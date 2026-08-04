@@ -29,5 +29,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Initialize local runtime
+        run: go run ./cmd/loop-harness init --root .
+
       - name: Verify
         run: make ci-verify
