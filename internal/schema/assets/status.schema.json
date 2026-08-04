@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/status.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["runtime_id", "revision", "bound_req", "stage", "lifecycle", "phase", "objective", "completed", "open_items", "active_work", "human_gateway"],
+  "properties": {
+    "runtime_id": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 0},
+    "bound_req": {"type": ["object", "null"]},
+    "stage": {"type": "string", "minLength": 1},
+    "lifecycle": {"type": "string", "minLength": 1},
+    "phase": {"type": ["string", "null"]},
+    "objective": {"type": "string", "minLength": 1},
+    "completed": {"type": "array", "items": {"type": "string"}},
+    "open_items": {"type": "array", "items": {"type": "string"}},
+    "active_work": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["entity_type", "id", "state"], "properties": {"entity_type": {"enum": ["agent", "task", "bug", "team"]}, "id": {"type": "string", "minLength": 1}, "state": {"type": "string", "minLength": 1}}}},
+    "human_gateway": {"type": ["object", "null"]},
+    "change": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["id", "summary", "class", "risk", "work_items", "checks", "findings"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "class": {"type": "string", "minLength": 1},
+        "risk": {"type": "string", "minLength": 1},
+        "work_items": {"$ref": "#/$defs/counts"},
+        "checks": {"$ref": "#/$defs/checkCounts"},
+        "findings": {"$ref": "#/$defs/findingCounts"}
+      }
+    }
+  },
+  "$defs": {
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["active", "open", "done"],
+      "properties": {"active": {"type": "integer", "minimum": 0}, "open": {"type": "integer", "minimum": 0}, "done": {"type": "integer", "minimum": 0}}
+    },
+    "checkCounts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["passed", "open", "failed", "n_a"],
+      "properties": {"passed": {"type": "integer", "minimum": 0}, "open": {"type": "integer", "minimum": 0}, "failed": {"type": "integer", "minimum": 0}, "n_a": {"type": "integer", "minimum": 0}}
+    },
+    "findingCounts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["open", "blocking"],
+      "properties": {"open": {"type": "integer", "minimum": 0}, "blocking": {"type": "integer", "minimum": 0}}
+    }
+  }
+}

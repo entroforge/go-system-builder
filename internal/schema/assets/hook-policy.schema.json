@@ -1,0 +1,34 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://vibe-coding.local/schemas/hook-policy.schema.json",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["schema_version","policy_id","version","mode","rules"],
+  "properties":{
+    "schema_version":{"const":"1.2.0"},
+    "policy_id":{"type":"string","minLength":1},
+    "version":{"const":"v2.0.0"},
+    "mode":{"enum":["enforce","audit"]},
+    "available_profiles":{"type":"object"},
+    "protected_events":{"type":"array","uniqueItems":true,"items":{"enum":["PreToolUse","SessionStart","SubagentStart","SubagentStop","TeammateIdle","PreCompact"]}},
+    "protected_paths":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}},
+    "extension_protected_commands":{"type":"array","items":{"type":"string","minLength":1}},
+		"rules":{"type":"array","minItems":2,"maxItems":2,"items":{"$ref":"#/$defs/rule"}}
+  },
+  "$defs":{"rule":{
+    "type":"object","additionalProperties":false,
+    "required":["rule_id","event","matcher","predicate","classification","reason","missing","recovery","retry","human_required"],
+    "properties":{
+      "rule_id":{"type":"string","pattern":"^HOOK_[A-Z0-9_]+$"},
+      "event":{"type":"string","minLength":1},
+      "matcher":{"type":"string","minLength":1},
+      "predicate":{"type":"string","minLength":1},
+      "classification":{"enum":["block","deny","warn","info","audit"]},
+      "reason":{"type":"string","minLength":1},
+      "missing":{"type":"array","items":{"type":"string"}},
+      "recovery":{"type":"array","items":{"type":"string"}},
+      "retry":{"type":"string","minLength":1},
+      "human_required":{"type":"boolean"}
+    }
+  }}
+}

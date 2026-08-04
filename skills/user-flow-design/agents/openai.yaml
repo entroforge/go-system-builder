@@ -1,0 +1,4 @@
+interface:
+  display_name: "User Flow Design"
+  short_description: "Design executable E2E checklist routes"
+  default_prompt: "Use $user-flow-design to create E2E-ready checklist routes for this UI module."

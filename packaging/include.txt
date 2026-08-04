@@ -1,0 +1,15 @@
+# Release tarball include list.
+# Each non-empty, non-comment line is a path relative to repo root.
+# Directories are included recursively. Everything else is excluded.
+# This is a whitelist: the REQ-002 instance runtime (.claude/loop-state.json,
+# loop-events.jsonl, hook-decisions.jsonl, bin/), Go source (cmd/, internal/,
+# go.mod, go.sum), tests/, .github/, and packaging/ itself are excluded.
+
+AGENTS-template.md
+prelude.md
+loop-template.md
+settings.json
+skills
+agents
+docs
+packaging/install.md

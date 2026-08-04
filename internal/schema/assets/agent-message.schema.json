@@ -1,0 +1,699 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/agent-message.schema.json",
+  "title": "Loop Agent Message Envelope",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/readbackRequest"
+    },
+    {
+      "$ref": "#/$defs/readbackResponse"
+    },
+    {
+      "$ref": "#/$defs/activation"
+    },
+    {
+      "$ref": "#/$defs/completionReport"
+    },
+    {
+      "$ref": "#/$defs/lifecycleEvent"
+    }
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "message_type",
+        "message_id",
+        "correlation_id",
+        "runtime_id",
+        "expected_runtime_revision",
+        "agent_id",
+        "agent_definition_ref",
+        "task_id",
+        "bug_id",
+        "team_id",
+        "occurred_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "enum": [
+          "readback_request",
+          "readback_response",
+          "activation",
+          "completion_report",
+          "work_start",
+          "completion_ack",
+          "blocker_report",
+          "blocker_resolution",
+          "shutdown_approval"
+          ]
+        },
+        "message_id": {
+          "type": "string",
+          "pattern": "^msg-[A-Za-z0-9._-]+$"
+        },
+        "correlation_id": {
+          "type": "string",
+          "pattern": "^corr-[A-Za-z0-9._-]+$"
+        },
+        "runtime_id": {
+          "type": "string",
+          "pattern": "^loop-[A-Za-z0-9._-]+$"
+        },
+        "expected_runtime_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent_definition_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^TASK-[0-9]{3,}(?:-[0-9]{2,})?$"
+        },
+        "bug_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^BUG-[0-9]{3,}$"
+            }
+          ]
+        },
+        "team_id": {
+          "type": ["string", "null"]
+        },
+        "occurred_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "documentReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "path", "version", "sha256", "read_order"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "req",
+            "design",
+            "ui_baseline",
+            "ui_prototype",
+            "contract",
+            "task",
+            "bug",
+            "rule",
+            "team_manifest"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "read_order": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skillReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "category", "source", "version", "sha256"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]+$"
+        },
+        "category": {
+          "enum": ["methodology", "best-practice"]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "responsibility",
+        "read_paths",
+        "prospective_write_paths",
+        "forbidden_paths",
+        "forbidden_actions",
+        "output_paths"
+      ],
+      "properties": {
+        "responsibility": {
+          "type": "string",
+          "minLength": 1
+        },
+        "read_paths": {
+          "$ref": "#/$defs/uniqueStrings"
+        },
+        "prospective_write_paths": {
+          "$ref": "#/$defs/uniqueStrings"
+        },
+        "forbidden_paths": {
+          "$ref": "#/$defs/uniqueStrings"
+        },
+        "forbidden_actions": {
+          "$ref": "#/$defs/uniqueStrings"
+        },
+        "output_paths": {
+          "$ref": "#/$defs/uniqueStrings"
+        }
+      }
+    },
+    "uniqueStrings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "checkResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "command", "result", "evidence_ref"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string"
+        },
+        "result": {
+          "enum": ["pass", "fail", "blocked", "not_run"]
+        },
+        "evidence_ref": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "readbackRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "message_type",
+            "message_id",
+            "correlation_id",
+            "runtime_id",
+            "expected_runtime_revision",
+            "agent_id",
+            "agent_definition_ref",
+            "task_id",
+            "bug_id",
+            "team_id",
+            "occurred_at",
+            "role_family",
+            "documents",
+            "skills",
+            "scope",
+            "closing_contract_ref",
+            "readback_fields"
+          ],
+          "properties": {
+            "schema_version": {},
+            "message_type": {
+              "const": "readback_request"
+            },
+            "message_id": {},
+            "correlation_id": {},
+            "runtime_id": {},
+            "expected_runtime_revision": {},
+            "agent_id": {},
+            "agent_definition_ref": {},
+            "task_id": {},
+            "bug_id": {},
+            "team_id": {},
+            "occurred_at": {},
+            "role_family": {
+              "enum": [
+                "frontend-builder",
+                "backend-builder",
+                "test-builder",
+                "document-verifier",
+                "delivery-verifier",
+                "qa",
+                "e2e-tester"
+              ]
+            },
+            "documents": {
+              "type": "array",
+              "minItems": 3,
+              "items": {
+                "$ref": "#/$defs/documentReference"
+              }
+            },
+            "skills": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/skillReference"
+              }
+            },
+            "scope": {
+              "$ref": "#/$defs/scope"
+            },
+            "closing_contract_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "readback_fields": {
+              "$ref": "#/$defs/uniqueStrings"
+            }
+          }
+        }
+      ]
+    },
+    "readbackResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "message_type",
+            "message_id",
+            "correlation_id",
+            "runtime_id",
+            "expected_runtime_revision",
+            "agent_id",
+            "agent_definition_ref",
+            "task_id",
+            "bug_id",
+            "team_id",
+            "occurred_at",
+            "request_message_id",
+            "status",
+            "objective",
+            "user_value",
+            "responsibility",
+            "covered_clauses",
+            "planned_surfaces",
+            "allowed_actions",
+            "forbidden_actions",
+            "dependencies",
+            "integration_boundaries",
+            "expected_outputs",
+            "evidence_plan",
+            "closing_criteria",
+            "skill_applications",
+            "assumptions",
+            "risks",
+            "unresolved_questions",
+            "documents_read"
+          ],
+          "properties": {
+            "schema_version": {},
+            "message_type": {
+              "const": "readback_response"
+            },
+            "message_id": {},
+            "correlation_id": {},
+            "runtime_id": {},
+            "expected_runtime_revision": {},
+            "agent_id": {},
+            "agent_definition_ref": {},
+            "task_id": {},
+            "bug_id": {},
+            "team_id": {},
+            "occurred_at": {},
+            "request_message_id": {
+              "type": "string",
+              "pattern": "^msg-[A-Za-z0-9._-]+$"
+            },
+            "status": {
+              "enum": ["ready", "conflict", "missing_input", "out_of_scope"]
+            },
+            "objective": {
+              "type": "string",
+              "minLength": 1
+            },
+            "user_value": {
+              "type": "string",
+              "minLength": 1
+            },
+            "responsibility": {
+              "type": "string",
+              "minLength": 1
+            },
+            "covered_clauses": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "planned_surfaces": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "allowed_actions": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "forbidden_actions": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "dependencies": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "integration_boundaries": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "expected_outputs": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "evidence_plan": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "closing_criteria": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "skill_applications": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "assumptions": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "risks": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "unresolved_questions": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "documents_read": {
+              "type": "array",
+              "minItems": 3,
+              "items": {
+                "$ref": "#/$defs/documentReference"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "activation": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "message_type",
+            "message_id",
+            "correlation_id",
+            "runtime_id",
+            "expected_runtime_revision",
+            "agent_id",
+            "agent_definition_ref",
+            "task_id",
+            "bug_id",
+            "team_id",
+            "occurred_at",
+            "activation_id",
+            "approved_readback_message_id",
+            "approved_readback_sha256",
+            "approval_evidence_id",
+            "documents",
+            "allowed_tools",
+            "allowed_read_paths",
+            "allowed_write_paths",
+            "allowed_command_classes",
+            "output_paths",
+            "checkpoints",
+            "stop_conditions",
+            "expires_on"
+          ],
+          "properties": {
+            "schema_version": {},
+            "message_type": {
+              "const": "activation"
+            },
+            "message_id": {},
+            "correlation_id": {},
+            "runtime_id": {},
+            "expected_runtime_revision": {},
+            "agent_id": {},
+            "agent_definition_ref": {},
+            "task_id": {},
+            "bug_id": {},
+            "team_id": {},
+            "occurred_at": {},
+            "activation_id": {
+              "type": "string",
+              "pattern": "^act-[A-Za-z0-9._-]+$"
+            },
+            "approved_readback_message_id": {
+              "type": "string",
+              "pattern": "^msg-[A-Za-z0-9._-]+$"
+            },
+            "approved_readback_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "approval_evidence_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "documents": {
+              "type": "array",
+              "minItems": 3,
+              "items": {
+                "$ref": "#/$defs/documentReference"
+              }
+            },
+            "allowed_tools": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "allowed_read_paths": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "allowed_write_paths": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "allowed_command_classes": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "output_paths": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "checkpoints": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "stop_conditions": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "expires_on": {
+              "enum": [
+                "completion",
+                "pause",
+                "revocation",
+                "fingerprint_change",
+                "scope_change"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "lifecycleEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "message_type",
+            "message_id",
+            "correlation_id",
+            "runtime_id",
+            "expected_runtime_revision",
+            "agent_id",
+            "agent_definition_ref",
+            "task_id",
+            "bug_id",
+            "team_id",
+            "occurred_at"
+          ],
+          "properties": {
+            "schema_version": {},
+            "message_type": {
+              "enum": [
+                "work_start",
+                "completion_ack",
+                "blocker_report",
+                "blocker_resolution",
+                "shutdown_approval"
+              ]
+            },
+            "message_id": {},
+            "correlation_id": {},
+            "runtime_id": {},
+            "expected_runtime_revision": {},
+            "agent_id": {},
+            "agent_definition_ref": {},
+            "task_id": {},
+            "bug_id": {},
+            "team_id": {},
+            "occurred_at": {},
+            "activation_id": {
+              "type": "string",
+              "pattern": "^act-[A-Za-z0-9._-]+$"
+            },
+            "body": {"type": "string"}
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "message_type": {"const": "work_start"}
+            }
+          },
+          "then": {
+            "required": ["activation_id"]
+          }
+        }
+      ]
+    },
+    "completionReport": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "message_type",
+            "message_id",
+            "correlation_id",
+            "runtime_id",
+            "expected_runtime_revision",
+            "agent_id",
+            "agent_definition_ref",
+            "task_id",
+            "bug_id",
+            "team_id",
+            "occurred_at",
+            "activation_id",
+            "status",
+            "summary",
+            "changed_paths",
+            "reviewed_paths",
+            "checks",
+            "evidence_refs",
+            "finding_refs",
+            "remaining_risks",
+            "scope_deviations",
+            "requested_event"
+          ],
+          "properties": {
+            "schema_version": {},
+            "message_type": {
+              "const": "completion_report"
+            },
+            "message_id": {},
+            "correlation_id": {},
+            "runtime_id": {},
+            "expected_runtime_revision": {},
+            "agent_id": {},
+            "agent_definition_ref": {},
+            "task_id": {},
+            "bug_id": {},
+            "team_id": {},
+            "occurred_at": {},
+            "activation_id": {
+              "type": "string",
+              "pattern": "^act-[A-Za-z0-9._-]+$"
+            },
+            "status": {
+              "enum": ["completed", "blocked", "failed"]
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "changed_paths": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "reviewed_paths": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/checkResult"
+              }
+            },
+            "evidence_refs": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "finding_refs": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "remaining_risks": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "scope_deviations": {
+              "$ref": "#/$defs/uniqueStrings"
+            },
+            "requested_event": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

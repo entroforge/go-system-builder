@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.2.0",
+  "policy_id": "hook-policy-loop-engineering",
+  "version": "v2.0.0",
+  "mode": "enforce",
+  "available_profiles": {
+    "enforce": {"default": true, "description": "Default deterministic guardrails."},
+    "audit": {"default": false, "description": "Explicit local development diagnostics."}
+  },
+  "protected_events": ["PreToolUse", "SessionStart", "SubagentStart", "SubagentStop", "TeammateIdle", "PreCompact"],
+  "protected_paths": [
+    ".claude/settings.json", ".claude/agents/", "docs/hook-policy.json",
+    "docs/loop-definition.json"
+  ],
+  "extension_protected_commands": [],
+  "rules": [
+    {"rule_id":"HOOK_LOCKED_ARTIFACT_WRITE","event":"PreToolUse","matcher":"Write|Edit|MultiEdit|NotebookEdit|Bash","predicate":"locked_artifact_write","classification":"block","reason":"locked_artifact_write","missing":["new generation of the locked artifact"],"recovery":["create a new version under docs/{kind}/versions/{REQ-ID}/g{N+1}/{canonical-file-name}"],"retry":"after_rework","human_required":true},
+    {"rule_id":"HOOK_SQUASH_MERGE","event":"PreToolUse","matcher":"Bash","predicate":"squash_merge","classification":"block","reason":"squash_merge","missing":["normal merge without --squash"],"recovery":["use a normal merge without squash"],"retry":"with_normal_merge","human_required":false}
+  ]
+}

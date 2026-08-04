@@ -1,0 +1,238 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "team-manifest-REQ-002-qa-round-1",
+  "version": "v1.0.0",
+  "runtime_id": "loop-REQ-002-example",
+  "req_id": "REQ-002",
+  "baseline_generation": 1,
+  "review_round": 1,
+  "platform_team_id": "claude-team-loop-REQ-002",
+  "workgroup_id": "workgroup-qa-round-1",
+  "workgroup_kind": "qa",
+  "status": "planned",
+  "documents": [
+    {
+      "id": "REQ-002",
+      "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
+      "version": "v1.0.0",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "id": "TASK-001",
+      "path": "docs/tasks/TASK-001.md",
+      "version": "v1.0.0",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "risk_tags": [
+    {
+      "tag": "architecture",
+      "source": "TASK-001 changed shared runtime schemas",
+      "derivation": "explicit"
+    },
+    {
+      "tag": "reliability",
+      "source": "REQ-002 FR-017 recovery behavior",
+      "derivation": "explicit"
+    }
+  ],
+  "responsibility_dispositions": [
+    {
+      "responsibility_id": "QA-MODULE-CODE",
+      "disposition": "assigned",
+      "trigger": "mandatory QA baseline",
+      "assignment_ids": ["assignment-qa-module-code"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "QA-REUSE-ABSTRACTION",
+      "disposition": "assigned",
+      "trigger": "mandatory QA baseline",
+      "assignment_ids": ["assignment-qa-reuse"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "QA-UNIT-TEST",
+      "disposition": "assigned",
+      "trigger": "mandatory executable-behavior baseline",
+      "assignment_ids": ["assignment-qa-unit-test"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "QA-INTEGRATION-TEST",
+      "disposition": "assigned",
+      "trigger": "mandatory QA baseline",
+      "assignment_ids": ["assignment-qa-integration-test"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "QA-ARCHITECTURE",
+      "disposition": "assigned",
+      "trigger": "architecture risk tag",
+      "assignment_ids": ["assignment-qa-architecture"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "QA-SECURITY",
+      "disposition": "not_applicable",
+      "trigger": "no security or trust-boundary impact",
+      "assignment_ids": [],
+      "na_rationale": "The scoped runtime schema work does not change authentication, authorization, secrets or sensitive data handling.",
+      "evidence_ref": "TASK-001#impact"
+    },
+    {
+      "responsibility_id": "QA-PERFORMANCE",
+      "disposition": "not_applicable",
+      "trigger": "no performance risk tag",
+      "assignment_ids": [],
+      "na_rationale": "No latency, throughput or resource budget is affected.",
+      "evidence_ref": "TASK-001#impact"
+    },
+    {
+      "responsibility_id": "QA-RELIABILITY",
+      "disposition": "assigned",
+      "trigger": "reliability risk tag",
+      "assignment_ids": ["assignment-qa-reliability"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "QA-MIGRATION",
+      "disposition": "not_applicable",
+      "trigger": "no database or protocol migration",
+      "assignment_ids": [],
+      "na_rationale": "No persisted production schema or rollout migration is in scope.",
+      "evidence_ref": "TASK-001#impact"
+    }
+  ],
+  "assignments": [
+    {
+      "assignment_id": "assignment-qa-module-code",
+      "responsibility_id": "QA-MODULE-CODE",
+      "role_family": "qa",
+      "scope": ["runtime validator"],
+      "agent_id": "agent-qa-module-code",
+      "agent_definition_ref": ".claude/agents/qa.md",
+      "skill_refs": ["code-quality"],
+      "read_paths": [".claude/hooks/", "tests/"],
+      "write_paths": ["docs/reports/qa/QA-001.md"],
+      "output_paths": ["docs/reports/qa/QA-001.md"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "One module and one code-quality conclusion.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-qa-reuse",
+      "responsibility_id": "QA-REUSE-ABSTRACTION",
+      "role_family": "qa",
+      "scope": ["runtime validator"],
+      "agent_id": "agent-qa-reuse",
+      "agent_definition_ref": ".claude/agents/qa.md",
+      "skill_refs": ["code-quality"],
+      "read_paths": [".claude/hooks/", "tests/"],
+      "write_paths": ["docs/reports/qa/QA-002.md"],
+      "output_paths": ["docs/reports/qa/QA-002.md"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Reuse and hardcoding remain separate from local code correctness.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-qa-unit-test",
+      "responsibility_id": "QA-UNIT-TEST",
+      "role_family": "qa",
+      "scope": ["runtime validator unit tests"],
+      "agent_id": "agent-qa-unit-test",
+      "agent_definition_ref": ".claude/agents/qa.md",
+      "skill_refs": ["testing-strategy"],
+      "read_paths": [".claude/hooks/", "tests/"],
+      "write_paths": ["docs/reports/qa/QA-003.md"],
+      "output_paths": ["docs/reports/qa/QA-003.md"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Unit-test evidence has an independent conclusion.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-qa-integration-test",
+      "responsibility_id": "QA-INTEGRATION-TEST",
+      "role_family": "qa",
+      "scope": ["Hook and runtime integration"],
+      "agent_id": "agent-qa-integration-test",
+      "agent_definition_ref": ".claude/agents/qa.md",
+      "skill_refs": ["testing-strategy", "integration-verification"],
+      "read_paths": [".claude/", "tests/"],
+      "write_paths": ["docs/reports/qa/QA-004.md"],
+      "output_paths": ["docs/reports/qa/QA-004.md"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Integration behavior requires distinct evidence.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-qa-architecture",
+      "responsibility_id": "QA-ARCHITECTURE",
+      "role_family": "qa",
+      "scope": ["runtime schemas and Hook boundary"],
+      "agent_id": "agent-qa-architecture",
+      "agent_definition_ref": ".claude/agents/qa.md",
+      "skill_refs": ["state-machine-design", "code-quality"],
+      "read_paths": [".claude/", "docs/design/loop-engineering/"],
+      "write_paths": ["docs/reports/qa/QA-005.md"],
+      "output_paths": ["docs/reports/qa/QA-005.md"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Shared runtime boundary triggered architecture review.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-qa-reliability",
+      "responsibility_id": "QA-RELIABILITY",
+      "role_family": "qa",
+      "scope": ["runtime recovery and fail-closed behavior"],
+      "agent_id": "agent-qa-reliability",
+      "agent_definition_ref": ".claude/agents/qa.md",
+      "skill_refs": ["reliability-review"],
+      "read_paths": [".claude/", "tests/"],
+      "write_paths": ["docs/reports/qa/QA-006.md"],
+      "output_paths": ["docs/reports/qa/QA-006.md"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Recovery and fail-closed behavior require an independent reliability conclusion.",
+      "status": "planned"
+    }
+  ],
+  "separation_edges": [
+    {
+      "left_assignment_id": "assignment-qa-module-code",
+      "right_assignment_id": "assignment-qa-reuse",
+      "reason": "different_conclusion"
+    },
+    {
+      "left_assignment_id": "assignment-qa-unit-test",
+      "right_assignment_id": "assignment-qa-integration-test",
+      "reason": "different_conclusion"
+    },
+    {
+      "left_assignment_id": "assignment-qa-architecture",
+      "right_assignment_id": "assignment-qa-reliability",
+      "reason": "different_conclusion"
+    }
+  ],
+  "planned_agent_count": 6,
+  "max_parallel_agents": 4,
+  "quantity_rationale": "Six distinct QA conclusions are required; four may run concurrently within practical platform capacity.",
+  "validation": {
+    "result": "pass",
+    "missing_responsibilities": [],
+    "unresolved_conflicts": [],
+    "warnings": [],
+    "validated_at": "2026-06-20T00:00:00Z"
+  }
+}

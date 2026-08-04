@@ -1,0 +1,127 @@
+package runtime
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"reflect"
+	"time"
+
+	"github.com/entroforge/go-system-builder/internal/change"
+	"github.com/entroforge/go-system-builder/internal/schema"
+)
+
+// ChangeRequest creates the one active Change Record carried by a Runtime.
+// The record is deliberately stored through the same CAS/journal path as all
+// other Runtime facts.
+type ChangeRequest struct {
+	ExpectedRevision int
+	Record           change.Record
+	OccurredAt       time.Time
+}
+
+func CreateChange(root, statePath, journalPath string, request ChangeRequest) (Snapshot, error) {
+	if request.ExpectedRevision < 0 {
+		return Snapshot{}, fmt.Errorf("expected revision must be non-negative")
+	}
+	if err := change.Validate(request.Record); err != nil {
+		return Snapshot{}, err
+	}
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(data, &current); err != nil {
+		return Snapshot{}, fmt.Errorf("decode runtime: %w", err)
+	}
+	if existing, ok := current["change"]; ok && existing != nil {
+		return Snapshot{}, fmt.Errorf("runtime already has an active Change Record")
+	}
+	if err := assertBoundREQConsistency(current, request.Record); err != nil {
+		return Snapshot{}, err
+	}
+	if err := assertRequiredChecksInvariant(request.Record); err != nil {
+		return Snapshot{}, err
+	}
+	changeMap, err := change.Encode(request.Record)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	runtimeID, _ := current["runtime_id"].(string)
+	lifecycle, _ := current["lifecycle"].(map[string]any)
+	occurredAt := request.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	store := NewStore(statePath, journalPath)
+	store.PreCommitValidator = func(state map[string]any) error {
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			return fmt.Errorf("encode post-change runtime: %w", err)
+		}
+		return schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", encoded)
+	}
+	return store.Update(request.ExpectedRevision, Mutation{
+		EventID:        fmt.Sprintf("evt-change-%s-r%d", request.Record.ID, request.ExpectedRevision+1),
+		TransitionID:   "CHANGE-RECORD-CREATE",
+		Event:          "change_record_created",
+		Actor:          "orchestrator",
+		IdempotencyKey: fmt.Sprintf("runtime:change:%s:%d", request.Record.ID, request.ExpectedRevision),
+		RuntimeID:      runtimeID,
+		From:           map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},
+		To:             map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},
+		EvidenceIDs:    []string{},
+		Message:        "Created the active Runtime Change Record.",
+		OccurredAt:     occurredAt,
+		Apply: func(state map[string]any) error {
+			if existing, ok := state["change"]; ok && existing != nil {
+				return fmt.Errorf("runtime already has an active Change Record")
+			}
+			if err := assertBoundREQConsistency(state, request.Record); err != nil {
+				return err
+			}
+			if err := assertRequiredChecksInvariant(request.Record); err != nil {
+				return err
+			}
+			state["change"] = changeMap
+			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+			return nil
+		},
+	})
+}
+
+// assertBoundREQConsistency enforces REQ-001 FR-001 at the Change Record
+// boundary: the record's req_ref and req_sha256 must match the Runtime's
+// currently bound REQ. Without this, a Change Record could claim lineage to a
+// REQ the Runtime is not bound to, creating a second state authority.
+func assertBoundREQConsistency(state map[string]any, record change.Record) error {
+	bound, ok := state["bound_req"].(map[string]any)
+	if !ok || bound == nil {
+		return fmt.Errorf("runtime has no bound REQ; cannot create Change Record")
+	}
+	boundID, _ := bound["id"].(string)
+	boundSHA, _ := bound["sha256"].(string)
+	if boundID == "" || boundSHA == "" {
+		return fmt.Errorf("bound REQ is missing id or sha256; cannot create Change Record")
+	}
+	if record.REQRef != boundID {
+		return fmt.Errorf("change req_ref %q does not match bound REQ %q", record.REQRef, boundID)
+	}
+	if record.REQSHA != boundSHA {
+		return fmt.Errorf("change req_sha256 does not match bound REQ fingerprint")
+	}
+	return nil
+}
+
+// assertRequiredChecksInvariant enforces the deterministic-checks rule from
+// REQ-002 FR-005: the record's RequiredChecks must equal DefaultChecks for its
+// class/risk/scope. This blocks silent reduction at the CAS boundary, where
+// REQ-001's no-partial-state guarantee lives.
+func assertRequiredChecksInvariant(record change.Record) error {
+	expected := change.DefaultChecks(record.Class, record.Risk, record.Scope)
+	if !reflect.DeepEqual(expected, record.RequiredChecks) {
+		return fmt.Errorf("change required_checks must equal the deterministic default for class=%q risk=%q (expected %d checks, got %d)", record.Class, record.Risk, len(expected), len(record.RequiredChecks))
+	}
+	return nil
+}
