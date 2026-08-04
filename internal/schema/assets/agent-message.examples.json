@@ -1,0 +1,298 @@
+[
+  {
+    "schema_version": "1.0.0",
+    "message_type": "readback_request",
+    "message_id": "msg-readback-request-001",
+    "correlation_id": "corr-agent-001",
+    "runtime_id": "loop-REQ-002-example",
+    "expected_runtime_revision": 10,
+    "agent_id": "agent-frontend-builder-001",
+    "agent_definition_ref": ".claude/agents/frontend-builder.md",
+    "task_id": "TASK-001",
+    "bug_id": null,
+    "team_id": "team-builder-001",
+    "occurred_at": "2026-06-20T00:00:00Z",
+    "role_family": "frontend-builder",
+    "documents": [
+      {
+        "id": "TASK-001",
+        "kind": "task",
+        "path": "docs/tasks/TASK-001.md",
+        "version": "v1.0.0",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "read_order": 1
+      },
+      {
+        "id": "CONTRACTS-002",
+        "kind": "contract",
+        "path": "docs/contracts/CONTRACTS-002.md",
+        "version": "v1.0.0",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "read_order": 2
+      },
+      {
+        "id": "REQ-002",
+        "kind": "req",
+        "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
+        "version": "v1.0.0",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "read_order": 3
+      }
+    ],
+    "skills": [
+      {
+        "name": "two-phase-activation",
+        "category": "methodology",
+        "source": ".claude/skills/two-phase-activation/SKILL.md",
+        "version": "v1.0.0",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      {
+        "name": "code-quality",
+        "category": "best-practice",
+        "source": ".claude/skills/code-quality/SKILL.md",
+        "version": "v1.0.0",
+        "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    ],
+    "scope": {
+      "responsibility": "Implement the runtime validator for TASK-001.",
+      "read_paths": [
+        "docs/",
+        ".claude/"
+      ],
+      "prospective_write_paths": [
+        ".claude/hooks/",
+        "tests/"
+      ],
+      "forbidden_paths": [
+        "docs/requirements/",
+        "docs/agent-protocol.md"
+      ],
+      "forbidden_actions": [
+        "modify locked REQ",
+        "squash merge",
+        "formal release"
+      ],
+      "output_paths": [
+        "docs/tasks/TASK-001.md"
+      ]
+    },
+    "closing_contract_ref": "docs/tasks/TASK-001.md#closing-contract",
+    "readback_fields": [
+      "objective",
+      "responsibility",
+      "covered_clauses",
+      "planned_surfaces",
+      "closing_criteria",
+      "risks"
+    ]
+  },
+  {
+    "schema_version": "1.0.0",
+    "message_type": "readback_response",
+    "message_id": "msg-readback-response-001",
+    "correlation_id": "corr-agent-001",
+    "runtime_id": "loop-REQ-002-example",
+    "expected_runtime_revision": 10,
+    "agent_id": "agent-frontend-builder-001",
+    "agent_definition_ref": ".claude/agents/frontend-builder.md",
+    "task_id": "TASK-001",
+    "bug_id": null,
+    "team_id": "team-builder-001",
+    "occurred_at": "2026-06-20T00:01:00Z",
+    "request_message_id": "msg-readback-request-001",
+    "status": "ready",
+    "objective": "Implement the runtime validator.",
+    "user_value": "Loop transitions become machine-enforced and recoverable.",
+    "responsibility": "Implement only the validator and its tests.",
+    "covered_clauses": [
+      "REQ-002 FR-003",
+      "REQ-002 FR-004",
+      "TASK-001 Closing Contract"
+    ],
+    "planned_surfaces": [
+      ".claude/hooks/",
+      "tests/"
+    ],
+    "allowed_actions": [
+      "edit activated files",
+      "run activated tests"
+    ],
+    "forbidden_actions": [
+      "modify locked REQ",
+      "edit agent-protocol.md"
+    ],
+    "dependencies": [
+      "loop-definition.json",
+      "loop-state.schema.json"
+    ],
+    "integration_boundaries": [
+      "runtime CAS",
+      "PreToolUse Hook"
+    ],
+    "expected_outputs": [
+      "validator implementation",
+      "automated tests",
+      "completion report"
+    ],
+    "evidence_plan": [
+      "schema validation",
+      "state/phase semantic tests"
+    ],
+    "closing_criteria": [
+      "valid states pass",
+      "illegal transitions fail closed"
+    ],
+    "skill_applications": [
+      "two-phase-activation controls execution",
+      "code-quality guides implementation review"
+    ],
+    "assumptions": [],
+    "risks": [
+      "installed Claude Code Hook behavior must be compatibility-tested"
+    ],
+    "unresolved_questions": [],
+    "documents_read": [
+      {
+        "id": "TASK-001",
+        "kind": "task",
+        "path": "docs/tasks/TASK-001.md",
+        "version": "v1.0.0",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "read_order": 1
+      },
+      {
+        "id": "CONTRACTS-002",
+        "kind": "contract",
+        "path": "docs/contracts/CONTRACTS-002.md",
+        "version": "v1.0.0",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "read_order": 2
+      },
+      {
+        "id": "REQ-002",
+        "kind": "req",
+        "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
+        "version": "v1.0.0",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "read_order": 3
+      }
+    ]
+  },
+  {
+    "schema_version": "1.0.0",
+    "message_type": "activation",
+    "message_id": "msg-activation-001",
+    "correlation_id": "corr-agent-001",
+    "runtime_id": "loop-REQ-002-example",
+    "expected_runtime_revision": 12,
+    "agent_id": "agent-frontend-builder-001",
+    "agent_definition_ref": ".claude/agents/frontend-builder.md",
+    "task_id": "TASK-001",
+    "bug_id": null,
+    "team_id": "team-builder-001",
+    "occurred_at": "2026-06-20T00:02:00Z",
+    "activation_id": "act-agent-builder-001",
+    "approved_readback_message_id": "msg-readback-response-001",
+    "approved_readback_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "approval_evidence_id": "evidence-understanding-001",
+    "documents": [
+      {
+        "id": "TASK-001",
+        "kind": "task",
+        "path": "docs/tasks/TASK-001.md",
+        "version": "v1.0.0",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "read_order": 1
+      },
+      {
+        "id": "CONTRACTS-002",
+        "kind": "contract",
+        "path": "docs/contracts/CONTRACTS-002.md",
+        "version": "v1.0.0",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "read_order": 2
+      },
+      {
+        "id": "REQ-002",
+        "kind": "req",
+        "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
+        "version": "v1.0.0",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "read_order": 3
+      }
+    ],
+    "allowed_tools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit",
+      "Bash"
+    ],
+    "allowed_read_paths": [
+      "docs/",
+      ".claude/",
+      "tests/"
+    ],
+    "allowed_write_paths": [
+      ".claude/hooks/",
+      "tests/"
+    ],
+    "allowed_command_classes": [
+      "test",
+      "lint",
+      "schema-validation"
+    ],
+    "output_paths": [
+      "docs/tasks/TASK-001.md"
+    ],
+    "checkpoints": [
+      "validator implemented",
+      "negative tests pass"
+    ],
+    "stop_conditions": [
+      "document fingerprint changes",
+      "scope expansion is required",
+      "Hook blocks a required operation repeatedly"
+    ],
+    "expires_on": "completion"
+  },
+  {
+    "schema_version": "1.0.0",
+    "message_type": "completion_report",
+    "message_id": "msg-completion-001",
+    "correlation_id": "corr-agent-001",
+    "runtime_id": "loop-REQ-002-example",
+    "expected_runtime_revision": 13,
+    "agent_id": "agent-frontend-builder-001",
+    "agent_definition_ref": ".claude/agents/frontend-builder.md",
+    "task_id": "TASK-001",
+    "bug_id": null,
+    "team_id": "team-builder-001",
+    "occurred_at": "2026-06-20T00:10:00Z",
+    "activation_id": "act-agent-builder-001",
+    "status": "completed",
+    "summary": "Implemented the runtime validator and negative transition tests.",
+    "changed_paths": [
+      ".claude/hooks/validate-loop-state.js",
+      "tests/loop-state.test.js"
+    ],
+    "reviewed_paths": [],
+    "checks": [
+      {
+        "name": "loop state tests",
+        "command": "npm test",
+        "result": "pass",
+        "evidence_ref": "evidence-test-001"
+      }
+    ],
+    "evidence_refs": [
+      "evidence-test-001"
+    ],
+    "finding_refs": [],
+    "remaining_risks": [],
+    "scope_deviations": [],
+    "requested_event": "completion_reported"
+  }
+]

@@ -1,0 +1,317 @@
+[
+  {
+    "schema_version": "1.0.0",
+    "record_type": "canonical_bug",
+    "bug_id": "BUG-001",
+    "status": "accepted",
+    "runtime_id": "loop-REQ-002-example",
+    "req_id": "REQ-002",
+    "baseline_generation": 1,
+    "source_finding_ids": [
+      "REV-F001",
+      "QA-F003"
+    ],
+    "source_reports": [
+      {
+        "id": "REV-001",
+        "path": "docs/reports/review/REV-001.md",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      {
+        "id": "QA-003",
+        "path": "docs/reports/qa/QA-003.md",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ],
+    "severity": "P1",
+    "violated_clauses": [
+      "REQ-002 FR-017",
+      "TASK-001 Closing Contract assertion 2"
+    ],
+    "actual_behavior": "A stale runtime revision can overwrite a newer snapshot.",
+    "expected_behavior": "A stale writer is rejected without mutating runtime state.",
+    "reproduction_evidence": [
+      "evidence-reproduction-001",
+      "test-stale-revision-fails"
+    ],
+    "root_cause": "The runtime update path does not compare the observed revision before atomic replacement.",
+    "impact": [
+      "runtime recovery correctness",
+      "concurrent Orchestrator safety"
+    ],
+    "repair_scope": [
+      ".claude/hooks/runtime-store.js",
+      "tests/runtime-store.test.js"
+    ],
+    "forbidden_scope": [
+      "docs/requirements/",
+      "docs/agent-protocol.md"
+    ],
+    "closing_contract": [
+      {
+        "id": "CC-001",
+        "statement": "A write with expected_revision lower than current revision returns STALE_REVISION.",
+        "evidence_ref": "test-stale-revision-fails"
+      },
+      {
+        "id": "CC-002",
+        "statement": "Rejected stale writes do not change the state file hash.",
+        "evidence_ref": "test-stale-write-no-mutation"
+      }
+    ],
+    "original_assignment_id": "assignment-ver-runtime-recovery",
+    "original_responsibility_id": "VER-MODULE-COMPLETE",
+    "required_skill_refs": [
+      "bug-resolution",
+      "reliability-review",
+      "testing-strategy"
+    ],
+    "attempt_count": 0,
+    "same_contract_failure_count": 0,
+    "reviewed_by": "orchestrator",
+    "reviewed_at": "2026-06-20T01:00:00Z"
+  },
+  {
+    "schema_version": "1.0.0",
+    "record_type": "change_impact",
+    "impact_id": "impact-BUG-001-attempt-1",
+    "runtime_id": "loop-REQ-002-example",
+    "req_id": "REQ-002",
+    "baseline_generation": 1,
+    "source_bug_ids": [
+      "BUG-001"
+    ],
+    "change_types": [
+      "implementation",
+      "test"
+    ],
+    "changed_artifacts": [
+      {
+        "id": "runtime-store",
+        "path": ".claude/hooks/runtime-store.js",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      {
+        "id": "runtime-store-tests",
+        "path": "tests/runtime-store.test.js",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    ],
+    "decisions": [
+      {
+        "source_id": "runtime-store",
+        "target_id": "evidence-ver-runtime-round-1",
+        "relation": "implements reviewed module",
+        "rule_id": "IM-IMPLEMENTATION-MODULE",
+        "decision": "invalidate",
+        "responsibility_id": "VER-MODULE-COMPLETE",
+        "scope": [
+          "runtime recovery"
+        ],
+        "rationale": "The reviewed implementation changed after the PASS evidence was produced.",
+        "recovery_evidence": [
+          "new full-round VER-MODULE-COMPLETE evidence"
+        ]
+      },
+      {
+        "source_id": "runtime-store-tests",
+        "target_id": "evidence-qa-unit-round-1",
+        "relation": "provides test evidence",
+        "rule_id": "IM-TEST-PROVENANCE",
+        "decision": "invalidate",
+        "responsibility_id": "QA-UNIT-TEST",
+        "scope": [
+          "runtime store unit tests"
+        ],
+        "rationale": "Assertions and fixtures changed, so the prior test-quality conclusion is stale.",
+        "recovery_evidence": [
+          "new full-round QA-UNIT-TEST evidence"
+        ]
+      },
+      {
+        "source_id": "runtime-store",
+        "target_id": "clean-round-1",
+        "relation": "was frozen by",
+        "rule_id": "IM-ANY-CHANGE-CLEAN-ROUND",
+        "decision": "invalidate",
+        "responsibility_id": null,
+        "scope": [
+          "review round 1"
+        ],
+        "rationale": "A clean round cannot survive a later relevant implementation change.",
+        "recovery_evidence": [
+          "new complete Delivery + QA + E2E Browser round"
+        ]
+      }
+    ],
+    "escalation_level": "review_round",
+    "invalidated_evidence_ids": [
+      "evidence-ver-runtime-round-1",
+      "evidence-qa-unit-round-1",
+      "clean-round-1"
+    ],
+    "superseded_evidence_ids": [],
+    "retained_evidence_ids": [],
+    "required_reverification_ids": [
+      "VER-MODULE-COMPLETE:runtime-recovery",
+      "QA-UNIT-TEST:runtime-store",
+      "complete-review-round"
+    ],
+    "analyzed_by": "orchestrator",
+    "analyzed_at": "2026-06-20T02:00:00Z"
+  },
+  {
+    "schema_version": "1.0.0",
+    "record_type": "targeted_reverification",
+    "reverification_id": "reverify-BUG-001-attempt-1",
+    "runtime_id": "loop-REQ-002-example",
+    "bug_id": "BUG-001",
+    "baseline_generation": 1,
+    "original_assignment_id": "assignment-ver-runtime-recovery",
+    "performing_assignment_id": "assignment-ver-runtime-recovery",
+    "continuity_reason": null,
+    "impact_id": "impact-BUG-001-attempt-1",
+    "assertion_results": [
+      {
+        "assertion_id": "CC-001",
+        "result": "pass",
+        "evidence_refs": [
+          "test-stale-revision-fails"
+        ]
+      },
+      {
+        "assertion_id": "CC-002",
+        "result": "pass",
+        "evidence_refs": [
+          "test-stale-write-no-mutation"
+        ]
+      }
+    ],
+    "scope_compliance": "pass",
+    "result": "pass",
+    "performed_at": "2026-06-20T03:00:00Z"
+  },
+  {
+    "schema_version": "1.0.0",
+    "record_type": "clean_round",
+    "clean_round_id": "clean-round-2",
+    "runtime_id": "loop-REQ-002-example",
+    "req_id": "REQ-002",
+    "baseline_generation": 1,
+    "review_round": 2,
+    "frozen_artifacts": [
+      {
+        "id": "runtime-store",
+        "path": ".claude/hooks/runtime-store.js",
+        "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      {
+        "id": "runtime-store-tests",
+        "path": "tests/runtime-store.test.js",
+        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    ],
+    "delivery_manifest_ref": {
+      "id": "team-manifest-delivery-round-2",
+      "path": "docs/evidence/team-manifest-delivery-round-2.json",
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "qa_manifest_ref": {
+      "id": "team-manifest-qa-round-2",
+      "path": "docs/evidence/team-manifest-qa-round-2.json",
+      "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "e2e_manifest_ref": {
+      "id": "team-manifest-e2e-round-2",
+      "path": "docs/evidence/team-manifest-e2e-round-2.json",
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "responsibility_results": [
+      {
+        "responsibility_id": "VER-REQ-GAP",
+        "scope": [
+          "REQ-002"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-ver-req-round-2"
+      },
+      {
+        "responsibility_id": "VER-SPEC-GAP",
+        "scope": [
+          "TASK-001"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-ver-spec-round-2"
+      },
+      {
+        "responsibility_id": "VER-MODULE-COMPLETE",
+        "scope": [
+          "runtime recovery"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-ver-runtime-round-2"
+      },
+      {
+        "responsibility_id": "QA-MODULE-CODE",
+        "scope": [
+          "runtime store"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-qa-code-round-2"
+      },
+      {
+        "responsibility_id": "QA-REUSE-ABSTRACTION",
+        "scope": [
+          "runtime store"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-qa-reuse-round-2"
+      },
+      {
+        "responsibility_id": "QA-UNIT-TEST",
+        "scope": [
+          "runtime store tests"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-qa-unit-round-2"
+      },
+      {
+        "responsibility_id": "QA-INTEGRATION-TEST",
+        "scope": [
+          "runtime CAS and Hook integration"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-qa-integration-round-2"
+      },
+      {
+        "responsibility_id": "E2E-USER-FLOW",
+        "scope": [
+          "primary acceptance flow"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-e2e-user-flow-round-2"
+      },
+      {
+        "responsibility_id": "E2E-CONSOLE-NETWORK",
+        "scope": [
+          "browser console and network"
+        ],
+        "disposition": "pass",
+        "evidence_id": "evidence-e2e-console-network-round-2"
+      }
+    ],
+    "closed_bug_ids": [
+      "BUG-001"
+    ],
+    "targeted_reverification_ids": [
+      "reverify-BUG-001-attempt-1"
+    ],
+    "open_blocking_bug_ids": [],
+    "invalid_evidence_ids": [],
+    "unresolved_blocker_ids": [],
+    "latest_required_evidence_at": "2026-06-20T04:00:00Z",
+    "evaluated_at": "2026-06-20T04:01:00Z",
+    "evaluated_by": "orchestrator",
+    "result": "pass"
+  }
+]

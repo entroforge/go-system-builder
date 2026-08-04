@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "message_type": "activation",
+  "message_id": "msg-activation-assignment-example",
+  "correlation_id": "corr-workgroup-example-assignment-example",
+  "runtime_id": "loop-REQ-002-example",
+  "expected_runtime_revision": 2,
+  "agent_id": "agent-frontend-builder-example",
+  "agent_definition_ref": ".claude/agents/frontend-builder.md",
+  "task_id": "TASK-001",
+  "bug_id": null,
+  "team_id": "claude-team-loop-REQ-002",
+  "occurred_at": "2026-06-20T00:01:00Z",
+  "activation_id": "act-assignment-example",
+  "approved_readback_message_id": "msg-readback-response-assignment-example",
+  "approved_readback_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "approval_evidence_id": "approval-assignment-example",
+  "documents": [
+    {
+      "id": "TASK-001",
+      "kind": "task",
+      "path": "docs/tasks/TASK-001.md",
+      "version": "v1.0.0",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "read_order": 1
+    },
+    {
+      "id": "CONTRACTS-001",
+      "kind": "contract",
+      "path": "docs/contracts/CONTRACTS-001.md",
+      "version": "v1.0.0",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "read_order": 2
+    },
+    {
+      "id": "REQ-002",
+      "kind": "req",
+      "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
+      "version": "v1.0.0",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "read_order": 3
+    }
+  ],
+  "allowed_tools": ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill"],
+  "allowed_read_paths": ["docs/", "internal/"],
+  "allowed_write_paths": ["internal/example/", "docs/reports/review/REV-001.md"],
+  "allowed_command_classes": ["test", "lint", "build"],
+  "output_paths": ["docs/reports/review/REV-001.md"],
+  "checkpoints": ["Closing Contract completed", "completion report submitted"],
+  "stop_conditions": ["fingerprint change", "scope conflict", "Hook denial"],
+  "expires_on": "completion"
+}

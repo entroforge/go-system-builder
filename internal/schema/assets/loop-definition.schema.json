@@ -1,0 +1,553 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/loop-definition.schema.json",
+  "title": "Layered Loop Engineering Definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "definition_id",
+    "status",
+    "initial_state",
+    "terminal_states",
+    "states",
+    "phase_machines",
+    "entity_lifecycles",
+    "transitions",
+    "global_transitions",
+    "forbidden_events",
+    "invariants"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "definition_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]+$"
+    },
+    "status": {
+      "enum": ["draft", "reviewed", "locked", "deprecated"]
+    },
+    "initial_state": {
+      "$ref": "#/$defs/id"
+    },
+    "terminal_states": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "states": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/state"
+      }
+    },
+    "phase_machines": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/phaseMachine"
+      }
+    },
+    "entity_lifecycles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/entityLifecycle"
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/transition"
+      }
+    },
+    "global_transitions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/transition"
+      }
+    },
+    "forbidden_events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/forbiddenEvent"
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/invariant"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]+$"
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "category",
+        "description",
+        "phase_machine",
+        "entry_condition",
+        "exit_condition"
+      ],
+      "properties": {
+        "stage": {
+          "enum": [
+            "S0",
+            "S1",
+            "S1/S2/S3/S4",
+            "S2/S3/S4",
+            "S5",
+            "S6",
+            "S7",
+            "S8/S9",
+            "S10",
+            "S11",
+            "cross-stage"
+          ]
+        },
+        "category": {
+          "enum": ["control", "work", "review", "wait", "terminal"]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase_machine": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entry_condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exit_condition": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "phaseMachine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_state",
+        "initial_phase",
+        "entry_phases",
+        "terminal_phases",
+        "phases",
+        "transitions"
+      ],
+      "properties": {
+        "owner_state": {
+          "$ref": "#/$defs/id"
+        },
+        "initial_phase": {
+          "$ref": "#/$defs/id"
+        },
+        "entry_phases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "terminal_phases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "phases": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/phase"
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/phaseTransition"
+          }
+        }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "entry_condition", "exit_condition"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entry_condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exit_condition": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "phaseTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "event",
+        "to",
+        "guards",
+        "actions",
+        "required_evidence",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^PTR-[A-Z]+-[0-9]{2}$"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "selector": {
+          "type": "string",
+          "pattern": "^SEL-[A-Z0-9-]+$"
+        },
+        "automation": {
+          "$ref": "#/$defs/automationPolicy"
+        },
+        "event": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "guards": {
+          "$ref": "#/$defs/idList"
+        },
+        "actions": {
+          "$ref": "#/$defs/idList"
+        },
+        "required_evidence": {
+          "$ref": "#/$defs/idList"
+        },
+        "actors": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "user",
+              "orchestrator",
+              "document_verifier",
+              "frontend_builder",
+              "backend_builder",
+              "test_builder",
+              "delivery_verifier",
+              "qa",
+              "e2e_tester",
+              "release_auditor",
+              "hook",
+              "hook_controller",
+              "system"
+            ]
+          }
+        },
+        "on_guard_failure": {
+          "enum": ["reject", "warn_and_retry", "pause"]
+        },
+        "auto_trigger": {
+          "$ref": "#/$defs/autoTrigger"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "entityLifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initial_state",
+        "terminal_states",
+        "states",
+        "transitions"
+      ],
+      "properties": {
+        "initial_state": {
+          "$ref": "#/$defs/id"
+        },
+        "terminal_states": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "states": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/entityTransition"
+          }
+        }
+      }
+    },
+    "entityTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "event", "to", "guards"],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "event": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "guards": {
+          "$ref": "#/$defs/idList"
+        }
+      }
+    },
+    "stateSelector": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      ]
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "event",
+        "to",
+        "actors",
+        "guards",
+        "actions",
+        "required_evidence",
+        "on_guard_failure",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(TR|GTR)-[0-9]{3}$"
+        },
+        "from": {
+          "$ref": "#/$defs/stateSelector"
+        },
+        "from_phase": {
+          "$ref": "#/$defs/id"
+        },
+        "selector": {
+          "type": "string",
+          "pattern": "^SEL-[A-Z0-9-]+$"
+        },
+        "automation": {
+          "$ref": "#/$defs/automationPolicy"
+        },
+        "event": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^(RESUME_FROM_PAUSE|[a-z][a-z0-9_]+)$"
+        },
+        "actors": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "user",
+              "orchestrator",
+              "document_verifier",
+              "frontend_builder",
+              "backend_builder",
+              "test_builder",
+              "delivery_verifier",
+              "qa",
+              "e2e_tester",
+              "release_auditor",
+              "hook",
+              "hook_controller",
+              "system"
+            ]
+          }
+        },
+        "guards": {
+          "$ref": "#/$defs/idList"
+        },
+        "actions": {
+          "$ref": "#/$defs/idList"
+        },
+        "required_evidence": {
+          "$ref": "#/$defs/idList"
+        },
+        "on_guard_failure": {
+          "enum": ["reject", "warn_and_retry", "pause"]
+        },
+        "auto_trigger": {
+          "$ref": "#/$defs/autoTrigger"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "autoTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "event",
+        "actor",
+        "quality_gate_id",
+        "max_per_event",
+        "human_required"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "event": {
+          "const": "PreToolUse"
+        },
+        "actor": {
+          "const": "hook_controller"
+        },
+        "quality_gate_id": {
+          "type": "string",
+          "pattern": "^GATE-[A-Z0-9-]+$"
+        },
+        "max_per_event": {
+          "const": 1
+        },
+        "human_required": {
+          "const": false
+        }
+      }
+    },
+    "automationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eligible", "human_boundary"],
+      "properties": {
+        "eligible": {
+          "type": "boolean"
+        },
+        "human_boundary": {
+          "type": "boolean"
+        }
+      }
+    },
+    "idList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "forbiddenEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "enforcement", "reason"],
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/id"
+        },
+        "enforcement": {
+          "const": "strong_block"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "enforcement"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^INV-[0-9]{3}$"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enforcement": {
+          "enum": ["schema", "guard", "hook", "human_gate", "combined"]
+        }
+      }
+    }
+  }
+}

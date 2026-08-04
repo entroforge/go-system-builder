@@ -1,0 +1,461 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/team-manifest.schema.json",
+  "title": "Loop Team Workgroup Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "version",
+    "runtime_id",
+    "req_id",
+    "baseline_generation",
+    "review_round",
+    "platform_team_id",
+    "workgroup_id",
+    "workgroup_kind",
+    "status",
+    "documents",
+    "risk_tags",
+    "responsibility_dispositions",
+    "assignments",
+    "separation_edges",
+    "planned_agent_count",
+    "max_parallel_agents",
+    "quantity_rationale",
+    "validation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "manifest_id": {
+      "type": "string",
+      "pattern": "^team-manifest-[A-Za-z0-9._-]+$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtime_id": {
+      "type": "string",
+      "pattern": "^loop-[A-Za-z0-9._-]+$"
+    },
+    "req_id": {
+      "type": "string",
+      "pattern": "^REQ-[0-9]{3,}$"
+    },
+    "baseline_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "review_round": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "platform_team_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workgroup_id": {
+      "type": "string",
+      "pattern": "^workgroup-[A-Za-z0-9._-]+$"
+    },
+    "workgroup_kind": {
+      "enum": [
+        "builder",
+        "document_verifier",
+        "delivery_verifier",
+        "qa",
+        "e2e_browser"
+      ]
+    },
+    "status": {
+      "enum": ["planned", "active", "complete", "stale", "closed"]
+    },
+    "documents": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Fingerprinted document references used for runtime verification. The bottom-up reading order is NOT enforced here; it is enforced on the readback-request template (see internal/schema/assets/readback-request.schema.json) because ordering is a launch-time concern, not a manifest-construction concern.",
+      "$comment": "BUG-002: positional kind/read_order lives in readback-request.schema.json, not here. BUG-004: documents[].sha256 is hand-maintained today; refresh coverage is partial (see D1/D2 in BUG-004 §8).",
+      "items": {
+        "$ref": "#/$defs/reference"
+      }
+    },
+    "risk_tags": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/riskTag"
+      }
+    },
+    "responsibility_dispositions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/disposition"
+      }
+    },
+    "assignments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/assignment"
+      }
+    },
+    "separation_edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/separationEdge"
+      }
+    },
+    "planned_agent_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_parallel_agents": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "quantity_rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "validation": {
+      "$ref": "#/$defs/validation"
+    },
+    "dispatched_at": {
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$",
+      "description": "REQ-003 FR-013: timestamp written by the team-dispatch CLI; used by the angle_declared_before_dispatch guard to enforce pre-review angle declaration. Null until dispatch fires."
+    },
+    "inherited_angles": {
+      "type": "array",
+      "description": "REQ-003 FR-013: baseline angles aggregated from docs/design/angles/{module}.yaml across the Change Record's scope.include modules. Populated by `loop-harness angles list --baseline-for <req>`. Empty when no active angles exist for the scope. The manifest validator checks len(inherited_angles) == sum of active angles across scope.include modules.",
+      "items": {
+        "$ref": "#/$defs/inheritedAngle"
+      }
+    }
+  },
+  "$defs": {
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "version", "sha256"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of the document file referenced by `path`. Verified against disk by semantic.validateReviewManifestReferences at validate --all time. Mismatches surface as fingerprint-mismatch errors. BUG-004 D5: future direction is to make this field optional and compute on validate; today it is required.",
+          "$comment": "BUG-004: refresh coverage today is loop-state.json only (via loop-harness runtime fingerprint); manifests and readback templates still require manual hash propagation when source documents change."
+        }
+      }
+    },
+    "riskTag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "source", "derivation"],
+      "properties": {
+        "tag": {
+          "enum": [
+            "frontend",
+            "ui",
+            "backend",
+            "api",
+            "cross-component",
+            "database",
+            "migration",
+            "security",
+            "reliability",
+            "concurrency",
+            "performance",
+            "architecture",
+            "regression"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "derivation": {
+          "enum": ["explicit", "inferred"]
+        }
+      }
+    },
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "responsibility_id",
+        "disposition",
+        "trigger",
+        "assignment_ids",
+        "na_rationale",
+        "evidence_ref"
+      ],
+      "properties": {
+        "responsibility_id": {
+          "$ref": "#/$defs/responsibilityId"
+        },
+        "disposition": {
+          "enum": ["assigned", "not_applicable"]
+        },
+        "trigger": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assignment_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^assignment-[A-Za-z0-9._-]+$"
+          }
+        },
+        "na_rationale": {
+          "type": ["string", "null"]
+        },
+        "evidence_ref": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assignment_id",
+        "responsibility_id",
+        "role_family",
+        "scope",
+        "agent_id",
+        "agent_definition_ref",
+        "skill_refs",
+        "read_paths",
+        "write_paths",
+        "output_paths",
+        "depends_on",
+        "reuse_decision",
+        "grouping_rationale",
+        "status"
+      ],
+      "properties": {
+        "assignment_id": {
+          "type": "string",
+          "pattern": "^assignment-[A-Za-z0-9._-]+$"
+        },
+        "responsibility_id": {
+          "$ref": "#/$defs/responsibilityId"
+        },
+        "role_family": {
+          "enum": [
+            "frontend-builder",
+            "backend-builder",
+            "test-builder",
+            "document-verifier",
+            "delivery-verifier",
+            "qa",
+            "e2e-tester"
+          ]
+        },
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "agent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent_definition_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "read_paths": {
+          "$ref": "#/$defs/paths"
+        },
+        "write_paths": {
+          "$ref": "#/$defs/paths"
+        },
+        "output_paths": {
+          "$ref": "#/$defs/paths"
+        },
+        "depends_on": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Workgroup-internal assignment references only. Cross-workgroup wait relationships MUST be expressed via separation_edges (logical independence) or runtime scheduling (temporal ordering); the harness does not resolve depends_on across manifest boundaries.",
+          "$comment": "BUG-001: a missing-in-manifest reference is reported by internal/team/validator.go:firstMissingDependency as 'depends_on references assignment %q not in this manifest', NOT as a cycle. Real cycles are detected separately by hasCycle.",
+          "items": {
+            "type": "string",
+            "pattern": "^assignment-[A-Za-z0-9._-]+$"
+          }
+        },
+        "reuse_decision": {
+          "enum": ["create", "reuse", "replace"]
+        },
+        "grouping_rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "planned",
+            "reading",
+            "activated",
+            "working",
+            "reported",
+            "complete",
+            "blocked",
+            "stale"
+          ]
+        }
+      }
+    },
+    "separationEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left_assignment_id", "right_assignment_id", "reason"],
+      "properties": {
+        "left_assignment_id": {
+          "type": "string",
+          "pattern": "^assignment-[A-Za-z0-9._-]+$"
+        },
+        "right_assignment_id": {
+          "type": "string",
+          "pattern": "^assignment-[A-Za-z0-9._-]+$"
+        },
+        "reason": {
+          "enum": [
+            "different_conclusion",
+            "independence",
+            "permission_boundary",
+            "skill_or_tool_conflict",
+            "workload_limit",
+            "write_conflict"
+          ]
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "missing_responsibilities",
+        "unresolved_conflicts",
+        "warnings",
+        "validated_at"
+      ],
+      "properties": {
+        "result": {
+          "enum": ["pass", "warn", "block"]
+        },
+        "missing_responsibilities": {
+          "$ref": "#/$defs/strings"
+        },
+        "unresolved_conflicts": {
+          "$ref": "#/$defs/strings"
+        },
+        "warnings": {
+          "$ref": "#/$defs/strings"
+        },
+        "validated_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "responsibilityId": {
+      "enum": [
+        "DV-SPEC-CONSISTENCY",
+        "DV-TASK-EXECUTABILITY",
+        "BUILD-WORK-PACKAGE",
+        "VER-REQ-GAP",
+        "VER-SPEC-GAP",
+        "VER-MODULE-COMPLETE",
+        "VER-INTEGRATION",
+        "VER-REGRESSION",
+        "QA-MODULE-CODE",
+        "QA-REUSE-ABSTRACTION",
+        "QA-UNIT-TEST",
+        "QA-INTEGRATION-TEST",
+        "QA-ARCHITECTURE",
+        "QA-SECURITY",
+        "QA-PERFORMANCE",
+        "QA-RELIABILITY",
+        "QA-MIGRATION",
+        "E2E-USER-FLOW",
+        "E2E-CONSOLE-NETWORK"
+      ]
+    },
+    "inheritedAngle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "module", "statement", "target", "last_applied_in"],
+      "description": "REQ-003 FR-013: snapshot of an active angle in a module's angles registry, frozen at team dispatch time so reviewers see a stable baseline.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ANG-[A-Z0-9]+-[0-9]{3,}$"
+        },
+        "module": {
+          "type": "string",
+          "minLength": 1
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "last_applied_in": {
+          "type": "string",
+          "pattern": "^REQ-[0-9]{3,}$"
+        }
+      }
+    },
+    "paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "strings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

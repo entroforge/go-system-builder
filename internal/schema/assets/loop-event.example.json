@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0.0",
+  "runtime_id": "loop-REQ-002-example",
+  "event_id": "evt-000001",
+  "sequence": 1,
+  "event": "transition_committed",
+  "outcome": "committed",
+  "actor": {
+    "type": "user",
+    "id": "user"
+  },
+  "request_id": "session-bind-001",
+  "baseline_generation": 1,
+  "before_revision": 0,
+  "after_revision": 1,
+  "transition_id": "TR-001",
+  "gate_id": "MANUAL",
+  "gate_fingerprint": "sha256:manual",
+  "producer_responsibility": "user",
+  "from": {
+    "state": "inactive",
+    "phase": null
+  },
+  "to": {
+    "state": "planning",
+    "phase": "design"
+  },
+  "guard_results": [
+    {
+      "id": "req_locked",
+      "result": "pass",
+      "detail": "REQ-002 v1.0.0 is locked."
+    }
+  ],
+  "action_results": [
+    {
+      "id": "bind_loop_req",
+      "result": "committed",
+      "detail": "REQ-002 bound to loop-REQ-002-example."
+    }
+  ],
+  "evidence_ids": [],
+  "message": "Loop initialized for locked REQ-002.",
+  "occurred_at": "2026-06-18T00:00:00Z"
+}
