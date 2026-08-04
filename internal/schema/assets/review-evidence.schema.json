@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/review-evidence.schema.json",
+  "title": "Loop Review Evidence",
+  "oneOf": [
+    {"$ref": "#/$defs/canonicalBug"},
+    {"$ref": "#/$defs/changeImpact"},
+    {"$ref": "#/$defs/targetedReverification"},
+    {"$ref": "#/$defs/cleanRound"}
+  ],
+  "$defs": {
+    "strings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "evidence_ref"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "statement": {"type": "string", "minLength": 1},
+        "evidence_ref": {"type": ["string", "null"]}
+      }
+    },
+    "canonicalBug": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "record_type", "bug_id", "status", "runtime_id",
+        "req_id", "baseline_generation", "source_finding_ids", "source_reports",
+        "severity", "violated_clauses", "actual_behavior", "expected_behavior",
+        "reproduction_evidence", "root_cause", "impact", "repair_scope",
+        "forbidden_scope", "closing_contract", "original_assignment_id",
+        "original_responsibility_id", "required_skill_refs", "attempt_count",
+        "same_contract_failure_count", "reviewed_by", "reviewed_at"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "record_type": {"const": "canonical_bug"},
+        "bug_id": {"type": "string", "pattern": "^BUG-[0-9]{3,}$"},
+        "status": {"enum": ["accepted", "rejected", "duplicate", "req_change_required", "spec_rework_required"]},
+        "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+        "req_id": {"type": "string", "pattern": "^REQ-[0-9]{3,}$"},
+        "baseline_generation": {"type": "integer", "minimum": 1},
+        "source_finding_ids": {"$ref": "#/$defs/strings"},
+        "source_reports": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reference"}},
+        "severity": {"enum": ["P0", "P1", "P2", "P3"]},
+        "violated_clauses": {"$ref": "#/$defs/strings"},
+        "actual_behavior": {"type": "string", "minLength": 1},
+        "expected_behavior": {"type": "string", "minLength": 1},
+        "reproduction_evidence": {"$ref": "#/$defs/strings"},
+        "root_cause": {"type": "string", "minLength": 1},
+        "impact": {"$ref": "#/$defs/strings"},
+        "repair_scope": {"$ref": "#/$defs/strings"},
+        "forbidden_scope": {"$ref": "#/$defs/strings"},
+        "closing_contract": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/assertion"}},
+        "original_assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
+        "original_responsibility_id": {"type": "string", "minLength": 1},
+        "required_skill_refs": {"$ref": "#/$defs/strings"},
+        "attempt_count": {"type": "integer", "minimum": 0},
+        "same_contract_failure_count": {"type": "integer", "minimum": 0},
+        "reviewed_by": {"type": "string", "minLength": 1},
+        "reviewed_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "impactDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id", "target_id", "relation", "rule_id", "decision",
+        "responsibility_id", "scope", "rationale", "recovery_evidence"
+      ],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "target_id": {"type": "string", "minLength": 1},
+        "relation": {"type": "string", "minLength": 1},
+        "rule_id": {"type": "string", "pattern": "^IM-[A-Z0-9-]+$"},
+        "decision": {"enum": ["invalidate", "supersede", "retain", "reverify"]},
+        "responsibility_id": {"type": ["string", "null"]},
+        "scope": {"$ref": "#/$defs/strings"},
+        "rationale": {"type": "string", "minLength": 1},
+        "recovery_evidence": {"$ref": "#/$defs/strings"}
+      }
+    },
+    "changeImpact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "record_type", "impact_id", "runtime_id", "req_id",
+        "baseline_generation", "source_bug_ids", "change_types",
+        "changed_artifacts", "decisions", "escalation_level",
+        "invalidated_evidence_ids", "superseded_evidence_ids",
+        "retained_evidence_ids", "required_reverification_ids",
+        "analyzed_by", "analyzed_at"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "record_type": {"const": "change_impact"},
+        "impact_id": {"type": "string", "pattern": "^impact-[A-Za-z0-9._-]+$"},
+        "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+        "req_id": {"type": "string", "pattern": "^REQ-[0-9]{3,}$"},
+        "baseline_generation": {"type": "integer", "minimum": 1},
+        "source_bug_ids": {"$ref": "#/$defs/strings"},
+        "change_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["requirement", "design", "contract", "task", "implementation", "test", "configuration", "database", "dependency", "documentation_only"]
+          }
+        },
+        "changed_artifacts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reference"}},
+        "decisions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/impactDecision"}},
+        "escalation_level": {"enum": ["assignment", "workgroup", "review_round", "baseline"]},
+        "invalidated_evidence_ids": {"$ref": "#/$defs/strings"},
+        "superseded_evidence_ids": {"$ref": "#/$defs/strings"},
+        "retained_evidence_ids": {"$ref": "#/$defs/strings"},
+        "required_reverification_ids": {"$ref": "#/$defs/strings"},
+        "analyzed_by": {"type": "string", "minLength": 1},
+        "analyzed_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "assertionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assertion_id", "result", "evidence_refs"],
+      "properties": {
+        "assertion_id": {"type": "string", "minLength": 1},
+        "result": {"enum": ["pass", "fail", "blocked"]},
+        "evidence_refs": {"$ref": "#/$defs/strings"}
+      }
+    },
+    "targetedReverification": {
+      "type": "object",
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "result": {"const": "pass"}
+            },
+            "required": ["result"]
+          },
+          "then": {
+            "properties": {
+              "scope_compliance": {"const": "pass"},
+              "assertion_results": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "result": {"const": "pass"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "required": [
+        "schema_version", "record_type", "reverification_id", "runtime_id",
+        "bug_id", "baseline_generation", "original_assignment_id",
+        "performing_assignment_id", "continuity_reason", "impact_id",
+        "assertion_results", "scope_compliance", "result", "performed_at"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "record_type": {"const": "targeted_reverification"},
+        "reverification_id": {"type": "string", "pattern": "^reverify-[A-Za-z0-9._-]+$"},
+        "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+        "bug_id": {"type": "string", "pattern": "^BUG-[0-9]{3,}$"},
+        "baseline_generation": {"type": "integer", "minimum": 1},
+        "original_assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
+        "performing_assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
+        "continuity_reason": {"type": ["string", "null"]},
+        "impact_id": {"type": "string", "pattern": "^impact-[A-Za-z0-9._-]+$"},
+        "assertion_results": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/assertionResult"}},
+        "scope_compliance": {"enum": ["pass", "fail"]},
+        "result": {"enum": ["pass", "fail", "blocked", "scope_changed"]},
+        "performed_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "responsibilityResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["responsibility_id", "scope", "disposition", "evidence_id"],
+      "properties": {
+        "responsibility_id": {"type": "string", "minLength": 1},
+        "scope": {"$ref": "#/$defs/strings"},
+        "disposition": {"enum": ["pass", "not_applicable"]},
+        "evidence_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "cleanRound": {
+      "type": "object",
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "result": {"const": "pass"}
+            },
+            "required": ["result"]
+          },
+          "then": {
+            "properties": {
+              "open_blocking_bug_ids": {"type": "array", "maxItems": 0},
+              "invalid_evidence_ids": {"type": "array", "maxItems": 0},
+              "unresolved_blocker_ids": {"type": "array", "maxItems": 0}
+            }
+          }
+        }
+      ],
+      "required": [
+        "schema_version", "record_type", "clean_round_id", "runtime_id",
+        "req_id", "baseline_generation", "review_round", "frozen_artifacts",
+        "delivery_manifest_ref", "qa_manifest_ref", "e2e_manifest_ref", "responsibility_results",
+        "closed_bug_ids", "targeted_reverification_ids",
+        "open_blocking_bug_ids", "invalid_evidence_ids",
+        "unresolved_blocker_ids", "latest_required_evidence_at",
+        "evaluated_at", "evaluated_by", "result"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "record_type": {"const": "clean_round"},
+        "clean_round_id": {"type": "string", "pattern": "^clean-round-[A-Za-z0-9._-]+$"},
+        "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+        "req_id": {"type": "string", "pattern": "^REQ-[0-9]{3,}$"},
+        "baseline_generation": {"type": "integer", "minimum": 1},
+        "review_round": {"type": "integer", "minimum": 1},
+        "frozen_artifacts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reference"}},
+        "delivery_manifest_ref": {"$ref": "#/$defs/reference"},
+        "qa_manifest_ref": {"$ref": "#/$defs/reference"},
+        "e2e_manifest_ref": {"$ref": "#/$defs/reference"},
+        "responsibility_results": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/responsibilityResult"}},
+        "closed_bug_ids": {"$ref": "#/$defs/strings"},
+        "targeted_reverification_ids": {"$ref": "#/$defs/strings"},
+        "open_blocking_bug_ids": {"$ref": "#/$defs/strings"},
+        "invalid_evidence_ids": {"$ref": "#/$defs/strings"},
+        "unresolved_blocker_ids": {"$ref": "#/$defs/strings"},
+        "latest_required_evidence_at": {"$ref": "#/$defs/timestamp"},
+        "evaluated_at": {"$ref": "#/$defs/timestamp"},
+        "evaluated_by": {"type": "string", "minLength": 1},
+        "result": {"enum": ["pass", "incomplete", "blocked"]}
+      }
+    }
+  }
+}

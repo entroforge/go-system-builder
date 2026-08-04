@@ -1,0 +1,1112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/loop-state.schema.json",
+  "title": "Loop Runtime State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "runtime_id",
+    "definition",
+    "revision",
+    "lifecycle",
+    "authorization",
+    "bound_req",
+    "baseline",
+    "review",
+    "configuration",
+    "hook_control",
+    "documents",
+    "entities",
+    "evidence",
+    "blockers",
+    "pause",
+    "journal",
+    "last_transition",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.1.0"
+    },
+    "root": {
+      "type": "string",
+      "description": "Repository root path; populated by the harness at startup so direct-check guards (e.g. planning_complete) can locate CONTRACTS / TASKS under docs/. Not persisted across harness restarts; not required by transition semantics."
+    },
+    "runtime_id": {
+      "type": "string",
+      "pattern": "^loop-[A-Za-z0-9._-]+$"
+    },
+    "definition": {
+      "$ref": "#/$defs/fingerprintedReference"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "phase", "phase_revision"],
+      "properties": {
+        "state": {
+          "enum": [
+            "inactive",
+            "planning",
+            "document_verification",
+            "building",
+            "verification",
+            "bug_resolution",
+            "acceptance",
+            "release_audit",
+            "paused",
+            "awaiting_human_release",
+            "aborted"
+          ]
+        },
+        "phase": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "phase_revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "command", "actor", "occurred_at"],
+      "properties": {
+        "mode": {
+          "enum": ["none", "loop", "binding"]
+        },
+        "command": {
+          "type": ["string", "null"]
+        },
+        "actor": {
+          "type": ["string", "null"]
+        },
+        "occurred_at": {
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "bound_req": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/boundReq"
+        }
+      ]
+    },
+    "change": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/changeRecord"}
+      ]
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "captured_at"],
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "captured_at": {
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round", "clean_round"],
+      "properties": {
+        "round": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clean_round": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repair"],
+      "properties": {
+        "repair": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_attempts_per_bug",
+            "max_same_contract_failures",
+            "max_full_review_rounds"
+          ],
+          "properties": {
+            "max_attempts_per_bug": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 3
+            },
+            "max_same_contract_failures": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 2
+            },
+            "max_full_review_rounds": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5
+            }
+          }
+        }
+      }
+    },
+    "hook_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_ref",
+        "mode",
+        "health",
+        "consecutive_failures",
+        "last_checked_at"
+      ],
+      "properties": {
+        "policy_ref": {
+          "$ref": "#/$defs/fingerprintedReference"
+        },
+        "mode": {
+          "enum": ["disabled", "audit", "enforce"]
+        },
+        "health": {
+          "enum": ["healthy", "degraded", "failed"]
+        },
+        "consecutive_failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_checked_at": {
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/documentReference"
+      }
+    },
+    "entities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agents", "tasks", "bugs", "teams"],
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/agent"
+          }
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/task"
+          }
+        },
+        "bugs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bug"
+          }
+        },
+        "teams": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/team"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/blocker"
+      }
+    },
+    "pause": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/pause"
+        }
+      ]
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "last_sequence", "last_event_id"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "const": ".claude/loop-events.jsonl"
+        },
+        "last_sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_event_id": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "last_transition": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/transitionSnapshot"
+        }
+      ]
+    },
+    "milestone": {
+      "$ref": "#/$defs/milestone"
+    },
+    "updated_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    }
+  },
+  "$defs": {
+    "milestone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage", "lifecycle_state", "lifecycle_phase", "objective", "action",
+        "protocol_ref", "manual_ref", "primary_skill", "read", "missing",
+        "done_when", "human_required", "blocked", "blocker", "event",
+        "instruction", "recovery", "source_revision", "updated_at"
+      ],
+      "properties": {
+        "stage": {"type": "string", "minLength": 1},
+        "lifecycle_state": {"type": "string", "minLength": 1},
+        "lifecycle_phase": {"type": ["string", "null"]},
+        "objective": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "minLength": 1},
+        "protocol_ref": {"type": "string", "minLength": 1},
+        "manual_ref": {"type": "string", "const": ".claude/bin/loop-harness.md"},
+        "primary_skill": {"type": "string", "minLength": 1},
+        "read": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "read_order": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "missing": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "done_when": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "questions": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "automation": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "integration": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "human_required": {"type": "boolean"},
+        "blocked": {"type": "boolean"},
+        "blocker": {"type": ["string", "null"]},
+        "event": {"type": "string", "minLength": 1},
+        "instruction": {"type": "string", "minLength": 1},
+        "recovery": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "source_revision": {"type": "integer", "minimum": 0},
+        "updated_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"},
+        "quality_gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status", "gate_id", "candidate_transition", "observed_revision",
+            "fingerprint", "missing", "evidence_refs", "transition_committed",
+            "next_cursor"
+          ],
+          "properties": {
+            "status": {"enum": ["advanced", "satisfied", "not_ready", "blocked", "unknown"]},
+            "gate_id": {"type": "string"},
+            "candidate_transition": {"type": "string"},
+            "observed_revision": {"type": "integer", "minimum": 0},
+            "fingerprint": {"type": "string"},
+            "missing": {"type": "array", "items": {"type": "string"}},
+            "evidence_refs": {"type": "array", "items": {"type": "string"}},
+            "transition_committed": {"type": "boolean"},
+            "next_cursor": {"type": "string"}
+          }
+        }
+      }
+    },
+    "changeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "req_ref", "req_sha256", "summary", "class", "risk", "scope", "acceptance", "unknowns", "work_items", "required_checks", "findings", "workspace"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^CHG-[0-9]{3,}$"},
+        "req_ref": {"type": "string", "minLength": 1},
+        "req_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "summary": {"type": "string", "minLength": 1},
+        "class": {"enum": ["docs-only", "config", "behavior feature", "bugfix", "refactor", "deletion", "performance", "migration", "exploration"]},
+        "risk": {"enum": ["low", "medium", "high"]},
+        "scope": {"$ref": "#/$defs/changeScope"},
+        "acceptance": {"type": "array", "items": {"$ref": "#/$defs/changeAcceptance"}},
+        "unknowns": {"type": "array", "items": {"type": "string"}},
+        "work_items": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/changeWorkItem"}},
+        "required_checks": {"type": "array", "items": {"$ref": "#/$defs/changeCheck"}},
+        "findings": {"type": "array", "items": {"$ref": "#/$defs/changeFinding"}},
+        "workspace": {"$ref": "#/$defs/changeWorkspace"}
+      }
+    },
+    "changeScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["include", "exclude"],
+      "properties": {"include": {"type": "array", "items": {"type": "string"}}, "exclude": {"type": "array", "items": {"type": "string"}}}
+    },
+    "changeAcceptance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {"ref": {"type": "string", "minLength": 1}, "status": {"type": "string"}}
+    },
+    "changeWorkItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "text", "status", "depends_on", "owner", "write_paths"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^W-[0-9]+$"}, "text": {"type": "string", "minLength": 1},
+        "status": {"enum": ["open", "active", "done", "blocked", "cancelled"]},
+        "depends_on": {"type": "array", "items": {"type": "string"}}, "owner": {"type": "string", "minLength": 1},
+        "write_paths": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "changeCheck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "reason", "command", "scope_refs", "independence", "acceptance_refs", "status", "evidence_ref"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^CK-[0-9]+$"}, "kind": {"type": "string", "minLength": 1}, "reason": {"type": "string", "minLength": 1},
+        "command": {"type": "string"}, "scope_refs": {"type": "array", "items": {"type": "string"}},
+        "independence": {"enum": ["self", "independent", "human"]}, "acceptance_refs": {"type": "array", "items": {"type": "string"}},
+        "status": {"enum": ["open", "passed", "failed", "n_a", "invalid"]}, "evidence_ref": {"type": ["string", "null"]}
+      }
+    },
+    "changeFinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "severity", "status"],
+      "properties": {"id": {"type": "string", "minLength": 1}, "severity": {"type": "string", "minLength": 1}, "status": {"type": "string", "minLength": 1}}
+    },
+    "changeWorkspace": {
+      "type": "object", "additionalProperties": false,
+      "required": ["branch", "base_sha", "integration_target"],
+      "properties": {"branch": {"type": "string"}, "base_sha": {"type": "string"}, "integration_target": {"type": "string"}}
+    },
+    "fingerprintedReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "version", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "boundReq": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "version",
+        "sha256",
+        "id",
+        "status",
+        "approved_by",
+        "approved_at"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^REQ-[0-9]{3,}$"
+        },
+        "status": {
+          "const": "locked"
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ui_impact"],
+          "properties": {"ui_impact": {"enum": ["none", "changed", "unknown"]}}
+        }
+      }
+    },
+    "documentReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "path",
+        "version",
+        "sha256",
+        "status",
+        "generation"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "req",
+            "design",
+            "ui_baseline",
+            "ui_prototype",
+            "contract",
+            "task",
+            "review",
+            "qa",
+            "e2e",
+            "bug",
+            "acceptance",
+            "release_audit",
+            "team_manifest",
+            "prompt"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "role",
+        "state",
+        "task_ids",
+        "team_id",
+        "definition_ref",
+        "prompt_ref",
+        "readback_ref",
+        "activation_ref",
+        "activation_revision",
+        "updated_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "spawned",
+            "reading",
+            "understanding_submitted",
+            "understanding_approved",
+            "activated",
+            "working",
+            "reported",
+            "done",
+            "blocked",
+            "stopped"
+          ]
+        },
+        "task_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "team_id": {
+          "type": ["string", "null"]
+        },
+        "definition_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "readback_ref": {
+          "type": ["string", "null"]
+        },
+        "activation_ref": {
+          "type": ["string", "null"]
+        },
+        "activation_revision": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "work_started_ref": {
+          "type": ["string", "null"]
+        },
+        "completion_reported_ref": {
+          "type": ["string", "null"]
+        },
+        "completion_acknowledged_ref": {
+          "type": ["string", "null"]
+        },
+        "work_blocked_ref": {
+          "type": ["string", "null"]
+        },
+        "blocker_resolved_ref": {
+          "type": ["string", "null"]
+        },
+        "shutdown_approved_ref": {
+          "type": ["string", "null"]
+        },
+        "updated_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "path", "sha256", "owner_agent_ids"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^TASK-[0-9]{3,}(?:-[0-9]{2,})?$"
+        },
+        "state": {
+          "enum": [
+            "candidate",
+            "reviewed",
+            "locked",
+            "in_progress",
+            "review",
+            "blocked",
+            "done",
+            "cancelled"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "owner_agent_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "bug": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "state",
+        "path",
+        "severity",
+        "attempt_count",
+        "same_contract_failure_count",
+        "original_finder_agent_ids"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^BUG-[0-9]{3,}$"
+        },
+        "state": {
+          "enum": [
+            "draft",
+            "investigating",
+            "pending_approval",
+            "accepted",
+            "assigned",
+            "fixed",
+            "retesting",
+            "closed",
+            "rejected",
+            "duplicate"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "enum": ["P0", "P1", "P2", "P3"]
+        },
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "same_contract_failure_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "original_finder_agent_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "team": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "platform_team_id",
+        "kind",
+      "status",
+      "manifest_ref",
+      "responsibility_ids",
+      "agent_ids",
+      "review_round"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platform_team_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["builder", "document_verifier", "delivery_verifier", "qa", "e2e_browser"]
+        },
+        "status": {
+          "enum": ["planned", "active", "complete", "stale", "closed"]
+        },
+      "manifest_ref": {
+        "type": "string",
+        "minLength": 1
+      },
+      "responsibility_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "agent_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "review_round": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {"const": "invalid"}
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "invalidated_by": {"type": "string", "minLength": 1},
+              "invalidation_rule": {"type": "string", "minLength": 1},
+              "invalidation_reason": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {"const": "valid"}
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "invalidated_by": {"type": "null"},
+              "invalidation_rule": {"type": "null"},
+              "invalidation_reason": {"type": "null"}
+            }
+          }
+        }
+      ],
+      "required": [
+        "id",
+        "kind",
+        "path",
+        "sha256",
+        "status",
+        "baseline_generation",
+        "review_round",
+        "produced_by",
+        "invalidated_by",
+        "invalidation_rule",
+        "invalidation_reason",
+        "responsibility_id",
+        "scope_refs"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "document_review",
+            "change_impact",
+            "agent_readback",
+            "agent_activation",
+            "agent_completion",
+            "builder_report",
+            "delivery_review",
+            "qa_review",
+            "e2e_review",
+            "bug",
+            "targeted_reverification",
+            "clean_round",
+            "acceptance",
+            "release_audit",
+            "human_decision",
+            "planning_design",
+            "planning_contract",
+            "planning_task",
+            "angle_declaration",
+            "team_manifest",
+            "completion_report"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "status": {
+          "enum": ["valid", "invalid", "superseded"]
+        },
+        "baseline_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_round": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "produced_by": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "invalidated_by": {
+          "type": ["string", "null"]
+        },
+        "invalidation_rule": {
+          "type": ["string", "null"]
+        },
+        "invalidation_reason": {
+          "type": ["string", "null"]
+        },
+        "responsibility_id": {
+          "type": ["string", "null"]
+        },
+        "scope_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "dimension": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "reason",
+        "evidence_ids",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "missing_guard",
+            "document_conflict",
+            "req_change",
+            "security",
+            "compliance",
+            "irreversible_action",
+            "repair_limit",
+            "runtime_integrity",
+            "human_decision"
+          ]
+        },
+        "status": {
+          "enum": ["open", "resolved"]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "created_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "pause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from_state",
+        "from_phase",
+        "phase_revision",
+        "baseline_generation",
+        "review_round",
+        "entity_snapshot_revision",
+        "reason",
+        "required_human_action",
+        "document_fingerprints",
+        "committed_idempotency_keys",
+        "paused_at"
+      ],
+      "properties": {
+        "from_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from_phase": {
+          "type": ["string", "null"]
+        },
+        "phase_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "baseline_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_round": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "entity_snapshot_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_human_action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document_fingerprints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fingerprintedReference"
+          }
+        },
+        "committed_idempotency_keys": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "paused_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "transitionSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "sequence",
+        "transition_id",
+        "event",
+        "actor",
+        "from",
+        "to",
+        "expected_revision",
+        "committed_revision",
+        "idempotency_key",
+        "evidence_ids",
+        "occurred_at"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transition_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from": {
+          "$ref": "#/$defs/cursor"
+        },
+        "to": {
+          "$ref": "#/$defs/cursor"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "committed_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "occurred_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        }
+      }
+    },
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "phase"],
+      "properties": {
+        "state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase": {
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0.0",
+  "message_type": "readback_request",
+  "message_id": "msg-readback-assignment-example",
+  "correlation_id": "corr-workgroup-example-assignment-example",
+  "runtime_id": "loop-REQ-002-example",
+  "expected_runtime_revision": 1,
+  "agent_id": "agent-frontend-builder-example",
+  "agent_definition_ref": ".claude/agents/frontend-builder.md",
+  "task_id": "TASK-001",
+  "bug_id": null,
+  "team_id": "claude-team-loop-REQ-002",
+  "occurred_at": "2026-06-20T00:00:00Z",
+  "role_family": "frontend-builder",
+  "documents": [
+    {
+      "id": "TASK-001",
+      "kind": "task",
+      "path": "docs/tasks/TASK-001.md",
+      "version": "v1.0.0",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "read_order": 1
+    },
+    {
+      "id": "CONTRACTS-001",
+      "kind": "contract",
+      "path": "docs/contracts/CONTRACTS-001.md",
+      "version": "v1.0.0",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "read_order": 2
+    },
+    {
+      "id": "REQ-002",
+      "kind": "req",
+      "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
+      "version": "v1.0.0",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "read_order": 3
+    }
+  ],
+  "skills": [
+    {
+      "name": "two-phase-activation",
+      "category": "methodology",
+      "source": ".claude/skills/two-phase-activation/SKILL.md",
+      "version": "1.0.0",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "scope": {
+    "responsibility": "Implement one locked work package.",
+    "read_paths": ["docs/", "internal/"],
+    "prospective_write_paths": ["internal/example/"],
+    "forbidden_paths": [".claude/loop-state.json"],
+    "forbidden_actions": ["self activation", "squash merge", "formal release"],
+    "output_paths": ["docs/reports/review/REV-001.md"]
+  },
+  "closing_contract_ref": "TASK-001#closing-contract",
+  "readback_fields": [
+    "objective",
+    "responsibility",
+    "covered_clauses",
+    "planned_surfaces",
+    "evidence_plan",
+    "closing_criteria",
+    "documents_read"
+  ]
+}

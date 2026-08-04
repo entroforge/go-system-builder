@@ -1,0 +1,129 @@
+{
+  "schema_version": "1.1.0",
+  "runtime_id": "loop-REQ-002-example",
+  "definition": {
+    "path": "docs/loop-definition.json",
+    "version": "1.1.0",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "revision": 1,
+  "lifecycle": {
+    "state": "planning",
+    "phase": "design",
+    "phase_revision": 0
+  },
+  "milestone": {
+    "stage": "S2",
+    "lifecycle_state": "planning",
+    "lifecycle_phase": "design",
+    "objective": "complete architecture and any required UI design package",
+    "action": "complete the planning phase for design",
+    "protocol_ref": "docs/agent-protocol.md#s2",
+    "manual_ref": ".claude/bin/loop-harness.md",
+    "primary_skill": "specification-planning",
+    "read": ["bound REQ", "docs/design/", "docs/rules/"],
+    "read_order": ["LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/agent-protocol.md#s2", "bound REQ", ".claude/skills/specification-planning/SKILL.md"],
+    "missing": ["architecture_record"],
+    "done_when": ["architecture decisions cover the contract boundary", "any UI-impacting module has a complete target design package"],
+    "questions": [],
+    "automation": ["do not call loop-harness for normal continuation"],
+    "integration": [],
+    "human_required": false,
+    "blocked": false,
+    "blocker": null,
+    "event": "SessionStart",
+    "instruction": "LOOP RECOVERY: you are at S2. Next: complete the planning phase for design.",
+    "recovery": ["read docs/agent-protocol.md#s2", "if blocked read .claude/bin/loop-harness.md"],
+    "source_revision": 1,
+    "updated_at": "2026-06-18T00:00:00Z",
+    "quality_gate": {
+      "status": "not_ready",
+      "gate_id": "GATE-PLANNING-DESIGN-COMPLETE",
+      "candidate_transition": "PTR-PLAN-01",
+      "observed_revision": 1,
+      "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "missing": ["architecture_record"],
+      "evidence_refs": [],
+      "transition_committed": false,
+      "next_cursor": "planning.design"
+    }
+  },
+  "authorization": {
+    "mode": "loop",
+    "command": "/loop REQ-002",
+    "actor": "user",
+    "occurred_at": "2026-06-18T00:00:00Z"
+  },
+  "bound_req": {
+    "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
+    "version": "v1.0.0",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "id": "REQ-002",
+    "status": "locked",
+    "approved_by": "user",
+    "approved_at": "2026-06-18T00:00:00Z",
+    "metadata": {"ui_impact": "none"}
+  },
+  "baseline": {
+    "generation": 1,
+    "captured_at": "2026-06-18T00:00:00Z"
+  },
+  "review": {
+    "round": 0,
+    "clean_round": null
+  },
+  "configuration": {
+    "repair": {
+      "max_attempts_per_bug": 3,
+      "max_same_contract_failures": 2,
+      "max_full_review_rounds": 5
+    }
+  },
+  "hook_control": {
+    "policy_ref": {
+      "path": "docs/hook-policy.json",
+      "version": "v1.3.0",
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "mode": "audit",
+    "health": "healthy",
+    "consecutive_failures": 0,
+    "last_checked_at": "2026-06-20T00:00:00Z"
+  },
+  "documents": [],
+  "entities": {
+    "agents": [],
+    "tasks": [],
+    "bugs": [],
+    "teams": []
+  },
+  "evidence": [],
+  "blockers": [],
+  "pause": null,
+  "journal": {
+    "path": ".claude/loop-events.jsonl",
+    "last_sequence": 1,
+    "last_event_id": "evt-000001"
+  },
+  "last_transition": {
+    "event_id": "evt-000001",
+    "sequence": 1,
+    "transition_id": "TR-001",
+    "event": "loop_requested",
+    "actor": "user",
+    "from": {
+      "state": "inactive",
+      "phase": null
+    },
+    "to": {
+      "state": "planning",
+      "phase": "design"
+    },
+    "expected_revision": 0,
+    "committed_revision": 1,
+    "idempotency_key": "loop-REQ-002-example:TR-001:0",
+    "evidence_ids": [],
+    "occurred_at": "2026-06-18T00:00:00Z"
+  },
+  "updated_at": "2026-06-18T00:00:00Z"
+}

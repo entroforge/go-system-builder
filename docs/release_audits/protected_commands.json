@@ -1,0 +1,104 @@
+[
+  {
+    "family": "git",
+    "subcommand": "push",
+    "args_patterns": [
+      { "literal": "main" },
+      { "literal": "master" },
+      { "regex": "^release/.*$" },
+      { "regex": "^deploy/.*$" }
+    ],
+    "reason": "git push to a protected branch (main/master/release/* / deploy/*) is a formal release operation and requires a human (HS-005)."
+  },
+  {
+    "family": "git",
+    "subcommand": "merge",
+    "flags_any": ["--squash"],
+    "reason": "git merge --squash is a release-shaped operation that collapses history and must be human-approved (HS-005)."
+  },
+  {
+    "family": "git",
+    "subcommand": "tag",
+    "reason": "git tag creates an immutable release marker and is part of the formal release flow (HS-005)."
+  },
+  {
+    "family": "gh",
+    "subcommand": "release create",
+    "reason": "gh release create is a formal release operation (HS-005)."
+  },
+  {
+    "family": "gh",
+    "subcommand": "release edit",
+    "reason": "gh release edit modifies an existing release (HS-005)."
+  },
+  {
+    "family": "gh",
+    "subcommand": "release delete",
+    "reason": "gh release delete removes a release artifact (HS-005)."
+  },
+  {
+    "family": "gh",
+    "subcommand": "release upload",
+    "reason": "gh release upload adds artifacts to a release (HS-005)."
+  },
+  {
+    "family": "gh",
+    "subcommand": "pr merge",
+    "reason": "gh pr merge merges a pull request, including squash merges, and is part of the formal release flow (HS-005)."
+  },
+  {
+    "family": "npm",
+    "subcommand": "publish",
+    "reason": "npm publish releases a package to the registry (HS-005)."
+  },
+  {
+    "family": "goreleaser",
+    "subcommand": "release",
+    "reason": "goreleaser release produces and publishes release artifacts (HS-005)."
+  },
+  {
+    "family": "terraform",
+    "subcommand": "apply",
+    "reason": "terraform apply mutates infrastructure state (HS-005)."
+  },
+  {
+    "family": "terraform",
+    "subcommand": "destroy",
+    "reason": "terraform destroy removes infrastructure (HS-005)."
+  },
+  {
+    "family": "kubectl",
+    "subcommand": "apply",
+    "reason": "kubectl apply mutates cluster state (HS-005)."
+  },
+  {
+    "family": "kubectl",
+    "subcommand": "delete",
+    "reason": "kubectl delete removes cluster resources (HS-005)."
+  },
+  {
+    "family": "aws",
+    "subcommand": "s3 cp",
+    "reason": "aws s3 cp mutates S3 bucket contents (HS-005)."
+  },
+  {
+    "family": "aws",
+    "subcommand": "s3 sync",
+    "reason": "aws s3 sync mutates S3 bucket contents (HS-005)."
+  },
+  {
+    "family": "sh",
+    "flags_any": ["-c"],
+    "reason": "sh -c <string> evaluates an opaque string that can hide any command, including protected-release shapes; the bare sh <script> form is permitted because the script path is visible (HS-005 / HS-012)."
+  },
+  {
+    "family": "npx",
+    "args_patterns": [{ "literal": "--" }],
+    "reason": "npx -- <cmd> wrappers make npx stop parsing flags, hiding the inner program from classifiers; bare npx <pkg> <args> is permitted because all args are visible (HS-005 / HS-012)."
+  },
+  {
+    "family": "bash",
+    "flags_any": ["-c"],
+    "reason": "bash -c <string> evaluates an opaque string that can hide any command, including protected-release shapes; the bare bash <script> form is permitted because the script path is visible (HS-005 / HS-012)."
+  }
+]

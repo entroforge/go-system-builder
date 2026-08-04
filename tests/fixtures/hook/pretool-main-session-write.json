@@ -1,0 +1,14 @@
+{
+  "session_id": "session-main-fixture-1",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "docs/tasks/TASK-001.md"
+  },
+  "runtime_context": {
+    "runtime_id": "loop-REQ-002",
+    "revision": 4,
+    "bound_req_path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
+    "agent": null
+  }
+}

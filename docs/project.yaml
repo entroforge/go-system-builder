@@ -1,0 +1,52 @@
+project:
+  id: "{project-id}"
+  name: "{project-name}"
+  goal: "{one-line-project-goal}"
+  owner: "{owner}"
+  created_at: "YYYY-MM-DD"
+
+configuration:
+  delivery_mode: "full"
+  release_branch: "main"
+  integration_branch: "develop"
+
+context:
+  business_domain: "{domain}"
+  users: []
+  constraints:
+    schedule: "{schedule}"
+    budget: "{budget}"
+    compliance: []
+    security: []
+
+tech_stack:
+  frontend: []
+  backend: []
+  database: []
+  cache: []
+  queue: []
+  deploy: []
+
+paths:
+  project_map: "docs/project-map.md"
+  requirements: "docs/requirements/"
+  design: "docs/design/"
+  ui_prototypes: "docs/design/prototypes/"
+  contracts: "docs/contracts/"
+  tasks: "docs/tasks/"
+  reports: "docs/reports/"
+  release_audits: "docs/release_audits/"
+  loop_definition: "docs/loop-definition.json"
+  loop_runtime: ".claude/loop-state.json"
+  hook_policy: "docs/hook-policy.json"
+  skills: ".claude/skills/"
+  agents: ".claude/agents/"
+
+required_rules:
+  - "communication.md"
+  - "naming.md"
+  - "change-control.md"
+  - "git-branch-release.md"
+  - "security.md"
+
+runtime_note: "Current Loop state exists only in .claude/loop-state.json."

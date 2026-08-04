@@ -1,0 +1,203 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "team-manifest-REQ-001-delivery-fixture-round-1",
+  "version": "v1.0.0",
+  "runtime_id": "loop-REQ-001",
+  "req_id": "REQ-001",
+  "baseline_generation": 1,
+  "review_round": 1,
+  "platform_team_id": "claude-team-loop-REQ-001",
+  "workgroup_id": "workgroup-delivery-round-1",
+  "workgroup_kind": "delivery_verifier",
+  "status": "planned",
+  "documents": [
+    {
+      "id": "TASK-001",
+      "path": "docs/tasks/TASK-001.md",
+      "version": "v1.0.0",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "risk_tags": [
+    {
+      "tag": "cross-component",
+      "source": "TASK-001 changed shared runtime schemas",
+      "derivation": "explicit"
+    },
+    {
+      "tag": "regression",
+      "source": "TASK-001 changed shared runtime schemas",
+      "derivation": "explicit"
+    }
+  ],
+  "responsibility_dispositions": [
+    {
+      "responsibility_id": "VER-REQ-GAP",
+      "disposition": "assigned",
+      "trigger": "mandatory delivery baseline",
+      "assignment_ids": ["assignment-ver-req-gap"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "VER-SPEC-GAP",
+      "disposition": "assigned",
+      "trigger": "mandatory delivery baseline",
+      "assignment_ids": ["assignment-ver-spec-gap"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "VER-MODULE-COMPLETE",
+      "disposition": "assigned",
+      "trigger": "mandatory executable-behavior baseline",
+      "assignment_ids": ["assignment-ver-module-complete"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "VER-INTEGRATION",
+      "disposition": "assigned",
+      "trigger": "mandatory delivery baseline",
+      "assignment_ids": ["assignment-ver-integration"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "VER-REGRESSION",
+      "disposition": "assigned",
+      "trigger": "mandatory delivery baseline",
+      "assignment_ids": ["assignment-ver-regression"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "QA-SECURITY",
+      "disposition": "not_applicable",
+      "trigger": "no security or trust-boundary impact",
+      "assignment_ids": [],
+      "na_rationale": "The scoped fixture work does not change authentication, authorization, secrets or sensitive data handling.",
+      "evidence_ref": "TASK-001#impact"
+    },
+    {
+      "responsibility_id": "QA-PERFORMANCE",
+      "disposition": "not_applicable",
+      "trigger": "no performance risk tag",
+      "assignment_ids": [],
+      "na_rationale": "No latency, throughput or resource budget is affected.",
+      "evidence_ref": "TASK-001#impact"
+    },
+    {
+      "responsibility_id": "QA-MIGRATION",
+      "disposition": "not_applicable",
+      "trigger": "no database or protocol migration",
+      "assignment_ids": [],
+      "na_rationale": "No persisted production schema or rollout migration is in scope.",
+      "evidence_ref": "TASK-001#impact"
+    }
+  ],
+  "assignments": [
+    {
+      "assignment_id": "assignment-ver-req-gap",
+      "responsibility_id": "VER-REQ-GAP",
+      "role_family": "delivery-verifier",
+      "scope": ["requirement gap coverage"],
+      "agent_id": "agent-ver-req-gap",
+      "agent_definition_ref": "agents/delivery-verifier.md",
+      "skill_refs": ["code-quality"],
+      "read_paths": ["internal/"],
+      "write_paths": ["docs/reports/review/REV-001.json"],
+      "output_paths": ["docs/reports/review/REV-001.json"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Requirement-gap coverage has an independent conclusion.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-ver-spec-gap",
+      "responsibility_id": "VER-SPEC-GAP",
+      "role_family": "delivery-verifier",
+      "scope": ["specification gap coverage"],
+      "agent_id": "agent-ver-spec-gap",
+      "agent_definition_ref": "agents/delivery-verifier.md",
+      "skill_refs": ["code-quality"],
+      "read_paths": ["internal/"],
+      "write_paths": ["docs/reports/review/REV-002.json"],
+      "output_paths": ["docs/reports/review/REV-002.json"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Specification-gap coverage has an independent conclusion.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-ver-module-complete",
+      "responsibility_id": "VER-MODULE-COMPLETE",
+      "role_family": "delivery-verifier",
+      "scope": ["module completeness"],
+      "agent_id": "agent-ver-module-complete",
+      "agent_definition_ref": "agents/delivery-verifier.md",
+      "skill_refs": ["testing-strategy"],
+      "read_paths": ["internal/", "tests/"],
+      "write_paths": ["docs/reports/review/REV-003.json"],
+      "output_paths": ["docs/reports/review/REV-003.json"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Module completeness has an independent executable-behavior conclusion.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-ver-integration",
+      "responsibility_id": "VER-INTEGRATION",
+      "role_family": "delivery-verifier",
+      "scope": ["integration"],
+      "agent_id": "agent-ver-integration",
+      "agent_definition_ref": "agents/delivery-verifier.md",
+      "skill_refs": ["testing-strategy", "integration-verification"],
+      "read_paths": ["internal/", "tests/"],
+      "write_paths": ["docs/reports/review/REV-004.json"],
+      "output_paths": ["docs/reports/review/REV-004.json"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Integration behavior requires distinct evidence.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-ver-regression",
+      "responsibility_id": "VER-REGRESSION",
+      "role_family": "delivery-verifier",
+      "scope": ["regression boundary"],
+      "agent_id": "agent-ver-regression",
+      "agent_definition_ref": "agents/delivery-verifier.md",
+      "skill_refs": ["state-machine-design"],
+      "read_paths": ["internal/", "docs/design/loop-engineering/"],
+      "write_paths": ["docs/reports/review/REV-005.json"],
+      "output_paths": ["docs/reports/review/REV-005.json"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Shared runtime boundary triggered regression review.",
+      "status": "planned"
+    }
+  ],
+  "separation_edges": [
+    {
+      "left_assignment_id": "assignment-ver-req-gap",
+      "right_assignment_id": "assignment-ver-spec-gap",
+      "reason": "different_conclusion"
+    },
+    {
+      "left_assignment_id": "assignment-ver-module-complete",
+      "right_assignment_id": "assignment-ver-integration",
+      "reason": "different_conclusion"
+    }
+  ],
+  "planned_agent_count": 5,
+  "max_parallel_agents": 3,
+  "quantity_rationale": "Five distinct delivery conclusions are required; three may run concurrently within practical platform capacity.",
+  "validation": {
+    "result": "pass",
+    "missing_responsibilities": [],
+    "unresolved_conflicts": [],
+    "warnings": [],
+    "validated_at": "2026-06-20T00:00:00Z"
+  }
+}

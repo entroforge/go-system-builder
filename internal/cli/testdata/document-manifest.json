@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "team-manifest-REQ-001-document-fixture-round-1",
+  "version": "v1.0.0",
+  "runtime_id": "loop-REQ-001",
+  "req_id": "REQ-001",
+  "baseline_generation": 1,
+  "review_round": 1,
+  "platform_team_id": "claude-team-loop-REQ-001",
+  "workgroup_id": "workgroup-document-round-1",
+  "workgroup_kind": "document_verifier",
+  "status": "planned",
+  "documents": [
+    {
+      "id": "REQ-001",
+      "path": "docs/requirements/REQ-001.md",
+      "version": "v1.0.0",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "id": "TASK-001",
+      "path": "docs/tasks/TASK-001.md",
+      "version": "v1.0.0",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "risk_tags": [],
+  "responsibility_dispositions": [
+    {
+      "responsibility_id": "DV-SPEC-CONSISTENCY",
+      "disposition": "assigned",
+      "trigger": "mandatory document-verification baseline",
+      "assignment_ids": ["assignment-dv-spec-consistency"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "DV-TASK-EXECUTABILITY",
+      "disposition": "assigned",
+      "trigger": "mandatory document-verification baseline",
+      "assignment_ids": ["assignment-dv-task-executability"],
+      "na_rationale": null,
+      "evidence_ref": null
+    },
+    {
+      "responsibility_id": "VER-INTEGRATION",
+      "disposition": "not_applicable",
+      "trigger": "no cross-component impact",
+      "assignment_ids": [],
+      "na_rationale": "The scoped fixture work does not change a cross-component boundary.",
+      "evidence_ref": "TASK-001#impact"
+    },
+    {
+      "responsibility_id": "VER-REGRESSION",
+      "disposition": "not_applicable",
+      "trigger": "no regression risk tag",
+      "assignment_ids": [],
+      "na_rationale": "No regression risk tag is present.",
+      "evidence_ref": "TASK-001#impact"
+    },
+    {
+      "responsibility_id": "QA-SECURITY",
+      "disposition": "not_applicable",
+      "trigger": "no security or trust-boundary impact",
+      "assignment_ids": [],
+      "na_rationale": "The scoped fixture work does not change authentication, authorization, secrets or sensitive data handling.",
+      "evidence_ref": "TASK-001#impact"
+    },
+    {
+      "responsibility_id": "QA-PERFORMANCE",
+      "disposition": "not_applicable",
+      "trigger": "no performance risk tag",
+      "assignment_ids": [],
+      "na_rationale": "No latency, throughput or resource budget is affected.",
+      "evidence_ref": "TASK-001#impact"
+    },
+    {
+      "responsibility_id": "QA-MIGRATION",
+      "disposition": "not_applicable",
+      "trigger": "no database or protocol migration",
+      "assignment_ids": [],
+      "na_rationale": "No persisted production schema or rollout migration is in scope.",
+      "evidence_ref": "TASK-001#impact"
+    }
+  ],
+  "assignments": [
+    {
+      "assignment_id": "assignment-dv-spec-consistency",
+      "responsibility_id": "DV-SPEC-CONSISTENCY",
+      "role_family": "document-verifier",
+      "scope": ["specification consistency"],
+      "agent_id": "agent-dv-spec-consistency",
+      "agent_definition_ref": "agents/document-verifier.md",
+      "skill_refs": ["code-quality"],
+      "read_paths": ["internal/"],
+      "write_paths": ["docs/reports/review/REV-001.json"],
+      "output_paths": ["docs/reports/review/REV-001.json"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Specification consistency has an independent conclusion.",
+      "status": "planned"
+    },
+    {
+      "assignment_id": "assignment-dv-task-executability",
+      "responsibility_id": "DV-TASK-EXECUTABILITY",
+      "role_family": "document-verifier",
+      "scope": ["task executability"],
+      "agent_id": "agent-dv-task-executability",
+      "agent_definition_ref": "agents/document-verifier.md",
+      "skill_refs": ["code-quality"],
+      "read_paths": ["internal/"],
+      "write_paths": ["docs/reports/review/REV-002.json"],
+      "output_paths": ["docs/reports/review/REV-002.json"],
+      "depends_on": [],
+      "reuse_decision": "create",
+      "grouping_rationale": "Task executability has an independent conclusion.",
+      "status": "planned"
+    }
+  ],
+  "separation_edges": [
+    {
+      "left_assignment_id": "assignment-dv-spec-consistency",
+      "right_assignment_id": "assignment-dv-task-executability",
+      "reason": "different_conclusion"
+    }
+  ],
+  "planned_agent_count": 2,
+  "max_parallel_agents": 2,
+  "quantity_rationale": "Two distinct document-verification conclusions are required.",
+  "validation": {
+    "result": "pass",
+    "missing_responsibilities": [],
+    "unresolved_conflicts": [],
+    "warnings": [],
+    "validated_at": "2026-06-20T00:00:00Z"
+  }
+}

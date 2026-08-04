@@ -1,0 +1,19 @@
+{
+  "session_id": "session-fixture-1",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "src/app.go"
+  },
+  "runtime_context": {
+    "runtime_id": "loop-REQ-002",
+    "revision": 4,
+    "agent": {
+      "id": "agent-builder-1",
+      "state": "reading",
+      "allowed_tools": [],
+      "allowed_write_paths": [],
+      "allowed_command_classes": []
+    }
+  }
+}

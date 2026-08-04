@@ -1,0 +1,38 @@
+# Local Claude / agent runtime state (workspace-local; never commit)
+.claude/
+
+# Go build and test artifacts
+/bin/
+/build/
+/dist/
+/loop-harness
+*.test
+*.coverprofile
+coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# Project-local temporary files
+/tmp/
+/temp/
+*.tmp
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
