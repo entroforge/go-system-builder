@@ -1,9 +1,15 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild and upload assets for
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,13 +27,13 @@ jobs:
       contents: write
 
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ github.event.release.tag_name || inputs.tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -48,14 +54,12 @@ jobs:
       - name: Build release package
         run: make release-checksum VERSION="$VERSION"
 
-      - name: Create GitHub Release
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$VERSION" \
+          gh release upload "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "go-system-builder $VERSION" \
-            --generate-notes \
+            --clobber \
             "dist/vibe-coding-loop-template-$VERSION.tar.gz" \
             "dist/sha256sums-$VERSION.txt"
