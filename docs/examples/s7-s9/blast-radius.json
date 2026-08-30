@@ -1,0 +1,19 @@
+{
+  "affected_surfaces": [
+    "form submission",
+    "response rendering",
+    "reload persistence"
+  ],
+  "affected_paths": [
+    "src/client/form.ts",
+    "src/server/decoder.go"
+  ],
+  "bounded_by": "the shared payload contract and its direct consumers",
+  "excluded_surfaces": [
+    "read-only list pages using the independent list contract"
+  ],
+  "evidence_refs": [
+    "path:src/client/form.ts",
+    "path:src/server/decoder.go"
+  ]
+}

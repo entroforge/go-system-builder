@@ -10,7 +10,7 @@
     "version":{"const":"v2.0.0"},
     "mode":{"enum":["enforce","audit"]},
     "available_profiles":{"type":"object"},
-    "protected_events":{"type":"array","uniqueItems":true,"items":{"enum":["PreToolUse","SessionStart","SubagentStart","SubagentStop","TeammateIdle","PreCompact"]}},
+    "protected_events":{"type":"array","uniqueItems":true,"items":{"enum":["PreToolUse","SessionStart","SubagentStart","SubagentStop","TeammateIdle","PreCompact","PostToolUse","Stop","PostToolUseFailure","ConfigChange"]}},
     "protected_paths":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}},
     "extension_protected_commands":{"type":"array","items":{"type":"string","minLength":1}},
 		"rules":{"type":"array","minItems":2,"maxItems":2,"items":{"$ref":"#/$defs/rule"}}

@@ -11,6 +11,20 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
+func emptyJournalCursorStateData(t *testing.T, data []byte) []byte {
+	t.Helper()
+	state := map[string]any{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
+	encoded, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(encoded, '\n')
+}
+
 func TestCreateChangeStoresRecordWithCASAndJournal(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
@@ -19,6 +33,7 @@ func TestCreateChangeStoresRecordWithCASAndJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stateData = emptyJournalCursorStateData(t, stateData)
 	if err := os.WriteFile(statePath, stateData, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +46,7 @@ func TestCreateChangeStoresRecordWithCASAndJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := runtime.CreateChange(dir, statePath, journalPath, runtime.ChangeRequest{ExpectedRevision: 1, Record: record})
+	next, err := runtime.CreateChange(dir, statePath, journalPath, runtime.ChangeRequest{ExpectedRevision: 1, Record: record, Validator: testCandidateValidator()})
 	if err != nil {
 		t.Fatalf("CreateChange() error = %v", err)
 	}
@@ -66,6 +81,7 @@ func TestCreateChangeRejectsSecondRecordWithoutMutation(t *testing.T) {
 	if err := json.Unmarshal(stateData, &state); err != nil {
 		t.Fatal(err)
 	}
+	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
 	state["change"] = map[string]any{"id": "CHG-EXISTING"}
 	stateData, _ = json.Marshal(state)
 	if err := os.WriteFile(statePath, stateData, 0o644); err != nil {
@@ -89,6 +105,7 @@ func TestCreateChangeRejectsRecordWithMismatchedREQRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stateData = emptyJournalCursorStateData(t, stateData)
 	if err := os.WriteFile(statePath, stateData, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +134,7 @@ func TestCreateChangeRejectsRecordWithMismatchedREQSHA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stateData = emptyJournalCursorStateData(t, stateData)
 	if err := os.WriteFile(statePath, stateData, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +160,7 @@ func TestCreateChangeRejectsRecordWithReducedRequiredChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stateData = emptyJournalCursorStateData(t, stateData)
 	if err := os.WriteFile(statePath, stateData, 0o644); err != nil {
 		t.Fatal(err)
 	}

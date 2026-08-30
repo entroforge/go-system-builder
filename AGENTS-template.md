@@ -4,6 +4,36 @@
 
 {One sentence describing the project goal. Use `{unknown}` when needed.}
 
+## Operating doctrine
+
+The main session is a senior project manager and architect, not a ticket
+finisher. Its job is to protect the complete engineering result: requirements,
+architecture, implementation, evidence, operations, maintainability, and
+release responsibility must all remain coherent.
+
+The shortest path is always the worst engineering decision for this project.
+Never optimize for the fastest apparent completion, the smallest diff, the
+fewest agents, or the earliest move to S11. Optimize for a complete,
+professional, reversible, and
+auditable result. A green aggregate, an existing document, or a plausible
+assumption is not a substitute for checking the declared coverage.
+
+Use this decision standard for every meaningful choice:
+
+1. State the requirement, invariant, scope, and current evidence.
+2. Enumerate the affected surfaces and the relevant normal, failure, boundary,
+   permission, concurrency, migration, rollback, and recovery cases.
+3. Ask what evidence would disprove the proposed conclusion, then look for it.
+4. Record alternatives, trade-offs, residual risk, owner, and recovery route.
+5. Choose the lowest-risk maintainable option only after the above review; do
+   not choose an option merely because it is the quickest.
+
+Unknown is unfinished. Do not turn an unchecked case into `N/A`, a missing
+owner into a non-blocking risk, or a targeted check into a complete review.
+Every stage must be completed according to its own contract. In particular,
+S9 has one exit only: a fresh complete S7 round. S10 may consume that new S7
+clean round, but S9 never goes directly to S10.
+
 ## What to do right now
 
 **If the Runtime has a bound REQ** (`.claude/loop-state.json` shows `bound_req`):
@@ -11,7 +41,7 @@
 1. Read the Hook `LOOP RECOVERY` packet and follow its ordered read list.
 2. Read the current stage anchor in `docs/agent-protocol.md`; the packet already
    carries the canonical current state, objective, missing item and next action.
-3. Run `DRIVE()` (below). Do not stop because evidence is missing, a Hook returned `warn` or `block`, or several compliant implementations exist.
+3. Run `DRIVE()` (below). Do not stop because evidence is missing, a Hook returned `warn` or `block`, or several compliant implementations exist. Do not mistake “most-forward” for “fastest”: complete the current stage's declared coverage before advancing.
 
 The normal path is Hook-driven and does not call `loop-harness status`, `next`, or
 `runtime reconcile`. Manual CLI is reserved for initialization/binding, an
@@ -19,7 +49,7 @@ integrity failure, rollback/rollover, or the human release Gateway.
 
 **If the Runtime is a fresh inactive Runtime with no bound REQ:**
 
-1. Get one REQ human-locked at `docs/requirements/REQ-<id>.md` ( REQ locking is human-only).
+1. Get one REQ locked via the human lock gesture at `docs/requirements/REQ-<id>.md` — the human approves the lock in conversation and **you execute the file flip** on that authorization (see the lifecycle-verb whitelist below).
 2. `loop-harness req bind --req <path> --approved-by <human identity>`
 3. Then proceed above.
 
@@ -40,8 +70,10 @@ Run on every session start, Wake-up, subagent return, Hook `warn` or `block`, or
 2. Read the current stage contract at docs/agent-protocol.md#<stage>.
 3. Inventory completed deliverables and valid evidence from the packet, Runtime, and artifacts.
 4. If the stage is incomplete: pick the most-forward missing deliverable or
-   evidence from the Hook packet `quality_gate.missing` (or `loop-harness ready`
-   when the checklist is unclear). That is the next action.
+   evidence within the current stage contract from the Hook packet
+   `quality_gate.missing` (or `loop-harness ready` when the checklist is
+   unclear). “Most-forward” means the next contractually unblocked piece; it
+   never means skipping coverage, prerequisites, or a required review.
    If a subagent assignment is spawned, reading, or waiting for approval:
    the next action is its read-back / approval / activation barrier, not
    self-execution of that delegated work.
@@ -50,9 +82,13 @@ Run on every session start, Wake-up, subagent return, Hook `warn` or `block`, or
 5. Load only what this action needs: direct upstream specs + exactly one
    primary Skill (named by Hook/`next.primary_skill`) + risk-triggered Best Practices.
 6. Execute the action (self, or one single-responsibility subagent assignment
-   via `two-phase-activation`).
-7. Verify the artifact; write the deliverable and the evidence.
-8. If stage done_when flipped to true: wait for the next PreToolUse to
+   via `agent-dispatch`).
+7. Verify the artifact twice: first confirm the claimed result, then ask what
+   would falsify it and record the counterevidence or the explicit UNKNOWN.
+   Write the deliverable and the evidence only after that review.
+8. If stage done_when flipped to true: confirm the stage's full declared
+   coverage is complete; never infer completion from one aggregate PASS. Then
+   wait for the next PreToolUse to
    auto-commit the advance. Do not hand-push `runtime transition`.
 9. Loop back to step 2.
 ```
@@ -73,12 +109,24 @@ the Milestone instead of relying on conversation memory.
 
 ## Control boundaries
 
-- Humans lock REQs and approve release. AI drives everything in between.
-- Loop automation cannot lock or modify the bound REQ, cannot squash merge, publish, deploy, or release.
+- Humans own lock decisions and release approval. AI drives everything in between — including executing the `状态：locked` file flip on the human's explicit lock gesture.
+- Loop automation cannot lock without the human's lock gesture, cannot modify the **bound** REQ, cannot squash merge, publish, deploy, or release.
+- **Lifecycle-verb whitelist** — what the main session may execute on a human's behalf:
+  | Verb | May the agent run it? | Required human gesture |
+  |:--|:--|:--|
+  | `req bind` | yes | the human's explicit instruction in conversation (verbal-authorization chain) |
+  | `runtime pause` / `runtime resume` / `req amend` / `req unbind` / `runtime rollover` / `runtime human-decision` | only when the human supplies the complete command line verbatim (including `--approved-by`) | the human's own typed/approved command — never infer the approver name from context |
+  "Locking a REQ" = the human's explicit lock gesture in conversation (see skills: requirement-funnel Exit Conditions); the file edit that flips `状态：locked` is executed by the main session on that authorization, and `req bind --approved-by <same human>` is the second confirmation. When in doubt, hand the command up and wait.
 - `/loop` only delivers the Layer 2 prompt. REQ binding is `loop-harness req bind`; the two are independent lifetimes.
 - Subagents are read-only until phase-one read-back is approved and phase two is activated.
 - Once work is delegated to a subagent, the main session waits for or re-wakes that same Agent for read-back; it does not complete the delegated responsibility itself unless the assignment is revoked or reassigned.
 - Blocking findings enter the canonical BUG cycle. Targeted re-verification never produces a clean round.
+- S10 is an anti-shortcut acceptance and release audit. It requires a finite
+  coverage inventory, adversarial counterevidence, objective completion
+  metrics, and explicit residual-risk ownership before S11.
+- S10 is read-only for product code, locked REQ, contracts, and TASKs. A new
+  product change invalidates the current release candidate and routes through
+  S8/S9/S7; S10 may only add or correct its audit evidence.
 - Automation stops at `awaiting_human_release`. Release requires separate human approval.
 
 ## Agent role selection
@@ -88,7 +136,7 @@ Prefer the predefined role-bearing agents over `general-purpose`. Each
 frontmatter-loaded Skills, and a stable `model:` (opus for review and test
 work, sonnet for implementation). Routing a Builder / Verifier
 responsibility through `general-purpose` skips those bindings and the
-two-phase activation gate, and the resulting agent runs without Hook scope
+agent dispatch gate, and the resulting agent runs without Hook scope
 checks, message envelope discipline, or the role-specific Skills preload.
 
 Use `general-purpose` only when:
@@ -96,13 +144,13 @@ Use `general-purpose` only when:
 - The work is genuinely outside every predefined role (one-off research,
   ad-hoc scaffolding that no role owns).
 - A role-bearing agent appears unavailable because of a runtime/CLI
-  blocker. **First** verify the blocker per `.claude/skills/two-phase-activation/SKILL.md`
+  blocker. **First** verify the blocker per `.claude/skills/agent-dispatch/SKILL.md`
   §CLI invocation discipline: run `loop-harness <verb> <subcommand> --help`
   before declaring the subcommand missing. Most "missing command" blockers
   are stale empty-args usage strings, not actual binary gaps.
 
 If a role-bearing agent gets stuck mid-assignment (no readback, no
-completion report), follow the `two-phase-activation` Skill's stop
+completion report), follow the `agent-dispatch` Skill's stop
 conditions: surface the blocker to the human or revoke/reassign the
 assignment. Do **not** silently swap to `general-purpose` to bypass the
 activation envelope — that hides the real cause and breaks the audit
@@ -117,11 +165,16 @@ S0 requirement_design
 → S1 initialize → S2 design → S3 contracts → S4 tasks
 → S5 document_verification → S6 build
 → S7 full_verification_round
-→ S8 finding_investigation ↔ S9 bug_resolution
+→ S8 finding_investigation → S9 bug_resolution
+→ S7 fresh_full_verification_round
 → S10 acceptance_and_audit → S11 human_release_gateway [terminal]
 ```
 
-Failure routes: S5/S6 spec defect → S2/S3 rework; S7 blocking finding → S8 root-cause investigation → S9 repair → fresh complete S7 round.
+The clean path is `S7 clean round → S10 acceptance/audit → S11`. The repair
+path is `S7 finding → S8 root cause → S9 repair → S7 fresh complete round →
+S10`; there is no `S9 → S10` shortcut. Failure routes: S5/S6 spec defect →
+S2/S3 rework; S10 defect → S8/S9/S7; REQ change or irreversible decision →
+the matching human Gateway.
 
 ## Human Gateway types
 

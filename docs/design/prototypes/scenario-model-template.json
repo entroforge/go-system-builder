@@ -1,0 +1,99 @@
+{
+  "module": "example-module",
+  "coverage_profile": "ordinary",
+  "facts": [
+    {
+      "id": "FACT-EXAMPLE",
+      "partitions": [
+        {
+          "id": "FACT-EXAMPLE-VALID",
+          "value": "<synthetic-value>"
+        },
+        {
+          "id": "FACT-EXAMPLE-INVALID",
+          "value": "<synthetic-invalid-value>"
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "BR-EXAMPLE",
+      "source_refs": [
+        "REQ-<id>/FR-<id>"
+      ],
+      "risk": "money is involved",
+      "branches": [
+        {
+          "id": "BR-EXAMPLE-ALLOW",
+          "case_id": "CASE-EXAMPLE-ALLOW",
+          "title": "合法事实允许完成目标动作",
+          "polarity": "positive",
+          "required": true,
+          "witness": {
+            "FACT-EXAMPLE": "FACT-EXAMPLE-VALID"
+          },
+          "oracle": {
+            "visible": [
+              "<visible success checkpoint>"
+            ],
+            "terminal_state": "<expected terminal state>",
+            "persisted_effects": [
+              "<persisted business result>"
+            ],
+            "forbidden_side_effects": [
+              "<forbidden side effect that must remain absent>"
+            ]
+          },
+          "fixture_id": "FX-EXAMPLE-VALID",
+          "story_refs": [
+            "S-001"
+          ],
+          "flow_refs": [
+            "F-001",
+            "PATH-EXAMPLE-ALLOW"
+          ],
+          "browser_required": true
+        },
+        {
+          "id": "BR-EXAMPLE-REJECT",
+          "case_id": "CASE-EXAMPLE-REJECT",
+          "title": "非法事实被正确拦截且可恢复",
+          "polarity": "negative",
+          "required": true,
+          "witness": {
+            "FACT-EXAMPLE": "FACT-EXAMPLE-INVALID"
+          },
+          "oracle": {
+            "visible": [
+              "<visible validation or denial checkpoint>"
+            ],
+            "terminal_state": "<state remains unchanged or expected rejection state>",
+            "persisted_effects": [
+              "<no forbidden persistence>"
+            ],
+            "rejection": "<stable rejection code or message>",
+            "expected_state": "<expected unchanged state>",
+            "forbidden_side_effects": [
+              "<forbidden side effect>"
+            ],
+            "recovery": "N/A",
+            "recovery_source_refs": [
+              "REQ-<id>/FR-<id>"
+            ],
+            "recovery_reason": "<source-backed reason that no recovery path exists>"
+          },
+          "fixture_id": "FX-EXAMPLE-INVALID",
+          "story_refs": [
+            "S-001"
+          ],
+          "flow_refs": [
+            "F-001",
+            "PATH-EXAMPLE-REJECT"
+          ],
+          "browser_required": true
+        }
+      ]
+    }
+  ]
+}

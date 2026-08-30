@@ -3,6 +3,7 @@ package team_test
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func TestGenerateReadbackRequestsCreatesOneSchemaValidPackagePerAssignment(t *te
 		}
 		if request.RoleFamily == "qa" {
 			for _, name := range []string{
-				"two-phase-activation", "testing-strategy", "code-quality", "security-review",
+				"agent-dispatch", "testing-strategy", "code-quality", "security-review",
 				"performance-review", "reliability-review", "database-change", "state-machine-design",
 			} {
 				if !hasSkill(request, name) {
@@ -82,6 +83,43 @@ func TestGenerateReadbackRequestsRejectsNonBottomUpDocuments(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected document-order rejection")
+	}
+}
+
+func TestGenerateReadbackRequestsRejectsAuthoringPlaceholderAgentID(t *testing.T) {
+	root := filepath.Join("..", "..")
+	manifestData, err := schema.ReadAsset("team-manifest.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	assignments, ok := manifest["assignments"].([]any)
+	if !ok || len(assignments) == 0 {
+		t.Fatal("manifest has no assignments")
+	}
+	first, ok := assignments[0].(map[string]any)
+	if !ok {
+		t.Fatal("manifest assignment has unexpected shape")
+	}
+	first["agent_id"] = "TODO(planner):agent-id-for-qa"
+	manifestData, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = team.GenerateReadbackRequests(root, manifestData, team.LaunchOptions{
+		TaskID: "TASK-001",
+		Documents: []team.DocumentReference{
+			{ID: "TASK-001", Kind: "task", Path: "task", Version: "v1", SHA256: hash('1'), ReadOrder: 1},
+			{ID: "CONTRACTS-001", Kind: "contract", Path: "contract", Version: "v1", SHA256: hash('2'), ReadOrder: 2},
+			{ID: "REQ-002", Kind: "req", Path: "req", Version: "v1", SHA256: hash('3'), ReadOrder: 3},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "authoring placeholder") {
+		t.Fatalf("expected authoring-placeholder rejection, got %v", err)
 	}
 }
 

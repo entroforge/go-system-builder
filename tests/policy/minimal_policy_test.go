@@ -41,8 +41,8 @@ func TestLockedArtifactExactPathBlocksEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	if decision.Decision != "block" || decision.Reason != "locked_artifact_write" {
-		t.Fatalf("exact locked path must block with the retained reason: %#v", decision)
+	if decision.Decision != "deny" || decision.Reason != "locked_artifact_write" {
+		t.Fatalf("exact locked path must deny with the retained reason: %#v", decision)
 	}
 }
 
@@ -122,8 +122,8 @@ func TestProvenBashMutationOfLockedArtifactBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	if decision.Decision != "block" || decision.Reason != "locked_artifact_write" {
-		t.Fatalf("proven Bash mutation of a locked path must block: %#v", decision)
+	if decision.Decision != "deny" || decision.Reason != "locked_artifact_write" {
+		t.Fatalf("proven Bash mutation of a locked path must deny: %#v", decision)
 	}
 }
 
@@ -171,8 +171,8 @@ func TestGitSquashMergeBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	if decision.Decision != "block" || decision.Reason != "squash_merge" {
-		t.Fatalf("git squash merge must block with the retained reason: %#v", decision)
+	if decision.Decision != "deny" || decision.Reason != "squash_merge" {
+		t.Fatalf("git squash merge must deny with the retained reason: %#v", decision)
 	}
 }
 
@@ -189,8 +189,8 @@ func TestGitHubPRSquashMergeBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	if decision.Decision != "block" || decision.Reason != "squash_merge" {
-		t.Fatalf("GitHub PR squash merge must block with the retained reason: %#v", decision)
+	if decision.Decision != "deny" || decision.Reason != "squash_merge" {
+		t.Fatalf("GitHub PR squash merge must deny with the retained reason: %#v", decision)
 	}
 }
 
@@ -367,8 +367,8 @@ func TestLockedArtifactDirectMutationToolsBlock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("evaluate: %v", err)
 			}
-			if decision.Decision != "block" || decision.Reason != "locked_artifact_write" {
-				t.Fatalf("%s exact locked write must block: %#v", toolName, decision)
+			if decision.Decision != "deny" || decision.Reason != "locked_artifact_write" {
+				t.Fatalf("%s exact locked write must deny: %#v", toolName, decision)
 			}
 		})
 	}
@@ -415,7 +415,7 @@ func TestUnlockedSiblingAndGenerationBehavior(t *testing.T) {
 			stage:     "S6",
 			path:      oldPath,
 			artifacts: []policy.LockedArtifact{oldArtifact, candidateArtifact},
-			want:      "block",
+			want:      "deny",
 		},
 		{
 			name:      "generation two candidate is editable",
@@ -429,7 +429,7 @@ func TestUnlockedSiblingAndGenerationBehavior(t *testing.T) {
 			stage:     "S6",
 			path:      candidatePath,
 			artifacts: []policy.LockedArtifact{oldArtifact, candidateArtifact},
-			want:      "block",
+			want:      "deny",
 		},
 	}
 
@@ -487,8 +487,8 @@ func TestEnforceBlockReasonsAreExactlyRetainedReasons(t *testing.T) {
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
-		if decision.Decision != "block" || decision.Reason != want[index] {
-			t.Fatalf("retained block[%d] = %#v, want reason %q", index, decision, want[index])
+		if decision.Decision != "deny" || decision.Reason != want[index] {
+			t.Fatalf("retained deny[%d] = %#v, want reason %q", index, decision, want[index])
 		}
 	}
 }
@@ -501,7 +501,8 @@ func TestOldGenerationRemainsImmutableDuringRework(t *testing.T) {
 		ToolName:  "Edit",
 		ToolInput: map[string]any{"file_path": oldPath},
 		Runtime: policy.RuntimeContext{
-			CurrentStage: "S5",
+			CurrentStage:              "S5",
+			CurrentBaselineGeneration: 2,
 			LockedArtifacts: []policy.LockedArtifact{{
 				ID:                 "BE-039",
 				Kind:               "contracts",
@@ -516,7 +517,7 @@ func TestOldGenerationRemainsImmutableDuringRework(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	if decision.Decision != "block" || decision.Reason != "locked_artifact_write" {
+	if decision.Decision != "deny" || decision.Reason != "locked_artifact_write" {
 		t.Fatalf("old locked generation must remain immutable during rework: %#v", decision)
 	}
 }

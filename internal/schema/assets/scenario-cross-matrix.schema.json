@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scenario-cross-matrix.schema.json",
+  "title": "Module cross-matrix (convergence-1 carrier)",
+  "description": "The fact x FR x story completeness hunt made fill-in (L3-S2 v4.0.1): every hunted cell names its covering branch or records why none exists.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["module", "entries"],
+  "properties": {
+    "module": {"type": "string", "minLength": 1},
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fact", "req_ref", "story"],
+        "properties": {
+          "fact": {"type": "string", "minLength": 1},
+          "req_ref": {
+            "type": "string",
+            "pattern": "^REQ-[A-Z0-9]+(-[A-Z0-9]+)*(?:/FR-[A-Z0-9]+(-[A-Z0-9]+)*)?$"
+          },
+          "story": {"type": "string", "pattern": "^S-[0-9]{3}$"},
+          "branch": {"type": "string", "minLength": 1},
+          "no_branch_reason": {"type": "string", "minLength": 1}
+        },
+        "anyOf": [
+          {"required": ["branch"]},
+          {"required": ["no_branch_reason"]}
+        ]
+      }
+    }
+  }
+}

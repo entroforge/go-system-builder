@@ -102,7 +102,7 @@ func (v *Validator) ValidateBytes(schemaName string, data []byte) error {
 		return fmt.Errorf("decode data: %w", err)
 	}
 	if err := compiled.Validate(value); err != nil {
-		return fmt.Errorf("validate data: %w", err)
+		return fmt.Errorf("validate data: %w", pruneValidationError(err))
 	}
 	return nil
 }
@@ -115,6 +115,115 @@ func (v *Validator) ValidateEmbedded(schemaName, instanceName string) error {
 		return err
 	}
 	return v.ValidateBytes(schemaName, data)
+}
+
+// WarnMissingExtensionFields returns warnings for the extension fields an
+// Agent Message omitted. The envelope schema layers its requirements: the 12
+// base envelope fields stay hard-required (missing ones are rejected by
+// ValidateBytes), while each message type's extension fields are recorded on
+// the branch's "x-warn-required" annotation. Callers use this after a
+// successful hard validation to surface the missing extensions as
+// recoverable warnings instead of rejections.
+func WarnMissingExtensionFields(data []byte) []string {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var message map[string]any
+	if err := decoder.Decode(&message); err != nil {
+		return nil
+	}
+	return warnMissingExtensions(message)
+}
+
+// warnMissingExtensions resolves the message-type branch in the embedded
+// agent-message schema and diffs its x-warn-required list against the keys
+// actually present in the instance. Unknown message types return nil.
+func warnMissingExtensions(message map[string]any) []string {
+	rawSchema, err := ReadAsset("agent-message.schema.json")
+	if err != nil {
+		return nil
+	}
+	var parsed struct {
+		Defs map[string]json.RawMessage `json:"$defs"`
+	}
+	if err := json.Unmarshal(rawSchema, &parsed); err != nil {
+		return nil
+	}
+	rawBase, ok := parsed.Defs["base"]
+	if !ok {
+		return nil
+	}
+	var base struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(rawBase, &base); err != nil {
+		return nil
+	}
+	if len(base.Properties) == 0 {
+		return nil
+	}
+	baseFields := make(map[string]struct{}, len(base.Properties))
+	for field := range base.Properties {
+		baseFields[field] = struct{}{}
+	}
+	branch := messageBranchFor(message)
+	if branch == "" {
+		return nil
+	}
+	rawWarn, ok := parsed.Defs[branch]
+	if !ok {
+		return nil
+	}
+	var branchDef struct {
+		AllOf []json.RawMessage `json:"allOf"`
+	}
+	if err := json.Unmarshal(rawWarn, &branchDef); err != nil {
+		return nil
+	}
+	for _, layer := range branchDef.AllOf {
+		var tier struct {
+			WarnRequired []string `json:"x-warn-required"`
+		}
+		if err := json.Unmarshal(layer, &tier); err != nil || len(tier.WarnRequired) == 0 {
+			continue
+		}
+		var warnings []string
+		for _, field := range tier.WarnRequired {
+			if _, present := message[field]; present {
+				continue
+			}
+			if _, isBase := baseFields[field]; isBase {
+				// Base fields are hard-required elsewhere; they never belong
+				// on the warn tier.
+				continue
+			}
+			warnings = append(warnings, field)
+		}
+		return warnings
+	}
+	return nil
+}
+
+// messageBranchFor maps a message_type value to the $defs branch that carries
+// its warn tier, following the discriminator pruning convention in errors.go
+// (one lifecycle branch for all lifecycle event types).
+func messageBranchFor(message map[string]any) string {
+	messageType, _ := message["message_type"].(string)
+	switch messageType {
+	case "readback_request":
+		return "readbackRequest"
+	case "readback_response":
+		return "readbackResponse"
+	case "plan_report":
+		return "planReport"
+	case "activation":
+		return "activation"
+	case "completion_report":
+		return "completionReport"
+	case "work_start", "completion_ack", "blocker_report", "blocker_resolution", "shutdown_approval":
+		return "lifecycleEvent"
+	default:
+		return ""
+	}
 }
 
 // compileSchema resolves a schema by basename from embed, falling back to disk

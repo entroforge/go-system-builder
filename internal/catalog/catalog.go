@@ -15,9 +15,10 @@ type SkillSpec struct {
 
 var Skills = []SkillSpec{
 	{"loop-orchestration", "methodology"},
+	{"requirement-funnel", "methodology"},
 	{"specification-planning", "methodology"},
 	{"document-verification", "methodology"},
-	{"two-phase-activation", "methodology"},
+	{"agent-dispatch", "methodology"},
 	{"team-planning", "methodology"},
 	{"bug-resolution", "methodology"},
 	{"impact-analysis", "methodology"},
@@ -45,6 +46,7 @@ var Skills = []SkillSpec{
 	{"dag-design", "best-practice"},
 	{"api-contracts", "best-practice"},
 	{"ui-prototyping", "best-practice"},
+	{"scenario-model-design", "best-practice"},
 	{"user-story-design", "best-practice"},
 	{"user-flow-design", "best-practice"},
 	{"testing-strategy", "best-practice"},
@@ -109,7 +111,7 @@ func ValidateSkill(root string, spec SkillSpec) error {
 	if frontmatter["name"] != spec.Name {
 		return fmt.Errorf("skill %s: frontmatter name mismatch", spec.Name)
 	}
-	if frontmatter["category"] != spec.Category {
+	if category := frontmatter["category"]; category != "" && category != spec.Category {
 		return fmt.Errorf("skill %s: category must be %s", spec.Name, spec.Category)
 	}
 	description := frontmatter["description"]
@@ -133,12 +135,14 @@ func ValidateSkill(root string, spec SkillSpec) error {
 		}
 	}
 	// A Skill must cite at least one authoritative source. Shipped runtime
-	// authorities include the Loop Definition, Hook Policy, and Main Spine.
-	// Historical design-rationale docs live under docs/design/loop-engineering/
-	// in the source repository and are allowed only as source-repo references.
+	// authorities include the Loop Definition, Hook Policy, Main Spine, and
+	// reusable rules. Historical design-rationale docs live under
+	// docs/design/loop-engineering/ in the source repository and are allowed only
+	// as source-repo references.
 	if !strings.Contains(body, "docs/loop-definition.json") &&
 		!strings.Contains(body, "docs/agent-protocol.md") &&
 		!strings.Contains(body, "docs/hook-policy.json") &&
+		!strings.Contains(body, "docs/rules/") &&
 		!strings.Contains(body, "docs/design/loop-engineering/") {
 		return fmt.Errorf("skill %s: missing authoritative source reference", spec.Name)
 	}
@@ -165,7 +169,9 @@ func ValidateAgents(root string) error {
 			}
 		}
 		for _, phrase := range []string{
-			"phase one", "phase two", "activation", ".claude/loop-state.json",
+			// L4 dispatch vocabulary: every definition states the plan
+			// checkpoint flow and the activation exception.
+			"PLAN_REPORT", "plan_checkpoint", "plan_approval_required", ".claude/loop-state.json",
 			"squash merge", "## Mission", "## Allowed Artifacts", "## Output Contract", "## Stop Conditions",
 		} {
 			if !strings.Contains(body, phrase) {

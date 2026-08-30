@@ -40,9 +40,9 @@
   ],
   "skills": [
     {
-      "name": "two-phase-activation",
+      "name": "agent-dispatch",
       "category": "methodology",
-      "source": ".claude/skills/two-phase-activation/SKILL.md",
+      "source": ".claude/skills/agent-dispatch/SKILL.md",
       "version": "1.0.0",
       "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
     }

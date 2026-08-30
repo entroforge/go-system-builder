@@ -2,12 +2,15 @@ package assignment_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignment"
+	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
 func setupBugRuntime(t *testing.T, root string, bugState string) {
@@ -26,34 +29,36 @@ func setupBugRuntime(t *testing.T, root string, bugState string) {
 		"id":                          "BUG-001",
 		"state":                       bugState,
 		"path":                        "docs/reports/bugs/BUG-001.md",
-		"severity":                    "blocking",
+		"severity":                    "P1",
 		"attempt_count":               float64(0),
 		"same_contract_failure_count": float64(0),
 		"original_finder_agent_ids":   []any{"agent-finder"},
 	}
-	state := map[string]any{
-		"schema_version": "1.0.0",
-		"runtime_id":     "loop-test",
-		"definition":     map[string]any{"path": "x", "version": "1.0.0", "sha256": "x"},
-		"revision":       3,
-		"lifecycle":      map[string]any{"state": "bug_resolution", "phase": "investigation", "phase_revision": float64(1)},
-		"authorization":  map[string]any{"mode": "loop", "command": "/loop", "actor": "x", "occurred_at": "2026-01-01T00:00:00Z"},
-		"bound_req":      map[string]any{"id": "REQ-X", "path": "x", "version": "1.0.0", "sha256": "x", "status": "locked"},
-		"baseline":       map[string]any{"generation": float64(1), "captured_at": "2026-01-01T00:00:00Z"},
-		"review":         map[string]any{"round": float64(0), "clean_round": nil},
-		"documents":      []any{},
-		"entities": map[string]any{
-			"agents": []any{},
-			"tasks":  []any{},
-			"bugs":   []any{bug},
-			"teams":  []any{},
-		},
-		"evidence":        []any{},
-		"blockers":        []any{},
-		"pause":           nil,
-		"journal":         map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": float64(0), "last_event_id": nil},
-		"last_transition": nil,
-		"updated_at":      "2026-01-01T00:00:00Z",
+	stateData, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["runtime_id"] = "loop-test"
+	state["revision"] = 3
+	state["lifecycle"] = map[string]any{
+		"state":          "bug_resolution",
+		"phase":          "investigation",
+		"phase_revision": 1,
+	}
+	state["entities"] = map[string]any{
+		"agents": []any{},
+		"tasks":  []any{},
+		"bugs":   []any{bug},
+		"teams":  []any{},
+	}
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
 	}
 	data, _ := json.MarshalIndent(state, "", "  ")
 	os.MkdirAll(filepath.Join(root, ".claude"), 0o755)
@@ -352,4 +357,104 @@ func readBugRuntimeState(t *testing.T, root string) map[string]any {
 	var state map[string]any
 	json.Unmarshal(data, &state)
 	return state
+}
+
+// TestBugSameContractFailureCountIncrements covers RC-15 (S9-M5): every
+// closing_contract_failed retry increments same_contract_failure_count so the
+// max_same_contract_failures cap becomes reachable.
+func TestBugSameContractFailureCountIncrements(t *testing.T) {
+	root := t.TempDir()
+	setupBugRuntime(t, root, "retesting")
+	_, err := assignment.AdvanceBug(root,
+		filepath.Join(root, ".claude", "loop-state.json"),
+		filepath.Join(root, ".claude", "loop-events.jsonl"),
+		assignment.BugEventRequest{
+			ExpectedRevision: 3,
+			BugID:            "BUG-001",
+			Event:            "closing_contract_failed",
+			Params: map[string]any{
+				"failure_evidence": "docs/reports/bugs/BUG-001.md#failure",
+			},
+		})
+	if err != nil {
+		t.Fatalf("closing_contract_failed failed: %v", err)
+	}
+	state := readBugRuntimeState(t, root)
+	bug := state["entities"].(map[string]any)["bugs"].([]any)[0].(map[string]any)
+	if bug["same_contract_failure_count"] != float64(1) {
+		t.Errorf("expected same_contract_failure_count=1 after first failure, got %v", bug["same_contract_failure_count"])
+	}
+}
+
+// TestBugSameContractFailureCapTypedError covers RC-15 (S9-M5): once the
+// consecutive Closing Contract failure streak reaches max_same_contract_failures
+// the retry is rejected with a typed *transition.RepairLimitError so the
+// GTR-004 bridge (adapter.DispatchRepairLimitExceeded) can pause the Loop.
+func TestBugSameContractFailureCapTypedError(t *testing.T) {
+	root := t.TempDir()
+	setupBugRuntime(t, root, "retesting")
+	state := readBugRuntimeState(t, root)
+	state["configuration"] = map[string]any{
+		"repair": map[string]any{
+			"max_same_contract_failures": float64(2),
+		},
+	}
+	bugs := state["entities"].(map[string]any)["bugs"].([]any)
+	bug := bugs[0].(map[string]any)
+	bug["same_contract_failure_count"] = float64(2) // streak already at cap
+	data, _ := json.MarshalIndent(state, "", "  ")
+	os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), append(data, '\n'), 0o644)
+
+	_, err := assignment.AdvanceBug(root,
+		filepath.Join(root, ".claude", "loop-state.json"),
+		filepath.Join(root, ".claude", "loop-events.jsonl"),
+		assignment.BugEventRequest{
+			ExpectedRevision: 3,
+			BugID:            "BUG-001",
+			Event:            "closing_contract_failed",
+			Params: map[string]any{
+				"failure_evidence": "docs/reports/bugs/BUG-001.md#failure",
+			},
+		})
+	var rle *transition.RepairLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("expected typed *transition.RepairLimitError, got %v (%T)", err, err)
+	}
+	if rle.BugID != "BUG-001" || rle.Attempts != 3 || rle.Max != 2 {
+		t.Errorf("unexpected RepairLimitError payload: %+v", rle)
+	}
+}
+
+// TestBugClosingContractPassedResetsStreak covers RC-15 (S9-M5): a successful
+// Closing Contract clears the consecutive failure streak.
+func TestBugClosingContractPassedResetsStreak(t *testing.T) {
+	root := t.TempDir()
+	setupBugRuntime(t, root, "retesting")
+	state := readBugRuntimeState(t, root)
+	bugs := state["entities"].(map[string]any)["bugs"].([]any)
+	bug := bugs[0].(map[string]any)
+	bug["same_contract_failure_count"] = float64(2)
+	data, _ := json.MarshalIndent(state, "", "  ")
+	os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), append(data, '\n'), 0o644)
+
+	_, err := assignment.AdvanceBug(root,
+		filepath.Join(root, ".claude", "loop-state.json"),
+		filepath.Join(root, ".claude", "loop-events.jsonl"),
+		assignment.BugEventRequest{
+			ExpectedRevision: 3,
+			BugID:            "BUG-001",
+			Event:            "closing_contract_passed",
+			Params: map[string]any{
+				"reverification_evidence": "docs/reports/bugs/BUG-001.md#reverify",
+				"actor_agent_id":          "agent-builder",
+			},
+		})
+	if err != nil {
+		t.Fatalf("closing_contract_passed failed: %v", err)
+	}
+	state = readBugRuntimeState(t, root)
+	bug = state["entities"].(map[string]any)["bugs"].([]any)[0].(map[string]any)
+	if bug["same_contract_failure_count"] != float64(0) {
+		t.Errorf("expected same_contract_failure_count reset to 0, got %v", bug["same_contract_failure_count"])
+	}
 }

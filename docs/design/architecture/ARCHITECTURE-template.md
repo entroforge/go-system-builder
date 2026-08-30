@@ -1,6 +1,7 @@
 # 架构文档：{项目名称}
 
-> 状态：draft / reviewed / locked  
+> 状态：draft / reviewed / locked
+> （定稿时翻 locked——PTR-PLAN-01 只登记 locked 的架构文档；机器登记只认 locked，reviewed 仅人审中间态）  
 > 版本：v0.1.0  
 > Architect：{Architect}  
 > 日期：YYYY-MM-DD  

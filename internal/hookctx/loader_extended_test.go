@@ -1,6 +1,8 @@
 package hookctx_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +14,11 @@ import (
 	"github.com/entroforge/go-system-builder/internal/policy"
 )
 
+func hookSHA(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 // writeJSONL writes a JSON file to disk for tests.
 func writeJSONL(t *testing.T, path, content string) {
 	t.Helper()
@@ -20,6 +27,56 @@ func writeJSONL(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadFullBindsS9AssignmentScopeFromPlanReport(t *testing.T) {
+	root := t.TempDir()
+	plan := []byte(`{"assignments":[{"assignment_id":"repair-assignment-unit-1","owner_agent_id":"","scope":["internal/api"]}]}`)
+	report := []byte(`{"agent_id":"builder-s9","assignment_id":"repair-assignment-unit-1"}`)
+	planPath := filepath.Join(root, ".claude", "review", "repair", "plans", "repair-plan-1.json")
+	reportPath := filepath.Join(root, ".claude", "review", "repair", "plan-reports", "repair-plan-report-1.json")
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, plan, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reportPath, report, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{
+		"runtime_id": "loop-REQ-039", "revision": 7,
+		"lifecycle": map[string]any{"state": "bug_resolution", "phase": "fixing"},
+		"review": map[string]any{"repair": map[string]any{
+			"status": "repairing", "session_id": "repair-session-1",
+			"plan_ref": ".claude/review/repair/plans/repair-plan-1.json", "plan_sha256": hookSHA(plan),
+			"plan_report_refs": []any{map[string]any{"path": ".claude/review/repair/plan-reports/repair-plan-report-1.json", "sha256": hookSHA(report)}},
+		}},
+		"entities": map[string]any{"agents": []any{map[string]any{"id": "builder-s9", "state": "working"}}},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJSONL(t, filepath.Join(root, ".claude", "loop-state.json"), string(data))
+	writeJSONL(t, filepath.Join(root, ".claude", "loop-events.jsonl"), "")
+
+	loaded, err := hookctx.LoadFull(root, "builder-s9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PolicyContext.RepairStatus != "repairing" || loaded.PolicyContext.Agent == nil {
+		t.Fatalf("S9 repair pointer/agent not projected: %#v", loaded.PolicyContext)
+	}
+	if loaded.PolicyContext.Agent.RepairAssignmentID != "repair-assignment-unit-1" {
+		t.Fatalf("assignment id = %q", loaded.PolicyContext.Agent.RepairAssignmentID)
+	}
+	if len(loaded.PolicyContext.Agent.RepairAllowedWritePaths) != 1 || loaded.PolicyContext.Agent.RepairAllowedWritePaths[0] != "internal/api" {
+		t.Fatalf("assignment scope = %#v", loaded.PolicyContext.Agent.RepairAllowedWritePaths)
 	}
 }
 
@@ -191,7 +248,9 @@ func TestLoadFullLockedArtifactsFiresExistingPolicyDecision(t *testing.T) {
 // TestLoadFullLockedArtifactsSkipsWrongGenerationOrMissingFields
 // ensures the loader does NOT fabricate block decisions when the
 // documents entry is incomplete or belongs to a different baseline
-// generation (BUG-039-04 §4.2).
+// generation (BUG-039-04 §4.2). REQ baselines are the exception: every
+// locked REQ generation stays write-protected, including superseded ones
+// (L3-S1 amend keeps the old REQ locked).
 func TestLoadFullLockedArtifactsSkipsWrongGenerationOrMissingFields(t *testing.T) {
 	root := t.TempDir()
 	state := `{
@@ -200,9 +259,9 @@ func TestLoadFullLockedArtifactsSkipsWrongGenerationOrMissingFields(t *testing.T
 		"baseline":{"generation":2},
 		"documents":[
 			{
-				"id":"OLD-REQ",
-				"kind":"req",
-				"path":"docs/requirements/OLD.md",
+				"id":"OLD-CONTRACT",
+				"kind":"contract",
+				"path":"docs/contracts/OLD.md",
 				"version":"v1.0.0",
 				"sha256":"0000000000000000000000000000000000000000000000000000000000000000",
 				"status":"locked",
@@ -224,7 +283,42 @@ func TestLoadFullLockedArtifactsSkipsWrongGenerationOrMissingFields(t *testing.T
 		t.Fatalf("load full: %v", err)
 	}
 	if len(loaded.PolicyContext.LockedArtifacts) != 0 {
-		t.Fatalf("expected 0 LockedArtifacts (g1 row + incomplete row must both be skipped), got %+v", loaded.PolicyContext.LockedArtifacts)
+		t.Fatalf("expected 0 LockedArtifacts (g1 contract row + incomplete row must both be skipped), got %+v", loaded.PolicyContext.LockedArtifacts)
+	}
+}
+
+// TestLoadFullKeepsSupersededReQLockedAcrossGenerations pins the REQ
+// exception: a locked req document from an older baseline generation
+// remains a locked artifact after an amend bumps the baseline.
+func TestLoadFullKeepsSupersededReQLockedAcrossGenerations(t *testing.T) {
+	root := t.TempDir()
+	state := `{
+		"runtime_id":"loop-REQ-039",
+		"revision":33,
+		"baseline":{"generation":2},
+		"documents":[
+			{
+				"id":"REQ-039",
+				"kind":"req",
+				"path":"docs/requirements/REQ-039.md",
+				"version":"v1.0.0",
+				"sha256":"0000000000000000000000000000000000000000000000000000000000000000",
+				"status":"locked",
+				"generation":1
+			}
+		]
+	}`
+	writeJSONL(t, filepath.Join(root, ".claude", "loop-state.json"), state)
+
+	loaded, err := hookctx.LoadFull(root, "")
+	if err != nil {
+		t.Fatalf("load full: %v", err)
+	}
+	if len(loaded.PolicyContext.LockedArtifacts) != 1 {
+		t.Fatalf("expected the superseded REQ to stay locked, got %+v", loaded.PolicyContext.LockedArtifacts)
+	}
+	if got := loaded.PolicyContext.LockedArtifacts[0].ID; got != "REQ-039" {
+		t.Fatalf("locked artifact id = %q, want REQ-039", got)
 	}
 }
 
@@ -272,6 +366,7 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 			"role_family":"backend-builder",
 			"agent_id":"agent-039-04",
 			"write_paths":["internal/controller/"],
+			"done_when":["register the exact Assignment Result", "preserve evidence refs"],
 			"status":"in_progress"
 		}]
 	}`
@@ -300,6 +395,40 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 	}
 	if len(row.WritePaths) != 1 || row.WritePaths[0] != "internal/controller/" {
 		t.Fatalf("WritePaths: got %+v", row.WritePaths)
+	}
+	if strings.Join(row.DoneWhen, "|") != "register the exact Assignment Result|preserve evidence refs" {
+		t.Fatalf("DoneWhen: got %+v", row.DoneWhen)
+	}
+}
+
+func TestLoadFullDoesNotGuessFirstAssignmentWhenAgentBindingIsAmbiguous(t *testing.T) {
+	root := t.TempDir()
+	state := `{
+		"runtime_id":"loop-REQ-039","revision":1,"baseline":{"generation":1},
+		"entities":{
+			"agents":[{"id":"agent-039-ambiguous","state":"working","task_ids":["TASK-039-ambiguous"]}],
+			"tasks":[{"id":"TASK-039-ambiguous","state":"in_progress","owner_agent_ids":["agent-039-ambiguous"]}],
+			"bugs":[],"teams":[]
+		}
+	}`
+	manifest := `{
+		"schema_version":"1.0.0","manifest_id":"team-manifest-ambiguous","version":"v1.0.0",
+		"runtime_id":"loop-REQ-039","req_id":"REQ-039","baseline_generation":1,"status":"active",
+		"workgroup_id":"workgroup-ambiguous","workgroup_kind":"builder",
+		"assignments":[
+			{"assignment_id":"assignment-one","responsibility_id":"BUILD-WORK-PACKAGE","role_family":"backend-builder","agent_id":"agent-other-1","write_paths":["internal/one"],"status":"planned"},
+			{"assignment_id":"assignment-two","responsibility_id":"BUILD-WORK-PACKAGE","role_family":"backend-builder","agent_id":"agent-other-2","write_paths":["internal/two"],"status":"planned"}
+		]
+	}`
+	writeJSONL(t, filepath.Join(root, ".claude", "loop-state.json"), state)
+	writeJSONL(t, filepath.Join(root, ".claude", "workgroups", "REQ-039", "TASK-039-ambiguous", "manifest.json"), manifest)
+
+	loaded, err := hookctx.LoadFull(root, "")
+	if err != nil {
+		t.Fatalf("load full: %v", err)
+	}
+	if len(loaded.Assignments) != 0 {
+		t.Fatalf("ambiguous agent binding must not inherit the first assignment: %+v", loaded.Assignments)
 	}
 }
 

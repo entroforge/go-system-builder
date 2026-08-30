@@ -26,13 +26,18 @@
 package assignment
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/identity"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
@@ -51,20 +56,32 @@ type agentMessage struct {
 	ExpectedRuntimeRevision int    `json:"expected_runtime_revision"`
 	AgentID                 string `json:"agent_id"`
 	TaskID                  string `json:"task_id"`
-	Body                    string `json:"body,omitempty"`
+	// Activation chain fields (verified at activation_sent — L3-S6
+	// complexity pass: previously schema-required but never checked, pure
+	// ceremony; now fail-closed against the registered readback file).
+	ApprovedReadbackMessageID string `json:"approved_readback_message_id,omitempty"`
+	ApprovedReadbackSHA256    string `json:"approved_readback_sha256,omitempty"`
+	Body                      string `json:"body,omitempty"`
 }
 
 // expectedAgentMessageType returns the canonical message_type expected for a
 // given Agent event. The mapping is the engine's contract; mismatched
 // message types are rejected with a typed error.
 //
+// readback_submitted accepts BOTH the plan_checkpoint plan_report and the
+// approval-mode readback_response — applyAgentEventParams enforces the
+// dispatch-mode-specific choice once the agent row is in hand (the message
+// is validated before the agent is located).
+//
 // readback_started / understanding_rejected / document_conflict_reported /
-// activation_sent / work_started / completion_reported / completion_acknowledged /
-// work_blocked / blocker_resolved / shutdown_approved all use their own
-// message_type suffix matching the loop-definition.json event name.
+// understanding_approved / activation_sent / work_started / completion_reported /
+// completion_acknowledged / work_blocked / blocker_resolved /
+// shutdown_approved all use their own message_type.
 func expectedAgentMessageType(event string) string {
 	switch event {
-	case "readback_submitted", "understanding_approved", "understanding_rejected",
+	case "readback_submitted":
+		return "plan_report|readback_response"
+	case "understanding_approved", "understanding_rejected",
 		"readback_started", "document_conflict_reported":
 		return "readback_response"
 	case "activation_sent":
@@ -98,6 +115,9 @@ func AdvanceAgent(
 	if request.AgentID == "" || request.Event == "" {
 		return loopruntime.Snapshot{}, fmt.Errorf("agent_id and event are required")
 	}
+	if err := identity.ValidateAgentID(request.AgentID); err != nil {
+		return loopruntime.Snapshot{}, fmt.Errorf("runtime agent-event: %w", err)
+	}
 	data, err := os.ReadFile(request.MessagePath)
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read Agent message: %w", err)
@@ -118,8 +138,17 @@ func AdvanceAgent(
 			"unsupported Agent event %q; canonical 12 events: readback_started, readback_submitted, understanding_approved, understanding_rejected, document_conflict_reported, activation_sent, work_started, completion_reported, completion_acknowledged, work_blocked, blocker_resolved, shutdown_approved",
 			request.Event)
 	}
-	if message.MessageType != expectedType || message.AgentID != request.AgentID {
-		return loopruntime.Snapshot{}, fmt.Errorf("Agent message does not match event or Agent")
+	typeMatches := message.MessageType == expectedType
+	if !typeMatches && strings.Contains(expectedType, "|") {
+		for _, candidate := range strings.Split(expectedType, "|") {
+			if message.MessageType == candidate {
+				typeMatches = true
+				break
+			}
+		}
+	}
+	if !typeMatches || message.AgentID != request.AgentID {
+		return loopruntime.Snapshot{}, fmt.Errorf("Agent message does not match event or Agent (event %q expects message_type %q, got %q)", request.Event, expectedType, message.MessageType)
 	}
 
 	stateData, err := os.ReadFile(statePath)
@@ -150,7 +179,7 @@ func AdvanceAgent(
 	}
 	agentTransitions := agentEntityTransitions(catalog)
 
-	store := loopruntime.NewStore(statePath, journalPath)
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	return store.Update(request.ExpectedRevision, loopruntime.Mutation{
 		EventID:        fmt.Sprintf("evt-agent-%s-%s-r%d", request.AgentID, request.Event, request.ExpectedRevision+1),
 		TransitionID:   "AGENT-LIFECYCLE",
@@ -185,7 +214,7 @@ func AdvanceAgent(
 						"Agent event %s is not legal from state %s (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped)",
 						request.Event, currentState)
 				}
-				if err := applyAgentEventParams(agent, request, message); err != nil {
+				if err := applyAgentEventParams(root, agent, request, message); err != nil {
 					return err
 				}
 				agent["state"] = resolvedTo
@@ -203,22 +232,54 @@ func AdvanceAgent(
 
 // applyAgentEventParams applies event-specific param checks. These mirror
 // the prior implementation for the original 3 events and extend to all 12.
-func applyAgentEventParams(agent map[string]any, request AgentEventRequest, message agentMessage) error {
+func applyAgentEventParams(root string, agent map[string]any, request AgentEventRequest, message agentMessage) error {
 	switch request.Event {
 	case "readback_submitted":
 		if agent["state"] != "reading" {
 			return fmt.Errorf("readback submission requires reading state")
+		}
+		// The plan_checkpoint flow submits a plan_report message type; the
+		// approval flow submits the classic readback_response. The message
+		// type is validated against the agent's dispatch mode here, where
+		// the agent row is in hand (expectedAgentMessageType accepts both).
+		// Agents registered before the dispatch_mode field (legacy states)
+		// keep the approval semantics — register-workgroup stamps every new
+		// agent with an explicit mode.
+		mode, _ := agent["dispatch_mode"].(string)
+		switch mode {
+		case "plan_checkpoint":
+			if message.MessageType != "plan_report" {
+				return fmt.Errorf("dispatch_mode %s requires a plan_report message (PLAN_REPORT then continue); readback_response belongs to plan_approval_required", mode)
+			}
+		case "plan_approval_required", "":
+			if message.MessageType != "readback_response" {
+				return fmt.Errorf("dispatch_mode %q requires a readback_response message", mode)
+			}
+		default:
+			return fmt.Errorf("unknown dispatch_mode %q (canonical: plan_checkpoint, plan_approval_required, one_shot)", mode)
 		}
 	case "understanding_approved":
 		if agent["state"] != "understanding_submitted" {
 			return fmt.Errorf("approval requires submitted understanding")
 		}
 	case "activation_sent":
-		if agent["state"] != "understanding_approved" {
-			return fmt.Errorf("activation requires approved understanding")
+		mode, _ := agent["dispatch_mode"].(string)
+		// L4 §3.3: plan_checkpoint agents activate straight off the plan
+		// report (continuous execution); approval-mode (and legacy) agents
+		// must wait for understanding_approved.
+		legalFrom := map[string]bool{"understanding_approved": true}
+		if mode == "plan_checkpoint" {
+			legalFrom["understanding_submitted"] = true
+		}
+		currentState, _ := agent["state"].(string)
+		if !legalFrom[currentState] {
+			return fmt.Errorf("activation from %s requires dispatch_mode plan_checkpoint with a submitted plan report (or understanding_approved first)", currentState)
 		}
 		if message.ExpectedRuntimeRevision != request.ExpectedRevision {
 			return fmt.Errorf("activation expected revision is stale")
+		}
+		if err := verifyActivationReadbackChain(root, agent, message); err != nil {
+			return err
 		}
 		agent["activation_revision"] = request.ExpectedRevision + 1
 	case "understanding_rejected":
@@ -253,6 +314,49 @@ func applyAgentEventParams(agent map[string]any, request AgentEventRequest, mess
 		if agent["state"] != "blocked" {
 			return fmt.Errorf("shutdown_approved requires blocked state")
 		}
+	}
+	return nil
+}
+
+// verifyActivationReadbackChain fail-closes the activation envelope's
+// hash-chain fields against the registered readback file: the envelope's
+// approved_readback_sha256 must equal the byte hash of the file recorded at
+// readback_submitted, and approved_readback_message_id must equal that
+// file's message_id. The fields were schema-required before but never
+// checked — ceremony; this makes them a guarantee.
+func verifyActivationReadbackChain(root string, agent map[string]any, message agentMessage) error {
+	ref, _ := agent["readback_ref"].(string)
+	if ref == "" {
+		return fmt.Errorf("activation chain: agent has no registered readback_ref — submit readback_submitted first")
+	}
+	path := ref
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("activation chain: registered readback %s unreadable: %w", ref, err)
+	}
+	sum := sha256.Sum256(data)
+	actual := fmt.Sprintf("%x", sum[:])
+	if message.ApprovedReadbackSHA256 == "" {
+		return fmt.Errorf("activation chain: approved_readback_sha256 is empty — set it to the sha256 of the readback message file (%s)", ref)
+	}
+	if message.ApprovedReadbackSHA256 != actual {
+		return fmt.Errorf(
+			"activation chain: approved_readback_sha256 %s… does not match registered readback %s (actual %s…) — recompute the hash of the readback message file and resubmit",
+			message.ApprovedReadbackSHA256[:12], ref, actual[:12])
+	}
+	var readback struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.Unmarshal(data, &readback); err != nil {
+		return fmt.Errorf("activation chain: registered readback %s is not valid JSON: %w", ref, err)
+	}
+	if message.ApprovedReadbackMessageID == "" || message.ApprovedReadbackMessageID != readback.MessageID {
+		return fmt.Errorf(
+			"activation chain: approved_readback_message_id %q does not match registered readback message_id %q",
+			message.ApprovedReadbackMessageID, readback.MessageID)
 	}
 	return nil
 }
@@ -304,6 +408,13 @@ func agentEntityTransitions(catalog *transition.Catalog) agentEntityTransitionsR
 		res[t.From+"|"+t.Event] = t.To
 	}
 	return agentEntityTransitionsResolver{m: res}
+}
+
+// ResolveAgentTransition exposes the catalog-driven (from, event) -> to
+// resolution to sibling packages (the S7 review submit advances reviewer
+// agents with the same completion_reported event).
+func ResolveAgentTransition(catalog *transition.Catalog, from, event string) (string, bool) {
+	return agentEntityTransitions(catalog).resolve(from, event)
 }
 
 // canonicalAgentEventList returns the canonical 12 Agent events, ordered.

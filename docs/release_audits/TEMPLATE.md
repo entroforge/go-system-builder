@@ -9,6 +9,10 @@
 > Runtime ref：`{runtime-id}@{revision}`
 > Clean-round evidence：`{review-evidence-ref}`
 
+> 先完成 coverage inventory 和反证审查，再填写 Final Decision。审计不是
+> “测试全绿”的复述；没有检查的项目必须保持 `UNKNOWN`，不能改写成 `N/A`
+> 或 `APPROVED_WITH_NON_BLOCKING_RISKS`。
+
 ## 1. Release Scope
 
 | 项 | 内容 |
@@ -35,6 +39,67 @@
 | 路径 | 变更类型 | 风险 |
 |:---|:---|:---|
 | `{path}` | added / changed / deleted | low / medium / high |
+
+### 2.1 Coverage And Responsibility Reconciliation
+
+| Inventory ID | Source / changed path / risk | Expected invariant | Owner / independent reviewer | Acceptance or audit evidence | Disposition |
+|:---|:---|:---|:---|:---|:---|
+| COV-001 | {REQ / path / risk} | {expected} | {owner} | {ACC / REV / QA / E2E / audit ref} | pass / N/A / UNKNOWN / fail |
+
+The inventory is frozen for this audit. Removing an item requires a recorded
+scope rationale tied to the locked REQ and changed paths; it must not be used
+to make the metrics pass. Reuse the `COV-*` IDs from the ACC where possible;
+add only audit-specific system-invariant items here.
+
+### 2.2 Counterevidence Ledger
+
+| Inventory ID / audit area | What would disprove PASS? | Adversarial check | Evidence | Outcome / route |
+|:---|:---|:---|:---|:---|
+| {COV-001} | {failure, boundary, permission, concurrency, migration, rollback or stale-doc case} | {check performed} | {ref} | pass / N/A / UNKNOWN / fail → {route} |
+
+Every `pass` needs a concrete counterevidence check. An unanswered check is
+`UNKNOWN` and blocks an approved conclusion.
+
+The machine manifest must contain explicit rows for `requirement`, `contract`,
+`changed_path`, and `audit_area`; a hard category cannot be omitted to create
+an empty 100% denominator. Use an evidence-backed `not_applicable` row only
+when the locked scope proves that category is genuinely out of scope.
+
+Machine companion: save the frozen ledger as JSON and validate all eight audit
+areas before registering the audit evidence:
+
+```text
+loop-harness s10 manifest validate --file <release-audit-manifest.json> --type release_audit
+```
+
+If the audit result is `BLOCKED`, use `--outcome blocked` so the structured
+ledger can preserve its blocking findings and route the registered envelope
+through TR-018 to `paused`. This routed validation still requires the complete
+inventory, counterevidence links, and eight audit-area rows; it only relaxes
+the zero-blocker requirement needed by an approval artifact.
+
+Copyable JSON shape: `docs/examples/s10/release-audit-manifest.json`.
+
+The release-audit evidence envelope must carry `audit_manifest_path` and
+`audit_manifest_sha256`. The Quality Gate consumes the JSON ledger described
+by `internal/schema/assets/s10-audit-manifest.schema.json`; this Markdown is
+the human-readable explanation and cannot replace the ledger. After
+validation, register the envelope with `runtime evidence add`; do not invoke
+`runtime transition` manually.
+
+### 2.3 Markdown 渲染（single source）
+
+本模板各节的表格正文由 S10 manifest 渲染生成，而不是手工维护的第二份载体：
+manifest 是机器事实的唯一来源，Markdown 只是其人类可读投影。
+
+```text
+loop-harness s10 manifest render --file <release-audit-manifest.json> \
+  --output docs/reports/audits/<audit-id>.md
+```
+
+渲染前 manifest 必须先通过 `s10 manifest validate`；渲染器不自行校验之外
+的事实。手工编辑渲染产物不会改变 Gate 消费的 JSON ledger；如需修改结论，
+修改 manifest 后重新渲染。
 
 ## 3. State Machine Audit
 
@@ -152,6 +217,8 @@
 - [ ] 多实例运行时是否安全？
 - [ ] 测试是否覆盖真实 DB / migration / 并发，而不是只覆盖 mock？
 - [ ] 文档、TD、review report 是否与代码一致？
+- [ ] 本次 coverage inventory 是否完整、冻结且 100% 有 disposition？
+- [ ] 每个 PASS 的反证问题是否有证据回答？是否仍有 `UNKNOWN`、无 owner 风险或无 tracking 的技术债？
 
 ## 15. Final Decision
 

@@ -21,8 +21,9 @@ Apply when `UI impact = changed` and S2 creates or updates
 to keep stories anchored to inspectable prototype HTML; use `user-flow-design`
 after stories establish the outcomes that must be walked in a real browser.
 
-A module's `stories.md` aggregates stories from every REQ that touches that
-module; each entry carries its own `REQ-id` so cross-REQ traceability holds.
+A module's `stories.md` is the complete current story set for every behavior in
+the module. Each entry uses `source_refs` for REQ traceability; no entry owns a
+REQ copy and no per-REQ/per-round story file exists.
 
 ## Required Inputs
 
@@ -31,8 +32,9 @@ module; each entry carries its own `REQ-id` so cross-REQ traceability holds.
   page HTML files in `docs/design/prototypes/{module}/`.
 - Known roles, permissions, business data, upstream and downstream screens.
 - Applicable UX, accessibility, security, and domain rules.
-- Existing entries in `stories.md` (when extending) so REQ-id, S-NNN, and
-  prototype-region references stay consistent.
+- Existing complete `stories.md`, `scenario-model.json`, `cases.json`, and
+  `scenario-coverage.json` so stable S-NNN, CASE/branch, and prototype-region
+  references stay consistent.
 
 ## Required Format
 
@@ -40,7 +42,8 @@ The canonical structure lives in `docs/design/prototypes/USER-STORY-template.md`
 and is preserved verbatim. Each story entry in `stories.md` MUST carry:
 
 - `S-NNN` zero-padded ID (per-module sequence, not per-REQ)
-- `REQ-id` field declaring which locked REQ this story serves
+- `source_refs` listing the REQ/decision/rule sources for the current behavior
+- scenario branch and CASE references, including positive and negative outcomes
 - `actor`, `trigger`, `goal`, `context`, `consequence-of-not-completing`
 - `result` block: user-visible terminal outcome the feature produces
 - Page transitions with rationale ("why this page exists for this journey")
@@ -48,7 +51,7 @@ and is preserved verbatim. Each story entry in `stories.md` MUST carry:
 - Edge outcomes (success / empty / validation / error / permission / cancel /
   retry / destructive / boundary) when applicable, each with N/A rationale if
   omitted
-- Mapping to REQ acceptance criteria and to one or more `F-NNN` flows
+- Mapping to source refs and to one or more `F-NNN` flows
 
 ## Quality Criteria
 
@@ -78,9 +81,9 @@ unexplained permission result before contracts lock.
 
 ### Keep The Story Set Traceable
 
-Maintain a module-level story set inside `stories.md`. Each story has a stable
-`S-NNN`, a `REQ-id`, an actor, a trigger, an intended outcome, relevant REQ
-clauses, prototype regions, and links to one or more `F-NNN` flows. Narrative
+Maintain a module-level current story set inside `stories.md`. Each story has a stable
+`S-NNN`, `source_refs`, an actor, a trigger, an intended outcome, branch/CASE
+references, prototype regions, and links to one or more `F-NNN` flows. Narrative
 depth is flexible: record only the context needed to justify the design and
 enable review. Do not force unrelated roles or scenarios into one story just
 to fit a fixed form.
@@ -96,18 +99,18 @@ unresolved decision blocks S3 rather than becoming a Builder assumption.
 
 - Updated `docs/design/prototypes/{module}/stories.md` with one entry per
   material story; each entry follows the canonical structure from
-  `USER-STORY-template.md`, carries `S-NNN` plus `REQ-id`, and maps to at
-  least one `F-NNN` flow and one prototype HTML region.
+  `USER-STORY-template.md`, carries `S-NNN` plus `source_refs` and branch/CASE
+  references, and maps to at least one `F-NNN` flow and one prototype HTML region.
 - Explicit UI/UX decisions or blockers for S2/S3.
 - Story IDs and outcome references usable by `user-flow-design` and S3
   contracts.
 
 ## N/A Criteria
 
-N/A only when the REQ has no user-visible interface impact. A small visual
+N/A only when the module has no user-visible interface impact. A small visual
 change is not N/A when it changes what a user understands, chooses, or can
-do. New `S-NNN` slots are required for any new material outcome even when a
-prior story overlaps the same screen.
+do. Update the module current story when a new REQ introduces a material outcome;
+do not create a REQ-specific copy.
 
 ## Stop Conditions
 

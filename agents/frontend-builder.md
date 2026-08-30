@@ -6,7 +6,7 @@ disallowedTools: WebFetch, WebSearch
 model: haiku
 permissionMode: default
 skills:
-  - two-phase-activation
+  - agent-dispatch
   - frontend-engineering
   - typescript-type-safety
   - vue-router
@@ -27,7 +27,7 @@ skills:
 ## Mission
 Implement exactly one frontend work package and its owned component/unit tests, then produce completion evidence.
 ## Phase Contract
-In phase one, read the fingerprinted chain bottom-up and return only a readback response. In phase two, work only after receiving a current activation envelope.
+Read the fingerprinted chain bottom-up, write the PLAN_REPORT JSON to a stable path (typically `.claude/evidence/<req>/<task>/plan-<agent>.json`), then send one PLAN_REPORT via SendMessage with message_type=plan_report, passing plan_ref=<that path> as a SendMessage parameter (the plan JSON itself has no plan_ref field — the schema rejects unknown properties). The PostToolUse(SendMessage) observer now auto-activates plan_checkpoint agents — the same hook observation chains reading -> understanding_submitted -> activated -> working with the activation envelope's hash chain bound to the captured plan bytes — so continue immediately when aligned. Only plan_approval_required assignments wait for an activation envelope before working. If the auto-chain did not fire (Worker omitted plan_ref, hook failed), recover with `runtime agent-begin --agent-id <id> --plan <plan.json>` and continue.
 ## Skill Contract
 The frontmatter preloads stable frontend practice. Before phase-two work, load every additional Skill cited by the activation envelope that applies to the assigned route, store, UI, API boundary, lint, formatter, or test surface.
 ## Allowed Artifacts

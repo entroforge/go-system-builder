@@ -6,273 +6,401 @@ import (
 	"github.com/entroforge/go-system-builder/internal/verification"
 )
 
-func validRoundEvidence(id, responsibility string, round int) map[string]any {
+// cleanState builds a state carrying the S7 ReviewPlan projection: plan
+// pointer, claim dispositions, evidence and finding/BUG entities.
+type cleanStateSpec struct {
+	round           int
+	planStatus      string
+	claims          map[string]map[string]any // claim_id -> {disposition, applicability, result_id}
+	evidence        []map[string]any
+	findings        []map[string]any
+	bugs            []map[string]any
+	planRoundOffset int // make the plan belong to a different round
+}
+
+func cleanState(spec cleanStateSpec) map[string]any {
+	evidence := make([]any, 0, len(spec.evidence))
+	for _, entry := range spec.evidence {
+		evidence = append(evidence, entry)
+	}
+	findings := make([]any, 0, len(spec.findings))
+	for _, row := range spec.findings {
+		findings = append(findings, row)
+	}
+	bugs := make([]any, 0, len(spec.bugs))
+	for _, row := range spec.bugs {
+		bugs = append(bugs, row)
+	}
+	state := map[string]any{
+		"review":   map[string]any{"round": spec.round, "clean_round": nil},
+		"evidence": evidence,
+		"entities": map[string]any{"bugs": bugs, "findings": findings},
+	}
+	if spec.planStatus != "" {
+		planRound := spec.round + spec.planRoundOffset
+		claims := map[string]any{}
+		for claimID, row := range spec.claims {
+			claims[claimID] = map[string]any{
+				"lens":          "qa",
+				"applicability": valueOr(row, "applicability", "required"),
+				"disposition":   valueOr(row, "disposition", "planned"),
+				"assignment_id": "assignment-qa-1",
+				"result_id":     row["result_id"],
+				"finding_ids":   []any{},
+			}
+		}
+		state["review"] = map[string]any{
+			"round":       spec.round,
+			"clean_round": nil,
+			"plan": map[string]any{
+				"plan_id": "review-plan-t", "path": ".claude/review/plans/review-plan-t.json",
+				"sha256": "aaaa", "revision": 1, "review_round": planRound,
+				"status": spec.planStatus, "e2e_coverage_state": "regression_available",
+				"submitted_at": "2026-01-01T00:00:00Z",
+			},
+			"claims":            claims,
+			"assignments":       map[string]any{},
+			"observation_batch": nil,
+		}
+	}
+	return state
+}
+
+func valueOr(row map[string]any, key, fallback string) string {
+	if value, ok := row[key].(string); ok && value != "" {
+		return value
+	}
+	return fallback
+}
+
+func passClaim(resultID string) map[string]any {
+	return map[string]any{"disposition": "pass", "result_id": resultID}
+}
+
+func reviewEvidence(id, kind string, round int, status string) map[string]any {
 	return map[string]any{
-		"id":                  id,
-		"kind":                "delivery_review",
-		"path":                "docs/reports/review/REV-X.md",
-		"sha256":              "abc",
-		"status":              "valid",
-		"baseline_generation": float64(1),
-		"review_round":        float64(round),
-		"produced_by":         []any{"agent-x"},
-		"invalidated_by":      nil,
-		"invalidation_rule":   nil,
-		"invalidation_reason": nil,
-		"responsibility_id":   responsibility,
-		"scope_refs":          []any{},
+		"id": id, "kind": kind, "path": "evidence/" + id + ".json",
+		"sha256": "abc", "status": status, "baseline_generation": float64(1),
+		"review_round": float64(round), "produced_by": []any{"agent-x"},
+		"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
+		"responsibility_id": "QA", "scope_refs": []any{},
 	}
 }
 
 func targetedReverificationEvidence(id, bugID string, round int) map[string]any {
 	return map[string]any{
-		"id":                  id,
-		"kind":                "targeted_reverification",
-		"path":                "docs/reports/bugs/" + bugID + ".md#reverify",
-		"sha256":              "def",
-		"status":              "valid",
-		"baseline_generation": float64(1),
-		"review_round":        float64(round),
-		"produced_by":         []any{"agent-x"},
-		"invalidated_by":      nil,
-		"invalidation_rule":   nil,
-		"invalidation_reason": nil,
-		"responsibility_id":   "VER-REQ",
-		"scope_refs":          []any{bugID},
+		"id": id, "kind": "targeted_reverification", "path": "docs/reports/bugs/" + bugID + ".md#reverify",
+		"sha256": "def", "status": "valid", "baseline_generation": float64(1),
+		"review_round": float64(round), "produced_by": []any{"agent-x"},
+		"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
+		"responsibility_id": "VER-REQ", "scope_refs": []any{bugID},
 	}
 }
 
-func stateWithRound(round int, evidence []map[string]any, bugs []map[string]any, teams []map[string]any) map[string]any {
-	evArr := make([]any, 0, len(evidence))
-	for _, e := range evidence {
-		evArr = append(evArr, e)
-	}
-	bugArr := make([]any, 0, len(bugs))
-	for _, b := range bugs {
-		bugArr = append(bugArr, b)
-	}
-	teamArr := make([]any, 0, len(teams))
-	for _, t := range teams {
-		teamArr = append(teamArr, t)
-	}
-	return map[string]any{
-		"review":   map[string]any{"round": float64(round)},
-		"evidence": evArr,
-		"entities": map[string]any{
-			"bugs":  bugArr,
-			"teams": teamArr,
+// A clean round = plan closed clean + every required Claim consumed pass +
+// no findings + no invalid current-round evidence + no blocking BUGs + the
+// machine snapshot registered (L3-S7 §10.1).
+func TestCleanRoundPassesWhenAllClaimsConsumed(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims: map[string]map[string]any{
+			"claim-dv-1":  passClaim("ev-r1"),
+			"claim-qa-1":  passClaim("ev-r2"),
+			"claim-e2e-1": passClaim("ev-r3"),
 		},
-	}
-}
-
-func TestCleanRoundPassesWhenAllGuardsSatisfied(t *testing.T) {
-	teams := []map[string]any{
-		{"kind": "delivery_verifier", "responsibility_ids": []any{"VER-REQ"}},
-		{"kind": "qa", "responsibility_ids": []any{"QA-QUALITY"}},
-		{"kind": "e2e_browser", "responsibility_ids": []any{"E2E-USER-FLOW"}},
-	}
-	state := stateWithRound(1, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 1),
-		validRoundEvidence("ev-2", "QA-QUALITY", 1),
-		validRoundEvidence("ev-3", "E2E-USER-FLOW", 1),
-	}, nil, teams)
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("ev-r2", "review_result", 1, "valid"),
+			reviewEvidence("ev-r3", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+	})
 	result := verification.EvaluateCleanRound(state)
 	if !result.Passed {
 		t.Fatalf("expected clean round to pass, got reasons: %v", result.Reasons)
 	}
 }
 
-func TestCleanRoundFailsWithoutE2EBrowserEvidence(t *testing.T) {
-	teams := []map[string]any{
-		{"kind": "delivery_verifier", "responsibility_ids": []any{"VER-REQ"}},
-		{"kind": "qa", "responsibility_ids": []any{"QA-QUALITY"}},
-		{"kind": "e2e_browser", "responsibility_ids": []any{"E2E-USER-FLOW"}},
-	}
-	state := stateWithRound(1, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 1),
-		validRoundEvidence("ev-2", "QA-QUALITY", 1),
-	}, nil, teams)
+func TestCleanRoundFailsWithoutPlan(t *testing.T) {
+	state := cleanState(cleanStateSpec{round: 1})
 	result := verification.EvaluateCleanRound(state)
 	if result.Passed {
-		t.Fatal("expected clean round to fail without E2E browser evidence")
+		t.Fatal("clean round without a ReviewPlan must fail")
 	}
+	assertCheckFailed(t, result, "review_plan_clean")
 }
 
-func TestCleanRoundFailsWithoutE2EBrowserWorkgroup(t *testing.T) {
-	teams := []map[string]any{
-		{"kind": "delivery_verifier", "responsibility_ids": []any{"VER-REQ"}},
-		{"kind": "qa", "responsibility_ids": []any{"QA-QUALITY"}},
-	}
-	state := stateWithRound(1, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 1),
-		validRoundEvidence("ev-2", "QA-QUALITY", 1),
-	}, nil, teams)
+func TestCleanRoundFailsWhenPlanNotClean(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "observation_sealed",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+	})
 	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("expected clean round to fail without an E2E browser workgroup")
-	}
+	assertCheckFailed(t, result, "review_plan_clean")
 }
 
-func TestCleanRoundFailsOnMixedReviewRounds(t *testing.T) {
-	state := stateWithRound(2, []map[string]any{
-		validRoundEvidence("ev-current", "VER-REQ", 2),
-		validRoundEvidence("ev-old", "QA-QUALITY", 1),
-	}, nil, nil)
+func TestCleanRoundFailsWhenClaimNotConsumed(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims: map[string]map[string]any{
+			"claim-dv-1": passClaim("ev-r1"),
+			"claim-qa-1": {"disposition": "running"},
+		},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+	})
 	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("expected clean round to fail when evidence mixes rounds")
-	}
-	found := false
-	for _, check := range result.Checks {
-		if check.Name == "same_review_round" && !check.Passed {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("expected same_review_round check to fail")
-	}
+	assertCheckFailed(t, result, "all_required_claims_pass")
 }
 
-// BUG-039-36: OrganicSpine retains S6 building completion evidence at round 1
-// after TR-006 bumps review.round to 2. same_review_round must only consider
-// clean-round / verification-phase evidence, not historical agent_completion.
-func TestCleanRoundIgnoresPriorRoundBuildingEvidence(t *testing.T) {
-	teams := []map[string]any{
-		{"kind": "delivery_verifier", "responsibility_ids": []any{"VER-REQ"}},
-		{"kind": "qa", "responsibility_ids": []any{"QA-QUALITY"}},
-		{"kind": "e2e_browser", "responsibility_ids": []any{"E2E-USER-FLOW"}},
-	}
-	building := map[string]any{
-		"id":                  "ev-completion-1",
-		"kind":                "agent_completion",
-		"path":                "evidence/ev-completion-1.json",
-		"sha256":              "abc",
-		"status":              "valid",
-		"baseline_generation": float64(1),
-		"review_round":        float64(1),
-		"produced_by":         []any{"builder-1"},
-		"invalidated_by":      nil,
-		"invalidation_rule":   nil,
-		"invalidation_reason": nil,
-		"responsibility_id":   "BUILD-WORK-PACKAGE",
-		"scope_refs":          []any{},
-	}
-	state := stateWithRound(2, []map[string]any{
-		building,
-		validRoundEvidence("ev-1", "VER-REQ", 2),
-		validRoundEvidence("ev-2", "QA-QUALITY", 2),
-		validRoundEvidence("ev-3", "E2E-USER-FLOW", 2),
-	}, nil, teams)
+func TestCleanRoundFailsWithCurrentRoundFinding(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+		findings: []map[string]any{{
+			"finding_id": "finding-1", "review_round": float64(1), "severity": "P1",
+		}},
+	})
+	result := verification.EvaluateCleanRound(state)
+	assertCheckFailed(t, result, "no_findings_current_round")
+}
+
+func TestCleanRoundFailsOnInvalidatedCurrentRoundEvidence(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("ev-stale", "review_result", 1, "invalid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+	})
+	result := verification.EvaluateCleanRound(state)
+	assertCheckFailed(t, result, "no_invalidated_pass_evidence")
+}
+
+// BUG-039-36 spirit: prior-round review evidence must not pollute the
+// current round's evaluation.
+func TestCleanRoundIgnoresPriorRoundReviewEvidence(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      2,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r2")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"), // prior round
+			reviewEvidence("ev-r2", "review_result", 2, "valid"), // current
+			reviewEvidence("clean-round-r2", "clean_round", 2, "valid"),
+		},
+	})
 	result := verification.EvaluateCleanRound(state)
 	if !result.Passed {
-		t.Fatalf("expected clean round to pass with prior-round building evidence, got: %v", result.Reasons)
-	}
-	for _, check := range result.Checks {
-		if check.Name == "same_review_round" && !check.Passed {
-			t.Fatalf("same_review_round must ignore building evidence: %s", check.Detail)
-		}
-	}
-}
-
-func TestCleanRoundFailsOnInvalidatedEvidence(t *testing.T) {
-	ev := validRoundEvidence("ev-invalid", "VER-REQ", 1)
-	ev["status"] = "invalid"
-	state := stateWithRound(1, []map[string]any{ev}, nil, nil)
-	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("expected clean round to fail with invalidated evidence")
+		t.Fatalf("prior-round evidence must not pollute the clean round: %v", result.Reasons)
 	}
 }
 
 func TestCleanRoundFailsOnOpenBlockingBug(t *testing.T) {
-	bug := map[string]any{
-		"id":       "BUG-001",
-		"state":    "accepted",
-		"severity": "P0",
-	}
-	state := stateWithRound(1, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 1),
-	}, []map[string]any{bug}, nil)
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+		bugs: []map[string]any{{"id": "BUG-001", "severity": "P0", "state": "accepted"}},
+	})
 	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("expected clean round to fail with open blocking bug")
-	}
+	assertCheckFailed(t, result, "no_open_blocking_bugs")
 }
 
-func TestCleanRoundFailsOnMissingResponsibilityEvidence(t *testing.T) {
-	team := map[string]any{
-		"responsibility_ids": []any{"VER-REQ", "QA-QUALITY"},
-	}
-	state := stateWithRound(1, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 1),
-	}, nil, []map[string]any{team})
+// RC-02 (L3-S7 §10.1): blocking is the explicit business judgment, never a
+// severity synonym. A P1 BUG with blocking=true must block the clean round
+// exactly like a P0 — severity alone cannot launder a business blocker into
+// a clean round.
+func TestCleanRoundFailsOnOpenP1BusinessBlockingBug(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+		bugs: []map[string]any{{
+			"id": "BUG-002", "severity": "P1", "blocking": true, "state": "accepted",
+		}},
+	})
 	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("expected clean round to fail when a responsibility lacks PASS evidence")
-	}
+	assertCheckFailed(t, result, "no_open_blocking_bugs")
 }
 
-func TestCleanRoundFailsWithoutRegisteredResponsibilities(t *testing.T) {
-	state := stateWithRound(1, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 1),
-	}, nil, nil)
+// The blocking flag also survives a string-typed round trip (recovery/import
+// paths re-serialize flags as text).
+func TestCleanRoundFailsOnOpenP2BlockingBugWithStringFlag(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+		bugs: []map[string]any{{
+			"id": "BUG-003", "severity": "P2", "blocking": "true", "state": "fixing",
+		}},
+	})
 	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("expected clean round to fail when no review responsibilities are registered")
-	}
+	assertCheckFailed(t, result, "no_open_blocking_bugs")
 }
 
-func TestCleanRoundFailsAtRoundZero(t *testing.T) {
-	team := map[string]any{
-		"responsibility_ids": []any{"VER-REQ"},
-	}
-	state := stateWithRound(0, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 0),
-	}, nil, []map[string]any{team})
+// A closed P1 blocking BUG owes the same targeted re-verification as a P0.
+func TestCleanRoundFailsWhenClosedP1BlockingBugLacksReverification(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+		bugs: []map[string]any{{
+			"id": "BUG-002", "severity": "P1", "blocking": true, "state": "closed",
+		}},
+	})
 	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("expected clean round to fail before review round 1")
+	assertCheckFailed(t, result, "no_open_blocking_bugs")
+}
+
+// A non-P0 BUG without the blocking marker stays non-blocking: ordinary
+// defects drain through the finding path without stopping the round.
+func TestCleanRoundPassesWithNonBlockingP1Bug(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      2,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r2")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r2", "review_result", 2, "valid"),
+			reviewEvidence("clean-round-r2", "clean_round", 2, "valid"),
+		},
+		bugs: []map[string]any{{
+			"id": "BUG-004", "severity": "P1", "blocking": false, "state": "closed",
+		}},
+	})
+	result := verification.EvaluateCleanRound(state)
+	if !result.Passed {
+		t.Fatalf("non-blocking P1 BUG must not stop the clean round: %v", result.Reasons)
 	}
 }
 
 func TestCleanRoundFailsWhenClosedBlockingBugLacksTargetedReverification(t *testing.T) {
-	bug := map[string]any{
-		"id":       "BUG-001",
-		"state":    "closed",
-		"severity": "P0",
-	}
-	team := map[string]any{
-		"kind":               "delivery_verifier",
-		"responsibility_ids": []any{"VER-REQ"},
-	}
-	state := stateWithRound(1, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 1),
-	}, []map[string]any{bug}, []map[string]any{team})
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+		bugs: []map[string]any{{"id": "BUG-001", "severity": "P0", "state": "closed"}},
+	})
 	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("expected clean round to fail without targeted re-verification evidence for closed BUG")
-	}
+	assertCheckFailed(t, result, "no_open_blocking_bugs")
 }
 
 func TestCleanRoundPassesWhenBlockingBugClosedWithTargetedReverification(t *testing.T) {
-	bug := map[string]any{
-		"id":       "BUG-001",
-		"state":    "closed",
-		"severity": "P0",
-	}
-	teams := []map[string]any{
-		{"kind": "delivery_verifier", "responsibility_ids": []any{"VER-REQ"}},
-		{"kind": "qa", "responsibility_ids": []any{"QA-QUALITY"}},
-		{"kind": "e2e_browser", "responsibility_ids": []any{"E2E-USER-FLOW"}},
-	}
-	state := stateWithRound(1, []map[string]any{
-		validRoundEvidence("ev-1", "VER-REQ", 1),
-		validRoundEvidence("ev-2", "QA-QUALITY", 1),
-		validRoundEvidence("ev-3", "E2E-USER-FLOW", 1),
-		targetedReverificationEvidence("reverify-BUG-001-attempt-1", "BUG-001", 1),
-	}, []map[string]any{bug}, teams)
+	state := cleanState(cleanStateSpec{
+		round:      2,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r2")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r2", "review_result", 2, "valid"),
+			reviewEvidence("clean-round-r2", "clean_round", 2, "valid"),
+			targetedReverificationEvidence("ev-reverify", "BUG-001", 2),
+		},
+		bugs: []map[string]any{{"id": "BUG-001", "severity": "P0", "state": "closed"}},
+	})
 	result := verification.EvaluateCleanRound(state)
 	if !result.Passed {
-		t.Fatalf("expected clean round to pass with closed bug, got: %v", result.Reasons)
+		t.Fatalf("expected clean round with closed+reverified bug, got: %v", result.Reasons)
 	}
+}
+
+func TestCleanRoundFailsAtRoundZero(t *testing.T) {
+	state := cleanState(cleanStateSpec{round: 0})
+	result := verification.EvaluateCleanRound(state)
+	assertCheckFailed(t, result, "review_round_started")
+}
+
+func TestCleanRoundFailsWithoutSnapshotEvidence(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims:     map[string]map[string]any{"claim-qa-1": passClaim("ev-r1")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+		},
+	})
+	result := verification.EvaluateCleanRound(state)
+	assertCheckFailed(t, result, "clean_round_snapshot_registered")
+}
+
+// A stale plan (belonging to an older round) cannot close the current round.
+func TestCleanRoundFailsWithStalePlan(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:           2,
+		planStatus:      "clean",
+		planRoundOffset: -1,
+		claims:          map[string]map[string]any{"claim-qa-1": passClaim("ev-r2")},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r2", "review_result", 2, "valid"),
+			reviewEvidence("clean-round-r2", "clean_round", 2, "valid"),
+		},
+	})
+	result := verification.EvaluateCleanRound(state)
+	assertCheckFailed(t, result, "review_plan_clean")
+}
+
+// N/A claims with their plan-level disposition never block the clean round.
+func TestCleanRoundPassesWithNotApplicableClaims(t *testing.T) {
+	state := cleanState(cleanStateSpec{
+		round:      1,
+		planStatus: "clean",
+		claims: map[string]map[string]any{
+			"claim-qa-1":  passClaim("ev-r1"),
+			"claim-e2e-1": {"disposition": "not_applicable", "applicability": "not_applicable"},
+		},
+		evidence: []map[string]any{
+			reviewEvidence("ev-r1", "review_result", 1, "valid"),
+			reviewEvidence("clean-round-r1", "clean_round", 1, "valid"),
+		},
+	})
+	result := verification.EvaluateCleanRound(state)
+	if !result.Passed {
+		t.Fatalf("N/A claims must not block the clean round: %v", result.Reasons)
+	}
+}
+
+func assertCheckFailed(t *testing.T, result verification.Result, name string) {
+	t.Helper()
+	for _, check := range result.Checks {
+		if check.Name == name && !check.Passed {
+			return
+		}
+	}
+	t.Fatalf("check %s did not fail; reasons: %v", name, result.Reasons)
 }

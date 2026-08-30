@@ -28,7 +28,10 @@
 package assignment_test
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -131,7 +134,7 @@ func TestEndToEndDefectScenario(t *testing.T) {
 	os.WriteFile(filepath.Join(root, finding1), []byte("# Finding 1001\nbody\n"), 0o644)
 	os.WriteFile(filepath.Join(root, finding2), []byte("# Finding 1002\nbody\n"), 0o644)
 
-	statePath, journalPath := e2eFreshState(t, root, "verification", "delivery")
+	statePath, journalPath := e2eFreshState(t, root, "verification", "observation_sealed")
 
 	// Step 1: TR-008 record_finding_batch → 2 canonical BUGs created.
 	rev, journalAfter := step1RecordFindingBatch(t, root, statePath, journalPath, finding1, finding2)
@@ -269,6 +272,67 @@ func splitLines(s string) []string {
 // step1RecordFindingBatch drives the record_finding_batch action through
 // a store.Update that simulates TR-008. It returns the post-commit
 // revision and the journal sequence number.
+// seedObservationBatchForTR008 writes the sealed ObservationBatch pointer and
+// the two Finding entity rows that the S7 round consumer would have produced
+// (L3-S7 §3.7): record_finding_batch reads them from state, never from
+// transition params.
+func seedObservationBatchForTR008(t *testing.T, root, statePath, journalPath, finding1, finding2 string) {
+	t.Helper()
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	shaFile := func(path string) string {
+		content, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(content)
+		return fmt.Sprintf("%x", sum[:])
+	}
+	findingRow := func(id, path, finder, severity string) map[string]any {
+		return map[string]any{
+			"finding_id": id, "path": path, "sha256": shaFile(path),
+			"claim_id": "claim-x", "assignment_id": "assignment-x", "lens": "qa",
+			"severity": severity, "observation_mode": "code_inspection",
+			"original_finder": finder, "review_round": 1,
+			"created_at": "2026-01-01T00:00:00Z",
+		}
+	}
+	entities := state["entities"].(map[string]any)
+	entities["findings"] = []any{
+		findingRow("finding-1001", finding1, "agent-dv", "P0"),
+		findingRow("finding-1002", finding2, "agent-qa", "P1"),
+	}
+	state["review"] = map[string]any{
+		"round": 1, "clean_round": nil,
+		"plan": map[string]any{
+			"plan_id": "review-plan-e2e", "path": ".claude/review/plans/review-plan-e2e.json",
+			"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "revision": 1, "review_round": 1,
+			"status": "observation_sealed", "e2e_coverage_state": "regression_available",
+			"submitted_at": "2026-01-01T00:00:00Z",
+		},
+		"claims":      map[string]any{},
+		"assignments": map[string]any{},
+		"observation_batch": map[string]any{
+			"batch_id": "observation-batch-r1", "path": ".claude/evidence/observation-batch-r1.json",
+			"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "finding_ids": []any{"finding-1001", "finding-1002"},
+			"drain_policy": "complete_required_claims", "sealed_at": "2026-01-01T00:00:00Z",
+		},
+	}
+	out, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, append(out, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func step1RecordFindingBatch(t *testing.T, root, statePath, journalPath, finding1, finding2 string) (int, int) {
 	t.Helper()
 	// First move lifecycle to bug_resolution.investigation (TR-008 effect).
@@ -286,6 +350,11 @@ func step1RecordFindingBatch(t *testing.T, root, statePath, journalPath, finding
 		t.Fatal("TR-008 not in catalog")
 	}
 
+	// L3-S7: TR-008 consumes the sealed ObservationBatch, not a params
+	// payload. Seed the exact-set batch + Finding entities the round
+	// consumer would have written (one finding per file on disk).
+	seedObservationBatchForTR008(t, root, statePath, journalPath, finding1, finding2)
+
 	// Build the record_finding_batch action context.
 	actionFn, ok := transition.LookupAction("record_finding_batch")
 	if !ok {
@@ -293,7 +362,7 @@ func step1RecordFindingBatch(t *testing.T, root, statePath, journalPath, finding
 	}
 	fromCursor := map[string]any{
 		"state": "verification",
-		"phase": "delivery",
+		"phase": "observation_sealed",
 	}
 	toCursor := map[string]any{
 		"state": "bug_resolution",
@@ -301,7 +370,7 @@ func step1RecordFindingBatch(t *testing.T, root, statePath, journalPath, finding
 	}
 	// The action mutates state.entities.bugs in place. We run it through a
 	// store.Update closure so the mutation is committed via CAS-safe append.
-	store := loopruntime.NewStore(statePath, journalPath)
+	store := loopruntime.NewWriter(statePath, journalPath, root, assignmentTestValidator{})
 	mutation := loopruntime.Mutation{
 		EventID:        "evt-record-finding-batch-r1",
 		TransitionID:   "TR-008",
@@ -321,22 +390,6 @@ func step1RecordFindingBatch(t *testing.T, root, statePath, journalPath, finding
 				To:         toCursor,
 				Evidence:   map[string]string{},
 				OccurredAt: time.Now().UTC(),
-				Params: map[string]any{
-					"findings": []any{
-						map[string]any{
-							"reporter_agent_id": "agent-dv",
-							"finding_body":      "Finding 1001 body",
-							"finding_path":      finding1,
-							"severity":          "P0",
-						},
-						map[string]any{
-							"reporter_agent_id": "agent-qa",
-							"finding_body":      "Finding 1002 body",
-							"finding_path":      finding2,
-							"severity":          "P1",
-						},
-					},
-				},
 			}
 			if _, err := actionFn(state, ctx); err != nil {
 				return err
@@ -359,6 +412,20 @@ func step1RecordFindingBatch(t *testing.T, root, statePath, journalPath, finding
 	}
 	return snap.Revision, journalLastSeq(journalPath)
 }
+
+type assignmentTestValidator struct{}
+
+func (assignmentTestValidator) ValidateCandidate(_ string, state map[string]any) error {
+	if state == nil || state["runtime_id"] == nil {
+		return errors.New("test validator rejects empty probe")
+	}
+	if lifecycle, ok := state["lifecycle"].(map[string]any); ok && lifecycle["phase"] == "invalid_semantic_phase" {
+		return errors.New("test validator rejects semantic probe")
+	}
+	return nil
+}
+
+var _ loopruntime.CandidateValidator = assignmentTestValidator{}
 
 // stepBugEvent is a thin wrapper that drives assignment.AdvanceBug and
 // returns the post-commit revision.

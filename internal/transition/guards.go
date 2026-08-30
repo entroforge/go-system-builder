@@ -11,12 +11,18 @@
 package transition
 
 import (
+	"crypto/sha256"
 	"fmt"
+
+	"github.com/entroforge/go-system-builder/internal/acceptance"
+	"github.com/entroforge/go-system-builder/internal/scenario"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/entroforge/go-system-builder/internal/review"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/verification"
 )
@@ -109,38 +115,56 @@ func GuardNames() []string {
 func InitGuardRegistry() {
 	newFns := map[string]GuardFn{
 		// Top-level / planning / verification / bug guards.
-		"req_exists":                 evidenceBackedGuard("req_exists"),
-		"req_locked":                 evidenceBackedGuard("req_locked"),
-		"req_questions_non_blocking": evidenceBackedGuard("req_questions_non_blocking"),
-		"pm_context_matches_req":     evidenceBackedGuard("pm_context_matches_req"),
-		"no_other_active_loop":       evidenceBackedGuard("no_other_active_loop"),
+		// TR-001's former stub guards (req_exists / req_locked /
+		// req_questions_non_blocking / pm_context_matches_req) were removed:
+		// their semantics live in the bind CLI/engine prechecks and the
+		// human lock itself (L3-S1 v4.x); only the cross-entity check is a
+		// real transition guard.
+		"no_other_active_loop": evidenceBackedGuard("no_other_active_loop"),
+		"contracts_checked":    guardContractsCheckedFn,
+		"tasks_checked":        guardTasksCheckedFn,
 		// BUG-PLANNING-SUBSTATE: planning_phase_ready / contracts_reviewed /
 		// candidate_tasks_complete are replaced by the single direct-check guard below.
-		"planning_complete":                     guardPlanningCompleteFn,
-		"joint_document_pass":                   evidenceBackedGuard("joint_document_pass"),
-		"verified_versions_current":             evidenceBackedGuard("verified_versions_current"),
-		"req_baseline_unchanged":                evidenceBackedGuard("req_baseline_unchanged"),
-		"all_builder_tasks_in_review":           evidenceBackedGuard("all_builder_tasks_in_review"),
-		"builder_reports_complete":              evidenceBackedGuard("builder_reports_complete"),
-		"verification_team_manifest_complete":   evidenceBackedGuard("verification_team_manifest_complete"),
-		"blocking_findings_present":             evidenceBackedGuard("blocking_findings_present"),
-		"same_review_round":                     evidenceBackedGuard("same_review_round"),
-		"all_required_dimensions_passed":        evidenceBackedGuard("all_required_dimensions_passed"),
-		"no_invalidated_pass_evidence":          evidenceBackedGuard("no_invalidated_pass_evidence"),
-		"no_open_blocking_bugs":                 evidenceBackedGuard("no_open_blocking_bugs"),
-		"verification_phase_clean_round_passed": evidenceBackedGuard("verification_phase_clean_round_passed"),
-		// REQ-003 TASK-003-C (FR-009): the three legacy evidenceBackedGuard
-		// stubs on the DV/QA/E2E phase transitions are replaced by the
-		// dedicated angle_complete guards. The legacy ids are intentionally
-		// REMOVED from the registry (no longer wired into any transition);
-		// the evidenceBackedGuard helper itself is preserved for the
-		// remaining declarative guards above.
-		"delivery_angle_complete":                 guardDeliveryAngleCompleteFn,
-		"qa_angle_complete":                       guardQAAngleCompleteFn,
-		"e2e_angle_complete":                      guardE2EAngleCompleteFn,
-		"acc_complete":                            evidenceBackedGuard("acc_complete"),
-		"clean_round_still_valid":                 evidenceBackedGuard("clean_round_still_valid"),
-		"release_audit_approved":                  evidenceBackedGuard("release_audit_approved"),
+		"planning_complete":         guardPlanningCompleteFn,
+		"joint_document_pass":       evidenceBackedGuard("joint_document_pass"),
+		"verified_versions_current": evidenceBackedGuard("verified_versions_current"),
+		// L3-S6 P0-4: req_baseline_unchanged now compares the bound REQ's
+		// registered sha256 against the on-disk file (real body below) —
+		// TR-004/TR-007 previously accepted any non-empty evidence map.
+		"req_baseline_unchanged": guardReqBaselineUnchangedFn,
+		// L3-S6 P0-4: the three former evidenceBackedGuard stubs on TR-006
+		// are deleted — their names promised batch semantics the bodies
+		// never computed. The real evaluation lives in
+		// GATE-BUILDER-BATCH-READY's applyBuilderBatchCompleteness (exact
+		// TR-003 set, per-task completion + verified integration).
+		// RC-06 (S7-4): the six clean-round-shaped stub names below were
+		// registered but never declared by any transition in
+		// docs/loop-definition.json — guard-theater inventory. Their real
+		// semantics live in `verification.EvaluateCleanRound`, which the
+		// DECLARED clean-round guards (clean_round_valid on TR-009,
+		// clean_round_still_valid on TR-015/TR-017) already delegate to:
+		//   all_required_dimensions_passed / same_review_round /
+		//   no_invalidated_pass_evidence / no_open_blocking_bugs /
+		//   verification_phase_clean_round_passed
+		// The five ReviewPlan-finding-shaped stubs (blocking_findings_present
+		// among them) had no declared consumer either; the S7 exit contract
+		// is observation_batch_sealed (TR-008) + clean_round_valid (TR-009).
+		// L3-S7 P0: the S7 exit guards are real semantic checks over the
+		// ReviewPlan projection — TR-008 requires the sealed ObservationBatch
+		// carrying the exact Finding set; TR-009 recomputes the machine
+		// CleanRound over the exact Claim set.
+		"observation_batch_sealed": guardObservationBatchSealedFn,
+		"clean_round_valid":        guardCleanRoundValidFn,
+		// L3-S7 P1: the angle_complete guards are retired with the whole
+		// angle lifecycle — their intent lives in ReviewPlan Claims
+		// (claim.source_refs), enforced by the plan validator.
+		"acc_complete":            guardACCCurrentFn,
+		"clean_round_still_valid": evidenceBackedGuard("clean_round_still_valid"),
+		// L3-S7: TR-010/TR-011 no longer capture the checkpoint themselves —
+		// the review verdict transaction did. This guard proves the single
+		// authoritative checkpoint exists before the cursor moves.
+		"pause_checkpoint_recorded":               evidenceBackedGuard("pause_checkpoint_recorded"),
+		"release_audit_approved":                  guardReleaseAuditCurrentFn,
 		"resume_checkpoint_valid":                 evidenceBackedGuard("resume_checkpoint_valid"),
 		"baselines_unchanged":                     evidenceBackedGuard("baselines_unchanged"),
 		"updated_req_locked":                      evidenceBackedGuard("updated_req_locked"),
@@ -201,20 +225,22 @@ func InitGuardRegistry() {
 		// BUG-PLANNING-SUBSTATE: ui_impact_resolved stays (real body in
 		// guardUIIImpactResolvedFn). The seven entries that used to live under
 		// "Planning phase." in this block are deleted (see comment above).
-		"ui_impact_resolved": guardUIIImpactResolvedFn,
+		"ui_impact_resolved":      guardUIIImpactResolvedFn,
+		"scenario_bridge_checked": guardScenarioBridgeCheckedFn,
 	}
 	semanticChecks := map[string]bool{
 		"no_other_active_loop": true, "resume_checkpoint_valid": true,
-		"same_review_round": true, "all_required_dimensions_passed": true,
-		"no_invalidated_pass_evidence": true, "no_open_blocking_bugs": true,
-		"verification_phase_clean_round_passed": true, "clean_round_still_valid": true,
-		"planning_complete": true, "all_targeted_reverification_passed": true,
-		"ui_impact_resolved": true,
-		// REQ-003 TASK-003-C: the three angle_complete guards run semantic
-		// checks against on-disk angle_declaration + team_manifest evidence
-		// (FR-002 + FR-003 + FR-004 + FR-010). They are not declarative
-		// attestation guards.
-		"delivery_angle_complete": true, "qa_angle_complete": true, "e2e_angle_complete": true,
+		"contracts_checked": true, "tasks_checked": true,
+		"clean_round_still_valid":   true,
+		"pause_checkpoint_recorded": true,
+		// RC-06 (S10-14): both guards now resolve + re-hash their evidence
+		// artifact on disk, so they are honest semantic checks.
+		"acc_complete":           true,
+		"release_audit_approved": true,
+		"planning_complete":      true, "all_targeted_reverification_passed": true,
+		"ui_impact_resolved": true, "scenario_bridge_checked": true,
+		"req_baseline_unchanged":   true,
+		"observation_batch_sealed": true, "clean_round_valid": true,
 	}
 	newReg := make(map[string]GuardRegistration, len(newFns))
 	for name, fn := range newFns {
@@ -238,9 +264,12 @@ func InitGuardRegistry() {
 //
 // TODO(BUG-GUARDS-OVER-ENGINEERED step 1): this helper is the source
 // of the guard-theater pattern. New transitions MUST NOT wire through it
-// without a semantic body of their own. The switch above carries the only
-// four real checks (`no_other_active_loop`, `resume_checkpoint_valid`, plus
-// the clean-round names delegated to `verification.EvaluateCleanRound`);
+// without a semantic body of their own. Real semantic bodies live both in
+// this switch (`no_other_active_loop`, `resume_checkpoint_valid`, plus the
+// clean-round names delegated to `verification.EvaluateCleanRound`) and in
+// the dedicated guard*Fn functions registered outside it (contracts/tasks/
+// planning/bridge/UI-impact/reverification, and the transition-layer
+// human_decision scope validation in validateRequest);
 // every other name lands in the final `len(evidence) == 0` check, which
 // is not a guard — it is a request validator.
 func evidenceBackedGuard(name string) GuardFn {
@@ -250,11 +279,14 @@ func evidenceBackedGuard(name string) GuardFn {
 			if err := requireFreshInactiveRuntime(state); err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
-		case "resume_checkpoint_valid":
+		case "resume_checkpoint_valid", "pause_checkpoint_recorded":
 			if pause, ok := state["pause"].(map[string]any); !ok || pause == nil {
 				return fmt.Errorf("%s: pause checkpoint missing", name)
 			}
-		case "same_review_round", "all_required_dimensions_passed", "no_invalidated_pass_evidence", "no_open_blocking_bugs", "verification_phase_clean_round_passed", "clean_round_still_valid":
+		case "clean_round_still_valid":
+			// RC-06 (S7-4): the only DECLARED clean-round delegate left in
+			// the switch. The five undeclared clean-round-shaped stub names
+			// were removed from the registry (see InitGuardRegistry).
 			result := verification.EvaluateCleanRound(state)
 			if !result.Passed {
 				return fmt.Errorf("%s: clean-round evaluation failed: %v", name, result.Reasons)
@@ -268,8 +300,229 @@ func evidenceBackedGuard(name string) GuardFn {
 }
 
 func requireFreshInactiveRuntime(state map[string]any) error {
-	if err := loopruntime.ValidateFreshInactiveState(state); err != nil {
-		return fmt.Errorf("requires a fresh inactive runtime: %w", err)
+	if err := loopruntime.ValidateBindEligibleState(state); err != nil {
+		return fmt.Errorf("requires a fresh inactive runtime (unbound, revision-independent): %w", err)
+	}
+	return nil
+}
+
+// guardCleanRoundValidFn is the real body behind TR-009's clean_round_valid
+// guard (L3-S7 §10): the machine CleanRound is recomputed over the current
+// ReviewPlan's exact Claim set by verification.EvaluateCleanRound — an
+// agent hand-written aggregate PASS is not a substitute.
+func guardCleanRoundValidFn(state map[string]any, _ map[string]string) error {
+	result := verification.EvaluateCleanRound(state)
+	if !result.Passed {
+		return fmt.Errorf("clean_round_valid: %v", result.Reasons)
+	}
+	return nil
+}
+
+// guardACCCurrentFn is the real body behind TR-015/TR-017's acc_complete
+// guard (RC-06, S10-14 — formerly an evidenceBackedGuard stub that accepted
+// any non-empty evidence map). It requires a CURRENT acceptance evidence
+// entry in runtime.evidence[] whose on-disk artifact still matches its
+// registered sha256: an invalidated, stale-round, or drifted ACC no longer
+// satisfies the release-audit precondition. The same resolution rules as
+// the engine's validateCurrentEvidence apply (status=valid, current baseline
+// generation, current review round, fingerprint match), so the guard cannot
+// be satisfied by a re-used or re-hashed envelope.
+func guardACCCurrentFn(state map[string]any, _ map[string]string) error {
+	root, _ := state["root"].(string)
+	if root == "" {
+		root = "."
+	}
+	if err := acceptance.ValidateCurrentS10Evidence(root, state, "acceptance"); err != nil {
+		return fmt.Errorf("acc_complete: %w", err)
+	}
+	return nil
+}
+
+// guardReleaseAuditCurrentFn is the real body behind TR-017's
+// release_audit_approved guard (RC-06, S10-14 — same stub lineage as
+// acc_complete). It requires a CURRENT release_audit evidence entry whose
+// registered fingerprint still matches the on-disk audit record.
+func guardReleaseAuditCurrentFn(state map[string]any, _ map[string]string) error {
+	root, _ := state["root"].(string)
+	if root == "" {
+		root = "."
+	}
+	if err := acceptance.ValidateCurrentS10Evidence(root, state, "release_audit"); err != nil {
+		return fmt.Errorf("release_audit_approved: %w", err)
+	}
+	return nil
+}
+
+// requireCurrentEvidenceKind scans runtime.evidence[] for a valid entry of
+// the supplied kind registered against the current baseline generation and
+// review round, then re-hashes the artifact on disk. Returns a descriptive
+// error when no such entry exists (fail-closed: an empty evidence list is a
+// rejection, not a pass).
+func requireCurrentEvidenceKind(state map[string]any, kind string) error {
+	items, _ := state["evidence"].([]any)
+	baseline, _ := state["baseline"].(map[string]any)
+	review, _ := state["review"].(map[string]any)
+	var found map[string]any
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok || item["status"] != "valid" {
+			continue
+		}
+		if itemKind, _ := item["kind"].(string); itemKind != kind {
+			continue
+		}
+		if integer(item["baseline_generation"]) != integer(baseline["generation"]) {
+			continue
+		}
+		if evidenceRound := integer(item["review_round"]); evidenceRound > 0 && evidenceRound != integer(review["round"]) {
+			continue
+		}
+		found = item
+		break
+	}
+	if found == nil {
+		return fmt.Errorf("no valid %s evidence entry for the current baseline/round — record the artifact before advancing", kind)
+	}
+	rel, _ := found["path"].(string)
+	clean := filepath.Clean(rel)
+	if rel == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s evidence %v carries unsafe path %q", kind, found["id"], rel)
+	}
+	root, _ := state["root"].(string)
+	if root == "" {
+		root = "."
+	}
+	data, err := os.ReadFile(filepath.Join(root, clean))
+	if err != nil {
+		return fmt.Errorf("%s evidence %v unreadable at %s: %w", kind, found["id"], rel, err)
+	}
+	sum := sha256.Sum256(data)
+	actual := fmt.Sprintf("%x", sum[:])
+	want, _ := found["sha256"].(string)
+	if want == "" || actual != want {
+		return fmt.Errorf("%s evidence %v fingerprint drifted (registered %s…, on disk %s…) — re-record the artifact", kind, found["id"], want[:min(12, len(want))], actual[:12])
+	}
+	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// guardObservationBatchSealedFn is the real body behind TR-008's
+// observation_batch_sealed guard (L3-S7 §3.7): the sealed ObservationBatch
+// must exist for the current round, its finding_ids must equal the exact
+// current-round Finding set, and an ordinary batch (complete_required_claims)
+// must seal with every required Claim dispositioned — unobserved Claims are
+// only legal on a critical immediate-stop batch.
+func guardObservationBatchSealedFn(state map[string]any, _ map[string]string) error {
+	reviewMap, _ := state["review"].(map[string]any)
+	if reviewMap == nil {
+		return fmt.Errorf("observation_batch_sealed: runtime review section missing")
+	}
+	plan, _ := reviewMap["plan"].(map[string]any)
+	if plan == nil {
+		return fmt.Errorf("observation_batch_sealed: no ReviewPlan registered for this round")
+	}
+	if status, _ := plan["status"].(string); status != "observation_sealed" {
+		return fmt.Errorf("observation_batch_sealed: ReviewPlan status is %s; the batch seals automatically when the final required Claim disposition lands", status)
+	}
+	batch, _ := reviewMap["observation_batch"].(map[string]any)
+	if batch == nil {
+		return fmt.Errorf("observation_batch_sealed: no sealed ObservationBatch in the runtime")
+	}
+	batchRound := currentRoundOf(reviewMap)
+	if round := intFrom(batch["review_round"]); round != 0 && round != batchRound {
+		return fmt.Errorf("observation_batch_sealed: batch belongs to round %d, current round is %d", round, batchRound)
+	}
+	batchIDs := map[string]bool{}
+	if raw, ok := batch["finding_ids"].([]any); ok {
+		for _, value := range raw {
+			if id, _ := value.(string); id != "" {
+				batchIDs[id] = true
+			}
+		}
+	}
+	if len(batchIDs) == 0 {
+		// The state pointer only carries ids; fall back to the schema-level
+		// invariant that a sealed batch never has an empty exact set.
+		return fmt.Errorf("observation_batch_sealed: sealed batch carries no finding ids")
+	}
+	// Exact-set check: batch finding_ids == current-round Finding entities.
+	roundFindings := review.RoundFindings(state)
+	actual := map[string]bool{}
+	for _, row := range roundFindings {
+		if id, ok := row["finding_id"].(string); ok {
+			actual[id] = true
+		}
+	}
+	for id := range batchIDs {
+		if !actual[id] {
+			return fmt.Errorf("observation_batch_sealed: batch references finding %s which is not a current-round Finding entity", id)
+		}
+	}
+	for id := range actual {
+		if !batchIDs[id] {
+			return fmt.Errorf("observation_batch_sealed: current-round finding %s is missing from the sealed batch; the handoff must carry the exact set (L3-S7 §3.7)", id)
+		}
+	}
+	if policy, _ := batch["drain_policy"].(string); policy != "immediate_stop" {
+		if pending := review.UndispositionedRequired(state); len(pending) > 0 {
+			return fmt.Errorf("observation_batch_sealed: ordinary batch sealed with unobserved required claims %v; only a critical immediate-stop batch may carry safety gaps", pending)
+		}
+	}
+	return nil
+}
+
+func currentRoundOf(reviewMap map[string]any) int {
+	return intFrom(reviewMap["round"])
+}
+
+func intFrom(value any) int {
+	switch n := value.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return 0
+	}
+}
+
+// guardReqBaselineUnchangedFn is the real body behind the
+// req_baseline_unchanged guard on TR-004/TR-007 (L3-S6 §11.2): the bound
+// REQ's sha256 recorded in runtime.bound_req must still match the file at
+// bound_req.path. Formerly this name was an evidenceBackedGuard stub that
+// accepted any non-empty evidence map — a reworked REQ could slip through
+// a "return to planning" transition that is only legal for non-REQ
+// findings.
+func guardReqBaselineUnchangedFn(state map[string]any, _ map[string]string) error {
+	bound, ok := state["bound_req"].(map[string]any)
+	if !ok || bound == nil {
+		return fmt.Errorf("req_baseline_unchanged: runtime has no bound REQ — rebind before transitioning")
+	}
+	reqPath, _ := bound["path"].(string)
+	registeredSHA, _ := bound["sha256"].(string)
+	if reqPath == "" || registeredSHA == "" {
+		return fmt.Errorf("req_baseline_unchanged: bound REQ records no path/sha256 fingerprint")
+	}
+	root, _ := state["root"].(string)
+	if root == "" {
+		root = "."
+	}
+	data, err := os.ReadFile(filepath.Join(root, reqPath))
+	if err != nil {
+		return fmt.Errorf("req_baseline_unchanged: bound REQ %s unreadable: %w", reqPath, err)
+	}
+	sum := sha256.Sum256(data)
+	actual := fmt.Sprintf("%x", sum[:])
+	if actual != registeredSHA {
+		return fmt.Errorf(
+			"req_baseline_unchanged: bound REQ %s drifted (registered %s…, on disk %s…) — the REQ baseline changed since bind; REQ-affecting findings must go through the human amendment boundary, not TR-004/TR-007",
+			reqPath, registeredSHA[:12], actual[:12])
 	}
 	return nil
 }
@@ -282,7 +535,7 @@ func guardAllTargetedReverificationPassedFn(state map[string]any, evidence map[s
 
 // guardUIIImpactResolvedFn is the SM-003 guard (LOOP-STATE-MACHINE.md §15):
 // once `req bind` registers a REQ with `ui_impact = unknown`, planning must
-// pause until PM clarifies the value in §11 of the REQ. The guard is
+// pause until PM clarifies the value in the REQ's §D (待澄清). The guard is
 // state-derived (it inspects bound_req.metadata.ui_impact directly) and is
 // wired into the registry as `ui_impact_resolved`. Loop-Definition wiring
 // is a follow-on human-decision change.
@@ -298,7 +551,7 @@ func guardUIIImpactResolvedFn(state map[string]any, _ map[string]string) error {
 	ui, _ := metadata["ui_impact"].(string)
 	if ui == "unknown" {
 		reqID, _ := bound["id"].(string)
-		return fmt.Errorf("ui_impact_resolved: bound REQ %s declares ui_impact=unknown; planning cannot advance until §11 clarifies the value", reqID)
+		return fmt.Errorf("ui_impact_resolved: bound REQ %s declares ui_impact=unknown; planning cannot advance until §D (待澄清问题) clarifies the value", reqID)
 	}
 	return nil
 }
@@ -321,6 +574,69 @@ func guardUIIImpactResolvedFn(state map[string]any, _ map[string]string) error {
 // state["root"] slot populated by Apply; the guard does not require
 // evidence (the only transition that uses it is TR-002, whose required_evidence
 // is empty).
+// guardContractsCheckedFn runs S3's mechanical close (token reconciliation,
+// clause cells, fingerprint column) as a real transition guard — the check
+// happens on the natural path (PTR-PLAN-02 evaluation), not as a voluntary
+// CLI invocation (L3-S3 v4.0.1: D2 wiring).
+func guardContractsCheckedFn(state map[string]any, _ map[string]string) error {
+	root, _ := state["root"].(string)
+	if root == "" {
+		root = "."
+	}
+	result, err := semantic.ContractsCheck(root)
+	if err != nil {
+		return fmt.Errorf("contracts_checked: %w", err)
+	}
+	if result.Contracts == 0 {
+		return fmt.Errorf("contracts_checked: no contracts found under docs/contracts — the contracts stage produced nothing; write the contracts before advancing planning")
+	}
+	if len(result.Problems) > 0 {
+		return fmt.Errorf("contracts_checked: %d problem(s): %s", len(result.Problems), strings.Join(result.Problems, "; "))
+	}
+	return nil
+}
+
+// guardScenarioBridgeCheckedFn runs the S2 AC↔CASE bridge at PTR-PLAN-02
+// evaluation — the single-denominator rule made a natural-path gate instead
+// of a voluntary `scenario bridge` invocation (D2).
+func guardScenarioBridgeCheckedFn(state map[string]any, _ map[string]string) error {
+	root, _ := state["root"].(string)
+	if root == "" {
+		root = "."
+	}
+	if err := scenario.GuardBridgeChecked(root); err != nil {
+		return fmt.Errorf("scenario_bridge_checked: %w", err)
+	}
+	return nil
+}
+
+// guardTasksCheckedFn runs S4's mechanical close (batch quality: coverage,
+// DAG, closing contracts) at TR-002 evaluation time. Like contracts_checked,
+// the real check happens on the natural path (TR-002 evaluation), not as a
+// voluntary CLI invocation (L3-S4 v4.0.1).
+func guardTasksCheckedFn(state map[string]any, _ map[string]string) error {
+	root, _ := state["root"].(string)
+	if root == "" {
+		root = "."
+	}
+	result, err := semantic.TasksCheck(root)
+	if err != nil {
+		return fmt.Errorf("tasks_checked: %w", err)
+	}
+	if len(result.Problems) > 0 {
+		return fmt.Errorf("tasks_checked: %d problem(s): %s", len(result.Problems), strings.Join(result.Problems, "; "))
+	}
+	return nil
+}
+
+// guardPlanningCompleteFn is S4's state-readiness gate (L3-S4 v4.0.1).
+// Contracts: current-baseline documents[] registration is the authority —
+// PTR-PLAN-02 registers locked contracts before TR-002 can fire, so the
+// former filename-scan fallback would only silently weaken the check.
+// Tasks: the batch is registered by TR-002's own action
+// (register_planning_tasks); at gate time the disk batch must already be
+// fully complete (or cancelled). "Disk-consistent" means the markdown Status
+// field matches — fingerprints are owned by registration and reachability.
 func guardPlanningCompleteFn(state map[string]any, _ map[string]string) error {
 	root, _ := state["root"].(string)
 	if root == "" {
@@ -328,48 +644,46 @@ func guardPlanningCompleteFn(state map[string]any, _ map[string]string) error {
 		// the call path; fall back to "." so the helper can be exercised.
 		root = "."
 	}
-	if err := checkPlanningDocumentsComplete(root, state); err == nil {
-		return nil
-	}
-	if err := checkArtifactStatus(root, "docs/contracts", "CONTRACTS-*.md", "locked", "planning"); err != nil {
-		return err
-	}
-	return checkArtifactStatus(root, "docs/tasks", "TASK-*.md", "complete", "planning")
-}
-
-// checkPlanningDocumentsComplete mirrors GATE-PLANNING-TASKS-COMPLETE: it
-// inspects current-baseline runtime documents instead of legacy filename
-// patterns so organic fixtures (e.g. BE-039-loop-controller.md) satisfy TR-002
-// when contracts and tasks are locked/complete in state and on disk.
-func checkPlanningDocumentsComplete(root string, state map[string]any) error {
 	baseline, _ := state["baseline"].(map[string]any)
 	generation := integer(baseline["generation"])
 	documents, _ := state["documents"].([]any)
 	hasLockedContract := false
-	hasCompleteTask := false
 	for _, raw := range documents {
 		doc, ok := raw.(map[string]any)
 		if !ok || integer(doc["generation"]) != generation {
 			continue
 		}
-		kind, _ := doc["kind"].(string)
+		if kind, _ := doc["kind"].(string); kind != "contract" {
+			continue
+		}
 		status, _ := doc["status"].(string)
 		path, _ := doc["path"].(string)
-		switch {
-		case kind == "contract" && strings.EqualFold(status, "locked"):
-			if err := verifyDocumentStatusOnDisk(root, path, "locked"); err != nil {
-				return fmt.Errorf("planning not complete: contract %s: %w", path, err)
-			}
-			hasLockedContract = true
-		case kind == "task" && strings.EqualFold(status, "complete"):
-			if err := verifyDocumentStatusOnDisk(root, path, "complete"); err != nil {
-				return fmt.Errorf("planning not complete: task %s: %w", path, err)
-			}
-			hasCompleteTask = true
+		if !strings.EqualFold(status, "locked") {
+			continue
 		}
+		if err := verifyDocumentStatusOnDisk(root, path, "locked"); err != nil {
+			return fmt.Errorf("planning not complete: contract %s: %w", path, err)
+		}
+		hasLockedContract = true
 	}
-	if !hasLockedContract || !hasCompleteTask {
-		return fmt.Errorf("planning not complete: runtime documents missing locked contract or complete task at generation %d", generation)
+	if !hasLockedContract {
+		// Phase-aware routing: from the contracts phase the
+		// PTR-PLAN-02 transition is the natural next PreToolUse advance;
+		// from the tasks phase it has already fired and cannot re-fire —
+		// the actionable gap there is the contract file's own Status field.
+		if lifecycle, _ := state["lifecycle"].(map[string]any); lifecycle != nil {
+			if phase, _ := lifecycle["phase"].(string); phase == "tasks" {
+				return fmt.Errorf("planning not complete: no locked contract registered at generation %d — PTR-PLAN-02 already advanced past contracts; flip the contract markdown Status to `locked` (a finalized contract declares locked at authoring time, see docs/agent-protocol.md#s3) and TR-002 itself re-registers locked contracts when it commits", generation)
+			}
+		}
+		return fmt.Errorf("planning not complete: no locked contract registered at generation %d — PTR-PLAN-02 (contracts→tasks) fires on the next PreToolUse and registers contracts whose markdown Status is `locked` (see docs/agent-protocol.md#s3); TR-002 does not scan filenames", generation)
+	}
+	_, _, problems, err := semantic.TaskBatchComplete(root)
+	if err != nil {
+		return fmt.Errorf("planning not complete: %w", err)
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("planning not complete: %s", strings.Join(problems, "; "))
 	}
 	return nil
 }
@@ -387,48 +701,6 @@ func verifyDocumentStatusOnDisk(root, relPath, required string) error {
 		return fmt.Errorf("status=%q, want %q", got, required)
 	}
 	return nil
-}
-
-// checkArtifactStatus returns nil when at least one file matching `pattern`
-// exists in `dir` whose markdown carries `status: <required>` on a top-level
-// blockquote line. Returns a direct error message naming the file and the
-// observed status so the caller can fix it without grepping the manual.
-// scope is the error prefix (e.g. "planning") used in the rejection line.
-//
-// Used by guardPlanningCompleteFn; exported here so it can be reused by
-// future direct-check guards.
-func checkArtifactStatus(root, dir, pattern, required, scope string) error {
-	fullDir := filepath.Join(root, dir)
-	entries, err := os.ReadDir(fullDir)
-	if err != nil {
-		return fmt.Errorf("%s not complete: %s not readable: %v", scope, dir, err)
-	}
-	var observed []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		matched, err := filepath.Match(pattern, entry.Name())
-		if err != nil || !matched {
-			continue
-		}
-		path := filepath.Join(fullDir, entry.Name())
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			observed = append(observed, fmt.Sprintf("%s (unreadable)", entry.Name()))
-			continue
-		}
-		got := markdownStatusField(string(data))
-		if strings.EqualFold(got, required) {
-			return nil
-		}
-		observed = append(observed, fmt.Sprintf("%s status=%q", entry.Name(), got))
-	}
-	if len(observed) == 0 {
-		return fmt.Errorf("%s not complete: no %s matching %s in %s", scope, pattern, pattern, dir)
-	}
-	return fmt.Errorf("%s not complete: %s — none has status=%q (observed: %s)",
-		scope, dir, required, strings.Join(observed, "; "))
 }
 
 // markdownStatusField extracts the value of a top-level `> 状态：value` or

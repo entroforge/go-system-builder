@@ -1,0 +1,29 @@
+{
+  "module": "example-module",
+  "coverage_profile": "ordinary",
+  "counts": {
+    "facts": 1,
+    "rules": 1,
+    "branches": 2,
+    "cases": 2,
+    "positive": 1,
+    "negative": 1,
+    "required_branches": 2,
+    "browser_required_cases": 2
+  },
+  "required_branch_coverage": {
+    "required": 2,
+    "covered": 2,
+    "percentage": 100,
+    "allow_required": 1,
+    "allow_covered": 1,
+    "reject_required": 1,
+    "reject_covered": 1
+  },
+  "ratio": {
+    "positive": 1,
+    "negative": 1,
+    "negative_to_positive": 1,
+    "minimum_negative_to_positive": 1
+  }
+}

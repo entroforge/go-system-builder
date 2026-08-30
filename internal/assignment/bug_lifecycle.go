@@ -9,6 +9,8 @@ import (
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
 // BugEventRequest drives a BUG entity lifecycle transition.
@@ -101,15 +103,26 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 		return loopruntime.Snapshot{}, fmt.Errorf(
 			"runtime_id mismatch: request=%s state=%s", request.RuntimeID, currentRuntimeID)
 	}
+	lifecycle, ok := currentState["lifecycle"].(map[string]any)
+	if !ok {
+		return loopruntime.Snapshot{}, fmt.Errorf("runtime lifecycle must be an object")
+	}
+	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
+	occurredAt := time.Now().UTC()
 
 	mutation := loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-bug-%s-%d", request.BugID, request.ExpectedRevision+1),
-		TransitionID:   "BUG-LIFECYCLE",
-		Event:          request.Event,
-		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("bug:%s:%s:%d", request.BugID, request.Event, request.ExpectedRevision),
-		OccurredAt:     time.Now().UTC(),
-		RuntimeID:      currentRuntimeID,
+		Audit: loopruntime.AuditEnvelope{
+			EventID:        fmt.Sprintf("evt-bug-%s-%d", request.BugID, request.ExpectedRevision+1),
+			TransitionID:   "BUG-LIFECYCLE",
+			Event:          request.Event,
+			Actor:          "orchestrator",
+			IdempotencyKey: fmt.Sprintf("bug:%s:%s:%d", request.BugID, request.Event, request.ExpectedRevision),
+			RuntimeID:      currentRuntimeID,
+			From:           cursor,
+			To:             cursor,
+			EvidenceIDs:    []string{},
+		},
+		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
 			entities, ok := state["entities"].(map[string]any)
 			if !ok {
@@ -167,6 +180,13 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 			if resolved.To == "investigating" {
 				attempts := readBugInt(located, "attempt_count")
 				nextAttempt := attempts + 1
+				// RC-15 (S9-M4/M5): closing_contract_failed also increments
+				// same_contract_failure_count so the consecutive-contract-
+				// failure cap becomes reachable. The pass path resets the
+				// streak counter.
+				if request.Event == "closing_contract_failed" {
+					located["same_contract_failure_count"] = readBugInt(located, "same_contract_failure_count") + 1
+				}
 				// Enforce repair limits before committing the retry. The limits
 				// come from runtime configuration.repair.
 				if err := checkRetryLimits(state, located, nextAttempt); err != nil {
@@ -174,18 +194,21 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 				}
 				located["attempt_count"] = nextAttempt
 			}
+			if request.Event == "closing_contract_passed" && resolved.To == "closed" {
+				located["same_contract_failure_count"] = 0
+			}
 			// Record the fix path when reported.
 			if request.Event == "fix_reported" {
 				if path, ok := request.Params["fix_ref"].(string); ok && path != "" {
 					located["fix_ref"] = path
 				}
 			}
-			located["updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
-			state["updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+			located["updated_at"] = occurredAt.Format(time.RFC3339Nano)
+			state["updated_at"] = occurredAt.Format(time.RFC3339Nano)
 			return nil
 		},
 	}
-	store := loopruntime.NewStore(statePath, journalPath)
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	return store.Update(request.ExpectedRevision, mutation)
 }
 
@@ -227,6 +250,7 @@ func checkBugGuards(bug map[string]any, request BugEventRequest, guards []string
 			if fix == "" {
 				return fmt.Errorf("guard %s failed: fix_ref param required", guard)
 			}
+			bug["fix_ref"] = fix
 		case "original_finder_assigned":
 			actor, _ := request.Params["actor_agent_id"].(string)
 			if actor == "" {
@@ -246,21 +270,25 @@ func checkBugGuards(bug map[string]any, request BugEventRequest, guards []string
 			if ev == "" {
 				return fmt.Errorf("guard %s failed: reverification_evidence param required", guard)
 			}
+			bug["reverification_evidence"] = ev
 		case "failure_evidence_recorded":
 			ev, _ := request.Params["failure_evidence"].(string)
 			if ev == "" {
 				return fmt.Errorf("guard %s failed: failure_evidence param required", guard)
 			}
+			bug["failure_evidence"] = ev
 		case "root_cause_evidence_complete":
 			ev, _ := request.Params["root_cause_evidence"].(string)
 			if ev == "" {
 				return fmt.Errorf("guard %s failed: root_cause_evidence param required", guard)
 			}
+			bug["root_cause_evidence"] = ev
 		case "bug_closing_contract_complete":
 			ev, _ := request.Params["closing_contract"].(string)
 			if ev == "" {
 				return fmt.Errorf("guard %s failed: closing_contract param required", guard)
 			}
+			bug["closing_contract"] = ev
 		default:
 			// Unknown guards are treated as satisfied (trust the loop-definition).
 		}
@@ -316,17 +344,24 @@ func bugIDFor(bug map[string]any) string {
 }
 
 // checkRetryLimits enforces the runtime configuration.repair limits before a
-// BUG is sent back to investigation for another attempt. The limits are:
+// BUG is sent back to investigation for another attempt. RC-09 (S9-7): this
+// is a thin adapter over the canonical transition.CheckRepairLimit — the
+// limit semantics live in exactly one place (internal/transition), and this
+// path raises the same typed *transition.RepairLimitError the GTR-004 bridge
+// recognizes, instead of a locally-formatted error the dispatcher cannot
+// catch.
 //
-//   - max_attempts_per_bug: absolute cap on how many times a single BUG may
-//     cycle through investigation. Exceeding it means the BUG cannot be fixed
-//     within the allowed budget and must pause the Loop for human decision.
-//   - max_same_contract_failures: cap on consecutive Closing Contract failures
-//     for the same BUG. Exceeding it means the contract itself may be wrong.
+// max_same_contract_failures stays local: it caps consecutive Closing
+// Contract failures for the same BUG and has no CheckRepairLimit equivalent.
+// RC-15 (S9-M5): it raises the same typed *transition.RepairLimitError so the
+// GTR-004 bridge (adapter.DispatchRepairLimitExceeded) can pause the Loop.
 //
 // Both limits default to 0 (unlimited) when the configuration is absent, so
 // the check is opt-in via the runtime configuration block.
 func checkRetryLimits(state map[string]any, bug map[string]any, nextAttempt int) error {
+	if limit := transition.CheckRepairLimit(state, withAttemptCount(bug, nextAttempt)); limit != nil {
+		return limit
+	}
 	configuration, ok := state["configuration"].(map[string]any)
 	if !ok {
 		return nil
@@ -335,22 +370,28 @@ func checkRetryLimits(state map[string]any, bug map[string]any, nextAttempt int)
 	if !ok {
 		return nil
 	}
-	maxAttempts := readBugInt(repair, "max_attempts_per_bug")
-	if maxAttempts > 0 && nextAttempt > maxAttempts {
-		id, _ := bug["id"].(string)
-		return fmt.Errorf(
-			"BUG %s exceeded max_attempts_per_bug (%d): attempt %d; pause the Loop for human decision",
-			id, maxAttempts, nextAttempt)
-	}
 	maxSameContract := readBugInt(repair, "max_same_contract_failures")
 	if maxSameContract > 0 {
 		sameContractFailures := readBugInt(bug, "same_contract_failure_count")
 		if sameContractFailures >= maxSameContract {
 			id, _ := bug["id"].(string)
 			return fmt.Errorf(
-				"BUG %s exceeded max_same_contract_failures (%d): contract may be wrong; pause the Loop",
-				id, maxSameContract)
+				"BUG %s exceeded max_same_contract_failures (%d): contract may be wrong; pause the Loop: %w",
+				id, maxSameContract, &transition.RepairLimitError{BugID: id, Attempts: sameContractFailures, Max: maxSameContract})
 		}
 	}
 	return nil
+}
+
+// withAttemptCount returns a shallow view of bug whose attempt_count reads as
+// nextAttempt. The lifecycle evaluates the limit against the attempt it is
+// about to commit, which is one higher than the persisted count.
+func withAttemptCount(bug map[string]any, nextAttempt int) map[string]any {
+	view := make(map[string]any, len(bug)+1)
+	for key, value := range bug {
+		view[key] = value
+	}
+	view["attempt_count"] = nextAttempt
+	view["id"], _ = bug["id"].(string)
+	return view
 }

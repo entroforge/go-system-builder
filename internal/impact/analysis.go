@@ -123,6 +123,12 @@ func InvalidateEvidence(state map[string]any, impacts []EvidenceImpact, invalida
 
 // matchChange applies the impact rules to a single evidence entry and returns
 // the (rule, matchedScopeRef) pair, or ("", "") when the entry is unaffected.
+//
+// RC-09 (S9-3): an evidence entry that declares no scope_refs is treated as
+// full-surface sensitive. Under the previous behavior such an entry could
+// never match any rule and therefore never auto-invalidated — an unrelated
+// path change left an unscoped PASS evidence row "valid" forever. Fail closed:
+// any changed path invalidates it and the reason says so explicitly.
 func matchChange(entry map[string]any, changedPaths []string, baselineGeneration int) (string, string) {
 	scopeRefs := readStringSlice(entry["scope_refs"])
 	entryGeneration := readInt(entry["baseline_generation"])
@@ -131,6 +137,10 @@ func matchChange(entry map[string]any, changedPaths []string, baselineGeneration
 		// Rule 1: REQ change invalidates the whole baseline generation.
 		if isREQPath(normalized) && entryGeneration == baselineGeneration {
 			return "req_baseline_change", normalized
+		}
+		// RC-09 (S9-3): unscoped evidence is full-surface sensitive.
+		if len(scopeRefs) == 0 {
+			return "unscoped_evidence", normalized
 		}
 		// Rule 2-4: scope_ref overlap with the changed path.
 		for _, scope := range scopeRefs {
@@ -237,6 +247,8 @@ func ruleDescription(rule, detail string) string {
 		return "BUG repair changed; targeted re-verification evidence is invalid"
 	case "scope_overlap":
 		return "changed artifact overlaps evidence scope"
+	case "unscoped_evidence":
+		return "evidence declares no scope_refs; it is full-surface sensitive and any changed path invalidates it"
 	default:
 		return rule
 	}

@@ -85,7 +85,7 @@ func TestHOOK_PostCompact_SessionStartFallback(t *testing.T) {
 
 // TestHOOK_SubagentStart_DelegationPreflightViaHookCLI covers HOOK-SubagentStart
 // at L3: real Hook CLI emits delegation preflight questions (worktree / team /
-// two-phase activation) without requiring a manual transition CLI.
+// agent dispatch) without requiring a manual transition CLI.
 func TestHOOK_SubagentStart_DelegationPreflightViaHookCLI(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "tasks", 7)
@@ -108,13 +108,18 @@ func TestHOOK_SubagentStart_DelegationPreflightViaHookCLI(t *testing.T) {
 		}
 	}
 	if !strings.Contains(out, "readback") && !strings.Contains(out, "activation") && !strings.Contains(out, "phase") {
-		t.Fatalf("SubagentStart must mention two-phase readback/activation, got %s", stdout)
+		t.Fatalf("SubagentStart must mention the dispatch plan/readback flow, got %s", stdout)
 	}
 }
 
-// TestHOOK_TeammateIdle_HookCLIEmitsGuidance pins TeammateIdle Hook CLI entry.
-// BUG-039-37 wires HandleTeammateIdleForController into reconcileGuidance;
-// this fixture may still no-op milestone fingerprint when guidance matches.
+// TestHOOK_TeammateIdle_HookCLIEmitsGuidance pins TeammateIdle Hook CLI entry
+// with the official Claude Code 2.1.218 payload shape (teammate_name/
+// team_name/transcript_path; no self-made agent_id or facts). The fixture
+// teammate idles before its PLAN_REPORT checkpoint, so the L4 §16.1 control
+// applies: exit 2 with the feedback on stderr, routed back to the same
+// teammate. BUG-039-37 wires HandleTeammateIdleForController into
+// reconcileGuidance; this fixture may still no-op milestone fingerprint when
+// guidance matches.
 func TestHOOK_TeammateIdle_HookCLIEmitsGuidance(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "tasks", 8)
@@ -139,14 +144,17 @@ func TestHOOK_TeammateIdle_HookCLIEmitsGuidance(t *testing.T) {
 	code, stdout, stderr := runHook(t, root, "TeammateIdle", `{
 		"session_id":"session-hook-teammate-idle",
 		"hook_event_name":"TeammateIdle",
-		"agent_id":"builder-idle-1",
-		"facts":{"assignment_reported":true}
+		"teammate_name":"builder-idle-1",
+		"team_name":"team-idle",
+		"transcript_path":"/tmp/claude/transcripts/builder-idle-1.jsonl"
 	}`)
-	if code != 0 {
-		t.Fatalf("TeammateIdle Hook failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+	if code != 2 {
+		t.Fatalf("TeammateIdle before PLAN_REPORT must exit 2 (real platform control): code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
-	if !strings.Contains(strings.ToLower(stdout), "teammate") {
-		t.Fatalf("TeammateIdle Hook must emit teammate guidance, got %s", stdout)
+	for _, needle := range []string{"teammate_idle_resume_assignment", "builder-idle-1", "PLAN_REPORT"} {
+		if !strings.Contains(stderr, needle) {
+			t.Fatalf("TeammateIdle stderr feedback must contain %q, got %s", needle, stderr)
+		}
 	}
 	after := req039fixtures.ReadState(t, root)
 	ms, _ := after["milestone"].(map[string]any)
@@ -159,9 +167,15 @@ func TestHOOK_TeammateIdle_HookCLIEmitsGuidance(t *testing.T) {
 	_ = raw
 }
 
-// TestHOOK_TeammateIdle_AllocatesNextTaskViaHookCLI covers TeammateIdle Branch 4
-// at L4: complete assignment + completion report → Hook allocates next candidate.
-func TestHOOK_TeammateIdle_AllocatesNextTaskViaHookCLI(t *testing.T) {
+// TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI pins TeammateIdle
+// Branch 4 at L4: complete assignment + completion report → idle is
+// allowed; the scheduler (not the Hook) is the only writer of the next
+// assignment. L4 §15.2 P2-5 retired the in-TeammateIdle allocation, so
+// the fixture now asserts the negative: TASK-039-05 stays untouched and
+// the revision is unchanged. Teammates must not self-claim Team tasks
+// (`unauthorized_task_self_claim` is the gate that would block the same
+// TaskUpdate from a teammate).
+func TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "tasks", 12)
 	state["lifecycle"] = map[string]any{"state": "building", "phase": nil, "phase_revision": 0}
@@ -169,7 +183,7 @@ func TestHOOK_TeammateIdle_AllocatesNextTaskViaHookCLI(t *testing.T) {
 		ms["stage"] = "S6"
 		ms["lifecycle_state"] = "building"
 		ms["lifecycle_phase"] = nil
-		ms["objective"] = "allocate next legal task after completion"
+		ms["objective"] = "acknowledge completion; scheduler allocates next legal task"
 	}
 	completionRef := ".claude/evidence/loop-system-test/g1/assignments/assignment-039-04/completion.json"
 	state["entities"] = map[string]any{
@@ -237,16 +251,19 @@ func TestHOOK_TeammateIdle_AllocatesNextTaskViaHookCLI(t *testing.T) {
 		"agent_id":"builder-idle-alloc"
 	}`)
 	if code != 0 {
-		t.Fatalf("TeammateIdle allocate Hook failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+		t.Fatalf("TeammateIdle idle Hook failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	lower := strings.ToLower(stdout)
-	if !strings.Contains(lower, "next") && !strings.Contains(lower, "allocate") {
-		t.Fatalf("TeammateIdle Branch 4 must mention next/allocate, got %s", stdout)
+	if !strings.Contains(lower, "scheduler") {
+		t.Fatalf("TeammateIdle Branch 4 must name the scheduler as next-task owner, got %s", stdout)
+	}
+	if !strings.Contains(lower, "idle") && !strings.Contains(lower, "next") {
+		t.Fatalf("TeammateIdle Branch 4 must mention idle/next, got %s", stdout)
 	}
 
 	after := req039fixtures.ReadState(t, root)
-	if rev := req039fixtures.Revision(after); rev <= beforeRev {
-		t.Fatalf("Branch 4 must CAS-advance revision, before=%v after=%v stdout=%s", beforeRev, rev, stdout)
+	if rev := req039fixtures.Revision(after); rev != beforeRev {
+		t.Fatalf("Branch 4 must NOT CAS-advance revision, before=%v after=%v stdout=%s", beforeRev, rev, stdout)
 	}
 	entities, _ := after["entities"].(map[string]any)
 	tasks, _ := entities["tasks"].([]any)
@@ -259,16 +276,12 @@ func TestHOOK_TeammateIdle_AllocatesNextTaskViaHookCLI(t *testing.T) {
 			nextOwners, _ = task["owner_agent_ids"].([]any)
 		}
 	}
-	if nextState != "in_progress" {
-		t.Fatalf("Branch 4 must advance TASK-039-05 to in_progress, got %q stdout=%s", nextState, stdout)
+	if nextState != "candidate" {
+		t.Fatalf("Branch 4 must leave TASK-039-05 untouched (scheduler allocates), got %q stdout=%s", nextState, stdout)
 	}
-	found := false
 	for _, o := range nextOwners {
 		if s, _ := o.(string); s == "builder-idle-alloc" {
-			found = true
+			t.Fatalf("Branch 4 must NOT self-claim TASK-039-05 to builder-idle-alloc, owners=%v", nextOwners)
 		}
-	}
-	if !found {
-		t.Fatalf("Branch 4 must allocate TASK-039-05 to builder-idle-alloc, owners=%v", nextOwners)
 	}
 }

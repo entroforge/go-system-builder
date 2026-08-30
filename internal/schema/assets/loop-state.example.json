@@ -109,7 +109,7 @@
     "event_id": "evt-000001",
     "sequence": 1,
     "transition_id": "TR-001",
-    "event": "loop_requested",
+    "event": "req_bound",
     "actor": "user",
     "from": {
       "state": "inactive",

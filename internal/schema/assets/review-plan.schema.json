@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/review-plan.schema.json",
+  "title": "S7 Review Plan",
+  "description": "The single authority for one S7 review round: frozen baseline, the exact required Claim set, and the Assignment DAG projection (L3-S7 §3.2-§3.4). Registered via `loop-harness runtime review-plan`; the runtime pins path+sha256 and derives Claim dispositions from consumed ReviewResults.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "review_plan_id",
+    "review_round",
+    "baseline_generation",
+    "frozen_subjects",
+    "claims",
+    "assignments",
+    "e2e_coverage_state",
+    "dispatch_capacity_policy",
+    "created_by",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "review_plan_id": {
+      "type": "string",
+      "pattern": "^review-plan-[A-Za-z0-9._-]+$"
+    },
+    "review_round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "baseline_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "frozen_subjects": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Exact fingerprinted product/config/test/spec surfaces this round binds. Every ReviewResult must bind the digest computed over this set.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "kind": {"type": "string"}
+        }
+      }
+    },
+    "coverage_inventory": {
+      "type": "array",
+      "description": "Frozen S6 changed-surface denominator. Every current-generation completion scope must appear here and in at least one Claim source_refs.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "source_ref", "target", "lens"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"type": "string", "minLength": 1},
+          "source_ref": {"type": "string", "minLength": 1},
+          "target": {"type": "string", "minLength": 1},
+          "lens": {"enum": ["delivery", "qa", "e2e"]}
+        }
+      }
+    },
+    "e2e_assets": {
+      "type": "array",
+      "description": "Existing CASE/PATH assets and fingerprints required when e2e_coverage_state=regression_available.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["asset_id", "case_ref", "path", "sha256"],
+        "properties": {
+          "asset_id": {"type": "string", "minLength": 1},
+          "case_ref": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "selector_ref": {"type": "string"},
+          "route_ref": {"type": "string"},
+          "environment": {"type": "string"}
+        }
+      }
+    },
+    "change_impact": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": {"type": "string"},
+        "source_refs": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Evidence or surface references consumed by the Planner. On TR-012 re-entry this must include the current change_impact evidence reference; runtime validation then binds its changed_artifacts to frozen_subjects. The schema validates shape only."
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The single required Claim set. Static/E2E/discovery are computed views over this set, not separate authorities (L3-S7 v0.7.0).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim_id",
+          "lens",
+          "target",
+          "assertion",
+          "oracle",
+          "method",
+          "applicability",
+          "source_refs"
+        ],
+        "properties": {
+          "claim_id": {
+            "type": "string",
+            "pattern": "^claim-[A-Za-z0-9._-]+$"
+          },
+          "lens": {
+            "enum": ["delivery", "qa", "e2e"]
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact module, path, contract clause, CASE/PATH, runtime invariant or failure mode."
+          },
+          "assertion": {"type": "string", "minLength": 1},
+          "oracle": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What observable fact counts as pass/fail."
+          },
+          "method": {"type": "string", "minLength": 1},
+          "required_evidence": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "applicability": {
+            "enum": ["required", "not_applicable"]
+          },
+          "na_rationale": {
+            "type": "string",
+            "description": "Required when applicability=not_applicable: why this Claim does not apply, with evidence."
+          },
+          "na_checklist_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required when applicability=not_applicable: the N/A checklist (or impact-analysis artifact id) the conclusion was checked against. A bare rationale with no checklist is not a verifiable N/A (S7-9/RC-07)."
+          },
+          "source_refs": {
+            "type": "array",
+            "minItems": 1,
+            "description": "REQ, risk, impact, BUG history, Closing Contract or CASE/PATH sources. N/A decisions need sources too.",
+            "items": {"type": "string", "minLength": 1}
+          },
+          "focus_key": {
+            "type": "string",
+            "description": "Round-local professional focus used for Assignment grouping; no global registry or minimum count."
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "resource_locks": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {"applicability": {"const": "not_applicable"}}
+            },
+            "then": {
+              "required": ["na_rationale", "na_checklist_id"],
+              "properties": {
+                "na_rationale": {"minLength": 8}
+              }
+            }
+          }
+        ]
+      }
+    },
+    "assignments": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Claim responsibility grouping and DAG projection. One Assignment may cover several same-lens Claims; the exact-set coverage rules are enforced by the plan validator.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "assignment_id",
+          "lens",
+          "claim_ids",
+          "non_overlap_boundary",
+          "execution_wave"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string",
+            "pattern": "^assignment-[A-Za-z0-9._-]+$"
+          },
+          "lens": {
+            "enum": ["delivery", "qa", "e2e"]
+          },
+          "claim_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"}
+          },
+          "focus_keys": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "non_overlap_boundary": {
+            "type": "string",
+            "minLength": 8,
+            "description": "What this Assignment owns and what adjacent Reviewers must not redo."
+          },
+          "execution_wave": {
+            "enum": ["static", "behavior"],
+            "description": "static = DV/QA white-box Claims (Wave A); behavior = E2E and specialty Claims that unlock only after every required static Claim has a disposition (L3-S7 §5)."
+          },
+          "resource_locks": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "e2e_coverage_state": {
+      "enum": ["cold_start", "regression_available", "not_applicable"]
+    },
+    "verification_artifact_workspace": {
+      "type": ["string", "null"],
+      "description": "Only for e2e cold_start: the isolated write surface for new E2E spec/fixture/evidence. Writes outside this surface during verification are hard-denied."
+    },
+    "dispatch_capacity_policy": {
+      "const": "coverage_complete",
+      "description": "Fixed by L3-S7 §4.5: required Assignments may queue but never be deleted or merged to fit platform capacity. Switching to bounded_flow is a quality-policy downgrade that requires a human decision."
+    },
+    "coverage_justification": {
+      "type": ["string", "null"],
+      "description": "Required when a whole lens (delivery/qa) has zero required claims: proof the round contains no executable or maintainability impact (pure docs/metadata change)."
+    },
+    "created_by": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "minLength": 1}
+  }
+}

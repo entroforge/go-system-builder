@@ -1,10 +1,25 @@
 {
   "hooks": {
-    "PreToolUse": [{"matcher":"Write|Edit|MultiEdit|Bash|NotebookEdit|Task|Agent","hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event PreToolUse --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
+    "PreToolUse": [{"matcher":"Write|Edit|MultiEdit|Bash|NotebookEdit|Task|TaskUpdate|Agent|mcp__.*","hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event PreToolUse --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
     "SessionStart": [{"hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event SessionStart --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
     "SubagentStart": [{"hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event SubagentStart --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
     "SubagentStop": [{"hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event SubagentStop --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
     "TeammateIdle": [{"hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event TeammateIdle --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
+    "Stop": [{"hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event Stop --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
+    "PostToolUse": [
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event PostToolUse --root \"$CLAUDE_PROJECT_DIR\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [{"matcher":"*","hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event PostToolUseFailure --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
+    "ConfigChange": [{"matcher":"*","hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event ConfigChange --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
     "PreCompact": [{"hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event PreCompact --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}]
   }
 }

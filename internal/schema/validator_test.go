@@ -20,7 +20,7 @@ func TestValidatorAcceptsLoopStateExample(t *testing.T) {
 	}
 }
 
-func TestValidatorAcceptsPlanningAndAngleEvidenceKinds(t *testing.T) {
+func TestValidatorAcceptsPlanningEvidenceKinds(t *testing.T) {
 	data, err := schema.ReadAsset("loop-state.example.json")
 	if err != nil {
 		t.Fatal(err)
@@ -39,15 +39,6 @@ func TestValidatorAcceptsPlanningAndAngleEvidenceKinds(t *testing.T) {
 			"responsibility_id": "Architect", "scope_refs": []any{},
 		},
 		map[string]any{
-			"id": "ev-angle-delivery", "kind": "angle_declaration", "path": "evidence/ev-angle-delivery.json",
-			"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			"status": "valid", "baseline_generation": 1, "review_round": 1,
-			"produced_by": []any{"delivery-1"}, "invalidated_by": nil,
-			"invalidation_rule": nil, "invalidation_reason": nil,
-			"responsibility_id": "Delivery Verifier", "scope_refs": []any{},
-			"dimension": "delivery",
-		},
-		map[string]any{
 			"id": "ev-manifest-delivery", "kind": "team_manifest", "path": "evidence/ev-manifest-delivery.json",
 			"sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			"status": "valid", "baseline_generation": 1, "review_round": 1,
@@ -61,7 +52,7 @@ func TestValidatorAcceptsPlanningAndAngleEvidenceKinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", updated); err != nil {
-		t.Fatalf("planning_design/angle_declaration/team_manifest evidence kinds must validate: %v", err)
+		t.Fatalf("planning_design/team_manifest evidence kinds must validate: %v", err)
 	}
 }
 

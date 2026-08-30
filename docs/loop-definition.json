@@ -4,7 +4,7 @@
   "status": "reviewed",
   "initial_state": "inactive",
   "terminal_states": [
-    "awaiting_human_release",
+    "release_authorized",
     "aborted"
   ],
   "states": {
@@ -43,18 +43,18 @@
     "verification": {
       "stage": "S7",
       "category": "review",
-      "description": "Delivery Verifier, QA, and E2E Browser teams run a complete review round; findings are investigated before repair.",
+      "description": "One frozen baseline, one ReviewPlan with an exact required Claim set, 1..N DV/QA/E2E reviewer Assignments, one Canonical ReviewResult per Assignment, and a machine-computed CleanRound or sealed ObservationBatch.",
       "phase_machine": "verification",
-      "entry_condition": "Builder or repair output is ready for a full review round.",
-      "exit_condition": "A valid clean round passes, a finding enters BUG resolution, or the Loop pauses."
+      "entry_condition": "S6 builder results are integrated and consumed (or S9 targeted re-verification passed) and a new review round is open.",
+      "exit_condition": "The machine CleanRound passes (TR-009), a sealed ObservationBatch hands the exact Finding set to S8 (TR-008), or the Loop pauses on a verdict (TR-010/TR-011)."
     },
     "bug_resolution": {
       "stage": "S8/S9",
       "category": "work",
-      "description": "Findings are investigated, accepted as canonical BUGs, repaired and rechecked by the original finding responsibility.",
+      "description": "S8 consumes sealed S7 Findings into InvestigationCases, derives causal models and approved RepairContracts; S9 repairs only from an approved RepairContract. Canonical BUGs are compatibility projections, not authorities.",
       "phase_machine": "bug_resolution",
-      "entry_condition": "A blocking Delivery Verifier, QA, or E2E Browser finding exists.",
-      "exit_condition": "Targeted re-verification passes and affected evidence is invalidated, or specification/REQ change is required."
+      "entry_condition": "A sealed S7 ObservationBatch with an exact immutable Finding set exists, or a human release decision routes a finding into S8.",
+      "exit_condition": "The approved RepairContract completes targeted re-verification and hands back to S7, or the InvestigationCase is routed to specification, REQ, duplicate, no-change, or further investigation."
     },
     "acceptance": {
       "stage": "S10",
@@ -82,11 +82,19 @@
     },
     "awaiting_human_release": {
       "stage": "S11",
-      "category": "terminal",
-      "description": "Loop automation is complete and cannot perform squash merge or formal release.",
+      "category": "control",
+      "description": "Automation stops at the human release gateway; only constrained human decision events may route S11.",
       "phase_machine": null,
       "entry_condition": "ACC and release architecture audit are approved.",
-      "exit_condition": "No automated exit exists."
+      "exit_condition": "A human-authorized decision event routes to release_authorized, paused, bug_resolution, acceptance, release_audit, or aborted."
+    },
+    "release_authorized": {
+      "stage": "S11",
+      "category": "terminal",
+      "description": "An external human release owner authorized the release handoff; the Harness performs no release side effect.",
+      "phase_machine": null,
+      "entry_condition": "TR-025 records a current human release decision.",
+      "exit_condition": "No exit exists."
     },
     "aborted": {
       "stage": "cross-stage",
@@ -129,17 +137,24 @@
           "id": "PTR-PLAN-01",
           "from": "design",
           "selector": "SEL-PLANNING-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "planning_design_complete",
           "to": "contracts",
           "actors": [
             "orchestrator",
             "hook_controller"
           ],
-          "guards": [],
-          "actions": [],
+          "guards": [
+            "ui_impact_resolved"
+          ],
+          "actions": [
+            "register_design_documents"
+          ],
           "required_evidence": [],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -148,23 +163,31 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "Advance formal planning from design to contracts after the design quality gate passes."
+          "description": "Advance formal planning from design to contracts after the design quality gate passes. Gate readiness facts: an ARCHITECTURE-*.md whose top status line (状态/Status) declares `locked` plus a valid planning_design JSON envelope (responsibility Architect, conclusion pass — a markdown file as --path yields `evidence:<id>:schema`). Missing tokens `document:design:locked` / `evidence:planning_design_record` mean one of these is absent."
         },
         {
           "id": "PTR-PLAN-02",
           "from": "contracts",
           "selector": "SEL-PLANNING-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "planning_contracts_complete",
           "to": "tasks",
           "actors": [
             "orchestrator",
             "hook_controller"
           ],
-          "guards": [],
-          "actions": [],
+          "guards": [
+            "contracts_checked",
+            "scenario_bridge_checked"
+          ],
+          "actions": [
+            "register_locked_contracts"
+          ],
           "required_evidence": [],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -173,210 +196,53 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "Advance formal planning from contracts to tasks after the contract quality gate passes."
+          "description": "Advance formal planning from contracts to tasks after the contract quality gate passes. Gate readiness facts: a contract declaring `Status: locked` on disk (or an already-registered locked contract in runtime documents[]) plus valid planning_contract evidence — the missing token `document:contract:locked` means neither was found; flip the contract's top status line（状态/Status）to locked."
         }
       ]
     },
     "verification": {
       "owner_state": "verification",
-      "initial_phase": "delivery",
+      "initial_phase": "planned",
       "entry_phases": [
-        "delivery"
+        "planned"
       ],
       "terminal_phases": [
-        "clean_round_passed"
+        "clean",
+        "observation_sealed"
       ],
       "phases": {
-        "delivery": {
-          "description": "Run every required Delivery Verifier responsibility for the current round.",
-          "entry_condition": "A complete team manifest and Builder/repair evidence exist.",
-          "exit_condition": "All dimensions pass or findings leave the top-level state."
+        "planned": {
+          "description": "A review round is open but no ReviewPlan is registered yet.",
+          "entry_condition": "TR-006/TR-012/TR-016 opened a new review round.",
+          "exit_condition": "A schema-valid ReviewPlan with an exactly-partitioned required Claim set is registered via runtime review-plan."
         },
-        "qa": {
-          "description": "Run every required QA responsibility for the same review round.",
-          "entry_condition": "All Delivery Verifier dimensions pass.",
-          "exit_condition": "All QA dimensions pass or findings leave the top-level state."
+        "running": {
+          "description": "The ReviewPlan is registered; static DV/QA Claims and (after they settle) behavior E2E Claims are dispatched and consumed.",
+          "entry_condition": "ReviewPlan registered for the current round.",
+          "exit_condition": "Every required Claim has a consumed disposition; a finding flips the round to cannot_clean."
         },
-        "e2e_browser": {
-          "description": "Run real-browser E2E user flows for the same review round.",
-          "entry_condition": "Delivery Verifier and QA dimensions pass.",
-          "exit_condition": "All required E2E browser responsibilities pass or findings leave the top-level state."
+        "cannot_clean": {
+          "description": "At least one confirmed Finding exists; the clean path is closed but ordinary safe discovery continues.",
+          "entry_condition": "A consumed ReviewResult carried a Finding.",
+          "exit_condition": "The remaining required Claims complete (discovery_draining) or a P0 finding seals the batch immediately."
         },
-        "clean_round_evaluation": {
-          "description": "Validate same-round completeness, evidence freshness and closed blocking BUGs.",
-          "entry_condition": "Delivery, QA, and E2E Browser all report PASS for one round.",
-          "exit_condition": "The round passes or review restarts at delivery."
+        "discovery_draining": {
+          "description": "The remaining required Claims are being completed after a confirmed ordinary finding (drain_policy=complete_required_claims).",
+          "entry_condition": "cannot_clean with undispositioned required Claims still being consumed.",
+          "exit_condition": "The final required Claim disposition lands and the ObservationBatch seals."
         },
-        "clean_round_passed": {
-          "description": "One complete and current review round satisfies the acceptance gate.",
-          "entry_condition": "Clean-round guards all pass.",
-          "exit_condition": "The top-level Loop enters acceptance."
+        "observation_sealed": {
+          "description": "The final required Claim set is dispositioned and the ObservationBatch carries the exact Finding set for S8.",
+          "entry_condition": "Round consumer sealed the ObservationBatch.",
+          "exit_condition": "TR-008 hands the batch to bug_resolution."
+        },
+        "clean": {
+          "description": "Every applicable Claim was consumed without findings; the machine CleanRound snapshot is registered.",
+          "entry_condition": "Round consumer computed the CleanRound over the exact Claim set.",
+          "exit_condition": "TR-009 promotes the clean round into acceptance."
         }
       },
-      "transitions": [
-        {
-          "id": "PTR-VERIFY-01",
-          "from": "delivery",
-          "selector": "SEL-VERIFICATION-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
-          "event": "delivery_pass",
-          "to": "qa",
-          "actors": [
-            "delivery_verifier",
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [
-            "delivery_angle_complete"
-          ],
-          "actions": [
-            "record_delivery_result"
-          ],
-          "required_evidence": [
-            "team_manifest_record",
-            "delivery_review_record"
-          ],
-          "on_guard_failure": "warn_and_retry",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-VERIFY-DELIVERY-PASS",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "QA cannot start until all required delivery dimensions pass."
-        },
-        {
-          "id": "PTR-VERIFY-02",
-          "from": "qa",
-          "selector": "SEL-VERIFICATION-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
-          "event": "qa_pass",
-          "to": "e2e_browser",
-          "actors": [
-            "qa",
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [
-            "qa_angle_complete"
-          ],
-          "actions": [
-            "record_qa_result"
-          ],
-          "required_evidence": [
-            "team_manifest_record",
-            "qa_review_record"
-          ],
-          "on_guard_failure": "warn_and_retry",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-VERIFY-QA-PASS",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "Real-browser E2E follows complete QA evidence."
-        },
-        {
-          "id": "PTR-VERIFY-03",
-          "from": "e2e_browser",
-          "selector": "SEL-VERIFICATION-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
-          "event": "e2e_browser_pass",
-          "to": "clean_round_evaluation",
-          "actors": [
-            "e2e_tester",
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [
-            "e2e_angle_complete"
-          ],
-          "actions": [
-            "record_e2e_result"
-          ],
-          "required_evidence": [
-            "team_manifest_record",
-            "e2e_review_record"
-          ],
-          "on_guard_failure": "warn_and_retry",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-VERIFY-E2E-PASS",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "Clean-round evaluation follows complete real-browser E2E evidence."
-        },
-        {
-          "id": "PTR-VERIFY-04",
-          "from": "clean_round_evaluation",
-          "selector": "SEL-VERIFICATION-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
-          "event": "clean_round_valid",
-          "to": "clean_round_passed",
-          "actors": [
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [
-            "same_review_round",
-            "all_required_dimensions_passed",
-            "no_invalidated_pass_evidence",
-            "no_open_blocking_bugs"
-          ],
-          "actions": [
-            "record_clean_round"
-          ],
-          "required_evidence": [
-            "clean_round_record"
-          ],
-          "on_guard_failure": "warn_and_retry",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-VERIFY-CLEAN-ROUND-VALID",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "Only one complete, current and blocker-free round passes."
-        },
-        {
-          "id": "PTR-VERIFY-05",
-          "from": "clean_round_evaluation",
-          "selector": "SEL-VERIFICATION-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
-          "event": "clean_round_incomplete",
-          "to": "delivery",
-          "actors": [
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [],
-          "actions": [
-            "start_new_review_round"
-          ],
-          "required_evidence": [
-            "clean_round_record"
-          ],
-          "on_guard_failure": "warn_and_retry",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-CLEAN-ROUND-INCOMPLETE",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "Mixed, incomplete or stale evidence restarts the full review."
-        }
-      ]
+      "transitions": []
     },
     "bug_resolution": {
       "owner_state": "bug_resolution",
@@ -389,42 +255,97 @@
       ],
       "phases": {
         "investigation": {
-          "description": "Reproduce findings and determine root cause.",
-          "entry_condition": "Blocking findings are received.",
-          "exit_condition": "Root cause and evidence are sufficient to draft canonical BUGs."
+          "description": "Investigators consume S7 encounter/raw evidence, form competing hypotheses and answer independent discriminator questions. Reproduction is an exception for missing or contradictory evidence, not an intake requirement.",
+          "entry_condition": "TR-008 or a human defect decision has opened an InvestigationCase with an exact source Finding set and a frozen baseline.",
+          "exit_condition": "The Case has a supported causal model, or an explicit route to investigate_more, specification rework, REQ decision, duplicate, or no-change."
         },
         "bug_report_review": {
-          "description": "The orchestrator deduplicates and accepts canonical BUG reports.",
-          "entry_condition": "BUG drafts contain reproduction, root cause and Closing Contract.",
-          "exit_condition": "Every blocking finding has an explicit disposition. An insufficient BUG report returns to investigation (PTR-BUG-03); an accepted canonical BUG enters repair_readback (PTR-BUG-02); a final rejected finding with no product or specification change, or a duplicate whose canonical target needs no remaining repair, may use TR-022 only when no accepted BUG remains; a duplicate of an open canonical BUG follows that BUG's repair path; spec rework uses TR-023 and REQ change uses TR-024."
+          "description": "Legacy compatibility projection only. New S8 paths do not enter this phase and do not use canonical BUG acceptance as their authority. Existing BUG records are projections of an InvestigationCase/RepairContract and must be mapped back to those artifacts before repair.",
+          "entry_condition": "An older implementation has already materialized a BUG projection that must be reconciled into an InvestigationCase.",
+          "exit_condition": "The projection is mapped to a Case and, when repair is requested, an approved RepairContract exists; otherwise the projection returns to investigation for Case reconciliation."
         },
         "repair_readback": {
-          "description": "Repair Builders read BUG plus the original specification chain and submit structured understanding.",
-          "entry_condition": "Canonical BUGs are accepted.",
-          "exit_condition": "Understanding and phase-two activation are approved."
+          "description": "S9 Repair Builders read the approved RepairContract and submit structured understanding. A compatibility BUG projection may be read for legacy context but cannot authorize repair.",
+          "entry_condition": "An approved RepairContract is durably referenced and handed off from S8.",
+          "exit_condition": "Understanding and phase-two activation are approved against the RepairContract."
+        },
+        "planning": {
+          "description": "S9 Repair Builders bind each RepairUnit to an explicit Assignment/assertion map and submit an immutable PlanReport with proposed scope and a failing pre-fix check; product writes remain denied.",
+          "entry_condition": "A RepairSession and RepairPlan are created from the approved RepairContract.",
+          "exit_condition": "Every required Assignment has a bound PlanReport."
+        },
+        "reproducing": {
+          "description": "The Runtime and PreToolUse Hook hold the product first-write barrier while the builder confirms the original failure and records red pre-fix evidence.",
+          "entry_condition": "A PlanReport is accepted for the current RepairPlan and Assignment.",
+          "exit_condition": "The explicit S9 execution-begin checkpoint is committed."
         },
         "fixing": {
-          "description": "Activated repair Builders implement within approved BUG/task scope.",
-          "entry_condition": "Repair activation is recorded.",
-          "exit_condition": "Fix reports, changed paths and validation evidence exist."
+          "description": "Activated repair Builders implement within the approved RepairContract scope and immutable Assignment/path boundary; every Assignment must report exact units before impact reconciliation.",
+          "entry_condition": "Repair activation is recorded and an approved RepairContract is current.",
+          "exit_condition": "Fix reports, changed paths and validation evidence exist for the Contract."
         },
         "targeted_reverification": {
-          "description": "The original finding responsibility checks each BUG Closing Contract.",
-          "entry_condition": "Repair evidence exists and affected PASS evidence is invalidated.",
+          "description": "The original Finding responsibility checks the RepairContract symptom, invariant and detection-gap assertions.",
+          "entry_condition": "Repair evidence exists, affected PASS evidence is invalidated, and the approved RepairContract is current.",
           "exit_condition": "Targeted checks pass or return to investigation."
         },
         "ready_for_full_review": {
-          "description": "A terminal handoff checkpoint inside S9: targeted checks pass and no further S9 work may start; the only successor is TR-012 into a complete Delivery + QA + E2E Browser round.",
-          "entry_condition": "All repaired BUGs pass targeted re-verification.",
+          "description": "A terminal handoff checkpoint inside S9: all RepairContract assertions pass and no further S9 work may start; the only successor is TR-012 into a complete Delivery + QA + E2E Browser round.",
+          "entry_condition": "All source Findings covered by the approved RepairContract pass targeted re-verification.",
           "exit_condition": "TR-012 returns the top-level Loop to verification.delivery."
         }
       },
       "transitions": [
         {
+          "id": "PTR-BUG-09",
+          "from": "repair_readback",
+          "selector": "SEL-BUG-OUTCOME",
+          "automation": {"eligible": true, "human_boundary": false},
+          "event": "repair_plan_compiled",
+          "to": "planning",
+          "actors": ["orchestrator", "hook_controller"],
+          "guards": [],
+          "actions": [],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "S9 enters planning with a dispatchable Assignment set; no implementation write is authorized yet."
+        },
+        {
+          "id": "PTR-BUG-10",
+          "from": "planning",
+          "selector": "SEL-BUG-OUTCOME",
+          "automation": {"eligible": true, "human_boundary": false},
+          "event": "repair_plan_reported",
+          "to": "reproducing",
+          "actors": ["orchestrator", "hook_controller"],
+          "guards": [],
+          "actions": [],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "Builders report their intended repair and failing pre-fix signal before execution."
+        },
+        {
+          "id": "PTR-BUG-11",
+          "from": "reproducing",
+          "selector": "SEL-BUG-OUTCOME",
+          "automation": {"eligible": true, "human_boundary": false},
+          "event": "repair_execution_started",
+          "to": "fixing",
+          "actors": ["orchestrator", "hook_controller"],
+          "guards": [],
+          "actions": [],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "Only the explicit execution checkpoint releases implementation writes."
+        },
+        {
           "id": "PTR-BUG-01",
           "from": "investigation",
           "selector": "SEL-BUG-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "bug_drafts_ready",
           "to": "bug_report_review",
           "actors": [
@@ -438,10 +359,10 @@
             "record_bug_drafts"
           ],
           "required_evidence": [
-            "finding_record",
+            "observation_batch_record",
             "root_cause_record"
           ],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -450,13 +371,16 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "A finding cannot become repair work before root-cause evidence exists."
+          "description": "Legacy compatibility transition only. If an older implementation emits bug_drafts_ready, the resulting BUG records are projections that must be reconciled into an InvestigationCase; new paths keep the Case status in its artifact and do not create a second runtime phase machine."
         },
         {
           "id": "PTR-BUG-02",
           "from": "bug_report_review",
           "selector": "SEL-BUG-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "canonical_bugs_accepted",
           "to": "repair_readback",
           "actors": [
@@ -473,7 +397,7 @@
           "required_evidence": [
             "bug_batch_record"
           ],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -482,13 +406,16 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "The orchestrator approves canonical BUGs and duplicate mappings."
+          "description": "Legacy compatibility projection only. A canonical BUG acceptance event cannot authorize S9 unless an approved RepairContract is already present; new paths do not enter bug_report_review."
         },
         {
           "id": "PTR-BUG-03",
           "from": "bug_report_review",
           "selector": "SEL-BUG-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "bug_reports_rejected",
           "to": "investigation",
           "actors": [
@@ -502,7 +429,7 @@
           "required_evidence": [
             "bug_batch_record"
           ],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -511,13 +438,45 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "Insufficient BUG reports return to investigation."
+          "description": "Legacy compatibility projection only. Rejected BUG projections return to the InvestigationCase rather than creating another per-Finding BUG draft."
+        },
+        {
+          "id": "PTR-BUG-08",
+          "from": "investigation",
+          "selector": "SEL-BUG-OUTCOME",
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
+          "event": "repair_contract_approved",
+          "to": "repair_readback",
+          "actors": [
+            "orchestrator",
+            "hook_controller"
+          ],
+          "guards": [
+            "root_cause_evidence_complete",
+            "bug_closing_contract_complete",
+            "bug_closing_contracts_complete"
+          ],
+          "actions": [
+            "set_bug_phase_repair_readback"
+          ],
+          "required_evidence": [
+            "root_cause_record",
+            "repair_record"
+          ],
+          "on_guard_failure": "reject",
+          "description": "Legacy compatibility projection only. The current S8 main path is `runtime investigation contract approve`, which writes immutable approved Case/Contract revisions, pins their hashes, and enters S9 repair_readback directly; it does not invoke this PTR-BUG-08 catalog transition. No canonical BUG acceptance is required or sufficient."
         },
         {
           "id": "PTR-BUG-04",
           "from": "repair_readback",
           "selector": "SEL-BUG-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "repair_builders_activated",
           "to": "fixing",
           "actors": [
@@ -534,7 +493,7 @@
           "required_evidence": [
             "activation_record"
           ],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -543,13 +502,16 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "Repair execution uses the same two-phase activation gate."
+          "description": "Legacy compatibility projection only. Current S9 dispatch uses `runtime repair dispatch` for each RepairAssignment, then the explicit `runtime repair execution begin` checkpoint releases implementation writes."
         },
         {
           "id": "PTR-BUG-05",
           "from": "fixing",
           "selector": "SEL-BUG-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "repair_batch_reported",
           "to": "targeted_reverification",
           "actors": [
@@ -567,7 +529,7 @@
             "repair_record",
             "change_impact_record"
           ],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -582,7 +544,10 @@
           "id": "PTR-BUG-06",
           "from": "targeted_reverification",
           "selector": "SEL-BUG-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "targeted_reverification_pass",
           "to": "ready_for_full_review",
           "actors": [
@@ -598,7 +563,7 @@
           "required_evidence": [
             "targeted_reverification_record"
           ],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -610,10 +575,34 @@
           "description": "A targeted pass never substitutes for the full review round; it records the S9-to-S7 handoff checkpoint."
         },
         {
+          "id": "PTR-BUG-12",
+          "from": "investigation",
+          "selector": "SEL-BUG-OUTCOME",
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
+          "event": "targeted_reverification_unblocked",
+          "to": "targeted_reverification",
+          "actors": [
+            "orchestrator",
+            "hook_controller",
+            "qa"
+          ],
+          "guards": [],
+          "actions": [],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "After an environmental or authority blocker is resolved, reopen the existing targeted verification checkpoint; runtime hard-checks status=blocked, failure_route=blocked, and a non-empty resolution reason. A new independent TargetedReverification is still required, and this transition never authorizes a repair or a pass."
+        },
+        {
           "id": "PTR-BUG-07",
           "from": "targeted_reverification",
           "selector": "SEL-BUG-OUTCOME",
-          "automation": {"eligible": true, "human_boundary": false},
+          "automation": {
+            "eligible": true,
+            "human_boundary": false
+          },
           "event": "targeted_reverification_fail",
           "to": "investigation",
           "actors": [
@@ -627,7 +616,7 @@
           "required_evidence": [
             "targeted_reverification_record"
           ],
-          "on_guard_failure": "warn_and_retry",
+          "on_guard_failure": "reject",
           "auto_trigger": {
             "enabled": true,
             "event": "PreToolUse",
@@ -636,7 +625,7 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "Failed repair verification restarts root-cause investigation."
+          "description": "Failed repair verification returns to the same InvestigationCase for causal reassessment; it does not create a new BUG draft unless the causal model genuinely differs."
         }
       ]
     }
@@ -650,6 +639,7 @@
       ],
       "states": [
         "spawned",
+        "queued",
         "reading",
         "understanding_submitted",
         "understanding_approved",
@@ -710,6 +700,14 @@
           ]
         },
         {
+          "from": "understanding_submitted",
+          "event": "activation_sent",
+          "to": "activated",
+          "guards": [
+            "activation_scope_valid"
+          ]
+        },
+        {
           "from": "activated",
           "event": "work_started",
           "to": "working",
@@ -744,7 +742,7 @@
         {
           "from": "blocked",
           "event": "blocker_resolved",
-          "to": "activated",
+          "to": "working",
           "guards": [
             "activation_scope_still_valid"
           ]
@@ -950,18 +948,17 @@
     {
       "id": "TR-001",
       "from": "inactive",
-      "automation": {"eligible": false, "human_boundary": true},
-      "event": "loop_requested",
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
+      "event": "req_bound",
       "to": "planning",
       "actors": [
         "user",
         "orchestrator"
       ],
       "guards": [
-        "req_exists",
-        "req_locked",
-        "req_questions_non_blocking",
-        "pm_context_matches_req",
         "no_other_active_loop"
       ],
       "actions": [
@@ -980,7 +977,10 @@
       "from": "planning",
       "from_phase": "tasks",
       "selector": "SEL-PLANNING-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "planning_ready",
       "to": "document_verification",
       "actors": [
@@ -988,11 +988,15 @@
         "hook_controller"
       ],
       "guards": [
-        "planning_complete"
+        "planning_complete",
+        "tasks_checked"
       ],
-      "actions": [],
+      "actions": [
+        "register_locked_contracts",
+        "register_planning_tasks"
+      ],
       "required_evidence": [],
-      "on_guard_failure": "warn_and_retry",
+      "on_guard_failure": "reject",
       "auto_trigger": {
         "enabled": true,
         "event": "PreToolUse",
@@ -1001,13 +1005,16 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Planning completes when at least one CONTRACTS-*.md is locked AND at least one TASK-*.md is complete. Direct file+status check via the planning_complete guard."
+      "description": "Planning completes when contracts are locked and the TASK batch is fully complete on disk (planning_complete), with clause coverage, DAG acyclicity, and closing contracts verified (tasks_checked). Gate readiness facts: a TASK declaring `Status: complete` on disk (or a registered complete task) plus valid planning_task evidence — the missing token `document:task:complete` means neither was found. On commit, locked contracts and complete tasks are registered into documents[]."
     },
     {
       "id": "TR-003",
       "from": "document_verification",
       "selector": "SEL-DOCUMENT-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "document_pass",
       "to": "building",
       "actors": [
@@ -1020,13 +1027,10 @@
         "verified_versions_current"
       ],
       "actions": [
-        "atomically_lock_execution_batch",
-        "record_document_result"
+        "register_execution_batch"
       ],
       "required_evidence": [
-        "document_review_record",
-        "contract_set_record",
-        "task_batch_record"
+        "document_review_record"
       ],
       "on_guard_failure": "reject",
       "auto_trigger": {
@@ -1043,7 +1047,10 @@
       "id": "TR-004",
       "from": "document_verification",
       "selector": "SEL-DOCUMENT-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "document_fix_required",
       "to": "planning",
       "actors": [
@@ -1055,7 +1062,7 @@
         "req_baseline_unchanged"
       ],
       "actions": [
-        "record_document_result"
+        "invalidate_consumed_review_evidence"
       ],
       "required_evidence": [
         "document_review_record"
@@ -1074,7 +1081,10 @@
     {
       "id": "TR-005",
       "from": "document_verification",
-      "automation": {"eligible": false, "human_boundary": true},
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
       "event": "document_req_change_required",
       "to": "paused",
       "actors": [
@@ -1097,7 +1107,10 @@
       "id": "TR-006",
       "from": "building",
       "selector": "SEL-BUILDING-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "builder_batch_reported",
       "to": "verification",
       "actors": [
@@ -1107,20 +1120,15 @@
         "orchestrator",
         "hook_controller"
       ],
-      "guards": [
-        "all_builder_tasks_in_review",
-        "builder_reports_complete",
-        "verification_team_manifest_complete"
-      ],
+      "guards": [],
       "actions": [
         "start_review_round",
-        "set_verification_phase_delivery"
+        "set_verification_phase_planned"
       ],
       "required_evidence": [
-        "builder_report_record",
-        "team_manifest_record"
+        "builder_report_record"
       ],
-      "on_guard_failure": "warn_and_retry",
+      "on_guard_failure": "reject",
       "auto_trigger": {
         "enabled": true,
         "event": "PreToolUse",
@@ -1129,13 +1137,16 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Start a complete review round after all activated Builders report."
+      "description": "Start a complete review round after every TASK in the TR-003 exact execution batch has a Builder Result with passing checks, no unapproved scope deviations, and a verified integration checkpoint. S7 verification planning starts from the real integrated diff at its own entry; the building stage no longer demands S7 team-manifest evidence it cannot legitimately produce."
     },
     {
       "id": "TR-007",
       "from": "building",
       "selector": "SEL-BUILDING-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "execution_spec_change_required",
       "to": "planning",
       "actors": [
@@ -1169,7 +1180,10 @@
       "id": "TR-008",
       "from": "verification",
       "selector": "SEL-VERIFICATION-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "blocking_findings_reported",
       "to": "bug_resolution",
       "actors": [
@@ -1180,14 +1194,13 @@
         "hook_controller"
       ],
       "guards": [
-        "blocking_findings_present"
+        "observation_batch_sealed"
       ],
       "actions": [
-        "record_finding_batch",
         "set_bug_phase_investigation"
       ],
       "required_evidence": [
-        "finding_record"
+        "observation_batch_record"
       ],
       "on_guard_failure": "reject",
       "auto_trigger": {
@@ -1198,14 +1211,18 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Any blocking Delivery, QA, or E2E Browser finding means the REQ batch is incomplete and must enter S8 investigation before repair."
+      "description": "A sealed ObservationBatch carries the exact immutable Finding set (with encounters, wall actions and evidence refs) into the S8 Runtime cursor. TR-008 records the cursor handoff; the next mandatory S8 verb is `runtime investigation ingest`, which creates the InvestigationCase after exact-set/hash/baseline validation. S8 consumes the facts and does not re-reproduce symptoms by default. No per-Finding BUG draft is created; any legacy BUG draft is only a compatibility projection of the Case.",
+      "from_phase": "observation_sealed"
     },
     {
       "id": "TR-009",
       "from": "verification",
-      "from_phase": "clean_round_passed",
+      "from_phase": "clean",
       "selector": "SEL-VERIFICATION-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "clean_round_passed",
       "to": "acceptance",
       "actors": [
@@ -1213,10 +1230,7 @@
         "hook_controller"
       ],
       "guards": [
-        "verification_phase_clean_round_passed",
-        "same_review_round",
-        "no_invalidated_pass_evidence",
-        "no_open_blocking_bugs"
+        "clean_round_valid"
       ],
       "actions": [
         "record_clean_round"
@@ -1233,13 +1247,16 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Acceptance requires one complete, current and blocker-free review round."
+      "description": "Acceptance requires the machine CleanRound: every required Claim of the current ReviewPlan has a consumed pass Result, no current-round Finding exists, and the clean-round snapshot is recomputed by the clean_round_valid guard at promotion time."
     },
     {
       "id": "TR-010",
       "from": "verification",
       "selector": "SEL-VERIFICATION-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "verification_req_change_required",
       "to": "paused",
       "actors": [
@@ -1249,13 +1266,12 @@
         "orchestrator",
         "hook_controller"
       ],
-      "guards": [],
-      "actions": [
-        "capture_pause_checkpoint"
+      "guards": [
+        "pause_checkpoint_recorded"
       ],
+      "actions": [],
       "required_evidence": [
-        "review_result_record",
-        "pause_record"
+        "review_result_record"
       ],
       "on_guard_failure": "reject",
       "auto_trigger": {
@@ -1266,13 +1282,16 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "A required REQ change pauses automation."
+      "description": "A ReviewResult verdict of req_change_required pauses the loop for a human REQ decision. The verdict transaction (runtime review-result submit) already created the single authoritative pause checkpoint; this transition only moves the cursor."
     },
     {
       "id": "TR-011",
       "from": "verification",
       "selector": "SEL-VERIFICATION-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "verification_release_blocked",
       "to": "paused",
       "actors": [
@@ -1280,13 +1299,12 @@
         "orchestrator",
         "hook_controller"
       ],
-      "guards": [],
-      "actions": [
-        "capture_pause_checkpoint"
+      "guards": [
+        "pause_checkpoint_recorded"
       ],
+      "actions": [],
       "required_evidence": [
-        "review_result_record",
-        "pause_record"
+        "review_result_record"
       ],
       "on_guard_failure": "reject",
       "auto_trigger": {
@@ -1297,14 +1315,17 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Security, compliance or equivalent blockers require human intervention."
+      "description": "A ReviewResult verdict of release_blocked pauses the loop for a human release decision. The verdict transaction (runtime review-result submit) already created the single authoritative pause checkpoint; this transition only moves the cursor."
     },
     {
       "id": "TR-012",
       "from": "bug_resolution",
       "from_phase": "ready_for_full_review",
       "selector": "SEL-BUG-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "targeted_reverification_completed",
       "to": "verification",
       "actors": [
@@ -1320,7 +1341,7 @@
       ],
       "actions": [
         "start_review_round",
-        "set_verification_phase_delivery"
+        "set_verification_phase_planned"
       ],
       "required_evidence": [
         "targeted_reverification_record",
@@ -1335,13 +1356,16 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Only the ready_for_full_review handoff checkpoint may enter a complete Delivery + QA + E2E Browser round; targeted re-verification never substitutes for that round."
+      "description": "Only the ready_for_full_review handoff checkpoint for an approved RepairContract may enter a complete Delivery + QA + E2E Browser round; targeted re-verification never substitutes for that round."
     },
     {
       "id": "TR-013",
       "from": "bug_resolution",
       "selector": "SEL-BUG-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "repair_spec_change_required",
       "to": "planning",
       "actors": [
@@ -1376,7 +1400,10 @@
       "id": "TR-014",
       "from": "bug_resolution",
       "selector": "SEL-BUG-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "repair_req_change_required",
       "to": "paused",
       "actors": [
@@ -1412,7 +1439,10 @@
       "id": "TR-015",
       "from": "acceptance",
       "selector": "SEL-ACCEPTANCE-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "acceptance_completed",
       "to": "release_audit",
       "actors": [
@@ -1445,7 +1475,10 @@
       "id": "TR-016",
       "from": "acceptance",
       "selector": "SEL-ACCEPTANCE-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "acceptance_review_required",
       "to": "verification",
       "actors": [
@@ -1456,13 +1489,13 @@
       "actions": [
         "invalidate_affected_evidence",
         "start_review_round",
-        "set_verification_phase_delivery"
+        "set_verification_phase_planned"
       ],
       "required_evidence": [
         "acceptance_record",
         "change_impact_record"
       ],
-      "on_guard_failure": "warn_and_retry",
+      "on_guard_failure": "reject",
       "auto_trigger": {
         "enabled": true,
         "event": "PreToolUse",
@@ -1477,7 +1510,10 @@
       "id": "TR-017",
       "from": "release_audit",
       "selector": "SEL-RELEASE-AUDIT-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "release_audit_approved",
       "to": "awaiting_human_release",
       "actors": [
@@ -1495,7 +1531,8 @@
       ],
       "required_evidence": [
         "release_audit_record",
-        "acceptance_record"
+        "acceptance_record",
+        "clean_round_record"
       ],
       "on_guard_failure": "reject",
       "auto_trigger": {
@@ -1512,7 +1549,10 @@
       "id": "TR-018",
       "from": "release_audit",
       "selector": "SEL-RELEASE-AUDIT-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "release_audit_blocked",
       "to": "paused",
       "actors": [
@@ -1543,7 +1583,10 @@
     {
       "id": "TR-019",
       "from": "paused",
-      "automation": {"eligible": false, "human_boundary": true},
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
       "event": "human_resume_approved",
       "to": "RESUME_FROM_PAUSE",
       "actors": [
@@ -1561,13 +1604,17 @@
         "human_decision_record",
         "pause_record"
       ],
+      "human_decision_scope": "runtime_resume",
       "on_guard_failure": "reject",
       "description": "Resume the exact validated state, phase and entity checkpoint."
     },
     {
       "id": "TR-020",
       "from": "paused",
-      "automation": {"eligible": false, "human_boundary": true},
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
       "event": "req_baseline_updated",
       "to": "planning",
       "actors": [
@@ -1579,19 +1626,24 @@
       ],
       "actions": [
         "increment_baseline_generation",
+        "update_bound_req",
         "invalidate_all_downstream_evidence"
       ],
       "required_evidence": [
         "human_decision_record",
         "req_lock_record"
       ],
+      "human_decision_scope": "runtime_amend",
       "on_guard_failure": "reject",
       "description": "A changed locked REQ starts a new planning generation."
     },
     {
       "id": "TR-021",
       "from": "paused",
-      "automation": {"eligible": false, "human_boundary": true},
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
       "event": "human_abort_approved",
       "to": "aborted",
       "actors": [
@@ -1607,6 +1659,7 @@
       "required_evidence": [
         "human_decision_record"
       ],
+      "human_decision_scope": "runtime_abort",
       "on_guard_failure": "reject",
       "description": "Only a human may permanently abort the Loop."
     },
@@ -1614,7 +1667,10 @@
       "id": "TR-022",
       "from": "bug_resolution",
       "selector": "SEL-BUG-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "findings_resolved_without_repair",
       "to": "verification",
       "actors": [
@@ -1641,13 +1697,16 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "When the completed S8 disposition batch contains no accepted BUG, every finding is finally rejected without product/specification change or duplicate-linked to a canonical BUG with no remaining repair, the Loop returns to verification for a fresh complete round. An insufficient BUG report remains in investigation; spec and REQ changes use TR-023 and TR-024."
+      "description": "When the InvestigationCase has dispositioned every source Finding as no-change, duplicate, or another non-repair route, and no approved RepairContract remains, the Loop returns to verification for a fresh complete round. The legacy bug_batch_record is only a compatibility projection; spec and REQ changes use TR-023 and TR-024."
     },
     {
       "id": "TR-023",
       "from": "bug_resolution",
       "selector": "SEL-BUG-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "finding_spec_change_required",
       "to": "planning",
       "actors": [
@@ -1679,7 +1738,10 @@
       "id": "TR-024",
       "from": "bug_resolution",
       "selector": "SEL-BUG-OUTCOME",
-      "automation": {"eligible": true, "human_boundary": false},
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
       "event": "finding_req_change_required",
       "to": "paused",
       "actors": [
@@ -1704,6 +1766,157 @@
         "human_required": false
       },
       "description": "A finding that requires modifying the locked REQ cannot proceed autonomously; the Loop pauses for human amendment. Complements TR-014 which handles repair-level REQ change."
+    },
+    {
+      "id": "TR-025",
+      "from": "awaiting_human_release",
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
+      "event": "human_release_approved",
+      "to": "release_authorized",
+      "actors": [
+        "user",
+        "orchestrator"
+      ],
+      "guards": [],
+      "actions": [
+        "record_human_release_decision"
+      ],
+      "required_evidence": [
+        "human_decision_record"
+      ],
+      "human_decision_scope": "runtime_release",
+      "on_guard_failure": "reject",
+      "description": "Record human release authorization without performing merge, publication, deployment, or formal release."
+    },
+    {
+      "id": "TR-026",
+      "from": "awaiting_human_release",
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
+      "event": "human_release_deferred",
+      "to": "paused",
+      "actors": [
+        "user",
+        "orchestrator"
+      ],
+      "guards": [],
+      "actions": [
+        "capture_pause_checkpoint",
+        "record_human_release_decision"
+      ],
+      "required_evidence": [
+        "human_decision_record",
+        "pause_record"
+      ],
+      "human_decision_scope": "runtime_release",
+      "on_guard_failure": "reject",
+      "description": "Defer the release decision and capture the S11 checkpoint before entering paused."
+    },
+    {
+      "id": "TR-027",
+      "from": "awaiting_human_release",
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
+      "event": "human_release_rejected_defect",
+      "to": "bug_resolution",
+      "actors": [
+        "user",
+        "orchestrator"
+      ],
+      "guards": [],
+      "actions": [
+        "record_human_release_decision"
+      ],
+      "required_evidence": [
+        "human_decision_record",
+        "finding_record"
+      ],
+      "human_decision_scope": "runtime_release",
+      "on_guard_failure": "reject",
+      "description": "Route a human defect rejection to bug-resolution investigation with its finding evidence."
+    },
+    {
+      "id": "TR-028",
+      "from": "awaiting_human_release",
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
+      "event": "human_release_rejected_acceptance",
+      "to": "acceptance",
+      "actors": [
+        "user",
+        "orchestrator"
+      ],
+      "guards": [],
+      "actions": [
+        "record_human_release_decision",
+        "invalidate_human_release_acceptance_evidence"
+      ],
+      "required_evidence": [
+        "human_decision_record"
+      ],
+      "human_decision_scope": "runtime_release",
+      "on_guard_failure": "reject",
+      "description": "Re-enter acceptance and invalidate only prior acceptance and release-audit evidence."
+    },
+    {
+      "id": "TR-029",
+      "from": "awaiting_human_release",
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
+      "event": "human_release_rejected_release_audit",
+      "to": "release_audit",
+      "actors": [
+        "user",
+        "orchestrator"
+      ],
+      "guards": [],
+      "actions": [
+        "record_human_release_decision",
+        "invalidate_human_release_release_audit_evidence"
+      ],
+      "required_evidence": [
+        "human_decision_record"
+      ],
+      "human_decision_scope": "runtime_release",
+      "on_guard_failure": "reject",
+      "description": "Re-enter release audit and invalidate only prior release-audit evidence."
+    },
+    {
+      "id": "TR-030",
+      "from": "awaiting_human_release",
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
+      "event": "human_release_aborted",
+      "to": "aborted",
+      "actors": [
+        "user",
+        "orchestrator"
+      ],
+      "guards": [
+        "human_abort_approved"
+      ],
+      "actions": [
+        "record_human_release_decision"
+      ],
+      "required_evidence": [
+        "human_decision_record"
+      ],
+      "human_decision_scope": "runtime_release",
+      "on_guard_failure": "reject",
+      "description": "Record a human release abort without performing any release side effect."
     }
   ],
   "global_transitions": [
@@ -1732,6 +1945,7 @@
         "human_decision_record",
         "pause_record"
       ],
+      "human_decision_scope": "runtime_pause",
       "on_guard_failure": "reject",
       "description": "A user may pause from any active state."
     },
@@ -1818,7 +2032,7 @@
         "bug_batch_record"
       ],
       "on_guard_failure": "reject",
-      "description": "Configured repair limits never silently close a BUG."
+      "description": "Configured repair limits never silently close an InvestigationCase or RepairContract; exhaustion pauses the Loop with the current repair evidence."
     },
     {
       "id": "GTR-005",
@@ -1847,6 +2061,33 @@
       ],
       "on_guard_failure": "reject",
       "description": "Runtime/document inconsistency fails closed."
+    },
+    {
+      "id": "GTR-006",
+      "from": [
+        "bug_resolution",
+        "acceptance"
+      ],
+      "automation": {
+        "eligible": false,
+        "human_boundary": true
+      },
+      "event": "human_s7_governance_return",
+      "to": "planning",
+      "actors": [
+        "user",
+        "orchestrator"
+      ],
+      "guards": [],
+      "actions": [
+        "reset_s7_review_after_governance"
+      ],
+      "required_evidence": [
+        "human_decision_record"
+      ],
+      "human_decision_scope": "runtime_governance",
+      "on_guard_failure": "reject",
+      "description": "When the S7 full-review budget is exhausted, a human may return the Runtime to planning for specification or architecture governance instead of authorizing another review round."
     }
   ],
   "forbidden_events": [
@@ -1889,6 +2130,11 @@
       "event": "automated_formal_release",
       "enforcement": "strong_block",
       "reason": "Formal release is outside Loop automation."
+    },
+    {
+      "event": "automated_s11_decision",
+      "enforcement": "strong_block",
+      "reason": "Automation stops at awaiting_human_release; only TR-025..TR-030 human events may route S11."
     }
   ],
   "invariants": [
@@ -1929,27 +2175,27 @@
     },
     {
       "id": "INV-008",
-      "statement": "Every blocking finding maps to an accepted canonical BUG before repair.",
+      "statement": "Every blocking Finding maps to exactly one current InvestigationCase or an explicit duplicate, no-change, specification, or REQ disposition before S8 exits; a per-Finding BUG is not required.",
       "enforcement": "guard"
     },
     {
       "id": "INV-009",
-      "statement": "Repair reads BUG plus the original specification chain.",
+      "statement": "S8 consumes the sealed ObservationBatch encounter and raw evidence; symptom re-reproduction is not a default investigation prerequisite.",
       "enforcement": "guard"
     },
     {
       "id": "INV-010",
-      "statement": "Original finding responsibilities reverify repairs before a complete review restarts.",
+      "statement": "S9 repair activation requires a current approved RepairContract; canonical BUG records are compatibility projections and cannot authorize repair.",
       "enforcement": "guard"
     },
     {
       "id": "INV-011",
-      "statement": "Repair invalidates affected evidence and targeted checks never replace the complete review.",
+      "statement": "An approved RepairContract covers every source Finding with causal, invariant and detection-gap assertions; repair invalidates affected evidence and targeted checks never replace the complete review.",
       "enforcement": "combined"
     },
     {
       "id": "INV-012",
-      "statement": "A clean round uses current evidence from one complete round and has no blocking BUG.",
+      "statement": "A clean round uses current evidence from one complete round and has no unresolved blocking InvestigationCase or approved RepairContract.",
       "enforcement": "combined"
     },
     {
@@ -1959,8 +2205,8 @@
     },
     {
       "id": "INV-014",
-      "statement": "Loop automation ends at awaiting_human_release.",
-      "enforcement": "schema"
+      "statement": "Loop automation stops at awaiting_human_release, which is a human control gateway routable only by constrained human events; it is not a terminal state.",
+      "enforcement": "combined"
     },
     {
       "id": "INV-015",
@@ -1971,6 +2217,11 @@
       "id": "INV-016",
       "statement": "Runtime recovery restores state, phase and entity checkpoints without chat history.",
       "enforcement": "combined"
+    },
+    {
+      "id": "INV-017",
+      "statement": "Documentation fact: the compiled Go registry is the superset of the transition references declared here — 59 guards / 48 actions are registered (transition.GuardNames / transition.ActionNames) while this file's 81 transition declarations reference 58 unique guards / 33 unique actions. Registry >= definition is the invariant: every identifier referenced here MUST exist in the registry (LoadCatalog fail-closed check), but registry entries may exist without a declared consumer. Do not treat the count difference as documentation drift.",
+      "enforcement": "schema"
     }
   ]
 }

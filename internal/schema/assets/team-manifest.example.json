@@ -121,11 +121,19 @@
       "skill_refs": ["code-quality"],
       "read_paths": [".claude/hooks/", "tests/"],
       "write_paths": ["docs/reports/qa/QA-001.md"],
+      "required_checks": [
+        "go test ./internal/... ./tests/...",
+        "locked:docs/contracts/BE-002-runtime-validator.md"
+      ],
       "output_paths": ["docs/reports/qa/QA-001.md"],
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "One module and one code-quality conclusion.",
-      "status": "planned"
+      "done_when": ["register the QA Result for the exact assigned Claim set", "run and record every required check"],
+      "status": "planned",
+      "worktree_path": ".worktrees/assignment-qa-module-code",
+      "branch": "wt/assignment-qa-module-code",
+      "target_branch": "develop"
     },
     {
       "assignment_id": "assignment-qa-reuse",
@@ -141,6 +149,7 @@
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Reuse and hardcoding remain separate from local code correctness.",
+      "done_when": ["register the QA Result for the exact assigned Claim set", "record the reuse and abstraction conclusion"],
       "status": "planned"
     },
     {
@@ -157,6 +166,7 @@
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Unit-test evidence has an independent conclusion.",
+      "done_when": ["register the QA Result for the exact assigned Claim set", "record unit-test evidence and required checks"],
       "status": "planned"
     },
     {
@@ -173,6 +183,7 @@
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Integration behavior requires distinct evidence.",
+      "done_when": ["register the QA Result for the exact assigned Claim set", "record integration evidence and required checks"],
       "status": "planned"
     },
     {
@@ -189,6 +200,7 @@
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Shared runtime boundary triggered architecture review.",
+      "done_when": ["register the QA Result for the exact assigned Claim set", "record the architecture and boundary conclusion"],
       "status": "planned"
     },
     {
@@ -205,6 +217,7 @@
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Recovery and fail-closed behavior require an independent reliability conclusion.",
+      "done_when": ["register the QA Result for the exact assigned Claim set", "record recovery evidence and required checks"],
       "status": "planned"
     }
   ],

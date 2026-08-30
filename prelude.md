@@ -168,14 +168,18 @@ its permanent prompt.
 ## 4. Subagents
 
 Claude Code subagents use `.claude/agents/*.md`. Every assignment is singular
-and fingerprinted. Phase one is read-only and follows the document order in the
-request. Phase two is a separate activation bound to the approved read-back,
-tools, paths, commands, and current runtime revision.
+and fingerprinted. The default dispatch mode is `plan_checkpoint`: the Worker
+reads the fingerprinted chain, sends one PLAN_REPORT, and continues
+immediately (the PostToolUse observer records the checkpoint and activates the
+Worker). `plan_approval_required` keeps the two-round flow: phase one is
+read-only and follows the document order in the request; phase two is a
+separate activation bound to the approved read-back, tools, paths, commands,
+and current runtime revision.
 
-After the main session sends a phase-one request, the active Driver work is to
-collect and verify that Agent's read-back, then approve, reject, revoke, or
-reactivate the same Agent. The main session must not finish the delegated
-responsibility itself while phase one is pending.
+After the main session dispatches, the active Driver work is to watch for that
+Agent's PLAN_REPORT (or, in approval mode, collect and verify the read-back,
+then approve, reject, revoke, or reactivate the same Agent). The main session
+must not finish the delegated responsibility itself while the Agent is pending.
 
 Team construction uses `.claude/skills/team-planning/SKILL.md` and a manifest
 validated by:
@@ -196,7 +200,7 @@ Load procedures only when their trigger applies:
 | start, recovery, pause, resume, next action | `loop-orchestration` |
 | design, UI, contracts, candidate tasks | `specification-planning` |
 | contract/task batch review | `document-verification` |
-| teammate spawn or reactivation | `two-phase-activation` |
+| teammate spawn or reactivation | `agent-dispatch` |
 | workgroup planning | `team-planning` |
 | blocking finding and repair | `bug-resolution` |
 | changed artifact or stale evidence | `impact-analysis` |

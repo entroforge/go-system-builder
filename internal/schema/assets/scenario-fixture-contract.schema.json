@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/scenario-fixture-contract.schema.json",
+  "title": "Module Scenario Fixture Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["module", "fixtures"],
+  "properties": {
+    "module": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "fixtures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/fixture"}}
+  },
+  "$defs": {
+    "steps": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "fixture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "persona", "synthetic", "setup", "cleanup"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "persona": {"type": "string", "minLength": 1},
+        "synthetic": {"const": true},
+        "setup": {"$ref": "#/$defs/steps"},
+        "cleanup": {"$ref": "#/$defs/steps"}
+      }
+    }
+  }
+}

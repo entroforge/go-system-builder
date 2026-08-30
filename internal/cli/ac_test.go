@@ -54,13 +54,22 @@ func acFixtureRoot(t *testing.T) string {
 	for _, rel := range []string{
 		"docs/loop-definition.json",
 		"docs/hook-policy.json",
+		// RC-06 (S10-3): the protected-release policy rule loads the
+		// data-driven protected-commands table from the runtime root; the
+		// fixture must ship the real table so Bash classification sees the
+		// production surface instead of failing closed on a missing file.
+		"docs/release_audits/protected_commands.json",
 	} {
 		source := filepath.Join(repoRoot(t), rel)
 		data, err := os.ReadFile(source)
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
-		if err := os.WriteFile(filepath.Join(root, rel), data, 0o644); err != nil {
+		target := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -87,7 +96,7 @@ func writeACState(t *testing.T, root string, state map[string]any) {
 
 // planningState builds a schema-valid loop-state.json that drives the
 // pre-tool-use ControlCycle. The fields mirror loop-state.example.json
-// (B1 §8.1) so the PreCommitValidator accepts the post-mutation state
+// (B1 §8.1) so the commit validator accepts the post-mutation state
 // the Controller persists (BUG-039-07 §4.1). Without the full schema
 // surface (bound_req sha256, manual_ref, instruction, recovery,
 // configuration), MarshalAndValidateRuntime would reject the

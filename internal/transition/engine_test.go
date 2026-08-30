@@ -25,7 +25,7 @@ func TestApplyStartsLockedREQAndProducesSchemaValidRuntime(t *testing.T) {
 		ExpectedRevision: 0,
 		Actor:            "user",
 		Evidence: map[string]string{
-			"req_lock_record":           "REQ-002#lock",
+			"req_lock_record":           "docs/requirements/REQ-002.md@0000000000000000000000000000000000000000000000000000000000000000",
 			"loop_authorization_record": "user:/loop REQ-002",
 		},
 		REQ: &transition.LockedREQ{
@@ -41,8 +41,8 @@ func TestApplyStartsLockedREQAndProducesSchemaValidRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Revision != 1 {
-		t.Fatalf("expected revision 1, got %d", next.Revision)
+	if next.Revision != 0 {
+		t.Fatalf("expected new bound runtime revision 0, got %d", next.Revision)
 	}
 	data, err := os.ReadFile(statePath)
 	if err != nil {
@@ -55,11 +55,8 @@ func TestApplyStartsLockedREQAndProducesSchemaValidRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := schema.NewValidator(root).ValidateBytes(
-		"loop-event.schema.json",
-		journal,
-	); err != nil {
-		t.Fatalf("transition produced invalid journal event: %v", err)
+	if len(journal) != 0 {
+		t.Fatalf("bound runtime journal must start empty, got %q", journal)
 	}
 	var state map[string]any
 	if err := json.Unmarshal(data, &state); err != nil {
@@ -112,7 +109,7 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 		ExpectedRevision: 0,
 		Actor:            "user",
 		Evidence: map[string]string{
-			"req_lock_record":           "REQ-002#lock",
+			"req_lock_record":           "docs/requirements/REQ-002.md@0000000000000000000000000000000000000000000000000000000000000000",
 			"loop_authorization_record": "user:/loop REQ-002",
 		},
 		REQ: &transition.LockedREQ{
@@ -125,12 +122,12 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
-		TransitionID: "PTR-PLAN-01", ExpectedRevision: 1, Actor: "hook_controller",
+		TransitionID: "PTR-PLAN-01", ExpectedRevision: 0, Actor: "hook_controller",
 	}); err != nil {
 		t.Fatalf("PTR-PLAN-01 must advance planning.design: %v", err)
 	}
 	if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
-		TransitionID: "PTR-PLAN-02", ExpectedRevision: 2, Actor: "hook_controller",
+		TransitionID: "PTR-PLAN-02", ExpectedRevision: 1, Actor: "hook_controller",
 	}); err != nil {
 		t.Fatalf("PTR-PLAN-02 must advance planning.contracts: %v", err)
 	}
@@ -139,7 +136,7 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 	// values.
 	next, err := transition.Apply(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-002",
-		ExpectedRevision: 3,
+		ExpectedRevision: 2,
 		Actor:            "orchestrator",
 		Evidence:         map[string]string{},
 	})
@@ -153,7 +150,7 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 
 	if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-006",
-		ExpectedRevision: 2,
+		ExpectedRevision: 3,
 		Actor:            "orchestrator",
 		Evidence: map[string]string{
 			"builder_report_record": "builder-report",
@@ -168,25 +165,13 @@ func TestApplyPlanningCompleteAcceptsEnglishStatusFields(t *testing.T) {
 	root := filepath.Join("..", "..")
 	statePath, journalPath := copyInactiveRuntime(t, root)
 	startLockedREQ(t, root, statePath, journalPath)
-	planningRoot := filepath.Dir(statePath)
-	if err := os.MkdirAll(filepath.Join(planningRoot, "docs", "contracts"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(planningRoot, "docs", "tasks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(planningRoot, "docs", "contracts", "CONTRACTS-english.md"), []byte("# Contract\n\n> Status: locked\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(planningRoot, "docs", "tasks", "TASK-english.md"), []byte("# Task\n\n> Status: complete\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	seedPlanningArtifactsLang(t, statePath, true)
 	advancePlanningToTasks(t, root, statePath, journalPath)
 
 	if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
-		TransitionID: "TR-002", ExpectedRevision: 3, Actor: "orchestrator", Evidence: map[string]string{},
+		TransitionID: "TR-002", ExpectedRevision: 2, Actor: "orchestrator", Evidence: map[string]string{},
 	}); err != nil {
-		t.Fatalf("TR-002 must accept the English Status field used by TASK templates: %v", err)
+		t.Fatalf("TR-002 must accept the English Status fields used by TASK templates: %v", err)
 	}
 }
 
@@ -218,7 +203,7 @@ func TestApplyRejectsEvidenceNotRegisteredInRuntime(t *testing.T) {
 	// when the planning_complete guard finds no CONTRACTS-*.md with
 	// status=locked AND no TASK-*.md with status=complete.
 	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
-		TransitionID: "TR-002", ExpectedRevision: 3, Actor: "orchestrator",
+		TransitionID: "TR-002", ExpectedRevision: 2, Actor: "orchestrator",
 		Evidence: map[string]string{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "planning not complete") {
@@ -242,9 +227,12 @@ func TestApplyDispatchesRegisteredGuardAndAction(t *testing.T) {
 		guardCalled = true
 		return nil
 	})
+	transition.RegisterGuard("tasks_checked", func(state map[string]any, evidence map[string]string) error {
+		return nil
+	})
 	defer transition.InitGuardRegistry()
 	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
-		TransitionID: "TR-002", ExpectedRevision: 3, Actor: "orchestrator", Evidence: map[string]string{},
+		TransitionID: "TR-002", ExpectedRevision: 2, Actor: "orchestrator", Evidence: map[string]string{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -278,10 +266,10 @@ func TestApplyRejectsEvidenceWithIncompatibleKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
-		TransitionID: "TR-002", ExpectedRevision: 3, Actor: "orchestrator", Evidence: map[string]string{},
+		TransitionID: "TR-002", ExpectedRevision: 2, Actor: "orchestrator", Evidence: map[string]string{},
 	})
-	if err == nil || !strings.Contains(err.Error(), "status=\"draft\"") {
-		t.Fatalf("TR-002 must report the offending file's status when contracts are not locked: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no complete TASK document") {
+		t.Fatalf("TR-002 must fail while the planning batch is incomplete (a locked contract now exists via the advance fixture, so the gap is the missing complete TASK): %v", err)
 	}
 }
 
@@ -300,9 +288,30 @@ func startLockedREQ(t *testing.T, root, statePath, journalPath string) {
 
 func advancePlanningToTasks(t *testing.T, root, statePath, journalPath string) {
 	t.Helper()
+	tempRoot := filepath.Dir(statePath)
+	// PTR-PLAN-01's register_design_documents demands a locked architecture
+	// document on disk.
+	archDir := filepath.Join(tempRoot, "docs", "design", "architecture")
+	if err := os.MkdirAll(archDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(archDir, "ARCHITECTURE-test.md"),
+		[]byte("# ARCHITECTURE-test\n\n> 状态：locked\n> 版本：v1.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// PTR-PLAN-02's contracts_checked guard demands at least one real
+	// contract on disk (the contractless-stage floor).
+	contractsDir := filepath.Join(tempRoot, "docs", "contracts")
+	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contractsDir, "BE-test.md"),
+		[]byte("# BE-test\n\n> 状态：locked\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for revision, id := range []string{"PTR-PLAN-01", "PTR-PLAN-02"} {
 		if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
-			TransitionID: id, ExpectedRevision: revision + 1, Actor: "hook_controller",
+			TransitionID: id, ExpectedRevision: revision, Actor: "hook_controller",
 		}); err != nil {
 			t.Fatalf("%s must advance formal planning: %v", id, err)
 		}
@@ -388,30 +397,62 @@ func copyInactiveRuntime(t *testing.T, root string) (string, string) {
 	return statePath, journalPath
 }
 
-// seedPlanningArtifacts creates the minimum CONTRACTS/TASKS files the
-// planning_complete direct-check guard requires. The temp root is derived
-// from statePath (see copyInactiveRuntime which writes state["root"]).
-// Used by tests that exercise TR-002 after BUG-PLANNING-SUBSTATE collapsed
-// the planning sub-state machine.
+// seedPlanningArtifacts creates the minimum planning surface both TR-002
+// guards require: a locked CONTRACTS index whose 需求覆盖矩阵 declares the
+// clause universe, a locked contract file, and a complete TASK declaring
+// coverage + closing contract (L3-S4 v4.0.1 — the batch-quality guard
+// consumes structure, not just Status lines). The temp root is derived from
+// statePath (see copyInactiveRuntime which writes state["root"]).
 func seedPlanningArtifacts(t *testing.T, statePath string) {
+	seedPlanningArtifactsLang(t, statePath, false)
+}
+
+func seedPlanningArtifactsLang(t *testing.T, statePath string, english bool) {
 	t.Helper()
 	root := filepath.Dir(statePath)
 	contractsDir := filepath.Join(root, "docs", "contracts")
 	tasksDir := filepath.Join(root, "docs", "tasks")
+	archDir := filepath.Join(root, "docs", "design", "architecture")
+	if err := os.MkdirAll(archDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archStatus := "> 状态：locked"
+	if english {
+		archStatus = "> Status: locked"
+	}
+	if err := os.WriteFile(filepath.Join(archDir, "ARCHITECTURE-test.md"),
+		[]byte("# ARCHITECTURE-test\n\n"+archStatus+"\n> 版本：v1.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	contractPath := filepath.Join(contractsDir, "CONTRACTS-test.md")
-	if err := os.WriteFile(contractPath,
-		[]byte("# CONTRACTS-test\n\n> 状态：locked\n"), 0o644); err != nil {
+	status := func(value string) string {
+		if english {
+			return "> Status: " + value
+		}
+		return "> 状态：" + value
+	}
+	index := "# CONTRACTS-test\n\n" + status("locked") + "\n> 版本：v1.0.0\n\n" +
+		"## 需求覆盖矩阵\n\n" +
+		"| REQ source_ref | Rule → CASE | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n" +
+		"|:--|:--|:--|:--|:--|\n" +
+		"| REQ-test | — | — | BE-TEST §1 | — |\n"
+	if err := os.WriteFile(filepath.Join(contractsDir, "CONTRACTS-test.md"), []byte(index), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	taskPath := filepath.Join(tasksDir, "TASK-test.md")
-	if err := os.WriteFile(taskPath,
-		[]byte("# TASK-test\n\n> 状态：complete\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(contractsDir, "BE-TEST.md"),
+		[]byte("# BE-TEST\n\n"+status("locked")+"\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task := "# TASK-test\n\n" + status("complete") + "\n> Version: v1.0.0\n> Primary contract: BE-TEST\n\n" +
+		"## 3. Delivered Clauses\n\n" +
+		"| Contract | Delivered clauses |\n|:--|:--|\n| BE-TEST | §1 |\n\n" +
+		"## 7. Closing Contract\n\n```text\nassert BE-TEST §1 == satisfied\n```\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-test.md"), []byte(task), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -423,4 +464,28 @@ func fileHash(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return transition.SHA256(data)
+}
+
+// TestParseUIImpactRejectsDriftedReflection verifies that a §C
+// reflection that disagrees with the top anchor field must be refused
+// (a drifted echo would silently route a changed REQ through the none path).
+func TestParseUIImpactRejectsDriftedReflection(t *testing.T) {
+	base := "> 状态：locked\n> 版本：v1.0.0\n"
+	// The template's real §C reflection is a table row — pin THAT format
+	// (a colon-form-only parser would be an unsafe fallback).
+	drifted := base + "> UI impact：none\n\n# 内容\n\n## §C 具体需求\n\n| 字段 | 内容 |\n|:--|:--|\n| UI impact（引自顶部） | changed（顶部 blockquote 是唯一被解析的位置，本节只回显） |\n"
+	if _, err := transition.ParseUIImpactForTest(drifted); err == nil || !strings.Contains(err.Error(), "inconsistent") {
+		t.Fatalf("drifted template-row reflection must be refused, got %v", err)
+	}
+	aligned := base + "> UI impact：changed\n\n# 内容\n\n## §C 具体需求\n\n| 字段 | 内容 |\n|:--|:--|\n| UI impact（引自顶部） | changed（回显） |\n"
+	value, err := transition.ParseUIImpactForTest(aligned)
+	if err != nil || value != "changed" {
+		t.Fatalf("aligned template-row reflection must pass, got %q %v", value, err)
+	}
+	// The untouched template placeholder row must not read as a mismatch.
+	placeholder := base + "> UI impact：none\n\n# 内容\n\n## §C 具体需求\n\n| 字段 | 内容 |\n|:--|:--|\n| UI impact（引自顶部） | none / changed / unknown（顶部 blockquote 是唯一被解析的位置，本节只回显，不独立声明） |\n"
+	top, err := transition.ParseUIImpactForTest(placeholder)
+	if err != nil || top != "none" || !strings.HasPrefix(top, "none") {
+		t.Fatalf("legal top value with placeholder row must pass, got %q %v", top, err)
+	}
 }

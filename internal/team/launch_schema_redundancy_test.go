@@ -162,7 +162,7 @@ func validateReadbackSchema(t *testing.T, v *schema.Validator, bugID *string, do
 		"schema_version":       "1.0.0",
 		"message_type":         "readback_request",
 		"documents":            toInterfaceDocuments(documents),
-		"skills":               []map[string]any{{"name": "two-phase-activation"}},
+		"skills":               []map[string]any{{"name": "agent-dispatch"}},
 		"scope":                map[string]any{"responsibility": "x"},
 		"closing_contract_ref": "TASK-001#closing-contract",
 		"readback_fields":      []string{"objective"},

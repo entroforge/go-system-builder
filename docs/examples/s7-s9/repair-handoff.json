@@ -1,0 +1,42 @@
+{
+  "handoff_id": "repair-handoff-example",
+  "session": {
+    "id": "repair-session-example",
+    "path": ".claude/evidence/repair/sessions/repair-session-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "plan": {
+    "id": "repair-plan-example",
+    "path": ".claude/evidence/repair/plans/repair-plan-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "contract": {
+    "path": ".claude/evidence/repair/contracts/repair-contract-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "result": {
+    "id": "repair-result-example",
+    "path": ".claude/evidence/repair/results/repair-result-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "changeset": {
+    "id": "repair-changeset-example",
+    "path": ".claude/evidence/repair/changesets/repair-changeset-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "change_impact": {
+    "id": "impact-example",
+    "path": ".claude/evidence/repair/change-impact/impact-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "targeted_reverifications": [
+    {
+      "id": "reverify-example",
+      "path": ".claude/evidence/repair/reverification/reverify-example.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "handed_off_by": "agent-repair-orchestrator-1",
+  "next_action": "register the S7 seed, review changed-artifact coverage, then dispatch the final full-review Assignments",
+  "occurred_at": "2026-08-26T12:00:00Z"
+}

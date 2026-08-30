@@ -1,0 +1,9 @@
+{
+  "missed_by": [
+    "unit tests cover the decoder and client serializer separately",
+    "no contract test exercises the serialized payload across the boundary"
+  ],
+  "detection_gap": "the test suite does not assert that the client payload and server decoder share the same field contract",
+  "preventive_assertion": "a contract-level test must fail when either side reintroduces the stale field shape",
+  "verification_ref": "path:tests/contract/payload_boundary_test.go"
+}

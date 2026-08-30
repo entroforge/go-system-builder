@@ -78,12 +78,12 @@ func TestCT03911_DualPassDocumentVerificationSystem(t *testing.T) {
 }
 
 // TestCT03912_BuilderCompleteCommitsTR006System covers CT-039-12:
-// builder complete + PreToolUse → TR-006 → verification.delivery.
+// builder complete + PreToolUse → TR-006 → verification.planned (L3-S7).
 func TestCT03912_BuilderCompleteCommitsTR006System(t *testing.T) {
 	root := freshRoot(t)
 	runner := &req039fixtures.CLIRunner{}
 	// Use BaseState (same as CLI CT-039-12) so locked TASK/docs + revision
-	// match the TR-006 angle guards; systemPlanningState alone trips
+	// match the TR-006 batch gate; systemPlanningState alone trips
 	// LOOP_TRANSITION_GUARD on incomplete planning docs.
 	state := req039fixtures.BaseState(t, root, "building", "", 19)
 	req039fixtures.SeedBuilderBatchReady(t, root, state)
@@ -101,8 +101,8 @@ func TestCT03912_BuilderCompleteCommitsTR006System(t *testing.T) {
 	}
 	after := req039fixtures.ReadState(t, root)
 	lc, ph := req039fixtures.Lifecycle(after)
-	if lc != "verification" || ph != "delivery" {
-		t.Fatalf("CT-039-12 TR-006 must land verification.delivery, got %q/%q stdout=%s", lc, ph, stdout)
+	if lc != "verification" || ph != "planned" {
+		t.Fatalf("CT-039-12 TR-006 must land verification.planned, got %q/%q stdout=%s", lc, ph, stdout)
 	}
 	req039fixtures.AssertLastTransition(t, after, "TR-006")
 }

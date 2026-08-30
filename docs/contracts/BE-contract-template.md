@@ -2,13 +2,14 @@
 
 > 类型：backend
 > 状态：draft / reviewed / locked
+> （机器登记只认 locked——reviewed 仅人审中间态，PTR-PLAN-02 前须翻 locked；时机见 protocol #s3）
 > 版本：v0.1.0
 > 负责 Builder：{Builder-BE-01}
 > 关联需求：`docs/requirements/REQ-{id}.md`
 > 关联设计：`docs/design/architecture/ARCHITECTURE.md`
 > 锁定日期：YYYY-MM-DD
 
-> 锁定依据：`{runtime-id}@{revision}` / `{transition-id}` / `{document-verification-evidence}`。
+> 锁定状态与依据见 runtime documents[] 与 journal（.claude/loop-events.jsonl）——文件内不再手填
 
 ## 1. 文档链接
 
@@ -40,15 +41,21 @@
 
 ### 需求条款映射
 
-| REQ 条款 | 本合同条款 | 验收标准 |
-|:---|:---|:---|
-| FR-{id} | §{n} | {标准} |
+| REQ source_ref | Rule / CASE / Story / PATH | 本合同条款 | 验收标准 |
+|:---|:---|:---|:---|
+| REQ-{id}/FR-{id} | BR-{id} → CASE-{id} → S-{id} → F-{id} → PATH-{id} | §{n} | {标准} |
 
 ### UI 设计包反推需求
 
-| UI 设计文件 | 数据 / 状态 / 错误 / 权限 / 副作用 | 本合同条款 | SYNC 条款 |
+| 模块当前真相文件 | 数据 / 状态 / 错误 / 权限 / 副作用 | 本合同条款 | SYNC 条款 |
 |:---|:---|:---|:---|
-| prototype.html / USER-STORY / USER-FLOW | {field/state/error/permission/side-effect} | §{n} | SYNC-{id} §{n} |
+| `scenario-model.json` / `cases.json` / `stories.md` / `flows.md` / current `*.html` | {field/state/error/permission/side-effect} | §{n} | SYNC-{id} §{n} |
+
+### Rule → CASE → Story → PATH → Spec → Evidence
+
+| REQ source_ref | Rule / CASE | Story / PATH | Spec | BE oracle / persistence assertion | Evidence |
+|:---|:---|:---|:---|:---|:---|
+| REQ-{id}/FR-{id} | BR-{id} / CASE-{id} | S-{id} / F-{id} / PATH-{id} | `web/e2e/{module}/*.spec.ts` | {visible, terminal_state, persisted_effects, forbidden_side_effects; negative also rejection, expected_state, recovery} | REV/QA/E2E round {n} |
 
 ## 4. 技术约束
 

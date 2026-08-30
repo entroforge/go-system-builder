@@ -68,7 +68,8 @@
         "document_verifier",
         "delivery_verifier",
         "qa",
-        "e2e_browser"
+        "e2e_browser",
+        "investigator"
       ]
     },
     "status": {
@@ -127,14 +128,7 @@
     "dispatched_at": {
       "type": ["string", "null"],
       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$",
-      "description": "REQ-003 FR-013: timestamp written by the team-dispatch CLI; used by the angle_declared_before_dispatch guard to enforce pre-review angle declaration. Null until dispatch fires."
-    },
-    "inherited_angles": {
-      "type": "array",
-      "description": "REQ-003 FR-013: baseline angles aggregated from docs/design/angles/{module}.yaml across the Change Record's scope.include modules. Populated by `loop-harness angles list --baseline-for <req>`. Empty when no active angles exist for the scope. The manifest validator checks len(inherited_angles) == sum of active angles across scope.include modules.",
-      "items": {
-        "$ref": "#/$defs/inheritedAngle"
-      }
+      "description": "Timestamp of the workgroup dispatch (register-workgroup). Serves as the dispatch-time fact for recovery and audit; the angle machinery that consumed it is retired (L3-S7). Null until dispatch fires."
     }
   },
   "$defs": {
@@ -259,6 +253,31 @@
         "responsibility_id": {
           "$ref": "#/$defs/responsibilityId"
         },
+        "claim_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "S7 reviewer assignments: the exact Claim set from the registered ReviewPlan this Assignment answers (L3-S7 section 3.4). Required for delivery-verifier/qa/e2e-tester role families; register-workgroup rejects mismatches.",
+          "items": {
+            "type": "string",
+            "pattern": "^claim-[A-Za-z0-9._-]+$"
+          }
+        },
+        "dispatch_mode": {
+          "enum": ["plan_checkpoint", "plan_approval_required", "one_shot"],
+          "description": "L4 dispatch mode. plan_checkpoint (default): the Worker sends one PLAN_REPORT and continues immediately — Main stays silent when aligned. plan_approval_required: two-round readback -> approval -> activation for high-risk or irreversible work. one_shot: no plan checkpoint; only for idempotent single-action tasks."
+        },
+        "focus_keys": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Round-local professional focus keys copied from the ReviewPlan assignment.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "non_overlap_boundary": {
+          "type": "string",
+          "description": "What this Assignment owns and what adjacent Reviewers must not redo (L3-S7 section 3.4)."
+        },
         "role_family": {
           "enum": [
             "frontend-builder",
@@ -267,7 +286,8 @@
             "document-verifier",
             "delivery-verifier",
             "qa",
-            "e2e-tester"
+            "e2e-tester",
+            "investigator"
           ]
         },
         "scope": {
@@ -302,6 +322,25 @@
         "write_paths": {
           "$ref": "#/$defs/paths"
         },
+        "required_checks": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Integration-check commands the Integrator must actually execute before this assignment may reach the verified checkpoint state (L3-S6 §7.4). Entries prefixed with \"locked:\" declare locked-artifact paths instead of commands.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "done_when": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Concrete closing predicates for this Assignment. SubagentStart projects these values into the Worker context; do not replace them with a generic completion reminder.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "output_paths": {
           "$ref": "#/$defs/paths"
         },
@@ -333,6 +372,21 @@
             "blocked",
             "stale"
           ]
+        },
+        "worktree_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional worktree coordinates (L3-S6 worktree discipline). Record them before the Builder starts writing: the SubagentStop integrator reads them to inspect/merge. Create with `git worktree add <path> -b <branch> <target_branch>`."
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source branch of the assignment worktree (e.g. wt/<assignment-id>)."
+        },
+        "target_branch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Integration branch the worktree merges back into (e.g. develop)."
         }
       }
     },
@@ -410,36 +464,9 @@
         "QA-RELIABILITY",
         "QA-MIGRATION",
         "E2E-USER-FLOW",
-        "E2E-CONSOLE-NETWORK"
+        "E2E-CONSOLE-NETWORK",
+        "S8-CAUSAL-INVESTIGATION"
       ]
-    },
-    "inheritedAngle": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "module", "statement", "target", "last_applied_in"],
-      "description": "REQ-003 FR-013: snapshot of an active angle in a module's angles registry, frozen at team dispatch time so reviewers see a stable baseline.",
-      "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^ANG-[A-Z0-9]+-[0-9]{3,}$"
-        },
-        "module": {
-          "type": "string",
-          "minLength": 1
-        },
-        "statement": {
-          "type": "string",
-          "minLength": 1
-        },
-        "target": {
-          "type": "string",
-          "minLength": 1
-        },
-        "last_applied_in": {
-          "type": "string",
-          "pattern": "^REQ-[0-9]{3,}$"
-        }
-      }
     },
     "paths": {
       "type": "array",

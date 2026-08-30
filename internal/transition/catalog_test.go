@@ -93,6 +93,48 @@ func TestCatalogFailsClosedOnMissingAction(t *testing.T) {
 	}
 }
 
+func TestCatalogFailsClosedOnUnknownRequiredEvidence(t *testing.T) {
+	root := t.TempDir()
+	defDir := filepath.Join(root, "docs")
+	if err := os.MkdirAll(defDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	def := map[string]any{
+		"schema_version":    "1.0.0",
+		"states":            map[string]any{},
+		"phase_machines":    map[string]any{},
+		"entity_lifecycles": map[string]any{},
+		"transitions": []any{
+			map[string]any{
+				"id":                "TR-EVIDENCE-UNKNOWN",
+				"from":              "inactive",
+				"event":             "evidence_unknown",
+				"to":                "planning",
+				"actors":            []string{"orchestrator"},
+				"guards":            []string{},
+				"actions":           []string{},
+				"required_evidence": []string{"unknown_evidence_slot"},
+				"description":       "test",
+			},
+		},
+		"global_transitions": []any{},
+		"forbidden_events":   []any{},
+		"invariants":         []any{},
+	}
+	data, err := json.MarshalIndent(def, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defDir, "loop-definition.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = transition.LoadCatalog(root)
+	if err == nil || !strings.Contains(err.Error(), "required evidence") {
+		t.Fatalf("expected unknown required evidence to fail closed, got %v", err)
+	}
+}
+
 // TestTaskEntityGuardsPresentInGuardRegistry is the explicit assertion for
 // the 3 task-entity guards resolved by DV round 1 F-CORE-001/002/003.
 func TestTaskEntityGuardsPresentInGuardRegistry(t *testing.T) {

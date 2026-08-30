@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -71,6 +72,7 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 
 	out := Inspection{
 		AssignmentID:       req.Assignment.AssignmentID,
+		TaskID:             req.Assignment.TaskID,
 		WorktreePath:       req.Assignment.WorktreePath,
 		SourceBranch:       req.Assignment.Branch,
 		TargetBranch:       targetBranch,
@@ -165,14 +167,35 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	//    today; for the BUG-039-05 contract we accept a list passed via
 	//    cfg and otherwise treat WritePaths as best-effort.
 	locked := lockedArtifacts(cfg, req)
-	if len(locked) > 0 {
+	// The changed-file list feeds both the locked-artifact screen and the
+	// write-scope audit below; compute it once when either consumer needs
+	// it.
+	var changedFiles []string
+	if len(locked) > 0 || len(req.Assignment.WritePaths) > 0 {
 		files, err := listChangedFiles(ctx, targetRepo, base, sourceHead)
 		if err != nil {
 			return out, fmt.Errorf("list changed files: %w", err)
 		}
-		out.LockedDiff = intersectLocked(files, locked)
+		changedFiles = files
+	}
+	if len(locked) > 0 {
+		out.LockedDiff = intersectLocked(changedFiles, locked)
 		if len(out.LockedDiff) > 0 {
 			addBlocker(fmt.Sprintf("%s: %s", ErrLockedArtifact.Error(), strings.Join(out.LockedDiff, ", ")))
+			return out, nil
+		}
+	}
+
+	// 6b. Write-scope audit (L3-S6 §7.4 condition 4): the real diff must
+	//     be a subset of the assignment's declared WritePaths. An
+	//     assignment without WritePaths declares no scope, so the audit
+	//     is skipped rather than fabricated — the gap is visible in the
+	//     manifest, not hidden here. Out-of-scope files block the
+	//     integration and preserve the worktree.
+	if len(req.Assignment.WritePaths) > 0 {
+		out.OutOfScopeDiff = outsideWriteScope(changedFiles, req.Assignment.WritePaths)
+		if len(out.OutOfScopeDiff) > 0 {
+			addBlocker(fmt.Sprintf("%s: %s", ErrScopeViolation.Error(), strings.Join(out.OutOfScopeDiff, ", ")))
 			return out, nil
 		}
 	}
@@ -342,4 +365,130 @@ func hasFailing(results []CheckResult) bool {
 		}
 	}
 	return false
+}
+
+// outsideWriteScope returns the changed files not covered by any declared
+// write path pattern. Patterns follow the manifest's glob conventions:
+// `**` matches any number of path segments, `*` matches within one
+// segment, and a bare directory pattern covers everything beneath it.
+func outsideWriteScope(changed, writePaths []string) []string {
+	var outside []string
+	for _, file := range changed {
+		if !pathMatchesAnyPattern(file, writePaths) {
+			outside = append(outside, file)
+		}
+	}
+	return outside
+}
+
+func pathMatchesAnyPattern(file string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if pathMatchesPattern(file, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathMatchesPattern reports whether a slash-separated repo-relative file
+// path matches one write-path pattern. A pattern ending in "/**" (or a
+// bare directory without wildcards) covers the whole subtree.
+func pathMatchesPattern(file, pattern string) bool {
+	file = strings.Trim(file, "/")
+	pattern = strings.Trim(pattern, "/")
+	if file == "" || pattern == "" {
+		return false
+	}
+	if pattern == "**" {
+		return true
+	}
+	fileParts := strings.Split(file, "/")
+	patternParts := strings.Split(pattern, "/")
+	// A directory-only pattern (no extension and no wildcard in the last
+	// segment) is a prefix match: "internal/order" covers
+	// internal/order/anything.go.
+	if !strings.Contains(patternParts[len(patternParts)-1], "*") &&
+		!strings.Contains(patternParts[len(patternParts)-1], ".") {
+		return pathUnderDirectory(fileParts, patternParts)
+	}
+	return segmentsMatch(fileParts, 0, patternParts, 0)
+}
+
+func pathUnderDirectory(fileParts []string, dirParts []string) bool {
+	if len(fileParts) <= len(dirParts) {
+		return false
+	}
+	for i, part := range dirParts {
+		if !segmentGlob(part, fileParts[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// segmentsMatch implements `**` (any number of segments) and `*`
+// (within one segment) glob matching over slash-split paths.
+func segmentsMatch(file []string, fi int, pattern []string, pi int) bool {
+	if pi == len(pattern) {
+		return fi == len(file)
+	}
+	if pattern[pi] == "**" {
+		for skip := fi; skip <= len(file); skip++ {
+			if segmentsMatch(file, skip, pattern, pi+1) {
+				return true
+			}
+		}
+		return false
+	}
+	if fi == len(file) {
+		return false
+	}
+	if !segmentGlob(pattern[pi], file[fi]) {
+		return false
+	}
+	return segmentsMatch(file, fi+1, pattern, pi+1)
+}
+
+// segmentGlob matches one path segment with `*` wildcards.
+func segmentGlob(pattern, segment string) bool {
+	if !strings.Contains(pattern, "*") {
+		return pattern == segment
+	}
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == segment
+	}
+	if !strings.HasPrefix(segment, parts[0]) || !strings.HasSuffix(segment, parts[len(parts)-1]) {
+		return false
+	}
+	rest := segment
+	if len(parts[0]) > 0 {
+		rest = strings.TrimPrefix(rest, parts[0])
+	}
+	for _, part := range parts[1 : len(parts)-1] {
+		idx := strings.Index(rest, part)
+		if idx < 0 {
+			return false
+		}
+		rest = rest[idx+len(part):]
+	}
+	if tail := parts[len(parts)-1]; len(tail) > 0 {
+		return strings.HasSuffix(rest, tail) || strings.Contains(rest, tail)
+	}
+	return true
+}
+
+// CommandCheckRunner executes one required-check command through the shell
+// in the repository root and fails on a non-zero exit. It is the default
+// runner the Controller wires into Inspect/Integrate so "Required Checks
+// verified" reflects real command executions (L3-S6 §11.2 "Integration
+// checks 未接线").
+func CommandCheckRunner(ctx context.Context, root, command string) error {
+	execCmd := exec.CommandContext(ctx, "sh", "-c", command)
+	execCmd.Dir = root
+	output, err := execCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("check %q failed (%v): %s", command, err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }

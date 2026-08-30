@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
 // minimalPolicy mirrors the shape of docs/hook-policy.json after the REQ-039
@@ -26,20 +27,28 @@ func writePolicyRefState(t *testing.T, dir, recordedVersion, recordedSHA string)
 	if err := os.WriteFile(policyPath, []byte(minimalPolicy), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	state := map[string]any{
-		"runtime_id": "loop-test",
-		"revision":   32,
-		"hook_control": map[string]any{
-			"mode":   "enforce",
-			"health": "healthy",
-			"policy_ref": map[string]any{
-				"path":    "docs/hook-policy.json",
-				"version": recordedVersion,
-				"sha256":  recordedSHA,
-			},
-		},
+	data, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, err := json.Marshal(state)
+	state := map[string]any{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["runtime_id"] = "loop-test"
+	state["revision"] = 32
+	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
+	hookControl, ok := state["hook_control"].(map[string]any)
+	if !ok {
+		t.Fatal("loop-state example must contain hook_control")
+	}
+	hookControl["policy_ref"] = map[string]any{
+		"path":    "docs/hook-policy.json",
+		"version": recordedVersion,
+		"sha256":  recordedSHA,
+	}
+	state["hook_control"] = hookControl
+	data, err = json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +93,7 @@ func TestStoreRefreshFingerprintsTracksPolicyVersionNotSchemaVersion(t *testing.
 	dir := t.TempDir()
 	statePath, journalPath, _ := writePolicyRefState(t, dir, "1.2.0", "stale-digest")
 
-	if _, err := runtime.NewStore(statePath, journalPath).RefreshFingerprints(dir); err != nil {
+	if _, err := testWriter(statePath, journalPath).RefreshFingerprints(dir); err != nil {
 		t.Fatalf("RefreshFingerprints: %v", err)
 	}
 
@@ -107,23 +116,29 @@ func TestStoreRefreshFingerprintsFallsBackToSchemaVersion(t *testing.T) {
 	if err := os.WriteFile(definitionPath, definition, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	state := map[string]any{
-		"runtime_id": "loop-test",
-		"revision":   3,
-		"definition": map[string]any{
-			"path": "loop-definition.json", "version": "1.2.0", "sha256": "stale",
-		},
-	}
-	data, err := json.Marshal(state)
+	statePath := filepath.Join(dir, "loop-state.json")
+	writeExampleRuntime(t, statePath)
+	data, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	statePath := filepath.Join(dir, "loop-state.json")
+	state := map[string]any{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["revision"] = 3
+	state["definition"] = map[string]any{
+		"path": "loop-definition.json", "version": "1.2.0", "sha256": "stale",
+	}
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(statePath, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	store := runtime.NewStore(statePath, filepath.Join(dir, "loop-events.jsonl"))
+	store := testWriter(statePath, filepath.Join(dir, "loop-events.jsonl"))
 	if _, err := store.RefreshFingerprints(dir); err != nil {
 		t.Fatalf("RefreshFingerprints: %v", err)
 	}
@@ -195,7 +210,7 @@ func TestStoreInspectPolicyRefDetectsVersionAndSHADrift(t *testing.T) {
 func TestStoreInspectPolicyRefCleanAfterRefresh(t *testing.T) {
 	dir := t.TempDir()
 	statePath, journalPath, _ := writePolicyRefState(t, dir, "1.2.0", "stale-digest")
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 
 	if _, err := store.RefreshFingerprints(dir); err != nil {
 		t.Fatalf("RefreshFingerprints: %v", err)

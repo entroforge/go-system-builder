@@ -37,6 +37,13 @@ func stateFromAsset(t *testing.T, name string) map[string]any {
 // .claude/loop-state.json plus an empty journal, and returns the dir.
 func writeLoopState(t *testing.T, state map[string]any) string {
 	t.Helper()
+	// The fixture writes an empty journal, so its state cursor must also be
+	// empty. Runtime writers reject mixed state/journal pairs before mutation.
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
+	}
 	dir := t.TempDir()
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
@@ -167,9 +174,9 @@ func TestRunControlCycleNeverBlocksOnNotReady(t *testing.T) {
 }
 
 func TestRunControlCycleHandlesTerminalCursor(t *testing.T) {
-	// S11 awaiting_human_release is a terminal state. The cycle must
-	// never auto-advance from a terminal cursor; it must surface
-	// `satisfied` (no auto-trigger at the cursor) and keep the tool allowed.
+	// S11 awaiting_human_release is a human gateway, not an automatic
+	// transition surface. The cycle must never auto-advance or submit a human
+	// decision from this cursor; it must keep the tool allowed.
 	state := stateFromAsset(t, "loop-state.example.json")
 	state["lifecycle"] = map[string]any{"state": "awaiting_human_release", "phase": nil, "phase_revision": 0}
 	dir := writeLoopState(t, state)

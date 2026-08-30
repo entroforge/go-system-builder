@@ -10,6 +10,9 @@
       "$ref": "#/$defs/readbackResponse"
     },
     {
+      "$ref": "#/$defs/planReport"
+    },
+    {
       "$ref": "#/$defs/activation"
     },
     {
@@ -42,15 +45,16 @@
         },
         "message_type": {
           "enum": [
-          "readback_request",
-          "readback_response",
-          "activation",
-          "completion_report",
-          "work_start",
-          "completion_ack",
-          "blocker_report",
-          "blocker_resolution",
-          "shutdown_approval"
+            "readback_request",
+            "readback_response",
+            "plan_report",
+            "activation",
+            "completion_report",
+            "work_start",
+            "completion_ack",
+            "blocker_report",
+            "blocker_resolution",
+            "shutdown_approval"
           ]
         },
         "message_id": {
@@ -93,7 +97,10 @@
           ]
         },
         "team_id": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "occurred_at": {
           "type": "string",
@@ -104,7 +111,14 @@
     "documentReference": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "path", "version", "sha256", "read_order"],
+      "required": [
+        "id",
+        "kind",
+        "path",
+        "version",
+        "sha256",
+        "read_order"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -144,14 +158,23 @@
     "skillReference": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "category", "source", "version", "sha256"],
+      "required": [
+        "name",
+        "category",
+        "source",
+        "version",
+        "sha256"
+      ],
       "properties": {
         "name": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]+$"
         },
         "category": {
-          "enum": ["methodology", "best-practice"]
+          "enum": [
+            "methodology",
+            "best-practice"
+          ]
         },
         "source": {
           "type": "string",
@@ -211,7 +234,12 @@
     "checkResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "command", "result", "evidence_ref"],
+      "required": [
+        "name",
+        "command",
+        "result",
+        "evidence_ref"
+      ],
       "properties": {
         "name": {
           "type": "string",
@@ -221,10 +249,18 @@
           "type": "string"
         },
         "result": {
-          "enum": ["pass", "fail", "blocked", "not_run"]
+          "enum": [
+            "pass",
+            "fail",
+            "blocked",
+            "not_run"
+          ]
         },
         "evidence_ref": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -237,24 +273,18 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "schema_version",
-            "message_type",
-            "message_id",
-            "correlation_id",
-            "runtime_id",
-            "expected_runtime_revision",
-            "agent_id",
             "agent_definition_ref",
-            "task_id",
+            "agent_id",
             "bug_id",
-            "team_id",
+            "correlation_id",
+            "expected_runtime_revision",
+            "message_id",
+            "message_type",
             "occurred_at",
-            "role_family",
-            "documents",
-            "skills",
-            "scope",
-            "closing_contract_ref",
-            "readback_fields"
+            "runtime_id",
+            "schema_version",
+            "task_id",
+            "team_id"
           ],
           "properties": {
             "schema_version": {},
@@ -279,7 +309,8 @@
                 "document-verifier",
                 "delivery-verifier",
                 "qa",
-                "e2e-tester"
+                "e2e-tester",
+                "investigator"
               ]
             },
             "documents": {
@@ -306,7 +337,141 @@
             "readback_fields": {
               "$ref": "#/$defs/uniqueStrings"
             }
-          }
+          },
+          "x-warn-required": [
+            "closing_contract_ref",
+            "documents",
+            "readback_fields",
+            "role_family",
+            "scope",
+            "skills"
+          ]
+        }
+      ]
+    },
+    "planReport": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "L4 plan_checkpoint PLAN_REPORT (dispatch_mode=plan_checkpoint): one structured plan the Worker sends before touching the work surface; sending it IS the checkpoint — the Worker continues immediately, and Main stays silent when aligned. The activation envelope's hash chain binds to this file exactly like the approval-mode readback.",
+          "required": [
+            "agent_definition_ref",
+            "agent_id",
+            "bug_id",
+            "correlation_id",
+            "expected_runtime_revision",
+            "message_id",
+            "message_type",
+            "occurred_at",
+            "runtime_id",
+            "schema_version",
+            "task_id",
+            "team_id"
+          ],
+          "properties": {
+            "schema_version": {},
+            "message_type": {
+              "const": "plan_report"
+            },
+            "message_id": {},
+            "correlation_id": {},
+            "runtime_id": {},
+            "expected_runtime_revision": {},
+            "agent_id": {},
+            "agent_definition_ref": {},
+            "task_id": {},
+            "bug_id": {},
+            "team_id": {},
+            "occurred_at": {},
+            "assignment_id": {
+              "type": "string",
+              "pattern": "^assignment-[A-Za-z0-9._-]+$"
+            },
+            "assignment_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "objective": {
+              "type": "string",
+              "minLength": 8
+            },
+            "planned_paths": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "description"
+                ],
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "minLength": 4
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "assertion_checks": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "assertion",
+                  "oracle"
+                ],
+                "properties": {
+                  "assertion": {
+                    "type": "string",
+                    "minLength": 4
+                  },
+                  "oracle": {
+                    "type": "string",
+                    "minLength": 4
+                  }
+                }
+              }
+            },
+            "dependencies": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "risks_blockers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "x-warn-required": [
+            "assertion_checks",
+            "assignment_id",
+            "assignment_revision",
+            "dependencies",
+            "objective",
+            "planned_paths",
+            "risks_blockers",
+            "steps"
+          ]
         }
       ]
     },
@@ -319,37 +484,18 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "schema_version",
-            "message_type",
-            "message_id",
-            "correlation_id",
-            "runtime_id",
-            "expected_runtime_revision",
-            "agent_id",
             "agent_definition_ref",
-            "task_id",
+            "agent_id",
             "bug_id",
-            "team_id",
+            "correlation_id",
+            "expected_runtime_revision",
+            "message_id",
+            "message_type",
             "occurred_at",
-            "request_message_id",
-            "status",
-            "objective",
-            "user_value",
-            "responsibility",
-            "covered_clauses",
-            "planned_surfaces",
-            "allowed_actions",
-            "forbidden_actions",
-            "dependencies",
-            "integration_boundaries",
-            "expected_outputs",
-            "evidence_plan",
-            "closing_criteria",
-            "skill_applications",
-            "assumptions",
-            "risks",
-            "unresolved_questions",
-            "documents_read"
+            "runtime_id",
+            "schema_version",
+            "task_id",
+            "team_id"
           ],
           "properties": {
             "schema_version": {},
@@ -371,7 +517,12 @@
               "pattern": "^msg-[A-Za-z0-9._-]+$"
             },
             "status": {
-              "enum": ["ready", "conflict", "missing_input", "out_of_scope"]
+              "enum": [
+                "ready",
+                "conflict",
+                "missing_input",
+                "out_of_scope"
+              ]
             },
             "objective": {
               "type": "string",
@@ -431,7 +582,28 @@
                 "$ref": "#/$defs/documentReference"
               }
             }
-          }
+          },
+          "x-warn-required": [
+            "allowed_actions",
+            "assumptions",
+            "closing_criteria",
+            "covered_clauses",
+            "dependencies",
+            "documents_read",
+            "evidence_plan",
+            "expected_outputs",
+            "forbidden_actions",
+            "integration_boundaries",
+            "objective",
+            "planned_surfaces",
+            "request_message_id",
+            "responsibility",
+            "risks",
+            "skill_applications",
+            "status",
+            "unresolved_questions",
+            "user_value"
+          ]
         }
       ]
     },
@@ -444,31 +616,18 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "schema_version",
-            "message_type",
-            "message_id",
-            "correlation_id",
-            "runtime_id",
-            "expected_runtime_revision",
-            "agent_id",
             "agent_definition_ref",
-            "task_id",
+            "agent_id",
             "bug_id",
-            "team_id",
+            "correlation_id",
+            "expected_runtime_revision",
+            "message_id",
+            "message_type",
             "occurred_at",
-            "activation_id",
-            "approved_readback_message_id",
-            "approved_readback_sha256",
-            "approval_evidence_id",
-            "documents",
-            "allowed_tools",
-            "allowed_read_paths",
-            "allowed_write_paths",
-            "allowed_command_classes",
-            "output_paths",
-            "checkpoints",
-            "stop_conditions",
-            "expires_on"
+            "runtime_id",
+            "schema_version",
+            "task_id",
+            "team_id"
           ],
           "properties": {
             "schema_version": {},
@@ -495,7 +654,8 @@
             },
             "approved_readback_sha256": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "sha256 of the exact readback message file bytes registered at readback_submitted — compute with `shasum -a 256 <readback-file>` (macOS) or `sha256sum <file>` (Linux). The runtime verifies this against the registered file at activation_sent; mismatch rejects the activation. In the bundled examples the value is the hash of the readback_response example serialized as compact JSON (encoding/json default)."
             },
             "approval_evidence_id": {
               "type": "string",
@@ -538,7 +698,22 @@
                 "scope_change"
               ]
             }
-          }
+          },
+          "x-warn-required": [
+            "activation_id",
+            "allowed_command_classes",
+            "allowed_read_paths",
+            "allowed_tools",
+            "allowed_write_paths",
+            "approval_evidence_id",
+            "approved_readback_message_id",
+            "approved_readback_sha256",
+            "checkpoints",
+            "documents",
+            "expires_on",
+            "output_paths",
+            "stop_conditions"
+          ]
         }
       ]
     },
@@ -589,17 +764,23 @@
               "type": "string",
               "pattern": "^act-[A-Za-z0-9._-]+$"
             },
-            "body": {"type": "string"}
+            "body": {
+              "type": "string"
+            }
           }
         },
         {
           "if": {
             "properties": {
-              "message_type": {"const": "work_start"}
+              "message_type": {
+                "const": "work_start"
+              }
             }
           },
           "then": {
-            "required": ["activation_id"]
+            "required": [
+              "activation_id"
+            ]
           }
         }
       ]
@@ -613,29 +794,18 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "schema_version",
-            "message_type",
-            "message_id",
-            "correlation_id",
-            "runtime_id",
-            "expected_runtime_revision",
-            "agent_id",
             "agent_definition_ref",
-            "task_id",
+            "agent_id",
             "bug_id",
-            "team_id",
+            "correlation_id",
+            "expected_runtime_revision",
+            "message_id",
+            "message_type",
             "occurred_at",
-            "activation_id",
-            "status",
-            "summary",
-            "changed_paths",
-            "reviewed_paths",
-            "checks",
-            "evidence_refs",
-            "finding_refs",
-            "remaining_risks",
-            "scope_deviations",
-            "requested_event"
+            "runtime_id",
+            "schema_version",
+            "task_id",
+            "team_id"
           ],
           "properties": {
             "schema_version": {},
@@ -657,7 +827,11 @@
               "pattern": "^act-[A-Za-z0-9._-]+$"
             },
             "status": {
-              "enum": ["completed", "blocked", "failed"]
+              "enum": [
+                "completed",
+                "blocked",
+                "failed"
+              ]
             },
             "summary": {
               "type": "string",
@@ -691,7 +865,20 @@
               "type": "string",
               "minLength": 1
             }
-          }
+          },
+          "x-warn-required": [
+            "activation_id",
+            "changed_paths",
+            "checks",
+            "evidence_refs",
+            "finding_refs",
+            "remaining_risks",
+            "requested_event",
+            "reviewed_paths",
+            "scope_deviations",
+            "status",
+            "summary"
+          ]
         }
       ]
     }

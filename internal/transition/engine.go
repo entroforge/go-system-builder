@@ -2,6 +2,7 @@ package transition
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,8 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/impact"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/verification"
 )
 
 // ResumeSentinel is the Loop Definition TR-019 sentinel that resolves to the
@@ -30,8 +34,12 @@ type LockedREQ struct {
 type Request struct {
 	TransitionID     string
 	ExpectedRevision int
-	Actor            string
-	Evidence         map[string]string
+	// ExpectedRuntimeID binds a caller's snapshot to the runtime identity as
+	// well as its numeric revision. This prevents a pre-bind revision-zero
+	// snapshot from being accepted after bind created a new runtime identity.
+	ExpectedRuntimeID string
+	Actor             string
+	Evidence          map[string]string
 	// AffectedPaths are repository-relative paths changed by the tool call that
 	// triggered this transition. Used by invalidate_affected_evidence.
 	AffectedPaths []string
@@ -60,9 +68,10 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 		occurredAt = time.Now().UTC()
 	}
 	evidenceIDs := evidenceValues(request.Evidence)
-	// Snapshot also completes any interrupted rollover before the transition is
-	// resolved, so guards never inspect a mixed state/journal pair.
-	snapshot, err := loopruntime.NewStore(statePath, journalPath).Snapshot()
+	// Apply is an explicit mutation boundary. Its writer may recover a durable
+	// pending operation before guards inspect the state/journal pair.
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	snapshot, err := store.Snapshot()
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
 	}
@@ -73,12 +82,28 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	}
 	currentState, _ := currentLifecycle["state"].(string)
 	currentPhase := nullablePhase(currentLifecycle["phase"])
+	if expectedRuntimeID := strings.TrimSpace(request.ExpectedRuntimeID); expectedRuntimeID != "" && !(request.TransitionID == "TR-001" && expectedRuntimeID == "loop-inactive") {
+		currentRuntimeID, _ := current["runtime_id"].(string)
+		if currentRuntimeID != expectedRuntimeID {
+			return loopruntime.Snapshot{}, fmt.Errorf("%w: expected %q, current %q", loopruntime.ErrStaleRuntimeIdentity, expectedRuntimeID, currentRuntimeID)
+		}
+	}
 	catalog, err := LoadCatalog(root)
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("load transition catalog: %w", err)
 	}
 	resolved, err := resolveCatalog(catalog, request.TransitionID, currentState, currentPhase)
 	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	// RC-06 (S10-2): forbidden_events were decoded into the catalog but never
+	// consumed by Apply — the "strong_block" table was documentation. The two
+	// acceptance/release-audit strong blocks are now a hard pre-Apply barrier:
+	// no clean round, no ACC, no release audit — regardless of what evidence
+	// refs the caller supplies. `clean_round_still_valid` re-checks this inside
+	// the mutation, but the catalog declaration itself must gate Apply
+	// fail-closed (create_acc_without_clean_round / run_release_audit_without_acc).
+	if err := enforceForbiddenEvents(catalog, resolved.Spec, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	if err := validateRequest(root, current, resolved.Spec, request); err != nil {
@@ -135,8 +160,16 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 		GateID:                 request.GateID,
 		GateFingerprint:        request.GateFingerprint,
 		ProducerResponsibility: request.ProducerResponsibility,
-		RequireEmptyJournal:    resolved.Spec.ID == "TR-001",
+		BoundaryReset:          resolved.Spec.ID == "TR-001",
 		Apply: func(state map[string]any) error {
+			// Direct-check guards resolve disk paths from state["root"]. The
+			// writer re-reads state from disk before invoking this closure, so
+			// the default must live HERE: without it guards fall back to "." and
+			// can pass vacuously (or read the wrong tree) in CLI flows
+			// (L3-S4 v4.0.1). A pre-set root (unit-test temp root) wins.
+			if currentRoot, _ := state["root"].(string); currentRoot == "" {
+				state["root"] = root
+			}
 			lifecycle, ok := state["lifecycle"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("runtime lifecycle must be an object")
@@ -232,19 +265,62 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 					return err
 				}
 			}
+
+			// A pause checkpoint is only meaningful while paused. After all
+			// actions ran (TR-019's restore reads the checkpoint), any
+			// transition out of `paused` (TR-019 restore, TR-020 amend,
+			// TR-021 abort) must drop it, or the next pause would be
+			// rejected as an overwrite.
+			if lifecycle["state"] != "paused" {
+				state["pause"] = nil
+			}
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			return nil
 		},
 	}
 
-	store := loopruntime.NewStore(statePath, journalPath)
-	// Pre-commit validator per BUG-001 §4b.2(g). Runs semantic.ValidateRuntimeBytes
-	// on the post-mutation state before the atomic write; if invalid, the
-	// runtime is not committed and no journal entry is appended.
-	store.PreCommitValidator = func(state map[string]any) error {
-		return MarshalAndValidateRuntime(root, state)
-	}
+	// Inject the root-aware semantic validator at the composition boundary.
+	// Runtime owns the commit boundary but does not import this package.
 	return store.Update(request.ExpectedRevision, mutation)
+}
+
+// enforceForbiddenEvents is the Apply-time consumer of the Loop Definition's
+// strong_block forbidden_events table (RC-06, S10-2). Before this barrier the
+// table was only read by conformance tests; a caller with a hand-built
+// evidence map could fire TR-015/TR-017 with an empty or stale clean round and
+// the runtime would record the ACC anyway.
+//
+// Event → predicate mapping:
+//   - create_acc_without_clean_round (TR-015 acceptance→release_audit): the
+//     machine CleanRound must evaluate PASS over the current runtime.
+//   - run_release_audit_without_acc (TR-017 release_audit→awaiting_human_release):
+//     identical predicate — the audit's own release_audit_record evidence does
+//     not substitute for the ACC precondition.
+//
+// The barrier is evaluated pre-Apply against the current snapshot (fail-closed
+// on an unreadable review section) so no journal row is written for a refused
+// mutation.
+func enforceForbiddenEvents(catalog *Catalog, spec TransitionSpec, state map[string]any) error {
+	fe, declared := catalog.ForbiddenEvents["create_acc_without_clean_round"]
+	if !declared {
+		// Fail closed: a definition that drops the declaration loses its
+		// acceptance barrier and must refuse to run rather than degrade.
+		return fmt.Errorf("loop definition no longer declares forbidden event create_acc_without_clean_round; refusal to evaluate TR-015/TR-017 without it")
+	}
+	switch spec.ID {
+	case "TR-015", "TR-017":
+	default:
+		_ = fe
+		return nil
+	}
+	result := verification.EvaluateCleanRound(state)
+	if !result.Passed {
+		return fmt.Errorf(
+			"forbidden event %s: transition %s rejected — no valid clean round for review round %d: %v",
+			fe.Event, spec.ID, result.ReviewRound, result.Reasons,
+		)
+	}
+	return nil
 }
 
 func resolveCatalog(catalog *Catalog, id, currentState string, currentPhase any) (resolvedTransition, error) {
@@ -283,6 +359,7 @@ func resolveCatalog(catalog *Catalog, id, currentState string, currentPhase any)
 			ID: global.ID, Event: global.Event, To: global.To, Actors: global.Actors,
 			Guards: global.Guards, Actions: global.Actions, RequiredEvidence: global.RequiredEvidence,
 			OnGuardFailure: global.OnGuardFailure, Description: global.Description,
+			HumanDecisionScope: global.HumanDecisionScope,
 		}, Global: true, FromStates: append([]string(nil), global.FromStates...)}, nil
 	}
 	return resolvedTransition{}, fmt.Errorf("unknown transition %q", id)
@@ -296,10 +373,11 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 		return fmt.Errorf("actor %q cannot execute %s", request.Actor, spec.ID)
 	}
 	seen := map[string]bool{}
+	catalog := evidence.DefaultCatalog()
 	for _, kind := range spec.RequiredEvidence {
 		ref := strings.TrimSpace(request.Evidence[kind])
 		if ref == "" {
-			return fmt.Errorf("transition %s requires evidence %s", spec.ID, kind)
+			return fmt.Errorf("%s", catalog.MissingBindingMessage(spec.ID, kind))
 		}
 		if seen[ref] {
 			return fmt.Errorf("transition %s reuses evidence %s for multiple requirements", spec.ID, ref)
@@ -309,7 +387,7 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 			if err := validateGeneratedEvidence(state, kind, ref, request); err != nil {
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
-		} else if spec.ID != "TR-001" {
+		} else if !(spec.ID == "TR-001" || (spec.ID == "TR-020" && kind == "req_lock_record")) {
 			if err := validateCurrentEvidence(root, state, kind, ref); err != nil {
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
@@ -318,54 +396,74 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 	if spec.ID == "TR-001" && request.REQ == nil {
 		return fmt.Errorf("TR-001 requires locked REQ metadata")
 	}
+	if spec.ID == "TR-020" && request.REQ == nil {
+		return fmt.Errorf("TR-020 requires the amended locked REQ metadata")
+	}
+	if spec.HumanDecisionScope != "" {
+		if err := validateHumanDecisionScope(state, spec, request); err != nil {
+			return fmt.Errorf("transition %s: %w", spec.ID, err)
+		}
+	}
 	return nil
 }
 
+// ErrBaselineDrift marks the resume path's fingerprint-drift refusal so
+// callers can route to amendment with errors.Is instead of string matching.
+var ErrBaselineDrift = errors.New("baselines_unchanged")
+
 func generatedEvidenceKind(kind string) bool {
-	return kind == "pause_record"
+	return evidence.DefaultCatalog().IsGenerated(kind)
 }
 
 func validateGeneratedEvidence(state map[string]any, kind, ref string, request Request) error {
-	if kind == "pause_record" {
-		return nil
+	generator, ok := evidence.DefaultCatalog().Generator(kind)
+	if !ok {
+		return fmt.Errorf("unsupported generated evidence kind %s", kind)
 	}
-	return fmt.Errorf("unsupported generated evidence kind %s", kind)
+	if !generatedEvidenceReferenceMatches(strings.TrimSpace(ref), generator.Reference) {
+		return fmt.Errorf("reference %q does not match catalog generator %q", ref, generator.Reference)
+	}
+	return nil
+}
+
+func generatedEvidenceReferenceMatches(ref, canonical string) bool {
+	return ref == canonical
 }
 
 func validateCurrentEvidence(root string, state map[string]any, requiredKind, ref string) error {
 	items, _ := state["evidence"].([]any)
-	var evidence map[string]any
+	var evidenceItem map[string]any
 	for _, raw := range items {
 		item, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
 		if item["id"] == ref || item["path"] == ref {
-			evidence = item
+			evidenceItem = item
 			break
 		}
 	}
-	if evidence == nil {
+	if evidenceItem == nil {
 		return fmt.Errorf("reference %q is not current runtime evidence", ref)
 	}
-	if evidence["status"] != "valid" {
+	if evidenceItem["status"] != "valid" {
 		return fmt.Errorf("reference %q is not valid", ref)
 	}
-	actualKind, _ := evidence["kind"].(string)
-	if !contains(allowedEvidenceKinds(requiredKind), actualKind) {
+	actualKind, _ := evidenceItem["kind"].(string)
+	if !evidence.DefaultCatalog().Accepts(requiredKind, actualKind) {
 		return fmt.Errorf("reference %q has kind %q, incompatible with %s", ref, actualKind, requiredKind)
 	}
 	baseline, _ := state["baseline"].(map[string]any)
-	if integer(evidence["baseline_generation"]) != integer(baseline["generation"]) {
-		return fmt.Errorf("reference %q belongs to baseline generation %d, current is %d", ref, integer(evidence["baseline_generation"]), integer(baseline["generation"]))
+	if integer(evidenceItem["baseline_generation"]) != integer(baseline["generation"]) {
+		return fmt.Errorf("reference %q belongs to baseline generation %d, current is %d", ref, integer(evidenceItem["baseline_generation"]), integer(baseline["generation"]))
 	}
-	if evidenceRound := integer(evidence["review_round"]); evidenceRound > 0 {
+	if evidenceRound := integer(evidenceItem["review_round"]); evidenceRound > 0 {
 		review, _ := state["review"].(map[string]any)
 		if evidenceRound != integer(review["round"]) {
 			return fmt.Errorf("reference %q belongs to review round %d, current is %d", ref, evidenceRound, integer(review["round"]))
 		}
 	}
-	rel, _ := evidence["path"].(string)
+	rel, _ := evidenceItem["path"].(string)
 	clean := filepath.Clean(rel)
 	if rel == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("reference %q has unsafe path %q", ref, rel)
@@ -374,7 +472,7 @@ func validateCurrentEvidence(root string, state map[string]any, requiredKind, re
 	if err != nil {
 		return fmt.Errorf("read reference %q: %w", ref, err)
 	}
-	want, _ := evidence["sha256"].(string)
+	want, _ := evidenceItem["sha256"].(string)
 	if actual := SHA256(data); want == "" || actual != want {
 		return fmt.Errorf("reference %q fingerprint mismatch", ref)
 	}
@@ -382,48 +480,68 @@ func validateCurrentEvidence(root string, state map[string]any, requiredKind, re
 }
 
 func allowedEvidenceKinds(required string) []string {
-	switch required {
-	case "req_lock_record", "loop_authorization_record", "human_decision_record", "pause_record":
-		return []string{"human_decision"}
-	// BUG-PLANNING-SUBSTATE: baseline_record removed because the only
-	// transition that demanded it (PTR-PLAN-01) is deleted. TR-002 has
-	// required_evidence=[] and is gated by the direct-check planning_complete
-	// guard.
-	case "activation_record":
-		return []string{"agent_activation"}
-	case "builder_report_record":
-		return []string{"builder_report", "agent_completion"}
-	case "team_manifest_record":
-		return []string{"builder_report", "team_manifest"}
-	case "completion_report":
-		return []string{"agent_completion", "completion_report"}
-	case "delivery_review_record":
-		return []string{"delivery_review"}
-	case "qa_review_record":
-		return []string{"qa_review"}
-	case "e2e_review_record":
-		return []string{"e2e_review"}
-	case "review_result_record":
-		return []string{"delivery_review", "qa_review", "e2e_review"}
-	case "finding_record", "bug_batch_record", "root_cause_record", "repair_record":
-		return []string{"bug"}
-	case "targeted_reverification_record":
-		return []string{"targeted_reverification"}
-	case "clean_round_record":
-		return []string{"clean_round"}
-	case "acceptance_record":
-		return []string{"acceptance"}
-	case "release_audit_record":
-		return []string{"release_audit"}
-	case "change_impact_record":
-		return []string{"change_impact"}
-	// Planning sub-state transitions no longer demand separate design/UI records,
-	// but TR-003 still consumes jointly verified contract/task batch records.
-	case "contract_set_record", "task_batch_record", "document_review_record":
-		return []string{"document_review", "document_review_record"}
-	default:
-		return nil
+	return evidence.DefaultCatalog().AcceptedKinds(required)
+}
+
+// validateHumanDecisionScope enforces that a human-boundary transition's
+// human_decision evidence is scoped to exactly this verb, runtime, and
+// revision (`<scope>:<runtime_id>@<revision>` — the revision the evidence
+// became current, which is the state this transition applies to). One
+// approval therefore cannot be replayed after the revision moves or be
+// reused as a different verb — the transition-layer counterpart of
+// runtime.validateLifecycleApproval.
+func validateHumanDecisionScope(state map[string]any, spec TransitionSpec, request Request) error {
+	runtimeID, _ := state["runtime_id"].(string)
+	revision := integer(state["revision"])
+	expected := fmt.Sprintf("%s:%s@%d", spec.HumanDecisionScope, runtimeID, revision)
+	items, _ := state["evidence"].([]any)
+	// Prefer the evidence bound to the canonical human_decision slot: stray
+	// extra keys in request.Evidence must not widen the gate's match set.
+	var preferred string
+	if slot, ok := request.Evidence["human_decision_record"]; ok && strings.TrimSpace(slot) != "" {
+		preferred = strings.TrimSpace(slot)
 	}
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item == nil || item["kind"] != "human_decision" || item["status"] != "valid" {
+			continue
+		}
+		idRef, _ := item["id"].(string)
+		pathRef, _ := item["path"].(string)
+		cited := preferred != "" && (preferred == idRef || preferred == pathRef)
+		if !cited && preferred == "" {
+			for _, value := range request.Evidence {
+				if value == idRef || value == pathRef {
+					cited = true
+					break
+				}
+			}
+		}
+		if !cited {
+			continue
+		}
+		if containsString(toStringSlice(item["scope_refs"]), expected) {
+			return nil
+		}
+		return fmt.Errorf("human_decision evidence %q must be scoped to %q — record the decision with the matching lifecycle verb (e.g. `runtime pause/resume`, `req amend`, or `runtime human-decision`) so one approval authorizes exactly one verb at one revision", idRef, expected)
+	}
+	return fmt.Errorf("transition %s cites no current human_decision evidence; the decision must be registered and scoped to %q", spec.ID, expected)
+}
+
+func toStringSlice(value any) []string {
+	switch values := value.(type) {
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, raw := range values {
+			if s, _ := raw.(string); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		return []string{values}
+	}
+	return nil
 }
 
 func dispatchAction(name string, results []map[string]any, state map[string]any, ctx *ActionContext) error {
@@ -549,13 +667,155 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 	return nil
 }
 
+// updateBoundREQ swaps the amended baseline into the running cycle: the new
+// locked REQ becomes bound_req with a current-generation documents entry,
+// while the superseded entry stays as locked history (the hook protects
+// every locked req generation — see the hookctx loader). Runs after
+// increment_baseline_generation, which already bumped the generation.
+func updateBoundREQ(root string, state map[string]any, request Request, occurredAt time.Time) error {
+	req := request.REQ
+	if req.ID == "" || req.Path == "" || req.Version == "" || req.SHA256 == "" ||
+		req.ApprovedBy == "" || req.ApprovedAt == "" {
+		return fmt.Errorf("amended REQ metadata is incomplete")
+	}
+	data, err := os.ReadFile(filepath.Join(root, req.Path))
+	if err != nil {
+		return fmt.Errorf("read amended REQ: %w", err)
+	}
+	if SHA256(data) != req.SHA256 {
+		return fmt.Errorf("amended REQ fingerprint mismatch")
+	}
+	status := ParseMarkdownField(string(data), "状态", "Status")
+	if !strings.EqualFold(status, "locked") {
+		return fmt.Errorf("amended REQ %s is not locked (status=%q)", req.ID, status)
+	}
+	bound, _ := state["bound_req"].(map[string]any)
+	if bound == nil {
+		return fmt.Errorf("runtime has no bound REQ to amend")
+	}
+	oldID, _ := bound["id"].(string)
+	if oldID != "" && req.ID != oldID {
+		return fmt.Errorf("amended REQ %q does not match the bound REQ %q — changing the target is an unbind + rebind, not an amendment", req.ID, oldID)
+	}
+	oldVersion, _ := bound["version"].(string)
+	greater, parseable := versionStrictlyGreater(req.Version, oldVersion)
+	if !parseable {
+		return fmt.Errorf("REQ versions must be dotted numeric (got amended %q, bound %q)", req.Version, oldVersion)
+	}
+	if !greater {
+		return fmt.Errorf("amended REQ version %q must strictly exceed the bound version %q", req.Version, oldVersion)
+	}
+	uiImpact, err := parseUIImpact(string(data))
+	if err != nil {
+		return err
+	}
+	state["bound_req"] = map[string]any{
+		"path":        req.Path,
+		"version":     req.Version,
+		"sha256":      req.SHA256,
+		"id":          req.ID,
+		"status":      "locked",
+		"approved_by": req.ApprovedBy,
+		"approved_at": req.ApprovedAt,
+		"metadata":    map[string]any{"ui_impact": uiImpact},
+	}
+	baseline, ok := state["baseline"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("runtime baseline must be an object")
+	}
+	state["documents"] = appendDocument(state["documents"], map[string]any{
+		"id":         req.ID,
+		"kind":       "req",
+		"path":       req.Path,
+		"version":    req.Version,
+		"sha256":     req.SHA256,
+		"status":     "locked",
+		"generation": integer(baseline["generation"]),
+	})
+	state["authorization"] = map[string]any{
+		"mode":        "binding",
+		"command":     "loop-harness req amend",
+		"actor":       request.Actor,
+		"occurred_at": occurredAt.UTC().Format(time.RFC3339Nano),
+	}
+	return nil
+}
+
+// versionStrictlyGreater compares dotted numeric versions (an optional "v"
+// prefix is tolerated). parseable is false when either side is not dotted
+// numeric — callers must reject instead of guessing an ordering.
+func versionStrictlyGreater(a, b string) (greater, parseable bool) {
+	parse := func(v string) ([]int, bool) {
+		v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+		if v == "" {
+			return nil, false
+		}
+		parts := strings.Split(v, ".")
+		nums := make([]int, 0, len(parts))
+		for _, part := range parts {
+			if part == "" {
+				return nil, false
+			}
+			n := 0
+			for _, r := range part {
+				if r < '0' || r > '9' {
+					return nil, false
+				}
+				if n > (1<<31-1)/10 {
+					return nil, false // numeric field would overflow — not a real version
+				}
+				n = n*10 + int(r-'0')
+			}
+			nums = append(nums, n)
+		}
+		return nums, true
+	}
+	na, okA := parse(a)
+	nb, okB := parse(b)
+	if !okA || !okB {
+		return false, false
+	}
+	for i := 0; i < len(na) || i < len(nb); i++ {
+		var x, y int
+		if i < len(na) {
+			x = na[i]
+		}
+		if i < len(nb) {
+			y = nb[i]
+		}
+		if x != y {
+			return x > y, true
+		}
+	}
+	return false, true
+}
+
 // parseUIImpact reads the `UI impact` field from a locked REQ and returns
 // one of {none, changed, unknown}. The third value is part of the canonical
 // SM-003 planning-phase contract (LOOP-STATE-MACHINE.md §15): bindREQ
-// accepts `unknown`, but the planning cannot advance until PM clarifies it
-// in §12 of the REQ. The guard that enforces "unknown → planning paused"
+// accepts `unknown`, but the planning cannot advance until the REQ's §D
+// (待澄清问题) clarifies it. The guard that enforces "unknown → planning paused"
 // lives in guardUIIImpactResolved (registered as `ui_impact_resolved`).
 func parseUIImpact(content string) (string, error) {
+	value, err := parseUIImpactField(content)
+	if err != nil {
+		return "", err
+	}
+	// The REQ template carries a second UI-impact declaration in §C (a
+	// human-facing reflection of the top anchor field). A drifted §C value
+	// would silently route a `changed` requirement through the `none` path
+	// Refuse the mismatch and name both values.
+	if echo := sectionCUIImpact(content); echo != "" && !strings.EqualFold(echo, value) {
+		return "", fmt.Errorf("REQ UI impact is inconsistent: top anchor field says %q but the §C reflection says %q — align them (the top field is the machine anchor; §C only reflects it)", value, echo)
+	}
+	return value, nil
+}
+
+// ParseUIImpactForTest exposes parseUIImpact for the drift pin test.
+func ParseUIImpactForTest(content string) (string, error) { return parseUIImpact(content) }
+
+// parseUIImpactField reads only the top blockquote `UI impact` anchor.
+func parseUIImpactField(content string) (string, error) {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ">"))
 		for _, separator := range []string{"：", ":"} {
@@ -574,8 +834,74 @@ func parseUIImpact(content string) (string, error) {
 	return "", fmt.Errorf("locked REQ is missing UI impact metadata")
 }
 
+// sectionCUIImpact extracts the UI-impact value declared inside the §C
+// section. The REQ template's reflection is a markdown table row
+// `| UI impact（引自顶部） | none / changed / unknown（…） |` — the value is
+// the first token of the second cell that matches one of the three legal
+// values. A colon-form `UI impact：value` line is also accepted (free-form
+// REQs). Empty when §C declares neither. Without the three-value filter the
+// template's own placeholder row ("none / changed / unknown（…）") would be
+// read as a mismatch on every template-conformant REQ.
+func sectionCUIImpact(content string) string {
+	inC := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			inC = strings.Contains(trimmed, "§C")
+			continue
+		}
+		if !inC {
+			continue
+		}
+		for _, separator := range []string{"：", ":"} {
+			parts := strings.SplitN(trimmed, separator, 2)
+			if len(parts) == 2 && strings.Contains(strings.ToLower(parts[0]), "ui impact") {
+				if value := firstLegalUIImpact(parts[1]); value != "" {
+					return value
+				}
+			}
+		}
+		if strings.HasPrefix(trimmed, "|") && strings.Contains(strings.ToLower(trimmed), "ui impact") {
+			cells := strings.Split(strings.Trim(trimmed, "|"), "|")
+			for _, cell := range cells {
+				if value := firstLegalUIImpact(cell); value != "" {
+					return value
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func firstLegalUIImpact(cell string) string {
+	lowered := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(cell), "**")))
+	for _, legal := range []string{"none", "changed", "unknown"} {
+		if strings.HasPrefix(lowered, legal) {
+			return legal
+		}
+	}
+	return ""
+}
+
+// appendDocument appends a document entry unless a same-id entry of the
+// same baseline generation already exists — that one is replaced in place.
+// Same-generation re-registration happens when S6→S5 rework re-locks a
+// revised contract: stacking entries would break subject fingerprint matching
+// forever (each stale sha poisons the manifest).
 func appendDocument(value any, document map[string]any) []any {
 	documents, _ := value.([]any)
+	id, _ := document["id"].(string)
+	generation := integer(document["generation"])
+	for i, raw := range documents {
+		existing, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if existingID, _ := existing["id"].(string); existingID == id && integer(existing["generation"]) == generation {
+			documents[i] = document
+			return documents
+		}
+	}
 	return append(documents, document)
 }
 
@@ -722,27 +1048,18 @@ func capturePauseCheckpoint(state map[string]any, resolved resolvedTransition, o
 		reviewRound = integer(review["round"])
 	}
 
-	entities, _ := state["entities"].(map[string]any)
-	entitySnapshotRevision := 0
-	if entities != nil {
-		entitySnapshotRevision = len(asEntityArray(entities))
-	}
-
 	documents := documentFingerprints(state)
-	keys := committedIdempotencyKeys(state)
 
 	state["pause"] = map[string]any{
-		"from_state":                 fromState,
-		"from_phase":                 fromPhase,
-		"phase_revision":             phaseRevision,
-		"baseline_generation":        baselineGeneration,
-		"review_round":               reviewRound,
-		"entity_snapshot_revision":   entitySnapshotRevision,
-		"reason":                     resolved.Spec.Description,
-		"required_human_action":      pauseRequiredAction(fromState),
-		"document_fingerprints":      documents,
-		"committed_idempotency_keys": keys,
-		"paused_at":                  occurredAt.UTC().Format(time.RFC3339Nano),
+		"from_state":            fromState,
+		"from_phase":            fromPhase,
+		"phase_revision":        phaseRevision,
+		"baseline_generation":   baselineGeneration,
+		"review_round":          reviewRound,
+		"reason":                resolved.Spec.Description,
+		"required_human_action": pauseRequiredAction(fromState),
+		"document_fingerprints": documents,
+		"paused_at":             occurredAt.UTC().Format(time.RFC3339Nano),
 	}
 	return nil
 }
@@ -778,13 +1095,13 @@ func restoreFromPauseAction(root string, state map[string]any) error {
 		}
 		data, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
-			return fmt.Errorf("baselines_unchanged: cannot read %s: %w", path, err)
+			return fmt.Errorf("%w: cannot read %s: %w", ErrBaselineDrift, path, err)
 		}
 		actualSHA := fmt.Sprintf("%x", sha256.Sum256(data))
 		if actualSHA != expectedSHA {
 			return fmt.Errorf(
-				"baselines_unchanged: %s fingerprint drifted (pause recorded %s, actual %s)",
-				path, expectedSHA[:12], actualSHA[:12])
+				"%w: %s fingerprint drifted (pause recorded %s, actual %s)",
+				ErrBaselineDrift, path, expectedSHA[:12], actualSHA[:12])
 		}
 	}
 	state["pause"] = nil
@@ -855,11 +1172,13 @@ func invalidateAllDownstream(state map[string]any, source string) {
 }
 
 // invalidateAllDownstreamAction is the action-registry entry point; same
-// semantics as invalidateAllDownstream.
-func invalidateAllDownstreamAction(state map[string]any, source string) {
+// semantics as invalidateAllDownstream. It returns the number of evidence
+// entries newly invalidated (RC-05: callers that accept an explicit "all"
+// sweep must be able to report what actually changed).
+func invalidateAllDownstreamAction(state map[string]any, source string) int {
 	evidenceSlice, ok := state["evidence"].([]any)
 	if !ok {
-		return
+		return 0
 	}
 	var impacts []impact.EvidenceImpact
 	for _, raw := range evidenceSlice {
@@ -879,7 +1198,8 @@ func invalidateAllDownstreamAction(state map[string]any, source string) {
 			})
 		}
 	}
-	impact.InvalidateEvidence(state, impacts, source)
+	invalidated := impact.InvalidateEvidence(state, impacts, source)
+	return len(invalidated)
 }
 
 func documentFingerprints(state map[string]any) []any {
@@ -906,27 +1226,6 @@ func documentFingerprints(state map[string]any) []any {
 		})
 	}
 	return out
-}
-
-func committedIdempotencyKeys(state map[string]any) []string {
-	last, ok := state["last_transition"].(map[string]any)
-	if !ok {
-		return []string{}
-	}
-	if key, _ := last["idempotency_key"].(string); key != "" {
-		return []string{key}
-	}
-	return []string{}
-}
-
-func asEntityArray(entities map[string]any) []any {
-	var combined []any
-	for _, key := range []string{"agents", "tasks", "bugs", "teams"} {
-		if arr, ok := entities[key].([]any); ok {
-			combined = append(combined, arr...)
-		}
-	}
-	return combined
 }
 
 func pauseRequiredAction(fromState string) string {

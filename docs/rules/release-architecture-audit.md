@@ -14,6 +14,9 @@ scope: release, hotfix, merge to master/main
 Every release needs an architecture release audit before merge to `master/main`.
 
 The audit is not another code review. It verifies that system-level invariants still hold.
+It is also an anti-shortcut review: the auditor freezes the finite scope,
+states what would disprove each conclusion, and records that counterevidence
+check before approving the release package.
 
 ## 2. Required Output
 
@@ -24,6 +27,11 @@ docs/release_audits/YYYY-MM-DD_<release-or-topic>_architecture_audit.md
 ```
 
 The report must be committed with the release.
+
+The report must include a coverage inventory, independent responsibility where
+needed, and a counterevidence ledger. Every inventory item needs a disposition;
+unanswered `UNKNOWN`, unsupported `PASS`, unowned risk, or untracked debt blocks
+approval. `N/A` requires an authoritative source and a reason.
 
 Allowed conclusions:
 
@@ -75,6 +83,9 @@ Before approval, the PM / Architect must answer:
 8. Is multi-instance execution safe?
 9. Do tests cover real DB/migration/concurrency paths?
 10. Are docs, TDs, bugs, and review reports consistent with code?
+11. What is the finite audit inventory, and is every item dispositioned?
+12. What would falsify each material PASS, and where is the counterevidence?
+13. Are there any `UNKNOWN`, unsupported PASS, unowned risk, or untracked debt items?
 
 ## 6. Forbidden
 

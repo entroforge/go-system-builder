@@ -77,17 +77,36 @@ func evidenceByID(state map[string]any, id string) map[string]any {
 	return nil
 }
 
-func TestComputeImpactDoesNotInvalidateUnscopedRepairEvidence(t *testing.T) {
+// TestComputeImpactInvalidatesUnscopedEvidence pins the RC-09 (S9-3)
+// fail-closed semantics: an evidence entry that declares no scope_refs is
+// full-surface sensitive, so ANY changed path invalidates it. The previous
+// behavior (unscoped evidence can never match a rule and therefore never
+// auto-invalidates) is exactly the S9-3 finding — an unrelated path change
+// left an unscoped PASS evidence row "valid" forever.
+func TestComputeImpactInvalidatesUnscopedEvidence(t *testing.T) {
 	state := map[string]any{
 		"baseline": map[string]any{"generation": 1},
 		"evidence": []any{
 			validEvidenceIndex("ev-change-impact", "change_impact", nil),
+			validEvidenceIndex("ev-repair", "bug", nil),
+			validEvidenceIndex("ev-scoped", "delivery_review", []any{"docs/requirements/REQ-039.md"}),
 		},
 	}
 	impacts := impact.ComputeImpact(state, []string{"internal/controller/cycle.go"})
+	invalidated := map[string]string{}
 	for _, item := range impacts {
-		if item.EvidenceID == "ev-change-impact" {
-			t.Fatal("unscoped change_impact must not be impacted by source path change")
+		invalidated[item.EvidenceID] = item.Rule
+	}
+	for _, id := range []string{"ev-change-impact", "ev-repair"} {
+		rule, ok := invalidated[id]
+		if !ok {
+			t.Fatalf("unscoped evidence %s must be invalidated by an unrelated path change (RC-09 S9-3 fail-closed)", id)
 		}
+		if rule != "unscoped_evidence" {
+			t.Fatalf("evidence %s invalidation rule = %q, want unscoped_evidence", id, rule)
+		}
+	}
+	if _, ok := invalidated["ev-scoped"]; ok {
+		t.Fatal("evidence scoped to docs/requirements must not be impacted by a source path change")
 	}
 }

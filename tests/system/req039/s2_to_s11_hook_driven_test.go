@@ -34,7 +34,7 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	req039fixtures.WritePlanningContractPass(t, root, state)
 	writeSystemState(t, root, state)
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s3", "Edit",
-		map[string]any{"file_path": "docs/contracts/BE-039-loop-controller.md"},
+		map[string]any{"file_path": "docs/contracts/BE-039.md"},
 		"PTR-PLAN-02", "planning", "tasks", bugID)
 
 	// S4 → S5 (TR-002)
@@ -50,41 +50,23 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	req039fixtures.WriteDocumentVerificationPassEvidence(t, root, state, "dv-spec", "dv-task")
 	writeSystemState(t, root, state)
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s5", "Edit",
-		map[string]any{"file_path": "docs/contracts/BE-039-loop-controller.md"},
+		map[string]any{"file_path": "docs/contracts/BE-039.md"},
 		"TR-003", "building", "", bugID)
 
-	// S6 → S7 delivery (TR-006)
+	// S6 → S7 (TR-006): the round opens at verification.planned (L3-S7).
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.WriteBuilderBatchReadyEvidence(t, root, state)
 	writeSystemState(t, root, state)
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s6", "Bash", bash,
-		"TR-006", "verification", "delivery", bugID)
+		"TR-006", "verification", "planned", bugID)
 
-	// S7 verification chain (PTR-VERIFY-01..04 + TR-009)
+	// S7: the ReviewPlan is registered, every required Claim consumed pass,
+	// and the round consumer generated the machine CleanRound (the
+	// claim-level flow is driven by the runtime verbs; the exit is one
+	// hook-committed TR-009).
 	state = req039fixtures.ReadState(t, root)
-	req039fixtures.EnsureREQDoc(t, root, state, "none")
-	req039fixtures.WriteVerificationDimensionPass(t, root, state, "delivery")
+	req039fixtures.SeedCleanRoundReady(t, root, state)
 	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s7-delivery", "Bash", bash,
-		"PTR-VERIFY-01", "verification", "qa", bugID)
-
-	state = req039fixtures.ReadState(t, root)
-	req039fixtures.WriteVerificationDimensionPass(t, root, state, "qa")
-	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s7-qa", "Bash", bash,
-		"PTR-VERIFY-02", "verification", "e2e_browser", bugID)
-
-	state = req039fixtures.ReadState(t, root)
-	req039fixtures.WriteVerificationDimensionPass(t, root, state, "e2e_browser")
-	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s7-e2e", "Bash", bash,
-		"PTR-VERIFY-03", "verification", "clean_round_evaluation", bugID)
-
-	state = req039fixtures.ReadState(t, root)
-	req039fixtures.WriteCleanRoundEvaluationPass(t, root, state)
-	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s7-clean-eval", "Bash", bash,
-		"PTR-VERIFY-04", "verification", "clean_round_passed", bugID)
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s7-tr009", "Bash", bash,
 		"TR-009", "acceptance", "", bugID)
 

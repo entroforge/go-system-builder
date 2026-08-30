@@ -1,24 +1,23 @@
-# 用户故事：USER-STORY-{REQ-id}-{module}
+# 模块用户故事：stories.md
 
-> 需求：REQ-{id}
 > 模块：{module}
-> 状态：draft / reviewed / locked
-> 关联原型：`docs/design/prototypes/{module}/prototype.html`
-> 关联动线：`docs/design/prototypes/{module}/USER-FLOW-{REQ-id}-{module}.md`
+> 当前真相：本文件维护模块完整故事集合；不创建 per-REQ/per-round 副本
+> 关联原型：`docs/design/prototypes/{module}/index.html` + 当前 `*.html`
+> 关联场景：`scenario-model.json` / `cases.json` / `scenario-coverage.json` / `fixture-contract.json`
 
 ## 使用方式
 
-本文件按模块维护一组真实用户故事，而不是强制一个模块只对应一个角色或
-一个场景。一个故事描述“谁在什么情境下，为何要完成什么目标”；它可关联一
-条或多条 `PATH-*` 用户动线。故事数量不设上限，优先按用户目标或业务场景
-划分，不按页面机械拆分。
+本文件按模块维护完整、当前且唯一的真实用户故事集合，而不是需求增量或
+历史版本集合。一个故事描述“谁在什么情境下，为何要完成什么目标”；它可
+关联一条或多条 `PATH-*`，并必须引用 scenario branch / CASE。REQ 只写入
+`source_refs`，不出现在文件名或所有权字段中。
 
 ## 1. 故事目录
 
-| 故事 ID | 用户角色 | 触发场景 | 用户目标 | 关联路径 | 覆盖条款 |
+| 故事 ID | 用户角色 | 触发场景 | 用户目标 | CASE / PATH | source_refs |
 |:---|:---|:---|:---|:---|:---|
-| US-CREATE | {role} | {real-world trigger} | {goal} | PATH-CREATE-SUCCESS, PATH-CREATE-VALIDATION | FR-{id} |
-| US-MANAGE | {role} | {real-world trigger} | {goal} | PATH-EDIT-*, PATH-DELETE-* | FR-{id} |
+| S-001 | {role} | {real-world trigger} | {goal} | CASE-001 / PATH-001 | REQ-{id}/FR-{id} |
+| S-002 | {role} | {rejection or recovery trigger} | {safe recovery goal} | CASE-002 / PATH-002 | REQ-{id}/FR-{id} |
 
 ## 2. 用户和场景
 
@@ -27,11 +26,14 @@
 
 | 项 | 内容 |
 |:---|:---|
-| 故事 ID | US-{id} |
+| 故事 ID | S-{id} |
+| source_refs | REQ-{id}/FR-{id}, decision/state/rule refs |
 | 用户角色 | {role} |
 | 触发背景 | {why this user starts the flow} |
 | 业务目标 | {what success means} |
 | 前置条件 | {permissions, data, state} |
+| 覆盖分支 | BR-{id}-ALLOW, BR-{id}-REJECT |
+| 覆盖 CASE | CASE-{id} |
 
 ## 3. 功能设计背景
 
@@ -63,15 +65,17 @@
 
 ## 8. REQ 映射
 
-| REQ 条款 | 原型区域 | 用户价值 | 验收方式 |
+| source_ref | 原型区域 | 用户价值 | 验收方式 |
 |:---|:---|:---|:---|
-| FR-{id} | {screen/section} | {value} | {evidence} |
+| REQ-{id}/FR-{id} | {screen/section} | {value} | {evidence} |
 
 ## 9. 与原型和动线的一致性
 
 | 检查项 | 结果 | 证据 |
 |:---|:---|:---|
-| 成功故事在 `prototype.html` 中可见 | pass / fail | {section/state} |
-| 异常和边缘故事在 `prototype.html` 中可见或明确 N/A | pass / fail | {section/state/N-A reason} |
-| 页面跳转均有 `USER-FLOW-*` 路径覆盖 | pass / fail | {PATH ids} |
+| 成功故事在当前 `*.html` 中可见 | pass / fail | {section/state} |
+| 异常和边缘故事在当前 `*.html` 中可见或明确 N/A | pass / fail | {section/state/N-A reason} |
+| 页面跳转均有 `F-NNN` / `PATH-*` 路径覆盖 | pass / fail | {PATH ids} |
+| required allow/reject branch coverage = 100% | pass / fail | {scenario-coverage.json} |
+| browser-required CASE 均绑定 module spec | pass / fail | `web/e2e/{module}/` |
 | 合同需要的字段、状态、错误、权限和副作用已标出 | pass / fail | {contract notes} |

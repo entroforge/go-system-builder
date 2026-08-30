@@ -1,0 +1,103 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_type": "release_audit",
+  "runtime_id": "loop-REQ-003",
+  "baseline_generation": 4,
+  "review_round": 3,
+  "coverage_inventory": [
+    {
+      "id": "REQ-AC-001",
+      "category": "requirement",
+      "source_refs": ["docs/requirements/REQ-003.md#ac-1"],
+      "expected": "The user-visible acceptance criterion is satisfied.",
+      "oracle": "The complete user path observes the expected result after reload.",
+      "owner": "Requirement Acceptance",
+      "evidence_refs": ["evidence-acceptance-result"],
+      "disposition": "pass"
+    },
+    {
+      "id": "CONTRACT-001",
+      "category": "contract",
+      "source_refs": ["docs/contracts/CONTRACTS-003.md#contract-1"],
+      "expected": "The locked FE/BE contract remains compatible.",
+      "oracle": "Contract checks and the persisted payload agree at the boundary.",
+      "owner": "Requirement Acceptance",
+      "evidence_refs": ["evidence-contract-check"],
+      "disposition": "pass"
+    },
+    {
+      "id": "PATH-001",
+      "category": "changed_path",
+      "source_refs": ["internal/example/handler.go"],
+      "expected": "Every declared changed path has a current disposition.",
+      "oracle": "The path is covered by current review evidence and its SHA is recorded.",
+      "owner": "Evidence Integrity",
+      "evidence_refs": ["evidence-clean-round"],
+      "disposition": "pass"
+    },
+    {
+      "id": "INVARIANT-001",
+      "category": "audit_area",
+      "source_refs": ["docs/rules/release-architecture-audit.md"],
+      "expected": "The changed system preserves its release invariants.",
+      "oracle": "The eight audit areas have independent evidence-backed conclusions.",
+      "owner": "Release Auditor",
+      "evidence_refs": ["evidence-release-audit"],
+      "disposition": "pass"
+    }
+  ],
+  "counterevidence": [
+    {
+      "id": "CE-REQ-AC-001",
+      "inventory_id": "REQ-AC-001",
+      "question": "What rejection, boundary, retry, or reload case would prove the acceptance claim false?",
+      "evidence_refs": ["evidence-acceptance-negative"],
+      "outcome": "pass"
+    },
+    {
+      "id": "CE-CONTRACT-001",
+      "inventory_id": "CONTRACT-001",
+      "question": "What payload, version, or error-shape mismatch would prove the contract claim false?",
+      "evidence_refs": ["evidence-contract-negative"],
+      "outcome": "pass"
+    },
+    {
+      "id": "CE-PATH-001",
+      "inventory_id": "PATH-001",
+      "question": "What unreviewed caller, configuration, or generated artifact would prove path coverage false?",
+      "evidence_refs": ["evidence-path-reconciliation"],
+      "outcome": "pass"
+    },
+    {
+      "id": "CE-INVARIANT-001",
+      "inventory_id": "INVARIANT-001",
+      "question": "What state, transaction, concurrency, migration, observability, or release-scope counterexample would disprove the audit conclusion?",
+      "evidence_refs": ["evidence-audit-counterexample"],
+      "outcome": "pass"
+    }
+  ],
+  "audit_areas": [
+    {"id": "state_machine", "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": ["evidence-audit-state"]},
+    {"id": "transaction_uow", "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": ["evidence-audit-transaction"]},
+    {"id": "concurrency_idempotency", "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": ["evidence-audit-concurrency"]},
+    {"id": "data_migration", "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": ["evidence-audit-data"]},
+    {"id": "call_sites_topology", "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": ["evidence-audit-topology"]},
+    {"id": "observability_errors", "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": ["evidence-audit-observability"]},
+    {"id": "verification_evidence", "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": ["evidence-audit-verification"]},
+    {"id": "docs_release_scope", "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": ["evidence-audit-docs"]}
+  ],
+  "risks": [],
+  "technical_debt": [],
+  "blocking_findings": [],
+  "metrics": {
+    "requirement_coverage": 1,
+    "contract_coverage": 1,
+    "changed_path_coverage": 1,
+    "audit_area_coverage": 1,
+    "unknown_count": 0,
+    "unsupported_pass_count": 0,
+    "unowned_risk_count": 0,
+    "untracked_debt_count": 0,
+    "blocking_finding_count": 0
+  }
+}

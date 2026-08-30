@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/scenario-coverage.schema.json",
+  "title": "Generated Module Scenario Coverage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["module", "coverage_profile", "counts", "required_branch_coverage", "ratio"],
+  "properties": {
+    "module": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "coverage_profile": {"enum": ["ordinary", "rule-dense", "critical"]},
+    "counts": {"$ref": "#/$defs/counts"},
+    "required_branch_coverage": {"$ref": "#/$defs/coverage"},
+    "ratio": {"$ref": "#/$defs/ratio"}
+  },
+  "$defs": {
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["facts", "rules", "branches", "cases", "positive", "negative", "required_branches", "browser_required_cases"],
+      "properties": {
+        "facts": {"type": "integer", "minimum": 0}, "rules": {"type": "integer", "minimum": 0},
+        "branches": {"type": "integer", "minimum": 0}, "cases": {"type": "integer", "minimum": 0},
+        "positive": {"type": "integer", "minimum": 0}, "negative": {"type": "integer", "minimum": 0},
+        "required_branches": {"type": "integer", "minimum": 0}, "browser_required_cases": {"type": "integer", "minimum": 0}
+      }
+    },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["required", "covered", "percentage", "allow_required", "allow_covered", "reject_required", "reject_covered"],
+      "properties": {
+        "required": {"type": "integer", "minimum": 0}, "covered": {"type": "integer", "minimum": 0},
+        "percentage": {"type": "number", "minimum": 0, "maximum": 100},
+        "allow_required": {"type": "integer", "minimum": 0}, "allow_covered": {"type": "integer", "minimum": 0},
+        "reject_required": {"type": "integer", "minimum": 0}, "reject_covered": {"type": "integer", "minimum": 0}
+      }
+    },
+    "ratio": {
+      "type": "object", "additionalProperties": false,
+      "required": ["positive", "negative", "negative_to_positive", "minimum_negative_to_positive"],
+      "properties": {
+        "positive": {"type": "integer", "minimum": 0}, "negative": {"type": "integer", "minimum": 0},
+        "negative_to_positive": {"type": "number", "minimum": 0},
+        "minimum_negative_to_positive": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

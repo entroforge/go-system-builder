@@ -122,37 +122,39 @@ DRIVE()
      Continue until a real stop condition.
 ```
 
-## Agent Activation Barrier
+## Agent Dispatch Barrier (plan_checkpoint)
 
 Claude Code Agent Teams allow the same subagent to be woken repeatedly. The
-Driver therefore treats activation as a scheduling barrier, not as a passive
+Driver therefore treats dispatch as a scheduling barrier, not as a passive
 wait. Once the main session delegates an assignment, the most-forward missing
-work is the Agent's read-back chain until that assignment is activated,
-rejected, or revoked.
+work is that Agent's plan checkpoint until the plan is recorded — then the
+Worker executes continuously in the same turn (L4: no second approval gate in
+the default `plan_checkpoint` mode).
 
 Apply this barrier before self-executing any stage work:
 
 | Agent lifecycle fact | Driver next action |
 |:---|:---|
-| assignment created but no `phase_one_request` | load `two-phase-activation`; create and send the request |
-| `phase_one_request` sent, no `readback_response` | wait for or re-wake that Agent to return the structured read-back |
-| `readback_response=ready` | verify fingerprints and understanding; commit `understanding_approved`; send phase-two activation; commit `activated` |
-| `readback_response=conflict`, `missing_input`, or `out_of_scope` | commit `understanding_rejected`; repair the assignment/spec input or revoke |
-| Agent activated | let that Agent execute its bounded responsibility; monitor completion |
-| Agent idle or repeat wake needed | re-wake the same Agent with the current envelope chain, not a fresh informal prompt |
+| assignment dispatched but no plan checkpoint | load `agent-dispatch`; the Worker sends PLAN_REPORT via SendMessage (`message_type=plan_report`) — the PostToolUse(SendMessage) observer records the checkpoint; the first product write is blocked until then |
+| PLAN_REPORT sent and aligned | stay silent — the Worker continues executing in the same turn; never reply with a "go ahead" approval |
+| PLAN_REPORT drifted (scope/oracle/dependency) | send one CORRECTION to the same Agent; it continues the current assignment |
+| plan recorded, no Result yet | the Worker keeps executing; TeammateIdle/SubagentStop before the Result is blocked (exit 2) by the Hook |
+| Result registered (`reported`) | the Agent may idle; consume the Result — never let an idle teammate self-claim the next task |
+| Agent blocked with a valid blocker | idle is allowed; consume the blocker and repair the condition |
+| Agent unrecoverable | re-dispatch a replacement from the shared Assignment + plan checkpoint; never create a second runtime truth |
 
 Rules:
 
 - Work-first does not mean main-first. If an assignment has been delegated,
-  the missing work is the activation/read-back evidence, not the delegated
+  the missing work is the plan checkpoint and the Result, not the delegated
   deliverable itself.
 - The main session must not implement, verify, or report the delegated
-  responsibility while its Agent is in phase one. To take the work back, first
-  revoke the assignment or record an explicit reassignment.
-- A missing `readback_response` is not a Human Gateway. Re-wake the Agent,
-  collect the response, then continue DRIVE.
-- A completed `readback_response` must be approved or rejected before any
-  phase-two work starts.
+  responsibility while its Agent holds the assignment. To take the work back,
+  first revoke the assignment or record an explicit reassignment.
+- A missing PLAN_REPORT is not a Human Gateway. Re-wake the Agent, collect
+  the plan, then continue DRIVE.
+- `plan_approval_required` is reserved for high-risk destructive work; only
+  that mode waits for an explicit approval before mutation.
 
 ## Autonomous decision rules (apply at DRIVE step 4 and 6)
 
@@ -190,7 +192,7 @@ it matches `docs/agent-protocol.md`.
 | S1 initialize, recovery, pause, resume | `loop-orchestration` (this Skill) |
 | S2 design, S3 contracts, S4 tasks | `specification-planning` |
 | S5 document_verification | `document-verification` |
-| any subagent spawned → activated | `two-phase-activation` |
+| any subagent dispatched (plan_checkpoint) | `agent-dispatch` |
 | Team creation / reconstruction | `team-planning` |
 | S8 finding_investigation; S9 bug_resolution.* | `bug-resolution` |
 | any committed change requiring evidence recalculation | `impact-analysis` |
@@ -285,7 +287,7 @@ follows:
 
 | Removed concern | Where it lives now |
 |:---|:---|
-| Agent readback / activation | `two-phase-activation` Skill + Transition Guard |
+| Agent plan checkpoint / dispatch | `agent-dispatch` Skill + Assignment lifecycle events |
 | Scope / permission expansion | Activation envelope revision, never a PreToolUse block |
 | Team required for subagent | `team-planning` Skill + SubagentStart guidance |
 | Policy tamper / self-evolution | Capability-controlled assignment, not a runtime rule |
@@ -344,7 +346,7 @@ already proceeded; nothing is in a denial state.
 
 Activation / scope / Team / UI prototype / clean round / subagent report /
 teammate idle concerns are **not** part of this packet. They live in the
-`two-phase-activation` Skill, the team-manifest envelope, the
+`agent-dispatch` Skill, the team-manifest envelope, the
 SubagentStart / TeammateIdle Guidance, or the stage's `done_when` predicate
 — never as a Quality Gate denial. The Driver pulls them forward as normal
 scheduling work, not as a tool block.
@@ -363,8 +365,8 @@ For each HS-* decision:
 2. **Do not retry the same call.** The Adapter has already denied the tool
    call at the protocol layer. Read the rule's own `human_required` and
    `retry` fields rather than assuming — `HOOK_LOCKED_ARTIFACT_WRITE` is
-   `human_required=true`, `retry="after_rework"`, while `HOOK_SQUASH_MERGE`
-   is `human_required=false`, `retry="with_normal_merge"`.
+   `human_required=true`, `retry="never"`, while `HOOK_SQUASH_MERGE`
+   is `human_required=false`, `retry="rerun after recovery validation"`.
 3. Take the rule's recovery path:
    - `HOOK_LOCKED_ARTIFACT_WRITE` → write a new generation under
      `docs/{kind}/versions/{REQ-ID}/g{N+1}/`. If changing the locked

@@ -2,18 +2,19 @@
 
 > 类型：frontend
 > 状态：draft / reviewed / locked
+> （机器登记只认 locked——reviewed 仅人审中间态，PTR-PLAN-02 前须翻 locked；时机见 protocol #s3）
 > 版本：v0.1.0
 > 负责 Builder：{Builder-FE-01}
 > 关联需求：`docs/requirements/REQ-{id}.md`
 > 关联设计：`docs/design/architecture/ARCHITECTURE.md`
 > 锁定日期：YYYY-MM-DD
 
-> 锁定依据：`{runtime-id}@{revision}` / `{transition-id}` / `{document-verification-evidence}`。
+> 锁定状态与依据见 runtime documents[] 与 journal（.claude/loop-events.jsonl）——文件内不再手填
 
 ## 1. 文档链接
 
 | 关系 | 文档 | 条款/用途 |
-|:---|:---|:---|
+|:---|:---|:---|:---|
 | upstream | `docs/requirements/REQ-{id}.md` | FR/NFR/验收条款 |
 | upstream | `docs/design/prototypes/{module}/` | UI impact = changed 时必填 |
 | related | `docs/contracts/SYNC-{id}.md` | 联调约束 |
@@ -37,22 +38,30 @@
 | 依赖项 | 路径 | 状态 |
 |:---|:---|:---|
 | 需求 | `docs/requirements/REQ-{id}.md` | locked |
-| UI 原型 HTML | `docs/design/prototypes/{module}/prototype.html` | locked / N/A |
-| 用户故事 | `docs/design/prototypes/{module}/USER-STORY-{REQ-id}-{module}.md` | locked / N/A |
-| 用户动线 | `docs/design/prototypes/{module}/USER-FLOW-{REQ-id}-{module}.md` | locked / N/A |
+| 模块入口/页面 HTML | `docs/design/prototypes/{module}/index.html` + `*.html` | current / N/A |
+| 模块场景输入/fixture | `docs/design/prototypes/{module}/scenario-model.json` + `fixture-contract.json` | current / N/A |
+| 生成场景输出 | `docs/design/prototypes/{module}/cases.json` + `scenario-coverage.json` | current / N/A |
+| 用户故事 | `docs/design/prototypes/{module}/stories.md` | current / N/A |
+| 用户动线 | `docs/design/prototypes/{module}/flows.md` | current / N/A |
 | 联调合同 | `docs/contracts/SYNC-{id}.md` | locked |
 
 ### 需求条款映射
 
-| REQ 条款 | 本合同条款 | 验收标准 |
-|:---|:---|:---|
-| FR-{id} | §{n} | {标准} |
+| REQ source_ref | Rule / CASE / Story / PATH | 本合同条款 | 验收标准 |
+|:---|:---|:---|:---|
+| REQ-{id}/FR-{id} | BR-{id} → CASE-{id} → S-{id} → F-{id} → PATH-{id} | §{n} | {标准} |
 
 ### UI 设计包映射
 
-| UI 设计文件 | 页面 / 组件 | 本合同条款 | 验收标准 |
+| UI/场景当前真相文件 | 页面 / 组件 / visible oracle | 本合同条款 | 验收标准 |
 |:---|:---|:---|:---|
-| prototype.html / USER-STORY / USER-FLOW | {screen/component} | §{n} | {标准} |
+| current `*.html` / `stories.md` / `flows.md` / `cases.json` | {screen/component} | §{n} | {标准} |
+
+### 场景与测试映射
+
+| CASE | polarity / branch | visible oracle | PATH | module spec | evidence |
+|:---|:---|:---|:---|:---|:---|
+| CASE-{id} | positive / negative · BR-{id} | {visible / terminal_state / persisted_effects / forbidden_side_effects; negative also rejection / expected_state / recovery} | F-{id} / PATH-{id} | `web/e2e/{module}/*.spec.ts` | QA/E2E round {n} |
 
 ## 4. 技术约束
 

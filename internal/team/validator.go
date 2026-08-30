@@ -59,19 +59,21 @@ var mandatoryByWorkgroup = map[string][]string{
 		"QA-UNIT-TEST",
 		"QA-INTEGRATION-TEST",
 	},
-	"e2e_browser": {"E2E-USER-FLOW", "E2E-CONSOLE-NETWORK"},
+	"e2e_browser":  {"E2E-USER-FLOW", "E2E-CONSOLE-NETWORK"},
+	"investigator": {"S8-CAUSAL-INVESTIGATION"},
 }
 
 var responsibilitySkills = map[string][]string{
-	"QA-UNIT-TEST":        {"testing-strategy"},
-	"QA-INTEGRATION-TEST": {"testing-strategy"},
-	"QA-SECURITY":         {"security-review"},
-	"QA-PERFORMANCE":      {"performance-review"},
-	"QA-RELIABILITY":      {"reliability-review"},
-	"QA-MIGRATION":        {"database-change"},
-	"VER-INTEGRATION":     {"integration-verification"},
-	"E2E-USER-FLOW":       {"e2e-browser-testing", "playwright-e2e"},
-	"E2E-CONSOLE-NETWORK": {"e2e-browser-testing", "playwright-e2e"},
+	"QA-UNIT-TEST":            {"testing-strategy"},
+	"QA-INTEGRATION-TEST":     {"testing-strategy"},
+	"QA-SECURITY":             {"security-review"},
+	"QA-PERFORMANCE":          {"performance-review"},
+	"QA-RELIABILITY":          {"reliability-review"},
+	"QA-MIGRATION":            {"database-change"},
+	"VER-INTEGRATION":         {"integration-verification"},
+	"E2E-USER-FLOW":           {"e2e-browser-testing", "playwright-e2e"},
+	"E2E-CONSOLE-NETWORK":     {"e2e-browser-testing", "playwright-e2e"},
+	"S8-CAUSAL-INVESTIGATION": {"bug-resolution"},
 }
 
 var riskResponsibilityByWorkgroup = map[string]map[string]string{

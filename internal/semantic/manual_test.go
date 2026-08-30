@@ -113,6 +113,36 @@ func TestValidateManualAgreementFailsWhenHeaderMalformed(t *testing.T) {
 	}
 }
 
+func TestValidateManualAgreementRejectsMissingEvidenceBindingGuidance(t *testing.T) {
+	root := t.TempDir()
+	definition := `{
+  "schema_version": "1.0.0",
+  "states": {},
+  "phase_machines": {},
+  "entity_lifecycles": {},
+  "transitions": [{
+    "id": "TR-006",
+    "from": "building",
+    "event": "builder_batch_reported",
+    "to": "verification",
+    "actors": ["orchestrator"],
+    "guards": [],
+    "actions": [],
+    "required_evidence": ["builder_report_record"],
+    "description": "Start a review round."
+  }],
+  "global_transitions": [],
+  "forbidden_events": [],
+  "invariants": []
+}`
+	writeMinimalProject(t, root, definition, manualAtRoot)
+
+	err := semantic.ValidateManualAgreement(root)
+	if err == nil || !strings.Contains(err.Error(), "--evidence builder_report_record=<reference>") {
+		t.Fatalf("expected doctor to report missing evidence binding guidance, got %v", err)
+	}
+}
+
 func TestExtractManualDefinitionSHAParsesValidHeader(t *testing.T) {
 	markdown := `# loop-harness — Transition Checklist
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scenario Model Design"
+  short_description: "Design strict module scenarios and coverage gates"
+  default_prompt: "Use $scenario-model-design to maintain a module current-truth scenario package with fail-closed branch coverage."

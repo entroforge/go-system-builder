@@ -4,23 +4,35 @@ import "github.com/entroforge/go-system-builder/internal/policy"
 
 // AssignmentContext is the read-only view of one active agent assignment as
 // projected into the Hook Context. It is sourced from runtime.entities.tasks[]
-// (for status/task_id) and from .claude/workgroups/REQ-039/<TASK>/manifest.json
+// (for status/task_id) and from .claude/workgroups/<REQ-ID>/<TASK>/manifest.json
 // (for assignment_id, agent_id, write_paths and report status). The fields
 // here intentionally do NOT include any path the loader could mutate — the
 // Hook is observation-only on the runtime, per SYNC-039 §3 / §8.
 type AssignmentContext struct {
-	AssignmentID      string   `json:"assignment_id"`
-	TaskID            string   `json:"task_id"`
-	OwnerAgentID      string   `json:"owner_agent_id"`
-	WorktreePath      string   `json:"worktree_path,omitempty"`
-	Branch            string   `json:"branch,omitempty"`
-	TargetBranch      string   `json:"target_branch,omitempty"`
-	State             string   `json:"state"`
-	ManifestRef       string   `json:"manifest_ref,omitempty"`
-	ReportStatus      string   `json:"report_status,omitempty"`
-	CompletionRef     string   `json:"completion_ref,omitempty"`
-	CompletionAckRef  string   `json:"completion_ack_ref,omitempty"`
-	WritePaths        []string `json:"write_paths,omitempty"`
+	AssignmentID       string   `json:"assignment_id"`
+	TaskID             string   `json:"task_id"`
+	OwnerAgentID       string   `json:"owner_agent_id"`
+	RoleFamily         string   `json:"role_family,omitempty"`
+	AgentDefinitionRef string   `json:"agent_definition_ref,omitempty"`
+	WorktreePath       string   `json:"worktree_path,omitempty"`
+	Branch             string   `json:"branch,omitempty"`
+	TargetBranch       string   `json:"target_branch,omitempty"`
+	State              string   `json:"state"`
+	ManifestRef        string   `json:"manifest_ref,omitempty"`
+	ReportStatus       string   `json:"report_status,omitempty"`
+	CompletionRef      string   `json:"completion_ref,omitempty"`
+	CompletionAckRef   string   `json:"completion_ack_ref,omitempty"`
+	WritePaths         []string `json:"write_paths,omitempty"`
+	// RequiredChecks carries the assignment's declared integration-check
+	// commands (workgroup manifest `required_checks`). The Controller wires
+	// them plus a real runner into Inspect/Integrate, so the `verified`
+	// checkpoint state reflects executed checks (L3-S6 §11.2 "Integration
+	// checks 未接线").
+	RequiredChecks []string `json:"required_checks,omitempty"`
+	// DoneWhen is the assignment's concrete closing contract from the
+	// workgroup manifest. It is projected into SubagentStart so the Worker
+	// sees the actual completion predicates instead of a generic reminder.
+	DoneWhen          []string `json:"done_when,omitempty"`
 	ResponsibilityIDs []string `json:"responsibility_ids,omitempty"`
 }
 
