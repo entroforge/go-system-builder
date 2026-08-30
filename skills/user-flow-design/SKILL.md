@@ -21,10 +21,10 @@ Apply when `UI impact = changed` and S2 creates or updates
 `E2E-USER-FLOW` responsibilities. Use after `user-story-design` identifies
 the user outcomes that must be walked in a real browser.
 
-A module's `flows.md` aggregates flows from every REQ that touches that
-module; each entry carries its own `REQ-id` so cross-REQ traceability holds,
-and the per-flow `PATH-*` steps become the executable checklist for S7 E2E
-Browser dispatch.
+A module's `flows.md` is the complete current flow set for the module. Each
+entry uses `source_refs` for REQ traceability and binds a CASE/branch; there is
+no per-REQ or per-round flow file. The `PATH-*` steps become the executable
+checklist for S7 E2E Browser dispatch.
 
 ## Required Inputs
 
@@ -34,8 +34,9 @@ Browser dispatch.
   visible controls and states.
 - Roles, permissions, test data, entry surfaces, and contract-relevant
   effects.
-- Existing entries in `flows.md` (when extending) so `REQ-id`, `F-NNN`, and
-  `PATH-*` references stay consistent.
+- Existing complete `flows.md`, `cases.json`, `scenario-coverage.json`, and
+  `stories.md` so `source_refs`, `F-NNN`, `PATH-*`, CASE, and branch references
+  stay consistent.
 
 ## Required Format
 
@@ -43,7 +44,8 @@ The canonical structure lives in `docs/design/prototypes/USER-FLOW-template.md`
 and is preserved verbatim. Each flow entry in `flows.md` MUST carry:
 
 - `F-NNN` zero-padded ID (per-module sequence, not per-REQ)
-- `REQ-id` field declaring which locked REQ this flow serves
+- `source_refs` listing the REQ/decision/rule sources for the current behavior
+- CASE and branch references, with positive/negative polarity where applicable
 - Header: 触发 / 角色 / 前置 / 关联 story (`S-NNN`)
 - `PATH-*` ordered checklist of atomic steps; each step names one human
   action, the visible control or stable selector hint, any input, and the
@@ -97,9 +99,9 @@ route.
 
 Provide a per-module flow directory that lets S7 assign explicit flow IDs
 to an `E2E-USER-FLOW` responsibility. Include flow goal, role, entry,
-terminal state, data/permission requirements, linked story and REQ
-clauses, prototype area, priority, and required / N-A status. Keep the
-locked `flows.md` as the planned checklist; the E2E report mirrors
+  terminal state, data/permission requirements, linked story, CASE and source
+  refs, prototype area, priority, and required / N-A status. Keep the current
+  `flows.md` as the planned checklist; the E2E report mirrors
 assigned flow and `PATH-*` IDs and adds PASS/FAIL/BLOCKED plus
 screenshots, traces, and observations.
 
@@ -121,16 +123,15 @@ to S3 contracts.
 ### Respect The Cross-REQ Module Regression Sweep
 
 `docs/rules/ui-prototype.md §8` requires that any REQ modifying a module's
-prototype set trigger a regression sweep of every `F-NNN` in that module's
-`flows.md`. New flows for the REQ therefore live alongside, not in place
-of, the existing flow set; flow IDs continue the per-module sequence so
-prior REQ evidence remains valid.
+current-truth package trigger a regression sweep of every `F-NNN` and required
+CASE/PATH in that module's `flows.md`. Reconcile new behavior into the current
+flow set; do not create a REQ-owned flow copy.
 
 ## Outputs
 
 - Updated `docs/design/prototypes/{module}/flows.md` with one entry per
   material flow; each entry follows the canonical structure from
-  `USER-FLOW-template.md`, carries `F-NNN` plus `REQ-id`, and produces
+  `USER-FLOW-template.md`, carries `F-NNN` plus `source_refs` and CASE/branch references, and produces
   per-flow `PATH-*` steps that are dispatchable to S7 E2E Browser.
 - A module interaction-coverage map that names every declared control in
   the module's prototype HTML and the `PATH-*` step that exercises it.

@@ -115,6 +115,32 @@ func TestE2EBrowserManifestRequiresBrowserResponsibilities(t *testing.T) {
 	assertInvalid(t, manifest, "missing mandatory responsibility E2E-CONSOLE-NETWORK")
 }
 
+func TestInvestigatorManifestIsSemanticallyValid(t *testing.T) {
+	manifest := loadExample(t)
+	manifest["manifest_id"] = "team-manifest-S8-case-1-hyp-1"
+	manifest["workgroup_id"] = "workgroup-S8-case-1-hyp-1"
+	manifest["workgroup_kind"] = "investigator"
+	manifest["planned_agent_count"] = float64(1)
+	manifest["max_parallel_agents"] = float64(1)
+	manifest["responsibility_dispositions"] = []any{
+		disposition("S8-CAUSAL-INVESTIGATION", "assignment-s8-case-1-hyp-1"),
+	}
+	manifest["assignments"] = []any{
+		assignment("assignment-s8-case-1-hyp-1", "S8-CAUSAL-INVESTIGATION", "agent-investigator-1", "bug-resolution"),
+	}
+	manifest["separation_edges"] = []any{}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := team.ValidateBytes(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.NewEmbeddedValidator().ValidateBytes("team-manifest.schema.json", data); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func loadExample(t *testing.T) map[string]any {
 	t.Helper()
 	data, err := schema.ReadAsset("team-manifest.example.json")

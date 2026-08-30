@@ -82,7 +82,7 @@ func TestTASK03901TR002RejectsBeforeTasksPhase(t *testing.T) {
 
 	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-002",
-		ExpectedRevision: 1,
+		ExpectedRevision: 0,
 		Actor:            "orchestrator",
 	})
 	if err == nil || !strings.Contains(err.Error(), "planning.tasks") {
@@ -205,22 +205,27 @@ func TestTASK03901LoaderRejectsSemanticAutomationViolations(t *testing.T) {
 		{
 			name: "top-level and phase scopes are ambiguous",
 			mutate: func(definition map[string]any) {
+				// L3-S7: the verification machine no longer has phase
+				// transitions; the planning machine hosts the scenario.
 				for _, raw := range definition["transitions"].([]any) {
 					candidate := raw.(map[string]any)
-					if candidate["from"] == "verification" {
+					if candidate["from"] == "planning" {
 						candidate["selector"] = "SEL-CROSS-TOP"
+						// drop the phase qualifier so the top-level
+						// candidate fans out into every planning cursor
+						delete(candidate, "from_phase")
 					}
 				}
-				verification := definition["phase_machines"].(map[string]any)["verification"].(map[string]any)
-				for _, raw := range verification["transitions"].([]any) {
+				planning := definition["phase_machines"].(map[string]any)["planning"].(map[string]any)
+				for _, raw := range planning["transitions"].([]any) {
 					candidate := raw.(map[string]any)
 					candidate["selector"] = "SEL-CROSS-TOP"
-					if candidate["id"] == "PTR-VERIFY-01" {
+					if candidate["id"] == "PTR-PLAN-01" {
 						candidate["selector"] = "SEL-CROSS-PHASE"
 					}
 				}
 			},
-			want: "verification.delivery",
+			want: "planning.design",
 		},
 	}
 
@@ -265,7 +270,6 @@ func TestTASK03901CatalogCoversAutomaticMainlineAndRecovery(t *testing.T) {
 
 	wantAuto := []string{
 		"PTR-PLAN-01", "PTR-PLAN-02", "TR-002", "TR-003", "TR-004", "TR-006", "TR-007",
-		"PTR-VERIFY-01", "PTR-VERIFY-02", "PTR-VERIFY-03", "PTR-VERIFY-04", "PTR-VERIFY-05",
 		"TR-008", "TR-009", "TR-010", "TR-011", "TR-012", "TR-013", "TR-014", "TR-015",
 		"TR-016", "TR-017", "TR-018", "PTR-BUG-01", "PTR-BUG-02", "PTR-BUG-03", "PTR-BUG-04",
 		"PTR-BUG-05", "PTR-BUG-06", "PTR-BUG-07", "TR-022", "TR-023", "TR-024",
@@ -344,13 +348,15 @@ func TestTASK03901SelectorResolverReturnsConflictForMutuallyExclusiveEvents(t *t
 		t.Fatalf("LoadCatalog failed: %v", err)
 	}
 
+	// L3-S7: the mutually-exclusive S7 outcomes at one cursor are the two
+	// pause verdicts (TR-010 req change vs TR-011 release blocked).
 	resolution, err := catalog.ResolveAutomaticTransition(
-		transition.Cursor{State: "verification", Phase: "clean_round_evaluation"},
+		transition.Cursor{State: "verification", Phase: "running"},
 		transition.TriggerFacts{
-			RequestedEvents: []string{"clean_round_valid", "clean_round_incomplete"},
+			RequestedEvents: []string{"verification_req_change_required", "verification_release_blocked"},
 			GateOutcomes: []transition.GateOutcome{
-				{GateID: "GATE-VERIFY-CLEAN-ROUND-VALID", Status: "satisfied"},
-				{GateID: "GATE-CLEAN-ROUND-INCOMPLETE", Status: "satisfied"},
+				{GateID: "GATE-VERIFY-REQ-CHANGE-REQUIRED", Status: "satisfied"},
+				{GateID: "GATE-VERIFY-RELEASE-BLOCKED", Status: "satisfied"},
 			},
 		},
 	)

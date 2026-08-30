@@ -25,20 +25,20 @@ The manifest proposes assignments; Hooks and runtime enforce activation. Runtime
 | Separation edges | this Skill's procedure and inlined method summary | independence constraints |
 
 ## Procedure
-1. Enumerate mandatory responsibilities for the team type: Delivery Verifier requires REQ-coverage, contract-implementation, module-function, integration, regression; QA requires code-quality, architecture, testing, security, performance, reliability; E2E Tester requires locked `USER-FLOW-*` `PATH-*` coverage and console/network observation.
+1. Enumerate mandatory responsibilities for the team type: Delivery Verifier requires REQ-source coverage, contract-implementation, module-function, integration, regression; QA requires code-quality, architecture, testing, security, performance, reliability; E2E Tester requires current module CASE/PATH coverage and console/network observation.
 2. Add risk-triggered responsibilities from TASK risk tags (security-sensitive → security-review, migration → database-change, UI → frontend-engineering).
 3. Partition the scope so each assignment covers exactly one auditable responsibility. Record `N/A` with justification for any responsibility that does not apply — silence is not N/A.
 4. Select the Builder role by write ownership: `frontend-builder` for frontend product code and owned component tests; `backend-builder` for backend product code, migrations, and owned unit/integration tests; `test-builder` for test-only files, fixtures, helpers, and test infrastructure. An E2E responsibility always uses `e2e-tester`.
 5. Build separation edges: no single Agent may verify its own output; the original finder must own targeted re-verification; Builder and Verifier for the same scope must be different Agents.
 6. Check reuse freshness: if an existing Agent's fingerprints still match and its scope covers the new responsibility, reuse it; otherwise create a new assignment.
-7. Compute Agent count from: modules × contracts × risk × migration × concurrency × security × BUG history. Do not use a fixed team size.
+7. Compute Agent count from: modules × contracts × scenario coverage risk × migration × concurrency × security × BUG history. Do not use a fixed team size.
 8. Produce one assignment per responsibility with: agent ID, role, responsibility ID, allowed read paths, allowed write paths, task-specific Skills, message template, stop conditions. Harness merges these with the role's default Skill profile before launch.
 9. Validate the manifest via `loop-harness validate --all --root .` (schema + team-manifest schema).
-10. Emit launch packages: one `readback_request` per assignment, ready for `two-phase-activation`.
+10. Emit launch packages: one assignment brief per assignment, ready for `agent-dispatch` (plan_checkpoint).
 
 ## Outputs
 - A schema-valid team manifest with assignments, count rationale, and coverage result.
-- One readback_request launch package per assignment.
+- One assignment brief (launch package) per assignment.
 
 ## Exit Conditions
 - Coverage is complete (all mandatory responsibilities assigned or justified N/A).

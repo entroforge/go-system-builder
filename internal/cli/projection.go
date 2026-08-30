@@ -19,20 +19,31 @@ type stageContract struct {
 	DoneWhen  []string
 }
 
+// PrimarySkill is the single source of truth for the S7 verification round's
+// `primary_skill` projection value (RC-12 FL-4). `projectNext` (run.go), the
+// S7 budget gateway, and docs/agent-protocol.md §S7 must all name the same
+// Methodology Skill; controller.go projects this value verbatim into
+// guidance and the recovery read order (.claude/skills/<skill>/SKILL.md).
+// Focus-specific DV/QA/E2E Skills are per-Assignment dispatch facts, not the
+// round's primary_skill.
+const PrimarySkillS7 = "loop-orchestration"
+
 var projectionContracts = map[string]stageContract{
-	"S0":          {"bind one human-locked requirement", []string{"docs/requirements/"}, []string{"locked_req_binding"}, []string{"a locked REQ is fingerprinted and bound to the runtime"}},
-	"S2":          {"complete architecture and any required UI design package", []string{"bound REQ", "docs/design/", "docs/rules/"}, []string{"architecture_record"}, []string{"architecture decisions cover the contract boundary", "any UI-impacting module has a complete target design package"}},
-	"S3":          {"complete the development contract set", []string{"bound REQ", "docs/design/", "docs/contracts/"}, []string{"locked_contract_set"}, []string{"at least one contract set is locked and traces to the REQ"}},
-	"S4":          {"complete an executable TASK batch", []string{"bound REQ", "docs/contracts/", "docs/tasks/"}, []string{"complete_task_batch"}, []string{"at least one TASK is complete and every contract clause has TASK coverage"}},
-	"S5":          {"independently verify and atomically lock the specification chain", []string{"bound REQ", "docs/design/", "docs/contracts/", "docs/tasks/"}, []string{"joint_document_pass"}, []string{"document-verification responsibilities pass with current fingerprints"}},
-	"S6":          {"implement the locked TASK batch", []string{"bound REQ", "locked contracts", "locked TASKs"}, []string{"builder_completion_reports"}, []string{"all Builder assignments report completion and owned checks pass"}},
-	"S7":          {"complete one current full verification round", []string{"bound REQ", "locked specification chain", "Builder evidence"}, []string{"current_clean_round"}, []string{"all required verification dimensions pass in the same round"}},
-	"S8":          {"turn blocking findings into evidence-backed dispositions", []string{"blocking findings", "locked specification chain", "implementation"}, []string{"finding_dispositions"}, []string{"every finding has a supported disposition and every accepted BUG has a Closing Contract"}},
-	"S9":          {"repair accepted BUGs and target-reverify them", []string{"accepted BUGs", "locked specification chain", "implementation"}, []string{"targeted_reverification"}, []string{"repair evidence is current and targeted reverification passes"}},
-	"S10":         {"complete acceptance and release audit", []string{"bound REQ", "current clean round", "valid evidence"}, []string{"acceptance_record", "release_audit"}, []string{"acceptance and release audit are complete with no open action"}},
-	"S11":         {"present the release-ready package to the human", []string{"acceptance record", "release audit", "release-ready package"}, []string{}, []string{"the release Gateway is visible and automation has stopped"}},
-	"paused":      {"resolve the recorded pause condition", []string{"runtime pause checkpoint", "recorded blockers"}, []string{"pause_resolution"}, []string{"the blocking condition is resolved or a human chooses the next route"}},
-	"cross-stage": {"recover a valid runtime cursor", []string{".claude/loop-state.json", "docs/loop-definition.json"}, []string{"valid_runtime_cursor"}, []string{"runtime lifecycle and phase map to one declared stage"}},
+	"S0":                 {"produce one human-locked requirement (draft via requirement-funnel; binding is the S1 action)", []string{"docs/requirements/"}, []string{"human_locked_req"}, []string{"a locked REQ exists in docs/requirements/ — `req bind` (S1) initializes the runtime and fingerprints it"}},
+	"S2":                 {"complete architecture and any required UI design package", []string{"bound REQ", "docs/design/", "docs/rules/"}, []string{"architecture_record"}, []string{"architecture decisions cover the contract boundary", "any UI-impacting module has a complete target design package"}},
+	"S3":                 {"complete the development contract set", []string{"bound REQ", "docs/design/", "docs/contracts/"}, []string{"locked_contract_set"}, []string{"at least one contract set is locked and traces to the REQ"}},
+	"S4":                 {"complete an executable TASK batch", []string{"bound REQ", "docs/contracts/", "docs/tasks/"}, []string{"complete_task_batch"}, []string{"at least one TASK is complete and every contract clause has TASK coverage"}},
+	"S5":                 {"independently verify and atomically lock the specification chain", []string{"bound REQ", "docs/design/", "docs/contracts/", "docs/tasks/"}, []string{"joint_document_pass"}, []string{"document-verification responsibilities pass with current fingerprints"}},
+	"S6":                 {"implement the locked TASK batch", []string{"bound REQ", "locked contracts", "locked TASKs", "docs/agent-protocol.md#s6"}, []string{"builder_completion_reports", "verified_integration_checkpoints"}, []string{"every TASK in the TR-003 batch has a Builder Result with passing checks, no unapproved scope deviations, and a verified integration checkpoint (register results via `runtime task-complete`; no team manifest is required)"}},
+	"S7":                 {"complete one current full verification round", []string{"bound REQ", "locked specification chain", "Builder evidence", "docs/agent-protocol.md#s7"}, []string{"review_plan"}, []string{"every required Claim of the registered ReviewPlan has a consumed pass Result; findings seal into the ObservationBatch (TR-008), otherwise the machine CleanRound closes the round (TR-009)"}},
+	"S8":                 {"turn the sealed ObservationBatch into evidence-backed InvestigationCase dispositions", []string{"sealed ObservationBatch", "locked specification chain", "implementation"}, []string{"investigation_case", "causal_model_or_route"}, []string{"every Finding is covered by a Case route and every s9_repair Case has an approved RepairContract"}},
+	"S9":                 {"execute approved RepairContracts and target-reverify them", []string{"approved RepairContract", "locked specification chain", "implementation"}, []string{"targeted_reverification"}, []string{"repair evidence is current and the Contract assertions pass"}},
+	"S10":                {"complete acceptance and release audit", []string{"bound REQ", "current clean round", "ACC-template.md", "release_audits/TEMPLATE.md", "release-architecture-audit.md", "acceptance-and-handoff/SKILL.md"}, []string{"coverage_inventory", "counterevidence_ledger", "acceptance_record", "release_audit"}, []string{"coverage inventory is frozen and 100% dispositioned", "counterevidence is recorded for every coverage item", "UNKNOWN, unsupported PASS, unowned risk, untracked debt, and blocking finding are all zero", "S9 changes have returned through a fresh S7 clean round; no S9→S10 shortcut"}},
+	"S11":                {"present the release-ready package to the human and record one explicit decision", []string{"acceptance record", "release audit", "release-ready package"}, []string{"human_decision"}, []string{"one explicit S11 decision is recorded or the Gateway remains awaiting a decision"}},
+	"release_authorized": {"S11 human-authorized terminal", []string{"human decision record"}, []string{}, []string{"human authorization is recorded; Harness performs no merge, publication, deployment, or formal release"}},
+	"aborted":            {"aborted terminal Runtime", []string{"human decision record"}, []string{}, []string{"automation remains stopped and only an eligible human-authorized rollover may start a new Runtime"}},
+	"paused":             {"resolve the pause via one of the three human-gated exits: `runtime resume` (baselines unchanged) / `req amend` (drifted baseline, new REQ version) / `runtime human-decision --disposition abort` (abandon)", []string{"runtime pause checkpoint", "recorded blockers"}, []string{"pause_resolution"}, []string{"the blocking condition is resolved or a human chooses the next route"}},
+	"cross-stage":        {"recover a valid runtime cursor", []string{".claude/loop-state.json", "docs/loop-definition.json"}, []string{"valid_runtime_cursor"}, []string{"runtime lifecycle and phase map to one declared stage"}},
 }
 
 type statusProjection struct {
@@ -88,7 +99,7 @@ func buildNextProjection(state map[string]any, stage, skill, action, root string
 		Stage: stage, ProtocolRef: protocolReference(stage), Objective: contract.Objective,
 		Action: action, Read: resolveBoundREQRead(contract.Read, state), PrimarySkill: skill,
 		Missing: contract.Missing, DoneWhen: contract.DoneWhen, Then: "recompute",
-		HumanRequired: stage == "S11" || stage == "paused",
+		HumanRequired: stage == "S11" || stage == "paused" || stage == "aborted",
 	}
 	if record, ok := projectedChange(state); ok {
 		next := change.NextStep(record)
@@ -99,6 +110,7 @@ func buildNextProjection(state map[string]any, stage, skill, action, root string
 		projection.Missing = changeOpenItems(record)
 		projection.DoneWhen = []string{"all Change Record work items are done", "all required checks are passed or evidence-backed N/A"}
 	}
+	applyS7BudgetGateway(&projection, state)
 	return projection
 }
 
@@ -152,7 +164,7 @@ func contractFor(stage string, state map[string]any, root string) stageContract 
 		if hasMarkdownArtifact(root, "docs/design/architecture", "ARCHITECTURE-*.md", "") {
 			contract.Missing = []string{"contract_set"}
 			if boundREQHasUIImpact(state) {
-				complete, _ := hasCompleteUIDesignPackage(filepath.Join(root, "docs/design/prototypes"))
+				complete, _ := hasCompleteUIDesignPackageForREQ(root, boundREQPathFromState(state))
 				if !complete {
 					contract.Missing = []string{"ui_design_package"}
 				}
@@ -178,8 +190,17 @@ func contractFor(stage string, state map[string]any, root string) stageContract 
 	case "S9":
 		contract.Missing = []string{repairMissingItem(state)}
 	case "S10":
-		if lifecycleState(state) == "release_audit" {
-			contract.Missing = []string{"release_audit"}
+		switch lifecycleState(state) {
+		case "acceptance":
+			contract.Missing = []string{"coverage_inventory", "counterevidence_ledger", "acceptance_manifest"}
+		case "release_audit":
+			contract.Missing = []string{"audit_areas:8", "counterevidence_ledger", "release_audit_manifest", "s11_handoff"}
+		}
+	case "S11":
+		if lifecycleState(state) == "awaiting_human_release" {
+			contract.Missing = []string{"human_decision: approve | defer | reject_defect | reject_acceptance | reject_release_audit | abort"}
+		} else {
+			contract.Missing = []string{}
 		}
 	}
 	return contract
@@ -210,18 +231,27 @@ func lifecyclePhase(state map[string]any) string {
 	return value
 }
 
+// verificationMissingItem names the single missing S7 fact for the
+// projection. The ReviewPlan status drives the token: no plan -> register
+// one; running/draining -> consume the pending Claim results; sealed ->
+// TR-008; clean -> TR-009 (L3-S7 §11.1).
 func verificationMissingItem(state map[string]any) string {
-	switch lifecyclePhase(state) {
-	case "delivery":
-		return "delivery_round"
-	case "qa":
-		return "qa_round"
-	case "e2e_browser":
-		return "e2e_browser_round"
-	case "clean_round_passed":
-		return "acceptance_transition"
+	reviewMap, _ := state["review"].(map[string]any)
+	plan, _ := reviewMap["plan"].(map[string]any)
+	if plan == nil {
+		return "review_plan"
+	}
+	switch status, _ := plan["status"].(string); status {
+	case "running", "cannot_clean", "discovery_draining":
+		return "claim_results"
+	case "observation_sealed":
+		return "tr008_observation_handoff"
+	case "clean":
+		return "tr009_acceptance_transition"
+	case "paused":
+		return "pause_resolution"
 	default:
-		return "current_clean_round"
+		return "review_plan"
 	}
 }
 
@@ -310,17 +340,18 @@ func protocolReference(stage string) string {
 
 func completedStages(stage string) []string {
 	known := map[string][]string{
-		"S0":  {},
-		"S2":  {"S0", "S1"},
-		"S3":  {"S0", "S1", "S2"},
-		"S4":  {"S0", "S1", "S2", "S3"},
-		"S5":  {"S0", "S1", "S2", "S3", "S4"},
-		"S6":  {"S0", "S1", "S2", "S3", "S4", "S5"},
-		"S7":  {"S0", "S1", "S2", "S3", "S4", "S5", "S6"},
-		"S8":  {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"},
-		"S9":  {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"},
-		"S10": {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"},
-		"S11": {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S10"},
+		"S0":      {},
+		"S2":      {"S0", "S1"},
+		"S3":      {"S0", "S1", "S2"},
+		"S4":      {"S0", "S1", "S2", "S3"},
+		"S5":      {"S0", "S1", "S2", "S3", "S4"},
+		"S6":      {"S0", "S1", "S2", "S3", "S4", "S5"},
+		"S7":      {"S0", "S1", "S2", "S3", "S4", "S5", "S6"},
+		"S8":      {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"},
+		"S9":      {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"},
+		"S10":     {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"},
+		"S11":     {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S10"},
+		"aborted": {"S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S10"},
 	}
 	items := known[stage]
 	completed := make([]string, len(items))
@@ -361,8 +392,42 @@ func stringValue(value any) string {
 }
 
 func projectedGateway(state map[string]any, stage string) any {
+	if s7BudgetGateRequired(state) {
+		return map[string]any{
+			"type":             "s7_budget_gateway",
+			"human_required":   true,
+			"decision_command": "loop-harness runtime s7-budget-decision --file <decision.json> --expected-revision <N> --actor <user>",
+			"decisions":        []string{"increase_budget", "return_to_governance"},
+			"guidance":         "the current S7 round may finish, but no new full review round opens until the human decision is recorded",
+		}
+	}
+	switch lifecycleState(state) {
+	case "awaiting_human_release":
+		return map[string]any{
+			"type":             "human_release_gateway",
+			"human_required":   true,
+			"decision_command": "loop-harness runtime human-decision --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> --expected-revision <N> --actor <user|orchestrator> --decision-evidence <ref>",
+			"dispositions":     []string{"approve", "defer", "reject_defect", "reject_acceptance", "reject_release_audit", "abort"},
+			"finding_evidence": "--finding-evidence <ref> is required for reject_defect",
+		}
+	case "release_authorized":
+		return map[string]any{
+			"type":           "release_authorized",
+			"human_required": false,
+			"terminal":       true,
+			"guidance":       "S11 human-authorized terminal; Harness has no squash merge, publication, deployment, or formal release permission",
+		}
+	case "aborted":
+		return map[string]any{
+			"type":           "aborted",
+			"human_required": false,
+			"terminal":       true,
+			"blocked":        true,
+			"guidance":       "aborted terminal; stop automation and use only an eligible human-authorized rollover for a new Runtime",
+		}
+	}
 	if stage == "S11" {
-		return map[string]any{"type": "release_ready", "human_required": true}
+		return map[string]any{"type": "human_release_gateway", "human_required": true}
 	}
 	if stage == "paused" {
 		return map[string]any{"type": "pause_resolution", "human_required": true, "pause": state["pause"]}

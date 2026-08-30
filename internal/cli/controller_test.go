@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,26 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
+func TestMilestoneRefreshFailureReasonIsBoundedAndActionable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "stale revision", err: fmt.Errorf("refresh: %w", runtime.ErrStaleRevision), want: "stale_revision"},
+		{name: "pending runtime", err: runtime.ErrPendingRuntimeOperation, want: "pending_runtime"},
+		{name: "candidate validation", err: fmt.Errorf("candidate: %w", runtime.ErrCandidateValidatorInvalid), want: "candidate_validation"},
+		{name: "unknown write", err: errors.New("permission denied"), want: "write_or_integrity"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := milestoneRefreshFailureReason(tt.err); got != tt.want {
+				t.Fatalf("reason=%q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildGuidanceForSessionStartUsesCanonicalNextProjection(t *testing.T) {
 	root := filepath.Join("..", "..")
 	state := map[string]any{
@@ -24,7 +45,7 @@ func TestBuildGuidanceForSessionStartUsesCanonicalNextProjection(t *testing.T) {
 		"revision":   12,
 		"lifecycle": map[string]any{
 			"state": "verification",
-			"phase": "qa",
+			"phase": "running",
 		},
 		"bound_req": map[string]any{
 			"path": "docs/requirements/REQ-039-loop-control-plane.md",
@@ -36,26 +57,50 @@ func TestBuildGuidanceForSessionStartUsesCanonicalNextProjection(t *testing.T) {
 	if guidance.Stage != "S7" {
 		t.Fatalf("expected S7 guidance, got %#v", guidance)
 	}
-	if guidance.LifecycleState != "verification" || guidance.LifecyclePhase != "qa" {
+	if guidance.LifecycleState != "verification" || guidance.LifecyclePhase != "running" {
 		t.Fatalf("unexpected lifecycle cursor: %#v", guidance)
 	}
 	if guidance.ProtocolRef != "docs/agent-protocol.md#s7" {
 		t.Fatalf("unexpected protocol ref: %q", guidance.ProtocolRef)
 	}
-	if guidance.ManualRef != ".claude/bin/loop-harness.md" {
+	if guidance.ManualRef != loopManualRef {
 		t.Fatalf("unexpected manual ref: %q", guidance.ManualRef)
 	}
 	if guidance.PrimarySkill != "team-planning" {
 		t.Fatalf("unexpected primary skill: %q", guidance.PrimarySkill)
 	}
-	if guidance.Action != "complete QA responsibilities" {
+	if !strings.Contains(guidance.Action, "review-result submit") {
 		t.Fatalf("unexpected next action: %q", guidance.Action)
 	}
 	if !strings.Contains(guidance.Instruction, "docs/agent-protocol.md#s7") {
 		t.Fatalf("instruction must contain protocol ref: %q", guidance.Instruction)
 	}
-	if !strings.Contains(guidance.Instruction, ".claude/bin/loop-harness.md") {
+	if !strings.Contains(guidance.Instruction, loopManualRef) {
 		t.Fatalf("instruction must contain manual ref: %q", guidance.Instruction)
+	}
+}
+
+func TestPlanCheckpointSubagentStartDoesNotWaitForSecondTurn(t *testing.T) {
+	root := filepath.Join("..", "..")
+	state := map[string]any{
+		"runtime_id": "loop-REQ-plan-checkpoint",
+		"revision":   1,
+		"lifecycle":  map[string]any{"state": "building", "phase": "implementation"},
+	}
+	guidance := buildGuidance(root, state, "SubagentStart", policy.Input{
+		Runtime: policy.RuntimeContext{Agent: &policy.AgentContext{
+			ID: "agent-1", State: "reading", DispatchMode: "plan_checkpoint",
+		}},
+	})
+	if guidance.Blocked {
+		t.Fatalf("plan_checkpoint agent must not wait for a second approval turn: %#v", guidance)
+	}
+	joined := strings.Join(guidance.Automation, " ") + " " + guidance.Action
+	if !strings.Contains(joined, "PLAN_REPORT") || !strings.Contains(joined, "continue") {
+		t.Fatalf("guidance must route PLAN_REPORT directly into continuous execution: %q", joined)
+	}
+	if strings.Contains(strings.ToLower(joined), "phase-two activation") || strings.Contains(strings.ToLower(joined), "wait for phase-two") {
+		t.Fatalf("plan_checkpoint guidance still contains the retired approval wait: %q", joined)
 	}
 }
 
@@ -66,7 +111,7 @@ func TestBuildGuidanceDefinesRecoveryReadOrderAndNoCliNormalPath(t *testing.T) {
 		"revision":   12,
 		"lifecycle": map[string]any{
 			"state": "verification",
-			"phase": "qa",
+			"phase": "running",
 		},
 		"bound_req": map[string]any{
 			"path": "docs/requirements/REQ-039-loop-control-plane.md",
@@ -96,7 +141,49 @@ func TestBuildGuidanceDefinesRecoveryReadOrderAndNoCliNormalPath(t *testing.T) {
 }
 
 func TestBuildGuidanceSchedulesDelegationAndWorktreeIntegration(t *testing.T) {
-	root := filepath.Join("..", "..")
+	fix := newRuntimeFixture(t)
+	fix.state["lifecycle"] = map[string]any{"state": "building", "phase": "implementation", "phase_revision": 0}
+	fix.state["milestone"] = map[string]any{
+		"stage":           "S6",
+		"lifecycle_state": "building",
+		"lifecycle_phase": "implementation",
+		"objective":       "complete the implementation batch",
+		"action":          "implement remaining TASKs",
+		"protocol_ref":    "docs/agent-protocol.md#s6",
+		"manual_ref":      ".claude/bin/loop-harness.md",
+		"primary_skill":   "loop-orchestration",
+		"read":            []string{".claude/loop-state.json"},
+		"missing":         []string{},
+		"done_when":       []string{},
+		"human_required":  false,
+		"blocked":         false,
+		"blocker":         nil,
+		"event":           "SessionStart",
+		"instruction":     "milestone",
+		"recovery":        []string{},
+		"source_revision": 32,
+		"updated_at":      "2026-07-29T00:00:00Z",
+	}
+	fix.addAgent("backend-builder-1", "backend-builder", "working", "workgroup-build", []string{"TASK-build-1"})
+	fix.addTeam("workgroup-build", "planned", []string{"backend-builder-1"})
+	fix.addTask("TASK-build-1", "in_progress", []string{"backend-builder-1"})
+	fix.persist(t)
+
+	// Decorate the agent row with the completion_reported_ref so the
+	// loader can carry the durable completion fact onto the Assignment
+	// row. L4 §10.3 / §16.1: the SubagentStop completion flag is
+	// derived from the Assignment + agent, not from the Hook payload's
+	// self-injected Facts map.
+	entities, _ := fix.state["entities"].(map[string]any)
+	agents, _ := entities["agents"].([]any)
+	for _, raw := range agents {
+		row, _ := raw.(map[string]any)
+		if id, _ := row["id"].(string); id == "backend-builder-1" {
+			row["completion_reported_ref"] = ".claude/evidence/loop-REQ-039/g1/assignments/assignment-build-1/completion.json"
+		}
+	}
+	fix.persist(t)
+
 	state := map[string]any{
 		"runtime_id": "loop-REQ-039",
 		"revision":   12,
@@ -106,14 +193,14 @@ func TestBuildGuidanceSchedulesDelegationAndWorktreeIntegration(t *testing.T) {
 		},
 	}
 
-	started := buildGuidance(root, state, "SubagentStart", policy.Input{
+	started := buildGuidance(fix.root, state, "SubagentStart", policy.Input{
 		ToolInput: map[string]any{"subagent_type": "backend-builder"},
 		Runtime:   policy.RuntimeContext{Agent: &policy.AgentContext{State: "activated"}},
 	})
 	if len(started.Questions) < 3 {
 		t.Fatalf("SubagentStart must ask delegation preflight questions, got %#v", started.Questions)
 	}
-	preflight := buildGuidance(root, state, "PreToolUse", policy.Input{
+	preflight := buildGuidance(fix.root, state, "PreToolUse", policy.Input{
 		ToolName:  "Agent",
 		ToolInput: map[string]any{"subagent_type": "backend-builder"},
 	})
@@ -126,8 +213,52 @@ func TestBuildGuidanceSchedulesDelegationAndWorktreeIntegration(t *testing.T) {
 		}
 	}
 
-	stopped := buildGuidance(root, state, "SubagentStop", policy.Input{
-		Facts: map[string]bool{"agent_report_complete": true},
+	// SubagentStop must read the agent's completion fact from the
+	// control plane (hookctx) — see L4 §10.3 / §16.1. Seed a
+	// completion_report so resolveAgentReportComplete resolves true.
+	reportDir := filepath.Join(fix.root, ".claude", "evidence", "loop-REQ-039", "g1", "assignments", "assignment-build-1")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	report := `{"message_type":"completion_report","assignment_id":"assignment-build-1"}`
+	if err := os.WriteFile(filepath.Join(reportDir, "completion.json"), []byte(report), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// addAgent stamps an activation_ref on the agent row; hookctx.LoadFull
+	// fails hard when that envelope is missing, which would silently
+	// fail-open resolveAgentReportComplete. Materialise it.
+	activationPath := filepath.Join(fix.root, ".claude", "workgroups", "REQ-039", "workgroup-build", "activation.json")
+	if err := os.MkdirAll(filepath.Dir(activationPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activationPath, []byte(`{"agent_id":"backend-builder-1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// hookctx discovers the assignment row from the workgroup manifest,
+	// so materialise one that resolves to assignment-build-1 /
+	// backend-builder-1 with status=complete.
+	wgDir := filepath.Join(fix.root, ".claude", "workgroups", "REQ-039", "TASK-build-1")
+	if err := os.MkdirAll(wgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{
+		"schema_version":"1.0.0","manifest_id":"wg-build","version":"v1.0.0",
+		"runtime_id":"loop-REQ-039","req_id":"REQ-039","baseline_generation":1,
+		"status":"active","workgroup_id":"workgroup-build","workgroup_kind":"builder",
+		"assignments":[{
+			"assignment_id":"assignment-build-1","responsibility_id":"BUILD-WORK-PACKAGE",
+			"role_family":"backend-builder","agent_id":"backend-builder-1",
+			"write_paths":["internal/"],"status":"complete"
+		}]
+	}`
+	if err := os.WriteFile(filepath.Join(wgDir, "manifest.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped := buildGuidance(fix.root, state, "SubagentStop", policy.Input{
+		AgentID: "backend-builder-1",
 	})
 	if !strings.Contains(stopped.Action, "worktree") {
 		t.Fatalf("SubagentStop must require worktree integration before acknowledgement, got %q", stopped.Action)
@@ -144,17 +275,28 @@ func TestBuildGuidanceSchedulesDelegationAndWorktreeIntegration(t *testing.T) {
 }
 
 func TestBuildGuidanceReawakensSameTeammateWhenIdle(t *testing.T) {
+	// The TeammateIdle "report is on the wire" fact now comes from
+	// hookctx, not from a self-injected `facts.assignment_reported` flag
+	// (L4 §10.2 / §16.1). The official Claude Code 2.1.218 payload does
+	// not carry the flag, so reading it produced a constant-true
+	// Blocked verdict on every idle. With no agent identity in the
+	// payload and no hookctx-resolved runtime the verdict falls back to
+	// the missing-report hint so the Agent still sees a specific next
+	// step instead of a silent miss.
 	guidance := buildGuidance(filepath.Join("..", ".."), map[string]any{
 		"runtime_id": "loop-REQ-039",
 		"revision":   12,
 		"lifecycle":  map[string]any{"state": "building", "phase": "implementation"},
-	}, "TeammateIdle", policy.Input{Facts: map[string]bool{"assignment_reported": false}})
+	}, "TeammateIdle", policy.Input{})
 
-	if !strings.Contains(strings.ToLower(guidance.Action), "same teammate") {
-		t.Fatalf("idle teammate must be reawakened instead of replaced, got %q", guidance.Action)
-	}
 	if !containsSubstring(guidance.Automation, "do not spawn a replacement") {
 		t.Fatalf("idle guidance must prohibit replacement spawn, got %#v", guidance.Automation)
+	}
+	if !guidance.Blocked {
+		t.Fatalf("idle without a hookctx-resolved report must surface the missing-report hint (fail-open hint, not silent), got action=%q blocker=%q", guidance.Action, guidance.Blocker)
+	}
+	if !strings.Contains(guidance.Blocker, "report is missing") {
+		t.Fatalf("missing-report blocker text drifted, got %q", guidance.Blocker)
 	}
 }
 
@@ -187,6 +329,15 @@ func TestRefreshMilestoneUsesCASAndIsIdempotent(t *testing.T) {
 	}
 	var state map[string]any
 	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
+	}
+	data, err = json.MarshalIndent(state, "", "  ")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(statePath, data, 0o644); err != nil {
@@ -242,6 +393,11 @@ func TestRefreshMilestonePreservesLastTransition(t *testing.T) {
 	var state map[string]any
 	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatal(err)
+	}
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
 	}
 	state["last_transition"] = map[string]any{
 		"event_id":           "evt-tr008",
@@ -311,7 +467,7 @@ func TestRunControlCycleHelperWrappersAreExposed(t *testing.T) {
 	state := map[string]any{
 		"runtime_id": "loop-REQ-039",
 		"revision":   12,
-		"lifecycle":  map[string]any{"state": "verification", "phase": "qa"},
+		"lifecycle":  map[string]any{"state": "verification", "phase": "running"},
 	}
 	internal := buildGuidance(root, state, "PreToolUse", policy.Input{})
 	exported := BuildGuidanceForState(root, state, "PreToolUse", policy.Input{})
@@ -489,6 +645,33 @@ func TestMilestoneIdempotencyChangesWithQualityGateFingerprint(t *testing.T) {
 	}
 }
 
+func TestMilestoneIdentityIgnoresObservedRevision(t *testing.T) {
+	guidance := policy.Guidance{
+		RuntimeID: "loop-REQ-039",
+		Revision:  12,
+		Stage:     "S10",
+		Action:    "audit the release scope",
+	}
+	base := controller.QualityGateResult{
+		Status:           controller.StatusNotReady,
+		GateID:           "GATE-RELEASE-AUDIT-APPROVED",
+		ObservedRevision: 12,
+		Fingerprint:      "sha256:stable",
+		Missing:          []string{"evidence:release_audit_record"},
+		NextCursor:       "release_audit",
+	}
+	persisted := guidanceMapWithGate(persistedGuidanceForMatch(guidance), base, "PreToolUse", 12, time.Now().UTC(), base)
+
+	newerObservation := base
+	newerObservation.ObservedRevision = 13
+	if !milestoneMatchesWithGate(persisted, guidance, newerObservation) {
+		t.Fatal("a revision-only observation change must not force a milestone refresh")
+	}
+	if milestoneIdempotencyWithGate(guidance, base) != milestoneIdempotencyWithGate(guidance, newerObservation) {
+		t.Fatal("revision-only observation change must not change milestone idempotency")
+	}
+}
+
 // TestRefreshMilestonePersistsQualityGateObject locks the integration
 // point: when refreshMilestone commits a milestone, the persisted
 // `milestone.quality_gate` must round-trip as a 9-field object and the
@@ -504,6 +687,15 @@ func TestRefreshMilestonePersistsQualityGateObject(t *testing.T) {
 	}
 	var state map[string]any
 	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
+	}
+	data, err = json.MarshalIndent(state, "", "  ")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(statePath, data, 0o644); err != nil {
@@ -690,6 +882,11 @@ func newRuntimeFixture(t *testing.T) *runtimeFixture {
 	}
 	state["runtime_id"] = "loop-REQ-039"
 	state["revision"] = 32
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
+	}
 	state["lifecycle"] = map[string]any{
 		"state":          "building",
 		"phase":          nil,
@@ -903,7 +1100,12 @@ func asAnySlice(value any) []any {
 
 // ---------- TeammateIdle branch tests ----------
 
-// Branch 1: assignment not complete, no blocker → re-wake same teammate.
+// Branch 1: assignment not complete, no blocker → re-wake same teammate
+// (guidance only). L4 §15.2 P0-4 retired the fake-wake CAS that used to
+// rewrite the agent row to `state=activated`: real platform wake is the
+// `exit 2` control in `stopidle.go`. The Controller-side handler is now a
+// pure projection — Runtime stays unchanged when the Agent needs to
+// resume.
 func TestHandleTeammateIdleResumesSameTeammate(t *testing.T) {
 	fix := newRuntimeFixture(t)
 	fix.addAgent("agent-039-04", "backend-builder", "working", "workgroup-039-04", []string{"TASK-039-04"})
@@ -933,11 +1135,14 @@ func TestHandleTeammateIdleResumesSameTeammate(t *testing.T) {
 	if !strings.Contains(strings.ToLower(guidance.Action), "re-wake") || !strings.Contains(strings.ToLower(guidance.Action), "same teammate") {
 		t.Fatalf("Branch 1 must re-wake same teammate, got %q", guidance.Action)
 	}
-	if fix.agentStatus(t, "agent-039-04") != "activated" {
-		t.Fatalf("Branch 1 must CAS-update teammate state to activated, got %q", fix.agentStatus(t, "agent-039-04"))
+	// Guidance-only handler: no Runtime CAS must mutate the agent row or
+	// advance the revision (L4 §15.2 P0-4 — the previous `state=activated`
+	// fake-wake is gone).
+	if got := fix.agentStatus(t, "agent-039-04"); got != "working" {
+		t.Fatalf("Branch 1 must NOT CAS-rewrite teammate state: got %q, want working", got)
 	}
-	if updated.Revision <= snapshot.Revision {
-		t.Fatalf("CAS must advance revision: before=%d after=%d", snapshot.Revision, updated.Revision)
+	if updated.Revision != snapshot.Revision {
+		t.Fatalf("Branch 1 must not advance Runtime revision, before=%d after=%d", snapshot.Revision, updated.Revision)
 	}
 	if !containsSubstring(guidance.Automation, "do not spawn a replacement") {
 		t.Fatalf("Branch 1 must prohibit replacement spawn, got %#v", guidance.Automation)
@@ -1018,7 +1223,11 @@ func TestHandleTeammateIdleDemandsBlockerReport(t *testing.T) {
 	}
 }
 
-// Branch 4: assignment complete AND reported → allocate next task via CAS.
+// Branch 4: assignment complete AND reported → idle is allowed; the
+// scheduler (not the Hook) allocates the next legal task. L4 §15.2 P2-5
+// retired the in-TeammateIdle allocation: a teammate must not self-claim
+// a Team task (unauthorized_task_self_claim is the gate). The handler
+// stays guidance-only and the TASK row stays untouched.
 func TestHandleTeammateIdleAllocatesNextLegalTask(t *testing.T) {
 	fix := newRuntimeFixture(t)
 	fix.addAgent("agent-039-04", "backend-builder", "working", "workgroup-039-04", []string{"TASK-039-04"})
@@ -1047,28 +1256,30 @@ func TestHandleTeammateIdleAllocatesNextLegalTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleTeammateIdle: %v", err)
 	}
-	if updated.Revision <= snapshot.Revision {
-		t.Fatalf("Branch 4 must CAS-advance revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+	if updated.Revision != snapshot.Revision {
+		t.Fatalf("Branch 4 must NOT CAS-advance revision, before=%d after=%d", snapshot.Revision, updated.Revision)
 	}
 	state, owners := fix.taskState(t, "TASK-039-05")
-	if state != "in_progress" {
-		t.Fatalf("Branch 4 must advance TASK-039-05 to in_progress, got %q", state)
+	if state != "candidate" {
+		t.Fatalf("Branch 4 must leave TASK-039-05 untouched (scheduler allocates), got %q", state)
 	}
-	found := false
 	for _, o := range owners {
 		if s, _ := o.(string); s == "agent-039-04" {
-			found = true
+			t.Fatalf("Branch 4 must NOT self-claim TASK-039-05 to agent-039-04, owners=%v", owners)
 		}
 	}
-	if !found {
-		t.Fatalf("Branch 4 must allocate TASK-039-05 to agent-039-04, got owners=%v", owners)
+	lower := strings.ToLower(guidance.Action)
+	if !strings.Contains(lower, "idle") && !strings.Contains(lower, "next") {
+		t.Fatalf("Branch 4 must mention idle / next / scheduler, got %q", guidance.Action)
 	}
-	if !strings.Contains(strings.ToLower(guidance.Action), "next") {
-		t.Fatalf("Branch 4 must reference next task, got %q", guidance.Action)
+	if !strings.Contains(lower, "scheduler") {
+		t.Fatalf("Branch 4 guidance must name the scheduler as the next-task owner, got %q", guidance.Action)
 	}
 }
 
-// Branch 5: no remaining tasks → worktree recovery / Team close-out.
+// Branch 5: no remaining tasks → idle is allowed; the scheduler owns Team
+// close-out. The Handler no longer CAS-marks the Team `status=complete`
+// (that is a team-lifecycle mutation, not a TeammateIdle one).
 func TestHandleTeammateIdleClosesOutTeamWhenNoTasksRemain(t *testing.T) {
 	fix := newRuntimeFixture(t)
 	fix.addAgent("agent-039-04", "backend-builder", "working", "workgroup-039-04", []string{"TASK-039-04"})
@@ -1096,15 +1307,15 @@ func TestHandleTeammateIdleClosesOutTeamWhenNoTasksRemain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleTeammateIdle: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(guidance.Action), "close-out") &&
-		!strings.Contains(strings.ToLower(guidance.Action), "worktree recovery") {
-		t.Fatalf("Branch 5 must reference close-out or worktree recovery, got %q", guidance.Action)
+	lower := strings.ToLower(guidance.Action)
+	if !strings.Contains(lower, "scheduler") && !strings.Contains(lower, "close") {
+		t.Fatalf("Branch 5 must name the scheduler-owned close path, got %q", guidance.Action)
 	}
-	if fix.teamStatus(t, "workgroup-039-04") != "complete" {
-		t.Fatalf("Branch 5 must CAS-mark Team status=complete, got %q", fix.teamStatus(t, "workgroup-039-04"))
+	if got := fix.teamStatus(t, "workgroup-039-04"); got != "planned" {
+		t.Fatalf("Branch 5 must NOT CAS-mark Team status=complete: got %q, want planned", got)
 	}
-	if updated.Revision <= snapshot.Revision {
-		t.Fatalf("Branch 5 must CAS-advance revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+	if updated.Revision != snapshot.Revision {
+		t.Fatalf("Branch 5 must not advance Runtime revision, before=%d after=%d", snapshot.Revision, updated.Revision)
 	}
 }
 
@@ -1385,4 +1596,28 @@ func runGit(t *testing.T, root string, args ...string) ([]byte, error) {
 func gitCommand(root string, args ...string) *exec.Cmd {
 	full := append([]string{"-C", root}, args...)
 	return exec.Command("git", full...)
+}
+
+// TestFreshCheckoutSessionStartIsNotBlocked verifies that a fresh
+// checkout (no loop-state.json) must receive non-BLOCKED S0 bootstrap
+// guidance, not the corrupted-runtime recovery packet whose reconcile
+// command cannot succeed.
+func TestFreshCheckoutSessionStartIsNotBlocked(t *testing.T) {
+	root := t.TempDir()
+	guidance, _, err := ReconcileGuidanceForController(root, "SessionStart", policy.Input{})
+	if err != nil {
+		t.Fatalf("fresh checkout must not error: %v", err)
+	}
+	if guidance.Blocked {
+		t.Fatalf("fresh checkout must not be BLOCKED, got blocker=%q action=%q", guidance.Blocker, guidance.Action)
+	}
+	if guidance.Stage != "S0" || guidance.PrimarySkill != "requirement-funnel" {
+		t.Fatalf("fresh checkout must route to S0/requirement-funnel, got %s/%s", guidance.Stage, guidance.PrimarySkill)
+	}
+	if !strings.Contains(guidance.Action, "REQ-template") || !strings.Contains(guidance.Action, "req bind") {
+		t.Fatalf("fresh checkout action must point at drafting + bind, got %q", guidance.Action)
+	}
+	if strings.Contains(guidance.Action, "reconcile") {
+		t.Fatalf("fresh checkout must not suggest reconcile, got %q", guidance.Action)
+	}
 }

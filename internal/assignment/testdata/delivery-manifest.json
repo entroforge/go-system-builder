@@ -35,7 +35,9 @@
       "responsibility_id": "VER-REQ-GAP",
       "disposition": "assigned",
       "trigger": "mandatory delivery baseline",
-      "assignment_ids": ["assignment-ver-req-gap"],
+      "assignment_ids": [
+        "assignment-ver-req-gap"
+      ],
       "na_rationale": null,
       "evidence_ref": null
     },
@@ -43,7 +45,9 @@
       "responsibility_id": "VER-SPEC-GAP",
       "disposition": "assigned",
       "trigger": "mandatory delivery baseline",
-      "assignment_ids": ["assignment-ver-spec-gap"],
+      "assignment_ids": [
+        "assignment-ver-spec-gap"
+      ],
       "na_rationale": null,
       "evidence_ref": null
     },
@@ -51,7 +55,9 @@
       "responsibility_id": "VER-MODULE-COMPLETE",
       "disposition": "assigned",
       "trigger": "mandatory executable-behavior baseline",
-      "assignment_ids": ["assignment-ver-module-complete"],
+      "assignment_ids": [
+        "assignment-ver-module-complete"
+      ],
       "na_rationale": null,
       "evidence_ref": null
     },
@@ -59,7 +65,9 @@
       "responsibility_id": "VER-INTEGRATION",
       "disposition": "assigned",
       "trigger": "mandatory delivery baseline",
-      "assignment_ids": ["assignment-ver-integration"],
+      "assignment_ids": [
+        "assignment-ver-integration"
+      ],
       "na_rationale": null,
       "evidence_ref": null
     },
@@ -67,7 +75,9 @@
       "responsibility_id": "VER-REGRESSION",
       "disposition": "assigned",
       "trigger": "mandatory delivery baseline",
-      "assignment_ids": ["assignment-ver-regression"],
+      "assignment_ids": [
+        "assignment-ver-regression"
+      ],
       "na_rationale": null,
       "evidence_ref": null
     },
@@ -101,81 +111,155 @@
       "assignment_id": "assignment-ver-req-gap",
       "responsibility_id": "VER-REQ-GAP",
       "role_family": "delivery-verifier",
-      "scope": ["requirement gap coverage"],
+      "scope": [
+        "requirement gap coverage"
+      ],
       "agent_id": "agent-ver-req-gap",
       "agent_definition_ref": "agents/delivery-verifier.md",
-      "skill_refs": ["code-quality"],
-      "read_paths": ["internal/"],
-      "write_paths": ["docs/reports/review/REV-001.json"],
-      "output_paths": ["docs/reports/review/REV-001.json"],
+      "skill_refs": [
+        "code-quality"
+      ],
+      "read_paths": [
+        "internal/"
+      ],
+      "write_paths": [
+        "docs/reports/review/REV-001.json"
+      ],
+      "output_paths": [
+        "docs/reports/review/REV-001.json"
+      ],
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Requirement-gap coverage has an independent conclusion.",
-      "status": "planned"
+      "status": "planned",
+      "claim_ids": [
+        "claim-dv-req-gap"
+      ],
+      "non_overlap_boundary": "owns VER-REQ-GAP only"
     },
     {
       "assignment_id": "assignment-ver-spec-gap",
       "responsibility_id": "VER-SPEC-GAP",
       "role_family": "delivery-verifier",
-      "scope": ["specification gap coverage"],
+      "scope": [
+        "specification gap coverage"
+      ],
       "agent_id": "agent-ver-spec-gap",
       "agent_definition_ref": "agents/delivery-verifier.md",
-      "skill_refs": ["code-quality"],
-      "read_paths": ["internal/"],
-      "write_paths": ["docs/reports/review/REV-002.json"],
-      "output_paths": ["docs/reports/review/REV-002.json"],
+      "skill_refs": [
+        "code-quality"
+      ],
+      "read_paths": [
+        "internal/"
+      ],
+      "write_paths": [
+        "docs/reports/review/REV-002.json"
+      ],
+      "output_paths": [
+        "docs/reports/review/REV-002.json"
+      ],
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Specification-gap coverage has an independent conclusion.",
-      "status": "planned"
+      "status": "planned",
+      "claim_ids": [
+        "claim-dv-spec-gap"
+      ],
+      "non_overlap_boundary": "owns VER-SPEC-GAP only"
     },
     {
       "assignment_id": "assignment-ver-module-complete",
       "responsibility_id": "VER-MODULE-COMPLETE",
       "role_family": "delivery-verifier",
-      "scope": ["module completeness"],
+      "scope": [
+        "module completeness"
+      ],
       "agent_id": "agent-ver-module-complete",
       "agent_definition_ref": "agents/delivery-verifier.md",
-      "skill_refs": ["testing-strategy"],
-      "read_paths": ["internal/", "tests/"],
-      "write_paths": ["docs/reports/review/REV-003.json"],
-      "output_paths": ["docs/reports/review/REV-003.json"],
+      "skill_refs": [
+        "testing-strategy"
+      ],
+      "read_paths": [
+        "internal/",
+        "tests/"
+      ],
+      "write_paths": [
+        "docs/reports/review/REV-003.json"
+      ],
+      "output_paths": [
+        "docs/reports/review/REV-003.json"
+      ],
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Module completeness has an independent executable-behavior conclusion.",
-      "status": "planned"
+      "status": "planned",
+      "claim_ids": [
+        "claim-dv-module-complete"
+      ],
+      "non_overlap_boundary": "owns VER-MODULE-COMPLETE only"
     },
     {
       "assignment_id": "assignment-ver-integration",
       "responsibility_id": "VER-INTEGRATION",
       "role_family": "delivery-verifier",
-      "scope": ["integration"],
+      "scope": [
+        "integration"
+      ],
       "agent_id": "agent-ver-integration",
       "agent_definition_ref": "agents/delivery-verifier.md",
-      "skill_refs": ["testing-strategy", "integration-verification"],
-      "read_paths": ["internal/", "tests/"],
-      "write_paths": ["docs/reports/review/REV-004.json"],
-      "output_paths": ["docs/reports/review/REV-004.json"],
+      "skill_refs": [
+        "testing-strategy",
+        "integration-verification"
+      ],
+      "read_paths": [
+        "internal/",
+        "tests/"
+      ],
+      "write_paths": [
+        "docs/reports/review/REV-004.json"
+      ],
+      "output_paths": [
+        "docs/reports/review/REV-004.json"
+      ],
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Integration behavior requires distinct evidence.",
-      "status": "planned"
+      "status": "planned",
+      "claim_ids": [
+        "claim-dv-integration"
+      ],
+      "non_overlap_boundary": "owns VER-INTEGRATION only"
     },
     {
       "assignment_id": "assignment-ver-regression",
       "responsibility_id": "VER-REGRESSION",
       "role_family": "delivery-verifier",
-      "scope": ["regression boundary"],
+      "scope": [
+        "regression boundary"
+      ],
       "agent_id": "agent-ver-regression",
       "agent_definition_ref": "agents/delivery-verifier.md",
-      "skill_refs": ["state-machine-design"],
-      "read_paths": ["internal/", "docs/design/loop-engineering/"],
-      "write_paths": ["docs/reports/review/REV-005.json"],
-      "output_paths": ["docs/reports/review/REV-005.json"],
+      "skill_refs": [
+        "state-machine-design"
+      ],
+      "read_paths": [
+        "internal/",
+        "docs/design/loop-engineering/"
+      ],
+      "write_paths": [
+        "docs/reports/review/REV-005.json"
+      ],
+      "output_paths": [
+        "docs/reports/review/REV-005.json"
+      ],
       "depends_on": [],
       "reuse_decision": "create",
       "grouping_rationale": "Shared runtime boundary triggered regression review.",
-      "status": "planned"
+      "status": "planned",
+      "claim_ids": [
+        "claim-dv-regression"
+      ],
+      "non_overlap_boundary": "owns VER-REGRESSION only"
     }
   ],
   "separation_edges": [

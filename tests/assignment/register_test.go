@@ -307,7 +307,7 @@ func TestRegisterBugMissingEvidenceRejected(t *testing.T) {
 }
 
 func TestRegisterTaskHappyPath(t *testing.T) {
-	root, statePath, journalPath := freshState(t, "planning", "task_drafting")
+	root, statePath, journalPath := freshState(t, "planning", "tasks")
 	taskRel := "docs/tasks/TASK-100.md"
 	if err := os.MkdirAll(filepath.Join(root, "docs/tasks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -321,10 +321,22 @@ func TestRegisterTaskHappyPath(t *testing.T) {
 	var s map[string]any
 	json.Unmarshal(stateBytes, &s)
 	s["entities"] = map[string]any{
-		"agents": []any{map[string]any{"id": "agent-builder-1"}},
-		"tasks":  []any{},
-		"bugs":   []any{},
-		"teams":  []any{},
+		"agents": []any{map[string]any{
+			"id":                  "agent-builder-1",
+			"role":                "builder",
+			"state":               "reading",
+			"task_ids":            []any{},
+			"team_id":             nil,
+			"definition_ref":      "agents/builder.md",
+			"prompt_ref":          "manifest#assignment-1",
+			"readback_ref":        nil,
+			"activation_ref":      nil,
+			"activation_revision": nil,
+			"updated_at":          "2026-06-20T00:00:00Z",
+		}},
+		"tasks": []any{},
+		"bugs":  []any{},
+		"teams": []any{},
 	}
 	s["revision"] = 0
 	data, _ := json.MarshalIndent(s, "", "  ")
@@ -347,7 +359,7 @@ func TestRegisterTaskHappyPath(t *testing.T) {
 }
 
 func TestRegisterTaskMissingPathOrOwnerRejected(t *testing.T) {
-	root, statePath, journalPath := freshState(t, "planning", "task_drafting")
+	root, statePath, journalPath := freshState(t, "planning", "tasks")
 	// Empty Path.
 	_, err := assignment.RegisterTask(root, statePath, journalPath, assignment.RegisterTaskRequest{
 		ExpectedRevision: 0,
@@ -401,7 +413,7 @@ func TestRegisterTaskMissingPathOrOwnerRejected(t *testing.T) {
 }
 
 func TestRegisterTaskDuplicateIDRejected(t *testing.T) {
-	root, statePath, journalPath := freshState(t, "planning", "task_drafting")
+	root, statePath, journalPath := freshState(t, "planning", "tasks")
 	taskRel := "docs/tasks/TASK-100.md"
 	if err := os.MkdirAll(filepath.Join(root, "docs/tasks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -414,10 +426,22 @@ func TestRegisterTaskDuplicateIDRejected(t *testing.T) {
 	var s map[string]any
 	json.Unmarshal(stateBytes, &s)
 	s["entities"] = map[string]any{
-		"agents": []any{map[string]any{"id": "agent-builder-1"}},
-		"tasks":  []any{},
-		"bugs":   []any{},
-		"teams":  []any{},
+		"agents": []any{map[string]any{
+			"id":                  "agent-builder-1",
+			"role":                "builder",
+			"state":               "reading",
+			"task_ids":            []any{},
+			"team_id":             nil,
+			"definition_ref":      "agents/builder.md",
+			"prompt_ref":          "manifest#assignment-1",
+			"readback_ref":        nil,
+			"activation_ref":      nil,
+			"activation_revision": nil,
+			"updated_at":          "2026-06-20T00:00:00Z",
+		}},
+		"tasks": []any{},
+		"bugs":  []any{},
+		"teams": []any{},
 	}
 	s["revision"] = 0
 	data, _ := json.MarshalIndent(s, "", "  ")
@@ -502,6 +526,11 @@ func TestRepairLimitBridgeFiresAboveThreshold(t *testing.T) {
 		},
 	}
 	state0["revision"] = 4
+	state0["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
+	}
 	data, _ := json.MarshalIndent(state0, "", "  ")
 	os.WriteFile(statePath, append(data, '\n'), 0o644)
 	os.WriteFile(journalPath, []byte{}, 0o644)

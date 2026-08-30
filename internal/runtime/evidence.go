@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/acceptance"
+	"github.com/entroforge/go-system-builder/internal/evidence"
 )
 
 // EvidenceRequest describes one current, fingerprinted evidence artifact to
@@ -25,24 +26,13 @@ type EvidenceRequest struct {
 	ReviewRound      *int
 	ScopeRefs        []string
 	OccurredAt       time.Time
+	Validator        CandidateValidator
 }
 
-var evidenceKinds = map[string]bool{
-	"document_review":         true,
-	"change_impact":           true,
-	"agent_readback":          true,
-	"agent_activation":        true,
-	"agent_completion":        true,
-	"builder_report":          true,
-	"delivery_review":         true,
-	"qa_review":               true,
-	"e2e_review":              true,
-	"bug":                     true,
-	"targeted_reverification": true,
-	"clean_round":             true,
-	"acceptance":              true,
-	"release_audit":           true,
-	"human_decision":          true,
+// IsRegisteredEvidenceKind reports whether kind can be persisted by
+// RecordEvidence using the shared evidence catalog.
+func IsRegisteredEvidenceKind(kind string) bool {
+	return evidence.DefaultCatalog().IsRegisteredKind(kind)
 }
 
 // RecordEvidence adds one valid evidence item and commits it as a Runtime
@@ -52,8 +42,17 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	if request.ID == "" {
 		return Snapshot{}, fmt.Errorf("evidence id is required")
 	}
-	if !evidenceKinds[request.Kind] {
-		return Snapshot{}, fmt.Errorf("unsupported evidence kind %q", request.Kind)
+	catalog := evidence.DefaultCatalog()
+	if !catalog.IsRegisteredKind(request.Kind) {
+		return Snapshot{}, fmt.Errorf("unsupported evidence kind %q; registered kinds: %s; note: the Quality Gate records S10 artifacts as acceptance_record/release_audit_record, but registration uses --kind acceptance or --kind release_audit (bind --review-round to the current round; S10 envelopes also auto-inherit it from the envelope file)", request.Kind, strings.Join(catalog.RegisteredKinds(), ", "))
+	}
+	// finding_supplement is pipeline-owned: review.SubmitSupplement persists
+	// the entities.finding_supplements index row and the evidence entry in one
+	// runtime CAS transaction. A manual add would register an evidence row
+	// with no supplement index row — a half-registered supplement — so this
+	// entry point fails closed with the authoritative path.
+	if strings.TrimSpace(request.Kind) == "finding_supplement" {
+		return Snapshot{}, fmt.Errorf("evidence kind %q is pipeline-owned: persist supplements with `runtime finding-supplement` (appends the entities.finding_supplements row and the finding_supplement evidence entry in one CAS transaction); manual evidence registration would split the supplement index from the evidence log", request.Kind)
 	}
 	if len(request.ProducedBy) == 0 {
 		return Snapshot{}, fmt.Errorf("evidence produced_by is required")
@@ -71,8 +70,21 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read evidence artifact: %w", err)
 	}
+	if err := acceptance.ValidateEvidenceArtifact(root, request.Kind, data); err != nil {
+		return Snapshot{}, err
+	}
+	// S10 evidence must bind to the current review round (L3-S10 §4.2): the
+	// s10 board and gates read entry.review_round verbatim. The envelope
+	// already carries that fact, so a registration that omits --review-round
+	// inherits it instead of persisting a round-less row the S10 layer would
+	// immediately reject as stale (2026-08-28 walkthrough defect B).
+	if request.ReviewRound == nil && isS10RoundScopedKind(request.Kind) {
+		if round, ok := s10EnvelopeReviewRound(data); ok {
+			request.ReviewRound = &round
+		}
+	}
 
-	store := NewStore(statePath, journalPath)
+	store := NewWriter(statePath, journalPath, root, request.Validator)
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
@@ -81,6 +93,34 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	from := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
+	// S10 registration must consume the same authoritative finite inventory
+	// as the Quality Gate once the Runtime has entered a real review round.
+	// Keep the round-zero bootstrap fixture/legacy path structural-only; a
+	// production S10 state has a bound REQ and pinned ReviewPlan, which makes
+	// the non-self-declared denominator reconstructible here as well.
+	if isS10RoundScopedKind(request.Kind) && acceptance.S10AuthorityAvailable(current) {
+		manifestType := "acceptance"
+		if request.Kind == "release_audit" || request.Kind == "release_audit_record" {
+			manifestType = "release_audit"
+		}
+		var envelope struct {
+			Conclusion string `json:"conclusion"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil || strings.TrimSpace(envelope.Conclusion) == "" {
+			return Snapshot{}, fmt.Errorf("S10 %s evidence requires a non-empty conclusion before authoritative inventory validation", manifestType)
+		}
+		baseline, baselineErr := acceptance.BuildS10ExternalBaseline(root, current, nil)
+		if baselineErr != nil {
+			return Snapshot{}, fmt.Errorf("S10 external baseline is unverifiable: %w; restore the current-generation completion/change-impact artifacts", baselineErr)
+		}
+		authority, authorityErr := acceptance.BuildS10InventoryAuthority(root, current, baseline)
+		if authorityErr != nil {
+			return Snapshot{}, fmt.Errorf("S10 authoritative inventory is unverifiable: %w; restore the current bound REQ, contract/TASK registrations, and pinned S7 ReviewPlan", authorityErr)
+		}
+		if _, err := acceptance.ValidateForOutcomeWithBaselineAndAuthority(data, manifestType, strings.TrimSpace(envelope.Conclusion), baseline, authority); err != nil {
+			return Snapshot{}, err
+		}
+	}
 
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
@@ -92,13 +132,6 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		return Snapshot{}, err
 	}
 	sha := sha256Hex(data)
-	store.PreCommitValidator = func(state map[string]any) error {
-		encoded, err := json.Marshal(state)
-		if err != nil {
-			return fmt.Errorf("encode post-evidence runtime: %w", err)
-		}
-		return schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", encoded)
-	}
 	return store.Update(request.ExpectedRevision, Mutation{
 		EventID:        fmt.Sprintf("evt-evidence-%s-r%d", request.ID, request.ExpectedRevision+1),
 		TransitionID:   "EVIDENCE-RECORD",
@@ -184,6 +217,22 @@ func safeEvidencePath(root, path string) (string, error) {
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
 	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root: %w", err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root symlinks: %w", err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(filepath.Join(rootAbs, clean))
+	if err != nil {
+		return "", fmt.Errorf("resolve evidence path symlinks: %w", err)
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
+	}
 	return filepath.ToSlash(clean), nil
 }
 
@@ -192,4 +241,27 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+// isS10RoundScopedKind reports whether an evidence kind is consumed by the
+// S10 board and gates with a mandatory current-round binding.
+func isS10RoundScopedKind(kind string) bool {
+	switch kind {
+	case "acceptance", "acceptance_record", "release_audit", "release_audit_record":
+		return true
+	default:
+		return false
+	}
+}
+
+// s10EnvelopeReviewRound reads review_round out of an S10 evidence envelope.
+// ok is false when the envelope omits it or the value cannot be a round.
+func s10EnvelopeReviewRound(data []byte) (int, bool) {
+	var envelope struct {
+		ReviewRound int `json:"review_round"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.ReviewRound < 1 {
+		return 0, false
+	}
+	return envelope.ReviewRound, true
 }

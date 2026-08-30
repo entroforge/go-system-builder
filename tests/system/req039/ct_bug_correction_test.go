@@ -15,18 +15,18 @@ func TestCT03914_FindingToBugRepairFullReview(t *testing.T) {
 	root := freshRoot(t)
 	runner := &req039fixtures.CLIRunner{}
 	state := systemPlanningState(t, root, "design", 30)
-	req039fixtures.SeedVerificationDelivery(t, root, state)
-	state["review"] = map[string]any{"round": 1, "clean_round": nil}
+	// L3-S7: TR-008 fires from verification.observation_sealed with the
+	// sealed ObservationBatch carrying the exact Finding set.
+	req039fixtures.SeedSealedObservationBatch(t, root, state)
 	req039fixtures.EnsureStateRoot(state, root)
 	writeSystemState(t, root, state)
 
-	toolInput := map[string]any{"file_path": "internal/controller/cycle.go"}
+	// The verification stage freezes the product baseline, so the hook is
+	// driven with a write inside the allowed report surface.
+	toolInput := map[string]any{"file_path": "docs/reports/bugs/CT-039-14.md"}
 	const bugID = "CT-039-14/TR-008"
 
-	// TR-008: blocking finding → bug_resolution.investigation
-	state = req039fixtures.ReadState(t, root)
-	req039fixtures.WriteBlockingFindingEvidence(t, root, state, "delivery-verifier-1", "Delivery Verifier")
-	writeSystemState(t, root, state)
+	// TR-008: sealed ObservationBatch → bug_resolution.investigation
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "ct14-tr008", "Edit", toolInput,
 		"TR-008", "bug_resolution", "investigation", bugID)
 
@@ -65,9 +65,10 @@ func TestCT03914_FindingToBugRepairFullReview(t *testing.T) {
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "ct14-ptr-bug-06", "Edit", toolInput,
 		"PTR-BUG-06", "bug_resolution", "ready_for_full_review", bugID)
 
-	// TR-012 → verification.delivery (full review return)
+	// TR-012 → verification.planned (full review return; the new round
+	// starts at planned and waits for a fresh ReviewPlan)
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "ct14-tr012", "Edit", toolInput,
-		"TR-012", "verification", "delivery", bugID)
+		"TR-012", "verification", "planned", bugID)
 
 	if runner.ManualTransitionCalls != 0 {
 		t.Fatalf("CT-039-14 manual transition count=%d, want 0", runner.ManualTransitionCalls)
@@ -105,7 +106,7 @@ func TestCT03923_TargetedRecheckFailedSystem(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	body := req039fixtures.PreToolUseBody("session-ct-039-23-sys", "Edit", map[string]any{
-		"file_path": "internal/controller/cycle.go",
+		"file_path": "docs/reports/bugs/BUG-039-15.md",
 	})
 	code, _, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {

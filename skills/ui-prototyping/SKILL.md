@@ -8,7 +8,7 @@ version: 3.1.0
 
 ## Authority
 
-The final UI design package is prepared after REQ lock and before
+The current module UI/scenario package is prepared after REQ lock and before
 development contracts. Stage requirements live in `docs/agent-protocol.md`;
 UI gate legality lives in `docs/loop-definition.json`; package shape lives in
 `docs/rules/ui-prototype.md`. HTML prototype quality criteria below are the
@@ -28,10 +28,10 @@ into.
 ## Required Inputs
 
 - Locked REQ acceptance criteria.
-- Current implementation facts and the affected module's existing package at
-  `docs/design/prototypes/{module}/` (if any).
+- Current implementation facts and the affected module's complete existing package at
+  `docs/design/prototypes/{module}/` (if any), including the scenario four-pack.
 - Applicable UX, accessibility, security, and domain rules.
-- Applicable `docs/design/proto/*-convention.md` siblings (storage key
+- Applicable `docs/design/prototypes/*-convention.md` siblings (storage key
   layout, naming) when the prototype references them.
 
 ## Quality Criteria
@@ -43,13 +43,14 @@ contracts in §Module Layout through §Cross-REQ Regression below.
 
 ## Outputs
 
-Final UI design package per affected module:
-`docs/design/prototypes/{module}/{index.html, *.html, stories.md, flows.md}`
+Current UI/scenario package per affected module:
+`docs/design/prototypes/{module}/{index.html, *.html, stories.md, flows.md,
+scenario-model.json, cases.json, scenario-coverage.json, fixture-contract.json}`
 plus optional `*-convention.md` siblings.
 
 `stories.md` and `flows.md` content is produced via `user-story-design` and
 `user-flow-design`; their internal `S-NNN` / `F-NNN` IDs are per-module, and
-each entry carries its own `REQ-id`. The present Skill guarantees that the
+each entry carries `source_refs` plus CASE/branch links. The present Skill guarantees that the
 referenced outcomes, controls, and states are inspectable in the HTML
 prototype.
 
@@ -68,8 +69,8 @@ cannot be made inspectable in the prototype HTML.
 
 ## Non-Goals
 
-Do not use prose alone as a frontend prototype. Do not maintain version
-history or addendum files — the prototype describes the current target only;
+Do not use prose alone as a frontend prototype. Do not maintain version,
+generation, REQ, round history or addendum files — the package describes the current target only;
 git history provides retrospective audit. Do not capture a separate UI
 baseline — the running code IS the baseline. Do not redefine `S-NNN` /
 `F-NNN` ID rules (those belong to `user-story-design` /
@@ -104,16 +105,14 @@ A prototype describes **the target** — what we are about to build. The
 current implementation is the live baseline; it lives in the running code,
 not in a captured document. Therefore:
 
-- **One final version per file.** No version history, no addendum files, no
-  semver tracking. A single design-generation label (`v1`, `v2`, …) bumps
-  only on major redesign.
-- **Module-scoped, not REQ-scoped.** A module's prototype set evolves across
-  multiple REQs. REQ-A adds a tab; REQ-B refines it; both modify the same
-  `{module}/` directory. Stories and flows inside `stories.md` / `flows.md`
-  carry their own `REQ-id` so cross-REQ traceability holds.
-- **HTML + stories + flows are co-equal.** A module package is incomplete
-  without all three. Stories validate design rationality; flows become E2E
-  test scripts after dev complete.
+- **Current truth only.** No version history, generation label, addendum, REQ copy,
+  or round copy is maintained in the package. Git and round evidence preserve history.
+- **Module-scoped, not REQ-scoped.** A module's package evolves across multiple REQs;
+  every REQ touching it is merged into the same complete current directory. REQ appears
+  only in `source_refs`.
+- **Scenario + HTML + stories + flows are co-equal.** A module package is incomplete
+  without the scenario four-pack and the UI set. Stories validate design rationality;
+  flows become E2E scripts; cases and coverage prove branch completeness.
 - **Modifiable, not locked.** Prototype files evolve as the target
   clarifies. Contract lock references the current fingerprint via
   `impact-analysis`; the prototype file itself is never sealed.
@@ -126,8 +125,12 @@ Every UI-impacting module ships a package under
 ```text
 docs/design/prototypes/{module}/
 ├── index.html         # module entry hub (cards link to each prototype file)
-├── stories.md         # per-module story set (S-NNN + REQ-id), see user-story-design
-├── flows.md           # per-module flow set (F-NNN + REQ-id + PATH-*), see user-flow-design
+├── stories.md         # complete current module story set, see user-story-design
+├── flows.md           # complete current module flow set, see user-flow-design
+├── scenario-model.json       # current rules and explicit branch witnesses
+├── cases.json                 # generated current cases
+├── scenario-coverage.json     # generated current coverage output
+├── fixture-contract.json      # synthetic setup/cleanup contract
 ├── *.html             # one HTML file per page / dialog / wizard / component mockup
 └── *-convention.md    # optional cross-cutting design conventions
 ```
@@ -167,14 +170,14 @@ Legacy `proto/` paths must be migrated.
 
 ## HTML Header Contract
 
-Every prototype HTML file carries a 4-field header in a dark gradient
-`.proto-meta` bar. **No other fields.** REQ ID, lock status, owner, and
-related contracts are noise — the prototype describes the current target
-only, and contracts live elsewhere.
+Every prototype HTML file carries a 4-field current-truth header in a dark
+gradient `.proto-meta` bar. **No other fields.** Version, REQ ID, lock status,
+round, owner, and related contracts are excluded; the prototype describes the
+current target only, and contracts live elsewhere.
 
 ```html
 <header class="proto-meta">
-  <span>设计代数: v1</span>
+  <span>设计代数: v2</span>
   <span>更新: 2026-07-09</span>
   <span>路由: <strong>/layout/fund — overview</strong></span>
   <span><a href="index.html">↩ 模块入口</a></span>
@@ -183,14 +186,14 @@ only, and contracts live elsewhere.
 
 | # | Field | Format | Example | Purpose |
 |---|---|---|---|---|
-| 1 | 设计代数 | `v<int>` | `v1`, `v2` | Major redesign generation. Bumps only when the design is restructured (layout overhaul, IA shift). Minor refinements do NOT bump — only the 更新 date moves. |
-| 2 | 更新 | `YYYY-MM-DD` | `2026-07-09` | Last edit date. Tells a reviewer whether the prototype is stale relative to recent REQ work. |
+| 1 | 设计代数 | `v{n}` | `v2` | Design generation; bumps when the S2 package is re-converged. Machine-checked. |
+| 2 | 更新 | `YYYY-MM-DD` | `2026-07-09` | Last edit date. |
 | 3 | 路由 | `<strong>...</strong>` | `/layout/fund — overview`, `/layout/fund/:id — 父详情` | Page route plus slot label. Optional on dialogs / wizards / component mockups (omit if no route). |
 | 4 | index 链接 | `<a href="index.html">↩ 模块入口</a>` | link back | Present when an `index.html` hub exists for the module. |
 
-REQ-id lives inside `stories.md` / `flows.md` entries, not in the HTML
-header, because the prototype is module-scoped. Lock status is gone because
-nothing is locked. Owner is gone because git blame is authoritative.
+REQ source refs live inside the module scenario/story/flow mappings, not in the
+HTML header, because the package is module-scoped. Version, lock status, round,
+and owner fields are not part of current-truth HTML.
 Related contracts belong in `CONTRACTS-{id}.md`, not in every prototype
 file.
 
@@ -234,14 +237,14 @@ Skill only enforces cross-document consistency:
 - The module interaction-coverage map in `flows.md` must enumerate every
   declared actionable control in the module's HTML and assign it to at
   least one `PATH-*` step (or an explicit N/A rationale).
-- Each `S-NNN` and `F-NNN` entry carries its `REQ-id` so cross-REQ
-  traceability and the §8 regression sweep can locate the source REQ.
+- Each `S-NNN` and `F-NNN` entry carries `source_refs`, branch/CASE references,
+  and the §8 module regression sweep uses the complete current set.
 
 ## Cross-REQ Regression
 
 > **Module regression rule** (`docs/rules/ui-prototype.md §8`): when a REQ
 > modifies any file in `docs/design/prototypes/{module}/`, the resulting
-> test plan MUST execute **every flow** listed in `{module}/flows.md`
+> test plan MUST execute **every current flow and required CASE/PATH** listed in `{module}/flows.md`
 > end-to-end, not only the flows directly touched by this REQ. This
 > protects prior REQs' shipped behavior from silent regression.
 
@@ -251,10 +254,10 @@ refactor its data loading. Both must verify the module's existing flows
 (capture, review, decide) still pass.
 
 This rule propagates to `skills/e2e-browser-testing/SKILL.md`: the
-per-acceptance-criterion block in a test plan must include a
+module-level block in a test plan must include a
 "module-flow regression sweep" sub-block when the change touches an
 existing module. The sweep enumerates every `F-NNN` from the affected
-module's `flows.md` and walks it via Playwright + CDP.
+module's `flows.md` and required scenario files, then walks them via Playwright + CDP.
 
 ## Layout Variants
 
@@ -342,18 +345,18 @@ from contracts via path + section anchor.
 A module prototype set is ready for contract lock when ALL of these hold:
 
 - [ ] `docs/design/prototypes/{module}/` exists with `index.html`,
-      `stories.md`, `flows.md`, and ≥1 page HTML file
+      `stories.md`, `flows.md`, the scenario four-pack, and ≥1 page HTML file
 - [ ] Every HTML file carries the 4-field header (设计代数 / 更新 / 路由 /
-      index 链接); no REQ ID, no version, no lock status, no owner, no
+      index 链接); no version, REQ ID, round, lock status, no owner, no
       related-contracts field
 - [ ] Every HTML file's `aside.proto-notes` has the 6 mandatory sections
       in canonical order
 - [ ] The layout-appropriate layout-specific section is present (column
       spec / zone map / sub-component map / step list / state-grid)
-- [ ] `stories.md` carries ≥1 `S-NNN` entry; every story cites its
-      `REQ-id`, ≥1 prototype file, and ≥1 `F-NNN` flow
-- [ ] `flows.md` carries ≥1 `F-NNN` entry with `PATH-*` steps; every flow
-      cites its `REQ-id`, a triggering story ID, and ≥1 prototype file per
+- [ ] `stories.md` carries the complete current `S-NNN` set; every story cites
+      `source_refs`, a branch/CASE, ≥1 prototype file, and ≥1 `F-NNN` flow
+- [ ] `flows.md` carries the complete current `F-NNN` set with `PATH-*` steps;
+      every flow cites `source_refs`, a CASE/branch, a triggering story ID, and ≥1 prototype file per
       step
 - [ ] The module interaction-coverage map assigns every declared control
       in the prototype HTML to at least one `PATH-*` step or an explicit
@@ -365,7 +368,9 @@ A module prototype set is ready for contract lock when ALL of these hold:
 - [ ] Edge cases cover at minimum: empty, error, permission-denied,
       terminal state
 - [ ] If the REQ modifies an existing module: the test plan includes a
-      module-flow regression sweep enumerating every `F-NNN`
+      full-module regression sweep enumerating every `F-NNN` and required CASE/PATH
+- [ ] The scenario four-pack is present; generated cases and coverage are current;
+      required allow/reject branch coverage is 100%; and the module ratio gate passes
 
 Failing any item is a `DV-SPEC-CONSISTENCY` finding; the prototype set
 returns to S2 rework.

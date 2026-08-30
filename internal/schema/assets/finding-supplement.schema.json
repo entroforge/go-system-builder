@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/finding-supplement.schema.json",
+  "title": "S7/S8 Finding Supplement",
+  "description": "One append-only supplement to an immutable Finding (L3-S7 §3.6, L3-S8 §2.2). The original finder (or a scheduler-authorized replacement) adds new observation/evidence/correlation refs — typically answering an S8 discriminator-bound follow-up observation or clarification request. A supplement never rewrites the original Finding or its encounter, never re-does the base capture S7 owed, and never carries root cause or repair content; causal judgment belongs to S8. Discriminator gate (L3-S7 §14.1): an S8 follow-up observation must carry hypothesis_id + discriminator + expected_outcomes; an S7 in-round note from the original finder carries none of them and is declared with `runtime finding-supplement --in-round-note`. Everything else is rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "supplement_id",
+    "supplements_finding_id",
+    "author",
+    "new_observation",
+    "created_at",
+    "hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "supplement_id": {
+      "type": "string",
+      "pattern": "^supplement-[A-Za-z0-9._-]+$"
+    },
+    "supplements_finding_id": {
+      "type": "string",
+      "pattern": "^finding-[A-Za-z0-9._-]+$",
+      "description": "The immutable Finding this supplement hangs under. The Finding itself and the sealed ObservationBatch finding_ids set never change."
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent identity authoring the supplement. Must equal the Finding's original_finder unless a scheduler-appointed replacement is authorized via `runtime finding-supplement --authorized-by` (L3-S8 §2.2)."
+    },
+    "new_observation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The new discriminating fact or clarification text. Bounded in scope: a supplement is not a second base encounter."
+    },
+    "evidence_refs": {
+      "type": "array",
+      "description": "Fresh typed evidence refs produced by the controlled observation.",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "correlation_refs": {
+      "type": "array",
+      "description": "New correlation refs (traces, logs, related findings) tying the observation into the investigation.",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "discriminator": {
+      "type": "string",
+      "description": "The S8 discriminator this observation answers (L3-S8 §2.1/§8). Discriminator gate (L3-S7 §14.1): required — together with hypothesis_id and expected_outcomes — for every S8 discriminator-bound follow-up observation; a request to re-run an already confirmed symptom without one is rejected. Must stay empty (with hypothesis_id and expected_outcomes) for S7 in-round notes declared via `runtime finding-supplement --in-round-note`."
+    },
+    "hypothesis_id": {
+      "type": "string",
+      "description": "The registered S8 Hypothesis the discriminator distinguishes. Required for S8 follow-up observations; S7 in-round notes (--in-round-note) must not carry it."
+    },
+    "expected_outcomes": {
+      "type": "array",
+      "description": "The expected distinguishing outcomes of the controlled follow-up observation: which observable result supports vs refutes the hypothesis (L3-S8 §2.2). Required for S8 follow-up — together with hypothesis_id and discriminator — and required for the S8 discriminator-bound follow-up observation. Omitted only on S7 in-round notes (declared with --in-round-note).",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Independent content hash: sha256 hex of the canonical JSON (compact, sorted keys) of this document with the hash field omitted. Lets consumers fingerprint the supplement without trusting the writer."
+    }
+  }
+}

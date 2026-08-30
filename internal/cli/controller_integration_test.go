@@ -65,7 +65,7 @@ func TestSessionStartHookEmitsRecoveryGuidanceAndPersistsMilestone(t *testing.T)
 	for _, expected := range []string{
 		"LOOP RECOVERY",
 		"docs/agent-protocol.md#s2",
-		".claude/bin/loop-harness.md",
+		"loop-harness.md",
 		"Next:",
 	} {
 		if !strings.Contains(message, expected) {
@@ -219,5 +219,62 @@ func TestPreToolUseHookDelegatesToControllerCycle(t *testing.T) {
 	permissionDecision, _ := output["permissionDecision"].(string)
 	if permissionDecision != "allow" {
 		t.Fatalf("PreToolUse must allow not_ready, got permissionDecision=%q payload=%v", permissionDecision, payload)
+	}
+}
+
+func TestPreToolUsePreservesUnknownMCPWarningAtControllerBoundary(t *testing.T) {
+	root := acFixtureRoot(t)
+	writeACState(t, root, planningState(t, root, "design", 1))
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(`{
+		"hook_event_name":"PreToolUse",
+		"session_id":"session-unknown-mcp",
+		"tool_name":"mcp__example__mutate",
+		"tool_input":{"operation":"write"}
+	}`), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("unknown MCP warning must remain non-blocking: code=%d stderr=%s", code, stderr.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("Hook output is not JSON: %v; output=%s", err, stdout.String())
+	}
+	specific, _ := payload["hookSpecificOutput"].(map[string]any)
+	if specific["permissionDecision"] != "allow" {
+		t.Fatalf("warning must still allow the tool, got %v", specific["permissionDecision"])
+	}
+	reason, _ := specific["permissionDecisionReason"].(string)
+	if !strings.Contains(reason, "unknown_mcp_tool") || !strings.Contains(reason, "classify") {
+		t.Fatalf("warning must survive the Controller projection with recovery guidance: %s", reason)
+	}
+}
+
+func TestPreToolUseBlocksUnknownMCPForActivatedWorker(t *testing.T) {
+	root := acFixtureRoot(t)
+	writeACState(t, root, planningState(t, root, "design", 1))
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(`{
+		"hook_event_name":"PreToolUse",
+		"session_id":"session-unknown-mcp-worker",
+		"agent_id":"agent-worker-1",
+		"tool_name":"mcp__example__mutate",
+		"tool_input":{"operation":"write"},
+		"runtime_context":{"runtime_id":"loop-test","revision":1,"agent":{"id":"agent-worker-1","state":"working"}}
+	}`), &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("unknown MCP for a Worker must be denied with exit 2: code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("Hook output is not JSON: %v; output=%s", err, stdout.String())
+	}
+	specific, _ := payload["hookSpecificOutput"].(map[string]any)
+	if specific["permissionDecision"] != "deny" {
+		t.Fatalf("Worker unknown MCP must render deny, got %v", specific["permissionDecision"])
+	}
+	if !strings.Contains(stdout.String(), "unknown_mcp_tool") || !strings.Contains(stdout.String(), "activated Assignment") {
+		t.Fatalf("Worker deny must preserve the actionable policy recovery: %s", stdout.String())
 	}
 }

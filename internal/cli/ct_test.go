@@ -215,9 +215,17 @@ func TestCT03906_GitSquashMergeBlocks(t *testing.T) {
 }
 
 // TestCT03907_OrdinaryGitOpsAllow covers CT-039-07 from SYNC-039 §12.
-// Ordinary merge / push / npm publish commands must NOT be blocked by
-// the minimal safety policy. Only `git merge --squash` (and the gh-PR
-// equivalent) trigger a block (BE-039 §6.2).
+// Ordinary merge / push commands must NOT be blocked by the minimal safety
+// policy. Only `git merge --squash` (and the gh-PR equivalent) trigger the
+// squash_merge block (BE-039 §6.2).
+//
+// RC-06 (S10-3): the former `git push origin develop` and
+// `npm publish --dry-run` rows asserted that unclassified push/publish was
+// allowed. With the protected-commands table now wired into the PreToolUse
+// enforce path, `git push origin develop` matches the protected
+// release-branch row and npm publish is HS-005 — both are hard-denied by
+// design (see internal/policy/protected_release_test.go). The allow surface
+// here is ordinary non-release git work.
 func TestCT03907_OrdinaryGitOpsAllow(t *testing.T) {
 	root := ctFixture(t)
 	state := planningState(t, root, "design", 1)
@@ -228,8 +236,8 @@ func TestCT03907_OrdinaryGitOpsAllow(t *testing.T) {
 		command string
 	}{
 		{"ordinary merge", "git merge feature/req-039"},
-		{"git push", "git push origin develop"},
-		{"npm publish", "npm publish --dry-run"},
+		{"git status", "git status --porcelain"},
+		{"git log", "git log --oneline -5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

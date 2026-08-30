@@ -29,7 +29,8 @@
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "path": {"type": "string", "minLength": 1},
-        "sha256": {"$ref": "#/$defs/sha256"}
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["added", "modified", "deleted"]}
       }
     },
     "assertion": {
@@ -65,6 +66,10 @@
         "source_finding_ids": {"$ref": "#/$defs/strings"},
         "source_reports": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reference"}},
         "severity": {"enum": ["P0", "P1", "P2", "P3"]},
+        "blocking": {
+          "type": "boolean",
+          "description": "Explicit business-blocking marker (RC-02, L3-S7 §10.1). P0 canonical BUGs are implicitly blocking=true; a non-P0 canonical BUG with blocking=true blocks the clean round exactly like a P0."
+        },
         "violated_clauses": {"$ref": "#/$defs/strings"},
         "actual_behavior": {"type": "string", "minLength": 1},
         "expected_behavior": {"type": "string", "minLength": 1},
@@ -107,11 +112,15 @@
       "additionalProperties": false,
       "required": [
         "schema_version", "record_type", "impact_id", "runtime_id", "req_id",
-        "baseline_generation", "source_bug_ids", "change_types",
+        "baseline_generation", "change_types",
         "changed_artifacts", "decisions", "escalation_level",
         "invalidated_evidence_ids", "superseded_evidence_ids",
         "retained_evidence_ids", "required_reverification_ids",
         "analyzed_by", "analyzed_at"
+      ],
+      "anyOf": [
+        {"required": ["source_bug_ids"]},
+        {"required": ["source_case_ids"]}
       ],
       "properties": {
         "schema_version": {"const": "1.0.0"},
@@ -121,6 +130,7 @@
         "req_id": {"type": "string", "pattern": "^REQ-[0-9]{3,}$"},
         "baseline_generation": {"type": "integer", "minimum": 1},
         "source_bug_ids": {"$ref": "#/$defs/strings"},
+        "source_case_ids": {"$ref": "#/$defs/strings"},
         "change_types": {
           "type": "array",
           "minItems": 1,
@@ -179,9 +189,13 @@
       ],
       "required": [
         "schema_version", "record_type", "reverification_id", "runtime_id",
-        "bug_id", "baseline_generation", "original_assignment_id",
+        "baseline_generation", "original_assignment_id",
         "performing_assignment_id", "continuity_reason", "impact_id",
         "assertion_results", "scope_compliance", "result", "performed_at"
+      ],
+      "anyOf": [
+        {"required": ["bug_id"]},
+        {"required": ["case_id"]}
       ],
       "properties": {
         "schema_version": {"const": "1.0.0"},
@@ -189,6 +203,7 @@
         "reverification_id": {"type": "string", "pattern": "^reverify-[A-Za-z0-9._-]+$"},
         "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
         "bug_id": {"type": "string", "pattern": "^BUG-[0-9]{3,}$"},
+        "case_id": {"type": "string", "pattern": "^investigation-case-[A-Za-z0-9._-]+$"},
         "baseline_generation": {"type": "integer", "minimum": 1},
         "original_assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
         "performing_assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
@@ -197,6 +212,7 @@
         "assertion_results": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/assertionResult"}},
         "scope_compliance": {"enum": ["pass", "fail"]},
         "result": {"enum": ["pass", "fail", "blocked", "scope_changed"]},
+        "failure_class": {"enum": ["fail_same_cause", "fail_new_cause", "blocked", "scope_changed", "stale"]},
         "performed_at": {"$ref": "#/$defs/timestamp"}
       }
     },

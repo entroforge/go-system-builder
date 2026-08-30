@@ -1,7 +1,7 @@
 GO ?= go
 HARNESS_BIN ?= .claude/bin/loop-harness
 
-.PHONY: build build-all manual fmt-check vet test test-race verify doctor validate ci-verify release-graph release-graph-validate release release-checksum release-list clean-release
+.PHONY: build build-all manual fmt-check vet test test-race verify doctor health platform-smoke platform-smoke-required validate ci-verify release-graph release-graph-validate release release-checksum release-list clean-release
 
 # Local dev build (host platform only). Used by `verify`, `ci-verify`, and
 # other targets that need a runnable binary on this host.
@@ -41,6 +41,18 @@ test-race:
 
 doctor:
 	$(GO) run ./cmd/loop-harness doctor --root .
+
+health:
+	$(GO) run ./cmd/loop-harness health --root .
+
+# platform-smoke always verifies the real settings -> Harness process/JSON
+# boundary. Claude Code itself is optional on developer/CI machines; use the
+# required target in an environment where the Claude CLI is installed.
+platform-smoke: build
+	tools/claude-hook-smoke.sh --root .
+
+platform-smoke-required: build
+	tools/claude-hook-smoke.sh --root . --require-platform
 
 validate:
 	$(GO) run ./cmd/loop-harness validate --all --root .

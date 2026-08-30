@@ -5,7 +5,9 @@ package transition_test
 // one scenario and is named TestSM<NNN>_<short_description>.
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,6 +77,17 @@ func applyT(t *testing.T, root, id string, rev int, actor string, evidence map[s
 		filepath.Join(root, ".claude", "loop-state.json"),
 		filepath.Join(root, ".claude", "loop-events.jsonl"),
 		transition.Request{TransitionID: id, ExpectedRevision: rev, Actor: actor, Evidence: evidence})
+	return err
+}
+
+// applyTWithREQ mirrors applyT for transitions that carry REQ metadata
+// (TR-001 bind, TR-020 amend).
+func applyTWithREQ(t *testing.T, root, id string, rev int, actor string, evidence map[string]string, req *transition.LockedREQ) error {
+	t.Helper()
+	_, err := transition.Apply(root,
+		filepath.Join(root, ".claude", "loop-state.json"),
+		filepath.Join(root, ".claude", "loop-events.jsonl"),
+		transition.Request{TransitionID: id, ExpectedRevision: rev, Actor: actor, Evidence: evidence, REQ: req})
 	return err
 }
 
@@ -195,7 +208,7 @@ func TestSM015_InvalidatedEvidenceRejected(t *testing.T) {
 	}
 }
 
-// --- SM-020: automation requests squash merge -> strong-block ---
+// --- SM-020: automation requests squash merge -> recoverable deny ---
 
 func TestSM020_AutomatedSquashMergeBlocked(t *testing.T) {
 	// This is a Hook policy test, not a transition test.
@@ -212,8 +225,8 @@ func TestSM020_AutomatedSquashMergeBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Decision != "block" {
-		t.Fatalf("SM-020: expected block for automated squash merge, got %s", decision.Decision)
+	if decision.Decision != "deny" {
+		t.Fatalf("SM-020: expected deny for automated squash merge, got %s", decision.Decision)
 	}
 }
 
@@ -233,17 +246,15 @@ func TestSM022_ReqChangeInvalidatesDownstream(t *testing.T) {
 	}
 	state["baseline"] = map[string]any{"generation": float64(1), "captured_at": "2026-01-01T00:00:00Z"}
 	state["pause"] = map[string]any{
-		"from_state":                 "verification",
-		"from_phase":                 nil,
-		"phase_revision":             float64(1),
-		"baseline_generation":        float64(1),
-		"review_round":               float64(1),
-		"entity_snapshot_revision":   float64(0),
-		"reason":                     "test",
-		"required_human_action":      "test",
-		"document_fingerprints":      []any{},
-		"committed_idempotency_keys": []string{},
-		"paused_at":                  "2026-01-01T00:00:00Z",
+		"from_state":            "verification",
+		"from_phase":            nil,
+		"phase_revision":        float64(1),
+		"baseline_generation":   float64(1),
+		"review_round":          float64(1),
+		"reason":                "test",
+		"required_human_action": "test",
+		"document_fingerprints": []any{},
+		"paused_at":             "2026-01-01T00:00:00Z",
 	}
 	state["evidence"] = []any{
 		map[string]any{
@@ -254,14 +265,23 @@ func TestSM022_ReqChangeInvalidatesDownstream(t *testing.T) {
 			"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
 		},
 	}
+	// The amended REQ must exist on disk with a strictly higher version.
+	reqDir := filepath.Join(root, "docs", "requirements")
+	os.MkdirAll(reqDir, 0o755)
+	amended := "# REQ-099\n\n> 状态：locked\n> 版本：1.2.0\n> UI impact：none\n"
+	os.WriteFile(filepath.Join(reqDir, "REQ-099.md"), []byte(amended), 0o644)
+	amendSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(amended)))
 	registerFixtureEvidence(t, root, state, map[string]string{
 		"human_decision_record": "docs/reports/human/decision.md",
-		"req_lock_record":       "docs/reports/human/req-lock.md",
 	})
+	scopeFixtureEvidence(t, state, "docs/reports/human/decision.md", "runtime_amend:loop-inactive@5")
 	writeFullState(t, root, state)
-	err := applyT(t, root, "TR-020", 5, "user", map[string]string{
+	err := applyTWithREQ(t, root, "TR-020", 5, "user", map[string]string{
 		"human_decision_record": "docs/reports/human/decision.md",
-		"req_lock_record":       "docs/reports/human/req-lock.md",
+		"req_lock_record":       "docs/requirements/REQ-099.md@" + amendSHA,
+	}, &transition.LockedREQ{
+		ID: "REQ-099", Path: "docs/requirements/REQ-099.md", Version: "1.2.0", SHA256: amendSHA,
+		ApprovedBy: "tester", ApprovedAt: "2026-01-02T00:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("SM-022: TR-020 failed: %v", err)

@@ -35,6 +35,17 @@ func AssertLastTransition(t *testing.T, state map[string]any, wantID string) {
 	}
 }
 
+// AssertBindingReceipt verifies the bind boundary without pretending that
+// the archived TR-001 event is part of the new runtime's revision-zero
+// journal.
+func AssertBindingReceipt(t *testing.T, state map[string]any, wantID string) {
+	t.Helper()
+	receipt, _ := state["binding_receipt"].(map[string]any)
+	if got, _ := receipt["transition_id"].(string); got != wantID {
+		t.Fatalf("binding receipt transition want %q, got %q", wantID, got)
+	}
+}
+
 // ParseHookQualityGate decodes hook stdout quality_gate block.
 func ParseHookQualityGate(t *testing.T, raw string) map[string]any {
 	t.Helper()
@@ -104,9 +115,7 @@ func SkipIfProductBlocker(t *testing.T, combined, bugID string) {
 		needle string
 		id     string
 	}{
-		{"angle_declaration", "loop-state.schema.json evidence.kind enum"},
 		{"team_manifest evidence is required", "loop-state.schema.json evidence.kind enum"},
-		{"delivery_angle_complete", "loop-state.schema.json evidence.kind enum"},
 		{"planning_design_record", "loop-state.schema.json evidence.kind enum"},
 		{"evidence:planning_design_record", "loop-state.schema.json evidence.kind enum"},
 		{"finding_record", "BUG-039-22"},

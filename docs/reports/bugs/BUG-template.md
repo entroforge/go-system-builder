@@ -1,107 +1,166 @@
-# Canonical BUG: BUG-{id}
+# Canonical BUG Compatibility Projection: BUG-{id}
 
-> Status: reported / accepted / assigned / fixing / fixed / verifying / closed / rejected / duplicate
-> Severity: P0 / P1 / P2 / P3
-> Runtime ref: `{runtime-id}@{revision}`
-> Found in review round: {n}
-> Finding evidence: `{REV/QA/E2E evidence ref}`
-> Original responsibility: `{assignment-id}`
-> Owner: PM / Architect
+> This document is generated **after** an `InvestigationCase` disposition; for
+> `s9_repair`, the Case must also have an approved `RepairContract`. It is a
+> human-readable compatibility projection for reporting, task tracking, and
+> legacy integrations. It is not an S8 intake, grouping, root-cause, approval,
+> or repair authority.
 
-## 1. Fingerprinted Specification Chain
-
-Repair read order is BUG -> TASK -> contracts -> REQ -> UI/design -> rules.
-
-| Order | Kind | ID | Path | Version | SHA-256 | Relevant clauses |
-|:---|:---|:---|:---|:---|:---|:---|
-| 1 | BUG | BUG-{id} | `docs/reports/bugs/BUG-{id}.md` | {version} | `{sha256}` | all |
-| 2 | TASK | TASK-{id} | `docs/tasks/TASK-{id}.md` | {version} | `{sha256}` | scope/Closing Contract |
-| 3 | contract | {id} | `docs/contracts/{id}.md` | {version} | `{sha256}` | §{n} |
-| 4 | REQ | REQ-{id} | `docs/requirements/REQ-{id}.md` | {version} | `{sha256}` | FR/NFR |
-| 5 | design/rule | {id} | `{path}` | {version} | `{sha256}` | §{n} |
-
-## 2. Observed Contradiction
+## Projection Metadata
 
 | Field | Value |
 |:---|:---|
-| expected | {REQ/contract/TASK assertion} |
-| observed | {reproducible fact} |
-| user/data/system impact | {impact} |
-| reproduction | {steps/command/sample} |
+| BUG ID | `BUG-{id}` |
+| Projection status | reported / assigned / fixing / fixed / verifying / closed / rejected / duplicate |
+| Route | `s9_repair` / `s2_spec_rework` / `human_req_change` / `s7_no_change` / `investigate_more` / `duplicate` |
+| InvestigationCase | `{case-id}@{revision}` |
+| Case hash | `{sha256}` |
+| RepairContract | `{contract-id}@{revision}` or `not applicable` |
+| Contract hash | `{sha256}` or `not applicable` |
+| Source Findings | `{exact Finding ID set}` |
+| ObservationBatch | `{batch-id}@{revision}` |
+| Runtime ref | `{runtime-id}@{revision}` |
+| Severity | P0 / P1 / P2 / P3 |
+| Generated after approval | `{approval-ref}` |
 
-## 3. Root Cause Investigation
-
-| Hypothesis | Evidence | Result |
-|:---|:---|:---|
-| {hypothesis} | {code/test/log/data} | confirmed / rejected |
-
-Accepted root cause: {supported explanation}
-
-The root cause must explain the observed symptom. Browser traces, console logs,
-network captures, screenshots, or deterministic command output are required
-when the finding came from E2E evidence.
-
-## 4. Closing Contract
-
-The Closing Contract has **four explicit sub-fields** (per
-`docs/agent-protocol.md` §S8 actions step 5 + `skills/bug-resolution/SKILL.md`
-§Closing Contract). Each must be filled before the BUG is `accepted`.
-
-### 4.1 Repair scope
-
-{precise file paths / functions / data structures the Builder is permitted to
-modify. Anything outside this scope is forbidden.}
-
-### 4.2 Forbidden scope
-
-{file paths / functions / data structures the Builder MUST NOT touch, even
-if a related fix would be tempting. Examples: cross-module refactors,
-out-of-scope REQ clauses, lock files, generated code.}
-
-### 4.3 Before-fix evidence
-
-{concrete reproduction evidence captured BEFORE the repair: command output,
-screenshot/trace, JSONL line, deterministic test failure, or observed HTTP
-status. Browser traces, console logs, network captures, or screenshots are
-required when the finding came from E2E evidence.}
-
-### 4.4 Retest contract
-
-{how the repair will be re-verified: which original-responsibility agent
-re-runs the targeted check, which test command proves the fix, which
-historical PASS evidence is invalidated, what fresh evidence IDs replace it.}
+If any authority reference is missing, do not fill the gap in this file. Return
+to the Case or Contract and use:
 
 ```text
-assert {old contradiction} == absent
-assert {required behavior/field/state} == expected
-assert {regression test} fails_before_and_passes_after
-assert {data repair invariant} == satisfied
+BLOCKED: BUG projection is missing an approved authority
+Missing: <Case/Contract reference or hash>
+Next: read or revise the referenced InvestigationCase/RepairContract
+Verify: compare the projection metadata with the approved Case/Contract hash
 ```
 
-## 5. Acceptance And Repair
+## Authority and Traceability
+
+The authoritative read order is:
+
+```text
+InvestigationCase -> approved RepairContract -> this BUG projection -> S9 task
+```
+
+| Kind | ID | Path | Revision | SHA-256 | Relevant clauses |
+|:---|:---|:---|:---|:---|:---|
+| Finding set | `{finding-ids}` | `{evidence paths}` | `{revision}` | `{sha256}` | observed facts |
+| InvestigationCase | `{case-id}` | `{case path}` | `{revision}` | `{sha256}` | grouping/causal model/route |
+| RepairContract | `{contract-id}` | `{contract path}` | `{revision}` | `{sha256}` | approved repair/verification |
+| TASK | `TASK-{id}` | `docs/tasks/...` | `{version}` | `{sha256}` | derived execution scope |
+| REQ/design/rule | `{id}` | `{path}` | `{version}` | `{sha256}` | affected authority |
+
+Do not edit the Finding, Case, or RepairContract from this document. If the
+projection disagrees with an authority artifact, the authority artifact wins;
+regenerate this projection from its approved revision.
+
+## 1. Observed Facts
+
+This section is a readable projection of the source Findings and S7 encounter
+evidence. It must not introduce new observations.
+
+| Field | Value |
+|:---|:---|
+| Expected | `{REQ/contract/TASK assertion}` |
+| Observed | `{frozen observed fact}` |
+| User/data/system impact | `{impact}` |
+| Operation path | `{short journey from entry to wall}` |
+| Last known good | `{state/evidence ref}` |
+| Wall action | `{operation that crossed the boundary}` |
+| First bad result | `{visible/request/response/persisted contradiction}` |
+| Before-fix evidence | `{evidence refs}` |
+
+The S8 source is the Finding encounter/raw evidence. Reproduction steps are
+included only when they were explicitly required by a discriminator and are
+linked to that supplement.
+
+## 2. Root Cause and Causal Model
+
+Copy this section from the approved Case/RepairContract. Do not turn a
+hypothesis into a root cause by editing this projection.
+
+| Causal element | Approved value | Evidence refs |
+|:---|:---|:---|
+| Violated invariant/authority | `{value}` | `{refs}` |
+| Faulty mechanism | `{value}` | `{refs}` |
+| Propagation | `{value}` | `{refs}` |
+| Primary root cause | `{value}` | `{refs}` |
+| Contributing factors | `{value}` | `{refs}` |
+| Blast radius | `{checked surfaces / exclusions}` | `{refs}` |
+| Detection gap | `{missing oracle/test/guard}` | `{refs}` |
+
+The root cause must explain every source Finding in the Case. Unexplained IDs,
+split Cases, and duplicate links belong in the Case revision, not in an
+invented BUG paragraph.
+
+## 3. Approved Repair Contract Projection
+
+### 3.1 Repair scope
+
+`{files/modules/interfaces/data structures the Builder may change}`
+
+### 3.2 Forbidden scope
+
+`{files/modules/contracts/requirements the Builder must not change}`
+
+### 3.3 Compatibility and rollout
+
+`{migration, compatibility, rollout, rollback, and data-safety expectations}`
+
+### 3.4 Required verification assertions
+
+```text
+assert {source Finding symptom} == absent or expected behavior restored
+assert {violated invariant} == satisfied
+assert {detection-gap assertion} == covered
+assert {regression surface} == passing with fresh evidence
+```
+
+### 3.5 S9 handoff
 
 | Field | Reference |
 |:---|:---|
-| BUG acceptance evidence | `{approval-ref}` |
-| repair assignment | `{assignment-id}` |
+| Repair assignment | `{assignment-id}` |
+| Contract approval | `{approval-ref}` |
 | Builder activation | `{activation-ref}` |
-| repair fingerprint | `{commit/sha256}` |
-| impact analysis | `{impact-ref}` |
-| invalidated evidence | `{evidence-ids}` |
+| Repair fingerprint | `{commit/sha256}` |
+| Impact analysis | `{impact-ref}` |
+| Invalidated evidence | `{evidence-ids}` |
 
-No repair starts before BUG acceptance and phase-two activation.
+S9 executes the approved Contract revision and hash. It must not broaden the
+scope, replace the root cause, or weaken the assertions through this BUG file.
 
-## 6. Verification
+## 4. Verification and Closure
 
 | Verification | Owner | Result | Evidence |
 |:---|:---|:---|:---|
-| targeted original-responsibility re-check | `{assignment-id}` | pass / fail | `{ref}` |
-| required complete review round | round {n} | pass / pending | `{clean-round-ref}` |
+| Targeted source-Finding verification | `{assignment-id}` | pass / fail / blocked | `{ref}` |
+| Root-invariant verification | `{assignment-id}` | pass / fail / blocked | `{ref}` |
+| Detection-gap verification | `{assignment-id}` | pass / fail / blocked | `{ref}` |
+| Required complete S7 round | round `{n}` | pass / pending | `{clean-round-ref}` |
 
-## 7. Deduplication And History
+Targeted verification can close the repair projection only when every approved
+assertion passes. It never creates a clean S7 round; a complete Delivery + QA +
+E2E round remains a separate gate.
 
-Canonical BUG: BUG-{id} / duplicate of BUG-{id}
+If verification is blocked, preserve the Contract and report:
 
-| Date | Event | Actor | Runtime revision | Evidence |
+```text
+BLOCKED: <verification step>
+Missing: <evidence, environment, or authorization>
+Next: <one recovery action or route>
+Verify: <fresh evidence ref or status readback>
+```
+
+## 5. Route and Deduplication History
+
+| Field | Value |
+|:---|:---|
+| Canonical Case | `{case-id}@{revision}` |
+| Duplicate of | `BUG-{id}` / `none` |
+| Split from | `{case-id}` / `none` |
+| Merged from | `{case-ids}` / `none` |
+| Route rationale | `{approved reason}` |
+
+| Date | Event | Actor | Case/Contract revision | Evidence |
 |:---|:---|:---|:---|:---|
 | | | | | |

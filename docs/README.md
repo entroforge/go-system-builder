@@ -21,8 +21,9 @@ The goal of Loop Engineering is not to let the model work without constraint. It
 is to let Claude Code, inside one human-locked requirement scope, continuously
 complete development, verification, repair and re-review under a state machine,
 document specifications, professional methods and automatic gates — and finally
-**stop at the human release gate**. Stopping at `awaiting_human_release` is the
-Loop's success definition; `aborted` is not.
+**stop at the human release gate**. `awaiting_human_release` is a non-terminal
+human decision gateway; an explicit approval reaches the `release_authorized`
+terminal, while `aborted` is the separate terminal/blocked outcome.
 
 A Loop never modifies the REQ, never squash-merges, and never formally releases.
 This is the first principle of the design.
@@ -34,9 +35,10 @@ The whole loop has one simple control shape:
 ```mermaid
 graph LR
     H1["**Human**<br/>locks REQ"]:::human
-    M["**Loop automation**<br/>prototype gate → design → contracts<br/>→ TASK → Team → two-phase activation<br/>→ specialized Builder → Verifier → QA → E2E Tester<br/>→ BUG repair → full re-review<br/>→ ACC → Release Architecture Audit"]:::auto
+    M["**Loop automation**<br/>prototype gate → design → contracts<br/>→ TASK → Team → agent dispatch (plan_checkpoint)<br/>→ specialized Builder → Verifier → QA → E2E Tester<br/>→ BUG repair → full re-review<br/>→ ACC → Release Architecture Audit"]:::auto
+    G["**Human**<br/>S11 decision gateway"]:::human
     H2["**Human**<br/>squash merge + formal release"]:::human
-    H1 ==> M ==> H2
+    H1 ==> M ==> G ==> H2
     classDef human fill:#fce4ec,stroke:#c2185b
     classDef auto fill:#e8f5e9,stroke:#2e7d32
 ```
@@ -74,12 +76,15 @@ REQ-003 decouples the two lifetimes:
 - **Engineering Loop binding** is a Harness operation:
 
   ```bash
-  loop-harness req bind --req docs/requirements/REQ-<id>.md \
-    --approved-by <human identity>
+  loop-harness req bind --approved-by <human identity>
   ```
 
-  It creates the Runtime Bookmark, sets the cursor to S1, and writes the
-  `req_bound` journal event. It does not start any schedule.
+  `--req` is optional: with exactly one bindable REQ (`req list` shows the
+  pool) it is auto-discovered. It archives the inactive bootstrap runtime,
+  creates the Runtime Bookmark (machine cursor `planning/design`) at revision
+  `0` with an empty active journal, and records `event=req_bound` in the
+  binding receipt together with the source runtime hashes. It does not start
+  any schedule.
 
 - **Claude `/loop`** is a Claude Code built-in scheduler that delivers the
   project's `.claude/loop.md` Wake-up Prompt on a cadence. It does not bind
@@ -99,7 +104,7 @@ human locks REQ
 -> design and contracts
 -> TASK decomposition
 -> Agent Team creation
--> two-phase activation
+-> agent dispatch (plan_checkpoint)
 -> specialized Builder development
 -> Delivery Verifier + QA + E2E Tester
 -> finding investigation and canonical BUG reports
@@ -228,14 +233,14 @@ every other section:
 
 ## 5. Loop State Machine
 
-The Loop Definition defines 11 top-level states, 21 top-level transitions, and 5
+The Loop Definition defines 12 top-level states, 30 top-level transitions, and 5
 global transitions. The main flow is a single one-way trunk; every side branch
 is a correction loop that never bypasses the trunk.
 
 ```mermaid
 stateDiagram-v2
     [*] --> inactive
-    inactive --> planning: TR-001 loop_requested
+    inactive --> planning: TR-001 req_bound
     planning --> document_verification: TR-002 planning_ready
     document_verification --> building: TR-003 document_pass
     document_verification --> planning: TR-004 document_fix_required
@@ -253,7 +258,15 @@ stateDiagram-v2
     acceptance --> verification: TR-016 acceptance_review_required
     release_audit --> awaiting_human_release: TR-017 audit_approved
     release_audit --> paused: TR-018 audit_blocked
+    awaiting_human_release --> release_authorized: TR-025 approve
+    awaiting_human_release --> paused: TR-026 defer
+    awaiting_human_release --> bug_resolution: TR-027 reject_defect
+    awaiting_human_release --> acceptance: TR-028 reject_acceptance
+    awaiting_human_release --> release_audit: TR-029 reject_release_audit
+    awaiting_human_release --> aborted: TR-030 abort
     paused --> planning: TR-020 req_baseline_updated
+    release_authorized --> [*]
+    aborted --> [*]
 ```
 
 Main trunk:
@@ -267,6 +280,7 @@ inactive
 -> acceptance
 -> release_audit
 -> awaiting_human_release
+-> release_authorized
 ```
 
 Correction loops:
@@ -275,8 +289,8 @@ Correction loops:
 document_verification -> planning.design
 building              -> planning.design
 bug_resolution        -> planning.design
-verification          -> bug_resolution -> verification.delivery
-acceptance            -> verification.delivery
+verification          -> bug_resolution -> verification.planned
+acceptance            -> verification.planned
 ```
 
 Any state can pause (GTR-001). Runtime integrity failure always pauses
@@ -301,12 +315,16 @@ stateDiagram-v2
         design --> document_verification: TR-002 planning_complete
     }
     state verification {
-        [*] --> delivery
-        delivery --> qa: PTR-VERIFY-01
-        qa --> e2e_browser: PTR-VERIFY-02
-        e2e_browser --> clean_round_evaluation: PTR-VERIFY-03
-        clean_round_evaluation --> clean_round_passed: PTR-VERIFY-04
-        clean_round_evaluation --> delivery: PTR-VERIFY-05 restart round
+        [*] --> planned
+        planned --> running: runtime review-plan
+        running --> cannot_clean: finding verdict
+        cannot_clean --> discovery_draining
+        running --> clean
+        discovery_draining --> observation_sealed
+        cannot_clean --> observation_sealed: P0 stop-the-line
+        running --> observation_sealed
+        observation_sealed --> bug_resolution: TR-008 sealed batch
+        clean --> acceptance: TR-009 machine CleanRound
     }
     state bug_resolution {
         [*] --> investigation
@@ -326,9 +344,18 @@ the REQ is locked and before the development contract is locked**, because
 FE/BE/SYNC contracts link to the locked package. Skipping the gate when UI
 impact is `changed` is forbidden by INV-004.
 
+The verification machine is a ReviewPlan status projection (L3-S7): `planned`
+waits for a registered ReviewPlan with an exactly-partitioned required Claim
+set; `running` consumes static DV/QA Claims first, then behavior E2E; a finding
+flips the round to `cannot_clean` but ordinary safe discovery continues
+(`discovery_draining`); only a P0 finding seals the ObservationBatch
+immediately. The exit transitions are machine-guarded: TR-008 consumes the
+sealed batch (exact Finding set), TR-009 recomputes the CleanRound over the
+exact Claim set.
+
 Targeted re-verification never creates a clean round. It only permits returning
-to `verification.delivery`, where a complete Delivery + QA + E2E Browser round
-must run again.
+to `verification.planned`, where a complete review round — a fresh ReviewPlan
+with every required Claim consumed — must run again.
 
 ---
 
@@ -351,13 +378,14 @@ On-demand Methodology Skills route by state and event:
 | `inactive`, startup, recovery, `paused` | `loop-orchestration` |
 | `planning.*` | `specification-planning` |
 | `document_verification` | `document-verification` |
-| Agent `spawned` through `activated` | `two-phase-activation` |
+| Agent `spawned` through `activated` | `agent-dispatch` |
 | `building` after activation | none; TASK plus selected Best Practices |
 | team creation, reuse, reconstruction | `team-planning` |
-| `verification.delivery`, `verification.qa`, `verification.e2e_browser` after activation | none; team responsibility plus Best Practices |
+| `verification.planned` | `loop-orchestration` (ReviewPlan authoring) |
+| `verification.running` / `cannot_clean` / `discovery_draining` | `team-planning` (Claim-bound reviewer dispatch; see `loop-harness s7 status`) |
 | `bug_resolution.*` | `bug-resolution` |
 | any committed change requiring evidence recalculation | `impact-analysis` |
-| `verification.clean_round_evaluation` | `clean-round-evaluation` |
+| `verification.clean` / `verification.observation_sealed` | `acceptance-and-handoff` (TR-009) / `bug-resolution` (TR-008) |
 | `acceptance`, `release_audit` | `acceptance-and-handoff` |
 
 Routing order:
@@ -369,7 +397,7 @@ current runtime state and phase
 -> Agent Definition kind
 -> task artifact and risk tags
 -> smallest applicable Best-practice set
--> two-phase activation when a subagent is involved
+-> agent dispatch when a subagent is involved
 ```
 
 Forbidden Skill designs: a role-as-Skill (`builder`, `verifier`, `qa`); a Skill
@@ -424,13 +452,19 @@ Key invariants:
 
 ---
 
-## 9. Two-Phase Agent Activation
+## 9. Agent Activation (three dispatch modes)
 
-Subagents are read-only until their read-back is approved. Phase-one safety
-depends on runtime-aware Hook observation and recovery, not on prompt trust.
-Once the main session delegates an assignment, the Driver's next work is that
-Agent's read-back / approval / activation chain. It must not complete the
-delegated responsibility itself unless the assignment is revoked or reassigned.
+Dispatch defaults to `plan_checkpoint` continuous execution: the Worker sends
+one structured PLAN_REPORT (`skills/agent-dispatch/SKILL.md` has the complete
+file example) and continues immediately — the PostToolUse(SendMessage)
+observer chains reading → activated → working automatically, and Main stays
+silent when aligned (CORRECTION only on semantic drift). The two-round
+read-back → approval → activation flow below is the `plan_approval_required`
+exception for genuinely high-risk or irreversible work; `one_shot` covers
+idempotent single actions. Once the main session delegates an assignment, the
+Driver's next work is that Agent's plan checkpoint (or approval chain); it
+must not complete the delegated responsibility itself unless the assignment is
+revoked or reassigned.
 
 ```mermaid
 sequenceDiagram
@@ -444,7 +478,7 @@ sequenceDiagram
     Main->>Cli: team launch --manifest
     Cli-->>Main: one readback_request envelope per assignment
     rect rgb(255, 243, 224)
-        Note over Agent: Phase one: read-only
+        Note over Agent: plan_approval_required only: phase one read-only
         Main->>Agent: send readback_request with fingerprinted paths
         Agent->>Agent: read TASK -> CONTRACTS -> REQ -> DESIGN -> RULES
         Agent-->>Main: readback_response (ready / conflict / missing)
@@ -456,19 +490,22 @@ sequenceDiagram
     alt ready and fingerprints match
         Main->>RT: agent-event understanding_approved (CAS rev+1)
         Main->>Agent: send activation envelope
-        Main->>RT: agent-event activated (CAS rev+1)
+        Main->>RT: agent-event activation_sent (CAS rev+1; runtime verifies approved_readback_sha256)
     else conflict or missing
         Main->>Agent: understanding_rejected -> back to reading
     end
     rect rgb(232, 245, 233)
-        Note over Agent: Phase two: bounded write
-        Agent->>Out: write assigned report
+        Note over Agent: Phase two: bounded write (in the assignment worktree)
+        Main->>RT: agent-event work_started
+        Agent->>Out: write assigned output
         Agent->>Hook: PreToolUse Write
-        Hook->>RT: Agent=activated AND path in scope AND fingerprint matches
+        Hook->>RT: Agent=working AND path in scope AND fingerprint matches
         Hook-->>Agent: allow
         Agent-->>Main: completion_report
     end
-    Main->>RT: consume completion -> decide TR-003 / TR-004 / TR-005
+    Main->>RT: runtime task-complete (one atomic Builder Result: envelope + Agent reported + TASK review + evidence)
+    Main->>Hook: SubagentStop -> Inspect (scope/locked/merge-tree/required checks) -> non-squash merge -> verified checkpoint (or `runtime task-integrate` explicitly when the payload cannot identify the assignment)
+    Main->>RT: the stage's own gate evaluates the batch (S6: TR-006 / TR-007)
 ```
 
 The effective activation scope is the intersection of six conditions:
@@ -525,7 +562,7 @@ AND no referenced evidence is invalidated
 
 All of this must hold for one same review round. Targeted re-verification, no
 matter how many dimensions it covers, can never satisfy the clean-round gate;
-it only authorizes returning to `verification.delivery` to run a complete round.
+it only authorizes returning to `verification.planned` to run a complete round.
 
 ---
 
@@ -577,9 +614,11 @@ sufficient for engineering execution, so no separate `/goal` is required.
 
 ### Starting a REQ after a terminal Runtime
 
-`awaiting_human_release` and `aborted` remain terminal Loop states. They are
-not made reusable by editing `.claude/loop-state.json`. When a human has
-completed the release decision and wants to begin a new REQ, they first run:
+`release_authorized` and `aborted` are terminal Loop states. `awaiting_human_release`
+is a non-terminal human gateway and cannot be rolled over while its decision is
+pending. None of these states is made reusable by editing
+`.claude/loop-state.json`. When a human has completed the release decision and
+wants to begin a new REQ, they first run:
 
 ```bash
 .claude/bin/loop-harness runtime rollover \
@@ -595,7 +634,7 @@ Create that evidence with `runtime evidence add --scope-ref
 runtime_rollover:current`; the harness resolves the token to the revision
 committed by the evidence write, so the subsequent rollover has an exact
 authorization target.
-It archives the terminal state and its
+It archives the eligible terminal state and its
 journal under `.claude/runtime-archive/`, then creates a new empty inactive
 Runtime and journal. A durable pending marker recovers an interrupted rollover
 before any later runtime operation. Only this clean Runtime may be bound to the
@@ -609,7 +648,7 @@ round passes, or any blocking Delivery Verifier, QA, or E2E Browser finding
 forces S8 finding investigation through `bug_resolution` (TR-008). The finding
 is reproduced, root cause is investigated, a canonical BUG is written and
 accepted, a Builder reads the BUG plus the original specification chain, the fix
-is two-phase activated, the **original finding responsibility** re-verifies,
+is dispatched (plan_checkpoint), the **original finding responsibility** re-verifies,
 affected historical PASS evidence is invalidated, and a complete Delivery,
 QA, and E2E Browser round runs again. Local re-verification alone never ends
 the Loop.
@@ -717,14 +756,47 @@ mechanism; `.claude/loop-state.json` is never edited by hand.
 # Recover/replay the snapshot from the journal head at startup.
 .claude/bin/loop-harness runtime reconcile --root .
 
-# Human-authorized handoff after awaiting_human_release or aborted.
+# Human-authorized handoff after release_authorized or aborted.
+# awaiting_human_release must receive an explicit S11 decision first.
 # This archives the old Runtime; it is not a Loop transition.
 .claude/bin/loop-harness runtime rollover --approved-by <identity> --approval-evidence <human-decision-id> --root .
 
+# Record exactly one current S11 human decision; this is also the legacy
+# awaiting_human_release migration entrypoint. No target state is accepted.
+.claude/bin/loop-harness runtime human-decision \
+  --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> \
+  --expected-revision N --actor <user|orchestrator> \
+  --decision-evidence <human-decision-reference>
+# reject_defect additionally requires --finding-evidence <finding-reference>.
+
 # Apply one legal transition via compare-and-swap on revision.
 .claude/bin/loop-harness runtime transition \
-  --id TR-xxx --expected-revision N --actor orchestrator
+  --id TR-xxx --expected-revision N --actor orchestrator \
+  --evidence <slot>=<reference>
 ```
 
-Other runtime verbs: `register-workgroup`, `agent-event`, `bug-event`. Run
-`loop-harness runtime` with no subcommand to list them.
+For a transition with `required_evidence`, repeat `--evidence` once per slot.
+The left side is the requirement slot from the Manual, while the right side
+is the ID or repository-relative path of a currently valid registered
+evidence artifact; a `*_record` slot is not itself an evidence kind to
+register. For example, TR-006 can be recovered with:
+
+```bash
+.claude/bin/loop-harness runtime transition \
+  --id TR-006 --expected-revision N --actor orchestrator \
+  --evidence builder_report_record=<builder-report-id-or-path>
+```
+
+If a binding is missing, retry with the command shape shown in the error and
+run `loop-harness explain TR-006` (replace the ID as needed) to see each slot's
+accepted registered kinds and current candidate evidence. Do not register the
+`*_record` slot name; use one of the accepted persisted kinds shown by the
+Manual or explain command.
+
+Other runtime verbs: `register-workgroup`, `agent-event`, `task-complete`
+(canonical Builder Result registration — one command replaces the
+`agent-event completion_reported` + `evidence add` dual write),
+`task-integrate` (explicit worktree integration: Inspect → non-squash
+merge → verified checkpoint, identical to the SubagentStop path),
+`bug-event`, `evidence`, `transition`, `change`, and `human-decision`.
+Run `loop-harness runtime` with no subcommand for the full list.

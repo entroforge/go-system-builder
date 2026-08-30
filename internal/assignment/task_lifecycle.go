@@ -30,6 +30,7 @@ import (
 	"time"
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
@@ -76,18 +77,21 @@ func AdvanceTask(
 		occurredAt = time.Now().UTC()
 	}
 
-	store := loopruntime.NewStore(statePath, journalPath)
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	return store.Update(request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-task-%s-%s-r%d", request.TaskID, request.Event, request.ExpectedRevision+1),
-		TransitionID:   "TASK-LIFECYCLE",
-		Event:          request.Event,
-		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:task:%s:%s:%d", request.TaskID, request.Event, request.ExpectedRevision),
-		RuntimeID:      runtimeID,
-		From:           cursor,
-		To:             cursor,
-		Message:        fmt.Sprintf("Recorded a TASK lifecycle event (%s on %s)", request.Event, request.TaskID),
-		OccurredAt:     occurredAt,
+		Audit: loopruntime.AuditEnvelope{
+			EventID:        fmt.Sprintf("evt-task-%s-%s-r%d", request.TaskID, request.Event, request.ExpectedRevision+1),
+			TransitionID:   "TASK-LIFECYCLE",
+			Event:          request.Event,
+			Actor:          "orchestrator",
+			IdempotencyKey: fmt.Sprintf("runtime:task:%s:%s:%d", request.TaskID, request.Event, request.ExpectedRevision),
+			RuntimeID:      runtimeID,
+			From:           cursor,
+			To:             cursor,
+			EvidenceIDs:    []string{},
+		},
+		Message:    fmt.Sprintf("Recorded a TASK lifecycle event (%s on %s)", request.Event, request.TaskID),
+		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
 			entities, ok := state["entities"].(map[string]any)
 			if !ok {
@@ -181,6 +185,8 @@ func applyTaskEventGuards(task map[string]any, request TaskEventRequest, resolve
 	case "task_cancelled":
 		if reason, _ := request.Params["cancellation_reason"].(string); reason == "" {
 			return fmt.Errorf("guard cancellation_reason_recorded failed: cancellation_reason param required")
+		} else {
+			task["cancellation_reason"] = reason
 		}
 	}
 	return nil

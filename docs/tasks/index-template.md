@@ -31,6 +31,8 @@
 |:---|:---|:---|:---|:---|:---|:---|
 | TASK-001 | BE-001 | Builder-BE-01 | 1d | - | pending | - |
 
+本表「状态」列是看板**进程**状态（pending/in-progress/done），与 TASK 文件头部的文档 Status 三词（draft/complete/cancelled）是两个正交词汇表——不要把 pending 写进 TASK 文件。
+
 ## 关键路径
 
 ```text

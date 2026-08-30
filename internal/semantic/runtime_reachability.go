@@ -18,11 +18,15 @@ type runtimeReachability struct {
 		Path   string `json:"path"`
 		SHA256 string `json:"sha256"`
 	} `json:"bound_req"`
+	Baseline struct {
+		Generation int `json:"generation"`
+	} `json:"baseline"`
 	Documents []struct {
-		ID     string `json:"id"`
-		Path   string `json:"path"`
-		SHA256 string `json:"sha256"`
-		Kind   string `json:"kind"`
+		ID         string `json:"id"`
+		Path       string `json:"path"`
+		SHA256     string `json:"sha256"`
+		Kind       string `json:"kind"`
+		Generation int    `json:"generation"`
 	} `json:"documents"`
 	Entities struct {
 		Agents []struct {
@@ -83,6 +87,14 @@ func ValidateRuntimeReachability(root string) error {
 	}
 
 	for _, doc := range state.Documents {
+		// Superseded generations of every kind are immutable history: after
+		// an in-place amend the old entry keeps its original fingerprint
+		// (and the file may have been moved to versions/), so reachability
+		// and fingerprint equality only apply to the current baseline's
+		// documents (L3-S3 v4.0.1: promotion from the req-only exemption).
+		if doc.Generation > 0 && doc.Generation < state.Baseline.Generation {
+			continue
+		}
 		if err := checkReachablePath(root, fmt.Sprintf("documents[%s]", doc.ID), doc.Path); err != nil {
 			return err
 		}

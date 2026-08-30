@@ -27,7 +27,7 @@ Project-instance files such as `AGENTS.md`, `docs/project-map.md`, `docs/require
 
 ## Core Gates
 
-- No PM todo list, no requirement work.
+- No bound REQ, no requirement work (the machine-enforced gate; the PM todo block was removed from the REQ template).
 - No stage check, no next stage.
 - No locked requirement, no design lock, contract lock, task split, Builder dispatch, or feature branch.
 - No UI Design Package Gate, no FE/BE/SYNC contract lock for UI-impacting requirements.

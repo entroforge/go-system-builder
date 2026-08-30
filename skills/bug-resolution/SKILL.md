@@ -1,67 +1,127 @@
 ---
 name: bug-resolution
-description: Use when Delivery Verifier, QA, or E2E Browser finds a blocking defect, or when an accepted BUG needs repair
+description: Use when S7 produces an investigation-ready Finding batch, or when an approved RepairContract is ready for S9 execution
 category: methodology
-version: 1.1.0
+version: 2.0.0
 ---
-# Bug Resolution
+# S8 Investigation and Bug Projection
 
 ## Authority
-The main session turns findings into canonical BUG reports before assigning repairs. Runtime authority lives in `docs/loop-definition.json`; the S8/S9 stage contracts live in `docs/agent-protocol.md`; the method summary is inlined below.
+
+Runtime legality is defined by `docs/loop-definition.json`; the S8/S9 stage contract is defined by `docs/agent-protocol.md`. This Skill explains how an Agent supplies the missing Case/Contract facts and does not override either authority.
+
+S8 has one investigation chain:
+
+```text
+sealed S7 Finding / ObservationBatch
+  -> reversible InvestigationCase
+  -> HypothesisResults and CausalModel
+  -> approved RepairContract
+  -> S9 repair
+```
+
+- S7 `Finding` and its encounter/raw evidence are immutable facts. S8 consumes them; it does not rewrite them.
+- `InvestigationCase` is the S8 authority. It owns grouping, split/merge revisions, hypotheses, evidence, causal reasoning, blast radius, detection gap, and route.
+- `RepairContract` is the only repair authority. S9 executes its approved revision and hash.
+- A canonical BUG is a human-readable compatibility projection created **after** `RepairContract` approval. It is never an S8 intake, grouping, approval, or repair prerequisite.
 
 ## Entry Conditions
-- A blocking finding exists from `verification.delivery`, `verification.qa`, `verification.e2e_browser`, or a failed `targeted_reverification`, **or**
-- An accepted canonical BUG is ready for repair.
-- The finding is reproducible or backed by deterministic evidence.
-- The Loop is in top-level `bug_resolution`.
+
+- A sealed S7 `ObservationBatch` or an exact Finding set is available.
+- Each Finding has an immutable identity/hash, baseline, expected/observed facts, and the recorded boundary or code-inspection scope needed for investigation.
+- The Loop is in S8/`bug_resolution`.
+- Existing Cases and approved Contracts have been checked for overlap and duplicates.
+
+An incomplete but safe S7 batch enters S8 with explicit `capture_gaps`; do not silently turn a gap into a reproduction task. If the Finding set is not sealed or cannot be identified exactly, stop intake and repair the S7 handoff first.
 
 ## Required Inputs
-| Input | Path / field | Why |
-|:---|:---|:---|
-| Finding evidence | `docs/reports/...` referenced by the finding | observed gap, severity, scope |
-| Affected REQ/contract/TASK | traceability links from the finding | Closing Contract and forbidden scope |
-| Existing BUGs | runtime `entities.bugs[]` | deduplication |
-| Review round + baseline | runtime `lifecycle` | freeze scope for re-verification |
-| Repair limits | runtime BUG counters | pause before exceeding attempts |
-| Original finder | finding `responsibility_id` | targeted re-verification owner |
+
+| Input | Use |
+|:---|:---|
+| Finding exact set and hashes | Bind the Case without changing S7 facts |
+| Encounter/raw evidence | Read `last_good -> wall_action -> first_bad`, timeline, state delta, side effects, and terminal state before considering reproduction |
+| Baseline and traceability refs | Bound the affected implementation/specification surface |
+| Existing Cases/Contracts | Detect duplicate, overlap, split, or follow-on work |
+| S7 capture gaps and detection claims | Carry known uncertainty into the causal and repair contracts |
+| Finder/checkpoint availability | Continue with the original investigator or an authorized replacement |
+
+## Evidence Policy
+
+1. **Do not reproduce the S7 symptom by default.** First consume the frozen encounter, raw evidence, state deltas, and code-inspection trail.
+2. Request a `FindingSupplement` only when a discriminator is missing and a new observation can distinguish competing hypotheses. The supplement is append-only and must reference the Finding and the discriminator it answers.
+3. If the discriminator cannot be obtained safely, record the gap and route `investigate_more` or `human_req_change`; do not manufacture certainty by repeating the same journey.
+4. S8 owns root-cause investigation and detection-gap reasoning. S7 owns claim completeness and observation capture. S8 may use S7 gaps as facts, but does not rerun the S7 review protocol merely to make the intake look complete.
 
 ## Procedure
-1. S8: read each finding; reproduce it or confirm deterministic evidence; record the before-fix failing evidence.
-2. S8: investigate root cause from reproduction, browser traces/logs when applicable, and implementation/spec evidence. Distinguish implementation defect, test defect, specification conflict, environment/dependency failure, and expected behavior.
-   - Hard step: ask why E2E did not cover or fail this gap. Check the project E2E scenario inventory (when present) and run `loop-harness e2e-coverage --inventory <path> --root .`. If a contracted behavior broke and the corresponding CT/AC did not go red, the Closing Contract **must** include a **coverage gap** item (raise fidelity or add a system test) — investigation is incomplete without that answer.
-3. S8: group findings into canonical BUGs by `same user-visible contradiction AND same root cause AND compatible Closing Contract`. Never merge just because they touch the same file.
-4. S8: draft each canonical BUG with: source finding IDs, affected clauses, reproducible actual vs expected, evidence-supported root cause, severity, repair scope, forbidden scope, Closing Contract (including any E2E coverage-gap remediation), before-fix evidence, original finder, required Best Practices.
-5. S8: submit for main-session review. Keep these outcomes distinct: an insufficient BUG report returns to investigation; `accepted` enters repair; a final `rejected_no_product_change` disposition means expected behavior, a test-only issue, or a transient environment condition with no product/specification correction; `duplicate` links to its canonical BUG; `req_change_required` pauses; `spec_rework_required` returns to `planning.rework`.
-6. S9: for each accepted BUG, request `repair_readback` → `fixing` transition and run `two-phase-activation` for the repair Builder, who reads `BUG → TASK → CONTRACTS → REQ → DESIGN → RULES`.
-7. S9: after Builder reports fix, invoke `impact-analysis` to compute the change-impact record and mark affected historical PASS evidence `invalid`.
-8. S9: route to `targeted_reverification`. The original finder checks every Closing Contract assertion, before/after reproduction, scope compliance, regression evidence, and root-cause elimination.
-9. S9: act on the targeted result: `pass` → BUG may close; `fail` → return to S8 investigation, increment same-contract failure counter; `blocked` → preserve BUG state; `scope_changed` → invalidate activation and return to BUG review.
-10. S9: when all accepted BUGs close, enter `ready_for_full_review`, the persisted S9-to-S7 handoff checkpoint. It performs no work and only permits TR-012 back to `verification.delivery` for a new complete Delivery + QA + E2E round; targeted re-verification never creates a clean round.
-11. Use TR-022 only when the entire S8 batch has no accepted BUG and every finding is final-rejected without product/specification change or duplicate-linked to a canonical BUG with no remaining repair. A duplicate of an open BUG follows that BUG's repair path; a specification or REQ change must not use TR-022.
+
+1. **Ingest and bind.** Create or resume one `InvestigationCase` from the exact Finding set, ObservationBatch hash, and baseline. Reject changed or ambiguous input. Do not create a BUG at this point.
+2. **Group reversibly.** Group by a shared candidate mechanism and compatible repair boundary, never merely by file, symptom wording, or agent ownership. Record the grouping rationale. Split or merge by Case revision while preserving prior hashes and the exact Finding coverage.
+3. **Form competing hypotheses.** Each hypothesis must state the invariant or authority it may violate, the evidence that would support/refute it, and a discriminator. Do not write a root cause as an untested conclusion.
+4. **Dispatch independent questions.** Assign sub agents by evidence question, not one agent per Finding. Allocate a unique `assignment-*` id, register it on the Hypothesis, then run `runtime investigation dispatch` so the id is bound to the Investigator workgroup/Task/Agent lifecycle. An assignment includes Finding IDs, boundary refs, hypothesis, discriminator, read/command scope, expected evidence, stop condition, and forbidden product changes. The worker reports generic `PLAN_REPORT` and then continues; a second approval round is not required. Workers submit evidence and `HypothesisResult` only, using the same bound Assignment id.
+5. **Build the causal model.** The supported model must connect `trigger -> violated invariant -> faulty mechanism -> propagation -> symptoms`, and must state blast radius and detection gap. Every source Finding is explained, explicitly split, linked as duplicate, or routed as unresolved; unexplained Findings cannot be hidden in prose.
+6. **Choose exactly one route per Case.** Use only:
+   - `s9_repair` — implementation, contract, test, tooling, configuration, database, dependency, or environment repair is required;
+   - `s2_spec_rework` — the specification/design is internally inconsistent or incomplete;
+   - `human_req_change` — the requested behavior or requirement must change;
+   - `s7_no_change` — expected behavior, test-only false alarm, or transient condition with no product/spec change;
+   - `investigate_more` — evidence or discrimination is insufficient;
+   - `duplicate` — follow an existing canonical Case/Contract.
+7. **Create and approve the RepairContract.** For `s9_repair`, bind the exact Finding set, violated invariant, causal model, repair scope, forbidden scope, compatibility/migration/rollback expectations, symptom assertions, root-invariant assertion, detection-gap assertion, and stop/escalation conditions. Main approves; Architect review is conditional on a cross-module, source-of-truth, or contract-boundary change.
+   First register a `human_decision` evidence artifact scoped to `s8_contract_approval:<runtime_id>@<current-runtime-revision>` and record the exact draft SHA-256 in that decision artifact. The approval handoff is then the CAS command `runtime investigation contract approve --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`. It must succeed before S9 work begins; it writes the approved Contract hash, creates the next immutable Case revision, and advances to `bug_resolution.repair_readback`.
+8. **Project and hand off.** Only after approval, generate the canonical BUG compatibility projection and the S9 work package idempotently from the Case and RepairContract. S9 reads the approved Contract hash and does not rediscover the root cause. A projection failure must not roll back the approved investigation; retry the projection from the same Case/Contract revision.
+   The executable S9 path is: `runtime repair session open` → `runtime repair plan compile` → **the generic L4 `agent-message` PLAN_REPORT checkpoint, when the worker is platform-dispatched** → **`runtime repair plan-report submit` (one domain report per repair Assignment, must include a failing red pre-fix check; product writes stay denied)** → **`runtime repair execution begin` (the only verb that releases implementation writes)** → `runtime repair result submit` (changed_artifacts must exactly match the session diff; status vocabulary added/deleted/modified) → `runtime repair changeset compute` → `runtime repair impact create/commit` (invalidates affected historical PASS evidence in the same transaction) → independent `runtime repair targeted create/commit` (verifier must differ from the repair Builder) → `runtime repair handoff create/commit` (fires TR-012, bumps the round, writes the S7 seed). Copyable `--file` shapes for the domain artifacts are in [`docs/examples/s7-s9/`](../../docs/examples/s7-s9/). The generic PLAN_REPORT is an Agent-lifecycle checkpoint; it does not replace the S9 domain `repair-plan-report`, and the domain file must not be passed as `SendMessage(plan_ref=...)`. After every command, read `runtime repair status`; its `next_action` is the Controller checkpoint. A non-pass RepairResult or scope deviation routes back to S8 and cannot be advanced by hand-editing the pointer. For a non-`blocked` targeted failure, run `runtime investigation route --case-id <case> --route investigate_more --reason "targeted reverification requires causal reassessment" --reassessment-evidence <targeted-path>`; this creates a new revision of the same Case, preserves the original Finding set and failure hash, clears the superseded Contract pointer, and retires the old `review.repair` pointer. A `blocked` targeted result first resolves the blocker, runs `runtime repair targeted resume --actor <actor> --reason <resolution>`, and submits a new independent reverification; it is not causal evidence yet.
+
+## Blocking and Recovery
+
+Every blocked result must expose all four fields:
+
+```text
+BLOCKED: <short reason>
+Missing: <field, evidence, or authorization>
+Next: <one concrete command or action>
+Verify: <status/readback command or artifact>
+```
+
+Use these recovery rules:
+
+- **Unsealed or changed Finding set:** stop before Case creation; return to S7 to seal or re-export the exact batch, then verify the batch hash.
+- **Missing discriminator:** append a `FindingSupplement` for the named discriminator; if it is unsafe or unavailable, route `investigate_more` instead of repeating the symptom.
+- **Original finder unavailable:** resume from the saved Case/checkpoint with an authorized replacement investigator; do not discard the Case or require a fresh reproduction.
+- **Case revision conflict:** reload the latest Case, preserve its source Finding exact set, and submit a new revision; never overwrite a newer revision.
+- **Unexplained Finding or unsupported causal edge:** keep the Case open, add a targeted hypothesis assignment, and verify that every source ID is covered before Contract approval.
+- **RepairContract incomplete:** revise the Case/Contract and run the completeness check again; do not create a BUG or dispatch S9.
+- **Route requires specification or requirement change:** set the corresponding route, preserve evidence and causal work, and hand off to S2 or the human decision point.
+- **S9 projection or dispatch failure after approval:** retry the idempotent projection using the approved Contract hash; do not create a second Case or alter the approved Contract.
+- **S9 targeted failure:** read the failed TargetedReverification from `runtime repair status`. For `fail_same_cause`, `fail_new_cause`, `scope_changed`, or `stale`, use the exact `investigation route ... --reassessment-evidence <targeted-path>` action shown by `next_action`; it is the same Case's causal reassessment revision, not a new BUG or an S9 retry loop. For `blocked`, resolve the environment/authority blocker, run `runtime repair targeted resume --actor <actor> --reason <resolution>`, and submit a new independent targeted result first; this path does not create causal evidence.
 
 ## Outputs
-- Accepted/rejected/duplicate canonical BUG records with Closing Contracts.
-- Repair task assignment, activation evidence, fix evidence.
-- Change-impact record and evidence invalidation set (from `impact-analysis`).
-- Targeted re-verification result bound to the original finder.
 
-## Exit Conditions
-- Every blocking finding has a final disposition: accepted BUGs are `closed` with targeted `pass`, while no-repair findings are final-rejected or duplicate-linked with the required rationale; specification and REQ changes have their separate routes.
+- A versioned `InvestigationCase` with exact Finding coverage, grouping history, hypotheses, evidence, causal model, blast radius, detection gap, and route.
+- For `s9_repair`, an approved `RepairContract` with revision/hash and S9 handoff.
+- For other routes, the route rationale and the required next owner/action.
+- A canonical BUG only as a post-approval compatibility projection.
 
 ## Stop Conditions
-Stop immediately and surface to the human if any of:
-- Root cause is not supported by reproduction or deterministic evidence.
-- The BUG requires a REQ change (`req_change_required`) — pause.
-- A proposed final no-repair disposition lacks evidence that product behavior and specification already agree.
-- A configured repair limit is reached — pause; never auto-close or downgrade.
-- The original finder is unavailable and no continuity replacement exists.
+
+Stop and surface the named route when:
+
+- the evidence cannot support a causal model;
+- a requirement or specification decision is needed;
+- a Finding remains unexplained;
+- the proposed repair only hides a symptom or changes the source contract without authorization;
+- a stale revision, integrity failure, or missing authority cannot be recovered through the rules above.
+
+## Exit Conditions
+
+- Every source Finding is covered by an InvestigationCase disposition without rewriting the immutable observation.
+- A Case routed to `s9_repair` has an approved RepairContract with a causal model, bounded blast radius, detection-gap assertion, symptom assertions, and exact source Finding coverage.
+- A Case routed elsewhere records one route, its reason, the next owner, and the evidence needed to resume.
+- S9 receives the approved RepairContract hash; it does not receive an open-ended BUG report or rediscover the root cause.
 
 ## Non-Goals
-- Do not assign repair before the BUG is `accepted`.
-- Do not count targeted re-verification as a clean round.
-- Do not let the repair Builder change the BUG Closing Contract or source specification.
-- Do not restore invalidated PASS evidence — invalid evidence is immutable.
 
-## Inlined Methodology
-
-The BUG lifecycle is one ordered chain: finding -> S8 root-cause investigation -> S8 canonical BUG review -> S9 repair read-back and activation -> S9 fix -> impact analysis and evidence invalidation -> original-finding-responsibility targeted re-verification -> BUG close -> `ready_for_full_review` handoff -> new complete Delivery + QA + E2E Browser round -> clean-round evaluation. An insufficient report returns to investigation; a final no-product-change rejection and a duplicate whose canonical BUG has no remaining repair may use the single no-repair exit, while specification and REQ changes use their own exits. Group findings into canonical BUGs only when `same user-visible contradiction AND same root cause AND compatible Closing Contract`; never merge solely because they touch the same file. Evidence states are `valid`, `invalid`, `superseded`; invalid evidence is never revived and replacement evidence gets a new ID. Change classification distinguishes ten types (requirement, design, contract, task, implementation, test, configuration, database, dependency, documentation_only); documentation_only is valid only when impact analysis proves no normative clause, executable instruction, fingerprinted activation input, or evidence meaning changed. Conservative escalation expands impact when traceability links are absent, trust boundaries are crossed, browser/runtime evidence contradicts unit-level evidence, or test/evidence provenance is unknown. Targeted re-verification is performed by the original finding responsibility and may close a BUG but never creates a clean round. ACC and release architecture audit reference the clean-round record by ID and hash; later changes do not rewrite the record.
+- Do not create a rich BUG before the Case and RepairContract exist.
+- Do not use a BUG as the source of truth for grouping, root cause, approval, or repair scope.
+- Do not default to E2E reproduction when S7 encounter/raw evidence is available.
+- Do not let S8 repair product code or let S9 reinterpret the causal model.
+- Do not count targeted re-verification as a new clean S7 round.

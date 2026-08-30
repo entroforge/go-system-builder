@@ -140,3 +140,50 @@ func TestComputeImpactDifferentBaselineGenerationNotAffectedByREQChange(t *testi
 		t.Fatalf("expected 0 impacted entries for different generation, got %d", len(impacts))
 	}
 }
+
+// TestComputeImpactUnscopedEvidenceInvalidatedByUnrelatedPath is the RC-09
+// (S9-3) negative case: under the old semantics an evidence entry with no
+// scope_refs could never match any rule and therefore stayed "valid" no
+// matter what changed. Fail closed — an unscoped entry is full-surface
+// sensitive and ANY changed path invalidates it with rule=unscoped_evidence.
+func TestComputeImpactUnscopedEvidenceInvalidatedByUnrelatedPath(t *testing.T) {
+	state := stateWith(validEvidence("ev-unscoped"))
+	impacts := impact.ComputeImpact(state, []string{"internal/some/unrelated.go"})
+	if len(impacts) != 1 {
+		t.Fatalf("unscoped evidence must be invalidated by an unrelated path change, got %d impacts", len(impacts))
+	}
+	if impacts[0].EvidenceID != "ev-unscoped" {
+		t.Fatalf("expected ev-unscoped, got %s", impacts[0].EvidenceID)
+	}
+	if impacts[0].Rule != "unscoped_evidence" {
+		t.Fatalf("expected rule unscoped_evidence, got %s", impacts[0].Rule)
+	}
+	if impacts[0].AlreadyInvalid {
+		t.Fatal("unscoped evidence must be newly affected, not already invalid")
+	}
+}
+
+// TestComputeImpactUnscopedEvidenceInvalidatedOnAnyPath pins the "any path"
+// part of the S9-3 fail-closed contract across the path families the scoped
+// rules used to gate on.
+func TestComputeImpactUnscopedEvidenceInvalidatedOnAnyPath(t *testing.T) {
+	for _, path := range []string{
+		"docs/contracts/CONTRACTS-002.md",
+		"docs/tasks/TASK-012.md",
+		"docs/reports/bugs/BUG-001.md",
+		"cmd/harness/main.go",
+	} {
+		state := stateWith(validEvidence("ev-unscoped"))
+		impacts := impact.ComputeImpact(state, []string{path})
+		if len(impacts) != 1 || impacts[0].Rule != "unscoped_evidence" {
+			t.Errorf("path %s: expected unscoped_evidence impact, got %#v", path, impacts)
+		}
+	}
+	// REQ changes remain their own, strictly wider rule: they invalidate the
+	// whole baseline generation regardless of scope.
+	state := stateWith(validEvidence("ev-unscoped"))
+	impacts := impact.ComputeImpact(state, []string{"docs/requirements/REQ-002.md"})
+	if len(impacts) != 1 || impacts[0].Rule != "req_baseline_change" {
+		t.Errorf("REQ path: expected req_baseline_change impact, got %#v", impacts)
+	}
+}

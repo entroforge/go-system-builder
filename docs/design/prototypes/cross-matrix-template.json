@@ -1,0 +1,19 @@
+{
+  "module": "example-module",
+  "entries": [
+    {
+      "fact": "FACT-EXAMPLE",
+      "req_ref": "REQ-<id>/FR-<id>",
+      "story": "S-001",
+      "branch": "branch-<id>",
+      "no_branch_reason": null
+    },
+    {
+      "fact": "FACT-EXAMPLE",
+      "req_ref": "REQ-<id>/FR-<id>",
+      "story": "S-002",
+      "branch": null,
+      "no_branch_reason": "故事 S-002 的该事实组合由既有全局规则覆盖，本需求不引入新分支"
+    }
+  ]
+}

@@ -81,15 +81,15 @@ func TestRegistryLookupReturnsDefensiveCopy(t *testing.T) {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 
-	first, ok := registry.Lookup("GATE-VERIFY-QA-PASS")
+	first, ok := registry.Lookup("GATE-VERIFY-CLEAN-ROUND-PASSED")
 	if !ok {
-		t.Fatal("QA gate is not registered")
+		t.Fatal("clean-round gate is not registered")
 	}
 	first.EvidenceRequirements[0].Responsibilities[0] = "mutated"
 	first.EvidenceRequirements[0].Conclusions[0] = "mutated"
 
-	second, _ := registry.Lookup("GATE-VERIFY-QA-PASS")
-	if second.EvidenceRequirements[0].Responsibilities[0] != "QA" {
+	second, _ := registry.Lookup("GATE-VERIFY-CLEAN-ROUND-PASSED")
+	if second.EvidenceRequirements[0].Responsibilities[0] != "Clean Round Evaluator" {
 		t.Fatalf("registry responsibility was mutated: %#v", second.EvidenceRequirements[0])
 	}
 	if second.EvidenceRequirements[0].Conclusions[0] != "pass" {

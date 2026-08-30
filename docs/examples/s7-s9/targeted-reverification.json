@@ -1,0 +1,26 @@
+{
+  "reverification_id": "reverify-example",
+  "runtime_id": "loop-REQ-003",
+  "case_id": "investigation-case-example",
+  "baseline_generation": 4,
+  "original_assignment_id": "repair-assignment-unit-1",
+  "performing_assignment_id": "assignment-qa-independent-1",
+  "continuity_reason": "test://reverify-log: independent verification of the approved root and detection-gap assertions after repair",
+  "impact_id": "impact-example",
+  "assertion_results": [
+    {
+      "assertion_id": "root-1",
+      "result": "pass",
+      "evidence_refs": ["runtime:reverify-example-root"]
+    },
+    {
+      "assertion_id": "gap-1",
+      "result": "pass",
+      "evidence_refs": ["runtime:reverify-example-gap"]
+    }
+  ],
+  "scope_compliance": "pass",
+  "result": "pass",
+  "failure_class": "",
+  "performed_at": "2026-08-26T11:30:00Z"
+}

@@ -1,14 +1,11 @@
 package runtime
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/change"
-	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
 // ChangeRequest creates the one active Change Record carried by a Runtime.
@@ -18,6 +15,7 @@ type ChangeRequest struct {
 	ExpectedRevision int
 	Record           change.Record
 	OccurredAt       time.Time
+	Validator        CandidateValidator
 }
 
 func CreateChange(root, statePath, journalPath string, request ChangeRequest) (Snapshot, error) {
@@ -27,14 +25,12 @@ func CreateChange(root, statePath, journalPath string, request ChangeRequest) (S
 	if err := change.Validate(request.Record); err != nil {
 		return Snapshot{}, err
 	}
-	data, err := os.ReadFile(statePath)
+	store := NewWriter(statePath, journalPath, root, request.Validator)
+	snapshot, err := store.Snapshot()
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
 	}
-	var current map[string]any
-	if err := json.Unmarshal(data, &current); err != nil {
-		return Snapshot{}, fmt.Errorf("decode runtime: %w", err)
-	}
+	current := snapshot.State
 	if existing, ok := current["change"]; ok && existing != nil {
 		return Snapshot{}, fmt.Errorf("runtime already has an active Change Record")
 	}
@@ -53,14 +49,6 @@ func CreateChange(root, statePath, journalPath string, request ChangeRequest) (S
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
-	}
-	store := NewStore(statePath, journalPath)
-	store.PreCommitValidator = func(state map[string]any) error {
-		encoded, err := json.Marshal(state)
-		if err != nil {
-			return fmt.Errorf("encode post-change runtime: %w", err)
-		}
-		return schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", encoded)
 	}
 	return store.Update(request.ExpectedRevision, Mutation{
 		EventID:        fmt.Sprintf("evt-change-%s-r%d", request.Record.ID, request.ExpectedRevision+1),

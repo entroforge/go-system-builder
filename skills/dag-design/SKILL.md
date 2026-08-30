@@ -2,13 +2,13 @@
 name: dag-design
 description: Use when directed acyclic graphs, dependency ordering, workflow execution, topological scheduling, or cycle handling change
 category: best-practice
-version: 0.3.0
+version: 0.3.1
 ---
 # DAG Design
 ## Authority
 Quality guidance only. Legal Loop transitions remain in `docs/loop-definition.json`; stage routing remains in `docs/agent-protocol.md`.
 ## Applicability
-Apply to dependency graphs, build graphs, workflow scheduling, task ordering, graph persistence, or cycle validation.
+Apply to dependency graphs, build graphs, workflow scheduling, task ordering, graph persistence, or cycle validation. TASK-batch cycle detection is machine-owned (`loop-harness tasks check` at TR-002); load this skill for design-time methodology, not for checking the TASK batch.
 ## Required Inputs
 Read node and edge semantics, ownership, ordering guarantees, failure policy, persistence model, and scale constraints.
 ## Quality Criteria

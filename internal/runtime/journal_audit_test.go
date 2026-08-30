@@ -17,7 +17,7 @@ func TestJournalEventContainsSYNC039AuditFields(t *testing.T) {
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	writeState(t, statePath, 1)
 
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 	_, err := store.Update(1, runtime.Mutation{
 		EventID:                "evt-audit-2",
 		TransitionID:           "PTR-PLAN-01",

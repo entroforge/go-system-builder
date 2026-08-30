@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/review-investigation-case.schema.json",
+  "title": "S8 InvestigationCase",
+  "description": "The minimum S8 intake dossier. Intake preserves the sealed Finding exact set and leaves causal, routing, and RepairContract fields empty until investigation proves them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "revision",
+    "status",
+    "source_finding_ids",
+    "observation_batch_id",
+    "observation_batch_ref",
+    "observation_batch_sha256",
+    "baseline_generation",
+    "baseline_digest",
+    "grouping_rationale",
+    "unexplained_finding_ids",
+    "failure_boundary_refs",
+    "cross_layer_trace",
+    "evidence_gaps",
+    "hypotheses",
+    "hypothesis_results",
+    "causal_model",
+    "primary_root_cause",
+    "blast_radius",
+    "detection_gap",
+    "route",
+    "route_reason",
+    "repair_contract_ref"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"type": "string", "pattern": "^investigation-case-[A-Za-z0-9._-]+$"},
+    "revision": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["investigating", "contract_review", "contract_approved", "routed", "blocked", "closed"]},
+    "source_finding_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "observation_batch_id": {"type": "string", "minLength": 1},
+    "observation_batch_ref": {"type": "string", "minLength": 1},
+    "observation_batch_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "baseline_generation": {"type": "integer", "minimum": 0},
+    "baseline_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "grouping_rationale": {"type": "string", "minLength": 1},
+    "unexplained_finding_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "failure_boundary_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "cross_layer_trace": {"type": ["object", "null"]},
+    "evidence_gaps": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "hypotheses": {"type": "array", "items": {"$ref": "#/$defs/hypothesis"}},
+    "hypothesis_results": {"type": "array", "items": {"$ref": "#/$defs/hypothesis_result"}},
+    "causal_model": {"type": ["object", "null"]},
+    "primary_root_cause": {"type": ["string", "null"]},
+    "blast_radius": {"type": ["object", "null"]},
+    "detection_gap": {"type": ["object", "null"]},
+    "route": {
+      "type": ["string", "null"],
+      "enum": ["s9_repair", "s2_spec_rework", "human_req_change", "s7_no_change", "investigate_more", "duplicate", null]
+    },
+    "route_reason": {"type": ["string", "null"]},
+    "no_competing_hypothesis": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Explicit declaration that no competing hypothesis was credible enough to warrant a discriminator; substitutes for the refuted-hypothesis result in causal closure (S8-4)."
+    },
+    "repair_contract_ref": {"type": ["string", "null"]},
+    "repair_contract_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "causal_reassessment_refs": {
+      "type": "array",
+      "description": "Content-addressed S9 targeted-reverification or equivalent evidence that reopens an approved causal model for S8 reassessment.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      },
+      "uniqueItems": true
+    },
+    "canonical_case_id": {"type": ["string", "null"], "minLength": 1},
+    "canonical_case_ref": {"type": ["string", "null"], "minLength": 1},
+    "canonical_case_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "route_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "reason", "case_revision", "hypothesis_count", "hypothesis_result_count", "occurred_at"],
+        "properties": {
+          "from": {"type": ["string", "null"]},
+          "to": {"enum": ["s9_repair", "s2_spec_rework", "human_req_change", "s7_no_change", "investigate_more", "duplicate"]},
+          "reason": {"type": "string", "minLength": 1},
+          "case_revision": {"type": "integer", "minimum": 1},
+          "hypothesis_count": {"type": "integer", "minimum": 0},
+          "hypothesis_result_count": {"type": "integer", "minimum": 0},
+          "evidence_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "occurred_at": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "revision_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["revision", "path", "sha256", "operation", "occurred_at"],
+        "properties": {
+          "revision": {"type": "integer", "minimum": 1},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "operation": {"type": "string", "minLength": 1},
+          "occurred_at": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hypothesis_id", "assignment_id", "statement", "invariant", "discriminator", "expected_outcomes", "source_finding_ids", "evidence_refs", "status"],
+      "properties": {
+        "hypothesis_id": {"type": "string", "minLength": 1},
+        "assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
+        "statement": {"type": "string", "minLength": 1},
+        "invariant": {"type": "string", "minLength": 1},
+        "discriminator": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "expected_outcomes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["support", "refute"],
+          "properties": {
+            "support": {"type": "string", "minLength": 1},
+            "refute": {"type": "string", "minLength": 1}
+          }
+        },
+        "source_finding_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "status": {"enum": ["open", "supported", "refuted", "inconclusive"]}
+      }
+    },
+    "hypothesis_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hypothesis_id", "assignment_id", "method", "evidence_refs", "source_boundary_refs", "observed", "counterfactual_or_discriminator", "result", "explains_finding_ids", "does_not_explain"],
+      "properties": {
+        "hypothesis_id": {"type": "string", "minLength": 1},
+        "assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
+        "method": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "source_boundary_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "observed": {"type": "string", "minLength": 1},
+        "counterfactual_or_discriminator": {"type": "string", "minLength": 1},
+        "result": {"enum": ["supported", "refuted", "inconclusive"]},
+        "explains_finding_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "does_not_explain": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  }
+}

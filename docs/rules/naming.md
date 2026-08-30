@@ -23,10 +23,14 @@ Names must make traceability obvious.
 | UI design package directory | `docs/design/prototypes/{module}/` | `docs/design/prototypes/fund/` |
 | UI prototype HTML | `<feature>.html` (one per page/dialog/wizard) | `fund-list.html`, `wizard.html` |
 | UI module entry hub | `index.html` (card-grid linking to every page HTML file) | `docs/design/prototypes/fund/index.html` |
-| UI stories (per-module file) | `stories.md` (one per module; S-NNN entries each carry REQ-id) | `docs/design/prototypes/investor/stories.md` |
-| UI flows (per-module file) | `flows.md` (one per module; F-NNN entries each carry REQ-id + PATH-* steps) | `docs/design/prototypes/investor/flows.md` |
-| UI user story template | `USER-STORY-{REQ-NNN}-{module}.md` (canonical format reference; output lives in `stories.md`) | `USER-STORY-REQ-001-user-list.md` |
-| UI user flow template | `USER-FLOW-{REQ-NNN}-{module}.md` (canonical format reference; output lives in `flows.md`) | `USER-FLOW-REQ-001-user-list.md` |
+| UI stories (per-module current truth) | `stories.md` (one complete module set; source REQs appear only in `source_refs`) | `docs/design/prototypes/investor/stories.md` |
+| UI flows (per-module current truth) | `flows.md` (one complete module set; `F-NNN` + `PATH-*` steps) | `docs/design/prototypes/investor/flows.md` |
+| Scenario model | `scenario-model.json` (module rules and branch witnesses) | `docs/design/prototypes/investor/scenario-model.json` |
+| Generated cases | `cases.json` (current generated output) | `docs/design/prototypes/investor/cases.json` |
+| Scenario coverage | `scenario-coverage.json` (current generated output) | `docs/design/prototypes/investor/scenario-coverage.json` |
+| Fixture contract | `fixture-contract.json` (synthetic setup and cleanup) | `docs/design/prototypes/investor/fixture-contract.json` |
+| UI user story template | `USER-STORY-template.md` (canonical structure; output lives in module `stories.md`) | `docs/design/prototypes/USER-STORY-template.md` |
+| UI user flow template | `USER-FLOW-template.md` (canonical structure; output lives in module `flows.md`) | `docs/design/prototypes/USER-FLOW-template.md` |
 | contract overview | `CONTRACTS-{NNN}.md` | `CONTRACTS-001.md` |
 | frontend contract | `FE-{NNN}.md` | `FE-001.md` |
 | backend contract | `BE-{NNN}.md` | `BE-001.md` |
@@ -66,3 +70,4 @@ Names must make traceability obvious.
 - API field rename without contract approval
 - default values that hide unknown business identity
 - legacy `proto/` paths for the UI design package directory; the canonical name is `prototypes/` (per `docs/rules/ui-prototype.md` §4). Existing `proto/` paths must be migrated before the next UI-impacting REQ locks
+- per-REQ, per-round, `v1/v2`, addendum, or generation copies of module stories, flows, cases, prototypes, fixtures, or Playwright specs

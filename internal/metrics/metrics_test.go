@@ -63,7 +63,7 @@ func TestRecordCASConflictIncrementsTotal(t *testing.T) {
 
 func TestRecordMilestoneRefreshFailureIncrementsTotal(t *testing.T) {
 	root := t.TempDir()
-	if err := metrics.RecordMilestoneRefreshFailure(root); err != nil {
+	if err := metrics.RecordMilestoneRefreshFailure(root, "stale_revision"); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := metrics.NewStore(root).Read()
@@ -72,6 +72,9 @@ func TestRecordMilestoneRefreshFailureIncrementsTotal(t *testing.T) {
 	}
 	if snap.MilestoneRefreshFailures != 1 {
 		t.Fatalf("milestone refresh failures=%d want 1", snap.MilestoneRefreshFailures)
+	}
+	if snap.MilestoneRefreshFailureReasons["stale_revision"] != 1 {
+		t.Fatalf("stale_revision failures=%d want 1", snap.MilestoneRefreshFailureReasons["stale_revision"])
 	}
 }
 
@@ -166,7 +169,7 @@ func TestFormatDoctorIncludesAllMetricFamilies(t *testing.T) {
 	_ = metrics.RecordGateEvaluation(root, "advanced")
 	_ = metrics.RecordTransitionCommit(root, "T-1")
 	_ = metrics.RecordCASConflict(root)
-	_ = metrics.RecordMilestoneRefreshFailure(root)
+	_ = metrics.RecordMilestoneRefreshFailure(root, "write_or_integrity")
 	_ = metrics.RecordRecoveryPacket(root)
 	_ = metrics.RecordIntegrationDuration(root, "success", 10)
 
@@ -188,18 +191,120 @@ func TestFormatDoctorIncludesAllMetricFamilies(t *testing.T) {
 	}
 }
 
+func TestFormatHealthDistinguishesHistoricalRuntimeSignals(t *testing.T) {
+	root := t.TempDir()
+	if out, err := metrics.FormatHealth(root); err != nil || !strings.Contains(out, "runtime health: healthy") {
+		t.Fatalf("empty metrics should be healthy, out=%q err=%v", out, err)
+	}
+	if err := metrics.RecordCASConflict(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := metrics.RecordGateEvaluation(root, "unknown"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := metrics.FormatHealth(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"runtime health: degraded",
+		"historical runtime signals",
+		"loop_cas_conflicts_total=1",
+		"loop_gate_evaluations_total{status=\"unknown\"} 1",
+		"next: inspect runtime state/journal with `loop-harness runtime reconcile`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("health output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestProcessCountersMirrorLegacySemantics(t *testing.T) {
 	root := t.TempDir()
+	gateBefore := metrics.ProcessGateEvaluations()
+	transitionBefore := metrics.ProcessTransitionCommits()
+	casBefore := metrics.ProcessCASConflicts()
 	metrics.RecordGateEvaluationProcess(root, "satisfied")
 	metrics.RecordTransitionCommitProcess(root, "T-1")
 	metrics.RecordCASConflictProcess(root)
-	if metrics.ProcessGateEvaluations() != 1 {
-		t.Fatalf("process gate=%d want 1", metrics.ProcessGateEvaluations())
+	if got := metrics.ProcessGateEvaluations() - gateBefore; got != 1 {
+		t.Fatalf("process gate delta=%d want 1", got)
 	}
-	if metrics.ProcessTransitionCommits() != 1 {
-		t.Fatalf("process transition=%d want 1", metrics.ProcessTransitionCommits())
+	if got := metrics.ProcessTransitionCommits() - transitionBefore; got != 1 {
+		t.Fatalf("process transition delta=%d want 1", got)
 	}
-	if metrics.ProcessCASConflicts() != 1 {
-		t.Fatalf("process cas=%d want 1", metrics.ProcessCASConflicts())
+	if got := metrics.ProcessCASConflicts() - casBefore; got != 1 {
+		t.Fatalf("process cas delta=%d want 1", got)
+	}
+}
+
+// TestPruneDeadFamiliesRemovesLegacyRoundLabels exercises the RC-17 family
+// hygiene pass: a round-keyed S7 map carrying a label the round vocabulary
+// cannot parse (legacy or corrupt writer) must not survive another mutation,
+// because retainS7Rounds skips it when computing retention and FormatS7 can
+// never render it — it would be dead weight in every future snapshot.
+func TestPruneDeadFamiliesRemovesLegacyRoundLabels(t *testing.T) {
+	root := t.TempDir()
+	// Record a live round so the store exists with wired data.
+	if err := metrics.RecordS7RoundShape(root, 2, 3, 4, 5); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the on-disk snapshot with a legacy unparseable round label.
+	path := filepath.Join(root, metrics.DefaultRelativePath)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Add a legacy unparseable round label alongside the live one (do not
+	// remove the live entry — the prune must delete only the dead label).
+	patched := strings.Replace(string(raw), `"2": 5`, `"2": 5,
+		"round-legacy": 9`, 1)
+	if patched == string(raw) {
+		t.Fatalf("expected to patch the S7PlanRevision entry in:\n%s", raw)
+	}
+	if err := os.WriteFile(path, []byte(patched), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Any later mutation must prune the dead label.
+	if err := metrics.RecordS7RoundShape(root, 3, 1, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := metrics.NewStore(root).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, legacy := snap.S7PlanRevision["round-legacy"]; legacy {
+		t.Fatalf("legacy round label survived prune: %v", snap.S7PlanRevision)
+	}
+	if snap.S7PlanRevision["2"] != 5 {
+		t.Fatalf("live round 2 entry lost in prune: %v", snap.S7PlanRevision)
+	}
+	if snap.S7PlanRevision["3"] != 1 {
+		t.Fatalf("live round 3 entry lost in prune: %v", snap.S7PlanRevision)
+	}
+}
+
+// TestTrackedFamilyBudget pins the RC-17 family budget: the durable snapshot
+// must track at most maxTrackedFamilies loop_* families. Growing the set
+// requires retiring a dead family in the same change (or extending the
+// maxTrackedFamilies comment with the new producer/consumer pair).
+func TestTrackedFamilyBudget(t *testing.T) {
+	// The field names of the persisted Snapshot are observable through the
+	// on-disk JSON; count loop_* keys in a snapshot that observed one round.
+	root := t.TempDir()
+	_ = metrics.RecordGateEvaluation(root, "satisfied")
+	_ = metrics.RecordS7RoundShape(root, 1, 1, 1, 1)
+	raw, err := os.ReadFile(filepath.Join(root, metrics.DefaultRelativePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	families := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, `"loop_`) {
+			families++
+		}
+	}
+	if families > 16 {
+		t.Fatalf("metrics snapshot tracks %d loop_* families, budget is 16:\n%s", families, raw)
 	}
 }

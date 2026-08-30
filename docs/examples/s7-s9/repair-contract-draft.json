@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0.0",
+  "repair_contract_id": "repair-contract-payload-boundary-1",
+  "case_id": "investigation-case-...",
+  "revision": 1,
+  "status": "draft",
+  "source_finding_ids": [
+    "finding-..."
+  ],
+  "root_cause_statement": "the client serializer and server decoder use different authorities for the same payload field",
+  "violated_invariant": "one authoritative payload contract is used by every producer and consumer",
+  "causal_model_ref": "case://investigation-case-.../causal-model",
+  "architecture_intent": "restore one shared payload authority and remove the stale duplicate mapping",
+  "repair_units": [
+    {
+      "id": "repair-unit-contract-boundary",
+      "description": "align the client and server with the shared payload contract and add a cross-boundary regression test",
+      "scope": [
+        "src/client/form.ts",
+        "src/server/decoder.go",
+        "tests/contract/payload_boundary_test.go"
+      ],
+      "assertion_ids": [
+        "symptom-1",
+        "root-1",
+        "gap-1"
+      ],
+      "depends_on": [],
+      "resource_locks": [
+        "payload-contract"
+      ]
+    }
+  ],
+  "prospective_scope": [
+    "src/client/form.ts",
+    "src/server/decoder.go",
+    "tests/contract/payload_boundary_test.go"
+  ],
+  "forbidden_scope": [
+    "unrelated response contracts",
+    "locked requirements"
+  ],
+  "compatibility_migration": "preserve the accepted legacy input only at the declared boundary, then emit the canonical shape",
+  "symptom_assertions": [
+    "the submitted field is rendered and remains present after reload"
+  ],
+  "root_invariant_assertions": [
+    "client serialization and server decoding resolve the field from the same contract authority"
+  ],
+  "detection_gap_assertions": [
+    "the cross-boundary contract test fails if either side returns to the stale field shape"
+  ],
+  "regression_surfaces": [
+    "form submission",
+    "response rendering",
+    "reload persistence"
+  ],
+  "stop_escalation_conditions": [
+    "the requested compatibility behavior contradicts the locked requirement",
+    "the actual diff leaves the approved prospective scope"
+  ],
+  "approved_by": null,
+  "approved_at": null,
+  "approval_hash": null
+}

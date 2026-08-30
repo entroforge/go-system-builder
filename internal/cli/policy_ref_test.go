@@ -12,6 +12,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/controller"
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
 // policyRefFixturePolicy mirrors docs/hook-policy.json after the REQ-039
@@ -32,18 +33,29 @@ func writePolicyRefFixture(t *testing.T, recordedVersion, recordedSHA string) (r
 	if err := os.WriteFile(policyPath, []byte(policyRefFixturePolicy), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	state := map[string]any{
-		"runtime_id": "loop-test",
-		"revision":   32,
-		"hook_control": map[string]any{
-			"mode":   "enforce",
-			"health": "healthy",
-			"policy_ref": map[string]any{
-				"path":    "docs/hook-policy.json",
-				"version": recordedVersion,
-				"sha256":  recordedSHA,
-			},
-		},
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), definition, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateData, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{}
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["runtime_id"] = "loop-test"
+	state["revision"] = 32
+	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
+	hookControl := state["hook_control"].(map[string]any)
+	hookControl["policy_ref"] = map[string]any{
+		"path":    "docs/hook-policy.json",
+		"version": recordedVersion,
+		"sha256":  recordedSHA,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -55,6 +67,9 @@ func writePolicyRefFixture(t *testing.T, recordedVersion, recordedSHA string) (r
 	}
 	statePath = filepath.Join(claudeDir, "loop-state.json")
 	if err := os.WriteFile(statePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "loop-events.jsonl"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root, statePath

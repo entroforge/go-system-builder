@@ -44,7 +44,7 @@ func ValidateTemplates(root string) error {
 		{
 			path: "prelude.md",
 			required: []string{
-				"loop-orchestration", "team-planning", "two-phase-activation",
+				"loop-orchestration", "team-planning", "agent-dispatch",
 				"bug-resolution", "clean-round-evaluation",
 			},
 			forbidden: []string{"## 3. Core Gates"},
@@ -67,7 +67,8 @@ func ValidateTemplates(root string) error {
 		{
 			path: "docs/tasks/TASK-template.md",
 			required: []string{
-				"Team manifest:", "Assignment ID:", "Document Manifest", "SHA-256",
+				"Team manifest:", "Assignment ID:", "Document Manifest",
+				"Delivered Clauses", "Module Impact",
 				"Selected Skills", "Lifecycle Evidence", "Closing Contract",
 			},
 			forbidden: []string{
@@ -76,19 +77,36 @@ func ValidateTemplates(root string) error {
 			},
 		},
 		{
-			path:     "docs/reports/review/REV-template.md",
-			required: []string{"Review round:", "Workgroup manifest:", "Responsibility:", "Evidence Validity"},
+			path: "docs/reports/review/REV-template.md",
+			required: []string{
+				// v4.2 findings-only design: the §0 envelope skeleton is the
+				// mandatory artifact; the markdown report is findings-only.
+				"document_review", "subject_refs", "conclusion",
+				"requested_event", "Findings",
+			},
 		},
 		{
-			path:      "docs/reports/qa/QA-template.md",
-			required:  []string{"Review round:", "Workgroup manifest:", "Responsibility:", "Best Practice:"},
-			forbidden: []string{"每个 QA Agent 只能承担一个单一职责维度"},
+			path:     "docs/reports/qa/QA-template.md",
+			required: []string{"Review round:", "Workgroup manifest:", "Responsibility:", "Best Practice:"},
+			forbidden: []string{
+				"每个 QA Agent 只能承担一个单一职责维度",
+			},
+		},
+		{
+			path: "docs/reports/e2e/E2E-template.md",
+			required: []string{
+				// The E2E projection must keep the seven-field negative-CASE
+				// accounting and the cold-start digest binding discoverable.
+				"Real-Browser Flow Execution", "`persisted_effects`", "`recovery`",
+				"s7 workspace-digest", "capture_gaps",
+			},
 		},
 		{
 			path: "docs/reports/bugs/BUG-template.md",
 			required: []string{
-				"Canonical BUG", "Root Cause Investigation", "impact analysis",
-				"targeted original-responsibility re-check", "complete review round",
+				"Canonical BUG", "InvestigationCase", "RepairContract",
+				"## 2. Root Cause and Causal Model", "## 3. Approved Repair Contract Projection",
+				"Targeted source-Finding verification", "complete S7 round",
 			},
 		},
 		{
@@ -131,14 +149,19 @@ func ValidateTemplates(root string) error {
 	}
 	for _, value := range []string{
 		`"PreToolUse"`, `"SubagentStart"`, `"SubagentStop"`,
-		`"TeammateIdle"`, `"SessionStart"`, `"PreCompact"`,
+		`"TeammateIdle"`, `"Stop"`, `"SessionStart"`, `"PreCompact"`, `"PostToolUse"`,
+		`"PostToolUseFailure"`, `"ConfigChange"`,
 		`.claude/bin/loop-harness hook --event`,
 	} {
 		if !strings.Contains(string(settingsData), value) {
 			return fmt.Errorf("%s: missing migrated field or route %q", settingsLabel, value)
 		}
 	}
-	for _, removed := range []string{`"PostToolUse"`, `"PermissionRequest"`, `"TaskCompleted"`, `"ConfigChange"`} {
+	// PostToolUse and PostToolUseFailure are live observation events. ConfigChange
+	// is also an audit-only observer; it cannot veto policy_settings changes.
+	// PermissionRequest and TaskCompleted stay retired until their separate
+	// human-gateway / stop-channel designs are approved.
+	for _, removed := range []string{`"PermissionRequest"`, `"TaskCompleted"`} {
 		if strings.Contains(string(settingsData), removed) {
 			return fmt.Errorf("%s: obsolete Hook event %s", settingsLabel, removed)
 		}

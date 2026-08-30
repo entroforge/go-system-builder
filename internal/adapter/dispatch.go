@@ -14,6 +14,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/evidence"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/transition"
 )
@@ -47,7 +48,7 @@ func DispatchRepairLimitExceeded(root, statePath, journalPath string, expectedRe
 		ExpectedRevision: expectedRevision,
 		Actor:            "hook",
 		Evidence: map[string]string{
-			"pause_record":     "runtime:pause-checkpoint",
+			"pause_record":     evidence.DefaultCatalog().GeneratorReference("pause_record"),
 			"bug_batch_record": "runtime:bug:" + rle.BugID,
 		},
 		Params:     map[string]any{"bug_id": rle.BugID, "attempts": rle.Attempts, "max": rle.Max},

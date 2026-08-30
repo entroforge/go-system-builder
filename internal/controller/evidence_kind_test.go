@@ -3,6 +3,7 @@ package controller
 import (
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/transition"
@@ -14,7 +15,8 @@ func TestEvidenceKindCompatibleRequirementEnvelopeAliases(t *testing.T) {
 		want             bool
 	}{
 		{"finding_record", "bug", true},
-		{"finding_record", "finding", false},
+		{"finding_record", "finding", true}, // L3-S7: immutable Finding kind
+
 		{"finding_record", "bug_batch_record", false},
 		{"root_cause_record", "bug", true},
 		{"root_cause_record", "root_cause", false},
@@ -43,6 +45,26 @@ func TestEvidenceKindCompatibleRequirementEnvelopeAliases(t *testing.T) {
 		if got := evidenceKindCompatible(tc.required, tc.actual); got != tc.want {
 			t.Errorf("evidenceKindCompatible(%q, %q) = %v, want %v", tc.required, tc.actual, got, tc.want)
 		}
+	}
+}
+
+func TestEvidenceKindPreferenceFollowsCatalogAndFailsClosed(t *testing.T) {
+	catalog := evidence.DefaultCatalog()
+
+	for _, actual := range []string{"team_manifest", "team_manifest_record", "builder_report", "document_review", "unknown_kind"} {
+		want := catalog.IsPreferred("team_manifest_record", actual)
+		if got := evidenceKindPreferred("team_manifest_record", actual); got != want {
+			t.Fatalf("preference(%q) = %v, want catalog result %v", actual, got, want)
+		}
+	}
+}
+
+func TestBuildTransitionEvidenceUsesCatalogGeneratedReference(t *testing.T) {
+	got := buildTransitionEvidence(runtime.Snapshot{}, &transition.TransitionSpec{
+		RequiredEvidence: []string{"pause_record"},
+	}, qualitygate.Evaluation{})
+	if got["pause_record"] != "generated:pause_checkpoint" {
+		t.Fatalf("pause_record generated reference = %q, want catalog reference", got["pause_record"])
 	}
 }
 

@@ -70,8 +70,10 @@ func TestCT03912_BuilderCompleteCommitsTR006NoManualCLI(t *testing.T) {
 	}
 	after := req039fixtures.ReadState(t, root)
 	lc, ph := req039fixtures.Lifecycle(after)
-	if lc != "verification" || ph != "delivery" {
-		t.Fatalf("CT-039-12 TR-006 must land verification.delivery, got %q/%q", lc, ph)
+	// L3-S7: TR-006 opens the round at verification.planned; the ReviewPlan
+	// registration (runtime review-plan) moves it to running.
+	if lc != "verification" || ph != "planned" {
+		t.Fatalf("CT-039-12 TR-006 must land verification.planned, got %q/%q", lc, ph)
 	}
 }
 
@@ -94,10 +96,10 @@ func TestCT03910_ConflictDirtyPreservePins(t *testing.T) {
 // CT-039-13; the multi-step Delivery→QA→E2E→clean chain is exercised in
 // tests/system/req039/ct_verification_chain_test.go.
 func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
-	t.Run("delivery_cursor_surfaces_PTR-VERIFY-01", func(t *testing.T) {
+	t.Run("running_cursor_surfaces_round_gates", func(t *testing.T) {
 		root := req039fixtures.FreshRoot(t)
-		state := req039fixtures.BaseState(t, root, "verification", "delivery", 25)
-		req039fixtures.SeedVerificationDelivery(t, root, state)
+		state := req039fixtures.BaseState(t, root, "verification", "running", 25)
+		req039fixtures.SeedReviewPlanRound(t, root, state)
 		req039fixtures.WriteState(t, root, state)
 
 		result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
@@ -108,7 +110,7 @@ func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
 			t.Fatalf("control cycle: %v", err)
 		}
 		if result.Decision.Decision != "allow" {
-			t.Fatalf("CT-039-13 must allow tool at delivery cursor, got %q", result.Decision.Decision)
+			t.Fatalf("CT-039-13 must allow tool at the running cursor, got %q", result.Decision.Decision)
 		}
 		if result.QualityGate.GateID == "" && result.QualityGate.Status != controller.StatusUnknown {
 			t.Fatalf("CT-039-13 must surface a gate projection, got %+v", result.QualityGate)
@@ -118,25 +120,45 @@ func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
 
 // TestCT03914_EvidenceDrivenCorrectionPath pins CT-039-14 at the Hook
 // entry; the full finding→BUG→repair→full review chain is in system tests.
+// RC-04 (S8-1): bug_resolution.investigation freezes the product surface, so
+// the correction-path pin must use an allowed report surface, not a product
+// write. A product write in investigation is the hard deny the audit demands.
 func TestCT03914_EvidenceDrivenCorrectionPath(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "verification", "delivery", 30)
-	req039fixtures.SeedVerificationDelivery(t, root, state)
+	state := req039fixtures.BaseState(t, root, "bug_resolution", "investigation", 30)
+	req039fixtures.SeedBugReportsRejected(t, root, state)
+	state["lifecycle"] = map[string]any{"state": "bug_resolution", "phase": "investigation", "phase_revision": 0}
 	state["entities"] = map[string]any{
 		"agents": []any{}, "tasks": []any{}, "teams": []any{},
-		"bugs": []any{map[string]any{"id": "BUG-039-14", "state": "investigating"}},
+		"bugs": []any{map[string]any{"id": "BUG-039-14", "state": "investigating", "severity": "P0",
+			"path": "docs/reports/bugs/BUG-039-14.md", "attempt_count": 0,
+			"same_contract_failure_count": 0, "original_finder_agent_ids": []any{"qa-1"}}},
 	}
 	req039fixtures.WriteState(t, root, state)
 
+	// Allowed surface: investigation artifacts belong under .claude/ or
+	// docs/reports/ (L3-S8, RC-04 phase_write_path_allowed).
 	result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
 		Root: root, Event: "PreToolUse", ToolName: "Edit",
-		ToolInput: map[string]any{"file_path": "internal/controller/cycle.go"},
+		ToolInput: map[string]any{"file_path": "docs/reports/bugs/BUG-039-14.md"},
 	})
 	if err != nil {
 		t.Fatalf("control cycle: %v", err)
 	}
 	if result.Decision.Decision != "allow" {
 		t.Fatalf("CT-039-14 correction path must allow tools, got %q", result.Decision.Decision)
+	}
+
+	// Product surface remains frozen in investigation — the RC-04 hard deny.
+	productResult, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
+		Root: root, Event: "PreToolUse", ToolName: "Edit",
+		ToolInput: map[string]any{"file_path": "internal/controller/cycle.go"},
+	})
+	if err != nil {
+		t.Fatalf("control cycle: %v", err)
+	}
+	if productResult.Decision.Decision != "deny" {
+		t.Fatalf("CT-039-14 investigation must deny product writes, got %q", productResult.Decision.Decision)
 	}
 }
 
@@ -179,8 +201,8 @@ func TestCT03915_S11StopsAutoAdvance(t *testing.T) {
 // conflicting requested events → unknown + LOOP_TRIGGER_CONFLICT, allow, no transition.
 func TestCT03916_ConflictingEventsUnknownConflict(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "verification", "delivery", 32)
-	req039fixtures.SeedConflictingDeliveryEvents(t, root, state)
+	state := req039fixtures.BaseState(t, root, "verification", "running", 32)
+	req039fixtures.SeedConflictingPauseVerdicts(t, root, state)
 	req039fixtures.WriteState(t, root, state)
 
 	result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
@@ -374,15 +396,18 @@ func TestCT03920_BuilderCompletionDurableRef(t *testing.T) {
 	}
 }
 
-// TestCT03921_CleanRoundIncompleteReturnsDelivery covers CT-039-21:
-// clean round incomplete → PTR-VERIFY-05 back to delivery.
-func TestCT03921_CleanRoundIncompleteReturnsDelivery(t *testing.T) {
+// TestCT03921_OpenRoundDoesNotAdvance supersedes the legacy CT-039-21
+// (clean round incomplete → PTR-VERIFY-05). L3-S7 deleted the restart
+// transition: an open round with pending Claims advances nowhere — no TR-008,
+// no TR-009, and the hook packet names the missing claim results.
+func TestCT03921_OpenRoundDoesNotAdvance(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "verification", "clean_round_evaluation", 40)
-	req039fixtures.SeedCleanRoundIncomplete(t, root, state)
+	state := req039fixtures.BaseState(t, root, "verification", "running", 40)
+	req039fixtures.SeedReviewPlanRound(t, root, state)
 	req039fixtures.WriteState(t, root, state)
 
 	runner := &req039fixtures.CLIRunner{}
+	before := req039fixtures.ReadState(t, root)
 	body := req039fixtures.PreToolUseBody("session-ct-039-21", "Bash", map[string]any{"command": "go test ./..."})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)
 	if code != 0 {
@@ -391,13 +416,14 @@ func TestCT03921_CleanRoundIncompleteReturnsDelivery(t *testing.T) {
 	if runner.ManualTransitionCalls != 0 {
 		t.Fatalf("CT-039-21 must not use manual transition CLI")
 	}
-	if !strings.Contains(stdout, "PTR-VERIFY-05") {
-		t.Fatalf("CT-039-21 hook must commit/candidate PTR-VERIFY-05, stdout=%s", stdout)
+	if strings.Contains(stdout, "transition_committed\":true") || strings.Contains(stdout, `"transition_committed":true`) {
+		t.Fatalf("an open round must not commit any exit transition, stdout=%s", stdout)
 	}
 	after := req039fixtures.ReadState(t, root)
-	_, ph := req039fixtures.Lifecycle(after)
-	if ph != "delivery" {
-		t.Fatalf("CT-039-21 must return to verification.delivery, got phase=%q", ph)
+	lc, ph := req039fixtures.Lifecycle(after)
+	beforeLC, beforePh := req039fixtures.Lifecycle(before)
+	if lc != beforeLC || ph != beforePh {
+		t.Fatalf("open round must not move the cursor: %s/%s -> %s/%s", beforeLC, beforePh, lc, ph)
 	}
 }
 

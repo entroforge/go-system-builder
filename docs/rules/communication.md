@@ -31,7 +31,7 @@ from chat, self-activate, or broaden their assignment.
 Read-back, activation, completion, team planning, BUG handling, and clean-round
 procedures are owned by:
 
-- `.claude/skills/two-phase-activation/SKILL.md`
+- `.claude/skills/agent-dispatch/SKILL.md`
 - `.claude/skills/team-planning/SKILL.md`
 - `.claude/skills/bug-resolution/SKILL.md`
 - `.claude/skills/clean-round-evaluation/SKILL.md`

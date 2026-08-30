@@ -12,7 +12,10 @@ Apply to `behavior-change`, QA unit-test, and QA integration-test responsibiliti
 ## Required Inputs
 Read acceptance clauses, Closing Contract, changed paths, failure modes, and integration boundaries.
 ## Quality Criteria
-Map clauses to tests; cover branches, boundaries, errors, states, side effects, rollback, retries, regressions, and meaningful assertions. Verify tests fail for the intended defect.
+Map `source_refs → Rule → CASE → Story → PATH → Spec → Evidence`; cover every required
+allow/reject branch, boundaries, errors, states, side effects, rollback, retries,
+regressions, and meaningful assertions. Enforce the module positive/negative ratio and
+verify tests fail for the intended defect.
 ## Outputs
 Test plan, executable evidence, coverage gaps, or one scoped QA conclusion.
 ## N/A Criteria

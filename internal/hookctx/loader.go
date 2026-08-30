@@ -1,6 +1,7 @@
 package hookctx
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -39,6 +40,14 @@ type stateFile struct {
 		Document   any `json:"document_round,omitempty"`
 		Build      any `json:"build_round,omitempty"`
 		Verify     any `json:"verify_round,omitempty"`
+		// L3-S7: the registered ReviewPlan pointer carries the verification
+		// artifact workspace — the only product-adjacent write surface the
+		// reviewer hard-deny rule allows during the verification stage.
+		Plan *struct {
+			Status                        string `json:"status"`
+			VerificationArtifactWorkspace string `json:"verification_artifact_workspace"`
+		} `json:"plan"`
+		Repair map[string]any `json:"repair"`
 	} `json:"review"`
 	Pause *struct {
 		Reason string `json:"reason,omitempty"`
@@ -47,12 +56,17 @@ type stateFile struct {
 		Agents []struct {
 			ID                    string   `json:"id"`
 			State                 string   `json:"state"`
+			DispatchMode          string   `json:"dispatch_mode"`
+			PlanReportedRef       *string  `json:"plan_reported_ref"`
 			ActivationRef         *string  `json:"activation_ref"`
 			TaskIDs               []string `json:"task_ids"`
 			TeamID                *string  `json:"team_id"`
 			PromptRef             *string  `json:"prompt_ref"`
 			CompletionReportedRef *string  `json:"completion_reported_ref"`
 			CompletionAckRef      *string  `json:"completion_acknowledged_ref"`
+			// AssignmentID is not stored on the agent row; it is resolved
+			// below from the workgroup manifest. Kept out of this struct —
+			// the load path resolves it via loadAgentAssignmentID.
 		} `json:"agents"`
 		Bugs []struct {
 			ID       string `json:"id"`
@@ -121,8 +135,16 @@ type workgroupManifest struct {
 		AgentID            string   `json:"agent_id"`
 		AgentDefinitionRef string   `json:"agent_definition_ref"`
 		SkillRefs          []string `json:"skill_refs"`
-		WritePaths         []string `json:"write_paths"`
-		Status             string   `json:"status"`
+		// Scope is the manifest's declared write surface; WritePaths is the
+		// schema-required binding (L3-S6 write-scope audit reads the real
+		// diff against this). We accept both names so legacy manifests that
+		// only carried `scope` still feed the audit instead of silently
+		// declaring no scope.
+		Scope          []string `json:"scope"`
+		WritePaths     []string `json:"write_paths"`
+		RequiredChecks []string `json:"required_checks"`
+		DoneWhen       []string `json:"done_when"`
+		Status         string   `json:"status"`
 		// Worktree coordinates are optional extensions on the workgroup
 		// assignment row (BUG-039-37 / BUG-039-04 residual). When present
 		// the loader surfaces them; when absent they stay blank — never
@@ -163,7 +185,7 @@ func Load(root, agentID string) (policy.RuntimeContext, error) {
 //     LockedArtifacts derived from state.documents[] (BUG-039-04 §4.1).
 //   - Assignments: one AssignmentContext per active task in the current
 //     generation, with assignment_id/owner/worktree/branch/target_branch
-//     sourced from .claude/workgroups/REQ-039/<TASK>/manifest.json. Tasks
+//     sourced from .claude/workgroups/<REQ-ID>/<TASK>/manifest.json. Tasks
 //     with state ∈ {candidate, reviewed, locked} are surfaced as
 //     "structured-but-not-active" rows; tasks with state ∈
 //     {in_progress, review, done, blocked} participate in the active
@@ -201,6 +223,9 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 		Revision:    state.Revision,
 		ProjectRoot: root,
 	}
+	if state.Baseline != nil {
+		context.CurrentBaselineGeneration = state.Baseline.Generation
+	}
 	if state.BoundREQ != nil {
 		context.BoundREQPath = state.BoundREQ.Path
 		context.BoundREQUIImpact = state.BoundREQ.Metadata.UIImpact
@@ -215,6 +240,15 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 	if state.Review != nil {
 		context.CurrentReviewRound = state.Review.Round
 		context.CleanRound = state.Review.CleanRound
+		if state.Review.Plan != nil {
+			context.VerificationWorkspace = state.Review.Plan.VerificationArtifactWorkspace
+		}
+		if state.Review.Repair != nil {
+			context.RepairStatus, _ = state.Review.Repair["status"].(string)
+			context.RepairSessionID, _ = state.Review.Repair["session_id"].(string)
+			context.RepairPlanRef, _ = state.Review.Repair["plan_ref"].(string)
+			context.RepairPlanSHA256, _ = state.Review.Repair["plan_sha256"].(string)
+		}
 	}
 	for _, ev := range state.Evidence {
 		if ev.Status == "valid" {
@@ -273,7 +307,10 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			if doc.Status != "locked" && doc.Status != "active" {
 				continue
 			}
-			if doc.Generation != loaded.BaselineGeneration {
+			// REQ baselines are immutable history: every locked generation
+			// stays write-protected, not only the current baseline's entry
+			// (after an amend the superseded REQ must remain locked).
+			if doc.Kind != "req" && doc.Generation != loaded.BaselineGeneration {
 				continue
 			}
 			if doc.ID == "" || doc.Kind == "" || doc.Path == "" ||
@@ -284,23 +321,7 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			docs = append(docs, doc)
 		}
 	}
-	if len(docs) > 0 {
-		sort.Slice(docs, func(i, j int) bool {
-			return docs[i].Path < docs[j].Path
-		})
-		context.LockedArtifacts = make([]policy.LockedArtifact, 0, len(docs))
-		for _, doc := range docs {
-			context.LockedArtifacts = append(context.LockedArtifacts, policy.LockedArtifact{
-				ID:                 doc.ID,
-				Kind:               doc.Kind,
-				Path:               doc.Path,
-				Version:            doc.Version,
-				SHA256:             doc.SHA256,
-				LockedFromStage:    lockedFromStageFor(doc.Kind),
-				BaselineGeneration: doc.Generation,
-			})
-		}
-	}
+	context.LockedArtifacts = LockedArtifactsFromSnapshot(snapshot)
 
 	// Assignments (BUG-039-04 §4.1). We walk runtime.entities.tasks[] and,
 	// for each row with a non-empty owner_agent_ids[0], attempt to read the
@@ -376,12 +397,47 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 	// referenced activation envelope before policy evaluation. Failure
 	// paths here are documented by loader_test.go errors.
 	if agentID != "" {
+		var repairPointer map[string]any
+		if state.Review != nil {
+			repairPointer = state.Review.Repair
+		}
 		for _, agent := range state.Entities.Agents {
 			if agent.ID != agentID {
 				continue
 			}
-			context.Agent = &policy.AgentContext{ID: agent.ID, State: agent.State}
+			context.Agent = &policy.AgentContext{ID: agent.ID, State: agent.State, DispatchMode: agent.DispatchMode}
+			if agent.PlanReportedRef != nil {
+				context.Agent.PlanReportedRef = *agent.PlanReportedRef
+			}
+			// RC-04 (S7-3): surface the dispatched-Assignment facts on the
+			// runtime projection itself so the L4 first-write barrier can be
+			// evaluated on every PreToolUse path, including ones that carry
+			// no AgentContext (e.g. the controller safety input). The
+			// assignment is resolved from the same workgroup manifest the
+			// Integrator reads (single deterministic owner rule); ambiguous
+			// rows stay unresolved and the barrier stands down on the
+			// AssignmentID fact but still sees the Agent fallback.
+			context.AssignmentID = loadAgentAssignmentID(root, agent.TaskIDs, agent.ID)
+			if context.Agent != nil {
+				context.Agent.AssignmentID = context.AssignmentID
+			}
+			if agent.PlanReportedRef != nil {
+				context.PlanReportedRef = *agent.PlanReportedRef
+			}
+			context.DispatchMode = agent.DispatchMode
+			// L4 §15.2 P0-1: surface the dispatched task set, team and
+			// registered completion ref so the TaskUpdate self-claim guard
+			// and the TeammateIdle/SubagentStop control path can recognize
+			// the exact teammate from runtime facts.
+			context.Agent.TaskIDs = append([]string(nil), agent.TaskIDs...)
+			if agent.TeamID != nil {
+				context.Agent.TeamID = *agent.TeamID
+			}
+			if agent.CompletionReportedRef != nil {
+				context.Agent.CompletionReportedRef = *agent.CompletionReportedRef
+			}
 			if agent.ActivationRef == nil {
+				loadRepairAgentScope(root, repairPointer, agent.ID, context.Agent)
 				break
 			}
 			activation, err := loadActivation(root, *agent.ActivationRef)
@@ -394,6 +450,7 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			context.Agent.AllowedTools = activation.AllowedTools
 			context.Agent.AllowedWritePaths = activation.AllowedWritePaths
 			context.Agent.AllowedCommandClasses = activation.AllowedCommandClasses
+			loadRepairAgentScope(root, repairPointer, agent.ID, context.Agent)
 			break
 		}
 		if context.Agent == nil {
@@ -408,13 +465,117 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 	loaded.PolicyContext = context
 
 	// Integration checkpoint (BUG-039-04 §4.1). The runtime's
-	// milestone.integration block today is `[]` for the active REQ-039
+	// milestone.integration block today is `[]` for the active REQ
 	// tree; we read it as an arbitrary slice and pick the first item
 	// that looks like an integration record. Future loop-states that
 	// land a real integration record will surface here.
 	loaded.IntegrationCheckpoint = firstIntegrationCheckpoint(state.Milestone)
 
 	return loaded, nil
+}
+
+// repairPlanHook is the deliberately small, read-only projection needed by
+// the S9 Hook barrier. The authoritative artifact is still validated by the
+// repair package at each Runtime command; this loader only verifies the
+// pointed bytes and extracts the assignment scope before a tool call.
+type repairPlanHook struct {
+	Assignments []struct {
+		AssignmentID string   `json:"assignment_id"`
+		OwnerAgentID string   `json:"owner_agent_id"`
+		Scope        []string `json:"scope"`
+	} `json:"assignments"`
+}
+
+type repairPlanReportHook struct {
+	AgentID      string `json:"agent_id"`
+	AssignmentID string `json:"assignment_id"`
+}
+
+// loadRepairAgentScope binds a Worker to the S9 assignment proven by its
+// PlanReport. A malformed/missing pointer is intentionally left unresolved;
+// the policy layer then blocks product writes in fixing instead of guessing a
+// scope from the activation envelope or from ToolInput.
+func loadRepairAgentScope(root string, pointer map[string]any, agentID string, agent *policy.AgentContext) {
+	if agent == nil || pointer == nil || agentID == "" {
+		return
+	}
+	planPath, _ := pointer["plan_ref"].(string)
+	planSHA, _ := pointer["plan_sha256"].(string)
+	planBytes, ok := readRepairHookArtifact(root, planPath, planSHA)
+	if !ok {
+		return
+	}
+	var plan repairPlanHook
+	if json.Unmarshal(planBytes, &plan) != nil {
+		return
+	}
+
+	assignmentID := ""
+	for _, assignment := range plan.Assignments {
+		if assignment.OwnerAgentID == agentID {
+			assignmentID = assignment.AssignmentID
+			agent.RepairAllowedWritePaths = append([]string(nil), assignment.Scope...)
+			break
+		}
+	}
+	if refs, ok := pointer["plan_report_refs"].([]any); ok {
+		for _, raw := range refs {
+			ref, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			path, _ := ref["path"].(string)
+			sha, _ := ref["sha256"].(string)
+			data, valid := readRepairHookArtifact(root, path, sha)
+			if !valid {
+				continue
+			}
+			var report repairPlanReportHook
+			if json.Unmarshal(data, &report) != nil || report.AgentID != agentID {
+				continue
+			}
+			assignmentID = report.AssignmentID
+			for _, assignment := range plan.Assignments {
+				if assignment.AssignmentID != assignmentID {
+					continue
+				}
+				agent.RepairAllowedWritePaths = append([]string(nil), assignment.Scope...)
+				break
+			}
+			agent.RepairPlanReportRef = path
+			break
+		}
+	}
+	if assignmentID != "" {
+		agent.RepairAssignmentID = assignmentID
+	}
+}
+
+func readRepairHookArtifact(root, relative, expectedSHA string) ([]byte, bool) {
+	if strings.TrimSpace(relative) == "" || strings.TrimSpace(expectedSHA) == "" {
+		return nil, false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false
+	}
+	abs, err := filepath.Abs(filepath.Join(rootAbs, filepath.FromSlash(relative)))
+	if err != nil {
+		return nil, false
+	}
+	rel, err := filepath.Rel(rootAbs, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil, false
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, false
+	}
+	actual := sha256.Sum256(data)
+	if fmt.Sprintf("%x", actual[:]) != expectedSHA {
+		return nil, false
+	}
+	return data, true
 }
 
 type loadedTask struct {
@@ -432,6 +593,46 @@ type buildAgentRow struct {
 	CompletionReportedRef string
 	CompletionAckRef      string
 	TaskID                string
+}
+
+// loadAgentAssignmentID resolves the dispatched Assignment for one agent row
+// (RC-04 S7-3). It reuses the workgroup manifest the Integrator reads: for
+// each of the agent's task ids the manifest must name exactly one assignment
+// row owned by the agent (or a single unbound row). The first deterministic
+// match wins; ambiguous multi-assignment rows resolve to "" so callers never
+// invent a binding the manifest does not prove.
+func loadAgentAssignmentID(root string, taskIDs []string, agentID string) string {
+	for _, taskID := range taskIDs {
+		_, manifest := loadWorkgroupManifest(root, taskID)
+		if manifest == nil {
+			continue
+		}
+		match := ""
+		ambiguous := false
+		for _, a := range manifest.Assignments {
+			if a.AssignmentID == "" {
+				continue
+			}
+			if a.AgentID != "" && a.AgentID != agentID {
+				continue
+			}
+			if a.AgentID == "" && len(manifest.Assignments) != 1 {
+				continue
+			}
+			if match != "" && match != a.AssignmentID {
+				ambiguous = true
+				break
+			}
+			match = a.AssignmentID
+		}
+		if ambiguous {
+			continue
+		}
+		if match != "" {
+			return match
+		}
+	}
+	return ""
 }
 
 // buildAssignmentRow materializes one AssignmentContext for an
@@ -452,24 +653,32 @@ func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *Assig
 	if manifest != nil {
 		// Match an assignment row whose agent_id matches this agent.
 		for _, a := range manifest.Assignments {
-			if a.AgentID != "" && a.AgentID != agent.ID {
+			if a.AgentID == "" || a.AgentID != agent.ID {
 				continue
 			}
 			row.AssignmentID = a.AssignmentID
+			row.RoleFamily = a.RoleFamily
+			row.AgentDefinitionRef = a.AgentDefinitionRef
 			row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
-			row.WritePaths = append(row.WritePaths, a.WritePaths...)
+			row.WritePaths = append(row.WritePaths, assignmentWritePaths(a.WritePaths, a.Scope)...)
+			row.RequiredChecks = append(row.RequiredChecks, a.RequiredChecks...)
+			row.DoneWhen = append(row.DoneWhen, a.DoneWhen...)
 			row.ReportStatus = a.Status
 			applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)
 			break
 		}
-		// Fallback: pick the first assignment row when no explicit
-		// agent_id match — common for prepublished workgroups whose
-		// agent_id slot is still "planned".
-		if row.AssignmentID == "" && len(manifest.Assignments) > 0 {
+		// A single unbound assignment is safe to associate with the task's
+		// sole owner. Multiple unbound assignments are ambiguous and must not
+		// inherit the first row's scope.
+		if row.AssignmentID == "" && len(manifest.Assignments) == 1 {
 			a := manifest.Assignments[0]
 			row.AssignmentID = a.AssignmentID
+			row.RoleFamily = a.RoleFamily
+			row.AgentDefinitionRef = a.AgentDefinitionRef
 			row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
-			row.WritePaths = append(row.WritePaths, a.WritePaths...)
+			row.WritePaths = append(row.WritePaths, assignmentWritePaths(a.WritePaths, a.Scope)...)
+			row.RequiredChecks = append(row.RequiredChecks, a.RequiredChecks...)
+			row.DoneWhen = append(row.DoneWhen, a.DoneWhen...)
 			row.ReportStatus = a.Status
 			applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)
 		}
@@ -478,7 +687,7 @@ func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *Assig
 	// assignment sidecar and/or a durable integration checkpoint. Never
 	// invent paths that are not present on disk (BUG-039-04 §4.2).
 	enrichAssignmentCoords(root, row)
-	if manifest == nil && row.AssignmentID == "" {
+	if row.AssignmentID == "" {
 		return nil
 	}
 	return row
@@ -493,25 +702,41 @@ func buildAssignmentRowFromTask(root, taskID, ownerAgentID string) *AssignmentCo
 	if manifest == nil {
 		return nil
 	}
-	for _, a := range manifest.Assignments {
-		if a.AssignmentID == "" {
+	matchedIndex := -1
+	for index := range manifest.Assignments {
+		a := &manifest.Assignments[index]
+		if a.AssignmentID == "" || (a.AgentID != "" && a.AgentID != ownerAgentID) {
 			continue
 		}
-		row := &AssignmentContext{
-			AssignmentID:      a.AssignmentID,
-			TaskID:            taskID,
-			OwnerAgentID:      ownerAgentID,
-			State:             "in_progress",
-			ManifestRef:       ".claude/workgroups/" + reqIDFromRuntime(root) + "/" + taskID + "/manifest.json",
-			ReportStatus:      a.Status,
-			WritePaths:        append([]string(nil), a.WritePaths...),
-			ResponsibilityIDs: []string{a.ResponsibilityID},
+		if a.AgentID == "" && len(manifest.Assignments) != 1 {
+			continue
 		}
-		applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)
-		enrichAssignmentCoords(root, row)
-		return row
+		if matchedIndex >= 0 {
+			return nil
+		}
+		matchedIndex = index
 	}
-	return nil
+	if matchedIndex < 0 {
+		return nil
+	}
+	a := manifest.Assignments[matchedIndex]
+	row := &AssignmentContext{
+		AssignmentID:       a.AssignmentID,
+		TaskID:             taskID,
+		OwnerAgentID:       ownerAgentID,
+		RoleFamily:         a.RoleFamily,
+		AgentDefinitionRef: a.AgentDefinitionRef,
+		State:              "in_progress",
+		ManifestRef:        ".claude/workgroups/" + reqIDFromRuntime(root) + "/" + taskID + "/manifest.json",
+		ReportStatus:       a.Status,
+		WritePaths:         assignmentWritePaths(a.WritePaths, a.Scope),
+		RequiredChecks:     append([]string(nil), a.RequiredChecks...),
+		DoneWhen:           append([]string(nil), a.DoneWhen...),
+		ResponsibilityIDs:  []string{a.ResponsibilityID},
+	}
+	applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)
+	enrichAssignmentCoords(root, row)
+	return row
 }
 
 // applyAssignmentCoords copies non-empty worktree coordinates onto the
@@ -558,6 +783,17 @@ type assignmentCoordFile struct {
 	WorktreePath string `json:"worktree_path"`
 	Branch       string `json:"branch"`
 	TargetBranch string `json:"target_branch"`
+}
+
+// assignmentWritePaths resolves the write-scope binding for a manifest
+// row: schema-required write_paths first, with the legacy `scope` field as
+// the declared fallback (a scope-only manifest must still feed the L3-S6
+// write-scope audit instead of declaring no scope).
+func assignmentWritePaths(writePaths, scope []string) []string {
+	if len(writePaths) > 0 {
+		return append([]string(nil), writePaths...)
+	}
+	return append([]string(nil), scope...)
 }
 
 func loadAssignmentSidecar(root, assignmentID string) (assignmentCoordFile, bool) {
@@ -638,7 +874,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// loadWorkgroupManifest reads .claude/workgroups/REQ-039/<task>/manifest.json
+// loadWorkgroupManifest reads .claude/workgroups/<REQ-ID>/<task>/manifest.json
 // from the project root. The function returns (path-or-empty, manifest-or-nil);
 // callers distinguish "manifest not present" from "manifest present but
 // unparseable" by checking only the manifest pointer.
@@ -761,23 +997,24 @@ func optionalString(p *string) string {
 }
 
 // reqIDFromRuntime reads the runtime and returns the bound REQ id, used
-// only as a display hint in fallback assignment rows. Returns "REQ-039"
-// on any read failure so the synthesis path is fail-loud, not fail-silent.
+// only as a display hint in fallback assignment rows. Returns "UNBOUND"
+// when the runtime is unreadable or nothing is bound — a label, never a
+// plausible foreign REQ id.
 func reqIDFromRuntime(root string) string {
 	snapshot, err := runtime.NewStore(
 		filepath.Join(root, ".claude", "loop-state.json"),
 		filepath.Join(root, ".claude", "loop-events.jsonl"),
 	).Snapshot()
 	if err != nil {
-		return "REQ-039"
+		return "UNBOUND"
 	}
 	bound, ok := snapshot.State["bound_req"].(map[string]any)
 	if !ok {
-		return "REQ-039"
+		return "UNBOUND"
 	}
 	id, _ := bound["id"].(string)
 	if id == "" {
-		return "REQ-039"
+		return "UNBOUND"
 	}
 	return id
 }
@@ -796,4 +1033,67 @@ func loadActivation(root, ref string) (activationFile, error) {
 		return activationFile{}, fmt.Errorf("decode activation: %w", err)
 	}
 	return activation, nil
+}
+
+// LockedArtifactsFromState projects the runtime state's documents[] into
+// the policy.LockedArtifact list using the same selection rules as the
+// hook transport: status locked/active, non-req kinds only in the current
+// baseline generation, every locked req generation kept (immutable
+// history). Shared with the controller's final-safety input so the wire
+// path and the hook transport agree on what is locked.
+func LockedArtifactsFromSnapshot(snapshot runtime.Snapshot) []policy.LockedArtifact {
+	generation := 0
+	if baseline, ok := snapshot.State["baseline"].(map[string]any); ok {
+		switch v := baseline["generation"].(type) {
+		case float64:
+			generation = int(v)
+		case int:
+			generation = v
+		}
+	}
+	var docs []lockedDocument
+	if rawDocs, ok := snapshot.State["documents"].([]any); ok {
+		for _, entry := range rawDocs {
+			if entry == nil {
+				continue
+			}
+			buf, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			var doc lockedDocument
+			if err := json.Unmarshal(buf, &doc); err != nil {
+				continue
+			}
+			if doc.Status != "locked" && doc.Status != "active" {
+				continue
+			}
+			if doc.Kind != "req" && doc.Generation != generation {
+				continue
+			}
+			if doc.ID == "" || doc.Kind == "" || doc.Path == "" ||
+				doc.Version == "" || doc.SHA256 == "" ||
+				doc.Generation == 0 {
+				continue
+			}
+			docs = append(docs, doc)
+		}
+	}
+	if len(docs) == 0 {
+		return nil
+	}
+	sort.Slice(docs, func(i, j int) bool { return docs[i].Path < docs[j].Path })
+	artifacts := make([]policy.LockedArtifact, 0, len(docs))
+	for _, doc := range docs {
+		artifacts = append(artifacts, policy.LockedArtifact{
+			ID:                 doc.ID,
+			Kind:               doc.Kind,
+			Path:               doc.Path,
+			Version:            doc.Version,
+			SHA256:             doc.SHA256,
+			LockedFromStage:    lockedFromStageFor(doc.Kind),
+			BaselineGeneration: doc.Generation,
+		})
+	}
+	return artifacts
 }

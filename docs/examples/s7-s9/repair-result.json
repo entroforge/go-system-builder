@@ -1,0 +1,65 @@
+{
+  "contract": {
+    "path": ".claude/evidence/repair/contracts/repair-contract-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "session": {
+    "id": "repair-session-example",
+    "path": ".claude/evidence/repair/sessions/repair-session-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "plan": {
+    "id": "repair-plan-example",
+    "path": ".claude/evidence/repair/plans/repair-plan-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "result_id": "repair-result-example",
+  "producer_agent_id": "agent-repair-builder-1",
+  "unit_results": [
+    {
+      "unit_id": "unit-1",
+      "status": "pass",
+      "evidence_refs": ["docs/reports/repair/repair-result-example.md#unit-1"]
+    }
+  ],
+  "changed_artifacts": [
+    {
+      "path": "internal/example/handler.go",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "status": "modified"
+    },
+    {
+      "path": "internal/example/handler_test.go",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "status": "modified"
+    }
+  ],
+  "result": "pass",
+  "assignment_id": "repair-assignment-unit-1",
+  "plan_report": {
+    "id": "repair-plan-report-example",
+    "path": ".claude/evidence/repair/plan-reports/repair-plan-report-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "before_fix_checks": [
+    {
+      "name": "pre-fix regression",
+      "command": "go test ./internal/example -run TestContractBoundary",
+      "result": "fail",
+      "evidence_refs": ["docs/reports/bugs/BUG-example.md#reproduction"]
+    }
+  ],
+  "checks": [
+    {
+      "name": "post-fix regression",
+      "command": "go test ./internal/example -run TestContractBoundary",
+      "result": "pass",
+      "evidence_refs": ["docs/reports/repair/repair-result-example.md#checks"]
+    }
+  ],
+  "scope_deviations": [],
+  "migration_ref": "",
+  "rollback_ref": "",
+  "residual_risks": [],
+  "occurred_at": "2026-08-26T10:30:00Z"
+}

@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/review-result.schema.json",
+  "title": "S7 Canonical ReviewResult",
+  "description": "The single structured result one Assignment submits (L3-S7 §3.5). claim_results must equal the Assignment's Claim set exactly; every fail Claim references a Finding with a real encounter. Submitted via `loop-harness runtime review-result submit`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result_id",
+    "assignment_id",
+    "assignment_revision",
+    "review_plan_id",
+    "review_round",
+    "baseline_generation",
+    "producer_agent_id",
+    "subject_digest",
+    "claim_results",
+    "verdict"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "result_id": {
+      "type": "string",
+      "pattern": "^review-result-[A-Za-z0-9._-]+$"
+    },
+    "assignment_id": {
+      "type": "string",
+      "pattern": "^assignment-[A-Za-z0-9._-]+$"
+    },
+    "assignment_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The ReviewPlan/Assignment revision observed before execution; stale revisions are not submittable."
+    },
+    "review_plan_id": {
+      "type": "string",
+      "pattern": "^review-plan-[A-Za-z0-9._-]+$"
+    },
+    "review_round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "baseline_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "producer_agent_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "subject_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 over the ReviewPlan's frozen_subjects (sorted path:sha256 lines). The submit verb recomputes and rejects drift."
+    },
+    "verification_artifact_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "E2E cold_start only: digest of the spec/fixture/evidence revision actually used. Null when no verification workspace exists."
+    },
+    "claim_results": {
+      "type": "array",
+      "description": "The pass/fail answers. Together with blocked_claims this must equal the Assignment's Claim set exactly — no missing entries, no extras, no Claim answered twice. not_applicable is a ReviewPlan disposition, never a Reviewer conclusion.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "conclusion", "observed"],
+        "properties": {
+          "claim_id": {"type": "string"},
+          "conclusion": {
+            "enum": ["pass", "fail"]
+          },
+          "method": {"type": "string"},
+          "observed": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What the Reviewer actually observed for this Claim."
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "blocked_claims": {
+      "type": "array",
+      "description": "Required Claims the Reviewer objectively cannot execute because a confirmed product Finding of this round breaks a build/start/entry/precondition (L3-S7 §3.5 blocked_by_confirmed_finding). The tool projects these to disposition=blocked; they are never a pass and never satisfy the repaired round's Claim. Token/time/Agent shortage has no confirmed Finding to bind and is rejected.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "blocking_finding_ids", "failed_precondition", "evidence_refs", "after_repair_required"],
+        "properties": {
+          "claim_id": {"type": "string"},
+          "blocking_finding_ids": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Confirmed Findings of this review round (consumed earlier or confirmed by this same result) that make the Claim non-executable.",
+            "items": {"type": "string"}
+          },
+          "failed_precondition": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "detail"],
+            "properties": {
+              "kind": {"enum": ["build", "start", "entry", "precondition"]},
+              "detail": {"type": "string", "minLength": 1}
+            }
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"}
+          },
+          "after_repair_required": {
+            "const": true,
+            "description": "Invariant: the repaired round owes this Claim a real execution."
+          }
+        }
+      }
+    },
+    "site_lost": {
+      "type": "array",
+      "description": "Explicit Reviewer declarations that an ordinary Finding's encounter scene is unrecoverable (L3-S7 §9.1 step 12). When the named Finding also fails investigation readiness, submit records an Assignment BLOCKER and stays in S7 instead of consuming the result; P0/security/data-destructive findings never use this path (they seal with capture_gaps).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "reason"],
+        "properties": {
+          "finding_id": {"type": "string"},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "result"],
+        "properties": {
+          "name": {"type": "string"},
+          "command": {"type": "string", "minLength": 1},
+          "result": {
+            "enum": ["pass", "fail"]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "description": "One Finding per fail Claim, each with a real encounter (see finding.schema.json).",
+      "items": {
+        "$ref": "finding.schema.json"
+      }
+    },
+    "deviations": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "verdict": {
+      "enum": ["pass", "finding", "req_change_required", "release_blocked"],
+      "description": "Use 'finding' for blocked Claims (with findings[]), 'pass' for all pass, 'req_change_required' / 'release_blocked' for human-pause verdicts. 'fail' is not a valid verdict — there is no per-Claim verdict that maps to it; submit verdict=finding with findings[] populated (one Finding per fail Claim, each with a real encounter)."
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"verdict": {"const": "finding"}}},
+      "then": {
+        "description": "verdict=finding needs at least one Finding with a real encounter, or a blocked_by_confirmed_finding projection bound to a confirmed Finding of this round.",
+        "anyOf": [
+          {"properties": {"findings": {"minItems": 1}}},
+          {"properties": {"blocked_claims": {"minItems": 1}}}
+        ]
+      }
+    },
+    {
+      "description": "Every Claim is answered exactly once: at least one of claim_results / blocked_claims must be non-empty (an Assignment whose Claims are all blocked still submits one result).",
+      "anyOf": [
+        {"properties": {"claim_results": {"minItems": 1}}},
+        {"properties": {"blocked_claims": {"minItems": 1}}}
+      ]
+    }
+  ]
+}

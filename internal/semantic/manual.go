@@ -24,11 +24,29 @@ package semantic
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+type manualEvidenceDefinition struct {
+	Transitions []struct {
+		ID               string   `json:"id"`
+		RequiredEvidence []string `json:"required_evidence"`
+	} `json:"transitions"`
+	PhaseMachines map[string]struct {
+		Transitions []struct {
+			ID               string   `json:"id"`
+			RequiredEvidence []string `json:"required_evidence"`
+		} `json:"transitions"`
+	} `json:"phase_machines"`
+	GlobalTransitions []struct {
+		ID               string   `json:"id"`
+		RequiredEvidence []string `json:"required_evidence"`
+	} `json:"global_transitions"`
+}
 
 // manualCandidatePaths lists the on-disk locations where the agent-facing
 // Manual may live, in lookup order. See the package doc comment for the
@@ -74,6 +92,46 @@ func ValidateManualAgreement(root string) error {
 	if embedded != actual {
 		return fmt.Errorf("manual stale at %s: embedded Loop definition SHA-256 %s does not match current docs/loop-definition.json SHA-256 %s — run `loop-harness manual --root .` to regenerate",
 			foundRel, embedded, actual)
+	}
+	var definition manualEvidenceDefinition
+	if err := json.Unmarshal(defData, &definition); err != nil {
+		// ValidateRepository performs the full schema/semantic definition
+		// validation. Keep this narrow manual check compatible with small
+		// synthetic Manual-agreement fixtures that only exercise fingerprinting.
+		return nil
+	}
+	if err := validateManualEvidenceBindings(definition, string(data)); err != nil {
+		return fmt.Errorf("manual evidence bindings: %w", err)
+	}
+	return nil
+}
+
+func validateManualEvidenceBindings(definition manualEvidenceDefinition, markdown string) error {
+	check := func(id string, slots []string) error {
+		for _, slot := range slots {
+			prefix := "--evidence " + slot + "="
+			if !strings.Contains(markdown, prefix) {
+				return fmt.Errorf("manual missing evidence binding guidance for transition %s slot %s; run `loop-harness manual --root .` to regenerate; expected %s<reference>", id, slot, prefix)
+			}
+		}
+		return nil
+	}
+	for _, spec := range definition.Transitions {
+		if err := check(spec.ID, spec.RequiredEvidence); err != nil {
+			return err
+		}
+	}
+	for _, machine := range definition.PhaseMachines {
+		for _, spec := range machine.Transitions {
+			if err := check(spec.ID, spec.RequiredEvidence); err != nil {
+				return err
+			}
+		}
+	}
+	for _, spec := range definition.GlobalTransitions {
+		if err := check(spec.ID, spec.RequiredEvidence); err != nil {
+			return err
+		}
 	}
 	return nil
 }

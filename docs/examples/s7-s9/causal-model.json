@@ -1,0 +1,15 @@
+{
+  "trigger": "the client sends a field using the stale boundary name",
+  "violated_invariant": "one authoritative contract defines the field shape at every boundary",
+  "faulty_mechanism": "the server decoder still reads the pre-migration shape",
+  "propagation": "the value is discarded before persistence and the response projection",
+  "symptoms": [
+    "the submitted value is not rendered",
+    "the submitted value is not retained after reload"
+  ],
+  "evidence_refs": [
+    "path:src/client/form.ts",
+    "path:src/server/decoder.go",
+    "runtime:observation-batch-..."
+  ]
+}

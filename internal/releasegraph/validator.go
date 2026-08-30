@@ -56,6 +56,7 @@ var embeddedAssetPatterns = []string{
 	"review-evidence.examples.json",
 	"team-manifest.schema.json",
 	"team-manifest.example.json",
+	"s10-audit-manifest.schema.json",
 	"readback-request.template.json",
 	"activation.template.json",
 }
@@ -222,13 +223,30 @@ func validateSkillReferences(root string, skill stagedSkillFrontmatter) error {
 		if shouldSkipPathReference(raw) {
 			continue
 		}
-		absolute := filepath.Join(root, raw)
-		if _, err := os.Stat(absolute); err != nil {
+		if !skillReferenceExists(root, skill.AbsPath, raw) {
 			return fmt.Errorf("release graph: %s references %q which does not exist in the staged tree",
 				skill.Path, raw)
 		}
 	}
 	return nil
+}
+
+// skillReferenceExists resolves a Markdown reference using the same two
+// scopes available to a Skill author: a relative link may point beside the
+// Skill (for example references/runtime-recovery-reference.md), or it may
+// point at a template-root document (for example docs/agent-protocol.md).
+// Checking both keeps local Skill references honest without treating every
+// missing root document as a valid relative link.
+func skillReferenceExists(root, skillPath, raw string) bool {
+	for _, candidate := range []string{
+		filepath.Join(filepath.Dir(skillPath), raw),
+		filepath.Join(root, raw),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // shouldSkipPathReference returns true when a backticked path is allowed
@@ -244,6 +262,13 @@ func shouldSkipPathReference(raw string) bool {
 		return true
 	}
 	if strings.HasPrefix(raw, "docs/design/loop-engineering/") {
+		return true
+	}
+	// The project map is created by the installer from
+	// docs/project-map-template.md. It is intentionally absent from the
+	// distributable template because it is instance-specific, but methodology
+	// Skills must still name the path agents consume after initialization.
+	if raw == "docs/project-map.md" {
 		return true
 	}
 	// Bare filenames in methodology text commonly name an instance output

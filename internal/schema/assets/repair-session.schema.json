@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/repair-session.schema.json",
+  "title": "S9 RepairSession",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "record_type", "session_id", "contract_ref", "contract_sha256", "runtime_id", "req_id", "baseline_generation", "baseline_artifacts", "baseline_digest", "status", "created_by", "created_at"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "record_type": {"const": "repair_session"},
+    "session_id": {"type": "string", "pattern": "^repair-session-[A-Za-z0-9._-]+$"},
+    "contract_ref": {"type": "string", "minLength": 1},
+    "contract_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+    "req_id": {"type": "string", "pattern": "^REQ-[0-9]{3,}$"},
+    "baseline_generation": {"type": "integer", "minimum": 0},
+    "baseline_artifacts": {"type": "array", "items": {"$ref": "#/$defs/ref"}},
+    "baseline_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "status": {"enum": ["planned", "planning", "reproducing", "executing", "result_submitted", "handed_off"]},
+    "created_by": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"}
+  },
+  "$defs": {
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "id": {"type": "string"},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "status": {"enum": ["added", "modified", "deleted"]}
+      }
+    }
+  }
+}

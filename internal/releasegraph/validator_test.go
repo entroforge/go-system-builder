@@ -55,6 +55,31 @@ func TestValidateStagedReleaseStillRejectsDanglingQualifiedPath(t *testing.T) {
 	}
 }
 
+func TestValidateStagedReleaseAllowsInstallerCreatedProjectMap(t *testing.T) {
+	root := minimalStage(t)
+	writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
+	if err := os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStageFile(t, root, "skills/example/SKILL.md", "---\nname: example\n---\nRead the installed project facts from `docs/project-map.md`.\n")
+	if err := releasegraph.ValidateStagedRelease(root); err != nil {
+		t.Fatalf("installer-created project map is not a release dependency: %v", err)
+	}
+}
+
+func TestValidateStagedReleaseResolvesSkillLocalReferences(t *testing.T) {
+	root := minimalStage(t)
+	writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
+	if err := os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStageFile(t, root, "skills/example/references/local.md", "# local authority\n")
+	writeStageFile(t, root, "skills/example/SKILL.md", "---\nname: example\n---\nRead `references/local.md`.\n")
+	if err := releasegraph.ValidateStagedRelease(root); err != nil {
+		t.Fatalf("Skill-local reference should resolve beside the Skill: %v", err)
+	}
+}
+
 func minimalStage(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

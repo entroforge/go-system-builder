@@ -1,23 +1,28 @@
-// Package verification evaluates the clean-round gate.
+// Package verification evaluates the machine CleanRound.
 //
-// A clean round is the precondition for acceptance (TR-009) and release audit
-// (TR-015). Per docs/loop-definition.json the
-// PTR-VERIFY-04 transition requires all four of:
+// Post-S7-remediation (L3-S7 §10): a clean round is no longer a set of
+// per-lens aggregate PASS envelopes. It is a strict conjunction computed
+// over the current ReviewPlan's exact Claim set:
 //
-//   - same_review_round
-//   - all_required_dimensions_passed
-//   - no_invalidated_pass_evidence
-//   - no_open_blocking_bugs
+//   - a ReviewPlan is registered for the current round and closed clean;
+//   - every required Claim has a consumed pass Result (N/A Claims carry a
+//     plan-level disposition with source and rationale);
+//   - no Finding exists for the current round;
+//   - no current-round review evidence has been invalidated;
+//   - no business-blocking BUG is open (and closed blockers carry targeted
+//     re-verification);
+//   - the machine CleanRound snapshot is registered as evidence.
 //
-// This package implements that evaluation as a pure function over the runtime
-// state, so the same logic is usable by the transition engine, the Hook policy
-// engine, and the `loop-harness verification clean-round` CLI.
+// The function is pure over the runtime state, so the transition engine,
+// the Quality Gate evaluator and the CLI all share one implementation.
 package verification
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/entroforge/go-system-builder/internal/impact"
+	"github.com/entroforge/go-system-builder/internal/review"
 )
 
 // Result is the outcome of a clean-round evaluation.
@@ -28,16 +33,17 @@ type Result struct {
 	Reasons     []string      `json:"reasons,omitempty"`
 }
 
-// CheckResult records the outcome of one of the four guard checks.
+// CheckResult records the outcome of one guard check.
 type CheckResult struct {
 	Name   string `json:"name"`
 	Passed bool   `json:"passed"`
 	Detail string `json:"detail,omitempty"`
 }
 
-// EvaluateCleanRound inspects the runtime state and decides whether the current
-// review round satisfies all four clean-round guards. The state is the decoded
-// loop-state.json object. The function never mutates state.
+// EvaluateCleanRound inspects the runtime state and decides whether the
+// current review round is a valid machine CleanRound (L3-S7 §10.1). The
+// state is the decoded loop-state.json object. The function never mutates
+// state.
 func EvaluateCleanRound(state map[string]any) Result {
 	currentRound := readReviewRound(state)
 	result := Result{ReviewRound: currentRound}
@@ -48,73 +54,92 @@ func EvaluateCleanRound(state map[string]any) Result {
 	}
 	result.Checks = append(result.Checks, checkActiveRound)
 
-	// Check 1: same_review_round — every clean-round-relevant (verification-
-	// phase) evidence item under consideration must belong to the current
-	// review round. Historical building/planning evidence from earlier rounds
-	// is not under consideration (BUG-039-36).
-	checkRound := CheckResult{Name: "same_review_round", Passed: true}
-	for _, entry := range evidenceEntries(state) {
-		if !isCleanRoundRelevantEvidence(entry) {
-			continue
-		}
-		evRound := readInt(entry["review_round"])
-		if evRound != 0 && evRound != currentRound {
-			checkRound.Passed = false
-			id, _ := entry["id"].(string)
-			checkRound.Detail = fmt.Sprintf(
-				"evidence %s belongs to round %d, current round is %d",
-				id, evRound, currentRound)
-			break
-		}
+	// Check 2: the ReviewPlan for this round exists and closed clean. The
+	// consumer writes status=clean only when the final required Claim lands
+	// without findings, so a missing/wrong-status plan is not cleanable.
+	checkPlan := CheckResult{Name: "review_plan_clean", Passed: false}
+	ptr := review.PlanPointerFromState(state)
+	switch {
+	case ptr == nil:
+		checkPlan.Detail = "no ReviewPlan registered for this round"
+	case ptr.ReviewRound != currentRound:
+		checkPlan.Detail = fmt.Sprintf("ReviewPlan belongs to round %d, current round is %d", ptr.ReviewRound, currentRound)
+	case ptr.Status != "clean":
+		checkPlan.Detail = fmt.Sprintf("ReviewPlan status is %s, not clean", ptr.Status)
+	default:
+		checkPlan.Passed = true
 	}
-	result.Checks = append(result.Checks, checkRound)
+	result.Checks = append(result.Checks, checkPlan)
 
-	// Check 2: all_required_dimensions_passed — every responsibility listed in
-	// any registered team manifest must have a corresponding PASS evidence
-	// entry in the current round.
-	checkDims := CheckResult{Name: "all_required_dimensions_passed", Passed: true}
-	if missingKinds := missingReviewWorkgroups(state); len(missingKinds) > 0 {
-		checkDims.Passed = false
-		checkDims.Detail = fmt.Sprintf("missing review workgroups: %v", missingKinds)
-		result.Checks = append(result.Checks, checkDims)
+	// Check 3: all_required_claims_pass — the exact-set evaluation. Every
+	// required Claim needs disposition=pass with a consumed Result; N/A
+	// Claims keep their plan-level disposition.
+	checkClaims := CheckResult{Name: "all_required_claims_pass", Passed: true}
+	dispositions := review.Dispositions(state)
+	if len(dispositions) == 0 {
+		checkClaims.Passed = false
+		checkClaims.Detail = "no claim dispositions registered"
 	} else {
-		required := collectRequiredResponsibilities(state)
-		if len(required) == 0 {
-			checkDims.Passed = false
-			checkDims.Detail = "no registered review responsibilities"
-		} else if missing := missingResponsibilityEvidence(state, currentRound, required); len(missing) > 0 {
-			checkDims.Passed = false
-			checkDims.Detail = fmt.Sprintf(
-				"responsibilities without PASS evidence: %v", missing)
+		var unproven []string
+		for claimID, disp := range dispositions {
+			if disp.Applicability == "not_applicable" {
+				if disp.Disposition != "not_applicable" {
+					unproven = append(unproven, claimID+"(n/a-disposition="+disp.Disposition+")")
+				}
+				continue
+			}
+			if disp.Disposition != "pass" || disp.ResultID == "" {
+				unproven = append(unproven, claimID+"("+disp.Disposition+")")
+			}
 		}
-		result.Checks = append(result.Checks, checkDims)
+		if len(unproven) > 0 {
+			sort.Strings(unproven)
+			checkClaims.Passed = false
+			checkClaims.Detail = fmt.Sprintf("claims without a consumed pass: %v", unproven)
+		}
 	}
+	result.Checks = append(result.Checks, checkClaims)
 
-	// Check 3: no_invalidated_pass_evidence — no evidence with status invalid
-	// may be referenced as a PASS in the current round. We approximate this by
-	// checking that no evidence in the current round has status invalid. A
-	// stricter check would walk impact.ComputeImpact, but the runtime already
-	// carries the validity status on each entry.
+	// Check 4: no_findings_current_round — a confirmed Finding forecloses the
+	// clean path for the round regardless of later pass Results.
+	checkFindings := CheckResult{Name: "no_findings_current_round", Passed: true}
+	if findings := review.RoundFindings(state); len(findings) > 0 {
+		ids := make([]string, 0, len(findings))
+		for _, row := range findings {
+			if id, ok := row["finding_id"].(string); ok {
+				ids = append(ids, id)
+			}
+		}
+		checkFindings.Passed = false
+		checkFindings.Detail = fmt.Sprintf("current-round findings exist: %v", ids)
+	}
+	result.Checks = append(result.Checks, checkFindings)
+
+	// Check 5: no_invalidated_pass_evidence — no current-round review
+	// evidence (result/finding/batch/clean snapshot) may be invalid.
 	checkInvalid := CheckResult{Name: "no_invalidated_pass_evidence", Passed: true}
 	for _, entry := range evidenceEntries(state) {
 		if readInt(entry["review_round"]) != currentRound {
 			continue
 		}
+		kind, _ := entry["kind"].(string)
+		switch kind {
+		case "review_result", "finding", "observation_batch", "clean_round":
+		default:
+			continue
+		}
 		if status, _ := entry["status"].(string); status == "invalid" {
 			checkInvalid.Passed = false
 			id, _ := entry["id"].(string)
-			checkInvalid.Detail = fmt.Sprintf(
-				"evidence %s is invalid but belongs to the current round", id)
+			checkInvalid.Detail = fmt.Sprintf("evidence %s is invalid but belongs to the current round", id)
 			break
 		}
 	}
 	result.Checks = append(result.Checks, checkInvalid)
 
-	// Check 4: no_open_blocking_bugs — no BUG entity may be in a state that
-	// blocks the round (accepted / assigned / fixing / retesting).
+	// Check 6: no_open_blocking_bugs (unchanged semantics; L3-S7 §10.1.9-10).
 	checkBugs := CheckResult{Name: "no_open_blocking_bugs", Passed: true}
-	openBugs := openBlockingBugs(state)
-	if len(openBugs) > 0 {
+	if openBugs := openBlockingBugs(state); len(openBugs) > 0 {
 		checkBugs.Passed = false
 		checkBugs.Detail = fmt.Sprintf("open blocking bugs: %v", openBugs)
 	} else if missing := closedBugsMissingTargetedEvidence(state, currentRound); len(missing) > 0 {
@@ -123,7 +148,25 @@ func EvaluateCleanRound(state map[string]any) Result {
 	}
 	result.Checks = append(result.Checks, checkBugs)
 
-	// Aggregate. The round passes only when every check passed.
+	// Check 7: the machine CleanRound snapshot exists as current-round
+	// evidence. TR-009 binds this record; an agent hand-written aggregate is
+	// not a substitute (L3-S7 §10.2).
+	checkSnapshot := CheckResult{Name: "clean_round_snapshot_registered", Passed: false}
+	for _, entry := range evidenceEntries(state) {
+		kind, _ := entry["kind"].(string)
+		if kind != "clean_round" || readInt(entry["review_round"]) != currentRound {
+			continue
+		}
+		if status, _ := entry["status"].(string); status == "valid" {
+			checkSnapshot.Passed = true
+			break
+		}
+	}
+	if !checkSnapshot.Passed {
+		checkSnapshot.Detail = "no valid clean_round evidence for the current round"
+	}
+	result.Checks = append(result.Checks, checkSnapshot)
+
 	result.Passed = true
 	for _, check := range result.Checks {
 		if !check.Passed {
@@ -133,58 +176,6 @@ func EvaluateCleanRound(state map[string]any) Result {
 		}
 	}
 	return result
-}
-
-// isCleanRoundRelevantEvidence reports whether an evidence entry is under
-// consideration for same_review_round. Building/planning/document evidence
-// from earlier lifecycle phases must not veto a verification clean round.
-func isCleanRoundRelevantEvidence(entry map[string]any) bool {
-	kind, _ := entry["kind"].(string)
-	switch kind {
-	case "delivery_review", "qa_review", "e2e_review", "clean_round",
-		"angle_declaration", "team_manifest", "targeted_reverification":
-		return true
-	case "":
-		// Untyped evidence with a responsibility_id remains under consideration
-		// (legacy fixtures / SM-014 mixed-round cases).
-		id, _ := entry["responsibility_id"].(string)
-		return id != ""
-	default:
-		return false
-	}
-}
-
-func missingReviewWorkgroups(state map[string]any) []string {
-	required := map[string]bool{
-		"delivery_verifier": false,
-		"qa":                false,
-		"e2e_browser":       false,
-	}
-	entities, ok := state["entities"].(map[string]any)
-	if !ok {
-		return []string{"delivery_verifier", "qa", "e2e_browser"}
-	}
-	teams, ok := entities["teams"].([]any)
-	if !ok {
-		return []string{"delivery_verifier", "qa", "e2e_browser"}
-	}
-	for _, raw := range teams {
-		team, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		kind, _ := team["kind"].(string)
-		if _, ok := required[kind]; ok {
-			required[kind] = true
-		}
-	}
-	var missing []string
-	for _, kind := range []string{"delivery_verifier", "qa", "e2e_browser"} {
-		if !required[kind] {
-			missing = append(missing, kind)
-		}
-	}
-	return missing
 }
 
 // evidenceEntries returns the evidence array as a slice of maps.
@@ -202,79 +193,8 @@ func evidenceEntries(state map[string]any) []map[string]any {
 	return out
 }
 
-// missingResponsibilityEvidence collects responsibility IDs declared by team
-// manifests that have no valid PASS evidence in the current round.
-func missingResponsibilityEvidence(state map[string]any, currentRound int, required []string) []string {
-	covered := map[string]bool{}
-	for _, entry := range evidenceEntries(state) {
-		if readInt(entry["review_round"]) != currentRound {
-			continue
-		}
-		if status, _ := entry["status"].(string); status != "valid" {
-			continue
-		}
-		if id, _ := entry["responsibility_id"].(string); id != "" {
-			covered[id] = true
-		}
-	}
-	var missing []string
-	for _, id := range required {
-		if !covered[id] {
-			missing = append(missing, id)
-		}
-	}
-	return missing
-}
-
-// collectRequiredResponsibilities walks the registered team manifests in the
-// runtime and returns the union of their responsibility IDs.
-func collectRequiredResponsibilities(state map[string]any) []string {
-	entities, ok := state["entities"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	teams, ok := entities["teams"].([]any)
-	if !ok {
-		return nil
-	}
-	seen := map[string]bool{}
-	var ordered []string
-	for _, raw := range teams {
-		team, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		if values, ok := team["responsibility_ids"].([]any); ok {
-			for _, value := range values {
-				id, _ := value.(string)
-				if id == "" || seen[id] {
-					continue
-				}
-				seen[id] = true
-				ordered = append(ordered, id)
-			}
-			continue
-		}
-		if manifest, ok := team["manifest_ref"].(map[string]any); ok {
-			assignments, _ := manifest["assignments"].([]any)
-			for _, assignment := range assignments {
-				a, ok := assignment.(map[string]any)
-				if !ok {
-					continue
-				}
-				id, _ := a["responsibility_id"].(string)
-				if id == "" || seen[id] {
-					continue
-				}
-				seen[id] = true
-				ordered = append(ordered, id)
-			}
-		}
-	}
-	return ordered
-}
-
-// openBlockingBugs returns the IDs of P0 BUG entities in a blocking state.
+// openBlockingBugs returns the IDs of business-blocking BUG entities (P0, or
+// any severity with blocking=true) in a blocking state.
 func openBlockingBugs(state map[string]any) []string {
 	entities, ok := state["entities"].(map[string]any)
 	if !ok {
@@ -337,9 +257,38 @@ func closedBugsMissingTargetedEvidence(state map[string]any, currentRound int) [
 	return missing
 }
 
+// isBlockingBug decides whether a BUG entity blocks the clean round
+// (RC-02, L3-S7 §10.1): blocking is the explicit business judgment, never a
+// severity synonym. A BUG blocks when
+//
+//   - severity is P0 (implicit blocking=true, backward compatible), or
+//   - the blocking field reads true (bool, or the string "true" from
+//     hand-recovered/re-imported state).
+//
+// A non-P0 BUG with blocking=true blocks exactly like a P0; a non-P0 BUG
+// without the marker does not. The stored entity is map[string]any, so the
+// flag is read defensively (bool / string forms) rather than via a typed
+// struct — the same pattern as bug_lifecycle.readBugInt.
 func isBlockingBug(bug map[string]any) bool {
-	severity, _ := bug["severity"].(string)
-	return severity == "P0"
+	if severity, _ := bug["severity"].(string); severity == "P0" {
+		return true
+	}
+	return readBugBool(bug["blocking"])
+}
+
+// readBugBool parses the blocking flag from the decoded runtime entity.
+// Accepts bool (normal JSON decode), and the string "true"/"false" for
+// recovery/import paths that re-serialize flags as text. Anything else is
+// not a blocking claim.
+func readBugBool(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true"
+	default:
+		return false
+	}
 }
 
 func hasTargetedReverificationEvidence(state map[string]any, currentRound int, bugID string) bool {
@@ -389,11 +338,11 @@ func containsBugID(text, bugID string) bool {
 }
 
 func readReviewRound(state map[string]any) int {
-	review, ok := state["review"].(map[string]any)
+	reviewMap, ok := state["review"].(map[string]any)
 	if !ok {
 		return 0
 	}
-	return readInt(review["round"])
+	return readInt(reviewMap["round"])
 }
 
 func readInt(value any) int {

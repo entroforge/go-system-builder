@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/observation-batch.schema.json",
+  "title": "S7 ObservationBatch",
+  "description": "The lossless S7 -> S8 handoff: the exact set of immutable Findings plus the claim coverage summary, sealed atomically by the round consumer once the final required Claim set has an exact disposition (L3-S7 §3.7). Machine-written by `runtime review-result submit`; never hand-authored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_batch_id",
+    "conclusion",
+    "evidence_id",
+    "kind",
+    "runtime_id",
+    "producer_agent_id",
+    "producer_responsibility",
+    "review_plan_id",
+    "review_round",
+    "baseline_generation",
+    "subject_digest",
+    "finding_ids",
+    "drain_policy",
+    "claim_coverage_summary",
+    "unobserved_claim_ids",
+    "original_finder_routes",
+    "investigation_readiness",
+    "sealed_at",
+    "sealed_by",
+    "revision"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "observation_batch_id": {
+      "type": "string",
+      "pattern": "^observation-batch-[A-Za-z0-9._-]+$"
+    },
+    "conclusion": {
+      "const": "sealed",
+      "description": "The gate-consumable fact: this batch is sealed. Open batches never exist as files — the runtime pointer tracks the open batch in state only."
+    },
+    "evidence_id": {
+      "type": "string",
+      "description": "Envelope identity (same value as observation_batch_id); the gate verifies the persisted document against the evidence index row."
+    },
+    "kind": {"const": "observation_batch"},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "producer_agent_id": {"const": "round-consumer"},
+    "producer_responsibility": {"const": "Orchestrator"},
+    "review_plan_id": {"type": "string"},
+    "review_round": {"type": "integer", "minimum": 1},
+    "baseline_generation": {"type": "integer", "minimum": 0},
+    "subject_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "finding_ids": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The exact Finding set. S7 never merges or deduplicates similar symptoms; S8 proves shared roots.",
+      "items": {"type": "string"}
+    },
+    "drained_assignment_ids": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "drain_policy": {
+      "enum": ["complete_required_claims", "immediate_stop"]
+    },
+    "claim_coverage_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_required", "pass", "finding", "not_applicable", "blocked", "blocked_claims", "plan_revision"],
+      "properties": {
+        "total_required": {"type": "integer", "minimum": 0},
+        "pass": {"type": "integer", "minimum": 0},
+        "finding": {"type": "integer", "minimum": 0},
+        "not_applicable": {"type": "integer", "minimum": 0},
+        "blocked": {"type": "integer", "minimum": 0},
+        "blocked_claims": {
+          "type": "array",
+          "description": "Every blocked Claim with its blocked_by_confirmed_finding binding (L3-S7 §3.5/§3.7): the confirmed Findings of this round that make it non-executable, the failed precondition, the evidence, and the after-repair obligation. Empty when no Claim is blocked. blocked is never a pass; the repaired round owes these Claims.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["claim_id", "blocking_finding_ids", "failed_precondition", "evidence_refs", "after_repair_required", "result_id"],
+            "properties": {
+              "claim_id": {"type": "string"},
+              "blocking_finding_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"}
+              },
+              "failed_precondition": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "detail"],
+                "properties": {
+                  "kind": {"enum": ["build", "start", "entry", "precondition"]},
+                  "detail": {"type": "string", "minLength": 1}
+                }
+              },
+              "evidence_refs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"}
+              },
+              "after_repair_required": {"const": true},
+              "result_id": {
+                "type": "string",
+                "description": "The Canonical ReviewResult that produced the projection."
+              }
+            }
+          }
+        },
+        "plan_revision": {"type": "integer", "minimum": 1}
+      }
+    },
+    "cancelled_or_non_gating_assignment_ids": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "unobserved_claim_ids": {
+      "type": "array",
+      "description": "MUST be empty for ordinary batches; only immediate-stop safety gaps may remain, each justified by a capture gap.",
+      "items": {"type": "string"}
+    },
+    "original_finder_routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "agent_id", "assignment_id"],
+        "properties": {
+          "finding_id": {"type": "string"},
+          "agent_id": {"type": "string"},
+          "assignment_id": {"type": "string"}
+        }
+      }
+    },
+    "investigation_readiness": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "status"],
+        "properties": {
+          "finding_id": {"type": "string"},
+          "status": {
+            "enum": ["ready", "ready_with_safety_gaps"]
+          },
+          "capture_gaps": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "severity_summary": {"type": "string"},
+    "stop_reason": {"type": "string"},
+    "sealed_at": {"type": "string", "minLength": 1},
+    "sealed_by": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1}
+  }
+}

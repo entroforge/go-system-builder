@@ -6,30 +6,32 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
 func writeLegacyPlanningState(t *testing.T, dir string, phase any, revision int) {
 	t.Helper()
-	state := map[string]any{
-		"schema_version": "1.1.0",
-		"runtime_id":     "loop-legacy",
-		"revision":       revision,
-		"baseline":       map[string]any{"generation": 1, "captured_at": "2026-06-20T00:00:00Z"},
-		"lifecycle": map[string]any{
-			"state":          "planning",
-			"phase":          phase,
-			"phase_revision": 0,
-		},
-		"journal": map[string]any{
-			"path":          ".claude/loop-events.jsonl",
-			"last_sequence": revision,
-			"last_event_id": nil,
-		},
-		"last_transition": nil,
-		"updated_at":      "2026-06-20T00:00:00Z",
+	data, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, err := json.MarshalIndent(state, "", "  ")
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["runtime_id"] = "loop-legacy"
+	state["revision"] = revision
+	state["lifecycle"] = map[string]any{
+		"state":          "planning",
+		"phase":          phase,
+		"phase_revision": 0,
+	}
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
+	}
+	data, err = json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +57,7 @@ func TestMigrateLegacyPlanningMapsPhaseFromArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := runtime.NewStore(filepath.Join(claude, "loop-state.json"), filepath.Join(claude, "loop-events.jsonl"))
+	store := testWriter(filepath.Join(claude, "loop-state.json"), filepath.Join(claude, "loop-events.jsonl"))
 	migrated, err := store.MigrateLegacyPlanning(root)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +116,7 @@ func TestMigrateLegacyPlanningNoOpForCurrentFormalPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := runtime.NewStore(filepath.Join(claude, "loop-state.json"), filepath.Join(claude, "loop-events.jsonl"))
+	store := testWriter(filepath.Join(claude, "loop-state.json"), filepath.Join(claude, "loop-events.jsonl"))
 	migrated, err := store.MigrateLegacyPlanning(root)
 	if err != nil {
 		t.Fatal(err)

@@ -6,9 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path"
 	"sort"
 	"strings"
 
+	"github.com/entroforge/go-system-builder/internal/acceptance"
+	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 )
 
@@ -30,6 +34,14 @@ const (
 // FileView is the evaluator's read-only artifact boundary.
 type FileView interface {
 	ReadFile(path string) ([]byte, error)
+}
+
+// fileDirLister is the optional directory-listing capability a FileView may
+// implement so the planning gates can discover disk-declared artifacts
+// (documents[] registration is produced by the gated transitions
+// themselves, so requiring it up front deadlocks the auto-advance path).
+type fileDirLister interface {
+	ReadDir(dir string) ([]os.DirEntry, error)
 }
 
 // Input contains the immutable facts observed for one gate evaluation.
@@ -80,36 +92,7 @@ func (e *Engine) RequestedEvents(input Input) []string {
 }
 
 func evidenceKindsEqual(requirementKind, actualKind string) bool {
-	if requirementKind == actualKind {
-		return true
-	}
-	switch requirementKind {
-	case "document_review_record":
-		return actualKind == "document_review"
-	case "clean_round_record":
-		return actualKind == "clean_round"
-	case "bug_batch_record":
-		return actualKind == "bug"
-	case "targeted_reverification_record":
-		return actualKind == "targeted_reverification"
-	case "delivery_review_record":
-		return actualKind == "delivery_review"
-	case "finding_record", "root_cause_record", "repair_record":
-		return actualKind == "bug"
-	case "team_manifest_record":
-		return actualKind == "builder_report" || actualKind == "team_manifest"
-	case "completion_report":
-		return actualKind == "agent_completion" || actualKind == "completion_report"
-	case "builder_report_record":
-		return actualKind == "builder_report" || actualKind == "agent_completion"
-	case "activation_record":
-		return actualKind == "agent_activation"
-	case "pause_record":
-		// Schema evidence.kind enum uses human_decision; gate requirements
-		// still name pause_record (TR-014/024). Accept both spellings.
-		return actualKind == "pause" || actualKind == "human_decision"
-	}
-	return strings.TrimSuffix(requirementKind, "_record") == actualKind
+	return evidence.DefaultCatalog().Accepts(requirementKind, actualKind)
 }
 
 // Evaluate reports unknown for unregistered gates. Registered gate semantics
@@ -162,6 +145,19 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) (Evaluation, error) 
 	if input.GateID == "GATE-PLANNING-DESIGN-COMPLETE" {
 		return evaluatePlanningDesign(input, result, spec), nil
 	}
+	if input.GateID == "GATE-DOCUMENT-PASS" {
+		// Registered-document drift check: every current-
+		// generation registered document must still match its disk sha.
+		// Without this, exactSubjects compares against the verified subset
+		// only and a document the reviewers never saw can be re-registered
+		// from disk and locked into building by TR-003's commit.
+		if conflicts := registeredDocumentDrift(input); len(conflicts) > 0 {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = conflicts
+			return result, nil
+		}
+	}
 	if input.GateID == "GATE-PLANNING-CONTRACTS-COMPLETE" {
 		return evaluatePlanningArtifact(input, result, spec, documents, "contract", "locked", "document:contract:locked"), nil
 	}
@@ -201,6 +197,25 @@ type evidenceEnvelope struct {
 	RequestedEvent         string       `json:"requested_event"`
 	InvalidatedBy          string       `json:"invalidated_by"`
 	TaskID                 string       `json:"task_id"`
+	// Builder-result content (L3-S6 §7.3): the gate consumes the completion
+	// facts instead of counting envelopes by task_id alone.
+	Checks          []envelopeCheck `json:"checks,omitempty"`
+	ChangedPaths    []string        `json:"changed_paths,omitempty"`
+	ScopeDeviations []string        `json:"scope_deviations,omitempty"`
+	// S10 acceptance/release-audit evidence points at a structured completion
+	// ledger. The human-readable ACC/audit Markdown remains a report; this
+	// reference makes the finite coverage and counterevidence contract
+	// consumable by the gate without parsing prose.
+	AuditManifestPath   string `json:"audit_manifest_path,omitempty"`
+	AuditManifestSHA256 string `json:"audit_manifest_sha256,omitempty"`
+}
+
+// envelopeCheck mirrors the completion-report checkResult shape
+// (name/command/result/evidence_ref) the Builder submits.
+type envelopeCheck struct {
+	Name    string `json:"name"`
+	Command string `json:"command"`
+	Result  string `json:"result"`
 }
 
 func evaluatePlanningDesign(input Input, result Evaluation, spec GateSpec) Evaluation {
@@ -212,11 +227,26 @@ func evaluatePlanningDesign(input Input, result Evaluation, spec GateSpec) Evalu
 	relevant := make([]documentFact, 0, len(requiredKinds))
 	for _, kind := range requiredKinds {
 		document, ok := findCurrentDocument(documents, kind, input.Files)
-		if !ok {
-			result.Missing = append(result.Missing, "document:"+kind+":locked")
+		if ok {
+			relevant = append(relevant, document)
 			continue
 		}
-		relevant = append(relevant, document)
+		// Disk fallback (same family as the planning artifact
+		// gates): a locked REQ / ARCH document declared on disk satisfies
+		// the precondition — the registration into documents[] happens at
+		// PTR-PLAN-01's commit.
+		if diskFacts, listed := diskDeclaredArtifacts(input, kind, "locked"); listed {
+			for _, fact := range diskFacts {
+				if fact.Kind == kind {
+					relevant = append(relevant, fact)
+					ok = true
+					break
+				}
+			}
+		}
+		if !ok {
+			result.Missing = append(result.Missing, "document:"+kind+":locked")
+		}
 	}
 	if len(result.Missing) > 0 {
 		sort.Strings(result.Missing)
@@ -242,6 +272,22 @@ func evaluatePlanningArtifact(
 		if document.Kind == kind && document.Status == status {
 			found = true
 			break
+		}
+	}
+	if !found {
+		// Disk fallback: the agent's producible fact is the
+		// file itself — a contract declaring `Status: locked` / a task
+		// declaring `Status: complete` on disk satisfies the gate's
+		// precondition; the commit-time registration into documents[]
+		// (with journal) remains the transition's job.
+		if diskFacts, ok := diskDeclaredArtifacts(input, kind, status); ok {
+			documents = append(documents, diskFacts...)
+			for _, fact := range diskFacts {
+				if fact.Kind == kind && fact.Status == status {
+					found = true
+					break
+				}
+			}
 		}
 	}
 	if !found {
@@ -273,6 +319,13 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 	}
 	var evidenceIDs []string
 	for _, requirement := range spec.EvidenceRequirements {
+		if requirement.ProducedByTransition {
+			// The transition engine validates the canonical generated token and
+			// materializes this evidence while committing the transition. It
+			// cannot be required in the pre-transition snapshot without making
+			// the automatic gate permanently not_ready.
+			continue
+		}
 		qualified, conflicts := qualifiedEvidence(
 			state,
 			input.Files,
@@ -305,11 +358,350 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 	if result.Status == StatusSatisfied && result.GateID == "GATE-DOCUMENT-PASS" {
 		applyDocumentPassIndependence(input, &result, documents)
 	}
-	if result.Status == StatusSatisfied && result.GateID == "GATE-BUILDER-BATCH-READY" {
+	if result.GateID == "GATE-BUILDER-BATCH-READY" {
+		// Unconditional: the exact-set evaluation runs even when the base
+		// requirements are short, so the missing matrix names each
+		// unproven TASK (and a lost/empty batch registry) instead of only
+		// the aggregate evidence token.
 		applyBuilderBatchCompleteness(input, &result)
+	}
+	if result.GateID == "GATE-VERIFY-CLEAN-ROUND-PASSED" {
+		// L3-S7 §10: recompute the machine CleanRound over the ReviewPlan's
+		// exact Claim set; an evidence-only pass is not sufficient.
+		applyCleanRoundGate(input, &result)
+	}
+	if result.GateID == "GATE-VERIFY-BLOCKING-FINDING" {
+		// L3-S7 §3.7: the sealed ObservationBatch must carry the exact
+		// current-round Finding set with the drain policy respected.
+		applyObservationBatchGate(input, &result)
+	}
+	if result.GateID == "GATE-ACCEPTANCE-COMPLETE" || result.GateID == "GATE-ACCEPTANCE-REVIEW-REQUIRED" || result.GateID == "GATE-RELEASE-AUDIT-APPROVED" || result.GateID == "GATE-RELEASE-AUDIT-BLOCKED" {
+		// L3-S10 §1.2: a generic PASS/APPROVED envelope is not enough. The
+		// finite coverage inventory and counterevidence ledger are the
+		// machine-consumed anti-shortcut contract. RC-05 (S10-8): the blocked
+		// route re-checks too — a structurally incomplete ledger cannot enter
+		// TR-018 just because its conclusion says "blocked"; the blocked
+		// manifest itself must still be a complete, evidence-linked record.
+		// RC-16: the review_required acceptance route is under the same
+		// manifest re-hash gate — without it a tampered review_required
+		// manifest sails through the gate unverified.
+		applyS10ManifestGate(input, &result)
 	}
 	result.Fingerprint = fingerprint(result.GateID, spec.SemanticVersion, state, generation, documents, result.EvidenceRefs)
 	return result
+}
+
+func applyS10ManifestGate(input Input, result *Evaluation) {
+	wanted := map[string]string{"acceptance": "acceptance_record"}
+	if result.GateID == "GATE-RELEASE-AUDIT-APPROVED" || result.GateID == "GATE-RELEASE-AUDIT-BLOCKED" {
+		wanted["release_audit"] = "release_audit_record"
+	}
+	for manifestType, evidenceKind := range wanted {
+		evidenceID := ""
+		for _, id := range result.EvidenceRefs {
+			envelope, ok := s10EnvelopeByID(input, id)
+			if ok && evidenceKindsEqual(evidenceKind, envelope.Kind) {
+				evidenceID = id
+				break
+			}
+		}
+		if evidenceID == "" {
+			// The ordinary evidence requirements already explain a missing
+			// acceptance/audit envelope. Do not add a second, confusing
+			// manifest error when its parent evidence is absent.
+			continue
+		}
+		envelope, _ := s10EnvelopeByID(input, evidenceID)
+		if strings.TrimSpace(envelope.AuditManifestPath) == "" || strings.TrimSpace(envelope.AuditManifestSHA256) == "" {
+			result.Missing = append(result.Missing, "s10:"+manifestType+"_manifest:"+evidenceID)
+			result.Status = StatusNotReady
+			continue
+		}
+		if input.Files == nil {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = append(result.Conflicts, "s10:"+manifestType+"_manifest:"+evidenceID+":unreadable; next: restore the manifest file and register a new fingerprinted envelope")
+			continue
+		}
+		manifestData, err := input.Files.ReadFile(envelope.AuditManifestPath)
+		if err != nil {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = append(result.Conflicts, fmt.Sprintf("s10:%s_manifest:%s:unreadable:%s; next: restore the manifest file and register a new fingerprinted envelope", manifestType, evidenceID, err))
+			continue
+		}
+		if sha256Hex(manifestData) != envelope.AuditManifestSHA256 {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = append(result.Conflicts, fmt.Sprintf("s10:%s_manifest:%s:sha256_mismatch; next: do not edit in place, regenerate the manifest and register a new fingerprinted envelope", manifestType, evidenceID))
+			continue
+		}
+		// RC-16: outcome-aware validation. Passing/approved outcomes require a
+		// clean ledger; a routed review_required/blocked outcome keeps the
+		// unresolved rows that explain the route, but must still be a
+		// structurally complete, evidence-linked record. The conclusion/type
+		// pairing is fail-closed: allowsUnresolvedOutcome only relaxes the
+		// matching route (acceptance+review_required, release_audit+blocked).
+		baseline, baselineErr := s10ExternalBaseline(input)
+		if baselineErr != nil {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = append(result.Conflicts, fmt.Sprintf("s10:%s_manifest:%s:external_baseline_unverifiable:%s; next: restore the current-generation completion artifacts so the changed-surface denominator can be re-derived, then re-run the gate", manifestType, evidenceID, baselineErr))
+			continue
+		}
+		var summary acceptance.Summary
+		if input.Root != "" && acceptance.S10AuthorityAvailable(input.Snapshot.State) {
+			authority, authorityErr := acceptance.BuildS10InventoryAuthority(input.Root, input.Snapshot.State, baseline)
+			if authorityErr != nil {
+				result.Status = StatusUnknown
+				result.ErrorCode = ErrorGateUnknown
+				result.Conflicts = append(result.Conflicts, fmt.Sprintf("s10:%s_manifest:%s:authoritative_inventory_unverifiable:%s; next: restore the current bound REQ, contract/TASK registrations, and pinned S7 ReviewPlan before re-running the gate", manifestType, evidenceID, authorityErr))
+				continue
+			}
+			summary, err = acceptance.ValidateForOutcomeWithBaselineAndAuthority(manifestData, manifestType, strings.TrimSpace(envelope.Conclusion), baseline, authority)
+		} else {
+			summary, err = acceptance.ValidateForOutcomeWithBaseline(manifestData, manifestType, strings.TrimSpace(envelope.Conclusion), baseline)
+		}
+		if err != nil {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = append(result.Conflicts, fmt.Sprintf("s10:%s_manifest:%s:invalid:%s", manifestType, evidenceID, err))
+			continue
+		}
+		if missing := missingS10EvidenceRefs(input, evidenceID, summary.EvidenceRefs); len(missing) > 0 {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = append(result.Conflicts, fmt.Sprintf("s10:%s_manifest:%s:evidence_ref_missing:%s; next: register the referenced current evidence first, then regenerate and re-register the manifest envelope (ids match runtime evidence verbatim — copy them from `.claude/loop-state.json` evidence[].id)", manifestType, evidenceID, strings.Join(missing, ",")))
+			continue
+		}
+		if summary.ManifestType != manifestType || !s10ManifestBindingMatches(input, envelope, manifestData) {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = append(result.Conflicts, fmt.Sprintf("s10:%s_manifest:%s:binding_mismatch; next: regenerate against the current runtime, baseline, and S7 round", manifestType, evidenceID))
+		}
+	}
+	result.Missing = sortedUnique(result.Missing)
+	result.Conflicts = sortedUnique(result.Conflicts)
+	if len(result.Conflicts) == 0 && len(result.Missing) > 0 {
+		result.Status = StatusNotReady
+	}
+}
+
+// S10ExternalBaseline is the shared RC-05/RC-16 external-denominator builder
+// for the S10 manifest consumers: the Quality Gate (applyS10ManifestGate) and
+// `loop-harness s10 status` (inspectS10Artifact) both call it so the two can
+// never diverge on what the denominator is (RC-16 status/gate single source).
+// It unions three sources the manifest author does not control:
+//
+//  1. the immutable current-generation completion artifacts, re-derived
+//     through review.ChangedPathsForRootDetailed when a repository root is
+//     available (the same exact-set surface S7 froze);
+//  2. change_impact evidence artifacts of the current generation — the
+//     change ledger a repair round authorized;
+//  3. the affected paths of the triggering request, with the explicit "all"
+//     token marking a full-surface declaration (waives the exact-set check).
+//
+// RC-16 fail-closed rule: when the completion-artifact projection is
+// unverifiable (review diagnostics present — e.g. a registered completion
+// artifact missing from disk), the returned error names the diagnostics and
+// the caller must surface `s10:external_baseline_unverifiable` instead of
+// silently waiving the exact-set check. Only a genuinely empty projection
+// (no diagnostics, no paths) returns a Baseline with no ChangedPaths, which
+// leaves the self-declared denominator untouched.
+func S10ExternalBaseline(root string, state map[string]any, affectedPaths []string) (acceptance.Baseline, error) {
+	return acceptance.BuildS10ExternalBaseline(root, state, affectedPaths)
+}
+
+// s10ExternalBaseline is the gate-side wrapper over S10ExternalBaseline. The
+// gate reads the change_impact ledger through the evaluator's FileView (tests
+// use in-memory file views), so rooted evaluation calls the shared builder for
+// the completion projection and then unions the FileView-based ledger entries.
+// A rootless evaluation keeps the pre-RC-16 behavior: no completion projection
+// to verify, so only the ledger and affected paths contribute.
+func s10ExternalBaseline(input Input) (acceptance.Baseline, error) {
+	if input.Root == "" {
+		baseline := acceptance.Baseline{}
+		if strings.TrimSpace(strings.Join(input.AffectedPaths, ",")) == "all" || (len(input.AffectedPaths) == 1 && input.AffectedPaths[0] == "all") {
+			baseline.AffectedPathsAll = true
+			return baseline, nil
+		}
+		seen := map[string]struct{}{}
+		add := func(paths []string) {
+			for _, p := range paths {
+				p = strings.TrimPrefix(strings.TrimSpace(strings.ReplaceAll(p, "\\", "/")), "./")
+				if p == "" || strings.Contains(p, ":") {
+					continue
+				}
+				if _, ok := seen[p]; ok {
+					continue
+				}
+				seen[p] = struct{}{}
+				baseline.ChangedPaths = append(baseline.ChangedPaths, p)
+			}
+		}
+		add(changeImpactChangedPaths(input))
+		for _, p := range input.AffectedPaths {
+			add([]string{p})
+		}
+		sort.Strings(baseline.ChangedPaths)
+		return baseline, nil
+	}
+	baseline, err := S10ExternalBaseline(input.Root, input.Snapshot.State, input.AffectedPaths)
+	if err != nil {
+		return acceptance.Baseline{}, err
+	}
+	extra := changeImpactChangedPaths(input)
+	if len(extra) > 0 {
+		seen := map[string]struct{}{}
+		for _, p := range baseline.ChangedPaths {
+			seen[p] = struct{}{}
+		}
+		for _, p := range extra {
+			p = strings.TrimPrefix(strings.TrimSpace(strings.ReplaceAll(p, "\\", "/")), "./")
+			if p == "" || strings.Contains(p, ":") {
+				continue
+			}
+			if _, ok := seen[p]; !ok {
+				seen[p] = struct{}{}
+				baseline.ChangedPaths = append(baseline.ChangedPaths, p)
+			}
+		}
+		sort.Strings(baseline.ChangedPaths)
+	}
+	return baseline, nil
+}
+
+// changeImpactChangedPaths reads changed_artifacts from every current-
+// generation change_impact evidence artifact in the runtime index. A drifted
+// or unreadable artifact contributes nothing (its registration gate already
+// proves it separately); a readable one is an authoritative ledger entry.
+func changeImpactChangedPaths(input Input) []string {
+	if input.Files == nil {
+		return nil
+	}
+	return changeImpactChangedPathsRead(input.Snapshot.State, input.Files.ReadFile)
+}
+
+func changeImpactChangedPathsRead(state map[string]any, readFile func(string) ([]byte, error)) []string {
+	generation := nestedInt(state, "baseline", "generation")
+	rawEvidence, _ := state["evidence"].([]any)
+	var paths []string
+	for _, raw := range rawEvidence {
+		entry, _ := raw.(map[string]any)
+		if entry == nil || !evidenceKindsEqual("change_impact_record", stringValue(entry["kind"])) ||
+			stringValue(entry["status"]) != "valid" || entry["invalidated_by"] != nil ||
+			intValue(entry["baseline_generation"]) != generation {
+			continue
+		}
+		data, err := readFile(stringValue(entry["path"]))
+		if err != nil || sha256Hex(data) != stringValue(entry["sha256"]) {
+			continue
+		}
+		var impact struct {
+			ChangedArtifacts []struct {
+				Path string `json:"path"`
+			} `json:"changed_artifacts"`
+		}
+		if json.Unmarshal(data, &impact) != nil {
+			continue
+		}
+		for _, artifact := range impact.ChangedArtifacts {
+			if artifact.Path != "" {
+				paths = append(paths, artifact.Path)
+			}
+		}
+	}
+	return paths
+}
+
+func missingS10EvidenceRefs(input Input, selfID string, refs []string) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	currentGeneration := nestedInt(input.Snapshot.State, "baseline", "generation")
+	currentRound := nestedInt(input.Snapshot.State, "review", "round")
+	available := make(map[string]struct{})
+	rawEvidence, _ := input.Snapshot.State["evidence"].([]any)
+	for _, raw := range rawEvidence {
+		entry, _ := raw.(map[string]any)
+		if entry == nil || stringValue(entry["status"]) != "valid" || intValue(entry["baseline_generation"]) != currentGeneration {
+			continue
+		}
+		// RC-14: invalidated_by empty string is treated as nil (not invalidated); only non-empty invalidates.
+		if v := entry["invalidated_by"]; v != nil {
+			if str, ok := v.(string); ok {
+				if stringValue(str) != "" {
+					continue
+				}
+			} else {
+				continue
+			}
+		}
+		id := stringValue(entry["id"])
+		if id == "" || id == selfID {
+			continue
+		}
+		// RC-14: when entry carries a review_round, it must match currentRound; round-less evidence is not round-bound and remains available.
+		if currentRound > 0 {
+			if round := intValue(entry["review_round"]); round != 0 && round != currentRound {
+				continue
+			}
+		}
+		// RC-14: kind must be a registered evidence kind (phantom kinds rejected).
+		kind := stringValue(entry["kind"])
+		if kind != "" && !evidence.DefaultCatalog().IsRegisteredKind(kind) {
+			continue
+		}
+		path := stringValue(entry["path"])
+		if input.Files == nil || path == "" {
+			continue
+		}
+		data, err := input.Files.ReadFile(path)
+		if err != nil || sha256Hex(data) != stringValue(entry["sha256"]) {
+			continue
+		}
+		available[id] = struct{}{}
+	}
+	missing := make([]string, 0)
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			missing = append(missing, ref)
+			continue
+		}
+		// RC-14: execution anchors (://) are not runtime evidence ids; they cannot satisfy S10 manifest refs.
+		if strings.Contains(ref, "://") {
+			missing = append(missing, ref)
+			continue
+		}
+		if _, ok := available[ref]; !ok {
+			missing = append(missing, ref)
+		}
+	}
+	return sortedUnique(missing)
+}
+
+func s10EnvelopeByID(input Input, id string) (evidenceEnvelope, bool) {
+	for _, envelope := range evidenceEnvelopesByID(input, []string{id}) {
+		return envelope, true
+	}
+	return evidenceEnvelope{}, false
+}
+
+func s10ManifestBindingMatches(input Input, envelope evidenceEnvelope, data []byte) bool {
+	var manifest struct {
+		RuntimeID          string `json:"runtime_id"`
+		BaselineGeneration int    `json:"baseline_generation"`
+		ReviewRound        int    `json:"review_round"`
+	}
+	if json.Unmarshal(data, &manifest) != nil {
+		return false
+	}
+	return manifest.RuntimeID == envelope.RuntimeID &&
+		manifest.BaselineGeneration == envelope.BaselineGeneration &&
+		manifest.ReviewRound == envelope.ReviewRound &&
+		manifest.RuntimeID == stringValue(input.Snapshot.State["runtime_id"]) &&
+		manifest.BaselineGeneration == nestedInt(input.Snapshot.State, "baseline", "generation") &&
+		manifest.ReviewRound == nestedInt(input.Snapshot.State, "review", "round")
 }
 
 func evidenceMissingKey(spec GateSpec, requirement EvidenceRequirement) string {
@@ -346,18 +738,41 @@ func unauthorizedProducerConflicts(
 			currentRoundKinds[requirement.Kind] = true
 		}
 	}
+	kindCurrentRound := func(kind string) bool {
+		for requirementKind := range currentRoundKinds {
+			if evidenceKindsEqual(requirementKind, kind) {
+				return true
+			}
+		}
+		return false
+	}
 	runtimeID, _ := input.Snapshot.State["runtime_id"].(string)
 	raw, _ := input.Snapshot.State["evidence"].([]any)
 	var conflicts []string
 	for _, item := range raw {
 		index, _ := item.(map[string]any)
+		if index == nil {
+			continue
+		}
 		kind := stringValue(index["kind"])
-		responsibilities, relevant := allowed[kind]
-		if index == nil || !relevant ||
+		// Requirements name catalog slots; the persisted kind may be a
+		// legacy alias (review_result vs the pre-S7 per-lens kinds
+		// delivery_review/qa_review/e2e_review), so the lookup goes through
+		// the alias-aware comparison.
+		var responsibilities map[string]struct{}
+		relevant := false
+		for requirementKind, resp := range allowed {
+			if evidenceKindsEqual(requirementKind, kind) {
+				responsibilities = resp
+				relevant = true
+				break
+			}
+		}
+		if !relevant ||
 			stringValue(index["status"]) != "valid" ||
 			intValue(index["baseline_generation"]) != generation ||
 			index["invalidated_by"] != nil ||
-			(currentRoundKinds[kind] && intValue(index["review_round"]) != currentRound) ||
+			(kindCurrentRound(kind) && intValue(index["review_round"]) != currentRound) ||
 			input.Files == nil {
 			continue
 		}
@@ -480,6 +895,7 @@ func qualifiedEvidence(
 	raw, _ := state["evidence"].([]any)
 	var valid []string
 	var conflicts []string
+	var mismatched []string
 	for _, item := range raw {
 		index, _ := item.(map[string]any)
 		if index == nil || !evidenceKindsEqual(requirement.Kind, stringValue(index["kind"])) {
@@ -526,10 +942,29 @@ func qualifiedEvidence(
 			(envelope.ReviewRound != currentRound || envelope.ReviewRound != intValue(index["review_round"])) {
 			continue
 		}
-		if envelope.InvalidatedBy != "" ||
-			!containsString(requirement.Conclusions, envelope.Conclusion) ||
-			(requirement.RequestedEvent != "" && envelope.RequestedEvent != requirement.RequestedEvent) ||
-			!subjectsMatch(envelope.SubjectRefs, documents) {
+		if envelope.InvalidatedBy != "" {
+			continue
+		}
+		// A registered current-generation record whose conclusion or
+		// requested_event misses the requirement may be a naming error —
+		// but the same kind legitimately serves several requirements with
+		// different conclusion vocabularies (bug serves finding_record AND
+		// root_cause_record), so the conflict is deferred: it is reported
+		// only when nothing ends up qualifying (without the
+		// false alarms).
+		if !containsString(requirement.Conclusions, envelope.Conclusion) {
+			if !requirement.RoutingVerdict {
+				mismatched = append(mismatched, "evidence:"+stringValue(index["id"])+":conclusion_mismatch:"+envelope.Conclusion)
+			}
+			continue
+		}
+		if requirement.RequestedEvent != "" && envelope.RequestedEvent != requirement.RequestedEvent {
+			if !requirement.RoutingVerdict {
+				mismatched = append(mismatched, "evidence:"+stringValue(index["id"])+":requested_event_mismatch:"+envelope.RequestedEvent)
+			}
+			continue
+		}
+		if !subjectsMatch(envelope.SubjectRefs, documents) {
 			continue
 		}
 		if !containsString(requirement.Responsibilities, envelope.ProducerResponsibility) {
@@ -537,10 +972,20 @@ func qualifiedEvidence(
 		}
 		valid = append(valid, envelope.EvidenceID)
 	}
+	if len(valid) == 0 && len(mismatched) > 0 {
+		// Nothing qualified and naming errors exist — they are the reason.
+		conflicts = append(conflicts, mismatched...)
+	}
 	return sortedUnique(valid), sortedUnique(conflicts)
 }
 
 func applyDocumentPassIndependence(input Input, result *Evaluation, documents []documentFact) {
+	// Reviewer-vs-author is data-driven: it only fires when documents carry
+	// a real author_agent_id. On the organic path registrations record
+	// hook_controller (the commit actor, not the drafting agent), so this
+	// layer is dormant there — independence rests on separation_edges
+	// (dispatch) + distinct producers (below) + the reviewer discipline in
+	// the document-verifier card (L3-S5 §2, honestly recorded).
 	envelopes := evidenceEnvelopesByID(input, result.EvidenceRefs)
 	producers := make(map[string]struct{}, len(envelopes))
 	authors := make(map[string]struct{})
@@ -554,8 +999,9 @@ func applyDocumentPassIndependence(input Input, result *Evaluation, documents []
 		if _, isAuthor := authors[envelope.ProducerAgentID]; isAuthor {
 			result.Missing = append(result.Missing, "evidence:reviewer_not_candidate_author")
 		}
-		if !exactSubjects(envelope.SubjectRefs, documents) {
+		if missing := missingSubjects(envelope.SubjectRefs, documents); len(missing) > 0 {
 			result.Missing = append(result.Missing, "evidence:exact_document_manifest")
+			result.Conflicts = append(result.Conflicts, "exact_subjects_missing:"+strings.Join(missing, ","))
 		}
 	}
 	if len(envelopes) != len(result.EvidenceRefs) {
@@ -615,23 +1061,51 @@ func evidenceEnvelopesByID(input Input, ids []string) []evidenceEnvelope {
 	return envelopes
 }
 
+// applyBuilderBatchCompleteness evaluates GATE-BUILDER-BATCH-READY over the
+// TR-003 exact execution batch — the current-generation task documents
+// registered by register_execution_batch — instead of scanning runtime task
+// states (L3-S6 §8.2). A task registered straight into `reviewed` (or left
+// in `candidate`) is inside the registered batch and therefore cannot slip
+// the completeness check. Per TASK the gate proves:
+//
+//  1. a qualified completion_report envelope bound to that task exists;
+//  2. every check recorded in the envelope passed (non-pass results block);
+//  3. the envelope declares no scope deviations;
+//  4. a durable worktree integration checkpoint with task_id bound to that
+//     task reached `verified` or beyond.
+//
+// An empty registered batch is itself not_ready: TR-003 refuses to lock an
+// empty batch, so reaching building without one means the batch registry
+// was lost, not that zero work suffices.
 func applyBuilderBatchCompleteness(input Input, result *Evaluation) {
-	completed := make(map[string]struct{})
+	batch := executionBatchTasks(input.Snapshot.State)
+	if len(batch) == 0 {
+		result.Missing = append(result.Missing, "batch:execution_batch_empty")
+		result.Status = StatusNotReady
+		return
+	}
+	completions := make(map[string]evidenceEnvelope)
 	for _, envelope := range evidenceEnvelopesByID(input, result.EvidenceRefs) {
 		if evidenceKindsEqual("completion_report", envelope.Kind) && envelope.TaskID != "" {
-			completed[envelope.TaskID] = struct{}{}
+			completions[envelope.TaskID] = envelope
 		}
 	}
-	entities, _ := input.Snapshot.State["entities"].(map[string]any)
-	tasks, _ := entities["tasks"].([]any)
-	for _, item := range tasks {
-		task, _ := item.(map[string]any)
-		if task == nil || !activatedTaskState(stringValue(task["state"])) {
-			continue
-		}
-		taskID := stringValue(task["id"])
-		if _, ok := completed[taskID]; !ok {
+	integrated := verifiedIntegrationTaskIDs(input)
+	for _, taskID := range batch {
+		envelope, ok := completions[taskID]
+		if !ok {
 			result.Missing = append(result.Missing, "evidence:completion_report:"+taskID)
+		}
+		if ok {
+			if failing := failingEnvelopeChecks(envelope); len(failing) > 0 {
+				result.Missing = append(result.Missing, "checks:"+taskID+":"+strings.Join(failing, ","))
+			}
+			if len(envelope.ScopeDeviations) > 0 {
+				result.Missing = append(result.Missing, "scope_deviations:"+taskID+":"+strings.Join(envelope.ScopeDeviations, ","))
+			}
+		}
+		if !integrated[taskID] {
+			result.Missing = append(result.Missing, "integration_checkpoint:"+taskID)
 		}
 	}
 	result.Missing = sortedUnique(result.Missing)
@@ -640,13 +1114,84 @@ func applyBuilderBatchCompleteness(input Input, result *Evaluation) {
 	}
 }
 
-func activatedTaskState(state string) bool {
-	switch state {
-	case "in_progress", "review", "done":
-		return true
-	default:
-		return false
+// executionBatchTasks returns the TR-003 exact execution batch: the task
+// documents registered at the current baseline generation. Order is the
+// registration order so the missing matrix is reproducible.
+func executionBatchTasks(state map[string]any) []string {
+	generation := nestedInt(state, "baseline", "generation")
+	raw, _ := state["documents"].([]any)
+	var batch []string
+	for _, item := range raw {
+		document, _ := item.(map[string]any)
+		if document == nil || stringValue(document["kind"]) != "task" {
+			continue
+		}
+		if intValue(document["generation"]) != generation {
+			continue
+		}
+		if id := stringValue(document["id"]); id != "" {
+			batch = append(batch, id)
+		}
 	}
+	return batch
+}
+
+// verifiedIntegrationTaskIDs loads every durable worktree checkpoint for
+// the current runtime + generation and returns the task IDs whose state
+// reached `verified` or beyond. The checkpoint files are the Integrator's
+// authoritative record; a FileView without directory listing makes them
+// unobservable, which is surfaced as missing per task by the caller (fail
+// closed, not silently skipped).
+func verifiedIntegrationTaskIDs(input Input) map[string]bool {
+	integrated := make(map[string]bool)
+	lister, ok := input.Files.(fileDirLister)
+	if !ok || input.Files == nil {
+		return integrated
+	}
+	runtimeID, _ := input.Snapshot.State["runtime_id"].(string)
+	generation := nestedInt(input.Snapshot.State, "baseline", "generation")
+	dir := path.Join(".claude", "evidence", runtimeID, fmt.Sprintf("g%d", generation), "worktree")
+	entries, err := lister.ReadDir(dir)
+	if err != nil {
+		return integrated
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		data, err := input.Files.ReadFile(path.Join(dir, entry.Name(), "checkpoint.json"))
+		if err != nil {
+			continue
+		}
+		var checkpoint struct {
+			TaskID string `json:"task_id"`
+			State  string `json:"state"`
+		}
+		if json.Unmarshal(data, &checkpoint) != nil || checkpoint.TaskID == "" {
+			continue
+		}
+		switch checkpoint.State {
+		case "verified", "acknowledged", "cleanup_pending", "complete":
+			integrated[checkpoint.TaskID] = true
+		}
+	}
+	return integrated
+}
+
+// failingEnvelopeChecks names the envelope checks whose result is not pass
+// (fail / blocked / not_run all leave the closing contract unproven).
+func failingEnvelopeChecks(envelope evidenceEnvelope) []string {
+	var failing []string
+	for _, check := range envelope.Checks {
+		if check.Result != "pass" {
+			label := check.Name
+			if label == "" {
+				label = check.Command
+			}
+			failing = append(failing, label+"="+check.Result)
+		}
+	}
+	return failing
 }
 
 func sortedUnique(values []string) []string {
@@ -795,4 +1340,136 @@ func intValue(value any) int {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// diskDeclaredArtifacts scans the artifact directory for the given kind and
+// returns the on-disk documents whose top-of-file status field matches.
+// The bool reports whether listing was possible at all (a FileView without
+// directory listing — legacy test doubles — keeps the documents[]-only
+// behavior).
+func diskDeclaredArtifacts(input Input, kind, status string) ([]documentFact, bool) {
+	lister, ok := input.Files.(fileDirLister)
+	if !ok || input.Files == nil {
+		return nil, false
+	}
+	dirRel, filePrefix := diskArtifactHome(kind)
+	entries, err := lister.ReadDir(dirRel)
+	if err != nil {
+		return nil, false
+	}
+	var facts []documentFact
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".md") ||
+			strings.Contains(strings.ToLower(name), "template") ||
+			strings.EqualFold(name, "README.md") ||
+			(filePrefix != "" && !strings.HasPrefix(strings.TrimSuffix(name, ".md"), filePrefix)) {
+			continue
+		}
+		rel := path.Join(dirRel, name)
+		data, err := input.Files.ReadFile(rel)
+		if err != nil {
+			continue
+		}
+		declared := parseMarkdownStatusField(string(data))
+		if declared != status {
+			continue
+		}
+		facts = append(facts, documentFact{
+			Kind: kind, Path: rel,
+			Version: parseMarkdownVersionField(string(data)),
+			SHA256:  sha256Hex(data),
+			Status:  declared,
+		})
+	}
+	return facts, true
+}
+
+// parseMarkdownStatusField reads the top blockquote `状态`/`Status` field,
+// mirroring the transition package's ParseMarkdownField semantics without
+// importing it.
+func parseMarkdownStatusField(content string) string {
+	return parseTopField(content, "状态", "Status")
+}
+
+func parseMarkdownVersionField(content string) string {
+	return parseTopField(content, "版本", "Version")
+}
+
+func parseTopField(content string, keys ...string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ">"))
+		for _, key := range keys {
+			for _, sep := range []string{"：", ":"} {
+				prefix := key + sep
+				if strings.HasPrefix(line, prefix) {
+					value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+					// Trailing parenthetical annotations (e.g. the REQ
+					// template's guidance note) are not part of the value.
+					if i := strings.IndexAny(value, "（( "); i > 0 {
+						value = strings.TrimSpace(value[:i])
+					}
+					return value
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// diskArtifactHome maps a document kind to the directory and file prefix
+// whose on-disk Status declaration is the agent-producible fact for that
+// kind's gate precondition.
+func diskArtifactHome(kind string) (dir string, prefix string) {
+	switch kind {
+	case "task":
+		return "docs/tasks", "TASK-"
+	case "design":
+		return "docs/design/architecture", "ARCHITECTURE-"
+	case "req":
+		return "docs/requirements", "REQ-"
+	default:
+		return "docs/contracts", ""
+	}
+}
+
+// registeredDocumentDrift names every current-generation registered
+// document whose on-disk bytes no longer match the registered sha (or
+// whose file is unreadable) — one `document_drift:<path>` conflict each.
+func registeredDocumentDrift(input Input) []string {
+	if input.Files == nil {
+		return nil
+	}
+	documents := currentDocuments(input.Snapshot.State, nestedInt(input.Snapshot.State, "baseline", "generation"))
+	var conflicts []string
+	for _, document := range documents {
+		if document.Path == "" || document.SHA256 == "" {
+			// An empty path/sha escapes both this screen and exactSubjects —
+			// name it instead of silently shrinking the manifest.
+			conflicts = append(conflicts, "document_drift:"+document.Path+"(missing path/sha)")
+			continue
+		}
+		data, err := input.Files.ReadFile(document.Path)
+		if err != nil || sha256Hex(data) != document.SHA256 {
+			conflicts = append(conflicts, "document_drift:"+document.Path)
+		}
+	}
+	sort.Strings(conflicts)
+	return conflicts
+}
+
+// missingSubjects lists the manifest entries the envelope did not cover.
+func missingSubjects(subjects []subjectRef, documents []documentFact) []string {
+	have := make(map[string]bool, len(subjects))
+	for _, subject := range subjects {
+		have[subject.Path] = true
+	}
+	var missing []string
+	for _, document := range documents {
+		if !have[document.Path] {
+			missing = append(missing, document.Path)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }

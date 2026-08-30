@@ -46,11 +46,12 @@
         "hook_blocked",
         "human_decision",
         "journal_reconciled",
-        "planning_phase_migrated"
+        "planning_phase_migrated",
+        "milestone_refreshed"
       ]
     },
     "outcome": {
-      "enum": ["committed", "rejected", "warning", "blocked", "reconciled", "migrated"]
+      "enum": ["committed", "rejected", "warning", "blocked", "reconciled", "migrated", "refreshed"]
     },
     "actor": {
       "type": "object",
@@ -73,6 +74,10 @@
       }
     },
     "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
       "type": "string",
       "minLength": 1
     },

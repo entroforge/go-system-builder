@@ -42,7 +42,11 @@ func StageFor(state, phase, root string) (cursor, label string) {
 	case "acceptance", "release_audit":
 		return "S10", state
 	case "awaiting_human_release":
-		return "S11", "awaiting_human_release"
+		return "S11", "human_release_gateway"
+	case "release_authorized":
+		return "S11", "release_authorized"
+	case "aborted":
+		return "aborted", "aborted"
 	case "paused":
 		return "paused", "paused"
 	default:

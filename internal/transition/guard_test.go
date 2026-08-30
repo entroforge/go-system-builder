@@ -81,7 +81,7 @@ func TestGuardPassesWhenNoBlockingBugs(t *testing.T) {
 // TestGuardUIIImpactResolvedBlocksUnknown verifies the SM-003 guard
 // (LOOP-STATE-MACHINE.md §15): once `req bind` registers a REQ with
 // `ui_impact = unknown`, the planning phase cannot advance until PM
-// clarifies the value in §11. The guard is state-derived (reads
+// clarifies the value in §D. The guard is state-derived (reads
 // bound_req.metadata.ui_impact) and is wired into the registry as
 // `ui_impact_resolved`.
 func TestGuardUIIImpactResolvedBlocksUnknown(t *testing.T) {
@@ -177,7 +177,7 @@ func TestBindREQAcceptsUnknownUIIImpact(t *testing.T) {
 		ExpectedRevision: 0,
 		Actor:            "user",
 		Evidence: map[string]string{
-			"req_lock_record":           "REQ-099#lock",
+			"req_lock_record":           "docs/requirements/REQ-099.md@0000000000000000000000000000000000000000000000000000000000000000",
 			"loop_authorization_record": "user:/loop REQ-099",
 		},
 		REQ: &transition.LockedREQ{

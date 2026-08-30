@@ -79,8 +79,8 @@ func TestReady_SatisfiedPlanningContracts(t *testing.T) {
 
 func TestReady_ConflictVerificationDelivery(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "verification", "delivery", 32)
-	req039fixtures.SeedConflictingDeliveryEvents(t, root, state)
+	state := req039fixtures.BaseState(t, root, "verification", "running", 32)
+	req039fixtures.SeedConflictingPauseVerdicts(t, root, state)
 	req039fixtures.WriteState(t, root, state)
 
 	before := readRevision(t, root)

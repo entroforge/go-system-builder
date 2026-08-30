@@ -9,19 +9,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/controller"
+	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
-const loopManualRef = ".claude/bin/loop-harness.md"
+const loopManualRef = "loop-harness.md"
+
+// loopManualFallbackRef is the alternate on-disk location for the agent-facing
+// Manual (some harness generations install it under .claude/bin/). Guidance
+// always names the primary path first and mentions the fallback only in
+// recovery packets, so a stale install location can still be found.
+const loopManualFallbackRef = ".claude/bin/loop-harness.md"
 
 // buildGuidance is the positive side of the Hook control plane. It deliberately
 // consumes projectNext/buildNextProjection, the same projection used by
@@ -33,6 +42,13 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 	lifecyclePhase, _ := lifecycle["phase"].(string)
 	stage, skill, action := projectNext(lifecycleState, lifecyclePhase, root)
 	next := buildNextProjection(state, stage, skill, action, root)
+	applyS7BudgetGateway(&next, state)
+	if lifecycleState == "bug_resolution" && lifecyclePhase == "investigation" {
+		next.Action = investigationNextAction(state)
+	}
+	if lifecycleState == "bug_resolution" && lifecyclePhase != "investigation" {
+		next.Action = repairNextAction(state, lifecyclePhase)
+	}
 
 	guidance := policy.Guidance{
 		RuntimeID:      stringValue(state["runtime_id"]),
@@ -53,7 +69,7 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 		Automation: []string{
 			"do not call loop-harness for normal continuation",
 			"treat this Hook packet as the Controller checkpoint",
-			"use loop-harness manually only for initialization/binding, runtime reconcile after integrity failure, rollback/rollover, or release Gateway",
+			"use loop-harness manually only for initialization/binding, runtime reconcile after integrity failure, rollback/rollover, release Gateway, or the explicit worktree integration follow-up (`runtime task-integrate`)",
 		},
 		HumanRequired: next.HumanRequired,
 		Recovery:      []string{"continue from this packet's Stage and Next", "read " + next.ProtocolRef, "if blocked or unclear read " + loopManualRef},
@@ -63,7 +79,13 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 		guidance.HumanRequired = true
 		guidance.Blocked = true
 		guidance.Blocker = pauseReason(state, lifecycleState)
-		guidance.Action = "stop automation and surface the human Gateway"
+		if lifecycleState == "awaiting_human_release" {
+			guidance.Action = "stop automation and submit one explicit runtime human-decision (approve, defer, reject_defect, reject_acceptance, reject_release_audit, or abort)"
+		} else {
+			guidance.Action = "stop automation and surface the human Gateway"
+		}
+	} else if lifecycleState == "release_authorized" {
+		guidance.Action = "S11 human-authorized terminal; Harness performs no squash merge, publication, deployment, or formal release"
 	}
 	switch event {
 	case "PreCompact":
@@ -73,13 +95,33 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 	case "SubagentStart":
 		addDelegationPreflight(&guidance, input)
 		if input.Runtime.Agent != nil {
+			approvalRequired := input.Runtime.Agent.DispatchMode == "plan_approval_required"
 			switch input.Runtime.Agent.State {
-			case "spawned", "reading", "understanding_submitted":
+			case "spawned", "reading":
+				if !approvalRequired {
+					guidance.Missing = appendUnique(guidance.Missing, "plan_report")
+					guidance.Action = "read the assignment, send one PLAN_REPORT via SendMessage(message_type=plan_report, plan_ref=<path>), then continue executing immediately; do not wait for Main approval"
+					guidance.Automation = append(guidance.Automation, "plan_checkpoint is the normal dispatch mode; PLAN_REPORT is a live checkpoint, not a final response or an idle barrier")
+					break
+				}
+				guidance.Blocked = true
+				guidance.Blocker = "phase-one readback is not yet approved"
+				guidance.Missing = appendUnique(guidance.Missing, "agent_readback")
+				guidance.Action = "complete the assigned readback and wait for phase-two activation"
+			case "understanding_submitted":
+				if !approvalRequired {
+					guidance.Automation = append(guidance.Automation, "PLAN_REPORT was submitted; the PostToolUse observer auto-activates the Agent, so continue without a second Main turn")
+					break
+				}
 				guidance.Blocked = true
 				guidance.Blocker = "phase-one readback is not yet approved"
 				guidance.Missing = appendUnique(guidance.Missing, "agent_readback")
 				guidance.Action = "complete the assigned readback and wait for phase-two activation"
 			case "understanding_approved":
+				if !approvalRequired {
+					guidance.Automation = append(guidance.Automation, "plan_checkpoint does not require an approval turn; continue through the recorded checkpoint")
+					break
+				}
 				guidance.Blocked = true
 				guidance.Blocker = "phase-two activation has not been committed"
 				guidance.Missing = appendUnique(guidance.Missing, "activation_envelope")
@@ -102,7 +144,16 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 			"re-wake the same Agent when its report is missing; do not silently spawn a replacement",
 			"SubagentStop is not completion until the worktree integration checklist is complete",
 		)
-		if !input.Facts["agent_report_complete"] {
+		// L4 §10.3 / §16.1: completion/blocker facts come from the
+		// control plane (agent state + assignment report), not from a
+		// self-injected `input.Facts["agent_report_complete"]` — the
+		// official payload does not carry that flag, so reading it made
+		// the Guidance block path fire on every SubagentStop and falsely
+		// reported the worktree integration as blocked. The verdict is
+		// fail-open: a missing/unreadable runtime defers to the platform
+		// `exit 2` control (stopidle.go) for the hard block.
+		reportComplete := resolveAgentReportComplete(root, input)
+		if !reportComplete {
 			guidance.Blocked = true
 			guidance.Blocker = "subagent completion or blocker report is missing"
 			guidance.Missing = appendUnique(guidance.Missing, "agent_completion_report")
@@ -115,7 +166,14 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 			"re-wake the same teammate with the current assignment envelope; do not spawn a replacement",
 			"if the teammate is blocked, require a blocker report; if it reported, acknowledge it before scheduling the next legal action",
 		)
-		if !input.Facts["assignment_reported"] {
+		// L4 §10.2 / §16.1: idle facts come from the control plane — the
+		// platform payload has no `facts.assignment_reported` field, so
+		// the old code path produced a constant-true-blocked verdict on
+		// every TeammateIdle. The verdict is fail-open: a missing/
+		// unreadable runtime falls through to the stopidle.go real
+		// platform control (which is the authoritative block path).
+		reportComplete := resolveAgentReportComplete(root, input)
+		if !reportComplete {
 			guidance.Blocked = true
 			guidance.Blocker = "the current-round assignment report is missing"
 			guidance.Missing = appendUnique(guidance.Missing, "assignment_report")
@@ -125,8 +183,385 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 		}
 	}
 
+	// L3-S7 §8: a SessionStart/PreCompact during the verification phase must
+	// carry the S7-specific recovery projection (current round, assignment
+	// buckets, unconsumed Results, Claim coverage gaps, single next action).
+	if lifecycleState == "verification" && (event == "SessionStart" || event == "PreCompact") {
+		applyS7RecoveryProjection(state, &guidance)
+	}
+
+	// S8 entry source line: when the lifecycle flipped into bug_resolution
+	// via TR-008 (ObservationBatch handoff), the recovery packet must carry
+	// the exact source fact — observation_batch id and finding count — so a
+	// compacted Agent can re-bind to the right sealed batch without reading
+	// the milestone log. Read from state.review.observation_batch.
+	if lifecycleState == "bug_resolution" && (event == "SessionStart" || event == "PreCompact") {
+		applyS8EntryProjection(state, &guidance)
+		applyS9RepairProjection(state, &guidance)
+	}
+
+	// L3-S10 §9: acceptance and release audit are read-only audit work, not
+	// an invitation to take the shortest route to S11. Keep the finite
+	// denominator, counterevidence, and the S9→fresh-S7 prerequisite visible
+	// on every normal recovery packet.
+	if lifecycleState == "acceptance" || lifecycleState == "release_audit" {
+		applyS10Guidance(&guidance)
+	}
+
 	guidance.Instruction = formatGuidanceInstruction(guidance)
 	return guidance
+}
+
+func applyS10Guidance(guidance *policy.Guidance) {
+	guidance.Automation = append(guidance.Automation,
+		"S10 is read-only for product code, locked REQ, contracts, and TASKs; any product change invalidates the current S7 clean round and must return through S8→S9→fresh S7",
+		"do not treat a generic clean-round or overall PASS as acceptance; consume the finite coverage_inventory and counterevidence ledger",
+		"the shortest path to S11 is not a completion criterion; UNKNOWN must be resolved, not renamed N/A or non-blocking risk",
+	)
+	guidance.Recovery = append(guidance.Recovery,
+		"if the manifest gate names a missing row, correct that row and register a new immutable evidence artifact",
+		"if an audit finding changes product behavior, stop S10 and route S8→S9→fresh S7; never patch in S10",
+		"only after acceptance and release audit are complete should the Controller move to S11's human gateway",
+	)
+	if guidance.LifecycleState == "acceptance" {
+		guidance.Missing = appendUniqueStrings(guidance.Missing, "coverage_inventory", "counterevidence_ledger", "acceptance_manifest")
+		guidance.DoneWhen = append(guidance.DoneWhen,
+			"every coverage item has source, expected, oracle, owner, evidence, disposition, and one counterevidence result",
+			"acceptance manifest is valid, current, and bound to this runtime/baseline/review round",
+		)
+	} else {
+		guidance.Missing = appendUniqueStrings(guidance.Missing, "audit_areas:8", "counterevidence_ledger", "release_audit_manifest")
+		guidance.DoneWhen = append(guidance.DoneWhen,
+			"all 8 release-audit areas have an independent conclusion and evidence",
+			"release-audit manifest is valid, current, and bound to this runtime/baseline/review round",
+		)
+	}
+}
+
+func investigationNextAction(state map[string]any) string {
+	reviewMap, _ := state["review"].(map[string]any)
+	casePointer, _ := reviewMap["investigation"].(map[string]any)
+	if casePointer == nil {
+		return "ingest the sealed ObservationBatch via `runtime investigation ingest --expected-revision <N> --grouping-rationale <reason>`; do not create a BUG or reproduce the symptom"
+	}
+	caseID := stringValue(casePointer["case_id"])
+	if caseID == "" {
+		caseID = "<case-id>"
+	}
+	if route := stringValue(casePointer["route"]); route != "" {
+		if action := investigationRouteNextAction(route, casePointer); action != "" {
+			return fmt.Sprintf("Case %s is routed to %s; next: %s", caseID, route, action)
+		}
+	}
+	return fmt.Sprintf("continue InvestigationCase %s: run `runtime investigation status --case-id %s`, then dispatch independent hypothesis questions", caseID, caseID)
+}
+
+func repairNextAction(state map[string]any, phase string) string {
+	reviewMap, _ := state["review"].(map[string]any)
+	if investigation, _ := reviewMap["investigation"].(map[string]any); investigation == nil || stringValue(investigation["status"]) != "contract_approved" {
+		return "complete S8 InvestigationCase and approve the RepairContract before opening S9"
+	}
+	pointer, _ := reviewMap["repair"].(map[string]any)
+	if pointer == nil {
+		return "consume the approved S8 RepairContract: run `runtime repair session open --session-id <session> --created-by <agent>`"
+	}
+	switch stringValue(pointer["status"]) {
+	case "planning":
+		return "dispatch each RepairAssignment with `runtime repair dispatch --assignment-id <assignment> --agent-id <agent>`, then submit one S9 domain PlanReport per Builder"
+	case "reproducing":
+		return "submit any missing S9 domain PlanReports; when every Assignment is reported run `runtime repair execution begin`"
+	}
+	if action := stringValue(pointer["next_action"]); action != "" {
+		return action
+	}
+	return fmt.Sprintf("continue S9 repair phase %s: run `runtime repair status` and follow the recorded next action", phase)
+}
+
+func applyS9RepairProjection(state map[string]any, guidance *policy.Guidance) {
+	reviewMap, _ := state["review"].(map[string]any)
+	if reviewMap == nil {
+		return
+	}
+	investigation, _ := reviewMap["investigation"].(map[string]any)
+	if investigation == nil || stringValue(investigation["status"]) != "contract_approved" {
+		return
+	}
+	pointer, _ := reviewMap["repair"].(map[string]any)
+	if pointer == nil {
+		line := "S9 RepairSession not opened: consume the approved Contract with `runtime repair session open --session-id <session> --created-by <agent>`"
+		guidance.Automation = append(guidance.Automation, line)
+		guidance.Recovery = append([]string{line}, guidance.Recovery...)
+		return
+	}
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	line := fmt.Sprintf("S9 repair %s: session=%s; next=%s", stringValue(pointer["status"]), stringValue(pointer["session_id"]), repairNextAction(state, stringValue(lifecycle["phase"])))
+	switch stringValue(pointer["status"]) {
+	case "planning":
+		line += "; dispatch every RepairAssignment with `runtime repair dispatch --assignment-id <assignment> --agent-id <agent>`, then submit one domain PlanReport per Builder with a red/blocked pre-fix check"
+	case "reproducing":
+		line += "; all PlanReports must be present before `runtime repair execution begin`; implementation writes remain gated"
+	case "repairing":
+		line += "; submit one exact-unit RepairResult per Assignment; the batch stays in fixing until every Assignment is reported"
+	case "impact_reconciliation":
+		line += "; the complete Assignment Result batch is present; compute session-wide Changeset and commit ChangeImpact"
+	case "blocked":
+		if route := stringValue(pointer["failure_route"]); route != "" {
+			line += "; failure_route=" + route + " — follow the recorded recovery action; do not create a symptom-only patch"
+		}
+	case "closed":
+		if seed := stringValue(pointer["review_plan_seed_ref"]); seed != "" {
+			line += "; consume the registration-ready S7 seed with `runtime review-plan --file " + seed + "` after refreshing frozen hashes"
+		}
+	}
+	guidance.Automation = append(guidance.Automation, line)
+	guidance.Recovery = append([]string{line}, guidance.Recovery...)
+}
+
+// applyS7RecoveryProjection enriches the SessionStart/PreCompact recovery
+// packet with the S7-specific projection L3-S7 §8 demands: the current
+// review round, running/queued/blocked Assignments, unconsumed
+// ReviewResults, Claim coverage gaps (required Claims still without a
+// disposition) and the single next action. Every fact is computed from the
+// shared control plane (state.review: plan pointer, claim dispositions,
+// assignment rows, finding entities) — no new state file is introduced.
+// Other lifecycle phases and events are untouched.
+func applyS7RecoveryProjection(state map[string]any, guidance *policy.Guidance) {
+	reviewMap, _ := state["review"].(map[string]any)
+	if reviewMap == nil {
+		return
+	}
+	// The buildNextProjection layer still emits the legacy `claim_results`
+	// open-items token for the S7 stage contract; the S7 recovery packet
+	// supersedes it with the precise `claim:<id>` matrix (L3-S7 §8), so
+	// drop the bare aggregate so the Agent does not see redundant noise.
+	guidance.Missing = stripMissingTokens(guidance.Missing, "claim_results")
+	round := integerValue(reviewMap["round"])
+	ptr := review.PlanPointerFromState(state)
+
+	planDesc := "no ReviewPlan registered"
+	planStatus := "planned"
+	if ptr != nil {
+		planDesc = fmt.Sprintf("%s status=%s revision=%d e2e_coverage=%s", ptr.PlanID, ptr.Status, ptr.Revision, ptr.E2ECoverageState)
+		planStatus = ptr.Status
+	}
+	guidance.Automation = append(guidance.Automation,
+		fmt.Sprintf("S7 review round %d: plan %s", round, planDesc),
+	)
+	if maxRounds := s7MaxRounds(state); maxRounds > 0 && round >= maxRounds {
+		guidance.Automation = append(guidance.Automation,
+			fmt.Sprintf("S7 budget: current round %d of %d may drain, but opening another full round requires the human `runtime s7-budget-decision` gateway", round, maxRounds),
+		)
+	}
+
+	blockedAgents := blockedAgentIDs(state)
+	var running, queued, blocked, unconsumed []string
+	assignments, _ := reviewMap["assignments"].(map[string]any)
+	assignmentIDs := make([]string, 0, len(assignments))
+	for id := range assignments {
+		assignmentIDs = append(assignmentIDs, id)
+	}
+	sort.Strings(assignmentIDs)
+	for _, id := range assignmentIDs {
+		row, _ := assignments[id].(map[string]any)
+		if row == nil {
+			continue
+		}
+		status := stringValue(row["status"])
+		agent := stringValue(row["agent_id"])
+		label := id
+		if agent != "" {
+			label = id + "(" + agent + ")"
+		}
+		switch status {
+		case "planned":
+			// Not yet dispatched: platform capacity may queue work but never
+			// drops required coverage (L3-S7 §4.5).
+			queued = append(queued, id)
+		case "dispatched":
+			if blockedAgents[agent] {
+				blocked = append(blocked, label)
+			} else {
+				running = append(running, label)
+			}
+			// A dispatched Assignment's Canonical ReviewResult is pending
+			// until `runtime review-result submit` consumes it.
+			unconsumed = append(unconsumed, id)
+		}
+	}
+	guidance.Automation = append(guidance.Automation,
+		"S7 assignments running: "+s7Bucket(running),
+		"S7 assignments queued: "+s7Bucket(queued),
+		"S7 assignments blocked: "+s7Bucket(blocked),
+		"S7 unconsumed ReviewResults (dispatched, result not yet consumed via `runtime review-result submit`): "+s7Bucket(unconsumed),
+	)
+
+	// Claim coverage gaps: required Claims with no final disposition yet.
+	gaps := review.UndispositionedRequired(state)
+	for _, claimID := range gaps {
+		guidance.Missing = appendUnique(guidance.Missing, "claim:"+claimID)
+	}
+
+	// cannot_clean / discovery_draining: the round is NOT closed — the
+	// ObservationBatch has been opened (when present) and the round is
+	// draining with drain_policy=complete_required_claims. Surface that
+	// invariant so a compacted Agent treats "draining" as continuing the
+	// remaining required Claims, not as the round ending.
+	if planStatus == "cannot_clean" || planStatus == "discovery_draining" {
+		invariant := "S7 round status=" + planStatus + ": ObservationBatch is open with drain_policy=complete_required_claims; cannot_clean/discovery_draining ≠ end — finish the remaining required Claims listed in Missing"
+		batchLine := s7ObservationBatchLine(reviewMap)
+		if strings.Contains(batchLine, "not yet opened") {
+			// The plan status already proves a batch exists; a missing
+			// pointer is a control-plane inconsistency, not a fact to
+			// state — saying both lines would contradict the invariant.
+			batchLine = "S7 ObservationBatch: pointer missing from state.review despite " + planStatus + " — run `loop-harness doctor` to diagnose the control plane"
+		}
+		guidance.Automation = append(guidance.Automation, invariant, batchLine)
+	}
+
+	next := s7RecoveryNextAction(planStatus, round, running, queued, blocked, unconsumed, gaps)
+	guidance.Action = next
+	guidance.Recovery = append([]string{
+		fmt.Sprintf("S7 recovery: round %d, plan %s; coverage gaps=%d; next: %s", round, planDesc, len(gaps), next),
+	}, guidance.Recovery...)
+}
+
+// applyS8EntryProjection adds the S8 entry source line that tells a
+// compacted Agent exactly which ObservationBatch carried the lifecycle from
+// S7 into bug_resolution via TR-008. The batch pointer is read from
+// state.review.observation_batch (the same path the sealed handoff
+// document writes — L3-S7 §3.7). When no batch is present (defensive),
+// the projection is skipped: S8 entry without a sealed batch would be a
+// control-plane contradiction the rest of the harness must surface, not
+// the recovery packet.
+//
+// The line is appended to the Automation block (positive guidance), and
+// mirrored as the first Recovery line so a PreCompact that drops
+// Automation still preserves the source fact.
+func applyS8EntryProjection(state map[string]any, guidance *policy.Guidance) {
+	reviewMap, _ := state["review"].(map[string]any)
+	if reviewMap == nil {
+		return
+	}
+	if investigationPointer, _ := reviewMap["investigation"].(map[string]any); investigationPointer == nil {
+		line := "S8 intake pending: run `runtime investigation ingest --expected-revision <N> --grouping-rationale <reason>`; do not create a BUG or reproduce the sealed symptom"
+		guidance.Automation = append(guidance.Automation, line)
+		guidance.Recovery = append([]string{line}, guidance.Recovery...)
+	}
+	batch, _ := reviewMap["observation_batch"].(map[string]any)
+	if batch == nil {
+		return
+	}
+	id := stringValue(batch["batch_id"])
+	if id == "" {
+		return
+	}
+	drain := stringValue(batch["drain_policy"])
+	findingIDs, _ := batch["finding_ids"].([]any)
+	count := len(findingIDs)
+	line := fmt.Sprintf("S8 entered via TR-008 with observation_batch %s (%d findings, drain_policy=%s)",
+		id, count, drain)
+	guidance.Automation = append(guidance.Automation, line)
+	guidance.Recovery = append([]string{line}, guidance.Recovery...)
+}
+
+// s7ObservationBatchLine renders the current ObservationBatch pointer (id,
+// drain_policy, finding count) as one compact recovery line. Returns a
+// placeholder when no batch has been opened yet (the round will open one
+// on the next seal-triggering ReviewResult when the round surfaces an
+// ordinary Finding).
+func s7ObservationBatchLine(reviewMap map[string]any) string {
+	batch, _ := reviewMap["observation_batch"].(map[string]any)
+	if batch == nil {
+		return "S7 ObservationBatch: not yet opened (round continues with drain_policy=complete_required_claims)"
+	}
+	id := stringValue(batch["batch_id"])
+	if id == "" {
+		id = "observation-batch(unknown)"
+	}
+	drain := stringValue(batch["drain_policy"])
+	if drain == "" {
+		drain = "complete_required_claims"
+	}
+	findingIDs, _ := batch["finding_ids"].([]any)
+	return fmt.Sprintf("S7 ObservationBatch %s: drain_policy=%s; %d finding(s) sealed", id, drain, len(findingIDs))
+}
+
+// s7RecoveryNextAction computes the single next action for a verification
+// recovery packet. The order is deterministic: finish in-flight Results
+// first, then unblock, then dispatch queued coverage, then close the round.
+func s7RecoveryNextAction(planStatus string, round int, running, queued, blocked, unconsumed, gaps []string) string {
+	switch planStatus {
+	case "observation_sealed":
+		return "the sealed ObservationBatch hands off to S8 automatically: the next PreToolUse auto-commits TR-008 — do not invoke the transition CLI"
+	case "clean":
+		return "the machine CleanRound promotes to acceptance automatically: the next PreToolUse auto-commits TR-009 — do not invoke the transition CLI"
+	case "paused":
+		return "resolve the recorded pause verdict checkpoint; the round resumes only through the human gateway (TR-010/TR-011)"
+	case "planned", "":
+		return fmt.Sprintf("register the ReviewPlan for round %d: `loop-harness s7 draft --out plan.json`, fill the TODO oracles and generated `coverage_inventory`/`e2e_assets` facts, then `runtime review-plan --file plan.json`", round)
+	}
+	// running / cannot_clean / discovery_draining: coverage continues even
+	// after an ordinary finding (drain_policy=complete_required_claims).
+	if len(running) > 0 {
+		return fmt.Sprintf("consume the pending ReviewResult for %s via `runtime review-result submit --assignment-id %s --result <result.json>`", running[0], firstAssignmentID(running[0]))
+	}
+	if len(blocked) > 0 {
+		return fmt.Sprintf("assignment %s is blocked: fix the capture conditions, record `runtime agent-event --event blocker_resolved --agent-id <id> --message <file>`, then resubmit the same review result; blocked coverage must still be consumed before the round can close", blocked[0])
+	}
+	if len(queued) > 0 {
+		return fmt.Sprintf("dispatch queued assignment %s via `runtime register-workgroup`; queued coverage is never dropped (L3-S7 §4.5)", queued[0])
+	}
+	if len(unconsumed) > 0 {
+		return fmt.Sprintf("consume the pending ReviewResult for %s via `runtime review-result submit`", unconsumed[0])
+	}
+	if len(gaps) > 0 {
+		return "claim coverage gaps remain without an assignment (" + strings.Join(gaps, ", ") + "); inspect `loop-harness s7 status` and repair the dispatch"
+	}
+	return "all required Claims are dispositioned; the round consumer seals on the next `runtime review-result submit` — verify via `loop-harness s7 status`"
+}
+
+// s7Bucket renders one assignment bucket for the recovery packet, keeping
+// empty buckets explicit so a compacted Agent sees the full picture.
+func s7Bucket(ids []string) string {
+	if len(ids) == 0 {
+		return "none"
+	}
+	return strings.Join(ids, ", ")
+}
+
+// firstAssignmentID strips the optional "(agent)" suffix from a bucket label.
+func firstAssignmentID(label string) string {
+	if idx := strings.Index(label, "("); idx > 0 {
+		return label[:idx]
+	}
+	return label
+}
+
+// blockedAgentIDs indexes agent entities that are explicitly blocked so a
+// dispatched review Assignment can be bucketed as blocked instead of
+// running.
+func blockedAgentIDs(state map[string]any) map[string]bool {
+	out := map[string]bool{}
+	entities, _ := state["entities"].(map[string]any)
+	agents, _ := entities["agents"].([]any)
+	for _, raw := range agents {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		id := stringValue(row["id"])
+		if id == "" {
+			continue
+		}
+		if v, ok := row["blocked"].(bool); ok && v {
+			out[id] = true
+			continue
+		}
+		if stringValue(row["state"]) == "blocked" {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 func addDelegationPreflight(guidance *policy.Guidance, input policy.Input) {
@@ -134,7 +569,7 @@ func addDelegationPreflight(guidance *policy.Guidance, input policy.Input) {
 		"Is a single subagent necessary, or should this responsibility use an Agent Team?",
 		"Which predefined agent template under .claude/agents/ is being used?",
 		"Is the assignment isolated in a worktree?",
-		"Does the spawn carry an explicit team_name and a two-phase readback/activation envelope?",
+		"Does the spawn carry an explicit team_name and a dispatch envelope (plan report / activation)?",
 	}
 	if subType, _ := input.ToolInput["subagent_type"].(string); subType != "" {
 		guidance.ReadOrder = insertReadOrder(guidance.ReadOrder, ".claude/agents/"+subType+".md", 2)
@@ -142,7 +577,7 @@ func addDelegationPreflight(guidance *policy.Guidance, input policy.Input) {
 	guidance.Automation = append(guidance.Automation,
 		"use TeamCreate plus team_name for parallel or role-bearing execution; read-only Explore/Plan research is the narrow exemption",
 		"isolate execution in a worktree before writing",
-		"do not write until phase-one readback is approved and phase-two activation is committed",
+		"default: send one PLAN_REPORT through SendMessage while the Worker is running, then continue; only plan_approval_required waits for activation",
 	)
 }
 
@@ -258,10 +693,7 @@ func refreshMilestoneWithGate(root, statePath, journalPath string, snapshot runt
 	persistedGuidance.Instruction = formatGuidanceInstruction(persistedGuidance)
 	milestone := guidanceMapWithGate(persistedGuidance, controller.QualityGateResult{}, event, snapshot.Revision+1, now, gate)
 	from := lifecycleCursor(snapshot.State)
-	store := runtime.NewStore(statePath, journalPath)
-	store.PreCommitValidator = func(state map[string]any) error {
-		return transition.MarshalAndValidateRuntime(root, state)
-	}
+	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	updated, err := store.Update(snapshot.Revision, runtime.Mutation{
 		EventID:              fmt.Sprintf("evt-milestone-refreshed-r%d", snapshot.Revision+1),
 		TransitionID:         "MILESTONE-REFRESH",
@@ -284,10 +716,28 @@ func refreshMilestoneWithGate(root, statePath, journalPath string, snapshot runt
 		},
 	})
 	if err != nil {
-		metrics.RecordMilestoneRefreshFailure(root)
+		_ = metrics.RecordMilestoneRefreshFailure(root, milestoneRefreshFailureReason(err))
 		return runtime.Snapshot{}, false, err
 	}
 	return updated, true, nil
+}
+
+// milestoneRefreshFailureReason keeps the durable metric useful without
+// leaking raw error strings into a label. The refresh is a best-effort
+// checkpoint, so classification is diagnostic only: it never changes the
+// Controller's gate verdict or invents a revision cap.
+func milestoneRefreshFailureReason(err error) string {
+	switch {
+	case errors.Is(err, runtime.ErrStaleRevision):
+		return "stale_revision"
+	case errors.Is(err, runtime.ErrPendingRuntimeOperation):
+		return "pending_runtime"
+	case errors.Is(err, runtime.ErrCandidateValidatorRequired),
+		errors.Is(err, runtime.ErrCandidateValidatorInvalid):
+		return "candidate_validation"
+	default:
+		return "write_or_integrity"
+	}
 }
 
 // reconcileGuidance is intentionally bounded. A concurrent transition may
@@ -301,7 +751,14 @@ func refreshMilestoneWithGate(root, statePath, journalPath string, snapshot runt
 func reconcileGuidance(root, event string, input policy.Input) (policy.Guidance, runtime.Snapshot, error) {
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
-	store := runtime.NewStore(statePath, journalPath)
+	// A fresh checkout (no state file) is S0, not a recovery case: there is
+	// nothing to reconcile and no lock to take.
+	if runtimeStateMissing(root) {
+		return *freshStartGuidance(root, event), runtime.Snapshot{}, nil
+	}
+	// Guidance reconciliation persists a milestone, so it is an explicit
+	// mutation path and owns pending-runtime recovery.
+	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	for attempt := 0; attempt < 2; attempt++ {
 		snapshot, err := store.Snapshot()
 		if err != nil {
@@ -402,7 +859,7 @@ func guidanceMapWithGate(g policy.Guidance, _ controller.QualityGateResult, even
 		"source_revision": sourceRevision,
 		"updated_at":      now.Format(time.RFC3339Nano),
 	}
-	if gate.Status != "" {
+	if gateHasIdentity(gate) {
 		milestone["quality_gate"] = qualityGateMap(gate)
 	}
 	return milestone
@@ -445,29 +902,56 @@ func milestoneMatches(current map[string]any, guidance policy.Guidance) bool {
 
 // milestoneMatchesWithGate reports whether the persisted milestone is
 // semantically identical to a fresh projection computed from `guidance`
-// and `gate`. The comparison ignores time/event/instruction/source_revision
-// fields, but a quality_gate fingerprint change MUST defeat the no-op
-// (BUG-039-07 §4.1 step 2) so a new gate result forces a fresh write.
+// and `gate`. Volatile observations such as revision/time/event are not part
+// of milestone identity; a quality-gate fingerprint or actual guidance
+// change still defeats the no-op (BUG-039-07 §4.1 step 2).
 func milestoneMatchesWithGate(current map[string]any, guidance policy.Guidance, gate controller.QualityGateResult) bool {
 	if current == nil {
 		return false
 	}
-	existing := map[string]any{}
-	for key, value := range current {
+	return equalJSON(stableMilestoneProjection(current), stableMilestoneProjection(
+		guidanceMapWithGate(guidance, controller.QualityGateResult{}, "", guidance.Revision, time.Time{}, gate),
+	))
+}
+
+// stableMilestoneProjection is the single semantic identity used by both
+// the no-op comparison and the journal idempotency key. The observed runtime
+// revision is diagnostic telemetry, not a state change: including it here
+// makes every hook refresh its own milestone and burns an unbounded revision
+// for no semantic progress.
+func stableMilestoneProjection(milestone map[string]any) map[string]any {
+	if milestone == nil {
+		return nil
+	}
+	projection := make(map[string]any, len(milestone))
+	for key, value := range milestone {
 		switch key {
 		case "source_revision", "updated_at", "event", "instruction":
 			continue
+		case "quality_gate":
+			gate, ok := value.(map[string]any)
+			if !ok {
+				projection[key] = value
+				continue
+			}
+			stableGate := make(map[string]any, len(gate))
+			for gateKey, gateValue := range gate {
+				if gateKey != "observed_revision" {
+					stableGate[gateKey] = gateValue
+				}
+			}
+			projection[key] = stableGate
 		default:
-			existing[key] = value
+			projection[key] = value
 		}
 	}
-	expected := guidanceMapWithGate(guidance, controller.QualityGateResult{}, "", guidance.Revision, time.Time{}, gate)
-	for key := range expected {
-		if key == "source_revision" || key == "updated_at" || key == "event" || key == "instruction" {
-			delete(expected, key)
-		}
-	}
-	return equalJSON(existing, expected)
+	return projection
+}
+
+func gateHasIdentity(gate controller.QualityGateResult) bool {
+	return gate.Status != "" || gate.GateID != "" || gate.CandidateTransition != "" ||
+		gate.Fingerprint != "" || len(gate.Missing) > 0 || len(gate.EvidenceRefs) > 0 ||
+		len(gate.Conflicts) > 0 || gate.ErrorCode != "" || gate.TransitionCommitted || gate.NextCursor != ""
 }
 
 func equalJSON(left, right any) bool {
@@ -485,24 +969,13 @@ func milestoneIdempotency(g policy.Guidance) string {
 	return milestoneIdempotencyWithGate(g, controller.QualityGateResult{})
 }
 
-// milestoneIdempotencyWithGate hashes the guidance together with the
-// gate fingerprint so a gate change produces a new Journal key while a
-// semantically identical checkpoint stays a no-op (BUG-039-07 §4.1 step 3,
-// REQ-039 §17 idempotency).
+// milestoneIdempotencyWithGate hashes the stable milestone projection so a
+// gate change produces a new Journal key while observation-only revision
+// changes remain idempotent (BUG-039-07 §4.1 step 3, REQ-039 §17).
 func milestoneIdempotencyWithGate(g policy.Guidance, gate controller.QualityGateResult) string {
-	payload := struct {
-		Guidance    policy.Guidance
-		GateStatus  string
-		GateID      string
-		Fingerprint string
-		ObservedRev int
-	}{
-		Guidance:    g,
-		GateStatus:  string(gate.Status),
-		GateID:      gate.GateID,
-		Fingerprint: gate.Fingerprint,
-		ObservedRev: gate.ObservedRevision,
-	}
+	payload := stableMilestoneProjection(guidanceMapWithGate(
+		g, controller.QualityGateResult{}, "", g.Revision, time.Time{}, gate,
+	))
 	data, _ := json.Marshal(payload)
 	sum := sha256.Sum256(data)
 	return "milestone:" + hex.EncodeToString(sum[:])
@@ -511,6 +984,51 @@ func milestoneIdempotencyWithGate(g policy.Guidance, gate controller.QualityGate
 func lifecycleCursor(state map[string]any) map[string]any {
 	lifecycle, _ := state["lifecycle"].(map[string]any)
 	return map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
+}
+
+// resolveAgentReportComplete computes the SubagentStop / TeammateIdle
+// "report is on the wire" fact from the control plane (hookctx), not
+// from a self-injected `input.Facts[...]` flag. The official Claude
+// Code 2.1.218 payload does NOT carry an `agent_report_complete` or
+// `assignment_reported` field, so reading those flags produced a
+// constant-true verdict that mis-fired on every event (L4 §10.2 /
+// §15.2 P0-2 follow-up: keep the stop/idle facts on the same source
+// the `stopidle.go` real platform control reads).
+//
+// The helper is fail-open: a missing or unreadable runtime cannot
+// invent a completion fact, so it returns false. The hard block is
+// owned by the platform `exit 2` control (stopidle.go), not by the
+// Guidance projection — the projection only emits a "report is
+// missing" hint when the control plane truly cannot see a report.
+func resolveAgentReportComplete(root string, input policy.Input) bool {
+	if root == "" {
+		return false
+	}
+	agentID := input.EffectiveAgentID()
+	if agentID == "" {
+		return false
+	}
+	loaded, err := hookctx.LoadFull(root, agentID)
+	if err != nil || loaded == nil {
+		return false
+	}
+	assignment := hook.AssignmentForAgent(loaded.Assignments, agentID)
+	if hook.HasCompletionReport(assignment) || hook.HasBlockerReport(assignment) {
+		return true
+	}
+	// Final fallback for the no-assignment case (one-shot dispatch):
+	// when the agent's own state already reports completion the loop
+	// considers the report consumed without a separate Assignment row.
+	if loaded.PolicyContext.Agent != nil {
+		switch loaded.PolicyContext.Agent.State {
+		case "reported", "done", "completed", "closed":
+			return true
+		}
+		if loaded.PolicyContext.Agent.CompletionReportedRef != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func pauseReason(state map[string]any, lifecycleState string) string {
@@ -523,7 +1041,7 @@ func pauseReason(state map[string]any, lifecycleState string) string {
 		}
 	}
 	if lifecycleState == "awaiting_human_release" {
-		return "release-ready package awaits human approval"
+		return "release-ready package awaits an explicit human decision: approve, defer, reject_defect, reject_acceptance, reject_release_audit, or abort"
 	}
 	return "runtime is in a human-controlled terminal or paused state"
 }
@@ -535,6 +1053,28 @@ func appendUnique(values []string, item string) []string {
 		}
 	}
 	return append(values, item)
+}
+
+// stripMissingTokens returns a copy of `values` with every occurrence of any
+// `drop` token removed. Used by the S7 recovery projection to drop the
+// legacy open-items aggregate so the recovery packet only carries the
+// precise per-Claim matrix the §8 contract demands.
+func stripMissingTokens(values []string, drop ...string) []string {
+	if len(values) == 0 || len(drop) == 0 {
+		return values
+	}
+	skip := map[string]struct{}{}
+	for _, token := range drop {
+		skip[token] = struct{}{}
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := skip[value]; ok {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func appendUniqueStrings(values []string, items ...string) []string {
@@ -626,11 +1166,44 @@ func refreshHookControl(root string, request *policy.Input, decision *policy.Dec
 		}
 	}
 	if err != nil {
+		if runtimeStateMissing(root) {
+			decision.Guidance = freshStartGuidance(root, request.Event)
+			return
+		}
 		decision.Guidance = fallbackGuidance(request.Event)
 		return
 	}
 	request.Runtime = controllerRuntimeContext(snapshot.State, root, request.Runtime)
 	decision.Guidance = &guidance
+}
+
+// freshStartGuidance covers the state every new project starts in: no
+// loop-state.json yet. That is not a blocked condition — it is S0 with the
+// bind path not yet taken (the former BLOCKED + reconcile
+// instruction could never succeed on a fresh checkout).
+func freshStartGuidance(root, event string) *policy.Guidance {
+	guidance := &policy.Guidance{
+		RuntimeID:      "unbound",
+		Revision:       0,
+		Event:          event,
+		Stage:          "S0",
+		LifecycleState: "inactive",
+		Objective:      "produce one human-locked requirement",
+		Action:         "draft docs/requirements/REQ-<id>.md from docs/requirements/REQ-template.md (skills: requirement-funnel), have the human lock it, then bind with `loop-harness req bind --approved-by <the human who locked it>` (bind auto-initializes the runtime)",
+		ProtocolRef:    "docs/agent-protocol.md#s0",
+		ManualRef:      loopManualRef,
+		PrimarySkill:   "requirement-funnel",
+		Read:           []string{"docs/agent-protocol.md#s0", "docs/requirements/REQ-template.md"},
+		ReadOrder:      []string{"LOOP RECOVERY packet (this message)", "docs/agent-protocol.md#s0", "skills/requirement-funnel/SKILL.md", "docs/requirements/REQ-template.md"},
+		Missing:        []string{"human_locked_req"},
+		DoneWhen:       []string{"a locked REQ exists and `req bind` succeeds (the runtime is initialized by bind)"},
+		Blocked:        false,
+		Blocker:        "",
+		Recovery:       []string{"check `req list` for bindable REQs once one is locked"},
+		Automation:     []string{"req bind auto-initializes the runtime — do not run `runtime reconcile` on a fresh checkout"},
+	}
+	guidance.Instruction = formatGuidanceInstruction(*guidance)
+	return guidance
 }
 
 func fallbackGuidance(event string) *policy.Guidance {
@@ -652,7 +1225,7 @@ func fallbackGuidance(event string) *policy.Guidance {
 		Blocked:        true,
 		Blocker:        "the Runtime snapshot could not be safely reconciled",
 		Instruction:    "",
-		Recovery:       []string{"read docs/agent-protocol.md#cursor-mapping", "read .claude/bin/loop-harness.md", "run loop-harness runtime reconcile --root ."},
+		Recovery:       []string{"read docs/agent-protocol.md#cursor-mapping", "read " + loopManualRef + " (fallback: " + loopManualFallbackRef + ")", "run loop-harness runtime reconcile --root ."},
 		Automation:     []string{"normal continuation is suspended until the Runtime cursor is reconciled"},
 	}
 	guidance.Instruction = formatGuidanceInstruction(*guidance)
@@ -688,23 +1261,31 @@ func FallbackGuidanceForController(event string) *policy.Guidance {
 	return fallbackGuidance(event)
 }
 
-// HandleTeammateIdleForController is the BUG-039-06 §4.1 repair: the
-// TeammateIdle event handler must combine assignment state + task list to
-// decide between resume / report / blocker / next-task / close. It runs
-// the 5-branch scheduler, performs the matching Runtime CAS update, and
-// returns the resulting Guidance + post-CAS snapshot.
+// FreshStartGuidanceForController returns the S0 bootstrap Guidance for a
+// fresh checkout (no runtime state file yet) — not a blocked condition.
+func FreshStartGuidanceForController(root, event string) *policy.Guidance {
+	return freshStartGuidance(root, event)
+}
+
+// HandleTeammateIdleForController projects the L4 scheduling decision into
+// the Guidance packet. It does NOT mutate runtime state: the fake-wake
+// `state=activated` CAS, the idle-time `next-task` allocation, and the
+// close-out CAS were retired in §15.2 P0-4 / P2-5. Real platform wake is
+// `stopidle.go` (exit 2); the scheduler — not the Hook — owns next-task
+// allocation; close-out belongs to the team lifecycle, not TeammateIdle.
 //
-// Branch table (per REQ-039 §13.7 / FR-017 / ARCHITECTURE-039 §11):
+// Branch table (L4 §10.2 / §15.2 P0-4):
 //
-//  1. assignment not complete, no blocker         → re-wake same teammate (status=active)
+//  1. assignment not complete, no blocker         → re-wake same teammate (guidance only)
 //  2. assignment complete but no completion report → Guidance demanding report
 //  3. assignment blocked but no blocker report     → Guidance demanding blocker report
-//  4. assignment complete AND reported            → allocate next legal task in same Team
-//  5. no remaining tasks                          → worktree recovery / Team close-out
+//  4. assignment complete AND reported            → idle, await consumer; scheduler allocates next
+//  5. no remaining tasks                          → idle, scheduler closes the Team
 //
-// All Runtime state changes flow through runtime.Store CAS via the
-// existing reconcileGuidance pattern; no Runtime field is mutated
-// outside that surface.
+// The Handler keeps the branch classification so the Agent still sees a
+// decision-specific Action / Missing / Automation packet, but every branch
+// projects to read-only Guidance now — Runtime mutation happens elsewhere
+// (canonical Result consumption, scheduler dispatch, team lifecycle).
 func HandleTeammateIdleForController(root string, snapshot runtime.Snapshot, loaded *hookctx.LoadedContext, event string, input policy.Input) (policy.Guidance, runtime.Snapshot, error) {
 	if !isGuidanceEvent(event) {
 		return policy.Guidance{}, snapshot, fmt.Errorf("HandleTeammateIdle: %q is not a guidance event", event)
@@ -719,52 +1300,19 @@ func HandleTeammateIdleForController(root string, snapshot runtime.Snapshot, loa
 
 	assignment := findAssignmentForTeammate(loaded, teammate)
 	decision := classifyTeammateDecision(teammate, assignment)
-
-	root = filepath.Clean(root)
-	statePath := filepath.Join(root, ".claude", "loop-state.json")
-	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
-
-	updated := snapshot
-	var err error
-	switch decision.kind {
-	case teammateResume:
-		updated, _, err = casTeammateStatus(root, statePath, journalPath, snapshot, teammate.ID, "activated", decision, event)
-	case teammateDemandCompletionReport:
-		updated, _, err = casTeammateStatus(root, statePath, journalPath, snapshot, teammate.ID, teammate.Status, decision, event)
-	case teammateDemandBlockerReport:
-		updated, _, err = casTeammateStatus(root, statePath, journalPath, snapshot, teammate.ID, teammate.Status, decision, event)
-	case teammateAllocateNext:
-		next := nextLegalTaskForTeammate(snapshot.State, teammate, loaded)
-		if next == nil {
-			// Complete + reported, but no remaining legal task in the
-			// Team. Fall through to close-out rather than allocate.
-			decision = closeOutFromAllocateNext(decision)
-			updated, _, err = casCloseOutTeammate(root, statePath, journalPath, snapshot, teammate, decision, event)
-		} else {
-			updated, _, err = casTeammateStatus(root, statePath, journalPath, snapshot, teammate.ID, "activated", decision, event)
-			if err == nil {
-				updated, _, err = casCreateAssignment(root, statePath, journalPath, updated, teammate, next, event)
-			}
-		}
-	case teammateCloseOut:
-		updated, _, err = casCloseOutTeammate(root, statePath, journalPath, snapshot, teammate, decision, event)
-	}
-	if err != nil {
-		return policy.Guidance{}, snapshot, err
+	// Idle is guidance-only: the scheduler (not the Hook) is the only
+	// writer of a new assignment, so the previously "allocate next task"
+	// branch is rewritten into an idle-allow packet that names the next
+	// step without performing a CAS (L4 §15.1 / §15.2 P2-5). The other
+	// branches stay intact (resume / demand report / demand blocker);
+	// only the idle-allow kind is rewritten so the Agent sees the
+	// scheduler-owned next step instead of a (now removed) Hook CAS.
+	if decision.kind == teammateIdleAwaitingConsumer {
+		decision = idleAfterCompletionDecision(decision)
 	}
 
-	guidance := buildGuidanceFromDecision(root, updated.State, event, input, decision)
-	// Refresh the milestone so the persisted checkpoint reflects the
-	// scheduling decision the handler just made.
-	refreshed, _, err := refreshMilestone(root, statePath, journalPath, updated, guidance, event)
-	if err != nil && !errors.Is(err, runtime.ErrStaleRevision) {
-		return guidance, updated, err
-	}
-	if refreshed.Revision != 0 {
-		updated = refreshed
-		guidance = buildGuidanceFromDecision(root, updated.State, event, input, decision)
-	}
-	return guidance, updated, nil
+	guidance := buildGuidanceFromDecision(root, snapshot.State, event, input, decision)
+	return guidance, snapshot, nil
 }
 
 // HandleSubagentStopForController wires SubagentStop through the Worktree
@@ -829,6 +1377,12 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	}
 	inspectResult, err := integration.Inspect(ctx, inspectReq, integration.InspectConfig{
 		SkipCompletionCheck: false,
+		// L3-S6 §7.4: required checks come from the assignment's manifest
+		// declaration and run for real via the shell runner — a `verified`
+		// checkpoint without an executed check set is no longer reachable
+		// from this wiring.
+		CheckRunner:    integration.CommandCheckRunner,
+		RequiredChecks: assignment.RequiredChecks,
 	})
 	if err != nil {
 		guidance := buildGuidance(root, snapshot.State, event, input)
@@ -896,6 +1450,11 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		Root:      root,
 		GitRoot:   root,
 		RuntimeID: loaded.PolicyContext.RuntimeID,
+		// Same real-check wiring as Inspect — the verified transition in
+		// the checkpoint state machine runs the assignment's declared
+		// checks instead of advancing on an empty list.
+		CheckRunner:    integration.CommandCheckRunner,
+		RequiredChecks: assignment.RequiredChecks,
 	})
 	if err != nil {
 		// Dirty / conflict preserve paths still return a checkpoint; surface
@@ -1063,16 +1622,19 @@ func inspectionForAckCleanup(assignment hookctx.AssignmentContext, inspected int
 	return out
 }
 
-// teammateDecision enumerates the five scheduling branches BUG-039-06 §4.1
-// demands of the TeammateIdle event.
+// teammateDecision enumerates the TeammateIdle scheduling branches that
+// still need a distinct Guidance projection. Idle is guidance-only
+// (L4 §15.2 P0-4 / §15.2 P2-5): the resume branch no longer CAS-writes
+// `state=activated` and idle never allocates the next task — that is the
+// scheduler's job. The four retained kinds map one-to-one to the §10.2
+// decision matrix rows that the Hook still needs to render.
 type teammateDecisionKind int
 
 const (
 	teammateResume teammateDecisionKind = iota + 1
 	teammateDemandCompletionReport
 	teammateDemandBlockerReport
-	teammateAllocateNext
-	teammateCloseOut
+	teammateIdleAwaitingConsumer
 )
 
 type teammateDecision struct {
@@ -1135,20 +1697,24 @@ func classifyTeammateDecision(teammate *teammateRow, assignment *hookctx.Assignm
 		decision.automation = append(decision.automation, "resume existing assignment instead of allocating new work")
 		return decision
 	case complete && hasCompletionReport(assignment):
-		decision.kind = teammateAllocateNext
-		decision.action = "acknowledge the completion report and allocate the next legal task in the same Team"
+		decision.kind = teammateIdleAwaitingConsumer
+		decision.action = "acknowledge the completion report; idle is allowed — the scheduler allocates the next legal task in the same Team"
 		decision.automation = append(decision.automation,
-			"completion report is durable; advance teammate state and create the next assignment",
+			"completion report is durable; scheduler/Main will dispatch the next assignment",
+			"idle does not self-claim a Team task — wait for the next scheduler dispatch",
 		)
 		return decision
 	default:
 		// Fall-through covers the "blocked but blocker already reported"
-		// case and any case where there is no remaining work.
-		decision.kind = teammateCloseOut
+		// case and any case where there is no remaining work. Idle is
+		// allowed and the scheduler owns Team close-out; the Guidance
+		// packet still names that boundary so the Agent does not invent
+		// a replacement spawn.
+		decision.kind = teammateIdleAwaitingConsumer
 		decision.blockedFlag = false
 		decision.worktreeRecovery = true
 		decision.teamCompleted = true
-		decision.action = "enter worktree recovery / Team close-out; preserve worktree and merge into the integration branch"
+		decision.action = "idle is allowed; the scheduler closes the Team once the durable Result is consumed — preserve worktree until the scheduler dispatches the close-out"
 		return decision
 	}
 }
@@ -1297,256 +1863,28 @@ func hasBlockerReport(assignment *hookctx.AssignmentContext) bool {
 	return assignment.ReportStatus == "blocked" || assignment.ReportStatus == "blocker_report"
 }
 
-func nextLegalTaskForTeammate(state map[string]any, teammate *teammateRow, loaded *hookctx.LoadedContext) *nextTaskCandidate {
-	entities, _ := state["entities"].(map[string]any)
-	tasks, _ := entities["tasks"].([]any)
-	completed := teammateCompletedTaskIDs(loaded, teammate)
-	for _, raw := range tasks {
-		row, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		stateStr := stringValue(row["state"])
-		if stateStr != "candidate" && stateStr != "pending" && stateStr != "planned" && stateStr != "reviewed" {
-			continue
-		}
-		taskID := stringValue(row["id"])
-		if containsStringValue(completed, taskID) {
-			continue
-		}
-		deps, _ := row["depends_on"].([]any)
-		if !dependenciesSatisfied(deps, completed) {
-			continue
-		}
-		owners, _ := row["owner_agent_ids"].([]any)
-		// Allocate the task to the same Team as the idle teammate. We
-		// prefer the teammate itself when no other owner is recorded;
-		// otherwise we attach the new assignment to the first listed
-		// owner so the CAS mutation stays deterministic.
-		owner := teammate.ID
-		if len(owners) > 0 {
-			if first, ok := owners[0].(string); ok && first != "" {
-				owner = first
-			}
-		}
-		teamID := teammate.TeamID
-		return &nextTaskCandidate{
-			TaskID: taskID,
-			Owner:  owner,
-			TeamID: teamID,
-			State:  stateStr,
-		}
-	}
-	return nil
-}
-
-func dependenciesSatisfied(deps []any, completed []string) bool {
-	for _, dep := range deps {
-		name, ok := dep.(string)
-		if !ok {
-			continue
-		}
-		if !containsStringValue(completed, name) {
-			return false
-		}
-	}
-	return true
-}
-
-func containsStringValue(values []string, target string) bool {
-	for _, v := range values {
-		if v == target {
-			return true
-		}
-	}
-	return false
-}
-
-func teammateCompletedTaskIDs(loaded *hookctx.LoadedContext, teammate *teammateRow) []string {
-	completed := make([]string, 0, len(teammate.TaskIDs))
-	if loaded != nil {
-		for _, row := range loaded.Assignments {
-			if row.OwnerAgentID != teammate.ID && !containsStringValue(teammate.TaskIDs, row.TaskID) {
-				continue
-			}
-			if isAssignmentComplete(&row) && hasCompletionReport(&row) {
-				completed = appendUnique(completed, row.TaskID)
-			}
-		}
-	}
-	return completed
-}
-
-type nextTaskCandidate struct {
-	TaskID string
-	Owner  string
-	TeamID string
-	State  string
-}
-
-func casTeammateStatus(root, statePath, journalPath string, snapshot runtime.Snapshot, agentID, newStatus string, decision teammateDecision, event string) (runtime.Snapshot, bool, error) {
-	if snapshot.Revision == 0 {
-		return snapshot, false, nil
-	}
-	store := runtime.NewStore(statePath, journalPath)
-	store.PreCommitValidator = func(state map[string]any) error {
-		return transition.MarshalAndValidateRuntime(root, state)
-	}
-	now := time.Now().UTC()
-	updated, err := store.Update(snapshot.Revision, runtime.Mutation{
-		EventID:        fmt.Sprintf("evt-teammate-%s-%s-r%d", agentID, newStatus, snapshot.Revision+1),
-		TransitionID:   "TEAMMATE-IDLE-DECISION",
-		Event:          "teammate_idle_decision",
-		Actor:          "hook_controller",
-		RuntimeID:      stringValue(snapshot.State["runtime_id"]),
-		From:           teammateFromCursor(snapshot.State),
-		To:             teammateFromCursor(snapshot.State),
-		EvidenceIDs:    []string{},
-		IdempotencyKey: fmt.Sprintf("teammate:%s:%s:%d", agentID, decisionLabel(decision.kind), snapshot.Revision),
-		Message:        fmt.Sprintf("TeammateIdle scheduled %s decision for %s", decisionLabel(decision.kind), agentID),
-		OccurredAt:     now,
-		Apply: func(state map[string]any) error {
-			entities, _ := state["entities"].(map[string]any)
-			agents, _ := entities["agents"].([]any)
-			for _, raw := range agents {
-				row, ok := raw.(map[string]any)
-				if !ok {
-					continue
-				}
-				if id, _ := row["id"].(string); id != agentID {
-					continue
-				}
-				row["state"] = newStatus
-				row["updated_at"] = now.Format(time.RFC3339Nano)
-			}
-			state["entities"] = entities
-			return nil
-		},
-	})
-	if err != nil {
-		return runtime.Snapshot{}, false, err
-	}
-	return updated, true, nil
-}
-
-func casCreateAssignment(root, statePath, journalPath string, snapshot runtime.Snapshot, teammate *teammateRow, next *nextTaskCandidate, event string) (runtime.Snapshot, bool, error) {
-	if snapshot.Revision == 0 || next == nil {
-		return snapshot, false, nil
-	}
-	store := runtime.NewStore(statePath, journalPath)
-	store.PreCommitValidator = func(state map[string]any) error {
-		return transition.MarshalAndValidateRuntime(root, state)
-	}
-	now := time.Now().UTC()
-	newAssignmentID := fmt.Sprintf("assignment-%s-next-%s", teammate.ID, next.TaskID)
-	updated, err := store.Update(snapshot.Revision, runtime.Mutation{
-		EventID:        fmt.Sprintf("evt-teammate-%s-allocate-%s-r%d", teammate.ID, next.TaskID, snapshot.Revision+1),
-		TransitionID:   "TEAMMATE-NEXT-ASSIGNMENT",
-		Event:          "teammate_next_assignment",
-		Actor:          "hook_controller",
-		RuntimeID:      stringValue(snapshot.State["runtime_id"]),
-		From:           teammateFromCursor(snapshot.State),
-		To:             teammateFromCursor(snapshot.State),
-		EvidenceIDs:    []string{},
-		IdempotencyKey: fmt.Sprintf("teammate:%s:next:%s:%d", teammate.ID, next.TaskID, snapshot.Revision),
-		Message:        fmt.Sprintf("TeammateIdle allocated next task %s to teammate %s", next.TaskID, teammate.ID),
-		OccurredAt:     now,
-		Apply: func(state map[string]any) error {
-			entities, _ := state["entities"].(map[string]any)
-			tasks, _ := entities["tasks"].([]any)
-			for _, raw := range tasks {
-				row, ok := raw.(map[string]any)
-				if !ok {
-					continue
-				}
-				if id, _ := row["id"].(string); id == next.TaskID {
-					owners, _ := row["owner_agent_ids"].([]any)
-					ownerSet := map[string]bool{}
-					for _, o := range owners {
-						if s, ok := o.(string); ok {
-							ownerSet[s] = true
-						}
-					}
-					ownerSet[teammate.ID] = true
-					row["owner_agent_ids"] = ownerKeys(ownerSet)
-					row["state"] = "in_progress"
-				}
-			}
-			state["entities"] = entities
-			return nil
-		},
-	})
-	if err != nil {
-		return runtime.Snapshot{}, false, err
-	}
-	_ = newAssignmentID // reference kept for future evidence correlation; not used in the bare CAS update.
-	return updated, true, nil
-}
-
-func casCloseOutTeammate(root, statePath, journalPath string, snapshot runtime.Snapshot, teammate *teammateRow, decision teammateDecision, event string) (runtime.Snapshot, bool, error) {
-	if snapshot.Revision == 0 {
-		return snapshot, false, nil
-	}
-	store := runtime.NewStore(statePath, journalPath)
-	store.PreCommitValidator = func(state map[string]any) error {
-		return transition.MarshalAndValidateRuntime(root, state)
-	}
-	now := time.Now().UTC()
-	updated, err := store.Update(snapshot.Revision, runtime.Mutation{
-		EventID:        fmt.Sprintf("evt-teammate-%s-closeout-r%d", teammate.ID, snapshot.Revision+1),
-		TransitionID:   "TEAMMATE-CLOSEOUT",
-		Event:          "teammate_closeout",
-		Actor:          "hook_controller",
-		RuntimeID:      stringValue(snapshot.State["runtime_id"]),
-		From:           teammateFromCursor(snapshot.State),
-		To:             teammateFromCursor(snapshot.State),
-		EvidenceIDs:    []string{},
-		IdempotencyKey: fmt.Sprintf("teammate:%s:closeout:%d", teammate.ID, snapshot.Revision),
-		Message:        "TeammateIdle entered worktree recovery / Team close-out",
-		OccurredAt:     now,
-		Apply: func(state map[string]any) error {
-			entities, _ := state["entities"].(map[string]any)
-			teams, _ := entities["teams"].([]any)
-			for _, raw := range teams {
-				row, ok := raw.(map[string]any)
-				if !ok {
-					continue
-				}
-				if id, _ := row["id"].(string); id != teammate.TeamID {
-					continue
-				}
-				row["status"] = "complete"
-			}
-			state["entities"] = entities
-			return nil
-		},
-	})
-	if err != nil {
-		return runtime.Snapshot{}, false, err
-	}
-	return updated, true, nil
-}
-
 func persistSubagentCheckpoint(root, statePath, journalPath string, snapshot runtime.Snapshot, inspection *integration.Inspection, targetBranch, event, integratedState string) (runtime.Snapshot, bool, error) {
 	if snapshot.Revision == 0 {
 		return snapshot, false, nil
 	}
-	store := runtime.NewStore(statePath, journalPath)
-	store.PreCommitValidator = func(state map[string]any) error {
-		return transition.MarshalAndValidateRuntime(root, state)
-	}
+	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	now := time.Now().UTC()
 	// The milestone schema constrains `integration` to a string array.
 	// Surface the checkpoint state + blockers as compact one-line
 	// strings so the durable Milestone projection stays schema-valid
 	// while still preserving the worktree + branch identity.
 	integrationEntries := []string{
+		fmt.Sprintf("assignment_id=%s", inspection.AssignmentID),
+		fmt.Sprintf("task_id=%s", inspection.TaskID),
 		fmt.Sprintf("worktree=%s", inspection.WorktreePath),
 		fmt.Sprintf("branch=%s", inspection.SourceBranch),
 		fmt.Sprintf("target_branch=%s", targetBranch),
 		fmt.Sprintf("status=%s", integratedState),
 		fmt.Sprintf("source_head=%s", inspection.SourceHead),
 		fmt.Sprintf("merge_base=%s", inspection.MergeBase),
+	}
+	if len(inspection.OutOfScopeDiff) > 0 {
+		integrationEntries = append(integrationEntries, fmt.Sprintf("out_of_scope=%s", strings.Join(inspection.OutOfScopeDiff, ",")))
 	}
 	if len(inspection.LockedDiff) > 0 {
 		integrationEntries = append(integrationEntries, fmt.Sprintf("locked_paths=%s", strings.Join(inspection.LockedDiff, ",")))
@@ -1598,36 +1936,32 @@ func decisionLabel(kind teammateDecisionKind) string {
 		return "demand_completion_report"
 	case teammateDemandBlockerReport:
 		return "demand_blocker_report"
-	case teammateAllocateNext:
-		return "allocate_next"
-	case teammateCloseOut:
-		return "close_out"
+	case teammateIdleAwaitingConsumer:
+		return "idle_awaiting_consumer"
 	}
 	return "unknown"
 }
 
-// closeOutFromAllocateNext converts an allocate-next decision to a
-// close-out decision when the team has no remaining legal tasks. The
-// scheduler preserves the original automation/missing entries and
-// rewrites the action text so the Agent sees a close-out story.
-func closeOutFromAllocateNext(source teammateDecision) teammateDecision {
+// idleAfterCompletionDecision rewrites the previously "allocate next
+// task" decision into a read-only idle packet. The Agent still gets a
+// specific next-step — acknowledge the completion report and wait for the
+// scheduler — but the Hook never CAS-writes a new assignment from
+// TeammateIdle (L4 §15.1 / §15.2 P2-5). The original automation entries
+// stay so the Agent can see why idle is allowed and who owns the next
+// dispatch.
+func idleAfterCompletionDecision(source teammateDecision) teammateDecision {
 	next := source
-	next.kind = teammateCloseOut
-	next.action = "enter worktree recovery / Team close-out; preserve worktree and merge into the integration branch"
+	next.kind = teammateIdleAwaitingConsumer
+	next.action = "acknowledge the completion report; idle is allowed — the scheduler allocates the next legal task in the same Team"
 	next.blocker = ""
 	next.blockedFlag = false
-	next.automation = append(next.automation, "no remaining legal task in this Team")
-	next.worktreeRecovery = true
-	next.teamCompleted = true
+	next.automation = appendUniqueStrings(next.automation,
+		"idle does not self-claim a Team task — wait for the scheduler/Main dispatch",
+	)
+	next.worktreeRecovery = false
+	next.teamCompleted = false
+	next.nextTaskID = ""
 	return next
-}
-
-func ownerKeys(set map[string]bool) []any {
-	out := make([]any, 0, len(set))
-	for k := range set {
-		out = append(out, k)
-	}
-	return out
 }
 
 func buildGuidanceFromDecision(root string, state map[string]any, event string, input policy.Input, decision teammateDecision) policy.Guidance {
@@ -1642,4 +1976,12 @@ func buildGuidanceFromDecision(root string, state map[string]any, event string, 
 	guidance.Integration = appendUniqueStrings(guidance.Integration, decision.missingReports...)
 	guidance.Instruction = formatGuidanceInstruction(guidance)
 	return guidance
+}
+
+// runtimeStateMissing reports whether the runtime state file does not exist
+// at all (fresh checkout) — distinct from a corrupted state, which keeps the
+// BLOCKED recovery path.
+func runtimeStateMissing(root string) bool {
+	_, err := os.Stat(filepath.Join(root, ".claude", "loop-state.json"))
+	return err != nil && os.IsNotExist(err)
 }

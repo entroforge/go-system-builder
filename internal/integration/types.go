@@ -91,6 +91,7 @@ type Inspection struct {
 	Ready          bool          `json:"ready"`
 	Blockers       []string      `json:"blockers,omitempty"`
 	AssignmentID   string        `json:"assignment_id,omitempty"`
+	TaskID         string        `json:"task_id,omitempty"`
 	WorktreePath   string        `json:"worktree_path,omitempty"`
 	SourceBranch   string        `json:"source_branch,omitempty"`
 	TargetBranch   string        `json:"target_branch,omitempty"`
@@ -99,8 +100,12 @@ type Inspection struct {
 	MergeBase      string        `json:"merge_base,omitempty"`
 	RequiredChecks []CheckResult `json:"required_checks,omitempty"`
 	LockedDiff     []string      `json:"locked_diff,omitempty"`
-	Conflicts      []string      `json:"conflicts,omitempty"`
-	NonSquashMode  bool          `json:"non_squash_mode"`
+	// OutOfScopeDiff lists changed files not covered by the assignment's
+	// declared WritePaths (L3-S6 §7.4 condition 4). Non-empty means the
+	// integration is refused and the worktree preserved.
+	OutOfScopeDiff []string `json:"out_of_scope_diff,omitempty"`
+	Conflicts      []string `json:"conflicts,omitempty"`
+	NonSquashMode  bool     `json:"non_squash_mode"`
 
 	// BaselineGeneration is echoed from InspectRequest so callers can build
 	// the idempotent checkpoint key without re-supplying it.
@@ -139,23 +144,28 @@ type Result struct {
 // merge-attempt identity (assignment_id + source_head + target_branch +
 // baseline_generation); CAS uses Revision as the optimistic lock.
 type Checkpoint struct {
-	AssignmentID       string   `json:"assignment_id"`
-	TaskID             string   `json:"task_id,omitempty"`
-	SourceBranch       string   `json:"source_branch,omitempty"`
-	SourceHead         string   `json:"source_head,omitempty"`
-	TargetBranch       string   `json:"target_branch,omitempty"`
-	TargetHead         string   `json:"target_head,omitempty"`
-	MergeBase          string   `json:"merge_base,omitempty"`
-	MergeCommit        string   `json:"merge_commit,omitempty"`
-	BaselineGeneration int      `json:"baseline_generation"`
-	State              string   `json:"state"`
-	Revision           int64    `json:"revision"`
-	IdempotencyKey     string   `json:"idempotency_key,omitempty"`
-	Blockers           []string `json:"blockers,omitempty"`
-	FailureReason      string   `json:"failure_reason,omitempty"`
-	LastErrorCode      string   `json:"last_error_code,omitempty"`
-	LockedDiff         []string `json:"locked_diff,omitempty"`
-	UpdatedAt          string   `json:"updated_at"`
+	AssignmentID       string `json:"assignment_id"`
+	TaskID             string `json:"task_id,omitempty"`
+	SourceBranch       string `json:"source_branch,omitempty"`
+	SourceHead         string `json:"source_head,omitempty"`
+	TargetBranch       string `json:"target_branch,omitempty"`
+	TargetHead         string `json:"target_head,omitempty"`
+	MergeBase          string `json:"merge_base,omitempty"`
+	MergeCommit        string `json:"merge_commit,omitempty"`
+	BaselineGeneration int    `json:"baseline_generation"`
+	State              string `json:"state"`
+	Revision           int64  `json:"revision"`
+	IdempotencyKey     string `json:"idempotency_key,omitempty"`
+	// WorktreePath is persisted so the loader's coordinate fallback chain
+	// can recover the worktree location from this durable record alone
+	// (L3-S6 §11.2 "worktree 元数据分裂" — the checkpoint previously never
+	// carried it, so the third fallback hop always read an empty value).
+	WorktreePath  string   `json:"worktree_path,omitempty"`
+	Blockers      []string `json:"blockers,omitempty"`
+	FailureReason string   `json:"failure_reason,omitempty"`
+	LastErrorCode string   `json:"last_error_code,omitempty"`
+	LockedDiff    []string `json:"locked_diff,omitempty"`
+	UpdatedAt     string   `json:"updated_at"`
 }
 
 // CheckpointPath returns the canonical on-disk path for a checkpoint. The
@@ -195,6 +205,11 @@ var ErrMissingCommits = errors.New("source branch has no commits beyond merge ba
 // ErrMissingTarget is returned when the target branch does not exist on
 // disk / git refs.
 var ErrMissingTarget = errors.New("target branch does not exist")
+
+// ErrScopeViolation is returned when the source diff touches files outside
+// the assignment's declared WritePaths. The worktree is preserved; the
+// offending paths ride on Inspection.OutOfScopeDiff.
+var ErrScopeViolation = errors.New("worktree diff is outside the assignment write scope")
 
 // ErrCASStale is returned when the checkpoint file's Revision does not
 // match ExpectedRevision. Callers should re-read the checkpoint and decide

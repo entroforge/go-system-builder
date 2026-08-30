@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0.0",
+  "result_id": "review-result-example-qa-1",
+  "assignment_id": "assignment-qa-logic-1",
+  "assignment_revision": 1,
+  "review_plan_id": "review-plan-example-1",
+  "review_round": 1,
+  "baseline_generation": 1,
+  "producer_agent_id": "agent-qa-1",
+  "subject_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "verification_artifact_digest": null,
+  "claim_results": [
+    {
+      "claim_id": "claim-qa-error-path-1",
+      "conclusion": "fail",
+      "method": "code review of the error paths in internal/example",
+      "observed": "the Update handler drops the store error and reports success",
+      "evidence_refs": [".claude/evidence/example/code-trail.md"]
+    },
+    {
+      "claim_id": "claim-qa-state-machine-1",
+      "conclusion": "pass",
+      "method": "state transition walk",
+      "observed": "every transition has a defined from-state and rollback",
+      "evidence_refs": [".claude/evidence/example/state-graph.md"]
+    }
+  ],
+  "checks": [
+    {
+      "name": "unit tests",
+      "command": "go test ./internal/example/",
+      "result": "pass",
+      "evidence_refs": [".claude/evidence/example/go-test.log"]
+    }
+  ],
+  "findings": [
+    {
+      "schema_version": "1.0.0",
+      "finding_id": "finding-example-1",
+      "claim_id": "claim-qa-error-path-1",
+      "lens": "qa",
+      "severity": "P1",
+      "expected": "Update propagates the store error and the caller sees a failure",
+      "authority_refs": ["docs/contracts/CONTRACTS-001.md#errors"],
+      "observed": "Update returns nil after the store write fails; the caller proceeds as if the write succeeded",
+      "observation_mode": "code_inspection",
+      "encounter": {
+        "journey_summary": "read Update -> call graph to store.Write -> error branch discards the result -> caller observes nil",
+        "inspection_entry": "internal/example/service.go:Update",
+        "symbol_trail": "Update -> store.Write (error dropped at service.go:87)",
+        "last_good_checkpoint": "store.Write returns a typed error for the duplicate key",
+        "wall_action": "the error return value is assigned to _ at service.go:87",
+        "first_bad_checkpoint": "Update returns nil although store.Write failed",
+        "terminal_state": "caller commits the transaction and reports success",
+        "state_delta_refs": [".claude/evidence/example/state-diff.md"],
+        "timeline": [
+          {
+            "sequence": 1,
+            "action": "trace Update error handling",
+            "target": "internal/example/service.go",
+            "observed_checkpoint": "error dropped at line 87",
+            "evidence_refs": [".claude/evidence/example/code-trail.md"]
+          }
+        ]
+      },
+      "reproducibility": "always",
+      "evidence_refs": [".claude/evidence/example/code-trail.md"],
+      "correlation_refs": ["service.go:87"],
+      "visible_impact": "callers persist partial state under a success signal",
+      "negative_facts": ["the sibling Delete path propagates errors correctly"],
+      "open_questions": ["does any caller rely on the current drop behavior?"]
+    }
+  ],
+  "deviations": [],
+  "verdict": "finding"
+}

@@ -1,0 +1,29 @@
+{
+  "module": "example-module",
+  "fixtures": [
+    {
+      "id": "FX-EXAMPLE-VALID",
+      "persona": "<synthetic-persona>",
+      "synthetic": true,
+      "setup": [
+        "<create only facts that exist before the user journey>"
+      ],
+      "cleanup": [
+        "<delete the isolated case namespace>",
+        "<verify no residual records remain>"
+      ]
+    },
+    {
+      "id": "FX-EXAMPLE-INVALID",
+      "persona": "<synthetic-persona>",
+      "synthetic": true,
+      "setup": [
+        "<create only facts needed before the rejection journey>"
+      ],
+      "cleanup": [
+        "<delete the isolated case namespace>",
+        "<verify no residual records remain>"
+      ]
+    }
+  ]
+}

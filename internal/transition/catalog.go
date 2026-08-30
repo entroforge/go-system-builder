@@ -23,6 +23,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/entroforge/go-system-builder/internal/evidence"
 )
 
 // StateSpec is the per-state entry in loop-definition.json states map.
@@ -52,6 +54,15 @@ type TransitionSpec struct {
 	OnGuardFailure   string            `json:"on_guard_failure,omitempty"`
 	AutoTrigger      *AutoTriggerSpec  `json:"auto_trigger,omitempty"`
 	Description      string            `json:"description"`
+	// HumanDecisionScope names the lifecycle-verb scope prefix (e.g.
+	// "runtime_pause") that the transition's human_decision evidence must
+	// carry as `<scope>:<runtime_id>@<state revision>`. Empty means the
+	// transition makes no scope demand. This is the transition-layer
+	// counterpart of runtime.validateLifecycleApproval: one approval
+	// authorizes exactly one verb on one runtime at one revision — it can
+	// neither be reused after the revision moves nor be replayed as a
+	// different verb (公理二: the human gate rides the natural path).
+	HumanDecisionScope string `json:"human_decision_scope,omitempty"`
 }
 
 // AutoTriggerSpec is the canonical hook-trigger metadata attached to a
@@ -91,6 +102,8 @@ type GlobalTransitionSpec struct {
 	OnGuardFailure   string            `json:"on_guard_failure,omitempty"`
 	AutoTrigger      *AutoTriggerSpec  `json:"auto_trigger,omitempty"`
 	Description      string            `json:"description"`
+	// HumanDecisionScope mirrors TransitionSpec's field for global transitions.
+	HumanDecisionScope string `json:"human_decision_scope,omitempty"`
 }
 
 // EntityLifecycleSpec is the per-entity-lifecycle descriptor.
@@ -231,6 +244,9 @@ func LoadCatalog(root string) (*Catalog, error) {
 	if err := json.Unmarshal(data, &def); err != nil {
 		return nil, fmt.Errorf("decode Loop Definition: %w", err)
 	}
+	if err := validateEvidenceRequirements(def); err != nil {
+		return nil, err
+	}
 
 	catalog := &Catalog{
 		Definition:          &def,
@@ -312,6 +328,41 @@ func LoadCatalog(root string) (*Catalog, error) {
 	}
 
 	return catalog, nil
+}
+
+func validateEvidenceRequirements(def LoopDefinition) error {
+	catalog := evidence.DefaultCatalog()
+	validate := func(owner, id string, required []string) error {
+		if err := catalog.ValidateSlots(required); err != nil {
+			return fmt.Errorf("transition %s %s: %w", owner, id, err)
+		}
+		return nil
+	}
+	for _, spec := range def.Transitions {
+		if err := validate("top-level", spec.ID, spec.RequiredEvidence); err != nil {
+			return err
+		}
+	}
+	for owner, machine := range def.PhaseMachines {
+		for _, spec := range machine.Transitions {
+			if err := validate("phase "+owner, spec.ID, spec.RequiredEvidence); err != nil {
+				return err
+			}
+		}
+	}
+	for _, spec := range def.GlobalTransitions {
+		if err := validate("global", spec.ID, spec.RequiredEvidence); err != nil {
+			return err
+		}
+	}
+	for entity, lifecycle := range def.EntityLifecycles {
+		for _, spec := range lifecycle.Transitions {
+			if err := validate("entity "+entity, spec.ID, spec.RequiredEvidence); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 var registeredQualityGates = map[string]struct{}{

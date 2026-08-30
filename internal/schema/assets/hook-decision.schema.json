@@ -69,6 +69,11 @@
       "type": "string",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
     },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Measured controller and policy evaluation duration before the Hook decision was persisted; a missing record may still indicate a platform timeout."
+    },
     "table_unloaded": {
       "type": "boolean",
       "description": "True when the protected-commands table at docs/release_audits/protected_commands.json could not be loaded at startup. Informational only; the decision field reflects the verdict Hook actually applied. Operators can grep this field to detect installations missing the file."
@@ -98,6 +103,11 @@
           "type": "array",
           "items": {"type": "string", "minLength": 1}
         },
+        "error_code": {"type": "string"},
+        "conflicts": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
         "transition_committed": {"type": "boolean"},
         "next_cursor": {"type": "string"}
       }
@@ -121,7 +131,7 @@
         "objective": {"type": "string", "minLength": 1},
         "action": {"type": "string", "minLength": 1},
         "protocol_ref": {"type": "string", "minLength": 1},
-        "manual_ref": {"type": "string", "const": ".claude/bin/loop-harness.md"},
+        "manual_ref": {"type": "string", "enum": ["loop-harness.md", ".claude/bin/loop-harness.md"]},
         "primary_skill": {"type": "string", "minLength": 1},
         "read": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "read_order": {"type": "array", "items": {"type": "string", "minLength": 1}},

@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0.0",
+  "review_plan_id": "review-plan-example-1",
+  "review_round": 1,
+  "baseline_generation": 1,
+  "frozen_subjects": [
+    {
+      "path": "internal/example/service.go",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": "product_code"
+    },
+    {
+      "path": "docs/tasks/TASK-001.md",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "kind": "task"
+    }
+  ],
+  "change_impact": {
+    "summary": "S6 delivered the example service update path",
+    "source_refs": ["docs/tasks/TASK-001.md"]
+  },
+  "claims": [
+    {
+      "claim_id": "claim-dv-req-coverage-1",
+      "lens": "delivery",
+      "target": "internal/example",
+      "assertion": "every acceptance criterion of REQ-001 has a real implementation landing point",
+      "oracle": "each AC maps to code and at least one executed check",
+      "method": "requirement traceability review",
+      "applicability": "required",
+      "source_refs": ["docs/requirements/REQ-001.md"],
+      "focus_key": "requirement-traceability"
+    },
+    {
+      "claim_id": "claim-qa-error-path-1",
+      "lens": "qa",
+      "target": "internal/example/service.go",
+      "assertion": "error returns propagate to the caller with the typed failure",
+      "oracle": "no error return is dropped on any Update path",
+      "method": "logic/state/error review",
+      "applicability": "required",
+      "source_refs": ["docs/contracts/CONTRACTS-001.md"],
+      "focus_key": "logic-state-error"
+    },
+    {
+      "claim_id": "claim-qa-state-machine-1",
+      "lens": "qa",
+      "target": "internal/example",
+      "assertion": "state transitions are complete and reversible",
+      "oracle": "every state has defined entry/exit and no orphan transition",
+      "method": "state machine walk",
+      "applicability": "required",
+      "source_refs": ["docs/design/ARCH-001.md"],
+      "focus_key": "logic-state-error"
+    },
+    {
+      "claim_id": "claim-e2e-na-1",
+      "lens": "e2e",
+      "target": "n/a",
+      "assertion": "no user-observable behavior changed",
+      "oracle": "change impact shows a pure internal package with no entry point",
+      "method": "impact analysis",
+      "applicability": "not_applicable",
+      "na_rationale": "pure internal refactoring with no user-visible surface",
+      "na_checklist_id": "docs/requirements/REQ-001.md#ui_impact",
+      "source_refs": ["docs/requirements/REQ-001.md#ui_impact"]
+    }
+  ],
+  "assignments": [
+    {
+      "assignment_id": "assignment-dv-trace-1",
+      "lens": "delivery",
+      "claim_ids": ["claim-dv-req-coverage-1"],
+      "focus_keys": ["requirement-traceability"],
+      "non_overlap_boundary": "owns REQ/contract traceability; does not re-review code quality (QA lens owns it)",
+      "execution_wave": "static"
+    },
+    {
+      "assignment_id": "assignment-qa-logic-1",
+      "lens": "qa",
+      "claim_ids": ["claim-qa-error-path-1", "claim-qa-state-machine-1"],
+      "focus_keys": ["logic-state-error"],
+      "non_overlap_boundary": "owns logic/state/error for internal/example; does not duplicate the DV traceability pass",
+      "execution_wave": "static"
+    }
+  ],
+  "e2e_coverage_state": "not_applicable",
+  "verification_artifact_workspace": null,
+  "dispatch_capacity_policy": "coverage_complete",
+  "created_by": "orchestrator",
+  "created_at": "2026-08-18T00:00:00Z"
+}

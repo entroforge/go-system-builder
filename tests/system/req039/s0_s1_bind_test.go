@@ -55,7 +55,7 @@ func TestS0S1_InitBindEntersPlanningDesign(t *testing.T) {
 
 	after := req039fixtures.ReadState(t, root)
 	req039fixtures.AssertLifecycle(t, after, "planning", "design")
-	req039fixtures.AssertLastTransition(t, after, "TR-001")
+	req039fixtures.AssertBindingReceipt(t, after, "TR-001")
 	ms, _ := after["milestone"].(map[string]any)
 	// TR-001 lands planning.design; stage may remain S0 until milestone refresh
 	// on the first Hook — either S0 (bind cursor) or S2 (planning.design) is OK.

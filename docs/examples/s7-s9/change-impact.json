@@ -1,0 +1,37 @@
+{
+  "impact_id": "impact-example",
+  "runtime_id": "loop-REQ-003",
+  "req_id": "REQ-003",
+  "baseline_generation": 4,
+  "source_bug_ids": [],
+  "source_case_ids": ["investigation-case-example"],
+  "change_types": ["contract", "implementation", "regression_test"],
+  "changed_artifacts": [
+    {
+      "id": "changed-internal-example-handler-go",
+      "path": "internal/example/handler.go",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "decisions": [
+    {
+      "source_id": "investigation-case-example",
+      "target_id": "internal/example/handler.go",
+      "relation": "implements-root-cause-boundary",
+      "rule_id": "RULE-CONTRACT-BOUNDARY",
+      "decision": "reverify",
+      "responsibility_id": "REPAIR-CONTRACT-BOUNDARY",
+      "scope": ["internal/example/handler.go"],
+      "rationale": "The changed handler is inside the approved root-cause boundary and invalidates its prior verification evidence.",
+      "recovery_evidence": []
+    }
+  ],
+  "escalation_level": "assignment",
+  "invalidated_evidence_ids": ["review-result-example"],
+  "superseded_evidence_ids": [],
+  "retained_evidence_ids": [],
+  "required_reverification_ids": ["reverify-example"],
+  "analyzed_by": "agent-impact-reviewer-1",
+  "analyzed_at": "2026-08-26T11:00:00Z",
+  "occurred_at": "2026-08-26T11:00:00Z"
+}

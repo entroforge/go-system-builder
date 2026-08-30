@@ -1,0 +1,27 @@
+{
+  "session_ref": {
+    "id": "repair-session-example",
+    "path": ".claude/evidence/repair/sessions/repair-session-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "plan_ref": {
+    "id": "repair-plan-example",
+    "path": ".claude/evidence/repair/plans/repair-plan-example.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "assignment_id": "repair-assignment-unit-1",
+  "assertion_ids": ["root-1", "gap-1"],
+  "agent_id": "agent-repair-builder-1",
+  "report_id": "repair-plan-report-example",
+  "plan": "Normalize the boundary contract and add the regression check before changing the implementation.",
+  "red_checks": [
+    {
+      "name": "pre-fix regression",
+      "command": "go test ./internal/example -run TestContractBoundary",
+      "result": "fail",
+      "evidence_refs": ["docs/reports/bugs/BUG-example.md#reproduction"]
+    }
+  ],
+  "proposed_paths": ["internal/example/handler.go", "internal/example/handler_test.go"],
+  "occurred_at": "2026-08-26T10:00:00Z"
+}

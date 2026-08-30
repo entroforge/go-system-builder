@@ -148,6 +148,12 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 	if next.AssignmentID == "" {
 		next.AssignmentID = idempAssignment(req)
 	}
+	if next.TaskID == "" {
+		next.TaskID = req.Inspection.TaskID
+	}
+	if next.WorktreePath == "" {
+		next.WorktreePath = req.Inspection.WorktreePath
+	}
 	next.SourceBranch = req.Inspection.SourceBranch
 	next.SourceHead = req.Inspection.SourceHead
 	next.TargetBranch = req.Inspection.TargetBranch
@@ -352,6 +358,8 @@ func preserveFromInspection(cfg IntegrateConfig, req IntegrateRequest, reason st
 
 	cp := Checkpoint{
 		AssignmentID:       idempAssignment(req),
+		TaskID:             req.Inspection.TaskID,
+		WorktreePath:       req.Inspection.WorktreePath,
 		SourceBranch:       req.Inspection.SourceBranch,
 		SourceHead:         req.Inspection.SourceHead,
 		TargetBranch:       req.Inspection.TargetBranch,
@@ -436,6 +444,8 @@ func stableErrorCode(err error) string {
 		return "LOOP_INTEGRATION_PARTIAL"
 	case errors.Is(err, ErrLockedArtifact):
 		return "LOOP_LOCKED_ARTIFACT"
+	case errors.Is(err, ErrScopeViolation):
+		return "LOOP_SCOPE_VIOLATION"
 	case errors.Is(err, ErrSquashForbidden):
 		return "LOOP_SQUASH_MERGE"
 	default:
@@ -451,7 +461,7 @@ func LessThan(a, b string) bool { return lessThan(a, b) }
 func integrationDurationStatus(result Result, err error) string {
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrDirtyWorktree), errors.Is(err, ErrMergeConflict), errors.Is(err, ErrSquashForbidden):
+		case errors.Is(err, ErrDirtyWorktree), errors.Is(err, ErrMergeConflict), errors.Is(err, ErrSquashForbidden), errors.Is(err, ErrScopeViolation):
 			return "preserved"
 		default:
 			return "error"

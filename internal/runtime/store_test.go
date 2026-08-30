@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
 func TestStoreUpdateUsesRevisionCASAndAppendsJournal(t *testing.T) {
@@ -22,7 +23,7 @@ func TestStoreUpdateUsesRevisionCASAndAppendsJournal(t *testing.T) {
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	writeState(t, statePath, 1)
 
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 	next, err := store.Update(1, runtime.Mutation{
 		EventID:        "evt-2",
 		TransitionID:   "TR-TEST",
@@ -55,7 +56,7 @@ func TestStoreRetainLastTransitionSkipsLastTransitionOverwrite(t *testing.T) {
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	writeState(t, statePath, 1)
 
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 	if _, err := store.Update(1, runtime.Mutation{
 		EventID:        "evt-tr008",
 		TransitionID:   "TR-008",
@@ -122,7 +123,7 @@ func TestStoreSerializesConcurrentWriters(t *testing.T) {
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	writeState(t, statePath, 1)
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
@@ -163,20 +164,8 @@ func TestStoreReconcilesMissingLastJournalEvent(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
-	writeState(t, statePath, 1)
-	store := runtime.NewStore(statePath, journalPath)
-	if _, err := store.Update(1, runtime.Mutation{
-		EventID:        "evt-reconcile",
-		TransitionID:   "TR-TEST",
-		Event:          "test_transition",
-		Actor:          "orchestrator",
-		IdempotencyKey: "runtime:TR-TEST:1",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(journalPath, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	prepareMissingReconcileTarget(t, statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 
 	reconciled, err := store.Reconcile()
 	if err != nil {
@@ -191,12 +180,14 @@ func TestStoreReconcilesMissingLastJournalEvent(t *testing.T) {
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
-	if !scanner.Scan() {
-		t.Fatal("expected reconciled journal line")
-	}
 	var event map[string]any
-	if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-		t.Fatal(err)
+	for scanner.Scan() {
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if event == nil {
+		t.Fatal("expected reconciled journal line")
 	}
 	if event["event_id"] != "evt-reconcile" {
 		t.Fatalf("unexpected reconciled event: %v", event)
@@ -210,7 +201,7 @@ func TestStoreRejectsStaleRevisionWithoutMutation(t *testing.T) {
 	writeState(t, statePath, 2)
 	before, _ := os.ReadFile(statePath)
 
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 	_, err := store.Update(1, runtime.Mutation{
 		EventID:        "evt-stale",
 		TransitionID:   "TR-TEST",
@@ -230,9 +221,66 @@ func TestStoreRejectsStaleRevisionWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestStoreValidationFailureLeavesStateJournalAndRevisionUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "loop-state.json")
+	journalPath := filepath.Join(dir, "loop-events.jsonl")
+	writeState(t, statePath, 1)
+	if err := os.WriteFile(journalPath, []byte("journal-before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalBefore, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := testWriter(statePath, journalPath)
+	_, err = store.Update(1, runtime.Mutation{
+		EventID:        "evt-invalid-candidate",
+		TransitionID:   "TR-TEST",
+		Event:          "test_transition",
+		Actor:          "orchestrator",
+		IdempotencyKey: "runtime:TR-TEST:1:invalid",
+		Apply: func(state map[string]any) error {
+			state["unknown_runtime_field"] = true
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected schema validation failure")
+	}
+
+	stateAfter, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalAfter, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stateAfter) != string(stateBefore) {
+		t.Fatal("validation failure changed state bytes")
+	}
+	if string(journalAfter) != string(journalBefore) {
+		t.Fatal("validation failure changed journal bytes")
+	}
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Revision != 1 {
+		t.Fatalf("validation failure changed revision: got %d", snapshot.Revision)
+	}
+}
+
 func TestStoreRolloverRejectsNonCanonicalFreshState(t *testing.T) {
 	dir := t.TempDir()
-	store := runtime.NewStore(filepath.Join(dir, "loop-state.json"), filepath.Join(dir, "loop-events.jsonl"))
+	store := testWriter(filepath.Join(dir, "loop-state.json"), filepath.Join(dir, "loop-events.jsonl"))
 	_, err := store.Rollover(
 		map[string]any{"runtime_id": "loop-inactive", "revision": 0},
 		filepath.Join(dir, "archive"),
@@ -259,7 +307,7 @@ func TestStoreRecoversExpiredLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 	next, err := store.Update(1, runtime.Mutation{
 		EventID:        "evt-after-expired-lock",
 		TransitionID:   "TR-TEST",
@@ -277,22 +325,38 @@ func TestStoreRecoversExpiredLock(t *testing.T) {
 
 func writeState(t *testing.T, path string, revision int) {
 	t.Helper()
-	state := map[string]any{
-		"runtime_id": "loop-test",
-		"revision":   revision,
-		"journal": map[string]any{
-			"path":          ".claude/loop-events.jsonl",
-			"last_sequence": revision,
-			"last_event_id": nil,
-		},
-		"last_transition": nil,
-		"updated_at":      "2026-06-20T00:00:00Z",
+	data, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, err := json.MarshalIndent(state, "", "  ")
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["runtime_id"] = "loop-test"
+	state["revision"] = revision
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
+	}
+	state["last_transition"] = nil
+	data, err = json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitionDir := filepath.Join(filepath.Dir(path), "docs")
+	if err := os.MkdirAll(definitionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(definitionDir, "loop-definition.json"), definition, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -316,42 +380,46 @@ func TestStoreRefreshFingerprintsRecomputesSHA(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// State pre-populated with stale hashes (wrong on purpose).
-	state := map[string]any{
-		"runtime_id": "loop-test",
-		"revision":   3,
-		"journal":    map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 3, "last_event_id": "evt-3"},
-		"last_transition": map[string]any{
-			"event_id": "evt-3", "sequence": 3, "transition_id": "TR-X", "event": "x", "actor": "user",
-			"from":              map[string]any{"state": "a", "phase": nil},
-			"to":                map[string]any{"state": "b", "phase": nil},
-			"expected_revision": 3, "committed_revision": 3, "idempotency_key": "k",
-			"evidence_ids": []string{}, "occurred_at": "2026-06-20T00:00:00Z",
-		},
-		"updated_at": "2026-06-20T00:00:00Z",
-		"documents": []any{
-			map[string]any{"id": "DOC-1", "kind": "task", "path": "doc.md", "version": "v1", "sha256": "stale", "status": "locked", "generation": 1},
-		},
-		"evidence": []any{
-			map[string]any{"id": "EV-1", "kind": "document_review", "path": "evidence.md", "sha256": "stale", "status": "valid", "baseline_generation": 1, "review_round": 1, "produced_by": []string{"a"}, "invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil, "responsibility_id": nil, "scope_refs": []string{}},
-		},
-		"bound_req": map[string]any{
-			"id": "REQ-001", "path": "doc.md", "version": "v1", "sha256": "stale",
-			"status": "locked", "approved_by": "u", "approved_at": "2026-06-20T00:00:00Z",
-		},
+	// Start from the canonical schema example and replace only the fields this
+	// fingerprint test exercises. RefreshFingerprints is a durable writer, so
+	// its fixture must itself satisfy the Runtime schema before the refresh.
+	data, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, _ := json.MarshalIndent(state, "", "  ")
+	state := map[string]any{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["runtime_id"] = "loop-test"
+	state["revision"] = 3
+	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
+	state["last_transition"] = nil
+	state["documents"] = []any{
+		map[string]any{"id": "DOC-1", "kind": "task", "path": "doc.md", "version": "v1", "sha256": "stale", "status": "locked", "generation": 1},
+	}
+	state["evidence"] = []any{
+		map[string]any{"id": "EV-1", "kind": "document_review", "path": "evidence.md", "sha256": "stale", "status": "valid", "baseline_generation": 1, "review_round": 1, "produced_by": []string{"a"}, "invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil, "responsibility_id": nil, "scope_refs": []string{}},
+	}
+	state["bound_req"] = map[string]any{
+		"id": "REQ-001", "path": "doc.md", "version": "v1", "sha256": "stale",
+		"status": "locked", "approved_by": "u", "approved_at": "2026-06-20T00:00:00Z",
+	}
+	data, err = json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(statePath, append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 	result, err := store.RefreshFingerprints(dir)
 	if err != nil {
 		t.Fatalf("RefreshFingerprints: %v", err)
 	}
-	if len(result.Updated) != 3 {
-		t.Fatalf("expected 3 updated entries, got %d (%v)", len(result.Updated), result.Updated)
+	if len(result.Updated) != 4 {
+		t.Fatalf("expected 4 updated entries including the definition fingerprint, got %d (%v)", len(result.Updated), result.Updated)
 	}
 	if len(result.Unchanged) != 0 {
 		t.Fatalf("expected 0 unchanged, got %d (%v)", len(result.Unchanged), result.Unchanged)
@@ -377,8 +445,8 @@ func TestStoreRefreshFingerprintsRecomputesSHA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second RefreshFingerprints: %v", err)
 	}
-	if len(result2.Updated) != 0 || len(result2.Unchanged) != 3 {
-		t.Fatalf("expected 0 updated / 3 unchanged on second pass; got updated=%d unchanged=%d", len(result2.Updated), len(result2.Unchanged))
+	if len(result2.Updated) != 0 || len(result2.Unchanged) != 4 {
+		t.Fatalf("expected 0 updated / 4 unchanged on second pass; got updated=%d unchanged=%d", len(result2.Updated), len(result2.Unchanged))
 	}
 }
 
@@ -391,16 +459,23 @@ func TestStoreRefreshFingerprintsSynchronizesDefinitionVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	definitionHash := sha256.Sum256(definition)
-	state := map[string]any{
-		"runtime_id": "loop-test",
-		"revision":   8,
-		"definition": map[string]any{
-			"path":    "loop-definition.json",
-			"version": "1.2.0",
-			"sha256":  fmt.Sprintf("%x", definitionHash),
-		},
+	writeExampleRuntime(t, statePath)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, err := json.Marshal(state)
+	state := map[string]any{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["runtime_id"] = "loop-test"
+	state["revision"] = 8
+	state["definition"] = map[string]any{
+		"path":    "loop-definition.json",
+		"version": "1.2.0",
+		"sha256":  fmt.Sprintf("%x", definitionHash),
+	}
+	data, err = json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +483,7 @@ func TestStoreRefreshFingerprintsSynchronizesDefinitionVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := runtime.NewStore(statePath, filepath.Join(dir, "loop-events.jsonl")).RefreshFingerprints(dir); err != nil {
+	if _, err := testWriter(statePath, filepath.Join(dir, "loop-events.jsonl")).RefreshFingerprints(dir); err != nil {
 		t.Fatalf("RefreshFingerprints: %v", err)
 	}
 
@@ -451,7 +526,7 @@ func TestStoreRefreshFingerprintsReportsMissing(t *testing.T) {
 	if err := os.WriteFile(statePath, append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	store := runtime.NewStore(statePath, journalPath)
+	store := testWriter(statePath, journalPath)
 	result, err := store.RefreshFingerprints(dir)
 	if err != nil {
 		t.Fatalf("RefreshFingerprints: %v", err)
@@ -471,25 +546,41 @@ func TestStoreRefreshFingerprintsUpdatesTaskEntityHash(t *testing.T) {
 	if err := os.WriteFile(taskPath, []byte("updated task\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	state := map[string]any{
-		"revision": 1,
-		"entities": map[string]any{
-			"tasks": []any{map[string]any{
-				"id": "TASK-001", "path": "TASK-001.md", "sha256": "stale", "state": "reviewed",
-			}},
-		},
+	writeExampleRuntime(t, statePath)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, _ := json.Marshal(state)
+	state := map[string]any{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["revision"] = 1
+	entities := state["entities"].(map[string]any)
+	entities["tasks"] = []any{map[string]any{
+		"id": "TASK-001", "path": "TASK-001.md", "sha256": "stale", "state": "reviewed", "owner_agent_ids": []any{"agent-1"},
+	}}
+	state["entities"] = entities
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(statePath, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := runtime.NewStore(statePath, filepath.Join(dir, "loop-events.jsonl")).RefreshFingerprints(dir)
+	result, err := testWriter(statePath, filepath.Join(dir, "loop-events.jsonl")).RefreshFingerprints(dir)
 	if err != nil {
 		t.Fatalf("RefreshFingerprints: %v", err)
 	}
-	if len(result.Updated) != 1 || result.Updated[0] != "TASK-001.md" {
-		t.Fatalf("expected task entity update, got %#v", result)
+	foundTask := false
+	for _, path := range result.Updated {
+		if path == "TASK-001.md" {
+			foundTask = true
+		}
+	}
+	if len(result.Updated) != 2 || !foundTask {
+		t.Fatalf("expected task entity and definition updates, got %#v", result)
 	}
 	updated, err := os.ReadFile(statePath)
 	if err != nil {

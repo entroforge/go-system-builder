@@ -1,0 +1,4 @@
+interface:
+  display_name: "Runtime Recovery"
+  short_description: "Safely inspect, plan, and rebuild damaged Runtime state"
+  default_prompt: "Use $runtime-recovery to diagnose and recover a damaged Loop Runtime without bypassing state, evidence, or audit controls."
