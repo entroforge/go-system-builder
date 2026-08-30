@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/evidence"
@@ -37,7 +38,26 @@ var (
 	MetricsGateEvaluations   = 0
 	MetricsTransitionCommits = 0
 	MetricsCASConflicts      = 0
+	metricsCountersMu        sync.Mutex
 )
+
+func incrementMetricsGateEvaluations() {
+	metricsCountersMu.Lock()
+	MetricsGateEvaluations++
+	metricsCountersMu.Unlock()
+}
+
+func incrementMetricsTransitionCommits() {
+	metricsCountersMu.Lock()
+	MetricsTransitionCommits++
+	metricsCountersMu.Unlock()
+}
+
+func incrementMetricsCASConflicts() {
+	metricsCountersMu.Lock()
+	MetricsCASConflicts++
+	metricsCountersMu.Unlock()
+}
 
 // diskFiles is the production FileView used to back the Quality Gate
 // evaluator. It reads from the project root relative paths.
@@ -258,7 +278,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		if applyErr != nil {
 			// CAS stale: re-read, recompute once, and try again.
 			if errors.Is(applyErr, runtime.ErrStaleRevision) {
-				MetricsCASConflicts++
+				incrementMetricsCASConflicts()
 				metrics.RecordCASConflict(req.Root)
 				rebroadcast, _, recomputeErr := recomputeAfterStale(req, store, catalog, registry, evaluator, ctx)
 				if recomputeErr != nil {
@@ -289,7 +309,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 			result.Snapshot = snapshot
 			return result, nil
 		}
-		MetricsTransitionCommits++
+		incrementMetricsTransitionCommits()
 		metrics.RecordTransitionCommit(req.Root, candidate.ID)
 		snapshot = next
 		result.Snapshot = next
@@ -525,7 +545,7 @@ func recomputeAfterStale(
 		autoTransitionRequest(req, registry, refreshed, candidate, gateID, evaluation))
 	if applyErr != nil {
 		if errors.Is(applyErr, runtime.ErrStaleRevision) {
-			MetricsCASConflicts++
+			incrementMetricsCASConflicts()
 			metrics.RecordCASConflict(req.Root)
 		}
 		// Second stale: the cycle must NOT retry a third time.
@@ -550,7 +570,7 @@ func recomputeAfterStale(
 	if err != nil {
 		return ControlResult{}, 1, fmt.Errorf("reread runtime after retry: %w", err)
 	}
-	MetricsTransitionCommits++
+	incrementMetricsTransitionCommits()
 	metrics.RecordTransitionCommit(req.Root, candidate.ID)
 	cursorState, cursorPhase = snapshotCursor(final.State)
 	out := ControlResult{
@@ -602,7 +622,7 @@ func evaluateAutomaticGates(
 			AffectedPaths: affected,
 			Files:         files,
 		})
-		MetricsGateEvaluations++
+		incrementMetricsGateEvaluations()
 		if timedOut {
 			return results, true
 		}

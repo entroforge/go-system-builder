@@ -62,7 +62,7 @@ func NewRegistry(catalog *transition.Catalog) (*Registry, error) {
 		if existing, ok := registry.gates[gateID]; ok {
 			return fmt.Errorf("quality gate %s is declared by both %s and %s", gateID, existing.TransitionID, transitionID)
 		}
-		requirements := semanticRequirements[gateID]
+		requirements := cloneRequirements(semanticRequirements[gateID])
 		if len(requirements) == 0 {
 			return fmt.Errorf("quality gate %s has no semantic definition", gateID)
 		}
