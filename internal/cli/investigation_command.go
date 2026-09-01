@@ -243,13 +243,6 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, formatFailure("runtime investigation dispatch", err))
 		return 1
 	}
-	resolvedRevision, err := resolveExpectedRevision(rootPath, stateFile, *expectedRevision)
-	if err != nil {
-		_ = os.Remove(manifestPath)
-		_ = os.Remove(taskPath)
-		fmt.Fprintln(stderr, formatFailure("runtime investigation dispatch", err))
-		return 1
-	}
 	var occurredAt time.Time
 	if strings.TrimSpace(*occurredAtValue) != "" {
 		occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
@@ -260,7 +253,7 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 			return 2
 		}
 	}
-	next, err := assignment.Register(rootPath, stateFile, journalFile, assignment.Request{ExpectedRevision: resolvedRevision, ManifestPath: manifestPath, TaskID: taskID, TaskPath: taskPath, OccurredAt: occurredAt})
+	next, err := assignment.Register(rootPath, stateFile, journalFile, assignment.Request{ExpectedRevision: *expectedRevision, ManifestPath: manifestPath, TaskID: taskID, TaskPath: taskPath, OccurredAt: occurredAt})
 	if err != nil {
 		_ = os.Remove(manifestPath)
 		_ = os.Remove(taskPath)
@@ -362,8 +355,8 @@ func runRuntimeInvestigationHypothesisRegister(args []string, stdout, stderr io.
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	hypothesisID := flags.String("id", "", "hypothesis id")
-	expectedCaseRevision := flags.Int("expected-case-revision", -1, "expected Case revision (read it with `runtime investigation status`)")
-	expectedCaseSHA := flags.String("expected-case-sha256", "", "expected Case sha256 (read it with `runtime investigation status`)")
+	expectedCaseRevision := flags.Int("expected-case-revision", -1, "optional explicit Case revision assertion")
+	expectedCaseSHA := flags.String("expected-case-sha256", "", "optional explicit Case sha256 assertion")
 	assignmentID := flags.String("assignment-id", "", "dispatched Assignment answering this hypothesis")
 	statement := flags.String("statement", "", "falsifiable causal statement")
 	invariant := flags.String("invariant", "", "invariant the hypothesis claims is violated")
@@ -382,12 +375,8 @@ func runRuntimeInvestigationHypothesisRegister(args []string, stdout, stderr io.
 		fmt.Fprintln(stderr, "runtime investigation hypothesis register requires --case-id and --id")
 		return 2
 	}
-	resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime investigation hypothesis register", err))
-		return 1
-	}
 	var occurredAt time.Time
+	var err error
 	if strings.TrimSpace(*occurredAtValue) != "" {
 		occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
 		if err != nil {
@@ -396,7 +385,7 @@ func runRuntimeInvestigationHypothesisRegister(args []string, stdout, stderr io.
 		}
 	}
 	snapshot, err := investigation.RegisterHypothesis(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.HypothesisRequest{
-		ExpectedRevision:     resolvedRevision,
+		ExpectedRevision:     *expectedRevision,
 		ExpectedCaseRevision: *expectedCaseRevision,
 		ExpectedCaseSHA256:   strings.TrimSpace(*expectedCaseSHA),
 		CaseID:               strings.TrimSpace(*caseID),
@@ -436,8 +425,8 @@ func runRuntimeInvestigationHypothesisResult(args []string, stdout, stderr io.Wr
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	hypothesisID := flags.String("hypothesis-id", "", "registered hypothesis id")
-	expectedCaseRevision := flags.Int("expected-case-revision", -1, "expected Case revision (read it with `runtime investigation status`)")
-	expectedCaseSHA := flags.String("expected-case-sha256", "", "expected Case sha256 (read it with `runtime investigation status`)")
+	expectedCaseRevision := flags.Int("expected-case-revision", -1, "optional explicit Case revision assertion")
+	expectedCaseSHA := flags.String("expected-case-sha256", "", "optional explicit Case sha256 assertion")
 	assignmentID := flags.String("assignment-id", "", "Assignment that produced this result")
 	method := flags.String("method", "", "how the observation was made")
 	observed := flags.String("observed", "", "what was observed at the discriminator")
@@ -459,12 +448,8 @@ func runRuntimeInvestigationHypothesisResult(args []string, stdout, stderr io.Wr
 		fmt.Fprintln(stderr, "runtime investigation hypothesis result requires --case-id and --hypothesis-id")
 		return 2
 	}
-	resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime investigation hypothesis result", err))
-		return 1
-	}
 	var occurredAt time.Time
+	var err error
 	if strings.TrimSpace(*occurredAtValue) != "" {
 		occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
 		if err != nil {
@@ -473,7 +458,7 @@ func runRuntimeInvestigationHypothesisResult(args []string, stdout, stderr io.Wr
 		}
 	}
 	snapshot, err := investigation.SubmitHypothesisResult(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.HypothesisResultRequest{
-		ExpectedRevision:     resolvedRevision,
+		ExpectedRevision:     *expectedRevision,
 		ExpectedCaseRevision: *expectedCaseRevision,
 		ExpectedCaseSHA256:   strings.TrimSpace(*expectedCaseSHA),
 		CaseID:               strings.TrimSpace(*caseID),
@@ -516,8 +501,8 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	route := flags.String("route", "", "investigate_more | s9_repair | duplicate | s2_spec_rework | human_req_change | s7_no_change")
-	expectedCaseRevision := flags.Int("expected-case-revision", -1, "expected Case revision (read it with `runtime investigation status`)")
-	expectedCaseSHA := flags.String("expected-case-sha256", "", "expected Case sha256 (read it with `runtime investigation status`)")
+	expectedCaseRevision := flags.Int("expected-case-revision", -1, "optional explicit Case revision assertion")
+	expectedCaseSHA := flags.String("expected-case-sha256", "", "optional explicit Case sha256 assertion")
 	routeReason := flags.String("reason", "", "why this disposition")
 	primaryRootCause := flags.String("primary-root-cause", "", "s9_repair: the one-sentence root cause")
 	causalModelFile := flags.String("causal-model-file", "", "s9_repair: JSON file with the causal model")
@@ -534,12 +519,8 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runtime investigation route requires --case-id and --route")
 		return 2
 	}
-	resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime investigation route", err))
-		return 1
-	}
 	var occurredAt time.Time
+	var err error
 	if strings.TrimSpace(*occurredAtValue) != "" {
 		occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
 		if err != nil {
@@ -585,7 +566,7 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	snapshot, err := investigation.UpdateCaseRoute(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.RouteRequest{
-		ExpectedRevision:               resolvedRevision,
+		ExpectedRevision:               *expectedRevision,
 		ExpectedCaseRevision:           *expectedCaseRevision,
 		ExpectedCaseSHA256:             strings.TrimSpace(*expectedCaseSHA),
 		CaseID:                         strings.TrimSpace(*caseID),
@@ -670,12 +651,8 @@ func runRuntimeInvestigationConsume(args []string, stdout, stderr io.Writer) int
 		fmt.Fprintln(stderr, "runtime investigation consume requires --case-id")
 		return 2
 	}
-	expected, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime investigation consume", err))
-		return 1
-	}
 	var occurredAt time.Time
+	var err error
 	if strings.TrimSpace(*occurredAtValue) != "" {
 		occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
 		if err != nil {
@@ -684,7 +661,7 @@ func runRuntimeInvestigationConsume(args []string, stdout, stderr io.Writer) int
 		}
 	}
 	snapshot, err := investigation.ConsumeCaseRoute(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.ConsumeRouteRequest{
-		ExpectedRevision: expected,
+		ExpectedRevision: *expectedRevision,
 		CaseID:           strings.TrimSpace(*caseID),
 		Actor:            strings.TrimSpace(*actor),
 		OccurredAt:       occurredAt,
@@ -854,12 +831,8 @@ func runRuntimeInvestigationIngest(args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, "runtime investigation ingest requires --grouping-rationale; intake must record why the exact Finding set is provisionally grouped")
 		return 2
 	}
-	resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime investigation ingest", err))
-		return 1
-	}
 	var occurredAt time.Time
+	var err error
 	if strings.TrimSpace(*occurredAtValue) != "" {
 		occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
 		if err != nil {
@@ -868,7 +841,7 @@ func runRuntimeInvestigationIngest(args []string, stdout, stderr io.Writer) int 
 		}
 	}
 	snapshot, err := investigation.Ingest(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.IngestRequest{
-		ExpectedRevision:  resolvedRevision,
+		ExpectedRevision:  *expectedRevision,
 		CaseID:            strings.TrimSpace(*caseID),
 		GroupingRationale: *groupingRationale,
 		OccurredAt:        occurredAt,
@@ -928,7 +901,7 @@ func writeInvestigationCaseTemplate(root string, pointer map[string]any, target 
 		revision = intFieldCLI(caseDocument["revision"])
 	}
 	if revision < 1 {
-		return fmt.Errorf("Case %s revision is not readable; regenerate the scaffold after `runtime investigation status` confirms the Case", caseID)
+		return fmt.Errorf("Case %s artifact version is not readable; regenerate the scaffold after `runtime investigation status` confirms the Case", caseID)
 	}
 
 	// RouteRequest draft: the fields Route() validates are pre-named; the
@@ -936,7 +909,6 @@ func writeInvestigationCaseTemplate(root string, pointer map[string]any, target 
 	routeDraft := map[string]any{
 		"template":                "route-request-draft",
 		"case_id":                 caseID,
-		"expected_case_sha256":    stringValue(pointer["sha256"]),
 		"route":                   "TODO(s9_repair|investigate_more|duplicate|s2_spec_rework|human_req_change|s7_no_change)",
 		"route_reason":            "TODO(why this disposition)",
 		"primary_root_cause":      "TODO(one-sentence root cause; required for s9_repair)",
@@ -944,7 +916,7 @@ func writeInvestigationCaseTemplate(root string, pointer map[string]any, target 
 		"blast_radius_file":       "TODO(JSON file path; see docs/examples/s7-s9/blast-radius.json)",
 		"detection_gap_file":      "TODO(JSON file path; see docs/examples/s7-s9/detection-gap.json)",
 		"unexplained_finding_ids": stringSliceAny(caseDocument["unexplained_finding_ids"]),
-		"next_verb":               fmt.Sprintf("runtime investigation route --case-id %s --route <route> --reason <...> --expected-case-revision %d --expected-case-sha256 <sha> [--causal-model-file <...> --blast-radius-file <...> --detection-gap-file <...>]", caseID, revision),
+		"next_verb":               fmt.Sprintf("runtime investigation route --case-id %s --route <route> --reason <...> [--causal-model-file <...> --blast-radius-file <...> --detection-gap-file <...>]", caseID),
 	}
 
 	// RepairContract placeholder: mirrors repair-contract.schema.json's
@@ -974,7 +946,7 @@ func writeInvestigationCaseTemplate(root string, pointer map[string]any, target 
 		"root_invariant_assertions":  []string{"TODO(root-1: ...)"},
 		"detection_gap_assertions":   []string{"TODO(gap-1: ...)"},
 		"stop_escalation_conditions": []string{"TODO(when the repair must stop and escalate)"},
-		"next_verb":                  fmt.Sprintf("runtime investigation contract approve --case-id %s --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id> --expected-case-revision %d --expected-case-sha256 <sha>", caseID, revision),
+		"next_verb":                  fmt.Sprintf("runtime investigation contract approve --case-id %s --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>", caseID),
 	}
 
 	document := map[string]any{
@@ -1033,12 +1005,8 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "runtime investigation contract approve requires --case-id, --file, --approved-by, --approval-hash and --approval-evidence-id; approval is the S8→S9 authority transaction")
 		return 2
 	}
-	resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime investigation contract approve", err))
-		return 1
-	}
 	var occurredAt time.Time
+	var err error
 	if strings.TrimSpace(*occurredAtValue) != "" {
 		occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
 		if err != nil {
@@ -1047,7 +1015,7 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 		}
 	}
 	snapshot, err := investigation.ApproveContract(resolveRootPath(*root, "."), resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.ContractRequest{
-		ExpectedRevision:   resolvedRevision,
+		ExpectedRevision:   *expectedRevision,
 		CaseID:             strings.TrimSpace(*caseID),
 		ContractPath:       *contractPath,
 		ApprovedBy:         *approvedBy,

@@ -458,7 +458,7 @@ func ValidatePlanTaskCoverage(state map[string]any, plan *Plan) error {
 			"ReviewPlan drops current-generation TASKs from Claim coverage",
 			missingItems,
 			[]string{"add each missing TASK id to at least one Claim.source_refs; keep the Claim target and oracle specific to that TASK"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	return nil

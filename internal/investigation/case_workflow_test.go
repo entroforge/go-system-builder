@@ -26,14 +26,12 @@ func TestRegisterHypothesisCreatesImmutableCaseRevisionAndHistory(t *testing.T) 
 	}
 
 	snapshot, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
-		ExpectedRevision:     1,
-		ExpectedCaseRevision: 1,
-		ExpectedCaseSHA256:   pointer["sha256"].(string),
-		CaseID:               "investigation-case-observation-batch-r1",
-		HypothesisID:         "hypothesis-payload-drift",
-		Statement:            "FE and BE payload schemas drift at the serialization boundary",
-		Invariant:            "one authoritative payload contract owns field shape",
-		Discriminator:        "compare generated client payload with the server DTO",
+		ExpectedRevision: -1,
+		CaseID:           "investigation-case-observation-batch-r1",
+		HypothesisID:     "hypothesis-payload-drift",
+		Statement:        "FE and BE payload schemas drift at the serialization boundary",
+		Invariant:        "one authoritative payload contract owns field shape",
+		Discriminator:    "compare generated client payload with the server DTO",
 		ExpectedOutcomes: map[string]any{
 			"support": "the field differs at the boundary",
 			"refute":  "the field is identical across the boundary",

@@ -25,7 +25,7 @@ This section is a human-facing summary. It must not override the Loop runtime.
 | basis | {document/evidence links} |
 | next human milestone | {milestone} |
 | stage check | pass / blocked |
-| runtime ID and revision | {runtime-id}@{revision} / inactive |
+| runtime identity | {runtime-id} / inactive |
 | runtime lifecycle | {state.phase} / inactive |
 | bound REQ | REQ-{id} / none |
 
@@ -38,13 +38,13 @@ This section is a human-facing summary. It must not override the Loop runtime.
 | design/UI | `{path}` | {status/N/A} | {version/hash} |
 | contracts | `docs/contracts/CONTRACTS-{id}.md` | {status} | {version/hash} |
 | tasks | `docs/tasks/index.md` | {status} | {version/hash} |
-| runtime | `.claude/loop-state.json` | authoritative | revision {n} |
+| runtime | `.claude/loop-state.json` | authoritative | {state / phase / next} |
 
 ## 4. PM Todo
 
 | REQ | Human stage | Completed evidence | Next action | Owner | Blocker | Acceptance remaining | Runtime ref |
 |:---|:---|:---|:---|:---|:---|:---|:---|
-| REQ-{id} | {S0-S11} | {links} | {one action} | {role} | {none/item} | {evidence} | `{runtime-id}@{revision}` |
+| REQ-{id} | {S0-S11} | {links} | {one action} | {role} | {none/item} | {evidence} | `{runtime-id}` |
 
 ## 5. Unknowns
 

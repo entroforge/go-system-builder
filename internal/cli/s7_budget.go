@@ -31,12 +31,9 @@ func runRuntimeS7BudgetDecision(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	missing := make([]string, 0, 3)
+	missing := make([]string, 0, 2)
 	if strings.TrimSpace(*decisionPath) == "" {
 		missing = append(missing, "--file")
-	}
-	if *expectedRevision < 0 {
-		missing = append(missing, "--expected-revision")
 	}
 	if strings.TrimSpace(*actor) == "" {
 		missing = append(missing, "--actor")
@@ -72,13 +69,13 @@ func runRuntimeS7BudgetDecision(args []string, stdout, stderr io.Writer) int {
 	if receipt.Decision.Decision == runtime.S7BudgetDecisionGovernance {
 		next, transitionErr := transition.Apply(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), transition.Request{
 			TransitionID:     "GTR-006",
-			ExpectedRevision: receipt.Snapshot.Revision,
+			ExpectedRevision: -1,
 			Actor:            strings.TrimSpace(*actor),
 			Evidence:         map[string]string{"human_decision_record": receipt.EvidenceID},
 			OccurredAt:       time.Now().UTC(),
 		})
 		if transitionErr != nil {
-			fmt.Fprintf(stderr, "runtime s7-budget-decision: decision recorded at revision %d but governance handoff is pending: %v; retry `runtime transition --id GTR-006 --expected-revision %d --actor %s --evidence human_decision_record=%s`\n", receipt.Snapshot.Revision, transitionErr, receipt.Snapshot.Revision, *actor, receipt.EvidenceID)
+			fmt.Fprintf(stderr, "runtime s7-budget-decision: decision recorded at revision %d but governance handoff is pending: %v; retry `runtime transition --id GTR-006 --actor %s --evidence human_decision_record=%s`\n", receipt.Snapshot.Revision, transitionErr, *actor, receipt.EvidenceID)
 			return 1
 		}
 		result["revision"] = next.Revision
@@ -138,7 +135,7 @@ func applyS7BudgetGateway(next *nextProjection, state map[string]any) {
 	next.Stage = "S7"
 	next.ProtocolRef = "docs/agent-protocol.md#s7"
 	next.Objective = "obtain the human decision for an exhausted S7 full-review budget"
-	next.Action = "stop automation and submit `runtime s7-budget-decision --file <decision.json> --expected-revision <N> --actor <user>` with increase_budget or return_to_governance"
+	next.Action = "stop automation and submit `runtime s7-budget-decision --file <decision.json> --actor <user>` with increase_budget or return_to_governance"
 	next.PrimarySkill = PrimarySkillS7
 	next.Missing = []string{"s7_budget_decision"}
 	next.DoneWhen = []string{"the decision is recorded in Runtime evidence", "increase_budget updates max_full_review_rounds or return_to_governance routes to planning"}

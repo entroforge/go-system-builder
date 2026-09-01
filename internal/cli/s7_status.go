@@ -125,7 +125,7 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 	if maxRounds > 0 && round >= maxRounds {
 		fmt.Fprintln(stdout, "budget: exhausted for opening another full S7 round")
 		fmt.Fprintln(stdout, "human decision required: increase_budget or return_to_governance")
-		fmt.Fprintln(stdout, "next: `loop-harness runtime s7-budget-decision --file <decision.json> --expected-revision <N> --actor <user>`")
+		fmt.Fprintln(stdout, "next: `loop-harness runtime s7-budget-decision --file <decision.json> --actor <user>`")
 	}
 	if cfg, ok := state["configuration"].(map[string]any); ok {
 		if repair, ok := cfg["repair"].(map[string]any); ok {

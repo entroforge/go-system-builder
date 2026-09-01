@@ -19,7 +19,7 @@
 | related | `docs/design/prototypes/{module}/` | UI impact = changed 时必填；模块当前真相包 |
 | downstream | `docs/tasks/index.md` | 派生任务 |
 | evidence | `docs/reports/review/REV-{id}.md` | 文档审核 |
-| runtime | `.claude/loop-state.json` | 当前状态仅通过 runtime revision 引用 |
+| runtime | `.claude/loop-state.json` | 当前状态通过 Runtime identity、状态和指纹引用；commit revision 仅作可选审计元数据 |
 
 ## 合同锁定声明
 

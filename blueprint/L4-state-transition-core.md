@@ -1,10 +1,10 @@
 # L4 — 权威状态机与迁移事务核心（Authoritative State & Transition Core）
 
-> 层：第四层｜机制域：权威状态存储模型、单写者 CAS、崩溃安全写序与恢复标记、实体生命周期索引、guard/action 迁移引擎、自动推进与候选仲裁、失效与预算事务、归档与周期边界、对账命令族
+> 层：第四层｜机制域：权威状态存储模型、单写者写入协调、崩溃安全写序与恢复标记、实体生命周期索引、guard/action 迁移引擎、自动推进与候选仲裁、失效与预算事务、归档与周期边界、对账命令族
 >
 > 上游：L1 D1（权威外置）与 D7；L2 状态概念层；全部读写 runtime 的 L3 Stage
 >
-> 四家族分工：[调度](L4-agent-dispatch-governance.md)定义谁行动，[Hook 接线](L4-hook-platform-wiring.md)定义决策如何上总线，[运行时控制面](L4-runtime-control-plane.md)定义内容合规规则与词汇词典——**本文档是"事实住哪、怎样变更才算合法、崩了怎么自证"的唯一权威**。迁移 ID 五类形态学、guard/action 引擎、auto_trigger 仲裁的本体在此；L2 只保留生命周期概念与全局规则的"存在声明"，各 L3 只写消费。
+> 五家族分工：[调度](L4-agent-dispatch-governance.md)定义谁行动，[Hook 接线](L4-hook-platform-wiring.md)定义决策如何上总线，[运行时控制面](L4-runtime-control-plane.md)定义内容合规规则与词汇词典，[revision 使用篇](L4-revision-usage.md)定义内部提交序号与命令协调——**本文档是"事实住哪、怎样变更才算合法、崩了怎么自证"的唯一权威**。迁移 ID 五类形态学、guard/action 引擎、auto_trigger 仲裁的本体在此；L2 只保留生命周期概念与全局规则的"存在声明"，各 L3 只写消费。
 >
 > 状态：v0.1.0。【当前实现】均为代码核对结论（核对日 2026-08-28）；意图与现状的差距在 §11 披露。
 
@@ -23,7 +23,7 @@
 | `schema_version` / `updated_at` | 必填 | 版本常量 / 写入时间 |
 | `runtime_id` | 身份 | `^loop-[A-Za-z0-9._-]+$` |
 | `definition` | 指纹引用 | path/version/sha256 指向 loop-definition |
-| `revision` | CAS 轴 | 单调递增、无上限 |
+| `revision` | Runtime Writer 提交序号 | 单调递增、无上限；由 Writer 内部生成，Agent 不手工提供 |
 | `lifecycle` | 当前位置 | `{state, phase, phase_revision}`；12 个顶级 state × 可嵌套 phase |
 | `authorization` | 授权记录 | mode（none/loop/binding）/command/actor/occurred_at |
 | `bound_req` / `binding_receipt` | 基线 | status 固定 locked；receipt 存 TR-001 双指纹收据 |
@@ -42,11 +42,11 @@
 
 ### 1.2 journal 条目形状
 
-JSONL 公共字段：schema_version、runtime_id、event_id、idempotency_key、sequence、event、outcome、actor{type,id}、request_id、baseline_generation、before_revision/after_revision、from/to、evidence_ids、message、occurred_at；transition_committed 类追加 transition_id、gate_id（默认 `MANUAL`）、gate_fingerprint（默认 `sha256:manual`）、producer_responsibility、guard_results、action_results。一致性不变式：tail 的 sequence/event_id 必须等于 cursor 二元组。超过 10k 行时自动归档为段文件 `loop-events.jsonl.archive.<tailSeq>.jsonl`（见 §11，`maybeRotateJournalLocked`，marker 事务段感知）。
+JSONL 公共字段：schema_version、runtime_id、event_id、idempotency_key、sequence、event、outcome、actor{type,id}、request_id、baseline_generation、before_revision/after_revision（Runtime Writer 内部提交序号）、from/to、evidence_ids、message、occurred_at；transition_committed 类追加 transition_id、gate_id（默认 `MANUAL`）、gate_fingerprint（默认 `sha256:manual`）、producer_responsibility、guard_results、action_results。一致性不变式：tail 的 sequence/event_id 必须等于 cursor 二元组。超过 10k 行时自动归档为段文件 `loop-events.jsonl.archive.<tailSeq>.jsonl`（见 §11，`maybeRotateJournalLocked`，marker 事务段感知）。
 
 ### 1.3 runtime-archive
 
-终局归档目录 `<archiveRoot>/<runtimeID>-r<revision>-<UTCStamp>/`：`loop-state.json` + `loop-events.jsonl` + `rollover.json` 清单（含 state/journal 双 sha256、approved_by/approval_evidence_id、disposition）。disposition 取值：空串（TR-001 边界复位）与 `unbound`（撤销授权）。弃周期全程可审计，撤销≠抹除。
+终局归档目录 `<archiveRoot>/<runtimeID>-r<revision>-<UTCStamp>/`：其中 `revision` 仅作 Writer 生成的归档排序元数据；目录包含 `loop-state.json` + `loop-events.jsonl` + `rollover.json` 清单（含 state/journal 双 sha256、approved_by/approval_evidence_id、disposition）。disposition 取值：空串（TR-001 边界复位）与 `unbound`（撤销授权）。弃周期全程可审计，撤销≠抹除。
 
 ## 2. 状态全集与生命周期索引
 
@@ -55,10 +55,10 @@ JSONL 公共字段：schema_version、runtime_id、event_id、idempotency_key、
 - **实体生命周期**（entity_lifecycles）：agent 初始 spawned 终态 done/stopped 共十一态十三转移（readback_started→reading；readback_submitted→understanding_submitted；understanding_approved / understanding_rejected 回 reading / document_conflict_reported→blocked；activation_sent 双入口（submitted 直通、approved 后备用）→activated；work_started→working；completion_reported→reported；completion_acknowledged→done；work_blocked→blocked；blocker_resolved→working；shutdown_approved→stopped）；task 八态（candidate…done/cancelled）；bug 十态（draft→…→closed/rejected/duplicate）。
 - **REQ 七动词的机械落点**（生命周期概念仍以 L2 为概念源，此处是唯一机械形态表）：bind=TR-001（boundary reset，双指纹收据）；pause=GTR-001 及七个人闸变体共用同一 capture_pause_checkpoint；resume=TR-019（sentinel `RESUME_FROM_PAUSE` 解 pause.from_*，逐指纹核对，漂移即拒）；amend=TR-020（generation+1 + 换基线 + 下游全失效）；abort 双入口（paused 态 TR-021；S11 处置 TR-030）；approve=TR-025（只授权不发布）；**rollover 与 unbind 不是 transition**——它们是 Store API（跨文件原子操作），这正是 L2「三条裁决」②③ 在代码层的形态。
 
-## 3. 单写者与 CAS 本体
+## 3. 单写者与内部提交一致性
 
 - 读写分型：`NewStore` 只读快照；**`NewWriter` 强制注入 CandidateValidator**（缺失或恒空校验直接拒启）——语义验证器不是可选装饰，是写入资格的一部分。
-- 写主流程 `Update(expectedRevision, mutation)`：加文件锁 → recoverPendingWritesLocked → revision 对比（不等即 `ErrStaleRevision`）→ applyMutation。身份轴另有一条：`ErrStaleRuntimeIdentity`。
+- 写主流程（当前实现）`Update(expectedRevision, mutation)`：加文件锁 → recoverPendingWritesLocked → revision 对比（不等即 `ErrStaleRevision`）→ applyMutation。目标态由 [revision 使用篇](L4-revision-usage.md)规定：正常命令在锁内读取当前 Runtime 并提交，显式 `expectedRevision` 只保留给高级调用者；身份轴另有一条：`ErrStaleRuntimeIdentity`。这里保留 CAS 仅为底层兼容实现，不构成单主会话的业务并发模型。
 - 锁协议：`statePath+".lock"` 的 O_CREATE|O_EXCL owner 文件（PID+纳秒），5ms 轮询，超 30 秒视为陈旧回收。
 - 定向错误词表：ErrStaleRevision / ErrStaleRuntimeIdentity / ErrPendingRuntimeOperation / ErrBaselineDrift（resume 指纹漂移，路由 amend）/ RepairLimitError。每条 stale 都必须携带"观察到什么/期望什么/下一个动词"（词典与铁律见控制面篇 §2，两文按"规则/引擎"分工引用同表）。
 
@@ -80,7 +80,7 @@ definition 现在只允许 `reject | pause` 两值（RC-06/C-12：`warn_and_retr
 
 ### 5.3 迁移内校验
 
-Apply 前置三查：cursor 匹配（含 human_boundary 动词的 actor 白名单）、required_evidence 逐一过 `validateCurrentEvidence`（存在于 runtime 且 valid、kind 兼容、baseline_generation 同代、review_round 同轮、path 安全、sha 一致）、human_decision 类证据的 **scope 字符串格式** `<scope>:<runtime_id>@<revision>`（绑死对象与修订，过期即拒）。
+Apply 前置三查：cursor 匹配（含 human_boundary 动词的 actor 白名单）、required_evidence 逐一过 `validateCurrentEvidence`（存在于 runtime 且 valid、kind 兼容、baseline_generation 同代、review_round 同轮、path 安全、sha 一致）、human_decision 类证据的 semantic identity 与一次性消费规则。revision 的内部提交检查和 Agent-facing 默认语义见 [revision 使用篇](L4-revision-usage.md)，不在此重复定义。
 
 ## 6. 自动推进与候选仲裁
 
@@ -112,11 +112,11 @@ Apply 前置三查：cursor 匹配（含 human_boundary 动词的 actor 白名�
 | configuration.repair.max_full_review_rounds | 5 | 开新轮 action 内做超限判定 |
 | …last_budget_decision | null | increase_budget / return_to_governance 决策的完整审计对象（证据 id、前后预算值、authorized_by、committed_revision 十字段）|
 
-预算调整本身是一笔事务：`ApplyS7BudgetDecision` 单 CAS 内同时写证据、改预算、落决策记录；return_to_governance 经 GTR-006 把 runtime 送回 planning 重开。
+预算调整本身是一笔事务：`ApplyS7BudgetDecision` 在同一个 Writer 事务内同时写证据、改预算、落决策记录；return_to_governance 经 GTR-006 把 Runtime 送回 planning 重开。
 
 ## 8. 归档与周期边界
 
-- **rollover 前置五验**：runtime 处于终态二选一；ApprovedBy 与 EvidenceID 齐备；该证据必须是 kind=human_decision、valid、scope 含 `runtime_rollover:<id>@<rev>`；fresh inactive 新 runtime 通过三零校验（revision=0、last_sequence=0、event_id=nil）；最后走 rolloverPending 三阶段恢复协议完成目录化归档与新周期落盘。
+- **rollover 前置五验**：Runtime 处于终态二选一；ApprovedBy 与 EvidenceID 齐备；该证据必须是 kind=human_decision、valid、scope 含当前 Runtime 的语义动作 `runtime_rollover:<id>`；fresh inactive 新 Runtime 通过三零校验（revision=0、last_sequence=0、event_id=nil）；最后走 rolloverPending 三阶段恢复协议完成目录化归档与新周期落盘。
 - **unbind** 是非终态可用的姊妹操作（scope=`runtime_unbind`，在飞实体软门信息进清单 extras）；与 rollover 共享 archiveAndReset 机器，只有 disposition 不同。
 - **pause/resume 的指纹闸**：capture 落下的 document_fingerprints 被 restoreFromPause 逐文件重算比对，漂移即 ErrBaselineDrift——这就是 L2「恢复前校验基线未漂移」的引擎形态。
 

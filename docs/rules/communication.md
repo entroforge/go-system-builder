@@ -15,7 +15,9 @@ Versioned documents and structured evidence are the source of truth.
 
 ## Required Communication
 
-- Identify the runtime ID/revision or state that justifies the next action.
+- Identify the runtime ID and the current state/`next` action that justifies
+  the next step. A committed Runtime revision may be cited as optional audit
+  metadata, but it is never a prerequisite for normal agent communication.
 - Link authoritative REQ, specification, assignment, activation, BUG, and evidence documents.
 - State blockers without silently reducing scope or acceptance.
 - Record baseline decisions before acting on them.

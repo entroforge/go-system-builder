@@ -1,7 +1,7 @@
 # Acceptance Evidence: ACC-{id}
 
 > Status: draft / passed / blocked / invalidated
-> Runtime ref: `{runtime-id}@{revision}`
+> Runtime ref: `{runtime-id}`
 > Source REQ refs: REQ-{id} / none
 > Accepted module current truth: `docs/design/prototypes/{module}/`
 > Baseline generation: {n}

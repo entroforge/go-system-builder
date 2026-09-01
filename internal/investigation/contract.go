@@ -26,8 +26,8 @@ const contractNextCommand = "runtime investigation contract approve --root . --c
 // bytes the human reviewed (sha256 of the on-disk draft; the server
 // recomputes and compares, so a mid-approval swap is rejected). Approval
 // evidence is a human_boundary gate: ApprovalEvidenceID must resolve to
-// valid human_decision evidence produced by ApprovedBy and scoped to
-// "s8_contract_approval:<runtime_id>@<revision>". Both fields are required;
+// valid human_decision evidence produced by ApprovedBy and scoped to the
+// semantic context "s8_contract_approval:<runtime_id>". Both fields are required;
 // an approver name by itself is not an approval receipt.
 type ContractRequest struct {
 	ExpectedRevision   int
@@ -56,9 +56,6 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 		return runtime.Snapshot{}, actionableContractError("resolve repository root: %v", err)
 	}
 	root = absoluteRoot
-	if request.ExpectedRevision < 0 {
-		return runtime.Snapshot{}, actionableContractError("expected Runtime revision must be non-negative")
-	}
 	if strings.TrimSpace(request.CaseID) == "" {
 		return runtime.Snapshot{}, actionableContractError("case_id is required")
 	}
@@ -76,7 +73,7 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before RepairContract approval: %w", err)
 	}
-	if current.Revision != request.ExpectedRevision {
+	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
 		return runtime.Snapshot{}, fmt.Errorf("%w: expected %d but Runtime is at %d; next: %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, contractNextCommand)
 	}
 
@@ -177,7 +174,7 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	if approvalEvidenceID == "" {
 		return runtime.Snapshot{}, actionableContractError("approval_evidence_id is required; cite valid human_decision evidence for this S8 approval")
 	}
-	if err := validateContractApprovalEvidence(current.State, strings.TrimSpace(request.ApprovedBy), approvalEvidenceID, current.Revision); err != nil {
+	if err := validateContractApprovalEvidence(root, current.State, strings.TrimSpace(request.ApprovedBy), approvalEvidenceID, current.Revision, request.CaseID, stringField(draft["repair_contract_id"]), approvalHash); err != nil {
 		return runtime.Snapshot{}, actionableContractError("%v", err)
 	}
 
@@ -252,13 +249,15 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	cursor := map[string]any{"state": stringField(lifecycle["state"]), "phase": lifecycle["phase"]}
 	nextCursor := map[string]any{"state": "bug_resolution", "phase": "repair_readback"}
 	runtimeID := stringField(current.State["runtime_id"])
+	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	baseline, _ := baselineGeneration(current.State)
-	snapshot, err := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).Update(request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-repair-contract-approved-%s-r%d", contractID, request.ExpectedRevision+1),
+	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	snapshot, err := updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
+		EventID:                fmt.Sprintf("evt-repair-contract-approved-%s-r%d", contractID, commitRevision+1),
 		TransitionID:           "S8-REPAIR-CONTRACT-APPROVAL",
 		Event:                  "repair_contract_approved",
 		Actor:                  "orchestrator",
-		IdempotencyKey:         fmt.Sprintf("runtime:investigation-contract-approve:%s:%d", contractID, request.ExpectedRevision),
+		IdempotencyKey:         fmt.Sprintf("runtime:investigation-contract-approve:%s:%d", contractID, commitRevision),
 		RuntimeID:              runtimeID,
 		From:                   cursor,
 		To:                     nextCursor,
@@ -299,6 +298,9 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 			existing["repair_contract_ref"] = approvedRel
 			existing["repair_contract_sha256"] = contractSHA
 			existing["updated_at"] = approvedAt.UTC().Format(time.RFC3339Nano)
+			if err := runtime.ConsumeHumanDecisionEvidence(state, approvalEvidenceID, "S8-REPAIR-CONTRACT-APPROVAL", approvedAt); err != nil {
+				return err
+			}
 			state["updated_at"] = approvedAt.UTC().Format(time.RFC3339Nano)
 			return nil
 		},
@@ -382,32 +384,77 @@ func validateContractBaseline(root string, state, caseDocument map[string]any) e
 	return nil
 }
 
-// contractApprovalScope is the human_boundary scope prefix for the
-// S8→S9 contract approval. It mirrors the runtime_rollover / runtime_governance
-// prefixes used by store.go validateLifecycleApproval so one human_decision
-// receipt authorizes exactly one verb at one revision.
+// contractApprovalScope is the semantic human_boundary scope prefix for the
+// S8→S9 contract approval. Runtime revision is deliberately not part of this
+// business scope; the approval hash, Case/Contract identity and one-time
+// evidence id provide the business binding.
 const contractApprovalScope = "s8_contract_approval"
 
 // validateContractApprovalEvidence enforces that the cited human_decision
 // evidence is valid, produced by the named approver, and scoped to
-// "s8_contract_approval:<runtime_id>@<revision>". A decision from another
-// verb, another identity, or another revision is rejected.
-func validateContractApprovalEvidence(state map[string]any, approvedBy, evidenceID string, revision int) error {
+// "s8_contract_approval:<runtime_id>". A legacy @revision suffix remains
+// readable for migration, but new evidence uses the semantic scope.
+func validateContractApprovalEvidence(root string, state map[string]any, approvedBy, evidenceID string, revision int, caseID, contractID, approvalHash string) error {
 	items, ok := state["evidence"].([]any)
 	if !ok {
 		return errors.New("runtime evidence must be an array")
 	}
 	runtimeID := stringField(state["runtime_id"])
+	semanticScope := fmt.Sprintf("%s:%s", contractApprovalScope, runtimeID)
+	legacyScope := fmt.Sprintf("%s@%d", semanticScope, revision)
 	for _, raw := range items {
 		item, _ := raw.(map[string]any)
 		if item == nil || stringField(item["id"]) != evidenceID || stringField(item["kind"]) != "human_decision" || stringField(item["status"]) != "valid" {
 			continue
 		}
-		if containsStringAny(item["produced_by"], approvedBy) && containsStringAny(item["scope_refs"], fmt.Sprintf("%s:%s@%d", contractApprovalScope, runtimeID, revision)) {
+		if runtime.HumanDecisionEvidenceConsumed(item) {
+			return fmt.Errorf("contract approval evidence %q was already consumed; create a new approval decision", evidenceID)
+		}
+		if containsStringAny(item["produced_by"], approvedBy) && (containsStringAny(item["scope_refs"], semanticScope) || containsStringAny(item["scope_refs"], legacyScope)) {
+			if err := validateContractApprovalArtifact(root, item, state, caseID, contractID, approvalHash); err != nil {
+				return err
+			}
 			return nil
 		}
 	}
-	return fmt.Errorf("contract approval evidence %q must be valid human_decision evidence produced by %q and scoped to %s:%s@%d; register the decision artifact with `runtime evidence add --kind human_decision --scope-ref %s:%s@%d` before approving the Contract", evidenceID, approvedBy, contractApprovalScope, runtimeID, revision, contractApprovalScope, runtimeID, revision)
+	return fmt.Errorf("contract approval evidence %q must be valid human_decision evidence produced by %q and scoped to %s; register the decision artifact with `runtime evidence add --kind human_decision --scope-ref %s` before approving the Contract", evidenceID, approvedBy, semanticScope, semanticScope)
+}
+
+// validateContractApprovalArtifact binds JSON approval records to the Case,
+// exact draft hash and evidence ID being approved. Markdown/legacy records
+// remain readable during migration; the current S8 CLI contract emits JSON
+// records with all fields below.
+func validateContractApprovalArtifact(root string, item, state map[string]any, caseID, contractID, approvalHash string) error {
+	pathRef := strings.TrimSpace(stringField(item["path"]))
+	if filepath.Ext(pathRef) != ".json" {
+		return nil
+	}
+	clean := filepath.Clean(pathRef)
+	if pathRef == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("contract approval evidence %q has unsafe artifact path %q", stringField(item["id"]), pathRef)
+	}
+	data, err := os.ReadFile(filepath.Join(root, clean))
+	if err != nil {
+		return fmt.Errorf("read contract approval artifact %q: %w", stringField(item["id"]), err)
+	}
+	var artifact map[string]any
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		return fmt.Errorf("decode contract approval artifact %q: %w", stringField(item["id"]), err)
+	}
+	want := map[string]string{
+		"decision":      "approve_contract",
+		"decision_id":   stringField(item["id"]),
+		"runtime_id":    stringField(state["runtime_id"]),
+		"case_id":       caseID,
+		"contract_id":   contractID,
+		"approval_hash": approvalHash,
+	}
+	for field, expected := range want {
+		if stringField(artifact[field]) != expected {
+			return fmt.Errorf("contract approval artifact %q field %s=%q, want %q", stringField(item["id"]), field, stringField(artifact[field]), expected)
+		}
+	}
+	return nil
 }
 
 // containsStringAny reports whether the decoded string list contains value.

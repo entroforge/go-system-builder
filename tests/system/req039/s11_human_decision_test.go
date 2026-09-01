@@ -31,7 +31,10 @@ func TestBUG104S11ExplicitApproveE2E(t *testing.T) {
 	}
 	expectedRevision := int(req039fixtures.Revision(state))
 
-	decision := req039fixtures.EvidenceEnvelope(state, "ev-human-approve", "human_decision", "release-owner", "release owner", "approved", nil)
+	decision := req039fixtures.EvidenceEnvelope(state, "ev-human-approve", "human_decision", "release-owner", "release owner", "approved", map[string]any{
+		"decision_id": "ev-human-approve", "disposition": "approve",
+		"target_cursor": map[string]any{"state": "awaiting_human_release", "phase": nil},
+	})
 	req039fixtures.AppendEvidence(state, req039fixtures.WriteEvidenceEnvelope(t, root, state, "ev-human-approve", "human_decision", "release-owner", "release owner", decision, []any{
 		fmt.Sprintf("runtime_release:%s@%d", req039fixtures.RuntimeIDFromState(state), expectedRevision),
 	}))
@@ -58,7 +61,10 @@ func TestBUG104ApproveRolloverE2E(t *testing.T) {
 	state := req039fixtures.BaseState(t, root, "awaiting_human_release", "", 0)
 	req039fixtures.SeedAwaitingHumanRelease(t, root, state)
 	req039fixtures.EnsureStateRoot(state, root)
-	decision := req039fixtures.EvidenceEnvelope(state, "ev-human-approve", "human_decision", "release-owner", "release owner", "approved", nil)
+	decision := req039fixtures.EvidenceEnvelope(state, "ev-human-approve", "human_decision", "release-owner", "release owner", "approved", map[string]any{
+		"decision_id": "ev-human-approve", "disposition": "approve",
+		"target_cursor": map[string]any{"state": "awaiting_human_release", "phase": nil},
+	})
 	releaseScope := fmt.Sprintf("runtime_release:%s@%d", req039fixtures.RuntimeIDFromState(state), int(req039fixtures.Revision(state)))
 	req039fixtures.AppendEvidence(state, req039fixtures.WriteEvidenceEnvelope(t, root, state, "ev-human-approve", "human_decision", "release-owner", "release owner", decision, []any{releaseScope}))
 	req039fixtures.WriteState(t, root, state)

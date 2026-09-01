@@ -103,6 +103,10 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 		return loopruntime.Snapshot{}, fmt.Errorf(
 			"runtime_id mismatch: request=%s state=%s", request.RuntimeID, currentRuntimeID)
 	}
+	commitSequence, err := commitRevision(request.ExpectedRevision, currentState)
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	lifecycle, ok := currentState["lifecycle"].(map[string]any)
 	if !ok {
 		return loopruntime.Snapshot{}, fmt.Errorf("runtime lifecycle must be an object")
@@ -112,11 +116,11 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 
 	mutation := loopruntime.Mutation{
 		Audit: loopruntime.AuditEnvelope{
-			EventID:        fmt.Sprintf("evt-bug-%s-%d", request.BugID, request.ExpectedRevision+1),
+			EventID:        fmt.Sprintf("evt-bug-%s-%d", request.BugID, commitSequence+1),
 			TransitionID:   "BUG-LIFECYCLE",
 			Event:          request.Event,
 			Actor:          "orchestrator",
-			IdempotencyKey: fmt.Sprintf("bug:%s:%s:%d", request.BugID, request.Event, request.ExpectedRevision),
+			IdempotencyKey: fmt.Sprintf("bug:%s:%s:%d", request.BugID, request.Event, commitSequence),
 			RuntimeID:      currentRuntimeID,
 			From:           cursor,
 			To:             cursor,
@@ -209,7 +213,7 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 		},
 	}
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	return store.Update(request.ExpectedRevision, mutation)
+	return updateRuntime(store, request.ExpectedRevision, mutation)
 }
 
 // checkBugGuards evaluates the guard list for a BUG transition. Guards that

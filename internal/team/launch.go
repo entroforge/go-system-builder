@@ -40,12 +40,16 @@ type MessageScope struct {
 }
 
 type ReadbackRequest struct {
-	SchemaVersion           string              `json:"schema_version"`
-	MessageType             string              `json:"message_type"`
-	MessageID               string              `json:"message_id"`
-	CorrelationID           string              `json:"correlation_id"`
-	RuntimeID               string              `json:"runtime_id"`
-	ExpectedRuntimeRevision int                 `json:"expected_runtime_revision"`
+	SchemaVersion string `json:"schema_version"`
+	MessageType   string `json:"message_type"`
+	MessageID     string `json:"message_id"`
+	CorrelationID string `json:"correlation_id"`
+	RuntimeID     string `json:"runtime_id"`
+	// ExpectedRuntimeRevision is optional compatibility metadata for an
+	// integration that deliberately pins a launch package to a snapshot. The
+	// normal launch path leaves it nil; the Agent does not need Runtime's
+	// internal commit sequence.
+	ExpectedRuntimeRevision *int                `json:"expected_runtime_revision,omitempty"`
 	AgentID                 string              `json:"agent_id"`
 	AgentDefinitionRef      string              `json:"agent_definition_ref"`
 	TaskID                  string              `json:"task_id"`
@@ -138,6 +142,11 @@ func GenerateReadbackRequests(root string, data []byte, options LaunchOptions) (
 		occurredAt = time.Now().UTC()
 	}
 	teamID := value.PlatformTeamID
+	var expectedRuntimeRevision *int
+	if options.ExpectedRuntimeRevision > 0 {
+		revision := options.ExpectedRuntimeRevision
+		expectedRuntimeRevision = &revision
+	}
 	requests := make([]ReadbackRequest, 0, len(value.Assignments))
 	for _, item := range value.Assignments {
 		if err := identity.ValidateAgentID(item.AgentID); err != nil {
@@ -155,7 +164,7 @@ func GenerateReadbackRequests(root string, data []byte, options LaunchOptions) (
 			MessageID:               "msg-readback-" + item.AssignmentID,
 			CorrelationID:           "corr-" + value.WorkgroupID + "-" + item.AssignmentID,
 			RuntimeID:               value.RuntimeID,
-			ExpectedRuntimeRevision: options.ExpectedRuntimeRevision,
+			ExpectedRuntimeRevision: expectedRuntimeRevision,
 			AgentID:                 item.AgentID,
 			AgentDefinitionRef:      item.AgentDefinitionRef,
 			TaskID:                  options.TaskID,

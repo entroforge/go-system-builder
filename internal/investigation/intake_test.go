@@ -42,6 +42,21 @@ func TestIngestRejectsMissingObservationBatchWithRecoveryCommand(t *testing.T) {
 	}
 }
 
+func TestIngestUsesWriterRevisionWhenExpectedRuntimeRevisionIsOmitted(t *testing.T) {
+	fixture := newIntakeFixture(t, []string{"finding-1"})
+
+	snapshot, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
+		ExpectedRevision:  -1,
+		GroupingRationale: "the normal S8 path lets the Writer assign the Runtime commit sequence",
+	})
+	if err != nil {
+		t.Fatalf("Ingest() without Runtime revision error = %v", err)
+	}
+	if snapshot.Revision != 1 {
+		t.Fatalf("Runtime revision = %d, want Writer-assigned revision 1", snapshot.Revision)
+	}
+}
+
 func TestIngestRejectsObservationBatchHashDrift(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 	setObservationBatchPointer(t, fixture, "0"+strings.Repeat("0", 63))

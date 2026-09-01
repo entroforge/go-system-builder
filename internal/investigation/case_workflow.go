@@ -617,12 +617,6 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	if strings.TrimSpace(root) == "" {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "repository root is required")
 	}
-	if request.ExpectedRevision < 0 || request.ExpectedCaseRevision < 1 {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "expected Runtime revision must be non-negative and expected Case revision must be at least 1")
-	}
-	if strings.TrimSpace(request.ExpectedCaseSHA256) == "" {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "expected_case_sha256 is required; read runtime investigation status before mutating the Case")
-	}
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "resolve repository root: %v", err)
@@ -631,18 +625,26 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before Case revision: %w", err)
 	}
-	if current.Revision != request.ExpectedRevision {
+	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
 		return runtime.Snapshot{}, fmt.Errorf("%w: expected Runtime revision %d but it is %d; next: %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, caseWorkflowNext)
 	}
 	pointer, err := mutableCasePointer(current.State, request.CaseID, request.Operation)
 	if err != nil {
 		return runtime.Snapshot{}, err
 	}
-	if integerValueOrZero(pointer["revision"]) != request.ExpectedCaseRevision {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "stale Case revision: expected %d but Runtime points at %d; re-read the Case pointer", request.ExpectedCaseRevision, integerValueOrZero(pointer["revision"]))
+	expectedCaseRevision := request.ExpectedCaseRevision
+	if expectedCaseRevision < 1 {
+		expectedCaseRevision = integerValueOrZero(pointer["revision"])
 	}
-	if stringField(pointer["sha256"]) != request.ExpectedCaseSHA256 {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "stale Case sha256/hash: expected %s but Runtime pins %s; re-read runtime investigation status before retry", request.ExpectedCaseSHA256, stringField(pointer["sha256"]))
+	expectedCaseSHA256 := strings.TrimSpace(request.ExpectedCaseSHA256)
+	if expectedCaseSHA256 == "" {
+		expectedCaseSHA256 = stringField(pointer["sha256"])
+	}
+	if integerValueOrZero(pointer["revision"]) != expectedCaseRevision {
+		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "stale Case revision: expected %d but Runtime points at %d; re-read the Case pointer", expectedCaseRevision, integerValueOrZero(pointer["revision"]))
+	}
+	if stringField(pointer["sha256"]) != expectedCaseSHA256 {
+		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "stale Case sha256/hash: expected %s but Runtime pins %s; re-read runtime investigation status before retry", expectedCaseSHA256, stringField(pointer["sha256"]))
 	}
 	caseRel := stringField(pointer["path"])
 	casePath, err := repositoryPath(root, caseRel)
@@ -654,8 +656,8 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "Case %q is missing or unreadable: %v", caseRel, err)
 	}
 	actualSHA := sha256Hex(caseBytes)
-	if actualSHA != request.ExpectedCaseSHA256 {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "Case %q sha256 drifted: expected %s but disk is %s; inspect runtime investigation status, then restore the pinned artifact or reconcile", caseRel, request.ExpectedCaseSHA256, actualSHA)
+	if actualSHA != expectedCaseSHA256 {
+		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "Case %q sha256 drifted: expected %s but disk is %s; inspect runtime investigation status, then restore the pinned artifact or reconcile", caseRel, expectedCaseSHA256, actualSHA)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("review-investigation-case.schema.json", caseBytes); err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "Case %q schema is invalid: %v", caseRel, err)
@@ -664,7 +666,7 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	if err := json.Unmarshal(caseBytes, &currentDocument); err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "decode Case %q: %v", caseRel, err)
 	}
-	if stringField(currentDocument["case_id"]) != request.CaseID || integerValueOrZero(currentDocument["revision"]) != request.ExpectedCaseRevision {
+	if stringField(currentDocument["case_id"]) != request.CaseID || integerValueOrZero(currentDocument["revision"]) != expectedCaseRevision {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "Case identity or revision does not match the Runtime pointer; re-read status before retry")
 	}
 	caseIDs, err := stringSlice(currentDocument["source_finding_ids"], "InvestigationCase.source_finding_ids")
@@ -701,7 +703,7 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 		}
 	}
 	nextDocument["case_id"] = request.CaseID
-	nextDocument["revision"] = request.ExpectedCaseRevision + 1
+	nextDocument["revision"] = expectedCaseRevision + 1
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
@@ -711,9 +713,9 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
 	}
 	history = append(history, map[string]any{
-		"revision":    request.ExpectedCaseRevision,
+		"revision":    expectedCaseRevision,
 		"path":        caseRel,
-		"sha256":      request.ExpectedCaseSHA256,
+		"sha256":      expectedCaseSHA256,
 		"operation":   nonEmpty(request.Operation, "case_revision_updated"),
 		"occurred_at": occurredAt.UTC().Format(time.RFC3339Nano),
 	})
@@ -726,7 +728,7 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	if err := schema.NewEmbeddedValidator().ValidateBytes("review-investigation-case.schema.json", nextBytes); err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "next Case revision schema is invalid: %v", err)
 	}
-	nextRevision := request.ExpectedCaseRevision + 1
+	nextRevision := expectedCaseRevision + 1
 	nextRel := filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "cases", request.CaseID+fmt.Sprintf("-r%d.json", nextRevision)))
 	nextPath, err := repositoryPath(root, nextRel)
 	if err != nil {
@@ -744,17 +746,19 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	lifecycle, _ := current.State["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": stringField(lifecycle["state"]), "phase": lifecycle["phase"]}
 	runtimeID := stringField(current.State["runtime_id"])
+	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	baseline, _ := baselineGeneration(current.State)
 	status := stringField(nextDocument["status"])
 	if status == "" {
 		status = "investigating"
 	}
-	snapshot, err := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).Update(request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-investigation-case-%s-r%d", request.CaseID, request.ExpectedRevision+1),
+	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	snapshot, err := updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
+		EventID:                fmt.Sprintf("evt-investigation-case-%s-r%d", request.CaseID, commitRevision+1),
 		TransitionID:           "INVESTIGATION-CASE-REVISION-UPDATED",
 		Event:                  "investigation_case_revision_updated",
 		Actor:                  "orchestrator",
-		IdempotencyKey:         fmt.Sprintf("runtime:investigation-case:%s:%d", request.CaseID, request.ExpectedRevision),
+		IdempotencyKey:         fmt.Sprintf("runtime:investigation-case:%s:%d", request.CaseID, commitRevision),
 		RuntimeID:              runtimeID,
 		From:                   cursor,
 		To:                     cursor,
@@ -775,7 +779,7 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 			if !ok || existing == nil {
 				return fmt.Errorf("active InvestigationCase disappeared; run %s and reconcile", caseWorkflowNext)
 			}
-			if stringField(existing["case_id"]) != request.CaseID || integerValueOrZero(existing["revision"]) != request.ExpectedCaseRevision || stringField(existing["sha256"]) != request.ExpectedCaseSHA256 {
+			if stringField(existing["case_id"]) != request.CaseID || integerValueOrZero(existing["revision"]) != expectedCaseRevision || stringField(existing["sha256"]) != expectedCaseSHA256 {
 				return fmt.Errorf("active InvestigationCase changed during update; re-read %s and retry", caseWorkflowNext)
 			}
 			if existing["status"] == "contract_approved" && nextDocument["status"] == "investigating" {

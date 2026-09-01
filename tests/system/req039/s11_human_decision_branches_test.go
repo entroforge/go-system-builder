@@ -66,7 +66,11 @@ func TestBUG104DeferResumeS11E2E(t *testing.T) {
 
 	// The defer decision is scoped to its own revision and cannot authorize
 	// the resume — a fresh runtime_resume-scoped decision is required.
-	resumeDecision := req039fixtures.EvidenceEnvelope(state, "ev-resume", "human_decision", "release-owner", "release owner", "approved", nil)
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	resumeDecision := req039fixtures.EvidenceEnvelope(state, "ev-resume", "human_decision", "release-owner", "release owner", "approved", map[string]any{
+		"decision_id": "ev-resume", "disposition": "resume",
+		"target_cursor": map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},
+	})
 	req039fixtures.AppendEvidence(state, req039fixtures.WriteEvidenceEnvelope(t, root, state, "ev-resume", "human_decision", "release-owner", "release owner", resumeDecision, []any{
 		fmt.Sprintf("runtime_resume:%s@%d", req039fixtures.RuntimeIDFromState(state), int(req039fixtures.Revision(state))),
 	}))
@@ -231,7 +235,30 @@ func addS11EvidenceWithScopeProducer(t *testing.T, root string, state map[string
 	if scope == nil && kind == "human_decision" {
 		scope = []any{fmt.Sprintf("runtime_release:%s@%d", req039fixtures.RuntimeIDFromState(state), int(req039fixtures.Revision(state)))}
 	}
-	envelope := req039fixtures.EvidenceEnvelope(state, id, kind, producer, "BUG-104", conclusion, nil)
+	extra := map[string]any(nil)
+	if kind == "human_decision" {
+		disposition := ""
+		switch {
+		case conclusion == "approved":
+			disposition = "approve"
+		case conclusion == "deferred":
+			disposition = "defer"
+		case conclusion == "reject_defect":
+			disposition = "reject_defect"
+		case conclusion == "abort":
+			disposition = "abort"
+		case strings.Contains(id, "acceptance"):
+			disposition = "reject_acceptance"
+		case strings.Contains(id, "audit"):
+			disposition = "reject_release_audit"
+		}
+		lifecycle, _ := state["lifecycle"].(map[string]any)
+		extra = map[string]any{
+			"decision_id": id, "disposition": disposition,
+			"target_cursor": map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},
+		}
+	}
+	envelope := req039fixtures.EvidenceEnvelope(state, id, kind, producer, "BUG-104", conclusion, extra)
 	entry := req039fixtures.WriteEvidenceEnvelope(t, root, state, id, kind, producer, "BUG-104", envelope, scope)
 	req039fixtures.AppendEvidence(state, entry)
 	return id

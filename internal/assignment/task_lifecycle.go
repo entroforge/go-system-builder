@@ -70,6 +70,10 @@ func AdvanceTask(
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
 	runtimeID, _ := current["runtime_id"].(string)
+	commitRevision, err := commitRevision(request.ExpectedRevision, current)
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	occurredAt := request.OccurredAt
@@ -78,13 +82,13 @@ func AdvanceTask(
 	}
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	return store.Update(request.ExpectedRevision, loopruntime.Mutation{
+	mutation := loopruntime.Mutation{
 		Audit: loopruntime.AuditEnvelope{
-			EventID:        fmt.Sprintf("evt-task-%s-%s-r%d", request.TaskID, request.Event, request.ExpectedRevision+1),
+			EventID:        fmt.Sprintf("evt-task-%s-%s-r%d", request.TaskID, request.Event, commitRevision+1),
 			TransitionID:   "TASK-LIFECYCLE",
 			Event:          request.Event,
 			Actor:          "orchestrator",
-			IdempotencyKey: fmt.Sprintf("runtime:task:%s:%s:%d", request.TaskID, request.Event, request.ExpectedRevision),
+			IdempotencyKey: fmt.Sprintf("runtime:task:%s:%s:%d", request.TaskID, request.Event, commitRevision),
 			RuntimeID:      runtimeID,
 			From:           cursor,
 			To:             cursor,
@@ -120,7 +124,8 @@ func AdvanceTask(
 			}
 			return fmt.Errorf("Task %s is not registered", request.TaskID)
 		},
-	})
+	}
+	return updateRuntime(store, request.ExpectedRevision, mutation)
 }
 
 // applyTaskEventGuards enforces the per-event guard requirements. The

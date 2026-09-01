@@ -83,6 +83,33 @@ func TestBugInvestigationStarted(t *testing.T) {
 	assertBugState(t, root, "BUG-001", "investigating")
 }
 
+func TestBugInvestigationStartedWithoutRuntimeRevision(t *testing.T) {
+	root := t.TempDir()
+	setupBugRuntime(t, root, "draft")
+	statePath := filepath.Join(root, ".claude", "loop-state.json")
+	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
+
+	snapshot, err := assignment.AdvanceBug(root, statePath, journalPath, assignment.BugEventRequest{
+		ExpectedRevision: -1,
+		BugID:            "BUG-001",
+		Event:            "investigation_started",
+	})
+	if err != nil {
+		t.Fatalf("investigation_started without revision failed: %v", err)
+	}
+	if snapshot.Revision != 4 {
+		t.Fatalf("snapshot revision = %d, want 4", snapshot.Revision)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(journal), "-0\"") || strings.Contains(string(journal), ":-1") {
+		t.Fatalf("omitted revision leaked into BUG event identity: %s", journal)
+	}
+	assertBugState(t, root, "BUG-001", "investigating")
+}
+
 func TestBugReportSubmittedRequiresGuards(t *testing.T) {
 	root := t.TempDir()
 	setupBugRuntime(t, root, "investigating")

@@ -21,9 +21,12 @@ const (
 // small: the Runtime supplies the authoritative revision, runtime id, and
 // evidence scope at commit time.
 type S7BudgetDecision struct {
-	Decision                    string `json:"decision"`
-	RuntimeID                   string `json:"runtime_id"`
-	ExpectedRevision            int    `json:"expected_revision"`
+	Decision  string `json:"decision"`
+	RuntimeID string `json:"runtime_id"`
+	// ExpectedRevision is retained only as a source-compatibility field for
+	// older callers. It is deliberately not serialized or validated: Runtime
+	// revision is a Writer concern, not a human decision fact.
+	ExpectedRevision            int    `json:"-"`
 	ReviewRound                 int    `json:"review_round"`
 	PreviousMaxFullReviewRounds int    `json:"previous_max_full_review_rounds"`
 	NewMaxFullReviewRounds      int    `json:"new_max_full_review_rounds"`
@@ -61,9 +64,6 @@ type S7BudgetDecisionReceipt struct {
 // a human lower the limit. The caller owns any subsequent lifecycle transition
 // for return_to_governance.
 func ApplyS7BudgetDecision(root, statePath, journalPath string, request S7BudgetDecisionRequest) (S7BudgetDecisionReceipt, error) {
-	if request.ExpectedRevision < 0 {
-		return S7BudgetDecisionReceipt{}, fmt.Errorf("expected revision must be non-negative")
-	}
 	if strings.TrimSpace(request.Actor) == "" {
 		return S7BudgetDecisionReceipt{}, fmt.Errorf("S7 budget decision actor is required")
 	}
@@ -92,11 +92,8 @@ func ApplyS7BudgetDecision(root, statePath, journalPath string, request S7Budget
 		return S7BudgetDecisionReceipt{}, fmt.Errorf("read runtime: %w", err)
 	}
 	state := snapshot.State
-	if snapshot.Revision != request.ExpectedRevision {
+	if request.ExpectedRevision >= 0 && snapshot.Revision != request.ExpectedRevision {
 		return S7BudgetDecisionReceipt{}, ErrStaleRevision
-	}
-	if decision.ExpectedRevision != request.ExpectedRevision {
-		return S7BudgetDecisionReceipt{}, fmt.Errorf("S7 budget decision expected_revision=%d does not match requested revision %d", decision.ExpectedRevision, request.ExpectedRevision)
 	}
 	runtimeID, _ := state["runtime_id"].(string)
 	if decision.RuntimeID != runtimeID {
@@ -133,7 +130,7 @@ func ApplyS7BudgetDecision(root, statePath, journalPath string, request S7Budget
 		return S7BudgetDecisionReceipt{}, fmt.Errorf("return_to_governance must not change new_max_full_review_rounds")
 	}
 
-	committedRevision := request.ExpectedRevision + 1
+	committedRevision := snapshot.Revision + 1
 	evidenceID := strings.TrimSpace(decision.DecisionID)
 	if evidenceID == "" {
 		evidenceID = fmt.Sprintf("ev-s7-budget-decision-r%d", committedRevision)
@@ -142,7 +139,7 @@ func ApplyS7BudgetDecision(root, statePath, journalPath string, request S7Budget
 	if decision.Decision == S7BudgetDecisionGovernance {
 		scopePrefix = "runtime_governance"
 	}
-	scopeRef := fmt.Sprintf("%s:%s@%d", scopePrefix, runtimeID, committedRevision)
+	scopeRef := fmt.Sprintf("%s:%s", scopePrefix, runtimeID)
 	baselineGeneration := baselineGeneration(state)
 	reviewRound := decision.ReviewRound
 	occurredAt := time.Now().UTC()
@@ -156,12 +153,12 @@ func ApplyS7BudgetDecision(root, statePath, journalPath string, request S7Budget
 	receipt := S7BudgetDecisionReceipt{
 		Decision: decision, EvidenceID: evidenceID, EvidencePath: cleanPath, ScopeRef: scopeRef,
 	}
-	next, err := store.Update(request.ExpectedRevision, Mutation{
+	mutation := Mutation{
 		EventID:        fmt.Sprintf("evt-s7-budget-decision-r%d", committedRevision),
 		TransitionID:   "S7-BUDGET-DECISION",
 		Event:          "s7_budget_decision_recorded",
 		Actor:          request.Actor,
-		IdempotencyKey: fmt.Sprintf("runtime:s7-budget-decision:%s:%d", evidenceID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:s7-budget-decision:%s:%d", evidenceID, committedRevision-1),
 		RuntimeID:      runtimeID,
 		EvidenceIDs:    []string{evidenceID},
 		Message:        fmt.Sprintf("Recorded human S7 budget decision %s.", decision.Decision),
@@ -177,14 +174,23 @@ func ApplyS7BudgetDecision(root, statePath, journalPath string, request S7Budget
 					return fmt.Errorf("S7 budget decision evidence %s is already registered", evidenceID)
 				}
 			}
-			items = append(items, map[string]any{
+			entry := map[string]any{
 				"id": evidenceID, "kind": "human_decision", "path": cleanPath,
 				"sha256": sha256Hex(data), "status": "valid",
 				"baseline_generation": baselineGeneration, "review_round": reviewRound,
 				"produced_by": []string{request.Actor}, "invalidated_by": nil,
 				"invalidation_rule": nil, "invalidation_reason": nil,
 				"responsibility_id": nil, "scope_refs": []string{scopeRef},
-			})
+			}
+			// An increase_budget decision is fully consumed by this single
+			// Writer transaction. A return_to_governance decision remains
+			// available for the immediately following GTR-006 transition,
+			// whose transition mutation consumes it.
+			if decision.Decision == S7BudgetDecisionIncrease {
+				entry["consumed_by"] = "S7-BUDGET-DECISION"
+				entry["consumed_at"] = occurredAt.Format(time.RFC3339Nano)
+			}
+			items = append(items, entry)
 			state["evidence"] = items
 			configuration, ok := state["configuration"].(map[string]any)
 			if !ok {
@@ -211,7 +217,13 @@ func ApplyS7BudgetDecision(root, statePath, journalPath string, request S7Budget
 			state["updated_at"] = occurredAt.Format(time.RFC3339Nano)
 			return nil
 		},
-	})
+	}
+	var next Snapshot
+	if request.ExpectedRevision < 0 {
+		next, err = store.UpdateCurrent(mutation)
+	} else {
+		next, err = store.Update(request.ExpectedRevision, mutation)
+	}
 	if err != nil {
 		return S7BudgetDecisionReceipt{}, err
 	}
@@ -227,9 +239,6 @@ func validateS7BudgetDecision(decision S7BudgetDecision, actor string) error {
 	}
 	if strings.TrimSpace(decision.RuntimeID) == "" {
 		return fmt.Errorf("S7 budget decision runtime_id is required")
-	}
-	if decision.ExpectedRevision < 0 {
-		return fmt.Errorf("S7 budget decision expected_revision must be non-negative")
 	}
 	if decision.ReviewRound < 1 {
 		return fmt.Errorf("S7 budget decision review_round must be at least 1")

@@ -97,7 +97,7 @@ func runS10Manifest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "s10 manifest validate: %v\n", err)
 		return 1
 	}
-	next := "create a fingerprinted acceptance/release-audit evidence envelope pointing to this immutable manifest, then register it with `loop-harness runtime evidence add --expected-revision <N> --id <id> --kind <acceptance|release_audit> --path <envelope.json> --produced-by <agent> --responsibility <role>`; let the Controller evaluate the next gate and do not call runtime transition"
+	next := "create a fingerprinted acceptance/release-audit evidence envelope pointing to this immutable manifest, then register it with `loop-harness runtime evidence add --id <id> --kind <acceptance|release_audit> --path <envelope.json> --produced-by <agent> --responsibility <role>`; let the Controller evaluate the next gate and do not call runtime transition"
 	if strings.TrimSpace(*outcome) == "blocked" {
 		next = "register the blocked release-audit envelope with `loop-harness runtime evidence add`, then let the Controller take TR-018 to paused; do not call runtime transition"
 	} else if strings.TrimSpace(*outcome) == "review_required" {
@@ -276,7 +276,7 @@ func runS10ManifestScaffold(args []string, stdout, stderr io.Writer) int {
 		"conclusion":              conclusion,
 		"audit_manifest_path":     manifest,
 		"audit_manifest_sha256":   "<SHA256-OF-MANIFEST-FILE>",
-		"disclosure":              "dry-run scaffold only — replace every <PLACEHOLDER> with current Runtime facts, then register with `loop-harness runtime evidence add --expected-revision <N> --id <id> --kind release_audit --path <envelope.json> --produced-by <agent> --responsibility <role>`; never edit a registered envelope in place",
+		"disclosure":              "dry-run scaffold only — replace every <PLACEHOLDER> with current Runtime facts, then register with `loop-harness runtime evidence add --id <id> --kind release_audit --path <envelope.json> --produced-by <agent> --responsibility <role>`; never edit a registered envelope in place",
 	}
 	if conclusion == "accepted" {
 		envelope["conclusion"] = "approved"

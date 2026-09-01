@@ -63,7 +63,7 @@ frontend/backend/test-builder（构建者）；document/delivery-verifier、qa�
 
 Agent 调度是首个进入 L4 的共用机制。S5/S6/S7/S8/S9 只声明消费 `one_shot`、`plan_checkpoint` 或 `plan_approval_required` 及本阶段完成条件；派发对象、计划回执、消息、等待、idle/stop、恢复和结果消费统一以 [L4 Agent 调度与治理机制](L4-agent-dispatch-governance.md) 为目标态。两阶段授权事件（readback_submitted → understanding_approved → activated）仍是 `plan_approval_required` 模式下的真实代码路径（internal/assignment/lifecycle.go 的 12 事件生命周期），并非待迁移的死代码；`two-phase-activation` Skill 已被 `agent-dispatch` 取代并删除。
 
-其余横跨多个 Stage 的机制——权威状态与单写者 CAS、revision 语义词典、指纹体系、证据链与失效家族、追溯分母链（单一验证分母）、精确集求值纪律、门禁与迁移分类学、写屏障家族、观测采集与脱敏、暂停/Blocker/终止保障、会话恢复投影、错误信息契约、债务与兼容性登记——统一沉淀在 [L4 运行时控制面与横切治理](L4-runtime-control-plane.md)。各 L3 只声明消费方式，不再内联定义；发现正文与该文冲突时，先核对代码现状，再按演化协议回改落后的一方。另有两份基石机制篇：[Hook 与平台事件接线](L4-hook-platform-wiring.md) 与 [权威状态机与迁移事务核心](L4-state-transition-core.md) 分别是事件总线契约与存储/迁移引擎的唯一权威——各 L3 的 hook 表格与 TR 表格只描述本阶段消费，不复制定义。
+其余横跨多个 Stage 的机制——权威状态与单写者、revision 的内部语义与命令协调、指纹体系、证据链与失效家族、追溯分母链（单一验证分母）、精确集求值纪律、门禁与迁移分类学、写屏障家族、观测采集与脱敏、暂停/Blocker/终止保障、会话恢复投影、错误信息契约、债务与兼容性登记——统一沉淀在 [L4 运行时控制面与横切治理](L4-runtime-control-plane.md) 与 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)。其中 revision 的内部/外部边界以新增 L4 为唯一权威；各 L3 只声明消费方式，不再内联定义。发现正文与 L4 冲突时，先核对代码现状，再按演化协议回改落后的一方。另有三份基石机制篇：[Hook 与平台事件接线](L4-hook-platform-wiring.md)、[权威状态机与迁移事务核心](L4-state-transition-core.md) 和 revision 篇分别是事件总线、存储/迁移引擎与命令协调的唯一权威——各 L3 的 hook 表格与 TR 表格只描述本阶段消费，不复制定义。
 
 **编排三原则**：①模板负责"声明结构"（字段逼问），harness 负责"事实求值"（指纹/门/迁移），hook 负责"在自然事件上执法与提醒"；②同一职责多机制必须声明主备；③优先写机制的真实命令/事件名。
 

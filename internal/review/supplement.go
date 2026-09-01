@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,8 +39,12 @@ const supplementIndexRelativePath = ".claude/review/finding-supplements.json"
 
 // SupplementRequest drives `runtime finding-supplement`.
 type SupplementRequest struct {
-	FindingID string
-	FilePath  string
+	// ExpectedRevision is an optional explicit assertion for integrations or
+	// recovery tooling. Normal stage callers leave it negative and the Writer
+	// commits against the current locked Runtime snapshot.
+	ExpectedRevision int
+	FindingID        string
+	FilePath         string
 	// AuthorizedBy records the scheduler identity that appointed a replacement
 	// finder when Author != the Finding's original_finder (L3-S8 §2.2: the
 	// original Agent may be unreachable; S8 never treats that as losing the
@@ -101,7 +106,7 @@ type supplementIndex struct {
 //     scheduler-authorized replacement (--authorized-by, L3-S8 §2.2);
 //  5. persists the artifact under the evidence tree and appends one immutable
 //     entities.finding_supplements row plus the finding_supplement evidence
-//     entry in one runtime CAS transaction — the Finding and any sealed
+//     entry in one Writer transaction — the Finding and any sealed
 //     ObservationBatch are never modified.
 func SubmitSupplement(root, statePath, journalPath string, request SupplementRequest) (SupplementReceipt, error) {
 	if strings.TrimSpace(request.FindingID) == "" || strings.TrimSpace(request.FilePath) == "" {
@@ -225,12 +230,20 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 	lens := stringField(findingRow["lens"])
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	snapshot, err := store.Update(revision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-finding-supplement-%s-r%d", supplement.SupplementID, revision+1),
+	expectedRevision := request.ExpectedRevision
+	// Zero was the implicit value before SupplementRequest exposed the
+	// optional assertion. Active review rounds are already beyond bootstrap,
+	// so retain source compatibility for callers that omit the field.
+	if expectedRevision <= 0 {
+		expectedRevision = -1
+	}
+	commitRevision := currentCommitRevision(expectedRevision, current)
+	snapshot, err := updateRuntime(store, expectedRevision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-finding-supplement-%s-r%d", supplement.SupplementID, commitRevision+1),
 		TransitionID:   "FINDING-SUPPLEMENT",
 		Event:          "finding_supplement_appended",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:finding-supplement:%s:%d", supplement.SupplementID, revision),
+		IdempotencyKey: fmt.Sprintf("runtime:finding-supplement:%s:%d", supplement.SupplementID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
@@ -247,6 +260,18 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 		},
 	})
 	if err != nil {
+		// The artifact is staged before the Writer commit. Remove it only when
+		// the failed operation left no pending marker, the Runtime is still the
+		// pre-commit revision, and no state path points at it.
+		cleanupStore := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+		if _, cleanupErr := cleanupStore.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{
+			ExpectedRevision: revision,
+			ArtifactPath:     supplementRel,
+			ArtifactSHA256:   supplementSHA,
+			ReferencedPaths:  supplementStateArtifactPaths(current),
+		}); cleanupErr != nil {
+			return SupplementReceipt{}, fmt.Errorf("finding supplement append failed and staged artifact cleanup was inconclusive: %w (original: %v)", cleanupErr, err)
+		}
 		return SupplementReceipt{}, err
 	}
 	// The main state now carries the rows; retire the legacy control-plane
@@ -501,6 +526,38 @@ func supplementContentHash(data []byte) (string, error) {
 		return "", fmt.Errorf("encode FindingSupplement content: %w", err)
 	}
 	return sha256Of(canonical), nil
+}
+
+// supplementStateArtifactPaths returns the repository-relative artifact paths
+// currently referenced by Runtime. It is used only for fail-closed cleanup
+// after staging a supplement and before the Writer commit becomes durable.
+func supplementStateArtifactPaths(state map[string]any) []string {
+	seen := map[string]bool{}
+	var visit func(any)
+	visit = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for _, child := range typed {
+				visit(child)
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child)
+			}
+		case string:
+			path := filepath.ToSlash(typed)
+			if strings.HasPrefix(path, ".claude/") {
+				seen[path] = true
+			}
+		}
+	}
+	visit(state)
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // ---------------------------------------------------------------------------

@@ -131,7 +131,7 @@ func validateCoverageInventory(root string, state map[string]any, plan *Plan) er
 			"ReviewPlan does not declare the complete S6 changed-surface inventory",
 			missing,
 			[]string{"copy the missing changed surfaces into coverage_inventory and add each source_ref to at least one Claim"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	bySource := make(map[string]CoverageItem, len(plan.CoverageInventory))
@@ -142,7 +142,7 @@ func validateCoverageInventory(root string, state map[string]any, plan *Plan) er
 				"Coverage Inventory contains an invalid item",
 				[]string{err.Error()},
 				[]string{"complete id, kind, source_ref, target and lens for every coverage_inventory item"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		if item.SourceRef == "" {
@@ -151,7 +151,7 @@ func validateCoverageInventory(root string, state map[string]any, plan *Plan) er
 				"Coverage Inventory contains an item without source_ref",
 				[]string{"coverage_inventory item " + item.ID},
 				[]string{"set source_ref to the exact changed path or authoritative surface id"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		bySource[item.SourceRef] = item
@@ -186,7 +186,7 @@ func validateCoverageInventory(root string, state map[string]any, plan *Plan) er
 			"ReviewPlan changed-surface coverage is incomplete",
 			missing,
 			[]string{"add each changed surface to frozen_subjects with its current SHA-256, then add the same source_ref to a focused QA or E2E Claim; keep target/oracle specific to that surface"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	return nil

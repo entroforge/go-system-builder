@@ -4,6 +4,8 @@
 >
 > 阅读顺序：§1～§3 先回答“为什么必须停机等人、人的决策是什么、决策之后去哪里”；§4 再映射 package、固定命令、六条路由、暂停/归档和真实发布边界；§5～§8 审计分工、当前硬约束、出口和易错点。S6～S11 尚未完成机制优化，本文不把“有一条本地 decision 记录”表述成已完成身份认证或已执行发布。
 
+> **Revision 口径**：Runtime `revision` 是 Writer 内部提交序号，不是 S11 人闸条件、人类授权凭证或 Agent 的正常输入。S11 人只选择 disposition；主会话提交当前 package/context 和 decision ID，Writer 负责锁内校验、一次性消费、提交与 revision 记录。显式 revision 仅是集成/恢复调用者可选的高级断言，统一边界见 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)。
+
 ## 1. 第一层：S11 的立意与目标
 
 ### 1.1 为什么需要 S11
@@ -16,9 +18,9 @@ S11 的核心不是继续做工程工作，而是**结构性停机，把一个�
 
 | 项目 | 定义 |
 |:--|:--|
-| 输入 | S10 的 clean-round/ACC/release-audit IDs and hashes；runtime revision/baseline；已完成范围；唯一未决事实；影响、非阻断风险、建议、恢复点；`automation stops` 声明 |
+| 输入 | S10 的 clean-round/ACC/release-audit IDs and hashes；Runtime identity/baseline/context；已完成范围；唯一未决事实；影响、非阻断风险、建议、恢复点；`automation stops` 声明 |
 | 要搞清楚 | 人是否批准当前 release 风险；若不批准，是暂缓、缺陷退回、验收退回、审计退回还是中止；下一步允许回到哪里；是否需要新一轮完整验证 |
-| 核心工作 | 校验 package 与当前 Runtime → 停止自动候选 → 让人执行固定六枚举命令 → CAS/decision scope 校验 → 只提交对应的固定 transition → 留下可审计决策 |
+| 核心工作 | 校验 package 与当前 Runtime → 停止自动候选 → 让人选择固定六枚举 → 校验语义 decision scope → 由 Writer 原子提交对应固定 transition → 留下可审计决策 |
 | 输出 | `human_decision_record`；固定 TR-025～TR-030 的 state/journal 变化；必要的 pause checkpoint、finding evidence 或定向失效记录 |
 | 目标完成 | 恰有一个显式 decision 被持久化；去向与 disposition 一一对应；approve 只表示 release authorization，实际 merge/publish/deploy/formal release 仍在 Harness 外由人执行 |
 | 下一阶段 | approve → `release_authorized`；defer → paused；reject_defect → S8；reject_acceptance → S10 acceptance；reject_release_audit → S10 release_audit；abort → `aborted` |
@@ -30,7 +32,7 @@ flowchart LR
     subgraph INPUT["Input"]
         I1["S10 release-ready package"]
         I2["clean round + ACC + audit hashes"]
-        I3["runtime revision / baseline"]
+        I3["runtime identity / baseline"]
         I4["risks + recommendation + recovery point"]
         I5["human decision authority"]
     end
@@ -38,7 +40,7 @@ flowchart LR
     subgraph S11["S11 Human Release Gateway"]
         T1["T1 校验交接包与当前 Runtime"] --> T2["T2 结构性停机，无自动候选"]
         T2 --> T3["T3 人选择唯一 disposition"]
-        T3 --> T4["T4 固定映射、CAS 与 decision scope 校验"]
+        T3 --> T4["T4 固定映射、语义 scope 与 decision ID 校验"]
         T4 --> T5["T5 记录决策并执行固定去向"]
     end
 
@@ -69,7 +71,7 @@ flowchart LR
 
 - `awaiting_human_release` 是**非终态的人类 Gateway**，但对 Loop 自动推进而言没有 automatic candidate；Controller 在该 cursor 不评估或提交任何 S11 decision；
 - 六枚举与 transition ID 固定映射，CLI 不接受任意 target state 或 transition ID；这是 S11 最强的结构性约束；
-- human decision 的 transition 有 `human_decision_scope=runtime_release`，校验 evidence 属于当前 runtime、当前 revision、当前 verb scope，配合 CAS 防止旧决定重放；
+- human decision 的 transition 有 `human_decision_scope=runtime_release`，校验 evidence 属于当前 Runtime、当前 release package/context 和当前 verb scope；一次性 decision ID、固定 transition 和 Writer 事务负责防止旧决定重放；
 - TR-025 的 `release_authorized` 只记录授权，不执行 merge、publication、deployment 或 formal release；
 - `--actor` 是命令参数和 evidence/Runtime 中的字符串，当前本地文件 Runtime 不负责认证这个字符串背后是否真为人；
 - `docs/release_audits/protected_commands.json` 和 classifier 已描述多类发布命令，但主 `policy.Engine.Evaluate` 当前实际硬处理的是 locked-artifact write 与 squash merge；不能仅凭命令表存在就声称所有 deploy/publish/release 命令已被 S11 硬拦；
@@ -79,10 +81,10 @@ flowchart LR
 
 | 任务 | 要解决的问题 | 主要动作 | 阶段产出 |
 |:--|:--|:--|:--|
-| T1 校验交接包 | 人看到的材料是不是 S10 生成的当前事实 | 对照 runtime ID/revision/baseline、clean round、ACC、audit fingerprints、风险和恢复点；缺项则不进入决策 | package validation record |
+| T1 校验交接包 | 人看到的材料是不是 S10 生成的当前事实 | 对照 Runtime identity/context/baseline、clean round、ACC、audit fingerprints、风险和恢复点；缺项则不进入决策 | package validation record |
 | T2 结构性停机 | 是否存在默认推进、超时批准或 Agent 代替人选项 | Controller 对 awaiting cursor 返回空候选；禁止自动 S11 event；显式显示六选项 | human gateway state |
 | T3 人做唯一决策 | 当前风险应批准、暂缓、退回哪一层或中止 | 人阅读压缩包并选择 `approve/defer/reject_defect/reject_acceptance/reject_release_audit/abort` | selected disposition |
-| T4 固定映射与校验 | 决策是否只授权当前 runtime/current revision/current verb | CLI switch 映射固定 transition；检查 actor、revision、decision evidence；reject_defect 额外要求 finding evidence | validated transition request |
+| T4 固定映射与校验 | 决策是否只授权当前 Runtime/context/current verb | CLI switch 映射固定 transition；检查 actor、decision ID、decision evidence；reject_defect 额外要求 finding evidence | validated transition request |
 | T5 固定路由与留痕 | 决策之后的工程去向是否可恢复、不可歧义 | 提交 TR-025～TR-030；写 journal；必要时生成 pause、定向失效或 finding route | state/phase/checkpoint/decision record |
 | T6 终态与下一周期 | approve 后是否被误解成已发布；终态如何归档 | 人在 Harness 外执行 release；若开始下一周期，再用独立 rollover approval/evidence | release operation or fresh inactive runtime |
 
@@ -92,13 +94,13 @@ S11 不重新审查 ACC 或 audit 的正文。若人需要补工程事实，应�
 
 ```mermaid
 flowchart TD
-    IN["S10 package<br/>awaiting_human_release"] --> CHECK["T1 对照 Runtime revision、baseline、hash、风险与恢复点"]
+    IN["S10 package<br/>awaiting_human_release"] --> CHECK["T1 对照 Runtime identity、baseline、hash、风险与恢复点"]
     CHECK --> READY{"交接包完整且仍对应当前状态？"}
     READY -->|"否"| HOLD["不做 decision<br/>补包或回 S10"]
     READY -->|"是"| STOP["T2 Controller 无自动候选<br/>automation stops"]
     STOP --> HUMAN["T3 人选择唯一 disposition"]
-    HUMAN --> CMD["runtime human-decision<br/>固定六枚举 + CAS + decision evidence"]
-    CMD --> VALID{"参数、scope、revision、evidence 都有效？"}
+    HUMAN --> CMD["runtime human-decision<br/>固定六枚举 + 语义 scope + decision evidence"]
+    CMD --> VALID{"参数、语义 scope、decision ID、evidence 都有效？"}
     VALID -->|"否"| RETRY["零状态副作用<br/>修正命令/补 evidence/重新阅读 package"]
     RETRY --> CMD
 
@@ -127,7 +129,7 @@ flowchart TD
 
 S10 交给人的不是整个 Runtime，而是一张可在短时间内完成判断的决策包。至少要有：
 
-- **当前事实**：runtime ID、revision、baseline generation、REQ 版本/fingerprint、review round；
+- **当前事实**：Runtime ID、baseline generation、REQ 版本/fingerprint、review round 和 package/context identity；
 - **已完成什么**：交付范围、主要变更、clean-round ID/hash、ACC ID/hash、audit ID/hash；
 - **为什么可信**：每个引用文件的当前指纹、validity、关键验证结论；
 - **唯一未决事实**：人需要承担或决定的具体风险，不用“请审阅全部材料”代替；
@@ -135,7 +137,7 @@ S10 交给人的不是整个 Runtime，而是一张可在短时间内完成判�
 - **恢复点**：defer、reject 或重新启动时应回到哪个 state/phase，以及哪些 evidence 会失效；
 - **停止声明**：明确 automation stops，Harness 不 merge/publish/deploy/release。
 
-当前没有独立 `release_ready_package` Runtime entity 或专用 JSON schema。package 主要由 ACC、audit、generic evidence 和 S10/agent handoff 文档组成。S11 的 transition 只要求 `human_decision_record`，不会重新解析 S10 package 的所有 hash 和风险表；因此 T1 必须由人/主会话先做对账。
+当前没有独立 `release_ready_package` Runtime entity 或专用 JSON schema。package 主要由 ACC、audit、generic evidence 和 S10/agent handoff 文档组成。S11 的 transition 只要求 `human_decision_record`，不会重新解析 S10 package 的所有 hash 和风险表；因此 T1 必须由人/主会话先做对账。Runtime revision 可以作为内部审计回执展示，但不属于 T1 的人工输入。
 
 ### 4.2 T2 — 结构性停机与无自动候选
 
@@ -144,7 +146,7 @@ S10 交给人的不是整个 Runtime，而是一张可在短时间内完成判�
 1. `docs/loop-definition.json` 把 TR-025～TR-030 标为 `eligible=false`、`human_boundary=true`，并列出 `automated_s11_decision` forbidden event；
 2. `internal/controller/cycle.go` 对 `awaiting_human_release`、`release_authorized`、`aborted` 返回空 automatic candidates，不会因为 evidence 恰好齐全而自行选 approve。
 
-这意味着自然 `PreToolUse` 只会维持可用/等待状态，不会提交一个默认 S11 decision。若命令缺参、未知 disposition、旧 revision 或 evidence 不合格，CLI 返回失败且不写 state/journal。
+这意味着自然 `PreToolUse` 只会维持可用/等待状态，不会提交一个默认 S11 decision。若命令缺参、未知 disposition、当前 package/context 不匹配或 evidence 不合格，CLI 返回失败且不写 state/journal。
 
 但“无自动 transition”不等于“所有 shell 命令都被 S11 禁止”：
 
@@ -156,23 +158,25 @@ S10 交给人的不是整个 Runtime，而是一张可在短时间内完成判�
 
 ### 4.3 T3/T4 — 固定 human-decision 命令与 scope
 
-唯一 CLI 入口是：
+目标态的唯一 CLI 入口是：
 
 ```bash
 loop-harness runtime human-decision \
   --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> \
-  --expected-revision <N> \
   --actor <user-or-operator-id> \
   --decision-evidence <human-decision-reference>
 ```
+
+Runtime revision 由 Writer 在普通命令中自动生成；`--expected-revision <N>` 仅是外部集成或恢复工具可主动选择的高级断言。主会话和人类操作手册不得把它当作正常前置，也不得先读取 `X` 再计算 `X+1`。
 
 额外规则：
 
 - `reject_defect` 必须再提供 `--finding-evidence <finding-reference>`；
 - `defer` 会绑定 `pause_record=generated:pause_checkpoint`，由 TR-026 的 action 生成实际 checkpoint；
 - CLI 通过 `runtime.HumanReleaseTransitionID` 做固定 switch，不允许用户传 `--target-state` 或任意 transition ID；
-- transition 层的 `human_decision_scope=runtime_release` 要求当前有效 `human_decision` evidence 的 scope 对应 `runtime_release:<runtime_id>@<current_revision>`；
-- Runtime writer 使用 expected revision 做 CAS；旧 revision 的 decision 不会覆盖新状态；
+- transition 层的 `human_decision_scope=runtime_release` 要求当前有效 `human_decision` evidence 绑定当前 Runtime、release package/context、disposition 和一次性 decision ID；`human_decision_scope` 是 Loop Definition 中 transition 的语义前缀，不是决策 artifact 字段；
+- evidence 登记和 fixed transition 应由同一个 Runtime Writer 事务完成，或由 Runtime 生成中间 evidence；Agent 不负责预测下一 revision；
+- Runtime Writer 在内部处理锁、提交序号和幂等消费；revision 变化不会成为人类重放保护的操作协议；
 - `record_human_release_decision` 只记录 evidence/transition event，不把 decision 内容扩写成 release operation。
 
 当前本地信任边界仍有限：`--actor` 是字符串，transition scope 校验的是字符串和 evidence scope，不是外部身份认证、签名或组织权限校验。谁能写入当前项目的有效 human-decision evidence，谁就可能在本地模型中满足“由某 actor 产生”的形式；这属于已知设计边界，不能写成“已验证真人身份”。
@@ -209,7 +213,7 @@ TR-028 的 action 会把当前 valid 的 `acceptance`、`acceptance_record`、`r
 - current runtime 必须处于这两个终态之一；
 - fresh state 必须是合法 inactive Runtime；
 - `ApprovedBy`、`EvidenceID` 必填；
-- evidence 必须是 valid `human_decision`，由 approved actor 产生，并 scope 到 `runtime_rollover:<runtime_id>@<revision>`；
+- evidence 必须是 valid `human_decision`，由 approved actor 产生，并 scope 到当前 Runtime 的 `runtime_rollover:<runtime_id>` 语义动作；提交 revision 由 Writer 内部记录；
 - rollover 会把旧 state/journal 归档，再替换为 fresh runtime。
 
 Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也不代表 Harness 执行了发布。
@@ -221,9 +225,9 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 | 职能 | 主责 | 承载位置 | 当前消费者 |
 |:--|:--|:--|:--|
 | package 汇编 | S10 Orchestrator/Acceptance/Auditor | ACC、audit、handoff package | 人、S11 context |
-| package 当前性复核 | 人/主会话 | runtime ID/revision、hash、风险对账 | human decision |
+| package 当前性复核 | 人/主会话 | Runtime identity/context、hash、风险对账 | human decision |
 | 自动停机 | Controller + Loop Definition | no automatic candidates、forbidden event | PreToolUse/Controller |
-| 决策输入校验 | CLI + transition engine | disposition switch、CAS、human decision scope | TR-025～030 |
+| 决策输入校验 | CLI + transition engine | disposition switch、语义 decision scope、decision ID | TR-025～030 |
 | 价值/风险决定 | Human | human_decision evidence | 固定 S11 route |
 | 状态写入 | transition engine/runtime writer | state、journal、pause/entity checkpoint | recovery/rollover |
 | 实际发布执行 | Human / external release system | Harness 外部 | 不属于 S11 transition |
@@ -236,7 +240,7 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 - defect rejection 回 S8 后重新 canonicalize；不要在 S11 直接把 finding 当 repair ticket；
 - acceptance rejection 与 audit rejection 有不同失效范围，不能用一个“重新验收”模糊处理；
 - defer 保留可恢复 checkpoint，避免人暂不决定时丢失 S10 cursor、phase 和 entities；
-- 每个 decision 只能作用于一个 runtime、一个 revision、一个 lifecycle verb，避免同一批准被复用到其他动作。
+- 每个 decision 只能作用于一个 Runtime、一个 package/context、一个 lifecycle verb 和一个 decision ID，避免同一批准被复用到其他动作。
 
 ### 5.3 当前实现与未闭合缺口
 
@@ -262,7 +266,7 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 | 如何表达复杂人意见 | 六个固定语义，而非自由文本 target state | route 可审计、可恢复；细节理由仍在 decision evidence/package |
 | approve 是否执行发布 | 永久分离授权和执行 | 防 Harness 越权；依赖外部流程读取授权状态 |
 | reject 是否全部作废 | acceptance/audit 定向失效，defect 带 finding 回 S8 | 保留可复用的未受影响事实；当前失效粒度偏粗 |
-| human 身份如何处理 | local actor + scoped evidence + CAS | 满足本地 runtime 的最小可审计模型；不宣称身份认证 |
+| human 身份如何处理 | local actor + scoped evidence + one-time decision ID | 满足本地 Runtime 的最小可审计模型；不宣称身份认证 |
 | defer 如何处理 | paused + checkpoint，无自动 abort | 不让时间代替价值判断；需要外部 owner 提醒 |
 
 ## 6. L1 准则如何嵌入 S11
@@ -270,10 +274,10 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 | L1 准则 | S11 中的实际落点 |
 |:--|:--|
 | D1 权威外置 | human decision、state/journal、pause checkpoint、rollover archive 落盘；package 正文与 Runtime 仍是两种载体 |
-| D2 自然路径观测 | 人类命令通过 transition engine/CAS 写入，Controller 自然路径只负责发现等待状态，不自动代决策 |
-| D3 门是顾问 | CLI 缺参/旧 revision/无 scope evidence 会拒绝并给出修复方向；不会把 package 内容缺口自动定位到某一节 |
+| D2 自然路径观测 | 人类命令通过 transition engine/Writer 事务写入，Controller 自然路径只负责发现等待状态，不自动代决策 |
+| D3 门是顾问 | CLI 缺参/语义 context 不匹配/无 scope evidence 会拒绝并给出修复方向；不会把 package 内容缺口自动定位到某一节 |
 | D4 引导性产物 | S10 package 的五要素、唯一未决事实、影响、建议、恢复点和 automation-stops 声明压缩人类判断成本 |
-| D5 三级强制 | fixed CLI/transition schema、human scope/CAS、no-candidate/forbidden event 共同控制；本地身份认证和完整命令阻断仍弱 |
+| D5 三级强制 | fixed CLI/transition schema、human scope/one-time decision、no-candidate/forbidden event 共同控制；本地身份认证和完整命令阻断仍弱 |
 | D6 三方收敛 | S10 工程事实、S11 人的风险判断、Harness 的状态落盘分开；Harness 不替人做价值判断 |
 | D7 收敛可观测 | 每个 disposition 有 event、revision、evidence、state/phase outcome；defer/abort/approve 成为明确终点或 checkpoint |
 | 公理一 原型 | 对应真实 release approval、change deferral、defect rejection、acceptance/audit rework、abort 与 rollover |
@@ -286,8 +290,8 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 
 ### 7.1 正式产出
 
-- 当前 revision 对齐的 release-ready package；
-- valid `human_decision_record` 及其 runtime/verb/revision scope；
+- 当前 Runtime/context 对齐的 release-ready package；
+- valid `human_decision_record` 及其 Runtime/verb/decision-ID scope；
 - TR-025～TR-030 对应的 transition journal event；
 - defer 的 pause checkpoint，或 reject_defect 的 finding evidence；
 - reject_acceptance/reject_release_audit 的 invalidation records；
@@ -298,9 +302,9 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 
 | 维度 | 目标判定 | 当前机器实际检查 |
 |:--|:--|:--|
-| Package currentness | package refs/hashes 与 Runtime 当前 revision/baseline/round 一致 | transition 不解析 package；依赖人/主会话对账 |
+| Package currentness | package refs/hashes 与 Runtime identity/baseline/round 一致 | transition 不解析 package；依赖人/主会话对账 |
 | Human choice | 恰有一个六枚举 disposition，无默认/自由 target | CLI fixed switch，未知值/缺参 exit 2 |
-| Decision freshness | evidence valid，scope=`runtime_release:<runtime>@<revision>`，CAS 成功 | transition scope + expected revision 真检查；actor 仍是字符串 |
+| Decision freshness | evidence valid，scope 绑定 Runtime/package context/disposition/decision ID，Writer 一次性消费 | transition 接受可选显式 revision 断言；正常路径由当前 cursor、scope 和一次性 decision ID 完成消费 |
 | Route safety | 每个 disposition 只到声明的固定 state/phase | `HumanReleaseTransitionID` + catalog 固定 TR；无 arbitrary target |
 | Release separation | approve 只记录授权，外部执行单独发生 | TR-025 只有 record action；Harness 不执行 release |
 | Rework correctness | acceptance/audit rejection 只失效对应 evidence，defect 带 finding 回 S8 | TR-028/029 按 kind 粗粒度失效；TR-027 不创建 BUG |
@@ -312,8 +316,8 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 | 情况 | 去向 |
 |:--|:--|
 | package 缺 hash、风险、恢复点或与当前 Runtime 不一致 | 不做 decision，回 S10 补 package/重做相应证据 |
-| CLI 缺 disposition/actor/revision/decision evidence | exit 2，零 state/journal 副作用；补齐后重新命令 |
-| human decision evidence scope/revision 无效 | transition reject；重新创建当前 `runtime_release` scope 的 evidence |
+| CLI 缺 disposition/actor/decision evidence | exit 2，零 state/journal 副作用；补齐后重新命令 |
+| human decision evidence scope/context 无效 | transition reject；重新创建当前 `runtime_release` 语义 scope 的 evidence |
 | `approve` 后有人要求 Harness 自动 merge/deploy/publish | 拒绝越权；由外部人工发布流程执行并留组织审计 |
 | `defer` | TR-026 → paused；等待 `runtime resume`、REQ amendment 或 abort |
 | `reject_defect` | TR-027 → S8；主会话必须把 finding evidence 纳入调查并创建/核对 canonical BUG |
@@ -331,7 +335,7 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 2. 以为没有自动候选就等于所有发布/部署命令都被 Hook 硬拦；两者是不同控制面；
 3. 用 `approve` 作为 Harness 自动 merge/publish/deploy 的授权；TR-025 明确不执行副作用；
 4. 传入任意 target state 或 transition ID；CLI 只接受六个 disposition；
-5. 重用旧 revision 的 human decision evidence；CAS 和 scope 会拒绝，不能绕过；
+5. 重用旧 package/context 或 decision ID 的 human decision evidence；固定 transition 和一次性消费会拒绝，不能绕过；
 6. 认为 `--actor user` 已完成真人认证；当前只是本地字符串和 evidence scope；
 7. `reject_defect` 后直接让 Builder 修复；TR-027 只带 finding evidence 回 S8，不是 accepted BUG；
 8. `reject_acceptance`/`reject_release_audit` 后复用旧 invalid evidence；对应 evidence 已被 action 标 invalid；
@@ -345,7 +349,7 @@ Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也�
 ### 8.2 阅读预算
 
 - **人只想做一次决策**：读 S10 package 的当前事实、唯一未决、影响、建议、恢复点和 automation-stops；再读 §4.4 的六路由表；
-- **正在执行 human-decision CLI**：读 §4.3，确认 disposition、expected revision、actor、decision evidence 和 reject_defect 的 finding evidence；
+- **正在执行 human-decision CLI**：读 §4.3，确认 disposition、actor、decision evidence 和 reject_defect 的 finding evidence；显式 expected revision 仅在集成/恢复调用者主动选择时使用，不属于流程逻辑；
 - **发生 reject/defer**：读 §4.4～§4.5 与 §7.3 的对应路由，不重读全部 ACC/audit；
 - **正在维护 harness**：必须读 §5.3，并对照 `runtime/s11_migration.go`、`cli/run.go`、`transition/engine.go` 的 human scope、Controller no-candidate、TR-025～030 actions 与 policy/classifier 接线；
 - **准备下一周期**：额外读 §4.5 的 rollover 条件；不要把 S11 transition 与 Store.Rollover 混成一个阶段动作。

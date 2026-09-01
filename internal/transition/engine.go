@@ -2,6 +2,7 @@ package transition
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -88,6 +89,10 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 			return loopruntime.Snapshot{}, fmt.Errorf("%w: expected %q, current %q", loopruntime.ErrStaleRuntimeIdentity, expectedRuntimeID, currentRuntimeID)
 		}
 	}
+	commitRevision := snapshot.Revision
+	if request.ExpectedRevision >= 0 {
+		commitRevision = request.ExpectedRevision
+	}
 	catalog, err := LoadCatalog(root)
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("load transition catalog: %w", err)
@@ -142,11 +147,11 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 		baselineGen = request.BaselineGeneration
 	}
 	mutation := loopruntime.Mutation{
-		EventID:                fmt.Sprintf("evt-%s-r%d", strings.ToLower(request.TransitionID), request.ExpectedRevision+1),
+		EventID:                fmt.Sprintf("evt-%s-r%d", strings.ToLower(request.TransitionID), commitRevision+1),
 		TransitionID:           resolved.Spec.ID,
 		Event:                  resolved.Spec.Event,
 		Actor:                  request.Actor,
-		IdempotencyKey:         fmt.Sprintf("runtime:%s:%d", request.TransitionID, request.ExpectedRevision),
+		IdempotencyKey:         fmt.Sprintf("runtime:%s:%d", request.TransitionID, commitRevision),
 		EvidenceIDs:            evidenceIDs,
 		GuardResults:           guardResults,
 		ActionResults:          actionResults,
@@ -206,6 +211,16 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 
 			if err := validateRequest(root, state, resolved.Spec, request); err != nil {
 				return err
+			}
+
+			// Human decisions authorize one committed transition only. Consume
+			// before transition actions so a baseline-reset action cannot first
+			// invalidate the decision that authorized this very transition.
+			if resolved.Spec.HumanDecisionScope != "" {
+				decisionRef := strings.TrimSpace(request.Evidence["human_decision_record"])
+				if err := loopruntime.ConsumeHumanDecisionEvidence(state, decisionRef, resolved.Spec.ID, occurredAt); err != nil {
+					return fmt.Errorf("transition %s: consume human_decision evidence: %w", resolved.Spec.ID, err)
+				}
 			}
 			for index, name := range resolved.Spec.Guards {
 				guard, ok := LookupGuard(name)
@@ -281,6 +296,9 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 
 	// Inject the root-aware semantic validator at the composition boundary.
 	// Runtime owns the commit boundary but does not import this package.
+	if request.ExpectedRevision < 0 {
+		return store.UpdateCurrent(mutation)
+	}
 	return store.Update(request.ExpectedRevision, mutation)
 }
 
@@ -400,7 +418,7 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 		return fmt.Errorf("TR-020 requires the amended locked REQ metadata")
 	}
 	if spec.HumanDecisionScope != "" {
-		if err := validateHumanDecisionScope(state, spec, request); err != nil {
+		if err := validateHumanDecisionScope(root, state, spec, request); err != nil {
 			return fmt.Errorf("transition %s: %w", spec.ID, err)
 		}
 	}
@@ -484,16 +502,13 @@ func allowedEvidenceKinds(required string) []string {
 }
 
 // validateHumanDecisionScope enforces that a human-boundary transition's
-// human_decision evidence is scoped to exactly this verb, runtime, and
-// revision (`<scope>:<runtime_id>@<revision>` — the revision the evidence
-// became current, which is the state this transition applies to). One
-// approval therefore cannot be replayed after the revision moves or be
-// reused as a different verb — the transition-layer counterpart of
-// runtime.validateLifecycleApproval.
-func validateHumanDecisionScope(state map[string]any, spec TransitionSpec, request Request) error {
+// human_decision evidence is scoped to the semantic verb and runtime identity.
+// Runtime revision is deliberately not part of the Agent-facing evidence
+// contract. The old @revision form remains readable for migration.
+func validateHumanDecisionScope(root string, state map[string]any, spec TransitionSpec, request Request) error {
 	runtimeID, _ := state["runtime_id"].(string)
-	revision := integer(state["revision"])
-	expected := fmt.Sprintf("%s:%s@%d", spec.HumanDecisionScope, runtimeID, revision)
+	expected := fmt.Sprintf("%s:%s", spec.HumanDecisionScope, runtimeID)
+	legacyExpected := fmt.Sprintf("%s@%d", expected, integer(state["revision"]))
 	items, _ := state["evidence"].([]any)
 	// Prefer the evidence bound to the canonical human_decision slot: stray
 	// extra keys in request.Evidence must not widen the gate's match set.
@@ -520,12 +535,111 @@ func validateHumanDecisionScope(state map[string]any, spec TransitionSpec, reque
 		if !cited {
 			continue
 		}
-		if containsString(toStringSlice(item["scope_refs"]), expected) {
+		if loopruntime.HumanDecisionEvidenceConsumed(item) {
+			return fmt.Errorf("human_decision evidence %q was already consumed; create a new decision for transition %s", idRef, spec.ID)
+		}
+		refs := toStringSlice(item["scope_refs"])
+		if containsString(refs, expected) || containsString(refs, legacyExpected) {
+			if err := validateHumanDecisionArtifact(root, state, spec, item); err != nil {
+				return err
+			}
 			return nil
 		}
-		return fmt.Errorf("human_decision evidence %q must be scoped to %q — record the decision with the matching lifecycle verb (e.g. `runtime pause/resume`, `req amend`, or `runtime human-decision`) so one approval authorizes exactly one verb at one revision", idRef, expected)
+		return fmt.Errorf("human_decision evidence %q must include semantic scope %q in its scope_refs; human_decision_scope comes from Loop Definition, not the decision artifact", idRef, expected)
 	}
 	return fmt.Errorf("transition %s cites no current human_decision evidence; the decision must be registered and scoped to %q", spec.ID, expected)
+}
+
+// validateHumanDecisionArtifact binds JSON decision records to the exact
+// lifecycle cursor, runtime, fixed transition and evidence ID they were
+// created for. Markdown records remain readable during migration. The S7
+// budget command has its own structured JSON contract and performs its target
+// checks before handing return_to_governance to GTR-006.
+func validateHumanDecisionArtifact(root string, state map[string]any, spec TransitionSpec, item map[string]any) error {
+	pathRef := strings.TrimSpace(stringValue(item["path"]))
+	if filepath.Ext(pathRef) != ".json" {
+		return nil
+	}
+	if spec.ID == "GTR-006" {
+		return nil
+	}
+	clean := filepath.Clean(pathRef)
+	if pathRef == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("human_decision evidence %q has unsafe artifact path %q", stringValue(item["id"]), pathRef)
+	}
+	data, err := os.ReadFile(filepath.Join(root, clean))
+	if err != nil {
+		return fmt.Errorf("read human_decision artifact %q: %w", stringValue(item["id"]), err)
+	}
+	var artifact map[string]any
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		return fmt.Errorf("decode human_decision artifact %q: %w", stringValue(item["id"]), err)
+	}
+	runtimeID := stringValue(state["runtime_id"])
+	if value, ok := artifact["runtime_id"]; !ok || stringValue(value) == "" {
+		return fmt.Errorf("human_decision artifact %q must declare runtime_id", stringValue(item["id"]))
+	} else if stringValue(value) != runtimeID {
+		return fmt.Errorf("human_decision artifact %q targets runtime %q, current runtime is %q", stringValue(item["id"]), stringValue(value), runtimeID)
+	}
+	if value, ok := artifact["decision_id"]; !ok || stringValue(value) == "" {
+		return fmt.Errorf("human_decision artifact %q must declare decision_id", stringValue(item["id"]))
+	} else if stringValue(value) != stringValue(item["id"]) {
+		return fmt.Errorf("human_decision artifact %q declares decision_id %q", stringValue(item["id"]), stringValue(value))
+	}
+	wantDisposition := dispositionForHumanDecisionEvent(spec.Event)
+	if wantDisposition != "" && stringValue(artifact["disposition"]) != wantDisposition {
+		return fmt.Errorf("human_decision artifact %q disposition %q does not authorize %s", stringValue(item["id"]), stringValue(artifact["disposition"]), spec.ID)
+	}
+	rawCursor, ok := artifact["target_cursor"]
+	if !ok {
+		return fmt.Errorf("human_decision artifact %q must declare target_cursor", stringValue(item["id"]))
+	}
+	cursor, ok := rawCursor.(map[string]any)
+	if !ok {
+		return fmt.Errorf("human_decision artifact %q target_cursor must be an object", stringValue(item["id"]))
+	}
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	wantState := stringValue(lifecycle["state"])
+	if stringValue(cursor["state"]) != wantState {
+		return fmt.Errorf("human_decision artifact %q targets state %q, current state is %q", stringValue(item["id"]), stringValue(cursor["state"]), wantState)
+	}
+	if phaseValue(cursor["phase"]) != phaseValue(lifecycle["phase"]) {
+		return fmt.Errorf("human_decision artifact %q targets phase %q, current phase is %q", stringValue(item["id"]), phaseValue(cursor["phase"]), phaseValue(lifecycle["phase"]))
+	}
+	return nil
+}
+
+func dispositionForHumanDecisionEvent(event string) string {
+	switch event {
+	case "human_release_approved":
+		return "approve"
+	case "human_release_deferred":
+		return "defer"
+	case "human_release_rejected_defect":
+		return "reject_defect"
+	case "human_release_rejected_acceptance":
+		return "reject_acceptance"
+	case "human_release_rejected_release_audit":
+		return "reject_release_audit"
+	case "human_release_aborted":
+		return "abort"
+	case "human_abort_approved":
+		return "abort"
+	default:
+		return ""
+	}
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func phaseValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	return stringValue(value)
 }
 
 func toStringSlice(value any) []string {

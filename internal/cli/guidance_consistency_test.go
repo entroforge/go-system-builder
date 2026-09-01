@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // TestGuidanceVerbsExistInRuntime keeps the guidance chain honest: every
@@ -96,5 +97,26 @@ func TestProtocolTransitionIdsResolvable(t *testing.T) {
 		if !strings.Contains(string(def), `"id": "`+id+`"`) && !strings.Contains(string(def), id) {
 			t.Errorf("protocol references %q which is neither in loop-definition nor a documented runtime-authority id", id)
 		}
+	}
+}
+
+// TestAgentProtocolStaysRunbookScoped prevents intermediate audit material from
+// being promoted into the Main Spine again. The protocol is an English
+// constitution/route table; S7-S9 control-plane detail is owned by the L3/L4
+// documents and must not return as a protocol anchor.
+func TestAgentProtocolStaysRunbookScoped(t *testing.T) {
+	root := filepath.Join("..", "..")
+	path := filepath.Join(root, "docs", "agent-protocol.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range string(data) {
+		if unicode.Is(unicode.Han, r) {
+			t.Fatalf("%s contains Han character %q; keep the Main Spine in English", path, r)
+		}
+	}
+	if strings.Contains(string(data), "s7s9-control-plane-map") {
+		t.Fatalf("%s contains the removed S7-S9 control-plane map anchor; link the owning L3/L4 document instead", path)
 	}
 }

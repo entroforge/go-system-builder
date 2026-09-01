@@ -130,9 +130,10 @@ func submitResult(
 	// Reject a stale caller before producing any review artifacts. The CAS
 	// remains authoritative for races, but this early check prevents the
 	// common stale-submit path from leaving orphan evidence on disk.
-	if currentRevision := intField(current["revision"]); currentRevision != request.ExpectedRevision {
+	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
 		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
 	}
+	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	if state, _ := lifecycle["state"].(string); state != "verification" {
 		return loopruntime.Snapshot{}, fmt.Errorf("ReviewResults can only be submitted in the verification stage (current state: %s)", lifecycle["state"])
@@ -377,12 +378,12 @@ func submitResult(
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	casAttempted = true
-	snapshot, err := store.Update(request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-result-%s-r%d", result.ResultID, request.ExpectedRevision+1),
+	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-review-result-%s-r%d", result.ResultID, commitRevision+1),
 		TransitionID:   "REVIEW-RESULT",
 		Event:          "review_result_submitted",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-result:%s:%d", result.ResultID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:review-result:%s:%d", result.ResultID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
@@ -477,7 +478,7 @@ func submitResult(
 		// have landed before the error surfaced).
 		if after, readErr := os.ReadFile(statePath); readErr == nil {
 			var post map[string]any
-			if json.Unmarshal(after, &post) == nil && intField(post["revision"]) == request.ExpectedRevision {
+			if json.Unmarshal(after, &post) == nil && intField(post["revision"]) == commitRevision {
 				cleanupArtifacts()
 			}
 		}
@@ -1472,14 +1473,14 @@ func staleReviewPlanAfterDrift(
 		cursor = map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	}
 	runtimeID, _ := current["runtime_id"].(string)
-	expectedRevision := intField(current["revision"])
+	commitRevision := currentCommitRevision(-1, current)
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	snapshot, err := store.Update(expectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-plan-stale-%s-r%d", plan.PlanID, expectedRevision+1),
+	snapshot, err := updateRuntime(store, -1, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-review-plan-stale-%s-r%d", plan.PlanID, commitRevision+1),
 		TransitionID:   "REVIEW-PLAN-STALE",
 		Event:          "review_plan_stale",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-plan-stale:%s:%d", plan.PlanID, expectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:review-plan-stale:%s:%d", plan.PlanID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,

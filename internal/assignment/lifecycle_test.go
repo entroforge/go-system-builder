@@ -60,6 +60,49 @@ func TestAdvanceAgentRequiresReadbackApprovalBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestAdvanceAgentAcceptsMessageWithoutRuntimeRevision(t *testing.T) {
+	root := filepath.Join("..", "..")
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "loop-state.json")
+	journalPath := filepath.Join(dir, "loop-events.jsonl")
+	state := activeState(t, root, "verification", "running", 7)
+	state["entities"].(map[string]any)["agents"] = []any{map[string]any{
+		"id": "agent-ver-1", "role": "delivery-verifier", "state": "reading",
+		"task_ids": []any{"TASK-012"}, "team_id": "workgroup-delivery-round-1",
+		"definition_ref": "agents/delivery-verifier.md", "prompt_ref": "manifest#assignment-ver-1",
+		"readback_ref": nil, "activation_ref": nil, "activation_revision": nil,
+		"updated_at": "2026-06-22T00:00:00Z",
+	}}
+	writeJSON(t, statePath, state)
+	messagePath := writeAgentExample(t, root, dir, "readback_response", "agent-ver-1", "TASK-012", 7)
+	messageData, err := os.ReadFile(messagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var message map[string]any
+	if err := json.Unmarshal(messageData, &message); err != nil {
+		t.Fatal(err)
+	}
+	delete(message, "expected_runtime_revision")
+	messageData, err = json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(messagePath, messageData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := assignment.AdvanceAgent(root, statePath, journalPath, assignment.AgentEventRequest{
+		ExpectedRevision: -1, AgentID: "agent-ver-1", Event: "readback_submitted", MessagePath: messagePath,
+	})
+	if err != nil {
+		t.Fatalf("readback without Runtime revision failed: %v", err)
+	}
+	if snapshot.Revision != 8 {
+		t.Fatalf("snapshot revision = %d, want 8", snapshot.Revision)
+	}
+}
+
 func TestAdvanceAgentRejectsAuthoringPlaceholderAgentID(t *testing.T) {
 	_, err := assignment.AdvanceAgent(t.TempDir(), "loop-state.json", "loop-events.jsonl", assignment.AgentEventRequest{
 		AgentID: "TODO(planner):agent-id-for-qa",

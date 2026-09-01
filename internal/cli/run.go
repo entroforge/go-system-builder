@@ -44,11 +44,9 @@ import (
 // `internal/hook/adapter.go` `message()`.
 //
 // A `runtime.ErrStaleRevision` (or any error wrapping it) is enriched with a
-// concrete next-action so the caller can recover instead of doing
-// half-experiments: read the current revision with `loop-harness status --root
-// <root>` and retry with `--expected-revision <N>`. Repeated divergence means
-// an actor is committing concurrently; the durable cure is
-// `loop-harness runtime reconcile`.
+// concrete next-action for callers that deliberately supplied an explicit
+// revision assertion. Normal stage commands leave that assertion omitted and
+// let the Writer consume the current Runtime under its lock.
 //
 // Recognized rule-id sources (in order of preference):
 //   - `guard <NAME> failed: ...`         → id = NAME.
@@ -61,7 +59,7 @@ func formatFailure(cmd string, err error) string {
 		return fmt.Sprintf("%s: %s See %s#%s.", cmd, msg, transition.ManualTargetPath(), strings.ToLower(id))
 	}
 	if errors.Is(err, runtime.ErrStaleRevision) {
-		return fmt.Sprintf("%s: %s. Next: run `loop-harness status --root <root>` to read the current revision and retry with `--expected-revision <N>`. If revisions diverge repeatedly, an actor is committing concurrently; resolve with `loop-harness runtime reconcile`.", cmd, msg)
+		return fmt.Sprintf("%s: %s. The command used an explicit revision assertion; normal stage retries should omit it. If an integration intentionally keeps the assertion, run `loop-harness status --root <root>` and retry with `--expected-revision <N>`; repeated integrity divergence may require `loop-harness runtime reconcile`.", cmd, msg)
 	}
 	if errors.Is(err, runtime.ErrStaleRuntimeIdentity) {
 		return fmt.Sprintf("%s: %s. The runtime identity changed at a lifecycle boundary; reread status and rebuild the transition request against the current runtime.", cmd, msg)
@@ -331,7 +329,7 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 	now := time.Now().UTC()
 	shaHex := fmt.Sprintf("%x", sha256.Sum256(data))
 	next, err := transition.Apply(*root, statePath, journalPath, transition.Request{
-		TransitionID: "TR-001", ExpectedRevision: snapshot.Revision, ExpectedRuntimeID: "loop-inactive", Actor: "user",
+		TransitionID: "TR-001", ExpectedRevision: -1, ExpectedRuntimeID: "loop-inactive", Actor: "user",
 		Evidence: map[string]string{
 			"req_lock_record":           *reqPath + "@" + shaHex,
 			"loop_authorization_record": "approved-by:" + *approvedBy,
@@ -944,10 +942,14 @@ func runTeam(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "parse request occurred_at: %v\n", err)
 		return 1
 	}
+	expectedRuntimeRevision := -1
+	if request.ExpectedRuntimeRevision != nil {
+		expectedRuntimeRevision = *request.ExpectedRuntimeRevision
+	}
 	requests, err := team.GenerateReadbackRequests(*root, manifestData, team.LaunchOptions{
 		TaskID:                  request.TaskID,
 		BugID:                   request.BugID,
-		ExpectedRuntimeRevision: request.ExpectedRuntimeRevision,
+		ExpectedRuntimeRevision: expectedRuntimeRevision,
 		Documents:               request.Documents,
 		OccurredAt:              occurredAt,
 	})
@@ -1079,11 +1081,6 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "runtime transition requires --id and --actor")
 			return 2
 		}
-		resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime transition", err))
-			return 1
-		}
 		resolvedStatePath := resolveRootPath(*root, *statePath)
 		resolvedJournalPath := resolveRootPath(*root, *journalPath)
 		currentSnapshot, err := runtime.NewStore(resolvedStatePath, resolvedJournalPath).Snapshot()
@@ -1113,7 +1110,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		next, err := transition.Apply(*root, resolvedStatePath, resolvedJournalPath, transition.Request{
-			TransitionID: *transitionID, ExpectedRevision: resolvedRevision, ExpectedRuntimeID: currentRuntimeID,
+			TransitionID: *transitionID, ExpectedRevision: *expectedRevision, ExpectedRuntimeID: currentRuntimeID,
 			Actor: *actor, Evidence: evidenceMap, REQ: req, OccurredAt: occurredAt,
 			Params: params,
 		})
@@ -1151,24 +1148,19 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		}
 		// Anchor --state / --journal relative paths against --root so the
 		// verb works from any cwd (e.g. a sandboxed shell whose cwd is not
-		// the project root). resolveExpectedRevision must read the same
-		// resolved state file as assignment.Register, otherwise the
-		// resolved revision diverges from the file the writer opens and
-		// Register aborts with a stale-revision error.
+		// the project root). Keep the paths aligned with assignment.Register;
+		// the Writer resolves the current revision inside its own write path.
 		resolvedState := resolveRootPath(*root, *statePath)
 		resolvedJournal := resolveRootPath(*root, *journalPath)
-		resolvedRevision, err := resolveExpectedRevision(*root, resolvedState, *expectedRevision)
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime register-workgroup", err))
-			return 1
-		}
+		resolvedRevision := *expectedRevision
 		var occurredAt time.Time
 		if *occurredAtValue != "" {
-			occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
-			if err != nil {
-				fmt.Fprintf(stderr, "runtime register-workgroup: invalid --occurred-at: %v\n", err)
+			parsedAt, parseErr := time.Parse(time.RFC3339Nano, *occurredAtValue)
+			if parseErr != nil {
+				fmt.Fprintf(stderr, "runtime register-workgroup: invalid --occurred-at: %v\n", parseErr)
 				return 2
 			}
+			occurredAt = parsedAt
 		}
 		next, err := assignment.Register(*root, resolvedState, resolvedJournal, assignment.Request{
 			ExpectedRevision: resolvedRevision,
@@ -1191,8 +1183,9 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		// readback_submitted -> activation_sent -> work_started chain as
 		// the PostToolUse(SendMessage) auto-chain, driven explicitly when
 		// the auto-chain could not (e.g. Worker omitted plan_ref, hook
-		// failed). One CAS-bound AdvanceAgent call per step so the
-		// existing dispatch-mode / state / hash-chain guards stay in force.
+		// failed). One Writer commit per step so the existing dispatch-mode /
+		// state / hash-chain guards stay in force; an explicit revision remains
+		// an optional recovery assertion.
 		flags := flag.NewFlagSet("runtime agent-begin", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		bindUsage(flags, "runtime agent-begin")
@@ -1210,18 +1203,15 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "runtime agent-begin requires --agent-id and --plan")
 			return 2
 		}
-		resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime agent-begin", err))
-			return 1
-		}
+		resolvedRevision := *expectedRevision
 		var occurredAt time.Time
 		if *occurredAtValue != "" {
-			occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
-			if err != nil {
-				fmt.Fprintf(stderr, "runtime agent-begin: invalid --occurred-at: %v\n", err)
+			parsedAt, parseErr := time.Parse(time.RFC3339Nano, *occurredAtValue)
+			if parseErr != nil {
+				fmt.Fprintf(stderr, "runtime agent-begin: invalid --occurred-at: %v\n", parseErr)
 				return 2
 			}
+			occurredAt = parsedAt
 		}
 		next, outcome, err := assignment.AgentBegin(*root, *statePath, *journalPath, assignment.AgentBeginRequest{
 			ExpectedRevision: resolvedRevision,
@@ -1260,18 +1250,15 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "runtime agent-event requires --agent-id, --event and --message")
 			return 2
 		}
-		resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime agent-event", err))
-			return 1
-		}
+		resolvedRevision := *expectedRevision
 		var occurredAt time.Time
 		if *occurredAtValue != "" {
-			occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
-			if err != nil {
-				fmt.Fprintf(stderr, "runtime agent-event: invalid --occurred-at: %v\n", err)
+			parsedAt, parseErr := time.Parse(time.RFC3339Nano, *occurredAtValue)
+			if parseErr != nil {
+				fmt.Fprintf(stderr, "runtime agent-event: invalid --occurred-at: %v\n", parseErr)
 				return 2
 			}
+			occurredAt = parsedAt
 		}
 		next, err := assignment.AdvanceAgent(*root, *statePath, *journalPath, assignment.AgentEventRequest{
 			ExpectedRevision: resolvedRevision,
@@ -1324,18 +1311,15 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "runtime task-complete requires --agent-id and --message")
 			return 2
 		}
-		resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime task-complete", err))
-			return 1
-		}
+		resolvedRevision := *expectedRevision
 		var occurredAt time.Time
 		if *occurredAtValue != "" {
-			occurredAt, err = time.Parse(time.RFC3339Nano, *occurredAtValue)
-			if err != nil {
-				fmt.Fprintf(stderr, "runtime task-complete: invalid --occurred-at: %v\n", err)
+			parsedAt, parseErr := time.Parse(time.RFC3339Nano, *occurredAtValue)
+			if parseErr != nil {
+				fmt.Fprintf(stderr, "runtime task-complete: invalid --occurred-at: %v\n", parseErr)
 				return 2
 			}
+			occurredAt = parsedAt
 		}
 		next, err := assignment.CompleteTask(*root, *statePath, *journalPath, assignment.CompletionRequest{
 			ExpectedRevision: resolvedRevision,
@@ -1463,11 +1447,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		if revise {
-			resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-			if err != nil {
-				fmt.Fprintln(stderr, formatFailure("runtime review-plan revise", err))
-				return 1
-			}
+			resolvedRevision := *expectedRevision
 			next, err := review.RevisePlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.ReviseRequest{
 				ExpectedRevision: resolvedRevision,
 				PlanPath:         resolveRootPath(*root, *planPath),
@@ -1490,11 +1470,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "runtime review-plan requires --file <plan.json>")
 			return 2
 		}
-		resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime review-plan", err))
-			return 1
-		}
+		resolvedRevision := *expectedRevision
 		next, err := review.RegisterPlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.PlanRequest{
 			ExpectedRevision: resolvedRevision,
 			PlanPath:         resolveRootPath(*root, *planPath),
@@ -1538,11 +1514,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "runtime review-result requires --assignment-id <id> and --result <result.json>")
 			return 2
 		}
-		resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime review-result", err))
-			return 1
-		}
+		resolvedRevision := *expectedRevision
 		resolvedCaptures := ""
 		if *captureDir != "" {
 			resolvedCaptures = resolveRootPath(*root, *captureDir)
@@ -1661,11 +1633,6 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "runtime bug-event requires --bug-id and --event")
 			return 2
 		}
-		resolvedRevision, err := resolveExpectedRevision(*root, *statePath, *expectedRevision)
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime bug-event", err))
-			return 1
-		}
 		var params map[string]any
 		if *paramsRaw != "" {
 			if err := json.Unmarshal([]byte(*paramsRaw), &params); err != nil {
@@ -1674,7 +1641,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		next, err := assignment.AdvanceBug(*root, *statePath, *journalPath, assignment.BugEventRequest{
-			ExpectedRevision: resolvedRevision,
+			ExpectedRevision: *expectedRevision,
 			BugID:            *bugID,
 			Event:            *event,
 			MessagePath:      resolveRootPath(*root, *messagePath),
@@ -1688,8 +1655,11 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			// never committed, so the Runtime revision is still resolvedRevision
 			// — the CAS must pin that revision, not revision+1. The dispatch
 			// error, if any, is reported; the original limit error is otherwise
-			// surfaced after the pause is committed.
-			nextSnapshot, dispatchErr := adapter.DispatchRepairLimitExceeded(*root, *statePath, *journalPath, resolvedRevision, err)
+			// surfaced after the pause is committed. A negative expected
+			// revision keeps the bridge on the same Writer-owned path as the
+			// normal BUG event; the failed event did not commit, so the
+			// dispatcher can safely consume the current snapshot itself.
+			nextSnapshot, dispatchErr := adapter.DispatchRepairLimitExceeded(*root, *statePath, *journalPath, *expectedRevision, err)
 			if dispatchErr == nil {
 				if encodeErr := json.NewEncoder(stdout).Encode(nextSnapshot); encodeErr != nil {
 					fmt.Fprintf(stderr, "encode paused snapshot: %v\n", encodeErr)
@@ -1743,7 +1713,9 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 // The disposition is mapped to a fixed transition by the Runtime package; the
 // caller cannot supply a target state or transition ID. This makes the command
 // usable for both legacy S11 snapshots and the current human gateway while
-// keeping missing evidence, actor, and CAS revision fail-closed.
+// keeping missing evidence and actor fail-closed. Runtime revision is an
+// optional advanced assertion; the normal path lets the Writer use its
+// current locked snapshot.
 func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("runtime human-decision", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -1760,12 +1732,9 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	missing := make([]string, 0, 4)
+	missing := make([]string, 0, 3)
 	if strings.TrimSpace(*disposition) == "" {
 		missing = append(missing, "--disposition")
-	}
-	if *expectedRevision < 0 {
-		missing = append(missing, "--expected-revision")
 	}
 	if strings.TrimSpace(*actor) == "" {
 		missing = append(missing, "--actor")
@@ -2105,8 +2074,8 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *expectedRevision < 0 || *id == "" || *kind == "" || *path == "" || len(producedBy) == 0 {
-		fmt.Fprintln(stderr, "runtime evidence add requires --expected-revision, --id, --kind, --path and --produced-by")
+	if *id == "" || *kind == "" || *path == "" || len(producedBy) == 0 {
+		fmt.Fprintln(stderr, "runtime evidence add requires --id, --kind, --path and --produced-by")
 		return 2
 	}
 	var round *int
@@ -2166,8 +2135,8 @@ func runRuntimeChange(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *expectedRevision < 0 || *inputPath == "" {
-		fmt.Fprintln(stderr, "runtime change create requires --expected-revision and --input")
+	if *inputPath == "" {
+		fmt.Fprintln(stderr, "runtime change create requires --input")
 		return 2
 	}
 	data, err := os.ReadFile(resolveRootPath(*root, *inputPath))
@@ -2220,21 +2189,6 @@ func resolveRootPath(root, path string) string {
 		return path
 	}
 	return filepath.Join(root, path)
-}
-
-// resolveExpectedRevision reads the current runtime revision when the
-// caller omitted `--expected-revision` (value -1). CAS still applies to
-// the write itself — the flag just removes the hand-shake step of reading
-// the state first (L3-S6 E2E pass).
-func resolveExpectedRevision(root, statePath string, provided int) (int, error) {
-	if provided >= 0 {
-		return provided, nil
-	}
-	snapshot, err := runtime.NewStore(resolveRootPath(root, statePath), resolveRootPath(root, ".claude/loop-events.jsonl")).Snapshot()
-	if err != nil {
-		return 0, fmt.Errorf("read current runtime revision (omit --expected-revision or read it with `status`): %w", err)
-	}
-	return snapshot.Revision, nil
 }
 
 type stringListFlag []string
@@ -2762,11 +2716,12 @@ func runPostToolUseHook(root string, request policy.Input, stdout, stderr io.Wri
 		planRef = planReportRef(request)
 		if dispatchMode == "plan_checkpoint" && planRef != "" {
 			outcome, err := assignment.AutoAdvanceToWorking(assignment.AutoChainInput{
-				Root:        root,
-				StatePath:   statePath,
-				JournalPath: journalPath,
-				AgentID:     obs.AgentID,
-				PlanPath:    planRef,
+				Root:             root,
+				StatePath:        statePath,
+				JournalPath:      journalPath,
+				ExpectedRevision: -1,
+				AgentID:          obs.AgentID,
+				PlanPath:         planRef,
 			})
 			if err != nil {
 				fmt.Fprintf(stderr, "note: plan_checkpoint auto-chain failed (%v); fall back to `runtime agent-begin --agent-id %s --plan %s`\n", err, obs.AgentID, planRef)

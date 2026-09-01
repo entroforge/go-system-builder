@@ -4,6 +4,8 @@
 >
 > 阅读顺序：先读 §1～§3 理解一次绑定怎样成立；真正执行时按 §4 看每一步由谁和什么机制承载；§5 单独说明贯穿后续 stage 的授权控制面；§6～§8 供审计和遇错时查阅。S1 的主线是一笔一次性授权提交，不把暂停、修订、解绑等跨阶段动作混进正常绑定路径。
 
+> **Revision 口径**：Runtime `revision` 是 Writer 内部生成的提交序号，不是绑定授权、人类决策或 Agent 的正常输入。主会话只提交候选 REQ、授权人和业务意图；锁、原子写、journal、pending 及 revision 分配由 Runtime Writer 完成。详见 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)。
+
 ## 1. 第一层：S1 的立意与目标
 
 ### 1.1 为什么需要 S1
@@ -84,7 +86,7 @@ S1 只有四项顺序任务。前三项决定“能不能授权”，第四项�
 |:--|:--|:--|:--|
 | T1 发现候选并预检 | 哪份 locked REQ 可绑定；是否存在歧义；runtime 是否允许首次绑定 | 缺失时自动 init；扫描候选；检查元数据、当前 runtime、控制面漂移；多候选时停下交人选择 | 唯一可提交的 REQ 路径，或带下一步的明确拒绝 |
 | T2 确认最小人类授权 | 人是否明确同意以该 REQ 启动这次生命周期；审计记名是什么 | 人直接执行，或明确指令主会话代跑；提供 `--approved-by`；通过工具权限确认保留人在场边界 | 针对“绑定这个对象”的单次授权意图与记名 |
-| T3 TR-001 原子绑定 | 能否把候选、授权和状态起点作为一笔事务写入 | 重算 SHA；验证 guard/evidence；执行 bind 与 authorization action；CAS + pending marker + journal 原子落盘 | 唯一 `bound_req`、authorization、generation=1、首条 journal |
+| T3 TR-001 原子绑定 | 能否把候选、授权和状态起点作为一笔事务写入 | 重算 SHA；验证 guard/evidence；执行 bind 与 authorization action；由 Writer 在锁内完成 pending marker + journal 原子落盘并分配 revision | 唯一 `bound_req`、authorization、generation=1、首条 journal |
 | T4 核对回执与状态投影 | 人和后续系统能否得到同一个权威答案 | 读取命令回执；确认 event/cursor/generation/指纹；后续 hook 每次重读 runtime | 可见回执 + `planning.design` 权威投影，交给 S2 |
 
 这四项任务之间不能重排：未选定唯一候选就不能请求授权；没有明确授权就不能提交 TR-001；没有完整事务就不能宣布进入 S2。
@@ -161,15 +163,15 @@ flowchart TD
 | 维度 | 设计 |
 |:--|:--|
 | 转换 | TR-001：inactive → `planning.design`；`human_boundary=true`，不允许自动化自行跨越 |
-| guard | `no_other_active_loop`；Store 同时要求 fresh inactive、空 journal 和预期 revision，形成结构性唯一性 |
+| guard | `no_other_active_loop`；Store 在 Writer 锁内检查 fresh inactive 和空 journal，形成结构性唯一性；revision 不由 Agent 提供 |
 | 证据 | `req_lock_record` 绑定 path@SHA；`loop_authorization_record` 绑定 approved-by |
 | actions | `bind_loop_req` + `record_loop_authorization` |
 | 写入事实 | runtime_id、bound_req 的 id/path/version/SHA/status/approved_by/approved_at/UI impact；authorization；generation=1；REQ 登记进 `documents[]` |
 | 审计事实 | event=`req_bound`、last_transition 与 journal 首条同步记录 |
-| 写入安全 | revision/CAS 防旧快照覆盖；pending marker → 状态写入 → journal append → marker 清理；崩溃后由恢复或 reconcile 对账 |
+| 写入安全 | Writer 锁、pending marker → 状态写入 → journal append → marker 清理；revision 作为内部提交记录；崩溃后由恢复或 reconcile 对账 |
 | 完成产出 | 一份不存在“双绑定”和“半绑定”的 runtime 起点 |
 
-唯一性不是一句约定，而是多层同向约束：状态机只允许从 inactive 进入、首次绑定要求空 journal、Store 验证 fresh inactive、CAS 阻止并发旧写。多层都消费同一个事实，因此属于防御性覆盖，不是职责重复。
+唯一性不是一句约定，而是多层同向约束：状态机只允许从 inactive 进入、首次绑定要求空 journal、Store 在 Writer 锁内验证 fresh inactive。revision 记录提交顺序，但不是授权本身，也不需要 Agent 预测下一值。
 
 ### 4.4 T4 — 核对回执与状态投影：让成功可见、可继续
 
@@ -244,7 +246,7 @@ stateDiagram-v2
 | 授权对象选择 | 人 | 多候选时 `--req` | TR-001 | agent 不替人做真实选择 |
 | 授权记名 | 人提供、harness 记录 | `--approved-by` → authorization/journal | 审计者、后续人闸 | 自我声明的边界如实保留 |
 | 指纹与元数据复核 | harness | CLI 快检 + engine 重读/重算 | runtime、hook | 两次检查分属早失败与提交时防竞态，不是假重复 |
-| 唯一性与原子性 | transition/store | guard、fresh check、空 journal、CAS、pending | 全生命周期 | 多层同向防御同一高风险事实 |
+| 唯一性与原子性 | transition/store | guard、fresh check、空 journal、Writer lock、pending | 全生命周期 | 多层同向保障同一高风险事实；不把 CAS 暴露为 Agent 门槛 |
 | 当前阶段投影 | runtime + hook | lifecycle/cursor 每事件重读 | S2～S11 | 命令回执只展示，不成为第二权威 |
 | 生命周期操作引导 | 主会话 + `loop-orchestration` | 初始化/恢复/pause/resume 时按需加载；实际写入仍只走 harness | 人、当前 stage | skill 负责操作编排，不取得 runtime 写权 |
 | 暂停/恢复 | 人决策 + runtime 命令 | checkpoint、TR-019、基线 re-hash | 当前 stage | stage failure route 触发，S1 统一定义语义 |
@@ -312,7 +314,7 @@ S1 的交付物不是新文档，而是一组彼此一致的 runtime 事实：
 | REQ 元数据、命名或 UI impact 非法 | 未绑定对象返回 S0 修复并重新锁定；已绑定对象不得就地改，走 pause + amend |
 | 已存在 active bound_req | 若目标变化，按语义选择 pause + amend 或 unbind；终态周期先 rollover |
 | definition / policy / schema 漂移 | 按错误提示使用 `doctor`、`validate --all` 或 `runtime reconcile` 诊断；不绕过 preflight |
-| revision 过期或并发冲突 | 重读权威 runtime 后重新判断，不用旧快照覆盖 |
+| Writer 内部写入冲突或提交上下文变化 | 由 Writer/Store 在锁内重新读取并按状态机返回下一动作；正常路径不要求 Agent 计算或传递 revision |
 | pending marker 或 state/journal 不一致 | 走 Store 恢复或 `runtime reconcile`；禁止手编状态 |
 | TR-001 任一步失败 | 保持“不进入 S2”；确认未形成半绑定后再安全重试 |
 
@@ -328,7 +330,7 @@ S1 的交付物不是新文档，而是一组彼此一致的 runtime 事实：
 - **amend 必须先 pause**：新版本进入新 generation，旧 REQ 保持锁定，全部下游证据失效；
 - **unbind 不要求先 pause**：它是独立的撤销授权动作；有在飞实体时用软门要求人显式 `--force`；
 - **approve 不会自动 rollover**：获批和关闭归档是两个时刻；
-- **所有 runtime 写入都走命令/transition/store**：人工编辑会破坏 revision、journal、pending 和指纹不变量。
+- **所有 runtime 写入都走命令/transition/store**：人工编辑会破坏 Writer、journal、pending 和指纹不变量；revision 由系统记录，不由人维护。
 
 ### 8.2 阅读预算
 

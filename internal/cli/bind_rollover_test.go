@@ -255,14 +255,14 @@ func TestRuntimeRolloverRequiresRecordedHumanDecisionEvidence(t *testing.T) {
 	}
 }
 
-func TestRuntimeRolloverRejectsApprovalForDifferentRuntimeRevision(t *testing.T) {
+func TestRuntimeRolloverRejectsApprovalForDifferentRuntime(t *testing.T) {
 	root := newBindTestRoot(t)
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	state := readJSONMap(t, statePath)
 	state["revision"] = float64(2)
 	state["runtime_id"] = "loop-REQ-037"
 	state["lifecycle"] = map[string]any{"state": "aborted", "phase": nil, "phase_revision": float64(1)}
-	state["evidence"] = []any{rolloverApprovalEvidence("release-owner", "loop-REQ-037", 1)}
+	state["evidence"] = []any{rolloverApprovalEvidence("release-owner", "loop-REQ-038", 1)}
 	writeJSONMap(t, statePath, state)
 
 	var stdout, stderr bytes.Buffer
@@ -270,8 +270,8 @@ func TestRuntimeRolloverRejectsApprovalForDifferentRuntimeRevision(t *testing.T)
 		"runtime", "rollover", "--root", root,
 		"--approved-by", "release-owner", "--approval-evidence", "ev-rollover-approval",
 	}, strings.NewReader(""), &stdout, &stderr)
-	if code == 0 || !strings.Contains(stderr.String(), "runtime_rollover:loop-REQ-037@2") {
-		t.Fatalf("rollover error = %q, want runtime-scoped approval rejection", stderr.String())
+	if code == 0 || !strings.Contains(stderr.String(), "runtime_rollover:loop-REQ-037") {
+		t.Fatalf("rollover error = %q, want semantic runtime-scoped approval rejection", stderr.String())
 	}
 }
 
@@ -309,8 +309,8 @@ func TestRuntimeEvidenceAddExpandsCurrentRolloverScope(t *testing.T) {
 	}
 	state = readJSONMap(t, statePath)
 	evidence := state["evidence"].([]any)[0].(map[string]any)
-	if got := evidence["scope_refs"].([]any); len(got) != 1 || got[0] != "runtime_rollover:loop-REQ-037@9" {
-		t.Fatalf("rollover scope refs = %#v, want current terminal revision", got)
+	if got := evidence["scope_refs"].([]any); len(got) != 1 || got[0] != "runtime_rollover:loop-REQ-037" {
+		t.Fatalf("rollover scope refs = %#v, want semantic runtime scope", got)
 	}
 
 	stdout.Reset()
@@ -474,7 +474,7 @@ func TestREQBindRecoversInterruptedRolloverBeforeBinding(t *testing.T) {
 	}
 }
 
-func rolloverApprovalEvidence(approvedBy, runtimeID string, revision int) map[string]any {
+func rolloverApprovalEvidence(approvedBy, runtimeID string, _ int) map[string]any {
 	return map[string]any{
 		"id":                  "ev-rollover-approval",
 		"kind":                "human_decision",
@@ -488,7 +488,7 @@ func rolloverApprovalEvidence(approvedBy, runtimeID string, revision int) map[st
 		"invalidation_rule":   nil,
 		"invalidation_reason": nil,
 		"responsibility_id":   nil,
-		"scope_refs":          []any{fmt.Sprintf("runtime_rollover:%s@%d", runtimeID, revision)},
+		"scope_refs":          []any{fmt.Sprintf("runtime_rollover:%s", runtimeID)},
 	}
 }
 

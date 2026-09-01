@@ -57,32 +57,33 @@ func writeDecisionArtifact(root, name string, payload map[string]any) (string, e
 }
 
 // registerDecisionEvidence writes the decision artifact and records it as
-// current human_decision evidence, returning the evidence id and the
-// revision the follow-up transition must expect.
-func registerDecisionEvidence(root string, snapshot runtime.Snapshot, id, decision, reason, approvedBy, scopeRef string) (string, int, error) {
+// current human_decision evidence. Runtime revision is an internal Writer
+// concern: the caller supplies only the semantic lifecycle scope, and the
+// evidence write follows the normal Writer-owned current-state path.
+func registerDecisionEvidence(root string, snapshot runtime.Snapshot, id, decision, reason, approvedBy, scopeRef string) (string, error) {
 	runtimeID, _ := snapshot.State["runtime_id"].(string)
+	stateName, phase := snapshotLifecycle(snapshot)
 	payload := map[string]any{
-		"decision":    decision,
-		"reason":      reason,
-		"approved_by": approvedBy,
-		"runtime_id":  runtimeID,
-		"revision":    snapshot.Revision,
-		// the scope binds the NEXT revision — the one the follow-up
-		// transition will apply at — so the audit artifact states it too.
-		"authorization_revision": snapshot.Revision + 1,
+		"decision":      decision,
+		"disposition":   decision,
+		"decision_id":   id,
+		"reason":        reason,
+		"approved_by":   approvedBy,
+		"runtime_id":    runtimeID,
+		"target_cursor": map[string]any{"state": stateName, "phase": phase},
 	}
 	if scopeRef != "" {
 		payload["scope"] = scopeRef
 	}
 	rel, err := writeDecisionArtifact(root, id, payload)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
 	_, err = runtime.RecordEvidence(root,
 		filepath.Join(root, ".claude", "loop-state.json"),
 		filepath.Join(root, ".claude", "loop-events.jsonl"),
 		runtime.EvidenceRequest{
-			ExpectedRevision: snapshot.Revision,
+			ExpectedRevision: -1,
 			ID:               id,
 			Kind:             "human_decision",
 			Path:             rel,
@@ -91,9 +92,13 @@ func registerDecisionEvidence(root string, snapshot runtime.Snapshot, id, decisi
 			Validator:        semantic.RuntimeCandidateValidator{},
 		})
 	if err != nil {
-		return "", 0, fmt.Errorf("register decision evidence: %w", err)
+		return "", fmt.Errorf("register decision evidence: %w", err)
 	}
-	return id, snapshot.Revision + 1, nil
+	return id, nil
+}
+
+func lifecycleDecisionID(prefix string) string {
+	return fmt.Sprintf("hd-%s-%d", prefix, time.Now().UTC().UnixNano())
 }
 
 func runRuntimePause(args []string, stdout, stderr io.Writer) int {
@@ -131,9 +136,9 @@ func runRuntimePause(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runtime pause: nothing is bound — bind a REQ first (req bind --approved-by <human identity>)")
 		return 1
 	}
-	evID, nextRev, err := registerDecisionEvidence(*root, snapshot,
-		fmt.Sprintf("hd-pause-r%d", snapshot.Revision+1), "user_pause_requested", *reason, *approvedBy,
-		fmt.Sprintf("runtime_pause:%s@%d", snapshot.State["runtime_id"], snapshot.Revision+1))
+	evID, err := registerDecisionEvidence(*root, snapshot,
+		lifecycleDecisionID("pause"), "user_pause_requested", *reason, *approvedBy,
+		fmt.Sprintf("runtime_pause:%s", snapshot.State["runtime_id"]))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime pause", err))
 		return 1
@@ -142,7 +147,7 @@ func runRuntimePause(args []string, stdout, stderr io.Writer) int {
 		filepath.Join(*root, ".claude", "loop-state.json"),
 		filepath.Join(*root, ".claude", "loop-events.jsonl"),
 		transition.Request{
-			TransitionID: "GTR-001", ExpectedRevision: nextRev, Actor: "user",
+			TransitionID: "GTR-001", ExpectedRevision: -1, Actor: "user",
 			Evidence: map[string]string{
 				"human_decision_record": evID,
 				"pause_record":          "generated:pause_checkpoint",
@@ -186,9 +191,9 @@ func runRuntimeResume(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runtime resume: runtime is %q, not paused — nothing to resume\n", state)
 		return 1
 	}
-	evID, nextRev, err := registerDecisionEvidence(*root, snapshot,
-		fmt.Sprintf("hd-resume-r%d", snapshot.Revision+1), "human_resume_approved", "", *approvedBy,
-		fmt.Sprintf("runtime_resume:%s@%d", snapshot.State["runtime_id"], snapshot.Revision+1))
+	evID, err := registerDecisionEvidence(*root, snapshot,
+		lifecycleDecisionID("resume"), "human_resume_approved", "", *approvedBy,
+		fmt.Sprintf("runtime_resume:%s", snapshot.State["runtime_id"]))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime resume", err))
 		return 1
@@ -197,7 +202,7 @@ func runRuntimeResume(args []string, stdout, stderr io.Writer) int {
 		filepath.Join(*root, ".claude", "loop-state.json"),
 		filepath.Join(*root, ".claude", "loop-events.jsonl"),
 		transition.Request{
-			TransitionID: "TR-019", ExpectedRevision: nextRev, Actor: "user",
+			TransitionID: "TR-019", ExpectedRevision: -1, Actor: "user",
 			Evidence: map[string]string{
 				"human_decision_record": evID,
 				"pause_record":          "generated:pause_checkpoint",
@@ -317,9 +322,9 @@ func runREQUnbind(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	runtimeID, _ := snapshot.State["runtime_id"].(string)
-	evID, _, err := registerDecisionEvidence(*root, snapshot,
-		fmt.Sprintf("hd-unbind-r%d", snapshot.Revision+1), "req_unbind_requested", *reason, *approvedBy,
-		fmt.Sprintf("runtime_unbind:%s@%d", runtimeID, snapshot.Revision+1))
+	evID, err := registerDecisionEvidence(*root, snapshot,
+		lifecycleDecisionID("unbind"), "req_unbind_requested", *reason, *approvedBy,
+		fmt.Sprintf("runtime_unbind:%s", runtimeID))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("req unbind", err))
 		return 1
@@ -409,9 +414,9 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	runtimeID, _ := snapshot.State["runtime_id"].(string)
-	evID, _, err := registerDecisionEvidence(*root, snapshot,
-		fmt.Sprintf("hd-amend-r%d", snapshot.Revision+1), "req_amendment_approved", *reqPath, *approvedBy,
-		fmt.Sprintf("runtime_amend:%s@%d", runtimeID, snapshot.Revision+1))
+	evID, err := registerDecisionEvidence(*root, snapshot,
+		lifecycleDecisionID("amend"), "req_amendment_approved", *reqPath, *approvedBy,
+		fmt.Sprintf("runtime_amend:%s", runtimeID))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("req amend", err))
 		return 1
@@ -422,7 +427,7 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		filepath.Join(*root, ".claude", "loop-state.json"),
 		filepath.Join(*root, ".claude", "loop-events.jsonl"),
 		transition.Request{
-			TransitionID: "TR-020", ExpectedRevision: snapshot.Revision + 1, Actor: "user",
+			TransitionID: "TR-020", ExpectedRevision: -1, Actor: "user",
 			Evidence: map[string]string{
 				"human_decision_record": evID,
 				"req_lock_record":       *reqPath + "@" + shaHex,

@@ -490,7 +490,7 @@ func repairPreExecutionBlock(input Input, rawPath string) Decision {
 		Reason:       fmt.Sprintf("S9 %s is read-only on the product surface until BeginRepairExecution; %s is not a repair-control artifact", input.Runtime.CurrentPhase, reviewerRelativePath(input, rawPath)),
 		Recovery: []string{
 			"record one PlanReport per RepairAssignment with a failing pre-fix check",
-			"run `BeginRepairExecution` via `runtime repair execution begin --expected-revision <current>` after every Assignment has a PlanReport",
+			"run `BeginRepairExecution` via `runtime repair execution begin --actor <agent>` after every Assignment has a PlanReport",
 			"keep plan/reproduction evidence under .claude/review/repair/ or .claude/evidence/; do not write product files yet",
 		},
 		Retry: RetryAfterRecoveryValidation,

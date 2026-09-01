@@ -9,8 +9,10 @@ import (
 )
 
 // ChangeRequest creates the one active Change Record carried by a Runtime.
-// The record is deliberately stored through the same CAS/journal path as all
-// other Runtime facts.
+// The record is deliberately stored through the same Writer/journal path as
+// all other Runtime facts. A negative ExpectedRevision selects the normal
+// single-writer path; non-negative values remain an explicit advanced CAS
+// assertion.
 type ChangeRequest struct {
 	ExpectedRevision int
 	Record           change.Record
@@ -19,9 +21,6 @@ type ChangeRequest struct {
 }
 
 func CreateChange(root, statePath, journalPath string, request ChangeRequest) (Snapshot, error) {
-	if request.ExpectedRevision < 0 {
-		return Snapshot{}, fmt.Errorf("expected revision must be non-negative")
-	}
 	if err := change.Validate(request.Record); err != nil {
 		return Snapshot{}, err
 	}
@@ -46,16 +45,17 @@ func CreateChange(root, statePath, journalPath string, request ChangeRequest) (S
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
+	commitRevision := snapshot.Revision
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
 	return store.Update(request.ExpectedRevision, Mutation{
-		EventID:        fmt.Sprintf("evt-change-%s-r%d", request.Record.ID, request.ExpectedRevision+1),
+		EventID:        fmt.Sprintf("evt-change-%s-r%d", request.Record.ID, commitRevision+1),
 		TransitionID:   "CHANGE-RECORD-CREATE",
 		Event:          "change_record_created",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:change:%s:%d", request.Record.ID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:change:%s:%d", request.Record.ID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},
 		To:             map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},

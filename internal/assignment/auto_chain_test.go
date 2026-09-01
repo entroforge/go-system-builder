@@ -168,7 +168,7 @@ func TestAgentBeginRejectsAuthoringPlaceholderBeforeRecoveryLookup(t *testing.T)
 // TestAutoAdvanceToWorkingChainsPlanCheckpointAgent is the happy-path test
 // for the PostToolUse(SendMessage) auto-chain: from a registered
 // plan_checkpoint agent in reading state, one AutoAdvanceToWorking call
-// advances the agent to working in three CAS-bound AdvanceAgent calls.
+// advances the agent to working in three Writer commits.
 //
 // Uses TASK-012 + delivery-manifest so the register-workgroup call goes
 // through the existing schema-valid path; then drives the chain against
@@ -199,11 +199,12 @@ func TestAutoAdvanceToWorkingChainsPlanCheckpointAgent(t *testing.T) {
 	planPath, _ := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
 
 	outcome, err := assignment.AutoAdvanceToWorking(assignment.AutoChainInput{
-		Root:        root,
-		StatePath:   statePath,
-		JournalPath: journalPath,
-		AgentID:     agentID,
-		PlanPath:    planPath,
+		Root:             root,
+		StatePath:        statePath,
+		JournalPath:      journalPath,
+		ExpectedRevision: -1,
+		AgentID:          agentID,
+		PlanPath:         planPath,
 	})
 	if err != nil {
 		t.Fatalf("auto-chain: %v", err)
@@ -216,6 +217,19 @@ func TestAutoAdvanceToWorkingChainsPlanCheckpointAgent(t *testing.T) {
 	}
 	if outcome.ActivationID == "" {
 		t.Fatal("activation_id must be set after chaining")
+	}
+	for _, name := range []string{
+		"activation-" + agentID + "-message.json",
+		"work-start-" + agentID + ".json",
+	} {
+		path := filepath.Join(root, ".claude", "evidence", workgroupID, taskID, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read generated %s: %v", name, err)
+		}
+		if strings.Contains(string(data), "expected_runtime_revision") {
+			t.Fatalf("normal auto-chain message %s must not expose Runtime revision: %s", name, data)
+		}
 	}
 }
 
@@ -259,11 +273,12 @@ func TestAutoAdvanceToWorkingSkipsPlanApprovalRequired(t *testing.T) {
 	}
 	planPath, _ := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
 	outcome, err := assignment.AutoAdvanceToWorking(assignment.AutoChainInput{
-		Root:        root,
-		StatePath:   statePath,
-		JournalPath: journalPath,
-		AgentID:     agentID,
-		PlanPath:    planPath,
+		Root:             root,
+		StatePath:        statePath,
+		JournalPath:      journalPath,
+		ExpectedRevision: -1,
+		AgentID:          agentID,
+		PlanPath:         planPath,
 	})
 	if err != nil {
 		t.Fatalf("auto-chain: %v", err)
@@ -297,8 +312,9 @@ func TestAgentBeginFallbackMatchesAutoChain(t *testing.T) {
 	}
 	planPath, _ := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
 	snap, outcome, err := assignment.AgentBegin(root, statePath, journalPath, assignment.AgentBeginRequest{
-		AgentID:  agentID,
-		PlanPath: planPath,
+		ExpectedRevision: -1,
+		AgentID:          agentID,
+		PlanPath:         planPath,
 	})
 	if err != nil {
 		t.Fatalf("agent-begin: %v", err)
@@ -435,8 +451,9 @@ func TestAgentBeginSynthesizesEnvelopeForLegacyAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap, outcome, err := assignment.AgentBegin(root, statePath, journalPath, assignment.AgentBeginRequest{
-		AgentID:  agentID,
-		PlanPath: planPath,
+		ExpectedRevision: -1,
+		AgentID:          agentID,
+		PlanPath:         planPath,
 	})
 	if err != nil {
 		t.Fatalf("agent-begin on legacy agent: %v", err)
@@ -502,8 +519,9 @@ func TestAgentBeginResumesMidChainAfterFailure(t *testing.T) {
 	}
 
 	snap, outcome, err := assignment.AgentBegin(root, statePath, journalPath, assignment.AgentBeginRequest{
-		AgentID:  agentID,
-		PlanPath: planPath,
+		ExpectedRevision: -1,
+		AgentID:          agentID,
+		PlanPath:         planPath,
 	})
 	if err != nil {
 		t.Fatalf("agent-begin resume: %v", err)

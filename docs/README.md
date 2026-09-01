@@ -132,7 +132,7 @@ and one mutability rule.
 |:---|:---|:---|:---|:---|
 | **Locked REQ** | `docs/requirements/REQ-xxx.md` | what is required | only via human change control | **human only** |
 | **Loop Definition** | `docs/loop-definition.json` | which transition is legal in the current state | versioned design doc | design phase (human) |
-| **Loop Runtime** | `.claude/loop-state.json` | current facts + resumable Milestone | CAS `revision + 1`; lifecycle transitions use the Transition Engine and Milestone refresh uses the Runtime Store | **single Runtime control plane** |
+| **Loop Runtime** | `.claude/loop-state.json` | current facts + resumable Milestone | Writer-owned current-state commit sequence; lifecycle transitions use the Transition Engine and Milestone refresh uses the Runtime Store | **single Runtime control plane** |
 | **Evidence** | `docs/reports/**/*.{md,json}` | that something was done and is still valid | can be marked invalid by impact-analysis | the activated Agent that owns it |
 
 Chat, `project.yaml`, project-map, TASK bodies and REQ Todo blocks are **not**
@@ -410,8 +410,9 @@ globally without applicability.
 ## 8. Call Chain: One Transition
 
 The Orchestrator never declares a state transition directly. Every advance goes
-through `transition.Apply`, which is the only writer of `loop-state.json`, and
-only via compare-and-swap on `revision`.
+through `transition.Apply`, which is the only writer of `loop-state.json`.
+The Writer reads the current Runtime under lock; an explicit revision
+assertion is an optional integration/recovery choice, not a normal stage step.
 
 ```mermaid
 sequenceDiagram
@@ -488,9 +489,9 @@ sequenceDiagram
     end
     Main->>Main: compare readback against current document versions
     alt ready and fingerprints match
-        Main->>RT: agent-event understanding_approved (CAS rev+1)
+        Main->>RT: agent-event understanding_approved (Writer commit; internal revision)
         Main->>Agent: send activation envelope
-        Main->>RT: agent-event activation_sent (CAS rev+1; runtime verifies approved_readback_sha256)
+        Main->>RT: agent-event activation_sent (Writer commit; verifies approved_readback_sha256)
     else conflict or missing
         Main->>Agent: understanding_rejected -> back to reading
     end
@@ -628,12 +629,11 @@ wants to begin a new REQ, they first run:
 ```
 
 The command requires the named valid `human_decision` evidence to have been
-produced by the specified identity and scoped to
-`runtime_rollover:<runtime_id>@<revision>` for the current terminal Runtime.
+produced by the specified identity and scoped to the semantic action
+`runtime_rollover:<runtime_id>` for the current terminal Runtime.
 Create that evidence with `runtime evidence add --scope-ref
-runtime_rollover:current`; the harness resolves the token to the revision
-committed by the evidence write, so the subsequent rollover has an exact
-authorization target.
+runtime_rollover:current`; the harness resolves the token to the current
+Runtime identity, while the Writer records the commit revision internally.
 It archives the eligible terminal state and its
 journal under `.claude/runtime-archive/`, then creates a new empty inactive
 Runtime and journal. A durable pending marker recovers an interrupted rollover
@@ -765,13 +765,13 @@ mechanism; `.claude/loop-state.json` is never edited by hand.
 # awaiting_human_release migration entrypoint. No target state is accepted.
 .claude/bin/loop-harness runtime human-decision \
   --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> \
-  --expected-revision N --actor <user|orchestrator> \
+  --actor <user|orchestrator> \
   --decision-evidence <human-decision-reference>
 # reject_defect additionally requires --finding-evidence <finding-reference>.
 
-# Apply one legal transition via compare-and-swap on revision.
+# Apply one legal transition; the Writer owns the internal commit sequence.
 .claude/bin/loop-harness runtime transition \
-  --id TR-xxx --expected-revision N --actor orchestrator \
+  --id TR-xxx --actor orchestrator \
   --evidence <slot>=<reference>
 ```
 
@@ -783,7 +783,7 @@ register. For example, TR-006 can be recovered with:
 
 ```bash
 .claude/bin/loop-harness runtime transition \
-  --id TR-006 --expected-revision N --actor orchestrator \
+  --id TR-006 --actor orchestrator \
   --evidence builder_report_record=<builder-report-id-or-path>
 ```
 

@@ -46,12 +46,19 @@ func TestRuntimeRepairSessionAndPlanAdvanceByCAS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	snapshot, session, sessionRef, err := repair.OpenRepairSession(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "main"}, SessionID: "repair-session-1", CreatedBy: "main"})
+	snapshot, session, sessionRef, err := repair.OpenRepairSession(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: -1, Actor: "main"}, SessionID: "repair-session-1", CreatedBy: "main"})
 	if err != nil {
 		t.Fatalf("OpenRepairSession() error = %v", err)
 	}
 	if snapshot.Revision != 1 || session.Status != "planned" {
 		t.Fatalf("session snapshot=%d status=%s", snapshot.Revision, session.Status)
+	}
+	journal, err := os.ReadFile(filepath.Join(root, ".claude", "loop-events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(journal), "r0") || strings.Contains(string(journal), ":-1") {
+		t.Fatalf("omitted Runtime revision must not leak into internal S9 event identity: %s", journal)
 	}
 	snapshot, plan, planRef, err := repair.CompileRepairPlan(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), repair.CompilePlanRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 1, Actor: "main"}, PlanID: "repair-plan-1", CreatedBy: "main"})
 	if err != nil {

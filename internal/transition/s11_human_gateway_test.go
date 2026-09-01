@@ -204,14 +204,16 @@ func TestBUG104DeferCapturesS11BeforeCursorChange(t *testing.T) {
 	if updated["lifecycle"].(map[string]any)["state"] != "paused" {
 		t.Fatalf("state after defer = %#v, want paused", updated["lifecycle"])
 	}
-	// The defer decision is scoped to revision 5 and must not authorize the
-	// revision-6 resume (one approval, one verb, one revision) — a fresh
-	// scoped decision is required.
+	// The defer decision has been consumed by TR-026 and must not authorize the
+	// resume. A fresh decision is required for the new human boundary.
 	state6 := readState(t, root)
-	scopeFixtureEvidence(t, state6, "docs/reports/human/decision.md", "runtime_resume:loop-inactive@6")
+	registerFixtureEvidence(t, root, state6, map[string]string{
+		"human_decision_record": "docs/reports/human/resume-decision.md",
+	})
+	scopeFixtureEvidence(t, state6, "docs/reports/human/resume-decision.md", "runtime_resume:loop-inactive@6")
 	writeFullState(t, root, state6)
 	if err := applyT(t, root, "TR-019", 6, "user", map[string]string{
-		"human_decision_record": "docs/reports/human/decision.md",
+		"human_decision_record": "docs/reports/human/resume-decision.md",
 		"pause_record":          "generated:pause_checkpoint",
 	}); err != nil {
 		t.Fatalf("TR-019 must resume the S11 checkpoint: %v", err)

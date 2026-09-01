@@ -160,6 +160,10 @@ func AdvanceAgent(
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
 	runtimeID, _ := current["runtime_id"].(string)
+	commitRevision, err := commitRevision(request.ExpectedRevision, current)
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	if message.RuntimeID != "" && message.RuntimeID != runtimeID {
 		return loopruntime.Snapshot{}, fmt.Errorf("Agent message runtime does not match current runtime")
 	}
@@ -180,12 +184,12 @@ func AdvanceAgent(
 	agentTransitions := agentEntityTransitions(catalog)
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	return store.Update(request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-agent-%s-%s-r%d", request.AgentID, request.Event, request.ExpectedRevision+1),
+	mutation := loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-agent-%s-%s-r%d", request.AgentID, request.Event, commitRevision+1),
 		TransitionID:   "AGENT-LIFECYCLE",
 		Event:          request.Event,
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:agent:%s:%s:%d", request.AgentID, request.Event, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:agent:%s:%s:%d", request.AgentID, request.Event, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
@@ -214,7 +218,7 @@ func AdvanceAgent(
 						"Agent event %s is not legal from state %s (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped)",
 						request.Event, currentState)
 				}
-				if err := applyAgentEventParams(root, agent, request, message); err != nil {
+				if err := applyAgentEventParams(root, agent, request, message, commitRevision); err != nil {
 					return err
 				}
 				agent["state"] = resolvedTo
@@ -227,12 +231,13 @@ func AdvanceAgent(
 			}
 			return fmt.Errorf("Agent %s is not registered", request.AgentID)
 		},
-	})
+	}
+	return updateRuntime(store, request.ExpectedRevision, mutation)
 }
 
 // applyAgentEventParams applies event-specific param checks. These mirror
 // the prior implementation for the original 3 events and extend to all 12.
-func applyAgentEventParams(root string, agent map[string]any, request AgentEventRequest, message agentMessage) error {
+func applyAgentEventParams(root string, agent map[string]any, request AgentEventRequest, message agentMessage, commitRevision int) error {
 	switch request.Event {
 	case "readback_submitted":
 		if agent["state"] != "reading" {
@@ -275,13 +280,13 @@ func applyAgentEventParams(root string, agent map[string]any, request AgentEvent
 		if !legalFrom[currentState] {
 			return fmt.Errorf("activation from %s requires dispatch_mode plan_checkpoint with a submitted plan report (or understanding_approved first)", currentState)
 		}
-		if message.ExpectedRuntimeRevision != request.ExpectedRevision {
+		if request.ExpectedRevision >= 0 && message.ExpectedRuntimeRevision != request.ExpectedRevision {
 			return fmt.Errorf("activation expected revision is stale")
 		}
 		if err := verifyActivationReadbackChain(root, agent, message); err != nil {
 			return err
 		}
-		agent["activation_revision"] = request.ExpectedRevision + 1
+		agent["activation_revision"] = commitRevision + 1
 	case "understanding_rejected":
 		if agent["state"] != "understanding_submitted" {
 			return fmt.Errorf("rejection requires submitted understanding")

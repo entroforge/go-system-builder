@@ -127,17 +127,21 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		occurredAt = time.Now().UTC()
 	}
 	producedBy := append([]string(nil), request.ProducedBy...)
-	scopeRefs, err := expandRolloverScopeRefs(request.ScopeRefs, runtimeID, request.ExpectedRevision+1)
+	commitRevision := request.ExpectedRevision
+	if commitRevision < 0 {
+		commitRevision = snapshot.Revision
+	}
+	scopeRefs, err := expandRolloverScopeRefs(request.ScopeRefs, runtimeID, commitRevision+1)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	sha := sha256Hex(data)
-	return store.Update(request.ExpectedRevision, Mutation{
-		EventID:        fmt.Sprintf("evt-evidence-%s-r%d", request.ID, request.ExpectedRevision+1),
+	mutation := Mutation{
+		EventID:        fmt.Sprintf("evt-evidence-%s-r%d", request.ID, commitRevision+1),
 		TransitionID:   "EVIDENCE-RECORD",
 		Event:          "evidence_recorded",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:evidence:%s:%d", request.ID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:evidence:%s:%d", request.ID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           from,
 		To:             from,
@@ -189,7 +193,11 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			return nil
 		},
-	})
+	}
+	if request.ExpectedRevision < 0 {
+		return store.UpdateCurrent(mutation)
+	}
+	return store.Update(request.ExpectedRevision, mutation)
 }
 
 // expandRolloverScopeRefs resolves the explicit `runtime_rollover:current`
@@ -203,7 +211,7 @@ func expandRolloverScopeRefs(scopeRefs []string, runtimeID string, committedRevi
 	result := append([]string{}, scopeRefs...)
 	for index, scope := range result {
 		if scope == "runtime_rollover:current" {
-			result[index] = fmt.Sprintf("runtime_rollover:%s@%d", runtimeID, committedRevision)
+			result[index] = fmt.Sprintf("runtime_rollover:%s", runtimeID)
 		}
 	}
 	return result, nil

@@ -66,6 +66,10 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
+	commitRevision, err := commitRevision(request.ExpectedRevision, current)
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	lifecycle, ok := current["lifecycle"].(map[string]any)
 	if !ok {
 		return loopruntime.Snapshot{}, fmt.Errorf("runtime lifecycle must be an object")
@@ -122,12 +126,12 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 	// staged artifact; if the commit may still be recoverable, the file is
 	// intentionally retained.
 	stagedActivations := make([]loopruntime.ArtifactCleanupRequest, 0, len(value.Assignments))
-	snapshot, updateErr := store.Update(request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-register-%s-r%d", value.WorkgroupID, request.ExpectedRevision+1),
+	snapshot, updateErr := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-register-%s-r%d", value.WorkgroupID, commitRevision+1),
 		TransitionID:   "ENTITY-REGISTER",
 		Event:          "workgroup_registered",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:register:%s:%d", value.ManifestID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:register:%s:%d", value.ManifestID, commitRevision),
 		EvidenceIDs:    []string{manifestRef, taskRef},
 		Message:        "Registered a validated workgroup, task and phase-one Agents.",
 		OccurredAt:     occurredAt,
@@ -264,7 +268,7 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 						return fmt.Errorf("activation envelope: hash staged bytes: %w", marshalErr)
 					}
 					stagedActivations = append(stagedActivations, loopruntime.ArtifactCleanupRequest{
-						ExpectedRevision: request.ExpectedRevision,
+						ExpectedRevision: commitRevision,
 						ArtifactPath:     activationRef,
 						ArtifactSHA256:   sha256Of(append(activationBytes, '\n')),
 						ReferencedPaths:  stateArtifactPaths(current),
@@ -525,6 +529,10 @@ func RegisterBug(root, statePath, journalPath string, req RegisterBugRequest) (l
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
+	commitRevision, err := commitRevision(req.ExpectedRevision, current)
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	cursor := map[string]any{
@@ -539,12 +547,12 @@ func RegisterBug(root, statePath, journalPath string, req RegisterBugRequest) (l
 	}
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	return store.Update(req.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-register-bug-%s-r%d", req.BugID, req.ExpectedRevision+1),
+	return updateRuntime(store, req.ExpectedRevision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-register-bug-%s-r%d", req.BugID, commitRevision+1),
 		TransitionID:   "ENTITY-REGISTER",
 		Event:          "bug_registered",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:register:bug:%s:%d", req.BugID, req.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:register:bug:%s:%d", req.BugID, commitRevision),
 		From:           cursor,
 		To:             cursor,
 		RuntimeID:      runtimeID,
@@ -717,6 +725,10 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
+	commitRevision, err := commitRevision(req.ExpectedRevision, current)
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	cursor := map[string]any{
@@ -731,12 +743,12 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 	}
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	return store.Update(req.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-register-task-%s-r%d", req.TaskID, req.ExpectedRevision+1),
+	return updateRuntime(store, req.ExpectedRevision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-register-task-%s-r%d", req.TaskID, commitRevision+1),
 		TransitionID:   "ENTITY-REGISTER",
 		Event:          "task_registered",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:register:task:%s:%d", req.TaskID, req.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:register:task:%s:%d", req.TaskID, commitRevision),
 		From:           cursor,
 		To:             cursor,
 		RuntimeID:      runtimeID,

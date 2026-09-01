@@ -2040,6 +2040,20 @@
             "minLength": 1
           }
         },
+        "consumed_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "consumed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        },
         "dimension": {
           "type": "string",
           "minLength": 1

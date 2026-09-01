@@ -1,10 +1,10 @@
 # L4 — 运行时控制面与横切治理机制（Runtime Control Plane & Cross-cutting Governance）
 
-> 层：第四层｜机制域：权威状态、CAS 与 revision、指纹体系、证据链、追溯分母链、精确集求值、门禁分类学、写屏障家族、观测采集与脱敏、暂停/阻塞/终止保障、会话恢复投影、错误信息契约、债务与兼容性登记
+> 层：第四层｜机制域：权威状态、指纹体系、证据链、追溯分母链、精确集求值、门禁分类学、写屏障家族、观测采集与脱敏、暂停/阻塞/终止保障、会话恢复投影、错误信息契约、债务与兼容性登记
 >
 > 上游：L1 D1～D7 与五公理；L2 生命周期目标、全局规则与「REQ 授权生命周期」概念层
 >
-> 姊妹篇（四家族）：[L4 Agent 调度与治理](L4-agent-dispatch-governance.md)=「谁在责任上行动」——拓扑、PLAN_REPORT、等待/idle/stop、恢复的对象模型与 Hook 决策矩阵；[L4 权威状态机与迁移事务核心](L4-state-transition-core.md)=「事实住哪、怎样变更才算合法」——存储模型、单写者 CAS 本体、崩溃写序、实体生命周期索引、guard/action 引擎与自动推进仲裁；[L4 Hook 与平台事件接线](L4-hook-platform-wiring.md)=「决策如何坐上平台总线」——事件注册、payload 契约、输出/退出码契约、fail-open/closed 态度分界；**本文档=「内容怎样才算合规」**——指纹与证据规则、追溯分母、精确集求值、人闸与人机界面契约、错误信息契约、债务登记等数据契约与行为准则层。
+> 姊妹篇（五家族）：[L4 Agent 调度与治理](L4-agent-dispatch-governance.md)=「谁在责任上行动」——拓扑、PLAN_REPORT、等待/idle/stop、恢复的对象模型与 Hook 决策矩阵；[L4 权威状态机与迁移事务核心](L4-state-transition-core.md)=「事实住哪、怎样变更才算合法」——存储模型、单写者、崩溃写序、实体生命周期索引、guard/action 引擎与自动推进仲裁；[L4 Runtime revision 使用与命令协调](L4-revision-usage.md)=「revision 谁需要知道」——内部提交序号、单主会话默认命令、对象版本边界与复杂度准入；[L4 Hook 与平台事件接线](L4-hook-platform-wiring.md)=「决策如何坐上平台总线」——事件注册、payload 契约、输出/退出码契约、fail-open/closed 态度分界；**本文档=「内容怎样才算合规」**——指纹与证据规则、追溯分母、精确集求值、人闸与人机界面契约、错误信息契约、债务登记等数据契约与行为准则层。
 >
 > 层内权威声明（本文件成立的前提）：**凡列入本目录的机制域，其目标态定义以本文为唯一权威**。L2 中同名全局规则只保留"存在与用途"的声明；各 L3 只写"本阶段消费哪种实例化"。L3 正文与本文件冲突时，先核对代码现状，再按 L1 第五部分演化协议回改落后的一方。唯一的显式外移：「注意力分配/渐进披露」是文档写作纪律而非运行时机制，权威仍在 [L3-README](L3-README.md#注意力分配原则各-l3-sn-的共用判定尺本节是唯一权威各-stage-只引用不复述)。
 >
@@ -32,7 +32,7 @@
 ### 1.1 单一权威与单一写者
 
 - `.claude/loop-state.json` 是唯一的工程事实源；`journal` 只追加；终态周期整体归档到 `runtime-archive`（带 disposition），REQ 文件状态只是给浏览者的可读性镜像。
-- **所有权威写入都经 Runtime Store/Writer 完成，使用单一 revision CAS**。Hook 是触发器不是存储：PostToolUse(SendMessage) 捕获 PLAN_REPORT 后落库走的也是同一条 Runtime 写路径，不自带第二套存储。
+- **所有权威写入都经 Runtime Store/Writer 完成，由单写者内部串行化并自动分配 revision**。Hook 是触发器不是存储：PostToolUse(SendMessage) 捕获 PLAN_REPORT 后落库走的也是同一条 Runtime 写路径，不自带第二套存储；revision 的 Agent-facing 边界见 [revision 篇](L4-revision-usage.md)。
 - 板（board）、CLI 回执、hook 投影都是**只读视图**；视图不参与判定真值，与权威不一致时触发 reconcile 而非互相说服。
 - 调度控制面（Assignment/plan/Result/checkpoint）必须解析到项目级共享存储，不跟随 Worker worktree cwd 各写一份，也不靠 git merge 汇总运行态（详接调度篇 §2.2 的硬边界）。
 
@@ -57,22 +57,9 @@
 
 ---
 
-## 2. CAS 与 revision 语义词典
+## 2. Revision 语义指针
 
-全系统只有一个 CAS 机制（对比期望 revision，不符则拒绝并解释），但不同对象的 revision **语义分层**：
-
-| 对象 | revision 语义 | CAS 载体 | stale 后的正确动作 |
-|:--|:--|:--|:--|
-| loop-state | 单调递增、无上限；每次迁移 +1 | `--expected-revision`（或等价运行时参数） | 重读看板刷新坐标后重放同一动作 |
-| ReviewPlan | **每轮最多一次受控 revise**（v1→v2）；轮本身递增 | `review-plan revise --file v2 --source-ref --affected-surface` | 整轮 stale 则重开新轮 |
-| InvestigationCase | 事件驱动不可变新版本（ingest/route/reassessment 触发） | `--expected-case-revision` + `--expected-case-sha256` | 以 SHA 校验创建新 revision 续作，旧指针退休 |
-| RepairContract | 批准瞬间固化 revision+hash，之后永不可变 | repair session open 以 DoR 元组锁定 | Contract/session stale → 回 S8 重议，不在 S9 修补 |
-| Assignment / 结果投递 | 属调度域（assignment_id + revision，见[调度篇 §5.3](L4-agent-dispatch-governance.md#53-revision-规则)） | 同左 | 同左 |
-
-两条铁律：
-
-1. **stale 不是错误状态而是指令**：每条 CAS 失败信息必须同时给出"观察到的值 / 期望的值 / 下一个动词"；静默重试语义被禁止。
-2. **一名词一义**："revision" 在跨 stage 文本中出现时必须能分辨属于上表哪一行；新机制引入第五种 revision 语义需先修订本节。
+revision 的统一语义、对象版本分层、Agent-facing 命令默认值、可选 CAS 和复杂度准入统一见 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)。本文件只消费其中的结果：指纹、generation、review round、证据 validity 和对象 hash 各自承担自己的事实身份，不借 revision 代言。
 
 ---
 
@@ -208,9 +195,9 @@ REQ 七动词生命周期（bind/pause/resume/amend/unbind/abort/approve；生�
 
 1. **结构性停机两层**：loop-definition 标 `eligible=false + human_boundary=true`（辅 forbidden event 如 automated_s11_decision）→ Controller 对该 cursor 返回空自动候选。两层独立起作用。
 2. **固定处置枚举 + 专用动词**：人只能从预定义处置选择（S11 六枚举 approve/defer/reject_defect/reject_acceptance/reject_release_audit/abort ↔ TR-025..030）；每个处置映射固定去向，不接受自由 target-state。
-3. **人闸只做三件事**：记名（actor 自我声明）、留证（decision evidence，scope 字符串形如 `human_release:<runtime_id>@<revision>` 定绑对象与修订）、选去向。approve 只记录授权，永不执行 merge/publish/deploy/release；rollover 是独立 API 而非闸的一部分。
+3. **人闸只做三件事**：记名（actor 自我声明）、留证（decision evidence 绑定 Runtime identity、disposition、当前 release context 和一次性 decision ID）、选去向。approve 只记录授权，永不执行 merge/publish/deploy/release；rollover 是独立 API 而非闸的一部分。Runtime revision 由 Writer 内部记录，不是人闸输入。
 4. **交接物压缩视图的最小字段（目标态）**：交给人的一切就绪包应含——关键事实 IDs and hashes、已完成范围、可信依据、唯一未决事实、影响与残余风险、建议处置、恢复点、automation stops 声明。当前无独立 runtime entity/schema（诚实缺口，§15）。
-5. **零副作用拒绝**：未知处置、缺证据、过期 revision 一律非零退出且不产生状态变更。
+5. **零副作用拒绝**：未知处置、缺证据或业务 context 不匹配一律非零退出且不产生状态变更；内部 revision 冲突由 Writer/命令协调处理，不转化为正常 Agent 操作税。
 
 ### 7.3 阶段锁定时序契约
 
@@ -323,7 +310,7 @@ preserves         本方案保住了什么现场（可选）
 | assignment id 前缀族 | `assignment-*` 通用；平台别名 `assignment-s9-*` 仅作 generic checkpoint 绑定；领域 `repair-assignment-*`；Runtime 字段 `assignment_owners`。新增拼写先入表 |
 | complete ≠ done ≠ integrated | TASK 文档完成 ≠ Builder Result submitted ≠ consumed/integrated；三条状态线不合并 |
 | 计划批准 vs 合同批准 | dispatch_mode 的 plan approval ≠ RepairContract 的 contract approve；对象、动词、迁移完全不同 |
-| epoch 三兄弟 | generation（基线代际）/ review_round（验证轮次）/ revision（§2 表四行对象修订）；引用时必须带限定词 |
+| epoch 三兄弟 | generation（基线代际）/ review_round（验证轮次）/ revision（见 [L4 revision 使用篇](L4-revision-usage.md)；Runtime 只作内部提交序号，对象版本另行定义）；引用时必须带限定词 |
 | angle 与 focus_key | angle 生命周期已删除；focus_key 只是 Assignment 分组的上下文维度提示，不是第二套检查分类 registry |
 
 ---
@@ -346,7 +333,7 @@ L2 全局规则「债务登记」（类型/影响/成本/负责人，债可累�
 
 | 机制域 | S0 | S1 | S2 | S3 | S4 | S5 | S6 | S7 | S8 | S9 | S10 | S11 |
 |:--|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| 权威状态/单写者/CAS | ○ | ● | ○ | ○ | ○ | ○ | ● | ● | ● | ● | ● | ● |
+| 权威状态/单写者协调 | ○ | ● | ○ | ○ | ○ | ○ | ● | ● | ● | ● | ● | ● |
 | 指纹体系 | ○(sha 可算) | ● | ○ | ○ | − | ● | ● | ● | ● | ● | ● | ○(对账) |
 | 证据链/失效家族 | − | ○ | ○ | ○ | ○ | ● | ● | ● | ○ | ● | ● | ●(kind 型失效) |
 | 能量函数七检查 | − | − | − | − | − | − | − | ●(生产) | − | − | ●(复算) | ○(间接) |

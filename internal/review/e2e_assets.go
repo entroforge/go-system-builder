@@ -13,7 +13,7 @@ func validateE2EAssetDeclarations(plan *Plan) error {
 			"regression_available requires at least one fingerprinted reusable E2E asset",
 			[]string{"no CASE/PATH asset with a path and sha256 is declared"},
 			[]string{"add e2e_assets entries for the existing spec/fixture/selector/environment assets, or change the plan to cold_start"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	seen := map[string]bool{}
@@ -24,7 +24,7 @@ func validateE2EAssetDeclarations(plan *Plan) error {
 				fmt.Sprintf("E2E asset %q has an incomplete fingerprint declaration", asset.AssetID),
 				[]string{"asset_id, case_ref, repository path and 64-character sha256 are required"},
 				[]string{"complete the e2e_assets entry from the current CASE/PATH files"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		if seen[asset.AssetID] {
@@ -33,7 +33,7 @@ func validateE2EAssetDeclarations(plan *Plan) error {
 				fmt.Sprintf("E2E asset %q is declared more than once", asset.AssetID),
 				[]string{"duplicate asset_id"},
 				[]string{"keep one immutable entry per reusable E2E asset"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		seen[asset.AssetID] = true
@@ -49,7 +49,7 @@ func validateE2EAssetDeclarations(plan *Plan) error {
 				fmt.Sprintf("E2E asset %q has no selector/route/environment fingerprint", asset.AssetID),
 				[]string{"selector_ref, route_ref and environment are required for a regression_available asset; a spec that merely mentions the CASE id (even in a comment) is not a reusable regression asset (S7-7/RC-07)"},
 				[]string{"declare selector_ref (the locator/test-id surface), route_ref (the route or flow entry point) and environment (the recorded browser/base-URL/profile fingerprint) for this asset, or switch the plan to cold_start"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 	}

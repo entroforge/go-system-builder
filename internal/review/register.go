@@ -77,9 +77,10 @@ func RegisterPlan(
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
-	if currentRevision := intField(current["revision"]); currentRevision != request.ExpectedRevision {
+	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
 		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
 	}
+	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	if state, _ := lifecycle["state"].(string); state != "verification" {
 		return loopruntime.Snapshot{}, fmt.Errorf("a ReviewPlan can only be registered in the verification stage (current state: %s); enter S7 via TR-006/TR-012 first", lifecycle["state"])
@@ -164,12 +165,12 @@ func RegisterPlan(
 	}
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	snapshot, err := store.Update(request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-plan-%s-r%d", plan.ReviewPlanID, request.ExpectedRevision+1),
+	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-review-plan-%s-r%d", plan.ReviewPlanID, commitRevision+1),
 		TransitionID:   "REVIEW-PLAN",
 		Event:          "review_plan_registered",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-plan:%s:%d", plan.ReviewPlanID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:review-plan:%s:%d", plan.ReviewPlanID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             map[string]any{"state": "verification", "phase": "running"},
@@ -187,7 +188,7 @@ func RegisterPlan(
 				return false
 			}
 			var persisted map[string]any
-			return json.Unmarshal(stateBytes, &persisted) == nil && intField(persisted["revision"]) == request.ExpectedRevision
+			return json.Unmarshal(stateBytes, &persisted) == nil && intField(persisted["revision"]) == commitRevision
 		}
 		if errors.Is(err, loopruntime.ErrStaleRevision) || cleanupStateRevision() {
 			cleanupPlan()

@@ -59,7 +59,7 @@ func validateRepairRoundBaseline(root string, state map[string]any, plan *Plan) 
 			"TR-012 re-entry requires an explicit post-repair baseline binding",
 			missing,
 			repair,
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 
@@ -69,7 +69,7 @@ func validateRepairRoundBaseline(root string, state map[string]any, plan *Plan) 
 			"ReviewPlan.change_impact does not cite the TR-012 change_impact evidence",
 			[]string{fmt.Sprintf("required source_ref: %s", changeImpactRef)},
 			[]string{"add the exact change_impact evidence id to change_impact.source_refs"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 
@@ -90,7 +90,7 @@ func validateRepairRoundBaseline(root string, state map[string]any, plan *Plan) 
 			"TR-012 change_impact evidence cannot be read as a current immutable artifact",
 			[]string{err.Error()},
 			[]string{"restore the indexed artifact or record a new valid change_impact before opening the full review"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	if err := schema.NewValidator(root).ValidateBytes("review-evidence.schema.json", data); err != nil {
@@ -99,7 +99,7 @@ func validateRepairRoundBaseline(root string, state map[string]any, plan *Plan) 
 			"TR-012 change_impact evidence is not a canonical review-evidence artifact",
 			[]string{err.Error()},
 			[]string{"rewrite the change_impact artifact using review-evidence.schema.json and re-register its fingerprint"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	var impact repairChangeImpactArtifact
@@ -114,7 +114,7 @@ func validateRepairRoundBaseline(root string, state map[string]any, plan *Plan) 
 			"TR-012 change_impact evidence is outside the active Runtime baseline",
 			[]string{fmt.Sprintf("artifact runtime_id=%s baseline_generation=%d; active runtime_id=%s baseline_generation=%d", impact.RuntimeID, impact.BaselineGeneration, runtimeID, generation)},
 			[]string{"record a change_impact artifact for the active runtime and baseline generation"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 
@@ -163,7 +163,7 @@ func validateRepairRoundBaseline(root string, state map[string]any, plan *Plan) 
 			"TR-012 ReviewPlan does not freeze every post-repair changed artifact",
 			missing,
 			[]string{"add every change_impact.changed_artifacts path to frozen_subjects with the exact post-repair SHA-256; keep it in coverage_inventory and a Claim source_refs"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	return nil

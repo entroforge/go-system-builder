@@ -169,7 +169,26 @@ func TestResumeRefusedOnBaselineDriftRoutesToAmend(t *testing.T) {
 	root := newUXTestRoot(t, map[string]string{"REQ-203.md": "# REQ-203\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：none\n"})
 	bindForReview(t, root)
 	var stdout, stderr bytes.Buffer
-	cli.Run([]string{"runtime", "pause", "--root", root, "--reason", "x", "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
+	if code := cli.Run([]string{"runtime", "pause", "--root", root, "--reason", "x", "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("pause failed: code=%d stderr=%s", code, stderr.String())
+	}
+	decisionFiles, err := filepath.Glob(filepath.Join(root, ".claude", "decisions", "*.json"))
+	if err != nil || len(decisionFiles) != 1 {
+		t.Fatalf("pause decision artifact = %v, err=%v; want one artifact", decisionFiles, err)
+	}
+	var decision map[string]any
+	decisionData, err := os.ReadFile(decisionFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(decisionData, &decision); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"revision", "authorization_revision"} {
+		if _, present := decision[field]; present {
+			t.Fatalf("human decision artifact must not carry Runtime %s: %#v", field, decision)
+		}
+	}
 	// Drift: modify the locked REQ while paused (no hook in this test harness).
 	os.WriteFile(filepath.Join(root, "docs", "requirements", "REQ-203.md"),
 		[]byte("# REQ-203\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：none\n\ndrifted\n"), 0o644)

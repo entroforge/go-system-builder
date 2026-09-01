@@ -6,6 +6,8 @@
 >
 > 设计状态：本文以目标机制为主；§13 单列当前实现差距。当前代码已落地 ObservationBatch ingest、InvestigationCase revision、Hypothesis/Result、真实 Investigator dispatch、route、canonical duplicate link、`investigate_more` 重入、S9 定向失败的同 Case causal reassessment、RepairContract approve 和 S9 指针推进；单 Runtime 多 Case 协调仍不是本轮目标。v0.7 起增加“复杂度预算”：任何新字段、状态或工具都必须直接减少信息丢失、错误路由或重复调查，否则只保留为计算视图或文档提示。
 
+> **Revision 口径**：Case/Contract revision 是工具生成的对象版本，Runtime `revision` 是 Writer 内部提交序号；二者都不是 Investigator/Main Agent 的手工编号任务。S8 只提交 Case ID/hash、Finding exact set、Hypothesis/Result、Contract draft hash 和路由意图，Writer/API 负责版本与提交协调。统一边界见 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)。
+
 ## 0. 一句话结论与阶段关系
 
 S7 证明“某些可观察事实与权威预期冲突”，并保存当时实际发生的操作现场；S8 从已冻结的 `last-good → wall-action → first-bad` 边界出发，证明“什么机制导致这些冲突、同一机制还影响哪里、恢复哪个架构不变量才能完整解决”；S9 才负责实施。
@@ -99,7 +101,7 @@ S8 不负责：
 ### 1.4 不可退让的不变量
 
 1. **表象不丢失**：S7 Findings immutable；聚类、合并和 duplicate 只增加关系，不删除 source facts。
-2. **聚类可逆**：candidate group 可以 split/merge，并保留理由和 revision；canonicalization 发生在因果模型成立之后。
+2. **聚类可逆**：candidate group 可以 split/merge，并保留理由和工具生成的对象版本历史；canonicalization 发生在因果模型成立之后。
 3. **根因必须因果化**：根因能解释触发条件、传播路径和所有归入 Case 的表象；只相关、不因果的事实不能收口。
 4. **重要替代假设必须处理**：supported/refuted/inconclusive 均有证据；不能因一个看似合理的解释停止调查。
 5. **调查不改系统**：S8 任何产品写入都会污染 before-fix baseline 和因果判断，必须 hard deny。
@@ -116,7 +118,7 @@ S8 入口消费一份 sealed ObservationBatch，而不是聊天摘要或单条 g
 
 > 这里的“验证”是完整性与可调查性校验，不是重新执行 S7。Claim coverage、encounter 采集、E2E 动线和 site-lost 处理由 S7 负责；S8 消费这些结果，并把 `ready_with_safety_gaps` 作为带缺口的调查输入。
 
-- batch revision、frozen baseline digest 和当前 handoff 一致；
+- batch identity、frozen baseline digest 和当前 handoff 一致；
 - `finding_ids[]` exact set 可解析且每个 Finding hash 匹配；
 - Finding 的 expected/authority、observed、observation mode、encounter、failure boundary、evidence 和 original finder 完整；
 - 按 observation mode，`last_good_checkpoint → wall_action → first_bad_checkpoint` 或 inspection/call/data-flow failure boundary 可解析，每个 material checkpoint 有 step-bound evidence 或显式 safety capture gap；
@@ -205,11 +207,11 @@ Case 不要求 Agent 在 Intake 一次填满。字段按阶段渐进出现，避
 
 | 阶段 | 必填内容 | 目的 |
 |:--|:--|:--|
-| Intake | `case_id / revision / status`、`observation_batch_id / baseline_digest`、`source_finding_ids[]`、`grouping_rationale` | 建立 exact set 和 provisional grouping，不提前声称根因 |
+| Intake | `case_id / object_version / status`、`observation_batch_id / baseline_digest`、`source_finding_ids[]`、`grouping_rationale` | 建立 exact set 和 provisional grouping，不提前声称根因；对象版本由工具生成 |
 | Investigation | `failure_boundary_refs[]`、`cross_layer_trace`、`evidence_gaps`、`hypotheses[]`、`hypothesis_results[]`、`unexplained_finding_ids[]`；若从 S9 回流则增加带 hash 的 `causal_reassessment_refs[]` | 记录每个独立证据问题、残余事实和导致旧因果模型失效的定向证据 |
 | Close | `causal_model`、`primary_root_cause`、`blast_radius`、`detection_gap`、`route / route_reason`、`repair_contract_ref` | 只有完整因果链和唯一下一路由才能离开 S8 |
 
-`classification`、`disposition` 和 requested transition 不再作为三套并行权威；Case 只保存一个 `route`：`s9_repair`、`s2_spec_rework`、`human_req_change`、`s7_no_change`、`investigate_more` 或 `duplicate`。split/merge 只增加 revision/history，不删除 source Findings。S9 定向失败回流时，`causal_reassessment_refs[]` 只作为新的证据索引，不另建 FailureCase 或 RepairContract 状态。
+`classification`、`disposition` 和 requested transition 不再作为三套并行权威；Case 只保存一个 `route`：`s9_repair`、`s2_spec_rework`、`human_req_change`、`s7_no_change`、`investigate_more` 或 `duplicate`。split/merge 只增加工具生成的对象版本历史，不删除 source Findings。S9 定向失败回流时，`causal_reassessment_refs[]` 只作为新的证据索引，不另建 FailureCase 或 RepairContract 状态。
 
 ### 3.3 Hypothesis 与 HypothesisResult
 
@@ -225,7 +227,7 @@ HypothesisResult：
 
 | 字段 | 含义 |
 |:--|:--|
-| `hypothesis_id / assignment_id / revision` | 责任和版本 |
+| `hypothesis_id / assignment_id / revision` | 责任和工具生成的对象版本 |
 | `method` | 如何判别，不复制整份 Case |
 | `evidence_refs[]` | 命令、trace、schema diff、数据 snapshot、控制实验 |
 | `source_boundary_refs[]` | 使用了哪些 Finding encounter steps/checkpoints，防止调查脱离原现场 |
@@ -234,7 +236,7 @@ HypothesisResult：
 | `result` | `supported / refuted / inconclusive` |
 | `explains_finding_ids[]` | 能解释哪些表象 |
 | `does_not_explain[]` | 残余事实 |
-| `new_hypotheses[]` | 新线索；必须在写入同一 Case revision 时就带唯一 `assignment-*`、invariant、support/refute outcomes 和 source Finding subset，之后才可派发 |
+| `new_hypotheses[]` | 新线索；必须在写入同一 Case 对象版本时就带唯一 `assignment-*`、invariant、support/refute outcomes 和 source Finding subset，之后才可派发 |
 
 Agent final text 不是 HypothesisResult；产品代码 diff 更不是调查证据。
 
@@ -524,7 +526,7 @@ S9 的 targeted failure 是 `investigate_more` 的另一种受控入口：当失
 
 Main/Architect 批准 RepairContract 时，权威事务只负责：
 
-1. 校验 Case revision、source Finding exact set 和 baseline；
+1. 校验 Case identity/hash、source Finding exact set 和 baseline；
 2. 校验 CausalModel、root cause、blast radius、detection gap；
 3. 校验无 unexplained Findings；
 4. 校验 contract assertions 覆盖每个 source Finding 和根因不变量；
@@ -532,7 +534,7 @@ Main/Architect 批准 RepairContract 时，权威事务只负责：
 6. 持久化 approved RepairContract hash；
 7. 更新 Case `contract_approved` 并返回唯一下一动作。
 
-当前实现的最小入口是 `runtime investigation contract approve --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`：它要求 draft 覆盖 Case 的 exact Finding set，并要求当前 Runtime revision 下由该 approver 产生、绑定 `s8_contract_approval:<runtime_id>@<revision>` 的 `human_decision` evidence，同时校验人审阅的 draft SHA-256。通过后以不可变的新 Case/Contract 修订写入 hash，并通过同一个 Runtime CAS 将生命周期推进到 `bug_resolution.repair_readback`。它不在审批失败时创建 BUG，也不把 Markdown/BUG 投影伪装成权威；S9 以 Runtime 指针中的 Contract ref/hash 作为唯一入口。
+当前实现的最小入口是 `runtime investigation contract approve --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`：它要求 draft 覆盖 Case 的 exact Finding set，并校验人审阅的 draft SHA-256。Runtime revision 由 Writer 在锁内记录；显式 revision/hash 参数只为外部集成或恢复保留，不是 S8 的 Agent-facing 前置。审批以当前 Case/Contract hash、Runtime identity、decision ID 和固定路由校验上下文为准；JSON 人审记录还应包含 `decision_id`、`runtime_id`、`case_id`、`contract_id`、`approval_hash` 和 `decision=approve_contract`，以把决定绑定到本次 Case/Contract。审批成功后，Writer 在同一事务中消费该 decision evidence，后续不能重放；工具生成不可变的新 Case/Contract 对象版本并推进到 `bug_resolution.repair_readback`。它不在审批失败时创建 BUG，也不把 Markdown/BUG 投影伪装成权威；S9 以 Runtime 指针中的 Contract ref/hash 作为唯一入口。
 
 canonical Problem/BUG、人读报告、S9 work-package 和 Finding mapping 都是批准后的幂等投影，可以重试生成；它们不再和 Case/Contract 共享一个过大的跨域事务。只有所有受当前 route 约束的 Cases 都 ready，才推进 Macro-stage。
 
@@ -620,7 +622,7 @@ S8 的必经链只有一条：
 
 `sealed ObservationBatch → ingest → Case revision → hypothesis/result → route → approved RepairContract`
 
-- `runtime investigation status` 是当前 Case 的恢复入口；它展示 Case revision/hash、未解释 Findings、假设和下一动作。`status --all` 只能帮助人工发现目录中的其他 Case，不能写入指针、不能决定 mixed route，也不能替代 CaseSet coordinator。
+- `runtime investigation status` 是当前 Case 的恢复入口；它展示 Case 对象版本/hash、未解释 Findings、假设和下一动作。`status --all` 只能帮助人工发现目录中的其他 Case，不能写入指针、不能决定 mixed route，也不能替代 CaseSet coordinator。
 - 假设按独立证据问题派发，而不是按 Finding 数量机械派发。`runtime investigation dispatch` 将 Hypothesis 的 `assignment_id` 接到现有 workgroup/Task/Agent lifecycle，并预置通用 `plan_checkpoint` activation；显式传入的 Assignment 必须与 Hypothesis 登记值一致；Agent 进程本身由 Claude/Agent Team 平台启动，Runtime 不假装已经 spawn。HypothesisResult 产生的 `new_hypotheses[]` 也必须已经完整可派发，不能先写入一个没有 Assignment 的半成品。
 - Investigator 的通用 `agent-message` `PLAN_REPORT` 是平台生命周期 checkpoint，不是 HypothesisResult 或根因结论；PostToolUse 按已指纹化 workgroup manifest 校验 S8 的 `assignment-*`、Agent、Task、Team 和当前 runtime，非 S7 通用 checkpoint 的 `assignment_revision` 固定为 `1`。计划回报通过后立即继续 discriminator，不等待 Main 的第二轮批准；最终因果事实仍必须由 `runtime investigation hypothesis result` 写入 Case。
 - `route` 是持久化的诊断决定，不是自动推进所有生命周期的万能 Transition；`contract approve` 的 S9 路由在同一 CAS 中推进到 S9，`investigation consume` 接走 S2、duplicate 和 no-change 路由，REQ 变更仍停在人闸。普通 `investigate_more` 只有在新增 Hypothesis/Result 后才能在新的 Case revision 中显式重路由；S9 targeted failure 使用带精确证据 hash 的 `--reassessment-evidence` 作为例外入口，先清除旧 Contract 指针并退休旧 `review.repair` 指针，再继续调查；duplicate 的 canonical Case path+SHA 已持久化。
@@ -724,7 +726,7 @@ S8 的必经链只有一条：
 
 ## 14.A · 复杂度审查审计（2026-08-26，S7~S8 第八轮）
 
-> 本节保留第八轮审计时的原始发现，不是当前实现快照；“未修”表示该轮结束时尚未修复。当前状态以 §13.1、§13.1.A 和 [S7～S9 控制面与埋点地图](../docs/agent-protocol.md#s7s9-control-plane-map) 为准。
+> 本节保留第八轮审计时的原始发现，不是当前实现快照；“未修”表示该轮结束时尚未修复。当前状态以 §13.1、§13.1.A 和 [L4 运行时控制面当前事实](../blueprint/L4-runtime-control-plane.md#15-当前事实边界) 为准。
 
 > 方法 = 冷读 sub-agent 完整走 S8 引导链 + 沙盒 r9 从 sealed ObservationBatch 实驱**新路径全链**
 > （ingest → hypothesis register/result → route s9_repair → contract approve → `S8-REPAIR-CONTRACT-APPROVAL` 自动推进 repair_readback）。

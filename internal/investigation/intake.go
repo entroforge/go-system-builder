@@ -103,9 +103,6 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	if strings.TrimSpace(root) == "" {
 		return runtime.Snapshot{}, actionableError("repository root is required")
 	}
-	if request.ExpectedRevision < 0 {
-		return runtime.Snapshot{}, actionableError("expected Runtime revision must be non-negative")
-	}
 	if strings.TrimSpace(request.GroupingRationale) == "" {
 		return runtime.Snapshot{}, actionableError("grouping_rationale is required to create the provisional InvestigationCase")
 	}
@@ -114,7 +111,7 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before investigation intake: %w", err)
 	}
-	if current.Revision != request.ExpectedRevision {
+	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
 		return runtime.Snapshot{}, fmt.Errorf("%w: expected %d but Runtime is at %d; next: %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, intakeNextCommand)
 	}
 	// RC-18 lifecycle gate: only TR-008 (verification.observation_sealed ->
@@ -217,6 +214,7 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		occurredAt = time.Now().UTC()
 	}
 	runtimeID := stringField(current.State["runtime_id"])
+	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	cursor := map[string]any{"state": stringField(lifecycle["state"]), "phase": lifecycle["phase"]}
 	pointerMap := map[string]any{
 		"case_id":              caseID,
@@ -229,12 +227,12 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		"updated_at":           occurredAt.UTC().Format(time.RFC3339Nano),
 	}
 	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	snapshot, err := store.Update(request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-investigation-case-%s-r%d", caseID, request.ExpectedRevision+1),
+	snapshot, err := updateRuntime(store, request.ExpectedRevision, runtime.Mutation{
+		EventID:                fmt.Sprintf("evt-investigation-case-%s-r%d", caseID, commitRevision+1),
 		TransitionID:           "INVESTIGATION-CASE-INGESTED",
 		Event:                  "transition_committed",
 		Actor:                  "orchestrator",
-		IdempotencyKey:         fmt.Sprintf("runtime:investigation-ingest:%s:%d", batch.ObservationBatchID, request.ExpectedRevision),
+		IdempotencyKey:         fmt.Sprintf("runtime:investigation-ingest:%s:%d", batch.ObservationBatchID, commitRevision),
 		RuntimeID:              runtimeID,
 		From:                   cursor,
 		To:                     cursor,
