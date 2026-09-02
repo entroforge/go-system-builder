@@ -1,7 +1,7 @@
 # E2E Tester Evidence: E2E-{id}
 
 > Status: draft / pass / finding / req_change_required / release_blocked / invalidated (ReviewResult verdict vocabulary; submit via `runtime review-result submit`)
-> Runtime ref: `{runtime-id}@{revision}`
+> Runtime ref: `{runtime-id}`
 > Review round: {n}
 > Workgroup manifest: `{team-manifest-path}`
 > Assignment: `{assignment-id}`
@@ -15,14 +15,14 @@ ReviewResult JSON (`internal/schema/assets/review-result.example.json` is the sc
 
 ## 1. Header
 
-Module current-truth package + source REQ refs + review round + bound runtime revision + module spec path.
+Module current-truth package + source REQ refs + review round + Runtime identity + module spec path.
 
 | Field | Value |
 |:---|:---|
 | module | {module} |
 | source REQ refs | REQ-{id} / none |
 | review round | {n} |
-| runtime ref | `{runtime-id}@{revision}` |
+| runtime ref | `{runtime-id}` |
 | current scenario package | `docs/design/prototypes/{module}/` · `{sha256}` |
 | spec chain | current module spec `web/e2e/{module}/` `{sha256}` / contracts `{sha256}` / TASK `{sha256}` |
 

@@ -6,9 +6,11 @@
 >
 > 设计状态：本文以目标机制为主；§13 单列当前实现差距。当前已落地第一批可执行事务：S9 artifact/domain 校验、不可变 RepairSession/RepairPlan/RepairAssignment/PlanReport/RepairResult、Changeset、ChangeImpact、独立 TargetedReverification、Targeted failure → S8 causal reassessment 回流、RepairHandoff，以及 Runtime CAS 指针、批次聚合、S9 专属 Hook、RepairAssignment→Builder lifecycle bridge 和 CLI 串联；§13 仍保留高级 ownership/WIP 编译、完整多 Contract batch 和旧证据全量失效账本等差距；S9→S7 seed 的输入基线与最终 ReviewPlan 合并规则已在协议和本节 §14.C 明确。
 
+> **Revision 口径**：S9 消费 approved Contract 的 ID/hash、RepairAssignment、实际 diff 和 targeted assertion；Contract/Assignment 对象版本由工具生成，Runtime `revision` 由 Writer 内部记录。Builder/Repair Lead 不手工计算或复制这些 revision。当前代码中的 CAS/显式 revision 是迁移中的内部实现约束，不是正常 Agent 操作步骤。统一边界见 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)。
+
 ## 0. 一句话结论与阶段关系
 
-> **S9 不接收“发现了什么问题”的自由文本，也不重新猜根因；它只消费 S8 已批准且带 revision/hash 的 RepairContract，把其中的架构修复意图转成可执行 Assignment，完成 Minimum Complete Root-Cause Repair，按真实 diff 重算影响、独立复验全部断言，然后回到 S7 开启一轮全新的完整审查。**
+> **S9 不接收“发现了什么问题”的自由文本，也不重新猜根因；它只消费 S8 已批准且带对象版本/hash 的 RepairContract，把其中的架构修复意图转成可执行 Assignment，完成 Minimum Complete Root-Cause Repair，按真实 diff 重算影响、独立复验全部断言，然后回到 S7 开启一轮全新的完整审查。**
 
 ```mermaid
 flowchart LR
@@ -338,7 +340,7 @@ Assignment 生成器应直接把以下顺序写进 Agent 的必经 prompt：
 flowchart TD
     IN["Approved RepairContract"] --> DOR{"Definition of Ready valid?"}
     DOR -->|"no"| S8A["Return S8 with typed gap"]
-    DOR -->|"yes"| LOCK["Lock revision/hash/baseline"]
+    DOR -->|"yes"| LOCK["Lock Contract hash/baseline"]
     LOCK --> PLAN["Compile RepairPlan + Assignment DAG"]
     PLAN --> RED["Replay symptom + root assertions"]
     RED --> REDOK{"Expected red reproduced?"}
@@ -415,7 +417,7 @@ Contract 声明这些要求时，RepairResult 必须提供可执行事实：
 
 `repair result submit` 必须原子执行：
 
-1. 校验 session/plan/assignment/contract revision/hash；
+1. 校验 session/plan/assignment/contract identity、object version 和 hash；
 2. 复算当前 worktree/changeset changed artifacts；
 3. 校验每个 repair unit 都有实现结果和 invariant mapping；
 4. 校验全部 expected-red assertion 有 before-fix evidence；
@@ -724,7 +726,7 @@ Phase 是对象事实的投影：
 ### 13.0 已落地的最小闭环（当前代码）
 
 - `internal/repair` 已将 approved Contract 的 hash/status/provenance 作为 S9 输入门禁，并以不可变文件写入 Session、Plan、Result、Changeset、ChangeImpact、TargetedReverification、RepairHandoff。
-- `runtime repair session open`、`plan compile`、`dispatch`、generic PLAN_REPORT checkpoint、领域 `plan-report submit`、`execution begin`、`result submit`、`impact commit`、`targeted commit`、`handoff commit` 和 `status` 已通过 Runtime revision CAS/Assignment 绑定串联；每一步都把下一动作写入 `review.repair.next_action`。generic PLAN_REPORT 只负责平台生命周期，领域 PlanReport 才负责 S9 红前检；execution begin 之后 Builder 继续既有派发，不重复 dispatch。
+- `runtime repair session open`、`plan compile`、`dispatch`、generic PLAN_REPORT checkpoint、领域 `plan-report submit`、`execution begin`、`result submit`、`impact commit`、`targeted commit`、`handoff commit` 和 `status` 已通过 Writer 当前状态/Assignment 绑定串联；每一步都把下一动作写入 `review.repair.next_action`。显式 Runtime revision 仅为集成/恢复断言保留。generic PLAN_REPORT 只负责平台生命周期，领域 PlanReport 才负责 S9 红前检；execution begin 之后 Builder 继续既有派发，不重复 dispatch。
 - `runtime investigation project` 只生成 canonical BUG JSON/Markdown 兼容投影，不写 Runtime authority；投影必须消费 approved Case/Contract 和 exact Finding set。
 - S9 Runtime 提交点已经绑定当前证据链：`impact commit` 只能消费当前 Runtime 指向的 RepairResult，并要求 RepairResult/ChangeImpact 的 changed-artifact path+SHA exact-set；handoff 还会校验 Changeset 与同一集合一致，targeted reverification 必须命中当前 Impact，不能用同一阶段生成的另一份“看起来有效”的证据替换链上证据。
 - `RepairResult.changed_artifacts[]` 对 deleted 文件也必须携带 base/last-good 内容的 SHA256；S8 intake 会逐个核验 ObservationBatch 中 Finding 的 entities 行、文件存在性、内容哈希、Finding schema 和行/文件身份一致性。CAS 失败时，Session/Plan/Result 以及 `register-workgroup` 预写的 activation envelope 都会在安全条件满足时自动清理，避免留下不可重试的孤儿文件。
@@ -862,7 +864,7 @@ Phase 是对象事实的投影：
 
 S9 机制只有满足以下条件才算设计完成：
 
-- 唯一输入是 approved RepairContract revision/hash；
+- 唯一输入是 approved RepairContract identity/version/hash（由工具生成，Agent 不手工推进）；
 - RepairContract 可以稳定编译为 unit DAG、ownership、Assignment 和 assertion map；
 - PLAN_REPORT 后默认连续执行，普通任务不再依赖脆弱的第二轮授意；
 - first-write 和每次关键提交都校验 active Contract/unit/scope；

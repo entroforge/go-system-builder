@@ -1,7 +1,7 @@
 # QA Evidence: QA-{id}
 
 > Status: draft / pass / finding / req_change_required / release_blocked / invalidated (ReviewResult verdict vocabulary; submit via `runtime review-result submit`)
-> Runtime ref: `{runtime-id}@{revision}`
+> Runtime ref: `{runtime-id}`
 > Review round: {n}
 > Workgroup manifest: `{team-manifest-path}`
 > Assignment: `{assignment-id}`

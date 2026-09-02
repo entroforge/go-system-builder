@@ -16,10 +16,24 @@ func TestRuntimeHumanDecisionRequiresFailClosedInputs(t *testing.T) {
 		t.Fatalf("missing human decision inputs exit code = %d, want 2; stderr=%q", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "--disposition") ||
-		!strings.Contains(stderr.String(), "--expected-revision") ||
 		!strings.Contains(stderr.String(), "--actor") ||
 		!strings.Contains(stderr.String(), "--decision-evidence") {
 		t.Fatalf("missing-input error is not actionable: %q", stderr.String())
+	}
+}
+
+func TestRuntimeHumanDecisionTreatsRevisionAsOptional(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{
+		"runtime", "human-decision",
+		"--root", t.TempDir(),
+		"--disposition", "approve",
+		"--actor", "release-owner",
+		"--decision-evidence", "decision-104",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if code == 2 || strings.Contains(stderr.String(), "requires --expected-revision") {
+		t.Fatalf("revision must be optional at the CLI boundary; code=%d stderr=%q", code, stderr.String())
 	}
 }
 

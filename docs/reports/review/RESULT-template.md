@@ -1,7 +1,7 @@
 # ReviewResult Evidence: RESULT-{id}
 
 > Status: draft / pass / finding / req_change_required / release_blocked / invalidated
-> Runtime ref: `.claude/loop-state.json` @ revision {n}
+> Runtime ref: `.claude/loop-state.json` ({runtime-id})
 > ReviewPlan: {review-plan-id} (round {n}, revision {n})
 > Assignment: {assignment-id} — lens {delivery|qa|e2e}
 > Agent: {agent-id}

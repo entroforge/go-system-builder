@@ -396,7 +396,7 @@ func projectedGateway(state map[string]any, stage string) any {
 		return map[string]any{
 			"type":             "s7_budget_gateway",
 			"human_required":   true,
-			"decision_command": "loop-harness runtime s7-budget-decision --file <decision.json> --expected-revision <N> --actor <user>",
+			"decision_command": "loop-harness runtime s7-budget-decision --file <decision.json> --actor <user>",
 			"decisions":        []string{"increase_budget", "return_to_governance"},
 			"guidance":         "the current S7 round may finish, but no new full review round opens until the human decision is recorded",
 		}
@@ -406,7 +406,7 @@ func projectedGateway(state map[string]any, stage string) any {
 		return map[string]any{
 			"type":             "human_release_gateway",
 			"human_required":   true,
-			"decision_command": "loop-harness runtime human-decision --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> --expected-revision <N> --actor <user|orchestrator> --decision-evidence <ref>",
+			"decision_command": "loop-harness runtime human-decision --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> --actor <user|orchestrator> --decision-evidence <ref>",
 			"dispositions":     []string{"approve", "defer", "reject_defect", "reject_acceptance", "reject_release_audit", "abort"},
 			"finding_evidence": "--finding-evidence <ref> is required for reject_defect",
 		}

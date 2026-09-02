@@ -103,7 +103,6 @@ func TestRuntimeEvidenceAddCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{
 		"runtime", "evidence", "add", "--root", root,
-		"--expected-revision", "1",
 		"--id", "EV-CLI-001",
 		"--kind", "document_review",
 		"--path", "REV-001.md",

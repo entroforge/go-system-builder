@@ -73,8 +73,9 @@ the superseded RepairContract pointer, preserves route history, and returns
 the Case to `investigating`. Then register and dispatch new discriminators.
 Do not edit the Case file or revive the old Contract by hand.
 
-After every Case-writing verb, re-read `runtime investigation status` for the
-fresh `--expected-case-revision` / `--expected-case-sha256`; both are required
-by register/result/route. `runtime investigation project --bug-id <BUG-xxx>`
-only fires after the Case is `contract_approved` — it projects, never
-authorizes.
+After every Case-writing verb, consume the returned Case ID/hash and the next
+action from the command or status board. Do not read a revision to calculate
+the next command: `--expected-case-revision` / `--expected-case-sha256` are
+optional explicit assertions for integrations or recovery tools. `runtime
+investigation project --bug-id <BUG-xxx>` only fires after the Case is
+`contract_approved` — it projects, never authorizes.

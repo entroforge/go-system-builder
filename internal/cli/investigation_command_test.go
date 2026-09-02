@@ -202,7 +202,12 @@ func TestRuntimeInvestigationContractApproveCLIHandsOffToS9(t *testing.T) {
 	}
 
 	approvalHash := sha256HexForCLI(append(append([]byte(nil), contractBytes...), '\n'))
-	decision := map[string]any{"decision": "approve_contract", "approved_by": "main-session", "approval_hash": approvalHash}
+	decision := map[string]any{
+		"decision": "approve_contract", "decision_id": "ev-contract-approval",
+		"runtime_id": req039fixtures.RuntimeIDFromState(state),
+		"case_id":    "investigation-case-observation-batch-r1", "contract_id": "repair-contract-r1",
+		"approved_by": "main-session", "approval_hash": approvalHash,
+	}
 	decisionBytes, err := json.MarshalIndent(decision, "", "  ")
 	if err != nil {
 		t.Fatal(err)

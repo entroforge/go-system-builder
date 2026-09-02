@@ -117,7 +117,7 @@ func ValidatePlan(plan *Plan) error {
 			"dispatch_capacity_policy must be coverage_complete",
 			[]string{"the plan declares a capacity policy other than coverage_complete"},
 			[]string{"set dispatch_capacity_policy to coverage_complete; platform capacity may queue Assignments but must not delete coverage"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	if err := rejectPlannerPlaceholders(plan); err != nil {
@@ -205,7 +205,7 @@ func ValidatePlan(plan *Plan) error {
 				fmt.Sprintf("claim %s is not_applicable without an na_checklist_id", claim.ClaimID),
 				[]string{"the N/A disposition carries only a free-text rationale; there is no checklist or impact-analysis artifact the conclusion was verified against"},
 				[]string{"set na_checklist_id to the N/A checklist / impact-analysis artifact id (e.g. bound_req#ui_impact or na-checklist-template-1 — fill every section of docs/design/NA-checklist-template.md: scope / impact / evidence / alternative / sign-off) and keep na_rationale as the human summary"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 	}
@@ -235,7 +235,7 @@ func ValidatePlan(plan *Plan) error {
 				"e2e_coverage_state=cold_start requires a verification_artifact_workspace",
 				[]string{"the cold-start E2E plan has no isolated verification workspace"},
 				[]string{"set verification_artifact_workspace to the isolated spec/fixture write surface"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		if requiredByLens["e2e"] == 0 {
@@ -244,7 +244,7 @@ func ValidatePlan(plan *Plan) error {
 				"e2e_coverage_state=cold_start requires at least one required e2e Claim",
 				[]string{"the blank E2E coverage matrix has no executable Claim"},
 				[]string{"add one required e2e Claim per recoverable flow context and assign it in the behavior wave"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 	case "not_applicable":
@@ -261,7 +261,7 @@ func ValidatePlan(plan *Plan) error {
 				"verification_artifact_workspace is only valid when e2e_coverage_state=cold_start",
 				[]string{"regression_available declares an isolated authoring workspace"},
 				[]string{"remove verification_artifact_workspace or change e2e_coverage_state to cold_start"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		if requiredByLens["e2e"] == 0 {
@@ -270,7 +270,7 @@ func ValidatePlan(plan *Plan) error {
 				"e2e_coverage_state=regression_available requires at least one required e2e Claim",
 				[]string{"the plan declares reusable E2E assets but has no executable E2E Claim"},
 				[]string{"bind each changed or gap surface to an existing E2E asset Claim; do not silently skip behavior coverage"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		if err := validateE2EAssetDeclarations(plan); err != nil {
@@ -282,7 +282,7 @@ func ValidatePlan(plan *Plan) error {
 			fmt.Sprintf("unknown e2e_coverage_state %q", plan.E2ECoverageState),
 			[]string{"e2e_coverage_state must be cold_start, regression_available, or not_applicable"},
 			[]string{"choose the state that matches the actual E2E asset inventory"},
-			"runtime review-plan --file plan.json --expected-revision <N>",
+			"runtime review-plan --file plan.json",
 		)
 	}
 	if err := validateAssignmentOverlap(plan, claims); err != nil {

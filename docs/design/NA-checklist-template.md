@@ -17,7 +17,7 @@
 （或其制品副本）中留下填写痕迹。
 
 填完五节后，把 `na_checklist_id` 写进 Claim、把人读摘要写进 `na_rationale`，
-再注册：`runtime review-plan --file plan.json --expected-revision <N>`。
+再注册：`runtime review-plan --file plan.json`。
 
 ## 检查单（五节，逐项必填）
 

@@ -21,7 +21,6 @@ func TestApplyS7BudgetDecisionAtomicallyExtendsBudgetAndRecordsEvidence(t *testi
 	writeS7Decision(t, filepath.Join(root, decisionPath), runtime.S7BudgetDecision{
 		Decision:                    runtime.S7BudgetDecisionIncrease,
 		RuntimeID:                   "loop-REQ-002-example",
-		ExpectedRevision:            1,
 		ReviewRound:                 5,
 		PreviousMaxFullReviewRounds: 5,
 		NewMaxFullReviewRounds:      8,
@@ -30,7 +29,7 @@ func TestApplyS7BudgetDecisionAtomicallyExtendsBudgetAndRecordsEvidence(t *testi
 	})
 
 	receipt, err := runtime.ApplyS7BudgetDecision(root, statePath, journalPath, runtime.S7BudgetDecisionRequest{
-		ExpectedRevision: 1,
+		ExpectedRevision: -1,
 		DecisionPath:     decisionPath,
 		Actor:            "user",
 		Validator:        testCandidateValidator(),
@@ -57,7 +56,7 @@ func TestApplyS7BudgetDecisionAtomicallyExtendsBudgetAndRecordsEvidence(t *testi
 	if item["kind"] != "human_decision" || item["path"] != "s7-budget-decision.json" {
 		t.Fatalf("decision evidence = %#v", item)
 	}
-	if !containsString(item["scope_refs"].([]string), "runtime_budget:loop-REQ-002-example@2") {
+	if !containsString(item["scope_refs"].([]string), "runtime_budget:loop-REQ-002-example") {
 		t.Fatalf("decision evidence scope_refs = %#v", item["scope_refs"])
 	}
 }

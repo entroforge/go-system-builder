@@ -20,15 +20,15 @@ current revision.
 | Request file | Command that consumes it |
 |:---|:---|
 | `repair-contract-draft.json` | `loop-harness runtime investigation contract approve --case-id <case> --file repair-contract-draft.json --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>` |
-| `repair-plan-report.json` | `loop-harness runtime repair plan-report submit --file repair-plan-report.json --expected-revision <N> --actor <agent>` |
-| `repair-result.json` | `loop-harness runtime repair result submit --file repair-result.json --expected-revision <N> --actor <agent>` |
+| `repair-plan-report.json` | `loop-harness runtime repair plan-report submit --file repair-plan-report.json --actor <agent>` |
+| `repair-result.json` | `loop-harness runtime repair result submit --file repair-result.json --actor <agent>` |
 | `change-impact.json` | `loop-harness runtime repair impact create --file change-impact.json`, then `... impact commit --file <created-impact.json>` |
 | `targeted-reverification.json` | `loop-harness runtime repair targeted create --file targeted-reverification.json`, then `... targeted commit --file <created-reverification.json>` |
 | `repair-handoff.json` | `loop-harness runtime repair handoff create --file repair-handoff.json`, then `... handoff commit --file <created-handoff.json>` |
 
-For every CAS-writing command, read the current revision from the status board
-or the previous command response. The placeholder IDs, paths and hashes in
-these examples are not valid evidence for a real run.
+The placeholder IDs, paths and hashes in these examples are not valid evidence
+for a real run. Runtime and Case writers consume current pointers when the
+optional explicit revision/hash assertions are omitted.
 
 ## The normal handoff path
 
@@ -37,7 +37,6 @@ these examples are not valid evidence for a real run.
    ```text
    loop-harness runtime investigation hypothesis register \
      --case-id investigation-case-... --id hypothesis-1 \
-     --expected-case-revision <N> --expected-case-sha256 <case-sha256> \
      --assignment-id assignment-s8-hypothesis-1 \
      --statement "..." --invariant "..." \
      --discriminator "..." --support "..." --refute "..." \
@@ -56,12 +55,11 @@ these examples are not valid evidence for a real run.
    ```
 
    After the Investigator returns its read-only evidence, submit the
-   hypothesis result with flags (refresh the Case revision/SHA from status):
+   hypothesis result with flags:
 
    ```text
    loop-harness runtime investigation hypothesis result \
      --case-id investigation-case-... --hypothesis-id hypothesis-1 \
-     --expected-case-revision <N> --expected-case-sha256 <case-sha256> \
      --assignment-id assignment-s8-hypothesis-1 \
      --method "read-only boundary trace" --observed "..." \
      --result supported --explains finding-... \
@@ -79,7 +77,6 @@ these examples are not valid evidence for a real run.
    ```text
    loop-harness runtime investigation route \
      --case-id investigation-case-... --route s9_repair \
-     --expected-case-revision <N> --expected-case-sha256 <case-sha256> \
      --reason "..." --primary-root-cause "..." \
      --causal-model-file causal-model.json \
      --blast-radius-file blast-radius.json \
@@ -87,16 +84,13 @@ these examples are not valid evidence for a real run.
 
    loop-harness runtime investigation contract approve \
      --case-id investigation-case-... \
-     --expected-revision <runtime-rev> \
      --file repair-contract-draft.json \
      --approved-by main-session \
      --approval-hash <draft-sha256> \
      --approval-evidence-id <human-decision-id>
    ```
 
-   Refresh `runtime investigation status` between CAS-writing commands and
-   copy its current Case revision/SHA into the expected flags. Its top-level
-   `next` is the executable recovery action for the current Case.
+   Its top-level `next` is the executable recovery action for the current Case.
 
    The multi-value S8 flags (`--source-finding`, `--source-boundary`,
    `--evidence`, `--explains`, and `--does-not-explain`) may be repeated or

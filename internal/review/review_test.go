@@ -174,7 +174,7 @@ func registerFixturePlan(t *testing.T, root, statePath, journalPath string) loop
 	t.Cleanup(func() { fixtureEvidenceRoot = "" })
 	planPath := writePlanFile(t, root)
 	snap, err := RegisterPlan(root, statePath, journalPath, PlanRequest{
-		ExpectedRevision: 1,
+		ExpectedRevision: -1,
 		PlanPath:         planPath,
 	})
 	if err != nil {

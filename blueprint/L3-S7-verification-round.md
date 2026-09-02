@@ -8,6 +8,8 @@
 >
 > 设计状态：本文件同时作为当前机制契约和目标设计；§13 区分已落地能力、兼容投影和真实差距，历史审计段落保留当时快照。未在“当前事实”中明确标为已落地的内容，不得当作现有代码能力。
 
+> **Revision 口径**：Runtime `revision` 是 Writer 内部提交序号；ReviewPlan、Assignment 和 verification artifact 的版本由各自工具生成。S7 只提交 Claim、Result、Finding、digest 和 `next` 等业务事实，不要求 Reviewer/Main Agent 读取、计算或复制 Runtime revision。目标命令边界统一见 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)；§13 的旧 CAS 文案仅为历史实现记录。
+
 ## 0. 阅读方式与一句话结论
 
 S7 不应继续被实现成“Delivery、QA、E2E 三段人工串行，再由 Agent 手工拼聚合 PASS”的流程。目标形态是：
@@ -68,7 +70,7 @@ S7 不负责：
 
 ### 1.4 不可退让的不变量
 
-1. **冻结产品基线，分离验证产物**：一轮所有 Result 必须绑定相同 generation、产品代码/配置/S6 测试和 authoritative subject fingerprints；这些变化使本轮 stale。S7 cold-start 新建的 E2E spec/fixture/evidence 使用独立 verification-artifact revision，允许增长，但每份 Result 必须绑定自己实际使用的 artifact digest。
+1. **冻结产品基线，分离验证产物**：一轮所有 Result 必须绑定相同 generation、产品代码/配置/S6 测试和 authoritative subject fingerprints；这些变化使本轮 stale。S7 cold-start 新建的 E2E spec/fixture/evidence 使用独立、由工具生成的 verification-artifact revision，允许增长，但每份 Result 必须绑定自己实际使用的 artifact digest。
 2. **角色独立**：Reviewer 不能验证自己在 S6/S9 写入的产品结果；原 finding 的 targeted re-verification 由原责任方承担，但它不能生成 clean round。
 3. **职责无沉默**：每个适用 Claim 必须有明确结论；`not_applicable` 是有来源、有理由的决定，不是缺报告的别名。
 4. **结论不聚合造假**：Lens/round 状态只由被消费的 ReviewResult 计算，不能由 Orchestrator 另写一条总 PASS 覆盖局部缺失。
@@ -156,7 +158,7 @@ flowchart LR
 | 失败时看到的表象、操作现场和 failure boundary | immutable Finding（含 encounter）+ sealed ObservationBatch | BUG 草稿、聊天摘要、复现脚本、root-cause 猜测 |
 | 本轮是否完整、有效、blocker-free | CleanRound evaluator/snapshot | 人工总 PASS |
 
-所有控制面记录遵循 L4 的共享存储不变量：即使 E2E spec 或报告写在隔离 worktree，ReviewPlan、Assignment、plan checkpoint、ReviewResult 和 round checkpoint 仍必须写入项目级共享控制面，并使用 revision/CAS。
+所有控制面记录遵循 L4 的共享存储不变量：即使 E2E spec 或报告写在隔离 worktree，ReviewPlan、Assignment、plan checkpoint、ReviewResult 和 round checkpoint 仍必须写入项目级共享控制面；Writer 在内部串行写入并记录提交 revision。
 
 ### 3.2 ReviewPlan
 
@@ -164,7 +166,7 @@ flowchart LR
 
 | 字段 | 含义 |
 |:--|:--|
-| `review_plan_id` / `review_round` / `revision` | 计划身份、轮次和并发控制 |
+| `review_plan_id` / `review_round` / `revision` | 计划身份、轮次和工具生成的计划版本；不要求 Agent 手工推进 |
 | `baseline_generation` | 当前冻结 generation |
 | `frozen_subjects[]` | S6 产品代码、配置、已有产品测试、REQ、设计、契约、TASK、CASE/PATH 的精确版本与指纹 |
 | `change_impact` | S6 变化面、依赖接缝、风险标签、历史 BUG 与回归面 |
@@ -177,7 +179,7 @@ flowchart LR
 | `dispatch_policy` | 优先级、真实依赖、共享环境/账号/spec 写面的 resource locks 和平台容量；不得含 Reviewer/token 硬上限 |
 | `status` | `planned / running / cannot_clean / discovery_draining / observation_sealed / clean / paused / stale`；close-round 是 submit 内部事务，不是持久化状态 |
 
-ReviewPlan 在 S7 入口生成初始完整 required Claims。平台是否当下允许 launch 某个 Agent 是调度事实，不应删除或合并 required Assignment。只有 Result/Finding 明确暴露一个初始 plan 未覆盖、且可以通过 `source_ref + affected_surface` 定位的新表面时，才允许一次受控 revision；revision 后重新计算受影响 Claims，完成后即关闭本轮计划。所谓“无新增 Claim”是一次计算结果，不是 Agent 可以自行递归扩大范围的长期状态。
+ReviewPlan 在 S7 入口生成初始完整 required Claims。平台是否当下允许 launch 某个 Agent 是调度事实，不应删除或合并 required Assignment。只有 Result/Finding 明确暴露一个初始 plan 未覆盖、且可以通过 `source_ref + affected_surface` 定位的新表面时，才允许一次受控 ReviewPlan 对象版本；版本号由工具生成，之后重新计算受影响 Claims，完成后即关闭本轮计划。所谓“无新增 Claim”是一次计算结果，不是 Agent 可以自行递归扩大范围的长期状态。
 
 ### 3.3 Claim：取代重复的 angle/责任/检查叙事
 
@@ -359,7 +361,7 @@ Finding 禁止将以下内容写成已确认事实：`root_cause`、`repair_scop
 | `original_finder_routes[]` | 可继续联系/resume 的 Agent、Assignment、responsibility；会话失联时仍可从 Finding 恢复 |
 | `investigation_readiness` | 每个 Finding 的 encounter/evidence 完整性和显式 capture gaps；不是“可再次复现”评分 |
 | `severity_summary / stop_reason` | 为什么立即停线，或为什么按普通策略继续完整发现 |
-| `sealed_at / sealed_by / revision` | 不可变交接和 CAS 信息 |
+| `sealed_at / sealed_by / revision` | 不可变交接和工具生成的版本信息 |
 
 ObservationBatch 只打包事实，不做语义去重，也不预分配 canonical BUG。两个 Finding 表象相近仍分别保留；是否同根由 S8 的 InvestigationCase 证明。
 
@@ -521,9 +523,9 @@ Wave A 结果：
 - 按 coverage matrix 拆成 1..N Assignments 的所有适用 E2E CASE/PATH；
 - console/network、持久化、禁止副作用、拒绝和恢复 oracle；
 - 必要的性能、可靠性、并发或迁移演练；
-- ReviewPlan 根据 Wave A 事实显式新增、且经过 revision 的 Claim。
+- ReviewPlan 根据 Wave A 事实显式新增、且经过工具生成对象版本的 Claim。
 
-行为波次不是允许任意扩 scope。新增 Claim 必须来自 Result/Finding 的 `source_ref + affected_surface`，且每轮最多进行一次受控 ReviewPlan revision，再重新计算受影响 Assignment。所有 required Claims 有 disposition后，本轮计划即收口；首次 E2E `cold_start` 下，spec/fixture/evidence 写面按 Assignment 隔离或加锁，平台排队可以延长时间，但不得减少 E2E Agents 或合并过载 flow。
+行为波次不是允许任意扩 scope。新增 Claim 必须来自 Result/Finding 的 `source_ref + affected_surface`，且每轮最多进行一次受控 ReviewPlan 对象版本，再重新计算受影响 Assignment。版本号由工具生成，所有 required Claims 有 disposition 后，本轮计划即收口；首次 E2E `cold_start` 下，spec/fixture/evidence 写面按 Assignment 隔离或加锁，平台排队可以延长时间，但不得减少 E2E Agents 或合并过载 flow。
 
 ### 5.4 主流程
 
@@ -748,9 +750,9 @@ loop-harness runtime review-result submit --assignment-id assignment-qa-fund --r
 
 ### 9.1 `runtime review-result submit` 的原子职责
 
-一次提交必须在同一 revision/CAS 事务中：
+一次提交必须在同一个 Runtime Writer 事务中完成；内部提交 revision 由 Writer 记录，Agent 不提供：
 
-1. 解析 Assignment 和当前 revision；
+1. 解析 Assignment 和当前控制面对象；
 2. 校验 producer/role/independence；
 3. 校验 product subject digest 与 frozen baseline；E2E Assignment 同时校验 verification-artifact revision/digest；
 4. 校验 Claim 集合、逐项结论、required checks 和 evidence refs；
@@ -783,7 +785,7 @@ loop-harness runtime review-result submit --assignment-id assignment-qa-fund --r
 
 Finding 是观察事实，不在 S7 自动变成 accepted BUG。S8 负责消费已保存的 encounter、聚类、假设验证、因果推导和 RepairContract；S7 必须保证 ObservationBatch、全部 Finding IDs、readiness 和 raw evidence refs 真正随 TR-008 handoff 到达 S8，不能只改变 lifecycle cursor，也不能默认让 S8重新复现症状。
 
-环境、凭证、工具或输入缺失且可恢复时，Worker 发送 BLOCKER，Assignment 进入 blocked 并保留恢复动作，不提交“blocked ReviewResult”。baseline/revision 变化时，submit 拒绝旧 Result 并将 round/Assignment 标 stale；`stale` 是控制面状态，不是 Reviewer verdict。
+环境、凭证、工具或输入缺失且可恢复时，Worker 发送 BLOCKER，Assignment 进入 blocked 并保留恢复动作，不提交“blocked ReviewResult”。baseline、round 或对象版本变化时，submit 拒绝旧 Result 并将 round/Assignment 标 stale；`stale` 是控制面状态，不是 Reviewer verdict。Runtime revision 的变化本身不要求 Agent 参与处理。
 
 ### 9.3 N/A 的控制
 
@@ -845,7 +847,7 @@ CleanRound 必须保存用于重算的最小引用和 digest，而不是复制�
 - S8/S9 修复产生新实现；
 - 运行环境版本变化到足以改变 oracle。
 
-S7 在授权 verification workspace 中新增/修订 cold-start E2E spec、fixture 或 evidence 不使产品 round stale；它只增加 artifact revision。某份 Result consumed 后，其绑定的 spec/fixture digest 若变化，该 Result 和依赖 Claim 变为 invalid，必须用新 artifact revision 重跑。若所谓 E2E spec 修改越界改变了产品测试、CASE/PATH 或 locked 规格，则按产品/权威变化使整轮 stale。
+S7 在授权 verification workspace 中新增/修订 cold-start E2E spec、fixture 或 evidence 不使产品 round stale；它只增加由工具生成的 artifact revision。某份 Result consumed 后，其绑定的 spec/fixture digest 若变化，该 Result 和依赖 Claim 变为 invalid，必须用新 artifact revision 重跑。若所谓 E2E spec 修改越界改变了产品测试、CASE/PATH 或 locked 规格，则按产品/权威变化使整轮 stale。
 
 新轮创建新 ReviewPlan 和新 Result IDs；历史记录保留但不进入当前集合。旧轮 evidence 不因仍在 index 中而否决新轮，也不能因 ID 相同而满足新轮。
 
@@ -1248,7 +1250,7 @@ S7 的主闭环已经落到当前实现；本表只记录仍影响行为的差�
 | DraftPlan / QA coverage | DraftPlan 生成六个 QA baseline focus，并拆成可独立派发的 Assignment；从当前模块 `cases.json` 读取 required browser CASE，按 CASE 拆分 E2E Assignment；literal `TODO(planner)` 在注册 gate 拒绝；DraftPlan 同时投影 changed-surface `coverage_inventory` | 没有可读 CASE inventory 时仍保留显式 TODO，必须先补 S2 场景包；不能用通用 Claim 假装已完成 |
 | E2E workspace | workspace 仅允许 `cold_start`；`regression_available` 不得创建写面，也必须有 required E2E Claim；声明的 E2E asset 在注册/修订时校验 path containment、可读性和 SHA-256；E2E Result 与 result artifact 均保留 `verification_artifact_digest`；Planner 从 CASE→Playwright spec 文本映射生成最小 `e2e_assets`，任一 required CASE 缺映射即回退 `cold_start` | 产品侧浏览器/console/network wrapper、selector 与 environment 的更细粒度 fingerprint 仍由产品接入；当前自动投影不猜测这些字段 |
 | Finding / evidence | Result submit 原子写入 immutable Finding/ObservationBatch；required evidence 采用 typed refs，`path:`/indexed evidence 会校验存在性与指纹；capture buffer 使用严格 JSONL 和多 Finding 的 `finding_id`/`claim_id` 关联，普通 Finding 继续要求 failure boundary | 浏览器/runner 的产品侧 console/network 注入 wrapper 仍由产品接入 |
-| S7→S8 handoff | ObservationBatch 保留 exact Finding set、coverage、routes、readiness；`drained_assignment_ids[]` 包含触发 seal 的当前 Assignment，避免 S8 丢失最后一份 Result | S8 的 ingest/Case/hypothesis/result/route/Contract 主链与 Investigator Assignment lifecycle bridge 已可执行；单 Runtime 多 Case 协调和只读聚合仍不是现有权威，见 [S7～S9 控制面与埋点地图](../docs/agent-protocol.md#s7s9-control-plane-map) |
+| S7→S8 handoff | ObservationBatch 保留 exact Finding set、coverage、routes、readiness；`drained_assignment_ids[]` 包含触发 seal 的当前 Assignment，避免 S8 丢失最后一份 Result | S8 的 ingest/Case/hypothesis/result/route/Contract 主链与 Investigator Assignment lifecycle bridge 已可执行；单 Runtime 多 Case 协调和只读聚合仍不是现有权威，见 [L3-S8 当前事实](L3-S8-finding-investigation.md#13-当前实现差距与迁移清单) 与 [L4 跨 L3 消费地图](L4-runtime-control-plane.md#14-跨-l3-消费地图) |
 | 工具必经路径 | plan_checkpoint 连续执行、idle/stop 控制、reviewer product-write hard deny、结构化 gate diagnostics、结果消费和机器 CleanRound 已由 Hook/submit/consumer 接管；`s7 status` 直接显示 round budget、blocked ref 和恢复动词 | 命令面拆分（review-plan register/revise、dispatch-assignment）和真实平台 doctor 仍是低复杂度后续项 |
 
 ### 13.1.A S7→S8→S9 接口审计（2026-08-26）
@@ -1258,7 +1260,7 @@ S7 的交付边界是“可调查的观察事实”，不是根因结论：
 - `review-result submit` 负责把 exact Claims、typed evidence、Finding encounter、capture gaps、baseline 和最后一个已消费 Assignment 原子收口为 `review.observation_batch`；S8 不应依赖聊天摘要或重新跑用户旅程。
 - `ObservationBatch` 是 S8 的唯一正常入口。S7 不创建 canonical BUG，也不把 targeted PASS、seed 或单个 Finding 当作可直接修复的授权。
 - TR-012 生成的 S7 seed 已投影到 `review.plan`，但只是 registration staging：下一轮 Planner 仍需检查 changed artifacts、TASK coverage、E2E applicability、frozen subjects 和 risk，再走正常 ReviewPlan 注册/派发/消费路径。
-- Runtime `revision` 只是 CAS 序号，没有最大值；ReviewPlan `revision` 是同一 round 的受控计划修订号，当前最多一次；Case/Contract revision 和 artifact SHA 是另外三类身份，不能混用。
+- Runtime `revision` 是没有最大值的内部提交序号；ReviewPlan `revision` 是同一 round 的受控计划版本，当前最多一次且由工具生成；Case/Contract revision 和 artifact SHA 是另外三类身份，不能混用。
 
 因此 S7 只对“发现是否完整、现场是否可调查、是否正确交给 S8”负责；共同根因、架构级修复意图由 S8 负责，实际写入、影响重算、定向复验和回环由 S9 负责。S7 的低优先残留仍是命令面兼容迁移、真实 Claude Code doctor 和产品侧浏览器/console/network wrapper，不应被伪装成 S7 业务闭环缺失。
 
@@ -1266,7 +1268,7 @@ S7 的交付边界是“可调查的观察事实”，不是根因结论：
 
 本轮按实际落地重新确认边界：S7 只把同一轮的 ReviewPlan、Claim disposition、Finding encounter、typed evidence、capture gaps 和 sealed `ObservationBatch` 交给 S8；S8 只在 immutable Case 中登记可证伪假设、证据结果、因果闭合和路由，approved `RepairContract` 才是 S9 授权；S9 只消费该 Contract，按 RepairAssignment 走 PlanReport → execution begin → exact Result → Impact → independent Targeted → Handoff，并把 seed 交回 S7。任何聊天摘要、BUG 兼容投影、targeted PASS 或 seed 都不能越级成为下一阶段事实源。
 
-本轮实现核对还确认两项输入层修复：S8 多 Finding/多边界证据的重复 flags 不再静默丢失；缺失/非法的因果模型、影响面或检测缺口文件会在 CLI 边界指出具体路径和下一动作。它们没有新增状态、Case、scheduler 或额外审批轮，只把既有对象的输入契约埋回必经工具路径，复杂度收益为正。Runtime revision 继续无限递增且仅用于 CAS；ReviewPlan revision 的一次受控修改仍是另一条规则。
+本轮实现核对还确认两项输入层修复：S8 多 Finding/多边界证据的重复 flags 不再静默丢失；缺失/非法的因果模型、影响面或检测缺口文件会在 CLI 边界指出具体路径和下一动作。它们没有新增状态、Case、scheduler 或额外审批轮，只把既有对象的输入契约埋回必经工具路径，复杂度收益为正。Runtime revision 继续无限递增并由 Writer 作为内部提交序号记录；ReviewPlan revision 的一次受控修改仍是另一条业务对象规则。
 
 ### 13.2 历史迁移批次（已落地项的原始记录）
 

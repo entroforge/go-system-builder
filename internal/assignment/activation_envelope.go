@@ -185,13 +185,13 @@ func activationEnvelopePath(root, workgroupID, taskID, agentID string) string {
 // bound to the plan_report file bytes. Used by the PostToolUse auto-chain and
 // the runtime agent-begin fallback verb. It clones the bundled
 // agent-message.examples.json activation example and patches the agent_id /
-// task_id / runtime_id / expected_runtime_revision / hash chain fields so the
+// task_id / runtime_id / hash chain fields so the
 // auto-generated envelope stays schema-valid without re-deriving the
 // document / allowed_*_paths / checkpoints / stop_conditions payloads from
 // scratch. Documents array is patched to >=3 entries (schema minItems=3).
 //
-// activation_revision is the runtime revision the activation will land at
-// (one greater than the post-readback_submitted revision).
+// activationRevision is an optional explicit Runtime revision assertion. A
+// negative value is the normal path and is omitted from the Agent message.
 func BuildPlanCheckpointActivationMessage(
 	root, runtimeID, agentID, agentDefinitionRef, taskID, teamID string,
 	activationRevision int,
@@ -234,7 +234,11 @@ func BuildPlanCheckpointActivationMessage(
 	cloned["task_id"] = taskID
 	cloned["team_id"] = teamID
 	cloned["runtime_id"] = runtimeID
-	cloned["expected_runtime_revision"] = activationRevision
+	if activationRevision >= 0 {
+		cloned["expected_runtime_revision"] = activationRevision
+	} else {
+		delete(cloned, "expected_runtime_revision")
+	}
 	cloned["occurred_at"] = occurredAtRFC3339
 	cloned["activation_id"] = activationID
 	cloned["approved_readback_message_id"] = messageID
@@ -337,20 +341,22 @@ func WriteWorkStartMessageFile(
 		return "", fmt.Errorf("work_start message: mkdir: %w", err)
 	}
 	message := map[string]any{
-		"schema_version":            "1.0.0",
-		"message_type":              "work_start",
-		"message_id":                "msg-work-start-" + activationID,
-		"correlation_id":            correlationID,
-		"runtime_id":                runtimeID,
-		"expected_runtime_revision": expectedRevision,
-		"agent_id":                  agentID,
-		"agent_definition_ref":      agentDefinitionRef,
-		"task_id":                   taskID,
-		"bug_id":                    nil,
-		"team_id":                   teamID,
-		"occurred_at":               occurredAtRFC3339,
-		"activation_id":             activationID,
-		"body":                      "auto-chain: plan_checkpoint continuous execution",
+		"schema_version":       "1.0.0",
+		"message_type":         "work_start",
+		"message_id":           "msg-work-start-" + activationID,
+		"correlation_id":       correlationID,
+		"runtime_id":           runtimeID,
+		"agent_id":             agentID,
+		"agent_definition_ref": agentDefinitionRef,
+		"task_id":              taskID,
+		"bug_id":               nil,
+		"team_id":              teamID,
+		"occurred_at":          occurredAtRFC3339,
+		"activation_id":        activationID,
+		"body":                 "auto-chain: plan_checkpoint continuous execution",
+	}
+	if expectedRevision >= 0 {
+		message["expected_runtime_revision"] = expectedRevision
 	}
 	data, err := json.MarshalIndent(message, "", "  ")
 	if err != nil {

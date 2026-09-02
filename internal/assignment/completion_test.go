@@ -102,7 +102,7 @@ func TestCompleteTaskRegistersBuilderResultAtomically(t *testing.T) {
 	messagePath := completionMessage(t, root, "builder-1", "TASK-001")
 
 	snapshot, err := assignment.CompleteTask(root, statePath, journalPath, assignment.CompletionRequest{
-		ExpectedRevision: 7,
+		ExpectedRevision: -1,
 		AgentID:          "builder-1",
 		MessagePath:      messagePath,
 	})

@@ -69,7 +69,7 @@ func TestApproveContractCommitsApprovedContractAndCaseRevision(t *testing.T) {
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1", "finding-2"})
 	approvalHash, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
 	snapshot, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision:   expectedRevision,
+		ExpectedRevision:   -1,
 		CaseID:             "investigation-case-observation-batch-r1",
 		ContractPath:       contractPath,
 		ApprovedBy:         "main-session",
@@ -226,8 +226,21 @@ func registerContractApprovalEvidence(t *testing.T, fixture *intakeFixture, cont
 	}
 	approvalHash := hash(draftBytes)
 	evidenceID := "ev-contract-approval"
+	var draft map[string]any
+	if err := json.Unmarshal(draftBytes, &draft); err != nil {
+		t.Fatal(err)
+	}
+	current, err := runtime.NewStore(fixture.statePath, fixture.journalPath).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeID, _ := current.State["runtime_id"].(string)
 	decisionBytes, err := json.MarshalIndent(map[string]any{
 		"decision":      "approve_contract",
+		"decision_id":   evidenceID,
+		"runtime_id":    runtimeID,
+		"case_id":       draft["case_id"],
+		"contract_id":   draft["repair_contract_id"],
 		"approved_by":   "main-session",
 		"approval_hash": approvalHash,
 	}, "", "  ")
@@ -243,19 +256,13 @@ func registerContractApprovalEvidence(t *testing.T, fixture *intakeFixture, cont
 	if err := os.WriteFile(decisionPath, decisionBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	current, err := runtime.NewStore(fixture.statePath, fixture.journalPath).Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtimeID, _ := current.State["runtime_id"].(string)
-	approvalRevision := current.Revision + 1
 	next, err := runtime.RecordEvidence(fixture.root, fixture.statePath, fixture.journalPath, runtime.EvidenceRequest{
 		ExpectedRevision: current.Revision,
 		ID:               evidenceID,
 		Kind:             "human_decision",
 		Path:             decisionRel,
 		ProducedBy:       []string{"main-session"},
-		ScopeRefs:        []string{fmt.Sprintf("s8_contract_approval:%s@%d", runtimeID, approvalRevision)},
+		ScopeRefs:        []string{fmt.Sprintf("s8_contract_approval:%s", runtimeID)},
 		Validator:        semantic.RuntimeCandidateValidator{},
 	})
 	if err != nil {

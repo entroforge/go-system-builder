@@ -56,12 +56,10 @@ type TransitionSpec struct {
 	Description      string            `json:"description"`
 	// HumanDecisionScope names the lifecycle-verb scope prefix (e.g.
 	// "runtime_pause") that the transition's human_decision evidence must
-	// carry as `<scope>:<runtime_id>@<state revision>`. Empty means the
-	// transition makes no scope demand. This is the transition-layer
-	// counterpart of runtime.validateLifecycleApproval: one approval
-	// authorizes exactly one verb on one runtime at one revision — it can
-	// neither be reused after the revision moves nor be replayed as a
-	// different verb (公理二: the human gate rides the natural path).
+	// carry as `<scope>:<runtime_id>`. Empty means the transition makes no
+	// scope demand. Runtime revision is deliberately not part of the
+	// human-facing approval scope; the fixed transition, runtime identity and
+	// one-time evidence id provide the semantic boundary.
 	HumanDecisionScope string `json:"human_decision_scope,omitempty"`
 }
 

@@ -102,15 +102,15 @@ func snapshotCursor(state map[string]any) (string, string) {
 // implements the eleven steps of BUG-039-02 §4.1 verbatim:
 //
 //  1. Parse Hook payload / tool name / input paths.
-//  2. Read snapshot revision N via runtime.Store.
+//  2. Read a Runtime snapshot via runtime.Store for gate evaluation.
 //  3. Resolve current cursor, bound REQ, active assignment, Milestone.
 //  4. Compute affected paths.
 //  5. transition.LoadCatalog + ResolveAutomaticTransition for the cursor.
 //  6. qualitygate.Evaluator.Evaluate against the current cursor.
-//  7. On satisfied, call transition.Apply with expected_revision=N (at
-//     most once per cycle).
-//  8. On CAS stale, re-read and recompute once; second stale returns
-//     unknown + LOOP_CAS_STALE.
+//  7. On satisfied, call transition.Apply; the Writer re-reads the current
+//     Runtime under lock and commits at most one allowlisted Transition.
+//  8. A legacy explicit-CAS failure may re-read and recompute once; normal
+//     controller cycles do not supply a revision assertion.
 //  9. On success, refresh Milestone / Guidance / Journal (via the cli
 //     refreshMilestone helper).
 //  10. On the new cursor, run final safety (locked artifact / squash
@@ -1053,7 +1053,7 @@ func autoTransitionRequest(
 	runtimeIdentity, _ := snapshot.State["runtime_id"].(string)
 	return transition.Request{
 		TransitionID:           candidate.ID,
-		ExpectedRevision:       snapshot.Revision,
+		ExpectedRevision:       -1,
 		ExpectedRuntimeID:      runtimeIdentity,
 		Actor:                  candidate.AutoTrigger.Actor,
 		Evidence:               buildTransitionEvidence(snapshot, candidate, evaluation),

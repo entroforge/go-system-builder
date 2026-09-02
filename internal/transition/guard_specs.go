@@ -125,7 +125,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"human_abort_approved": {
 		ID:    "human_abort_approved",
-		Check: "The transition's evidence validation enforces that the cited human_decision evidence is current and scoped to `runtime_abort:<runtime_id>@<revision>` (human_decision_scope on TR-021/TR-030) — one approval authorizes exactly one abort at one revision; the guard body itself only rejects an empty evidence map.",
+		Check: "The transition's evidence validation enforces that the cited human_decision evidence is current and scoped to `runtime_abort:<runtime_id>` (human_decision_scope on TR-021/TR-030); the fixed transition and one-time evidence id define the approval boundary, while Runtime revision remains internal.",
 	},
 	"no_accepted_bugs": {
 		ID:    "no_accepted_bugs",

@@ -474,7 +474,7 @@ func submitSiteLostBlocker(
 			return
 		}
 		var persisted map[string]any
-		if json.Unmarshal(stateBytes, &persisted) != nil || intField(persisted["revision"]) != request.ExpectedRevision {
+		if json.Unmarshal(stateBytes, &persisted) != nil || intField(persisted["revision"]) != currentCommitRevision(request.ExpectedRevision, current) {
 			return
 		}
 		if path, pathErr := repositoryContainedPath(root, blockerRel); pathErr == nil {
@@ -484,12 +484,13 @@ func submitSiteLostBlocker(
 	blockerSHA := sha256Of(blockerBytes)
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	snapshot, err := store.Update(request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-site-lost-%s-r%d", result.ResultID, request.ExpectedRevision+1),
+	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
+	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-review-site-lost-%s-r%d", result.ResultID, commitRevision+1),
 		TransitionID:   "REVIEW-RESULT",
 		Event:          "review_assignment_blocked",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-site-lost:%s:%d", result.ResultID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:review-site-lost:%s:%d", result.ResultID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,

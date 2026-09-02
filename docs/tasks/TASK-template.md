@@ -7,7 +7,7 @@
 > Module current truth: `docs/design/prototypes/{module}/` / N/A
 > Primary contract: {FE/BE/SYNC-id}
 > Closing Contract: TASK-{id}#closing-contract
-> Runtime ref: `{runtime-id}@{revision}`
+> Runtime ref: `{runtime-id}`
 > Team manifest: `{team-manifest-path}`
 > Assignment ID: `{assignment-id}`
 > Builder Agent: `{agent-id}`
@@ -123,6 +123,6 @@ completion is defined by `.claude/skills/clean-round-evaluation/SKILL.md`.
 
 ## 11. History
 
-| Date | Event | Actor | Runtime revision | Evidence |
+| Date | Event | Actor | Runtime identity / state | Evidence |
 |:---|:---|:---|:---|:---|
 | | | | | |

@@ -68,7 +68,7 @@ func TestS7BudgetDecisionReturnToGovernanceReachesPlanning(t *testing.T) {
 	decisionPath := filepath.Join(root, "human-budget-decision.json")
 	decision := map[string]any{
 		"decision": "return_to_governance", "runtime_id": state["runtime_id"],
-		"expected_revision": 1, "review_round": 5, "previous_max_full_review_rounds": 5,
+		"review_round": 5, "previous_max_full_review_rounds": 5,
 		"new_max_full_review_rounds": 0,
 		"reason":                     "the repeated findings indicate an architecture-level governance gap", "authorized_by": "user",
 	}
@@ -83,7 +83,7 @@ func TestS7BudgetDecisionReturnToGovernanceReachesPlanning(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{
 		"runtime", "s7-budget-decision", "--root", root, "--file", decisionPath,
-		"--expected-revision", "1", "--actor", "user",
+		"--actor", "user",
 	}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("return_to_governance exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
@@ -120,7 +120,7 @@ func TestS7BudgetDecisionIncreaseLeavesControllerOnAutomaticRetryPath(t *testing
 	decisionPath := filepath.Join(root, "human-budget-decision.json")
 	decision := map[string]any{
 		"decision": "increase_budget", "runtime_id": state["runtime_id"],
-		"expected_revision": 1, "review_round": 5, "previous_max_full_review_rounds": 5,
+		"review_round": 5, "previous_max_full_review_rounds": 5,
 		"new_max_full_review_rounds": 8,
 		"reason":                     "the repaired surface needs another complete S7 round", "authorized_by": "user",
 	}

@@ -123,7 +123,11 @@ func repairOccurred(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, value)
 }
 func repairExpected(f *repairCLIFlags) (int, error) {
-	return resolveExpectedRevision(f.root, f.state, f.expected)
+	// Keep the optional explicit value intact. A normal S9 command passes -1
+	// through to the Writer, which reads the Runtime under its lock; resolving
+	// it here would recreate the stale read-then-CAS handoff that this flag is
+	// meant to stop imposing on Agents.
+	return f.expected, nil
 }
 
 // runRuntimeRepairDispatch materializes one S9 RepairAssignment as a normal

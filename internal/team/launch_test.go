@@ -86,6 +86,32 @@ func TestGenerateReadbackRequestsRejectsNonBottomUpDocuments(t *testing.T) {
 	}
 }
 
+func TestGenerateReadbackRequestsOmitsRuntimeRevisionByDefault(t *testing.T) {
+	root := filepath.Join("..", "..")
+	manifestData, err := schema.ReadAsset("team-manifest.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests, err := team.GenerateReadbackRequests(root, manifestData, team.LaunchOptions{
+		TaskID: "TASK-001",
+		Documents: []team.DocumentReference{
+			{ID: "TASK-001", Kind: "task", Path: "task", Version: "v1", SHA256: hash('1'), ReadOrder: 1},
+			{ID: "CONTRACTS-001", Kind: "contract", Path: "contract", Version: "v1", SHA256: hash('2'), ReadOrder: 2},
+			{ID: "REQ-002", Kind: "req", Path: "req", Version: "v1", SHA256: hash('3'), ReadOrder: 3},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "expected_runtime_revision") {
+		t.Fatalf("normal readback request must not expose Runtime revision: %s", data)
+	}
+}
+
 func TestGenerateReadbackRequestsRejectsAuthoringPlaceholderAgentID(t *testing.T) {
 	root := filepath.Join("..", "..")
 	manifestData, err := schema.ReadAsset("team-manifest.example.json")

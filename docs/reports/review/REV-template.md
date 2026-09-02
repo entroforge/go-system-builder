@@ -26,7 +26,7 @@
 
 注 1：`review_round` 字段**不写**——S5 是轮 0，缺省即正确；误填反而静默失配。
 注 2（**登记——教学链此前漏了这步**）：信封写盘后必须登记进 runtime 才被 gate 看到：
-`go run ./cmd/loop-harness runtime evidence add --id REV-{runid}-{resp} --kind document_review --path docs/reports/review/REV-{runid}-{resp}.json --produced-by <你的 agent id> --responsibility <你的职责> --expected-revision <当前 revision>`
+`go run ./cmd/loop-harness runtime evidence add --id REV-{runid}-{resp} --kind document_review --path docs/reports/review/REV-{runid}-{resp}.json --produced-by <你的 agent id> --responsibility <你的职责>`
 `--kind` 必须与信封内的 `kind` 同词（都用 `document_review`）。这是 evidence 命令，不是 transition 命令——"不调 transition"的纪律不禁止它。
 **重签规则（fix 回路第二轮起）**：`runtime evidence add` 拒绝重复 ID（旧条目即使已 invalid 也占 ID）——重签时给 ID 加轮次后缀：`REV-{runid}-{resp}-r2`、`-r3`…（信封 `evidence_id` 与文件名同步改），旧信封文件保留作历史。
 注 3：字段口径 = 11 个字段（10 个机器校验；`created_at` 仅归档）+ 1 个故意不写的 `review_round`。

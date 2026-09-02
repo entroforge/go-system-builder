@@ -4,7 +4,6 @@
   "message_id": "msg-readback-assignment-example",
   "correlation_id": "corr-workgroup-example-assignment-example",
   "runtime_id": "loop-REQ-002-example",
-  "expected_runtime_revision": 1,
   "agent_id": "agent-frontend-builder-example",
   "agent_definition_ref": ".claude/agents/frontend-builder.md",
   "task_id": "TASK-001",

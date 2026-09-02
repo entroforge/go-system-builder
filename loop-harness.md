@@ -16,7 +16,7 @@ The Hook is an event trigger for the Loop Controller, not only a guard. On `Sess
 
 ### Bootstrap binding boundary
 
-`revision` has no global maximum. A Hook/controller checkpoint may advance the inactive bootstrap runtime before `TR-001`; binding uses the current revision as its CAS value, archives the complete inactive state/journal pair, and installs a new `loop-REQ-*` runtime at revision `0` with an empty active journal. The `binding_receipt` carries `event=req_bound`, the approved REQ, and source runtime hashes. Do not edit revision by hand or reuse a pre-bind runtime snapshot after binding; the runtime identity changes and stale identities are rejected.
+`revision` has no global maximum. A Hook/controller checkpoint may advance the inactive bootstrap runtime before `TR-001`; binding lets the Writer read and commit the current Runtime under lock, archives the complete inactive state/journal pair, and installs a new `loop-REQ-*` runtime at revision `0` with an empty active journal. The `binding_receipt` carries `event=req_bound`, the approved REQ, and source runtime hashes. Do not edit revision by hand or reuse a pre-bind runtime snapshot after binding; the runtime identity changes and stale identities are rejected.
 
 1. Read the `Next` action and current `Stage` from the Hook packet, then follow its `Read in order` list.
 2. Read the linked `docs/agent-protocol.md#sN` section before acting.
@@ -24,10 +24,10 @@ The Hook is an event trigger for the Loop Controller, not only a guard. On `Sess
 4. Execute the one missing deliverable/evidence named by Hook/`ready` `missing[]`; do not invent a parallel lifecycle.
 5. For `SubagentStop`, complete the report, worktree review, merge-back to the current `develop` integration branch and `completion_ack` checklist before acknowledging the stop. For `TeammateIdle`, re-wake the same teammate. The identical integration chain is available explicitly via `runtime task-integrate --assignment-id <id>` when the automatic SubagentStop payload cannot identify the assignment.
 6. Builder completion is registered with `runtime task-complete` — one atomic command (message validation + evidence envelope derivation + Agent/TASK advance + evidence registration); the legacy `agent-event completion_reported` + `runtime evidence add` dual write still works but produces a thinner envelope. Before the Builder writes, create its worktree (`git worktree add .worktrees/<assignment-id> -b wt/<assignment-id> develop`) and record `worktree_path`/`branch`/`target_branch` on the manifest row — SubagentStop integration requires them.
-7. In S7 (verification) the round is driven by runtime verbs, not by hand-pushed transitions: scaffold and register the ReviewPlan (`s7 draft`, inspect `coverage_inventory`/`e2e_assets`, then `runtime review-plan --file <plan.json>`), dispatch reviewers (`s7 manifest-draft`, `runtime register-workgroup`), consume each Assignment's Canonical ReviewResult (`runtime review-result submit --assignment-id <id> --result <result.json>`; required evidence refs are typed, and observation steps land via `capture step --finding <id> --claim <id>` / `--captures`), and revise a running plan once per round (`runtime review-plan revise`). `loop-harness s7 status` is the board: it prints the plan line, the round counter (current / `max_full_review_rounds`), the `round_entry` block (which TR re-entered the round and its seed/handoff/impact refs) plus the `seed_projection` line when a plan is registered from the S9 seed, the `subject_digest` every result must bind, claim dispositions, any blocked assignment's `blocker_ref` and the recovery verb `runtime agent-event --event blocker_resolved --agent-id <id> --message <file>`, and the single next action; a cold-start E2E round also has `loop-harness s7 workspace-digest` for the `verification_artifact_digest` the E2E result must bind. Re-entering S7 via TR-012 (post S9 repair) re-runs the same verbs from a generated seed: `.claude/review/repair/s7-seeds/review-plan-s9-round-<N>.json` is baseline-complete (it carries the changed-artifact `frozen_subjects`, the change-impact source_refs, and the current-generation TASK coverage) but not a finished plan — the Planner still refines Claims, Assignments and `non_overlap_boundary` per `docs/agent-protocol.md` §s7s9-control-plane-map; refresh the frozen shas if the tree moved, refine the Claim set if needed, then `runtime review-plan --file <seed>`. the change-impact evidence is the source of truth: the registered plan must derive `frozen_subjects`, `coverage_inventory`, and a Claim source_ref from every `changed_artifacts` path/SHA it carries; QA reports additionally carry the §5 Targeted Re-verification table alongside §2–§4, and the round counter tells you which round you are on. A no-repair batch returns via TR-022 (`findings_resolved_without_repair`) instead of TR-012 and runs the same S7 verbs without a seed. A rejected command includes the missing facts, repair action, next command, verification command and protocol ref; fix those facts and resubmit the same artifact. The machine exits are automatic — a sealed ObservationBatch or a machine CleanRound commits TR-008/TR-009 on the next PreToolUse; do not invoke the transition CLI for them. If the PostToolUse auto-activation chain did not fire for a dispatched Worker, recover with `runtime agent-begin --agent-id <id> --plan <plan-report.json>`. Full verb walkthrough: `docs/agent-protocol.md#s7`.
+7. In S7 (verification) the round is driven by runtime verbs, not by hand-pushed transitions: scaffold and register the ReviewPlan (`s7 draft`, inspect `coverage_inventory`/`e2e_assets`, then `runtime review-plan --file <plan.json>`), dispatch reviewers (`s7 manifest-draft`, `runtime register-workgroup`), consume each Assignment's Canonical ReviewResult (`runtime review-result submit --assignment-id <id> --result <result.json>`; required evidence refs are typed, and observation steps land via `capture step --finding <id> --claim <id>` / `--captures`), and revise a running plan once per round (`runtime review-plan revise`). `loop-harness s7 status` is the board: it prints the plan line, the round counter (current / `max_full_review_rounds`), the `round_entry` block (which TR re-entered the round and its seed/handoff/impact refs) plus the `seed_projection` line when a plan is registered from the S9 seed, the `subject_digest` every result must bind, claim dispositions, any blocked assignment's `blocker_ref` and the recovery verb `runtime agent-event --event blocker_resolved --agent-id <id> --message <file>`, and the single next action; a cold-start E2E round also has `loop-harness s7 workspace-digest` for the `verification_artifact_digest` the E2E result must bind. Re-entering S7 via TR-012 (post S9 repair) re-runs the same verbs from a generated seed: `.claude/review/repair/s7-seeds/review-plan-s9-round-<N>.json` is baseline-complete (it carries the changed-artifact `frozen_subjects`, the change-impact source_refs, and the current-generation TASK coverage) but not a finished plan — the Planner still refines Claims, Assignments and `non_overlap_boundary` per `blueprint/L3-S7-verification-round.md` and `blueprint/L4-runtime-control-plane.md`; refresh the frozen shas if the tree moved, refine the Claim set if needed, then `runtime review-plan --file <seed>`. the change-impact evidence is the source of truth: the registered plan must derive `frozen_subjects`, `coverage_inventory`, and a Claim source_ref from every `changed_artifacts` path/SHA it carries; QA reports additionally carry the §5 Targeted Re-verification table alongside §2–§4, and the round counter tells you which round you are on. A no-repair batch returns via TR-022 (`findings_resolved_without_repair`) instead of TR-012 and runs the same S7 verbs without a seed. A rejected command includes the missing facts, repair action, next command, verification command and protocol ref; fix those facts and resubmit the same artifact. The machine exits are automatic — a sealed ObservationBatch or a machine CleanRound commits TR-008/TR-009 on the next PreToolUse; do not invoke the transition CLI for them. If the PostToolUse auto-activation chain did not fire for a dispatched Worker, recover with `runtime agent-begin --agent-id <id> --plan <plan-report.json>`. Full verb walkthrough: `docs/agent-protocol.md#s7`.
 Before registering an S7 draft, inspect its CASE-level E2E Assignments. `s7 draft` projects required browser CASEs from `docs/design/prototypes/<module>/cases.json`; a complete CASE→Playwright spec mapping produces `regression_available` and SHA-pinned `e2e_assets`, while any missing mapping produces `cold_start`, an `e2e-workspace/<round>` write surface, and one behavior Assignment per CASE. If no readable CASE inventory exists, the remaining `TODO(planner)` is intentional and registration explains the missing S2 input. Typed path evidence may use `path:<repo-relative>#sha256=<64-hex>` for drift detection; bare `path:` is compatibility-only existence evidence.
 8. In S9 (bug_resolution), consume only the approved RepairContract: open the RepairSession, compile the RepairPlan, dispatch each Assignment with `runtime repair dispatch --assignment-id <assignment> --agent-id <agent>`, send the generic PLAN_REPORT and submit the S9 domain PlanReport, then wait for `runtime repair execution begin` before product writes. Use `runtime repair status` for each Assignment's owner/report/result, `queue_reason`, `lock_state` and next action; do not create a second scheduler or edit Runtime state by hand.
-9. If `s7 status` reports `round N of M` with N >= M, finish draining the current round but do not open another one. Submit the human artifact through `runtime s7-budget-decision --file <decision.json> --expected-revision <N> --actor <user>`; `increase_budget` atomically raises `max_full_review_rounds` and leaves the pending round-opening transition to retry, while `return_to_governance` records the decision, invalidates downstream review evidence, resets the review projection, and routes through GTR-006 to planning. The decision file is persisted as scoped `human_decision` evidence, and CAS rejects stale revisions, mismatched runtime/round values, and non-increasing limits.
+9. If `s7 status` reports `round N of M` with N >= M, finish draining the current round but do not open another one. Submit the human artifact through `runtime s7-budget-decision --file <decision.json> --actor <user>`; `increase_budget` atomically raises `max_full_review_rounds` and leaves the pending round-opening transition to retry, while `return_to_governance` records the decision, invalidates downstream review evidence, resets the review projection, and routes through GTR-006 to planning. The decision file is persisted as scoped `human_decision` evidence; Runtime revision is assigned internally by the Writer.
 10. In S10 (acceptance_and_audit), treat the stage as a read-only audit, not a final shortcut: run `s10 status`, freeze the finite coverage inventory and responsibility matrix, record one counterevidence check per item, and validate the machine manifest before registering the human-readable ACC or release-audit envelope. The manifest must prove 100% requirement/contract/changed-path/audit-area coverage with zero UNKNOWN, unsupported PASS, unowned risk, untracked debt, or blocking finding. If any product or architecture defect appears, return through S8 → S9 → a fresh complete S7; never use S9 → S10 or edit product code in S10. Only a current clean package may reach S11.
 11. Some authority transactions carry runtime-issued ids that are not TRs and therefore do not appear in the Contents index above: `S8-REPAIR-CONTRACT-APPROVAL` (runtime investigation contract approve — the S8→S9 authority; PTR-BUG-08 is its legacy-catalog alias), plus the entity/record CAS ids (REVIEW-RESULT, REVIEW-PLAN-STALE, S7-BUDGET-DECISION, AGENT-LIFECYCLE, BUG-LIFECYCLE, EVIDENCE-RECORD). They are driven by their runtime verbs, never by `runtime transition`.
 12. Stop only at a human Gateway, an external asynchronous wait, or the end of the current turn.
@@ -45,7 +45,7 @@ During BUG investigation, answer why E2E did not cover or fail the gap (`skills/
 ```bash
 loop-harness runtime human-decision \
   --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> \
-  --expected-revision <N> --actor <user|orchestrator> \
+  --actor <user|orchestrator> \
   --decision-evidence <human-decision-reference>
 ```
 
@@ -272,7 +272,7 @@ S10 acceptance machine artifact (required before the Controller can consume the 
 loop-harness s10 manifest validate --root <root> \
   --file <acceptance-manifest.json> --type acceptance
 loop-harness runtime evidence add --root <root> \
-  --expected-revision <N> --id <id> --kind acceptance \
+  --id <id> --kind acceptance \
   --path <envelope.json> --produced-by <agent> --responsibility <role>
 ```
 
@@ -396,7 +396,7 @@ S10 acceptance machine artifact (required before the Controller can consume the 
 loop-harness s10 manifest validate --root <root> \
   --file <acceptance-manifest.json> --type acceptance
 loop-harness runtime evidence add --root <root> \
-  --expected-revision <N> --id <id> --kind acceptance \
+  --id <id> --kind acceptance \
   --path <envelope.json> --produced-by <agent> --responsibility <role>
 ```
 
@@ -450,7 +450,7 @@ The release-audit evidence must point to a separately validated manifest:
 loop-harness s10 manifest validate --root <root> \
   --file <release-audit-manifest.json> --type release_audit
 loop-harness runtime evidence add --root <root> \
-  --expected-revision <N> --id <id> --kind release_audit \
+  --id <id> --kind release_audit \
   --path <envelope.json> --produced-by <agent> --responsibility "Release Auditor"
 ```
 
@@ -481,7 +481,7 @@ The BLOCKED release-audit evidence must preserve its machine-readable blocker le
 loop-harness s10 manifest validate --root <root> \
   --file <release-audit-manifest.json> --type release_audit --outcome blocked
 loop-harness runtime evidence add --root <root> \
-  --expected-revision <N> --id <id> --kind release_audit \
+  --id <id> --kind release_audit \
   --path <envelope.json> --produced-by <agent> --responsibility "Release Auditor"
 ```
 
@@ -532,7 +532,7 @@ _paused → aborted_
 
 Only a human may permanently abort the Loop.
 
-- `human_abort_approved` [evidence_attestation] — The transition's evidence validation enforces that the cited human_decision evidence is current and scoped to `runtime_abort:<runtime_id>@<revision>` (human_decision_scope on TR-021/TR-030) — one approval authorizes exactly one abort at one revision; the guard body itself only rejects an empty evidence map.
+- `human_abort_approved` [evidence_attestation] — The transition's evidence validation enforces that the cited human_decision evidence is current and scoped to `runtime_abort:<runtime_id>` (human_decision_scope on TR-021/TR-030); the fixed transition and one-time evidence id define the approval boundary, while Runtime revision remains internal.
 
 Evidence: `human_decision_record`
 
@@ -694,7 +694,7 @@ _awaiting_human_release → aborted_
 
 Record a human release abort without performing any release side effect.
 
-- `human_abort_approved` [evidence_attestation] — The transition's evidence validation enforces that the cited human_decision evidence is current and scoped to `runtime_abort:<runtime_id>@<revision>` (human_decision_scope on TR-021/TR-030) — one approval authorizes exactly one abort at one revision; the guard body itself only rejects an empty evidence map.
+- `human_abort_approved` [evidence_attestation] — The transition's evidence validation enforces that the cited human_decision evidence is current and scoped to `runtime_abort:<runtime_id>` (human_decision_scope on TR-021/TR-030); the fixed transition and one-time evidence id define the approval boundary, while Runtime revision remains internal.
 
 Evidence: `human_decision_record`
 

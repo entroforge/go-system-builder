@@ -9,7 +9,7 @@
 | 第一层 | `L1-design-principles.md` | 工程哲学与设计蓝图：场景、物理约束 C1-C5、使命与六项把控、主干设计决策 D1-D7、五公理、失效模式目录、演化协议、权威层结构定义 | ✅ v2.4.0 |
 | 第二层 | `L2-lifecycle-plan.md` | 生命周期实战目标：三条铁律 + 能量函数、S0-S11 每阶段（任务/把控/风险对应/理论根据/入口/出口/失败路由）、全局规则、层间校验 | ✅ v1.4.4 |
 | 第三层 | `L3-README.md` + 12 份 `L3-Sn-<stage名>.md`（S0-requirement-design … S11-release-gate） | 各 Stage 详细落地设计：角色/产物/过程/门禁判定/工具承载（T1-T7）/失败处置/反作弊/度量 | ✅ |
-| 第四层 | 五份机制篇：`L4-agent-dispatch-governance.md`（谁在责任上行动）、`L4-state-transition-core.md`（事实住哪与合法变更引擎）、`L4-hook-platform-wiring.md`（决策如何上平台总线）、`L4-hook-anchor-catalog.md`（平台 31 锚点全图与选点审查）、`L4-runtime-control-plane.md`（内容合规规则与词汇词典）；后续按机制域扩展 | 横跨多个 L3 的工具机制与治理设计：统一对象模型、状态、消息、Hook、Harness、恢复和验收契约；每份是其覆盖域的唯一权威定义处，各 L3 只声明消费 | ✅ v0.3.0 / v0.1.0 / v0.1.1 / v0.1.0 / v0.3.0 |
+| 第四层 | 六份机制篇：`L4-agent-dispatch-governance.md`（谁在责任上行动）、`L4-state-transition-core.md`（事实住哪与合法变更引擎）、`L4-hook-platform-wiring.md`（决策如何上平台总线）、`L4-hook-anchor-catalog.md`（平台 31 锚点全图与选点审查）、`L4-runtime-control-plane.md`（内容合规规则与词汇词典）、`L4-revision-usage.md`（revision 的内部语义与 Agent-facing 命令协调）；后续按机制域扩展 | 横跨多个 L3 的工具机制与治理设计：统一对象模型、状态、消息、Hook、Harness、恢复和验收契约；每份是其覆盖域的唯一权威定义处，各 L3 只声明消费 | ✅ v0.3.0 / v0.1.0 / v0.1.1 / v0.1.0 / v0.3.0 / v0.1.0 |
 | 第五层 | `L5-*.md`（待建） | 实现规格与实现：Schema、Skill、Agent Definition、模板、代码、测试和迁移任务 | ⏳ |
 | 第六层 | `L6-*.md`（待建） | 实战运营记录与回灌（失效数据 → 第一层演化协议） | ⏳ |
 
@@ -18,6 +18,8 @@
 1. **从上往下读**：先 L1 后 L2；任何下层困惑先回上层找根据。
 2. **映射纪律**（L1 §六）：下层每条设计必须能指认它承载的 D1-D7 与通过的公理；指认不出 = 越层设计，退回。
 3. **修订走 L1 第五部分演化协议**：任何层的修订须引用实战证据、过准入五问、带版本与 changelog。
+
+2026-09-01 新增 [`L4-revision-usage.md`](L4-revision-usage.md)：统一 revision 的内部语义、Agent-facing 命令边界和复杂度准入；各 L3 不再把手工 revision 计算写成正常操作步骤。
 
 ## 安装位置
 

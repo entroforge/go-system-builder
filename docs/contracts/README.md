@@ -4,8 +4,9 @@ This directory stores contract templates and contract rules.
 
 ## Lock Authority
 
-Contract templates record the runtime revision, transition, exact fingerprints,
-and document-verification evidence that locked the batch. Legal guards are
+Contract templates record the runtime identity, transition, exact fingerprints,
+and document-verification evidence that locked the batch. The Writer's commit
+revision is optional audit metadata, not a handoff prerequisite. Legal guards are
 defined in `docs/loop-definition.json`; this README does
 not maintain a second gate list.
 

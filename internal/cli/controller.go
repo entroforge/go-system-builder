@@ -242,7 +242,7 @@ func investigationNextAction(state map[string]any) string {
 	reviewMap, _ := state["review"].(map[string]any)
 	casePointer, _ := reviewMap["investigation"].(map[string]any)
 	if casePointer == nil {
-		return "ingest the sealed ObservationBatch via `runtime investigation ingest --expected-revision <N> --grouping-rationale <reason>`; do not create a BUG or reproduce the symptom"
+		return "ingest the sealed ObservationBatch via `runtime investigation ingest --grouping-rationale <reason>`; do not create a BUG or reproduce the symptom"
 	}
 	caseID := stringValue(casePointer["case_id"])
 	if caseID == "" {
@@ -443,7 +443,7 @@ func applyS8EntryProjection(state map[string]any, guidance *policy.Guidance) {
 		return
 	}
 	if investigationPointer, _ := reviewMap["investigation"].(map[string]any); investigationPointer == nil {
-		line := "S8 intake pending: run `runtime investigation ingest --expected-revision <N> --grouping-rationale <reason>`; do not create a BUG or reproduce the sealed symptom"
+		line := "S8 intake pending: run `runtime investigation ingest --grouping-rationale <reason>`; do not create a BUG or reproduce the sealed symptom"
 		guidance.Automation = append(guidance.Automation, line)
 		guidance.Recovery = append([]string{line}, guidance.Recovery...)
 	}

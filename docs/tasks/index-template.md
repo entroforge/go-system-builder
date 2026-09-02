@@ -7,7 +7,7 @@
 
 ## 里程碑
 
-> Runtime ref: `{runtime-id}@{revision}`. Legal task-lock and activation guards are defined by the Loop Definition.
+> Runtime ref: `{runtime-id}`. Legal task-lock and activation guards are defined by the Loop Definition; the Writer's commit revision is optional audit metadata.
 
 ## 文档链接
 

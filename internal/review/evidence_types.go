@@ -41,7 +41,7 @@ func validatePlanEvidenceRequirements(plan *Plan) error {
 				fmt.Sprintf("claim %s declares unknown required evidence kind %q", claim.ClaimID, rawRequirement),
 				[]string{fmt.Sprintf("claim %s requires %q, which is not in the S7 evidence vocabulary", claim.ClaimID, rawRequirement)},
 				[]string{"replace it with one of: " + strings.Join(sortedTypedEvidenceKinds(), ", ")},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 	}

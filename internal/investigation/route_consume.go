@@ -25,14 +25,14 @@ type ConsumeRouteRequest struct {
 // canonical-follow-up acknowledgement. REQ changes deliberately remain at
 // the human pause boundary because they require a new locked REQ.
 func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteRequest) (runtime.Snapshot, error) {
-	if request.ExpectedRevision < 0 || request.CaseID == "" {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "expected Runtime revision and case_id are required")
+	if request.CaseID == "" {
+		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "case_id is required")
 	}
 	current, err := runtime.NewStore(statePath, journalPath).Snapshot()
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before route consumption: %w", err)
 	}
-	if current.Revision != request.ExpectedRevision {
+	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
 		return runtime.Snapshot{}, fmt.Errorf("%w: expected Runtime revision %d but it is %d; next: runtime investigation status --case-id %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, request.CaseID)
 	}
 	review, ok := current.State["review"].(map[string]any)
@@ -62,12 +62,13 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 		actor = "orchestrator"
 	}
 	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	return writer.Update(request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-s8-route-consume-%s-r%d", request.CaseID, request.ExpectedRevision+1),
+	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
+	return updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
+		EventID:                fmt.Sprintf("evt-s8-route-consume-%s-r%d", request.CaseID, commitRevision+1),
 		TransitionID:           "S8-ROUTE-CONSUME",
 		Event:                  "investigation_route_consumed",
 		Actor:                  actor,
-		IdempotencyKey:         fmt.Sprintf("runtime:s8:route-consume:%s:%d", request.CaseID, request.ExpectedRevision),
+		IdempotencyKey:         fmt.Sprintf("runtime:s8:route-consume:%s:%d", request.CaseID, commitRevision),
 		RuntimeID:              stringField(current.State["runtime_id"]),
 		EvidenceIDs:            []string{stringField(pointer["path"])},
 		From:                   routeCursor(current.State),

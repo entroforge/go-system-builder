@@ -1057,12 +1057,45 @@ func (s *Store) InspectPolicyRef(root string) (PolicyRefDrift, error) {
 }
 
 func (s *Store) Update(expectedRevision int, mutation Mutation) (Snapshot, error) {
+	// A negative expected revision is the normal single-writer path. The
+	// caller is not asking for a stale-snapshot assertion; read the current
+	// state while holding the Writer lock and let the Writer assign the next
+	// internal commit sequence. Non-negative values remain available as an
+	// explicit advanced CAS assertion for integrations and recovery tools.
+	if expectedRevision < 0 {
+		return s.UpdateCurrent(mutation)
+	}
 	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	defer release()
 	if err := s.recoverPendingWritesLocked(); err != nil {
+		return Snapshot{}, err
+	}
+	return s.applyMutation(expectedRevision, mutation)
+}
+
+// UpdateCurrent commits a mutation against the Runtime state observed inside
+// the Writer lock. This is the normal single-writer path: callers provide the
+// business mutation, while the Writer owns the internal commit sequence. The
+// explicit Update method remains available for integrations that deliberately
+// want a stale-snapshot assertion.
+func (s *Store) UpdateCurrent(mutation Mutation) (Snapshot, error) {
+	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer release()
+	if err := s.recoverPendingWritesLocked(); err != nil {
+		return Snapshot{}, err
+	}
+	state, err := s.read()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	expectedRevision, err := integerField(state, "revision")
+	if err != nil {
 		return Snapshot{}, err
 	}
 	return s.applyMutation(expectedRevision, mutation)
@@ -2449,11 +2482,13 @@ func validateLifecycleApproval(state map[string]any, approvedBy, evidenceID, run
 		if item == nil || item["id"] != evidenceID || item["kind"] != "human_decision" || item["status"] != "valid" {
 			continue
 		}
-		if containsString(item["produced_by"], approvedBy) && containsString(item["scope_refs"], fmt.Sprintf("%s:%s@%d", scopePrefix, runtimeID, revision)) {
+		semanticScope := fmt.Sprintf("%s:%s", scopePrefix, runtimeID)
+		legacyScope := fmt.Sprintf("%s@%d", semanticScope, revision)
+		if containsString(item["produced_by"], approvedBy) && (containsString(item["scope_refs"], semanticScope) || containsString(item["scope_refs"], legacyScope)) {
 			return nil
 		}
 	}
-	return fmt.Errorf("%s approval evidence %q must be valid human_decision evidence produced by %q and scoped to %s:%s@%d", scopePrefix, evidenceID, approvedBy, scopePrefix, runtimeID, revision)
+	return fmt.Errorf("%s approval evidence %q must be valid human_decision evidence produced by %q and scoped to %s:%s", scopePrefix, evidenceID, approvedBy, scopePrefix, runtimeID)
 }
 
 func emptyArray(value any) bool {

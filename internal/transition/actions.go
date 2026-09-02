@@ -245,7 +245,7 @@ func actionStartReviewRound(state map[string]any, ctx *ActionContext) (ActionRes
 	if maxRounds, err := configuredMaxFullReviewRounds(state); err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	} else if currentRound >= maxRounds {
-		err := fmt.Errorf("S7 full-review budget exhausted at round %d of %d; human decision required: run `loop-harness runtime s7-budget-decision --file <decision.json> --expected-revision <N> --actor <user>` with increase_budget or return_to_governance", currentRound, maxRounds)
+		err := fmt.Errorf("S7 full-review budget exhausted at round %d of %d; human decision required: run `loop-harness runtime s7-budget-decision --file <decision.json> --actor <user>` with increase_budget or return_to_governance", currentRound, maxRounds)
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	}
 	nextRound := currentRound + 1

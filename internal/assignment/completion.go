@@ -102,6 +102,10 @@ func CompleteTask(
 	if message.RuntimeID != "" && message.RuntimeID != runtimeID {
 		return loopruntime.Snapshot{}, fmt.Errorf("completion message runtime does not match current runtime")
 	}
+	commitRevision, err := commitRevision(request.ExpectedRevision, current)
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	baseline, _ := current["baseline"].(map[string]any)
 	generation := 0
 	if baseline != nil {
@@ -170,12 +174,12 @@ func CompleteTask(
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	return store.Update(request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-complete-%s-%s-r%d", request.AgentID, message.TaskID, request.ExpectedRevision+1),
+	mutation := loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-complete-%s-%s-r%d", request.AgentID, message.TaskID, commitRevision+1),
 		TransitionID:   "BUILDER-RESULT",
 		Event:          "completion_reported",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:complete:%s:%s:%d", request.AgentID, message.TaskID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:complete:%s:%s:%d", request.AgentID, message.TaskID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
@@ -192,7 +196,8 @@ func CompleteTask(
 			}
 			return appendCompletionEvidence(state, evidenceID, envelopeRel, envelopeSHA, request.AgentID, generation, message.ChangedPaths, occurredAt)
 		},
-	})
+	}
+	return updateRuntime(store, request.ExpectedRevision, mutation)
 }
 
 // applyCompletionAgent advances the agent row exactly like the

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -126,36 +125,42 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 
 	// --- abandon via pause → abort (TR-021) ---
 	must("pause-for-abort", "runtime", "pause", "--root", root, "--reason", "abandoning this requirement", "--approved-by", "alice")
+	snapshot := stateOf()
+	lifecycleSnapshot := snapshot["lifecycle"].(map[string]any)
 	abortDecision := filepath.Join(root, ".claude", "decisions", "abort.json")
 	if err := os.MkdirAll(filepath.Dir(abortDecision), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(abortDecision, []byte(`{"decision":"human_abort_approved","approved_by":"alice"}`), 0o644); err != nil {
+	decisionBytes, err := json.Marshal(map[string]any{
+		"decision": "human_abort_approved", "disposition": "abort", "decision_id": "hd-abort",
+		"approved_by": "alice", "runtime_id": snapshot["runtime_id"],
+		"target_cursor": map[string]any{"state": lifecycleSnapshot["state"], "phase": lifecycleSnapshot["phase"]},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := stateOf()
-	revision := int(snapshot["revision"].(float64))
+	if err := os.WriteFile(abortDecision, append(decisionBytes, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	must("abort-evidence", "runtime", "evidence", "add", "--root", root,
-		"--expected-revision", itoa(revision), "--id", "hd-abort",
+		"--id", "hd-abort",
 		"--kind", "human_decision", "--path", ".claude/decisions/abort.json",
 		"--produced-by", "alice",
-		"--scope-ref", fmt.Sprintf("runtime_abort:%s@%d", snapshot["runtime_id"], revision+1))
+		"--scope-ref", fmt.Sprintf("runtime_abort:%s", snapshot["runtime_id"]))
 	must("abort", "runtime", "transition", "--root", root,
-		"--id", "TR-021", "--expected-revision", itoa(revision+1), "--actor", "user",
+		"--id", "TR-021", "--actor", "user",
 		"--evidence", "human_decision_record=hd-abort")
 	if state, _ := lifecycle(); state != "aborted" {
 		t.Fatalf("lifecycle after TR-021 = %s, want aborted", state)
 	}
 
 	// --- rollover: REQ archived with dual fingerprints, fresh runtime ---
-	snapshot = stateOf()
-	revision = int(snapshot["revision"].(float64))
 	rolloverDecision := filepath.Join(root, ".claude", "decisions", "rollover.json")
 	if err := os.WriteFile(rolloverDecision, []byte(`{"decision":"runtime_rollover","approved_by":"alice"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	must("rollover-evidence", "runtime", "evidence", "add", "--root", root,
-		"--expected-revision", itoa(revision), "--id", "hd-rollover",
+		"--id", "hd-rollover",
 		"--kind", "human_decision", "--path", ".claude/decisions/rollover.json",
 		"--produced-by", "alice", "--scope-ref", "runtime_rollover:current")
 	out = must("rollover", "runtime", "rollover", "--root", root,
@@ -211,5 +216,3 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 		t.Fatalf("next-period bind output: %s", out)
 	}
 }
-
-func itoa(n int) string { return strconv.Itoa(n) }

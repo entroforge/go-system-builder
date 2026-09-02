@@ -299,7 +299,7 @@ func verifyRegressionAssetFingerprints(root string, plan *Plan) error {
 				fmt.Sprintf("E2E asset %s is outside the repository", asset.AssetID),
 				[]string{err.Error()},
 				[]string{"use the exact repository-relative CASE/PATH file and regenerate its sha256"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		data, err := os.ReadFile(path)
@@ -309,7 +309,7 @@ func verifyRegressionAssetFingerprints(root string, plan *Plan) error {
 				fmt.Sprintf("E2E asset %s cannot be read", asset.AssetID),
 				[]string{err.Error()},
 				[]string{"restore the asset or change the plan to cold_start and author a fresh verification workspace"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 		if actual := sha256Of(data); actual != asset.SHA256 {
@@ -318,7 +318,7 @@ func verifyRegressionAssetFingerprints(root string, plan *Plan) error {
 				fmt.Sprintf("E2E asset %s fingerprint is stale", asset.AssetID),
 				[]string{fmt.Sprintf("asset %s has sha256 %s, plan declares %s", asset.Path, actual, asset.SHA256)},
 				[]string{"refresh the fingerprint from the current immutable asset, or switch to cold_start"},
-				"runtime review-plan --file plan.json --expected-revision <N>",
+				"runtime review-plan --file plan.json",
 			)
 		}
 	}

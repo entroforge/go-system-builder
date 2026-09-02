@@ -17,9 +17,12 @@
 //     chain can never activate one — it returns an observation gap instead.
 //   - Sender identification gaps fail silent (the hook never invents an
 //     agent binding).
-//   - Each AdvanceAgent call is a separate CAS via assignment.AdvanceAgent,
-//     so the existing dispatch-mode / state / hash-chain guards stay
-//     in force (we do NOT bypass verifyActivationReadbackChain).
+//   - Each AdvanceAgent call is a separate Runtime Writer commit via
+//     assignment.AdvanceAgent, so the existing dispatch-mode / state /
+//     hash-chain guards stay in force (we do NOT bypass
+//     verifyActivationReadbackChain). The normal hook path omits the
+//     revision assertion; an explicit AgentBegin assertion remains available
+//     to recovery/integration callers.
 //   - The activation envelope (the file at agent.activation_ref) is
 //     rewritten in lockstep with the synthesized activation message so the
 //     Hook loader and the runtime see the same allowed_* fields.
@@ -52,6 +55,10 @@ type AutoChainInput struct {
 	Root        string
 	StatePath   string
 	JournalPath string
+	// ExpectedRevision is an optional explicit assertion for the recovery or
+	// integration caller. The passive PostToolUse hook leaves it negative so
+	// each Writer commit uses the current Runtime under lock.
+	ExpectedRevision int
 	// AgentID is the resolved sender (PostToolUse identifySender output).
 	AgentID string
 	// PlanPath is the on-disk plan_report JSON. Required for hash binding.
@@ -69,8 +76,8 @@ type AutoChainInput struct {
 
 // AutoAdvanceToWorking drives a plan_checkpoint agent from
 // reading -> understanding_submitted -> activated -> working in three
-// CAS-bound AdvanceAgent calls, with the activation envelope's hash chain
-// bound to the captured plan_report file bytes.
+// Runtime Writer commits, with the activation envelope's hash chain bound to
+// the captured plan_report file bytes.
 //
 // Returns an outcome with Chained=false (no error) when the input is not
 // actionable (agent has wrong dispatch_mode, missing plan path, missing
@@ -78,7 +85,7 @@ type AutoChainInput struct {
 // as silent skips and the agent stays in its current state; the recovery
 // path is `runtime agent-begin --agent-id <id> --plan <file>`.
 //
-// Errors are reserved for actual filesystem / schema / CAS failures that
+// Errors are reserved for actual filesystem / schema / Writer failures that
 // the caller should surface (so the agent's tool call still proceeds but
 // the stderr note names the failure).
 func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
@@ -151,7 +158,7 @@ func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
 	envelopeSource.AgentID = in.AgentID
 	runtimeID := runtimeIDFromSnapshot(snapshot)
 	workgroupID := teamID
-	expectedRevision := snapshot.Revision
+	expectedRevision := in.ExpectedRevision
 
 	// Step 1: readback_submitted (plan_report -> reading -> understanding_submitted).
 	readbackPath := resolveRootPath(in.Root, in.PlanPath)
@@ -186,7 +193,9 @@ func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
 		if err != nil {
 			return AutoChainOutcome{}, fmt.Errorf("auto-chain: readback_submitted: %w", err)
 		}
-		expectedRevision = submitted.Revision
+		if expectedRevision >= 0 {
+			expectedRevision = submitted.Revision
+		}
 	case "understanding_submitted", "activated":
 		// Resume below at the matching step.
 	default:
@@ -231,7 +240,9 @@ func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
 		if err != nil {
 			return AutoChainOutcome{}, fmt.Errorf("auto-chain: activation_sent: %w", err)
 		}
-		expectedRevision = activated.Revision
+		if expectedRevision >= 0 {
+			expectedRevision = activated.Revision
+		}
 	} else {
 		// Resume from activated: recover the activation identity from the
 		// stored activation message so the work_start message correlates
@@ -293,8 +304,8 @@ func runtimeIDFromSnapshot(snap loopruntime.Snapshot) string {
 // runtime agent-begin — the recovery verb for plan_checkpoint agents whose
 // PostToolUse(SendMessage) auto-chain could not drive the lifecycle (e.g.
 // the Worker sent PLAN_REPORT without a `plan_ref` payload field, or the
-// hook failed before reaching the chain). Performs the same three CAS-bound
-// events the auto-chain performs but driven by an explicit CLI call, so
+// hook failed before reaching the chain). Performs the same three Writer
+// commits the auto-chain performs but driven by an explicit CLI call, so
 // the recovery path matches the happy path exactly (no bypass of
 // verifyActivationReadbackChain or any other AdvanceAgent guard).
 // =============================================================================
@@ -337,6 +348,7 @@ func AgentBegin(root, statePath, journalPath string, req AgentBeginRequest) (loo
 		Root:             root,
 		StatePath:        statePath,
 		JournalPath:      journalPath,
+		ExpectedRevision: req.ExpectedRevision,
 		AgentID:          req.AgentID,
 		PlanPath:         req.PlanPath,
 		EnvelopeOverride: override,

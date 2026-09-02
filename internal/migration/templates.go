@@ -60,7 +60,7 @@ func ValidateTemplates(root string) error {
 			path:     "docs/project-map-template.md",
 			optional: true,
 			required: []string{
-				"human-facing summary", ".claude/loop-state.json", "runtime ID and revision",
+				"human-facing summary", ".claude/loop-state.json", "runtime identity",
 			},
 			forbidden: []string{"Goal 模式", "Loop 模式", "Active loop REQ"},
 		},

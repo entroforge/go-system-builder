@@ -58,7 +58,7 @@ func TestRuntimeChangeCreateCommandBuildsChecksFromInput(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{
 		"runtime", "change", "create", "--root", root, "--state", "loop-state.json", "--journal", "loop-events.jsonl",
-		"--expected-revision", "1", "--input", "change-input.json",
+		"--input", "change-input.json",
 	}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("runtime change create failed: code=%d stderr=%s", code, stderr.String())

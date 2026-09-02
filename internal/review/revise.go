@@ -63,9 +63,10 @@ func RevisePlan(
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
-	if currentRevision := intField(current["revision"]); currentRevision != request.ExpectedRevision {
+	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
 		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
 	}
+	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	currentPlan, ptr, err := LoadPlan(root, current)
 	if err != nil {
 		return loopruntime.Snapshot{}, err
@@ -136,12 +137,12 @@ func RevisePlan(
 	}
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	snapshot, err := store.Update(request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-revise-%s-r%d", next.ReviewPlanID, request.ExpectedRevision+1),
+	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-review-revise-%s-r%d", next.ReviewPlanID, commitRevision+1),
 		TransitionID:   "REVIEW-PLAN-REVISE",
 		Event:          "review_plan_revised",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-revise:%s:%d", next.ReviewPlanID, request.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:review-revise:%s:%d", next.ReviewPlanID, commitRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
@@ -300,7 +301,7 @@ func RevisePlan(
 		// to it.
 		cleanupStore := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 		if _, cleanupErr := cleanupStore.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{
-			ExpectedRevision: request.ExpectedRevision,
+			ExpectedRevision: commitRevision,
 			ArtifactPath:     planRel,
 			ArtifactSHA256:   planSHA,
 			ReferencedPaths:  []string{ptr.Path},

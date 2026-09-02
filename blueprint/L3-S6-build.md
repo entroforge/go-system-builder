@@ -8,6 +8,8 @@
 >
 > 阅读顺序：§1～§3 理解 S6 的价值流和机制取舍；§4～§7 理解目标工作流、任务调度、状态与数据闭环；§8～§9 理解引导如何进入工具必经之路；§10～§12 对照当前实现、出口和迁移顺序。
 
+> **Revision 口径**：Runtime revision 和 Assignment revision 都由对应 Writer/API 生成。Builder/主会话只消费 Assignment ID、当前 scope、checks、checkpoint 和 `next`；不手工编号、计算或复制 revision。Runtime 的锁、原子写和内部提交序号见 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)。
+
 ## 1. 第一层：S6 的立意、边界与完成定义
 
 ### 1.1 为什么需要 S6
@@ -36,7 +38,7 @@ S6 应收敛成一条短而硬的执行流水线：
 | 要搞清楚 | 哪些 TASK 已 Ready；谁拥有唯一写入权；哪些任务因依赖或写冲突必须等待；实际实现和检查改变了什么；S7 如何复验 |
 | 核心工作 | 生成调度板 → 原子派发 → 计划回执与首写屏障 → 连续实现和 owned checks → 唯一完成交接 → worktree 语义集成 → 批次出口 |
 | 正式输出 | 已集成实现；每 TASK 唯一 Builder Result；实际 diff；检查结果与原始引用；integration checkpoint；S7 可消费的构建批次索引 |
-| 目标完成 | TR-003 精确批次中的每个 TASK 均满足唯一 Owner、当前 Assignment revision、有效 Result、无 scope 偏差、已集成、Required Checks 通过 |
+| 目标完成 | TR-003 精确批次中的每个 TASK 均满足唯一 Owner、当前 Assignment 对象版本、有效 Result、无 scope 偏差、已集成、Required Checks 通过 |
 | 下一阶段 | TR-006 启动新 review round 并进入 verification.delivery；S7 根据实际集成差异和锁定真相生成 Delivery 验证计划 |
 
 ### 1.4 S6 的职责边界
@@ -66,7 +68,7 @@ S6 应收敛成一条短而硬的执行流水线：
 | 层级 | 适用对象 | 目标形态 |
 |:--|:--|:--|
 | Hard deny | locked artifact、禁用 merge 方式、明确不可恢复动作 | PreToolUse 或底层工具直接拒绝 |
-| Semantic gate | Owner、Assignment revision/plan、实际 diff scope、Required Checks、精确 TASK 覆盖 | dispatch、completion、integration、TR-006 中实算 |
+| Semantic gate | Owner、Assignment 对象版本/plan、实际 diff scope、Required Checks、精确 TASK 覆盖 | dispatch、completion、integration、TR-006 中实算；对象版本由工具生成 |
 | Guidance | 阅读顺序、实现方法、风险 Skill、建议命令 | 当前工具上下文、生成模板、失败恢复信息 |
 
 不应把所有指导都升级为文件级硬锁，也不应把本可机器计算的约束降级为长文档提醒。
@@ -97,9 +99,9 @@ S6 应收敛成一条短而硬的执行流水线：
 |:--|:--|:--|:--|
 | T1 准备精确批次与调度板 | 这次必须完成哪些 TASK；谁 Ready；哪里冲突 | 从 TR-003 批次读取 TASK DAG；按 active assignments 实算冲突；计算 Ready/Waiting/Conflict；设置 WIP | S6 Board、批次指纹、调度顺序 |
 | T2 原子派发 | 谁拥有任务；允许改什么；使用哪个 worktree | 生成 Assignment Record；校验一 TASK 一 Owner、role/path、写重叠；创建 worktree；生成 PLAN_REPORT 请求 | assignment、worktree、effective scope |
-| T3 计划检查点 | Builder 是否理解当前任务；依赖和证据计划是否成立 | 运行中发送 PLAN_REPORT；机器校验 revision/scope/checks；普通任务立即继续，高风险进入 L4 Plan approval | plan checkpoint / approval ref |
+| T3 计划检查点 | Builder 是否理解当前任务；依赖和证据计划是否成立 | 运行中发送 PLAN_REPORT；机器校验 assignment identity/scope/checks；普通任务立即继续，高风险进入 L4 Plan approval | plan checkpoint / approval ref |
 | T4 实现与 owned checks | 如何快速兑现 Closing Contract 并尽早发现错误 | 在 scope 内实现；运行任务级测试/lint/build；按需加载 Skill；问题分类 | 实现、测试、原始检查结果 |
-| T5 唯一完成交接 | Builder 实际做了什么；后续工具如何消费 | 登记 Builder Result；自动提取 diff、checks、Owner、Assignment revision；校验结果 | canonical builder result |
+| T5 唯一完成交接 | Builder 实际做了什么；后续工具如何消费 | 登记 Builder Result；自动提取 diff、checks、Owner、Assignment 对象版本；校验结果 | canonical builder result |
 | T6 语义集成 | 真实差异是否安全、在 scope 内且可复验 | Inspect diff、locked paths、merge conflict、Required Checks；非 squash 集成；写 checkpoint | integrated implementation、checkpoint |
 | T7 精确批次出口 | 是否每个锁定 TASK 都真实完成；能否进入独立验证 | 对 TR-003 精确集合逐项求值；TR-006；S7 入口生成验证计划 | review round、verification.delivery |
 
@@ -116,8 +118,8 @@ flowchart TD
 
     PICK -->|是| DISPATCH["T2 task dispatch<br/>assignment + worktree + effective scope"]
     DISPATCH --> PLAN["T3 SendMessage PLAN_REPORT<br/>发送后不等待，连续执行"]
-    PLAN --> READY{"revision、scope、checks、依赖<br/>机械校验是否成立？"}
-    READY -->|否：可补输入| REVISE["阻止首写；补输入或修 assignment revision"]
+    PLAN --> READY{"assignment identity、scope、checks、依赖<br/>机械校验是否成立？"}
+    READY -->|否：可补输入| REVISE["阻止首写；补输入或生成新的 Assignment 对象版本"]
     REVISE --> PLAN
     READY -->|否：规格冲突且 REQ 不变| IMPACT["change impact"]
     IMPACT --> TR7["TR-007 → planning.design"]
@@ -218,7 +220,7 @@ Main Agent 负责处理异常、优先级和人工边界，不再手工拼装每
 
 ### 6.1 一个权威 Assignment Record
 
-Assignment 的跨 Stage 最小字段、两条状态线、revision 和 canonical Result 契约以 L4 §5 为权威。S6 不复制一套独立 Schema，只增加以下阶段引用：
+Assignment 的跨 Stage 最小字段、两条状态线、对象版本和 canonical Result 契约以 L4 §5 为权威。S6 不复制一套独立 Schema，只增加以下阶段引用：
 
 | S6 引用 | 内容 | 生产方式 |
 |:--|:--|:--|
@@ -246,7 +248,7 @@ Builder 只需回答五个需要真实判断的问题：
 S6 默认使用 L4 `plan_checkpoint`：
 
 - Worker 在仍运行时通过 SendMessage 提交 PLAN_REPORT，不能把计划作为 final response；
-- PostToolUse 校验 PLAN_REPORT 对应当前 assignment revision；
+- PostToolUse 校验 PLAN_REPORT 对应当前 Assignment 对象版本；
 - 校验文档和 TASK 指纹仍然当前；
 - 校验依赖已 integrated；
 - 校验 Owner 唯一且没有 active 写冲突；
@@ -296,7 +298,7 @@ Builder 直接由 Closing Contract 驱动：
 |:--|:--|
 | scope 内普通实现错误 | 留在原 assignment 修复并重跑 owned checks |
 | 外部环境或权限暂缺 | assignment=blocked，保留 worktree；继续可独立完成的工作 |
-| 需要扩大写 scope，但规格不变 | 新 assignment revision；重新计算冲突；普通计划重新回执，高风险 approval 不继承 |
+| 需要扩大写 scope，但规格不变 | 由工具生成新的 Assignment 对象版本；重新计算冲突；普通计划重新回执，高风险 approval 不继承 |
 | TASK/contract/design 无法共同成立，REQ 不变 | change impact → TR-007 → planning.design |
 | 必须改变 REQ 目标或 AC | human amendment，不得借 TR-007 静默推进 |
 | 发现邻近但不属于 assignment 的缺陷 | 记录 finding，不顺手扩大修复 |
@@ -305,7 +307,7 @@ Builder 直接由 Closing Contract 驱动：
 
 每个 TASK 的完成事实只生产一次。Builder Result 至少包含：
 
-- task_id、assignment_id、assignment revision、owner；
+- task_id、assignment_id、Assignment 对象版本、owner（版本由工具生成）；
 - completion status 和摘要；
 - 实际 changed paths，由工具从 git diff 生成；
 - reviewed paths；
@@ -318,7 +320,7 @@ Builder 直接由 Closing Contract 驱动：
 目标 task complete 命令应原子执行：
 
 1. 校验 Result schema；
-2. 校验 Owner、Assignment revision 当前；
+2. 校验 Owner、Assignment 对象版本当前；
 3. 自动提取并核对真实 diff；
 4. 写入 Result 和 evidence index；
 5. 把 assignment 从 running 置为 result_submitted；
@@ -330,7 +332,7 @@ Builder 直接由 Closing Contract 驱动：
 
 目标 task integrate 必须检查：
 
-1. Builder Result 可解析且绑定当前 Owner/Assignment revision/TASK；
+1. Builder Result 可解析且绑定当前 Owner/Assignment 对象版本/TASK；
 2. worktree clean，source 有 commit，target 存在；
 3. merge-tree 无冲突；
 4. 实际 changed paths 是 effective scope 的子集；
@@ -382,10 +384,10 @@ GATE-BUILDER-BATCH-READY 必须以 TR-003 锁定的 TASK ID 精确集合为输�
 对每个 TASK 必须同时证明：
 
 - 恰有一个当前写 Owner；
-- Assignment revision 当前，且所需 plan checkpoint/approval 有效；
+- Assignment 对象版本当前，且所需 plan checkpoint/approval 有效；
 - Builder Result 存在、schema-valid 且 producer=Owner；
 - 实际 changed paths ⊆ effective scope；
-- scope deviations 为空或已由新 revision 批准；
+- scope deviations 为空或已由新 Assignment 对象版本批准；
 - Required Checks 全部通过；
 - integration checkpoint 已 verified；
 - generation 和消费的文档指纹当前。
@@ -425,11 +427,11 @@ TR-006 后，S7 入口工具根据以下事实生成 Delivery 计划：
 | TR-003 进入 building | 精确 batch、缺失输入、初始 S6 Board | batch 与指纹来源唯一 |
 | s6 prepare | Ready/Waiting/Conflict、关键路径、WIP 建议 | TASK DAG、即时冲突、一 TASK 一候选 Owner |
 | task dispatch | 任务上下文、effective scope、checks、Skills、PLAN_REPORT 模板 | 真实 topology、worktree、Owner、role/path、无写冲突 |
-| PLAN_REPORT / PostToolUse | 五项判断和当前文档切片 | assignment revision、planned paths、checks 和依赖一致 |
+| PLAN_REPORT / PostToolUse | 五项判断和当前文档切片 | Assignment 对象版本、planned paths、checks 和依赖一致 |
 | 首次写入/PreToolUse | 一行当前 TASK、scope、Closing Contract、下一检查 | 计划已记录；高风险计划已批准；locked artifact/不可恢复动作硬阻断 |
 | test wrapper | 当前 assertion、建议命令、失败分类 | 保存真实 command/result |
 | TeammateIdle/SubagentStop | 当前缺计划、缺 Result、阻塞或可交卷事实 | 未完成时继续同一 Worker，不自动派下一 TASK |
-| task complete | 自动 diff、缺失字段、下一步 integrate | canonical Result、Owner/Assignment revision/Checks |
+| task complete | 自动 diff、缺失字段、下一步 integrate | canonical Result、Owner/Assignment 对象版本/Checks |
 | task integrate | scope 差集、冲突、检查和恢复动作 | 真实 diff、locked path、merge/checkpoint |
 | batch gate | 每 TASK 的 exact missing matrix | 对 TR-003 精确集合全称量化 |
 | S7 entry | 基于真实 diff 的 Delivery plan | verification phase 与 review round 当前 |
@@ -495,7 +497,7 @@ agent-protocol.md 应缩减为“宪法与路由表”，只保留：
 - integration checkpoint 持久化 task_id 与 worktree_path，controller milestone 同步记录 assignment_id/task_id；
 - TR-006 不再要求 team_manifest_record（S7 前置矛盾消除），三个 evidence-attestation stub guard 已删除；
 - `req_baseline_unchanged`（TR-004/TR-007/TR-023）改为真实指纹比较：bound_req 登记的 sha256 必须与磁盘 REQ 文件一致；
-- `runtime task-complete` 提供原子 Builder Result 登记：一条命令完成消息校验、completion evidence envelope 派生、Agent reported、TASK review、evidence 索引——单一 revision CAS。
+- `runtime task-complete` 提供原子 Builder Result 登记：一条命令完成消息校验、completion evidence envelope 派生、Agent reported、TASK review、evidence 索引；由 Writer 内部记录提交 revision，Agent 不传递它。
 
 同日复杂度整改（引导层对齐）追加：
 
@@ -559,7 +561,7 @@ agent-protocol.md 应缩减为“宪法与路由表”，只保留：
 
 - TR-003 精确 execution batch 的 S6 Board；
 - 每个 TASK 的权威 Assignment Record；
-- 当前 Assignment revision 和 plan checkpoint/approval ref；
+- 当前 Assignment 对象版本和 plan checkpoint/approval ref（由工具生成并回执）；
 - 已集成的实现、owned tests、迁移或 fixture；
 - 每个 TASK 唯一 Builder Result；
 - commands/checks 的原始输出引用；
@@ -572,12 +574,12 @@ agent-protocol.md 应缩减为“宪法与路由表”，只保留：
 
 | 情况 | 去向 |
 |:--|:--|
-| PLAN_REPORT 缺输入、文档指纹不明 | 留 S6，补输入并重新生成 assignment revision |
+| PLAN_REPORT 缺输入、文档指纹不明 | 留 S6，补输入并由工具生成新的 Assignment 对象版本 |
 | 普通实现或测试失败且规格明确 | 留原 assignment 修复，保留失败结果 |
 | 依赖未集成 | Waiting，不派发；由调度板显示解锁条件 |
 | 写路径冲突 | Conflict，串行化或拆 TASK |
 | 外部环境/权限阻塞 | blocked + preserve worktree；穷尽其余可做项 |
-| 需要扩大 scope | 新 revision，重新校验冲突并重新提交计划；高风险重新批准 |
+| 需要扩大 scope | 生成新的 Assignment 对象版本，重新校验冲突并重新提交计划；高风险重新批准 |
 | contract/design/TASK 冲突，REQ 不变 | change impact → TR-007 → planning.design |
 | 必须改变 REQ | human amendment |
 | dirty worktree、merge conflict、检查失败 | preserve，修复后重试 integrate |
@@ -589,7 +591,7 @@ agent-protocol.md 应缩减为“宪法与路由表”，只保留：
 #### P0 — 先消除假闭环（已落地，2026-08-20）
 
 1. ✅ 让 Gate 以 TR-003 exact TASK set 为输入；
-2. ✅ 实算 Owner 侧的 Builder Result、真实 diff scope 和 checkpoint（assignment revision 消费随 P1 canonical Result 收口）；
+2. ✅ 实算 Owner 侧的 Builder Result、真实 diff scope 和 checkpoint（Assignment 对象版本消费随 P1 canonical Result 收口）；
 3. ✅ 将 Required Checks 真正接入 Integrator（manifest `required_checks` + CommandCheckRunner）；
 4. ✅ 删除没有真实语义的 S6 批次 Guard（TR-006 三个 stub）；`req_baseline_unchanged` 同批改为真实指纹比较。
 

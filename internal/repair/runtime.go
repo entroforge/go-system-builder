@@ -63,6 +63,24 @@ type CommitHandoffRequest struct {
 	Handoff ArtifactRef
 }
 
+// runtimeCommitRevision is an internal event/idempotency detail. A negative
+// request means the normal single-writer path: use the snapshot read by the
+// domain operation to name the commit, while the Writer assigns the actual
+// next Runtime revision under its lock.
+func runtimeCommitRevision(expected int, current runtimepkg.Snapshot) int {
+	if expected >= 0 {
+		return expected
+	}
+	return current.Revision
+}
+
+func updateRuntime(writer *runtimepkg.Store, expected int, mutation runtimepkg.Mutation) (runtimepkg.Snapshot, error) {
+	if expected < 0 {
+		return writer.UpdateCurrent(mutation)
+	}
+	return writer.Update(expected, mutation)
+}
+
 func OpenRepairSession(root, statePath, journalPath string, req OpenSessionRequest) (runtimepkg.Snapshot, RepairSession, ArtifactRef, error) {
 	current, writer, err := readRepairRuntime(root, statePath, journalPath)
 	if err != nil {
@@ -127,7 +145,8 @@ func OpenRepairSession(root, statePath, journalPath string, req OpenSessionReque
 	for sessionID, digest := range fingerprints {
 		anyFingerprints[sessionID] = digest
 	}
-	snapshot, err := writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-session-open-%s-r%d", req.SessionID, req.ExpectedRevision+1), TransitionID: whitelistChecked("S9-SESSION-OPEN"), Event: "repair_session_opened", Actor: req.Actor, IdempotencyKey: fmt.Sprintf("runtime:s9:session-open:%s:%d", req.SessionID, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.SessionID, contract.ContractID}, From: cursor(current.State), To: cursor(current.State), RequestID: "s9-session-open", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-SESSION-OPEN", GateFingerprint: "sha256:s9-session-open-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
+	snapshot, err := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-session-open-%s-r%d", req.SessionID, commitRevision+1), TransitionID: whitelistChecked("S9-SESSION-OPEN"), Event: "repair_session_opened", Actor: req.Actor, IdempotencyKey: fmt.Sprintf("runtime:s9:session-open:%s:%d", req.SessionID, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.SessionID, contract.ContractID}, From: cursor(current.State), To: cursor(current.State), RequestID: "s9-session-open", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-SESSION-OPEN", GateFingerprint: "sha256:s9-session-open-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 		ensureObject(state, "review")["repair"] = map[string]any{"session_id": session.SessionID, "case_id": contract.CaseID, "contract_id": contract.ContractID, "contract_ref": contract.Ref.Path, "contract_sha256": contract.Ref.SHA256, "path": ref.Path, "sha256": ref.SHA256, "revision": 1, "status": "contract_ready", "authority_fingerprint": anyFingerprints, "updated_at": at.Format(time.RFC3339Nano), "next_action": "runtime repair plan compile --root <root> --plan-id <plan> --created-by <agent>"}
 		return nil
 	}})
@@ -160,7 +179,8 @@ func CompileRepairPlan(root, statePath, journalPath string, req CompilePlanReque
 	if actor == "" {
 		actor = req.CreatedBy
 	}
-	snapshot, err := writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-plan-%s-r%d", plan.PlanID, req.ExpectedRevision+1), TransitionID: whitelistChecked("PTR-BUG-09"), Event: "repair_plan_compiled", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:plan:%s:%d", plan.PlanID, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{plan.PlanID}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "planning"}, RequestID: "s9-plan-compile", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-PLAN-COMPILE", GateFingerprint: "sha256:s9-plan-compile-v2", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
+	snapshot, err := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-plan-%s-r%d", plan.PlanID, commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-09"), Event: "repair_plan_compiled", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:plan:%s:%d", plan.PlanID, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{plan.PlanID}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "planning"}, RequestID: "s9-plan-compile", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-PLAN-COMPILE", GateFingerprint: "sha256:s9-plan-compile-v2", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 		updateRepairPointer(state, map[string]any{"plan_ref": ref.Path, "plan_sha256": ref.SHA256, "status": "planning", "updated_at": at.Format(time.RFC3339Nano), "next_action": "submit one PlanReport per repair assignment with a failing pre-fix check"})
 		setLifecycle(state, "bug_resolution", "planning")
 		return nil
@@ -228,7 +248,8 @@ func SubmitRepairPlanReportToRuntime(root, statePath, journalPath string, req Su
 		actor = report.AgentID
 	}
 	reportRefs := appendArtifactRefFromPointer(p["plan_report_refs"], req.Report)
-	snapshot, err := writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-plan-report-%s-r%d", report.ReportID, req.ExpectedRevision+1), TransitionID: whitelistChecked("PTR-BUG-10"), Event: "repair_plan_reported", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:plan-report:%s:%d", report.ReportID, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Report.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "reproducing"}, RequestID: "s9-plan-report", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-PLAN-REPORT", GateFingerprint: "sha256:s9-plan-report-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
+	snapshot, err := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-plan-report-%s-r%d", report.ReportID, commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-10"), Event: "repair_plan_reported", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:plan-report:%s:%d", report.ReportID, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Report.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "reproducing"}, RequestID: "s9-plan-report", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-PLAN-REPORT", GateFingerprint: "sha256:s9-plan-report-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 		owners := stringMapField(stateRepairPointer(state)["assignment_owners"])
 		owners[report.AssignmentID] = report.AgentID
 		updateRepairPointer(state, map[string]any{"plan_report_ref": req.Report.Path, "plan_report_sha256": req.Report.SHA256, "plan_report_refs": reportRefs, "assignment_owners": owners, "assignment_id": report.AssignmentID, "status": "reproducing", "updated_at": at.Format(time.RFC3339Nano), "next_action": "submit PlanReport for every repair assignment, then begin repair execution"})
@@ -299,7 +320,8 @@ func BeginRepairExecution(root, statePath, journalPath string, req BeginRepairEx
 	if actor == "" {
 		actor = report.AgentID
 	}
-	return writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-execution-begin-r%d", req.ExpectedRevision+1), TransitionID: whitelistChecked("PTR-BUG-11"), Event: "repair_execution_started", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:execution:%s:%d", report.ReportID, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{reportRef.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "fixing"}, RequestID: "s9-execution-begin", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-EXECUTION-BEGIN", GateFingerprint: "sha256:s9-execution-begin-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
+	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-execution-begin-r%d", commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-11"), Event: "repair_execution_started", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:execution:%s:%d", report.ReportID, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{reportRef.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "fixing"}, RequestID: "s9-execution-begin", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-EXECUTION-BEGIN", GateFingerprint: "sha256:s9-execution-begin-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 		updateRepairPointer(state, map[string]any{"status": "repairing", "updated_at": at.Format(time.RFC3339Nano), "next_action": "continue the already-dispatched Builder(s) within their bound scope; submit one exact-unit RepairResult per Assignment"})
 		setLifecycle(state, "bug_resolution", "fixing")
 		return nil
@@ -387,7 +409,8 @@ func SubmitRepairResultToRuntime(root, statePath, journalPath string, req Submit
 	} else {
 		nextStatus, nextAction = repairResultNextState(complete, allPass, missing)
 	}
-	snapshot, err := writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-result-%s-r%d", result.ResultID, req.ExpectedRevision+1), TransitionID: whitelistChecked("S9-RESULT-SUBMIT"), Event: "repair_result_submitted", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:result:%s:%d", result.ResultID, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{result.ResultID}, From: cursor(current.State), To: cursor(current.State), RequestID: "s9-result-submit", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-RESULT-SUBMIT", GateFingerprint: "sha256:s9-result-submit-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
+	snapshot, err := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-result-%s-r%d", result.ResultID, commitRevision+1), TransitionID: whitelistChecked("S9-RESULT-SUBMIT"), Event: "repair_result_submitted", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:result:%s:%d", result.ResultID, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{result.ResultID}, From: cursor(current.State), To: cursor(current.State), RequestID: "s9-result-submit", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-RESULT-SUBMIT", GateFingerprint: "sha256:s9-result-submit-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 		updateRepairPointer(state, map[string]any{"result_ref": ref.Path, "result_sha256": ref.SHA256, "result_refs": resultRefs, "status": nextStatus, "updated_at": at.Format(time.RFC3339Nano), "next_action": nextAction})
 		return nil
 	}})
@@ -901,6 +924,7 @@ func CommitChangeImpact(root, statePath, journalPath string, req CommitImpactReq
 	if actor == "" {
 		actor = "orchestrator"
 	}
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
 	supersededIDs := map[string]bool{}
 	retainedIDs := map[string]bool{}
 	for _, id := range impactDocument.SupersededEvidenceIDs {
@@ -909,7 +933,7 @@ func CommitChangeImpact(root, statePath, journalPath string, req CommitImpactReq
 	for _, id := range impactDocument.RetainedEvidenceIDs {
 		retainedIDs[id] = true
 	}
-	return writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-impact-r%d", req.ExpectedRevision+1), TransitionID: whitelistChecked("PTR-BUG-05"), Event: "change_impact_reconciled", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:impact:%s:%d", req.Impact.Path, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Impact.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "targeted_reverification"}, RequestID: "s9-impact-reconcile", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-IMPACT-RECONCILE", GateFingerprint: "sha256:s9-impact-reconcile-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-impact-r%d", commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-05"), Event: "change_impact_reconciled", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:impact:%s:%d", req.Impact.Path, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Impact.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "targeted_reverification"}, RequestID: "s9-impact-reconcile", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-IMPACT-RECONCILE", GateFingerprint: "sha256:s9-impact-reconcile-v1", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 		updateRepairPointer(state, map[string]any{"impact_ref": req.Impact.Path, "impact_sha256": req.Impact.SHA256, "status": "targeted_reverification", "required_reverification_ids": requiredReverificationIDs(impactDocument), "updated_at": at.Format(time.RFC3339Nano), "next_action": "submit independent targeted reverification"})
 		changedPaths := make([]string, 0, len(impactDocument.ChangedArtifacts))
 		for _, artifact := range impactDocument.ChangedArtifacts {
@@ -1171,6 +1195,7 @@ func CommitTargetedReverification(root, statePath, journalPath string, req Commi
 	if actor == "" {
 		return runtimepkg.Snapshot{}, errors.New("targeted reverification commit requires an explicit actor identity: pass --actor <agent-id> (the independent verifier), not an implicit default")
 	}
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
 	// RC-01 (S9-1): identity-bound independence. The string-inequality check
 	// inside ValidateTargetedReverification is not enough — a Builder can fill
 	// any fabricated "independent" verifier ID. Here the two identities are
@@ -1188,13 +1213,13 @@ func CommitTargetedReverification(root, statePath, journalPath string, req Commi
 			route = "fail_same_cause"
 		}
 		nextAction := targetedFailureNextAction(stringField(p["case_id"]), route, req.Reverification)
-		return writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-targeted-fail-r%d", req.ExpectedRevision+1), TransitionID: whitelistChecked("S9-TARGETED-FAILURE"), Event: "targeted_reverification_failed", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:targeted-failure:%s:%d", req.Reverification.Path, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Reverification.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "investigation"}, RequestID: "s9-targeted-reverification-failure", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-TARGETED-FAILURE", GateFingerprint: "sha256:s9-targeted-failure-v1", ProducerResponsibility: "S9 QA", OccurredAt: at, Apply: func(state map[string]any) error {
+		return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-targeted-fail-r%d", commitRevision+1), TransitionID: whitelistChecked("S9-TARGETED-FAILURE"), Event: "targeted_reverification_failed", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:targeted-failure:%s:%d", req.Reverification.Path, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Reverification.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "investigation"}, RequestID: "s9-targeted-reverification-failure", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-TARGETED-FAILURE", GateFingerprint: "sha256:s9-targeted-failure-v1", ProducerResponsibility: "S9 QA", OccurredAt: at, Apply: func(state map[string]any) error {
 			updateRepairPointer(state, map[string]any{"targeted_reverification_refs": refs, "targeted_reverification_artifacts": targetedArtifacts, "failure_route": route, "status": "blocked", "updated_at": at.Format(time.RFC3339Nano), "next_action": nextAction})
 			setLifecycle(state, "bug_resolution", "investigation")
 			return nil
 		}})
 	}
-	return writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-targeted-r%d", req.ExpectedRevision+1), TransitionID: whitelistChecked("PTR-BUG-06"), Event: "targeted_reverification_passed", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:targeted:%s:%d", req.Reverification.Path, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Reverification.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "ready_for_full_review"}, RequestID: "s9-targeted-reverification", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-TARGETED-REVERIFICATION", GateFingerprint: "sha256:s9-targeted-reverification-v1", ProducerResponsibility: "S9 QA", OccurredAt: at, Apply: func(state map[string]any) error {
+	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-targeted-r%d", commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-06"), Event: "targeted_reverification_passed", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:targeted:%s:%d", req.Reverification.Path, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Reverification.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "ready_for_full_review"}, RequestID: "s9-targeted-reverification", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-TARGETED-REVERIFICATION", GateFingerprint: "sha256:s9-targeted-reverification-v1", ProducerResponsibility: "S9 QA", OccurredAt: at, Apply: func(state map[string]any) error {
 		updateRepairPointer(state, map[string]any{"targeted_reverification_refs": refs, "targeted_reverification_artifacts": targetedArtifacts, "status": "ready_for_full_review", "updated_at": at.Format(time.RFC3339Nano), "next_action": "create RepairHandoff; S7 must run a complete review round"})
 		setLifecycle(state, "bug_resolution", "ready_for_full_review")
 		return nil
@@ -1229,10 +1254,11 @@ func ResumeTargetedReverification(root, statePath, journalPath string, req Resum
 		actor = "orchestrator"
 	}
 	at := occurred(req.OccurredAt)
-	return writer.Update(req.ExpectedRevision, runtimepkg.Mutation{
-		EventID: fmt.Sprintf("evt-s9-targeted-resume-r%d", req.ExpectedRevision+1), TransitionID: whitelistChecked("PTR-BUG-12"),
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
+	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{
+		EventID: fmt.Sprintf("evt-s9-targeted-resume-r%d", commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-12"),
 		Event: "targeted_reverification_unblocked", Actor: actor,
-		IdempotencyKey: fmt.Sprintf("runtime:s9:targeted-resume:%s:%d", stringField(p["session_id"]), req.ExpectedRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:s9:targeted-resume:%s:%d", stringField(p["session_id"]), commitRevision),
 		RuntimeID:      stringField(current.State["runtime_id"]), EvidenceIDs: stringSliceFromAny(p["targeted_reverification_refs"]),
 		From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "targeted_reverification"},
 		RequestID: "s9-targeted-reverification-resume", BaselineGeneration: baselineGeneration(current.State),
@@ -1448,8 +1474,9 @@ func CommitRepairHandoff(root, statePath, journalPath string, req CommitHandoffR
 	if actor == "" {
 		actor = "orchestrator"
 	}
+	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
 	return func() (runtimepkg.Snapshot, error) {
-		snapshot, updateErr := writer.Update(req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-handoff-r%d", req.ExpectedRevision+1), TransitionID: whitelistChecked("TR-012"), Event: "repair_handoff_ready", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:handoff:%s:%d", req.Handoff.Path, req.ExpectedRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Handoff.Path, seedRef.Path}, From: cursor(current.State), To: map[string]any{"state": "verification", "phase": "running"}, RequestID: "s9-handoff", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-REPAIR-HANDOFF", GateFingerprint: "sha256:s9-repair-handoff-v3", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+		snapshot, updateErr := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-handoff-r%d", commitRevision+1), TransitionID: whitelistChecked("TR-012"), Event: "repair_handoff_ready", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:handoff:%s:%d", req.Handoff.Path, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Handoff.Path, seedRef.Path}, From: cursor(current.State), To: map[string]any{"state": "verification", "phase": "running"}, RequestID: "s9-handoff", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-REPAIR-HANDOFF", GateFingerprint: "sha256:s9-repair-handoff-v3", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 			updateRepairPointer(state, map[string]any{"changeset_ref": handoff.ChangesetRef.Path, "changeset_sha256": handoff.ChangesetRef.SHA256, "handoff_ref": req.Handoff.Path, "handoff_sha256": req.Handoff.SHA256, "status": "closed", "updated_at": at.Format(time.RFC3339Nano), "next_action": "review the staged S7 seed; if coverage changes, refine it once with `runtime review-plan revise --file <plan-v2.json> --source-ref runtime:<change-impact-evidence-id> --affected-surface <surface>`, then dispatch Delivery + QA + E2E assignments", "review_plan_seed_ref": seedRef.Path, "review_plan_seed_sha256": seedRef.SHA256, "implementation_baseline_digest": newBaselineDigest})
 			review := ensureObject(state, "review")
 			round := integerValue(review["round"])
@@ -1541,8 +1568,11 @@ func ValidateS9TransitionID(transitionID string) error {
 }
 
 func checkRevision(expected, actual int, next string) error {
+	if expected < 0 {
+		return nil
+	}
 	if expected != actual {
-		return fmt.Errorf("%w: expected %d but Runtime is at %d; next: %s --expected-revision %d", runtimepkg.ErrStaleRevision, expected, actual, next, actual)
+		return fmt.Errorf("%w: explicit expected revision %d does not match Runtime revision %d; next: %s", runtimepkg.ErrStaleRevision, expected, actual, next)
 	}
 	return nil
 }
@@ -2078,6 +2108,13 @@ func validateHandoffAgainstCurrentRepair(root string, state, pointer map[string]
 func cleanupStagedArtifact(writer *runtimepkg.Store, expectedRevision int, ref ArtifactRef, state map[string]any, operationErr error) error {
 	if writer == nil || ref.Path == "" || ref.SHA256 == "" {
 		return operationErr
+	}
+	if expectedRevision < 0 {
+		current, err := writer.Snapshot()
+		if err != nil {
+			return fmt.Errorf("%w; staged artifact %s could not be safely cleaned: read current Runtime: %v", operationErr, ref.Path, err)
+		}
+		expectedRevision = current.Revision
 	}
 	_, cleanupErr := writer.RemoveUnreferencedArtifact(runtimepkg.ArtifactCleanupRequest{ExpectedRevision: expectedRevision, ArtifactPath: ref.Path, ArtifactSHA256: ref.SHA256, ReferencedPaths: stateArtifactPaths(state)})
 	if cleanupErr != nil {
