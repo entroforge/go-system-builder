@@ -182,13 +182,13 @@ These hold across every stage:
 ## S0 — requirement_design {#s0}
 
 - **purpose**: produce one human-locked REQ baseline.
-- **inputs**: user intent, project facts (`docs/project-map.md`), applicable rules.
+- **inputs**: user intent, project facts (`docs/project-map.md`), applicable rules, Project Design Foundation (`docs/design/DESIGN.md` when the product has user-visible UI).
 - **inputs_from**: [] (human input + existing project baselines; this is the entry stage)
 - **actions**:
-  1. distill the user's expected outcome into §A — an agent-filtered restatement (ambiguous colloquial wording removed, implicit premises made explicit), confirmed by the human; never record raw quotes
-  2. funnel through §A (why) → §B (direction & constraints) → §C (what), one layer at a time; each hand-up is a complete proposal (recommendation + rationale + rejected alternatives) with at most 3 genuine value-decision points for the human
-  3. record unknowns, dependencies, and out-of-scope items (§D)
-  4. determine UI impact (`none` / `changed` / `unknown`)
+  1. determine UI impact (`none` / `changed` / `unknown`) from the expected outcome **before** drafting §A. If the outcome may change user-visible UI, read `docs/design/DESIGN.md` first (`docs/rules/design-foundation.md`). Missing, draft, stale, or uncovered-surface Foundation → finish F0–F6 via `skills/design-foundation` and obtain human publish confirmation before writing §A–§C or locking a `changed` REQ. S0 records Foundation version / Surface / posture only; it does not copy Kernel or Grammar. Runtime does not yet hard-block a missing Foundation.
+  2. distill the user's expected outcome into §A — an agent-filtered restatement (ambiguous colloquial wording removed, implicit premises made explicit), confirmed by the human; never record raw quotes
+  3. funnel through §A (why) → §B (direction & constraints) → §C (what), one layer at a time; each hand-up is a complete proposal (recommendation + rationale + rejected alternatives) with at most 3 genuine value-decision points for the human
+  4. record unknowns, dependencies, and out-of-scope items (§D)
   5. obtain human lock and a lock record (date, identity, version)
 - **done_when**:
   - REQ file exists at `docs/requirements/REQ-<id>.md` with `status: locked`
@@ -222,11 +222,11 @@ These hold across every stage:
 ## S2 — design {#s2}
 
 - **purpose**: produce the architecture decisions and, when UI impact is `changed`, the module's nine-file scenario design package (the dual-track convergence of `skills: specification-planning`).
-- **inputs**: locked REQ, existing architecture, existing module packages (if any), applicable design rules (`docs/rules/scenario-model.md`).
+- **inputs**: locked REQ, existing architecture, existing module packages (if any), applicable design rules (`docs/rules/scenario-model.md`, `docs/rules/design-foundation.md`), Project Design Foundation (`docs/design/DESIGN.md`, `design-language.md`, current surface profile) when UI impact is `changed`.
 - **inputs_from**: [S0 (locked REQ), S1 (Runtime Bookmark + baseline generation 1)]
 - **actions**:
   1. draft or update `docs/design/architecture/ARCHITECTURE-<id>.md` (system track)
-  2. if UI impact = `changed`: run the dual-track convergence per `skills: specification-planning` — user track first lands `stories.md`; convergence-1 fills the hand-written `cross-matrix.json` carrier (fact×FR×story cells: covering branch or no-branch reason) and produces `scenario-model.json` + `fixture-contract.json`; convergence-2 lands `flows.md`, page HTML, and `index.html`. The current implementation IS the baseline; no separate capture is required.
+  2. if UI impact = `changed`: read published Foundation and the current Surface Profile; write `docs/design/derivation/REQ-<id>.md` from `docs/design/derivation/DERIVATION-template.md` before expanding the module package. Then run the dual-track convergence per `skills: specification-planning` — user track first lands `stories.md`; convergence-1 fills the hand-written `cross-matrix.json` carrier (fact×FR×story cells: covering branch or no-branch reason) and produces `scenario-model.json` + `fixture-contract.json`; convergence-2 lands `flows.md`, page HTML, and `index.html`. One macro composition and one stress state must exist before the remaining pages. The current implementation IS the baseline; no separate capture is required. Derivation Note is a semantic duty, not a PTR-PLAN-01 predicate.
   3. at close: run `go run ./cmd/loop-harness scenario generate --module <module> --root .` then `scenario validate --module <module> --root .` — validate runs the full AC↔CASE bridge
   4. flip the architecture document's top `status` field to `locked` (PTR-PLAN-01 registers only locked `ARCHITECTURE-*.md`; leaving it as draft fails the gate with `document:design:locked`), then register the JSON evidence envelope described in the `specification-planning` SKILL's "Planning Evidence Envelopes" section (kind=`planning_design`, responsibility=`Architect`—the main session itself; missing evidence fails with `evidence:planning_design_record`, and an invalid envelope fails with `evidence:<id>:schema`)
   5. record decisions that the contracts will need (state, data, integration, migration)

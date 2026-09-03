@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Style Tile — {direction name}</title>
+  <style>
+    :root {
+      /* F2 candidate placeholders. Compare design worlds here; do not treat as Kernel.
+         After F4/F6, published Anchor/Stress/module HTML uses packages/design-tokens/tokens.css. */
+      --tile-bg: #f7f5f2;
+      --tile-ink: #1a1c1e;
+      --tile-muted: #6c7278;
+      --tile-action: #b8422e;
+      --tile-surface: #ffffff;
+    }
+    body { margin: 0; font-family: Georgia, "Songti SC", serif; background: var(--tile-bg); color: var(--tile-ink); }
+    main { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+    h1, h2 { font-weight: 600; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 16px; letter-spacing: 0.08em; text-transform: uppercase; }
+    section { background: var(--tile-surface); padding: 20px; margin: 16px 0; }
+    .swatch { display: inline-block; width: 72px; height: 48px; margin-right: 8px; vertical-align: middle; }
+    .muted { color: var(--tile-muted); }
+    .action { color: #fff; background: var(--tile-action); border: 0; padding: 8px 16px; }
+    .quiet { background: transparent; border: 1px solid var(--tile-ink); padding: 8px 16px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Style Tile — {direction name}</h1>
+  <p class="muted">Candidate for F2. Not a frozen spec and not a full page.</p>
+
+  <section>
+    <h2>Thesis / Laws / Anti-principles / Risk</h2>
+    <p><strong>Thesis:</strong> {one sentence}</p>
+    <p><strong>Active laws:</strong> {LAW-ids}</p>
+    <p><strong>Refuses:</strong> {anti-principles}</p>
+    <p><strong>Risk:</strong> {what this world might fail at}</p>
+  </section>
+
+  <section>
+    <h2>Type</h2>
+    <p style="font-size: 32px; line-height: 1.1;">{Headline sample}</p>
+    <p>{Body sample using real product language, not lorem ipsum.}</p>
+    <p class="muted">{Metadata / timestamp / source label}</p>
+  </section>
+
+  <section>
+    <h2>Color roles</h2>
+    <p><span class="swatch" style="background: var(--tile-ink)"></span> Environment / ink</p>
+    <p><span class="swatch" style="background: var(--tile-muted)"></span> Secondary / meta</p>
+    <p><span class="swatch" style="background: var(--tile-action)"></span> Promise / action only</p>
+    <p><span class="swatch" style="background: var(--tile-bg); border: 1px solid #ddd"></span> Page ground</p>
+  </section>
+
+  <section>
+    <h2>Surface and material</h2>
+    <p>{Background, cards, borders, depth. Describe the shared character, not a component API.}</p>
+  </section>
+
+  <section>
+    <h2>Image / icon / line</h2>
+    <p>{Photography honesty, crop, icon grammar.}</p>
+  </section>
+
+  <section>
+    <h2>Actions and states</h2>
+    <p><button class="action" type="button">Primary promise</button>
+       <button class="quiet" type="button">Secondary</button></p>
+    <p>Success: {one line of real copy}.</p>
+    <p>Empty or failure: {one line of real copy that still sounds like this product}.</p>
+  </section>
+</main>
+</body>
+</html>

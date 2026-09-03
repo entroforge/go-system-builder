@@ -2,7 +2,7 @@
 name: ui-prototyping
 description: Use when a requirement changes frontend screens, interactions, states, or visual behavior, and the final UI design package must reach contract lock
 category: best-practice
-version: 3.1.0
+version: 3.3.0
 ---
 # UI Prototyping
 
@@ -11,7 +11,8 @@ version: 3.1.0
 The current module UI/scenario package is prepared after REQ lock and before
 development contracts. Stage requirements live in `docs/agent-protocol.md`;
 UI gate legality lives in `docs/loop-definition.json`; package shape lives in
-`docs/rules/ui-prototype.md`. HTML prototype quality criteria below are the
+`docs/rules/ui-prototype.md`; project-level language lives in
+`docs/rules/design-foundation.md`. HTML prototype quality criteria below are the
 canonical shape a Document Verifier checks before contract lock. Story and
 flow content quality criteria live in `skills/user-story-design/SKILL.md` and
 `skills/user-flow-design/SKILL.md`; the present Skill binds them together
@@ -30,7 +31,10 @@ into.
 - Locked REQ acceptance criteria.
 - Current implementation facts and the affected module's complete existing package at
   `docs/design/prototypes/{module}/` (if any), including the scenario four-pack.
+- Design Derivation Note at `docs/design/derivation/REQ-{id}.md` and
+  `docs/design/design-language.md` when `UI impact = changed`.
 - Applicable UX, accessibility, security, and domain rules.
+- `docs/rules/design-foundation.md` and `docs/rules/ui-prototype.md`.
 - Applicable `docs/design/prototypes/*-convention.md` siblings (storage key
   layout, naming) when the prototype references them.
 
@@ -208,11 +212,12 @@ the order is part of the contract.
 | # | Heading | Content shape | What it answers |
 |---|---|---|---|
 | 1 | `本原型目标` | `<p>` — sidebar slot + main-UI intent in one paragraph | Why does this page exist? Which sidebar slot does it occupy? |
-| 2 | `PM 决策 (D-1 / D-2 / ...)` | `<ul>` of `<li><b>D1</b> ...` | What product decisions shaped this layout? Each decision gets a stable code (D1, D2, R1…) so contracts and BUG reports can cite it. |
-| 3 | `FR coverage` | 3-col `<table>`: FR ref (`§3.1`) · UI affordance · `状态` badge | Which REQ functional requirements does this page cover? Status uses `.badge-status`: `covered` / `partial` / `open`. |
-| 4 | `API endpoints` | 3-col `<table>`: Method · Path (`<code>`) · UI 用途 | Which backend endpoints does this page call? |
-| 5 | `Edge cases (N)` | `<ul>` of fallback states | Empty, error, permission-denied, terminal-state, confirm-required, etc. |
-| 6 | `Q&A (N)` | `<ul>` of `<li><b>Q1 (topic)</b> — DECIDED: ...` or `OPEN: ...` | Open / decided design questions with stable IDs. |
+| 2 | `设计推导` | `<ul>` of Foundation version, Surface, Experience role, Active laws, Exception | Why does this page grow this way from Kernel/Grammar? Cite `docs/design/derivation/REQ-{id}.md` |
+| 3 | `PM 决策 (D-1 / D-2 / ...)` | `<ul>` of `<li><b>D1</b> ...` | What product decisions shaped this layout? Each decision gets a stable code (D1, D2, R1…) so contracts and BUG reports can cite it. |
+| 4 | `FR coverage` | 3-col `<table>`: FR ref (`§3.1`) · UI affordance · `状态` badge | Which REQ functional requirements does this page cover? Status uses `.badge-status`: `covered` / `partial` / `open`. |
+| 5 | `API endpoints` | 3-col `<table>`: Method · Path (`<code>`) · UI 用途 | Which backend endpoints does this page call? |
+| 6 | `Edge cases (N)` | `<ul>` of fallback states | Empty, error, permission-denied, terminal-state, confirm-required, etc. |
+| 7 | `Q&A (N)` | `<ul>` of `<li><b>Q1 (topic)</b> — DECIDED: ...` or `OPEN: ...` | Open / decided design questions with stable IDs. |
 
 ### Layout-specific section (pick one, between PM 决策 and FR coverage)
 
@@ -274,26 +279,44 @@ Each variant has layout-specific conventions.
 
 ## Visual Tokens
 
-Conventional CSS variables or Tailwind utility classes. Pick one per
-module and stay consistent.
+CSS variables come from `packages/design-tokens/tokens.css`, generated from
+`tokens.json`. Do not invent a second palette per module and do not add a
+hex that is absent from `tokens.json`. F2 Style Tiles may still use
+*candidate* hex while comparing design worlds; published Anchor / Stress /
+module HTML after F6 must use the variables.
+
+From `docs/design/prototypes/<module>/`:
+
+```html
+<link rel="stylesheet" href="../../../../packages/design-tokens/tokens.css">
+```
+
+Canonical names (see `packages/design-tokens/README.md`):
+
+`--color-surface-page`, `--color-surface-raised`, `--color-content-ink`,
+`--color-content-meta`, `--color-content-border`,
+`--color-content-border-strong`, `--color-action-promise`,
+`--color-status-success`, `--color-status-warning`,
+`--color-status-blocking`, `--color-status-info`, `--color-brand-mark`,
+`--space-*`, `--rounded-*`, `--font-*`.
+
+P1 aliases, if an older page still uses them, map locally — do not put hex
+back into the page:
 
 ```css
 :root {
-  --c-bg: #f8fafc;          /* page background (slate-50) */
-  --c-card: #fff;
-  --c-border: #e2e8f0;       /* slate-200 */
-  --c-border-strong: #cbd5e1;
-  --c-text: #0f172a;         /* slate-900 */
-  --c-text-muted: #64748b;   /* slate-500 */
-  --c-primary: #2563eb;      /* blue-600 */
-  --c-success: #10b981;
-  --c-warning: #f59e0b;
-  --c-danger: #ef4444;
-  --c-info: #6366f1;
-  --radius: 8px;
-  --radius-lg: 12px;
+  --color-surface-card: var(--color-surface-raised);
+  --color-border-default: var(--color-content-border);
+  --color-content-primary: var(--color-content-ink);
+  --color-content-muted: var(--color-content-meta);
+  --radius: var(--rounded-md);
+  --radius-lg: var(--rounded-lg);
 }
 ```
+
+The legacy `--c-bg` / `--c-primary` names stay retired. After changing
+primitives, run `loop-harness design-foundation emit-css --root .`.
+Unregistered hex is reported by `loop-harness design-foundation check`.
 
 Badge system — `.badge-status` (FR coverage status):
 
@@ -349,8 +372,11 @@ A module prototype set is ready for contract lock when ALL of these hold:
 - [ ] Every HTML file carries the 4-field header (设计代数 / 更新 / 路由 /
       index 链接); no version, REQ ID, round, lock status, no owner, no
       related-contracts field
-- [ ] Every HTML file's `aside.proto-notes` has the 6 mandatory sections
-      in canonical order
+- [ ] Every HTML file's `aside.proto-notes` has the 7 mandatory sections
+      in canonical order (`本原型目标` → `设计推导` → `PM 决策` → layout-specific
+      → `FR coverage` → `API endpoints` → `Edge cases` → `Q&A`)
+- [ ] `设计推导` cites Foundation version, active laws, experience role, and
+      exception; each active law maps to a visible region on the page
 - [ ] The layout-appropriate layout-specific section is present (column
       spec / zone map / sub-component map / step list / state-grid)
 - [ ] `stories.md` carries the complete current `S-NNN` set; every story cites

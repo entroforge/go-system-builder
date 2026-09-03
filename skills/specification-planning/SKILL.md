@@ -2,12 +2,12 @@
 name: specification-planning
 description: Use when designing architecture, final UI design packages, contracts, and task decomposition in the planning phase
 category: methodology
-version: 2.1.0
+version: 2.2.0
 ---
 # Specification Planning
 
 ## Authority
-The locked REQ is the baseline. Design, contracts, and tasks must trace back to it. Runtime authority lives in `docs/loop-definition.json`; stage contracts live in `docs/agent-protocol.md`; the method summary is inlined below.
+The locked REQ is the baseline. Design, contracts, and tasks must trace back to it. Runtime authority lives in `docs/loop-definition.json`; stage contracts live in `docs/agent-protocol.md`; Project Design Foundation lives in `docs/rules/design-foundation.md`; the method summary is inlined below.
 
 ## Entry Conditions
 - The Loop is in `planning` (phases advance design → contracts → tasks via PTR-PLAN-01/02 and TR-002).
@@ -18,8 +18,10 @@ The locked REQ is the baseline. Design, contracts, and tasks must trace back to 
 |:---|:---|:--|
 | Locked REQ | runtime `bound_req.path` | source of acceptance criteria and scope |
 | Existing design | `docs/design/**` | reuse and conflict detection |
+| Design Foundation | `docs/design/DESIGN.md`, `docs/design/design-language.md`, current `docs/design/surface-profiles/*.md` | inherit project language when UI impact is `changed`; do not invent brand in the module package |
+| Derivation template | `docs/design/derivation/DERIVATION-template.md` | write `docs/design/derivation/REQ-<id>.md` before expanding HTML |
 | Module current truth | `docs/design/prototypes/<module>/{index.html, stories.md, flows.md, scenario-model.json, cross-matrix.json, cases.json, scenario-coverage.json, fixture-contract.json, *.html}` | current module package and prototype gate input |
-| Rules | `docs/rules/*.md` | naming, security, api-design, state-machine constraints |
+| Rules | `docs/rules/*.md` | naming, security, api-design, state-machine, design-foundation constraints |
 | Loop Definition | `docs/loop-definition.json` | planning exit transition and executable guards |
 
 ## Procedure — dual-track convergence (v2.0.0)
@@ -27,8 +29,23 @@ The locked REQ is the baseline. Design, contracts, and tasks must trace back to 
 **Step 0 — route by UI impact before doing anything else**: read the bound
 REQ's top `UI impact` field. `unknown` → stop, resolve it in the REQ's §D
 first (the `ui_impact_resolved` guard blocks PTR-PLAN-01). `none` → skip
-the entire S2 package work (steps 1–9) and go straight to contracts
-(step 10). `changed` → run the full flow below.
+steps 0.5 and 3–7 (Foundation derivation and the UI/scenario package) but
+still complete architecture plus ADR (step 1) and the architecture close
+in steps 8–9 before contracts (step 10). `changed` → run the full flow
+below. Do not treat `none` as “no design”: locked ARCHITECTURE remains
+required.
+
+**Step 0.5 — consume Project Design Foundation (`changed` only)**: read
+`docs/design/DESIGN.md`, `design-language.md`, and the Surface Profile named
+by the REQ. If Foundation is missing, draft, or cannot cover this surface,
+stop and load `skills/design-foundation` — do not batch-generate pages.
+Otherwise write `docs/design/derivation/REQ-<id>.md` (inherit / extend /
+exception, active laws, one macro composition, one stress state). Extend
+requires a promotion candidate note; exception requires
+`docs/design/exceptions/EX-*.md`. One macro composition and one stress HTML
+state must exist before the remaining module pages. See
+`docs/rules/design-foundation.md`. This step is a semantic duty, not a
+PTR-PLAN-01 predicate.
 
 The S2 portion runs as two tracks with free ordering within one agent (not
 subagent parallelism), converging twice. "Free ordering" means either track
@@ -174,6 +191,8 @@ go run ./cmd/loop-harness runtime evidence add --id planning-design-pass   --kin
 ## Outputs
 - Architecture and ADR records (with the depth self-review paragraph and
   the endorsed-N/A list) under `docs/design/`.
+- Design Derivation Note at `docs/design/derivation/REQ-<id>.md` when UI
+  impact is `changed`.
 - Locked current module UI/scenario package (when UI impact or behavior is
   changed) with fingerprints for the scenario package (nine files incl.
   cross-matrix.json), HTML prototype, stories, flows, and module spec.

@@ -12,6 +12,7 @@
 | goal | {goal} | confirmed / unknown |
 | users | {roles} | confirmed / unknown |
 | domain | {domain} | confirmed / unknown |
+| product surfaces | {consumer / operations / none} | confirmed / unknown |
 | stack | {frontend/backend/data/deploy} | confirmed / unknown |
 | constraints | {schedule/security/compliance} | confirmed / unknown |
 
@@ -35,6 +36,7 @@ This section is a human-facing summary. It must not override the Loop runtime.
 |:---|:---|:---|:---|
 | rules | `docs/rules/README.md` | locked | {version} |
 | REQ | `docs/requirements/REQ-{id}.md` | {status} | {version/hash} |
+| design foundation | `docs/design/DESIGN.md` | missing / draft / published / N/A | {version} |
 | design/UI | `{path}` | {status/N/A} | {version/hash} |
 | contracts | `docs/contracts/CONTRACTS-{id}.md` | {status} | {version/hash} |
 | tasks | `docs/tasks/index.md` | {status} | {version/hash} |

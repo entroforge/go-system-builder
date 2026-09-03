@@ -16,6 +16,7 @@ type SkillSpec struct {
 var Skills = []SkillSpec{
 	{"loop-orchestration", "methodology"},
 	{"requirement-funnel", "methodology"},
+	{"design-foundation", "methodology"},
 	{"specification-planning", "methodology"},
 	{"document-verification", "methodology"},
 	{"agent-dispatch", "methodology"},
@@ -46,6 +47,7 @@ var Skills = []SkillSpec{
 	{"dag-design", "best-practice"},
 	{"api-contracts", "best-practice"},
 	{"ui-prototyping", "best-practice"},
+	{"design-critic", "best-practice"},
 	{"scenario-model-design", "best-practice"},
 	{"user-story-design", "best-practice"},
 	{"user-flow-design", "best-practice"},

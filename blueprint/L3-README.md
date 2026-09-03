@@ -59,7 +59,7 @@ frontend/backend/test-builder（构建者）；document/delivery-verifier、qa�
 
 ### E. 技能（`skills/*/SKILL.md`——方法论按需加载）
 
-`agent-dispatch`（L4 plan_checkpoint 派发；旧 `two-phase-activation` 已删除）/ `team-planning`（组队）/ `loop-orchestration`（驱动）/ `bug-resolution`（深查）/ `clean-round-evaluation` 等。
+`agent-dispatch`（L4 plan_checkpoint 派发；旧 `two-phase-activation` 已删除）/ `team-planning`（组队）/ `loop-orchestration`（驱动）/ `requirement-funnel`（S0）/ `design-foundation`（Loop 外 F0～F6）/ `design-critic`（方向独立评审）/ `bug-resolution`（深查）/ `clean-round-evaluation` 等。
 
 Agent 调度是首个进入 L4 的共用机制。S5/S6/S7/S8/S9 只声明消费 `one_shot`、`plan_checkpoint` 或 `plan_approval_required` 及本阶段完成条件；派发对象、计划回执、消息、等待、idle/stop、恢复和结果消费统一以 [L4 Agent 调度与治理机制](L4-agent-dispatch-governance.md) 为目标态。两阶段授权事件（readback_submitted → understanding_approved → activated）仍是 `plan_approval_required` 模式下的真实代码路径（internal/assignment/lifecycle.go 的 12 事件生命周期），并非待迁移的死代码；`two-phase-activation` Skill 已被 `agent-dispatch` 取代并删除。
 

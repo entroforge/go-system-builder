@@ -2,7 +2,7 @@
 name: frontend-engineering
 description: Use when frontend components, browser behavior, accessibility, or responsive presentation changes
 category: best-practice
-version: 1.0.0
+version: 1.1.0
 ---
 # Frontend Engineering
 ## Authority
@@ -10,9 +10,9 @@ Quality guidance only. Stage routing lives in `docs/agent-protocol.md`; Skill ro
 ## Applicability
 Apply to frontend paths and the `frontend` risk tag.
 ## Required Inputs
-Read the UI design package, FE contract, states, target browsers, and affected components.
+Read the UI design package, FE contract, states, target browsers, affected components, Project Design Foundation (`docs/rules/design-foundation.md`), `packages/design-tokens/tokens.css`, and — when the target app has Storybook — live component docs via `tools/ui-lab/README.md`.
 ## Quality Criteria
-Check component ownership, state transitions, loading/error/empty states, accessibility, responsive constraints, keyboard behavior, and regression risk.
+Check component ownership, state transitions, loading/error/empty states, accessibility, responsive constraints, keyboard behavior, and regression risk. Reuse a live component that already covers the semantic role (`docs-list` / `docs-show` when UI Lab exists); do not re-implement Button, Dialog, or similar from `docs/design/portable/DESIGN.md` or from a library demo. A second module that needs the same relationship must share the component or file `docs/design/components/CP-*.md` before adding a parallel control. Unregistered hex and near-duplicate names are advisory findings from `loop-harness design-foundation check`.
 ## Outputs
 Implementation choices or one scoped review conclusion with evidence.
 ## N/A Criteria

@@ -35,6 +35,8 @@ When `UI impact = changed`:
 
 1. Locate the affected module directory `docs/design/prototypes/<module>/`. Create it if missing.
 2. Read the complete existing module package and merge the REQ behavior into its current truth.
+   HTML pages link `packages/design-tokens/tokens.css` (see `docs/rules/design-foundation.md`);
+   do not introduce unregistered hex.
 3. Ensure the module ships `index.html`, `stories.md`, `flows.md`, `scenario-model.json`,
    `cases.json`, `scenario-coverage.json`, `fixture-contract.json`, and ≥1 page HTML file.
 4. Update the complete module set; REQ is a `source_refs` value, not the owner of a copy.
@@ -82,7 +84,7 @@ The four tokens (`设计代数 / 更新 / 路由 / index 链接`) are machine-ch
 
 REQ ID, lock status, owner, and related contracts are explicitly **dropped** — they are noise given the "only final version" rule, and they live elsewhere (REQ file, `CONTRACTS-{id}.md` index, git history).
 
-Below the header, each page carries a sticky `aside.proto-notes` sidebar with 6 mandatory sections in canonical order: `本原型目标` → `PM 决策` → layout-specific section → `FR coverage` → `API endpoints` → `Edge cases` → `Q&A`. See `skills/ui-prototyping/SKILL.md` §Sidebar for full contract.
+Below the header, each page carries a sticky `aside.proto-notes` sidebar with 7 mandatory sections in canonical order: `本原型目标` → `设计推导` → `PM 决策` → layout-specific section → `FR coverage` → `API endpoints` → `Edge cases` → `Q&A`. See `skills/ui-prototyping/SKILL.md` §Sidebar for full contract.
 
 ## 6. Stories Minimum
 

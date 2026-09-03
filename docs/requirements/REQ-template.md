@@ -12,7 +12,7 @@
 > `UI impact` 是 `状态：locked` 的强制顶部字段，`req bind` 只解析这一处（§C 的回显必须与之一致，不一致会被拒绝）。值必须三选一：`none` / `changed` / `unknown`。`unknown` 会触发规划暂停门禁，需在 §D 澄清后才能推进 S2。
 
 <!-- 给 agent（固定阅读，2 行）：
-人给预期效果，你全权接管设计，人只逐层拍板；按 §A→§B→§C 漏斗推进，上一层拍板前不设计下一层。
+若预期效果可能改界面：先读 DESIGN.md / design-foundation；缺失则停漏斗走 F0–F6，再按 §A→§B→§C 推进。
 提案纪律与自审见 requirement-funnel skill——上交唯一合格形态是完整方案，开放问题禁止上交。 -->
 
 ## §A 理念（Why）
@@ -106,6 +106,10 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 |:--|:--|
 | UI impact（引自顶部） | none / changed / unknown（顶部 blockquote 是唯一被 `parseUIImpact` 解析的位置，本节只回显，不独立声明） |
 | 影响页面 / 模块 | {页面、路由、组件或 N/A} |
+| Foundation reference | `docs/design/DESIGN.md@vX.Y.Z` / `pending-foundation` / `N/A`（`none` 可为 N/A；`changed` 不得用风格句替代。S1 parser 不读本字段） |
+| Surface | `consumer` / `operations` / `{profile}` / `N/A` |
+| Design posture | `inherit` / `extend` / `exception`（`extend` 须在 Derivation Note 写清新增语法；`exception` 须同时有 `docs/design/exceptions/EX-*.md`） |
+| Derivation note | `docs/design/derivation/REQ-{id}.md` / `N/A`（`changed` 时由 S2 填写；S0 可留 pending） |
 | 模块当前真相包 | `docs/design/prototypes/<module>/`（index.html + stories.md + flows.md + scenario-model.json + cross-matrix.json + cases.json + scenario-coverage.json + fixture-contract.json + *.html）/ N/A |
 | 原型门禁状态 | N/A / pending / ready |
 

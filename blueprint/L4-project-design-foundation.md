@@ -8,7 +8,7 @@
 >
 > 姊妹篇：[L4 运行时控制面](L4-runtime-control-plane.md)管理 Loop 内的权威状态与机械约束；本文管理 Loop 外、跨 REQ 长期生效的项目级设计真相。
 >
-> 状态：v1.0.0，目标态蓝图。本文定义设计控制逻辑，不宣称模板、Skill、Schema、UI Lab、Design Token 或视觉回归已经完成接线。
+> 状态：v1.0.2，目标态蓝图。本文定义设计控制逻辑。模板、Skill、Token、UI Lab 接线说明与顾问型检查的实现规格见 [L5](L5-project-design-foundation.md)；实战回放协议见 [L6](L6-design-foundation-replay.md)。本文不宣称 Runtime 已硬阻断缺失的 Foundation。
 
 ## 0. 决策摘要
 
@@ -621,7 +621,7 @@ docs/design/
 │   └── golden-flows/              # 关键流程和状态证据
 ├── decisions/                     # 方向选择、修订与破坏性变化
 ├── exceptions/                    # 有范围和期限的局部偏离
-└── modules/<module>/              # S2 模块设计包
+└── prototypes/<module>/           # S2 模块设计包（L4 曾示意为 modules/；落地路径不改名）
 
 packages/design-tokens/            # primitive / semantic / component tokens
 packages/ui/                       # components / patterns / stories
@@ -752,13 +752,13 @@ S2 的架构与场景/原型双轨保持不变。涉及 UI 时新增四项语义
 
 | 领域 | 当前可确认事实 | 目标态 |
 | --- | --- | --- |
-| REQ | 已有 `UI impact=none/changed/unknown` | 同时引用 Foundation、Surface 与例外关系 |
-| S2 | 已有架构、场景、原型和模块 UI package 设计 | 开始具体设计前消费 Foundation，形成 Derivation Note |
-| 项目级设计真相 | 尚无正式 Kernel/Grammar/Surface Profile 契约 | 在首个 UI REQ 前建立并可跨 REQ 维护 |
-| Agent 引导 | 主要围绕 Loop Stage 和模块设计 | 项目理解时主动识别并发起 F1～F6 |
-| Design System | 仓库尚未建立统一的项目级 Token/UI Lab 接线 | 由 Foundation 驱动而不是由默认 UI 库反向决定 |
-| 视觉验证 | 尚未形成项目级 Golden Screen/Flow 接线 | 分离方向验证、系统一致性和真实效果 |
-| Runtime gate | 当前没有 Project Design Foundation gate | 首先采用提示词与文档，观察后再决定有限机械检查 |
+| REQ | 已有 `UI impact=none/changed/unknown`，模板另含 Foundation / Surface / posture / Derivation 语义字段（S1 parser 仍只读三值） | 字段被后续 REQ 实际填写并继承 |
+| S2 | `changed` 路径先写 Derivation Note 再扩模块包；`none` 仍做架构 | 观察是否减少风格追问与横向返工 |
+| 项目级设计真相 | 模板、规则与 Skill 已落地；目标项目在首个 UI REQ 前填写并发布 | 在首个 UI REQ 前建立并可跨 REQ 维护 |
+| Agent 引导 | 项目理解与 S0 漏斗会检查 Foundation；S2 `changed` 先写 Derivation Note | 观察是否减少风格追问与横向返工 |
+| Design System | 模板仓库已提供 DTCG `tokens.json`、`tokens.css`、顾问型 `design-foundation check`、组件提案与 UI Lab / visual-qa 接线说明；目标项目在 F4 后替换原语 | 由 Foundation 驱动而不是由默认 UI 库反向决定 |
+| 视觉验证 | 已分离方向验证（Proof Set / 人）与实现漂移（snapshot 协议）；模板工厂无产品屏幕可拍 | 像素相等 ≠ 方向正确；Golden Screen 失败先判基准过期 |
+| Runtime gate | 当前没有 Project Design Foundation gate；`validate --all` 不包含 Foundation 检查 | 仅在 L6 观察到稳定跳过后，才考虑 `--strict` CI 或有限机械提示 |
 
 ### 13.1 为什么第一版不直接做硬门
 
@@ -781,7 +781,7 @@ S2 的架构与场景/原型双轨保持不变。涉及 UI 时新增四项语义
 
 ## 15. 向 L5 下沉的实现顺序
 
-本 L4 通过后，再按以下顺序设计实现规格：
+实现规格的唯一权威是 [L5 项目级设计基础落地方案](L5-project-design-foundation.md)。顺序契约不变，L5 负责路径、模板全文、Skill、S0/S2 补丁和分批 DoD：
 
 1. `DESIGN.md` / Design Kernel 模板；
 2. Design Grammar 与 Surface Profile 模板；
@@ -813,6 +813,15 @@ L5 的每一项都必须能回指本文中的权威对象和失败模式，不�
 当这条链成立，人不需要再横向审查全部弹窗、筛选器和按钮来“找出一个标准”；这些底层对象从一开始就来自同一套上层设计判断。宏观设计因此真正成为对系统整体的控制能力，而不是最后一次昂贵的视觉清理。
 
 ## 变更记录
+
+### v1.0.2 — 2026-09-03
+
+- §13 对齐 L5 P2～P4：Token / 顾问型检查 / UI Lab 接线说明已落入仓库；Runtime 仍无 Foundation 硬门。
+- 指向 [L6 实战回放协议](L6-design-foundation-replay.md)。
+
+### v1.0.1 — 2026-09-03
+
+- §15 指向 [L5 项目级设计基础落地方案](L5-project-design-foundation.md)；十二条顺序仍是本层契约，实现细节不再写在 L4。
 
 ### v1.0.0 — 2026-09-03
 

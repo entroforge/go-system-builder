@@ -49,6 +49,12 @@ integrity failure, rollback/rollover, or the human release Gateway.
 
 **If the Runtime is a fresh inactive Runtime with no bound REQ:**
 
+0. If the product has user-visible UI, read `docs/design/DESIGN.md` and
+   `docs/rules/design-foundation.md`. Missing, draft, stale, or uncovered
+   surface → finish F0–F6 via `.claude/skills/design-foundation/SKILL.md`
+   (human confirms direction, kernel, then publish) **before** locking the
+   first `UI impact=changed` REQ. Do not invent brand in the REQ. Pure
+   backend work records Foundation as `N/A` on the project map and continues.
 1. Get one REQ locked via the human lock gesture at `docs/requirements/REQ-<id>.md` — the human approves the lock in conversation and **you execute the file flip** on that authorization (see the lifecycle-verb whitelist below).
 2. `loop-harness req bind --req <path> --approved-by <human identity>`
 3. Then proceed above.

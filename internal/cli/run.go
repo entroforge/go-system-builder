@@ -132,6 +132,7 @@ func printTopLevelUsage(stdout io.Writer) {
 	fmt.Fprintln(stdout, "  release-graph Release-graph topological assertions")
 	fmt.Fprintln(stdout, "  e2e-coverage  Score E2E scenario inventory fidelity (REQ-039)")
 	fmt.Fprintln(stdout, "  scenario      Generate and validate module fact-driven scenario packages")
+	fmt.Fprintln(stdout, "  design-foundation  Advisory Design Foundation checks, token CSS, portable DESIGN.md")
 	fmt.Fprintln(stdout, "  manual      Render the gate-level manual")
 	fmt.Fprintln(stdout, "  explain     Per-transition details (explain <TR-xxx>)")
 	fmt.Fprintln(stdout)
@@ -140,7 +141,7 @@ func printTopLevelUsage(stdout io.Writer) {
 
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: loop-harness <init|req|status|next|ready|validate|dry-run|hook|doctor|health|actions|runtime|team|s6|s7|tasks|contracts|capture|impact|verification|release-graph|e2e-coverage|scenario|s10|manual|explain>")
+		fmt.Fprintln(stderr, "usage: loop-harness <init|req|status|next|ready|validate|dry-run|hook|doctor|health|actions|runtime|team|s6|s7|tasks|contracts|capture|impact|verification|release-graph|e2e-coverage|scenario|design-foundation|s10|manual|explain>")
 		fmt.Fprintln(stderr, "manual:  see .claude/bin/loop-harness.md (gate-level specification)")
 		fmt.Fprintln(stderr, "explain: loop-harness explain <TR-xxx> (per-transition details)")
 		return 2
@@ -190,6 +191,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runE2ECoverage(args[1:], stdout, stderr)
 	case "scenario":
 		return runScenario(args[1:], stdout, stderr)
+	case "design-foundation":
+		return runDesignFoundation(args[1:], stdout, stderr)
 	case "contracts":
 		return runContracts(args[1:], stdout, stderr)
 	case "s6":

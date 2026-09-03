@@ -58,6 +58,10 @@ vibe-coding-loop-template-<version>/
 ├── skills/                        SKILL.md files
 ├── agents/                        7 agent definitions
 ├── docs/                          all templates + Loop definitions + rules
+├── blueprint/                     L1–L6 design docs -> .claude/bin/blueprint
+├── packages/design-tokens/        Foundation token source + CSS
+├── tools/ui-lab/                  Storybook MCP wiring
+├── tools/visual-qa/               snapshot-drift protocol
 └── .claude/bin/loop-harness       precompiled binary for this platform
 ```
 
@@ -81,6 +85,10 @@ Apply the tarball to a target project using this mapping:
 | `skills/` | `.claude/skills/` | copy recursively as-is |
 | `agents/` | `.claude/agents/` | copy recursively as-is |
 | `docs/` | `docs/` | copy recursively; fill `project.yaml`, `project-map.md` |
+| `blueprint/` | `.claude/bin/blueprint` | copy recursively |
+| `packages/` | `packages/` | copy recursively (design tokens) |
+| `tools/ui-lab/` | `tools/ui-lab/` | copy recursively |
+| `tools/visual-qa/` | `tools/visual-qa/` | copy recursively |
 | `.claude/bin/loop-harness` | `.claude/bin/loop-harness` | copy as-is from the matching platform tarball |
 
 After copying, initialize the runtime:
@@ -124,6 +132,9 @@ user-project/
 │   ├── requirements/                  empty; use REQ-template.md
 │   ├── contracts/ tasks/ reports/     empty; filled by Loop progression
 │   └── rules/                         as-is
+├── packages/design-tokens/            from tarball (tokens.json + tokens.css)
+├── tools/ui-lab/                      Storybook MCP wiring
+├── tools/visual-qa/                   snapshot protocol; pixels ≠ Thesis
 └── .claude/
     ├── settings.json                  from tarball root (Layer 3 registration)
     ├── loop.md                        from loop-template.md (Layer 2 Wake-up)
@@ -198,6 +209,7 @@ Load procedures only when their trigger applies:
 | Situation | Skill |
 |:---|:---|
 | start, recovery, pause, resume, next action | `loop-orchestration` |
+| first UI REQ, missing/stale DESIGN.md, new product surface | `design-foundation` |
 | design, UI, contracts, candidate tasks | `specification-planning` |
 | contract/task batch review | `document-verification` |
 | teammate spawn or reactivation | `agent-dispatch` |
@@ -216,7 +228,7 @@ Best Practices are selected from risk tags and the assigned responsibility.
   human-locked REQ and is sufficient engineering authorization; no separate
   `/goal` is required.
 - Loop automation cannot change or lock the REQ.
-- UI-impacting work needs a reviewed final UI design package (`docs/design/prototypes/{module}/` with `index.html` + page HTML files with the 4-field header, plus `stories.md` and `flows.md` carrying S-NNN / F-NNN entries each with its REQ-id) before contract lock.
+- UI-impacting work needs a published Project Design Foundation (`docs/design/DESIGN.md`) before the first `UI impact=changed` REQ is locked, then a reviewed final UI design package (`docs/design/prototypes/{module}/` with `index.html` + page HTML files with the 4-field header, plus `stories.md` and `flows.md` carrying S-NNN / F-NNN entries each with its REQ-id) before contract lock.
 - No side effect occurs before activation.
 - Delivery Verifier, QA, and E2E Tester work uses single-responsibility assignments.
 - Blocking findings create or reference a canonical BUG before repair.

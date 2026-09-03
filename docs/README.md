@@ -709,7 +709,7 @@ Warn-and-self-correct (recoverable process completeness):
 | Directory | Purpose |
 |:---|:---|
 | `requirements/` | requirement baselines |
-| `design/` | architecture, UI, state, data, and Loop contracts |
+| `design/` | architecture, UI, state, data, Loop contracts, and Project Design Foundation (`DESIGN.md`) |
 | `contracts/` | FE/BE/SYNC execution contracts |
 | `tasks/` | executable assignments |
 | `reports/` | BUG, delivery, QA, and acceptance evidence |
@@ -732,10 +732,11 @@ in the Harness. Reusable methods and best practices live in the Skill catalog.
 
 1. Copy `AGENTS-template.md` to `AGENTS.md`.
 2. Copy `project-map-template.md` to `project-map.md`.
-3. Fill stable project configuration in `project.yaml`.
-4. Build the Harness with `make build`.
-5. Run `loop-harness doctor --root .`.
-6. Register Hooks only after validation passes.
+3. If the product has user-visible UI, copy `docs/design/DESIGN-template.md` to `docs/design/DESIGN.md` (leave `draft`) and run `skills/design-foundation` before the first `UI impact=changed` REQ. See `docs/design/README.md`.
+4. Fill stable project configuration in `project.yaml`.
+5. Build the Harness with `make build`.
+6. Run `loop-harness doctor --root .`.
+7. Register Hooks only after validation passes.
 
 ---
 
