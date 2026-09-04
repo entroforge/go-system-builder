@@ -148,10 +148,11 @@ func foundationNA(root string) (bool, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "design foundation") && strings.Contains(strings.ToLower(line), "| n/a") {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "design foundation") && strings.Contains(lower, "| n/a") {
 			return true, nil
 		}
-		if strings.Contains(line, "product surfaces") && strings.Contains(strings.ToLower(line), "| none") {
+		if strings.Contains(lower, "product surfaces") && strings.Contains(lower, "| none") {
 			return true, nil
 		}
 	}

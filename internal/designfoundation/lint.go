@@ -166,7 +166,7 @@ func lintableDesignFile(rel string) bool {
 	if strings.Contains(rel, "/proof/style-tiles/") {
 		return false
 	}
-	if strings.Contains(rel, "/portable/") {
+	if strings.Contains(rel, "/proof/portable/") || strings.HasPrefix(rel, "docs/design/portable/") {
 		return false
 	}
 	return strings.HasSuffix(rel, ".html") || strings.HasSuffix(rel, ".css")

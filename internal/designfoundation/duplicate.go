@@ -55,13 +55,10 @@ func LintDuplicateComponents(root string) ([]Finding, error) {
 			if entry.IsDir() || !strings.HasSuffix(name, ".md") || strings.Contains(name, "template") || name == "README.md" {
 				continue
 			}
-			// Only count exception/component proposals; ADR files must not
-			// trigger component-repeat.
-			if !(strings.HasPrefix(name, "CP-") || strings.HasPrefix(name, "EX-")) {
-				mustBeProposal := proposalDir == filepath.Join(root, "docs", "design", "components")
-				if !mustBeProposal {
-					continue
-				}
+			// Only component proposals participate in duplicate detection.
+			// ADR and EX records must not trigger component_repeat.
+			if !strings.HasPrefix(name, "CP-") {
+				continue
 			}
 			rel, _ := filepath.Rel(root, filepath.Join(proposalDir, name))
 			rel = filepath.ToSlash(rel)
