@@ -6,7 +6,7 @@ target project. The template factory does not ship a product Storybook.
 UI Lab is the implementation layer: Agent queries **what currently exists**.
 Project Design Foundation (`docs/design/DESIGN.md`) remains the language
 layer: **why a choice is allowed**. Live component knowledge must not rewrite
-the Kernel (L4 §12 Storybook MCP boundary).
+the Kernel. Live Storybook answers what exists; Foundation answers why a choice is allowed.
 
 ## When to stand this up
 

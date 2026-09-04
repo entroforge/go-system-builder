@@ -16,7 +16,6 @@ settings.json                               Hook registration for .claude/settin
 skills/                                     SKILL.md files -> .claude/skills/
 agents/                                     agent definitions -> .claude/agents/
 docs/                                       templates + Loop definitions + rules -> docs/
-blueprint/                                  layered design docs -> .claude/bin/blueprint
 packages/design-tokens/                     DTCG tokens + generated CSS
 tools/ui-lab/                               Storybook MCP wiring note
 tools/visual-qa/                            snapshot-drift protocol (not Thesis proof)
@@ -136,10 +135,6 @@ esac
 cp .claude/bin/"$HARNESS" .claude/bin/loop-harness
 chmod +x .claude/bin/loop-harness
 cp $TARDIR/loop-harness.md .claude/bin/loop-harness.md
-
-# Design blueprint (layered design docs: L1 philosophy, L2 lifecycle plan, ...)
-# Kept next to the Manual for on-demand lookup of design intent by agents and humans.
-cp -R $TARDIR/blueprint .claude/bin/blueprint
 
 # Documentation tree (templates + Loop definitions + rules)
 cp -R $TARDIR/docs .

@@ -1,28 +1,30 @@
 ---
 name: design-critic
-description: Use when design-foundation has produced two or three direction candidates and before asking the human to pick one
+description: Use when design-foundation has produced direction candidates (thin path or 2–3 worlds) and before asking the human to pick one
 category: best-practice
-version: 1.0.0
+version: 1.1.0
 ---
 # Design Critic
 
 ## Authority
 
 Independent review of candidate Design Kernels and Style Tiles. The producer
-of the candidates must not declare them adequate. Control questions come from
-`blueprint/L4-project-design-foundation.md` §4.7. The prompt-layer rule is
+of the candidates must not declare them adequate. Score against the six
+dimensions below. The prompt-layer rule is
 `docs/rules/design-foundation.md`. This Skill does not write Runtime state
 and does not replace the human's direction confirmation.
 
 ## Applicability
 
-Apply after F2 has produced 2–3 Kernel candidates with Style Tiles, and
+Apply after F2 has produced candidates (thin path: recommended world + rejected
+category default; full path: 2–3 Kernel candidates with Style Tiles), and
 before the direction hand-up. Also apply if F5 proofs look consistent but
 empty of product character.
 
 ## Required Inputs
 
-- `docs/design/research/evidence-field.md` (facts vs inferences vs references)
+- Brief / `docs/project-map.md` facts (ritual already named?)
+- `docs/design/research/evidence-field.md` only if the full F2 path created it
 - Candidate Kernel drafts and their Style Tiles under `docs/design/proof/style-tiles/`
 - `docs/rules/design-foundation.md`
 
@@ -47,6 +49,9 @@ Also reject:
 - adjective kernels;
 - three skins that only swap color, type, and radius;
 - candidates that all depend on the same industry cliché;
+- **candidates that share the product role of a ritual already marked as fact
+  in the Evidence Field** — they are quota worlds, not a Direction Set; keep
+  the ritual translation plus the category-default foil;
 - a tile that cannot show a failure or empty state in the product's voice.
 
 ## Outputs
@@ -71,7 +76,9 @@ UI.
 
 Stop the hand-up when all candidates fail Distinctiveness or Generativity, or
 when Evidence Field is mostly inferences marked as facts. Return the producer
-to F1/F2 instead of asking the human to pick a skin.
+to F1/F2 instead of asking the human to pick a skin. If the producer invented
+two extra worlds that share the evidenced ritual's role, send them back to the
+thin path instead of scoring the extras.
 
 ## Non-Goals
 

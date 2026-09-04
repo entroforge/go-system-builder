@@ -29,10 +29,7 @@ F2 Tile 可以使用候选 hex。F6 之后的 Anchor / Stress / Golden Flow 与�
 
 ## Portable 快照（可选派生，非权威）
 
-`portable/` 存放由 Kernel / Grammar / Token 派生的 Google DESIGN.md 快照，非项目权威。
-
-```bash
-loop-harness design-foundation export-portable --root .
-```
+目标项目可用 `loop-harness design-foundation export-portable --root .` 生成
+`portable/DESIGN.md`。模板工厂**不检入**该快照，也不检入 Anchor / Golden Flow HTML。
 
 不要手写该快照，不要把组件 API 塞入其中。查询现役组件请走 Storybook MCP（`tools/ui-lab/README.md`）。

@@ -28,7 +28,7 @@ Names must make traceability obvious.
 | design tokens | `packages/design-tokens/tokens.json` (+ generated `tokens.css`) | `packages/design-tokens/tokens.json` |
 | portable DESIGN snapshot | `docs/design/proof/portable/DESIGN.md` (derived, not authority) | `docs/design/proof/portable/DESIGN.md` |
 | component proposal | `docs/design/decisions/CP-{id}.md` (legacy `docs/design/components/CP-{id}.md` still recognized) | `docs/design/decisions/CP-001.md` |
-| foundation replay record | `docs/reports/design-foundation/` + L6 template | `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` |
+| foundation replay record | `docs/reports/design-foundation/` | `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` |
 | UI design package directory | `docs/design/prototypes/{module}/` | `docs/design/prototypes/fund/` |
 | UI prototype HTML | `<feature>.html` (one per page/dialog/wizard) | `fund-list.html`, `wizard.html` |
 | UI module entry hub | `index.html` (card-grid linking to every page HTML file) | `docs/design/prototypes/fund/index.html` |

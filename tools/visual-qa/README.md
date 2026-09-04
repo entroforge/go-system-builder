@@ -1,8 +1,7 @@
 # Visual QA
 
 Playwright and Storybook snapshots prove **implementation drift** against a
-checked-in baseline. They do not prove that the Design Thesis is correct
-(L4 §1.3, §12 Playwright / Storybook visual testing boundary).
+checked-in baseline. They do not prove that the Design Thesis is correct.
 
 This template factory has no product screens to snapshot. Target projects
 add baselines here (or under the app's existing Playwright/Storybook tree)
@@ -52,5 +51,6 @@ the factory and empty backend products.
 
 - Treat snapshot equality as S7 / S10 acceptance of brand direction.
 - Auto-update baselines because a library default changed.
-- Fail-close on missing Foundation until L6 observation says agents skip F0
-  as a stable failure (`blueprint/L6-design-foundation-replay.md`).
+- Fail-close on missing Foundation until a real-product replay
+  (`docs/reports/design-foundation/FOUNDATION-REPLAY-template.md`) shows agents
+  skip F0 as a stable failure.

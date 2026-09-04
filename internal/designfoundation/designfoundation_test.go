@@ -121,8 +121,8 @@ func TestExportPortableExtractsNumberedKernelHeadings(t *testing.T) {
 	if !strings.Contains(body, "可生成") {
 		t.Fatal("expected the template Thesis section in the Overview")
 	}
-	if !strings.Contains(body, "明确拒绝的设计世界") {
-		t.Fatal("expected the template Anti-principles section in Do's and Don'ts")
+	if !strings.Contains(body, "明确拒绝的设计世界") && !strings.Contains(body, "Rejected direction") && !strings.Contains(body, "DFD-01") {
+		t.Fatal("expected the template Anti-principles / Rejected direction in Do's and Don'ts (v1.0 Anti-principles or v1.1 Rejected direction history)")
 	}
 }
 

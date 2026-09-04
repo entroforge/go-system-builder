@@ -170,7 +170,7 @@ UI impact 的唯一机器锚点是 REQ 顶部字段；§C 只回显，不产生�
 
 ### 4.3.1 消费 Project Design Foundation
 
-S0 不建立、不重写项目级设计基础。权威定义在 [L4 项目级设计基础](L4-project-design-foundation.md)，落地在 [L5](L5-project-design-foundation.md) 与 `docs/rules/design-foundation.md`。
+S0 不建立、不重写项目级设计基础。权威定义在 [L4 项目级设计基础](L4-project-design-foundation.md)，实现与规则见 `docs/rules/design-foundation.md`。
 
 前端相关 REQ 在 T3 只声明关系：
 

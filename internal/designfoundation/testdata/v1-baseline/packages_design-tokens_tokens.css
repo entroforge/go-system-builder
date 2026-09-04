@@ -1,0 +1,41 @@
+/* Generated from packages/design-tokens/tokens.json. Do not hand-edit.
+   loop-harness design-foundation emit-css --root . */
+:root {
+  --color-action-promise: #2563eb;
+  --color-brand-mark: #2563eb;
+  --color-content-border: #e2e8f0;
+  --color-content-border-strong: #cbd5e1;
+  --color-content-ink: #0f172a;
+  --color-content-meta: #64748b;
+  --color-primitive-amber-500: #f59e0b;
+  --color-primitive-blue-600: #2563eb;
+  --color-primitive-emerald-500: #10b981;
+  --color-primitive-indigo-500: #6366f1;
+  --color-primitive-red-500: #ef4444;
+  --color-primitive-slate-200: #e2e8f0;
+  --color-primitive-slate-300: #cbd5e1;
+  --color-primitive-slate-50: #f8fafc;
+  --color-primitive-slate-500: #64748b;
+  --color-primitive-slate-900: #0f172a;
+  --color-primitive-white: #ffffff;
+  --color-status-blocking: #ef4444;
+  --color-status-info: #6366f1;
+  --color-status-success: #10b981;
+  --color-status-warning: #f59e0b;
+  --color-surface-page: #f8fafc;
+  --color-surface-raised: #ffffff;
+  --font-family-ui: system-ui, "Segoe UI", sans-serif;
+  --font-size-body: 16px;
+  --font-size-headline: 28px;
+  --font-size-meta: 12px;
+  --font-weight-regular: 400;
+  --font-weight-semibold: 600;
+  --rounded-lg: 12px;
+  --rounded-md: 8px;
+  --rounded-sm: 4px;
+  --space-lg: 24px;
+  --space-md: 16px;
+  --space-sm: 8px;
+  --space-xl: 32px;
+  --space-xs: 4px;
+}

@@ -11,7 +11,7 @@ import (
 
 func runDesignFoundation(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "design-foundation requires <check|emit-css|export-portable>")
+		fmt.Fprintln(stderr, "design-foundation requires <check|emit-css|export-portable|migrate>")
 		return 2
 	}
 	switch args[0] {
@@ -21,8 +21,10 @@ func runDesignFoundation(args []string, stdout, stderr io.Writer) int {
 		return runDesignFoundationEmitCSS(args[1:], stdout, stderr)
 	case "export-portable":
 		return runDesignFoundationExport(args[1:], stdout, stderr)
+	case "migrate":
+		return runDesignFoundationMigrate(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "design-foundation: unknown subcommand %q; expected check, emit-css or export-portable\n", args[0])
+		fmt.Fprintf(stderr, "design-foundation: unknown subcommand %q; expected check, emit-css, export-portable or migrate\n", args[0])
 		return 2
 	}
 }
@@ -106,3 +108,48 @@ func runDesignFoundationExport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "wrote %s (derived snapshot, not authority)\n", path)
 	return 0
 }
+
+func runDesignFoundationMigrate(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("design-foundation migrate", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	bindUsage(flags, "design-foundation migrate")
+	root := flags.String("root", ".", "repository root")
+	to := flags.String("to", "contract-v1", "migration target (only contract-v1)")
+	write := flags.Bool("write", false, "write markers (default is dry-run)")
+	dryRun := flags.Bool("dry-run", true, "preview without writing")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	// --write overrides dry-run
+	isDryRun := *dryRun
+	for _, a := range args {
+		if a == "--write" {
+			isDryRun = false
+			break
+		}
+	}
+	if *write {
+		isDryRun = false
+	}
+	if *to != "contract-v1" {
+		fmt.Fprintln(stderr, "design-foundation migrate: only --to contract-v1 is supported")
+		return 2
+	}
+	plan, err := designfoundation.PlanMigrate(*root, *to, isDryRun)
+	if err != nil {
+		fmt.Fprintln(stderr, formatFailure("design-foundation migrate", err))
+		return 1
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(plan)
+	if !isDryRun {
+		if written, werr := designfoundation.WriteMigrate(*root, plan); werr == nil && len(written) > 0 {
+			for _, line := range written {
+				fmt.Fprintln(stderr, line)
+			}
+		}
+	}
+	return 0
+}
+

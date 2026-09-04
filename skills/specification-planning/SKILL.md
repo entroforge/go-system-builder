@@ -2,7 +2,7 @@
 name: specification-planning
 description: Use when designing architecture, final UI design packages, contracts, and task decomposition in the planning phase
 category: methodology
-version: 2.2.0
+version: 2.2.2
 ---
 # Specification Planning
 
@@ -18,7 +18,7 @@ The locked REQ is the baseline. Design, contracts, and tasks must trace back to 
 |:---|:---|:--|
 | Locked REQ | runtime `bound_req.path` | source of acceptance criteria and scope |
 | Existing design | `docs/design/**` | reuse and conflict detection |
-| Design Foundation | `docs/design/DESIGN.md`, `docs/design/design-language.md`, current `docs/design/surface-profiles/*.md` | inherit project language when UI impact is `changed`; do not invent brand in the module package |
+| Design Foundation | `docs/design/DESIGN.md` **§0 Next-agent card first**, then `design-language.md` and the Surface row if needed | inherit interaction/visual constraints when UI impact is `changed`; do not invent brand from a library hex; Foundation does not replace architecture |
 | Derivation template | `docs/design/derivation/DERIVATION-template.md` | write `docs/design/derivation/REQ-<id>.md` before expanding HTML |
 | Module current truth | `docs/design/prototypes/<module>/{index.html, stories.md, flows.md, scenario-model.json, cross-matrix.json, cases.json, scenario-coverage.json, fixture-contract.json, *.html}` | current module package and prototype gate input |
 | Rules | `docs/rules/*.md` | naming, security, api-design, state-machine, design-foundation constraints |
@@ -36,16 +36,32 @@ below. Do not treat `none` as “no design”: locked ARCHITECTURE remains
 required.
 
 **Step 0.5 — consume Project Design Foundation (`changed` only)**: read
-`docs/design/DESIGN.md`, `design-language.md`, and the Surface Profile named
-by the REQ. If Foundation is missing, draft, or cannot cover this surface,
-stop and load `skills/design-foundation` — do not batch-generate pages.
-Otherwise write `docs/design/derivation/REQ-<id>.md` (inherit / extend /
-exception, active laws, one macro composition, one stress state). Extend
-requires a promotion candidate note; exception requires
-`docs/design/decisions/EX-*.md` (legacy `docs/design/exceptions/` still recognized). One macro composition and one stress HTML
-state must exist before the remaining module pages. See
+`docs/design/DESIGN.md` **§0 Next-agent card** first, then the current `SUR-*` diff
+named by the REQ, then `design-language.md` only if the card cannot answer
+Must not. The card must already answer action role (no hex), value **and**
+status-tag color, and which commitments are buttons vs sentences. Do not treat
+a hex or library Primary from a prior construction note as the brand. Do not
+open `design-language.md` on Core+thin when the card already answers Must not.
+If Foundation is `local` (investment tier `local`) → write
+`docs/design/derivation/REQ-<id>.md` with `Foundation: local` and module-local
+decisions, without publishing a project Foundation. If status is `provisional`
+/ `draft` / `in-review` / `superseded` or confirmation is PENDING, it is not a lock (only `published` with dates recorded is). If Foundation is missing,
+draft, in-review, provisional, superseded, lacks §0, or cannot cover this surface, stop and load
+`skills/design-foundation` — do not batch-generate pages. inherit must not
+add a new information posture (KPI dashboard) without `extend`. Otherwise write
+`docs/design/derivation/REQ-<id>.md` as a **referenced-ID consumption list**:
+active `LAW/ANTI/INV` by stable ID + opening `GR-*`, `Must not` by source ID,
+`Bindings` by `ROLE/PATTERN`/component path, `Proof` by `PROOF-*` with
+resolvable path, one macro composition, one stress state; `inherit`/`extend`/
+`exception` posture (extend → promotion candidate note; exception →
+`docs/design/decisions/EX-*.md`). One macro composition and one stress HTML
+state must exist before the remaining module pages. If any required ID, version
+(`DESIGN.md@version`, `SUR-*@version`), or Proof path cannot be resolved,
+stop at semantic fix — do not invent a skin. See
 `docs/rules/design-foundation.md`. This step is a semantic duty, not a
-PTR-PLAN-01 predicate.
+PTR-PLAN-01 predicate. It does not replace the architecture track. The cold-start
+handoff packet is only `§0 + SUR-* diff + current Derivation` (together
+≤120 lines / ≤12 KB); later implementers read that packet, not the full thesis.
 
 The S2 portion runs as two tracks with free ordering within one agent (not
 subagent parallelism), converging twice. "Free ordering" means either track

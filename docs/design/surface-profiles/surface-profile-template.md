@@ -1,22 +1,45 @@
 # Surface Profile — {name}
 
+> 只在出现 **第二个** Surface 时复制本文件。单 Surface 把差分写在 `DESIGN.md` §8，Profile/version = `inline`。
+>
+> ID：SUR-0X
+> 版本：vX.Y.Z
 > 继承：DESIGN.md@vX.Y.Z
-> 对比证明：{proof path}
+> 用户/任务：{一句话}
 
-新增 Surface 时先继承现有 Kernel/Grammar，再声明差异。不能以“后台更密”或“移动端更窄”为理由从零发明风格。
+## Inherits
 
-## 用户、任务、关系
+<!-- foundation-contract:v1 surface-inherits -->
+| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |
+|:--|:--|:--|
+| INV-01 | yes | |
+| GR-01 | yes | |
+| ROLE-action-promise | yes | |
 
-{主要用户、任务模式、产品与人的关系}
+## Variant selections
 
-## 密度 / 解释深度 / 决策速度 / 错误成本
+<!-- foundation-contract:v1 surface-variants -->
+| Variant | 选择 | 理由 |
+|:--|:--|:--|
+| density | low / medium / high | |
+| whitespace | compact / balanced / spacious | |
+| navigation | local / global / task-first | |
+| type-scale | compact / default / expressive | |
+| evidence-depth | summary / expandable / inline | |
+| freshness | relaxed / timestamped / realtime | |
+| brand-expression | wordmark / accent / ambient | |
 
-## 导航、输入、反馈、恢复姿态
+## Adds / suppresses
 
-## 必须保留的 Invariants
+| 动作 | GR/ROLE/PATTERN | 理由 | 是否需要 extension |
+|:--|:--|:--|:--|
 
-## 允许调整的 Variants
+## Exceptions
 
-## 品牌表达可以出现的位置与强度
+| EX-* | 范围 | 到期/复查条件 |
+|:--|:--|:--|
 
-## 与其他 Surface 的同源证明
+## Contrast proof
+
+| PROOF-* | 对比 Surface | 证明哪些 invariant 保持、哪些 variant 改变 |
+|:--|:--|:--|

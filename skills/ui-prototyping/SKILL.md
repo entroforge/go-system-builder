@@ -2,7 +2,7 @@
 name: ui-prototyping
 description: Use when a requirement changes frontend screens, interactions, states, or visual behavior, and the final UI design package must reach contract lock
 category: best-practice
-version: 3.3.0
+version: 3.3.1
 ---
 # UI Prototyping
 
@@ -31,8 +31,7 @@ into.
 - Locked REQ acceptance criteria.
 - Current implementation facts and the affected module's complete existing package at
   `docs/design/prototypes/{module}/` (if any), including the scenario four-pack.
-- Design Derivation Note at `docs/design/derivation/REQ-{id}.md` and
-  `docs/design/design-language.md` when `UI impact = changed`.
+- Design Derivation Note at `docs/design/derivation/REQ-{id}.md` (when `UI impact = changed`; `docs/design/design-language.md` is **not** a default Required Input — open Grammar only when the Derivation's `Active constraints → GR-*` column actually cites a `GR-*` that the page must compile, otherwise the §0 card + Surface diff + Derivation drives the page).
 - Applicable UX, accessibility, security, and domain rules.
 - `docs/rules/design-foundation.md` and `docs/rules/ui-prototype.md`.
 - Applicable `docs/design/prototypes/*-convention.md` siblings (storage key
@@ -212,7 +211,7 @@ the order is part of the contract.
 | # | Heading | Content shape | What it answers |
 |---|---|---|---|
 | 1 | `本原型目标` | `<p>` — sidebar slot + main-UI intent in one paragraph | Why does this page exist? Which sidebar slot does it occupy? |
-| 2 | `设计推导` | `<ul>` of Foundation version, Surface, Experience role, Active laws, Exception | Why does this page grow this way from Kernel/Grammar? Cite `docs/design/derivation/REQ-{id}.md` |
+| 2 | `设计推导` | `<ul>` of Foundation version (`DESIGN.md@version` or `local`), `SUR-*@version` + profile, Experience role, Active constraints by stable ID (`LAW/ANTI/INV` → `GR-*`), `Must not` by source ID, `Bindings` by `ROLE/PATTERN`/component, Exception (`EX-*`) | Why does this page grow this way from the Next-agent card? Cite `docs/design/derivation/REQ-{id}.md` (the cold-start handoff packet is only §0 + SUR diff + Derivation, ≤120 lines / ≤12 KB). Construction hex or library Primary from a prior page is never the brand; only `semantic_token_only` values are legal. |
 | 3 | `PM 决策 (D-1 / D-2 / ...)` | `<ul>` of `<li><b>D1</b> ...` | What product decisions shaped this layout? Each decision gets a stable code (D1, D2, R1…) so contracts and BUG reports can cite it. |
 | 4 | `FR coverage` | 3-col `<table>`: FR ref (`§3.1`) · UI affordance · `状态` badge | Which REQ functional requirements does this page cover? Status uses `.badge-status`: `covered` / `partial` / `open`. |
 | 5 | `API endpoints` | 3-col `<table>`: Method · Path (`<code>`) · UI 用途 | Which backend endpoints does this page call? |
@@ -375,8 +374,8 @@ A module prototype set is ready for contract lock when ALL of these hold:
 - [ ] Every HTML file's `aside.proto-notes` has the 7 mandatory sections
       in canonical order (`本原型目标` → `设计推导` → `PM 决策` → layout-specific
       → `FR coverage` → `API endpoints` → `Edge cases` → `Q&A`)
-- [ ] `设计推导` cites Foundation version, active laws, experience role, and
-      exception; each active law maps to a visible region on the page
+- [ ] `设计推导` cites Foundation version, Next-agent card / active laws, Must not, experience role, and
+      exception; each active law maps to a visible region on the page; construction hex is not cited as brand
 - [ ] The layout-appropriate layout-specific section is present (column
       spec / zone map / sub-component map / step list / state-grid)
 - [ ] `stories.md` carries the complete current `S-NNN` set; every story cites

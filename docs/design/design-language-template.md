@@ -1,74 +1,48 @@
 # Design Grammar
 
 > 编译自：DESIGN.md@vX.Y.Z
-> 不变量 / 受控变量 / 选择规则 / 例外必须齐全。数值表不是 Grammar。
+> 版本：vX.Y.Z
+> 规则：只写 active 维度；inherited/debt/N/A 不用散文填充。
 
-每条规则使用：
+## 1. Dimension coverage
 
-```text
-因为【Kernel/Law】
-所以在【场景/任务】
-优先采用【设计关系】
-避免【冲突关系】
-允许【受控变化】
-通过【Proof】判断是否成立
-```
+<!-- foundation-contract:v1 dimensions -->
+| 维度 | 状态 active/inherited/debt/N/A | 依据约束 | 继承源或 DEBT | Proof |
+|:--|:--|:--|:--|:--|
+| Information | active | LAW-01 | — | PROOF-01 |
+| Composition | active | LAW-01 | — | PROOF-01 |
+| Color | inherited | INV-02 | `packages/ui@vX` | PROOF-02 |
+| Typography | debt | LAW-03 | DEBT-03 | — |
+| Shape & Surface | N/A | — | {理由} | — |
+| Image & Icon | N/A | — | {理由} | — |
+| Interaction | active | LAW-02 | — | PROOF-02 |
+| Content | active | LAW-01 | — | PROOF-01 |
+| Motion | debt | LAW-02 | DEBT-04 | — |
 
-九个维度各至少一条，或显式声明“本产品该维暂弱”并写入 `DESIGN.md` 设计债务。
+## 2. Constraint explanations
 
-## LAW-01 {名称}
+只为需要背景的 LAW/ANTI/INV 补充信念、依据、代价与边界。§0 已有的 Do/Don't 不在此改写。
 
-信念：
-依据：{Evidence Field 条目}
-设计后果：
-适用条件：
-代价：
-Do：
-Don't：
-证明：{Proof 路径}
+## 3. Compilation and selection rules
 
-### 编译
+<!-- foundation-contract:v1 grammar-rules -->
+| ID | Dimensions | Source constraints | 条件/任务 | 优先采用 | 避免 | 允许变化 | Bindings | Proof |
+|:--|:--|:--|:--|:--|:--|:--|:--|:--|
+| GR-01 | Information, Interaction | LAW-01, ANTI-01 | 承诺 | 先依据后行动 | 双主行动 | 文案/密度 | ROLE-action-promise, PAT-confirm | PROOF-01 |
 
-因为【LAW-01】所以在【场景】优先【关系】避免【冲突】允许【受控变化】通过【Proof】判断。
+每一行可展开为：因为【Source】所以在【条件】优先【关系】避免【冲突】允许【变化】通过【Proof】判断。
 
-| 维度 | 消费者端 | 运营端 |
-|:--|:--|:--|
-| Information | | |
-| Composition | | |
-| Color | | |
-| Typography | | |
-| Shape & Surface | | |
-| Image & Icon | | |
-| Interaction | | |
-| Content | | |
-| Motion | | |
+## 4. Variant catalog
 
-重复本结构覆盖 LAW-02 … LAW-0n。
-
-## Invariants
-
-- {所有 Surface 必须保持的设计关系，例如强调稀缺、状态可解释}
-
-## Variants
-
-- {可随 Surface、任务或密度变化的部分，例如留白、字号、导航、表格密度}
-
-## Selection Rules
-
-| 条件 | 选用模式 | 不要选用 |
-|:--|:--|:--|
-| 探索 | | |
-| 判断 | | |
-| 承诺 | | |
-| 等待 | | |
-| 恢复 | | |
-
-## Semantic roles
-
-P2 起与 Token 对齐。P0/P1 先冻结角色名称，不冻结色值。
-
-| 角色 | 含义 | Grammar 回指 | Token（P2） |
+| Variant | 合法值 | 默认值 | 由哪些 SUR-* 选择 |
 |:--|:--|:--|:--|
-| action.promise | 用户将做出可追踪承诺 | LAW-01 | |
-| evidence.support | 支撑判断的依据 | LAW-01 | |
-| status.blocking | 阻止继续的错误或权限 | LAW-0n | |
+| density | low / medium / high | medium | SUR-01 |
+| brand-expression | wordmark / accent / ambient | accent | SUR-01 |
+
+## 5. Semantic roles and patterns
+
+<!-- foundation-contract:v1 bindings -->
+| ID | 含义 | Source GR-* | Token / component / pattern | 状态 active/reserved/debt |
+|:--|:--|:--|:--|:--|
+| ROLE-action-promise | 用户将做出可追踪承诺 | GR-01 | `color.action.promise` | active |
+| PAT-confirm | 高风险承诺模式 | GR-01 | `packages/ui/Confirm` | active |

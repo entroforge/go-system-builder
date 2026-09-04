@@ -108,6 +108,9 @@ func renderPortable(tf *tokenFile, kernel, grammar string) string {
 	if anti := extractSection(kernel, "Anti-principles"); anti != "" {
 		b.WriteString(anti)
 		b.WriteString("\n\n")
+	} else if rej := extractSection(kernel, "Rejected direction"); rej != "" {
+		b.WriteString(rej)
+		b.WriteString("\n\n")
 	}
 	b.WriteString("- Do use `action.promise` for at most one primary commitment per screen.\n")
 	b.WriteString("- Don't introduce hex values that are absent from tokens.json.\n")

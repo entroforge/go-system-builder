@@ -88,6 +88,18 @@ Automation stops before squash merge, main-branch publication, or formal release
     Request TR-017. Never request, attempt, or proxy merge, publication,
     deployment, or formal release.
 
+## Design Foundation feedback transaction
+
+Any S7 Finding, counterevidence item, visual regression, usability test, or subsequent REQ that contradicts or falsifies an active `LAW-* / ANTI-* / INV-* / GR-* / ROLE-* / PAT-* / SUR-*` (or shows an `EX-*` boundary is wrong) enters the `skills/design-foundation` feedback transaction — it is not closed by writing a report:
+
+1. **Record fact** — source observation (`Finding` ID / S7 counterevidence row / visual-qa result / REQ `PROOF-*`), violated or falsified constraint IDs, and `REQ-* / PROOF-*` path.
+2. **Classify** — local fix (module package only) / module Pattern or `CP-*` candidate / global Grammar/Token/Component extension (`ADR-*` / `DFD-*`) / scoped `EX-*` / Kernel breaking change (human re-confirm).
+3. **Update only the classified authority** — list affected edges `Grammar / Surface / Derivation / Token / component / Proof`; do not silently promote a local composition to global.
+4. **Replay** — re-run affected-edge reference/binding checks (`loop-harness design-foundation check`) and one minimal replay (second `changed` REQ cold-start or affected Proof state).
+5. **Close on evidence** — receipt fields `Source observation / Affected constraint IDs / Classification / Changed edges / Replay evidence / Status open/closed` must be present and resolvable; checker validates refs/paths, human judges whether Kernel should change. `open` until both pass; never close on report completion alone.
+
+Carriers reuse existing authority (no new Feedback DB): local fix → source Finding + repair/verification evidence; module pattern → `CP-*`; global extension → `ADR-*`/`DFD-*` + updated tables; exception → `EX-*`; breaking change → `DFD-*` + human re-publish. This Skill and `docs/agent-protocol.md` #s7 / #s10 are the entry points; filling `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` after two REQs does not count as wired.
+
 ## Machine-checked S10 artifact
 
 The human ACC and release-audit Markdown is rendered from the JSON manifest —

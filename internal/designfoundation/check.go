@@ -63,6 +63,13 @@ func Check(root string) (Report, error) {
 		return report, err
 	}
 
+	isAllLocal := len(changedREQs) > 0
+	for _, r := range changedREQs {
+		if r.FoundationRef != "local" {
+			isAllLocal = false
+			break
+		}
+	}
 	if kernelErr != nil {
 		if len(changedREQs) == 0 {
 			report.Findings = append(report.Findings, Finding{
@@ -71,6 +78,32 @@ func Check(root string) (Report, error) {
 				Path:     KernelRel,
 				Detail:   "no DESIGN.md and no locked UI-impact=changed REQ; template factory or pre-UI project",
 			})
+		} else if isAllLocal {
+			for _, r := range changedREQs {
+				derivation := filepath.Join("docs", "design", "derivation", "REQ-"+r.ID+".md")
+				if _, err := os.Stat(filepath.Join(root, derivation)); err != nil {
+					report.Findings = append(report.Findings, Finding{
+						Code:     "local_contract_incomplete",
+						Severity: SeverityWarning,
+						Path:     derivation,
+						Detail:   "local REQ-" + r.ID + " must have a module Derivation with LOCAL decisions and upgrade triggers; missing " + derivation,
+					})
+				} else {
+					if data, err := os.ReadFile(filepath.Join(root, derivation)); err == nil {
+						if !containsLocalUpgradeTrigger(string(data)) {
+							report.Findings = append(report.Findings, Finding{
+								Code:     "local_contract_incomplete",
+								Severity: SeverityWarning,
+								Path:     derivation,
+								Detail:   "local REQ-" + r.ID + " derivation must describe upgrade triggers and non-promotion scope (不得晋升)",
+							})
+						}
+					}
+				}
+			}
+			if findings := checkLocalUpgradeSuspected(root, changedREQs); len(findings) > 0 {
+				report.Findings = append(report.Findings, findings...)
+			}
 		} else {
 			report.Findings = append(report.Findings, Finding{
 				Code:     "foundation_missing",
@@ -81,35 +114,60 @@ func Check(root string) (Report, error) {
 		}
 	} else {
 		status := kernelStatus(string(kernel))
-		if status != "published" && len(changedREQs) > 0 {
+		pending := kernelConfirmationPending(string(kernel))
+		if status == "published" && pending {
+			report.Findings = append(report.Findings, Finding{
+				Code:     "foundation_fake_lock",
+				Severity: SeverityWarning,
+				Path:     KernelRel,
+				Detail:   "DESIGN.md is published while confirmation records still say PENDING; use provisional until a human date is written",
+			})
+		}
+		if status == "provisional" && len(changedREQs) > 0 && !isAllLocal {
+			report.Findings = append(report.Findings, Finding{
+				Code:     "foundation_provisional",
+				Severity: SeverityWarning,
+				Path:     KernelRel,
+				Detail:   "DESIGN.md is provisional; later REQs must not treat §0 as a published lock",
+			})
+		} else if status != "published" && status != "provisional" && len(changedREQs) > 0 {
 			report.Findings = append(report.Findings, Finding{
 				Code:     "foundation_unpublished",
 				Severity: SeverityWarning,
 				Path:     KernelRel,
-				Detail:   "DESIGN.md status is " + status + " while a locked UI-impact=changed REQ exists; finish F6 publish or set pending-foundation only during F0–F6",
+				Detail:   "DESIGN.md status is " + status + " while a locked UI-impact=changed REQ exists; finish F6 publish, stay local, or keep provisional until a human confirms",
 			})
 		}
-		if status == "published" {
+		// Core+thin may leave Grammar as debt. Only Extended still owes design-language.md
+		// after a real publish (not a fake lock).
+		if status == "published" && !pending && designInvestment(root) == "extended" {
 			if _, err := os.Stat(filepath.Join(root, GrammarRel)); err != nil {
 				report.Findings = append(report.Findings, Finding{
 					Code:     "grammar_missing",
 					Severity: SeverityWarning,
 					Path:     GrammarRel,
-					Detail:   "published Kernel without design-language.md",
+					Detail:   "extended published Kernel without design-language.md",
 				})
 			}
 		}
 	}
 
 	for _, req := range changedREQs {
-		ref := req.FoundationRef
-		if ref == "" || ref == "pending-foundation" {
+		// Local investment: REQ cites "local" — do not require published Foundation ref.
+		if isAllLocal && req.FoundationRef == "local" {
+			continue
+		}
+		if req.FoundationRef == "" || req.FoundationRef == "pending-foundation" {
 			report.Findings = append(report.Findings, Finding{
 				Code:     "req_foundation_ref",
 				Severity: SeverityWarning,
 				Path:     req.Path,
 				Detail:   "UI impact=changed REQ should cite docs/design/DESIGN.md@vX.Y.Z after publish; pending-foundation is only valid during F0–F6",
 			})
+		}
+		// For pure-local roots, derivation existence already handled as local_contract_incomplete above.
+		if isAllLocal {
+			continue
 		}
 		derivation := filepath.Join("docs", "design", "derivation", "REQ-"+req.ID+".md")
 		if _, err := os.Stat(filepath.Join(root, derivation)); err != nil {
@@ -133,6 +191,43 @@ func Check(root string) (Report, error) {
 		return report, err
 	}
 	report.Findings = append(report.Findings, dupFindings...)
+
+	// Case rules (promise quota / green ban etc.) are not global aesthetics.
+	// They must be declared via docs/design/design-checks.json (restricted DSL
+	// 5 types, source → LAW/ANTI/INV) and are enforced via generic checks
+	// (checkProjectRules). The generic engine never guesses color/role.
+
+	if _, err := os.Stat(filepath.Join(root, KernelRel)); err == nil {
+		if idx, idxFindings, idxErr := BuildContractIndex(root); idxErr == nil {
+			// ContractIndex mode decides what cascades.
+			switch idx.Mode {
+			case "legacy-v1.0":
+				// Compatibility: only the single legacy info, plus parse-level marker version complaints.
+				for _, f := range idxFindings {
+					if f.Code == "foundation_contract_legacy" || f.Code == "contract_version_unknown" {
+						report.Findings = append(report.Findings, f)
+					}
+				}
+			case "contract-v1":
+				report.Findings = append(report.Findings, idxFindings...)
+				report.Findings = append(report.Findings, runGenericChecks(root, idx)...)
+			case "factory":
+				for _, f := range idxFindings {
+					if f.Code == "contract_version_unknown" {
+						report.Findings = append(report.Findings, f)
+					}
+				}
+			}
+			_ = idx
+		}
+	} else {
+		// No kernel: still surface contract-version complaints from deriv/surface probes if any marker exists elsewhere.
+		if idx, idxFindings, idxErr := BuildContractIndex(root); idxErr == nil && idx.Mode == "contract-v1" {
+			report.Findings = append(report.Findings, idxFindings...)
+			report.Findings = append(report.Findings, runGenericChecks(root, idx)...)
+			_ = idx
+		}
+	}
 	return report, nil
 }
 
@@ -157,6 +252,42 @@ func foundationNA(root string) (bool, error) {
 		}
 	}
 	return false, scanner.Err()
+}
+
+func designInvestment(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "docs", "project-map.md"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.Contains(strings.ToLower(line), "design investment") {
+			continue
+		}
+		cells := splitTableLine(line)
+		if len(cells) < 2 {
+			continue
+		}
+		val := strings.ToLower(strings.Trim(strings.TrimSpace(cells[1]), "`"))
+		if i := strings.IndexAny(val, " /|"); i >= 0 {
+			val = val[:i]
+		}
+		return val
+	}
+	return ""
+}
+
+func kernelConfirmationPending(body string) bool {
+	for i, line := range strings.Split(body, "\n") {
+		if i > 20 {
+			break
+		}
+		lower := strings.ToLower(line)
+		if !strings.Contains(line, "确认") && !strings.Contains(lower, "confirm") {
+			continue
+		}
+		return strings.Contains(strings.ToUpper(line), "PENDING")
+	}
+	return false
 }
 
 func kernelStatus(body string) string {
@@ -273,4 +404,50 @@ func reqTableField(body, field string) string {
 		}
 	}
 	return ""
+}
+
+func containsLocalUpgradeTrigger(body string) bool {
+	lower := strings.ToLower(body)
+	hasUpgrade := strings.Contains(lower, "upgrade") || strings.Contains(body, "升级") || strings.Contains(lower, "trigger")
+	hasNonPromote := strings.Contains(body, "不得晋升") || strings.Contains(body, "不得传播") || strings.Contains(strings.ToLower(body), "not promote")
+	// Local derivation must mention when to upgrade and that local decisions must not be promoted.
+	return hasUpgrade && hasNonPromote
+}
+
+func checkLocalUpgradeSuspected(root string, changed []changedREQ) []Finding {
+	if len(changed) <= 1 {
+		// Also consider surface profile appearance as second surface signal.
+		surfaceDir := filepath.Join(root, "docs", "design", "surface-profiles")
+		if entries, err := os.ReadDir(surfaceDir); err == nil {
+			count := 0
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				if !strings.HasSuffix(e.Name(), ".md") {
+					continue
+				}
+				low := strings.ToLower(e.Name())
+				if strings.Contains(low, "template") || low == "readme.md" {
+					continue
+				}
+				count++
+			}
+			if count > 0 {
+				return []Finding{{
+					Code:     "local_upgrade_suspected",
+					Severity: SeverityInfo,
+					Path:     "docs/design/surface-profiles",
+					Detail:   "local investment but a Surface profile exists; re-evaluate F0 and upgrade to Core if this is a second consumer/surface",
+				}}
+			}
+		}
+		return nil
+	}
+	return []Finding{{
+		Code:     "local_upgrade_suspected",
+		Severity: SeverityInfo,
+		Path:     changed[1].Path,
+		Detail:   "second UI impact=changed REQ (" + changed[1].ID + ") while Foundation is still local; local conditions likely no longer hold — re-run F0 and upgrade to Core without data loss",
+	}}
 }

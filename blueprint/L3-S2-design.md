@@ -101,7 +101,7 @@ flowchart TD
     ARCH --> UI{"UI impact"}
     UI -->|unknown| STOP["停止推进<br/>走 REQ amendment 澄清"]
     UI -->|none| REVIEW["T5 三角色自审"]
-    UI -->|changed| DERIVE["读 Foundation + Surface<br/>写 Derivation Note"]
+    UI -->|changed| DERIVE["读 Next-agent card<br/>写 Derivation Must not"]
     DERIVE --> MODULES["确定受影响模块<br/>先读既有完整模块包"]
 
     MODULES --> SYS["T3 系统轨<br/>architecture → facts"]
@@ -148,14 +148,14 @@ flowchart TD
 |:--|:--|:--|
 | `unknown` | 停止；指出 REQ §D 中要澄清的事实，走 human-only amendment | 猜成 none/changed 后继续 |
 | `none` 且无行为包变化 | 保留 T1/T5，跳过 T3/T4 的 UI 包生产 | 跳过 ARCHITECTURE，或把“无 UI”误写成“无设计” |
-| `changed` | 读已发布 Foundation 与 Surface Profile，写 Derivation Note，再从 REQ 绑定受影响模块并更新每个模块的当前真相包 | 跳过推导直接画 HTML；新建 REQ 私有副本 |
+| `changed` | 先读 Next-agent card（`DESIGN.md` §0）与 Surface 行，写含 Must not 的 Derivation Note，再更新模块真相包；架构轨不向 Kernel 要模块图 | 跳过推导直接画 HTML；把施工 hex 当品牌；新建 REQ 私有副本 |
 | 非 UI 但 AC→FR 仍需要 CASE | 按 AC bridge 的实际分母补模块行为包，或使用 NFR/§A4 的受控 N/A | 用 ui_impact=none 静默删除验收项 |
 
 当前 `hasCompleteUIDesignPackageForREQ` 主要进入 status/next 投影；它会检查模块绑定、必需文件、HTML 头和 symlink 边界，但不是 PTR-PLAN-01 的 transition guard。此处必须如实把它称为**引导性检查**，不能称为已接线的硬门。
 
 ### 4.2.1 消费 Project Design Foundation
 
-`changed` 路径在双轨之前读取已发布的 Kernel、Grammar 和当前 Surface Profile，并写 `docs/design/derivation/REQ-{id}.md`。先完成一张宏观构图和一个压力状态，再扩展其余 HTML / stories / flows。Derivation Note 迫使 Agent 说明“这个页面为什么这样长”，不复制整份 Foundation。
+`changed` 路径在双轨之前**先读**已发布 Foundation 的 Next-agent card（`DESIGN.md` §0）与当前 Surface 行，写 `docs/design/derivation/REQ-{id}.md`（含 Must not）。需要时再打开 Grammar。禁止把上一页施工 hex 或库 Primary 当成品牌。先完成一张宏观构图和一个压力状态，再扩展其余 HTML / stories / flows。Derivation Note 迫使 Agent 说明“这个页面为什么这样长”以及本页不得发明什么，不复制整份 Foundation。Foundation 不替代本阶段的架构轨。
 
 可复用发现按 [L4 §7.4](L4-project-design-foundation.md) 回灌：一次性构图留模块包；反复关系提修订提案；禁止静默改 `DESIGN.md`。
 

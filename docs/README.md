@@ -344,7 +344,7 @@ the REQ is locked and before the development contract is locked**, because
 FE/BE/SYNC contracts link to the locked package. Skipping the gate when UI
 impact is `changed` is forbidden by INV-004.
 
-The verification machine is a ReviewPlan status projection (L3-S7): `planned`
+The verification machine is a ReviewPlan status projection (`docs/agent-protocol.md` #s7): `planned`
 waits for a registered ReviewPlan with an exactly-partitioned required Claim
 set; `running` consumes static DV/QA Claims first, then behavior E2E; a finding
 flips the round to `cannot_clean` but ordinary safe discovery continues

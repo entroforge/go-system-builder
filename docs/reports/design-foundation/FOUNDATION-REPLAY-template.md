@@ -3,7 +3,7 @@
 > 状态：open / observed / concluded
 > 日期：YYYY-MM-DD
 > Foundation：docs/design/DESIGN.md@vX.Y.Z / missing / N/A
-> 对照协议：blueprint/L6-design-foundation-replay.md
+> 对照协议：docs/rules/design-foundation.md
 
 Fill this after a real UI project has used Project Design Foundation across
 at least two `UI impact=changed` REQs. Do not fill it in the template factory.
@@ -14,10 +14,10 @@ at least two `UI impact=changed` REQs. Do not fill it in the template factory.
 |:---|:---|
 | Product / surface | |
 | REQs observed | REQ-… |
-| Humans who confirmed F2 / F3 / F6 | |
+| Humans who confirmed | full path: F2 / F3 / F6 · thin path: one packet |
 | UI Lab present? | yes / no |
 
-## 2. Signals (L4 §11.4)
+## 2. Signals
 
 | Signal | Before Foundation | After Foundation | Evidence (REQ / chat / PR) |
 |:---|:---|:---|:---|
@@ -28,6 +28,8 @@ at least two `UI impact=changed` REQs. Do not fill it in the template factory.
 | Same-semantic components rewritten across modules | | | |
 | Surface Profile explains consumer vs operations | | | |
 | Local findings return via CP-* / Grammar revision | | | |
+| Handoff bans (no dual primary CTA, no mood color, no library-blue brand lock) | | | |
+| Construction hex promoted to brand by a later agent | | | |
 
 ## 3. Skip / fail events
 
@@ -36,6 +38,7 @@ at least two `UI impact=changed` REQs. Do not fill it in the template factory.
 | | Agent locked a changed REQ with no DESIGN.md | |
 | | Agent asked the human to pick a hex | |
 | | Third primary button appeared | |
+| | Later agent locked library default blue / a hex as the brand | |
 | | Snapshot passed but users rejected the direction | |
 
 ## 4. Gate promotion decision
@@ -54,4 +57,4 @@ quality stays out of fail-closed gates.
 
 ## 5. Conclusion
 
-{Did Foundation reduce cross-module visual rework and low-information style questions? What should change in L4/L5?}
+{Did Foundation reduce cross-module visual rework and low-information style questions? Did a new agent on the second changed REQ still obey the Next-agent card? What should change in `skills/design-foundation` or `docs/rules/design-foundation.md`?}
