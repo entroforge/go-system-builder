@@ -12,8 +12,8 @@ import (
 )
 
 var hexRe = regexp.MustCompile(`(?i)#([0-9a-f]{3,8})\b`)
-var rgbRe = regexp.MustCompile(`(?i)\brgba?\(\s*(\d{1,3})(?:\s*,\s*|\s+)(\d{1,3})(?:\s*,\s*|\s+)(\d{1,3})`)
-var hslRe = regexp.MustCompile(`(?i)\bhsla?\(\s*([-\d.]+)(?:deg)?(?:\s*,\s*|\s+)([\d.]+)%(?:\s*,\s*|\s+)([\d.]+)%`)
+var rgbRe = regexp.MustCompile(`(?i)\brgba?\(\s*(\d{1,3})(?:\s*,\s*|\s+)(\d{1,3})(?:\s*,\s*|\s+)(\d{1,3})(?:\s*,\s*[\d.]+%?\s*)?\s*\)`)
+var hslRe = regexp.MustCompile(`(?i)\bhsla?\(\s*([-\d.]+)(?:deg)?(?:\s*,\s*|\s+)([\d.]+)%(?:\s*,\s*|\s+)([\d.]+)%(?:\s*(?:,\s*|\s*/\s*)[\d.]+%?\s*)?\s*\)`)
 
 func LintUnregisteredHex(root string) ([]Finding, error) {
 	tf, err := LoadTokens(root)

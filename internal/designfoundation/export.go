@@ -132,19 +132,18 @@ func extractSection(body, title string) string {
 	if body == "" {
 		return ""
 	}
-	idx := strings.Index(body, "## "+title)
-	if idx < 0 {
-		idx = strings.Index(body, "### "+title)
-	}
-	if idx < 0 {
+	pattern := `(?m)^##+\s*(?:\d+\.\s*)?` + regexp.QuoteMeta(title) + `\b`
+	re := regexp.MustCompile(pattern)
+	loc := re.FindStringIndex(body)
+	if loc == nil {
 		return ""
 	}
-	rest := body[idx:]
+	rest := body[loc[0]:]
 	if nl := strings.Index(rest, "\n"); nl >= 0 {
 		rest = rest[nl+1:]
 	}
-	if loc := heading.FindStringIndex(rest); loc != nil {
-		rest = rest[:loc[0]]
+	if next := heading.FindStringIndex(rest); next != nil {
+		rest = rest[:next[0]]
 	}
 	return strings.TrimSpace(rest)
 }

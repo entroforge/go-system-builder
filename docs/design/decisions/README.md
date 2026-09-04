@@ -13,7 +13,7 @@
 - 新 UI 片段先落在 `prototypes/<module>/`，**不静默升为全局**。第二模块出现同语义再提 `CP-*`；与 Kernel 冲突但业务必须 → `EX-*`。
 - `EX-*` 必须有范围、期限、禁止扩散面、复查条件；到期未复查视为过期。
 - 重复组件由 `loop-harness design-foundation check --root .` 顾问式提示（`component_repeat`），默认不阻断 `validate --all`。
-- 遗留路径 `docs/design/components/CP-*.md` 与 `docs/design/exceptions/EX-*.md` 仍被校验兼容识别，新项目请用本目录。
+- 遗留路径 `docs/design/components/CP-*.md` 仍参与 `component_repeat` 校验；`docs/design/exceptions/EX-*.md` 仅作为例外记录兼容读取，不参与组件重复检测。新项目请用本目录。
 
 ## 命名
 
