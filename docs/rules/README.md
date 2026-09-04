@@ -39,6 +39,7 @@ Hooks; procedures belong to Skills; role behavior belongs to Agent Definitions.
 | Bugfix Review | `bugfix-review.md` | BUG investigation or closure |
 | Release Architecture Audit | `release-architecture-audit.md` | release preparation |
 | UI Design Package | `ui-prototype.md` | visible frontend change |
+| Project Design Foundation | `design-foundation.md` | user-visible UI, brand language, first UI REQ, new product surface |
 
 ## Immutable Policy
 

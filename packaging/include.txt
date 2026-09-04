@@ -11,7 +11,9 @@ loop-template.md
 settings.json
 skills
 agents
-blueprint
 docs
 packaging/install.md
+packages
 tools/claude-hook-smoke.sh
+tools/ui-lab
+tools/visual-qa

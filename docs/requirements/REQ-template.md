@@ -12,7 +12,7 @@
 > `UI impact` 是 `状态：locked` 的强制顶部字段，`req bind` 只解析这一处（§C 的回显必须与之一致，不一致会被拒绝）。值必须三选一：`none` / `changed` / `unknown`。`unknown` 会触发规划暂停门禁，需在 §D 澄清后才能推进 S2。
 
 <!-- 给 agent（固定阅读，2 行）：
-人给预期效果，你全权接管设计，人只逐层拍板；按 §A→§B→§C 漏斗推进，上一层拍板前不设计下一层。
+若预期效果可能改界面：先读 DESIGN.md / design-foundation；缺失则停漏斗走 F0–F6，再按 §A→§B→§C 推进。
 提案纪律与自审见 requirement-funnel skill——上交唯一合格形态是完整方案，开放问题禁止上交。 -->
 
 ## §A 理念（Why）
@@ -106,6 +106,10 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 |:--|:--|
 | UI impact（引自顶部） | none / changed / unknown（顶部 blockquote 是唯一被 `parseUIImpact` 解析的位置，本节只回显，不独立声明） |
 | 影响页面 / 模块 | {页面、路由、组件或 N/A} |
+| Foundation reference | `docs/design/DESIGN.md@vX.Y.Z` / `local` / `pending-foundation` / `N/A`（`none` 可为 N/A；`local` 表示本 REQ 使用模块级推导，不发布项目级 Foundation；`changed` 的 Core/Extended 必须为版本化引用，不得用风格句替代。S1 parser 不读本字段，仍只解析顶部 `UI impact`） |
+| Surface | `SUR-0X@vX.Y.Z` / `local` / `N/A`（Core/Extended 使用 `SUR-*@version`；`local` 仅用于模块级推导；旧值 `consumer/operations` 视为 `SUR-01` 别名） |
+| Design posture | `local` / `inherit` / `extend` / `exception`（`local` 仅配合 `local` Foundation；`extend` 须在 Derivation Note 写清新增语法及是否候选晋升；`exception` 须同时有 `docs/design/decisions/EX-*.md` (legacy `docs/design/exceptions/EX-*.md` still recognized)） |
+| Derivation note | `docs/design/derivation/REQ-{id}.md` / `N/A`（`changed` 时由 S2 填写且必须为可解析路径；`local` 亦需模块 Derivation；S0 可留 pending） |
 | 模块当前真相包 | `docs/design/prototypes/<module>/`（index.html + stories.md + flows.md + scenario-model.json + cross-matrix.json + cases.json + scenario-coverage.json + fixture-contract.json + *.html）/ N/A |
 | 原型门禁状态 | N/A / pending / ready |
 
@@ -135,7 +139,7 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 
 ## §F 派生文档与覆盖矩阵（**S0 不读不填**——整个 §F 由 S3 起的 CONTRACTS-{id} 索引维护，本表仅锁定时快照；跳到 §G/文末即可）
 
-<!-- 活矩阵唯一居所在 CONTRACTS-{id} 索引；REQ 是锁定基线，agent 不填写本表——L3-S3 v4.0.1 -->
+<!-- 活矩阵唯一居所在 CONTRACTS-{id} 索引；REQ 是锁定基线，agent 不填写本表 -->
 
 ### 派生 UI 设计包
 
@@ -181,4 +185,4 @@ REQ 只能作为来源，不能创建需求私有设计或测试副本。任何�
 
 | 日期 | 版本 | 变更内容 | 申请人 | 审批人 |
 |:--|:--|:--|:--|:--|
-| 2026-08-15 | v2.0.0 | {示例行——首个真实变更从下一行开始} 重构为漏斗结构（§A 理念→§B 方向与约束→§C 具体需求→§D 澄清→§E 锁定→§F 覆盖矩阵）；删除 PM Todo、21 项自查 checklist 与设计公理五问（实质分别转入字段/S2 引擎/blueprint）；状态枚举精简为 draft/locked/changed/archived；过程方法论由 requirement-funnel skill 承载；流程表补权限列、非功能表补 NFR 编号列 | owner | owner |
+| 2026-08-15 | v2.0.0 | {示例行——首个真实变更从下一行开始} 重构为漏斗结构（§A 理念→§B 方向与约束→§C 具体需求→§D 澄清→§E 锁定→§F 覆盖矩阵）；删除 PM Todo、21 项自查 checklist 与设计公理五问（实质分别转入字段/S2 引擎）；状态枚举精简为 draft/locked/changed/archived；过程方法论由 requirement-funnel skill 承载；流程表补权限列、非功能表补 NFR 编号列 | owner | owner |

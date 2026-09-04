@@ -13,10 +13,13 @@ prelude.md                                  full onboarding (read §1 for the co
 loop-template.md                            Wake-up Prompt source -> .claude/loop.md
 loop-harness.md                             agent-facing Manual source -> .claude/bin/loop-harness.md
 settings.json                               Hook registration for .claude/settings.json
-tools/claude-hook-smoke.sh                  Process-boundary Hook smoke and platform acceptance entry
 skills/                                     SKILL.md files -> .claude/skills/
 agents/                                     agent definitions -> .claude/agents/
 docs/                                       templates + Loop definitions + rules -> docs/
+packages/design-tokens/                     DTCG tokens + generated CSS
+tools/ui-lab/                               Storybook MCP wiring note
+tools/visual-qa/                            snapshot-drift protocol (not Thesis proof)
+tools/claude-hook-smoke.sh                  Process-boundary Hook smoke and platform acceptance entry
 .claude/bin/loop-harness-darwin-arm64       precompiled Harness, macOS arm64 (statically linked)
 .claude/bin/loop-harness-linux-amd64        precompiled Harness, Linux x86_64 (statically linked)
 .claude/bin/loop-harness-windows-amd64.exe  precompiled Harness, Windows x86_64 (statically linked)
@@ -133,12 +136,17 @@ cp .claude/bin/"$HARNESS" .claude/bin/loop-harness
 chmod +x .claude/bin/loop-harness
 cp $TARDIR/loop-harness.md .claude/bin/loop-harness.md
 
-# Design blueprint (layered design docs: L1 philosophy, L2 lifecycle plan, ...)
-# Kept next to the Manual for on-demand lookup of design intent by agents and humans.
-cp -R $TARDIR/blueprint .claude/bin/blueprint
-
 # Documentation tree (templates + Loop definitions + rules)
 cp -R $TARDIR/docs .
+
+# Project Design Foundation implementation (tokens, UI Lab, visual-qa protocol)
+mkdir -p packages tools
+cp -R $TARDIR/packages/* packages/
+cp -R $TARDIR/tools/ui-lab tools/ui-lab
+cp -R $TARDIR/tools/visual-qa tools/visual-qa
+if [ -f "$TARDIR/tools/claude-hook-smoke.sh" ]; then
+  cp "$TARDIR/tools/claude-hook-smoke.sh" tools/claude-hook-smoke.sh
+fi
 
 # Initialize runtime (not shipped in tarball)
 .claude/bin/loop-harness init --root .

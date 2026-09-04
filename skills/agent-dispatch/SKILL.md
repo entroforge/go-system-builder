@@ -1,13 +1,13 @@
 ---
 name: agent-dispatch
-description: Use when spawning, reassigning, or reactivating any specialized Builder or Reviewer Agent; covers the three L4 dispatch modes (plan_checkpoint continuous execution by default, plan_approval_required for high-risk work, one_shot for idempotent single actions)
+description: Use when spawning, reassigning, or reactivating any specialized Builder or Reviewer Agent; covers the three dispatch modes (plan_checkpoint continuous execution by default, plan_approval_required for high-risk work, one_shot for idempotent single actions)
 category: methodology
 version: 1.0.0
 ---
 # Agent Dispatch
 
 ## Authority
-Dispatch modes and the agent lifecycle are defined in `docs/loop-definition.json` (`entity_lifecycles.agent`) and `blueprint/L4-agent-dispatch-governance.md` §3.3/§7; the runtime events are executed by `loop-harness runtime agent-event` / `runtime task-complete`.
+Dispatch modes and the agent lifecycle are defined in `docs/loop-definition.json` (`entity_lifecycles.agent`) and this Skill; the runtime events are executed by `loop-harness runtime agent-event` / `runtime task-complete`.
 
 ## Entry Conditions
 - An Agent Definition exists under `agents/<role>.md`.
@@ -106,4 +106,4 @@ apply, submit the generic checkpoint first and the domain artifact second.
 - Do not use `one_shot` for anything with side effects.
 
 ## Inlined Methodology
-Loop Engineering dispatches Agents in three modes (L4 §3.3). The default is continuous execution: one structured PLAN_REPORT is the checkpoint — it makes the plan inspectable and correctable while the work proceeds, without a synchronous approval wait. The two-round readback → approval → activation flow remains for genuinely high-risk or irreversible work, and the activation hash chain (`approved_readback_sha256`) applies in both modes: the envelope proves which plan the Worker actually saw. The first-write barrier (PreToolUse) blocks a dispatched Worker's first product mutation until its PLAN_REPORT is recorded, whenever the hook payload identifies the sender; on platforms whose payloads carry no agent identity the barrier stays dormant (the reviewer product-write freeze and the PLAN_REPORT phase contract in every agent card carry the invariant instead). PostToolUse(SendMessage) observes the report automatically via its three-level identification ladder (payload agent_id → teammate_name → sole agent awaiting its plan checkpoint).
+Loop Engineering dispatches Agents in three modes. The default is continuous execution: one structured PLAN_REPORT is the checkpoint — it makes the plan inspectable and correctable while the work proceeds, without a synchronous approval wait. The two-round readback → approval → activation flow remains for genuinely high-risk or irreversible work, and the activation hash chain (`approved_readback_sha256`) applies in both modes: the envelope proves which plan the Worker actually saw. The first-write barrier (PreToolUse) blocks a dispatched Worker's first product mutation until its PLAN_REPORT is recorded, whenever the hook payload identifies the sender; on platforms whose payloads carry no agent identity the barrier stays dormant (the reviewer product-write freeze and the PLAN_REPORT phase contract in every agent card carry the invariant instead). PostToolUse(SendMessage) observes the report automatically via its three-level identification ladder (payload agent_id → teammate_name → sole agent awaiting its plan checkpoint).

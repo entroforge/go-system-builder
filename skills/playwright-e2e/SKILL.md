@@ -2,7 +2,7 @@
 name: playwright-e2e
 description: Use when Playwright browser tests, end-to-end flows, browser fixtures, or UI test evidence change
 category: best-practice
-version: 0.3.0
+version: 0.3.1
 ---
 # Playwright E2E
 ## Authority
@@ -17,7 +17,9 @@ test data, and environment contract.
 Execute human navigation steps, use stable semantic selectors, isolate test data, assert
 common oracle fields (`visible`, `terminal_state`, `persisted_effects`,
 `forbidden_side_effects`) and, for negative cases, `rejection`, `expected_state`, and
-`recovery`; retain traceable evidence and source-backed recovery N/A.
+`recovery`; retain traceable evidence and source-backed recovery N/A. Playwright or
+Storybook snapshot equality proves implementation drift only (`tools/visual-qa/README.md`);
+it does not prove the Design Thesis.
 ## Outputs
 Repeatable browser tests or a scoped E2E review conclusion with browser evidence.
 ## N/A Criteria

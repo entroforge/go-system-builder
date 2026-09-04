@@ -798,6 +798,10 @@ Reviewer 不能在最终 Result 中单方面把 required Claim 改成 N/A。机�
 
 ReviewPlan 标为 `not_applicable` 的 Claim 不再派发，也不要求生成一份“空审查”Result；它由 close-round 直接校验 disposition 的 source 和 rationale。
 
+### 9.4 Design Foundation 反馈事务入口（L4 §7.4–§7.5）
+
+与 Project Design Foundation 矛盾或证伪它的 S7 Finding、counterevidence 行、visual-qa 结论或后续 REQ 现象，按 L4 §7.5 以事务入 `S8 → S10` 回灌，而不是以报告写完视为闭环：`Source observation`（Finding ID / counterevidence 行 / visual-qa / `REQ-*` `PROOF-*`）→ 违反或被证伪的约束 ID（`LAW/ANTI/INV/GR/ROLE/PAT/SUR/EX`）→ 依 L4 §7.4 分类（局部修复 / 模块 Pattern/`CP-*` / 全局 Grammar/Token/Component `ADR/DFD` / 有期 `EX-*` / Kernel breaking change）→ 只改分类指向的权威层并列出受影响边（Grammar / Surface / Derivation / Token / 组件 / Proof）→ 受影响边的引用/绑定回检（`design-foundation check`）+ 一个最小回放（第二份 `changed` REQ 冷换手或受影响 Proof 态）。载体复用既有权威（Finding+修复证据 / `CP-*` / `ADR/DFD`+受影响表 / `EX-*`），不新建 Feedback 库；收据字段 `Source observation / Affected constraint IDs / Classification / Changed edges / Replay evidence / Status open/closed` 必须可解析，checker 只验引用与路径。S7 本轮进入 `cannot_clean → S8` 时保留这些字段，随 ObservationBatch 交 S8 定类；仅在 L4 写路由表或只等两份 REQ 后填 `FOUNDATION-REPLAY`，不算已接线。本 Skill 与 `skills/acceptance-and-handoff` 是该事务在 S7/S10 的入口。
+
 ## 10. CleanRound 的正确语义
 
 ### 10.1 严格条件

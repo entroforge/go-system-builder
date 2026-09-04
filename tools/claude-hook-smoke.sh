@@ -4,7 +4,7 @@
 # This command deliberately has two scopes:
 #   1. always: execute the configured Hook command with official payload shapes;
 #   2. optional: confirm a real Claude CLI is installed for the interactive
-#      same-session exit-2 acceptance described in the platform blueprint.
+#      same-session exit-2 acceptance described in the platform Hook reference.
 #
 # It never starts an interactive Claude session, spends API budget, or edits
 # product files. The latter acceptance still needs a disposable project and a

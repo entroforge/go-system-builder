@@ -42,7 +42,7 @@ flowchart LR
     end
 
     subgraph S2["S2 Design"]
-        T1["T1 建立架构边界与风险决策"] --> T2["T2 解析 UI / 行为影响"]
+        T1["T1 建立架构边界与风险决策"] --> T2["T2 解析 UI / 写 Derivation"]
         T2 --> T3["T3 双轨建立系统事实与用户故事"]
         T3 --> T4["T4 汇聚行为、oracle、fixture 与路径"]
         T4 --> T5["T5 自审、校验、锁定与登记"]
@@ -76,9 +76,9 @@ T3、T4 是条件路径：UI impact=`changed` 或行为模型确实变化时执�
 - **不负责**：FE/BE/SYNC 条款翻译（S3）、TASK 拆分（S4）、独立文档审查（S5）和实现；
 - **事实源边界**：模块包是跨 REQ 演进的当前真相，不能为本 REQ 复制一份私有场景包；
 - **验证边界**：`scenario-coverage.json` 的 100% 是设计分支已构造，不是 S7 的执行证据；
-- **当前接线事实**：PTR-PLAN-01 的真实机械门要求 locked REQ、locked ARCHITECTURE、planning_design 证据和 `ui_impact_resolved`；它没有直接运行完整 UI package 校验；
+- **当前接线事实**：PTR-PLAN-01 的真实机械门要求 locked REQ、locked ARCHITECTURE、planning_design 证据和 `ui_impact_resolved`；它没有直接运行完整 UI package 校验，也不检查 Project Design Foundation 或 Derivation Note；
 - **当前保护事实**：PTR-PLAN-01 只把 ARCHITECTURE 登记进 `documents[]`。stories/flows/JSON/HTML 真相包目前没有进入 runtime 的精确指纹集，也不受同等级 locked-artifact 保护；
-- **当前方法冲突**：`specification-planning` Step 0 写着 UI impact=`none` 时跳过步骤 1～9，而步骤 1 包含架构设计；这与 design gate 必须存在 locked ARCHITECTURE 冲突。本文按实际 gate 采用“架构恒做、UI 包条件做”，并把 skill 文案列为待对齐项；
+- **当前方法事实**：`specification-planning` Step 0 在 `none` 时跳过 Foundation 推导与 UI 包，仍完成架构与 ADR；与 design gate 必须存在 locked ARCHITECTURE 对齐；
 - **当前人闸事实**：ADR 方向签核是方法层约定，不是 loop-definition 中的 human-boundary transition，不能写成已被 runtime 强制。
 
 ## 2. 第二层：S2 的任务分解
@@ -86,7 +86,7 @@ T3、T4 是条件路径：UI impact=`changed` 或行为模型确实变化时执�
 | 任务 | 要解决的问题 | 主要动作 | 阶段产出 |
 |:--|:--|:--|:--|
 | T1 建立架构边界与风险决策 | 契约和实现依赖的技术决定是否齐全；为什么这样选 | 沿架构模板覆盖上下文、模块、数据流、状态/数据模型、安全、性能、部署回滚；实质取舍进入 ADR | 架构草案、风险—决策—后果链、ADR 集 |
-| T2 解析 UI / 行为影响 | 是否需要新建或更新模块真相包；影响哪些既有模块 | 读取 bound REQ 顶部 UI impact 与模块绑定；unknown 停止；none/changed 分流；既有模块先读全包 | 明确的受影响模块清单和条件工作范围 |
+| T2 解析 UI / 行为影响 | 是否需要新建或更新模块真相包；影响哪些既有模块 | 读取 bound REQ 顶部 UI impact 与模块绑定；unknown 停止；none/changed 分流；`changed` 先写 Derivation Note 再读模块包 | 明确的受影响模块清单、推导说明和条件工作范围 |
 | T3 建立两条事实轨 | 系统词汇和用户意图如何在汇聚前各自完整 | 系统轨从架构落 facts/partitions；用户轨从 REQ §A 落 stories，复用稳定 S-NNN | 可汇聚的系统 facts 与用户 stories |
 | T4 汇聚完整行为与可走查路径 | 每条规则的正反结果、数据和真实路径是否齐全 | facts × FR × stories 找 rules/branches；branch 同写 oracle；cross-matrix 查沉默格；再写 fixtures、flows、HTML 原型 | source package、生成前 bridge 结果、可执行路径和 fixture |
 | T5 自审、校验、锁定与登记 | 设计是否可实现、可取证、可维护；机器事实能否进入 S3 | 三角色攻击；generate/validate；锁 ARCHITECTURE；登记 planning_design；由 gate 提交 PTR-PLAN-01 | 可审计设计出口与 `planning.contracts` cursor |
@@ -101,7 +101,8 @@ flowchart TD
     ARCH --> UI{"UI impact"}
     UI -->|unknown| STOP["停止推进<br/>走 REQ amendment 澄清"]
     UI -->|none| REVIEW["T5 三角色自审"]
-    UI -->|changed| MODULES["确定受影响模块<br/>先读既有完整模块包"]
+    UI -->|changed| DERIVE["读 Next-agent card<br/>写 Derivation Must not"]
+    DERIVE --> MODULES["确定受影响模块<br/>先读既有完整模块包"]
 
     MODULES --> SYS["T3 系统轨<br/>architecture → facts"]
     MODULES --> USER["T3 用户轨<br/>REQ §A → stories"]
@@ -147,10 +148,18 @@ flowchart TD
 |:--|:--|:--|
 | `unknown` | 停止；指出 REQ §D 中要澄清的事实，走 human-only amendment | 猜成 none/changed 后继续 |
 | `none` 且无行为包变化 | 保留 T1/T5，跳过 T3/T4 的 UI 包生产 | 跳过 ARCHITECTURE，或把“无 UI”误写成“无设计” |
-| `changed` | 从 REQ 明确绑定受影响模块，更新每个模块的当前真相包 | 新建 REQ 私有副本 |
+| `changed` | 先读 Next-agent card（`DESIGN.md` §0）与 Surface 行，写含 Must not 的 Derivation Note，再更新模块真相包；架构轨不向 Kernel 要模块图 | 跳过推导直接画 HTML；把施工 hex 当品牌；新建 REQ 私有副本 |
 | 非 UI 但 AC→FR 仍需要 CASE | 按 AC bridge 的实际分母补模块行为包，或使用 NFR/§A4 的受控 N/A | 用 ui_impact=none 静默删除验收项 |
 
 当前 `hasCompleteUIDesignPackageForREQ` 主要进入 status/next 投影；它会检查模块绑定、必需文件、HTML 头和 symlink 边界，但不是 PTR-PLAN-01 的 transition guard。此处必须如实把它称为**引导性检查**，不能称为已接线的硬门。
+
+### 4.2.1 消费 Project Design Foundation
+
+`changed` 路径在双轨之前**先读**已发布 Foundation 的 Next-agent card（`DESIGN.md` §0）与当前 Surface 行，写 `docs/design/derivation/REQ-{id}.md`（含 Must not）。需要时再打开 Grammar。禁止把上一页施工 hex 或库 Primary 当成品牌。先完成一张宏观构图和一个压力状态，再扩展其余 HTML / stories / flows。Derivation Note 迫使 Agent 说明“这个页面为什么这样长”以及本页不得发明什么，不复制整份 Foundation。Foundation 不替代本阶段的架构轨。
+
+可复用发现按 [L4 §7.4](L4-project-design-foundation.md) 回灌：一次性构图留模块包；反复关系提修订提案；禁止静默改 `DESIGN.md`。
+
+**诚实缺口**：Derivation Note 与 Foundation 引用目前不是 PTR-PLAN-01 谓词，也未进入 runtime `documents[]`。S2 主会话仍必须主动完成；S5 只做语义审查，不把它伪装成已接线硬门。
 
 ### 4.3 T3 — 系统轨与用户轨
 
@@ -196,6 +205,7 @@ changed 路径随后运行 `scenario generate` 和 `scenario validate`；所有�
 | 模块行为真相 | design agent | scenario source package | S3、S7、S8 |
 | 正反结构与引用 | harness | scenario generate/validate/bridge | S3 gate、验证者 |
 | 用户旅程 | design agent | stories/flows/PATH/HTML | FE 契约、E2E |
+| 项目级设计推导 | design agent | `docs/design/derivation/REQ-*` + Foundation | 模块原型、S5 语义审查 |
 | 设计登记与 cursor | gate + transition/store | planning_design evidence、documents[]、PTR-PLAN-01 | hook、S3 |
 | UI 包完整性提示 | projection | status/next 的 missing 项 | 主会话 |
 | 独立语义审查 | S5 两个 verifier | document_review | TR-003 |
@@ -206,9 +216,9 @@ changed 路径随后运行 `scenario generate` 和 `scenario validate`；所有�
 - scenario-model 与 cases 不双写：前者是源，后者是生成投影；
 - stories、branches、flows 不是三份用户故事：分别表达意图、行为结果和可执行路径；
 - `scenario bridge` 与 `contracts check` 不重复：前者管 AC→CASE，后者管 CASE→契约；
-- **接线缺口**：完整 UI package 检查尚未挂到 PTR-PLAN-01；S2 可以在只有 locked architecture + evidence 时机械进入 S3；
+- **接线缺口**：完整 UI package 检查尚未挂到 PTR-PLAN-01；S2 可以在只有 locked architecture + evidence 时机械进入 S3；Project Design Foundation 与 Derivation Note 同样尚未成为机械门；
 - **锁定缺口**：模块真相包未登记进 runtime `documents[]`，S5 的 exact subject 和后续 locked-artifact hook 不覆盖它；
-- **方法缺口**：UI none 路由在 skill 中错误跳过 architecture；
+- **方法缺口（已修）**：`specification-planning` Step 0 在 `none` 时不再跳过架构；仍跳过 Foundation 推导与 UI 包；
 - **判断缺口**：oracle 语义、fact×story 组合和真实用户路径不能由 schema 证明正确；
 - **分母边界**：AC bridge 对非 UI AC 也可能要求 CASE；不能把“只对 changed 强制”写成无条件现状。
 
@@ -281,6 +291,7 @@ changed 路径随后运行 `scenario generate` 和 `scenario validate`；所有�
 - oracle 是判定结果，不是实现步骤；
 - cases/coverage 是生成物，任何手改都应被 validate 拒绝；
 - design gate 当前不能证明完整 UI package 已完成，不能把 status 投影当硬门；
+- Foundation / Derivation Note 是 S2 的语义入口，不是已接线硬门；
 - 模块包尚未进入 runtime 精确锁定集，S5/S6 期间的保护不能虚称；
 - ADR 签核目前是流程约定，不是机器 human boundary。
 

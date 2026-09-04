@@ -20,6 +20,15 @@ Names must make traceability obvious.
 |:---|:---|:---|
 | requirement | `REQ-{NNN}.md` | `REQ-001.md` |
 | ADR | `ADR-{NNN}.md` | `ADR-001.md` |
+| design foundation | `docs/design/DESIGN.md` | `docs/design/DESIGN.md` |
+| design grammar | `docs/design/design-language.md` | `docs/design/design-language.md` |
+| surface profile | `docs/design/surface-profiles/{surface}.md` | `docs/design/surface-profiles/consumer.md` |
+| design derivation | `docs/design/derivation/REQ-{id}.md` | `docs/design/derivation/REQ-014.md` |
+| design exception | `docs/design/decisions/EX-{id}.md` (legacy `docs/design/exceptions/EX-{id}.md` still recognized) | `docs/design/decisions/EX-001.md` |
+| design tokens | `packages/design-tokens/tokens.json` (+ generated `tokens.css`) | `packages/design-tokens/tokens.json` |
+| portable DESIGN snapshot | `docs/design/proof/portable/DESIGN.md` (derived, not authority) | `docs/design/proof/portable/DESIGN.md` |
+| component proposal | `docs/design/decisions/CP-{id}.md` (legacy `docs/design/components/CP-{id}.md` still recognized) | `docs/design/decisions/CP-001.md` |
+| foundation replay record | `docs/reports/design-foundation/` | `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` |
 | UI design package directory | `docs/design/prototypes/{module}/` | `docs/design/prototypes/fund/` |
 | UI prototype HTML | `<feature>.html` (one per page/dialog/wizard) | `fund-list.html`, `wizard.html` |
 | UI module entry hub | `index.html` (card-grid linking to every page HTML file) | `docs/design/prototypes/fund/index.html` |

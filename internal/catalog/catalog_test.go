@@ -35,6 +35,24 @@ func TestScenarioModelDesignSkillIsRegistered(t *testing.T) {
 	t.Fatal("scenario-model-design is missing from the static skill catalog")
 }
 
+func TestDesignFoundationSkillsAreRegistered(t *testing.T) {
+	want := map[string]string{
+		"design-foundation": "methodology",
+		"design-critic":     "best-practice",
+	}
+	found := map[string]string{}
+	for _, skill := range catalog.Skills {
+		if _, ok := want[skill.Name]; ok {
+			found[skill.Name] = skill.Category
+		}
+	}
+	for name, category := range want {
+		if found[name] != category {
+			t.Fatalf("%s category=%q, want %s (registered=%v)", name, found[name], category, found)
+		}
+	}
+}
+
 func TestCatalogRejectsSkillDescriptionThatSummarizesWorkflow(t *testing.T) {
 	root := t.TempDir()
 	writeSkillFixture(t, root, "loop-orchestration", `---

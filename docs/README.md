@@ -344,7 +344,7 @@ the REQ is locked and before the development contract is locked**, because
 FE/BE/SYNC contracts link to the locked package. Skipping the gate when UI
 impact is `changed` is forbidden by INV-004.
 
-The verification machine is a ReviewPlan status projection (L3-S7): `planned`
+The verification machine is a ReviewPlan status projection (`docs/agent-protocol.md` #s7): `planned`
 waits for a registered ReviewPlan with an exactly-partitioned required Claim
 set; `running` consumes static DV/QA Claims first, then behavior E2E; a finding
 flips the round to `cannot_clean` but ordinary safe discovery continues
@@ -709,7 +709,7 @@ Warn-and-self-correct (recoverable process completeness):
 | Directory | Purpose |
 |:---|:---|
 | `requirements/` | requirement baselines |
-| `design/` | architecture, UI, state, data, and Loop contracts |
+| `design/` | architecture, UI, state, data, Loop contracts, and Project Design Foundation (`DESIGN.md`) |
 | `contracts/` | FE/BE/SYNC execution contracts |
 | `tasks/` | executable assignments |
 | `reports/` | BUG, delivery, QA, and acceptance evidence |
@@ -732,10 +732,11 @@ in the Harness. Reusable methods and best practices live in the Skill catalog.
 
 1. Copy `AGENTS-template.md` to `AGENTS.md`.
 2. Copy `project-map-template.md` to `project-map.md`.
-3. Fill stable project configuration in `project.yaml`.
-4. Build the Harness with `make build`.
-5. Run `loop-harness doctor --root .`.
-6. Register Hooks only after validation passes.
+3. If the product has user-visible UI, copy `docs/design/DESIGN-template.md` to `docs/design/DESIGN.md` (leave `draft`) and run `skills/design-foundation` before the first `UI impact=changed` REQ. See `docs/design/README.md`.
+4. Fill stable project configuration in `project.yaml`.
+5. Build the Harness with `make build`.
+6. Run `loop-harness doctor --root .`.
+7. Register Hooks only after validation passes.
 
 ---
 

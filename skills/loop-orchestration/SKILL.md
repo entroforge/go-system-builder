@@ -128,7 +128,7 @@ Claude Code Agent Teams allow the same subagent to be woken repeatedly. The
 Driver therefore treats dispatch as a scheduling barrier, not as a passive
 wait. Once the main session delegates an assignment, the most-forward missing
 work is that Agent's plan checkpoint until the plan is recorded — then the
-Worker executes continuously in the same turn (L4: no second approval gate in
+Worker executes continuously in the same turn (no second approval gate in
 the default `plan_checkpoint` mode).
 
 Apply this barrier before self-executing any stage work:

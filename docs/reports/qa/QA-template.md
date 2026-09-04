@@ -61,7 +61,7 @@ Repair-rounds only (TR-012 re-entry): in a first-round report with no repaired B
 omit this table entirely. This table **coexists** with §2–§4 — a repair round still
 carries the full assigned-quality conclusion AND a Targeted Re-verification row per
 closed BUG. Targeted re-verification alone never satisfies the machine CleanRound — only
-a fresh complete round does (L3-S7 §10 / agent-protocol.md#s9).
+a fresh complete round does (`docs/agent-protocol.md` #s7 / #s9).
 
 | BUG | Original assignment | Repair fingerprint | Result | Evidence |
 |:---|:---|:---|:---|:---|

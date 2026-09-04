@@ -41,3 +41,16 @@
 ## Endorsed N/A
 
 {经背书的 N/A 清单——每条一行：`AC-{id}` → `NFR-{id}` 或 `§A4-{条目}`。此表随 ADR 一并进入 S2 人闸签核包。}
+
+## Feedback receipt（仅当本 ADR 承载一条反馈事务时填写；否则保留为空，checker 不要求）
+
+| 字段 | 填写 |
+|:---|:---|
+| Source observation | {Finding ID / counterevidence 行 / visual-qa 结果 / REQ-* PROOF-* 路径} |
+| Affected constraint IDs | {被违反或被证伪的 LAW-*/ANTI-*/INV-*/GR-*/ROLE-*/PAT-*/SUR-*/EX-*，逗号分隔} |
+| Classification | {local fix / module Pattern-CP / global Grammar/Token/Component extension / scoped EX / Kernel breaking change} |
+| Changed edges | {Grammar / Surface / Derivation / Token / component / Proof 中实际改动的边，列文件与版本} |
+| Replay evidence | {受影响边的 design-foundation check 结果 + 一个最小回放：第二份 changed REQ 冷换手或受影响 Proof 态路径} |
+| Status | open / closed |
+
+未通过前保持 `open`；收据字段必须可解析（checker 只验引用与路径，是否应改 Kernel 由人判定）。不得以报告写完视为闭环。

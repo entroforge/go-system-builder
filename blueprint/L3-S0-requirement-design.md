@@ -69,8 +69,8 @@ flowchart LR
 
 S0 负责需求语义，不负责下游实现设计：
 
-- **负责**：价值、范围、负空间、需求级方向、硬约束、FR/NFR、流程与拒绝路径、权限、验收标准、迁移范围、UI impact、未知项、人的拍板与锁定记录；
-- **不负责**：架构和 ADR 细化（S2）、场景真相包（S2）、FE/BE/SYNC 契约（S3）、任务拆分（S4）、实现与验证；
+- **负责**：价值、范围、负空间、需求级方向、硬约束、FR/NFR、流程与拒绝路径、权限、验收标准、迁移范围、UI impact、Foundation 引用（版本 / Surface / inherit-extend-exception）、未知项、人的拍板与锁定记录；
+- **不负责**：架构和 ADR 细化（S2）、场景真相包（S2）、FE/BE/SYNC 契约（S3）、任务拆分（S4）、实现与验证、重写 Project Design Foundation（Kernel/Grammar 住在 `docs/design/`，S0 只引用）；
 - **不执行**：绑定 runtime。`locked` 是 S0 的需求语义冻结，`req bind` 是 S1 的生命周期授权，两者不能合并；
 - **不保存**：人的逐字原话。REQ 保存的是 agent 消歧、补全前提后由人确认的权威整理稿；
 - **不回填**：§F 只是下游索引骨架与权威居所说明，S0 不填、下游也不回写；S3 的 `CONTRACTS-{id}` 索引才是活矩阵唯一居所。
@@ -93,7 +93,8 @@ S0 只有五项主任务。§D“待澄清”不是独立阶段，而是贯穿 T
 
 ```mermaid
 flowchart TD
-    IN["人的预期效果"] --> T1["T1 建立理念<br/>§A Why"]
+    IN["人的预期效果"] --> FOUND["可能改 UI？读 DESIGN.md<br/>缺失则先 F0–F6 再进 §A"]
+    FOUND --> T1["T1 建立理念<br/>§A Why"]
     T1 --> A{"人确认 §A？"}
     A -->|需调整| T1
     A -->|确认| T2["T2 裁定方向<br/>§B Direction"]
@@ -167,6 +168,20 @@ flowchart TD
 
 UI impact 的唯一机器锚点是 REQ 顶部字段；§C 只回显，不产生第二份事实。`none / changed / unknown` 是风险路由，不是含糊措辞：`unknown` 的价值是如实登记不确定性，并把它停在正确的下游门口（D1、D3）。
 
+### 4.3.1 消费 Project Design Foundation
+
+S0 不建立、不重写项目级设计基础。权威定义在 [L4 项目级设计基础](L4-project-design-foundation.md)，实现与规则见 `docs/rules/design-foundation.md`。
+
+前端相关 REQ 在 T3 只声明关系：
+
+- Foundation reference（`DESIGN.md` 版本 / `pending-foundation` / `N/A`）；
+- 受影响 Surface；
+- inherit / extend / exception。
+
+若预期效果可能改界面，**进入 §A 之前**读 `DESIGN.md`。Foundation 缺失或不足时先返回 F0～F6（`skills/design-foundation`）并由人发布，再开始漏斗、再锁定 REQ。不能用 §B 几句风格描述替代项目级基础。
+
+**诚实缺口**：当前 Runtime 与 PTR 都不会机械阻断缺失的 Foundation；提示词与 `requirement-funnel` 的 0.5 步是默认行为，不是已接线硬门。
+
 ### 4.4 T4 — 全链自审：审推理，不审格式
 
 | 维度 | 设计 |
@@ -202,6 +217,7 @@ UI impact 的唯一机器锚点是 REQ 顶部字段；§C 只回显，不产生�
 | 价值取舍 | 人 | 每层 ≤3 个拍板点 + §E 记录 | 当前层与审计 | human-only，agent 必须先给推荐方案 |
 | 字段结构与追溯锚 | REQ 模板 | 顶部元数据、§A～§E | agent、S1、下游检查 | 模板管形状，skill 管思考过程，职责正交 |
 | UI 影响路由 | agent 声明、人确认 | 顶部 UI impact | S1 parser、S2 guard | 多机制串联同一事实，不是多份事实 |
+| 项目级设计基础引用 | agent 检查并声明，人只确认方向级 Foundation（Loop 外） | REQ §C Foundation 字段；权威在 `docs/design/DESIGN.md` | S2 Derivation Note | S0 不复制 Kernel；Runtime 暂不机械检查 |
 | 需求语义锁定 | 人授权、agent 落盘 | 顶部状态 + §E 锁定记录 | S1 bind | 与 bind 不重叠：锁方向，bind 授权 |
 | 指纹与唯一授权 | S1 harness | `req bind` → runtime | hook、全部下游 gate | S0 不手算、不手写 runtime |
 | 锁定后改写控制 | change-control + bind 后 hook | 人修订协议 + `documents[]` 指纹 | 所有写入动作 | 规则给语义，hook 给机械执行 |
@@ -294,6 +310,7 @@ S0 只交付一份东西：**human-locked REQ**。它至少包含：
 | AC 使用“体验好、响应快” | 下游无法形成一致判定 | AC/NFR 必须带指标或证据 |
 | 漏掉迁移范围 | S4 无法拆出删除、兼容和清理任务 | §C 迁移清单作为任务边界输入 |
 | 顶部 UI impact 与 §C 回显不一致 | 机器只认顶部字段，产生双事实 | 顶部为唯一机器锚，§C 仅回显 |
+| 用 REQ 风格句替代 Foundation | 每个 REQ 重新猜品牌，事后横向返工 | 进 §A 前先读 `DESIGN.md`；缺失则 F0～F6 后再锁 `changed` REQ |
 | 把 `unknown` 当作“以后再说” | 未知没有消费者和截止点 | §D 写影响、阻塞范围；S2 guard 消费 |
 | 先问人一串问题再设计 | 人承担了本应由 agent 完成的推理 | 完整提案 + ≤3 个价值拍板点 |
 | 把 human lock 当作已 bind | 误以为 runtime 和 hook 已建立保护 | §4.5 明确语义冻结与机械冻结的时序 |

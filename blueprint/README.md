@@ -1,6 +1,6 @@
 # Blueprint — 分层设计蓝图（项目定调文档）
 
-> 本文件夹是整个模板项目的**分层设计文档永久居所**：自顶向下、逐层推导，每一层可对照上层验证。安装时随模板分发，放到 `.claude/bin/` 旁边，作为设计理念与规划的双向查询备用。
+> 本文件夹是**工厂仓库**的分层设计文档居所：自顶向下、逐层推导，每一层可对照上层验证。它**不**随模板产物装进目标项目。目标项目 Agent 只读会安装的 Skill、`docs/rules/`、`docs/agent-protocol.md` 与模板；维护者改机制时在本目录推导，再把可执行结论写入那些会装走的文件。
 
 ## 层结构与文件索引
 
@@ -9,9 +9,9 @@
 | 第一层 | `L1-design-principles.md` | 工程哲学与设计蓝图：场景、物理约束 C1-C5、使命与六项把控、主干设计决策 D1-D7、五公理、失效模式目录、演化协议、权威层结构定义 | ✅ v2.4.0 |
 | 第二层 | `L2-lifecycle-plan.md` | 生命周期实战目标：三条铁律 + 能量函数、S0-S11 每阶段（任务/把控/风险对应/理论根据/入口/出口/失败路由）、全局规则、层间校验 | ✅ v1.4.4 |
 | 第三层 | `L3-README.md` + 12 份 `L3-Sn-<stage名>.md`（S0-requirement-design … S11-release-gate） | 各 Stage 详细落地设计：角色/产物/过程/门禁判定/工具承载（T1-T7）/失败处置/反作弊/度量 | ✅ |
-| 第四层 | 六份机制篇：`L4-agent-dispatch-governance.md`（谁在责任上行动）、`L4-state-transition-core.md`（事实住哪与合法变更引擎）、`L4-hook-platform-wiring.md`（决策如何上平台总线）、`L4-hook-anchor-catalog.md`（平台 31 锚点全图与选点审查）、`L4-runtime-control-plane.md`（内容合规规则与词汇词典）、`L4-revision-usage.md`（revision 的内部语义与 Agent-facing 命令协调）；后续按机制域扩展 | 横跨多个 L3 的工具机制与治理设计：统一对象模型、状态、消息、Hook、Harness、恢复和验收契约；每份是其覆盖域的唯一权威定义处，各 L3 只声明消费 | ✅ v0.3.0 / v0.1.0 / v0.1.1 / v0.1.0 / v0.3.0 / v0.1.0 |
-| 第五层 | `L5-*.md`（待建） | 实现规格与实现：Schema、Skill、Agent Definition、模板、代码、测试和迁移任务 | ⏳ |
-| 第六层 | `L6-*.md`（待建） | 实战运营记录与回灌（失效数据 → 第一层演化协议） | ⏳ |
+| 第四层 | 七份机制篇：`L4-project-design-foundation.md`（项目级设计基础与全局设计语言）、`L4-agent-dispatch-governance.md`（谁在责任上行动）、`L4-state-transition-core.md`（事实住哪与合法变更引擎）、`L4-hook-platform-wiring.md`（决策如何上平台总线）、`L4-hook-anchor-catalog.md`（平台 31 锚点全图与选点审查）、`L4-runtime-control-plane.md`（内容合规规则与词汇词典）、`L4-revision-usage.md`（revision 的内部语义与 Agent-facing 命令协调）；后续按机制域扩展 | 横跨多个 L3 的工具机制与治理设计：统一对象模型、状态、消息、Hook、Harness、恢复和验收契约；设计基础篇额外定义跨 REQ 的产品级设计上下文、Agent 主动切入和 S0/S1/S2 消费边界；每份是其覆盖域的唯一权威定义处，各 L3 只声明消费 | ✅ v1.2.0 / v0.3.0 / v0.1.0 / v0.1.1 / v0.1.0 / v0.3.0 / v0.1.0 |
+| 第五层 | —（设计域无独立 L5，权威见第四层 `L4-project-design-foundation.md`；其余域待建） | 实现规格由工程侧承载，不在蓝图中展开 | — |
+| 第六层 | —（设计域无独立 L6，其余域待建） | 实战记录与回灌不在蓝图中展开，历史由 git 追溯 | — |
 
 ## 阅读纪律
 
@@ -21,18 +21,26 @@
 
 2026-09-01 新增 [`L4-revision-usage.md`](L4-revision-usage.md)：统一 revision 的内部语义、Agent-facing 命令边界和复杂度准入；各 L3 不再把手工 revision 计算写成正常操作步骤。
 
-## 安装位置
+## 仓库位置
 
-目标项目应用本模板时，把本文件夹整体复制到 Manual 旁边，供 agent 与人随时查证设计意图：
+本目录只留在工厂仓库根下。**不要**复制进目标项目，也不要让会安装的 Skill / `docs/` / Manual 去链这里的文件。
+
+维护者查阅：
 
 ```bash
-cp -R blueprint <target-project>/.claude/bin/blueprint
+ls blueprint/
 ```
 
 ## 变更记录
 
-| 日期 | 变更 |
-|:--|:--|
+| 日期 | 变更 | 依据 |
+|:--|:--|:--|
+| 2026-09-04 | 明确蓝图只留工厂仓库，不进目标项目；会安装的 Skill / `docs/` / Manual 不得链本目录 | owner：blueprint 不随产物带入具体项目 |
+| 2026-09-04 | L4 v1.1.1：笺录换手证明档位写在 L4 但入口未执行、published+PENDING 是假锁、禁令必须覆盖状态色与按钮 vs 句子。Skill 1.3.0 / 规则 §1 / 顾问检查器同步纠正 | git 历史（设计域 L6 调查档已随 v1.2.0 移出蓝图） |
+| 2026-09-04 | L4 v1.0.3 / 对照试验证明 Foundation 命中换手禁令而非架构；增加薄路径、Next-agent card、Derivation Must not | git 历史（设计域 L5/L6 已随 v1.2.0 移出蓝图） |
+| 2026-09-03 | L5 P2～P4 与 L6 回放协议落入仓库：DTCG Token、portable 导出、UI Lab/visual-qa 接线、顾问型 `design-foundation check`、观察记录模板。Runtime 仍无 Foundation 硬门 | L5 DF-T08～T13；L4 §11.4 / §13.1 |
+| 2026-09-03 | 新立 L5《项目级设计基础落地方案》：把 L4 F0～F6 译为 P0～P4 可执行切片（模板/Skill/S0·S2 协议/Token/UI Lab/有限机械检查）；转译 IBM、Google DESIGN.md、Atlassian 实测、Style Tiles、USWDS、DTCG、Storybook MCP 的采用边界；和解 `modules/` 示意路径与现役 `prototypes/` | L4 通过后按 §15 下沉实现规格；owner 要求完整且具体的落地 |
+| 2026-09-03 | 新立并重构《项目级设计基础与全局设计语言》L4：将跨 REQ 的顶层设计从 Loop 中前置，收敛为 Evidence → Kernel → Grammar → Surface → Proof → REQ Derivation → Feedback 单一因果链；明确 Agent 主动切入、三次人的高杠杆确认、S0/S1/S2 边界与目标态接线路径 | owner 要求以“由点及面”的生成式顶层设计替代页面做完后横向挑选、重写和统一 |
 | 2026-08-14 | 建立 `blueprint/`；L1/L2 自 `docs/rules/` 迁入并按层级命名；接入发布白名单与安装流程 | owner 指示：层级文档永久保留、安装时置于 `.claude/bin/loop-harness` 旁备用 |
 | 2026-08-20 | 建立首份 L4 `L4-agent-dispatch-governance.md`；L4 定位调整为横跨多个 L3 的工具机制与治理层，具体实现下沉 L5 | owner 指示：统一梳理 Sub-agent / Agent Team 调度与治理 |
 | 2026-08-20 | L4 终审收敛为机制准入规则、单一事实链与可验证平台控制；Claims/Assignment/Result 为事实，coverage/board/ledger 为视图；普通计划回执连续执行，高风险才审批 | 删除重复控制面，避免把未验证的 Hook 唤醒能力写成既成事实 |

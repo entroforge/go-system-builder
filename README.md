@@ -4,14 +4,15 @@ Reusable documentation scaffolding for AI/Agent-assisted software delivery.
 
 ## Entry Points
 
-1. `AGENTS-template.md`: project-local `AGENTS.md` source — Layer 1 entry (Main-session Driver).
+1. `AGENTS-template.md`: project-local `AGENTS.md` source — Layer 1 entry (Main-session Driver). Step 0 checks Project Design Foundation before the first `UI impact=changed` REQ.
 2. `loop-template.md`: project-local `.claude/loop.md` source — Layer 2 Wake-up Prompt.
 3. `settings.json`: Hook registration — Layer 3 guardrail enforcement.
 4. `docs/agent-protocol.md`: authoritative Main Spine (S0-S11 stage contracts).
 5. `docs/README.md`: setup and usage order.
 6. `docs/project-map-template.md`: template for project facts, stage, PM todo, and gates.
 7. `docs/requirements/REQ-template.md`: requirement template.
-8. `prelude.md`: main-session onboarding.
+8. `docs/rules/design-foundation.md` and `skills/design-foundation/SKILL.md`: F0–F6 before locking UI-changing REQs.
+9. `prelude.md`: main-session onboarding.
 
 ## Copy Into A New Project
 

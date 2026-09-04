@@ -7,7 +7,7 @@ version: 1.1.0
 # Clean Round Evaluation
 
 ## Authority
-The CleanRound is machine-owned (L3-S7 §10, `docs/loop-definition.json` TR-009 / `clean_round_valid`): the round consumer registers the snapshot inside the final `runtime review-result submit`, and TR-009's guard recomputes the full conjunction at promotion time. This skill is the read-only inspection entry — nobody hand-writes a clean-round record or an aggregate PASS.
+The CleanRound is machine-owned (`docs/agent-protocol.md` #s7, `docs/loop-definition.json` TR-009 / `clean_round_valid`): the round consumer registers the snapshot inside the final `runtime review-result submit`, and TR-009's guard recomputes the full conjunction at promotion time. This skill is the read-only inspection entry — nobody hand-writes a clean-round record or an aggregate PASS.
 
 ## Entry Conditions
 - The Loop is in phase `verification.clean` (the consumer already closed the round), or `verification.running` with the final Claim Result about to land.
@@ -59,4 +59,4 @@ Stop immediately and surface to the human if any of:
 
 ## Inlined Methodology
 
-Machine CleanRound evaluation (L3-S7 §10) is a strict conjunction over the current ReviewPlan: the plan belongs to this round and closed clean; every required Claim has a consumed pass Result (plan-level N/A carries source and rationale — silence is not N/A); no current-round Finding exists; no current-round review evidence is invalid; no blocking BUG is open and every BUG closed during the round has targeted re-verification evidence; and the machine snapshot is registered as evidence. TR-009's `clean_round_valid` guard recomputes all of it at promotion. Targeted re-verification is performed by the original finding responsibility and may close a BUG but never creates a clean round. ACC and release audit reference the clean-round snapshot by ID and hash; later changes do not rewrite it — they invalidate it and require a new round. Nobody computes a weighted score or partial PASS: the result is strictly `pass` or not.
+Machine CleanRound evaluation (`docs/agent-protocol.md` #s7) is a strict conjunction over the current ReviewPlan: the plan belongs to this round and closed clean; every required Claim has a consumed pass Result (plan-level N/A carries source and rationale — silence is not N/A); no current-round Finding exists; no current-round review evidence is invalid; no blocking BUG is open and every BUG closed during the round has targeted re-verification evidence; and the machine snapshot is registered as evidence. TR-009's `clean_round_valid` guard recomputes all of it at promotion. Targeted re-verification is performed by the original finding responsibility and may close a BUG but never creates a clean round. ACC and release audit reference the clean-round snapshot by ID and hash; later changes do not rewrite it — they invalidate it and require a new round. Nobody computes a weighted score or partial PASS: the result is strictly `pass` or not.
