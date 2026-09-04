@@ -95,7 +95,7 @@ func TestTokenChecks_PrimitiveConsumption(t *testing.T) {
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
 		"docs/design/proof/anchor-screens/consumer.html": "<html><div style=\"color: var(--color-primitive-blue-600)\">x</div></html>",
-		"docs/design/prototypes/fund/fund-list.html":    "<html><div style=\"color: var(--color-action-promise)\">ok</div></html>",
+		"docs/design/prototypes/fund/fund-list.html":     "<html><div style=\"color: var(--color-action-promise)\">ok</div></html>",
 		"docs/project-map.md":                            "| design investment | core | x | upgrade when: y |\n",
 	})
 	report, err := Check(root)
@@ -138,7 +138,7 @@ func TestTokenChecks_GeneratedAssetUnverifiable(t *testing.T) {
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
 		"docs/design/proof/anchor-screens/consumer.html": "<html><head></head><body style=\"color: var(--color-action-promise)\">no link</body></html>",
-		"docs/design/prototypes/fund/fund-list.html":    "<html><head><link rel=\"stylesheet\" href=\"/packages/design-tokens/tokens.css\"></head><body style=\"color: var(--color-action-promise)\">ok</body></html>",
+		"docs/design/prototypes/fund/fund-list.html":     "<html><head><link rel=\"stylesheet\" href=\"/packages/design-tokens/tokens.css\"></head><body style=\"color: var(--color-action-promise)\">ok</body></html>",
 		"docs/project-map.md":                            "| design investment | core | x | upgrade when: y |\n",
 	})
 	report, err := Check(root)

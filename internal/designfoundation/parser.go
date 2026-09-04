@@ -13,11 +13,11 @@ var markerAnyRe = regexp.MustCompile(`<!--\s*foundation-contract:[^\s>]+\s*[^>]*
 // ParsedTable is the first table after a foundation-contract marker.
 // Headers are raw header cell texts; Rows map header -> cell value (trimmed).
 type ParsedTable struct {
-	Marker string
-	File   string
-	Line   int // 1-indexed line of the marker
-	Headers []string
-	Rows    []map[string]string
+	Marker   string
+	File     string
+	Line     int // 1-indexed line of the marker
+	Headers  []string
+	Rows     []map[string]string
 	RowLines []int // line number per data row
 }
 
@@ -64,11 +64,11 @@ func parseContentTables(content, rel string) ([]ParsedTable, []Finding, error) {
 			continue
 		}
 		pt := ParsedTable{
-			Marker: marker,
-			File:   rel,
-			Line:   i + 1,
-			Headers: table.Headers,
-			Rows:    table.Rows,
+			Marker:   marker,
+			File:     rel,
+			Line:     i + 1,
+			Headers:  table.Headers,
+			Rows:     table.Rows,
 			RowLines: table.RowLines,
 		}
 		_ = headerLine

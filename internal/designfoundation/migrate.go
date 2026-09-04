@@ -10,13 +10,13 @@ import (
 // It never auto-chooses investment tier, infers semantic role from color,
 // or promotes screenshots to Proof (L5 §10).
 type MigratePlan struct {
-	Root    string               `json:"root"`
-	Target  string               `json:"target"`
-	DryRun  bool                 `json:"dry_run"`
-	Mode    string               `json:"mode"` // factory | legacy-v1.0 | contract-v1
-	Files   []FileMigrate        `json:"files"`
-	Notes   []string             `json:"notes"`
-	Warnings []Finding           `json:"warnings,omitempty"`
+	Root     string        `json:"root"`
+	Target   string        `json:"target"`
+	DryRun   bool          `json:"dry_run"`
+	Mode     string        `json:"mode"` // factory | legacy-v1.0 | contract-v1
+	Files    []FileMigrate `json:"files"`
+	Notes    []string      `json:"notes"`
+	Warnings []Finding     `json:"warnings,omitempty"`
 }
 
 type FileMigrate struct {

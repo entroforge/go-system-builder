@@ -56,11 +56,11 @@ func TestI1_TemplatesMigratedToContractV1(t *testing.T) {
 	// and differ from the frozen v1.0 baseline.
 	root := repoRoot(t)
 	markers := map[string]string{
-		"docs/design/DESIGN-template.md":                            "foundation-contract:v1 constraints",
-		"docs/design/design-language-template.md":                   "foundation-contract:v1 dimensions",
+		"docs/design/DESIGN-template.md":                           "foundation-contract:v1 constraints",
+		"docs/design/design-language-template.md":                  "foundation-contract:v1 dimensions",
 		"docs/design/surface-profiles/surface-profile-template.md": "foundation-contract:v1 surface-inherits",
-		"docs/design/derivation/DERIVATION-template.md":             "foundation-contract:v1 derivation-active",
-		"docs/design/research/evidence-field-template.md":           "foundation-contract:v1 evidence-product",
+		"docs/design/derivation/DERIVATION-template.md":            "foundation-contract:v1 derivation-active",
+		"docs/design/research/evidence-field-template.md":          "foundation-contract:v1 evidence-product",
 	}
 	baselineDir := filepath.Join(root, "internal", "designfoundation", "testdata", "v1-baseline")
 	for liveRel, marker := range markers {
@@ -73,11 +73,11 @@ func TestI1_TemplatesMigratedToContractV1(t *testing.T) {
 		}
 		// Must have diverged from frozen v1.0
 		frozenName := map[string]string{
-			"docs/design/DESIGN-template.md":                            "docs_design_DESIGN-template.md",
-			"docs/design/design-language-template.md":                   "docs_design_design-language-template.md",
+			"docs/design/DESIGN-template.md":                           "docs_design_DESIGN-template.md",
+			"docs/design/design-language-template.md":                  "docs_design_design-language-template.md",
 			"docs/design/surface-profiles/surface-profile-template.md": "docs_design_surface-profiles_surface-profile-template.md",
-			"docs/design/derivation/DERIVATION-template.md":             "docs_design_derivation_DERIVATION-template.md",
-			"docs/design/research/evidence-field-template.md":           "docs_design_research_evidence-field-template.md",
+			"docs/design/derivation/DERIVATION-template.md":            "docs_design_derivation_DERIVATION-template.md",
+			"docs/design/research/evidence-field-template.md":          "docs_design_research_evidence-field-template.md",
 		}[liveRel]
 		frozen, _ := os.ReadFile(filepath.Join(baselineDir, frozenName))
 		if sha256.Sum256(live) == sha256.Sum256(frozen) {
@@ -85,7 +85,6 @@ func TestI1_TemplatesMigratedToContractV1(t *testing.T) {
 		}
 	}
 }
-
 
 func TestI0_TemplateFactoryStillAdvisoryClean(t *testing.T) {
 	root := repoRoot(t)

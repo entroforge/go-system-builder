@@ -22,8 +22,8 @@ var dchkIDRe = regexp.MustCompile(`^DCHK-[A-Za-z0-9_\-]+$`)
 
 // DesignChecks is the restricted DSL projection (L5 §5.9).
 type DesignChecks struct {
-	Version    int              `json:"version"`
-	Foundation string           `json:"foundation"`
+	Version    int               `json:"version"`
+	Foundation string            `json:"foundation"`
 	Rules      []DesignCheckRule `json:"rules"`
 }
 

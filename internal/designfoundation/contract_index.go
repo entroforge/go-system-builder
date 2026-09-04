@@ -15,15 +15,15 @@ type ContractIndex struct {
 
 	Tables []ParsedTable
 
-	Constraints map[string]ConstraintRow
+	Constraints  map[string]ConstraintRow
 	GrammarRules map[string]GrammarRule
-	Dimensions  map[string]DimensionRow
-	Roles       map[string]RoleRow
-	Surfaces    map[string]SurfaceRow
-	Proofs      map[string]ProofRow
-	Debts       map[string]DebtRow
-	Evidence    map[string]EvidenceRow
-	Derivations map[string]DerivationPack // key: REQ id, e.g. "014"
+	Dimensions   map[string]DimensionRow
+	Roles        map[string]RoleRow
+	Surfaces     map[string]SurfaceRow
+	Proofs       map[string]ProofRow
+	Debts        map[string]DebtRow
+	Evidence     map[string]EvidenceRow
+	Derivations  map[string]DerivationPack // key: REQ id, e.g. "014"
 }
 
 type ConstraintRow struct {
@@ -78,12 +78,12 @@ type SurfaceRow struct {
 }
 
 type ProofRow struct {
-	ID   string
-	Type string
-	Path string
+	ID    string
+	Type  string
+	Path  string
 	Cover string
-	File string
-	Line int
+	File  string
+	Line  int
 }
 
 type DebtRow struct {
