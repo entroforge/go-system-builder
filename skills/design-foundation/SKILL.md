@@ -137,8 +137,8 @@ upgrade to Extended. Do not compile nine dimensions to look complete.
 
 On Extended, or Core+full: write `design-language.md`. A single surface stays
 **inline in `DESIGN.md` §8** (`Profile/version` = `inline`). Copy
-`surface-profiles/surface-profile-template.md` only from the **second** surface
-on. Do not create `surface-profiles/consumer.md` for the first screen.
+`docs/design/surface-profiles/surface-profile-template.md` only from the **second** surface
+on. Do not create `docs/design/surface-profiles/consumer.md` for the first screen.
 Grammar states relationships, not hex values. Every important Law leaves the
 chain Evidence → Law → Grammar rule → Surface adaptation → Proof. Map compiled
 roles onto `packages/design-tokens/tokens.json` in the **target project**

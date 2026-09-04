@@ -282,6 +282,9 @@ func shouldSkipPathReference(raw string) bool {
 		"docs/design/proof/portable/DESIGN.md":
 		return true
 	}
+	if strings.HasPrefix(raw, "docs/design/surface-profiles/") && !strings.Contains(raw, "template") {
+		return true
+	}
 	// Bare filenames in methodology text commonly name an instance output
 	// (for example `flows.md`) rather than a repository-root dependency. The
 	// release graph cannot distinguish those meanings, so enforcing them here
