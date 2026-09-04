@@ -88,7 +88,7 @@ func TestLintSkipsTemplatesPortableAndStyleTiles(t *testing.T) {
 		"packages/design-tokens/tokens.json":                     mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
 		"docs/design/proof/style-tiles/STYLE-TILE-template.html": "<div style=\"color:#ff00aa\"></div>\n",
 		"docs/design/proof/style-tiles/direction-a.html":         "<div style=\"color:#b8422e\"></div>\n",
-		"docs/design/proof/portable/DESIGN.md":                         "color: #ff00aa\n",
+		"docs/design/proof/portable/DESIGN.md":                   "color: #ff00aa\n",
 		"docs/design/README.md":                                  "# #ff00aa\n",
 	})
 	findings, err := LintUnregisteredHex(root)
@@ -108,6 +108,32 @@ func TestExportPortableOmitsComponents(t *testing.T) {
 	}
 	if strings.Contains(body, "## Components") {
 		t.Fatal("portable snapshot must not include a Components section")
+	}
+}
+
+func TestExportPortableExtractsNumberedKernelHeadings(t *testing.T) {
+	root := repoRoot(t)
+	kernel := mustRead(t, filepath.Join(root, "docs", "design", "DESIGN-template.md"))
+	body := renderPortable(mustTokens(t, root), kernel, "")
+	if strings.Contains(body, "Starter snapshot. Publish") {
+		t.Fatal("numbered template headings must extract the Thesis, not the starter fallback")
+	}
+	if !strings.Contains(body, "可生成") {
+		t.Fatal("expected the template Thesis section in the Overview")
+	}
+	if !strings.Contains(body, "明确拒绝的设计世界") {
+		t.Fatal("expected the template Anti-principles section in Do's and Don'ts")
+	}
+}
+
+func TestExtractGrammarDimensionRows(t *testing.T) {
+	grammar := "## LAW-01 先依据后行动\n\n### 编译\n\n| 维度 | 消费者端 | 运营端 |\n|:--|:--|:--|\n| Information | 先证据后行动 | 来源先行 |\n| Composition | 证据→判断→行动 | 密度不弱层级 |\n"
+	got := extractGrammarDimension(grammar, "Composition")
+	if !strings.Contains(got, "证据→判断→行动") || !strings.Contains(got, "密度不弱层级") {
+		t.Fatalf("compile-table rows must feed the portable Layout, got %q", got)
+	}
+	if got := extractGrammarDimension(grammar, "Motion"); got != "" {
+		t.Fatalf("empty cells must fall through to the honest fallback, got %q", got)
 	}
 }
 

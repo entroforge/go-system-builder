@@ -149,5 +149,36 @@ func extractSection(body, title string) string {
 }
 
 func extractGrammarDimension(grammar, dimension string) string {
-	return extractSection(grammar, dimension)
+	if section := extractSection(grammar, dimension); section != "" {
+		return section
+	}
+	return grammarDimensionRows(grammar, dimension)
+}
+
+// grammarDimensionRows collects a dimension's rows from the per-Law compile
+// tables when the Grammar carries no standalone heading for it. Empty cells
+// return nothing so the caller keeps its honest fallback text.
+func grammarDimensionRows(grammar, dimension string) string {
+	if grammar == "" {
+		return ""
+	}
+	pattern := regexp.MustCompile(`(?i)^\|\s*` + regexp.QuoteMeta(dimension) + `\s*\|(.+)\|\s*$`)
+	var rows []string
+	for _, line := range strings.Split(grammar, "\n") {
+		m := pattern.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		var cells []string
+		for _, cell := range strings.Split(m[1], "|") {
+			if cell = strings.TrimSpace(cell); cell != "" {
+				cells = append(cells, cell)
+			}
+		}
+		if len(cells) == 0 {
+			continue
+		}
+		rows = append(rows, "- "+dimension+": "+strings.Join(cells, " / "))
+	}
+	return strings.Join(rows, "\n")
 }

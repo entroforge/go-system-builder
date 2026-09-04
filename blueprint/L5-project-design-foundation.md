@@ -76,7 +76,7 @@ docs/design/
 ├── design-language-template.md
 ├── surface-profiles/
 │   ├── surface-profile-template.md
-│   ├── consumer.md                           # 目标项目填写；模板可给示例名
+│   ├── consumer.md                           # 第二 Surface 起目标项目填写；单 Surface 用 DESIGN.md §8 内联
 │   └── operations.md
 ├── proof/
 │   ├── README.md
@@ -121,7 +121,7 @@ docs/design/proof/portable/DESIGN.md (legacy docs/design/portable/DESIGN.md stil
 | Evidence Field | `research/evidence-field.md` | `evidence-field-template.md` | F1、方向评审 | 不检查 |
 | Design Kernel | `DESIGN.md` | `DESIGN-template.md` | 全部 UI Agent | 不检查审美；P4 可查文件存在 |
 | Design Grammar | `design-language.md` | `design-language-template.md` | S2、原型、前端实现 | 不检查 |
-| Surface Profile | `surface-profiles/*.md` | `surface-profile-template.md` | S0 Surface 声明、S2 推导 | 不检查 |
+| Surface Profile | `surface-profiles/*.md`（单 Surface 内联于 `DESIGN.md` §8） | `surface-profile-template.md` | S0 Surface 声明、S2 推导 | 不检查 |
 | Proof Set | `proof/**` | `proof/README.md` 清单 | F5 人验收、S7 走查 | 不把截图当方向事实 |
 | Derivation Note | `docs/design/derivation/REQ-<id>.md` | `DERIVATION-template.md` | S2 T2/T3、S5 语义审查 | P1 起作为 S2 清单项，非 gate |
 | Exception | `decisions/EX-{id}.md` (legacy `exceptions/EX-*.md` 仍兼容) | `EXCEPTION-template.md` | S0、S2、修订 | 不检查 |

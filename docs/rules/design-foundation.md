@@ -28,7 +28,7 @@ stable skip.
 |:---|:---|:---|
 | Kernel | `docs/design/DESIGN.md` | Worldview, thesis, tensions, law index, anti-principles |
 | Grammar | `docs/design/design-language.md` | How the thesis generates visual, interaction, content, and motion choices |
-| Surface | `docs/design/surface-profiles/*.md` | Same grammar, different density and posture |
+| Surface | `docs/design/surface-profiles/*.md` (a single-surface project keeps §8 `Surfaces in force` in `DESIGN.md`; profile files start with the second surface) | Same grammar, different density and posture |
 | Proof | `docs/design/proof/` | Style tiles, anchor/stress screens, golden flows |
 | Derivation | `docs/design/derivation/REQ-{id}.md` | Why this REQ looks this way |
 | Exception | `docs/design/decisions/EX-{id}.md` (legacy `docs/design/exceptions/EX-{id}.md` still recognized) | Scoped, time-boxed deviation |

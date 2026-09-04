@@ -2,7 +2,7 @@
 name: design-foundation
 description: Use when a project has user-visible UI but Project Design Foundation is missing, stale, or cannot cover a new surface
 category: methodology
-version: 1.1.0
+version: 1.1.1
 ---
 # Design Foundation
 
@@ -82,7 +82,10 @@ anti-principles.
 
 ### F4 Compile
 
-Write `design-language.md` and at least one Surface Profile. Grammar states
+Write `design-language.md` and define at least one Surface Profile: a
+single-surface project keeps the inline `Surfaces in force` table (§8) in
+`DESIGN.md`; from the second surface on, copy
+`surface-profiles/surface-profile-template.md` per surface. Grammar states
 relationships, not hex values. Every important Law leaves the chain
 Evidence → Law → Grammar rule → Surface adaptation → Proof. Define invariants,
 variants, selection rules, and exceptions. Map compiled roles onto
@@ -120,7 +123,8 @@ downstream steps (L4 §2.3).
 - `docs/design/research/evidence-field.md`
 - Human-confirmed `docs/design/DESIGN.md` (status `published`)
 - `docs/design/design-language.md`
-- One or more `docs/design/surface-profiles/*.md`
+- Surface Profile defined — inline `DESIGN.md` §8 for a single surface, or
+  `docs/design/surface-profiles/*.md` from the second surface on
 - Proof Set under `docs/design/proof/`
 - Direction ADR under `docs/design/decisions/`
 - Updated `packages/design-tokens/tokens.json` + generated `tokens.css`
@@ -130,7 +134,8 @@ downstream steps (L4 §2.3).
 
 - Thesis is generative and exclusive; tensions, 3–7 laws, and anti-principles
   are confirmed.
-- At least one Surface Profile exists.
+- At least one Surface Profile is defined (inline `DESIGN.md` §8 for a
+  single surface, or `docs/design/surface-profiles/*.md`).
 - Style Tile plus one anchor and one stress proof exist.
 - Human has confirmed direction, kernel, and publish.
 - `DESIGN.md` status is `published` and later REQs can cite its version.
