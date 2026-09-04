@@ -42,7 +42,7 @@ stop and load `skills/design-foundation` — do not batch-generate pages.
 Otherwise write `docs/design/derivation/REQ-<id>.md` (inherit / extend /
 exception, active laws, one macro composition, one stress state). Extend
 requires a promotion candidate note; exception requires
-`docs/design/exceptions/EX-*.md`. One macro composition and one stress HTML
+`docs/design/decisions/EX-*.md` (legacy `docs/design/exceptions/` still recognized). One macro composition and one stress HTML
 state must exist before the remaining module pages. See
 `docs/rules/design-foundation.md`. This step is a semantic duty, not a
 PTR-PLAN-01 predicate.

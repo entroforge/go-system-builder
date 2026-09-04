@@ -39,14 +39,32 @@ func LintDuplicateComponents(root string) ([]Finding, error) {
 		names[role] = append(names[role], rel)
 	}
 
-	proposalDir := filepath.Join(root, "docs", "design", "components")
-	if entries, err := os.ReadDir(proposalDir); err == nil {
+	for _, proposalDir := range []string{
+		filepath.Join(root, "docs", "design", "decisions"),
+		filepath.Join(root, "docs", "design", "components"),
+	} {
+		entries, err := os.ReadDir(proposalDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
 		for _, entry := range entries {
 			name := entry.Name()
 			if entry.IsDir() || !strings.HasSuffix(name, ".md") || strings.Contains(name, "template") || name == "README.md" {
 				continue
 			}
-			rel := filepath.Join("docs", "design", "components", name)
+			// Only count exception/component proposals; ADR files must not
+			// trigger component-repeat.
+			if !(strings.HasPrefix(name, "CP-") || strings.HasPrefix(name, "EX-")) {
+				mustBeProposal := proposalDir == filepath.Join(root, "docs", "design", "components")
+				if !mustBeProposal {
+					continue
+				}
+			}
+			rel, _ := filepath.Rel(root, filepath.Join(proposalDir, name))
+			rel = filepath.ToSlash(rel)
 			addRole(rel, strings.TrimSuffix(name, ".md"))
 			data, err := os.ReadFile(filepath.Join(root, rel))
 			if err != nil {
@@ -59,8 +77,6 @@ func LintDuplicateComponents(root string) ([]Finding, error) {
 			}
 			addRole(rel, first)
 		}
-	} else if !os.IsNotExist(err) {
-		return nil, err
 	}
 
 	protoRoot := filepath.Join(root, "docs", "design", "prototypes")

@@ -88,7 +88,7 @@ func TestLintSkipsTemplatesPortableAndStyleTiles(t *testing.T) {
 		"packages/design-tokens/tokens.json":                     mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
 		"docs/design/proof/style-tiles/STYLE-TILE-template.html": "<div style=\"color:#ff00aa\"></div>\n",
 		"docs/design/proof/style-tiles/direction-a.html":         "<div style=\"color:#b8422e\"></div>\n",
-		"docs/design/portable/DESIGN.md":                         "color: #ff00aa\n",
+		"docs/design/proof/portable/DESIGN.md":                         "color: #ff00aa\n",
 		"docs/design/README.md":                                  "# #ff00aa\n",
 	})
 	findings, err := LintUnregisteredHex(root)

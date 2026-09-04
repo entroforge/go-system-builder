@@ -67,7 +67,7 @@ func TestDesignFoundationCheckJSONAndEmitCSS(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("export-portable failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
-	body, err := os.ReadFile(filepath.Join(root, "docs", "design", "portable", "DESIGN.md"))
+	body, err := os.ReadFile(filepath.Join(root, "docs", "design", "proof", "portable", "DESIGN.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@
 > 确认记录：方向 {date} · 内核 {date} · 发布 {date}
 
 本文是项目级设计入口：只保留可生成、可排除的 Kernel。组件 API、Token 表和页面清单不准写入。
-完整语法在 `design-language.md`；Surface 适配在 `surface-profiles/`；证明在 `proof/`。
+完整语法在 `design-language.md`；Surface 适配见本文件 §8；证明在 `proof/`。
 
 ## 1. Design Worldview
 
@@ -54,18 +54,23 @@
 
 ## 8. Surfaces in force
 
-| Surface | Profile | 与主 Surface 的对比证明 |
-|:--|:--|:--|
-| {consumer} | `surface-profiles/consumer.md` | `proof/...` |
+单 Surface 项目直接填下表即可；多 Surface 时再为新增 Surface 复制 `surface-profiles/surface-profile-template.md`。
+
+| Surface | 继承 | 密度/姿态差异 | 对比证明 |
+|:--|:--|:--|:--|
+| {consumer} | 本 Kernel/Grammar | {主 Surface 基准} | `proof/anchor-screens/{consumer}.html` |
+| {operations} | 同上 | {更密/更任务导向} | `proof/anchor-screens/{operations}.html` |
 
 ## 9. Proof Set
 
 | 类型 | 路径 | 证明什么 |
 |:--|:--|:--|
-| Style Tile | `proof/style-tiles/` | 设计世界 |
-| Anchor | `proof/anchor-screens/` | 理想核心场景 |
-| Stress | `proof/anchor-screens/` | 高密度 / 失败 / 权限 |
-| Golden Flow | `proof/golden-flows/` | 状态变化 |
+| Style Tile | `proof/style-tiles/` | 设计世界（HTML，F2 每候选 1 份） |
+| Anchor | `proof/anchor-screens/` | 理想核心场景（HTML） |
+| Stress | `proof/anchor-screens/` | 高密度 / 失败 / 权限（HTML） |
+| Golden Flow | `proof/golden-flows/` | 状态变化（HTML） |
+
+Figma 链接不得作为本表任何一项的权威引用。
 
 ## 10. Open design debt
 
@@ -74,6 +79,6 @@
 
 ## 11. How to inherit
 
-后续 UI REQ 读取本文 + `design-language.md` + 当前 Surface Profile，
+后续 UI REQ 读取本文 + `design-language.md` + 当前 Surface 行，
 在 `docs/design/derivation/REQ-{id}.md` 声明 inherit / extend / exception。
-禁止把局部冠军组件静默升为全局规范。
+例外与组件提案走 `docs/design/decisions/`（见 `decisions/README.md`）；禁止把局部冠军组件静默升为全局规范。

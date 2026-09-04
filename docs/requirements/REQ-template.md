@@ -108,7 +108,7 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 | 影响页面 / 模块 | {页面、路由、组件或 N/A} |
 | Foundation reference | `docs/design/DESIGN.md@vX.Y.Z` / `pending-foundation` / `N/A`（`none` 可为 N/A；`changed` 不得用风格句替代。S1 parser 不读本字段） |
 | Surface | `consumer` / `operations` / `{profile}` / `N/A` |
-| Design posture | `inherit` / `extend` / `exception`（`extend` 须在 Derivation Note 写清新增语法；`exception` 须同时有 `docs/design/exceptions/EX-*.md`） |
+| Design posture | `inherit` / `extend` / `exception`（`extend` 须在 Derivation Note 写清新增语法；`exception` 须同时有 `docs/design/decisions/EX-*.md` (legacy `docs/design/exceptions/EX-*.md` still recognized)） |
 | Derivation note | `docs/design/derivation/REQ-{id}.md` / `N/A`（`changed` 时由 S2 填写；S0 可留 pending） |
 | 模块当前真相包 | `docs/design/prototypes/<module>/`（index.html + stories.md + flows.md + scenario-model.json + cross-matrix.json + cases.json + scenario-coverage.json + fixture-contract.json + *.html）/ N/A |
 | 原型门禁状态 | N/A / pending / ready |

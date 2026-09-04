@@ -4,7 +4,7 @@
 >
 > 上游：L4 §11.4 观察信号、L4 §13.1 硬门延迟理由、L5 P0～P4 落地、`docs/rules/design-foundation.md`
 >
-> 下游：填好的 `docs/design/research/FOUNDATION-REPLAY-template.md`；仅在稳定失效后考虑 `--strict` CI 或 Runtime 提示
+> 下游：填好的 `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md (legacy docs/design/research/FOUNDATION-REPLAY-template.md still recognized)`；仅在稳定失效后考虑 `--strict` CI 或 Runtime 提示
 >
 > 状态：v1.0.0，观察协议。本模板仓库**不能**代替一次真实产品回放；本文件规定如何回放、记什么、何时才允许把检查升级为门。
 
@@ -13,7 +13,7 @@
 Project Design Foundation 的经验证据来自**带用户可见界面的目标产品**，不是模板工厂。本仓库故意不填写 `DESIGN.md`、不发明消费端 Kernel、不挂 Foundation 到 `validate --all`。因此 DF-T13 在本仓库的完成态是：
 
 1. 有一份可执行的观察协议（本文）；
-2. 有一份目标项目可填写的记录模板（`docs/design/research/FOUNDATION-REPLAY-template.md`）；
+2. 有一份目标项目可填写的记录模板（`docs/reports/design-foundation/FOUNDATION-REPLAY-template.md (legacy docs/design/research/FOUNDATION-REPLAY-template.md still recognized)`）；
 3. 升级规则写清：未观察到稳定失效，不得把审美或空壳文档做成 fail-closed 硬门（D3、D5、成本公理）。
 
 把模板仓库自己涂成一个假产品来“跑通 F0～F6”不算 L6。那只会制造形容词 Kernel 和形式主义。
@@ -87,7 +87,7 @@ Project Design Foundation 的经验证据来自**带用户可见界面的目标�
 | 项 | 状态 |
 | --- | --- |
 | 观察协议 | 本文 |
-| 记录模板 | `docs/design/research/FOUNDATION-REPLAY-template.md` |
+| 记录模板 | `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md (legacy docs/design/research/FOUNDATION-REPLAY-template.md still recognized)` |
 | 顾问型机械检查 | `loop-harness design-foundation check`（不进 `validate --all`） |
 | 真实产品回放数据 | **无**；等目标项目填写记录 |
 | Runtime Foundation 硬门 | **无** |

@@ -83,9 +83,10 @@ docs/design/
 │   ├── style-tiles/                          # 候选与选定 HTML
 │   ├── anchor-screens/
 │   └── golden-flows/
-├── decisions/                                # 方向选择与 breaking change；沿用 ADR-template
-├── exceptions/
-│   └── EXCEPTION-template.md
+├── decisions/                                # 方向选择 / 例外 / 组件提案（ADR / EX-* / CP-*）
+│   ├── ADR-template.md
+│   ├── EXCEPTION-template.md                 # 局部偏离（legacy exceptions/ 仍兼容）
+│   └── COMPONENT-PROPOSAL-template.md        # 组件提案（legacy components/ 仍兼容）
 ├── derivation/
 │   └── DERIVATION-template.md                # REQ 级 Design Derivation Note
 └── prototypes/<module>/                      # 现有 S2 模块包，不改名
@@ -103,7 +104,7 @@ tools/ui-lab/                                 # Storybook / MCP 入口说明
 tools/visual-qa/                              # Golden Screen 与 Playwright snapshot
 
 # 派生、非权威
-docs/design/portable/DESIGN.md                # Google DESIGN.md 导出，由 Token+Kernel 生成
+docs/design/proof/portable/DESIGN.md (legacy docs/design/portable/DESIGN.md still recognized)                # Google DESIGN.md 导出，由 Token+Kernel 生成
 ```
 
 路径纪律：
@@ -123,7 +124,7 @@ docs/design/portable/DESIGN.md                # Google DESIGN.md 导出，由 To
 | Surface Profile | `surface-profiles/*.md` | `surface-profile-template.md` | S0 Surface 声明、S2 推导 | 不检查 |
 | Proof Set | `proof/**` | `proof/README.md` 清单 | F5 人验收、S7 走查 | 不把截图当方向事实 |
 | Derivation Note | `docs/design/derivation/REQ-<id>.md` | `DERIVATION-template.md` | S2 T2/T3、S5 语义审查 | P1 起作为 S2 清单项，非 gate |
-| Exception | `exceptions/EX-<id>.md` | `EXCEPTION-template.md` | S0、S2、修订 | 不检查 |
+| Exception | `decisions/EX-{id}.md` (legacy `exceptions/EX-*.md` 仍兼容) | `EXCEPTION-template.md` | S0、S2、修订 | 不检查 |
 | Decision | `docs/design/decisions/ADR-*` 或 `DFD-*` | 现有 `ADR-template.md` | F3/F6 人确认 | 沿用 ADR 人闸约定 |
 | Token | `packages/design-tokens` | P2 schema | 原型 CSS、实现、portable 导出 | P2 起 lint 引用 |
 | UI Lab | Storybook + MCP | P3 | 实现 Agent | 查询，不生成第二套组件 |
@@ -196,7 +197,7 @@ P4 有限机械检查       → 只公证存在性、引用版本、重复组件
 
 - `UI impact=changed` 且 Foundation 为 `pending-foundation`：先完成 F6 发布，再锁定 REQ 或从 S0 返回补齐；当前 Runtime 不阻断，Skill 必须把这写成默认行为；
 - `extend` 必须在 Derivation Note 写清新增语法及其是否候选晋升；
-- `exception` 必须同时有 `exceptions/EX-*.md`；
+- `exception` 必须同时有 `decisions/EX-*.md` (legacy `exceptions/EX-*.md` still recognized)；
 - S0 不复制 Kernel/Grammar 正文。
 
 **S2 顺序（插在现有 T2 之后、双轨之前）**
@@ -545,7 +546,7 @@ Anchor / Stress / Golden Flow 使用现有原型 HTML 约定（四字段头）�
 {本 REQ 用哪个页面/状态/流程证明推导成立}
 ```
 
-### 5.7 `docs/design/exceptions/EXCEPTION-template.md`
+### 5.7 `docs/design/decisions/EXCEPTION-template.md` (legacy `docs/design/exceptions/EXCEPTION-template.md`)
 
 ```markdown
 # EX-{id}

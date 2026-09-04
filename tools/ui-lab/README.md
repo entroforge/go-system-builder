@@ -64,9 +64,9 @@ Before implementing or restyling a control:
    (`action.promise`, `status.blocking`, dialog, drawer…)?
 2. `docs-show` — which props, states, and stories already exist?
 3. Reuse or wrap that component. Do **not** re-implement it from
-   `docs/design/portable/DESIGN.md` or from a library demo.
+   `docs/design/proof/portable/DESIGN.md` or from a library demo.
 4. If nothing fits, keep the new piece **module-local** and file
-   `docs/design/components/CP-*.md`. Do not silently promote a local champion.
+   `docs/design/decisions/CP-*.md` (legacy `docs/design/components/CP-*.md` still recognized). Do not silently promote a local champion.
 
 Quality bar: `skills/frontend-engineering/SKILL.md`.
 Duplicate names: `loop-harness design-foundation check --root .`.

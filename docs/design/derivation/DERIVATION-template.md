@@ -25,7 +25,7 @@
 
 ## Exception
 
-{无 / `exceptions/EX-{id}.md`}
+{无 / `decisions/EX-{id}.md` (legacy `exceptions/EX-*.md` 仍兼容)}
 
 ## Proof
 

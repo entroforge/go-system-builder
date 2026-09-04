@@ -13,10 +13,14 @@ import (
 const (
 	TokensJSONRel = "packages/design-tokens/tokens.json"
 	TokensCSSRel  = "packages/design-tokens/tokens.css"
-	PortableRel   = "docs/design/portable/DESIGN.md"
+	PortableRel   = "docs/design/proof/portable/DESIGN.md"
 	KernelRel     = "docs/design/DESIGN.md"
 	GrammarRel    = "docs/design/design-language.md"
 )
+
+// LegacyPortableRel is the pre-convergence location kept for backward
+// compatibility in checks/lint (read both, write to PortableRel only).
+const LegacyPortableRel = "docs/design/portable/DESIGN.md"
 
 type tokenLeaf struct {
 	Path        string

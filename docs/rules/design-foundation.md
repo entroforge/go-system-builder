@@ -31,12 +31,12 @@ stable skip.
 | Surface | `docs/design/surface-profiles/*.md` | Same grammar, different density and posture |
 | Proof | `docs/design/proof/` | Style tiles, anchor/stress screens, golden flows |
 | Derivation | `docs/design/derivation/REQ-{id}.md` | Why this REQ looks this way |
-| Exception | `docs/design/exceptions/EX-{id}.md` | Scoped, time-boxed deviation |
+| Exception | `docs/design/decisions/EX-{id}.md` (legacy `docs/design/exceptions/EX-{id}.md` still recognized) | Scoped, time-boxed deviation |
 | Module package | `docs/design/prototypes/<module>/` | Current module truth (S2) |
 
 `DESIGN.md` must stay short. Token values, component APIs, and page catalogs
 do not belong there. Google DESIGN.md, if used at all, is a derived snapshot
-under `docs/design/portable/` and is not the project authority.
+under `docs/design/proof/portable/` (legacy `docs/design/portable/` still recognized) and is not the project authority.
 
 Control logic: `blueprint/L4-project-design-foundation.md`.
 Landing spec: `blueprint/L5-project-design-foundation.md`.
@@ -89,7 +89,7 @@ REQ §B are not a substitute for Foundation.
 - Three candidate directions that only swap color, type, and radius.
 - Using "modern / simple / tech / youthful" as the Kernel.
 - Silently promoting a local champion component into a global rule. New UI
-  pieces stay module-local until `docs/design/components/CP-*.md` and a
+  pieces stay module-local until `docs/design/decisions/CP-*.md` (legacy `docs/design/components/CP-*.md` still recognized) and a
   `design-foundation check` duplicate review justify reuse or promotion.
 - Asking the human to pick spacing, hex values, or button shapes one by one.
 - Treating pixel snapshot equality as proof that the thesis is correct.
