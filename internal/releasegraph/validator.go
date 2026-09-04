@@ -271,6 +271,17 @@ func shouldSkipPathReference(raw string) bool {
 	if raw == "docs/project-map.md" {
 		return true
 	}
+	// Live Design Foundation files are copied from *-template.md in the
+	// target project (DESIGN.md, Grammar, Evidence Field, portable snapshot).
+	// The factory ships the templates only; Skills must still name the live
+	// paths agents consume after F0–F6.
+	switch raw {
+	case "docs/design/DESIGN.md",
+		"docs/design/design-language.md",
+		"docs/design/research/evidence-field.md",
+		"docs/design/proof/portable/DESIGN.md":
+		return true
+	}
 	// Bare filenames in methodology text commonly name an instance output
 	// (for example `flows.md`) rather than a repository-root dependency. The
 	// release graph cannot distinguish those meanings, so enforcing them here

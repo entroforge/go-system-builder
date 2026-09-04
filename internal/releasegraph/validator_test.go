@@ -55,6 +55,18 @@ func TestValidateStagedReleaseStillRejectsDanglingQualifiedPath(t *testing.T) {
 	}
 }
 
+func TestValidateStagedReleaseAllowsInstanceDesignFoundationLiveFiles(t *testing.T) {
+	root := minimalStage(t)
+	writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
+	if err := os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStageFile(t, root, "skills/example/SKILL.md", "---\nname: example\n---\nRead `docs/design/DESIGN.md` and `docs/design/research/evidence-field.md`.\n")
+	if err := releasegraph.ValidateStagedRelease(root); err != nil {
+		t.Fatalf("instance Foundation live files are not release dependencies: %v", err)
+	}
+}
+
 func TestValidateStagedReleaseAllowsInstallerCreatedProjectMap(t *testing.T) {
 	root := minimalStage(t)
 	writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
