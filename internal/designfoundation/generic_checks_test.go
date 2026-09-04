@@ -37,12 +37,12 @@ func TestGenericChecks_NoFalsePositiveOnMinimalContractV1(t *testing.T) {
 	// Core-minimal style but with Grammar covering 9 dims so generic checks are clean.
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":                tokensJSONForTest(t),
-		"docs/design/DESIGN.md":                             kernelWithVersion("v1.0.0"),
-		"docs/design/design-language.md":                    grammarNineActive(),
-		"docs/design/surface-profiles/consumer.md":          "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
+		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
+		"docs/design/design-language.md":                 grammarNineActive(),
+		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
 		"docs/design/proof/anchor-screens/consumer.html": "<html>anchor</html>",
-		"docs/project-map.md":                           "| design investment | core | reuse | upgrade when: new surface |\n| design foundation | docs/design/DESIGN.md | published | v1.0.0 |\n",
+		"docs/project-map.md":                            "| design investment | core | reuse | upgrade when: new surface |\n| design foundation | docs/design/DESIGN.md | published | v1.0.0 |\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -61,11 +61,11 @@ func TestGenericChecks_ActiveConstraintUnbound(t *testing.T) {
 	root := t.TempDir()
 	kernel := "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n<!-- foundation-contract:v1 constraints -->\n| ID | Status | 类型 | 可执行 Statement / Do | Don't / 反向边界 | Scope | Source | Binding | Checkability | Proof / review |\n|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|\n| LAW-01 | active | law | do | dont | global | EVD-01 | — | human | PROOF-01 |\n\n## 8. Surfaces in force\n<!-- foundation-contract:v1 surfaces -->\n| ID | Surface | Profile/version | 与主 Surface 的对比证明 |\n|:--|:--|:--|:--|\n| SUR-01 | consumer | surface-profiles/consumer.md@v1.0.0 | PROOF-01 |\n\n## 9. Proof Set\n<!-- foundation-contract:v1 proofs -->\n| ID | 类型 | 路径 | 证明哪些约束 |\n|:--|:--|:--|:--|\n| PROOF-01 | Anchor | proof/anchor-screens/consumer.html | LAW-01 |\n\n## 10. Open design debt\n<!-- foundation-contract:v1 debts -->\n| ID | 项 | 影响 | 复查条件 |\n|:--|:--|:--|:--|\n| DEBT-01 | x | low | next review |\n"
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":       tokensJSONForTest(t),
-		"docs/design/DESIGN.md":                    kernel,
-		"docs/design/design-language.md":           grammarNineActive(),
+		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/DESIGN.md":                          kernel,
+		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/proof/anchor-screens/consumer.html": "<html/>",
-		"docs/project-map.md":                      "| design investment | core | x | upgrade when: y |\n",
+		"docs/project-map.md":                            "| design investment | core | x | upgrade when: y |\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -157,7 +157,7 @@ func TestGenericChecks_DerivationIncompleteAndHandoffAndVersion(t *testing.T) {
 		"docs/design/proof/anchor-screens/consumer.html": "<html/>",
 		"docs/project-map.md":                            "| design investment | core | x | upgrade when: y |\n| design foundation | docs/design/DESIGN.md | published | v1.0.0 |\n",
 		"docs/requirements/REQ-014.md":                   "# REQ-014\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v9.9.9 |\n| Surface | consumer |\n",
-		"docs/design/derivation/REQ-014.md":               "# Design Derivation — REQ-014\n\n> Foundation：docs/design/DESIGN.md@v9.9.9\n> Surface：SUR-01@v9.9.9\n\n## Active constraints\n\n<!-- foundation-contract:v1 derivation-active -->\n| ID | 本 REQ 的具体落点 | 需要打开的 GR-* |\n|:--|:--|:--|\n| LAW-01 | x | GR-01 |\n\n## Must not\n\n<!-- foundation-contract:v1 derivation-must-not -->\n| Source ID | 本页不得出现 | 观察位置 |\n|:--|:--|:--|\n| ANTI-01 | x | y |\n\n## Bindings\n\n<!-- foundation-contract:v1 derivation-bindings -->\n| ROLE/PATTERN/组件 | 现役来源 | 本 REQ 用途 |\n|:--|:--|:--|\n| ROLE-action-promise | packages/ui | commit |\n\n## Proof\n<!-- foundation-contract:v1 derivation-proof -->\n| PROOF ID | 可解析路径 | 验证哪些约束 | 观察方法 |\n|:--|:--|:--|:--|\n| PROOF-01 | docs/design/proof/anchor-screens/missing.html | LAW-01 | visual |\n",
+		"docs/design/derivation/REQ-014.md":              "# Design Derivation — REQ-014\n\n> Foundation：docs/design/DESIGN.md@v9.9.9\n> Surface：SUR-01@v9.9.9\n\n## Active constraints\n\n<!-- foundation-contract:v1 derivation-active -->\n| ID | 本 REQ 的具体落点 | 需要打开的 GR-* |\n|:--|:--|:--|\n| LAW-01 | x | GR-01 |\n\n## Must not\n\n<!-- foundation-contract:v1 derivation-must-not -->\n| Source ID | 本页不得出现 | 观察位置 |\n|:--|:--|:--|\n| ANTI-01 | x | y |\n\n## Bindings\n\n<!-- foundation-contract:v1 derivation-bindings -->\n| ROLE/PATTERN/组件 | 现役来源 | 本 REQ 用途 |\n|:--|:--|:--|\n| ROLE-action-promise | packages/ui | commit |\n\n## Proof\n<!-- foundation-contract:v1 derivation-proof -->\n| PROOF ID | 可解析路径 | 验证哪些约束 | 观察方法 |\n|:--|:--|:--|:--|\n| PROOF-01 | docs/design/proof/anchor-screens/missing.html | LAW-01 | visual |\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -209,7 +209,7 @@ func TestGenericChecks_InvestmentProfileMissing(t *testing.T) {
 		"docs/design/proof/anchor-screens/consumer.html": "<html/>",
 		"docs/project-map.md":                            "# Project Map\n\n| baseline | foo | bar |\n",
 		"docs/requirements/REQ-014.md":                   "# REQ-014\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n",
-		"docs/design/derivation/REQ-014.md": "# Design Derivation — REQ-014\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n> Surface：SUR-01@v1.0.0\n\n## Active constraints\n\n<!-- foundation-contract:v1 derivation-active -->\n| ID | 本 REQ 的具体落点 | 需要打开的 GR-* |\n|:--|:--|:--|\n| LAW-01 | x | GR-01 |\n\n## Must not\n\n<!-- foundation-contract:v1 derivation-must-not -->\n| Source ID | 本页不得出现 | 观察位置 |\n|:--|:--|:--|\n| ANTI-01 | x | y |\n\n## Bindings\n\n<!-- foundation-contract:v1 derivation-bindings -->\n| ROLE/PATTERN/组件 | 现役来源 | 本 REQ 用途 |\n|:--|:--|:--|\n| ROLE-action-promise | packages/ui | x |\n\n## Proof\n<!-- foundation-contract:v1 derivation-proof -->\n| PROOF ID | 可解析路径 | 验证哪些约束 | 观察方法 |\n|:--|:--|:--|:--|\n| PROOF-01 | docs/design/proof/anchor-screens/consumer.html | LAW-01 | visual |\n",
+		"docs/design/derivation/REQ-014.md":              "# Design Derivation — REQ-014\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n> Surface：SUR-01@v1.0.0\n\n## Active constraints\n\n<!-- foundation-contract:v1 derivation-active -->\n| ID | 本 REQ 的具体落点 | 需要打开的 GR-* |\n|:--|:--|:--|\n| LAW-01 | x | GR-01 |\n\n## Must not\n\n<!-- foundation-contract:v1 derivation-must-not -->\n| Source ID | 本页不得出现 | 观察位置 |\n|:--|:--|:--|\n| ANTI-01 | x | y |\n\n## Bindings\n\n<!-- foundation-contract:v1 derivation-bindings -->\n| ROLE/PATTERN/组件 | 现役来源 | 本 REQ 用途 |\n|:--|:--|:--|\n| ROLE-action-promise | packages/ui | x |\n\n## Proof\n<!-- foundation-contract:v1 derivation-proof -->\n| PROOF ID | 可解析路径 | 验证哪些约束 | 观察方法 |\n|:--|:--|:--|:--|\n| PROOF-01 | docs/design/proof/anchor-screens/consumer.html | LAW-01 | visual |\n",
 	})
 	report, err := Check(root)
 	if err != nil {

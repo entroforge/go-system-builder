@@ -59,7 +59,7 @@ func TestE2E_LocalToCoreUpgrade_SecondConsumerTriggersPromptWithoutDataLoss(t *t
 
 	// Add second local REQ without upgrading Foundation.
 	mustWriteTreeGeneric(t, tmp, map[string]string{
-		"docs/requirements/REQ-002.md": "# REQ-002\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | local |\n| Surface | local |\n",
+		"docs/requirements/REQ-002.md":      "# REQ-002\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | local |\n| Surface | local |\n",
 		"docs/design/derivation/REQ-002.md": "# Local Design Derivation — REQ-002\n\n> Foundation：local\n> Surface：local\n> Scope：second consumer checkout variant\n> Expires / review：2026-10-01\n\n## Local decisions\n| ID | 决策 | 理由 | 不得晋升/传播到 |\n|:--|:--|:--|:--|\n| LOCAL-02 | reuse same checkout tokens | second consumer | 共享组件、下一 REQ |\n\n## Upgrade triggers\n- 出现第二消费者时升级 Core — 本行即升级触发与不得晋升说明\n\n## Proof\n`docs/design/prototypes/checkout/index.html` — local proof\n",
 	})
 	report2, err := Check(tmp)
@@ -85,15 +85,15 @@ func TestE2E_LocalToCoreUpgrade_SecondConsumerTriggersPromptWithoutDataLoss(t *t
 	// Now perform the real upgrade: install a Core Foundation without losing local decisions.
 	// Simulate what F0→F6 would do: publish Kernel + Grammar + Surface, and upgrade REQ-002 to Core.
 	mustWriteTreeGeneric(t, tmp, map[string]string{
-		"packages/design-tokens/tokens.json": tokensJSONForTest(t),
-		"docs/design/DESIGN.md":              kernelWithVersion("v1.0.0"),
-		"docs/design/design-language.md":     grammarNineActive(),
-		"docs/design/surface-profiles/consumer.md": "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
+		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
+		"docs/design/design-language.md":                 grammarNineActive(),
+		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
 		"docs/design/proof/anchor-screens/consumer.html": "<html>anchor</html>",
 		// Upgrade REQ-002 to Core (FoundationRef points to published Kernel)
-		"docs/requirements/REQ-002.md": "# REQ-002\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n| Surface | consumer |\n",
+		"docs/requirements/REQ-002.md":      "# REQ-002\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n| Surface | consumer |\n",
 		"docs/design/derivation/REQ-002.md": "# Design Derivation — REQ-002\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n> Surface：SUR-01@v1.0.0\n\n## Active constraints\n\n<!-- foundation-contract:v1 derivation-active -->\n| ID | 本 REQ 的具体落点 | 需要打开的 GR-* |\n|:--|:--|:--|\n| LAW-01 | upgraded from LOCAL-02 | GR-01 |\n\n## Must not\n\n<!-- foundation-contract:v1 derivation-must-not -->\n| Source ID | 本页不得出现 | 观察位置 |\n|:--|:--|:--|\n| LAW-01 | 双主行动 | checkout |\n\n## Bindings\n\n<!-- foundation-contract:v1 derivation-bindings -->\n| ROLE/PATTERN/组件 | 现役来源 | 本 REQ 用途 |\n|:--|:--|:--|\n| ROLE-action-promise | packages/ui | checkout CTA |\n\n## Proof\n<!-- foundation-contract:v1 derivation-proof -->\n| PROOF ID | 可解析路径 | 验证哪些约束 | 观察方法 |\n|:--|:--|:--|:--|\n| PROOF-01 | docs/design/proof/anchor-screens/consumer.html | LAW-01 | visual |\n",
-		"docs/project-map.md":                       "| design investment | core | upgraded from local — second consumer without data loss | upgrade when: second Surface / handoff |\n| design foundation | docs/design/DESIGN.md | published | v1.0.0 |\n",
+		"docs/project-map.md":               "| design investment | core | upgraded from local — second consumer without data loss | upgrade when: second Surface / handoff |\n| design foundation | docs/design/DESIGN.md | published | v1.0.0 |\n",
 	})
 	// REQ-001 local derivation should be preserved (no data loss); keep it as-is (LOCAL-01 still on disk).
 	// After upgrade, the local derivation for REQ-001 remains; Core checks treat mixed local+core as non-all-local.
@@ -132,16 +132,16 @@ func TestE2E_CoreColdHandoffBudgetSecondReqTrial(t *testing.T) {
 	// Build a Core root with two changed REQs to simulate the handoff trial (Req-014 first, Req-015 second in new session).
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": tokensJSONForTest(t),
-		"docs/design/DESIGN.md":              kernelWithVersion("v1.0.0"),
-		"docs/design/design-language.md":     grammarNineActive(),
-		"docs/design/surface-profiles/consumer.md": "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
+		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
+		"docs/design/design-language.md":                 grammarNineActive(),
+		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
 		"docs/design/proof/anchor-screens/consumer.html": "<html>anchor</html>",
-		"docs/project-map.md": "| design investment | core | reuse | upgrade when: new surface |\n| design foundation | docs/design/DESIGN.md | published | v1.0.0 |\n",
-		"docs/requirements/REQ-014.md": "# REQ-014\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n| Surface | consumer |\n",
-		"docs/design/derivation/REQ-014.md": "# Design Derivation — REQ-014\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n> Surface：SUR-01@v1.0.0\n\n## Active constraints\n\n<!-- foundation-contract:v1 derivation-active -->\n| ID | 本 REQ 的具体落点 | 需要打开的 GR-* |\n|:--|:--|:--|\n| LAW-01 | checkout CTA | GR-01 |\n\n## Must not\n\n<!-- foundation-contract:v1 derivation-must-not -->\n| Source ID | 本页不得出现 | 观察位置 |\n|:--|:--|:--|\n| LAW-01 | 双主行动 | checkout |\n\n## Bindings\n\n<!-- foundation-contract:v1 derivation-bindings -->\n| ROLE/PATTERN/组件 | 现役来源 | 本 REQ 用途 |\n|:--|:--|:--|\n| ROLE-action-promise | packages/ui | checkout |\n\n## Proof\n<!-- foundation-contract:v1 derivation-proof -->\n| PROOF ID | 可解析路径 | 验证哪些约束 | 观察方法 |\n|:--|:--|:--|:--|\n| PROOF-01 | docs/design/proof/anchor-screens/consumer.html | LAW-01 | visual |\n",
+		"docs/project-map.md":                            "| design investment | core | reuse | upgrade when: new surface |\n| design foundation | docs/design/DESIGN.md | published | v1.0.0 |\n",
+		"docs/requirements/REQ-014.md":                   "# REQ-014\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n| Surface | consumer |\n",
+		"docs/design/derivation/REQ-014.md":              "# Design Derivation — REQ-014\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n> Surface：SUR-01@v1.0.0\n\n## Active constraints\n\n<!-- foundation-contract:v1 derivation-active -->\n| ID | 本 REQ 的具体落点 | 需要打开的 GR-* |\n|:--|:--|:--|\n| LAW-01 | checkout CTA | GR-01 |\n\n## Must not\n\n<!-- foundation-contract:v1 derivation-must-not -->\n| Source ID | 本页不得出现 | 观察位置 |\n|:--|:--|:--|\n| LAW-01 | 双主行动 | checkout |\n\n## Bindings\n\n<!-- foundation-contract:v1 derivation-bindings -->\n| ROLE/PATTERN/组件 | 现役来源 | 本 REQ 用途 |\n|:--|:--|:--|\n| ROLE-action-promise | packages/ui | checkout |\n\n## Proof\n<!-- foundation-contract:v1 derivation-proof -->\n| PROOF ID | 可解析路径 | 验证哪些约束 | 观察方法 |\n|:--|:--|:--|:--|\n| PROOF-01 | docs/design/proof/anchor-screens/consumer.html | LAW-01 | visual |\n",
 		// Second changed REQ: the cold handoff trial — new session reads only §0 + SUR + Derivation(REQ-015)
-		"docs/requirements/REQ-015.md": "# REQ-015\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n| Surface | consumer |\n",
+		"docs/requirements/REQ-015.md":      "# REQ-015\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n| Surface | consumer |\n",
 		"docs/design/derivation/REQ-015.md": "# Design Derivation — REQ-015\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n> Surface：SUR-01@v1.0.0\n\n## Active constraints\n\n<!-- foundation-contract:v1 derivation-active -->\n| ID | 本 REQ 的具体落点 | 需要打开的 GR-* |\n|:--|:--|:--|\n| LAW-01 | compare CTA | GR-01 |\n\n## Must not\n\n<!-- foundation-contract:v1 derivation-must-not -->\n| Source ID | 本页不得出现 | 观察位置 |\n|:--|:--|:--|\n| LAW-01 | 双主行动 | compare |\n\n## Bindings\n\n<!-- foundation-contract:v1 derivation-bindings -->\n| ROLE/PATTERN/组件 | 现役来源 | 本 REQ 用途 |\n|:--|:--|:--|\n| ROLE-action-promise | packages/ui | compare |\n\n## Proof\n<!-- foundation-contract:v1 derivation-proof -->\n| PROOF ID | 可解析路径 | 验证哪些约束 | 观察方法 |\n|:--|:--|:--|:--|\n| PROOF-01 | docs/design/proof/anchor-screens/consumer.html | LAW-01 | visual |\n",
 	})
 	report, err := Check(root)
@@ -337,13 +337,13 @@ func TestE2E_ErrorDSLAndLegacyMigration_E2E(t *testing.T) {
 	// Part D: primitive consumption + generated asset unverifiable via Check
 	primRoot := t.TempDir()
 	mustWriteTreeGeneric(t, primRoot, map[string]string{
-		"packages/design-tokens/tokens.json":                      tokensJSONForTest(t),
-		"docs/design/DESIGN.md":                                   kernelWithVersion("v1.0.0"),
-		"docs/design/design-language.md":                          grammarNineActive(),
-		"docs/design/surface-profiles/consumer.md":                "# Surface\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
-		"docs/design/proof/anchor-screens/consumer.html":          "<html><head></head><body style=\"color: var(--color-primitive-slate-50)\">anchor with primitive</body></html>",
-		"docs/design/proof/anchor-screens/operations.html":        "<html><body style=\"color: var(--color-surface-page)\">good semantic</body></html>",
-		"docs/project-map.md":                                     "| design investment | core | x | upgrade when: y |\n",
+		"packages/design-tokens/tokens.json":               tokensJSONForTest(t),
+		"docs/design/DESIGN.md":                            kernelWithVersion("v1.0.0"),
+		"docs/design/design-language.md":                   grammarNineActive(),
+		"docs/design/surface-profiles/consumer.md":         "# Surface\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
+		"docs/design/proof/anchor-screens/consumer.html":   "<html><head></head><body style=\"color: var(--color-primitive-slate-50)\">anchor with primitive</body></html>",
+		"docs/design/proof/anchor-screens/operations.html": "<html><body style=\"color: var(--color-surface-page)\">good semantic</body></html>",
+		"docs/project-map.md":                              "| design investment | core | x | upgrade when: y |\n",
 	})
 	report4, _ := Check(primRoot)
 	hasPrim := false
@@ -374,11 +374,11 @@ func TestE2E_StrictIsPerProject_AndValidateAllExcludesFoundation(t *testing.T) {
 	// A violated Core root is still advisory by default (warnings, not error).
 	badRoot := t.TempDir()
 	mustWriteTreeGeneric(t, badRoot, map[string]string{
-		"packages/design-tokens/tokens.json": tokensJSONForTest(t),
-		"docs/design/DESIGN.md":              "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n<!-- foundation-contract:v1 constraints -->\n| ID | Status | 类型 | 可执行 Statement / Do | Don't / 反向边界 | Scope | Source | Binding | Checkability | Proof / review |\n|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|\n| LAW-01 | active | law | do | dont | global | EVD-01 | — | human | PROOF-01 |\n\n## 8. Surfaces in force\n<!-- foundation-contract:v1 surfaces -->\n| ID | Surface | Profile/version | 与主 Surface 的对比证明 |\n|:--|:--|:--|:--|\n| SUR-01 | consumer | surface-profiles/consumer.md@v1.0.0 | PROOF-01 |\n\n## 9. Proof Set\n<!-- foundation-contract:v1 proofs -->\n| ID | 类型 | 路径 | 证明哪些约束 |\n|:--|:--|:--|:--|\n| PROOF-01 | Anchor | proof/anchor-screens/consumer.html | LAW-01 |\n\n## 10. Open design debt\n<!-- foundation-contract:v1 debts -->\n| ID | 项 | 影响 | 复查条件 |\n|:--|:--|:--|:--|\n| DEBT-01 | x | low | next review |\n",
-		"docs/design/design-language.md":            grammarNineActive(),
+		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/DESIGN.md":                          "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n<!-- foundation-contract:v1 constraints -->\n| ID | Status | 类型 | 可执行 Statement / Do | Don't / 反向边界 | Scope | Source | Binding | Checkability | Proof / review |\n|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|\n| LAW-01 | active | law | do | dont | global | EVD-01 | — | human | PROOF-01 |\n\n## 8. Surfaces in force\n<!-- foundation-contract:v1 surfaces -->\n| ID | Surface | Profile/version | 与主 Surface 的对比证明 |\n|:--|:--|:--|:--|\n| SUR-01 | consumer | surface-profiles/consumer.md@v1.0.0 | PROOF-01 |\n\n## 9. Proof Set\n<!-- foundation-contract:v1 proofs -->\n| ID | 类型 | 路径 | 证明哪些约束 |\n|:--|:--|:--|:--|\n| PROOF-01 | Anchor | proof/anchor-screens/consumer.html | LAW-01 |\n\n## 10. Open design debt\n<!-- foundation-contract:v1 debts -->\n| ID | 项 | 影响 | 复查条件 |\n|:--|:--|:--|:--|\n| DEBT-01 | x | low | next review |\n",
+		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/proof/anchor-screens/consumer.html": "<html/>",
-		"docs/project-map.md":                      "| design investment | core | x | upgrade when: y |\n",
+		"docs/project-map.md":                            "| design investment | core | x | upgrade when: y |\n",
 	})
 	reportBad, _ := Check(badRoot)
 	if len(reportBad.Warnings()) == 0 {
