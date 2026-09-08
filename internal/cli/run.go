@@ -1432,6 +1432,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		// initializes claim/assignment projections, phase -> running.
 		// `revise` is the one controlled revision per round (§5.3).
 		revise := len(args) > 1 && args[1] == "revise"
+	revive := len(args) > 1 && args[1] == "revive"
 		flags := flag.NewFlagSet("runtime review-plan", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		bindUsage(flags, "runtime review-plan")
@@ -1443,11 +1444,25 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		sourceRef := flags.String("source-ref", "", "revise: triggering Result/Finding evidence id")
 		affectedSurface := flags.String("affected-surface", "", "revise: path surface the revision may touch")
 		parseArgs := args[1:]
-		if revise {
+		if revise || revive {
 			parseArgs = args[2:]
 		}
 		if err := flags.Parse(parseArgs); err != nil {
 			return 2
+		}
+		if revive {
+			next, err := review.RevivePlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), *expectedRevision)
+			if err != nil {
+				fmt.Fprintln(stderr, formatFailure("runtime review-plan revive", err))
+				return 1
+			}
+			ptr := review.PlanPointerFromState(next.State)
+			fmt.Fprintf(stderr, "review-plan revive: %s now at revision %d (status %s); baseline re-check clean, no claim touched\n", ptr.PlanID, ptr.Revision, ptr.Status)
+			return encodeJSON(stdout, map[string]any{
+				"plan_id":  ptr.PlanID,
+				"revision": ptr.Revision,
+				"status":   ptr.Status,
+			})
 		}
 		if revise {
 			resolvedRevision := *expectedRevision

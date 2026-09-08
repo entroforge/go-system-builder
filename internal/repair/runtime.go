@@ -575,11 +575,38 @@ func checkS9AuthorityFreshness(root string, pointer map[string]any, pending []Ch
 	for _, artifact := range live {
 		liveByPath[artifact.Path] = artifact.SHA256
 	}
+	// Contract scope is the authorized mutation surface for this session: a
+	// baseline artifact inside it that drifted is an in-flight unit repair
+	// whose result will claim it; outside it (or forbidden) a drift is
+	// unauthorized and blocks the commit.
+	var contractScope *ApprovedContract
+	if ref := stringField(pointer["contract_ref"]); ref != "" {
+		if approved, err := ValidateApprovedContractRef(root, ContractRef{Path: ref, SHA256: stringField(pointer["contract_sha256"])}); err == nil {
+			contractScope = &approved
+		}
+	}
 	for _, artifact := range session.BaselineArtifacts {
 		if claimed[artifact.Path] {
 			continue
 		}
+		// .claude/tmp is transient controller scratch (staging copies, probe
+		// files); it is not an implementation surface and must never stale the
+		// authority fingerprint — same class as the control-plane drift paths.
+		if strings.HasPrefix(artifact.Path, ".claude/tmp/") {
+			continue
+		}
 		if liveByPath[artifact.Path] != artifact.SHA256 {
+			// Sessions opened before the capture-side filter excluded
+			// control-plane journals and dependency/build caches may carry
+			// captured copies; they drift during ordinary verification runs
+			// and are never authority-relevant, so forgive them here as well
+			// as at capture.
+			if ignoreBaselinePath(artifact.Path) {
+				continue
+			}
+			if contractScope != nil && scopeAllows(artifact.Path, contractScope.ProspectiveScope, contractScope.ForbiddenScope) == nil {
+				continue
+			}
 			return fmt.Errorf(
 				"S9 authority fingerprint is stale: baseline artifact %q drifted after RepairSession %s opened (session=%s live=%s); the Session/Plan/Result chain no longer describes the code being repaired — claim the change through a RepairResult or re-baseline the case through S8/S9 planning before committing further repair artifacts",
 				artifact.Path, session.SessionID, shortDigest(artifact.SHA256), shortDigest(liveByPath[artifact.Path]))

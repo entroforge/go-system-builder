@@ -237,7 +237,11 @@ func isAllowedDriftSurface(rel string) bool {
 	if strings.HasPrefix(rel, "docs/") || strings.HasPrefix(rel, "blueprint/") || strings.HasPrefix(rel, "schema/") {
 		return true
 	}
-	if strings.HasPrefix(rel, "e2e-workspace/") {
+	// git status --porcelain collapses a fully-untracked directory to its bare
+	// name ("?? e2e-workspace/"); filepath.Clean strips the trailing slash, so the
+	// bare form must be allowed too or the cold-start workspace itself turns the
+	// round stale on first write.
+	if rel == "e2e-workspace" || strings.HasPrefix(rel, "e2e-workspace/") {
 		return true
 	}
 	if rel == ".git" || strings.HasPrefix(rel, ".git/") {
@@ -247,7 +251,23 @@ func isAllowedDriftSurface(rel string) bool {
 }
 
 func isControlPlaneDriftPath(rel string) bool {
-	if rel == ".claude/loop-state.json" || rel == ".claude/loop-events.jsonl" || rel == ".claude/loop-metrics.json" || rel == ".claude/settings.json" || rel == ".claude/settings.local.json" {
+	// .claude/glm.json is a tracked but constantly-rewritten local model
+	// config (model switching rewrites it); pinning or drift-flagging it
+	// stales every round on an unrelated local toggle.
+	if rel == ".claude/loop-state.json" || rel == ".claude/loop-events.jsonl" || rel == ".claude/loop-metrics.json" || rel == ".claude/settings.json" || rel == ".claude/settings.local.json" || rel == ".claude/glm.json" {
+		return true
+	}
+	// Hook bookkeeping (hook-decisions.jsonl, transient hook-*.scratch files)
+	// is control-plane: it changes on every hook evaluation and must never
+	// stale a review round. A transient untracked hook scratch file was
+	// observed staling an otherwise clean round mid-batch.
+	if strings.HasPrefix(rel, ".claude/hook") {
+		return true
+	}
+	// Runtime lock files (.claude/loop-state.json.lock) exist only for the
+	// instant of a concurrent CAS write; catching them mid-scan stales a
+	// clean round on a pure race.
+	if strings.HasPrefix(rel, ".claude/") && strings.HasSuffix(rel, ".lock") {
 		return true
 	}
 	for _, prefix := range []string{".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/"} {
@@ -326,8 +346,20 @@ func verifyRegressionAssetFingerprints(root string, plan *Plan) error {
 }
 
 // verifySealedArtifactDigests re-checks every consumed E2E assignment's
-// bound digest against the workspace at close time (L3-S7 §10.1.6): a
-// workspace that drifted after consumption invalidates the round.
+// bound digest against the workspace at close time (L3-S7 §10.1.6, §10.3):
+// a workspace file that a consumed result actually depended on and that
+// changed (or disappeared) after consumption invalidates the round.
+//
+// L3-S7 §10.3 splits workspace movement in two: changing/removing a
+// spec/fixture a consumed result bound invalidates that result honestly,
+// while ADDING new cold-start artifacts is ordinary artifact-revision
+// growth and must not stale the round. The whole-directory digest cannot
+// tell those apart, so when a bound aggregate no longer matches the live
+// digest this falls back to the result's own typed evidence anchors: every
+// workspace-relative `path:…#sha256=…` ref the result pinned is re-verified
+// against disk. If all of them still match, the consumed evidence is
+// byte-valid (the aggregate moved only through later artifact revisions)
+// and the assignment passes; any missing or changed anchor fails closed.
 func verifySealedArtifactDigests(root string, ptr *PlanPointer, assignments map[string]any) error {
 	if ptr.VerificationArtifactWorkspace == "" {
 		return nil
@@ -342,10 +374,83 @@ func verifySealedArtifactDigests(root string, ptr *PlanPointer, assignments map[
 			continue
 		}
 		bound, _ := row["artifact_digest"].(string)
-		if bound != "" && bound != current {
-			return fmt.Errorf("assignment %s consumed a result against workspace digest %s, but the workspace now digests to %s; the round is stale (L3-S7 §10.3)", id, bound, current)
+		if bound == "" || bound == current {
+			continue
+		}
+		if err := verifyResultWorkspaceAnchors(root, ptr.VerificationArtifactWorkspace, id, row); err != nil {
+			return fmt.Errorf("assignment %s consumed a result against workspace digest %s, but the workspace now digests to %s; the round is stale (L3-S7 §10.3): %w", id, bound, current, err)
 		}
 	}
+	return nil
+}
+
+// verifyResultWorkspaceAnchors re-verifies every workspace-relative typed
+// path anchor (path:<workspace-relative>#sha256=<hex>) that a consumed
+// result pinned. It returns nil only when at least one anchor was verified
+// and none drifted; results that pinned no workspace anchor cannot be
+// re-verified and fail closed.
+func verifyResultWorkspaceAnchors(root, workspaceRel, assignmentID string, row map[string]any) error {
+	resultRel, _ := row["result_ref"].(string)
+	if resultRel == "" {
+		return fmt.Errorf("consumed row has no result_ref; its workspace anchors cannot be re-verified")
+	}
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(resultRel)))
+	if err != nil {
+		return fmt.Errorf("read consumed result %s: %w", resultRel, err)
+	}
+	var result struct {
+		Checks []struct {
+			EvidenceRefs []string `json:"evidence_refs"`
+		} `json:"checks"`
+		ClaimResults []struct {
+			EvidenceRefs []string `json:"evidence_refs"`
+		} `json:"claim_results"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return fmt.Errorf("decode consumed result %s: %w", resultRel, err)
+	}
+	workspaceAbs := filepath.Clean(filepath.Join(root, filepath.FromSlash(workspaceRel)))
+	check := func(ref string) error {
+		if !strings.HasPrefix(ref, "path:") {
+			return nil
+		}
+		refPath := strings.TrimPrefix(ref, "path:")
+		shaIdx := strings.Index(refPath, "#sha256=")
+		if shaIdx < 0 {
+			return nil
+		}
+		rel := filepath.Clean(filepath.FromSlash(refPath[:shaIdx]))
+		abs := filepath.Clean(filepath.Join(root, rel))
+		if !strings.HasPrefix(abs, workspaceAbs+string(filepath.Separator)) && abs != workspaceAbs {
+			return nil // anchored outside the workspace: not ours to re-verify
+		}
+		want := refPath[shaIdx+len("#sha256="):]
+		fileData, err := os.ReadFile(abs)
+		if err != nil {
+			return fmt.Errorf("anchor %s no longer resolvable: %w", ref, err)
+		}
+		if got := sha256Of(fileData); got != want {
+			return fmt.Errorf("anchor %s changed after consumption (now %s)", ref, got)
+		}
+		return nil
+	}
+	for _, c := range result.Checks {
+		for _, ref := range c.EvidenceRefs {
+			if err := check(ref); err != nil {
+				return err
+			}
+		}
+	}
+	for _, c := range result.ClaimResults {
+		for _, ref := range c.EvidenceRefs {
+			if err := check(ref); err != nil {
+				return err
+			}
+		}
+	}
+	// A result that pinned no workspace anchors declared no dependency on
+	// the workspace (e.g. a repo-spec re-run); workspace growth cannot have
+	// invalidated it, so there is nothing to re-verify.
 	return nil
 }
 

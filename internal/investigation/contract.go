@@ -282,9 +282,19 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 				return fmt.Errorf("active InvestigationCase changed during approval; expected %s at investigating; re-read runtime investigation status and retry", request.CaseID)
 			}
 			lifecycle, ok := state["lifecycle"].(map[string]any)
-			if !ok || lifecycle == nil || stringField(lifecycle["state"]) != "bug_resolution" || stringField(lifecycle["phase"]) != "investigation" {
-				return errors.New("Runtime is no longer in bug_resolution.investigation; inspect the Controller checkpoint before retry")
+			if !ok || lifecycle == nil || stringField(lifecycle["state"]) != "bug_resolution" {
+				return errors.New("Runtime is no longer in bug_resolution; inspect the Controller checkpoint before retry")
 			}
+			// Phase-agnostic within bug_resolution: after an investigate_more
+			// re-entry the Case returns to investigating while side effects of
+			// earlier plan-report submissions may have advanced the phase past
+			// investigation. The authoritative guards are the Case pointer
+			// (case_id + sha + investigating status, checked above); approval
+			// itself re-pins the phase to repair_readback below.
+			// repair_readback is accepted for re-approval after an
+			// investigate_more re-entry: the s9_repair re-route restores this
+			// phase while the Case returns to investigating, and the designed
+			// continuation is a fresh approval of the re-authored contract.
 			phaseRevision, err := integerValue(lifecycle["phase_revision"])
 			if err != nil {
 				return fmt.Errorf("lifecycle.phase_revision is invalid: %w", err)

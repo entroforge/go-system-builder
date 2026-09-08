@@ -199,6 +199,12 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 			return nil
 		}
 		relSlash := filepath.ToSlash(rel)
+		if ignoreBaselinePath(relSlash) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		parts := strings.Split(relSlash, "/")
 		if parts[0] == ".git" {
 			if entry.IsDir() {
@@ -243,9 +249,36 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 	return artifacts, sha256Bytes([]byte(strings.Join(lines, "\n"))), nil
 }
 
+// ignoreBaselinePath reports whether a repository-relative path must never
+// enter (or continue to gate) a session authority baseline. Control-plane
+// bookkeeping (#11) and dependency/build caches (#13: vite pre-bundle
+// metadata, dist output, coverage) regenerate during ordinary verification
+// runs and are never authority-relevant.
+func ignoreBaselinePath(rel string) bool {
+	if isControlPlanePath(rel, false) {
+		return true
+	}
+	for _, part := range strings.Split(rel, "/") {
+		switch part {
+		case "node_modules", "dist", "coverage", ".vite", ".turbo", ".nuxt", ".output":
+			return true
+		}
+	}
+	return false
+}
+
 func isControlPlanePath(rel string, isDir bool) bool {
 	_ = isDir
 	if rel == ".claude/loop-state.json" || rel == ".claude/loop-events.jsonl" || rel == ".claude/loop-metrics.json" || rel == ".claude/settings.json" || rel == ".claude/settings.local.json" {
+		return true
+	}
+	// Hook decision journals append on every hook evaluation; they are
+	// control-plane bookkeeping and must never enter a session baseline
+	// (a captured copy goes stale on the builders' own next hook call).
+	if strings.HasPrefix(rel, ".claude/hook") {
+		return true
+	}
+	if strings.HasPrefix(rel, ".claude/") && strings.HasSuffix(rel, ".lock") {
 		return true
 	}
 	for _, prefix := range []string{".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/"} {

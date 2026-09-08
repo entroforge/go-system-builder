@@ -82,7 +82,7 @@ func completionChangedPaths(root string, entry map[string]any) ([]string, error)
 	if kind := stringField(envelope["kind"]); kind != "" && kind != "completion_report" {
 		return nil, fmt.Errorf("artifact kind is %q, want completion_report", kind)
 	}
-	return normalizeBaselinePaths(stringSliceValue(envelope["changed_paths"])), nil
+	return filterFreezableChangedPaths(root, normalizeBaselinePaths(stringSliceValue(envelope["changed_paths"]))), nil
 }
 
 func normalizeBaselinePaths(paths []string) []string {
@@ -148,4 +148,34 @@ func validateS7BaselineProjection(root string, state map[string]any) error {
 		[]string{"restore the canonical completion artifact or run the S6 completion path again so its path and sha256 are registered together"},
 		"loop-harness s7 draft --out plan.json",
 	)
+}
+
+// filterFreezableChangedPaths drops changed_paths entries that name an
+// existing directory on disk. Builder agents may record an evidence-staging
+// directory itself (for example ".claude/evidence/REQ-042/") as shorthand for
+// "my run logs live under here". Such an entry is bookkeeping, not a
+// reviewable product surface: the S7 denominator must stay freezable
+// (frozen_subjects reads each path as a regular file, and a directory always
+// fails that read), while every real artifact the builder delivered is still
+// captured individually by its own changed_paths entry or by another
+// envelope. Without this filter a single directory entry deadlocks plan
+// registration: validateCoverageInventory demands it in frozen_subjects, and
+// the frozen-subject baseline check rejects it as unreadable - an unfixable
+// combination for the planner. Entries that cannot be stat'd (missing on
+// disk) are kept so the existing fail-closed diagnostics still fire.
+func filterFreezableChangedPaths(root string, paths []string) []string {
+	if root == "" {
+		return paths
+	}
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		absolute, err := repositoryContainedPath(root, path)
+		if err == nil {
+			if info, statErr := os.Stat(absolute); statErr == nil && info.IsDir() {
+				continue
+			}
+		}
+		result = append(result, path)
+	}
+	return result
 }
