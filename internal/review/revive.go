@@ -39,7 +39,7 @@ func RevivePlan(
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("review-plan revive: load plan: %w", err)
 	}
-	if err := verifyFrozenSubjects(root, plan); err != nil {
+	if err := verifyFrozenSubjects(root, plan, current.State); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("review-plan revive: baseline still drifted; the round stays stale (use revise for real drift): %w", err)
 	}
 	lifecycle, _ := current.State["lifecycle"].(map[string]any)
@@ -58,7 +58,7 @@ func RevivePlan(
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
-		Message: fmt.Sprintf("ReviewPlan %s revived from stale after drift re-check passed (revision %d unchanged; no claim, assignment or result touched)", ptr.PlanID, ptr.Revision),
+		Message:        fmt.Sprintf("ReviewPlan %s revived from stale after drift re-check passed (revision %d unchanged; no claim, assignment or result touched)", ptr.PlanID, ptr.Revision),
 		OccurredAt:     time.Now().UTC(),
 		Apply: func(state map[string]any) error {
 			reviewMap, ok := state["review"].(map[string]any)

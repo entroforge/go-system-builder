@@ -165,13 +165,17 @@ func checkHandoffRefs(root string, handoff RepairHandoff) (HandoffCompleteness, 
 	if sessionErr == nil && changesetErr == nil && changeset.SessionID != session.SessionID {
 		invalid = append(invalid, "changeset is not bound to the Session")
 	}
+	// RC-15: with a multi-Assignment plan the handoff's singular ResultRef is
+	// only a compatibility pointer; the result_refs batch union is the exact
+	// authority and is enforced at commit (validateHandoffAgainstCurrentRepair).
+	// Here the cited result merely has to sit inside the repaired surface.
 	if resultErr == nil && changesetErr == nil {
-		if err := exactChangedArtifactSet(result.ChangedArtifacts, changeset.Artifacts, "RepairResult", "Changeset"); err != nil {
+		if err := changedArtifactsWithinActual(result.ChangedArtifacts, changeset.Artifacts); err != nil {
 			invalid = append(invalid, err.Error())
 		}
 	}
 	if resultErr == nil && impactErr == nil {
-		if err := exactChangedArtifactSet(result.ChangedArtifacts, impact.ChangedArtifacts, "RepairResult", "ChangeImpact"); err != nil {
+		if err := changedArtifactsWithinActual(result.ChangedArtifacts, impact.ChangedArtifacts); err != nil {
 			invalid = append(invalid, err.Error())
 		}
 	}

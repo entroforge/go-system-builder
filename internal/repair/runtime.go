@@ -100,17 +100,40 @@ func OpenRepairSession(root, statePath, journalPath string, req OpenSessionReque
 	}
 	if existing := repairPointer(current.State); existing != nil {
 		if stringField(existing["session_id"]) != req.SessionID {
-			return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("an active S9 RepairSession already exists; inspect runtime repair status")
+			// Defect #26 recovery: the repair pointer only ever clears through a
+			// fresh open, so a closed session pinned by a previous repair would
+			// block every later approved contract forever. Allow a fresh session
+			// when the pinned session is closed, the cursor sits at
+			// bug_resolution.repair_readback, and a DIFFERENT InvestigationCase
+			// has an approved contract.
+			closed := stringField(existing["status"]) == "closed"
+			readback := lifecycleState(current.State) == "bug_resolution" && lifecyclePhase(current.State) == "repair_readback"
+			prior := investigationPointer(current.State)
+			newContract := prior != nil && stringField(prior["status"]) == "contract_approved" && stringField(prior["case_id"]) != stringField(existing["case_id"])
+			// Defect #27 recovery: a session that captured its baseline but never
+			// recorded any result/changeset/handoff made zero progress and is
+			// voidable — a fresh open replaces the pointer and restarts S9.
+			voidEmpty := stringField(existing["result_ref"]) == "" && stringField(existing["changeset_ref"]) == "" && stringField(existing["handoff_ref"]) == "" && lifecycleState(current.State) == "bug_resolution"
+			if !(closed && readback && newContract) && !voidEmpty {
+				return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("an active S9 RepairSession already exists; inspect runtime repair status")
+			}
+		} else {
+			ref := ArtifactRef{ID: req.SessionID, Path: stringField(existing["path"]), SHA256: stringField(existing["sha256"])}
+			var session RepairSession
+			if err := decodeArtifact(root, ref, "repair-session.schema.json", &session); err != nil {
+				return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
+			}
+			return current, session, ref, nil
 		}
-		ref := ArtifactRef{ID: req.SessionID, Path: stringField(existing["path"]), SHA256: stringField(existing["sha256"])}
-		var session RepairSession
-		if err := decodeArtifact(root, ref, "repair-session.schema.json", &session); err != nil {
-			return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
-		}
-		return current, session, ref, nil
 	}
 	if lifecycleState(current.State) != "bug_resolution" || lifecyclePhase(current.State) != "repair_readback" {
-		return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("S9 session open requires bug_resolution.repair_readback; consume the approved Contract first")
+		// Defect #27 recovery: a voided zero-progress session may be restarted
+		// from the fixing phase itself (the replacement session starts S9 over).
+		stale := repairPointer(current.State)
+		voidEmpty := stale != nil && stringField(stale["session_id"]) != req.SessionID && stringField(stale["result_ref"]) == "" && stringField(stale["changeset_ref"]) == "" && stringField(stale["handoff_ref"]) == "" && lifecycleState(current.State) == "bug_resolution"
+		if !voidEmpty {
+			return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("S9 session open requires bug_resolution.repair_readback; consume the approved Contract first")
+		}
 	}
 	investigation := investigationPointer(current.State)
 	if investigation == nil || stringField(investigation["status"]) != "contract_approved" {
@@ -1133,8 +1156,18 @@ func CommitTargetedReverification(root, statePath, journalPath string, req Commi
 		return runtimepkg.Snapshot{}, err
 	}
 	p := repairPointer(current.State)
-	if p == nil || stringField(p["status"]) != "targeted_reverification" {
-		return runtimepkg.Snapshot{}, errors.New("S9 targeted reverification requires status=targeted_reverification")
+	// RC-15 (S9-H9): the pass path advances status to ready_for_full_review
+	// without checking required_reverification_ids, so a batch reverification
+	// can strand the remaining required ids behind this status gate and
+	// deadlock the handoff. Accept ready_for_full_review as a recovery
+	// station for completing the missing required reverifications; the pass
+	// path writes the same status back, which is idempotent there.
+	status := ""
+	if p != nil {
+		status = stringField(p["status"])
+	}
+	if p == nil || (status != "targeted_reverification" && status != "ready_for_full_review") {
+		return runtimepkg.Snapshot{}, errors.New("S9 targeted reverification requires status=targeted_reverification (or ready_for_full_review to complete missing required reverifications)")
 	}
 	// RC-09 (S9-4): a reverification performed against drifted code endorses a
 	// repair that is not on disk — block the commit before identity checks.
@@ -2000,15 +2033,39 @@ func artifactRefSet(values []ArtifactRef, label string) (map[string]string, erro
 	return result, nil
 }
 
+// isNonProductSurface reports whether a path is bookkeeping rather than the
+// repaired product: control plane, round documentation, the cold-start
+// verification workspace, generated docs, or build caches. Such files drift
+// during the round by design and are never claimable through a RepairResult
+// (contract scope is product-only), so the exact-set reconciliation must not
+// demand them.
+func isNonProductSurface(path string) bool {
+	if ignoreBaselinePath(path) {
+		return true
+	}
+	for _, prefix := range []string{".claude/", "docs/", "e2e-workspace/", "blueprint/", "schema/"} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func compareArtifactSets(left, right map[string]string, leftName, rightName string) error {
 	missing := []string{}
 	extra := []string{}
 	for path, hash := range left {
+		if isNonProductSurface(path) {
+			continue
+		}
 		if !artifactSetEntryMatches(hash, right[path]) {
 			missing = append(missing, path)
 		}
 	}
 	for path, hash := range right {
+		if isNonProductSurface(path) {
+			continue
+		}
 		if !artifactSetEntryMatches(hash, left[path]) {
 			extra = append(extra, path)
 		}

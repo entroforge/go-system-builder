@@ -456,10 +456,23 @@ func inspectS10Artifact(root string, state map[string]any, manifestType string) 
 	} else {
 		wantedKinds["release_audit_record"] = true
 	}
+	// The evidence ledger is append-only and RecordEvidence rejects duplicate
+	// ids, so recovery from a bad registration means registering a NEW id.
+	// Select the LAST matching valid entry: the newest registration supersedes
+	// earlier ones (RC-15 S10-H2), and first-match would wedge the board on a
+	// stale row forever.
+	var selected map[string]any
 	for _, raw := range stateEvidence(state) {
 		entry, _ := raw.(map[string]any)
 		if entry == nil || !wantedKinds[stringValue(entry["kind"])] || stringValue(entry["status"]) != "valid" {
 			continue
+		}
+		selected = entry
+	}
+	{
+		entry := selected
+		if entry == nil {
+			return result
 		}
 		if entry["invalidated_by"] != nil {
 			return s10InvalidArtifact(result, "evidence is invalidated; register a new current S10 evidence envelope")
@@ -563,7 +576,6 @@ func inspectS10Artifact(root string, state map[string]any, manifestType string) 
 		result.Next = "let the Controller evaluate the S10 gate; do not call runtime transition or release commands"
 		return result
 	}
-	return result
 }
 
 func s10InvalidArtifact(result s10ArtifactStatus, message string) s10ArtifactStatus {

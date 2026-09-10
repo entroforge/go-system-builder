@@ -362,6 +362,10 @@ func requireCurrentEvidenceKind(state map[string]any, kind string) error {
 	items, _ := state["evidence"].([]any)
 	baseline, _ := state["baseline"].(map[string]any)
 	review, _ := state["review"].(map[string]any)
+	// RC-15 (S10-H2): the evidence ledger is append-only; the newest
+	// registration supersedes earlier ones (drift recovery via fresh id),
+	// and first-match would wedge acc_complete / release_audit_approved on
+	// a stale row whose envelope has been regenerated since.
 	var found map[string]any
 	for _, raw := range items {
 		item, ok := raw.(map[string]any)
@@ -378,7 +382,6 @@ func requireCurrentEvidenceKind(state map[string]any, kind string) error {
 			continue
 		}
 		found = item
-		break
 	}
 	if found == nil {
 		return fmt.Errorf("no valid %s evidence entry for the current baseline/round — record the artifact before advancing", kind)

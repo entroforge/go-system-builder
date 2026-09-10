@@ -170,7 +170,13 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	review := mapFieldCLI(snapshot.State, "review")
 	pointer := mapFieldCLI(review, "repair")
 	status := stringValue(pointer["status"])
-	if status != "planning" && status != "reproducing" {
+	// Recovery dispatch (RC: queued coverage is never dropped): an assignment
+	// the operator skipped before execution begin has no owner, and only its
+	// owner may submit the unit result — refusing dispatch in repairing would
+	// strand that unit permanently.
+	existingOwners := stringMapCLI(pointer["assignment_owners"])
+	unownedInRepairing := status == "repairing" && existingOwners[*assignmentID] == ""
+	if status != "planning" && status != "reproducing" && !unownedInRepairing {
 		fmt.Fprintf(stderr, "runtime repair dispatch: S9 status=%s cannot accept a new Builder; compile a RepairPlan and dispatch before `runtime repair execution begin`\n", status)
 		return 1
 	}
@@ -193,7 +199,7 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s is not in RepairPlan %s; use `runtime repair status` to list exact assignments\n", *assignmentID, plan.PlanID)
 		return 1
 	}
-	owners := stringMapCLI(pointer["assignment_owners"])
+	owners := existingOwners
 	if owner := owners[target.AssignmentID]; owner != "" {
 		fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s is already owned by Agent %s; continue that Agent or recover the session, do not replace ownership\n", target.AssignmentID, owner)
 		return 1

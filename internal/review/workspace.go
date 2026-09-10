@@ -145,7 +145,7 @@ func repositoryContainedPath(root, rel string) (string, error) {
 // product drift — the plan is stale even though the hand-written list hashes
 // clean. Allowed write surfaces (.claude/, docs/reports/, e2e-workspace/) are
 // excluded from the drift scan.
-func verifyFrozenSubjects(root string, plan *Plan) error {
+func verifyFrozenSubjects(root string, plan *Plan, state map[string]any) error {
 	if plan == nil {
 		return fmt.Errorf("frozen subject verification requires a plan")
 	}
@@ -160,9 +160,17 @@ func verifyFrozenSubjects(root string, plan *Plan) error {
 		if err != nil {
 			return fmt.Errorf("frozen subject %s is outside repository: %w", subject.Path, err)
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("frozen subject %s is unreadable: %w", subject.Path, err)
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			// RC-29: an S9 repair may DELETE an S6-denominator artifact; the TR-012
+			// round must still freeze that path (coverage requires it) at its
+			// pre-deletion digest. An absent frozen subject is accepted only when
+			// the current round's change impact itself records the same path+sha256
+			// as a deleted changed artifact.
+			if os.IsNotExist(readErr) && deletionCorroborated(root, state, subject.Path, subject.SHA256) {
+				continue
+			}
+			return fmt.Errorf("frozen subject %s is unreadable: %w", subject.Path, readErr)
 		}
 		actual := sha256Of(data)
 		if actual != subject.SHA256 {
@@ -175,6 +183,47 @@ func verifyFrozenSubjects(root string, plan *Plan) error {
 		}
 	}
 	return nil
+}
+
+// deletionCorroborated reports whether the active round's TR-012 change
+// impact records path@sha256 as a (deleted) changed artifact — the only
+// authority that may excuse an absent frozen subject (RC-29).
+func deletionCorroborated(root string, state map[string]any, subjectPath, subjectSHA string) bool {
+	if state == nil || root == "" {
+		return false
+	}
+	review, _ := state["review"].(map[string]any)
+	entry, _ := review["round_entry"].(map[string]any)
+	impactPath := ""
+	if entry != nil {
+		impactPath = stringField(entry["change_impact_ref"])
+	}
+	if strings.TrimSpace(impactPath) == "" {
+		return false
+	}
+	absolute, err := repositoryContainedPath(root, impactPath)
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(absolute)
+	if err != nil {
+		return false
+	}
+	var impact struct {
+		ChangedArtifacts []struct {
+			Path   string `json:"path"`
+			SHA256 string `json:"sha256"`
+		} `json:"changed_artifacts"`
+	}
+	if err := json.Unmarshal(data, &impact); err != nil {
+		return false
+	}
+	for _, artifact := range impact.ChangedArtifacts {
+		if artifact.Path == subjectPath && artifact.SHA256 == subjectSHA {
+			return true
+		}
+	}
+	return false
 }
 
 // detectUndeclaredProductDrift scans the git diff baseline for product files

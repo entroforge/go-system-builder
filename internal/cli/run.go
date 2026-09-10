@@ -1432,7 +1432,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		// initializes claim/assignment projections, phase -> running.
 		// `revise` is the one controlled revision per round (§5.3).
 		revise := len(args) > 1 && args[1] == "revise"
-	revive := len(args) > 1 && args[1] == "revive"
+		revive := len(args) > 1 && args[1] == "revive"
 		flags := flag.NewFlagSet("runtime review-plan", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		bindUsage(flags, "runtime review-plan")

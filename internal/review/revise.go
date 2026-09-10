@@ -91,7 +91,7 @@ func RevisePlan(
 	if next.ReviewRound != currentPlan.ReviewRound || next.BaselineGeneration != currentPlan.BaselineGeneration {
 		return loopruntime.Snapshot{}, fmt.Errorf("a revision keeps the review_round and baseline_generation; a changed baseline is a stale round, not a revision")
 	}
-	if err := verifyFrozenSubjects(root, &next); err != nil {
+	if err := verifyFrozenSubjects(root, &next, current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan frozen subject baseline: %w", err)
 	}
 	if err := verifyRegressionAssetFingerprints(root, &next); err != nil {

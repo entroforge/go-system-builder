@@ -348,7 +348,7 @@ func validateContractBaseline(root string, state, caseDocument map[string]any) e
 		return fmt.Errorf("%s; re-verify the Case against the current S7 baseline before approval", warning)
 	}
 
-	batchPointer, err := observationBatchPointer(state)
+	batchPointer, err := observationBatchPointer(root, state)
 	if err != nil {
 		return fmt.Errorf("sealed ObservationBatch is unavailable: %w", err)
 	}

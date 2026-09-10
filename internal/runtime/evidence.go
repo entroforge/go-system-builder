@@ -109,6 +109,20 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		if err := json.Unmarshal(data, &envelope); err != nil || strings.TrimSpace(envelope.Conclusion) == "" {
 			return Snapshot{}, fmt.Errorf("S10 %s evidence requires a non-empty conclusion before authoritative inventory validation", manifestType)
 		}
+		// RC-15 (S10-H1): validate the manifest the envelope RESOLVES to, not
+		// the envelope bytes themselves — the envelope carries registration
+		// metadata (kind, evidence_id, ...) that no manifest decoder may be
+		// asked to accept under DisallowUnknownFields.
+		manifestData, _, envelopeConclusion, resolveErr := acceptance.ResolveS10Manifest(root, request.Kind, data)
+		if resolveErr != nil {
+			return Snapshot{}, resolveErr
+		}
+		// Keep `data` as the registered file's original bytes: the evidence
+		// row's recorded sha256 and the board's on-disk hash check bind to the
+		// envelope file; only the validators below consume the resolved
+		// manifest bytes.
+		s10ManifestData := manifestData
+		envelope.Conclusion = envelopeConclusion
 		baseline, baselineErr := acceptance.BuildS10ExternalBaseline(root, current, nil)
 		if baselineErr != nil {
 			return Snapshot{}, fmt.Errorf("S10 external baseline is unverifiable: %w; restore the current-generation completion/change-impact artifacts", baselineErr)
@@ -117,7 +131,7 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		if authorityErr != nil {
 			return Snapshot{}, fmt.Errorf("S10 authoritative inventory is unverifiable: %w; restore the current bound REQ, contract/TASK registrations, and pinned S7 ReviewPlan", authorityErr)
 		}
-		if _, err := acceptance.ValidateForOutcomeWithBaselineAndAuthority(data, manifestType, strings.TrimSpace(envelope.Conclusion), baseline, authority); err != nil {
+		if _, err := acceptance.ValidateForOutcomeWithBaselineAndAuthority(s10ManifestData, manifestType, strings.TrimSpace(envelope.Conclusion), baseline, authority); err != nil {
 			return Snapshot{}, err
 		}
 	}

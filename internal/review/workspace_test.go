@@ -1,6 +1,7 @@
 package review
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,14 +121,54 @@ func TestVerifyFrozenSubjectsBindsCurrentDiskContent(t *testing.T) {
 	plan := &Plan{FrozenSubjects: []FrozenSubject{{
 		Path: "internal/example/service.go", SHA256: sha256Of([]byte("baseline")), Kind: "product_code",
 	}}}
-	if err := verifyFrozenSubjects(root, plan); err != nil {
+	if err := verifyFrozenSubjects(root, plan, nil); err != nil {
 		t.Fatalf("matching frozen subject must pass: %v", err)
 	}
 	if err := os.WriteFile(path, []byte("drifted"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyFrozenSubjects(root, plan); err == nil || !strings.Contains(err.Error(), "frozen subject") {
+	if err := verifyFrozenSubjects(root, plan, nil); err == nil || !strings.Contains(err.Error(), "frozen subject") {
 		t.Fatalf("drifted frozen subject must fail closed, got %v", err)
+	}
+}
+
+// RC-29: an absent frozen subject passes only with TR-012 deletion corroboration.
+func TestVerifyFrozenSubjectsDeletedArtifactNeedsImpactCorroboration(t *testing.T) {
+	root := t.TempDir()
+	deletedPath := "internal/example/legacy.go"
+	digest := sha256Of([]byte("pre-deletion"))
+	plan := &Plan{FrozenSubjects: []FrozenSubject{{
+		Path: deletedPath, SHA256: digest, Kind: "post_repair_changed_artifact",
+	}}}
+	impact := map[string]any{
+		"review": map[string]any{
+			"round_entry": map[string]any{
+				"change_impact_ref": "impact.json",
+			},
+		},
+	}
+	impactBody := fmt.Sprintf(
+		`{"changed_artifacts":[{"id":"d","path":%q,"sha256":%q}]}`,
+		deletedPath, digest,
+	)
+	if err := os.WriteFile(filepath.Join(root, "impact.json"), []byte(impactBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFrozenSubjects(root, plan, impact); err != nil {
+		t.Fatalf("impact-corroborated deleted frozen subject must pass: %v", err)
+	}
+	if err := verifyFrozenSubjects(root, plan, nil); err == nil || !strings.Contains(err.Error(), "unreadable") {
+		t.Fatalf("deleted frozen subject without state must fail closed, got %v", err)
+	}
+	mismatch := fmt.Sprintf(
+		`{"changed_artifacts":[{"id":"d","path":%q,"sha256":"%s"}]}`,
+		deletedPath, sha256Of([]byte("other")),
+	)
+	if err := os.WriteFile(filepath.Join(root, "impact.json"), []byte(mismatch), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyFrozenSubjects(root, plan, impact); err == nil || !strings.Contains(err.Error(), "unreadable") {
+		t.Fatalf("sha-mismatched corroboration must fail closed, got %v", err)
 	}
 }
 

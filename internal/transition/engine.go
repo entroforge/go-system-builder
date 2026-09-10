@@ -222,6 +222,89 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 					return fmt.Errorf("transition %s: consume human_decision evidence: %w", resolved.Spec.ID, err)
 				}
 			}
+			// RC-15 (S10-H2): TR-027 reject_defect drops the cursor from
+			// awaiting_human_release directly to bug_resolution.investigation.
+			// S8 ingest requires a sealed observation_batch pointer with
+			// batch_id/path/sha256/finding_ids; without a fresh S7 round,
+			// construct a minimal placeholder batch from the dispatched finding
+			// evidence and pin the pointer in state so ingest can proceed.
+			if resolved.Spec.ID == "TR-027" {
+				if review, _ := state["review"].(map[string]any); review != nil {
+					if batch, _ := review["observation_batch"].(map[string]any); batch == nil {
+						if root, _ := state["root"].(string); root != "" {
+							// finding_ids must carry real Finding ids: S8 intake validates
+							// every entry against the entities.findings rows
+							// (exactFindingSet + validateFindingArtifacts). The
+							// finding_record evidence reference counts only when it is
+							// itself a finding-* id; otherwise the placeholder batch
+							// covers the findings the rejection sends back to S8.
+							findingIDs := []string{}
+							if findingRef := strings.TrimSpace(request.Evidence["finding_record"]); strings.HasPrefix(findingRef, "finding-") {
+								findingIDs = append(findingIDs, findingRef)
+							} else if entities, _ := state["entities"].(map[string]any); entities != nil {
+								rawFindings, _ := entities["findings"].([]any)
+								for _, rawFinding := range rawFindings {
+									findingRow, _ := rawFinding.(map[string]any)
+									if findingRow == nil {
+										continue
+									}
+									if id := stringValue(findingRow["finding_id"]); strings.HasPrefix(id, "finding-") {
+										findingIDs = append(findingIDs, id)
+									}
+								}
+							}
+							baseline := baselineGeneration(state)
+							runtimeID := stringValue(state["runtime_id"])
+							planPtr, _ := review["plan"].(map[string]any)
+							subjectDigest, _ := planPtr["sha256"].(string)
+							batchID := fmt.Sprintf("observation-batch-tr027-%s-%d", runtimeID, occurredAt.UnixNano())
+							doc := map[string]any{
+								"schema_version":       "1.0.0",
+								"observation_batch_id": batchID,
+								"runtime_id":           runtimeID,
+								"baseline_generation":  baseline,
+								"subject_digest":       subjectDigest,
+								"finding_ids":          findingIDs,
+								"claim_coverage_summary": map[string]any{
+									"total_required": 1, "pass": 0, "finding": 1,
+									"not_applicable": 0, "blocked": 0, "blocked_claims": []any{},
+									"plan_revision": 1,
+								},
+								"unobserved_claim_ids": []string{},
+								"sealed_by":            "tr027_placeholder",
+								"sealed_at":            occurredAt.UTC().Format(time.RFC3339Nano),
+							}
+							batchBytes, err := json.Marshal(doc)
+							if err != nil {
+								return fmt.Errorf("transition %s: encode TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
+							}
+							batchPath := filepath.Join(".claude", "review", "observation-batches", batchID+".json")
+							absPath, err := filepath.Abs(filepath.Join(root, batchPath))
+							if err != nil {
+								return fmt.Errorf("transition %s: resolve TR-027 placeholder observation batch path: %w", resolved.Spec.ID, err)
+							}
+							// A state pointer to a batch file that never reached disk
+							// would wedge S8 intake on an unexplainable sha mismatch;
+							// persist errors fail the TR-027 transition instead.
+							if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+								return fmt.Errorf("transition %s: persist TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
+							}
+							if err := os.WriteFile(absPath, batchBytes, 0o644); err != nil {
+								return fmt.Errorf("transition %s: persist TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
+							}
+							review["observation_batch"] = map[string]any{
+								"batch_id":     batchID,
+								"path":         batchPath,
+								"sha256":       sha256Sum(batchBytes),
+								"finding_ids":  findingIDs,
+								"drain_policy": "complete_required_claims",
+								"sealed_at":    occurredAt.UTC().Format(time.RFC3339Nano),
+							}
+						}
+					}
+				}
+			}
+
 			for index, name := range resolved.Spec.Guards {
 				guard, ok := LookupGuard(name)
 				if !ok {
@@ -628,6 +711,10 @@ func dispositionForHumanDecisionEvent(event string) string {
 	default:
 		return ""
 	}
+}
+
+func sha256Sum(data []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
 func stringValue(value any) string {
