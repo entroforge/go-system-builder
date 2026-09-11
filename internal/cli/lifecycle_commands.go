@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -422,7 +421,7 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	now := time.Now().UTC()
-	shaHex := fmt.Sprintf("%x", sha256.Sum256(data))
+	shaHex := transition.REQSHA256(data)
 	next, err := transition.Apply(*root,
 		filepath.Join(*root, ".claude", "loop-state.json"),
 		filepath.Join(*root, ".claude", "loop-events.jsonl"),

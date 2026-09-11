@@ -66,27 +66,26 @@ build_harness() {
   local ext=""
   if [ "$goos" = "windows" ]; then ext=".exe"; fi
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    "$GO" build -trimpath -ldflags="-s -w" \
+    "$GO" build -trimpath -ldflags="-s -w -X github.com/entroforge/go-system-builder/internal/cli.BuildVersion=$version" \
       -o "$harness_bin_dir/loop-harness-${key}${ext}" \
       "$root/cmd/loop-harness"
 }
 
 build_harness darwin  arm64 darwin-arm64
+build_harness darwin  amd64 darwin-amd64
+build_harness linux   arm64 linux-arm64
 build_harness linux   amd64 linux-amd64
 build_harness windows amd64 windows-amd64
 
 # Pick the binary matching the current host to regenerate the agent-facing
-# Manual. The Manual is platform-independent, but the emitter must run on
-# this host. aarch64 Linux and Rosetta-on-Intel macOS fall back to amd64
-# binaries (Go's amd64 runs under Rosetta; native aarch64 is not in the
-# release matrix yet).
+# Manual. Select a native binary; unsupported architectures fail explicitly.
 host_os="$(uname -s)"
 host_arch="$(uname -m)"
 case "${host_os}/${host_arch}" in
   Darwin/arm64|Darwin/aarch64)   host_bin="loop-harness-darwin-arm64" ;;
-  Darwin/x86_64|Darwin/amd64)    host_bin="loop-harness-darwin-arm64" ;;
+  Darwin/x86_64|Darwin/amd64)    host_bin="loop-harness-darwin-amd64" ;;
   Linux/x86_64|Linux/amd64)      host_bin="loop-harness-linux-amd64" ;;
-  Linux/aarch64|Linux/arm64)     host_bin="loop-harness-linux-amd64" ;;
+  Linux/aarch64|Linux/arm64)     host_bin="loop-harness-linux-arm64" ;;
   MINGW*/x86_64|MINGW*/amd64)    host_bin="loop-harness-windows-amd64.exe" ;;
   MSYS*/x86_64|MSYS*/amd64)      host_bin="loop-harness-windows-amd64.exe" ;;
   CYGWIN*/x86_64|CYGWIN*/amd64)  host_bin="loop-harness-windows-amd64.exe" ;;
@@ -115,6 +114,7 @@ fi
 # Rename packaging/install.md -> INSTALL.md at the tarball root.
 if [ -f "$stage_root/packaging/install.md" ]; then
   mv "$stage_root/packaging/install.md" "$stage_root/INSTALL.md"
+  mv "$stage_root/packaging/project.gitattributes" "$stage_root/project.gitattributes"
   rmdir "$stage_root/packaging" 2>/dev/null || true
 fi
 

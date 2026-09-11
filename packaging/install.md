@@ -32,8 +32,8 @@ to `.claude/bin/loop-harness.md` next to the chosen binary, so an `ls
 (`See .claude/bin/loop-harness.md#<rule>`), so an agent that hits a gate can
 jump straight to the relevant check.
 
-All three Harness binaries are **statically linked** at build time
-(`CGO_ENABLED=0`) and the production layout keeps all three in `.claude/bin/`
+All five Harness binaries are **statically linked** at build time
+(`CGO_ENABLED=0`) and the production layout keeps all five in `.claude/bin/`
 permanently. See §2 for the full static-linking contract and the machine-switch
 workflow.
 
@@ -46,7 +46,9 @@ This tarball does **not** contain:
 
 ## 2. Static Linking & Multi-Machine Layout
 
-**Static linking is a build-time property.** The three Harness binaries are
+Follow docs/runtime-portability.md for paired Runtime backup and handoff. Native PowerShell uses .claude/bin/loop-harness.ps1; Bash uses the shell launcher. Never synchronize only the active state through Git.
+
+**Static linking is a build-time property.** The five Harness binaries are
 produced in the source repo by `make build-all` (or `make release`) with
 `CGO_ENABLED=0`, so each binary:
 
@@ -59,34 +61,25 @@ End users do **not** invoke any linker at install time. The binaries are
 already statically linked when they arrive; the apply procedure in §3 just
 copies them.
 
-**All three binaries stay in `.claude/bin/` permanently** — this is the
+**All five binaries stay in `.claude/bin/` permanently** — this is the
 production layout for a target project, not a staging area. They are the
 canonical fixture of the install; do not delete them as cruft.
 
 ```text
+.claude/bin/loop-harness-darwin-amd64       macOS Intel
+.claude/bin/loop-harness-linux-arm64        Linux ARM64
 .claude/bin/loop-harness-darwin-arm64       macOS arm64  (statically linked)
 .claude/bin/loop-harness-linux-amd64        Linux x86_64 (statically linked)
 .claude/bin/loop-harness-windows-amd64.exe  Windows x86_64 (statically linked)
-.claude/bin/loop-harness                    active binary: copy of whichever matches the current host
+.claude/bin/loop-harness                    shell launcher: selects native binary at invocation
 .claude/bin/loop-harness.md                 agent-facing Manual (deep-link target for Hook messages)
 ```
 
-**Switching work machines is a one-command operation.** When you move from a
-macOS laptop to a Linux desktop (or any combination), you do not re-download
-or re-extract anything. You only re-run the activation `case` block in §3 —
-it picks the matching binary and overwrites `.claude/bin/loop-harness` with
-it. The three platform binaries remain untouched in `.claude/bin/` and are
-ready for the next switch. Going back to the original machine is the same:
-re-run the case block.
+**Switching machines uses the stable launcher; do not copy a platform binary over it.**
 
-To check which binary is currently active, compare its SHA against the three
-platform binaries:
+Use .claude/bin/loop-harness version in Bash or & .claude/bin/loop-harness.ps1 version in PowerShell to report the executable, platform and build identity.
 
-```bash
-shasum -a 256 .claude/bin/loop-harness .claude/bin/loop-harness-{darwin-arm64,linux-amd64,windows-amd64.exe}
-```
-
-The active one matches one of the three. To check that a binary is in fact
+To check that a binary is in fact
 statically linked (no dynamic loader dependency):
 
 ```bash
@@ -101,8 +94,11 @@ otool -L .claude/bin/loop-harness-darwin-arm64 # (macOS) shows no @rpath deps
 TARDIR=vibe-coding-loop-template-<version>
 
 # Entry and onboarding
+# Merge project.gitattributes into existing .gitattributes before binding a REQ.
+# New projects without attributes may copy it directly.
 cp $TARDIR/AGENTS-template.md AGENTS.md
 cp $TARDIR/prelude.md prelude.md
+printf '@AGENTS.md\n' > CLAUDE.md
 
 # Claude Code runtime assets
 mkdir -p .claude/bin .claude/skills .claude/agents
@@ -111,29 +107,20 @@ cp $TARDIR/loop-template.md .claude/loop.md
 cp -R $TARDIR/skills/* .claude/skills/
 cp -R $TARDIR/agents/* .claude/agents/
 
-# Drop all three statically-linked Harness binaries into .claude/bin/. They
+# Drop all five statically-linked Harness binaries into .claude/bin/. They
 # are pre-linked (no host libc) and stay here permanently as the production
-# layout described in §2 — switching work machines only rewrites the
-# unversioned `loop-harness` below.
+# layout described in §2; the launcher selects the native file each time.
 cp $TARDIR/.claude/bin/loop-harness-darwin-arm64      .claude/bin/loop-harness-darwin-arm64
 cp $TARDIR/.claude/bin/loop-harness-linux-amd64       .claude/bin/loop-harness-linux-amd64
 cp $TARDIR/.claude/bin/loop-harness-windows-amd64.exe .claude/bin/loop-harness-windows-amd64.exe
 chmod +x .claude/bin/loop-harness-darwin-arm64 .claude/bin/loop-harness-linux-amd64 .claude/bin/loop-harness-windows-amd64.exe
 
-# Activate the binary matching the current host. Re-run this block alone on
-# a different machine to switch — the three platform binaries above stay put.
-case "$(uname -s)/$(uname -m)" in
-  Darwin/arm64|Darwin/aarch64)   HARNESS=loop-harness-darwin-arm64 ;;
-  Darwin/x86_64|Darwin/amd64)    HARNESS=loop-harness-darwin-arm64 ;;  # Rosetta runs arm64
-  Linux/x86_64|Linux/amd64)      HARNESS=loop-harness-linux-amd64 ;;
-  Linux/aarch64|Linux/arm64)     HARNESS=loop-harness-linux-amd64 ;;   # no native aarch64 binary yet, use amd64
-  MINGW*/x86_64|MINGW*/amd64)    HARNESS=loop-harness-windows-amd64.exe ;;
-  MSYS*/x86_64|MSYS*/amd64)      HARNESS=loop-harness-windows-amd64.exe ;;
-  CYGWIN*/x86_64|CYGWIN*/amd64)  HARNESS=loop-harness-windows-amd64.exe ;;
-  *) echo "unsupported host: $(uname -s)/$(uname -m)" >&2; exit 1 ;;
-esac
-cp .claude/bin/"$HARNESS" .claude/bin/loop-harness
-chmod +x .claude/bin/loop-harness
+# Install stable launchers. Each invocation selects the native binary.
+cp $TARDIR/.claude/bin/loop-harness-darwin-amd64 .claude/bin/
+cp $TARDIR/.claude/bin/loop-harness-linux-arm64 .claude/bin/
+cp $TARDIR/tools/loop-harness-launcher.sh .claude/bin/loop-harness
+cp $TARDIR/tools/loop-harness-launcher.ps1 .claude/bin/loop-harness.ps1
+chmod +x .claude/bin/loop-harness .claude/bin/loop-harness-*
 cp $TARDIR/loop-harness.md .claude/bin/loop-harness.md
 
 # Documentation tree (templates + Loop definitions + rules)
@@ -180,7 +167,7 @@ If you prefer to build from source, clone the source repository and run:
 
 ```bash
 make build        # host-platform binary only -> .claude/bin/loop-harness (CGO on, dev only)
-make build-all    # cross-compile all three platforms, CGO_ENABLED=0, statically linked
+make build-all    # cross-compile all five platforms, CGO_ENABLED=0, statically linked
                   # -> dist/bin/loop-harness-<goos>-<goarch>[.exe]
 ```
 

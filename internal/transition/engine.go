@@ -1,6 +1,7 @@
 package transition
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -822,7 +823,7 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 	if err != nil {
 		return fmt.Errorf("read locked REQ: %w", err)
 	}
-	if SHA256(data) != req.SHA256 {
+	if REQSHA256(data) != req.SHA256 {
 		return fmt.Errorf("locked REQ fingerprint mismatch")
 	}
 	status := ParseMarkdownField(string(data), "状态", "Status")
@@ -883,7 +884,7 @@ func updateBoundREQ(root string, state map[string]any, request Request, occurred
 	if err != nil {
 		return fmt.Errorf("read amended REQ: %w", err)
 	}
-	if SHA256(data) != req.SHA256 {
+	if REQSHA256(data) != req.SHA256 {
 		return fmt.Errorf("amended REQ fingerprint mismatch")
 	}
 	status := ParseMarkdownField(string(data), "状态", "Status")
@@ -1203,6 +1204,13 @@ func contains(values []string, target string) bool {
 
 func SHA256(data []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
+// REQSHA256 fingerprints a locked REQ using canonical LF line endings. This
+// preserves its identity across Git checkout policy while SHA256 remains the
+// raw-byte digest for every other artifact type.
+func REQSHA256(data []byte) string {
+	return SHA256(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))
 }
 
 // capturePauseCheckpoint snapshots the runtime into state["pause"] before the

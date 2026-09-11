@@ -116,6 +116,7 @@ func printTopLevelUsage(stdout io.Writer) {
 	fmt.Fprintln(stdout, "  validate    Validate runtime + journal against schema")
 	fmt.Fprintln(stdout, "  dry-run     Render an applied transition without writing")
 	fmt.Fprintln(stdout, "  hook        Hook adapter entrypoints (PreToolUse, Stop, etc.)")
+	fmt.Fprintln(stdout, "  version     Executable platform and build identity")
 	fmt.Fprintln(stdout, "  doctor      Structural schema / manual / policy_ref checks (not runtime health)")
 	fmt.Fprintln(stdout, "  health      Runtime history signals and Hook timing (use --fail-on-degraded in CI)")
 	fmt.Fprintln(stdout, "  actions     Canonical Agent action catalog and compatibility notes")
@@ -151,6 +152,10 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 	switch args[0] {
+	case "version", "--version":
+		return runBuildInfo(stdout)
+	case "deployment-check":
+		return runDeploymentCheck(args[1:], stdout, stderr)
 	case "init":
 		return runInit(args[1:], stdout, stderr)
 	case "req":
@@ -330,7 +335,7 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	now := time.Now().UTC()
-	shaHex := fmt.Sprintf("%x", sha256.Sum256(data))
+	shaHex := transition.REQSHA256(data)
 	next, err := transition.Apply(*root, statePath, journalPath, transition.Request{
 		TransitionID: "TR-001", ExpectedRevision: -1, ExpectedRuntimeID: "loop-inactive", Actor: "user",
 		Evidence: map[string]string{
@@ -756,12 +761,7 @@ func writeNewFile(path string, data []byte) error {
 }
 
 func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return runtime.SyncDirectory(path)
 }
 
 func inactiveRuntimeState(root string, occurredAt time.Time) (map[string]any, error) {

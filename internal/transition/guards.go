@@ -520,8 +520,7 @@ func guardReqBaselineUnchangedFn(state map[string]any, _ map[string]string) erro
 	if err != nil {
 		return fmt.Errorf("req_baseline_unchanged: bound REQ %s unreadable: %w", reqPath, err)
 	}
-	sum := sha256.Sum256(data)
-	actual := fmt.Sprintf("%x", sum[:])
+	actual := REQSHA256(data)
 	if actual != registeredSHA {
 		return fmt.Errorf(
 			"req_baseline_unchanged: bound REQ %s drifted (registered %s…, on disk %s…) — the REQ baseline changed since bind; REQ-affecting findings must go through the human amendment boundary, not TR-004/TR-007",

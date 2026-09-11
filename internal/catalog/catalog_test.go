@@ -128,6 +128,29 @@ Authority: docs/rules/scenario-model.md
 	}
 }
 
+func TestCatalogAcceptsCRLFSkillFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	content := "---\n" +
+		"name: loop-orchestration\n" +
+		"description: Use when recovering an active Engineering Loop\n" +
+		"category: methodology\n" +
+		"version: 1.0.0\n" +
+		"---\n" +
+		"# Loop Orchestration\n" +
+		"## Authority\n" +
+		"docs/agent-protocol.md\n" +
+		"## Entry Conditions\n" +
+		"## Required Inputs\n" +
+		"## Procedure\n" +
+		"## Outputs\n" +
+		"## Stop Conditions\n" +
+		"## Non-Goals\n" +
+		"## Exit Conditions\n"
+	writeSkillFixture(t, root, "loop-orchestration", strings.ReplaceAll(content, "\n", "\r\n"))
+	if err := catalog.ValidateSkill(root, catalog.SkillSpec{Name: "loop-orchestration", Category: "methodology"}); err != nil {
+		t.Fatalf("CRLF frontmatter should validate: %v", err)
+	}
+}
 func writeSkillFixture(t *testing.T, root, name, content string) {
 	t.Helper()
 	dir := filepath.Join(root, "skills", name)

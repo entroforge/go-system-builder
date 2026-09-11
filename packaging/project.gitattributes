@@ -1,0 +1,11 @@
+# Merge these rules with the target project's existing attributes.
+# Apply before binding new REQs; never renormalize an active evidence chain blindly.
+AGENTS.md text eol=lf
+CLAUDE.md text eol=lf
+docs/** text eol=lf
+.claude/agents/** text eol=lf
+.claude/skills/** text eol=lf
+.claude/loop.md text eol=lf
+.claude/bin/** -text
+*.sh text eol=lf
+*.ps1 text eol=lf

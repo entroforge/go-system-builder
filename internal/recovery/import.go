@@ -855,8 +855,8 @@ func parseImportMetadata(content string) map[string]string {
 			metadata["status"] = firstWord(value)
 		case "version", "版本":
 			metadata["version"] = firstWord(value)
-		case "req", "requirement", "req_id", "bound_req", "需求":
-			metadata["req"] = firstWord(value)
+		case "req", "requirement", "req_id", "bound_req", "需求", "关联需求":
+			metadata["req"] = importREQReference(value)
 		case "sha256", "sha-256", "digest", "summary_sha256":
 			metadata[key] = firstWord(value)
 		}
@@ -940,6 +940,20 @@ func firstWord(value string) string {
 		return strings.Trim(fields[0], "`*_|")
 	}
 	return ""
+}
+
+func importREQReference(value string) string {
+	token := firstWord(value)
+	if closing := strings.Index(token, "`"); closing >= 0 {
+		token = token[:closing]
+	}
+	if strings.HasSuffix(strings.ToLower(token), ".md") {
+		base := strings.TrimSuffix(filepath.Base(filepath.FromSlash(token)), filepath.Ext(token))
+		if strings.HasPrefix(strings.ToUpper(base), "REQ-") {
+			return base
+		}
+	}
+	return token
 }
 
 func importTaskState(status string) string {

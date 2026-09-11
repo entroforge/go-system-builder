@@ -18,7 +18,7 @@ func TestApplyStartsLockedREQAndProducesSchemaValidRuntime(t *testing.T) {
 	root := filepath.Join("..", "..")
 	statePath, journalPath := copyInactiveRuntime(t, root)
 	reqPath := "internal/transition/testdata/locked-req.md"
-	reqHash := fileHash(t, filepath.Join(root, reqPath))
+	reqHash := reqFileHash(t, filepath.Join(root, reqPath))
 
 	next, err := transition.Apply(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-001",
@@ -114,7 +114,7 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 		},
 		REQ: &transition.LockedREQ{
 			ID: "REQ-002", Path: reqPath, Version: "v1.0.0",
-			SHA256:     fileHash(t, filepath.Join(root, reqPath)),
+			SHA256:     reqFileHash(t, filepath.Join(root, reqPath)),
 			ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z",
 		},
 	})
@@ -279,7 +279,7 @@ func startLockedREQ(t *testing.T, root, statePath, journalPath string) {
 	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
 		TransitionID: "TR-001", ExpectedRevision: 0, Actor: "user",
 		Evidence: map[string]string{"req_lock_record": "REQ-002#lock", "loop_authorization_record": "user:/loop REQ-002"},
-		REQ:      &transition.LockedREQ{ID: "REQ-002", Path: reqPath, Version: "v1.0.0", SHA256: fileHash(t, filepath.Join(root, reqPath)), ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z"},
+		REQ:      &transition.LockedREQ{ID: "REQ-002", Path: reqPath, Version: "v1.0.0", SHA256: reqFileHash(t, filepath.Join(root, reqPath)), ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -455,6 +455,15 @@ func seedPlanningArtifactsLang(t *testing.T, statePath string, english bool) {
 	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-test.md"), []byte(task), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func reqFileHash(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return transition.REQSHA256(data)
 }
 
 func fileHash(t *testing.T, path string) string {

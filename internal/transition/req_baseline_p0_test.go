@@ -41,6 +41,23 @@ func TestReqBaselineUnchangedAcceptsMatchingFile(t *testing.T) {
 	}
 }
 
+func TestReqBaselineUnchangedAcceptsCanonicalCRLFFingerprint(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("# REQ\r\n> Status: locked\r\n")
+	writeBoundREQFixture(t, root, content)
+	state := map[string]any{
+		"root": root,
+		"bound_req": map[string]any{
+			"path":   "docs/requirements/REQ-001.md",
+			"sha256": transition.REQSHA256(content),
+		},
+	}
+	guard, _ := transition.LookupGuard("req_baseline_unchanged")
+	if err := guard(state, nil); err != nil {
+		t.Fatalf("canonical CRLF REQ must pass: %v", err)
+	}
+}
+
 func TestReqBaselineUnchangedRejectsTamperedFile(t *testing.T) {
 	root := t.TempDir()
 	writeBoundREQFixture(t, root, []byte("# REQ\n> Status: locked\n"))

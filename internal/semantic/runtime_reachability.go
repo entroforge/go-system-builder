@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -81,7 +82,7 @@ func ValidateRuntimeReachability(root string) error {
 			return err
 		}
 		if err := checkReachableFingerprint(root, "bound_req",
-			state.BoundREQ.Path, state.BoundREQ.SHA256); err != nil {
+			state.BoundREQ.Path, state.BoundREQ.SHA256, true); err != nil {
 			return err
 		}
 	}
@@ -100,7 +101,7 @@ func ValidateRuntimeReachability(root string) error {
 		}
 		if doc.SHA256 != "" {
 			if err := checkReachableFingerprint(root,
-				fmt.Sprintf("documents[%s]", doc.ID), doc.Path, doc.SHA256); err != nil {
+				fmt.Sprintf("documents[%s]", doc.ID), doc.Path, doc.SHA256, false); err != nil {
 				return err
 			}
 		}
@@ -158,7 +159,7 @@ func ValidateRuntimeReachability(root string) error {
 		if err := checkReachablePath(root, fmt.Sprintf("evidence[%s]", evidence.ID), evidence.Path); err != nil {
 			return err
 		}
-		if err := checkReachableFingerprint(root, fmt.Sprintf("evidence[%s]", evidence.ID), evidence.Path, evidence.SHA256); err != nil {
+		if err := checkReachableFingerprint(root, fmt.Sprintf("evidence[%s]", evidence.ID), evidence.Path, evidence.SHA256, false); err != nil {
 			return err
 		}
 	}
@@ -182,7 +183,7 @@ func checkReachablePath(root, label, relative string) error {
 	return nil
 }
 
-func checkReachableFingerprint(root, label, relative, expected string) error {
+func checkReachableFingerprint(root, label, relative, expected string, canonicalREQ bool) error {
 	if relative == "" || expected == "" {
 		return nil
 	}
@@ -192,6 +193,9 @@ func checkReachableFingerprint(root, label, relative, expected string) error {
 	if err != nil {
 		return fmt.Errorf("runtime reachability: %s fingerprint read %q: %w",
 			label, relative, err)
+	}
+	if canonicalREQ {
+		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	}
 	actual := fmt.Sprintf("%x", sha256.Sum256(data))
 	if actual != expected {

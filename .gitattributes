@@ -1,0 +1,10 @@
+# Byte-fingerprinted specs and scripts must not change on Windows checkout.
+* text=auto eol=lf
+*.exe binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.zip binary
+*.gz binary
+/dist/** -text

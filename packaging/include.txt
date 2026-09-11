@@ -13,7 +13,10 @@ skills
 agents
 docs
 packaging/install.md
+packaging/project.gitattributes
 packages
 tools/claude-hook-smoke.sh
+tools/loop-harness-launcher.sh
+tools/loop-harness-launcher.ps1
 tools/ui-lab
 tools/visual-qa

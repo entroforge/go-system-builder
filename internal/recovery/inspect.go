@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -189,8 +190,12 @@ func validateREQ(root, requestedPath string) (REQBinding, string, error) {
 		Path:    relativePath,
 		Status:  strings.ToLower(status),
 		Version: version,
-		SHA256:  sha256Hex(data),
+		SHA256:  sha256Hex(canonicalREQBytes(data)),
 	}, fullPath, nil
+}
+
+func canonicalREQBytes(data []byte) []byte {
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 }
 
 func reqIDFromFilename(baseName string) string {

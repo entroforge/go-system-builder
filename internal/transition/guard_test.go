@@ -158,6 +158,33 @@ func TestGuardUIIImpactResolvedBlocksUnknown(t *testing.T) {
 // value (LOOP-STATE-MACHINE.md §15 + ui-prototype.md §3), and bindREQ must
 // accept it. The guard `ui_impact_resolved` (registered separately) is what
 // blocks planning from advancing until the value is clarified.
+func TestBindREQAcceptsCRLFCanonicalFingerprint(t *testing.T) {
+	root := filepath.Join("..", "..")
+	statePath, journalPath := copyInactiveRuntime(t, root)
+	reqPath := filepath.Join(root, "internal", "transition", "testdata", "req-crlf-canonical.md")
+	content := []byte("# 需求：REQ-098\r\n> 状态：locked\r\n> 版本：v1.0.0\r\n> UI impact：none\r\n")
+	if err := os.WriteFile(reqPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(reqPath) })
+
+	next, err := transition.Apply(root, statePath, journalPath, transition.Request{
+		TransitionID: "TR-001", ExpectedRevision: 0, Actor: "user",
+		Evidence: map[string]string{"req_lock_record": "REQ-098#lock", "loop_authorization_record": "user:/loop REQ-098"},
+		REQ: &transition.LockedREQ{
+			ID: "REQ-098", Path: "internal/transition/testdata/req-crlf-canonical.md", Version: "v1.0.0",
+			SHA256: transition.REQSHA256(content), ApprovedBy: "user", ApprovedAt: "2026-09-11T00:00:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("TR-001 must accept the canonical CRLF REQ fingerprint: %v", err)
+	}
+	bound, _ := next.State["bound_req"].(map[string]any)
+	if got, _ := bound["sha256"].(string); got != transition.REQSHA256(content) {
+		t.Fatalf("bound REQ SHA256 = %q, want canonical %q", got, transition.REQSHA256(content))
+	}
+}
+
 func TestBindREQAcceptsUnknownUIIImpact(t *testing.T) {
 	root := filepath.Join("..", "..")
 	statePath, journalPath := copyInactiveRuntime(t, root)
