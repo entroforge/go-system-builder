@@ -970,6 +970,9 @@ func runTeam(args []string, stdout, stderr io.Writer) int {
 }
 
 func runRuntime(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "repair-evidence-binding" {
+		return runEvidenceBindingRepair(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "repair-batch-scope" {
 		return runBatchScopeRepair(args[1:], stdout, stderr)
 	}

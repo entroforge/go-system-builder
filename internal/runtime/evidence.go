@@ -90,6 +90,9 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
 	}
 	current := snapshot.State
+	if err := validateDocumentRegistration(current, request, data); err != nil {
+		return Snapshot{}, err
+	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	from := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
@@ -286,4 +289,56 @@ func s10EnvelopeReviewRound(data []byte) (int, bool) {
 		return 0, false
 	}
 	return envelope.ReviewRound, true
+}
+
+// Bound document reviews are gate envelopes, not arbitrary report attachments.
+// Unbound legacy/bootstrap artifacts retain their existing compatibility.
+func validateDocumentRegistration(state map[string]any, req EvidenceRequest, data []byte) error {
+	if req.Kind != "document_review" {
+		return nil
+	}
+	bound, _ := state["bound_req"].(map[string]any)
+	if bound == nil || bound["id"] == nil || bound["id"] == "" {
+		return nil
+	}
+	var e struct {
+		Schema         string `json:"schema_version"`
+		ID             string `json:"evidence_id"`
+		Kind           string `json:"kind"`
+		Runtime        string `json:"runtime_id"`
+		Generation     int    `json:"baseline_generation"`
+		Producer       string `json:"producer_agent_id"`
+		Responsibility string `json:"producer_responsibility"`
+		Round          int    `json:"review_round"`
+	}
+	if err := json.Unmarshal(data, &e); err != nil {
+		return fmt.Errorf("document_review requires a JSON evidence envelope: %w", err)
+	}
+	baseline, _ := state["baseline"].(map[string]any)
+	generation, err := integerField(baseline, "generation")
+	if err != nil {
+		return err
+	}
+	producerOK := false
+	for _, p := range req.ProducedBy {
+		if p == e.Producer && p != "" {
+			producerOK = true
+		}
+	}
+	if e.ID != req.ID {
+		return fmt.Errorf("document_review evidence_id mismatch: registration %q, envelope %q; use the envelope ID or obtain a correctly reissued envelope", req.ID, e.ID)
+	}
+	if e.Schema == "" || e.Kind != req.Kind || e.Runtime != state["runtime_id"] || e.Generation != generation || !producerOK || e.Responsibility == "" || e.Responsibility != req.ResponsibilityID {
+		return fmt.Errorf("document_review envelope binding mismatch (schema/kind/runtime/generation/producer/responsibility)")
+	}
+	life, _ := state["lifecycle"].(map[string]any)
+	review, _ := state["review"].(map[string]any)
+	currentRound := 0
+	if review != nil {
+		currentRound, _ = integerField(review, "round")
+	}
+	if life["state"] == "document_verification" && currentRound == 0 && (req.ReviewRound != nil || e.Round != 0) {
+		return fmt.Errorf("S5 document_review must omit --review-round and envelope review_round; r3 in an ID is a re-signing suffix, not an S7 review round")
+	}
+	return nil
 }

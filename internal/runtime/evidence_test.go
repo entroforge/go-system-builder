@@ -19,7 +19,7 @@ func TestRecordEvidenceAppendsFingerprintedEvidenceWithCAS(t *testing.T) {
 	statePath := filepath.Join(root, "loop-state.json")
 	journalPath := filepath.Join(root, "loop-events.jsonl")
 	writeExampleRuntime(t, statePath)
-	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte("document pass\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte(`{"schema_version":"1.0.0","evidence_id":"EV-DOCUMENT-001","kind":"document_review","runtime_id":"loop-REQ-002-example","baseline_generation":1,"producer_agent_id":"document-verifier","producer_responsibility":"DV-TRUTH-AUDIT"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
