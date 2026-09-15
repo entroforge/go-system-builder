@@ -49,12 +49,12 @@ integrity failure, rollback/rollover, or the human release Gateway.
 
 **If the Runtime is a fresh inactive Runtime with no bound REQ:**
 
-0. If the product has user-visible UI, read `docs/design/DESIGN.md` and
-   `docs/rules/design-foundation.md`. Missing, draft, stale, or uncovered
-   surface → finish F0–F6 via `.claude/skills/design-foundation/SKILL.md`
-   (human confirms direction, kernel, then publish) **before** locking the
-   first `UI impact=changed` REQ. Do not invent brand in the REQ. Pure
-   backend work records Foundation as `N/A` on the project map and continues.
+0. If the product has user-visible UI, determine `design investment`
+   (`local / core / extended`) per `docs/rules/design-foundation.md`.
+   Local work uses a module-local derivation without publishing a project
+   Foundation. Core/extended work requires a covering published Foundation
+   via `.claude/skills/design-foundation/SKILL.md` before locking the UI REQ.
+   Pure backend work records Foundation as `N/A` on the project map.
 1. Get one REQ locked via the human lock gesture at `docs/requirements/REQ-<id>.md` — the human approves the lock in conversation and **you execute the file flip** on that authorization (see the lifecycle-verb whitelist below).
 2. `loop-harness req bind --req <path> --approved-by <human identity>`
 3. Then proceed above.
@@ -80,9 +80,9 @@ Run on every session start, Wake-up, subagent return, Hook `warn` or `block`, or
    `quality_gate.missing` (or `loop-harness ready` when the checklist is
    unclear). “Most-forward” means the next contractually unblocked piece; it
    never means skipping coverage, prerequisites, or a required review.
-   If a subagent assignment is spawned, reading, or waiting for approval:
-   the next action is its read-back / approval / activation barrier, not
-   self-execution of that delegated work.
+   If a subagent assignment is awaiting its required plan checkpoint or approval:
+   the next action is that mode's checkpoint / approval / activation barrier,
+   not self-execution of that delegated work.
    Else: produce nothing extra — the next PreToolUse auto-advances when the
    gate is satisfied. Do not call transition CLI.
 5. Load only what this action needs: direct upstream specs + exactly one
@@ -124,8 +124,8 @@ the Milestone instead of relying on conversation memory.
   | `runtime pause` / `runtime resume` / `req amend` / `req unbind` / `runtime rollover` / `runtime human-decision` | only when the human supplies the complete command line verbatim (including `--approved-by`) | the human's own typed/approved command — never infer the approver name from context |
   "Locking a REQ" = the human's explicit lock gesture in conversation (see skills: requirement-funnel Exit Conditions); the file edit that flips `状态：locked` is executed by the main session on that authorization, and `req bind --approved-by <same human>` is the second confirmation. When in doubt, hand the command up and wait.
 - `/loop` only delivers the Layer 2 prompt. REQ binding is `loop-harness req bind`; the two are independent lifetimes.
-- Subagents are read-only until phase-one read-back is approved and phase two is activated.
-- Once work is delegated to a subagent, the main session waits for or re-wakes that same Agent for read-back; it does not complete the delegated responsibility itself unless the assignment is revoked or reassigned.
+- Subagents follow their declared dispatch mode: `plan_checkpoint` requires the recorded PLAN_REPORT before writes, without a second approval wait; `plan_approval_required` requires read-back approval and activation.
+- Once work is delegated to a subagent, the main session waits for or re-wakes that same Agent for its required checkpoint or result; it does not complete the delegated responsibility itself unless the assignment is revoked or reassigned.
 - Blocking findings enter the canonical BUG cycle. Targeted re-verification never produces a clean round.
 - S10 is an anti-shortcut acceptance and release audit. It requires a finite
   coverage inventory, adversarial counterevidence, objective completion
@@ -289,3 +289,13 @@ compact checkpoint. Repeated user notices may be suppressed within one
 session/agent, but safety denials and model context must never be suppressed.
 A Worker plan checkpoint requiring no approval does not silence progress
 reports to the user.
+
+## Bounded planning continuation
+
+S3/S4 work does not require another user approval merely because a stage
+changed or drafting is substantial. Main Stop provides one continuation
+reminder when a locked REQ has a current unblocked planning milestone and
+no delegated agent. `stop_hook_active` always permits the next Stop; this
+is not an unattended scheduler or proof of completion. Honor explicit user
+stop requests and explain actual permission/external waits. S2 design
+sign-off and other stages retain their existing domain-specific rules.

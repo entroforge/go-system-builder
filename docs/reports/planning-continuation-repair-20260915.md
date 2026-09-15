@@ -1,0 +1,9 @@
+# Planning continuation and installation consistency repair
+
+S2 advanced to S3, but the main session offered to wait for another user prompt. Stop emitted recovery text as a notice and allowed completion. Separately, the S3 projection treated any locked contract filename as permission to report the next stage's task batch.
+
+This change keeps S3 missing work inside the contract/evidence boundary and adds a bounded main Stop reminder for contracts/tasks only. It requires a locked binding and an explicit current, unblocked, non-human milestone; pauses, blockers and any delegated agent suppress the reminder. Existing review Stop rules remain. The transport uses exit 2 and stderr feedback; stop_hook_active permits the next stop. This is a single reminder, not an unattended scheduler. Explicit user stops or unrecorded external/approval waits must be honored by the model on that reminder. Other phases retain existing controls; no general autonomous-loop guarantee is made.
+
+Documentation aligns default plan_checkpoint versus approval-required dispatch, uses installed CLI commands in planning, clarifies Foundation local/core/extended entry routing, and regenerates the stale manual. Existing product UI customization must be merged separately; do not retrospectively add Foundation approval to a locked requirement.
+
+Validation: go test -p 1 ./... -skip '^TestOneOfPruningFallsBackToBranchSummary$' passed. The single exclusion is the previously reproduced baseline schema-summary test failure. go vet ./... passed. Targeted hook/CLI race tests passed. A full project copy at REQ-053 S3 verified first Stop exit 2 without Runtime mutation, repeated Stop with stop_hook_active exit 0, and PreToolUse exit 0 while the contract gate remained incomplete. Old and new doctor/validate report the same 43 contract CASE coverage gaps; this is not a fully passing product audit. No live Claude UI acceptance or billing measurement was performed.

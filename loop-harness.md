@@ -6,7 +6,7 @@
 
 - **Path**: `loop-harness.md`
 - **Harness version**: dev
-- **Loop definition SHA-256**: `082fa55027edaa1a382f7b8eb1e7bb963b36f559b0cb66bb2dcc28abb7121232`
+- **Loop definition SHA-256**: `b17dc5acc058f90379f07019c9403cfe93c7c38546fe2f33beec0e8039188e8d`
 
 ---
 
@@ -85,6 +85,7 @@ Human approval records release authorization only. Harness has no squash merge, 
 - [`TR-028`](#tr-028) awaiting_human_release → acceptance — Re-enter acceptance and invalidate only prior acceptance and release-audit evidence.
 - [`TR-029`](#tr-029) awaiting_human_release → release_audit — Re-enter release audit and invalidate only prior release-audit evidence.
 - [`TR-030`](#tr-030) awaiting_human_release → aborted — Record a human release abort without performing any release side effect.
+- [`TR-031`](#tr-031) release_audit → verification — A functional or contract defect found in the release audit restarts the complete review round (L3-S10 §4.
 
 _Phase: bug_resolution_
 
@@ -704,6 +705,25 @@ Evidence bindings (copy into `runtime transition`):
   Accepted kinds: `human_decision`
 
 If a binding is missing, retry with the command above; run `loop-harness explain TR-030` to inspect current candidates.
+
+### `TR-031` {#tr-031}
+
+_release_audit → verification_
+
+A functional or contract defect found in the release audit restarts the complete review round (L3-S10 §4.6). Affected historical PASS evidence is invalidated at S9.3 impact_reconciliation (agent-protocol §S9), not here: the action fail-closes on the affected paths the automatic PreToolUse path cannot supply while S10 freezes the product surface, and the record-derived sweep would invalidate the change-impact ledger the next round must freeze from.
+
+_No guards._
+
+Evidence: `acceptance_record`, `change_impact_record`
+
+Evidence bindings (copy into `runtime transition`):
+
+- `acceptance_record`: `--evidence acceptance_record=<reference>`
+  Accepted kinds: `acceptance`
+- `change_impact_record`: `--evidence change_impact_record=<reference>`
+  Accepted kinds: `change_impact`
+
+If a binding is missing, retry with the command above; run `loop-harness explain TR-031` to inspect current candidates.
 
 ## Phase transitions: bug_resolution
 

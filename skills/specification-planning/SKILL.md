@@ -105,7 +105,7 @@ win.
    - a `no_branch_reason` is a rationale: name the why — at least 8
      characters including a letter (a bare "不需要"/"." is rejected;
      free-word escapes are not endorsed N/A).
-5. Immediately run `go run ./cmd/loop-harness scenario bridge --root .` — the
+5. Immediately run `.claude/bin/loop-harness scenario bridge --root .` — the
    AC source check (AC→FR→BR) needs no generated outputs; fix gaps now, not
    at close.
 
@@ -127,7 +127,7 @@ win.
    expected_state, recovery)"; maintainer: "which rule will clash with
    module evolution?" Record the conclusion as one paragraph under a
    `## Depth Self-Review` heading in the ADR package.
-9. Close: `go run ./cmd/loop-harness scenario generate --module <module>
+9. Close: `.claude/bin/loop-harness scenario generate --module <module>
    --root .` then `scenario validate --module <module> --root .` — ratio
    gates, reference existence, byte-frozen outputs, cross-matrix
    references, and the full AC bridge (every AC reaches a CASE or carries
@@ -150,7 +150,7 @@ win.
     「本合同条款」 columns. On finalization set each contract's top status line
     （模板中的「状态」行）to `locked` (PTR-PLAN-02 registers only locked contracts),
     register the planning_contract envelope (Planning Evidence Envelopes
-    section), and run `go run ./cmd/loop-harness contracts check --root .`
+    section), and run `.claude/bin/loop-harness contracts check --root .`
     — token references, clause cells, and fingerprint columns are
     machine-checked there and again at PTR-PLAN-02.
 11. Decompose into TASKs: each TASK binds one primary contract, declares
@@ -199,7 +199,7 @@ win.
 `subject_refs` 留空即合法（planning 门不要求钉指纹——磁盘 Status 是事实载体）；`review_round` 不写。落盘为 `docs/reports/planning/{id}.json` 后登记：
 
 ```text
-go run ./cmd/loop-harness runtime evidence add --id planning-design-pass   --kind planning_design --path docs/reports/planning/planning-design-pass.json   --produced-by <你的 agent id> --responsibility Architect   --expected-revision <当前 revision，.claude/loop-state.json 顶部>
+.claude/bin/loop-harness runtime evidence add --id planning-design-pass   --kind planning_design --path docs/reports/planning/planning-design-pass.json   --produced-by <你的 agent id> --responsibility Architect
 ```
 
 （S3/S4 同款换 `--kind planning_contract --responsibility "Contract Planner"` / `--kind planning_task --responsibility "Task Planner"`，id 对应 `planning-contracts-pass` / `planning-tasks-pass`。）**重签规则**：同 ID 会被拒（invalid 条目也占 ID）——返工第二轮起用 `-r2` 后缀新 ID（`planning-design-pass-r2`）。missing token 对照：`evidence:planning_design_record` / `evidence:planning_contract_record` / `evidence:planning_task_record` = 该阶段信封未登记或不合格；`evidence:<id>:schema` = 信封字段与登记不互证（多为 path 指向了 markdown 或 conclusion 拼错）。
