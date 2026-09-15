@@ -131,6 +131,9 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 		case StateComplete:
 			return Result{Checkpoint: current, Reused: true}, nil
 		case StateBlocked, StatePreserved:
+			if req.RetryPreserved && req.Inspection.Ready {
+				break
+			}
 			// A previous failure stops the chain. Re-surfacing the
 			// blocker is the right behaviour — we don't try to
 			// resurrect a failed integration without an explicit
@@ -142,6 +145,17 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 	// Build the next-state checkpoint from the inspection + existing
 	// durable record. CAS gates the transition.
 	next := current
+	if found && req.RetryPreserved && (current.State == StateBlocked || current.State == StatePreserved) {
+		if current.AssignmentID != idempAssignment(req) || current.SourceBranch != req.Inspection.SourceBranch || current.TargetBranch != req.Inspection.TargetBranch || current.BaselineGeneration != req.Inspection.BaselineGeneration || current.WorktreePath != req.Inspection.WorktreePath {
+			return Result{}, fmt.Errorf("retry checkpoint identity mismatch")
+		}
+		// Start a new checked attempt using CAS against the preserved record.
+		// Prior failure remains in the runtime journal; never grant verified.
+		next.State = StatePending
+		next.FailureReason = ""
+		next.LastErrorCode = ""
+		next.MergeCommit = ""
+	}
 	if next.State == "" {
 		next.State = StatePending
 	}

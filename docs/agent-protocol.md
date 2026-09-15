@@ -358,6 +358,28 @@ Whenever the automatic path does not fire or cannot identify the assignment (and
 
 It drives the identical chain (Inspect → non-squash merge → required checks → verified checkpoint; preserve on failure) and is an allowed manual invocation. Preconditions: the assignment's worktree coordinates are registered and the Builder Result is registered via `runtime task-complete`. An unknown assignment id fails with the list of currently known ids.
 
+### Integration retry and reporting
+
+The first integration call must report the durable checkpoint state accurately.
+`preserved` or `blocked` is not `merged`. Resolve the recorded cause before an
+explicit retry:
+
+```bash
+.claude/bin/loop-harness runtime task-integrate --assignment-id <id> --retry-preserved
+```
+
+Retry requires a matching existing checkpoint and unchanged assignment coordinates.
+It preserves the original merge-base scope denominator, verifies source ancestry,
+rechecks scope and required checks, then runs merge/verification via checkpoint CAS.
+An externally merged source is acceptable only through this checked recovery path;
+never add an empty commit to make the branch appear unmerged. The next ordinary
+invocation performs acknowledgement/cleanup after `verified`.
+
+Unstaged updates to named Harness runtime projections are excluded from the
+integration dirty-tree check. Product/config/Skill changes, staged changes, deletes
+and renames still block. Do not commit Runtime repeatedly merely to satisfy this
+check. Never force `verified` by editing a checkpoint.
+
 ### Agent lifecycle event table
 
 | Event (exact name) | Prerequisite agent state | Command |

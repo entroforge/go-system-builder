@@ -1358,6 +1358,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		root := flags.String("root", ".", "repository root")
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
+		retry := flags.Bool("retry-preserved", false, "reinspect and retry the existing failed integration; supports already merged source with pinned original scope")
 		assignmentID := flags.String("assignment-id", "", "assignment to integrate")
 		agentID := flags.String("agent-id", "", "owning agent ID (optional, aids lookup)")
 		if err := flags.Parse(args[1:]); err != nil {
@@ -1405,7 +1406,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			Event:    "SubagentStop",
 			AgentID:  *agentID,
 			TargetID: *assignmentID,
-			Facts:    map[string]bool{"agent_report_complete": true},
+			Facts:    map[string]bool{"agent_report_complete": true, "integration_retry": *retry},
 		}
 		guidance, updated, err := HandleSubagentStopForController(context.Background(), resolvedRoot, snapshot, loaded, "SubagentStop", input)
 		if err != nil {

@@ -8,19 +8,31 @@ import (
 	"strings"
 )
 
-// worktreeClean returns nil iff `git -C root status --porcelain` produces
-// empty output. The porcelain output is un-tracked AND modified files; an
-// empty result means the worktree is exactly what HEAD references.
+// worktreeClean excludes only unstaged writes to named Harness-owned runtime
+// projections. Tracked product/config/skill changes, staged changes, deletions
+// and renames still block. Untracked files retain the existing policy.
 func worktreeClean(ctx context.Context, root string) (bool, error) {
-	// Ignore untracked files: harness state under `.claude/` and copied
-	// docs authorities are intentionally untracked in worktree fixtures.
-	// REQ-039 §13.6 / BE-039 §8 refuse merge on uncommitted changes to
-	// tracked content, not on the presence of harness sidecars.
-	out, err := defaultRunner.Run(ctx, root, "status", "--porcelain", "--untracked-files=no")
+	out, err := defaultRunner.Run(ctx, root, "status", "--porcelain", "-z", "--untracked-files=no")
 	if err != nil {
 		return false, fmt.Errorf("git status: %w", err)
 	}
-	return strings.TrimSpace(out) == "", nil
+	for _, entry := range strings.Split(out, "\x00") {
+		if entry == "" {
+			continue
+		}
+		if len(entry) < 4 || entry[:2] != " M" || !runtimeProjection(entry[3:]) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+func runtimeProjection(path string) bool {
+	switch path {
+	case ".claude/loop-state.json", ".claude/loop-events.jsonl", ".claude/loop-metrics.json", ".claude/hook-decisions.jsonl":
+		return true
+	}
+	parts := strings.Split(path, "/")
+	return len(parts) == 7 && parts[0] == ".claude" && parts[1] == "evidence" && strings.HasPrefix(parts[2], "loop-") && strings.HasPrefix(parts[3], "g") && parts[4] == "worktree" && parts[5] != "" && parts[6] == "checkpoint.json"
 }
 
 // branchExists returns true if `git -C root show-ref --verify` exits

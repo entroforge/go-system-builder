@@ -92,8 +92,9 @@ for event in events:
         raise SystemExit(f"platform smoke: {event} command does not target the same Harness event")
     for hook in commands:
         timeout = hook.get("timeout", 10)
-        if timeout > 10:
-            raise SystemExit(f"platform smoke: {event} timeout {timeout}s exceeds the 10s contract")
+        limit = 600 if event in ("SubagentStop", "TeammateIdle") else 10
+        if timeout > limit or timeout <= 0:
+            raise SystemExit(f"platform smoke: {event} timeout {timeout}s outside 1..{limit}s")
 
 pretool = json.dumps(hooks.get("PreToolUse", []))
 if "mcp__.*" not in pretool:

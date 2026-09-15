@@ -22,6 +22,8 @@ type RequiredCheckRunner func(ctx context.Context, root, command string) error
 // production use; tests use it to inject a check runner and to skip the
 // completion-report check (which depends on a specific on-disk layout).
 type InspectConfig struct {
+	// RecoveryBase retains the original scope denominator for an already merged branch.
+	RecoveryBase string
 	// CheckRunner runs the command list in RequiredChecks. If nil, the
 	// check step is recorded as "skip" so the contract's "default to none
 	// if not specified" semantic is honoured.
@@ -145,6 +147,16 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	if err != nil {
 		addBlocker(fmt.Sprintf("merge base: %v", err))
 		return out, nil
+	}
+	if cfg.RecoveryBase != "" {
+		// Both tips must descend from the frozen pre-merge base. Never
+		// compute an empty diff from the now-merged branch's current base.
+		for _, tip := range []string{sourceHead, targetHead} {
+			if _, err := defaultRunner.Run(ctx, targetRepo, "merge-base", "--is-ancestor", cfg.RecoveryBase, tip); err != nil {
+				return out, fmt.Errorf("recovery base is not an ancestor of %s", tip)
+			}
+		}
+		base = cfg.RecoveryBase
 	}
 	out.MergeBase = base
 	count, err := countCommitsBetween(ctx, targetRepo, base, sourceHead)

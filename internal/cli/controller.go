@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1375,7 +1376,30 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		BaselineGeneration: loaded.BaselineGeneration,
 		RuntimeID:          loaded.PolicyContext.RuntimeID,
 	}
+	recoveryBase := ""
+	retry := input.Facts["integration_retry"]
+	if retry {
+		cpPath := integration.DefaultCheckpointStore().Path(root, loaded.PolicyContext.RuntimeID, loaded.BaselineGeneration, assignment.AssignmentID)
+		cp, found, err := integration.DefaultCheckpointStore().Load(cpPath)
+		if err != nil {
+			return policy.Guidance{}, snapshot, err
+		}
+		if !found || (cp.State != integration.StatePreserved && cp.State != integration.StateBlocked && cp.State != integration.StateMerged) {
+			return policy.Guidance{}, snapshot, fmt.Errorf("retry requires an existing preserved/blocked/merged checkpoint")
+		}
+		if cp.AssignmentID != assignment.AssignmentID || cp.SourceBranch != assignment.Branch || cp.TargetBranch != targetBranch || cp.BaselineGeneration != loaded.BaselineGeneration || cp.WorktreePath != assignment.WorktreePath || cp.MergeBase == "" || cp.SourceHead == "" {
+			return policy.Guidance{}, snapshot, fmt.Errorf("retry checkpoint coordinates or original scope missing/mismatched")
+		}
+		// A builder may append a corrective commit, but cannot replace the
+		// historical source ancestry when reusing this assignment.
+		cmd := exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", cp.SourceHead, assignment.Branch)
+		if err := cmd.Run(); err != nil {
+			return policy.Guidance{}, snapshot, fmt.Errorf("retry source no longer descends from recorded source head")
+		}
+		recoveryBase = cp.MergeBase
+	}
 	inspectResult, err := integration.Inspect(ctx, inspectReq, integration.InspectConfig{
+		RecoveryBase:        recoveryBase,
 		SkipCompletionCheck: false,
 		// L3-S6 §7.4: required checks come from the assignment's manifest
 		// declaration and run for real via the shell runner — a `verified`
@@ -1441,6 +1465,7 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	}
 
 	integrateReq := integration.IntegrateRequest{
+		RetryPreserved:   retry,
 		Inspection:       inspectResult,
 		ExpectedRevision: int64(snapshot.Revision),
 		Acknowledge:      acknowledge,
@@ -1487,7 +1512,16 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		return guidance, snapshot, nil
 	}
 
-	integratedState := "merged"
+	if integrationResult.Checkpoint.State == integration.StatePreserved || integrationResult.Checkpoint.State == integration.StateBlocked {
+		guidance := buildGuidance(root, snapshot.State, event, input)
+		guidance.Blocked = true
+		guidance.Blocker = "existing integration checkpoint is " + integrationResult.Checkpoint.State + ": " + integrationResult.Checkpoint.FailureReason
+		guidance.Action = "resolve the recorded blocker, then run runtime task-integrate --assignment-id " + assignment.AssignmentID + " --retry-preserved"
+		guidance.Integration = []string{"checkpoint_state=" + integrationResult.Checkpoint.State}
+		guidance.Instruction = formatGuidanceInstruction(guidance)
+		return guidance, snapshot, nil
+	}
+	integratedState := integrationResult.Checkpoint.State
 	if integrationResult.Checkpoint.State == integration.StateVerified {
 		integratedState = "verified"
 	} else if integrationResult.Checkpoint.State == integration.StateAcknowledged {

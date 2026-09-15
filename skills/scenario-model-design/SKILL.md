@@ -148,10 +148,10 @@ shared mutable data is a fail-closed finding.
 Use the repository harness when available:
 
 ```bash
-go run ./cmd/loop-harness scenario generate --module <module> --root .
-go run ./cmd/loop-harness scenario validate --module <module> --root .
-go run ./cmd/loop-harness scenario validate --all --root .
-go run ./cmd/loop-harness scenario validate --module <module> --root . --require-specs
+.claude/bin/loop-harness scenario generate --module <module> --root .
+.claude/bin/loop-harness scenario validate --module <module> --root .
+.claude/bin/loop-harness scenario validate --all --root .
+.claude/bin/loop-harness scenario validate --module <module> --root . --require-specs
 ```
 
 Do not replace a failed command with a manual PASS. If the scenario command is

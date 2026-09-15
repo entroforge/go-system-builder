@@ -124,7 +124,7 @@ fi
 rm -rf "$stage_root/docs/design/loop-engineering"
 
 # Target projects start with templates, not this source project's instances.
-find "$stage_root/docs/reports" -type f ! -name '*-template.md' -delete 2>/dev/null || true
+find "$stage_root/docs/reports" -type f ! -name '*-template.md' ! -name 'README.md' -delete 2>/dev/null || true
 # Clean up any empty subdirectories left behind.
 find "$stage_root/docs/reports" -type d -empty -delete 2>/dev/null || true
 

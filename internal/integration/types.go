@@ -116,6 +116,8 @@ type Inspection struct {
 // snapshot and ExpectedRevision is the CAS key used to gate the checkpoint
 // persistence (see CheckpointStore.CompareAndSwap).
 type IntegrateRequest struct {
+	// RetryPreserved explicitly retries a failed checkpoint after a fresh inspection.
+	RetryPreserved   bool
 	Inspection       Inspection
 	ExpectedRevision int64
 	// Acknowledge, when true, advances the state machine from verified to
