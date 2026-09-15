@@ -109,9 +109,9 @@ func validateInventory(inventory Inventory) error {
 			if input.Kind != InputKindREQ {
 				return &ValidationError{Code: ErrInvalidInventory, Field: "inputs.kind", Path: input.Path, Reason: "selected req inventory input has the wrong kind"}
 			}
-			// REQ bindings use canonical LF bytes so the locked identity is stable
-			// across Git CRLF checkout policy. The inventory retains the raw file
-			// digest and Import later verifies both representations against disk.
+			if input.SHA256 != inventory.REQ.SHA256 {
+				return &ValidationError{Code: ErrInvalidInventory, Field: "req.sha256", Path: input.Path, Reason: "req binding sha256 does not match inventory input"}
+			}
 		}
 	}
 	if !reqFound {

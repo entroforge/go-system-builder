@@ -2,7 +2,18 @@
 # Apply before binding new REQs; never renormalize an active evidence chain blindly.
 AGENTS.md text eol=lf
 CLAUDE.md text eol=lf
-docs/** text eol=lf
+# Auto-detect binary evidence; explicitly binary assets below retain exact bytes.
+docs/** text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary
 .claude/agents/** text eol=lf
 .claude/skills/** text eol=lf
 .claude/loop.md text eol=lf

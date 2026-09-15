@@ -167,10 +167,13 @@ func verifyFrozenSubjects(root string, plan *Plan, state map[string]any) error {
 			// pre-deletion digest. An absent frozen subject is accepted only when
 			// the current round's change impact itself records the same path+sha256
 			// as a deleted changed artifact.
-			if os.IsNotExist(readErr) && deletionCorroborated(root, state, subject.Path, subject.SHA256) {
+			if os.IsNotExist(readErr) && deletionCorroborated(root, state, plan, subject.Path, subject.SHA256) {
 				continue
 			}
 			return fmt.Errorf("frozen subject %s is unreadable: %w", subject.Path, readErr)
+		}
+		if subject.Kind == "deleted" {
+			return fmt.Errorf("frozen deleted subject %s reappeared on disk", subject.Path)
 		}
 		actual := sha256Of(data)
 		if actual != subject.SHA256 {
@@ -185,42 +188,66 @@ func verifyFrozenSubjects(root string, plan *Plan, state map[string]any) error {
 	return nil
 }
 
-// deletionCorroborated reports whether the active round's TR-012 change
-// impact records path@sha256 as a (deleted) changed artifact — the only
-// authority that may excuse an absent frozen subject (RC-29).
-func deletionCorroborated(root string, state map[string]any, subjectPath, subjectSHA string) bool {
+// deletionCorroborated requires a registered, hash-pinned deletion fact. The
+// current round entry or an explicit ChangeImpact source reference selects the
+// authority; a self-declared FrozenSubject.Kind never proves deletion. The
+// latest live fact for the path wins, so an old deletion cannot excuse a later
+// add/modify followed by an undeclared deletion.
+func deletionCorroborated(root string, state map[string]any, plan *Plan, subjectPath, subjectSHA string) bool {
 	if state == nil || root == "" {
 		return false
 	}
+	round, generation := currentReviewRound(state), baselineGeneration(state)
+	selected := map[string]bool{}
 	review, _ := state["review"].(map[string]any)
 	entry, _ := review["round_entry"].(map[string]any)
-	impactPath := ""
-	if entry != nil {
-		impactPath = stringField(entry["change_impact_ref"])
+	if entry != nil && intField(entry["round"]) == round && intField(entry["baseline_generation"]) == generation {
+		if id := evidenceReferenceID(state, stringField(entry["change_impact_ref"])); id != "" {
+			selected[id] = true
+		}
 	}
-	if strings.TrimSpace(impactPath) == "" {
+	if plan != nil && plan.ReviewRound == round && plan.BaselineGeneration == generation && plan.ChangeImpact != nil {
+		for _, ref := range plan.ChangeImpact.SourceRefs {
+			if id := evidenceReferenceID(state, ref); id != "" {
+				selected[id] = true
+			}
+		}
+	}
+	if len(selected) == 0 {
 		return false
 	}
-	absolute, err := repositoryContainedPath(root, impactPath)
-	if err != nil {
-		return false
-	}
-	data, err := os.ReadFile(absolute)
-	if err != nil {
-		return false
-	}
-	var impact struct {
-		ChangedArtifacts []struct {
-			Path   string `json:"path"`
-			SHA256 string `json:"sha256"`
-		} `json:"changed_artifacts"`
-	}
-	if err := json.Unmarshal(data, &impact); err != nil {
-		return false
-	}
-	for _, artifact := range impact.ChangedArtifacts {
-		if artifact.Path == subjectPath && artifact.SHA256 == subjectSHA {
-			return true
+	rows := evidenceEntries(state)
+	for i := len(rows) - 1; i >= 0; i-- {
+		row, _ := rows[i].(map[string]any)
+		if row == nil || stringField(row["kind"]) != "change_impact" || stringField(row["status"]) != "valid" || row["invalidated_by"] != nil || intField(row["baseline_generation"]) != generation {
+			continue
+		}
+		// Do not consume a future round's record. Older records need an
+		// explicit plan citation; the current entry is also a legal citation.
+		if intField(row["review_round"]) > round {
+			return false
+		}
+		id := stringField(row["id"])
+		data, err := loadIndexedEvidenceArtifact(root, state, id, "change_impact")
+		if err != nil {
+			return false
+		}
+		var impact struct {
+			RuntimeID          string `json:"runtime_id"`
+			BaselineGeneration int    `json:"baseline_generation"`
+			ChangedArtifacts   []struct {
+				Path   string `json:"path"`
+				SHA256 string `json:"sha256"`
+				Status string `json:"status"`
+			} `json:"changed_artifacts"`
+		}
+		if json.Unmarshal(data, &impact) != nil || impact.RuntimeID != stringField(state["runtime_id"]) || impact.BaselineGeneration != generation {
+			return false
+		}
+		for _, artifact := range impact.ChangedArtifacts {
+			if artifact.Path == subjectPath {
+				return selected[id] && artifact.SHA256 == subjectSHA && artifact.Status == "deleted"
+			}
 		}
 	}
 	return false

@@ -432,3 +432,22 @@ Re-running DRIVE must not:
 
 The Runtime `revision` and `entities` arrays are the deduplication source.
 Before creating any entity, check the Runtime for an existing match.
+
+## User-visible progress
+
+The recovery packet is a scheduling checkpoint, not a work report. At the
+start of work, after a meaningful deliverable, on a blocker or change of
+approach, and approximately every 60 seconds during sustained work, tell the
+user briefly what has completed, what action is underway, and what comes
+next. Use the user's language. Do not narrate every tool call or expose
+internal reasoning. Report only observed results: a revision increment, an
+intended action, or a repeated Hook message is not evidence of progress.
+
+Hook `systemMessage` is a user notice; model recovery instructions belong in
+`hookSpecificOutput.additionalContext` for supported events. Full recovery
+context is retained at session/agent start and stage transitions. Ordinary
+PreToolUse calls provide the current gate conflicts, missing work, and a
+compact checkpoint. Repeated user notices may be suppressed within one
+session/agent, but safety denials and model context must never be suppressed.
+A Worker plan checkpoint requiring no approval does not silence progress
+reports to the user.

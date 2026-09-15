@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -380,14 +381,12 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 
 	generation := nestedS10Int(state, "baseline", "generation")
 	rawDocuments, _ := state["documents"].([]any)
-	// RC-15 (S10-H3): the registration ledger may carry same-generation alias
-	// rows for one document (historically a case-variant symlink compat
-	// layer). When the alias layer is removed from disk the dead paths would
-	// wedge the authority even though the content is still registered and
-	// verifiable through the live twin. First pass: verify every readable row
-	// and index sha -> path. Second pass: a row whose path is dead is
-	// admitted when its sha256 verifies through a same-generation live twin;
-	// anything else stays a hard error.
+	// Only a missing case-variant alias of the same document can use a live
+	// twin. Hash equality alone must never mask tampering or substitute a
+	// different document, kind, or unrelated path.
+	aliasKey := func(kind, id, path, sha string) string {
+		return kind + "\x00" + strings.ToLower(id) + "\x00" + strings.ToLower(filepath.ToSlash(filepath.Clean(path))) + "\x00" + sha
+	}
 	verifiedPaths := map[string]string{}
 	type pendingRow struct {
 		kind, id, path, sha string
@@ -409,10 +408,12 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 			return InventoryAuthority{}, fmt.Errorf("S10 inventory authority cannot use current %s document with missing id/path/sha256", kind)
 		}
 		if _, err := readAuthoritativeS10File(root, path, sha, kind+" "+id); err == nil {
-			verifiedPaths[sha] = path
-		} else {
+			verifiedPaths[aliasKey(kind, id, path, sha)] = path
+		} else if errors.Is(err, os.ErrNotExist) {
 			pending = append(pending, pendingRow{kind: kind, id: id, path: path, sha: sha})
 			continue
+		} else {
+			return InventoryAuthority{}, err
 		}
 		switch kind {
 		case "contract":
@@ -424,7 +425,7 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 		}
 	}
 	for _, row := range pending {
-		if _, live := verifiedPaths[row.sha]; !live {
+		if _, live := verifiedPaths[aliasKey(row.kind, row.id, row.path, row.sha)]; !live {
 			// No same-generation live twin: re-read the dead path so the
 			// original missing/drifted diagnostics surface as the hard error.
 			if _, err := readAuthoritativeS10File(root, row.path, row.sha, row.kind+" "+row.id); err != nil {

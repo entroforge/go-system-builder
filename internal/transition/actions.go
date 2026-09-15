@@ -255,13 +255,13 @@ func actionStartReviewRound(state map[string]any, ctx *ActionContext) (ActionRes
 		"baseline_generation": baselineGeneration(state),
 		"change_impact_ref":   nil,
 	}
-	if ctx.Spec.ID == "TR-012" {
+	if ctx.Spec.ID == "TR-012" || ctx.Spec.ID == "TR-016" || ctx.Spec.ID == "TR-031" {
 		changeImpactRef := ""
 		if ctx != nil && ctx.Evidence != nil {
 			changeImpactRef = strings.TrimSpace(ctx.Evidence["change_impact_record"])
 		}
 		if changeImpactRef == "" {
-			return ActionResult{Status: "failed", Detail: "TR-012 requires change_impact_record"}, fmt.Errorf("TR-012 requires a change_impact_record binding so the next S7 plan can freeze the post-repair baseline")
+			return ActionResult{Status: "failed", Detail: "TR-012 requires change_impact_record"}, fmt.Errorf("%s requires a change_impact_record binding so the next S7 plan can freeze its baseline", ctx.Spec.ID)
 		}
 		roundEntry["change_impact_ref"] = changeImpactRef
 	}

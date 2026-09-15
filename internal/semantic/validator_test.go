@@ -1,18 +1,20 @@
 package semantic_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
 func TestValidateRepositoryAcceptsCurrentDesign(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := freshRepositoryFixture(t)
 	if err := semantic.ValidateRepository(root); err != nil {
 		t.Fatalf("repository validation failed: %v", err)
 	}
@@ -40,28 +42,28 @@ func TestValidateRuntimeRejectsUnknownLifecycleState(t *testing.T) {
 }
 
 func TestValidateRuntimeFileAcceptsCommittedInactiveState(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := freshRepositoryFixture(t)
 	if err := semantic.ValidateRuntimeFile(root, ".claude/loop-state.json"); err != nil {
 		t.Fatalf("committed runtime validation failed: %v", err)
 	}
 }
 
 func TestValidateReviewManifestsChecksCommittedWorkgroups(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := freshRepositoryFixture(t)
 	if err := semantic.ValidateReviewManifests(root); err != nil {
 		t.Fatalf("review manifest validation failed: %v", err)
 	}
 }
 
 func TestValidateAgentMessagesChecksCommittedEvidence(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := freshRepositoryFixture(t)
 	if err := semantic.ValidateAgentMessages(root); err != nil {
 		t.Fatalf("Agent message validation failed: %v", err)
 	}
 }
 
 func TestValidateRuntimeReachabilityAcceptsFreshRuntime(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := freshRepositoryFixture(t)
 	if err := semantic.ValidateRuntimeReachability(root); err != nil {
 		t.Fatalf("runtime reachability validation failed: %v", err)
 	}
@@ -353,4 +355,38 @@ func TestValidateReviewManifestReferencesMismatchErrorIncludesHint(t *testing.T)
 	if !strings.Contains(err.Error(), "BUG-004") {
 		t.Fatalf("error should mention BUG-004, got: %v", err)
 	}
+}
+
+// Each repository-level check owns an inactive Runtime and never reads the
+// developer's ignored state or journal from the source checkout.
+func freshRepositoryFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	source := filepath.Join("..", "..")
+	for _, dir := range []string{"docs", "agents", "skills"} {
+		if err := os.CopyFS(filepath.Join(root, dir), os.DirFS(filepath.Join(source, dir))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".md") && entry.Name() != "settings.json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(source, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, entry.Name()), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run([]string{"init", "--root", root}, nil, &stdout, &stderr); code != 0 {
+		t.Fatalf("init fixture: %s %s", stdout.String(), stderr.String())
+	}
+	return root
 }

@@ -29,7 +29,7 @@ func seedIntegrableAssignment(t *testing.T, root string) string {
 			"id": "builder-ti", "role": "builder", "state": "reported",
 			"task_ids": []any{"TASK-039-01"}, "team_id": "team-ti",
 			"definition_ref": ".claude/agents/backend-builder.md",
-			"prompt_ref":     "manifest#assignment-ti",
+			"prompt_ref":     ".claude/workgroups/REQ-039/TASK-039-01/manifest.json#assignment-ti",
 			"readback_ref":   nil, "activation_ref": nil, "activation_revision": nil,
 			"updated_at": "2026-08-20T00:00:00Z",
 		}},

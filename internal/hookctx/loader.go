@@ -118,41 +118,47 @@ type activationFile struct {
 	AllowedCommandClasses []string `json:"allowed_command_classes"`
 }
 
+type workgroupAssignment struct {
+	AssignmentID       string   `json:"assignment_id"`
+	ResponsibilityID   string   `json:"responsibility_id"`
+	RoleFamily         string   `json:"role_family"`
+	AgentID            string   `json:"agent_id"`
+	AgentDefinitionRef string   `json:"agent_definition_ref"`
+	SkillRefs          []string `json:"skill_refs"`
+	// Scope is the manifest's declared write surface; WritePaths is the
+	// schema-required binding (L3-S6 write-scope audit reads the real
+	// diff against this). We accept both names so legacy manifests that
+	// only carried `scope` still feed the audit instead of silently
+	// declaring no scope.
+	Scope          []string `json:"scope"`
+	WritePaths     []string `json:"write_paths"`
+	RequiredChecks []string `json:"required_checks"`
+	DoneWhen       []string `json:"done_when"`
+	Status         string   `json:"status"`
+	// Worktree coordinates are optional extensions on the workgroup
+	// assignment row (BUG-039-37 / BUG-039-04 residual). When present
+	// the loader surfaces them; when absent they stay blank — never
+	// fabricated.
+	WorktreePath string `json:"worktree_path,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	TargetBranch string `json:"target_branch,omitempty"`
+}
+
 type workgroupManifest struct {
-	SchemaVersion      string `json:"schema_version"`
-	ManifestID         string `json:"manifest_id"`
-	Version            string `json:"version"`
-	RuntimeID          string `json:"runtime_id"`
-	ReqID              string `json:"req_id"`
-	BaselineGeneration int    `json:"baseline_generation"`
-	Status             string `json:"status"`
-	WorkgroupID        string `json:"workgroup_id"`
-	WorkgroupKind      string `json:"workgroup_kind"`
-	Assignments        []struct {
-		AssignmentID       string   `json:"assignment_id"`
-		ResponsibilityID   string   `json:"responsibility_id"`
-		RoleFamily         string   `json:"role_family"`
-		AgentID            string   `json:"agent_id"`
-		AgentDefinitionRef string   `json:"agent_definition_ref"`
-		SkillRefs          []string `json:"skill_refs"`
-		// Scope is the manifest's declared write surface; WritePaths is the
-		// schema-required binding (L3-S6 write-scope audit reads the real
-		// diff against this). We accept both names so legacy manifests that
-		// only carried `scope` still feed the audit instead of silently
-		// declaring no scope.
-		Scope          []string `json:"scope"`
-		WritePaths     []string `json:"write_paths"`
-		RequiredChecks []string `json:"required_checks"`
-		DoneWhen       []string `json:"done_when"`
-		Status         string   `json:"status"`
-		// Worktree coordinates are optional extensions on the workgroup
-		// assignment row (BUG-039-37 / BUG-039-04 residual). When present
-		// the loader surfaces them; when absent they stay blank — never
-		// fabricated.
-		WorktreePath string `json:"worktree_path,omitempty"`
-		Branch       string `json:"branch,omitempty"`
-		TargetBranch string `json:"target_branch,omitempty"`
-	} `json:"assignments"`
+	SchemaVersion      string                `json:"schema_version"`
+	ManifestID         string                `json:"manifest_id"`
+	Version            string                `json:"version"`
+	RuntimeID          string                `json:"runtime_id"`
+	ReqID              string                `json:"req_id"`
+	BaselineGeneration int                   `json:"baseline_generation"`
+	Status             string                `json:"status"`
+	WorkgroupID        string                `json:"workgroup_id"`
+	WorkgroupKind      string                `json:"workgroup_kind"`
+	Assignments        []workgroupAssignment `json:"assignments"`
+	Documents          []struct {
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+	} `json:"documents"`
 	ResponsibilityDispositions []struct {
 		ResponsibilityID string   `json:"responsibility_id"`
 		Disposition      string   `json:"disposition"`
@@ -335,8 +341,9 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			continue
 		}
 		taskIndex[task.ID] = loadedTask{
-			State:    task.State,
-			OwnerIDs: append([]string(nil), task.OwnerAgentIDs...),
+			RuntimeID: state.RuntimeID,
+			State:     task.State,
+			OwnerIDs:  append([]string(nil), task.OwnerAgentIDs...),
 		}
 	}
 	for _, agent := range state.Entities.Agents {
@@ -379,7 +386,14 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			continue
 		}
 		// Avoid duplicating rows already added above.
-		if assignmentAlreadyPresent(loaded.Assignments, task.ID, task.OwnerAgentIDs[0]) {
+		knownAgent := false
+		for _, agent := range state.Entities.Agents {
+			if agent.ID == task.OwnerAgentIDs[0] {
+				knownAgent = true
+				break
+			}
+		}
+		if knownAgent || assignmentAlreadyPresent(loaded.Assignments, task.ID, task.OwnerAgentIDs[0]) {
 			continue
 		}
 		row := buildAssignmentRowFromTask(root, task.ID, task.OwnerAgentIDs[0])
@@ -417,7 +431,7 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			// Integrator reads (single deterministic owner rule); ambiguous
 			// rows stay unresolved and the barrier stands down on the
 			// AssignmentID fact but still sees the Agent fallback.
-			context.AssignmentID = loadAgentAssignmentID(root, agent.TaskIDs, agent.ID)
+			context.AssignmentID = loadAgentAssignmentID(root, agent.TaskIDs, agent.ID, optionalString(agent.PromptRef), state.RuntimeID)
 			if context.Agent != nil {
 				context.Agent.AssignmentID = context.AssignmentID
 			}
@@ -579,8 +593,9 @@ func readRepairHookArtifact(root, relative, expectedSHA string) ([]byte, bool) {
 }
 
 type loadedTask struct {
-	State    string
-	OwnerIDs []string
+	RuntimeID string
+	State     string
+	OwnerIDs  []string
 }
 
 // buildAgentRow is the closure-friendly copy of one entities.agents[]
@@ -601,35 +616,11 @@ type buildAgentRow struct {
 // row owned by the agent (or a single unbound row). The first deterministic
 // match wins; ambiguous multi-assignment rows resolve to "" so callers never
 // invent a binding the manifest does not prove.
-func loadAgentAssignmentID(root string, taskIDs []string, agentID string) string {
+func loadAgentAssignmentID(root string, taskIDs []string, agentID, promptRef, runtimeID string) string {
 	for _, taskID := range taskIDs {
-		_, manifest := loadWorkgroupManifest(root, taskID)
-		if manifest == nil {
-			continue
-		}
-		match := ""
-		ambiguous := false
-		for _, a := range manifest.Assignments {
-			if a.AssignmentID == "" {
-				continue
-			}
-			if a.AgentID != "" && a.AgentID != agentID {
-				continue
-			}
-			if a.AgentID == "" && len(manifest.Assignments) != 1 {
-				continue
-			}
-			if match != "" && match != a.AssignmentID {
-				ambiguous = true
-				break
-			}
-			match = a.AssignmentID
-		}
-		if ambiguous {
-			continue
-		}
-		if match != "" {
-			return match
+		row := buildAssignmentRow(root, buildAgentRow{ID: agentID, TaskID: taskID, PromptRef: promptRef}, loadedTask{RuntimeID: runtimeID})
+		if row != nil {
+			return row.AssignmentID
 		}
 	}
 	return ""
@@ -649,40 +640,19 @@ func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *Assig
 		CompletionAckRef: agent.CompletionAckRef,
 		ManifestRef:      agent.PromptRef,
 	}
-	_, manifest := loadWorkgroupManifest(root, agent.TaskID)
-	if manifest != nil {
-		// Match an assignment row whose agent_id matches this agent.
-		for _, a := range manifest.Assignments {
-			if a.AgentID == "" || a.AgentID != agent.ID {
-				continue
-			}
-			row.AssignmentID = a.AssignmentID
-			row.RoleFamily = a.RoleFamily
-			row.AgentDefinitionRef = a.AgentDefinitionRef
-			row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
-			row.WritePaths = append(row.WritePaths, assignmentWritePaths(a.WritePaths, a.Scope)...)
-			row.RequiredChecks = append(row.RequiredChecks, a.RequiredChecks...)
-			row.DoneWhen = append(row.DoneWhen, a.DoneWhen...)
-			row.ReportStatus = a.Status
-			applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)
-			break
-		}
-		// A single unbound assignment is safe to associate with the task's
-		// sole owner. Multiple unbound assignments are ambiguous and must not
-		// inherit the first row's scope.
-		if row.AssignmentID == "" && len(manifest.Assignments) == 1 {
-			a := manifest.Assignments[0]
-			row.AssignmentID = a.AssignmentID
-			row.RoleFamily = a.RoleFamily
-			row.AgentDefinitionRef = a.AgentDefinitionRef
-			row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
-			row.WritePaths = append(row.WritePaths, assignmentWritePaths(a.WritePaths, a.Scope)...)
-			row.RequiredChecks = append(row.RequiredChecks, a.RequiredChecks...)
-			row.DoneWhen = append(row.DoneWhen, a.DoneWhen...)
-			row.ReportStatus = a.Status
-			applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)
-		}
+	path, manifest, fragment := assignmentManifest(root, agent.TaskID, agent.PromptRef)
+	if manifest == nil || (idx.RuntimeID != "" && manifest.RuntimeID != "" && manifest.RuntimeID != idx.RuntimeID) {
+		return nil
 	}
+	assignment := selectManifestAssignment(manifest, agent.ID, agent.TaskID, fragment)
+	if assignment == nil {
+		return nil
+	}
+	if row.ManifestRef == "" {
+		row.ManifestRef = path
+	}
+	fillAssignmentRow(row, *assignment)
+
 	// Authoritative fallbacks when the workgroup row omits coordinates:
 	// assignment sidecar and/or a durable integration checkpoint. Never
 	// invent paths that are not present on disk (BUG-039-04 §4.2).
@@ -698,28 +668,16 @@ func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *Assig
 // the manifest exists AND names an assignment, which prevents spurious
 // rows in cases where the owner agent has not yet been spawned.
 func buildAssignmentRowFromTask(root, taskID, ownerAgentID string) *AssignmentContext {
-	_, manifest := loadWorkgroupManifest(root, taskID)
+	path, manifest, _ := assignmentManifest(root, taskID, "")
 	if manifest == nil {
 		return nil
 	}
-	matchedIndex := -1
-	for index := range manifest.Assignments {
-		a := &manifest.Assignments[index]
-		if a.AssignmentID == "" || (a.AgentID != "" && a.AgentID != ownerAgentID) {
-			continue
-		}
-		if a.AgentID == "" && len(manifest.Assignments) != 1 {
-			continue
-		}
-		if matchedIndex >= 0 {
-			return nil
-		}
-		matchedIndex = index
-	}
-	if matchedIndex < 0 {
+	selected := selectManifestAssignment(manifest, ownerAgentID, taskID, "")
+	if selected == nil {
 		return nil
 	}
-	a := manifest.Assignments[matchedIndex]
+	a := *selected
+
 	row := &AssignmentContext{
 		AssignmentID:       a.AssignmentID,
 		TaskID:             taskID,
@@ -727,7 +685,7 @@ func buildAssignmentRowFromTask(root, taskID, ownerAgentID string) *AssignmentCo
 		RoleFamily:         a.RoleFamily,
 		AgentDefinitionRef: a.AgentDefinitionRef,
 		State:              "in_progress",
-		ManifestRef:        ".claude/workgroups/" + reqIDFromRuntime(root) + "/" + taskID + "/manifest.json",
+		ManifestRef:        path,
 		ReportStatus:       a.Status,
 		WritePaths:         assignmentWritePaths(a.WritePaths, a.Scope),
 		RequiredChecks:     append([]string(nil), a.RequiredChecks...),

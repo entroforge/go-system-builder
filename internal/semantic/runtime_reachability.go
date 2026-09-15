@@ -1,9 +1,9 @@
 package semantic
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,7 +82,7 @@ func ValidateRuntimeReachability(root string) error {
 			return err
 		}
 		if err := checkReachableFingerprint(root, "bound_req",
-			state.BoundREQ.Path, state.BoundREQ.SHA256, true); err != nil {
+			state.BoundREQ.Path, state.BoundREQ.SHA256); err != nil {
 			return err
 		}
 	}
@@ -101,7 +101,7 @@ func ValidateRuntimeReachability(root string) error {
 		}
 		if doc.SHA256 != "" {
 			if err := checkReachableFingerprint(root,
-				fmt.Sprintf("documents[%s]", doc.ID), doc.Path, doc.SHA256, false); err != nil {
+				fmt.Sprintf("documents[%s]", doc.ID), doc.Path, doc.SHA256); err != nil {
 				return err
 			}
 		}
@@ -159,7 +159,7 @@ func ValidateRuntimeReachability(root string) error {
 		if err := checkReachablePath(root, fmt.Sprintf("evidence[%s]", evidence.ID), evidence.Path); err != nil {
 			return err
 		}
-		if err := checkReachableFingerprint(root, fmt.Sprintf("evidence[%s]", evidence.ID), evidence.Path, evidence.SHA256, false); err != nil {
+		if err := checkReachableFingerprint(root, fmt.Sprintf("evidence[%s]", evidence.ID), evidence.Path, evidence.SHA256); err != nil {
 			return err
 		}
 	}
@@ -171,31 +171,24 @@ func checkReachablePath(root, label, relative string) error {
 	if relative == "" {
 		return nil
 	}
-	clean := filepath.Clean(strings.SplitN(relative, "#", 2)[0])
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("runtime reachability: %s path %q escapes repository root", label, relative)
-	}
-	absolute := filepath.Join(root, clean)
-	if _, err := os.Stat(absolute); err != nil {
-		return fmt.Errorf("runtime reachability: %s path %q is not reachable: %w",
-			label, relative, err)
+	if _, err := resolveReachablePath(root, label, relative); err != nil {
+		return err
 	}
 	return nil
 }
 
-func checkReachableFingerprint(root, label, relative, expected string, canonicalREQ bool) error {
+func checkReachableFingerprint(root, label, relative, expected string) error {
 	if relative == "" || expected == "" {
 		return nil
 	}
-	clean := filepath.Clean(strings.SplitN(relative, "#", 2)[0])
-	absolute := filepath.Join(root, clean)
+	absolute, err := resolveReachablePath(root, label, relative)
+	if err != nil {
+		return err
+	}
 	data, err := os.ReadFile(absolute)
 	if err != nil {
 		return fmt.Errorf("runtime reachability: %s fingerprint read %q: %w",
 			label, relative, err)
-	}
-	if canonicalREQ {
-		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	}
 	actual := fmt.Sprintf("%x", sha256.Sum256(data))
 	if actual != expected {
@@ -203,4 +196,39 @@ func checkReachableFingerprint(root, label, relative, expected string, canonical
 			label, relative, expected, actual)
 	}
 	return nil
+}
+
+// Legacy agent definition refs use the source-template agents/ directory,
+// while installed projects keep those same files under .claude/agents/.
+// Only that documented definition alias is eligible for fallback. All reads
+// remain inside the real repository root, including after symlink resolution.
+func resolveReachablePath(root, label, relative string) (string, error) {
+	path := strings.ReplaceAll(strings.SplitN(relative, "#", 2)[0], `\`, "/")
+	if path == "" || strings.HasPrefix(path, "/") || strings.Contains(path, ":") {
+		return "", fmt.Errorf("runtime reachability: %s path %q escapes repository root", label, relative)
+	}
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("runtime reachability: %s path %q escapes repository root", label, relative)
+	}
+	actualRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	actualRoot, err = filepath.Abs(actualRoot)
+	if err != nil {
+		return "", err
+	}
+	absolute, err := filepath.EvalSymlinks(filepath.Join(actualRoot, clean))
+	if errors.Is(err, os.ErrNotExist) && strings.HasSuffix(label, ".definition_ref") && strings.HasPrefix(filepath.ToSlash(clean), "agents/") {
+		absolute, err = filepath.EvalSymlinks(filepath.Join(actualRoot, ".claude", clean))
+	}
+	if err != nil {
+		return "", fmt.Errorf("runtime reachability: %s path %q is not reachable: %w", label, relative, err)
+	}
+	rel, err := filepath.Rel(actualRoot, absolute)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("runtime reachability: %s path %q escapes repository root", label, relative)
+	}
+	return absolute, nil
 }

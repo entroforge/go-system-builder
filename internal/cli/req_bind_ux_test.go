@@ -91,7 +91,7 @@ func TestREQBindAutoInitsAndDiscoversSoleLockedREQ(t *testing.T) {
 	}
 }
 
-func TestREQBindUsesCanonicalCRLFFingerprint(t *testing.T) {
+func TestREQBindUsesRawCRLFFingerprint(t *testing.T) {
 	body := "# REQ-098\r\n\r\n> 状态：locked\r\n> 版本：v1.0.0\r\n> UI impact：none\r\n"
 	root := newUXTestRoot(t, map[string]string{"REQ-098.md": body})
 	var stdout, stderr bytes.Buffer
@@ -104,7 +104,7 @@ func TestREQBindUsesCanonicalCRLFFingerprint(t *testing.T) {
 	}
 	bound, _ := state["bound_req"].(map[string]any)
 	if got, _ := bound["sha256"].(string); got != transition.REQSHA256([]byte(body)) {
-		t.Fatalf("bound SHA256 = %q, want canonical %q", got, transition.REQSHA256([]byte(body)))
+		t.Fatalf("bound SHA256 = %q, want raw-byte %q", got, transition.REQSHA256([]byte(body)))
 	}
 }
 

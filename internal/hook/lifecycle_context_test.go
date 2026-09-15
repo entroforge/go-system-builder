@@ -22,11 +22,12 @@ func TestRenderWithAdditionalContextUsesNativeLifecycleField(t *testing.T) {
 	if err := json.Unmarshal(output, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := payload["additionalContext"].(string); got != "stage=S7 @ rev=4; next=inspect the review status" {
+	specific := payload["hookSpecificOutput"].(map[string]any)
+	if got, _ := specific["additionalContext"].(string); !strings.Contains(got, "stage=S7 @ rev=4; next=inspect the review status") {
 		t.Fatalf("additionalContext = %q", got)
 	}
-	if _, ok := payload["hookSpecificOutput"]; ok {
-		t.Fatal("SessionStart must keep the native lifecycle envelope")
+	if _, ok := payload["additionalContext"]; ok {
+		t.Fatal("additionalContext must be nested under hookSpecificOutput")
 	}
 }
 

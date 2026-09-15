@@ -41,7 +41,7 @@ func TestReqBaselineUnchangedAcceptsMatchingFile(t *testing.T) {
 	}
 }
 
-func TestReqBaselineUnchangedAcceptsCanonicalCRLFFingerprint(t *testing.T) {
+func TestReqBaselineUnchangedAcceptsRawCRLFFingerprint(t *testing.T) {
 	root := t.TempDir()
 	content := []byte("# REQ\r\n> Status: locked\r\n")
 	writeBoundREQFixture(t, root, content)
@@ -54,7 +54,7 @@ func TestReqBaselineUnchangedAcceptsCanonicalCRLFFingerprint(t *testing.T) {
 	}
 	guard, _ := transition.LookupGuard("req_baseline_unchanged")
 	if err := guard(state, nil); err != nil {
-		t.Fatalf("canonical CRLF REQ must pass: %v", err)
+		t.Fatalf("raw-byte CRLF REQ must pass: %v", err)
 	}
 }
 

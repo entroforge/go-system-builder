@@ -2628,6 +2628,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "render Hook output: %v\n", err)
 		return 1
 	}
+	output, commitNotice := hook.PrepareNotice(root, request.SessionID, request.EffectiveAgentID(), request.Event, output)
 	if len(output) > 0 {
 		if _, err := stdout.Write(append(output, '\n')); err != nil {
 			if isDenyingHookDecision(decision.Decision) {
@@ -2637,6 +2638,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 			return 1
 		}
 	}
+	commitNotice()
 	if isDenyingHookDecision(decision.Decision) {
 		return 2
 	}

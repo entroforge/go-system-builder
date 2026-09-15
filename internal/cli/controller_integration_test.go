@@ -244,7 +244,7 @@ func TestPreToolUsePreservesUnknownMCPWarningAtControllerBoundary(t *testing.T) 
 	if specific["permissionDecision"] != "allow" {
 		t.Fatalf("warning must still allow the tool, got %v", specific["permissionDecision"])
 	}
-	reason, _ := specific["permissionDecisionReason"].(string)
+	reason, _ := specific["additionalContext"].(string)
 	if !strings.Contains(reason, "unknown_mcp_tool") || !strings.Contains(reason, "classify") {
 		t.Fatalf("warning must survive the Controller projection with recovery guidance: %s", reason)
 	}

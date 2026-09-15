@@ -560,38 +560,26 @@ func TestRuntimeRegisterWorkgroupCommand(t *testing.T) {
 // around the test, plant a fresh state file with a unique manifest_id,
 // and chdir to an unrelated temp dir so cwd != --root.
 func TestRuntimeRegisterWorkgroupCommandAnchorsAgainstRoot(t *testing.T) {
-	root := func() string {
-		abs, err := filepath.Abs(filepath.Join("..", ".."))
+	root := t.TempDir()
+	for _, rel := range []string{"docs/loop-definition.json", "docs/hook-policy.json", "internal/cli/testdata/task-fixture.md"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", rel))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return abs
-	}()
-
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	stateDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	canonicalState := filepath.Join(stateDir, "loop-state.json")
 	canonicalJournal := filepath.Join(stateDir, "loop-events.jsonl")
-
-	// Save and restore the canonical runtime state + journal so the
-	// test cannot corrupt the operator's runtime.
-	origState, err := os.ReadFile(canonicalState)
-	if err != nil {
-		t.Fatalf("snapshot canonical state: %v", err)
-	}
-	origJournal, err := os.ReadFile(canonicalJournal)
-	if err != nil {
-		// A fresh test run may not have a journal yet; treat missing as
-		// empty bytes and only restore if the file exists pre-test.
-		origJournal = nil
-	}
-	t.Cleanup(func() {
-		_ = os.WriteFile(canonicalState, origState, 0o644)
-		if origJournal != nil {
-			_ = os.WriteFile(canonicalJournal, origJournal, 0o644)
-		} else {
-			_ = os.Remove(canonicalJournal)
-		}
-	})
 
 	suffix := fmt.Sprintf("anchor-%d", os.Getpid())
 	stateBytes, err := schema.ReadAsset("loop-state.example.json")

@@ -1490,6 +1490,15 @@ func TestHandleSubagentStopAdvancesIntegrationOnReadyInspection(t *testing.T) {
 // reconcileGuidance (ReconcileGuidanceForController), not text-only
 // buildGuidance.
 func TestReconcileGuidanceWiresSubagentStopHandler(t *testing.T) {
+	testSubagentStopReference(t, ".claude/workgroups/REQ-039/TASK-039-01/manifest.json#assignment-wire", true)
+}
+
+func TestSubagentStopDoesNotMergeThroughMissingExplicitReference(t *testing.T) {
+	testSubagentStopReference(t, "prompts/missing.json#assignment-wire", false)
+}
+
+func testSubagentStopReference(t *testing.T, promptRef string, wantMerge bool) {
+	t.Helper()
 	fix := newRuntimeFixture(t)
 	repo := fix.root
 	for _, args := range [][]string{
@@ -1540,7 +1549,7 @@ func TestReconcileGuidanceWiresSubagentStopHandler(t *testing.T) {
 		"agents": []any{map[string]any{
 			"id": "agent-wire", "role": "builder", "state": "reported",
 			"task_ids": []any{"TASK-039-01"}, "team_id": "team-wire",
-			"definition_ref": "defs/agent-wire.md", "prompt_ref": "prompts/wire.md",
+			"definition_ref": "defs/agent-wire.md", "prompt_ref": promptRef,
 			"readback_ref": "readback/wire.md", "activation_ref": "activation/wire.json",
 			"activation_revision": 1, "updated_at": "2026-07-30T00:00:00Z",
 		}},
@@ -1574,6 +1583,12 @@ func TestReconcileGuidanceWiresSubagentStopHandler(t *testing.T) {
 	developAfter, err := runGit(t, repo, "rev-parse", "develop")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !wantMerge {
+		if string(developAfter) != string(developBefore) {
+			t.Fatal("unresolved explicit reference merged a different assignment")
+		}
+		return
 	}
 	if string(developAfter) == string(developBefore) {
 		t.Fatalf("BUG-039-37 wiring must advance develop via Integrate, guidance=%#v", guidance.Integration)

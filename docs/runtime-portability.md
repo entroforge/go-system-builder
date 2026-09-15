@@ -18,7 +18,8 @@ Recovery inspection/planning is separate from product implementation authority.
 
 Merge packaging/project.gitattributes into a new project's attributes before
 binding a REQ. CRLF conversion changes SHA-256 even when displayed text is
-identical. Existing locked evidence must not be renormalized silently: preserve
+identical. REQ fingerprints retain raw-byte SHA-256, including for CRLF
+files bound by older versions; CRLF parsing does not normalize their identity. Existing locked evidence must not be renormalized silently: preserve
 bytes and use an approved recovery/migration with a recorded new baseline.
 
 The active state and journal are one recovery unit. Never synchronize just

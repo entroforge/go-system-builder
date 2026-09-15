@@ -98,7 +98,11 @@ TARDIR=vibe-coding-loop-template-<version>
 # New projects without attributes may copy it directly.
 cp $TARDIR/AGENTS-template.md AGENTS.md
 cp $TARDIR/prelude.md prelude.md
-printf '@AGENTS.md\n' > CLAUDE.md
+if [ ! -e CLAUDE.md ]; then
+  printf '@AGENTS.md\n' > CLAUDE.md
+elif ! grep -qxF '@AGENTS.md' CLAUDE.md; then
+  printf '\n@AGENTS.md\n' >> CLAUDE.md
+fi
 
 # Claude Code runtime assets
 mkdir -p .claude/bin .claude/skills .claude/agents

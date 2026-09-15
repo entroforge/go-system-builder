@@ -1,7 +1,6 @@
 package transition
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -1206,11 +1205,10 @@ func SHA256(data []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
-// REQSHA256 fingerprints a locked REQ using canonical LF line endings. This
-// preserves its identity across Git checkout policy while SHA256 remains the
-// raw-byte digest for every other artifact type.
+// REQSHA256 preserves the raw-byte identity used by existing bound REQs.
+// Checkout normalization is an explicit migration, never an implicit hash change.
 func REQSHA256(data []byte) string {
-	return SHA256(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))
+	return SHA256(data)
 }
 
 // capturePauseCheckpoint snapshots the runtime into state["pause"] before the

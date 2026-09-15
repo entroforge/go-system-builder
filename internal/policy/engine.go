@@ -979,6 +979,29 @@ func isInterpreterReadOnlyProbe(lower string) bool {
 	return false
 }
 
+// nullRedirectProbe keeps the exemption narrower than the general command
+// classifier: shells, arbitrary executables, find -exec/-delete, interpreter
+// flags and git output/config overrides must not acquire a new bypass.
+func nullRedirectProbe(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return true
+	}
+	switch fields[0] {
+	case "ls", "cat", "echo", "grep", "head", "tail", "wc", "pwd", "stat":
+		return true
+	case "rg":
+		return !strings.Contains(command, "--pre")
+	case "git":
+		if len(fields) < 2 || strings.Contains(command, "--output") || strings.Contains(command, "--ext-diff") || strings.Contains(command, "--textconv") {
+			return false
+		}
+		return contains([]string{"diff", "status", "log", "show", "rev-parse", "ls-files", "ls-tree", "diff-tree", "diff-index", "diff-files"}, fields[1])
+	default:
+		return false
+	}
+}
+
 // bashMutationPaths is intentionally a small conservative classifier, not a
 // shell parser. It catches common write forms and fails closed for dynamic
 // mutators; read/test commands remain outside the S7 write rule.
@@ -990,6 +1013,27 @@ func isInterpreterReadOnlyProbe(lower string) bool {
 // an empty path slice so the caller fails closed via the dynamic-mutation
 // branch instead of allowing a bypass.
 func bashMutationPaths(command string) ([]string, bool) {
+	// Discarding output is not a filesystem mutation. Remove only literal
+	// null-device redirections before inspecting the command itself. Never
+	// treat an arbitrary write to /dev/null (rm, mv, tee, etc.) as exempt.
+	original := command
+	command = bashRedirectPattern.ReplaceAllStringFunc(command, func(redirection string) string {
+		match := bashRedirectPattern.FindStringSubmatch(redirection)
+		if strings.Trim(match[3], "\"'") == "/dev/null" {
+			return match[1]
+		}
+		return redirection
+	})
+	if command != original {
+		if !nullRedirectProbe(command) {
+			return []string{"<unproven Bash mutation>"}, true
+		}
+		// This classifier is not a shell interpreter. Keep compound commands
+		// and substitutions fail-closed rather than exempting a later mutator.
+		if strings.ContainsAny(command, ";|&\n`()") || strings.Contains(command, "$(") {
+			return []string{"<compound Bash mutation>"}, true
+		}
+	}
 	lower := strings.ToLower(strings.TrimSpace(command))
 	trimmed := strings.TrimSpace(command)
 	paths := []string{}

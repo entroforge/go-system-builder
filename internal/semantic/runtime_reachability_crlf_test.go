@@ -11,7 +11,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
-func TestValidateRuntimeReachabilityAcceptsCanonicalCRLFREQFingerprint(t *testing.T) {
+func TestValidateRuntimeReachabilityAcceptsRawCRLFREQFingerprint(t *testing.T) {
 	root := t.TempDir()
 	reqPath := filepath.Join(root, "docs", "requirements", "REQ-CRLF.md")
 	if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
@@ -21,11 +21,11 @@ func TestValidateRuntimeReachabilityAcceptsCanonicalCRLFREQFingerprint(t *testin
 	if err := os.WriteFile(reqPath, req, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	canonical := sha256.Sum256([]byte("# REQ-CRLF\n\n状态：locked\n"))
+	rawDigest := sha256.Sum256(req)
 	state := map[string]any{
 		"bound_req": map[string]any{
 			"path":   "docs/requirements/REQ-CRLF.md",
-			"sha256": fmt.Sprintf("%x", canonical),
+			"sha256": fmt.Sprintf("%x", rawDigest),
 		},
 	}
 	stateData, err := json.Marshal(state)
@@ -40,6 +40,6 @@ func TestValidateRuntimeReachabilityAcceptsCanonicalCRLFREQFingerprint(t *testin
 		t.Fatal(err)
 	}
 	if err := semantic.ValidateRuntimeReachability(root); err != nil {
-		t.Fatalf("canonical CRLF bound REQ fingerprint should validate: %v", err)
+		t.Fatalf("raw-byte CRLF bound REQ fingerprint should validate: %v", err)
 	}
 }

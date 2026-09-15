@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestBuildPlanAcceptsCanonicalREQBindingWithRawCRLFInventory(t *testing.T) {
+func TestBuildPlanAcceptsRawREQBindingWithRawCRLFInventory(t *testing.T) {
 	root := t.TempDir()
 	path := "docs/requirements/REQ-052.md"
 	writeRecoveryFile(t, root, path, []byte("# REQ-052\r\n\r\n> 状态：locked\r\n> 版本：v1.0.3\r\n"))
@@ -21,11 +21,11 @@ func TestBuildPlanAcceptsCanonicalREQBindingWithRawCRLFInventory(t *testing.T) {
 	if !ok {
 		t.Fatalf("inventory missing %s", path)
 	}
-	if inventory.REQ.SHA256 == input.SHA256 {
-		t.Fatal("fixture did not exercise canonical binding against raw CRLF inventory bytes")
+	if inventory.REQ.SHA256 != input.SHA256 {
+		t.Fatal("binding must retain raw CRLF inventory identity")
 	}
 	if _, err := BuildPlan(inventory); err != nil {
-		t.Fatalf("BuildPlan() rejected valid canonical REQ binding: %v", err)
+		t.Fatalf("BuildPlan() rejected valid raw-byte REQ binding: %v", err)
 	}
 }
 

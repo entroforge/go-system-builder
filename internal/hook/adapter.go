@@ -234,8 +234,12 @@ func renderPreToolUsePayload(body, permission string) ([]byte, error) {
 // remains for warn and for in-process/library callers.
 func renderSystemMessage(body, event, additionalContext string) ([]byte, error) {
 	payload := map[string]any{"systemMessage": body}
-	if (event == "SessionStart" || event == "SubagentStart") && strings.TrimSpace(additionalContext) != "" {
-		payload["additionalContext"] = additionalContext
+	if event == "SessionStart" || event == "SubagentStart" {
+		payload["systemMessage"] = compactNotice(body)
+		payload["hookSpecificOutput"] = map[string]any{
+			"hookEventName":     event,
+			"additionalContext": body + "\n\n" + additionalContext,
+		}
 	}
 	return json.Marshal(payload)
 }

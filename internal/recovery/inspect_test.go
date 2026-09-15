@@ -1,7 +1,6 @@
 package recovery
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -108,7 +107,7 @@ func TestInspectAcceptsLockedREQAndDamagedBOMRuntime(t *testing.T) {
 	}
 }
 
-func TestInspectNormalizesREQCRLFForBinding(t *testing.T) {
+func TestInspectPreservesREQCRLFForBinding(t *testing.T) {
 	root := t.TempDir()
 	path := "docs/requirements/REQ-052.md"
 	data := []byte("# REQ-052\r\n\r\n> 状态：locked\r\n> 版本：v1.0.3\r\n")
@@ -118,9 +117,9 @@ func TestInspectNormalizesREQCRLFForBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect() error = %v", err)
 	}
-	wantBindingSHA := sha256HexForRecoveryTest(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))
+	wantBindingSHA := sha256HexForRecoveryTest(data)
 	if inventory.REQ.SHA256 != wantBindingSHA {
-		t.Fatalf("REQ binding SHA256 = %q, want LF-normalized %q", inventory.REQ.SHA256, wantBindingSHA)
+		t.Fatalf("REQ binding SHA256 = %q, want raw-byte %q", inventory.REQ.SHA256, wantBindingSHA)
 	}
 	input, ok := inventoryInputByPath(inventory, path)
 	if !ok {

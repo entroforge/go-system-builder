@@ -1947,16 +1947,18 @@ func assignmentIDs(assignments []RepairAssignment) []string {
 
 func aggregateRepairResultArtifacts(results []RepairResult) ([]ChangedArtifact, error) {
 	byPath := map[string]ChangedArtifact{}
+	// G12: results arrive in submission order (result_refs is append-only and
+	// dispatch serializes shared-authority lanes via dependencies + resource
+	// locks). When one path repeats — a later lane edited a file an earlier
+	// lane also changed, e.g. the shared field-registry authority — the later
+	// result describes the current on-disk state, so it wins; the earlier
+	// record remains in result_refs for audit. Rejecting the batch instead
+	// would make any sequentially-edited shared file uncommittable: results
+	// are immutable and a second result per Assignment is refused.
 	for _, result := range results {
 		for _, artifact := range result.ChangedArtifacts {
 			path := normalizePath(artifact.Path)
 			artifact.Path = path
-			if prior, ok := byPath[path]; ok {
-				if prior.SHA256 != artifact.SHA256 || prior.Status != artifact.Status {
-					return nil, fmt.Errorf("RepairResult batch reports conflicting changes for %s", path)
-				}
-				continue
-			}
 			byPath[path] = artifact
 		}
 	}
