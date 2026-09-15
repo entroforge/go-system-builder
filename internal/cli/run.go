@@ -970,6 +970,9 @@ func runTeam(args []string, stdout, stderr io.Writer) int {
 }
 
 func runRuntime(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "repair-batch-scope" {
+		return runBatchScopeRepair(args[1:], stdout, stderr)
+	}
 	if wantsHelp(args) {
 		name := compactHelpName(args)
 		if name == "" {
@@ -983,6 +986,8 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "repair-batch-scope":
+		return runBatchScopeRepair(args[1:], stdout, stderr)
 	case "recover":
 		return runRuntimeRecover(args[1:], stdout, stderr)
 	case "rollover":

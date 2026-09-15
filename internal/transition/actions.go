@@ -17,6 +17,7 @@ package transition
 import (
 	"crypto/sha256"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/docscope"
 	"os"
 	"path/filepath"
 	"sort"
@@ -481,9 +482,29 @@ func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (Act
 	if len(ctx.Evidence) == 0 {
 		return ActionResult{Status: "failed", Detail: "execution batch evidence missing"}, fmt.Errorf("register_execution_batch: current evidence missing")
 	}
-	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, "docs/tasks", []string{"TASK-"}, "task", "complete")
-	if err != nil {
-		return ActionResult{Status: "failed", Detail: err.Error()}, err
+	root := actionRoot(state, ctx)
+	registered := 0
+	bound, _ := state["bound_req"].(map[string]any)
+	boundID, _ := bound["id"].(string)
+	baseline, _ := state["baseline"].(map[string]any)
+	docs, _ := state["documents"].([]any)
+	for _, raw := range docs {
+		doc, _ := raw.(map[string]any)
+		if doc["kind"] != "task" || integerOf(doc["generation"]) != integerOf(baseline["generation"]) {
+			continue
+		}
+		rel, _ := doc["path"].(string)
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			return ActionResult{Status: "failed"}, err
+		}
+		if !docscope.Belongs(data, boundID) {
+			return ActionResult{Status: "failed"}, fmt.Errorf("foreign TASK in registered batch: %s; repair batch scope before review", rel)
+		}
+		if SHA256(data) != doc["sha256"] || ParseMarkdownField(string(data), "状态", "Status") != "complete" {
+			return ActionResult{Status: "failed"}, fmt.Errorf("reviewed TASK changed: %s; repeat document verification", rel)
+		}
+		registered++
 	}
 	if registered == 0 {
 		return ActionResult{Status: "failed",
@@ -553,6 +574,11 @@ func registerDocumentsFromDisk(root string, state map[string]any, ctx *ActionCon
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return registered, fmt.Errorf("read %s: %w", rel, err)
+		}
+		bound, _ := state["bound_req"].(map[string]any)
+		boundID, _ := bound["id"].(string)
+		if !docscope.Belongs(data, boundID) {
+			continue
 		}
 		status := ParseMarkdownField(string(data), "状态", "Status")
 		if status == "" {
