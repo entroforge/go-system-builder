@@ -19,8 +19,15 @@ type baselineBoundary struct {
 }
 
 func newBaselineBoundary(root string) baselineBoundary {
-	b := baselineBoundary{root: root, tracked: map[string]bool{}}
-	data, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return baselineBoundary{root: root, tracked: map[string]bool{}}
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(rootAbs); resolveErr == nil {
+		rootAbs = resolved
+	}
+	b := baselineBoundary{root: rootAbs, tracked: map[string]bool{}}
+	data, err := exec.Command("git", "-C", rootAbs, "ls-files", "-z").Output()
 	if err != nil {
 		return b
 	}
@@ -30,11 +37,11 @@ func newBaselineBoundary(root string) baselineBoundary {
 			b.tracked[p] = true
 		}
 	}
-	data, err = exec.Command("git", "-C", root, "worktree", "list", "--porcelain", "-z").Output()
+	data, err = exec.Command("git", "-C", rootAbs, "worktree", "list", "--porcelain", "-z").Output()
 	separator := "\x00"
 	if err != nil {
 		// Git before worktree-list -z: porcelain quotes special paths.
-		data, err = exec.Command("git", "-C", root, "-c", "core.quotePath=true", "worktree", "list", "--porcelain").Output()
+		data, err = exec.Command("git", "-C", rootAbs, "-c", "core.quotePath=true", "worktree", "list", "--porcelain").Output()
 		if err != nil {
 			return b
 		}
@@ -52,7 +59,7 @@ func newBaselineBoundary(root string) baselineBoundary {
 			}
 			name = decoded
 		}
-		rel, err := filepath.Rel(root, name)
+		rel, err := filepath.Rel(rootAbs, name)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
@@ -90,7 +97,8 @@ func (b *baselineBoundary) discoverEnvironment(rel string) bool {
 	// directories and vendored/tracked environments remain protected.
 	marker := rel + "/pyvenv.cfg"
 	info, err := os.Lstat(filepath.Join(b.root, filepath.FromSlash(marker)))
-	if err != nil || !info.Mode().IsRegular() || b.hasTracked(rel) || !gitIgnoredPaths(b.root, []string{marker})[marker] {
+	ignored := gitIgnoredPaths(b.root, []string{rel, marker})
+	if err != nil || !info.Mode().IsRegular() || b.hasTracked(rel) || !ignored[rel] || !ignored[marker] {
 		return false
 	}
 	b.worktrees = append(b.worktrees, rel)
