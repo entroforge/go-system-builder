@@ -1,0 +1,13 @@
+{
+  "decision": "delegate_bounded_repair",
+  "decision_id": "ev-repair-delegation-REQ-EXAMPLE",
+  "runtime_id": "loop-REQ-EXAMPLE",
+  "req_sha256": "REPLACE_WITH_LOCKED_REQ_SHA256",
+  "baseline_generation": 1,
+  "approved_by": "REPLACE_WITH_EXPLICIT_HUMAN_IDENTITY",
+  "reviewer": "main-driver",
+  "allowed_paths": ["server/service/example", "server/api/example", "web/src/example"],
+  "forbidden_paths": ["server/service/example/destructive_migration.go"],
+  "max_contracts": 3,
+  "expires_at": "REPLACE_WITH_EXPLICIT_RFC3339_EXPIRY"
+}

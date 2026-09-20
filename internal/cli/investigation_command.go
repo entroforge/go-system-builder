@@ -77,9 +77,15 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 	hypothesisID := flags.String("hypothesis-id", "", "registered hypothesis id")
 	agentID := flags.String("agent-id", "", "Investigator Agent id")
 	assignmentID := flags.String("assignment-id", "", "optional Assignment id; defaults to Hypothesis.assignment_id")
-	definitionRef := flags.String("agent-definition", "agents/investigator.md", "Investigator Agent Definition path")
+	definitionRef := flags.String("agent-definition", "", "Investigator Agent Definition path (default: .claude/agents/investigator.md; source-tree fallback: agents/investigator.md)")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 transition time")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*hypothesisID) == "" || strings.TrimSpace(*agentID) == "" {
@@ -147,6 +153,21 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 	if !strings.HasPrefix(resolvedAssignmentID, "assignment-") {
 		fmt.Fprintf(stderr, "runtime investigation dispatch: assignment_id %q must use the assignment- prefix so Runtime can bind it\n", resolvedAssignmentID)
 		return 1
+	}
+	definitionExplicit := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "agent-definition" {
+			definitionExplicit = true
+		}
+	})
+	if !definitionExplicit {
+		*definitionRef = "agents/investigator.md"
+		if _, err := os.Stat(filepath.Join(rootPath, ".claude", "agents")); err == nil {
+			*definitionRef = ".claude/agents/investigator.md"
+		} else if !os.IsNotExist(err) {
+			fmt.Fprintln(stderr, "inspect installed investigator:", err)
+			return 1
+		}
 	}
 	if strings.TrimSpace(*definitionRef) == "" {
 		fmt.Fprintln(stderr, "runtime investigation dispatch: --agent-definition must not be empty")
@@ -366,9 +387,15 @@ func runRuntimeInvestigationHypothesisRegister(args []string, stdout, stderr io.
 	var sourceFindings stringListFlag
 	flags.Var(&sourceFindings, "source-finding", "source Finding id; repeatable or comma-separated")
 	var evidenceRefs stringListFlag
-	flags.Var(&evidenceRefs, "evidence", "evidence ref backing the hypothesis; repeatable or comma-separated")
+	flags.Var(&evidenceRefs, "evidence", "current-generation evidence id or execution anchor such as test://<repo-relative-path>; repeatable or comma-separated; a file path alone is not a registered evidence id")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*hypothesisID) == "" {
@@ -441,7 +468,13 @@ func runRuntimeInvestigationHypothesisResult(args []string, stdout, stderr io.Wr
 	var evidenceRefs stringListFlag
 	flags.Var(&evidenceRefs, "evidence", "evidence ref; repeatable or comma-separated")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*hypothesisID) == "" {
@@ -512,7 +545,13 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 	reassessmentEvidence := flags.String("reassessment-evidence", "", "S9 targeted-failure artifact path(s), comma-separated; required when reopening an approved Case")
 	noCompetingHypothesis := flags.String("no-competing-hypothesis", "", "explicit declaration that no competing hypothesis was credible; substitutes for a refuted result in causal closure (S8-4)")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*route) == "" {
@@ -617,7 +656,7 @@ func investigationRouteNextAction(route string, pointer map[string]any) string {
 	switch route {
 	case "s9_repair":
 		caseID := stringValue(pointer["case_id"])
-		return fmt.Sprintf("draft the RepairContract for Case %s, record a matching human_decision evidence item, then run `runtime investigation contract approve --case-id %s --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`", caseID, caseID)
+		return fmt.Sprintf("draft the RepairContract for Case %s, use a matching human_decision, or (only with an explicit current bounded-repair grant) a repair_contract_review plus --delegation-evidence-id; then run `runtime investigation contract approve --case-id %s --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`", caseID, caseID)
 	case "investigate_more":
 		return "register a new falsifiable hypothesis or submit its result before routing again"
 	case "duplicate":
@@ -644,7 +683,13 @@ func runRuntimeInvestigationConsume(args []string, stdout, stderr io.Writer) int
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	actor := flags.String("actor", "orchestrator", "route consumer identity")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 transition time")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*caseID) == "" {
@@ -739,7 +784,13 @@ func runRuntimeInvestigationProject(args []string, stdout, stderr io.Writer) int
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	bugID := flags.String("bug-id", "", "canonical BUG compatibility id")
 	reviewedBy := flags.String("reviewed-by", "", "projection reviewer identity")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*bugID) == "" {
@@ -824,7 +875,13 @@ func runRuntimeInvestigationIngest(args []string, stdout, stderr io.Writer) int 
 	// the real Case is still created by the CAS in investigation.Ingest.
 	emitTemplate := flags.String("emit-template", "", "write a case-template.json scaffold (Case + RouteRequest draft + RepairContract placeholder) to this path, or `-` for stdout; dry-run only")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 transition time")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*groupingRationale) == "" {
@@ -996,9 +1053,16 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 	contractPath := flags.String("file", "", "draft RepairContract path")
 	approvedBy := flags.String("approved-by", "", "approving human or orchestrator identity")
 	approvalHash := flags.String("approval-hash", "", "sha256 of the exact draft reviewed by the approver")
-	approvalEvidenceID := flags.String("approval-evidence-id", "", "valid human_decision evidence id scoped to this S8 approval")
+	approvalEvidenceID := flags.String("approval-evidence-id", "", "valid human_decision evidence, or repair_contract_review when --delegation-evidence-id is set")
+	delegationEvidenceID := flags.String("delegation-evidence-id", "", "optional explicit human grant for bounded repair; no grant means human approval remains required")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 transition time")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*contractPath) == "" || strings.TrimSpace(*approvedBy) == "" || strings.TrimSpace(*approvalHash) == "" || strings.TrimSpace(*approvalEvidenceID) == "" {
@@ -1015,13 +1079,14 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 		}
 	}
 	snapshot, err := investigation.ApproveContract(resolveRootPath(*root, "."), resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.ContractRequest{
-		ExpectedRevision:   *expectedRevision,
-		CaseID:             strings.TrimSpace(*caseID),
-		ContractPath:       *contractPath,
-		ApprovedBy:         *approvedBy,
-		ApprovalHash:       strings.TrimSpace(*approvalHash),
-		ApprovalEvidenceID: strings.TrimSpace(*approvalEvidenceID),
-		OccurredAt:         occurredAt,
+		ExpectedRevision:     *expectedRevision,
+		CaseID:               strings.TrimSpace(*caseID),
+		ContractPath:         *contractPath,
+		ApprovedBy:           *approvedBy,
+		ApprovalHash:         strings.TrimSpace(*approvalHash),
+		ApprovalEvidenceID:   strings.TrimSpace(*approvalEvidenceID),
+		DelegationEvidenceID: strings.TrimSpace(*delegationEvidenceID),
+		OccurredAt:           occurredAt,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime investigation contract approve", err))
@@ -1050,7 +1115,13 @@ func runRuntimeInvestigationStatus(args []string, stdout, stderr io.Writer) int 
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	caseID := flags.String("case-id", "", "optional InvestigationCase id")
 	allCases := flags.Bool("all", false, "show the read-only aggregate of all InvestigationCases")
-	if err := flags.Parse(args); err != nil {
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		fmt.Fprintln(stdout, "Usage: loop-harness "+flags.Name())
+		flags.PrintDefaults()
+		return 0
+	}
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	snapshot, err := runtime.NewStore(resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath)).Snapshot()
@@ -1267,7 +1338,7 @@ func investigationStatusBoard(root string, pointer map[string]any, state map[str
 			pendingHypotheses = append(pendingHypotheses, id)
 		}
 	}
-	nextAction := "register one falsifiable hypothesis with `runtime investigation hypothesis register --case-id <case> --id <hypothesis> --assignment-id <assignment> --statement <...> --invariant <...> --discriminator <...> --support <...> --refute <...> --source-finding <finding>`"
+	nextAction := "register one falsifiable hypothesis with `runtime investigation hypothesis register --case-id <case> --id <hypothesis> --assignment-id <assignment> --statement <...> --invariant <...> --discriminator <...> --support <...> --refute <...> --source-finding <finding> --evidence <current-evidence-id-or-test://repo-relative-path>`"
 	if len(pendingHypotheses) > 0 {
 		nextAction = "dispatch it with `runtime investigation dispatch --case-id <case> --hypothesis-id <hypothesis> --agent-id <agent>`, then submit runtime investigation hypothesis result"
 	} else if len(awaitingResultHypotheses) > 0 {

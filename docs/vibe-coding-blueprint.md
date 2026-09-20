@@ -129,7 +129,7 @@ Important constraints:
 - docs and baselines land before implementation branches
 - Builder feature branches require locked tasks and locked contracts
 - release to `master/main` requires release audit
-- release squash merge must be synced back to `develop`
+- the human release owner synchronizes release changes back to the project’s chosen integration branch
 
 ## 9. Skills
 

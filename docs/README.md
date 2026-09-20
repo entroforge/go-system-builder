@@ -3,8 +3,9 @@
 This repository is a reusable Claude Code documentation and Harness template.
 Project-instance files are created in the target repository.
 
-REQ-002 is a self-evolution: this Loop Engineering method is used to refactor
-the documentation and Harness that the method itself runs on.
+For installation, use the release package’s `INSTALL.md` (source: `packaging/install.md`).
+For Main/Worker binding, integration and recovery, see [Workspace integration](workspace-integration.md).
+See [Claude Code compatibility](claude-platform-compatibility.md) for platform acceptance requirements.
 
 ---
 
@@ -51,7 +52,7 @@ Humans decide, and only humans decide:
 The Loop may never automatically create or lock a requirement baseline, change
 REQ goal, scope, priority or acceptance criteria, or publish to `master/main`.
 
-### Three-layer architecture (REQ-003)
+### Three-layer architecture
 
 The framework is built as three nested layers, with a support plane underneath:
 
@@ -71,7 +72,7 @@ event-driven controller, and neither is a second lifecycle.**
 
 ### Engineering Loop binding is independent of Claude `/loop`
 
-REQ-003 decouples the two lifetimes:
+The framework separates two lifetimes:
 
 - **Engineering Loop binding** is a Harness operation:
 
@@ -505,7 +506,8 @@ sequenceDiagram
         Agent-->>Main: completion_report
     end
     Main->>RT: runtime task-complete (one atomic Builder Result: envelope + Agent reported + TASK review + evidence)
-    Main->>Hook: SubagentStop -> Inspect (scope/locked/merge-tree/required checks) -> non-squash merge -> verified checkpoint (or `runtime task-integrate` explicitly when the payload cannot identify the assignment)
+    Hook-->>Main: SubagentStop projects pending integration action
+    Main->>Cli: runtime task-integrate (inspect, non-squash merge, checks, verified checkpoint)
     Main->>RT: the stage's own gate evaluates the batch (S6: TR-006 / TR-007)
 ```
 
@@ -798,6 +800,6 @@ Other runtime verbs: `register-workgroup`, `agent-event`, `task-complete`
 (canonical Builder Result registration — one command replaces the
 `agent-event completion_reported` + `evidence add` dual write),
 `task-integrate` (explicit worktree integration: Inspect → non-squash
-merge → verified checkpoint, identical to the SubagentStop path),
+merge → checks → verified checkpoint; SubagentStop only projects the pending action),
 `bug-event`, `evidence`, `transition`, `change`, and `human-decision`.
 Run `loop-harness runtime` with no subcommand for the full list.

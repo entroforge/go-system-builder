@@ -19,6 +19,7 @@ func TestRuntimeRepairDispatchBindsBuilderToAssignment(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
 	writeDispatchFile(t, root, "docs/agent-protocol.md", "# protocol\n")
 	writeDispatchFile(t, root, "agents/backend-builder.md", "# backend builder\n")
+	writeDispatchFile(t, root, ".claude/agents/test-builder.md", "# test builder\n")
 
 	contractBytes := []byte(`{
   "schema_version":"1.0.0","repair_contract_id":"repair-contract-dispatch","case_id":"investigation-case-dispatch","revision":1,"status":"approved",
@@ -91,6 +92,38 @@ func TestRuntimeRepairDispatchBindsBuilderToAssignment(t *testing.T) {
 	if !containsDispatchEntity(entities["teams"], response["workgroup_id"].(string)) || !containsDispatchEntity(entities["agents"], "builder-dispatch-1") || !containsDispatchEntity(entities["tasks"], response["task_id"].(string)) {
 		t.Fatalf("dispatch did not register Team/Agent/Task: %#v", entities)
 	}
+	// A one-unit plan can dispatch a separate read-only verifier, but never
+	// the repair owner or a product-writing Builder role.
+	baseArgs := []string{"runtime", "repair", "dispatch", "--root", root, "--assignment-id", plan.Assignments[0].AssignmentID, "--independent-verification"}
+	for _, tail := range [][]string{{"--agent-id", "builder-dispatch-1"}, {"--agent-id", "verifier", "--role-family", "backend-builder"}} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := cli.Run(append(append([]string{}, baseArgs...), tail...), strings.NewReader(""), &stdout, &stderr); code == 0 {
+			t.Fatal("invalid verifier was accepted")
+		}
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cli.Run(append(baseArgs, "--agent-id", "verifier"), strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("verifier dispatch: %s", stderr.String())
+	}
+	var verification map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &verification); err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := os.ReadFile(filepath.Join(root, verification["manifest_path"].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	item := manifest["assignments"].([]any)[0].(map[string]any)
+	if item["role_family"] != "test-builder" || len(item["write_paths"].([]any)) != 0 {
+		t.Fatalf("verifier has product authority: %v", item)
+	}
+
 }
 
 func writeDispatchFile(t *testing.T, root, rel, value string) {

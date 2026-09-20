@@ -313,7 +313,7 @@ These hold across every stage:
 - **done_when** (what GATE-BUILDER-BATCH-READY actually computes, per TASK in the TR-003 registered batch):
   - one Builder Result registered via `runtime task-complete` (the single completion path — it atomically validates the completion message, derives the evidence envelope, advances Agent and TASK, and registers evidence in one Writer transaction; the committed revision is internal metadata);
   - the envelope's recorded checks are all `pass` and it declares no scope deviations;
-  - a durable worktree integration checkpoint has reached `verified` (SubagentStop-driven inspect → non-squash merge → checks run);
+  - a durable worktree integration checkpoint has reached `verified` (explicit task-integrate: inspect → non-squash merge → checks run);
   - **no team manifest is required at this gate** — S7 planning starts from the real integrated diff at its own entry.
 - **next**: S7. Close every missing-token gap above (completion, checks, deviations, integration checkpoints); the next `PreToolUse` lets the Controller evaluate the build gate and auto-commit `TR-006` when satisfied.
 
@@ -334,29 +334,29 @@ These hold across every stage:
 6. Dispatch the Builder (subagent or teammate).
 7. Advance the 12-event lifecycle (table below).
 8. On completion: `runtime task-complete` (canonical path; the legacy `agent-event completion_reported` + `runtime evidence add` dual write still works but produces a thinner envelope the gate cannot consume).
-9. The Builder stop triggers `SubagentStop`: Inspect (scope audit, locked diff, merge-tree, required checks) → non-squash merge → `verified` checkpoint — or run `runtime task-integrate --assignment-id <id>` explicitly (see the integration contract). When every batch TASK is verified, the next `PreToolUse` auto-commits TR-006.
+9. The Builder stop triggers short `SubagentStop` guidance. Main runs `runtime task-integrate --assignment-id <id>`: Inspect (scope audit, locked diff, merge-tree, required checks) → non-squash merge → `verified` → durable acknowledgment → cleanup. When every batch TASK is verified, the next `PreToolUse` auto-commits TR-006.
 
 ### Worktree discipline
 
-Nobody creates the worktree for you. Before the Builder starts writing:
+Before the Builder starts writing, resolve relevant uncommitted inputs without automatic add/stash, record the main branch and approved HEAD SHA, and create the Worker checkout from that exact SHA. Example coordinates are placeholders:
 
 ```bash
-git worktree add .worktrees/<assignment-id> -b wt/<assignment-id> develop
+git worktree add -b codex/<assignment-id> .worktrees/<assignment-id> <approved-main-head-sha>
 ```
 
-Record the coordinates in the workgroup manifest row (`worktree_path`, `branch`, `target_branch`) or the sidecar `.claude/assignments/<assignment-id>.json`. Unregistered coordinates mean SubagentStop fails with `worktree_metadata` missing and no integration happens.
+Record the coordinates in the workgroup manifest row (`worktree_path`, `branch`, `target_branch`) or the sidecar `.claude/assignments/<assignment-id>.json`. The target is the registered main branch, for example test2. Unregistered coordinates block integration. Main remains in its original checkout. The optional workspace binding interface and its incomplete Worker bootstrap/S9 support are documented in docs/workspace-integration.md.
 
 ### Integration contract
 
 `SubagentStop` fires automatically when the platform stops the subagent (`.claude/settings.json` wires it to the harness). The hook locates the assignment from the payload's `agent_id` (or `target_id`) — that is the identification contract, and a natural payload that carries neither simply falls through to generic guidance without integrating.
 
-Whenever the automatic path does not fire or cannot identify the assignment (and for the acknowledge/cleanup follow-up after `verified`), run the integration explicitly:
+The Hook only returns the pending action; Main runs the integration explicitly outside the Hook deadline:
 
 ```bash
 .claude/bin/loop-harness runtime task-integrate --assignment-id <id>
 ```
 
-It drives the identical chain (Inspect → non-squash merge → required checks → verified checkpoint; preserve on failure) and is an allowed manual invocation. Preconditions: the assignment's worktree coordinates are registered and the Builder Result is registered via `runtime task-complete`. An unknown assignment id fails with the list of currently known ids.
+It drives Inspect → non-squash merge → required checks → verified checkpoint → durable acknowledgment → cleanup (preserve on failure) and is an allowed manual invocation. Preconditions: the assignment's worktree coordinates are registered and the Builder Result is registered via `runtime task-complete`. An unknown assignment id fails with the list of currently known ids.
 
 ### Integration retry and reporting
 
@@ -372,8 +372,8 @@ Retry requires a matching existing checkpoint and unchanged assignment coordinat
 It preserves the original merge-base scope denominator, verifies source ancestry,
 rechecks scope and required checks, then runs merge/verification via checkpoint CAS.
 An externally merged source is acceptable only through this checked recovery path;
-never add an empty commit to make the branch appear unmerged. The next ordinary
-invocation performs acknowledgement/cleanup after `verified`.
+never add an empty commit to make the branch appear unmerged. The command records
+acknowledgment before cleanup; if interrupted, repeat it to resume durable progress.
 
 Unstaged updates to named Harness runtime projections are excluded from the
 integration dirty-tree check. Product/config/Skill changes, staged changes, deletes
@@ -511,10 +511,10 @@ The runtime reads the file at the registered `readback_ref` path, computes its b
   - every Case routed to S9 has a supported CausalModel, blast radius, detection gap and approved RepairContract
   - no accepted repair is defined as a symptom-only patch; S9 consumes the approved RepairContract instead of re-deriving root cause
   - any canonical BUG emitted for compatibility references the approved RepairContract and is not an independent S8 authority
-- **next**: after intake (`runtime investigation ingest --grouping-rationale <why>`), register each falsifiable hypothesis with the Case ID, assignment, discriminator and source Finding refs; dispatch it with `runtime investigation dispatch --case-id <case> --hypothesis-id <hyp> --agent-id <agent>`, then submit the read-only result with `runtime investigation hypothesis result ...`. The Case Writer/API generates and validates the current Case object version/hash; do not read status to calculate or copy `--expected-case-revision`, and do not manually advance a Case version. The status board's top-level `next` is the executable next action and must be followed before routing. Once every source Finding is explained by supported results, record the route with `runtime investigation route --case-id <case> --route s9_repair --reason <...> --primary-root-cause <...> --causal-model-file <json> --blast-radius-file <json> --detection-gap-file <json>`, then approve the RepairContract with `runtime investigation contract approve --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`. The approval evidence binds the current Runtime/package context, draft hash, disposition and one-time decision ID; a JSON approval record carries `decision_id`, `runtime_id`, `case_id`, `contract_id`, `approval_hash` and `decision=approve_contract`, and the successful Writer transaction consumes it so it cannot be replayed. It does not include a Runtime revision suffix. `--expected-case-revision` / `--expected-case-sha256` remain optional explicit assertions for integrations or recovery, not normal Agent steps. The command advances the Runtime through `S8-REPAIR-CONTRACT-APPROVAL` to S9 and pins the Contract hash. If a legacy consumer needs a BUG-shaped view, run `runtime investigation project --bug-id <BUG-xxx>` only after approval; it validates the exact Finding set and never mutates the authority pointer. S9 consumes that contract. Specification correction routes to S2, REQ change pauses for the human Gateway, duplicate follows its canonical Case, evidence-backed no-change returns to a new complete S7 round, and `investigate_more` stays in S8. Do not ask S8 to reproduce a confirmed symptom by default.
+- **next**: after intake (`runtime investigation ingest --grouping-rationale <why>`), register each falsifiable hypothesis with the Case ID, assignment, discriminator and source Finding refs; dispatch it with `runtime investigation dispatch --case-id <case> --hypothesis-id <hyp> --agent-id <agent>`, then submit the read-only result with `runtime investigation hypothesis result ...`. The Case Writer/API generates and validates the current Case object version/hash; do not read status to calculate or copy `--expected-case-revision`, and do not manually advance a Case version. The status board's top-level `next` is the executable next action and must be followed before routing. Once every source Finding is explained by supported results, record the route with `runtime investigation route --case-id <case> --route s9_repair --reason <...> --primary-root-cause <...> --causal-model-file <json> --blast-radius-file <json> --detection-gap-file <json>`, then approve the RepairContract with `runtime investigation contract approve --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`. In the default human-approval path, the approval evidence binds the current Runtime/package context, draft hash, disposition and one-time decision ID; a JSON approval record carries `decision_id`, `runtime_id`, `case_id`, `contract_id`, `approval_hash` and `decision=approve_contract`, and the successful Writer transaction consumes it so it cannot be replayed. It does not include a Runtime revision suffix. `--expected-case-revision` / `--expected-case-sha256` remain optional explicit assertions for integrations or recovery, not normal Agent steps. The command advances the Runtime through `S8-REPAIR-CONTRACT-APPROVAL` to S9 and pins the Contract hash. If a legacy consumer needs a BUG-shaped view, run `runtime investigation project --bug-id <BUG-xxx>` only after approval; it validates the exact Finding set and never mutates the authority pointer. S9 consumes that contract. Specification correction routes to S2, REQ change pauses for the human Gateway, duplicate follows its canonical Case, evidence-backed no-change returns to a new complete S7 round, and `investigate_more` stays in S8. Do not ask S8 to reproduce a confirmed symptom by default.
 - S8 multi-value fields `--source-finding`, `--source-boundary`, `--evidence`, `--explains`, and `--does-not-explain` may be repeated or supplied as comma-separated values in one flag; the CLI preserves the complete set and the Case validator then checks exact-set membership and duplicates. `--causal-model-file`, `--blast-radius-file`, and `--detection-gap-file` are JSON-object authoring inputs; if a file is missing or is not valid JSON, the command identifies the specific flag/path. Create or fix the file and retry; do not misclassify this error as a missing Case root-cause field.
 - **failure_route**: an invalid or incomplete ObservationBatch returns to S7 for evidence completion; an unsupported root cause, unexplained Finding or incomplete contract stays in the same S8 Case; a duplicate follows its canonical Case; specification ambiguity routes to S2; REQ-level ambiguity surfaces `req_amendment`. A follow-up observation is allowed only when it is bound to a named discriminator and a safe evidence gap.
-- **human_gateway**: only `req_amendment`.
+- **human_gateway**: `req_amendment` and explicit RepairContract approval when neither a project policy pinned at REQ binding nor a valid bounded-repair grant applies. Under either authority, the Driver records a technical review and activates the exact contract via `--delegation-evidence-id`; see [bounded repair autonomy](bounded-repair-autonomy.md). A technical review never impersonates a human decision.
 - **primary_skill**: `bug-resolution` plus `plan_checkpoint`; S8 Investigator is read-only against product/spec.
 
 `runtime investigation status` is S8's single recovery entry point: when a Case is `contract_approved` and has no unprocessed S9 targeted failure, `next` directly gives

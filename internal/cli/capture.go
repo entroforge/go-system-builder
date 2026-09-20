@@ -41,7 +41,7 @@ func runCapture(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	findingID := flags.String("finding", "", "optional Finding id this step belongs to")
 	claimID := flags.String("claim", "", "optional Claim id this step belongs to")
 	sequence := flags.Int("sequence", 0, "step sequence (default: next)")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if *assignmentID == "" || *action == "" || *observed == "" {

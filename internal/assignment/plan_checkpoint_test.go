@@ -150,6 +150,11 @@ func TestPlanCheckpointActivatesStraightOffPlanReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plan report submission: %v", err)
 	}
+	rows := submitted.State["entities"].(map[string]any)["agents"].([]any)
+	row := rows[0].(map[string]any)
+	if row["plan_reported_ref"] != row["readback_ref"] || row["plan_reported_ref"] == "" {
+		t.Fatalf("readback and plan checkpoint must be one Writer commit: %#v", row)
+	}
 	// Direct activation without understanding_approved.
 	activationPath := writeMessage(t, dir, "activation.json", planCheckpointActivation(t, submitted.Revision, planSHA))
 	activated, err := assignment.AdvanceAgent(root, statePath, journalPath, assignment.AgentEventRequest{

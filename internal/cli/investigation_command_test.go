@@ -399,12 +399,26 @@ func prepareCLIInvestigationCase(t *testing.T, root string) {
 // route). Without them an ingested Case can never record a hypothesis, so
 // unexplained_finding_ids never empties and contract approve rejects forever.
 func TestRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T) {
+	for _, installed := range []bool{false, true} {
+		name := "source-layout"
+		if installed {
+			name = "installed-layout"
+		}
+		t.Run(name, func(t *testing.T) { testRuntimeInvestigationHypothesisAndRouteCLI(t, installed) })
+	}
+}
+
+func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool) {
 	root := req039fixtures.FreshRoot(t)
+	roleDir := "agents"
+	if installed {
+		roleDir = ".claude/agents"
+	}
 	state := req039fixtures.BaseState(t, root, "bug_resolution", "investigation", 0)
-	if err := os.MkdirAll(filepath.Join(root, "agents"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, roleDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "agents", "investigator.md"), []byte("# Investigator\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, roleDir, "investigator.md"), []byte("# Investigator\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {

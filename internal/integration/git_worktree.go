@@ -234,7 +234,7 @@ func checkoutBranch(ctx context.Context, root, branch string) error {
 // checkpoint.
 func RunCheck(ctx context.Context, root, command string, run func(ctx context.Context, root, command string) error) (CheckResult, error) {
 	if run == nil {
-		return CheckResult{Command: command, Status: "skip"}, nil
+		return CheckResult{Command: command, Status: "fail", Output: ErrCheckRunnerMissing.Error()}, ErrCheckRunnerMissing
 	}
 	if err := run(ctx, root, command); err != nil {
 		return CheckResult{Command: command, Status: "fail", Output: err.Error()}, nil

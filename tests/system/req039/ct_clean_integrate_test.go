@@ -15,79 +15,53 @@ import (
 )
 
 // TestCT03909_CleanWorktreeStopViaSubagentStop covers SYNC-039 §12 CT-039-09:
-// first SubagentStop merges to verified; second reaches complete, removes the
-// worktree, and leaves develop HEAD unchanged (no re-merge).
+// SubagentStop returns a short pending action; explicit integration verifies,
+// acknowledges and cleans up. Repeating the command never re-merges.
 func TestCT03909_CleanWorktreeStopViaSubagentStop(t *testing.T) {
 	root := freshRoot(t)
 	runner := &req039fixtures.CLIRunner{}
-	repo := setupGitWorktreeFixture(t, root)
-
-	state := systemPlanningState(t, root, "tasks", 11)
-	state["lifecycle"] = map[string]any{"state": "building", "phase": nil, "phase_revision": 0}
-	state["entities"] = map[string]any{
-		"agents": []any{map[string]any{
-			"id": "builder-ct09", "role": "builder", "state": "reported",
-			"task_ids": []any{"TASK-039-01"}, "team_id": "team-ct09",
-		}},
-		"tasks": []any{map[string]any{
-			"id": "TASK-039-01", "state": "review",
-			"owner_agent_ids": []any{"builder-ct09"},
-		}},
-		"bugs": []any{}, "teams": []any{},
-	}
-	writeSystemState(t, root, state)
-
-	writeWorkgroupWithWorktree(t, root, "TASK-039-01", "assignment-ct09", "builder-ct09", repo.wtPath, repo.branch)
-	writeCompletionReport(t, root, "loop-system-test", "assignment-ct09")
-
-	developBefore := repo.developHEAD()
-	body := req039fixtures.SubagentStopBody("session-ct-039-09", "builder-ct09", "assignment-ct09")
+	wt := seedIntegrableAssignment(t, root)
+	before := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
+	body := req039fixtures.SubagentStopBody("session-ct09", "builder-ti", "assignment-ti")
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "SubagentStop", body)
 	if code != 0 {
-		t.Fatalf("SubagentStop failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+		t.Fatalf("hook: %d %s %s", code, stdout, stderr)
+	}
+	if strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD")) != before {
+		t.Fatal("short Hook performed a merge")
+	}
+	if !strings.Contains(stdout+stderr, "task-integrate") {
+		t.Fatal("Hook lost actionable integration follow-up")
 	}
 	if runner.ManualTransitionCalls != 0 {
-		t.Fatalf("CT-039-09 must not use manual transition CLI")
+		t.Fatal("Hook used a manual lifecycle transition")
 	}
-
-	out := stdout + stderr
-	developAfterFirst := repo.developHEAD()
-	if developAfterFirst == developBefore {
-		t.Fatalf("CT-039-09 clean stop must non-squash merge into develop; out=%s", out)
+	code, stdout, stderr = runTaskIntegrate(t, root, "assignment-ti")
+	if code != 0 {
+		t.Fatalf("integrate: %d %s %s", code, stdout, stderr)
 	}
-	if !strings.Contains(strings.ToLower(out), "state=verified") &&
-		!strings.Contains(strings.ToLower(out), "verified") {
-		t.Fatalf("CT-039-09 must surface verified progress, got %s", out)
+	after := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
+	if before == after {
+		t.Fatal("explicit integration did not merge")
 	}
-	cpPath, cpState := readIntegrationCheckpoint(t, root)
-	if cpState != "verified" && cpState != "merged" {
-		t.Fatalf("CT-039-09 durable checkpoint want verified/merged, got %q path=%s", cpState, cpPath)
+	_, state := readIntegrationCheckpoint(t, root)
+	if state != "complete" {
+		t.Fatalf("checkpoint=%s", state)
 	}
-	if !strings.Contains(cpPath, filepath.Join("worktree", "assignment-ct09")) {
-		t.Fatalf("CT-039-09 checkpoint must be keyed by assignment_id, got path=%s", cpPath)
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("worktree remains: %v", err)
 	}
-
-	// Second SubagentStop: ack + cleanup → complete (BUG-039-38).
-	code2, stdout2, stderr2 := runHookWithRunner(t, runner, root, "SubagentStop", body)
-	if code2 != 0 {
-		t.Fatalf("second SubagentStop failed: code=%d stderr=%s stdout=%s", code2, stderr2, stdout2)
+	runtimeState := req039fixtures.ReadState(t, root)
+	agent := runtimeState["entities"].(map[string]any)["agents"].([]any)[0].(map[string]any)
+	if agent["state"] != "done" || agent["completion_acknowledged_ref"] == nil {
+		t.Fatalf("missing durable Agent acknowledgment: %v", agent)
 	}
-	out2 := stdout2 + stderr2
-	developAfterSecond := repo.developHEAD()
-	if developAfterSecond != developAfterFirst {
-		t.Fatalf("CT-039-09 second stop must not re-merge: before=%s after=%s out=%s",
-			developAfterFirst, developAfterSecond, out2)
+	code, stdout, stderr = runTaskIntegrate(t, root, "assignment-ti")
+	if code != 0 {
+		t.Fatalf("repeat: %d %s %s", code, stdout, stderr)
 	}
-	if !strings.Contains(strings.ToLower(out2), "state=complete") &&
-		!strings.Contains(strings.ToLower(out2), "complete") {
-		t.Fatalf("CT-039-09 second stop must surface complete, got %s", out2)
-	}
-	_, cpState2 := readIntegrationCheckpoint(t, root)
-	if cpState2 != "complete" {
-		t.Fatalf("CT-039-09 second stop durable checkpoint want complete, got %q (forbidden: verified-only)", cpState2)
-	}
-	if _, err := os.Stat(repo.wtPath); !os.IsNotExist(err) {
-		t.Fatalf("CT-039-09 complete must remove worktree at %s (stat err=%v)", repo.wtPath, err)
+	if strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD")) != after {
+		t.Fatal("repeat remerged")
 	}
 }
 

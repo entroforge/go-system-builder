@@ -343,7 +343,7 @@ func isControlPlaneDriftPath(rel string) bool {
 	// Runtime lock files (.claude/loop-state.json.lock) exist only for the
 	// instant of a concurrent CAS write; catching them mid-scan stales a
 	// clean round on a pure race.
-	if strings.HasPrefix(rel, ".claude/") && strings.HasSuffix(rel, ".lock") {
+	if strings.HasPrefix(rel, ".claude/") && (strings.HasSuffix(rel, ".lock") || strings.HasSuffix(rel, ".lock.process")) {
 		return true
 	}
 	for _, prefix := range []string{".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/"} {

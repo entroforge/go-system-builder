@@ -249,3 +249,27 @@ must trace back to the locked REQ. Invalid or guard-failing events do not
 change state, execute no side effect, and record a rejected event.
 Idempotency uses CAS revision checks; one committed transition per runtime
 revision.
+
+## Executable acceptance checks before locking TASKs
+
+Before locking a check command, verify its selected test inventory, browser
+support policy, runtime ownership, required dependencies, and known baseline
+failures. A command named cross-browser is not evidence that the current
+requirement is selected by those browser projects. Reuse unchanged baseline
+receipts only when their commit/configuration and declared scope apply; do not
+run the entire suite at every planning step. Unknown baseline health remains
+unknown, never PASS. Browser coverage changes use the existing specification
+change route, not a new approval workflow.
+
+Manual debugging and integration must use the same project runner/environment
+profile for comparable evidence. Do not replace a required custom reporter,
+filter away failed tests, or hide the command exit code behind `tail`/`tee`.
+Resource controls may limit concurrency without reducing test coverage.
+
+## Production-path ownership before S4 close
+
+For each user-visible or externally consumed capability, trace the real caller through the applicable UI mount, API wrapper, registered route, authorization, service and response projection. Reuse the existing TASK/contract traceability sections: name the owning TASK for each required connection, including changes to shared types. A service implementation alone does not establish a production consumer. For backend-only work start at its actual external caller; do not invent a UI obligation.
+
+Cross-check the files needed to implement each connection against its planned write scope. Missing ownership or contradictory scope is unfinished planning; correct it before locking/dispatch, not by copying business rules into the allowed component. Retain one canonical authority for business decisions; client-side validation requires explicit compatibility and differential checks.
+
+For critical capabilities name at least one check crossing the actual registered boundary and one counterexample (such as reverted wiring) that would make it fail. Counts, test names, a mock returning the desired response, and a test proving an entry is absent are not delivery evidence. Record coverage gaps explicitly; do not defer a TASK's own delivery obligations to S7. This is a semantic review obligation, not a claim that the current machine gate proves end-to-end correctness.

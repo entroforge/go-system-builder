@@ -36,7 +36,7 @@ func runDesignFoundationCheck(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	strict := flags.Bool("strict", false, "exit 1 when advisory warnings exist")
 	jsonOut := flags.Bool("json", false, "emit JSON report")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	report, err := designfoundation.Check(*root)
@@ -80,7 +80,7 @@ func runDesignFoundationEmitCSS(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "design-foundation emit-css")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	path, err := designfoundation.EmitCSSFile(*root)
@@ -97,7 +97,7 @@ func runDesignFoundationExport(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "design-foundation export-portable")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	path, err := designfoundation.ExportPortable(*root)
@@ -117,7 +117,7 @@ func runDesignFoundationMigrate(args []string, stdout, stderr io.Writer) int {
 	to := flags.String("to", "contract-v1", "migration target (only contract-v1)")
 	write := flags.Bool("write", false, "write markers (default is dry-run)")
 	dryRun := flags.Bool("dry-run", true, "preview without writing")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	// --write overrides dry-run

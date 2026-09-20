@@ -22,7 +22,7 @@ func runTasks(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "tasks check")
 	root := flags.String("root", ".", "repository root")
 	asJSON := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	result, err := semantic.TasksCheck(*root)

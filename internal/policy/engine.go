@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/classifier"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // Minimal Safety Policy — REQ-039 v2.0.0 §14 / BE-039 v1.0.2 §6.
@@ -90,6 +91,7 @@ const (
 // (controller, hookctx, adapter) still consume. The enforce path no longer
 // reads it; it remains as a data carrier until BUG-02/03 migrate callers.
 type AgentContext struct {
+	ReviewAssignment      bool     `json:"review_assignment,omitempty"`
 	ID                    string   `json:"id"`
 	State                 string   `json:"state"`
 	AllowedTools          []string `json:"allowed_tools"`
@@ -146,25 +148,27 @@ type LockedArtifact struct {
 // the two retained decisions. The remaining fields are data carriers for
 // downstream consumers and are preserved until BUG-02/03 migrate them away.
 type RuntimeContext struct {
-	RuntimeID                 string           `json:"runtime_id"`
-	Revision                  int              `json:"revision"`
-	BoundREQID                string           `json:"bound_req_id,omitempty"`
-	BoundREQPath              string           `json:"bound_req_path"`
-	BoundREQUIImpact          string           `json:"bound_req_ui_impact"`
-	Agent                     *AgentContext    `json:"agent"`
-	CurrentState              string           `json:"current_state"`
-	CurrentPhase              string           `json:"current_phase"`
-	Paused                    bool             `json:"paused"`
-	CleanRound                any              `json:"clean_round"`
-	CurrentReviewRound        int              `json:"current_review_round"`
-	EvidenceValidCount        int              `json:"evidence_valid_count"`
-	OpenBlockingBugs          int              `json:"open_blocking_bugs"`
-	Teams                     []TeamSummary    `json:"teams,omitempty"`
-	LastActivityAt            string           `json:"last_activity_at,omitempty"`
-	ProjectRoot               string           `json:"project_root,omitempty"`
-	CurrentStage              string           `json:"current_stage,omitempty"`
-	CurrentBaselineGeneration int              `json:"current_baseline_generation,omitempty"`
-	LockedArtifacts           []LockedArtifact `json:"locked_artifacts,omitempty"`
+	Workspace                 *workspace.Binding `json:"-"`
+	WorkspaceError            string             `json:"-"`
+	RuntimeID                 string             `json:"runtime_id"`
+	Revision                  int                `json:"revision"`
+	BoundREQID                string             `json:"bound_req_id,omitempty"`
+	BoundREQPath              string             `json:"bound_req_path"`
+	BoundREQUIImpact          string             `json:"bound_req_ui_impact"`
+	Agent                     *AgentContext      `json:"agent"`
+	CurrentState              string             `json:"current_state"`
+	CurrentPhase              string             `json:"current_phase"`
+	Paused                    bool               `json:"paused"`
+	CleanRound                any                `json:"clean_round"`
+	CurrentReviewRound        int                `json:"current_review_round"`
+	EvidenceValidCount        int                `json:"evidence_valid_count"`
+	OpenBlockingBugs          int                `json:"open_blocking_bugs"`
+	Teams                     []TeamSummary      `json:"teams,omitempty"`
+	LastActivityAt            string             `json:"last_activity_at,omitempty"`
+	ProjectRoot               string             `json:"project_root,omitempty"`
+	CurrentStage              string             `json:"current_stage,omitempty"`
+	CurrentBaselineGeneration int                `json:"current_baseline_generation,omitempty"`
+	LockedArtifacts           []LockedArtifact   `json:"locked_artifacts,omitempty"`
 	// VerificationWorkspace is the S7 ReviewPlan's verification artifact
 	// write surface (E2E cold-start spec/fixture/evidence). The reviewer
 	// product-write deny allows writes only inside it plus the control-plane
@@ -187,6 +191,7 @@ type RuntimeContext struct {
 }
 
 type Input struct {
+	CWD       string          `json:"cwd,omitempty"`
 	SessionID string          `json:"session_id"`
 	Event     string          `json:"hook_event_name"`
 	AgentID   string          `json:"agent_id"`
@@ -361,6 +366,9 @@ func (e *Engine) HasRule(id string) bool {
 }
 
 func (e *Engine) Evaluate(input Input) (Decision, error) {
+	if decision, blocked := WorkspaceBoundaryDecision(input); blocked {
+		return decision, nil
+	}
 	if decision, blocked := unknownMCPToolDecision(input); blocked {
 		return decision, nil
 	}
@@ -370,6 +378,14 @@ func (e *Engine) Evaluate(input Input) (Decision, error) {
 	// denies the command rather than letting it through unclassified.
 	if decision, blocked := protectedReleaseDecision(input); blocked {
 		return decision, nil
+	}
+	// Exact authenticated adapters enforce their own operation-specific authority.
+	// Commit rechecks every requested write through this policy; delivery validates
+	// S9 authority and records a candidate only. Classify the invocation as Read
+	// here to avoid rejecting a bounded adapter as arbitrary Worker shell.
+	if execution, ok := workspaceExecution(input); ok && workspaceAdapterCommand(input, execution) {
+		input.ToolName = "Read"
+		input.ToolInput = map[string]any{"file_path": execution.Path}
 	}
 	if decision, blocked := lockedArtifactDecision(input); blocked {
 		return decision, nil
@@ -569,9 +585,9 @@ func repairMutationPaths(input Input) ([]string, bool) {
 
 func repairControlPathAllowed(input Input, rawPath string) bool {
 	rel := reviewerRelativePath(input, rawPath)
-	for _, prefix := range []string{".claude/review/repair", ".claude/evidence", "docs/reports"} {
+	for _, prefix := range []string{".claude/review/repair", ".claude/evidence", ".claude/submissions", "docs/reports"} {
 		if rel == prefix || strings.HasPrefix(rel, prefix+"/") {
-			return input.Runtime.ProjectRoot == "" || reviewerPathContained(input.Runtime.ProjectRoot, rel)
+			return mutationRoot(input) == "" || reviewerPathContained(mutationRoot(input), rel)
 		}
 	}
 	return false
@@ -583,7 +599,7 @@ func repairPathMatches(input Input, rawPath, rule string) bool {
 	if rel != rule && !strings.HasPrefix(rel, strings.TrimSuffix(rule, "/")+"/") {
 		return false
 	}
-	return input.Runtime.ProjectRoot == "" || reviewerPathContained(input.Runtime.ProjectRoot, rel)
+	return mutationRoot(input) == "" || reviewerPathContained(mutationRoot(input), rel)
 }
 
 // assignmentWriteBeforePlanDecision is the L4 first-write barrier: a
@@ -630,7 +646,7 @@ func assignmentWriteBeforePlanDecision(input Input) (Decision, bool) {
 		if agent == nil {
 			return Decision{}, false
 		}
-		if agent.State != "spawned" && agent.State != "queued" && agent.State != "reading" {
+		if agent.DispatchMode != "plan_checkpoint" && agent.State != "spawned" && agent.State != "queued" && agent.State != "reading" {
 			return Decision{}, false
 		}
 		if agent.PlanReportedRef != "" || agent.DispatchMode == "one_shot" {
@@ -853,12 +869,12 @@ func phaseWritePathAllowed(input Input, rawPath string) bool {
 	rel := reviewerRelativePath(input, rawPath)
 	for _, prefix := range []string{".claude/evidence/", "docs/reports/", "docs/release_audits/"} {
 		if rel == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(rel, prefix) {
-			return input.Runtime.ProjectRoot == "" || reviewerPathContained(input.Runtime.ProjectRoot, rel)
+			return mutationRoot(input) == "" || reviewerPathContained(mutationRoot(input), rel)
 		}
 	}
 	if workspace := strings.TrimSuffix(filepath.ToSlash(input.Runtime.VerificationWorkspace), "/"); workspace != "" {
 		if rel == workspace || strings.HasPrefix(rel, workspace+"/") {
-			return input.Runtime.ProjectRoot == "" || reviewerPathContained(input.Runtime.ProjectRoot, rel)
+			return mutationRoot(input) == "" || reviewerPathContained(mutationRoot(input), rel)
 		}
 	}
 	return false
@@ -885,6 +901,20 @@ func phaseProductWriteBlock(input Input, rawPath string) Decision {
 }
 
 func reviewerRelativePath(input Input, rawPath string) string {
+	if input.Runtime.Workspace != nil {
+		path := strings.Trim(rawPath, "\"'")
+		if !filepath.IsAbs(path) {
+			base := input.CWD
+			if base == "" {
+				base = mutationRoot(input)
+			}
+			path = filepath.Join(base, path)
+		}
+		if rel, err := filepath.Rel(mutationRoot(input), path); err == nil {
+			return filepath.ToSlash(rel)
+		}
+	}
+
 	rel := strings.TrimPrefix(filepath.ToSlash(strings.Trim(rawPath, "\"'")), "./")
 	if abs, err := filepath.Abs(rawPath); err == nil && input.Runtime.ProjectRoot != "" {
 		if rootAbs, err := filepath.Abs(input.Runtime.ProjectRoot); err == nil {
@@ -904,7 +934,7 @@ func reviewerWritePathAllowed(input Input, rawPath string) bool {
 	}
 	for _, prefix := range allowed {
 		if rel == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(rel, prefix) {
-			return input.Runtime.ProjectRoot == "" || reviewerPathContained(input.Runtime.ProjectRoot, rel)
+			return mutationRoot(input) == "" || reviewerPathContained(mutationRoot(input), rel)
 		}
 	}
 	return false
@@ -1286,7 +1316,7 @@ func lockedArtifactDecision(input Input) (Decision, bool) {
 		}
 		for _, path := range affectedPaths {
 			if artifact.complete() &&
-				samePath(path, artifact.Path) {
+				samePath(lockedMutationPath(input, path), lockedReferencePath(input, artifact.Path)) {
 				recovery := []string{"create a new version through the formal rework path"}
 				if input.Runtime.BoundREQID != "" && artifact.Kind != "req" {
 					recovery = []string{ReworkPath(

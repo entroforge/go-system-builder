@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/filelock"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -3235,6 +3237,25 @@ func journalFileContains(path, eventID string) (bool, error) {
 }
 
 func acquireLock(path string, timeout time.Duration) (func(), error) {
+	// Fence current binaries with an OS-owned lock before the compatibility
+	// sentinel. A slow live writer can never be evicted by sentinel age.
+	// The sentinel remains for legacy lock diagnostics during uniform upgrades.
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	releaseProcess, err := filelock.Acquire(ctx, path+".process")
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	releaseLegacy, err := acquireLegacyLock(path, timeout-time.Since(started))
+	if err != nil {
+		releaseProcess()
+		return nil, err
+	}
+	return func() { releaseLegacy(); releaseProcess() }, nil
+}
+
+func acquireLegacyLock(path string, timeout time.Duration) (func(), error) {
 	deadline := time.Now().Add(timeout)
 	owner := strconv.Itoa(os.Getpid()) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	for {

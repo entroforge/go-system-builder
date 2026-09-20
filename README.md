@@ -24,6 +24,10 @@ Reusable documentation scaffolding for AI/Agent-assisted software delivery.
 
 This repository stores reusable templates, rules, and reference material only.
 
+See [packaging/README.md](packaging/README.md) for source and release boundaries,
+[packaging/install.md](packaging/install.md) for installation, and
+[docs/workspace-integration.md](docs/workspace-integration.md) for Main/Worker behavior.
+
 Project-instance files such as `AGENTS.md`, `docs/project-map.md`, `docs/requirements/REQ-*.md`, requirement indexes, and reports are local to each target project and must not be committed back to this template repository.
 
 ## Core Gates

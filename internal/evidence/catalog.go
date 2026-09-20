@@ -258,6 +258,7 @@ func formatKinds(kinds []string) string {
 // It remains a legal loop-state evidence kind and is auto-indexed by
 // internal/repair.CommitRepairHandoff.
 var defaultRegisteredKinds = []string{
+	"repair_contract_review",
 	"acceptance",
 	"agent_activation",
 	"agent_completion",

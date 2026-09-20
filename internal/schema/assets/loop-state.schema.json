@@ -26,6 +26,153 @@
     "updated_at"
   ],
   "properties": {
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "main_root",
+        "common_dir",
+        "integration_branch",
+        "bound_head",
+        "binding_version",
+        "executions"
+      ],
+      "properties": {
+        "main_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "common_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "integration_branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bound_head": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binding_version": {
+          "const": 1
+        },
+        "executions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "assignment_id",
+              "runtime_id",
+              "agent_id",
+              "worktree_path",
+              "branch",
+              "target_branch",
+              "base_commit",
+              "baseline_generation",
+              "execution_generation",
+              "status",
+              "write_paths",
+              "required_checks",
+              "inputs"
+            ],
+            "properties": {
+              "assignment_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "runtime_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "agent_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "worktree_path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "branch": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target_branch": {
+                "type": "string",
+                "minLength": 1
+              },
+              "base_commit": {
+                "type": "string",
+                "minLength": 1
+              },
+              "baseline_generation": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "execution_generation": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "status": {
+                "enum": [
+                  "preparing",
+                  "ready",
+                  "retired",
+                  "complete"
+                ]
+              },
+              "write_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "required_checks": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "inputs": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "platform_session_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "bootstrap_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "delivery_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivery_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "rework_ref": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "execution_history": {
+          "type": "array",
+          "items": {
+            "$ref": "#/properties/workspace/properties/executions/additionalProperties"
+          }
+        }
+      },
+      "description": "Optional versioned control-workspace binding. Older harnesses cannot write a bound runtime."
+    },
     "schema_version": {
       "const": "1.1.0"
     },
@@ -191,24 +338,76 @@
           "minimum": 1
         },
         "round_entry": {
-          "type": ["object", "null"],
+          "type": [
+            "object",
+            "null"
+          ],
           "description": "The transition that opened the active S7 round. TR-012 entries carry the exact repair handoff and change_impact evidence references used to freeze the post-repair baseline.",
           "additionalProperties": false,
-          "required": ["transition_id", "round", "baseline_generation", "change_impact_ref"],
+          "required": [
+            "transition_id",
+            "round",
+            "baseline_generation",
+            "change_impact_ref"
+          ],
           "properties": {
-            "transition_id": {"type": "string", "minLength": 1},
-            "round": {"type": "integer", "minimum": 1},
-            "baseline_generation": {"type": "integer", "minimum": 0},
-            "change_impact_ref": {"type": ["string", "null"], "minLength": 1},
-            "repair_handoff_ref": {"type": ["string", "null"], "minLength": 1},
-            "repair_handoff_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-            "implementation_baseline_digest": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-            "review_plan_seed_ref": {"type": ["string", "null"]},
-            "review_plan_seed_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+            "transition_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "round": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "baseline_generation": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "change_impact_ref": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "repair_handoff_ref": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "repair_handoff_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "implementation_baseline_digest": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "review_plan_seed_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "review_plan_seed_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[a-f0-9]{64}$"
+            }
           }
         },
         "plan": {
-          "description": "The registered S7 ReviewPlan pointer (L3-S7 §3.2). Claim/assignment content lives in the pinned plan file; the runtime holds identity, hash and status under CAS.",
+          "description": "The registered S7 ReviewPlan pointer (L3-S7 \u00a73.2). Claim/assignment content lives in the pinned plan file; the runtime holds identity, hash and status under CAS.",
           "oneOf": [
             {
               "type": "null"
@@ -227,44 +426,113 @@
                 "submitted_at"
               ],
               "properties": {
-                "plan_id": {"type": "string"},
-                "path": {"type": "string"},
-                "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-                "revision": {"type": "integer", "minimum": 1},
-                "review_round": {"type": "integer", "minimum": 1},
+                "plan_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "review_round": {
+                  "type": "integer",
+                  "minimum": 1
+                },
                 "status": {
-                  "enum": ["running", "cannot_clean", "discovery_draining", "observation_sealed", "clean", "paused", "stale"]
+                  "enum": [
+                    "running",
+                    "cannot_clean",
+                    "discovery_draining",
+                    "observation_sealed",
+                    "clean",
+                    "paused",
+                    "stale"
+                  ]
                 },
                 "e2e_coverage_state": {
-                  "enum": ["cold_start", "regression_available", "not_applicable"]
+                  "enum": [
+                    "cold_start",
+                    "regression_available",
+                    "not_applicable"
+                  ]
                 },
-                "verification_artifact_workspace": {"type": ["string", "null"]},
+                "verification_artifact_workspace": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "verification_artifact_digest": {
-                  "type": ["string", "null"],
+                  "type": [
+                    "string",
+                    "null"
+                  ],
                   "pattern": "^[a-f0-9]{64}$",
                   "description": "sha256 over the workspace's relative-path:file-hash lines at plan registration (E2E cold_start only); the seal/clean close recomputes and rejects drift."
                 },
-                "submitted_at": {"type": "string"}
+                "submitted_at": {
+                  "type": "string"
+                }
               }
             }
           ]
         },
         "claims": {
-          "description": "Consumer-maintained disposition projection for the current plan (L3-S7 §3.5 round-level disposition). Written only inside the review-plan / review-result CAS transactions.",
+          "description": "Consumer-maintained disposition projection for the current plan (L3-S7 \u00a73.5 round-level disposition). Written only inside the review-plan / review-result CAS transactions.",
           "type": "object",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["lens", "applicability", "disposition", "assignment_id"],
+            "required": [
+              "lens",
+              "applicability",
+              "disposition",
+              "assignment_id"
+            ],
             "properties": {
-              "lens": {"enum": ["delivery", "qa", "e2e"]},
-              "applicability": {"enum": ["required", "not_applicable"]},
-              "disposition": {"enum": ["planned", "running", "pass", "finding", "not_applicable", "blocked"]},
-              "assignment_id": {"type": "string"},
-              "result_id": {"type": ["string", "null"]},
+              "lens": {
+                "enum": [
+                  "delivery",
+                  "qa",
+                  "e2e"
+                ]
+              },
+              "applicability": {
+                "enum": [
+                  "required",
+                  "not_applicable"
+                ]
+              },
+              "disposition": {
+                "enum": [
+                  "planned",
+                  "running",
+                  "pass",
+                  "finding",
+                  "not_applicable",
+                  "blocked"
+                ]
+              },
+              "assignment_id": {
+                "type": "string"
+              },
+              "result_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "finding_ids": {
                 "type": "array",
-                "items": {"type": "string"}
+                "items": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -275,55 +543,140 @@
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["lens", "claim_ids", "status"],
+            "required": [
+              "lens",
+              "claim_ids",
+              "status"
+            ],
             "properties": {
-              "lens": {"enum": ["delivery", "qa", "e2e"]},
+              "lens": {
+                "enum": [
+                  "delivery",
+                  "qa",
+                  "e2e"
+                ]
+              },
               "claim_ids": {
                 "type": "array",
-                "items": {"type": "string"}
+                "items": {
+                  "type": "string"
+                }
               },
-              "status": {"enum": ["planned", "dispatched", "blocked", "result_submitted", "consumed"]},
-              "agent_id": {"type": ["string", "null"]},
-              "result_ref": {"type": ["string", "null"]},
-              "queued_agent_id": {"type": ["string", "null"], "description": "Agent registered for a resource-lock-queued Assignment; the scheduler promotes it when the holder is consumed."},
-              "blocker_ref": {"type": ["string", "null"], "description": "Canonical S7 site-lost blocker artifact; present only while this Assignment is blocked."},
-              "blocked_at": {"type": ["string", "null"], "description": "UTC timestamp at which the Assignment entered the explicit S7 blocker state."},
+              "status": {
+                "enum": [
+                  "planned",
+                  "dispatched",
+                  "blocked",
+                  "result_submitted",
+                  "consumed"
+                ]
+              },
+              "agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "queued_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Agent registered for a resource-lock-queued Assignment; the scheduler promotes it when the holder is consumed."
+              },
+              "blocker_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Canonical S7 site-lost blocker artifact; present only while this Assignment is blocked."
+              },
+              "blocked_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "UTC timestamp at which the Assignment entered the explicit S7 blocker state."
+              },
               "artifact_digest": {
-                "type": ["string", "null"],
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "pattern": "^[a-f0-9]{64}$",
-                "description": "The verification workspace digest the consumed E2E result ran against (L3-S7 §10.1.6)."
+                "description": "The verification workspace digest the consumed E2E result ran against (L3-S7 \u00a710.1.6)."
               },
               "resource_locks": {
-                "type": ["array", "null"],
-                "description": "Sorted unique non-empty union of the Assignment's declared locks plus the locks declared on each of its Claims (computed via mergedResourceLocks); consulted for dispatch conflict detection and queueing (L3-S7 §4.5, L4 §6.2). Absent/null when no claim/assignment in this round declares any lock.",
-                "items": {"type": "string", "minLength": 1},
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "description": "Sorted unique non-empty union of the Assignment's declared locks plus the locks declared on each of its Claims (computed via mergedResourceLocks); consulted for dispatch conflict detection and queueing (L3-S7 \u00a74.5, L4 \u00a76.2). Absent/null when no claim/assignment in this round declares any lock.",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "uniqueItems": true
               },
               "queue_reason": {
-                "type": ["string", "null"],
-                "description": "Recorded queue-cause identifier when the scheduler queues this Assignment behind a held resource lock; null when the Assignment is ready or already consumed (L3-S7 §4.5)."
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Recorded queue-cause identifier when the scheduler queues this Assignment behind a held resource lock; null when the Assignment is ready or already consumed (L3-S7 \u00a74.5)."
               }
             }
           }
         },
         "observation_batch": {
-          "description": "The sealed S7 -> S8 handoff pointer (L3-S7 §3.7); null while the round is still discovering.",
+          "description": "The sealed S7 -> S8 handoff pointer (L3-S7 \u00a73.7); null while the round is still discovering.",
           "oneOf": [
-            {"type": "null"},
+            {
+              "type": "null"
+            },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["batch_id", "path", "sha256", "finding_ids", "drain_policy", "sealed_at"],
+              "required": [
+                "batch_id",
+                "path",
+                "sha256",
+                "finding_ids",
+                "drain_policy",
+                "sealed_at"
+              ],
               "properties": {
-                "batch_id": {"type": "string"},
-                "path": {"type": "string"},
-                "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "batch_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
                 "finding_ids": {
                   "type": "array",
-                  "items": {"type": "string"}
+                  "items": {
+                    "type": "string"
+                  }
                 },
-                "drain_policy": {"enum": ["complete_required_claims", "immediate_stop"]},
-                "sealed_at": {"type": "string"}
+                "drain_policy": {
+                  "enum": [
+                    "complete_required_claims",
+                    "immediate_stop"
+                  ]
+                },
+                "sealed_at": {
+                  "type": "string"
+                }
               }
             }
           ]
@@ -331,14 +684,21 @@
         "investigation_baseline_drift": {
           "description": "RC-18 S8-H3: the latest baseline-digest drift warning from investigation Case revisions, or null while the Case baseline matches the frozen ReviewPlan subjects. Read-only projection for `runtime investigation status`; the Case artifact's pinned baseline_digest is never rewritten.",
           "oneOf": [
-            {"type": "null"},
-            {"type": "string", "minLength": 1}
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
           ]
         },
         "investigation": {
           "description": "The S8 InvestigationCase intake pointer. The Case artifact is the authority; this runtime field is only its CAS-pinned identity and status projection.",
           "oneOf": [
-            {"type": "null"},
+            {
+              "type": "null"
+            },
             {
               "type": "object",
               "additionalProperties": false,
@@ -353,29 +713,117 @@
                 "updated_at"
               ],
               "properties": {
-                "case_id": {"type": "string", "pattern": "^investigation-case-[A-Za-z0-9._-]+$"},
-                "path": {"type": "string", "minLength": 1},
-                "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-                "revision": {"type": "integer", "minimum": 1},
-                "status": {"enum": ["investigating", "contract_review", "contract_approved", "routed", "blocked", "closed"]},
-                "route": {"type": ["string", "null"], "enum": ["s9_repair", "s2_spec_rework", "human_req_change", "s7_no_change", "investigate_more", "duplicate", null]},
-                "route_reason": {"type": ["string", "null"]},
-                "route_consumed_at": {"type": ["string", "null"]},
-                "route_consumer": {"type": ["string", "null"]},
-                "next_action": {"type": ["string", "null"]},
+                "case_id": {
+                  "type": "string",
+                  "pattern": "^investigation-case-[A-Za-z0-9._-]+$"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "status": {
+                  "enum": [
+                    "investigating",
+                    "contract_review",
+                    "contract_approved",
+                    "routed",
+                    "blocked",
+                    "closed"
+                  ]
+                },
+                "route": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "s9_repair",
+                    "s2_spec_rework",
+                    "human_req_change",
+                    "s7_no_change",
+                    "investigate_more",
+                    "duplicate",
+                    null
+                  ]
+                },
+                "route_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "route_consumed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "route_consumer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "next_action": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "source_finding_ids": {
                   "type": "array",
                   "minItems": 1,
                   "uniqueItems": true,
-                  "items": {"type": "string", "minLength": 1}
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 },
-                "observation_batch_id": {"type": "string", "minLength": 1},
-                "updated_at": {"type": "string", "minLength": 1},
-                "repair_contract_ref": {"type": "string", "minLength": 1},
-                "repair_contract_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-                "canonical_case_id": {"type": ["string", "null"], "minLength": 1},
-                "canonical_case_ref": {"type": ["string", "null"], "minLength": 1},
-                "canonical_case_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+                "observation_batch_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "updated_at": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "repair_contract_ref": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "repair_contract_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "canonical_case_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1
+                },
+                "canonical_case_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1
+                },
+                "canonical_case_sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                }
               }
             }
           ]
@@ -383,71 +831,318 @@
         "repair": {
           "description": "The S9 RepairSession pointer. Domain artifacts remain authoritative; Runtime pins their identity, revision and current next action for CAS recovery.",
           "oneOf": [
-            {"type": "null"},
+            {
+              "type": "null"
+            },
             {
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "session_id", "case_id", "contract_id", "contract_ref", "contract_sha256",
-                "path", "sha256", "revision", "status", "updated_at", "next_action"
+                "session_id",
+                "case_id",
+                "contract_id",
+                "contract_ref",
+                "contract_sha256",
+                "path",
+                "sha256",
+                "revision",
+                "status",
+                "updated_at",
+                "next_action"
               ],
               "properties": {
-                "session_id": {"type": "string", "pattern": "^repair-session-[A-Za-z0-9._-]+$"},
-                "case_id": {"type": "string", "pattern": "^investigation-case-[A-Za-z0-9._-]+$"},
-                "contract_id": {"type": "string", "pattern": "^repair-contract-[A-Za-z0-9._-]+$"},
-                "contract_ref": {"type": "string", "minLength": 1},
-                "contract_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-                "path": {"type": "string", "minLength": 1},
-                "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-                "revision": {"type": "integer", "minimum": 1},
-                "status": {"enum": ["contract_ready", "planning", "reproducing", "repairing", "impact_reconciliation", "targeted_reverification", "ready_for_full_review", "blocked", "stale", "closed"]},
-                "plan_ref": {"type": ["string", "null"]},
-                "plan_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-                "plan_report_ref": {"type": ["string", "null"]},
-                "plan_report_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-                "plan_report_refs": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}, "uniqueItems": true},
-                "assignment_id": {"type": ["string", "null"], "pattern": "^repair-assignment-[A-Za-z0-9._-]+$"},
-                "assignment_owners": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
-                "result_ref": {"type": ["string", "null"]},
-                "result_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-                "result_refs": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}, "uniqueItems": true},
-                "changeset_ref": {"type": ["string", "null"]},
-                "changeset_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-                "impact_ref": {"type": ["string", "null"]},
-                "impact_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-                "targeted_reverification_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+                "session_id": {
+                  "type": "string",
+                  "pattern": "^repair-session-[A-Za-z0-9._-]+$"
+                },
+                "case_id": {
+                  "type": "string",
+                  "pattern": "^investigation-case-[A-Za-z0-9._-]+$"
+                },
+                "contract_id": {
+                  "type": "string",
+                  "pattern": "^repair-contract-[A-Za-z0-9._-]+$"
+                },
+                "contract_ref": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contract_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "status": {
+                  "enum": [
+                    "contract_ready",
+                    "planning",
+                    "reproducing",
+                    "repairing",
+                    "impact_reconciliation",
+                    "targeted_reverification",
+                    "ready_for_full_review",
+                    "blocked",
+                    "stale",
+                    "closed"
+                  ]
+                },
+                "plan_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "plan_sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "plan_report_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "plan_report_sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "plan_report_refs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "path",
+                      "sha256"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    }
+                  },
+                  "uniqueItems": true
+                },
+                "assignment_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^repair-assignment-[A-Za-z0-9._-]+$"
+                },
+                "assignment_owners": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "result_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "result_sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "result_refs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "path",
+                      "sha256"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    }
+                  },
+                  "uniqueItems": true
+                },
+                "changeset_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "changeset_sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "impact_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "impact_sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "targeted_reverification_refs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
                 "targeted_reverification_artifacts": {
                   "type": "array",
                   "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["path", "sha256"],
-                    "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+                    "required": [
+                      "path",
+                      "sha256"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    }
                   },
                   "uniqueItems": true
                 },
-                "handoff_ref": {"type": ["string", "null"]},
-                "handoff_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-                "failure_route": {"type": ["string", "null"], "enum": ["fail_same_cause", "fail_new_cause", "blocked", "scope_changed", "stale", null]},
-                "blocker_resolved_by": {"type": ["string", "null"], "minLength": 1},
-                "blocker_resolution": {"type": ["string", "null"], "minLength": 1},
-                "blocker_resolved_at": {"type": ["string", "null"], "minLength": 1},
-                "review_plan_seed_ref": {"type": ["string", "null"]},
-                "review_plan_seed_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-                "implementation_baseline_digest": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+                "handoff_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "handoff_sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "failure_route": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "fail_same_cause",
+                    "fail_new_cause",
+                    "blocked",
+                    "scope_changed",
+                    "stale",
+                    null
+                  ]
+                },
+                "blocker_resolved_by": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1
+                },
+                "blocker_resolution": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1
+                },
+                "blocker_resolved_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1
+                },
+                "review_plan_seed_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "review_plan_seed_sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "implementation_baseline_digest": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
                 "authority_fingerprint": {
                   "description": "RC-09 (S9-4): repository baseline digest captured when each RepairSession opened, keyed by session id. Repair commits re-verify the live digest against the pinned fingerprint and fail stale on drift.",
                   "type": "object",
-                  "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
                 },
                 "required_reverification_ids": {
                   "description": "RC-09 (S9-6): targeted reverification ids the ChangeImpact declared as mandatory. Repair handoff is blocked until every id resolves to a committed targeted_reverification artifact.",
                   "type": "array",
-                  "items": {"type": "string", "minLength": 1},
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "uniqueItems": true
                 },
-                "updated_at": {"type": "string", "minLength": 1},
-                "next_action": {"type": "string", "minLength": 1}
+                "updated_at": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "next_action": {
+                  "type": "string",
+                  "minLength": 1
+                }
               }
             }
           ]
@@ -470,6 +1165,51 @@
             "max_full_review_rounds"
           ],
           "properties": {
+            "bound_policy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "sha256",
+                "approved_by",
+                "req_sha256",
+                "runtime_id",
+                "baseline_generation"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "approved_by": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "req_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "runtime_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "baseline_generation": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "delegation_uses": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
             "max_attempts_per_bug": {
               "type": "integer",
               "minimum": 1,
@@ -637,14 +1377,14 @@
           }
         },
         "findings": {
-          "description": "Immutable S7 Finding index rows (L3-S7 §3.6). Full content lives in the pinned finding file; rows are never mutated after creation.",
+          "description": "Immutable S7 Finding index rows (L3-S7 \u00a73.6). Full content lives in the pinned finding file; rows are never mutated after creation.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/findingEntity"
           }
         },
         "finding_supplements": {
-          "description": "Append-only FindingSupplement index rows (L3-S7 §3.6, L3-S8 §2.2). Each row is the control-plane pointer to one persisted supplement artifact hanging under an immutable Finding; rows are never mutated after creation. Written exclusively by `runtime finding-supplement` in the main runtime CAS transaction.",
+          "description": "Append-only FindingSupplement index rows (L3-S7 \u00a73.6, L3-S8 \u00a72.2). Each row is the control-plane pointer to one persisted supplement artifact hanging under an immutable Finding; rows are never mutated after creation. Written exclusively by `runtime finding-supplement` in the main runtime CAS transaction.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/findingSupplementEntity"
@@ -771,7 +1511,10 @@
         },
         "manual_ref": {
           "type": "string",
-          "enum": ["loop-harness.md", ".claude/bin/loop-harness.md"]
+          "enum": [
+            "loop-harness.md",
+            ".claude/bin/loop-harness.md"
+          ]
         },
         "primary_skill": {
           "type": "string",
@@ -1306,17 +2049,50 @@
         "target_revision"
       ],
       "properties": {
-        "event_id": {"type": "string", "minLength": 1},
-        "transition_id": {"type": "string", "const": "TR-001"},
-        "event": {"type": "string", "const": "req_bound"},
-        "approved_by": {"type": "string", "minLength": 1},
-        "occurred_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"},
-        "source_runtime_id": {"type": "string", "minLength": 1},
-        "source_revision": {"type": "integer", "minimum": 0},
-        "source_state_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-        "source_journal_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-        "target_runtime_id": {"type": "string", "pattern": "^loop-REQ-[0-9]{3,}$"},
-        "target_revision": {"type": "integer", "const": 0}
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transition_id": {
+          "type": "string",
+          "const": "TR-001"
+        },
+        "event": {
+          "type": "string",
+          "const": "req_bound"
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurred_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        },
+        "source_runtime_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_state_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "source_journal_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "target_runtime_id": {
+          "type": "string",
+          "pattern": "^loop-REQ-[0-9]{3,}$"
+        },
+        "target_revision": {
+          "type": "integer",
+          "const": 0
+        }
       }
     },
     "documentReference": {
@@ -1376,7 +2152,7 @@
         },
         "author_agent_id": {
           "type": "string",
-          "description": "Registering actor — consumed by the S5 independence check (reviewer must not be an author)."
+          "description": "Registering actor \u2014 consumed by the S5 independence check (reviewer must not be an author)."
         },
         "registered_at": {
           "type": "string",
@@ -1465,7 +2241,11 @@
           "minimum": 0
         },
         "dispatch_mode": {
-          "enum": ["plan_checkpoint", "plan_approval_required", "one_shot"],
+          "enum": [
+            "plan_checkpoint",
+            "plan_approval_required",
+            "one_shot"
+          ],
           "description": "L4 dispatch mode captured at register-workgroup; controls whether activation_sent may follow the plan report directly (plan_checkpoint) or requires understanding_approved first (plan_approval_required)."
         },
         "plan_reported_ref": {
@@ -1617,24 +2397,50 @@
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
         },
-        "claim_id": {"type": "string"},
-        "assignment_id": {"type": "string"},
+        "claim_id": {
+          "type": "string"
+        },
+        "assignment_id": {
+          "type": "string"
+        },
         "lens": {
-          "enum": ["delivery", "qa", "e2e"]
+          "enum": [
+            "delivery",
+            "qa",
+            "e2e"
+          ]
         },
         "severity": {
-          "enum": ["P0", "P1", "P2", "P3"]
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
         },
         "blocking": {
           "type": "boolean",
           "description": "Explicit business-blocking marker carried from the Finding into the canonical BUG (RC-02). P0 Findings are implicitly blocking=true."
         },
         "observation_mode": {
-          "enum": ["user_flow", "api_flow", "command_flow", "state_transition", "code_inspection"]
+          "enum": [
+            "user_flow",
+            "api_flow",
+            "command_flow",
+            "state_transition",
+            "code_inspection"
+          ]
         },
-        "original_finder": {"type": "string"},
-        "review_round": {"type": "integer", "minimum": 1},
-        "created_at": {"type": "string"}
+        "original_finder": {
+          "type": "string"
+        },
+        "review_round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_at": {
+          "type": "string"
+        }
       }
     },
     "findingSupplementEntity": {
@@ -1668,7 +2474,7 @@
         "authorized_by": {
           "type": "string",
           "minLength": 1,
-          "description": "Scheduler identity that authorized a replacement finder when author != the Finding's original_finder (L3-S8 §2.2). Absent when the original finder authored the supplement."
+          "description": "Scheduler identity that authorized a replacement finder when author != the Finding's original_finder (L3-S8 \u00a72.2). Absent when the original finder authored the supplement."
         },
         "path": {
           "type": "string",
@@ -1678,18 +2484,28 @@
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
         },
-        "review_round": {"type": "integer", "minimum": 1},
-        "baseline_generation": {"type": "integer", "minimum": 0},
+        "review_round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "baseline_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
         "hypothesis_id": {
           "type": "string",
           "description": "Registered S8 Hypothesis the discriminator distinguishes. Present exactly on discriminator-bound follow-up observations; S7 in-round notes never carry it."
         },
         "discriminator": {
           "type": "string",
-          "description": "The S8 discriminator this observation answers (L3-S8 §2.1/§8). Present exactly on discriminator-bound follow-up observations."
+          "description": "The S8 discriminator this observation answers (L3-S8 \u00a72.1/\u00a78). Present exactly on discriminator-bound follow-up observations."
         },
-        "created_at": {"type": "string"},
-        "appended_at": {"type": "string"}
+        "created_at": {
+          "type": "string"
+        },
+        "appended_at": {
+          "type": "string"
+        }
       }
     },
     "bug": {
@@ -1737,7 +2553,7 @@
         },
         "blocking": {
           "type": "boolean",
-          "description": "Explicit business-blocking marker (RC-02, L3-S7 §10.1). P0 BUGs are implicitly blocking=true; a non-P0 BUG with blocking=true blocks the clean round exactly like a P0 — blocking is a business judgment, never a severity synonym."
+          "description": "Explicit business-blocking marker (RC-02, L3-S7 \u00a710.1). P0 BUGs are implicitly blocking=true; a non-P0 BUG with blocking=true blocks the clean round exactly like a P0 \u2014 blocking is a business judgment, never a severity synonym."
         },
         "attempt_count": {
           "type": "integer",
@@ -1957,6 +2773,7 @@
             "e2e_review",
             "bug",
             "targeted_reverification",
+            "repair_contract_review",
             "repair_handoff",
             "clean_round",
             "acceptance",

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -187,6 +189,7 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 		return nil, "", fmt.Errorf("resolve repository root: %w", err)
 	}
 	artifacts := []ArtifactRef{}
+	boundary := newBaselineBoundary(rootAbs)
 	err = filepath.WalkDir(rootAbs, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -199,7 +202,7 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 			return nil
 		}
 		relSlash := filepath.ToSlash(rel)
-		if ignoreBaselinePath(relSlash) {
+		if ignoreBaselinePath(relSlash) || boundary.excludes(relSlash) || (entry.IsDir() && boundary.discoverEnvironment(relSlash)) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -231,15 +234,46 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 		if !entry.Type().IsRegular() {
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read baseline artifact %s: %w", relSlash, err)
-		}
-		artifacts = append(artifacts, ArtifactRef{ID: "baseline-" + strings.NewReplacer("/", "-", "\\", "-").Replace(relSlash), Path: relSlash, SHA256: sha256Bytes(data), Status: "modified"})
+		// Inventory first: excluded logs are never read or hashed.
+		artifacts = append(artifacts, ArtifactRef{ID: "baseline-" + strings.NewReplacer("/", "-", "\\", "-").Replace(relSlash), Path: relSlash, Status: "modified"})
 		return nil
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("capture repository baseline: %w", err)
+	}
+	// RC-16 (S9-L1): runtime log output (server/log/<date>/info.log and the
+	// like) is written by the project's long-running service and by ordinary
+	// verification runs while a session is open. It is git-ignored, untracked
+	// exhaust — never implementation surface — so it is classified out of the
+	// baseline here, forgiven by the authority gate (checkS9AuthorityFreshness)
+	// and skipped by the Session diff (ComputeSessionChangeset) under one and
+	// the same rule. Without this, a single appended log line staled the
+	// fingerprint of every open session.
+	if excluded := runtimeLogPaths(rootAbs, artifactPaths(artifacts)); len(excluded) > 0 {
+		kept := make([]ArtifactRef, 0, len(artifacts))
+		for _, artifact := range artifacts {
+			if excluded[artifact.Path] {
+				continue
+			}
+			kept = append(kept, artifact)
+		}
+		artifacts = kept
+	}
+	for i := range artifacts {
+		f, err := os.Open(filepath.Join(rootAbs, filepath.FromSlash(artifacts[i].Path)))
+		if err != nil {
+			return nil, "", fmt.Errorf("read baseline artifact %s: %w", artifacts[i].Path, err)
+		}
+		h := sha256.New()
+		_, readErr := io.Copy(h, f)
+		closeErr := f.Close()
+		if readErr != nil {
+			return nil, "", readErr
+		}
+		if closeErr != nil {
+			return nil, "", closeErr
+		}
+		artifacts[i].SHA256 = hex.EncodeToString(h.Sum(nil))
 	}
 	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
 	lines := make([]string, 0, len(artifacts))
@@ -270,7 +304,15 @@ func ignoreBaselinePath(rel string) bool {
 
 func isControlPlanePath(rel string, isDir bool) bool {
 	_ = isDir
-	if rel == ".claude/loop-state.json" || rel == ".claude/loop-events.jsonl" || rel == ".claude/loop-metrics.json" || rel == ".claude/settings.json" || rel == ".claude/settings.local.json" {
+	// .claude/multi.json is the local session launcher's environment/profile
+	// file (model and connection settings, including local credentials). The
+	// harness never reads it; the launcher rewrites it on every session start
+	// or profile switch, so any captured copy goes stale out-of-band and can
+	// never describe the implementation surface. It is control-plane local
+	// state, exactly like loop-state.json, and must never enter (or gate) a
+	// session baseline. The exemption names this one file only — it does not
+	// widen to .claude/ as a whole.
+	if rel == ".claude/loop-state.json" || rel == ".claude/loop-events.jsonl" || rel == ".claude/loop-metrics.json" || rel == ".claude/settings.json" || rel == ".claude/settings.local.json" || rel == ".claude/multi.json" {
 		return true
 	}
 	// Hook decision journals append on every hook evaluation; they are
@@ -279,7 +321,7 @@ func isControlPlanePath(rel string, isDir bool) bool {
 	if strings.HasPrefix(rel, ".claude/hook") {
 		return true
 	}
-	if strings.HasPrefix(rel, ".claude/") && strings.HasSuffix(rel, ".lock") {
+	if strings.HasPrefix(rel, ".claude/") && (strings.HasSuffix(rel, ".lock") || strings.HasSuffix(rel, ".lock.process")) {
 		return true
 	}
 	for _, prefix := range []string{".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/"} {
@@ -288,6 +330,157 @@ func isControlPlanePath(rel string, isDir bool) bool {
 		}
 	}
 	return false
+}
+
+// artifactPaths extracts the repository-relative paths of an artifact list.
+func artifactPaths(artifacts []ArtifactRef) []string {
+	paths := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		paths = append(paths, artifact.Path)
+	}
+	return paths
+}
+
+// isRuntimeLogShape reports whether a repository-relative path is *named* like
+// runtime log output. Exactly two shapes qualify:
+//
+//   - a log file name: <name>.log, optionally followed by nothing but the
+//     rotation numbers, dates and compression extensions log rotation appends
+//     (info.log, info.log.1, info.log.2026-09-17, info.log.1.gz);
+//   - a log-output name directly inside a log directory (logs/app.out,
+//     logs/stdout).
+//
+// Resemblance to ".log" is not enough, and neither is living in a log
+// directory: internal/audit.logic.go is a Go file, web/app.logger.ts is a
+// TypeScript file, config/logback.xml is configuration, and an untracked
+// server/log/debug_helper.go is a local source copy. All of them are rejected
+// here and stay in the baseline.
+//
+// Shape alone never decides: runtimeLogPaths completes the classification with
+// Git's own verdict, so a tracked log fixture stays authority-relevant and an
+// unclassifiable repository keeps the strict default.
+func isRuntimeLogShape(rel string) bool {
+	parts := strings.Split(normalizePath(rel), "/")
+	name := strings.ToLower(parts[len(parts)-1])
+	if logFileName(name) {
+		return true
+	}
+	for _, directory := range parts[:len(parts)-1] {
+		if directory == "log" || directory == "logs" {
+			return logOutputName(name)
+		}
+	}
+	return false
+}
+
+// logFileName reports whether a file name ends in the log-file name family: a
+// "log" segment followed by at most rotation and compression segments. It
+// must be the final extension family — ".log" as the prefix of a longer
+// extension (logic.go) or as an infix (logger.ts, logback.xml) is not a log.
+func logFileName(name string) bool {
+	segments := strings.Split(name, ".")
+	index := len(segments) - 1
+	for index > 0 && logRotationSegment(segments[index]) {
+		index--
+	}
+	return index > 0 && segments[index] == "log"
+}
+
+// logRotationSegment reports whether a name segment is produced by log rotation
+// or compression rather than being another file extension: a rotation number, a
+// date, or a compression suffix.
+func logRotationSegment(segment string) bool {
+	switch segment {
+	case "gz", "bz2", "xz", "zip", "zst", "zstd", "lz4", "7z":
+		return true
+	}
+	if segment == "" {
+		return false
+	}
+	digits := false
+	for _, r := range segment {
+		switch {
+		case r >= '0' && r <= '9':
+			digits = true
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return digits
+}
+
+// logOutputName reports whether a file name inside a log directory is shaped
+// like log output. The list is an allowlist: anything carrying a source, build,
+// configuration or documentation extension is repository content that merely
+// lives in a log directory, never runtime exhaust.
+func logOutputName(name string) bool {
+	if name == "stdout" || name == "stderr" {
+		return true
+	}
+	parts := strings.Split(name, ".")
+	i := len(parts) - 1
+	for i > 0 && logRotationSegment(parts[i]) {
+		i--
+	}
+	if i < 1 {
+		return false
+	}
+	switch parts[i] {
+	case "out", "err", "stdout", "stderr":
+		return true
+	}
+	return false
+}
+
+// gitIgnoredPaths returns the subset of repository-relative paths that Git
+// classifies as ignored. Classification comes from the project's own ignore
+// rules instead of a hardcoded directory list, and it is existence-independent:
+// a log rotated away after the session opened still classifies. Tracked paths
+// are never reported — git check-ignore consults the index — so a fixture or
+// golden file committed on purpose stays authority-relevant.
+//
+// Ignored-and-untracked is necessary but never sufficient on its own: callers
+// pair it with the explicit shape test above.
+//
+// Any failure (not a Git repository, git unavailable, an unexpected exit
+// status) returns the empty set: the caller keeps the strict default rather
+// than widening an exemption on an unverifiable surface.
+func gitIgnoredPaths(root string, paths []string) map[string]bool {
+	ignored := map[string]bool{}
+	if len(paths) == 0 {
+		return ignored
+	}
+	command := exec.Command("git", "-C", root, "check-ignore", "--stdin", "-z")
+	command.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
+	output, err := command.Output()
+	if err != nil {
+		// Exit status 1 is "nothing matched", which is a normal answer.
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return ignored
+		}
+	}
+	for _, path := range strings.Split(string(output), "\x00") {
+		if strings.TrimSpace(path) != "" {
+			ignored[normalizePath(path)] = true
+		}
+	}
+	return ignored
+}
+
+// runtimeLogPaths returns the subset of paths that are runtime log output and
+// therefore never part of the session authority surface — no matter which
+// generation of the harness captured them. It is the single classification used
+// by baseline capture, the S9 authority gate, and the Session diff.
+func runtimeLogPaths(root string, paths []string) map[string]bool {
+	candidates := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if isRuntimeLogShape(path) {
+			candidates = append(candidates, normalizePath(path))
+		}
+	}
+	return gitIgnoredPaths(root, candidates)
 }
 
 // ComputeSessionChangeset derives the actual implementation delta from the
@@ -300,8 +493,30 @@ func ComputeSessionChangeset(root string, session RepairSession) ([]ArtifactRef,
 		return nil, err
 	}
 	base := map[string]ArtifactRef{}
+	// RC-16 (S9-L1): sessions opened before the capture-side runtime-log
+	// classification carry log output in BaselineArtifacts. The same rule is
+	// applied to the stored baseline here so the Session diff stays consistent
+	// with capture and with the authority gate: an appended log line is not a
+	// change, and the stored baseline is never rewritten.
+	logs := excludedBaselinePaths(root, artifactPaths(session.BaselineArtifacts))
 	for _, artifact := range session.BaselineArtifacts {
-		base[normalizePath(artifact.Path)] = artifact
+		path := normalizePath(artifact.Path)
+		if logs[path] {
+			continue
+		}
+		// RC-17 (S9-L2): the base side applies the same control-plane
+		// classification as capture and the authority gate. A stored baseline
+		// captured before a path was classified as control plane (notably
+		// .claude/multi.json, the launcher's local profile file) would
+		// otherwise surface here as a phantom "deleted" or "modified" entry
+		// that no RepairResult can legitimately claim. Stored baselines never
+		// contain the other exempt classes (capture already excluded them), so
+		// this filter is a no-op except for paths reclassified after session
+		// open.
+		if ignoreBaselinePath(path) {
+			continue
+		}
+		base[path] = artifact
 	}
 	now := map[string]ArtifactRef{}
 	for _, artifact := range current {

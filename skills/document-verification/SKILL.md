@@ -67,15 +67,14 @@ module current-truth package when the REQ touches UI.
 
 ## Stop Conditions
 
-Stop immediately and surface to the human if any of:
-
-- A fingerprint changed mid-review (the artifact was edited after you started).
-- A required document layer is missing entirely.
-- Two authorities contradict and cannot be reconciled without a REQ decision → `req_change_required`.
-- You recognize you authored (or materially drafted) an artifact under review — independence is lost（纪律层：机器无法替你判这一条，你不说没人知道——这是 S5 对你的唯一诚信要求）。
+Stop signing the affected review when its inputs drift, a document layer is missing, or reviewer independence is lost. Report to the Driver: refresh the review against the registered versions, route missing documents through fix_required, or reassign an independent reviewer. These technical recovery actions do not require a new human decision by themselves. Never sign stale evidence or review your own authored content. Only an unresolved contradiction requiring changed locked REQ/business semantics routes to the corresponding human Gateway.
 
 ## Non-Goals
 
 - Do not repair the reviewed documents — your fix_required routes them back to planning.
 - Do not lock the batch or activate Builders — TR-003 does that after both reviewers pass.
 - Do not treat missing coverage as N/A, and do not accept an unverifiable closing contract as executable.
+
+## Production entry and transaction feasibility
+
+TASK-EXECUTABILITY must inspect the actual entry and persistence path for every promised capability/slot family, not just document references. In existing TASK/contract traceability rows require: user action or external caller → registered entry → authoritative service/transaction → response or persisted state → owning TASK → necessary write paths → falsifiable check. Verify permission registration, UI mounts and shared types where applicable. A valid scope subset is not proof that all necessary files were declared. Keep changes that must be atomic in one transaction; do not split them merely to increase parallelism. Missing wiring ownership or a required transaction file is fix_required before dispatch. SPEC-CONSISTENCY retains business-semantic review; do not repeat its whole review or run the future product suite in S5.

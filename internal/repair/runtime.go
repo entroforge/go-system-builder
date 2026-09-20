@@ -114,6 +114,11 @@ func OpenRepairSession(root, statePath, journalPath string, req OpenSessionReque
 			// recorded any result/changeset/handoff made zero progress and is
 			// voidable — a fresh open replaces the pointer and restarts S9.
 			voidEmpty := stringField(existing["result_ref"]) == "" && stringField(existing["changeset_ref"]) == "" && stringField(existing["handoff_ref"]) == "" && lifecycleState(current.State) == "bug_resolution"
+			if voidEmpty && !(closed && readback && newContract) {
+				if err := validateEmptySessionReplacement(root, existing); err != nil {
+					return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
+				}
+			}
 			if !(closed && readback && newContract) && !voidEmpty {
 				return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("an active S9 RepairSession already exists; inspect runtime repair status")
 			}
@@ -158,10 +163,7 @@ func OpenRepairSession(root, statePath, journalPath string, req OpenSessionReque
 	// RC-09 (S9-4): record the session's authority fingerprint. The digest is
 	// the exact baseline the RepairSession captured; every later S9 checkpoint
 	// re-captures it and blocks the commit when the repository drifted.
-	_, authorityDigest, err := captureRepositoryBaseline(root)
-	if err != nil {
-		return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
-	}
+	authorityDigest := session.BaselineDigest
 	fingerprints := stringMapField(repairPointer(current.State)["authority_fingerprint"])
 	fingerprints[session.SessionID] = authorityDigest
 	anyFingerprints := make(map[string]any, len(fingerprints))
@@ -608,8 +610,18 @@ func checkS9AuthorityFreshness(root string, pointer map[string]any, pending []Ch
 			contractScope = &approved
 		}
 	}
+	// RC-16 (S9-L1): runtime log output that a pre-classification session
+	// captured is forgiven here exactly as at capture and in the Session diff.
+	// The stored baseline is never rewritten, so such a session continues
+	// without a rebuild.
+	runtimeLogs := excludedBaselinePaths(root, artifactPaths(session.BaselineArtifacts))
+	var drifted []string
+
 	for _, artifact := range session.BaselineArtifacts {
 		if claimed[artifact.Path] {
+			continue
+		}
+		if runtimeLogs[normalizePath(artifact.Path)] {
 			continue
 		}
 		// .claude/tmp is transient controller scratch (staging copies, probe
@@ -630,11 +642,17 @@ func checkS9AuthorityFreshness(root string, pointer map[string]any, pending []Ch
 			if contractScope != nil && scopeAllows(artifact.Path, contractScope.ProspectiveScope, contractScope.ForbiddenScope) == nil {
 				continue
 			}
-			return fmt.Errorf(
-				"S9 authority fingerprint is stale: baseline artifact %q drifted after RepairSession %s opened (session=%s live=%s); the Session/Plan/Result chain no longer describes the code being repaired — claim the change through a RepairResult or re-baseline the case through S8/S9 planning before committing further repair artifacts",
-				artifact.Path, session.SessionID, shortDigest(artifact.SHA256), shortDigest(liveByPath[artifact.Path]))
+			drifted = append(drifted, fmt.Sprintf("%q (session=%s live=%s)", artifact.Path, shortDigest(artifact.SHA256), shortDigest(liveByPath[artifact.Path])))
 		}
 	}
+	if len(drifted) > 0 {
+		total := len(drifted)
+		if len(drifted) > 50 {
+			drifted = drifted[:50]
+		}
+		return fmt.Errorf("S9 authority fingerprint is stale: %d baseline artifact(s) drifted after RepairSession %s opened: %s; preserve the original baseline, inspect all drift, and resume the authorized repair", total, session.SessionID, strings.Join(drifted, "; "))
+	}
+
 	return nil
 }
 

@@ -137,6 +137,11 @@ rm -f "$stage_root"/docs/loop-definition.json.bak-*
 find "$stage_root/docs/release_audits" -mindepth 1 -maxdepth 1 \
   ! -name 'TEMPLATE.md' ! -name 'protected_commands.json' -exec rm -rf {} + 2>/dev/null || true
 
+# Inventory exact staged bytes, including generated manual and each binary.
+# Verify the extracted package before installation; this is not a signature.
+python3 "$root/tools/release-manifest.py" create --root "$stage_root" --source "$root" --version "$version"
+python3 "$root/tools/release-manifest.py" verify --root "$stage_root"
+
 mkdir -p "$(dirname "$output")"
 rm -f "$output"
 tar -czf "$output" -C "$staged" "vibe-coding-loop-template-$version"

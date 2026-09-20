@@ -30,7 +30,7 @@ func runS6Command(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("s6 status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	return runS6Status(*root, stdout)

@@ -132,8 +132,8 @@ func TestMetricsAccumulateAcrossProcesses(t *testing.T) {
 	if snap.GateEvaluations["unknown"] != 2 {
 		t.Fatalf("cross-write count=%d want 2", snap.GateEvaluations["unknown"])
 	}
-	if _, err := os.Stat(filepath.Join(root, metrics.DefaultRelativePath)); err != nil {
-		t.Fatalf("metrics file missing: %v", err)
+	if _, err := os.Stat(filepath.Join(root, ".claude/hook-metrics")); err != nil {
+		t.Fatalf("metrics observation directory missing: %v", err)
 	}
 }
 

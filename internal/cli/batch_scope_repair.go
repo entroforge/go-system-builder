@@ -147,7 +147,7 @@ func runBatchScopeRepair(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "project root")
 	planFile := flags.String("apply-plan", "", "apply exactly the JSON plan produced by the read-only invocation")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	store := runtime.NewWriter(filepath.Join(*root, ".claude/loop-state.json"), filepath.Join(*root, ".claude/loop-events.jsonl"), *root, semantic.RuntimeCandidateValidator{})

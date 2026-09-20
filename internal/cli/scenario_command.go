@@ -39,7 +39,7 @@ func runScenarioBridge(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "scenario bridge")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	result, err := scenario.RunBridge(*root, false)
@@ -67,7 +67,7 @@ func runScenarioGenerate(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	all := flags.Bool("all", false, "not supported for generate; use --module")
 	requireSpecs := flags.Bool("require-specs", false, "only supported for validate")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if len(flags.Args()) != 0 {
@@ -102,7 +102,7 @@ func runScenarioValidate(args []string, stdout, stderr io.Writer) int {
 	all := flags.Bool("all", false, "validate all module packages")
 	root := flags.String("root", ".", "repository root")
 	requireSpecs := flags.Bool("require-specs", false, "require module-scoped CASE and PATH references in Playwright specs")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if len(flags.Args()) != 0 {

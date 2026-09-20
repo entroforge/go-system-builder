@@ -10,6 +10,10 @@ Vibe Coding should not be "coding while chatting." The engineering approach deco
 
 ## Directory Structure
 
+See [packaging/README.md](packaging/README.md) for source and release boundaries,
+[packaging/install.md](packaging/install.md) for installation, and
+[docs/workspace-integration.md](docs/workspace-integration.md) for Main/Worker behavior.
+
 ```
 docs/
 ├── project.yaml              # Project metadata, tech stack, baseline status

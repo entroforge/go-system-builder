@@ -36,3 +36,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local framework maintenance archives (not reusable template assets)
+/.local/

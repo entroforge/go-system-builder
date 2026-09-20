@@ -9,8 +9,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 type stateFile struct {
@@ -130,11 +132,12 @@ type workgroupAssignment struct {
 	// diff against this). We accept both names so legacy manifests that
 	// only carried `scope` still feed the audit instead of silently
 	// declaring no scope.
-	Scope          []string `json:"scope"`
-	WritePaths     []string `json:"write_paths"`
-	RequiredChecks []string `json:"required_checks"`
-	DoneWhen       []string `json:"done_when"`
-	Status         string   `json:"status"`
+	Scope                []string `json:"scope"`
+	WritePaths           []string `json:"write_paths"`
+	IntegrationCheckMode string   `json:"integration_check_mode,omitempty"`
+	RequiredChecks       []string `json:"required_checks"`
+	DoneWhen             []string `json:"done_when"`
+	Status               string   `json:"status"`
 	// Worktree coordinates are optional extensions on the workgroup
 	// assignment row (BUG-039-37 / BUG-039-04 residual). When present
 	// the loader surfaces them; when absent they stay blank — never
@@ -215,6 +218,10 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 		}
 		return nil, fmt.Errorf("read runtime state: %w", err)
 	}
+	binding, err := workspace.Decode(snapshot.State)
+	if err != nil {
+		return nil, err
+	}
 	data, err := json.Marshal(snapshot.State)
 	if err != nil {
 		return nil, fmt.Errorf("encode runtime state: %w", err)
@@ -225,6 +232,7 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 	}
 
 	context := policy.RuntimeContext{
+		Workspace:   binding,
 		RuntimeID:   state.RuntimeID,
 		Revision:    state.Revision,
 		ProjectRoot: root,
@@ -438,6 +446,33 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			if agent.PlanReportedRef != nil {
 				context.PlanReportedRef = *agent.PlanReportedRef
 			}
+
+			if agent.DispatchMode == "plan_checkpoint" && context.Agent.PlanReportedRef != "" {
+				if err := plancheckpoint.Validate(root, snapshot, agentID, context.Agent.PlanReportedRef); err != nil {
+					context.Agent.PlanReportedRef = ""
+					context.PlanReportedRef = ""
+				} else if agent.State == "activated" || agent.State == "working" {
+					if ref, err := plancheckpoint.ActivatedRef(root, snapshot, agentID); err != nil || ref == "" {
+						context.Agent.PlanReportedRef = ""
+						context.PlanReportedRef = ""
+					} else {
+						context.Agent.PlanReportedRef = ref
+						context.PlanReportedRef = ref
+					}
+				}
+			}
+			if context.Agent.PlanReportedRef == "" && agent.DispatchMode == "plan_checkpoint" {
+				// A legacy agent-begin may have committed activation but not the observer marker.
+				// Invalid evidence stays unrecorded; normal plan/write gates remain closed.
+				if ref, err := plancheckpoint.ActivatedRef(root, snapshot, agentID); err == nil && ref != "" {
+					context.Agent.PlanReportedRef = ref
+					context.PlanReportedRef = ref
+				}
+			}
+			reviewMap, _ := snapshot.State["review"].(map[string]any)
+			reviewRows, _ := reviewMap["assignments"].(map[string]any)
+			reviewRow, _ := reviewRows[context.AssignmentID].(map[string]any)
+			context.Agent.ReviewAssignment = reviewRow != nil && reviewRow["agent_id"] == agentID
 			context.DispatchMode = agent.DispatchMode
 			// L4 §15.2 P0-1: surface the dispatched task set, team and
 			// registered completion ref so the TaskUpdate self-claim guard
@@ -679,18 +714,19 @@ func buildAssignmentRowFromTask(root, taskID, ownerAgentID string) *AssignmentCo
 	a := *selected
 
 	row := &AssignmentContext{
-		AssignmentID:       a.AssignmentID,
-		TaskID:             taskID,
-		OwnerAgentID:       ownerAgentID,
-		RoleFamily:         a.RoleFamily,
-		AgentDefinitionRef: a.AgentDefinitionRef,
-		State:              "in_progress",
-		ManifestRef:        path,
-		ReportStatus:       a.Status,
-		WritePaths:         assignmentWritePaths(a.WritePaths, a.Scope),
-		RequiredChecks:     append([]string(nil), a.RequiredChecks...),
-		DoneWhen:           append([]string(nil), a.DoneWhen...),
-		ResponsibilityIDs:  []string{a.ResponsibilityID},
+		AssignmentID:         a.AssignmentID,
+		TaskID:               taskID,
+		OwnerAgentID:         ownerAgentID,
+		RoleFamily:           a.RoleFamily,
+		AgentDefinitionRef:   a.AgentDefinitionRef,
+		State:                "in_progress",
+		ManifestRef:          path,
+		ReportStatus:         a.Status,
+		WritePaths:           assignmentWritePaths(a.WritePaths, a.Scope),
+		RequiredChecks:       append([]string(nil), a.RequiredChecks...),
+		IntegrationCheckMode: a.IntegrationCheckMode,
+		DoneWhen:             append([]string(nil), a.DoneWhen...),
+		ResponsibilityIDs:    []string{a.ResponsibilityID},
 	}
 	applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)
 	enrichAssignmentCoords(root, row)
@@ -721,6 +757,15 @@ func applyAssignmentCoords(row *AssignmentContext, worktreePath, branch, targetB
 // files leave the fields blank.
 func enrichAssignmentCoords(root string, row *AssignmentContext) {
 	if row == nil || row.AssignmentID == "" {
+		return
+	}
+	// Bound runtimes have a single coordinate authority. Missing/stale
+	// execution records must not fall back to an old sidecar or checkpoint.
+	if binding, state, err := workspace.Load(root); err == nil && binding != nil {
+		row.WorktreePath, row.Branch, row.TargetBranch = "", "", ""
+		if e, ok := binding.Execution(row.AssignmentID, workspace.RuntimeID(state), workspace.Generation(state)); ok && e.AgentID == row.OwnerAgentID && e.Status == "ready" {
+			row.WorktreePath, row.Branch, row.TargetBranch = e.Path, e.Branch, e.TargetBranch
+		}
 		return
 	}
 	if row.WorktreePath != "" && row.Branch != "" && row.TargetBranch != "" {
@@ -777,45 +822,41 @@ func loadAssignmentSidecar(root, assignmentID string) (assignmentCoordFile, bool
 }
 
 func loadAssignmentCheckpointCoords(root, assignmentID string) *assignmentCoordFile {
-	evidenceRoot := filepath.Join(root, ".claude", "evidence")
-	entries, err := os.ReadDir(evidenceRoot)
+	if assignmentID == "" || filepath.Base(assignmentID) != assignmentID {
+		return nil
+	}
+	// A legacy fallback may only consult this active Runtime/generation.
+	// Never search historical evidence directories for a reusable assignment ID.
+	snapshot, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
 	if err != nil {
 		return nil
 	}
-	for _, runtimeEntry := range entries {
-		if !runtimeEntry.IsDir() {
-			continue
-		}
-		runtimeDir := filepath.Join(evidenceRoot, runtimeEntry.Name())
-		genEntries, err := os.ReadDir(runtimeDir)
-		if err != nil {
-			continue
-		}
-		for _, genEntry := range genEntries {
-			if !genEntry.IsDir() || !strings.HasPrefix(genEntry.Name(), "g") {
-				continue
-			}
-			path := filepath.Join(runtimeDir, genEntry.Name(), "worktree", assignmentID, "checkpoint.json")
-			data, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			var raw map[string]any
-			if err := json.Unmarshal(data, &raw); err != nil {
-				continue
-			}
-			coords := &assignmentCoordFile{
-				WorktreePath: stringFromAny(raw["worktree_path"]),
-				Branch:       firstNonEmpty(stringFromAny(raw["source_branch"]), stringFromAny(raw["branch"])),
-				TargetBranch: stringFromAny(raw["target_branch"]),
-			}
-			if coords.WorktreePath == "" && coords.Branch == "" && coords.TargetBranch == "" {
-				continue
-			}
-			return coords
-		}
+	runtimeID := workspace.RuntimeID(snapshot.State)
+	if runtimeID == "" || filepath.Base(runtimeID) != runtimeID {
+		return nil
 	}
-	return nil
+	generation := workspace.Generation(snapshot.State)
+	path := filepath.Join(root, ".claude/evidence", runtimeID, fmt.Sprintf("g%d", generation), "worktree", assignmentID, "checkpoint.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var raw map[string]any
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	if stringFromAny(raw["assignment_id"]) != assignmentID {
+		return nil
+	}
+	gen, ok := raw["baseline_generation"].(float64)
+	if !ok || int(gen) != generation {
+		return nil
+	}
+	coords := &assignmentCoordFile{WorktreePath: stringFromAny(raw["worktree_path"]), Branch: firstNonEmpty(stringFromAny(raw["source_branch"]), stringFromAny(raw["branch"])), TargetBranch: stringFromAny(raw["target_branch"])}
+	if coords.WorktreePath == "" || coords.Branch == "" || coords.TargetBranch == "" {
+		return nil
+	}
+	return coords
 }
 
 func stringFromAny(v any) string {

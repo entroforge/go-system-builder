@@ -120,7 +120,7 @@ INCLUDE := $(shell grep -v '^[[:space:]]*\#' packaging/include.txt | grep -v '^[
 # cross-compile line.
 release: build-all $(TARBALL)
 
-$(TARBALL): $(INCLUDE) packaging/install.md packaging/build-release.sh
+$(TARBALL): $(INCLUDE) packaging/include.txt packaging/install.md packaging/build-release.sh
 	@bash packaging/build-release.sh "$(VERSION)" "$(TARBALL)"
 
 release-list:

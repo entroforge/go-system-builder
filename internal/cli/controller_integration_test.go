@@ -126,7 +126,7 @@ func TestSessionStartHookEmitsRecoveryGuidanceAndPersistsMilestone(t *testing.T)
 	if code != 0 {
 		t.Fatalf("SubagentStop hook failed: code=%d stderr=%s", code, stderr.String())
 	}
-	for _, expected := range []string{"SubagentStop", "develop", "completion_ack"} {
+	for _, expected := range []string{"SubagentStop", "bound integration branch", "completion_ack"} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("allowed SubagentStop must emit integration guidance %q: %s", expected, stdout.String())
 		}

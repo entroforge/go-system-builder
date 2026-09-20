@@ -206,3 +206,39 @@ Starting a Loop is two independent actions:
 
 The two actions are independent: bind creates the Runtime Bookmark, `/loop`
 recovers the Driver after compacts. Neither one implies the other.
+
+## Verify one coherent release before upgrading
+
+The release includes `release-manifest.json`: version, available source revision,
+dirty-source indication and SHA256 of every packaged binary/manual/asset. From
+the extracted package, run `python3 tools/release-manifest.py verify --root .`
+before copying anything. This detects missing, extra or modified files; it is not
+a publisher signature. A dirty commit identifier alone is not source provenance:
+retain the reviewed source snapshot/patch and this exact package together.
+
+Install one complete release at a quiescent boundary. Record each source-to-target
+mapping and preserved project customization (especially UI Skills and rules).
+Compare with the prior installation before replacing files; do not blindly delete
+extra project files or reinitialize an existing Runtime. Archive terminal Runtime,
+journal and evidence with their original release identity. Rollback must restore a
+compatible asset set and state, not only an older binary. Packaging explicitly does
+not attest a real Claude workflow; see `docs/claude-platform-compatibility.md`.
+
+
+### Optional bound Worker preparation
+
+Use the same Harness release for Main and Workers. `runtime workspace bind`
+records the current checkout and branch; it does not select develop or change
+branches. Resolve uncommitted source inputs before `workspace prepare`.
+Preparation requires the installed `.claude/agents` and `.claude/skills` assets,
+copies the current native executable rather than a platform-dispatch launcher,
+and records the Worker bootstrap digest in Main before marking it ready.
+
+Declared Worker checks currently require Linux amd64/arm64, Bubblewrap, user
+namespaces and seccomp. They run offline in disposable copies, with socket
+creation/connections disabled and Main/Git metadata read-only. A missing sandbox
+is an explicit failure, never a fallback to ordinary shell. Existing project
+checks on Main retain their existing behavior. Windows/macOS binaries compile,
+but this isolated check adapter is unavailable there. See
+`docs/workspace-integration.md` for CLI routing, cache/environment constraints,
+recovery commands, and the S9 candidate/merge protocol, explicit launch/recovery commands, and platform acceptance limits.

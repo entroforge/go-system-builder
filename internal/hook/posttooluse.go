@@ -17,6 +17,7 @@
 package hook
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -139,8 +140,13 @@ func identifySender(input policy.Input, agents []AgentRow) string {
 // envelope. The decision is always allow-shaped (systemMessage only).
 func RenderPostToolUseEnvelope(obs PostToolUseObservation) string {
 	msg := obs.SystemMsg
-	if msg == "" {
+	if !obs.Recorded || msg == "" {
 		msg = "PostToolUse observed (no dispatch message captured: " + obs.Reason + ")"
 	}
-	return fmt.Sprintf(`{"systemMessage": %q}`, strings.ReplaceAll(msg, `"`, `'`))
+	output := map[string]any{"systemMessage": msg}
+	if !obs.Recorded && obs.Message == "plan_report" {
+		output["hookSpecificOutput"] = map[string]any{"hookEventName": "PostToolUse", "additionalContext": msg}
+	}
+	encoded, _ := json.Marshal(output)
+	return string(encoded)
 }

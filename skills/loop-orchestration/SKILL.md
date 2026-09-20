@@ -451,3 +451,18 @@ compact checkpoint. Repeated user notices may be suppressed within one
 session/agent, but safety denials and model context must never be suppressed.
 A Worker plan checkpoint requiring no approval does not silence progress
 reports to the user.
+
+## Technical barriers and progress
+
+A Worker blocked from its next action does not automatically mean the human must decide. Resolve missing task ownership, dependency mistakes, overlapping writes and reviewer independence through existing planning/assignment paths before escalating. Stop unsafe writes, not all unrelated work. An explicit human-boundary command still requires its actual authorization; advisory autonomy never manufactures human_decision evidence.
+
+When a command response or Hook already supplies a current next_action and the relevant artifact identity, execute it without another full status/read cycle. Refresh on restart, conflicting external updates, stale CAS, missing context or a contradictory checkpoint. Progress is a completed deliverable, resolved assertion or new discriminating evidence, not Runtime revision churn, file timestamps or tool count. Repeated unchanged failures require diagnosis; normal long-running checks remain legitimate. Use the dispatch Skill's bounded waiting and evidence reuse rules.
+
+## Routine repair authority
+
+Before escalating an ordinary technical RepairContract approval, check the
+Runtime's `configuration.repair.bound_policy` and existing current bounded grants.
+A policy pinned when the human locked/bound this REQ authorizes the Driver review
+path described in docs/bounded-repair-autonomy.md; use the pinned digest rather
+than asking for repeated approval. Do not infer, fabricate, extend or auto-renew
+policy. Scope/semantic changes outside authority keep their existing Gateway.

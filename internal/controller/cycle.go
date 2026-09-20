@@ -18,6 +18,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // Stable error codes returned on the QualityGate.ErrorCode field and on
@@ -209,7 +210,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	// --- Step 5/7: selector seam — gate outcomes + requested events ---
 	facts := buildTriggerFacts(evaluator, req, snapshot, candidates, evalResults, affected, files)
 	if conflict, conflictIDs := detectSelectorEvidenceConflict(facts, evalResults); conflict {
-		metrics.RecordGateEvaluation(req.Root, string(StatusUnknown))
+		metrics.ObserveGateEvaluation(req.Root, string(StatusUnknown))
 		result.QualityGate.Status = StatusUnknown
 		result.QualityGate.ErrorCode = CodeTriggerConfl
 		result.QualityGate.Conflicts = conflictIDs
@@ -225,7 +226,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	if err != nil {
 		var conflict *transition.TriggerConflictError
 		if errors.As(err, &conflict) {
-			metrics.RecordGateEvaluation(req.Root, string(StatusUnknown))
+			metrics.ObserveGateEvaluation(req.Root, string(StatusUnknown))
 			result.QualityGate.Status = StatusUnknown
 			result.QualityGate.ErrorCode = CodeTriggerConfl
 			result.QualityGate.Conflicts = append([]string{}, conflict.CandidateIDs...)
@@ -267,7 +268,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	if candidate != nil {
 		result.QualityGate.CandidateTransition = candidate.ID
 	}
-	metrics.RecordGateEvaluation(req.Root, string(gateStatus))
+	metrics.ObserveGateEvaluation(req.Root, string(gateStatus))
 
 	// --- Step 7: optionally commit one transition ---
 	if gateStatus == StatusSatisfied && candidate != nil && candidate.AutoTrigger != nil && candidate.AutoTrigger.Actor != "" {
@@ -279,7 +280,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 			// CAS stale: re-read, recompute once, and try again.
 			if errors.Is(applyErr, runtime.ErrStaleRevision) {
 				incrementMetricsCASConflicts()
-				metrics.RecordCASConflict(req.Root)
+				metrics.ObserveCASConflict(req.Root)
 				rebroadcast, _, recomputeErr := recomputeAfterStale(req, store, catalog, registry, evaluator, ctx)
 				if recomputeErr != nil {
 					result.QualityGate.Status = StatusUnknown
@@ -310,7 +311,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 			return result, nil
 		}
 		incrementMetricsTransitionCommits()
-		metrics.RecordTransitionCommit(req.Root, candidate.ID)
+		metrics.ObserveTransitionCommit(req.Root, candidate.ID)
 		snapshot = next
 		result.Snapshot = next
 		result.QualityGate.ObservedRevision = next.Revision
@@ -366,30 +367,24 @@ func applyFinalSafety(
 ) ControlResult {
 	safetyInput := buildSafetyInput(req, snapshot, affected)
 	engine, err := policy.Load(filepath.Join(req.Root, "docs", "hook-policy.json"))
+	var decision policy.Decision
 	if err != nil {
-		// A missing policy document must not block the tool — fall back to
-		// allow. The Hook adapter will surface a separate warning.
 		result.Warnings = append(result.Warnings, fmt.Sprintf("load hook-policy: %v", err))
-		engine = nil
-	}
-	if engine != nil {
-		decision, err := engine.Evaluate(safetyInput)
+		decision = policy.UnavailableDecision(safetyInput, err)
+	} else {
+		decision, err = engine.Evaluate(safetyInput)
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("safety evaluate: %v", err))
-			decision = allowDecision()
+			decision = policy.UnavailableDecision(safetyInput, err)
 		}
-		// Quality gate may ONLY be projected to blocked when the safety
-		// layer actually denied the call. not_ready is intentionally
-		// distinct (BE-039 §3.2 / §5.2).
-		if decision.Decision == "block" || decision.Decision == "deny" {
-			decision.HumanRequired = decision.HumanRequired || (decision.RuleID == policy.RuleLockedArtifactWrite)
-			result.Decision = decision
-			result.QualityGate.Status = StatusBlocked
-			return result
-		}
-		result.Decision = decision
-	} else {
-		result.Decision = allowDecision()
+	}
+	// Missing safety authority is a safety denial, distinct from quality
+	// not_ready/unknown, which must still let an authorized agent continue.
+	result.Decision = decision
+	if decision.Decision == "block" || decision.Decision == "deny" {
+		result.Decision.HumanRequired = decision.HumanRequired || decision.RuleID == policy.RuleLockedArtifactWrite
+		result.QualityGate.Status = StatusBlocked
+		return result
 	}
 
 	// Default: the tool may proceed regardless of gate progress. not_ready
@@ -488,7 +483,7 @@ func recomputeAfterStale(
 	if resolution.Transition == nil {
 		gateID, evaluation, candidate := projectZeroSelected(candidates, evalResults)
 		gateStatus, _, _ := projectGateResult(evaluation)
-		metrics.RecordGateEvaluation(req.Root, string(gateStatus))
+		metrics.ObserveGateEvaluation(req.Root, string(gateStatus))
 		out := ControlResult{
 			Snapshot: refreshed,
 			Decision: allowDecision(),
@@ -518,7 +513,7 @@ func recomputeAfterStale(
 		}
 	}
 	gateStatus, _, _ := projectGateResult(evaluation)
-	metrics.RecordGateEvaluation(req.Root, string(gateStatus))
+	metrics.ObserveGateEvaluation(req.Root, string(gateStatus))
 	if gateStatus != StatusSatisfied {
 		out := ControlResult{
 			Snapshot: refreshed,
@@ -546,7 +541,7 @@ func recomputeAfterStale(
 	if applyErr != nil {
 		if errors.Is(applyErr, runtime.ErrStaleRevision) {
 			incrementMetricsCASConflicts()
-			metrics.RecordCASConflict(req.Root)
+			metrics.ObserveCASConflict(req.Root)
 		}
 		// Second stale: the cycle must NOT retry a third time.
 		out := ControlResult{
@@ -571,7 +566,7 @@ func recomputeAfterStale(
 		return ControlResult{}, 1, fmt.Errorf("reread runtime after retry: %w", err)
 	}
 	incrementMetricsTransitionCommits()
-	metrics.RecordTransitionCommit(req.Root, candidate.ID)
+	metrics.ObserveTransitionCommit(req.Root, candidate.ID)
 	cursorState, cursorPhase = snapshotCursor(final.State)
 	out := ControlResult{
 		Snapshot: final,
@@ -931,7 +926,13 @@ func buildSafetyInput(req ControlRequest, snapshot runtime.Snapshot, affected []
 	if baseline, ok := snapshot.State["baseline"].(map[string]any); ok {
 		rt.CurrentBaselineGeneration = int(baseline["generation"].(float64))
 	}
+	var bindingErr error
+	rt.Workspace, bindingErr = workspace.Decode(snapshot.State)
+	if bindingErr != nil {
+		rt.WorkspaceError = bindingErr.Error()
+	}
 	return policy.Input{
+		CWD:       req.CWD,
 		SessionID: req.SessionID,
 		Event:     req.Event,
 		AgentID:   req.AgentID,

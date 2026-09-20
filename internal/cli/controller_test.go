@@ -264,13 +264,13 @@ func TestBuildGuidanceSchedulesDelegationAndWorktreeIntegration(t *testing.T) {
 		t.Fatalf("SubagentStop must require worktree integration before acknowledgement, got %q", stopped.Action)
 	}
 	joined := strings.ToLower(strings.Join(stopped.Integration, " "))
-	for _, expected := range []string{"inspect", "develop", "remove worktree", "completion_ack"} {
+	for _, expected := range []string{"inspect", "bound integration branch", "remove worktree", "completion_ack"} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("SubagentStop integration must mention %q, got %#v", expected, stopped.Integration)
 		}
 	}
-	if !strings.Contains(joined, "never merge") || !strings.Contains(joined, "master/main") {
-		t.Fatalf("integration guidance must explicitly protect release branches: %#v", stopped.Integration)
+	if !strings.Contains(joined, "human gateway") || strings.Contains(joined, "master/main") {
+		t.Fatalf("integration guidance must preserve the release gate without prohibiting a user-bound main branch: %#v", stopped.Integration)
 	}
 }
 
@@ -1590,11 +1590,11 @@ func testSubagentStopReference(t *testing.T, promptRef string, wantMerge bool) {
 		}
 		return
 	}
-	if string(developAfter) == string(developBefore) {
-		t.Fatalf("BUG-039-37 wiring must advance develop via Integrate, guidance=%#v", guidance.Integration)
+	if string(developAfter) != string(developBefore) {
+		t.Fatal("Hook ran a long integration inside its deadline")
 	}
 	joined := strings.ToLower(strings.Join(guidance.Integration, " "))
-	if !strings.Contains(joined, "worktree integrated") {
+	if !strings.Contains(joined, "integration pending") {
 		t.Fatalf("wired SubagentStop must surface integration progress, got %#v", guidance.Integration)
 	}
 }
@@ -1634,5 +1634,94 @@ func TestFreshCheckoutSessionStartIsNotBlocked(t *testing.T) {
 	}
 	if strings.Contains(guidance.Action, "reconcile") {
 		t.Fatalf("fresh checkout must not suggest reconcile, got %q", guidance.Action)
+	}
+}
+
+func TestPostMergeModeChecksCandidateThroughController(t *testing.T) {
+	fix := newRuntimeFixture(t)
+	// Build a real git repository so Inspect can complete its checks.
+	if err := os.MkdirAll(filepath.Join(fix.root, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := fix.root
+	for _, args := range [][]string{
+		{"init", "--initial-branch=develop"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+		// Disable gpg signing so the commit hook doesn't fail in
+		// environments with a global commit.gpgsign=true (the harness
+		// CI/dev shells have a 1Password-backed signing agent that is
+		// not reachable inside the test).
+		{"config", "commit.gpgsign", "false"},
+		{"config", "tag.gpgsign", "false"},
+		{"checkout", "-b", "develop"},
+		{"commit", "--allow-empty", "-m", "initial"},
+	} {
+		if _, err := runGit(t, repo, args...); err != nil {
+			t.Fatalf("git %v: %v", strings.Join(args, " "), err)
+		}
+	}
+	// Create a worktree with a branch that has commits.
+	wtPath := filepath.Join(repo, "wt")
+	if _, err := runGit(t, repo, "worktree", "add", "-b", "codex/req-039-bogus", wtPath, "develop"); err != nil {
+		t.Fatalf("worktree add: %v", err)
+	}
+	if _, err := runGit(t, wtPath, "commit", "--allow-empty", "-m", "feature commit"); err != nil {
+		t.Fatalf("commit in worktree: %v", err)
+	}
+	// Only the candidate has this file. Pre-merge execution would fail.
+	if err := os.WriteFile(filepath.Join(wtPath, "candidate.txt"), []byte("candidate"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(t, wtPath, "add", "candidate.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(t, wtPath, "commit", "-m", "candidate-only test"); err != nil {
+		t.Fatal(err)
+	}
+	counter := filepath.Join(t.TempDir(), "check-count")
+	// Create a fake completion report so Inspect passes the report check.
+	reportDir := filepath.Join(repo, ".claude", "evidence", "loop-REQ-039", "g1", "assignments", "assignment-039-06")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	report := `{"message_type":"completion_report","assignment_id":"assignment-039-06"}`
+	if err := os.WriteFile(filepath.Join(reportDir, "completion.json"), []byte(report), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fix.persist(t)
+	snapshot := fix.snapshot(t)
+	loaded := &hookctx.LoadedContext{
+		BaselineGeneration: 1,
+		Assignments: []hookctx.AssignmentContext{{
+			AssignmentID:         "assignment-039-06",
+			TaskID:               "TASK-039-06",
+			OwnerAgentID:         "agent-039-06",
+			State:                "complete",
+			WorktreePath:         wtPath,
+			Branch:               "codex/req-039-bogus",
+			TargetBranch:         "develop",
+			IntegrationCheckMode: "post_merge",
+			RequiredChecks:       []string{fmt.Sprintf("test -f candidate.txt && printf 'checked\\n' >> %q", counter)},
+		}},
+	}
+	guidance, updated, err := HandleSubagentStopForController(t.Context(), fix.root, snapshot, loaded, "SubagentStop", policy.Input{AgentID: "agent-039-06"})
+	if err != nil {
+		t.Fatalf("HandleSubagentStop: %v", err)
+	}
+	if updated.Revision <= snapshot.Revision {
+		t.Fatalf("ready SubagentStop must CAS-advance revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+	}
+	counterBytes, readErr := os.ReadFile(counter)
+	if readErr != nil || strings.Count(string(counterBytes), "checked") != 1 {
+		t.Fatalf("delivery check did not execute once: %q %v", counterBytes, readErr)
+	}
+	joined := strings.ToLower(strings.Join(guidance.Integration, " "))
+	if !strings.Contains(joined, "worktree integrated") {
+		t.Fatalf("ready integration guidance must surface checkpoint, got %#v", guidance.Integration)
+	}
+	if strings.Contains(joined, "cleanup") && !strings.Contains(joined, "acknowledge") {
+		t.Fatalf("SubagentStop must not claim cleanup happened in this call (Acknowledge=false, Cleanup=false), got %#v", guidance.Integration)
 	}
 }

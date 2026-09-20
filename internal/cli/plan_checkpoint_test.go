@@ -11,7 +11,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
-func TestValidatePlanReportCheckpointAcceptsManifestAssignmentOutsideS7(t *testing.T) {
+func planCheckpointFixture(t *testing.T) (string, runtime.Snapshot, string) {
 	root := t.TempDir()
 	manifest := decodePlanCheckpointAsset(t, "team-manifest.example.json")
 	manifest["manifest_id"] = "team-manifest-s9"
@@ -53,7 +53,11 @@ func TestValidatePlanReportCheckpointAcceptsManifestAssignmentOutsideS7(t *testi
 		},
 	}
 
-	if err := validatePlanReportCheckpoint(root, runtime.Snapshot{State: state}, "agent-s9", planPath); err != nil {
+	return root, runtime.Snapshot{State: state}, planPath
+}
+func TestValidatePlanReportCheckpointAcceptsManifestAssignmentOutsideS7(t *testing.T) {
+	root, snapshot, planPath := planCheckpointFixture(t)
+	if err := validatePlanReportCheckpoint(root, snapshot, "agent-s9", planPath); err != nil {
 		t.Fatalf("manifest-bound S9 PLAN_REPORT must be accepted: %v", err)
 	}
 }

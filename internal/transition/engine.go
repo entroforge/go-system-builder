@@ -13,6 +13,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/impact"
+	"github.com/entroforge/go-system-builder/internal/repairpolicy"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/verification"
@@ -24,12 +25,14 @@ import (
 const ResumeSentinel = "RESUME_FROM_PAUSE"
 
 type LockedREQ struct {
-	ID         string
-	Path       string
-	Version    string
-	SHA256     string
-	ApprovedBy string
-	ApprovedAt string
+	RepairPolicyPath   string
+	RepairPolicySHA256 string
+	ID                 string
+	Path               string
+	Version            string
+	SHA256             string
+	ApprovedBy         string
+	ApprovedAt         string
 }
 
 type Request struct {
@@ -856,6 +859,23 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 	}
 	baseline["generation"] = max(1, integer(baseline["generation"])+1)
 	baseline["captured_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+	if req.RepairPolicyPath != "" || req.RepairPolicySHA256 != "" {
+		if _, err := repairpolicy.Read(root, req.RepairPolicyPath, req.RepairPolicySHA256, req.ApprovedBy); err != nil {
+			return err
+		}
+		config, _ := state["configuration"].(map[string]any)
+		if config == nil {
+			config = map[string]any{}
+			state["configuration"] = config
+		}
+		repairConfig, _ := config["repair"].(map[string]any)
+		if repairConfig == nil {
+			repairConfig = map[string]any{}
+			config["repair"] = repairConfig
+		}
+		repairConfig["bound_policy"] = map[string]any{"path": req.RepairPolicyPath, "sha256": req.RepairPolicySHA256, "approved_by": req.ApprovedBy, "req_sha256": req.SHA256, "runtime_id": state["runtime_id"], "baseline_generation": baseline["generation"]}
+	}
+
 	state["documents"] = appendDocument(state["documents"], map[string]any{
 		"id":         req.ID,
 		"kind":       "req",

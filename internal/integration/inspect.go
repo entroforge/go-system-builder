@@ -6,9 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // RequiredCheckRunner is the hook the Integrator uses to execute a single
@@ -22,11 +23,11 @@ type RequiredCheckRunner func(ctx context.Context, root, command string) error
 // production use; tests use it to inject a check runner and to skip the
 // completion-report check (which depends on a specific on-disk layout).
 type InspectConfig struct {
+	LockedArtifacts []string
 	// RecoveryBase retains the original scope denominator for an already merged branch.
 	RecoveryBase string
-	// CheckRunner runs the command list in RequiredChecks. If nil, the
-	// check step is recorded as "skip" so the contract's "default to none
-	// if not specified" semantic is honoured.
+	// CheckRunner runs RequiredChecks. A missing executor fails closed when
+	// checks are declared; an empty RequiredChecks list still means none.
 	CheckRunner RequiredCheckRunner
 	// RequiredChecks is the command list to execute. Empty means no
 	// checks required.
@@ -35,6 +36,10 @@ type InspectConfig struct {
 	// existence check. Tests use this to drive the merge-back path with
 	// only a clean tree.
 	SkipCompletionCheck bool
+	// ValidateDelivery validates an immutable domain candidate against the
+	// inspected source SHA. It replaces only the generic completion envelope;
+	// Git cleanliness, scope, locks, checks and merge preconditions still run.
+	ValidateDelivery func(context.Context, Inspection) error
 }
 
 // Inspect validates every precondition for SubagentStop merge-back per
@@ -91,7 +96,7 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	//    Inspect only confirms the file is present and parseable so a
 	//    missing report is surfaced as an integration blocker, not as a
 	//    generic controller failure.
-	if !cfg.SkipCompletionCheck {
+	if !cfg.SkipCompletionCheck && cfg.ValidateDelivery == nil {
 		reportPath := completionReportPath(req.Root, req.Assignment.AssignmentID, req.RuntimeID, req.Assignment.CompletionRef)
 		data, err := os.ReadFile(reportPath)
 		if err != nil {
@@ -126,6 +131,12 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 		return out, nil
 	}
 	out.SourceHead = sourceHead
+	if cfg.ValidateDelivery != nil {
+		if err := cfg.ValidateDelivery(ctx, out); err != nil {
+			addBlocker(err.Error())
+			return out, nil
+		}
+	}
 
 	// 4. Target branch exists.
 	targetRepo := req.Root
@@ -224,8 +235,9 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	}
 
 	// 8. Required checks.
-	if len(cfg.RequiredChecks) > 0 {
-		for _, command := range cfg.RequiredChecks {
+	commands, _ := splitRequiredChecks(cfg.RequiredChecks)
+	if len(commands) > 0 {
+		for _, command := range commands {
 			res := CheckResult{Command: command}
 			if cfg.CheckRunner != nil {
 				if err := cfg.CheckRunner(ctx, targetRepo, command); err != nil {
@@ -235,7 +247,8 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 					res.Status = "pass"
 				}
 			} else {
-				res.Status = "skip"
+				res.Status = "fail"
+				res.Output = ErrCheckRunnerMissing.Error()
 			}
 			out.RequiredChecks = append(out.RequiredChecks, res)
 			if res.Status == "fail" {
@@ -339,7 +352,7 @@ func scanCompletionReport(root, assignmentID string) string {
 //     declared allow-list, not the locked manifest; we intersect with
 //     anything tagged "locked:" to keep the heuristic safe).
 func lockedArtifacts(cfg InspectConfig, req InspectRequest) []string {
-	var locked []string
+	locked := append([]string(nil), cfg.LockedArtifacts...)
 	for _, hint := range cfg.RequiredChecks {
 		// Convention: a RequiredChecks entry prefixed with "locked:" is
 		// actually a locked-artifact path, not a check command. This
@@ -402,105 +415,11 @@ func pathMatchesAnyPattern(file string, patterns []string) bool {
 	return false
 }
 
-// pathMatchesPattern reports whether a slash-separated repo-relative file
-// path matches one write-path pattern. A pattern ending in "/**" (or a
-// bare directory without wildcards) covers the whole subtree.
-func pathMatchesPattern(file, pattern string) bool {
-	file = strings.Trim(file, "/")
-	pattern = strings.Trim(pattern, "/")
-	if file == "" || pattern == "" {
-		return false
-	}
-	if pattern == "**" {
-		return true
-	}
-	fileParts := strings.Split(file, "/")
-	patternParts := strings.Split(pattern, "/")
-	// A directory-only pattern (no extension and no wildcard in the last
-	// segment) is a prefix match: "internal/order" covers
-	// internal/order/anything.go.
-	if !strings.Contains(patternParts[len(patternParts)-1], "*") &&
-		!strings.Contains(patternParts[len(patternParts)-1], ".") {
-		return pathUnderDirectory(fileParts, patternParts)
-	}
-	return segmentsMatch(fileParts, 0, patternParts, 0)
-}
-
-func pathUnderDirectory(fileParts []string, dirParts []string) bool {
-	if len(fileParts) <= len(dirParts) {
-		return false
-	}
-	for i, part := range dirParts {
-		if !segmentGlob(part, fileParts[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-// segmentsMatch implements `**` (any number of segments) and `*`
-// (within one segment) glob matching over slash-split paths.
-func segmentsMatch(file []string, fi int, pattern []string, pi int) bool {
-	if pi == len(pattern) {
-		return fi == len(file)
-	}
-	if pattern[pi] == "**" {
-		for skip := fi; skip <= len(file); skip++ {
-			if segmentsMatch(file, skip, pattern, pi+1) {
-				return true
-			}
-		}
-		return false
-	}
-	if fi == len(file) {
-		return false
-	}
-	if !segmentGlob(pattern[pi], file[fi]) {
-		return false
-	}
-	return segmentsMatch(file, fi+1, pattern, pi+1)
-}
-
-// segmentGlob matches one path segment with `*` wildcards.
-func segmentGlob(pattern, segment string) bool {
-	if !strings.Contains(pattern, "*") {
-		return pattern == segment
-	}
-	parts := strings.Split(pattern, "*")
-	if len(parts) == 1 {
-		return pattern == segment
-	}
-	if !strings.HasPrefix(segment, parts[0]) || !strings.HasSuffix(segment, parts[len(parts)-1]) {
-		return false
-	}
-	rest := segment
-	if len(parts[0]) > 0 {
-		rest = strings.TrimPrefix(rest, parts[0])
-	}
-	for _, part := range parts[1 : len(parts)-1] {
-		idx := strings.Index(rest, part)
-		if idx < 0 {
-			return false
-		}
-		rest = rest[idx+len(part):]
-	}
-	if tail := parts[len(parts)-1]; len(tail) > 0 {
-		return strings.HasSuffix(rest, tail) || strings.Contains(rest, tail)
-	}
-	return true
-}
+// Keep inspection and Hook scope decisions on the same glob semantics.
+func pathMatchesPattern(file, pattern string) bool { return workspace.PathMatchesScope(file, pattern) }
 
 // CommandCheckRunner executes one required-check command through the shell
 // in the repository root and fails on a non-zero exit. It is the default
 // runner the Controller wires into Inspect/Integrate so "Required Checks
 // verified" reflects real command executions (L3-S6 §11.2 "Integration
 // checks 未接线").
-func CommandCheckRunner(ctx context.Context, root, command string) error {
-	execCmd := exec.CommandContext(ctx, "sh", "-c", command)
-	execCmd.Dir = root
-	output, err := execCmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("check %q failed (%v): %s", command, err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}

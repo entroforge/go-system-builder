@@ -95,6 +95,7 @@ func fillAssignmentRow(row *AssignmentContext, a workgroupAssignment) {
 	row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
 	row.WritePaths = assignmentWritePaths(a.WritePaths, a.Scope)
 	row.RequiredChecks = append([]string(nil), a.RequiredChecks...)
+	row.IntegrationCheckMode = a.IntegrationCheckMode
 	row.DoneWhen = append([]string(nil), a.DoneWhen...)
 	row.ReportStatus = a.Status
 	applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)

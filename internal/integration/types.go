@@ -146,18 +146,20 @@ type Result struct {
 // merge-attempt identity (assignment_id + source_head + target_branch +
 // baseline_generation); CAS uses Revision as the optimistic lock.
 type Checkpoint struct {
-	AssignmentID       string `json:"assignment_id"`
-	TaskID             string `json:"task_id,omitempty"`
-	SourceBranch       string `json:"source_branch,omitempty"`
-	SourceHead         string `json:"source_head,omitempty"`
-	TargetBranch       string `json:"target_branch,omitempty"`
-	TargetHead         string `json:"target_head,omitempty"`
-	MergeBase          string `json:"merge_base,omitempty"`
-	MergeCommit        string `json:"merge_commit,omitempty"`
-	BaselineGeneration int    `json:"baseline_generation"`
-	State              string `json:"state"`
-	Revision           int64  `json:"revision"`
-	IdempotencyKey     string `json:"idempotency_key,omitempty"`
+	AssignmentID       string   `json:"assignment_id"`
+	TaskID             string   `json:"task_id,omitempty"`
+	SourceBranch       string   `json:"source_branch,omitempty"`
+	SourceHead         string   `json:"source_head,omitempty"`
+	TargetBranch       string   `json:"target_branch,omitempty"`
+	TargetHead         string   `json:"target_head,omitempty"`
+	MergeBase          string   `json:"merge_base,omitempty"`
+	CheckReceipts      []string `json:"check_receipts,omitempty"`
+	TestedHead         string   `json:"tested_head,omitempty"`
+	MergeCommit        string   `json:"merge_commit,omitempty"`
+	BaselineGeneration int      `json:"baseline_generation"`
+	State              string   `json:"state"`
+	Revision           int64    `json:"revision"`
+	IdempotencyKey     string   `json:"idempotency_key,omitempty"`
 	// WorktreePath is persisted so the loader's coordinate fallback chain
 	// can recover the worktree location from this durable record alone
 	// (L3-S6 §11.2 "worktree 元数据分裂" — the checkpoint previously never
@@ -217,3 +219,7 @@ var ErrScopeViolation = errors.New("worktree diff is outside the assignment writ
 // match ExpectedRevision. Callers should re-read the checkpoint and decide
 // whether to retry or surface a stale-merge error.
 var ErrCASStale = errors.New("checkpoint revision is stale")
+
+// Required checks must execute before verified; missing wiring is not a PASS.
+var ErrCheckRunnerMissing = errors.New("required checks configured without an executor")
+var ErrCheckFailed = errors.New("integration required check failed; worktree preserved")

@@ -59,11 +59,17 @@ integrity failure, rollback/rollover, or the human release Gateway.
 2. `loop-harness req bind --req <path> --approved-by <human identity>`
 3. Then proceed above.
 
-**If the Runtime is terminal** (`awaiting_human_release` or `aborted`) **and a
+**If the Runtime is terminal** (`release_authorized` or `aborted`) **and a
 new REQ must start:** a human first runs
 `loop-harness runtime rollover --approved-by <human identity> --approval-evidence <human-decision-id> --root .`.
 Rollover archives the completed runtime and journal, then seeds a fresh
 inactive Runtime. Do not edit `loop-state.json` or reuse a terminal Runtime.
+
+`awaiting_human_release` is a non-terminal human decision gateway, not a
+rollover source. Follow `docs/agent-protocol.md#s11` for the human decision;
+`approve` reaches `release_authorized`. `paused` is a resumable wait state,
+not a terminal state. Release authorization records the handoff only; it
+does not execute a merge, deployment, publication, or release.
 
 `/loop` is **not** an authorization and does not bind a REQ. It only delivers the Layer 2 Wake-up prompt on a schedule.
 
@@ -115,7 +121,7 @@ the Milestone instead of relying on conversation memory.
 
 ## Control boundaries
 
-- Humans own lock decisions and release approval. AI drives everything in between — including executing the `状态：locked` file flip on the human's explicit lock gesture.
+- Humans own lock, release and the explicit stage authority boundaries below. The Driver autonomously executes work within those boundaries — including executing the `状态：locked` file flip on the human's explicit lock gesture.
 - Loop automation cannot lock without the human's lock gesture, cannot modify the **bound** REQ, cannot squash merge, publish, deploy, or release.
 - **Lifecycle-verb whitelist** — what the main session may execute on a human's behalf:
   | Verb | May the agent run it? | Required human gesture |
@@ -173,7 +179,7 @@ S0 requirement_design
 → S7 full_verification_round
 → S8 finding_investigation → S9 bug_resolution
 → S7 fresh_full_verification_round
-→ S10 acceptance_and_audit → S11 human_release_gateway [terminal]
+→ S10 acceptance_and_audit → S11 human_release_gateway [awaiting human decision]
 ```
 
 The clean path is `S7 clean round → S10 acceptance/audit → S11`. The repair
@@ -184,7 +190,7 @@ the matching human Gateway.
 
 ## Human Gateway types
 
-The main session surfaces a Gateway **only** at one of:
+For exceptional blockers, the main session uses the Gateway types below. Explicit stage authority boundaries (S2 sign-off, S8 approval without a valid delegation, and review-budget decisions) also remain in force; do not invent additional human gates for ordinary technical recovery.
 
 | Type | Trigger |
 |:---|:---|
@@ -248,20 +254,27 @@ Loop commands:
 .claude/bin/loop-harness validate --all --root .
 ```
 
-Before every `Agent` / `Task` call, answer the Hook preflight: is a single
-subagent necessary, or is an Agent Team better; which predefined role template
-is being used; and is the assignment isolated in a worktree? During S6–S9,
-every role-bearing spawn must pass an explicit `team_name`; create the team
-first via `TeamCreate({team_name: "loop-{req-id}"})`. Read-only research
-subagents (`Explore`, `Plan`, `claude-code-guide`, `statusline-setup`) are
-exempt from the team gate, but still receive the preflight guidance.
+Before every `Agent` / `Task` call, check whether one specialized subagent is
+sufficient, name its predefined role and registered assignment, and isolate
+product writes in the assignment worktree. Prefer a team only when peer
+coordination adds value. For supported Claude Code >=2.1.178, teams are
+session-managed: do not call removed TeamCreate/TeamDelete tools or require
+Agent.team_name (ignored by the platform). Team support must be enabled and
+verified; use Runtime assignment/agent identity, not platform team name, for
+authority. Read-only research still follows applicable scope restrictions.
+See docs/claude-platform-compatibility.md for tested versions and acceptance.
 
-On `SubagentStop`, a completion report is not enough: inspect the worktree,
-verify the task branch targets `develop`, merge it back into the current
-development branch, remove the worktree after successful checks, and record
-`completion_ack`. Never merge this automation path into `master`/`main` or
-release. On `TeammateIdle`, re-wake the same teammate with its current
-assignment; do not silently replace it.
+On `SubagentStop`, Main consumes the explicit
+`runtime task-integrate --assignment-id <id> --root <main-root>` action.
+The Hook itself does not run long checks. Integrate into the registered main
+branch (for example test2), never an implicit develop branch. Keep Main in its
+original checkout; inspect Worker files read-only and let the assigned Worker
+make product changes. Successful verification precedes durable completion_ack,
+which precedes cleanup. Preserve cleanup_pending without discarding verification.
+Respect project branch protection and the human release gateway. On
+`TeammateIdle`, inspect the current assignment before re-waking the same
+teammate; do not silently replace it. See docs/workspace-integration.md for
+current implementation boundaries.
 
 ## Escalation
 
@@ -299,3 +312,17 @@ no delegated agent. `stop_hook_active` always permits the next Stop; this
 is not an unattended scheduler or proof of completion. Honor explicit user
 stop requests and explain actual permission/external waits. S2 design
 sign-off and other stages retain their existing domain-specific rules.
+
+## Optional bounded repair authority
+
+For a new bound REQ, an explicit finite human grant may delegate ordinary S8 contract reviews to the Driver under docs/bounded-repair-autonomy.md. Do not infer this grant from the approver name, install it on old REQs, or manufacture human_decision for technical review. No grant preserves the existing explicit contract approval requirement. S2 ADR sign-off, requirement changes, budgets, external permissions and release retain their own boundaries. Within a valid grant, recoverable task/scope-planning issues go to the Driver, not repeated user A/B/C menus.
+
+## Approved repair policy at new requirement binding
+
+If installation recorded a human-approved project repair policy, include its
+unchanged path and SHA256 using `req bind --repair-policy` and
+`--repair-policy-sha256`. Do not create or enlarge a policy from an account name.
+See `docs/bounded-repair-autonomy.md`. In-scope technical RepairContract approvals
+then use the Driver's registered review and pinned policy, without another human
+approval. Missing authority, business changes and release keep their Gateway.
+Existing bound runtimes are not retroactively granted this authority.

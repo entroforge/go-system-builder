@@ -1226,8 +1226,8 @@ func TestHookCommandFailsWhenPolicyLoadMissing(t *testing.T) {
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-	if code == 0 {
-		t.Fatalf("expected non-zero exit when hook-policy.json is missing, got 0")
+	if code != 2 {
+		t.Fatalf("missing policy must block the platform with exit 2, got %d", code)
 	}
 	if !strings.Contains(stderr.String(), "load policy") {
 		t.Fatalf("expected load-policy error on stderr, got %s", stderr.String())

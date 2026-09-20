@@ -754,6 +754,15 @@
           "guards": [
             "outputs_captured"
           ]
+        },
+        {
+          "from": "reported",
+          "event": "integration_rework_requested",
+          "to": "working",
+          "guards": [
+            "blocker_recorded",
+            "activation_scope_still_valid"
+          ]
         }
       ]
     },
@@ -836,6 +845,15 @@
           "to": "cancelled",
           "guards": [
             "cancellation_reason_recorded"
+          ]
+        },
+        {
+          "from": "review",
+          "event": "integration_rework_requested",
+          "to": "in_progress",
+          "guards": [
+            "blocker_recorded",
+            "activation_scope_still_valid"
           ]
         }
       ]

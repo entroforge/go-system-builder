@@ -13,14 +13,25 @@ scope: branches, merges, release workflow, master/main gates
 
 `master/main` stores release snapshots only.
 
-Daily work goes through `develop`. Release from `develop` to `master/main` uses squash merge. After release, merge `master/main` back into `develop`.
+Main stays in the user’s selected project checkout and its bound current branch.
+There is no universal integration branch name: if Main is on `test2`, registered
+Workers start from its frozen base and integrate back into `test2`. Neither
+project configuration nor this rule authorizes switching Main to another branch.
+See [Workspace integration](../workspace-integration.md) for input snapshots,
+commit boundaries and recovery.
+
+The release model below assumes a separate protected release branch selected by
+the project. Binding a branch never overrides its release protections; if Main
+is on a protected release branch, resolve that setup before dispatching writes.
+Human release uses squash merge to `master/main`, followed by the project’s
+normal synchronization back to its integration branch.
 
 ## 2. Branch Model
 
 | Branch | Purpose | Protection |
 |:---|:---|:---|
 | `master` / `main` | production release snapshot | no direct daily work; release/hotfix only |
-| `develop` | daily integration | project default integration branch |
+| `<bound-integration-branch>` | daily integration | actual branch captured by Main workspace binding |
 
 Project chooses either `master` or `main` as release branch. This rule uses `master/main` for both.
 
@@ -28,14 +39,18 @@ Project chooses either `master` or `main` as release branch. This rule uses `mas
 
 | Type | Name | Source | Target |
 |:---|:---|:---|:---|
-| docs/process | `docs/<topic>` | `develop` | `develop` |
-| feature | `feature/<task-id>-<topic>` | `develop` | `develop` |
-| bugfix | `bugfix/<bug-id>-<topic>` | `develop` | `develop` |
-| tech debt | `td/<id>-<topic>` | `develop` | `develop` |
-| release candidate | `release/<version-or-date>` | `develop` | `master/main` |
-| production hotfix | `hotfix/<bug-id>-<topic>` | `master/main` | `master/main` + `develop` |
+| docs/process | `docs/<topic>` | `<bound-integration-branch>` | `<bound-integration-branch>` |
+| feature | `feature/<task-id>-<topic>` | `<bound-integration-branch>` | `<bound-integration-branch>` |
+| bugfix | `bugfix/<bug-id>-<topic>` | `<bound-integration-branch>` | `<bound-integration-branch>` |
+| tech debt | `td/<id>-<topic>` | `<bound-integration-branch>` | `<bound-integration-branch>` |
+| release candidate | `release/<version-or-date>` | `<bound-integration-branch>` | `master/main` |
+| production hotfix | `hotfix/<bug-id>-<topic>` | `master/main` | `master/main` + `<bound-integration-branch>` |
 
 ## 4. Stage To Branch
+
+These are optional naming conventions for separately authorized branches, not
+instructions to switch Main at each stage. Registered Worker branches follow
+the workspace execution record; Main retains its bound checkout and branch.
 
 | Stage | Output | Branch |
 |:---|:---|:---|
@@ -61,11 +76,11 @@ Loop Definition, runtime, activation, and Hooks enforce timing.
 
 | Operation | Rule |
 |:---|:---|
-| `develop` -> `master/main` | squash merge only |
-| `master/main` -> `develop` after release | normal merge |
-| `hotfix/*` -> `master/main` | squash merge, then merge back to `develop` |
+| `<bound-integration-branch>` -> `master/main` | squash merge only |
+| `master/main` -> `<bound-integration-branch>` after release | normal merge |
+| `hotfix/*` -> `master/main` | squash merge, then merge back to `<bound-integration-branch>` |
 | `release/*` -> `master/main` | squash merge |
-| `feature/*` / `bugfix/*` -> `develop` | project convention; must keep task evidence |
+| `feature/*` / `bugfix/*` -> `<bound-integration-branch>` | registered Worker integration uses non-squash merge and verified checks; keep task evidence |
 
 ## 7. Release Gates
 
@@ -105,19 +120,11 @@ awaiting_human_release
 Only an explicit human release approval may authorize squash merge to
 `master/main`.
 
-## 10. Command Sketch
+## 10. Human Release Handoff
 
-```bash
-git checkout develop
-git pull origin develop
-
-# platform performs squash merge: develop -> master/main
-
-git checkout develop
-git pull origin develop
-git fetch origin
-git merge origin/master
-git push origin develop
-```
-
-For `main`, replace `master` with `main`.
+The handoff identifies the actual bound integration branch, tested commit,
+project release branch and release evidence. The human release owner performs
+release and post-release synchronization through the project’s approved process.
+Do not place automatic checkout, pull, squash or push commands in Main’s
+engineering continuation. A protected release target requires its own human
+release decision even when a Worker has passed integration checks.
