@@ -1,11 +1,15 @@
 package audit
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/entroforge/go-system-builder/internal/filelock"
 )
 
 // TestAcquireLockTimeoutSurfacesAsError covers acquireLock's deadline
@@ -18,17 +22,11 @@ func TestAcquireLockTimeoutSurfacesAsError(t *testing.T) {
 	dir := t.TempDir()
 	lockPath := dir + "/test.lock"
 
-	// Pre-create the lockfile to simulate a holder that never
-	// releases. The acquireLock polling loop will see ErrExist on
-	// every iteration until the timeout elapses.
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	releaseHolder, err := filelock.Acquire(context.Background(), lockPath+".process")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = f.Close()
-		_ = os.Remove(lockPath)
-	})
+	t.Cleanup(releaseHolder)
 
 	// Use a 200ms timeout so the test is fast but still exercises
 	// the deadline branch. The production 30s timeout is exercised
@@ -51,20 +49,17 @@ func TestAcquireLockTimeoutSurfacesAsError(t *testing.T) {
 // that error immediately rather than retry.
 func TestAcquireLockRejectsNonExistError(t *testing.T) {
 	dir := t.TempDir()
-	// Make the parent directory read-only so OpenFile(O_CREATE) fails
-	// with EACCES, not ErrExist.
-	if err := os.Chmod(dir, 0o500); err != nil {
+	parentFile := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(parentFile, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-
-	lockPath := dir + "/.lock"
+	lockPath := filepath.Join(parentFile, ".lock")
 	release, err := acquireLock(lockPath, 200*time.Millisecond)
 	if err == nil {
 		release()
-		t.Fatal("acquireLock must return an error when OpenFile fails with EACCES")
+		t.Fatal("acquireLock must return an error when the lock parent is not a directory")
 	}
-	if errors.Is(err, os.ErrExist) {
-		t.Fatalf("acquireLock must not retry on non-ErrExist errors, got: %v", err)
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("acquireLock must surface non-contention errors immediately, got: %v", err)
 	}
 }
