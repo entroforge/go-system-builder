@@ -8,10 +8,10 @@ import (
 
 func TestS3DoesNotTreatForeignLockedContractAsTaskReadiness(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs/contracts"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs/dev/contracts"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs/contracts/CONTRACTS-052.md"), []byte("# Contract\n> 状态：locked\nREQ-052\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs/dev/contracts/CONTRACTS-052.md"), []byte("# Contract\n> 状态：locked\nREQ-052\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	c := contractFor("S3", map[string]any{"bound_req": map[string]any{"id": "REQ-053"}}, root)

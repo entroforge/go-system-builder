@@ -33,7 +33,7 @@ func WorkerInvocation(e Execution, verb string) string {
 // Commit runs only explicit Git add/commit operations in the registered Worker.
 // Repository hooks remain enabled. The caller serializes shared Git mutations;
 // no cwd, checkout, stash, reset or automatic add-all is performed.
-func (b *Binding) Commit(ctx context.Context, e Execution, request CommitRequest) (CommitReceipt, error) {
+func (b *ExecutionRegistry) Commit(ctx context.Context, e Execution, request CommitRequest) (CommitReceipt, error) {
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
 		return CommitReceipt{}, err
 	}

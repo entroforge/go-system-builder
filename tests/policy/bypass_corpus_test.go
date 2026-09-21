@@ -83,7 +83,7 @@ func TestLegacyPermissionCorpusAllows(t *testing.T) {
 			input: policy.Input{
 				Event:     "PreToolUse",
 				ToolName:  "Edit",
-				ToolInput: map[string]any{"file_path": "docs/hook-policy.json"},
+				ToolInput: map[string]any{"file_path": "docs/control/hook-policy.json"},
 			},
 		},
 		{
@@ -151,7 +151,7 @@ func TestHookPolicyLoadsInEnforceMode(t *testing.T) {
 
 func loadPolicyEngine(t *testing.T) *policy.Engine {
 	t.Helper()
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}

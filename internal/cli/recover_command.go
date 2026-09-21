@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/controller"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/recovery"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 const (
@@ -467,6 +469,8 @@ func runRuntimeRecoverPlan(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "runtime recover plan")
 	root := flags.String("root", ".", "repository root")
 	reqPath := flags.String("req", "", "explicit locked REQ path")
+	dev := flags.String("dev-branch", "", "explicit REQ development branch")
+	upstream := flags.String("release-upstream", "", "explicit release destination")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
@@ -479,6 +483,13 @@ func runRuntimeRecoverPlan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover plan", err))
 		return 1
 	}
+	binding, err := workspace.Bind(*root, *dev, *upstream)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	inventory.REQ.Workspace = &binding
+
 	document, planPath, err := persistRecoveryPlan(inventory.Root, inventory)
 	if err != nil {
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover plan", err))
@@ -523,7 +534,16 @@ func persistRecoveryPlan(root string, inventory recovery.Inventory) (recoveryPla
 	if err := os.WriteFile(journalPath, nil, 0o600); err != nil {
 		return recoveryPlanDocument{}, "", fmt.Errorf("write recovery seed journal: %w", err)
 	}
+	if inventory.REQ.Workspace == nil {
+		return recoveryPlanDocument{}, "", fmt.Errorf("explicit recovery workspace binding required")
+	}
+	files, err := fileview.New(root, "refs/heads/"+inventory.REQ.Workspace.DevBranch, []fileview.Rule{{Path: ".", Source: "git_tree"}})
+	if err != nil {
+		return recoveryPlanDocument{}, "", err
+	}
+
 	_, err = transition.Apply(root, statePath, journalPath, transition.Request{
+		Files:            files,
 		TransitionID:     "TR-001",
 		ExpectedRevision: 0,
 		Actor:            "orchestrator",
@@ -532,6 +552,7 @@ func persistRecoveryPlan(root string, inventory recovery.Inventory) (recoveryPla
 			"loop_authorization_record": "recovery-plan:" + basePlan.PlanSHA256[:16],
 		},
 		REQ: &transition.LockedREQ{
+			Workspace:  inventory.REQ.Workspace,
 			ID:         basePlan.REQ.ID,
 			Path:       basePlan.REQ.Path,
 			Version:    basePlan.REQ.Version,
@@ -539,7 +560,8 @@ func persistRecoveryPlan(root string, inventory recovery.Inventory) (recoveryPla
 			ApprovedBy: "recovery-plan",
 			ApprovedAt: createdAt.Format(time.RFC3339Nano),
 		},
-		OccurredAt: createdAt,
+		OccurredAt:     createdAt,
+		RecoveryWriter: runtime.NewOfflineRecoveryCapability(),
 	})
 	if err != nil {
 		return recoveryPlanDocument{}, "", fmt.Errorf("bind recovery seed runtime: %w", err)
@@ -650,7 +672,7 @@ func mergeRecoveryProjection(root, statePath, journalPath string, imported recov
 	if eventSuffix == "" {
 		return errors.New("recovery projection plan hash is required")
 	}
-	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	writer := runtime.NewOfflineRecoveryWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}, runtime.NewOfflineRecoveryCapability())
 	_, err = writer.Update(revision, runtime.Mutation{
 		EventID:              "evt-recovery-import-" + eventSuffix,
 		Event:                "recovery_projection_imported",

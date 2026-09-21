@@ -13,7 +13,7 @@ const DefaultQualityCycleBudget = 2 * time.Second
 
 // ResolveQualityCycleBudget returns the quality-cycle deadline for one
 // RunControlCycle call. An explicit request override wins; otherwise the value
-// is read from docs/loop-definition.json via the loaded catalog; missing or
+// is read from docs/control/loop-definition.json via the loaded catalog; missing or
 // invalid values fall back to DefaultQualityCycleBudget.
 func ResolveQualityCycleBudget(catalog *transition.Catalog, override time.Duration) time.Duration {
 	if override > 0 {

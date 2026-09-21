@@ -20,7 +20,7 @@ import (
 // that we know is unregistered.
 func TestCatalogFailsClosedOnMissingGuard(t *testing.T) {
 	root := t.TempDir()
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	os.MkdirAll(defDir, 0o755)
 	def := map[string]any{
 		"schema_version":    "1.0.0",
@@ -58,7 +58,7 @@ func TestCatalogFailsClosedOnMissingGuard(t *testing.T) {
 // TestCatalogFailsClosedOnMissingAction mirrors the guard test for actions.
 func TestCatalogFailsClosedOnMissingAction(t *testing.T) {
 	root := t.TempDir()
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	os.MkdirAll(defDir, 0o755)
 	def := map[string]any{
 		"schema_version":    "1.0.0",
@@ -95,7 +95,7 @@ func TestCatalogFailsClosedOnMissingAction(t *testing.T) {
 
 func TestCatalogFailsClosedOnUnknownRequiredEvidence(t *testing.T) {
 	root := t.TempDir()
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	if err := os.MkdirAll(defDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestCapturePauseCheckpointSingleCallPerPauseEvent(t *testing.T) {
 // definition.json contains the RESUME_FROM_PAUSE sentinel and no
 // $resume_state literal.
 func TestTR019SentinelInLoopDefinition(t *testing.T) {
-	defPath := filepath.Join("..", "..", "docs", "loop-definition.json")
+	defPath := filepath.Join("..", "..", "docs", "control", "loop-definition.json")
 	data, err := os.ReadFile(defPath)
 	if err != nil {
 		t.Fatalf("read loop-definition.json: %v", err)

@@ -15,7 +15,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
-// policyRefFixturePolicy mirrors docs/hook-policy.json after the REQ-039
+// policyRefFixturePolicy mirrors docs/control/hook-policy.json after the REQ-039
 // reduction: artifact `version` v2.0.0 next to wire-format `schema_version`
 // 1.2.0 (BUG-039-12).
 const policyRefFixturePolicy = `{"version":"v2.0.0","schema_version":"1.2.0","policy_id":"hook-policy"}`
@@ -26,18 +26,18 @@ const policyRefFixturePolicy = `{"version":"v2.0.0","schema_version":"1.2.0","po
 func writePolicyRefFixture(t *testing.T, recordedVersion, recordedSHA string) (root, statePath string) {
 	t.Helper()
 	root = t.TempDir()
-	policyPath := filepath.Join(root, "docs", "hook-policy.json")
+	policyPath := filepath.Join(root, "docs", "control", "hook-policy.json")
 	if err := os.MkdirAll(filepath.Dir(policyPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(policyPath, []byte(policyRefFixturePolicy), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), definition, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), definition, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stateData, err := schema.ReadAsset("loop-state.example.json")
@@ -53,7 +53,7 @@ func writePolicyRefFixture(t *testing.T, recordedVersion, recordedSHA string) (r
 	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
 	hookControl := state["hook_control"].(map[string]any)
 	hookControl["policy_ref"] = map[string]any{
-		"path":    "docs/hook-policy.json",
+		"path":    "docs/control/hook-policy.json",
 		"version": recordedVersion,
 		"sha256":  recordedSHA,
 	}

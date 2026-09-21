@@ -21,9 +21,9 @@ import (
 )
 
 type relocationIntent struct {
-	Request workspace.RebindRequest `json:"request"`
-	Before  *workspace.Binding      `json:"before"`
-	After   *workspace.Binding      `json:"after"`
+	Request workspace.RebindRequest      `json:"request"`
+	Before  *workspace.ExecutionRegistry `json:"before"`
+	After   *workspace.ExecutionRegistry `json:"after"`
 }
 
 func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
@@ -144,6 +144,12 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 		}
 		key := fmt.Sprintf("workspace-relocation-r%d", snap.Revision+1)
 		snap, err = writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: req.RuntimeID, IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: "explicit Main relocation: " + *reason, Apply: func(state map[string]any) error {
+			bound, _ := state["bound_req"].(map[string]any)
+			authority, _ := bound["workspace"].(map[string]any)
+			if authority["project_root"] != intent.Before.MainRoot || authority["dev_branch"] != intent.Before.Branch {
+				return fmt.Errorf("REQ workspace authority changed during relocation")
+			}
+			authority["project_root"] = intent.After.MainRoot
 			state["workspace"] = workspace.Encode(intent.After)
 			state["root"] = actual
 			return nil

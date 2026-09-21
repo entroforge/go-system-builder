@@ -17,7 +17,7 @@ import (
 
 func TestRuntimeRepairDispatchBindsBuilderToAssignment(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
-	writeDispatchFile(t, root, "docs/agent-protocol.md", "# protocol\n")
+	writeDispatchFile(t, root, "docs/control/agent-protocol.md", "# protocol\n")
 	writeDispatchFile(t, root, "agents/backend-builder.md", "# backend builder\n")
 	writeDispatchFile(t, root, ".claude/agents/test-builder.md", "# test builder\n")
 

@@ -16,7 +16,7 @@ func TestBatchScopeRepairCASAndJournal(t *testing.T) {
 	state["review"] = map[string]any{"round": 0, "clean_round": nil}
 	docs := []any{}
 	for _, pair := range [][2]string{{"TASK-1", "REQ-038"}, {"TASK-2", "REQ-039"}} {
-		rel := "docs/tasks/" + pair[0] + ".md"
+		rel := "docs/dev/tasks/" + pair[0] + ".md"
 		body := []byte("> Status: complete\n> Source REQ refs: " + pair[1] + "\n")
 		os.MkdirAll(filepath.Dir(filepath.Join(root, rel)), 0755)
 		os.WriteFile(filepath.Join(root, rel), body, 0644)
@@ -61,7 +61,7 @@ func TestBatchScopeRepairCASAndJournal(t *testing.T) {
 	if !bytes.Contains(journal, []byte("BATCH-SCOPE-REPAIR")) {
 		t.Fatal("repair missing journal audit")
 	}
-	if _, err := os.Stat(filepath.Join(root, "docs/tasks/TASK-1.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "docs/dev/tasks/TASK-1.md")); err != nil {
 		t.Fatal("historical file removed")
 	}
 	if run("--apply-plan", path) == 0 {

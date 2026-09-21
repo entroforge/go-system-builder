@@ -23,7 +23,7 @@ func TestCT03903_ConcurrentHookCLI_OneCommit(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	body := req039fixtures.HookBody("PreToolUse", "session-ct-039-03", "Edit", map[string]any{
-		"file_path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md",
+		"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md",
 	})
 
 	const N = 2
@@ -93,7 +93,7 @@ func TestConcurrent_PreToolUse_CAS_OneCommit(t *testing.T) {
 		"session_id":      "session-sys-cas-seam",
 		"hook_event_name": "PreToolUse",
 		"tool_name":       "Edit",
-		"tool_input":      map[string]any{"file_path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md"},
+		"tool_input":      map[string]any{"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md"},
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {

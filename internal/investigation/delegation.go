@@ -115,7 +115,7 @@ func literalRepositoryPath(root, path string) error {
 func within(path, dir string) bool { return path == dir || strings.HasPrefix(path, dir+"/") }
 func overlaps(a, b string) bool    { return within(a, b) || within(b, a) }
 
-var delegatedProtectedPaths = []string{".git", ".claude", ".agents", ".codex", "AGENTS.md", "CLAUDE.md", "AGENTS-template.md", "settings.json", "hooks", "packaging", "prelude.md", "loop-template.md", "docs/requirements", "docs/contracts", "docs/tasks", "docs/design", "docs/loop-definition.json", "docs/hook-policy.json", "docs/agent-protocol.md", "loop-harness.md", "agents", "skills", "internal/schema", "internal/investigation", "internal/runtime", "internal/policy", "internal/cli", "internal/hook", "internal/transition"}
+var delegatedProtectedPaths = []string{".git", ".claude", ".agents", ".codex", "AGENTS.md", "CLAUDE.md", "AGENTS-template.md", "settings.json", "hooks", "packaging", "prelude.md", "loop-template.md", "docs/requirements", "docs/dev/contracts", "docs/dev/tasks", "docs/design", "docs/control", "docs/architecture", "docs/reports/release-audits", "loop-harness.md", "agents", "skills", "internal/schema", "internal/investigation", "internal/runtime", "internal/policy", "internal/cli", "internal/hook", "internal/transition"}
 
 func validateDelegatedApproval(root string, state, draft map[string]any, req ContractRequest) (map[string]any, error) {
 	draftBytes, err := json.Marshal(draft)

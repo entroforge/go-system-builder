@@ -110,10 +110,23 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 			return "HEAD", nil
 		}
 	case "merge-base":
+		if len(args) >= 4 && args[1] == "--is-ancestor" {
+			if f.isAncestor(args[2], args[3]) {
+				return "", nil
+			}
+			return "", fmt.Errorf("fakeRunner: %s is not ancestor of %s", args[2], args[3])
+		}
 		if len(args) >= 3 {
 			return f.computeMergeBase(args[1], args[2]), nil
 		}
 	case "rev-list":
+		if len(args) == 5 && args[1] == "--parents" && args[2] == "-n" && args[3] == "1" {
+			c, ok := f.commits[args[4]]
+			if !ok {
+				return "", fmt.Errorf("unknown merge commit %s", args[4])
+			}
+			return strings.Join(append([]string{args[4]}, c.parents...), " "), nil
+		}
 		if len(args) >= 3 && args[1] == "--count" {
 			rng := args[2]
 			parts := strings.SplitN(rng, "..", 2)
@@ -122,11 +135,11 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 			}
 		}
 	case "diff":
-		if len(args) >= 3 && args[1] == "--name-only" {
-			rng := args[2]
+		if len(args) == 5 && args[1] == "--no-renames" && args[2] == "--name-only" && args[3] == "-z" {
+			rng := args[4]
 			parts := strings.SplitN(rng, "..", 2)
 			if len(parts) == 2 {
-				return f.diffNameOnly(parts[0], parts[1]), nil
+				return strings.ReplaceAll(f.diffNameOnly(parts[0], parts[1]), "\n", "\x00"), nil
 			}
 		}
 	case "merge-tree":
@@ -246,6 +259,35 @@ func (f *fakeRunner) computeMergeBase(a, b string) string {
 		}
 	}
 	return ""
+}
+
+func (f *fakeRunner) isAncestor(ancestor, descendant string) bool {
+	resolve := func(ref string) string {
+		if sha, ok := f.branchHeads[ref]; ok {
+			return sha
+		}
+		return ref
+	}
+	ancestor = resolve(ancestor)
+	descendant = resolve(descendant)
+	seen := map[string]bool{}
+	var visit func(string) bool
+	visit = func(commit string) bool {
+		if commit == ancestor {
+			return true
+		}
+		if seen[commit] {
+			return false
+		}
+		seen[commit] = true
+		for _, parent := range f.commits[commit].parents {
+			if visit(parent) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(descendant)
 }
 
 func (f *fakeRunner) ancestors(sha string) []string {

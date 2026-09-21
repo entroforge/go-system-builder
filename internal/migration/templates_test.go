@@ -41,7 +41,7 @@ func TestMainEntryRoutesThroughReadableSpine(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	for _, required := range []string{"docs/agent-protocol.md", "S0", "S11", "DRIVE()"} {
+	for _, required := range []string{"docs/control/agent-protocol.md", "S0", "S11", "DRIVE()"} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("AGENTS-template.md must route through readable Main Spine: missing %q", required)
 		}

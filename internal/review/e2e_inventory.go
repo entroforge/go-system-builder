@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -103,9 +104,16 @@ func discoverE2EInventory(root string, state map[string]any) (e2eInventory, []st
 	for _, item := range inventory.Cases {
 		caseIDs[item.ID] = item
 	}
+	scope := pathscope.New(root)
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			diagnostics = append(diagnostics, fmt.Sprintf("walk E2E assets: %v", walkErr))
+			return nil
+		}
+		if scope.Excludes(path) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if entry.IsDir() {

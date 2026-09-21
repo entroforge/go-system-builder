@@ -41,7 +41,7 @@
       "lens": "qa",
       "severity": "P1",
       "expected": "Update propagates the store error and the caller sees a failure",
-      "authority_refs": ["docs/contracts/CONTRACTS-001.md#errors"],
+      "authority_refs": ["docs/dev/contracts/CONTRACTS-001.md#errors"],
       "observed": "Update returns nil after the store write fails; the caller proceeds as if the write succeeded",
       "observation_mode": "code_inspection",
       "encounter": {

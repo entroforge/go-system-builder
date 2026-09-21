@@ -11,7 +11,7 @@ import (
 // ReplaceExecution reserves a fresh execution without reusing or deleting the
 // old tree. Callers must hold the workspace lock and old launch lease, verify
 // the expected generation, and reject existing integration/delivery evidence.
-func (b *Binding) ReplaceExecution(ctx context.Context, state map[string]any, id, owner string, expected int) (Execution, error) {
+func (b *ExecutionRegistry) ReplaceExecution(ctx context.Context, state map[string]any, id, owner string, expected int) (Execution, error) {
 	old, ok := b.Execution(id, RuntimeID(state), Generation(state))
 	if !ok || old.Generation != expected || old.AgentID != owner {
 		return Execution{}, fmt.Errorf("replacement execution identity changed")
@@ -55,7 +55,7 @@ func (b *Binding) ReplaceExecution(ctx context.Context, state map[string]any, id
 
 // AdoptExecution requires an explicitly supplied historical base and hashes.
 // Neither the old base nor input provenance is inferred from current HEAD.
-func (b *Binding) AdoptExecution(ctx context.Context, state map[string]any, e Execution) (Execution, error) {
+func (b *ExecutionRegistry) AdoptExecution(ctx context.Context, state map[string]any, e Execution) (Execution, error) {
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
 		return e, err
 	}
@@ -120,7 +120,7 @@ func (b *Binding) AdoptExecution(ctx context.Context, state map[string]any, e Ex
 	return e, nil
 }
 
-func (b *Binding) AllExecutions() []Execution {
+func (b *ExecutionRegistry) AllExecutions() []Execution {
 	out := append([]Execution{}, b.History...)
 	for _, e := range b.Executions {
 		out = append(out, e)

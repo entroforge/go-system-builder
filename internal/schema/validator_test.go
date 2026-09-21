@@ -105,7 +105,7 @@ func TestValidatorAcceptsRequirementScopedTaskIDs(t *testing.T) {
 	state["entities"].(map[string]any)["tasks"] = []any{map[string]any{
 		"id":              "TASK-039-01",
 		"state":           "reviewed",
-		"path":            "docs/tasks/TASK-039-01-loop-definition.md",
+		"path":            "docs/dev/tasks/TASK-039-01-loop-definition.md",
 		"sha256":          "1111111111111111111111111111111111111111111111111111111111111111",
 		"owner_agent_ids": []any{"agent-039-01"},
 	}}
@@ -120,7 +120,7 @@ func TestValidatorAcceptsRequirementScopedTaskIDs(t *testing.T) {
 
 func TestValidatorAcceptsCurrentHookPolicy(t *testing.T) {
 	validator := schema.NewValidator(filepath.Join("..", ".."))
-	if err := validator.ValidateFile("hook-policy.schema.json", "docs/hook-policy.json"); err != nil {
+	if err := validator.ValidateFile("hook-policy.schema.json", "docs/control/hook-policy.json"); err != nil {
 		t.Fatalf("current Hook policy must match embedded schema: %v", err)
 	}
 }
@@ -166,7 +166,7 @@ func TestValidatorRejectsInvalidHookDecision(t *testing.T) {
 // ships at the locked v1.3.0 contract (TASK-025 §4.6).
 func TestValidatorAcceptsCurrentHookPolicyVersion(t *testing.T) {
 	validator := schema.NewValidator(filepath.Join("..", ".."))
-	if err := validator.ValidateFile("hook-policy.schema.json", "docs/hook-policy.json"); err != nil {
+	if err := validator.ValidateFile("hook-policy.schema.json", "docs/control/hook-policy.json"); err != nil {
 		t.Fatalf("current Hook policy must match embedded schema: %v", err)
 	}
 }

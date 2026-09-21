@@ -75,7 +75,7 @@ func TestValidateManualAgreementFailsWhenDefinitionDrifts(t *testing.T) {
 	// Edit loop-definition.json AFTER the manual was generated to simulate
 	// drift (e.g. someone added a transition but forgot to regen the manual).
 	if err := os.WriteFile(
-		filepath.Join(root, "docs", "loop-definition.json"),
+		filepath.Join(root, "docs", "control", "loop-definition.json"),
 		[]byte("{\"extra\":\"drift\"}\n"),
 		0o644,
 	); err != nil {
@@ -180,7 +180,7 @@ const (
 )
 
 // writeMinimalProject creates the smallest project tree that
-// ValidateManualAgreement can run against: a docs/loop-definition.json plus a
+// ValidateManualAgreement can run against: a docs/control/loop-definition.json plus a
 // matching Manual whose embedded SHA-256 is computed from the on-disk
 // definition. The Manual is written at either the project root (source-repo
 // placement) or .claude/bin/loop-harness.md (target-project placement),
@@ -188,10 +188,10 @@ const (
 // to test drift, missing, or malformed scenarios.
 func writeMinimalProject(t *testing.T, root, definitionPayload string, placement manualPlacement) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	defPath := filepath.Join(root, "docs", "loop-definition.json")
+	defPath := filepath.Join(root, "docs", "control", "loop-definition.json")
 	defBytes := []byte(definitionPayload)
 	if err := os.WriteFile(defPath, defBytes, 0o644); err != nil {
 		t.Fatal(err)

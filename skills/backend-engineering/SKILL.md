@@ -6,7 +6,7 @@ version: 1.0.0
 ---
 # Backend Engineering
 ## Authority
-Quality guidance only. Stage routing lives in `docs/agent-protocol.md`; Skill routing authority comes from the current assignment and risk tags; the reusable method summary is inlined below.
+Quality guidance only. Stage routing lives in `docs/control/agent-protocol.md`; Skill routing authority comes from the current assignment and risk tags; the reusable method summary is inlined below.
 ## Applicability
 Apply to backend paths and the `backend` risk tag.
 ## Required Inputs

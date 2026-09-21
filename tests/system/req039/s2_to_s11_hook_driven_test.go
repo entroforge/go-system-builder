@@ -22,7 +22,7 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	const bugID = "SPINE-S2-S11"
-	archEdit := map[string]any{"file_path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md"}
+	archEdit := map[string]any{"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md"}
 	bash := map[string]any{"command": "go test ./..."}
 
 	// S2 → S3 (PTR-PLAN-01)
@@ -34,7 +34,7 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	req039fixtures.WritePlanningContractPass(t, root, state)
 	writeSystemState(t, root, state)
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s3", "Edit",
-		map[string]any{"file_path": "docs/contracts/BE-039.md"},
+		map[string]any{"file_path": "docs/dev/contracts/BE-039.md"},
 		"PTR-PLAN-02", "planning", "tasks", bugID)
 
 	// S4 → S5 (TR-002)
@@ -42,7 +42,7 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	req039fixtures.WritePlanningTaskPass(t, root, state)
 	writeSystemState(t, root, state)
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s4", "Edit",
-		map[string]any{"file_path": "docs/tasks/TASK-039-01-loop-definition.md"},
+		map[string]any{"file_path": "docs/dev/tasks/TASK-039-01-loop-definition.md"},
 		"TR-002", "document_verification", "", bugID)
 
 	// S5 → S6 (TR-003)
@@ -50,7 +50,7 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	req039fixtures.WriteDocumentVerificationPassEvidence(t, root, state, "dv-spec", "dv-task")
 	writeSystemState(t, root, state)
 	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s5", "Edit",
-		map[string]any{"file_path": "docs/contracts/BE-039.md"},
+		map[string]any{"file_path": "docs/dev/contracts/BE-039.md"},
 		"TR-003", "building", "", bugID)
 
 	// S6 → S7 (TR-006): the round opens at verification.planned (L3-S7).

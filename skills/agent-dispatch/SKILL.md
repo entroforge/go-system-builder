@@ -7,7 +7,7 @@ version: 1.0.0
 # Agent Dispatch
 
 ## Authority
-Dispatch modes and the agent lifecycle are defined in `docs/loop-definition.json` (`entity_lifecycles.agent`) and this Skill; the runtime events are executed by `loop-harness runtime agent-event` / `runtime task-complete`.
+Dispatch modes and the agent lifecycle are defined in `docs/control/loop-definition.json` (`entity_lifecycles.agent`) and this Skill; the runtime events are executed by `loop-harness runtime agent-event` / `runtime task-complete`.
 
 ## Entry Conditions
 - An Agent Definition exists under `agents/<role>.md`.
@@ -170,3 +170,36 @@ then prepare/launch. After generic completion, submit repair-result.json with
 `s9_delivery_command`. Main integrates that immutable candidate before registering
 the final RepairResult; independent verification and fresh S7 remain required.
 See `docs/workspace-integration.md` for explicit adoption, replacement and relocation.
+
+
+## Temporary worktrees and committed stage delivery
+
+Bind both destinations explicitly with `req bind --dev-branch <branch> --release-upstream <upstream>`; neither defaults to develop or the remote default. The project's authority root and this development branch own retained changes.
+
+Before dispatch, commit the required stage documents, code and tests to that branch. Create/reuse registered temporary worktrees with `runtime worktree-create --root <authority-root> --assignment-id <id>`. Git worktrees share Git objects, but have separate indexes and working files: staged and dirty parent changes are absent. Native Claude Code base-ref defaults must be checked against the binding.
+
+Workers commit scoped results and report. Main reviews them and runs `runtime task-integrate --root <authority-root> --assignment-id <id>`: normal merge commit, verification, acknowledgement, cleanup. This is development integration, not release. Failed integration preserves the checkout; retry the same assignment. Do not discard unreceived work or create replacement worktrees indefinitely.
+
+Stage gates consume each input from the source declared in the upstream file contract. Formal deliverables use one pinned Git tree; only explicitly allowed evidence/runtime inputs use disk. Dirty files cannot satisfy formal stage delivery. Worktree backlog reminders are advisory, delivered to Main through Agent-visible context, and never authorize deleting unknown worktrees.
+
+## Contract reading and shared implementation dependencies
+
+A Builder enters through its TASK: goal, allowed changes, dependencies, closing
+assertions, then ordered links to local responsibility, SYNC operation and shared
+model. Follow [shared-model reading rules in the factory](../../docs/rules/shared-model-contracts.md) (after installation: [project rule](../../docs/rules/shared-model-contracts.md)).
+Do not recursively expand all background links. A shared implementation task
+must be integrated before dependent worktrees start; independent generation from
+the same committed schema can run in parallel. Compare shared design inputs,
+not whole checkout commit equality. Actual consumption needs tests, not just a
+model reference in the completion report.
+
+## Overall dispatch plan (waves-v1)
+
+Follow [factory dispatch rules](../../docs/rules/dispatch-plan.md), or after installation
+[project dispatch rules](../../docs/rules/dispatch-plan.md). S4 delivers the REQ's
+index as an ordered wave checklist; S5 reviews and freezes it with TASKs. S6 reads
+that plan and `s6 status --capacity <actual total slots>` before dispatch, then
+recomputes after integration or capacity release. Start every compatible ready
+TASK within actual capacity; do not wait for unrelated tasks in an earlier wave.
+Only verified integration into the root development branch releases consumers.
+Never write runtime progress back into frozen plans or TASKs.

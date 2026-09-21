@@ -20,7 +20,7 @@ Use this rule for APIs, events, webhooks, FE/BE sync, response fields, auth, rat
 
 ## 3. Hard Rules
 
-- Document API fields in `docs/contracts/SYNC-*.md`.
+- Document API fields in `docs/dev/contracts/SYNC-*.md`.
 - Define auth, authorization, error codes, rate limits, and idempotency.
 - Use or generate `X-Request-ID`.
 - Use ISO 8601 UTC for time fields.
@@ -63,8 +63,13 @@ Use this rule for APIs, events, webhooks, FE/BE sync, response fields, auth, rat
 
 ## 7. Evidence
 
-- `docs/contracts/SYNC-*.md`
+- `docs/dev/contracts/SYNC-*.md`
 - contract/API tests
 - error-code tests
 - linked state doc when API changes state
 
+
+
+## Shared model authority
+
+Follow [shared-model contracts](shared-model-contracts.md). Data shape has one native authoring source; SYNC owns shared behavior, FE/BE derive responsibilities. Structural negative examples fail schema validation; business negatives remain valid data and are rejected by the business rule.

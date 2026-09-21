@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"encoding/json"
+	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/controller"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
@@ -49,6 +51,10 @@ func writeLoopState(t *testing.T, state map[string]any) string {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	req039fixtures.CommitFixture(t, dir)
+	if bound, ok := state["bound_req"].(map[string]any); ok {
+		bound["workspace"] = map[string]any{"project_root": dir, "dev_branch": "test-development", "release_upstream": "origin/release", "bound_commit": "fixture"}
+	}
 	raw, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -62,24 +68,24 @@ func writeLoopState(t *testing.T, state map[string]any) string {
 	return dir
 }
 
-// copyLoopDefinition copies docs/loop-definition.json from the project root
+// copyLoopDefinition copies docs/control/loop-definition.json from the project root
 // into a temp test sandbox so transition.LoadCatalog can resolve the
 // catalog. Normal quality-cycle tests also need a valid safety policy: missing
 // authority is now a separate safety failure, not an implicit allow fixture.
 func copyLoopDefinition(t *testing.T, sourceRoot, destRoot string) error {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(sourceRoot, "docs", "loop-definition.json"))
+	data, err := os.ReadFile(filepath.Join(sourceRoot, "docs", "control", "loop-definition.json"))
 	if err != nil {
 		return err
 	}
-	dest := filepath.Join(destRoot, "docs")
+	dest := filepath.Join(destRoot, "docs", "control")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dest, "loop-definition.json"), data, 0o644); err != nil {
 		return err
 	}
-	policyData, err := os.ReadFile(filepath.Join(sourceRoot, "docs", "hook-policy.json"))
+	policyData, err := os.ReadFile(filepath.Join(sourceRoot, "docs", "control", "hook-policy.json"))
 	if err != nil {
 		return err
 	}
@@ -165,7 +171,7 @@ func TestRunControlCycleNeverBlocksOnNotReady(t *testing.T) {
 		Root:      dir,
 		Event:     "PreToolUse",
 		ToolName:  "Edit",
-		ToolInput: map[string]any{"file_path": "docs/contracts/BE-039.md"},
+		ToolInput: map[string]any{"file_path": "docs/dev/contracts/BE-039.md"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +291,7 @@ func TestRunControlCycleSelectorDocumentVerificationProjectsPassGate(t *testing.
 		Root:      dir,
 		Event:     "PreToolUse",
 		ToolName:  "Edit",
-		ToolInput: map[string]any{"file_path": "docs/contracts/BE-039.md"},
+		ToolInput: map[string]any{"file_path": "docs/dev/contracts/BE-039.md"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -319,7 +325,7 @@ func TestRunControlCycleSelectorDualSatisfiedConflict(t *testing.T) {
 		Root:      dir,
 		Event:     "PreToolUse",
 		ToolName:  "Edit",
-		ToolInput: map[string]any{"file_path": "docs/contracts/BE-039.md"},
+		ToolInput: map[string]any{"file_path": "docs/dev/contracts/BE-039.md"},
 		GateEvaluator: dualSatisfiedEvaluator{
 			gates: map[string]qualitygate.Status{
 				"GATE-DOCUMENT-PASS":         qualitygate.StatusSatisfied,
@@ -459,7 +465,7 @@ func TestProjectedNotReadyCursorIsForwarded(t *testing.T) {
 		Root:      dir,
 		Event:     "PreToolUse",
 		ToolName:  "Write",
-		ToolInput: map[string]any{"file_path": "docs/tasks/TASK-X.md"},
+		ToolInput: map[string]any{"file_path": "docs/dev/tasks/TASK-X.md"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -565,6 +571,7 @@ func TestRunControlCycleGateTimeoutReturnsUnknown(t *testing.T) {
 		ToolName:           "Edit",
 		ToolInput:          map[string]any{"file_path": "internal/cli/controller.go"},
 		QualityCycleBudget: 50 * time.Millisecond,
+		Files:              fileview.Disk{Root: dir},
 		GateEvaluator:      blockingSlowEvaluator{delay: 500 * time.Millisecond},
 	})
 	elapsed := time.Since(start)
@@ -623,7 +630,7 @@ func TestResolveQualityCycleBudgetReadsLoopDefinition(t *testing.T) {
 	if err := copyLoopDefinition(t, projectRoot, dir); err != nil {
 		t.Fatal(err)
 	}
-	defPath := filepath.Join(dir, "docs", "loop-definition.json")
+	defPath := filepath.Join(dir, "docs", "control", "loop-definition.json")
 	raw, err := os.ReadFile(defPath)
 	if err != nil {
 		t.Fatal(err)
@@ -655,7 +662,7 @@ func TestRunControlCycleConfiguredBudgetOverridesDefault(t *testing.T) {
 	if err := copyLoopDefinition(t, projectRoot, dir); err != nil {
 		t.Fatal(err)
 	}
-	defPath := filepath.Join(dir, "docs", "loop-definition.json")
+	defPath := filepath.Join(dir, "docs", "control", "loop-definition.json")
 	raw, err := os.ReadFile(defPath)
 	if err != nil {
 		t.Fatal(err)
@@ -679,6 +686,7 @@ func TestRunControlCycleConfiguredBudgetOverridesDefault(t *testing.T) {
 		Event:         "PreToolUse",
 		ToolName:      "Edit",
 		ToolInput:     map[string]any{"file_path": "internal/cli/controller.go"},
+		Files:         fileview.Disk{Root: dir},
 		GateEvaluator: blockingSlowEvaluator{delay: 200 * time.Millisecond},
 	})
 	elapsed := time.Since(start)
@@ -703,7 +711,7 @@ func TestRunControlCycleRecordsLabeledGateMetrics(t *testing.T) {
 		Root:      dir,
 		Event:     "PreToolUse",
 		ToolName:  "Write",
-		ToolInput: map[string]any{"file_path": "docs/tasks/TASK-X.md"},
+		ToolInput: map[string]any{"file_path": "docs/dev/tasks/TASK-X.md"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -717,5 +725,39 @@ func TestRunControlCycleRecordsLabeledGateMetrics(t *testing.T) {
 	}
 	if controller.MetricsGateEvaluations < 1 {
 		t.Fatalf("legacy gate counter=%d want >=1", controller.MetricsGateEvaluations)
+	}
+}
+
+func TestNoAutomaticCandidateStillEnforcesProtectedCommands(t *testing.T) {
+	for _, cursor := range []string{"inactive", "release_authorized", "aborted"} {
+		for _, table := range []string{"[]", "{bad", "missing"} {
+			t.Run(cursor+"/"+table, func(t *testing.T) {
+				state := stateFromAsset(t, "loop-state.example.json")
+				state["lifecycle"] = map[string]any{"state": cursor, "phase": nil, "phase_revision": 0}
+				dir := writeLoopState(t, state)
+				if err := copyLoopDefinition(t, projectRoot, dir); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(filepath.Join(projectRoot, "docs/control/hook-policy.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "docs/control/hook-policy.json"), data, 0644); err != nil {
+					t.Fatal(err)
+				}
+				if table != "missing" {
+					if err := os.WriteFile(filepath.Join(dir, "docs/control/protected-commands.json"), []byte(table), 0644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{Root: dir, Event: "PreToolUse", ToolName: "Bash", ToolInput: map[string]any{"command": "git push origin main"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Decision.Decision != "deny" || !strings.Contains(result.Decision.Reason, "protected_commands table unreadable") {
+					t.Fatalf("no-candidate safety bypass: %+v", result.Decision)
+				}
+			})
+		}
 	}
 }

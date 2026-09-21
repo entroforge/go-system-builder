@@ -22,7 +22,7 @@ type BootstrapReceipt struct {
 // Bootstrap installs executable and declarative assets only. It never copies
 // settings permissions, credentials, Runtime, journal, or evidence. A receipt
 // is published last; mismatching existing files require explicit recovery.
-func (b *Binding) Bootstrap(e Execution, executable string) error {
+func (b *ExecutionRegistry) Bootstrap(e Execution, executable string) error {
 	r := BootstrapReceipt{Version: 1, RuntimeID: e.RuntimeID, AssignmentID: e.AssignmentID, Generation: e.Generation, Files: map[string]string{}}
 	install := func(rel string, data []byte, mode os.FileMode) error {
 		dest := filepath.Join(e.Path, filepath.FromSlash(rel))
@@ -158,7 +158,7 @@ func publishBootstrapFile(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(f.Name(), path)
 }
 
-func (b *Binding) ValidateBootstrap(e Execution) error {
+func (b *ExecutionRegistry) ValidateBootstrap(e Execution) error {
 	data, err := os.ReadFile(filepath.Join(e.Path, ".claude/loop-bootstrap.json"))
 	if err != nil {
 		return fmt.Errorf("Worker bootstrap receipt unavailable: %w", err)

@@ -80,7 +80,7 @@ func TestRealGitPreservedMergedRetry(t *testing.T) {
 	write(".claude/loop-state.json", "{\"revision\":2}")
 	clean, e := worktreeClean(ctx, root)
 	if e != nil || !clean {
-		t.Fatalf("runtime dirt: %v %v", clean, e)
+		t.Fatalf("runtime dirt: %v %v status=%q", clean, e, git("status", "--porcelain", "-z", "--untracked-files=all"))
 	}
 	same, e := Integrate(ctx, IntegrateRequest{Inspection: recovered}, cfg)
 	if e != nil || same.Checkpoint.State != StatePreserved {

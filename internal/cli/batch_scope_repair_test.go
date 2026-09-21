@@ -20,9 +20,9 @@ func TestBatchScopeRepairInspectionBoundaries(t *testing.T) {
 		{"review started", func(s map[string]any, r string) { s["review"] = map[string]any{"round": 1} }, false},
 		{"paused", func(s map[string]any, r string) { s["pause"] = map[string]any{} }, false},
 		{"tampered", func(s map[string]any, r string) {
-			os.WriteFile(filepath.Join(r, "docs/tasks/TASK-1.md"), []byte("changed"), 0644)
+			os.WriteFile(filepath.Join(r, "docs/dev/tasks/TASK-1.md"), []byte("changed"), 0644)
 		}, false},
-		{"missing", func(s map[string]any, r string) { os.Remove(filepath.Join(r, "docs/tasks/TASK-1.md")) }, false},
+		{"missing", func(s map[string]any, r string) { os.Remove(filepath.Join(r, "docs/dev/tasks/TASK-1.md")) }, false},
 		{"escape", func(s map[string]any, r string) { s["documents"].([]any)[0].(map[string]any)["path"] = "../outside.md" }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -39,7 +39,7 @@ func TestBatchScopeRepairInspectionBoundaries(t *testing.T) {
 			reqHash := write("docs/requirements/REQ-053.md", "> 状态：locked")
 			docs := []any{}
 			for _, row := range [][2]string{{"TASK-1", "REQ-052"}, {"TASK-2", "REQ-053"}} {
-				rel := "docs/tasks/" + row[0] + ".md"
+				rel := "docs/dev/tasks/" + row[0] + ".md"
 				h := write(rel, "> Source REQ refs: "+row[1])
 				docs = append(docs, map[string]any{"id": row[0], "kind": "task", "path": rel, "sha256": h, "generation": 1})
 			}

@@ -6,7 +6,7 @@ version: 1.0.0
 ---
 # Performance Review
 ## Authority
-Measured budgets and requirements own conclusions. Stage routing lives in `docs/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
+Measured budgets and requirements own conclusions. Stage routing lives in `docs/control/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
 ## Applicability
 Apply to the `performance` risk tag.
 ## Required Inputs

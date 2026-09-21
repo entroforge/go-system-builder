@@ -159,7 +159,16 @@ func excludedBaselinePaths(root string, paths []string) map[string]bool {
 			delete(excluded, p)
 			continue
 		}
-		if ignoreBaselinePath(p) || b.excludes(p) {
+		// Stored membership is historical authority: a committed deletion must
+		// not gain cache exemption merely because HEAD/index no longer own it.
+		foreign := false
+		for _, dir := range b.worktrees {
+			if p == dir || strings.HasPrefix(p, dir+"/") {
+				foreign = true
+				break
+			}
+		}
+		if ignoreBaselinePath(p) || foreign {
 			excluded[p] = true
 		}
 	}

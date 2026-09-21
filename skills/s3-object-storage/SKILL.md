@@ -6,7 +6,7 @@ version: 0.4.0
 ---
 # S3 Object Storage
 ## Authority
-Quality guidance only. Security, retention, and data contracts remain authoritative in the locked design and `docs/agent-protocol.md`.
+Quality guidance only. Security, retention, and data contracts remain authoritative in the locked design and `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to S3-compatible storage clients, object key design, upload/download paths, **AWS Signature Version 4 (SigV4)** presigned operations, lifecycle rules, or storage events. RustFS-compatible deployments use SigV4 as the required signing baseline.
 ## Required Inputs

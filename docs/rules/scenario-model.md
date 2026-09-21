@@ -176,3 +176,8 @@ regression；只补本 REQ 的路径不满足规范。
 - **cross-matrix.json**（模块包第九文件；5 手写 + 页面 HTML + 2 生成）：汇聚①的事实×需求点×故事交叉清单——每格指向覆盖它的 branch 或记录无分支理由；"沉默不是不适用"。机器地板（`scenario generate/validate` 强制）：每个 fact、每个 story 至少出现在一格（fact×story 组合本身是猎杀判断，不要求笛卡尔积）；branch 格的 rule 必须在 `source_refs` 真实引用该格的 `REQ-<id>/FR-<id>`（且只可引用 bound REQ）；无分支理由须 ≥8 字符且含字母（讲清 why——"."或"不需要"不是背书）。
 - **AC↔CASE 桥**：`scenario bridge`（源头检查，汇聚①后即可跑）与 `scenario validate`（全链含 BR→CASE）——每条验收标准须达 FR→BR→CASE 或带背书 N/A（NFR 编号或 §A4 指针；自由文本不是 N/A）。
 - **S-NNN 恰好三位数字**（`S-001`，引擎按 `S-[0-9]{3}` 匹配）：`S-1`/`S-1234` 不会被识别为 story 引用（引用校验与 cross-matrix 地板两侧同时不认，静默失效）。F-NNN 同理三位。
+
+
+## Shared model authority
+
+Follow [shared-model contracts](shared-model-contracts.md). Data shape has one native authoring source; SYNC owns shared behavior, FE/BE derive responsibilities. Structural negative examples fail schema validation; business negatives remain valid data and are rejected by the business rule.

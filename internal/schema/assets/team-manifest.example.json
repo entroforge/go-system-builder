@@ -19,7 +19,7 @@
     },
     {
       "id": "TASK-001",
-      "path": "docs/tasks/TASK-001.md",
+      "path": "docs/dev/tasks/TASK-001.md",
       "version": "v1.0.0",
       "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
     }
@@ -123,7 +123,7 @@
       "write_paths": ["docs/reports/qa/QA-001.md"],
       "required_checks": [
         "go test ./internal/... ./tests/...",
-        "locked:docs/contracts/BE-002-runtime-validator.md"
+        "locked:docs/dev/contracts/BE-002-runtime-validator.md"
       ],
       "output_paths": ["docs/reports/qa/QA-001.md"],
       "depends_on": [],

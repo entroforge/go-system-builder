@@ -58,7 +58,7 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 		!strings.Contains(next, "req bind --req docs/requirements/REQ-100.md") {
 		t.Fatalf("S0 projection must carry the ready-to-run bind command: %s", next)
 	}
-	out := must("bind", "req", "bind", "--root", root, "--approved-by", "alice")
+	out := must("bind", "req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice")
 	if !strings.Contains(out, "bound REQ-100 v1.0.0") || !strings.Contains(out, "event req_bound") {
 		t.Fatalf("bind output missing facts: %s", out)
 	}
@@ -74,7 +74,7 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 	if state, _ := lifecycle(); state != "paused" {
 		t.Fatalf("lifecycle after pause = %s", state)
 	}
-	if _, _, code := run("req", "bind", "--root", root, "--approved-by", "alice"); code == 0 {
+	if _, _, code := run("req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice"); code == 0 {
 		t.Fatal("bind must refuse on a paused runtime")
 	}
 	out = must("resume", "runtime", "resume", "--root", root, "--approved-by", "alice")
@@ -91,7 +91,7 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "docs", "requirements", "REQ-100.md"), []byte(amended), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out = must("amend", "req", "amend", "--root", root, "--req", "docs/requirements/REQ-100.md", "--approved-by", "alice")
+	out = must("amend", "req", "amend", "--root", commitStageFixture(t, root), "--req", "docs/requirements/REQ-100.md", "--approved-by", "alice")
 	if !strings.Contains(out, "REQ-100 v1.1.0 (baseline generation 2") {
 		t.Fatalf("amend output: %s", out)
 	}
@@ -118,7 +118,7 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 	}
 
 	// --- rebind the same REQ (fresh runtime) ---
-	out = must("rebind", "req", "bind", "--root", root, "--approved-by", "alice")
+	out = must("rebind", "req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice")
 	if !strings.Contains(out, "bound REQ-100 v1.1.0") {
 		t.Fatalf("rebind output: %s", out)
 	}
@@ -211,7 +211,7 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 		[]byte("# REQ-101\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：none\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out = must("bind-next-period", "req", "bind", "--root", root, "--approved-by", "alice")
+	out = must("bind-next-period", "req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice")
 	if !strings.Contains(out, "bound REQ-101 v1.0.0") {
 		t.Fatalf("next-period bind output: %s", out)
 	}

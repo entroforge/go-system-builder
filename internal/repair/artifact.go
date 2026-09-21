@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"io"
 	"os"
 	"os/exec"
@@ -190,6 +191,7 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 	}
 	artifacts := []ArtifactRef{}
 	boundary := newBaselineBoundary(rootAbs)
+	scope := pathscope.New(root)
 	err = filepath.WalkDir(rootAbs, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -202,7 +204,7 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 			return nil
 		}
 		relSlash := filepath.ToSlash(rel)
-		if ignoreBaselinePath(relSlash) || boundary.excludes(relSlash) || (entry.IsDir() && boundary.discoverEnvironment(relSlash)) {
+		if (scope.Excludes(path) && !boundary.hasTracked(relSlash)) || ignoreBaselinePath(relSlash) || boundary.excludes(relSlash) || (entry.IsDir() && boundary.discoverEnvironment(relSlash)) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}

@@ -152,7 +152,7 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	if assignment == nil {
 		return fail(fmt.Errorf("assignment and owner must match the current registered runtime"))
 	}
-	inputs := []string{"docs/loop-definition.json", "docs/hook-policy.json"}
+	inputs := []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"}
 	for _, ref := range []string{assignment.ManifestRef, assignment.AgentDefinitionRef} {
 		path, _, _ := strings.Cut(ref, "#")
 		if path != "" {

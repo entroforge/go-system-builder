@@ -3,6 +3,8 @@ package review
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -259,6 +261,7 @@ func deletionCorroborated(root string, state map[string]any, plan *Plan, subject
 // Non-git repositories (e.g., TempDir fixtures) degrade gracefully: no extra
 // drift is reported when git is unavailable.
 func detectUndeclaredProductDrift(root string, plan *Plan) ([]string, error) {
+	scope := pathscope.New(root)
 	frozen := make(map[string]bool, len(plan.FrozenSubjects))
 	for _, subject := range plan.FrozenSubjects {
 		frozen[normalizeSurface(subject.Path)] = true
@@ -286,7 +289,7 @@ func detectUndeclaredProductDrift(root string, plan *Plan) ([]string, error) {
 		if rel == "" || frozen[rel] {
 			continue
 		}
-		if isAllowedDriftSurface(rel) {
+		if scope.Excludes(rel) || isAllowedDriftSurface(rel) {
 			continue
 		}
 		drift = append(drift, rel)
@@ -299,10 +302,10 @@ func isAllowedDriftSurface(rel string) bool {
 	if rel == ".claude" || isControlPlaneDriftPath(rel) {
 		return true
 	}
-	if rel == "docs/reports" || strings.HasPrefix(rel, "docs/reports/") {
+	if rel == projectlayout.Reports || strings.HasPrefix(rel, "docs/reports/") {
 		return true
 	}
-	if rel == "docs/release_audits" || strings.HasPrefix(rel, "docs/release_audits/") {
+	if rel == projectlayout.ReleaseAudits || strings.HasPrefix(rel, "docs/reports/release-audits/") {
 		return true
 	}
 	// Audit, blueprint and other non-product projections are not frozen product
@@ -578,6 +581,9 @@ type CaptureStep struct {
 	Observed   string   `json:"observed"`
 	Evidence   []string `json:"evidence_refs,omitempty"`
 	CapturedAt string   `json:"captured_at"`
+	// Provenance is populated by capture exec. It is optional so legacy
+	// hand-authored `capture step` buffers remain readable and mergeable.
+	Provenance *CaptureProvenance `json:"provenance,omitempty"`
 }
 
 // SanitizeCapture rejects any field that smells like a secret.

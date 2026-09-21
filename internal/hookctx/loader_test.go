@@ -18,7 +18,7 @@ func TestLoaderBuildsPolicyContextFromRuntimeAndActivation(t *testing.T) {
 		"runtime_id":"loop-REQ-002",
 		"revision":5,
 		"bound_req":{"path":"docs/requirements/REQ-002.md","metadata":{"ui_impact":"changed"}},
-		"hook_control":{"policy_ref":{"path":"docs/hook-policy.json","version":"v1.3.0","sha256":"abc"}},
+		"hook_control":{"policy_ref":{"path":"docs/control/hook-policy.json","version":"v1.3.0","sha256":"abc"}},
 		"entities":{"agents":[{
 			"id":"agent-builder-1",
 			"state":"activated",

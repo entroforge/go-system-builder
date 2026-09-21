@@ -51,6 +51,8 @@ loop-harness runtime task-integrate --root /project --assignment-id assignment-e
 loop-harness runtime workspace pending --root /project
 ```
 
+未指定 `integration_check_mode` 时保留 Worker 预检与 Main 合并后检查；指定 `post_merge` 时只跳过重复的动态预检。两种模式都检查工作区身份、范围和冻结文档，并且都必须完成 Main 合并后的必需检查。canonical Result 的路径与 SHA256 一起绑定到回执；恢复时 Result 改变须重新验证，不能复用旧 PASS。首次接收确认前目标 HEAD 改变也须重验；已经确认后的纯清理重试保留原验证回执。
+
 SubagentStop/SessionStart/PreCompact 提示 Main 消费显式待办，不在 Hook 中同步跑长合并。pending 从原报告/checkpoint 生成命令，不建立第二套调度状态。
 
 S9 先完成通用报告，再 deliver：冻结 source SHA、Contract/Session/Plan、执行代次及 Git blob 变更摘要。主目录整合时重新检查授权、源提交、范围和冲突，正常非 squash 合并后执行必需检查，只有 verified 且 Main HEAD 仍等于 tested_head 时，调用原领域 SubmitRepairResult。Session 累计差异和独立复验门禁继续生效。后续仍是独立针对性复验 → fresh S7 → 人类发布授权，不自动发布。

@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Vitest
 ## Authority
-Technical practice only. Stage routing remains in `docs/agent-protocol.md`; acceptance clauses determine what behavior must be proved.
+Technical practice only. Stage routing remains in `docs/control/agent-protocol.md`; acceptance clauses determine what behavior must be proved.
 ## Applicability
 Apply to Vitest tests, test setup, mocks, coverage configuration, or test reliability.
 ## Required Inputs

@@ -26,7 +26,7 @@ func NewSessionID() (string, error) {
 
 // Launch changes only the child cwd. Identity must be persisted before calling;
 // a retry must explicitly resume the same platform session, never guess latest.
-func (b *Binding) Launch(ctx context.Context, e Execution, binary, role, prompt string, resume bool, stdout, stderr io.Writer) error {
+func (b *ExecutionRegistry) Launch(ctx context.Context, e Execution, binary, role, prompt string, resume bool, stdout, stderr io.Writer) error {
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
 		return err
 	}

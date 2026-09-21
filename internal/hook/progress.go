@@ -104,6 +104,17 @@ func PrepareNotice(root, session, agent, event string, output []byte) ([]byte, f
 	// never hidden. Revision churn alone is not progress.
 	state := map[string]any{"message": message}
 	if context, ok := specific["additionalContext"].(string); ok {
+		if strings.HasPrefix(context, "QUALITY_GATE ") {
+			if line, rest, ok := strings.Cut(context, "\n"); ok {
+				var gate map[string]any
+				if json.Unmarshal([]byte(strings.TrimPrefix(line, "QUALITY_GATE ")), &gate) == nil {
+					delete(gate, "observed_revision")
+					delete(gate, "fingerprint")
+					stable, _ := json.Marshal(gate)
+					context = string(stable) + "\n" + rest
+				}
+			}
+		}
 		state["context"] = noticeRevisionFields.ReplaceAllString(context, "")
 	}
 	if gate, ok := specific["quality_gate"].(map[string]any); ok {

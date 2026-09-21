@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"sort"
@@ -124,6 +126,7 @@ func Import(root string, source any) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("validate import req: %w", err)
 	}
+	actualBinding.Workspace = binding.Workspace // workspace identity is a declared plan input, not a REQ Markdown field
 	if actualBinding != binding {
 		return ImportResult{}, &ValidationError{
 			Code: ErrInvalidInventory, Field: "req", Path: binding.Path,
@@ -221,8 +224,8 @@ type importCollector struct {
 
 func (c *importCollector) scanDocuments() error {
 	for _, directory := range []string{
-		"docs/requirements", "docs/design", "docs/contracts", "docs/tasks",
-		"docs/reports", "docs/release_audits",
+		projectlayout.Requirements, "docs/design", projectlayout.Architecture, projectlayout.Contracts, projectlayout.Tasks,
+		projectlayout.Reports,
 	} {
 		fullDirectory := filepath.Join(c.root, filepath.FromSlash(directory))
 		if _, err := os.Stat(fullDirectory); os.IsNotExist(err) {
@@ -230,7 +233,7 @@ func (c *importCollector) scanDocuments() error {
 		} else if err != nil {
 			return fmt.Errorf("inspect import document directory %q: %w", directory, err)
 		}
-		if err := filepath.WalkDir(fullDirectory, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if err := pathscope.WalkDir(c.root, fullDirectory, func(filePath string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return fmt.Errorf("walk import document directory %q: %w", directory, walkErr)
 			}
@@ -338,7 +341,7 @@ func (c *importCollector) scanEvidence() error {
 	} else if err != nil {
 		return fmt.Errorf("inspect import evidence directory: %w", err)
 	}
-	return filepath.WalkDir(directory, func(filePath string, entry os.DirEntry, walkErr error) error {
+	return pathscope.WalkDir(c.root, directory, func(filePath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("walk import evidence directory: %w", walkErr)
 		}
@@ -816,9 +819,9 @@ func importDocumentKind(relative string) string {
 		return "e2e"
 	case strings.Contains(base, "CONTRACT"):
 		return "contract"
-	case strings.Contains(base, "RELEASE") || strings.Contains(filepath.ToSlash(relative), "/release_audits/"):
+	case strings.Contains(base, "RELEASE") || strings.Contains(filepath.ToSlash(relative), "/reports/release-audits/"):
 		return "release_audit"
-	case strings.Contains(filepath.ToSlash(relative), "/design/"):
+	case strings.Contains(filepath.ToSlash(relative), "/design/"), strings.Contains(filepath.ToSlash(relative), "/architecture/"):
 		return "design"
 	default:
 		return ""

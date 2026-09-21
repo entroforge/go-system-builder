@@ -20,7 +20,7 @@ cannot become a full review; and a non-blocking risk still needs an owner,
 tracking artifact, impact, and recovery point.
 
 ## Authority
-Automation stops before squash merge, main-branch publication, or formal release. Runtime authority lives in `docs/loop-definition.json`; the stage contract lives in `docs/agent-protocol.md`; the method summary is inlined below.
+Automation stops before squash merge, main-branch publication, or formal release. Runtime authority lives in `docs/control/loop-definition.json`; the stage contract lives in `docs/control/agent-protocol.md`; the method summary is inlined below.
 
 ## Entry Conditions
 - A `clean_round_valid` evidence record exists and is referenced by ID and hash.
@@ -98,7 +98,7 @@ Any S7 Finding, counterevidence item, visual regression, usability test, or subs
 4. **Replay** — re-run affected-edge reference/binding checks (`loop-harness design-foundation check`) and one minimal replay (second `changed` REQ cold-start or affected Proof state).
 5. **Close on evidence** — receipt fields `Source observation / Affected constraint IDs / Classification / Changed edges / Replay evidence / Status open/closed` must be present and resolvable; checker validates refs/paths, human judges whether Kernel should change. `open` until both pass; never close on report completion alone.
 
-Carriers reuse existing authority (no new Feedback DB): local fix → source Finding + repair/verification evidence; module pattern → `CP-*`; global extension → `ADR-*`/`DFD-*` + updated tables; exception → `EX-*`; breaking change → `DFD-*` + human re-publish. This Skill and `docs/agent-protocol.md` #s7 / #s10 are the entry points; filling `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` after two REQs does not count as wired.
+Carriers reuse existing authority (no new Feedback DB): local fix → source Finding + repair/verification evidence; module pattern → `CP-*`; global extension → `ADR-*`/`DFD-*` + updated tables; exception → `EX-*`; breaking change → `DFD-*` + human re-publish. This Skill and `docs/control/agent-protocol.md` #s7 / #s10 are the entry points; filling `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` after two REQs does not count as wired.
 
 ## Machine-checked S10 artifact
 

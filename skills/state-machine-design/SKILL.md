@@ -6,7 +6,7 @@ version: 1.2.0
 ---
 # State Machine Design
 ## Authority
-The machine-readable definition owns legal transitions. Runtime authority lives in `docs/loop-definition.json`; the state-machine review method is inlined below.
+The machine-readable definition owns legal transitions. Runtime authority lives in `docs/control/loop-definition.json`; the state-machine review method is inlined below.
 ## Applicability
 Apply to the `state-machine` risk tag or lifecycle review.
 ## Required Inputs

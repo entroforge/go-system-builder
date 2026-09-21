@@ -14,14 +14,14 @@ import (
 )
 
 func TestValidateRepositoryAcceptsCurrentDesign(t *testing.T) {
-	root := freshRepositoryFixture(t)
+	root := isolatedSemanticProject(t)
 	if err := semantic.ValidateRepository(root); err != nil {
 		t.Fatalf("repository validation failed: %v", err)
 	}
 }
 
 func TestValidateRuntimeRejectsUnknownLifecycleState(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := isolatedSemanticProject(t)
 	data, err := schema.ReadAsset("loop-state.example.json")
 	if err != nil {
 		t.Fatal(err)
@@ -41,29 +41,29 @@ func TestValidateRuntimeRejectsUnknownLifecycleState(t *testing.T) {
 	}
 }
 
-func TestValidateRuntimeFileAcceptsCommittedInactiveState(t *testing.T) {
-	root := freshRepositoryFixture(t)
+func TestValidateRuntimeFileAcceptsFreshInactiveState(t *testing.T) {
+	root := isolatedSemanticProject(t)
 	if err := semantic.ValidateRuntimeFile(root, ".claude/loop-state.json"); err != nil {
-		t.Fatalf("committed runtime validation failed: %v", err)
+		t.Fatalf("fresh runtime validation failed: %v", err)
 	}
 }
 
-func TestValidateReviewManifestsChecksCommittedWorkgroups(t *testing.T) {
-	root := freshRepositoryFixture(t)
+func TestValidateReviewManifestsAcceptsFreshProject(t *testing.T) {
+	root := isolatedSemanticProject(t)
 	if err := semantic.ValidateReviewManifests(root); err != nil {
 		t.Fatalf("review manifest validation failed: %v", err)
 	}
 }
 
-func TestValidateAgentMessagesChecksCommittedEvidence(t *testing.T) {
-	root := freshRepositoryFixture(t)
+func TestValidateAgentMessagesAcceptsFreshProject(t *testing.T) {
+	root := isolatedSemanticProject(t)
 	if err := semantic.ValidateAgentMessages(root); err != nil {
 		t.Fatalf("Agent message validation failed: %v", err)
 	}
 }
 
 func TestValidateRuntimeReachabilityAcceptsFreshRuntime(t *testing.T) {
-	root := freshRepositoryFixture(t)
+	root := isolatedSemanticProject(t)
 	if err := semantic.ValidateRuntimeReachability(root); err != nil {
 		t.Fatalf("runtime reachability validation failed: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestValidateCrossManifestDependenciesEmptyRefsReturnsNil(t *testing.T) {
 func TestValidateReviewManifestReferencesMismatchErrorIncludesHint(t *testing.T) {
 	root := t.TempDir()
 	// Minimal doc on disk.
-	docPath := filepath.Join(root, "docs", "tasks", "TASK-1.md")
+	docPath := filepath.Join(root, "docs", "dev", "tasks", "TASK-1.md")
 	if err := os.MkdirAll(filepath.Dir(docPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestValidateReviewManifestReferencesMismatchErrorIncludesHint(t *testing.T)
 		"documents": []any{
 			map[string]any{
 				"id":     "TASK-1",
-				"path":   "docs/tasks/TASK-1.md",
+				"path":   "docs/dev/tasks/TASK-1.md",
 				"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
 			},
 		},

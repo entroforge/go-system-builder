@@ -32,7 +32,7 @@ func TestIntegrationSelectionRequiresExactAssignmentAndOwner(t *testing.T) {
 }
 func TestVerifiedAcknowledgmentUsesAgentLifecycle(t *testing.T) {
 	fix := newRuntimeFixture(t)
-	definitionPath := filepath.Join(fix.root, "docs/loop-definition.json")
+	definitionPath := filepath.Join(fix.root, "docs/control/loop-definition.json")
 	data, _ := os.ReadFile(definitionPath)
 	var definition map[string]any
 	json.Unmarshal(data, &definition)
@@ -50,7 +50,7 @@ func TestVerifiedAcknowledgmentUsesAgentLifecycle(t *testing.T) {
 	cp := integration.Checkpoint{State: integration.StateVerified, BaselineGeneration: 1, MergeCommit: "merge", TestedHead: "merge"}
 	runtimeID, _ := snapshot.State["runtime_id"].(string)
 	os.MkdirAll(filepath.Dir(integration.CheckpointPath(fix.root, runtimeID, 1, "a")), 0700)
-	snapshot.State["workspace"] = workspace.Encode(&workspace.Binding{Version: 1, MainRoot: fix.root, CommonDir: filepath.Join(fix.root, ".git"), Branch: "feature/customer", Executions: map[string]workspace.Execution{"b": {AssignmentID: "b", RuntimeID: runtimeID, BaselineGeneration: 1, AgentID: "agent-ack"}}})
+	snapshot.State["workspace"] = workspace.Encode(&workspace.ExecutionRegistry{Version: 1, MainRoot: fix.root, CommonDir: filepath.Join(fix.root, ".git"), Branch: "feature/customer", Executions: map[string]workspace.Execution{"b": {AssignmentID: "b", RuntimeID: runtimeID, BaselineGeneration: 1, AgentID: "agent-ack"}}})
 	if _, err := acknowledgeVerifiedIntegration(fix.root, snapshot, a, cp); err == nil {
 		t.Fatal("acknowledged owner before its second assignment was verified")
 	}

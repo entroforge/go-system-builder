@@ -1360,7 +1360,7 @@ func TestRefreshFingerprintsRejectsValidatorThatAcceptsInvalidCandidate(t *testi
 	state := readJSONMapRuntimeTest(t, statePath)
 	state["documents"] = []any{map[string]any{
 		"id": "DOC-REFRESH", "kind": "task", "path": "document.md", "version": "v1",
-		"sha256": "stale", "status": "locked", "generation": 1,
+		"sha256": strings.Repeat("1", 64), "status": "locked", "generation": 1,
 	}}
 	writeJSONMapRuntimeTest(t, statePath, state)
 	stateBefore := mustRead(t, statePath)

@@ -61,6 +61,20 @@ func TestTrackedCacheNamesKeepDeletionAndIgnoreOnlyOutputs(t *testing.T) {
 			if !found {
 				t.Fatalf("staged deletion lost: %v", after)
 			}
+			boundaryGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "delete product")
+			committed, err := ComputeSessionChangeset(root, RepairSession{BaselineArtifacts: before})
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained := false
+			for _, change := range committed {
+				if change.Path == rel && change.Status == "deleted" {
+					retained = true
+				}
+			}
+			if !retained {
+				t.Fatalf("committed deletion lost: %v", committed)
+			}
 			if excludedBaselinePaths(root, []string{rel})[rel] {
 				t.Fatal("freshness classifier exempts tracked deletion")
 			}

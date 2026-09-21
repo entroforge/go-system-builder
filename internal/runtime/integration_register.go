@@ -1,4 +1,4 @@
-// Package runtime's TASK-039-06 ordered extension. Per docs/tasks/index-039.md
+// Package runtime's TASK-039-06 ordered extension. Per docs/dev/tasks/index-039.md
 // §7, TASK-039-06 owns internal/integration/ and is allowed to add exactly
 // one ordered-extension file under internal/runtime/. That file is this one.
 //

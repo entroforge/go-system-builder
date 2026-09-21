@@ -21,10 +21,10 @@ Chat never changes a baseline.
 | Requirements | `docs/requirements/` | user + PM / Architect |
 | Design | `docs/design/` | PM / Architect |
 | UI Prototypes | `docs/design/prototypes/` | PM / Architect |
-| Contracts | `docs/contracts/` | PM / Architect, affected Builders informed |
-| Tasks | `docs/tasks/` | PM / Architect |
+| Contracts | `docs/dev/contracts/` | PM / Architect, affected Builders informed |
+| Tasks | `docs/dev/tasks/` | PM / Architect |
 | Quality | `docs/reports/` | assigned Verifier/QA evidence + PM / Architect |
-| Acceptance / Release | `docs/reports/acceptance/`, `docs/release_audits/` | Release Owner + PM / Architect |
+| Acceptance / Release | `docs/reports/acceptance/`, `docs/reports/release-audits/` | Release Owner + PM / Architect |
 
 ## 3. Runtime Effects
 
@@ -70,3 +70,11 @@ Inside an active loop:
 - any change to REQ goal, scope, priority, or acceptance pauses the loop
 - `REQ_CHANGE_REQUIRED` remains blocked until human approval updates the requirement baseline
 - every automatic change must update affected links, versions, tasks, and verification evidence
+
+## Maintenance and reviewed baselines
+
+`runtime fingerprint` and `runtime reconcile-policy-ref` maintain Harness
+definition/policy metadata. They cannot approve changed REQs, registered design,
+contracts, dispatch plans, TASKs or evidence by replacing recorded hashes.
+Fingerprint drift remains visible until the existing change/review or evidence
+registration workflow establishes a new valid baseline.

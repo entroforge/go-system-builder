@@ -10,10 +10,10 @@ import (
 func WritePlanningContractPass(t *testing.T, root string, state map[string]any) {
 	t.Helper()
 	EnsureStateRoot(state, root)
-	contractPath := "docs/contracts/BE-039.md"
+	contractPath := "docs/dev/contracts/BE-039.md"
 	data := []byte("# BE-039\n\n> Status: locked\n> Version: v1.0.2\n\n" +
 		"### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n")
-	indexPath := "docs/contracts/CONTRACTS-039.md"
+	indexPath := "docs/dev/contracts/CONTRACTS-039.md"
 	indexData := []byte("# CONTRACTS-039\n\n> 状态：locked\n> 版本：v1.0.2\n\n## 需求覆盖矩阵\n\n" +
 		"| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:--|:--|:--|:--|\n" +
 		"| REQ-039/FR-001 | — | BE-039 §1 | — |\n")
@@ -39,7 +39,7 @@ func WritePlanningContractPass(t *testing.T, root string, state map[string]any) 
 func WritePlanningTaskPass(t *testing.T, root string, state map[string]any) {
 	t.Helper()
 	EnsureStateRoot(state, root)
-	taskPath := "docs/tasks/TASK-039-01-loop-definition.md"
+	taskPath := "docs/dev/tasks/TASK-039-01-loop-definition.md"
 	data := []byte("# TASK-039-01\n\n> Status: complete\n> Version: v1.0.2\n> Primary contract: BE-039\n\n" +
 		"## 3. Delivered Clauses\n\n| Contract | Delivered clauses |\n|:--|:--|\n| BE-039 | §1 |\n\n" +
 		"## 7. Closing Contract\n\n```text\nassert BE-039 §1 == satisfied\n```\n")

@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,19 +19,18 @@ var recoveryInputFiles = []string{
 	".claude/loop-state.json.fingerprint-pending.json",
 	".claude/loop-state.json.rollover-pending.json",
 	".claude/loop-state.json.recovery-pending.json",
-	"docs/loop-definition.json",
-	"docs/hook-policy.json",
+	projectlayout.Definition,
+	projectlayout.Policy,
 }
 
 var recoveryInputDirectories = []string{
 	".claude/evidence",
 	".claude/workgroups",
-	"docs/requirements",
-	"docs/design",
-	"docs/contracts",
-	"docs/tasks",
-	"docs/reports",
-	"docs/release_audits",
+	projectlayout.Requirements,
+	"docs/design", projectlayout.Architecture,
+	projectlayout.Contracts,
+	projectlayout.Tasks,
+	projectlayout.Reports,
 }
 
 // Inspect validates the explicit REQ and inventories durable recovery inputs
@@ -88,7 +89,7 @@ func Inspect(root, reqPath string) (Inventory, error) {
 		} else if err != nil {
 			return Inventory{}, fmt.Errorf("inspect recovery directory %q: %w", relativeDirectory, err)
 		}
-		if err := filepath.WalkDir(fullDirectory, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := pathscope.WalkDir(resolvedRoot, fullDirectory, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return fmt.Errorf("walk recovery directory %q: %w", relativeDirectory, walkErr)
 			}
@@ -318,7 +319,7 @@ func inputKind(relativePath string) string {
 	case ".claude/loop-state.json.commit-pending.json", ".claude/loop-state.json.fingerprint-pending.json", ".claude/loop-state.json.rollover-pending.json", ".claude/loop-state.json.recovery-pending.json":
 		return InputKindRuntimePending
 	default:
-		if strings.HasPrefix(relativePath, "docs/requirements/") && strings.HasPrefix(filepath.Base(filepath.FromSlash(relativePath)), "REQ-") {
+		if strings.HasPrefix(relativePath, projectlayout.Requirements+"/") && strings.HasPrefix(filepath.Base(filepath.FromSlash(relativePath)), "REQ-") {
 			return InputKindREQ
 		}
 		return InputKindArtifact

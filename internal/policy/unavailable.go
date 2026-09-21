@@ -13,7 +13,7 @@ func UnavailableDecision(input Input, cause error) Decision {
 		RuleID:   RulePolicyUnavailable,
 		Reason:   fmt.Sprintf("safety policy unavailable: %v", cause),
 		Recovery: []string{
-			"Use Read/Grep/Glob to inspect docs/hook-policy.json.",
+			"Use Read/Grep/Glob to inspect docs/control/hook-policy.json.",
 			"Restore the approved policy from a trusted installation or backup using an external terminal, then retry. Do not disable Hooks or retry blocked Bash commands from the agent.",
 		},
 		Retry: RetryAfterRecoveryValidation,

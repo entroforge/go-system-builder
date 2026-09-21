@@ -14,7 +14,7 @@ import (
 // editable during the S5 repair loop and write-blocked from S6 on —
 // both directions, through the same projection the controller uses.
 func TestWireSafetyLocksArtifactsFromStage(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestWireSafetyLocksArtifactsFromStage(t *testing.T) {
 				"milestone":  map[string]any{"stage": stage},
 				"baseline":   map[string]any{"generation": float64(1)},
 				"documents": []any{map[string]any{
-					"id": "BE-1", "kind": "contract", "path": "docs/contracts/BE-1.md",
+					"id": "BE-1", "kind": "contract", "path": "docs/dev/contracts/BE-1.md",
 					"version": "v1.0.0", "sha256": "a1b2c3", "status": "locked", "generation": float64(1),
 				}},
 			},
@@ -36,7 +36,7 @@ func TestWireSafetyLocksArtifactsFromStage(t *testing.T) {
 	run := func(stage string) policy.Decision {
 		input := buildSafetyInput(ControlRequest{
 			Root: ".", Event: "PreToolUse", ToolName: "Edit",
-			ToolInput: map[string]any{"file_path": "docs/contracts/BE-1.md"},
+			ToolInput: map[string]any{"file_path": "docs/dev/contracts/BE-1.md"},
 		}, snapshotFor(stage), nil)
 		decision, err := engine.Evaluate(input)
 		if err != nil {

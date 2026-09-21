@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,7 +10,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
-func boundaryFixture(t *testing.T) (*workspace.Binding, workspace.Execution) {
+func boundaryFixture(t *testing.T) (*workspace.ExecutionRegistry, workspace.Execution) {
 	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
@@ -25,11 +26,19 @@ func boundaryFixture(t *testing.T) (*workspace.Binding, workspace.Execution) {
 	os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".claude/\n.worktrees/\n"), 0600)
 	git("add", ".gitignore")
 	git("commit", "-m", "base")
+	head, err := workspace.Git(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := map[string]any{"workspace": workspace.Binding{ProjectRoot: root, DevBranch: "feature/customer-a", ReleaseUpstream: "main", BoundCommit: head}.Map()}
+	state := map[string]any{"bound_req": bound, "runtime_id": "loop-boundary", "baseline": map[string]any{"generation": 1}}
+	data, _ := json.Marshal(state)
+	os.MkdirAll(filepath.Join(root, ".claude"), 0700)
+	os.WriteFile(filepath.Join(root, ".claude/loop-state.json"), data, 0600)
 	b, err := workspace.New(ctx, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := map[string]any{"runtime_id": "loop-boundary", "baseline": map[string]any{"generation": 1}}
 	e, err := b.Plan(ctx, state, "assignment", "builder", []string{"src/**", "docs/"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)

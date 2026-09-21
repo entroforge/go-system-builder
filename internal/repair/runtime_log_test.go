@@ -108,7 +108,7 @@ func TestRuntimeLogAppendDoesNotStaleAuthorityAndRealDriftStillBlocks(t *testing
 
 	// An unclaimed, out-of-scope code change in the same session is still
 	// authority drift — the exemption above must not have widened the gate.
-	definitionPath := filepath.Join(root, "docs", "loop-definition.json")
+	definitionPath := filepath.Join(root, "docs", "control", "loop-definition.json")
 	definition, err := os.ReadFile(definitionPath)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestRuntimeLogAppendDoesNotStaleAuthorityAndRealDriftStillBlocks(t *testing
 	if err == nil || !strings.Contains(err.Error(), "authority fingerprint is stale") {
 		t.Fatalf("out-of-scope code drift must still block, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "docs/loop-definition.json") || !strings.Contains(err.Error(), ".gitignore") {
+	if !strings.Contains(err.Error(), "docs/control/loop-definition.json") || !strings.Contains(err.Error(), ".gitignore") {
 		t.Fatalf("stale-fingerprint error must name the drifted code path, got %v", err)
 	}
 }
@@ -271,5 +271,46 @@ func TestCaptureBaselineClassifiesOnlyNamedLogOutput(t *testing.T) {
 		if !withoutGit[testCase.rel] {
 			t.Fatalf("without Git classification %s must stay in the baseline (%s)", testCase.rel, testCase.reason)
 		}
+	}
+}
+
+func TestTrackedTempFreshnessRequiresExactClaim(t *testing.T) {
+	root := req039fixtures.FreshRoot(t)
+	runGit(t, root, "init")
+	rel := "src/temp/business.go"
+	writeFile(t, root, ".gitignore", "temp/\n")
+	writeFile(t, root, rel, "package business\n")
+	runGit(t, root, "add", "-f", rel)
+	state := req039fixtures.BaseState(t, root, "bug_resolution", "repair_readback", 0)
+	contractRef, contractSHA := writeRuntimeContract(t, root)
+	state["review"].(map[string]any)["investigation"] = map[string]any{"case_id": "investigation-case-1", "path": ".claude/review/investigation/cases/investigation-case-1-r2.json", "sha256": repeatHex("b", 64), "revision": 2, "status": "contract_approved", "source_finding_ids": []any{"finding-1"}, "observation_batch_id": "observation-batch-1", "updated_at": "2026-08-25T00:00:00Z", "repair_contract_ref": contractRef.Path, "repair_contract_sha256": contractSHA}
+	req039fixtures.WriteState(t, root, state)
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
+	if _, _, _, err := repair.OpenRepairSession(root, statePath, journalPath, repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "main"}, SessionID: "repair-session-tracked-temp", CreatedBy: "main"}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	if err = json.Unmarshal(raw, &current); err != nil {
+		t.Fatal(err)
+	}
+	pointer := current["review"].(map[string]any)["repair"].(map[string]any)
+	if err := repair.ValidateAuthorityFreshness(root, pointer, nil); err != nil {
+		t.Fatal(err)
+	}
+	changed := []byte("package business\n// authorized repair\n")
+	writeFile(t, root, rel, string(changed))
+	if err := repair.ValidateAuthorityFreshness(root, pointer, nil); err == nil || !strings.Contains(err.Error(), rel) {
+		t.Fatalf("unclaimed tracked temp drift bypassed: %v", err)
+	}
+	if err := repair.ValidateAuthorityFreshness(root, pointer, []repair.ChangedArtifact{{Path: rel, SHA256: fileHash(changed)}}); err != nil {
+		t.Fatalf("exact claimed repair rejected: %v", err)
 	}
 }

@@ -33,7 +33,7 @@ func TestRenderWithAdditionalContextUsesNativeLifecycleField(t *testing.T) {
 
 func TestBuildLifecycleAdditionalContextInjectsOnlyUniqueAssignment(t *testing.T) {
 	decision := policy.Decision{Guidance: &policy.Guidance{
-		Stage: "S7", Revision: 9, Action: "execute the assignment", ProtocolRef: "docs/agent-protocol.md#s7",
+		Stage: "S7", Revision: 9, Action: "execute the assignment", ProtocolRef: "docs/control/agent-protocol.md#s7",
 	}}
 	assignment := hookctx.AssignmentContext{
 		AssignmentID: "assignment-qa-1", TaskID: "task-qa-1", OwnerAgentID: "agent-qa-1",
@@ -59,10 +59,10 @@ func TestBuildLifecycleAdditionalContextInjectsOnlyUniqueAssignment(t *testing.T
 
 func TestBuildLifecycleAdditionalContextKeepsSessionStartCompact(t *testing.T) {
 	decision := policy.Decision{Guidance: &policy.Guidance{
-		Stage: "S2", Revision: 18, Action: "complete architecture", ProtocolRef: "docs/agent-protocol.md#s2",
+		Stage: "S2", Revision: 18, Action: "complete architecture", ProtocolRef: "docs/control/agent-protocol.md#s2",
 	}}
 	context := hook.BuildLifecycleAdditionalContext("SessionStart", policy.Input{Source: "resume"}, decision, nil)
-	for _, expected := range []string{"source=resume", "stage=S2 @ rev=18", "next=complete architecture", "read=docs/agent-protocol.md#s2"} {
+	for _, expected := range []string{"source=resume", "stage=S2 @ rev=18", "next=complete architecture", "read=docs/control/agent-protocol.md#s2"} {
 		if !strings.Contains(context, expected) {
 			t.Fatalf("context %q does not contain %q", context, expected)
 		}

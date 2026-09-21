@@ -139,3 +139,23 @@ func TestLockedHintStillRejectsChangedArtifact(t *testing.T) {
 		})
 	}
 }
+
+func TestTargetAdvanceBeforeAcknowledgmentRechecksCurrentHead(t *testing.T) {
+	root, _, in, cfg, git := newRecoveryGitRepo(t)
+	checks := 0
+	cfg.RequiredChecks = []string{"declared-check"}
+	cfg.CheckRunner = func(context.Context, string, string) error { checks++; return nil }
+	first, err := Integrate(context.Background(), IntegrateRequest{Inspection: in}, cfg)
+	if err != nil || first.Checkpoint.State != StateVerified {
+		t.Fatalf("initial verify: %+v %v", first, err)
+	}
+	git(root, "commit", "--allow-empty", "-m", "target advances before ack")
+	head := git(root, "rev-parse", "HEAD")
+	second, err := Integrate(context.Background(), IntegrateRequest{Inspection: InspectionFromCheckpoint(first.Checkpoint), Acknowledge: true}, cfg)
+	if err != nil || second.Checkpoint.State != StateAcknowledged || second.Checkpoint.TestedHead != head || checks != 2 {
+		t.Fatalf("stale verified head reused: checks=%d result=%+v err=%v", checks, second, err)
+	}
+	if second.Checkpoint.MergeCommit != first.Checkpoint.MergeCommit {
+		t.Fatal("reverification merged twice")
+	}
+}

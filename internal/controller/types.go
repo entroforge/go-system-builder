@@ -61,6 +61,10 @@ type ControlRequest struct {
 	QualityCycleBudget time.Duration
 	// GateEvaluator overrides the default registry-backed evaluator (tests).
 	GateEvaluator qualitygate.Evaluator
+	// recoveryWriter is set only by RecoveryReplay. Keeping the capability
+	// private to the controller request prevents ordinary Hook callers from
+	// opting into staging writes through a payload or --state/--journal flag.
+	recoveryWriter runtime.OfflineRecoveryCapability
 }
 
 // ControlResult is the single projection emitted by RunControlCycle. It

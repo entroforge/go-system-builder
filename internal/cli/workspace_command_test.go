@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,7 @@ func TestWorkspaceBindPersistsCurrentBranchAndRejectsDrift(t *testing.T) {
 			t.Fatalf("%s: %v", out, err)
 		}
 	}
+	bindFixtureWorkspace(t, fix)
 	var out, stderr bytes.Buffer
 	if code := runRuntimeWorkspace([]string{"bind", "--root", fix.root}, &out, &stderr); code != 0 {
 		t.Fatalf("bind=%d %s", code, stderr.String())
@@ -77,4 +79,22 @@ func TestInitAndBindRejectWorkerWithoutCreatingRuntime(t *testing.T) {
 			}
 		})
 	}
+}
+
+func bindFixtureWorkspace(t *testing.T, fix *runtimeFixture) {
+	t.Helper()
+	branch, err := runGit(t, fix.root, "branch", "--show-current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := runGit(t, fix.root, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, _ := fix.state["bound_req"].(map[string]any)
+	if bound == nil {
+		t.Fatal("fixture has no bound REQ")
+	}
+	bound["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": strings.TrimSpace(string(branch)), "release_upstream": "main", "bound_commit": strings.TrimSpace(string(head))}
+	fix.persist(t)
 }

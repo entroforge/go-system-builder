@@ -65,11 +65,11 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"builder_activation_recorded": {
 		ID:    "builder_activation_recorded",
-		Check: "An activation evidence item referencing the Builder assignment is recorded in runtime.evidence[] with a fingerprint matching the on-disk activation record under docs/tasks/.",
+		Check: "An activation evidence item referencing the Builder assignment is recorded in runtime.evidence[] with a fingerprint matching the on-disk activation record under docs/dev/tasks/.",
 	},
 	"builder_report_complete": {
 		ID:    "builder_report_complete",
-		Check: "The Builder's completion_report evidence item is referenced from runtime.evidence[] and its fingerprint matches the report file recorded under docs/tasks/.",
+		Check: "The Builder's completion_report evidence item is referenced from runtime.evidence[] and its fingerprint matches the report file recorded under docs/dev/tasks/.",
 	},
 	"builder_reports_complete": {
 		ID:    "builder_reports_complete",
@@ -157,7 +157,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"prompt_contract_valid": {
 		ID:    "prompt_contract_valid",
-		Check: "The agent's prompt contract (referenced from runtime.entities.agents[].prompt_contract) declares the role, write_scope, read_scope, and owner fields required by docs/agent-protocol.md.",
+		Check: "The agent's prompt contract (referenced from runtime.entities.agents[].prompt_contract) declares the role, write_scope, read_scope, and owner fields required by docs/control/agent-protocol.md.",
 	},
 	"qa_round_passed": {
 		ID:    "qa_round_passed",
@@ -169,7 +169,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"readback_complete": {
 		ID:    "readback_complete",
-		Check: "A readback evidence item (per docs/agent-protocol.md readback protocol) is referenced from runtime.evidence[] confirming the agent has acknowledged the prompt contract.",
+		Check: "A readback evidence item (per docs/control/agent-protocol.md readback protocol) is referenced from runtime.evidence[] confirming the agent has acknowledged the prompt contract.",
 	},
 	"rejection_reason_recorded": {
 		ID:    "rejection_reason_recorded",
@@ -221,7 +221,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"required_verification_evidence_present": {
 		ID:    "required_verification_evidence_present",
-		Check: "The verification evidence required by the TASK's closing contract (per docs/tasks/TASK-template.md) is referenced from runtime.evidence[] before the TASK can move from `review` to `done`.",
+		Check: "The verification evidence required by the TASK's closing contract (per docs/dev/tasks/TASK-template.md) is referenced from runtime.evidence[] before the TASK can move from `review` to `done`.",
 	},
 	"resume_checkpoint_valid": {
 		ID:    "resume_checkpoint_valid",
@@ -241,7 +241,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"task_manifest_complete": {
 		ID:    "task_manifest_complete",
-		Check: "The TASK moved from `candidate` to `reviewed` references a complete task manifest on disk under docs/tasks/ matching docs/tasks/TASK-template.md.",
+		Check: "The TASK moved from `candidate` to `reviewed` references a complete task manifest on disk under docs/dev/tasks/ matching docs/dev/tasks/TASK-template.md.",
 	},
 	"task_versions_current": {
 		ID:    "task_versions_current",
@@ -265,11 +265,11 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"write_scope_enforced": {
 		ID:    "write_scope_enforced",
-		Check: "Every document the agent intends to touch while in `working` falls within the `write_scope` declared in runtime.entities.agents[].activation_scope, per docs/hook-policy.json.",
+		Check: "Every document the agent intends to touch while in `working` falls within the `write_scope` declared in runtime.entities.agents[].activation_scope, per docs/control/hook-policy.json.",
 	},
 	"planning_complete": {
 		ID:    "planning_complete",
-		Check: "At least one current-baseline contract document has status=locked with a matching on-disk markdown Status field (contracts are registered by PTR-PLAN-02), AND every docs/tasks/TASK-*.md declares status complete or cancelled with at least one complete (the batch is registered by TR-002's own register_planning_tasks action). Fingerprints are owned by registration and reachability, not re-checked here.",
+		Check: "At least one current-baseline contract document has status=locked with a matching on-disk markdown Status field (contracts are registered by PTR-PLAN-02), AND every docs/dev/tasks/TASK-*.md declares status complete or cancelled with at least one complete (the batch is registered by TR-002's own register_planning_tasks action). Fingerprints are owned by registration and reachability, not re-checked here.",
 	},
 	"scenario_bridge_checked": {
 		ID:    "scenario_bridge_checked",

@@ -45,7 +45,7 @@ func cleanupWorktree(ctx context.Context, root, path string) error {
 }
 
 func InspectionFromCheckpoint(cp Checkpoint) Inspection {
-	return Inspection{Ready: true, AssignmentID: cp.AssignmentID, TaskID: cp.TaskID, WorktreePath: cp.WorktreePath, SourceBranch: cp.SourceBranch, SourceHead: cp.SourceHead, TargetBranch: cp.TargetBranch, TargetHead: cp.TargetHead, MergeBase: cp.MergeBase, BaselineGeneration: cp.BaselineGeneration, NonSquashMode: true}
+	return Inspection{CompletionReportPath: cp.CompletionReportPath, CompletionReportSHA256: cp.CompletionReportSHA256, Ready: true, AssignmentID: cp.AssignmentID, TaskID: cp.TaskID, WorktreePath: cp.WorktreePath, SourceBranch: cp.SourceBranch, SourceHead: cp.SourceHead, TargetBranch: cp.TargetBranch, TargetHead: cp.TargetHead, MergeBase: cp.MergeBase, BaselineGeneration: cp.BaselineGeneration, NonSquashMode: true}
 }
 
 func deferCleanup(store *CheckpointStore, path string, current, next Checkpoint, cause error) (Result, error) {

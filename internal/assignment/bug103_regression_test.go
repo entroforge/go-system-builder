@@ -40,7 +40,7 @@ func TestBUG103TaskEventCommitsSchemaValidRuntime(t *testing.T) {
 		"tasks": []any{map[string]any{
 			"id":              "TASK-103",
 			"state":           "candidate",
-			"path":            "docs/tasks/TASK-103.md",
+			"path":            "docs/dev/tasks/TASK-103.md",
 			"sha256":          "0000000000000000000000000000000000000000000000000000000000000000",
 			"owner_agent_ids": []any{"agent-builder"},
 		}},
@@ -80,7 +80,7 @@ func TestBUG103TaskLifecycleReferencesRemainSchemaValid(t *testing.T) {
 				"tasks": []any{map[string]any{
 					"id":              "TASK-103",
 					"state":           tc.initialState,
-					"path":            "docs/tasks/TASK-103.md",
+					"path":            "docs/dev/tasks/TASK-103.md",
 					"sha256":          "0000000000000000000000000000000000000000000000000000000000000000",
 					"owner_agent_ids": []any{"agent-builder"},
 				}},
@@ -114,14 +114,14 @@ func TestBUG103TaskLifecycleReferencesRemainSchemaValid(t *testing.T) {
 func writeBUG103Runtime(t *testing.T, rootEntities map[string]any) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), definition, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), definition, 0o644); err != nil {
 		t.Fatal(err)
 	}
 

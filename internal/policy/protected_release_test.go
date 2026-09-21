@@ -1,5 +1,5 @@
 // protected_release_test.go locks RC-06 (S10-3): the data-driven
-// protected-commands table (docs/release_audits/protected_commands.json) is
+// protected-commands table (docs/control/protected-commands.json) is
 // wired into the PreToolUse enforce path via protectedReleaseDecision.
 // Previously classifier.MatchProtectedCommands was reachable only from
 // tests — the table was documentation, not enforcement.
@@ -22,7 +22,7 @@ func protectedReleaseRoot(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(abs, "docs", "release_audits", "protected_commands.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(abs, "docs", "control", "protected-commands.json")); err != nil {
 		t.Fatalf("protected_commands table missing at repo root: %v", err)
 	}
 	return abs
@@ -120,10 +120,10 @@ func TestProtectedCommandsAllowsOrdinaryBash(t *testing.T) {
 // Bash instead of letting it through.
 func TestProtectedCommandsFailClosedOnBrokenTable(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs", "release_audits"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "release_audits", "protected_commands.json"),
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "protected-commands.json"),
 		[]byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -142,5 +142,42 @@ func TestProtectedCommandsFailClosedOnBrokenTable(t *testing.T) {
 	}
 	if !strings.Contains(decision.Reason, "unreadable") {
 		t.Fatalf("reason must explain the unreadable table, got %q", decision.Reason)
+	}
+}
+
+func TestProtectedCommandsEmptyTableFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "docs/control"), 0755)
+	os.WriteFile(filepath.Join(root, "docs/control/protected-commands.json"), []byte("[]"), 0644)
+	decision, err := loadRepositoryPolicy(t).Evaluate(policy.Input{Event: "PreToolUse", ToolName: "Bash", ToolInput: map[string]any{"command": "git push origin main"}, Runtime: policy.RuntimeContext{ProjectRoot: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Decision != "deny" {
+		t.Fatalf("empty table must deny: %+v", decision)
+	}
+}
+func TestReworkPathsUseCanonicalLayout(t *testing.T) {
+	for kind, base := range map[string]string{"req": "docs/requirements", "contract": "docs/dev/contracts", "task": "docs/dev/tasks", "architecture": "docs/architecture"} {
+		want := filepath.Join(base, "versions/REQ-001/g2/artifact.md")
+		if got := policy.ReworkPath(kind, "REQ-001", 2, "artifact.md"); got != want {
+			t.Fatalf("%s: %s != %s", kind, got, want)
+		}
+	}
+}
+
+func TestReworkUnknownKindDoesNotInventDirectory(t *testing.T) {
+	if got := policy.ReworkPath("unknown", "REQ-001", 2, "file.md"); got != "" {
+		t.Fatal(got)
+	}
+}
+
+func TestLockedArchitectureReworkUsesArchitectureRoot(t *testing.T) {
+	d, err := loadRepositoryPolicy(t).Evaluate(policy.Input{Event: "PreToolUse", ToolName: "Edit", ToolInput: map[string]any{"file_path": "docs/architecture/ARCHITECTURE-001.md"}, Runtime: policy.RuntimeContext{BoundREQID: "REQ-001", CurrentState: "planning", CurrentPhase: "design", LockedArtifacts: []policy.LockedArtifact{{ID: "ARCH-001", Kind: "design", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1", SHA256: strings.Repeat("a", 64), LockedFromStage: "S5", BaselineGeneration: 1}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Decision != "deny" || len(d.Recovery) != 1 || d.Recovery[0] != "docs/architecture/versions/REQ-001/g2/ARCHITECTURE-001.md" {
+		t.Fatalf("wrong architecture rework: %+v", d)
 	}
 }

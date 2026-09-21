@@ -431,8 +431,8 @@ func builderBatchShortKindInput(t *testing.T) Input {
 	taskOne := []byte("# TASK 1\n")
 	taskTwo := []byte("# TASK 2\n")
 	files := map[string][]byte{
-		"docs/tasks/TASK-TEST-01.md": taskOne,
-		"docs/tasks/TASK-TEST-02.md": taskTwo,
+		"docs/dev/tasks/TASK-TEST-01.md": taskOne,
+		"docs/dev/tasks/TASK-TEST-02.md": taskTwo,
 	}
 	add := func(id, kind, responsibility, conclusion, taskID string) map[string]any {
 		envelope := map[string]any{

@@ -7,25 +7,30 @@ Reusable documentation scaffolding for AI/Agent-assisted software delivery.
 1. `AGENTS-template.md`: project-local `AGENTS.md` source — Layer 1 entry (Main-session Driver). Step 0 checks Project Design Foundation before the first `UI impact=changed` REQ.
 2. `loop-template.md`: project-local `.claude/loop.md` source — Layer 2 Wake-up Prompt.
 3. `settings.json`: Hook registration — Layer 3 guardrail enforcement.
-4. `docs/agent-protocol.md`: authoritative Main Spine (S0-S11 stage contracts).
+4. `docs/control/agent-protocol.md`: authoritative Main Spine (S0-S11 stage contracts).
 5. `docs/README.md`: setup and usage order.
 6. `docs/project-map-template.md`: template for project facts, stage, PM todo, and gates.
 7. `docs/requirements/REQ-template.md`: requirement template.
 8. `docs/rules/design-foundation.md` and `skills/design-foundation/SKILL.md`: F0–F6 before locking UI-changing REQs.
-9. `prelude.md`: main-session onboarding.
+9. `docs/guides/getting-started.md`: main-session onboarding.
 
-## Copy Into A New Project
+## Documentation and Installation
 
-- Copy `AGENTS-template.md` to project root as `AGENTS.md`.
-- Copy `docs/project-map-template.md` to `docs/project-map.md`.
-- Follow `docs/README.md`.
+Start with the [documentation index](docs/README.md) and [document map](docs/DOCUMENT-MAP.md).
+The [framework index](blueprint/README.md) separates L1 principles, L2 lifecycle,
+L3 stages, and L4 mechanisms.
+Root `blueprint/` documents the template itself; it is separate from target-project
+`docs/` and is excluded from release packages.
+
+Follow the [installation guide](docs/guides/install.md) to install a release into a new empty project.
+Existing projects retain their matching release; this layout does not support overlay upgrades.
 
 ## Repository Boundary
 
 This repository stores reusable templates, rules, and reference material only.
 
 See [packaging/README.md](packaging/README.md) for source and release boundaries,
-[packaging/install.md](packaging/install.md) for installation, and
+[docs/guides/install.md](docs/guides/install.md) for installation, and
 [docs/workspace-integration.md](docs/workspace-integration.md) for Main/Worker behavior.
 
 Project-instance files such as `AGENTS.md`, `docs/project-map.md`, `docs/requirements/REQ-*.md`, requirement indexes, and reports are local to each target project and must not be committed back to this template repository.

@@ -21,7 +21,10 @@ func TestS0S1_InitBindEntersPlanningDesign(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "docs", "requirements"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, rel := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	if err := os.MkdirAll(filepath.Join(root, "docs/control"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		data, err := os.ReadFile(filepath.Join(repoRoot(t), rel))
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
@@ -47,7 +50,7 @@ func TestS0S1_InitBindEntersPlanningDesign(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	if code := runCLI(t, []string{
-		"req", "bind", "--root", root,
+		"req", "bind", "--root", req039fixtures.CommitFixture(t, root), "--dev-branch", "test-development", "--release-upstream", "origin/release",
 		"--req", reqRel, "--approved-by", "user",
 	}, bytes.NewReader(nil), &stdout, &stderr); code != 0 {
 		t.Fatalf("req bind failed: code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
@@ -68,7 +71,7 @@ func TestS0S1_InitBindEntersPlanningDesign(t *testing.T) {
 	}
 
 	body := req039fixtures.PreToolUseBody("session-s0-s1", "Edit", map[string]any{
-		"file_path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md",
+		"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md",
 	})
 	code, hookOut, hookErr := runHook(t, root, "PreToolUse", body)
 	if code != 0 {

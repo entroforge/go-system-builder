@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"io"
 	"os"
 	"path/filepath"
@@ -396,7 +397,22 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "req amend: no bound REQ in runtime")
 		return 1
 	}
-	data, err := os.ReadFile(filepath.Join(*root, *reqPath))
+	ref, refErr := fileview.DevelopmentRef(snapshot.State)
+	if refErr != nil {
+		fmt.Fprintln(stderr, refErr)
+		return 1
+	}
+	catalog, catErr := transition.LoadCatalog(*root)
+	if catErr != nil {
+		fmt.Fprintln(stderr, catErr)
+		return 1
+	}
+	files, fileErr := fileview.New(*root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+	if fileErr != nil {
+		fmt.Fprintln(stderr, fileErr)
+		return 1
+	}
+	data, err := files.ReadFile(*reqPath)
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("req amend", err))
 		return 1
@@ -426,7 +442,7 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		filepath.Join(*root, ".claude", "loop-state.json"),
 		filepath.Join(*root, ".claude", "loop-events.jsonl"),
 		transition.Request{
-			TransitionID: "TR-020", ExpectedRevision: -1, Actor: "user",
+			Files: files, TransitionID: "TR-020", ExpectedRevision: -1, Actor: "user",
 			Evidence: map[string]string{
 				"human_decision_record": evID,
 				"req_lock_record":       *reqPath + "@" + shaHex,

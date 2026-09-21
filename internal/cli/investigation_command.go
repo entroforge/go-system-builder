@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"io"
 	"os"
 	"path/filepath"
@@ -178,7 +179,7 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, formatFailure("runtime investigation dispatch", fmt.Errorf("read Agent Definition (dispatch derives the worker capability set — allowed tools, write paths, command classes — from the definition file, so it must exist in the repository): %w", err)))
 		return 1
 	}
-	protocolBytes, err := os.ReadFile(filepath.Join(rootPath, "docs", "agent-protocol.md"))
+	protocolBytes, err := os.ReadFile(filepath.Join(rootPath, projectlayout.Protocol))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime investigation dispatch", fmt.Errorf("read agent protocol: %w", err)))
 		return 1
@@ -212,7 +213,7 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 	}
 	documents := []any{
 		map[string]any{"id": "investigation-case", "path": caseRel, "version": fmt.Sprintf("r%d", intFieldCLI(pointer["revision"])), "sha256": stringValue(pointer["sha256"])},
-		map[string]any{"id": "agent-protocol", "path": "docs/agent-protocol.md", "version": "current", "sha256": sha256HexForArtifact(protocolBytes)},
+		map[string]any{"id": "agent-protocol", "path": projectlayout.Protocol, "version": "current", "sha256": sha256HexForArtifact(protocolBytes)},
 		map[string]any{"id": "investigator-definition", "path": filepath.ToSlash(*definitionRef), "version": "current", "sha256": sha256HexForArtifact(definitionBytes)},
 	}
 	manifest := map[string]any{
@@ -228,7 +229,7 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 			"assignment_id": resolvedAssignmentID, "responsibility_id": "S8-CAUSAL-INVESTIGATION", "role_family": "investigator",
 			"scope": []string{"case:" + strings.TrimSpace(*caseID), "hypothesis:" + strings.TrimSpace(*hypothesisID)}, "agent_id": strings.TrimSpace(*agentID),
 			"agent_definition_ref": filepath.ToSlash(*definitionRef), "skill_refs": []string{"bug-resolution", "code-quality", "testing-strategy"},
-			"read_paths": []string{caseRel, "docs/agent-protocol.md"}, "write_paths": []string{}, "output_paths": []string{".claude/review/investigation/"},
+			"read_paths": []string{caseRel, projectlayout.Protocol}, "write_paths": []string{}, "output_paths": []string{".claude/review/investigation/"},
 			"depends_on": []string{}, "reuse_decision": "create", "grouping_rationale": "one Investigator owns one falsifiable discriminator and returns evidence to the Case workflow", "status": "planned",
 			"dispatch_mode": "plan_checkpoint",
 		}},

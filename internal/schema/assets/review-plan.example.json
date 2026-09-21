@@ -10,14 +10,14 @@
       "kind": "product_code"
     },
     {
-      "path": "docs/tasks/TASK-001.md",
+      "path": "docs/dev/tasks/TASK-001.md",
       "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
       "kind": "task"
     }
   ],
   "change_impact": {
     "summary": "S6 delivered the example service update path",
-    "source_refs": ["docs/tasks/TASK-001.md"]
+    "source_refs": ["docs/dev/tasks/TASK-001.md"]
   },
   "claims": [
     {
@@ -39,7 +39,7 @@
       "oracle": "no error return is dropped on any Update path",
       "method": "logic/state/error review",
       "applicability": "required",
-      "source_refs": ["docs/contracts/CONTRACTS-001.md"],
+      "source_refs": ["docs/dev/contracts/CONTRACTS-001.md"],
       "focus_key": "logic-state-error"
     },
     {

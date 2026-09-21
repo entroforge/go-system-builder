@@ -159,7 +159,6 @@ func CompleteTask(
 	}
 	envelopeSHA := sha256Of(envelopeBytes)
 
-	messageRef := repositoryPath(root, request.MessagePath)
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
@@ -188,7 +187,7 @@ func CompleteTask(
 			message.TaskID, evidenceID),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
-			if err := applyCompletionAgent(state, request, message, agentTransitions, messageRef, occurredAt); err != nil {
+			if err := applyCompletionAgent(state, request, message, agentTransitions, envelopeRel, occurredAt); err != nil {
 				return err
 			}
 			if err := applyCompletionTask(state, message, taskTransitions, envelopeRel, occurredAt); err != nil {
@@ -202,13 +201,13 @@ func CompleteTask(
 
 // applyCompletionAgent advances the agent row exactly like the
 // completion_reported event path (working → reported) and records the
-// message ref.
+// canonical Result ref, including resubmissions.
 func applyCompletionAgent(
 	state map[string]any,
 	request CompletionRequest,
 	message completionMessage,
 	agentTransitions agentEntityTransitionsResolver,
-	messageRef string,
+	resultRef string,
 	occurredAt time.Time,
 ) error {
 	entities, ok := state["entities"].(map[string]any)
@@ -227,7 +226,9 @@ func applyCompletionAgent(
 		}
 		currentState, _ := agent["state"].(string)
 		if currentState == "reported" || currentState == "done" {
-			// Idempotent resubmission: the agent already reported.
+			// Keep the latest canonical Result aligned with the TASK.
+			agent["completion_reported_ref"] = resultRef
+			agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			return nil
 		}
 		resolvedTo, found := agentTransitions.resolve(currentState, "completion_reported")
@@ -237,8 +238,8 @@ func applyCompletionAgent(
 				currentState)
 		}
 		agent["state"] = resolvedTo
-		if messageRef != "" {
-			agent["completion_reported_ref"] = messageRef
+		if resultRef != "" {
+			agent["completion_reported_ref"] = resultRef
 		}
 		agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 		return nil
@@ -248,9 +249,8 @@ func applyCompletionAgent(
 
 // applyCompletionTask applies the builder_reported TASK side effect with
 // the canonical envelope as the completion_report_ref. A task row already
-// past the reporting point (review/done) is left untouched — the agent
-// idempotency above covers resubmission; a row in an illegal state fails
-// closed instead of drifting.
+// past the reporting point (review/done) retains its lifecycle state but
+// advances its canonical Result reference. Illegal states fail closed.
 func applyCompletionTask(
 	state map[string]any,
 	message completionMessage,

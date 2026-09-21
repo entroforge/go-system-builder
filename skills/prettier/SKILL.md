@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Prettier
 ## Authority
-Technical practice only. Stage routing remains in `docs/agent-protocol.md`; formatter output does not establish behavioral correctness.
+Technical practice only. Stage routing remains in `docs/control/agent-protocol.md`; formatter output does not establish behavioral correctness.
 ## Applicability
 Apply to Prettier configuration, formatting commands, formatter integration, or formatting-only diffs.
 ## Required Inputs

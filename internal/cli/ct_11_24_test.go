@@ -24,7 +24,7 @@ func TestCT03911_DualPassDocumentVerificationCommitsTR003(t *testing.T) {
 
 	runner := &req039fixtures.CLIRunner{}
 	body := req039fixtures.PreToolUseBody("session-ct-039-11", "Edit", map[string]any{
-		"file_path": "docs/contracts/BE-039-loop-controller.md",
+		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)
 	if code != 0 {
@@ -291,7 +291,7 @@ func TestCT03919_GateTimeoutStableErrorNoTransition(t *testing.T) {
 		Root:               root,
 		Event:              "PreToolUse",
 		ToolName:           "Edit",
-		ToolInput:          map[string]any{"file_path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md"},
+		ToolInput:          map[string]any{"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md"},
 		QualityCycleBudget: 50 * time.Millisecond,
 		GateEvaluator:      ctSlowEvaluator{delay: 500 * time.Millisecond},
 	})
@@ -491,7 +491,7 @@ func TestCT03924_SameAgentDualDVLabelsBlocksTR003(t *testing.T) {
 
 	runner := &req039fixtures.CLIRunner{}
 	body := req039fixtures.PreToolUseBody("session-ct-039-24", "Edit", map[string]any{
-		"file_path": "docs/contracts/BE-039-loop-controller.md",
+		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)
 	if code != 0 {

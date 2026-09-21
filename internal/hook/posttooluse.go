@@ -140,6 +140,9 @@ func identifySender(input policy.Input, agents []AgentRow) string {
 // envelope. The decision is always allow-shaped (systemMessage only).
 func RenderPostToolUseEnvelope(obs PostToolUseObservation) string {
 	msg := obs.SystemMsg
+	if !obs.Recorded {
+		msg = ""
+	}
 	if !obs.Recorded || msg == "" {
 		msg = "PostToolUse observed (no dispatch message captured: " + obs.Reason + ")"
 	}

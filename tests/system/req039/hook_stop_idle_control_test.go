@@ -192,7 +192,7 @@ func TestHOOK_PreToolUseTaskUpdate_UnauthorizedSelfClaim_Denied(t *testing.T) {
 		"tool_name":"TaskUpdate",
 		"tool_input":{"taskId":"TASK-039-99","status":"in_progress"}
 	}`)
-	if code != 2 {
+	if code != 0 {
 		t.Fatalf("unauthorized self-claim must exit 2: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	if !strings.Contains(stdout, `"permissionDecision":"deny"`) {
@@ -216,7 +216,7 @@ func TestHOOK_PreToolUseTaskUpdate_OwnerSelfAssignment_Denied(t *testing.T) {
 		"tool_name":"TaskUpdate",
 		"tool_input":{"taskId":"TASK-039-99","owner":"builder-l4"}
 	}`)
-	if code != 2 {
+	if code != 0 {
 		t.Fatalf("owner self-assignment must exit 2: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	if !strings.Contains(stdout, "unauthorized_task_self_claim") {

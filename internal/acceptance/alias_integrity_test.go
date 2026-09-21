@@ -30,8 +30,8 @@ func TestS10AliasCannotHideDriftOrSubstituteUnrelatedDocuments(t *testing.T) {
 			task := []byte("# TASK-001\n## Closing Contract\n")
 			plan := []byte(`{"review_plan_id":"review-plan-2","review_round":2,"baseline_generation":1,"claims":[{"claim_id":"claim-qa-1"}]}`)
 			reqSHA := write("docs/requirements/REQ-001.md", req)
-			contractSHA := write("docs/contracts/BE-001.md", contract)
-			taskSHA := write("docs/tasks/TASK-001.md", task)
+			contractSHA := write("docs/dev/contracts/BE-001.md", contract)
+			taskSHA := write("docs/dev/tasks/TASK-001.md", task)
 			planSHA := write(".claude/review/plans/review-plan-2.json", plan)
 			state := map[string]any{
 				"bound_req": map[string]any{"id": "REQ-001", "path": "docs/requirements/REQ-001.md", "sha256": reqSHA},
@@ -41,19 +41,19 @@ func TestS10AliasCannotHideDriftOrSubstituteUnrelatedDocuments(t *testing.T) {
 					"plan":  map[string]any{"path": ".claude/review/plans/review-plan-2.json", "sha256": planSHA},
 				},
 				"documents": []any{
-					map[string]any{"id": "BE-001", "kind": "contract", "path": "docs/contracts/BE-001.md", "sha256": contractSHA, "generation": 1},
-					map[string]any{"id": "TASK-001", "kind": "task", "path": "docs/tasks/TASK-001.md", "sha256": taskSHA, "generation": 1},
+					map[string]any{"id": "BE-001", "kind": "contract", "path": "docs/dev/contracts/BE-001.md", "sha256": contractSHA, "generation": 1},
+					map[string]any{"id": "TASK-001", "kind": "task", "path": "docs/dev/tasks/TASK-001.md", "sha256": taskSHA, "generation": 1},
 				},
 			}
-			if _, err := os.Stat(filepath.Join(root, "docs/contracts/be-001.md")); err == nil {
+			if _, err := os.Stat(filepath.Join(root, "docs/dev/contracts/be-001.md")); err == nil {
 				t.Skip("missing case-alias scenario requires a case-sensitive filesystem")
 			}
-			alias := map[string]any{"id": "BE-001", "kind": "contract", "path": "docs/contracts/be-001.md", "sha256": contractSHA, "generation": 1}
+			alias := map[string]any{"id": "BE-001", "kind": "contract", "path": "docs/dev/contracts/be-001.md", "sha256": contractSHA, "generation": 1}
 			switch scenario {
 			case "tampered original":
-				write("docs/contracts/be-001.md", []byte("tampered"))
+				write("docs/dev/contracts/be-001.md", []byte("tampered"))
 			case "unrelated path":
-				alias["path"] = "docs/contracts/unrelated.md"
+				alias["path"] = "docs/dev/contracts/unrelated.md"
 			case "different identity":
 				alias["id"] = "BE-999"
 			case "different kind":

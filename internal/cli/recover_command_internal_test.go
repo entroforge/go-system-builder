@@ -28,7 +28,7 @@ func TestResolveRecoveryPathRejectsSymlinkOutsideRepository(t *testing.T) {
 
 func TestMergeRecoveryProjectionPreservesDurableBUGEntities(t *testing.T) {
 	root := t.TempDir()
-	for _, relative := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	for _, relative := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", relative))
 		if err != nil {
 			t.Fatal(err)

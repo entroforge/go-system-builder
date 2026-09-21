@@ -76,6 +76,10 @@ func RenderWithAdditionalContext(root, event string, decision policy.Decision, r
 	switch decision.Decision {
 	case "allow":
 		if decision.Guidance == nil {
+			if additionalContext != "" {
+				data, err := renderSystemMessage("", event, additionalContext)
+				return data, 0, err
+			}
 			return nil, 0, nil
 		}
 		body := formatGuidance(*decision.Guidance)
@@ -214,34 +218,40 @@ func formatGuidance(guidance policy.Guidance) string {
 
 // renderPreToolUsePayload renders the PreToolUse-specific JSON envelope.
 // Warnings allow; recoverable denies and human blocks deny.
+// Ordinary guidance does not grant permission or replace Claude's permission policy.
 func renderPreToolUsePayload(body, permission string) ([]byte, error) {
-	payload := map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName":            "PreToolUse",
-			"permissionDecision":       permission,
-			"permissionDecisionReason": body,
-		},
-		"systemMessage": body,
+	specific := map[string]any{"hookEventName": "PreToolUse", "additionalContext": boundedContext(body)}
+	if permission == "deny" {
+		specific["permissionDecision"] = "deny"
+		specific["permissionDecisionReason"] = boundedContext(body)
 	}
-	return json.Marshal(payload)
+	return json.Marshal(map[string]any{"hookSpecificOutput": specific})
 }
 
-// renderSystemMessage renders the non-PreToolUse plain envelope for warn and
-// block decisions (the systemMessage-only shape used by SessionStart,
-// SubagentStop, TeammateIdle, etc.). Block decisions on
-// TeammateIdle/SubagentStop never reach this renderer from the CLI
-// transport — they exit 2 with stderr feedback (stopidle.go); this shape
-// remains for warn and for in-process/library callers.
+// Stop/idle context would force continuation; never deliver soft warnings there.
 func renderSystemMessage(body, event, additionalContext string) ([]byte, error) {
-	payload := map[string]any{"systemMessage": body}
-	if event == "SessionStart" || event == "SubagentStart" {
-		payload["systemMessage"] = compactNotice(body)
-		payload["hookSpecificOutput"] = map[string]any{
-			"hookEventName":     event,
-			"additionalContext": body + "\n\n" + additionalContext,
+	switch event {
+	case "SessionStart", "SubagentStart", "PostToolUse", "PreToolUse":
+		context := body
+		if additionalContext != "" {
+			if context != "" {
+				context += "\n\n"
+			}
+			context += additionalContext
 		}
+		return json.Marshal(map[string]any{"systemMessage": compactNotice(body), "hookSpecificOutput": map[string]any{"hookEventName": event, "additionalContext": boundedContext(context)}})
+	case "Stop", "SubagentStop", "TeammateIdle":
+		return json.Marshal(map[string]any{"systemMessage": body})
+	default:
+		return nil, nil
 	}
-	return json.Marshal(payload)
+}
+func boundedContext(s string) string {
+	r := []rune(s)
+	if len(r) > 10000 {
+		return string(r[:9900]) + "\n[truncated; read the runtime recovery record]"
+	}
+	return s
 }
 
 // auditRecord is the on-disk representation of a policy.Decision in

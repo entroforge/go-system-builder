@@ -421,10 +421,10 @@ func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool)
 	if err := os.WriteFile(filepath.Join(root, roleDir, "investigator.md"), []byte("# Investigator\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "agent-protocol.md"), []byte("# Protocol\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "agent-protocol.md"), []byte("# Protocol\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	batch := map[string]any{

@@ -5,6 +5,7 @@ package recovery
 import (
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 const (
@@ -101,11 +102,12 @@ func (e *ValidationError) Unwrap() []error {
 
 // REQBinding is the verified identity of the explicitly selected locked REQ.
 type REQBinding struct {
-	ID      string `json:"id"`
-	Path    string `json:"path"`
-	Status  string `json:"status"`
-	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
+	Workspace *workspace.Binding `json:"workspace,omitempty"`
+	ID        string             `json:"id"`
+	Path      string             `json:"path"`
+	Status    string             `json:"status"`
+	Version   string             `json:"version"`
+	SHA256    string             `json:"sha256"`
 }
 
 // InventoryInput is a content-addressed repository-relative recovery input.

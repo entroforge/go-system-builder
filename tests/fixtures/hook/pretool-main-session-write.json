@@ -3,7 +3,7 @@
   "hook_event_name": "PreToolUse",
   "tool_name": "Edit",
   "tool_input": {
-    "file_path": "docs/tasks/TASK-001.md"
+    "file_path": "docs/dev/tasks/TASK-001.md"
   },
   "runtime_context": {
     "runtime_id": "loop-REQ-002",

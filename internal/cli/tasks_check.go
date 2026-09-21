@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
@@ -21,17 +22,24 @@ func runTasks(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "tasks check")
 	root := flags.String("root", ".", "repository root")
+	req := flags.String("req", "", "REQ ID for the planning batch")
 	asJSON := flags.Bool("json", false, "machine-readable output")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
-	result, err := semantic.TasksCheck(*root)
+	result, err := semantic.TasksCheckWithFiles(*root, fileview.Disk{Root: *root}, *req)
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("tasks check", err))
 		return 1
 	}
 	if *asJSON {
-		return encodeJSON(stdout, result)
+		if code := encodeJSON(stdout, result); code != 0 {
+			return code
+		}
+		if len(result.Problems) > 0 {
+			return 1
+		}
+		return 0
 	}
 	if len(result.Problems) > 0 {
 		for _, problem := range result.Problems {
@@ -39,6 +47,9 @@ func runTasks(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stderr, "tasks check: %d problem(s) across %d task(s) — fix the flagged items and rerun\n", len(result.Problems), result.Tasks)
 		return 1
+	}
+	for _, warning := range result.Warnings {
+		fmt.Fprintln(stderr, "warning:", warning)
 	}
 	for _, load := range result.ReferenceLoads {
 		fmt.Fprintf(stdout, "  load: %s\n", load)

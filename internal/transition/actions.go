@@ -18,6 +18,9 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/docscope"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"os"
 	"path/filepath"
 	"sort"
@@ -462,39 +465,53 @@ func actionRoot(state map[string]any, ctx *ActionContext) string {
 }
 
 // actionRegisterLockedContracts runs on PTR-PLAN-02 (contracts→tasks):
-// it scans docs/contracts/*.md for status=locked files and registers each
+// it scans docs/dev/contracts/*.md for status=locked files and registers each
 // into documents[] (same-generation-same-id replaces, appendDocument) —
 // feeding the S3 exit gate that consumes documents[], and arming hook
 // write-protection for contracts (L3-S3 v4.0.1).
 func actionRegisterLockedContracts(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, "docs/contracts", []string{"BE-", "FE-", "SYNC-", "CONTRACTS-"}, "contract", "locked")
+	models, modelErr := sharedModelDocuments(state, ctx, true)
+	if modelErr != nil {
+		return ActionResult{Status: "failed", Detail: modelErr.Error()}, modelErr
+	}
+	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, projectlayout.Contracts, []string{"BE-", "FE-", "SYNC-", "CONTRACTS-"}, "contract", "locked")
 	if err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	}
-	return ActionResult{Status: "committed", MutationApplied: registered > 0,
-		Detail: fmt.Sprintf("registered %d locked contract(s)", registered)}, nil
+	return ActionResult{Status: "committed", MutationApplied: registered+models > 0,
+		Detail: fmt.Sprintf("registered %d locked contract(s) and %d shared input(s)", registered, models)}, nil
 }
 
 // actionRegisterExecutionBatch replaces the evidence-presence placeholder
 // on TR-003: the atomic lock registers the execution batch — complete TASK
 // files join the already-registered contracts in documents[].
 func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (ActionResult, error) {
+	if err := dispatchPlanDocuments(state, ctx, false); err != nil {
+		return ActionResult{Status: "failed", Detail: err.Error()}, err
+	}
+	if _, err := sharedModelDocuments(state, ctx, false); err != nil {
+		return ActionResult{Status: "failed", Detail: err.Error()}, err
+	}
 	if len(ctx.Evidence) == 0 {
 		return ActionResult{Status: "failed", Detail: "execution batch evidence missing"}, fmt.Errorf("register_execution_batch: current evidence missing")
 	}
 	root := actionRoot(state, ctx)
+	var files fileview.Reader = fileview.Disk{Root: root}
+	if ctx.Request != nil && ctx.Request.Files != nil {
+		files = ctx.Request.Files
+	}
 	registered := 0
 	bound, _ := state["bound_req"].(map[string]any)
 	boundID, _ := bound["id"].(string)
-	baseline, _ := state["baseline"].(map[string]any)
-	docs, _ := state["documents"].([]any)
-	for _, raw := range docs {
+	reviewedBaseline, _ := state["baseline"].(map[string]any)
+	reviewedDocs, _ := state["documents"].([]any)
+	for _, raw := range reviewedDocs {
 		doc, _ := raw.(map[string]any)
-		if doc["kind"] != "task" || integerOf(doc["generation"]) != integerOf(baseline["generation"]) {
+		if doc["kind"] != "task" || integerOf(doc["generation"]) != integerOf(reviewedBaseline["generation"]) {
 			continue
 		}
 		rel, _ := doc["path"].(string)
-		data, err := os.ReadFile(filepath.Join(root, rel))
+		data, err := files.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			return ActionResult{Status: "failed"}, err
 		}
@@ -508,8 +525,28 @@ func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (Act
 	}
 	if registered == 0 {
 		return ActionResult{Status: "failed",
-			Detail: "execution batch is empty — no complete TASK under docs/tasks; an empty batch would lock nothing into building"}, fmt.Errorf("register_execution_batch: no complete TASK document under docs/tasks — write and complete the task batch before TR-003")
+			Detail: "execution batch is empty — no complete TASK under docs/dev/tasks; an empty batch would lock nothing into building"}, fmt.Errorf("register_execution_batch: no complete TASK document under docs/dev/tasks — write and complete the task batch before TR-003")
 	}
+	// Freeze the reviewed plan and TASKs in the existing artifact lock projection.
+	baseline, _ := state["baseline"].(map[string]any)
+	generation := integerOf(baseline["generation"])
+	docs, _ := state["documents"].([]any)
+	planned := false
+	for _, raw := range docs {
+		d, _ := raw.(map[string]any)
+		if d["kind"] == "dispatch_plan" && integerOf(d["generation"]) == generation {
+			planned = true
+		}
+	}
+	if planned {
+		for _, raw := range docs {
+			d, _ := raw.(map[string]any)
+			if integerOf(d["generation"]) == generation && (d["kind"] == "task" || d["kind"] == "dispatch_plan") {
+				d["status"] = "locked"
+			}
+		}
+	}
+
 	return ActionResult{Status: "committed", MutationApplied: true,
 		Detail: fmt.Sprintf("registered %d complete task(s)", registered)}, nil
 }
@@ -520,7 +557,10 @@ func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (Act
 // fixtures. Unlike TR-003's register_execution_batch it carries no evidence
 // precondition — TR-002's required_evidence is empty (L3-S4 v4.0.1 B4).
 func actionRegisterPlanningTasks(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, "docs/tasks", []string{"TASK-"}, "task", "complete")
+	if err := dispatchPlanDocuments(state, ctx, true); err != nil {
+		return ActionResult{Status: "failed", Detail: err.Error()}, err
+	}
+	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, projectlayout.Tasks, []string{"TASK-"}, "task", "complete")
 	if err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	}
@@ -538,7 +578,14 @@ func registerDocumentsFromDisk(root string, state map[string]any, ctx *ActionCon
 		root = "."
 	}
 	dir := filepath.Join(root, filepath.FromSlash(dirRel))
-	entries, err := os.ReadDir(dir)
+	var files fileview.Reader = fileview.Disk{Root: root}
+	if ctx.Request != nil && ctx.Request.Files != nil {
+		files = ctx.Request.Files
+	}
+	if kind == "task" {
+		files = semantic.ScopedPlanningFiles(root, files, planningREQ(state))
+	}
+	entries, err := files.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// No directory = nothing to register (a repo without this docs
@@ -571,7 +618,7 @@ func registerDocumentsFromDisk(root string, state map[string]any, ctx *ActionCon
 			continue
 		}
 		rel := filepath.ToSlash(filepath.Join(dirRel, name))
-		data, err := os.ReadFile(filepath.Join(dir, name))
+		data, err := files.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return registered, fmt.Errorf("read %s: %w", rel, err)
 		}
@@ -1003,13 +1050,13 @@ func actionRecordAbort(state map[string]any, ctx *ActionContext) (ActionResult, 
 // fact to sign over (previously nothing registered kind=design,
 // so the S2 exit gate could never be satisfied on the organic path).
 func actionRegisterDesignDocuments(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, "docs/design/architecture", []string{"ARCHITECTURE-"}, "design", "locked")
+	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, projectlayout.Architecture, []string{"ARCHITECTURE-"}, "design", "locked")
 	if err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	}
 	if registered == 0 {
 		return ActionResult{Status: "failed",
-			Detail: "no locked architecture document under docs/design/architecture — the design stage produced nothing to register"}, fmt.Errorf("register_design_documents: no ARCHITECTURE-*.md with Status locked under docs/design/architecture — write the architecture document before advancing")
+			Detail: "no locked architecture document under docs/architecture — the design stage produced nothing to register"}, fmt.Errorf("register_design_documents: no ARCHITECTURE-*.md with Status locked under docs/architecture — write the architecture document before advancing")
 	}
 	return ActionResult{Status: "committed", MutationApplied: true,
 		Detail: fmt.Sprintf("registered %d locked design document(s)", registered)}, nil

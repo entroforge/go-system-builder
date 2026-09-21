@@ -29,7 +29,7 @@ type activationChainFixture struct {
 
 func newActivationChainFixture(t *testing.T) activationChainFixture {
 	t.Helper()
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")

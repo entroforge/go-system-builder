@@ -21,7 +21,7 @@ func TestCT03901_DesignGateCommitsPTRPLAN01System(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	body := req039fixtures.PreToolUseBody("session-ct-039-01-sys", "Edit", map[string]any{
-		"file_path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md",
+		"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {
@@ -57,7 +57,7 @@ func TestCT03911_DualPassDocumentVerificationSystem(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	body := req039fixtures.PreToolUseBody("session-ct-039-11-sys", "Edit", map[string]any{
-		"file_path": "docs/contracts/BE-039-loop-controller.md",
+		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {
@@ -117,7 +117,7 @@ func TestCT03924_SameAgentDualDVBlocksTR003System(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	body := req039fixtures.PreToolUseBody("session-ct-039-24-sys", "Edit", map[string]any{
-		"file_path": "docs/contracts/BE-039-loop-controller.md",
+		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {

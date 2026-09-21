@@ -20,14 +20,15 @@ func TestBoundHookRejectsWrongDirectoryBeforeRuntimeMutation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			policyData, err := os.ReadFile("../../docs/hook-policy.json")
+			policyData, err := os.ReadFile("../../docs/control/hook-policy.json")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = os.WriteFile(filepath.Join(fix.root, "docs/hook-policy.json"), policyData, 0600); err != nil {
+			if err = os.WriteFile(filepath.Join(fix.root, "docs/control/hook-policy.json"), policyData, 0600); err != nil {
 				t.Fatal(err)
 			}
 			ctx := context.Background()
+			bindFixtureWorkspace(t, fix)
 			binding, err := workspace.New(ctx, fix.root)
 			if err != nil {
 				t.Fatal(err)

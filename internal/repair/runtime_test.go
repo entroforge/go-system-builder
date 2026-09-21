@@ -540,11 +540,11 @@ func TestRuntimeRepairBlocksOnAuthorityDrift(t *testing.T) {
 		t.Fatalf("clean result submit before drift must succeed: %v", err)
 	}
 	// RC-09 (S9-4): AFTER the result, an out-of-band edit mutates a baseline
-	// file the repair never claimed — upstream drift. docs/loop-definition.json
+	// file the repair never claimed — upstream drift. docs/control/loop-definition.json
 	// exists in the fixture root before the session opened, so it is a real
 	// baseline path being silently mutated. The next S9 checkpoint must fail
 	// stale on the authority fingerprint.
-	defPath := filepath.Join(root, "docs", "loop-definition.json")
+	defPath := filepath.Join(root, "docs", "control", "loop-definition.json")
 	defData, readErr := os.ReadFile(defPath)
 	if readErr != nil {
 		t.Fatal(readErr)

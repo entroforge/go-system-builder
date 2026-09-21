@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -88,7 +89,7 @@ func completionChangedPaths(root string, entry map[string]any) ([]string, error)
 		if err != nil {
 			return nil, fmt.Errorf("changed path %q: %w", changed, err)
 		}
-		if info, err := os.Stat(absolute); err == nil && info.IsDir() && !evidenceDirectory(changed) {
+		if info, err := os.Stat(absolute); err == nil && info.IsDir() && !evidenceDirectory(root, changed) {
 			return nil, fmt.Errorf("changed path %q is a product directory; submit a canonical file-level completion report including deleted files", changed)
 		}
 	}
@@ -162,8 +163,20 @@ func validateS7BaselineProjection(root string, state map[string]any) error {
 
 // Only framework-owned evidence bookkeeping directories may be dropped.
 // Product directories are retained by this helper and diagnosed by the reader.
-func evidenceDirectory(path string) bool {
-	return path == ".claude/evidence" || strings.HasPrefix(path, ".claude/evidence/")
+func evidenceDirectory(root, path string) bool {
+	if path != ".claude/evidence" && !strings.HasPrefix(path, ".claude/evidence/") {
+		return false
+	}
+	// A lexical evidence prefix cannot exempt a symlink into product code.
+	current := root
+	for _, part := range strings.Split(path, "/") {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func filterFreezableChangedPaths(root string, paths []string) []string {
@@ -174,7 +187,7 @@ func filterFreezableChangedPaths(root string, paths []string) []string {
 	for _, path := range paths {
 		absolute, err := repositoryContainedPath(root, path)
 		if err == nil {
-			if info, statErr := os.Stat(absolute); statErr == nil && info.IsDir() && evidenceDirectory(path) {
+			if info, statErr := os.Stat(absolute); statErr == nil && info.IsDir() && evidenceDirectory(root, path) {
 				continue
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,16 +22,16 @@ func TestTransitionAffectedPathsCLI(t *testing.T) {
 		ok   bool
 	}{
 		{"missing", nil, false},
-		{"scoped", []string{"--affected-paths", "docs/tasks/TASK-313.md"}, true},
-		{"repeat", []string{"--affected-paths", "docs/tasks/TASK-313.md", "--affected-paths", "docs/tasks/TASK-313.md"}, true},
+		{"scoped", []string{"--affected-paths", "docs/dev/tasks/TASK-313.md"}, true},
+		{"repeat", []string{"--affected-paths", "docs/dev/tasks/TASK-313.md", "--affected-paths", "docs/dev/tasks/TASK-313.md"}, true},
 		{"all", []string{"--affected-paths", "all"}, true},
 		{"escape", []string{"--affected-paths", "../outside"}, false},
 		{"absolute", []string{"--affected-paths", "/tmp/outside"}, false},
 		{"empty", []string{"--affected-paths", ""}, false},
 		{"glob", []string{"--affected-paths", "docs/*"}, false},
 		{"implicit-all", []string{"--affected-paths", "./all"}, false},
-		{"mixed-all", []string{"--affected-paths", "all", "--affected-paths", "docs/tasks/TASK-313.md"}, false},
-		{"positional", []string{"--affected-paths", "docs/tasks/TASK-313.md", "docs/tasks/TASK-314.md"}, false},
+		{"mixed-all", []string{"--affected-paths", "all", "--affected-paths", "docs/dev/tasks/TASK-313.md"}, false},
+		{"positional", []string{"--affected-paths", "docs/dev/tasks/TASK-313.md", "docs/dev/tasks/TASK-314.md"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -43,7 +44,7 @@ func TestTransitionAffectedPathsCLI(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			raw, err := os.ReadFile("../../docs/loop-definition.json")
+			raw, err := os.ReadFile("../../docs/control/loop-definition.json")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,7 +59,7 @@ func TestTransitionAffectedPathsCLI(t *testing.T) {
 				}
 			}
 			raw, _ = json.Marshal(def)
-			write(filepath.Join(root, "docs/loop-definition.json"), raw)
+			write(filepath.Join(root, "docs/control/loop-definition.json"), raw)
 			raw, err = schema.ReadAsset("loop-state.example.json")
 			if err != nil {
 				t.Fatal(err)
@@ -72,10 +73,17 @@ func TestTransitionAffectedPathsCLI(t *testing.T) {
 			ev := func(id, p string) map[string]any {
 				return map[string]any{"id": id, "kind": "delivery_review", "path": "evidence/" + id + ".json", "sha256": strings.Repeat("a", 64), "status": "valid", "baseline_generation": 1, "review_round": 1, "produced_by": []any{"agent-1"}, "invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil, "responsibility_id": "Builder", "scope_refs": []any{p}}
 			}
-			state["evidence"] = []any{ev("ev-affected", "docs/tasks/TASK-313.md"), ev("ev-unrelated", "docs/tasks/TASK-303.md")}
+			state["evidence"] = []any{ev("ev-affected", "docs/dev/tasks/TASK-313.md"), ev("ev-unrelated", "docs/dev/tasks/TASK-303.md")}
+			for _, args := range [][]string{{"init", "-b", "dev"}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base"}} {
+				if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+					t.Fatalf("%s %v", out, err)
+				}
+			}
+			head, _ := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+			state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": "dev", "release_upstream": "main", "bound_commit": strings.TrimSpace(string(head))}
 			before, _ := json.Marshal(state)
-			sp := filepath.Join(root, "state.json")
-			jp := filepath.Join(root, "journal.jsonl")
+			sp := filepath.Join(root, ".claude/loop-state.json")
+			jp := filepath.Join(root, ".claude/loop-events.jsonl")
 			write(sp, before)
 			write(jp, nil)
 			args := []string{"runtime", "transition", "--root", root, "--state", sp, "--journal", jp, "--id", "TR-007", "--actor", "orchestrator", "--expected-revision", "1"}

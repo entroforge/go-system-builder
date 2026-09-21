@@ -69,7 +69,7 @@ func runWorkspaceCommit(args []string, stdout, stderr io.Writer) int {
 	if loaded.PolicyContext.Agent == nil || loaded.PolicyContext.Agent.State != "working" {
 		return fail(fmt.Errorf("commit requires working owner with recorded plan/activation"))
 	}
-	engine, err := policy.Load(filepath.Join(*root, "docs/hook-policy.json"))
+	engine, err := policy.Load(filepath.Join(*root, "docs/control/hook-policy.json"))
 	if err != nil {
 		return fail(err)
 	}

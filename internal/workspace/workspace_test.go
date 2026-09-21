@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func repository(t *testing.T) (*Binding, context.Context) {
+func repository(t *testing.T) (*ExecutionRegistry, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
@@ -27,6 +27,11 @@ func repository(t *testing.T) (*Binding, context.Context) {
 	if _, err := Git(ctx, root, "commit", "-m", "base"); err != nil {
 		t.Fatal(err)
 	}
+	head, err := Git(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveControlState(t, root, map[string]any{"bound_req": map[string]any{"workspace": Binding{root, "test2", "main", head}.Map()}})
 	b, err := New(ctx, root)
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +40,7 @@ func repository(t *testing.T) (*Binding, context.Context) {
 }
 func TestPinnedTest2AndDirtyInputs(t *testing.T) {
 	b, ctx := repository(t)
-	state := map[string]any{"runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}}
+	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}, "runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}}
 	for _, args := range [][]string{{"branch", "test3"}, {"branch", "test4"}} {
 		if _, err := Git(ctx, b.MainRoot, args...); err != nil {
 			t.Fatal(err)
@@ -92,7 +97,7 @@ func TestInputSymlinkEscape(t *testing.T) {
 	}
 	Git(ctx, b.MainRoot, "add", "link")
 	Git(ctx, b.MainRoot, "commit", "-m", "link")
-	_, err := b.Plan(ctx, map[string]any{"runtime_id": "loop-test"}, "assignment", "builder", nil, nil, []string{"link"})
+	_, err := b.Plan(ctx, map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}, "runtime_id": "loop-test"}, "assignment", "builder", nil, nil, []string{"link"})
 	if err == nil {
 		t.Fatal("accepted outside input")
 	}
@@ -106,6 +111,7 @@ func TestBindingUsesUsersCurrentCheckoutAndBranch(t *testing.T) {
 			if _, err := Git(ctx, original.MainRoot, "worktree", "add", "-b", branch, userRoot); err != nil {
 				t.Fatal(err)
 			}
+			saveControlState(t, userRoot, map[string]any{"bound_req": map[string]any{"workspace": Binding{userRoot, branch, "main", original.BoundHead}.Map()}})
 			binding, err := New(ctx, userRoot)
 			if err != nil {
 				t.Fatal(err)
@@ -122,5 +128,21 @@ func TestBindingUsesUsersCurrentCheckoutAndBranch(t *testing.T) {
 				t.Fatal("binding modified another checkout")
 			}
 		})
+	}
+}
+
+func TestExecutionRegistryCannotOverrideRequirementAuthority(t *testing.T) {
+	b, ctx := repository(t)
+	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}}
+	if err := b.ValidateAuthority(state); err != nil {
+		t.Fatal(err)
+	}
+	b.Branch = "another-branch"
+	if err := b.ValidateAuthority(state); err == nil {
+		t.Fatal("execution registry overrode bound development branch")
+	}
+	saveControlState(t, b.MainRoot, map[string]any{})
+	if _, err := New(ctx, b.MainRoot); err == nil {
+		t.Fatal("created execution registry without bound requirement authority")
 	}
 }

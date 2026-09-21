@@ -2,7 +2,7 @@
   "schema_version": "1.1.0",
   "runtime_id": "loop-REQ-002-example",
   "definition": {
-    "path": "docs/loop-definition.json",
+    "path": "docs/control/loop-definition.json",
     "version": "1.1.0",
     "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   },
@@ -18,11 +18,11 @@
     "lifecycle_phase": "design",
     "objective": "complete architecture and any required UI design package",
     "action": "complete the planning phase for design",
-    "protocol_ref": "docs/agent-protocol.md#s2",
+    "protocol_ref": "docs/control/agent-protocol.md#s2",
     "manual_ref": ".claude/bin/loop-harness.md",
     "primary_skill": "specification-planning",
     "read": ["bound REQ", "docs/design/", "docs/rules/"],
-    "read_order": ["LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/agent-protocol.md#s2", "bound REQ", ".claude/skills/specification-planning/SKILL.md"],
+    "read_order": ["LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/control/agent-protocol.md#s2", "bound REQ", ".claude/skills/specification-planning/SKILL.md"],
     "missing": ["architecture_record"],
     "done_when": ["architecture decisions cover the contract boundary", "any UI-impacting module has a complete target design package"],
     "questions": [],
@@ -33,7 +33,7 @@
     "blocker": null,
     "event": "SessionStart",
     "instruction": "LOOP RECOVERY: you are at S2. Next: complete the planning phase for design.",
-    "recovery": ["read docs/agent-protocol.md#s2", "if blocked read .claude/bin/loop-harness.md"],
+    "recovery": ["read docs/control/agent-protocol.md#s2", "if blocked read .claude/bin/loop-harness.md"],
     "source_revision": 1,
     "updated_at": "2026-06-18T00:00:00Z",
     "quality_gate": {
@@ -81,7 +81,7 @@
   },
   "hook_control": {
     "policy_ref": {
-      "path": "docs/hook-policy.json",
+      "path": "docs/control/hook-policy.json",
       "version": "v1.3.0",
       "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
     },

@@ -35,7 +35,7 @@ func seedIntegrableAssignment(t *testing.T, root string) string {
 		}},
 		"tasks": []any{map[string]any{
 			"id": "TASK-039-01", "state": "review",
-			"path":            "docs/tasks/TASK-039-01.md",
+			"path":            "docs/dev/tasks/TASK-039-01.md",
 			"sha256":          "0000000000000000000000000000000000000000000000000000000000000001",
 			"owner_agent_ids": []any{"builder-ti"},
 		}},

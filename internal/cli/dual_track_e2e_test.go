@@ -26,7 +26,7 @@ func TestS2DualTrackConvergenceE2E(t *testing.T) {
 	// module package are (re)written on top afterwards.
 	for _, pair := range []struct{ src, dest string }{
 		{"../../skills", "skills"}, {"../../agents", "agents"}, {"../../docs", "docs"},
-		{"../../prelude.md", "prelude.md"}, {"../../AGENTS-template.md", "AGENTS-template.md"},
+		{"../../docs/guides/getting-started.md", "docs/guides/getting-started.md"}, {"../../AGENTS-template.md", "AGENTS-template.md"},
 		{"../../settings.json", "settings.json"}, {"../../loop-template.md", "loop-template.md"},
 	} {
 		if err := copyTree(t, root, pair.src, pair.dest); err != nil {
@@ -57,7 +57,7 @@ func TestS2DualTrackConvergenceE2E(t *testing.T) {
 
 	// --- phase 0: unknown blocks planning advance (wired guard), in a scratch root ---
 	scratch := newUXTestRoot(t, map[string]string{"REQ-301.md": "# REQ-301\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：unknown\n"})
-	if _, _, code := run("req", "bind", "--root", scratch, "--approved-by", "alice"); code != 0 {
+	if _, _, code := run("req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, scratch), "--approved-by", "alice"); code != 0 {
 		t.Fatalf("bind with unknown impact must succeed (blocking happens at PTR-PLAN-01)")
 	}
 	if _, stderr, code := run("runtime", "transition", "--root", scratch,
@@ -67,7 +67,7 @@ func TestS2DualTrackConvergenceE2E(t *testing.T) {
 
 	// --- main flow: locked as changed from the start (rewriting a bound REQ would need an amendment) ---
 	writeREQ("changed", "FR-001")
-	if out, _, code := run("req", "bind", "--root", root, "--approved-by", "alice"); code != 0 || !strings.Contains(out, "ui_impact=changed") {
+	if out, _, code := run("req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice"); code != 0 || !strings.Contains(out, "ui_impact=changed") {
 		t.Fatalf("bind failed: %s", out)
 	}
 

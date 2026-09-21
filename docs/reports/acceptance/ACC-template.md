@@ -19,8 +19,8 @@
 |:---|:---|:---|:---|
 | REQ | `docs/requirements/REQ-{id}.md` | {version} | `{sha256}` |
 | module current truth | `docs/design/prototypes/{module}/` (scenario four-pack + stories/flows/index/*.html) | current | `{sha256/N/A}` |
-| contracts | `docs/contracts/CONTRACTS-{id}.md` | {version} | `{sha256}` |
-| tasks | `docs/tasks/index.md` | {version} | `{sha256}` |
+| contracts | `docs/dev/contracts/CONTRACTS-{id}.md` | {version} | `{sha256}` |
+| tasks | `docs/dev/tasks/index-REQ-{id}.md` | {version} | `{sha256}` |
 
 ## 1.1 Audit Universe And Responsibility
 

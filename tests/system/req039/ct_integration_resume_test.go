@@ -42,7 +42,7 @@ func TestCT03917_SubagentStopIdempotentResumeAfterMerge(t *testing.T) {
 		t.Fatalf("cleanup recovery: %d %s %s", code, out, errText)
 	}
 	if readIntegrationCheckpointState(t, root) != "complete" {
-		t.Fatal("cleanup response loss did not recover")
+		t.Fatalf("cleanup response loss did not recover: %s %s", out, errText)
 	}
 	if strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD")) != head {
 		t.Fatal("recovery remerged")
@@ -82,7 +82,8 @@ func setupGitWorktreeFixture(t *testing.T, root string) gitWorktreeFixture {
 
 func runGitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	// Fixtures must not depend on the developer's global Git identity.
+	cmd := exec.Command("git", append([]string{"-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

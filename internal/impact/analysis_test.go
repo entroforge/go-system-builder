@@ -41,8 +41,8 @@ func stateWith(evidence ...map[string]any) map[string]any {
 
 func TestComputeImpactREQChangeInvalidatesWholeBaseline(t *testing.T) {
 	state := stateWith(
-		validEvidence("ev-1", "docs/contracts/CONTRACTS-002.md"),
-		validEvidence("ev-2", "docs/tasks/TASK-012.md"),
+		validEvidence("ev-1", "docs/dev/contracts/CONTRACTS-002.md"),
+		validEvidence("ev-2", "docs/dev/tasks/TASK-012.md"),
 	)
 	impacts := impact.ComputeImpact(state, []string{"docs/requirements/REQ-002.md"})
 	if len(impacts) != 2 {
@@ -60,10 +60,10 @@ func TestComputeImpactREQChangeInvalidatesWholeBaseline(t *testing.T) {
 
 func TestComputeImpactContractChangeOnlyAffectsScopedEvidence(t *testing.T) {
 	state := stateWith(
-		validEvidence("ev-contract", "docs/contracts/CONTRACTS-002.md"),
-		validEvidence("ev-unrelated", "docs/contracts/CONTRACTS-009.md"),
+		validEvidence("ev-contract", "docs/dev/contracts/CONTRACTS-002.md"),
+		validEvidence("ev-unrelated", "docs/dev/contracts/CONTRACTS-009.md"),
 	)
-	impacts := impact.ComputeImpact(state, []string{"docs/contracts/CONTRACTS-002.md"})
+	impacts := impact.ComputeImpact(state, []string{"docs/dev/contracts/CONTRACTS-002.md"})
 	if len(impacts) != 1 {
 		t.Fatalf("expected 1 impacted entry, got %d", len(impacts))
 	}
@@ -76,10 +76,10 @@ func TestComputeImpactContractChangeOnlyAffectsScopedEvidence(t *testing.T) {
 }
 
 func TestComputeImpactAlreadyInvalidReported(t *testing.T) {
-	ev := validEvidence("ev-old", "docs/contracts/CONTRACTS-002.md")
+	ev := validEvidence("ev-old", "docs/dev/contracts/CONTRACTS-002.md")
 	ev["status"] = "invalid"
 	state := stateWith(ev)
-	impacts := impact.ComputeImpact(state, []string{"docs/contracts/CONTRACTS-002.md"})
+	impacts := impact.ComputeImpact(state, []string{"docs/dev/contracts/CONTRACTS-002.md"})
 	if len(impacts) != 1 {
 		t.Fatalf("expected 1 impacted entry, got %d", len(impacts))
 	}
@@ -89,15 +89,15 @@ func TestComputeImpactAlreadyInvalidReported(t *testing.T) {
 }
 
 func TestInvalidateEvidenceMarksNewlyAffectedOnly(t *testing.T) {
-	evFresh := validEvidence("ev-fresh", "docs/contracts/CONTRACTS-002.md")
-	evAlready := validEvidence("ev-already", "docs/contracts/CONTRACTS-002.md")
+	evFresh := validEvidence("ev-fresh", "docs/dev/contracts/CONTRACTS-002.md")
+	evAlready := validEvidence("ev-already", "docs/dev/contracts/CONTRACTS-002.md")
 	evAlready["status"] = "invalid"
 	evAlready["invalidated_by"] = "PTR-BUG-05"
 	evAlready["invalidation_rule"] = "previous"
 	evAlready["invalidation_reason"] = "previous reason"
 	state := stateWith(evFresh, evAlready)
 
-	impacts := impact.ComputeImpact(state, []string{"docs/contracts/CONTRACTS-002.md"})
+	impacts := impact.ComputeImpact(state, []string{"docs/dev/contracts/CONTRACTS-002.md"})
 	newlyInvalidated := impact.InvalidateEvidence(state, impacts, "TR-007")
 
 	if len(newlyInvalidated) != 1 || newlyInvalidated[0] != "ev-fresh" {
@@ -123,14 +123,14 @@ func TestInvalidateEvidenceMarksNewlyAffectedOnly(t *testing.T) {
 }
 
 func TestComputeImpactEmptyChangedPathsReturnsNil(t *testing.T) {
-	state := stateWith(validEvidence("ev-1", "docs/contracts/CONTRACTS-002.md"))
+	state := stateWith(validEvidence("ev-1", "docs/dev/contracts/CONTRACTS-002.md"))
 	if impacts := impact.ComputeImpact(state, nil); impacts != nil {
 		t.Errorf("expected nil for empty changedPaths, got %v", impacts)
 	}
 }
 
 func TestComputeImpactDifferentBaselineGenerationNotAffectedByREQChange(t *testing.T) {
-	evOld := validEvidence("ev-gen0", "docs/contracts/CONTRACTS-002.md")
+	evOld := validEvidence("ev-gen0", "docs/dev/contracts/CONTRACTS-002.md")
 	evOld["baseline_generation"] = float64(0)
 	state := stateWith(evOld)
 	impacts := impact.ComputeImpact(state, []string{"docs/requirements/REQ-002.md"})
@@ -168,8 +168,8 @@ func TestComputeImpactUnscopedEvidenceInvalidatedByUnrelatedPath(t *testing.T) {
 // rules used to gate on.
 func TestComputeImpactUnscopedEvidenceInvalidatedOnAnyPath(t *testing.T) {
 	for _, path := range []string{
-		"docs/contracts/CONTRACTS-002.md",
-		"docs/tasks/TASK-012.md",
+		"docs/dev/contracts/CONTRACTS-002.md",
+		"docs/dev/tasks/TASK-012.md",
 		"docs/reports/bugs/BUG-001.md",
 		"cmd/harness/main.go",
 	} {

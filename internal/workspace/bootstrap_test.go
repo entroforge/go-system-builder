@@ -55,7 +55,7 @@ func TestBootstrapResumesAndPreservesChangedAssets(t *testing.T) {
 
 func TestFrozenInputChangesBlockPreparation(t *testing.T) {
 	b, ctx := repository(t)
-	state := map[string]any{"runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}}
+	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}, "runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}}
 	e, err := b.Plan(ctx, state, "assignment", "builder", []string{"input.md"}, nil, []string{"input.md"})
 	if err != nil {
 		t.Fatal(err)

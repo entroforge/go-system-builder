@@ -2,6 +2,7 @@ package designfoundation
 
 import (
 	"bufio"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -319,7 +320,7 @@ type changedREQ struct {
 var reqFile = regexp.MustCompile(`^REQ-([A-Za-z0-9]+)\.md$`)
 
 func listChangedREQs(root string) ([]changedREQ, error) {
-	dir := filepath.Join(root, "docs", "requirements")
+	dir := filepath.Join(root, projectlayout.Requirements)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -336,7 +337,7 @@ func listChangedREQs(root string) ([]changedREQ, error) {
 		if m == nil {
 			continue
 		}
-		rel := filepath.Join("docs", "requirements", entry.Name())
+		rel := filepath.Join(projectlayout.Requirements, entry.Name())
 		data, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			return nil, err

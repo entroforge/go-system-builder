@@ -5,12 +5,12 @@
 // historical PASS evidence whose scope overlaps the changed artifact must be
 // marked invalid before a clean round or acceptance gate can rely on it.
 //
-// This package implements the change-to-evidence-impact mapping defined by
-// docs/design/loop-engineering/BUG-IMPACT-CLEAN-ROUND.md §3 and the evidence
-// validity model in docs/design/loop-engineering/LOOP-RUNTIME.md §7.
+// The current evidence validity and change-impact contract is described in
+// blueprint/l4-mechanisms/L4-runtime-control-plane.md.
 package impact
 
 import (
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"path/filepath"
 	"strings"
 )
@@ -220,15 +220,15 @@ func pathsOverlap(left, right string) bool {
 }
 
 func isREQPath(path string) bool {
-	return strings.HasPrefix(path, "docs/requirements/")
+	return strings.HasPrefix(path, projectlayout.Requirements+"/")
 }
 
 func isContractPath(path string) bool {
-	return strings.HasPrefix(path, "docs/contracts/")
+	return strings.HasPrefix(path, "docs/dev/contracts/")
 }
 
 func isTaskPath(path string) bool {
-	return strings.HasPrefix(path, "docs/tasks/")
+	return strings.HasPrefix(path, "docs/dev/tasks/")
 }
 
 func isBUGPath(path string) bool {

@@ -14,7 +14,7 @@ func grammarWithRole(roleID, binding string) string {
 func TestTokenChecks_SemanticRoleUnbound_EmptyBinding(t *testing.T) {
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarWithRole("ROLE-action-promise", "—"),
 		"docs/design/surface-profiles/consumer.md":       "# Surface\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| LAW-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -42,7 +42,7 @@ func TestTokenChecks_SemanticRoleUnbound_EmptyBinding(t *testing.T) {
 func TestTokenChecks_SemanticRoleUnbound_PrimitiveRejected(t *testing.T) {
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarWithRole("ROLE-action-promise", "color.primitive.blue-600"),
 		"docs/design/surface-profiles/consumer.md":       "# Surface\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| LAW-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -68,7 +68,7 @@ func TestTokenChecks_SemanticRoleUnbound_ComponentAndSemanticPass(t *testing.T) 
 	for _, binding := range []string{"color.action.promise", "packages/ui/Confirm", "color.action.promise, packages/ui/Confirm", "PAT-confirm"} {
 		root := t.TempDir()
 		mustWriteTreeGeneric(t, root, map[string]string{
-			"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+			"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 			"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 			"docs/design/design-language.md":                 grammarWithRole("ROLE-action-promise", binding),
 			"docs/design/surface-profiles/consumer.md":       "# Surface\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| LAW-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -90,7 +90,7 @@ func TestTokenChecks_SemanticRoleUnbound_ComponentAndSemanticPass(t *testing.T) 
 func TestTokenChecks_PrimitiveConsumption(t *testing.T) {
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -133,12 +133,12 @@ func TestTokenChecks_PrimitiveConsumption(t *testing.T) {
 func TestTokenChecks_GeneratedAssetUnverifiable(t *testing.T) {
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
 		"docs/design/proof/anchor-screens/consumer.html": "<html><head></head><body style=\"color: var(--color-action-promise)\">no link</body></html>",
-		"docs/design/prototypes/fund/fund-list.html":     "<html><head><link rel=\"stylesheet\" href=\"/packages/design-tokens/tokens.css\"></head><body style=\"color: var(--color-action-promise)\">ok</body></html>",
+		"docs/design/prototypes/fund/fund-list.html":     "<html><head><link rel=\"stylesheet\" href=\"/docs/design/tokens/tokens.css\"></head><body style=\"color: var(--color-action-promise)\">ok</body></html>",
 		"docs/project-map.md":                            "| design investment | core | x | upgrade when: y |\n",
 	})
 	report, err := Check(root)
@@ -159,7 +159,7 @@ func TestTokenChecks_GeneratedAssetUnverifiable(t *testing.T) {
 	}
 	anchorPath := filepath.Join(root, "docs/design/proof/anchor-screens/consumer.html")
 	orig, _ := os.ReadFile(anchorPath)
-	_ = os.WriteFile(anchorPath, []byte(strings.Replace(string(orig), "<body", "<!-- Generated from packages/design-tokens/tokens.json --><body", 1)), 0o644)
+	_ = os.WriteFile(anchorPath, []byte(strings.Replace(string(orig), "<body", "<!-- Generated from docs/design/tokens/tokens.json --><body", 1)), 0o644)
 	report2, _ := Check(root)
 	for _, f := range report2.Findings {
 		if f.Code == "generated_asset_unverifiable" && strings.Contains(f.Path, "anchor-screens/consumer.html") {

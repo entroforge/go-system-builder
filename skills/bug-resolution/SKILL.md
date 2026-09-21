@@ -8,7 +8,7 @@ version: 2.0.0
 
 ## Authority
 
-Runtime legality is defined by `docs/loop-definition.json`; the S8/S9 stage contract is defined by `docs/agent-protocol.md`. This Skill explains how an Agent supplies the missing Case/Contract facts and does not override either authority.
+Runtime legality is defined by `docs/control/loop-definition.json`; the S8/S9 stage contract is defined by `docs/control/agent-protocol.md`. This Skill explains how an Agent supplies the missing Case/Contract facts and does not override either authority.
 
 S8 has one investigation chain:
 

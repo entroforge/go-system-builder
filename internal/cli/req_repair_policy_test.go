@@ -18,7 +18,7 @@ func TestREQBindPinsApprovedRepairPolicy(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "repair-policy.json"), data, 0600)
 	sha := fmt.Sprintf("%x", sha256.Sum256(data))
 	var out, errout bytes.Buffer
-	if code := cli.Run([]string{"req", "bind", "--root", root, "--approved-by", "ux-owner", "--repair-policy", "repair-policy.json", "--repair-policy-sha256", sha}, strings.NewReader(""), &out, &errout); code != 0 {
+	if code := cli.Run([]string{"req", "bind", "--root", root, "--dev-branch", "feature/req", "--release-upstream", "origin/main", "--approved-by", "ux-owner", "--repair-policy", "repair-policy.json", "--repair-policy-sha256", sha}, strings.NewReader(""), &out, &errout); code != 0 {
 		t.Fatalf("bind: %s", errout.String())
 	}
 	raw, _ := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
@@ -42,7 +42,7 @@ func TestREQBindInvalidPolicyLeavesRuntimeUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errout bytes.Buffer
-	code := cli.Run([]string{"req", "bind", "--root", root, "--approved-by", "ux-owner", "--repair-policy", "missing.json", "--repair-policy-sha256", strings.Repeat("a", 64)}, strings.NewReader(""), &out, &errout)
+	code := cli.Run([]string{"req", "bind", "--root", root, "--dev-branch", "feature/req", "--release-upstream", "origin/main", "--approved-by", "ux-owner", "--repair-policy", "missing.json", "--repair-policy-sha256", strings.Repeat("a", 64)}, strings.NewReader(""), &out, &errout)
 	if code == 0 {
 		t.Fatal("missing policy accepted")
 	}

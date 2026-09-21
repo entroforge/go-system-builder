@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,17 +69,17 @@ func repoRoot(t *testing.T) string {
 func freshRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{
-		"docs/loop-definition.json",
-		"docs/hook-policy.json",
+		"docs/control/loop-definition.json",
+		"docs/control/hook-policy.json",
 		// RC-06 (S10-3): the protected-release policy rule loads the
 		// data-driven protected-commands table from the runtime root; the
 		// fixture must ship the real table so Bash classification sees the
 		// production surface instead of failing closed on a missing file.
-		"docs/release_audits/protected_commands.json",
+		"docs/control/protected-commands.json",
 	} {
 		source := filepath.Join(repoRoot(t), rel)
 		data, err := os.ReadFile(source)
@@ -102,6 +103,10 @@ func freshRoot(t *testing.T) string {
 func writeSystemState(t *testing.T, root string, state map[string]any) {
 	t.Helper()
 	req039fixtures.EnsureStateRoot(state, root)
+	req039fixtures.CommitCurrentFixture(t, root)
+	if bound, ok := state["bound_req"].(map[string]any); ok {
+		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": strings.TrimSpace(runGitIn(t, root, "branch", "--show-current")), "release_upstream": "origin/release", "bound_commit": strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))}
+	}
 	path := filepath.Join(root, ".claude", "loop-state.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -151,7 +156,7 @@ func systemPlanningState(t *testing.T, root, phase string, revision int) map[str
 		"schema_version": "1.1.0",
 		"runtime_id":     "loop-system-test",
 		"definition": map[string]any{
-			"path":    "docs/loop-definition.json",
+			"path":    "docs/control/loop-definition.json",
 			"version": "1.1.0",
 			"sha256":  "b6d545f83b7b31c9a140a1a96770c8866ebf7ef4f482c51687dfbacf38de0908",
 		},
@@ -167,11 +172,11 @@ func systemPlanningState(t *testing.T, root, phase string, revision int) map[str
 			"lifecycle_phase": phase,
 			"objective":       "complete the " + phase + " phase",
 			"action":          "complete the planning phase for " + phase,
-			"protocol_ref":    "docs/agent-protocol.md#" + phase,
+			"protocol_ref":    "docs/control/agent-protocol.md#" + phase,
 			"manual_ref":      ".claude/bin/loop-harness.md",
 			"primary_skill":   "specification-planning",
 			"read":            []any{"docs/requirements/REQ-039.md"},
-			"read_order":      []any{"LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/agent-protocol.md#" + phase},
+			"read_order":      []any{"LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/control/agent-protocol.md#" + phase},
 			"missing":         []any{},
 			"done_when":       []any{},
 			"questions":       []any{},
@@ -182,7 +187,7 @@ func systemPlanningState(t *testing.T, root, phase string, revision int) map[str
 			"blocker":         nil,
 			"event":           "SessionStart",
 			"instruction":     "LOOP RECOVERY: you are at S" + stageLetter + ".",
-			"recovery":        []any{"read docs/agent-protocol.md#" + phase, "if blocked read .claude/bin/loop-harness.md"},
+			"recovery":        []any{"read docs/control/agent-protocol.md#" + phase, "if blocked read .claude/bin/loop-harness.md"},
 			"source_revision": float64(revision),
 			"updated_at":      "2026-07-30T00:00:00Z",
 		},
@@ -223,7 +228,7 @@ func systemPlanningState(t *testing.T, root, phase string, revision int) map[str
 			"last_event_id": nil,
 		},
 		"hook_control": map[string]any{
-			"policy_ref":           map[string]any{"path": "docs/hook-policy.json", "version": "v2.0.0", "sha256": "8dea604dfce3a7f0869938eed5f4f6cc225261ed9f20cc8a1c2b5ddb4c5b91ec"},
+			"policy_ref":           map[string]any{"path": "docs/control/hook-policy.json", "version": "v2.0.0", "sha256": "8dea604dfce3a7f0869938eed5f4f6cc225261ed9f20cc8a1c2b5ddb4c5b91ec"},
 			"mode":                 "enforce",
 			"health":               "healthy",
 			"consecutive_failures": 0,

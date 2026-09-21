@@ -76,7 +76,7 @@
     },
     "table_unloaded": {
       "type": "boolean",
-      "description": "True when the protected-commands table at docs/release_audits/protected_commands.json could not be loaded at startup. Informational only; the decision field reflects the verdict Hook actually applied. Operators can grep this field to detect installations missing the file."
+      "description": "True when the protected-commands table at docs/control/protected-commands.json could not be loaded at startup. Informational only; the decision field reflects the verdict Hook actually applied. Operators can grep this field to detect installations missing the file."
     },
     "table_unloaded_reason": {
       "type": "string",

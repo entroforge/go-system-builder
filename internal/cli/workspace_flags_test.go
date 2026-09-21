@@ -19,6 +19,7 @@ func TestWorkspaceFlagRoutingUsesParsedArgumentsAndPreservesArtifactRoot(t *test
 		}
 	}
 	ctx := context.Background()
+	bindFixtureWorkspace(t, fix)
 	b, err := workspace.New(ctx, fix.root)
 	if err != nil {
 		t.Fatal(err)

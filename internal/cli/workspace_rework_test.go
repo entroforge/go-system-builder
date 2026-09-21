@@ -19,7 +19,7 @@ func TestWorkspaceReworkArchivesFailureAndResumesInterruptedFinalization(t *test
 			t.Fatal(err)
 		}
 	}
-	definition := filepath.Join(fix.root, "docs/loop-definition.json")
+	definition := filepath.Join(fix.root, "docs/control/loop-definition.json")
 	data, _ := os.ReadFile(definition)
 	var def map[string]any
 	json.Unmarshal(data, &def)
@@ -53,6 +53,7 @@ func TestWorkspaceReworkArchivesFailureAndResumesInterruptedFinalization(t *test
 	os.WriteFile(filepath.Join(filepath.Dir(manifest), "activation.json"), []byte(`{"agent_id":"builder-rework","allowed_tools":["Write"],"allowed_write_paths":["src"]}`), 0600)
 	data, _ = json.Marshal(map[string]any{"runtime_id": workspace.RuntimeID(fix.state), "assignments": []any{map[string]any{"assignment_id": "assignment-rework", "agent_id": "builder-rework", "write_paths": []string{"src"}}}})
 	os.WriteFile(manifest, data, 0600)
+	bindFixtureWorkspace(t, fix)
 	b, err := workspace.New(context.Background(), fix.root)
 	if err != nil {
 		t.Fatal(err)

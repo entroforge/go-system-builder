@@ -12,7 +12,7 @@ Prompt-layer rule: `docs/rules/design-foundation.md`.
 Templates: `docs/design/DESIGN-template.md` and siblings under `docs/design/`.
 Checker: `loop-harness design-foundation check` (advisory; not on `validate --all`).
 This Skill is Loop-external. It does not move a Runtime cursor and is not an
-S0–S11 stage. Stage contracts remain in `docs/agent-protocol.md`.
+S0–S11 stage. Stage contracts remain in `docs/control/agent-protocol.md`.
 
 ## Entry Conditions
 
@@ -141,10 +141,10 @@ On Extended, or Core+full: write `design-language.md`. A single surface stays
 on. Do not create `docs/design/surface-profiles/consumer.md` for the first screen.
 Grammar states relationships, not hex values. Every important Law leaves the
 chain Evidence → Law → Grammar rule → Surface adaptation → Proof. Map compiled
-roles onto `packages/design-tokens/tokens.json` in the **target project**
+roles onto `docs/design/tokens/tokens.json` in the **target project**
 (keep semantic names; replace primitive values). Run
 `loop-harness design-foundation emit-css --root .` there. Do not treat the
-template factory `packages/design-tokens/` as a product brand.
+template factory `docs/design/tokens/` as a product brand.
 
 ### F5 Prove
 
@@ -211,7 +211,7 @@ transaction — it is not closed by completing a report:
 Carriers reuse existing authority (no new Feedback DB): local fix → source
 Finding + repair/verification evidence; module pattern → `CP-*`; global
 extension → `ADR-*`/`DFD-*` + updated tables; exception → `EX-*`; breaking
-change → `DFD-*` + human re-publish. This Skill, `docs/agent-protocol.md` #s7,
+change → `DFD-*` + human re-publish. This Skill, `docs/control/agent-protocol.md` #s7,
 and `skills/acceptance-and-handoff` are the S7/S10 entry points; filling
 `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` after two REQs
 does not count as wired.

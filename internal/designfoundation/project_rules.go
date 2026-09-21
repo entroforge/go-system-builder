@@ -2,6 +2,7 @@ package designfoundation
 
 import (
 	"encoding/json"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -514,7 +515,7 @@ func expandGlob(root, pattern string) ([]string, error) {
 			baseDir = root
 		}
 		var out []string
-		err := filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
+		err := pathscope.Walk(root, baseDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}

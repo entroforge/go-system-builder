@@ -8,10 +8,10 @@ import (
 
 func TestBatchRegistrationExcludesForeignREQAndExecutionDoesNotRescan(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, "docs/tasks"), 0755)
+	os.MkdirAll(filepath.Join(root, "docs/dev/tasks"), 0755)
 	write := func(id, req string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(root, "docs/tasks", id+".md"), []byte("> Status: complete\n> Source REQ refs: "+req+"\n"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "docs/dev/tasks", id+".md"), []byte("> Status: complete\n> Source REQ refs: "+req+"\n"), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}

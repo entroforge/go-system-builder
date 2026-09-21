@@ -4,7 +4,7 @@
 > in the target project. It is the default Prompt that Claude Code's built-in
 > `/loop` scheduler delivers on each wake-up.
 >
-> Source: `docs/agent-protocol.md`, `docs/loop-definition.json`, and
+> Source: `docs/control/agent-protocol.md`, `docs/control/loop-definition.json`, and
 > `AGENTS-template.md`.
 
 ## What this file is — and is not
@@ -48,7 +48,7 @@ do not wait for the next wake-up before acting.
 
 2. Read the map, not the entire library. After compact/new-session recovery,
    follow the Hook packet's order: AGENTS.md, .claude/loop-state.json, the
-   current stage section of docs/agent-protocol.md, the bound locked REQ path,
+   current stage section of docs/control/agent-protocol.md, the bound locked REQ path,
    and the one primary Skill.
 
 3. Confirm the bound locked REQ. Verify it is locked and its SHA-256 matches
@@ -107,6 +107,17 @@ Prompt.
 
 ## Reference
 
-- Main Spine: `docs/agent-protocol.md`
-- Loop Definition: `docs/loop-definition.json`
+- Main Spine: `docs/control/agent-protocol.md`
+- Loop Definition: `docs/control/loop-definition.json`
 - Project Entry: `AGENTS-template.md`
+
+
+## 临时 worktree 与阶段交付
+
+REQ 绑定必须显式提供 `--dev-branch <开发主分支>` 和 `--release-upstream <最终发布上游>`，远程发布目标包含 remote；没有 develop 默认值。项目根目录是当前 REQ 唯一权威。
+
+派发前将上游正式 Markdown、代码和测试产出整理提交；不要自动提交用户无关变更。新 worktree 不含主会话未提交或仅暂存的文件。主会话用 `runtime worktree-create --assignment-id <id> --root <项目根目录>` 从绑定开发分支的明确 commit 创建；不要依赖平台默认分支或复制整个目录。明确不入 Git 的 evidence 单独按依赖交接，不能复制整个控制面。
+
+子会话在子分支提交成果并报告，主会话在项目根目录执行 `runtime task-integrate --assignment-id <id>`，生成合并提交、校验、接收并及时清理。集成不是 release；临时 worktree 不是交付终点。未回收、分支偏离、积压只提醒，不新增 Stop 或普通工具硬门禁。
+
+Gate 的输入来源由 loop-definition 的 file_sources 契约声明；正式交付读固定 Git tree，明确运行输入读磁盘，Runtime 读权威快照。未提交产出不能帮助阶段通过。允许汇总的 evidence 按 mutable_evidence_kinds 自动同步对应 SHA256；同步不改变结论或代际，也不抹除产品基线漂移。

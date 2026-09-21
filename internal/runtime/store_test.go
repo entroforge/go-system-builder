@@ -348,11 +348,11 @@ func writeState(t *testing.T, path string, revision int) {
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	definitionDir := filepath.Join(filepath.Dir(path), "docs")
+	definitionDir := filepath.Join(filepath.Dir(path), "docs", "control")
 	if err := os.MkdirAll(definitionDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -361,11 +361,9 @@ func writeState(t *testing.T, path string, revision int) {
 	}
 }
 
-// TestStoreRefreshFingerprintsRecomputesSHA covers BUG-004 repair: the
-// fingerprint refresh command must rewrite stale SHA256 hashes in the runtime
-// state's documents / evidence / bound_req entries without bumping the
-// revision or appending to the journal.
-func TestStoreRefreshFingerprintsRecomputesSHA(t *testing.T) {
+// Maintenance must preserve document, evidence and REQ attestations while
+// refreshing Harness metadata without a revision bump or a new journal entry.
+func TestStoreRefreshFingerprintsPreservesAttestedHashes(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -396,13 +394,13 @@ func TestStoreRefreshFingerprintsRecomputesSHA(t *testing.T) {
 	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
 	state["last_transition"] = nil
 	state["documents"] = []any{
-		map[string]any{"id": "DOC-1", "kind": "task", "path": "doc.md", "version": "v1", "sha256": "stale", "status": "locked", "generation": 1},
+		map[string]any{"id": "DOC-1", "kind": "task", "path": "doc.md", "version": "v1", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "status": "locked", "generation": 1},
 	}
 	state["evidence"] = []any{
-		map[string]any{"id": "EV-1", "kind": "document_review", "path": "evidence.md", "sha256": "stale", "status": "valid", "baseline_generation": 1, "review_round": 1, "produced_by": []string{"a"}, "invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil, "responsibility_id": nil, "scope_refs": []string{}},
+		map[string]any{"id": "EV-1", "kind": "document_review", "path": "evidence.md", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "status": "valid", "baseline_generation": 1, "review_round": 1, "produced_by": []string{"a"}, "invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil, "responsibility_id": nil, "scope_refs": []string{}},
 	}
 	state["bound_req"] = map[string]any{
-		"id": "REQ-001", "path": "doc.md", "version": "v1", "sha256": "stale",
+		"id": "REQ-001", "path": "doc.md", "version": "v1", "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
 		"status": "locked", "approved_by": "u", "approved_at": "2026-06-20T00:00:00Z",
 	}
 	data, err = json.MarshalIndent(state, "", "  ")
@@ -418,8 +416,8 @@ func TestStoreRefreshFingerprintsRecomputesSHA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshFingerprints: %v", err)
 	}
-	if len(result.Updated) != 4 {
-		t.Fatalf("expected 4 updated entries including the definition fingerprint, got %d (%v)", len(result.Updated), result.Updated)
+	if len(result.Updated) != 1 || len(result.Drifted) != 3 {
+		t.Fatalf("expected only definition updated and three preserved subjects: %+v", result)
 	}
 	if len(result.Unchanged) != 0 {
 		t.Fatalf("expected 0 unchanged, got %d (%v)", len(result.Unchanged), result.Unchanged)
@@ -431,6 +429,13 @@ func TestStoreRefreshFingerprintsRecomputesSHA(t *testing.T) {
 	if err := json.Unmarshal(raw, &after); err != nil {
 		t.Fatal(err)
 	}
+	for _, field := range []string{"documents", "evidence", "bound_req"} {
+		beforeBytes, _ := json.Marshal(state[field])
+		afterBytes, _ := json.Marshal(after[field])
+		if string(beforeBytes) != string(afterBytes) {
+			t.Fatalf("maintenance changed %s", field)
+		}
+	}
 	if after["revision"].(float64) != 3 {
 		t.Fatalf("revision must not change; got %v", after["revision"])
 	}
@@ -440,13 +445,13 @@ func TestStoreRefreshFingerprintsRecomputesSHA(t *testing.T) {
 		t.Fatal("journal file must not exist after fingerprint refresh")
 	}
 
-	// Re-run; now everything should report Unchanged.
+	// Re-run: only metadata is unchanged; attested drift remains visible.
 	result2, err := store.RefreshFingerprints(dir)
 	if err != nil {
 		t.Fatalf("second RefreshFingerprints: %v", err)
 	}
-	if len(result2.Updated) != 0 || len(result2.Unchanged) != 4 {
-		t.Fatalf("expected 0 updated / 4 unchanged on second pass; got updated=%d unchanged=%d", len(result2.Updated), len(result2.Unchanged))
+	if len(result2.Updated) != 0 || len(result2.Unchanged) != 1 || len(result2.Drifted) != 3 {
+		t.Fatalf("expected 0 updated / 1 unchanged / 3 drifted on second pass; got updated=%d unchanged=%d", len(result2.Updated), len(result2.Unchanged))
 	}
 }
 
@@ -539,7 +544,7 @@ func TestStoreRefreshFingerprintsReportsMissing(t *testing.T) {
 	}
 }
 
-func TestStoreRefreshFingerprintsUpdatesTaskEntityHash(t *testing.T) {
+func TestStoreRefreshFingerprintsPreservesTaskEntityHash(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	taskPath := filepath.Join(dir, "TASK-001.md")
@@ -558,7 +563,7 @@ func TestStoreRefreshFingerprintsUpdatesTaskEntityHash(t *testing.T) {
 	state["revision"] = 1
 	entities := state["entities"].(map[string]any)
 	entities["tasks"] = []any{map[string]any{
-		"id": "TASK-001", "path": "TASK-001.md", "sha256": "stale", "state": "reviewed", "owner_agent_ids": []any{"agent-1"},
+		"id": "TASK-001", "path": "TASK-001.md", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "state": "reviewed", "owner_agent_ids": []any{"agent-1"},
 	}}
 	state["entities"] = entities
 	data, err = json.Marshal(state)
@@ -579,8 +584,8 @@ func TestStoreRefreshFingerprintsUpdatesTaskEntityHash(t *testing.T) {
 			foundTask = true
 		}
 	}
-	if len(result.Updated) != 2 || !foundTask {
-		t.Fatalf("expected task entity and definition updates, got %#v", result)
+	if len(result.Updated) != 1 || foundTask || len(result.Drifted) != 1 {
+		t.Fatalf("expected definition update and preserved task hash, got %#v", result)
 	}
 	updated, err := os.ReadFile(statePath)
 	if err != nil {
@@ -591,7 +596,7 @@ func TestStoreRefreshFingerprintsUpdatesTaskEntityHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := after["entities"].(map[string]any)["tasks"].([]any)[0].(map[string]any)
-	if task["sha256"] == "stale" || task["sha256"] == "" {
-		t.Fatalf("task hash was not refreshed: %#v", task)
+	if task["sha256"] != "1111111111111111111111111111111111111111111111111111111111111111" {
+		t.Fatalf("task hash was unexpectedly refreshed: %#v", task)
 	}
 }

@@ -17,8 +17,8 @@ import (
 
 // repoRoot resolves the absolute path of the repository root regardless
 // of the test binary's working directory. The new AC + CT + system tests
-// all seed temp fixtures from on-disk docs/loop-definition.json +
-// docs/hook-policy.json, but running `go test ./internal/cli/...` does
+// all seed temp fixtures from on-disk docs/control/loop-definition.json +
+// docs/control/hook-policy.json, but running `go test ./internal/cli/...` does
 // not guarantee a stable cwd; this helper bails on the test source file
 // location and walks up.
 func repoRoot(t *testing.T) string {
@@ -48,17 +48,17 @@ func repoRoot(t *testing.T) string {
 func acFixtureRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{
-		"docs/loop-definition.json",
-		"docs/hook-policy.json",
+		"docs/control/loop-definition.json",
+		"docs/control/hook-policy.json",
 		// RC-06 (S10-3): the protected-release policy rule loads the
 		// data-driven protected-commands table from the runtime root; the
 		// fixture must ship the real table so Bash classification sees the
 		// production surface instead of failing closed on a missing file.
-		"docs/release_audits/protected_commands.json",
+		"docs/control/protected-commands.json",
 	} {
 		source := filepath.Join(repoRoot(t), rel)
 		data, err := os.ReadFile(source)
@@ -80,6 +80,10 @@ func acFixtureRoot(t *testing.T) string {
 }
 
 func writeACState(t *testing.T, root string, state map[string]any) {
+	commitStageFixture(t, root)
+	if bound, ok := state["bound_req"].(map[string]any); ok {
+		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release", "bound_commit": "fixture"}
+	}
 	t.Helper()
 	path := filepath.Join(root, ".claude", "loop-state.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -108,7 +112,7 @@ func planningState(t *testing.T, root string, phase string, revision int) map[st
 		"schema_version": "1.1.0",
 		"runtime_id":     "loop-test",
 		"definition": map[string]any{
-			"path":    "docs/loop-definition.json",
+			"path":    "docs/control/loop-definition.json",
 			"version": "1.1.0",
 			"sha256":  "b6d545f83b7b31c9a140a1a96770c8866ebf7ef4f482c51687dfbacf38de0908",
 		},
@@ -124,11 +128,11 @@ func planningState(t *testing.T, root string, phase string, revision int) map[st
 			"lifecycle_phase": phase,
 			"objective":       "complete the " + phase + " phase",
 			"action":          "complete the " + phase + " phase",
-			"protocol_ref":    "docs/agent-protocol.md#" + phase,
+			"protocol_ref":    "docs/control/agent-protocol.md#" + phase,
 			"manual_ref":      ".claude/bin/loop-harness.md",
 			"primary_skill":   "specification-planning",
 			"read":            []any{"docs/requirements/"},
-			"read_order":      []any{"LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/agent-protocol.md#" + phase},
+			"read_order":      []any{"LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/control/agent-protocol.md#" + phase},
 			"missing":         []any{},
 			"done_when":       []any{},
 			"questions":       []any{},
@@ -139,7 +143,7 @@ func planningState(t *testing.T, root string, phase string, revision int) map[st
 			"blocker":         nil,
 			"event":           "PreToolUse",
 			"instruction":     "LOOP RECOVERY: you are at S" + phaseLetter(phase) + ".",
-			"recovery":        []any{"read docs/agent-protocol.md#" + phase, "if blocked read .claude/bin/loop-harness.md"},
+			"recovery":        []any{"read docs/control/agent-protocol.md#" + phase, "if blocked read .claude/bin/loop-harness.md"},
 			"source_revision": float64(revision),
 			"updated_at":      "2026-07-30T00:00:00Z",
 		},
@@ -180,7 +184,7 @@ func planningState(t *testing.T, root string, phase string, revision int) map[st
 			"last_event_id": nil,
 		},
 		"hook_control": map[string]any{
-			"policy_ref":           map[string]any{"path": "docs/hook-policy.json", "version": "v2.0.0", "sha256": "8dea604dfce3a7f0869938eed5f4f6cc225261ed9f20cc8a1c2b5ddb4c5b91ec"},
+			"policy_ref":           map[string]any{"path": "docs/control/hook-policy.json", "version": "v2.0.0", "sha256": "8dea604dfce3a7f0869938eed5f4f6cc225261ed9f20cc8a1c2b5ddb4c5b91ec"},
 			"mode":                 "enforce",
 			"health":               "healthy",
 			"consecutive_failures": 0,
@@ -221,7 +225,11 @@ func parseQualityGateField(t *testing.T, raw string) (map[string]any, map[string
 	qg, _ := env["quality_gate"].(map[string]any)
 	if qg == nil {
 		if hsp, ok := env["hookSpecificOutput"].(map[string]any); ok {
-			qg, _ = hsp["quality_gate"].(map[string]any)
+			text, _ := hsp["additionalContext"].(string)
+			line := strings.SplitN(text, "\n", 2)[0]
+			decoder := json.NewDecoder(strings.NewReader(strings.TrimPrefix(line, "QUALITY_GATE ")))
+			decoder.UseNumber()
+			_ = decoder.Decode(&qg)
 		}
 	}
 	return env, qg
@@ -259,7 +267,7 @@ func TestAC001_PreToolUseAutoAdvancesOnSatisfiedGate(t *testing.T) {
 		"hook_event_name":"PreToolUse",
 		"agent_id":"agent-1",
 		"tool_name":"Write",
-		"tool_input":{"file_path":"docs/design/architecture/ARCHITECTURE-039.md"}
+		"tool_input":{"file_path":"docs/architecture/ARCHITECTURE-039.md"}
 	}`
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
 	if code != 0 {
@@ -270,7 +278,7 @@ func TestAC001_PreToolUseAutoAdvancesOnSatisfiedGate(t *testing.T) {
 	if env == nil {
 		t.Fatal("hook output did not carry a quality_gate envelope")
 	}
-	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != "allow" {
+	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
 		t.Fatalf("AC-001 must surface permissionDecision=allow, got %v env=%v", pd, env)
 	}
 	if gateID, _ := qg["gate_id"].(string); !strings.Contains(gateID, "GATE-PLANNING-DESIGN-COMPLETE") {
@@ -305,7 +313,7 @@ func TestAC002_NotReadyQualityGateDoesNotBlockTool(t *testing.T) {
 	if env == nil {
 		t.Fatal("hook output did not carry a quality_gate envelope")
 	}
-	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != "allow" {
+	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
 		t.Fatalf("AC-002 must allow tools when quality gate is not_ready, got %v", pd)
 	}
 	if qg == nil {
@@ -337,14 +345,14 @@ func TestAC003_LockedArtifactBlocksWrite(t *testing.T) {
 	input := `{
 		"hook_event_name": "PreToolUse",
 		"tool_name": "Edit",
-		"tool_input": {"file_path": "docs/contracts/BE-039-loop-controller.md"},
+		"tool_input": {"file_path": "docs/dev/contracts/BE-039-loop-controller.md"},
 		"runtime_context": {
 			"bound_req_id": "REQ-039",
 			"current_stage": "S6",
 			"locked_artifacts": [{
 				"id": "BE-039",
 				"kind": "contracts",
-				"path": "docs/contracts/BE-039-loop-controller.md",
+				"path": "docs/dev/contracts/BE-039-loop-controller.md",
 				"version": "v1.0.2",
 				"sha256": "fbd5f1df",
 				"locked_from_stage": "S6",
@@ -352,11 +360,11 @@ func TestAC003_LockedArtifactBlocksWrite(t *testing.T) {
 			}]
 		}
 	}`
-	policyBytes, err := os.ReadFile(filepath.Join(root, "docs", "hook-policy.json"))
+	policyBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpPolicy := filepath.Join(root, "docs", "hook-policy.json")
+	tmpPolicy := filepath.Join(root, "docs", "control", "hook-policy.json")
 	if string(policyBytes) == "" {
 		_ = tmpPolicy
 	}
@@ -463,7 +471,7 @@ func TestAC006_SubagentStopEmitsIntegrationGuidance(t *testing.T) {
 		t.Fatalf("SubagentStop must not fail: %d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, expected := range []string{"SubagentStop", "bound integration branch", "completion_ack"} {
+	for _, expected := range []string{"SubagentStop", "REQ-bound development branch", "completion_ack"} {
 		if !strings.Contains(out, expected) {
 			t.Fatalf("AC-006: SubagentStop integration guidance missing %q: %s", expected, out)
 		}

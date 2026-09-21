@@ -23,7 +23,7 @@ func baseContractRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -224,7 +224,7 @@ func TestProjectRules_RequiredImport_Violation(t *testing.T) {
 	})
 	writeChecks(t, root, DesignChecks{
 		Version: 1, Foundation: "docs/design/DESIGN.md@v1.0.0",
-		Rules: []DesignCheckRule{{ID: "DCHK-01", Source: "LAW-01", Type: "required_import", Import: "packages/design-tokens/tokens.css", Targets: []string{"docs/design/proof/**/*.html"}}},
+		Rules: []DesignCheckRule{{ID: "DCHK-01", Source: "LAW-01", Type: "required_import", Import: "docs/design/tokens/tokens.css", Targets: []string{"docs/design/proof/**/*.html"}}},
 	})
 	report, _ := Check(root)
 	found := false

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -12,7 +13,7 @@ import (
 // projections. Tracked product/config/skill changes, staged changes, deletions
 // and renames still block. Untracked files retain the existing policy.
 func worktreeClean(ctx context.Context, root string) (bool, error) {
-	out, err := defaultRunner.Run(ctx, root, "status", "--porcelain", "-z", "--untracked-files=no")
+	out, err := defaultRunner.Run(ctx, root, "status", "--porcelain", "-z", "--untracked-files=all")
 	if err != nil {
 		return false, fmt.Errorf("git status: %w", err)
 	}
@@ -20,7 +21,7 @@ func worktreeClean(ctx context.Context, root string) (bool, error) {
 		if entry == "" {
 			continue
 		}
-		if len(entry) < 4 || entry[:2] != " M" || !runtimeProjection(entry[3:]) {
+		if len(entry) < 4 || (entry[:2] != " M" && entry[:2] != "??") || !runtimeProjection(entry[3:]) {
 			return false, nil
 		}
 	}
@@ -28,10 +29,13 @@ func worktreeClean(ctx context.Context, root string) (bool, error) {
 }
 func runtimeProjection(path string) bool {
 	switch path {
-	case ".claude/loop-state.json", ".claude/loop-events.jsonl", ".claude/loop-metrics.json", ".claude/hook-decisions.jsonl":
+	case ".claude/integration.lock", ".claude/loop-state.json", ".claude/loop-events.jsonl", ".claude/loop-metrics.json", ".claude/hook-decisions.jsonl":
 		return true
 	}
 	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == ".claude" && parts[1] == "hook-metrics" && strings.HasPrefix(parts[2], ".pending-") && strings.HasSuffix(parts[2], ".json") {
+		return true
+	}
 	return len(parts) == 7 && parts[0] == ".claude" && parts[1] == "evidence" && strings.HasPrefix(parts[2], "loop-") && strings.HasPrefix(parts[3], "g") && parts[4] == "worktree" && parts[5] != "" && parts[6] == "checkpoint.json"
 }
 
@@ -123,7 +127,7 @@ func splitConflictHunks(out string) []string {
 // head, relative to the repository root. Used to compute the locked-artifact
 // diff.
 func listChangedFiles(ctx context.Context, root, base, head string) ([]string, error) {
-	out, err := defaultRunner.Run(ctx, root, "diff", "--name-only", base+".."+head)
+	out, err := defaultRunner.Run(ctx, root, "diff", "--no-renames", "--name-only", "-z", base+".."+head)
 	if err != nil {
 		return nil, fmt.Errorf("git diff --name-only %s..%s: %w", base, head, err)
 	}
@@ -131,8 +135,7 @@ func listChangedFiles(ctx context.Context, root, base, head string) ([]string, e
 		return nil, nil
 	}
 	var files []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
+	for _, line := range strings.Split(out, "\x00") {
 		if line != "" {
 			files = append(files, filepath.Clean(line))
 		}
@@ -167,7 +170,7 @@ func performMerge(ctx context.Context, targetRoot, source string) (string, error
 	// --no-gpg-sign / --amend / --force anywhere in this package.
 	msg := "Merge worktree branch " + source
 	_, err := defaultRunner.Run(ctx, targetRoot,
-		"merge", "--no-ff", "--no-verify", "-m", msg, source,
+		"merge", "--no-ff", "-m", msg, source,
 	)
 	if err != nil {
 		return "", fmt.Errorf("git merge --no-ff %s: %w", source, err)
@@ -179,11 +182,14 @@ func performMerge(ctx context.Context, targetRoot, source string) (string, error
 	return head, nil
 }
 
-// removeWorktree runs `git worktree remove --force` ONLY when the worktree
+// removeWorktree runs non-forced `git worktree remove` ONLY when the worktree
 // is clean. The caller must call worktreeClean first; this function
 // performs the additional belt-and-braces check and refuses if any
 // uncommitted changes are present.
 func removeWorktree(ctx context.Context, repoRoot, worktreePath string) error {
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		return nil
+	}
 	clean, err := worktreeClean(ctx, worktreePath)
 	if err != nil {
 		return fmt.Errorf("verify clean: %w", err)
@@ -194,7 +200,7 @@ func removeWorktree(ctx context.Context, repoRoot, worktreePath string) error {
 	if _, err := defaultRunner.Run(ctx, repoRoot, "worktree", "remove", worktreePath); err != nil {
 		// If the worktree is already gone we treat that as success
 		// (idempotent cleanup). Anything else is a real error.
-		if strings.Contains(err.Error(), "not registered") {
+		if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
 			return nil
 		}
 		return fmt.Errorf("git worktree remove: %w", err)
@@ -213,16 +219,34 @@ func isCommit(ctx context.Context, root, rev string) (bool, error) {
 	return strings.TrimSpace(out) == "commit", nil
 }
 
+// mergeCommitReachable verifies that a previously recorded merge commit is
+// still part of the target branch history. Re-verification reuses the merge
+// instead of creating a second merge, so it must never run against an
+// unrelated checkout or silently trust a stale checkpoint.
+func mergeCommitReachable(ctx context.Context, root, mergeCommit, targetBranch string) (bool, error) {
+	if strings.TrimSpace(mergeCommit) == "" || strings.TrimSpace(targetBranch) == "" {
+		return false, errors.New("merge commit and target branch are required")
+	}
+	_, err := defaultRunner.Run(ctx, root, "merge-base", "--is-ancestor", mergeCommit, targetBranch)
+	if err != nil {
+		// Git uses a non-zero exit status for the ordinary "not an
+		// ancestor" answer. Callers intentionally turn both that answer
+		// and command failures into a closed re-verification gate.
+		return false, nil
+	}
+	return true, nil
+}
+
 // checkoutBranch switches the worktree to `branch` (a no-op when already
 // there) and returns the resulting HEAD SHA. It is used so the merge runs
 // from the target branch, not the source.
 func checkoutBranch(ctx context.Context, root, branch string) error {
 	current, err := defaultRunner.Run(ctx, root, "rev-parse", "--abbrev-ref", "HEAD")
-	if err == nil && strings.TrimSpace(current) == branch {
-		return nil
+	if err != nil {
+		return err
 	}
-	if _, err := defaultRunner.Run(ctx, root, "checkout", "--quiet", branch); err != nil {
-		return fmt.Errorf("git checkout %s: %w", branch, err)
+	if strings.TrimSpace(current) != strings.TrimPrefix(branch, "refs/heads/") {
+		return fmt.Errorf("authority root is on %s, expected %s; switch explicitly after preserving local work", strings.TrimSpace(current), branch)
 	}
 	return nil
 }

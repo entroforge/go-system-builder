@@ -1,6 +1,6 @@
 // Manual agreement validator — asserts the agent-facing Manual exists and
 // that its embedded Loop definition SHA-256 matches the on-disk
-// docs/loop-definition.json. The Manual is the deployment artifact paired
+// docs/control/loop-definition.json. The Manual is the deployment artifact paired
 // with the binary; drift here means an agent is reading stale specifications,
 // which is worse than having no Manual at all.
 //
@@ -14,7 +14,7 @@
 //     projects get this via `loop-harness init` or the install guide's cp.
 //
 // doctor picks the first one that exists and checks its embedded SHA-256
-// against docs/loop-definition.json. If neither exists, the project is
+// against docs/control/loop-definition.json. If neither exists, the project is
 // missing its agent-facing specification.
 //
 // Called by `loop-harness doctor`. Failures emit a clear recovery hint
@@ -26,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,7 @@ var manualCandidatePaths = []string{
 //
 //  1. The Manual file exists at one of manualCandidatePaths.
 //  2. The Manual's header carries a parseable Loop definition SHA-256.
-//  3. That SHA-256 matches a fresh computation over docs/loop-definition.json.
+//  3. That SHA-256 matches a fresh computation over docs/control/loop-definition.json.
 //
 // Anything else (Manual content typos, missing sections, stale guard specs
 // after a registry edit but no loop-definition change) is out of scope; the
@@ -83,14 +84,14 @@ func ValidateManualAgreement(root string) error {
 			foundRel, err)
 	}
 
-	defData, err := os.ReadFile(filepath.Join(root, "docs", "loop-definition.json"))
+	defData, err := os.ReadFile(filepath.Join(root, projectlayout.Definition))
 	if err != nil {
 		return fmt.Errorf("read loop-definition.json: %w", err)
 	}
 	actual := fmt.Sprintf("%x", sha256.Sum256(defData))
 
 	if embedded != actual {
-		return fmt.Errorf("manual stale at %s: embedded Loop definition SHA-256 %s does not match current docs/loop-definition.json SHA-256 %s — run `loop-harness manual --root .` to regenerate",
+		return fmt.Errorf("manual stale at %s: embedded Loop definition SHA-256 %s does not match current docs/control/loop-definition.json SHA-256 %s — run `loop-harness manual --root .` to regenerate",
 			foundRel, embedded, actual)
 	}
 	var definition manualEvidenceDefinition

@@ -70,7 +70,7 @@ func TestPlanningGatesReadDiskDeclaredArtifacts(t *testing.T) {
 		"producer_agent_id":       "planner-1",
 		"producer_responsibility": "Contract Planner",
 		"subject_refs": []any{map[string]any{
-			"path": "docs/contracts/BE-001.md", "version": "v1.0.0",
+			"path": "docs/dev/contracts/BE-001.md", "version": "v1.0.0",
 			"sha256": sha256Hex(contractData),
 		}},
 		"conclusion": "pass",
@@ -100,8 +100,8 @@ func TestPlanningGatesReadDiskDeclaredArtifacts(t *testing.T) {
 		TransitionID: "PTR-PLAN-02",
 		GateID:       "GATE-PLANNING-CONTRACTS-COMPLETE",
 		Files: listingFiles{
-			"docs/contracts/BE-001.md": contractData,
-			"evidence/contract.json":   envelopeData,
+			"docs/dev/contracts/BE-001.md": contractData,
+			"evidence/contract.json":       envelopeData,
 		},
 	}
 	result, err := evaluator.Evaluate(context.Background(), input)
@@ -145,7 +145,7 @@ func TestPlanningDesignGateReadsDiskDeclaredArchitecture(t *testing.T) {
 		"producer_agent_id":       "architect-1",
 		"producer_responsibility": "Architect",
 		"subject_refs": []any{
-			map[string]any{"path": "docs/design/architecture/ARCHITECTURE-001.md", "version": "v1.0.0", "sha256": sha256Hex(archData)},
+			map[string]any{"path": "docs/architecture/ARCHITECTURE-001.md", "version": "v1.0.0", "sha256": sha256Hex(archData)},
 			map[string]any{"path": "docs/requirements/REQ-001.md", "version": "v1.0.0", "sha256": sha256Hex(reqData)},
 		},
 		"conclusion": "pass",
@@ -177,9 +177,9 @@ func TestPlanningDesignGateReadsDiskDeclaredArchitecture(t *testing.T) {
 		TransitionID: "PTR-PLAN-01",
 		GateID:       "GATE-PLANNING-DESIGN-COMPLETE",
 		Files: listingFiles{
-			"docs/design/architecture/ARCHITECTURE-001.md": archData,
-			"docs/requirements/REQ-001.md":                 reqData,
-			"evidence/design.json":                         envelopeData,
+			"docs/architecture/ARCHITECTURE-001.md": archData,
+			"docs/requirements/REQ-001.md":          reqData,
+			"evidence/design.json":                  envelopeData,
 		},
 	}
 	result, err := evaluator.Evaluate(context.Background(), input)
@@ -201,7 +201,7 @@ func TestDocumentPassGateFlagsRegisteredDocumentDrift(t *testing.T) {
 	contractData := []byte("# BE-001\n\n> 状态：locked\n> 版本：v1.0.0\n")
 	driftedData := []byte("# BE-001 (edited after review)\n\n> 状态：locked\n> 版本：v1.0.0\n")
 	doc := func(data []byte) map[string]any {
-		return map[string]any{"id": "BE-001", "kind": "contract", "path": "docs/contracts/BE-001.md", "version": "v1.0.0", "sha256": sha256Hex(data), "status": "locked", "generation": float64(1)}
+		return map[string]any{"id": "BE-001", "kind": "contract", "path": "docs/dev/contracts/BE-001.md", "version": "v1.0.0", "sha256": sha256Hex(data), "status": "locked", "generation": float64(1)}
 	}
 	input := qualitygate.Input{
 		Snapshot: runtime.Snapshot{
@@ -219,7 +219,7 @@ func TestDocumentPassGateFlagsRegisteredDocumentDrift(t *testing.T) {
 		TransitionID: "TR-003",
 		GateID:       "GATE-DOCUMENT-PASS",
 		Files: listingFiles{
-			"docs/contracts/BE-001.md": driftedData,
+			"docs/dev/contracts/BE-001.md": driftedData,
 		},
 	}
 	result, err := evaluator.Evaluate(context.Background(), input)
@@ -228,7 +228,7 @@ func TestDocumentPassGateFlagsRegisteredDocumentDrift(t *testing.T) {
 	}
 	blocked := false
 	for _, conflict := range result.Conflicts {
-		if strings.Contains(conflict, "document_drift:docs/contracts/BE-001.md") {
+		if strings.Contains(conflict, "document_drift:docs/dev/contracts/BE-001.md") {
 			blocked = true
 		}
 	}
@@ -279,7 +279,7 @@ func TestREVTemplateEnvelopeTeachesTheTruth(t *testing.T) {
 	manualNote := "手动从 .claude/loop-state.json 的 documents[] 逐条复制 {path, version, sha256}——多一少一都拒。故意没有自动命令：逐条抄写就是'我签的是哪一版'的对峙，这一步的笨拙是审查的锚"
 	filled = strings.ReplaceAll(filled,
 		`[`+"\n    "+`"`+manualNote+`"`+"\n  ]",
-		`[{"path": "docs/contracts/BE-001.md", "version": "v1.0.0", "sha256": "`+sha256Hex(contractData)+`"}]`)
+		`[{"path": "docs/dev/contracts/BE-001.md", "version": "v1.0.0", "sha256": "`+sha256Hex(contractData)+`"}]`)
 	if strings.Contains(filled, "填写") || strings.Contains(filled, "手动从") {
 		t.Fatalf("test does not know how to fill the template anymore — template placeholders changed:\n%q", filled)
 	}
@@ -299,7 +299,7 @@ func TestREVTemplateEnvelopeTeachesTheTruth(t *testing.T) {
 				"baseline":   map[string]any{"generation": float64(1)},
 				"review":     map[string]any{"round": float64(0)},
 				"documents": []any{map[string]any{
-					"id": "BE-001", "kind": "contract", "path": "docs/contracts/BE-001.md",
+					"id": "BE-001", "kind": "contract", "path": "docs/dev/contracts/BE-001.md",
 					"version": "v1.0.0", "sha256": sha256Hex(contractData), "status": "locked", "generation": float64(1),
 				}},
 				"evidence": []any{map[string]any{
@@ -313,8 +313,8 @@ func TestREVTemplateEnvelopeTeachesTheTruth(t *testing.T) {
 		TransitionID: "TR-003",
 		GateID:       "GATE-DOCUMENT-PASS",
 		Files: listingFiles{
-			"docs/contracts/BE-001.md": contractData,
-			"evidence/dv-spec.json":    envelopeData,
+			"docs/dev/contracts/BE-001.md": contractData,
+			"evidence/dv-spec.json":        envelopeData,
 		},
 	}
 	// A single responsibility passes only its own requirement; the gate
@@ -345,7 +345,7 @@ func TestREVTemplateEnvelopeFixRequiredVariant(t *testing.T) {
 		"schema_version": "1.0.0", "evidence_id": "ev-dv-fix", "kind": "document_review",
 		"runtime_id": "loop-test", "baseline_generation": 1,
 		"producer_agent_id": "dv-spec-1", "producer_responsibility": "DV-SPEC-CONSISTENCY",
-		"subject_refs": []any{map[string]any{"path": "docs/contracts/BE-001.md", "version": "v1.0.0", "sha256": sha256Hex(contractData)}},
+		"subject_refs": []any{map[string]any{"path": "docs/dev/contracts/BE-001.md", "version": "v1.0.0", "sha256": sha256Hex(contractData)}},
 		"conclusion":   "fix_required", "requested_event": "document_fix_required",
 		"created_at": "2026-08-18T00:00:00Z",
 	}
@@ -359,7 +359,7 @@ func TestREVTemplateEnvelopeFixRequiredVariant(t *testing.T) {
 				"baseline":   map[string]any{"generation": float64(1)},
 				"review":     map[string]any{"round": float64(0)},
 				"documents": []any{map[string]any{
-					"id": "BE-001", "kind": "contract", "path": "docs/contracts/BE-001.md",
+					"id": "BE-001", "kind": "contract", "path": "docs/dev/contracts/BE-001.md",
 					"version": "v1.0.0", "sha256": sha256Hex(contractData), "status": "locked", "generation": float64(1),
 				}},
 				"evidence": []any{map[string]any{
@@ -373,8 +373,8 @@ func TestREVTemplateEnvelopeFixRequiredVariant(t *testing.T) {
 		TransitionID: "TR-004",
 		GateID:       "GATE-DOCUMENT-FIX-REQUIRED",
 		Files: listingFiles{
-			"docs/contracts/BE-001.md": contractData,
-			"evidence/dv-fix.json":     envelopeData,
+			"docs/dev/contracts/BE-001.md": contractData,
+			"evidence/dv-fix.json":         envelopeData,
 		},
 	}
 	result, err := evaluator.Evaluate(context.Background(), input)
@@ -459,9 +459,9 @@ func TestPlanningEnvelopeTeachesTheTruth(t *testing.T) {
 		TransitionID: "PTR-PLAN-01",
 		GateID:       "GATE-PLANNING-DESIGN-COMPLETE",
 		Files: listingFiles{
-			"docs/design/architecture/ARCHITECTURE-001.md": archData,
-			"docs/requirements/REQ-001.md":                 reqData,
-			"evidence/design.json":                         envelopeData,
+			"docs/architecture/ARCHITECTURE-001.md": archData,
+			"docs/requirements/REQ-001.md":          reqData,
+			"evidence/design.json":                  envelopeData,
 		},
 	}
 	result, err := evaluator.Evaluate(context.Background(), input)

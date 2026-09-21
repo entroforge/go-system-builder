@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Vue Router
 ## Authority
-Technical practice only. Stage routing remains in `docs/agent-protocol.md`; the approved user flow owns navigation intent.
+Technical practice only. Stage routing remains in `docs/control/agent-protocol.md`; the approved user flow owns navigation intent.
 ## Applicability
 Apply to route records, navigation, guards, route parameters, or route-driven page state.
 ## Required Inputs

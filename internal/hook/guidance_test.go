@@ -22,10 +22,10 @@ func TestRenderGuidanceKeepsGateRecoveryActionable(t *testing.T) {
 			LifecycleState: "building",
 			Revision:       8,
 			Action:         "complete Builder assignments",
-			ProtocolRef:    "docs/agent-protocol.md#s6",
+			ProtocolRef:    "docs/control/agent-protocol.md#s6",
 			ManualRef:      ".claude/bin/loop-harness.md",
 			Missing:        []string{"builder_completion_reports"},
-			ReadOrder:      []string{"LOOP RECOVERY packet (this message)", "AGENTS.md", "docs/agent-protocol.md#s6"},
+			ReadOrder:      []string{"LOOP RECOVERY packet (this message)", "AGENTS.md", "docs/control/agent-protocol.md#s6"},
 			Questions:      []string{"Is a single subagent necessary, or should this responsibility use an Agent Team?"},
 			Automation:     []string{"do not call loop-harness for normal continuation"},
 			Integration:    []string{"merge the worktree branch back into develop"},
@@ -41,12 +41,12 @@ func TestRenderGuidanceKeepsGateRecoveryActionable(t *testing.T) {
 	if err := json.Unmarshal(output, &payload); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := payload["systemMessage"].(string)
+	body, _ := contextValue(payload).(string)
 	for _, fragment := range []string{
 		"HOOK_AGENT_NOT_ACTIVATED",
 		"LOOP RECOVERY",
 		"Next: complete Builder assignments",
-		"docs/agent-protocol.md#s6",
+		"docs/control/agent-protocol.md#s6",
 		".claude/bin/loop-harness.md",
 		"Read in order",
 		"Agent Team",
@@ -68,7 +68,7 @@ func TestRenderGuidanceForAllowedLifecycleEvent(t *testing.T) {
 			Revision:       9,
 			Objective:      "implement the locked TASK batch",
 			Action:         "integrate the subagent worktree before acknowledging stop",
-			ProtocolRef:    "docs/agent-protocol.md#s6",
+			ProtocolRef:    "docs/control/agent-protocol.md#s6",
 			ManualRef:      ".claude/bin/loop-harness.md",
 			Integration:    []string{"merge the worktree branch back into develop"},
 		},
@@ -83,7 +83,7 @@ func TestRenderGuidanceForAllowedLifecycleEvent(t *testing.T) {
 	if err := json.Unmarshal(output, &payload); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := payload["systemMessage"].(string)
+	body, _ := contextValue(payload).(string)
 	if !strings.Contains(body, "integrate the subagent worktree") || !strings.Contains(body, "develop") {
 		t.Fatalf("allowed lifecycle event must still emit positive guidance: %s", body)
 	}

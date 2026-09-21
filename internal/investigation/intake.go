@@ -116,7 +116,7 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	}
 	// RC-18 lifecycle gate: only TR-008 (verification.observation_sealed ->
 	// bug_resolution.investigation) or a human defect decision may open S8
-	// intake (docs/loop-definition.json bug_resolution.investigation
+	// intake (docs/control/loop-definition.json bug_resolution.investigation
 	// entry_condition). Without this gate a stale batch pointer left behind by
 	// a phase change — or a Case-route replay after route_consume clears the
 	// pointer and leaves the phase — could enter the Case write path.

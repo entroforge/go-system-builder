@@ -3,6 +3,7 @@ package scenario
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -100,6 +101,10 @@ type BridgeResult struct {
 // (usable right after convergence-1, before cases are generated); true adds
 // the BR→CASE hop (rule must carry at least one branch).
 func RunBridge(root string, requireBranches bool) (BridgeResult, error) {
+	return RunBridgeWithFiles(root, requireBranches, fileview.Disk{Root: root})
+}
+func RunBridgeWithFiles(root string, requireBranches bool, files fileview.Reader) (BridgeResult, error) {
+	root, _ = filepath.Abs(root)
 	result := BridgeResult{}
 	bound, ok := readBoundREQ(root)
 	if !ok {
@@ -107,7 +112,7 @@ func RunBridge(root string, requireBranches bool) (BridgeResult, error) {
 		return result, nil
 	}
 	result.REQ = bound.ID
-	reqData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(bound.Path)))
+	reqData, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(bound.Path)))
 	if err != nil {
 		return result, fmt.Errorf("AC bridge: read bound REQ %s: %w", bound.Path, err)
 	}
@@ -119,12 +124,12 @@ func RunBridge(root string, requireBranches bool) (BridgeResult, error) {
 
 	// Collect FR-level rule references across all module packages.
 	frRules := map[string]bool{} // "FR-003" -> referenced by some rule (with a branch when required)
-	modules, err := listModules(root)
+	modules, err := listModulesWithFiles(root, files)
 	if err != nil {
 		return result, fmt.Errorf("AC bridge: %w", err)
 	}
 	for _, module := range modules {
-		data, err := os.ReadFile(filepath.Join(root, prototypeRoot, module, modelFile))
+		data, err := files.ReadFile(filepath.Join(root, prototypeRoot, module, modelFile))
 		if err != nil {
 			continue
 		}
@@ -182,7 +187,11 @@ func RunBridge(root string, requireBranches bool) (BridgeResult, error) {
 // listModules enumerates module package directories under the prototypes
 // root (templates and non-directories excluded).
 func listModules(root string) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(root, prototypeRoot))
+	return listModulesWithFiles(root, fileview.Disk{Root: root})
+}
+func listModulesWithFiles(root string, files fileview.Reader) ([]string, error) {
+	root, _ = filepath.Abs(root)
+	entries, err := files.ReadDir(filepath.Join(root, prototypeRoot))
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +212,11 @@ func listModules(root string) ([]string, error) {
 // no ACs) may pass — an AC pointing at FR- with no packages to cite it is
 // a broken denominator, not a boundary case.
 func GuardBridgeChecked(root string) error {
-	modules, err := listModules(root)
+	return GuardBridgeCheckedWithFiles(root, fileview.Disk{Root: root})
+}
+func GuardBridgeCheckedWithFiles(root string, files fileview.Reader) error {
+	root, _ = filepath.Abs(root)
+	modules, err := listModulesWithFiles(root, files)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("ac bridge: enumerate module packages: %w", err)
@@ -214,26 +227,26 @@ func GuardBridgeChecked(root string) error {
 			// contexts). A bound REQ without packages is checked below.
 			return nil
 		}
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(bound.Path)))
+		data, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(bound.Path)))
 		if err != nil {
 			return fmt.Errorf("ac bridge: read bound REQ %s: %w", bound.Path, err)
 		}
 		_, acRows, _ := parseREQTables(string(data))
 		for _, ac := range acRows {
 			if strings.HasPrefix(strings.TrimSpace(ac.Target), "FR-") {
-				return fmt.Errorf("ac bridge: %s points at %s but no module packages exist under docs/design/prototypes — this is an S2 design-package gap (see docs/agent-protocol.md#s2 failure_route): build the package or endorse the N/A (an NFR id declared in the REQ, or a §A4 明确不做 entry); silence is not N/A", ac.ID, strings.TrimSpace(ac.Target))
+				return fmt.Errorf("ac bridge: %s points at %s but no module packages exist under docs/design/prototypes — this is an S2 design-package gap (see docs/control/agent-protocol.md#s2 failure_route): build the package or endorse the N/A (an NFR id declared in the REQ, or a §A4 明确不做 entry); silence is not N/A", ac.ID, strings.TrimSpace(ac.Target))
 			}
 		}
 		return nil
 	}
-	if _, err := RunBridge(root, true); err != nil {
+	if _, err := RunBridgeWithFiles(root, true, files); err != nil {
 		return err
 	}
 	// The module source packages (scenario-model, fixtures, cross-matrix)
 	// re-validate on the natural path too — a matrix edited after generate
 	// must not survive to the planning advance unnoticed.
 	for _, module := range modules {
-		if _, err := loadSourcePackage(root, module); err != nil {
+		if _, err := loadSourcePackageWithFiles(root, module, files); err != nil {
 			return fmt.Errorf("module %s: %w", module, err)
 		}
 	}

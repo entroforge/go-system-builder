@@ -26,8 +26,8 @@ func TestHOOK_PreCompact_PersistsMilestoneViaHookCLI(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("PreCompact Hook failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
-	if !strings.Contains(stdout, "LOOP RECOVERY") && !strings.Contains(stdout, "objective") && !strings.Contains(stdout, "design") {
-		t.Fatalf("PreCompact must emit resumable recovery packet, got %s", stdout)
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("PreCompact must persist without discarded output, got %s", stdout)
 	}
 
 	after := req039fixtures.ReadState(t, root)
@@ -199,13 +199,13 @@ func TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI(t *testing.T) {
 			map[string]any{
 				"id": "TASK-039-04", "state": "done",
 				"owner_agent_ids": []any{"builder-idle-alloc"},
-				"path":            "docs/tasks/TASK-039-04.md",
+				"path":            "docs/dev/tasks/TASK-039-04.md",
 				"sha256":          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			},
 			map[string]any{
 				"id": "TASK-039-05", "state": "candidate",
 				"owner_agent_ids": []any{},
-				"path":            "docs/tasks/TASK-039-05.md",
+				"path":            "docs/dev/tasks/TASK-039-05.md",
 				"sha256":          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			},
 		},

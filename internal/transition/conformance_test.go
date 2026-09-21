@@ -15,7 +15,7 @@ import (
 )
 
 // TestCatalogLoadSucceedsAgainstRepo verifies LoadCatalog passes against the
-// real docs/loop-definition.json. A failure here means a declared guard or
+// real docs/control/loop-definition.json. A failure here means a declared guard or
 // action is missing from the registry, which is the fail-closed invariant.
 func TestCatalogLoadSucceedsAgainstRepo(t *testing.T) {
 	root := "../.."

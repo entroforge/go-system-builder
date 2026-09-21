@@ -6,7 +6,7 @@ version: 0.3.1
 ---
 # Playwright E2E
 ## Authority
-Technical practice only. S7 evidence ownership remains in `docs/agent-protocol.md`; route dispatch and clean-round adjudication remain in `e2e-browser-testing`.
+Technical practice only. S7 evidence ownership remains in `docs/control/agent-protocol.md`; route dispatch and clean-round adjudication remain in `e2e-browser-testing`.
 ## Applicability
 Apply to browser automation, executable user flows, fixtures, selectors, or E2E evidence.
 ## Required Inputs

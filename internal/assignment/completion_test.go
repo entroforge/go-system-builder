@@ -29,14 +29,14 @@ func anyStrings(values []any) []string {
 func completionRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), definition, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), definition, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root
@@ -80,7 +80,7 @@ func TestCompleteTaskRegistersBuilderResultAtomically(t *testing.T) {
 	state["baseline"] = map[string]any{"generation": 1, "captured_at": "2026-08-20T00:00:00Z"}
 	taskBytes := []byte("# TASK-001\n")
 	state["documents"] = []any{map[string]any{
-		"id": "TASK-001", "kind": "task", "path": "docs/tasks/TASK-001.md",
+		"id": "TASK-001", "kind": "task", "path": "docs/dev/tasks/TASK-001.md",
 		"version": "v1", "sha256": semanticSha(t, taskBytes), "status": "complete", "generation": 1,
 	}}
 	state["entities"] = map[string]any{
@@ -93,7 +93,7 @@ func TestCompleteTaskRegistersBuilderResultAtomically(t *testing.T) {
 			"updated_at": "2026-08-20T00:00:00Z",
 		}},
 		"tasks": []any{map[string]any{
-			"id": "TASK-001", "state": "in_progress", "path": "docs/tasks/TASK-001.md",
+			"id": "TASK-001", "state": "in_progress", "path": "docs/dev/tasks/TASK-001.md",
 			"sha256": semanticSha(t, taskBytes), "owner_agent_ids": []any{"builder-1"},
 		}},
 		"bugs": []any{}, "teams": []any{},
@@ -187,7 +187,7 @@ func TestCompleteTaskProjectsChangedPathsIntoEvidenceScopeRefs(t *testing.T) {
 			"updated_at": "2026-08-20T00:00:00Z",
 		}},
 		"tasks": []any{map[string]any{
-			"id": "TASK-001", "state": "in_progress", "path": "docs/tasks/TASK-001.md",
+			"id": "TASK-001", "state": "in_progress", "path": "docs/dev/tasks/TASK-001.md",
 			"sha256": semanticSha(t, []byte("# TASK-001\n")), "owner_agent_ids": []any{"builder-1"},
 		}},
 		"bugs": []any{}, "teams": []any{},
@@ -238,7 +238,7 @@ func TestCompleteTaskResubmissionEscalatesEvidenceID(t *testing.T) {
 		}},
 		"tasks": []any{map[string]any{
 			"id": "TASK-001", "state": "in_progress",
-			"path": "docs/tasks/TASK-001.md", "sha256": semanticSha(t, []byte("# TASK-001\n")),
+			"path": "docs/dev/tasks/TASK-001.md", "sha256": semanticSha(t, []byte("# TASK-001\n")),
 			"owner_agent_ids": []any{"builder-1"},
 		}},
 		"bugs": []any{}, "teams": []any{},
@@ -253,12 +253,7 @@ func TestCompleteTaskResubmissionEscalatesEvidenceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first submission: %v", err)
 	}
-	// Reset the agent to working for the retry (the fix-and-resubmit path
-	// runs after a failed gate, with the agent already reported).
-	agents := first.State["entities"].(map[string]any)["agents"].([]any)
-	agents[0].(map[string]any)["state"] = "working"
-	first.State["entities"].(map[string]any)["agents"] = agents
-	writeJSON(t, statePath, first.State)
+	// Resubmit directly from reported: both references must advance together.
 
 	second, err := assignment.CompleteTask(root, statePath, journalPath, assignment.CompletionRequest{
 		ExpectedRevision: first.Revision, AgentID: "builder-1", MessagePath: messagePath,
@@ -273,6 +268,11 @@ func TestCompleteTaskResubmissionEscalatesEvidenceID(t *testing.T) {
 	ids := []string{items[0].(map[string]any)["id"].(string), items[1].(map[string]any)["id"].(string)}
 	if ids[0] != "ev-completion-TASK-001-g1" || ids[1] != "ev-completion-TASK-001-g1-r2" {
 		t.Fatalf("evidence ids = %v, want base then -r2", ids)
+	}
+	agents := second.State["entities"].(map[string]any)["agents"].([]any)
+	tasks := second.State["entities"].(map[string]any)["tasks"].([]any)
+	if agents[0].(map[string]any)["completion_reported_ref"] != tasks[0].(map[string]any)["completion_report_ref"] {
+		t.Fatal("resubmission split agent and TASK Result references")
 	}
 	// The retry's envelope file exists on disk under its own name.
 	rel := items[1].(map[string]any)["path"].(string)

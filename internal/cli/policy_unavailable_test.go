@@ -17,10 +17,10 @@ func TestUnavailablePolicyUsesPlatformControl(t *testing.T) {
 			t.Run(broken+"/"+tool, func(t *testing.T) {
 				root := t.TempDir()
 				if broken == "invalid" {
-					if err := os.MkdirAll(filepath.Join(root, "docs"), 0755); err != nil {
+					if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0755); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(filepath.Join(root, "docs/hook-policy.json"), []byte("{"), 0600); err != nil {
+					if err := os.WriteFile(filepath.Join(root, "docs/control/hook-policy.json"), []byte("{"), 0600); err != nil {
 						t.Fatal(err)
 					}
 				}

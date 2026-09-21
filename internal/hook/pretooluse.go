@@ -30,6 +30,14 @@ import (
 //
 // User-visible notices and model context are separate. Ordinary tool calls
 // carry a compact checkpoint; a committed stage change restores full guidance.
+// hookSpecificOutput.additionalContext carries the Agent-facing Recovery Packet, derived
+// from decision.Missing / decision.Recovery and the Quality Gate missing[]
+// list. When the Decision carries a Guidance the legacy LOOP RECOVERY
+// packet is appended after the quality_gate summary so existing recovery
+// consumers (e.g. the Controller integration tests that grep for
+// "LOOP RECOVERY") continue to find the canonical recovery text. The
+// Decision never fabricates status="advanced" — that projection only fires
+// when controller.ControlResult.QualityGate.TransitionCommitted is true.
 func PreToolUseWithQualityGate(decision policy.Decision, result controller.ControlResult) ([]byte, int, error) {
 	qg := normalizeQualityGate(result.QualityGate)
 
@@ -50,33 +58,18 @@ func PreToolUseWithQualityGate(decision policy.Decision, result controller.Contr
 			body += "\n\n" + compactGuidance(*decision.Guidance)
 		}
 	}
-	reason := "Safety checks allow this tool; stage readiness is reported separately."
-	if permissionDecision == "deny" {
-		reason = formatPreToolUseRecoveryPacket(decision, qg)
-	}
 
-	payload := map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName":            "PreToolUse",
-			"permissionDecision":       permissionDecision,
-			"permissionDecisionReason": reason,
-			"additionalContext":        body,
-			"quality_gate": map[string]any{
-				"status":               string(qg.Status),
-				"gate_id":              qg.GateID,
-				"candidate_transition": qg.CandidateTransition,
-				"observed_revision":    qg.ObservedRevision,
-				"fingerprint":          qg.Fingerprint,
-				"missing":              nonNil(qg.Missing),
-				"evidence_refs":        nonNil(qg.EvidenceRefs),
-				"conflicts":            nonNil(qg.Conflicts),
-				"error_code":           qg.ErrorCode,
-				"transition_committed": qg.TransitionCommitted,
-				"next_cursor":          qg.NextCursor,
-			},
-		},
-		"systemMessage": qualityNotice(decision, qg),
+	if decision.AdditionalContext != "" {
+		body += "\n\n" + decision.AdditionalContext
 	}
+	projection, _ := json.Marshal(qg)
+	body = "QUALITY_GATE " + string(projection) + "\n" + body
+	specific := map[string]any{"hookEventName": "PreToolUse", "additionalContext": boundedContext(body)}
+	if permissionDecision == "deny" {
+		specific["permissionDecision"] = "deny"
+		specific["permissionDecisionReason"] = boundedContext(body)
+	}
+	payload := map[string]any{"hookSpecificOutput": specific, "systemMessage": qualityNotice(decision, qg)}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, 1, fmt.Errorf("encode Hook output: %w", err)
@@ -107,7 +100,7 @@ func normalizeQualityGate(qg controller.QualityGateResult) controller.QualityGat
 }
 
 // formatPreToolUseRecoveryPacket renders the Agent-facing human-readable
-// text for the PreToolUse systemMessage. The Quality Gate's missing[] list
+// text for the PreToolUse additionalContext. The Quality Gate's missing[] list
 // is always included so the agent can resume work without re-deriving it
 // from JSON.
 func formatPreToolUseRecoveryPacket(decision policy.Decision, qg controller.QualityGateResult) string {

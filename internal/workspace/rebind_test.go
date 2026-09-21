@@ -30,6 +30,7 @@ func TestExplicitRelocationPreservesBranchBaseAndPointer(t *testing.T) {
 	if moved.BaseCommit != e.BaseCommit || next.Branch != "test2" || next.BoundHead != b.BoundHead {
 		t.Fatal("relocation changed history")
 	}
+	state["bound_req"].(map[string]any)["workspace"].(map[string]any)["project_root"] = newRoot
 	state["workspace"] = Encode(next)
 	saveControlState(t, newRoot, state)
 	for i := 0; i < 2; i++ {

@@ -11,40 +11,31 @@ scope: branches, merges, release workflow, master/main gates
 
 ## 1. Rule
 
-`master/main` stores release snapshots only.
+`<release_upstream>` stores release snapshots only.
 
-Main stays in the user’s selected project checkout and its bound current branch.
-There is no universal integration branch name: if Main is on `test2`, registered
-Workers start from its frozen base and integrate back into `test2`. Neither
-project configuration nor this rule authorizes switching Main to another branch.
-See [Workspace integration](../workspace-integration.md) for input snapshots,
-commit boundaries and recovery.
+Daily work goes through `<dev_branch>`. Release from `<dev_branch>` to `<release_upstream>` uses squash merge. After release, merge `<release_upstream>` back into `<dev_branch>`.
 
-The release model below assumes a separate protected release branch selected by
-the project. Binding a branch never overrides its release protections; if Main
-is on a protected release branch, resolve that setup before dispatching writes.
-Human release uses squash merge to `master/main`, followed by the project’s
-normal synchronization back to its integration branch.
+Main stays in the authority checkout. A mismatch with the REQ-bound branch must be resolved explicitly; never automatically switch branches. See [workspace integration](../workspace-integration.md).
 
 ## 2. Branch Model
 
 | Branch | Purpose | Protection |
 |:---|:---|:---|
-| `master` / `main` | production release snapshot | no direct daily work; release/hotfix only |
-| `<bound-integration-branch>` | daily integration | actual branch captured by Main workspace binding |
+| `<release_upstream>` | production release snapshot | no direct daily work; release/hotfix only |
+| `<dev_branch>` | daily integration | REQ explicitly declared development branch |
 
-Project chooses either `master` or `main` as release branch. This rule uses `master/main` for both.
+REQ binding explicitly declares both destinations, including the remote for a remote release target. Neither field has a default.
 
 ## 3. Short-Lived Branches
 
 | Type | Name | Source | Target |
 |:---|:---|:---|:---|
-| docs/process | `docs/<topic>` | `<bound-integration-branch>` | `<bound-integration-branch>` |
-| feature | `feature/<task-id>-<topic>` | `<bound-integration-branch>` | `<bound-integration-branch>` |
-| bugfix | `bugfix/<bug-id>-<topic>` | `<bound-integration-branch>` | `<bound-integration-branch>` |
-| tech debt | `td/<id>-<topic>` | `<bound-integration-branch>` | `<bound-integration-branch>` |
-| release candidate | `release/<version-or-date>` | `<bound-integration-branch>` | `master/main` |
-| production hotfix | `hotfix/<bug-id>-<topic>` | `master/main` | `master/main` + `<bound-integration-branch>` |
+| docs/process | `docs/<topic>` | `<dev_branch>` | `<dev_branch>` |
+| feature | `feature/<task-id>-<topic>` | `<dev_branch>` | `<dev_branch>` |
+| bugfix | `bugfix/<bug-id>-<topic>` | `<dev_branch>` | `<dev_branch>` |
+| tech debt | `td/<id>-<topic>` | `<dev_branch>` | `<dev_branch>` |
+| release candidate | `release/<version-or-date>` | `<dev_branch>` | `<release_upstream>` |
+| production hotfix | `hotfix/<bug-id>-<topic>` | `<release_upstream>` | `<release_upstream>` + `<dev_branch>` |
 
 ## 4. Stage To Branch
 
@@ -56,8 +47,8 @@ the workspace execution record; Main retains its bound checkout and branch.
 |:---|:---|:---|
 | S0/S1 requirement design and initialization | `AGENTS.md`, `project.yaml`, `project-map.md`, `REQ-*.md` | `docs/req-<id>-<topic>` or `docs/bootstrap-project` |
 | S2 design | architecture, state, model, ADR, UI design packages | `docs/design-<req-id>-<topic>` |
-| S3 contracts | FE/BE/SYNC contracts | `docs/contracts-<req-id>-<topic>` |
-| S4 tasks | task board and task files | `docs/tasks-<req-id>-<topic>` |
+| S3 contracts | FE/BE/SYNC contracts | `docs/dev/contracts-<req-id>-<topic>` |
+| S4 tasks | task board and task files | `docs/dev/tasks-<req-id>-<topic>` |
 | S5 document verification | REV/document-verification evidence | `docs/document-verification-<req-id>` |
 | S6 build | code and tests | `feature/<task-id>-<topic>` |
 | S7 full verification round | REV/QA/E2E evidence | `docs/review-<req-id>-round-<n>` |
@@ -76,17 +67,17 @@ Loop Definition, runtime, activation, and Hooks enforce timing.
 
 | Operation | Rule |
 |:---|:---|
-| `<bound-integration-branch>` -> `master/main` | squash merge only |
-| `master/main` -> `<bound-integration-branch>` after release | normal merge |
-| `hotfix/*` -> `master/main` | squash merge, then merge back to `<bound-integration-branch>` |
-| `release/*` -> `master/main` | squash merge |
-| `feature/*` / `bugfix/*` -> `<bound-integration-branch>` | registered Worker integration uses non-squash merge and verified checks; keep task evidence |
+| `<dev_branch>` -> `<release_upstream>` | squash merge only |
+| `<release_upstream>` -> `<dev_branch>` after release | normal merge |
+| `hotfix/*` -> `<release_upstream>` | squash merge, then merge back to `<dev_branch>` |
+| `release/*` -> `<release_upstream>` | squash merge |
+| `feature/*` / `bugfix/*` -> `<dev_branch>` | normal merge commit; retain task evidence, verify, acknowledge and clean the temporary worktree |
 
 ## 7. Release Gates
 
-Before merge to `master/main`:
+Before merge to `<release_upstream>`:
 
-- release audit exists in `docs/release_audits/`
+- release audit exists in `docs/reports/release-audits/`
 - audit result is not `BLOCKED`
 - TASK, REV, and QA evidence exists
 - locked contract quality gate evidence exists
@@ -95,9 +86,9 @@ Before merge to `master/main`:
 
 ## 8. Forbidden
 
-- feature branch directly into `master/main`
-- normal merge commit into `master/main`
-- daily work on `master/main`
+- feature branch directly into `<release_upstream>`
+- normal merge commit into `<release_upstream>`
+- daily work on `<release_upstream>`
 - release without release audit
 - release with `BLOCKED` audit
 - sync commit with unrelated changes
@@ -118,7 +109,7 @@ awaiting_human_release
 ```
 
 Only an explicit human release approval may authorize squash merge to
-`master/main`.
+`<release_upstream>`.
 
 ## 10. Human Release Handoff
 
@@ -128,3 +119,12 @@ release and post-release synchronization through the project’s approved proces
 Do not place automatic checkout, pull, squash or push commands in Main’s
 engineering continuation. A protected release target requires its own human
 release decision even when a Worker has passed integration checks.
+## 临时 worktree 与阶段交付
+
+REQ 绑定必须显式提供 `--dev-branch <开发主分支>` 和 `--release-upstream <最终发布上游>`，远程发布目标包含 remote；没有 develop 默认值。项目根目录是当前 REQ 唯一权威。
+
+派发前将上游正式 Markdown、代码和测试产出整理提交；不要自动提交用户无关变更。新 worktree 不含主会话未提交或仅暂存的文件。主会话用 `runtime worktree-create --assignment-id <id> --root <项目根目录>` 从绑定开发分支的明确 commit 创建；不要依赖平台默认分支或复制整个目录。明确不入 Git 的 evidence 单独按依赖交接，不能复制整个控制面。
+
+子会话在子分支提交成果并报告，主会话在项目根目录执行 `runtime task-integrate --assignment-id <id>`，生成合并提交、校验、接收并及时清理。集成不是 release；临时 worktree 不是交付终点。未回收、分支偏离、积压只提醒，不新增 Stop 或普通工具硬门禁。
+
+Gate 的输入来源由 loop-definition 的 file_sources 契约声明；正式交付读固定 Git tree，明确运行输入读磁盘，Runtime 读权威快照。未提交产出不能帮助阶段通过。允许汇总的 evidence 按 mutable_evidence_kinds 自动同步对应 SHA256；同步不改变结论或代际，也不抹除产品基线漂移。

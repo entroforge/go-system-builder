@@ -14,11 +14,11 @@ func TestFinalSafetyRechecksPolicyAndPreservesQualitySeparation(t *testing.T) {
 		for _, tool := range []string{"Write", "Bash", "Read"} {
 			t.Run(corruption+"/"+tool, func(t *testing.T) {
 				root := t.TempDir()
-				if err := os.MkdirAll(filepath.Join(root, "docs"), 0755); err != nil {
+				if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0755); err != nil {
 					t.Fatal(err)
 				}
-				path := filepath.Join(root, "docs/hook-policy.json")
-				data, err := os.ReadFile("../../docs/hook-policy.json")
+				path := filepath.Join(root, "docs/control/hook-policy.json")
+				data, err := os.ReadFile("../../docs/control/hook-policy.json")
 				if err != nil {
 					t.Fatal(err)
 				}

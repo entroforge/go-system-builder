@@ -21,7 +21,7 @@ import (
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 )
 
-type Binding struct {
+type ExecutionRegistry struct {
 	History    []Execution          `json:"execution_history,omitempty"`
 	Version    int                  `json:"binding_version"`
 	MainRoot   string               `json:"main_root"`
@@ -83,7 +83,7 @@ func Canonical(path string) (string, error) {
 	}
 	return filepath.EvalSymlinks(p)
 }
-func Decode(state map[string]any) (*Binding, error) {
+func Decode(state map[string]any) (*ExecutionRegistry, error) {
 	raw, ok := state["workspace"]
 	if !ok || raw == nil {
 		return nil, nil
@@ -92,7 +92,7 @@ func Decode(state map[string]any) (*Binding, error) {
 	if err != nil {
 		return nil, err
 	}
-	var v Binding
+	var v ExecutionRegistry
 	if err = json.Unmarshal(b, &v); err != nil {
 		return nil, err
 	}
@@ -102,15 +102,18 @@ func Decode(state map[string]any) (*Binding, error) {
 	if v.Executions == nil {
 		v.Executions = map[string]Execution{}
 	}
+	if err := v.ValidateAuthority(state); err != nil {
+		return nil, err
+	}
 	return &v, nil
 }
-func Encode(v *Binding) map[string]any {
+func Encode(v *ExecutionRegistry) map[string]any {
 	data, _ := json.Marshal(v)
 	var out map[string]any
 	_ = json.Unmarshal(data, &out)
 	return out
 }
-func Load(root string) (*Binding, map[string]any, error) {
+func Load(root string) (*ExecutionRegistry, map[string]any, error) {
 	data, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
 	if err != nil {
 		return nil, nil, err
@@ -122,7 +125,27 @@ func Load(root string) (*Binding, map[string]any, error) {
 	v, err := Decode(state)
 	return v, state, err
 }
-func New(ctx context.Context, root string) (*Binding, error) {
+func New(ctx context.Context, root string) (*ExecutionRegistry, error) {
+	b, err := inspectCheckout(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(b.MainRoot, ".claude/loop-state.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read REQ workspace authority: %w", err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	if err := b.ValidateAuthority(state); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// inspectCheckout reads Git identity only; it grants no execution authority.
+func inspectCheckout(ctx context.Context, root string) (*ExecutionRegistry, error) {
 	root, err := Canonical(root)
 	if err != nil {
 		return nil, err
@@ -151,9 +174,9 @@ func New(ctx context.Context, root string) (*Binding, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Binding{Version: 1, MainRoot: root, CommonDir: common, Branch: branch, BoundHead: head, Executions: map[string]Execution{}}, nil
+	return &ExecutionRegistry{Version: 1, MainRoot: root, CommonDir: common, Branch: branch, BoundHead: head, Executions: map[string]Execution{}}, nil
 }
-func (b *Binding) Validate(ctx context.Context, root string) error {
+func (b *ExecutionRegistry) Validate(ctx context.Context, root string) error {
 	actual, err := New(ctx, root)
 	if err != nil {
 		return err
@@ -163,7 +186,7 @@ func (b *Binding) Validate(ctx context.Context, root string) error {
 	}
 	return nil
 }
-func (b *Binding) Execution(id, runtimeID string, generation int) (Execution, bool) {
+func (b *ExecutionRegistry) Execution(id, runtimeID string, generation int) (Execution, bool) {
 	e, ok := b.Executions[id]
 	return e, ok && e.RuntimeID == runtimeID && e.BaselineGeneration == generation
 }
@@ -193,7 +216,7 @@ func ControlFile(path string) bool {
 }
 
 // CleanInputs includes untracked inputs; it never adds, stashes or deletes them.
-func (b *Binding) CleanInputs(ctx context.Context) error {
+func (b *ExecutionRegistry) CleanInputs(ctx context.Context) error {
 	out, err := gitRaw(ctx, b.MainRoot, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
 		return err
@@ -234,7 +257,10 @@ func (b *Binding) CleanInputs(ctx context.Context) error {
 }
 
 // Plan freezes a commit and the exact input bytes, before any Git side effect.
-func (b *Binding) Plan(ctx context.Context, state map[string]any, id, agent string, scope, checks []string, inputPaths []string) (Execution, error) {
+func (b *ExecutionRegistry) Plan(ctx context.Context, state map[string]any, id, agent string, scope, checks []string, inputPaths []string) (Execution, error) {
+	if err := b.ValidateAuthority(state); err != nil {
+		return Execution{}, err
+	}
 	if RuntimeID(state) == "" {
 		return Execution{}, fmt.Errorf("runtime identity is required")
 	}
@@ -296,7 +322,7 @@ func (b *Binding) Plan(ctx context.Context, state map[string]any, id, agent stri
 	}
 	return e, nil
 }
-func (b *Binding) Materialize(ctx context.Context, e Execution) error {
+func (b *ExecutionRegistry) Materialize(ctx context.Context, e Execution) error {
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
 		return err
 	}
@@ -316,7 +342,7 @@ func (b *Binding) Materialize(ctx context.Context, e Execution) error {
 	return b.PublishPointer(e)
 }
 
-func (b *Binding) PublishPointer(e Execution) error {
+func (b *ExecutionRegistry) PublishPointer(e Execution) error {
 	// Only the control pointer is copied. Runtime, evidence, secrets and mutable
 	// settings are not duplicated. The registered control state authenticates it.
 	dir := filepath.Join(e.Path, ".claude")
@@ -344,7 +370,7 @@ func (b *Binding) PublishPointer(e Execution) error {
 
 // ValidateInputs detects control-plane artifact drift even for ignored files
 // which do not appear in the committed Worker tree.
-func (b *Binding) ValidateInputs(e Execution) error {
+func (b *ExecutionRegistry) ValidateInputs(e Execution) error {
 	for path, expected := range e.Inputs {
 		resolved, err := Canonical(filepath.Join(b.MainRoot, filepath.FromSlash(path)))
 		if err != nil {
@@ -365,7 +391,7 @@ func (b *Binding) ValidateInputs(e Execution) error {
 	}
 	return nil
 }
-func (b *Binding) ValidateExecution(ctx context.Context, e Execution, initial bool) error {
+func (b *ExecutionRegistry) ValidateExecution(ctx context.Context, e Execution, initial bool) error {
 	top, err := Git(ctx, e.Path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return err
@@ -541,6 +567,33 @@ func RequireMain(root string) error {
 	}
 	if marked {
 		return fmt.Errorf("%s is a registered Worker workspace; initialize/bind only in the main workspace; do not create a second Runtime", worker)
+	}
+	return nil
+}
+
+// ValidateAuthority treats the execution registry as a projection of the locked
+// REQ destinations. Neither current checkout nor assignment metadata can replace it.
+func (b *ExecutionRegistry) ValidateAuthority(state map[string]any) error {
+	req, _ := state["bound_req"].(map[string]any)
+	raw, _ := req["workspace"].(map[string]any)
+	bytes, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	var authority Binding
+	if err := json.Unmarshal(bytes, &authority); err != nil {
+		return err
+	}
+	if authority.ProjectRoot == "" || authority.DevBranch == "" || authority.ReleaseUpstream == "" || authority.BoundCommit == "" {
+		return fmt.Errorf("REQ workspace authority is missing; explicitly bind development and release destinations before execution")
+	}
+	if filepath.Clean(authority.ProjectRoot) != filepath.Clean(b.MainRoot) || strings.TrimPrefix(authority.DevBranch, "refs/heads/") != b.Branch {
+		return fmt.Errorf("execution registry differs from REQ-bound project root/development branch")
+	}
+	for _, e := range b.Executions {
+		if e.TargetBranch != b.Branch {
+			return fmt.Errorf("execution %s target differs from REQ-bound development branch", e.AssignmentID)
+		}
 	}
 	return nil
 }

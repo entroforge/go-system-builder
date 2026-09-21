@@ -19,7 +19,7 @@ is the scaffold; `docs/reports/review/RESULT-template.md` documents the same fie
 | Kind | ID / Scope | Path | Version | SHA-256 |
 |:---|:---|:---|:---|:---|
 | REQ | REQ-{id} | `docs/requirements/REQ-{id}.md` | {version} | `{sha256}` |
-| TASK | TASK-{id} | `docs/tasks/TASK-{id}.md` | {version} | `{sha256}` |
+| TASK | TASK-{id} | `docs/dev/tasks/TASK-{id}.md` | {version} | `{sha256}` |
 | source/tests | {scope} | `{path}` | {commit/version} | `{sha256}` |
 | module current truth | {module} | `docs/design/prototypes/{module}/` (scenario four-pack + stories/flows/index/*.html) | current | `{sha256}` |
 | Skill | {skill} | `.claude/skills/{skill}/SKILL.md` | {version} | `{sha256}` |
@@ -61,7 +61,7 @@ Repair-rounds only (TR-012 re-entry): in a first-round report with no repaired B
 omit this table entirely. This table **coexists** with §2–§4 — a repair round still
 carries the full assigned-quality conclusion AND a Targeted Re-verification row per
 closed BUG. Targeted re-verification alone never satisfies the machine CleanRound — only
-a fresh complete round does (`docs/agent-protocol.md` #s7 / #s9).
+a fresh complete round does (`docs/control/agent-protocol.md` #s7 / #s9).
 
 | BUG | Original assignment | Repair fingerprint | Result | Evidence |
 |:---|:---|:---|:---|:---|

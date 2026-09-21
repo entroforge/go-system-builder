@@ -93,10 +93,23 @@ func fillAssignmentRow(row *AssignmentContext, a workgroupAssignment) {
 	row.RoleFamily = a.RoleFamily
 	row.AgentDefinitionRef = a.AgentDefinitionRef
 	row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
-	row.WritePaths = assignmentWritePaths(a.WritePaths, a.Scope)
+	row.WritePaths = assignmentWritePaths(a.WritePaths, a.OutputPaths, a.Scope)
 	row.RequiredChecks = append([]string(nil), a.RequiredChecks...)
 	row.IntegrationCheckMode = a.IntegrationCheckMode
 	row.DoneWhen = append([]string(nil), a.DoneWhen...)
 	row.ReportStatus = a.Status
 	applyAssignmentCoords(row, a.WorktreePath, a.Branch, a.TargetBranch)
+}
+
+// Registered manifest pointers take precedence over historical task-shaped paths.
+func assignmentManifestForRefs(root, taskID string, refs registeredManifestRef) (string, *workgroupManifest, string) {
+	for _, ref := range []string{refs.PromptRef, refs.TeamRef} {
+		if _, formal := registeredManifestPath(root, ref); formal {
+			return assignmentManifest(root, taskID, ref)
+		}
+	}
+	if refs.PromptRef != "" {
+		return assignmentManifest(root, taskID, refs.PromptRef)
+	}
+	return assignmentManifest(root, taskID, "")
 }

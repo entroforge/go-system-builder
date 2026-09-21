@@ -247,7 +247,7 @@ func TestBUG104S11HumanRoutesApplyThroughCatalog(t *testing.T) {
 			refs := addS11Evidence(t, root, state, tc.evidence)
 			writeFullState(t, root, state)
 
-			snapshot, err := transition.Apply(root, filepath.Join(root, ".claude", "loop-state.json"), filepath.Join(root, ".claude", "loop-events.jsonl"), transition.Request{
+			snapshot, err := applyFixture(root, filepath.Join(root, ".claude", "loop-state.json"), filepath.Join(root, ".claude", "loop-events.jsonl"), transition.Request{
 				TransitionID: tc.id, ExpectedRevision: 5, Actor: "user", Evidence: refs,
 			})
 			if err != nil {

@@ -80,7 +80,7 @@ func writeWorkgroupWithWorktree(t *testing.T, root, taskID, assignmentID, agentI
 		"schema_version":"1.0.0",
 		"manifest_id":"team-manifest-` + assignmentID + `",
 		"version":"v1.0.0",
-		"runtime_id":"loop-system-test",
+		"runtime_id":"` + readSystemState(t, root)["runtime_id"].(string) + `",
 		"req_id":"REQ-039",
 		"baseline_generation":1,
 		"status":"active",

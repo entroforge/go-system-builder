@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -218,7 +219,7 @@ func Project(root string, request Request) (Result, error) {
 		return Result{}, err
 	}
 	markdown := buildMarkdown(request.BugID, jsonRel, caseRel, sha256Hex(caseBytes), contractRel, sha256Hex(contractBytes), caseDocument, contractDocument, findingRefs, findingDocuments, canonical)
-	markdownPath, err := projectionPath(root, request.MarkdownPath, filepath.ToSlash(filepath.Join("docs", "reports", "bugs", request.BugID+".md")))
+	markdownPath, err := projectionPath(root, request.MarkdownPath, filepath.ToSlash(filepath.Join(projectlayout.Reports, "bugs", request.BugID+".md")))
 	if err != nil {
 		return Result{}, err
 	}

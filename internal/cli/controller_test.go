@@ -60,7 +60,7 @@ func TestBuildGuidanceForSessionStartUsesCanonicalNextProjection(t *testing.T) {
 	if guidance.LifecycleState != "verification" || guidance.LifecyclePhase != "running" {
 		t.Fatalf("unexpected lifecycle cursor: %#v", guidance)
 	}
-	if guidance.ProtocolRef != "docs/agent-protocol.md#s7" {
+	if guidance.ProtocolRef != "docs/control/agent-protocol.md#s7" {
 		t.Fatalf("unexpected protocol ref: %q", guidance.ProtocolRef)
 	}
 	if guidance.ManualRef != loopManualRef {
@@ -72,7 +72,7 @@ func TestBuildGuidanceForSessionStartUsesCanonicalNextProjection(t *testing.T) {
 	if !strings.Contains(guidance.Action, "review-result submit") {
 		t.Fatalf("unexpected next action: %q", guidance.Action)
 	}
-	if !strings.Contains(guidance.Instruction, "docs/agent-protocol.md#s7") {
+	if !strings.Contains(guidance.Instruction, "docs/control/agent-protocol.md#s7") {
 		t.Fatalf("instruction must contain protocol ref: %q", guidance.Instruction)
 	}
 	if !strings.Contains(guidance.Instruction, loopManualRef) {
@@ -129,7 +129,7 @@ func TestBuildGuidanceDefinesRecoveryReadOrderAndNoCliNormalPath(t *testing.T) {
 	if guidance.ReadOrder[1] != "AGENTS-template.md" {
 		t.Fatalf("source template should be the fallback entry document, got %#v", guidance.ReadOrder)
 	}
-	if !strings.Contains(strings.Join(guidance.ReadOrder, " -> "), "docs/agent-protocol.md#s7") {
+	if !strings.Contains(strings.Join(guidance.ReadOrder, " -> "), "docs/control/agent-protocol.md#s7") {
 		t.Fatalf("read order must point to current protocol anchor, got %#v", guidance.ReadOrder)
 	}
 	if !containsString(guidance.Automation, "do not call loop-harness for normal continuation") {
@@ -149,7 +149,7 @@ func TestBuildGuidanceSchedulesDelegationAndWorktreeIntegration(t *testing.T) {
 		"lifecycle_phase": "implementation",
 		"objective":       "complete the implementation batch",
 		"action":          "implement remaining TASKs",
-		"protocol_ref":    "docs/agent-protocol.md#s6",
+		"protocol_ref":    "docs/control/agent-protocol.md#s6",
 		"manual_ref":      ".claude/bin/loop-harness.md",
 		"primary_skill":   "loop-orchestration",
 		"read":            []string{".claude/loop-state.json"},
@@ -264,7 +264,7 @@ func TestBuildGuidanceSchedulesDelegationAndWorktreeIntegration(t *testing.T) {
 		t.Fatalf("SubagentStop must require worktree integration before acknowledgement, got %q", stopped.Action)
 	}
 	joined := strings.ToLower(strings.Join(stopped.Integration, " "))
-	for _, expected := range []string{"inspect", "bound integration branch", "remove worktree", "completion_ack"} {
+	for _, expected := range []string{"inspect", "req-bound development branch", "remove worktree", "completion_ack"} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("SubagentStop integration must mention %q, got %#v", expected, stopped.Integration)
 		}
@@ -360,7 +360,7 @@ func TestRefreshMilestoneUsesCASAndIsIdempotent(t *testing.T) {
 		t.Fatal("first refresh must persist the missing milestone")
 	}
 	if updated.Revision != snapshot.Revision+1 {
-		t.Fatalf("expected one CAS revision increment, before=%d after=%d", snapshot.Revision, updated.Revision)
+		t.Fatalf("expected one CAS revision increment, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
 	}
 	if updated.State["milestone"] == nil {
 		t.Fatal("milestone must be persisted in runtime state")
@@ -524,7 +524,7 @@ func TestGuidanceMapWithGateProjectsQualityGateBlock(t *testing.T) {
 		LifecyclePhase: "contracts",
 		Objective:      "complete the development contract set",
 		Action:         "complete contract traceability",
-		ProtocolRef:    "docs/agent-protocol.md#s3",
+		ProtocolRef:    "docs/control/agent-protocol.md#s3",
 		ManualRef:      loopManualRef,
 		PrimarySkill:   "specification-planning",
 		Missing:        []string{"contract traceability"},
@@ -601,7 +601,7 @@ func TestMilestoneMatchesDetectsQualityGateFingerprintChange(t *testing.T) {
 		LifecyclePhase: "contracts",
 		Objective:      "complete the development contract set",
 		Action:         "complete contract traceability",
-		ProtocolRef:    "docs/agent-protocol.md#s3",
+		ProtocolRef:    "docs/control/agent-protocol.md#s3",
 		ManualRef:      loopManualRef,
 		PrimarySkill:   "specification-planning",
 		Missing:        []string{"contract traceability"},
@@ -826,11 +826,11 @@ func newRuntimeFixture(t *testing.T) *runtimeFixture {
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The semantic validator reads docs/loop-definition.json from the root.
+	// The semantic validator reads docs/control/loop-definition.json from the root.
 	// Provide a minimal stub that exposes the `building` state with no phase
 	// machine and a `planning` state with a phase machine, so the cursor
 	// (state=building, phase=implementation) validates.
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	minimalDef := `{
@@ -862,12 +862,12 @@ func newRuntimeFixture(t *testing.T) *runtimeFixture {
     }
   },
   "entity_lifecycles": {
-    "agent": {"states": ["spawned", "reading", "understanding_submitted", "understanding_approved", "activated", "working", "reported", "done", "blocked", "stopped"]},
+    "agent": {"states": ["spawned", "reading", "understanding_submitted", "understanding_approved", "activated", "working", "reported", "done", "blocked", "stopped"], "transitions": [{"from":"reported","event":"completion_acknowledged","to":"done"}]},
     "task": {"states": ["candidate", "reviewed", "locked", "in_progress", "review", "blocked", "done", "cancelled"]},
     "bug": {"states": ["draft", "investigating", "pending_approval", "accepted", "assigned", "fixed", "retesting", "closed", "rejected", "duplicate"]}
   }
 }`
-	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), []byte(minimalDef), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), []byte(minimalDef), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Start from the schema-valid example and override the cursors we
@@ -914,7 +914,7 @@ func newRuntimeFixture(t *testing.T) *runtimeFixture {
 		"lifecycle_phase": "implementation",
 		"objective":       "complete the implementation batch",
 		"action":          "implement remaining TASKs",
-		"protocol_ref":    "docs/agent-protocol.md#s6",
+		"protocol_ref":    "docs/control/agent-protocol.md#s6",
 		"manual_ref":      ".claude/bin/loop-harness.md",
 		"primary_skill":   "loop-orchestration",
 		"read":            []string{".claude/loop-state.json"},
@@ -980,7 +980,7 @@ func (f *runtimeFixture) addTask(id, state string, ownerIDs []string) {
 		"id":              id,
 		"state":           state,
 		"owner_agent_ids": ownerAnys,
-		"path":            "docs/tasks/" + id + ".md",
+		"path":            "docs/dev/tasks/" + id + ".md",
 		"sha256":          "0000000000000000000000000000000000000000000000000000000000000000",
 	})
 	entities["tasks"] = tasks
@@ -1142,7 +1142,7 @@ func TestHandleTeammateIdleResumesSameTeammate(t *testing.T) {
 		t.Fatalf("Branch 1 must NOT CAS-rewrite teammate state: got %q, want working", got)
 	}
 	if updated.Revision != snapshot.Revision {
-		t.Fatalf("Branch 1 must not advance Runtime revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+		t.Fatalf("Branch 1 must not advance Runtime revision, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
 	}
 	if !containsSubstring(guidance.Automation, "do not spawn a replacement") {
 		t.Fatalf("Branch 1 must prohibit replacement spawn, got %#v", guidance.Automation)
@@ -1257,7 +1257,7 @@ func TestHandleTeammateIdleAllocatesNextLegalTask(t *testing.T) {
 		t.Fatalf("HandleTeammateIdle: %v", err)
 	}
 	if updated.Revision != snapshot.Revision {
-		t.Fatalf("Branch 4 must NOT CAS-advance revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+		t.Fatalf("Branch 4 must NOT CAS-advance revision, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
 	}
 	state, owners := fix.taskState(t, "TASK-039-05")
 	if state != "candidate" {
@@ -1315,7 +1315,7 @@ func TestHandleTeammateIdleClosesOutTeamWhenNoTasksRemain(t *testing.T) {
 		t.Fatalf("Branch 5 must NOT CAS-mark Team status=complete: got %q, want planned", got)
 	}
 	if updated.Revision != snapshot.Revision {
-		t.Fatalf("Branch 5 must not advance Runtime revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+		t.Fatalf("Branch 5 must not advance Runtime revision, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
 	}
 }
 
@@ -1380,6 +1380,7 @@ func TestHandleSubagentStopFallsBackWhenAssignmentMissing(t *testing.T) {
 // SubagentStop with !Ready inspection preserves the worktree.
 func TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection(t *testing.T) {
 	fix := newRuntimeFixture(t)
+	fix.state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": "develop", "release_upstream": "origin/release", "bound_commit": "fixture"}
 	fix.persist(t)
 	snapshot := fix.snapshot(t)
 	loaded := &hookctx.LoadedContext{
@@ -1405,7 +1406,7 @@ func TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection(t *testing.T) {
 		t.Fatalf("blocker must reference inspection failure, got %q", guidance.Blocker)
 	}
 	if updated.Revision <= snapshot.Revision {
-		t.Fatalf("preserved checkpoint must still CAS-advance revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+		t.Fatalf("preserved checkpoint must still CAS-advance revision, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
 	}
 	if len(guidance.Missing) == 0 {
 		t.Fatal("missing must include the inspection blockers")
@@ -1437,6 +1438,28 @@ func TestHandleSubagentStopAdvancesIntegrationOnReadyInspection(t *testing.T) {
 			t.Fatalf("git %v: %v", strings.Join(args, " "), err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(repo, ".git/info/exclude"), []byte(".claude/\nwt/\ndocs/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bindFixtureWorkspace(t, fix)
+	// Commit all formal inputs, keeping only runtime output untracked/ignored.
+	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".claude/\nwt/\n"), 0600)
+	if out, err := runGit(t, repo, "add", "-f", "docs", ".gitignore"); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	if out, err := runGit(t, repo, "commit", "-m", "formal input baseline"); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	fix.addAgent("agent-039-06", "builder", "reported", "team-test", []string{"TASK-039-06"})
+	activation := filepath.Join(repo, ".claude/workgroups/REQ-039/team-test/activation.json")
+	if err := os.MkdirAll(filepath.Dir(activation), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activation, []byte(`{"agent_id":"agent-039-06"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fix.addTask("TASK-039-06", "review", []string{"agent-039-06"})
 	// Create a worktree with a branch that has commits.
 	wtPath := filepath.Join(repo, "wt")
 	if _, err := runGit(t, repo, "worktree", "add", "-b", "codex/req-039-bogus", wtPath, "develop"); err != nil {
@@ -1455,6 +1478,7 @@ func TestHandleSubagentStopAdvancesIntegrationOnReadyInspection(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fix.state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": "develop", "release_upstream": "origin/release", "bound_commit": "fixture"}
 	fix.persist(t)
 	snapshot := fix.snapshot(t)
 	loaded := &hookctx.LoadedContext{
@@ -1474,7 +1498,7 @@ func TestHandleSubagentStopAdvancesIntegrationOnReadyInspection(t *testing.T) {
 		t.Fatalf("HandleSubagentStop: %v", err)
 	}
 	if updated.Revision <= snapshot.Revision {
-		t.Fatalf("ready SubagentStop must CAS-advance revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+		t.Fatalf("ready SubagentStop must CAS-advance revision, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
 	}
 	joined := strings.ToLower(strings.Join(guidance.Integration, " "))
 	if !strings.Contains(joined, "worktree integrated") {
@@ -1556,7 +1580,7 @@ func testSubagentStopReference(t *testing.T, promptRef string, wantMerge bool) {
 		"tasks": []any{map[string]any{
 			"id": "TASK-039-01", "state": "review",
 			"owner_agent_ids": []any{"agent-wire"},
-			"path":            "docs/tasks/TASK-039-01.md",
+			"path":            "docs/dev/tasks/TASK-039-01.md",
 			"sha256":          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		}},
 		"bugs": []any{}, "teams": []any{},
@@ -1661,6 +1685,25 @@ func TestPostMergeModeChecksCandidateThroughController(t *testing.T) {
 			t.Fatalf("git %v: %v", strings.Join(args, " "), err)
 		}
 	}
+	bindFixtureWorkspace(t, fix)
+	// Commit all formal inputs, keeping only runtime output untracked/ignored.
+	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".claude/\nwt/\n"), 0600)
+	if out, err := runGit(t, repo, "add", "-f", "docs", ".gitignore"); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	if out, err := runGit(t, repo, "commit", "-m", "formal input baseline"); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	fix.addAgent("agent-039-06", "builder", "reported", "team-test", []string{"TASK-039-06"})
+	activation := filepath.Join(repo, ".claude/workgroups/REQ-039/team-test/activation.json")
+	if err := os.MkdirAll(filepath.Dir(activation), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activation, []byte(`{"agent_id":"agent-039-06"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fix.addTask("TASK-039-06", "review", []string{"agent-039-06"})
 	// Create a worktree with a branch that has commits.
 	wtPath := filepath.Join(repo, "wt")
 	if _, err := runGit(t, repo, "worktree", "add", "-b", "codex/req-039-bogus", wtPath, "develop"); err != nil {
@@ -1711,7 +1754,7 @@ func TestPostMergeModeChecksCandidateThroughController(t *testing.T) {
 		t.Fatalf("HandleSubagentStop: %v", err)
 	}
 	if updated.Revision <= snapshot.Revision {
-		t.Fatalf("ready SubagentStop must CAS-advance revision, before=%d after=%d", snapshot.Revision, updated.Revision)
+		t.Fatalf("ready SubagentStop must CAS-advance revision, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
 	}
 	counterBytes, readErr := os.ReadFile(counter)
 	if readErr != nil || strings.Count(string(counterBytes), "checked") != 1 {

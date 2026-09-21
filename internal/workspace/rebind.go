@@ -22,7 +22,10 @@ type RebindRequest struct {
 // PlanRebind validates an explicit relocation, including repaired native Git
 // links. It never guesses a new repository from a remote URL or branch name.
 // Git worktree move/repair must have completed before rebinding the Harness.
-func (b *Binding) PlanRebind(ctx context.Context, state map[string]any, r RebindRequest) (*Binding, error) {
+func (b *ExecutionRegistry) PlanRebind(ctx context.Context, state map[string]any, r RebindRequest) (*ExecutionRegistry, error) {
+	if err := b.ValidateAuthority(state); err != nil {
+		return nil, err
+	}
 	if r.RuntimeID != RuntimeID(state) || r.OldMainRoot != b.MainRoot || r.OldCommonDir != b.CommonDir || r.Branch != b.Branch || r.ExpectedHead == "" {
 		return nil, fmt.Errorf("rebind expected identity does not match recorded Main")
 	}
@@ -33,7 +36,7 @@ func (b *Binding) PlanRebind(ctx context.Context, state map[string]any, r Rebind
 			return nil, err
 		}
 	}
-	actual, err := New(ctx, r.NewMainRoot)
+	actual, err := inspectCheckout(ctx, r.NewMainRoot)
 	if err != nil {
 		return nil, fmt.Errorf("repair native Git worktree links before Harness rebind: %w", err)
 	}
@@ -94,7 +97,7 @@ func (b *Binding) PlanRebind(ctx context.Context, state map[string]any, r Rebind
 	return &next, nil
 }
 
-func (b *Binding) RelocatePointer(e Execution, oldMain string) error {
+func (b *ExecutionRegistry) RelocatePointer(e Execution, oldMain string) error {
 	path := filepath.Join(e.Path, ".claude/loop-workspace.json")
 	data, err := os.ReadFile(path)
 	if err != nil {

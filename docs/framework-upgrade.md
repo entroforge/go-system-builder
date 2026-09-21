@@ -1,25 +1,19 @@
-# Upgrade a bound project
+# Release compatibility and fresh installation
 
-Build and install one release manifest from a clean source revision. Back up the
-paired Runtime state/journal, checkpoints, installed framework and Git worktrees
-before activation. Test the same release in an isolated project copy first.
+This release introduces layout v2. Install it only into a new, empty target with
+`loop-harness install --source <verified-release> --root <empty-target>`.
+The installer rejects occupied targets. Old or mixed authority layouts are rejected
+by `projectlayout.Check`; this is not an in-place migration facility.
 
-Install release assets according to prelude.md, merging project-specific entry
-text, commands, settings permissions and git attributes. Never copy source instance
-REQs/TASKs/contracts, Runtime, journal or source-project reports into the project.
-Do not initialize or rebind an existing Runtime. Do not renormalize active evidence.
-Record source revision and SHA256 of each installed asset, plus explicit exceptions.
+Existing projects, especially those with an active bound REQ, must remain on their
+matching framework release. Do not overlay binaries, docs, skills or settings from
+this release, reinitialize their Runtime, or rewrite historical evidence paths.
+Completing a REQ does not by itself migrate that project's stored references.
+A future migration needs a separate reviewed procedure and recovery validation.
 
-A requirement locked before Foundation installation retains its existing approved
-requirements/contracts and design evidence. Installing Foundation templates does
-not retroactively attest a Foundation or impose new product requirements. Apply
-Foundation intake to subsequent unlocked requirements. Any actual change to the
-bound requirement follows the existing human amendment Gateway.
-
-Framework binaries and release docs are tooling, not completed business evidence.
-Verify schema/definition/policy compatibility and current gate projection, exercise
-Hook process boundaries, and test pending integration recovery before resuming.
-Keep a rollback package; binary rollback never rewinds Runtime automatically.
+Verify the package manifest before installation. Installed links are rewritten for
+the project layout, so installed hashes must be recorded separately from package
+hashes. Framework assets are tooling, never business acceptance evidence.
 
 Hooks are fast control-plane checks only: they evaluate the gate, persist the
 resumable Milestone, and surface pending work; they never run integration

@@ -21,14 +21,14 @@ func TestStoreRejectsSemanticInvalidCandidateWithoutValidator(t *testing.T) {
 		t.Fatalf("create journal: %v", err)
 	}
 
-	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatalf("read loop definition: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatalf("create docs directory: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), definition, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), definition, 0o644); err != nil {
 		t.Fatalf("write loop definition: %v", err)
 	}
 
@@ -152,11 +152,11 @@ func TestStoreSemanticValidationFailureLeavesStateJournalAndRevisionUnchanged(t 
 }
 
 func testWriter(statePath, journalPath string) *runtime.Store {
-	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		panic(err)
 	}
-	definitionDir := filepath.Join(filepath.Dir(statePath), "docs")
+	definitionDir := filepath.Join(filepath.Dir(statePath), "docs", "control")
 	if err := os.MkdirAll(definitionDir, 0o755); err != nil {
 		panic(err)
 	}
