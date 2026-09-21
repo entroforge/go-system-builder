@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"sort"
@@ -178,7 +179,7 @@ func GenerateReadbackRequests(root string, data []byte, options LaunchOptions) (
 				Responsibility:        item.Responsibility + ": " + item.GroupingRationale,
 				ReadPaths:             item.ReadPaths,
 				ProspectiveWritePaths: item.WritePaths,
-				ForbiddenPaths:        []string{".claude/loop-state.json", "docs/requirements/", "docs/contracts/"},
+				ForbiddenPaths:        []string{".claude/loop-state.json", projectlayout.Requirements + "/", "docs/dev/contracts/"},
 				ForbiddenActions:      []string{"self activation", "scope expansion", "squash merge", "formal release"},
 				OutputPaths:           item.OutputPaths,
 			},

@@ -1,6 +1,7 @@
 package designfoundation
 
 import (
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,7 +155,7 @@ func checkPrimitiveConsumption(root string, idx *ContractIndex) []Finding {
 	if _, err := os.Stat(designRoot); err != nil {
 		return findings
 	}
-	_ = filepath.Walk(designRoot, func(path string, info os.FileInfo, err error) error {
+	_ = pathscope.Walk(root, designRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -209,7 +210,7 @@ func checkGeneratedAssetUnverifiable(root string, idx *ContractIndex) []Finding 
 	if _, err := os.Stat(designRoot); err != nil {
 		return findings
 	}
-	_ = filepath.Walk(designRoot, func(path string, info os.FileInfo, err error) error {
+	_ = pathscope.Walk(root, designRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -244,7 +245,7 @@ func checkGeneratedAssetUnverifiable(root string, idx *ContractIndex) []Finding 
 		}
 		// Verifiable if references generated tokens.css or carries generator digest marker.
 		hasLink := strings.Contains(body, TokensCSSRel) || strings.Contains(body, "tokens.css")
-		hasDigest := strings.Contains(body, "Generated from "+TokensJSONRel) || strings.Contains(body, "Generated from packages/design-tokens/tokens.json")
+		hasDigest := strings.Contains(body, "Generated from "+TokensJSONRel)
 		// Inline digest may also be via "source digest" comment from emit-css
 		if !hasLink && !hasDigest {
 			findings = append(findings, Finding{

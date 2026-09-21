@@ -42,11 +42,12 @@ type ControlRequest struct {
 	// Root/.claude exactly.
 	StatePath   string
 	JournalPath string
-	Event       string                // PreToolUse, PostToolUse, SessionStart, ...
-	ToolName    string                // Write, Edit, Bash, ...
-	ToolInput   map[string]any        // parsed payload (file_path, command, ...)
-	TargetID    string                // optional target identifier from the Hook payload
-	AgentID     string                // optional agent id for hookctx resolution
+	Event       string         // PreToolUse, PostToolUse, SessionStart, ...
+	ToolName    string         // Write, Edit, Bash, ...
+	ToolInput   map[string]any // parsed payload (file_path, command, ...)
+	TargetID    string         // optional target identifier from the Hook payload
+	AgentID     string         // optional agent id for hookctx resolution
+	CWD         string
 	SessionID   string                // optional session id
 	Runtime     policy.RuntimeContext // optional preloaded runtime facts, including Agent identity
 	HookPayload map[string]any        // raw hook payload, preserved for diagnostics
@@ -60,6 +61,10 @@ type ControlRequest struct {
 	QualityCycleBudget time.Duration
 	// GateEvaluator overrides the default registry-backed evaluator (tests).
 	GateEvaluator qualitygate.Evaluator
+	// recoveryWriter is set only by RecoveryReplay. Keeping the capability
+	// private to the controller request prevents ordinary Hook callers from
+	// opting into staging writes through a payload or --state/--journal flag.
+	recoveryWriter runtime.OfflineRecoveryCapability
 }
 
 // ControlResult is the single projection emitted by RunControlCycle. It

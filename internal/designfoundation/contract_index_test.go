@@ -97,8 +97,8 @@ func TestMigrate_DryRunDoesNotWrite(t *testing.T) {
 	root := t.TempDir()
 	// legacy kernel without markers
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
-		"docs/design/DESIGN.md":              "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n| 项 | 可执行内容 |\n|:--|:--|\n| Laws — 必须做 | do |\n",
+		"docs/design/tokens/tokens.json": mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/design/DESIGN.md":          "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n| 项 | 可执行内容 |\n|:--|:--|\n| Laws — 必须做 | do |\n",
 	})
 	plan, err := PlanMigrate(root, "contract-v1", true)
 	if err != nil {

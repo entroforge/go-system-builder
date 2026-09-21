@@ -84,7 +84,7 @@ func TestEnvelopeDecisionIDSeparatesDistinctNativeEventPayloads(t *testing.T) {
 		SessionID: "session-config",
 		Event:     "ConfigChange",
 		Source:    "project_settings",
-		FilePath:  "docs/hook-policy.json",
+		FilePath:  "docs/control/hook-policy.json",
 	}, policy.Decision{Decision: "audit"}, time.Unix(1, 0))
 	second := engine.Envelope(policy.Input{
 		SessionID: "session-config",
@@ -195,7 +195,7 @@ func TestEngineAccessorsPreserveLoadedMetadata(t *testing.T) {
 
 func loadRepositoryPolicy(t *testing.T) *policy.Engine {
 	t.Helper()
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load repository policy: %v", err)
 	}

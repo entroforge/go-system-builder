@@ -6,7 +6,7 @@ version: 1.0.0
 ---
 # Security Review
 ## Authority
-Quality guidance within assigned scope. Stage routing lives in `docs/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
+Quality guidance within assigned scope. Stage routing lives in `docs/control/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
 ## Applicability
 Apply to the `security` risk tag.
 ## Required Inputs

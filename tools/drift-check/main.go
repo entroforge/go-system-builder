@@ -110,6 +110,11 @@ func scan(root string) reportT {
 		path := filepath.Join(root, relPath)
 		data, err := os.ReadFile(path)
 		if err != nil {
+			addFinding(relPath, 0, "required-template-missing", err.Error())
+			return
+		}
+		if len(strings.TrimSpace(string(data))) == 0 {
+			addFinding(relPath, 0, "required-template-empty", "required template is empty")
 			return
 		}
 		allowedSet := make(map[string]bool, len(allowed))
@@ -135,21 +140,26 @@ func scan(root string) reportT {
 
 	scanTemplate("docs/requirements/REQ-template.md", "REQ-状态", canonicalENUMs["REQ-状态"])
 	for _, p := range []string{
-		"docs/contracts/CONTRACTS-template.md",
-		"docs/contracts/BE-contract-template.md",
-		"docs/contracts/FE-contract-template.md",
-		"docs/contracts/SYNC-contract-template.md",
-		"docs/design/architecture/ARCHITECTURE-template.md",
+		"docs/dev/contracts/CONTRACTS-template.md",
+		"docs/dev/contracts/BE-contract-template.md",
+		"docs/dev/contracts/FE-contract-template.md",
+		"docs/dev/contracts/SYNC-contract-template.md",
+		"docs/architecture/ARCHITECTURE-template.md",
 	} {
 		scanTemplate(p, "CONTRACT-状态", canonicalENUMs["CONTRACT-状态"])
 	}
-	scanTemplate("docs/tasks/index-template.md", "TASK-INDEX-状态", canonicalENUMs["TASK-INDEX-状态"])
+	scanTemplate("docs/dev/tasks/index-template.md", "TASK-INDEX-状态", canonicalENUMs["TASK-INDEX-状态"])
 
 	// UI impact: scan REQ-template and CONTRACTS-template for the value list.
 	scanUIImpact := func(relPath string) {
 		path := filepath.Join(root, relPath)
 		data, err := os.ReadFile(path)
 		if err != nil {
+			addFinding(relPath, 0, "required-template-missing", err.Error())
+			return
+		}
+		if len(strings.TrimSpace(string(data))) == 0 {
+			addFinding(relPath, 0, "required-template-empty", "required template is empty")
 			return
 		}
 		re := regexp.MustCompile(`UI\s*impact\s*[：:]\s*([^\n|]+?)\s*(?:\||$)`)
@@ -178,7 +188,7 @@ func scan(root string) reportT {
 		}
 	}
 	scanUIImpact("docs/requirements/REQ-template.md")
-	scanUIImpact("docs/contracts/CONTRACTS-template.md")
+	scanUIImpact("docs/dev/contracts/CONTRACTS-template.md")
 
 	// Cross-check Hook policy JSON vs schema ENUM.
 	checkProtectedEvents(root, addFinding)
@@ -211,7 +221,7 @@ type addFindingFn func(relPath string, line int, category, detail string)
 
 func checkProtectedEvents(root string, addFinding addFindingFn) {
 	schemaPath := filepath.Join(root, "internal/schema/assets/hook-policy.schema.json")
-	policyPath := filepath.Join(root, "docs/hook-policy.json")
+	policyPath := filepath.Join(root, "docs/control/hook-policy.json")
 
 	schemaData, err := os.ReadFile(schemaPath)
 	if err != nil {

@@ -25,7 +25,7 @@ Names must make traceability obvious.
 | surface profile | `docs/design/surface-profiles/{surface}.md` | `docs/design/surface-profiles/consumer.md` |
 | design derivation | `docs/design/derivation/REQ-{id}.md` | `docs/design/derivation/REQ-014.md` |
 | design exception | `docs/design/decisions/EX-{id}.md` (legacy `docs/design/exceptions/EX-{id}.md` still recognized) | `docs/design/decisions/EX-001.md` |
-| design tokens | `packages/design-tokens/tokens.json` (+ generated `tokens.css`) | `packages/design-tokens/tokens.json` |
+| design tokens | `docs/design/tokens/tokens.json` (+ generated `tokens.css`) | `docs/design/tokens/tokens.json` |
 | portable DESIGN snapshot | `docs/design/proof/portable/DESIGN.md` (derived, not authority) | `docs/design/proof/portable/DESIGN.md` |
 | component proposal | `docs/design/decisions/CP-{id}.md` (legacy `docs/design/components/CP-{id}.md` still recognized) | `docs/design/decisions/CP-001.md` |
 | foundation replay record | `docs/reports/design-foundation/` | `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` |
@@ -68,7 +68,7 @@ Names must make traceability obvious.
 | directories | follow project ecosystem; keep cross-doc paths stable |
 | types/classes | use domain names; avoid vague `Manager` or `Helper` |
 | API fields | match `SYNC-*` exactly |
-| states | match `docs/design/state/*.md` exactly |
+| states | match `docs/architecture/state/*.md` exactly |
 | events | `{domain}.{entity}.{action}`, e.g. `order.payment.succeeded` |
 | errors | stable short code, e.g. `E1001`; never reuse meaning |
 

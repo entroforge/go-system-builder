@@ -16,7 +16,7 @@ import (
 )
 
 func TestRegisterWorkgroupAddsTaskTeamAndReadingAgents(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -65,7 +65,7 @@ func TestRegisterWorkgroupAddsTaskTeamAndReadingAgents(t *testing.T) {
 }
 
 func TestRegisterWorkgroupRejectsAuthoringPlaceholderAgentID(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -115,7 +115,7 @@ func TestRegisterWorkgroupRejectsAuthoringPlaceholderAgentID(t *testing.T) {
 func seedReviewPlan(t *testing.T, repoRoot string, dir string, state map[string]any) {
 	t.Helper()
 	subjects := []any{
-		map[string]any{"path": "docs/tasks/TASK-012.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
+		map[string]any{"path": "docs/dev/tasks/TASK-012.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
 	}
 	claim := func(id, target string) map[string]any {
 		return map[string]any{
@@ -211,7 +211,7 @@ func seedReviewPlan(t *testing.T, repoRoot string, dir string, state map[string]
 }
 
 func TestRegisterRepairBindingRejectsManifestOwnerDrift(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -226,7 +226,7 @@ func TestRegisterRepairBindingRejectsManifestOwnerDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	protocol, err := os.ReadFile(filepath.Join(root, "docs", "agent-protocol.md"))
+	protocol, err := os.ReadFile(filepath.Join(root, "docs", "control", "agent-protocol.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,16 +235,16 @@ func TestRegisterRepairBindingRejectsManifestOwnerDrift(t *testing.T) {
 		"schema_version": "1.0.0", "manifest_id": "team-manifest-repair-owner", "version": "1.0.0",
 		"runtime_id": "loop-REQ-002", "req_id": "REQ-002", "baseline_generation": 1, "review_round": nil,
 		"platform_team_id": "platform-s9-repair", "workgroup_id": "workgroup-repair-owner", "workgroup_kind": "builder", "status": "planned",
-		"documents": []any{map[string]any{"id": "agent-protocol", "path": "docs/agent-protocol.md", "version": "current", "sha256": hex.EncodeToString(sum[:])}},
+		"documents": []any{map[string]any{"id": "agent-protocol", "path": "docs/control/agent-protocol.md", "version": "current", "sha256": hex.EncodeToString(sum[:])}},
 		"risk_tags": []any{},
 		"responsibility_dispositions": []any{map[string]any{
 			"responsibility_id": "BUILD-WORK-PACKAGE", "disposition": "assigned", "trigger": "one bounded repair assignment",
-			"assignment_ids": []string{"assignment-s9-unit-1"}, "na_rationale": nil, "evidence_ref": "docs/agent-protocol.md",
+			"assignment_ids": []string{"assignment-s9-unit-1"}, "na_rationale": nil, "evidence_ref": "docs/control/agent-protocol.md",
 		}},
 		"assignments": []any{map[string]any{
 			"assignment_id": "assignment-s9-unit-1", "responsibility_id": "BUILD-WORK-PACKAGE", "role_family": "backend-builder",
 			"scope": []string{"internal/api"}, "agent_id": "manifest-owner", "agent_definition_ref": "agents/backend-builder.md",
-			"skill_refs": []string{"code-quality"}, "read_paths": []string{"docs/agent-protocol.md"}, "write_paths": []string{"internal/api"},
+			"skill_refs": []string{"code-quality"}, "read_paths": []string{"docs/control/agent-protocol.md"}, "write_paths": []string{"internal/api"},
 			"output_paths": []string{".claude/evidence"}, "depends_on": []string{}, "reuse_decision": "create",
 			"grouping_rationale": "one Builder owns one repair assignment", "status": "planned",
 		}},
@@ -283,7 +283,7 @@ func TestRegisterRepairBindingRejectsManifestOwnerDrift(t *testing.T) {
 }
 
 func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -346,7 +346,7 @@ func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) 
 }
 
 func TestRegisterWorkgroupRejectsWrongLoopStateWithoutMutation(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")

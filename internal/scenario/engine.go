@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,6 +35,7 @@ var (
 )
 
 type sourcePackage struct {
+	files           fileview.Reader
 	directory       string
 	model           ScenarioModel
 	fixtures        FixtureContract
@@ -141,19 +144,34 @@ func loadSourcePackage(root, module string) (sourcePackage, error) {
 	if err := recoverTransaction(directory); err != nil {
 		return sourcePackage{}, fmt.Errorf("recover scenario outputs: %w", err)
 	}
-	modelBytes, err := readRequiredFile(directory, modelFile)
+	return loadSourcePackageWithFiles(root, module, scenarioDisk{fileview.Disk{Root: root}})
+}
+
+type scenarioDisk struct{ fileview.Disk }
+
+func (d scenarioDisk) ReadFile(path string) ([]byte, error) {
+	return readRequiredFile(filepath.Dir(path), filepath.Base(path))
+}
+
+func loadSourcePackageWithFiles(root, module string, files fileview.Reader) (sourcePackage, error) {
+	root, _ = filepath.Abs(root)
+	if err := validateModuleName(module); err != nil {
+		return sourcePackage{}, err
+	}
+	directory := filepath.Join(root, prototypeRoot, module)
+	modelBytes, err := files.ReadFile(filepath.Join(directory, modelFile))
 	if err != nil {
 		return sourcePackage{}, err
 	}
-	fixtureBytes, err := readRequiredFile(directory, fixtureFile)
+	fixtureBytes, err := files.ReadFile(filepath.Join(directory, fixtureFile))
 	if err != nil {
 		return sourcePackage{}, err
 	}
-	stories, err := readRequiredFile(directory, "stories.md")
+	stories, err := files.ReadFile(filepath.Join(directory, "stories.md"))
 	if err != nil {
 		return sourcePackage{}, err
 	}
-	flows, err := readRequiredFile(directory, "flows.md")
+	flows, err := files.ReadFile(filepath.Join(directory, "flows.md"))
 	if err != nil {
 		return sourcePackage{}, err
 	}
@@ -171,7 +189,7 @@ func loadSourcePackage(root, module string) (sourcePackage, error) {
 	if err := decodeStrict(fixtureBytes, &fixtures); err != nil {
 		return sourcePackage{}, fmt.Errorf("decode fixture-contract.json: %w", err)
 	}
-	crossMatrixBytes, err := readRequiredFile(directory, "cross-matrix.json")
+	crossMatrixBytes, err := files.ReadFile(filepath.Join(directory, "cross-matrix.json"))
 	if err != nil {
 		return sourcePackage{}, err
 	}
@@ -183,7 +201,7 @@ func loadSourcePackage(root, module string) (sourcePackage, error) {
 		return sourcePackage{}, err
 	}
 	source := sourcePackage{
-		directory: directory, model: model, fixtures: fixtures, crossMatrix: crossMatrix,
+		files: files, directory: directory, model: model, fixtures: fixtures, crossMatrix: crossMatrix,
 		modelBytes: modelBytes, fixtureBytes: fixtureBytes, crossMatrixByte: crossMatrixBytes,
 		stories: stories, flows: flows, root: root,
 	}
@@ -547,7 +565,7 @@ func inspectSpecs(root, module string, cases []Case) (BrowserSpecCoverage, error
 func readPlaywrightTestBodies(root, module string) ([]string, error) {
 	var bodies []string
 	specRoot := filepath.Join(root, "web/e2e", module)
-	if err := filepath.WalkDir(specRoot, func(path string, entry os.DirEntry, walkErr error) error {
+	if err := pathscope.WalkDir(root, specRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if errors.Is(walkErr, os.ErrNotExist) {
 			return nil
 		}

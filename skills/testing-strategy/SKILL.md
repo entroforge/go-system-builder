@@ -6,7 +6,7 @@ version: 1.0.0
 ---
 # Testing Strategy
 ## Authority
-Tests prove contract behavior; they do not redefine it. Stage routing lives in `docs/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable testing method is inlined below.
+Tests prove contract behavior; they do not redefine it. Stage routing lives in `docs/control/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable testing method is inlined below.
 ## Applicability
 Apply to `behavior-change`, QA unit-test, and QA integration-test responsibilities.
 ## Required Inputs

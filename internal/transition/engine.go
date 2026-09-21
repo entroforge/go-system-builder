@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +26,7 @@ import (
 const ResumeSentinel = "RESUME_FROM_PAUSE"
 
 type LockedREQ struct {
+	Workspace  *workspace.Binding
 	ID         string
 	Path       string
 	Version    string
@@ -33,6 +36,7 @@ type LockedREQ struct {
 }
 
 type Request struct {
+	Files            fileview.Reader
 	TransitionID     string
 	ExpectedRevision int
 	// ExpectedRuntimeID binds a caller's snapshot to the runtime identity as
@@ -53,6 +57,10 @@ type Request struct {
 	GateID                 string
 	GateFingerprint        string
 	ProducerResponsibility string
+	// RecoveryWriter is an explicit capability for recovery-plan replay over
+	// a temporary Runtime pair. A zero capability selects the strict active
+	// authority writer; paths never select recovery mode implicitly.
+	RecoveryWriter loopruntime.OfflineRecoveryCapability
 }
 
 type resolvedTransition struct {
@@ -72,6 +80,9 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	// Apply is an explicit mutation boundary. Its writer may recover a durable
 	// pending operation before guards inspect the state/journal pair.
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	if request.RecoveryWriter.Enabled() {
+		store = loopruntime.NewOfflineRecoveryWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}, request.RecoveryWriter)
+	}
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
@@ -97,8 +108,24 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("load transition catalog: %w", err)
 	}
+	if request.Files == nil {
+		if ref, err := fileview.DevelopmentRef(current); err == nil {
+			if err := fileview.ValidateAuthority(root, current); err != nil {
+				return loopruntime.Snapshot{}, err
+			}
+			view, err := fileview.New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+			if err != nil {
+				return loopruntime.Snapshot{}, err
+			}
+			request.Files = view
+		}
+	}
 	resolved, err := resolveCatalog(catalog, request.TransitionID, currentState, currentPhase)
 	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if request.Files == nil && resolved.Spec.AutoTrigger != nil {
+		_, err := fileview.DevelopmentRef(current)
 		return loopruntime.Snapshot{}, err
 	}
 	// RC-06 (S10-2): forbidden_events were decoded into the catalog but never
@@ -209,6 +236,11 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 				}
 			}
 
+			if view, ok := request.Files.(interface{ Verify() error }); ok {
+				if err := view.Verify(); err != nil {
+					return err
+				}
+			}
 			if err := validateRequest(root, state, resolved.Spec, request); err != nil {
 				return err
 			}
@@ -229,7 +261,12 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 					guardResults[index]["detail"] = "Guard is not registered."
 					return fmt.Errorf("transition %s guard %s is not registered", resolved.Spec.ID, name)
 				}
-				if err := guard(state, request.Evidence); err != nil {
+				guardState := make(map[string]any, len(state)+1)
+				for k, v := range state {
+					guardState[k] = v
+				}
+				guardState["_file_view"] = request.Files
+				if err := guard(guardState, request.Evidence); err != nil {
 					guardResults[index]["result"] = "fail"
 					guardResults[index]["detail"] = err.Error()
 					return fmt.Errorf("guard %s failed: %w", name, err)
@@ -290,6 +327,9 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 				state["pause"] = nil
 			}
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+			if view, ok := request.Files.(interface{ Verify() error }); ok {
+				return view.Verify()
+			}
 			return nil
 		},
 	}
@@ -406,7 +446,7 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
 		} else if !(spec.ID == "TR-001" || (spec.ID == "TR-020" && kind == "req_lock_record")) {
-			if err := validateCurrentEvidence(root, state, kind, ref); err != nil {
+			if err := validateCurrentEvidenceWithFiles(root, state, kind, ref, request.Files); err != nil {
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
 		}
@@ -449,6 +489,9 @@ func generatedEvidenceReferenceMatches(ref, canonical string) bool {
 }
 
 func validateCurrentEvidence(root string, state map[string]any, requiredKind, ref string) error {
+	return validateCurrentEvidenceWithFiles(root, state, requiredKind, ref, nil)
+}
+func validateCurrentEvidenceWithFiles(root string, state map[string]any, requiredKind, ref string, files fileview.Reader) error {
 	items, _ := state["evidence"].([]any)
 	var evidenceItem map[string]any
 	for _, raw := range items {
@@ -486,7 +529,10 @@ func validateCurrentEvidence(root string, state map[string]any, requiredKind, re
 	if rel == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("reference %q has unsafe path %q", ref, rel)
 	}
-	data, err := os.ReadFile(filepath.Join(root, clean))
+	if files == nil {
+		files = fileview.Disk{Root: root}
+	}
+	data, err := files.ReadFile(clean)
 	if err != nil {
 		return fmt.Errorf("read reference %q: %w", ref, err)
 	}
@@ -731,7 +777,11 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 		req.ApprovedBy == "" || req.ApprovedAt == "" {
 		return fmt.Errorf("locked REQ metadata is incomplete")
 	}
-	data, err := os.ReadFile(filepath.Join(root, req.Path))
+	files := request.Files
+	if files == nil {
+		files = fileview.Disk{Root: root}
+	}
+	data, err := files.ReadFile(req.Path)
 	if err != nil {
 		return fmt.Errorf("read locked REQ: %w", err)
 	}
@@ -763,6 +813,9 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 		"approved_at": req.ApprovedAt,
 		"metadata":    map[string]any{"ui_impact": uiImpact},
 	}
+	if req.Workspace != nil {
+		state["bound_req"].(map[string]any)["workspace"] = req.Workspace.Map()
+	}
 	baseline, ok := state["baseline"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("runtime baseline must be an object")
@@ -792,7 +845,11 @@ func updateBoundREQ(root string, state map[string]any, request Request, occurred
 		req.ApprovedBy == "" || req.ApprovedAt == "" {
 		return fmt.Errorf("amended REQ metadata is incomplete")
 	}
-	data, err := os.ReadFile(filepath.Join(root, req.Path))
+	files := request.Files
+	if files == nil {
+		files = fileview.Disk{Root: root}
+	}
+	data, err := files.ReadFile(req.Path)
 	if err != nil {
 		return fmt.Errorf("read amended REQ: %w", err)
 	}
@@ -832,6 +889,9 @@ func updateBoundREQ(root string, state map[string]any, request Request, occurred
 		"approved_by": req.ApprovedBy,
 		"approved_at": req.ApprovedAt,
 		"metadata":    map[string]any{"ui_impact": uiImpact},
+	}
+	if binding, ok := bound["workspace"].(map[string]any); ok {
+		state["bound_req"].(map[string]any)["workspace"] = binding
 	}
 	baseline, ok := state["baseline"].(map[string]any)
 	if !ok {

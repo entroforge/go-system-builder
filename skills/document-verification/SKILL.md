@@ -7,7 +7,7 @@ version: 2.2.0
 # Document Verification
 
 ## Authority
-You produce evidence; the gate evaluates it. Runtime authority lives in `docs/loop-definition.json`; the S5 stage contract lives in `docs/agent-protocol.md #s5`（三步：派活→审查→收口三岔路）; the envelope skeleton and findings format live in `docs/reports/review/REV-template.md`.
+You produce evidence; the gate evaluates it. Runtime authority lives in `docs/control/loop-definition.json`; the S5 stage contract lives in `docs/control/agent-protocol.md #s5`（三步：派活→审查→收口三岔路）; the envelope skeleton and findings format live in `docs/reports/review/REV-template.md`.
 
 ## Role Contract
 

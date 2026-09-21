@@ -97,6 +97,7 @@ func submitResult(
 	// the buffered steps; reviewer-written timelines are never rewritten. A
 	// multi-Finding result must correlate each buffered step so S8 never gets an
 	// assignment-wide timeline attached to the wrong Finding.
+	var captureSteps []CaptureStep
 	if request.CaptureDir != "" {
 		steps, captureErr := LoadCaptureStepsStrict(request.CaptureDir)
 		if captureErr != nil {
@@ -117,6 +118,7 @@ func submitResult(
 				"runtime review-result submit --assignment-id "+request.AssignmentID+" --result "+request.ResultPath,
 			)
 		}
+		captureSteps = steps
 	}
 
 	stateData, err := os.ReadFile(statePath)
@@ -188,6 +190,15 @@ func submitResult(
 	}
 	if err := validateClaimResultSet(assignment, &result); err != nil {
 		return loopruntime.Snapshot{}, err
+	}
+	if err := validateCapturePassProvenance(plan, assignment, &result, captureSteps); err != nil {
+		return loopruntime.Snapshot{}, s7GateError(
+			"S7_CAPTURE_PROVENANCE",
+			"PASS evidence is not bound to the ReviewPlan execution window",
+			[]string{err.Error()},
+			[]string{"submit the capture buffer produced by `capture exec` and rerun the command against the unchanged frozen subjects; legacy path evidence remains valid for manually authored observations"},
+			"runtime review-result submit --assignment-id "+request.AssignmentID+" --result "+request.ResultPath,
+		)
 	}
 	if err := validateClaimEvidenceRequirements(plan, assignment, &result); err != nil {
 		return loopruntime.Snapshot{}, err
@@ -674,6 +685,24 @@ func validateEvidenceRefs(root string, state map[string]any, refs []string, owne
 		ref := strings.TrimSpace(rawRef)
 		if ref == "" {
 			return fmt.Errorf("%s contains an empty evidence reference", owner)
+		}
+		if strings.HasPrefix(ref, "command_output:") {
+			if err := validateCommandOutputEvidence(root, ref, owner); err != nil {
+				return err
+			}
+			continue
+		}
+		if strings.HasPrefix(ref, "artifact:") {
+			if err := validateArtifactCaptureRef(ref, owner); err != nil {
+				return err
+			}
+			continue
+		}
+		if strings.HasPrefix(ref, "env:") {
+			if err := validateEnvironmentCaptureRef(ref, owner); err != nil {
+				return err
+			}
+			continue
 		}
 		if strings.HasPrefix(ref, "path:") {
 			rel, wantDigest, err := parsePathEvidenceRef(ref)

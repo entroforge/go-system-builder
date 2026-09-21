@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,7 @@ import (
 // StageFor projects a machine lifecycle state + phase to the Main Spine
 // S-cursor and a short dotted label. The mapping is the single source of
 // truth shared by the CLI `status`/`next` projection and the Hook stage
-// banner; docs/agent-protocol.md "#cursor-mapping" pins the contract.
+// banner; docs/control/agent-protocol.md "#cursor-mapping" pins the contract.
 //
 // Planning phases are formal runtime state. The root argument remains in the
 // signature for callers that also load Runtime from disk, but StageFor never
@@ -85,11 +86,11 @@ func LegacyPlanningPhaseForArtifacts(contractsExists, tasksExists bool) string {
 // It supports generation-1 Runtime migration; normal projection remains
 // authoritative on the committed lifecycle phase.
 func ReconcileLegacyPlanningPhase(root string) (string, error) {
-	contractsExists, err := legacyArtifactExists(root, "docs/contracts", "CONTRACTS-*.md")
+	contractsExists, err := legacyArtifactExists(root, projectlayout.Contracts, "CONTRACTS-*.md")
 	if err != nil {
 		return "", err
 	}
-	tasksExists, err := legacyArtifactExists(root, "docs/tasks", "TASK-*.md")
+	tasksExists, err := legacyArtifactExists(root, projectlayout.Tasks, "TASK-*.md")
 	if err != nil {
 		return "", err
 	}

@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - 'v*.*.*'
   release:
     types:
       - published
@@ -13,6 +16,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -27,13 +34,13 @@ jobs:
       contents: write
 
     env:
-      VERSION: ${{ github.event.release.tag_name || inputs.tag }}
+      VERSION: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -54,12 +61,19 @@ jobs:
       - name: Build release package
         run: make release-checksum VERSION="$VERSION"
 
-      - name: Upload release assets
+      - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber \
-            "dist/vibe-coding-loop-template-$VERSION.tar.gz" \
+          assets=(
+            "dist/vibe-coding-loop-template-$VERSION.tar.gz"
             "dist/sha256sums-$VERSION.txt"
+          )
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$VERSION" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$VERSION" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$VERSION" --generate-notes
+          fi

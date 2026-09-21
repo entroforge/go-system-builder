@@ -29,16 +29,16 @@ func newBatchP0Input(t *testing.T) batchP0 {
 	taskOne := []byte("# TASK 1\n")
 	taskTwo := []byte("# TASK 2\n")
 	files := listingFiles{
-		"docs/tasks/TASK-TEST-01.md": taskOne,
-		"docs/tasks/TASK-TEST-02.md": taskTwo,
+		"docs/dev/tasks/TASK-TEST-01.md": taskOne,
+		"docs/dev/tasks/TASK-TEST-02.md": taskTwo,
 	}
 	documents := []any{
 		map[string]any{
-			"id": "TASK-TEST-01", "kind": "task", "path": "docs/tasks/TASK-TEST-01.md",
+			"id": "TASK-TEST-01", "kind": "task", "path": "docs/dev/tasks/TASK-TEST-01.md",
 			"version": "v1", "sha256": sha256Hex(taskOne), "status": "complete", "generation": 1,
 		},
 		map[string]any{
-			"id": "TASK-TEST-02", "kind": "task", "path": "docs/tasks/TASK-TEST-02.md",
+			"id": "TASK-TEST-02", "kind": "task", "path": "docs/dev/tasks/TASK-TEST-02.md",
 			"version": "v1", "sha256": sha256Hex(taskTwo), "status": "complete", "generation": 1,
 		},
 	}
@@ -80,7 +80,7 @@ func (b *batchP0) addCompletion(t *testing.T, taskID string, mutate func(map[str
 		"producer_agent_id":       "builder-1",
 		"producer_responsibility": "BUILD-WORK-PACKAGE",
 		"subject_refs": []any{
-			map[string]any{"path": "docs/tasks/" + taskID + ".md", "version": "v1", "sha256": sha256Hex(b.files["docs/tasks/"+taskID+".md"])},
+			map[string]any{"path": "docs/dev/tasks/" + taskID + ".md", "version": "v1", "sha256": sha256Hex(b.files["docs/dev/tasks/"+taskID+".md"])},
 		},
 		"conclusion": "completed",
 		"task_id":    taskID,

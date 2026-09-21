@@ -19,8 +19,8 @@ import (
 // plan_checkpoint on every assignment) so register-workgroup's pre-stage
 // step can run for a plan_checkpoint agent. The fixture is self-contained
 // (uses t.TempDir() for the runtime state; the manifest lives under the
-// repo-rooted .claude/workgroups/<req>/<task>/ path register-workgroup
-// expects).
+// isolated project-rooted .claude/workgroups/<req>/<task>/ path
+// register-workgroup expects).
 func planCheckpointWorkgroupState(t *testing.T, root, reqID, workgroupID, taskID, agentID string) (string, string, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -70,7 +70,7 @@ func planCheckpointWorkgroupState(t *testing.T, root, reqID, workgroupID, taskID
 // is written to .claude/evidence/<workgroup>/<task>/activation-<agent>.json
 // with all four hookctx-loader fields populated.
 func TestPreStageActivationEnvelopeWritesActivationFile(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	agentID := "agent-pre-stage-1"
 	envelopePath, err := assignment.PreStageActivationEnvelope(root, "wg-pre-stage", "TASK-pre", agentID, "plan_checkpoint", assignment.ActivationSourceEntry{
 		AgentID:            agentID,
@@ -111,7 +111,7 @@ func TestPreStageActivationEnvelopeWritesActivationFile(t *testing.T) {
 // the pre-stage must NOT write a file (the human Gate signs the readback first,
 // and a pre-staged envelope would silently widen the activation surface).
 func TestPreStageActivationEnvelopeSkipsApprovalMode(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	envelopePath, err := assignment.PreStageActivationEnvelope(root, "wg-approval", "TASK-app", "agent-approval", "plan_approval_required", assignment.ActivationSourceEntry{
 		AgentID: "agent-approval",
 	})
@@ -174,7 +174,7 @@ func TestAgentBeginRejectsAuthoringPlaceholderBeforeRecoveryLookup(t *testing.T)
 // through the existing schema-valid path; then drives the chain against
 // the first registered agent.
 func TestAutoAdvanceToWorkingChainsPlanCheckpointAgent(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	reqID := "REQ-002"
 	workgroupID := "workgroup-delivery-round-1"
 	taskID := "TASK-012"
@@ -237,7 +237,7 @@ func TestAutoAdvanceToWorkingChainsPlanCheckpointAgent(t *testing.T) {
 // gate: even if the auto-chain is invoked for a plan_approval_required
 // agent, it returns a silent skip rather than driving the chain.
 func TestAutoAdvanceToWorkingSkipsPlanApprovalRequired(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	agentID := "agent-ver-req-gap"
 	statePath, journalPath, manifestPath := planCheckpointWorkgroupState(t, root, "REQ-002", "workgroup-delivery-round-1", "TASK-012", agentID)
 
@@ -295,7 +295,7 @@ func TestAutoAdvanceToWorkingSkipsPlanApprovalRequired(t *testing.T) {
 // recovery verb produces the same end state as the auto-chain when given
 // the same inputs (it is a thin wrapper).
 func TestAgentBeginFallbackMatchesAutoChain(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	agentID := "agent-ver-req-gap"
 	statePath, journalPath, manifestPath := planCheckpointWorkgroupState(t, root, "REQ-002", "workgroup-delivery-round-1", "TASK-012", agentID)
 	taskPath := filepath.Join(filepath.Dir(manifestPath), "TASK-012.md")
@@ -390,7 +390,7 @@ var _ = schema.ReadAsset
 // `runtime agent-begin` must synthesize the capability set from the
 // workgroup manifest row (never inventing permissions) and chain to working.
 func TestAgentBeginSynthesizesEnvelopeForLegacyAgent(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	agentID := "agent-ver-req-gap"
 	statePath, journalPath, manifestPath := planCheckpointWorkgroupState(t, root, "REQ-002", "workgroup-delivery-legacy", "TASK-013", agentID)
 	taskPath := filepath.Join(filepath.Dir(manifestPath), "TASK-013.md")
@@ -477,7 +477,7 @@ func TestAgentBeginSynthesizesEnvelopeForLegacyAgent(t *testing.T) {
 // idempotency short-circuit made the state unrecoverable). The chain must
 // resume at activation_sent, not declare the agent idempotent.
 func TestAgentBeginResumesMidChainAfterFailure(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	agentID := "agent-ver-req-gap"
 	statePath, journalPath, manifestPath := planCheckpointWorkgroupState(t, root, "REQ-002", "workgroup-delivery-resume", "TASK-014", agentID)
 	taskPath := filepath.Join(filepath.Dir(manifestPath), "TASK-014.md")

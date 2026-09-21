@@ -1544,13 +1544,13 @@ func validateS9TransitionID(transitionID string) error {
 	if s9RuntimeTransitionIDs[transitionID] {
 		return nil
 	}
-	return fmt.Errorf("TransitionID %q is not declared in docs/loop-definition.json; repair checkpoints may only journal whitelisted transitions (%s)",
+	return fmt.Errorf("TransitionID %q is not declared in docs/control/loop-definition.json; repair checkpoints may only journal whitelisted transitions (%s)",
 		transitionID, strings.Join(append(append([]string{}, repairAllowedTransitions...), "S9-SESSION-OPEN", "S9-RESULT-SUBMIT", "S9-TARGETED-FAILURE"), ", "))
 }
 
 // whitelistChecked is the RC-09 (S9-8) emission-site guard for compile-time
 // pinned TransitionID literals. Because the argument is a literal reviewed
-// against docs/loop-definition.json, a whitelist violation is a programming
+// against docs/control/loop-definition.json, a whitelist violation is a programming
 // error, not a runtime condition: it fails the process loudly rather than
 // writing an undeclared transition into the journal.
 func whitelistChecked(transitionID string) string {

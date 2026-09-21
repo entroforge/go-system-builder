@@ -18,8 +18,8 @@ func TestGenerateReadbackRequestsCreatesOneSchemaValidPackagePerAssignment(t *te
 		t.Fatal(err)
 	}
 	documents := []team.DocumentReference{
-		{ID: "TASK-001", Kind: "task", Path: "docs/tasks/TASK-001.md", Version: "v1", SHA256: hash('1'), ReadOrder: 1},
-		{ID: "CONTRACTS-001", Kind: "contract", Path: "docs/contracts/CONTRACTS-001.md", Version: "v1", SHA256: hash('2'), ReadOrder: 2},
+		{ID: "TASK-001", Kind: "task", Path: "docs/dev/tasks/TASK-001.md", Version: "v1", SHA256: hash('1'), ReadOrder: 1},
+		{ID: "CONTRACTS-001", Kind: "contract", Path: "docs/dev/contracts/CONTRACTS-001.md", Version: "v1", SHA256: hash('2'), ReadOrder: 2},
 		{ID: "REQ-002", Kind: "req", Path: "docs/requirements/REQ-002.md", Version: "v1", SHA256: hash('3'), ReadOrder: 3},
 	}
 

@@ -294,18 +294,18 @@ func TestRuntimeRecoveryPlanReplaysTrustedPlanningEvidence(t *testing.T) {
 		content        string
 	}{
 		{
-			path: "docs/design/architecture/ARCHITECTURE-039-recovery.md", kind: "planning_design",
+			path: "docs/architecture/ARCHITECTURE-039-recovery.md", kind: "planning_design",
 			responsibility: "Architect", id: "ev-recovery-design",
 			content: "# Architecture\n\n> REQ: REQ-039\n> Status: locked\n> Version: v1.0.0\n",
 		},
 		{
-			path: "docs/contracts/CONTRACTS-039-recovery.md", kind: "planning_contract",
+			path: "docs/dev/contracts/CONTRACTS-039-recovery.md", kind: "planning_contract",
 			responsibility: "Contract Planner", id: "ev-recovery-contract",
 			content: "# Contracts\n\n> REQ: REQ-039\n> Status: locked\n> Version: v1.0.0\n\n" +
 				"## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:--|:--|:--|:--|\n| REQ-039 | — | BE-039-RECOVERY §1 | — |\n",
 		},
 		{
-			path: "docs/tasks/TASK-039-01.md", kind: "planning_task",
+			path: "docs/dev/tasks/TASK-039-01.md", kind: "planning_task",
 			responsibility: "Task Planner", id: "ev-recovery-task",
 			content: "# Task\n\n> REQ: REQ-039\n> Status: complete\n> Version: v1.0.0\n> Primary contract: BE-039-RECOVERY\n\n" +
 				"## 3. Delivered Clauses\n\n| Contract | Delivered clauses |\n|:--|:--|\n| BE-039-RECOVERY | §1 |\n\n" +
@@ -318,7 +318,7 @@ func TestRuntimeRecoveryPlanReplaysTrustedPlanningEvidence(t *testing.T) {
 	}
 	// The batch-quality guard (tasks_checked) resolves the primary contract on
 	// disk and reconciles it against the index clause cell (L3-S4 v4.0.1).
-	writeRecoveryFile(t, root, "docs/contracts/BE-039-RECOVERY.md",
+	writeRecoveryFile(t, root, "docs/dev/contracts/BE-039-RECOVERY.md",
 		"# BE-039-RECOVERY\n\n> REQ: REQ-039\n> Status: locked\n> Version: v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n")
 
 	planPath := createRecoveryPlan(t, root)
@@ -425,7 +425,7 @@ func TestRuntimeRecoveryApplyRejectsNewArtifactAfterPlan(t *testing.T) {
 	corrupt := []byte(`{"runtime":"corrupt-before-new-artifact"}`)
 	writeActiveRuntimeBytes(t, root, corrupt)
 	planPath := createRecoveryPlan(t, root)
-	writeRecoveryFile(t, root, "docs/design/architecture/ARCHITECTURE-039-late.md", "# Late\n\n> REQ: REQ-039\n> Status: locked\n> Version: v1.0.0\n")
+	writeRecoveryFile(t, root, "docs/architecture/ARCHITECTURE-039-late.md", "# Late\n\n> REQ: REQ-039\n> Status: locked\n> Version: v1.0.0\n")
 
 	code, stdout, stderr := runRecovery(t, root,
 		"runtime", "recover", "apply",
@@ -582,6 +582,10 @@ func writeTrustedPlanningEvidence(t *testing.T, root, id, kind, responsibility, 
 
 func runRecovery(t *testing.T, root string, args ...string) (int, string, string) {
 	t.Helper()
+	if len(args) >= 3 && args[0] == "runtime" && args[1] == "recover" && args[2] == "plan" {
+		req039fixtures.CommitFixture(t, root)
+		args = append(args, "--dev-branch", "test-development", "--release-upstream", "origin/release")
+	}
 	var stdout, stderr bytes.Buffer
 	code := cli.Run(args, bytes.NewReader(nil), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()

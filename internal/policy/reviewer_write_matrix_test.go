@@ -34,7 +34,7 @@ func evaluateWrite(t *testing.T, engine *policy.Engine, tool, path, stage, works
 }
 
 func TestReviewerProductWriteHardDeny(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -54,14 +54,14 @@ func TestReviewerProductWriteHardDeny(t *testing.T) {
 	}
 
 	// Locked spec writes are product-surface writes too.
-	decision = evaluateWrite(t, engine, "Edit", "docs/contracts/CONTRACTS-001.md", "verification", "")
+	decision = evaluateWrite(t, engine, "Edit", "docs/dev/contracts/CONTRACTS-001.md", "verification", "")
 	if decision.Decision != "deny" || decision.RuleID != policy.RuleReviewerProductWrite {
 		t.Fatalf("locked spec edit in verification must deny, got %q", decision.Decision)
 	}
 }
 
 func TestReviewerNotebookEditProductWriteHardDeny(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestReviewerNotebookEditProductWriteHardDeny(t *testing.T) {
 }
 
 func TestReviewerWriteAuthorizedSurfacesStayOpen(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestReviewerWriteAuthorizedSurfacesStayOpen(t *testing.T) {
 }
 
 func TestReviewerBashMutationHardDenyAndReadOnlyCommandsStayOpen(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestReviewerBashMutationHardDenyAndReadOnlyCommandsStayOpen(t *testing.T) {
 }
 
 func TestReviewerProductWriteRuleScopedToVerificationStage(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestReviewerProductWriteRuleScopedToVerificationStage(t *testing.T) {
 }
 
 func TestReviewerWriteSurfaceRejectsSymlinkEscape(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -201,5 +201,24 @@ func TestReviewerWriteSurfaceRejectsSymlinkEscape(t *testing.T) {
 	}
 	if decision.Decision != "deny" || decision.RuleID != policy.RuleReviewerProductWrite {
 		t.Fatalf("symlinked evidence surface must deny, got %q (%s)", decision.Decision, decision.RuleID)
+	}
+}
+
+func TestNestedReleaseAuditDoesNotInheritReviewerOrRepairPermission(t *testing.T) {
+	engine := loadRepositoryPolicy(t)
+	for _, stage := range []string{"verification", "bug_resolution"} {
+		for _, path := range []string{"docs/reports/release-audits/audit.md", "docs/reports/release-audits/sub/audit.md"} {
+			d, err := engine.Evaluate(policy.Input{Event: "PreToolUse", ToolName: "Write", ToolInput: map[string]any{"file_path": path}, Runtime: policy.RuntimeContext{CurrentState: stage, CurrentPhase: "planning"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectedRule := policy.RuleReviewerProductWrite
+			if stage == "bug_resolution" {
+				expectedRule = policy.RuleRepairWriteBeforeExecution
+			}
+			if d.Decision != "deny" || d.RuleID != expectedRule {
+				t.Fatalf("%s must deny %s through %s: %+v", stage, path, expectedRule, d)
+			}
+		}
 	}
 }

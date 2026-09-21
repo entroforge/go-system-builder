@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"os"
 	"path/filepath"
 	"sort"
@@ -187,9 +188,16 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 		return nil, "", fmt.Errorf("resolve repository root: %w", err)
 	}
 	artifacts := []ArtifactRef{}
+	scope := pathscope.New(root)
 	err = filepath.WalkDir(rootAbs, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if scope.Excludes(path) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		rel, err := filepath.Rel(rootAbs, path)
 		if err != nil {

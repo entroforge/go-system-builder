@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Structured Logging
 ## Authority
-Quality guidance only. Security and data-handling policy remain in `docs/rules/security.md`; stage routing remains in `docs/agent-protocol.md`.
+Quality guidance only. Security and data-handling policy remain in `docs/rules/security.md`; stage routing remains in `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to application logs, structured fields, correlation IDs, audit records, redaction, log levels, or operational diagnostics.
 ## Required Inputs

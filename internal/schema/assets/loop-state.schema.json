@@ -1244,6 +1244,34 @@
         "approved_at"
       ],
       "properties": {
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "project_root",
+            "dev_branch",
+            "release_upstream",
+            "bound_commit"
+          ],
+          "properties": {
+            "project_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dev_branch": {
+              "type": "string",
+              "minLength": 1
+            },
+            "release_upstream": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bound_commit": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
         "path": {
           "type": "string",
           "minLength": 1
@@ -1343,6 +1371,7 @@
             "ui_baseline",
             "ui_prototype",
             "contract",
+            "dispatch_plan",
             "task",
             "review",
             "qa",

@@ -11,7 +11,7 @@ import (
 // Worker in a pre-plan state may not mutate the product surface before its
 // PLAN_REPORT is recorded. The main session (no Agent context) is exempt.
 func TestFirstWriteBarrier(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

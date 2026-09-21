@@ -7,7 +7,7 @@ version: 0.2.1
 # Requirement Funnel
 
 ## Authority
-Stage contract: `docs/agent-protocol.md` #s0 (primary_skill). Structure and field definitions: `docs/requirements/REQ-template.md` (§A→§B→§C funnel). This skill carries process only — how to think, converge, and hand up.
+Stage contract: `docs/control/agent-protocol.md` #s0 (primary_skill). Structure and field definitions: `docs/requirements/REQ-template.md` (§A→§B→§C funnel). This skill carries process only — how to think, converge, and hand up.
 
 ## Entry Conditions
 - S0 starts (new REQ), or an amendment reopens a locked REQ (new generation) — both run the same funnel.

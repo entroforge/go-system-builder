@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # JWT Authentication
 ## Authority
-Quality guidance only. Security policy remains in `docs/rules/security.md`; stage routing remains in `docs/agent-protocol.md`.
+Quality guidance only. Security policy remains in `docs/rules/security.md`; stage routing remains in `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to JWT token creation or validation, claims, signing keys, token transport, refresh flows, or authentication middleware.
 ## Required Inputs

@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # HTTP API Design
 ## Authority
-Quality guidance only. Locked interface meaning remains in the applicable contract; stage routing remains in `docs/agent-protocol.md`.
+Quality guidance only. Locked interface meaning remains in the applicable contract; stage routing remains in `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to HTTP request and response behavior, resource design, headers, status codes, caching, pagination, or errors.
 ## Required Inputs

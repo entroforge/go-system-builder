@@ -51,16 +51,27 @@ func TestCT03909_CleanWorktreeStopViaSubagentStop(t *testing.T) {
 	}
 
 	out := stdout + stderr
+
+	if repo.developHEAD() != developBefore {
+		t.Fatal("SubagentStop must not mutate the authority branch")
+	}
+	if _, err := os.Stat(repo.wtPath); err != nil {
+		t.Fatal("SubagentStop must preserve the worker checkout", err)
+	}
+	code, stdout, stderr = runTaskIntegrate(t, root, "assignment-ct09")
+	if code != 0 {
+		t.Fatalf("Main integration failed: %s %s", stdout, stderr)
+	}
+
 	developAfterFirst := repo.developHEAD()
 	if developAfterFirst == developBefore {
 		t.Fatalf("CT-039-09 clean stop must non-squash merge into develop; out=%s", out)
 	}
-	if !strings.Contains(strings.ToLower(out), "state=verified") &&
-		!strings.Contains(strings.ToLower(out), "verified") {
+	if !strings.Contains(strings.ToLower(stdout+stderr), "integrated") {
 		t.Fatalf("CT-039-09 must surface verified progress, got %s", out)
 	}
 	cpPath, cpState := readIntegrationCheckpoint(t, root)
-	if cpState != "verified" && cpState != "merged" {
+	if cpState != "complete" {
 		t.Fatalf("CT-039-09 durable checkpoint want verified/merged, got %q path=%s", cpState, cpPath)
 	}
 	if !strings.Contains(cpPath, filepath.Join("worktree", "assignment-ct09")) {
@@ -68,7 +79,7 @@ func TestCT03909_CleanWorktreeStopViaSubagentStop(t *testing.T) {
 	}
 
 	// Second SubagentStop: ack + cleanup → complete (BUG-039-38).
-	code2, stdout2, stderr2 := runHookWithRunner(t, runner, root, "SubagentStop", body)
+	code2, stdout2, stderr2 := runTaskIntegrate(t, root, "assignment-ct09")
 	if code2 != 0 {
 		t.Fatalf("second SubagentStop failed: code=%d stderr=%s stdout=%s", code2, stderr2, stdout2)
 	}

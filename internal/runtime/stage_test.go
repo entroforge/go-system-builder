@@ -8,15 +8,15 @@ import (
 
 func TestStageForIgnoresTemplateArtifacts(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs", "contracts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "contracts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs", "tasks"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		filepath.Join(root, "docs", "contracts", "CONTRACTS-template.md"),
-		filepath.Join(root, "docs", "tasks", "TASK-template.md"),
+		filepath.Join(root, "docs", "dev", "contracts", "CONTRACTS-template.md"),
+		filepath.Join(root, "docs", "dev", "tasks", "TASK-template.md"),
 	} {
 		if err := os.WriteFile(path, []byte("template"), 0o644); err != nil {
 			t.Fatal(err)
@@ -31,15 +31,15 @@ func TestStageForIgnoresTemplateArtifacts(t *testing.T) {
 
 func TestStageForUsesFormalPhaseWithConcretePlanningArtifacts(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs", "contracts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "contracts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs", "tasks"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		filepath.Join(root, "docs", "contracts", "CONTRACTS-001.md"),
-		filepath.Join(root, "docs", "tasks", "TASK-001.md"),
+		filepath.Join(root, "docs", "dev", "contracts", "CONTRACTS-001.md"),
+		filepath.Join(root, "docs", "dev", "tasks", "TASK-001.md"),
 	} {
 		if err := os.WriteFile(path, []byte("artifact"), 0o644); err != nil {
 			t.Fatal(err)
@@ -54,15 +54,15 @@ func TestStageForUsesFormalPhaseWithConcretePlanningArtifacts(t *testing.T) {
 
 func TestStageForFormalPlanningPhaseDoesNotScanArtifacts(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs", "contracts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "contracts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs", "tasks"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		filepath.Join(root, "docs", "contracts", "CONTRACTS-001.md"),
-		filepath.Join(root, "docs", "tasks", "TASK-001.md"),
+		filepath.Join(root, "docs", "dev", "contracts", "CONTRACTS-001.md"),
+		filepath.Join(root, "docs", "dev", "tasks", "TASK-001.md"),
 	} {
 		if err := os.WriteFile(path, []byte("artifact"), 0o644); err != nil {
 			t.Fatal(err)
@@ -101,18 +101,18 @@ func TestLegacyPlanningPhaseForArtifactsReconcilesThreeStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			if tc.contractsExists {
-				if err := os.MkdirAll(filepath.Join(root, "docs", "contracts"), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "contracts"), 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(root, "docs", "contracts", "CONTRACTS-legacy.md"), []byte("legacy"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(root, "docs", "dev", "contracts", "CONTRACTS-legacy.md"), []byte("legacy"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if tc.tasksExists {
-				if err := os.MkdirAll(filepath.Join(root, "docs", "tasks"), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "tasks"), 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(root, "docs", "tasks", "TASK-legacy.md"), []byte("legacy"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(root, "docs", "dev", "tasks", "TASK-legacy.md"), []byte("legacy"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}

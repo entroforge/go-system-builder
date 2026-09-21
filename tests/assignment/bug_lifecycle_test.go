@@ -118,12 +118,12 @@ func bugState(t *testing.T, statePath, bugID string) map[string]any {
 func TestEndToEndDefectScenario(t *testing.T) {
 	root := t.TempDir()
 	// Copy loop-definition.json so the catalog can resolve.
-	defSrc := filepath.Join("..", "..", "docs", "loop-definition.json")
+	defSrc := filepath.Join("..", "..", "docs", "control", "loop-definition.json")
 	defData, err := os.ReadFile(defSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	os.MkdirAll(defDir, 0o755)
 	os.WriteFile(filepath.Join(defDir, "loop-definition.json"), defData, 0o644)
 
@@ -476,12 +476,12 @@ func journalLastSeq(journalPath string) int {
 // transition.Apply(GTR-004) → paused.
 func TestRepairLimitBridgeIntegrationE2E(t *testing.T) {
 	root := t.TempDir()
-	defSrc := filepath.Join("..", "..", "docs", "loop-definition.json")
+	defSrc := filepath.Join("..", "..", "docs", "control", "loop-definition.json")
 	defData, _ := os.ReadFile(defSrc)
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), defData, 0o644)
+	os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), defData, 0o644)
 
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")

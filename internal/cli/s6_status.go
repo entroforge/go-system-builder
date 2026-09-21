@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entroforge/go-system-builder/internal/dispatch"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 )
 
@@ -30,10 +31,16 @@ func runS6Command(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("s6 status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "repository root")
+	capacity := flags.Int("capacity", 0, "actual total concurrent slots; omit to inspect without selecting a batch")
+	asJSON := flags.Bool("json", false, "machine-readable dispatch projection")
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
 	}
-	return runS6Status(*root, stdout)
+	if *capacity < 0 {
+		fmt.Fprintln(stderr, "capacity must be nonnegative")
+		return 2
+	}
+	return runS6DispatchStatus(*root, *capacity, *asJSON, stdout, stderr)
 }
 
 // runS6Status reads the current runtime state and prints the S6 batch
@@ -216,4 +223,49 @@ func s6ScopeDeviations(envelope map[string]any) []string {
 		}
 	}
 	return devs
+}
+
+func runS6DispatchStatus(root string, capacity int, asJSON bool, stdout, stderr io.Writer) int {
+	snapshot, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
+	if lifecycle["state"] != "building" {
+		message := "S6 dispatch unavailable in the current lifecycle state; Builder dispatch requires building after S5 approval. Use `loop-harness next` for the current stage."
+		if asJSON {
+			return encodeJSON(stdout, map[string]any{"lifecycle_state": lifecycle["state"], "dispatch_available": false, "next": []string{}, "reason": message})
+		}
+		fmt.Fprintf(stdout, "Lifecycle: %v. %s\n", lifecycle["state"], message)
+		return 0
+	}
+	b, err := dispatch.Load(root, snapshot.State, capacity)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if asJSON {
+		return encodeJSON(stdout, b)
+	}
+	if b.Legacy {
+		fmt.Fprintln(stdout, "legacy: no reviewed dispatch plan; existing execution remains recoverable")
+		return runS6Status(root, stdout)
+	}
+	for _, w := range b.Plan.Warnings {
+		fmt.Fprintln(stdout, "warning:", w)
+	}
+	fmt.Fprintf(stdout, "S6 dispatch plan: %s (runtime revision %v, total capacity %d)\n", b.Plan.Path, b.Revision, capacity)
+	for _, r := range b.Rows {
+		mark := " "
+		if r.State == "integrated" {
+			mark = "x"
+		}
+		fmt.Fprintf(stdout, "W%d [%s] %s — %s: %s\n", r.Task.Wave, mark, r.Task.ID, r.State, r.Reason)
+	}
+	fmt.Fprintf(stdout, "Next batch: %v\n", b.Next)
+	if capacity == 0 {
+		fmt.Fprintln(stdout, "Declare actual platform capacity with --capacity to select a batch; no fixed default of 2.")
+	}
+	return 0
 }

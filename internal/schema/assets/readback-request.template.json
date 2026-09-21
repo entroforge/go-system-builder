@@ -15,7 +15,7 @@
     {
       "id": "TASK-001",
       "kind": "task",
-      "path": "docs/tasks/TASK-001.md",
+      "path": "docs/dev/tasks/TASK-001.md",
       "version": "v1.0.0",
       "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
       "read_order": 1
@@ -23,7 +23,7 @@
     {
       "id": "CONTRACTS-001",
       "kind": "contract",
-      "path": "docs/contracts/CONTRACTS-001.md",
+      "path": "docs/dev/contracts/CONTRACTS-001.md",
       "version": "v1.0.0",
       "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
       "read_order": 2

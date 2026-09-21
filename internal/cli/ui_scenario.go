@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -82,7 +83,7 @@ func hasCompleteUIDesignPackageForModule(root, module string) (bool, error) {
 		}
 	}
 	pagePaths := make([]string, 0)
-	if err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, err error) error {
+	if err := pathscope.WalkDir(root, directory, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

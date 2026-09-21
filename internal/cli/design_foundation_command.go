@@ -71,7 +71,7 @@ func printDesignFoundationReport(w io.Writer, report designfoundation.Report) {
 		fmt.Fprintf(w, "  [%s] %s: %s — %s\n", f.Severity, f.Code, loc, f.Detail)
 	}
 	if len(report.Warnings()) > 0 {
-		fmt.Fprintln(w, "next: missing Foundation → skills/design-foundation F0–F6; unregistered hex → packages/design-tokens/tokens.json; repeats → docs/design/decisions/ (CP-*/EX-*, legacy docs/design/components/ still recognized)")
+		fmt.Fprintln(w, "next: missing Foundation → skills/design-foundation F0–F6; unregistered hex → docs/design/tokens/tokens.json; repeats → docs/design/decisions/ (CP-*/EX-*, legacy docs/design/components/ still recognized)")
 	}
 }
 

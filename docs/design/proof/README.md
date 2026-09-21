@@ -17,7 +17,7 @@ F5 只用最小而有张力的 HTML 样本证明语言可辐射。模块 `protot
 
 每张 Tile 至少包含：版式与字体关系、色彩角色、表面层级、图像/图标/材质、主次行动与状态、一段真实内容、一个成功态、一个失败或空态、对应的 Thesis / Laws / Anti-principles / 风险。
 
-F2 Tile 可以使用候选 hex。F6 之后的 Anchor / Stress / Golden Flow 与模块原型必须引用 `packages/design-tokens/tokens.css`，不得再发明未登记色值。
+F2 Tile 可以使用候选 hex。F6 之后的 Anchor / Stress / Golden Flow 与模块原型必须引用 `docs/design/tokens/tokens.css`，不得再发明未登记色值。
 
 ## Anchor / Stress Screen
 

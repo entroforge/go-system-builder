@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"io"
 	"os"
 	"path/filepath"
@@ -229,7 +230,7 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", fmt.Errorf("read Agent Definition (dispatch derives the worker capability set — allowed tools, write paths, command classes — from the definition file, so it must exist in the repository): %w", err)))
 		return 1
 	}
-	protocolBytes, err := os.ReadFile(filepath.Join(root, "docs", "agent-protocol.md"))
+	protocolBytes, err := os.ReadFile(filepath.Join(root, projectlayout.Protocol))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", fmt.Errorf("read agent protocol: %w", err)))
 		return 1
@@ -266,7 +267,7 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 			map[string]any{"id": "repair-contract", "path": contractPath, "version": "approved", "sha256": contractSHA},
 			map[string]any{"id": "repair-session", "path": sessionPath, "version": "planned", "sha256": sessionSHA},
 			map[string]any{"id": "repair-plan", "path": planRef.Path, "version": "compiled", "sha256": planRef.SHA256},
-			map[string]any{"id": "agent-protocol", "path": "docs/agent-protocol.md", "version": "current", "sha256": sha256HexForArtifact(protocolBytes)},
+			map[string]any{"id": "agent-protocol", "path": projectlayout.Protocol, "version": "current", "sha256": sha256HexForArtifact(protocolBytes)},
 			map[string]any{"id": "builder-definition", "path": definitionPath, "version": "current", "sha256": sha256HexForArtifact(definitionBytes)},
 		},
 		"risk_tags":                   []any{},
@@ -275,7 +276,7 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 			"assignment_id": manifestAssignmentID, "responsibility_id": "BUILD-WORK-PACKAGE", "role_family": *roleFamily,
 			"scope": append([]string(nil), target.Scope...), "agent_id": *agentID, "agent_definition_ref": definitionPath,
 			"skill_refs": []string{"code-quality", "testing-strategy", "api-contracts", "state-machine-design", "integration-verification"},
-			"read_paths": []string{contractPath, sessionPath, planRef.Path, "docs/agent-protocol.md"}, "write_paths": append([]string(nil), target.Scope...),
+			"read_paths": []string{contractPath, sessionPath, planRef.Path, projectlayout.Protocol}, "write_paths": append([]string(nil), target.Scope...),
 			"output_paths": []string{".claude/review/repair/", ".claude/evidence/"}, "depends_on": []string{}, "reuse_decision": "create",
 			"grouping_rationale": "one Builder owns one immutable RepairAssignment; cross-assignment dependencies and locks are consumed by S9 Runtime", "status": "planned", "dispatch_mode": "plan_checkpoint",
 		}},

@@ -7,7 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/qualitygate"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -69,7 +74,7 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 		Automation: []string{
 			"do not call loop-harness for normal continuation",
 			"treat this Hook packet as the Controller checkpoint",
-			"use loop-harness manually only for initialization/binding, runtime reconcile after integrity failure, rollback/rollover, release Gateway, or the explicit worktree integration follow-up (`runtime task-integrate`)",
+			"use loop-harness manually only for initialization/binding, runtime reconcile after integrity failure, rollback/rollover, release Gateway, the read-only S6 dispatch projection (`s6 status --capacity <actual total slots>`), or the explicit worktree integration follow-up (`runtime task-integrate`)",
 		},
 		HumanRequired: next.HumanRequired,
 		Recovery:      []string{"continue from this packet's Stage and Next", "read " + next.ProtocolRef, "if blocked or unclear read " + loopManualRef},
@@ -135,8 +140,8 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 	case "SubagentStop":
 		guidance.Integration = []string{
 			"inspect the subagent worktree and review its committed diff and required checks",
-			"verify the task branch targets the current develop integration branch",
-			"merge the reviewed worktree branch back into develop/current integration branch",
+			"verify the task branch targets the REQ-bound development branch",
+			"merge the reviewed worktree branch back into the REQ-bound development branch",
 			"remove worktree only after the merge and checks succeed",
 			"record completion_ack after integration; never merge this path into master/main or release",
 		}
@@ -159,7 +164,7 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 			guidance.Missing = appendUnique(guidance.Missing, "agent_completion_report")
 			guidance.Action = "submit completion or blocker report before stopping"
 		} else {
-			guidance.Action = "review and integrate the subagent worktree into the current development branch before acknowledging stop"
+			guidance.Action = "review and integrate the subagent worktree into the current development branch then acknowledge and clean it via runtime task-integrate"
 		}
 	case "TeammateIdle":
 		guidance.Automation = append(guidance.Automation,
@@ -206,6 +211,11 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 	// on every normal recovery packet.
 	if lifecycleState == "acceptance" || lifecycleState == "release_audit" {
 		applyS10Guidance(&guidance)
+	}
+
+	if lifecycleState == "building" && qualitygate.HasDispatchPlan(state) {
+		applyDispatchGuidance(root, state, event, input, &guidance)
+		guidance.Automation = append(guidance.Automation, "read the approved overall dispatch plan and `loop-harness s6 status --capacity <actual total slots>`; dispatch compatible ready tasks, integrate reported results promptly and refill slots without waiting for unrelated tasks in a prior wave")
 	}
 
 	guidance.Instruction = formatGuidanceInstruction(guidance)
@@ -805,7 +815,11 @@ func reconcileSpecialGuidance(root string, snapshot runtime.Snapshot, event stri
 	}
 	switch event {
 	case "SubagentStop":
-		return HandleSubagentStopForController(context.Background(), root, snapshot, loaded, event, input)
+		guidance := buildGuidance(root, snapshot.State, event, input)
+		if assignment := findAssignmentForInput(loaded, input); assignment != nil && assignment.WorktreePath != "" {
+			guidance.Integration = append(guidance.Integration, "Main must run runtime task-integrate --assignment-id "+assignment.AssignmentID+" in the authority root; stopping does not merge or clean a worktree")
+		}
+		return guidance, snapshot, nil
 	case "TeammateIdle":
 		return HandleTeammateIdleForController(root, snapshot, loaded, event, input)
 	default:
@@ -1190,11 +1204,11 @@ func freshStartGuidance(root, event string) *policy.Guidance {
 		LifecycleState: "inactive",
 		Objective:      "produce one human-locked requirement",
 		Action:         "draft docs/requirements/REQ-<id>.md from docs/requirements/REQ-template.md (skills: requirement-funnel), have the human lock it, then bind with `loop-harness req bind --approved-by <the human who locked it>` (bind auto-initializes the runtime)",
-		ProtocolRef:    "docs/agent-protocol.md#s0",
+		ProtocolRef:    "docs/control/agent-protocol.md#s0",
 		ManualRef:      loopManualRef,
 		PrimarySkill:   "requirement-funnel",
-		Read:           []string{"docs/agent-protocol.md#s0", "docs/requirements/REQ-template.md"},
-		ReadOrder:      []string{"LOOP RECOVERY packet (this message)", "docs/agent-protocol.md#s0", "skills/requirement-funnel/SKILL.md", "docs/requirements/REQ-template.md"},
+		Read:           []string{"docs/control/agent-protocol.md#s0", "docs/requirements/REQ-template.md"},
+		ReadOrder:      []string{"LOOP RECOVERY packet (this message)", "docs/control/agent-protocol.md#s0", "skills/requirement-funnel/SKILL.md", "docs/requirements/REQ-template.md"},
 		Missing:        []string{"human_locked_req"},
 		DoneWhen:       []string{"a locked REQ exists and `req bind` succeeds (the runtime is initialized by bind)"},
 		Blocked:        false,
@@ -1215,17 +1229,17 @@ func fallbackGuidance(event string) *policy.Guidance {
 		LifecycleState: "unknown",
 		Objective:      "recover a valid runtime cursor",
 		Action:         "run loop-harness runtime reconcile --root .",
-		ProtocolRef:    "docs/agent-protocol.md#cursor-mapping",
+		ProtocolRef:    "docs/control/agent-protocol.md#cursor-mapping",
 		ManualRef:      loopManualRef,
 		PrimarySkill:   "loop-orchestration",
-		Read:           []string{".claude/loop-state.json", "docs/loop-definition.json"},
-		ReadOrder:      []string{"LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/agent-protocol.md#cursor-mapping", loopManualRef},
+		Read:           []string{".claude/loop-state.json", projectlayout.Definition},
+		ReadOrder:      []string{"LOOP RECOVERY packet (this message)", "AGENTS.md", ".claude/loop-state.json", "docs/control/agent-protocol.md#cursor-mapping", loopManualRef},
 		Missing:        []string{"valid_runtime_cursor"},
 		DoneWhen:       []string{"runtime and journal reconcile successfully"},
 		Blocked:        true,
 		Blocker:        "the Runtime snapshot could not be safely reconciled",
 		Instruction:    "",
-		Recovery:       []string{"read docs/agent-protocol.md#cursor-mapping", "read " + loopManualRef + " (fallback: " + loopManualFallbackRef + ")", "run loop-harness runtime reconcile --root ."},
+		Recovery:       []string{"read docs/control/agent-protocol.md#cursor-mapping", "read " + loopManualRef + " (fallback: " + loopManualFallbackRef + ")", "run loop-harness runtime reconcile --root ."},
 		Automation:     []string{"normal continuation is suspended until the Runtime cursor is reconciled"},
 	}
 	guidance.Instruction = formatGuidanceInstruction(*guidance)
@@ -1315,17 +1329,8 @@ func HandleTeammateIdleForController(root string, snapshot runtime.Snapshot, loa
 	return guidance, snapshot, nil
 }
 
-// HandleSubagentStopForController wires SubagentStop through the Worktree
-// Integrator (BUG-039-05) per BUG-039-06 §4.1:
-//
-//  1. Match the loaded assignment by agent_id / assignment_id.
-//  2. Call integration.Inspect. If Ready → Integrate(Acknowledge=false,
-//     Cleanup=false). If !Ready → surface blockers as Guidance and
-//     preserve the worktree.
-//  3. Surface the checkpoint in the Milestone via refreshMilestone.
-//
-// Cleanup and Acknowledge happen on subsequent calls (TeammateIdle or
-// another SubagentStop) — never in this handler (BUG-039-06 §4.2).
+// HandleSubagentStopForController is the explicit Main task-integrate handler.
+// Lifecycle hooks never invoke this mutation path.
 func HandleSubagentStopForController(ctx context.Context, root string, snapshot runtime.Snapshot, loaded *hookctx.LoadedContext, event string, input policy.Input) (policy.Guidance, runtime.Snapshot, error) {
 	if !isGuidanceEvent(event) {
 		return policy.Guidance{}, snapshot, fmt.Errorf("HandleSubagentStop: %q is not a guidance event", event)
@@ -1350,22 +1355,77 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	root = filepath.Clean(root)
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
-	targetBranch := assignment.TargetBranch
-	if targetBranch == "" {
-		targetBranch = "develop"
+	targetBranch, targetErr := fileview.DevelopmentRef(snapshot.State)
+	if targetErr != nil {
+		return policy.Guidance{}, snapshot, targetErr
+	}
+	targetBranch = strings.TrimPrefix(targetBranch, "refs/heads/")
+	if assignment.TargetBranch != "" && strings.TrimPrefix(assignment.TargetBranch, "refs/heads/") != targetBranch {
+		return policy.Guidance{}, snapshot, fmt.Errorf("assignment target %s differs from bound development branch %s; reconcile the assignment", assignment.TargetBranch, targetBranch)
 	}
 
-	// First SubagentStop: merge → verified (Acknowledge=false, Cleanup=false).
-	// Subsequent SubagentStop after verified: ack + cleanup follow-up
-	// (BUG-039-06 §4.2 / BUG-039-38). Consult prior BEFORE treating Inspect
-	// !Ready as terminal — after merge, Inspect commonly fails with
-	// ErrMissingCommits (no commits beyond merge base).
+	// Consult the receipt before inspection: received branches have no new
+	// commits beyond the merge base, and cleanup may already have removed the path.
 	prior := loadPriorIntegrationState(root, loaded.PolicyContext.RuntimeID, loaded.BaselineGeneration, assignment.AssignmentID)
-	acknowledge, cleanup := false, false
+	priorPath := integration.DefaultCheckpointStore().Path(root, loaded.PolicyContext.RuntimeID, loaded.BaselineGeneration, assignment.AssignmentID)
+	priorCheckpoint, priorFound, _ := integration.DefaultCheckpointStore().Load(priorPath)
+	if priorFound && priorCheckpoint.MergeCommit == "" && priorCheckpoint.SourceHead != "" && priorCheckpoint.TargetHead != "" {
+		// A lost merge response may be followed by ordinary commits on the
+		// bound development branch. Walk that branch's first-parent merge
+		// history and accept only the exact two-parent merge whose first and
+		// second parents are the inspected target/source heads. The explicit
+		// ancestry checks keep an unrelated merge from being mistaken for the
+		// receipt merely because it is reachable from the current branch tip.
+		targetRef := "refs/heads/" + targetBranch
+		currentTarget, headErr := fileview.Resolve(root, targetRef)
+		mergeCandidates, listErr := exec.CommandContext(ctx, "git", "-C", root, "rev-list", "--first-parent", "--merges", targetRef).Output()
+		if headErr == nil && listErr == nil {
+			isAncestor := func(ancestor, descendant string) bool {
+				return exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", ancestor, descendant).Run() == nil
+			}
+			for _, candidate := range strings.Fields(string(mergeCandidates)) {
+				parentsRaw, showErr := exec.CommandContext(ctx, "git", "-C", root, "show", "-s", "--format=%P", candidate).Output()
+				parents := strings.Fields(string(parentsRaw))
+				if showErr != nil || len(parents) != 2 ||
+					parents[0] != priorCheckpoint.TargetHead || parents[1] != priorCheckpoint.SourceHead {
+					continue
+				}
+				if !isAncestor(candidate, currentTarget) ||
+					!isAncestor(priorCheckpoint.TargetHead, candidate) ||
+					!isAncestor(priorCheckpoint.SourceHead, candidate) {
+					continue
+				}
+				recovered := priorCheckpoint
+				recovered.MergeCommit, recovered.State = candidate, integration.StateMerged
+				recovered.FailureReason, recovered.LastErrorCode = "", ""
+				written, err := integration.DefaultCheckpointStore().CompareAndSwap(priorPath, priorCheckpoint, recovered)
+				if err != nil {
+					return policy.Guidance{}, snapshot, err
+				}
+				priorCheckpoint, prior = written, written.State
+				break
+			}
+		}
+	}
+
+	resumeMerged := priorFound && priorCheckpoint.MergeCommit != ""
+	if resumeMerged {
+		head, err := fileview.Resolve(root, "refs/heads/"+assignment.Branch)
+		if err != nil || head != priorCheckpoint.SourceHead {
+			return policy.Guidance{}, snapshot, fmt.Errorf("source changed after reception; preserve and reconcile")
+		}
+	}
+	acknowledge, cleanup := true, true
 	if prior == integration.StateVerified ||
 		prior == integration.StateAcknowledged ||
 		prior == integration.StateCleanupPending {
 		acknowledge, cleanup = true, true
+	}
+
+	if _, err := os.Stat(assignment.WorktreePath); err == nil {
+		if err := workspace.ValidateCheckout(root, assignment.WorktreePath); err != nil {
+			return policy.Guidance{}, snapshot, err
+		}
 	}
 
 	inspectReq := integration.InspectRequest{
@@ -1374,6 +1434,9 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		TargetBranch:       targetBranch,
 		BaselineGeneration: loaded.BaselineGeneration,
 		RuntimeID:          loaded.PolicyContext.RuntimeID,
+	}
+	for _, artifact := range loaded.PolicyContext.LockedArtifacts {
+		inspectReq.LockedPaths = append(inspectReq.LockedPaths, artifact.Path)
 	}
 	inspectResult, err := integration.Inspect(ctx, inspectReq, integration.InspectConfig{
 		SkipCompletionCheck: false,
@@ -1384,21 +1447,36 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		CheckRunner:    integration.CommandCheckRunner,
 		RequiredChecks: assignment.RequiredChecks,
 	})
+	if err != nil && resumeMerged {
+		// Removal may already have succeeded before the final checkpoint write.
+		// Only a recorded merge reachable from the authority branch can resume.
+		ancestry := exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", priorCheckpoint.MergeCommit, "refs/heads/"+targetBranch)
+		if ancestry.Run() == nil {
+			inspectResult = inspectionForAckCleanup(*assignment, inspectResult, targetBranch, loaded.BaselineGeneration)
+			inspectResult.SourceHead = priorCheckpoint.SourceHead
+			inspectResult.TargetHead = priorCheckpoint.TargetHead
+			err = nil
+		}
+	}
+
 	if err != nil {
 		guidance := buildGuidance(root, snapshot.State, event, input)
 		guidance.Blocked = true
 		guidance.Blocker = "worktree inspection failed: " + err.Error()
 		guidance.Missing = appendUnique(guidance.Missing, "worktree_inspect")
-		guidance.Action = "repair the worktree state and re-run SubagentStop"
+		guidance.Action = "repair the worktree state and retry runtime task-integrate"
 		guidance.Instruction = formatGuidanceInstruction(guidance)
 		return guidance, snapshot, nil
 	}
 
 	if !inspectResult.Ready {
-		if acknowledge && cleanup {
+		if resumeMerged || prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
 			// Post-merge follow-up: force Ready so Integrate resumes
 			// ack/cleanup without re-running the merge gate (BUG-039-38).
 			inspectResult = inspectionForAckCleanup(*assignment, inspectResult, targetBranch, loaded.BaselineGeneration)
+			if inspectResult.SourceHead == "" {
+				inspectResult.SourceHead = priorCheckpoint.SourceHead
+			}
 		} else {
 			guidance := buildGuidance(root, snapshot.State, event, input)
 			guidance.Integration = appendUniqueStrings(guidance.Integration, inspectResult.Blockers...)
@@ -1470,7 +1548,7 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 				guidance.Integration = appendUniqueStrings(guidance.Integration,
 					fmt.Sprintf("checkpoint_state=%s", integrationResult.Checkpoint.State))
 			}
-			guidance.Action = "preserve the worktree and branch; remediate the conflict or dirty tree before retrying SubagentStop"
+			guidance.Action = "preserve the worktree and branch; remediate the conflict or dirty tree before retrying runtime task-integrate"
 			guidance.Instruction = formatGuidanceInstruction(guidance)
 			updated, _, perr := persistSubagentCheckpoint(root, statePath, journalPath, snapshot, &inspectResult, targetBranch, event, "preserved")
 			if perr == nil && updated.Revision != 0 {
@@ -1510,14 +1588,14 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 			fmt.Sprintf("worktree integrated to state=%s", integratedState),
 			"milestone persist deferred: "+err.Error(),
 		)
-		if acknowledge && cleanup {
+		if prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
 			guidance.Integration = appendUniqueStrings(guidance.Integration,
 				"completion_ack recorded; worktree cleanup follow-up applied",
 			)
 			guidance.Action = fmt.Sprintf("worktree integration advanced to %s", integratedState)
 		} else {
 			guidance.Integration = appendUniqueStrings(guidance.Integration,
-				"acknowledge and cleanup happen on the next TeammateIdle or SubagentStop",
+				"retry runtime task-integrate to finish acknowledgement and cleanup",
 			)
 			guidance.Action = fmt.Sprintf("worktree integration advanced to %s; preserve worktree until acknowledged", integratedState)
 		}
@@ -1531,7 +1609,7 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	guidance := buildGuidance(root, snapshot.State, event, input)
 	guidance.Blocked = false
 	guidance.Blocker = ""
-	if acknowledge && cleanup {
+	if prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
 		guidance.Integration = appendUniqueStrings(guidance.Integration,
 			fmt.Sprintf("worktree integrated to state=%s", integratedState),
 			"completion_ack recorded; worktree cleanup follow-up applied",
@@ -1540,7 +1618,7 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	} else {
 		guidance.Integration = appendUniqueStrings(guidance.Integration,
 			fmt.Sprintf("worktree integrated to state=%s", integratedState),
-			"acknowledge and cleanup happen on the next TeammateIdle or SubagentStop",
+			"retry runtime task-integrate to finish acknowledgement and cleanup",
 		)
 		guidance.Action = fmt.Sprintf("worktree integration advanced to %s; preserve worktree until acknowledged", integratedState)
 	}
@@ -1555,7 +1633,7 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		guidance = buildGuidance(root, snapshot.State, event, input)
 		guidance.Blocked = false
 		guidance.Blocker = ""
-		if acknowledge && cleanup {
+		if prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
 			guidance.Integration = appendUniqueStrings(guidance.Integration,
 				fmt.Sprintf("worktree integrated to state=%s", integratedState),
 				"completion_ack recorded; worktree cleanup follow-up applied",
@@ -1564,7 +1642,7 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		} else {
 			guidance.Integration = appendUniqueStrings(guidance.Integration,
 				fmt.Sprintf("worktree integrated to state=%s", integratedState),
-				"acknowledge and cleanup happen on the next TeammateIdle or SubagentStop",
+				"retry runtime task-integrate to finish acknowledgement and cleanup",
 			)
 			guidance.Action = fmt.Sprintf("worktree integration advanced to %s; preserve worktree until acknowledged", integratedState)
 		}

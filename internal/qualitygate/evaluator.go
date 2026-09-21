@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path"
 	"sort"
@@ -168,6 +169,7 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) (Evaluation, error) 
 }
 
 type documentFact struct {
+	ID            string
 	Kind          string
 	Path          string
 	Version       string
@@ -1084,6 +1086,18 @@ func applyBuilderBatchCompleteness(input Input, result *Evaluation) {
 		result.Status = StatusNotReady
 		return
 	}
+	if HasDispatchPlan(input.Snapshot.State) {
+		progress := PlannedBuilderProgress(input)
+		for _, taskID := range batch {
+			if progress[taskID].State != "integrated" {
+				result.Missing = append(result.Missing, "integration_checkpoint:"+taskID+":"+progress[taskID].Reason)
+			}
+		}
+		if len(result.Missing) > 0 {
+			result.Status = StatusNotReady
+		}
+		return
+	}
 	completions := make(map[string]evidenceEnvelope)
 	for _, envelope := range evidenceEnvelopesByID(input, result.EvidenceRefs) {
 		if evidenceKindsEqual("completion_report", envelope.Kind) && envelope.TaskID != "" {
@@ -1141,7 +1155,9 @@ func executionBatchTasks(state map[string]any) []string {
 // reached `verified` or beyond. The checkpoint files are the Integrator's
 // authoritative record; a FileView without directory listing makes them
 // unobservable, which is surfaced as missing per task by the caller (fail
-// closed, not silently skipped).
+// closed, not silently skipped). Report-bound checkpoints also pass through
+// the merge-receipt guard so this legacy projection cannot release a
+// successor from an unreachable target.
 func verifiedIntegrationTaskIDs(input Input) map[string]bool {
 	integrated := make(map[string]bool)
 	lister, ok := input.Files.(fileDirLister)
@@ -1163,16 +1179,15 @@ func verifiedIntegrationTaskIDs(input Input) map[string]bool {
 		if err != nil {
 			continue
 		}
-		var checkpoint struct {
-			TaskID string `json:"task_id"`
-			State  string `json:"state"`
-		}
+		var checkpoint dispatchCheckpoint
 		if json.Unmarshal(data, &checkpoint) != nil || checkpoint.TaskID == "" {
 			continue
 		}
 		switch checkpoint.State {
 		case "verified", "acknowledged", "cleanup_pending", "complete":
-			integrated[checkpoint.TaskID] = true
+			if checkpointMergeValid(input, checkpoint) {
+				integrated[checkpoint.TaskID] = true
+			}
 		}
 	}
 	return integrated
@@ -1226,6 +1241,7 @@ func currentDocuments(state map[string]any, generation int) []documentFact {
 			continue
 		}
 		document := documentFact{
+			ID:            stringValue(value["id"]),
 			Kind:          stringValue(value["kind"]),
 			Path:          stringValue(value["path"]),
 			Version:       stringValue(value["version"]),
@@ -1243,6 +1259,11 @@ func currentDocuments(state map[string]any, generation int) []documentFact {
 
 func findCurrentDocument(documents []documentFact, kind string, files FileView) (documentFact, bool) {
 	for _, document := range documents {
+		// Shared schema/sample subjects must participate in S5, but cannot
+		// substitute for the S2 architecture deliverable.
+		if kind == "design" && strings.HasPrefix(document.ID, "shared-model:") {
+			continue
+		}
 		if document.Kind != kind || document.Status != "locked" || document.Path == "" || document.SHA256 == "" || files == nil {
 			continue
 		}
@@ -1423,13 +1444,13 @@ func parseTopField(content string, keys ...string) string {
 func diskArtifactHome(kind string) (dir string, prefix string) {
 	switch kind {
 	case "task":
-		return "docs/tasks", "TASK-"
+		return projectlayout.Tasks, "TASK-"
 	case "design":
-		return "docs/design/architecture", "ARCHITECTURE-"
+		return projectlayout.Architecture, "ARCHITECTURE-"
 	case "req":
-		return "docs/requirements", "REQ-"
+		return projectlayout.Requirements, "REQ-"
 	default:
-		return "docs/contracts", ""
+		return projectlayout.Contracts, ""
 	}
 }
 

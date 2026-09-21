@@ -1,7 +1,7 @@
 package transition_test
 
-// This file implements the SM-001..024 test matrix from
-// docs/design/loop-engineering/LOOP-STATE-MACHINE.md §15. Each test maps to
+// This file retains the historical SM-001..024 test matrix, now maintained
+// against docs/control/loop-definition.json. Each test maps to
 // one scenario and is named TestSM<NNN>_<short_description>.
 
 import (
@@ -21,12 +21,12 @@ import (
 
 func setupRepoWithDefinition(t *testing.T, root string) {
 	t.Helper()
-	defSrc := filepath.Join("..", "..", "docs", "loop-definition.json")
+	defSrc := filepath.Join("..", "..", "docs", "control", "loop-definition.json")
 	defData, err := os.ReadFile(defSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	os.MkdirAll(defDir, 0o755)
 	os.WriteFile(filepath.Join(defDir, "loop-definition.json"), defData, 0o644)
 	os.MkdirAll(filepath.Join(root, ".claude"), 0o755)
@@ -43,7 +43,7 @@ func inactiveState(rev int) map[string]any {
 	return map[string]any{
 		"schema_version": "1.1.0",
 		"runtime_id":     "loop-inactive",
-		"definition":     map[string]any{"path": "docs/loop-definition.json", "version": "1.2.0", "sha256": "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86"},
+		"definition":     map[string]any{"path": "docs/control/loop-definition.json", "version": "1.2.0", "sha256": "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86"},
 		"revision":       float64(rev),
 		"lifecycle":      map[string]any{"state": "inactive", "phase": nil, "phase_revision": float64(0)},
 		"authorization":  map[string]any{"mode": "none", "command": "", "actor": "", "occurred_at": "2026-01-01T00:00:00Z"},
@@ -53,7 +53,7 @@ func inactiveState(rev int) map[string]any {
 			"repair": map[string]any{"max_attempts_per_bug": float64(3), "max_same_contract_failures": float64(2), "max_full_review_rounds": float64(5)},
 		},
 		"hook_control": map[string]any{
-			"policy_ref":           map[string]any{"path": "docs/hook-policy.json", "version": "v1.0.0", "sha256": "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86"},
+			"policy_ref":           map[string]any{"path": "docs/control/hook-policy.json", "version": "v1.0.0", "sha256": "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86"},
 			"mode":                 "audit",
 			"health":               "healthy",
 			"consecutive_failures": float64(0),
@@ -73,7 +73,7 @@ func inactiveState(rev int) map[string]any {
 
 func applyT(t *testing.T, root, id string, rev int, actor string, evidence map[string]string) error {
 	t.Helper()
-	_, err := transition.Apply(root,
+	_, err := applyFixture(root,
 		filepath.Join(root, ".claude", "loop-state.json"),
 		filepath.Join(root, ".claude", "loop-events.jsonl"),
 		transition.Request{TransitionID: id, ExpectedRevision: rev, Actor: actor, Evidence: evidence})
@@ -84,7 +84,7 @@ func applyT(t *testing.T, root, id string, rev int, actor string, evidence map[s
 // (TR-001 bind, TR-020 amend).
 func applyTWithREQ(t *testing.T, root, id string, rev int, actor string, evidence map[string]string, req *transition.LockedREQ) error {
 	t.Helper()
-	_, err := transition.Apply(root,
+	_, err := applyFixture(root,
 		filepath.Join(root, ".claude", "loop-state.json"),
 		filepath.Join(root, ".claude", "loop-events.jsonl"),
 		transition.Request{TransitionID: id, ExpectedRevision: rev, Actor: actor, Evidence: evidence, REQ: req})
@@ -212,7 +212,7 @@ func TestSM015_InvalidatedEvidenceRejected(t *testing.T) {
 
 func TestSM020_AutomatedSquashMergeBlocked(t *testing.T) {
 	// This is a Hook policy test, not a transition test.
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

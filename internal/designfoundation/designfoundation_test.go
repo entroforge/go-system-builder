@@ -49,8 +49,8 @@ func TestCheckTemplateFactoryIsAdvisoryClean(t *testing.T) {
 func TestCheckWarnsOnChangedREQWithoutFoundation(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
-		"docs/requirements/REQ-014.md":       "# REQ-014\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | pending-foundation |\n",
+		"docs/design/tokens/tokens.json": mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/requirements/REQ-014.md":   "# REQ-014\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | pending-foundation |\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestCheckWarnsOnChangedREQWithoutFoundation(t *testing.T) {
 func TestLintUnregisteredHex(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":         mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/design/tokens/tokens.json":             mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
 		"docs/design/prototypes/fund/fund-list.html": "<div style=\"color:#ff00aa\"></div>\n",
 	})
 	findings, err := LintUnregisteredHex(root)
@@ -85,7 +85,7 @@ func TestLintUnregisteredHex(t *testing.T) {
 func TestLintSkipsTemplatesPortableAndStyleTiles(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":                     mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/design/tokens/tokens.json":                         mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
 		"docs/design/proof/style-tiles/STYLE-TILE-template.html": "<div style=\"color:#ff00aa\"></div>\n",
 		"docs/design/proof/style-tiles/direction-a.html":         "<div style=\"color:#b8422e\"></div>\n",
 		"docs/design/proof/portable/DESIGN.md":                   "color: #ff00aa\n",
@@ -140,7 +140,7 @@ func TestExtractGrammarDimensionRows(t *testing.T) {
 func TestLintUnregisteredRgbAndHsl(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":         mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/design/tokens/tokens.json":             mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
 		"docs/design/prototypes/fund/fund-list.html": "<div style=\"color:rgb(255, 0, 170)\"></div>\n",
 	})
 	findings, err := LintUnregisteredHex(root)

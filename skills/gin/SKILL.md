@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Gin
 ## Authority
-Quality guidance only. Locked HTTP semantics remain in the API contract; stage routing remains in `docs/agent-protocol.md`.
+Quality guidance only. Locked HTTP semantics remain in the API contract; stage routing remains in `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to Gin routers, handlers, middleware, request binding, validation, recovery, or response serialization.
 ## Required Inputs

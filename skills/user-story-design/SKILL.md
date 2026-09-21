@@ -10,8 +10,8 @@ version: 1.1.0
 
 User stories explain intended product behavior; they do not change the locked
 REQ or decide whether a stage transition is legal. Stage requirements live in
-`docs/agent-protocol.md`; UI gate legality lives in
-`docs/loop-definition.json`; the required package shape lives in
+`docs/control/agent-protocol.md`; UI gate legality lives in
+`docs/control/loop-definition.json`; the required package shape lives in
 `docs/rules/ui-prototype.md`.
 
 ## Applicability

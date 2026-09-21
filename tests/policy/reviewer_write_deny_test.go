@@ -10,14 +10,14 @@ import (
 // The S7 frozen-baseline invariant (L3-S7 §1.4.1, §8) plus the RC-04
 // phase-level freeze: verification and every non-fixing bug_resolution
 // phase, acceptance, and release_audit all freeze the product surface.
-// Only .claude/, docs/reports/, docs/release_audits/, and the ReviewPlan's
+// Only .claude/, docs/reports/, docs/reports/release-audits/, and the ReviewPlan's
 // declared verification artifact workspace remain writable; product writes
 // elsewhere hard-deny. The sole product-write exception is
 // bug_resolution.fixing through an approved RepairContract scope (tested in
 // internal/policy repair matrix, not here). Non-verification stages are no
 // longer open for product writes after RC-04.
 func TestReviewerProductWriteDecision(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestReviewerProductWriteDecision(t *testing.T) {
 	}{
 		{"product code in verification", "verification", "Edit", "internal/controller/cycle.go", "", true},
 		{"product code via MultiEdit", "verification", "MultiEdit", "web/src/app/page.vue", "", true},
-		{"locked spec via Write", "verification", "Write", "docs/contracts/BE-039.md", "", true},
+		{"locked spec via Write", "verification", "Write", "docs/dev/contracts/BE-039.md", "", true},
 		{"control plane allowed", "verification", "Write", ".claude/evidence/x/review-result-1.json", "", false},
 		{"report projection allowed", "verification", "Edit", "docs/reports/qa/QA-1.md", "", false},
 		{"verification workspace allowed", "verification", "Write", "/tmp/e2e-workspace/spec/flow.spec.ts", workspace, false},

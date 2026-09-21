@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # GORM
 ## Authority
-Quality guidance only. Data contracts and migration policy remain authoritative in the locked design and `docs/agent-protocol.md`.
+Quality guidance only. Data contracts and migration policy remain authoritative in the locked design and `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to GORM models, queries, associations, transactions, hooks, migrations, or persistence performance.
 ## Required Inputs

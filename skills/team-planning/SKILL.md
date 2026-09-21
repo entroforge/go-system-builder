@@ -7,7 +7,7 @@ version: 1.3.0
 # Team Planning
 
 ## Authority
-The manifest proposes assignments; Hooks and runtime enforce activation. Runtime authority lives in `.claude/loop-state.json`; stage contracts live in `docs/agent-protocol.md`; the team-planning method is inlined below.
+The manifest proposes assignments; Hooks and runtime enforce activation. Runtime authority lives in `.claude/loop-state.json`; stage contracts live in `docs/control/agent-protocol.md`; the team-planning method is inlined below.
 
 ## Entry Conditions
 - Specification scope is known (contracts, TASKs, modules, risk tags are drafted).
@@ -18,7 +18,7 @@ The manifest proposes assignments; Hooks and runtime enforce activation. Runtime
 | Input | Path / field | Why |
 |:---|:---|:---|
 | Responsibility catalog | this Skill's procedure and inlined method summary | mandatory vs risk-triggered duties |
-| Contracts + TASKs | `docs/contracts/**`, `docs/tasks/**` | scope partitioning inputs |
+| Contracts + TASKs | `docs/dev/contracts/**`, `docs/dev/tasks/**` | scope partitioning inputs |
 | Risk tags | TASK risk fields | route Best-practice Skills per Agent |
 | Agent Definitions | `.claude/agents/<role>.md` | available roles and max permissions |
 | Existing manifests | runtime `entities.teams[]` | reuse freshness and continuity |

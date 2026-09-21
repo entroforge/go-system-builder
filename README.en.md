@@ -10,33 +10,26 @@ Vibe Coding should not be "coding while chatting." The engineering approach deco
 
 ## Directory Structure
 
-```
-docs/
-├── project.yaml              # Project metadata, tech stack, baseline status
-├── vibe-coding-blueprint.md  # Master blueprint: full process and engineering principles
-├── rules/                    # Engineering rules (communication, naming, API design, security, etc.)
-├── requirements/             # Requirements document templates
-├── design/                   # Architecture, dataflow, state machine, data model, ADR templates
-├── contracts/                # Frontend/backend/sync contract templates
-├── tasks/                    # Task board and task sheet templates
-├── reports/                  # Review, bug, test, acceptance report templates
-├── release_audits/           # Pre-release architecture audit templates
-├── delivery/                 # Handover and changelog templates
-└── retrospective/            # Retrospective templates
+Start at the [documentation index](docs/README.md) or [document map](docs/DOCUMENT-MAP.md).
+
+```text
+blueprint/                   # Template design and maintenance: L1–L4; never packaged
+docs/                        # Target-project documentation
+├── control/                  # Executable Definition, policy, protocol, protected commands
+├── requirements/     # REQ templates and project requirements
+├── design/                   # Experience Foundation, derivation, prototypes, design decisions
+├── architecture/             # Technical architecture, shared models, state and dataflow
+├── dev/contracts/            # FE/BE/SYNC and integration contracts
+├── dev/tasks/                # Task index, task sheets and dispatch plan
+├── reports/release-audits/   # Release audit template; sibling report categories retain their roles
+├── guides/                   # Installation, onboarding, concepts and engineering workflow
+├── rules/                    # Execution constraints
+└── examples/                 # Self-contained learning and regression fixtures
 ```
 
-## Seven-Phase Process
-
-| Phase | Focus | Key Outputs |
-|:---|:---|:---|
-| 0. Bootstrap | Workspace, tech boundaries, collaboration rules | `project.yaml`, rule baselines |
-| 1. Requirements | Turn vague ideas into verifiable requirements | `REQ-{id}.md` |
-| 2. Architecture | System boundaries, module decomposition, data flow, ADRs | `ARCHITECTURE.md`, ADRs |
-| 3. State & Locking | Core entity lifecycles, concurrency control | State machines, data models |
-| 4. Contracts | Decompose design into independently executable contracts | `FE/BE/SYNC-{id}.md` |
-| 5. Task Planning | Orchestrate contracts into executable plans | Task board, task sheets |
-| 6. Development & QA | Implement against contracts, prove compliance via tests | Code, tests, review reports |
-| 7. Delivery & Retro | Deliverable, observable, reviewable releases | Acceptance reports, changelogs, retros |
+The [stage protocol](docs/control/agent-protocol.md) defines S0–S11, and the
+Loop Definition controls legal transitions. Framework documents explain the
+design across L1–L4; implementation and tests remain in the source tree.
 
 ## Agent Roles
 
@@ -75,11 +68,13 @@ Once a contract is marked `locked`, it becomes the sole execution reference for 
 
 ## Quick Start
 
-1. Copy the `docs/` directory into your new project
-2. Edit `docs/project.yaml` with your project name, goals, tech stack, and constraints
-3. Read `docs/vibe-coding-blueprint.md` for the complete process
-4. Read `docs/rules/README.md` for all engineering rules
-5. Follow the seven-phase process step by step
+1. Follow the [installation guide](docs/guides/install.md) using a release and a fresh empty target.
+2. Fill the installed project metadata and project map.
+3. Read [onboarding](docs/guides/getting-started.md) and the [engineering workflow](docs/guides/engineering-loop.md).
+4. Use the installed Harness to validate and bind a human-locked REQ.
+
+Do not copy the factory's entire docs tree into a project or overlay an existing Runtime.
+Existing projects keep their matching complete release; this version rejects legacy and mixed layouts.
 
 ## Success Criteria
 

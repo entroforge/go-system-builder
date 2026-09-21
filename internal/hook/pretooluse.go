@@ -27,7 +27,7 @@ import (
 //     → permissionDecision="deny", quality_gate.status="blocked".
 //   - "info" on PreToolUse still allows (lifecycle context only).
 //
-// systemMessage always carries the Agent-facing Recovery Packet, derived
+// hookSpecificOutput.additionalContext carries the Agent-facing Recovery Packet, derived
 // from decision.Missing / decision.Recovery and the Quality Gate missing[]
 // list. When the Decision carries a Guidance the legacy LOOP RECOVERY
 // packet is appended after the quality_gate summary so existing recovery
@@ -57,27 +57,17 @@ func PreToolUseWithQualityGate(decision policy.Decision, result controller.Contr
 		body = body + "\n\n" + formatGuidance(*decision.Guidance)
 	}
 
-	payload := map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName":            "PreToolUse",
-			"permissionDecision":       permissionDecision,
-			"permissionDecisionReason": body,
-			"quality_gate": map[string]any{
-				"status":               string(qg.Status),
-				"gate_id":              qg.GateID,
-				"candidate_transition": qg.CandidateTransition,
-				"observed_revision":    qg.ObservedRevision,
-				"fingerprint":          qg.Fingerprint,
-				"missing":              nonNil(qg.Missing),
-				"evidence_refs":        nonNil(qg.EvidenceRefs),
-				"conflicts":            nonNil(qg.Conflicts),
-				"error_code":           qg.ErrorCode,
-				"transition_committed": qg.TransitionCommitted,
-				"next_cursor":          qg.NextCursor,
-			},
-		},
-		"systemMessage": body,
+	if decision.AdditionalContext != "" {
+		body += "\n\n" + decision.AdditionalContext
 	}
+	projection, _ := json.Marshal(qg)
+	body = "QUALITY_GATE " + string(projection) + "\n" + body
+	specific := map[string]any{"hookEventName": "PreToolUse", "additionalContext": boundedContext(body)}
+	if permissionDecision == "deny" {
+		specific["permissionDecision"] = "deny"
+		specific["permissionDecisionReason"] = boundedContext(body)
+	}
+	payload := map[string]any{"hookSpecificOutput": specific}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, 1, fmt.Errorf("encode Hook output: %w", err)
@@ -108,7 +98,7 @@ func normalizeQualityGate(qg controller.QualityGateResult) controller.QualityGat
 }
 
 // formatPreToolUseRecoveryPacket renders the Agent-facing human-readable
-// text for the PreToolUse systemMessage. The Quality Gate's missing[] list
+// text for the PreToolUse additionalContext. The Quality Gate's missing[] list
 // is always included so the agent can resume work without re-deriving it
 // from JSON.
 func formatPreToolUseRecoveryPacket(decision policy.Decision, qg controller.QualityGateResult) string {

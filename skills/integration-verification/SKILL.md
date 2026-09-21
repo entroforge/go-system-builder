@@ -6,7 +6,7 @@ version: 1.0.0
 ---
 # Integration Verification
 ## Authority
-The SYNC and component contracts own expected data flow. Stage routing lives in `docs/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
+The SYNC and component contracts own expected data flow. Stage routing lives in `docs/control/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
 ## Applicability
 Apply to `cross-component` risk and integration responsibilities.
 ## Required Inputs

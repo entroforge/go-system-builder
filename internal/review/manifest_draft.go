@@ -139,7 +139,7 @@ func lensToRoleFamily(lens string) string {
 }
 
 // roleFamilyDefinitionRef maps a reviewer role family to its agent definition
-// (agents/<role>.md — the identity anchor, see docs/agent-protocol.md).
+// (agents/<role>.md — the identity anchor, see docs/control/agent-protocol.md).
 func roleFamilyDefinitionRef(roleFamily string) string {
 	return "agents/" + roleFamily + ".md"
 }

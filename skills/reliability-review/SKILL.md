@@ -6,7 +6,7 @@ version: 1.0.0
 ---
 # Reliability Review
 ## Authority
-Quality guidance within the assigned responsibility. Stage routing lives in `docs/agent-protocol.md`; runtime authority lives in `.claude/loop-state.json`; the reusable review method is inlined below.
+Quality guidance within the assigned responsibility. Stage routing lives in `docs/control/agent-protocol.md`; runtime authority lives in `.claude/loop-state.json`; the reusable review method is inlined below.
 ## Applicability
 Apply to `reliability` or `concurrency` risk.
 ## Required Inputs

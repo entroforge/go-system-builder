@@ -25,7 +25,7 @@
 ```
 
 注 1：`review_round` 字段**不写**——S5 是轮 0，缺省即正确；误填反而静默失配。
-注 2（**登记——教学链此前漏了这步**）：信封写盘后必须登记进 runtime 才被 gate 看到：
+注 2（**登记——教学链此前漏了这步**）：信封写盘后必须登记进 runtime 才被 gate 看到。`docs/reports/review` 遵循 `file_sources` 的根目录 `git_tree` 来源；登记后先将信封提交并集成到当前 REQ 绑定的开发分支，再由 Hook/Gate 消费。未提交或仅 staged 的文件不会成为正式 Gate 输入：
 `go run ./cmd/loop-harness runtime evidence add --id REV-{runid}-{resp} --kind document_review --path docs/reports/review/REV-{runid}-{resp}.json --produced-by <你的 agent id> --responsibility <你的职责>`
 `--kind` 必须与信封内的 `kind` 同词（都用 `document_review`）。这是 evidence 命令，不是 transition 命令——"不调 transition"的纪律不禁止它。
 **重签规则（fix 回路第二轮起）**：`runtime evidence add` 拒绝重复 ID（旧条目即使已 invalid 也占 ID）——重签时给 ID 加轮次后缀：`REV-{runid}-{resp}-r2`、`-r3`…（信封 `evidence_id` 与文件名同步改），旧信封文件保留作历史。
@@ -37,9 +37,9 @@
 | Kind | ID | Path | Version | SHA-256 |
 |:---|:---|:---|:---|:---|
 | REQ | REQ-{id} | `docs/requirements/REQ-{id}.md` | {version} | `{sha256}` |
-| architecture | ARCHITECTURE-{id} | `docs/design/architecture/ARCHITECTURE-{id}.md` | {version} | `{sha256}` |
-| contract | {id} | `docs/contracts/{id}.md` | {version} | `{sha256}` |
-| TASK | TASK-{id} | `docs/tasks/TASK-{id}.md` | {version} | `{sha256}` |
+| architecture | ARCHITECTURE-{id} | `docs/architecture/ARCHITECTURE-{id}.md` | {version} | `{sha256}` |
+| contract | {id} | `docs/dev/contracts/{id}.md` | {version} | `{sha256}` |
+| TASK | TASK-{id} | `docs/dev/tasks/TASK-{id}.md` | {version} | `{sha256}` |
 | module current truth | {module} | `docs/design/prototypes/{module}/` (scenario four-pack + stories/flows/index/*.html) | current | `{sha256}` |
 
 ## 2. Assigned Conclusion
@@ -56,7 +56,7 @@ N/A requires a recorded rationale and evidence.
 |:--|:--|:--|:--|:--|:--|:--|
 | REV-F001 | P0/P1/P2/P3 | `{path:line}` | {contract/REQ} | {fact} | {evidence} | BUG-{id} / pending / n/a |
 
-缺失型 finding（如 NFR 未落地）的 Location 填"应出现处"（如 `docs/contracts/CONTRACTS-<id>.md §索引`），Observed 记 `absent`。Findings 随信封 conclusion=fix_required 走 TR-004 回 planning 修复——本 assignment 不修、也不进 BUG 生命周期（那是 S7 起的事）。
+缺失型 finding（如 NFR 未落地）的 Location 填"应出现处"（如 `docs/dev/contracts/CONTRACTS-<id>.md §索引`），Observed 记 `absent`。Findings 随信封 conclusion=fix_required 走 TR-004 回 planning 修复——本 assignment 不修、也不进 BUG 生命周期（那是 S7 起的事）。
 
 ## 4. Checks
 

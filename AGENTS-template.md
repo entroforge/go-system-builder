@@ -39,7 +39,7 @@ clean round, but S9 never goes directly to S10.
 **If the Runtime has a bound REQ** (`.claude/loop-state.json` shows `bound_req`):
 
 1. Read the Hook `LOOP RECOVERY` packet and follow its ordered read list.
-2. Read the current stage anchor in `docs/agent-protocol.md`; the packet already
+2. Read the current stage anchor in `docs/control/agent-protocol.md`; the packet already
    carries the canonical current state, objective, missing item and next action.
 3. Run `DRIVE()` (below). Do not stop because evidence is missing, a Hook returned `warn` or `block`, or several compliant implementations exist. Do not mistake “most-forward” for “fastest”: complete the current stage's declared coverage before advancing.
 
@@ -73,7 +73,7 @@ Run on every session start, Wake-up, subagent return, Hook `warn` or `block`, or
 
 ```text
 1. Use the current Hook packet/Milestone; verify the bound REQ is locked and its SHA-256 matches the baseline.
-2. Read the current stage contract at docs/agent-protocol.md#<stage>.
+2. Read the current stage contract at docs/control/agent-protocol.md#<stage>.
 3. Inventory completed deliverables and valid evidence from the packet, Runtime, and artifacts.
 4. If the stage is incomplete: pick the most-forward missing deliverable or
    evidence within the current stage contract from the Hook packet
@@ -104,7 +104,7 @@ Run on every session start, Wake-up, subagent return, Hook `warn` or `block`, or
 ```text
 Layer 1  Main-session Driver   this file + agent-protocol.md + loop-orchestration Skill    (drives)
 Layer 2  Wake-up Recovery      .claude/loop.md (delivered by Claude /loop)                 (re-seats driver)
-Layer 3  Event Control + Guard docs/hook-policy.json + Hooks + Runtime Milestone       (guides and blocks)
+Layer 3  Event Control + Guard docs/control/hook-policy.json + Hooks + Runtime Milestone       (guides and blocks)
 ```
 
 Layer 3 is an active control plane. Hook events trigger Runtime reconciliation,
@@ -164,7 +164,7 @@ trail.
 
 ## Stage route (summary)
 
-Full stage contracts at `docs/agent-protocol.md#s0` through `#s11`.
+Full stage contracts at `docs/control/agent-protocol.md#s0` through `#s11`.
 
 ```text
 S0 requirement_design
@@ -200,13 +200,13 @@ A Gateway package includes: type, completed work, the single unresolved fact, im
 
 | Concern | Authority |
 |:---|:---|
-| stage contracts | `docs/agent-protocol.md` |
-| legal Loop states/transitions | `docs/loop-definition.json` |
+| stage contracts | `docs/control/agent-protocol.md` |
+| legal Loop states/transitions | `docs/control/loop-definition.json` |
 | current facts + bound REQ | `.claude/loop-state.json` (Harness is sole writer) |
 | methodology | `.claude/skills/*/SKILL.md` |
 | role identity | `.claude/agents/*.md` |
 | assignments + scope | team manifest + Agent message envelopes |
-| permission boundaries | `docs/hook-policy.json` + Claude Code Hooks |
+| permission boundaries | `docs/control/hook-policy.json` + Claude Code Hooks |
 | stable policies | `docs/rules/README.md` |
 
 Do not infer runtime state from this file, `project.yaml`, project-map, a TASK body, or chat.
@@ -217,7 +217,7 @@ Do not infer runtime state from this file, `project.yaml`, project-map, a TASK b
    scheduling checkpoint.
 2. This file.
 3. `.claude/loop-state.json` and its `milestone`.
-4. `docs/agent-protocol.md#<current stage>` from the packet.
+4. `docs/control/agent-protocol.md#<current stage>` from the packet.
 5. The bound locked REQ (path from Runtime), then the primary Skill named by
    the packet.
 6. If blocked or the next action is unclear, read `.claude/bin/loop-harness.md`.
@@ -256,11 +256,10 @@ first via `TeamCreate({team_name: "loop-{req-id}"})`. Read-only research
 subagents (`Explore`, `Plan`, `claude-code-guide`, `statusline-setup`) are
 exempt from the team gate, but still receive the preflight guidance.
 
-On `SubagentStop`, a completion report is not enough: inspect the worktree,
-verify the task branch targets `develop`, merge it back into the current
-development branch, remove the worktree after successful checks, and record
-`completion_ack`. Never merge this automation path into `master`/`main` or
-release. On `TeammateIdle`, re-wake the same teammate with its current
+After the subagent report returns, Main runs `runtime task-integrate` in the
+authority root against the REQ-bound development branch. This merges committed
+worker results, verifies, acknowledges and cleans the temporary worktree.
+SubagentStop only observes and reminds; development reception is not release. On `TeammateIdle`, re-wake the same teammate with its current
 assignment; do not silently replace it.
 
 ## Escalation
@@ -270,3 +269,23 @@ assignment; do not silently replace it.
 - Blocking finding: use `.claude/skills/bug-resolution/SKILL.md` to investigate root cause before repair.
 - Unclear next action: use `.claude/skills/loop-orchestration/SKILL.md`.
 - Human-controlled or irreversible action: surface the matching Gateway type.
+
+
+## 临时 worktree 与阶段交付
+
+REQ 绑定必须显式提供 `--dev-branch <开发主分支>` 和 `--release-upstream <最终发布上游>`，远程发布目标包含 remote；没有 develop 默认值。项目根目录是当前 REQ 唯一权威。
+
+派发前将上游正式 Markdown、代码和测试产出整理提交；不要自动提交用户无关变更。新 worktree 不含主会话未提交或仅暂存的文件。主会话用 `runtime worktree-create --assignment-id <id> --root <项目根目录>` 从绑定开发分支的明确 commit 创建；不要依赖平台默认分支或复制整个目录。明确不入 Git 的 evidence 单独按依赖交接，不能复制整个控制面。
+
+子会话在子分支提交成果并报告，主会话在项目根目录执行 `runtime task-integrate --assignment-id <id>`，生成合并提交、校验、接收并及时清理。集成不是 release；临时 worktree 不是交付终点。未回收、分支偏离、积压只提醒，不新增 Stop 或普通工具硬门禁。
+
+Gate 的输入来源由 loop-definition 的 file_sources 契约声明；正式交付读固定 Git tree，明确运行输入读磁盘，Runtime 读权威快照。未提交产出不能帮助阶段通过。允许汇总的 evidence 按 mutable_evidence_kinds 自动同步对应 SHA256；同步不改变结论或代际，也不抹除产品基线漂移。
+
+## Shared data and contract reading
+
+For S3 converge the project data model and SYNC protocol before deriving FE/BE
+responsibilities. Use [shared-model contracts](docs/rules/shared-model-contracts.md).
+For S6 start from the TASK's ordered file links, scope and closing assertions;
+read only the relevant contract/protocol/model slices. Register committed model
+inputs in the existing baseline, and require real consumers to validate or
+generate from them. Do not create a per-REQ model copy or an extra registry.

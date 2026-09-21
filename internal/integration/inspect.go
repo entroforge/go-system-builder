@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,6 +72,7 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	}
 
 	out := Inspection{
+		LockedPaths:        lockedArtifacts(cfg, req),
 		AssignmentID:       req.Assignment.AssignmentID,
 		TaskID:             req.Assignment.TaskID,
 		WorktreePath:       req.Assignment.WorktreePath,
@@ -105,6 +107,13 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 			addBlocker(fmt.Sprintf("completion report has wrong message_type %q", kind))
 			return out, nil
 		}
+		relPath, reportSHA, err := completionReportBinding(req.Root, reportPath, data)
+		if err != nil {
+			addBlocker(fmt.Sprintf("completion report path is outside the authority root: %v", err))
+			return out, nil
+		}
+		out.CompletionReportPath = relPath
+		out.CompletionReportSHA256 = reportSHA
 	}
 
 	// 2. Worktree clean.
@@ -156,17 +165,8 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 		return out, nil
 	}
 
-	// 6. Locked-artifact diff. The locked list is supplied via the
-	//    assignment context's WritePaths field plus any extra hints the
-	//    caller wires into cfg.RequiredChecks via a separate hook. To
-	//    keep this package self-contained we honour an explicit list in
-	//    cfg.RequiredChecks (named RequiredLockedArtifacts would be
-	//    cleaner, but it would force callers outside REQ-039 to learn a
-	//    second name). We instead derive the locked list from the
-	//    WritePaths + a parallel field AssignmentContext doesn't carry
-	//    today; for the BUG-039-05 contract we accept a list passed via
-	//    cfg and otherwise treat WritePaths as best-effort.
-	locked := lockedArtifacts(cfg, req)
+	// 6. Enforce the Runtime lock set independently of task checks.
+	locked := out.LockedPaths
 	// The changed-file list feeds both the locked-artifact screen and the
 	// write-scope audit below; compute it once when either consumer needs
 	// it.
@@ -213,10 +213,15 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 
 	// 8. Required checks.
 	if len(cfg.RequiredChecks) > 0 {
+		// Pre-merge checks must run in the delivered worker checkout. Running
+		// them against the authority root here can pass or fail on files that
+		// are not part of the candidate; Integrate repeats the same commands
+		// against gitRoot after the merge before recording verified.
+		checkRoot := req.Assignment.WorktreePath
 		for _, command := range cfg.RequiredChecks {
 			res := CheckResult{Command: command}
 			if cfg.CheckRunner != nil {
-				if err := cfg.CheckRunner(ctx, targetRepo, command); err != nil {
+				if err := cfg.CheckRunner(ctx, checkRoot, command); err != nil {
 					res.Status = "fail"
 					res.Output = err.Error()
 				} else {
@@ -237,6 +242,38 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 
 	out.Ready = true
 	return out, nil
+}
+
+// completionReportBinding returns the durable, repository-relative identity
+// of the report Inspect actually read. Both the lexical and resolved paths are
+// checked so a report reference cannot escape the authority root through a
+// symlink. Integrate and the quality gate consume this exact pair.
+func completionReportBinding(root, reportPath string, data []byte) (string, string, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", err
+	}
+	reportAbs, err := filepath.Abs(reportPath)
+	if err != nil {
+		return "", "", err
+	}
+	rel, err := filepath.Rel(rootAbs, reportAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", "", fmt.Errorf("path %q is outside %q", reportPath, root)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve root: %w", err)
+	}
+	resolvedReport, err := filepath.EvalSymlinks(reportAbs)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve report: %w", err)
+	}
+	resolvedRel, err := filepath.Rel(resolvedRoot, resolvedReport)
+	if err != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) || filepath.IsAbs(resolvedRel) {
+		return "", "", fmt.Errorf("resolved path %q is outside %q", reportPath, root)
+	}
+	return filepath.ToSlash(filepath.Clean(rel)), fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
 // completionReportPath returns the location of the completion report for
@@ -319,29 +356,15 @@ func scanCompletionReport(root, assignmentID string) string {
 	return ""
 }
 
-// lockedArtifacts returns the merged list of locked artifact paths the
-// Inspect step enforces. The list is sourced from:
-//   - cfg.RequiredChecks (reused as "explicit locked hints" — see Inspect
-//     for the rationale),
-//   - assignment.WritePaths (best-effort — WritePaths is the agent's
-//     declared allow-list, not the locked manifest; we intersect with
-//     anything tagged "locked:" to keep the heuristic safe).
+// lockedArtifacts combines authoritative paths with legacy explicit hints.
+// Assignment WritePaths grants scope; it never grants permission to edit locks.
 func lockedArtifacts(cfg InspectConfig, req InspectRequest) []string {
-	var locked []string
+	locked := append([]string(nil), req.LockedPaths...)
 	for _, hint := range cfg.RequiredChecks {
-		// Convention: a RequiredChecks entry prefixed with "locked:" is
-		// actually a locked-artifact path, not a check command. This
-		// lets callers pass both signals in one slice without expanding
-		// InspectConfig.
 		if strings.HasPrefix(hint, "locked:") {
 			locked = append(locked, strings.TrimPrefix(hint, "locked:"))
 		}
 	}
-	// Nothing else: WritePaths is permissive, not locked. Locked
-	// artifacts are owned by the hookctx loader (LockedArtifacts on
-	// PolicyContext), but InspectRequest does not carry that field by
-	// design — see hookctx/types.go. The Controller (BUG-02) supplies
-	// them when wiring this call from SubagentStop.
 	return locked
 }
 

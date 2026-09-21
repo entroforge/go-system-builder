@@ -155,14 +155,14 @@ func TestInspectInventoryRecordsRepositoryRelativePathsAndSHA256(t *testing.T) {
 func TestInspectInventoriesDefinitionAndPolicyUsedByRecoverySeed(t *testing.T) {
 	root := t.TempDir()
 	writeRecoveryREQ(t, root, "docs/requirements/REQ-011.md", "locked", "v1.0.0")
-	writeRecoveryFile(t, root, "docs/loop-definition.json", []byte(`{"schema_version":"1.1.0"}`))
-	writeRecoveryFile(t, root, "docs/hook-policy.json", []byte(`{"version":"v1","mode":"audit"}`))
+	writeRecoveryFile(t, root, "docs/control/loop-definition.json", []byte(`{"schema_version":"1.1.0"}`))
+	writeRecoveryFile(t, root, "docs/control/hook-policy.json", []byte(`{"version":"v1","mode":"audit"}`))
 
 	inventory, err := Inspect(root, "docs/requirements/REQ-011.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	for _, path := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		if _, ok := inventoryInputByPath(inventory, path); !ok {
 			t.Fatalf("recovery seed input %q missing from inventory", path)
 		}

@@ -51,17 +51,28 @@ func TestCT03917_SubagentStopIdempotentResumeAfterMerge(t *testing.T) {
 		t.Fatalf("CT-039-17 must not use manual transition CLI")
 	}
 
+	if repo.developHEAD() != developBefore {
+		t.Fatal("SubagentStop must not mutate the authority branch")
+	}
+	if _, err := os.Stat(repo.wtPath); err != nil {
+		t.Fatal("SubagentStop must preserve the worker checkout", err)
+	}
+	code, stdout, stderr = runTaskIntegrate(t, root, "assignment-ct17")
+	if code != 0 {
+		t.Fatalf("Main integration failed: %s %s", stdout, stderr)
+	}
+
 	developAfterFirst := repo.developHEAD()
 	if developAfterFirst == developBefore {
 		t.Fatalf("CT-039-17 first SubagentStop must merge into develop; out=%s", stdout+stderr)
 	}
 	cpState := readIntegrationCheckpointState(t, root)
-	if cpState != "verified" && cpState != "merged" {
+	if cpState != "complete" {
 		t.Fatalf("CT-039-17 first stop checkpoint want verified/merged, got %q", cpState)
 	}
 
 	// Second SubagentStop: must not re-merge; must resume to complete.
-	code2, stdout2, stderr2 := runHookWithRunner(t, runner, root, "SubagentStop", body)
+	code2, stdout2, stderr2 := runTaskIntegrate(t, root, "assignment-ct17")
 	if code2 != 0 {
 		t.Fatalf("resume SubagentStop failed: code=%d stderr=%s stdout=%s", code2, stderr2, stdout2)
 	}
@@ -110,7 +121,8 @@ func setupGitWorktreeFixture(t *testing.T, root string) gitWorktreeFixture {
 
 func runGitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	// Fixtures must not depend on the developer's global Git identity.
+	cmd := exec.Command("git", append([]string{"-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

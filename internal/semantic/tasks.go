@@ -2,6 +2,9 @@ package semantic
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/sharedmodel"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -33,6 +36,7 @@ type TaskCheckResult struct {
 	// reviewer — deliberately NOT problems: avoiding subagent compact is a
 	// prompt-and-review concern, not a hard gate (L3-S5 v4.4.1).
 	ReferenceLoads []string `json:"reference_loads,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 type taskDocument struct {
@@ -51,26 +55,54 @@ type taskDocument struct {
 // TasksCheck is S4's exit-side reconciliation. It runs as the tasks_checked
 // guard on TR-002 and via `tasks check` for agent self-service.
 func TasksCheck(root string) (TaskCheckResult, error) {
+	return TasksCheckWithFiles(root, fileview.Disk{Root: root})
+}
+func TasksCheckWithFiles(root string, files fileview.Reader, reqIDs ...string) (TaskCheckResult, error) {
 	result := TaskCheckResult{Problems: []string{}}
-	tasks, err := loadTaskDocuments(root)
+	var err error
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return result, err
+	}
+	req := ""
+	if len(reqIDs) > 0 {
+		req = reqIDs[0]
+	}
+	plan, planErr := LoadDispatchPlan(root, files, req)
+	if planErr != nil {
+		return result, planErr
+	}
+	result.Problems = append(result.Problems, plan.Problems...)
+	result.Warnings = append(result.Warnings, plan.Warnings...)
+	if req == "" {
+		req = plan.REQ
+	}
+	files = ScopedPlanningFiles(root, files, req)
+	tasks, err := loadTaskDocumentsWithFiles(root, files)
 	if err != nil {
 		return result, err
 	}
 	result.Tasks = len(tasks)
 	if len(tasks) == 0 {
-		result.Problems = append(result.Problems, "no TASK documents under docs/tasks — write the batch before checking")
+		result.Problems = append(result.Problems, "no TASK documents under docs/dev/tasks — write the batch before checking")
 		// Fall through: the clause-universe floor must still be named so an
 		// empty repo cannot look half-green.
 	}
 
 	// Clause universe: the CONTRACTS index matrix is the single home (L3-S4 v4).
 	universe := map[string]bool{}
-	indexFiles, _ := filepath.Glob(filepath.Join(root, "docs", "contracts", "CONTRACTS-*.md"))
+	var indexFiles []string
+	contractEntries, _ := files.ReadDir(filepath.Join(root, projectlayout.Contracts))
+	for _, entry := range contractEntries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "CONTRACTS-") && strings.HasSuffix(entry.Name(), ".md") {
+			indexFiles = append(indexFiles, filepath.Join(root, projectlayout.Contracts, entry.Name()))
+		}
+	}
 	for _, indexFile := range indexFiles {
 		if strings.Contains(strings.ToLower(filepath.Base(indexFile)), "template") {
 			continue
 		}
-		data, err := os.ReadFile(indexFile)
+		data, err := files.ReadFile(indexFile)
 		if err != nil {
 			return result, fmt.Errorf("read %s: %w", indexFile, err)
 		}
@@ -84,7 +116,7 @@ func TasksCheck(root string) (TaskCheckResult, error) {
 
 	// Contract inventory for primary-contract existence and index coverage.
 	contractIDs := map[string]bool{}
-	entries, _ := os.ReadDir(filepath.Join(root, "docs", "contracts"))
+	entries, _ := files.ReadDir(filepath.Join(root, projectlayout.Contracts))
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".md") || strings.Contains(strings.ToLower(name), "template") {
@@ -117,7 +149,7 @@ func TasksCheck(root string) (TaskCheckResult, error) {
 		if task.contract == "" {
 			result.Problems = append(result.Problems, fmt.Sprintf("%s: missing \"> Primary contract:\" header", task.rel))
 		} else if !contractIDs[task.contract] {
-			result.Problems = append(result.Problems, fmt.Sprintf("%s: primary contract %s has no file under docs/contracts", task.rel, task.contract))
+			result.Problems = append(result.Problems, fmt.Sprintf("%s: primary contract %s has no file under docs/dev/contracts", task.rel, task.contract))
 		}
 		if !task.hasClose {
 			result.Problems = append(result.Problems, fmt.Sprintf("%s: no Closing Contract block with assert lines", task.rel))
@@ -171,7 +203,7 @@ func TasksCheck(root string) (TaskCheckResult, error) {
 		for _, dep := range task.deps {
 			target, ok := byID[dep]
 			if !ok {
-				result.Problems = append(result.Problems, fmt.Sprintf("%s depends on %s which does not exist under docs/tasks", task.id, dep))
+				result.Problems = append(result.Problems, fmt.Sprintf("%s depends on %s which does not exist under docs/dev/tasks", task.id, dep))
 				continue
 			}
 			if target.status == "cancelled" {
@@ -202,7 +234,7 @@ func TasksCheck(root string) (TaskCheckResult, error) {
 			if clean == "" || filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
 				continue
 			}
-			if data, err := os.ReadFile(filepath.Join(root, clean)); err == nil {
+			if data, err := files.ReadFile(filepath.Join(root, clean)); err == nil {
 				readBytes += len(data)
 			}
 		}
@@ -218,7 +250,10 @@ func TasksCheck(root string) (TaskCheckResult, error) {
 // checks (coverage/DAG) live in TasksCheck; the planning_complete guard
 // consumes this so state readiness and batch quality stay separable.
 func TaskBatchComplete(root string) (complete, cancelled int, problems []string, err error) {
-	tasks, err := loadTaskDocuments(root)
+	return TaskBatchCompleteWithFiles(root, fileview.Disk{Root: root})
+}
+func TaskBatchCompleteWithFiles(root string, files fileview.Reader) (complete, cancelled int, problems []string, err error) {
+	tasks, err := loadTaskDocumentsWithFiles(root, files)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -235,19 +270,23 @@ func TaskBatchComplete(root string) (complete, cancelled int, problems []string,
 		}
 	}
 	if complete == 0 {
-		problems = append(problems, "no complete TASK document under docs/tasks")
+		problems = append(problems, "no complete TASK document under docs/dev/tasks")
 	}
 	return complete, cancelled, problems, nil
 }
 
 func loadTaskDocuments(root string) ([]*taskDocument, error) {
-	dir := filepath.Join(root, "docs", "tasks")
-	entries, err := os.ReadDir(dir)
+	return loadTaskDocumentsWithFiles(root, fileview.Disk{Root: root})
+}
+func loadTaskDocumentsWithFiles(root string, files fileview.Reader) ([]*taskDocument, error) {
+	root, _ = filepath.Abs(root)
+	dir := filepath.Join(root, projectlayout.Tasks)
+	entries, err := files.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read docs/tasks: %w", err)
+		return nil, fmt.Errorf("read docs/dev/tasks: %w", err)
 	}
 	var tasks []*taskDocument
 	for _, entry := range entries {
@@ -259,14 +298,14 @@ func loadTaskDocuments(root string) ([]*taskDocument, error) {
 			!strings.HasPrefix(id, "TASK-") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, name))
+		data, err := files.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			return nil, fmt.Errorf("read docs/tasks/%s: %w", name, err)
+			return nil, fmt.Errorf("read docs/dev/tasks/%s: %w", name, err)
 		}
 		content := string(data)
 		task := &taskDocument{
 			id:       id,
-			rel:      "docs/tasks/" + name,
+			rel:      "docs/dev/tasks/" + name,
 			hasClose: strings.Contains(content, "Closing Contract") && strings.Contains(content, "assert "),
 		}
 		if m := taskStatusField.FindStringSubmatch(content); m != nil {
@@ -282,9 +321,10 @@ func loadTaskDocuments(root string) ([]*taskDocument, error) {
 				}
 			}
 		}
+		task.problems = append(task.problems, sharedmodel.Reading(root, task.rel, content, files)...)
 		for _, row := range sectionTable(content, "Document Manifest") {
 			if len(row) >= 4 {
-				p := strings.Trim(row[3], "` ")
+				p := sharedmodel.ReadingPath(root, task.rel, row[3])
 				if p != "" && p != "{path}" && !strings.HasPrefix(p, ":--") && p != "Path" {
 					task.manifestPaths = append(task.manifestPaths, p)
 				}
@@ -340,7 +380,15 @@ func sectionTable(content, marker string) [][]string {
 		for i := range cells {
 			cells[i] = strings.TrimSpace(cells[i])
 		}
-		rows = append(rows, cells)
+		separator := len(cells) > 0
+		for _, cell := range cells {
+			if strings.Trim(cell, ":- ") != "" || !strings.Contains(cell, "-") {
+				separator = false
+			}
+		}
+		if !separator {
+			rows = append(rows, cells)
+		}
 	}
 	return rows
 }

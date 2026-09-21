@@ -69,11 +69,11 @@ func TestGuidanceVerbsExistInRuntime(t *testing.T) {
 // runtime-authority ids (manual item 11).
 func TestProtocolTransitionIdsResolvable(t *testing.T) {
 	root := filepath.Join("..", "..")
-	def, err := os.ReadFile(filepath.Join(root, "docs", "loop-definition.json"))
+	def, err := os.ReadFile(filepath.Join(root, "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	proto, err := os.ReadFile(filepath.Join(root, "docs", "agent-protocol.md"))
+	proto, err := os.ReadFile(filepath.Join(root, "docs", "control", "agent-protocol.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestProtocolTransitionIdsResolvable(t *testing.T) {
 // documents and must not return as a protocol anchor.
 func TestAgentProtocolStaysRunbookScoped(t *testing.T) {
 	root := filepath.Join("..", "..")
-	path := filepath.Join(root, "docs", "agent-protocol.md")
+	path := filepath.Join(root, "docs", "control", "agent-protocol.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

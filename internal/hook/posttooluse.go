@@ -139,8 +139,15 @@ func identifySender(input policy.Input, agents []AgentRow) string {
 // envelope. The decision is always allow-shaped (systemMessage only).
 func RenderPostToolUseEnvelope(obs PostToolUseObservation) string {
 	msg := obs.SystemMsg
+	// A failed observer must not retain the success text that identifySender
+	// produced before the handoff validator rejected the artifact. The actual
+	// reason is the only Agent-facing message for Recorded=false.
+	if !obs.Recorded {
+		msg = ""
+	}
 	if msg == "" {
 		msg = "PostToolUse observed (no dispatch message captured: " + obs.Reason + ")"
 	}
-	return fmt.Sprintf(`{"systemMessage": %q}`, strings.ReplaceAll(msg, `"`, `'`))
+	data, _ := renderSystemMessage(msg, "PostToolUse", "")
+	return string(data)
 }

@@ -26,6 +26,9 @@ func newIntegrationFixture(t *testing.T) *integrationFixture {
 	fr, restoreRunner := runFakeRunner(t)
 	root := t.TempDir()
 	wt := filepath.Join(root, "wt-feature")
+	if err := os.MkdirAll(wt, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Wire fake git state for a clean, mergeable worktree.
 	fr.addCommit("base-commit")
@@ -104,6 +107,11 @@ func TestIntegrateCleanPathReachesComplete(t *testing.T) {
 		t.Fatalf("expected merge_commit to be recorded, got empty")
 	}
 
+	verifiedAt := res.Checkpoint.VerifiedAt
+	if _, err := time.Parse(time.RFC3339Nano, verifiedAt); err != nil {
+		t.Fatalf("missing successful-check timestamp: %v", err)
+	}
+
 	// Second call: Acknowledge=true should advance to acknowledged.
 	res, err = Integrate(context.Background(), IntegrateRequest{
 		Inspection:  f.readyInspection(),
@@ -140,6 +148,9 @@ func TestIntegrateCleanPathReachesComplete(t *testing.T) {
 	}
 	if res.Checkpoint.MergeCommit == "" {
 		t.Fatalf("expected merge_commit preserved at complete, got empty")
+	}
+	if res.Checkpoint.VerifiedAt != verifiedAt {
+		t.Fatal("cleanup must not refresh successful-check time")
 	}
 }
 
@@ -556,5 +567,29 @@ func TestIntegrateRecordsDurationMetric(t *testing.T) {
 	}
 	if success.SumMS < 0 {
 		t.Fatalf("sum_ms must be non-negative, got %d", success.SumMS)
+	}
+}
+
+func TestIntegrationPreservesChangesWrittenByChecksAndResumesWithoutRemerge(t *testing.T) {
+	f := newIntegrationFixture(t)
+	defer f.cleanup()
+	req := IntegrateRequest{Inspection: f.readyInspection(), Acknowledge: true, Cleanup: true}
+	cfg := IntegrateConfig{Root: f.root, GitRoot: f.root, RuntimeID: "loop-REQ-039", RequiredChecks: []string{"check"},
+		CheckRunner: func(_ context.Context, root, _ string) error { f.fr.markDirty(root); return nil }}
+	first, err := Integrate(context.Background(), req, cfg)
+	if err == nil || first.Checkpoint.State != StatePreserved || first.Checkpoint.MergeCommit == "" {
+		t.Fatalf("dirty check result certified: %#v %v", first, err)
+	}
+	if _, err := os.Stat(f.wt); err != nil {
+		t.Fatal("failed verification removed worktree")
+	}
+	f.fr.markClean(f.root)
+	cfg.CheckRunner = func(context.Context, string, string) error { return nil }
+	second, err := Integrate(context.Background(), req, cfg)
+	if err != nil || second.Checkpoint.State != StateComplete {
+		t.Fatalf("retry: %#v %v", second, err)
+	}
+	if second.Checkpoint.MergeCommit != first.Checkpoint.MergeCommit {
+		t.Fatal("retry merged twice")
 	}
 }

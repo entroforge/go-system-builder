@@ -74,6 +74,10 @@ type InspectRequest struct {
 	// when locating the completion report. Empty falls back to
 	// "loop-REQ-039" and a broader evidence scan.
 	RuntimeID string
+
+	// LockedPaths comes from the authoritative Runtime document projection,
+	// independently of assignment-declared checks or write scope.
+	LockedPaths []string
 }
 
 // CheckResult mirrors the SYNC-039 §8 {"command","status"} record shape.
@@ -99,6 +103,7 @@ type Inspection struct {
 	TargetHead     string        `json:"target_head,omitempty"`
 	MergeBase      string        `json:"merge_base,omitempty"`
 	RequiredChecks []CheckResult `json:"required_checks,omitempty"`
+	LockedPaths    []string      `json:"locked_paths,omitempty"`
 	LockedDiff     []string      `json:"locked_diff,omitempty"`
 	// OutOfScopeDiff lists changed files not covered by the assignment's
 	// declared WritePaths (L3-S6 §7.4 condition 4). Non-empty means the
@@ -106,6 +111,12 @@ type Inspection struct {
 	OutOfScopeDiff []string `json:"out_of_scope_diff,omitempty"`
 	Conflicts      []string `json:"conflicts,omitempty"`
 	NonSquashMode  bool     `json:"non_squash_mode"`
+	// CompletionReportPath and CompletionReportSHA256 bind the inspected
+	// Builder Result to the integration decision. The path is always a
+	// repository-relative path under InspectRequest.Root; Integrate uses the
+	// pair to reject a report that changed after inspection.
+	CompletionReportPath   string `json:"completion_report_path,omitempty"`
+	CompletionReportSHA256 string `json:"completion_report_sha256,omitempty"`
 
 	// BaselineGeneration is echoed from InspectRequest so callers can build
 	// the idempotent checkpoint key without re-supplying it.
@@ -144,18 +155,25 @@ type Result struct {
 // merge-attempt identity (assignment_id + source_head + target_branch +
 // baseline_generation); CAS uses Revision as the optimistic lock.
 type Checkpoint struct {
-	AssignmentID       string `json:"assignment_id"`
-	TaskID             string `json:"task_id,omitempty"`
-	SourceBranch       string `json:"source_branch,omitempty"`
-	SourceHead         string `json:"source_head,omitempty"`
-	TargetBranch       string `json:"target_branch,omitempty"`
-	TargetHead         string `json:"target_head,omitempty"`
-	MergeBase          string `json:"merge_base,omitempty"`
-	MergeCommit        string `json:"merge_commit,omitempty"`
-	BaselineGeneration int    `json:"baseline_generation"`
-	State              string `json:"state"`
-	Revision           int64  `json:"revision"`
-	IdempotencyKey     string `json:"idempotency_key,omitempty"`
+	VerifiedAt string `json:"verified_at,omitempty"` // Last successful checks; cleanup must not advance this time.
+	// CompletionReportPath and CompletionReportSHA256 identify the exact
+	// Builder Result whose contents were covered by the successful checks.
+	// They are written only when the verified transition succeeds and are
+	// preserved unchanged by acknowledgement and cleanup.
+	CompletionReportPath   string `json:"completion_report_path,omitempty"`
+	CompletionReportSHA256 string `json:"completion_report_sha256,omitempty"`
+	AssignmentID           string `json:"assignment_id"`
+	TaskID                 string `json:"task_id,omitempty"`
+	SourceBranch           string `json:"source_branch,omitempty"`
+	SourceHead             string `json:"source_head,omitempty"`
+	TargetBranch           string `json:"target_branch,omitempty"`
+	TargetHead             string `json:"target_head,omitempty"`
+	MergeBase              string `json:"merge_base,omitempty"`
+	MergeCommit            string `json:"merge_commit,omitempty"`
+	BaselineGeneration     int    `json:"baseline_generation"`
+	State                  string `json:"state"`
+	Revision               int64  `json:"revision"`
+	IdempotencyKey         string `json:"idempotency_key,omitempty"`
 	// WorktreePath is persisted so the loader's coordinate fallback chain
 	// can recover the worktree location from this durable record alone
 	// (L3-S6 §11.2 "worktree 元数据分裂" — the checkpoint previously never
@@ -164,8 +182,13 @@ type Checkpoint struct {
 	Blockers      []string `json:"blockers,omitempty"`
 	FailureReason string   `json:"failure_reason,omitempty"`
 	LastErrorCode string   `json:"last_error_code,omitempty"`
-	LockedDiff    []string `json:"locked_diff,omitempty"`
-	UpdatedAt     string   `json:"updated_at"`
+	// ResumeState records the last successfully persisted integration stage
+	// when State is preserved after a failure. Recovery uses it to resume at
+	// the failed stage boundary (for example cleanup_pending) instead of
+	// re-running an already verified check set.
+	ResumeState string   `json:"resume_state,omitempty"`
+	LockedDiff  []string `json:"locked_diff,omitempty"`
+	UpdatedAt   string   `json:"updated_at"`
 }
 
 // CheckpointPath returns the canonical on-disk path for a checkpoint. The

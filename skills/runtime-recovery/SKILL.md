@@ -13,8 +13,8 @@ explicit approval, then apply atomically.
 
 ## Authorities
 
-- Current legal lifecycle: `docs/loop-definition.json`.
-- Stage/operator contract: `docs/agent-protocol.md`.
+- Current legal lifecycle: `docs/control/loop-definition.json`.
+- Stage/operator contract: `docs/control/agent-protocol.md`.
 - Recovery architecture and trust ordering: `references/runtime-recovery-reference.md`.
 - Runtime implementation: `internal/runtime/recovery.go`, `internal/runtime/store.go`.
 - CLI boundary: `internal/cli/recover_command.go`.

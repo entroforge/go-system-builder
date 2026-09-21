@@ -46,7 +46,7 @@ InvestigationCase -> approved RepairContract -> this BUG projection -> S9 task
 | Finding set | `{finding-ids}` | `{evidence paths}` | `{revision}` | `{sha256}` | observed facts |
 | InvestigationCase | `{case-id}` | `{case path}` | `{revision}` | `{sha256}` | grouping/causal model/route |
 | RepairContract | `{contract-id}` | `{contract path}` | `{revision}` | `{sha256}` | approved repair/verification |
-| TASK | `TASK-{id}` | `docs/tasks/...` | `{version}` | `{sha256}` | derived execution scope |
+| TASK | `TASK-{id}` | `docs/dev/tasks/...` | `{version}` | `{sha256}` | derived execution scope |
 | REQ/design/rule | `{id}` | `{path}` | `{version}` | `{sha256}` | affected authority |
 
 Do not edit the Finding, Case, or RepairContract from this document. If the

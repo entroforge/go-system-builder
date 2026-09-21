@@ -43,7 +43,7 @@ func TestPreToolUseBlockUsesOfficialOutputShape(t *testing.T) {
 	if specific["permissionDecision"] != "deny" {
 		t.Fatalf("unexpected permission decision: %v", specific["permissionDecision"])
 	}
-	if decoded["systemMessage"] == nil {
+	if contextValue(decoded) == nil {
 		t.Fatalf("systemMessage must accompany block payload")
 	}
 }
@@ -80,14 +80,14 @@ func TestTeammateIdleWarnReturnsReminderWithoutBlocking(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if decoded["systemMessage"] == nil {
+	if contextValue(decoded) == nil {
 		t.Fatalf("warn must carry a systemMessage, got %v", decoded)
 	}
 	if decoded["hookSpecificOutput"] != nil {
 		t.Fatalf("non-PreToolUse warn must not include hookSpecificOutput, got %v", decoded)
 	}
-	if !strings.Contains(decoded["systemMessage"].(string), "HOOK_TEAMMATE_IDLE_STALE") {
-		t.Fatalf("systemMessage must surface rule_id, got %v", decoded["systemMessage"])
+	if !strings.Contains(contextValue(decoded).(string), "HOOK_TEAMMATE_IDLE_STALE") {
+		t.Fatalf("systemMessage must surface rule_id, got %v", contextValue(decoded))
 	}
 }
 
@@ -113,10 +113,10 @@ func TestPreToolUseWarnRendersAllowWithSystemMessage(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 	specific := decoded["hookSpecificOutput"].(map[string]any)
-	if specific["permissionDecision"] != "allow" {
+	if specific["permissionDecision"] != nil {
 		t.Fatalf("warn on PreToolUse must allow the tool call, got %v", specific["permissionDecision"])
 	}
-	if specific["permissionDecisionReason"] == nil {
+	if specific["additionalContext"] == nil {
 		t.Fatalf("warn on PreToolUse must carry permissionDecisionReason")
 	}
 }
@@ -179,7 +179,7 @@ func TestRecoverableDenyRejectsWithoutHumanGateway(t *testing.T) {
 	if specific["permissionDecision"] != "deny" {
 		t.Fatalf("recoverable deny must reject the tool: %v", specific)
 	}
-	if strings.Contains(decoded["systemMessage"].(string), "Human required") {
+	if strings.Contains(contextValue(decoded).(string), "Human required") {
 		t.Fatalf("recoverable deny must not fabricate a human Gateway: %v", decoded)
 	}
 }
@@ -235,10 +235,10 @@ func TestHSMinimalSafetyBlocksDenyOnPreToolUse(t *testing.T) {
 			if err := json.Unmarshal(output, &lifecycle); err != nil {
 				t.Fatalf("invalid JSON: %v", err)
 			}
-			if lifecycle["hookSpecificOutput"] != nil {
+			if lifecycle["hookSpecificOutput"] == nil {
 				t.Fatalf("HS-* %s on SessionStart must NOT carry hookSpecificOutput, got %v", rule, lifecycle)
 			}
-			if lifecycle["systemMessage"] == nil {
+			if contextValue(lifecycle) == nil {
 				t.Fatalf("HS-* %s on SessionStart must carry systemMessage", rule)
 			}
 		})
@@ -637,9 +637,9 @@ func TestMessageBuildsExactlyFormattedBodyWithAllFourFields(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	body, ok := decoded["systemMessage"].(string)
+	body, ok := contextValue(decoded).(string)
 	if !ok {
-		t.Fatalf("expected systemMessage string, got %#v", decoded["systemMessage"])
+		t.Fatalf("expected systemMessage string, got %#v", contextValue(decoded))
 	}
 	// QA-2 §2 row 3: replace byte-exact brittleness with a structural
 	// shape check. The previous `body != want` would fail on any future
@@ -785,9 +785,9 @@ func TestMessageAppendsManualAnchorOnWarn(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	body, ok := decoded["systemMessage"].(string)
+	body, ok := contextValue(decoded).(string)
 	if !ok {
-		t.Fatalf("expected systemMessage string, got %#v", decoded["systemMessage"])
+		t.Fatalf("expected systemMessage string, got %#v", contextValue(decoded))
 	}
 	want := "See .claude/bin/loop-harness.md#hook_squash_merge"
 	if !strings.Contains(body, want) {
@@ -810,7 +810,7 @@ func TestMessageAnchorUsesLowercaseRuleID(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	body, _ := decoded["systemMessage"].(string)
+	body, _ := contextValue(decoded).(string)
 	if !strings.Contains(body, "#req_locked") {
 		t.Fatalf("anchor must use lowercase suffix #req_locked, got %q", body)
 	}
@@ -835,7 +835,7 @@ func TestMessageOmitsAnchorWhenRuleIDEmpty(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	body, _ := decoded["systemMessage"].(string)
+	body, _ := contextValue(decoded).(string)
 	if strings.Contains(body, "See .claude/bin/loop-harness.md") {
 		t.Fatalf("empty RuleID must omit manual anchor, got %q", body)
 	}
@@ -959,9 +959,9 @@ func TestStagePrefixOnWarn(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	body, ok := decoded["systemMessage"].(string)
+	body, ok := contextValue(decoded).(string)
 	if !ok {
-		t.Fatalf("expected systemMessage string, got %#v", decoded["systemMessage"])
+		t.Fatalf("expected systemMessage string, got %#v", contextValue(decoded))
 	}
 	prefix := "[S2 planning.design @ rev=3]"
 	if !strings.HasPrefix(body, prefix) {
@@ -1019,7 +1019,7 @@ func TestStagePrefixOmittedWhenRuntimeEmpty(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	body, _ := decoded["systemMessage"].(string)
+	body, _ := contextValue(decoded).(string)
 	if strings.HasPrefix(body, "[") {
 		t.Fatalf("empty runtime must not prepend a stage prefix, got %q", body)
 	}
@@ -1054,12 +1054,12 @@ func TestInfoDecisionEmitsStageBanner(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if decoded["hookSpecificOutput"] != nil {
+	if decoded["hookSpecificOutput"] == nil {
 		t.Fatalf("info on SessionStart must not carry hookSpecificOutput, got %v", decoded)
 	}
-	body, ok := decoded["systemMessage"].(string)
+	body, ok := contextValue(decoded).(string)
 	if !ok || body == "" {
-		t.Fatalf("info must emit a non-empty systemMessage banner, got %#v", decoded["systemMessage"])
+		t.Fatalf("info must emit a non-empty systemMessage banner, got %#v", contextValue(decoded))
 	}
 	for _, fragment := range []string{"Stage ", "S6 building", "rev=7", "REQ-002-self-evolution"} {
 		if !strings.Contains(body, fragment) {
@@ -1094,7 +1094,14 @@ func TestInfoDecisionOnPreToolUseAllows(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 	specific := decoded["hookSpecificOutput"].(map[string]any)
-	if specific["permissionDecision"] != "allow" {
+	if specific["permissionDecision"] != nil {
 		t.Fatalf("info on PreToolUse must allow, got %v", specific["permissionDecision"])
 	}
+}
+
+func contextValue(payload map[string]any) any {
+	if specific, ok := payload["hookSpecificOutput"].(map[string]any); ok {
+		return specific["additionalContext"]
+	}
+	return payload["systemMessage"]
 }

@@ -45,7 +45,7 @@
     ],
     "forbidden_scope": [
       "docs/requirements/",
-      "docs/agent-protocol.md"
+      "docs/control/agent-protocol.md"
     ],
     "closing_contract": [
       {

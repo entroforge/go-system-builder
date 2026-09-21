@@ -4,6 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/sharedmodel"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,32 +30,42 @@ type ContractCheckResult struct {
 	Clauses      int      `json:"clauses"`
 	Fingerprints int      `json:"fingerprints"`
 	Problems     []string `json:"problems,omitempty"`
+	Warnings     []string `json:"warnings,omitempty"`
+	ModelRows    int      `json:"model_rows"`
 }
 
 // ContractsCheck is S3's mechanical close (L3-S3 v4.0.1). Division of labor
 // with the S2 AC bridge: the bridge owns REQ-side AC↔CASE; this owns
 // contract-side token existence. Non-goal: free-text cell semantics.
 func ContractsCheck(root string) (ContractCheckResult, error) {
+	return ContractsCheckWithFiles(root, fileview.Disk{Root: root})
+}
+func ContractsCheckWithFiles(root string, files fileview.Reader, reqIDs ...string) (ContractCheckResult, error) {
+	root, _ = filepath.Abs(root)
 	result := ContractCheckResult{Problems: []string{}}
-	dir := filepath.Join(root, "docs", "contracts")
-	entries, err := os.ReadDir(dir)
+	models := sharedmodel.Check(root, files, reqIDs...)
+	result.Problems = append(result.Problems, models.Problems...)
+	result.Warnings = models.Warnings
+	result.ModelRows = models.Rows
+	dir := filepath.Join(root, projectlayout.Contracts)
+	entries, err := files.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return result, nil // no contracts directory — nothing to reconcile
 		}
-		return result, fmt.Errorf("read docs/contracts: %w", err)
+		return result, fmt.Errorf("read docs/dev/contracts: %w", err)
 	}
 
 	universe := map[string]bool{}
 	caseUniverse := map[string]bool{}
-	modules, _ := os.ReadDir(filepath.Join(root, "docs", "design", "prototypes"))
+	modules, _ := files.ReadDir(filepath.Join(root, "docs", "design", "prototypes"))
 	for _, module := range modules {
 		if !module.IsDir() || module.Name() == "template" || module.Name() == "templates" {
 			continue
 		}
 		mpath := filepath.Join(root, "docs", "design", "prototypes", module.Name())
 		for _, file := range []string{"cases.json", "stories.md", "flows.md"} {
-			data, err := os.ReadFile(filepath.Join(mpath, file))
+			data, err := files.ReadFile(filepath.Join(mpath, file))
 			if err != nil {
 				continue
 			}
@@ -69,7 +82,7 @@ func ContractsCheck(root string) (ContractCheckResult, error) {
 		// denominator: cases.json is a generated artifact, and a tampered
 		// cases.json (delete a CASE, delete its citations) would otherwise
 		// silently shrink the verification denominator.
-		modelCaseIDs, modelErr := modelCaseIDs(filepath.Join(mpath, "scenario-model.json"))
+		modelCaseIDs, modelErr := modelCaseIDsWithFiles(filepath.Join(mpath, "scenario-model.json"), files)
 		switch {
 		case modelErr != nil:
 			result.Problems = append(result.Problems, fmt.Sprintf("%s: scenario-model.json unreadable: %v — the CASE denominator cannot be verified", module.Name(), modelErr))
@@ -78,7 +91,7 @@ func ContractsCheck(root string) (ContractCheckResult, error) {
 				caseUniverse[id] = true
 				universe[id] = true
 			}
-			if casesData, err := os.ReadFile(filepath.Join(mpath, "cases.json")); err == nil {
+			if casesData, err := files.ReadFile(filepath.Join(mpath, "cases.json")); err == nil {
 				generated := map[string]bool{}
 				for _, pattern := range contractTokenPatterns {
 					for _, token := range pattern.FindAllString(string(casesData), -1) {
@@ -102,9 +115,15 @@ func ContractsCheck(root string) (ContractCheckResult, error) {
 	}
 
 	reqFRs := map[string]bool{}
-	reqFiles, _ := filepath.Glob(filepath.Join(root, "docs", "requirements", "REQ-*.md"))
+	reqEntries, _ := files.ReadDir(filepath.Join(root, projectlayout.Requirements))
+	var reqFiles []string
+	for _, entry := range reqEntries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "REQ-") && strings.HasSuffix(entry.Name(), ".md") {
+			reqFiles = append(reqFiles, filepath.Join(root, projectlayout.Requirements, entry.Name()))
+		}
+	}
 	for _, reqFile := range reqFiles {
-		data, err := os.ReadFile(reqFile)
+		data, err := files.ReadFile(reqFile)
 		if err != nil {
 			continue
 		}
@@ -131,7 +150,7 @@ func ContractsCheck(root string) (ContractCheckResult, error) {
 
 	for id, path := range contractIDs {
 		result.Contracts++
-		data, err := os.ReadFile(path)
+		data, err := files.ReadFile(path)
 		if err != nil {
 			result.Problems = append(result.Problems, fmt.Sprintf("%s: unreadable: %v", id, err))
 			continue
@@ -168,7 +187,7 @@ func ContractsCheck(root string) (ContractCheckResult, error) {
 			// numbers are compared as a set, so §1 cannot satisfy §10
 			// (substring comparison would be a false negative).
 			n := clauseNumberOf(cell)
-			targetData, err := os.ReadFile(target)
+			targetData, err := files.ReadFile(target)
 			declared := declaredClauseNumbers(string(targetData))
 			if err != nil || !declared[n] {
 				result.Problems = append(result.Problems, fmt.Sprintf("%s: clause cell %q cites %s §%s but the target contract never declares that clause number — align the index cell with the contract's own clause map", id, cell, contractID, n))
@@ -184,7 +203,7 @@ func ContractsCheck(root string) (ContractCheckResult, error) {
 				cell = strings.TrimSpace(cell)
 				if isHex64(strings.ToLower(cell)) && strings.Contains(strings.ToLower(strings.Join(cells[:i], " ")), "fingerprint") {
 					result.Fingerprints++
-					if resolved, ok := resolveContractFingerprint(root, trimmed); ok && resolved != cell {
+					if resolved, ok := resolveContractFingerprintWithFiles(root, trimmed, files); ok && resolved != cell {
 						result.Problems = append(result.Problems, fmt.Sprintf("%s: fingerprint column does not match disk (recorded %s… actual %s…)", id, cell[:12], resolved[:12]))
 					}
 				}
@@ -217,6 +236,9 @@ func isHex64(s string) bool {
 }
 
 func resolveContractFingerprint(root, row string) (string, bool) {
+	return resolveContractFingerprintWithFiles(root, row, fileview.Disk{Root: root})
+}
+func resolveContractFingerprintWithFiles(root, row string, files fileview.Reader) (string, bool) {
 	cells := strings.Split(strings.Trim(strings.TrimSpace(row), "|"), "|")
 	var fileRef string
 	for _, cell := range cells {
@@ -234,7 +256,7 @@ func resolveContractFingerprint(root, row string) (string, bool) {
 	if fileRef == "" {
 		return "", false
 	}
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(fileRef)))
+	data, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(fileRef)))
 	if err != nil {
 		return "", false
 	}
@@ -250,7 +272,10 @@ func clauseNumberOf(cell string) string {
 // modelCaseIDs extracts the branch case_id set from a module's
 // scenario-model.json — the authoritative CASE denominator.
 func modelCaseIDs(path string) (map[string]bool, error) {
-	data, err := os.ReadFile(path)
+	return modelCaseIDsWithFiles(path, fileview.Disk{Root: "."})
+}
+func modelCaseIDsWithFiles(path string, files fileview.Reader) (map[string]bool, error) {
+	data, err := files.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

@@ -16,7 +16,7 @@
       {
         "id": "TASK-001",
         "kind": "task",
-        "path": "docs/tasks/TASK-001.md",
+        "path": "docs/dev/tasks/TASK-001.md",
         "version": "v1.0.0",
         "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
         "read_order": 1
@@ -24,7 +24,7 @@
       {
         "id": "CONTRACTS-002",
         "kind": "contract",
-        "path": "docs/contracts/CONTRACTS-002.md",
+        "path": "docs/dev/contracts/CONTRACTS-002.md",
         "version": "v1.0.0",
         "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "read_order": 2
@@ -66,7 +66,7 @@
       ],
       "forbidden_paths": [
         "docs/requirements/",
-        "docs/agent-protocol.md"
+        "docs/control/agent-protocol.md"
       ],
       "forbidden_actions": [
         "modify locked REQ",
@@ -74,10 +74,10 @@
         "formal release"
       ],
       "output_paths": [
-        "docs/tasks/TASK-001.md"
+        "docs/dev/tasks/TASK-001.md"
       ]
     },
-    "closing_contract_ref": "docs/tasks/TASK-001.md#closing-contract",
+    "closing_contract_ref": "docs/dev/tasks/TASK-001.md#closing-contract",
     "readback_fields": [
       "objective",
       "responsibility",
@@ -109,7 +109,7 @@
     "steps": [
       {
         "description": "Read the locked contract clauses and map them to handler routes",
-        "target": "docs/contracts/CONTRACTS-002.md"
+        "target": "docs/dev/contracts/CONTRACTS-002.md"
       },
       {
         "description": "Implement the handler and tests",
@@ -199,7 +199,7 @@
       {
         "id": "TASK-001",
         "kind": "task",
-        "path": "docs/tasks/TASK-001.md",
+        "path": "docs/dev/tasks/TASK-001.md",
         "version": "v1.0.0",
         "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
         "read_order": 1
@@ -207,7 +207,7 @@
       {
         "id": "CONTRACTS-002",
         "kind": "contract",
-        "path": "docs/contracts/CONTRACTS-002.md",
+        "path": "docs/dev/contracts/CONTRACTS-002.md",
         "version": "v1.0.0",
         "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "read_order": 2
@@ -236,13 +236,13 @@
     "occurred_at": "2026-06-20T00:02:00Z",
     "activation_id": "act-agent-builder-001",
     "approved_readback_message_id": "msg-readback-response-001",
-    "approved_readback_sha256": "3c04c5a5d3439ac4882f32b816d713298ef6b74b3d2d5a78228c4466ff9e82b6",
+    "approved_readback_sha256": "2de84bc98b52566ceddd94ef19dd133588cdcfb699c1d6a91d7f5bc757f3ea45",
     "approval_evidence_id": "evidence-understanding-001",
     "documents": [
       {
         "id": "TASK-001",
         "kind": "task",
-        "path": "docs/tasks/TASK-001.md",
+        "path": "docs/dev/tasks/TASK-001.md",
         "version": "v1.0.0",
         "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
         "read_order": 1
@@ -250,7 +250,7 @@
       {
         "id": "CONTRACTS-002",
         "kind": "contract",
-        "path": "docs/contracts/CONTRACTS-002.md",
+        "path": "docs/dev/contracts/CONTRACTS-002.md",
         "version": "v1.0.0",
         "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "read_order": 2
@@ -286,7 +286,7 @@
       "schema-validation"
     ],
     "output_paths": [
-      "docs/tasks/TASK-001.md"
+      "docs/dev/tasks/TASK-001.md"
     ],
     "checkpoints": [
       "validator implemented",

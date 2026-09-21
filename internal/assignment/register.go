@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/dispatch"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
@@ -139,6 +140,17 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 		From:           cursor,
 		To:             cursor,
 		Apply: func(state map[string]any) error {
+			if err := dispatch.CheckRegistration(root, state, request.TaskID); err != nil {
+				return err
+			}
+			plannedWrites := []string{}
+			for _, item := range value.Assignments {
+				plannedWrites = append(plannedWrites, effectiveActivationWritePaths(item.WritePaths, item.OutputPaths)...)
+			}
+			if err := dispatch.ValidateWorkPackage(root, state, request.TaskID, request.TaskPath, taskData, plannedWrites, len(value.Assignments)); err != nil {
+				return err
+			}
+
 			lifecycle, ok := state["lifecycle"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("runtime lifecycle must be an object")
@@ -257,13 +269,14 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 				}
 				var activationRefValue any
 				if activationRef != "" {
-					activationBytes, marshalErr := json.MarshalIndent(buildActivationEnvelope(item.AgentID, ActivationSourceEntry{
+					envelope := buildActivationEnvelope(item.AgentID, ActivationSourceEntry{
 						AgentID:            item.AgentID,
 						AgentDefinitionRef: item.AgentDefinitionRef,
 						SkillRefs:          item.SkillRefs,
 						WritePaths:         item.WritePaths,
 						OutputPaths:        item.OutputPaths,
-					}), "", "  ")
+					})
+					activationBytes, marshalErr := json.MarshalIndent(envelope, "", "  ")
 					if marshalErr != nil {
 						return fmt.Errorf("activation envelope: hash staged bytes: %w", marshalErr)
 					}

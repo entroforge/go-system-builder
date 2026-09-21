@@ -138,7 +138,7 @@ func writeMessage(t *testing.T, dir, name string, body map[string]any) string {
 // no approval round. The hash chain still binds the activation to the plan
 // file bytes.
 func TestPlanCheckpointActivatesStraightOffPlanReport(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	statePath, journalPath := planCheckpointState(t, root, "plan_checkpoint")
 	dir := filepath.Dir(statePath)
 
@@ -172,7 +172,7 @@ func TestPlanCheckpointActivatesStraightOffPlanReport(t *testing.T) {
 // TestApprovalModeStillRequiresApproval pins the exception path:
 // plan_approval_required agents cannot activate off the plan submission.
 func TestApprovalModeStillRequiresApproval(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	statePath, journalPath := planCheckpointState(t, root, "plan_approval_required")
 	dir := filepath.Dir(statePath)
 

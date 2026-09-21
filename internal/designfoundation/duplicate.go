@@ -1,6 +1,7 @@
 package designfoundation
 
 import (
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -77,7 +78,7 @@ func LintDuplicateComponents(root string) ([]Finding, error) {
 	}
 
 	protoRoot := filepath.Join(root, "docs", "design", "prototypes")
-	_ = filepath.Walk(protoRoot, func(path string, info os.FileInfo, err error) error {
+	_ = pathscope.Walk(root, protoRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil || info.IsDir() {
 			return nil
 		}

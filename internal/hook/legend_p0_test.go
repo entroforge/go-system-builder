@@ -35,7 +35,9 @@ func TestNotReadyBuilderPacketCarriesTokenLegend(t *testing.T) {
 		t.Fatalf("hook render: code=%d err=%v", code, err)
 	}
 	var payload struct {
-		SystemMessage string `json:"systemMessage"`
+		Specific struct {
+			Context string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatal(err)
@@ -45,8 +47,8 @@ func TestNotReadyBuilderPacketCarriesTokenLegend(t *testing.T) {
 		"run `runtime task-complete` for the named TASK",
 		"run `runtime task-integrate --assignment-id <id>`",
 	} {
-		if !strings.Contains(payload.SystemMessage, want) {
-			t.Fatalf("systemMessage missing %q:\n%s", want, payload.SystemMessage)
+		if !strings.Contains(payload.Specific.Context, want) {
+			t.Fatalf("systemMessage missing %q:\n%s", want, payload.Specific.Context)
 		}
 	}
 }
@@ -60,12 +62,14 @@ func TestSatisfiedPacketHasNoLegend(t *testing.T) {
 		t.Fatal(err)
 	}
 	var payload struct {
-		SystemMessage string `json:"systemMessage"`
+		Specific struct {
+			Context string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(payload.SystemMessage, "MISSING TOKENS:") {
-		t.Fatalf("satisfied packet must not carry the legend:\n%s", payload.SystemMessage)
+	if strings.Contains(payload.Specific.Context, "MISSING TOKENS:") {
+		t.Fatalf("satisfied packet must not carry the legend:\n%s", payload.Specific.Context)
 	}
 }

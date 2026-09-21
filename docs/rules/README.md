@@ -47,3 +47,9 @@ Hooks; procedures belong to Skills; role behavior belongs to Agent Definitions.
 - Locked REQ changes require human approval through change control.
 - Agent permissions are the intersection of definition, manifest, activation, runtime, and Hook policy.
 - Release architecture audit is engineering evidence; human release approval is a separate final boundary.
+
+- [Shared models and contract reading](shared-model-contracts.md): common data/protocol authority, explicit model policy, progressive TASK links and real consumer validation.
+
+## Overall dispatch plan
+
+S4 → S5 → S6 follow [dispatch plan rules](dispatch-plan.md). Read the approved wave checklist and live S6 board; schedule compatible ready tasks and integrate results promptly.

@@ -17,6 +17,16 @@ import (
 func s6Fixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), definition, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -33,8 +43,8 @@ func s6Fixture(t *testing.T) string {
 		"baseline":       map[string]any{"generation": 1, "captured_at": "2026-08-20T00:00:00Z"},
 		"review":         map[string]any{"round": 0, "clean_round": nil},
 		"documents": []any{
-			map[string]any{"id": "TASK-A", "kind": "task", "path": "docs/tasks/TASK-A.md", "status": "complete", "generation": 1},
-			map[string]any{"id": "TASK-B", "kind": "task", "path": "docs/tasks/TASK-B.md", "status": "complete", "generation": 1},
+			map[string]any{"id": "TASK-A", "kind": "task", "path": "docs/dev/tasks/TASK-A.md", "status": "complete", "generation": 1},
+			map[string]any{"id": "TASK-B", "kind": "task", "path": "docs/dev/tasks/TASK-B.md", "status": "complete", "generation": 1},
 		},
 		"entities": map[string]any{"agents": []any{}, "tasks": []any{}, "bugs": []any{}, "teams": []any{}},
 		"evidence": []any{},

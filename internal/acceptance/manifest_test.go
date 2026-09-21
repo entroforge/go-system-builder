@@ -58,7 +58,7 @@ func TestValidateManifestAcceptsCompleteAcceptanceAudit(t *testing.T) {
   "review_round": 2,
   "coverage_inventory": [
     {"id":"REQ-AC-001","category":"requirement","source_refs":["REQ-001#ac-1"],"expected":"record saves","oracle":"reload shows value","owner":"Acceptance","evidence_refs":["ev-e2e-1"],"disposition":"pass"},
-    {"id":"CONTRACT-001","category":"contract","source_refs":["docs/contracts/CONTRACT-001.md"],"expected":"contract is honored","oracle":"contract checks pass","owner":"Contract Reviewer","evidence_refs":["ev-contract-1"],"disposition":"pass"},
+    {"id":"CONTRACT-001","category":"contract","source_refs":["docs/dev/contracts/CONTRACT-001.md"],"expected":"contract is honored","oracle":"contract checks pass","owner":"Contract Reviewer","evidence_refs":["ev-contract-1"],"disposition":"pass"},
     {"id":"PATH-001","category":"changed_path","source_refs":["internal/service.go"],"expected":"path reviewed","oracle":"code review and test","owner":"Architecture / Code Audit","evidence_refs":["ev-code-1"],"disposition":"pass"},
     {"id":"AUDIT-001","category":"audit_area","source_refs":["release scope"],"expected":"system impact reviewed","oracle":"release audit","owner":"Release Auditor","evidence_refs":["ev-audit-1"],"disposition":"pass"},
     {"id":"OPS-001","category":"operations","source_refs":["runbook"],"expected":"rollback is documented","oracle":"operator can execute rollback","owner":"Data / Migration / Operations","evidence_refs":["ev-ops-1"],"disposition":"not_applicable","na_reason":"No deployment or migration surface is in scope for this REQ."}
@@ -452,8 +452,8 @@ func TestBuildS10InventoryAuthorityUsesPinnedRuntimeFacts(t *testing.T) {
 	task := []byte("# TASK-001\n## Closing Contract\n")
 	plan := []byte(`{"review_plan_id":"review-plan-2","review_round":2,"baseline_generation":1,"claims":[{"claim_id":"claim-qa-1"}]}`)
 	reqSHA := write("docs/requirements/REQ-001.md", req)
-	contractSHA := write("docs/contracts/BE-001.md", contract)
-	taskSHA := write("docs/tasks/TASK-001.md", task)
+	contractSHA := write("docs/dev/contracts/BE-001.md", contract)
+	taskSHA := write("docs/dev/tasks/TASK-001.md", task)
 	planSHA := write(".claude/review/plans/review-plan-2.json", plan)
 	state := map[string]any{
 		"bound_req": map[string]any{"id": "REQ-001", "path": "docs/requirements/REQ-001.md", "sha256": reqSHA},
@@ -463,8 +463,8 @@ func TestBuildS10InventoryAuthorityUsesPinnedRuntimeFacts(t *testing.T) {
 			"plan":  map[string]any{"path": ".claude/review/plans/review-plan-2.json", "sha256": planSHA},
 		},
 		"documents": []any{
-			map[string]any{"id": "BE-001", "kind": "contract", "path": "docs/contracts/BE-001.md", "sha256": contractSHA, "generation": 1},
-			map[string]any{"id": "TASK-001", "kind": "task", "path": "docs/tasks/TASK-001.md", "sha256": taskSHA, "generation": 1},
+			map[string]any{"id": "BE-001", "kind": "contract", "path": "docs/dev/contracts/BE-001.md", "sha256": contractSHA, "generation": 1},
+			map[string]any{"id": "TASK-001", "kind": "task", "path": "docs/dev/tasks/TASK-001.md", "sha256": taskSHA, "generation": 1},
 		},
 	}
 	authority, err := BuildS10InventoryAuthority(root, state, Baseline{ChangedPaths: []string{"internal/service.go"}})

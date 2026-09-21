@@ -12,7 +12,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
-// minimalPolicy mirrors the shape of docs/hook-policy.json after the REQ-039
+// minimalPolicy mirrors the shape of docs/control/hook-policy.json after the REQ-039
 // reduction: an artifact `version` ("v2.0.0") alongside the wire-format
 // `schema_version` ("1.2.0"). The two must never be confused — that confusion
 // is BUG-039-12.
@@ -20,7 +20,7 @@ const minimalPolicy = `{"version":"v2.0.0","schema_version":"1.2.0","policy_id":
 
 func writePolicyRefState(t *testing.T, dir, recordedVersion, recordedSHA string) (statePath, journalPath, policyPath string) {
 	t.Helper()
-	policyPath = filepath.Join(dir, "docs", "hook-policy.json")
+	policyPath = filepath.Join(dir, "docs", "control", "hook-policy.json")
 	if err := os.MkdirAll(filepath.Dir(policyPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func writePolicyRefState(t *testing.T, dir, recordedVersion, recordedSHA string)
 		t.Fatal("loop-state example must contain hook_control")
 	}
 	hookControl["policy_ref"] = map[string]any{
-		"path":    "docs/hook-policy.json",
+		"path":    "docs/control/hook-policy.json",
 		"version": recordedVersion,
 		"sha256":  recordedSHA,
 	}
@@ -107,7 +107,7 @@ func TestStoreRefreshFingerprintsTracksPolicyVersionNotSchemaVersion(t *testing.
 }
 
 // TestStoreRefreshFingerprintsFallsBackToSchemaVersion pins the fallback that
-// keeps docs/loop-definition.json working: it declares only `schema_version`,
+// keeps docs/control/loop-definition.json working: it declares only `schema_version`,
 // so that value remains authoritative when no `version` field exists.
 func TestStoreRefreshFingerprintsFallsBackToSchemaVersion(t *testing.T) {
 	dir := t.TempDir()

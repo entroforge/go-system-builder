@@ -138,6 +138,7 @@ func RecoveryReplay(ctx context.Context, request RecoveryReplayRequest) (Recover
 		AffectedPaths:      append([]string(nil), request.AffectedPaths...),
 		QualityCycleBudget: request.QualityCycleBudget,
 		GateEvaluator:      request.GateEvaluator,
+		recoveryWriter:     runtime.NewOfflineRecoveryCapability(),
 	}
 	statePath, journalPath := controlRuntimePaths(cycleRequest)
 	statePath, err = resolveRecoveryReplayPath(rootPath, statePath, "state")

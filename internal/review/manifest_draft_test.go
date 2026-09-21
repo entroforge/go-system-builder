@@ -95,7 +95,7 @@ func TestDraftManifestPrefillsControlPlaneFacts(t *testing.T) {
 	state := baseVerificationState()
 	state["documents"] = []any{
 		map[string]any{
-			"id": "TASK-001", "kind": "task", "path": "docs/tasks/TASK-001.md",
+			"id": "TASK-001", "kind": "task", "path": "docs/dev/tasks/TASK-001.md",
 			"version": "v1.0.0", "sha256": strings.Repeat("3", 64),
 			"status": "complete", "generation": 1,
 		},

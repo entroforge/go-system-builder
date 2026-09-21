@@ -138,3 +138,23 @@ func writeSkillFixture(t *testing.T, root, name, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestInstalledAssetsNeverFallBackToRoot(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("installed"), 0644)
+	os.MkdirAll(filepath.Join(root, "skills/loop-orchestration"), 0755)
+	data, err := os.ReadFile("../../skills/loop-orchestration/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "skills/loop-orchestration/SKILL.md"), data, 0644)
+	if err := catalog.ValidateSkill(root, catalog.SkillSpec{Name: "loop-orchestration", Category: "methodology"}); err == nil || !strings.Contains(err.Error(), "mixed asset layout") {
+		t.Fatalf("root skill fallback: %v", err)
+	}
+	os.RemoveAll(filepath.Join(root, "skills"))
+	os.MkdirAll(filepath.Join(root, "agents"), 0755)
+	os.WriteFile(filepath.Join(root, "agents/qa.md"), []byte("definition"), 0644)
+	if err := catalog.ValidateAgents(root); err == nil || !strings.Contains(err.Error(), "mixed asset layout") {
+		t.Fatalf("root agent fallback: %v", err)
+	}
+}

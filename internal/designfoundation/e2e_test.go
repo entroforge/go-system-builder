@@ -85,7 +85,7 @@ func TestE2E_LocalToCoreUpgrade_SecondConsumerTriggersPromptWithoutDataLoss(t *t
 	// Now perform the real upgrade: install a Core Foundation without losing local decisions.
 	// Simulate what F0→F6 would do: publish Kernel + Grammar + Surface, and upgrade REQ-002 to Core.
 	mustWriteTreeGeneric(t, tmp, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
@@ -132,7 +132,7 @@ func TestE2E_CoreColdHandoffBudgetSecondReqTrial(t *testing.T) {
 	// Build a Core root with two changed REQs to simulate the handoff trial (Req-014 first, Req-015 second in new session).
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
@@ -297,8 +297,8 @@ func TestE2E_ErrorDSLAndLegacyMigration_E2E(t *testing.T) {
 	// Part C: legacy v1.0 kernel without markers -> compatibility info only, no cascade
 	legacyRoot := t.TempDir()
 	mustWriteTreeGeneric(t, legacyRoot, map[string]string{
-		"packages/design-tokens/tokens.json": tokensJSONForTest(t),
-		"docs/design/DESIGN.md":              "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n| 项 | 可执行内容 |\n|:--|:--|\n| Laws — 必须做 | do |\n",
+		"docs/design/tokens/tokens.json": tokensJSONForTest(t),
+		"docs/design/DESIGN.md":          "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n| 项 | 可执行内容 |\n|:--|:--|\n| Laws — 必须做 | do |\n",
 	})
 	idx, findings, err := BuildContractIndex(legacyRoot)
 	if err != nil {
@@ -337,7 +337,7 @@ func TestE2E_ErrorDSLAndLegacyMigration_E2E(t *testing.T) {
 	// Part D: primitive consumption + generated asset unverifiable via Check
 	primRoot := t.TempDir()
 	mustWriteTreeGeneric(t, primRoot, map[string]string{
-		"packages/design-tokens/tokens.json":               tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                   tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                            kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                   grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":         "# Surface\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -374,7 +374,7 @@ func TestE2E_StrictIsPerProject_AndValidateAllExcludesFoundation(t *testing.T) {
 	// A violated Core root is still advisory by default (warnings, not error).
 	badRoot := t.TempDir()
 	mustWriteTreeGeneric(t, badRoot, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n<!-- foundation-contract:v1 constraints -->\n| ID | Status | 类型 | 可执行 Statement / Do | Don't / 反向边界 | Scope | Source | Binding | Checkability | Proof / review |\n|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|\n| LAW-01 | active | law | do | dont | global | EVD-01 | — | human | PROOF-01 |\n\n## 8. Surfaces in force\n<!-- foundation-contract:v1 surfaces -->\n| ID | Surface | Profile/version | 与主 Surface 的对比证明 |\n|:--|:--|:--|:--|\n| SUR-01 | consumer | surface-profiles/consumer.md@v1.0.0 | PROOF-01 |\n\n## 9. Proof Set\n<!-- foundation-contract:v1 proofs -->\n| ID | 类型 | 路径 | 证明哪些约束 |\n|:--|:--|:--|:--|\n| PROOF-01 | Anchor | proof/anchor-screens/consumer.html | LAW-01 |\n\n## 10. Open design debt\n<!-- foundation-contract:v1 debts -->\n| ID | 项 | 影响 | 复查条件 |\n|:--|:--|:--|:--|\n| DEBT-01 | x | low | next review |\n",
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/proof/anchor-screens/consumer.html": "<html/>",

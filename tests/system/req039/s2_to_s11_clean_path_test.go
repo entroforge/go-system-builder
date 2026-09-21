@@ -43,14 +43,14 @@ func TestS2_ToS11_CleanPath_Conformance(t *testing.T) {
 		"hook_event_name":"PreToolUse",
 		"agent_id":"agent-1",
 		"tool_name":"Edit",
-		"tool_input":{"file_path":"docs/design/architecture/ARCHITECTURE-039.md"}
+		"tool_input":{"file_path":"docs/architecture/ARCHITECTURE-039.md"}
 	}`
 	code, stdout, stderr := runHook(t, root, "PreToolUse", input)
 	if code != 0 {
 		t.Fatalf("S2 PreToolUse must not fail: code=%d stderr=%s", code, stderr)
 	}
 	env, qg := parseEnv(t, stdout)
-	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != "allow" {
+	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
 		t.Fatalf("S2 PreToolUse must allow: %v", pd)
 	}
 	if gateID, _ := qg["gate_id"].(string); !strings.Contains(gateID, "GATE-PLANNING-DESIGN-COMPLETE") {
@@ -78,7 +78,7 @@ func TestS2_ToS11_CleanPath_Conformance(t *testing.T) {
 	revBefore, _ := persisted["revision"].(float64)
 	_, stdout2, _ := runHook(t, root, "PreToolUse", input)
 	env2, _ := parseEnv(t, stdout2)
-	if pd := env2["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != "allow" {
+	if pd := env2["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
 		t.Fatalf("S2 second PreToolUse must still allow: %v", pd)
 	}
 	rawState2, _ := os.ReadFile(filepath.Join(root, ".claude", "loop-state.json"))
@@ -121,10 +121,16 @@ func parseEnv(t *testing.T, raw string) (map[string]any, map[string]any) {
 	if err := dec.Decode(&env); err != nil {
 		t.Fatalf("hook output is not JSON: %v\noutput=%s", err, raw)
 	}
-	qg, _ := env["quality_gate"].(map[string]any)
-	if qg == nil {
-		if hsp, ok := env["hookSpecificOutput"].(map[string]any); ok {
-			qg, _ = hsp["quality_gate"].(map[string]any)
+	var qg map[string]any
+	if hsp, ok := env["hookSpecificOutput"].(map[string]any); ok {
+		context, _ := hsp["additionalContext"].(string)
+		first := strings.SplitN(context, "\n", 2)[0]
+		if strings.HasPrefix(first, "QUALITY_GATE ") {
+			d := json.NewDecoder(strings.NewReader(strings.TrimPrefix(first, "QUALITY_GATE ")))
+			d.UseNumber()
+			if err := d.Decode(&qg); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	return env, qg

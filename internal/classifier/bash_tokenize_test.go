@@ -79,3 +79,12 @@ func TestResolveCurlCommandSubstitutionNotFlaggedAsREQWrite(t *testing.T) {
 		})
 	}
 }
+
+func TestGitMutationPathsAfterDoubleDash(t *testing.T) {
+	for _, command := range []string{"git restore -- docs/requirements/REQ-001.md", "git checkout HEAD -- docs/requirements/REQ-001.md"} {
+		got, err := classifier.Resolve(command)
+		if err != nil || !got.Mutates || len(got.AffectedPaths) != 1 || got.AffectedPaths[0] != "docs/requirements/REQ-001.md" {
+			t.Fatalf("%s: %+v %v", command, got, err)
+		}
+	}
+}

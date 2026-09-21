@@ -172,7 +172,7 @@ func TestBindREQAcceptsUnknownUIIImpact(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(reqPath) })
 	relPath := "internal/transition/testdata/ui-unknown-req.md"
 	hash := fileHash(t, reqPath)
-	next, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	next, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-001",
 		ExpectedRevision: 0,
 		Actor:            "user",
@@ -213,7 +213,7 @@ func stateAtVerificationMap(rev int) map[string]any {
 	return map[string]any{
 		"schema_version": "1.1.0",
 		"runtime_id":     "loop-test",
-		"definition":     map[string]any{"path": "docs/loop-definition.json", "version": "1.2.0", "sha256": "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86"},
+		"definition":     map[string]any{"path": "docs/control/loop-definition.json", "version": "1.2.0", "sha256": "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86"},
 		"revision":       float64(rev),
 		"lifecycle":      map[string]any{"state": "verification", "phase": "clean_round_evaluation", "phase_revision": float64(1)},
 		"authorization":  map[string]any{"mode": "loop", "command": "/loop", "actor": "x", "occurred_at": "2026-01-01T00:00:00Z"},
@@ -223,7 +223,7 @@ func stateAtVerificationMap(rev int) map[string]any {
 			"repair": map[string]any{"max_attempts_per_bug": float64(3), "max_same_contract_failures": float64(2), "max_full_review_rounds": float64(5)},
 		},
 		"hook_control": map[string]any{
-			"policy_ref":           map[string]any{"path": "docs/hook-policy.json", "version": "v1.0.0", "sha256": "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86"},
+			"policy_ref":           map[string]any{"path": "docs/control/hook-policy.json", "version": "v1.0.0", "sha256": "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86"},
 			"mode":                 "audit",
 			"health":               "healthy",
 			"consecutive_failures": float64(0),

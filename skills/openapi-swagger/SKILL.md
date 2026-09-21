@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # OpenAPI and Swagger
 ## Authority
-Quality guidance only. The locked API contract remains authoritative; stage routing remains in `docs/agent-protocol.md`.
+Quality guidance only. The locked API contract remains authoritative; stage routing remains in `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to OpenAPI documents, generated server or client code, schema components, documentation publication, or contract validation.
 ## Required Inputs

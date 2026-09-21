@@ -24,9 +24,14 @@ func decodeHookOutput(t *testing.T, data []byte) (map[string]any, map[string]any
 	if !ok {
 		t.Fatalf("hookSpecificOutput missing or wrong type, got %#v", envelope["hookSpecificOutput"])
 	}
-	qg, ok := specific["quality_gate"].(map[string]any)
-	if !ok {
-		t.Fatalf("quality_gate missing or wrong type, got %#v", specific["quality_gate"])
+	if _, ok := specific["quality_gate"]; ok {
+		t.Fatal("nonstandard wire field quality_gate")
+	}
+	text, _ := specific["additionalContext"].(string)
+	line := strings.SplitN(text, "\n", 2)[0]
+	var qg map[string]any
+	if !strings.HasPrefix(line, "QUALITY_GATE ") || json.Unmarshal([]byte(strings.TrimPrefix(line, "QUALITY_GATE ")), &qg) != nil {
+		t.Fatalf("missing model-facing gate projection: %q", text)
 	}
 	return envelope, specific, qg
 }
@@ -57,7 +62,7 @@ func TestPreToolUseNotReadyAllowsTool(t *testing.T) {
 		t.Fatalf("not_ready must exit 0, got %d", exitCode)
 	}
 	_, specific, qg := decodeHookOutput(t, output)
-	if specific["permissionDecision"] != "allow" {
+	if specific["permissionDecision"] != nil {
 		t.Fatalf("not_ready MUST allow the tool, got %v", specific["permissionDecision"])
 	}
 	if qg["status"] != "not_ready" {
@@ -106,7 +111,7 @@ func TestPreToolUseAdvancedCommitsTransition(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	_, specific, qg := decodeHookOutput(t, output)
-	if specific["permissionDecision"] != "allow" {
+	if specific["permissionDecision"] != nil {
 		t.Fatalf("advanced must allow the tool, got %v", specific["permissionDecision"])
 	}
 	if qg["status"] != "advanced" {
@@ -189,7 +194,7 @@ func TestPreToolUseUnknownAllowsTool(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	_, specific, qg := decodeHookOutput(t, output)
-	if specific["permissionDecision"] != "allow" {
+	if specific["permissionDecision"] != nil {
 		t.Fatalf("unknown MUST allow, got %v", specific["permissionDecision"])
 	}
 	if qg["status"] != "unknown" {
@@ -220,7 +225,7 @@ func TestPreToolUseSatisfiedAllowsTool(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	_, specific, qg := decodeHookOutput(t, output)
-	if specific["permissionDecision"] != "allow" {
+	if specific["permissionDecision"] != nil {
 		t.Fatalf("satisfied must allow, got %v", specific["permissionDecision"])
 	}
 	if qg["status"] != "satisfied" {
@@ -309,6 +314,6 @@ func envelope2SystemMessage(t *testing.T, data []byte) (string, bool) {
 	if err := json.Unmarshal(data, &env); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	s, ok := env["systemMessage"].(string)
+	s, ok := contextValue(env).(string)
 	return s, ok
 }

@@ -6,7 +6,7 @@ version: 1.0.0
 ---
 # Code Quality
 ## Authority
-Quality guidance only. Stage routing lives in `docs/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
+Quality guidance only. Stage routing lives in `docs/control/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
 ## Applicability
 Apply to code changes, QA module-code, and reuse/abstraction responsibilities.
 ## Required Inputs

@@ -552,8 +552,8 @@ func TestAcceptanceGateRejectsManifestOutsideAuthoritativeInventory(t *testing.T
 	task := []byte("# TASK-TEST\n## Closing Contract\n")
 	plan := []byte(`{"review_plan_id":"review-plan-test","review_round":2,"baseline_generation":1,"claims":[{"claim_id":"claim-qa-1"}]}`)
 	reqSHA := write("docs/requirements/REQ-TEST.md", req)
-	contractSHA := write("docs/contracts/BE-TEST.md", contract)
-	taskSHA := write("docs/tasks/TASK-TEST.md", task)
+	contractSHA := write("docs/dev/contracts/BE-TEST.md", contract)
+	taskSHA := write("docs/dev/tasks/TASK-TEST.md", task)
 	planSHA := write(".claude/review/plans/review-plan-test.json", plan)
 	manifest := validS10Manifest(t, "acceptance")
 	input := s10GateInput(t, "GATE-ACCEPTANCE-COMPLETE", "TR-015", "acceptance", map[string]any{
@@ -566,8 +566,8 @@ func TestAcceptanceGateRejectsManifestOutsideAuthoritativeInventory(t *testing.T
 		"id": "REQ-TEST", "path": "docs/requirements/REQ-TEST.md", "sha256": reqSHA,
 	}
 	input.Snapshot.State["documents"] = []any{
-		map[string]any{"id": "BE-TEST", "kind": "contract", "path": "docs/contracts/BE-TEST.md", "sha256": contractSHA, "generation": 1},
-		map[string]any{"id": "TASK-TEST", "kind": "task", "path": "docs/tasks/TASK-TEST.md", "sha256": taskSHA, "generation": 1},
+		map[string]any{"id": "BE-TEST", "kind": "contract", "path": "docs/dev/contracts/BE-TEST.md", "sha256": contractSHA, "generation": 1},
+		map[string]any{"id": "TASK-TEST", "kind": "task", "path": "docs/dev/tasks/TASK-TEST.md", "sha256": taskSHA, "generation": 1},
 	}
 	input.Snapshot.State["review"].(map[string]any)["plan"] = map[string]any{
 		"path": ".claude/review/plans/review-plan-test.json", "sha256": planSHA,
@@ -954,7 +954,7 @@ func TestEveryRegisteredGateReturnsEvaluatorOwnedStatus(t *testing.T) {
 	}
 	evaluator := qualitygate.NewEvaluator(registry)
 	taskData := []byte("# TASK\n")
-	files := memoryFiles{"docs/tasks/TASK-TEST.md": taskData}
+	files := memoryFiles{"docs/dev/tasks/TASK-TEST.md": taskData}
 
 	for _, gateID := range registry.IDs() {
 		spec, _ := registry.Lookup(gateID)
@@ -968,7 +968,7 @@ func TestEveryRegisteredGateReturnsEvaluatorOwnedStatus(t *testing.T) {
 					"review":     map[string]any{"round": 1},
 					"documents": []any{
 						map[string]any{
-							"id": "TASK-TEST", "kind": "task", "path": "docs/tasks/TASK-TEST.md",
+							"id": "TASK-TEST", "kind": "task", "path": "docs/dev/tasks/TASK-TEST.md",
 							"version": "v1", "sha256": sha256Hex(taskData), "status": "locked", "generation": 1,
 						},
 					},
@@ -1155,7 +1155,7 @@ func reviewGateInput(t *testing.T, evidenceRound int) qualitygate.Input {
 		"producer_responsibility": "QA",
 		"subject_refs": []any{
 			map[string]any{
-				"path": "docs/tasks/TASK-TEST.md", "version": "v1.0.0",
+				"path": "docs/dev/tasks/TASK-TEST.md", "version": "v1.0.0",
 				"sha256": sha256Hex(taskData),
 			},
 		},
@@ -1167,8 +1167,8 @@ func reviewGateInput(t *testing.T, evidenceRound int) qualitygate.Input {
 		t.Fatalf("marshal evidence: %v", err)
 	}
 	files := memoryFiles{
-		"docs/tasks/TASK-TEST.md": taskData,
-		"evidence/qa.json":        envelopeData,
+		"docs/dev/tasks/TASK-TEST.md": taskData,
+		"evidence/qa.json":            envelopeData,
 	}
 	return qualitygate.Input{
 		Snapshot: runtime.Snapshot{
@@ -1180,7 +1180,7 @@ func reviewGateInput(t *testing.T, evidenceRound int) qualitygate.Input {
 				"review":     map[string]any{"round": 3},
 				"documents": []any{
 					map[string]any{
-						"id": "TASK-TEST", "kind": "task", "path": "docs/tasks/TASK-TEST.md",
+						"id": "TASK-TEST", "kind": "task", "path": "docs/dev/tasks/TASK-TEST.md",
 						"version": "v1.0.0", "sha256": sha256Hex(taskData), "status": "locked", "generation": 1,
 					},
 				},
@@ -1189,7 +1189,7 @@ func reviewGateInput(t *testing.T, evidenceRound int) qualitygate.Input {
 						"id": "ev-qa", "kind": "review_result", "path": "evidence/qa.json",
 						"sha256": sha256Hex(envelopeData), "status": "valid", "baseline_generation": 1,
 						"review_round": evidenceRound, "produced_by": []any{"qa-1"}, "invalidated_by": nil,
-						"responsibility_id": "QA", "scope_refs": []any{"docs/tasks/TASK-TEST.md"},
+						"responsibility_id": "QA", "scope_refs": []any{"docs/dev/tasks/TASK-TEST.md"},
 					},
 				},
 			},
@@ -1382,7 +1382,7 @@ func containsPrefix(values []string, prefix string) bool {
 func conflictingRequestedEventsInput(t *testing.T) qualitygate.Input {
 	t.Helper()
 	taskData := []byte("# TASK\n")
-	files := memoryFiles{"docs/tasks/TASK-TEST.md": taskData}
+	files := memoryFiles{"docs/dev/tasks/TASK-TEST.md": taskData}
 	var evidence []any
 	add := func(id, conclusion, event string) {
 		envelope := map[string]any{
@@ -1396,7 +1396,7 @@ func conflictingRequestedEventsInput(t *testing.T) qualitygate.Input {
 			"producer_responsibility": "Original Finder",
 			"subject_refs": []any{
 				map[string]any{
-					"path": "docs/tasks/TASK-TEST.md", "version": "v1.0.0",
+					"path": "docs/dev/tasks/TASK-TEST.md", "version": "v1.0.0",
 					"sha256": sha256Hex(taskData),
 				},
 			},
@@ -1414,7 +1414,7 @@ func conflictingRequestedEventsInput(t *testing.T) qualitygate.Input {
 			"id": id, "kind": "targeted_reverification_record", "path": path,
 			"sha256": sha256Hex(data), "status": "valid", "baseline_generation": 1,
 			"review_round": 3, "produced_by": []any{"finder-1"}, "invalidated_by": nil,
-			"responsibility_id": "Original Finder", "scope_refs": []any{"docs/tasks/TASK-TEST.md"},
+			"responsibility_id": "Original Finder", "scope_refs": []any{"docs/dev/tasks/TASK-TEST.md"},
 		})
 	}
 	add("ev-pass", "pass", "targeted_reverification_pass")
@@ -1430,7 +1430,7 @@ func conflictingRequestedEventsInput(t *testing.T) qualitygate.Input {
 				"review":     map[string]any{"round": 3},
 				"documents": []any{
 					map[string]any{
-						"id": "TASK-TEST", "kind": "task", "path": "docs/tasks/TASK-TEST.md",
+						"id": "TASK-TEST", "kind": "task", "path": "docs/dev/tasks/TASK-TEST.md",
 						"version": "v1.0.0", "sha256": sha256Hex(taskData), "status": "locked", "generation": 1,
 					},
 				},
@@ -1452,8 +1452,8 @@ func documentPassInput(t *testing.T, specAgent, taskAgent, author string) qualit
 	docs := []doc{
 		{id: "REQ-TEST", kind: "req", path: "docs/requirements/REQ-TEST.md", version: "v1", data: []byte("# REQ\n")},
 		{id: "ARCH-TEST", kind: "design", path: "docs/design/ARCH-TEST.md", version: "v1", data: []byte("# ARCH\n")},
-		{id: "BE-TEST", kind: "contract", path: "docs/contracts/BE-TEST.md", version: "v1", data: []byte("# BE\n")},
-		{id: "TASK-TEST", kind: "task", path: "docs/tasks/TASK-TEST.md", version: "v1", data: []byte("# TASK\n")},
+		{id: "BE-TEST", kind: "contract", path: "docs/dev/contracts/BE-TEST.md", version: "v1", data: []byte("# BE\n")},
+		{id: "TASK-TEST", kind: "task", path: "docs/dev/tasks/TASK-TEST.md", version: "v1", data: []byte("# TASK\n")},
 	}
 	files := memoryFiles{}
 	var documents []any
@@ -1528,22 +1528,22 @@ func builderBatchInput(t *testing.T) qualitygate.Input {
 	taskOne := []byte("# TASK 1\n")
 	taskTwo := []byte("# TASK 2\n")
 	files := memoryFiles{
-		"docs/tasks/TASK-TEST-01.md": taskOne,
-		"docs/tasks/TASK-TEST-02.md": taskTwo,
+		"docs/dev/tasks/TASK-TEST-01.md": taskOne,
+		"docs/dev/tasks/TASK-TEST-02.md": taskTwo,
 	}
 	documents := []any{
 		map[string]any{
-			"id": "TASK-TEST-01", "kind": "task", "path": "docs/tasks/TASK-TEST-01.md",
+			"id": "TASK-TEST-01", "kind": "task", "path": "docs/dev/tasks/TASK-TEST-01.md",
 			"version": "v1", "sha256": sha256Hex(taskOne), "status": "locked", "generation": 1,
 		},
 		map[string]any{
-			"id": "TASK-TEST-02", "kind": "task", "path": "docs/tasks/TASK-TEST-02.md",
+			"id": "TASK-TEST-02", "kind": "task", "path": "docs/dev/tasks/TASK-TEST-02.md",
 			"version": "v1", "sha256": sha256Hex(taskTwo), "status": "locked", "generation": 1,
 		},
 	}
 	subjects := []any{
-		map[string]any{"path": "docs/tasks/TASK-TEST-01.md", "version": "v1", "sha256": sha256Hex(taskOne)},
-		map[string]any{"path": "docs/tasks/TASK-TEST-02.md", "version": "v1", "sha256": sha256Hex(taskTwo)},
+		map[string]any{"path": "docs/dev/tasks/TASK-TEST-01.md", "version": "v1", "sha256": sha256Hex(taskOne)},
+		map[string]any{"path": "docs/dev/tasks/TASK-TEST-02.md", "version": "v1", "sha256": sha256Hex(taskTwo)},
 	}
 	var evidence []any
 	add := func(id, kind, responsibility, conclusion, taskID string) {

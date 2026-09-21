@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 )
@@ -74,15 +75,18 @@ type stateFile struct {
 			Severity string `json:"severity"`
 		} `json:"bugs"`
 		Teams []struct {
+			ID                string   `json:"id"`
 			ManifestRef       string   `json:"manifest_ref"`
 			ResponsibilityIDs []string `json:"responsibility_ids"`
+			AgentIDs          []string `json:"agent_ids"`
 		} `json:"teams"`
 		Tasks []struct {
-			ID            string   `json:"id"`
-			State         string   `json:"state"`
-			Path          string   `json:"path"`
-			SHA256        string   `json:"sha256"`
-			OwnerAgentIDs []string `json:"owner_agent_ids"`
+			ID                  string   `json:"id"`
+			State               string   `json:"state"`
+			Path                string   `json:"path"`
+			SHA256              string   `json:"sha256"`
+			OwnerAgentIDs       []string `json:"owner_agent_ids"`
+			CompletionReportRef string   `json:"completion_report_ref"`
 		} `json:"tasks"`
 	} `json:"entities"`
 	Evidence []struct {
@@ -142,6 +146,7 @@ type workgroupManifest struct {
 		// declaring no scope.
 		Scope          []string `json:"scope"`
 		WritePaths     []string `json:"write_paths"`
+		OutputPaths    []string `json:"output_paths"`
 		RequiredChecks []string `json:"required_checks"`
 		DoneWhen       []string `json:"done_when"`
 		Status         string   `json:"status"`
@@ -217,6 +222,7 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("decode runtime state: %w", err)
 	}
+	manifestRefs := registeredManifestRefs(state)
 
 	context := policy.RuntimeContext{
 		RuntimeID:   state.RuntimeID,
@@ -335,8 +341,9 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			continue
 		}
 		taskIndex[task.ID] = loadedTask{
-			State:    task.State,
-			OwnerIDs: append([]string(nil), task.OwnerAgentIDs...),
+			State:         task.State,
+			OwnerIDs:      append([]string(nil), task.OwnerAgentIDs...),
+			CompletionRef: task.CompletionReportRef,
 		}
 	}
 	for _, agent := range state.Entities.Agents {
@@ -358,7 +365,7 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 				CompletionAckRef:      optionalString(agent.CompletionAckRef),
 				PromptRef:             optionalString(agent.PromptRef),
 				TaskID:                taskID,
-			}, idx)
+			}, idx, manifestRefs[agent.ID])
 			if row != nil {
 				loaded.Assignments = append(loaded.Assignments, *row)
 			}
@@ -382,8 +389,9 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 		if assignmentAlreadyPresent(loaded.Assignments, task.ID, task.OwnerAgentIDs[0]) {
 			continue
 		}
-		row := buildAssignmentRowFromTask(root, task.ID, task.OwnerAgentIDs[0])
+		row := buildAssignmentRowFromTask(root, task.ID, task.OwnerAgentIDs[0], manifestRefs[task.OwnerAgentIDs[0]])
 		if row != nil {
+			row.CompletionRef = task.CompletionReportRef
 			loaded.Assignments = append(loaded.Assignments, *row)
 		}
 	}
@@ -417,7 +425,7 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 			// Integrator reads (single deterministic owner rule); ambiguous
 			// rows stay unresolved and the barrier stands down on the
 			// AssignmentID fact but still sees the Agent fallback.
-			context.AssignmentID = loadAgentAssignmentID(root, agent.TaskIDs, agent.ID)
+			context.AssignmentID = loadAgentAssignmentID(root, agent.TaskIDs, agent.ID, manifestRefs[agent.ID])
 			if context.Agent != nil {
 				context.Agent.AssignmentID = context.AssignmentID
 			}
@@ -579,8 +587,19 @@ func readRepairHookArtifact(root, relative, expectedSHA string) ([]byte, bool) {
 }
 
 type loadedTask struct {
-	State    string
-	OwnerIDs []string
+	CompletionRef string
+	State         string
+	OwnerIDs      []string
+}
+
+// registeredManifestRef carries the two control-plane pointers that can
+// identify an assignment's team manifest. The Agent prompt pointer is more
+// specific; the registered Team pointer is the second authoritative source.
+// Empty pointers are deliberately retained as the signal to use the legacy
+// canonical fallback only when no registered manifest path exists.
+type registeredManifestRef struct {
+	PromptRef string
+	TeamRef   string
 }
 
 // buildAgentRow is the closure-friendly copy of one entities.agents[]
@@ -601,9 +620,9 @@ type buildAgentRow struct {
 // row owned by the agent (or a single unbound row). The first deterministic
 // match wins; ambiguous multi-assignment rows resolve to "" so callers never
 // invent a binding the manifest does not prove.
-func loadAgentAssignmentID(root string, taskIDs []string, agentID string) string {
+func loadAgentAssignmentID(root string, taskIDs []string, agentID string, refs registeredManifestRef) string {
 	for _, taskID := range taskIDs {
-		_, manifest := loadWorkgroupManifest(root, taskID)
+		_, manifest := loadWorkgroupManifestForRefs(root, taskID, refs)
 		if manifest == nil {
 			continue
 		}
@@ -640,7 +659,7 @@ func loadAgentAssignmentID(root string, taskIDs []string, agentID string) string
 // supplies completion_reported / completion_acknowledged refs. The
 // matching workgroup manifest supplies assignment_id, write_paths,
 // responsibility_ids and the worktree/branch coordinates.
-func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *AssignmentContext {
+func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask, refs registeredManifestRef) *AssignmentContext {
 	row := &AssignmentContext{
 		TaskID:           agent.TaskID,
 		OwnerAgentID:     agent.ID,
@@ -649,8 +668,19 @@ func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *Assig
 		CompletionAckRef: agent.CompletionAckRef,
 		ManifestRef:      agent.PromptRef,
 	}
-	_, manifest := loadWorkgroupManifest(root, agent.TaskID)
+	// TASK-scoped canonical Results also recover pre-fix runtimes whose
+	// agent pointer still names a wire message. Never borrow another owner's result.
+	if idx.CompletionRef != "" {
+		for _, owner := range idx.OwnerIDs {
+			if owner == agent.ID {
+				row.CompletionRef = idx.CompletionRef
+				break
+			}
+		}
+	}
+	manifestPath, manifest := loadWorkgroupManifestForRefs(root, agent.TaskID, refs)
 	if manifest != nil {
+		row.ManifestRef = manifestPath
 		// Match an assignment row whose agent_id matches this agent.
 		for _, a := range manifest.Assignments {
 			if a.AgentID == "" || a.AgentID != agent.ID {
@@ -660,7 +690,7 @@ func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *Assig
 			row.RoleFamily = a.RoleFamily
 			row.AgentDefinitionRef = a.AgentDefinitionRef
 			row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
-			row.WritePaths = append(row.WritePaths, assignmentWritePaths(a.WritePaths, a.Scope)...)
+			row.WritePaths = append(row.WritePaths, assignmentWritePaths(a.WritePaths, a.OutputPaths, a.Scope)...)
 			row.RequiredChecks = append(row.RequiredChecks, a.RequiredChecks...)
 			row.DoneWhen = append(row.DoneWhen, a.DoneWhen...)
 			row.ReportStatus = a.Status
@@ -676,7 +706,7 @@ func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *Assig
 			row.RoleFamily = a.RoleFamily
 			row.AgentDefinitionRef = a.AgentDefinitionRef
 			row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
-			row.WritePaths = append(row.WritePaths, assignmentWritePaths(a.WritePaths, a.Scope)...)
+			row.WritePaths = append(row.WritePaths, assignmentWritePaths(a.WritePaths, a.OutputPaths, a.Scope)...)
 			row.RequiredChecks = append(row.RequiredChecks, a.RequiredChecks...)
 			row.DoneWhen = append(row.DoneWhen, a.DoneWhen...)
 			row.ReportStatus = a.Status
@@ -697,8 +727,8 @@ func buildAssignmentRow(root string, agent buildAgentRow, idx loadedTask) *Assig
 // has no entry for the task's owner_agent_ids[0]. It only emits a row if
 // the manifest exists AND names an assignment, which prevents spurious
 // rows in cases where the owner agent has not yet been spawned.
-func buildAssignmentRowFromTask(root, taskID, ownerAgentID string) *AssignmentContext {
-	_, manifest := loadWorkgroupManifest(root, taskID)
+func buildAssignmentRowFromTask(root, taskID, ownerAgentID string, refs registeredManifestRef) *AssignmentContext {
+	manifestPath, manifest := loadWorkgroupManifestForRefs(root, taskID, refs)
 	if manifest == nil {
 		return nil
 	}
@@ -727,9 +757,9 @@ func buildAssignmentRowFromTask(root, taskID, ownerAgentID string) *AssignmentCo
 		RoleFamily:         a.RoleFamily,
 		AgentDefinitionRef: a.AgentDefinitionRef,
 		State:              "in_progress",
-		ManifestRef:        ".claude/workgroups/" + reqIDFromRuntime(root) + "/" + taskID + "/manifest.json",
+		ManifestRef:        manifestPath,
 		ReportStatus:       a.Status,
-		WritePaths:         assignmentWritePaths(a.WritePaths, a.Scope),
+		WritePaths:         assignmentWritePaths(a.WritePaths, a.OutputPaths, a.Scope),
 		RequiredChecks:     append([]string(nil), a.RequiredChecks...),
 		DoneWhen:           append([]string(nil), a.DoneWhen...),
 		ResponsibilityIDs:  []string{a.ResponsibilityID},
@@ -789,11 +819,11 @@ type assignmentCoordFile struct {
 // row: schema-required write_paths first, with the legacy `scope` field as
 // the declared fallback (a scope-only manifest must still feed the L3-S6
 // write-scope audit instead of declaring no scope).
-func assignmentWritePaths(writePaths, scope []string) []string {
-	if len(writePaths) > 0 {
-		return append([]string(nil), writePaths...)
+func assignmentWritePaths(writePaths, outputPaths, scope []string) []string {
+	if len(writePaths) == 0 {
+		writePaths = scope
 	}
-	return append([]string(nil), scope...)
+	return pathscope.EffectiveWrites(writePaths, outputPaths)
 }
 
 func loadAssignmentSidecar(root, assignmentID string) (assignmentCoordFile, bool) {
@@ -874,6 +904,147 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// registeredManifestRefs projects the registered Agent/Team pointers into a
+// per-owner lookup. The Agent prompt ref is preferred; a Team manifest_ref is
+// the registered fallback. A team without an id is usable only when it names
+// the Agent explicitly through agent_ids; conflicting references remain
+// ambiguous.
+func registeredManifestRefs(state stateFile) map[string]registeredManifestRef {
+	byTeamID := make(map[string]string, len(state.Entities.Teams))
+	ambiguousTeam := make(map[string]bool)
+	byAgentID := make(map[string]string)
+	ambiguousAgent := make(map[string]bool)
+	for _, team := range state.Entities.Teams {
+		ref := strings.TrimSpace(team.ManifestRef)
+		if ref == "" {
+			continue
+		}
+		teamID := strings.TrimSpace(team.ID)
+		if teamID != "" && !ambiguousTeam[teamID] {
+			if previous, ok := byTeamID[teamID]; ok && previous != ref {
+				delete(byTeamID, teamID)
+				ambiguousTeam[teamID] = true
+			} else {
+				byTeamID[teamID] = ref
+			}
+		}
+		for _, agentID := range team.AgentIDs {
+			agentID = strings.TrimSpace(agentID)
+			if agentID == "" {
+				continue
+			}
+			if previous, ok := byAgentID[agentID]; ok && previous != ref {
+				delete(byAgentID, agentID)
+				ambiguousAgent[agentID] = true
+				continue
+			}
+			if !ambiguousAgent[agentID] {
+				byAgentID[agentID] = ref
+			}
+		}
+	}
+	refs := make(map[string]registeredManifestRef, len(state.Entities.Agents))
+	for _, agent := range state.Entities.Agents {
+		agentID := strings.TrimSpace(agent.ID)
+		ref := registeredManifestRef{}
+		if agent.PromptRef != nil {
+			ref.PromptRef = strings.TrimSpace(*agent.PromptRef)
+		}
+		if agent.TeamID != nil {
+			teamID := strings.TrimSpace(*agent.TeamID)
+			if !ambiguousTeam[teamID] {
+				ref.TeamRef = byTeamID[teamID]
+			}
+		} else if !ambiguousAgent[agentID] {
+			// A Team without an id may still bind an Agent explicitly through
+			// its agent_ids list. No positional or single-team guess is safe.
+			ref.TeamRef = byAgentID[agentID]
+		}
+		refs[agent.ID] = ref
+	}
+	// A task can briefly outlive its Agent row during activation/recovery. A
+	// Team's explicit agent_ids still bind that owner to the registered Team
+	// manifest; this is an identity lookup, not a positional Team guess.
+	for agentID, teamRef := range byAgentID {
+		if _, exists := refs[agentID]; !exists {
+			refs[agentID] = registeredManifestRef{TeamRef: teamRef}
+		}
+	}
+	return refs
+}
+
+// loadWorkgroupManifestForRefs resolves a registered manifest before using
+// the old task-shaped canonical path. Once a formal .json reference exists,
+// a missing or malformed file is a closed lookup: guessing another caller's
+// task path could cross owners and apply the wrong write scope.
+func loadWorkgroupManifestForRefs(root, taskID string, refs registeredManifestRef) (string, *workgroupManifest) {
+	for _, ref := range []string{refs.PromptRef, refs.TeamRef} {
+		path, formal := registeredManifestPath(root, ref)
+		if !formal {
+			continue
+		}
+		if path == "" {
+			return "", nil
+		}
+		return readWorkgroupManifest(path, root)
+	}
+	return loadWorkgroupManifest(root, taskID)
+}
+
+// registeredManifestPath identifies a repository manifest path embedded in a
+// registered ref (the Agent form may carry `#assignment-id`). Non-manifest
+// legacy prompt labels such as `manifest#assignment-id` deliberately return
+// formal=false so the canonical fallback remains available.
+func registeredManifestPath(root, ref string) (string, bool) {
+	path := strings.TrimSpace(ref)
+	if path == "" {
+		return "", false
+	}
+	if before, _, ok := strings.Cut(path, "#"); ok {
+		path = strings.TrimSpace(before)
+	}
+	if !strings.HasSuffix(strings.ToLower(path), ".json") {
+		return "", false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", true
+	}
+	pathAbs := path
+	if !filepath.IsAbs(pathAbs) {
+		pathAbs = filepath.Join(rootAbs, filepath.FromSlash(pathAbs))
+	}
+	rel, err := filepath.Rel(rootAbs, pathAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", true
+	}
+	return pathAbs, true
+}
+
+func readWorkgroupManifest(path, root string) (string, *workgroupManifest) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil
+	}
+	var manifest workgroupManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return "", nil
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", nil
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return "", nil
+	}
+	rel, err := filepath.Rel(rootAbs, pathAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", nil
+	}
+	return filepath.ToSlash(filepath.Clean(rel)), &manifest
+}
+
 // loadWorkgroupManifest reads .claude/workgroups/<REQ-ID>/<task>/manifest.json
 // from the project root. The function returns (path-or-empty, manifest-or-nil);
 // callers distinguish "manifest not present" from "manifest present but
@@ -891,23 +1062,29 @@ func loadWorkgroupManifest(root, taskID string) (string, *workgroupManifest) {
 	if err != nil {
 		return "", nil
 	}
+	activeREQ := reqIDFromRuntime(root)
+	if activeREQ != "UNBOUND" {
+		path := filepath.Join(manifestDir, activeREQ, taskID, "manifest.json")
+		return readWorkgroupManifest(path, root)
+	}
+	var foundPath string
+	var foundManifest *workgroupManifest
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		reqDir := filepath.Join(manifestDir, entry.Name())
 		path := filepath.Join(reqDir, taskID, "manifest.json")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
+		if manifestPath, manifest := readWorkgroupManifest(path, root); manifest != nil {
+			if foundManifest != nil {
+				// Without a bound REQ, more than one task-shaped manifest is
+				// ambiguous. Do not let directory order select another owner.
+				return "", nil
+			}
+			foundPath, foundManifest = manifestPath, manifest
 		}
-		var manifest workgroupManifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			continue
-		}
-		return path, &manifest
 	}
-	return "", nil
+	return foundPath, foundManifest
 }
 
 // lockedFromStageFor maps a document kind to the lifecycle stage at which
@@ -926,7 +1103,7 @@ func lockedFromStageFor(kind string) string {
 	switch kind {
 	case "req":
 		return "S2"
-	case "design", "ui_baseline", "ui_prototype", "contract", "task", "team_manifest":
+	case "design", "ui_baseline", "ui_prototype", "contract", "task", "dispatch_plan", "team_manifest":
 		return "S6"
 	case "review", "qa", "e2e", "acceptance", "release_audit", "bug":
 		return "S7"
@@ -1009,14 +1186,20 @@ func reqIDFromRuntime(root string) string {
 		return "UNBOUND"
 	}
 	bound, ok := snapshot.State["bound_req"].(map[string]any)
-	if !ok {
-		return "UNBOUND"
+	if ok {
+		id, _ := bound["id"].(string)
+		if id != "" {
+			return id
+		}
 	}
-	id, _ := bound["id"].(string)
-	if id == "" {
-		return "UNBOUND"
+	// Older fixtures may not carry bound_req but still use the canonical
+	// loop-REQ-* runtime identity. It is safe to derive this exact REQ suffix;
+	// all other unbound runtimes remain ambiguous and use the unique-candidate
+	// legacy fallback in loadWorkgroupManifest.
+	if runtimeID, _ := snapshot.State["runtime_id"].(string); strings.HasPrefix(runtimeID, "loop-REQ-") {
+		return strings.TrimPrefix(runtimeID, "loop-")
 	}
-	return id
+	return "UNBOUND"
 }
 
 func loadActivation(root, ref string) (activationFile, error) {

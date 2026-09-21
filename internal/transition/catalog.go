@@ -2,7 +2,7 @@
 //
 // The transition catalog (this file) is the single source of truth for which
 // guards, actions, transitions, phase transitions and global transitions are
-// legal. It is loaded once at startup from docs/loop-definition.json and is
+// legal. It is loaded once at startup from docs/control/loop-definition.json and is
 // fail-closed: any declared identifier (guard, action, transition, phase,
 // global, entity lifecycle transition, forbidden event) that does not have a
 // registered implementation causes LoadCatalog to return an error.
@@ -20,6 +20,8 @@ package transition
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"sort"
@@ -123,19 +125,21 @@ type EntityTransition struct {
 // keys TASK-013 needs are decoded; unknown keys are tolerated because the
 // upstream schema validates full structure.
 type LoopDefinition struct {
-	SchemaVersion       string                         `json:"schema_version"`
-	DefinitionID        string                         `json:"definition_id"`
-	Status              string                         `json:"status"`
-	InitialState        string                         `json:"initial_state"`
-	TerminalStates      []string                       `json:"terminal_states"`
-	States              map[string]StateSpec           `json:"states"`
-	PhaseMachines       map[string]PhaseMachineSpec    `json:"phase_machines"`
-	EntityLifecycles    map[string]EntityLifecycleSpec `json:"entity_lifecycles"`
-	Transitions         []TransitionSpec               `json:"transitions"`
-	GlobalTransitions   []GlobalTransitionSpec         `json:"global_transitions"`
-	ForbiddenEvents     []ForbiddenEventSpec           `json:"forbidden_events"`
-	Invariants          []InvariantSpec                `json:"invariants"`
-	QualityCycleTimeout string                         `json:"quality_cycle_timeout,omitempty"`
+	MutableEvidenceKinds []string                       `json:"mutable_evidence_kinds"`
+	FileSources          []fileview.Rule                `json:"file_sources"`
+	SchemaVersion        string                         `json:"schema_version"`
+	DefinitionID         string                         `json:"definition_id"`
+	Status               string                         `json:"status"`
+	InitialState         string                         `json:"initial_state"`
+	TerminalStates       []string                       `json:"terminal_states"`
+	States               map[string]StateSpec           `json:"states"`
+	PhaseMachines        map[string]PhaseMachineSpec    `json:"phase_machines"`
+	EntityLifecycles     map[string]EntityLifecycleSpec `json:"entity_lifecycles"`
+	Transitions          []TransitionSpec               `json:"transitions"`
+	GlobalTransitions    []GlobalTransitionSpec         `json:"global_transitions"`
+	ForbiddenEvents      []ForbiddenEventSpec           `json:"forbidden_events"`
+	Invariants           []InvariantSpec                `json:"invariants"`
+	QualityCycleTimeout  string                         `json:"quality_cycle_timeout,omitempty"`
 }
 
 // PhaseMachineSpec is one entry in phase_machines.
@@ -233,7 +237,7 @@ func (e *TriggerConflictError) Code() string { return TriggerConflictCode }
 // against the registered guard and action registries. Returns an error if any
 // declared guard, action, transition, or forbidden event is missing.
 func LoadCatalog(root string) (*Catalog, error) {
-	defPath := filepath.Join(root, "docs", "loop-definition.json")
+	defPath := filepath.Join(root, projectlayout.Definition)
 	data, err := os.ReadFile(defPath)
 	if err != nil {
 		return nil, fmt.Errorf("read Loop Definition: %w", err)

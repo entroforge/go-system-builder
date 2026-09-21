@@ -3,7 +3,7 @@ package scenario
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -76,7 +76,11 @@ func validateCrossMatrix(source sourcePackage, root string) error {
 	reqID := ""
 	if bound, ok := readBoundREQ(root); ok {
 		reqID = bound.ID
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(bound.Path)))
+		files := source.files
+		if files == nil {
+			files = fileview.Disk{Root: root}
+		}
+		data, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(bound.Path)))
 		if err != nil {
 			return fmt.Errorf("cross-matrix: read bound REQ %s: %w — the FR join cannot degrade to shape-only", bound.Path, err)
 		}

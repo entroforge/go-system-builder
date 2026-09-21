@@ -69,8 +69,8 @@ func seedSatisfiedPlanningDesign(t *testing.T, root string, state map[string]any
 	req := []byte("# REQ-001\n\n> 状态：locked\n> 版本：v1.0.0\n")
 	architecture := []byte("# ARCHITECTURE-001\n\n> 状态：locked\n> 版本：v1.0.0\n")
 	for path, data := range map[string][]byte{
-		"docs/requirements/REQ-001.md":                 req,
-		"docs/design/architecture/ARCHITECTURE-001.md": architecture,
+		"docs/requirements/REQ-001.md":          req,
+		"docs/architecture/ARCHITECTURE-001.md": architecture,
 	} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", path, err)
@@ -89,7 +89,7 @@ func seedSatisfiedPlanningDesign(t *testing.T, root string, state map[string]any
 		"producer_responsibility": "Architect",
 		"subject_refs": []map[string]any{
 			{"path": "docs/requirements/REQ-001.md", "version": "v1.0.0", "sha256": sha256Hex(req)},
-			{"path": "docs/design/architecture/ARCHITECTURE-001.md", "version": "v1.0.0", "sha256": sha256Hex(architecture)},
+			{"path": "docs/architecture/ARCHITECTURE-001.md", "version": "v1.0.0", "sha256": sha256Hex(architecture)},
 		},
 		"conclusion": "pass",
 	}

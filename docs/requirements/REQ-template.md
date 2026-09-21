@@ -1,5 +1,7 @@
 # 需求：REQ-{id}
 
+> Dispatch policy: waves-v1
+
 > 名称：{需求名称}
 > 状态：draft / locked / changed / archived
 > （draft→locked 的翻转由 agent 依据人类在对话中的明确"锁定"拍板执行，见 skills: requirement-funnel）
@@ -151,8 +153,8 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 
 | 合同 | 路径 | 状态 | 覆盖需求 |
 |:--|:--|:--|:--|
-| CONTRACTS-{id} | `docs/contracts/CONTRACTS-{id}.md` | draft / reviewed / locked | 当前 REQ 全量索引 |
-| FE-{id} | `docs/contracts/FE-{id}.md` | draft / reviewed / locked | FR-{id} |
+| CONTRACTS-{id} | `docs/dev/contracts/CONTRACTS-{id}.md` | draft / reviewed / locked | 当前 REQ 全量索引 |
+| FE-{id} | `docs/dev/contracts/FE-{id}.md` | draft / reviewed / locked | FR-{id} |
 
 ### 条款覆盖
 
@@ -172,14 +174,14 @@ REQ 只能作为来源，不能创建需求私有设计或测试副本。任何�
 
 | 关系 | 文档 | 路径 | 状态 |
 |:--|:--|:--|:--|
-| downstream | 任务看板 | `docs/tasks/index.md` | draft / executing / completed |
+| downstream | 任务看板 | `docs/dev/tasks/index-REQ-{id}.md` | draft / executing / completed |
 | evidence | Review round manifest | `{team-manifest-path}` | pending / complete |
 | evidence | Delivery verification | `docs/reports/review/REV-{id}.md` | pending / PASS |
 | evidence | QA evidence | `docs/reports/qa/QA-{id}.md` | pending / PASS |
 | evidence | E2E Tester evidence | `docs/reports/e2e/E2E-{id}.md` | pending / PASS |
 | evidence | Clean round | `{review-evidence-path}` | pending / valid |
 | evidence | 验收 | `docs/reports/acceptance/ACC-{id}.md` | pending / passed |
-| downstream | 发布审计 | `docs/release_audits/{file}.md` | pending / approved |
+| downstream | 发布审计 | `docs/reports/release-audits/{file}.md` | pending / approved |
 
 ## 变更记录
 
