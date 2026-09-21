@@ -16,6 +16,7 @@ type baselineBoundary struct {
 	tracked   map[string]bool
 	worktrees []string
 	gitOK     bool
+	cache     map[string]bool
 }
 
 func newBaselineBoundary(root string) baselineBoundary {
@@ -32,6 +33,11 @@ func newBaselineBoundary(root string) baselineBoundary {
 		return b
 	}
 	b.gitOK = true
+	b.cache = map[string]bool{}
+	// Include HEAD ownership so a staged deletion cannot acquire cache exemption.
+	if head, e := exec.Command("git", "-C", rootAbs, "ls-tree", "-r", "--name-only", "-z", "HEAD").Output(); e == nil {
+		data = append(data, head...)
+	}
 	for _, p := range strings.Split(string(data), "\x00") {
 		if p != "" {
 			b.tracked[p] = true
@@ -87,6 +93,33 @@ func (b baselineBoundary) excludes(rel string) bool {
 			return true
 		}
 	}
+	return b.cacheExcluded(rel)
+}
+
+// Cache names alone are never sufficient. A protected descendant prevents
+// directory pruning, and unavailable Git never grants a cache exemption.
+func (b baselineBoundary) cacheExcluded(rel string) bool {
+	if !b.gitOK || b.hasTracked(rel) {
+		return false
+	}
+	parts := strings.Split(rel, "/")
+	for i, part := range parts {
+		switch part {
+		case "node_modules", "dist", "coverage", ".vite", ".turbo", ".nuxt", ".output", "test-results", "playwright-report", "blob-report", ".playwright", "tmp", "temp":
+			candidate := strings.Join(parts[:i+1], "/")
+			if b.hasTracked(candidate) {
+				continue
+			}
+			ignored, ok := b.cache[candidate]
+			if !ok {
+				ignored = gitIgnoredPaths(b.root, []string{candidate})[candidate]
+				b.cache[candidate] = ignored
+			}
+			if ignored {
+				return true
+			}
+		}
+	}
 	return false
 }
 func (b *baselineBoundary) discoverEnvironment(rel string) bool {
@@ -122,6 +155,10 @@ func excludedBaselinePaths(root string, paths []string) map[string]bool {
 	}
 	excluded := runtimeLogPaths(root, paths)
 	for _, p := range paths {
+		if b.hasTracked(p) && !isControlPlanePath(p, false) {
+			delete(excluded, p)
+			continue
+		}
 		if ignoreBaselinePath(p) || b.excludes(p) {
 			excluded[p] = true
 		}

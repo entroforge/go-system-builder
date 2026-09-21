@@ -292,13 +292,7 @@ func ignoreBaselinePath(rel string) bool {
 	if isControlPlanePath(rel, false) {
 		return true
 	}
-	for _, part := range strings.Split(rel, "/") {
-		switch part {
-		case "node_modules", "dist", "coverage", ".vite", ".turbo", ".nuxt", ".output",
-			"test-results", "playwright-report", "blob-report", ".playwright", "tmp", "temp":
-			return true
-		}
-	}
+
 	return false
 }
 
