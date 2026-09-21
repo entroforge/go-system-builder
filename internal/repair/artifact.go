@@ -184,13 +184,16 @@ func scopeAllows(path string, prospective, forbidden []string) error {
 // visible to the Session diff instead of silently excluded. Any legitimate
 // control-plane write must be under the known subtrees; product writes under
 // .claude remain product drift.
-func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
+func captureRepositoryBaseline(root string, protected ...ArtifactRef) ([]ArtifactRef, string, error) {
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve repository root: %w", err)
 	}
 	artifacts := []ArtifactRef{}
 	boundary := newBaselineBoundary(rootAbs)
+	for _, artifact := range protected {
+		boundary.addTracked(normalizePath(artifact.Path))
+	}
 	scope := pathscope.New(root)
 	err = filepath.WalkDir(rootAbs, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -243,18 +246,12 @@ func captureRepositoryBaseline(root string) ([]ArtifactRef, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("capture repository baseline: %w", err)
 	}
-	// RC-16 (S9-L1): runtime log output (server/log/<date>/info.log and the
-	// like) is written by the project's long-running service and by ordinary
-	// verification runs while a session is open. It is git-ignored, untracked
-	// exhaust — never implementation surface — so it is classified out of the
-	// baseline here, forgiven by the authority gate (checkS9AuthorityFreshness)
-	// and skipped by the Session diff (ComputeSessionChangeset) under one and
-	// the same rule. Without this, a single appended log line staled the
-	// fingerprint of every open session.
+	// Ignore only newly discovered generated logs. HEAD/index ownership and
+	// immutable Session membership both take precedence over current ignore rules.
 	if excluded := runtimeLogPaths(rootAbs, artifactPaths(artifacts)); len(excluded) > 0 {
 		kept := make([]ArtifactRef, 0, len(artifacts))
 		for _, artifact := range artifacts {
-			if excluded[artifact.Path] {
+			if excluded[artifact.Path] && !boundary.tracked[artifact.Path] {
 				continue
 			}
 			kept = append(kept, artifact)
@@ -314,7 +311,7 @@ func isControlPlanePath(rel string, isDir bool) bool {
 	// Hook decision journals append on every hook evaluation; they are
 	// control-plane bookkeeping and must never enter a session baseline
 	// (a captured copy goes stale on the builders' own next hook call).
-	if strings.HasPrefix(rel, ".claude/hook") {
+	if rel == ".claude/hook-decisions.jsonl" {
 		return true
 	}
 	if strings.HasPrefix(rel, ".claude/") && (strings.HasSuffix(rel, ".lock") || strings.HasSuffix(rel, ".lock.process")) {
@@ -465,10 +462,9 @@ func gitIgnoredPaths(root string, paths []string) map[string]bool {
 	return ignored
 }
 
-// runtimeLogPaths returns the subset of paths that are runtime log output and
-// therefore never part of the session authority surface — no matter which
-// generation of the harness captured them. It is the single classification used
-// by baseline capture, the S9 authority gate, and the Session diff.
+// runtimeLogPaths identifies candidate runtime log output for new baseline
+// capture. Stored membership takes precedence over this
+// current-state heuristic when checking an existing session.
 func runtimeLogPaths(root string, paths []string) map[string]bool {
 	candidates := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -479,21 +475,31 @@ func runtimeLogPaths(root string, paths []string) map[string]bool {
 	return gitIgnoredPaths(root, candidates)
 }
 
+// captureSessionBaseline retains the immutable baseline's ownership even after
+// deletion, untracking or ignore-rule changes. Legacy logs without historical
+// classification stay protected; existing approved artifacts are never rewritten.
+func captureSessionBaseline(root string, session RepairSession) ([]ArtifactRef, string, error) {
+	excluded := excludedBaselinePaths(root, artifactPaths(session.BaselineArtifacts))
+	protected := make([]ArtifactRef, 0, len(session.BaselineArtifacts))
+	for _, a := range session.BaselineArtifacts {
+		if !excluded[normalizePath(a.Path)] {
+			protected = append(protected, a)
+		}
+	}
+	return captureRepositoryBaseline(root, protected...)
+}
+
 // ComputeSessionChangeset derives the actual implementation delta from the
 // immutable Session baseline and the current repository. It is the authority
 // used by result submission; agents may describe a change, but cannot invent
 // one or omit one.
 func ComputeSessionChangeset(root string, session RepairSession) ([]ArtifactRef, error) {
-	current, _, err := captureRepositoryBaseline(root)
+	current, _, err := captureSessionBaseline(root, session)
 	if err != nil {
 		return nil, err
 	}
 	base := map[string]ArtifactRef{}
-	// RC-16 (S9-L1): sessions opened before the capture-side runtime-log
-	// classification carry log output in BaselineArtifacts. The same rule is
-	// applied to the stored baseline here so the Session diff stays consistent
-	// with capture and with the authority gate: an appended log line is not a
-	// change, and the stored baseline is never rewritten.
+	// Preserve historical membership, including legacy logs with unknown provenance.
 	logs := excludedBaselinePaths(root, artifactPaths(session.BaselineArtifacts))
 	for _, artifact := range session.BaselineArtifacts {
 		path := normalizePath(artifact.Path)

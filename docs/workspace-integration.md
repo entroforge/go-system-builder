@@ -84,3 +84,13 @@ Runtime workspace 仍是 schema 1.1.0 的可选扩展，绑定前统一更新二
 ## 验收范围
 
 临时真实 Git、进程、领域链路、故障恢复测试验证源码行为。真实 Claude S0–S11 和目标 Windows/macOS 运行验收需分别执行；未登录环境与交叉编译不能替代这些验收。检查隔离当前为 Linux 特性，不把其他平台的明确不可用说成支持。完整验证记录见优化方案的最新实施核验节。
+
+## Completion report identity
+
+An assignment's explicit `CompletionRef` is authoritative: missing or unreadable
+reports block integration and recovery. Neither operation substitutes another
+report. Without an explicit reference or a previously bound inspection, discovery
+uses only `.claude/evidence/<current-runtime>/g<current-generation>/assignments/<assignment>/completion.json`.
+Unknown Runtime/generation and historical or alternate layouts require explicit
+recovery; the framework does not scan other runtimes or select the first candidate.
+The normal evidence identity/hash and quality gates still apply.

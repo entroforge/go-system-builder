@@ -175,7 +175,7 @@ func RefreshCompletionBinding(root, runtimeID, explicitRef string, in Inspection
 		path = in.CompletionReportPath
 	}
 	if path == "" {
-		path = completionReportPath(root, in.AssignmentID, runtimeID, "")
+		path = completionReportPath(root, in.AssignmentID, runtimeID, "", in.BaselineGeneration)
 	}
 	binding, err := readCompletionReportBinding(root, path)
 	if err != nil {

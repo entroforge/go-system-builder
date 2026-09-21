@@ -592,7 +592,7 @@ func checkS9AuthorityFreshness(root string, pointer map[string]any, pending []Ch
 	if err != nil {
 		return err
 	}
-	live, _, err := captureRepositoryBaseline(root)
+	live, _, err := captureSessionBaseline(root, session)
 	if err != nil {
 		return err
 	}
@@ -610,10 +610,8 @@ func checkS9AuthorityFreshness(root string, pointer map[string]any, pending []Ch
 			contractScope = &approved
 		}
 	}
-	// RC-16 (S9-L1): runtime log output that a pre-classification session
-	// captured is forgiven here exactly as at capture and in the Session diff.
-	// The stored baseline is never rewritten, so such a session continues
-	// without a rebuild.
+	// Stored membership survives changes to current Git ownership/ignore rules.
+	// Legacy logs without historical provenance remain protected.
 	runtimeLogs := excludedBaselinePaths(root, artifactPaths(session.BaselineArtifacts))
 	var drifted []string
 

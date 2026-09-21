@@ -1482,6 +1482,7 @@ func TestHandleSubagentStopAdvancesIntegrationOnReadyInspection(t *testing.T) {
 	fix.persist(t)
 	snapshot := fix.snapshot(t)
 	loaded := &hookctx.LoadedContext{
+		PolicyContext:      policy.RuntimeContext{RuntimeID: "loop-REQ-039"},
 		BaselineGeneration: 1,
 		Assignments: []hookctx.AssignmentContext{{
 			AssignmentID: "assignment-039-06",
@@ -1736,6 +1737,7 @@ func TestPostMergeModeChecksCandidateThroughController(t *testing.T) {
 	fix.persist(t)
 	snapshot := fix.snapshot(t)
 	loaded := &hookctx.LoadedContext{
+		PolicyContext:      policy.RuntimeContext{RuntimeID: "loop-REQ-039"},
 		BaselineGeneration: 1,
 		Assignments: []hookctx.AssignmentContext{{
 			AssignmentID:         "assignment-039-06",

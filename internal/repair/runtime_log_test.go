@@ -70,9 +70,8 @@ func legacySessionPointer(t *testing.T, root, statePath, logRel, logSHA string) 
 }
 
 // TestRuntimeLogAppendDoesNotStaleAuthorityAndRealDriftStillBlocks covers: a log
-// append never blocks an open session (even one whose baseline already captured
-// the log, i.e. without a rebuild), while a genuine out-of-scope code change in
-// the same session still fails closed.
+// append does not block a new session. Legacy captured logs without provenance
+// remain protected, as do genuine out-of-scope code changes.
 func TestRuntimeLogAppendDoesNotStaleAuthorityAndRealDriftStillBlocks(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
 	runGit(t, root, "init")
@@ -94,16 +93,38 @@ func TestRuntimeLogAppendDoesNotStaleAuthorityAndRealDriftStillBlocks(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	pointer := legacySessionPointer(t, root, statePath, logRel, fileHash(captured))
-
-	// The long-running service appends its cron heartbeat to a log the session's
-	// baseline already lists. This is runtime exhaust, not an implementation
-	// change, so the gate stays green without re-baselining.
-	if err := os.WriteFile(logPath, append(captured, []byte("2026-09-17 08:00:00 info server/task/alert_check.go:19 Alert检查任务完成 {\"triggered\": 0, \"failed\": 0}\n")...), 0o644); err != nil {
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(raw, &current); err != nil {
+		t.Fatal(err)
+	}
+	pointer := current["review"].(map[string]any)["repair"].(map[string]any)
+	// A normal session has not captured this generated log.
+	if err := os.WriteFile(logPath, append(captured, []byte("normal append\n")...), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := repair.ValidateAuthorityFreshness(root, pointer, nil); err != nil {
-		t.Fatalf("a runtime log append must not stale the authority fingerprint: %v", err)
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, captured, 0644); err != nil {
+		t.Fatal(err)
+	}
+	pointer = legacySessionPointer(t, root, statePath, logRel, fileHash(captured))
+	if err := repair.ValidateAuthorityFreshness(root, pointer, nil); err != nil {
+		t.Fatalf("unchanged legacy baseline: %v", err)
+	}
+
+	// The long-running service appends its cron heartbeat to a log the session's
+	// baseline already lists. Its historical provenance is unknown, so it
+	// must now block rather than silently losing historical ownership.
+	if err := os.WriteFile(logPath, append(captured, []byte("2026-09-17 08:00:00 info server/task/alert_check.go:19 Alert检查任务完成 {\"triggered\": 0, \"failed\": 0}\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := repair.ValidateAuthorityFreshness(root, pointer, nil); err == nil || !strings.Contains(err.Error(), logRel) {
+		t.Fatalf("legacy log drift must remain protected: %v", err)
 	}
 
 	// An unclaimed, out-of-scope code change in the same session is still
@@ -131,8 +152,7 @@ func TestRuntimeLogAppendDoesNotStaleAuthorityAndRealDriftStillBlocks(t *testing
 
 // TestSessionChangesetExcludesRuntimeLogsAndKeepsRealChanges covers the diff
 // side against a legacy session object: the diff must report the repair's own
-// artifact with its current digest, drop the appended runtime log (which would
-// otherwise be an unclaimable "unreported change"), and keep a tracked log
+// artifact with its current digest, retain legacy log membership, and keep a tracked log
 // fixture that the repository deliberately version-controls.
 func TestSessionChangesetExcludesRuntimeLogsAndKeepsRealChanges(t *testing.T) {
 	root := t.TempDir()
@@ -178,11 +198,11 @@ func TestSessionChangesetExcludesRuntimeLogsAndKeepsRealChanges(t *testing.T) {
 	for _, artifact := range changeset {
 		byPath[artifact.Path] = artifact.SHA256
 	}
-	if len(changeset) != 2 {
-		t.Fatalf("session diff = %#v, want exactly the product change and the versioned fixture", changeset)
+	if len(changeset) != 3 {
+		t.Fatalf("session diff = %#v, want product change, legacy log drift and versioned fixture", changeset)
 	}
-	if _, exists := byPath[logRel]; exists {
-		t.Fatalf("runtime log %s must not appear in the session diff: %#v", logRel, changeset)
+	if _, exists := byPath[logRel]; !exists {
+		t.Fatalf("legacy log %s lost historical membership: %#v", logRel, changeset)
 	}
 	productData, err := os.ReadFile(productPath)
 	if err != nil {
@@ -312,5 +332,44 @@ func TestTrackedTempFreshnessRequiresExactClaim(t *testing.T) {
 	}
 	if err := repair.ValidateAuthorityFreshness(root, pointer, []repair.ChangedArtifact{{Path: rel, SHA256: fileHash(changed)}}); err != nil {
 		t.Fatalf("exact claimed repair rejected: %v", err)
+	}
+}
+
+func TestPostReviewCommittedLogDeletionFreshness(t *testing.T) {
+	root := req039fixtures.FreshRoot(t)
+	runGit(t, root, "init")
+	rel := "testdata/golden.log"
+	writeFile(t, root, ".gitignore", "*.log\n")
+	writeFile(t, root, rel, "package business\n")
+	runGit(t, root, "add", "-f", rel)
+	runGit(t, root, "-c", "user.name=Review", "-c", "user.email=review@example.invalid", "commit", "-m", "fixture")
+	state := req039fixtures.BaseState(t, root, "bug_resolution", "repair_readback", 0)
+	contractRef, contractSHA := writeRuntimeContract(t, root)
+	state["review"].(map[string]any)["investigation"] = map[string]any{"case_id": "investigation-case-1", "path": ".claude/review/investigation/cases/investigation-case-1-r2.json", "sha256": repeatHex("b", 64), "revision": 2, "status": "contract_approved", "source_finding_ids": []any{"finding-1"}, "observation_batch_id": "observation-batch-1", "updated_at": "2026-08-25T00:00:00Z", "repair_contract_ref": contractRef.Path, "repair_contract_sha256": contractSHA}
+	req039fixtures.WriteState(t, root, state)
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
+	if _, _, _, err := repair.OpenRepairSession(root, statePath, journalPath, repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "main"}, SessionID: "repair-session-tracked-temp", CreatedBy: "main"}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	if err = json.Unmarshal(raw, &current); err != nil {
+		t.Fatal(err)
+	}
+	pointer := current["review"].(map[string]any)["repair"].(map[string]any)
+	if err := repair.ValidateAuthorityFreshness(root, pointer, nil); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "rm", rel)
+	runGit(t, root, "-c", "user.name=Review", "-c", "user.email=review@example.invalid", "commit", "-m", "delete fixture")
+	if err := repair.ValidateAuthorityFreshness(root, pointer, nil); err == nil {
+		t.Fatal("unclaimed committed log fixture deletion passed freshness gate")
 	}
 }

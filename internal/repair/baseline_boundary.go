@@ -12,11 +12,12 @@ import (
 // proves that its contents are disposable. Registered worktrees and ignored,
 // marked Python environments have separate ownership; tracked files win.
 type baselineBoundary struct {
-	root      string
-	tracked   map[string]bool
-	worktrees []string
-	gitOK     bool
-	cache     map[string]bool
+	root        string
+	tracked     map[string]bool
+	trackedDirs map[string]bool
+	worktrees   []string
+	gitOK       bool
+	cache       map[string]bool
 }
 
 func newBaselineBoundary(root string) baselineBoundary {
@@ -40,7 +41,7 @@ func newBaselineBoundary(root string) baselineBoundary {
 	}
 	for _, p := range strings.Split(string(data), "\x00") {
 		if p != "" {
-			b.tracked[p] = true
+			b.addTracked(p)
 		}
 	}
 	data, err = exec.Command("git", "-C", rootAbs, "worktree", "list", "--porcelain", "-z").Output()
@@ -76,13 +77,23 @@ func newBaselineBoundary(root string) baselineBoundary {
 	}
 	return b
 }
-func (b baselineBoundary) hasTracked(dir string) bool {
-	for p := range b.tracked {
-		if p == dir || strings.HasPrefix(p, dir+"/") {
-			return true
-		}
+
+// addTracked builds exact-file and ancestor indexes once per scan.
+func (b *baselineBoundary) addTracked(path string) {
+	if b.tracked == nil {
+		b.tracked = map[string]bool{}
 	}
-	return false
+	if b.trackedDirs == nil {
+		b.trackedDirs = map[string]bool{}
+	}
+	b.tracked[path] = true
+	for i := strings.LastIndexByte(path, '/'); i >= 0; i = strings.LastIndexByte(path, '/') {
+		path = path[:i]
+		b.trackedDirs[path] = true
+	}
+}
+func (b baselineBoundary) hasTracked(path string) bool {
+	return b.tracked[path] || b.trackedDirs[path]
 }
 func (b baselineBoundary) excludes(rel string) bool {
 	if b.tracked[rel] {
@@ -130,8 +141,11 @@ func (b *baselineBoundary) discoverEnvironment(rel string) bool {
 	// directories and vendored/tracked environments remain protected.
 	marker := rel + "/pyvenv.cfg"
 	info, err := os.Lstat(filepath.Join(b.root, filepath.FromSlash(marker)))
+	if err != nil || !info.Mode().IsRegular() || b.hasTracked(rel) {
+		return false
+	}
 	ignored := gitIgnoredPaths(b.root, []string{rel, marker})
-	if err != nil || !info.Mode().IsRegular() || b.hasTracked(rel) || !ignored[rel] || !ignored[marker] {
+	if !ignored[rel] || !ignored[marker] {
 		return false
 	}
 	b.worktrees = append(b.worktrees, rel)
@@ -153,7 +167,9 @@ func excludedBaselinePaths(root string, paths []string) map[string]bool {
 			}
 		}
 	}
-	excluded := runtimeLogPaths(root, paths)
+	// Stored baseline membership is historical authority. Current ignore rules
+	// cannot reclassify its files, including legacy logs without provenance.
+	excluded := map[string]bool{}
 	for _, p := range paths {
 		if b.hasTracked(p) && !isControlPlanePath(p, false) {
 			delete(excluded, p)

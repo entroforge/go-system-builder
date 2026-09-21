@@ -99,7 +99,11 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	//    missing report is surfaced as an integration blocker, not as a
 	//    generic controller failure.
 	if !cfg.SkipCompletionCheck && cfg.ValidateDelivery == nil {
-		reportPath := completionReportPath(req.Root, req.Assignment.AssignmentID, req.RuntimeID, req.Assignment.CompletionRef)
+		reportPath := completionReportPath(req.Root, req.Assignment.AssignmentID, req.RuntimeID, req.Assignment.CompletionRef, req.BaselineGeneration)
+		if reportPath == "" {
+			addBlocker("completion report missing: provide an explicit CompletionRef or valid current Runtime, generation and assignment identity")
+			return out, nil
+		}
 		data, err := os.ReadFile(reportPath)
 		if err != nil {
 			addBlocker(fmt.Sprintf("completion report missing at %s: %v", reportPath, err))
@@ -301,84 +305,25 @@ func completionReportBinding(root, reportPath string, data []byte) (string, stri
 	return filepath.ToSlash(filepath.Clean(rel)), fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
-// completionReportPath returns the location of the completion report for
-// an assignment. Preferred order:
-//
-//  1. Explicit CompletionRef on the assignment (when the file exists)
-//  2. `.claude/evidence/<runtimeID>/g*/assignments/<id>/completion.json`
-//  3. Legacy loop-REQ-039 paths
-//  4. Broad scan under `.claude/evidence/*/g*/assignments/<id>/`
-//
-// Because the generator (BUG-04) writes the report at assignment creation
-// time using the same layout, Inspect just looks up the path. The runtime
-// id is best-effort — Inspect does not fail when it is missing because
-// the contract §4.1 only requires the file's existence.
-func completionReportPath(root, assignmentID, runtimeID, completionRef string) string {
+// completionReportPath never substitutes another report for an explicit binding.
+// Without a binding, only the current runtime/generation's canonical assignment
+// location is eligible. Unknown identity requires explicit recovery, not a scan.
+func completionReportPath(root, assignmentID, runtimeID, completionRef string, generation int) string {
 	if completionRef != "" {
-		path := completionRef
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(root, path)
+		if filepath.IsAbs(completionRef) {
+			return completionRef
 		}
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
+		return filepath.Join(root, completionRef)
 	}
-	var candidates []string
-	if runtimeID != "" {
-		candidates = append(candidates,
-			filepath.Join(root, ".claude", "evidence", runtimeID, "g1", "assignments", assignmentID, "completion.json"),
-			filepath.Join(root, ".claude", "evidence", runtimeID, "assignments", assignmentID, "completion.json"),
-		)
-	}
-	candidates = append(candidates,
-		filepath.Join(root, ".claude", "evidence", "loop-REQ-039", "g1", "assignments", assignmentID, "completion.json"),
-		filepath.Join(root, ".claude", "evidence", "loop-REQ-039", "assignments", assignmentID, "completion.json"),
-		filepath.Join(root, ".claude", "evidence", "assignments", assignmentID, "completion.json"),
-	)
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if found := scanCompletionReport(root, assignmentID); found != "" {
-		return found
-	}
-	if len(candidates) > 0 {
-		return candidates[0]
-	}
-	return filepath.Join(root, ".claude", "evidence", "loop-REQ-039", "g1", "assignments", assignmentID, "completion.json")
-}
-
-func scanCompletionReport(root, assignmentID string) string {
-	evidenceRoot := filepath.Join(root, ".claude", "evidence")
-	runtimeEntries, err := os.ReadDir(evidenceRoot)
-	if err != nil {
+	if runtimeID == "" || generation <= 0 || assignmentID == "" {
 		return ""
 	}
-	for _, runtimeEntry := range runtimeEntries {
-		if !runtimeEntry.IsDir() {
-			continue
-		}
-		runtimeDir := filepath.Join(evidenceRoot, runtimeEntry.Name())
-		genEntries, err := os.ReadDir(runtimeDir)
-		if err != nil {
-			continue
-		}
-		for _, genEntry := range genEntries {
-			if !genEntry.IsDir() {
-				continue
-			}
-			path := filepath.Join(runtimeDir, genEntry.Name(), "assignments", assignmentID, "completion.json")
-			if _, err := os.Stat(path); err == nil {
-				return path
-			}
-		}
-		path := filepath.Join(runtimeDir, "assignments", assignmentID, "completion.json")
-		if _, err := os.Stat(path); err == nil {
-			return path
+	for _, id := range []string{runtimeID, assignmentID} {
+		if id == "." || id == ".." || strings.ContainsAny(id, "/\\") {
+			return ""
 		}
 	}
-	return ""
+	return filepath.Join(root, ".claude", "evidence", runtimeID, fmt.Sprintf("g%d", generation), "assignments", assignmentID, "completion.json")
 }
 
 // lockedArtifacts combines authoritative paths with legacy explicit hints.

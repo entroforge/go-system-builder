@@ -306,6 +306,7 @@ func TestInspectCompletionReportPresentAndValid(t *testing.T) {
 
 	req := InspectRequest{
 		Root:               root,
+		RuntimeID:          "loop-REQ-039",
 		Assignment:         assignmentContext(wt, "feature", "develop"),
 		TargetBranch:       "develop",
 		BaselineGeneration: 1,
