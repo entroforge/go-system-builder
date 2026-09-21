@@ -21,8 +21,12 @@ Verify schema/definition/policy compatibility and current gate projection, exerc
 Hook process boundaries, and test pending integration recovery before resuming.
 Keep a rollback package; binary rollback never rewinds Runtime automatically.
 
-SubagentStop and TeammateIdle can execute real integration builds/tests and use
-600-second command-hook timeouts; lightweight hooks retain 10 seconds. Claude
-Code documents configurable command-hook timeout with a 600-second default
-(https://code.claude.com/docs/en/hooks). A timeout must preserve a resumable
-checkpoint; increasing the timeout is not evidence that a check passed.
+Hooks are fast control-plane checks only: they evaluate the gate, persist the
+resumable Milestone, and surface pending work; they never run integration
+builds or tests. Heavy integration runs outside the Hook — on SubagentStop the
+main session explicitly invokes `runtime task-integrate`, which performs the
+merge, checks and cleanup under its own command budget. All command hooks keep
+the 10-second timeout; the Harness enforces its own smaller internal budget, so
+raising the platform timeout cannot cure an internal overrun. A timeout must
+preserve a resumable checkpoint; increasing the timeout is not evidence that a
+check passed.
