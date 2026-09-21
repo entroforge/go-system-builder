@@ -73,6 +73,9 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 	if !ok || e.AgentID != *agent || e.Status != "ready" || e.BootstrapSHA256 == "" {
 		return fail(fmt.Errorf("launch requires current bootstrapped Worker owner"))
 	}
+	if err = b.PreflightChecks(ctx, e, e.Path); err != nil {
+		return fail(err)
+	}
 	loaded, err := hookctx.LoadFull(*root, e.AgentID)
 	if err != nil {
 		return fail(err)

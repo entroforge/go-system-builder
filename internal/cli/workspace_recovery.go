@@ -29,11 +29,15 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 	owner := fs.String("agent", "", "registered owner")
 	generation := fs.Int("execution-generation", 0, "exact old execution generation for replacement")
 	request := fs.String("request", "", "reviewed historical Execution JSON for adoption")
+	checkLocation := fs.String("check-location", "", "replacement runner: worker or main")
 	reason := fs.String("reason", "", "explicit recovery reason")
 	if err := parseWorkspaceFlags(fs, args[1:]); err != nil {
 		return 2
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
+	if *checkLocation != "" && (*checkLocation != "worker" && *checkLocation != "main" || verb != "replace") {
+		return fail(fmt.Errorf("check-location is a replacement-only worker/main choice"))
+	}
 	if *reason == "" {
 		return fail(fmt.Errorf("recovery requires an explicit reason"))
 	}
@@ -118,9 +122,19 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 		defer lease()
 		if old.Generation == *generation+1 && old.Status == "preparing" {
 			e = old
+			if *checkLocation != "" && e.CheckLocation != *checkLocation {
+				return fail(fmt.Errorf("replacement intent already pins its runner"))
+			}
 		} else {
 			e, err = b.ReplaceExecution(ctx, snap.State, *id, *owner, *generation)
 			if err != nil {
+				return fail(err)
+			}
+			if *checkLocation != "" {
+				e.CheckLocation = *checkLocation
+				b.Executions[*id] = e
+			}
+			if err = b.PreflightChecks(ctx, e, *root); err != nil {
 				return fail(err)
 			}
 			if err = persist("retire old Worker and reserve replacement; preserve old tree and evidence"); err != nil {

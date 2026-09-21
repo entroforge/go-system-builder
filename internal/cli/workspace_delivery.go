@@ -54,7 +54,7 @@ func runWorkspaceDelivery(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	e, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State))
-	if !ok || e.AgentID != *agent || e.Status != "ready" {
+	if !ok || e.AgentID != *agent || (e.Status != "ready" && !(verb == "integrate" && e.Status == "complete")) {
 		return fail(fmt.Errorf("delivery requires the registered execution and owner"))
 	}
 	loaded, err := hookctx.LoadFull(*root, e.AgentID)
@@ -146,7 +146,10 @@ func runWorkspaceDelivery(args []string, stdout, stderr io.Writer) int {
 	config := integration.IntegrateConfig{Root: *root, GitRoot: *root, RuntimeID: e.RuntimeID, RequiredChecks: e.Checks, CheckRunner: integration.CommandCheckRunner}
 	var inspected integration.Inspection
 	if found && (cp.State == integration.StateReady || cp.State == integration.StateMerged || cp.State == integration.StateVerified || cp.State == integration.StateAcknowledged || cp.State == integration.StateCleanupPending || cp.State == integration.StateComplete) {
-		inspected = integration.InspectionFromCheckpoint(cp)
+		inspected, err = integration.RefreshCompletionBinding(*root, e.RuntimeID, a.CompletionRef, integration.InspectionFromCheckpoint(cp))
+		if err != nil {
+			return fail(err)
+		}
 	} else {
 		if err = b.CleanInputs(ctx); err != nil {
 			return fail(err)
@@ -229,6 +232,10 @@ func runWorkspaceDelivery(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	finished, err := integration.Integrate(ctx, integration.IntegrateRequest{Inspection: integration.InspectionFromCheckpoint(cp), Acknowledge: true, Cleanup: true}, config)
+	if err != nil {
+		return fail(err)
+	}
+	snap, err = persistExecutionCompletion(*root, snap, e.AssignmentID)
 	if err != nil {
 		return fail(err)
 	}

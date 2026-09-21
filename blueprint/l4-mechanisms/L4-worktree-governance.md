@@ -1,6 +1,6 @@
 # L4 — Worktree 生命周期与项目根目录权威
 
-> 层：第四层；版本：v1.0.0；设计基准：最新 Claude Code 官方机制。
+> 层：第四层；版本：v1.1.0；设计基准：最新 Claude Code 官方机制。
 >
 > 上游：L1 D1（权威外置）、D2（自然路径）、D6（证据链）；L2 单一 REQ 生命周期。
 >
@@ -67,12 +67,16 @@ created → working → submitted → merged → verified → acknowledged → c
 
 复用既有 pending/ready/merged/verified/acknowledged/cleanup_pending/complete checkpoint 表达集成阶段，不新建平行状态机。失败保留精确阶段、source commit、merge commit 与原因；恢复从事实阶段继续，不把 preserved 当作不可恢复终态。
 
-主会话负责：
+主会话负责（默认 pre-and-post 模式）：
 
 1. 核对 assignment、仓库身份、开发目标、完整子分支提交和未跟踪文件；在 worker 工作树运行 manifest 声明的 `required_checks`，检查本次交付的真实输入与产物。
 2. 串行合并到根目录绑定开发分支，生成普通合并提交；不自动切到 manifest 指定的另一分支。
 3. 合并后在根目录重新运行 `required_checks` 作为联合校验，按控制面契约同步允许变化的 evidence 绑定。检查命令以当前执行目录为基准，无需自行猜测 worker/root 双路径。
 4. 写入接收事实，及时清理 worktree。清理失败只重试清理，不重复合并。
+
+显式例外 `post_merge` 只在已审阅的派发计划记录理由、成本与失败恢复后选择，不作为新任务的默认。它省略 Worker 动态 required_checks，不省略身份、范围、冻结输入和冲突检查；Main 合并树上的 required_checks 不得省略。Worker 与合并树不同，不能称为等价验证。检查失败时 Main 已包含候选，保留 merge/检查回执；环境失败 retry，代码失败 rework，未 verified 不 ack、不释放后继、不 cleanup，不自动 reset/stash。模式固定在不可变 manifest，变更走既有替换/返工流程。
+
+注册执行、只读观察、能力预检与迁移事务的收益/成本及状态消费者见 [受限执行决策](L4-workspace-execution-profiles.md)。
 
 开发主分支移动、根目录未提交修改、冲突、子目录新变更和校验失败均保留现场并给出恢复动作。不自动 stash/reset、强删未接收内容或提交无关变更。清理必须确认当前 source 仍是已接收版本，活动任务仍持锁时不删除。
 
@@ -104,3 +108,5 @@ Hook 仅处理有界读取和短事务；完整测试及重合并由主会话驱
 | 日期 | 版本 | 变更依据 |
 | --- | --- | --- |
 | 2026-09-18 | 1.0.0 | Worktree / Hook 问题复审及用户分支绑定、软提醒、上游输入来源要求；建立跨 Stage 唯一机制定义 |
+
+2026-09-21：修复目录迁移 CLI 权限闭环，增加受限观察/能力预检；维持双阶段默认并限定 post_merge 显式例外。证据与取舍见受限执行决策。

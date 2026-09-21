@@ -10,6 +10,8 @@ import (
 
 func TestReplacementRetainsOldTreeAndFrozenBase(t *testing.T) {
 	b, e, state, ctx := workerFixture(t)
+	e.CheckLocation = "main"
+	b.Executions[e.AssignmentID] = e
 	os.WriteFile(filepath.Join(e.Path, "input.md"), []byte("unfinished worker edits"), 0600)
 	// Main can legitimately advance while the lost Worker retains its old base.
 	os.WriteFile(filepath.Join(b.MainRoot, "new.md"), []byte("new independent input"), 0600)
@@ -25,6 +27,9 @@ func TestReplacementRetainsOldTreeAndFrozenBase(t *testing.T) {
 	next, err := b.ReplaceExecution(ctx, state, e.AssignmentID, e.AgentID, e.Generation)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if next.CheckLocation != "main" || b.History[0].CheckLocation != "main" {
+		t.Fatal("replacement lost runner")
 	}
 	if next.Generation != e.Generation+1 || next.BaseCommit != e.BaseCommit || next.Path == e.Path || len(b.History) != 1 || b.History[0].Status != "retired" {
 		t.Fatalf("bad replacement: %+v", next)

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"os"
@@ -34,6 +35,68 @@ func TestWorkspaceFlagRoutingUsesParsedArgumentsAndPreservesArtifactRoot(t *test
 	fix.state["workspace"] = workspace.Encode(b)
 	fix.persist(t)
 	if err := os.WriteFile(filepath.Join(e.Path, "--root"), []byte(`{"body":"Worker report"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	os.MkdirAll(filepath.Join(fix.root, ".claude/agents"), 0700)
+	os.MkdirAll(filepath.Join(fix.root, ".claude/skills"), 0700)
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Bootstrap(e, binary); err != nil {
+		t.Fatal(err)
+	}
+	e.BootstrapSHA256, err = workspace.BootstrapDigest(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Executions[e.AssignmentID] = e
+	fix.state["workspace"] = workspace.Encode(b)
+	fix.persist(t)
+	stateBefore, _ := os.ReadFile(fix.statePath)
+	for _, view := range []string{"cwd", "status", "diff", "staged", "log"} {
+		var out, stderr bytes.Buffer
+		if code := Run([]string{"runtime", "workspace", "observe", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID, "--view", view}, bytes.NewReader(nil), &out, &stderr); code != 0 {
+			t.Fatalf("observe %s: %d %s", view, code, stderr.String())
+		}
+		if view == "cwd" && strings.TrimSpace(out.String()) != e.Path {
+			t.Fatal("observation routed to Main")
+		}
+	}
+	for _, extra := range [][]string{{"--agent", "wrong"}, {"--assignment", "wrong"}, {"--view", "log --output=bad"}, {"unexpected"}} {
+		var out, stderr bytes.Buffer
+		args := []string{"runtime", "workspace", "observe", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID, "--view", "cwd"}
+		if code := Run(append(args, extra...), bytes.NewReader(nil), &out, &stderr); code == 0 {
+			t.Fatalf("invalid observation accepted: %v", extra)
+		}
+	}
+	if got, _ := os.ReadFile(fix.statePath); !bytes.Equal(got, stateBefore) {
+		t.Fatal("observation mutated Runtime")
+	}
+
+	// Capability failure must precede session reservation and Claude invocation.
+	e.Checks = []string{"project-test"}
+	b.Executions[e.AssignmentID] = e
+	fix.state["workspace"] = workspace.Encode(b)
+	fix.persist(t)
+	large, err := os.Create(filepath.Join(e.Path, "oversize"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = large.Truncate(513 << 20); err != nil {
+		t.Fatal(err)
+	}
+	large.Close()
+	stateBefore, _ = os.ReadFile(fix.statePath)
+	var launchOut, launchErr bytes.Buffer
+	if code := Run([]string{"runtime", "workspace", "launch", "--root", fix.root, "--assignment", e.AssignmentID, "--agent", e.AgentID}, bytes.NewReader(nil), &launchOut, &launchErr); code == 0 || !strings.Contains(launchErr.String(), "512 MiB") {
+		t.Fatalf("capability preflight: %d %s", code, launchErr.String())
+	}
+	if got, _ := os.ReadFile(fix.statePath); !bytes.Equal(got, stateBefore) {
+		t.Fatal("capability failure reserved session")
+	}
+	if err := os.Remove(filepath.Join(e.Path, "oversize")); err != nil {
 		t.Fatal(err)
 	}
 	var durableSubmission string

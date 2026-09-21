@@ -31,6 +31,7 @@ type ExecutionRegistry struct {
 	Executions map[string]Execution `json:"executions"`
 }
 type Execution struct {
+	CheckLocation      string            `json:"check_location,omitempty"`
 	ReworkRef          string            `json:"rework_ref,omitempty"`
 	PlatformSessionID  string            `json:"platform_session_id,omitempty"`
 	AssignmentID       string            `json:"assignment_id"`

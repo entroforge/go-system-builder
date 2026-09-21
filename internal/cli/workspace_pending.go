@@ -63,7 +63,19 @@ func pendingIntegrations(root string, loaded *hookctx.LoadedContext) ([]pendingI
 			return nil, fmt.Errorf("checkpoint identity differs from pending assignment %s", a.AssignmentID)
 		}
 		if found && cp.State == integration.StateComplete {
-			continue
+			projected := true
+			if b := loaded.PolicyContext.Workspace; b != nil {
+				e, ok := b.Execution(a.AssignmentID, loaded.PolicyContext.RuntimeID, loaded.BaselineGeneration)
+				projected = ok && e.Status == "complete"
+			}
+			currentReport := true
+			if cp.CompletionReportSHA256 != "" {
+				refreshed, err := integration.RefreshCompletionBinding(root, loaded.PolicyContext.RuntimeID, a.CompletionRef, integration.InspectionFromCheckpoint(cp))
+				currentReport = err == nil && refreshed.CompletionReportSHA256 == cp.CompletionReportSHA256 && refreshed.CompletionReportPath == cp.CompletionReportPath
+			}
+			if projected && currentReport {
+				continue
+			}
 		}
 		if !found && (a.CompletionRef == "" || a.WorktreePath == "") {
 			continue
@@ -73,6 +85,12 @@ func pendingIntegrations(root string, loaded *hookctx.LoadedContext) ([]pendingI
 			state = "reported"
 		}
 		row := pendingIntegration{AssignmentID: a.AssignmentID, AgentID: a.OwnerAgentID, State: state, Failure: cp.FailureReason, Command: []string{"loop-harness", "runtime", "task-integrate", "--root", root, "--assignment-id", a.AssignmentID, "--agent-id", a.OwnerAgentID}}
+		if b := loaded.PolicyContext.Workspace; b != nil {
+			if e, ok := b.Execution(a.AssignmentID, loaded.PolicyContext.RuntimeID, loaded.BaselineGeneration); ok && e.DeliveryRef != "" {
+				row.Command = []string{"loop-harness", "runtime", "workspace", "integrate", "--root", root, "--assignment", a.AssignmentID, "--agent", a.OwnerAgentID}
+			}
+		}
+
 		if found && (cp.State == integration.StatePreserved || cp.State == integration.StateBlocked) {
 			row.Command = append(row.Command, "--retry-preserved")
 			if loaded.PolicyContext.Workspace != nil && cp.TestedHead == "" {

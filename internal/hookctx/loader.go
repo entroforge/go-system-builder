@@ -790,7 +790,7 @@ func enrichAssignmentCoords(root string, row *AssignmentContext) {
 	// execution records must not fall back to an old sidecar or checkpoint.
 	if binding, state, err := workspace.Load(root); err == nil && binding != nil {
 		row.WorktreePath, row.Branch, row.TargetBranch = "", "", ""
-		if e, ok := binding.Execution(row.AssignmentID, workspace.RuntimeID(state), workspace.Generation(state)); ok && e.AgentID == row.OwnerAgentID && e.Status == "ready" {
+		if e, ok := binding.Execution(row.AssignmentID, workspace.RuntimeID(state), workspace.Generation(state)); ok && e.AgentID == row.OwnerAgentID && (e.Status == "ready" || e.Status == "complete") {
 			row.WorktreePath, row.Branch, row.TargetBranch = e.Path, e.Branch, e.TargetBranch
 		}
 		return

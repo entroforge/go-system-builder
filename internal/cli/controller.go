@@ -1700,6 +1700,9 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	}
 
 	updated, _, err := persistSubagentCheckpoint(root, statePath, journalPath, snapshot, &inspectResult, targetBranch, event, integratedState)
+	if err != nil && integratedState == integration.StateComplete {
+		return policy.Guidance{}, snapshot, fmt.Errorf("integration cleaned up; retry to finish Runtime completion projection: %w", err)
+	}
 	if err != nil && !errors.Is(err, runtime.ErrStaleRevision) {
 		// Merge/verify already committed in git + durable integrator
 		// checkpoint. A Milestone CAS schema miss must not hide the
@@ -2119,6 +2122,11 @@ func persistSubagentCheckpoint(root, statePath, journalPath string, snapshot run
 		Message:        fmt.Sprintf("SubagentStop recorded integration checkpoint state=%s", integratedState),
 		OccurredAt:     now,
 		Apply: func(state map[string]any) error {
+			if integratedState == integration.StateComplete {
+				if _, err := completeExecutionState(root, state, inspection.AssignmentID); err != nil {
+					return err
+				}
+			}
 			milestone, _ := state["milestone"].(map[string]any)
 			if milestone == nil {
 				milestone = map[string]any{}

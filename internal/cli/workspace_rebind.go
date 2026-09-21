@@ -21,9 +21,11 @@ import (
 )
 
 type relocationIntent struct {
-	Request workspace.RebindRequest      `json:"request"`
-	Before  *workspace.ExecutionRegistry `json:"before"`
-	After   *workspace.ExecutionRegistry `json:"after"`
+	Checkpoints []relocationCheckpoint       `json:"checkpoints,omitempty"`
+	Request     workspace.RebindRequest      `json:"request"`
+	Source      runtime.Snapshot             `json:"source"`
+	Before      *workspace.ExecutionRegistry `json:"before"`
+	After       *workspace.ExecutionRegistry `json:"after"`
 }
 
 func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
@@ -62,26 +64,6 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 	}
 	defer release()
 	writer := runtime.NewWriter(filepath.Join(actual, ".claude/loop-state.json"), filepath.Join(actual, ".claude/loop-events.jsonl"), actual, semantic.RuntimeCandidateValidator{})
-	snap, err := writer.Snapshot()
-	if err != nil {
-		return fail(err)
-	}
-	b, err := workspace.Decode(snap.State)
-	if err != nil {
-		return fail(err)
-	}
-	if b == nil {
-		return fail(fmt.Errorf("no old binding to relocate"))
-	}
-	for _, e := range b.Executions {
-		leaseCtx, stop := context.WithTimeout(ctx, 100*time.Millisecond)
-		lease, err := filelock.Acquire(leaseCtx, filepath.Join(actual, ".claude/workspace-launch", e.RuntimeID, fmt.Sprintf("g%d-%s-e%d.lock", e.BaselineGeneration, e.AssignmentID, e.Generation)))
-		stop()
-		if err != nil {
-			return fail(err)
-		}
-		defer lease()
-	}
 	canonical, _ := json.Marshal(req)
 	sum := sha256.Sum256(canonical)
 	receiptPath := filepath.Join(actual, ".claude/evidence/workspace-relocations", hex.EncodeToString(sum[:])+".json")
@@ -96,21 +78,27 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 	} else if !os.IsNotExist(err) {
 		return fail(err)
 	} else {
-		next, err := b.PlanRebind(ctx, snap.State, req)
+		reader := runtime.NewStore(filepath.Join(actual, ".claude/loop-state.json"), filepath.Join(actual, ".claude/loop-events.jsonl"))
+		snap, err := reader.Snapshot()
 		if err != nil {
 			return fail(err)
 		}
-		for _, e := range next.Executions {
-			if e.DeliveryRef != "" {
-				return fail(fmt.Errorf("finish delivery before relocation; immutable candidate retained"))
-			}
-			if _, found, err := integration.DefaultCheckpointStore().Load(integration.CheckpointPath(actual, e.RuntimeID, e.BaselineGeneration, e.AssignmentID)); err != nil {
-				return fail(err)
-			} else if found {
-				return fail(fmt.Errorf("finish integration/cleanup before relocation; checkpoint coordinates remain immutable"))
-			}
+		b, err := workspace.Decode(snap.State)
+		if err != nil {
+			return fail(err)
 		}
-		intent = relocationIntent{req, b, next}
+		if b == nil {
+			return fail(fmt.Errorf("no binding to relocate"))
+		}
+		records, err := relocationCheckpoints(actual, b, req)
+		if err != nil {
+			return fail(err)
+		}
+		next, err := planTerminalRelocation(ctx, b, snap, req, records)
+		if err != nil {
+			return fail(err)
+		}
+		intent = relocationIntent{Request: req, Source: snap, Before: b, After: next, Checkpoints: records}
 		if err = os.MkdirAll(filepath.Dir(receiptPath), 0700); err != nil {
 			return fail(err)
 		}
@@ -137,29 +125,56 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 		}
 
 	}
-	if reflect.DeepEqual(b, intent.Before) {
-		// Revalidate on retries before changing authority, including exact HEAD.
-		if _, err = b.PlanRebind(ctx, snap.State, req); err != nil {
-			return fail(err)
-		}
-		key := fmt.Sprintf("workspace-relocation-r%d", snap.Revision+1)
-		snap, err = writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: req.RuntimeID, IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: "explicit Main relocation: " + *reason, Apply: func(state map[string]any) error {
-			bound, _ := state["bound_req"].(map[string]any)
-			authority, _ := bound["workspace"].(map[string]any)
-			if authority["project_root"] != intent.Before.MainRoot || authority["dev_branch"] != intent.Before.Branch {
-				return fmt.Errorf("REQ workspace authority changed during relocation")
-			}
-			authority["project_root"] = intent.After.MainRoot
-			state["workspace"] = workspace.Encode(intent.After)
-			state["root"] = actual
-			return nil
-		}})
+	if err := syncDirectory(filepath.Dir(receiptPath)); err != nil {
+		return fail(err)
+	}
+	if intent.Source.State == nil {
+		return fail(fmt.Errorf("relocation receipt lacks source snapshot; preserve it for explicit recovery"))
+	}
+	// Recheck native Git and the original authority on every retry. The transaction
+	// validates the active Runtime fingerprint under its own lock.
+	next, err := planTerminalRelocation(ctx, intent.Before, intent.Source, req, intent.Checkpoints)
+	if err != nil {
+		return fail(err)
+	}
+	if !reflect.DeepEqual(next, intent.After) {
+		return fail(fmt.Errorf("relocation plan changed"))
+	}
+	for _, e := range next.Executions {
+		leaseCtx, stop := context.WithTimeout(ctx, 100*time.Millisecond)
+		lease, err := filelock.Acquire(leaseCtx, filepath.Join(actual, ".claude/workspace-launch", e.RuntimeID, fmt.Sprintf("g%d-%s-e%d.lock", e.BaselineGeneration, e.AssignmentID, e.Generation)))
+		stop()
 		if err != nil {
 			return fail(err)
 		}
-		b = intent.After
-	} else if !reflect.DeepEqual(b, intent.After) {
-		return fail(fmt.Errorf("binding changed since relocation intent; preserve receipt for review"))
+		defer lease()
+	}
+	if err := recoverRelocatedCheckpoints(actual, intent.Checkpoints, false); err != nil {
+		return fail(err)
+	}
+
+	snap, recovered := completedRelocationSnapshot(writer, intent)
+	if !recovered {
+		snap, err = writer.RelocateWorkspace(intent.Source, workspace.Encode(intent.After), "workspace-relocation-"+hex.EncodeToString(sum[:]), *reason)
+	}
+	if err != nil {
+		return fail(err)
+	}
+	if err := recoverRelocatedCheckpoints(actual, intent.Checkpoints, true); err != nil {
+		return fail(err)
+	}
+	for _, record := range intent.Checkpoints {
+		current, _ := workspace.Decode(snap.State)
+		if current.Executions[record.After.AssignmentID].Status != "complete" {
+			snap, err = persistExecutionCompletion(actual, snap, record.After.AssignmentID)
+			if err != nil {
+				return fail(err)
+			}
+		}
+	}
+	b, err := workspace.Decode(snap.State)
+	if err != nil {
+		return fail(err)
 	}
 	if err = b.Validate(ctx, actual); err != nil {
 		return fail(err)

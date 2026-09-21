@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"github.com/entroforge/go-system-builder/internal/cli"
 )
 
@@ -937,6 +938,7 @@ func SeedPlanningDesignComplete(t *testing.T, root string, state map[string]any)
 // SeedAcceptanceReady seeds acceptance with ACC + clean round evidence (CT-039-15 path).
 func SeedAcceptanceReady(t *testing.T, root string, state map[string]any) {
 	t.Helper()
+	SeedCleanRoundProjection(t, root, state)
 	if err := os.MkdirAll(filepath.Join(root, "evidence"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -950,7 +952,7 @@ func SeedAcceptanceReady(t *testing.T, root string, state map[string]any) {
 		}
 		if wireKind == "acceptance" || wireKind == "release_audit" {
 			manifestPath := "s10/" + wireKind + "-manifest.json"
-			manifestData := s10ManifestData(t, state, wireKind, 1)
+			manifestData := s10ManifestData(t, root, state, wireKind, 1)
 			if err := os.MkdirAll(filepath.Join(root, "s10"), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -1010,6 +1012,7 @@ func SeedAcceptanceReady(t *testing.T, root string, state map[string]any) {
 // SeedReleaseAuditReady seeds release_audit with audit approval evidence.
 func SeedReleaseAuditReady(t *testing.T, root string, state map[string]any) {
 	t.Helper()
+	SeedCleanRoundProjection(t, root, state)
 	if err := os.MkdirAll(filepath.Join(root, "evidence"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1026,7 @@ func SeedReleaseAuditReady(t *testing.T, root string, state map[string]any) {
 		}
 		if wireKind == "acceptance" || wireKind == "release_audit" {
 			manifestPath := "s10/" + wireKind + "-manifest.json"
-			manifestData := s10ManifestData(t, state, wireKind, 1)
+			manifestData := s10ManifestData(t, root, state, wireKind, 1)
 			if err := os.MkdirAll(filepath.Join(root, "s10"), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -1081,28 +1084,49 @@ func SeedReleaseAuditReady(t *testing.T, root string, state map[string]any) {
 	state["milestone"].(map[string]any)["lifecycle_state"] = "release_audit"
 }
 
-func s10ManifestData(t *testing.T, state map[string]any, manifestType string, reviewRound int) []byte {
+func s10ManifestData(t *testing.T, root string, state map[string]any, manifestType string, reviewRound int) []byte {
 	t.Helper()
+	baseline, err := acceptance.BuildS10ExternalBaseline(root, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := acceptance.BuildS10InventoryAuthority(root, state, baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
 	items := []any{}
 	counterevidence := []any{}
-	for _, item := range []struct {
-		id, category string
+	type inventoryRow struct{ id, category string }
+	rows := []inventoryRow{{"AUDIT-001", "audit_area"}}
+	for _, group := range []struct {
+		category string
+		ids      []string
 	}{
-		// The S10 transition guard now consumes the same authoritative
-		// denominator as Runtime/Quality Gate. Keep this fixture aligned with
-		// its bound REQ and pinned ReviewPlan rather than using invented rows.
-		{"REQ-039", "requirement"},
-		{"CONTRACT-001", "contract"},
-		{"PATH-001", "changed_path"},
-		{"claim-qa-1", "claim"},
-		{"AUDIT-001", "audit_area"},
+		{"requirement", authority.RequirementIDs}, {"contract", authority.ContractIDs},
+		{"task", authority.TaskIDs}, {"claim", authority.ClaimIDs}, {"changed_path", authority.ChangedPaths},
 	} {
+		for _, id := range group.ids {
+			if group.category == "changed_path" {
+				id = "path:" + id
+			}
+			rows = append(rows, inventoryRow{id, group.category})
+		}
+		if len(group.ids) == 0 && (group.category == "contract" || group.category == "changed_path") {
+			rows = append(rows, inventoryRow{"none:" + group.category, group.category})
+		}
+	}
+	for _, item := range rows {
 		items = append(items, map[string]any{
-			"id": item.id, "category": item.category, "source_refs": []string{"fixture:" + item.id},
+			"id": item.id, "category": item.category, "source_refs": []string{state["bound_req"].(map[string]any)["path"].(string), state["review"].(map[string]any)["plan"].(map[string]any)["path"].(string)},
 			"expected": "fixture expected " + item.id, "oracle": "fixture oracle " + item.id,
 			"owner": "S10 fixture reviewer", "evidence_refs": []string{"ev-clean-pass"},
 			"disposition": "pass",
 		})
+		if strings.HasPrefix(item.id, "none:") {
+			row := items[len(items)-1].(map[string]any)
+			row["disposition"] = "not_applicable"
+			row["na_reason"] = "No entries in the authoritative current fixture inventory"
+		}
 		counterevidence = append(counterevidence, map[string]any{
 			"id": "CE-" + item.id, "inventory_id": item.id,
 			"question": "what disproves " + item.id + "?", "evidence_refs": []string{"ev-clean-pass"},

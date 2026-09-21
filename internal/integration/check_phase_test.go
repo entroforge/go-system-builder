@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,7 +54,23 @@ func TestPostMergeChecksUseCandidateOnTargetExactlyOnce(t *testing.T) {
 	if err != nil || !inspection.Ready || calls != 0 {
 		t.Fatalf("static inspect: %+v %v calls=%d", inspection, err, calls)
 	}
-	result, err := Integrate(ctx, IntegrateRequest{Inspection: inspection}, IntegrateConfig{Root: root, RuntimeID: "test", CheckpointDir: filepath.Join(t.TempDir(), "cp.json"), CheckRunner: runner, RequiredChecks: a.RequiredChecks})
+	integrateConfig := IntegrateConfig{Root: root, RuntimeID: "test", CheckpointDir: filepath.Join(t.TempDir(), "cp.json"), CheckRunner: func(context.Context, string, string) error { return fmt.Errorf("injected environment failure") }, RequiredChecks: a.RequiredChecks}
+	failed, err := Integrate(ctx, IntegrateRequest{Inspection: inspection}, integrateConfig)
+	if err == nil || failed.Checkpoint.State == StateVerified {
+		t.Fatalf("failed post-merge check passed: %+v %v", failed, err)
+	}
+	merged := git(root, "rev-parse", "HEAD")
+	if _, err := os.Stat(filepath.Join(root, "new-spec")); err != nil {
+		t.Fatal("merged candidate was reset")
+	}
+	if _, err := os.Stat(filepath.Join(wt, "new-spec")); err != nil {
+		t.Fatal("failed Worker was cleaned")
+	}
+	integrateConfig.CheckRunner = runner
+	result, err := Integrate(ctx, IntegrateRequest{Inspection: inspection, RetryPreserved: true}, integrateConfig)
+	if git(root, "rev-parse", "HEAD") != merged {
+		t.Fatal("retry changed preserved merge")
+	}
 	if err != nil || result.Checkpoint.State != StateVerified || calls != 1 {
 		t.Fatalf("delivery: %+v %v calls=%d", result, err, calls)
 	}

@@ -22,6 +22,9 @@ import (
 // Workspace creation is an explicit, journaled operation. The intent is saved
 // before Git side effects, so interrupted preparation can resume by identity.
 func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "observe" {
+		return runWorkspaceObserve(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "rework" {
 		return runWorkspaceRework(args[1:], stdout, stderr)
 	}
@@ -50,11 +53,11 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 		return runWorkspaceCheck(args[1:], stdout, stderr)
 	}
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
-		fmt.Fprintln(stdout, "runtime workspace <bind|status|prepare|adopt|replace|rebind|rework|launch|begin|report|check|commit|deliver|integrate|pending> --root <main-root> [--assignment <id> --agent <id>]; prepare installs a building or authorized S9 Worker; check runs a declared check in an isolated copy; see docs/workspace-integration.md")
+		fmt.Fprintln(stdout, "runtime workspace <bind|status|prepare|adopt|replace|rebind|rework|launch|begin|report|observe|check|commit|deliver|integrate|pending> --root <main-root> [--assignment <id> --agent <id>]; prepare installs a building or authorized S9 Worker; check runs a declared check in an isolated copy; see docs/workspace-integration.md")
 		return 0
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "runtime workspace <bind|status|prepare|adopt|replace|rebind|rework|launch|begin|report|check|commit|deliver|integrate|pending> --root <main-root> [--assignment <id> --agent <id>]")
+		fmt.Fprintln(stderr, "runtime workspace <bind|status|prepare|adopt|replace|rebind|rework|launch|begin|report|observe|check|commit|deliver|integrate|pending> --root <main-root> [--assignment <id> --agent <id>]")
 		return 2
 	}
 	verb := args[0]
@@ -67,6 +70,7 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "main control workspace root")
 	id := flags.String("assignment", "", "registered assignment identity")
 	agent := flags.String("agent", "", "registered owner identity")
+	checkLocation := flags.String("check-location", "", "prepare: worker (isolated) or main (integration checks)")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -172,6 +176,23 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	if *checkLocation != "" && *checkLocation != "worker" && *checkLocation != "main" {
+		return fail(fmt.Errorf("check-location must be worker or main"))
+	}
+	if prior, exists := binding.Executions[*id]; exists {
+		if *checkLocation != "" && *checkLocation != prior.CheckLocation && !(prior.CheckLocation == "" && *checkLocation == "worker") {
+			return fail(fmt.Errorf("existing execution check location is immutable; replace before delivery to choose another runner"))
+		}
+	} else {
+		e.CheckLocation = *checkLocation
+	}
+	source := mainRoot
+	if e.Status == "ready" {
+		source = e.Path
+	}
+	if err = binding.PreflightChecks(ctx, e, source); err != nil {
+		return fail(err)
+	}
 	if e.Status == "ready" {
 		if err = binding.ValidateExecution(ctx, e, false); err != nil {
 			return fail(err)
@@ -219,16 +240,17 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 func writePreparedExecution(out io.Writer, e workspace.Execution) error {
 	commands := []string{}
 	for i, check := range e.Checks {
-		if !strings.HasPrefix(strings.TrimSpace(check), "locked:") {
+		if e.CheckLocation != "main" && !strings.HasPrefix(strings.TrimSpace(check), "locked:") {
 			commands = append(commands, workspace.CheckInvocation(e, i))
 		}
 	}
 	return json.NewEncoder(out).Encode(struct {
 		workspace.Execution
-		CheckCommands   []string `json:"check_commands"`
-		CommitCommand   string   `json:"commit_command"`
-		BeginCommand    string   `json:"begin_command"`
-		ReportCommand   string   `json:"report_command"`
-		DeliveryCommand string   `json:"s9_delivery_command"`
-	}{e, commands, workspace.WorkerInvocation(e, "commit"), workspace.WorkerInvocation(e, "begin"), workspace.WorkerInvocation(e, "report"), workspace.WorkerInvocation(e, "deliver")})
+		ObservationCommands map[string]string `json:"observation_commands"`
+		CheckCommands       []string          `json:"check_commands"`
+		CommitCommand       string            `json:"commit_command"`
+		BeginCommand        string            `json:"begin_command"`
+		ReportCommand       string            `json:"report_command"`
+		DeliveryCommand     string            `json:"s9_delivery_command"`
+	}{e, workspace.ObservationCommands(e), commands, workspace.WorkerInvocation(e, "commit"), workspace.WorkerInvocation(e, "begin"), workspace.WorkerInvocation(e, "report"), workspace.WorkerInvocation(e, "deliver")})
 }

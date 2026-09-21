@@ -143,7 +143,12 @@ func WorkspaceBoundaryDecision(input Input) (Decision, bool) {
 		return Decision{}, false
 	}
 	if worker && input.ToolName == "Bash" {
-		return deny("Worker shell commands require an exact registered check, commit or delivery adapter; use scoped file tools for source changes")
+		if input.ToolInput["command"] == "pwd" {
+			return Decision{}, false
+		}
+		decision, handled := deny("Worker shell requires a registered adapter; Git observation is available without write authority")
+		decision.Recovery = []string{workspace.ObservationCommands(execution)["cwd"], workspace.ObservationCommands(execution)["status"], workspace.ObservationCommands(execution)["diff"], workspace.ObservationCommands(execution)["log"]}
+		return decision, handled
 	}
 	if worker && mutating && len(paths) == 0 {
 		return deny("Worker command has no provable write paths; use scoped file tools until the bounded command runner is available")
@@ -208,6 +213,11 @@ func workspaceAdapterCommand(input Input, e workspace.Execution) bool {
 	command, _ := input.ToolInput["command"].(string)
 	if command == workspace.WorkerInvocation(e, "commit") || command == workspace.WorkerInvocation(e, "deliver") || command == workspace.WorkerInvocation(e, "begin") || command == workspace.WorkerInvocation(e, "report") {
 		return true
+	}
+	for _, cmd := range workspace.ObservationCommands(e) {
+		if command == cmd {
+			return true
+		}
 	}
 	for i := range e.Checks {
 		if command == workspace.CheckInvocation(e, i) {

@@ -55,7 +55,13 @@ func verifiedDomainChecks(root string, e workspace.Execution, cp integration.Che
 			continue
 		}
 		cwd, err := workspace.Canonical(r.CWD)
-		if err != nil || cwd != root {
+		historical := false
+		for _, previous := range cp.PreviousMainRoots {
+			if r.CWD == previous {
+				historical = true
+			}
+		}
+		if (err != nil || cwd != root) && !historical {
 			return nil, fmt.Errorf("check receipt belongs to another Main checkout")
 		}
 		sum := sha256.Sum256(data)

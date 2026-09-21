@@ -130,3 +130,35 @@ func TestWorkerSymlinkStillEnforcesAbsoluteMainLockedReference(t *testing.T) {
 		t.Fatalf("locked symlink bypass: %+v %v", decision, err)
 	}
 }
+
+func TestWorkerObservationAdapterAndPwd(t *testing.T) {
+	b, e := boundaryFixture(t)
+	os.MkdirAll(filepath.Join(b.MainRoot, ".claude/agents"), 0700)
+	os.MkdirAll(filepath.Join(b.MainRoot, ".claude/skills"), 0700)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Bootstrap(e, executable); err != nil {
+		t.Fatal(err)
+	}
+	e.BootstrapSHA256, err = workspace.BootstrapDigest(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Executions[e.AssignmentID] = e
+	commands := []string{"pwd"}
+	for _, c := range workspace.ObservationCommands(e) {
+		commands = append(commands, c)
+	}
+	for _, command := range commands {
+		in := Input{Event: "PreToolUse", AgentID: e.AgentID, CWD: e.Path, ToolName: "Bash", ToolInput: map[string]any{"command": command}, Runtime: RuntimeContext{ProjectRoot: b.MainRoot, Workspace: b, RuntimeID: e.RuntimeID, CurrentBaselineGeneration: e.BaselineGeneration}}
+		if d, handled := WorkspaceBoundaryDecision(in); handled && d.Decision == "deny" {
+			t.Fatalf("observation denied: %+v", d)
+		}
+		in.ToolInput["command"] = command + "; touch forbidden"
+		if d, handled := WorkspaceBoundaryDecision(in); !handled || d.Decision != "deny" {
+			t.Fatal("compound command accepted")
+		}
+	}
+}

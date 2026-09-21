@@ -157,7 +157,9 @@ type Result struct {
 // merge-attempt identity (assignment_id + source_head + target_branch +
 // baseline_generation); CAS uses Revision as the optimistic lock.
 type Checkpoint struct {
-	VerifiedAt string `json:"verified_at,omitempty"` // Last successful checks; cleanup must not advance this time.
+	// PreviousMainRoots preserves receipt provenance across explicit Main relocation.
+	PreviousMainRoots []string `json:"previous_main_roots,omitempty"`
+	VerifiedAt        string   `json:"verified_at,omitempty"` // Last successful checks; cleanup must not advance this time.
 	// CompletionReportPath and CompletionReportSHA256 identify the exact
 	// Builder Result whose contents were covered by the successful checks.
 	// They are written only when the verified transition succeeds and are

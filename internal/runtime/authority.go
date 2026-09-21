@@ -20,6 +20,12 @@ func (s *Store) validateWriteAuthority(state map[string]any) error {
 	}
 	workspace, _ := bound["workspace"].(map[string]any)
 	declared, _ := workspace["project_root"].(string)
+	// Only the transaction-local relocation writer can read its exact old snapshot.
+	if s.relocationSourceHash != "" {
+		if hash, err := hashState(state); err == nil && hash == s.relocationSourceHash {
+			declared = s.root
+		}
+	}
 	if declared == "" || s.root == "" {
 		return fmt.Errorf("%w: project_root is required", ErrAuthorityMismatch)
 	}

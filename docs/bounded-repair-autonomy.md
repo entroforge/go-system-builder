@@ -87,7 +87,7 @@ the repair cycle and a fresh complete S7 after repair.
 
 ## Compatibility and rollout
 
-New Builder manifests should explicitly set integration_check_mode=post_merge.
+Ordinary Builder manifests retain pre-and-post merge checks. Select integration_check_mode=post_merge only with an explicit reviewed plan recording its reason, cost tradeoff and failure recovery; it is not a global default.
 Omission retains legacy pre-and-post checks; never edit an active manifest to
 change it. The new mode separates static inspection from mandatory merged-tree
 delivery checks. No pass evidence cache or reduced test inventory is introduced.
@@ -95,7 +95,7 @@ delivery checks. No pass evidence cache or reduced test inventory is introduced.
 Install at a quiescent boundary before the next REQ; preserve project Skills.
 New authority metadata/evidence kinds are not guaranteed readable by old binaries.
 Rollback requires a compatible runtime snapshot/journal and control assets, not
-just replacing the executable. Do not deploy these changes into active REQ-053.
+just replacing the executable. Do not overwrite an active REQ workspace; complete or explicitly migrate its recorded execution first.
 
 ## Reusable project policy pinned at new REQ binding
 

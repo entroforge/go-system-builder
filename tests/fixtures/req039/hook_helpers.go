@@ -149,6 +149,17 @@ func RequireLifecycleTransition(
 	wantTransition, wantState, wantPhase, bugID string,
 ) map[string]any {
 	t.Helper()
+	return requireLifecycleTransition(t, runner, root, session, tool, input, wantTransition, wantState, wantPhase, bugID, false)
+}
+
+// RequireStrictLifecycleTransition never hides a failed positive path as a skip.
+func RequireStrictLifecycleTransition(t *testing.T, runner *CLIRunner, root, session, tool string, input map[string]any, wantTransition, wantState, wantPhase, bugID string) map[string]any {
+	t.Helper()
+	return requireLifecycleTransition(t, runner, root, session, tool, input, wantTransition, wantState, wantPhase, bugID, true)
+}
+
+func requireLifecycleTransition(t *testing.T, runner *CLIRunner, root, session, tool string, input map[string]any, wantTransition, wantState, wantPhase, bugID string, strict bool) map[string]any {
+	t.Helper()
 	stdout, qg := HookStep(t, runner, root, session, tool, input)
 	state := ReadState(t, root)
 	lc, ph := Lifecycle(state)
@@ -156,9 +167,11 @@ func RequireLifecycleTransition(
 	if lc == wantState && ph == wantPhase && (wantTransition == "" || last == wantTransition) {
 		return state
 	}
-	SkipIfProductBlocker(t, stdout+fmt.Sprintf("%v", qg), bugID)
-	if status, _ := qg["status"].(string); status == "unknown" {
-		t.Skipf("product blocker %s: quality_gate status=unknown (transition not committed)", bugID)
+	if !strict {
+		SkipIfProductBlocker(t, stdout+fmt.Sprintf("%v", qg), bugID)
+		if status, _ := qg["status"].(string); status == "unknown" {
+			t.Skipf("product blocker %s: quality_gate status=unknown (transition not committed)", bugID)
+		}
 	}
 	t.Fatalf("hook %s want %s→%s.%s (last=%q), got %s.%s qg=%v", session, wantTransition, wantState, wantPhase, last, lc, ph, qg)
 	return nil

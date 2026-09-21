@@ -51,13 +51,13 @@ loop-harness runtime task-integrate --root /project --assignment-id assignment-e
 loop-harness runtime workspace pending --root /project
 ```
 
-未指定 `integration_check_mode` 时保留 Worker 预检与 Main 合并后检查；指定 `post_merge` 时只跳过重复的动态预检。两种模式都检查工作区身份、范围和冻结文档，并且都必须完成 Main 合并后的必需检查。canonical Result 的路径与 SHA256 一起绑定到回执；恢复时 Result 改变须重新验证，不能复用旧 PASS。首次接收确认前目标 HEAD 改变也须重验；已经确认后的纯清理重试保留原验证回执。
+未指定 `integration_check_mode` 时保留 Worker 预检与 Main 合并后检查；仅在派发计划明确记录理由、成本取舍和失败恢复时选择 `post_merge`，它省略 Worker 动态预检；Worker 树和合并树不同，不能把它称为等价重复检查。普通任务不默认选择此模式。两种模式都检查工作区身份、范围和冻结文档，并且都必须完成 Main 合并后的必需检查。canonical Result 的路径与 SHA256 一起绑定到回执；恢复时 Result 改变须重新验证，不能复用旧 PASS。首次接收确认前目标 HEAD 改变也须重验；已经确认后的纯清理重试保留原验证回执。
 
 SubagentStop/SessionStart/PreCompact 提示 Main 消费显式待办，不在 Hook 中同步跑长合并。pending 从原报告/checkpoint 生成命令，不建立第二套调度状态。
 
 S9 先完成通用报告，再 deliver：冻结 source SHA、Contract/Session/Plan、执行代次及 Git blob 变更摘要。主目录整合时重新检查授权、源提交、范围和冲突，正常非 squash 合并后执行必需检查，只有 verified 且 Main HEAD 仍等于 tested_head 时，调用原领域 SubmitRepairResult。Session 累计差异和独立复验门禁继续生效。后续仍是独立针对性复验 → fresh S7 → 人类发布授权，不自动发布。
 
-失败保留源树/checkpoint。环境问题解决后使用 `--retry-preserved` 重验原候选。若需要修改代码，由 Main 执行 `workspace rework --root /project --assignment <id> --agent <owner> --reason <具体修正原因>`：仅接受未 verified 的失败 checkpoint，归档旧 checkpoint/候选，按实体生命周期把 reported owner/TASK review 退回 working/in_progress，并将原 completion evidence 标为 superseded；完成后 Worker 修改、commit、report，S9 再 deliver 新候选。不会覆盖旧候选或把失败改成 PASS。中断的返工也由 pending 投影恢复命令。已验证交付通过真实 completion_acknowledged 生命周期确认，同一 owner 的其他交付也必须验证。清理失败停在 cleanup_pending，重试继续清理，不强删、不全局 prune。已有 failed 领域结果要走原领域恢复路径，不能通过替换 worktree 抹掉失败。
+失败保留源树/checkpoint。环境问题解决后使用 `--retry-preserved` 重验原候选。若需要修改代码，由 Main 执行 `workspace rework --root /project --assignment <id> --agent <owner> --reason <具体修正原因>`：仅接受未 verified 的失败 checkpoint，归档旧 checkpoint/候选，按实体生命周期把 reported owner/TASK review 退回 working/in_progress，并将原 completion evidence 标为 superseded；完成后 Worker 修改、commit、report，S9 再 deliver 新候选。不会覆盖旧候选或把失败改成 PASS。中断的返工也由 pending 投影恢复命令。已验证交付通过真实 completion_acknowledged 生命周期确认，同一 owner 的其他交付也必须验证。清理失败停在 cleanup_pending，重试继续清理，不强删、不全局 prune。清理完成后，由同一 durable checkpoint 将 ExecutionRegistry 投影为 complete；若 Runtime CAS 前中断，pending 会继续提示 Main 重试。complete 实例只允许 Main 重复集成或报告重验，不能重新启动 Worker。已有 failed 领域结果要走原领域恢复路径，不能通过替换 worktree 抹掉失败。
 
 ## 显式迁移与恢复
 
@@ -65,7 +65,7 @@ S9 先完成通用报告，再 deliver：冻结 source SHA、Contract/Session/Pl
 
 - `workspace adopt --root /project --assignment <id> --agent <owner> --request historical-execution.json --reason ...`：请求是完整 Execution JSON，必须提供真实历史 base_commit、输入摘要、原 branch/path/target、runtime/baseline/execution generation、scope/checks。校验当前登记 assignment、仓库归属和历史差异；拒绝第二份 Runtime/journal。不会把当前 HEAD 猜成历史基线，缺失来源时需重新建立已批准基线。旧 PASS 不升级成新 verified。
 - `workspace replace --root /project --assignment <id> --agent <owner> --execution-generation <旧代次> --reason ...`：要求没有活跃 launcher 锁、已登记 completion/candidate/integration checkpoint。保留旧树及 execution_history、原 owner 和冻结基线，新建代次/路径/分支。已有交付必须先走原集成/领域恢复；不能借替换绕过它。
-- `workspace rebind --root /new/project --request relocation.json --reason ...`：先由 Git 完成 native worktree move/repair，再重绑 Harness。要求旧 Main 已不存在、明确 runtime/旧新 Main/旧新 common directory/branch/expected_head，以及每个活动和历史 Worker 的路径映射；拒绝仍活跃 launcher 及未完成交付/checkpoint。先保存 before/after 迁移意图，再 CAS 改绑定，最后迁移指针；相同请求可继续中断的指针更新。该入口不自动搬文件或修 Git 元数据，也不改变目标分支。
+- `workspace rebind --root /new/project --request relocation.json --reason ...`：先由 Git 完成 native worktree move/repair，再重绑 Harness。要求旧 Main 已不存在、明确 runtime/旧新 Main/旧新 common directory/branch/expected_head，以及每个活动和历史 Worker 的路径映射；拒绝仍活跃 launcher 及未完成交付/checkpoint。先保存 before/after 迁移意图，再 CAS 改绑定，随后迁移已完成 checkpoint 的坐标并更新活动 Worker 指针；相同请求可继续中断的更新。该入口不自动搬文件或修 Git 元数据，也不改变目标分支。
 
 relocation.json 示例（路径映射必须完整）：
 
@@ -83,7 +83,7 @@ Runtime workspace 仍是 schema 1.1.0 的可选扩展，绑定前统一更新二
 
 ## 验收范围
 
-临时真实 Git、进程、领域链路、故障恢复测试验证源码行为。真实 Claude S0–S11 和目标 Windows/macOS 运行验收需分别执行；未登录环境与交叉编译不能替代这些验收。检查隔离当前为 Linux 特性，不把其他平台的明确不可用说成支持。完整验证记录见优化方案的最新实施核验节。
+临时真实 Git、进程、领域链路、故障恢复测试验证源码行为。真实 Claude S0–S11 和目标 Windows/macOS 运行验收需分别执行；未登录环境与交叉编译不能替代这些验收。检查隔离当前为 Linux 特性，不把其他平台的明确不可用说成支持。发布验收应保存所用版本、平台、操作结果和失败恢复证据。
 
 ## Completion report identity
 
@@ -94,3 +94,39 @@ uses only `.claude/evidence/<current-runtime>/g<current-generation>/assignments/
 Unknown Runtime/generation and historical or alternate layouts require explicit
 recovery; the framework does not scan other runtimes or select the first candidate.
 The normal evidence identity/hash and quality gates still apply.
+
+## Worker 观察与检查能力
+
+prepare 输出 `observation_commands`，包含 cwd、status、diff、staged、log 五个固定视图。
+例如使用 prepare 返回的完整命令调用 `runtime workspace observe --view log`。
+命令已经包含 Worker root、assignment 和 owner，不必自己构造身份。原始 `pwd` 可以使用；
+原始 Git shell 被限制时，Hook 返回对应 observe 命令。观察不写完成证据，不改变 Runtime revision。
+Git 调用禁用外部 diff/textconv、pager、fsmonitor 和惰性抓取，清除 Git 环境覆盖，最多输出 1 MiB、执行 10 秒。
+不接受自定义 flags、重定向或复合 shell；源码写入继续使用受 scope 约束的文件工具及 commit adapter。
+
+`runtime workspace prepare --check-location worker` 是兼容默认，prepare/launch 会先探测实际
+隔离能力和 512 MiB 检查树上限。网络依赖需预先准备离线缓存。
+不适用时可在新执行实例上显式选择 `--check-location main`，由 Main 集成检查通道运行注册检查；
+这不放开 Worker shell，不跳过 required_checks、独立验证或发布人闸。
+已存在执行实例的 runner 不可切换；没有交付/checkpoint 的实例可按原 replace 约束替换。
+replace 默认保留原 runner；可在满足原有无交付、无 checkpoint、无活动 launcher 的条件下显式指定 `--check-location main` 或 `worker`，新代次记录选择，旧代次保持历史。
+macOS/Windows 用户应明确选择 Main runner，不能把 Claude 自带 sandbox 等同于此框架的 Linux 检查实现。
+
+rebind 的迁移 intent 保存不可变源快照和请求，只允许路径坐标改变；Runtime/journal 沿用原提交恢复机制。
+已完成交付可以迁移，保留 immutable candidate、报告哈希、source/merge/tested SHA 和检查凭据原文；绝对路径按显式映射更新，历史检查 CWD 保存在 checkpoint 中。未完成交付仍拒绝迁移。旧版 ready 条目若对应完整 complete checkpoint，可在迁移后通过独立 Runtime CAS 恢复终态，无需重建已清理 Worker。
+同一请求可恢复 intent 已写入、Runtime 已写但 journal 未完成、checkpoint 尚未迁移、终态尚未投影及部分 Worker pointer 更新的窗口。迁移后可重复集成；重新提交 canonical Result 仍须重验，不能凭历史 PASS 放行。
+普通 Writer 仍拒绝旧 authority 外的访问；遇到非迁移 pending 事务需恢复原路径处理该事务，不能 force 跳过。
+
+观察 adapter 会在 Git 身份检查前拒绝继承的 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_TRACE` 等 Git 环境覆盖变量；按提示从调用环境清除后再执行。pager 和 external diff 环境设置会被忽略，不能由观察命令启用。
+
+### 发布前真实会话验收
+
+在隔离的新项目中，使用已登录的 Claude Code，记录 CLI 版本、操作系统和 Harness 提交：
+
+1. 在自选开发分支（例如 `test2`）提交输入，绑定 Main；准备并启动两个不同 scope 的 Worker，确认 Main 的目录/分支不变。
+2. 在 Worker 执行 `pwd` 以及 prepare 返回的全部观察命令；原始 Git 命令被拒绝时，确认 Claude 能读取 recovery 并改用观察 adapter。
+3. 验证本项目所需离线依赖可用、声明检查成功；缺少 bwrap/用户命名空间或检查树超限时，确认派发前失败且没有新增执行/会话记录。通用预检不会推断任意项目的依赖是否齐全；应在采用 Worker runner 前验证项目声明的依赖条件。
+4. 完成编辑、begin/commit/report/deliver 与 Main 集成；错误 owner、跨 Worker 和复合 shell 应拒绝。
+5. 注入合并后检查失败，确认保留候选和 checkpoint、未放行后继；环境修复后 retry，代码失败采用 rework 新候选，不自动 reset。
+6. 停止 launcher 后迁移项目，先修复原生 Git 链接，再按显式映射 rebind；中断并重试，检查 Runtime/journal 与各 Worker pointer 一致。
+7. Linux Worker runner、macOS/Windows Main runner 分别记录原生执行结果；未执行项标记待验收，不能以交叉编译代替。

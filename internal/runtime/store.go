@@ -217,13 +217,14 @@ type runtimeSemanticDefinition struct {
 }
 
 type Store struct {
-	statePath          string
-	journalPath        string
-	root               string
-	candidateValidator CandidateValidator
-	validatorInitErr   error
-	mutationCapable    bool
-	offlineRecovery    bool
+	statePath            string
+	journalPath          string
+	root                 string
+	candidateValidator   CandidateValidator
+	validatorInitErr     error
+	mutationCapable      bool
+	offlineRecovery      bool
+	relocationSourceHash string
 }
 
 // OfflineRecoveryCapability is an opaque opt-in for the recovery

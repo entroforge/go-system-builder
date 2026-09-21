@@ -25,6 +25,9 @@ func CheckInvocation(e Execution, index int) string {
 // RunCheck tests a disposable copy. The source Worker, Main and Git metadata
 // are read-only in the subprocess; generated test files never enter delivery.
 func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int, output io.Writer) (string, error) {
+	if e.CheckLocation == "main" {
+		return "", fmt.Errorf("this execution selected Main checks; report committed work and use Main integration, never run an unsandboxed Worker check")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	if index < 0 || index >= len(e.Checks) || strings.HasPrefix(strings.TrimSpace(e.Checks[index]), "locked:") {

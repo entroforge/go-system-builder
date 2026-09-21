@@ -68,7 +68,7 @@ func routeWorkspaceFlags(fs *flag.FlagSet) error {
 	}
 	var artifacts []string
 	switch fs.Name() {
-	case "projection", "ready", "validate", "doctor", "health", "explain", "req list", "runtime repair status", "runtime workspace status", "runtime workspace check", "runtime workspace pending", "runtime workspace commit", "runtime workspace deliver", "runtime workspace begin", "runtime workspace report":
+	case "projection", "ready", "validate", "doctor", "health", "explain", "req list", "runtime repair status", "runtime workspace status", "runtime workspace check", "runtime workspace pending", "runtime workspace commit", "runtime workspace deliver", "runtime workspace begin", "runtime workspace report", "runtime workspace observe":
 	case "runtime agent-begin":
 		artifacts = []string{"plan"}
 	case "runtime task-complete":
@@ -84,7 +84,7 @@ func routeWorkspaceFlags(fs *flag.FlagSet) error {
 		return fmt.Errorf("%s requires the bound Main session; Worker root routing does not grant scheduling or integration authority", fs.Name())
 	}
 	var execution workspace.Execution
-	if len(artifacts) > 0 || fs.Name() == "runtime workspace check" || (fs.Name() == "runtime workspace commit" || fs.Name() == "runtime workspace deliver" || fs.Name() == "runtime workspace begin" || fs.Name() == "runtime workspace report") {
+	if len(artifacts) > 0 || fs.Name() == "runtime workspace observe" || fs.Name() == "runtime workspace check" || (fs.Name() == "runtime workspace commit" || fs.Name() == "runtime workspace deliver" || fs.Name() == "runtime workspace begin" || fs.Name() == "runtime workspace report") {
 		binding, state, err := workspace.Load(main)
 		if err != nil {
 			return err
@@ -95,7 +95,7 @@ func routeWorkspaceFlags(fs *flag.FlagSet) error {
 		matched := false
 		for _, e := range binding.Executions {
 			ownerFlag := "agent-id"
-			if fs.Name() == "runtime workspace check" || (fs.Name() == "runtime workspace commit" || fs.Name() == "runtime workspace deliver" || fs.Name() == "runtime workspace begin" || fs.Name() == "runtime workspace report") {
+			if fs.Name() == "runtime workspace observe" || fs.Name() == "runtime workspace check" || (fs.Name() == "runtime workspace commit" || fs.Name() == "runtime workspace deliver" || fs.Name() == "runtime workspace begin" || fs.Name() == "runtime workspace report") {
 				ownerFlag = "agent"
 				if fs.Lookup("assignment").Value.String() != e.AssignmentID {
 					continue

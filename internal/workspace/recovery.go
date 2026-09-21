@@ -41,6 +41,7 @@ func (b *ExecutionRegistry) ReplaceExecution(ctx context.Context, state map[stri
 		return Execution{}, err
 	}
 	// Retain the originally frozen source, not Main's newer HEAD.
+	e.CheckLocation = old.CheckLocation
 	e.BaseCommit = old.BaseCommit
 	e.Inputs = old.Inputs
 	e.Generation = old.Generation + 1
