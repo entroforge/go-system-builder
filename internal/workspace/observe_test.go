@@ -34,6 +34,9 @@ func TestObservationPreservesTreesAndDisablesGitHelpers(t *testing.T) {
 	}
 	t.Setenv("GIT_EXTERNAL_DIFF", helper)
 	t.Setenv("GIT_PAGER", helper)
+	// Real Claude Bash supplies GIT_EDITOR. Accept it without invoking the
+	// editor, including during identity probes before the sanitized Git call.
+	t.Setenv("GIT_EDITOR", helper)
 	before, err := os.ReadFile(filepath.Join(b.CommonDir, "index"))
 	if err != nil {
 		t.Fatal(err)

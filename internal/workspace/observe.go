@@ -22,13 +22,14 @@ func ObservationCommands(e Execution) map[string]string {
 }
 
 // ValidateObservationEnvironment rejects inherited Git overrides before even
-// routing/identity probes can invoke Git. Pager/diff helpers are separately
-// disabled; all other Git overrides must be cleared by the invoking environment.
+// routing/identity probes can invoke Git. Claude supplies GIT_EDITOR to Bash;
+// these read-only commands never open an editor. Pager/diff helpers are separately
+// disabled, and all accepted Git variables are stripped from observation commands.
 func ValidateObservationEnvironment() error {
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		key = strings.ToUpper(key)
-		if strings.HasPrefix(key, "GIT_") && key != "GIT_PAGER" && key != "GIT_EXTERNAL_DIFF" {
+		if strings.HasPrefix(key, "GIT_") && key != "GIT_PAGER" && key != "GIT_EXTERNAL_DIFF" && key != "GIT_EDITOR" {
 			return fmt.Errorf("observation requires clearing inherited %s before Git identity checks", key)
 		}
 	}
