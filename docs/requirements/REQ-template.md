@@ -14,7 +14,7 @@
 > `UI impact` 是 `状态：locked` 的强制顶部字段，`req bind` 只解析这一处（§C 的回显必须与之一致，不一致会被拒绝）。值必须三选一：`none` / `changed` / `unknown`。`unknown` 会触发规划暂停门禁，需在 §D 澄清后才能推进 S2。
 
 <!-- 给 agent（固定阅读，2 行）：
-若预期效果可能改界面：先读 DESIGN.md / design-foundation；缺失则停漏斗走 F0–F6，再按 §A→§B→§C 推进。
+若预期效果可能改界面：先按 design-foundation 判定 local/core/extended；local 使用模块推导，core/extended 缺覆盖才走 F0–F6；再按 §A→§B→§C 推进。
 提案纪律与自审见 requirement-funnel skill——上交唯一合格形态是完整方案，开放问题禁止上交。 -->
 
 ## §A 理念（Why）

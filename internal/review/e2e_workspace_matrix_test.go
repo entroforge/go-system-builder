@@ -2,6 +2,7 @@ package review
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,7 +125,7 @@ func coldStartState() map[string]any {
 
 // writeE2EResultFile writes a passing result for assignment-e2e-1 binding the
 // given workspace digest (nil/empty binds nothing).
-func writeE2EResultFile(t *testing.T, root string, plan *Plan, resultID, artifactDigest string) string {
+func writeE2EResultFile(t *testing.T, root string, plan *Plan, resultID, artifactDigest string, extraEvidenceRefs ...string) string {
 	t.Helper()
 	payload := map[string]any{
 		"schema_version":      "1.0.0",
@@ -139,7 +140,7 @@ func writeE2EResultFile(t *testing.T, root string, plan *Plan, resultID, artifac
 		"claim_results": []any{
 			map[string]any{
 				"claim_id": "claim-e2e-1", "conclusion": "pass",
-				"observed": "flow behaves as declared", "evidence_refs": []string{fixtureEvidenceRef(t, root, "e2e-run.md")},
+				"observed": "flow behaves as declared", "evidence_refs": append([]string{fixtureEvidenceRef(t, root, "e2e-run.md")}, extraEvidenceRefs...),
 			},
 		},
 		"verdict": "pass",
@@ -356,7 +357,8 @@ func TestWorkspaceDriftAfterConsumptionBlocksRoundClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e2ePath := writeE2EResultFile(t, root, plan, "review-result-e2e-1", digest)
+	specRef := fmt.Sprintf("path:%s#sha256=%s", workspace+"/settings.spec.ts", sha256Of([]byte("spec v1")))
+	e2ePath := writeE2EResultFile(t, root, plan, "review-result-e2e-1", digest, specRef)
 	snap, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: revision, AssignmentID: "assignment-e2e-1", ResultPath: e2ePath,
 	})
@@ -387,5 +389,59 @@ func TestWorkspaceDriftAfterConsumptionBlocksRoundClose(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("workspace drift after consumption must block the round close as stale, got %v", err)
+	}
+}
+
+// §10.3: cold-start artifact-revision GROWTH (new files added after a
+// consumption, anchored files untouched) must NOT stale the round close.
+func TestWorkspaceGrowthAfterConsumptionDoesNotStaleRoundClose(t *testing.T) {
+	workspace := "e2e-workspace/plan-cs-1"
+	root := t.TempDir()
+	statePath, journalPath := writeState(t, root, coldStartState())
+	revision, plan := coldStartFixture(t, root, statePath, journalPath, workspace)
+
+	specPath := filepath.Join(root, workspace, "settings.spec.ts")
+	if err := os.MkdirAll(filepath.Dir(specPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, []byte("spec v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := WorkspaceDigest(root, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specRef := fmt.Sprintf("path:%s#sha256=%s", workspace+"/settings.spec.ts", sha256Of([]byte("spec v1")))
+	e2ePath := writeE2EResultFile(t, root, plan, "review-result-e2e-1", digest, specRef)
+	snap, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: revision, AssignmentID: "assignment-e2e-1", ResultPath: e2ePath,
+	})
+	if err != nil {
+		t.Fatalf("SubmitResult e2e: %v", err)
+	}
+
+	// Artifact-revision growth: a LATER reviewer adds a new spec file. The
+	// previously consumed result anchored settings.spec.ts, which is
+	// byte-identical, so the round still closes honestly.
+	growthPath := filepath.Join(root, workspace, "settings-growth.spec.ts")
+	if err := os.WriteFile(growthPath, []byte("test('added later', ...)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dvPath := writeResultFile(t, root, plan, "assignment-dv-1", "review-result-dv-1", "agent-dv-1", "pass",
+		map[string]string{"claim-dv-1": "pass"}, nil)
+	snap, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: snap.Revision, AssignmentID: "assignment-dv-1", ResultPath: dvPath,
+	})
+	if err != nil {
+		t.Fatalf("SubmitResult dv: %v", err)
+	}
+
+	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-1", "agent-qa-1", "pass",
+		map[string]string{"claim-qa-1": "pass"}, nil)
+	if _, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: snap.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
+	}); err != nil {
+		t.Fatalf("workspace growth after consumption must not stale the round close: %v", err)
 	}
 }

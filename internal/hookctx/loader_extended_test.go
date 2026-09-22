@@ -366,6 +366,7 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 			"role_family":"backend-builder",
 			"agent_id":"agent-039-04",
 			"write_paths":["internal/controller/"],
+            "integration_check_mode":"post_merge",
 			"done_when":["register the exact Assignment Result", "preserve evidence refs"],
 			"status":"in_progress"
 		}]
@@ -381,6 +382,9 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 		t.Fatalf("expected 1 assignment row, got %d (%+v)", len(loaded.Assignments), loaded.Assignments)
 	}
 	row := loaded.Assignments[0]
+	if row.IntegrationCheckMode != "post_merge" {
+		t.Fatalf("check mode lost: %+v", row)
+	}
 	if row.AssignmentID != "assignment-039-04" {
 		t.Fatalf("AssignmentID: got %q", row.AssignmentID)
 	}

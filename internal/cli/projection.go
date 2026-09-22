@@ -172,9 +172,9 @@ func contractFor(stage string, state map[string]any, root string) stageContract 
 			}
 		}
 	case "S3":
-		if hasMarkdownArtifact(root, projectlayout.Contracts, "CONTRACTS-*.md", "locked") {
-			contract.Missing = []string{"task_batch"}
-		}
+		// Stay inside the current stage until its quality gate commits the
+		// advance. A filename (even a locked one) is not current REQ evidence.
+		contract.Missing = []string{"locked_contract_set", "planning_contract_record"}
 	case "S4":
 		switch {
 		case !hasMarkdownArtifact(root, projectlayout.Contracts, "CONTRACTS-*.md", "locked"):

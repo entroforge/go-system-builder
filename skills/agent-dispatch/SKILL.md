@@ -108,6 +108,69 @@ apply, submit the generic checkpoint first and the domain artifact second.
 ## Inlined Methodology
 Loop Engineering dispatches Agents in three modes. The default is continuous execution: one structured PLAN_REPORT is the checkpoint — it makes the plan inspectable and correctable while the work proceeds, without a synchronous approval wait. The two-round readback → approval → activation flow remains for genuinely high-risk or irreversible work, and the activation hash chain (`approved_readback_sha256`) applies in both modes: the envelope proves which plan the Worker actually saw. The first-write barrier (PreToolUse) blocks a dispatched Worker's first product mutation until its PLAN_REPORT is recorded, whenever the hook payload identifies the sender; on platforms whose payloads carry no agent identity the barrier stays dormant (the reviewer product-write freeze and the PLAN_REPORT phase contract in every agent card carry the invariant instead). PostToolUse(SendMessage) observes the report automatically via its three-level identification ladder (payload agent_id → teammate_name → sole agent awaiting its plan checkpoint).
 
+## Recovery without repeated idle loops
+
+Treat a validated plan and its activation chain as the checkpoint; a missing
+legacy observation marker alone is not a reason to resend the plan. A failed
+PostToolUse persistence receipt is not successful registration. Use the stated
+recovery path and retain the current Assignment identity.
+
+TeammateIdle has no documented `stop_hook_active` input. The Harness permits at
+most two identical continuation reminders per session/agent/evidence state,
+then allows idle with `LOOP RECOVERY STALLED`. This does not complete the task,
+release write permissions, revoke the Assignment, or waive a safety denial.
+Main consumes the diagnostic and investigates the existing worker/checkpoint;
+never infer a dead worker from chat silence alone. Cache failure also surfaces
+an explicit diagnostic instead of endlessly demanding the same plan.
+
+## Execution completion and bounded waiting
+
+Use the existing assignment expected_outputs/done_when/checks/stop_conditions to state the deliverable, required checks, failure route and completion condition. Do not create a parallel progress ledger. Short commands should be awaited to completion. For long commands use the platform's completion notification or bounded status retrieval; fixed multi-minute sleep is not a substitute for observing a process. Backoff/rate-limit waits are permitted only when they address a concrete condition.
+
+A repeated check must have a reason: changed code/configuration, interrupted execution, invalid evidence, a new falsifiable hypothesis, or a mandated independent/post-integration verification. Consume current valid evidence rather than re-running for reassurance. Never reuse a candidate-tree pass as a merged-tree pass or an author's result as an independent conclusion. Record each run's actual tree, command, exit status and required case collection using existing evidence receipts.
+
+If the same failure and code fingerprint recur without new information, switch to bounded diagnosis or report the blocker to the Driver; do not repeat identical work indefinitely. Elapsed time alone is not a reason to kill a productive worker. The Driver resolves/reassigns through the supported lifecycle and continues unblocked work; it must not launch a second writer into the same assignment. After the declared checks and deliverables are complete, submit the Result and let the Driver consume it instead of inventing further review rounds.
+
+## Current platform identity
+
+For Claude Code >=2.1.178, do not call TeamCreate/TeamDelete or enforce Agent
+team_name: teams are session-managed. Bind the real platform actor to the
+registered Runtime assignment/owner; missing or ambiguous identity requires
+repairing that mapping, never guessing from the only waiting task. Prefer one
+role-bearing subagent unless peer coordination benefits the assignment. See
+`docs/claude-platform-compatibility.md` for platform acceptance boundaries.
+
+
+### Worktree integration handoff
+
+Keep Main in its original checkout. Pin each Worker to the approved main HEAD
+and explicitly register its target branch; do not assume develop. Resolve
+uncommitted source/document inputs before dispatch without automatic add/stash.
+SubagentStop returns a pending action; Main runs
+`runtime task-integrate --assignment-id <id> --root <main-root>`.
+That command records verification, then completion_ack through the Agent
+lifecycle, then cleanup. Retry cleanup_pending without discarding the verified
+result. `runtime workspace pending` reconstructs outstanding deliveries from
+durable reports/checkpoints after a restart. An owner with multiple worktrees
+is acknowledged only after all of its deliveries are verified.
+
+Read docs/workspace-integration.md before using workspace prepare. It installs
+the native Harness and trusted role/skill assets, freezes dispatch input hashes,
+and publishes a bootstrap receipt before ready. Main stays in its own checkout.
+Use the returned `check_commands` verbatim for declared Linux sandbox checks;
+they run in disposable copies and do not create source commits or replace
+post-merge verification. Worker CLI routing permits its own lifecycle reports,
+not Main approvals or scheduling. Use `workspace launch` from Main to start the installed role in the prepared
+Worker. Main stays in its original checkout. Resume only the recorded session
+with `--resume`. The launch exit is not assignment completion.
+Use returned `begin_command`, `commit_command`, and `report_command` verbatim;
+write plan.json, commit.json, and completion.json under `.claude/submissions`.
+For S9, first register the domain PlanReport and begin repair execution on Main;
+then prepare/launch. After generic completion, submit repair-result.json with
+`s9_delivery_command`. Main integrates that immutable candidate before registering
+the final RepairResult; independent verification and fresh S7 remain required.
+See `docs/workspace-integration.md` for explicit adoption, replacement and relocation.
+
 
 ## Temporary worktrees and committed stage delivery
 

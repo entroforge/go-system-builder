@@ -27,7 +27,7 @@ func TestSubagent_Integration_Guidance(t *testing.T) {
 		t.Fatalf("SubagentStop must not fail: code=%d stderr=%s", code, stderr)
 	}
 	out := stdout
-	for _, expected := range []string{"SubagentStop", "develop", "completion_ack"} {
+	for _, expected := range []string{"SubagentStop", "REQ-bound development branch", "completion_ack"} {
 		if !strings.Contains(out, expected) {
 			t.Fatalf("SubagentStop integration guidance must include %q: %s", expected, out)
 		}

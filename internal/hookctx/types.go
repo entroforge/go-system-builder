@@ -29,7 +29,8 @@ type AssignmentContext struct {
 	// them plus a real runner into Inspect/Integrate, so the `verified`
 	// checkpoint state reflects executed checks (L3-S6 §11.2 "Integration
 	// checks 未接线").
-	RequiredChecks []string `json:"required_checks,omitempty"`
+	IntegrationCheckMode string   `json:"integration_check_mode,omitempty"`
+	RequiredChecks       []string `json:"required_checks,omitempty"`
 	// DoneWhen is the assignment's concrete closing contract from the
 	// workgroup manifest. It is projected into SubagentStart so the Worker
 	// sees the actual completion predicates instead of a generic reminder.

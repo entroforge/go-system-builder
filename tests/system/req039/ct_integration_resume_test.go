@@ -1,93 +1,54 @@
-// ct_integration_resume_test.go — system-level CT-039-17 via SubagentStop Hook.
-// After merge→verified, second SubagentStop resumes ack/cleanup → complete
-// without re-merging develop (BUG-039-38).
+// System-level recovery after directory removal succeeds but completion
+// persistence is lost. The explicit command must not re-merge.
 
 package req039_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 // TestCT03917_SubagentStopIdempotentResumeAfterMerge covers CT-039-17:
-// after merge→verified, a second SubagentStop must not re-merge develop and
-// must advance the durable checkpoint to complete (ack+cleanup resume).
+// repeated explicit integration completes cleanup without re-merging.
 func TestCT03917_SubagentStopIdempotentResumeAfterMerge(t *testing.T) {
 	root := freshRoot(t)
-	runner := &req039fixtures.CLIRunner{}
-	repo := setupGitWorktreeFixture(t, root)
-
-	state := systemPlanningState(t, root, "tasks", 10)
-	state["lifecycle"] = map[string]any{"state": "building", "phase": nil, "phase_revision": 0}
-	state["entities"] = map[string]any{
-		"agents": []any{map[string]any{
-			"id": "builder-ct17", "role": "builder", "state": "reported",
-			"task_ids": []any{"TASK-039-01"}, "team_id": "team-ct17",
-		}},
-		"tasks": []any{map[string]any{
-			"id": "TASK-039-01", "state": "review",
-			"owner_agent_ids": []any{"builder-ct17"},
-		}},
-		"bugs": []any{}, "teams": []any{},
-	}
-	writeSystemState(t, root, state)
-
-	writeWorkgroupWithWorktree(t, root, "TASK-039-01", "assignment-ct17", "builder-ct17", repo.wtPath, repo.branch)
-	writeCompletionReport(t, root, "loop-system-test", "assignment-ct17")
-
-	body := req039fixtures.SubagentStopBody("session-ct-039-17", "builder-ct17", "assignment-ct17")
-	developBefore := repo.developHEAD()
-
-	code, stdout, stderr := runHookWithRunner(t, runner, root, "SubagentStop", body)
+	wt := seedIntegrableAssignment(t, root)
+	code, out, errText := runTaskIntegrate(t, root, "assignment-ti")
 	if code != 0 {
-		t.Fatalf("first SubagentStop failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+		t.Fatalf("initial integration: %d %s %s", code, out, errText)
 	}
-	if runner.ManualTransitionCalls != 0 {
-		t.Fatalf("CT-039-17 must not use manual transition CLI")
+	head := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
+	cpPath, _ := readIntegrationCheckpoint(t, root)
+	data, err := os.ReadFile(cpPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	if repo.developHEAD() != developBefore {
-		t.Fatal("SubagentStop must not mutate the authority branch")
+	var cp map[string]any
+	if err = json.Unmarshal(data, &cp); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(repo.wtPath); err != nil {
-		t.Fatal("SubagentStop must preserve the worker checkout", err)
+	// Simulate lost completion persistence after successful directory removal.
+	cp["state"] = "cleanup_pending"
+	data, _ = json.Marshal(cp)
+	if err = os.WriteFile(cpPath, data, 0600); err != nil {
+		t.Fatal(err)
 	}
-	code, stdout, stderr = runTaskIntegrate(t, root, "assignment-ct17")
+	code, out, errText = runTaskIntegrate(t, root, "assignment-ti")
 	if code != 0 {
-		t.Fatalf("Main integration failed: %s %s", stdout, stderr)
+		t.Fatalf("cleanup recovery: %d %s %s", code, out, errText)
 	}
-
-	developAfterFirst := repo.developHEAD()
-	if developAfterFirst == developBefore {
-		t.Fatalf("CT-039-17 first SubagentStop must merge into develop; out=%s", stdout+stderr)
+	if readIntegrationCheckpointState(t, root) != "complete" {
+		t.Fatalf("cleanup response loss did not recover: %s %s", out, errText)
 	}
-	cpState := readIntegrationCheckpointState(t, root)
-	if cpState != "complete" {
-		t.Fatalf("CT-039-17 first stop checkpoint want verified/merged, got %q", cpState)
+	if strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD")) != head {
+		t.Fatal("recovery remerged")
 	}
-
-	// Second SubagentStop: must not re-merge; must resume to complete.
-	code2, stdout2, stderr2 := runTaskIntegrate(t, root, "assignment-ct17")
-	if code2 != 0 {
-		t.Fatalf("resume SubagentStop failed: code=%d stderr=%s stdout=%s", code2, stderr2, stdout2)
-	}
-	out2 := stdout2 + stderr2
-	developAfterSecond := repo.developHEAD()
-	if developAfterSecond != developAfterFirst {
-		t.Fatalf("CT-039-17 idempotent resume must not re-merge: before=%s after=%s out=%s",
-			developAfterFirst, developAfterSecond, out2)
-	}
-	cpState2 := readIntegrationCheckpointState(t, root)
-	if cpState2 != "complete" {
-		t.Fatalf("CT-039-17 resume durable checkpoint want complete, got %q out=%s", cpState2, out2)
-	}
-	if _, err := os.Stat(repo.wtPath); !os.IsNotExist(err) {
-		t.Fatalf("CT-039-17 complete must remove worktree at %s (stat err=%v)", repo.wtPath, err)
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatal("removed checkout was recreated")
 	}
 }
 

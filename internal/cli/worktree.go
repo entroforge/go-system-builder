@@ -9,6 +9,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -191,9 +192,9 @@ func reminderDelivery(root string, input policy.Input) (string, func()) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if out, err := exec.CommandContext(ctx, "git", "-C", root, "worktree", "list", "--porcelain", "-z").Output(); err == nil {
+	if fields, err := pathscope.WorktreeFields(ctx, root); err == nil {
 		path := ""
-		for _, field := range strings.Split(string(out), "\x00") {
+		for _, field := range fields {
 			if strings.HasPrefix(field, "worktree ") {
 				path = strings.TrimPrefix(field, "worktree ")
 			}

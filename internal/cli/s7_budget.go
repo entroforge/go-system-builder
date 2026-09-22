@@ -28,7 +28,7 @@ func runRuntimeS7BudgetDecision(args []string, stdout, stderr io.Writer) int {
 	decisionPath := flags.String("file", "", "human S7 budget decision JSON path")
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 	actor := flags.String("actor", "", "human decision actor")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	missing := make([]string, 0, 2)

@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/docscope"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"github.com/entroforge/go-system-builder/internal/sharedmodel"
@@ -91,6 +92,7 @@ func TasksCheckWithFiles(root string, files fileview.Reader, reqIDs ...string) (
 
 	// Clause universe: the CONTRACTS index matrix is the single home (L3-S4 v4).
 	universe := map[string]bool{}
+	historicalContracts := map[string]bool{}
 	var indexFiles []string
 	contractEntries, _ := files.ReadDir(filepath.Join(root, projectlayout.Contracts))
 	for _, entry := range contractEntries {
@@ -105,6 +107,15 @@ func TasksCheckWithFiles(root string, files fileview.Reader, reqIDs ...string) (
 		data, err := files.ReadFile(indexFile)
 		if err != nil {
 			return result, fmt.Errorf("read %s: %w", indexFile, err)
+		}
+		if !docscope.Belongs(data, docscope.Bound(root)) {
+			for _, cell := range contractClauseCellPattern.FindAllString(string(data), -1) {
+				fields := strings.Fields(normalizeClauseCell(cell))
+				if len(fields) > 0 {
+					historicalContracts[fields[0]] = true
+				}
+			}
+			continue
 		}
 		for _, cell := range contractClauseCellPattern.FindAllString(string(data), -1) {
 			universe[normalizeClauseCell(cell)] = true
@@ -181,6 +192,15 @@ func TasksCheckWithFiles(root string, files fileview.Reader, reqIDs ...string) (
 		// universe starves coverage invisibly (the false-green hole).
 		ids := make([]string, 0, len(contractIDs))
 		for id := range contractIDs {
+			if historicalContracts[id] {
+				data, err := files.ReadFile(filepath.Join(root, projectlayout.Contracts, id+".md"))
+				if err != nil {
+					return result, err
+				}
+				if !docscope.Owners(data)[docscope.Bound(root)] {
+					continue
+				}
+			}
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
@@ -301,6 +321,9 @@ func loadTaskDocumentsWithFiles(root string, files fileview.Reader) ([]*taskDocu
 		data, err := files.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return nil, fmt.Errorf("read docs/dev/tasks/%s: %w", name, err)
+		}
+		if !docscope.Belongs(data, docscope.Bound(root)) {
+			continue
 		}
 		content := string(data)
 		task := &taskDocument{

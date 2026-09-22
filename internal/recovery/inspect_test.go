@@ -107,6 +107,29 @@ func TestInspectAcceptsLockedREQAndDamagedBOMRuntime(t *testing.T) {
 	}
 }
 
+func TestInspectPreservesREQCRLFForBinding(t *testing.T) {
+	root := t.TempDir()
+	path := "docs/requirements/REQ-052.md"
+	data := []byte("# REQ-052\r\n\r\n> 状态：locked\r\n> 版本：v1.0.3\r\n")
+	writeRecoveryFile(t, root, path, data)
+
+	inventory, err := Inspect(root, path)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	wantBindingSHA := sha256HexForRecoveryTest(data)
+	if inventory.REQ.SHA256 != wantBindingSHA {
+		t.Fatalf("REQ binding SHA256 = %q, want raw-byte %q", inventory.REQ.SHA256, wantBindingSHA)
+	}
+	input, ok := inventoryInputByPath(inventory, path)
+	if !ok {
+		t.Fatalf("inventory missing %s", path)
+	}
+	if input.SHA256 != sha256HexForRecoveryTest(data) {
+		t.Fatalf("REQ inventory SHA256 = %q, want raw byte digest %q", input.SHA256, sha256HexForRecoveryTest(data))
+	}
+}
+
 func TestInspectUsesCanonicalREQIDFromDescriptiveFilename(t *testing.T) {
 	root := t.TempDir()
 	reqPath := "docs/requirements/REQ-039-loop-control-plane.md"

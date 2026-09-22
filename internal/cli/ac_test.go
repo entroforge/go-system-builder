@@ -471,7 +471,7 @@ func TestAC006_SubagentStopEmitsIntegrationGuidance(t *testing.T) {
 		t.Fatalf("SubagentStop must not fail: %d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, expected := range []string{"SubagentStop", "develop", "completion_ack"} {
+	for _, expected := range []string{"SubagentStop", "REQ-bound development branch", "completion_ack"} {
 		if !strings.Contains(out, expected) {
 			t.Fatalf("AC-006: SubagentStop integration guidance missing %q: %s", expected, out)
 		}

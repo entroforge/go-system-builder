@@ -377,7 +377,7 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 		// current-round Finding set with the drain policy respected.
 		applyObservationBatchGate(input, &result)
 	}
-	if result.GateID == "GATE-ACCEPTANCE-COMPLETE" || result.GateID == "GATE-ACCEPTANCE-REVIEW-REQUIRED" || result.GateID == "GATE-RELEASE-AUDIT-APPROVED" || result.GateID == "GATE-RELEASE-AUDIT-BLOCKED" {
+	if result.GateID == "GATE-ACCEPTANCE-COMPLETE" || result.GateID == "GATE-ACCEPTANCE-REVIEW-REQUIRED" || result.GateID == "GATE-RELEASE-AUDIT-APPROVED" || result.GateID == "GATE-RELEASE-AUDIT-BLOCKED" || result.GateID == "GATE-RELEASE-AUDIT-REVIEW-REQUIRED" {
 		// L3-S10 §1.2: a generic PASS/APPROVED envelope is not enough. The
 		// finite coverage inventory and counterevidence ledger are the
 		// machine-consumed anti-shortcut contract. RC-05 (S10-8): the blocked
@@ -393,26 +393,57 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 	return result
 }
 
+// latestS10EvidenceID returns the most recently registered qualifying record of
+// the required kind. S10 records accumulate (every correction registers a new
+// fingerprinted envelope), and evidence rows cannot be retired outside a
+// transition commit, so the gate must judge the current claim -- the latest
+// registration -- instead of the oldest id that happens to sort first.
+func latestS10EvidenceID(input Input, refs []string, kind string) string {
+	qualified := make(map[string]struct{}, len(refs))
+	for _, id := range refs {
+		qualified[id] = struct{}{}
+	}
+	raw, _ := input.Snapshot.State["evidence"].([]any)
+	for i := len(raw) - 1; i >= 0; i-- {
+		index, _ := raw[i].(map[string]any)
+		if index == nil {
+			continue
+		}
+		id := stringValue(index["id"])
+		if _, ok := qualified[id]; !ok {
+			continue
+		}
+		if evidenceKindsEqual(kind, stringValue(index["kind"])) {
+			return id
+		}
+	}
+	return ""
+}
+
 func applyS10ManifestGate(input Input, result *Evaluation) {
 	wanted := map[string]string{"acceptance": "acceptance_record"}
 	if result.GateID == "GATE-RELEASE-AUDIT-APPROVED" || result.GateID == "GATE-RELEASE-AUDIT-BLOCKED" {
 		wanted["release_audit"] = "release_audit_record"
 	}
 	for manifestType, evidenceKind := range wanted {
-		evidenceID := ""
-		for _, id := range result.EvidenceRefs {
-			envelope, ok := s10EnvelopeByID(input, id)
-			if ok && evidenceKindsEqual(evidenceKind, envelope.Kind) {
-				evidenceID = id
-				break
-			}
-		}
+		evidenceID := latestS10EvidenceID(input, result.EvidenceRefs, evidenceKind)
 		if evidenceID == "" {
 			// The ordinary evidence requirements already explain a missing
 			// acceptance/audit envelope. Do not add a second, confusing
 			// manifest error when its parent evidence is absent.
 			continue
 		}
+		// The Controller must commit the same envelope whose manifest we check.
+		// Keeping older qualified refs here lets lexical ID ordering select a
+		// different record at commit time.
+		retained := make([]string, 0, len(result.EvidenceRefs))
+		for _, id := range result.EvidenceRefs {
+			envelope, ok := s10EnvelopeByID(input, id)
+			if id == evidenceID || !ok || !evidenceKindsEqual(evidenceKind, envelope.Kind) {
+				retained = append(retained, id)
+			}
+		}
+		result.EvidenceRefs = retained
 		envelope, _ := s10EnvelopeByID(input, evidenceID)
 		if strings.TrimSpace(envelope.AuditManifestPath) == "" || strings.TrimSpace(envelope.AuditManifestSHA256) == "" {
 			result.Missing = append(result.Missing, "s10:"+manifestType+"_manifest:"+evidenceID)
@@ -750,7 +781,8 @@ func unauthorizedProducerConflicts(
 	}
 	runtimeID, _ := input.Snapshot.State["runtime_id"].(string)
 	raw, _ := input.Snapshot.State["evidence"].([]any)
-	var conflicts []string
+	authorized := make(map[string]int)
+	unauthorized := make(map[string][]string)
 	for _, item := range raw {
 		index, _ := item.(map[string]any)
 		if index == nil {
@@ -762,10 +794,12 @@ func unauthorizedProducerConflicts(
 		// delivery_review/qa_review/e2e_review), so the lookup goes through
 		// the alias-aware comparison.
 		var responsibilities map[string]struct{}
+		slot := kind
 		relevant := false
 		for requirementKind, resp := range allowed {
 			if evidenceKindsEqual(requirementKind, kind) {
 				responsibilities = resp
+				slot = requirementKind
 				relevant = true
 				break
 			}
@@ -793,7 +827,23 @@ func unauthorizedProducerConflicts(
 			continue
 		}
 		if _, ok := responsibilities[envelope.ProducerResponsibility]; !ok {
-			conflicts = append(conflicts, "evidence:"+envelope.EvidenceID+":producer")
+			unauthorized[slot] = append(unauthorized[slot], envelope.EvidenceID)
+		} else {
+			authorized[slot]++
+		}
+	}
+	// Deferred like the naming errors in qualifiedEvidence: an unauthorized
+	// producer only explains an unfilled slot when no authorized record for
+	// that slot is registered. Reporting it unconditionally would make the
+	// gate unsatisfiable -- the operator can register a qualified record but
+	// cannot retire the foreign one, so the conflict would never clear.
+	var conflicts []string
+	for slot, ids := range unauthorized {
+		if authorized[slot] > 0 {
+			continue
+		}
+		for _, id := range ids {
+			conflicts = append(conflicts, "evidence:"+id+":producer")
 		}
 	}
 	return sortedUnique(conflicts)

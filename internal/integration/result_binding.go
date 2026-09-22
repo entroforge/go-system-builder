@@ -2,6 +2,7 @@ package integration
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -164,4 +165,36 @@ func isVerifiedOrLater(state string) bool {
 	default:
 		return false
 	}
+}
+
+// RefreshCompletionBinding reads the current canonical Result during recovery.
+// Integrate compares it with the durable binding and reruns checks on changes.
+func RefreshCompletionBinding(root, runtimeID, explicitRef string, in Inspection) (Inspection, error) {
+	path := explicitRef
+	if path == "" {
+		path = in.CompletionReportPath
+	}
+	if path == "" {
+		path = completionReportPath(root, in.AssignmentID, runtimeID, "", in.BaselineGeneration)
+	}
+	binding, err := readCompletionReportBinding(root, path)
+	if err != nil {
+		return in, err
+	}
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(binding.Path)))
+	if err != nil {
+		return in, err
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return in, err
+	}
+	if kind, _ := envelope["message_type"].(string); kind != "" && kind != "completion_report" {
+		return in, fmt.Errorf("invalid completion report type %q", kind)
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(data)) != binding.SHA256 {
+		return in, ErrCompletionReportChanged
+	}
+	in.CompletionReportPath, in.CompletionReportSHA256 = binding.Path, binding.SHA256
+	return in, nil
 }

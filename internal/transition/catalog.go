@@ -391,6 +391,7 @@ var registeredQualityGates = map[string]struct{}{
 	"GATE-ACCEPTANCE-REVIEW-REQUIRED":       {},
 	"GATE-RELEASE-AUDIT-APPROVED":           {},
 	"GATE-RELEASE-AUDIT-BLOCKED":            {},
+	"GATE-RELEASE-AUDIT-REVIEW-REQUIRED":    {},
 	"GATE-NO-REPAIR-REMAINS":                {},
 	"GATE-FINDING-SPEC-CHANGE-REQUIRED":     {},
 	"GATE-FINDING-REQ-CHANGE-REQUIRED":      {},

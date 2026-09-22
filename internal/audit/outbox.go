@@ -2,12 +2,15 @@ package audit
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/entroforge/go-system-builder/internal/filelock"
 )
 
 type Outbox struct {
@@ -87,52 +90,21 @@ func containsDecision(path, decisionID string) (bool, error) {
 	return false, scanner.Err()
 }
 
-// acquireLock takes an O_EXCL lockfile at <path> for the duration of one
-// in-process audit write. The default timeout (30s) plus retry-on-timeout
-// with exponential backoff covers N=1000 cross-process concurrency on a
-// single outbox (the round-4 N=1000 stress test in QA-1 BACKLOG §1 found
-// that 5s was too tight — ~3% of writers timed out). The retry budget
-// adds bounded time on top of the deadline (5s, 10s, 15s = up to 30s
-// extra) so even a hostile scheduler that preempts the lock-holder
-// returns to a successful acquisition instead of dropping the audit
-// record.
-//
-// On success the returned release func removes the lockfile. On failure
-// (ErrExist after deadline or a non-ErrExist error) it returns the error
-// without a release func — the caller cannot unlock since it never locked.
+// acquireLock serializes cross-process outbox writes with a process-owned OS
+// lock. The lock inode is intentionally persistent: unlinking a locked file
+// can let another process lock a different inode at the same path. A separate
+// .process file also prevents stale O_EXCL sentinels left by older binaries
+// from blocking current hooks. The operating system releases the lock when a
+// holder exits, including crash and forced-termination paths.
 func acquireLock(path string, timeout time.Duration) (func(), error) {
-	// Retry schedule: bounded sleep on ErrExist until deadline elapses.
-	// Backoff is intentionally short relative to the timeout (5ms..50ms)
-	// so we re-poll the lockfile quickly; if the lock is held for an
-	// extended period (e.g. a slow writer), the deadline will still cut
-	// the wait off cleanly. Under N=1000 contention, retries do not
-	// lengthen the worst-case wait — they keep the syscall window
-	// responsive.
-	backoff := 5 * time.Millisecond
-	const maxBackoff = 50 * time.Millisecond
-	deadline := time.Now().Add(timeout)
-	for {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = file.Close()
-			return func() { _ = os.Remove(path) }, nil
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	release, err := filelock.Acquire(ctx, path+".process")
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("audit outbox lock timeout: %w", err)
 		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		if time.Now().After(deadline) {
-			return nil, errors.New("audit outbox lock timeout")
-		}
-		time.Sleep(backoff)
-		// Exponential backoff capped at maxBackoff so a single wait can
-		// never exceed 50ms; gives a stuck lock-holder ~600 chances to
-		// release before the 30s deadline. This is the round-4
-		// 5s→30s timeout + retry fix.
-		if backoff < maxBackoff {
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
+		return nil, err
 	}
+	return release, nil
 }

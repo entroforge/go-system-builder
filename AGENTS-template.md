@@ -49,21 +49,27 @@ integrity failure, rollback/rollover, or the human release Gateway.
 
 **If the Runtime is a fresh inactive Runtime with no bound REQ:**
 
-0. If the product has user-visible UI, read `docs/design/DESIGN.md` and
-   `docs/rules/design-foundation.md`. Missing, draft, stale, or uncovered
-   surface → finish F0–F6 via `.claude/skills/design-foundation/SKILL.md`
-   (human confirms direction, kernel, then publish) **before** locking the
-   first `UI impact=changed` REQ. Do not invent brand in the REQ. Pure
-   backend work records Foundation as `N/A` on the project map and continues.
+0. If the product has user-visible UI, determine `design investment`
+   (`local / core / extended`) per `docs/rules/design-foundation.md`.
+   Local work uses a module-local derivation without publishing a project
+   Foundation. Core/extended work requires a covering published Foundation
+   via `.claude/skills/design-foundation/SKILL.md` before locking the UI REQ.
+   Pure backend work records Foundation as `N/A` on the project map.
 1. Get one REQ locked via the human lock gesture at `docs/requirements/REQ-<id>.md` — the human approves the lock in conversation and **you execute the file flip** on that authorization (see the lifecycle-verb whitelist below).
 2. `loop-harness req bind --req <path> --approved-by <human identity>`
 3. Then proceed above.
 
-**If the Runtime is terminal** (`awaiting_human_release` or `aborted`) **and a
+**If the Runtime is terminal** (`release_authorized` or `aborted`) **and a
 new REQ must start:** a human first runs
 `loop-harness runtime rollover --approved-by <human identity> --approval-evidence <human-decision-id> --root .`.
 Rollover archives the completed runtime and journal, then seeds a fresh
 inactive Runtime. Do not edit `loop-state.json` or reuse a terminal Runtime.
+
+`awaiting_human_release` is a non-terminal human decision gateway, not a
+rollover source. Follow `docs/agent-protocol.md#s11` for the human decision;
+`approve` reaches `release_authorized`. `paused` is a resumable wait state,
+not a terminal state. Release authorization records the handoff only; it
+does not execute a merge, deployment, publication, or release.
 
 `/loop` is **not** an authorization and does not bind a REQ. It only delivers the Layer 2 Wake-up prompt on a schedule.
 
@@ -80,9 +86,9 @@ Run on every session start, Wake-up, subagent return, Hook `warn` or `block`, or
    `quality_gate.missing` (or `loop-harness ready` when the checklist is
    unclear). “Most-forward” means the next contractually unblocked piece; it
    never means skipping coverage, prerequisites, or a required review.
-   If a subagent assignment is spawned, reading, or waiting for approval:
-   the next action is its read-back / approval / activation barrier, not
-   self-execution of that delegated work.
+   If a subagent assignment is awaiting its required plan checkpoint or approval:
+   the next action is that mode's checkpoint / approval / activation barrier,
+   not self-execution of that delegated work.
    Else: produce nothing extra — the next PreToolUse auto-advances when the
    gate is satisfied. Do not call transition CLI.
 5. Load only what this action needs: direct upstream specs + exactly one
@@ -115,7 +121,7 @@ the Milestone instead of relying on conversation memory.
 
 ## Control boundaries
 
-- Humans own lock decisions and release approval. AI drives everything in between — including executing the `状态：locked` file flip on the human's explicit lock gesture.
+- Humans own lock, release and the explicit stage authority boundaries below. The Driver autonomously executes work within those boundaries — including executing the `状态：locked` file flip on the human's explicit lock gesture.
 - Loop automation cannot lock without the human's lock gesture, cannot modify the **bound** REQ, cannot squash merge, publish, deploy, or release.
 - **Lifecycle-verb whitelist** — what the main session may execute on a human's behalf:
   | Verb | May the agent run it? | Required human gesture |
@@ -124,8 +130,8 @@ the Milestone instead of relying on conversation memory.
   | `runtime pause` / `runtime resume` / `req amend` / `req unbind` / `runtime rollover` / `runtime human-decision` | only when the human supplies the complete command line verbatim (including `--approved-by`) | the human's own typed/approved command — never infer the approver name from context |
   "Locking a REQ" = the human's explicit lock gesture in conversation (see skills: requirement-funnel Exit Conditions); the file edit that flips `状态：locked` is executed by the main session on that authorization, and `req bind --approved-by <same human>` is the second confirmation. When in doubt, hand the command up and wait.
 - `/loop` only delivers the Layer 2 prompt. REQ binding is `loop-harness req bind`; the two are independent lifetimes.
-- Subagents are read-only until phase-one read-back is approved and phase two is activated.
-- Once work is delegated to a subagent, the main session waits for or re-wakes that same Agent for read-back; it does not complete the delegated responsibility itself unless the assignment is revoked or reassigned.
+- Subagents follow their declared dispatch mode: `plan_checkpoint` requires the recorded PLAN_REPORT before writes, without a second approval wait; `plan_approval_required` requires read-back approval and activation.
+- Once work is delegated to a subagent, the main session waits for or re-wakes that same Agent for its required checkpoint or result; it does not complete the delegated responsibility itself unless the assignment is revoked or reassigned.
 - Blocking findings enter the canonical BUG cycle. Targeted re-verification never produces a clean round.
 - S10 is an anti-shortcut acceptance and release audit. It requires a finite
   coverage inventory, adversarial counterevidence, objective completion
@@ -173,7 +179,7 @@ S0 requirement_design
 → S7 full_verification_round
 → S8 finding_investigation → S9 bug_resolution
 → S7 fresh_full_verification_round
-→ S10 acceptance_and_audit → S11 human_release_gateway [terminal]
+→ S10 acceptance_and_audit → S11 human_release_gateway [awaiting human decision]
 ```
 
 The clean path is `S7 clean round → S10 acceptance/audit → S11`. The repair
@@ -184,7 +190,7 @@ the matching human Gateway.
 
 ## Human Gateway types
 
-The main session surfaces a Gateway **only** at one of:
+For exceptional blockers, the main session uses the Gateway types below. Explicit stage authority boundaries (S2 sign-off, S8 approval without a valid delegation, and review-budget decisions) also remain in force; do not invent additional human gates for ordinary technical recovery.
 
 | Type | Trigger |
 |:---|:---|
@@ -248,19 +254,27 @@ Loop commands:
 .claude/bin/loop-harness validate --all --root .
 ```
 
-Before every `Agent` / `Task` call, answer the Hook preflight: is a single
-subagent necessary, or is an Agent Team better; which predefined role template
-is being used; and is the assignment isolated in a worktree? During S6–S9,
-every role-bearing spawn must pass an explicit `team_name`; create the team
-first via `TeamCreate({team_name: "loop-{req-id}"})`. Read-only research
-subagents (`Explore`, `Plan`, `claude-code-guide`, `statusline-setup`) are
-exempt from the team gate, but still receive the preflight guidance.
+Before every `Agent` / `Task` call, check whether one specialized subagent is
+sufficient, name its predefined role and registered assignment, and isolate
+product writes in the assignment worktree. Prefer a team only when peer
+coordination adds value. For supported Claude Code >=2.1.178, teams are
+session-managed: do not call removed TeamCreate/TeamDelete tools or require
+Agent.team_name (ignored by the platform). Team support must be enabled and
+verified; use Runtime assignment/agent identity, not platform team name, for
+authority. Read-only research still follows applicable scope restrictions.
+See docs/claude-platform-compatibility.md for tested versions and acceptance.
 
-After the subagent report returns, Main runs `runtime task-integrate` in the
-authority root against the REQ-bound development branch. This merges committed
-worker results, verifies, acknowledges and cleans the temporary worktree.
-SubagentStop only observes and reminds; development reception is not release. On `TeammateIdle`, re-wake the same teammate with its current
-assignment; do not silently replace it.
+On `SubagentStop`, Main consumes the explicit
+`runtime task-integrate --assignment-id <id> --root <main-root>` action.
+The Hook itself does not run long checks. Integrate into the REQ-bound development
+branch, never an implicit develop branch. Keep Main in its
+original checkout; inspect Worker files read-only and let the assigned Worker
+make product changes. Successful verification precedes durable completion_ack,
+which precedes cleanup. Preserve cleanup_pending without discarding verification.
+Respect project branch protection and the human release gateway. On
+`TeammateIdle`, inspect the current assignment before re-waking the same
+teammate; do not silently replace it. See docs/workspace-integration.md for
+current implementation boundaries.
 
 ## Escalation
 
@@ -270,6 +284,48 @@ assignment; do not silently replace it.
 - Unclear next action: use `.claude/skills/loop-orchestration/SKILL.md`.
 - Human-controlled or irreversible action: surface the matching Gateway type.
 
+## User-visible progress
+
+The recovery packet is a scheduling checkpoint, not a work report. At the
+start of work, after a meaningful deliverable, on a blocker or change of
+approach, and approximately every 60 seconds during sustained work, tell the
+user briefly what has completed, what action is underway, and what comes
+next. Use the user's language. Do not narrate every tool call or expose
+internal reasoning. Report only observed results: a revision increment, an
+intended action, or a repeated Hook message is not evidence of progress.
+
+Hook `systemMessage` is a user notice; model recovery instructions belong in
+`hookSpecificOutput.additionalContext` for supported events. Full recovery
+context is retained at session/agent start and stage transitions. Ordinary
+PreToolUse calls provide the current gate conflicts, missing work, and a
+compact checkpoint. Repeated user notices may be suppressed within one
+session/agent, but safety denials and model context must never be suppressed.
+A Worker plan checkpoint requiring no approval does not silence progress
+reports to the user.
+
+## Bounded planning continuation
+
+S3/S4 work does not require another user approval merely because a stage
+changed or drafting is substantial. Main Stop provides one continuation
+reminder when a locked REQ has a current unblocked planning milestone and
+no delegated agent. `stop_hook_active` always permits the next Stop; this
+is not an unattended scheduler or proof of completion. Honor explicit user
+stop requests and explain actual permission/external waits. S2 design
+sign-off and other stages retain their existing domain-specific rules.
+
+## Optional bounded repair authority
+
+For a new bound REQ, an explicit finite human grant may delegate ordinary S8 contract reviews to the Driver under docs/bounded-repair-autonomy.md. Do not infer this grant from the approver name, install it on old REQs, or manufacture human_decision for technical review. No grant preserves the existing explicit contract approval requirement. S2 ADR sign-off, requirement changes, budgets, external permissions and release retain their own boundaries. Within a valid grant, recoverable task/scope-planning issues go to the Driver, not repeated user A/B/C menus.
+
+## Approved repair policy at new requirement binding
+
+If installation recorded a human-approved project repair policy, include its
+unchanged path and SHA256 using `req bind --repair-policy` and
+`--repair-policy-sha256`. Do not create or enlarge a policy from an account name.
+See `docs/bounded-repair-autonomy.md`. In-scope technical RepairContract approvals
+then use the Driver's registered review and pinned policy, without another human
+approval. Missing authority, business changes and release keep their Gateway.
+Existing bound runtimes are not retroactively granted this authority.
 
 ## 临时 worktree 与阶段交付
 

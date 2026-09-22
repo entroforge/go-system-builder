@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_type",
+    "runtime_id",
+    "assignment_id",
+    "source_head",
+    "base_commit",
+    "session_id",
+    "plan_id",
+    "contract_sha256",
+    "version",
+    "execution_generation",
+    "baseline_generation",
+    "proposal"
+  ],
+  "properties": {
+    "record_type": {
+      "const": "repair_workspace_candidate"
+    },
+    "runtime_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assignment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_head": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_commit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contract_sha256": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "const": 1
+    },
+    "execution_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "baseline_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "proposal": {
+      "type": "object"
+    }
+  }
+}

@@ -239,7 +239,7 @@ func renderSystemMessage(body, event, additionalContext string) ([]byte, error) 
 			}
 			context += additionalContext
 		}
-		return json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": event, "additionalContext": boundedContext(context)}})
+		return json.Marshal(map[string]any{"systemMessage": compactNotice(body), "hookSpecificOutput": map[string]any{"hookEventName": event, "additionalContext": boundedContext(context)}})
 	case "Stop", "SubagentStop", "TeammateIdle":
 		return json.Marshal(map[string]any{"systemMessage": body})
 	default:

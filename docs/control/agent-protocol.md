@@ -225,7 +225,7 @@ These hold across every stage:
 - **actions**:
   1. draft or update `docs/architecture/ARCHITECTURE-<id>.md` (system track)
   2. if UI impact = `changed`: read the **cold-start handoff packet only** — `docs/design/DESIGN.md` §0 Next-agent card + current `SUR-*` diff (or `Foundation: local` packet when investment tier is `local`) — budgeted together ≤120 lines / ≤12 KB; open `design-language.md` only if the card cannot answer Must not. Do not treat a construction hex or library Primary as the brand; after F6 only `semantic_token_only` values via `tokens.css` are legal. Write `docs/design/derivation/REQ-{id}.md` from `docs/design/derivation/DERIVATION-template.md` as a **referenced-ID consumption list** (active `LAW/ANTI/INV` by ID → opening `GR-*`, `Must not` by source ID, `Bindings` by `ROLE/PATTERN`/component, `Proof` by `PROOF-*` with resolvable path) before expanding the module package; `local` uses `Foundation: local` and stays module-local. If any required ID, version (`DESIGN.md@version`, `SUR-*@version`), or Proof path cannot be resolved, stop at semantic fix — do not invent a skin. Then run the dual-track convergence per `skills: specification-planning` — user track first lands `stories.md`; convergence-1 fills the hand-written `cross-matrix.json` carrier (fact×FR×story cells: covering branch or no-branch reason) and produces `scenario-model.json` + `fixture-contract.json`; convergence-2 lands `flows.md`, page HTML, and `index.html`. One macro composition and one stress state must exist before the remaining pages. The current implementation IS the baseline; no separate capture is required. Derivation Note is a semantic duty, not a PTR-PLAN-01 predicate. Foundation does not replace the architecture track. Still do not add aesthetics predicates to `done_when`.
-  3. at close: run `go run ./cmd/loop-harness scenario generate --module <module> --root .` then `scenario validate --module <module> --root .` — validate runs the full AC↔CASE bridge
+  3. at close: run `.claude/bin/loop-harness scenario generate --module <module> --root .` then `scenario validate --module <module> --root .` — validate runs the full AC↔CASE bridge
   4. flip the architecture document's top `status` field to `locked` (PTR-PLAN-01 registers only locked `ARCHITECTURE-*.md`; leaving it as draft fails the gate with `document:design:locked`), then register the JSON evidence envelope described in the `specification-planning` SKILL's "Planning Evidence Envelopes" section (kind=`planning_design`, responsibility=`Architect`—the main session itself; missing evidence fails with `evidence:planning_design_record`, and an invalid envelope fails with `evidence:<id>:schema`)
   5. record decisions that the contracts will need (state, data, integration, migration)
 - **done_when**:
@@ -248,7 +248,7 @@ These hold across every stage:
   2. converge the shared model and `SYNC-<id>.md` for the affected slice, then derive `FE-<id>.md` and `BE-<id>.md`; follow [shared-model contracts](../rules/shared-model-contracts.md)
   3. ensure contracts jointly cover every REQ acceptance criterion
   4. add bottom-up references and a coverage matrix
-  5. on finalization follow `skills: specification-planning` step 10 exactly: include shared model inputs in the review baseline, flip each contract's top status line (the template's `status` line) to `locked`, then run `go run ./cmd/loop-harness contracts check --root .` (the single detailed home for the machine-checked close; PTR-PLAN-02 registers only locked contracts), and register the JSON planning envelope (kind=`planning_contract`, responsibility=`Contract Planner`—see the SKILL's "Planning Evidence Envelopes" section; the gate also requires this evidence, missing `evidence:planning_contract_record`)
+  5. on finalization follow `skills: specification-planning` step 10 exactly: include shared model inputs in the review baseline, flip each contract's top status line (the template's `status` line) to `locked`, then run `.claude/bin/loop-harness contracts check --root .` (the single detailed home for the machine-checked close; PTR-PLAN-02 registers only locked contracts), and register the JSON planning envelope (kind=`planning_contract`, responsibility=`Contract Planner`—see the SKILL's "Planning Evidence Envelopes" section; the gate also requires this evidence, missing `evidence:planning_contract_record`)
 - **done_when**:
   - the contract set covers the entire REQ and declares the applicable shared-model policy; consumers reference the same native definitions
   - every contract has stability metadata (status, version, owner)
@@ -313,7 +313,7 @@ These hold across every stage:
 - **done_when** (what GATE-BUILDER-BATCH-READY actually computes, per TASK in the TR-003 registered batch):
   - one Builder Result registered via `runtime task-complete` (the single completion path — it atomically validates the completion message, derives the evidence envelope, advances Agent and TASK, and registers evidence in one Writer transaction; the committed revision is internal metadata);
   - the envelope's recorded checks are all `pass` and it declares no scope deviations;
-  - a durable worktree integration checkpoint has reached `verified` (Main runs explicit task-integrate: inspect → non-squash merge → checks → acknowledgement → cleanup);
+  - a durable worktree integration checkpoint has reached `verified` (explicit task-integrate: inspect → non-squash merge → checks run);
   - **no team manifest is required at this gate** — S7 planning starts from the real integrated diff at its own entry.
 - **next**: S7. Close every missing-token gap above (completion, checks, deviations, integration checkpoints); the next `PreToolUse` lets the Controller evaluate the build gate and auto-commit `TR-006` when satisfied.
 
@@ -346,15 +346,41 @@ Before dispatch, commit required stage inputs to the REQ-bound development branc
 
 The command records coordinates and the base commit. Uncommitted/staged inputs are absent from a new Git worktree. Native Claude Code isolation uses Git worktrees too; do not assume its default base ref matches this REQ. Preserve and reuse the assigned checkout on retry. Worktrees are temporary; only results received by the authority branch count as delivered.
 
+For the registered execution interface, see [workspace integration](../workspace-integration.md).
+
 ### Integration contract
 
 `SubagentStop` does not merge, acknowledge or remove a checkout. Main receives advisory worktree reminders through supported Agent context events. An asynchronous Agent launch is not completion.
 
-After the worker commits and registers its Builder Result via `runtime task-complete`, Main runs:
+The Hook only returns the pending action; Main runs the integration explicitly outside the Hook deadline:
 
 ```bash
 .claude/bin/loop-harness runtime task-integrate --root <authority-root> --assignment-id <id>
 ```
+
+It drives Inspect → non-squash merge → required checks → verified checkpoint → durable acknowledgment → cleanup (preserve on failure) and is an allowed manual invocation. Preconditions: the assignment's worktree coordinates are registered and the Builder Result is registered via `runtime task-complete`. An unknown assignment id fails with the list of currently known ids.
+
+### Integration retry and reporting
+
+The first integration call must report the durable checkpoint state accurately.
+`preserved` or `blocked` is not `merged`. Resolve the recorded cause before an
+explicit retry:
+
+```bash
+.claude/bin/loop-harness runtime task-integrate --assignment-id <id> --retry-preserved
+```
+
+Retry requires a matching existing checkpoint and unchanged assignment coordinates.
+It preserves the original merge-base scope denominator, verifies source ancestry,
+rechecks scope and required checks, then runs merge/verification via checkpoint CAS.
+An externally merged source is acceptable only through this checked recovery path;
+never add an empty commit to make the branch appear unmerged. The command records
+acknowledgment before cleanup; if interrupted, repeat it to resume durable progress.
+
+Unstaged updates to named Harness runtime projections are excluded from the
+integration dirty-tree check. Product/config/Skill changes, staged changes, deletes
+and renames still block. Do not commit Runtime repeatedly merely to satisfy this
+check. Never force `verified` by editing a checkpoint.
 
 This performs inspection, a normal merge commit into the declared development branch, required checks, acknowledgement and cleanup. Failed checks, conflicts or dirty trees preserve the results for explicit retry. It never switches the root branch or performs release. Unknown ownership and outstanding checkouts produce advisory reminders; they do not add a tool denial or Stop continuation barrier.
 
@@ -489,10 +515,10 @@ Use the dispatched `agent_id` for report identity. SubagentStop observes the chi
   - every Case routed to S9 has a supported CausalModel, blast radius, detection gap and approved RepairContract
   - no accepted repair is defined as a symptom-only patch; S9 consumes the approved RepairContract instead of re-deriving root cause
   - any canonical BUG emitted for compatibility references the approved RepairContract and is not an independent S8 authority
-- **next**: after intake (`runtime investigation ingest --grouping-rationale <why>`), register each falsifiable hypothesis with the Case ID, assignment, discriminator and source Finding refs; dispatch it with `runtime investigation dispatch --case-id <case> --hypothesis-id <hyp> --agent-id <agent>`, then submit the read-only result with `runtime investigation hypothesis result ...`. The Case Writer/API generates and validates the current Case object version/hash; do not read status to calculate or copy `--expected-case-revision`, and do not manually advance a Case version. The status board's top-level `next` is the executable next action and must be followed before routing. Once every source Finding is explained by supported results, record the route with `runtime investigation route --case-id <case> --route s9_repair --reason <...> --primary-root-cause <...> --causal-model-file <json> --blast-radius-file <json> --detection-gap-file <json>`, then approve the RepairContract with `runtime investigation contract approve --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`. The approval evidence binds the current Runtime/package context, draft hash, disposition and one-time decision ID; a JSON approval record carries `decision_id`, `runtime_id`, `case_id`, `contract_id`, `approval_hash` and `decision=approve_contract`, and the successful Writer transaction consumes it so it cannot be replayed. It does not include a Runtime revision suffix. `--expected-case-revision` / `--expected-case-sha256` remain optional explicit assertions for integrations or recovery, not normal Agent steps. The command advances the Runtime through `S8-REPAIR-CONTRACT-APPROVAL` to S9 and pins the Contract hash. If a legacy consumer needs a BUG-shaped view, run `runtime investigation project --bug-id <BUG-xxx>` only after approval; it validates the exact Finding set and never mutates the authority pointer. S9 consumes that contract. Specification correction routes to S2, REQ change pauses for the human Gateway, duplicate follows its canonical Case, evidence-backed no-change returns to a new complete S7 round, and `investigate_more` stays in S8. Do not ask S8 to reproduce a confirmed symptom by default.
+- **next**: after intake (`runtime investigation ingest --grouping-rationale <why>`), register each falsifiable hypothesis with the Case ID, assignment, discriminator and source Finding refs; dispatch it with `runtime investigation dispatch --case-id <case> --hypothesis-id <hyp> --agent-id <agent>`, then submit the read-only result with `runtime investigation hypothesis result ...`. The Case Writer/API generates and validates the current Case object version/hash; do not read status to calculate or copy `--expected-case-revision`, and do not manually advance a Case version. The status board's top-level `next` is the executable next action and must be followed before routing. Once every source Finding is explained by supported results, record the route with `runtime investigation route --case-id <case> --route s9_repair --reason <...> --primary-root-cause <...> --causal-model-file <json> --blast-radius-file <json> --detection-gap-file <json>`, then approve the RepairContract with `runtime investigation contract approve --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`. In the default human-approval path, the approval evidence binds the current Runtime/package context, draft hash, disposition and one-time decision ID; a JSON approval record carries `decision_id`, `runtime_id`, `case_id`, `contract_id`, `approval_hash` and `decision=approve_contract`, and the successful Writer transaction consumes it so it cannot be replayed. It does not include a Runtime revision suffix. `--expected-case-revision` / `--expected-case-sha256` remain optional explicit assertions for integrations or recovery, not normal Agent steps. The command advances the Runtime through `S8-REPAIR-CONTRACT-APPROVAL` to S9 and pins the Contract hash. If a legacy consumer needs a BUG-shaped view, run `runtime investigation project --bug-id <BUG-xxx>` only after approval; it validates the exact Finding set and never mutates the authority pointer. S9 consumes that contract. Specification correction routes to S2, REQ change pauses for the human Gateway, duplicate follows its canonical Case, evidence-backed no-change returns to a new complete S7 round, and `investigate_more` stays in S8. Do not ask S8 to reproduce a confirmed symptom by default.
 - S8 multi-value fields `--source-finding`, `--source-boundary`, `--evidence`, `--explains`, and `--does-not-explain` may be repeated or supplied as comma-separated values in one flag; the CLI preserves the complete set and the Case validator then checks exact-set membership and duplicates. `--causal-model-file`, `--blast-radius-file`, and `--detection-gap-file` are JSON-object authoring inputs; if a file is missing or is not valid JSON, the command identifies the specific flag/path. Create or fix the file and retry; do not misclassify this error as a missing Case root-cause field.
 - **failure_route**: an invalid or incomplete ObservationBatch returns to S7 for evidence completion; an unsupported root cause, unexplained Finding or incomplete contract stays in the same S8 Case; a duplicate follows its canonical Case; specification ambiguity routes to S2; REQ-level ambiguity surfaces `req_amendment`. A follow-up observation is allowed only when it is bound to a named discriminator and a safe evidence gap.
-- **human_gateway**: only `req_amendment`.
+- **human_gateway**: `req_amendment` and explicit RepairContract approval when neither a project policy pinned at REQ binding nor a valid bounded-repair grant applies. Under either authority, the Driver records a technical review and activates the exact contract via `--delegation-evidence-id`; see [bounded repair autonomy](../bounded-repair-autonomy.md). A technical review never impersonates a human decision.
 - **primary_skill**: `bug-resolution` plus `plan_checkpoint`; S8 Investigator is read-only against product/spec.
 
 `runtime investigation status` is S8's single recovery entry point: when a Case is `contract_approved` and has no unprocessed S9 targeted failure, `next` directly gives

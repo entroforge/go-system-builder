@@ -48,7 +48,7 @@ func TestNotReadyBuilderPacketCarriesTokenLegend(t *testing.T) {
 		"run `runtime task-integrate --assignment-id <id>`",
 	} {
 		if !strings.Contains(payload.Specific.Context, want) {
-			t.Fatalf("systemMessage missing %q:\n%s", want, payload.Specific.Context)
+			t.Fatalf("model context missing %q:\n%s", want, payload.Specific.Context)
 		}
 	}
 }

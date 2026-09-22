@@ -127,6 +127,8 @@ type Inspection struct {
 // snapshot and ExpectedRevision is the CAS key used to gate the checkpoint
 // persistence (see CheckpointStore.CompareAndSwap).
 type IntegrateRequest struct {
+	// RetryPreserved explicitly retries a failed checkpoint after a fresh inspection.
+	RetryPreserved   bool
 	Inspection       Inspection
 	ExpectedRevision int64
 	// Acknowledge, when true, advances the state machine from verified to
@@ -155,25 +157,29 @@ type Result struct {
 // merge-attempt identity (assignment_id + source_head + target_branch +
 // baseline_generation); CAS uses Revision as the optimistic lock.
 type Checkpoint struct {
-	VerifiedAt string `json:"verified_at,omitempty"` // Last successful checks; cleanup must not advance this time.
+	// PreviousMainRoots preserves receipt provenance across explicit Main relocation.
+	PreviousMainRoots []string `json:"previous_main_roots,omitempty"`
+	VerifiedAt        string   `json:"verified_at,omitempty"` // Last successful checks; cleanup must not advance this time.
 	// CompletionReportPath and CompletionReportSHA256 identify the exact
 	// Builder Result whose contents were covered by the successful checks.
 	// They are written only when the verified transition succeeds and are
 	// preserved unchanged by acknowledgement and cleanup.
-	CompletionReportPath   string `json:"completion_report_path,omitempty"`
-	CompletionReportSHA256 string `json:"completion_report_sha256,omitempty"`
-	AssignmentID           string `json:"assignment_id"`
-	TaskID                 string `json:"task_id,omitempty"`
-	SourceBranch           string `json:"source_branch,omitempty"`
-	SourceHead             string `json:"source_head,omitempty"`
-	TargetBranch           string `json:"target_branch,omitempty"`
-	TargetHead             string `json:"target_head,omitempty"`
-	MergeBase              string `json:"merge_base,omitempty"`
-	MergeCommit            string `json:"merge_commit,omitempty"`
-	BaselineGeneration     int    `json:"baseline_generation"`
-	State                  string `json:"state"`
-	Revision               int64  `json:"revision"`
-	IdempotencyKey         string `json:"idempotency_key,omitempty"`
+	CompletionReportPath   string   `json:"completion_report_path,omitempty"`
+	CompletionReportSHA256 string   `json:"completion_report_sha256,omitempty"`
+	AssignmentID           string   `json:"assignment_id"`
+	TaskID                 string   `json:"task_id,omitempty"`
+	SourceBranch           string   `json:"source_branch,omitempty"`
+	SourceHead             string   `json:"source_head,omitempty"`
+	TargetBranch           string   `json:"target_branch,omitempty"`
+	TargetHead             string   `json:"target_head,omitempty"`
+	MergeBase              string   `json:"merge_base,omitempty"`
+	MergeCommit            string   `json:"merge_commit,omitempty"`
+	BaselineGeneration     int      `json:"baseline_generation"`
+	State                  string   `json:"state"`
+	Revision               int64    `json:"revision"`
+	IdempotencyKey         string   `json:"idempotency_key,omitempty"`
+	CheckReceipts          []string `json:"check_receipts,omitempty"`
+	TestedHead             string   `json:"tested_head,omitempty"`
 	// WorktreePath is persisted so the loader's coordinate fallback chain
 	// can recover the worktree location from this durable record alone
 	// (L3-S6 §11.2 "worktree 元数据分裂" — the checkpoint previously never
@@ -238,3 +244,7 @@ var ErrScopeViolation = errors.New("worktree diff is outside the assignment writ
 // match ExpectedRevision. Callers should re-read the checkpoint and decide
 // whether to retry or surface a stale-merge error.
 var ErrCASStale = errors.New("checkpoint revision is stale")
+
+// Required checks must execute before verified; missing wiring is not a PASS.
+var ErrCheckRunnerMissing = errors.New("required checks configured without an executor")
+var ErrCheckFailed = errors.New("integration required check failed; worktree preserved")

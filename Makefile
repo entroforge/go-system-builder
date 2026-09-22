@@ -23,6 +23,8 @@ BUILD_DIR ?= dist/bin
 
 build-all:
 	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -o $(BUILD_DIR)/loop-harness-darwin-amd64 ./cmd/loop-harness
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -o $(BUILD_DIR)/loop-harness-linux-arm64 ./cmd/loop-harness
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 $(GO) build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/loop-harness-darwin-arm64      ./cmd/loop-harness
 	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/loop-harness-linux-amd64       ./cmd/loop-harness
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/loop-harness-windows-amd64.exe ./cmd/loop-harness

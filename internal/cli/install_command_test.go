@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,5 +96,50 @@ func TestS10ProjectionUsesInstalledCanonicalPaths(t *testing.T) {
 		if _, err := os.Stat(filepath.Join("../..", source)); err != nil {
 			t.Fatalf("S10 source target missing: %s: %v", source, err)
 		}
+	}
+}
+
+func TestReleaseManifestRejectsCorruptMissingAndExtraFiles(t *testing.T) {
+	for _, mode := range []string{"intact", "corrupt", "missing", "extra", "symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			p := filepath.Join(root, "asset.txt")
+			if err := os.WriteFile(p, []byte("asset"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			files, err := installInventory(root, packageManifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(map[string]any{"schema_version": 1, "files": files})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, packageManifest), data, 0644); err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "corrupt":
+				err = os.WriteFile(p, []byte("changed"), 0644)
+			case "missing":
+				err = os.Remove(p)
+			case "extra":
+				err = os.WriteFile(filepath.Join(root, "extra"), []byte("extra"), 0644)
+			case "symlink":
+				if err = os.Remove(p); err == nil {
+					err = os.Symlink(filepath.Join(root, packageManifest), p)
+				}
+				if err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = verifyInstallManifest(root)
+			if (mode == "intact") != (err == nil) {
+				t.Fatalf("%s validation: %v", mode, err)
+			}
+		})
 	}
 }

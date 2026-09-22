@@ -7,9 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // RequiredCheckRunner is the hook the Integrator uses to execute a single
@@ -23,9 +24,11 @@ type RequiredCheckRunner func(ctx context.Context, root, command string) error
 // production use; tests use it to inject a check runner and to skip the
 // completion-report check (which depends on a specific on-disk layout).
 type InspectConfig struct {
-	// CheckRunner runs the command list in RequiredChecks. If nil, the
-	// check step is recorded as "skip" so the contract's "default to none
-	// if not specified" semantic is honoured.
+	LockedArtifacts []string
+	// RecoveryBase retains the original scope denominator for an already merged branch.
+	RecoveryBase string
+	// CheckRunner runs RequiredChecks. A missing executor fails closed when
+	// checks are declared; an empty RequiredChecks list still means none.
 	CheckRunner RequiredCheckRunner
 	// RequiredChecks is the command list to execute. Empty means no
 	// checks required.
@@ -34,6 +37,10 @@ type InspectConfig struct {
 	// existence check. Tests use this to drive the merge-back path with
 	// only a clean tree.
 	SkipCompletionCheck bool
+	// ValidateDelivery validates an immutable domain candidate against the
+	// inspected source SHA. It replaces only the generic completion envelope;
+	// Git cleanliness, scope, locks, checks and merge preconditions still run.
+	ValidateDelivery func(context.Context, Inspection) error
 }
 
 // Inspect validates every precondition for SubagentStop merge-back per
@@ -91,8 +98,12 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	//    Inspect only confirms the file is present and parseable so a
 	//    missing report is surfaced as an integration blocker, not as a
 	//    generic controller failure.
-	if !cfg.SkipCompletionCheck {
-		reportPath := completionReportPath(req.Root, req.Assignment.AssignmentID, req.RuntimeID, req.Assignment.CompletionRef)
+	if !cfg.SkipCompletionCheck && cfg.ValidateDelivery == nil {
+		reportPath := completionReportPath(req.Root, req.Assignment.AssignmentID, req.RuntimeID, req.Assignment.CompletionRef, req.BaselineGeneration)
+		if reportPath == "" {
+			addBlocker("completion report missing: provide an explicit CompletionRef or valid current Runtime, generation and assignment identity")
+			return out, nil
+		}
 		data, err := os.ReadFile(reportPath)
 		if err != nil {
 			addBlocker(fmt.Sprintf("completion report missing at %s: %v", reportPath, err))
@@ -133,6 +144,12 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 		return out, nil
 	}
 	out.SourceHead = sourceHead
+	if cfg.ValidateDelivery != nil {
+		if err := cfg.ValidateDelivery(ctx, out); err != nil {
+			addBlocker(err.Error())
+			return out, nil
+		}
+	}
 
 	// 4. Target branch exists.
 	targetRepo := req.Root
@@ -154,6 +171,16 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	if err != nil {
 		addBlocker(fmt.Sprintf("merge base: %v", err))
 		return out, nil
+	}
+	if cfg.RecoveryBase != "" {
+		// Both tips must descend from the frozen pre-merge base. Never
+		// compute an empty diff from the now-merged branch's current base.
+		for _, tip := range []string{sourceHead, targetHead} {
+			if _, err := defaultRunner.Run(ctx, targetRepo, "merge-base", "--is-ancestor", cfg.RecoveryBase, tip); err != nil {
+				return out, fmt.Errorf("recovery base is not an ancestor of %s", tip)
+			}
+		}
+		base = cfg.RecoveryBase
 	}
 	out.MergeBase = base
 	count, err := countCommitsBetween(ctx, targetRepo, base, sourceHead)
@@ -212,13 +239,14 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	}
 
 	// 8. Required checks.
-	if len(cfg.RequiredChecks) > 0 {
+	commands, _ := splitRequiredChecks(cfg.RequiredChecks)
+	if len(commands) > 0 {
 		// Pre-merge checks must run in the delivered worker checkout. Running
 		// them against the authority root here can pass or fail on files that
 		// are not part of the candidate; Integrate repeats the same commands
 		// against gitRoot after the merge before recording verified.
 		checkRoot := req.Assignment.WorktreePath
-		for _, command := range cfg.RequiredChecks {
+		for _, command := range commands {
 			res := CheckResult{Command: command}
 			if cfg.CheckRunner != nil {
 				if err := cfg.CheckRunner(ctx, checkRoot, command); err != nil {
@@ -228,7 +256,8 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 					res.Status = "pass"
 				}
 			} else {
-				res.Status = "skip"
+				res.Status = "fail"
+				res.Output = ErrCheckRunnerMissing.Error()
 			}
 			out.RequiredChecks = append(out.RequiredChecks, res)
 			if res.Status == "fail" {
@@ -276,90 +305,32 @@ func completionReportBinding(root, reportPath string, data []byte) (string, stri
 	return filepath.ToSlash(filepath.Clean(rel)), fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
-// completionReportPath returns the location of the completion report for
-// an assignment. Preferred order:
-//
-//  1. Explicit CompletionRef on the assignment (when the file exists)
-//  2. `.claude/evidence/<runtimeID>/g*/assignments/<id>/completion.json`
-//  3. Legacy loop-REQ-039 paths
-//  4. Broad scan under `.claude/evidence/*/g*/assignments/<id>/`
-//
-// Because the generator (BUG-04) writes the report at assignment creation
-// time using the same layout, Inspect just looks up the path. The runtime
-// id is best-effort — Inspect does not fail when it is missing because
-// the contract §4.1 only requires the file's existence.
-func completionReportPath(root, assignmentID, runtimeID, completionRef string) string {
+// completionReportPath never substitutes another report for an explicit binding.
+// Without a binding, only the current runtime/generation's canonical assignment
+// location is eligible. Unknown identity requires explicit recovery, not a scan.
+func completionReportPath(root, assignmentID, runtimeID, completionRef string, generation int) string {
 	if completionRef != "" {
-		path := completionRef
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(root, path)
+		if filepath.IsAbs(completionRef) {
+			return completionRef
 		}
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
+		return filepath.Join(root, completionRef)
 	}
-	var candidates []string
-	if runtimeID != "" {
-		candidates = append(candidates,
-			filepath.Join(root, ".claude", "evidence", runtimeID, "g1", "assignments", assignmentID, "completion.json"),
-			filepath.Join(root, ".claude", "evidence", runtimeID, "assignments", assignmentID, "completion.json"),
-		)
-	}
-	candidates = append(candidates,
-		filepath.Join(root, ".claude", "evidence", "loop-REQ-039", "g1", "assignments", assignmentID, "completion.json"),
-		filepath.Join(root, ".claude", "evidence", "loop-REQ-039", "assignments", assignmentID, "completion.json"),
-		filepath.Join(root, ".claude", "evidence", "assignments", assignmentID, "completion.json"),
-	)
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	if found := scanCompletionReport(root, assignmentID); found != "" {
-		return found
-	}
-	if len(candidates) > 0 {
-		return candidates[0]
-	}
-	return filepath.Join(root, ".claude", "evidence", "loop-REQ-039", "g1", "assignments", assignmentID, "completion.json")
-}
-
-func scanCompletionReport(root, assignmentID string) string {
-	evidenceRoot := filepath.Join(root, ".claude", "evidence")
-	runtimeEntries, err := os.ReadDir(evidenceRoot)
-	if err != nil {
+	if runtimeID == "" || generation <= 0 || assignmentID == "" {
 		return ""
 	}
-	for _, runtimeEntry := range runtimeEntries {
-		if !runtimeEntry.IsDir() {
-			continue
-		}
-		runtimeDir := filepath.Join(evidenceRoot, runtimeEntry.Name())
-		genEntries, err := os.ReadDir(runtimeDir)
-		if err != nil {
-			continue
-		}
-		for _, genEntry := range genEntries {
-			if !genEntry.IsDir() {
-				continue
-			}
-			path := filepath.Join(runtimeDir, genEntry.Name(), "assignments", assignmentID, "completion.json")
-			if _, err := os.Stat(path); err == nil {
-				return path
-			}
-		}
-		path := filepath.Join(runtimeDir, "assignments", assignmentID, "completion.json")
-		if _, err := os.Stat(path); err == nil {
-			return path
+	for _, id := range []string{runtimeID, assignmentID} {
+		if id == "." || id == ".." || strings.ContainsAny(id, "/\\") {
+			return ""
 		}
 	}
-	return ""
+	return filepath.Join(root, ".claude", "evidence", runtimeID, fmt.Sprintf("g%d", generation), "assignments", assignmentID, "completion.json")
 }
 
 // lockedArtifacts combines authoritative paths with legacy explicit hints.
 // Assignment WritePaths grants scope; it never grants permission to edit locks.
 func lockedArtifacts(cfg InspectConfig, req InspectRequest) []string {
 	locked := append([]string(nil), req.LockedPaths...)
+	locked = append(locked, cfg.LockedArtifacts...)
 	for _, hint := range cfg.RequiredChecks {
 		if strings.HasPrefix(hint, "locked:") {
 			locked = append(locked, strings.TrimPrefix(hint, "locked:"))
@@ -413,105 +384,11 @@ func pathMatchesAnyPattern(file string, patterns []string) bool {
 	return false
 }
 
-// pathMatchesPattern reports whether a slash-separated repo-relative file
-// path matches one write-path pattern. A pattern ending in "/**" (or a
-// bare directory without wildcards) covers the whole subtree.
-func pathMatchesPattern(file, pattern string) bool {
-	file = strings.Trim(file, "/")
-	pattern = strings.Trim(pattern, "/")
-	if file == "" || pattern == "" {
-		return false
-	}
-	if pattern == "**" {
-		return true
-	}
-	fileParts := strings.Split(file, "/")
-	patternParts := strings.Split(pattern, "/")
-	// A directory-only pattern (no extension and no wildcard in the last
-	// segment) is a prefix match: "internal/order" covers
-	// internal/order/anything.go.
-	if !strings.Contains(patternParts[len(patternParts)-1], "*") &&
-		!strings.Contains(patternParts[len(patternParts)-1], ".") {
-		return pathUnderDirectory(fileParts, patternParts)
-	}
-	return segmentsMatch(fileParts, 0, patternParts, 0)
-}
-
-func pathUnderDirectory(fileParts []string, dirParts []string) bool {
-	if len(fileParts) <= len(dirParts) {
-		return false
-	}
-	for i, part := range dirParts {
-		if !segmentGlob(part, fileParts[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-// segmentsMatch implements `**` (any number of segments) and `*`
-// (within one segment) glob matching over slash-split paths.
-func segmentsMatch(file []string, fi int, pattern []string, pi int) bool {
-	if pi == len(pattern) {
-		return fi == len(file)
-	}
-	if pattern[pi] == "**" {
-		for skip := fi; skip <= len(file); skip++ {
-			if segmentsMatch(file, skip, pattern, pi+1) {
-				return true
-			}
-		}
-		return false
-	}
-	if fi == len(file) {
-		return false
-	}
-	if !segmentGlob(pattern[pi], file[fi]) {
-		return false
-	}
-	return segmentsMatch(file, fi+1, pattern, pi+1)
-}
-
-// segmentGlob matches one path segment with `*` wildcards.
-func segmentGlob(pattern, segment string) bool {
-	if !strings.Contains(pattern, "*") {
-		return pattern == segment
-	}
-	parts := strings.Split(pattern, "*")
-	if len(parts) == 1 {
-		return pattern == segment
-	}
-	if !strings.HasPrefix(segment, parts[0]) || !strings.HasSuffix(segment, parts[len(parts)-1]) {
-		return false
-	}
-	rest := segment
-	if len(parts[0]) > 0 {
-		rest = strings.TrimPrefix(rest, parts[0])
-	}
-	for _, part := range parts[1 : len(parts)-1] {
-		idx := strings.Index(rest, part)
-		if idx < 0 {
-			return false
-		}
-		rest = rest[idx+len(part):]
-	}
-	if tail := parts[len(parts)-1]; len(tail) > 0 {
-		return strings.HasSuffix(rest, tail) || strings.Contains(rest, tail)
-	}
-	return true
-}
+// Keep inspection and Hook scope decisions on the same glob semantics.
+func pathMatchesPattern(file, pattern string) bool { return workspace.PathMatchesScope(file, pattern) }
 
 // CommandCheckRunner executes one required-check command through the shell
 // in the repository root and fails on a non-zero exit. It is the default
 // runner the Controller wires into Inspect/Integrate so "Required Checks
 // verified" reflects real command executions (L3-S6 §11.2 "Integration
 // checks 未接线").
-func CommandCheckRunner(ctx context.Context, root, command string) error {
-	execCmd := exec.CommandContext(ctx, "sh", "-c", command)
-	execCmd.Dir = root
-	output, err := execCmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("check %q failed (%v): %s", command, err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}

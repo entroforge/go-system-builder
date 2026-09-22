@@ -70,7 +70,8 @@ func writeLoopState(t *testing.T, state map[string]any) string {
 
 // copyLoopDefinition copies docs/control/loop-definition.json from the project root
 // into a temp test sandbox so transition.LoadCatalog can resolve the
-// catalog. We only need the catalog; the rest of the test tree is synthetic.
+// catalog. Normal quality-cycle tests also need a valid safety policy: missing
+// authority is now a separate safety failure, not an implicit allow fixture.
 func copyLoopDefinition(t *testing.T, sourceRoot, destRoot string) error {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(sourceRoot, "docs", "control", "loop-definition.json"))
@@ -81,7 +82,14 @@ func copyLoopDefinition(t *testing.T, sourceRoot, destRoot string) error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dest, "loop-definition.json"), data, 0o644)
+	if err := os.WriteFile(filepath.Join(dest, "loop-definition.json"), data, 0o644); err != nil {
+		return err
+	}
+	policyData, err := os.ReadFile(filepath.Join(sourceRoot, "docs", "control", "hook-policy.json"))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dest, "hook-policy.json"), policyData, 0o644)
 }
 
 const projectRoot = "../../"
@@ -220,10 +228,12 @@ func TestRunControlCycleReportsSelectorConflict(t *testing.T) {
 	}
 
 	result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
-		Root:      dir,
-		Event:     "PreToolUse",
-		ToolName:  "Bash",
-		ToolInput: map[string]any{"command": "go test ./..."},
+		Root:  dir,
+		Event: "PreToolUse",
+		// Isolate candidate selection from S7's separate execution-authority
+		// gate; this fixture does not dispatch a verification assignment.
+		ToolName:  "Read",
+		ToolInput: map[string]any{"file_path": "docs/agent-protocol.md"},
 	})
 	if err != nil {
 		t.Fatal(err)

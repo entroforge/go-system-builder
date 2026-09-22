@@ -17,6 +17,7 @@ package transition
 import (
 	"crypto/sha256"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/docscope"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -258,13 +259,13 @@ func actionStartReviewRound(state map[string]any, ctx *ActionContext) (ActionRes
 		"baseline_generation": baselineGeneration(state),
 		"change_impact_ref":   nil,
 	}
-	if ctx.Spec.ID == "TR-012" {
+	if ctx.Spec.ID == "TR-012" || ctx.Spec.ID == "TR-016" || ctx.Spec.ID == "TR-031" {
 		changeImpactRef := ""
 		if ctx != nil && ctx.Evidence != nil {
 			changeImpactRef = strings.TrimSpace(ctx.Evidence["change_impact_record"])
 		}
 		if changeImpactRef == "" {
-			return ActionResult{Status: "failed", Detail: "TR-012 requires change_impact_record"}, fmt.Errorf("TR-012 requires a change_impact_record binding so the next S7 plan can freeze the post-repair baseline")
+			return ActionResult{Status: "failed", Detail: "TR-012 requires change_impact_record"}, fmt.Errorf("%s requires a change_impact_record binding so the next S7 plan can freeze its baseline", ctx.Spec.ID)
 		}
 		roundEntry["change_impact_ref"] = changeImpactRef
 	}
@@ -494,9 +495,33 @@ func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (Act
 	if len(ctx.Evidence) == 0 {
 		return ActionResult{Status: "failed", Detail: "execution batch evidence missing"}, fmt.Errorf("register_execution_batch: current evidence missing")
 	}
-	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, projectlayout.Tasks, []string{"TASK-"}, "task", "complete")
-	if err != nil {
-		return ActionResult{Status: "failed", Detail: err.Error()}, err
+	root := actionRoot(state, ctx)
+	var files fileview.Reader = fileview.Disk{Root: root}
+	if ctx.Request != nil && ctx.Request.Files != nil {
+		files = ctx.Request.Files
+	}
+	registered := 0
+	bound, _ := state["bound_req"].(map[string]any)
+	boundID, _ := bound["id"].(string)
+	reviewedBaseline, _ := state["baseline"].(map[string]any)
+	reviewedDocs, _ := state["documents"].([]any)
+	for _, raw := range reviewedDocs {
+		doc, _ := raw.(map[string]any)
+		if doc["kind"] != "task" || integerOf(doc["generation"]) != integerOf(reviewedBaseline["generation"]) {
+			continue
+		}
+		rel, _ := doc["path"].(string)
+		data, err := files.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			return ActionResult{Status: "failed"}, err
+		}
+		if !docscope.Belongs(data, boundID) {
+			return ActionResult{Status: "failed"}, fmt.Errorf("foreign TASK in registered batch: %s; repair batch scope before review", rel)
+		}
+		if SHA256(data) != doc["sha256"] || ParseMarkdownField(string(data), "状态", "Status") != "complete" {
+			return ActionResult{Status: "failed"}, fmt.Errorf("reviewed TASK changed: %s; repeat document verification", rel)
+		}
+		registered++
 	}
 	if registered == 0 {
 		return ActionResult{Status: "failed",
@@ -596,6 +621,11 @@ func registerDocumentsFromDisk(root string, state map[string]any, ctx *ActionCon
 		data, err := files.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return registered, fmt.Errorf("read %s: %w", rel, err)
+		}
+		bound, _ := state["bound_req"].(map[string]any)
+		boundID, _ := bound["id"].(string)
+		if !docscope.Belongs(data, boundID) {
+			continue
 		}
 		status := ParseMarkdownField(string(data), "状态", "Status")
 		if status == "" {

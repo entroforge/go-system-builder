@@ -54,6 +54,9 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	} else if !os.IsNotExist(err) {
 		return fail(err)
 	}
+	if err := verifyInstallManifest(source); err != nil {
+		return fail(err)
+	}
 	if err := releasegraph.ValidateStagedRelease(source); err != nil {
 		return fail(err)
 	}
@@ -71,6 +74,7 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 		{".claude/bin", ".claude/bin"}, {"AGENTS-template.md", "AGENTS.md"},
 		{"loop-template.md", ".claude/loop.md"}, {"settings.json", ".claude/settings.json"},
 		{"loop-harness.md", ".claude/bin/loop-harness.md"}, {"tools", "tools"},
+		{"project.gitattributes", ".gitattributes"},
 	}
 	for _, entry := range entries {
 		if err := copyInstallTree(filepath.Join(source, entry[0]), filepath.Join(stage, entry[1])); err != nil {
@@ -81,8 +85,16 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	if err := copyInstallTree(filepath.Join(stage, ".claude/bin", binary), filepath.Join(stage, ".claude/bin/loop-harness")); err != nil {
-		return fail(fmt.Errorf("unsupported or incomplete host binary %s: %w", binary, err))
+	if info, err := os.Stat(filepath.Join(stage, ".claude/bin", binary)); err != nil || !info.Mode().IsRegular() {
+		return fail(fmt.Errorf("unsupported or incomplete host binary %s", binary))
+	}
+	for _, launcher := range [][2]string{{"loop-harness-launcher.sh", "loop-harness"}, {"loop-harness-launcher.ps1", "loop-harness.ps1"}} {
+		if err := copyInstallTree(filepath.Join(source, "tools", launcher[0]), filepath.Join(stage, ".claude/bin", launcher[1])); err != nil {
+			return fail(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(stage, ".claude/bin/loop-harness"), 0755); err != nil {
+		return fail(err)
 	}
 	if err := copyInstallTree(filepath.Join(stage, "docs/project-map-template.md"), filepath.Join(stage, "docs/project-map.md")); err != nil {
 		return fail(err)
@@ -137,6 +149,9 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	if err := semantic.ValidateManualAgreement(stage); err != nil {
+		return fail(err)
+	}
+	if err := recordInstalledManifest(source, stage); err != nil {
 		return fail(err)
 	}
 	// Remove only an empty target; a concurrent writer makes this fail safely.

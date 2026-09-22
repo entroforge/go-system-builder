@@ -92,8 +92,9 @@ for event in events:
         raise SystemExit(f"platform smoke: {event} command does not target the same Harness event")
     for hook in commands:
         timeout = hook.get("timeout", 10)
-        if timeout > 10:
-            raise SystemExit(f"platform smoke: {event} timeout {timeout}s exceeds the 10s contract")
+        limit = 10
+        if timeout > limit or timeout <= 0:
+            raise SystemExit(f"platform smoke: {event} timeout {timeout}s outside 1..{limit}s")
 
 pretool = json.dumps(hooks.get("PreToolUse", []))
 if "mcp__.*" not in pretool:
@@ -148,7 +149,12 @@ if command -v "$claude_bin" >/dev/null 2>&1; then
     fi
     echo "SKIP Claude platform process: '$claude_bin' is not runnable (exit=$version_code): $version"
   else
-    echo "PASS Claude CLI detected: $version"
+    echo "PASS Claude CLI detected: $version (installation only, not workflow acceptance)"
+    detected_version="${version%% *}"
+    if [ "$detected_version" != "2.1.276" ]; then
+      echo "UNVERIFIED Claude version: $detected_version; reference is 2.1.276. Check docs/claude-platform-compatibility.md before deployment."
+      if [ "$require_platform" -eq 1 ]; then exit 78; fi
+    fi
     echo "ACCEPTANCE REQUIRED: in a disposable project, observe a real TeammateIdle/SubagentStop exit-2 continuation and record the Claude version."
   fi
 else

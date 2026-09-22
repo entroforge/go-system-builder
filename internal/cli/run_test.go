@@ -99,7 +99,7 @@ func TestRuntimeEvidenceAddCommand(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte("document pass\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte(`{"schema_version":"1.0.0","evidence_id":"EV-CLI-001","kind":"document_review","runtime_id":"loop-REQ-002-example","baseline_generation":1,"producer_agent_id":"document-verifier","producer_responsibility":"DV-TRUTH-AUDIT"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -569,6 +569,9 @@ func TestRuntimeRegisterWorkgroupCommandAnchorsAgainstRoot(t *testing.T) {
 		}
 	}
 	stateDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	canonicalState := filepath.Join(stateDir, "loop-state.json")
 	canonicalJournal := filepath.Join(stateDir, "loop-events.jsonl")
 
@@ -1215,8 +1218,8 @@ func TestHookCommandFailsWhenPolicyLoadMissing(t *testing.T) {
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-	if code == 0 {
-		t.Fatalf("expected non-zero exit when hook-policy.json is missing, got 0")
+	if code != 2 {
+		t.Fatalf("missing policy must block the platform with exit 2, got %d", code)
 	}
 	if !strings.Contains(stderr.String(), "load policy") {
 		t.Fatalf("expected load-policy error on stderr, got %s", stderr.String())

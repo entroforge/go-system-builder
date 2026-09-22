@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/filelock"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -215,13 +217,14 @@ type runtimeSemanticDefinition struct {
 }
 
 type Store struct {
-	statePath          string
-	journalPath        string
-	root               string
-	candidateValidator CandidateValidator
-	validatorInitErr   error
-	mutationCapable    bool
-	offlineRecovery    bool
+	statePath            string
+	journalPath          string
+	root                 string
+	candidateValidator   CandidateValidator
+	validatorInitErr     error
+	mutationCapable      bool
+	offlineRecovery      bool
+	relocationSourceHash string
 }
 
 // OfflineRecoveryCapability is an opaque opt-in for the recovery
@@ -1262,7 +1265,7 @@ func (s *Store) Reconcile() (bool, error) {
 		return false, nil
 	}
 	if inspection.TailSequence != targetSequence-1 {
-		return false, fmt.Errorf("reconcile journal tail sequence %d does not precede target sequence %d", inspection.TailSequence, targetSequence)
+		return false, fmt.Errorf("reconcile journal tail sequence %d does not precede target sequence %d; preserve the current state/journal pair, run `runtime recover inspect --root <root> --req <locked-REQ-path>` then `runtime recover plan` with the same arguments; do not retry reconcile or hand-edit journal sequences", inspection.TailSequence, targetSequence)
 	}
 	stateJournal, err := objectField(state, "journal")
 	if err != nil {
@@ -1275,7 +1278,7 @@ func (s *Store) Reconcile() (bool, error) {
 	if inspection.RuntimeID != "" {
 		runtimeID, _ := state["runtime_id"].(string)
 		if inspection.RuntimeID != runtimeID {
-			return false, fmt.Errorf("reconcile journal runtime_id %q does not match state runtime_id %q", inspection.RuntimeID, runtimeID)
+			return false, fmt.Errorf("reconcile journal runtime_id %q does not match state runtime_id %q; run `runtime recover inspect --root <root> --req <locked-REQ-path>` then `runtime recover plan` with the same arguments; apply only a reviewed recovery plan", inspection.RuntimeID, runtimeID)
 		}
 	}
 	if err := s.validateCandidate(state); err != nil {
@@ -1447,7 +1450,7 @@ func (s *Store) applyMutation(expectedRevision int, mutation Mutation) (Snapshot
 		return Snapshot{}, fmt.Errorf("inspect existing runtime journal before mutation: %w", err)
 	}
 	if err := validateStateJournalPair(state, existingJournal); err != nil {
-		return Snapshot{}, fmt.Errorf("inspect runtime journal cursor before mutation (state journal.last_sequence must match the journal tail; if this followed a crash run `runtime reconcile` to replay the pending transition, otherwise the journal was truncated or the state hand-edited and needs manual realignment): %w", err)
+		return Snapshot{}, fmt.Errorf("inspect runtime journal cursor before mutation (state journal.last_sequence must match the journal tail; use `runtime reconcile` only for a verified pending tail event; for missing/mismatched history run `runtime recover inspect --root <root> --req <locked-REQ-path>` then `runtime recover plan` with the same arguments; never manually realign state/journal): %w", err)
 	}
 	if _, exists := existingJournal.EventIndex[mutation.EventID]; exists {
 		return Snapshot{}, fmt.Errorf("mutation event_id %q already exists in runtime journal", mutation.EventID)
@@ -3007,15 +3010,6 @@ func writeDurableFile(path string, data []byte) error {
 	return syncDir(filepath.Dir(path))
 }
 
-func syncDir(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
-}
-
 type journalRotationPending struct {
 	SchemaVersion  string `json:"schema_version"`
 	ArchivedFile   string `json:"archived_file"`
@@ -3392,6 +3386,25 @@ func journalFileContains(path, eventID string) (bool, error) {
 }
 
 func acquireLock(path string, timeout time.Duration) (func(), error) {
+	// Fence current binaries with an OS-owned lock before the compatibility
+	// sentinel. A slow live writer can never be evicted by sentinel age.
+	// The sentinel remains for legacy lock diagnostics during uniform upgrades.
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	releaseProcess, err := filelock.Acquire(ctx, path+".process")
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	releaseLegacy, err := acquireLegacyLock(path, timeout-time.Since(started))
+	if err != nil {
+		releaseProcess()
+		return nil, err
+	}
+	return func() { releaseLegacy(); releaseProcess() }, nil
+}
+
+func acquireLegacyLock(path string, timeout time.Duration) (func(), error) {
 	deadline := time.Now().Add(timeout)
 	owner := strconv.Itoa(os.Getpid()) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	for {

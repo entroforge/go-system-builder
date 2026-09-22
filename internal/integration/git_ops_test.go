@@ -120,6 +120,13 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 			return f.computeMergeBase(args[1], args[2]), nil
 		}
 	case "rev-list":
+		if len(args) == 5 && args[1] == "--parents" && args[2] == "-n" && args[3] == "1" {
+			c, ok := f.commits[args[4]]
+			if !ok {
+				return "", fmt.Errorf("unknown merge commit %s", args[4])
+			}
+			return strings.Join(append([]string{args[4]}, c.parents...), " "), nil
+		}
 		if len(args) >= 3 && args[1] == "--count" {
 			rng := args[2]
 			parts := strings.SplitN(rng, "..", 2)
@@ -157,6 +164,11 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 		if len(args) >= 3 && args[1] == "--no-ff" {
 			source := args[len(args)-1]
 			head, ok := f.branchHeads[source]
+			if !ok {
+				if c, exists := f.commits[source]; exists {
+					head, ok = c.sha, true
+				}
+			}
 			if !ok || head == "" {
 				return "", fmt.Errorf("fakeRunner: merge source %s unknown", source)
 			}
@@ -168,6 +180,15 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 			return "", nil
 		}
 	case "worktree":
+		if len(args) >= 2 && args[1] == "list" {
+			var out string
+			for key := range f.worktrees {
+				if strings.HasPrefix(key, root+":") {
+					out += "worktree " + strings.TrimPrefix(key, root+":") + "\x00\x00"
+				}
+			}
+			return out, nil
+		}
 		if len(args) >= 3 && args[1] == "remove" {
 			path := args[2]
 			key := root + ":" + path

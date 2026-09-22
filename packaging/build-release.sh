@@ -66,12 +66,14 @@ build_harness() {
   local ext=""
   if [ "$goos" = "windows" ]; then ext=".exe"; fi
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    "$GO" build -trimpath -ldflags="-s -w" \
+    "$GO" build -trimpath -ldflags="-s -w -X github.com/entroforge/go-system-builder/internal/cli.BuildVersion=$version" \
       -o "$harness_bin_dir/loop-harness-${key}${ext}" \
       "$root/cmd/loop-harness"
 }
 
 build_harness darwin  arm64 darwin-arm64
+build_harness darwin  amd64 darwin-amd64
+build_harness linux   arm64 linux-arm64
 build_harness linux   amd64 linux-amd64
 build_harness windows amd64 windows-amd64
 
@@ -82,9 +84,9 @@ host_os="$(uname -s)"
 host_arch="$(uname -m)"
 case "${host_os}/${host_arch}" in
   Darwin/arm64|Darwin/aarch64)   host_bin="loop-harness-darwin-arm64" ;;
-
+  Darwin/x86_64|Darwin/amd64)    host_bin="loop-harness-darwin-amd64" ;;
   Linux/x86_64|Linux/amd64)      host_bin="loop-harness-linux-amd64" ;;
-
+  Linux/aarch64|Linux/arm64)     host_bin="loop-harness-linux-arm64" ;;
   MINGW*/x86_64|MINGW*/amd64)    host_bin="loop-harness-windows-amd64.exe" ;;
   MSYS*/x86_64|MSYS*/amd64)      host_bin="loop-harness-windows-amd64.exe" ;;
   CYGWIN*/x86_64|CYGWIN*/amd64)  host_bin="loop-harness-windows-amd64.exe" ;;
@@ -113,6 +115,7 @@ fi
 # Source and installed navigation have distinct audiences.
 cp "$stage_root/packaging/README.installed.md" "$stage_root/docs/README.md"
 cp "$stage_root/packaging/DOCUMENT-MAP.installed.md" "$stage_root/docs/DOCUMENT-MAP.md"
+mv "$stage_root/packaging/project.gitattributes" "$stage_root/project.gitattributes"
 rm -rf "$stage_root/packaging"
 cat > "$stage_root/INSTALL.md" <<'ENTRY'
 # Install the Loop Harness
@@ -127,8 +130,15 @@ cat > "$stage_root/prelude.md" <<'ENTRY'
 Read [the project onboarding guide](docs/guides/getting-started.md).
 ENTRY
 # Validate the actual packaged host binary and document closure, not a local substitute.
-cp "$harness_bin_dir/$host_bin" "$harness_bin_dir/loop-harness"
+cp "$stage_root/tools/loop-harness-launcher.sh" "$harness_bin_dir/loop-harness"
+cp "$stage_root/tools/loop-harness-launcher.ps1" "$harness_bin_dir/loop-harness.ps1"
+chmod 0755 "$harness_bin_dir/loop-harness"
 "$harness_bin_dir/loop-harness" release-graph validate --root "$stage_root" >/dev/null
+
+# Inventory exact staged bytes, including generated manual and each binary.
+# Verify the extracted package before installation; this is not a signature.
+python3 "$root/tools/release-manifest.py" create --root "$stage_root" --source "$root" --version "$version"
+python3 "$root/tools/release-manifest.py" verify --root "$stage_root"
 
 mkdir -p "$(dirname "$output")"
 rm -f "$output"

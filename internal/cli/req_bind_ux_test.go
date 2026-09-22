@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
 // newUXTestRoot prepares a repository root with definition/policy assets and
@@ -96,6 +97,23 @@ func TestREQBindAutoInitsAndDiscoversSoleLockedREQ(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, ".claude", "loop-state.json")); err != nil {
 		t.Fatalf("runtime not created: %v", err)
+	}
+}
+
+func TestREQBindUsesRawCRLFFingerprint(t *testing.T) {
+	body := "# REQ-098\r\n\r\n> 状态：locked\r\n> 版本：v1.0.0\r\n> UI impact：none\r\n"
+	root := newUXTestRoot(t, map[string]string{"REQ-098.md": body})
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run([]string{"req", "bind", "--root", root, "--dev-branch", "feature/req", "--release-upstream", "origin/main", "--approved-by", "ux-owner", "--json"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("CRLF req bind failed: code=%d stderr=%s", code, stderr.String())
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	bound, _ := state["bound_req"].(map[string]any)
+	if got, _ := bound["sha256"].(string); got != transition.REQSHA256([]byte(body)) {
+		t.Fatalf("bound SHA256 = %q, want raw-byte %q", got, transition.REQSHA256([]byte(body)))
 	}
 }
 

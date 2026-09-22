@@ -28,11 +28,11 @@ type PlanRequest struct {
 // allowed to use a lighter frozen-subject or regression-asset validation path.
 // Runtime-coordinate checks remain in RegisterPlan because the handoff builds
 // its next-round projection inside its own CAS transaction.
-func ValidatePlanArtifactForRegistration(root string, plan *Plan) error {
+func ValidatePlanArtifactForRegistration(root string, plan *Plan, state map[string]any) error {
 	if err := ValidatePlan(plan); err != nil {
 		return fmt.Errorf("ReviewPlan coverage: %w", err)
 	}
-	if err := verifyFrozenSubjects(root, plan); err != nil {
+	if err := verifyFrozenSubjects(root, plan, state); err != nil {
 		return fmt.Errorf("ReviewPlan frozen subject baseline: %w", err)
 	}
 	if err := verifyRegressionAssetFingerprints(root, plan); err != nil {
@@ -65,10 +65,6 @@ func RegisterPlan(
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode ReviewPlan: %w", err)
 	}
-	if err := ValidatePlanArtifactForRegistration(root, &plan); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-
 	stateData, err := os.ReadFile(statePath)
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
@@ -76,6 +72,9 @@ func RegisterPlan(
 	var current map[string]any
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
+	}
+	if err := ValidatePlanArtifactForRegistration(root, &plan, current); err != nil {
+		return loopruntime.Snapshot{}, err
 	}
 	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
 		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision

@@ -8,6 +8,7 @@ package req039_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,6 +220,9 @@ func TestFinalAuditConcurrentIntegrateSerializesAndReuses(t *testing.T) {
 	}
 	wg.Wait()
 	for i, outcome := range outcomes {
+		if errors.Is(outcome.err, integration.ErrIntegrationBusy) {
+			outcome.result, outcome.err = integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, cfg)
+		}
 		if outcome.err != nil || outcome.result.Checkpoint.State != integration.StateComplete {
 			t.Fatalf("concurrent integration %d did not serialize to complete: state=%s err=%v", i, outcome.result.Checkpoint.State, outcome.err)
 		}

@@ -9,16 +9,34 @@ import (
 	"strings"
 )
 
-// worktreeClean returns nil iff `git -C root status --porcelain` produces
-// empty output. The porcelain output is un-tracked AND modified files; an
-// empty result means the worktree is exactly what HEAD references.
+// worktreeClean excludes only unstaged writes to named Harness-owned runtime
+// projections. Tracked product/config/skill changes, staged changes, deletions
+// and renames still block. Untracked files retain the existing policy.
 func worktreeClean(ctx context.Context, root string) (bool, error) {
-	// New files are also uncommitted work; never delete or certify them silently.
-	out, err := defaultRunner.Run(ctx, root, "status", "--porcelain", "--untracked-files=all")
+	out, err := defaultRunner.Run(ctx, root, "status", "--porcelain", "-z", "--untracked-files=all")
 	if err != nil {
 		return false, fmt.Errorf("git status: %w", err)
 	}
-	return strings.TrimSpace(out) == "", nil
+	for _, entry := range strings.Split(out, "\x00") {
+		if entry == "" {
+			continue
+		}
+		if len(entry) < 4 || (entry[:2] != " M" && entry[:2] != "??") || !runtimeProjection(entry[3:]) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+func runtimeProjection(path string) bool {
+	switch path {
+	case ".claude/integration.lock", ".claude/loop-state.json", ".claude/loop-events.jsonl", ".claude/loop-metrics.json", ".claude/hook-decisions.jsonl":
+		return true
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == ".claude" && parts[1] == "hook-metrics" && strings.HasPrefix(parts[2], ".pending-") && strings.HasSuffix(parts[2], ".json") {
+		return true
+	}
+	return len(parts) == 7 && parts[0] == ".claude" && parts[1] == "evidence" && strings.HasPrefix(parts[2], "loop-") && strings.HasPrefix(parts[3], "g") && parts[4] == "worktree" && parts[5] != "" && parts[6] == "checkpoint.json"
 }
 
 // branchExists returns true if `git -C root show-ref --verify` exits
@@ -240,7 +258,7 @@ func checkoutBranch(ctx context.Context, root, branch string) error {
 // checkpoint.
 func RunCheck(ctx context.Context, root, command string, run func(ctx context.Context, root, command string) error) (CheckResult, error) {
 	if run == nil {
-		return CheckResult{Command: command, Status: "skip"}, nil
+		return CheckResult{Command: command, Status: "fail", Output: ErrCheckRunnerMissing.Error()}, ErrCheckRunnerMissing
 	}
 	if err := run(ctx, root, command); err != nil {
 		return CheckResult{Command: command, Status: "fail", Output: err.Error()}, nil

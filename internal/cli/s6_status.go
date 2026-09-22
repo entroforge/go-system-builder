@@ -33,7 +33,7 @@ func runS6Command(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	capacity := flags.Int("capacity", 0, "actual total concurrent slots; omit to inspect without selecting a batch")
 	asJSON := flags.Bool("json", false, "machine-readable dispatch projection")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if *capacity < 0 {

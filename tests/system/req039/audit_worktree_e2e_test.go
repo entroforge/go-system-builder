@@ -121,7 +121,12 @@ func runAuditGit(t *testing.T, dir string, args ...string) string {
 
 func auditIntegrateComplete(t *testing.T, r *auditGitRepo, insp integration.Inspection, cfg integration.IntegrateConfig) integration.Checkpoint {
 	t.Helper()
-	first, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, cfg)
+	prior, found, loadErr := integration.DefaultCheckpointStore().Load(integration.CheckpointPath(cfg.Root, cfg.RuntimeID, insp.BaselineGeneration, insp.AssignmentID))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	retry := found && (prior.State == integration.StatePreserved || prior.State == integration.StateBlocked)
+	first, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, RetryPreserved: retry}, cfg)
 	if err != nil || first.Checkpoint.State != integration.StateVerified {
 		t.Fatalf("first integration: state=%s err=%v checkpoint=%+v", first.Checkpoint.State, err, first.Checkpoint)
 	}
@@ -268,7 +273,7 @@ func TestL4AuditCheckFailureRetry(t *testing.T) {
 	}
 	mergeCommit := first.Checkpoint.MergeCommit
 	rootHead := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
-	second, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, cfg)
+	second, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true, RetryPreserved: true}, cfg)
 	if err != nil || second.Checkpoint.State != integration.StateComplete {
 		t.Fatalf("check retry did not complete: state=%s err=%v", second.Checkpoint.State, err)
 	}
@@ -300,10 +305,10 @@ func TestL4AuditCleanupRetryDoesNotReRunChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	failed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, cfg)
-	if !errors.Is(err, integration.ErrDirtyWorktree) || failed.Checkpoint.State != integration.StatePreserved {
+	if !errors.Is(err, integration.ErrCleanupPending) || failed.Checkpoint.State != integration.StateCleanupPending {
 		t.Fatalf("dirty cleanup must preserve: state=%s checks=%d err=%v", failed.Checkpoint.State, checks, err)
 	}
-	if failed.Checkpoint.ResumeState != integration.StateCleanupPending {
+	if failed.Checkpoint.State != integration.StateCleanupPending {
 		t.Fatalf("cleanup failure must retain resume stage cleanup_pending, got %q", failed.Checkpoint.ResumeState)
 	}
 	if failed.Checkpoint.MergeCommit != mergeCommit {
@@ -356,10 +361,10 @@ func TestL4AuditCleanupRetryRejectsWorkerHeadChange(t *testing.T) {
 	runAuditGit(t, r.worktree, "add", "new-delivery.txt")
 	runAuditGit(t, r.worktree, "commit", "-m", "new delivery after verify")
 	failed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, cfg)
-	if !errors.Is(err, integration.ErrDirtyWorktree) || failed.Checkpoint.State != integration.StatePreserved {
+	if !errors.Is(err, integration.ErrCleanupPending) || failed.Checkpoint.State != integration.StateCleanupPending {
 		t.Fatalf("new worker HEAD must preserve cleanup: state=%s checks=%d err=%v", failed.Checkpoint.State, checks, err)
 	}
-	if failed.Checkpoint.ResumeState != integration.StateCleanupPending {
+	if failed.Checkpoint.State != integration.StateCleanupPending {
 		t.Fatalf("new worker HEAD must retain cleanup_pending resume stage, got %q", failed.Checkpoint.ResumeState)
 	}
 	if checks != 1 {
@@ -377,14 +382,11 @@ func TestL4AuditAuthorityLockBlocksMutation(t *testing.T) {
 	r.commitFeature(t)
 	assignment := r.assignment("audit-lock")
 	insp := r.inspect(t, assignment)
-	lockDir := filepath.Join(r.root, ".claude", "integration")
-	if err := os.MkdirAll(lockDir, 0o755); err != nil {
-		t.Fatal(err)
+	_, release, lockErr := integration.LockWorkspace(context.Background(), r.root)
+	if lockErr != nil {
+		t.Fatal(lockErr)
 	}
-	lockPath := filepath.Join(lockDir, "authority.lock")
-	if err := os.WriteFile(lockPath, []byte("held by another integration\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	defer release()
 	before := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
 	res, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, r.cfg())
 	if err == nil {
@@ -399,9 +401,7 @@ func TestL4AuditAuthorityLockBlocksMutation(t *testing.T) {
 	if _, err := os.Stat(r.worktree); err != nil {
 		t.Fatalf("authority lock rejection must preserve worktree: %v", err)
 	}
-	if err := os.Remove(lockPath); err != nil {
-		t.Fatal(err)
-	}
+	release()
 	auditIntegrateComplete(t, r, insp, r.cfg())
 }
 
@@ -522,7 +522,7 @@ func TestL4AuditLostReceiptDoesNotAcceptUnrelatedMerge(t *testing.T) {
 		SourceHead:         sourceHead,
 		TargetBranch:       "develop",
 		TargetHead:         targetHead,
-		MergeBase:          targetHead,
+		MergeBase:          strings.TrimSpace(runGitIn(t, root, "merge-base", targetHead, sourceHead)),
 		BaselineGeneration: 1,
 		State:              integration.StateReady,
 		IdempotencyKey:     integration.IdempotencyKey(assignment.AssignmentID, sourceHead, "develop", 1),

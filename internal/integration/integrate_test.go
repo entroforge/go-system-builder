@@ -249,8 +249,8 @@ func TestIntegrateFailingCheckPreserves(t *testing.T) {
 	if res.Checkpoint.State != StatePreserved {
 		t.Fatalf("expected preserved, got %s", res.Checkpoint.State)
 	}
-	if res.Checkpoint.LastErrorCode != "LOOP_INTEGRATION_CONFLICT" {
-		t.Fatalf("expected LOOP_INTEGRATION_CONFLICT, got %s", res.Checkpoint.LastErrorCode)
+	if res.Checkpoint.LastErrorCode != "LOOP_INTEGRATION_CHECK_FAILED" {
+		t.Fatalf("expected LOOP_INTEGRATION_CHECK_FAILED, got %s", res.Checkpoint.LastErrorCode)
 	}
 }
 
@@ -487,8 +487,8 @@ func TestIntegrateRefusesForceDeleteOfDirtyWorktree(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when worktree is dirty at cleanup time, got nil")
 	}
-	if res.Checkpoint.State != StatePreserved {
-		t.Fatalf("expected preserved, got %s", res.Checkpoint.State)
+	if res.Checkpoint.State != StateCleanupPending {
+		t.Fatalf("expected cleanup_pending, got %s", res.Checkpoint.State)
 	}
 	if !f.fr.worktrees[f.root+":"+f.wt] {
 		t.Fatal("worktree must NOT be deleted when dirty")
@@ -570,6 +570,15 @@ func TestIntegrateRecordsDurationMetric(t *testing.T) {
 	}
 }
 
+func TestIntegrateMissingExecutorPreserves(t *testing.T) {
+	f := newIntegrationFixture(t)
+	defer f.cleanup()
+	result, err := Integrate(context.Background(), IntegrateRequest{Inspection: f.readyInspection()}, IntegrateConfig{Root: f.root, GitRoot: f.root, CheckpointDir: f.checkpointPath("assignment-test"), RuntimeID: "loop-REQ-039", RequiredChecks: []string{"must run"}})
+	if err == nil || result.Checkpoint.State != StatePreserved || result.Checkpoint.LastErrorCode != "LOOP_INTEGRATION_CHECK_FAILED" {
+		t.Fatalf("missing executor advanced: %#v %v", result, err)
+	}
+}
+
 func TestIntegrationPreservesChangesWrittenByChecksAndResumesWithoutRemerge(t *testing.T) {
 	f := newIntegrationFixture(t)
 	defer f.cleanup()
@@ -585,6 +594,7 @@ func TestIntegrationPreservesChangesWrittenByChecksAndResumesWithoutRemerge(t *t
 	}
 	f.fr.markClean(f.root)
 	cfg.CheckRunner = func(context.Context, string, string) error { return nil }
+	req.RetryPreserved = true
 	second, err := Integrate(context.Background(), req, cfg)
 	if err != nil || second.Checkpoint.State != StateComplete {
 		t.Fatalf("retry: %#v %v", second, err)

@@ -24,7 +24,7 @@ func runTasks(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	req := flags.String("req", "", "REQ ID for the planning batch")
 	asJSON := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	result, err := semantic.TasksCheckWithFiles(*root, fileview.Disk{Root: *root}, *req)

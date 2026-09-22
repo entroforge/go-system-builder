@@ -11,3 +11,4 @@
 - [L4-shared-model-contract-governance](L4-shared-model-contract-governance.md)
 - [L4-state-transition-core](L4-state-transition-core.md)
 - [L4-worktree-governance](L4-worktree-governance.md)
+- [L4-workspace-execution-profiles](L4-workspace-execution-profiles.md)

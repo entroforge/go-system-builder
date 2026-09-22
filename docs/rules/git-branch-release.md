@@ -15,6 +15,8 @@ scope: branches, merges, release workflow, master/main gates
 
 Daily work goes through `<dev_branch>`. Release from `<dev_branch>` to `<release_upstream>` uses squash merge. After release, merge `<release_upstream>` back into `<dev_branch>`.
 
+Main stays in the authority checkout. A mismatch with the REQ-bound branch must be resolved explicitly; never automatically switch branches. See [workspace integration](../workspace-integration.md).
+
 ## 2. Branch Model
 
 | Branch | Purpose | Protection |
@@ -36,6 +38,10 @@ REQ binding explicitly declares both destinations, including the remote for a re
 | production hotfix | `hotfix/<bug-id>-<topic>` | `<release_upstream>` | `<release_upstream>` + `<dev_branch>` |
 
 ## 4. Stage To Branch
+
+These are optional naming conventions for separately authorized branches, not
+instructions to switch Main at each stage. Registered Worker branches follow
+the workspace execution record; Main retains its bound checkout and branch.
 
 | Stage | Output | Branch |
 |:---|:---|:---|
@@ -105,24 +111,14 @@ awaiting_human_release
 Only an explicit human release approval may authorize squash merge to
 `<release_upstream>`.
 
-## 10. Command Sketch
+## 10. Human Release Handoff
 
-```bash
-git checkout <dev_branch>
-git pull origin <dev_branch>
-
-# platform performs squash merge: <dev_branch> -> <release_upstream>
-
-git checkout <dev_branch>
-git pull origin <dev_branch>
-git fetch origin
-git merge <release_upstream>
-git push origin <dev_branch>
-```
-
-For `main`, replace `master` with `main`.
-
-
+The handoff identifies the actual bound integration branch, tested commit,
+project release branch and release evidence. The human release owner performs
+release and post-release synchronization through the project’s approved process.
+Do not place automatic checkout, pull, squash or push commands in Main’s
+engineering continuation. A protected release target requires its own human
+release decision even when a Worker has passed integration checks.
 ## 临时 worktree 与阶段交付
 
 REQ 绑定必须显式提供 `--dev-branch <开发主分支>` 和 `--release-upstream <最终发布上游>`，远程发布目标包含 remote；没有 develop 默认值。项目根目录是当前 REQ 唯一权威。

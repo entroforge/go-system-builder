@@ -133,7 +133,7 @@ func runCaptureExecInner(args []string, stdin io.Reader, stdout, stderr io.Write
 	maxEvidenceBytes := flags.Int64("max-evidence-bytes", execEvidenceBytesDefault, "per-stream evidence file size cap; overflow is truncated and recorded")
 	maxArtifacts := flags.Int("max-artifacts", execMaxArtifactsDefault, "maximum produced/modified/deleted artifacts recorded per step")
 	artifactDepth := flags.Int("artifact-depth", execArtifactDepthDefault, "directory depth scanned under cwd for the artifact digest diff")
-	if err := flags.Parse(flagArgs); err != nil {
+	if err := parseWorkspaceFlags(flags, flagArgs); err != nil {
 		return 2
 	}
 	if *assignmentID == "" {

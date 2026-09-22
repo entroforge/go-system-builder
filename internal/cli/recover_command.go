@@ -178,7 +178,7 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 	rootFlag := flags.String("root", ".", "repository root")
 	planFlag := flags.String("plan", "", "approved recovery plan path")
 	approvedBy := flags.String("approved-by", "", "human recovery approver identity")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*planFlag) == "" || strings.TrimSpace(*approvedBy) == "" {
@@ -471,7 +471,7 @@ func runRuntimeRecoverPlan(args []string, stdout, stderr io.Writer) int {
 	reqPath := flags.String("req", "", "explicit locked REQ path")
 	dev := flags.String("dev-branch", "", "explicit REQ development branch")
 	upstream := flags.String("release-upstream", "", "explicit release destination")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*reqPath) == "" {
@@ -803,7 +803,7 @@ func runRuntimeRecoverInspect(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "runtime recover inspect")
 	root := flags.String("root", ".", "repository root")
 	reqPath := flags.String("req", "", "explicit locked REQ path")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*reqPath) == "" {

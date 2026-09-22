@@ -213,6 +213,7 @@ func ValidateAgents(root string) error {
 }
 
 func splitFrontmatter(content string) (map[string]string, string, error) {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
 	if !strings.HasPrefix(content, "---\n") {
 		return nil, "", fmt.Errorf("missing YAML frontmatter")
 	}

@@ -43,6 +43,10 @@ func mainStopDecisionForState(state map[string]any, input policy.Input) (policy.
 	if input.Event != "Stop" || input.StopHookActive || state == nil {
 		return policy.Decision{}, false
 	}
+	if decision, blocked := planningStopDecision(state); blocked {
+		return decision, true
+	}
+
 	review, ok := state["review"].(map[string]any)
 	if !ok {
 		return policy.Decision{}, false
@@ -121,4 +125,39 @@ func mainStopUnconsumedResult(id string) policy.Decision {
 func stringValue(value any) string {
 	valueString, _ := value.(string)
 	return valueString
+}
+
+// Only S3/S4 have no normal design sign-off. Other stages retain their
+// domain-specific stop rules; absence of a gateway is not proof of readiness.
+func planningStopDecision(state map[string]any) (policy.Decision, bool) {
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	phase := stringValue(lifecycle["phase"])
+	if stringValue(lifecycle["state"]) != "planning" || (phase != "contracts" && phase != "tasks") || state["pause"] != nil {
+		return policy.Decision{}, false
+	}
+	req, _ := state["bound_req"].(map[string]any)
+	if stringValue(req["id"]) == "" || stringValue(req["status"]) != "locked" {
+		return policy.Decision{}, false
+	}
+	milestone, _ := state["milestone"].(map[string]any)
+	human, known := milestone["human_required"].(bool)
+	blocked, knownBlocked := milestone["blocked"].(bool)
+	if !known || !knownBlocked || human || blocked || stringValue(milestone["lifecycle_phase"]) != phase {
+		return policy.Decision{}, false
+	}
+	if blockers, ok := state["blockers"].([]any); ok && len(blockers) > 0 {
+		return policy.Decision{}, false
+	}
+	entities, _ := state["entities"].(map[string]any)
+	// Do not turn a delegated assignment into main-session self-execution.
+	if agents, ok := entities["agents"].([]any); ok && len(agents) > 0 {
+		return policy.Decision{}, false
+	}
+	const rule = "main_stop_planning_continuation"
+	return policy.Decision{
+		Decision: "deny", RuleID: rule, MatchedRuleIDs: []string{rule},
+		Reason:   "Current planning stage still has work. Stage handoff or workload size does not require another user approval.",
+		Recovery: []string{"Continue DRIVE at the current S3/S4 contract; produce the next deliverable and evidence, without calling status/next or forcing a transition.", "If the user explicitly requested a stop, or an actual approval/external wait is required, explain that fact and end. This is one bounded reminder: stop_hook_active allows the next Stop, including repeated failure or no progress."},
+		Retry:    policy.RetryAfterRecoveryValidation,
+	}, true
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,9 +25,9 @@ func New(root string) Worktrees {
 	s := Worktrees{root: root, excluded: []string{filepath.Join(root, ".worktrees"), filepath.Join(root, ".claude", "worktrees")}}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", root, "worktree", "list", "--porcelain", "-z").Output()
+	fields, err := WorktreeFields(ctx, root)
 	if err == nil {
-		for _, field := range strings.Split(string(out), "\x00") {
+		for _, field := range fields {
 			if strings.HasPrefix(field, "worktree ") {
 				p := canonical(strings.TrimPrefix(field, "worktree "))
 				if p != root && !Within(p, root) {
@@ -97,4 +98,31 @@ func WalkDir(root, start string, visit fs.WalkDirFunc) error {
 		}
 		return visit(path, entry, err)
 	})
+}
+
+// WorktreeFields supports Git versions predating worktree list -z, decoding
+// porcelain quoting instead of treating spaces or newlines as path separators.
+func WorktreeFields(ctx context.Context, root string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", root, "worktree", "list", "--porcelain", "-z").Output()
+	if err == nil {
+		return strings.Split(string(out), "\x00"), nil
+	}
+	out, err = exec.CommandContext(ctx, "git", "-C", root, "-c", "core.quotePath=true", "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Split(string(out), "\n")
+	for i, field := range fields {
+		if strings.HasPrefix(field, "worktree ") {
+			name := strings.TrimPrefix(field, "worktree ")
+			if strings.HasPrefix(name, "\"") {
+				decoded, err := strconv.Unquote(name)
+				if err != nil {
+					return nil, err
+				}
+				fields[i] = "worktree " + decoded
+			}
+		}
+	}
+	return fields, nil
 }

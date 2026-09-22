@@ -46,6 +46,7 @@ func TestInspectRecordsCompletionReportBinding(t *testing.T) {
 	relPath, wantSHA := writeBoundCompletionReport(t, f.root, `{"message_type":"completion_report","status":"completed"}`)
 	insp, err := Inspect(context.Background(), InspectRequest{
 		Root:               f.root,
+		RuntimeID:          "loop-REQ-039",
 		Assignment:         assignmentContext(f.wt, "feature", "develop"),
 		TargetBranch:       "develop",
 		BaselineGeneration: 1,

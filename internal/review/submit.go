@@ -158,7 +158,7 @@ func submitResult(
 			return loopruntime.Snapshot{}, err
 		}
 	}
-	if err := verifyFrozenSubjects(root, plan); err != nil {
+	if err := verifyFrozenSubjects(root, plan, current); err != nil {
 		return staleReviewPlanAfterDrift(root, statePath, journalPath, current, fmt.Errorf("ReviewPlan frozen subject baseline: %w", err))
 	}
 	round := currentReviewRound(current)

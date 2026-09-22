@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -82,7 +83,17 @@ func completionChangedPaths(root string, entry map[string]any) ([]string, error)
 	if kind := stringField(envelope["kind"]); kind != "" && kind != "completion_report" {
 		return nil, fmt.Errorf("artifact kind is %q, want completion_report", kind)
 	}
-	return normalizeBaselinePaths(stringSliceValue(envelope["changed_paths"])), nil
+	paths := normalizeBaselinePaths(stringSliceValue(envelope["changed_paths"]))
+	for _, changed := range paths {
+		absolute, err := repositoryContainedPath(root, changed)
+		if err != nil {
+			return nil, fmt.Errorf("changed path %q: %w", changed, err)
+		}
+		if info, err := os.Stat(absolute); err == nil && info.IsDir() && !evidenceDirectory(root, changed) {
+			return nil, fmt.Errorf("changed path %q is a product directory; submit a canonical file-level completion report including deleted files", changed)
+		}
+	}
+	return filterFreezableChangedPaths(root, paths), nil
 }
 
 func normalizeBaselinePaths(paths []string) []string {
@@ -148,4 +159,39 @@ func validateS7BaselineProjection(root string, state map[string]any) error {
 		[]string{"restore the canonical completion artifact or run the S6 completion path again so its path and sha256 are registered together"},
 		"loop-harness s7 draft --out plan.json",
 	)
+}
+
+// Only framework-owned evidence bookkeeping directories may be dropped.
+// Product directories are retained by this helper and diagnosed by the reader.
+func evidenceDirectory(root, path string) bool {
+	if path != ".claude/evidence" && !strings.HasPrefix(path, ".claude/evidence/") {
+		return false
+	}
+	// A lexical evidence prefix cannot exempt a symlink into product code.
+	current := root
+	for _, part := range strings.Split(path, "/") {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func filterFreezableChangedPaths(root string, paths []string) []string {
+	if root == "" {
+		return paths
+	}
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		absolute, err := repositoryContainedPath(root, path)
+		if err == nil {
+			if info, statErr := os.Stat(absolute); statErr == nil && info.IsDir() && evidenceDirectory(root, path) {
+				continue
+			}
+		}
+		result = append(result, path)
+	}
+	return result
 }

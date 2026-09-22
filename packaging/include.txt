@@ -9,6 +9,8 @@ docs/design/tokens/README.md
 docs/design/tokens/tokens.json
 docs/design/tokens/tokens.css
 tools/claude-hook-smoke.sh
+tools/loop-harness-launcher.sh
+tools/loop-harness-launcher.ps1
 tools/ui-lab
 tools/visual-qa
 packaging/README.installed.md
@@ -124,3 +126,17 @@ docs/rules/security.md
 docs/rules/shared-model-contracts.md
 docs/rules/state-machine.md
 docs/rules/ui-prototype.md
+
+LICENSE
+packaging/project.gitattributes
+tools/release-manifest.py
+docs/bounded-repair-autonomy.md
+docs/claude-platform-compatibility.md
+docs/examples/autonomy/repair-delegation.json
+docs/examples/autonomy/repair-technical-review.json
+docs/framework-upgrade.md
+docs/repair-baseline-boundaries.md
+docs/runtime-batch-scope-repair.md
+docs/runtime-evidence-binding-repair.md
+docs/runtime-portability.md
+docs/workspace-integration.md

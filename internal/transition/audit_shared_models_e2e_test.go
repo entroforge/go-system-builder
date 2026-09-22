@@ -145,6 +145,7 @@ func auditSharedRegister(t *testing.T, repo *auditSharedRepo) (map[string]any, *
 	state := auditSharedState(repo.root)
 	view := repo.view(t)
 	auditSharedAction(t, "register_locked_contracts", state, auditSharedContext(repo.root, view, false))
+	auditSharedAction(t, "register_planning_tasks", state, auditSharedContext(repo.root, view, false))
 	return state, view
 }
 

@@ -235,8 +235,8 @@ func TestHSMinimalSafetyBlocksDenyOnPreToolUse(t *testing.T) {
 			if err := json.Unmarshal(output, &lifecycle); err != nil {
 				t.Fatalf("invalid JSON: %v", err)
 			}
-			if lifecycle["hookSpecificOutput"] == nil {
-				t.Fatalf("HS-* %s on SessionStart must NOT carry hookSpecificOutput, got %v", rule, lifecycle)
+			if lifecycle["hookSpecificOutput"].(map[string]any)["additionalContext"] == nil {
+				t.Fatalf("HS-* %s on SessionStart must carry model recovery context, got %v", rule, lifecycle)
 			}
 			if contextValue(lifecycle) == nil {
 				t.Fatalf("HS-* %s on SessionStart must carry systemMessage", rule)
@@ -1054,8 +1054,8 @@ func TestInfoDecisionEmitsStageBanner(t *testing.T) {
 	if err := json.Unmarshal(output, &decoded); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if decoded["hookSpecificOutput"] == nil {
-		t.Fatalf("info on SessionStart must not carry hookSpecificOutput, got %v", decoded)
+	if decoded["hookSpecificOutput"].(map[string]any)["additionalContext"] == nil {
+		t.Fatalf("info on SessionStart must carry model recovery context, got %v", decoded)
 	}
 	body, ok := contextValue(decoded).(string)
 	if !ok || body == "" {

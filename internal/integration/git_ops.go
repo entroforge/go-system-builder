@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/processtree"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,8 @@ func (execRunner) RunStdin(ctx context.Context, stdin string, root string, args 
 }
 
 func runGit(ctx context.Context, root string, stdin *strings.Reader, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	fullArgs := append([]string{"-C", root}, args...)
 	cmd := exec.CommandContext(ctx, "git", fullArgs...)
 	if stdin != nil {
@@ -46,7 +49,7 @@ func runGit(ctx context.Context, root string, stdin *strings.Reader, args ...str
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := processtree.Run(cmd); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))

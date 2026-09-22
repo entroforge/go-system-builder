@@ -8,6 +8,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/controller"
 	"github.com/entroforge/go-system-builder/internal/missingtokens"
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/qualitygate"
 )
 
 // PreToolUseWithQualityGate projects the Controller's layered result
@@ -27,6 +28,8 @@ import (
 //     → permissionDecision="deny", quality_gate.status="blocked".
 //   - "info" on PreToolUse still allows (lifecycle context only).
 //
+// User-visible notices and model context are separate. Ordinary tool calls
+// carry a compact checkpoint; a committed stage change restores full guidance.
 // hookSpecificOutput.additionalContext carries the Agent-facing Recovery Packet, derived
 // from decision.Missing / decision.Recovery and the Quality Gate missing[]
 // list. When the Decision carries a Guidance the legacy LOOP RECOVERY
@@ -49,12 +52,11 @@ func PreToolUseWithQualityGate(decision policy.Decision, result controller.Contr
 
 	body := formatPreToolUseRecoveryPacket(decision, qg)
 	if decision.Guidance != nil {
-		// Append the canonical LOOP RECOVERY packet so the existing
-		// recovery-text grep (Controller integration test, agent-protocol
-		// readers) continues to find the legacy summary. The new
-		// QUALITY GATE summary above remains the authoritative status
-		// line; this append is purely additive.
-		body = body + "\n\n" + formatGuidance(*decision.Guidance)
+		if qg.TransitionCommitted {
+			body += "\n\n" + formatGuidance(*decision.Guidance)
+		} else {
+			body += "\n\n" + compactGuidance(*decision.Guidance)
+		}
 	}
 
 	if decision.AdditionalContext != "" {
@@ -67,7 +69,7 @@ func PreToolUseWithQualityGate(decision policy.Decision, result controller.Contr
 		specific["permissionDecision"] = "deny"
 		specific["permissionDecisionReason"] = boundedContext(body)
 	}
-	payload := map[string]any{"hookSpecificOutput": specific}
+	payload := map[string]any{"hookSpecificOutput": specific, "systemMessage": qualityNotice(decision, qg)}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, 1, fmt.Errorf("encode Hook output: %w", err)
@@ -163,6 +165,15 @@ func formatPreToolUseRecoveryPacket(decision policy.Decision, qg controller.Qual
 	// unknown gate is un-actionable.
 	if len(qg.Conflicts) > 0 {
 		fmt.Fprintf(&b, " Conflicts: %s.", strings.Join(qg.Conflicts, "; "))
+		for _, conflict := range qg.Conflicts {
+			if strings.HasSuffix(conflict, ":producer") {
+				for _, requirement := range qualitygate.ProducerRequirements(qg.GateID) {
+					fmt.Fprintf(&b, " Producer contract: %s requires %s.", requirement.Kind, strings.Join(requirement.Responsibilities, " or "))
+				}
+				b.WriteString(" Verify the actual producer's responsibility and audit work; register new qualified evidence and retire invalid evidence through Harness. Do not relabel registered evidence or edit Runtime directly.")
+				break
+			}
+		}
 	}
 
 	// For blocked decisions the agent needs the rule id + recovery.

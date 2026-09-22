@@ -16,7 +16,7 @@
 
 `--root`必须不存在或为空目录，含`.git`的非空目录也不会被覆盖；可在安装成功后执行`git init`。安装器先校验发布资产，再在同级临时目录组装、初始化和验证，全部通过才通过重命名发布目标目录。复制失败不会覆盖目标内容，重试可使用新的空目录；异常中断留下的`.loop-install-*`目录不参与驱动，确认无安装进程使用后可以删除。
 
-安装器将 Skills/Agents 放到`.claude`，将`AGENTS-template.md`变成`AGENTS.md`，将主机二进制文件和生成的 Manual放在`.claude/bin`，并初始化唯一的inactive 状态的 Runtime。所有平台二进制文件保留，切换机器时用对应文件替换`.claude/bin/loop-harness`；版本必须一致。
+安装器将 Skills/Agents 放到`.claude`，将`AGENTS-template.md`变成`AGENTS.md`，将主机二进制文件和生成的 Manual放在`.claude/bin`，并初始化唯一的inactive 状态的 Runtime。所有平台二进制文件与 shell/PowerShell 启动器一并保留；`.claude/bin/loop-harness` 自动选择 Linux/macOS 的本机版本，Windows 使用 `loop-harness.ps1`。不要用原生二进制覆盖启动器。安装前校验 `release-manifest.json` 的完整文件清单，安装后 `.claude/framework-installation.json` 记录转换后的文件摘要和原始清单摘要；这些摘要证明内容一致性，不替代发布来源认证。
 
 安装后运行：
 

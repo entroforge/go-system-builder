@@ -1,6 +1,7 @@
 package review
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,18 +121,63 @@ func TestVerifyFrozenSubjectsBindsCurrentDiskContent(t *testing.T) {
 	plan := &Plan{FrozenSubjects: []FrozenSubject{{
 		Path: "internal/example/service.go", SHA256: sha256Of([]byte("baseline")), Kind: "product_code",
 	}}}
-	if err := verifyFrozenSubjects(root, plan); err != nil {
+	if err := verifyFrozenSubjects(root, plan, nil); err != nil {
 		t.Fatalf("matching frozen subject must pass: %v", err)
 	}
 	if err := os.WriteFile(path, []byte("drifted"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyFrozenSubjects(root, plan); err == nil || !strings.Contains(err.Error(), "frozen subject") {
+	if err := verifyFrozenSubjects(root, plan, nil); err == nil || !strings.Contains(err.Error(), "frozen subject") {
 		t.Fatalf("drifted frozen subject must fail closed, got %v", err)
 	}
 }
 
-// WS4d: the redaction gate and the buffer merge.
+// RC-29: an absent frozen subject passes only with TR-012 deletion corroboration.
+func TestVerifyFrozenSubjectsDeletedArtifactNeedsImpactCorroboration(t *testing.T) {
+	for _, tc := range []struct {
+		name, status                            string
+		tampered, unrelated, stale, invalidated bool
+		allowed                                 bool
+	}{
+		{name: "declared deletion", status: "deleted", allowed: true},
+		{name: "modified file missing", status: "modified"},
+		{name: "missing status"},
+		{name: "tampered ledger", status: "deleted", tampered: true},
+		{name: "unbound same-generation ledger", status: "deleted", unrelated: true},
+		{name: "stale round", status: "deleted", stale: true},
+		{name: "invalidated ledger", status: "deleted", invalidated: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := "internal/example/legacy.go"
+			digest := sha256Of([]byte("before deletion"))
+			body := []byte(fmt.Sprintf(`{"runtime_id":"r","baseline_generation":1,"changed_artifacts":[{"path":%q,"sha256":%q,"status":%q}]}`, path, digest, tc.status))
+			if err := os.WriteFile(filepath.Join(root, "impact.json"), body, 0600); err != nil {
+				t.Fatal(err)
+			}
+			row := map[string]any{"id": "impact", "kind": "change_impact", "path": "impact.json", "sha256": sha256Of(body), "status": "valid", "baseline_generation": 1}
+			entry := map[string]any{"round": 2, "baseline_generation": 1, "change_impact_ref": "impact"}
+			state := map[string]any{"runtime_id": "r", "baseline": map[string]any{"generation": 1}, "evidence": []any{row}, "review": map[string]any{"round": 2, "round_entry": entry}}
+			if tc.tampered {
+				row["sha256"] = sha256Of([]byte("different"))
+			}
+			if tc.unrelated {
+				entry["change_impact_ref"] = "other"
+			}
+			if tc.stale {
+				entry["round"] = 1
+			}
+			if tc.invalidated {
+				row["invalidated_by"] = "repair"
+			}
+			err := verifyFrozenSubjects(root, &Plan{FrozenSubjects: []FrozenSubject{{Path: path, SHA256: digest, Kind: "post_repair_changed_artifact"}}}, state)
+			if (err == nil) != tc.allowed {
+				t.Fatalf("allowed=%v err=%v", tc.allowed, err)
+			}
+		})
+	}
+}
+
 func TestSanitizeCaptureRejectsSecrets(t *testing.T) {
 	cases := []CaptureStep{
 		{Action: "login", Observed: "password: hunter2 accepted"},

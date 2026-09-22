@@ -8,7 +8,9 @@ project:
 configuration:
   delivery_mode: "full"
   release_branch: "main"
-  integration_branch: "develop"
+  # Descriptive project configuration; workspace binding captures Main's actual branch.
+  # Fill this with your project convention; it never selects or switches Main.
+  integration_branch: "{integration-branch}"
 
 context:
   business_domain: "{domain}"

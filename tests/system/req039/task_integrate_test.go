@@ -1,6 +1,6 @@
 // task_integrate_test.go — L3-S6 complexity pass N1: the explicit
 // `runtime task-integrate` verb drives the identical Inspect → non-squash
-// merge → verified checkpoint chain as the SubagentStop hook, without
+// merge → verification → acknowledgment → cleanup chain, without
 // depending on the platform payload carrying the assignment identity.
 package req039_test
 
@@ -29,7 +29,7 @@ func seedIntegrableAssignment(t *testing.T, root string) string {
 			"id": "builder-ti", "role": "builder", "state": "reported",
 			"task_ids": []any{"TASK-039-01"}, "team_id": "team-ti",
 			"definition_ref": ".claude/agents/backend-builder.md",
-			"prompt_ref":     "manifest#assignment-ti",
+			"prompt_ref":     ".claude/workgroups/REQ-039/TASK-039-01/manifest.json#assignment-ti",
 			"readback_ref":   nil, "activation_ref": nil, "activation_revision": nil,
 			"updated_at": "2026-08-20T00:00:00Z",
 		}},
@@ -57,7 +57,7 @@ func runTaskIntegrate(t *testing.T, root, assignmentID string) (int, string, str
 	return code, stdout.String(), stderr.String()
 }
 
-func TestTaskIntegrateMergesWorktreeToVerified(t *testing.T) {
+func TestTaskIntegrateMergesAcknowledgesAndCleansWorktree(t *testing.T) {
 	root := freshRoot(t)
 	wtPath := seedIntegrableAssignment(t, root)
 	developBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
@@ -78,7 +78,7 @@ func TestTaskIntegrateMergesWorktreeToVerified(t *testing.T) {
 	if len(strings.Fields(strings.TrimSpace(parents))) != 2 {
 		t.Fatalf("task-integrate must produce a merge commit, parents=%q", parents)
 	}
-	// Durable checkpoint reached verified with the task bound.
+	// Durable checkpoint reached complete with the task bound.
 	checkpointPath := filepath.Join(root, ".claude", "evidence", "loop-system-test", "g1", "worktree", "assignment-ti", "checkpoint.json")
 	data, err := os.ReadFile(checkpointPath)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestTaskIntegrateMergesWorktreeToVerified(t *testing.T) {
 		t.Fatalf("checkpoint task_id = %q, want TASK-039-01 (gate binding)", checkpoint.TaskID)
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
-		t.Fatalf("received worktree must be removed: %v", err)
+		t.Fatalf("completed checkout remains: %v", err)
 	}
 }
 

@@ -105,7 +105,7 @@ win.
    - a `no_branch_reason` is a rationale: name the why — at least 8
      characters including a letter (a bare "不需要"/"." is rejected;
      free-word escapes are not endorsed N/A).
-5. Immediately run `go run ./cmd/loop-harness scenario bridge --root .` — the
+5. Immediately run `.claude/bin/loop-harness scenario bridge --root .` — the
    AC source check (AC→FR→BR) needs no generated outputs; fix gaps now, not
    at close.
 
@@ -127,7 +127,7 @@ win.
    expected_state, recovery)"; maintainer: "which rule will clash with
    module evolution?" Record the conclusion as one paragraph under a
    `## Depth Self-Review` heading in the ADR package.
-9. Close: `go run ./cmd/loop-harness scenario generate --module <module>
+9. Close: `.claude/bin/loop-harness scenario generate --module <module>
    --root .` then `scenario validate --module <module> --root .` — ratio
    gates, reference existence, byte-frozen outputs, cross-matrix
    references, and the full AC bridge (every AC reaches a CASE or carries
@@ -150,7 +150,7 @@ win.
     「本合同条款」 columns. On finalization set each contract's top status line
     （模板中的「状态」行）to `locked` (PTR-PLAN-02 registers only locked contracts),
     register the planning_contract envelope (Planning Evidence Envelopes
-    section), and run `go run ./cmd/loop-harness contracts check --root .`
+    section), and run `.claude/bin/loop-harness contracts check --root .`
     — token references, clause cells, and fingerprint columns are
     machine-checked there and again at PTR-PLAN-02.
 11. Decompose into TASKs: each TASK binds one primary contract, declares
@@ -199,7 +199,7 @@ win.
 `subject_refs` 留空即合法（planning 门不要求钉指纹——磁盘 Status 是事实载体）；`review_round` 不写。落盘为 `docs/reports/planning/{id}.json` 后登记：
 
 ```text
-go run ./cmd/loop-harness runtime evidence add --id planning-design-pass   --kind planning_design --path docs/reports/planning/planning-design-pass.json   --produced-by <你的 agent id> --responsibility Architect   --expected-revision <当前 revision，.claude/loop-state.json 顶部>
+.claude/bin/loop-harness runtime evidence add --id planning-design-pass   --kind planning_design --path docs/reports/planning/planning-design-pass.json   --produced-by <你的 agent id> --responsibility Architect
 ```
 
 （S3/S4 同款换 `--kind planning_contract --responsibility "Contract Planner"` / `--kind planning_task --responsibility "Task Planner"`，id 对应 `planning-contracts-pass` / `planning-tasks-pass`。）**重签规则**：同 ID 会被拒（invalid 条目也占 ID）——返工第二轮起用 `-r2` 后缀新 ID（`planning-design-pass-r2`）。missing token 对照：`evidence:planning_design_record` / `evidence:planning_contract_record` / `evidence:planning_task_record` = 该阶段信封未登记或不合格；`evidence:<id>:schema` = 信封字段与登记不互证（多为 path 指向了 markdown 或 conclusion 拼错）。
@@ -249,6 +249,30 @@ must trace back to the locked REQ. Invalid or guard-failing events do not
 change state, execute no side effect, and record a rejected event.
 Idempotency uses CAS revision checks; one committed transition per runtime
 revision.
+
+## Executable acceptance checks before locking TASKs
+
+Before locking a check command, verify its selected test inventory, browser
+support policy, runtime ownership, required dependencies, and known baseline
+failures. A command named cross-browser is not evidence that the current
+requirement is selected by those browser projects. Reuse unchanged baseline
+receipts only when their commit/configuration and declared scope apply; do not
+run the entire suite at every planning step. Unknown baseline health remains
+unknown, never PASS. Browser coverage changes use the existing specification
+change route, not a new approval workflow.
+
+Manual debugging and integration must use the same project runner/environment
+profile for comparable evidence. Do not replace a required custom reporter,
+filter away failed tests, or hide the command exit code behind `tail`/`tee`.
+Resource controls may limit concurrency without reducing test coverage.
+
+## Production-path ownership before S4 close
+
+For each user-visible or externally consumed capability, trace the real caller through the applicable UI mount, API wrapper, registered route, authorization, service and response projection. Reuse the existing TASK/contract traceability sections: name the owning TASK for each required connection, including changes to shared types. A service implementation alone does not establish a production consumer. For backend-only work start at its actual external caller; do not invent a UI obligation.
+
+Cross-check the files needed to implement each connection against its planned write scope. Missing ownership or contradictory scope is unfinished planning; correct it before locking/dispatch, not by copying business rules into the allowed component. Retain one canonical authority for business decisions; client-side validation requires explicit compatibility and differential checks.
+
+For critical capabilities name at least one check crossing the actual registered boundary and one counterexample (such as reverted wiring) that would make it fail. Counts, test names, a mock returning the desired response, and a test proving an entry is absent are not delivery evidence. Record coverage gaps explicitly; do not defer a TASK's own delivery obligations to S7. This is a semantic review obligation, not a claim that the current machine gate proves end-to-end correctness.
 
 
 For new batches apply [shared-model contracts in the factory](../../docs/rules/shared-model-contracts.md) (after installation: [project rule](../../docs/rules/shared-model-contracts.md)): explicit policy, native source references, validated examples, committed design closure and role-specific TASK links. Do not create a registry or copy schemas per REQ. Independent generation may run in parallel; only actual shared implementation artifacts require foundation TASK dependencies.

@@ -772,6 +772,15 @@
           "guards": [
             "outputs_captured"
           ]
+        },
+        {
+          "from": "reported",
+          "event": "integration_rework_requested",
+          "to": "working",
+          "guards": [
+            "blocker_recorded",
+            "activation_scope_still_valid"
+          ]
         }
       ]
     },
@@ -854,6 +863,15 @@
           "to": "cancelled",
           "guards": [
             "cancellation_reason_recorded"
+          ]
+        },
+        {
+          "from": "review",
+          "event": "integration_rework_requested",
+          "to": "in_progress",
+          "guards": [
+            "blocker_recorded",
+            "activation_scope_still_valid"
           ]
         }
       ]
@@ -1935,6 +1953,40 @@
       "human_decision_scope": "runtime_release",
       "on_guard_failure": "reject",
       "description": "Record a human release abort without performing any release side effect."
+    },
+    {
+      "id": "TR-031",
+      "from": "release_audit",
+      "selector": "SEL-RELEASE-AUDIT-OUTCOME",
+      "automation": {
+        "eligible": true,
+        "human_boundary": false
+      },
+      "event": "acceptance_review_required",
+      "to": "verification",
+      "actors": [
+        "orchestrator",
+        "hook_controller"
+      ],
+      "guards": [],
+      "actions": [
+        "start_review_round",
+        "set_verification_phase_planned"
+      ],
+      "required_evidence": [
+        "acceptance_record",
+        "change_impact_record"
+      ],
+      "on_guard_failure": "reject",
+      "auto_trigger": {
+        "enabled": true,
+        "event": "PreToolUse",
+        "actor": "hook_controller",
+        "quality_gate_id": "GATE-RELEASE-AUDIT-REVIEW-REQUIRED",
+        "max_per_event": 1,
+        "human_required": false
+      },
+      "description": "A functional or contract defect found in the release audit restarts the complete review round (L3-S10 §4.6). Affected historical PASS evidence is invalidated at S9.3 impact_reconciliation (agent-protocol §S9), not here: the action fail-closes on the affected paths the automatic PreToolUse path cannot supply while S10 freezes the product surface, and the record-derived sweep would invalidate the change-impact ledger the next round must freeze from."
     }
   ],
   "global_transitions": [

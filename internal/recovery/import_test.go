@@ -64,6 +64,28 @@ func TestImportBuildsProjectionWithoutReadingActiveState(t *testing.T) {
 	}
 }
 
+func TestImportRecognizesChineseRelatedRequirementPath(t *testing.T) {
+	root := t.TempDir()
+	writeRecoveryImportFile(t, root, "docs/requirements/REQ-052.md", "# REQ-052\n\n状态：locked\n版本：v1.0.3\n")
+	writeRecoveryImportFile(t, root, "docs/design/architecture/ARCHITECTURE-052.md", "# 架构文档：CRM52 统一公司角色地址\n\n> 状态：locked\n> 版本：v1.0.0\n> Architect：main-session\n> 日期：2026-09-03\n> 关联需求：`docs/requirements/REQ-052.md`（runtime 注册的顶层权威路径）\n")
+
+	result, err := Import(root, REQBinding{
+		ID: "REQ-052", Path: "docs/requirements/REQ-052.md", Status: "locked", Version: "v1.0.3",
+		SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-052.md"),
+	})
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	for _, finding := range result.Findings {
+		if finding.Path == "docs/design/architecture/ARCHITECTURE-052.md" {
+			t.Fatalf("related REQ path was not imported: %#v", finding)
+		}
+	}
+	if document := result.Projection["documents"]; document == nil {
+		t.Fatal("architecture document was not imported")
+	}
+}
+
 func TestImportFindingsAreDeterministicAndLateArtifactsDoNotAdvanceCursor(t *testing.T) {
 	root := t.TempDir()
 	writeRecoveryImportFile(t, root, "docs/requirements/REQ-002.md", "# REQ-002\n\nStatus: locked\nVersion: v2.0.0\n")

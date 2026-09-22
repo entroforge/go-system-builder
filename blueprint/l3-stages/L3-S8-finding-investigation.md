@@ -536,6 +536,16 @@ Main/Architect 批准 RepairContract 时，权威事务只负责：
 
 当前实现的最小入口是 `runtime investigation contract approve --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`：它要求 draft 覆盖 Case 的 exact Finding set，并校验人审阅的 draft SHA-256。Runtime revision 由 Writer 在锁内记录；显式 revision/hash 参数只为外部集成或恢复保留，不是 S8 的 Agent-facing 前置。审批以当前 Case/Contract hash、Runtime identity、decision ID 和固定路由校验上下文为准；JSON 人审记录还应包含 `decision_id`、`runtime_id`、`case_id`、`contract_id`、`approval_hash` 和 `decision=approve_contract`，以把决定绑定到本次 Case/Contract。审批成功后，Writer 在同一事务中消费该 decision evidence，后续不能重放；工具生成不可变的新 Case/Contract 对象版本并推进到 `bug_resolution.repair_readback`。它不在审批失败时创建 BUG，也不把 Markdown/BUG 投影伪装成权威；S9 以 Runtime 指针中的 Contract ref/hash 作为唯一入口。
 
+### 10.1 可选择的有限技术修复授权
+
+逐 draft 人审仍是未选择 delegation 时的路径。另两条授权来源是人类签发的 per-REQ 有限委托，以及在人类绑定 REQ 时按 path/SHA 固定的项目策略；不从安装成功、actor 名字或旧会话推定授权。委托绑定 Runtime、REQ SHA、generation、允许/禁止范围、指定 reviewer、合同预算；per-REQ 委托必须到期，项目策略允许不设日期，但仍受该 REQ/generation、有限预算与策略指纹约束。
+
+每份合同仍需 exact draft SHA 的技术 review；授权者与 reviewer 不同，technical review 不是产出完成的独立验收。S9 实施者与 targeted verifier 必须不同，修复后仍回 fresh S7，REQ 修改、S2 设计签署和 S11 发布决策不被委托。review 中的语义断言是指定人的判断，不是机器对业务语义的证明；身份真实性处于本地文件协议的既有信任边界。
+
+批准事务校验有效证据、scope 与预算并原子计数；相同已批准合同重试不重复计数。撤销 grant 或修改项目策略阻止后续新批准，不抹除已批准合同；紧急停止已有修复须 pause/revoke 对应活动执行，不能把撤销 grant 当作撤销所有历史事实。超范围、未知/变化的业务语义走原人审/规格变更路线。
+
+设计依据、成本、消费者和验收见 [受限执行与授权演化](../l4-mechanisms/L4-workspace-execution-profiles.md)。
+
 canonical Problem/BUG、人读报告、S9 work-package 和 Finding mapping 都是批准后的幂等投影，可以重试生成；它们不再和 Case/Contract 共享一个过大的跨域事务。只有所有受当前 route 约束的 Cases 都 ready，才推进 Macro-stage。
 
 不再要求 Investigator 手写 rich BUG、runtime entity、generic root-cause envelope 和 batch wrapper 四份独立事实。人读 BUG 报告、Runtime entity 和 gate 由 InvestigationCase/RepairContract 投影。
@@ -833,7 +843,10 @@ S8 目标机制只有在以下条件全部成立时才算落地：
 
 | 日期 | 版本 | 变更 | 原因 |
 |:--|:--|:--|:--|
+| 2026-09-21 | v0.8.0 | 补齐逐 draft、per-REQ 委托与固定项目策略的授权、预算、失效和独立验收边界 | 使设计契约与已实现的授权路径一致，保留默认人审与发布人闸 |
 | 2026-08-20 | v0.6.0 | Intake 改为校验单一 `claim_coverage_summary` 与最终 Claim exact disposition；static/E2E/discovery 降为查询视图；`blocked_by_confirmed_finding` 改为工具从 blocked Claim 投影；仅 critical immediate-stop 接受显式 safety gaps | 消除 S7→S8 handoff 的重复 summary 和独立 blocker 状态，保留完整发现与产品客观不可执行面的表达能力 |
 | 2026-08-20 | v0.4.0 | 将 QA/DV `code_inspection` Finding 明确为一等入口；按 observation mode 消费 inspection/data-flow boundary；禁止把设计模式名称或 Reviewer 重构偏好直接当根因，并补充结构性 Case 的假设、测试、指标和 DoD | 接住 S7 Static Quality Frontier 一次发现的设计债、边界和维护风险，同时防止静态审查意见未经因果证明就演变为模式化重构 |
 | 2026-08-20 | v0.3.0 | S8 intake 改为消费 S7 Finding encounter、failure boundary、cross-layer trace 和 capture gaps；新增 investigation readiness、计算型 boundary/trace/gap 视图与 discriminator-bound follow-up；明确 S8 不默认重新复现症状，也不新增 Failure Episode 顶层实体 | 让 S8 直接开展因果调查，避免重复 S7 的复现成本；只增加嵌套字段、投影视图和一个 follow-up validator，使收益高于机制复杂度 |
 | 2026-08-20 | v0.2.0 | 将 S8 重构为 Macro-stage 的 Diagnosis 步骤；新增 ObservationBatch intake、FindingSupplement、InvestigationCase、HypothesisResult、CausalModel、可逆聚类、因果证明、RepairContract、case-level route 与 S9 原子 handoff | 确保 S7 多个表象无损进入 S8，推导共同根因和架构级修复思路，禁止局部症状修补 |
+
+2026-09-21：补齐有限委托和固定项目策略的授权、消费、撤销及独立验收边界；不改变默认人审和发布人闸。

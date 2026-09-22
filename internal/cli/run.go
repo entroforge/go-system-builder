@@ -11,7 +11,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/doclinks"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
-	"github.com/entroforge/go-system-builder/internal/workspace"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,7 +26,9 @@ import (
 	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	impactanalysis "github.com/entroforge/go-system-builder/internal/impact"
+	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/metrics"
+	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/releasegraph"
@@ -38,6 +39,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/team"
 	"github.com/entroforge/go-system-builder/internal/transition"
 	"github.com/entroforge/go-system-builder/internal/verification"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // formatFailure renders a CLI command's failure to stderr in the form
@@ -120,6 +122,7 @@ func printTopLevelUsage(stdout io.Writer) {
 	fmt.Fprintln(stdout, "  validate    Validate runtime + journal against schema")
 	fmt.Fprintln(stdout, "  dry-run     Render an applied transition without writing")
 	fmt.Fprintln(stdout, "  hook        Hook adapter entrypoints (PreToolUse, Stop, etc.)")
+	fmt.Fprintln(stdout, "  version     Executable platform and build identity")
 	fmt.Fprintln(stdout, "  install     Install a release into a fresh empty project (--source, --root)")
 	fmt.Fprintln(stdout, "  docs check  Validate local document links and anchors")
 	fmt.Fprintln(stdout, "  doctor      Structural schema / manual / policy_ref checks (not runtime health)")
@@ -176,6 +179,10 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	switch args[0] {
+	case "version", "--version":
+		return runBuildInfo(stdout)
+	case "deployment-check":
+		return runDeploymentCheck(args[1:], stdout, stderr)
 	case "docs":
 		return runDocsCheck(args[1:], stdout, stderr)
 	case "install":
@@ -263,10 +270,12 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	reqPath := flags.String("req", "", "locked REQ path (default: auto-discover the sole bindable REQ)")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
+	repairPolicyPath := flags.String("repair-policy", "", "project-approved repair policy path; applies only to this new binding")
+	repairPolicySHA := flags.String("repair-policy-sha256", "", "explicit SHA256 of the approved repair policy")
 	devBranch := flags.String("dev-branch", "", "explicit REQ development branch")
 	releaseUpstream := flags.String("release-upstream", "", "explicit final release destination (include remote when remote)")
 	asJSON := flags.Bool("json", false, "machine-readable state output")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if *approvedBy == "" {
@@ -375,14 +384,14 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	now := time.Now().UTC()
-	shaHex := fmt.Sprintf("%x", sha256.Sum256(data))
+	shaHex := transition.REQSHA256(data)
 	next, err := transition.Apply(*root, statePath, journalPath, transition.Request{
 		Files: view, TransitionID: "TR-001", ExpectedRevision: -1, ExpectedRuntimeID: "loop-inactive", Actor: "user",
 		Evidence: map[string]string{
 			"req_lock_record":           *reqPath + "@" + shaHex,
 			"loop_authorization_record": "approved-by:" + *approvedBy,
 		},
-		REQ: &transition.LockedREQ{Workspace: &binding, ID: id, Path: *reqPath, Version: version, SHA256: shaHex, ApprovedBy: *approvedBy, ApprovedAt: now.Format(time.RFC3339Nano)}, OccurredAt: now,
+		REQ: &transition.LockedREQ{Workspace: &binding, ID: id, Path: *reqPath, Version: version, SHA256: shaHex, ApprovedBy: *approvedBy, ApprovedAt: now.Format(time.RFC3339Nano), RepairPolicyPath: *repairPolicyPath, RepairPolicySHA256: *repairPolicySHA}, OccurredAt: now,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("req bind", err))
@@ -401,7 +410,7 @@ func runREQList(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "req list")
 	root := flags.String("root", ".", "repository root")
 	asJSON := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	summaries := classifyRequirements(*root)
@@ -481,7 +490,7 @@ func runProjection(args []string, nextOnly bool, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "projection")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	snapshot, err := runtime.NewStore(
@@ -529,7 +538,7 @@ func runReady(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "ready")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	report, err := controller.EvaluateReady(context.Background(), *root)
@@ -620,8 +629,12 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "init")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
+	}
+	if err := workspace.RequireMain(*root); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	if err := writeInactiveRuntime(*root); err != nil {
 		fmt.Fprintf(stderr, "init failed: %v\n", err)
@@ -807,12 +820,7 @@ func writeNewFile(path string, data []byte) error {
 }
 
 func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return runtime.SyncDirectory(path)
 }
 
 func inactiveRuntimeState(root string, occurredAt time.Time) (map[string]any, error) {
@@ -965,7 +973,7 @@ func runTeam(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	manifestPath := flags.String("manifest", "", "team manifest path relative to root")
 	templatePath := flags.String("request-template", "", "readback request template path relative to root")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if *manifestPath == "" || *templatePath == "" {
@@ -1021,10 +1029,29 @@ func runTeam(args []string, stdout, stderr io.Writer) int {
 }
 
 func runRuntime(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "workspace" {
+		return runRuntimeWorkspace(args[1:], stdout, stderr)
+	}
+	// Investigation leaf commands own their flag help; do not hide it behind
+	// the generic runtime help before their FlagSets have been registered.
+	if len(args) > 1 && args[0] == "investigation" && wantsHelp(args) {
+		return runRuntimeInvestigation(args[1:], stdout, stderr)
+	}
+
+	if len(args) > 0 && args[0] == "repair-evidence-binding" {
+		return runEvidenceBindingRepair(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "repair-batch-scope" {
+		return runBatchScopeRepair(args[1:], stdout, stderr)
+	}
 	if wantsHelp(args) {
 		name := compactHelpName(args)
 		if name == "" {
 			name = "<stage-specific verb>"
+		}
+		if name == "transition" {
+			printCommandHelp(stdout, "loop-harness runtime transition --id <ID> --actor <role> [--affected-paths <repo-relative-path>]...", "Low-level recovery only. Repeat --affected-paths for multiple literal paths (including deleted paths); use all alone only for an explicitly authorized full sweep. --params does not supply affected paths. Normal continuation uses stage-specific verbs.")
+			return 0
 		}
 		printCommandHelp(stdout, "loop-harness runtime "+name, "Runtime actions are the CAS-owned mutation surface. Choose the stage-specific verb shown by `loop-harness actions`; diagnostics expose the next recovery action.")
 		return 0
@@ -1034,6 +1061,8 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "repair-batch-scope":
+		return runBatchScopeRepair(args[1:], stdout, stderr)
 	case "recover":
 		return runRuntimeRecover(args[1:], stdout, stderr)
 	case "rollover":
@@ -1053,7 +1082,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		root := flags.String("root", ".", "repository root")
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		resolvedState := resolveRootPath(*root, *statePath)
@@ -1077,7 +1106,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		root := flags.String("root", ".", "repository root")
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		resolvedState := *statePath
@@ -1119,9 +1148,20 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		reqApprovedBy := flags.String("req-approved-by", "", "locked REQ approver for TR-001")
 		reqApprovedAt := flags.String("req-approved-at", "", "locked REQ approval time for TR-001")
 		paramsRaw := flags.String("params", "", "JSON object of guard params (used by generated-evidence transitions like PTR-BUG-02)") // deprecated: legacy compatibility
+		var affectedPaths stringListFlag
+		flags.Var(&affectedPaths, "affected-paths", "affected repository-relative path; repeat for multiple paths; use all alone for an explicit full sweep")
 		var evidence stringListFlag
 		flags.Var(&evidence, "evidence", "required evidence kind=reference; repeatable")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(stderr, "runtime transition: unexpected positional arguments; repeat --affected-paths for each path")
+			return 2
+		}
+		paths, pathErr := normalizeTransitionAffectedPaths(affectedPaths)
+		if pathErr != nil {
+			fmt.Fprintln(stderr, "runtime transition:", pathErr)
 			return 2
 		}
 		var params map[string]any
@@ -1182,7 +1222,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		next, err := transition.Apply(*root, resolvedStatePath, resolvedJournalPath, transition.Request{
 			TransitionID: *transitionID, ExpectedRevision: *expectedRevision, ExpectedRuntimeID: currentRuntimeID,
 			Actor: *actor, Evidence: evidenceMap, REQ: req, OccurredAt: occurredAt,
-			Params: params,
+			Params: params, AffectedPaths: paths,
 		})
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime transition", err))
@@ -1209,7 +1249,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		taskID := flags.String("task-id", "", "TASK ID")
 		taskPath := flags.String("task", "", "TASK path")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 registration time")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *manifestPath == "" || *taskID == "" || *taskPath == "" {
@@ -1266,7 +1306,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		agentID := flags.String("agent-id", "", "Agent ID")
 		planPath := flags.String("plan", "", "plan_report message path")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *agentID == "" || *planPath == "" {
@@ -1313,7 +1353,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		event := flags.String("event", "", "readback_submitted, understanding_approved, or activated")
 		messagePath := flags.String("message", "", "Agent message path")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *agentID == "" || *event == "" || *messagePath == "" {
@@ -1374,7 +1414,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		agentID := flags.String("agent-id", "", "Builder Agent ID")
 		messagePath := flags.String("message", "", "completion_report message path")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *agentID == "" || *messagePath == "" {
@@ -1419,9 +1459,10 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		root := flags.String("root", ".", "repository root")
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
+		retry := flags.Bool("retry-preserved", false, "reinspect and retry the existing failed integration; supports already merged source with pinned original scope")
 		assignmentID := flags.String("assignment-id", "", "assignment to integrate")
 		agentID := flags.String("agent-id", "", "owning agent ID (optional, aids lookup)")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *assignmentID == "" {
@@ -1441,6 +1482,25 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, formatFailure("runtime task-integrate", err))
 			return 1
 		}
+		if binding, bindingErr := workspace.Decode(snapshot.State); bindingErr != nil {
+			fmt.Fprintln(stderr, bindingErr)
+			return 1
+		} else if binding != nil {
+			if execution, ok := binding.Execution(*assignmentID, workspace.RuntimeID(snapshot.State), workspace.Generation(snapshot.State)); ok {
+				lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
+				if execution.DeliveryRef != "" || lifecycle["state"] == "bug_resolution" {
+					if *agentID != "" && *agentID != execution.AgentID {
+						fmt.Fprintln(stderr, "integration owner mismatch")
+						return 1
+					}
+					forward := []string{"integrate", "--root", resolvedRoot, "--assignment", execution.AssignmentID, "--agent", execution.AgentID}
+					if *retry {
+						forward = append(forward, "--retry-preserved")
+					}
+					return runWorkspaceDelivery(forward, stdout, stderr)
+				}
+			}
+		}
 		loaded, err := hookctx.LoadFull(resolvedRoot, *agentID)
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime task-integrate", err))
@@ -1453,7 +1513,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			if row.AssignmentID != "" {
 				known = append(known, row.AssignmentID)
 			}
-			if row.AssignmentID == *assignmentID || (*agentID != "" && row.OwnerAgentID == *agentID) {
+			if row.AssignmentID == *assignmentID && (*agentID == "" || row.OwnerAgentID == *agentID) {
 				matched = true
 			}
 		}
@@ -1466,12 +1526,34 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			Event:    "SubagentStop",
 			AgentID:  *agentID,
 			TargetID: *assignmentID,
-			Facts:    map[string]bool{"agent_report_complete": true},
+			Facts:    map[string]bool{"agent_report_complete": true, "integration_retry": *retry},
 		}
 		guidance, updated, err := HandleSubagentStopForController(context.Background(), resolvedRoot, snapshot, loaded, "SubagentStop", input)
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime task-integrate", err))
 			return 1
+		}
+		if !guidance.Blocked {
+			a := findAssignmentForInput(loaded, input)
+			if a != nil {
+				cp, found, loadErr := integration.DefaultCheckpointStore().Load(integration.CheckpointPath(resolvedRoot, loaded.PolicyContext.RuntimeID, loaded.BaselineGeneration, a.AssignmentID))
+				if loadErr != nil {
+					fmt.Fprintln(stderr, loadErr)
+					return 1
+				}
+				if found && cp.State == integration.StateVerified {
+					updated, err = acknowledgeVerifiedIntegration(resolvedRoot, updated, a, cp)
+					if err != nil {
+						fmt.Fprintln(stderr, err)
+						return 1
+					}
+					guidance, updated, err = HandleSubagentStopForController(context.Background(), resolvedRoot, updated, loaded, "SubagentStop", input)
+					if err != nil {
+						fmt.Fprintln(stderr, err)
+						return 1
+					}
+				}
+			}
 		}
 		state := ""
 		if guidance.Blocked {
@@ -1501,6 +1583,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		// initializes claim/assignment projections, phase -> running.
 		// `revise` is the one controlled revision per round (§5.3).
 		revise := len(args) > 1 && args[1] == "revise"
+		revive := len(args) > 1 && args[1] == "revive"
 		flags := flag.NewFlagSet("runtime review-plan", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		bindUsage(flags, "runtime review-plan")
@@ -1512,11 +1595,25 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		sourceRef := flags.String("source-ref", "", "revise: triggering Result/Finding evidence id")
 		affectedSurface := flags.String("affected-surface", "", "revise: path surface the revision may touch")
 		parseArgs := args[1:]
-		if revise {
+		if revise || revive {
 			parseArgs = args[2:]
 		}
-		if err := flags.Parse(parseArgs); err != nil {
+		if err := parseWorkspaceFlags(flags, parseArgs); err != nil {
 			return 2
+		}
+		if revive {
+			next, err := review.RevivePlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), *expectedRevision)
+			if err != nil {
+				fmt.Fprintln(stderr, formatFailure("runtime review-plan revive", err))
+				return 1
+			}
+			ptr := review.PlanPointerFromState(next.State)
+			fmt.Fprintf(stderr, "review-plan revive: %s now at revision %d (status %s); baseline re-check clean, no claim touched\n", ptr.PlanID, ptr.Revision, ptr.Status)
+			return encodeJSON(stdout, map[string]any{
+				"plan_id":  ptr.PlanID,
+				"revision": ptr.Revision,
+				"status":   ptr.Status,
+			})
 		}
 		if revise {
 			resolvedRevision := *expectedRevision
@@ -1579,7 +1676,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		assignmentID := flags.String("assignment-id", "", "plan assignment the result answers")
 		resultPath := flags.String("result", "", "ReviewResult JSON path")
 		captureDir := flags.String("captures", "", "capture buffer dir (or the steps.jsonl file itself); empty encounter timelines absorb buffered steps")
-		if err := flags.Parse(verbArgs); err != nil {
+		if err := parseWorkspaceFlags(flags, verbArgs); err != nil {
 			return 2
 		}
 		if *assignmentID == "" || *resultPath == "" {
@@ -1656,7 +1753,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		filePath := flags.String("file", "", "FindingSupplement JSON path")
 		authorizedBy := flags.String("authorized-by", "", "scheduler identity authorizing a replacement finder (required when author != original finder)")
 		inRoundNote := flags.Bool("in-round-note", false, "declare an S7 in-round note from the original finder (exempt from the hypothesis_id + discriminator + expected_outcomes gate; must not carry hypothesis_id)")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *findingID == "" || *filePath == "" {
@@ -1698,7 +1795,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		event := flags.String("event", "", "BUG lifecycle event (e.g. bug_accepted)")
 		messagePath := flags.String("message", "", "BUG message evidence path")
 		paramsRaw := flags.String("params", "", "JSON object of guard params")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *bugID == "" || *event == "" {
@@ -1761,7 +1858,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		root := flags.String("root", ".", "repository root")
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		// Anchor --state / --journal against --root so the verb works
@@ -1809,7 +1906,7 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 	actor := flags.String("actor", "", "human decision actor")
 	decisionEvidence := flags.String("decision-evidence", "", "human_decision_record evidence reference")
 	findingEvidence := flags.String("finding-evidence", "", "finding_record evidence reference; required for reject_defect")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 
@@ -1879,7 +1976,7 @@ func runRuntimeReconcilePolicyRef(args []string, stdout, stderr io.Writer) int {
 	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	checkOnly := flags.Bool("check", false, "report drift without writing state")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	// Anchor --state / --journal against --root so the verb works
@@ -1938,7 +2035,7 @@ func runRuntimeRollover(args []string, stdout, stderr io.Writer) int {
 	archive := flags.String("archive-dir", ".claude/runtime-archive", "archive directory relative to repository root")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
 	approvalEvidence := flags.String("approval-evidence", "", "valid human_decision evidence ID produced by --approved-by")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*approvedBy) == "" {
@@ -2152,7 +2249,7 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 	var producedBy, scopeRefs stringListFlag
 	flags.Var(&producedBy, "produced-by", "evidence producer; repeatable")
 	flags.Var(&scopeRefs, "scope-ref", "evidence scope reference; repeatable")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if *id == "" || *kind == "" || *path == "" || len(producedBy) == 0 {
@@ -2213,7 +2310,7 @@ func runRuntimeChange(args []string, stdout, stderr io.Writer) int {
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 	inputPath := flags.String("input", "", "JSON Change Record input path")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if *inputPath == "" {
@@ -2314,7 +2411,7 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "validate")
 	all := flags.Bool("all", false, "validate all Harness artifacts")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if !*all {
@@ -2335,7 +2432,7 @@ func runDryRun(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "dry-run")
 	root := flags.String("root", ".", "repository root")
 	fixture := flags.String("fixture", "", "Hook input fixture")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if *fixture == "" {
@@ -2357,7 +2454,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	bindUsage(flags, "hook")
 	event := flags.String("event", "", "Claude Code Hook event")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if *event == "" {
@@ -2374,8 +2471,12 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
+	}
+	if err := semantic.ValidateAgentDefinitions(*root); err != nil {
+		fmt.Fprintf(stderr, "doctor failed: %v\n", err)
+		return 1
 	}
 	if err := semantic.ValidateManualAgreement(*root); err != nil {
 		fmt.Fprintf(stderr, "doctor failed: %v\n", err)
@@ -2413,7 +2514,7 @@ func runHealth(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "health")
 	root := flags.String("root", ".", "repository root")
 	failOnDegraded := flags.Bool("fail-on-degraded", false, "return exit 1 when historical runtime signals require inspection")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	out, err := metrics.FormatHealth(*root)
@@ -2498,6 +2599,43 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "Hook argument event %q does not match input event %q\n", expectedEvent, request.Event)
 		return 1
 	}
+	// Resolve a registered Worker to its sole control Runtime without chdir.
+	rootContext, rootCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	controlRoot, rootErr := workspace.ResolveControl(rootContext, root)
+	rootCancel()
+	if rootErr != nil {
+		fmt.Fprintf(stderr, "workspace root unavailable: %v\n", rootErr)
+		if policy.UnavailableDecision(request, rootErr).Decision == "deny" {
+			return 2
+		}
+		return 0
+	}
+	root = controlRoot
+	// Session boundaries maintain the diagnostic spool. This runs under the
+	// native outer Hook deadline; interrupted compaction is exactly-once on retry.
+	// Mutating PreToolUse never performs this maintenance.
+	if request.Event == "SessionStart" || request.Event == "PreCompact" {
+		defer func() {
+			if err := metrics.CompactObservations(root); err != nil {
+				fmt.Fprintf(stderr, "metrics maintenance deferred: %v\n", err)
+			}
+		}()
+	}
+	// A separately launched top-level Claude session has no native agent_id.
+	// Resolve only its durable session/root pair; never impersonate nested agents.
+	if request.AgentID == "" && request.TeammateName == "" && request.SessionID != "" && request.CWD != "" {
+		ownerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		owner, err := workspace.SessionOwner(ownerCtx, root, request.CWD, request.SessionID)
+		cancel()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			if request.Event == "PreToolUse" {
+				return 2
+			}
+			return 0
+		}
+		request.AgentID = owner
+	}
 	// Official TeammateIdle payloads carry teammate_name instead of agent_id
 	// (Claude Code 2.1.218). Normalize once so hookctx resolution, the
 	// Controller and the audit envelope all identify the same teammate
@@ -2536,17 +2674,38 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 			request.Runtime = context
 		}
 	}
-	// The Hook policy document is the minimal-safety authority. If it
-	// cannot be loaded, evaluate() cannot render a safety decision and
-	// the Hook output is meaningless — return the load error instead of
-	// silently falling through. The controller cycle (run below) does
-	// NOT depend on the policy document; it only needs the catalog and
-	// the runtime store.
+	// Policy failure must use a platform-blocking exit for potentially mutating
+	// PreToolUse calls. Exit 1 is only a non-blocking Hook error in Claude Code.
+	// Leave explicit reads and lifecycle notifications available for diagnosis.
 	if _, err := policy.Load(filepath.Join(root, projectlayout.Policy)); err != nil {
 		fmt.Fprintf(stderr, "load policy: %v\n", err)
-		return 1
+		decision := policy.UnavailableDecision(request, err)
+		fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(decision))
+		if decision.Decision == "deny" {
+			return 2
+		}
+		return 0
 	}
 
+	// Bound mode reloads all facts from the sole control Runtime. A supplied
+	// runtime_context must not impersonate an activated Worker or skip its plan.
+	bound, bindingState, bindingErr := workspace.Load(root)
+	if bindingErr != nil && bindingState["workspace"] != nil {
+		request.Runtime.WorkspaceError = bindingErr.Error()
+	}
+	if request.Runtime.Workspace == nil && bindingErr == nil && bound != nil {
+		trusted, err := hookctx.Load(root, request.AgentID)
+		if err != nil {
+			request.Runtime.WorkspaceError = err.Error()
+		} else {
+			request.Runtime = trusted
+		}
+	}
+
+	if boundary, blocked := policy.WorkspaceBoundaryDecision(request); blocked {
+		fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(boundary))
+		return 2
+	}
 	// Main Stop is a preflight gate. It must run before the Controller because
 	// the Controller is allowed to commit one automatic transition and refresh
 	// the Runtime milestone; a Stop that is already known to be illegal must not
@@ -2639,6 +2798,20 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 			decision = stopDecision
 		}
 	}
+	// Budget only our Idle reminder; an exhausted reminder is not a safety waiver.
+	idleDiagnostic := ""
+	if renderHook && request.Event == "TeammateIdle" && decision.RuleID == hook.RuleTeammateIdleResumeAssignment {
+		exhausted, err := hook.IdleRecoveryExhausted(root, request, decision)
+		if exhausted || err != nil {
+			idleDiagnostic = "LOOP RECOVERY STALLED: repeated Idle recovery made no recorded progress. Main must inspect the current assignment/checkpoint; do not resend the same plan, replace the worker blindly, or mark the task complete. Product-write and completion gates remain enforced."
+			if err != nil {
+				idleDiagnostic = "LOOP RECOVERY CACHE UNAVAILABLE: progress could not be measured. Main must inspect the assignment; this is not proof of exhausted retries. Diagnostic: " + err.Error()
+			}
+			decision.Decision = "warn"
+			decision.Reason = idleDiagnostic
+			decision.Recovery = []string{"Main: inspect the existing assignment and its evidence before re-waking this worker"}
+		}
+	}
 	// Record the measured controller/policy path before the envelope is
 	// persisted. A platform timeout kills the process before this point, so a
 	// missing record remains a useful timeout signal rather than a fabricated
@@ -2680,7 +2853,12 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		return 0
 	}
 	if request.Event == "PreToolUse" || decision.Guidance != nil {
-		_ = metrics.RecordRecoveryPacket(root)
+		_ = metrics.ObserveRecoveryPacket(root)
+	}
+	if idleDiagnostic != "" {
+		// exit 0 allows idle without claiming a Result; make the blocked work visible.
+		_ = json.NewEncoder(stdout).Encode(map[string]any{"systemMessage": idleDiagnostic})
+		return 0
 	}
 	// TeammateIdle/SubagentStop block: the official Claude Code control is
 	// exit code 2 with the feedback on stderr (routed back to that same
@@ -2725,6 +2903,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "render Hook output: %v\n", err)
 		return 1
 	}
+	output, commitNotice := hook.PrepareNotice(root, request.SessionID, request.EffectiveAgentID(), request.Event, output)
 	if len(output) > 0 {
 		if _, err := stdout.Write(append(output, '\n')); err != nil {
 			if isDenyingHookDecision(decision.Decision) {
@@ -2734,6 +2913,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 			return 1
 		}
 	}
+	commitNotice()
 	if request.Event != "PreToolUse" && isDenyingHookDecision(decision.Decision) {
 		return 2
 	}
@@ -2789,8 +2969,7 @@ func runtimeCheckpointMissing(root string) bool {
 // activation envelope's hash chain bound to the plan_report file bytes
 // (assignable.AutoAdvanceToWorking). The chain is driven by the plan
 // SendMessage payload's `plan_ref` field; if the field is absent the
-// observation degrades to the legacy plan_reported_ref-only behavior and
-// the recovery verb is named in the stderr note.
+// observation is rejected if the required plan file reference is absent.
 func runPostToolUseHook(root string, request policy.Input, stdout, stderr io.Writer) int {
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
@@ -2841,11 +3020,11 @@ func runPostToolUseHook(root string, request policy.Input, stdout, stderr io.Wri
 			fmt.Fprintln(stdout, hook.RenderPostToolUseEnvelope(obs))
 			return 0
 		}
-		if err := recordPlanCheckpoint(root, statePath, journalPath, snapshot, obs.AgentID, request); err != nil {
+		if err := recordPlanCheckpoint(root, statePath, journalPath, snapshot, obs.AgentID, request, stderr); err != nil {
 			obs.Recorded = false
-			obs.SystemMsg = ""
-			obs.Reason = "plan_report registration failed: " + err.Error()
+			obs.Reason = "plan_report registration failed: checkpoint not persisted: " + err.Error()
 			fmt.Fprintf(stderr, "note: %s\n", obs.Reason)
+			obs.SystemMsg = ""
 			fmt.Fprintln(stdout, hook.RenderPostToolUseEnvelope(obs))
 			return 0
 		}
@@ -2907,230 +3086,66 @@ func planReportRef(request policy.Input) string {
 // remains non-blocking, but a malformed or unrelated plan report must not
 // clear the first-write barrier merely because it says message_type=plan_report.
 func validatePlanReportCheckpoint(root string, snapshot runtime.Snapshot, agentID, ref string) error {
-	if ref == "" {
-		return fmt.Errorf("plan_ref is required")
-	}
-	abs := ref
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(root, filepath.FromSlash(ref))
-	}
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return fmt.Errorf("resolve repository root: %w", err)
-	}
-	abs, err = filepath.Abs(abs)
-	if err != nil {
-		return fmt.Errorf("resolve plan_ref: %w", err)
-	}
-	rel, err := filepath.Rel(rootAbs, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("plan_ref %q is outside the repository", ref)
-	}
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		return fmt.Errorf("read plan_ref %q: %w", ref, err)
-	}
-	if err := schema.NewValidator(root).ValidateBytes("agent-message.schema.json", data); err != nil {
-		return fmt.Errorf("plan_ref schema: %w", err)
-	}
-	var message map[string]any
-	if err := json.Unmarshal(data, &message); err != nil {
-		return fmt.Errorf("decode plan_ref: %w", err)
-	}
-	if message["message_type"] != "plan_report" || message["agent_id"] != agentID {
-		return fmt.Errorf("plan_ref must be a plan_report for Agent %s", agentID)
-	}
-	if runtimeID, _ := snapshot.State["runtime_id"].(string); runtimeID != "" && message["runtime_id"] != runtimeID {
-		return fmt.Errorf("plan_ref runtime_id does not match the current runtime")
-	}
-	ptr := review.PlanPointerFromState(snapshot.State)
-	assignmentID, _ := message["assignment_id"].(string)
-	if ptr != nil {
-		if revision := integerValue(message["assignment_revision"]); revision != ptr.Revision {
-			// A non-S7 workgroup may be active while the previous S7 plan is
-			// still present in the projection. Only enforce the ReviewPlan
-			// revision when the submitted Assignment is actually one of its
-			// rows; S8/S9 assignments are bound by their manifest below.
-			reviewMap, _ := snapshot.State["review"].(map[string]any)
-			assignments, _ := reviewMap["assignments"].(map[string]any)
-			if _, exists := assignments[assignmentID]; exists {
-				return fmt.Errorf("plan_ref assignment_revision %d does not match ReviewPlan revision %d", revision, ptr.Revision)
-			}
-		}
-		reviewMap, _ := snapshot.State["review"].(map[string]any)
-		assignments, _ := reviewMap["assignments"].(map[string]any)
-		row, _ := assignments[assignmentID].(map[string]any)
-		if row != nil {
-			if row["agent_id"] != agentID {
-				return fmt.Errorf("plan_ref Assignment %s is not dispatched to Agent %s", assignmentID, agentID)
-			}
-			if revision := integerValue(message["assignment_revision"]); revision != ptr.Revision {
-				return fmt.Errorf("plan_ref assignment_revision %d does not match ReviewPlan revision %d", revision, ptr.Revision)
-			}
-			return nil
-		}
-	}
-	return validateManifestPlanReportCheckpoint(root, snapshot, message, agentID)
+	return plancheckpoint.Validate(root, snapshot, agentID, ref)
 }
 
-// validateManifestPlanReportCheckpoint validates the generic L4 checkpoint
-// for Builder/Investigator workgroups that are not S7 ReviewPlan rows. Their
-// Assignment identity lives in the fingerprinted team manifest; the manifest
-// assignment is immutable for the lifetime of that dispatch, so its generic
-// checkpoint revision is deliberately 1. S9 keeps a separate domain
-// RepairAssignment (repair-assignment-*) and maps it to the platform-safe
-// manifest id (assignment-s9-*); this function validates the latter while the
-// S9 domain PlanReport validates the former.
-func validateManifestPlanReportCheckpoint(root string, snapshot runtime.Snapshot, message map[string]any, agentID string) error {
-	assignmentID := stringValue(message["assignment_id"])
-	teamID := stringValue(message["team_id"])
-	taskID := stringValue(message["task_id"])
-	if assignmentID == "" || teamID == "" || taskID == "" {
-		return fmt.Errorf("manifest-bound plan_ref requires assignment_id, team_id, and task_id")
-	}
-	if revision := integerValue(message["assignment_revision"]); revision != 1 {
-		return fmt.Errorf("manifest-bound Assignment %s uses assignment_revision=1; got %d", assignmentID, revision)
-	}
-
-	entities, _ := snapshot.State["entities"].(map[string]any)
-	var agent map[string]any
-	rawAgents, _ := entities["agents"].([]any)
-	for _, raw := range rawAgents {
-		candidate, _ := raw.(map[string]any)
-		if stringValue(candidate["id"]) == agentID {
-			agent = candidate
-			break
-		}
-	}
-	if agent == nil {
-		return fmt.Errorf("manifest-bound plan_ref Agent %s is not registered", agentID)
-	}
-	if recordedTeam := stringValue(agent["team_id"]); recordedTeam != "" && recordedTeam != teamID {
-		return fmt.Errorf("plan_ref team_id %s does not match Agent %s team %s", teamID, agentID, recordedTeam)
-	}
-	if !containsStringValue(stringSliceAny(agent["task_ids"]), taskID) {
-		return fmt.Errorf("plan_ref TASK %s is outside Agent %s assignment", taskID, agentID)
-	}
-
-	var teamRow map[string]any
-	rawTeams, _ := entities["teams"].([]any)
-	for _, raw := range rawTeams {
-		candidate, _ := raw.(map[string]any)
-		if stringValue(candidate["id"]) == teamID {
-			teamRow = candidate
-			break
-		}
-	}
-	if teamRow == nil {
-		return fmt.Errorf("manifest-bound plan_ref team %s is not registered", teamID)
-	}
-	manifestRef := stringValue(teamRow["manifest_ref"])
-	if manifestRef == "" {
-		return fmt.Errorf("team %s has no manifest_ref for the plan checkpoint", teamID)
-	}
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return fmt.Errorf("resolve repository root for manifest: %w", err)
-	}
-	manifestPath := resolveRootPath(root, manifestRef)
-	manifestAbs, err := filepath.Abs(manifestPath)
-	if err != nil {
-		return fmt.Errorf("resolve team manifest %q: %w", manifestRef, err)
-	}
-	manifestRel, err := filepath.Rel(rootAbs, manifestAbs)
-	if err != nil || manifestRel == ".." || strings.HasPrefix(manifestRel, ".."+string(filepath.Separator)) || filepath.IsAbs(manifestRel) {
-		return fmt.Errorf("team manifest %q is outside the repository", manifestRef)
-	}
-	manifestBytes, err := os.ReadFile(manifestAbs)
-	if err != nil {
-		return fmt.Errorf("read dispatched team manifest %s: %w", manifestRef, err)
-	}
-	if err := schema.NewValidator(root).ValidateBytes("team-manifest.schema.json", manifestBytes); err != nil {
-		return fmt.Errorf("dispatched team manifest schema: %w", err)
-	}
-	if err := team.ValidateBytes(manifestBytes); err != nil {
-		return fmt.Errorf("dispatched team manifest semantics: %w", err)
-	}
-	var manifest struct {
-		RuntimeID   string `json:"runtime_id"`
-		WorkgroupID string `json:"workgroup_id"`
-		Assignments []struct {
-			AssignmentID       string `json:"assignment_id"`
-			AgentID            string `json:"agent_id"`
-			AgentDefinitionRef string `json:"agent_definition_ref"`
-		} `json:"assignments"`
-	}
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return fmt.Errorf("decode dispatched team manifest: %w", err)
-	}
-	if manifest.RuntimeID != stringValue(snapshot.State["runtime_id"]) {
-		return fmt.Errorf("plan_ref manifest runtime_id does not match the current runtime")
-	}
-	if manifest.WorkgroupID != teamID {
-		return fmt.Errorf("plan_ref team_id %s does not match manifest workgroup_id %s", teamID, manifest.WorkgroupID)
-	}
-	for _, assignment := range manifest.Assignments {
-		if assignment.AssignmentID != assignmentID {
-			continue
-		}
-		if assignment.AgentID != agentID {
-			return fmt.Errorf("plan_ref Assignment %s is owned by Agent %s, not %s", assignmentID, assignment.AgentID, agentID)
-		}
-		return nil
-	}
-	return fmt.Errorf("plan_ref Assignment %s is not declared by manifest %s", assignmentID, manifestRef)
-}
-
-func containsStringValue(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
-// recordPlanCheckpoint writes the normalized, schema-validated
-// agent.plan_reported_ref once. Replaying the same imported content-addressed
-// ref is idempotent; a different report cannot silently replace the first
-// durable checkpoint.
-func recordPlanCheckpoint(root, statePath, journalPath string, snapshot runtime.Snapshot, agentID string, request policy.Input) error {
+// recordPlanCheckpoint records validated plan evidence with bounded CAS retry.
+// An observation failure must never be rendered as a persisted checkpoint.
+func recordPlanCheckpoint(root, statePath, journalPath string, snapshot runtime.Snapshot, agentID string, request policy.Input, stderr io.Writer) error {
 	ref := planReportRef(request)
 	if ref == "" {
 		return fmt.Errorf("plan_ref is required")
 	}
 	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	_, err := store.Update(snapshot.Revision, runtime.Mutation{
-		EventID:      fmt.Sprintf("evt-plan-observed-%s-r%d", agentID, snapshot.Revision+1),
-		TransitionID: "PLAN-OBSERVATION",
-		Event:        "plan_report_observed",
-		Actor:        "hook_controller",
-		// Bind idempotency to the immutable report ref. A different report
-		// from the same Agent must reach Apply so the first-write barrier can
-		// reject replacement; a fixed Agent-only key could be treated as an
-		// already-applied mutation by a Writer before Apply runs.
-		IdempotencyKey: fmt.Sprintf("hook:plan-observed:%s:%s", agentID, ref),
-		RuntimeID:      runtimeIDString(snapshot.State),
-		OccurredAt:     time.Now().UTC(),
-		Apply: func(state map[string]any) error {
-			entities, _ := state["entities"].(map[string]any)
-			for _, raw := range entities["agents"].([]any) {
-				agent, _ := raw.(map[string]any)
-				if agent == nil || agent["id"] != agentID {
-					continue
-				}
-				if existing, _ := agent["plan_reported_ref"].(string); existing != "" {
-					if existing == ref {
-						return nil // replay of the same immutable report
-					}
-					return fmt.Errorf("agent %s already has plan_reported_ref %q; refusing replacement with %q", agentID, existing, ref)
-				}
-				agent["plan_reported_ref"] = ref
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = validatePlanReportCheckpoint(root, snapshot, agentID, ref); err != nil {
+			return err
+		}
+		entities, _ := snapshot.State["entities"].(map[string]any)
+		agents, _ := entities["agents"].([]any)
+		for _, raw := range agents {
+			a, _ := raw.(map[string]any)
+			if a["id"] == agentID && a["plan_reported_ref"] == ref {
 				return nil
 			}
-			return fmt.Errorf("agent %s not found", agentID)
-		},
-	})
+		}
+		_, err = store.Update(snapshot.Revision, runtime.Mutation{
+			EventID:        fmt.Sprintf("evt-plan-observed-%s-r%d", agentID, snapshot.Revision+1),
+			TransitionID:   "PLAN-OBSERVATION",
+			Event:          "plan_report_observed",
+			Actor:          "hook_controller",
+			IdempotencyKey: fmt.Sprintf("hook:plan-observed:%s:%s:r%d", agentID, ref, snapshot.Revision),
+			RuntimeID:      runtimeIDString(snapshot.State),
+			OccurredAt:     time.Now().UTC(),
+			Apply: func(state map[string]any) error {
+				entities, _ := state["entities"].(map[string]any)
+				for _, raw := range entities["agents"].([]any) {
+					agent, _ := raw.(map[string]any)
+					if agent == nil || agent["id"] != agentID {
+						continue
+					}
+					if existing, _ := agent["plan_reported_ref"].(string); existing != "" && existing != ref {
+						return fmt.Errorf("agent checkpoint already refers to a different plan; investigate dispatch before replacing it")
+					}
+					agent["plan_reported_ref"] = ref
+					return nil
+				}
+				return fmt.Errorf("agent %s not found", agentID)
+			},
+		})
+		if !errors.Is(err, runtime.ErrStaleRevision) || attempt == 2 {
+			break
+		}
+		snapshot, err = store.Snapshot()
+		if err != nil {
+			return err
+		}
+	}
+	if err != nil {
+		// The SendMessage already occurred; report persistence failure accurately.
+		fmt.Fprintf(stderr, "note: plan_report observation not persisted (%v)\n", err)
+	}
 	return err
 }
 
@@ -3441,7 +3456,7 @@ func runImpact(args []string, stdout, stderr io.Writer) int {
 	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 	var changed changedPaths
 	flags.Var(&changed, "changed", "changed path (repeatable)")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if len(changed) == 0 {
@@ -3519,7 +3534,7 @@ func runVerification(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "verification clean-round")
 	root := flags.String("root", ".", "repository root")
 	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	data, err := readRuntimeBytes(*root, *statePath)
@@ -3622,7 +3637,7 @@ func runReleaseGraph(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "release-graph validate")
 	root := flags.String("root", ".", "release or installed project root")
 	installed := flags.Bool("installed", false, "validate the installed .claude asset layout")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	validate := releasegraph.ValidateStagedRelease
@@ -3652,7 +3667,7 @@ func runManual(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	target := flags.String("target", transition.ManualTargetPath(), "output path relative to root; defaults to .claude/bin/loop-harness.md next to the binary")
 	toStdout := flags.Bool("stdout", false, "write to stdout instead of --target")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	catalog, err := transition.LoadCatalog(*root)
@@ -3706,7 +3721,7 @@ func runExplain(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "explain")
 	root := flags.String("root", ".", "repository root")
 	statePath := flags.String("state", ".claude/loop-state.json", "current Runtime state path; read-only")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	catalog, err := transition.LoadCatalog(*root)
