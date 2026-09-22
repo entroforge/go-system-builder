@@ -1,6 +1,6 @@
 // task_integrate_test.go — L3-S6 complexity pass N1: the explicit
 // `runtime task-integrate` verb drives the identical Inspect → non-squash
-// merge → verified checkpoint chain as the SubagentStop hook, without
+// merge → verification → acknowledgment → cleanup chain, without
 // depending on the platform payload carrying the assignment identity.
 package req039_test
 
@@ -29,13 +29,13 @@ func seedIntegrableAssignment(t *testing.T, root string) string {
 			"id": "builder-ti", "role": "builder", "state": "reported",
 			"task_ids": []any{"TASK-039-01"}, "team_id": "team-ti",
 			"definition_ref": ".claude/agents/backend-builder.md",
-			"prompt_ref":     "manifest#assignment-ti",
+			"prompt_ref":     ".claude/workgroups/REQ-039/TASK-039-01/manifest.json#assignment-ti",
 			"readback_ref":   nil, "activation_ref": nil, "activation_revision": nil,
 			"updated_at": "2026-08-20T00:00:00Z",
 		}},
 		"tasks": []any{map[string]any{
 			"id": "TASK-039-01", "state": "review",
-			"path":            "docs/tasks/TASK-039-01.md",
+			"path":            "docs/dev/tasks/TASK-039-01.md",
 			"sha256":          "0000000000000000000000000000000000000000000000000000000000000001",
 			"owner_agent_ids": []any{"builder-ti"},
 		}},
@@ -57,7 +57,7 @@ func runTaskIntegrate(t *testing.T, root, assignmentID string) (int, string, str
 	return code, stdout.String(), stderr.String()
 }
 
-func TestTaskIntegrateMergesWorktreeToVerified(t *testing.T) {
+func TestTaskIntegrateMergesAcknowledgesAndCleansWorktree(t *testing.T) {
 	root := freshRoot(t)
 	wtPath := seedIntegrableAssignment(t, root)
 	developBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
@@ -78,7 +78,7 @@ func TestTaskIntegrateMergesWorktreeToVerified(t *testing.T) {
 	if len(strings.Fields(strings.TrimSpace(parents))) != 2 {
 		t.Fatalf("task-integrate must produce a merge commit, parents=%q", parents)
 	}
-	// Durable checkpoint reached verified with the task bound.
+	// Durable checkpoint reached complete with the task bound.
 	checkpointPath := filepath.Join(root, ".claude", "evidence", "loop-system-test", "g1", "worktree", "assignment-ti", "checkpoint.json")
 	data, err := os.ReadFile(checkpointPath)
 	if err != nil {
@@ -91,13 +91,15 @@ func TestTaskIntegrateMergesWorktreeToVerified(t *testing.T) {
 	if err := json.Unmarshal(data, &checkpoint); err != nil {
 		t.Fatal(err)
 	}
-	if checkpoint.State != "verified" {
-		t.Fatalf("checkpoint state = %q, want verified (checkpoint=%s)", checkpoint.State, data)
+	if checkpoint.State != "complete" {
+		t.Fatalf("checkpoint state = %q, want complete (checkpoint=%s)", checkpoint.State, data)
 	}
 	if checkpoint.TaskID != "TASK-039-01" {
 		t.Fatalf("checkpoint task_id = %q, want TASK-039-01 (gate binding)", checkpoint.TaskID)
 	}
-	_ = wtPath
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("completed checkout remains: %v", err)
+	}
 }
 
 func TestTaskIntegrateUnknownAssignmentListsKnown(t *testing.T) {

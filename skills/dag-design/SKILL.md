@@ -6,7 +6,7 @@ version: 0.3.1
 ---
 # DAG Design
 ## Authority
-Quality guidance only. Legal Loop transitions remain in `docs/loop-definition.json`; stage routing remains in `docs/agent-protocol.md`.
+Quality guidance only. Legal Loop transitions remain in `docs/control/loop-definition.json`; stage routing remains in `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to dependency graphs, build graphs, workflow scheduling, task ordering, graph persistence, or cycle validation. TASK-batch cycle detection is machine-owned (`loop-harness tasks check` at TR-002); load this skill for design-time methodology, not for checking the TASK batch.
 ## Required Inputs

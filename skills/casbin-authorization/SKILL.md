@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Casbin Authorization
 ## Authority
-Quality guidance only. Product authorization policy and `docs/rules/security.md` remain authoritative; stage routing remains in `docs/agent-protocol.md`.
+Quality guidance only. Product authorization policy and `docs/rules/security.md` remain authoritative; stage routing remains in `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to Casbin models, policy storage, role relations, matcher functions, enforcers, or authorization middleware.
 ## Required Inputs

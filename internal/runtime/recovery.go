@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -269,6 +270,16 @@ type recoveryPendingSource struct {
 func ApplyRecovery(request RecoveryRequest) (RecoveryResult, error) {
 	normalizedRequest, err := normalizeRecoveryRequest(request)
 	if err != nil {
+		return RecoveryResult{}, err
+	}
+	if err := projectlayout.Check(normalizedRequest.Root); err != nil {
+		return RecoveryResult{}, err
+	}
+	if data, err := os.ReadFile(normalizedRequest.StatePath); err == nil {
+		if err := projectlayout.CheckRuntime(data); err != nil {
+			return RecoveryResult{}, err
+		}
+	} else if !os.IsNotExist(err) {
 		return RecoveryResult{}, err
 	}
 	for _, path := range []string{normalizedRequest.StatePath, normalizedRequest.JournalPath} {

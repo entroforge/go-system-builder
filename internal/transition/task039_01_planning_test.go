@@ -52,7 +52,7 @@ func TestTASK03901PlanningPhaseMachineIsFormal(t *testing.T) {
 }
 
 func TestTASK03901PlanningExitIsBoundToTasksPhase(t *testing.T) {
-	data, err := os.ReadFile("../../docs/loop-definition.json")
+	data, err := os.ReadFile("../../docs/control/loop-definition.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestTASK03901TR002RejectsBeforeTasksPhase(t *testing.T) {
 	startLockedREQ(t, root, statePath, journalPath)
 	seedPlanningArtifacts(t, statePath)
 
-	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-002",
 		ExpectedRevision: 0,
 		Actor:            "orchestrator",
@@ -94,7 +94,7 @@ func TestTASK03901LoopDefinitionSchemaAcceptsCanonicalAutoTrigger(t *testing.T) 
 	root := filepath.Join("..", "..")
 	if err := schema.NewValidator(root).ValidateFile(
 		"loop-definition.schema.json",
-		"docs/loop-definition.json",
+		"docs/control/loop-definition.json",
 	); err != nil {
 		t.Fatalf("canonical auto-trigger metadata must validate: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestTASK03901CatalogReadsLegacyPluralAutoTriggerEvent(t *testing.T) {
 
 func writeLoopDefinitionVariant(t *testing.T, mutate func(map[string]any)) string {
 	t.Helper()
-	data, err := os.ReadFile("../../docs/loop-definition.json")
+	data, err := os.ReadFile("../../docs/control/loop-definition.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,14 +417,14 @@ func writeLoopDefinitionVariant(t *testing.T, mutate func(map[string]any)) strin
 	mutate(definition)
 
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	data, err = json.MarshalIndent(definition, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root

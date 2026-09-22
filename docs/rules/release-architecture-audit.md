@@ -23,7 +23,7 @@ check before approving the release package.
 Create:
 
 ```text
-docs/release_audits/YYYY-MM-DD_<release-or-topic>_architecture_audit.md
+docs/reports/release-audits/YYYY-MM-DD_<release-or-topic>_architecture_audit.md
 ```
 
 The report must be committed with the release.

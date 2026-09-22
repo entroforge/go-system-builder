@@ -221,7 +221,7 @@ func TestRegisterPlanRejectsTaskCoverageGap(t *testing.T) {
 	state := baseVerificationState()
 	state["documents"] = []any{
 		map[string]any{
-			"id": "TASK-101", "kind": "task", "path": "docs/tasks/TASK-101.md",
+			"id": "TASK-101", "kind": "task", "path": "docs/dev/tasks/TASK-101.md",
 			"version": "v1.0.0", "sha256": strings.Repeat("2", 64),
 			"status": "locked", "generation": 1,
 		},
@@ -502,7 +502,7 @@ func TestRegisterPlanIgnoresPriorGenerationTasks(t *testing.T) {
 	state := baseVerificationState()
 	state["documents"] = []any{
 		map[string]any{
-			"id": "TASK-099", "kind": "task", "path": "docs/tasks/TASK-099.md",
+			"id": "TASK-099", "kind": "task", "path": "docs/dev/tasks/TASK-099.md",
 			"version": "v1.0.0", "sha256": strings.Repeat("3", 64),
 			"status": "locked", "generation": 0,
 		},

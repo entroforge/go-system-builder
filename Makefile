@@ -23,6 +23,8 @@ BUILD_DIR ?= dist/bin
 
 build-all:
 	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -o $(BUILD_DIR)/loop-harness-darwin-amd64 ./cmd/loop-harness
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -o $(BUILD_DIR)/loop-harness-linux-arm64 ./cmd/loop-harness
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 $(GO) build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/loop-harness-darwin-arm64      ./cmd/loop-harness
 	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/loop-harness-linux-amd64       ./cmd/loop-harness
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w" -o $(BUILD_DIR)/loop-harness-windows-amd64.exe ./cmd/loop-harness
@@ -65,11 +67,10 @@ release-graph-validate: build
 	bash packaging/build-release.sh $$version $$tarball >/dev/null; \
 	stage=$$(mktemp -d); \
 	tar -xzf $$tarball -C $$stage; \
-	cp $(HARNESS_BIN) $$stage/vibe-coding-loop-template-$$version/.claude/bin/loop-harness; \
-	$(HARNESS_BIN) release-graph validate --root $$stage/vibe-coding-loop-template-$$version; \
+	$$stage/vibe-coding-loop-template-$$version/.claude/bin/loop-harness release-graph validate --root $$stage/vibe-coding-loop-template-$$version; \
 	rm -rf $$dist $$stage
 
-# ci-verify runs the full CI matrix used by .github/workflows/verify.yml:
+# ci-verify runs the full CI matrix used by .github/workflows/ci.yml:
 # format check, static analysis, unit tests (with race), the in-tree doctor
 # against the source tree, the doctor against the staged release tree, the
 # full validate --all, and the release-graph validator. Any failure
@@ -77,9 +78,8 @@ release-graph-validate: build
 ci-verify: fmt-check vet test test-race doctor doctor-staged validate release-graph-validate build
 
 # doctor-staged builds the release tarball, extracts it to a tmpdir, and
-# runs `loop-harness doctor` against the extracted tree to verify the
-# shipped template itself passes every check (schemas, examples, runtime
-# reachability, inline methodology fingerprints).
+# installs with the packaged binary into a fresh target and verifies the
+# installed layout, schemas, examples, Runtime and Manual agreement.
 doctor-staged: build
 	@set -e; \
 	version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev); \
@@ -89,9 +89,11 @@ doctor-staged: build
 	stage=$$(mktemp -d); \
 	tar -xzf $$tarball -C $$stage; \
 	stage_root=$$stage/vibe-coding-loop-template-$$version; \
-	cp $(HARNESS_BIN) $$stage_root/.claude/bin/loop-harness; \
-	$(HARNESS_BIN) release-graph validate --root $$stage_root; \
-	$$stage_root/.claude/bin/loop-harness init --root $$stage_root; \
+	$$stage_root/.claude/bin/loop-harness release-graph validate --root $$stage_root; \
+	installed=$$stage/installed; \
+	$$stage_root/.claude/bin/loop-harness install --source $$stage_root --root $$installed; \
+	stage_root=$$installed; \
+	$$stage_root/.claude/bin/loop-harness release-graph validate --installed --root $$stage_root; \
 	$$stage_root/.claude/bin/loop-harness doctor --root $$stage_root; \
 	$$stage_root/.claude/bin/loop-harness validate --all --root $$stage_root; \
 	rm -rf $$dist $$stage
@@ -111,14 +113,14 @@ TARBALL := $(DIST)/vibe-coding-loop-template-$(VERSION).tar.gz
 # Strip comment and blank lines from the include list.
 INCLUDE := $(shell grep -v '^[[:space:]]*\#' packaging/include.txt | grep -v '^[[:space:]]*$$')
 
-# `release` cross-compiles all three platform binaries via `build-all` and
-# then stages them into the tarball. We deliberately do NOT depend on
-# `build` here: the tarball ships no host-platform binary, and build-all
-# already produces the host's binary as a side effect of the matching
-# cross-compile line.
+# Release staging includes its matching host executable for validation.
+# Always rebuild the tarball so nested assets and Go changes cannot reuse a stale package.
 release: build-all $(TARBALL)
 
-$(TARBALL): $(INCLUDE) packaging/install.md packaging/build-release.sh
+.PHONY: force-release
+force-release:
+
+$(TARBALL): force-release $(INCLUDE) docs/guides/install.md packaging/include.txt packaging/build-release.sh
 	@bash packaging/build-release.sh "$(VERSION)" "$(TARBALL)"
 
 release-list:

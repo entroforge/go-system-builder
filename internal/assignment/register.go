@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/dispatch"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
@@ -139,11 +140,22 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 		From:           cursor,
 		To:             cursor,
 		Apply: func(state map[string]any) error {
-			lifecycle, ok := state["lifecycle"].(map[string]any)
+			if err := dispatch.CheckRegistration(root, state, request.TaskID); err != nil {
+				return err
+			}
+			plannedWrites := []string{}
+			for _, item := range value.Assignments {
+				plannedWrites = append(plannedWrites, effectiveActivationWritePaths(item.WritePaths, item.OutputPaths)...)
+			}
+			if err := dispatch.ValidateWorkPackage(root, state, request.TaskID, request.TaskPath, taskData, plannedWrites, len(value.Assignments)); err != nil {
+				return err
+			}
+
+			_, ok := state["lifecycle"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("runtime lifecycle must be an object")
 			}
-			if err := validateWorkgroupState(value.WorkgroupKind, lifecycle); err != nil {
+			if err := validateWorkgroupState(value.WorkgroupKind, state); err != nil {
 				return err
 			}
 			if request.RepairAssignmentID != "" {
@@ -257,13 +269,14 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 				}
 				var activationRefValue any
 				if activationRef != "" {
-					activationBytes, marshalErr := json.MarshalIndent(buildActivationEnvelope(item.AgentID, ActivationSourceEntry{
+					envelope := buildActivationEnvelope(item.AgentID, ActivationSourceEntry{
 						AgentID:            item.AgentID,
 						AgentDefinitionRef: item.AgentDefinitionRef,
 						SkillRefs:          item.SkillRefs,
 						WritePaths:         item.WritePaths,
 						OutputPaths:        item.OutputPaths,
-					}), "", "  ")
+					})
+					activationBytes, marshalErr := json.MarshalIndent(envelope, "", "  ")
 					if marshalErr != nil {
 						return fmt.Errorf("activation envelope: hash staged bytes: %w", marshalErr)
 					}
@@ -335,7 +348,8 @@ func assignedResponsibilities(value manifest) []string {
 	return ids
 }
 
-func validateWorkgroupState(kind string, lifecycle map[string]any) error {
+func validateWorkgroupState(kind string, runtimeState map[string]any) error {
+	lifecycle, _ := runtimeState["lifecycle"].(map[string]any)
 	state, _ := lifecycle["state"].(string)
 	phase, _ := lifecycle["phase"].(string)
 	switch kind {
@@ -360,13 +374,36 @@ func validateWorkgroupState(kind string, lifecycle map[string]any) error {
 			return fmt.Errorf("builder workgroup requires building or bug_resolution state")
 		}
 	case "investigator":
-		if state != "bug_resolution" || phase != "investigation" {
-			return fmt.Errorf("investigator workgroup requires bug_resolution.investigation (current %s.%s)", state, phase)
+		if state != "bug_resolution" {
+			return fmt.Errorf("investigator workgroup requires bug_resolution state (current %s)", state)
+		}
+		if phase != "investigation" && !investigationReentry(runtimeState) {
+			return fmt.Errorf("investigator workgroup requires bug_resolution.investigation (current %s.%s); an investigate_more re-entry keeps the phase at the S9 checkpoint that earlier plan-report submissions advanced — signal the re-entry with `runtime investigation consume --case-id <case>` and inspect `runtime investigation status` before retrying", state, phase)
 		}
 	default:
 		return fmt.Errorf("unsupported workgroup kind %q", kind)
 	}
 	return nil
+}
+
+// investigationReentry reports whether the active InvestigationCase is back in
+// S8 investigation after an investigate_more re-entry. Contract approval is
+// already phase-agnostic within bug_resolution for the same reason
+// (internal/investigation/contract.go: earlier plan-report side effects may
+// have advanced the phase past investigation), and every other dispatch guard
+// reads the Case pointer — so the pointer is the authority here as well.
+func investigationReentry(runtimeState map[string]any) bool {
+	review, _ := runtimeState["review"].(map[string]any)
+	if review == nil {
+		return false
+	}
+	pointer, _ := review["investigation"].(map[string]any)
+	if pointer == nil {
+		return false
+	}
+	status, _ := pointer["status"].(string)
+	route, _ := pointer["route"].(string)
+	return status == "investigating" && route == "investigate_more"
 }
 
 func repositoryPath(root, path string) string {

@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Vue DevTools
 ## Authority
-Technical practice only. Stage routing remains in `docs/agent-protocol.md`; DevTools observations must be converted into reproducible test evidence.
+Technical practice only. Stage routing remains in `docs/control/agent-protocol.md`; DevTools observations must be converted into reproducible test evidence.
 ## Applicability
 Apply when Vue component hierarchy, reactive state, emitted events, routing, or browser performance needs diagnosis.
 ## Required Inputs

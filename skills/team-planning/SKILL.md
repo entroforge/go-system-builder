@@ -7,7 +7,7 @@ version: 1.3.0
 # Team Planning
 
 ## Authority
-The manifest proposes assignments; Hooks and runtime enforce activation. Runtime authority lives in `.claude/loop-state.json`; stage contracts live in `docs/agent-protocol.md`; the team-planning method is inlined below.
+The manifest proposes assignments; Hooks and runtime enforce activation. Runtime authority lives in `.claude/loop-state.json`; stage contracts live in `docs/control/agent-protocol.md`; the team-planning method is inlined below.
 
 ## Entry Conditions
 - Specification scope is known (contracts, TASKs, modules, risk tags are drafted).
@@ -18,7 +18,7 @@ The manifest proposes assignments; Hooks and runtime enforce activation. Runtime
 | Input | Path / field | Why |
 |:---|:---|:---|
 | Responsibility catalog | this Skill's procedure and inlined method summary | mandatory vs risk-triggered duties |
-| Contracts + TASKs | `docs/contracts/**`, `docs/tasks/**` | scope partitioning inputs |
+| Contracts + TASKs | `docs/dev/contracts/**`, `docs/dev/tasks/**` | scope partitioning inputs |
 | Risk tags | TASK risk fields | route Best-practice Skills per Agent |
 | Agent Definitions | `.claude/agents/<role>.md` | available roles and max permissions |
 | Existing manifests | runtime `entities.teams[]` | reuse freshness and continuity |
@@ -47,12 +47,7 @@ The manifest proposes assignments; Hooks and runtime enforce activation. Runtime
 - The manifest validates against `team-manifest.schema.json`.
 
 ## Stop Conditions
-Stop immediately and surface to the human if any of:
-- A mandatory responsibility cannot be covered (uncovered duty).
-- The dependency graph has a cycle.
-- Existing teammate state is stale (fingerprints drifted) and cannot be recovered.
-- Two assignments have overlapping write paths (write conflict).
-- A required role or Skill is unavailable.
+Stop dispatch of the affected assignment when coverage, dependencies, write ownership or role availability is invalid. This is a Worker/dispatch barrier, not automatically a Human Gateway. The Driver must first assign the missing duty, remove an erroneous dependency, serialize or repartition shared writes, or recover/reassign a stale teammate through the supported lifecycle. Preserve independent review and active assignment authority; do not silently widen scope or substitute roles. Continue unrelated unblocked work. Surface a human decision only when the remaining issue requires changed business semantics, unavailable external permission, a required explicit authorization or unrecoverable Runtime integrity; include the attempted autonomous recovery.
 
 ## Non-Goals
 - Do not use fixed team sizes — compute from scope and risk.
@@ -62,3 +57,15 @@ Stop immediately and surface to the human if any of:
 ## Inlined Methodology
 
 Claude Code currently permits one Agent Team per session. Therefore `platform_team_id` identifies the one Claude Code Team; `workgroup_id` identifies a logical phase grouping inside that Team. Builder, Document Verifier, Delivery Verifier, QA and E2E Browser workgroups execute in their applicable Loop phases; workgroups are not separate nested Claude Code Teams. Document Verification responsibilities: `DV-SPEC-CONSISTENCY` (REQ/design/UI/FE/BE/SYNC completeness, logic and cross-document consistency) and `DV-TASK-EXECUTABILITY` (task coverage, links, scope, dependencies, Closing Contracts, and evidence feasibility). Delivery Verification responsibilities: `VER-REQ-GAP`, `VER-SPEC-GAP`, `VER-MODULE-COMPLETE`, `VER-INTEGRATION`, `VER-REGRESSION`. QA responsibilities: `QA-MODULE-CODE`, `QA-REUSE-ABSTRACTION`, `QA-UNIT-TEST`, `QA-INTEGRATION-TEST`, `QA-ARCHITECTURE`, `QA-SECURITY`, `QA-PERFORMANCE`, `QA-RELIABILITY`, `QA-MIGRATION`. E2E Browser responsibilities: `E2E-USER-FLOW` (real-browser execution of assigned locked `PATH-*` entries from `USER-FLOW-*`) and `E2E-CONSOLE-NETWORK` (console errors, network failures, request/response mismatch, screenshots/traces). Risk-tag derivation covers frontend (`ui`, `frontend`), api (`api`, `cross-component`), database (`database`, `migration`), security (`security`), reliability (`reliability`, possibly `concurrency`), performance (`performance`), architecture (`architecture`), regression (`regression`). Scope partitioning rules: distinct write ownership or repository boundary; independent module or bounded-context responsibility; incompatible Best Practices or tool needs; high merge-conflict paths; independently testable Closing Contracts. One assignment may not exceed 30 files or 3 material modules. Conflict-graph `must_separate` edges when responsibilities require different conclusion enums, one responsibility checks the other's authored or repaired output, original-finder independence must be preserved, security/release/permission enforcement needs independent evidence, roles have different write permissions, scopes require incompatible Skills or tools, or combining them would exceed workload limits. Teammate reuse requires same role family and responsibility ID, unchanged scope, matching fingerprints, current prior read-back/activation, no unresolved report/BUG/blocked-task conflicts, valid independence, and non-stale teammate state. Workgroup gates: Document Verification must cover both DV duties; Builder Gate requires one write owner, Closing Contract, allowed paths and dependency position per locked TASK or accepted repair BUG; Delivery Verification must cover `VER-REQ-GAP`, `VER-SPEC-GAP`, all material module partitions and every triggered integration/regression responsibility; QA Gate must cover the four baseline QA responsibilities and every triggered architecture, security, performance, reliability and migration responsibility; E2E Browser Gate must cover all required locked `PATH-*` entries plus console/network evidence.
+
+## Dispatch scope and check-target consistency
+
+Before registering a Builder assignment, compare its TASK deliverables with write_paths, shared-type/API/route ownership and dependency order. Assign missing connection work explicitly rather than widening paths silently or instructing a component to duplicate an inaccessible authority. Reuse existing manifest fields and TASK sections; no additional parallel ledger is required.
+
+Bind each required check to an explicit execution tree and commit. A post-merge check must use the integration target supplied by the Integrator, never prefer an old source worktree merely because it exists. Preserve the real exit status and the project's evidence reporter; report zero collection, skipped required cases and missing artifacts as failures, not successful shell wrappers.
+
+Audit checks executed before and after merge so repeated expensive runs have an explicit purpose. Do not skip registered checks by policy text alone: changing an active contract or immutable manifest requires the existing rework/replacement procedure. In a replacement rehearsal verify not just registration, but old-assignment disposition, execution-batch selection and the check set consumed by integration.
+
+## Integration check phase
+
+Keep `legacy_pre_and_post_merge` (or the compatible omitted mode) for ordinary Builder assignments. Select `integration_check_mode: post_merge` only through an explicit reviewed plan explaining why Worker checks cannot run meaningfully or why their measured duplicate cost warrants deferral. Record the reason and recovery choice in the existing plan checkpoint; never fabricate measurements. Static identity, scope, locked-input and conflict inspection remains mandatory, and all required checks still run on the actual Main merge tree before verified/ack. On failure preserve the merge and receipts: retry an environment failure, or use rework for code corrections. Never reset Main automatically or edit an active manifest's mode. Target projects use `docs/workspace-integration.md` for the runner and recovery contract.

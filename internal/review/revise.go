@@ -72,11 +72,17 @@ func RevisePlan(
 		return loopruntime.Snapshot{}, err
 	}
 	switch ptr.Status {
-	case "running", "cannot_clean", "discovery_draining":
+	// stale is recoverable by a controlled revision once the drift source is
+	// remediated: without this arm a stale round has no in-round verb at all
+	// (register is blocked by the same-round pointer), deadlocking the loop.
+	case "running", "cannot_clean", "discovery_draining", "stale":
 	default:
 		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan %s is %s; revisions are only legal while the round is still discovering", ptr.PlanID, ptr.Status)
 	}
-	if ptr.Revision != 1 {
+	// The one-revision budget governs discovery revisions; a stale plan
+	// may be revised again purely to recover (the drift source must still
+	// verify clean against frozen subjects below).
+	if ptr.Revision != 1 && ptr.Status != "stale" {
 		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan %s is already at revision %d; at most one controlled revision per round (L3-S7 §5.3)", ptr.PlanID, ptr.Revision)
 	}
 	if next.ReviewPlanID != currentPlan.ReviewPlanID {
@@ -85,7 +91,7 @@ func RevisePlan(
 	if next.ReviewRound != currentPlan.ReviewRound || next.BaselineGeneration != currentPlan.BaselineGeneration {
 		return loopruntime.Snapshot{}, fmt.Errorf("a revision keeps the review_round and baseline_generation; a changed baseline is a stale round, not a revision")
 	}
-	if err := verifyFrozenSubjects(root, &next); err != nil {
+	if err := verifyFrozenSubjects(root, &next, current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan frozen subject baseline: %w", err)
 	}
 	if err := verifyRegressionAssetFingerprints(root, &next); err != nil {
@@ -119,7 +125,14 @@ func RevisePlan(
 	// updates in the CAS. Overwriting v1 before the CAS would let a stale
 	// revision silently rewrite evidence consumed by other readers.
 	planBytes := append(canonicalJSON(data), '\n')
-	planRel := filepath.ToSlash(filepath.Join(".claude", "review", "plans", next.ReviewPlanID+"-r2.json"))
+	// A recovery revision of an already-revised (revision 2, stale) plan
+	// must not restage the same -r2.json artifact: the pointer read needs
+	// the file present while writeArtifact's O_EXCL needs it absent.
+	nextRevision := ptr.Revision + 1
+	if nextRevision < 2 {
+		nextRevision = 2
+	}
+	planRel := filepath.ToSlash(filepath.Join(".claude", "review", "plans", fmt.Sprintf("%s-r%d.json", next.ReviewPlanID, nextRevision)))
 	if err := writeArtifact(root, planRel, planBytes); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
@@ -158,9 +171,16 @@ func RevisePlan(
 			if planMap == nil {
 				return fmt.Errorf("review plan pointer missing")
 			}
-			planMap["revision"] = 2
+			planMap["revision"] = nextRevision
 			planMap["path"] = planRel
 			planMap["sha256"] = planSHA
+			// stale-recovery: the revision re-pinned a drift-clean baseline
+			// (verifyFrozenSubjects already passed above); a round that was
+			// marked stale must return to discovering or it has no exit.
+			if status, _ := planMap["status"].(string); status == "stale" {
+				lifecycleMap, _ := state["lifecycle"].(map[string]any)
+				setPlanStatus(reviewMap, lifecycleMap, "running")
+			}
 
 			claimsProjection, _ := reviewMap["claims"].(map[string]any)
 			assignmentsProjection, _ := reviewMap["assignments"].(map[string]any)

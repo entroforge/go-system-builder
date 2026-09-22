@@ -15,8 +15,8 @@ It is advisory: it shapes how the main session decides the next action. It is
 | Concern | Authority |
 |:---|:---|
 | what is currently true | `.claude/loop-state.json` |
-| what transition is legal | `docs/loop-definition.json` |
-| what the route looks like | `docs/agent-protocol.md` (S0–S11 stage contracts) |
+| what transition is legal | `docs/control/loop-definition.json` |
+| what the route looks like | `docs/control/agent-protocol.md` (S0–S11 stage contracts) |
 | what the next action is | this Skill, computed from the above |
 
 ## What "work-first" means
@@ -37,7 +37,7 @@ always the most-forward missing piece of work the current stage requires.
 
 - A locked REQ exists; its SHA-256 matches the Runtime baseline.
 - `.claude/loop-state.json` is readable and schema-valid.
-- The Loop Definition under `docs/loop-definition.json` is readable.
+- The Loop Definition under `docs/control/loop-definition.json` is readable.
 - Hook policy health is `healthy`.
 
 If any entry condition fails, see "Stop conditions" below.
@@ -50,7 +50,7 @@ If any entry condition fails, see "Stop conditions" below.
 | Next projection | `loop-harness next --root .` | coarse missing-work projection — not live gate checklist |
 | Ready diagnostics | `loop-harness ready --root .` | dry-run current Quality Gate (`missing[]`); never hand-push Transition from it |
 | Hook packet | PreToolUse / SessionStart Recovery Packet | authoritative live `quality_gate.missing` + candidate |
-| Stage contract | `docs/agent-protocol.md#<current stage>` | the stage's `done_when`, `actions`, `failure_route` |
+| Stage contract | `docs/control/agent-protocol.md#<current stage>` | the stage's `done_when`, `actions`, `failure_route` |
 | Bound locked REQ | `runtime.bound_req.path` | verify the locked baseline |
 | Evidence map | `runtime.evidence[]` | check validity per stage `done_when` |
 
@@ -72,7 +72,7 @@ DRIVE()
 
 2. Resolve the current stage.
    - Read the Runtime's Main Spine stage (S0–S11).
-   - Read docs/agent-protocol.md#<stage> for done_when and actions.
+   - Read docs/control/agent-protocol.md#<stage> for done_when and actions.
 
 3. Inventory completed and open work for this stage.
    - Prefer the Hook packet `quality_gate.missing[]`. When unclear, run
@@ -185,7 +185,7 @@ locked REQ
 
 The `next.primary_skill` field names the primary Skill for the current
 action. The table below is the stable routing used by the Harness projection;
-it matches `docs/agent-protocol.md`.
+it matches `docs/control/agent-protocol.md`.
 
 | Main Spine stage / situation | Primary Skill |
 |:---|:---|
@@ -299,17 +299,19 @@ Activation, scope, Team, UI prototype, clean round, subagent report and idle
 staleness are **not** permission gates any more; they are forward scheduling
 guidance surfaced via the Quality Gate, Transition Guard or Recovery
 Packet. Quality Gate `not_ready` permits the original tool action and lists
-the missing work the Agent should produce next; only Safety `block` (locked
-artifact write or squash merge) may reject a tool call.
+the missing work the Agent should produce next; only a final Safety `block` or
+`deny` (locked-artifact write, squash merge, or protected-release command) may
+reject a tool call.
 
 This Skill describes how to process a Hook decision. It does **not** call
 Hook policy, write runtime, or set `runtime.lifecycle.state` — those are
 Hook and Harness responsibilities respectively. The Hook Adapter is
 stateless: `allow` permits the action, Quality `not_ready` permits the action
-and surfaces the missing list, and Safety `block` is reserved for the locked
-baseline and squash merge. `docs/hook-policy.json` defines the minimal
-Safety rule set; the surrounding policy shape is owned by BUG-039-01 and is
-no longer describing activation / scope / quality gates.
+and surfaces the missing list, and final Safety `block`/`deny` decisions cover
+locked-artifact writes, squash merges, and protected-release commands.
+`docs/control/hook-policy.json` defines the minimal Safety rule set; the
+surrounding policy shape is owned by BUG-039-01 and is no longer describing
+activation / scope / quality gates.
 
 ### Decision type → Driver action
 
@@ -319,7 +321,7 @@ no longer describing activation / scope / quality gates.
 | Quality `not_ready` | `permissionDecision="allow"` + `quality_gate.missing[]` | read Recovery Packet missing list, drive forward, re-evaluate on next Hook | n/a | no |
 | Quality `satisfied` / `advanced` | `permissionDecision="allow"` + transition result | continue DRIVE; refresh Milestone if `advanced` | n/a | no |
 | Quality `unknown` | `permissionDecision="allow"` + recovery code | follow the stable `LOOP_*` error code once, then continue | per code | no |
-| Safety `block` (locked artifact / squash merge) | `permissionDecision="deny"` + `permissionDecisionReason` | do **not** retry in a loop; produce new generation / amendment / normal-merge path | **no** | yes — rework or documented Human Gateway |
+| Safety `block`/`deny` (locked artifact, squash merge, protected release) | `permissionDecision="deny"` + `permissionDecisionReason` | do **not** retry in a loop; produce a new generation / amendment / normal-merge path, or stop at the human release boundary | **no** | yes — rework or documented Human Gateway |
 
 ### Recovery Packet processing path
 
@@ -351,10 +353,12 @@ SubagentStart / TeammateIdle Guidance, or the stage's `done_when` predicate
 — never as a Quality Gate denial. The Driver pulls them forward as normal
 scheduling work, not as a tool block.
 
-Safety `block` decisions do not enter this recovery loop. The tool that was
+Safety `block`/`deny` decisions do not enter this recovery loop. The tool that was
 blocked must be replaced with the new-generation, amendment, or normal-merge
-equivalent. The Driver surfaces the rework path or hands off to the
-documented Human Gateway package when the path requires human authority.
+equivalent. A protected-release command must stop at the human release
+boundary; it is never executed by the Harness. The Driver surfaces the
+rework path or hands off to the documented Human Gateway package when the path
+requires human authority.
 
 ### HS-* processing path
 
@@ -368,10 +372,14 @@ For each HS-* decision:
    `human_required=true`, `retry="never"`, while `HOOK_SQUASH_MERGE`
    is `human_required=false`, `retry="rerun after recovery validation"`.
 3. Take the rule's recovery path:
-   - `HOOK_LOCKED_ARTIFACT_WRITE` → write a new generation under
-     `docs/{kind}/versions/{REQ-ID}/g{N+1}/`. If changing the locked
-     baseline needs human amendment authority, form a `req_amendment`
-     Gateway.
+   - `HOOK_LOCKED_ARTIFACT_WRITE` → write a new generation under the
+     canonical root for its kind: `docs/requirements/` for `req`,
+     `docs/dev/contracts/` for `contract`, `docs/dev/tasks/` for `task` or a
+     dispatch plan, `docs/architecture/` for architecture documents,
+     `docs/design/` for design/UI baselines, or `docs/design/prototypes/` for
+     UI prototypes, followed by `versions/{REQ-ID}/g{N+1}/{canonical-file-name}`.
+     Unknown kinds require the formal rework path. If changing the locked
+     baseline needs human amendment authority, form a `req_amendment` Gateway.
    - `HOOK_SQUASH_MERGE` → re-issue as a normal merge without `--squash`.
      No Gateway.
 4. A Gateway package, when one is required, must contain: type, completed
@@ -379,11 +387,12 @@ For each HS-* decision:
    artifact needs an amendment the Agent cannot authorize), impact scope,
    recommended decision, and the stage to resume from after the human acts.
 
-Release-shaped operations (`git push <remote> master|main`, `gh pr merge`,
-`gh release create`) are **not** Hook block reasons. Hook Policy carries no
-rule for them. They are constrained by the stage's release-ready Gateway and
-human approval: reaching S11 raises a `release_ready` Gateway, and the human
-decides whether release proceeds.
+Protected-release operations (`git push <remote> master|main`, `gh pr merge`,
+`gh release create`, and the other commands matched by
+`docs/control/protected-commands.json`) receive a PreToolUse Hook
+`permissionDecision="deny"`. The S11 release-ready Gateway and human approval
+remain the authorization workflow; the Harness does not perform merge,
+publication, deployment, or formal release side effects.
 
 ### What this Skill does NOT do
 
@@ -392,7 +401,7 @@ decides whether release proceeds.
   or trigger TR-xxx.
 - It does **not** modify `.claude/loop-state.json` directly — the Harness
   transition engine is the sole writer.
-- It does **not** retry a Safety `block`; severity comes from the Safety
+- It does **not** retry a Safety `block`/`deny`; severity comes from the Safety
   decision itself, not retry count.
 - It does **not** treat Quality `not_ready` as a Human Gateway; the Agent
   produces the missing work forward and lets the next Hook re-evaluate.
@@ -432,3 +441,48 @@ Re-running DRIVE must not:
 
 The Runtime `revision` and `entities` arrays are the deduplication source.
 Before creating any entity, check the Runtime for an existing match.
+
+## User-visible progress
+
+The recovery packet is a scheduling checkpoint, not a work report. At the
+start of work, after a meaningful deliverable, on a blocker or change of
+approach, and approximately every 60 seconds during sustained work, tell the
+user briefly what has completed, what action is underway, and what comes
+next. Use the user's language. Do not narrate every tool call or expose
+internal reasoning. Report only observed results: a revision increment, an
+intended action, or a repeated Hook message is not evidence of progress.
+
+Hook `systemMessage` is a user notice; model recovery instructions belong in
+`hookSpecificOutput.additionalContext` for supported events. Full recovery
+context is retained at session/agent start and stage transitions. Ordinary
+PreToolUse calls provide the current gate conflicts, missing work, and a
+compact checkpoint. Repeated user notices may be suppressed within one
+session/agent, but safety denials and model context must never be suppressed.
+A Worker plan checkpoint requiring no approval does not silence progress
+reports to the user.
+
+## Technical barriers and progress
+
+A Worker blocked from its next action does not automatically mean the human must decide. Resolve missing task ownership, dependency mistakes, overlapping writes and reviewer independence through existing planning/assignment paths before escalating. Stop unsafe writes, not all unrelated work. An explicit human-boundary command still requires its actual authorization; advisory autonomy never manufactures human_decision evidence.
+
+When a command response or Hook already supplies a current next_action and the relevant artifact identity, execute it without another full status/read cycle. Refresh on restart, conflicting external updates, stale CAS, missing context or a contradictory checkpoint. Progress is a completed deliverable, resolved assertion or new discriminating evidence, not Runtime revision churn, file timestamps or tool count. Repeated unchanged failures require diagnosis; normal long-running checks remain legitimate. Use the dispatch Skill's bounded waiting and evidence reuse rules.
+
+## Routine repair authority
+
+Before escalating an ordinary technical RepairContract approval, check the
+Runtime's `configuration.repair.bound_policy` and existing current bounded grants.
+A policy pinned when the human locked/bound this REQ authorizes the Driver review
+path described in docs/bounded-repair-autonomy.md; use the pinned digest rather
+than asking for repeated approval. Do not infer, fabricate, extend or auto-renew
+policy. Scope/semantic changes outside authority keep their existing Gateway.
+
+
+## Temporary worktrees and committed stage delivery
+
+Bind both destinations explicitly with `req bind --dev-branch <branch> --release-upstream <upstream>`; neither defaults to develop or the remote default. The project's authority root and this development branch own retained changes.
+
+Before dispatch, commit the required stage documents, code and tests to that branch. Create/reuse registered temporary worktrees with `runtime worktree-create --root <authority-root> --assignment-id <id>`. Git worktrees share Git objects, but have separate indexes and working files: staged and dirty parent changes are absent. Native Claude Code base-ref defaults must be checked against the binding.
+
+Workers commit scoped results and report. Main reviews them and runs `runtime task-integrate --root <authority-root> --assignment-id <id>`: normal merge commit, verification, acknowledgement, cleanup. This is development integration, not release. Failed integration preserves the checkout; retry the same assignment. Do not discard unreceived work or create replacement worktrees indefinitely.
+
+Stage gates consume each input from the source declared in the upstream file contract. Formal deliverables use one pinned Git tree; only explicitly allowed evidence/runtime inputs use disk. Dirty files cannot satisfy formal stage delivery. Worktree backlog reminders are advisory, delivered to Main through Agent-visible context, and never authorize deleting unknown worktrees.

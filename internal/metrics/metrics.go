@@ -6,9 +6,11 @@ package metrics
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/filelock"
 	"os"
 	"path/filepath"
 	"sort"
@@ -105,6 +107,17 @@ func emptySnapshot() Snapshot {
 
 // Read loads the durable metrics snapshot. A missing file yields zeroes.
 func (s *Store) Read() (Snapshot, error) {
+	snap, err := s.readBase()
+	if err != nil {
+		return snap, err
+	}
+	if err := s.readObservations(&snap); err != nil {
+		return snap, err
+	}
+	return snap, nil
+}
+
+func (s *Store) readBase() (Snapshot, error) {
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return emptySnapshot(), nil
@@ -162,59 +175,17 @@ func (s *Store) Read() (Snapshot, error) {
 }
 
 // RecordGateEvaluation increments loop_gate_evaluations_total{status}.
-func RecordGateEvaluation(root, status string) error {
-	return NewStore(root).mutate(func(snap *Snapshot) {
-		label := normalizeLabel(status, "unknown")
-		snap.GateEvaluations[label]++
-	})
-}
-
-// RecordTransitionCommit increments loop_transition_commits_total{transition}.
+func RecordGateEvaluation(root, status string) error { return ObserveGateEvaluation(root, status) }
 func RecordTransitionCommit(root, transition string) error {
-	return NewStore(root).mutate(func(snap *Snapshot) {
-		label := normalizeLabel(transition, "unknown")
-		snap.TransitionCommits[label]++
-	})
+	return ObserveTransitionCommit(root, transition)
 }
-
-// RecordCASConflict increments loop_cas_conflicts_total.
-func RecordCASConflict(root string) error {
-	return NewStore(root).mutate(func(snap *Snapshot) {
-		snap.CASConflicts++
-	})
-}
-
-// RecordMilestoneRefreshFailure increments loop_milestone_refresh_failures_total
-// and records one bounded diagnostic reason. The reason labels are deliberately
-// a small operational taxonomy rather than raw error strings, so a malformed
-// candidate cannot create unbounded metric cardinality.
+func RecordCASConflict(root string) error { return ObserveCASConflict(root) }
 func RecordMilestoneRefreshFailure(root, reason string) error {
-	return NewStore(root).mutate(func(snap *Snapshot) {
-		snap.MilestoneRefreshFailures++
-		snap.MilestoneRefreshFailureReasons[normalizeMilestoneFailureReason(reason)]++
-	})
+	return ObserveMilestoneRefreshFailure(root, reason)
 }
-
-// RecordRecoveryPacket increments loop_recovery_packets_total.
-func RecordRecoveryPacket(root string) error {
-	return NewStore(root).mutate(func(snap *Snapshot) {
-		snap.RecoveryPackets++
-	})
-}
-
-// RecordIntegrationDuration records one integration duration sample under
-// loop_integration_duration_ms{status}.
+func RecordRecoveryPacket(root string) error { return ObserveRecoveryPacket(root) }
 func RecordIntegrationDuration(root, status string, durationMS int64) error {
-	if durationMS < 0 {
-		durationMS = 0
-	}
-	return NewStore(root).mutate(func(snap *Snapshot) {
-		label := normalizeLabel(status, "unknown")
-		stats := snap.IntegrationDuration[label]
-		stats.Count++
-		stats.SumMS += durationMS
-		snap.IntegrationDuration[label] = stats
-	})
+	return ObserveIntegrationDuration(root, status, durationMS)
 }
 
 func (s *Store) mutate(apply func(*Snapshot)) error {
@@ -230,7 +201,7 @@ func (s *Store) mutate(apply func(*Snapshot)) error {
 	}
 	defer release()
 
-	snap, err := s.Read()
+	snap, err := s.readBase()
 	if err != nil {
 		return err
 	}
@@ -552,44 +523,14 @@ func normalizeMilestoneFailureReason(value string) string {
 }
 
 func acquireLock(path string, timeout time.Duration) (func(), error) {
-	owner := fmt.Sprintf("%d:%d", os.Getpid(), time.Now().UnixNano())
-	backoff := 5 * time.Millisecond
-	const maxBackoff = 50 * time.Millisecond
-	const staleAge = 30 * time.Second
-	deadline := time.Now().Add(timeout)
-	for {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_, _ = file.WriteString(owner)
-			_ = file.Close()
-			return func() {
-				data, err := os.ReadFile(path)
-				if err == nil && strings.TrimSpace(string(data)) == owner {
-					_ = os.Remove(path)
-				}
-			}, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		// Stale reclaim: if lock file is older than staleAge, remove it.
-		if info, statErr := os.Stat(path); statErr == nil {
-			if time.Since(info.ModTime()) > staleAge {
-				_ = os.Remove(path)
-				continue
-			}
-		}
-		if time.Now().After(deadline) {
-			return nil, errors.New("metrics lock timeout")
-		}
-		time.Sleep(backoff)
-		if backoff < maxBackoff {
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
+	// A separate inode avoids treating an older binary's sentinel as an OS lock.
+	// Never unlink or age-reclaim a process-owned lock.
+	if timeout > 250*time.Millisecond {
+		timeout = 250 * time.Millisecond
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return filelock.Acquire(ctx, path+".process")
 }
 
 // processCounters mirror the legacy controller package-level ints for

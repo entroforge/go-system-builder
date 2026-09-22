@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"io"
 	"os"
 	"path/filepath"
@@ -144,11 +145,30 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	agentID := fs.String("agent-id", "", "Builder Agent id")
 	roleFamily := fs.String("role-family", "backend-builder", "Builder role family")
 	definitionRef := fs.String("agent-definition", "agents/backend-builder.md", "Builder Agent Definition path")
-	if err := fs.Parse(args); err != nil {
+	independentVerification := fs.Bool("independent-verification", false, "dispatch the independent verifier assignment for the targeted reverification of --assignment-id (identity registration only: no product writes, test-builder verifier)")
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
+	}
+	// RC-18: a verification identity is registered by the same dispatch chain
+	// but has a fixed shape — an independent test-builder that writes no
+	// product file — so its defaults follow the flag instead of the builder
+	// defaults; an explicitly passed flag always wins.
+	if *independentVerification {
+		explicit := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+		if !explicit["role-family"] {
+			*roleFamily = "test-builder"
+		}
+		if !explicit["agent-definition"] {
+			*definitionRef = ".claude/agents/test-builder.md"
+		}
 	}
 	if strings.TrimSpace(*assignmentID) == "" || strings.TrimSpace(*agentID) == "" {
 		fmt.Fprintln(stderr, "runtime repair dispatch requires --assignment-id and --agent-id")
+		return 2
+	}
+	if *independentVerification && *roleFamily != "test-builder" {
+		fmt.Fprintln(stderr, "independent verification requires role-family test-builder")
 		return 2
 	}
 	if *roleFamily != "frontend-builder" && *roleFamily != "backend-builder" && *roleFamily != "test-builder" {
@@ -170,7 +190,23 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	review := mapFieldCLI(snapshot.State, "review")
 	pointer := mapFieldCLI(review, "repair")
 	status := stringValue(pointer["status"])
-	if status != "planning" && status != "reproducing" {
+	// Recovery dispatch (RC: queued coverage is never dropped): an assignment
+	// the operator skipped before execution begin has no owner, and only its
+	// owner may submit the unit result — refusing dispatch in repairing would
+	// strand that unit permanently.
+	existingOwners := stringMapCLI(pointer["assignment_owners"])
+	unownedInRepairing := status == "repairing" && existingOwners[*assignmentID] == ""
+	// RC-18: a verification identity is dispatched against a plan assignment
+	// that already executed, so targeted_reverification — the only phase in
+	// which the reverification may be committed — must accept it too. The
+	// repair-assignment admission rules above are untouched.
+	verificationMode := *independentVerification
+	verificationStatus := status == "planning" || status == "reproducing" || status == "targeted_reverification"
+	if (verificationMode && !verificationStatus) || (!verificationMode && status != "planning" && status != "reproducing" && !unownedInRepairing) {
+		if verificationMode {
+			fmt.Fprintf(stderr, "runtime repair dispatch: --independent-verification requires S9 status=planning, reproducing or targeted_reverification (current %s)\n", status)
+			return 1
+		}
 		fmt.Fprintf(stderr, "runtime repair dispatch: S9 status=%s cannot accept a new Builder; compile a RepairPlan and dispatch before `runtime repair execution begin`\n", status)
 		return 1
 	}
@@ -193,23 +229,44 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s is not in RepairPlan %s; use `runtime repair status` to list exact assignments\n", *assignmentID, plan.PlanID)
 		return 1
 	}
-	owners := stringMapCLI(pointer["assignment_owners"])
-	if owner := owners[target.AssignmentID]; owner != "" {
-		fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s is already owned by Agent %s; continue that Agent or recover the session, do not replace ownership\n", target.AssignmentID, owner)
-		return 1
-	}
-	for _, ref := range repairArtifactRefs(pointer, "plan_report_refs", "plan_report_ref", "plan_report_sha256") {
-		report, reportErr := repair.ValidatePlanReport(root, ref)
-		if reportErr == nil && report.AssignmentID == target.AssignmentID {
-			fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s already has PlanReport %s; submit the domain report or inspect `runtime repair status`\n", target.AssignmentID, report.ReportID)
+	owners := existingOwners
+	dispatchAssignmentID := target.AssignmentID
+	manifestAssignmentID := "assignment-s9-" + dispatchSlug(strings.TrimPrefix(target.AssignmentID, "repair-assignment-"))
+	writePaths := append([]string(nil), target.Scope...)
+	groupingRationale := "one Builder owns one immutable RepairAssignment; cross-assignment dependencies and locks are consumed by S9 Runtime"
+	if verificationMode {
+		// RC-18: synthesize and validate the independent verification
+		// identity for this repair assignment. The repair assignment itself
+		// is already owned and already carries a PlanReport/RepairResult —
+		// that is this mode's precondition, not a conflict — so the builder
+		// duplicate guards below are deliberately skipped for it.
+		verificationAssignmentID, verificationErr := repair.ValidateVerificationDispatch(plan, target.AssignmentID, *agentID, owners)
+		if verificationErr != nil {
+			fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", verificationErr))
 			return 1
 		}
-	}
-	for _, ref := range repairArtifactRefs(pointer, "result_refs", "result_ref", "result_sha256") {
-		result, resultErr := repair.ValidateRepairResult(root, ref)
-		if resultErr == nil && result.AssignmentID == target.AssignmentID {
-			fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s already has RepairResult %s; do not dispatch it again\n", target.AssignmentID, result.ResultID)
+		dispatchAssignmentID = verificationAssignmentID
+		manifestAssignmentID = repair.ManifestVerificationAssignmentID(target.AssignmentID)
+		writePaths = []string{}
+		groupingRationale = "one independent verifier owns one synthesized verification assignment; it re-executes the approved contract assertions for the repair unit and writes no product file"
+	} else {
+		if owner := owners[target.AssignmentID]; owner != "" {
+			fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s is already owned by Agent %s; continue that Agent or recover the session, do not replace ownership\n", target.AssignmentID, owner)
 			return 1
+		}
+		for _, ref := range repairArtifactRefs(pointer, "plan_report_refs", "plan_report_ref", "plan_report_sha256") {
+			report, reportErr := repair.ValidatePlanReport(root, ref)
+			if reportErr == nil && report.AssignmentID == target.AssignmentID {
+				fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s already has PlanReport %s; submit the domain report or inspect `runtime repair status`\n", target.AssignmentID, report.ReportID)
+				return 1
+			}
+		}
+		for _, ref := range repairArtifactRefs(pointer, "result_refs", "result_ref", "result_sha256") {
+			result, resultErr := repair.ValidateRepairResult(root, ref)
+			if resultErr == nil && result.AssignmentID == target.AssignmentID {
+				fmt.Fprintf(stderr, "runtime repair dispatch: Assignment %s already has RepairResult %s; do not dispatch it again\n", target.AssignmentID, result.ResultID)
+				return 1
+			}
 		}
 	}
 	boundReq := mapFieldCLI(snapshot.State, "bound_req")
@@ -229,7 +286,7 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", fmt.Errorf("read Agent Definition (dispatch derives the worker capability set — allowed tools, write paths, command classes — from the definition file, so it must exist in the repository): %w", err)))
 		return 1
 	}
-	protocolBytes, err := os.ReadFile(filepath.Join(root, "docs", "agent-protocol.md"))
+	protocolBytes, err := os.ReadFile(filepath.Join(root, projectlayout.Protocol))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", fmt.Errorf("read agent protocol: %w", err)))
 		return 1
@@ -238,13 +295,13 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	contractSHA := stringValue(pointer["contract_sha256"])
 	sessionPath := stringValue(pointer["path"])
 	sessionSHA := stringValue(pointer["sha256"])
-	workgroupID := "workgroup-s9-" + dispatchSlug(stringValue(pointer["session_id"])) + "-" + dispatchSlug(target.AssignmentID)
-	manifestID := "team-manifest-s9-" + dispatchSlug(stringValue(pointer["session_id"])) + "-" + dispatchSlug(target.AssignmentID)
+	workgroupID := "workgroup-s9-" + dispatchSlug(stringValue(pointer["session_id"])) + "-" + dispatchSlug(dispatchAssignmentID)
+	manifestID := "team-manifest-s9-" + dispatchSlug(stringValue(pointer["session_id"])) + "-" + dispatchSlug(dispatchAssignmentID)
 	if entityExists(snapshot.State, "teams", workgroupID) {
 		fmt.Fprintf(stderr, "runtime repair dispatch: %s is already registered; inspect `runtime repair status` and Runtime team state\n", workgroupID)
 		return 1
 	}
-	taskID := s9RepairTaskID(stringValue(pointer["session_id"]), target.AssignmentID)
+	taskID := s9RepairTaskID(stringValue(pointer["session_id"]), dispatchAssignmentID)
 	if entityExists(snapshot.State, "tasks", taskID) {
 		fmt.Fprintf(stderr, "runtime repair dispatch: task %s already exists; inspect Runtime entities before retrying\n", taskID)
 		return 1
@@ -257,7 +314,6 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		reviewRoundValue = reviewRound
 	}
 	definitionPath := filepath.ToSlash(*definitionRef)
-	manifestAssignmentID := "assignment-s9-" + dispatchSlug(strings.TrimPrefix(target.AssignmentID, "repair-assignment-"))
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "manifest_id": manifestID, "version": "1.0.0", "runtime_id": stringValue(snapshot.State["runtime_id"]),
 		"req_id": reqID, "baseline_generation": baselineGeneration, "review_round": reviewRoundValue,
@@ -266,7 +322,7 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 			map[string]any{"id": "repair-contract", "path": contractPath, "version": "approved", "sha256": contractSHA},
 			map[string]any{"id": "repair-session", "path": sessionPath, "version": "planned", "sha256": sessionSHA},
 			map[string]any{"id": "repair-plan", "path": planRef.Path, "version": "compiled", "sha256": planRef.SHA256},
-			map[string]any{"id": "agent-protocol", "path": "docs/agent-protocol.md", "version": "current", "sha256": sha256HexForArtifact(protocolBytes)},
+			map[string]any{"id": "agent-protocol", "path": projectlayout.Protocol, "version": "current", "sha256": sha256HexForArtifact(protocolBytes)},
 			map[string]any{"id": "builder-definition", "path": definitionPath, "version": "current", "sha256": sha256HexForArtifact(definitionBytes)},
 		},
 		"risk_tags":                   []any{},
@@ -275,20 +331,28 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 			"assignment_id": manifestAssignmentID, "responsibility_id": "BUILD-WORK-PACKAGE", "role_family": *roleFamily,
 			"scope": append([]string(nil), target.Scope...), "agent_id": *agentID, "agent_definition_ref": definitionPath,
 			"skill_refs": []string{"code-quality", "testing-strategy", "api-contracts", "state-machine-design", "integration-verification"},
-			"read_paths": []string{contractPath, sessionPath, planRef.Path, "docs/agent-protocol.md"}, "write_paths": append([]string(nil), target.Scope...),
+			"read_paths": []string{contractPath, sessionPath, planRef.Path, projectlayout.Protocol}, "write_paths": writePaths,
 			"output_paths": []string{".claude/review/repair/", ".claude/evidence/"}, "depends_on": []string{}, "reuse_decision": "create",
-			"grouping_rationale": "one Builder owns one immutable RepairAssignment; cross-assignment dependencies and locks are consumed by S9 Runtime", "status": "planned", "dispatch_mode": "plan_checkpoint",
+			"grouping_rationale": groupingRationale, "status": "planned", "dispatch_mode": "plan_checkpoint",
 		}},
 		"separation_edges": []any{}, "planned_agent_count": 1, "max_parallel_agents": 1,
 		"quantity_rationale": "One platform-dispatched Builder per immutable RepairAssignment; no quality-layer token cap is applied.",
 		"validation":         map[string]any{"result": "pass", "missing_responsibilities": []any{}, "unresolved_conflicts": []any{}, "warnings": []any{}, "validated_at": time.Now().UTC().Format(time.RFC3339Nano)},
 	}
+	taskObjective := "execute the approved RepairAssignment and restore its mapped assertions"
+	taskInstruction := "Read the approved RepairContract and PlanReport contract; send one generic PLAN_REPORT, submit the S9 domain PlanReport, wait for execution begin, then implement only this Assignment scope."
+	taskNextAction := "send one PLAN_REPORT with plan_ref, submit runtime repair plan-report, and continue when execution begins"
+	if verificationMode {
+		taskObjective = fmt.Sprintf("independently re-execute the approved RepairContract assertions of %s and record the targeted reverification artifact", target.AssignmentID)
+		taskInstruction = "Read the approved RepairContract, RepairSession and RepairPlan; do not modify any product file; re-execute the contract assertions on the post-repair tree and commit `runtime repair targeted commit` with performing_assignment_id set to this verification assignment."
+		taskNextAction = "re-execute the contract assertions independently and submit the targeted reverification artifact"
+	}
 	task := map[string]any{
-		"task_id": taskID, "session_id": stringValue(pointer["session_id"]), "plan_id": plan.PlanID, "assignment_id": target.AssignmentID,
+		"task_id": taskID, "session_id": stringValue(pointer["session_id"]), "plan_id": plan.PlanID, "assignment_id": dispatchAssignmentID,
 		"unit_ids": target.UnitIDs, "scope": target.Scope, "depends_on": target.DependsOn, "resource_locks": target.ResourceLocks,
-		"state": "reviewed", "objective": "execute the approved RepairAssignment and restore its mapped assertions",
-		"instruction": "Read the approved RepairContract and PlanReport contract; send one generic PLAN_REPORT, submit the S9 domain PlanReport, wait for execution begin, then implement only this Assignment scope.",
-		"next_action": "send one PLAN_REPORT with plan_ref, submit runtime repair plan-report, and continue when execution begins",
+		"state": "reviewed", "objective": taskObjective,
+		"instruction": taskInstruction,
+		"next_action": taskNextAction,
 	}
 	manifestBytes, err := marshalInvestigationDispatch(manifest)
 	if err != nil {
@@ -327,13 +391,17 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	}
 	next, err := assignmentpkg.Register(root, statePath, journalPath, assignmentpkg.Request{
 		ExpectedRevision: expected, ManifestPath: manifestPath, TaskID: taskID, TaskPath: taskPath,
-		RepairAssignmentID: target.AssignmentID, RepairOwnerAgentID: *agentID, OccurredAt: at,
+		RepairAssignmentID: dispatchAssignmentID, RepairOwnerAgentID: *agentID, OccurredAt: at,
 	})
 	if err != nil {
 		_ = os.Remove(manifestPath)
 		_ = os.Remove(taskPath)
 		fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", err))
 		return 1
+	}
+	if verificationMode {
+		fmt.Fprintf(stderr, "Independent verification assignment %s (%s) dispatched to %s; manifest/task were generated internally (do not pass --manifest); next: re-execute the RepairContract assertions and commit `runtime repair targeted commit --actor %s` with performing_assignment_id=%s\n", dispatchAssignmentID, manifestAssignmentID, *agentID, *agentID, dispatchAssignmentID)
+		return encodeJSON(stdout, map[string]any{"assignment_id": dispatchAssignmentID, "agent_id": *agentID, "workgroup_id": workgroupID, "task_id": taskID, "manifest_path": manifestRel, "task_path": taskRel, "revision": next.Revision, "independent_verification": true, "original_assignment_id": target.AssignmentID, "next_action": "re-execute the contract assertions independently, then commit the targeted reverification with performing_assignment_id set to this verification assignment"})
 	}
 	fmt.Fprintf(stderr, "RepairAssignment %s dispatched to %s; manifest/task were generated internally (do not pass --manifest); next: (optional) send the generic PLAN_REPORT so the platform auto-chain records the checkpoint — the S9 authority is the domain `runtime repair plan-report` below and does not require it\n", target.AssignmentID, *agentID)
 	return encodeJSON(stdout, map[string]any{"assignment_id": target.AssignmentID, "agent_id": *agentID, "workgroup_id": workgroupID, "task_id": taskID, "manifest_path": manifestRel, "task_path": taskRel, "revision": next.Revision, "next_action": "send one generic PLAN_REPORT with plan_ref, then submit the S9 domain runtime repair plan-report"})
@@ -347,7 +415,7 @@ func runRuntimeRepairSessionOpen(args []string, stdout, stderr io.Writer) int {
 	sessionID := fs.String("session-id", "", "RepairSession id")
 	createdBy := fs.String("created-by", "", "session creator")
 	reqID := fs.String("req-id", "", "bound REQ id")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *sessionID == "" || *createdBy == "" {
@@ -380,7 +448,7 @@ func runRuntimeRepairPlanCompile(args []string, stdout, stderr io.Writer) int {
 	common := repairFlags(fs)
 	planID := fs.String("plan-id", "", "RepairPlan id")
 	createdBy := fs.String("created-by", "", "plan creator")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *planID == "" || *createdBy == "" {
@@ -411,7 +479,7 @@ func runRuntimeRepairPlanReportSubmit(args []string, stdout, stderr io.Writer) i
 	bindUsage(fs, "runtime repair plan-report submit")
 	common := repairFlags(fs)
 	file := fs.String("file", "", "PlanReport request JSON path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *file == "" {
@@ -453,7 +521,7 @@ func runRuntimeRepairExecutionBegin(args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	bindUsage(fs, "runtime repair execution begin")
 	common := repairFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	expected, err := repairExpected(common)
@@ -481,7 +549,7 @@ func runRuntimeRepairResultSubmit(args []string, stdout, stderr io.Writer) int {
 	bindUsage(fs, "runtime repair result submit")
 	common := repairFlags(fs)
 	file := fs.String("file", "", "RepairResult JSON path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *file == "" {
@@ -531,7 +599,7 @@ func runRuntimeRepairChangesetCompute(args []string, stdout, stderr io.Writer) i
 	baseRef := fs.String("base-ref", "", "git base ref")
 	headRef := fs.String("head-ref", "", "git head ref")
 	paths := fs.String("paths", "", "comma-separated repository-relative paths")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *sessionID == "" {
@@ -580,7 +648,7 @@ func runRuntimeRepairImpactCreate(args []string, stdout, stderr io.Writer) int {
 	bindUsage(fs, "runtime repair impact create")
 	root := fs.String("root", ".", "repository root")
 	file := fs.String("file", "", "ChangeImpact request JSON path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *file == "" {
@@ -606,7 +674,7 @@ func runRuntimeRepairTargetedCreate(args []string, stdout, stderr io.Writer) int
 	bindUsage(fs, "runtime repair targeted create")
 	root := fs.String("root", ".", "repository root")
 	file := fs.String("file", "", "TargetedReverification request JSON path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *file == "" {
@@ -632,7 +700,7 @@ func runRuntimeRepairHandoffCreate(args []string, stdout, stderr io.Writer) int 
 	bindUsage(fs, "runtime repair handoff create")
 	root := fs.String("root", ".", "repository root")
 	file := fs.String("file", "", "RepairHandoff request JSON path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *file == "" {
@@ -663,7 +731,7 @@ func runRuntimeRepairTargetedCommit(args []string, stdout, stderr io.Writer) int
 	bindUsage(fs, "runtime repair targeted commit")
 	common := repairFlags(fs)
 	file := fs.String("file", "", "TargetedReverification JSON path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *file == "" {
@@ -698,7 +766,7 @@ func runRuntimeRepairTargetedResume(args []string, stdout, stderr io.Writer) int
 	bindUsage(fs, "runtime repair targeted resume")
 	common := repairFlags(fs)
 	reason := fs.String("reason", "", "why the targeted verification blocker is resolved")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*reason) == "" {
@@ -733,7 +801,7 @@ func runRepairArtifactCommit(args []string, stdout, stderr io.Writer, label stri
 	bindUsage(fs, label)
 	common := repairFlags(fs)
 	file := fs.String("file", "", "artifact JSON path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *file == "" {
@@ -768,7 +836,7 @@ func runRuntimeRepairHandoffCommit(args []string, stdout, stderr io.Writer) int 
 	bindUsage(fs, "runtime repair handoff commit")
 	common := repairFlags(fs)
 	file := fs.String("file", "", "RepairHandoff JSON path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	if *file == "" {
@@ -804,7 +872,7 @@ func runRuntimeRepairStatus(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	state := fs.String("state", ".claude/loop-state.json", "runtime state path")
 	journal := fs.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
 	snapshot, err := runtime.NewStore(resolveRootPath(*root, *state), resolveRootPath(*root, *journal)).Snapshot()

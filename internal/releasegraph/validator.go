@@ -12,6 +12,8 @@ package releasegraph
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/doclinks"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,7 +33,7 @@ type stagedSkillFrontmatter struct {
 // either bare words ending in common template suffixes or inlined inside
 // backticks. It deliberately does not try to be a full markdown parser:
 // the goal is to catch dangling references, not to whitelist every
-// legitimate link. References under docs/release_audits/, .claude/, or
+// legitimate link. References under docs/reports/release-audits/, .claude/, or
 // URLs are skipped — only paths that resolve relative to the staged root
 // are required to exist.
 var markdownPathPattern = regexp.MustCompile("`([A-Za-z0-9_./-]+\\.(md|json|sh|yml|yaml))`")
@@ -65,6 +67,7 @@ var embeddedAssetPatterns = []string{
 // shipped release tarball. A staged tree that still carries one of these
 // paths fails validation immediately.
 var disallowedReleasePathPrefixes = []string{
+	"blueprint", "docs/framework", "docs/product", "docs/documentation-layout-proposal.md",
 	"docs/design/loop-engineering/",
 	".claude/loop-state.json",
 	".claude/loop-events.jsonl",
@@ -72,11 +75,11 @@ var disallowedReleasePathPrefixes = []string{
 }
 
 var disallowedInstanceGlobs = []string{
-	"docs/tasks/TASK-[0-9]*.md",
+	"docs/dev/tasks/TASK-[0-9]*.md",
 	"docs/requirements/REQ-[0-9]*.md",
-	"docs/loop-definition.json.bak-*",
-	"docs/release_audits/*REQ-*",
-	"docs/release_audits/bootstrap-*",
+	"docs/control/loop-definition.json.bak-*",
+	"docs/reports/release-audits/*REQ-*",
+	"docs/reports/release-audits/bootstrap-*",
 }
 
 // ValidateStagedRelease walks the staged tree at root, parses every Skill
@@ -115,7 +118,13 @@ func ValidateStagedRelease(root string) error {
 	if err := validateRoutingDocumentation(root); err != nil {
 		return err
 	}
-	return nil
+	for _, rel := range RequiredDocumentAssets {
+		info, err := os.Stat(filepath.Join(root, rel))
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			return fmt.Errorf("release graph: required document missing or empty: %s", rel)
+		}
+	}
+	return doclinks.Validate(root)
 }
 
 // assertNoDisallowedPaths fails if any of the disallowed release paths is
@@ -211,7 +220,7 @@ func parseSkillFrontmatterName(abs string) (string, error) {
 // validateSkillReferences scans the Skill body for relative path references
 // inside backticks and asserts each one resolves to a file in the staged
 // tree. It also asserts the audit-pointer comment, if present, points at
-// an audit file that ships in docs/release_audits/.
+// an audit file that ships in docs/reports/release-audits/.
 func validateSkillReferences(root string, skill stagedSkillFrontmatter) error {
 	data, err := os.ReadFile(skill.AbsPath)
 	if err != nil {
@@ -234,7 +243,7 @@ func validateSkillReferences(root string, skill stagedSkillFrontmatter) error {
 // skillReferenceExists resolves a Markdown reference using the same two
 // scopes available to a Skill author: a relative link may point beside the
 // Skill (for example references/runtime-recovery-reference.md), or it may
-// point at a template-root document (for example docs/agent-protocol.md).
+// point at a template-root document (for example docs/control/agent-protocol.md).
 // Checking both keeps local Skill references honest without treating every
 // missing root document as a valid relative link.
 func skillReferenceExists(root, skillPath, raw string) bool {
@@ -252,16 +261,13 @@ func skillReferenceExists(root, skillPath, raw string) bool {
 // shouldSkipPathReference returns true when a backticked path is allowed
 // to dangle or refers to a runtime-only path that the staged tree does
 // not ship. The release tarball is shipped without .claude/ instance
-// runtime, without docs/design/loop-engineering/ design rationale, and
-// without embedded harness schemas (which are compiled into the binary).
+// runtime and without embedded harness schemas (compiled into the binary).
+// Factory-only references are checked, so they fail instead of disappearing.
 func shouldSkipPathReference(raw string) bool {
 	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
 		return true
 	}
 	if strings.HasPrefix(raw, ".claude/") {
-		return true
-	}
-	if strings.HasPrefix(raw, "docs/design/loop-engineering/") {
 		return true
 	}
 	// The project map is created by the installer from
@@ -308,16 +314,38 @@ func shouldSkipPathReference(raw string) bool {
 }
 
 // validateRoutingDocumentation asserts that the staged tree's two routing
-// documents — AGENTS-template.md and prelude.md — exist. They are the
+// documents — AGENTS-template.md and docs/guides/getting-started.md — exist. They are the
 // primary entry points a target project loads, so they must always ship.
 func validateRoutingDocumentation(root string) error {
 	for _, rel := range []string{
 		"AGENTS-template.md",
-		"prelude.md",
+		projectlayout.GettingStarted,
 	} {
 		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
 			return fmt.Errorf("release graph: required entry %s missing: %w", rel, err)
 		}
 	}
 	return nil
+}
+
+// RequiredDocumentAssets is the finite non-optional documentation contract of a release.
+var RequiredDocumentAssets = []string{
+	"docs/control/loop-definition.json",
+	"docs/control/hook-policy.json",
+	"docs/control/protected-commands.json",
+	"docs/control/agent-protocol.md",
+	"docs/project.yaml",
+	"docs/project-map-template.md",
+	"docs/requirements/REQ-template.md",
+	"docs/design/tokens/README.md",
+	"docs/design/tokens/tokens.json",
+	"docs/design/tokens/tokens.css",
+	"docs/dev/contracts/CONTRACTS-template.md",
+	"docs/dev/contracts/BE-contract-template.md",
+	"docs/dev/contracts/FE-contract-template.md",
+	"docs/dev/contracts/SYNC-contract-template.md",
+	"docs/dev/tasks/index-template.md",
+	"docs/dev/tasks/TASK-template.md",
+	"docs/architecture/ARCHITECTURE-template.md",
+	"docs/reports/release-audits/TEMPLATE.md",
 }

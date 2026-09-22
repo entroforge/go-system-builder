@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Pinia
 ## Authority
-Technical practice only. Stage routing remains in `docs/agent-protocol.md`; server contracts retain authority over server state.
+Technical practice only. Stage routing remains in `docs/control/agent-protocol.md`; server contracts retain authority over server state.
 ## Applicability
 Apply to Pinia stores, cross-view client state, state-derived UI, or store persistence.
 ## Required Inputs

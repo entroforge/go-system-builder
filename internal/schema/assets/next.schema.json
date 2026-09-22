@@ -6,7 +6,7 @@
   "required": ["stage", "protocol_ref", "objective", "action", "read", "primary_skill", "missing", "done_when", "then", "human_required"],
   "properties": {
     "stage": {"type": "string", "minLength": 1},
-    "protocol_ref": {"type": "string", "pattern": "^docs/agent-protocol\\.md#.+$"},
+    "protocol_ref": {"type": "string", "pattern": "^docs/control/agent-protocol\\.md#.+$"},
     "objective": {"type": "string", "minLength": 1},
     "action": {"type": "string", "minLength": 1},
     "read": {"type": "array", "items": {"type": "string", "minLength": 1}},

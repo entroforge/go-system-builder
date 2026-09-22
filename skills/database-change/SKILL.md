@@ -6,7 +6,7 @@ version: 1.0.0
 ---
 # Database Change
 ## Authority
-The data model and migration contract own persisted semantics. Stage routing lives in `docs/agent-protocol.md`; Skill routing authority comes from the current assignment and risk tags; the reusable method summary is inlined below.
+The data model and migration contract own persisted semantics. Stage routing lives in `docs/control/agent-protocol.md`; Skill routing authority comes from the current assignment and risk tags; the reusable method summary is inlined below.
 ## Applicability
 Apply to `database` or `migration` risk.
 ## Required Inputs

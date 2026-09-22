@@ -99,12 +99,12 @@ func freshState(t *testing.T, state, phase string) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	// Copy loop-definition.json (the registry lookups depend on it).
-	defSrc := filepath.Join("..", "..", "docs", "loop-definition.json")
+	defSrc := filepath.Join("..", "..", "docs", "control", "loop-definition.json")
 	defData, err := os.ReadFile(defSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	if err := os.MkdirAll(defDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -308,8 +308,8 @@ func TestRegisterBugMissingEvidenceRejected(t *testing.T) {
 
 func TestRegisterTaskHappyPath(t *testing.T) {
 	root, statePath, journalPath := freshState(t, "planning", "tasks")
-	taskRel := "docs/tasks/TASK-100.md"
-	if err := os.MkdirAll(filepath.Join(root, "docs/tasks"), 0o755); err != nil {
+	taskRel := "docs/dev/tasks/TASK-100.md"
+	if err := os.MkdirAll(filepath.Join(root, "docs/dev/tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, taskRel), []byte("# TASK-100\n"), 0o644); err != nil {
@@ -380,7 +380,7 @@ func TestRegisterTaskMissingPathOrOwnerRejected(t *testing.T) {
 	_, err = assignment.RegisterTask(root, statePath, journalPath, assignment.RegisterTaskRequest{
 		ExpectedRevision: 0,
 		TaskID:           "TASK-100",
-		Path:             "docs/tasks/DOES-NOT-EXIST.md",
+		Path:             "docs/dev/tasks/DOES-NOT-EXIST.md",
 		OwnerAgentIDs:    []string{"agent-builder-1"},
 		SourceContractID: "BUG-003",
 	})
@@ -389,8 +389,8 @@ func TestRegisterTaskMissingPathOrOwnerRejected(t *testing.T) {
 	}
 
 	// Empty OwnerAgentIDs.
-	taskRel := "docs/tasks/TASK-100.md"
-	if err := os.MkdirAll(filepath.Join(root, "docs/tasks"), 0o755); err != nil {
+	taskRel := "docs/dev/tasks/TASK-100.md"
+	if err := os.MkdirAll(filepath.Join(root, "docs/dev/tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, taskRel), []byte("# TASK-100\n"), 0o644); err != nil {
@@ -414,8 +414,8 @@ func TestRegisterTaskMissingPathOrOwnerRejected(t *testing.T) {
 
 func TestRegisterTaskDuplicateIDRejected(t *testing.T) {
 	root, statePath, journalPath := freshState(t, "planning", "tasks")
-	taskRel := "docs/tasks/TASK-100.md"
-	if err := os.MkdirAll(filepath.Join(root, "docs/tasks"), 0o755); err != nil {
+	taskRel := "docs/dev/tasks/TASK-100.md"
+	if err := os.MkdirAll(filepath.Join(root, "docs/dev/tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, taskRel), []byte("# TASK-100\n"), 0o644); err != nil {
@@ -483,12 +483,12 @@ func TestRegisterTaskDuplicateIDRejected(t *testing.T) {
 func TestRepairLimitBridgeFiresAboveThreshold(t *testing.T) {
 	root := t.TempDir()
 	// Copy loop-definition.json so the catalog can load.
-	defSrc := filepath.Join("..", "..", "docs", "loop-definition.json")
+	defSrc := filepath.Join("..", "..", "docs", "control", "loop-definition.json")
 	defData, err := os.ReadFile(defSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	os.MkdirAll(defDir, 0o755)
 	os.WriteFile(filepath.Join(defDir, "loop-definition.json"), defData, 0o644)
 

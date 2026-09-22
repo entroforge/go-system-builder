@@ -1,11 +1,11 @@
 package cli
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"io"
 	"os"
 	"path/filepath"
@@ -108,7 +108,7 @@ func runRuntimePause(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	reason := flags.String("reason", "", "why the loop is paused (recorded in the human decision artifact)")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if *approvedBy == "" {
@@ -170,7 +170,7 @@ func runRuntimeResume(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "runtime resume")
 	root := flags.String("root", ".", "repository root")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if *approvedBy == "" {
@@ -274,7 +274,7 @@ func runREQUnbind(args []string, stdout, stderr io.Writer) int {
 	approvedBy := flags.String("approved-by", "", "human approver identity")
 	reason := flags.String("reason", "", "why the binding is revoked (recorded durably)")
 	force := flags.Bool("force", false, "unbind even with in-flight tasks/teams (visible abandonment)")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if *approvedBy == "" {
@@ -366,7 +366,7 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	reqPath := flags.String("req", "", "amended locked REQ path (version must strictly exceed the bound one)")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if *approvedBy == "" {
@@ -397,7 +397,22 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "req amend: no bound REQ in runtime")
 		return 1
 	}
-	data, err := os.ReadFile(filepath.Join(*root, *reqPath))
+	ref, refErr := fileview.DevelopmentRef(snapshot.State)
+	if refErr != nil {
+		fmt.Fprintln(stderr, refErr)
+		return 1
+	}
+	catalog, catErr := transition.LoadCatalog(*root)
+	if catErr != nil {
+		fmt.Fprintln(stderr, catErr)
+		return 1
+	}
+	files, fileErr := fileview.New(*root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+	if fileErr != nil {
+		fmt.Fprintln(stderr, fileErr)
+		return 1
+	}
+	data, err := files.ReadFile(*reqPath)
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("req amend", err))
 		return 1
@@ -422,12 +437,12 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	now := time.Now().UTC()
-	shaHex := fmt.Sprintf("%x", sha256.Sum256(data))
+	shaHex := transition.REQSHA256(data)
 	next, err := transition.Apply(*root,
 		filepath.Join(*root, ".claude", "loop-state.json"),
 		filepath.Join(*root, ".claude", "loop-events.jsonl"),
 		transition.Request{
-			TransitionID: "TR-020", ExpectedRevision: -1, Actor: "user",
+			Files: files, TransitionID: "TR-020", ExpectedRevision: -1, Actor: "user",
 			Evidence: map[string]string{
 				"human_decision_record": evID,
 				"req_lock_record":       *reqPath + "@" + shaHex,

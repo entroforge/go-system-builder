@@ -56,7 +56,7 @@ func TestConfigChangeIsAuditedAndNeverPretendsToBlock(t *testing.T) {
 		"hook_event_name":"ConfigChange",
 		"session_id":"session-config-change",
 		"source":"project_settings",
-		"file_path":"docs/hook-policy.json"
+		"file_path":"docs/control/hook-policy.json"
 	}`), &stdout, &stderr)
 	if code != 0 || stdout.Len() != 0 {
 		t.Fatalf("ConfigChange must be audit-only: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
@@ -75,7 +75,7 @@ func TestDistinctConfigChangeEventsAreNotDeduplicated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, filePath := range []string{"docs/hook-policy.json", "settings.json"} {
+	for _, filePath := range []string{"docs/control/hook-policy.json", "settings.json"} {
 		var stdout, stderr bytes.Buffer
 		code := cli.Run([]string{"hook", "--event", "ConfigChange", "--root", root}, strings.NewReader(`{
 			"hook_event_name":"ConfigChange",

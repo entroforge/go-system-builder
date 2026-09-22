@@ -33,12 +33,12 @@ func TestDesignFoundationCheckStrictFailsOnWarnings(t *testing.T) {
 
 func TestDesignFoundationCheckJSONAndEmitCSS(t *testing.T) {
 	root := t.TempDir()
-	src := filepath.Join("..", "..", "packages", "design-tokens", "tokens.json")
+	src := filepath.Join("..", "..", "docs", "design", "tokens", "tokens.json")
 	data, err := os.ReadFile(src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(root, "packages", "design-tokens", "tokens.json")
+	dst := filepath.Join(root, "docs", "design", "tokens", "tokens.json")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestDesignFoundationCheckJSONAndEmitCSS(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("emit-css failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
-	if _, err := os.Stat(filepath.Join(root, "packages", "design-tokens", "tokens.css")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "docs", "design", "tokens", "tokens.css")); err != nil {
 		t.Fatal(err)
 	}
 

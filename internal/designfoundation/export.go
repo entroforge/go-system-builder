@@ -78,7 +78,7 @@ func renderPortable(tf *tokenFile, kernel, grammar string) string {
 	b.WriteString("# DESIGN.md (derived snapshot)\n\n")
 	b.WriteString("_Generated ")
 	b.WriteString(time.Now().UTC().Format("2006-01-02"))
-	b.WriteString(". Authority remains `docs/design/DESIGN.md` and `packages/design-tokens/tokens.json`._\n\n")
+	b.WriteString(". Authority remains `docs/design/DESIGN.md` and `docs/design/tokens/tokens.json`._\n\n")
 	b.WriteString("## Overview\n\n")
 	if thesis := extractSection(kernel, "Design Thesis"); thesis != "" {
 		b.WriteString(thesis)

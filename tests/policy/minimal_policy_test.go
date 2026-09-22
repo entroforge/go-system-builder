@@ -15,14 +15,14 @@ func TestLockedArtifactExactPathBlocksEdit(t *testing.T) {
 		"hook_event_name": "PreToolUse",
 		"tool_name": "Edit",
 		"tool_input": {
-			"file_path": "docs/contracts/BE-039-loop-controller.md"
+			"file_path": "docs/dev/contracts/BE-039-loop-controller.md"
 		},
 		"runtime_context": {
 			"current_stage": "S6",
 			"locked_artifacts": [{
 				"id": "BE-039",
 				"kind": "contracts",
-				"path": "docs/contracts/BE-039-loop-controller.md",
+				"path": "docs/dev/contracts/BE-039-loop-controller.md",
 				"version": "v1.0.2",
 				"sha256": "fbd5f1df",
 				"locked_from_stage": "S6",
@@ -33,7 +33,7 @@ func TestLockedArtifactExactPathBlocksEdit(t *testing.T) {
 		t.Fatalf("decode input: %v", err)
 	}
 
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
@@ -47,14 +47,14 @@ func TestLockedArtifactExactPathBlocksEdit(t *testing.T) {
 }
 
 func TestCandidateArtifactBeforeLockStageAllowsEdit(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
 	decision, err := engine.Evaluate(policy.Input{
 		Event:     "PreToolUse",
 		ToolName:  "Edit",
-		ToolInput: map[string]any{"file_path": "docs/contracts/versions/REQ-039/g2/BE-039-loop-controller.md"},
+		ToolInput: map[string]any{"file_path": "docs/dev/contracts/versions/REQ-039/g2/BE-039-loop-controller.md"},
 		Runtime: policy.RuntimeContext{
 			CurrentStage: "S5",
 		},
@@ -68,20 +68,20 @@ func TestCandidateArtifactBeforeLockStageAllowsEdit(t *testing.T) {
 }
 
 func TestIncompleteManifestIdentityAllowsEdit(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
 	decision, err := engine.Evaluate(policy.Input{
 		Event:     "PreToolUse",
 		ToolName:  "Edit",
-		ToolInput: map[string]any{"file_path": "docs/contracts/BE-039-loop-controller.md"},
+		ToolInput: map[string]any{"file_path": "docs/dev/contracts/BE-039-loop-controller.md"},
 		Runtime: policy.RuntimeContext{
 			CurrentStage: "S6",
 			LockedArtifacts: []policy.LockedArtifact{{
 				ID:                 "BE-039",
 				Kind:               "contracts",
-				Path:               "docs/contracts/BE-039-loop-controller.md",
+				Path:               "docs/dev/contracts/BE-039-loop-controller.md",
 				Version:            "v1.0.2",
 				LockedFromStage:    "S6",
 				BaselineGeneration: 1,
@@ -97,11 +97,11 @@ func TestIncompleteManifestIdentityAllowsEdit(t *testing.T) {
 }
 
 func TestProvenBashMutationOfLockedArtifactBlocks(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
-	const lockedPath = "docs/contracts/BE-039-loop-controller.md"
+	const lockedPath = "docs/dev/contracts/BE-039-loop-controller.md"
 	decision, err := engine.Evaluate(policy.Input{
 		Event:     "PreToolUse",
 		ToolName:  "Bash",
@@ -128,7 +128,7 @@ func TestProvenBashMutationOfLockedArtifactBlocks(t *testing.T) {
 }
 
 func TestUnknownBashWithoutProvenLockedMutationAllows(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestUnknownBashWithoutProvenLockedMutationAllows(t *testing.T) {
 			LockedArtifacts: []policy.LockedArtifact{{
 				ID:                 "BE-039",
 				Kind:               "contracts",
-				Path:               "docs/contracts/BE-039-loop-controller.md",
+				Path:               "docs/dev/contracts/BE-039-loop-controller.md",
 				Version:            "v1.0.2",
 				SHA256:             "fbd5f1df",
 				LockedFromStage:    "S6",
@@ -159,7 +159,7 @@ func TestUnknownBashWithoutProvenLockedMutationAllows(t *testing.T) {
 }
 
 func TestGitSquashMergeBlocks(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestGitSquashMergeBlocks(t *testing.T) {
 }
 
 func TestGitHubPRSquashMergeBlocks(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
@@ -195,23 +195,23 @@ func TestGitHubPRSquashMergeBlocks(t *testing.T) {
 }
 
 func TestLockedArtifactRecoveryUsesNextGenerationPath(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
-	const lockedPath = "docs/contracts/BE-039-loop-controller.md"
+	const lockedPath = "docs/dev/contracts/BE-039-loop-controller.md"
 	var input policy.Input
 	if err := json.Unmarshal([]byte(`{
 		"hook_event_name": "PreToolUse",
 		"tool_name": "Write",
-		"tool_input": {"file_path": "docs/contracts/BE-039-loop-controller.md"},
+		"tool_input": {"file_path": "docs/dev/contracts/BE-039-loop-controller.md"},
 		"runtime_context": {
 			"bound_req_id": "REQ-039",
 			"current_stage": "S6",
 			"locked_artifacts": [{
 				"id": "BE-039",
 				"kind": "contracts",
-				"path": "docs/contracts/BE-039-loop-controller.md",
+				"path": "docs/dev/contracts/BE-039-loop-controller.md",
 				"version": "v1.0.2",
 				"sha256": "fbd5f1df",
 				"locked_from_stage": "S6",
@@ -225,18 +225,18 @@ func TestLockedArtifactRecoveryUsesNextGenerationPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	const reworkPath = "docs/contracts/versions/REQ-039/g2/BE-039-loop-controller.md"
+	const reworkPath = "docs/dev/contracts/versions/REQ-039/g2/BE-039-loop-controller.md"
 	if !slices.Contains(decision.Recovery, reworkPath) {
 		t.Fatalf("recovery must include exact next-generation path %q: %#v", reworkPath, decision)
 	}
 }
 
 func TestLockedArtifactBlockCarriesExactPath(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
-	const lockedPath = "docs/contracts/BE-039-loop-controller.md"
+	const lockedPath = "docs/dev/contracts/BE-039-loop-controller.md"
 	decision, err := engine.Evaluate(policy.Input{
 		Event:     "PreToolUse",
 		ToolName:  "MultiEdit",
@@ -271,7 +271,7 @@ func TestLockedArtifactBlockCarriesExactPath(t *testing.T) {
 }
 
 func TestSquashBlockCarriesParsedCommand(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
@@ -297,11 +297,11 @@ func TestSquashBlockCarriesParsedCommand(t *testing.T) {
 }
 
 func TestLockedArtifactBlockCarriesCurrentStage(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
-	const lockedPath = "docs/contracts/BE-039-loop-controller.md"
+	const lockedPath = "docs/dev/contracts/BE-039-loop-controller.md"
 	decision, err := engine.Evaluate(policy.Input{
 		Event:     "PreToolUse",
 		ToolName:  "NotebookEdit",
@@ -337,7 +337,7 @@ func TestLockedArtifactBlockCarriesCurrentStage(t *testing.T) {
 
 func TestLockedArtifactDirectMutationToolsBlock(t *testing.T) {
 	engine := loadPolicyEngine(t)
-	const lockedPath = "docs/contracts/BE-039-loop-controller.md"
+	const lockedPath = "docs/dev/contracts/BE-039-loop-controller.md"
 	artifact := policy.LockedArtifact{
 		ID:                 "BE-039",
 		Kind:               "contracts",
@@ -376,8 +376,8 @@ func TestLockedArtifactDirectMutationToolsBlock(t *testing.T) {
 
 func TestUnlockedSiblingAndGenerationBehavior(t *testing.T) {
 	engine := loadPolicyEngine(t)
-	const oldPath = "docs/contracts/BE-039-loop-controller.md"
-	const candidatePath = "docs/contracts/versions/REQ-039/g2/BE-039-loop-controller.md"
+	const oldPath = "docs/dev/contracts/BE-039-loop-controller.md"
+	const candidatePath = "docs/dev/contracts/versions/REQ-039/g2/BE-039-loop-controller.md"
 	oldArtifact := policy.LockedArtifact{
 		ID:                 "BE-039",
 		Kind:               "contracts",
@@ -406,7 +406,7 @@ func TestUnlockedSiblingAndGenerationBehavior(t *testing.T) {
 		{
 			name:      "unlocked sibling",
 			stage:     "S6",
-			path:      "docs/contracts/BE-039-loop-controller-notes.md",
+			path:      "docs/dev/contracts/BE-039-loop-controller-notes.md",
 			artifacts: []policy.LockedArtifact{oldArtifact},
 			want:      "allow",
 		},
@@ -456,7 +456,7 @@ func TestUnlockedSiblingAndGenerationBehavior(t *testing.T) {
 
 func TestEnforceBlockReasonsAreExactlyRetainedReasons(t *testing.T) {
 	engine := loadPolicyEngine(t)
-	const lockedPath = "docs/contracts/BE-039-loop-controller.md"
+	const lockedPath = "docs/dev/contracts/BE-039-loop-controller.md"
 	inputs := []policy.Input{
 		{
 			Event:     "PreToolUse",
@@ -495,7 +495,7 @@ func TestEnforceBlockReasonsAreExactlyRetainedReasons(t *testing.T) {
 
 func TestOldGenerationRemainsImmutableDuringRework(t *testing.T) {
 	engine := loadPolicyEngine(t)
-	const oldPath = "docs/contracts/BE-039-loop-controller.md"
+	const oldPath = "docs/dev/contracts/BE-039-loop-controller.md"
 	decision, err := engine.Evaluate(policy.Input{
 		Event:     "PreToolUse",
 		ToolName:  "Edit",

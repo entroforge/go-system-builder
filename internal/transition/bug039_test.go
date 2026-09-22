@@ -79,8 +79,8 @@ func TestBuilderReportRecordAcceptsShortKinds(t *testing.T) {
 
 func TestPlanningCompleteAcceptsRuntimeContractDocuments(t *testing.T) {
 	root := t.TempDir()
-	contractPath := "docs/contracts/BE-039-loop-controller.md"
-	taskPath := "docs/tasks/TASK-039-01-loop-definition.md"
+	contractPath := "docs/dev/contracts/BE-039-loop-controller.md"
+	taskPath := "docs/dev/tasks/TASK-039-01-loop-definition.md"
 	contractData := []byte("# BE-039\n> Status: locked\n")
 	taskData := []byte("# TASK-039-01\n> Status: complete\n")
 	for _, pair := range []struct {

@@ -15,7 +15,7 @@ import (
 )
 
 func TestAdvanceAgentRequiresReadbackApprovalBeforeActivation(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -61,7 +61,7 @@ func TestAdvanceAgentRequiresReadbackApprovalBeforeActivation(t *testing.T) {
 }
 
 func TestAdvanceAgentAcceptsMessageWithoutRuntimeRevision(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -114,7 +114,7 @@ func TestAdvanceAgentRejectsAuthoringPlaceholderAgentID(t *testing.T) {
 }
 
 func TestAdvanceAgentRejectsActivationBeforeApproval(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -138,7 +138,7 @@ func TestAdvanceAgentRejectsActivationBeforeApproval(t *testing.T) {
 }
 
 func TestBlockerResolvedReturnsReviewerToWorking(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")

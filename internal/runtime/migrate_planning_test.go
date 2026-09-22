@@ -50,10 +50,10 @@ func TestMigrateLegacyPlanningMapsPhaseFromArtifacts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claude, "loop-events.jsonl"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs", "contracts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "dev", "contracts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "contracts", "CONTRACTS-legacy.md"), []byte("legacy"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "dev", "contracts", "CONTRACTS-legacy.md"), []byte("legacy"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

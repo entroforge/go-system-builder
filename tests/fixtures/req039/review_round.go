@@ -73,7 +73,7 @@ func SeedReviewPlanRound(t *testing.T, root string, state map[string]any) {
 		"schema_version": "1.0.0", "review_plan_id": "review-plan-fixture-1",
 		"review_round": round, "baseline_generation": 1,
 		"frozen_subjects": []any{
-			map[string]any{"path": "docs/tasks/TASK-039-01-loop-definition.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
+			map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
 		},
 		"claims": claims, "assignments": assignments,
 		"e2e_coverage_state":              "regression_available",
@@ -310,7 +310,7 @@ func SeedCleanRoundProjection(t *testing.T, root string, state map[string]any) {
 		"schema_version": "1.0.0", "review_plan_id": "review-plan-fixture-1",
 		"review_round": round, "baseline_generation": 1,
 		"frozen_subjects": []any{
-			map[string]any{"path": "docs/tasks/TASK-039-01-loop-definition.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
+			map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
 		},
 		"claims": []any{
 			map[string]any{

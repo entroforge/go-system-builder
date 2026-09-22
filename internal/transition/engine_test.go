@@ -18,9 +18,9 @@ func TestApplyStartsLockedREQAndProducesSchemaValidRuntime(t *testing.T) {
 	root := filepath.Join("..", "..")
 	statePath, journalPath := copyInactiveRuntime(t, root)
 	reqPath := "internal/transition/testdata/locked-req.md"
-	reqHash := fileHash(t, filepath.Join(root, reqPath))
+	reqHash := reqFileHash(t, filepath.Join(root, reqPath))
 
-	next, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	next, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-001",
 		ExpectedRevision: 0,
 		Actor:            "user",
@@ -84,7 +84,7 @@ func TestApplyRejectsMissingEvidenceWithoutMutation(t *testing.T) {
 	statePath, journalPath := copyInactiveRuntime(t, root)
 	before, _ := os.ReadFile(statePath)
 
-	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-001",
 		ExpectedRevision: 0,
 		Actor:            "user",
@@ -104,7 +104,7 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 	statePath, journalPath := copyInactiveRuntime(t, root)
 	seedPlanningArtifacts(t, statePath)
 	reqPath := "internal/transition/testdata/locked-req.md"
-	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-001",
 		ExpectedRevision: 0,
 		Actor:            "user",
@@ -114,19 +114,19 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 		},
 		REQ: &transition.LockedREQ{
 			ID: "REQ-002", Path: reqPath, Version: "v1.0.0",
-			SHA256:     fileHash(t, filepath.Join(root, reqPath)),
+			SHA256:     reqFileHash(t, filepath.Join(root, reqPath)),
 			ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z",
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	if _, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "PTR-PLAN-01", ExpectedRevision: 0, Actor: "hook_controller",
 	}); err != nil {
 		t.Fatalf("PTR-PLAN-01 must advance planning.design: %v", err)
 	}
-	if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	if _, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "PTR-PLAN-02", ExpectedRevision: 1, Actor: "hook_controller",
 	}); err != nil {
 		t.Fatalf("PTR-PLAN-02 must advance planning.contracts: %v", err)
@@ -134,7 +134,7 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 	// TR-002 advances from formal planning.tasks to document_verification
 	// once the seeded CONTRACTS/TASKS artifacts exist with the required status
 	// values.
-	next, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	next, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-002",
 		ExpectedRevision: 2,
 		Actor:            "orchestrator",
@@ -148,7 +148,7 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 		t.Fatalf("expected document_verification state, got %#v", lifecycle)
 	}
 
-	if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	if _, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-006",
 		ExpectedRevision: 3,
 		Actor:            "orchestrator",
@@ -168,7 +168,7 @@ func TestApplyPlanningCompleteAcceptsEnglishStatusFields(t *testing.T) {
 	seedPlanningArtifactsLang(t, statePath, true)
 	advancePlanningToTasks(t, root, statePath, journalPath)
 
-	if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	if _, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "TR-002", ExpectedRevision: 2, Actor: "orchestrator", Evidence: map[string]string{},
 	}); err != nil {
 		t.Fatalf("TR-002 must accept the English Status fields used by TASK templates: %v", err)
@@ -180,7 +180,7 @@ func TestApplyRejectsGlobalTransitionFromUndeclaredSource(t *testing.T) {
 	statePath, journalPath := copyInactiveRuntime(t, root)
 	refs := addRuntimeEvidence(t, root, statePath, 0, nil, "human_decision_record", "pause_record")
 	before, _ := os.ReadFile(statePath)
-	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "GTR-001", ExpectedRevision: 0, Actor: "user", Evidence: refs,
 	})
 	if err == nil || !strings.Contains(err.Error(), "source state") {
@@ -202,7 +202,7 @@ func TestApplyRejectsEvidenceNotRegisteredInRuntime(t *testing.T) {
 	// is verifying that TR-002 still rejects planning→document_verification
 	// when the planning_complete guard finds no CONTRACTS-*.md with
 	// status=locked AND no TASK-*.md with status=complete.
-	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "TR-002", ExpectedRevision: 2, Actor: "orchestrator",
 		Evidence: map[string]string{},
 	})
@@ -231,7 +231,7 @@ func TestApplyDispatchesRegisteredGuardAndAction(t *testing.T) {
 		return nil
 	})
 	defer transition.InitGuardRegistry()
-	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "TR-002", ExpectedRevision: 2, Actor: "orchestrator", Evidence: map[string]string{},
 	})
 	if err != nil {
@@ -253,8 +253,8 @@ func TestApplyRejectsEvidenceWithIncompatibleKind(t *testing.T) {
 	// offending file (not "incompatible kind") when at least one of
 	// CONTRACTS / TASKS is missing or has the wrong status.
 	tempRoot := filepath.Dir(statePath)
-	contractsDir := filepath.Join(tempRoot, "docs", "contracts")
-	tasksDir := filepath.Join(tempRoot, "docs", "tasks")
+	contractsDir := filepath.Join(tempRoot, "docs", "dev", "contracts")
+	tasksDir := filepath.Join(tempRoot, "docs", "dev", "tasks")
 	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestApplyRejectsEvidenceWithIncompatibleKind(t *testing.T) {
 		[]byte("# CONTRACTS-draft\n\n> 状态：draft\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "TR-002", ExpectedRevision: 2, Actor: "orchestrator", Evidence: map[string]string{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "no complete TASK document") {
@@ -276,10 +276,10 @@ func TestApplyRejectsEvidenceWithIncompatibleKind(t *testing.T) {
 func startLockedREQ(t *testing.T, root, statePath, journalPath string) {
 	t.Helper()
 	reqPath := "internal/transition/testdata/locked-req.md"
-	_, err := transition.Apply(root, statePath, journalPath, transition.Request{
+	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "TR-001", ExpectedRevision: 0, Actor: "user",
 		Evidence: map[string]string{"req_lock_record": "REQ-002#lock", "loop_authorization_record": "user:/loop REQ-002"},
-		REQ:      &transition.LockedREQ{ID: "REQ-002", Path: reqPath, Version: "v1.0.0", SHA256: fileHash(t, filepath.Join(root, reqPath)), ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z"},
+		REQ:      &transition.LockedREQ{ID: "REQ-002", Path: reqPath, Version: "v1.0.0", SHA256: reqFileHash(t, filepath.Join(root, reqPath)), ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +291,7 @@ func advancePlanningToTasks(t *testing.T, root, statePath, journalPath string) {
 	tempRoot := filepath.Dir(statePath)
 	// PTR-PLAN-01's register_design_documents demands a locked architecture
 	// document on disk.
-	archDir := filepath.Join(tempRoot, "docs", "design", "architecture")
+	archDir := filepath.Join(tempRoot, "docs", "architecture")
 	if err := os.MkdirAll(archDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func advancePlanningToTasks(t *testing.T, root, statePath, journalPath string) {
 	}
 	// PTR-PLAN-02's contracts_checked guard demands at least one real
 	// contract on disk (the contractless-stage floor).
-	contractsDir := filepath.Join(tempRoot, "docs", "contracts")
+	contractsDir := filepath.Join(tempRoot, "docs", "dev", "contracts")
 	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func advancePlanningToTasks(t *testing.T, root, statePath, journalPath string) {
 		t.Fatal(err)
 	}
 	for revision, id := range []string{"PTR-PLAN-01", "PTR-PLAN-02"} {
-		if _, err := transition.Apply(root, statePath, journalPath, transition.Request{
+		if _, err := applyFixture(root, statePath, journalPath, transition.Request{
 			TransitionID: id, ExpectedRevision: revision, Actor: "hook_controller",
 		}); err != nil {
 			t.Fatalf("%s must advance formal planning: %v", id, err)
@@ -410,9 +410,9 @@ func seedPlanningArtifacts(t *testing.T, statePath string) {
 func seedPlanningArtifactsLang(t *testing.T, statePath string, english bool) {
 	t.Helper()
 	root := filepath.Dir(statePath)
-	contractsDir := filepath.Join(root, "docs", "contracts")
-	tasksDir := filepath.Join(root, "docs", "tasks")
-	archDir := filepath.Join(root, "docs", "design", "architecture")
+	contractsDir := filepath.Join(root, "docs", "dev", "contracts")
+	tasksDir := filepath.Join(root, "docs", "dev", "tasks")
+	archDir := filepath.Join(root, "docs", "architecture")
 	if err := os.MkdirAll(archDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -455,6 +455,15 @@ func seedPlanningArtifactsLang(t *testing.T, statePath string, english bool) {
 	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-test.md"), []byte(task), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func reqFileHash(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return transition.REQSHA256(data)
 }
 
 func fileHash(t *testing.T, path string) string {

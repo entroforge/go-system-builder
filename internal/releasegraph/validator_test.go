@@ -23,7 +23,7 @@ func TestValidateStagedReleaseRejectsInstanceArtifacts(t *testing.T) {
 	if err := os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeStageFile(t, root, "docs/tasks/TASK-017.md", "instance")
+	writeStageFile(t, root, "docs/dev/tasks/TASK-017.md", "instance")
 	err := releasegraph.ValidateStagedRelease(root)
 	if err == nil || !strings.Contains(err.Error(), "instance artifact") {
 		t.Fatalf("instance TASK must fail validation: %v", err)
@@ -95,8 +95,11 @@ func TestValidateStagedReleaseResolvesSkillLocalReferences(t *testing.T) {
 func minimalStage(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	for _, rel := range releasegraph.RequiredDocumentAssets {
+		writeStageFile(t, root, rel, "fixture")
+	}
 	writeStageFile(t, root, "AGENTS-template.md", "# AGENTS\n")
-	writeStageFile(t, root, "prelude.md", "# Prelude\n")
+	writeStageFile(t, root, "docs/guides/getting-started.md", "# Prelude\n")
 	writeStageFile(t, root, "Makefile", "verify:\n\t@true\n")
 	writeStageFile(t, root, "skills/example/SKILL.md", "---\nname: example\n---\n# Example\n")
 	return root
@@ -110,5 +113,43 @@ func writeStageFile(t *testing.T, root, rel, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRequiredDocumentsCannotDisappear(t *testing.T) {
+	for _, rel := range releasegraph.RequiredDocumentAssets {
+		t.Run(rel, func(t *testing.T) {
+			root := minimalStage(t)
+			writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
+			os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0755)
+			os.Remove(filepath.Join(root, rel))
+			if err := releasegraph.ValidateStagedRelease(root); err == nil {
+				t.Fatal("missing required document accepted")
+			}
+		})
+	}
+}
+
+func TestFactoryAuthorityReferenceCannotBeSkipped(t *testing.T) {
+	for _, rel := range []string{"blueprint/l1-principles/L1-design-principles.md", "docs/framework/l1-principles/L1-design-principles.md", "docs/design/loop-engineering/LOOP-RUNTIME.md"} {
+		root := minimalStage(t)
+		writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
+		os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0755)
+		writeStageFile(t, root, "skills/example/SKILL.md", "---\nname: example\n---\nRead `"+rel+"`.\n")
+		if err := releasegraph.ValidateStagedRelease(root); err == nil {
+			t.Fatalf("factory dependency accepted: %s", rel)
+		}
+	}
+}
+
+func TestValidateStagedReleaseRejectsBlueprint(t *testing.T) {
+	root := minimalStage(t)
+	writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
+	if err := os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeStageFile(t, root, "blueprint/README.md", "Template design only")
+	if err := releasegraph.ValidateStagedRelease(root); err == nil || !strings.Contains(err.Error(), "disallowed path") {
+		t.Fatalf("blueprint must not ship: %v", err)
 	}
 }

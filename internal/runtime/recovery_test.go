@@ -623,11 +623,11 @@ func recoveryPaths(t *testing.T) (string, string, string) {
 
 func writeRecoveryDefinition(t *testing.T, root string) {
 	t.Helper()
-	document, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	document, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	docsDir := filepath.Join(root, "docs")
+	docsDir := filepath.Join(root, "docs", "control")
 	if err := os.MkdirAll(docsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -743,3 +743,42 @@ func (f recoveryFailureFunc) Inject(step runtime.RecoveryFailureStep) error {
 }
 
 var _ runtime.RecoveryFailureInjector = recoveryFailureFunc(nil)
+
+func TestApplyRecoveryRejectsRetiredRequirementBeforeQuarantine(t *testing.T) {
+	for _, location := range []string{"active", "candidate"} {
+		t.Run(location, func(t *testing.T) {
+			root, statePath, journalPath := recoveryPaths(t)
+			candidate, journal := recoveryCandidates(t)
+			var state map[string]any
+			if err := json.Unmarshal(candidate, &state); err != nil {
+				t.Fatal(err)
+			}
+			state["bound_req"].(map[string]any)["path"] = "docs/product/requirements/REQ-002-loop-engineering-self-evolution.md"
+			old, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			active := []byte("broken active state\n")
+			if location == "active" {
+				active = old
+			} else {
+				candidate = old
+			}
+			writeRecoveryFile(t, statePath, active)
+			writeRecoveryFile(t, journalPath, []byte("journal unchanged\n"))
+			_, err = runtime.ApplyRecovery(recoveryRequest(root, statePath, journalPath, candidate, journal, "retired-req", "retired-req-sha"))
+			if err == nil || !strings.Contains(err.Error(), "layout migration required") {
+				t.Fatalf("retired path accepted: %v", err)
+			}
+			if string(mustReadRecoveryFile(t, statePath)) != string(active) {
+				t.Fatal("active state changed")
+			}
+			if string(mustReadRecoveryFile(t, journalPath)) != "journal unchanged\n" {
+				t.Fatal("journal changed")
+			}
+			if _, err := os.Stat(filepath.Join(root, ".claude/recovery/quarantine")); !os.IsNotExist(err) {
+				t.Fatalf("quarantine created: %v", err)
+			}
+		})
+	}
+}

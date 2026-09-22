@@ -18,12 +18,12 @@ import (
 func stateAtVerification(t *testing.T, root string) {
 	t.Helper()
 	// Copy the real Loop Definition so the transition engine can resolve.
-	defSrc := filepath.Join("..", "..", "docs", "loop-definition.json")
+	defSrc := filepath.Join("..", "..", "docs", "control", "loop-definition.json")
 	defData, err := os.ReadFile(defSrc)
 	if err != nil {
 		t.Fatalf("read loop-definition.json: %v", err)
 	}
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	if err := os.MkdirAll(defDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func stateAtVerification(t *testing.T, root string) {
 		"schema_version": "1.1.0",
 		"runtime_id":     "loop-test",
 		"definition": map[string]any{
-			"path":    "docs/loop-definition.json",
+			"path":    "docs/control/loop-definition.json",
 			"version": "1.2.0",
 			"sha256":  "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86",
 		},
@@ -75,7 +75,7 @@ func stateAtVerification(t *testing.T, root string) {
 		},
 		"hook_control": map[string]any{
 			"policy_ref": map[string]any{
-				"path":    "docs/hook-policy.json",
+				"path":    "docs/control/hook-policy.json",
 				"version": "v1.0.0",
 				"sha256":  "31c2f880dea1aeff73354c6e4a1dc45c234739a861ddcded79efe59cfbb69c86",
 			},
@@ -264,7 +264,7 @@ func TestTR020IncrementsBaselineAndInvalidatesEvidence(t *testing.T) {
 	})
 	scopeFixtureEvidence(t, state, "docs/reports/human/decision.md", "runtime_amend:loop-test@6")
 	writeState(t, root, state)
-	next, err := transition.Apply(root,
+	next, err := applyFixture(root,
 		filepath.Join(root, ".claude", "loop-state.json"),
 		filepath.Join(root, ".claude", "loop-events.jsonl"),
 		transition.Request{
@@ -345,7 +345,7 @@ func applyTransition(t *testing.T, root, transitionID string, expectedRevision i
 		Actor:            "orchestrator",
 		Evidence:         evidence,
 	}
-	_, err := transition.Apply(root,
+	_, err := applyFixture(root,
 		filepath.Join(root, ".claude", "loop-state.json"),
 		filepath.Join(root, ".claude", "loop-events.jsonl"),
 		req)

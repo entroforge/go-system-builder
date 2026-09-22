@@ -64,7 +64,7 @@ func runS10Manifest(args []string, stdout, stderr io.Writer) int {
 	file := flags.String("file", "", "S10 manifest JSON path relative to repository root")
 	kind := flags.String("type", "", "manifest type: acceptance or release_audit (default: read manifest_type)")
 	outcome := flags.String("outcome", "pass", "evidence outcome: pass, review_required, approved, approved_with_risk, or blocked")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*file) == "" {
@@ -133,7 +133,7 @@ func runS10ManifestInit(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	manifestType := flags.String("type", "", "manifest type to scaffold: acceptance or release_audit")
 	emitTemplate := flags.String("emit-template", "-", "write the manifest template to this repository-relative path, or `-` for stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	kind := strings.TrimSpace(*manifestType)
@@ -254,7 +254,7 @@ func runS10ManifestScaffold(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "s10 manifest scaffold")
 	kind := flags.String("type", "accepted", "conclusion to scaffold: accepted or blocked")
 	manifestPath := flags.String("manifest", "s10/manifest.json", "validated S10 manifest path the envelope binds (repository-relative)")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	conclusion := strings.TrimSpace(*kind)
@@ -309,7 +309,7 @@ func runS10ManifestRender(args []string, stdout, stderr io.Writer) int {
 	file := flags.String("file", "", "S10 manifest JSON path relative to repository root")
 	kind := flags.String("type", "", "manifest type: acceptance or release_audit (default: read manifest_type)")
 	output := flags.String("output", "", "write the Markdown to this repository-relative path instead of stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*file) == "" {
@@ -405,7 +405,7 @@ func runS10Status(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "s10 status")
 	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
 	snapshot, err := runtime.NewStore(
@@ -456,10 +456,23 @@ func inspectS10Artifact(root string, state map[string]any, manifestType string) 
 	} else {
 		wantedKinds["release_audit_record"] = true
 	}
+	// The evidence ledger is append-only and RecordEvidence rejects duplicate
+	// ids, so recovery from a bad registration means registering a NEW id.
+	// Select the LAST matching valid entry: the newest registration supersedes
+	// earlier ones (RC-15 S10-H2), and first-match would wedge the board on a
+	// stale row forever.
+	var selected map[string]any
 	for _, raw := range stateEvidence(state) {
 		entry, _ := raw.(map[string]any)
 		if entry == nil || !wantedKinds[stringValue(entry["kind"])] || stringValue(entry["status"]) != "valid" {
 			continue
+		}
+		selected = entry
+	}
+	{
+		entry := selected
+		if entry == nil {
+			return result
 		}
 		if entry["invalidated_by"] != nil {
 			return s10InvalidArtifact(result, "evidence is invalidated; register a new current S10 evidence envelope")
@@ -563,7 +576,6 @@ func inspectS10Artifact(root string, state map[string]any, manifestType string) 
 		result.Next = "let the Controller evaluate the S10 gate; do not call runtime transition or release commands"
 		return result
 	}
-	return result
 }
 
 func s10InvalidArtifact(result s10ArtifactStatus, message string) s10ArtifactStatus {

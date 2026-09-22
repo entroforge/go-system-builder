@@ -11,7 +11,7 @@ import (
 // Worker in a pre-plan state may not mutate the product surface before its
 // PLAN_REPORT is recorded. The main session (no Agent context) is exempt.
 func TestFirstWriteBarrier(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -25,7 +25,8 @@ func TestFirstWriteBarrier(t *testing.T) {
 		{"reading without plan blocks", &policy.AgentContext{ID: "a1", State: "reading", DispatchMode: "plan_checkpoint"}, "Write", true},
 		{"spawned without plan blocks", &policy.AgentContext{ID: "a1", State: "spawned", DispatchMode: "plan_checkpoint"}, "Edit", true},
 		{"plan recorded allows", &policy.AgentContext{ID: "a1", State: "reading", DispatchMode: "plan_checkpoint", PlanReportedRef: "plan_report:msg-1"}, "Write", false},
-		{"working agent exempt", &policy.AgentContext{ID: "a1", State: "working", DispatchMode: "plan_checkpoint"}, "Write", false},
+		{"working label without validated plan blocks", &policy.AgentContext{ID: "a1", State: "working", DispatchMode: "plan_checkpoint"}, "Write", true},
+		{"working with validated plan allows", &policy.AgentContext{ID: "a1", State: "working", DispatchMode: "plan_checkpoint", PlanReportedRef: "plan.json"}, "Write", false},
 		{"one_shot exempt", &policy.AgentContext{ID: "a1", State: "reading", DispatchMode: "one_shot"}, "Write", false},
 		{"main session (no agent) exempt", nil, "Write", false},
 		{"Bash not covered", &policy.AgentContext{ID: "a1", State: "reading", DispatchMode: "plan_checkpoint"}, "Bash", false},

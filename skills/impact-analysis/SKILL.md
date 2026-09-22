@@ -7,7 +7,7 @@ version: 1.1.0
 # Impact Analysis
 
 ## Authority
-This Skill identifies affected artifacts and marks evidence; it does not approve transitions. Runtime authority lives in `docs/loop-definition.json` and `.claude/loop-state.json`; the method summary is inlined below.
+This Skill identifies affected artifacts and marks evidence; it does not approve transitions. Runtime authority lives in `docs/control/loop-definition.json` and `.claude/loop-state.json`; the method summary is inlined below.
 
 ## Entry Conditions
 - A concrete changed artifact or fingerprint is known: specification rework, Builder completion, BUG repair, or an out-of-band change.

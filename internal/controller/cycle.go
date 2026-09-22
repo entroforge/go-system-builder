@@ -2,9 +2,11 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	"os"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,7 +19,9 @@ import (
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // Stable error codes returned on the QualityGate.ErrorCode field and on
@@ -57,34 +61,6 @@ func incrementMetricsCASConflicts() {
 	metricsCountersMu.Lock()
 	MetricsCASConflicts++
 	metricsCountersMu.Unlock()
-}
-
-// diskFiles is the production FileView used to back the Quality Gate
-// evaluator. It reads from the project root relative paths.
-type diskFiles struct {
-	root string
-}
-
-func (d diskFiles) ReadDir(dir string) ([]os.DirEntry, error) {
-	if dir == "" {
-		dir = "."
-	}
-	cleaned := filepath.Clean(dir)
-	if filepath.IsAbs(cleaned) {
-		return os.ReadDir(cleaned)
-	}
-	return os.ReadDir(filepath.Join(d.root, cleaned))
-}
-
-func (d diskFiles) ReadFile(path string) ([]byte, error) {
-	if path == "" {
-		return nil, os.ErrNotExist
-	}
-	cleaned := filepath.Clean(path)
-	if filepath.IsAbs(cleaned) {
-		return os.ReadFile(cleaned)
-	}
-	return os.ReadFile(filepath.Join(d.root, cleaned))
 }
 
 // snapshotCursor reads the current state/phase from a snapshot. It mirrors
@@ -162,6 +138,26 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		result.ErrorCode = CodeRuntimeInval
 		return result, nil
 	}
+	if req.Files == nil && len(catalog.Definition.MutableEvidenceKinds) > 0 {
+		if view, viewErr := productionFiles(req.Root, snapshot.State, catalog); viewErr == nil {
+			req.Files = view // refresh and evaluation share the same pinned input snapshot
+			kinds := map[string]bool{}
+			for _, k := range catalog.Definition.MutableEvidenceKinds {
+				kinds[k] = true
+			}
+			refreshWriter := runtime.NewWriter(statePath, journalPath, req.Root, semantic.RuntimeCandidateValidator{})
+			if req.recoveryWriter.Enabled() {
+				refreshWriter = runtime.NewOfflineRecoveryWriter(statePath, journalPath, req.Root, semantic.RuntimeCandidateValidator{}, req.recoveryWriter)
+			}
+			_, refreshErr := refreshWriter.RefreshEvidenceFingerprints(req.Root, kinds, view.ReadFile, func(path string) bool { source, err := view.Source(path); return err == nil && source == "disk" })
+			if refreshErr != nil {
+				result.Warnings = append(result.Warnings, "evidence fingerprint refresh: "+refreshErr.Error())
+			} else if refreshed, readErr := store.Snapshot(); readErr == nil {
+				snapshot = refreshed
+				result.Snapshot = snapshot
+			}
+		}
+	}
 	registry, err := qualitygate.NewRegistry(catalog)
 	if err != nil {
 		result.Error = fmt.Sprintf("build gate registry: %v", err)
@@ -180,10 +176,6 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	candidates := automaticCandidatesFor(catalog, cursor)
 
 	// --- Step 6: Evaluate every automatic candidate gate within budget ---
-	files := req.Files
-	if files == nil {
-		files = diskFiles{root: req.Root}
-	}
 	if len(candidates) == 0 {
 		// No auto-trigger candidate at the current cursor (planning already
 		// complete, terminal, or non-eligible phase). The cycle still
@@ -193,8 +185,22 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		result.QualityGate.TransitionCommitted = false
 		result.Decision = allowDecision()
 		result.Snapshot = snapshot
-		return result, nil
+		return applyFinalSafety(result, req, snapshot, affected), nil
 	}
+	files := req.Files
+	if files == nil {
+		view, viewErr := productionFiles(req.Root, snapshot.State, catalog)
+		if viewErr != nil {
+			result.Error = viewErr.Error()
+			result.ErrorCode = CodeGateUnknown
+			result.QualityGate.ErrorCode = CodeGateUnknown
+			result.QualityGate.Missing = []string{viewErr.Error()}
+			return applyFinalSafety(result, req, snapshot, affected), nil
+		}
+		files = view
+		req.Files = view
+	}
+
 	budget := ResolveQualityCycleBudget(catalog, req.QualityCycleBudget)
 	evalResults, timedOut := evaluateAutomaticGates(ctx, budget, evaluator, req, snapshot, candidates, affected, files)
 	if timedOut {
@@ -209,7 +215,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	// --- Step 5/7: selector seam — gate outcomes + requested events ---
 	facts := buildTriggerFacts(evaluator, req, snapshot, candidates, evalResults, affected, files)
 	if conflict, conflictIDs := detectSelectorEvidenceConflict(facts, evalResults); conflict {
-		metrics.RecordGateEvaluation(req.Root, string(StatusUnknown))
+		metrics.ObserveGateEvaluation(req.Root, string(StatusUnknown))
 		result.QualityGate.Status = StatusUnknown
 		result.QualityGate.ErrorCode = CodeTriggerConfl
 		result.QualityGate.Conflicts = conflictIDs
@@ -225,7 +231,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	if err != nil {
 		var conflict *transition.TriggerConflictError
 		if errors.As(err, &conflict) {
-			metrics.RecordGateEvaluation(req.Root, string(StatusUnknown))
+			metrics.ObserveGateEvaluation(req.Root, string(StatusUnknown))
 			result.QualityGate.Status = StatusUnknown
 			result.QualityGate.ErrorCode = CodeTriggerConfl
 			result.QualityGate.Conflicts = append([]string{}, conflict.CandidateIDs...)
@@ -267,7 +273,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	if candidate != nil {
 		result.QualityGate.CandidateTransition = candidate.ID
 	}
-	metrics.RecordGateEvaluation(req.Root, string(gateStatus))
+	metrics.ObserveGateEvaluation(req.Root, string(gateStatus))
 
 	// --- Step 7: optionally commit one transition ---
 	if gateStatus == StatusSatisfied && candidate != nil && candidate.AutoTrigger != nil && candidate.AutoTrigger.Actor != "" {
@@ -279,7 +285,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 			// CAS stale: re-read, recompute once, and try again.
 			if errors.Is(applyErr, runtime.ErrStaleRevision) {
 				incrementMetricsCASConflicts()
-				metrics.RecordCASConflict(req.Root)
+				metrics.ObserveCASConflict(req.Root)
 				rebroadcast, _, recomputeErr := recomputeAfterStale(req, store, catalog, registry, evaluator, ctx)
 				if recomputeErr != nil {
 					result.QualityGate.Status = StatusUnknown
@@ -310,7 +316,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 			return result, nil
 		}
 		incrementMetricsTransitionCommits()
-		metrics.RecordTransitionCommit(req.Root, candidate.ID)
+		metrics.ObserveTransitionCommit(req.Root, candidate.ID)
 		snapshot = next
 		result.Snapshot = next
 		result.QualityGate.ObservedRevision = next.Revision
@@ -365,31 +371,25 @@ func applyFinalSafety(
 	affected []string,
 ) ControlResult {
 	safetyInput := buildSafetyInput(req, snapshot, affected)
-	engine, err := policy.Load(filepath.Join(req.Root, "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join(req.Root, projectlayout.Policy))
+	var decision policy.Decision
 	if err != nil {
-		// A missing policy document must not block the tool — fall back to
-		// allow. The Hook adapter will surface a separate warning.
 		result.Warnings = append(result.Warnings, fmt.Sprintf("load hook-policy: %v", err))
-		engine = nil
-	}
-	if engine != nil {
-		decision, err := engine.Evaluate(safetyInput)
+		decision = policy.UnavailableDecision(safetyInput, err)
+	} else {
+		decision, err = engine.Evaluate(safetyInput)
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("safety evaluate: %v", err))
-			decision = allowDecision()
+			decision = policy.UnavailableDecision(safetyInput, err)
 		}
-		// Quality gate may ONLY be projected to blocked when the safety
-		// layer actually denied the call. not_ready is intentionally
-		// distinct (BE-039 §3.2 / §5.2).
-		if decision.Decision == "block" || decision.Decision == "deny" {
-			decision.HumanRequired = decision.HumanRequired || (decision.RuleID == policy.RuleLockedArtifactWrite)
-			result.Decision = decision
-			result.QualityGate.Status = StatusBlocked
-			return result
-		}
-		result.Decision = decision
-	} else {
-		result.Decision = allowDecision()
+	}
+	// Missing safety authority is a safety denial, distinct from quality
+	// not_ready/unknown, which must still let an authorized agent continue.
+	result.Decision = decision
+	if decision.Decision == "block" || decision.Decision == "deny" {
+		result.Decision.HumanRequired = decision.HumanRequired || decision.RuleID == policy.RuleLockedArtifactWrite
+		result.QualityGate.Status = StatusBlocked
+		return result
 	}
 
 	// Default: the tool may proceed regardless of gate progress. not_ready
@@ -439,7 +439,12 @@ func recomputeAfterStale(
 	}
 	files := req.Files
 	if files == nil {
-		files = diskFiles{root: req.Root}
+		view, viewErr := productionFiles(req.Root, refreshed.State, catalog)
+		if viewErr != nil {
+			return ControlResult{Snapshot: refreshed, Decision: allowDecision(), Error: viewErr.Error(), ErrorCode: CodeGateUnknown, QualityGate: QualityGateResult{Status: StatusUnknown, ErrorCode: CodeGateUnknown, Missing: []string{viewErr.Error()}}}, 1, nil
+		}
+		files = view
+		req.Files = view
 	}
 	affected := normalizeAffectedPaths(req)
 	budget := ResolveQualityCycleBudget(catalog, req.QualityCycleBudget)
@@ -488,7 +493,7 @@ func recomputeAfterStale(
 	if resolution.Transition == nil {
 		gateID, evaluation, candidate := projectZeroSelected(candidates, evalResults)
 		gateStatus, _, _ := projectGateResult(evaluation)
-		metrics.RecordGateEvaluation(req.Root, string(gateStatus))
+		metrics.ObserveGateEvaluation(req.Root, string(gateStatus))
 		out := ControlResult{
 			Snapshot: refreshed,
 			Decision: allowDecision(),
@@ -518,7 +523,7 @@ func recomputeAfterStale(
 		}
 	}
 	gateStatus, _, _ := projectGateResult(evaluation)
-	metrics.RecordGateEvaluation(req.Root, string(gateStatus))
+	metrics.ObserveGateEvaluation(req.Root, string(gateStatus))
 	if gateStatus != StatusSatisfied {
 		out := ControlResult{
 			Snapshot: refreshed,
@@ -546,7 +551,7 @@ func recomputeAfterStale(
 	if applyErr != nil {
 		if errors.Is(applyErr, runtime.ErrStaleRevision) {
 			incrementMetricsCASConflicts()
-			metrics.RecordCASConflict(req.Root)
+			metrics.ObserveCASConflict(req.Root)
 		}
 		// Second stale: the cycle must NOT retry a third time.
 		out := ControlResult{
@@ -571,7 +576,7 @@ func recomputeAfterStale(
 		return ControlResult{}, 1, fmt.Errorf("reread runtime after retry: %w", err)
 	}
 	incrementMetricsTransitionCommits()
-	metrics.RecordTransitionCommit(req.Root, candidate.ID)
+	metrics.ObserveTransitionCommit(req.Root, candidate.ID)
 	cursorState, cursorPhase = snapshotCursor(final.State)
 	out := ControlResult{
 		Snapshot: final,
@@ -631,6 +636,9 @@ func evaluateAutomaticGates(
 				Status: qualitygate.StatusUnknown,
 				GateID: gateID,
 			}
+		}
+		if view, ok := files.(*fileview.View); ok {
+			evaluation.Fingerprint = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(evaluation.Fingerprint+"\x00"+view.Commit)))
 		}
 		results = append(results, automaticGateEval{
 			candidate:  spec,
@@ -931,7 +939,13 @@ func buildSafetyInput(req ControlRequest, snapshot runtime.Snapshot, affected []
 	if baseline, ok := snapshot.State["baseline"].(map[string]any); ok {
 		rt.CurrentBaselineGeneration = int(baseline["generation"].(float64))
 	}
+	var bindingErr error
+	rt.Workspace, bindingErr = workspace.Decode(snapshot.State)
+	if bindingErr != nil {
+		rt.WorkspaceError = bindingErr.Error()
+	}
 	return policy.Input{
+		CWD:       req.CWD,
 		SessionID: req.SessionID,
 		Event:     req.Event,
 		AgentID:   req.AgentID,
@@ -1053,6 +1067,7 @@ func autoTransitionRequest(
 	runtimeIdentity, _ := snapshot.State["runtime_id"].(string)
 	return transition.Request{
 		TransitionID:           candidate.ID,
+		Files:                  transitionFiles(req.Files),
 		ExpectedRevision:       -1,
 		ExpectedRuntimeID:      runtimeIdentity,
 		Actor:                  candidate.AutoTrigger.Actor,
@@ -1064,6 +1079,7 @@ func autoTransitionRequest(
 		GateID:                 gateID,
 		GateFingerprint:        evaluation.Fingerprint,
 		ProducerResponsibility: gateProducerResponsibility(registry, gateID),
+		RecoveryWriter:         req.recoveryWriter,
 	}
 }
 
@@ -1276,4 +1292,19 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func productionFiles(root string, state map[string]any, catalog *transition.Catalog) (*fileview.View, error) {
+	if err := fileview.ValidateAuthority(root, state); err != nil {
+		return nil, err
+	}
+	ref, err := fileview.DevelopmentRef(state)
+	if err != nil {
+		return nil, err
+	}
+	return fileview.New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+}
+func transitionFiles(files qualityGateFiles) fileview.Reader {
+	view, _ := files.(fileview.Reader)
+	return view
 }

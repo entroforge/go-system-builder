@@ -116,7 +116,7 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	}
 	// RC-18 lifecycle gate: only TR-008 (verification.observation_sealed ->
 	// bug_resolution.investigation) or a human defect decision may open S8
-	// intake (docs/loop-definition.json bug_resolution.investigation
+	// intake (docs/control/loop-definition.json bug_resolution.investigation
 	// entry_condition). Without this gate a stale batch pointer left behind by
 	// a phase change — or a Case-route replay after route_consume clears the
 	// pointer and leaves the phase — could enter the Case write path.
@@ -127,7 +127,7 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 			stringField(lifecycle["state"]), stringField(lifecycle["phase"]), intakePhaseNext)
 	}
 
-	pointer, err := observationBatchPointer(current.State)
+	pointer, err := observationBatchPointer(root, current.State)
 	if err != nil {
 		return runtime.Snapshot{}, err
 	}
@@ -276,14 +276,19 @@ type batchPointer struct {
 	FindingIDs []string
 }
 
-func observationBatchPointer(state map[string]any) (batchPointer, error) {
-	review, ok := state["review"].(map[string]any)
-	if !ok || review == nil {
-		return batchPointer{}, fmt.Errorf("state.review is missing; S7 must seal an ObservationBatch before S8 intake; %s", intakeSealNext)
+func observationBatchPointer(root string, state map[string]any) (batchPointer, error) {
+	review, _ := state["review"].(map[string]any)
+	var raw map[string]any
+	if review != nil {
+		raw, _ = review["observation_batch"].(map[string]any)
 	}
-	raw, ok := review["observation_batch"].(map[string]any)
-	if !ok || raw == nil {
-		return batchPointer{}, fmt.Errorf("state.review.observation_batch is missing; S7 must seal an ObservationBatch before S8 intake; %s", intakeSealNext)
+	if raw == nil {
+		// Defect #25 recovery: a reject_defect (TR-027) executed before the
+		// placeholder-pointer fix — or any legacy path that cleared the review
+		// pointer — can leave S8 open while a sealed ObservationBatch evidence
+		// row is still registered and its artifact is intact. Recover from the
+		// newest valid sealed batch instead of dead-looping on ingest.
+		return batchPointerFromSealedEvidence(root, state)
 	}
 	pointer := batchPointer{BatchID: stringField(raw["batch_id"]), Path: stringField(raw["path"]), SHA256: stringField(raw["sha256"])}
 	if pointer.BatchID == "" {
@@ -301,6 +306,47 @@ func observationBatchPointer(state map[string]any) (batchPointer, error) {
 	}
 	pointer.FindingIDs = ids
 	return pointer, nil
+}
+
+// batchPointerFromSealedEvidence recovers the S8 intake pointer from the
+// newest valid observation_batch evidence row (defect #25 recovery). It never
+// fabricates a batch: batch_id/sha256 come from the evidence registry row and
+// finding_ids come from the sealed artifact itself, so every downstream
+// verification (sha, schema, exact finding set) still applies unchanged.
+func batchPointerFromSealedEvidence(root string, state map[string]any) (batchPointer, error) {
+	rows, _ := state["evidence"].([]any)
+	for index := len(rows) - 1; index >= 0; index-- {
+		row, _ := rows[index].(map[string]any)
+		if stringField(row["kind"]) != "observation_batch" || stringField(row["status"]) != "valid" {
+			continue
+		}
+		path := stringField(row["path"])
+		sha := stringField(row["sha256"])
+		batchID := stringField(row["id"])
+		if path == "" || sha == "" || batchID == "" {
+			continue
+		}
+		batchPath, err := repositoryPath(root, path)
+		if err != nil {
+			continue
+		}
+		batchBytes, err := os.ReadFile(batchPath)
+		if err != nil {
+			continue
+		}
+		var sealed struct {
+			ObservationBatchID string   `json:"observation_batch_id"`
+			FindingIDs         []string `json:"finding_ids"`
+		}
+		if err := json.Unmarshal(batchBytes, &sealed); err != nil {
+			continue
+		}
+		if sealed.ObservationBatchID == "" {
+			sealed.ObservationBatchID = batchID
+		}
+		return batchPointer{BatchID: sealed.ObservationBatchID, Path: path, SHA256: sha, FindingIDs: sealed.FindingIDs}, nil
+	}
+	return batchPointer{}, fmt.Errorf("state.review.observation_batch is missing and no valid sealed observation_batch evidence exists to recover from; %s", intakeSealNext)
 }
 
 func buildInitialCase(caseID string, batch observationBatch, batchRef, batchSHA, rationale string, baseline int) ([]byte, error) {

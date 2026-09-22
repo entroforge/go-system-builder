@@ -73,7 +73,13 @@ func EvaluateReady(ctx context.Context, root string) (ReadyReport, error) {
 	}
 
 	req := ControlRequest{Root: root, Event: "PreToolUse"}
-	files := diskFiles{root: root}
+	files, fileErr := productionFiles(root, snapshot.State, catalog)
+	if fileErr != nil {
+		report.Status = string(StatusUnknown)
+		report.ErrorCode = CodeGateUnknown
+		report.Missing = []string{fileErr.Error()}
+		return report, nil
+	}
 	budget := ResolveQualityCycleBudget(catalog, 0)
 	evalResults, timedOut := evaluateAutomaticGates(ctx, budget, evaluator, req, snapshot, candidates, nil, files)
 	if timedOut {

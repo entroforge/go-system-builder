@@ -19,6 +19,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"hash"
 	"io"
 	"io/fs"
@@ -132,7 +133,7 @@ func runCaptureExecInner(args []string, stdin io.Reader, stdout, stderr io.Write
 	maxEvidenceBytes := flags.Int64("max-evidence-bytes", execEvidenceBytesDefault, "per-stream evidence file size cap; overflow is truncated and recorded")
 	maxArtifacts := flags.Int("max-artifacts", execMaxArtifactsDefault, "maximum produced/modified/deleted artifacts recorded per step")
 	artifactDepth := flags.Int("artifact-depth", execArtifactDepthDefault, "directory depth scanned under cwd for the artifact digest diff")
-	if err := flags.Parse(flagArgs); err != nil {
+	if err := parseWorkspaceFlags(flags, flagArgs); err != nil {
 		return 2
 	}
 	if *assignmentID == "" {
@@ -177,9 +178,21 @@ func runCaptureExecInner(args []string, stdin io.Reader, stdout, stderr io.Write
 		return 1
 	}
 
-	bufferPath, err := captureBufferPath(absRoot, *assignmentID)
+	snapshot, err := captureRuntimeSnapshot(absRoot)
 	if err != nil {
 		fmt.Fprintf(stderr, "capture exec: %v\n", err)
+		return 1
+	}
+	runtimeID, _ := snapshot.State["runtime_id"].(string)
+	generation := 0
+	if baseline, ok := snapshot.State["baseline"].(map[string]any); ok {
+		if value, ok := baseline["generation"].(float64); ok {
+			generation = int(value)
+		}
+	}
+	bufferPath := review.CaptureFile(absRoot, runtimeID, generation, *assignmentID)
+	if bufferPath == "" {
+		fmt.Fprintln(stderr, "capture exec: resolve capture buffer path")
 		return 1
 	}
 	steps, err := review.LoadCaptureStepsStrict(bufferPath)
@@ -214,6 +227,7 @@ func runCaptureExecInner(args []string, stdin io.Reader, stdout, stderr io.Write
 	before := snapshotArtifacts(cwdAbs, *artifactDepth)
 
 	started := time.Now()
+	provenance := review.BeginCaptureProvenance(absRoot, snapshot.State, *assignmentID, cwdAbs, started)
 	binary := command[0]
 	if opts.CommandPath != "" {
 		binary = opts.CommandPath
@@ -239,6 +253,7 @@ func runCaptureExecInner(args []string, stdin io.Reader, stdout, stderr io.Write
 	cmd.Stderr = stderrPassthrough
 	runErr := cmd.Run()
 	duration := time.Since(started).Round(time.Millisecond)
+	provenance.Finish(time.Now().UTC())
 	stdoutRec.close()
 	stderrRec.close()
 
@@ -295,6 +310,7 @@ func runCaptureExecInner(args []string, stdin io.Reader, stdout, stderr io.Write
 		Observed:   observed,
 		Evidence:   evidenceRefs,
 		CapturedAt: started.UTC().Format(time.RFC3339Nano),
+		Provenance: provenance,
 	}
 	// Final gate over the assembled step: even after stream withholding, the
 	// buffer never persists a value that matches a secret pattern.
@@ -329,9 +345,7 @@ func runCaptureExecInner(args []string, stdin io.Reader, stdout, stderr io.Write
 // Runtime (runtime id + baseline generation), the same addressing `capture
 // step` uses.
 func captureBufferPath(absRoot, assignmentID string) (string, error) {
-	statePath := filepath.Join(absRoot, ".claude", "loop-state.json")
-	journalPath := filepath.Join(absRoot, ".claude", "loop-events.jsonl")
-	snapshot, err := runtime.NewStore(statePath, journalPath).Snapshot()
+	snapshot, err := captureRuntimeSnapshot(absRoot)
 	if err != nil {
 		return "", fmt.Errorf("read runtime: %w", err)
 	}
@@ -343,6 +357,12 @@ func captureBufferPath(absRoot, assignmentID string) (string, error) {
 		}
 	}
 	return review.CaptureFile(absRoot, runtimeID, generation, assignmentID), nil
+}
+
+func captureRuntimeSnapshot(absRoot string) (runtime.Snapshot, error) {
+	statePath := filepath.Join(absRoot, ".claude", "loop-state.json")
+	journalPath := filepath.Join(absRoot, ".claude", "loop-events.jsonl")
+	return runtime.NewStore(statePath, journalPath).Snapshot()
 }
 
 // appendCaptureStep appends one JSONL step to the buffer.
@@ -560,8 +580,15 @@ type artifactDigest struct {
 func snapshotArtifacts(root string, maxDepth int) map[string]artifactDigest {
 	out := map[string]artifactDigest{}
 	entries := 0
+	scope := pathscope.New(root)
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			return nil
+		}
+		if scope.Excludes(path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)

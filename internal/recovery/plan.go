@@ -106,6 +106,9 @@ func validateInventory(inventory Inventory) error {
 		seen[input.Path] = struct{}{}
 		if input.Path == inventory.REQ.Path {
 			reqFound = true
+			if input.Kind != InputKindREQ {
+				return &ValidationError{Code: ErrInvalidInventory, Field: "inputs.kind", Path: input.Path, Reason: "selected req inventory input has the wrong kind"}
+			}
 			if input.SHA256 != inventory.REQ.SHA256 {
 				return &ValidationError{Code: ErrInvalidInventory, Field: "req.sha256", Path: input.Path, Reason: "req binding sha256 does not match inventory input"}
 			}

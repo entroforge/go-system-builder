@@ -231,6 +231,10 @@ var semanticRequirements = map[string][]EvidenceRequirement{
 		requestedRequirement("acceptance_record", []string{"Acceptance", "Orchestrator"}, []string{"review_required"}, "acceptance_review_required"),
 		requirement("change_impact_record", []string{"Acceptance", "Orchestrator"}, []string{"recorded"}),
 	},
+	"GATE-RELEASE-AUDIT-REVIEW-REQUIRED": {
+		requestedRequirement("acceptance_record", []string{"Acceptance", "Orchestrator"}, []string{"review_required"}, "acceptance_review_required"),
+		requirement("change_impact_record", []string{"Acceptance", "Orchestrator"}, []string{"recorded"}),
+	},
 	"GATE-RELEASE-AUDIT-APPROVED": {
 		requirement("release_audit_record", []string{"Release Auditor"}, []string{"approved", "approved_with_risk"}),
 		requirement("acceptance_record", []string{"Acceptance", "Orchestrator"}, []string{"pass"}),
@@ -322,4 +326,10 @@ func cloneRequirements(source []EvidenceRequirement) []EvidenceRequirement {
 		result[index].Conclusions = append([]string(nil), requirement.Conclusions...)
 	}
 	return result
+}
+
+// ProducerRequirements returns a defensive copy of the gate's producer
+// contract for actionable diagnostics. It does not authorize a producer.
+func ProducerRequirements(gateID string) []EvidenceRequirement {
+	return cloneRequirements(semanticRequirements[gateID])
 }

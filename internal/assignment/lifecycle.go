@@ -224,6 +224,10 @@ func AdvanceAgent(
 				agent["state"] = resolvedTo
 				if messageRef != "" {
 					agent[agentEventEvidenceKey(request.Event)] = messageRef
+					if request.Event == "readback_submitted" && agent["dispatch_mode"] == "plan_checkpoint" {
+						// Commit the observation and authoritative readback in the same Writer mutation.
+						agent["plan_reported_ref"] = messageRef
+					}
 				}
 				agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 				state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)

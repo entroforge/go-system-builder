@@ -18,7 +18,7 @@
     {
       "id": "CONTRACT-001",
       "category": "contract",
-      "source_refs": ["docs/contracts/CONTRACTS-003.md#contract-1"],
+      "source_refs": ["docs/dev/contracts/CONTRACTS-003.md#contract-1"],
       "expected": "The locked FE/BE contract remains compatible.",
       "oracle": "Contract checks and the persisted payload agree at the boundary.",
       "owner": "Requirement Acceptance",

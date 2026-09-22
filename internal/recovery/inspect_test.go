@@ -107,6 +107,29 @@ func TestInspectAcceptsLockedREQAndDamagedBOMRuntime(t *testing.T) {
 	}
 }
 
+func TestInspectPreservesREQCRLFForBinding(t *testing.T) {
+	root := t.TempDir()
+	path := "docs/requirements/REQ-052.md"
+	data := []byte("# REQ-052\r\n\r\n> 状态：locked\r\n> 版本：v1.0.3\r\n")
+	writeRecoveryFile(t, root, path, data)
+
+	inventory, err := Inspect(root, path)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	wantBindingSHA := sha256HexForRecoveryTest(data)
+	if inventory.REQ.SHA256 != wantBindingSHA {
+		t.Fatalf("REQ binding SHA256 = %q, want raw-byte %q", inventory.REQ.SHA256, wantBindingSHA)
+	}
+	input, ok := inventoryInputByPath(inventory, path)
+	if !ok {
+		t.Fatalf("inventory missing %s", path)
+	}
+	if input.SHA256 != sha256HexForRecoveryTest(data) {
+		t.Fatalf("REQ inventory SHA256 = %q, want raw byte digest %q", input.SHA256, sha256HexForRecoveryTest(data))
+	}
+}
+
 func TestInspectUsesCanonicalREQIDFromDescriptiveFilename(t *testing.T) {
 	root := t.TempDir()
 	reqPath := "docs/requirements/REQ-039-loop-control-plane.md"
@@ -155,14 +178,14 @@ func TestInspectInventoryRecordsRepositoryRelativePathsAndSHA256(t *testing.T) {
 func TestInspectInventoriesDefinitionAndPolicyUsedByRecoverySeed(t *testing.T) {
 	root := t.TempDir()
 	writeRecoveryREQ(t, root, "docs/requirements/REQ-011.md", "locked", "v1.0.0")
-	writeRecoveryFile(t, root, "docs/loop-definition.json", []byte(`{"schema_version":"1.1.0"}`))
-	writeRecoveryFile(t, root, "docs/hook-policy.json", []byte(`{"version":"v1","mode":"audit"}`))
+	writeRecoveryFile(t, root, "docs/control/loop-definition.json", []byte(`{"schema_version":"1.1.0"}`))
+	writeRecoveryFile(t, root, "docs/control/hook-policy.json", []byte(`{"version":"v1","mode":"audit"}`))
 
 	inventory, err := Inspect(root, "docs/requirements/REQ-011.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	for _, path := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		if _, ok := inventoryInputByPath(inventory, path); !ok {
 			t.Fatalf("recovery seed input %q missing from inventory", path)
 		}

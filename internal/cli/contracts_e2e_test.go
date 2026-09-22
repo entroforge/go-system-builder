@@ -20,12 +20,15 @@ import (
 // replace semantics (no stacking).
 func TestS3ContractPipelineE2E(t *testing.T) {
 	root := t.TempDir()
-	for _, rel := range []string{"docs/contracts", "docs/requirements", "docs/design/architecture", "docs/design/prototypes/wb", ".claude"} {
+	for _, rel := range []string{"docs/dev/contracts", "docs/requirements", "docs/architecture", "docs/design/prototypes/wb", ".claude"} {
 		if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, rel := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	if err := os.MkdirAll(filepath.Join(root, "docs/control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", rel))
 		if err != nil {
 			t.Fatal(err)
@@ -47,7 +50,7 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	}
 
 	// REQ with an FR; module package with CASE/S/F/PATH universe.
-	write("docs/design/architecture/ARCHITECTURE-500.md", "# ARCHITECTURE-500\n\n> 状态：locked\n> 版本：v1.0.0\n")
+	write("docs/architecture/ARCHITECTURE-500.md", "# ARCHITECTURE-500\n\n> 状态：locked\n> 版本：v1.0.0\n")
 	write("docs/requirements/REQ-500.md", "# REQ-500\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：changed\n\n| 编号 | 模块 | 需求 | 服务于 | 优先级 |\n|:--|:--|:--|:--|:--|\n| FR-501 | wb | 提交 | A1 | Must |\n")
 	write("docs/design/prototypes/wb/scenario-model.json", `{
   "module": "wb", "coverage_profile": "ordinary",
@@ -70,7 +73,7 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	write("docs/design/prototypes/wb/flows.md", "# F-001\n\n### PATH-SUBMIT\n")
 
 	// --- green: a contract whose references all resolve ---
-	write("docs/contracts/BE-501.md", ""+
+	write("docs/dev/contracts/BE-501.md", ""+
 		"# BE-501\n\n> 状态：locked\n> 版本：v1.0.0\n\n"+
 		"| REQ source_ref | Rule/CASE/Story/PATH | 本合同条款§ | 验收标准 |\n|:--|:--|:--|:--|\n"+
 		"| REQ-500/FR-501 | CASE-WB-001 / S-001 / F-001 / PATH-SUBMIT | §2 | 可提交 |\n"+
@@ -81,16 +84,16 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	}
 
 	// --- red: broken CASE + unknown clause target ---
-	write("docs/contracts/BE-501.md", strings.Replace(readFile(t, root, "docs/contracts/BE-501.md"),
+	write("docs/dev/contracts/BE-501.md", strings.Replace(readFile(t, root, "docs/dev/contracts/BE-501.md"),
 		"CASE-WB-001", "CASE-GHOST-9", 1)+"\n| cell | FE-999 §1 | x |\n")
 	_, stderr, code := run("contracts", "check", "--root", root)
 	if code == 0 || !strings.Contains(stderr, "CASE-GHOST-9") || !strings.Contains(stderr, "FE-999") {
 		t.Fatalf("broken links must be named, got: %s", stderr)
 	}
 	// restore green
-	write("docs/contracts/BE-501.md", strings.Replace(readFile(t, root, "docs/contracts/BE-501.md"), "CASE-GHOST-9", "CASE-WB-001", 1))
-	write("docs/contracts/BE-501.md", func() string {
-		s := readFile(t, root, "docs/contracts/BE-501.md")
+	write("docs/dev/contracts/BE-501.md", strings.Replace(readFile(t, root, "docs/dev/contracts/BE-501.md"), "CASE-GHOST-9", "CASE-WB-001", 1))
+	write("docs/dev/contracts/BE-501.md", func() string {
+		s := readFile(t, root, "docs/dev/contracts/BE-501.md")
 		if idx := strings.Index(s, "\n| cell |"); idx >= 0 {
 			return s[:idx]
 		}
@@ -98,7 +101,7 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	}())
 
 	// --- registration via PTR-PLAN-02: bind, then fire the transition ---
-	if _, stderr, code := run("req", "bind", "--root", root, "--approved-by", "bob"); code != 0 {
+	if _, stderr, code := run("req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "bob"); code != 0 {
 		t.Fatalf("bind failed: %s", stderr)
 	}
 	// design→contracts→tasks: PTR-PLAN-01 first (carries the wired
@@ -129,14 +132,14 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	if contractEntry["author_agent_id"] != "orchestrator" {
 		t.Fatalf("contract author_agent_id = %v, want orchestrator (registering actor)", contractEntry["author_agent_id"])
 	}
-	diskData, _ := os.ReadFile(filepath.Join(root, "docs", "contracts", "BE-501.md"))
+	diskData, _ := os.ReadFile(filepath.Join(root, "docs", "dev", "contracts", "BE-501.md"))
 	if contractEntry["sha256"] != fmt.Sprintf("%x", sha256.Sum256(diskData)) {
 		t.Fatal("registered sha must match disk")
 	}
 
 	// --- same-generation rework: revise + re-lock → replace, not stack ---
-	revise := strings.Replace(readFile(t, root, "docs/contracts/BE-501.md"), "v1.0.0", "v1.1.0", 1)
-	write("docs/contracts/BE-501.md", revise)
+	revise := strings.Replace(readFile(t, root, "docs/dev/contracts/BE-501.md"), "v1.0.0", "v1.1.0", 1)
+	write("docs/dev/contracts/BE-501.md", revise)
 	// bump revision by a no-op evidence-free transition is not available; use direct state edit to allow re-fire
 	state = readJSONMap(t, statePath)
 	state["lifecycle"] = map[string]any{"state": "planning", "phase": "contracts", "phase_revision": float64(1)}
@@ -176,12 +179,15 @@ func intStr(n int) string { return fmt.Sprintf("%d", n) }
 // is a gate, not a voluntary command.
 func TestPTRPLAN02BlocksOnBrokenBridge(t *testing.T) {
 	root := t.TempDir()
-	for _, rel := range []string{"docs/contracts", "docs/requirements", "docs/design/architecture", ".claude"} {
+	for _, rel := range []string{"docs/dev/contracts", "docs/requirements", "docs/architecture", ".claude"} {
 		if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, rel := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	if err := os.MkdirAll(filepath.Join(root, "docs/control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", rel))
 		if err != nil {
 			t.Fatal(err)
@@ -198,15 +204,15 @@ func TestPTRPLAN02BlocksOnBrokenBridge(t *testing.T) {
 	// REQ with an AC pointing at an FR; a contract exists (so the
 	// contractless-stage floor passes) but no module packages exist — the
 	// bridge must name the AC.
-	write("docs/contracts/BE-700.md", "# BE-700\n\n> 状态：locked\n> 版本：v1.0.0\n\n"+
+	write("docs/dev/contracts/BE-700.md", "# BE-700\n\n> 状态：locked\n> 版本：v1.0.0\n\n"+
 		"| REQ source_ref | Rule/CASE/Story/PATH | 本合同条款§ | 验收标准 |\n|:--|:--|:--|:--|\n"+
 		"| REQ-700/FR-701 | — | BE-700 §1 | 可提交 |\n")
-	write("docs/design/architecture/ARCHITECTURE-700.md", "# ARCHITECTURE-700\n\n> 状态：locked\n> 版本：v1.0.0\n")
+	write("docs/architecture/ARCHITECTURE-700.md", "# ARCHITECTURE-700\n\n> 状态：locked\n> 版本：v1.0.0\n")
 	write("docs/requirements/REQ-700.md", "# REQ-700\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：none\n\n"+
 		"| 编号 | 模块 | 需求 | 服务于 | 优先级 |\n|:--|:--|:--|:--|:--|\n| FR-701 | wb7 | 提交 | A1 | Must |\n"+
 		"| 编号 | 验收标准 | 指向 |\n|:--|:--|:--|\n| AC-701 | 提交成功 | FR-701 |\n")
 	var stdout, stderr bytes.Buffer
-	if code := cli.Run([]string{"req", "bind", "--root", root, "--approved-by", "bob"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+	if code := cli.Run([]string{"req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "bob"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("bind failed: %s", stderr.String())
 	}
 	if code := cli.Run([]string{"runtime", "transition", "--root", root,
@@ -225,12 +231,15 @@ func TestPTRPLAN02BlocksOnBrokenBridge(t *testing.T) {
 // because scenario-model.json remains the authoritative CASE universe.
 func TestContractsReverseClosureUsesModelAsAuthority(t *testing.T) {
 	root := t.TempDir()
-	for _, rel := range []string{"docs/contracts", "docs/requirements", "docs/design/architecture", "docs/design/prototypes/wb", ".claude"} {
+	for _, rel := range []string{"docs/dev/contracts", "docs/requirements", "docs/architecture", "docs/design/prototypes/wb", ".claude"} {
 		if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, rel := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	if err := os.MkdirAll(filepath.Join(root, "docs/control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", rel))
 		if err != nil {
 			t.Fatal(err)
@@ -249,7 +258,7 @@ func TestContractsReverseClosureUsesModelAsAuthority(t *testing.T) {
 	// Tampered generated artifact: CASE-WB-002 deleted from cases.json…
 	write("docs/design/prototypes/wb/cases.json", `{"cases":[{"id":"CASE-WB-001"}]}`)
 	// …and its citation deleted from the contract.
-	write("docs/contracts/BE-510.md", "# BE-510\n\n> 状态：locked\n> 版本：v1.0.0\n\n"+
+	write("docs/dev/contracts/BE-510.md", "# BE-510\n\n> 状态：locked\n> 版本：v1.0.0\n\n"+
 		"| REQ source_ref | Rule/CASE/Story/PATH | 本合同条款§ | 验收标准 |\n|:--|:--|:--|:--|\n"+
 		"| REQ-510/FR-511 | CASE-WB-001 | BE-510 §1 | 可提交 |\n")
 	var stdout, stderr bytes.Buffer

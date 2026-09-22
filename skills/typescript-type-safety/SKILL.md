@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # TypeScript Type Safety
 ## Authority
-Technical practice only. Stage routing remains in `docs/agent-protocol.md`; the locked contract owns externally visible semantics.
+Technical practice only. Stage routing remains in `docs/control/agent-protocol.md`; the locked contract owns externally visible semantics.
 ## Applicability
 Apply to TypeScript source, generated declaration boundaries, compiler settings, or type-check failures.
 ## Required Inputs

@@ -64,7 +64,7 @@ func StopIdleDecision(root string, input policy.Input) (policy.Decision, bool) {
 	if !IsStopIdleEvent(input.Event) {
 		return policy.Decision{}, false
 	}
-	if input.StopHookActive {
+	if input.Event == "SubagentStop" && input.StopHookActive {
 		return policy.Decision{}, false
 	}
 	agentID := input.EffectiveAgentID()
@@ -132,7 +132,7 @@ func stopIdleBlock(event string, agent *policy.AgentContext) policy.Decision {
 	case event == "TeammateIdle":
 		ruleID = RuleTeammateIdleResumeAssignment
 		reason = fmt.Sprintf("teammate %s went idle after the plan but before the assignment Result; the plan is not the deliverable (L4 §7.4)", agent.ID)
-		if agent.AssignmentID != "" {
+		if agent.ReviewAssignment && agent.AssignmentID != "" {
 			// S7-10 (RC-12): an S7 ReviewPlan Assignment's deliverable is a
 			// Canonical ReviewResult, not the S6 `task-complete` verb — name
 			// the actual submit path when the plan checkpoint was recorded.
@@ -156,7 +156,7 @@ func stopIdleBlock(event string, agent *policy.AgentContext) policy.Decision {
 	default:
 		ruleID = RuleSubagentStopMissingResult
 		reason = fmt.Sprintf("subagent %s is treating the plan as its final response; a PLAN_REPORT is not the Result (L4 §16.1)", agent.ID)
-		if agent.AssignmentID != "" {
+		if agent.ReviewAssignment && agent.AssignmentID != "" {
 			// S7-10 (RC-12): see the TeammateIdle branch — S7 Assignments
 			// deliver via review-result submit, not `runtime task-complete`.
 			recovery = []string{

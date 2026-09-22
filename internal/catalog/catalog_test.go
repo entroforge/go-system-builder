@@ -128,6 +128,29 @@ Authority: docs/rules/scenario-model.md
 	}
 }
 
+func TestCatalogAcceptsCRLFSkillFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	content := "---\n" +
+		"name: loop-orchestration\n" +
+		"description: Use when recovering an active Engineering Loop\n" +
+		"category: methodology\n" +
+		"version: 1.0.0\n" +
+		"---\n" +
+		"# Loop Orchestration\n" +
+		"## Authority\n" +
+		"docs/control/agent-protocol.md\n" +
+		"## Entry Conditions\n" +
+		"## Required Inputs\n" +
+		"## Procedure\n" +
+		"## Outputs\n" +
+		"## Stop Conditions\n" +
+		"## Non-Goals\n" +
+		"## Exit Conditions\n"
+	writeSkillFixture(t, root, "loop-orchestration", strings.ReplaceAll(content, "\n", "\r\n"))
+	if err := catalog.ValidateSkill(root, catalog.SkillSpec{Name: "loop-orchestration", Category: "methodology"}); err != nil {
+		t.Fatalf("CRLF frontmatter should validate: %v", err)
+	}
+}
 func writeSkillFixture(t *testing.T, root, name, content string) {
 	t.Helper()
 	dir := filepath.Join(root, "skills", name)
@@ -136,5 +159,25 @@ func writeSkillFixture(t *testing.T, root, name, content string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInstalledAssetsNeverFallBackToRoot(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("installed"), 0644)
+	os.MkdirAll(filepath.Join(root, "skills/loop-orchestration"), 0755)
+	data, err := os.ReadFile("../../skills/loop-orchestration/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "skills/loop-orchestration/SKILL.md"), data, 0644)
+	if err := catalog.ValidateSkill(root, catalog.SkillSpec{Name: "loop-orchestration", Category: "methodology"}); err == nil || !strings.Contains(err.Error(), "mixed asset layout") {
+		t.Fatalf("root skill fallback: %v", err)
+	}
+	os.RemoveAll(filepath.Join(root, "skills"))
+	os.MkdirAll(filepath.Join(root, "agents"), 0755)
+	os.WriteFile(filepath.Join(root, "agents/qa.md"), []byte("definition"), 0644)
+	if err := catalog.ValidateAgents(root); err == nil || !strings.Contains(err.Error(), "mixed asset layout") {
+		t.Fatalf("root agent fallback: %v", err)
 	}
 }

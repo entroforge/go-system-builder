@@ -7,7 +7,7 @@ version: 2.2.0
 # Document Verification
 
 ## Authority
-You produce evidence; the gate evaluates it. Runtime authority lives in `docs/loop-definition.json`; the S5 stage contract lives in `docs/agent-protocol.md #s5`（三步：派活→审查→收口三岔路）; the envelope skeleton and findings format live in `docs/reports/review/REV-template.md`.
+You produce evidence; the gate evaluates it. Runtime authority lives in `docs/control/loop-definition.json`; the S5 stage contract lives in `docs/control/agent-protocol.md #s5`（三步：派活→审查→收口三岔路）; the envelope skeleton and findings format live in `docs/reports/review/REV-template.md`.
 
 ## Role Contract
 
@@ -34,7 +34,7 @@ module current-truth package when the REQ touches UI.
      - **需求覆盖端到端**：抽 2-3 条 AC 走完最后一公里——AC → 契约条款 → TASK §3 声明 → 收尾契约 assert 行，全程指名到位；任何一跳"对不上号"即 finding（机器只保到 AC↔CASE，这最后一公里归你）；
      - **NFR 落地追踪**：REQ 非功能表的每一行有没有落进某张契约的条款（`NFR-{id}` 被 CONTRACTS 索引引用或条款显式声明）？NFR 是最易静默掉队的——没落地的每一行都是 finding；
      - **负向与错误路径对账**：契约错误码表 ↔ 场景包负向分支 ↔ 权限拒绝用例三方对得上吗？REQ 流程表声明了权限列的，场景包里必须有"无权限被拒"的负向分支。
-   - TASK-EXECUTABILITY：跑 `go run ./cmd/loop-harness tasks check --root .` 消费机检结论（覆盖双向/DAG 无环机器已判，不重算），再审机器判不了的**五问+半问**（代入 builder 视角——"我拿到这个任务单能顺利干完吗"）：
+   - TASK-EXECUTABILITY：跑 `.claude/bin/loop-harness tasks check --root .` 消费机检结论（覆盖双向/DAG 无环机器已判，不重算），再审机器判不了的**五问+半问**（代入 builder 视角——"我拿到这个任务单能顺利干完吗"）：
      1. **单一职责**：一句话测试——说不成交付物、跨层混拆（FE+BE+SYNC 同任务）、收尾契约 assert 超四行，都是拆分信号；
      2. **单窗口可行**：**builder 中途 compact 丢任务信息是灾难性表现**——按 §2 清单量与 §4 写路径量判断会不会撞上（`tasks check` 输出的 reference load 是参考数字不是门槛——它同时供第五问判断证据产出成本）；能拆小/裁清单的都不是"设计如此"而是缺陷；
      3. **语义连贯**：地基（类型/schema/迁移）先于依赖者？有没有 B 用 A 产物却没声明依赖的缺失边？有没有复制粘贴来的假边？
@@ -67,15 +67,14 @@ module current-truth package when the REQ touches UI.
 
 ## Stop Conditions
 
-Stop immediately and surface to the human if any of:
-
-- A fingerprint changed mid-review (the artifact was edited after you started).
-- A required document layer is missing entirely.
-- Two authorities contradict and cannot be reconciled without a REQ decision → `req_change_required`.
-- You recognize you authored (or materially drafted) an artifact under review — independence is lost（纪律层：机器无法替你判这一条，你不说没人知道——这是 S5 对你的唯一诚信要求）。
+Stop signing the affected review when its inputs drift, a document layer is missing, or reviewer independence is lost. Report to the Driver: refresh the review against the registered versions, route missing documents through fix_required, or reassign an independent reviewer. These technical recovery actions do not require a new human decision by themselves. Never sign stale evidence or review your own authored content. Only an unresolved contradiction requiring changed locked REQ/business semantics routes to the corresponding human Gateway.
 
 ## Non-Goals
 
 - Do not repair the reviewed documents — your fix_required routes them back to planning.
 - Do not lock the batch or activate Builders — TR-003 does that after both reviewers pass.
 - Do not treat missing coverage as N/A, and do not accept an unverifiable closing contract as executable.
+
+## Production entry and transaction feasibility
+
+TASK-EXECUTABILITY must inspect the actual entry and persistence path for every promised capability/slot family, not just document references. In existing TASK/contract traceability rows require: user action or external caller → registered entry → authoritative service/transaction → response or persisted state → owning TASK → necessary write paths → falsifiable check. Verify permission registration, UI mounts and shared types where applicable. A valid scope subset is not proof that all necessary files were declared. Keep changes that must be atomic in one transaction; do not split them merely to increase parallelism. Missing wiring ownership or a required transaction file is fix_required before dispatch. SPEC-CONSISTENCY retains business-semantic review; do not repeat its whole review or run the future product suite in S5.

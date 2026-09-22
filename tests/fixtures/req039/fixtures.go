@@ -12,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"github.com/entroforge/go-system-builder/internal/cli"
 )
 
@@ -72,13 +74,13 @@ func FreshRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{
-		"docs/loop-definition.json",
-		"docs/hook-policy.json",
+		"docs/control/loop-definition.json",
+		"docs/control/hook-policy.json",
 		// RC-06 (S10-3): the protected-release policy rule loads the
 		// data-driven protected-commands table from the runtime root; the
 		// fixture must ship the real table so Bash classification sees the
 		// production surface instead of failing closed on a missing file.
-		"docs/release_audits/protected_commands.json",
+		"docs/control/protected-commands.json",
 	} {
 		data, err := os.ReadFile(filepath.Join(repo, rel))
 		if err != nil {
@@ -104,11 +106,11 @@ func FreshRoot(t *testing.T) string {
 // definitionRefs returns sha256 fingerprints for on-disk docs in root.
 func definitionRefs(t *testing.T, root string) (defSHA, policySHA string) {
 	t.Helper()
-	defBytes, err := os.ReadFile(filepath.Join(root, "docs", "loop-definition.json"))
+	defBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	polBytes, err := os.ReadFile(filepath.Join(root, "docs", "hook-policy.json"))
+	polBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +119,10 @@ func definitionRefs(t *testing.T, root string) (defSHA, policySHA string) {
 
 // WriteState persists loop-state.json under root/.claude/.
 func WriteState(t *testing.T, root string, state map[string]any) {
+	CommitFixture(t, root)
+	if bound, ok := state["bound_req"].(map[string]any); ok {
+		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release", "bound_commit": "fixture"}
+	}
 	t.Helper()
 	path := filepath.Join(root, ".claude", "loop-state.json")
 	raw, err := json.MarshalIndent(state, "", "  ")
@@ -226,7 +232,7 @@ func BaseState(t *testing.T, root, lifecycleState, phase string, revision int) m
 		"schema_version": "1.1.0",
 		"runtime_id":     "loop-req039-ct",
 		"definition": map[string]any{
-			"path":    "docs/loop-definition.json",
+			"path":    "docs/control/loop-definition.json",
 			"version": "1.1.0",
 			"sha256":  defSHA,
 		},
@@ -242,7 +248,7 @@ func BaseState(t *testing.T, root, lifecycleState, phase string, revision int) m
 			"lifecycle_phase": phaseOrNil(phase),
 			"objective":       "CT fixture at " + lifecycleState,
 			"action":          "advance via Hook",
-			"protocol_ref":    "docs/agent-protocol.md",
+			"protocol_ref":    "docs/control/agent-protocol.md",
 			"manual_ref":      ".claude/bin/loop-harness.md",
 			"primary_skill":   "loop-orchestration",
 			"read":            []any{".claude/loop-state.json"},
@@ -299,7 +305,7 @@ func BaseState(t *testing.T, root, lifecycleState, phase string, revision int) m
 		},
 		"hook_control": map[string]any{
 			"policy_ref": map[string]any{
-				"path": "docs/hook-policy.json", "version": "v2.0.0",
+				"path": "docs/control/hook-policy.json", "version": "v2.0.0",
 				"sha256": policySHA,
 			},
 			"mode": "enforce", "health": "healthy", "consecutive_failures": 0, "last_checked_at": nil,
@@ -391,7 +397,11 @@ func ParseQualityGate(t *testing.T, raw string) (map[string]any, map[string]any)
 	qg, _ := env["quality_gate"].(map[string]any)
 	if qg == nil {
 		if hsp, ok := env["hookSpecificOutput"].(map[string]any); ok {
-			qg, _ = hsp["quality_gate"].(map[string]any)
+			text, _ := hsp["additionalContext"].(string)
+			line := strings.SplitN(text, "\n", 2)[0]
+			decoder := json.NewDecoder(strings.NewReader(strings.TrimPrefix(line, "QUALITY_GATE ")))
+			decoder.UseNumber()
+			_ = decoder.Decode(&qg)
 		}
 	}
 	return env, qg
@@ -433,9 +443,9 @@ func ensureS5DocumentBaseline(t *testing.T, root string, state map[string]any) [
 	}
 	docs := []docSeed{
 		{"REQ-039", "req", "docs/requirements/REQ-039-loop-control-plane.md", "v2.0.0", []byte("# REQ-039\n\n> 状态：locked\n> 版本：v2.0.0\n")},
-		{"ARCH-039", "design", "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md", "v2.0.2", []byte("# ARCH\n\n> 状态：locked\n> 版本：v2.0.2\n")},
-		{"BE-039", "contract", "docs/contracts/BE-039-loop-controller.md", "v1.0.2", []byte("# BE\n\n> 状态：locked\n> 版本：v1.0.2\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n")},
-		{"TASK-039-01", "task", "docs/tasks/TASK-039-01-loop-definition.md", "v1.0.2", []byte("# TASK-039-01\n\n> 状态：complete\n> 版本：v1.0.2\n> Primary contract: BE-039-loop-controller\n")},
+		{"ARCH-039", "design", "docs/architecture/ARCHITECTURE-039-loop-control-plane.md", "v2.0.2", []byte("# ARCH\n\n> 状态：locked\n> 版本：v2.0.2\n")},
+		{"BE-039", "contract", "docs/dev/contracts/BE-039-loop-controller.md", "v1.0.2", []byte("# BE\n\n> 状态：locked\n> 版本：v1.0.2\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n")},
+		{"TASK-039-01", "task", "docs/dev/tasks/TASK-039-01-loop-definition.md", "v1.0.2", []byte("# TASK-039-01\n\n> 状态：complete\n> 版本：v1.0.2\n> Primary contract: BE-039-loop-controller\n")},
 	}
 	var documents, subjects []any
 	for _, d := range docs {
@@ -523,8 +533,8 @@ func SeedBuilderBatchReady(t *testing.T, root string, state map[string]any) {
 		path string
 		data []byte
 	}{
-		{"docs/tasks/TASK-039-01-loop-definition.md", taskOne},
-		{"docs/tasks/TASK-039-02-controller-cycle.md", taskTwo},
+		{"docs/dev/tasks/TASK-039-01-loop-definition.md", taskOne},
+		{"docs/dev/tasks/TASK-039-02-controller-cycle.md", taskTwo},
 	} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, pair.path)), 0o755); err != nil {
 			t.Fatal(err)
@@ -535,17 +545,17 @@ func SeedBuilderBatchReady(t *testing.T, root string, state map[string]any) {
 	}
 	documents := []any{
 		map[string]any{
-			"id": "TASK-039-01", "kind": "task", "path": "docs/tasks/TASK-039-01-loop-definition.md",
+			"id": "TASK-039-01", "kind": "task", "path": "docs/dev/tasks/TASK-039-01-loop-definition.md",
 			"version": "v1.0.2", "sha256": Sha256Hex(taskOne), "status": "locked", "generation": 1,
 		},
 		map[string]any{
-			"id": "TASK-039-02", "kind": "task", "path": "docs/tasks/TASK-039-02-controller-cycle.md",
+			"id": "TASK-039-02", "kind": "task", "path": "docs/dev/tasks/TASK-039-02-controller-cycle.md",
 			"version": "v1.0.2", "sha256": Sha256Hex(taskTwo), "status": "locked", "generation": 1,
 		},
 	}
 	subjects := []any{
-		map[string]any{"path": "docs/tasks/TASK-039-01-loop-definition.md", "version": "v1.0.2", "sha256": Sha256Hex(taskOne)},
-		map[string]any{"path": "docs/tasks/TASK-039-02-controller-cycle.md", "version": "v1.0.2", "sha256": Sha256Hex(taskTwo)},
+		map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "version": "v1.0.2", "sha256": Sha256Hex(taskOne)},
+		map[string]any{"path": "docs/dev/tasks/TASK-039-02-controller-cycle.md", "version": "v1.0.2", "sha256": Sha256Hex(taskTwo)},
 	}
 	var evidence []any
 	if err := os.MkdirAll(filepath.Join(root, "evidence"), 0o755); err != nil {
@@ -612,12 +622,12 @@ func SeedBuilderBatchReady(t *testing.T, root string, state map[string]any) {
 		"tasks": []any{
 			map[string]any{
 				"id": "TASK-039-01", "state": "review",
-				"path":   "docs/tasks/TASK-039-01-loop-definition.md",
+				"path":   "docs/dev/tasks/TASK-039-01-loop-definition.md",
 				"sha256": Sha256Hex(taskOne), "owner_agent_ids": []any{"builder-1"},
 			},
 			map[string]any{
 				"id": "TASK-039-02", "state": "review",
-				"path":   "docs/tasks/TASK-039-02-controller-cycle.md",
+				"path":   "docs/dev/tasks/TASK-039-02-controller-cycle.md",
 				"sha256": Sha256Hex(taskTwo), "owner_agent_ids": []any{"builder-1"},
 			},
 		},
@@ -690,7 +700,7 @@ func SeedConflictingDeliveryEvents(t *testing.T, root string, state map[string]a
 		t.Fatal(err)
 	}
 	taskData := []byte("# TASK\n")
-	taskPath := "docs/tasks/TASK-039-01-loop-definition.md"
+	taskPath := "docs/dev/tasks/TASK-039-01-loop-definition.md"
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, taskPath)), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -803,10 +813,10 @@ func SeedBugReportsRejected(t *testing.T, root string, state map[string]any) {
 func SeedTargetedReverificationFail(t *testing.T, root string, state map[string]any) {
 	t.Helper()
 	taskData := []byte("# TASK\n")
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, "docs/tasks/TASK-039-01-loop-definition.md")), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, "docs/dev/tasks/TASK-039-01-loop-definition.md")), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs/tasks/TASK-039-01-loop-definition.md"), taskData, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs/dev/tasks/TASK-039-01-loop-definition.md"), taskData, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	envelope := map[string]any{
@@ -814,7 +824,7 @@ func SeedTargetedReverificationFail(t *testing.T, root string, state map[string]
 		"runtime_id": runtimeIDFromState(state), "baseline_generation": 1, "review_round": 1,
 		"producer_agent_id": "finder-1", "producer_responsibility": "Original Finder",
 		"subject_refs": []any{
-			map[string]any{"path": "docs/tasks/TASK-039-01-loop-definition.md", "version": "v1.0.2", "sha256": Sha256Hex(taskData)},
+			map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "version": "v1.0.2", "sha256": Sha256Hex(taskData)},
 		},
 		"conclusion": "fail", "created_at": "2026-07-30T00:00:00Z",
 	}
@@ -824,12 +834,12 @@ func SeedTargetedReverificationFail(t *testing.T, root string, state map[string]
 	state["review"] = map[string]any{"round": 1, "clean_round": nil}
 	state["documents"] = []any{
 		map[string]any{
-			"id": "TASK-039-01", "kind": "task", "path": "docs/tasks/TASK-039-01-loop-definition.md",
+			"id": "TASK-039-01", "kind": "task", "path": "docs/dev/tasks/TASK-039-01-loop-definition.md",
 			"version": "v1.0.2", "sha256": Sha256Hex(taskData), "status": "locked", "generation": 1,
 		},
 	}
 	state["evidence"] = []any{
-		evidenceIndexEntry("ev-tgt-fail", "targeted_reverification", rel, Sha256Hex(data), 1, "finder-1", "Original Finder", []any{"docs/tasks/TASK-039-01-loop-definition.md"}),
+		evidenceIndexEntry("ev-tgt-fail", "targeted_reverification", rel, Sha256Hex(data), 1, "finder-1", "Original Finder", []any{"docs/dev/tasks/TASK-039-01-loop-definition.md"}),
 	}
 	state["milestone"].(map[string]any)["stage"] = "S8"
 	state["milestone"].(map[string]any)["lifecycle_state"] = "bug_resolution"
@@ -890,7 +900,7 @@ func SeedPlanningDesignComplete(t *testing.T, root string, state map[string]any)
 		data []byte
 	}{
 		{"docs/requirements/REQ-039-loop-control-plane.md", reqData},
-		{"docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md", archData},
+		{"docs/architecture/ARCHITECTURE-039-loop-control-plane.md", archData},
 	} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, pair.path)), 0o755); err != nil {
 			t.Fatal(err)
@@ -904,7 +914,7 @@ func SeedPlanningDesignComplete(t *testing.T, root string, state map[string]any)
 		"runtime_id": runtimeIDFromState(state), "baseline_generation": 1, "review_round": 1,
 		"producer_agent_id": "architect-1", "producer_responsibility": "Architect",
 		"subject_refs": []any{
-			map[string]any{"path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md", "version": "v2.0.2", "sha256": Sha256Hex(archData)},
+			map[string]any{"path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md", "version": "v2.0.2", "sha256": Sha256Hex(archData)},
 		},
 		"conclusion": "pass", "created_at": "2026-07-30T00:00:00Z",
 	}
@@ -917,7 +927,7 @@ func SeedPlanningDesignComplete(t *testing.T, root string, state map[string]any)
 	// the gate's disk fallback (pre-commit) and PTR-PLAN-01's
 	// register_design_documents (at commit) carry the chain.
 	state["evidence"] = []any{
-		evidenceIndexEntry("ev-design", "planning_design", evPath, Sha256Hex(evData), 1, "architect-1", "Architect", []any{"docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md"}),
+		evidenceIndexEntry("ev-design", "planning_design", evPath, Sha256Hex(evData), 1, "architect-1", "Architect", []any{"docs/architecture/ARCHITECTURE-039-loop-control-plane.md"}),
 	}
 	state["lifecycle"] = map[string]any{"state": "planning", "phase": "design", "phase_revision": 0}
 	state["milestone"].(map[string]any)["stage"] = "S2"
@@ -928,6 +938,7 @@ func SeedPlanningDesignComplete(t *testing.T, root string, state map[string]any)
 // SeedAcceptanceReady seeds acceptance with ACC + clean round evidence (CT-039-15 path).
 func SeedAcceptanceReady(t *testing.T, root string, state map[string]any) {
 	t.Helper()
+	SeedCleanRoundProjection(t, root, state)
 	if err := os.MkdirAll(filepath.Join(root, "evidence"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -941,7 +952,7 @@ func SeedAcceptanceReady(t *testing.T, root string, state map[string]any) {
 		}
 		if wireKind == "acceptance" || wireKind == "release_audit" {
 			manifestPath := "s10/" + wireKind + "-manifest.json"
-			manifestData := s10ManifestData(t, state, wireKind, 1)
+			manifestData := s10ManifestData(t, root, state, wireKind, 1)
 			if err := os.MkdirAll(filepath.Join(root, "s10"), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -1001,6 +1012,7 @@ func SeedAcceptanceReady(t *testing.T, root string, state map[string]any) {
 // SeedReleaseAuditReady seeds release_audit with audit approval evidence.
 func SeedReleaseAuditReady(t *testing.T, root string, state map[string]any) {
 	t.Helper()
+	SeedCleanRoundProjection(t, root, state)
 	if err := os.MkdirAll(filepath.Join(root, "evidence"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1014,7 +1026,7 @@ func SeedReleaseAuditReady(t *testing.T, root string, state map[string]any) {
 		}
 		if wireKind == "acceptance" || wireKind == "release_audit" {
 			manifestPath := "s10/" + wireKind + "-manifest.json"
-			manifestData := s10ManifestData(t, state, wireKind, 1)
+			manifestData := s10ManifestData(t, root, state, wireKind, 1)
 			if err := os.MkdirAll(filepath.Join(root, "s10"), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -1072,28 +1084,49 @@ func SeedReleaseAuditReady(t *testing.T, root string, state map[string]any) {
 	state["milestone"].(map[string]any)["lifecycle_state"] = "release_audit"
 }
 
-func s10ManifestData(t *testing.T, state map[string]any, manifestType string, reviewRound int) []byte {
+func s10ManifestData(t *testing.T, root string, state map[string]any, manifestType string, reviewRound int) []byte {
 	t.Helper()
+	baseline, err := acceptance.BuildS10ExternalBaseline(root, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := acceptance.BuildS10InventoryAuthority(root, state, baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
 	items := []any{}
 	counterevidence := []any{}
-	for _, item := range []struct {
-		id, category string
+	type inventoryRow struct{ id, category string }
+	rows := []inventoryRow{{"AUDIT-001", "audit_area"}}
+	for _, group := range []struct {
+		category string
+		ids      []string
 	}{
-		// The S10 transition guard now consumes the same authoritative
-		// denominator as Runtime/Quality Gate. Keep this fixture aligned with
-		// its bound REQ and pinned ReviewPlan rather than using invented rows.
-		{"REQ-039", "requirement"},
-		{"CONTRACT-001", "contract"},
-		{"PATH-001", "changed_path"},
-		{"claim-qa-1", "claim"},
-		{"AUDIT-001", "audit_area"},
+		{"requirement", authority.RequirementIDs}, {"contract", authority.ContractIDs},
+		{"task", authority.TaskIDs}, {"claim", authority.ClaimIDs}, {"changed_path", authority.ChangedPaths},
 	} {
+		for _, id := range group.ids {
+			if group.category == "changed_path" {
+				id = "path:" + id
+			}
+			rows = append(rows, inventoryRow{id, group.category})
+		}
+		if len(group.ids) == 0 && (group.category == "contract" || group.category == "changed_path") {
+			rows = append(rows, inventoryRow{"none:" + group.category, group.category})
+		}
+	}
+	for _, item := range rows {
 		items = append(items, map[string]any{
-			"id": item.id, "category": item.category, "source_refs": []string{"fixture:" + item.id},
+			"id": item.id, "category": item.category, "source_refs": []string{state["bound_req"].(map[string]any)["path"].(string), state["review"].(map[string]any)["plan"].(map[string]any)["path"].(string)},
 			"expected": "fixture expected " + item.id, "oracle": "fixture oracle " + item.id,
 			"owner": "S10 fixture reviewer", "evidence_refs": []string{"ev-clean-pass"},
 			"disposition": "pass",
 		})
+		if strings.HasPrefix(item.id, "none:") {
+			row := items[len(items)-1].(map[string]any)
+			row["disposition"] = "not_applicable"
+			row["na_reason"] = "No entries in the authoritative current fixture inventory"
+		}
 		counterevidence = append(counterevidence, map[string]any{
 			"id": "CE-" + item.id, "inventory_id": item.id,
 			"question": "what disproves " + item.id + "?", "evidence_refs": []string{"ev-clean-pass"},

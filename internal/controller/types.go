@@ -36,6 +36,7 @@ const (
 // ControlRequest is the immutable input the Hook entrypoint passes into the
 // cycle. Every field is read-only; the cycle never mutates the request.
 type ControlRequest struct {
+	CWD  string // platform execution directory, distinct from the control root
 	Root string // project root (where .claude/loop-state.json lives)
 	// StatePath and JournalPath optionally redirect Runtime reads/writes to a
 	// caller-owned staging pair. Empty values retain the production paths under
@@ -60,6 +61,10 @@ type ControlRequest struct {
 	QualityCycleBudget time.Duration
 	// GateEvaluator overrides the default registry-backed evaluator (tests).
 	GateEvaluator qualitygate.Evaluator
+	// recoveryWriter is set only by RecoveryReplay. Keeping the capability
+	// private to the controller request prevents ordinary Hook callers from
+	// opting into staging writes through a payload or --state/--journal flag.
+	recoveryWriter runtime.OfflineRecoveryCapability
 }
 
 // ControlResult is the single projection emitted by RunControlCycle. It

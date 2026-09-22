@@ -3,6 +3,7 @@ package catalog
 import (
 	"bufio"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,24 +72,47 @@ var agentRoles = []string{
 	"e2e-tester",
 }
 
-// resolveAssetPath locates a template asset (skill or agent definition) by
-// trying the target-project layout first (under .claude/), then the source-
-// repository layout (flat at root). This lets the same binary validate both
-// a running project and the template factory.
-//
-// kind is "skills" or "agents". When leaf is non-empty it is appended as the
-// final path segment (e.g. "SKILL.md"); when leaf is empty, name is treated
-// as the final segment (used for agents where name already includes ".md").
+// installedAssetLayout selects one authority for the complete asset set.
+// A deployed marker or either deployed asset directory selects installed mode;
+// individual missing files must never fall back to the factory source tree.
+func installedAssetLayout(root string) bool {
+	for _, rel := range []string{"AGENTS.md", ".claude/settings.json", ".claude/skills", ".claude/agents"} {
+		if _, err := os.Lstat(filepath.Join(root, rel)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func validateAssetAuthority(root string) error {
+	if !installedAssetLayout(root) {
+		return nil
+	}
+	matches, err := filepath.Glob(filepath.Join(root, "skills", "*", "SKILL.md"))
+	if err != nil {
+		return err
+	}
+	if len(matches) > 0 {
+		return fmt.Errorf("mixed asset layout: installed skills must use .claude/skills, not root skills")
+	}
+	for _, role := range agentRoles {
+		if _, err := os.Lstat(filepath.Join(root, "agents", role+".md")); err == nil {
+			return fmt.Errorf("mixed asset layout: installed agents must use .claude/agents, not root agents")
+		}
+	}
+	return nil
+}
+
 func resolveAssetPath(root, kind, name, leaf string) string {
-	segments := []string{name}
+	base := root
+	if installedAssetLayout(root) {
+		base = filepath.Join(root, ".claude")
+	}
+	segments := []string{base, kind, name}
 	if leaf != "" {
-		segments = []string{name, leaf}
+		segments = append(segments, leaf)
 	}
-	targetProject := filepath.Join(append([]string{root, ".claude", kind}, segments...)...)
-	if _, err := os.Stat(targetProject); err == nil {
-		return targetProject
-	}
-	return filepath.Join(append([]string{root, kind}, segments...)...)
+	return filepath.Join(segments...)
 }
 
 func ValidateSkills(root string) error {
@@ -101,6 +125,9 @@ func ValidateSkills(root string) error {
 }
 
 func ValidateSkill(root string, spec SkillSpec) error {
+	if err := validateAssetAuthority(root); err != nil {
+		return err
+	}
 	path := resolveAssetPath(root, "skills", spec.Name, "SKILL.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -138,20 +165,21 @@ func ValidateSkill(root string, spec SkillSpec) error {
 	}
 	// A Skill must cite at least one authoritative source. Shipped runtime
 	// authorities include the Loop Definition, Hook Policy, Main Spine, and
-	// reusable rules. Historical design-rationale docs live under
-	// docs/design/loop-engineering/ in the source repository and are allowed only
-	// as source-repo references.
-	if !strings.Contains(body, "docs/loop-definition.json") &&
-		!strings.Contains(body, "docs/agent-protocol.md") &&
-		!strings.Contains(body, "docs/hook-policy.json") &&
-		!strings.Contains(body, "docs/rules/") &&
-		!strings.Contains(body, "docs/design/loop-engineering/") {
+	// reusable rules. Factory design documents cannot substitute for an
+	// installed execution authority.
+	if !strings.Contains(body, projectlayout.Definition) &&
+		!strings.Contains(body, projectlayout.Protocol) &&
+		!strings.Contains(body, projectlayout.Policy) &&
+		!strings.Contains(body, "docs/rules/") {
 		return fmt.Errorf("skill %s: missing authoritative source reference", spec.Name)
 	}
 	return nil
 }
 
 func ValidateAgents(root string) error {
+	if err := validateAssetAuthority(root); err != nil {
+		return err
+	}
 	for _, role := range agentRoles {
 		path := resolveAssetPath(root, "agents", role+".md", "")
 		data, err := os.ReadFile(path)
@@ -185,6 +213,7 @@ func ValidateAgents(root string) error {
 }
 
 func splitFrontmatter(content string) (map[string]string, string, error) {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
 	if !strings.HasPrefix(content, "---\n") {
 		return nil, "", fmt.Errorf("missing YAML frontmatter")
 	}

@@ -2,7 +2,7 @@
 // convert a tokenized bash command into a ResolvedCommand describing which
 // paths the command will mutate and whether it is a protected-release shape
 // (BUG-002 §4b.2(b) and §4b.2(c)). The protected-commands table is loaded
-// from docs/release_audits/protected_commands.json via LoadProtectedCommands
+// from docs/control/protected-commands.json via LoadProtectedCommands
 // (BUG-002 §4b.2(d) lines 245-250) and matched against the resolved program +
 // subcommand + flags.
 //
@@ -27,6 +27,7 @@ package classifier
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,7 +35,7 @@ import (
 )
 
 // ProtectedCommand is one row of the protected-commands table loaded from
-// docs/release_audits/protected_commands.json. The table is data-driven so
+// docs/control/protected-commands.json. The table is data-driven so
 // adding a new release channel requires only a JSON change (BUG-002 §4b.2(d)).
 type ProtectedCommand struct {
 	Family       string        `json:"family"`
@@ -98,11 +99,11 @@ type ResolvedCommand struct {
 }
 
 // LoadProtectedCommands reads the data-driven protected-commands table from
-// docs/release_audits/protected_commands.json (BUG-002 §4b.2(d) lines 245-250).
+// docs/control/protected-commands.json (BUG-002 §4b.2(d) lines 245-250).
 // The returned slice is ordered as it appears in the JSON file so tests can
 // reference rows by index when needed.
 func LoadProtectedCommands(root string) ([]ProtectedCommand, error) {
-	path := filepath.Join(root, "docs", "release_audits", "protected_commands.json")
+	path := filepath.Join(root, projectlayout.ProtectedCommands)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read protected_commands.json: %w", err)
@@ -650,7 +651,7 @@ func splitAfterDoubleDash(tokens []Token) ([]string, bool) {
 	seen := false
 	for i, t := range tokens {
 		if !seen {
-			if t.Kind == TkWord && t.Value == "--" {
+			if (t.Kind == TkWord || t.Kind == TkLongFlag) && t.Value == "--" {
 				seen = true
 			}
 			continue

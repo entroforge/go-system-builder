@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # ESLint
 ## Authority
-Technical practice only. Stage routing remains in `docs/agent-protocol.md`; product rules remain in contracts and tests.
+Technical practice only. Stage routing remains in `docs/control/agent-protocol.md`; product rules remain in contracts and tests.
 ## Applicability
 Apply to ESLint configuration, rule changes, lint failures, or static-analysis suppressions.
 ## Required Inputs

@@ -21,7 +21,7 @@ func TestTR004_DocumentFixRequiredReturnsPlanningSystem(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	body := req039fixtures.PreToolUseBody("session-tr-004", "Edit", map[string]any{
-		"file_path": "docs/contracts/BE-039-loop-controller.md",
+		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {
@@ -48,7 +48,7 @@ func TestTR023_FindingSpecChangeReturnsPlanningSystem(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	body := req039fixtures.PreToolUseBody("session-tr-023", "Edit", map[string]any{
-		"file_path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md",
+		"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {

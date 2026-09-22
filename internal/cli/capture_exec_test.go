@@ -195,6 +195,9 @@ func TestCaptureExecHappyPathAppendsStep(t *testing.T) {
 	if !strings.Contains(step.Observed, "hello-stdout") || !strings.Contains(step.Observed, "goodbye-stderr") {
 		t.Fatalf("observed must inline bounded stdout/stderr summaries, got %q", step.Observed)
 	}
+	if step.Provenance == nil || !step.Provenance.DiagnosticOnly || step.Provenance.ReviewPlanID != "" {
+		t.Fatalf("capture without a ReviewPlan must remain explicitly diagnostic-only: %#v", step.Provenance)
+	}
 	if strings.Contains(step.Observed, "FAILED") || strings.Contains(step.Observed, "wall-action") {
 		t.Fatalf("happy path must not mark the step as failed/wall-action, got %q", step.Observed)
 	}

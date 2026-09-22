@@ -7,7 +7,7 @@ version: 2.2.2
 # Specification Planning
 
 ## Authority
-The locked REQ is the baseline. Design, contracts, and tasks must trace back to it. Runtime authority lives in `docs/loop-definition.json`; stage contracts live in `docs/agent-protocol.md`; Project Design Foundation lives in `docs/rules/design-foundation.md`; the method summary is inlined below.
+The locked REQ is the baseline. Design, contracts, and tasks must trace back to it. Runtime authority lives in `docs/control/loop-definition.json`; stage contracts live in `docs/control/agent-protocol.md`; Project Design Foundation lives in `docs/rules/design-foundation.md`; the method summary is inlined below.
 
 ## Entry Conditions
 - The Loop is in `planning` (phases advance design → contracts → tasks via PTR-PLAN-01/02 and TR-002).
@@ -22,7 +22,7 @@ The locked REQ is the baseline. Design, contracts, and tasks must trace back to 
 | Derivation template | `docs/design/derivation/DERIVATION-template.md` | write `docs/design/derivation/REQ-<id>.md` before expanding HTML |
 | Module current truth | `docs/design/prototypes/<module>/{index.html, stories.md, flows.md, scenario-model.json, cross-matrix.json, cases.json, scenario-coverage.json, fixture-contract.json, *.html}` | current module package and prototype gate input |
 | Rules | `docs/rules/*.md` | naming, security, api-design, state-machine, design-foundation constraints |
-| Loop Definition | `docs/loop-definition.json` | planning exit transition and executable guards |
+| Loop Definition | `docs/control/loop-definition.json` | planning exit transition and executable guards |
 
 ## Procedure — dual-track convergence (v2.0.0)
 
@@ -105,7 +105,7 @@ win.
    - a `no_branch_reason` is a rationale: name the why — at least 8
      characters including a letter (a bare "不需要"/"." is rejected;
      free-word escapes are not endorsed N/A).
-5. Immediately run `go run ./cmd/loop-harness scenario bridge --root .` — the
+5. Immediately run `.claude/bin/loop-harness scenario bridge --root .` — the
    AC source check (AC→FR→BR) needs no generated outputs; fix gaps now, not
    at close.
 
@@ -127,7 +127,7 @@ win.
    expected_state, recovery)"; maintainer: "which rule will clash with
    module evolution?" Record the conclusion as one paragraph under a
    `## Depth Self-Review` heading in the ADR package.
-9. Close: `go run ./cmd/loop-harness scenario generate --module <module>
+9. Close: `.claude/bin/loop-harness scenario generate --module <module>
    --root .` then `scenario validate --module <module> --root .` — ratio
    gates, reference existence, byte-frozen outputs, cross-matrix
    references, and the full AC bridge (every AC reaches a CASE or carries
@@ -141,8 +141,8 @@ win.
    consumes both).
 
 **S3/S4 steps:**
-10. Draft contracts in order: FE-contract → BE-contract → SYNC-contract,
-    from the four templates under `docs/contracts/` (CONTRACTS / BE / FE /
+10. Converge the shared data model and SYNC protocol first, then derive FE/BE responsibilities,
+    from the four templates under `docs/dev/contracts/` (CONTRACTS / BE / FE /
     SYNC). Each must link to the REQ source ref and the module
     current-truth package. The CONTRACTS index 需求覆盖矩阵 is the clause
     universe — one `{id} §{n}` cell per clause, and each `§n` must match
@@ -150,7 +150,7 @@ win.
     「本合同条款」 columns. On finalization set each contract's top status line
     （模板中的「状态」行）to `locked` (PTR-PLAN-02 registers only locked contracts),
     register the planning_contract envelope (Planning Evidence Envelopes
-    section), and run `go run ./cmd/loop-harness contracts check --root .`
+    section), and run `.claude/bin/loop-harness contracts check --root .`
     — token references, clause cells, and fingerprint columns are
     machine-checked there and again at PTR-PLAN-02.
 11. Decompose into TASKs: each TASK binds one primary contract, declares
@@ -158,7 +158,7 @@ win.
     Contract (§7 four assert lines), and obeys single-responsibility.
     Never hand-copy fingerprints or versions — runtime documents[] owns
     them; §2 keeps read order only.
-    **拆分纪律（builder 视角）**：一句话说不成交付物、或出现"以及/然后"→ 拆；FE+BE+SYNC 不混进同一任务；类型/schema/迁移是地基，下游任务必须声明对它的依赖。**compact 警示：尽量避免 subagent 中途 compact——builder 丢任务信息是灾难性表现**。宁可多拆一个任务，也不要让 builder 读着读着上下文被压缩；每个任务的 §2 清单只引用它真正需要的条款切片，不是整份文档。规模直觉锚：必读合计 ~30KB / 触碰 ~8 文件 / 改动 ~400 行——超了先想想能不能拆。
+    **拆分纪律（builder 视角）**：一句话说不成交付物、或出现"以及/然后"→ 拆；FE+BE+SYNC 不混进同一任务；只有实际依赖共享实现产物的下游任务，才声明对应 foundation TASK 依赖；单独生成或复用既有模型的任务可以并行，不把每个 REQ 的 schema 引用都强制串成地基任务。**compact 警示：尽量避免 subagent 中途 compact——builder 丢任务信息是灾难性表现**。宁可多拆一个任务，也不要让 builder 读着读着上下文被压缩；每个任务的 §2 清单只引用它真正需要的条款切片，不是整份文档。规模直觉锚：必读合计 ~30KB / 触碰 ~8 文件 / 改动 ~400 行——超了先想想能不能拆。
 12. Run `loop-harness tasks check` before requesting `TR-002`: batch
     completeness, clause coverage against the index, DAG acyclicity, and
     closing contracts are machine-checked there — and it prints per-task
@@ -199,7 +199,7 @@ win.
 `subject_refs` 留空即合法（planning 门不要求钉指纹——磁盘 Status 是事实载体）；`review_round` 不写。落盘为 `docs/reports/planning/{id}.json` 后登记：
 
 ```text
-go run ./cmd/loop-harness runtime evidence add --id planning-design-pass   --kind planning_design --path docs/reports/planning/planning-design-pass.json   --produced-by <你的 agent id> --responsibility Architect   --expected-revision <当前 revision，.claude/loop-state.json 顶部>
+.claude/bin/loop-harness runtime evidence add --id planning-design-pass   --kind planning_design --path docs/reports/planning/planning-design-pass.json   --produced-by <你的 agent id> --responsibility Architect
 ```
 
 （S3/S4 同款换 `--kind planning_contract --responsibility "Contract Planner"` / `--kind planning_task --responsibility "Task Planner"`，id 对应 `planning-contracts-pass` / `planning-tasks-pass`。）**重签规则**：同 ID 会被拒（invalid 条目也占 ID）——返工第二轮起用 `-r2` 后缀新 ID（`planning-design-pass-r2`）。missing token 对照：`evidence:planning_design_record` / `evidence:planning_contract_record` / `evidence:planning_task_record` = 该阶段信封未登记或不合格；`evidence:<id>:schema` = 信封字段与登记不互证（多为 path 指向了 markdown 或 conclusion 拼错）。
@@ -218,7 +218,7 @@ go run ./cmd/loop-harness runtime evidence add --id planning-design-pass   --kin
 
 ## Exit Conditions
 - The planning checkpoint is committed and the Loop transitioned to `document_verification`.
-- Next (NOT your job): dispatch two document-verifier subagents per `docs/agent-protocol.md #s5` — planning does not continue into S5; the activation envelopes should name any Triggered Deep-Dives (see the document-verification SKILL) whose conditions the REQ/contracts meet.
+- Next (NOT your job): dispatch two document-verifier subagents per `docs/control/agent-protocol.md #s5` — planning does not continue into S5; the activation envelopes should name any Triggered Deep-Dives (see the document-verification SKILL) whose conditions the REQ/contracts meet.
 
 ## Stop Conditions
 Stop immediately and surface to the human if any of:
@@ -249,3 +249,41 @@ must trace back to the locked REQ. Invalid or guard-failing events do not
 change state, execute no side effect, and record a rejected event.
 Idempotency uses CAS revision checks; one committed transition per runtime
 revision.
+
+## Executable acceptance checks before locking TASKs
+
+Before locking a check command, verify its selected test inventory, browser
+support policy, runtime ownership, required dependencies, and known baseline
+failures. A command named cross-browser is not evidence that the current
+requirement is selected by those browser projects. Reuse unchanged baseline
+receipts only when their commit/configuration and declared scope apply; do not
+run the entire suite at every planning step. Unknown baseline health remains
+unknown, never PASS. Browser coverage changes use the existing specification
+change route, not a new approval workflow.
+
+Manual debugging and integration must use the same project runner/environment
+profile for comparable evidence. Do not replace a required custom reporter,
+filter away failed tests, or hide the command exit code behind `tail`/`tee`.
+Resource controls may limit concurrency without reducing test coverage.
+
+## Production-path ownership before S4 close
+
+For each user-visible or externally consumed capability, trace the real caller through the applicable UI mount, API wrapper, registered route, authorization, service and response projection. Reuse the existing TASK/contract traceability sections: name the owning TASK for each required connection, including changes to shared types. A service implementation alone does not establish a production consumer. For backend-only work start at its actual external caller; do not invent a UI obligation.
+
+Cross-check the files needed to implement each connection against its planned write scope. Missing ownership or contradictory scope is unfinished planning; correct it before locking/dispatch, not by copying business rules into the allowed component. Retain one canonical authority for business decisions; client-side validation requires explicit compatibility and differential checks.
+
+For critical capabilities name at least one check crossing the actual registered boundary and one counterexample (such as reverted wiring) that would make it fail. Counts, test names, a mock returning the desired response, and a test proving an entry is absent are not delivery evidence. Record coverage gaps explicitly; do not defer a TASK's own delivery obligations to S7. This is a semantic review obligation, not a claim that the current machine gate proves end-to-end correctness.
+
+
+For new batches apply [shared-model contracts in the factory](../../docs/rules/shared-model-contracts.md) (after installation: [project rule](../../docs/rules/shared-model-contracts.md)): explicit policy, native source references, validated examples, committed design closure and role-specific TASK links. Do not create a registry or copy schemas per REQ. Independent generation may run in parallel; only actual shared implementation artifacts require foundation TASK dependencies.
+
+## Overall dispatch plan (waves-v1)
+
+Follow [factory dispatch rules](../../docs/rules/dispatch-plan.md), or after installation
+[project dispatch rules](../../docs/rules/dispatch-plan.md). S4 delivers the REQ's
+index as an ordered wave checklist; S5 reviews and freezes it with TASKs. S6 reads
+that plan and `s6 status --capacity <actual total slots>` before dispatch, then
+recomputes after integration or capacity release. Start every compatible ready
+TASK within actual capacity; do not wait for unrelated tasks in an earlier wave.
+Only verified integration into the root development branch releases consumers.
+Never write runtime progress back into frozen plans or TASKs.

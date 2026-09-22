@@ -6,7 +6,7 @@ version: 0.3.0
 ---
 # Domain-Driven Design
 ## Authority
-Quality guidance only. The locked REQ and design own product semantics; stage routing remains in `docs/agent-protocol.md`.
+Quality guidance only. The locked REQ and design own product semantics; stage routing remains in `docs/control/agent-protocol.md`.
 ## Applicability
 Apply to domain models, bounded contexts, aggregates, invariants, domain services, or domain events.
 ## Required Inputs

@@ -3,6 +3,7 @@ package assignment
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"time"
@@ -35,7 +36,7 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 	if request.BugID == "" || request.Event == "" {
 		return loopruntime.Snapshot{}, fmt.Errorf("bug_id and event are required")
 	}
-	defPath := filepath.Join(root, "docs", "loop-definition.json")
+	defPath := filepath.Join(root, projectlayout.Definition)
 	defData, err := os.ReadFile(defPath)
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read Loop Definition: %w", err)
@@ -80,12 +81,17 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 	// Optionally validate the message envelope if a path is provided.
 	if request.MessagePath != "" {
 		validator := schema.NewValidator(root)
-		msgData, err := os.ReadFile(filepath.Join(root, request.MessagePath))
-		if err == nil {
-			if err := validator.ValidateBytes(
-				"agent-message.schema.json", msgData); err != nil {
-				return loopruntime.Snapshot{}, fmt.Errorf("message validation: %w", err)
-			}
+		messagePath := request.MessagePath
+		if !filepath.IsAbs(messagePath) {
+			messagePath = filepath.Join(root, messagePath)
+		}
+		msgData, err := os.ReadFile(messagePath)
+		if err != nil {
+			return loopruntime.Snapshot{}, fmt.Errorf("read BUG message: %w", err)
+		}
+		if err := validator.ValidateBytes(
+			"agent-message.schema.json", msgData); err != nil {
+			return loopruntime.Snapshot{}, fmt.Errorf("message validation: %w", err)
 		}
 	}
 

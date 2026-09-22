@@ -21,7 +21,7 @@ func runContracts(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "contracts check")
 	root := flags.String("root", ".", "repository root")
 	asJSON := flags.Bool("json", false, "machine-readable output")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	result, err := semantic.ContractsCheck(*root)
@@ -30,7 +30,16 @@ func runContracts(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *asJSON {
-		return encodeJSON(stdout, result)
+		if code := encodeJSON(stdout, result); code != 0 {
+			return code
+		}
+		if len(result.Problems) > 0 {
+			return 1
+		}
+		return 0
+	}
+	for _, warning := range result.Warnings {
+		fmt.Fprintln(stderr, "contracts check: warning: "+warning)
 	}
 	if len(result.Problems) > 0 {
 		for _, problem := range result.Problems {

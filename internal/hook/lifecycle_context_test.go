@@ -22,17 +22,18 @@ func TestRenderWithAdditionalContextUsesNativeLifecycleField(t *testing.T) {
 	if err := json.Unmarshal(output, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := payload["additionalContext"].(string); got != "stage=S7 @ rev=4; next=inspect the review status" {
+	specific := payload["hookSpecificOutput"].(map[string]any)
+	if got, _ := specific["additionalContext"].(string); !strings.Contains(got, "stage=S7 @ rev=4; next=inspect the review status") {
 		t.Fatalf("additionalContext = %q", got)
 	}
-	if _, ok := payload["hookSpecificOutput"]; ok {
-		t.Fatal("SessionStart must keep the native lifecycle envelope")
+	if _, ok := payload["additionalContext"]; ok {
+		t.Fatal("additionalContext must be nested under hookSpecificOutput")
 	}
 }
 
 func TestBuildLifecycleAdditionalContextInjectsOnlyUniqueAssignment(t *testing.T) {
 	decision := policy.Decision{Guidance: &policy.Guidance{
-		Stage: "S7", Revision: 9, Action: "execute the assignment", ProtocolRef: "docs/agent-protocol.md#s7",
+		Stage: "S7", Revision: 9, Action: "execute the assignment", ProtocolRef: "docs/control/agent-protocol.md#s7",
 	}}
 	assignment := hookctx.AssignmentContext{
 		AssignmentID: "assignment-qa-1", TaskID: "task-qa-1", OwnerAgentID: "agent-qa-1",
@@ -58,10 +59,10 @@ func TestBuildLifecycleAdditionalContextInjectsOnlyUniqueAssignment(t *testing.T
 
 func TestBuildLifecycleAdditionalContextKeepsSessionStartCompact(t *testing.T) {
 	decision := policy.Decision{Guidance: &policy.Guidance{
-		Stage: "S2", Revision: 18, Action: "complete architecture", ProtocolRef: "docs/agent-protocol.md#s2",
+		Stage: "S2", Revision: 18, Action: "complete architecture", ProtocolRef: "docs/control/agent-protocol.md#s2",
 	}}
 	context := hook.BuildLifecycleAdditionalContext("SessionStart", policy.Input{Source: "resume"}, decision, nil)
-	for _, expected := range []string{"source=resume", "stage=S2 @ rev=18", "next=complete architecture", "read=docs/agent-protocol.md#s2"} {
+	for _, expected := range []string{"source=resume", "stage=S2 @ rev=18", "next=complete architecture", "read=docs/control/agent-protocol.md#s2"} {
 		if !strings.Contains(context, expected) {
 			t.Fatalf("context %q does not contain %q", context, expected)
 		}

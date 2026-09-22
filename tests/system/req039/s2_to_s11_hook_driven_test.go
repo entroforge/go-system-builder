@@ -22,42 +22,42 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	writeSystemState(t, root, state)
 
 	const bugID = "SPINE-S2-S11"
-	archEdit := map[string]any{"file_path": "docs/design/architecture/ARCHITECTURE-039-loop-control-plane.md"}
+	archEdit := map[string]any{"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md"}
 	bash := map[string]any{"command": "go test ./..."}
 
 	// S2 → S3 (PTR-PLAN-01)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s2", "Edit", archEdit,
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s2", "Edit", archEdit,
 		"PTR-PLAN-01", "planning", "contracts", bugID)
 
 	// S3 → S4 (PTR-PLAN-02)
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.WritePlanningContractPass(t, root, state)
 	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s3", "Edit",
-		map[string]any{"file_path": "docs/contracts/BE-039.md"},
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s3", "Edit",
+		map[string]any{"file_path": "docs/dev/contracts/BE-039.md"},
 		"PTR-PLAN-02", "planning", "tasks", bugID)
 
 	// S4 → S5 (TR-002)
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.WritePlanningTaskPass(t, root, state)
 	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s4", "Edit",
-		map[string]any{"file_path": "docs/tasks/TASK-039-01-loop-definition.md"},
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s4", "Edit",
+		map[string]any{"file_path": "docs/dev/tasks/TASK-039-01-loop-definition.md"},
 		"TR-002", "document_verification", "", bugID)
 
 	// S5 → S6 (TR-003)
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.WriteDocumentVerificationPassEvidence(t, root, state, "dv-spec", "dv-task")
 	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s5", "Edit",
-		map[string]any{"file_path": "docs/contracts/BE-039.md"},
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s5", "Edit",
+		map[string]any{"file_path": "docs/dev/contracts/BE-039.md"},
 		"TR-003", "building", "", bugID)
 
 	// S6 → S7 (TR-006): the round opens at verification.planned (L3-S7).
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.WriteBuilderBatchReadyEvidence(t, root, state)
 	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s6", "Bash", bash,
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s6", "Bash", bash,
 		"TR-006", "verification", "planned", bugID)
 
 	// S7: the ReviewPlan is registered, every required Claim consumed pass,
@@ -67,21 +67,21 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.SeedCleanRoundReady(t, root, state)
 	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s7-tr009", "Bash", bash,
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s7-tr009", "Bash", bash,
 		"TR-009", "acceptance", "", bugID)
 
 	// S10 acceptance → release_audit (TR-015)
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.WriteAcceptancePassEvidence(t, root, state)
 	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s10-acc", "Bash", bash,
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s10-acc", "Bash", bash,
 		"TR-015", "release_audit", "", bugID)
 
 	// S10 release_audit → S11 (TR-017)
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.WriteReleaseAuditPassEvidence(t, root, state)
 	writeSystemState(t, root, state)
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "spine-s10-audit", "Bash", bash,
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s10-audit", "Bash", bash,
 		"TR-017", "awaiting_human_release", "", bugID)
 
 	if runner.ManualTransitionCalls != 0 {
@@ -92,7 +92,7 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	finalLC, finalPh := req039fixtures.Lifecycle(final)
 	ms, _ := final["milestone"].(map[string]any)
 	stage, _ := ms["stage"].(string)
-	if finalLC != "awaiting_human_release" && stage != "S11" {
+	if finalLC != "awaiting_human_release" || stage != "S11" {
 		t.Fatalf("FR-024/FR-025: did not reach S11 (lifecycle=%s/%s stage=%s)", finalLC, finalPh, stage)
 	}
 	assertS11TerminalStop(t, runner, root, final)

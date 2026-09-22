@@ -1,14 +1,16 @@
 package audit_test
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/audit"
+	"github.com/entroforge/go-system-builder/internal/filelock"
 )
 
 func TestOutboxAppendIsIdempotentByDecisionID(t *testing.T) {
@@ -33,56 +35,24 @@ func TestOutboxAppendIsIdempotentByDecisionID(t *testing.T) {
 	}
 }
 
-// TestOutboxAcquireLockRetriesOnContention pins the round-4 B1 fix: the
-// audit outbox lockfile uses a 30s timeout with retry-on-ErrExist instead
-// of the round-3 5s hard cap. We hold the lock externally for 2s, then
-// release it; Append must observe the lock become available during the
-// retry loop and succeed (not timeout). This locks the N=1000
-// cross-process contention fix from QA-1 BACKLOG §1.
+// TestOutboxAcquireLockRetriesOnContention verifies that Append waits for a
+// live process-owned lock and resumes after the holder releases it.
 func TestOutboxAcquireLockRetriesOnContention(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hook-decisions.jsonl")
-	lockPath := path + ".lock"
-
+	lockPath := path + ".lock.process"
 	outbox := audit.NewOutbox(path)
 
-	// Hold the lock externally for 2s — well under the 30s timeout
-	// but well above the 5ms initial backoff, so the retry loop must
-	// observe the lock become available.
-	var released atomic.Bool
-	holderDone := make(chan struct{})
+	releaseHolder, err := filelock.Acquire(context.Background(), lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(releaseHolder)
 	go func() {
-		defer close(holderDone)
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err != nil {
-			t.Errorf("holder: %v", err)
-			return
-		}
-		// Release the lock after 2s unless the test signaled early.
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if released.Load() {
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		_ = f.Close()
-		_ = os.Remove(lockPath)
+		time.Sleep(200 * time.Millisecond)
+		releaseHolder()
 	}()
 
-	// Wait briefly to ensure the holder has acquired the lockfile first.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(lockPath); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if _, err := os.Stat(lockPath); err != nil {
-		t.Fatalf("lockfile not observed held: %v", err)
-	}
-
-	// Now Append — it must retry until the holder releases.
 	start := time.Now()
 	if err := outbox.Append(map[string]any{
 		"decision_id": "hook-decision-retry",
@@ -94,11 +64,79 @@ func TestOutboxAcquireLockRetriesOnContention(t *testing.T) {
 	if elapsed < 100*time.Millisecond {
 		t.Fatalf("Append returned too fast (%s) — did it actually wait for the lock?", elapsed)
 	}
-	if elapsed > 25*time.Second {
+	if elapsed > 2*time.Second {
 		t.Fatalf("Append waited too long (%s) — retry loop not bounded", elapsed)
 	}
-	released.Store(true)
-	<-holderDone
+}
+
+func TestOutboxAppendIgnoresLegacyStaleSentinel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hook-decisions.jsonl")
+	legacyLock := path + ".lock"
+	if err := os.WriteFile(legacyLock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	if err := audit.NewOutbox(path).Append(map[string]any{
+		"decision_id": "hook-decision-after-crash",
+		"decision":    "audit",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("stale legacy sentinel delayed Append: %s", elapsed)
+	}
+	if _, err := os.Stat(legacyLock); err != nil {
+		t.Fatalf("Append must not unlink legacy lock artifacts: %v", err)
+	}
+}
+
+func TestOutboxAppendReusesUnlockedProcessLockFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hook-decisions.jsonl")
+	processLock := path + ".lock.process"
+	if err := os.WriteFile(processLock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := audit.NewOutbox(path).Append(map[string]any{
+		"decision_id": "hook-decision-unlocked-file",
+		"decision":    "audit",
+	}); err != nil {
+		t.Fatalf("an unlocked persistent lock file must not block Append: %v", err)
+	}
+}
+
+func TestOutboxProcessLockReleasedAfterHolderExit(t *testing.T) {
+	if os.Getenv("GO_SYSTEM_BUILDER_AUDIT_LOCK_HELPER") == "1" {
+		lockPath := os.Getenv("GO_SYSTEM_BUILDER_AUDIT_LOCK_PATH")
+		if _, err := filelock.Acquire(context.Background(), lockPath); err != nil {
+			os.Exit(2)
+		}
+		// Exit without calling the release function. The OS must release the
+		// process-owned lock even though the persistent lock file remains.
+		os.Exit(0)
+	}
+
+	path := filepath.Join(t.TempDir(), "hook-decisions.jsonl")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestOutboxProcessLockReleasedAfterHolderExit$")
+	cmd.Env = append(os.Environ(),
+		"GO_SYSTEM_BUILDER_AUDIT_LOCK_HELPER=1",
+		"GO_SYSTEM_BUILDER_AUDIT_LOCK_PATH="+path+".lock.process",
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("lock-holder subprocess failed: %v: %s", err, output)
+	}
+
+	start := time.Now()
+	if err := audit.NewOutbox(path).Append(map[string]any{
+		"decision_id": "hook-decision-after-holder-exit",
+		"decision":    "audit",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("exited holder left the outbox blocked: %s", elapsed)
+	}
 }
 
 // TestOutboxAppendRejectsRecordWithoutDecisionID covers outbox.go:32-34 —
@@ -154,38 +192,16 @@ func TestOutboxAppendFailsWhenMkdirAllFails(t *testing.T) {
 	}
 }
 
-// TestOutboxAppendFailsWhenLockHeld covers outbox.go:39 — acquireLock
-// returns an error when the lock cannot be obtained. We hold the lock
-// indefinitely and verify Append returns an error (not a hang) within
-// a small budget. Since the production timeout is 30s, we exercise a
-// shorter timeout via the white-box acquireLock wrapper below; the
-// Append-level test is covered by the same package.
-func TestOutboxAppendFailsWhenLockHeld(t *testing.T) {
+func TestOutboxAppendWaitsForHeldProcessLock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hook-decisions.jsonl")
-	// Pre-create the lockfile so the first acquireLock attempt sees
-	// ErrExist. We hold it for the full test duration; Append must
-	// hit its 30s timeout in practice — too long for a unit test.
-	// The short-timeout regression is covered by the white-box
-	// acquireLock test in acquire_lock_test.go (same package).
-	lockPath := path + ".lock"
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	lockPath := path + ".lock.process"
+	releaseHolder, err := filelock.Acquire(context.Background(), lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = f.Close()
-		_ = os.Remove(lockPath)
-	})
+	t.Cleanup(releaseHolder)
 
-	// Append will block until the lockfile is released (it never is,
-	// in this test). We assert that within a 2s budget — well under
-	// the 30s production timeout — the call has NOT returned yet, so
-	// we know it's actually waiting (proving the test setup) and
-	// then we release the lock and verify it succeeds. This is a
-	// behavioral test of "Append waits for the lock and succeeds when
-	// the lock is released" without timing-sensitive assertions.
-	released := make(chan struct{})
 	done := make(chan error, 1)
 	outbox := audit.NewOutbox(path)
 	go func() {
@@ -194,17 +210,12 @@ func TestOutboxAppendFailsWhenLockHeld(t *testing.T) {
 			"decision":    "audit",
 		})
 	}()
-	// Verify Append is blocked (not yet returned) within 1s.
 	select {
 	case err := <-done:
 		t.Fatalf("Append returned prematurely: err=%v", err)
-	case <-time.After(1 * time.Second):
-		// Expected: Append is still blocked on the lockfile.
+	case <-time.After(100 * time.Millisecond):
 	}
-	// Release the lock and verify Append returns within 2s.
-	close(released)
-	_ = f.Close()
-	_ = os.Remove(lockPath)
+	releaseHolder()
 	select {
 	case err := <-done:
 		if err != nil {

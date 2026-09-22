@@ -100,17 +100,45 @@ func OpenRepairSession(root, statePath, journalPath string, req OpenSessionReque
 	}
 	if existing := repairPointer(current.State); existing != nil {
 		if stringField(existing["session_id"]) != req.SessionID {
-			return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("an active S9 RepairSession already exists; inspect runtime repair status")
+			// Defect #26 recovery: the repair pointer only ever clears through a
+			// fresh open, so a closed session pinned by a previous repair would
+			// block every later approved contract forever. Allow a fresh session
+			// when the pinned session is closed, the cursor sits at
+			// bug_resolution.repair_readback, and a DIFFERENT InvestigationCase
+			// has an approved contract.
+			closed := stringField(existing["status"]) == "closed"
+			readback := lifecycleState(current.State) == "bug_resolution" && lifecyclePhase(current.State) == "repair_readback"
+			prior := investigationPointer(current.State)
+			newContract := prior != nil && stringField(prior["status"]) == "contract_approved" && stringField(prior["case_id"]) != stringField(existing["case_id"])
+			// Defect #27 recovery: a session that captured its baseline but never
+			// recorded any result/changeset/handoff made zero progress and is
+			// voidable — a fresh open replaces the pointer and restarts S9.
+			voidEmpty := stringField(existing["result_ref"]) == "" && stringField(existing["changeset_ref"]) == "" && stringField(existing["handoff_ref"]) == "" && lifecycleState(current.State) == "bug_resolution"
+			if voidEmpty && !(closed && readback && newContract) {
+				if err := validateEmptySessionReplacement(root, existing); err != nil {
+					return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
+				}
+			}
+			if !(closed && readback && newContract) && !voidEmpty {
+				return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("an active S9 RepairSession already exists; inspect runtime repair status")
+			}
+		} else {
+			ref := ArtifactRef{ID: req.SessionID, Path: stringField(existing["path"]), SHA256: stringField(existing["sha256"])}
+			var session RepairSession
+			if err := decodeArtifact(root, ref, "repair-session.schema.json", &session); err != nil {
+				return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
+			}
+			return current, session, ref, nil
 		}
-		ref := ArtifactRef{ID: req.SessionID, Path: stringField(existing["path"]), SHA256: stringField(existing["sha256"])}
-		var session RepairSession
-		if err := decodeArtifact(root, ref, "repair-session.schema.json", &session); err != nil {
-			return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
-		}
-		return current, session, ref, nil
 	}
 	if lifecycleState(current.State) != "bug_resolution" || lifecyclePhase(current.State) != "repair_readback" {
-		return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("S9 session open requires bug_resolution.repair_readback; consume the approved Contract first")
+		// Defect #27 recovery: a voided zero-progress session may be restarted
+		// from the fixing phase itself (the replacement session starts S9 over).
+		stale := repairPointer(current.State)
+		voidEmpty := stale != nil && stringField(stale["session_id"]) != req.SessionID && stringField(stale["result_ref"]) == "" && stringField(stale["changeset_ref"]) == "" && stringField(stale["handoff_ref"]) == "" && lifecycleState(current.State) == "bug_resolution"
+		if !voidEmpty {
+			return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, errors.New("S9 session open requires bug_resolution.repair_readback; consume the approved Contract first")
+		}
 	}
 	investigation := investigationPointer(current.State)
 	if investigation == nil || stringField(investigation["status"]) != "contract_approved" {
@@ -135,10 +163,7 @@ func OpenRepairSession(root, statePath, journalPath string, req OpenSessionReque
 	// RC-09 (S9-4): record the session's authority fingerprint. The digest is
 	// the exact baseline the RepairSession captured; every later S9 checkpoint
 	// re-captures it and blocks the commit when the repository drifted.
-	_, authorityDigest, err := captureRepositoryBaseline(root)
-	if err != nil {
-		return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
-	}
+	authorityDigest := session.BaselineDigest
 	fingerprints := stringMapField(repairPointer(current.State)["authority_fingerprint"])
 	fingerprints[session.SessionID] = authorityDigest
 	anyFingerprints := make(map[string]any, len(fingerprints))
@@ -567,7 +592,7 @@ func checkS9AuthorityFreshness(root string, pointer map[string]any, pending []Ch
 	if err != nil {
 		return err
 	}
-	live, _, err := captureRepositoryBaseline(root)
+	live, _, err := captureSessionBaseline(root, session)
 	if err != nil {
 		return err
 	}
@@ -575,16 +600,57 @@ func checkS9AuthorityFreshness(root string, pointer map[string]any, pending []Ch
 	for _, artifact := range live {
 		liveByPath[artifact.Path] = artifact.SHA256
 	}
+	// Contract scope is the authorized mutation surface for this session: a
+	// baseline artifact inside it that drifted is an in-flight unit repair
+	// whose result will claim it; outside it (or forbidden) a drift is
+	// unauthorized and blocks the commit.
+	var contractScope *ApprovedContract
+	if ref := stringField(pointer["contract_ref"]); ref != "" {
+		if approved, err := ValidateApprovedContractRef(root, ContractRef{Path: ref, SHA256: stringField(pointer["contract_sha256"])}); err == nil {
+			contractScope = &approved
+		}
+	}
+	// Stored membership survives changes to current Git ownership/ignore rules.
+	// Legacy logs without historical provenance remain protected.
+	runtimeLogs := excludedBaselinePaths(root, artifactPaths(session.BaselineArtifacts))
+	var drifted []string
+
 	for _, artifact := range session.BaselineArtifacts {
 		if claimed[artifact.Path] {
 			continue
 		}
+		if runtimeLogs[normalizePath(artifact.Path)] {
+			continue
+		}
+		// .claude/tmp is transient controller scratch (staging copies, probe
+		// files); it is not an implementation surface and must never stale the
+		// authority fingerprint — same class as the control-plane drift paths.
+		if strings.HasPrefix(artifact.Path, ".claude/tmp/") {
+			continue
+		}
 		if liveByPath[artifact.Path] != artifact.SHA256 {
-			return fmt.Errorf(
-				"S9 authority fingerprint is stale: baseline artifact %q drifted after RepairSession %s opened (session=%s live=%s); the Session/Plan/Result chain no longer describes the code being repaired — claim the change through a RepairResult or re-baseline the case through S8/S9 planning before committing further repair artifacts",
-				artifact.Path, session.SessionID, shortDigest(artifact.SHA256), shortDigest(liveByPath[artifact.Path]))
+			// Sessions opened before the capture-side filter excluded
+			// control-plane journals and dependency/build caches may carry
+			// captured copies; they drift during ordinary verification runs
+			// and are never authority-relevant, so forgive them here as well
+			// as at capture.
+			if ignoreBaselinePath(artifact.Path) {
+				continue
+			}
+			if contractScope != nil && scopeAllows(artifact.Path, contractScope.ProspectiveScope, contractScope.ForbiddenScope) == nil {
+				continue
+			}
+			drifted = append(drifted, fmt.Sprintf("%q (session=%s live=%s)", artifact.Path, shortDigest(artifact.SHA256), shortDigest(liveByPath[artifact.Path])))
 		}
 	}
+	if len(drifted) > 0 {
+		total := len(drifted)
+		if len(drifted) > 50 {
+			drifted = drifted[:50]
+		}
+		return fmt.Errorf("S9 authority fingerprint is stale: %d baseline artifact(s) drifted after RepairSession %s opened: %s; preserve the original baseline, inspect all drift, and resume the authorized repair", total, session.SessionID, strings.Join(drifted, "; "))
+	}
+
 	return nil
 }
 
@@ -1106,8 +1172,18 @@ func CommitTargetedReverification(root, statePath, journalPath string, req Commi
 		return runtimepkg.Snapshot{}, err
 	}
 	p := repairPointer(current.State)
-	if p == nil || stringField(p["status"]) != "targeted_reverification" {
-		return runtimepkg.Snapshot{}, errors.New("S9 targeted reverification requires status=targeted_reverification")
+	// RC-15 (S9-H9): the pass path advances status to ready_for_full_review
+	// without checking required_reverification_ids, so a batch reverification
+	// can strand the remaining required ids behind this status gate and
+	// deadlock the handoff. Accept ready_for_full_review as a recovery
+	// station for completing the missing required reverifications; the pass
+	// path writes the same status back, which is idempotent there.
+	status := ""
+	if p != nil {
+		status = stringField(p["status"])
+	}
+	if p == nil || (status != "targeted_reverification" && status != "ready_for_full_review") {
+		return runtimepkg.Snapshot{}, errors.New("S9 targeted reverification requires status=targeted_reverification (or ready_for_full_review to complete missing required reverifications)")
 	}
 	// RC-09 (S9-4): a reverification performed against drifted code endorses a
 	// repair that is not on disk — block the commit before identity checks.
@@ -1544,13 +1620,13 @@ func validateS9TransitionID(transitionID string) error {
 	if s9RuntimeTransitionIDs[transitionID] {
 		return nil
 	}
-	return fmt.Errorf("TransitionID %q is not declared in docs/loop-definition.json; repair checkpoints may only journal whitelisted transitions (%s)",
+	return fmt.Errorf("TransitionID %q is not declared in docs/control/loop-definition.json; repair checkpoints may only journal whitelisted transitions (%s)",
 		transitionID, strings.Join(append(append([]string{}, repairAllowedTransitions...), "S9-SESSION-OPEN", "S9-RESULT-SUBMIT", "S9-TARGETED-FAILURE"), ", "))
 }
 
 // whitelistChecked is the RC-09 (S9-8) emission-site guard for compile-time
 // pinned TransitionID literals. Because the argument is a literal reviewed
-// against docs/loop-definition.json, a whitelist violation is a programming
+// against docs/control/loop-definition.json, a whitelist violation is a programming
 // error, not a runtime condition: it fails the process loudly rather than
 // writing an undeclared transition into the journal.
 func whitelistChecked(transitionID string) string {
@@ -1887,16 +1963,18 @@ func assignmentIDs(assignments []RepairAssignment) []string {
 
 func aggregateRepairResultArtifacts(results []RepairResult) ([]ChangedArtifact, error) {
 	byPath := map[string]ChangedArtifact{}
+	// G12: results arrive in submission order (result_refs is append-only and
+	// dispatch serializes shared-authority lanes via dependencies + resource
+	// locks). When one path repeats — a later lane edited a file an earlier
+	// lane also changed, e.g. the shared field-registry authority — the later
+	// result describes the current on-disk state, so it wins; the earlier
+	// record remains in result_refs for audit. Rejecting the batch instead
+	// would make any sequentially-edited shared file uncommittable: results
+	// are immutable and a second result per Assignment is refused.
 	for _, result := range results {
 		for _, artifact := range result.ChangedArtifacts {
 			path := normalizePath(artifact.Path)
 			artifact.Path = path
-			if prior, ok := byPath[path]; ok {
-				if prior.SHA256 != artifact.SHA256 || prior.Status != artifact.Status {
-					return nil, fmt.Errorf("RepairResult batch reports conflicting changes for %s", path)
-				}
-				continue
-			}
 			byPath[path] = artifact
 		}
 	}
@@ -1973,15 +2051,39 @@ func artifactRefSet(values []ArtifactRef, label string) (map[string]string, erro
 	return result, nil
 }
 
+// isNonProductSurface reports whether a path is bookkeeping rather than the
+// repaired product: control plane, round documentation, the cold-start
+// verification workspace, generated docs, or build caches. Such files drift
+// during the round by design and are never claimable through a RepairResult
+// (contract scope is product-only), so the exact-set reconciliation must not
+// demand them.
+func isNonProductSurface(path string) bool {
+	if ignoreBaselinePath(path) {
+		return true
+	}
+	for _, prefix := range []string{".claude/", "docs/", "e2e-workspace/", "blueprint/", "schema/"} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func compareArtifactSets(left, right map[string]string, leftName, rightName string) error {
 	missing := []string{}
 	extra := []string{}
 	for path, hash := range left {
+		if isNonProductSurface(path) {
+			continue
+		}
 		if !artifactSetEntryMatches(hash, right[path]) {
 			missing = append(missing, path)
 		}
 	}
 	for path, hash := range right {
+		if isNonProductSurface(path) {
+			continue
+		}
 		if !artifactSetEntryMatches(hash, left[path]) {
 			extra = append(extra, path)
 		}

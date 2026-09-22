@@ -106,7 +106,7 @@ func TestLoadFullSurfacesLockedArtifactsAtS2(t *testing.T) {
 			{
 				"id":"BE-039",
 				"kind":"contract",
-				"path":"docs/contracts/BE-039-loop-controller.md",
+				"path":"docs/dev/contracts/BE-039-loop-controller.md",
 				"version":"v1.0.2",
 				"sha256":"fbd5f1df14834c3e14930190ae6199a0d9e482c9bcff347b4ce946f666714e23",
 				"status":"locked",
@@ -132,7 +132,7 @@ func TestLoadFullSurfacesLockedArtifactsAtS2(t *testing.T) {
 	}
 	sort.Strings(paths)
 	want := []string{
-		"docs/contracts/BE-039-loop-controller.md",
+		"docs/dev/contracts/BE-039-loop-controller.md",
 		"docs/requirements/REQ-039-loop-control-plane.md",
 	}
 	for i, p := range want {
@@ -197,7 +197,7 @@ func TestLoadFullLockedArtifactsFiresExistingPolicyDecision(t *testing.T) {
 	// BUG-01 builder wires up.
 	loaded.PolicyContext.BoundREQID = "REQ-039"
 
-	engine, err := policy.Load(filepath.Join(root, "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join(root, "docs", "control", "hook-policy.json"))
 	if err != nil {
 		// hook-policy.json is not in this minimal temp tree; use the
 		// nil-engine path by exercising lockedArtifactDecision via
@@ -261,7 +261,7 @@ func TestLoadFullLockedArtifactsSkipsWrongGenerationOrMissingFields(t *testing.T
 			{
 				"id":"OLD-CONTRACT",
 				"kind":"contract",
-				"path":"docs/contracts/OLD.md",
+				"path":"docs/dev/contracts/OLD.md",
 				"version":"v1.0.0",
 				"sha256":"0000000000000000000000000000000000000000000000000000000000000000",
 				"status":"locked",
@@ -270,7 +270,7 @@ func TestLoadFullLockedArtifactsSkipsWrongGenerationOrMissingFields(t *testing.T
 			{
 				"id":"BE-NEW",
 				"kind":"contract",
-				"path":"docs/contracts/BE-NEW.md",
+				"path":"docs/dev/contracts/BE-NEW.md",
 				"status":"locked",
 				"generation":2
 			}
@@ -342,7 +342,7 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 			"tasks":[{
 				"id":"TASK-039-04",
 				"state":"in_progress",
-				"path":"docs/tasks/TASK-039-04-controller-cycle.md",
+				"path":"docs/dev/tasks/TASK-039-04-controller-cycle.md",
 				"sha256":"679a6de3de30ef4ec64aabaa1c9cbbb2e52005906fcfcd2d70dff2fbadc2533b",
 				"owner_agent_ids":["agent-039-04"]
 			}],
@@ -366,6 +366,7 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 			"role_family":"backend-builder",
 			"agent_id":"agent-039-04",
 			"write_paths":["internal/controller/"],
+            "integration_check_mode":"post_merge",
 			"done_when":["register the exact Assignment Result", "preserve evidence refs"],
 			"status":"in_progress"
 		}]
@@ -381,6 +382,9 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 		t.Fatalf("expected 1 assignment row, got %d (%+v)", len(loaded.Assignments), loaded.Assignments)
 	}
 	row := loaded.Assignments[0]
+	if row.IntegrationCheckMode != "post_merge" {
+		t.Fatalf("check mode lost: %+v", row)
+	}
 	if row.AssignmentID != "assignment-039-04" {
 		t.Fatalf("AssignmentID: got %q", row.AssignmentID)
 	}
@@ -554,7 +558,7 @@ func TestLoadFullSkipsAssignmentsWithoutManifestOrAgent(t *testing.T) {
 			"tasks":[{
 				"id":"TASK-039-99",
 				"state":"in_progress",
-				"path":"docs/tasks/TASK-039-99.md",
+				"path":"docs/dev/tasks/TASK-039-99.md",
 				"sha256":"0000000000000000000000000000000000000000000000000000000000000000",
 				"owner_agent_ids":["agent-039-99"]
 			}],

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/impact"
+	"github.com/entroforge/go-system-builder/internal/repairpolicy"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/verification"
@@ -24,15 +27,19 @@ import (
 const ResumeSentinel = "RESUME_FROM_PAUSE"
 
 type LockedREQ struct {
-	ID         string
-	Path       string
-	Version    string
-	SHA256     string
-	ApprovedBy string
-	ApprovedAt string
+	Workspace          *workspace.Binding
+	RepairPolicyPath   string
+	RepairPolicySHA256 string
+	ID                 string
+	Path               string
+	Version            string
+	SHA256             string
+	ApprovedBy         string
+	ApprovedAt         string
 }
 
 type Request struct {
+	Files            fileview.Reader
 	TransitionID     string
 	ExpectedRevision int
 	// ExpectedRuntimeID binds a caller's snapshot to the runtime identity as
@@ -53,6 +60,10 @@ type Request struct {
 	GateID                 string
 	GateFingerprint        string
 	ProducerResponsibility string
+	// RecoveryWriter is an explicit capability for recovery-plan replay over
+	// a temporary Runtime pair. A zero capability selects the strict active
+	// authority writer; paths never select recovery mode implicitly.
+	RecoveryWriter loopruntime.OfflineRecoveryCapability
 }
 
 type resolvedTransition struct {
@@ -72,6 +83,9 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	// Apply is an explicit mutation boundary. Its writer may recover a durable
 	// pending operation before guards inspect the state/journal pair.
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	if request.RecoveryWriter.Enabled() {
+		store = loopruntime.NewOfflineRecoveryWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}, request.RecoveryWriter)
+	}
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
@@ -97,8 +111,24 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("load transition catalog: %w", err)
 	}
+	if request.Files == nil {
+		if ref, err := fileview.DevelopmentRef(current); err == nil {
+			if err := fileview.ValidateAuthority(root, current); err != nil {
+				return loopruntime.Snapshot{}, err
+			}
+			view, err := fileview.New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+			if err != nil {
+				return loopruntime.Snapshot{}, err
+			}
+			request.Files = view
+		}
+	}
 	resolved, err := resolveCatalog(catalog, request.TransitionID, currentState, currentPhase)
 	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if request.Files == nil && resolved.Spec.AutoTrigger != nil {
+		_, err := fileview.DevelopmentRef(current)
 		return loopruntime.Snapshot{}, err
 	}
 	// RC-06 (S10-2): forbidden_events were decoded into the catalog but never
@@ -209,6 +239,11 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 				}
 			}
 
+			if view, ok := request.Files.(interface{ Verify() error }); ok {
+				if err := view.Verify(); err != nil {
+					return err
+				}
+			}
 			if err := validateRequest(root, state, resolved.Spec, request); err != nil {
 				return err
 			}
@@ -222,6 +257,89 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 					return fmt.Errorf("transition %s: consume human_decision evidence: %w", resolved.Spec.ID, err)
 				}
 			}
+			// RC-15 (S10-H2): TR-027 reject_defect drops the cursor from
+			// awaiting_human_release directly to bug_resolution.investigation.
+			// S8 ingest requires a sealed observation_batch pointer with
+			// batch_id/path/sha256/finding_ids; without a fresh S7 round,
+			// construct a minimal placeholder batch from the dispatched finding
+			// evidence and pin the pointer in state so ingest can proceed.
+			if resolved.Spec.ID == "TR-027" {
+				if review, _ := state["review"].(map[string]any); review != nil {
+					if batch, _ := review["observation_batch"].(map[string]any); batch == nil {
+						if root, _ := state["root"].(string); root != "" {
+							// finding_ids must carry real Finding ids: S8 intake validates
+							// every entry against the entities.findings rows
+							// (exactFindingSet + validateFindingArtifacts). The
+							// finding_record evidence reference counts only when it is
+							// itself a finding-* id; otherwise the placeholder batch
+							// covers the findings the rejection sends back to S8.
+							findingIDs := []string{}
+							if findingRef := strings.TrimSpace(request.Evidence["finding_record"]); strings.HasPrefix(findingRef, "finding-") {
+								findingIDs = append(findingIDs, findingRef)
+							} else if entities, _ := state["entities"].(map[string]any); entities != nil {
+								rawFindings, _ := entities["findings"].([]any)
+								for _, rawFinding := range rawFindings {
+									findingRow, _ := rawFinding.(map[string]any)
+									if findingRow == nil {
+										continue
+									}
+									if id := stringValue(findingRow["finding_id"]); strings.HasPrefix(id, "finding-") {
+										findingIDs = append(findingIDs, id)
+									}
+								}
+							}
+							baseline := baselineGeneration(state)
+							runtimeID := stringValue(state["runtime_id"])
+							planPtr, _ := review["plan"].(map[string]any)
+							subjectDigest, _ := planPtr["sha256"].(string)
+							batchID := fmt.Sprintf("observation-batch-tr027-%s-%d", runtimeID, occurredAt.UnixNano())
+							doc := map[string]any{
+								"schema_version":       "1.0.0",
+								"observation_batch_id": batchID,
+								"runtime_id":           runtimeID,
+								"baseline_generation":  baseline,
+								"subject_digest":       subjectDigest,
+								"finding_ids":          findingIDs,
+								"claim_coverage_summary": map[string]any{
+									"total_required": 1, "pass": 0, "finding": 1,
+									"not_applicable": 0, "blocked": 0, "blocked_claims": []any{},
+									"plan_revision": 1,
+								},
+								"unobserved_claim_ids": []string{},
+								"sealed_by":            "tr027_placeholder",
+								"sealed_at":            occurredAt.UTC().Format(time.RFC3339Nano),
+							}
+							batchBytes, err := json.Marshal(doc)
+							if err != nil {
+								return fmt.Errorf("transition %s: encode TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
+							}
+							batchPath := filepath.Join(".claude", "review", "observation-batches", batchID+".json")
+							absPath, err := filepath.Abs(filepath.Join(root, batchPath))
+							if err != nil {
+								return fmt.Errorf("transition %s: resolve TR-027 placeholder observation batch path: %w", resolved.Spec.ID, err)
+							}
+							// A state pointer to a batch file that never reached disk
+							// would wedge S8 intake on an unexplainable sha mismatch;
+							// persist errors fail the TR-027 transition instead.
+							if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+								return fmt.Errorf("transition %s: persist TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
+							}
+							if err := os.WriteFile(absPath, batchBytes, 0o644); err != nil {
+								return fmt.Errorf("transition %s: persist TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
+							}
+							review["observation_batch"] = map[string]any{
+								"batch_id":     batchID,
+								"path":         batchPath,
+								"sha256":       sha256Sum(batchBytes),
+								"finding_ids":  findingIDs,
+								"drain_policy": "complete_required_claims",
+								"sealed_at":    occurredAt.UTC().Format(time.RFC3339Nano),
+							}
+						}
+					}
+				}
+			}
+
 			for index, name := range resolved.Spec.Guards {
 				guard, ok := LookupGuard(name)
 				if !ok {
@@ -229,7 +347,12 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 					guardResults[index]["detail"] = "Guard is not registered."
 					return fmt.Errorf("transition %s guard %s is not registered", resolved.Spec.ID, name)
 				}
-				if err := guard(state, request.Evidence); err != nil {
+				guardState := make(map[string]any, len(state)+1)
+				for k, v := range state {
+					guardState[k] = v
+				}
+				guardState["_file_view"] = request.Files
+				if err := guard(guardState, request.Evidence); err != nil {
 					guardResults[index]["result"] = "fail"
 					guardResults[index]["detail"] = err.Error()
 					return fmt.Errorf("guard %s failed: %w", name, err)
@@ -290,6 +413,9 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 				state["pause"] = nil
 			}
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+			if view, ok := request.Files.(interface{ Verify() error }); ok {
+				return view.Verify()
+			}
 			return nil
 		},
 	}
@@ -406,7 +532,7 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
 		} else if !(spec.ID == "TR-001" || (spec.ID == "TR-020" && kind == "req_lock_record")) {
-			if err := validateCurrentEvidence(root, state, kind, ref); err != nil {
+			if err := validateCurrentEvidenceWithFiles(root, state, kind, ref, request.Files); err != nil {
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
 		}
@@ -449,6 +575,9 @@ func generatedEvidenceReferenceMatches(ref, canonical string) bool {
 }
 
 func validateCurrentEvidence(root string, state map[string]any, requiredKind, ref string) error {
+	return validateCurrentEvidenceWithFiles(root, state, requiredKind, ref, nil)
+}
+func validateCurrentEvidenceWithFiles(root string, state map[string]any, requiredKind, ref string, files fileview.Reader) error {
 	items, _ := state["evidence"].([]any)
 	var evidenceItem map[string]any
 	for _, raw := range items {
@@ -486,7 +615,10 @@ func validateCurrentEvidence(root string, state map[string]any, requiredKind, re
 	if rel == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("reference %q has unsafe path %q", ref, rel)
 	}
-	data, err := os.ReadFile(filepath.Join(root, clean))
+	if files == nil {
+		files = fileview.Disk{Root: root}
+	}
+	data, err := files.ReadFile(clean)
 	if err != nil {
 		return fmt.Errorf("read reference %q: %w", ref, err)
 	}
@@ -630,6 +762,10 @@ func dispositionForHumanDecisionEvent(event string) string {
 	}
 }
 
+func sha256Sum(data []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
 func stringValue(value any) string {
 	text, _ := value.(string)
 	return text
@@ -731,11 +867,15 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 		req.ApprovedBy == "" || req.ApprovedAt == "" {
 		return fmt.Errorf("locked REQ metadata is incomplete")
 	}
-	data, err := os.ReadFile(filepath.Join(root, req.Path))
+	files := request.Files
+	if files == nil {
+		files = fileview.Disk{Root: root}
+	}
+	data, err := files.ReadFile(req.Path)
 	if err != nil {
 		return fmt.Errorf("read locked REQ: %w", err)
 	}
-	if SHA256(data) != req.SHA256 {
+	if REQSHA256(data) != req.SHA256 {
 		return fmt.Errorf("locked REQ fingerprint mismatch")
 	}
 	status := ParseMarkdownField(string(data), "状态", "Status")
@@ -763,12 +903,32 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 		"approved_at": req.ApprovedAt,
 		"metadata":    map[string]any{"ui_impact": uiImpact},
 	}
+	if req.Workspace != nil {
+		state["bound_req"].(map[string]any)["workspace"] = req.Workspace.Map()
+	}
 	baseline, ok := state["baseline"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("runtime baseline must be an object")
 	}
 	baseline["generation"] = max(1, integer(baseline["generation"])+1)
 	baseline["captured_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+	if req.RepairPolicyPath != "" || req.RepairPolicySHA256 != "" {
+		if _, err := repairpolicy.Read(root, req.RepairPolicyPath, req.RepairPolicySHA256, req.ApprovedBy); err != nil {
+			return err
+		}
+		config, _ := state["configuration"].(map[string]any)
+		if config == nil {
+			config = map[string]any{}
+			state["configuration"] = config
+		}
+		repairConfig, _ := config["repair"].(map[string]any)
+		if repairConfig == nil {
+			repairConfig = map[string]any{}
+			config["repair"] = repairConfig
+		}
+		repairConfig["bound_policy"] = map[string]any{"path": req.RepairPolicyPath, "sha256": req.RepairPolicySHA256, "approved_by": req.ApprovedBy, "req_sha256": req.SHA256, "runtime_id": state["runtime_id"], "baseline_generation": baseline["generation"]}
+	}
+
 	state["documents"] = appendDocument(state["documents"], map[string]any{
 		"id":         req.ID,
 		"kind":       "req",
@@ -792,11 +952,15 @@ func updateBoundREQ(root string, state map[string]any, request Request, occurred
 		req.ApprovedBy == "" || req.ApprovedAt == "" {
 		return fmt.Errorf("amended REQ metadata is incomplete")
 	}
-	data, err := os.ReadFile(filepath.Join(root, req.Path))
+	files := request.Files
+	if files == nil {
+		files = fileview.Disk{Root: root}
+	}
+	data, err := files.ReadFile(req.Path)
 	if err != nil {
 		return fmt.Errorf("read amended REQ: %w", err)
 	}
-	if SHA256(data) != req.SHA256 {
+	if REQSHA256(data) != req.SHA256 {
 		return fmt.Errorf("amended REQ fingerprint mismatch")
 	}
 	status := ParseMarkdownField(string(data), "状态", "Status")
@@ -832,6 +996,9 @@ func updateBoundREQ(root string, state map[string]any, request Request, occurred
 		"approved_by": req.ApprovedBy,
 		"approved_at": req.ApprovedAt,
 		"metadata":    map[string]any{"ui_impact": uiImpact},
+	}
+	if binding, ok := bound["workspace"].(map[string]any); ok {
+		state["bound_req"].(map[string]any)["workspace"] = binding
 	}
 	baseline, ok := state["baseline"].(map[string]any)
 	if !ok {
@@ -1116,6 +1283,12 @@ func contains(values []string, target string) bool {
 
 func SHA256(data []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
+// REQSHA256 preserves the raw-byte identity used by existing bound REQs.
+// Checkout normalization is an explicit migration, never an implicit hash change.
+func REQSHA256(data []byte) string {
+	return SHA256(data)
 }
 
 // capturePauseCheckpoint snapshots the runtime into state["pause"] before the

@@ -22,7 +22,7 @@ func bindForReview(t *testing.T, root string) {
 
 func bindForReviewReq(t *testing.T, root, req string) {
 	t.Helper()
-	args := []string{"req", "bind", "--root", root, "--approved-by", "alice"}
+	args := []string{"req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice"}
 	if req != "" {
 		args = append(args, "--req", req)
 	}
@@ -83,7 +83,7 @@ func TestUnbindForceRecordsInFlight(t *testing.T) {
 		"tasks": []any{map[string]any{
 			"id":              "TASK-001",
 			"state":           "in_progress",
-			"path":            "docs/tasks/TASK-001.md",
+			"path":            "docs/dev/tasks/TASK-001.md",
 			"sha256":          "0000000000000000000000000000000000000000000000000000000000000000",
 			"owner_agent_ids": []any{},
 		}},
@@ -233,7 +233,7 @@ func TestAmendRejectsDifferentREQ(t *testing.T) {
 	cli.Run([]string{"runtime", "pause", "--root", root, "--reason", "x", "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
 	stdout.Reset()
 	stderr.Reset()
-	code := cli.Run([]string{"req", "amend", "--root", root, "--req", "docs/requirements/REQ-206.md", "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
+	code := cli.Run([]string{"req", "amend", "--root", commitStageFixture(t, root), "--req", "docs/requirements/REQ-206.md", "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
 	if code == 0 {
 		t.Fatal("amending to a different REQ id must be rejected")
 	}
@@ -252,7 +252,7 @@ func TestAmendRejectsNonNumericVersion(t *testing.T) {
 		[]byte("# REQ-207\n\n> 状态：locked\n> 版本：draft2\n> UI impact：none\n"), 0o644)
 	stdout.Reset()
 	stderr.Reset()
-	code := cli.Run([]string{"req", "amend", "--root", root, "--req", "docs/requirements/REQ-207.md", "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
+	code := cli.Run([]string{"req", "amend", "--root", commitStageFixture(t, root), "--req", "docs/requirements/REQ-207.md", "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
 	if code == 0 {
 		t.Fatal("non-numeric version must be rejected")
 	}
@@ -311,7 +311,7 @@ func TestBindPreflightsControlPlaneDrift(t *testing.T) {
 	if code := cli.Run([]string{"init", "--root", root}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("init failed: %s", stderr.String())
 	}
-	defPath := filepath.Join(root, "docs", "loop-definition.json")
+	defPath := filepath.Join(root, "docs", "control", "loop-definition.json")
 	data, err := os.ReadFile(defPath)
 	if err != nil {
 		t.Fatal(err)
@@ -321,7 +321,7 @@ func TestBindPreflightsControlPlaneDrift(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	code := cli.Run([]string{"req", "bind", "--root", root, "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
+	code := cli.Run([]string{"req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
 	if code == 0 {
 		t.Fatal("bind must refuse a drifted control plane")
 	}

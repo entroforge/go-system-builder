@@ -13,6 +13,6 @@ func s7GateError(code, summary string, missing, repair []string, next string) er
 		Repair:  repair,
 		Next:    next,
 		Verify:  "loop-harness s7 status",
-		Ref:     "docs/agent-protocol.md#s7",
+		Ref:     "docs/control/agent-protocol.md#s7",
 	})
 }

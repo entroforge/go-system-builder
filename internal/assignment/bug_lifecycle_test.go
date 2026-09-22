@@ -16,12 +16,12 @@ import (
 func setupBugRuntime(t *testing.T, root string, bugState string) {
 	t.Helper()
 	// Copy loop-definition.json.
-	defSrc := filepath.Join("..", "..", "docs", "loop-definition.json")
+	defSrc := filepath.Join("..", "..", "docs", "control", "loop-definition.json")
 	defData, err := os.ReadFile(defSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defDir := filepath.Join(root, "docs")
+	defDir := filepath.Join(root, "docs", "control")
 	os.MkdirAll(defDir, 0o755)
 	os.WriteFile(filepath.Join(defDir, "loop-definition.json"), defData, 0o644)
 

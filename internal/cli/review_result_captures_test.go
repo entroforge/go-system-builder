@@ -63,7 +63,7 @@ func TestReviewResultCapturesAcceptsBufferDir(t *testing.T) {
 			"schema_version": "1.0.0", "finding_id": "finding-captures-dir-1",
 			"claim_id": "claim-qa-1", "lens": "qa", "severity": "P1",
 			"expected":         "the store error propagates to the caller",
-			"authority_refs":   []string{"docs/contracts/CONTRACTS-001.md#errors"},
+			"authority_refs":   []string{"docs/dev/contracts/CONTRACTS-001.md#errors"},
 			"observed":         "update returns nil after the store write fails",
 			"observation_mode": "code_inspection",
 			"reproducibility":  "always",

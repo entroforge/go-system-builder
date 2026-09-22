@@ -65,5 +65,11 @@ func evidenceRefMatchesRequirement(ref, requirement string) bool {
 	if requirement == "trace" && refKind == "path" {
 		return true
 	}
+	if requirement == "path" && refKind == "command_output" {
+		return true
+	}
+	if requirement == "trace" && refKind == "command_output" {
+		return true
+	}
 	return refKind == requirement
 }

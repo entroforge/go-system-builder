@@ -8,7 +8,7 @@
     "Stop": [{"hooks":[{"type":"command","command":"\"$CLAUDE_PROJECT_DIR\"/.claude/bin/loop-harness hook --event Stop --root \"$CLAUDE_PROJECT_DIR\"","timeout":10}]}],
     "PostToolUse": [
       {
-        "matcher": "SendMessage",
+        "matcher": "SendMessage|Agent|Task|SubagentHandback|Bash",
         "hooks": [
           {
             "type": "command",

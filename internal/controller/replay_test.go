@@ -73,10 +73,11 @@ func TestRecoveryReplayStopsAtFirstNotReady(t *testing.T) {
 	// an empty documents[] no longer produces not_ready — remove the disk
 	// architecture document as well to keep this test's intent (a genuine
 	// first-step gap).
-	if err := os.Remove(filepath.Join(root, "docs", "design", "architecture", "ARCHITECTURE-039-loop-control-plane.md")); err != nil {
+	if err := os.Remove(filepath.Join(root, "docs", "architecture", "ARCHITECTURE-039-loop-control-plane.md")); err != nil {
 		t.Fatal(err)
 	}
 	state["documents"] = []any{}
+	req039fixtures.CommitFixture(t, root)
 	stagingStatePath, stagingJournalPath := stagingPair(t, root, state)
 
 	result, err := controller.RecoveryReplay(context.Background(), controller.RecoveryReplayRequest{
@@ -340,6 +341,8 @@ func replayFixture(t *testing.T) (string, map[string]any) {
 		t.Fatal(err)
 	}
 	state["bound_req"].(map[string]any)["sha256"] = req039fixtures.Sha256Hex(reqData)
+	req039fixtures.CommitFixture(t, root)
+	state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release", "bound_commit": "fixture"}
 	writeReplayPair(t, filepath.Join(root, ".claude", "loop-state.json"), filepath.Join(root, ".claude", "loop-events.jsonl"), state)
 	return root, state
 }

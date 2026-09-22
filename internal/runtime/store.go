@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"math"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/filelock"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -49,6 +52,13 @@ var ErrCandidateValidatorRequired = errors.New("runtime candidate validator is r
 // fail-closed guard against accidentally wiring a no-op test/function adapter
 // into a production writer.
 var ErrCandidateValidatorInvalid = errors.New("runtime candidate validator is invalid or no-op")
+
+// ErrOfflineRecoveryCapabilityRequired is returned when a caller asks for an
+// offline recovery writer without the explicit capability issued to recovery
+// orchestration. Ordinary writers never infer this mode from the state/journal
+// paths, so --state/--journal cannot bypass authority validation by pointing
+// at a staging directory.
+var ErrOfflineRecoveryCapabilityRequired = errors.New("offline recovery writer capability is required")
 
 const staleLockAge = 30 * time.Second
 
@@ -181,11 +191,12 @@ type commitPending struct {
 // revision bump; they still use the same marker-before-state-write protocol
 // and explicit writer recovery as normal commits.
 type statePending struct {
-	SchemaVersion       string         `json:"schema_version"`
-	PreviousStateSHA256 string         `json:"previous_state_sha256"`
-	PreviousRevision    int            `json:"previous_revision"`
-	StateSHA256         string         `json:"state_sha256"`
-	State               map[string]any `json:"state"`
+	Artifacts           []fingerprintArtifact `json:"artifacts,omitempty"`
+	SchemaVersion       string                `json:"schema_version"`
+	PreviousStateSHA256 string                `json:"previous_state_sha256"`
+	PreviousRevision    int                   `json:"previous_revision"`
+	StateSHA256         string                `json:"state_sha256"`
+	State               map[string]any        `json:"state"`
 }
 
 // runtimeSemanticDefinition is the small, repository-owned part of the Loop
@@ -206,13 +217,35 @@ type runtimeSemanticDefinition struct {
 }
 
 type Store struct {
-	statePath          string
-	journalPath        string
-	root               string
-	candidateValidator CandidateValidator
-	validatorInitErr   error
-	mutationCapable    bool
+	statePath            string
+	journalPath          string
+	root                 string
+	candidateValidator   CandidateValidator
+	validatorInitErr     error
+	mutationCapable      bool
+	offlineRecovery      bool
+	relocationSourceHash string
 }
+
+// OfflineRecoveryCapability is an opaque opt-in for the recovery
+// orchestrator's temporary Runtime pair. The unexported marker prevents
+// callers from manufacturing an enabled value with a struct literal; the
+// explicit constructor is intentionally used only at recovery composition
+// roots (RecoveryReplay and runtime recover plan generation).
+type OfflineRecoveryCapability struct{ enabled bool }
+
+// NewOfflineRecoveryCapability creates the capability required by
+// NewOfflineRecoveryWriter. This is a protocol capability, not a path-based
+// exemption: callers must deliberately thread it through recovery replay or
+// recovery-plan orchestration.
+func NewOfflineRecoveryCapability() OfflineRecoveryCapability {
+	return OfflineRecoveryCapability{enabled: true}
+}
+
+// Enabled reports whether this capability was issued by the runtime. It is
+// used by transition/controller composition code to select the matching
+// writer without exposing the marker itself.
+func (c OfflineRecoveryCapability) Enabled() bool { return c.enabled }
 
 func NewStore(statePath, journalPath string) *Store {
 	return &Store{statePath: statePath, journalPath: journalPath}
@@ -251,6 +284,22 @@ func NewWriter(statePath, journalPath, root string, validator CandidateValidator
 	if err := validator.ValidateCandidate("", map[string]any{}); err == nil {
 		store.validatorInitErr = ErrCandidateValidatorInvalid
 	}
+	return store
+}
+
+// NewOfflineRecoveryWriter constructs a mutation-capable Store for a
+// recovery-owned staging pair. It still requires the bound workspace root to
+// match root and all schema/semantic validation remains active; only the
+// active state/journal coordinate check is relaxed. Without the explicit
+// capability this returns a fail-closed writer, rather than inferring mode
+// from a path under .claude/recovery.
+func NewOfflineRecoveryWriter(statePath, journalPath, root string, validator CandidateValidator, capability OfflineRecoveryCapability) *Store {
+	store := NewWriter(statePath, journalPath, root, validator)
+	if !capability.enabled {
+		store.validatorInitErr = ErrOfflineRecoveryCapabilityRequired
+		return store
+	}
+	store.offlineRecovery = true
 	return store
 }
 
@@ -367,9 +416,20 @@ func currentCursor(state map[string]any) (map[string]any, error) {
 }
 
 func (s *Store) validateCandidate(state map[string]any) error {
+	if err := s.validateWriteAuthority(state); err != nil {
+		return err
+	}
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("encode candidate runtime: %w", err)
+	}
+	if err := projectlayout.CheckRuntime(encoded); err != nil {
+		return err
+	}
+	if s.root != "" {
+		if err := projectlayout.Check(s.root); err != nil {
+			return err
+		}
 	}
 	validator := schema.NewEmbeddedValidator()
 	if err := validator.ValidateBytes("loop-state.schema.json", encoded); err != nil {
@@ -395,7 +455,7 @@ func (s *Store) validateCandidate(state map[string]any) error {
 }
 
 func validateRuntimeSemanticCore(root string, state map[string]any) error {
-	definitionPath := filepath.Join(root, "docs", "loop-definition.json")
+	definitionPath := filepath.Join(root, projectlayout.Definition)
 	definitionData, err := os.ReadFile(definitionPath)
 	if err != nil {
 		// The runtime package has small unit fixtures that intentionally inject
@@ -722,7 +782,7 @@ func (s *Store) Rollover(freshState map[string]any, archiveRoot string, approval
 //
 // The document's own `version` field wins over `schema_version` (BUG-039-12
 // repair). `version` is the artifact's semantic version — the thing an audit
-// trail cares about, e.g. `docs/hook-policy.json` carries
+// trail cares about, e.g. `docs/control/hook-policy.json` carries
 // `version: "v2.0.0"` alongside `schema_version: "1.2.0"` (the wire-format
 // version of the policy schema). The previous heuristic preferred
 // `schema_version`, which wrote the schema format version into the policy
@@ -730,7 +790,7 @@ func (s *Store) Rollover(freshState map[string]any, archiveRoot string, approval
 // version the policy file never declared.
 //
 // `schema_version` remains the fallback for documents that declare no
-// `version` at all — `docs/loop-definition.json` is exactly this shape, so
+// `version` at all — `docs/control/loop-definition.json` is exactly this shape, so
 // `definition.version` continues to track its `schema_version`.
 //
 // An empty return means the document declares neither field (or is not JSON);
@@ -752,6 +812,7 @@ func DocumentMetadataVersion(data []byte) string {
 // FingerprintResult summarises a RefreshFingerprints pass. Updated lists the
 // document paths whose stored SHA256 changed; Unchanged lists paths that
 // already matched. Missing lists paths whose on-disk file does not exist.
+// Drifted lists attested paths whose recorded hash was preserved despite drift.
 // Triple is the RC-10 Step B convergence projection of the eight sha256
 // families onto (state_hash, evidence_hash, baseline_hash); it is derived
 // from the post-refresh state and never replaces per-family validation.
@@ -764,16 +825,27 @@ type FingerprintResult struct {
 	Updated   []string
 	Unchanged []string
 	Missing   []string
+	Drifted   []string
 	Triple    FingerprintTriple `json:"triple"`
 }
 
-// RefreshFingerprints recomputes the SHA256 of every document referenced by
-// the runtime state and writes the updated state back atomically. It is the
-// single source of truth for refreshing document fingerprints (BUG-004
-// repair). It does NOT bump the runtime revision and does NOT append a
-// journal entry — fingerprint refresh is a non-semantic housekeeping
-// operation that should not trigger transition events.
+// RefreshFingerprints updates only Harness definition and policy metadata.
+// Registered documents, the bound REQ, task subjects and evidence retain their
+// recorded hashes: changing a file is not a new review or evidence attestation.
+// Drift is reported for recovery through the existing change/review lifecycle.
 func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
+	return s.refreshFingerprints(root, nil, nil)
+}
+
+// RefreshEvidenceFingerprints refreshes only the declared mutable evidence kinds.
+// It preserves conclusions, generations, invalidation and frozen document hashes.
+func (s *Store) RefreshEvidenceFingerprints(root string, kinds map[string]bool, read func(string) ([]byte, error), writable ...func(string) bool) (FingerprintResult, error) {
+	if kinds == nil {
+		kinds = map[string]bool{}
+	}
+	return s.refreshFingerprints(root, kinds, read, writable...)
+}
+func (s *Store) refreshFingerprints(root string, evidenceKinds map[string]bool, read func(string) ([]byte, error), writable ...func(string) bool) (FingerprintResult, error) {
 	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
 	if err != nil {
 		return FingerprintResult{}, err
@@ -795,8 +867,24 @@ func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
 		return FingerprintResult{}, fmt.Errorf("validate state/journal pair before fingerprint refresh: %w", err)
 	}
 
+	var artifacts []fingerprintArtifact
+	if evidenceKinds != nil && read != nil && len(writable) > 0 {
+		writes, resolved, err := prepareEvidenceClosure(root, state, evidenceKinds, read, writable[0])
+		if err != nil {
+			return FingerprintResult{}, err
+		}
+		artifacts = writes
+		sourceRead := read
+		read = func(path string) ([]byte, error) {
+			if data, ok := resolved[filepath.ToSlash(filepath.Clean(path))]; ok {
+				return data, nil
+			}
+			return sourceRead(path)
+		}
+	}
+
 	var result FingerprintResult
-	refresh := func(entry map[string]any) {
+	refresh := func(entry map[string]any, mutable bool) {
 		path, _ := entry["path"].(string)
 		if path == "" {
 			return
@@ -805,7 +893,13 @@ func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
 		if !filepath.IsAbs(full) {
 			full = filepath.Join(root, path)
 		}
-		data, err := os.ReadFile(full)
+		var data []byte
+		var err error
+		if read != nil {
+			data, err = read(path)
+		} else {
+			data, err = os.ReadFile(full)
+		}
 		if err != nil {
 			result.Missing = append(result.Missing, path)
 			return
@@ -814,6 +908,10 @@ func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
 		current, _ := entry["sha256"].(string)
 		if current == sum {
 			result.Unchanged = append(result.Unchanged, path)
+			return
+		}
+		if !mutable {
+			result.Drifted = append(result.Drifted, path)
 			return
 		}
 		entry["sha256"] = sum
@@ -851,7 +949,7 @@ func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
 		result.Updated = append(result.Updated, path)
 	}
 
-	if docs, ok := state["documents"].([]any); ok {
+	if docs, ok := state["documents"].([]any); ok && evidenceKinds == nil {
 		baseline, _ := state["baseline"].(map[string]any)
 		currentGeneration := 0
 		if baseline != nil {
@@ -871,45 +969,61 @@ func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
 			if gen, err := integerField(doc, "generation"); err == nil && gen < currentGeneration {
 				continue
 			}
-			refresh(doc)
+			refresh(doc, false)
 		}
 	}
 	if evidence, ok := state["evidence"].([]any); ok {
 		for _, raw := range evidence {
 			if entry, ok := raw.(map[string]any); ok {
-				refresh(entry)
+				if evidenceKinds != nil {
+					kind, _ := entry["kind"].(string)
+					status, _ := entry["status"].(string)
+					baseline, _ := state["baseline"].(map[string]any)
+					review, _ := state["review"].(map[string]any)
+					gen, _ := integerField(entry, "baseline_generation")
+					currentGen, _ := integerField(baseline, "generation")
+					round, _ := integerField(entry, "review_round")
+					currentRound, _ := integerField(review, "round")
+					if !evidenceKinds[kind] || status != "valid" || gen != currentGen || (round > 0 && round != currentRound) {
+						continue
+					}
+					if _, err := safeEvidencePath(root, fmt.Sprint(entry["path"])); err != nil {
+						continue
+					}
+				}
+				refresh(entry, evidenceKinds != nil)
 			}
 		}
 	}
-	if boundReq, ok := state["bound_req"].(map[string]any); ok {
-		refresh(boundReq)
+	if boundReq, ok := state["bound_req"].(map[string]any); ok && evidenceKinds == nil {
+		refresh(boundReq, false)
 	}
 	// definition (loop-definition.json) and hook policy fingerprints must also
 	// track the on-disk artifact — REQ-003 TASK-003-C upgrades the definition
 	// file and validateRuntimeReferences compares state.Definition.SHA256
 	// against the new on-disk hash. Without this refresh, validate fails closed
 	// until a future REQ bind rewrites the whole runtime.
-	if definition, ok := state["definition"].(map[string]any); ok {
-		refresh(definition)
+	if definition, ok := state["definition"].(map[string]any); ok && evidenceKinds == nil {
+		refresh(definition, true)
 		refreshMetadataVersion(definition)
 	}
-	if hookControl, ok := state["hook_control"].(map[string]any); ok {
+	if hookControl, ok := state["hook_control"].(map[string]any); ok && evidenceKinds == nil {
 		if policyRef, ok := hookControl["policy_ref"].(map[string]any); ok {
-			refresh(policyRef)
+			refresh(policyRef, true)
 			refreshMetadataVersion(policyRef)
 		}
 	}
-	if entities, ok := state["entities"].(map[string]any); ok {
+	if entities, ok := state["entities"].(map[string]any); ok && evidenceKinds == nil {
 		if tasks, ok := entities["tasks"].([]any); ok {
 			for _, raw := range tasks {
 				if task, ok := raw.(map[string]any); ok {
-					refresh(task)
+					refresh(task, false)
 				}
 			}
 		}
 	}
 
-	if len(result.Updated) > 0 {
+	if len(result.Updated) > 0 || len(artifacts) > 0 {
 		if err := s.validateCandidate(state); err != nil {
 			return FingerprintResult{}, fmt.Errorf("post-refresh snapshot invalid: %w", err)
 		}
@@ -937,6 +1051,7 @@ func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
 			return FingerprintResult{}, err
 		}
 		pending := statePending{
+			Artifacts:           artifacts,
 			SchemaVersion:       "1.0.0",
 			PreviousStateSHA256: previousStateSHA256,
 			PreviousRevision:    previousRevision,
@@ -945,6 +1060,12 @@ func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
 		}
 		if err := atomicWriteJSON(s.fingerprintMarkerPath(), pending); err != nil {
 			return FingerprintResult{}, fmt.Errorf("record pending fingerprint refresh: %w", err)
+		}
+		if err := applyFingerprintArtifacts(root, artifacts); err != nil {
+			if errors.Is(err, errEvidenceRefreshSuperseded) {
+				_ = s.clearFingerprintMarkerLocked()
+			}
+			return FingerprintResult{}, err
 		}
 		if err := atomicWriteJSON(s.statePath, state); err != nil {
 			return FingerprintResult{}, fmt.Errorf("write refreshed runtime state: %w", err)
@@ -979,7 +1100,7 @@ func (s *Store) RefreshFingerprints(root string) (FingerprintResult, error) {
 // (REQ-039 §11, SYNC-039 §6-7): the recorded reference is what the audit
 // trail claims the enforced safety boundary was. When the policy document is
 // rewritten in place — e.g. the REQ-039 reduction to the minimal boundary
-// bumped `docs/hook-policy.json` to `v2.0.0` — the snapshot silently goes
+// bumped `docs/control/hook-policy.json` to `v2.0.0` — the snapshot silently goes
 // stale and the runtime attributes decisions to a policy version that is no
 // longer on disk. Detecting that divergence is the point of this type; the
 // fix path is RefreshFingerprints, which rewrites both fields in place
@@ -1144,7 +1265,7 @@ func (s *Store) Reconcile() (bool, error) {
 		return false, nil
 	}
 	if inspection.TailSequence != targetSequence-1 {
-		return false, fmt.Errorf("reconcile journal tail sequence %d does not precede target sequence %d", inspection.TailSequence, targetSequence)
+		return false, fmt.Errorf("reconcile journal tail sequence %d does not precede target sequence %d; preserve the current state/journal pair, run `runtime recover inspect --root <root> --req <locked-REQ-path>` then `runtime recover plan` with the same arguments; do not retry reconcile or hand-edit journal sequences", inspection.TailSequence, targetSequence)
 	}
 	stateJournal, err := objectField(state, "journal")
 	if err != nil {
@@ -1157,7 +1278,7 @@ func (s *Store) Reconcile() (bool, error) {
 	if inspection.RuntimeID != "" {
 		runtimeID, _ := state["runtime_id"].(string)
 		if inspection.RuntimeID != runtimeID {
-			return false, fmt.Errorf("reconcile journal runtime_id %q does not match state runtime_id %q", inspection.RuntimeID, runtimeID)
+			return false, fmt.Errorf("reconcile journal runtime_id %q does not match state runtime_id %q; run `runtime recover inspect --root <root> --req <locked-REQ-path>` then `runtime recover plan` with the same arguments; apply only a reviewed recovery plan", inspection.RuntimeID, runtimeID)
 		}
 	}
 	if err := s.validateCandidate(state); err != nil {
@@ -1329,7 +1450,7 @@ func (s *Store) applyMutation(expectedRevision int, mutation Mutation) (Snapshot
 		return Snapshot{}, fmt.Errorf("inspect existing runtime journal before mutation: %w", err)
 	}
 	if err := validateStateJournalPair(state, existingJournal); err != nil {
-		return Snapshot{}, fmt.Errorf("inspect runtime journal cursor before mutation (state journal.last_sequence must match the journal tail; if this followed a crash run `runtime reconcile` to replay the pending transition, otherwise the journal was truncated or the state hand-edited and needs manual realignment): %w", err)
+		return Snapshot{}, fmt.Errorf("inspect runtime journal cursor before mutation (state journal.last_sequence must match the journal tail; use `runtime reconcile` only for a verified pending tail event; for missing/mismatched history run `runtime recover inspect --root <root> --req <locked-REQ-path>` then `runtime recover plan` with the same arguments; never manually realign state/journal): %w", err)
 	}
 	if _, exists := existingJournal.EventIndex[mutation.EventID]; exists {
 		return Snapshot{}, fmt.Errorf("mutation event_id %q already exists in runtime journal", mutation.EventID)
@@ -1804,9 +1925,22 @@ func (s *Store) read() (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read runtime: %w", err)
 	}
+	if err := projectlayout.CheckRuntime(data); err != nil {
+		return nil, err
+	}
+	if s.mutationCapable && s.root != "" {
+		if err := projectlayout.Check(s.root); err != nil {
+			return nil, err
+		}
+	}
 	var state map[string]any
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("decode runtime: %w", err)
+	}
+	if s.mutationCapable {
+		if err := s.validateWriteAuthority(state); err != nil {
+			return nil, err
+		}
 	}
 	return state, nil
 }
@@ -1841,6 +1975,11 @@ func (s *Store) reportPendingOperationLocked() error {
 // writers. Each recovery candidate is validated before the first replacement
 // of state or journal, so a pending marker cannot become a semantic bypass.
 func (s *Store) recoverPendingWritesLocked() error {
+	// Check the existing binding before any recovery can replace files or
+	// truncate a journal. Pending candidates are checked again before replay.
+	if _, err := s.read(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	if _, err := os.Stat(s.commitMarkerPath()); err == nil {
 		if err := s.recoverPendingCommitLocked(); err != nil {
 			return err
@@ -1914,6 +2053,12 @@ func (s *Store) recoverPendingFingerprintLocked() error {
 		return err
 	}
 	if currentHash == pending.StateSHA256 {
+		if err := applyFingerprintArtifacts(s.root, pending.Artifacts); err != nil {
+			if errors.Is(err, errEvidenceRefreshSuperseded) {
+				return s.clearFingerprintMarkerLocked()
+			}
+			return err
+		}
 		return s.clearFingerprintMarkerLocked()
 	}
 	if currentHash != pending.PreviousStateSHA256 {
@@ -1925,6 +2070,12 @@ func (s *Store) recoverPendingFingerprintLocked() error {
 	}
 	if currentRevision != pending.PreviousRevision {
 		return errors.New("pending fingerprint refresh previous state revision does not match marker")
+	}
+	if err := applyFingerprintArtifacts(s.root, pending.Artifacts); err != nil {
+		if errors.Is(err, errEvidenceRefreshSuperseded) {
+			return s.clearFingerprintMarkerLocked()
+		}
+		return err
 	}
 	if err := atomicWriteJSON(s.statePath, pending.State); err != nil {
 		return fmt.Errorf("complete pending fingerprint refresh: %w", err)
@@ -2859,15 +3010,6 @@ func writeDurableFile(path string, data []byte) error {
 	return syncDir(filepath.Dir(path))
 }
 
-func syncDir(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
-}
-
 type journalRotationPending struct {
 	SchemaVersion  string `json:"schema_version"`
 	ArchivedFile   string `json:"archived_file"`
@@ -3244,6 +3386,25 @@ func journalFileContains(path, eventID string) (bool, error) {
 }
 
 func acquireLock(path string, timeout time.Duration) (func(), error) {
+	// Fence current binaries with an OS-owned lock before the compatibility
+	// sentinel. A slow live writer can never be evicted by sentinel age.
+	// The sentinel remains for legacy lock diagnostics during uniform upgrades.
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	releaseProcess, err := filelock.Acquire(ctx, path+".process")
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	releaseLegacy, err := acquireLegacyLock(path, timeout-time.Since(started))
+	if err != nil {
+		releaseProcess()
+		return nil, err
+	}
+	return func() { releaseLegacy(); releaseProcess() }, nil
+}
+
+func acquireLegacyLock(path string, timeout time.Duration) (func(), error) {
 	deadline := time.Now().Add(timeout)
 	owner := strconv.Itoa(os.Getpid()) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	for {

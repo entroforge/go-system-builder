@@ -248,7 +248,7 @@ func buildBindReviewState(t *testing.T, fixtures []planAssignmentFixture) (map[s
 		"review_round":        1,
 		"baseline_generation": 1,
 		"frozen_subjects": []any{
-			map[string]any{"path": "docs/tasks/TASK-700.md", "sha256": strings.Repeat("f", 64), "kind": "task"},
+			map[string]any{"path": "docs/dev/tasks/TASK-700.md", "sha256": strings.Repeat("f", 64), "kind": "task"},
 		},
 		"claims":                          []any{},
 		"assignments":                     []any{},

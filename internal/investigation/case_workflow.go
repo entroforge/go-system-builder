@@ -373,10 +373,19 @@ func UpdateCaseRoute(root, statePath, journalPath string, request RouteRequest) 
 			if pointer, pointerErr := mutableCasePointer(snapshot.State, request.CaseID, "case_routed"); pointerErr == nil {
 				if document, docErr := readCaseDocument(root, stringField(pointer["path"])); docErr == nil {
 					if history, histErr := objectArrayAllowEmpty(document["route_history"], "InvestigationCase.route_history"); histErr == nil {
+						// Count only the CONSECUTIVE TRAILING investigate_more
+						// entries: the livelock this cap exists to prevent is
+						// an unbroken chain of re-entries without convergence.
+						// A concrete route (s9_repair etc.) that was later
+						// followed by real repair work demonstrates
+						// convergence and must not inflate the counter for a
+						// new, legitimately-motivated re-entry.
 						attempts := 0
 						for _, entry := range history {
 							if stringField(entry["to"]) == "investigate_more" {
 								attempts++
+							} else if concrete := stringField(entry["to"]); concrete != "" && concrete != "investigate_more" {
+								attempts = 0
 							}
 						}
 						maxAttempts := configuredMaxInvestigateAttempts(snapshot.State)
@@ -1049,8 +1058,25 @@ func supportedExplainedFindingIDs(document map[string]any) []string {
 			ids = append(ids, values...)
 		}
 	}
-	set, _ := normalizeOptionalSet(ids, "supported explanations")
-	return set
+	// Union semantics: a Finding explained by MULTIPLE supported hypotheses is
+	// normal investigation reality (a primary mechanism plus narrower process
+	// hypotheses). normalizeOptionalSet errors on duplicates and this caller
+	// discarded that error, which silently marked every Finding unexplained.
+	// Deduplicate instead — each result's explains set is already validated
+	// against the source Finding set at submission time.
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return sortedStrings(out)
 }
 
 func hasInconclusiveResult(document map[string]any) bool {

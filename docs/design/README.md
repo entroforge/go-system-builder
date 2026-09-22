@@ -16,6 +16,10 @@ Later `UI impact=changed` agents open **two files**: `DESIGN.md` §0 and §8,
 plus `derivation/REQ-{id}.md`. They do not search `research/`, Grammar, or
 `surface-profiles/` unless §0 cannot answer Must not.
 
+## Design tokens
+
+[Design tokens](tokens/README.md) implement the design language. Edit `tokens/tokens.json` and generate `tokens/tokens.css` with `loop-harness design-foundation emit-css --root .`.
+
 ## Required templates (copy first)
 
 | Template | Live file | When |
@@ -47,7 +51,7 @@ plus `derivation/REQ-{id}.md`. They do not search `research/`, Grammar, or
 4. Fill §0 (action role, value/status color, button vs sentence) before pages.
    Confirmation still PENDING → status `provisional`, never `published`.
 5. After F4 in the **target** project, replace primitive values in that project's
-   `packages/design-tokens/tokens.json` and run `loop-harness design-foundation emit-css --root .`.
+   `docs/design/tokens/tokens.json` and run `loop-harness design-foundation emit-css --root .`.
    Do not brand-lock this factory's tokens.
 6. After a dated publish, each later UI REQ writes `derivation/REQ-{id}.md`.
 7. Optional: `loop-harness design-foundation export-portable --root .` writes a derived Google DESIGN.md under `docs/design/proof/portable/` (not authority).

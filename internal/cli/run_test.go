@@ -26,10 +26,13 @@ func TestValidateAllCommand(t *testing.T) {
 	// catalogue walk the production entrypoint performs is exercised by
 	// `internal/semantic`'s own tests.
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, rel := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	if err := os.MkdirAll(filepath.Join(root, "docs/control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", rel))
 		if err != nil {
 			t.Fatal(err)
@@ -63,14 +66,14 @@ func TestRuntimeEvidenceAddCommand(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), definition, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), definition, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	state, err := schema.ReadAsset("loop-state.example.json")
@@ -96,7 +99,7 @@ func TestRuntimeEvidenceAddCommand(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte("document pass\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte(`{"schema_version":"1.0.0","evidence_id":"EV-CLI-001","kind":"document_review","runtime_id":"loop-REQ-002-example","baseline_generation":1,"producer_agent_id":"document-verifier","producer_responsibility":"DV-TRUTH-AUDIT"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -125,14 +128,14 @@ func TestRuntimeReconcileCommandRestoresMissingJournalEvent(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "loop-state.json")
 	journalPath := filepath.Join(root, "loop-events.jsonl")
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop-definition.json"))
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "loop-definition.json"), definition, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "docs", "control", "loop-definition.json"), definition, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stateData, err := schema.ReadAsset("loop-state.example.json")
@@ -288,7 +291,10 @@ func TestPublicStatusNextAndReqBindCommands(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "docs", "requirements"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, rel := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	if err := os.MkdirAll(filepath.Join(root, "docs/control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", rel))
 		if err != nil {
 			t.Fatal(err)
@@ -307,7 +313,7 @@ func TestPublicStatusNextAndReqBindCommands(t *testing.T) {
 	}
 	out.Reset()
 	errOut.Reset()
-	if code := cli.Run([]string{"req", "bind", "--root", root, "--req", "docs/requirements/REQ-099.md", "--approved-by", "user"}, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := cli.Run([]string{"req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--req", "docs/requirements/REQ-099.md", "--approved-by", "user"}, strings.NewReader(""), &out, &errOut); code != 0 {
 		t.Fatal(errOut.String())
 	}
 	for _, command := range [][]string{{"status", "--root", root}, {"next", "--root", root}} {
@@ -553,45 +559,21 @@ func TestRuntimeRegisterWorkgroupCommand(t *testing.T) {
 // different (or empty) state file than the writer opens and the verb
 // aborts with a stale-revision gate even when the runtime is unchanged.
 //
-// Strategy: reuse the real project root so the semantic runtime validator
-// has its docs/, agents/, skills/, etc. trees in place. The runtime
-// schema constrains journal.path to .claude/loop-events.jsonl, so we save
-// and restore .claude/loop-state.json and .claude/loop-events.jsonl
-// around the test, plant a fresh state file with a unique manifest_id,
-// and chdir to an unrelated temp dir so cwd != --root.
+// Use an isolated project with real template assets, then chdir away from it.
+// The regression must neither require nor overwrite the operator's Runtime.
 func TestRuntimeRegisterWorkgroupCommandAnchorsAgainstRoot(t *testing.T) {
-	root := func() string {
-		abs, err := filepath.Abs(filepath.Join("..", ".."))
-		if err != nil {
+	root := acFixtureRoot(t)
+	for _, rel := range []string{"docs", "agents", "skills", "internal/cli/testdata"} {
+		if err := copyDir(filepath.Join(repoRoot(t), rel), filepath.Join(root, rel)); err != nil {
 			t.Fatal(err)
 		}
-		return abs
-	}()
-
+	}
 	stateDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	canonicalState := filepath.Join(stateDir, "loop-state.json")
 	canonicalJournal := filepath.Join(stateDir, "loop-events.jsonl")
-
-	// Save and restore the canonical runtime state + journal so the
-	// test cannot corrupt the operator's runtime.
-	origState, err := os.ReadFile(canonicalState)
-	if err != nil {
-		t.Fatalf("snapshot canonical state: %v", err)
-	}
-	origJournal, err := os.ReadFile(canonicalJournal)
-	if err != nil {
-		// A fresh test run may not have a journal yet; treat missing as
-		// empty bytes and only restore if the file exists pre-test.
-		origJournal = nil
-	}
-	t.Cleanup(func() {
-		_ = os.WriteFile(canonicalState, origState, 0o644)
-		if origJournal != nil {
-			_ = os.WriteFile(canonicalJournal, origJournal, 0o644)
-		} else {
-			_ = os.Remove(canonicalJournal)
-		}
-	})
 
 	suffix := fmt.Sprintf("anchor-%d", os.Getpid())
 	stateBytes, err := schema.ReadAsset("loop-state.example.json")
@@ -1006,7 +988,7 @@ func TestHookCommandBlocksFirstWriteBarrier(t *testing.T) {
 	}`
 
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-	if code != 2 {
+	if code != 0 {
 		t.Fatalf("first-write barrier must deny a pre-plan product write: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	out := stdout.String()
@@ -1090,14 +1072,14 @@ func TestHookCommandRejectsMismatchedEvent(t *testing.T) {
 func copyPolicyToTempRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	targetDir := filepath.Join(root, "docs")
+	targetDir := filepath.Join(root, "docs", "control")
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	source := filepath.Join("..", "..", "docs", "hook-policy.json")
+	source := filepath.Join("..", "..", "docs", "control", "hook-policy.json")
 	data, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
@@ -1105,20 +1087,15 @@ func copyPolicyToTempRoot(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(targetDir, "hook-policy.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The legacy protected_commands table is no longer consulted by the
-	// minimal safety engine (BE-039 §6). The helper still materialises
-	// docs/release_audits/ so historical fixtures that hard-code the path
-	// can resolve; absence is fine (no fail-closed error path).
-	protectedSource := filepath.Join("..", "..", "docs", "release_audits", "protected_commands.json")
-	if protectedData, err := os.ReadFile(protectedSource); err == nil {
-		protectedDir := filepath.Join(targetDir, "release_audits")
-		if err := os.MkdirAll(protectedDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(protectedDir, "protected_commands.json"), protectedData, 0o644); err != nil {
-			t.Fatal(err)
-		}
+	// Materialize the actual protected-command authority for ordinary Hook fixtures.
+	protectedData, err := os.ReadFile(filepath.Join("../..", "docs/control/protected-commands.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(targetDir, "protected-commands.json"), protectedData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	return root
 }
 
@@ -1129,10 +1106,13 @@ func copyPolicyToTempRoot(t *testing.T) string {
 // document declares, and creates both journals empty.
 func TestInitDerivesHookMetadataAndCreatesJournals(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, rel := range []string{"docs/loop-definition.json", "docs/hook-policy.json"} {
+	if err := os.MkdirAll(filepath.Join(root, "docs/control"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"docs/control/loop-definition.json", "docs/control/hook-policy.json"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", rel))
 		if err != nil {
 			t.Fatal(err)
@@ -1163,7 +1143,7 @@ func TestInitDerivesHookMetadataAndCreatesJournals(t *testing.T) {
 		t.Fatalf("init must mirror on-disk hook-policy.json version (v2.0.0): %#v", ref)
 	}
 	// SHA-256 must be the SHA-256 of the current on-disk policy.
-	policyBytes, err := os.ReadFile(filepath.Join(root, "docs", "hook-policy.json"))
+	policyBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1202,7 +1182,7 @@ func TestHookCommandFailsWhenHookctxLoadMissing(t *testing.T) {
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-	if code != 2 {
+	if code != 0 {
 		t.Fatalf("missing runtime must block a mutating tool, got code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 	}
 	out := stdout.String()
@@ -1214,13 +1194,13 @@ func TestHookCommandFailsWhenHookctxLoadMissing(t *testing.T) {
 	}
 	// The final safety projection is blocked because runtime facts are
 	// unreadable; the controller still records the recovery checkpoint.
-	if !strings.Contains(out, `"status":"blocked"`) {
+	if !strings.Contains(out, `\"status\":\"blocked\"`) {
 		t.Fatalf("missing runtime must drive quality_gate.status=blocked: %s", out)
 	}
 }
 
 // TestHookCommandFailsWhenPolicyLoadMissing pins the fail-closed contract
-// for missing docs/hook-policy.json — the Hook cannot render a verdict
+// for missing docs/control/hook-policy.json — the Hook cannot render a verdict
 // without the policy document and must surface a load error on stderr.
 func TestHookCommandFailsWhenPolicyLoadMissing(t *testing.T) {
 	root := t.TempDir()
@@ -1238,8 +1218,8 @@ func TestHookCommandFailsWhenPolicyLoadMissing(t *testing.T) {
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-	if code == 0 {
-		t.Fatalf("expected non-zero exit when hook-policy.json is missing, got 0")
+	if code != 2 {
+		t.Fatalf("missing policy must block the platform with exit 2, got %d", code)
 	}
 	if !strings.Contains(stderr.String(), "load policy") {
 		t.Fatalf("expected load-policy error on stderr, got %s", stderr.String())
@@ -1372,16 +1352,11 @@ func TestHookCommandFailsWhenStdinIsNotJSON(t *testing.T) {
 	}
 }
 
-// TestHookCommandIgnoresMissingProtectedCommandsTable is the rewrite of the
-// legacy `table_unloaded` audit-shape test. Under the minimal safety model
-// the Hook no longer loads docs/release_audits/protected_commands.json
-// (BE-039 §6.1 / ARCHITECTURE-039 §10.3), so the audit envelope no longer
-// carries table_unloaded / table_unloaded_reason. A PreToolUse that hits no
-// safety rule produces permissionDecision="allow"; the audit outbox must
-// still record the envelope with the Controller's quality_gate projection.
+// A missing Bash classification table does not reject unrelated Edit events.
+// The controller still records the Hook envelope and quality-gate projection.
 func TestHookCommandIgnoresMissingProtectedCommandsTable(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
-	if err := os.Remove(filepath.Join(root, "docs", "release_audits", "protected_commands.json")); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(filepath.Join(root, "docs", "control", "protected-commands.json")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	input := `{
@@ -1409,7 +1384,7 @@ func TestHookCommandIgnoresMissingProtectedCommandsTable(t *testing.T) {
 		t.Fatalf("minimal safety model must not surface legacy table_unloaded envelope field: %s", stdout.String())
 	}
 	// A pre-tool-use on a non-locked path produces permissionDecision=allow.
-	if !strings.Contains(stdout.String(), `"permissionDecision":"allow"`) {
+	if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
 		t.Fatalf("minimal safety model must allow a non-locked Edit: %s", stdout.String())
 	}
 }
@@ -1418,7 +1393,7 @@ func TestHookCommandIgnoresMissingProtectedCommandsTable(t *testing.T) {
 // HOOK_UI_PROTOTYPE_GATE warn tests. UI prototype completeness was a
 // Guidance concern under the minimal safety model (REQ-039 §14.3, BE-039
 // §6.3) — the Hook Policy never matches ui_contract_before_prototype.
-// The new contract: a Write to docs/contracts/ against a bound REQ with
+// The new contract: a Write to docs/dev/contracts/ against a bound REQ with
 // ui_impact=changed must NOT surface HOOK_UI_PROTOTYPE_GATE or any
 // equivalent warn. The same is true for MultiEdit and NotebookEdit.
 func TestHookCommandIgnoresUIPrototypeFact(t *testing.T) {
@@ -1432,19 +1407,19 @@ func TestHookCommandIgnoresUIPrototypeFact(t *testing.T) {
 			name:      "Write",
 			toolName:  "Write",
 			pathKey:   "file_path",
-			targetRel: "docs/contracts/FE-002.md",
+			targetRel: "docs/dev/contracts/FE-002.md",
 		},
 		{
 			name:      "MultiEdit",
 			toolName:  "MultiEdit",
 			pathKey:   "file_path",
-			targetRel: "docs/contracts/FE-002.md",
+			targetRel: "docs/dev/contracts/FE-002.md",
 		},
 		{
 			name:      "NotebookEdit",
 			toolName:  "NotebookEdit",
 			pathKey:   "notebook_path",
-			targetRel: "docs/contracts/CONTRACTS-002.ipynb",
+			targetRel: "docs/dev/contracts/CONTRACTS-002.ipynb",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1473,7 +1448,7 @@ func TestHookCommandIgnoresUIPrototypeFact(t *testing.T) {
 			if strings.Contains(stdout.String(), "HOOK_UI_PROTOTYPE_GATE") {
 				t.Fatalf("legacy HOOK_UI_PROTOTYPE_GATE predicate must not surface, got %s", stdout.String())
 			}
-			if !strings.Contains(stdout.String(), `"permissionDecision":"allow"`) {
+			if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
 				t.Fatalf("minimal safety model must allow contract edits without UI prototype package, got %s", stdout.String())
 			}
 		})

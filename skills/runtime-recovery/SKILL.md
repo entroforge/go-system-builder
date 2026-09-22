@@ -13,8 +13,8 @@ explicit approval, then apply atomically.
 
 ## Authorities
 
-- Current legal lifecycle: `docs/loop-definition.json`.
-- Stage/operator contract: `docs/agent-protocol.md`.
+- Current legal lifecycle: `docs/control/loop-definition.json`.
+- Stage/operator contract: `docs/control/agent-protocol.md`.
 - Recovery architecture and trust ordering: `references/runtime-recovery-reference.md`.
 - Runtime implementation: `internal/runtime/recovery.go`, `internal/runtime/store.go`.
 - CLI boundary: `internal/cli/recover_command.go`.
@@ -51,7 +51,7 @@ not repeatedly retry the same command through the blocked Hook channel.
 Run the read-only inventory with an explicit locked REQ:
 
 ```bash
-go run ./cmd/loop-harness runtime recover inspect \
+.claude/bin/loop-harness runtime recover inspect \
   --root . --req docs/requirements/REQ-NNN.md
 ```
 
@@ -71,7 +71,7 @@ quarantine and rebuild conservatively than to mutate an ambiguous Runtime.
 ### 2. Build a content-addressed plan
 
 ```bash
-go run ./cmd/loop-harness runtime recover plan \
+.claude/bin/loop-harness runtime recover plan \
   --root . --req docs/requirements/REQ-NNN.md
 ```
 
@@ -95,7 +95,7 @@ Never modify a plan to make it pass review. A changed input invalidates it.
 ### 3. Apply only with explicit approval
 
 ```bash
-go run ./cmd/loop-harness runtime recover apply \
+.claude/bin/loop-harness runtime recover apply \
   --root . \
   --plan .claude/recovery/rr-<plan-hash>/plan.json \
   --approved-by <human-operator>
@@ -112,10 +112,10 @@ unless inputs drifted.
 After apply, verify the manifest and quarantine paths, then run:
 
 ```bash
-go run ./cmd/loop-harness validate --all --root .
-go run ./cmd/loop-harness doctor --root .
-go run ./cmd/loop-harness status --root .
-go run ./cmd/loop-harness ready --root .
+.claude/bin/loop-harness validate --all --root .
+.claude/bin/loop-harness doctor --root .
+.claude/bin/loop-harness status --root .
+.claude/bin/loop-harness ready --root .
 ```
 
 Check that the bound REQ digest matches disk, state revision and journal tail

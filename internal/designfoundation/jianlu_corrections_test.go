@@ -59,11 +59,11 @@ func TestJianluPromptLayerCorrections(t *testing.T) {
 func TestCheckProvisionalIsNotAPublishLock(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
-		"docs/project-map.md":                "| design investment | core | handoff | upgrade when: second REQ |\n",
-		"docs/design/DESIGN.md":              "# Kernel\n\n> 状态：provisional\n> 确认记录：方向 PENDING · 内核 PENDING · 发布 PENDING\n\n## 0. Next-agent card\n\n| ID | Do |\n|:--|:--|\n| LAW-01 | retell |\n",
-		"docs/requirements/REQ-001.md":       "# REQ-001\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v0.1.0 |\n",
-		"docs/design/derivation/REQ-001.md":  "# Derivation\n\n> Foundation：docs/design/DESIGN.md@v0.1.0\n",
+		"docs/design/tokens/tokens.json":    mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/project-map.md":               "| design investment | core | handoff | upgrade when: second REQ |\n",
+		"docs/design/DESIGN.md":             "# Kernel\n\n> 状态：provisional\n> 确认记录：方向 PENDING · 内核 PENDING · 发布 PENDING\n\n## 0. Next-agent card\n\n| ID | Do |\n|:--|:--|\n| LAW-01 | retell |\n",
+		"docs/requirements/REQ-001.md":      "# REQ-001\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v0.1.0 |\n",
+		"docs/design/derivation/REQ-001.md": "# Derivation\n\n> Foundation：docs/design/DESIGN.md@v0.1.0\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -84,11 +84,11 @@ func TestCheckProvisionalIsNotAPublishLock(t *testing.T) {
 func TestCheckPublishedPendingIsFakeLock(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
-		"docs/project-map.md":                "| design investment | core | handoff | upgrade when: second REQ |\n",
-		"docs/design/DESIGN.md":              "# Kernel\n\n> 状态：published\n> 确认记录：方向 PENDING · 内核 PENDING · 发布 PENDING\n\n## 0. Next-agent card\n\n| ID | Do |\n|:--|:--|\n| LAW-01 | retell |\n",
-		"docs/requirements/REQ-001.md":       "# REQ-001\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v0.1.0 |\n",
-		"docs/design/derivation/REQ-001.md":  "# Derivation\n\n> Foundation：docs/design/DESIGN.md@v0.1.0\n",
+		"docs/design/tokens/tokens.json":    mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/project-map.md":               "| design investment | core | handoff | upgrade when: second REQ |\n",
+		"docs/design/DESIGN.md":             "# Kernel\n\n> 状态：published\n> 确认记录：方向 PENDING · 内核 PENDING · 发布 PENDING\n\n## 0. Next-agent card\n\n| ID | Do |\n|:--|:--|\n| LAW-01 | retell |\n",
+		"docs/requirements/REQ-001.md":      "# REQ-001\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v0.1.0 |\n",
+		"docs/design/derivation/REQ-001.md": "# Derivation\n\n> Foundation：docs/design/DESIGN.md@v0.1.0\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -106,11 +106,11 @@ func TestCheckPublishedPendingIsFakeLock(t *testing.T) {
 func TestCheckCorePublishedAllowsGrammarDebt(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
-		"docs/project-map.md":                "| design investment | core | handoff | upgrade when: second REQ |\n",
-		"docs/design/DESIGN.md":              "# Kernel\n\n> 状态：published\n> 确认记录：方向 2026-09-04 · 内核 2026-09-04 · 发布 2026-09-04\n\n## 0. Next-agent card\n\n| ID | Do |\n|:--|:--|\n| LAW-01 | retell |\n",
-		"docs/requirements/REQ-001.md":       "# REQ-001\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n",
-		"docs/design/derivation/REQ-001.md":  "# Derivation\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n",
+		"docs/design/tokens/tokens.json":    mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/project-map.md":               "| design investment | core | handoff | upgrade when: second REQ |\n",
+		"docs/design/DESIGN.md":             "# Kernel\n\n> 状态：published\n> 确认记录：方向 2026-09-04 · 内核 2026-09-04 · 发布 2026-09-04\n\n## 0. Next-agent card\n\n| ID | Do |\n|:--|:--|\n| LAW-01 | retell |\n",
+		"docs/requirements/REQ-001.md":      "# REQ-001\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n",
+		"docs/design/derivation/REQ-001.md": "# Derivation\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -124,11 +124,11 @@ func TestCheckCorePublishedAllowsGrammarDebt(t *testing.T) {
 func TestCheckExtendedPublishedStillOwesGrammar(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
-		"docs/project-map.md":                "| design investment | extended | two surfaces | upgrade when: design system |\n",
-		"docs/design/DESIGN.md":              "# Kernel\n\n> 状态：published\n> 确认记录：方向 2026-09-04 · 内核 2026-09-04 · 发布 2026-09-04\n\n## 0. Next-agent card\n\n| ID | Do |\n|:--|:--|\n| LAW-01 | retell |\n",
-		"docs/requirements/REQ-001.md":       "# REQ-001\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n",
-		"docs/design/derivation/REQ-001.md":  "# Derivation\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n",
+		"docs/design/tokens/tokens.json":    mustRead(t, filepath.Join(repoRoot(t), TokensJSONRel)),
+		"docs/project-map.md":               "| design investment | extended | two surfaces | upgrade when: design system |\n",
+		"docs/design/DESIGN.md":             "# Kernel\n\n> 状态：published\n> 确认记录：方向 2026-09-04 · 内核 2026-09-04 · 发布 2026-09-04\n\n## 0. Next-agent card\n\n| ID | Do |\n|:--|:--|\n| LAW-01 | retell |\n",
+		"docs/requirements/REQ-001.md":      "# REQ-001\n\n> 状态：locked\n> UI impact：changed\n\n| Foundation reference | docs/design/DESIGN.md@v1.0.0 |\n",
+		"docs/design/derivation/REQ-001.md": "# Derivation\n\n> Foundation：docs/design/DESIGN.md@v1.0.0\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestKernelStatusAndInvestmentHelpers(t *testing.T) {
 		t.Fatal("header PENDING must count as unconfirmed")
 	}
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "docs", "project-map.md"), []byte("| design investment | extended | x | y |\n"), 0o644); err != nil {

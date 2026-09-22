@@ -10,8 +10,8 @@ version: 1.1.0
 
 User flows are the locked execution plan for real-browser testing; E2E
 evidence records what happened during a particular run. S2 and S7 obligations
-live in `docs/agent-protocol.md`; UI gate legality lives in
-`docs/loop-definition.json`; package requirements live in
+live in `docs/control/agent-protocol.md`; UI gate legality lives in
+`docs/control/loop-definition.json`; package requirements live in
 `docs/rules/ui-prototype.md`.
 
 ## Applicability

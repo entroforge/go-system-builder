@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
@@ -23,20 +24,23 @@ const contractNextCommand = "runtime investigation contract approve --root . --c
 // Case revision are written before the Runtime pointer is advanced.
 //
 // RC-15 (S9-H5/H6) approval authority: ApprovalHash pins the exact draft
-// bytes the human reviewed (sha256 of the on-disk draft; the server
+// bytes the approver reviewed (sha256 of the on-disk draft; the server
 // recomputes and compares, so a mid-approval swap is rejected). Approval
 // evidence is a human_boundary gate: ApprovalEvidenceID must resolve to
 // valid human_decision evidence produced by ApprovedBy and scoped to the
 // semantic context "s8_contract_approval:<runtime_id>". Both fields are required;
-// an approver name by itself is not an approval receipt.
+// an approver name by itself is not an approval receipt. With an explicit
+// DelegationEvidenceID, ApprovalEvidenceID instead names a technical review;
+// delegation.go enforces the human grant, scope, expiry and atomic use budget.
 type ContractRequest struct {
-	ExpectedRevision   int
-	CaseID             string
-	ContractPath       string
-	ApprovedBy         string
-	ApprovalHash       string
-	ApprovalEvidenceID string
-	OccurredAt         time.Time
+	ExpectedRevision     int
+	CaseID               string
+	ContractPath         string
+	ApprovedBy           string
+	ApprovalHash         string
+	ApprovalEvidenceID   string
+	DelegationEvidenceID string
+	OccurredAt           time.Time
 }
 
 // ApproveContract validates a draft against the active InvestigationCase,
@@ -80,6 +84,9 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	pointer, err := activeCasePointer(current.State, request.CaseID)
 	if err != nil {
 		return runtime.Snapshot{}, err
+	}
+	if stringField(pointer["status"]) == "contract_approved" {
+		return resumeApprovedContract(root, current, pointer, request)
 	}
 	caseRel := stringField(pointer["path"])
 	casePath, err := repositoryPath(root, caseRel)
@@ -140,6 +147,9 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	if err := schema.NewEmbeddedValidator().ValidateBytes("repair-contract.schema.json", draftBytes); err != nil {
 		return runtime.Snapshot{}, actionableContractError("RepairContract draft %q schema is invalid: %v", contractRel, err)
 	}
+	if err := repair.ValidateContractUnitScopes(draftBytes); err != nil {
+		return runtime.Snapshot{}, actionableContractError("RepairContract scope is not executable: %v", err)
+	}
 	var draft map[string]any
 	if err := json.Unmarshal(draftBytes, &draft); err != nil {
 		return runtime.Snapshot{}, actionableContractError("decode RepairContract draft %q: %v", contractRel, err)
@@ -174,7 +184,13 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	if approvalEvidenceID == "" {
 		return runtime.Snapshot{}, actionableContractError("approval_evidence_id is required; cite valid human_decision evidence for this S8 approval")
 	}
-	if err := validateContractApprovalEvidence(root, current.State, strings.TrimSpace(request.ApprovedBy), approvalEvidenceID, current.Revision, request.CaseID, stringField(draft["repair_contract_id"]), approvalHash); err != nil {
+	var delegation map[string]any
+	if request.DelegationEvidenceID != "" {
+		delegation, err = validateDelegatedApproval(root, current.State, draft, request)
+	} else {
+		err = validateContractApprovalEvidence(root, current.State, strings.TrimSpace(request.ApprovedBy), approvalEvidenceID, current.Revision, request.CaseID, stringField(draft["repair_contract_id"]), approvalHash)
+	}
+	if err != nil {
 		return runtime.Snapshot{}, actionableContractError("%v", err)
 	}
 
@@ -191,6 +207,11 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	// approval time so downstream consumers read one canonical field.
 	approved["approver_id"] = strings.TrimSpace(request.ApprovedBy)
 	approved["approval_hash"] = sha256Hex(draftBytes)
+	approved["approval_evidence_id"] = approvalEvidenceID
+	delete(approved, "delegated_authority")
+	if delegation != nil {
+		approved["delegated_authority"] = delegation
+	}
 	approvedBytes, err := json.MarshalIndent(approved, "", "  ")
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("encode approved RepairContract: %w", err)
@@ -252,6 +273,10 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	baseline, _ := baselineGeneration(current.State)
 	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	evidenceIDs := []string{request.CaseID, contractID, approvalEvidenceID}
+	if delegation != nil {
+		evidenceIDs = append(evidenceIDs, request.DelegationEvidenceID)
+	}
 	snapshot, err := updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
 		EventID:                fmt.Sprintf("evt-repair-contract-approved-%s-r%d", contractID, commitRevision+1),
 		TransitionID:           "S8-REPAIR-CONTRACT-APPROVAL",
@@ -261,7 +286,7 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 		RuntimeID:              runtimeID,
 		From:                   cursor,
 		To:                     nextCursor,
-		EvidenceIDs:            []string{request.CaseID, contractID, approvalEvidenceID},
+		EvidenceIDs:            evidenceIDs,
 		RequestID:              "investigation-contract-approve",
 		BaselineGeneration:     baseline,
 		GateID:                 "S8-REPAIR-CONTRACT-APPROVAL",
@@ -270,6 +295,12 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 		Message:                fmt.Sprintf("repair_contract_approved: %s for %s; next: S9 consume the approved Contract", contractID, request.CaseID),
 		OccurredAt:             approvedAt,
 		Apply: func(state map[string]any) error {
+			// Revalidate reusable authority and budget inside the Writer CAS.
+			if delegation != nil {
+				if _, err := validateDelegatedApproval(root, state, draft, request); err != nil {
+					return err
+				}
+			}
 			review, ok := state["review"].(map[string]any)
 			if !ok || review == nil {
 				return errors.New("Runtime review section is missing; restore state.review before retry")
@@ -282,9 +313,19 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 				return fmt.Errorf("active InvestigationCase changed during approval; expected %s at investigating; re-read runtime investigation status and retry", request.CaseID)
 			}
 			lifecycle, ok := state["lifecycle"].(map[string]any)
-			if !ok || lifecycle == nil || stringField(lifecycle["state"]) != "bug_resolution" || stringField(lifecycle["phase"]) != "investigation" {
-				return errors.New("Runtime is no longer in bug_resolution.investigation; inspect the Controller checkpoint before retry")
+			if !ok || lifecycle == nil || stringField(lifecycle["state"]) != "bug_resolution" {
+				return errors.New("Runtime is no longer in bug_resolution; inspect the Controller checkpoint before retry")
 			}
+			// Phase-agnostic within bug_resolution: after an investigate_more
+			// re-entry the Case returns to investigating while side effects of
+			// earlier plan-report submissions may have advanced the phase past
+			// investigation. The authoritative guards are the Case pointer
+			// (case_id + sha + investigating status, checked above); approval
+			// itself re-pins the phase to repair_readback below.
+			// repair_readback is accepted for re-approval after an
+			// investigate_more re-entry: the s9_repair re-route restores this
+			// phase while the Case returns to investigating, and the designed
+			// continuation is a fresh approval of the re-authored contract.
 			phaseRevision, err := integerValue(lifecycle["phase_revision"])
 			if err != nil {
 				return fmt.Errorf("lifecycle.phase_revision is invalid: %w", err)
@@ -298,7 +339,11 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 			existing["repair_contract_ref"] = approvedRel
 			existing["repair_contract_sha256"] = contractSHA
 			existing["updated_at"] = approvedAt.UTC().Format(time.RFC3339Nano)
-			if err := runtime.ConsumeHumanDecisionEvidence(state, approvalEvidenceID, "S8-REPAIR-CONTRACT-APPROVAL", approvedAt); err != nil {
+			if delegation != nil {
+				if err := consumeDelegationUse(state, request.DelegationEvidenceID); err != nil {
+					return err
+				}
+			} else if err := runtime.ConsumeHumanDecisionEvidence(state, approvalEvidenceID, "S8-REPAIR-CONTRACT-APPROVAL", approvedAt); err != nil {
 				return err
 			}
 			state["updated_at"] = approvedAt.UTC().Format(time.RFC3339Nano)
@@ -338,7 +383,7 @@ func validateContractBaseline(root string, state, caseDocument map[string]any) e
 		return fmt.Errorf("%s; re-verify the Case against the current S7 baseline before approval", warning)
 	}
 
-	batchPointer, err := observationBatchPointer(state)
+	batchPointer, err := observationBatchPointer(root, state)
 	if err != nil {
 		return fmt.Errorf("sealed ObservationBatch is unavailable: %w", err)
 	}
@@ -490,7 +535,7 @@ func activeCasePointer(state map[string]any, caseID string) (map[string]any, err
 	if stringField(pointer["case_id"]) != caseID {
 		return nil, actionableContractError("active InvestigationCase is %q, not %q; inspect runtime investigation status before retry", stringField(pointer["case_id"]), caseID)
 	}
-	if stringField(pointer["status"]) != "investigating" {
+	if stringField(pointer["status"]) != "investigating" && stringField(pointer["status"]) != "contract_approved" {
 		return nil, actionableContractError("InvestigationCase %s is %q; only investigating Cases can receive first Contract approval", caseID, stringField(pointer["status"]))
 	}
 	return pointer, nil

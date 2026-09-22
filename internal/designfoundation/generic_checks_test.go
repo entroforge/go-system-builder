@@ -37,7 +37,7 @@ func TestGenericChecks_NoFalsePositiveOnMinimalContractV1(t *testing.T) {
 	// Core-minimal style but with Grammar covering 9 dims so generic checks are clean.
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | visible |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | default |\n",
@@ -61,7 +61,7 @@ func TestGenericChecks_ActiveConstraintUnbound(t *testing.T) {
 	root := t.TempDir()
 	kernel := "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n<!-- foundation-contract:v1 constraints -->\n| ID | Status | 类型 | 可执行 Statement / Do | Don't / 反向边界 | Scope | Source | Binding | Checkability | Proof / review |\n|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|\n| LAW-01 | active | law | do | dont | global | EVD-01 | — | human | PROOF-01 |\n\n## 8. Surfaces in force\n<!-- foundation-contract:v1 surfaces -->\n| ID | Surface | Profile/version | 与主 Surface 的对比证明 |\n|:--|:--|:--|:--|\n| SUR-01 | consumer | surface-profiles/consumer.md@v1.0.0 | PROOF-01 |\n\n## 9. Proof Set\n<!-- foundation-contract:v1 proofs -->\n| ID | 类型 | 路径 | 证明哪些约束 |\n|:--|:--|:--|:--|\n| PROOF-01 | Anchor | proof/anchor-screens/consumer.html | LAW-01 |\n\n## 10. Open design debt\n<!-- foundation-contract:v1 debts -->\n| ID | 项 | 影响 | 复查条件 |\n|:--|:--|:--|:--|\n| DEBT-01 | x | low | next review |\n"
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernel,
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/proof/anchor-screens/consumer.html": "<html/>",
@@ -92,7 +92,7 @@ func TestGenericChecks_DimensionRoutingAndActiveRule(t *testing.T) {
 	root := t.TempDir()
 	grammarMissingDim := "# Design Grammar\n\n> 编译自：DESIGN.md@v1.0.0\n> 版本：v1.0.0\n\n## 1. Dimension coverage\n\n<!-- foundation-contract:v1 dimensions -->\n| 维度 | 状态 active/inherited/debt/N/A | 依据约束 | 继承源或 DEBT | Proof |\n|:--|:--|:--|:--|:--|\n| Information | active | LAW-01 | — | PROOF-01 |\n| Color | active | LAW-01 | — | PROOF-01 |\n\n## 3. Compilation and selection rules\n\n<!-- foundation-contract:v1 grammar-rules -->\n| ID | Dimensions | Source constraints | 条件/任务 | 优先采用 | 避免 | 允许变化 | Bindings | Proof |\n|:--|:--|:--|:--|:--|:--|:--|:--|:--|\n| GR-01 | Information | LAW-01 | x | y | z | a | ROLE-action-promise | PROOF-01 |\n\n<!-- foundation-contract:v1 bindings -->\n| ID | 含义 | Source GR-* | Token / component / pattern | 状态 active/reserved/debt |\n|:--|:--|:--|:--|:--|\n| ROLE-action-promise | 承诺 | GR-01 | color.action.promise | active |\n"
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarMissingDim,
 		"docs/design/surface-profiles/consumer.md":       "# Surface\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -125,7 +125,7 @@ func TestGenericChecks_ConstraintRefMissing(t *testing.T) {
 	root := t.TempDir()
 	grammarBadRef := "# Design Grammar\n\n> 编译自：DESIGN.md@v1.0.0\n> 版本：v1.0.0\n\n## 1. Dimension coverage\n\n<!-- foundation-contract:v1 dimensions -->\n| 维度 | 状态 active/inherited/debt/N/A | 依据约束 | 继承源或 DEBT | Proof |\n|:--|:--|:--|:--|:--|\n| Information | active | LAW-01 | — | PROOF-01 |\n| Composition | N/A | — | x | — |\n| Color | N/A | — | x | — |\n| Typography | N/A | — | x | — |\n| Shape & Surface | N/A | — | x | — |\n| Image & Icon | N/A | — | x | — |\n| Interaction | N/A | — | x | — |\n| Content | N/A | — | x | — |\n| Motion | N/A | — | x | — |\n\n## 3. Compilation and selection rules\n\n<!-- foundation-contract:v1 grammar-rules -->\n| ID | Dimensions | Source constraints | 条件/任务 | 优先采用 | 避免 | 允许变化 | Bindings | Proof |\n|:--|:--|:--|:--|:--|:--|:--|:--|:--|\n| GR-01 | Information | LAW-99 | x | y | z | a | ROLE-action-promise | PROOF-01 |\n\n<!-- foundation-contract:v1 bindings -->\n| ID | 含义 | Source GR-* | Token / component / pattern | 状态 active/reserved/debt |\n|:--|:--|:--|:--|:--|\n| ROLE-action-promise | 承诺 | GR-01 | color.action.promise | active |\n"
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarBadRef,
 		"docs/design/surface-profiles/consumer.md":       "# S\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| LAW-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -150,7 +150,7 @@ func TestGenericChecks_ConstraintRefMissing(t *testing.T) {
 func TestGenericChecks_DerivationIncompleteAndHandoffAndVersion(t *testing.T) {
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface Profile — consumer\n> ID：SUR-01\n> 版本：v1.0.0\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -202,7 +202,7 @@ func TestGenericChecks_DerivationIncompleteAndHandoffAndVersion(t *testing.T) {
 func TestGenericChecks_InvestmentProfileMissing(t *testing.T) {
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json":             tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json":                 tokensJSONForTest(t),
 		"docs/design/DESIGN.md":                          kernelWithVersion("v1.0.0"),
 		"docs/design/design-language.md":                 grammarNineActive(),
 		"docs/design/surface-profiles/consumer.md":       "# Surface\n\n<!-- foundation-contract:v1 surface-inherits -->\n| ID | 保留？ yes / no（no 必须引用 EX-*） | 本 Surface 的可观察落点 |\n|:--|:--|:--|\n| INV-01 | yes | x |\n\n<!-- foundation-contract:v1 surface-variants -->\n| Variant | 选择 | 理由 |\n|:--|:--|:--|\n| density | medium | x |\n",
@@ -229,8 +229,8 @@ func TestGenericChecks_InvestmentProfileMissing(t *testing.T) {
 func TestGenericChecks_LegacyCompatSuppressesCascade(t *testing.T) {
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": tokensJSONForTest(t),
-		"docs/design/DESIGN.md":              "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n| 项 | 可执行内容 |\n|:--|:--|\n| Laws — 必须做 | do |\n",
+		"docs/design/tokens/tokens.json": tokensJSONForTest(t),
+		"docs/design/DESIGN.md":          "# Project Design Foundation\n\n> 状态：published\n> 版本：v1.0.0\n\n## 0. Next-agent card\n\n| 项 | 可执行内容 |\n|:--|:--|\n| Laws — 必须做 | do |\n",
 	})
 	report, err := Check(root)
 	if err != nil {
@@ -257,7 +257,7 @@ func TestGenericChecks_LegacyCompatSuppressesCascade(t *testing.T) {
 func TestGenericChecks_FactoryWithNoChangedREQStaysClean(t *testing.T) {
 	root := t.TempDir()
 	mustWriteTreeGeneric(t, root, map[string]string{
-		"packages/design-tokens/tokens.json": tokensJSONForTest(t),
+		"docs/design/tokens/tokens.json": tokensJSONForTest(t),
 	})
 	report, err := Check(root)
 	if err != nil {

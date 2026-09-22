@@ -322,6 +322,11 @@
         "write_paths": {
           "$ref": "#/$defs/paths"
         },
+        "integration_check_mode": {
+          "type": "string",
+          "enum": ["legacy_pre_and_post_merge", "post_merge"],
+          "description": "Omission preserves legacy pre/post checks. New assignments explicitly select post_merge for static inspection then merged-target required checks."
+        },
         "required_checks": {
           "type": "array",
           "uniqueItems": true,

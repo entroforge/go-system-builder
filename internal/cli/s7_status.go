@@ -41,7 +41,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 		flags := flag.NewFlagSet("s7 workspace-digest", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		root := flags.String("root", ".", "repository root")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		return runS7WorkspaceDigest(*root, stdout)
@@ -52,7 +52,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 		root := flags.String("root", ".", "repository root")
 		assignmentID := flags.String("assignment", "", "ReviewPlan Assignment id to dispatch (required)")
 		out := flags.String("out", "", "write the draft manifest JSON here (default stdout)")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *assignmentID == "" {
@@ -66,7 +66,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 		flags.SetOutput(stderr)
 		root := flags.String("root", ".", "repository root")
 		out := flags.String("out", "", "write the draft plan JSON here (default stdout)")
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		return runS7Draft(*root, *out, stdout)
@@ -75,7 +75,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "repository root")
 	explain := flags.Bool("explain", false, "expand the wave-readiness one-liner into A-completeness / B-admission / next-verb lines")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	return runS7Status(*root, stdout, *explain)

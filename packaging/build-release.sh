@@ -66,27 +66,27 @@ build_harness() {
   local ext=""
   if [ "$goos" = "windows" ]; then ext=".exe"; fi
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    "$GO" build -trimpath -ldflags="-s -w" \
+    "$GO" build -trimpath -ldflags="-s -w -X github.com/entroforge/go-system-builder/internal/cli.BuildVersion=$version" \
       -o "$harness_bin_dir/loop-harness-${key}${ext}" \
       "$root/cmd/loop-harness"
 }
 
 build_harness darwin  arm64 darwin-arm64
+build_harness darwin  amd64 darwin-amd64
+build_harness linux   arm64 linux-arm64
 build_harness linux   amd64 linux-amd64
 build_harness windows amd64 windows-amd64
 
 # Pick the binary matching the current host to regenerate the agent-facing
 # Manual. The Manual is platform-independent, but the emitter must run on
-# this host. aarch64 Linux and Rosetta-on-Intel macOS fall back to amd64
-# binaries (Go's amd64 runs under Rosetta; native aarch64 is not in the
-# release matrix yet).
+# this host. Unsupported hosts fail explicitly; there is no cross-architecture fallback.
 host_os="$(uname -s)"
 host_arch="$(uname -m)"
 case "${host_os}/${host_arch}" in
   Darwin/arm64|Darwin/aarch64)   host_bin="loop-harness-darwin-arm64" ;;
-  Darwin/x86_64|Darwin/amd64)    host_bin="loop-harness-darwin-arm64" ;;
+  Darwin/x86_64|Darwin/amd64)    host_bin="loop-harness-darwin-amd64" ;;
   Linux/x86_64|Linux/amd64)      host_bin="loop-harness-linux-amd64" ;;
-  Linux/aarch64|Linux/arm64)     host_bin="loop-harness-linux-amd64" ;;
+  Linux/aarch64|Linux/arm64)     host_bin="loop-harness-linux-arm64" ;;
   MINGW*/x86_64|MINGW*/amd64)    host_bin="loop-harness-windows-amd64.exe" ;;
   MSYS*/x86_64|MSYS*/amd64)      host_bin="loop-harness-windows-amd64.exe" ;;
   CYGWIN*/x86_64|CYGWIN*/amd64)  host_bin="loop-harness-windows-amd64.exe" ;;
@@ -97,7 +97,7 @@ case "${host_os}/${host_arch}" in
 esac
 
 # Generate the agent-facing Manual at the tarball root. The Manual is a
-# build artifact derived from docs/loop-definition.json + the guard_specs
+# build artifact derived from docs/control/loop-definition.json + the guard_specs
 # registry compiled into the binary; it is regenerated on every release so
 # the tarball always ships a Manual matching the binary's behavior. The
 # tarball ships it at the root (visible template source); the install guide
@@ -112,30 +112,33 @@ if [ ! -s "$stage_root/loop-harness.md" ]; then
   exit 1
 fi
 
-# Rename packaging/install.md -> INSTALL.md at the tarball root.
-if [ -f "$stage_root/packaging/install.md" ]; then
-  mv "$stage_root/packaging/install.md" "$stage_root/INSTALL.md"
-  rmdir "$stage_root/packaging" 2>/dev/null || true
-fi
+# Source and installed navigation have distinct audiences.
+cp "$stage_root/packaging/README.installed.md" "$stage_root/docs/README.md"
+cp "$stage_root/packaging/DOCUMENT-MAP.installed.md" "$stage_root/docs/DOCUMENT-MAP.md"
+mv "$stage_root/packaging/project.gitattributes" "$stage_root/project.gitattributes"
+rm -rf "$stage_root/packaging"
+cat > "$stage_root/INSTALL.md" <<'ENTRY'
+# Install the Loop Harness
 
-# Exclude the entire design/loop-engineering/ directory from the tarball.
-# Its methodology is represented by the reusable Skills; its remaining files
-# are source-project rationale rather than target-project template assets.
-rm -rf "$stage_root/docs/design/loop-engineering"
+Read [the installation guide](docs/guides/install.md). Use the packaged host
+binary's `install --source <this-directory> --root <empty-target>` command.
+Existing projects must stay on their matching release; never overlay docs.
+ENTRY
+cat > "$stage_root/prelude.md" <<'ENTRY'
+# Getting started
 
-# Target projects start with templates, not this source project's instances.
-find "$stage_root/docs/reports" -type f ! -name '*-template.md' -delete 2>/dev/null || true
-# Clean up any empty subdirectories left behind.
-find "$stage_root/docs/reports" -type d -empty -delete 2>/dev/null || true
+Read [the project onboarding guide](docs/guides/getting-started.md).
+ENTRY
+# Validate the actual packaged host binary and document closure, not a local substitute.
+cp "$stage_root/tools/loop-harness-launcher.sh" "$harness_bin_dir/loop-harness"
+cp "$stage_root/tools/loop-harness-launcher.ps1" "$harness_bin_dir/loop-harness.ps1"
+chmod 0755 "$harness_bin_dir/loop-harness"
+"$harness_bin_dir/loop-harness" release-graph validate --root "$stage_root" >/dev/null
 
-# Exclude any local instance artifact accidentally present at packaging time.
-find "$stage_root/docs/tasks" -type f \( -name 'TASK-[0-9]*.md' -o -name 'index-[0-9]*.md' \) -delete 2>/dev/null || true
-find "$stage_root/docs/requirements" -type f -name 'REQ-[0-9]*.md' -delete 2>/dev/null || true
-find "$stage_root/docs/contracts" -type f ! -name '*-template.md' ! -name 'README.md' -delete 2>/dev/null || true
-find "$stage_root/docs/design" -type f \( -name 'ARCHITECTURE-[0-9]*.md' -o -name '*-039-*.md' \) -delete 2>/dev/null || true
-rm -f "$stage_root"/docs/loop-definition.json.bak-*
-find "$stage_root/docs/release_audits" -mindepth 1 -maxdepth 1 \
-  ! -name 'TEMPLATE.md' ! -name 'protected_commands.json' -exec rm -rf {} + 2>/dev/null || true
+# Inventory exact staged bytes, including generated manual and each binary.
+# Verify the extracted package before installation; this is not a signature.
+python3 "$root/tools/release-manifest.py" create --root "$stage_root" --source "$root" --version "$version"
+python3 "$root/tools/release-manifest.py" verify --root "$stage_root"
 
 mkdir -p "$(dirname "$output")"
 rm -f "$output"

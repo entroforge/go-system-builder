@@ -2,6 +2,7 @@ package migration
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,12 +38,12 @@ func ValidateTemplates(root string) error {
 			required: []string{
 				"loop-definition.json", ".claude/loop-state.json", ".claude/skills/",
 				".claude/agents/", "hook-policy.json", "awaiting_human_release",
-				"docs/agent-protocol.md", "DRIVE()", "S0", "S11",
+				projectlayout.Protocol, "DRIVE()", "S0", "S11",
 			},
 			forbidden: []string{"Delivery Verifier Team：", "QA Team："},
 		},
 		{
-			path: "prelude.md",
+			path: projectlayout.GettingStarted,
 			required: []string{
 				"loop-orchestration", "team-planning", "agent-dispatch",
 				"bug-resolution", "clean-round-evaluation",
@@ -65,11 +66,11 @@ func ValidateTemplates(root string) error {
 			forbidden: []string{"Goal 模式", "Loop 模式", "Active loop REQ"},
 		},
 		{
-			path: "docs/tasks/TASK-template.md",
+			path: "docs/dev/tasks/TASK-template.md",
 			required: []string{
-				"Team manifest:", "Assignment ID:", "Document Manifest",
+				"Dispatch policy: waves-v1", "Execution:", "Document Manifest",
 				"Delivered Clauses", "Module Impact",
-				"Selected Skills", "Lifecycle Evidence", "Closing Contract",
+				"Selected Skills", "Execution entry", "Closing Contract",
 			},
 			forbidden: []string{
 				"TaskUpdate", "SendMessage", "30 个文件", "Agent Team 分工",
@@ -114,7 +115,7 @@ func ValidateTemplates(root string) error {
 			required: []string{"Clean review round:", "Clean-round evidence:", "human release approval"},
 		},
 		{
-			path:      "docs/release_audits/TEMPLATE.md",
+			path:      "docs/reports/release-audits/TEMPLATE.md",
 			required:  []string{"Clean-round evidence", "Release architecture audit", "Human release approval"},
 			forbidden: []string{"Human audit |"},
 		},
@@ -171,7 +172,7 @@ func ValidateTemplates(root string) error {
 		"docs/project-map-template.md",
 		"docs/rules/README.md",
 		"docs/rules/communication.md",
-		"docs/tasks/TASK-template.md",
+		"docs/dev/tasks/TASK-template.md",
 	} {
 		data, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
@@ -179,7 +180,7 @@ func ValidateTemplates(root string) error {
 			// only applies when the file exists.
 			continue
 		}
-		if strings.Contains(string(data), "docs/agent-protocol.md") {
+		if strings.Contains(string(data), projectlayout.Protocol) {
 			return fmt.Errorf("%s: still routes daily behavior through agent-protocol", path)
 		}
 	}

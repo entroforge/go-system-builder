@@ -9,8 +9,8 @@ version: 3.3.1
 ## Authority
 
 The current module UI/scenario package is prepared after REQ lock and before
-development contracts. Stage requirements live in `docs/agent-protocol.md`;
-UI gate legality lives in `docs/loop-definition.json`; package shape lives in
+development contracts. Stage requirements live in `docs/control/agent-protocol.md`;
+UI gate legality lives in `docs/control/loop-definition.json`; package shape lives in
 `docs/rules/ui-prototype.md`; project-level language lives in
 `docs/rules/design-foundation.md`. HTML prototype quality criteria below are the
 canonical shape a Document Verifier checks before contract lock. Story and
@@ -278,7 +278,7 @@ Each variant has layout-specific conventions.
 
 ## Visual Tokens
 
-CSS variables come from `packages/design-tokens/tokens.css`, generated from
+CSS variables come from `docs/design/tokens/tokens.css`, generated from
 `tokens.json`. Do not invent a second palette per module and do not add a
 hex that is absent from `tokens.json`. F2 Style Tiles may still use
 *candidate* hex while comparing design worlds; published Anchor / Stress /
@@ -287,10 +287,10 @@ module HTML after F6 must use the variables.
 From `docs/design/prototypes/<module>/`:
 
 ```html
-<link rel="stylesheet" href="../../../../packages/design-tokens/tokens.css">
+<link rel="stylesheet" href="../../tokens/tokens.css">
 ```
 
-Canonical names (see `packages/design-tokens/README.md`):
+Canonical names (see `docs/design/tokens/README.md`):
 
 `--color-surface-page`, `--color-surface-raised`, `--color-content-ink`,
 `--color-content-meta`, `--color-content-border`,

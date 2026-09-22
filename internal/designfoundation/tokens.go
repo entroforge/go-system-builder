@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	TokensJSONRel = "packages/design-tokens/tokens.json"
-	TokensCSSRel  = "packages/design-tokens/tokens.css"
+	TokensJSONRel = "docs/design/tokens/tokens.json"
+	TokensCSSRel  = "docs/design/tokens/tokens.css"
 	PortableRel   = "docs/design/proof/portable/DESIGN.md"
 	KernelRel     = "docs/design/DESIGN.md"
 	GrammarRel    = "docs/design/design-language.md"
@@ -147,7 +147,7 @@ func resolveRef(value string, byPath map[string]tokenLeaf, stack []string) (stri
 
 func (tf *tokenFile) CSS() string {
 	var b strings.Builder
-	b.WriteString("/* Generated from packages/design-tokens/tokens.json. Do not hand-edit.\n")
+	b.WriteString("/* Generated from " + TokensJSONRel + ". Do not hand-edit.\n")
 	b.WriteString("   loop-harness design-foundation emit-css --root . */\n")
 	b.WriteString(":root {\n")
 	for _, leaf := range tf.leaves {

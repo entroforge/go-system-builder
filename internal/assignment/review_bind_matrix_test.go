@@ -34,7 +34,7 @@ type reviewBindSpec struct {
 func seedReviewBindPlan(t *testing.T, repoRoot string, state map[string]any, spec reviewBindSpec) {
 	t.Helper()
 	subjects := []any{
-		map[string]any{"path": "docs/tasks/TASK-012.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
+		map[string]any{"path": "docs/dev/tasks/TASK-012.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
 	}
 	claim := func(id, target string) map[string]any {
 		row := map[string]any{
@@ -202,7 +202,7 @@ func registerFixtureWorkgroup(t *testing.T, root, dir string, state map[string]a
 
 // §14.1: behavior E2E 在静态 Claims 未完成前启动 —— DAG/gate 阻止。
 func TestReviewBindBlocksBehaviorWaveBeforeStaticSettles(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewBindPlan(t, root, state, reviewBindSpec{behaviorWave: []string{"assignment-ver-regression"}})
@@ -216,7 +216,7 @@ func TestReviewBindBlocksBehaviorWaveBeforeStaticSettles(t *testing.T) {
 // §14.1: DV/QA ordinary finding 后静态 Claims 已完整 disposition ——
 // behavior-wave Assignment 解锁；cannot_clean 不得被误作“停止发现”。
 func TestReviewBindUnlocksBehaviorWaveWithStaticFinding(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewBindPlan(t, root, state, reviewBindSpec{
@@ -238,7 +238,7 @@ func TestReviewBindUnlocksBehaviorWaveWithStaticFinding(t *testing.T) {
 // §14.1: 合并不同 role Lens —— workgroup kind 与 Assignment lens 不一致即
 // 拒绝。
 func TestReviewBindRejectsLensMismatch(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewBindPlan(t, root, state, reviewBindSpec{
@@ -254,7 +254,7 @@ func TestReviewBindRejectsLensMismatch(t *testing.T) {
 // §14.1: Result 必须逐 Claim 给结论 —— manifest 绑定的 Claim set 必须与
 // 计划 Assignment 完全一致。
 func TestReviewBindRejectsClaimSetMismatch(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewBindPlan(t, root, state, reviewBindSpec{})
@@ -275,7 +275,7 @@ func TestReviewBindRejectsClaimSetMismatch(t *testing.T) {
 // 一个计划 Assignment 只派发一次 —— 重复派发被拒绝，required work 只能
 // queued，不能被第二份 manifest 覆盖。
 func TestReviewBindRejectsRedispatch(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewBindPlan(t, root, state, reviewBindSpec{
@@ -289,7 +289,7 @@ func TestReviewBindRejectsRedispatch(t *testing.T) {
 }
 
 func TestReviewBindBlocksAssignmentUntilDependenciesSettle(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewBindPlan(t, root, state, reviewBindSpec{

@@ -73,7 +73,7 @@ func TestOfficialSubagentStopPayloadParses(t *testing.T) {
 // PreToolUse(TaskUpdate) self-claim guard (L4 §15.2 P0-5, §16.1): a
 // teammate may not claim an undispatched Team task; owned-task updates pass.
 func TestTaskUpdateSelfClaim(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestTaskUpdateSelfClaim(t *testing.T) {
 // PostToolUse(SendMessage) observer), not the retired two-phase
 // readback_submitted command (L4 §15.2 P0 / P1-3).
 func TestFirstWriteBarrierGuidesPlanCheckpoint(t *testing.T) {
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "hook-policy.json"))
+	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

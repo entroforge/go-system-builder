@@ -402,16 +402,16 @@ func newIntakeFixture(t *testing.T, pointerIDs []string) *intakeFixture {
 	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "docs", "control"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	repositoryRoot := filepath.Join("..", "..")
 	for _, name := range []string{"loop-definition.json", "hook-policy.json"} {
-		data, err := os.ReadFile(filepath.Join(repositoryRoot, "docs", name))
+		data, err := os.ReadFile(filepath.Join(repositoryRoot, "docs", "control", name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(root, "docs", name), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "docs", "control", name), data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -466,8 +466,8 @@ func newIntakeFixture(t *testing.T, pointerIDs []string) *intakeFixture {
 		}
 		entities["findings"] = rows
 	}
-	definitionSHA := fileSHA(t, filepath.Join(root, "docs/loop-definition.json"))
-	hookSHA := fileSHA(t, filepath.Join(root, "docs/hook-policy.json"))
+	definitionSHA := fileSHA(t, filepath.Join(root, "docs/control/loop-definition.json"))
+	hookSHA := fileSHA(t, filepath.Join(root, "docs/control/hook-policy.json"))
 	state["definition"].(map[string]any)["sha256"] = definitionSHA
 	state["hook_control"].(map[string]any)["policy_ref"].(map[string]any)["sha256"] = hookSHA
 	statePath := filepath.Join(root, ".claude/loop-state.json")
