@@ -90,6 +90,9 @@ func LoadPlan(root string, state map[string]any) (*Plan, *PlanPointer, error) {
 	if plan.ReviewPlanID != ptr.PlanID {
 		return nil, nil, fmt.Errorf("ReviewPlan id mismatch: state pins %s but the file declares %s", ptr.PlanID, plan.ReviewPlanID)
 	}
+	if plan.SchemaVersion == "1.1.0" && (plan.ReviewRound != ptr.ReviewRound || plan.E2ECoverageState != ptr.E2ECoverageState || workspaceValue(plan.VerificationArtifactWorkspace) != ptr.VerificationArtifactWorkspace) {
+		return nil, nil, fmt.Errorf("ReviewPlan pointer differs from the immutable plan's review_round, e2e_coverage_state or verification_artifact_workspace; restore the matching pointer rather than weakening verification obligations")
+	}
 	return &plan, ptr, nil
 }
 

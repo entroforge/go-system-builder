@@ -109,9 +109,13 @@ Input drift is checked again at dispatch, Result submission, final consumption,
 CleanRound evaluation and production exit gates (including TR-009 and S10).
 
 The final gate verifies hash-pinned consumed Result artifacts, current Claim
-responsibilities and passes. `status=clean` alone is insufficient. Evidence or
+responsibilities and passes. Runtime round, coverage-state and workspace pointers
+must match the immutable Plan; removing or replacing a workspace pointer cannot
+waive its sealed-artifact checks. `status=clean` alone is insufficient. Evidence or
 files added inside the authorized verification workspace do not invalidate
-scope solely because Git HEAD changed. Movement between preparation and CAS
+scope solely because Git HEAD changed. When the workspace digest changes after
+consumption, an earlier Result must pin at least one still-matching typed workspace
+path/hash anchor; missing anchors cannot prove that its execution inputs are stable. Movement between preparation and CAS
 requires preparing again, including when the concurrent commit was unrelated.
 
 ## Compatibility and delivery

@@ -503,6 +503,7 @@ func verifyResultWorkspaceAnchors(root, workspaceRel, assignmentID string, row m
 		return fmt.Errorf("decode consumed result %s: %w", resultRel, err)
 	}
 	workspaceAbs := filepath.Clean(filepath.Join(root, filepath.FromSlash(workspaceRel)))
+	verified := 0
 	check := func(ref string) error {
 		if !strings.HasPrefix(ref, "path:") {
 			return nil
@@ -525,6 +526,7 @@ func verifyResultWorkspaceAnchors(root, workspaceRel, assignmentID string, row m
 		if got := sha256Of(fileData); got != want {
 			return fmt.Errorf("anchor %s changed after consumption (now %s)", ref, got)
 		}
+		verified++
 		return nil
 	}
 	for _, c := range result.Checks {
@@ -541,9 +543,9 @@ func verifyResultWorkspaceAnchors(root, workspaceRel, assignmentID string, row m
 			}
 		}
 	}
-	// A result that pinned no workspace anchors declared no dependency on
-	// the workspace (e.g. a repo-spec re-run); workspace growth cannot have
-	// invalidated it, so there is nothing to re-verify.
+	if verified == 0 {
+		return fmt.Errorf("consumed result pins no workspace anchors; its changed workspace cannot be re-verified from evidence")
+	}
 	return nil
 }
 

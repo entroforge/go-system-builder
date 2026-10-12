@@ -197,6 +197,34 @@ func testRelatedModulePublicCLIClosure(t *testing.T, revise bool) {
 	testfixture.Write(t, root, ".claude/loop-state.json", state)
 	call(false, "verification", "clean-round")
 	testfixture.Write(t, root, ".claude/loop-state.json", originalState)
+	// Projection coordinates cannot erase obligations in the immutable Plan.
+	for _, mutation := range []struct {
+		field string
+		value any
+	}{
+		{"verification_artifact_workspace", nil},
+		{"verification_artifact_workspace", "e2e-workspace/empty-substitute"},
+		{"e2e_coverage_state", "not_applicable"},
+		{"review_round", 2},
+	} {
+		json.Unmarshal(originalState, &state)
+		state["review"].(map[string]any)["plan"].(map[string]any)[mutation.field] = mutation.value
+		testfixture.Write(t, root, ".claude/loop-state.json", state)
+		call(false, "verification", "clean-round")
+		call(false, "runtime", "transition", "--id", "TR-009", "--actor", "orchestrator", "--evidence", "clean_round_record=clean-round-r1")
+	}
+	testfixture.Write(t, root, ".claude/loop-state.json", originalState)
+	// An anchor-free cold-start Result cannot certify a workspace that changed
+	// after PASS. Restore it before the independent graph-drift scenario.
+	workspaceFile := filepath.Join(root, *plan.VerificationArtifactWorkspace, "post-pass-change.spec.ts")
+	if err := os.WriteFile(workspaceFile, []byte("changed browser oracle after PASS"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	call(false, "verification", "clean-round")
+	call(false, "runtime", "transition", "--id", "TR-009", "--actor", "orchestrator", "--evidence", "clean_round_record=clean-round-r1")
+	if err := os.Remove(workspaceFile); err != nil {
+		t.Fatal(err)
+	}
 	// A changed provider graph blocks even when status still reads clean.
 	raw, _ = os.ReadFile(sp)
 	var clean map[string]any

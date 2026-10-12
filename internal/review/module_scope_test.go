@@ -561,3 +561,28 @@ func TestModuleScopeIndependentExclusionConsumption(t *testing.T) {
 		t.Fatal("exclusion erased related candidate")
 	}
 }
+
+func TestModuleScopeWorkspaceGrowthRequiresStableAnchors(t *testing.T) {
+	root := t.TempDir()
+	workspace := "e2e-workspace/scoped"
+	spec := scopeWrite(t, root, workspace+"/orders.spec.ts", "original browser oracle")
+	bound, err := WorkspaceDigest(root, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ptr := &PlanPointer{VerificationArtifactWorkspace: workspace}
+	rows := map[string]any{"e2e-orders": map[string]any{"lens": "e2e", "status": "consumed", "artifact_digest": bound, "result_ref": ".claude/review/result.json"}}
+	scopeWrite(t, root, ".claude/review/result.json", map[string]any{"checks": []any{}})
+	scopeWrite(t, root, workspace+"/later.spec.ts", "another parallel reviewer adds an unrelated scenario")
+	if err := verifySealedArtifactDigests(root, ptr, rows); err == nil {
+		t.Fatal("changed workspace passed without any dependency anchors")
+	}
+	scopeWrite(t, root, ".claude/review/result.json", map[string]any{"claim_results": []any{map[string]any{"evidence_refs": []string{"path:" + workspace + "/orders.spec.ts#sha256=" + sha256Of(spec)}}}})
+	if err := verifySealedArtifactDigests(root, ptr, rows); err != nil {
+		t.Fatalf("unrelated parallel growth invalidated stable anchored result: %v", err)
+	}
+	scopeWrite(t, root, workspace+"/orders.spec.ts", "weakened browser oracle after PASS")
+	if err := verifySealedArtifactDigests(root, ptr, rows); err == nil {
+		t.Fatal("modified anchored oracle kept its PASS")
+	}
+}
