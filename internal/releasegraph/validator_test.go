@@ -153,3 +153,24 @@ func TestValidateStagedReleaseRejectsBlueprint(t *testing.T) {
 		t.Fatalf("blueprint must not ship: %v", err)
 	}
 }
+
+func TestRelatedModuleReleaseShipsTemplateWithoutFakeGraph(t *testing.T) {
+	root := minimalStage(t)
+	writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
+	if err := os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeStageFile(t, root, "skills/example/SKILL.md", "---\nname: example\n---\nS2 creates `docs/architecture/module-relations.json`; read `docs/architecture/module-relations-template.json`.\n")
+	if err := releasegraph.ValidateStagedRelease(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "docs/architecture/module-relations.json")); !os.IsNotExist(err) {
+		t.Fatal("stage contains a fake project graph")
+	}
+	if err := os.Remove(filepath.Join(root, "docs/architecture/module-relations-template.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := releasegraph.ValidateStagedRelease(root); err == nil {
+		t.Fatal("missing real template bypassed release validation")
+	}
+}

@@ -13,7 +13,7 @@ The CleanRound is machine-owned (`docs/control/agent-protocol.md` #s7, `docs/con
 ReviewPlan 1.1 also requires `module_scope_current_and_consumed`: the machine
 rechecks locked graph/CASE inputs, authoritative candidates, every disposition
 and the hash-pinned independent Results. `status=clean` alone does not pass.
-Inspect diagnostics with the existing CLI; follow [the supported guide](../../../docs/related-module-verification.md)
+Inspect diagnostics with the existing CLI; follow `docs/related-module-verification.md`
 for unresolved inputs or drift. Preserve the existing parallel reviewer scheduler.
 
 ## Entry Conditions
