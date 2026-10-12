@@ -99,3 +99,7 @@ declare `site_lost[]` in your ReviewResult (one entry per affected Finding:
 `blocked`. Recovery: fix the capture conditions, send
 `runtime agent-event --event blocker_resolved --agent-id <id> --message <file>`,
 then the same finder resubmits. Reproduction debt is never handed to S8.
+
+### Module-qualified execution
+
+For Plan 1.1, bind every claimed CASE/PATH to its full `cases_path` identity and execute the registered module Assignment. Preserve all required browser scenarios inside that module. Related-module dispositions and their independent assessment belong to the Plan; never replace them with a same-named CASE from another module or copy PASS to imply another execution. See `docs/related-module-verification.md`.

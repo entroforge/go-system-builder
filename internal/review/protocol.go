@@ -16,3 +16,12 @@ func ValidateProtocolBinding(state map[string]any, artifactVersion string) error
 	}
 	return nil
 }
+
+// ValidatePlanProtocolBinding separates new writable plans from historical
+// readable plans and from Result/Finding's unchanged 1.0 protocol.
+func ValidatePlanProtocolBinding(state map[string]any, plan *Plan) error {
+	if err := ValidateProtocolBinding(state, "1.0.0"); err != nil {
+		return err
+	}
+	return requireScopedPlan(plan)
+}

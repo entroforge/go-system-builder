@@ -13,7 +13,7 @@ import (
 // the S6 builder-batch evaluation — so the missing matrix names each unproven
 // Claim instead of only the aggregate evidence token.
 func applyCleanRoundGate(input Input, result *Evaluation) {
-	evaluation := verification.EvaluateCleanRound(input.Snapshot.State)
+	evaluation := verification.EvaluateCleanRoundForRoot(input.Root, input.Snapshot.State)
 	if evaluation.Passed {
 		return
 	}

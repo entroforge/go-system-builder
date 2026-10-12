@@ -287,3 +287,7 @@ recomputes after integration or capacity release. Start every compatible ready
 TASK within actual capacity; do not wait for unrelated tasks in an earlier wave.
 Only verified integration into the root development branch releases consumers.
 Never write runtime progress back into frozen plans or TASKs.
+
+## Stable module/resource inventory
+
+During S2 author/update `docs/architecture/module-relations.json` from the complete project inventory and architecture/contracts, using `docs/architecture/module-relations-template.json` as an example. Preserve existing declarations. S2 design registration fingerprints it as a design document; include that subject in S5 independent exact-manifest review. Record owned file paths/directory prefixes, shared resource providers/consumers, browser applicability and source references. S3 verifies contract consistency. Do not install an empty graph or ask the user to manually set an E2E tier for each REQ. See `docs/related-module-verification.md`.

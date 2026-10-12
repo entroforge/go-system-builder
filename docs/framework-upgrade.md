@@ -66,3 +66,7 @@ current exact subjects; follow [the confirmation and restoration procedure](runt
 Missing old fingerprint metadata has an explicit checked restoration command,
 not an automatic rebaseline. Keep matching binaries/assets and preserve historical
 artifacts. This is not a new general migration facility.
+
+## Plan 1.1 / related-module verification
+
+This release requires matching binaries, Skills, manuals and templates. Apply only to a fresh project or an inactive, unbound existing installation using the documented backup/controlled update process; preserve its module declaration and customized configuration. Do not replace an active legacy round with this binary or reset Runtime to bypass the version check. Historical Plan 1.0 remains readable but executable new rounds require Plan 1.1. Results remain 1.0. Old binaries may ignore new JSON fields when loading a pinned plan; remove older executable paths from the active toolchain and retain a complete matching rollback set. This does not revoke external old writers. See [the scope contract](related-module-verification.md).

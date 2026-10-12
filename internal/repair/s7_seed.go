@@ -2,6 +2,7 @@ package repair
 
 import (
 	"fmt"
+	reviewpkg "github.com/entroforge/go-system-builder/internal/review"
 	"sort"
 	"strings"
 	"time"
@@ -25,18 +26,18 @@ const seedMarker = "PLANNER-REFINE (S9 seed): the S7 Planner must replace this f
 // E2E Claim, and it requires the N/A e2e Claim below to carry na_rationale
 // and na_checklist_id. Every substantive Claim field is a seedMarker; the S7
 // Planner owns the real target/assertion/oracle/method set.
-func createS7ReviewPlanSeed(root, runtimeID, sessionID string, round, baselineGeneration int, impact ChangeImpact, contractRef ContractRef, taskIDs []string, impactPath string, at time.Time, sink artifactSink) (ArtifactRef, error) {
+func createS7ReviewPlanSeed(root, runtimeID, sessionID string, round, baselineGeneration int, impact ChangeImpact, contractRef ContractRef, taskIDs []string, impactPath string, at time.Time, scope reviewpkg.ModuleScope, sink artifactSink) (ArtifactRef, error) {
 	// Read the approved RepairContract so the handoff keeps verifying the
 	// artifact's hash and schema. The seed itself no longer embeds contract
 	// fields; it only points the Planner at the contract as a source ref.
 	if _, err := readArtifact(root, ArtifactRef{Path: contractRef.Path, SHA256: contractRef.SHA256}, "repair-contract.schema.json"); err != nil {
 		return ArtifactRef{}, err
 	}
-	scope, err := canonicalJSON([]string{runtimeID, sessionID})
+	scopeIdentity, err := canonicalJSON([]string{runtimeID, sessionID})
 	if err != nil {
 		return ArtifactRef{}, err
 	}
-	planID := fmt.Sprintf("review-plan-s9-%s-round-%d", sha256Bytes(scope), round)
+	planID := fmt.Sprintf("review-plan-s9-%s-round-%d", sha256Bytes(scopeIdentity), round)
 	frozen := make([]any, 0, len(impactVerificationSubjects(impact)))
 	coverage := make([]any, 0, len(impactVerificationSubjects(impact)))
 	for _, artifact := range impactVerificationSubjects(impact) {
@@ -88,7 +89,7 @@ func createS7ReviewPlanSeed(root, runtimeID, sessionID string, round, baselineGe
 		map[string]any{"assignment_id": "assignment-s9-qa", "lens": "qa", "claim_ids": []string{"claim-s9-qa"}, "non_overlap_boundary": "owns invariant, maintainability and scope verification", "execution_wave": "static"},
 	}
 	seed := map[string]any{
-		"schema_version": "1.0.0", "review_plan_id": planID, "review_round": round, "baseline_generation": baselineGeneration,
+		"schema_version": "1.1.0", "module_scope": scope, "review_plan_id": planID, "review_round": round, "baseline_generation": baselineGeneration,
 		"frozen_subjects": frozen, "coverage_inventory": coverage, "change_impact": map[string]any{"summary": "S9 post-repair seed; Planner must refine the exact Claim set", "source_refs": []string{impactPath}},
 		"claims": claims, "assignments": assignments, "e2e_coverage_state": "not_applicable", "verification_artifact_workspace": nil,
 		"dispatch_capacity_policy": "coverage_complete", "created_by": "s9-handoff", "created_at": nowOr(at),

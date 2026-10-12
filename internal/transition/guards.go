@@ -287,7 +287,7 @@ func evidenceBackedGuard(name string) GuardFn {
 			// RC-06 (S7-4): the only DECLARED clean-round delegate left in
 			// the switch. The five undeclared clean-round-shaped stub names
 			// were removed from the registry (see InitGuardRegistry).
-			result := verification.EvaluateCleanRound(state)
+			result := evaluateGuardCleanRound(state)
 			if !result.Passed {
 				return fmt.Errorf("%s: clean-round evaluation failed: %v", name, result.Reasons)
 			}
@@ -311,7 +311,7 @@ func requireFreshInactiveRuntime(state map[string]any) error {
 // ReviewPlan's exact Claim set by verification.EvaluateCleanRound — an
 // agent hand-written aggregate PASS is not a substitute.
 func guardCleanRoundValidFn(state map[string]any, _ map[string]string) error {
-	result := verification.EvaluateCleanRound(state)
+	result := evaluateGuardCleanRound(state)
 	if !result.Passed {
 		return fmt.Errorf("clean_round_valid: %v", result.Reasons)
 	}
@@ -776,4 +776,21 @@ func guardFiles(state map[string]any, root string) fileview.Reader {
 		return files
 	}
 	return fileview.Disk{Root: root}
+}
+
+func cleanRoundRoot(state map[string]any) string {
+	root, _ := state["root"].(string)
+	if root == "" {
+		bound, _ := state["bound_req"].(map[string]any)
+		w, _ := bound["workspace"].(map[string]any)
+		root, _ = w["project_root"].(string)
+	}
+	return root
+}
+
+func evaluateGuardCleanRound(state map[string]any) verification.Result {
+	if check, ok := state["_clean_round_check"].(func(map[string]any) verification.Result); ok && check != nil {
+		return check(state)
+	}
+	return verification.EvaluateCleanRoundForRoot(cleanRoundRoot(state), state)
 }

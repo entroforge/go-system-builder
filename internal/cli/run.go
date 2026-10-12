@@ -3608,7 +3608,7 @@ func runVerification(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "parse state: %v\n", err)
 		return 1
 	}
-	result := verification.EvaluateCleanRound(state)
+	result := verification.EvaluateCleanRoundForRoot(*root, state)
 	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		fmt.Fprintf(stderr, "encode result: %v\n", err)

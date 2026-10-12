@@ -145,3 +145,6 @@ docs/workspace-integration.md
 docs/examples/s7-s9/confirmation-sources.json
 docs/examples/s7-s9/confirmation-result.json
 docs/examples/s7-s9/confirmation-impact.json
+
+docs/architecture/module-relations-template.json
+docs/related-module-verification.md

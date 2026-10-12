@@ -204,7 +204,11 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 		})
 		notes = append(notes, "E2E assessed as not_applicable from ui_impact=none; keep the explicit claim-e2e-na-1 Claim with source_refs and na_rationale (it is not dispatched), then verify against the real required surfaces (§4.3) before registering")
 	default:
-		inventory, discoveryDiagnostics := discoverE2EInventory(root, state)
+		inventory := e2eInventory{}
+		discoveryDiagnostics := []string{}
+		if root == "" {
+			inventory, discoveryDiagnostics = discoverE2EInventory(root, state)
+		}
 		for _, diagnostic := range discoveryDiagnostics {
 			notes = append(notes, "E2E inventory: "+diagnostic+"; registration will reject an unverifiable asset and cold_start remains the safe fallback")
 		}
@@ -290,7 +294,7 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 		CreatedBy:                     "orchestrator",
 		CreatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	return plan, notes
+	return populateScopedDraft(root, state, plan, notes)
 }
 
 func changeImpactFromPaths(paths []string) *ChangeImpact {

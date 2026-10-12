@@ -172,6 +172,9 @@ func DraftManifest(root string, state map[string]any, assignmentID string) (*Man
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := ValidateModuleScope(root, state, plan); err != nil {
+		return nil, nil, err
+	}
 	var planned *PlanAssignment
 	for i := range plan.Assignments {
 		if plan.Assignments[i].AssignmentID == assignmentID {

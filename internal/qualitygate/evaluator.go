@@ -400,7 +400,7 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 		// the aggregate evidence token.
 		applyBuilderBatchCompleteness(input, &result)
 	}
-	if result.GateID == "GATE-VERIFY-CLEAN-ROUND-PASSED" {
+	if result.GateID == "GATE-VERIFY-CLEAN-ROUND-PASSED" || result.GateID == "GATE-ACCEPTANCE-COMPLETE" || result.GateID == "GATE-RELEASE-AUDIT-APPROVED" {
 		// L3-S7 §10: recompute the machine CleanRound over the ReviewPlan's
 		// exact Claim set; an evidence-only pass is not sufficient.
 		applyCleanRoundGate(input, &result)

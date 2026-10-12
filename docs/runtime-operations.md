@@ -201,3 +201,7 @@ an unrecorded mutation. A matching fingerprint makes a retry a no-op; a differen
 fingerprint, stale Contract, unrecorded changes or invalid provenance is rejected.
 Preserve those inputs and route through S8/S9 planning instead of enabling an
 environment bypass.
+
+## Related-module scope operations
+
+New S7 execution requires ReviewPlan 1.1 with the framework-generated `module_scope`. Use `s7 draft`, refine dispositions/Claims, then run `s7 lint`; author-only lint cannot establish Runtime readiness. `s7 status` exposes candidate counts, unresolved inputs, decisions and the input digest. Preserve operation IDs for retries. Drift or unknown ownership needs corrected/approved input and a fresh scope; deleting candidates or downgrading the schema cannot recover it. Top-level scope revisions invalidate their obligations, and final consumption verifies actual Result artifacts. See [related-module verification](related-module-verification.md).

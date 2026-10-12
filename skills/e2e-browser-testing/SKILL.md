@@ -392,3 +392,7 @@ An e2e evidence bundle clears S7 when ALL hold:
 - [ ] Cross-REQ regression sweep results enumerated in the report (every `F-NNN` listed with PASS/FAIL)
 
 Failing any item is a QA finding; the bundle returns to S6 / S9 rework. No Clean Round without a passing e2e bundle.
+
+## Plan 1.1 module identity
+
+Execute only the registered Assignment. Its required Claims bind `scenario_refs` by `cases_path + case_id + path_ids`; another module with the same CASE ID cannot substitute. Keep all required browser CASE/PATHs within each selected module. Reusable E2E assets declare `module_id` and `cases_path`. Related consumers are assessed by the fixed Plan, not by the REQ prototype links alone; do not expand your write boundary on your own. Never treat candidate discovery as runner admission or PASS. See `docs/related-module-verification.md`.

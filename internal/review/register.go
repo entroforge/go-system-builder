@@ -29,7 +29,7 @@ type PlanRequest struct {
 // Runtime-coordinate checks remain in RegisterPlan because the handoff builds
 // its next-round projection inside its own CAS transaction.
 func ValidatePlanArtifactForRegistration(root string, plan *Plan, state map[string]any) error {
-	if err := ValidateProtocolBinding(state, plan.SchemaVersion); err != nil {
+	if err := ValidatePlanProtocolBinding(state, plan); err != nil {
 		return err
 	}
 	if err := ValidatePlan(plan); err != nil {
@@ -81,6 +81,13 @@ func RegisterPlan(
 		return prior, err
 	}
 
+	preparedScope, err := prepareModuleScope(root, current, plan.ReviewRound, workspaceValue(plan.VerificationArtifactWorkspace))
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validatePreparedScope(&plan, preparedScope); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	if err := ValidatePlanArtifactForRegistration(root, &plan, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
@@ -157,6 +164,9 @@ func RegisterPlan(
 			plan.ReviewPlanID, round, len(plan.Claims), len(plan.Assignments), plan.E2ECoverageState),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
+			if err := preparedScope.Verify(state); err != nil {
+				return err
+			}
 			if err := ValidatePlanArtifactForRegistration(root, &plan, state); err != nil {
 				return err
 			}

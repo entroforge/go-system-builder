@@ -61,11 +61,12 @@ func PreflightPlan(root string, data []byte, state map[string]any) PlanPreflight
 	}
 	if state == nil {
 		skip("runtime_inputs", "no Runtime supplied; file fingerprints, authority and round readiness are not verified")
-	} else if err := ValidateProtocolBinding(state, plan.SchemaVersion); err != nil {
+	} else if err := ValidatePlanProtocolBinding(state, &plan); err != nil {
 		add("protocol", err)
 		skip("runtime_inputs", "depends on a compatible Runtime/artifact protocol")
 	} else {
 		add("protocol", nil)
+		add("module_scope", ValidateModuleScope(root, state, &plan))
 		add("frozen_subjects", verifyFrozenSubjects(root, &plan, state))
 		add("regression_assets", verifyRegressionAssetFingerprints(root, &plan))
 		add("task_coverage", ValidatePlanTaskCoverage(state, &plan))

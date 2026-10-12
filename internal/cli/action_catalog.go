@@ -49,6 +49,7 @@ func printActionCatalog(w io.Writer) {
 	fmt.Fprintln(w, "S7 complete verification")
 	fmt.Fprintln(w, "  1. `loop-harness s7 draft --out <plan.json>`")
 	fmt.Fprintln(w, "  2. `loop-harness s7 lint --file <plan.json>`, then `loop-harness runtime review-plan --file <plan.json>`")
+	fmt.Fprintln(w, "  Plan 1.1: framework-generated module_scope; refine each module decision and independent scope-assessment obligation. Unknown inputs or deleting candidates cannot register.")
 	fmt.Fprintln(w, "  3. `loop-harness s7 manifest-draft --assignment <id> --out <manifest.json>`")
 	fmt.Fprintln(w, "  4. `loop-harness runtime register-workgroup --manifest <manifest.json> --task-id <TASK> --task <task.md>` (compatibility: runtime register-workgroup remains the binding verb)")
 	fmt.Fprintln(w, "  5. `loop-harness runtime review-result submit --assignment-id <id> --result <result.json>`")

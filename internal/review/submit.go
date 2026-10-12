@@ -165,6 +165,16 @@ func submitResult(
 		}
 		return loopruntime.Snapshot{}, err
 	}
+	preparedScope, err := prepareModuleScope(root, current, plan.ReviewRound, workspaceValue(plan.VerificationArtifactWorkspace))
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validatePreparedScope(plan, preparedScope); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validateScopeProducerIndependence(current, plan, &result); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	// A regression_available plan reuses an existing CASE/PATH asset only
 	// while the declared path and fingerprint still match disk. Registration
 	// checks this once, but submit must check again because a test asset can
@@ -391,6 +401,12 @@ func submitResult(
 			result.ResultID, result.AssignmentID, result.Verdict),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
+			if err := preparedScope.Verify(state); err != nil {
+				return err
+			}
+			if err := validateScopeProducerIndependence(state, plan, &result); err != nil {
+				return err
+			}
 			if err := ValidateProtocolBinding(state, result.SchemaVersion); err != nil {
 				return err
 			}
@@ -469,6 +485,9 @@ func submitResult(
 				return nil
 			}
 			if cleanNow {
+				if err := validateModuleScopeConsumed(root, state, plan, result.ResultID, resultBytes); err != nil {
+					return err
+				}
 				cleanStart := time.Now()
 				if err := applyCleanRound(state, cleanRel, cleanSHA, round, occurredAt); err != nil {
 					return err

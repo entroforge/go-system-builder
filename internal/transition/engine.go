@@ -142,6 +142,17 @@ func ApplyContext(ctx context.Context, root, statePath, journalPath string, requ
 		_, err := fileview.DevelopmentRef(current)
 		return loopruntime.Snapshot{}, err
 	}
+	var cleanRoundCheck func(map[string]any) verification.Result
+	if contains(resolved.Spec.Guards, "clean_round_valid") || contains(resolved.Spec.Guards, "clean_round_still_valid") || resolved.Spec.ID == "TR-015" || resolved.Spec.ID == "TR-017" {
+		var err error
+		cleanRoundCheck, err = verification.PrepareCleanRoundForRoot(root, current)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		if evaluation := cleanRoundCheck(current); !evaluation.Passed {
+			return loopruntime.Snapshot{}, fmt.Errorf("clean-round completion refused: %v", evaluation.Reasons)
+		}
+	}
 	// RC-06 (S10-2): forbidden_events were decoded into the catalog but never
 	// consumed by Apply — the "strong_block" table was documentation. The two
 	// acceptance/release-audit strong blocks are now a hard pre-Apply barrier:
@@ -149,7 +160,7 @@ func ApplyContext(ctx context.Context, root, statePath, journalPath string, requ
 	// refs the caller supplies. `clean_round_still_valid` re-checks this inside
 	// the mutation, but the catalog declaration itself must gate Apply
 	// fail-closed (create_acc_without_clean_round / run_release_audit_without_acc).
-	if err := enforceForbiddenEvents(catalog, resolved.Spec, current); err != nil {
+	if err := enforceForbiddenEvents(root, catalog, resolved.Spec, current, cleanRoundCheck); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	if err := validateRequest(root, current, resolved.Spec, request); err != nil {
@@ -363,6 +374,7 @@ func ApplyContext(ctx context.Context, root, statePath, journalPath string, requ
 					guardState[k] = v
 				}
 				guardState["_file_view"] = request.Files
+				guardState["_clean_round_check"] = cleanRoundCheck
 				if err := guard(guardState, request.Evidence); err != nil {
 					guardResults[index]["result"] = "fail"
 					guardResults[index]["detail"] = err.Error()
@@ -455,7 +467,7 @@ func ApplyContext(ctx context.Context, root, statePath, journalPath string, requ
 // The barrier is evaluated pre-Apply against the current snapshot (fail-closed
 // on an unreadable review section) so no journal row is written for a refused
 // mutation.
-func enforceForbiddenEvents(catalog *Catalog, spec TransitionSpec, state map[string]any) error {
+func enforceForbiddenEvents(root string, catalog *Catalog, spec TransitionSpec, state map[string]any, check func(map[string]any) verification.Result) error {
 	fe, declared := catalog.ForbiddenEvents["create_acc_without_clean_round"]
 	if !declared {
 		// Fail closed: a definition that drops the declaration loses its
@@ -468,7 +480,12 @@ func enforceForbiddenEvents(catalog *Catalog, spec TransitionSpec, state map[str
 		_ = fe
 		return nil
 	}
-	result := verification.EvaluateCleanRound(state)
+	var result verification.Result
+	if check != nil {
+		result = check(state)
+	} else {
+		result = verification.EvaluateCleanRoundForRoot(root, state)
+	}
 	if !result.Passed {
 		return fmt.Errorf(
 			"forbidden event %s: transition %s rejected — no valid clean round for review round %d: %v",

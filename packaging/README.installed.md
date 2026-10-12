@@ -11,6 +11,7 @@
 | [报告](reports/README.md) | 验证、缺陷、验收与发布审计 |
 | [控制](control/README.md)、[规则](rules/README.md) | 流程契约、策略与稳定约束 |
 | [示例](examples/README.md) | 合成参考，不是本项目通过证据 |
+| [关联模块验证](related-module-verification.md) | S7 范围、排除依据与完成门 |
 | [工程指南](guides/engineering-loop.md) | 按需查阅概念与操作 |
 
 完整类型见 [文档地图](DOCUMENT-MAP.md)。当前事实读取 `.claude/loop-state.json`；定义、证据与事实各有自己的权威。已有活跃项目不得递归覆盖新版 docs，参见 [安装指南](guides/install.md)。

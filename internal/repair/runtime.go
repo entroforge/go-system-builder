@@ -1736,7 +1736,25 @@ func commitRepairHandoff(root, statePath, journalPath string, req CommitHandoffR
 	}
 	prepared := &preparedArtifacts{}
 	at := occurred(req.OccurredAt)
-	seedRef, err := createS7ReviewPlanSeed(root, stringField(current.State["runtime_id"]), stringField(p["session_id"]), integerValue(mapField(current.State, "review")["round"])+1, baselineGeneration(current.State), impactDocument, ContractRef{Path: handoff.ContractRef.Path, SHA256: handoff.ContractRef.SHA256}, taskIDs, handoff.ChangeImpactRef.Path, at, prepared.prepare)
+
+	// Resolve the next round from a private projection, including this handoff's
+	// immutable impact and the cumulative original S6 evidence. No Runtime write.
+	seedStateBytes, _ := json.Marshal(current.State)
+	var seedState map[string]any
+	if err := json.Unmarshal(seedStateBytes, &seedState); err != nil {
+		return runtimepkg.Snapshot{}, err
+	}
+	nextRound := integerValue(mapField(seedState, "review")["round"]) + 1
+	mapField(seedState, "review")["round"] = nextRound
+	indexHandoffEvidence(seedState, req.Handoff, handoff, baselineGeneration(seedState), nextRound, at)
+	seedScope, scopeErr := reviewpkg.ResolveModuleScopeForRoot(root, seedState, nextRound, "")
+	if scopeErr != nil {
+		seedScope = reviewpkg.ModuleScope{ResolverVersion: reviewpkg.ModuleScopeResolverVersion, RuntimeID: stringField(seedState["runtime_id"]), REQID: stringField(mapField(seedState, "bound_req")["id"]), BaselineGeneration: baselineGeneration(seedState), ReviewRound: nextRound, Resolution: "conservative_fallback", InputRefs: []reviewpkg.ScopeInputRef{}, UnresolvedInputs: []string{scopeErr.Error()}, Candidates: []reviewpkg.ModuleCandidate{}, Dispositions: []reviewpkg.ModuleDisposition{}, DiscoveryManifestDigest: sha256Bytes([]byte("[]")), InputDigest: sha256Bytes([]byte(scopeErr.Error()))}
+	}
+	for _, candidate := range seedScope.Candidates {
+		seedScope.Dispositions = append(seedScope.Dispositions, reviewpkg.ModuleDisposition{ModuleID: candidate.ModuleID, Action: "unknown", Rationale: "PLANNER-REFINE: decide the new full S7 module obligations", EvidenceRefs: []reviewpkg.ScopeInputRef{}, VerificationClaimIDs: []string{}, AssessmentClaimIDs: []string{}})
+	}
+	seedRef, err := createS7ReviewPlanSeed(root, stringField(current.State["runtime_id"]), stringField(p["session_id"]), integerValue(mapField(current.State, "review")["round"])+1, baselineGeneration(current.State), impactDocument, ContractRef{Path: handoff.ContractRef.Path, SHA256: handoff.ContractRef.SHA256}, taskIDs, handoff.ChangeImpactRef.Path, at, seedScope, prepared.prepare)
 	if err != nil {
 		return runtimepkg.Snapshot{}, fmt.Errorf("create S7 ReviewPlan seed: %w", err)
 	}

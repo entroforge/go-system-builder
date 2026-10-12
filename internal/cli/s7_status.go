@@ -168,6 +168,14 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 		// Every ReviewResult must bind this exact digest; printing it here
 		// saves the reviewer from re-deriving the frozen-baseline hash
 		// (the submit-time verifier rejects mismatches).
+		if plan.ModuleScope != nil {
+			fmt.Fprintf(stdout, "module_scope: resolution=%s candidates=%d unresolved=%d input_digest=%s\n", plan.ModuleScope.Resolution, len(plan.ModuleScope.Candidates), len(plan.ModuleScope.UnresolvedInputs), plan.ModuleScope.InputDigest)
+			for _, d := range plan.ModuleScope.Dispositions {
+				fmt.Fprintf(stdout, "  module=%s action=%s verification=%v assessment=%v\n", d.ModuleID, d.Action, d.VerificationClaimIDs, d.AssessmentClaimIDs)
+			}
+		} else {
+			fmt.Fprintln(stdout, "module_scope: historical plan, unsupported for new execution")
+		}
 		fmt.Fprintf(stdout, "subject_digest: %s (every review-result submit must bind exactly this value)\n", review.SubjectDigest(plan))
 	}
 	dispositions := review.Dispositions(state)

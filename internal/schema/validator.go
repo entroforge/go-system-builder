@@ -102,7 +102,7 @@ func (v *Validator) ValidateBytes(schemaName string, data []byte) error {
 			schemaName = "hook-decision-v1.2.schema.json"
 		}
 	}
-	for _, name := range []string{"repair-session", "repair-result", "repair-changeset", "review-evidence"} {
+	for _, name := range []string{"review-plan", "repair-session", "repair-result", "repair-changeset", "review-evidence"} {
 		if schemaName == name+".schema.json" {
 			var version struct {
 				Version string `json:"schema_version"`

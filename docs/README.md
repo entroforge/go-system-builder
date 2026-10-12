@@ -7,6 +7,7 @@
 | 了解框架为什么这样设计 | [模板设计四层主线](../blueprint/README.md) |
 | 安装到一个项目 | [安装指南](guides/install.md) |
 | 在目标项目开始工作 | [入门](guides/getting-started.md)、[阶段协议](control/agent-protocol.md) |
+| 核对关联模块验证范围 | [S7 关联模块验证](related-module-verification.md) |
 | 查阅机制与操作说明 | [工程指南](guides/engineering-loop.md) |
 | 找到文档类型、权威与发布边界 | [文档地图](DOCUMENT-MAP.md) |
 

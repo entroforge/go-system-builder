@@ -9,6 +9,7 @@ package review
 // Plan mirrors review-plan.schema.json — the single authority for one
 // review round's coverage, Claims and Assignment DAG projection.
 type Plan struct {
+	ModuleScope                   *ModuleScope     `json:"module_scope,omitempty"`
 	SchemaVersion                 string           `json:"schema_version"`
 	ReviewPlanID                  string           `json:"review_plan_id"`
 	ReviewRound                   int              `json:"review_round"`
@@ -34,6 +35,8 @@ type Plan struct {
 // the route/entry point it covers and the environment it was recorded on —
 // not merely that a spec file mentions the CASE id.
 type E2EAsset struct {
+	CasesPath   string `json:"cases_path,omitempty"`
+	ModuleID    string `json:"module_id,omitempty"`
 	AssetID     string `json:"asset_id"`
 	CaseRef     string `json:"case_ref"`
 	Path        string `json:"path"`
@@ -61,15 +64,16 @@ type ChangeImpact struct {
 
 // Claim is one auditable proposition a Reviewer must answer (L3-S7 §3.3).
 type Claim struct {
-	ClaimID          string   `json:"claim_id"`
-	Lens             string   `json:"lens"`
-	Target           string   `json:"target"`
-	Assertion        string   `json:"assertion"`
-	Oracle           string   `json:"oracle"`
-	Method           string   `json:"method"`
-	RequiredEvidence []string `json:"required_evidence,omitempty"`
-	Applicability    string   `json:"applicability"`
-	NARationale      string   `json:"na_rationale,omitempty"`
+	ScenarioRefs     []ScenarioRef `json:"scenario_refs,omitempty"`
+	ClaimID          string        `json:"claim_id"`
+	Lens             string        `json:"lens"`
+	Target           string        `json:"target"`
+	Assertion        string        `json:"assertion"`
+	Oracle           string        `json:"oracle"`
+	Method           string        `json:"method"`
+	RequiredEvidence []string      `json:"required_evidence,omitempty"`
+	Applicability    string        `json:"applicability"`
+	NARationale      string        `json:"na_rationale,omitempty"`
 	// NAChecklistID is the explicit N/A checklist the claim's not_applicable
 	// disposition was proven against (S7-9/RC-07). An e2e N/A claim without
 	// one is a silent dimension drop, not a conclusion.

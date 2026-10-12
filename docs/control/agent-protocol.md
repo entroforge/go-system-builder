@@ -762,3 +762,7 @@ Gate inputs follow the upstream `file_sources` contract: committed Git trees for
 ## Overall dispatch plan
 
 S4 → S5 → S6 follow [dispatch plan rules](../rules/dispatch-plan.md). Read the approved wave checklist and live S6 board; schedule compatible ready tasks and integrate results promptly.
+
+## S7 related-module scope (Plan 1.1)
+
+S2 records the project module/resource declaration as a design input; S3/S5 independently review its ownership, contracts and provider-to-consumer edges. S7 drafts a fixed, cumulative module scope and exact CASE/PATH obligations. Each related candidate needs required verification or independently assessed exclusion. Do not edit candidates, invent PASS, substitute same-named CASEs across modules, or shrink S9 to its last patch. Registration, Result consumption and completion gates recheck this scope. See [the supported contract](../related-module-verification.md). Parallel Assignment capacity and resource locks remain in force.

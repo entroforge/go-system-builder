@@ -16,10 +16,13 @@ package transition
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/docscope"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	reviewpkg "github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"os"
 	"path/filepath"
@@ -1058,6 +1061,63 @@ func actionRegisterDesignDocuments(state map[string]any, ctx *ActionContext) (Ac
 		return ActionResult{Status: "failed",
 			Detail: "no locked architecture document under docs/architecture — the design stage produced nothing to register"}, fmt.Errorf("register_design_documents: no ARCHITECTURE-*.md with Status locked under docs/architecture — write the architecture document before advancing")
 	}
+
+	// The JSON graph is a stable design input, registered with the author and
+	// generation so S5's existing independent exact-subject review signs it too.
+	var files fileview.Reader = fileview.Disk{Root: actionRoot(state, ctx)}
+	if ctx.Request != nil && ctx.Request.Files != nil {
+		files = ctx.Request.Files
+	}
+	data, readErr := files.ReadFile("docs/architecture/module-relations.json")
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return ActionResult{Status: "failed"}, readErr
+	}
+	if readErr == nil {
+		if err := schema.NewEmbeddedValidator().ValidateBytes("module-relations.schema.json", data); err != nil {
+			return ActionResult{Status: "failed"}, err
+		}
+		var relations reviewpkg.ModuleRelations
+		if err := json.Unmarshal(data, &relations); err != nil {
+			return ActionResult{Status: "failed"}, err
+		}
+		if err := reviewpkg.ValidateModuleRelations(&relations); err != nil {
+			return ActionResult{Status: "failed"}, err
+		}
+		actor := ""
+		if ctx.Request != nil {
+			actor = ctx.Request.Actor
+		}
+		state["documents"] = appendDocument(state["documents"], map[string]any{"id": "MODULE-RELATIONS", "kind": "design", "path": "docs/architecture/module-relations.json", "version": "1.0.0", "sha256": SHA256(data), "status": "locked", "generation": integerOf(mapValueForScope(state["baseline"])["generation"]), "author_agent_id": actor, "registered_at": ctx.OccurredAt.UTC().Format(time.RFC3339Nano)})
+		// CASE/flow definitions must also be S5 subjects. Pinning a graph alone
+		// would allow lowering required CASE flags without specification approval.
+		for _, module := range relations.Modules {
+			if module.CasesPath == "" {
+				continue
+			}
+			dir := filepath.ToSlash(filepath.Dir(module.CasesPath))
+			members, err := files.ReadDir(dir)
+			if err != nil {
+				return ActionResult{Status: "failed"}, err
+			}
+			for _, member := range members {
+				if member.IsDir() {
+					continue
+				}
+				name := member.Name()
+				if !(strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".html")) {
+					continue
+				}
+				rel := dir + "/" + name
+				bytes, err := files.ReadFile(rel)
+				if err != nil {
+					return ActionResult{Status: "failed"}, err
+				}
+				state["documents"] = appendDocument(state["documents"], map[string]any{"id": "MODULE-SCENARIO-" + module.ID + "-" + name, "kind": "design", "path": rel, "version": "1.0.0", "sha256": SHA256(bytes), "status": "locked", "generation": integerOf(mapValueForScope(state["baseline"])["generation"]), "author_agent_id": actor, "registered_at": ctx.OccurredAt.UTC().Format(time.RFC3339Nano)})
+				registered++
+			}
+		}
+		registered++
+	}
 	return ActionResult{Status: "committed", MutationApplied: true,
 		Detail: fmt.Sprintf("registered %d locked design document(s)", registered)}, nil
 }
@@ -1112,3 +1172,5 @@ func actorOf(ctx *ActionContext) string {
 	}
 	return ""
 }
+
+func mapValueForScope(v any) map[string]any { m, _ := v.(map[string]any); return m }

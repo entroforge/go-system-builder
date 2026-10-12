@@ -13,6 +13,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/dispatch"
 	"github.com/entroforge/go-system-builder/internal/identity"
+	"github.com/entroforge/go-system-builder/internal/review"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -98,6 +99,17 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 	if err := json.Unmarshal(manifestData, &value); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode team manifest: %w", err)
 	}
+	var verifyReviewScope func(map[string]any) error
+	if value.WorkgroupKind == "delivery_verifier" || value.WorkgroupKind == "qa" || value.WorkgroupKind == "e2e_browser" {
+		plan, _, err := review.LoadPlan(root, current)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		verifyReviewScope, err = review.PrepareModuleScopeValidation(root, current, plan)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+	}
 	for _, item := range value.Assignments {
 		if err := identity.ValidateAgentID(item.AgentID); err != nil {
 			return loopruntime.Snapshot{}, fmt.Errorf("team manifest assignment %s: %w", item.AssignmentID, err)
@@ -139,6 +151,11 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 		From:           cursor,
 		To:             cursor,
 		Apply: func(state map[string]any) error {
+			if verifyReviewScope != nil {
+				if err := verifyReviewScope(state); err != nil {
+					return err
+				}
+			}
 			if err := dispatch.CheckRegistration(root, state, request.TaskID); err != nil {
 				return err
 			}

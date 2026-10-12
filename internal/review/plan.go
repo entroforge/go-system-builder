@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/schema"
 	"os"
 	"path/filepath"
 	"sort"
@@ -79,6 +80,9 @@ func LoadPlan(root string, state map[string]any) (*Plan, *PlanPointer, error) {
 	if sha256Of(data) != ptr.SHA256 {
 		return nil, nil, fmt.Errorf("ReviewPlan %s drifted: pinned sha256 %s does not match the file on disk", ptr.Path, ptr.SHA256)
 	}
+	if err := schema.NewEmbeddedValidator().ValidateBytes("review-plan.schema.json", data); err != nil {
+		return nil, nil, fmt.Errorf("ReviewPlan schema: %w", err)
+	}
 	var plan Plan
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return nil, nil, fmt.Errorf("decode ReviewPlan %s: %w", ptr.Path, err)
@@ -115,6 +119,11 @@ func ValidatePlan(plan *Plan) error {
 	var problems []error
 	if plan == nil {
 		return fmt.Errorf("ReviewPlan is required")
+	}
+	if plan.SchemaVersion == "1.1.0" {
+		if err := ValidateModuleScopeObligations(plan); err != nil {
+			problems = append(problems, err)
+		}
 	}
 	if plan.DispatchCapacityPolicy != "coverage_complete" {
 		problems = append(problems, s7GateError(

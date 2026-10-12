@@ -9,6 +9,9 @@ import (
 
 func validateE2EAssetDeclarations(plan *Plan) error {
 	var problems []error
+	if err := validateScopedAssetIdentity(plan); err != nil {
+		problems = append(problems, err)
+	}
 	if len(plan.E2EAssets) == 0 {
 		problems = append(problems, s7GateError(
 			"S7_E2E_ASSET_FINGERPRINT",

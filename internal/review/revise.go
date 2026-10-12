@@ -69,7 +69,7 @@ func RevisePlan(
 		return prior, err
 	}
 
-	if err := ValidateProtocolBinding(current, next.SchemaVersion); err != nil {
+	if err := ValidatePlanProtocolBinding(current, &next); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
@@ -122,10 +122,26 @@ func RevisePlan(
 		return loopruntime.Snapshot{}, err
 	}
 
+	preparedScope, err := prepareModuleScope(root, current, next.ReviewRound, workspaceValue(next.VerificationArtifactWorkspace))
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validatePreparedScope(&next, preparedScope); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	changed, err := diffClaims(currentPlan, &next, request.SourceRef, request.AffectedSurface)
 	if err != nil {
 		return loopruntime.Snapshot{}, err
 	}
+	scopeChanged := changedModuleScopeClaims(currentPlan, &next)
+	for _, id := range scopeChanged {
+		for _, claim := range next.Claims {
+			if claim.ClaimID == id && (!containsString(claim.SourceRefs, request.SourceRef) || !surfaceMatches(claim.Target, request.AffectedSurface)) {
+				return loopruntime.Snapshot{}, fmt.Errorf("scope revision obligation %s must cite the triggering source and affected surface", id)
+			}
+		}
+	}
+	changed = sortedDistinct(append(changed, scopeChanged...))
 	if len(changed) == 0 {
 		return loopruntime.Snapshot{}, fmt.Errorf("the revision changes no Claim; nothing to revise")
 	}
@@ -171,6 +187,9 @@ func RevisePlan(
 			next.ReviewPlanID, len(changed), request.SourceRef),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
+			if err := preparedScope.Verify(state); err != nil {
+				return err
+			}
 			if err := ValidatePlanArtifactForRegistration(root, &next, state); err != nil {
 				return err
 			}
