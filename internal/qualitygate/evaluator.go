@@ -948,12 +948,12 @@ func qualifiedEvidence(
 	var valid []string
 	var conflicts []string
 	var mismatched []string
-	// Deferred like unauthorized producers below: evidence rows cannot be
+	// Deferred like conclusion mismatches below: evidence rows cannot be
 	// retired outside a transition commit, and the documented recovery for a
 	// mis-registered envelope is "register new qualified evidence" — which
 	// leaves the superseded row pointing at a shared path. An unconditional
 	// schema conflict would then make the gate permanently unsatisfiable;
-	// the deferred conflicts surface only when no record ends up qualifying.
+	// the deferred conflicts surface only when too few records qualify.
 	var deferredSchema []string
 	for _, item := range raw {
 		index, _ := item.(map[string]any)
