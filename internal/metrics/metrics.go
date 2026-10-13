@@ -389,6 +389,7 @@ func healthDegraded(snap Snapshot, timing map[string]hookTimingStats) bool {
 }
 
 type hookTimingStats struct {
+	phases  map[string][]int64
 	samples []int64
 }
 
@@ -415,6 +416,9 @@ func readHookTiming(root string) (map[string]hookTimingStats, error) {
 		var record struct {
 			HookEvent string `json:"hook_event"`
 			ElapsedMS *int64 `json:"elapsed_ms"`
+			Timing    *struct {
+				Phases Timing `json:"phases"`
+			} `json:"timing"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
 			return nil, fmt.Errorf("decode Hook timing outbox: %w", err)
@@ -433,6 +437,21 @@ func readHookTiming(root string) (map[string]hookTimingStats, error) {
 			stats.samples[len(stats.samples)-1] = *record.ElapsedMS
 		} else {
 			stats.samples = append(stats.samples, *record.ElapsedMS)
+		}
+		if record.Timing != nil {
+			if stats.phases == nil {
+				stats.phases = map[string][]int64{}
+			}
+			for phase, measured := range record.Timing.Phases {
+				if measured.Calls < 1 || measured.DurationNS < 0 {
+					return nil, fmt.Errorf("invalid Hook phase timing %q", phase)
+				}
+				values := stats.phases[phase]
+				if len(values) == maxSamples {
+					values = values[1:]
+				}
+				stats.phases[phase] = append(values, measured.DurationNS)
+			}
 		}
 		timing[event] = stats
 	}
@@ -468,6 +487,17 @@ func writeHookTimingStats(b *strings.Builder, timing map[string]hookTimingStats)
 		p95 := samples[index]
 		max := samples[len(samples)-1]
 		fmt.Fprintf(b, "  loop_hook_evaluation_duration_ms{event=%q} count=%d p95_ms=%d max_ms=%d\n", event, len(samples), p95, max)
+		phases := make([]string, 0, len(timing[event].phases))
+		for phase := range timing[event].phases {
+			phases = append(phases, phase)
+		}
+		sort.Strings(phases)
+		for _, phase := range phases {
+			values := append([]int64(nil), timing[event].phases[phase]...)
+			sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+			p50, p95 := (len(values)*50+99)/100-1, (len(values)*95+99)/100-1
+			fmt.Fprintf(b, "  loop_hook_phase_duration_ms{event=%q,phase=%q} count=%d p50_ms=%.3f p95_ms=%.3f\n", event, phase, len(values), float64(values[p50])/1e6, float64(values[p95])/1e6)
+		}
 		if p95 >= hookTimingWarningThresholdMS || max >= hookTimingWarningThresholdMS {
 			fmt.Fprintf(b, "  WARNING: Hook event %q is at or above %d%% of the %dms timeout; a platform timeout can bypass PreToolUse enforcement\n", event, hookTimingWarningThresholdMS*100/defaultHookTimeoutMS, defaultHookTimeoutMS)
 		}

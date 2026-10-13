@@ -37,10 +37,10 @@ func TestFormatFailureStaleRevisionCarriesNextAction(t *testing.T) {
 	}
 	// Next-action: the recovery recipe must be present.
 	for _, keyword := range []string{
-		"loop-harness status", // read current revision
-		"--root",              // required flag of the next command
-		"--expected-revision", // retry flag for the original verb
-		"runtime reconcile",   // durable cure for concurrent commits
+		"loop-harness status",     // read current revision
+		"--root",                  // required flag of the next command
+		"--expected-revision",     // retry flag for the original verb
+		"current plan and inputs", // recompute before retrying a prepared operation
 	} {
 		if !strings.Contains(rendered, keyword) {
 			t.Errorf("rendered line missing recovery keyword %q: %q", keyword, rendered)
@@ -91,8 +91,8 @@ func TestFormatFailureStaleRevisionAcrossVerbs(t *testing.T) {
 			if !strings.Contains(rendered, "loop-harness status") {
 				t.Errorf("verb %q lost the next-action status command: %q", verb, rendered)
 			}
-			if !strings.Contains(rendered, "runtime reconcile") {
-				t.Errorf("verb %q lost the runtime reconcile hint: %q", verb, rendered)
+			if strings.Contains(rendered, "runtime reconcile") {
+				t.Errorf("verb %q mistook a CAS retry for Runtime corruption: %q", verb, rendered)
 			}
 		})
 	}

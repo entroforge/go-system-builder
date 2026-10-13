@@ -10,6 +10,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"github.com/entroforge/go-system-builder/internal/evidence"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 )
 
 // EvidenceRequest describes one current, fingerprinted evidence artifact to
@@ -62,16 +63,41 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			return Snapshot{}, fmt.Errorf("evidence produced_by contains an empty actor")
 		}
 	}
-	cleanPath, err := safeEvidencePath(root, request.Path)
+	cleanPath, err := lexicalEvidencePath(request.Path)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	data, err := os.ReadFile(filepath.Join(root, cleanPath))
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("read evidence artifact: %w", err)
+	var data []byte
+	if !isS10RoundScopedKind(request.Kind) {
+		// Preserve non-S10 preflight ordering: invalid input must not enter a
+		// writer Snapshot, which may recover a pending durable operation.
+		cleanPath, err = safeEvidencePath(root, request.Path)
+		if err == nil {
+			data, err = os.ReadFile(filepath.Join(root, cleanPath))
+		}
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("read evidence artifact: %w", err)
+		}
+		if err := acceptance.ValidateEvidenceArtifact(root, request.Kind, data); err != nil {
+			return Snapshot{}, err
+		}
 	}
-	if err := acceptance.ValidateEvidenceArtifact(root, request.Kind, data); err != nil {
-		return Snapshot{}, err
+	store := NewWriter(statePath, journalPath, root, request.Validator)
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
+	}
+	current := snapshot.State
+	var source *fileview.View
+	if isS10RoundScopedKind(request.Kind) {
+		source, err = fileview.ForState(root, current)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("S10 source authority: %w", err)
+		}
+		data, err = source.ReadFile(cleanPath)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("read evidence artifact: %w", err)
+		}
 	}
 	// S10 evidence must bind to the current review round (L3-S10 §4.2): the
 	// s10 board and gates read entry.review_round verbatim. The envelope
@@ -84,60 +110,12 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		}
 	}
 
-	store := NewWriter(statePath, journalPath, root, request.Validator)
-	snapshot, err := store.Snapshot()
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
-	}
-	current := snapshot.State
 	if err := validateDocumentRegistration(current, request, data); err != nil {
 		return Snapshot{}, err
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	from := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
-	// S10 registration must consume the same authoritative finite inventory
-	// as the Quality Gate once the Runtime has entered a real review round.
-	// Keep the round-zero bootstrap fixture/legacy path structural-only; a
-	// production S10 state has a bound REQ and pinned ReviewPlan, which makes
-	// the non-self-declared denominator reconstructible here as well.
-	if isS10RoundScopedKind(request.Kind) && acceptance.S10AuthorityAvailable(current) {
-		manifestType := "acceptance"
-		if request.Kind == "release_audit" || request.Kind == "release_audit_record" {
-			manifestType = "release_audit"
-		}
-		var envelope struct {
-			Conclusion string `json:"conclusion"`
-		}
-		if err := json.Unmarshal(data, &envelope); err != nil || strings.TrimSpace(envelope.Conclusion) == "" {
-			return Snapshot{}, fmt.Errorf("S10 %s evidence requires a non-empty conclusion before authoritative inventory validation", manifestType)
-		}
-		// RC-15 (S10-H1): validate the manifest the envelope RESOLVES to, not
-		// the envelope bytes themselves — the envelope carries registration
-		// metadata (kind, evidence_id, ...) that no manifest decoder may be
-		// asked to accept under DisallowUnknownFields.
-		manifestData, _, envelopeConclusion, resolveErr := acceptance.ResolveS10Manifest(root, request.Kind, data)
-		if resolveErr != nil {
-			return Snapshot{}, resolveErr
-		}
-		// Keep `data` as the registered file's original bytes: the evidence
-		// row's recorded sha256 and the board's on-disk hash check bind to the
-		// envelope file; only the validators below consume the resolved
-		// manifest bytes.
-		s10ManifestData := manifestData
-		envelope.Conclusion = envelopeConclusion
-		baseline, baselineErr := acceptance.BuildS10ExternalBaseline(root, current, nil)
-		if baselineErr != nil {
-			return Snapshot{}, fmt.Errorf("S10 external baseline is unverifiable: %w; restore the current-generation completion/change-impact artifacts", baselineErr)
-		}
-		authority, authorityErr := acceptance.BuildS10InventoryAuthority(root, current, baseline)
-		if authorityErr != nil {
-			return Snapshot{}, fmt.Errorf("S10 authoritative inventory is unverifiable: %w; restore the current bound REQ, contract/TASK registrations, and pinned S7 ReviewPlan", authorityErr)
-		}
-		if _, err := acceptance.ValidateForOutcomeWithBaselineAndAuthority(s10ManifestData, manifestType, strings.TrimSpace(envelope.Conclusion), baseline, authority); err != nil {
-			return Snapshot{}, err
-		}
-	}
 
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
@@ -206,6 +184,27 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 				"responsibility_id":   nullableString(request.ResponsibilityID),
 				"scope_refs":          scopeRefs,
 			})
+			if isS10RoundScopedKind(request.Kind) {
+				// All mutable inputs are re-read inside the same revision CAS.
+				files, err := fileview.ForState(root, state)
+				if err != nil {
+					return fmt.Errorf("S10 source authority: %w", err)
+				}
+				if files.Commit != source.Commit || files.Ref != source.Ref {
+					return fmt.Errorf("S10 source changed after registration preflight; reevaluate")
+				}
+				candidate := make(map[string]any, len(state))
+				for key, value := range state {
+					candidate[key] = value
+				}
+				candidate["evidence"] = items
+				if _, err := acceptance.ValidateS10Candidate(acceptance.CandidateInput{State: candidate, Files: files, Kind: request.Kind, EvidenceID: request.ID}); err != nil {
+					return err
+				}
+				if err := files.Verify(); err != nil {
+					return err
+				}
+			}
 			state["evidence"] = items
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			return nil
@@ -235,12 +234,9 @@ func expandRolloverScopeRefs(scopeRefs []string, runtimeID string, committedRevi
 }
 
 func safeEvidencePath(root, path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("evidence path is required")
-	}
-	clean := filepath.Clean(path)
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
+	clean, err := lexicalEvidencePath(path)
+	if err != nil {
+		return "", err
 	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -256,6 +252,17 @@ func safeEvidencePath(root, path string) (string, error) {
 	}
 	relative, err := filepath.Rel(resolvedRoot, resolvedPath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
+	}
+	return clean, nil
+}
+
+func lexicalEvidencePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("evidence path is required")
+	}
+	clean := filepath.Clean(path)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
 	}
 	return filepath.ToSlash(clean), nil

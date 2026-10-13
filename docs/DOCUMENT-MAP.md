@@ -19,3 +19,5 @@
 模板仓库的 L1–L4 设计文档不随目标项目安装。技术架构决策与体验决策按职责分别记录；`design/decisions/` 中的 ADR 模板用于体验决策与 Foundation 反馈。
 
 工厂维护者入口：[框架分层](../blueprint/README.md)。
+
+源码仓库的报告目录保留空白模板与说明，真实业务报告由目标项目保存。框架本身的临时调查、迭代修复和本机验证材料放在 `.local/framework-maintenance/`；长期共享证据进入团队工件库。源码、发布和本机目录的完整边界见[维护说明](../packaging/README.md)。

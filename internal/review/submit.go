@@ -19,6 +19,7 @@ import (
 
 // SubmitRequest drives `runtime review-result submit`.
 type SubmitRequest struct {
+	OperationID      string
 	ExpectedRevision int
 	AssignmentID     string
 	ResultPath       string
@@ -37,6 +38,9 @@ func SubmitResult(
 	request SubmitRequest,
 ) (loopruntime.Snapshot, error) {
 	snapshot, err := submitResult(root, statePath, journalPath, request)
+	if snapshot.OperationReplayed {
+		return snapshot, err
+	}
 	var siteLostBlocked *SiteLostBlockedError
 	switch {
 	case err == nil:
@@ -129,6 +133,20 @@ func submitResult(
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
+	operation, prior, replayed, err := prepareReviewOperation(root, statePath, journalPath, request.OperationID, "REVIEW-RESULT", current, map[string]any{"result": result, "captures": captureSteps, "assignment_id": request.AssignmentID, "occurred_at": request.OccurredAt})
+	if err != nil {
+		return prior, err
+	}
+	if replayed {
+		if prior.Operation.Effect == "review_assignment_blocked" {
+			return prior, &SiteLostBlockedError{Message: prior.Operation.Message + "; durable operation replay: the result remains unconsumed"}
+		}
+		return prior, nil
+	}
+
+	if err := ValidateProtocolBinding(current, result.SchemaVersion); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	// Reject a stale caller before producing any review artifacts. The CAS
 	// remains authoritative for races, but this early check prevents the
 	// common stale-submit path from leaving orphan evidence on disk.
@@ -145,6 +163,16 @@ func submitResult(
 		if PlanPointerFromState(current) != nil {
 			return staleReviewPlanAfterDrift(root, statePath, journalPath, current, err)
 		}
+		return loopruntime.Snapshot{}, err
+	}
+	preparedScope, err := prepareModuleScope(root, current, plan.ReviewRound, workspaceValue(plan.VerificationArtifactWorkspace))
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validatePreparedScope(plan, preparedScope); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validateScopeProducerIndependence(current, plan, &result); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	// A regression_available plan reuses an existing CASE/PATH asset only
@@ -214,7 +242,7 @@ func submitResult(
 		// encounter cannot be completed AND is declared unrecoverable records
 		// an Assignment BLOCKER that stays in S7 instead of a bare rejection.
 		if readiness := asReadinessError(err); readiness != nil && len(result.SiteLost) > 0 {
-			return submitSiteLostBlocker(root, statePath, journalPath, request, current, assignment, &result, readiness)
+			return submitSiteLostBlocker(root, statePath, journalPath, request, current, assignment, &result, readiness, operation)
 		}
 		return loopruntime.Snapshot{}, err
 	}
@@ -247,28 +275,9 @@ func submitResult(
 	lens := assignment.Lens
 	responsibility := LensToResponsibility(lens)
 
-	// Persist artifacts before the CAS (same pattern as the S6 Builder
-	// Result): bytes on disk are what the evidence index fingerprints.
-	artifactRels := []string{}
-	casAttempted := false
-	cleanupArtifacts := func() {
-		for _, rel := range artifactRels {
-			if path, err := repositoryContainedPath(root, rel); err == nil {
-				_ = os.Remove(path)
-			}
-		}
-	}
-	// Validation/build failures happen before the state CAS and must not leave
-	// evidence that the runtime never indexed. A stale CAS is the one race we
-	// can identify safely after attempting the write, so it receives the same
-	// cleanup. For an unknown CAS error keep the immutable bytes: the writer
-	// may have committed state before returning the error and deleting them
-	// would make the evidence index unverifiable.
-	defer func() {
-		if !casAttempted {
-			cleanupArtifacts()
-		}
-	}()
+	// Build immutable outputs in memory. The Runtime writer stages and commits
+	// the complete bundle; rejected proposals never publish canonical files.
+	artifacts := []loopruntime.ImmutableArtifact{}
 	resultRel := filepath.ToSlash(filepath.Join(
 		".claude", "evidence", runtimeID, fmt.Sprintf("g%d", generation),
 		"reviews", result.ProducerAgentID, result.ResultID+".json"))
@@ -299,10 +308,7 @@ func submitResult(
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("encode review result envelope: %w", err)
 	}
-	if err := writeArtifact(root, resultRel, resultBytes); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	artifactRels = append(artifactRels, resultRel)
+	artifacts = append(artifacts, loopruntime.ImmutableArtifact{Path: resultRel, Data: resultBytes})
 	resultSHA := sha256Of(resultBytes)
 
 	findingArtifacts := make([]findingArtifact, 0, len(result.Findings))
@@ -314,10 +320,7 @@ func submitResult(
 		if err != nil {
 			return loopruntime.Snapshot{}, fmt.Errorf("encode finding %s: %w", finding.FindingID, err)
 		}
-		if err := writeArtifact(root, rel, bytes); err != nil {
-			return loopruntime.Snapshot{}, err
-		}
-		artifactRels = append(artifactRels, rel)
+		artifacts = append(artifacts, loopruntime.ImmutableArtifact{Path: rel, Data: bytes})
 		findingArtifacts = append(findingArtifacts, findingArtifact{finding: finding, rel: rel, sha: sha256Of(bytes)})
 	}
 
@@ -362,10 +365,7 @@ func submitResult(
 		if err := schema.NewValidator(root).ValidateBytes("observation-batch.schema.json", batchBytes); err != nil {
 			return loopruntime.Snapshot{}, fmt.Errorf("ObservationBatch schema: %w", err)
 		}
-		if err := writeArtifact(root, batchRel, batchBytes); err != nil {
-			return loopruntime.Snapshot{}, err
-		}
-		artifactRels = append(artifactRels, batchRel)
+		artifacts = append(artifacts, loopruntime.ImmutableArtifact{Path: batchRel, Data: batchBytes})
 		batchSHA = sha256Of(batchBytes)
 	}
 	if cleanNow {
@@ -377,10 +377,7 @@ func submitResult(
 		if err != nil {
 			return loopruntime.Snapshot{}, fmt.Errorf("encode CleanRound: %w", err)
 		}
-		if err := writeArtifact(root, cleanRel, cleanBytes); err != nil {
-			return loopruntime.Snapshot{}, err
-		}
-		artifactRels = append(artifactRels, cleanRel)
+		artifacts = append(artifacts, loopruntime.ImmutableArtifact{Path: cleanRel, Data: cleanBytes})
 		cleanSHA = sha256Of(cleanBytes)
 	}
 
@@ -388,8 +385,9 @@ func submitResult(
 	resultRepoPath := repositoryPath(root, request.ResultPath)
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	casAttempted = true
-	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+	snapshot, err := updateRuntime(store, commitRevision, loopruntime.Mutation{
+		Operation:      operation,
+		Artifacts:      artifacts,
 		EventID:        fmt.Sprintf("evt-review-result-%s-r%d", result.ResultID, commitRevision+1),
 		TransitionID:   "REVIEW-RESULT",
 		Event:          "review_result_submitted",
@@ -403,6 +401,30 @@ func submitResult(
 			result.ResultID, result.AssignmentID, result.Verdict),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
+			if err := preparedScope.Verify(state); err != nil {
+				return err
+			}
+			if err := validateScopeProducerIndependence(state, plan, &result); err != nil {
+				return err
+			}
+			if err := ValidateProtocolBinding(state, result.SchemaVersion); err != nil {
+				return err
+			}
+			if _, _, err := LoadPlan(root, state); err != nil {
+				return err
+			}
+			if err := verifyFrozenSubjects(root, plan, state); err != nil {
+				return err
+			}
+			if err := verifyRegressionAssetFingerprints(root, plan); err != nil {
+				return err
+			}
+			if err := validateResultEvidenceReferences(root, state, &result); err != nil {
+				return err
+			}
+			if err := verifyResultArtifactDigest(root, plan, ptr, &result, assignment.Lens); err != nil {
+				return err
+			}
 			// RC-10 observability: per-phase durations of the submit CAS
 			// transaction (loop_s7_submit_phase_ms{phase}). Best-effort — the
 			// `_ =` discard mirrors recordRoundMetrics and never fails the
@@ -463,6 +485,9 @@ func submitResult(
 				return nil
 			}
 			if cleanNow {
+				if err := validateModuleScopeConsumed(root, state, plan, result.ResultID, resultBytes); err != nil {
+					return err
+				}
 				cleanStart := time.Now()
 				if err := applyCleanRound(state, cleanRel, cleanSHA, round, occurredAt); err != nil {
 					return err
@@ -476,26 +501,11 @@ func submitResult(
 		},
 	})
 	if err != nil {
-		if errors.Is(err, loopruntime.ErrStaleRevision) {
-			cleanupArtifacts()
-			return snapshot, err
-		}
-		// An Apply-time rejection (e.g. reviewer Agent not in working state)
-		// fails the CAS without committing. When the persisted revision is
-		// still the caller's expected revision the transaction definitively
-		// did not land, so the staged artifacts are orphans that would block
-		// the corrected resubmit with "file exists" — remove them. Only an
-		// advanced or unreadable revision keeps the bytes (the commit may
-		// have landed before the error surfaced).
-		if after, readErr := os.ReadFile(statePath); readErr == nil {
-			var post map[string]any
-			if json.Unmarshal(after, &post) == nil && intField(post["revision"]) == commitRevision {
-				cleanupArtifacts()
-			}
-		}
 		return snapshot, err
 	}
-	recordRoundMetrics(root, current, plan, ptr, &result, round, occurredAt, sealNow, cleanNow)
+	if !snapshot.OperationReplayed {
+		recordRoundMetrics(root, current, plan, ptr, &result, round, occurredAt, sealNow, cleanNow)
+	}
 	return snapshot, nil
 }
 
@@ -1504,7 +1514,7 @@ func staleReviewPlanAfterDrift(
 	runtimeID, _ := current["runtime_id"].(string)
 	commitRevision := currentCommitRevision(-1, current)
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	snapshot, err := updateRuntime(store, -1, loopruntime.Mutation{
+	snapshot, err := updateRuntime(store, commitRevision, loopruntime.Mutation{
 		EventID:        fmt.Sprintf("evt-review-plan-stale-%s-r%d", plan.PlanID, commitRevision+1),
 		TransitionID:   "REVIEW-PLAN-STALE",
 		Event:          "review_plan_stale",
@@ -1959,33 +1969,6 @@ func marshalArtifact(value any) ([]byte, error) {
 		return nil, err
 	}
 	return append(data, '\n'), nil
-}
-
-func writeArtifact(root, rel string, data []byte) error {
-	abs, err := repositoryContainedPath(root, rel)
-	if err != nil {
-		return fmt.Errorf("artifact path %s: %w", rel, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return fmt.Errorf("create evidence dir: %w", err)
-	}
-	file, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("evidence artifact %s already exists but was never indexed by the runtime (a previous failed attempt staged it); delete the stale file or change the artifact id (result_id / finding_id / review_plan_id), then retry", rel)
-		}
-		return fmt.Errorf("write %s without overwrite: %w", rel, err)
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(abs)
-		return fmt.Errorf("write %s: %w", rel, err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(abs)
-		return fmt.Errorf("close %s: %w", rel, err)
-	}
-	return nil
 }
 
 func repositoryPath(root, path string) string {

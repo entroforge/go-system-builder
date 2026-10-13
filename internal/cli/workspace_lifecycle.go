@@ -18,7 +18,7 @@ func runWorkspaceLifecycle(args []string, stdout, stderr io.Writer) int {
 	id := fs.String("assignment", "", "registered assignment")
 	agent := fs.String("agent", "", "registered owner")
 	if err := parseWorkspaceFlags(fs, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	b, state, err := workspace.Load(*root)
 	if err != nil {

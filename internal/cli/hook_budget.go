@@ -29,7 +29,7 @@ func RunWithHookBudget(args []string, stdin io.Reader, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	return runBudgetedHook(ctx, executable, args[1:], stdin, stdout, stderr)
 }

@@ -287,7 +287,7 @@ func evidenceBackedGuard(name string) GuardFn {
 			// RC-06 (S7-4): the only DECLARED clean-round delegate left in
 			// the switch. The five undeclared clean-round-shaped stub names
 			// were removed from the registry (see InitGuardRegistry).
-			result := verification.EvaluateCleanRound(state)
+			result := evaluateGuardCleanRound(state)
 			if !result.Passed {
 				return fmt.Errorf("%s: clean-round evaluation failed: %v", name, result.Reasons)
 			}
@@ -311,7 +311,7 @@ func requireFreshInactiveRuntime(state map[string]any) error {
 // ReviewPlan's exact Claim set by verification.EvaluateCleanRound — an
 // agent hand-written aggregate PASS is not a substitute.
 func guardCleanRoundValidFn(state map[string]any, _ map[string]string) error {
-	result := verification.EvaluateCleanRound(state)
+	result := evaluateGuardCleanRound(state)
 	if !result.Passed {
 		return fmt.Errorf("clean_round_valid: %v", result.Reasons)
 	}
@@ -327,13 +327,20 @@ func guardCleanRoundValidFn(state map[string]any, _ map[string]string) error {
 // the engine's validateCurrentEvidence apply (status=valid, current baseline
 // generation, current review round, fingerprint match), so the guard cannot
 // be satisfied by a re-used or re-hashed envelope.
-func guardACCCurrentFn(state map[string]any, _ map[string]string) error {
+func guardACCCurrentFn(state map[string]any, refs map[string]string) error {
 	root, _ := state["root"].(string)
 	if root == "" {
 		root = "."
 	}
-	if err := acceptance.ValidateCurrentS10Evidence(root, state, "acceptance"); err != nil {
+	if refs["acceptance_record"] == "" {
+		return fmt.Errorf("acc_complete: exact acceptance_record evidence ID is required")
+	}
+	candidate, err := acceptance.ValidateS10Candidate(acceptance.CandidateInput{State: state, Files: guardFiles(state, root), Kind: "acceptance", EvidenceID: refs["acceptance_record"]})
+	if err != nil {
 		return fmt.Errorf("acc_complete: %w", err)
+	}
+	if candidate.Envelope.Conclusion != "pass" {
+		return fmt.Errorf("acc_complete: current acceptance conclusion is %q", candidate.Envelope.Conclusion)
 	}
 	return nil
 }
@@ -342,13 +349,20 @@ func guardACCCurrentFn(state map[string]any, _ map[string]string) error {
 // release_audit_approved guard (RC-06, S10-14 — same stub lineage as
 // acc_complete). It requires a CURRENT release_audit evidence entry whose
 // registered fingerprint still matches the on-disk audit record.
-func guardReleaseAuditCurrentFn(state map[string]any, _ map[string]string) error {
+func guardReleaseAuditCurrentFn(state map[string]any, refs map[string]string) error {
 	root, _ := state["root"].(string)
 	if root == "" {
 		root = "."
 	}
-	if err := acceptance.ValidateCurrentS10Evidence(root, state, "release_audit"); err != nil {
+	if refs["release_audit_record"] == "" {
+		return fmt.Errorf("release_audit_approved: exact release_audit_record evidence ID is required")
+	}
+	candidate, err := acceptance.ValidateS10Candidate(acceptance.CandidateInput{State: state, Files: guardFiles(state, root), Kind: "release_audit", EvidenceID: refs["release_audit_record"]})
+	if err != nil {
 		return fmt.Errorf("release_audit_approved: %w", err)
+	}
+	if candidate.Envelope.Conclusion != "approved" && candidate.Envelope.Conclusion != "approved_with_risk" {
+		return fmt.Errorf("release_audit_approved: current audit conclusion is %q", candidate.Envelope.Conclusion)
 	}
 	return nil
 }
@@ -762,4 +776,21 @@ func guardFiles(state map[string]any, root string) fileview.Reader {
 		return files
 	}
 	return fileview.Disk{Root: root}
+}
+
+func cleanRoundRoot(state map[string]any) string {
+	root, _ := state["root"].(string)
+	if root == "" {
+		bound, _ := state["bound_req"].(map[string]any)
+		w, _ := bound["workspace"].(map[string]any)
+		root, _ = w["project_root"].(string)
+	}
+	return root
+}
+
+func evaluateGuardCleanRound(state map[string]any) verification.Result {
+	if check, ok := state["_clean_round_check"].(func(map[string]any) verification.Result); ok && check != nil {
+		return check(state)
+	}
+	return verification.EvaluateCleanRoundForRoot(cleanRoundRoot(state), state)
 }

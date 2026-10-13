@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestDiscoverE2EInventoryMapsRequiredCasesToSpecFingerprints(t *testing.T) {
+func TestDiscoverE2EInventoryKeepsSourceCandidatesUnqualified(t *testing.T) {
 	root := t.TempDir()
 	moduleDir := filepath.Join(root, "docs", "design", "prototypes", "settings")
 	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
@@ -41,12 +41,16 @@ func TestDiscoverE2EInventoryMapsRequiredCasesToSpecFingerprints(t *testing.T) {
 	if len(inventory.Cases) != 2 {
 		t.Fatalf("cases=%d, want 2 required browser cases: %+v", len(inventory.Cases), inventory.Cases)
 	}
-	if len(inventory.Assets) != 2 {
-		t.Fatalf("assets=%d, want one asset per mapped CASE: %+v", len(inventory.Assets), inventory.Assets)
+	if len(inventory.Assets) != 0 || len(inventory.Candidates) != 1 {
+		t.Fatalf("source mentions became admitted assets: %+v", inventory)
 	}
-	for _, asset := range inventory.Assets {
-		if asset.Path != specRel || len(asset.SHA256) != 64 || !strings.HasPrefix(asset.CaseRef, "CASE-") {
-			t.Fatalf("invalid asset fingerprint: %+v", asset)
+	candidate := inventory.Candidates[0]
+	if candidate.Path != specRel || len(candidate.SHA256) != 64 || len(candidate.PossibleCases) != 2 {
+		t.Fatalf("candidate lost its navigation hints: %+v", candidate)
+	}
+	for _, ref := range candidate.PossibleCases {
+		if ref.ModuleRef != "docs/design/prototypes/settings/cases.json" || !strings.HasPrefix(ref.CaseID, "CASE-") {
+			t.Fatalf("unscoped CASE hint: %+v", ref)
 		}
 	}
 }
@@ -98,8 +102,8 @@ func TestDraftPlanSplitsE2EByCaseAndFallsBackToColdStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, _ = DraftPlanForRoot(root, state, 3)
-	if plan.E2ECoverageState != "regression_available" || len(plan.E2EAssets) != 2 || plan.VerificationArtifactWorkspace != nil {
-		t.Fatalf("complete CASE->spec mapping must be regression_available: state=%q assets=%d workspace=%v", plan.E2ECoverageState, len(plan.E2EAssets), plan.VerificationArtifactWorkspace)
+	if plan.E2ECoverageState != "cold_start" || len(plan.E2EAssets) != 0 || plan.VerificationArtifactWorkspace == nil {
+		t.Fatalf("source mentions cannot prove reusable tests: state=%q assets=%d workspace=%v", plan.E2ECoverageState, len(plan.E2EAssets), plan.VerificationArtifactWorkspace)
 	}
 	if got := countLensAssignments(plan, "e2e"); got != 2 {
 		t.Fatalf("regression E2E assignments=%d, want one per required CASE", got)
@@ -114,4 +118,29 @@ func countLensAssignments(plan *Plan, lens string) int {
 		}
 	}
 	return count
+}
+
+func TestE2ESourceCandidatesKeepSameNamedCasesSeparate(t *testing.T) {
+	root := t.TempDir()
+	for _, module := range []string{"invoices", "contacts"} {
+		dir := filepath.Join(root, "docs/design/prototypes", module)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		data := `{"module":"` + module + `","cases":[{"id":"CASE-001","required":true,"browser_required":true}]}`
+		if err := os.WriteFile(filepath.Join(dir, "cases.json"), []byte(data), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "ambiguous.spec.ts"), []byte("// CASE-001"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	inventory, notes := discoverE2EInventory(root, map[string]any{})
+	if len(notes) != 0 || len(inventory.Cases) != 2 || len(inventory.Candidates) != 1 || len(inventory.Assets) != 0 {
+		t.Fatalf("inventory=%+v notes=%v", inventory, notes)
+	}
+	refs := inventory.Candidates[0].PossibleCases
+	if len(refs) != 2 || refs[0].ModuleRef == refs[1].ModuleRef {
+		t.Fatalf("same-named CASE identities collapsed: %+v", refs)
+	}
 }

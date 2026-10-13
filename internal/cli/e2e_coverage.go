@@ -23,7 +23,7 @@ func runE2ECoverage(args []string, stdout, stderr io.Writer) int {
 	inventoryPath := flags.String("inventory", "", "path to E2E scenario inventory JSON (required)")
 	gate := flags.Bool("gate", false, "exit non-zero when E2E ready gate fails (default: warn only)")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*inventoryPath) == "" {
 		fmt.Fprintln(stderr, "e2e-coverage requires --inventory <path>")

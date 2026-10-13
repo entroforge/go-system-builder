@@ -93,7 +93,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"clean_round_still_valid": {
 		ID:    "clean_round_still_valid",
-		Check: "verification.EvaluateCleanRound still reports a passing clean round at the current baseline generation, so neither baselines nor evidence drifted between round capture and release.",
+		Check: "verification.EvaluateCleanRoundForRoot verifies the pinned Plan, current module scope and consumed Result artifacts at the current baseline generation, so neither baselines nor evidence drifted between round capture and release.",
 	},
 	"completion_report_complete": {
 		ID:    "completion_report_complete",

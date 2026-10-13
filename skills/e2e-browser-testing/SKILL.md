@@ -279,6 +279,12 @@ the regression sweep mandated by `docs/rules/ui-prototype.md §8`.
 
 ### Sweep mechanics
 
+Keep module-qualified CASE identity throughout discovery and reporting. A
+source scan does not establish `regression_available`: it supplies candidate
+locations only, including potentially unrelated or comment-only files. Never
+manufacture selector/environment metadata to qualify a scan hit. Verify actual
+runner collection and retain execution evidence separately from file hashes.
+
 1. Enumerate browser-required CASE IDs, branch mappings, and their separate
    `F-NNN` and `PATH-*` refs from `docs/design/prototypes/<module>/cases.json`.
 2. Use each separate `F-NNN` ref to validate structural membership against
@@ -386,3 +392,7 @@ An e2e evidence bundle clears S7 when ALL hold:
 - [ ] Cross-REQ regression sweep results enumerated in the report (every `F-NNN` listed with PASS/FAIL)
 
 Failing any item is a QA finding; the bundle returns to S6 / S9 rework. No Clean Round without a passing e2e bundle.
+
+## Plan 1.1 module identity
+
+Execute only the registered Assignment. Its required Claims bind `scenario_refs` by `cases_path + case_id + path_ids`; another module with the same CASE ID cannot substitute. Keep all required browser CASE/PATHs within each selected module. Reusable E2E assets declare `module_id` and `cases_path`. Related consumers are assessed by the fixed Plan, not by the REQ prototype links alone; do not expand your write boundary on your own. Never treat candidate discovery as runner admission or PASS. See `docs/related-module-verification.md`.

@@ -12,6 +12,7 @@
 package controller
 
 import (
+	"github.com/entroforge/go-system-builder/internal/metrics"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
@@ -72,13 +73,15 @@ type ControlRequest struct {
 // progress (advanced / satisfied / not_ready / blocked / unknown) and the
 // committed Runtime snapshot.
 type ControlResult struct {
-	Decision    policy.Decision   // minimal safety result (allow | block)
-	QualityGate QualityGateResult // gate progress for the current cursor
-	Snapshot    runtime.Snapshot  // committed Runtime after the cycle
-	Guidance    *policy.Guidance  // recovery / next packet
-	Error       string            // non-empty when the cycle bailed out
-	ErrorCode   string            // stable caller-visible code (LOOP_CAS_STALE, ...)
-	Warnings    []string          // non-fatal cycle warnings
+	AssignmentID string            // observed Hook assignment for diagnostic correlation
+	Timing       metrics.Timing    // diagnostic spans, never authorization evidence
+	Decision     policy.Decision   // minimal safety result (allow | block)
+	QualityGate  QualityGateResult // gate progress for the current cursor
+	Snapshot     runtime.Snapshot  // committed Runtime after the cycle
+	Guidance     *policy.Guidance  // recovery / next packet
+	Error        string            // non-empty when the cycle bailed out
+	ErrorCode    string            // stable caller-visible code (LOOP_CAS_STALE, ...)
+	Warnings     []string          // non-fatal cycle warnings
 }
 
 // QualityGateResult is the Controller projection of the Evaluator's

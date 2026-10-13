@@ -15,18 +15,19 @@ func ValidateApprovedContractRef(root string, ref ContractRef) (ApprovedContract
 		return ApprovedContract{}, fmt.Errorf("validate approved RepairContract reference: %w", err)
 	}
 	var document struct {
-		ContractID             string       `json:"repair_contract_id"`
-		CaseID                 string       `json:"case_id"`
-		Revision               int          `json:"revision"`
-		Status                 string       `json:"status"`
-		SourceFindingIDs       []string     `json:"source_finding_ids"`
-		Units                  []RepairUnit `json:"repair_units"`
-		ProspectiveScope       []string     `json:"prospective_scope"`
-		ForbiddenScope         []string     `json:"forbidden_scope"`
-		CompatibilityMigration string       `json:"compatibility_migration"`
-		ApprovedBy             string       `json:"approved_by"`
-		ApprovedAt             string       `json:"approved_at"`
-		ApprovalHash           string       `json:"approval_hash"`
+		ContractID               string       `json:"repair_contract_id"`
+		CaseID                   string       `json:"case_id"`
+		Revision                 int          `json:"revision"`
+		Status                   string       `json:"status"`
+		SourceFindingIDs         []string     `json:"source_finding_ids"`
+		Units                    []RepairUnit `json:"repair_units"`
+		ProspectiveScope         []string     `json:"prospective_scope"`
+		ForbiddenScope           []string     `json:"forbidden_scope"`
+		CompatibilityMigration   string       `json:"compatibility_migration"`
+		ApprovedBy               string       `json:"approved_by"`
+		ApprovedAt               string       `json:"approved_at"`
+		ApprovalHash             string       `json:"approval_hash"`
+		StopEscalationConditions []string     `json:"stop_escalation_conditions"`
 	}
 	if err := json.Unmarshal(data, &document); err != nil {
 		return ApprovedContract{}, fmt.Errorf("decode approved RepairContract: %w", err)
@@ -55,7 +56,8 @@ func ValidateApprovedContractRef(root string, ref ContractRef) (ApprovedContract
 		ContractID: document.ContractID, CaseID: document.CaseID, Revision: document.Revision, Status: document.Status,
 		SourceFindingIDs: append([]string(nil), document.SourceFindingIDs...), Units: append([]RepairUnit(nil), document.Units...),
 		ProspectiveScope: append([]string(nil), document.ProspectiveScope...), ForbiddenScope: append([]string(nil), document.ForbiddenScope...), CompatibilityMigration: document.CompatibilityMigration,
-		Ref: ContractRef{Path: relative, SHA256: ref.SHA256},
+		Ref:                      ContractRef{Path: relative, SHA256: ref.SHA256},
+		StopEscalationConditions: append([]string(nil), document.StopEscalationConditions...),
 	}, nil
 }
 

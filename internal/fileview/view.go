@@ -5,6 +5,7 @@ package fileview
 import (
 	"context"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"io/fs"
 	"os"
@@ -20,31 +21,62 @@ type Rule struct {
 	Source string `json:"source"`
 }
 type View struct {
+	ctx               context.Context
 	Root, Ref, Commit string
 	rules             []Rule
 	scope             pathscope.Worktrees
 }
 
+// WithContext shares the immutable source declaration and resolved commit,
+// while all subsequent reads and verification obey the caller's budget.
+func (v *View) WithContext(ctx context.Context) *View {
+	if v == nil {
+		return nil
+	}
+	copy := *v
+	copy.ctx = ctx
+	return &copy
+}
+
 func Resolve(root, ref string) (string, error) {
+	return ResolveContext(context.Background(), root, ref)
+}
+
+func ResolveContext(ctx context.Context, root, ref string) (string, error) {
 	if ref == "" || strings.HasPrefix(ref, "-") {
 		return "", fmt.Errorf("explicit Git reference is required")
 	}
-	out, e := git(root, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	out, e := gitContext(ctx, root, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
 	if e != nil {
 		return "", e
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 func git(root string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	return gitContext(context.Background(), root, args...)
+}
+
+func gitContext(parent context.Context, root string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	defer metrics.StartPhase(ctx, "fileview_git")()
 	defer cancel()
 	out, e := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...).Output()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if e != nil {
 		return nil, fmt.Errorf("git %s: %w", args[0], e)
 	}
 	return out, nil
 }
 func New(root, ref string, rules []Rule) (*View, error) {
+	return NewContext(context.Background(), root, ref, rules)
+}
+
+func NewContext(ctx context.Context, root, ref string, rules []Rule) (*View, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	root, e := filepath.Abs(root)
 	if e != nil {
 		return nil, e
@@ -52,7 +84,7 @@ func New(root, ref string, rules []Rule) (*View, error) {
 	if len(rules) == 0 {
 		return nil, fmt.Errorf("missing upstream file source contract")
 	}
-	v := &View{Root: root, Ref: ref, rules: append([]Rule(nil), rules...), scope: pathscope.New(root)}
+	v := &View{ctx: ctx, Root: root, Ref: ref, rules: append([]Rule(nil), rules...), scope: pathscope.New(root)}
 	seen := map[string]bool{}
 	needsGit := false
 	for i, r := range rules {
@@ -72,7 +104,7 @@ func New(root, ref string, rules []Rule) (*View, error) {
 		needsGit = needsGit || r.Source == "git_tree"
 	}
 	if needsGit {
-		v.Commit, e = Resolve(root, ref)
+		v.Commit, e = ResolveContext(ctx, root, ref)
 		if e != nil {
 			return nil, e
 		}
@@ -122,6 +154,10 @@ func (v *View) diskPath(p string) (string, error) {
 	return real, nil
 }
 func (v *View) ReadFile(path string) ([]byte, error) {
+	defer metrics.StartPhase(v.context(), "fileview_read")()
+	if err := v.context().Err(); err != nil {
+		return nil, err
+	}
 	p, source, e := v.source(path)
 	if e != nil {
 		return nil, e
@@ -134,7 +170,7 @@ func (v *View) ReadFile(path string) ([]byte, error) {
 		return os.ReadFile(full)
 	}
 	// Reject symlinks/submodules instead of treating their pointer bytes as content.
-	out, e := git(v.Root, "ls-tree", "-z", v.Commit, "--", p)
+	out, e := gitContext(v.context(), v.Root, "ls-tree", "-z", v.Commit, "--", p)
 	if e != nil {
 		return nil, e
 	}
@@ -146,9 +182,13 @@ func (v *View) ReadFile(path string) ([]byte, error) {
 	if len(fields) != 3 || fields[1] != "blob" || fields[0] == "120000" {
 		return nil, fmt.Errorf("not a regular Git blob: %s", p)
 	}
-	return git(v.Root, "cat-file", "blob", fields[2])
+	return gitContext(v.context(), v.Root, "cat-file", "blob", fields[2])
 }
 func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
+	defer metrics.StartPhase(v.context(), "fileview_read_dir")()
+	if err := v.context().Err(); err != nil {
+		return nil, err
+	}
 	p, source, e := v.source(path)
 	if e != nil {
 		return nil, e
@@ -162,7 +202,7 @@ func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
 	}
 	spec := v.Commit + ":"
 	if p != "." {
-		out, err := git(v.Root, "ls-tree", "-z", v.Commit, "--", p)
+		out, err := gitContext(v.context(), v.Root, "ls-tree", "-z", v.Commit, "--", p)
 		if err != nil {
 			return nil, err
 		}
@@ -171,7 +211,7 @@ func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
 		}
 		spec += p
 	}
-	out, e := git(v.Root, "ls-tree", "-z", spec)
+	out, e := gitContext(v.context(), v.Root, "ls-tree", "-z", spec)
 	if e != nil {
 		return nil, e
 	}
@@ -203,10 +243,13 @@ func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
 	return entries, nil
 }
 func (v *View) Verify() error {
+	if err := v.context().Err(); err != nil {
+		return err
+	}
 	if v.Commit == "" {
 		return nil
 	}
-	current, e := Resolve(v.Root, v.Ref)
+	current, e := ResolveContext(v.context(), v.Root, v.Ref)
 	if e != nil {
 		return e
 	}
@@ -236,4 +279,11 @@ func canonicalRoot(root string) string {
 		return p
 	}
 	return root
+}
+
+func (v *View) context() context.Context {
+	if v.ctx != nil {
+		return v.ctx
+	}
+	return context.Background()
 }

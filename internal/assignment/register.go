@@ -13,6 +13,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/dispatch"
 	"github.com/entroforge/go-system-builder/internal/identity"
+	"github.com/entroforge/go-system-builder/internal/review"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -98,6 +99,17 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 	if err := json.Unmarshal(manifestData, &value); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode team manifest: %w", err)
 	}
+	var verifyReviewScope func(map[string]any) error
+	if value.WorkgroupKind == "delivery_verifier" || value.WorkgroupKind == "qa" || value.WorkgroupKind == "e2e_browser" {
+		plan, _, err := review.LoadPlan(root, current)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		verifyReviewScope, err = review.PrepareModuleScopeValidation(root, current, plan)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+	}
 	for _, item := range value.Assignments {
 		if err := identity.ValidateAgentID(item.AgentID); err != nil {
 			return loopruntime.Snapshot{}, fmt.Errorf("team manifest assignment %s: %w", item.AssignmentID, err)
@@ -120,12 +132,11 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 	responsibilityIDs := assignedResponsibilities(value)
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	// Activation envelopes are staged while the mutation builds its candidate
-	// state. Keep their exact bytes' digests so a rejected Apply can remove only
-	// the files created by this attempt. Store.Update already protects the
-	// cleanup with the same revision/pending-marker checks used by every other
-	// staged artifact; if the commit may still be recoverable, the file is
-	// intentionally retained.
+	// Legacy activation drafts are written while Apply builds its candidate.
+	// They are mutable inputs to the later activation chain, not immutable S7
+	// evidence. Generic failure cleanup now retains published paths: an old
+	// caller reference list cannot prove they are unreachable from history.
+	// Authorization still requires a committed agent/activation_ref projection.
 	stagedActivations := make([]loopruntime.ArtifactCleanupRequest, 0, len(value.Assignments))
 	snapshot, updateErr := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
 		EventID:        fmt.Sprintf("evt-register-%s-r%d", value.WorkgroupID, commitRevision+1),
@@ -140,6 +151,11 @@ func Register(root, statePath, journalPath string, request Request) (loopruntime
 		From:           cursor,
 		To:             cursor,
 		Apply: func(state map[string]any) error {
+			if verifyReviewScope != nil {
+				if err := verifyReviewScope(state); err != nil {
+					return err
+				}
+			}
 			if err := dispatch.CheckRegistration(root, state, request.TaskID); err != nil {
 				return err
 			}

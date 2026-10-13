@@ -27,7 +27,7 @@ func runWorkspaceDelivery(args []string, stdout, stderr io.Writer) int {
 	agent := fs.String("agent", "", "registered owner")
 	retry := fs.Bool("retry-preserved", false, "retry the same immutable candidate after resolving its recorded failure")
 	if err := parseWorkspaceFlags(fs, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)

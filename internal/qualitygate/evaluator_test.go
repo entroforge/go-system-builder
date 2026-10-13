@@ -561,6 +561,10 @@ func TestAcceptanceGateRejectsManifestOutsideAuthoritativeInventory(t *testing.T
 		"audit_manifest_sha256": sha256Hex(manifest),
 	})
 	input.Root = root
+	input.Files.(memoryFiles)["docs/requirements/REQ-TEST.md"] = req
+	input.Files.(memoryFiles)["docs/dev/contracts/BE-TEST.md"] = contract
+	input.Files.(memoryFiles)["docs/dev/tasks/TASK-TEST.md"] = task
+	input.Files.(memoryFiles)[".claude/review/plans/review-plan-test.json"] = plan
 	input.Files.(memoryFiles)["s10/acceptance-manifest.json"] = manifest
 	input.Snapshot.State["bound_req"] = map[string]any{
 		"id": "REQ-TEST", "path": "docs/requirements/REQ-TEST.md", "sha256": reqSHA,
@@ -611,7 +615,7 @@ func TestAcceptanceGateRejectsManifestEvidenceReferenceDrift(t *testing.T) {
 	if result.Status != qualitygate.StatusUnknown || result.ErrorCode != qualitygate.ErrorGateUnknown {
 		t.Fatalf("status = %q code=%q, want unknown/%s", result.Status, result.ErrorCode, qualitygate.ErrorGateUnknown)
 	}
-	if !containsPrefix(result.Conflicts, "s10:acceptance_manifest:ev-acc:evidence_ref_missing") {
+	if !containsConflictFragment(result.Conflicts, "evidence_ref") {
 		t.Fatalf("conflicts = %#v, want missing evidence reference", result.Conflicts)
 	}
 }
@@ -735,7 +739,7 @@ func TestAcceptanceReviewRequiredGateRejectsTamperedManifest(t *testing.T) {
 	if result.Status != qualitygate.StatusUnknown || result.ErrorCode != qualitygate.ErrorGateUnknown {
 		t.Fatalf("status = %q code=%q conflicts=%v, want unknown/%s for a tampered review_required manifest", result.Status, result.ErrorCode, result.Conflicts, qualitygate.ErrorGateUnknown)
 	}
-	if !containsPrefix(result.Conflicts, "s10:acceptance_manifest:ev-acc:sha256_mismatch") {
+	if !containsConflictFragment(result.Conflicts, "manifest drifted") {
 		t.Fatalf("conflicts = %#v, want a sha256_mismatch conflict", result.Conflicts)
 	}
 }
@@ -800,7 +804,7 @@ func TestS10GateFailsClosedWhenExternalBaselineUnverifiable(t *testing.T) {
 	// A current-generation completion envelope whose artifact was never
 	// materialized: the projection cannot verify the denominator.
 	envelope := []byte(`{"kind":"completion_report","changed_paths":["internal/api/handler.go"],"reviewed_paths":[]}` + "\n")
-	files["evidence/ev-completion.json"] = envelope
+	// Deliberately absent from the declared file view, not just disk.
 	input.Snapshot.State["evidence"] = append(input.Snapshot.State["evidence"].([]any), map[string]any{
 		"id": "ev-completion", "kind": "completion_report", "path": "evidence/ev-completion.json",
 		"sha256": sha256Hex(envelope), "status": "valid", "baseline_generation": 1,
@@ -815,7 +819,7 @@ func TestS10GateFailsClosedWhenExternalBaselineUnverifiable(t *testing.T) {
 	if result.Status != qualitygate.StatusUnknown || result.ErrorCode != qualitygate.ErrorGateUnknown {
 		t.Fatalf("status = %q code=%q, want unknown/%s when the external baseline is unverifiable", result.Status, result.ErrorCode, qualitygate.ErrorGateUnknown)
 	}
-	if !containsPrefix(result.Conflicts, "s10:acceptance_manifest:ev-acc:external_baseline_unverifiable") {
+	if !containsConflictFragment(result.Conflicts, "ev-completion") {
 		t.Fatalf("conflicts = %#v, want external_baseline_unverifiable", result.Conflicts)
 	}
 }
@@ -1229,7 +1233,7 @@ func TestMissingS10EvidenceRefsRejectsPhantom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if !containsPrefix(result.Conflicts, "s10:acceptance_manifest:ev-acc:evidence_ref_missing") {
+	if !containsConflictFragment(result.Conflicts, "evidence_ref") {
 		t.Fatalf("conflicts = %#v, want phantom evidence_ref_missing", result.Conflicts)
 	}
 }
@@ -1263,7 +1267,7 @@ func TestS10SelfEvidenceRefRejectsEnvelopeSelfProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if !containsPrefix(result.Conflicts, "s10:acceptance_manifest:ev-acc:evidence_ref_missing") {
+	if !containsConflictFragment(result.Conflicts, "evidence_ref") {
 		t.Fatalf("conflicts = %#v, want self-proof evidence_ref_missing", result.Conflicts)
 	}
 }
@@ -1297,7 +1301,11 @@ func s10GateInput(t *testing.T, gateID, transitionID, lifecycleState string, ext
 			"responsibility_id": responsibility, "scope_refs": []any{},
 		}, data
 	}
-	files := memoryFiles{}
+	files := memoryFiles{
+		"authority/REQ.md":      []byte("# Requirement"),
+		"authority/contract.md": []byte("# Contract"),
+		"authority/plan.json":   []byte(`{"review_round":2,"baseline_generation":1,"claims":[{"claim_id":"claim-1"}]}`),
+	}
 	acceptance, acceptanceData := addEvidence("ev-acc", "acceptance", "Orchestrator", "pass")
 	files["evidence/ev-acc.json"] = acceptanceData
 	clean, cleanData := addEvidence("ev-clean", "clean_round", "Orchestrator", "pass")
@@ -1313,8 +1321,9 @@ func s10GateInput(t *testing.T, gateID, transitionID, lifecycleState string, ext
 			"runtime_id": "loop-test",
 			"lifecycle":  map[string]any{"state": lifecycleState, "phase": nil},
 			"baseline":   map[string]any{"generation": 1},
-			"review":     map[string]any{"round": 2},
-			"documents":  []any{},
+			"review":     map[string]any{"round": 2, "plan": map[string]any{"path": "authority/plan.json", "sha256": sha256Hex(files["authority/plan.json"])}},
+			"bound_req":  map[string]any{"id": "REQ-AC-001", "path": "authority/REQ.md", "sha256": sha256Hex(files["authority/REQ.md"])},
+			"documents":  []any{map[string]any{"id": "CONTRACT-001", "kind": "contract", "generation": 1, "path": "authority/contract.md", "sha256": sha256Hex(files["authority/contract.md"])}},
 			"evidence":   evidence,
 		}},
 		GateID: gateID, TransitionID: transitionID, Files: files,
@@ -1332,6 +1341,7 @@ func validS10Manifest(t *testing.T, kind string) []byte {
 		{"CONTRACT-001", "contract"},
 		{"PATH-001", "changed_path"},
 		{"AUDIT-001", "audit_area"},
+		{"claim-1", "claim"},
 	} {
 		items = append(items, map[string]any{
 			"id": item.id, "category": item.category, "source_refs": []string{"source:" + item.id},

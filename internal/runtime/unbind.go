@@ -59,7 +59,7 @@ func (s *Store) Unbind(freshState map[string]any, archiveRoot string, approval U
 		occurredAt = time.Now().UTC()
 	}
 
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	release, err := s.lock()
 	if err != nil {
 		return RolloverRecord{}, err
 	}
@@ -184,6 +184,9 @@ func (s *Store) archiveAndResetWithBoundary(stateData, journalData []byte, runti
 		SourceJournalSHA256: journalHash,
 		SourceRuntimeID:     runtimeID,
 		SourceRevision:      intPointer(revision),
+	}
+	if err := s.context().Err(); err != nil {
+		return RolloverRecord{}, err
 	}
 	if err := atomicWriteJSON(s.rolloverMarkerPath(), pending); err != nil {
 		return RolloverRecord{}, fmt.Errorf("record pending runtime rollover: %w", err)

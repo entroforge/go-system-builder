@@ -188,6 +188,7 @@ type RuntimeContext struct {
 	PlanReportedRef  string `json:"plan_reported_ref,omitempty"`
 	DispatchMode     string `json:"dispatch_mode,omitempty"`
 	RepairStatus     string `json:"repair_status,omitempty"`
+	RepairIntent     string `json:"repair_intent,omitempty"`
 	RepairSessionID  string `json:"repair_session_id,omitempty"`
 	RepairPlanRef    string `json:"repair_plan_ref,omitempty"`
 	RepairPlanSHA256 string `json:"repair_plan_sha256,omitempty"`
@@ -538,7 +539,7 @@ func repairPreExecutionWriteDecision(input Input) (Decision, bool) {
 }
 
 func repairPreExecutionBlock(input Input, rawPath string) Decision {
-	return Decision{
+	decision := Decision{
 		Decision:     "deny",
 		RuleID:       RuleRepairWriteBeforeExecution,
 		AffectedPath: reviewerRelativePath(input, rawPath),
@@ -550,6 +551,7 @@ func repairPreExecutionBlock(input Input, rawPath string) Decision {
 		},
 		Retry: RetryAfterRecoveryValidation,
 	}
+	return explainUnknownShellEffects(input, decision)
 }
 
 // repairAssignmentScopeDecision is the S9 phase-two product-write barrier.
@@ -570,6 +572,12 @@ func repairAssignmentScopeDecision(input Input) (Decision, bool) {
 	for _, path := range paths {
 		if repairControlPathAllowed(input, path) {
 			continue
+		}
+		if input.Runtime.RepairIntent == "confirm" || input.Runtime.RepairIntent == "unknown" {
+			decision := repairAssignmentBlock(input, path)
+			decision.Reason = "confirmation Session verifies inherited bytes and cannot write the implementation surface"
+			decision.Recovery = []string{"keep confirmation evidence in the repair-control directories; if implementation is needed, return to S8/S9 planning for an implement Session"}
+			return decision, true
 		}
 		if input.Runtime.Agent == nil || input.Runtime.Agent.RepairAssignmentID == "" {
 			return repairAssignmentBlock(input, path), true
@@ -593,7 +601,7 @@ func repairAssignmentBlock(input Input, rawPath string) Decision {
 	if input.Runtime.Agent != nil && input.Runtime.Agent.RepairAssignmentID != "" {
 		assignment = input.Runtime.Agent.RepairAssignmentID
 	}
-	return Decision{
+	decision := Decision{
 		Decision:     "deny",
 		RuleID:       RuleRepairAssignmentScope,
 		AffectedPath: reviewerRelativePath(input, rawPath),
@@ -605,6 +613,7 @@ func repairAssignmentBlock(input Input, rawPath string) Decision {
 		},
 		Retry: RetryAfterRecoveryValidation,
 	}
+	return explainUnknownShellEffects(input, decision)
 }
 
 func repairMutationPaths(input Input) ([]string, bool) {
@@ -822,18 +831,20 @@ func reviewerProductWriteDecision(input Input) (Decision, bool) {
 
 func reviewerProductWriteBlock(input Input, rawPath string) Decision {
 	rel := reviewerRelativePath(input, rawPath)
-	return Decision{
+	decision := Decision{
 		Decision:     "deny",
 		RuleID:       RuleReviewerProductWrite,
-		Reason:       fmt.Sprintf("verification stage freezes the product baseline; %s is outside the reviewer write surfaces (.claude/, docs/reports/, and the ReviewPlan verification_artifact_workspace)", rel),
+		Reason:       fmt.Sprintf("verification stage freezes the product baseline; %s is outside the reviewer write surfaces (.claude/evidence/, docs/reports/, and the ReviewPlan verification_artifact_workspace)", rel),
 		AffectedPath: rel,
 		Recovery: []string{
-			"write review evidence and result drafts under .claude/ or docs/reports/",
+			"write review evidence and result drafts under .claude/evidence/ or docs/reports/",
 			"E2E cold-start spec/fixture writes belong in the ReviewPlan verification_artifact_workspace",
+			"if command effects are unknown, use structured Read/search tools or a platform-enforced isolated workspace; classification uncertainty is not a product finding",
 			"if the product implementation must change, submit a ReviewResult with verdict=finding instead (L3-S7: Reviewers never repair)",
 		},
 		Retry: RetryAfterRecoveryValidation,
 	}
+	return explainUnknownShellEffects(input, decision)
 }
 
 // phaseProductWriteDecision closes the RC-04 phase bare windows (S8-1,
@@ -937,18 +948,19 @@ func phaseProductWriteBlock(input Input, rawPath string) Decision {
 	if input.Runtime.CurrentPhase != "" {
 		cursor += "." + input.Runtime.CurrentPhase
 	}
-	return Decision{
+	decision := Decision{
 		Decision:     "deny",
 		RuleID:       RulePhaseProductWrite,
-		Reason:       fmt.Sprintf("%s freezes the product surface; %s is outside the allowed write surfaces (.claude/, docs/reports/, docs/reports/release-audits/, and the ReviewPlan verification_artifact_workspace)", cursor, rel),
+		Reason:       fmt.Sprintf("%s freezes the product surface; %s is outside the allowed write surfaces (.claude/evidence/, docs/reports/, docs/reports/release-audits/, and the ReviewPlan verification_artifact_workspace)", cursor, rel),
 		AffectedPath: rel,
 		Recovery: []string{
-			"write investigation, repair and audit artifacts under .claude/ or docs/reports/ (release-audit reports also allow docs/reports/release-audits/)",
+			"write investigation, repair and audit artifacts under .claude/evidence/ or docs/reports/ (release-audit reports also allow docs/reports/release-audits/)",
 			"E2E cold-start spec/fixture writes belong in the ReviewPlan verification_artifact_workspace",
 			"product implementation changes are legal only in bug_resolution.fixing through BeginRepairExecution with an approved RepairContract and a dispatched repair Assignment (S9); verification findings must go through a ReviewResult with verdict=finding instead",
 		},
 		Retry: RetryAfterRecoveryValidation,
 	}
+	return explainUnknownShellEffects(input, decision)
 }
 
 func reviewerRelativePath(input Input, rawPath string) string {
@@ -1041,228 +1053,14 @@ func allReviewWritePathsAllowed(input Input, paths []string) bool {
 	return true
 }
 
-var (
-	bashRedirectPattern      = regexp.MustCompile(`(^|[[:space:]])([0-9]*>>?|[0-9]?&>)[[:space:]]*("[^"]+"|'[^']+'|[^[:space:]&;|]+)`)
-	bashPythonOpenPattern    = regexp.MustCompile(`open[[:space:]]*\([[:space:]]*["']([^"']+)["'][[:space:]]*,[[:space:]]*["'][^"']*[wax+][^"']*["']`)
-	bashInterpreterPattern   = regexp.MustCompile(`\b(python[0-9]*|node|nodejs|npm|npx|yarn|pnpm|make|cargo)\b`)
-	bashHeredocPattern       = regexp.MustCompile(`<<-?\s*["']?\w*`)
-	bashInterpreterProbeArgs = regexp.MustCompile(`(^|[[:space:]])(--version|-V|--help|-h)([[:space:]]|$)`)
-)
-
-func isInterpreterReadOnlyProbe(lower string) bool {
-	// Only version/help probes are safe. Everything else in the interpreter
-	// family is conservatively treated as a potential write (fail-closed).
-	if bashInterpreterProbeArgs.MatchString(lower) {
-		return true
-	}
-	// `npm --version` and friends embed the flag after the tool name; also
-	// handle `python --version` style without relying on word boundaries.
-	for _, probe := range []string{"--version", "--help", " -v ", " -h "} {
-		if strings.Contains(lower, probe) {
-			return true
-		}
-	}
-	fields := strings.Fields(lower)
-	if len(fields) == 2 && (fields[1] == "--version" || fields[1] == "-v" || fields[1] == "--help" || fields[1] == "-h" || fields[1] == "version" || fields[1] == "help") {
-		return true
-	}
-	return false
-}
-
-// nullRedirectProbe keeps the exemption narrower than the general command
-// classifier: shells, arbitrary executables, find -exec/-delete, interpreter
-// flags and git output/config overrides must not acquire a new bypass.
-func nullRedirectProbe(command string) bool {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return true
-	}
-	switch fields[0] {
-	case "ls", "cat", "echo", "grep", "head", "tail", "wc", "pwd", "stat":
-		return true
-	case "rg":
-		return !strings.Contains(command, "--pre")
-	case "git":
-		if len(fields) < 2 || strings.Contains(command, "--output") || strings.Contains(command, "--ext-diff") || strings.Contains(command, "--textconv") {
-			return false
-		}
-		return contains([]string{"diff", "status", "log", "show", "rev-parse", "ls-files", "ls-tree", "diff-tree", "diff-index", "diff-files"}, fields[1])
-	default:
-		return false
-	}
-}
-
-// bashMutationPaths is intentionally a small conservative classifier, not a
-// shell parser. It catches common write forms and fails closed for dynamic
-// mutators; read/test commands remain outside the S7 write rule.
-//
-// RC-03 (S7-2) extension: the interpreter family (python/node/npm/make/cargo/
-// go run/heredoc/inline script) is treated as potentially mutating —
-// `python3 gen_fixtures.py` must not bypass the frozen baseline. Commands
-// whose target cannot be statically extracted are still marked mutating with
-// an empty path slice so the caller fails closed via the dynamic-mutation
-// branch instead of allowing a bypass.
+// bashMutationPaths preserves the policy API while using the shared structural
+// classifier. Unknown effects intentionally carry no purported safe target.
 func bashMutationPaths(command string) ([]string, bool) {
-	// Discarding output is not a filesystem mutation. Remove only literal
-	// null-device redirections before inspecting the command itself. Never
-	// treat an arbitrary write to /dev/null (rm, mv, tee, etc.) as exempt.
-	original := command
-	command = bashRedirectPattern.ReplaceAllStringFunc(command, func(redirection string) string {
-		match := bashRedirectPattern.FindStringSubmatch(redirection)
-		if strings.Trim(match[3], "\"'") == "/dev/null" {
-			return match[1]
-		}
-		return redirection
-	})
-	if command != original {
-		if !nullRedirectProbe(command) {
-			return []string{"<unproven Bash mutation>"}, true
-		}
-		// This classifier is not a shell interpreter. Keep compound commands
-		// and substitutions fail-closed rather than exempting a later mutator.
-		if strings.ContainsAny(command, ";|&\n`()") || strings.Contains(command, "$(") {
-			return []string{"<compound Bash mutation>"}, true
-		}
+	effects := classifier.AnalyzeEffects(command)
+	if effects.Effect == classifier.UnknownEffects {
+		return nil, true
 	}
-	lower := strings.ToLower(strings.TrimSpace(command))
-	trimmed := strings.TrimSpace(command)
-	paths := []string{}
-	mutating := false
-	add := func(path string) {
-		path = strings.Trim(path, "\"'")
-		if path != "" {
-			paths = append(paths, path)
-		}
-	}
-
-	// Heredoc / here-string / inline-script markers: `<<`, `<<<`, `<<-`.
-	// `cat <<'EOF' > path` is already caught by the redirect pattern, but a
-	// bare `python3 <<'PY'` or `node <<'JS'` heredoc without an explicit
-	// redirect still executes a script that can mutate the product surface.
-	if bashHeredocPattern.MatchString(command) || strings.Contains(command, "<<<") {
-		mutating = true
-	}
-	// Interpreter family invocation — even without an extractable literal path
-	// the command is an inline script execution that can write arbitrarily.
-	// Checked here (before early return) so `python3 gen_fixtures.py` or
-	// `node -e '...'` never bypasses as non-mutating.
-	if bashInterpreterPattern.MatchString(lower) {
-		// Explicitly read-only probe allowlist: version/help probes are not
-		// product mutations. Everything else in this family is conservatively
-		// treated as a potential write (fail-closed); a true read-only script
-		// that is denied can be re-expressed as a `Read` tool call.
-		if !isInterpreterReadOnlyProbe(lower) {
-			mutating = true
-		}
-	}
-	// `go run` is an interpreter-family invocation hidden behind the `go`
-	// tool; `go generate` is already handled in the switch below.
-	if strings.Contains(lower, "go run") {
-		mutating = true
-	}
-	for _, match := range bashRedirectPattern.FindAllStringSubmatch(command, -1) {
-		mutating = true
-		add(match[3])
-	}
-	if strings.Contains(lower, "sed -i") || strings.Contains(lower, "sed  -i") || strings.Contains(lower, "perl -i") {
-		mutating = true
-		fields := strings.Fields(command)
-		if len(fields) > 0 {
-			add(fields[len(fields)-1])
-		}
-	}
-	if strings.Contains(lower, "open(") || strings.Contains(lower, "open (") {
-		if matches := bashPythonOpenPattern.FindAllStringSubmatch(command, -1); len(matches) > 0 {
-			mutating = true
-			for _, match := range matches {
-				add(match[1])
-			}
-		} else if strings.Contains(lower, "write") || strings.Contains(lower, "truncate") {
-			mutating = true
-		}
-	}
-	// Shell hooks commonly hide writes in a short Python/Node expression. The
-	// hook cannot safely prove the target of these APIs in all cases, so treat
-	// the command as a mutation even when no literal path was extracted; the
-	// caller then fails closed rather than allowing a dynamic write to bypass
-	// the verification surface.
-	if strings.Contains(lower, "path(") && (strings.Contains(lower, ".write_text") || strings.Contains(lower, ".write_bytes") || strings.Contains(lower, ".unlink") || strings.Contains(lower, ".mkdir")) {
-		mutating = true
-	}
-	if strings.Contains(lower, "fs.writefilesync") || strings.Contains(lower, "fs.appendfilesync") || strings.Contains(lower, "fs.rmsync") || strings.Contains(lower, "fs.mkdirSync") || strings.Contains(lower, "fs.mkdirasync") || strings.Contains(lower, ".writefilesync") || strings.Contains(lower, ".appendfilesync") || strings.Contains(lower, ".rmsync") || strings.Contains(lower, ".mkdirsync") {
-		mutating = true
-	}
-	// Inline script flags: `python -c`, `python3 -m`, `node -e`, etc. already
-	// covered by the interpreter-family check above, but make the intent
-	// explicit so a future allowlist does not accidentally re-open them.
-	if strings.Contains(lower, "python") && (strings.Contains(trimmed, " -c ") || strings.Contains(trimmed, " -m ") || strings.Contains(lower, " -c'") || strings.Contains(lower, " -c\"")) {
-		mutating = true
-	}
-	if strings.Contains(lower, "node ") && (strings.Contains(trimmed, " -e ") || strings.Contains(lower, " -e'") || strings.Contains(lower, " -e\"") || strings.Contains(lower, "--eval")) {
-		mutating = true
-	}
-	fields := strings.Fields(command)
-	if len(fields) > 0 {
-		base := strings.TrimPrefix(filepath.Base(strings.Trim(fields[0], "\"'")), "env")
-		switch base {
-		case "tee":
-			mutating = true
-			for _, field := range fields[1:] {
-				if !strings.HasPrefix(field, "-") {
-					add(field)
-					break
-				}
-			}
-		case "cp", "mv", "install":
-			mutating = true
-			if len(fields) > 1 {
-				add(fields[len(fields)-1])
-			}
-		case "rm", "touch", "mkdir":
-			mutating = true
-			for _, field := range fields[1:] {
-				if !strings.HasPrefix(field, "-") {
-					add(field)
-				}
-			}
-		case "go":
-			if len(fields) > 1 && (fields[1] == "generate" || fields[1] == "run") {
-				mutating = true
-			}
-		case "git":
-			for _, field := range fields[1:] {
-				if contains([]string{"apply", "checkout", "restore", "clean", "reset", "mv", "rm", "commit"}, strings.TrimLeft(field, "-")) {
-					mutating = true
-					break
-				}
-			}
-		case "python", "python3", "python2", "node", "nodejs", "npm", "npx", "yarn", "pnpm", "make", "cargo":
-			// Interpreter / build-tool family: already marked mutating above;
-			// attempt to extract a trailing file argument as the affected path
-			// for a more precise denial message, but mutating stays true even
-			// when no literal can be extracted (fail-closed).
-			if !isInterpreterReadOnlyProbe(lower) {
-				mutating = true
-				isInlineScript := strings.Contains(lower, " -c ") || strings.Contains(lower, " -c'") || strings.Contains(lower, " -c\"") || strings.Contains(lower, " -m ") || strings.Contains(lower, " -m'") || strings.Contains(lower, " -m\"") || strings.Contains(lower, " -e ") || strings.Contains(lower, " -e'") || strings.Contains(lower, " -e\"") || strings.Contains(lower, "--eval") || strings.Contains(lower, "open(") || strings.Contains(command, "<<")
-				if !isInlineScript {
-					for i := len(fields) - 1; i >= 1; i-- {
-						if !strings.HasPrefix(fields[i], "-") && !strings.Contains(fields[i], "=") {
-							// Skip the subcommand itself for npm/make/cargo.
-							add(fields[i])
-							break
-						}
-					}
-				}
-			}
-		}
-	}
-	if strings.HasPrefix(lower, "ln ") || strings.Contains(lower, " ln -") {
-		mutating = true
-	}
-	if strings.Contains(lower, "git") && strings.Contains(lower, " apply") {
-		mutating = true
-	}
-	return paths, mutating
+	return effects.Paths, effects.Effect == classifier.KnownWrites
 }
 
 // protectedReleaseDecision implements RC-06 (S10-3): the protected-commands
@@ -1749,4 +1547,23 @@ func pathResolutionBase(input Input) string {
 		}
 	}
 	return input.CWD
+}
+
+func explainUnknownShellEffects(input Input, decision Decision) Decision {
+	if input.ToolName != "Bash" {
+		return decision
+	}
+	command, _ := input.ToolInput["command"].(string)
+	effect := classifier.AnalyzeEffects(command)
+	if effect.Effect != classifier.UnknownEffects {
+		return decision
+	}
+	decision.Reason = "unknown_effects: " + effect.Reason
+	decision.ParsedCommand = strings.Join(effect.Segment, " ")
+	decision.Recovery = []string{
+		"for inspection, use structured Read/search tools or a supported literal read command",
+		"for an assigned check, use the authenticated runtime workspace check adapter; it must enforce isolation on the current platform (see runtime workspace check --help)",
+		"classification uncertainty does not establish a product defect; submit a finding only when an independent observation demonstrates one",
+	}
+	return decision
 }

@@ -173,10 +173,8 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 	notes = append(notes, "the six QA baseline Claims are independent quality questions; keep their plan-local claim_id values and merge Assignments only when the same-lens read set and non-overlap boundary remain truthful")
 
 	// E2E coverage state from the bound REQ's ui_impact (§4.2 step 6). The
-	// Planner consumes the actual S2 CASE catalog and the repository's
-	// Playwright spec mentions. A complete CASE→spec mapping is enough for
-	// regression_available; any missing required CASE conservatively falls
-	// back to cold_start while keeping one Assignment per CASE.
+	// Planner consumes the actual S2 CASE catalog. Textual spec mentions are
+	// navigation hints only and cannot establish regression_available.
 	uiImpact := boundREQUIImpact(state)
 	if strings.TrimSpace(uiImpact) == "" {
 		// S7-9 (RC-07): a missing/mistyped ui_impact previously followed the
@@ -206,9 +204,16 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 		})
 		notes = append(notes, "E2E assessed as not_applicable from ui_impact=none; keep the explicit claim-e2e-na-1 Claim with source_refs and na_rationale (it is not dispatched), then verify against the real required surfaces (§4.3) before registering")
 	default:
-		inventory, discoveryDiagnostics := discoverE2EInventory(root, state)
+		inventory := e2eInventory{}
+		discoveryDiagnostics := []string{}
+		if root == "" {
+			inventory, discoveryDiagnostics = discoverE2EInventory(root, state)
+		}
 		for _, diagnostic := range discoveryDiagnostics {
 			notes = append(notes, "E2E inventory: "+diagnostic+"; registration will reject an unverifiable asset and cold_start remains the safe fallback")
+		}
+		if len(inventory.Candidates) > 0 {
+			notes = append(notes, fmt.Sprintf("E2E source scan found %d candidate file(s); CASE mentions do not prove browser collection or execution. Verify runner collection before declaring reusable assets; the draft retains the full required CASE denominator.", len(inventory.Candidates)))
 		}
 		e2eAssets = sortE2EAssets(inventory.Assets)
 		assetByCase := make(map[string]bool, len(e2eAssets))
@@ -289,7 +294,7 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 		CreatedBy:                     "orchestrator",
 		CreatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	return plan, notes
+	return populateScopedDraft(root, state, plan, notes)
 }
 
 func changeImpactFromPaths(paths []string) *ChangeImpact {

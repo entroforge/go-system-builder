@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
@@ -20,8 +21,12 @@ import (
 )
 
 func runRuntimeRepair(args []string, stdout, stderr io.Writer) int {
+	if wantsHelp(args) {
+		printCommandHelp(stdout, "loop-harness runtime repair <session|authority|plan|dispatch|plan-report|execution|result|changeset|impact|targeted|handoff|status>", "Pass --help to the concrete operation for its flags.")
+		return 0
+	}
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "runtime repair requires <session|plan|dispatch|plan-report|execution|result|changeset|impact|targeted|handoff|status>")
+		fmt.Fprintln(stderr, "runtime repair requires <session|authority|plan|dispatch|plan-report|execution|result|changeset|impact|targeted|handoff|status>")
 		return 2
 	}
 	switch args[0] {
@@ -93,6 +98,12 @@ func runRuntimeRepair(args []string, stdout, stderr io.Writer) int {
 			return runRuntimeRepairHandoffCreate(args[2:], stdout, stderr)
 		}
 		return runRuntimeRepairHandoffCommit(args[2:], stdout, stderr)
+	case "authority":
+		if len(args) < 2 || args[1] != "restore" {
+			fmt.Fprintln(stderr, "runtime repair authority requires restore")
+			return 2
+		}
+		return runRuntimeRepairAuthorityRestore(args[2:], stdout, stderr)
 	case "status":
 		return runRuntimeRepairStatus(args[1:], stdout, stderr)
 	default:
@@ -124,10 +135,8 @@ func repairOccurred(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, value)
 }
 func repairExpected(f *repairCLIFlags) (int, error) {
-	// Keep the optional explicit value intact. A normal S9 command passes -1
-	// through to the Writer, which reads the Runtime under its lock; resolving
-	// it here would recreate the stale read-then-CAS handoff that this flag is
-	// meant to stop imposing on Agents.
+	// Preserve the caller's optional precondition. The domain writer always
+	// uses its actual prepared revision and rechecks it inside the commit lock.
 	return f.expected, nil
 }
 
@@ -147,7 +156,7 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	definitionRef := fs.String("agent-definition", "agents/backend-builder.md", "Builder Agent Definition path")
 	independentVerification := fs.Bool("independent-verification", false, "dispatch the independent verifier assignment for the targeted reverification of --assignment-id (identity registration only: no product writes, test-builder verifier)")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	// RC-18: a verification identity is registered by the same dispatch chain
 	// but has a fixed shape — an independent test-builder that writes no
@@ -189,6 +198,11 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	}
 	review := mapFieldCLI(snapshot.State, "review")
 	pointer := mapFieldCLI(review, "repair")
+	session, err := repair.ValidateRepairSession(root, repair.ArtifactRef{Path: stringValue(pointer["path"]), SHA256: stringValue(pointer["sha256"])})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	status := stringValue(pointer["status"])
 	// Recovery dispatch (RC: queued coverage is never dropped): an assignment
 	// the operator skipped before execution begin has no owner, and only its
@@ -233,6 +247,9 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	dispatchAssignmentID := target.AssignmentID
 	manifestAssignmentID := "assignment-s9-" + dispatchSlug(strings.TrimPrefix(target.AssignmentID, "repair-assignment-"))
 	writePaths := append([]string(nil), target.Scope...)
+	if session.Intent == "confirm" {
+		writePaths = []string{}
+	}
 	groupingRationale := "one Builder owns one immutable RepairAssignment; cross-assignment dependencies and locks are consumed by S9 Runtime"
 	if verificationMode {
 		// RC-18: synthesize and validate the independent verification
@@ -342,9 +359,13 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	taskObjective := "execute the approved RepairAssignment and restore its mapped assertions"
 	taskInstruction := "Read the approved RepairContract and PlanReport contract; send one generic PLAN_REPORT, submit the S9 domain PlanReport, wait for execution begin, then implement only this Assignment scope."
 	taskNextAction := "send one PLAN_REPORT with plan_ref, submit runtime repair plan-report, and continue when execution begins"
+	if session.Intent == "confirm" {
+		taskObjective = "confirm the inherited repair subjects without implementation writes"
+		taskInstruction = "Read the approved Contract and the Session confirmation_sources/verified_subjects. Submit current passing checks in the PlanReport (red_checks is the legacy field name; do not invent a failure). After execution begin, verify this Assignment subjects and submit a Result with changed_artifacts=[] and exact verified_subjects. Preserve independent targeted reverification and the fresh full S7 round."
+	}
 	if verificationMode {
 		taskObjective = fmt.Sprintf("independently re-execute the approved RepairContract assertions of %s and record the targeted reverification artifact", target.AssignmentID)
-		taskInstruction = "Read the approved RepairContract, RepairSession and RepairPlan; do not modify any product file; re-execute the contract assertions on the post-repair tree and commit `runtime repair targeted commit` with performing_assignment_id set to this verification assignment."
+		taskInstruction = "Read the approved RepairContract, RepairSession and RepairPlan; do not modify any product file; re-execute the contract assertions on the post-repair tree. Independently assess every stop_escalation_conditions entry in stop_condition_assessments, binding the exact approved contract_sha256 and zero-based condition_index, with outcome, rationale and evidence_refs. Triggered, unknown or omitted conditions cannot pass. Commit `runtime repair targeted commit` with performing_assignment_id set to this verification assignment and --actor set to your dispatched agent ID."
 		taskNextAction = "re-execute the contract assertions independently and submit the targeted reverification artifact"
 	}
 	task := map[string]any{
@@ -412,11 +433,14 @@ func runRuntimeRepairSessionOpen(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	bindUsage(fs, "runtime repair session open")
 	common := repairFlags(fs)
+	operationID := fs.String("operation-id", "", "stable operation ID; identical retry returns the original durable receipt")
 	sessionID := fs.String("session-id", "", "RepairSession id")
 	createdBy := fs.String("created-by", "", "session creator")
 	reqID := fs.String("req-id", "", "bound REQ id")
+	intent := fs.String("intent", "implement", "implement or confirm; confirmation verifies a prior committed repair without new implementation changes")
+	sourcesFile := fs.String("confirmation-sources", "", "JSON array of hash-pinned prior RepairHandoff references (required for confirm)")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *sessionID == "" || *createdBy == "" {
 		fmt.Fprintln(stderr, "runtime repair session open requires --session-id and --created-by")
@@ -432,13 +456,25 @@ func runRuntimeRepairSessionOpen(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	snapshot, session, ref, err := repair.OpenRepairSession(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, SessionID: *sessionID, CreatedBy: *createdBy, ReqID: *reqID})
+	var sources []repair.ArtifactRef
+	if *sourcesFile != "" {
+		data, readErr := os.ReadFile(resolveRootPath(common.root, *sourcesFile))
+		if readErr != nil {
+			fmt.Fprintln(stderr, readErr)
+			return 2
+		}
+		if err := json.Unmarshal(data, &sources); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+	}
+	snapshot, session, ref, err := repair.OpenRepairSession(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.OpenSessionRequest{Intent: *intent, ConfirmationSources: sources, RuntimeRequest: repair.RuntimeRequest{OperationID: *operationID, ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, SessionID: *sessionID, CreatedBy: *createdBy, ReqID: *reqID})
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime repair session open", err))
 		return 1
 	}
 	fmt.Fprintf(stderr, "S9 RepairSession %s opened; next: runtime repair plan compile --plan-id <plan> --created-by <agent>\n", session.SessionID)
-	return encodeJSON(stdout, map[string]any{"session": session, "artifact_ref": ref, "revision": snapshot.Revision})
+	return encodeJSON(stdout, map[string]any{"session": session, "artifact_ref": ref, "revision": snapshot.Revision, "operation_receipt": snapshot.Operation})
 }
 
 func runRuntimeRepairPlanCompile(args []string, stdout, stderr io.Writer) int {
@@ -446,10 +482,11 @@ func runRuntimeRepairPlanCompile(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	bindUsage(fs, "runtime repair plan compile")
 	common := repairFlags(fs)
+	operationID := fs.String("operation-id", "", "stable operation ID; identical retry returns the original durable receipt")
 	planID := fs.String("plan-id", "", "RepairPlan id")
 	createdBy := fs.String("created-by", "", "plan creator")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *planID == "" || *createdBy == "" {
 		fmt.Fprintln(stderr, "runtime repair plan compile requires --plan-id and --created-by")
@@ -464,13 +501,13 @@ func runRuntimeRepairPlanCompile(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 2
 	}
-	snapshot, plan, ref, err := repair.CompileRepairPlan(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.CompilePlanRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, PlanID: *planID, CreatedBy: *createdBy})
+	snapshot, plan, ref, err := repair.CompileRepairPlan(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.CompilePlanRequest{RuntimeRequest: repair.RuntimeRequest{OperationID: *operationID, ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, PlanID: *planID, CreatedBy: *createdBy})
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime repair plan compile", err))
 		return 1
 	}
 	fmt.Fprintf(stderr, "S9 RepairPlan %s compiled; next: dispatch each RepairAssignment, submit one domain PlanReport per Builder, then begin execution\n", plan.PlanID)
-	return encodeJSON(stdout, map[string]any{"plan": plan, "artifact_ref": ref, "revision": snapshot.Revision})
+	return encodeJSON(stdout, map[string]any{"plan": plan, "artifact_ref": ref, "revision": snapshot.Revision, "operation_receipt": snapshot.Operation})
 }
 
 func runRuntimeRepairPlanReportSubmit(args []string, stdout, stderr io.Writer) int {
@@ -478,9 +515,10 @@ func runRuntimeRepairPlanReportSubmit(args []string, stdout, stderr io.Writer) i
 	fs.SetOutput(stderr)
 	bindUsage(fs, "runtime repair plan-report submit")
 	common := repairFlags(fs)
+	operationID := fs.String("operation-id", "", "stable operation ID; identical retry returns the original durable receipt")
 	file := fs.String("file", "", "PlanReport request JSON path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *file == "" {
 		fmt.Fprintln(stderr, "runtime repair plan-report submit requires --file")
@@ -501,19 +539,14 @@ func runRuntimeRepairPlanReportSubmit(args []string, stdout, stderr io.Writer) i
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	report, ref, err := repair.CreatePlanReport(common.root, request)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime repair plan-report create", err))
-		return 1
-	}
-	snapshot, report, err := repair.SubmitRepairPlanReportToRuntime(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.SubmitPlanReportRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, Report: ref})
+	snapshot, report, ref, err := repair.SubmitPlanReportDraftToRuntime(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.RuntimeRequest{OperationID: *operationID, ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, request)
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime repair plan-report submit", err))
 		return 1
 	}
 	_ = report
 	fmt.Fprintln(stderr, "PlanReport accepted; next: runtime repair execution begin")
-	return encodeJSON(stdout, map[string]any{"report": report, "artifact_ref": ref, "revision": snapshot.Revision})
+	return encodeJSON(stdout, map[string]any{"report": report, "artifact_ref": ref, "revision": snapshot.Revision, "operation_receipt": snapshot.Operation})
 }
 
 func runRuntimeRepairExecutionBegin(args []string, stdout, stderr io.Writer) int {
@@ -522,7 +555,7 @@ func runRuntimeRepairExecutionBegin(args []string, stdout, stderr io.Writer) int
 	bindUsage(fs, "runtime repair execution begin")
 	common := repairFlags(fs)
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	expected, err := repairExpected(common)
 	if err != nil {
@@ -548,9 +581,10 @@ func runRuntimeRepairResultSubmit(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	bindUsage(fs, "runtime repair result submit")
 	common := repairFlags(fs)
+	operationID := fs.String("operation-id", "", "stable operation ID; identical retry returns the original durable receipt")
 	file := fs.String("file", "", "RepairResult JSON path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *file == "" {
 		fmt.Fprintln(stderr, "runtime repair result submit requires --file")
@@ -570,7 +604,7 @@ func runRuntimeRepairResultSubmit(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 2
 	}
-	snapshot, result, ref, err := repair.SubmitRepairResultToRuntime(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, Result: request})
+	snapshot, result, ref, err := repair.SubmitRepairResultToRuntime(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{OperationID: *operationID, ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, Result: request})
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime repair result submit", err))
 		return 1
@@ -587,7 +621,7 @@ func runRuntimeRepairResultSubmit(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	fmt.Fprintf(stderr, "RepairResult %s accepted; next: %s\n", result.ResultID, next)
-	return encodeJSON(stdout, map[string]any{"result": result, "artifact_ref": ref, "revision": snapshot.Revision})
+	return encodeJSON(stdout, map[string]any{"result": result, "artifact_ref": ref, "revision": snapshot.Revision, "operation_receipt": snapshot.Operation})
 }
 
 func runRuntimeRepairChangesetCompute(args []string, stdout, stderr io.Writer) int {
@@ -596,11 +630,12 @@ func runRuntimeRepairChangesetCompute(args []string, stdout, stderr io.Writer) i
 	bindUsage(fs, "runtime repair changeset compute")
 	root := fs.String("root", ".", "repository root")
 	sessionID := fs.String("session-id", "", "RepairSession id")
+	sessionFile := fs.String("session-ref", "", "explicit Session artifact path (required for archived scoped Sessions)")
 	baseRef := fs.String("base-ref", "", "git base ref")
 	headRef := fs.String("head-ref", "", "git head ref")
 	paths := fs.String("paths", "", "comma-separated repository-relative paths")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *sessionID == "" {
 		fmt.Fprintln(stderr, "runtime repair changeset compute requires --session-id")
@@ -615,15 +650,46 @@ func runRuntimeRepairChangesetCompute(args []string, stdout, stderr io.Writer) i
 	var changeset repair.Changeset
 	var err error
 	if len(explicit) == 0 && strings.TrimSpace(*baseRef) == "" && strings.TrimSpace(*headRef) == "" {
-		sessionPath := ".claude/review/repair/sessions/" + *sessionID + ".json"
+		sessionPath := *sessionFile
+		boundSHA := ""
+		if sessionPath == "" {
+			// Follow the current authoritative pointer. Never guess a scoped
+			// Session by choosing the newest matching file in the repository.
+			sp := resolveRootPath(*root, ".claude/loop-state.json")
+			jp := resolveRootPath(*root, ".claude/loop-events.jsonl")
+			snapshot, readErr := runtime.NewStore(sp, jp).Snapshot()
+			if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+				fmt.Fprintln(stderr, formatFailure("runtime repair changeset compute", readErr))
+				return 1
+			}
+			if readErr == nil {
+				review, _ := snapshot.State["review"].(map[string]any)
+				pointer, _ := review["repair"].(map[string]any)
+				if pointer["session_id"] == *sessionID {
+					sessionPath, _ = pointer["path"].(string)
+					boundSHA, _ = pointer["sha256"].(string)
+				}
+			}
+			if sessionPath == "" {
+				// Legacy standalone artifacts remain readable at their exact path.
+				sessionPath = ".claude/review/repair/sessions/" + *sessionID + ".json"
+			}
+		}
 		sessionRef, refErr := artifactRef(*root, sessionPath, *sessionID)
 		if refErr != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime repair changeset compute", refErr))
 			return 1
 		}
+		if boundSHA != "" {
+			sessionRef.SHA256 = boundSHA
+		}
 		session, sessionErr := repair.ValidateRepairSession(*root, sessionRef)
 		if sessionErr != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime repair changeset compute", sessionErr))
+			return 1
+		}
+		if session.SessionID != *sessionID {
+			fmt.Fprintln(stderr, "Session artifact does not match --session-id")
 			return 1
 		}
 		changeset, err = repair.ComputeSessionChangesetRecord(*root, session)
@@ -649,7 +715,7 @@ func runRuntimeRepairImpactCreate(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	file := fs.String("file", "", "ChangeImpact request JSON path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *file == "" {
 		fmt.Fprintln(stderr, "runtime repair impact create requires --file")
@@ -675,7 +741,7 @@ func runRuntimeRepairTargetedCreate(args []string, stdout, stderr io.Writer) int
 	root := fs.String("root", ".", "repository root")
 	file := fs.String("file", "", "TargetedReverification request JSON path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *file == "" {
 		fmt.Fprintln(stderr, "runtime repair targeted create requires --file")
@@ -701,7 +767,7 @@ func runRuntimeRepairHandoffCreate(args []string, stdout, stderr io.Writer) int 
 	root := fs.String("root", ".", "repository root")
 	file := fs.String("file", "", "RepairHandoff request JSON path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *file == "" {
 		fmt.Fprintln(stderr, "runtime repair handoff create requires --file")
@@ -732,7 +798,7 @@ func runRuntimeRepairTargetedCommit(args []string, stdout, stderr io.Writer) int
 	common := repairFlags(fs)
 	file := fs.String("file", "", "TargetedReverification JSON path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *file == "" {
 		fmt.Fprintln(stderr, "runtime repair targeted commit requires --file")
@@ -767,7 +833,7 @@ func runRuntimeRepairTargetedResume(args []string, stdout, stderr io.Writer) int
 	common := repairFlags(fs)
 	reason := fs.String("reason", "", "why the targeted verification blocker is resolved")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*reason) == "" {
 		fmt.Fprintln(stderr, "runtime repair targeted resume requires --reason <resolution>")
@@ -802,7 +868,7 @@ func runRepairArtifactCommit(args []string, stdout, stderr io.Writer, label stri
 	common := repairFlags(fs)
 	file := fs.String("file", "", "artifact JSON path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *file == "" {
 		fmt.Fprintln(stderr, label+" requires --file")
@@ -835,9 +901,10 @@ func runRuntimeRepairHandoffCommit(args []string, stdout, stderr io.Writer) int 
 	fs.SetOutput(stderr)
 	bindUsage(fs, "runtime repair handoff commit")
 	common := repairFlags(fs)
+	operationID := fs.String("operation-id", "", "stable operation ID; identical retry returns the original durable receipt")
 	file := fs.String("file", "", "RepairHandoff JSON path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *file == "" {
 		fmt.Fprintln(stderr, "runtime repair handoff commit requires --file")
@@ -857,7 +924,7 @@ func runRuntimeRepairHandoffCommit(args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return 2
 	}
-	snapshot, err := repair.CommitRepairHandoff(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.CommitHandoffRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, Handoff: ref})
+	snapshot, err := repair.CommitRepairHandoff(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.CommitHandoffRequest{RuntimeRequest: repair.RuntimeRequest{OperationID: *operationID, ExpectedRevision: expected, Actor: common.actor, OccurredAt: at}, Handoff: ref})
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime repair handoff commit", err))
 		return 1
@@ -873,7 +940,7 @@ func runRuntimeRepairStatus(args []string, stdout, stderr io.Writer) int {
 	state := fs.String("state", ".claude/loop-state.json", "runtime state path")
 	journal := fs.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	snapshot, err := runtime.NewStore(resolveRootPath(*root, *state), resolveRootPath(*root, *journal)).Snapshot()
 	if err != nil {
@@ -1225,4 +1292,25 @@ func repoFile(root, name string) (string, error) {
 		return "", fmt.Errorf("path %q escapes repository root", name)
 	}
 	return path, nil
+}
+
+func runRuntimeRepairAuthorityRestore(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("runtime repair authority restore", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	bindUsage(fs, "runtime repair authority restore")
+	common := repairFlags(fs)
+	if err := parseWorkspaceFlags(fs, args); err != nil {
+		return flagParseExitCode(err)
+	}
+	at, err := repairOccurred(common.occurred)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	snapshot, err := repair.RestoreAuthorityFingerprint(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), repair.RuntimeRequest{ExpectedRevision: common.expected, Actor: common.actor, OccurredAt: at})
+	if err != nil {
+		fmt.Fprintln(stderr, formatFailure("runtime repair authority restore", err))
+		return 1
+	}
+	return encodeJSON(stdout, map[string]any{"revision": snapshot.Revision, "restored": true})
 }

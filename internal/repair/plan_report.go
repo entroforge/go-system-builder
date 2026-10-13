@@ -3,7 +3,6 @@ package repair
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -28,6 +27,10 @@ type PlanReportRequest struct {
 // authorize implementation because it has not demonstrated the original
 // failure.
 func CreatePlanReport(root string, request PlanReportRequest) (PlanReport, ArtifactRef, error) {
+	return createPlanReport(root, request, writeImmutable)
+}
+
+func createPlanReport(root string, request PlanReportRequest, sink artifactSink) (PlanReport, ArtifactRef, error) {
 	if !strings.HasPrefix(request.ReportID, "repair-plan-report-") {
 		return PlanReport{}, ArtifactRef{}, fmt.Errorf("request.ReportID must carry the repair-plan-report- prefix so Runtime can bind it (got %q)", request.ReportID)
 	}
@@ -81,7 +84,14 @@ func CreatePlanReport(root string, request PlanReportRequest) (PlanReport, Artif
 			failed = true
 		}
 	}
-	if !failed {
+	if sessionIntent(session) == "confirm" {
+		if err := validateConfirmation(root, session); err != nil {
+			return PlanReport{}, ArtifactRef{}, err
+		}
+		if !allChecksPass(request.RedChecks) {
+			return PlanReport{}, ArtifactRef{}, errors.New("confirmation checkpoint requires current passing checks, not fabricated red checks")
+		}
+	} else if !failed {
 		return PlanReport{}, ArtifactRef{}, errors.New("PlanReport red_checks must contain a fail or blocked result before implementation writes")
 	}
 	assertionIDs := append([]string(nil), request.AssertionIDs...)
@@ -115,7 +125,7 @@ func CreatePlanReport(root string, request PlanReportRequest) (PlanReport, Artif
 		}
 	}
 	report := PlanReport{SchemaVersion: "1.0.0", RecordType: "repair_plan_report", ReportID: request.ReportID, SessionID: session.SessionID, PlanID: plan.PlanID, AssignmentID: assignment.AssignmentID, AssertionIDs: assertionIDs, AgentID: request.AgentID, Plan: request.PlanText, RedChecks: append([]RepairCheck(nil), request.RedChecks...), ProposedPaths: paths, Status: "reported", ReportedAt: nowOr(request.OccurredAt)}
-	ref, err := writeImmutable(root, filepath.Join(artifactRoot, "plan-reports", request.ReportID+".json"), "repair-plan-report.schema.json", report)
+	ref, err := sink(root, scopedRepairPath("plan-reports", request.ReportID, session.RuntimeID, session.SessionID), "repair-plan-report.schema.json", report)
 	return report, ref, err
 }
 

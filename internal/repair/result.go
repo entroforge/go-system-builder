@@ -8,6 +8,10 @@ import (
 )
 
 func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult, ArtifactRef, error) {
+	return submitRepairResult(root, request, writeImmutable)
+}
+
+func submitRepairResult(root string, request RepairResultRequest, sink artifactSink) (RepairResult, ArtifactRef, error) {
 	contract, err := ValidateApprovedContractRef(root, request.Contract)
 	if err != nil {
 		return RepairResult{}, ArtifactRef{}, err
@@ -69,14 +73,33 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 	if err != nil {
 		return RepairResult{}, ArtifactRef{}, err
 	}
-	if len(request.ChangedArtifacts) == 0 && (resultValue == "pass" || len(actualArtifacts) > 0) {
-		if len(actualArtifacts) == 0 {
-			return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult pass must enumerate changed artifacts")
-		}
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult must enumerate the actual Session diff before reporting a non-pass result")
+	confirm := sessionIntent(session) == "confirm"
+	if err := validateConfirmation(root, session); err != nil {
+		return RepairResult{}, ArtifactRef{}, err
 	}
-	if resultValue == "pass" && len(actualArtifacts) == 0 {
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("actual Session diff is empty; a passing RepairResult requires a repository change")
+	if confirm && len(actualArtifacts) != 0 {
+		return RepairResult{}, ArtifactRef{}, errors.New("confirm requires zero actual Session changes; route implementation work through an implement Session")
+	}
+	if len(request.ChangedArtifacts) == 0 && (resultValue == "pass" || len(actualArtifacts) > 0) && !confirm {
+		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult pass must enumerate changed artifacts; use a bound confirm Session for zero-change confirmation")
+	}
+	if resultValue == "pass" && len(actualArtifacts) == 0 && !confirm {
+		return RepairResult{}, ArtifactRef{}, errors.New("actual Session diff is empty; an implement pass requires a repository change")
+	}
+	if confirm && len(request.ChangedArtifacts) != 0 {
+		return RepairResult{}, ArtifactRef{}, errors.New("confirm cannot claim predecessor changes as this Session's changed_artifacts")
+	}
+	if !confirm && len(request.VerifiedSubjects) != 0 {
+		return RepairResult{}, ArtifactRef{}, errors.New("verified_subjects require a confirm Session")
+	}
+	if confirm {
+		expected := assignmentConfirmationSubjects(session, assignment)
+		if len(expected) == 0 {
+			return RepairResult{}, ArtifactRef{}, errors.New("confirmation Assignment has no inherited verification subjects")
+		}
+		if err := exactSubjectSet(request.VerifiedSubjects, expected, "RepairResult verified_subjects", "Assignment confirmation subjects"); err != nil {
+			return RepairResult{}, ArtifactRef{}, err
+		}
 	}
 	changed := append([]ChangedArtifact{}, request.ChangedArtifacts...)
 	seen := map[string]bool{}
@@ -133,10 +156,10 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 	checks := append([]RepairCheck{}, request.Checks...)
 	scopeDeviations := append([]string{}, request.ScopeDeviations...)
 	residualRisks := append([]string{}, request.ResidualRisks...)
-	if len(beforeChecks) == 0 {
+	if len(beforeChecks) == 0 && !confirm {
 		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult requires before_fix_checks proving the pre-fix failure; reuse the bound PlanReport red_checks")
 	}
-	if !hasFailedCheck(beforeChecks) {
+	if !hasFailedCheck(beforeChecks) && !confirm {
 		return RepairResult{}, ArtifactRef{}, fmt.Errorf("before_fix_checks must contain a fail or blocked check")
 	}
 	if resultValue == "pass" && !allChecksPass(checks) {
@@ -158,10 +181,15 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 		UnitResults: append([]RepairUnitResult{}, request.UnitResults...), ChangedArtifacts: changed, ScopeDeviations: scopeDeviations,
 		MigrationRef: request.MigrationRef, RollbackRef: request.RollbackRef, ResidualRisks: residualRisks, Result: resultValue, SubmittedAt: nowOr(request.OccurredAt),
 	}
+	if confirm {
+		document.SchemaVersion = "1.1.0"
+		document.Intent = "confirm"
+		document.VerifiedSubjects = append([]ArtifactRef(nil), request.VerifiedSubjects...)
+	}
 	if request.PlanReport.Path != "" {
 		document.PlanReportRef = &ArtifactRef{ID: request.PlanReport.ID, Path: request.PlanReport.Path, SHA256: request.PlanReport.SHA256}
 	}
-	ref, err := writeImmutable(root, artifactRoot+"/results/"+request.ResultID+".json", "repair-result.schema.json", document)
+	ref, err := sink(root, scopedRepairPath("results", request.ResultID, session.RuntimeID, session.SessionID), "repair-result.schema.json", document)
 	if err != nil {
 		return RepairResult{}, ArtifactRef{}, err
 	}

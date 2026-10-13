@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/filelock"
+	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -63,6 +64,12 @@ var ErrOfflineRecoveryCapabilityRequired = errors.New("offline recovery writer c
 const staleLockAge = 30 * time.Second
 
 type Mutation struct {
+	Operation *Operation
+	// Artifacts are prepared privately before acquiring the writer lock and
+	// published only after a durable pending commit exists. Apply must validate
+	// their domain contents and project their exact path/hash references.
+	Artifacts     []ImmutableArtifact
+	artifactBatch *artifactBatch
 	// Audit is the structured commit envelope. The legacy fields below remain
 	// as a compatibility surface for existing callers; Update normalizes both
 	// forms into this envelope before applying a mutation.
@@ -124,8 +131,10 @@ type AuditEnvelope struct {
 }
 
 type Snapshot struct {
-	Revision int
-	State    map[string]any
+	Revision          int
+	State             map[string]any
+	Operation         *OperationReceipt
+	OperationReplayed bool
 }
 
 // ArtifactCleanupRequest describes a staged repository artifact that may be
@@ -174,16 +183,17 @@ type rolloverPending struct {
 }
 
 type commitPending struct {
-	SchemaVersion        string         `json:"schema_version"`
-	PreviousStateSHA256  string         `json:"previous_state_sha256"`
-	PreviousRevision     int            `json:"previous_revision"`
-	StateSHA256          string         `json:"state_sha256"`
-	JournalEventSHA256   string         `json:"journal_event_sha256"`
-	RequestID            string         `json:"request_id"`
-	IdempotencyKey       string         `json:"idempotency_key"`
-	RetainLastTransition bool           `json:"retain_last_transition"`
-	State                map[string]any `json:"state"`
-	JournalEvent         map[string]any `json:"journal_event"`
+	Artifacts            []pendingArtifact `json:"artifacts,omitempty"`
+	SchemaVersion        string            `json:"schema_version"`
+	PreviousStateSHA256  string            `json:"previous_state_sha256"`
+	PreviousRevision     int               `json:"previous_revision"`
+	StateSHA256          string            `json:"state_sha256"`
+	JournalEventSHA256   string            `json:"journal_event_sha256"`
+	RequestID            string            `json:"request_id"`
+	IdempotencyKey       string            `json:"idempotency_key"`
+	RetainLastTransition bool              `json:"retain_last_transition"`
+	State                map[string]any    `json:"state"`
+	JournalEvent         map[string]any    `json:"journal_event"`
 }
 
 // statePending records a state-only durable write. Fingerprint refreshes do
@@ -217,6 +227,8 @@ type runtimeSemanticDefinition struct {
 }
 
 type Store struct {
+	commitFailure        CommitFailureInjector
+	ctx                  context.Context
 	statePath            string
 	journalPath          string
 	root                 string
@@ -416,6 +428,10 @@ func currentCursor(state map[string]any) (map[string]any, error) {
 }
 
 func (s *Store) validateCandidate(state map[string]any) error {
+	defer metrics.StartPhase(s.context(), "runtime_candidate_validation")()
+	if err := s.context().Err(); err != nil {
+		return err
+	}
 	if err := s.validateWriteAuthority(state); err != nil {
 		return err
 	}
@@ -451,7 +467,7 @@ func (s *Store) validateCandidate(state map[string]any) error {
 	if err := s.candidateValidator.ValidateCandidate(s.root, state); err != nil {
 		return fmt.Errorf("candidate runtime semantic validation: %w", err)
 	}
-	return nil
+	return s.context().Err()
 }
 
 func validateRuntimeSemanticCore(root string, state map[string]any) error {
@@ -592,7 +608,8 @@ func validateJournalEvent(event map[string]any) error {
 // Callers still pass the returned revision into Update, which retains the CAS
 // check if another writer commits after this snapshot is released.
 func (s *Store) Snapshot() (Snapshot, error) {
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	defer metrics.StartPhase(s.context(), "runtime_snapshot")()
+	release, err := s.lock()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -613,85 +630,22 @@ func (s *Store) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if err := s.context().Err(); err != nil {
+		return Snapshot{}, err
+	}
 	return Snapshot{Revision: revision, State: state}, nil
 }
 
-// RemoveUnreferencedArtifact performs a lock-protected, fail-closed cleanup
-// for artifacts staged before a Runtime CAS. It returns false when cleanup is
-// unsafe or unnecessary. In particular, it never removes anything while a
-// commit/fingerprint/rollover marker exists because the pending operation may
-// still publish a state that references the artifact.
-func (s *Store) RemoveUnreferencedArtifact(request ArtifactCleanupRequest) (bool, error) {
+// RemoveUnreferencedArtifact is retained for source compatibility only.
+// Deprecated: a revision plus caller-supplied references cannot prove absence
+// from current, pending, archived and historical artifact closures. Canonical
+// outputs are retained; the transaction writer cleans only its private staging.
+// A separate complete reachability collector is required before enabling GC.
+func (s *Store) RemoveUnreferencedArtifact(_ ArtifactCleanupRequest) (bool, error) {
 	if s == nil {
 		return false, errors.New("runtime store is required for artifact cleanup")
 	}
-	if strings.TrimSpace(s.root) == "" {
-		return false, errors.New("runtime root is required for artifact cleanup")
-	}
-	if request.ExpectedRevision < 0 {
-		return false, errors.New("artifact cleanup expected revision must not be negative")
-	}
-	if len(request.ArtifactSHA256) != 64 {
-		return false, errors.New("artifact cleanup requires a 64-character sha256")
-	}
-	cleanArtifact, err := safeEvidencePath(s.root, request.ArtifactPath)
-	if err != nil {
-		return false, fmt.Errorf("validate artifact cleanup path: %w", err)
-	}
-
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
-	if err != nil {
-		return false, err
-	}
-	defer release()
-	if err := s.reportPendingOperationLocked(); err != nil {
-		if errors.Is(err, ErrPendingRuntimeOperation) {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect pending runtime operation before artifact cleanup: %w", err)
-	}
-	state, err := s.read()
-	if err != nil {
-		return false, fmt.Errorf("read runtime before artifact cleanup: %w", err)
-	}
-	revision, err := integerField(state, "revision")
-	if err != nil {
-		return false, fmt.Errorf("read runtime revision before artifact cleanup: %w", err)
-	}
-	if revision != request.ExpectedRevision {
-		return false, nil
-	}
-	for _, referenced := range request.ReferencedPaths {
-		cleanReferenced, cleanErr := cleanArtifactReference(referenced)
-		if cleanErr != nil {
-			return false, fmt.Errorf("validate referenced artifact path %q: %w", referenced, cleanErr)
-		}
-		if cleanReferenced == cleanArtifact {
-			return false, nil
-		}
-	}
-
-	artifactPath := filepath.Join(s.root, filepath.FromSlash(cleanArtifact))
-	data, err := os.ReadFile(artifactPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("read artifact before cleanup: %w", err)
-	}
-	if sha256Hex(data) != request.ArtifactSHA256 {
-		return false, nil
-	}
-	if err := os.Remove(artifactPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("remove unreferenced artifact: %w", err)
-	}
-	if err := syncDir(filepath.Dir(artifactPath)); err != nil {
-		return false, fmt.Errorf("sync artifact cleanup: %w", err)
-	}
-	return true, nil
+	return false, nil
 }
 
 func cleanArtifactReference(path string) (string, error) {
@@ -733,7 +687,7 @@ func (s *Store) Rollover(freshState map[string]any, archiveRoot string, approval
 		occurredAt = time.Now().UTC()
 	}
 
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	release, err := s.lock()
 	if err != nil {
 		return RolloverRecord{}, err
 	}
@@ -822,6 +776,7 @@ func DocumentMetadataVersion(data []byte) string {
 // fingerprint.go for the two-layer decision; new diagnostics must consume
 // the triple, never mint a ninth family).
 type FingerprintResult struct {
+	Snapshot  Snapshot `json:"-"`
 	Updated   []string
 	Unchanged []string
 	Missing   []string
@@ -846,7 +801,7 @@ func (s *Store) RefreshEvidenceFingerprints(root string, kinds map[string]bool, 
 	return s.refreshFingerprints(root, kinds, read, writable...)
 }
 func (s *Store) refreshFingerprints(root string, evidenceKinds map[string]bool, read func(string) ([]byte, error), writable ...func(string) bool) (FingerprintResult, error) {
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	release, err := s.lock()
 	if err != nil {
 		return FingerprintResult{}, err
 	}
@@ -859,7 +814,7 @@ func (s *Store) refreshFingerprints(root string, evidenceKinds map[string]bool, 
 	if err != nil {
 		return FingerprintResult{}, err
 	}
-	inspection, err := inspectJournal(s.journalPath)
+	inspection, err := s.inspectJournal()
 	if err != nil {
 		return FingerprintResult{}, fmt.Errorf("inspect runtime journal before fingerprint refresh: %w", err)
 	}
@@ -885,6 +840,7 @@ func (s *Store) refreshFingerprints(root string, evidenceKinds map[string]bool, 
 
 	var result FingerprintResult
 	refresh := func(entry map[string]any, mutable bool) {
+		defer metrics.StartPhase(s.context(), "runtime_file_hash")()
 		path, _ := entry["path"].(string)
 		if path == "" {
 			return
@@ -1023,11 +979,14 @@ func (s *Store) refreshFingerprints(root string, evidenceKinds map[string]bool, 
 		}
 	}
 
+	if err := s.context().Err(); err != nil {
+		return FingerprintResult{}, err
+	}
 	if len(result.Updated) > 0 || len(artifacts) > 0 {
 		if err := s.validateCandidate(state); err != nil {
 			return FingerprintResult{}, fmt.Errorf("post-refresh snapshot invalid: %w", err)
 		}
-		inspection, err = inspectJournal(s.journalPath)
+		inspection, err = s.inspectJournal()
 		if err != nil {
 			return FingerprintResult{}, fmt.Errorf("inspect runtime journal after fingerprint refresh: %w", err)
 		}
@@ -1058,6 +1017,9 @@ func (s *Store) refreshFingerprints(root string, evidenceKinds map[string]bool, 
 			StateSHA256:         stateSHA256,
 			State:               state,
 		}
+		if err := s.context().Err(); err != nil {
+			return FingerprintResult{}, err
+		}
 		if err := atomicWriteJSON(s.fingerprintMarkerPath(), pending); err != nil {
 			return FingerprintResult{}, fmt.Errorf("record pending fingerprint refresh: %w", err)
 		}
@@ -1074,7 +1036,7 @@ func (s *Store) refreshFingerprints(root string, evidenceKinds map[string]bool, 
 		if err != nil {
 			return FingerprintResult{}, fmt.Errorf("read refreshed runtime state: %w", err)
 		}
-		writtenInspection, err := inspectJournal(s.journalPath)
+		writtenInspection, err := s.inspectJournal()
 		if err != nil {
 			return FingerprintResult{}, fmt.Errorf("inspect runtime journal after refreshed state write: %w", err)
 		}
@@ -1090,6 +1052,11 @@ func (s *Store) refreshFingerprints(root string, evidenceKinds map[string]bool, 
 	// re-deriving family rules. The families written above stay the
 	// enforcement layer (see fingerprint.go two-layer decision).
 	result.Triple = ComputeTriple(state)
+	revision, err := integerField(state, "revision")
+	if err != nil {
+		return FingerprintResult{}, err
+	}
+	result.Snapshot = Snapshot{Revision: revision, State: state}
 	return result, nil
 }
 
@@ -1186,7 +1153,13 @@ func (s *Store) Update(expectedRevision int, mutation Mutation) (Snapshot, error
 	if expectedRevision < 0 {
 		return s.UpdateCurrent(mutation)
 	}
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	defer metrics.StartPhase(s.context(), "runtime_update")()
+	mutation, cleanup, err := s.prepareMutationArtifacts(mutation)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer cleanup()
+	release, err := s.lock()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -1203,7 +1176,13 @@ func (s *Store) Update(expectedRevision int, mutation Mutation) (Snapshot, error
 // explicit Update method remains available for integrations that deliberately
 // want a stale-snapshot assertion.
 func (s *Store) UpdateCurrent(mutation Mutation) (Snapshot, error) {
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	defer metrics.StartPhase(s.context(), "runtime_update")()
+	mutation, cleanup, err := s.prepareMutationArtifacts(mutation)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer cleanup()
+	release, err := s.lock()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -1211,22 +1190,14 @@ func (s *Store) UpdateCurrent(mutation Mutation) (Snapshot, error) {
 	if err := s.recoverPendingWritesLocked(); err != nil {
 		return Snapshot{}, err
 	}
-	state, err := s.read()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	expectedRevision, err := integerField(state, "revision")
-	if err != nil {
-		return Snapshot{}, err
-	}
-	return s.applyMutation(expectedRevision, mutation)
+	return s.applyMutation(-1, mutation)
 }
 
 func (s *Store) Reconcile() (bool, error) {
 	if !s.mutationCapable {
 		return false, fmt.Errorf("%w: Reconcile requires a mutation-capable writer", ErrCandidateValidatorRequired)
 	}
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	release, err := s.lock()
 	if err != nil {
 		return false, err
 	}
@@ -1247,7 +1218,7 @@ func (s *Store) Reconcile() (bool, error) {
 	if eventID == "" {
 		return false, errors.New("last transition has no event_id")
 	}
-	inspection, err := inspectJournal(s.journalPath)
+	inspection, err := s.inspectJournal()
 	if err != nil {
 		return false, fmt.Errorf("inspect runtime journal for reconcile: %w", err)
 	}
@@ -1324,7 +1295,7 @@ func (s *Store) RecoverPendingOperations() (bool, error) {
 	if !s.mutationCapable {
 		return false, fmt.Errorf("%w: RecoverPendingOperations requires a mutation-capable writer", ErrCandidateValidatorRequired)
 	}
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	release, err := s.lock()
 	if err != nil {
 		return false, err
 	}
@@ -1350,7 +1321,7 @@ func (s *Store) RecoverPendingOperations() (bool, error) {
 // design|contracts|tasks phase machine based on artifact presence. It is
 // explicit-only (CLI migrate-planning); StageFor never scans artifacts.
 func (s *Store) MigrateLegacyPlanning(root string) (bool, error) {
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	release, err := s.lock()
 	if err != nil {
 		return false, err
 	}
@@ -1438,19 +1409,40 @@ func (s *Store) applyMutation(expectedRevision int, mutation Mutation) (Snapshot
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if revision != expectedRevision {
+	if expectedRevision < 0 {
+		expectedRevision = revision
+	}
+	if revision != expectedRevision && mutation.Operation == nil {
 		return Snapshot{}, ErrStaleRevision
 	}
 	mutation, err = normalizeMutation(state, mutation)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	existingJournal, err := inspectJournal(s.journalPath)
+	existingJournal, err := s.inspectJournal()
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("inspect existing runtime journal before mutation: %w", err)
 	}
 	if err := validateStateJournalPair(state, existingJournal); err != nil {
 		return Snapshot{}, fmt.Errorf("inspect runtime journal cursor before mutation (state journal.last_sequence must match the journal tail; use `runtime reconcile` only for a verified pending tail event; for missing/mismatched history run `runtime recover inspect --root <root> --req <locked-REQ-path>` then `runtime recover plan` with the same arguments; never manually realign state/journal): %w", err)
+	}
+	if mutation.Operation != nil {
+		if err := validateMutationOperation(mutation); err != nil {
+			return Snapshot{}, err
+		}
+		receipt, err := findOperation(existingJournal.Events, *mutation.Operation)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if receipt != nil {
+			if err := s.verifyOperationArtifacts(receipt); err != nil {
+				return Snapshot{}, err
+			}
+			return Snapshot{Revision: revision, State: state, Operation: receipt, OperationReplayed: true}, nil
+		}
+	}
+	if revision != expectedRevision {
+		return Snapshot{}, ErrStaleRevision
 	}
 	if _, exists := existingJournal.EventIndex[mutation.EventID]; exists {
 		return Snapshot{}, fmt.Errorf("mutation event_id %q already exists in runtime journal", mutation.EventID)
@@ -1473,6 +1465,9 @@ func (s *Store) applyMutation(expectedRevision int, mutation Mutation) (Snapshot
 		return Snapshot{}, fmt.Errorf("mutation apply coherence: %w", err)
 	}
 	if mutation.BoundaryReset {
+		if mutation.artifactBatch != nil {
+			return Snapshot{}, errors.New("boundary reset cannot publish a mutation artifact bundle")
+		}
 		return s.applyBoundaryResetLocked(previousState, state, mutation, expectedRevision)
 	}
 
@@ -1517,6 +1512,16 @@ func (s *Store) applyMutation(expectedRevision int, mutation Mutation) (Snapshot
 		runtimeID, _ = state["runtime_id"].(string)
 	}
 	journalEvent := buildJournalEvent(mutation, runtimeID, expectedRevision, nextRevision, sequence, occurredAt)
+	if mutation.artifactBatch != nil {
+		if err := s.preflightArtifactPublication(mutation.artifactBatch.entries, state); err != nil {
+			return Snapshot{}, err
+		}
+		bindArtifactManifest(journalEvent, mutation.artifactBatch.entries)
+	}
+	operationReceipt, err := bindOperationReceipt(journalEvent, mutation, nextRevision, occurredAt)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	if err := s.validateCandidate(state); err != nil {
 		return Snapshot{}, fmt.Errorf("post-mutation snapshot invalid: %w", err)
 	}
@@ -1547,17 +1552,50 @@ func (s *Store) applyMutation(expectedRevision int, mutation Mutation) (Snapshot
 		State:                state,
 		JournalEvent:         journalEvent,
 	}
+	if mutation.artifactBatch != nil {
+		pending.SchemaVersion = artifactPendingVersion(mutation.artifactBatch.entries)
+		pending.Artifacts = mutation.artifactBatch.entries
+	}
 	if err := validatePendingCommitCoherence(pending); err != nil {
 		return Snapshot{}, fmt.Errorf("pending runtime commit coherence: %w", err)
+	}
+	if err := validateArtifactManifest(pending); err != nil {
+		return Snapshot{}, err
+	}
+	if err := s.context().Err(); err != nil {
+		return Snapshot{}, err
+	}
+	// An error may occur after rename but before directory fsync. From this
+	// point preserve staging even when the marker write reports an error.
+	if err := s.injectCommitFailure(CommitBeforePendingMarker); err != nil {
+		return Snapshot{}, err
+	}
+	if mutation.artifactBatch != nil {
+		mutation.artifactBatch.durable = true
 	}
 	if err := atomicWriteJSON(s.commitMarkerPath(), pending); err != nil {
 		return Snapshot{}, fmt.Errorf("record pending runtime commit: %w", err)
 	}
+	if err := s.injectCommitFailure(CommitAfterPendingMarker); err != nil {
+		return Snapshot{}, err
+	}
+	if err := s.publishPendingArtifacts(pending.Artifacts); err != nil {
+		return Snapshot{}, err
+	}
+	if err := s.injectCommitFailure(CommitAfterArtifactPublish); err != nil {
+		return Snapshot{}, err
+	}
 	if err := atomicWriteJSON(s.statePath, state); err != nil {
 		return Snapshot{}, fmt.Errorf("write committed runtime state: %w", err)
 	}
+	if err := s.injectCommitFailure(CommitAfterStateWrite); err != nil {
+		return Snapshot{}, err
+	}
 	if err := appendJSONLine(s.journalPath, journalEvent); err != nil {
 		return Snapshot{}, fmt.Errorf("append committed runtime journal: %w", err)
+	}
+	if err := s.injectCommitFailure(CommitAfterJournalAppend); err != nil {
+		return Snapshot{}, err
 	}
 	if err := s.maybeRotateJournalLocked(); err != nil {
 		return Snapshot{}, fmt.Errorf("rotate journal: %w", err)
@@ -1565,7 +1603,11 @@ func (s *Store) applyMutation(expectedRevision int, mutation Mutation) (Snapshot
 	if err := s.clearCommitMarkerLocked(); err != nil {
 		return Snapshot{}, err
 	}
-	return Snapshot{Revision: nextRevision, State: state}, nil
+	if err := s.injectCommitFailure(CommitAfterMarkerClear); err != nil {
+		return Snapshot{}, err
+	}
+	s.cleanupPublishedArtifacts(pending.Artifacts)
+	return Snapshot{Revision: nextRevision, State: state, Operation: operationReceipt}, nil
 }
 
 // applyBoundaryResetLocked closes the bootstrap runtime and installs the
@@ -1707,6 +1749,9 @@ func validateMutationApplyBoundary(previousState, candidateState map[string]any,
 // marker carries the current state as the already-committed target, so recovery
 // only needs to append the missing event and clear the marker.
 func (s *Store) commitJournalOnlyLocked(state map[string]any, event map[string]any) error {
+	if err := s.context().Err(); err != nil {
+		return err
+	}
 	if err := validateJournalEvent(event); err != nil {
 		return fmt.Errorf("journal-only commit event invalid: %w", err)
 	}
@@ -1921,6 +1966,10 @@ func nonEmpty(value, fallback string) string {
 }
 
 func (s *Store) read() (map[string]any, error) {
+	defer metrics.StartPhase(s.context(), "runtime_state_read")()
+	if err := s.context().Err(); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(s.statePath)
 	if err != nil {
 		return nil, fmt.Errorf("read runtime: %w", err)
@@ -2027,7 +2076,7 @@ func (s *Store) recoverPendingFingerprintLocked() error {
 	if err := s.validateCandidate(pending.State); err != nil {
 		return fmt.Errorf("pending fingerprint refresh state is invalid: %w", err)
 	}
-	pendingJournal, err := inspectJournal(s.journalPath)
+	pendingJournal, err := s.inspectJournal()
 	if err != nil {
 		return fmt.Errorf("inspect runtime journal for fingerprint recovery: %w", err)
 	}
@@ -2084,7 +2133,7 @@ func (s *Store) recoverPendingFingerprintLocked() error {
 	if err != nil {
 		return fmt.Errorf("read recovered fingerprint refresh state: %w", err)
 	}
-	recoveredJournal, err := inspectJournal(s.journalPath)
+	recoveredJournal, err := s.inspectJournal()
 	if err != nil {
 		return fmt.Errorf("inspect runtime journal after fingerprint recovery: %w", err)
 	}
@@ -2116,8 +2165,13 @@ func (s *Store) recoverPendingCommitLocked() error {
 	if err := json.Unmarshal(data, &pending); err != nil {
 		return fmt.Errorf("decode pending runtime commit: %w", err)
 	}
-	if pending.SchemaVersion != "1.0.0" {
+	if pending.SchemaVersion != "1.0.0" && pendingArtifactSchema(pending.SchemaVersion) == "" {
 		return fmt.Errorf("unsupported pending runtime commit schema %q", pending.SchemaVersion)
+	}
+	if pendingArtifactSchema(pending.SchemaVersion) != "" {
+		if err := schema.NewEmbeddedValidator().ValidateBytes(pendingArtifactSchema(pending.SchemaVersion), data); err != nil {
+			return fmt.Errorf("pending artifact commit schema: %w", err)
+		}
 	}
 	if err := s.validateCandidate(pending.State); err != nil {
 		return fmt.Errorf("pending runtime commit state is invalid: %w", err)
@@ -2127,6 +2181,9 @@ func (s *Store) recoverPendingCommitLocked() error {
 	}
 	if err := validatePendingCommitCoherence(pending); err != nil {
 		return fmt.Errorf("pending runtime commit coherence: %w", err)
+	}
+	if err := validateArtifactManifest(pending); err != nil {
+		return err
 	}
 	journalEventBytes, err := jsonLineBytes(pending.JournalEvent)
 	if err != nil {
@@ -2158,7 +2215,7 @@ func (s *Store) recoverPendingCommitLocked() error {
 	if eventID == "" {
 		return errors.New("pending runtime commit has no event_id")
 	}
-	journal, err := inspectJournal(s.journalPath)
+	journal, err := s.inspectJournal()
 	if err != nil {
 		return fmt.Errorf("inspect runtime journal during commit recovery: %w", err)
 	}
@@ -2191,6 +2248,19 @@ func (s *Store) recoverPendingCommitLocked() error {
 		}
 	}
 
+	// Validate the complete state/journal pair before publishing anything.
+	if currentHash != desiredHash && currentHash != pending.PreviousStateSHA256 {
+		return errors.New("pending runtime commit found an unknown state fingerprint; refusing mixed-pair recovery")
+	}
+	if currentHash != desiredHash && currentHash == pending.PreviousStateSHA256 && (found || currentRevision != pending.PreviousRevision) {
+		return errors.New("pending runtime commit previous state conflicts with journal/revision")
+	}
+	if currentHash == desiredHash && currentRevision != pending.PreviousRevision+1 {
+		return errors.New("pending runtime commit desired state revision is not previous revision plus one")
+	}
+	if err := s.publishPendingArtifacts(pending.Artifacts); err != nil {
+		return err
+	}
 	switch currentHash {
 	case desiredHash:
 		if currentRevision != pending.PreviousRevision+1 {
@@ -2226,7 +2296,11 @@ func (s *Store) recoverPendingCommitLocked() error {
 			return fmt.Errorf("rotate journal: %w", err)
 		}
 	}
-	return s.clearCommitMarkerLocked()
+	if err := s.clearCommitMarkerLocked(); err != nil {
+		return err
+	}
+	s.cleanupPublishedArtifacts(pending.Artifacts)
+	return nil
 }
 
 func validatePendingCommitCoherence(pending commitPending) error {
@@ -2800,7 +2874,7 @@ func (s *Store) recoverPendingJournalRotationLocked() error {
 	if _, err := os.Stat(s.statePath); err == nil {
 		state, err := s.read()
 		if err == nil {
-			inspection, err := inspectJournal(s.journalPath)
+			inspection, err := s.inspectJournal()
 			if err != nil {
 				return fmt.Errorf("pending journal rotation journal invalid after recovery: %w", err)
 			}
@@ -3250,12 +3324,22 @@ func validateStateJournalCursor(stateJournal map[string]any, inspection journalI
 // file) before commit recovery makes a decision. A missing journal is an empty
 // tail.
 func inspectJournal(path string) (journalInspection, error) {
+	return inspectJournalContext(context.Background(), path)
+}
+
+func inspectJournalContext(ctx context.Context, path string) (journalInspection, error) {
+	if err := ctx.Err(); err != nil {
+		return journalInspection{}, err
+	}
 	segments, err := journalSegmentPaths(path)
 	if err != nil {
 		return journalInspection{}, err
 	}
 	var combined []byte
 	for _, seg := range segments {
+		if err := ctx.Err(); err != nil {
+			return journalInspection{}, err
+		}
 		data, err := os.ReadFile(seg)
 		if err != nil {
 			return journalInspection{}, fmt.Errorf("read journal archive %s: %w", seg, err)
@@ -3278,7 +3362,7 @@ func inspectJournal(path string) (journalInspection, error) {
 	if len(combined) == 0 {
 		return journalInspection{Events: []map[string]any{}, EventIndex: map[string]int{}}, nil
 	}
-	return inspectJournalData(combined)
+	return inspectJournalSegmentDataContext(ctx, combined, 1)
 }
 
 func inspectJournalData(data []byte) (journalInspection, error) {
@@ -3294,6 +3378,10 @@ func inspectJournalSegmentData(data []byte) (journalInspection, error) {
 }
 
 func inspectJournalSegmentDataFrom(data []byte, firstSequence int) (journalInspection, error) {
+	return inspectJournalSegmentDataContext(context.Background(), data, firstSequence)
+}
+
+func inspectJournalSegmentDataContext(ctx context.Context, data []byte, firstSequence int) (journalInspection, error) {
 	inspection := journalInspection{
 		Events:     make([]map[string]any, 0),
 		EventIndex: make(map[string]int),
@@ -3301,6 +3389,9 @@ func inspectJournalSegmentDataFrom(data []byte, firstSequence int) (journalInspe
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	expectedSequence := firstSequence
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return journalInspection{}, err
+		}
 		line := scanner.Bytes()
 		var event map[string]any
 		if err := json.Unmarshal(line, &event); err != nil {
@@ -3340,7 +3431,7 @@ func inspectJournalSegmentDataFrom(data []byte, firstSequence int) (journalInspe
 	if err := scanner.Err(); err != nil {
 		return journalInspection{}, fmt.Errorf("scan journal: %w", err)
 	}
-	return inspection, nil
+	return inspection, ctx.Err()
 }
 
 func journalContains(path, eventID string) (bool, error) {
@@ -3386,17 +3477,20 @@ func journalFileContains(path, eventID string) (bool, error) {
 }
 
 func acquireLock(path string, timeout time.Duration) (func(), error) {
+	return acquireLockContext(context.Background(), path, timeout)
+}
+
+func acquireLockContext(parent context.Context, path string, timeout time.Duration) (func(), error) {
 	// Fence current binaries with an OS-owned lock before the compatibility
 	// sentinel. A slow live writer can never be evicted by sentinel age.
 	// The sentinel remains for legacy lock diagnostics during uniform upgrades.
-	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
 	releaseProcess, err := filelock.Acquire(ctx, path+".process")
-	cancel()
 	if err != nil {
 		return nil, err
 	}
-	releaseLegacy, err := acquireLegacyLock(path, timeout-time.Since(started))
+	releaseLegacy, err := acquireLegacyLockContext(ctx, path)
 	if err != nil {
 		releaseProcess()
 		return nil, err
@@ -3405,9 +3499,17 @@ func acquireLock(path string, timeout time.Duration) (func(), error) {
 }
 
 func acquireLegacyLock(path string, timeout time.Duration) (func(), error) {
-	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return acquireLegacyLockContext(ctx, path)
+}
+
+func acquireLegacyLockContext(ctx context.Context, path string) (func(), error) {
 	owner := strconv.Itoa(os.Getpid()) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("runtime lock %s: %w", path, err)
+		}
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			if _, writeErr := file.WriteString(owner); writeErr != nil {
@@ -3436,10 +3538,11 @@ func acquireLegacyLock(path string, timeout time.Duration) (func(), error) {
 		if recovered {
 			continue
 		}
-		if time.Now().After(deadline) {
-			return nil, errors.New("runtime lock timeout")
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("runtime lock %s: %w", path, ctx.Err())
+		case <-time.After(5 * time.Millisecond):
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -3451,8 +3554,23 @@ func removeExpiredLock(path string, maxAge time.Duration) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("inspect runtime lock: %w", err)
 	}
-	if time.Since(info.ModTime()) <= maxAge {
-		return false, nil
+	owner, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read runtime lock owner: %w", err)
+	}
+	pid, identified := sentinelOwnerPID(string(owner))
+	if identified {
+		// We already hold the process lock. A killed writer's compatibility
+		// sentinel need not age for 30 seconds while the 5-second budget expires.
+		// Never evict a known live/unknown owner merely because its mtime is old.
+		if !processKnownAbsent(pid) {
+			return false, nil
+		}
+	} else if time.Since(info.ModTime()) <= maxAge {
+		return false, nil // Unidentified legacy sentinels retain the old policy.
 	}
 
 	latest, err := os.Stat(path)
@@ -3462,13 +3580,30 @@ func removeExpiredLock(path string, maxAge time.Duration) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reinspect runtime lock: %w", err)
 	}
-	if !os.SameFile(info, latest) || time.Since(latest.ModTime()) <= maxAge {
+	latestOwner, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reread runtime lock owner: %w", err)
+	}
+	if !os.SameFile(info, latest) || string(owner) != string(latestOwner) || (identified && !processKnownAbsent(pid)) || (!identified && time.Since(latest.ModTime()) <= maxAge) {
 		return false, nil
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("remove expired runtime lock: %w", err)
 	}
 	return true, nil
+}
+
+func sentinelOwnerPID(owner string) (int, bool) {
+	parts := strings.Split(owner, ":")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	pid, pidErr := strconv.Atoi(parts[0])
+	created, timeErr := strconv.ParseInt(parts[1], 10, 64)
+	return pid, pidErr == nil && pid > 0 && timeErr == nil && created > 0
 }
 
 func integerField(object map[string]any, key string) (int, error) {

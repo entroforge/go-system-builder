@@ -13,6 +13,10 @@ Vibe Coding should not be "coding while chatting." The engineering approach deco
 Start at the [documentation index](docs/README.md) or [document map](docs/DOCUMENT-MAP.md).
 
 ```text
+cmd/, internal/             # Go entry point, implementation and package tests
+tests/                     # Integration tests and synthetic fixtures
+skills/, agents/           # Sources installed into the target project's .claude/
+packaging/, tools/         # Release allowlist, installation mappings and tooling
 blueprint/                   # Template design and maintenance: L1–L4; never packaged
 docs/                        # Target-project documentation
 ├── control/                  # Executable Definition, policy, protocol, protected commands
@@ -25,7 +29,16 @@ docs/                        # Target-project documentation
 ├── guides/                   # Installation, onboarding, concepts and engineering workflow
 ├── rules/                    # Execution constraints
 └── examples/                 # Self-contained learning and regression fixtures
+.local/                    # Ignored local maintenance evidence, packages and backups
+dist/, .claude/             # Ignored generated assets and local installation state
 ```
+
+For framework maintenance, start with [CLAUDE.md](CLAUDE.md) and the
+[source/release boundaries](packaging/README.md). `CLAUDE.md` guides work on
+this source checkout; `AGENTS-template.md` supplies instructions to installed
+business projects. Dated repair reports, logs and source backups belong under
+`.local/framework-maintenance/`, whose local README indexes the archives.
+Keep durable shared evidence in team artifact storage before removing a checkout.
 
 The [stage protocol](docs/control/agent-protocol.md) defines S0–S11, and the
 Loop Definition controls legal transitions. Framework documents explain the

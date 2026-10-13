@@ -78,3 +78,7 @@ Stop signing the affected review when its inputs drift, a document layer is miss
 ## Production entry and transaction feasibility
 
 TASK-EXECUTABILITY must inspect the actual entry and persistence path for every promised capability/slot family, not just document references. In existing TASK/contract traceability rows require: user action or external caller → registered entry → authoritative service/transaction → response or persisted state → owning TASK → necessary write paths → falsifiable check. Verify permission registration, UI mounts and shared types where applicable. A valid scope subset is not proof that all necessary files were declared. Keep changes that must be atomic in one transaction; do not split them merely to increase parallelism. Missing wiring ownership or a required transaction file is fix_required before dispatch. SPEC-CONSISTENCY retains business-semantic review; do not repeat its whole review or run the future product suite in S5.
+
+## Module relationship subject
+
+Include the registered `docs/architecture/module-relations.json` in the exact S5 subject manifest. Independently cross-check module inventory, ownership, resource provider→consumer relationships, contract/applicability sources, and declared CASE directories. Removed modules/edges and widened browser exclusions need substantive review. A committed graph is not self-approved, and source/import absence cannot prove no business consumer exists. See `docs/related-module-verification.md`.

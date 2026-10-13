@@ -22,6 +22,15 @@ func NewOutbox(path string) *Outbox {
 }
 
 func (o *Outbox) Append(record any) error {
+	return o.AppendContext(context.Background(), record)
+}
+
+func (o *Outbox) AppendContext(parent context.Context, record any) error {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("encode audit record: %w", err)
@@ -39,18 +48,21 @@ func (o *Outbox) Append(record any) error {
 	if err := os.MkdirAll(filepath.Dir(o.path), 0o755); err != nil {
 		return fmt.Errorf("create audit directory: %w", err)
 	}
-	release, err := acquireLock(o.path+".lock", 30*time.Second)
+	release, err := filelock.Acquire(ctx, o.path+".lock.process")
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	found, err := containsDecision(o.path, identity.DecisionID)
+	found, err := containsDecisionContext(ctx, o.path, identity.DecisionID)
 	if err != nil {
 		return err
 	}
 	if found {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	file, err := os.OpenFile(o.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -64,6 +76,10 @@ func (o *Outbox) Append(record any) error {
 }
 
 func containsDecision(path, decisionID string) (bool, error) {
+	return containsDecisionContext(context.Background(), path, decisionID)
+}
+
+func containsDecisionContext(ctx context.Context, path, decisionID string) (bool, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -74,6 +90,9 @@ func containsDecision(path, decisionID string) (bool, error) {
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if len(scanner.Bytes()) == 0 {
 			continue
 		}

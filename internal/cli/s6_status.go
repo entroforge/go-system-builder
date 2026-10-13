@@ -34,7 +34,7 @@ func runS6Command(args []string, stdout, stderr io.Writer) int {
 	capacity := flags.Int("capacity", 0, "actual total concurrent slots; omit to inspect without selecting a batch")
 	asJSON := flags.Bool("json", false, "machine-readable dispatch projection")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *capacity < 0 {
 		fmt.Fprintln(stderr, "capacity must be nonnegative")

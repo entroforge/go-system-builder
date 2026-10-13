@@ -11,16 +11,31 @@
     {
       "assertion_id": "root-1",
       "result": "pass",
-      "evidence_refs": ["runtime:reverify-example-root"]
+      "evidence_refs": [
+        "runtime:reverify-example-root"
+      ]
     },
     {
       "assertion_id": "gap-1",
       "result": "pass",
-      "evidence_refs": ["runtime:reverify-example-gap"]
+      "evidence_refs": [
+        "runtime:reverify-example-gap"
+      ]
     }
   ],
   "scope_compliance": "pass",
   "result": "pass",
   "failure_class": "",
-  "performed_at": "2026-08-26T11:30:00Z"
+  "performed_at": "2026-08-26T11:30:00Z",
+  "stop_condition_assessments": [
+    {
+      "contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "condition_index": 0,
+      "outcome": "not_triggered",
+      "rationale": "Example only: replace SHA, enumerate every approved condition, and cite independent inspection evidence.",
+      "evidence_refs": [
+        "runtime:reverify-example-stop-condition"
+      ]
+    }
+  ]
 }

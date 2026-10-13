@@ -18,7 +18,7 @@ func runDeploymentCheck(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "project root")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	issues := []string{}
 	var state struct {

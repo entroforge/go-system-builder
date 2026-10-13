@@ -18,6 +18,11 @@ func TestRecoveryErrorCodeClassifiesWrappedRecoveryErrors(t *testing.T) {
 		want string
 	}{
 		{
+			name: "protocol refusal uses runtime sentinel",
+			err:  fmt.Errorf("source format: %w", runtime.ErrRecoveryProtocolUnsupported),
+			want: recoveryProtocolCode,
+		},
+		{
 			name: "req invalid uses validation error chain",
 			err:  fmt.Errorf("inspect: %w", reqValidation),
 			want: recoveryREQInvalidCode,

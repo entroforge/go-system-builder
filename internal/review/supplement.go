@@ -169,7 +169,6 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	generation := baselineGeneration(current)
-	revision := intField(current["revision"])
 
 	// Compute the immutable target before the CAS. Duplicate checks must happen
 	// before any filesystem mutation; otherwise a retry reports an artifact
@@ -204,11 +203,6 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 			}
 		}
 	}
-	// Persist only after all deterministic duplicate and legacy checks pass;
-	// writeArtifact itself also refuses overwrite as the final race guard.
-	if err := writeArtifact(root, supplementRel, supplementBytes); err != nil {
-		return SupplementReceipt{}, err
-	}
 	supplementSHA := sha256Of(supplementBytes)
 	row := SupplementRow{
 		SupplementID:         supplement.SupplementID,
@@ -238,7 +232,8 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 		expectedRevision = -1
 	}
 	commitRevision := currentCommitRevision(expectedRevision, current)
-	snapshot, err := updateRuntime(store, expectedRevision, loopruntime.Mutation{
+	snapshot, err := updateRuntime(store, commitRevision, loopruntime.Mutation{
+		Artifacts:      []loopruntime.ImmutableArtifact{{Path: supplementRel, Data: supplementBytes}},
 		EventID:        fmt.Sprintf("evt-finding-supplement-%s-r%d", supplement.SupplementID, commitRevision+1),
 		TransitionID:   "FINDING-SUPPLEMENT",
 		Event:          "finding_supplement_appended",
@@ -260,18 +255,6 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 		},
 	})
 	if err != nil {
-		// The artifact is staged before the Writer commit. Remove it only when
-		// the failed operation left no pending marker, the Runtime is still the
-		// pre-commit revision, and no state path points at it.
-		cleanupStore := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-		if _, cleanupErr := cleanupStore.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{
-			ExpectedRevision: revision,
-			ArtifactPath:     supplementRel,
-			ArtifactSHA256:   supplementSHA,
-			ReferencedPaths:  supplementStateArtifactPaths(current),
-		}); cleanupErr != nil {
-			return SupplementReceipt{}, fmt.Errorf("finding supplement append failed and staged artifact cleanup was inconclusive: %w (original: %v)", cleanupErr, err)
-		}
 		return SupplementReceipt{}, err
 	}
 	// The main state now carries the rows; retire the legacy control-plane

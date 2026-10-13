@@ -21,7 +21,7 @@ func runWorkspaceCheck(args []string, stdout, stderr io.Writer) int {
 	agent := fs.String("agent", "", "registered owner")
 	index := fs.Int("check", -1, "zero-based declared executable check index")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	snapshot, err := runtime.NewStore(filepath.Join(*root, ".claude/loop-state.json"), filepath.Join(*root, ".claude/loop-events.jsonl")).Snapshot()

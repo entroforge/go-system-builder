@@ -24,7 +24,7 @@ func runWorkspaceCommit(args []string, stdout, stderr io.Writer) int {
 	id := fs.String("assignment", "", "registered assignment")
 	agent := fs.String("agent", "", "registered owner")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

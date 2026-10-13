@@ -12,6 +12,9 @@ import (
 )
 
 func Acquire(ctx context.Context, path string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}

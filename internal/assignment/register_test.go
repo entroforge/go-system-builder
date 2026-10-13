@@ -282,7 +282,7 @@ func TestRegisterRepairBindingRejectsManifestOwnerDrift(t *testing.T) {
 	}
 }
 
-func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) {
+func TestRegisterWorkgroupRetainsLegacyDraftsWhenApplyFails(t *testing.T) {
 	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
@@ -290,6 +290,10 @@ func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) 
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewPlan(t, root, dir, state)
 	writeJSON(t, statePath, state)
+	beforeState, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	manifestPath := filepath.Join(dir, "manifest.json")
 	copyManifest(t, root, manifestPath)
@@ -332,16 +336,16 @@ func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) 
 
 	for _, agentID := range []string{"agent-ver-req-gap", "agent-ver-module-complete"} {
 		activationPath := filepath.Join(root, ".claude", "evidence", "workgroup-delivery-round-1", "TASK-013-CLEANUP", "activation-"+agentID+".json")
-		if _, statErr := os.Stat(activationPath); !os.IsNotExist(statErr) {
-			t.Fatalf("failed registration left activation envelope %s (stat err=%v)", activationPath, statErr)
+		if _, statErr := os.Stat(activationPath); statErr != nil {
+			t.Fatalf("generic failure cleanup removed a published legacy draft %s: %v", activationPath, statErr)
 		}
 	}
 	finalState, readErr := os.ReadFile(statePath)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if string(finalState) == "" {
-		t.Fatal("runtime state unexpectedly empty after rejected registration")
+	if string(finalState) != string(beforeState) {
+		t.Fatal("failed registration authorized a retained legacy draft")
 	}
 }
 

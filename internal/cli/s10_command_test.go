@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	s10fixture "github.com/entroforge/go-system-builder/tests/fixtures/s10"
 )
 
 func TestS10ManifestValidateCommandPrintsDerivedSummary(t *testing.T) {
@@ -246,6 +247,8 @@ func TestS10StatusReportsBlockedManifestRoute(t *testing.T) {
 	}
 	decoded["blocking_findings"] = []any{map[string]any{"id": "BLOCK-1", "route": "TR-018"}}
 	decoded["metrics"].(map[string]any)["blocking_finding_count"] = 1
+	decoded["coverage_inventory"] = append(decoded["coverage_inventory"].([]any), map[string]any{"id": "claim-1", "category": "claim", "source_refs": []string{"authority/plan.json"}, "expected": "review claim", "oracle": "independent countercheck", "owner": "Release Auditor", "evidence_refs": []string{"ev:REQ-AC-001"}, "disposition": "pass"})
+	decoded["counterevidence"] = append(decoded["counterevidence"].([]any), map[string]any{"id": "CE-claim-1", "inventory_id": "claim-1", "question": "can the claim be disproved?", "evidence_refs": []string{"ev:REQ-AC-001"}, "outcome": "pass"})
 	manifest, err := json.Marshal(decoded)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +260,7 @@ func TestS10StatusReportsBlockedManifestRoute(t *testing.T) {
 		"schema_version": "1.0.0", "evidence_id": "ev-audit", "kind": "release_audit",
 		"runtime_id": "loop-test", "baseline_generation": 1, "review_round": 1,
 		"producer_agent_id": "s10-agent", "producer_responsibility": "Release Auditor",
-		"conclusion": "blocked", "audit_manifest_path": "release-audit-manifest.json",
+		"conclusion": "blocked", "requested_event": "release_audit_blocked", "audit_manifest_path": "release-audit-manifest.json",
 		"audit_manifest_sha256": sha256Hex(manifest),
 	}
 	envelopeData, err := json.Marshal(envelope)
@@ -268,7 +271,7 @@ func TestS10StatusReportsBlockedManifestRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence := []any{map[string]any{
-		"id": "ev-audit", "kind": "release_audit", "path": "release-audit.json",
+		"id": "ev-audit", "kind": "release_audit", "path": "release-audit.json", "produced_by": []any{"s10-agent"}, "responsibility_id": "Release Auditor",
 		"sha256": sha256Hex(envelopeData), "status": "valid", "baseline_generation": 1, "review_round": 1,
 	}}
 	// RC-16: the status path now applies the same evidence-reference audit as
@@ -296,6 +299,7 @@ func TestS10StatusReportsBlockedManifestRoute(t *testing.T) {
 		"baseline":  map[string]any{"generation": 1}, "review": map[string]any{"round": 1},
 		"evidence": evidence,
 	}
+	s10fixture.Bind(t, root, state, "REQ-AC-001", 1)
 	data, err := json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
@@ -306,6 +310,44 @@ func TestS10StatusReportsBlockedManifestRoute(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("proposed envelope lint is read only", func(t *testing.T) {
+		proposed := append([]any(nil), evidence[1:]...)
+		state["evidence"] = proposed
+		before, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		statePath := filepath.Join(root, ".claude/loop-state.json")
+		if err := os.WriteFile(statePath, before, 0644); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := os.WriteFile(statePath, data, 0644); err != nil {
+				t.Error(err)
+			}
+		}()
+		var out, diagnostic bytes.Buffer
+		code := cli.Run([]string{"s10", "envelope", "lint", "--root", root, "--file", "release-audit.json"}, strings.NewReader(""), &out, &diagnostic)
+		if code != 0 {
+			t.Fatalf("lint code=%d: %s", code, &diagnostic)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result["artifact_valid"] != true || result["transition_ready"] != false || result["evidence_id"] != "ev-audit" {
+			t.Fatalf("unexpected lint: %s", &out)
+		}
+		after, err := os.ReadFile(statePath)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("lint changed Runtime: %v", err)
+		}
+		entries, err := os.ReadDir(filepath.Join(root, ".claude"))
+		if err != nil || len(entries) != 2 {
+			t.Fatalf("lint created lock/Runtime files: %v, %v", entries, err)
+		}
+	})
 
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"s10", "status", "--root", root}, strings.NewReader(""), &stdout, &stderr)

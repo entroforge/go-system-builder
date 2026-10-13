@@ -91,6 +91,28 @@ func (v *Validator) ValidateFile(schemaName, dataPath string) error {
 // matches an embedded schema, that schema is used; otherwise it is treated as
 // a disk path for backward compatibility.
 func (v *Validator) ValidateBytes(schemaName string, data []byte) error {
+	// Diagnostic envelopes are version-dispatched; the original strict 1.1
+	// schema remains unchanged for historical readers. This is not a Runtime
+	// authority or writer protocol upgrade.
+	if schemaName == "hook-decision.schema.json" {
+		var envelope struct {
+			Version string `json:"schema_version"`
+		}
+		if json.Unmarshal(data, &envelope) == nil && envelope.Version == "1.2.0" {
+			schemaName = "hook-decision-v1.2.schema.json"
+		}
+	}
+	for _, name := range []string{"review-plan", "repair-session", "repair-result", "repair-changeset", "review-evidence"} {
+		if schemaName == name+".schema.json" {
+			var version struct {
+				Version string `json:"schema_version"`
+			}
+			if json.Unmarshal(data, &version) == nil && version.Version == "1.1.0" {
+				schemaName = name + "-v1.1.schema.json"
+			}
+			break
+		}
+	}
 	compiled, err := v.compileSchema(schemaName)
 	if err != nil {
 		return err

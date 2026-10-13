@@ -1,6 +1,7 @@
 package review
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -30,22 +31,23 @@ func sortedTypedEvidenceKinds() []string {
 }
 
 func validatePlanEvidenceRequirements(plan *Plan) error {
+	var problems []error
 	for _, claim := range plan.Claims {
 		for _, rawRequirement := range claim.RequiredEvidence {
 			requirement := strings.ToLower(strings.TrimSpace(rawRequirement))
 			if _, ok := typedEvidenceKinds[requirement]; ok {
 				continue
 			}
-			return s7GateError(
+			problems = append(problems, s7GateError(
 				"S7_PLAN_EVIDENCE_KIND",
 				fmt.Sprintf("claim %s declares unknown required evidence kind %q", claim.ClaimID, rawRequirement),
 				[]string{fmt.Sprintf("claim %s requires %q, which is not in the S7 evidence vocabulary", claim.ClaimID, rawRequirement)},
 				[]string{"replace it with one of: " + strings.Join(sortedTypedEvidenceKinds(), ", ")},
 				"runtime review-plan --file plan.json",
-			)
+			))
 		}
 	}
-	return nil
+	return errors.Join(problems...)
 }
 
 func evidenceRefKind(ref string) string {

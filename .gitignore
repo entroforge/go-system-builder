@@ -33,6 +33,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+/CLAUDE.local.md
 
 # Logs
 *.log

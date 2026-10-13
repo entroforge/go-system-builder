@@ -1078,7 +1078,7 @@ func TestRevisePlanCleansArtifactAfterNonStaleApplyFailure(t *testing.T) {
 	}
 }
 
-func TestRevisePlanRetainsArtifactWhenRuntimeCommitIsPending(t *testing.T) {
+func TestRevisePlanDoesNotPublishWhenAnotherCommitIsPending(t *testing.T) {
 	root := t.TempDir()
 	statePath, journalPath := writeState(t, root, revisionSourceState())
 	snap := registerFixturePlan(t, root, statePath, journalPath)
@@ -1108,8 +1108,8 @@ func TestRevisePlanRetainsArtifactWhenRuntimeCommitIsPending(t *testing.T) {
 		t.Fatal("pending runtime commit must make revise fail closed")
 	}
 	artifact := filepath.Join(root, ".claude", "review", "plans", plan.ReviewPlanID+"-r2.json")
-	if _, err := os.Stat(artifact); err != nil {
-		t.Fatalf("pending commit cleanup removed a potentially reachable artifact: %v", err)
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("new proposal published before prior pending commit recovery: %v", err)
 	}
 }
 

@@ -96,7 +96,20 @@ func snapshotCursor(state map[string]any) (string, string) {
 // CallerHooks MUST treat the Decision field as the authoritative tool
 // verdict; a non-block Decision always implies the tool may proceed
 // (BE-039 §3.2: "Quality not_ready must NOT map to tool block").
-func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, error) {
+func RunControlCycle(ctx context.Context, req ControlRequest) (out ControlResult, outErr error) {
+	ctx = metrics.WithTiming(ctx)
+	stopTotal := metrics.StartPhase(ctx, "control_cycle_total")
+	defer func() {
+		stopTotal()
+		out.Timing = metrics.ReadTiming(ctx)
+		out.AssignmentID = req.Runtime.AssignmentID
+		if out.AssignmentID == "" && req.Runtime.Agent != nil {
+			out.AssignmentID = req.Runtime.Agent.AssignmentID
+			if out.AssignmentID == "" {
+				out.AssignmentID = req.Runtime.Agent.RepairAssignmentID
+			}
+		}
+	}()
 	if strings.TrimSpace(req.Root) == "" {
 		return ControlResult{}, fmt.Errorf("controller: root is required")
 	}
@@ -116,7 +129,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	statePath, journalPath := controlRuntimePaths(req)
 
 	// --- Step 2: read snapshot revision N ---
-	store := runtime.NewStore(statePath, journalPath)
+	store := runtime.NewStore(statePath, journalPath).WithContext(ctx)
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		result.Error = fmt.Sprintf("read runtime: %v", err)
@@ -139,7 +152,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		return result, nil
 	}
 	if req.Files == nil && len(catalog.Definition.MutableEvidenceKinds) > 0 {
-		if view, viewErr := productionFiles(req.Root, snapshot.State, catalog); viewErr == nil {
+		if view, viewErr := productionFilesContext(ctx, req.Root, snapshot.State, catalog); viewErr == nil {
 			req.Files = view // refresh and evaluation share the same pinned input snapshot
 			kinds := map[string]bool{}
 			for _, k := range catalog.Definition.MutableEvidenceKinds {
@@ -149,15 +162,23 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 			if req.recoveryWriter.Enabled() {
 				refreshWriter = runtime.NewOfflineRecoveryWriter(statePath, journalPath, req.Root, semantic.RuntimeCandidateValidator{}, req.recoveryWriter)
 			}
-			_, refreshErr := refreshWriter.RefreshEvidenceFingerprints(req.Root, kinds, view.ReadFile, func(path string) bool { source, err := view.Source(path); return err == nil && source == "disk" })
+			refreshWriter = refreshWriter.WithContext(ctx)
+			stopRefresh := metrics.StartPhase(ctx, "evidence_refresh")
+			refreshed, refreshErr := refreshWriter.RefreshEvidenceFingerprints(req.Root, kinds, view.ReadFile, func(path string) bool { source, err := view.Source(path); return err == nil && source == "disk" })
+			stopRefresh()
 			if refreshErr != nil {
 				result.Warnings = append(result.Warnings, "evidence fingerprint refresh: "+refreshErr.Error())
-			} else if refreshed, readErr := store.Snapshot(); readErr == nil {
-				snapshot = refreshed
+			} else {
+				snapshot = refreshed.Snapshot
 				result.Snapshot = snapshot
 			}
 		}
 	}
+	// Refresh returns the exact locked snapshot; do not reread a newer cursor
+	// while retaining candidates computed from the pre-refresh cursor.
+	cursorState, cursorPhase = snapshotCursor(snapshot.State)
+	result.QualityGate.ObservedRevision = snapshot.Revision
+	result.QualityGate.NextCursor = cursorString(cursorState, cursorPhase)
 	registry, err := qualitygate.NewRegistry(catalog)
 	if err != nil {
 		result.Error = fmt.Sprintf("build gate registry: %v", err)
@@ -189,7 +210,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	}
 	files := req.Files
 	if files == nil {
-		view, viewErr := productionFiles(req.Root, snapshot.State, catalog)
+		view, viewErr := productionFilesContext(ctx, req.Root, snapshot.State, catalog)
 		if viewErr != nil {
 			result.Error = viewErr.Error()
 			result.ErrorCode = CodeGateUnknown
@@ -280,7 +301,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		// Honor the AutoTrigger.actor contract: only the configured actor
 		// (typically "hook_controller") may drive this transition from the
 		// controller seam.
-		next, applyErr := transition.Apply(req.Root, statePath, journalPath, autoTransitionRequest(req, registry, snapshot, candidate, gateID, evaluation))
+		next, applyErr := transition.ApplyContext(ctx, req.Root, statePath, journalPath, autoTransitionRequest(req, registry, snapshot, candidate, gateID, evaluation))
 		if applyErr != nil {
 			// CAS stale: re-read, recompute once, and try again.
 			if errors.Is(applyErr, runtime.ErrStaleRevision) {
@@ -340,6 +361,7 @@ func evaluateGateWithBudget(
 	evaluator qualitygate.Evaluator,
 	input qualitygate.Input,
 ) (qualitygate.Evaluation, error, bool) {
+	defer metrics.StartPhase(ctx, "gate_evaluation")()
 	evalCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
@@ -439,7 +461,7 @@ func recomputeAfterStale(
 	}
 	files := req.Files
 	if files == nil {
-		view, viewErr := productionFiles(req.Root, refreshed.State, catalog)
+		view, viewErr := productionFilesContext(ctx, req.Root, refreshed.State, catalog)
 		if viewErr != nil {
 			return ControlResult{Snapshot: refreshed, Decision: allowDecision(), Error: viewErr.Error(), ErrorCode: CodeGateUnknown, QualityGate: QualityGateResult{Status: StatusUnknown, ErrorCode: CodeGateUnknown, Missing: []string{viewErr.Error()}}}, 1, nil
 		}
@@ -546,7 +568,7 @@ func recomputeAfterStale(
 	}
 	// Retry the transition once with the refreshed expected revision.
 	statePath, journalPath := controlRuntimePaths(req)
-	_, applyErr := transition.Apply(req.Root, statePath, journalPath,
+	next, applyErr := transition.ApplyContext(ctx, req.Root, statePath, journalPath,
 		autoTransitionRequest(req, registry, refreshed, candidate, gateID, evaluation))
 	if applyErr != nil {
 		if errors.Is(applyErr, runtime.ErrStaleRevision) {
@@ -571,10 +593,7 @@ func recomputeAfterStale(
 		}
 		return out, 1, nil
 	}
-	final, err := store.Snapshot()
-	if err != nil {
-		return ControlResult{}, 1, fmt.Errorf("reread runtime after retry: %w", err)
-	}
+	final := next
 	incrementMetricsTransitionCommits()
 	metrics.ObserveTransitionCommit(req.Root, candidate.ID)
 	cursorState, cursorPhase = snapshotCursor(final.State)
@@ -1295,6 +1314,10 @@ func containsString(values []string, target string) bool {
 }
 
 func productionFiles(root string, state map[string]any, catalog *transition.Catalog) (*fileview.View, error) {
+	return productionFilesContext(context.Background(), root, state, catalog)
+}
+
+func productionFilesContext(ctx context.Context, root string, state map[string]any, catalog *transition.Catalog) (*fileview.View, error) {
 	if err := fileview.ValidateAuthority(root, state); err != nil {
 		return nil, err
 	}
@@ -1302,7 +1325,7 @@ func productionFiles(root string, state map[string]any, catalog *transition.Cata
 	if err != nil {
 		return nil, err
 	}
-	return fileview.New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+	return fileview.NewContext(ctx, root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
 }
 func transitionFiles(files qualityGateFiles) fileview.Reader {
 	view, _ := files.(fileview.Reader)

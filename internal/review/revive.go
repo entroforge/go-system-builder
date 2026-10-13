@@ -39,6 +39,10 @@ func RevivePlan(
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("review-plan revive: load plan: %w", err)
 	}
+	verifyScope, err := PrepareModuleScopeValidation(root, current.State, plan)
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	if err := verifyFrozenSubjects(root, plan, current.State); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("review-plan revive: baseline still drifted; the round stays stale (use revise for real drift): %w", err)
 	}
@@ -48,8 +52,8 @@ func RevivePlan(
 		cursor = map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	}
 	runtimeID, _ := current.State["runtime_id"].(string)
-	commitRevision := currentCommitRevision(-1, current.State)
-	snapshot, err := updateRuntime(store, expectedRevision, loopruntime.Mutation{
+	commitRevision := currentCommitRevision(expectedRevision, current.State)
+	snapshot, err := updateRuntime(store, commitRevision, loopruntime.Mutation{
 		EventID:        fmt.Sprintf("evt-review-plan-revive-%s-r%d", ptr.PlanID, commitRevision+1),
 		TransitionID:   "REVIEW-PLAN-REVIVE",
 		Event:          "review_plan_revived",
@@ -61,6 +65,9 @@ func RevivePlan(
 		Message:        fmt.Sprintf("ReviewPlan %s revived from stale after drift re-check passed (revision %d unchanged; no claim, assignment or result touched)", ptr.PlanID, ptr.Revision),
 		OccurredAt:     time.Now().UTC(),
 		Apply: func(state map[string]any) error {
+			if err := verifyScope(state); err != nil {
+				return err
+			}
 			reviewMap, ok := state["review"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("runtime review section must be an object")

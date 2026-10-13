@@ -22,7 +22,7 @@ func runContracts(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	asJSON := flags.Bool("json", false, "machine-readable output")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	result, err := semantic.ContractsCheck(*root)
 	if err != nil {

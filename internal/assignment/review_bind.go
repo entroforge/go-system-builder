@@ -39,6 +39,9 @@ func bindReviewPlanAssignments(root string, state map[string]any, value manifest
 	if err != nil {
 		return err
 	}
+	if err := review.ValidateModuleScopeObligations(plan); err != nil {
+		return err
+	}
 	if ptr.Status != "running" && ptr.Status != "cannot_clean" && ptr.Status != "discovery_draining" {
 		return fmt.Errorf("ReviewPlan %s is %s; reviewer dispatch requires a running or draining round", ptr.PlanID, ptr.Status)
 	}

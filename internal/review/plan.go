@@ -3,7 +3,9 @@ package review
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/schema"
 	"os"
 	"path/filepath"
 	"sort"
@@ -78,12 +80,18 @@ func LoadPlan(root string, state map[string]any) (*Plan, *PlanPointer, error) {
 	if sha256Of(data) != ptr.SHA256 {
 		return nil, nil, fmt.Errorf("ReviewPlan %s drifted: pinned sha256 %s does not match the file on disk", ptr.Path, ptr.SHA256)
 	}
+	if err := schema.NewEmbeddedValidator().ValidateBytes("review-plan.schema.json", data); err != nil {
+		return nil, nil, fmt.Errorf("ReviewPlan schema: %w", err)
+	}
 	var plan Plan
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return nil, nil, fmt.Errorf("decode ReviewPlan %s: %w", ptr.Path, err)
 	}
 	if plan.ReviewPlanID != ptr.PlanID {
 		return nil, nil, fmt.Errorf("ReviewPlan id mismatch: state pins %s but the file declares %s", ptr.PlanID, plan.ReviewPlanID)
+	}
+	if plan.SchemaVersion == "1.1.0" && (plan.ReviewRound != ptr.ReviewRound || plan.E2ECoverageState != ptr.E2ECoverageState || workspaceValue(plan.VerificationArtifactWorkspace) != ptr.VerificationArtifactWorkspace) {
+		return nil, nil, fmt.Errorf("ReviewPlan pointer differs from the immutable plan's review_round, e2e_coverage_state or verification_artifact_workspace; restore the matching pointer rather than weakening verification obligations")
 	}
 	return &plan, ptr, nil
 }
@@ -111,62 +119,68 @@ func SubjectDigest(plan *Plan) string {
 // minimum holds (L3-S7 §4.2: a round with product impact never has a
 // zero-Claim white-box lens).
 func ValidatePlan(plan *Plan) error {
+	var problems []error
+	if plan == nil {
+		return fmt.Errorf("ReviewPlan is required")
+	}
+	if plan.SchemaVersion == "1.1.0" {
+		if err := ValidateModuleScopeObligations(plan); err != nil {
+			problems = append(problems, err)
+		}
+	}
 	if plan.DispatchCapacityPolicy != "coverage_complete" {
-		return s7GateError(
+		problems = append(problems, s7GateError(
 			"S7_DISPATCH_POLICY",
 			"dispatch_capacity_policy must be coverage_complete",
 			[]string{"the plan declares a capacity policy other than coverage_complete"},
 			[]string{"set dispatch_capacity_policy to coverage_complete; platform capacity may queue Assignments but must not delete coverage"},
 			"runtime review-plan --file plan.json",
-		)
+		))
 	}
 	if err := rejectPlannerPlaceholders(plan); err != nil {
-		return err
+		problems = append(problems, err)
 	}
 	if err := validatePlanEvidenceRequirements(plan); err != nil {
-		return err
+		problems = append(problems, err)
+	}
+	if err := validatePlanIdentity(plan); err != nil {
+		// Ownership, lens matching, DAGs and overlap require unambiguous IDs.
+		return errors.Join(append(problems, err)...)
 	}
 	claims := make(map[string]Claim, len(plan.Claims))
 	for _, claim := range plan.Claims {
-		if _, dup := claims[claim.ClaimID]; dup {
-			return fmt.Errorf("duplicate claim_id %s", claim.ClaimID)
-		}
 		claims[claim.ClaimID] = claim
 	}
 	for _, claim := range plan.Claims {
 		for _, dep := range claim.DependsOn {
 			if _, ok := claims[dep]; !ok {
-				return fmt.Errorf("claim %s depends on unknown claim %s", claim.ClaimID, dep)
+				problems = append(problems, fmt.Errorf("claim %s depends on unknown claim %s", claim.ClaimID, dep))
 			}
 		}
 	}
 	if cycle := findClaimCycle(plan.Claims); cycle != "" {
-		return fmt.Errorf("claim dependency cycle involving %s", cycle)
+		problems = append(problems, fmt.Errorf("claim dependency cycle involving %s", cycle))
 	}
 
-	assignmentSeen := make(map[string]bool, len(plan.Assignments))
 	claimOwner := make(map[string]string, len(plan.Claims))
 	for _, assignment := range plan.Assignments {
-		if assignmentSeen[assignment.AssignmentID] {
-			return fmt.Errorf("duplicate assignment_id %s", assignment.AssignmentID)
-		}
-		assignmentSeen[assignment.AssignmentID] = true
 		if assignment.ExecutionWave != "static" && assignment.ExecutionWave != "behavior" {
-			return fmt.Errorf("assignment %s has unknown execution_wave %q", assignment.AssignmentID, assignment.ExecutionWave)
+			problems = append(problems, fmt.Errorf("assignment %s has unknown execution_wave %q", assignment.AssignmentID, assignment.ExecutionWave))
 		}
 		for _, claimID := range assignment.ClaimIDs {
 			claim, ok := claims[claimID]
 			if !ok {
-				return fmt.Errorf("assignment %s references unknown claim %s", assignment.AssignmentID, claimID)
+				problems = append(problems, fmt.Errorf("assignment %s references unknown claim %s", assignment.AssignmentID, claimID))
+				continue
 			}
 			if claim.Applicability == "not_applicable" {
-				return fmt.Errorf("assignment %s dispatches not_applicable claim %s; N/A Claims are plan dispositions and are never dispatched (L3-S7 §9.3)", assignment.AssignmentID, claimID)
+				problems = append(problems, fmt.Errorf("assignment %s dispatches not_applicable claim %s; N/A Claims are plan dispositions and are never dispatched (L3-S7 §9.3)", assignment.AssignmentID, claimID))
 			}
 			if claim.Lens != assignment.Lens {
-				return fmt.Errorf("assignment %s (lens %s) covers claim %s of lens %s; merging lenses in one Assignment is forbidden (L3-S7 §3.4)", assignment.AssignmentID, assignment.Lens, claimID, claim.Lens)
+				problems = append(problems, fmt.Errorf("assignment %s (lens %s) covers claim %s of lens %s; merging lenses in one Assignment is forbidden (L3-S7 §3.4)", assignment.AssignmentID, assignment.Lens, claimID, claim.Lens))
 			}
 			if owner, dup := claimOwner[claimID]; dup {
-				return fmt.Errorf("claim %s is assigned to both %s and %s; the required Claim set must be partitioned exactly", claimID, owner, assignment.AssignmentID)
+				problems = append(problems, fmt.Errorf("claim %s is assigned to both %s and %s; the required Claim set must be partitioned exactly", claimID, owner, assignment.AssignmentID))
 			}
 			claimOwner[claimID] = assignment.AssignmentID
 		}
@@ -175,7 +189,7 @@ func ValidatePlan(plan *Plan) error {
 		owner := claimOwner[claim.ClaimID]
 		for _, dependency := range claim.DependsOn {
 			if dependencyOwner := claimOwner[dependency]; dependencyOwner == owner && owner != "" {
-				return fmt.Errorf("claim %s depends on %s in the same Assignment %s; split the dependency into separate Assignments so its Result can be consumed first", claim.ClaimID, dependency, owner)
+				problems = append(problems, fmt.Errorf("claim %s depends on %s in the same Assignment %s; split the dependency into separate Assignments so its Result can be consumed first", claim.ClaimID, dependency, owner))
 			}
 		}
 	}
@@ -188,7 +202,7 @@ func ValidatePlan(plan *Plan) error {
 		}
 		requiredByLens[claim.Lens]++
 		if _, assigned := claimOwner[claim.ClaimID]; !assigned {
-			return fmt.Errorf("required claim %s (%s) has no owning Assignment; platform capacity may queue work but never delete coverage (L3-S7 §4.5)", claim.ClaimID, claim.Lens)
+			problems = append(problems, fmt.Errorf("required claim %s (%s) has no owning Assignment; platform capacity may queue work but never delete coverage (L3-S7 §4.5)", claim.ClaimID, claim.Lens))
 		}
 	}
 	for _, claim := range plan.Claims {
@@ -200,106 +214,103 @@ func ValidatePlan(plan *Plan) error {
 		// An empty ui_impact-derived N/A silently dropped the whole E2E
 		// dimension for req pipelines with small bugs.
 		if strings.TrimSpace(claim.NAChecklistID) == "" {
-			return s7GateError(
+			problems = append(problems, s7GateError(
 				"S7_NA_CHECKLIST_MISSING",
 				fmt.Sprintf("claim %s is not_applicable without an na_checklist_id", claim.ClaimID),
 				[]string{"the N/A disposition carries only a free-text rationale; there is no checklist or impact-analysis artifact the conclusion was verified against"},
 				[]string{"set na_checklist_id to the N/A checklist / impact-analysis artifact id (e.g. bound_req#ui_impact or na-checklist-template-1 — fill every section of docs/design/NA-checklist-template.md: scope / impact / evidence / alternative / sign-off) and keep na_rationale as the human summary"},
 				"runtime review-plan --file plan.json",
-			)
+			))
 		}
 	}
 	justified := plan.CoverageJustification != nil && strings.TrimSpace(*plan.CoverageJustification) != ""
 	for _, lens := range []string{"delivery", "qa"} {
 		if requiredByLens[lens] == 0 && !justified {
-			return fmt.Errorf("the round has zero required %s Claims; that is only legal for a pure docs/metadata change and needs a non-empty coverage_justification (L3-S7 §4.2)", lens)
+			problems = append(problems, fmt.Errorf("the round has zero required %s Claims; that is only legal for a pure docs/metadata change and needs a non-empty coverage_justification (L3-S7 §4.2)", lens))
 		}
 	}
 	for _, assignment := range plan.Assignments {
 		switch assignment.Lens {
 		case "e2e":
 			if assignment.ExecutionWave != "behavior" {
-				return fmt.Errorf("assignment %s is an e2e lens but not in the behavior wave; behavior wave is reserved for E2E/specialty execution", assignment.AssignmentID)
+				problems = append(problems, fmt.Errorf("assignment %s is an e2e lens but not in the behavior wave; behavior wave is reserved for E2E/specialty execution", assignment.AssignmentID))
 			}
 		case "delivery", "qa":
 			if assignment.ExecutionWave != "static" {
-				return fmt.Errorf("assignment %s is a %s lens in the behavior wave; white-box delivery/QA review belongs to the static wave", assignment.AssignmentID, assignment.Lens)
+				problems = append(problems, fmt.Errorf("assignment %s is a %s lens in the behavior wave; white-box delivery/QA review belongs to the static wave", assignment.AssignmentID, assignment.Lens))
 			}
 		}
 	}
 	switch plan.E2ECoverageState {
 	case "cold_start":
 		if plan.VerificationArtifactWorkspace == nil || strings.TrimSpace(*plan.VerificationArtifactWorkspace) == "" {
-			return s7GateError(
+			problems = append(problems, s7GateError(
 				"S7_E2E_WORKSPACE_MISSING",
 				"e2e_coverage_state=cold_start requires a verification_artifact_workspace",
 				[]string{"the cold-start E2E plan has no isolated verification workspace"},
 				[]string{"set verification_artifact_workspace to the isolated spec/fixture write surface"},
 				"runtime review-plan --file plan.json",
-			)
+			))
 		}
 		if requiredByLens["e2e"] == 0 {
-			return s7GateError(
+			problems = append(problems, s7GateError(
 				"S7_E2E_CLAIM_MISSING",
 				"e2e_coverage_state=cold_start requires at least one required e2e Claim",
 				[]string{"the blank E2E coverage matrix has no executable Claim"},
 				[]string{"add one required e2e Claim per recoverable flow context and assign it in the behavior wave"},
 				"runtime review-plan --file plan.json",
-			)
+			))
 		}
 	case "not_applicable":
 		if plan.VerificationArtifactWorkspace != nil && strings.TrimSpace(*plan.VerificationArtifactWorkspace) != "" {
-			return fmt.Errorf("verification_artifact_workspace is only valid when e2e_coverage_state=cold_start; not_applicable must not create an E2E authoring surface")
+			problems = append(problems, fmt.Errorf("verification_artifact_workspace is only valid when e2e_coverage_state=cold_start; not_applicable must not create an E2E authoring surface"))
 		}
 		if naByLens["e2e"] == 0 {
-			return fmt.Errorf("e2e_coverage_state=not_applicable requires at least one e2e Claim carrying applicability=not_applicable with source and rationale; ui_impact=none alone is not a conclusion (L3-S7 §4.3)")
+			problems = append(problems, fmt.Errorf("e2e_coverage_state=not_applicable requires at least one e2e Claim carrying applicability=not_applicable with source and rationale; ui_impact=none alone is not a conclusion (L3-S7 §4.3)"))
 		}
 	case "regression_available":
 		if plan.VerificationArtifactWorkspace != nil && strings.TrimSpace(*plan.VerificationArtifactWorkspace) != "" {
-			return s7GateError(
+			problems = append(problems, s7GateError(
 				"S7_E2E_WORKSPACE_UNEXPECTED",
 				"verification_artifact_workspace is only valid when e2e_coverage_state=cold_start",
 				[]string{"regression_available declares an isolated authoring workspace"},
 				[]string{"remove verification_artifact_workspace or change e2e_coverage_state to cold_start"},
 				"runtime review-plan --file plan.json",
-			)
+			))
 		}
 		if requiredByLens["e2e"] == 0 {
-			return s7GateError(
+			problems = append(problems, s7GateError(
 				"S7_E2E_CLAIM_MISSING",
 				"e2e_coverage_state=regression_available requires at least one required e2e Claim",
 				[]string{"the plan declares reusable E2E assets but has no executable E2E Claim"},
 				[]string{"bind each changed or gap surface to an existing E2E asset Claim; do not silently skip behavior coverage"},
 				"runtime review-plan --file plan.json",
-			)
+			))
 		}
 		if err := validateE2EAssetDeclarations(plan); err != nil {
-			return err
+			problems = append(problems, err)
 		}
 	default:
-		return s7GateError(
+		problems = append(problems, s7GateError(
 			"S7_E2E_COVERAGE_STATE_UNKNOWN",
 			fmt.Sprintf("unknown e2e_coverage_state %q", plan.E2ECoverageState),
 			[]string{"e2e_coverage_state must be cold_start, regression_available, or not_applicable"},
 			[]string{"choose the state that matches the actual E2E asset inventory"},
 			"runtime review-plan --file plan.json",
-		)
+		))
 	}
 	if err := validateAssignmentOverlap(plan, claims); err != nil {
-		return err
+		problems = append(problems, err)
 	}
 	if err := validateColdStartE2EOverload(plan, claims); err != nil {
-		return err
+		problems = append(problems, err)
 	}
-	return nil
+	return errors.Join(problems...)
 }
 
-// rejectPlannerPlaceholders keeps DraftPlan useful as an authoring aid while
-// ensuring its temporary TODO markers can never cross the registration gate.
-// This is deliberately a narrow marker check rather than a second schema: a
-// planner may use prose such as "todo list" in a source reference, but the
-// generated TODO(planner) token is unambiguously unfinished plan content.
+// rejectPlannerPlaceholders rejects unfinished authoring markers in all fields.
 func rejectPlannerPlaceholders(plan *Plan) error {
+	var problems []error
 	check := func(kind, id, value string) error {
 		if strings.Contains(value, "TODO(planner)") || strings.Contains(value, "PLANNER-REFINE") {
 			return fmt.Errorf("%s %s still contains TODO(planner)/PLANNER-REFINE; replace the draft placeholder with a concrete target/assertion/oracle/method before registering the ReviewPlan", kind, id)
@@ -317,26 +328,26 @@ func rejectPlannerPlaceholders(plan *Plan) error {
 		}
 		for _, field := range fields {
 			if err := check(fmt.Sprintf("claim %s %s", claim.ClaimID, field.name), claim.ClaimID, field.value); err != nil {
-				return err
+				problems = append(problems, err)
 			}
 		}
 		for _, ref := range append(append([]string{}, claim.SourceRefs...), claim.RequiredEvidence...) {
 			if err := check(fmt.Sprintf("claim %s reference", claim.ClaimID), claim.ClaimID, ref); err != nil {
-				return err
+				problems = append(problems, err)
 			}
 		}
 	}
 	for _, assignment := range plan.Assignments {
 		if err := check("assignment boundary", assignment.AssignmentID, assignment.NonOverlapBoundary); err != nil {
-			return err
+			problems = append(problems, err)
 		}
 		for _, focus := range assignment.FocusKeys {
 			if err := check("assignment focus", assignment.AssignmentID, focus); err != nil {
-				return err
+				problems = append(problems, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(problems...)
 }
 
 // DependenciesSettled is the dispatch-time half of the Claim DAG gate. A

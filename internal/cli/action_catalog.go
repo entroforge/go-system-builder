@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"strings"
@@ -10,12 +12,14 @@ import (
 // flag package writes ErrHelp to stderr and returns exit 2 for nested commands;
 // agents need help to be a successful, discoverable action instead.
 func wantsHelp(args []string) bool {
-	for _, arg := range args {
-		if arg == "--help" || arg == "-h" || arg == "help" {
-			return true
-		}
+	return len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help")
+}
+
+func flagParseExitCode(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
 	}
-	return false
+	return 2
 }
 
 func printCommandHelp(w io.Writer, usage, detail string) {
@@ -44,11 +48,13 @@ func printActionCatalog(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "S7 complete verification")
 	fmt.Fprintln(w, "  1. `loop-harness s7 draft --out <plan.json>`")
-	fmt.Fprintln(w, "  2. `loop-harness runtime review-plan --file <plan.json>`")
+	fmt.Fprintln(w, "  2. `loop-harness s7 lint --file <plan.json>`, then `loop-harness runtime review-plan --file <plan.json>`")
+	fmt.Fprintln(w, "  Plan 1.1: framework-generated module_scope; refine each module decision and independent scope-assessment obligation. Unknown inputs or deleting candidates cannot register.")
 	fmt.Fprintln(w, "  3. `loop-harness s7 manifest-draft --assignment <id> --out <manifest.json>`")
 	fmt.Fprintln(w, "  4. `loop-harness runtime register-workgroup --manifest <manifest.json> --task-id <TASK> --task <task.md>` (compatibility: runtime register-workgroup remains the binding verb)")
 	fmt.Fprintln(w, "  5. `loop-harness runtime review-result submit --assignment-id <id> --result <result.json>`")
 	fmt.Fprintln(w, "  6. `loop-harness s7 status` — inspect exact Claim coverage, blockers and the next action")
+	fmt.Fprintln(w, "  Retryable plan/register/revise/result: preserve --operation-id; inspect the original receipt with `runtime operation --id <id>` (docs/runtime-operations.md)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "S8 root-cause investigation")
 	fmt.Fprintln(w, "  All S8 mutations go through `runtime investigation ...` — there is no `s8` subcommand (do not run `s8 intake`; the real CLI verb is `runtime investigation ingest --grouping-rationale <reason>`)")
@@ -58,6 +64,8 @@ func printActionCatalog(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "S9 complete repair and return")
 	fmt.Fprintln(w, "  `loop-harness runtime repair session open --session-id <id> --req-id <REQ> --created-by <agent> --actor <agent>` → `runtime repair plan compile --plan-id <id> --created-by <agent> --actor <agent>`")
+	fmt.Fprintln(w, "  Zero-change confirmation: `runtime repair session open --intent confirm --confirmation-sources <handoff-refs.json> --session-id <id> --created-by <agent>`; pin prior committed handoffs and report current verified_subjects, never predecessor changes.")
+	fmt.Fprintln(w, "  Missing legacy metadata: `runtime repair authority restore --actor <agent>` validates the immutable Session and recorded changes before restoring its fingerprint; environment variables do not waive S9 gates.")
 	fmt.Fprintln(w, "  `loop-harness runtime repair dispatch --assignment-id <id> --agent-id <agent> --role-family <role> --agent-definition <path> --actor <agent>`")
 	fmt.Fprintln(w, "  `loop-harness runtime repair plan-report submit --file <plan-report.json> --actor <agent>` → `runtime repair execution begin --actor <agent>`")
 	fmt.Fprintln(w, "  `loop-harness runtime repair result submit --file <result.json> --actor <agent>`")

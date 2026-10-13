@@ -694,6 +694,14 @@ func refreshMilestone(root, statePath, journalPath string, snapshot runtime.Snap
 }
 
 func refreshMilestoneWithGate(root, statePath, journalPath string, snapshot runtime.Snapshot, guidance policy.Guidance, event string, gate controller.QualityGateResult) (runtime.Snapshot, bool, error) {
+	return refreshMilestoneWithGateContext(context.Background(), root, statePath, journalPath, snapshot, guidance, event, gate)
+}
+
+func refreshMilestoneWithGateContext(ctx context.Context, root, statePath, journalPath string, snapshot runtime.Snapshot, guidance policy.Guidance, event string, gate controller.QualityGateResult) (runtime.Snapshot, bool, error) {
+	defer metrics.StartPhase(ctx, "milestone_refresh")()
+	if err := ctx.Err(); err != nil {
+		return runtime.Snapshot{}, false, err
+	}
 	current, _ := snapshot.State["milestone"].(map[string]any)
 	if milestoneMatchesWithGate(current, guidance, gate) {
 		return snapshot, false, nil
@@ -706,7 +714,7 @@ func refreshMilestoneWithGate(root, statePath, journalPath string, snapshot runt
 	persistedGuidance.Instruction = formatGuidanceInstruction(persistedGuidance)
 	milestone := guidanceMapWithGate(persistedGuidance, controller.QualityGateResult{}, event, snapshot.Revision+1, now, gate)
 	from := lifecycleCursor(snapshot.State)
-	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(ctx)
 	updated, err := store.Update(snapshot.Revision, runtime.Mutation{
 		EventID:              fmt.Sprintf("evt-milestone-refreshed-r%d", snapshot.Revision+1),
 		TransitionID:         "MILESTONE-REFRESH",

@@ -1,6 +1,7 @@
 package transition
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/impact"
 	"github.com/entroforge/go-system-builder/internal/repairpolicy"
@@ -75,6 +77,14 @@ type resolvedTransition struct {
 }
 
 func Apply(root, statePath, journalPath string, request Request) (loopruntime.Snapshot, error) {
+	return ApplyContext(context.Background(), root, statePath, journalPath, request)
+}
+
+// ApplyContext shares the caller deadline through snapshot, validation and CAS.
+func ApplyContext(ctx context.Context, root, statePath, journalPath string, request Request) (loopruntime.Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
@@ -86,6 +96,7 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if request.RecoveryWriter.Enabled() {
 		store = loopruntime.NewOfflineRecoveryWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}, request.RecoveryWriter)
 	}
+	store = store.WithContext(ctx)
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
@@ -116,7 +127,7 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 			if err := fileview.ValidateAuthority(root, current); err != nil {
 				return loopruntime.Snapshot{}, err
 			}
-			view, err := fileview.New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+			view, err := fileview.NewContext(ctx, root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
 			if err != nil {
 				return loopruntime.Snapshot{}, err
 			}
@@ -131,6 +142,17 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 		_, err := fileview.DevelopmentRef(current)
 		return loopruntime.Snapshot{}, err
 	}
+	var cleanRoundCheck func(map[string]any) verification.Result
+	if contains(resolved.Spec.Guards, "clean_round_valid") || contains(resolved.Spec.Guards, "clean_round_still_valid") || resolved.Spec.ID == "TR-015" || resolved.Spec.ID == "TR-017" {
+		var err error
+		cleanRoundCheck, err = verification.PrepareCleanRoundForRoot(root, current)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		if evaluation := cleanRoundCheck(current); !evaluation.Passed {
+			return loopruntime.Snapshot{}, fmt.Errorf("clean-round completion refused: %v", evaluation.Reasons)
+		}
+	}
 	// RC-06 (S10-2): forbidden_events were decoded into the catalog but never
 	// consumed by Apply — the "strong_block" table was documentation. The two
 	// acceptance/release-audit strong blocks are now a hard pre-Apply barrier:
@@ -138,7 +160,7 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	// refs the caller supplies. `clean_round_still_valid` re-checks this inside
 	// the mutation, but the catalog declaration itself must gate Apply
 	// fail-closed (create_acc_without_clean_round / run_release_audit_without_acc).
-	if err := enforceForbiddenEvents(catalog, resolved.Spec, current); err != nil {
+	if err := enforceForbiddenEvents(root, catalog, resolved.Spec, current, cleanRoundCheck); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	if err := validateRequest(root, current, resolved.Spec, request); err != nil {
@@ -352,6 +374,7 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 					guardState[k] = v
 				}
 				guardState["_file_view"] = request.Files
+				guardState["_clean_round_check"] = cleanRoundCheck
 				if err := guard(guardState, request.Evidence); err != nil {
 					guardResults[index]["result"] = "fail"
 					guardResults[index]["detail"] = err.Error()
@@ -444,7 +467,7 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 // The barrier is evaluated pre-Apply against the current snapshot (fail-closed
 // on an unreadable review section) so no journal row is written for a refused
 // mutation.
-func enforceForbiddenEvents(catalog *Catalog, spec TransitionSpec, state map[string]any) error {
+func enforceForbiddenEvents(root string, catalog *Catalog, spec TransitionSpec, state map[string]any, check func(map[string]any) verification.Result) error {
 	fe, declared := catalog.ForbiddenEvents["create_acc_without_clean_round"]
 	if !declared {
 		// Fail closed: a definition that drops the declaration loses its
@@ -457,7 +480,12 @@ func enforceForbiddenEvents(catalog *Catalog, spec TransitionSpec, state map[str
 		_ = fe
 		return nil
 	}
-	result := verification.EvaluateCleanRound(state)
+	var result verification.Result
+	if check != nil {
+		result = check(state)
+	} else {
+		result = verification.EvaluateCleanRoundForRoot(root, state)
+	}
 	if !result.Passed {
 		return fmt.Errorf(
 			"forbidden event %s: transition %s rejected — no valid clean round for review round %d: %v",
@@ -534,6 +562,39 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 		} else if !(spec.ID == "TR-001" || (spec.ID == "TR-020" && kind == "req_lock_record")) {
 			if err := validateCurrentEvidenceWithFiles(root, state, kind, ref, request.Files); err != nil {
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
+			}
+			if _, err := acceptance.Contract(kind); err == nil {
+				files := request.Files
+				if files == nil {
+					view, err := fileview.ForState(root, state)
+					if err != nil {
+						return err
+					}
+					files = view
+				}
+				candidate, err := acceptance.ValidateS10Candidate(acceptance.CandidateInput{State: state, Files: files, Kind: kind, EvidenceID: ref, AffectedPaths: request.AffectedPaths})
+				if err != nil {
+					return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
+				}
+				conclusion := candidate.Envelope.Conclusion
+				compatible := true
+				switch spec.Event {
+				case "acceptance_completed":
+					compatible = conclusion == "pass"
+				case "acceptance_review_required":
+					compatible = conclusion == "review_required"
+				case "release_audit_blocked":
+					compatible = conclusion == "blocked"
+				case "release_audit_approved":
+					if kind == "acceptance_record" {
+						compatible = conclusion == "pass"
+					} else {
+						compatible = conclusion == "approved" || conclusion == "approved_with_risk"
+					}
+				}
+				if !compatible {
+					return fmt.Errorf("transition %s cannot consume %s conclusion %q", spec.ID, ref, conclusion)
+				}
 			}
 		}
 	}
@@ -707,7 +768,20 @@ func validateHumanDecisionArtifact(root string, state map[string]any, spec Trans
 	if err := json.Unmarshal(data, &artifact); err != nil {
 		return fmt.Errorf("decode human_decision artifact %q: %w", stringValue(item["id"]), err)
 	}
+	return validateHumanDecisionFields(state, spec, item, artifact)
+}
+
+func validateHumanDecisionFields(state map[string]any, spec TransitionSpec, item, artifact map[string]any) error {
+	if err := validateDecisionDraftFields(state, artifact); err != nil {
+		return err
+	}
 	runtimeID := stringValue(state["runtime_id"])
+	if refs, present := artifact["scope_refs"]; present {
+		want := spec.HumanDecisionScope + ":" + runtimeID
+		if !containsString(toStringSlice(refs), want) {
+			return fmt.Errorf("human_decision artifact scope_refs must include %q", want)
+		}
+	}
 	if value, ok := artifact["runtime_id"]; !ok || stringValue(value) == "" {
 		return fmt.Errorf("human_decision artifact %q must declare runtime_id", stringValue(item["id"]))
 	} else if stringValue(value) != runtimeID {
@@ -829,6 +903,11 @@ func dispatchAction(name string, results []map[string]any, state map[string]any,
 // targeted re-verification evidence. A BUG still in retesting, fixing, or
 // investigation means targeted re-verification is not complete yet.
 func guardAllTargetedReverificationPassed(state map[string]any) error {
+	if review, ok := state["review"].(map[string]any); ok {
+		if repair, ok := review["repair"].(map[string]any); ok && repair["session_id"] != nil {
+			return fmt.Errorf("approved-contract S9 requires runtime repair handoff commit; generic TR-012 cannot bypass the Result, stop condition and handoff checks")
+		}
+	}
 	entities, ok := state["entities"].(map[string]any)
 	if !ok {
 		return nil

@@ -32,7 +32,7 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 	checkLocation := fs.String("check-location", "", "replacement runner: worker or main")
 	reason := fs.String("reason", "", "explicit recovery reason")
 	if err := parseWorkspaceFlags(fs, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	if *checkLocation != "" && (*checkLocation != "worker" && *checkLocation != "main" || verb != "replace") {

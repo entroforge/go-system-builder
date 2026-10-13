@@ -1,6 +1,7 @@
 package hookctx
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -186,7 +187,11 @@ type workgroupManifest struct {
 // Controller (BUG-02 next wave) and the Worktree Integrator (BUG-05 next
 // wave) — must use LoadFull.
 func Load(root, agentID string) (policy.RuntimeContext, error) {
-	loaded, err := LoadFull(root, agentID)
+	return LoadContext(context.Background(), root, agentID)
+}
+
+func LoadContext(ctx context.Context, root, agentID string) (policy.RuntimeContext, error) {
+	loaded, err := LoadFullContext(ctx, root, agentID)
 	if err != nil {
 		return policy.RuntimeContext{}, err
 	}
@@ -213,10 +218,14 @@ func Load(root, agentID string) (policy.RuntimeContext, error) {
 // tree is mutated; if a manifest or integration block is unreadable, the
 // loader drops the field rather than inventing data.
 func LoadFull(root, agentID string) (*LoadedContext, error) {
+	return LoadFullContext(context.Background(), root, agentID)
+}
+
+func LoadFullContext(ctx context.Context, root, agentID string) (*LoadedContext, error) {
 	snapshot, err := runtime.NewStore(
 		filepath.Join(root, ".claude", "loop-state.json"),
 		filepath.Join(root, ".claude", "loop-events.jsonl"),
-	).Snapshot()
+	).WithContext(ctx).Snapshot()
 	if err != nil {
 		if strings.Contains(err.Error(), "decode runtime") {
 			return nil, fmt.Errorf("decode runtime state: %w", err)
@@ -265,6 +274,25 @@ func LoadFull(root, agentID string) (*LoadedContext, error) {
 		}
 		if state.Review.Repair != nil {
 			context.RepairStatus, _ = state.Review.Repair["status"].(string)
+			context.RepairIntent = "unknown"
+			sessionPath, _ := state.Review.Repair["path"].(string)
+			sessionSHA, _ := state.Review.Repair["sha256"].(string)
+			if data, ok := readRepairHookArtifact(root, sessionPath, sessionSHA); ok {
+				var projection struct {
+					Intent     string `json:"intent"`
+					Version    string `json:"schema_version"`
+					RecordType string `json:"record_type"`
+					SessionID  string `json:"session_id"`
+				}
+				if json.Unmarshal(data, &projection) == nil && projection.RecordType == "repair_session" && projection.SessionID == state.Review.Repair["session_id"] {
+					switch {
+					case projection.Version == "1.0.0" && projection.Intent == "":
+						context.RepairIntent = "implement"
+					case projection.Version == "1.1.0" && projection.Intent == "confirm":
+						context.RepairIntent = "confirm"
+					}
+				}
+			}
 			context.RepairSessionID, _ = state.Review.Repair["session_id"].(string)
 			context.RepairPlanRef, _ = state.Review.Repair["plan_ref"].(string)
 			context.RepairPlanSHA256, _ = state.Review.Repair["plan_sha256"].(string)

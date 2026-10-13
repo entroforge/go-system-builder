@@ -35,7 +35,7 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 	request := fs.String("request", "", "explicit relocation JSON")
 	reason := fs.String("reason", "", "relocation reason")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	if *reason == "" {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"time"
 )
 
 // RelocateWorkspace changes only Main/Worker coordinates. It cannot execute an
@@ -88,7 +87,7 @@ func (s *Store) RelocateWorkspace(before Snapshot, registry map[string]any, id, 
 	if err != nil {
 		return Snapshot{}, err
 	}
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	release, err := s.lock()
 	if err != nil {
 		return Snapshot{}, err
 	}

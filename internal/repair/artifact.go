@@ -91,27 +91,7 @@ func writeImmutable(root, relative, schemaName string, document any) (ArtifactRe
 	if err := schema.NewEmbeddedValidator().ValidateBytes(schemaName, data); err != nil {
 		return ArtifactRef{}, fmt.Errorf("validate %s: %w", relative, err)
 	}
-	path, err := repositoryPath(root, relative)
-	if err != nil {
-		return ArtifactRef{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return ArtifactRef{}, fmt.Errorf("create artifact directory: %w", err)
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return ArtifactRef{}, fmt.Errorf("write immutable artifact %s: %w", relative, err)
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return ArtifactRef{}, fmt.Errorf("write immutable artifact %s: %w", relative, err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return ArtifactRef{}, fmt.Errorf("close immutable artifact %s: %w", relative, err)
-	}
-	return fileRef(relative, data), nil
+	return publishImmutableBytes(root, relative, data)
 }
 
 func readArtifact(root string, ref ArtifactRef, schemaName string) ([]byte, error) {
@@ -119,7 +99,19 @@ func readArtifact(root string, ref ArtifactRef, schemaName string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	relative, err := relativePath(root, path)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer opened.Close()
+	if err := checkImmutablePath(opened, relative); err != nil {
+		return nil, err
+	}
+	data, err := opened.ReadFile(relative)
 	if err != nil {
 		return nil, fmt.Errorf("read artifact %s: %w", ref.Path, err)
 	}
@@ -314,10 +306,40 @@ func isControlPlanePath(rel string, isDir bool) bool {
 	if rel == ".claude/hook-decisions.jsonl" {
 		return true
 	}
+	// .claude/hook-notices/ holds the per-(session,agent) notice-dedup stamps
+	// written by the progress hook (internal/hook/progress.go). The stamp is
+	// stable across runtime revisions by design ("revision churn alone is not
+	// progress"), but it DOES change whenever the gate state itself moves
+	// (gate_id/status/missing transitions during S9 execution). Hooks fire on
+	// every builder tool call, so any session whose baseline captured these
+	// stamps goes stale on the first gate transition after open, and the S9
+	// authority fingerprint then blocks every RepairResult submission — the
+	// gate becomes self-defeating (each submit advances the phase, which
+	// rewrites notices, which stales the next submit). Same class as the hook
+	// decision journal above: harness-written, never read as implementation
+	// surface, must not stale authority. Directory-scoped; any other .claude
+	// path stays authority-relevant.
+	if strings.HasPrefix(rel, ".claude/hook-notices/") {
+		return true
+	}
+	// .claude/hook-metrics/ holds hook timing telemetry: per-session
+	// .pending-*.json scratch buffers the metrics hook rewrites on every hook
+	// evaluation and later flushes/compacts away (compact.lock + summary.json)
+	// once the owning sessions end. The whole lifecycle is out-of-band harness
+	// bookkeeping (read only by `loop-harness health`); it never describes the
+	// implementation surface. A session baseline that captured pending buffers
+	// goes stale the moment compaction removes them - observed in the field as
+	// 753 drifted artifacts blocking every S9 RepairResult submission. Same
+	// class as the hook-notice stamps above: harness-written,
+	// harness-reclaimed, must not stale authority. Directory-scoped; any other
+	// .claude path stays authority-relevant.
+	if strings.HasPrefix(rel, ".claude/hook-metrics/") {
+		return true
+	}
 	if strings.HasPrefix(rel, ".claude/") && (strings.HasSuffix(rel, ".lock") || strings.HasSuffix(rel, ".lock.process")) {
 		return true
 	}
-	for _, prefix := range []string{".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/"} {
+	for _, prefix := range []string{".claude/operations/", ".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/"} {
 		if rel == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(rel, prefix) {
 			return true
 		}
@@ -562,8 +584,15 @@ func ComputeSessionChangesetRecord(root string, session RepairSession) (Changese
 	if err != nil {
 		return Changeset{}, err
 	}
-	if len(artifacts) == 0 {
+	confirm := sessionIntent(session) == "confirm"
+	if err := validateConfirmation(root, session); err != nil {
+		return Changeset{}, err
+	}
+	if len(artifacts) == 0 && !confirm {
 		return Changeset{}, errors.New("actual Session diff is empty")
+	}
+	if confirm && len(artifacts) != 0 {
+		return Changeset{}, errors.New("confirm Session has actual changes")
 	}
 	lines := make([]string, 0, len(artifacts))
 	for _, artifact := range artifacts {
@@ -571,7 +600,13 @@ func ComputeSessionChangesetRecord(root string, session RepairSession) (Changese
 	}
 	sort.Strings(lines)
 	digest := sha256Bytes([]byte(strings.Join(lines, "\n")))
-	return Changeset{SchemaVersion: "1.0.0", RecordType: "repair_changeset", ChangesetID: "repair-changeset-" + digest[:16], SessionID: session.SessionID, Source: "session_diff", Artifacts: artifacts, Digest: digest, ComputedAt: nowOr(time.Time{})}, nil
+	value := Changeset{SchemaVersion: "1.0.0", RecordType: "repair_changeset", ChangesetID: scopedChangesetID(session.SessionID, digest), SessionID: session.SessionID, Source: "session_diff", Artifacts: artifacts, Digest: digest, ComputedAt: nowOr(time.Time{})}
+	if confirm {
+		value.SchemaVersion = "1.1.0"
+		value.Intent = "confirm"
+		value.VerifiedSubjects = append([]ArtifactRef(nil), session.VerifiedSubjects...)
+	}
+	return value, nil
 }
 
 func exactIDs(expected, actual []string) error {

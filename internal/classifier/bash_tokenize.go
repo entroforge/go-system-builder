@@ -19,7 +19,6 @@ package classifier
 import (
 	"fmt"
 	"strings"
-	"unicode"
 )
 
 // TokenKind identifies the role of a token within a tokenized bash command.
@@ -47,6 +46,9 @@ const (
 type Token struct {
 	Kind  TokenKind
 	Value string
+	// Expanded distinguishes shell-expanded text from literal quoted search
+	// strings. Its value cannot safely be treated as a known argv operand.
+	Expanded bool
 }
 
 // String renders the token kind for debug output.
@@ -98,15 +100,18 @@ func Tokenize(command string) ([]Token, error) {
 	inDouble := false
 	parens := 0
 	redirectPending := false
+	expanded := false
 
 	flush := func() {
 		if !hasCurrent {
 			return
 		}
-		tokens = append(tokens, Token{Kind: currentKind, Value: current.String()})
+		tokens = append(tokens, Token{Kind: currentKind, Value: current.String(), Expanded: expanded})
+		redirectPending = false
 		current.Reset()
 		hasCurrent = false
 		currentKind = TkWord
+		expanded = false
 	}
 
 	runes := []rune(command)
@@ -115,16 +120,13 @@ func Tokenize(command string) ([]Token, error) {
 
 		// End-of-input handling for quote contexts.
 		if r == 0 {
-			break
+			return nil, fmt.Errorf("Tokenize: NUL in command")
 		}
 
 		switch {
 		case inSingle:
 			if r == '\'' {
 				inSingle = false
-				if hasCurrent {
-					flush()
-				}
 				continue
 			}
 			current.WriteRune(r)
@@ -135,9 +137,6 @@ func Tokenize(command string) ([]Token, error) {
 			switch r {
 			case '"':
 				inDouble = false
-				if hasCurrent {
-					flush()
-				}
 				continue
 			case '\\':
 				if i+1 < len(runes) {
@@ -160,6 +159,7 @@ func Tokenize(command string) ([]Token, error) {
 				}
 				return nil, fmt.Errorf("Tokenize: trailing backslash inside double quote")
 			case '$':
+				expanded = true
 				// Command substitution $() inside a double-quoted string. The
 				// subshell is self-contained: raw-scan finds the matching `)`,
 				// the inner command is validated recursively, and we expose
@@ -235,18 +235,17 @@ func Tokenize(command string) ([]Token, error) {
 
 		default:
 			switch r {
-			case ' ', '\t', '\n':
+			case ' ', '\t':
 				flush()
+			case '\n':
+				flush()
+				tokens = append(tokens, Token{Kind: TkSemicolon, Value: ";"})
 			case '\'':
 				inSingle = true
-				if hasCurrent {
-					flush()
-				}
+				hasCurrent = true
 			case '"':
 				inDouble = true
-				if hasCurrent {
-					flush()
-				}
+				hasCurrent = true
 			case '|':
 				flush()
 				if i+1 < len(runes) && runes[i+1] == '|' {
@@ -304,18 +303,24 @@ func Tokenize(command string) ([]Token, error) {
 				}
 				parens--
 				tokens = append(tokens, Token{Kind: TkRParen, Value: ")"})
+			case '`':
+				flush()
+				tokens = append(tokens, Token{Kind: TkBacktick, Value: "`"})
 			case '#':
 				if !hasCurrent {
 					// Rest of line is a comment.
 					flush()
-					return tokens, nil
+					for i+1 < len(runes) && runes[i+1] != '\n' {
+						i++
+					}
+					continue
 				}
 				current.WriteRune(r)
 				hasCurrent = true
 			case '\\':
 				if i+1 < len(runes) {
 					next := runes[i+1]
-					if unicode.IsSpace(next) {
+					if next == '\n' {
 						// Line continuation — drop both.
 						i++
 						continue
@@ -327,6 +332,9 @@ func Tokenize(command string) ([]Token, error) {
 					return nil, fmt.Errorf("Tokenize: trailing backslash")
 				}
 			default:
+				if strings.ContainsRune("$*?[]{}~", r) {
+					expanded = true
+				}
 				if !hasCurrent {
 					if r == '-' {
 						// Possibly a flag.
@@ -350,7 +358,6 @@ func Tokenize(command string) ([]Token, error) {
 						flush()
 						tokens = append(tokens, Token{Kind: TkSubshell, Value: "$("})
 						i++
-						parens++
 						start := i + 1
 						depth := 1
 						j := start

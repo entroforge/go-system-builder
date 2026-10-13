@@ -2,7 +2,6 @@ package review
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 
 // PlanRequest drives `runtime review-plan` registration.
 type PlanRequest struct {
+	OperationID      string
 	ExpectedRevision int
 	PlanPath         string
 	OccurredAt       time.Time
@@ -29,6 +29,9 @@ type PlanRequest struct {
 // Runtime-coordinate checks remain in RegisterPlan because the handoff builds
 // its next-round projection inside its own CAS transaction.
 func ValidatePlanArtifactForRegistration(root string, plan *Plan, state map[string]any) error {
+	if err := ValidatePlanProtocolBinding(state, plan); err != nil {
+		return err
+	}
 	if err := ValidatePlan(plan); err != nil {
 		return fmt.Errorf("ReviewPlan coverage: %w", err)
 	}
@@ -73,6 +76,18 @@ func RegisterPlan(
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
+	operation, prior, replayed, err := prepareReviewOperation(root, statePath, journalPath, request.OperationID, "REVIEW-PLAN", current, map[string]any{"plan": plan, "occurred_at": request.OccurredAt})
+	if err != nil || replayed {
+		return prior, err
+	}
+
+	preparedScope, err := prepareModuleScope(root, current, plan.ReviewRound, workspaceValue(plan.VerificationArtifactWorkspace))
+	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validatePreparedScope(&plan, preparedScope); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	if err := ValidatePlanArtifactForRegistration(root, &plan, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
@@ -109,53 +124,23 @@ func RegisterPlan(
 		return loopruntime.Snapshot{}, err
 	}
 	// E2E cold start: create and fingerprint the isolated write surface so
-	// result submit / round close can bind it exactly (L3-S7 §1.4.1). Keep a
-	// cleanup handle for the failure path; a failed registration must not leave
-	// an apparently usable empty workspace behind.
+	// result submit / round close can bind it exactly (L3-S7 §1.4.1). The
+	// workspace path is only authorized by the committed plan pointer. A failed
+	// or pending registration must never delete another writer's workspace.
 	workspace := ""
 	if plan.VerificationArtifactWorkspace != nil {
 		workspace = *plan.VerificationArtifactWorkspace
 	}
-	workspacePath := ""
-	workspaceWasAbsent := false
-	if workspace != "" {
-		workspacePath, err = repositoryContainedPath(root, workspace)
-		if err != nil {
-			return loopruntime.Snapshot{}, err
-		}
-		if _, statErr := os.Stat(workspacePath); os.IsNotExist(statErr) {
-			workspaceWasAbsent = true
-		} else if statErr != nil {
-			return loopruntime.Snapshot{}, fmt.Errorf("inspect verification workspace: %w", statErr)
-		}
-	}
 	artifactDigest, err := prepareVerificationWorkspace(root, &plan)
 	if err != nil {
 		return loopruntime.Snapshot{}, err
-	}
-	cleanupWorkspace := func() {
-		if workspaceWasAbsent && workspacePath != "" {
-			// Remove only the exact empty leaf we created. If a concurrent
-			// writer populated it, preserve its evidence rather than using a
-			// recursive delete during recovery.
-			_ = os.Remove(workspacePath)
-		}
 	}
 
 	// Pin the plan into the shared control plane directory; the runtime
 	// stores path+sha256 and every consumer hash-verifies on load.
 	planRel := filepath.ToSlash(filepath.Join(".claude", "review", "plans", plan.ReviewPlanID+".json"))
 	planBytes := append(canonicalJSON(data), '\n')
-	if err := writeArtifact(root, planRel, planBytes); err != nil {
-		cleanupWorkspace()
-		return loopruntime.Snapshot{}, err
-	}
 	planSHA := sha256Of(planBytes)
-	cleanupPlan := func() {
-		if path, err := repositoryContainedPath(root, planRel); err == nil {
-			_ = os.Remove(path)
-		}
-	}
 
 	runtimeID, _ := current["runtime_id"].(string)
 	occurredAt := request.OccurredAt
@@ -164,7 +149,9 @@ func RegisterPlan(
 	}
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+	snapshot, err := updateRuntime(store, commitRevision, loopruntime.Mutation{
+		Operation:      operation,
+		Artifacts:      []loopruntime.ImmutableArtifact{{Path: planRel, Data: planBytes}},
 		EventID:        fmt.Sprintf("evt-review-plan-%s-r%d", plan.ReviewPlanID, commitRevision+1),
 		TransitionID:   "REVIEW-PLAN",
 		Event:          "review_plan_registered",
@@ -177,22 +164,22 @@ func RegisterPlan(
 			plan.ReviewPlanID, round, len(plan.Claims), len(plan.Assignments), plan.E2ECoverageState),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
+			if err := preparedScope.Verify(state); err != nil {
+				return err
+			}
+			if err := ValidatePlanArtifactForRegistration(root, &plan, state); err != nil {
+				return err
+			}
+			if err := validateCoverageInventory(root, state, &plan); err != nil {
+				return err
+			}
+			if err := validateRepairRoundBaseline(root, state, &plan); err != nil {
+				return err
+			}
 			return ApplyRegisteredPlanProjection(state, plan, planRel, planSHA, round, workspace, artifactDigest, occurredAt)
 		},
 	})
 	if err != nil {
-		cleanupStateRevision := func() bool {
-			stateBytes, readErr := os.ReadFile(statePath)
-			if readErr != nil {
-				return false
-			}
-			var persisted map[string]any
-			return json.Unmarshal(stateBytes, &persisted) == nil && intField(persisted["revision"]) == commitRevision
-		}
-		if errors.Is(err, loopruntime.ErrStaleRevision) || cleanupStateRevision() {
-			cleanupPlan()
-			cleanupWorkspace()
-		}
 		return snapshot, err
 	}
 	return snapshot, nil

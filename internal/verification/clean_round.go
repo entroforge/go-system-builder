@@ -8,16 +8,17 @@
 //   - every required Claim has a consumed pass Result (N/A Claims carry a
 //     plan-level disposition with source and rationale);
 //   - no Finding exists for the current round;
-//   - no current-round review evidence has been invalidated;
+//   - no current review evidence is invalid (retired revision Results are history);
 //   - no business-blocking BUG is open (and closed blockers carry targeted
 //     re-verification);
 //   - the machine CleanRound snapshot is registered as evidence.
 //
-// The function is pure over the runtime state, so the transition engine,
-// the Quality Gate evaluator and the CLI all share one implementation.
+// Production callers use EvaluateCleanRoundForRoot for immutable input and
+// Result checks; EvaluateCleanRound is only the pure state-projection subcheck.
 package verification
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -129,6 +130,20 @@ func EvaluateCleanRound(state map[string]any) Result {
 			continue
 		}
 		if status, _ := entry["status"].(string); status == "invalid" {
+			// A controlled revision retires immutable Results. They remain
+			// invalid history, but must not poison a round after replacements
+			// pass. A Result still cited by a current Claim is never exempt.
+			retired := kind == "review_result" && entry["invalidation_reason"] == "plan_revision" && entry["invalidation_rule"] == "review_plan_revision" && ptr != nil && ptr.Revision > 1
+			if retired {
+				for _, disposition := range dispositions {
+					if disposition.ResultID == entry["id"] {
+						retired = false
+					}
+				}
+			}
+			if retired {
+				continue
+			}
 			checkInvalid.Passed = false
 			id, _ := entry["id"].(string)
 			checkInvalid.Detail = fmt.Sprintf("evidence %s is invalid but belongs to the current round", id)
@@ -369,3 +384,72 @@ func AffectedByChange(state map[string]any, changedPaths []string) bool {
 	}
 	return false
 }
+
+// EvaluateCleanRoundForRoot is the production completion gate. The pure
+// state function is only a projection check; it cannot prove input freshness.
+func EvaluateCleanRoundForRoot(root string, state map[string]any) Result {
+	check, err := PrepareCleanRoundForRoot(root, state)
+	if err != nil {
+		return addScopeCompletionCheck(EvaluateCleanRound(state), err)
+	}
+	return check(state)
+}
+
+// PrepareCleanRoundForRoot prepares graph discovery before an advancing CAS.
+// The capability rechecks immutable inputs, Plan identity and consumed files.
+func PrepareCleanRoundForRoot(root string, state map[string]any) (func(map[string]any) Result, error) {
+	plan, ptr, err := review.LoadPlan(root, state)
+	if err != nil {
+		return nil, err
+	}
+	verifyScope, err := review.PrepareModuleScopeValidation(root, state, plan)
+	if err != nil {
+		return nil, err
+	}
+	return func(current map[string]any) Result {
+		out := EvaluateCleanRound(current)
+		if err := verifyScope(current); err != nil {
+			return addScopeCompletionCheck(out, err)
+		}
+		loaded, currentPtr, err := review.LoadPlan(root, current)
+		if err == nil && (currentPtr.SHA256 != ptr.SHA256 || loaded.ReviewPlanID != plan.ReviewPlanID) {
+			err = fmt.Errorf("completion Plan pointer changed")
+		}
+		if err == nil {
+			err = review.ValidateConsumedScopeForRoot(root, current, loaded)
+		}
+		if err == nil {
+			err = verifyCleanSnapshot(root, current, loaded)
+		}
+		return addScopeCompletionCheck(out, err)
+	}, nil
+}
+func addScopeCompletionCheck(out Result, err error) Result {
+	check := CheckResult{Name: "module_scope_current_and_consumed", Passed: err == nil}
+	if err != nil {
+		check.Detail = err.Error()
+		out.Passed = false
+		out.Reasons = append(out.Reasons, check.Name+": "+check.Detail)
+	}
+	out.Checks = append(out.Checks, check)
+	return out
+}
+func verifyCleanSnapshot(root string, state map[string]any, plan *review.Plan) error {
+	for _, row := range evidenceEntries(state) {
+		if row["kind"] != "clean_round" || row["status"] != "valid" || readInt(row["review_round"]) != plan.ReviewRound || readInt(row["baseline_generation"]) != plan.BaselineGeneration {
+			continue
+		}
+		data, err := review.ReadIndexedArtifact(root, state, stringValueForScope(row["id"]), "clean_round")
+		if err != nil {
+			return err
+		}
+		var snapshot map[string]any
+		if json.Unmarshal(data, &snapshot) != nil || snapshot["review_plan_id"] != plan.ReviewPlanID || readInt(snapshot["review_round"]) != plan.ReviewRound || readInt(snapshot["baseline_generation"]) != plan.BaselineGeneration {
+			return fmt.Errorf("CleanRound snapshot binding mismatch")
+		}
+		return nil
+	}
+	return fmt.Errorf("no current fingerprinted CleanRound snapshot")
+}
+
+func stringValueForScope(v any) string { s, _ := v.(string); return s }
