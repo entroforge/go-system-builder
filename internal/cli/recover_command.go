@@ -32,6 +32,7 @@ const (
 	recoveryGateUnknownCode    = "LOOP_RECOVERY_GATE_UNKNOWN"
 	recoveryPlanInvalidCode    = "LOOP_RECOVERY_PLAN_INVALID"
 	recoveryApplyPendingCode   = "LOOP_RECOVERY_APPLY_PENDING"
+	recoveryProtocolCode       = "LOOP_RECOVERY_PROTOCOL_UNSUPPORTED"
 	recoveryAlreadyApplied     = "LOOP_RECOVERY_ALREADY_APPLIED"
 	recoveryImportedBugID      = "recovery-import"
 )
@@ -50,6 +51,9 @@ var (
 func recoveryErrorCode(err error) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, runtime.ErrRecoveryProtocolUnsupported) {
+		return recoveryProtocolCode
 	}
 	if errors.Is(err, errRecoveryPlanInvalid) {
 		return recoveryPlanInvalidCode
@@ -179,7 +183,7 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 	planFlag := flags.String("plan", "", "approved recovery plan path")
 	approvedBy := flags.String("approved-by", "", "human recovery approver identity")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*planFlag) == "" || strings.TrimSpace(*approvedBy) == "" {
 		fmt.Fprintln(stderr, "runtime recover apply requires --plan and --approved-by")
@@ -472,7 +476,7 @@ func runRuntimeRecoverPlan(args []string, stdout, stderr io.Writer) int {
 	dev := flags.String("dev-branch", "", "explicit REQ development branch")
 	upstream := flags.String("release-upstream", "", "explicit release destination")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*reqPath) == "" {
 		fmt.Fprintln(stderr, "runtime recover plan requires --req")
@@ -503,6 +507,9 @@ func runRuntimeRecoverPlan(args []string, stdout, stderr io.Writer) int {
 }
 
 func persistRecoveryPlan(root string, inventory recovery.Inventory) (recoveryPlanDocument, string, error) {
+	if err := runtime.CheckLegacyRecoverySources(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")); err != nil {
+		return recoveryPlanDocument{}, "", err
+	}
 	basePlan, err := recovery.BuildPlan(inventory)
 	if err != nil {
 		return recoveryPlanDocument{}, "", fmt.Errorf("build conservative recovery plan: %w", err)
@@ -804,7 +811,7 @@ func runRuntimeRecoverInspect(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	reqPath := flags.String("req", "", "explicit locked REQ path")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*reqPath) == "" {
 		fmt.Fprintln(stderr, "runtime recover inspect requires --req")

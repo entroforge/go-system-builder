@@ -30,7 +30,7 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 	prompt := fs.String("prompt", "Continue your registered assignment, preserve Main, and report evidence through the Harness.", "Worker instruction")
 	timeout := fs.Duration("timeout", 30*time.Minute, "maximum Worker process duration")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	if *timeout <= 0 {

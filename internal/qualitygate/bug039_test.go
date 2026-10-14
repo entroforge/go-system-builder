@@ -58,6 +58,11 @@ func TestReleaseAuditBlockedGateDoesNotRequireTransitionProducedPauseRecord(t *t
 		Files:        memFiles{"evidence/release.json": evidenceData, "evidence/support.json": []byte(`{"kind":"clean_round","support":true}`), manifestPath: manifest},
 	}
 
+	files := input.Files.(memFiles)
+	files["req.md"] = []byte("Requirement")
+	files["plan.json"] = []byte(`{"review_round":1,"baseline_generation":1,"claims":[{"claim_id":"claim-1"}]}`)
+	input.Snapshot.State["bound_req"] = map[string]any{"id": "REQ-AC-001", "path": "req.md", "sha256": sha256HexLocal(files["req.md"])}
+	input.Snapshot.State["review"].(map[string]any)["plan"] = map[string]any{"path": "plan.json", "sha256": sha256HexLocal(files["plan.json"])}
 	result, err := NewEvaluator(registry).Evaluate(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -84,6 +89,8 @@ func buildReleaseAuditBlockedManifest(t *testing.T, evidenceRef string) []byte {
 		map[string]any{"id": "CE-PATH-001", "inventory_id": "PATH-001", "question": "what disproves PATH-001?", "evidence_refs": []string{evidenceRef}, "outcome": "pass"},
 		map[string]any{"id": "CE-AUDIT-001", "inventory_id": "AUDIT-001", "question": "what disproves AUDIT-001?", "evidence_refs": []string{evidenceRef}, "outcome": "pass"},
 	}
+	items = append(items, map[string]any{"id": "claim-1", "category": "claim", "source_refs": []string{"plan.json"}, "expected": "claim", "oracle": "countercheck", "owner": "S10 reviewer", "evidence_refs": []string{evidenceRef}, "disposition": "pass"})
+	counterevidence = append(counterevidence, map[string]any{"id": "CE-claim-1", "inventory_id": "claim-1", "question": "can the claim be disproved?", "evidence_refs": []string{evidenceRef}, "outcome": "pass"})
 	areas := []any{}
 	for _, id := range []string{"state_machine", "transaction_uow", "concurrency_idempotency", "data_migration", "call_sites_topology", "observability_errors", "verification_evidence", "docs_release_scope"} {
 		areas = append(areas, map[string]any{"id": id, "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": []string{evidenceRef}})

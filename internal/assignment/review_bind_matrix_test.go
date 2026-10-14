@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignment"
+	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // ---------------------------------------------------------------------------
@@ -92,6 +94,8 @@ func seedReviewBindPlan(t *testing.T, repoRoot string, state map[string]any, spe
 		"created_by":                      "orchestrator",
 		"created_at":                      "2026-01-01T00:00:00Z",
 	}
+	testfixture.ReviewPlan(t, repoRoot, state, plan, review.ResolveModuleScopeForRoot)
+	planAssignments = plan["assignments"].([]any)
 	planData, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +133,7 @@ func seedReviewBindPlan(t *testing.T, repoRoot string, state map[string]any, spe
 	for _, raw := range planAssignments {
 		a := raw.(map[string]any)
 		id := a["assignment_id"].(string)
-		lens := "delivery"
+		lens, _ := a["lens"].(string)
 		if override, ok := spec.lensOverride[id]; ok {
 			lens = override
 		}
@@ -147,7 +151,7 @@ func seedReviewBindPlan(t *testing.T, repoRoot string, state map[string]any, spe
 				disposition = override
 			}
 			claimsProjection[c] = map[string]any{
-				"lens": "delivery", "applicability": "required", "disposition": disposition,
+				"lens": a["lens"], "applicability": "required", "disposition": disposition,
 				"assignment_id": id, "result_id": nil, "finding_ids": []any{},
 			}
 		}
@@ -156,13 +160,19 @@ func seedReviewBindPlan(t *testing.T, repoRoot string, state map[string]any, spe
 		"lens": "qa", "applicability": "not_applicable", "disposition": "not_applicable",
 		"assignment_id": "", "result_id": nil, "finding_ids": []any{},
 	}
+	// Dispatch-only fixture: the independent scope assessment is already settled.
+	for id, raw := range claimsProjection {
+		if strings.HasPrefix(id, "claim-fixture-scope-") {
+			raw.(map[string]any)["disposition"] = "pass"
+		}
+	}
 	state["review"] = reviewMap
 }
 
 func registerFixtureWorkgroup(t *testing.T, root, dir string, state map[string]any, mutateManifest func(body map[string]any)) error {
 	t.Helper()
-	statePath := filepath.Join(dir, "loop-state.json")
-	journalPath := filepath.Join(dir, "loop-events.jsonl")
+	statePath := filepath.Join(root, ".claude", "loop-state.json")
+	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
 	writeJSON(t, statePath, state)
 
 	manifestPath := filepath.Join(dir, "manifest.json")

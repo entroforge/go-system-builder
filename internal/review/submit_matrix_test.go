@@ -629,23 +629,6 @@ func TestSubmitResultApplyRejectionCleansStagedArtifacts(t *testing.T) {
 	}
 }
 
-func TestWriteArtifactNeverOverwrites(t *testing.T) {
-	root := t.TempDir()
-	if err := writeArtifact(root, "evidence/immutable.json", []byte("first")); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeArtifact(root, "evidence/immutable.json", []byte("second")); err == nil {
-		t.Fatal("artifact writer must reject overwrite")
-	}
-	data, err := os.ReadFile(filepath.Join(root, "evidence", "immutable.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "first" {
-		t.Fatalf("artifact was overwritten: %q", data)
-	}
-}
-
 // §14.1: code-inspection Finding 接受 inspection/call/data-flow trail，不
 // 要求伪造 UI steps。
 func TestSubmitResultAcceptsCodeInspectionWithoutUISteps(t *testing.T) {

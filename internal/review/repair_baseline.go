@@ -12,7 +12,11 @@ type repairChangeImpactArtifact struct {
 	RecordType         string `json:"record_type"`
 	RuntimeID          string `json:"runtime_id"`
 	BaselineGeneration int    `json:"baseline_generation"`
-	ChangedArtifacts   []struct {
+	VerifiedSubjects   []struct {
+		Path   string `json:"path"`
+		SHA256 string `json:"sha256"`
+	} `json:"verified_subjects"`
+	ChangedArtifacts []struct {
 		Path   string `json:"path"`
 		SHA256 string `json:"sha256"`
 	} `json:"changed_artifacts"`
@@ -134,7 +138,7 @@ func validateRepairRoundBaseline(root string, state map[string]any, plan *Plan) 
 			claimed[normalizeSurface(sourceRef)] = true
 		}
 	}
-	for _, artifact := range impact.ChangedArtifacts {
+	for _, artifact := range append(impact.ChangedArtifacts, impact.VerifiedSubjects...) {
 		path := normalizeSurface(artifact.Path)
 		if path == "" {
 			missingArtifacts = append(missingArtifacts, "change_impact contains an empty changed_artifacts.path")

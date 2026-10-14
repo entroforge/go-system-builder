@@ -11,8 +11,10 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/investigation"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -1121,7 +1123,7 @@ func TestUpdateCaseRevisionWarnsOnBaselineDigestDrift(t *testing.T) {
 	pointer := investigationPointer(t, fixture)
 
 	planRel := ".claude/review/plans/review-plan-drift.json"
-	planBytes := []byte(`{"review_plan_id":"review-plan-drift","frozen_subjects":[{"path":"internal/service/decoder.go","sha256":"` + strings.Repeat("b", 64) + `"}]}` + "\n")
+	planBytes := testfixture.HistoricalPlan(t, []byte(`{"schema_version":"1.0.0","review_round":1,"baseline_generation":3,"review_plan_id":"review-plan-drift","frozen_subjects":[{"path":"internal/service/decoder.go","sha256":"`+strings.Repeat("b", 64)+`"}]}`+"\n"))
 	planPath := filepath.Join(fixture.root, filepath.FromSlash(planRel))
 	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -1173,7 +1175,7 @@ func TestUpdateCaseRevisionClearsBaselineDriftWhenBaselineMatches(t *testing.T) 
 	pointer := investigationPointer(t, fixture)
 
 	planRel := ".claude/review/plans/review-plan-aligned.json"
-	planBytes := []byte(`{"review_plan_id":"review-plan-aligned","frozen_subjects":[]}` + "\n")
+	planBytes := testfixture.HistoricalPlan(t, []byte(`{"schema_version":"1.0.0","review_round":1,"baseline_generation":3,"review_plan_id":"review-plan-aligned","frozen_subjects":[{"path":"internal/service/decoder.go","sha256":"`+strings.Repeat("b", 64)+`"}]}`))
 	planPath := filepath.Join(fixture.root, filepath.FromSlash(planRel))
 	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -1181,20 +1183,28 @@ func TestUpdateCaseRevisionClearsBaselineDriftWhenBaselineMatches(t *testing.T) 
 	if err := os.WriteFile(planPath, planBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The subject digest of an empty frozen_subjects list is sha256("");
-	// seed the Case with that pinned digest so the recomputation matches.
-	emptyDigest := sha256.Sum256([]byte(""))
 	planSum := sha256.Sum256(planBytes)
 	setStateReviewPlan(t, fixture, "review-plan-aligned", planRel, hex.EncodeToString(planSum[:]))
+	current, err := runtime.NewStore(fixture.statePath, fixture.journalPath).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := review.LoadPlan(fixture.root, current.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alignedDigest := review.SubjectDigest(plan)
+	current.State["review"].(map[string]any)["investigation_baseline_drift"] = "previous baseline mismatch"
+	req039fixtures.WriteState(t, fixture.root, current.State)
 
-	_, err := investigation.UpdateCase(fixture.root, fixture.statePath, fixture.journalPath, investigation.CaseRevisionRequest{
+	_, err = investigation.UpdateCase(fixture.root, fixture.statePath, fixture.journalPath, investigation.CaseRevisionRequest{
 		ExpectedRevision:     currentRuntimeRevision(t, fixture),
 		ExpectedCaseRevision: integerPointerRevision(pointer),
 		ExpectedCaseSHA256:   pointer["sha256"].(string),
 		CaseID:               "investigation-case-observation-batch-r1",
 		Operation:            "align_baseline",
 		Mutate: func(document map[string]any) error {
-			document["baseline_digest"] = hex.EncodeToString(emptyDigest[:])
+			document["baseline_digest"] = alignedDigest
 			return nil
 		},
 	})

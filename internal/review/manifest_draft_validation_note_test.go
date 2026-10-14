@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // writeManifestDraftFixtureForNoteTest mirrors the fixture in
@@ -68,6 +69,15 @@ func writeManifestDraftFixtureForNoteTest(t *testing.T, root string) {
 		"e2e_coverage_state":       "not_applicable",
 		"dispatch_capacity_policy": "coverage_complete",
 	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan map[string]any
+	if err := json.Unmarshal(planBytes, &plan); err != nil {
+		t.Fatal(err)
+	}
+	testfixture.ReviewPlan(t, root, state, plan, ResolveModuleScopeForRoot)
+	planBytes, err = json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}

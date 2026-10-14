@@ -127,7 +127,7 @@ the Milestone instead of relying on conversation memory.
   | Verb | May the agent run it? | Required human gesture |
   |:--|:--|:--|
   | `req bind` | yes | the human's explicit instruction in conversation (verbal-authorization chain) |
-  | `runtime pause` / `runtime resume` / `req amend` / `req unbind` / `runtime rollover` / `runtime human-decision` | only when the human supplies the complete command line verbatim (including `--approved-by`) | the human's own typed/approved command — never infer the approver name from context |
+  | `runtime pause` / `runtime resume` / `req amend` / `req unbind` / `runtime rollover` / `runtime human-decision` | only when the human supplies the complete command line verbatim (including the flags that command actually accepts: `--approved-by` for REQ/rollover commands or `--actor` and `--decision-evidence` for `runtime human-decision`) | the human's own typed/approved command — never infer the approver name from context |
   "Locking a REQ" = the human's explicit lock gesture in conversation (see skills: requirement-funnel Exit Conditions); the file edit that flips `状态：locked` is executed by the main session on that authorization, and `req bind --approved-by <same human>` is the second confirmation. When in doubt, hand the command up and wait.
 - `/loop` only delivers the Layer 2 prompt. REQ binding is `loop-harness req bind`; the two are independent lifetimes.
 - Subagents follow their declared dispatch mode: `plan_checkpoint` requires the recorded PLAN_REPORT before writes, without a second approval wait; `plan_approval_required` requires read-back approval and activation.

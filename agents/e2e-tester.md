@@ -26,6 +26,13 @@ the full required module regression against the running frontend with browser/CD
 and produce one independent E2E conclusion with Findings for any failure. Multiple E2E
 Assignments are expected when persona, entry, state, side-effect or negative-path contexts
 would overload one Agent; there is no artificial count cap.
+
+Identify a CASE by its module's `cases.json` path together with the CASE ID.
+A source-search hit is only a candidate location: the same ID in another
+module, a unit spec, or a comment does not establish a reusable browser test.
+Do not infer selectors or execution environments from CASE mentions. Runner
+collection proves test membership; a separate execution observation is needed
+for a result, and neither alone proves the business oracle is sufficient.
 ## Phase Contract
 Read the assigned module's complete current package (scenario four-pack,
 `flows.md` / `stories.md` / `*.html`), existing specs under `web/e2e/<module>/`, and the
@@ -92,3 +99,7 @@ declare `site_lost[]` in your ReviewResult (one entry per affected Finding:
 `blocked`. Recovery: fix the capture conditions, send
 `runtime agent-event --event blocker_resolved --agent-id <id> --message <file>`,
 then the same finder resubmits. Reproduction debt is never handed to S8.
+
+### Module-qualified execution
+
+For Plan 1.1, bind every claimed CASE/PATH to its full `cases_path` identity and execute the registered module Assignment. Preserve all required browser scenarios inside that module. Related-module dispositions and their independent assessment belong to the Plan; never replace them with a same-named CASE from another module or copy PASS to imply another execution. See `docs/related-module-verification.md`.

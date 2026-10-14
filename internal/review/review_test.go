@@ -98,6 +98,18 @@ func baseVerificationState() map[string]any {
 // one N/A e2e claim; all static wave.
 func writePlanFile(t *testing.T, root string) string {
 	t.Helper()
+	return writeFixturePlanFile(t, root, true)
+}
+
+// Structural validators do not execute a round or need Runtime authority.
+// Keep their historical shape separate from the executable 1.1 fixture.
+func writeStructuralPlanFile(t *testing.T, root string) string {
+	t.Helper()
+	return writeFixturePlanFile(t, root, false)
+}
+
+func writeFixturePlanFile(t *testing.T, root string, scoped bool) string {
+	t.Helper()
 	// The registration/submit gates verify frozen_subjects against disk. Keep
 	// this fixture honest by creating the subject and pinning its real digest.
 	subjectPath := filepath.Join(root, "internal", "example", "service.go")
@@ -154,6 +166,9 @@ func writePlanFile(t *testing.T, root string) string {
 		"dispatch_capacity_policy":        "coverage_complete",
 		"created_by":                      "orchestrator",
 		"created_at":                      "2026-08-18T00:00:00Z",
+	}
+	if scoped {
+		scopeReviewFixtureFile(t, root, plan)
 	}
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
@@ -212,7 +227,7 @@ func markDispatched(t *testing.T, root, statePath, journalPath string, snapshot 
 // refs no longer satisfy the evidence gate, so fixtures bind real files).
 func fixtureEvidenceRef(t *testing.T, root, name string) string {
 	t.Helper()
-	rel := "docs/reports/" + name
+	rel := ".claude/evidence/fixtures/" + name
 	path := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -411,7 +426,7 @@ func TestRegisterPlanRejectsDuplicate(t *testing.T) {
 
 func TestValidatePlanCoverageRules(t *testing.T) {
 	root := t.TempDir()
-	base, err := os.ReadFile(writePlanFile(t, root))
+	base, err := os.ReadFile(writeStructuralPlanFile(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,7 +772,7 @@ func TestSubmitResultRejectsBuilderProducer(t *testing.T) {
 	_, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: snap.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "independence") {
+	if err == nil || !strings.Contains(err.Error(), "authored cumulative S6 changes") {
 		t.Fatalf("expected independence rejection, got %v", err)
 	}
 }
@@ -1078,7 +1093,7 @@ func TestRevisePlanCleansArtifactAfterNonStaleApplyFailure(t *testing.T) {
 	}
 }
 
-func TestRevisePlanRetainsArtifactWhenRuntimeCommitIsPending(t *testing.T) {
+func TestRevisePlanDoesNotPublishWhenAnotherCommitIsPending(t *testing.T) {
 	root := t.TempDir()
 	statePath, journalPath := writeState(t, root, revisionSourceState())
 	snap := registerFixturePlan(t, root, statePath, journalPath)
@@ -1108,8 +1123,8 @@ func TestRevisePlanRetainsArtifactWhenRuntimeCommitIsPending(t *testing.T) {
 		t.Fatal("pending runtime commit must make revise fail closed")
 	}
 	artifact := filepath.Join(root, ".claude", "review", "plans", plan.ReviewPlanID+"-r2.json")
-	if _, err := os.Stat(artifact); err != nil {
-		t.Fatalf("pending commit cleanup removed a potentially reachable artifact: %v", err)
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("new proposal published before prior pending commit recovery: %v", err)
 	}
 }
 
@@ -1184,7 +1199,7 @@ func TestRevisePlanInvalidatesConsumedResultsOnChangedClaims(t *testing.T) {
 		claim := raw.(map[string]any)
 		if claim["claim_id"] == "claim-qa-1" {
 			claim["assertion"] = "errors propagate AND surface in the typed result"
-			claim["source_refs"] = []string{"review-result-qa-1"}
+			claim["source_refs"] = append(claim["source_refs"].([]any), "review-result-qa-1")
 		}
 	}
 	out, _ := json.MarshalIndent(body, "", "  ")

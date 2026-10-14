@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // ---------------------------------------------------------------------------
@@ -281,6 +284,7 @@ func buildBindReviewState(t *testing.T, fixtures []planAssignmentFixture) (map[s
 	plan["assignments"] = planAssignments
 
 	root := t.TempDir()
+	testfixture.BindingPlan(t, map[string]any{"runtime_id": "loop-REQ-700", "baseline": map[string]any{"generation": 1}, "review": map[string]any{"round": 1}}, plan, review.ResolveModuleScopeForRoot)
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)

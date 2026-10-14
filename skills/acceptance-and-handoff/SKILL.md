@@ -116,10 +116,18 @@ loop-harness s10 manifest validate --root <root> \
   --file <manifest.json> --type <acceptance|release_audit>
 loop-harness s10 manifest render --root <root> \
   --file <manifest.json> [--output <report.md>]
+loop-harness s10 envelope lint --root <root> --file <envelope.json>
 loop-harness runtime evidence add --root <root> \
   --expected-revision <N> --id <id> --kind <acceptance|release_audit> \
   --path <envelope.json> --produced-by <agent> --responsibility <role>
 ```
+
+Scaffold the appropriate envelope with `s10 manifest scaffold --kind acceptance`
+or `--kind release_audit`; the default conclusion is unfinished. Acceptance
+uses `pass` / `review_required`; release audit uses `approved` /
+`approved_with_risk` / `blocked`. Follow the shared candidate and source-view
+contract in `docs/examples/s10/README.md`. A valid artifact is not a ready
+transition, and author-only lint is not production approval.
 
 The envelope JSON must contain the immutable manifest reference:
 `"audit_manifest_path": "<manifest.json>"` and
@@ -169,3 +177,9 @@ Stop immediately and surface to the human if any of:
 ## Inlined Methodology
 
 The Loop uses a layered state model: a top-level Loop state plus constrained phase machines for complex stages plus independent Agent/TASK/BUG lifecycles. The main trunk is `inactive -> planning -> document_verification -> building -> verification -> acceptance -> release_audit -> awaiting_human_release`. `bug_resolution` handles correction work; `paused` is a resumable wait state. Only `release_authorized` and `aborted` are terminal states eligible for rollover. Correction loops never bypass the trunk. `awaiting_human_release` is a non-terminal human decision gateway where automation stops; a human approve decision reaches `release_authorized` without executing a release: Hooks must strong-block squash merge, production deployment, and formal release when initiated by Loop automation. Invalid transition policy: undefined or guard-failing events do not change state, execute no side effect, record a rejected event, report the failed guard, and pause on repeated runtime-integrity failure. Idempotency uses compare-and-swap or equivalent revision checks; one committed transition per runtime revision; idempotency keys for state-changing actions; stale writers reload instead of overwriting. The 16 preservation invariants (INV-001..INV-016) map to enforcement layers (schema, hook, guard, combined). ACC and release architecture audit reference the clean-round record by ID and hash; later changes do not rewrite the record.
+
+Human decision authoring: use `runtime human-decision scaffold`, fill the actual
+human's identity and decision without inferring either, then run
+`runtime human-decision lint --file <decision.json> --actor <user|orchestrator>`.
+Lint is read-only and never grants transition permission. Register the exact
+decision bytes and scope before consuming them with the explicit human command.

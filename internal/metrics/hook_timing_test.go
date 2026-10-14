@@ -64,3 +64,27 @@ func TestFormatDoctorIgnoresMissingHookTimingOutbox(t *testing.T) {
 		t.Fatalf("missing hook timing outbox must be non-fatal, out=%q err=%v", out, err)
 	}
 }
+
+func TestDoctorPhaseTimingKeepsMissingOutOfDenominator(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"hook_event":"PreToolUse","elapsed_ms":8}
+{"hook_event":"PreToolUse","elapsed_ms":8,"timing":{"phases":{"runtime_lock_wait":{"calls":2,"duration_ns":1250000}}}}
+{"hook_event":"PreToolUse","elapsed_ms":8,"timing":{"phases":{"runtime_lock_wait":{"calls":1,"duration_ns":2250000}}}}
+`
+	if err := os.WriteFile(filepath.Join(root, ".claude/hook-decisions.jsonl"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := metrics.FormatDoctor(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `loop_hook_phase_duration_ms{event="PreToolUse",phase="runtime_lock_wait"} count=2 p50_ms=1.250 p95_ms=2.250`) {
+		t.Fatalf("missing was counted as zero: %s", out)
+	}
+	if strings.Contains(out, "runtime_lock_hold") {
+		t.Fatal("unmeasured phase fabricated")
+	}
+}

@@ -25,7 +25,7 @@ func runTasks(args []string, stdout, stderr io.Writer) int {
 	req := flags.String("req", "", "REQ ID for the planning batch")
 	asJSON := flags.Bool("json", false, "machine-readable output")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	result, err := semantic.TasksCheckWithFiles(*root, fileview.Disk{Root: *root}, *req)
 	if err != nil {

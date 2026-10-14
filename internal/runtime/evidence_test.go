@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	s10fixture "github.com/entroforge/go-system-builder/tests/fixtures/s10"
 )
 
 func TestRecordEvidenceAppendsFingerprintedEvidenceWithCAS(t *testing.T) {
@@ -106,7 +108,7 @@ func TestRecordEvidenceAcceptsChangeImpactEvidence(t *testing.T) {
 	}
 }
 
-func TestRecordEvidenceRejectsIncompleteS10ArtifactBeforeMutation(t *testing.T) {
+func TestRecordEvidenceRejectsUnboundS10ArtifactBeforeMutation(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "loop-state.json")
 	journalPath := filepath.Join(root, "loop-events.jsonl")
@@ -128,7 +130,7 @@ func TestRecordEvidenceRejectsIncompleteS10ArtifactBeforeMutation(t *testing.T) 
 	if err == nil {
 		t.Fatal("incomplete acceptance evidence must be rejected before mutation")
 	}
-	for _, want := range []string{"audit_manifest_path", "S10", "manifest"} {
+	for _, want := range []string{"S10 source authority", "not bound"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not identify recovery field %q", err, want)
 		}
@@ -171,16 +173,27 @@ func writeExampleRuntime(t *testing.T, path string) {
 // s10 board immediately reports as a stale binding. The envelope already
 // carries the round, so RecordEvidence must inherit it.
 func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
+	testRecordS10(t, false)
+}
+
+func TestRecordEvidenceS10UsesDeclaredGitView(t *testing.T) {
+	testRecordS10(t, true)
+}
+
+func testRecordS10(t *testing.T, gitView bool) {
 	root := t.TempDir()
-	statePath := filepath.Join(root, "loop-state.json")
-	journalPath := filepath.Join(root, "loop-events.jsonl")
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(root, ".claude/loop-state.json")
+	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
 	writeExampleRuntime(t, statePath)
 
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "manifest_type": "acceptance",
 		"runtime_id": "loop-test", "baseline_generation": 1, "review_round": 2,
 		"coverage_inventory": []any{map[string]any{
-			"id": "REQ-AC-1", "category": "requirement",
+			"id": "REQ-001", "category": "requirement",
 			"source_refs": []any{"REV-001.md#ac"}, "expected": "e", "oracle": "o",
 			"owner": "Acceptance", "evidence_refs": []any{"EV-CLEAN"}, "disposition": "pass",
 		}, map[string]any{
@@ -198,7 +211,7 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 		}},
 		"counterevidence": []any{
 			map[string]any{
-				"id": "CE-1", "inventory_id": "REQ-AC-1", "question": "q?",
+				"id": "CE-1", "inventory_id": "REQ-001", "question": "q?",
 				"evidence_refs": []any{"EV-CLEAN"}, "outcome": "pass",
 			},
 			map[string]any{
@@ -225,6 +238,8 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 		"producer_responsibility": "Clean Round Evaluator",
 		"review_round":            2, "runtime_id": "loop-test",
 	}
+	manifest["coverage_inventory"] = append(manifest["coverage_inventory"].([]any), map[string]any{"id": "claim-1", "category": "claim", "source_refs": []string{"authority/plan.json"}, "expected": "review claim", "oracle": "independent countercheck", "owner": "Acceptance", "evidence_refs": []string{"EV-CLEAN"}, "disposition": "pass"})
+	manifest["counterevidence"] = append(manifest["counterevidence"].([]any), map[string]any{"id": "CE-claim-1", "inventory_id": "claim-1", "question": "can the claim be disproved?", "evidence_refs": []string{"EV-CLEAN"}, "outcome": "pass"})
 	manifestData, _ := json.Marshal(manifest)
 	cleanData, _ := json.Marshal(clean)
 	for name, data := range map[string][]byte{"m.json": manifestData, "clean.json": cleanData} {
@@ -233,7 +248,7 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 		}
 	}
 	envelope := map[string]any{
-		"schema_version": "1.0.0", "kind": "acceptance_record",
+		"schema_version": "1.0.0", "kind": "acceptance",
 		"evidence_id": "acc-record-r2", "runtime_id": "loop-test",
 		"baseline_generation": 1, "review_round": 2,
 		"producer_agent_id": "orchestrator", "producer_responsibility": "Acceptance",
@@ -247,6 +262,20 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatal(err)
+	}
+	s10fixture.Bind(t, root, state, "REQ-001", 2)
+	state["runtime_id"] = "loop-test"
+	stateData, _ = json.Marshal(state)
+	if err := os.WriteFile(statePath, stateData, 0644); err != nil {
+		t.Fatal(err)
+	}
 	// Register the referenced clean-round evidence first so the manifest's
 	// evidence_refs resolve during the S10 artifact validation.
 	if _, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
@@ -260,6 +289,36 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 		Validator:        testCandidateValidator(),
 	}); err != nil {
 		t.Fatalf("RecordEvidence(clean) failed: %v", err)
+	}
+
+	if gitView {
+		path := filepath.Join(root, "docs/control/loop-definition.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var definition map[string]any
+		if err := json.Unmarshal(data, &definition); err != nil {
+			t.Fatal(err)
+		}
+		definition["file_sources"] = []any{map[string]any{"path": ".", "source": "git_tree"}, map[string]any{"path": ".claude", "source": "disk"}}
+		data, _ = json.Marshal(definition)
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"add", "authority", "docs", "acc-env.json", "m.json", "clean.json"}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "pinned S10 inputs"}} {
+			if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git: %v: %s", err, out)
+			}
+		}
+		// Neither missing working-tree envelopes nor invalid local manifests may
+		// replace the bytes explicitly declared to come from the Git tree.
+		if err := os.Remove(envPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "m.json"), []byte("invalid working-tree manifest"), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	next, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{

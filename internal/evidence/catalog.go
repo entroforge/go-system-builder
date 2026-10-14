@@ -77,6 +77,19 @@ func (c Catalog) IsRegisteredKind(kind string) bool {
 	return ok
 }
 
+// IsPersistableKind includes artifacts owned exclusively by a pipeline.
+func (c Catalog) IsPersistableKind(kind string) bool {
+	return c.IsRegisteredKind(kind) || strings.TrimSpace(kind) == "repair_handoff"
+}
+
+func (c Catalog) IsReferenceableKind(kind string) bool {
+	return c.IsPersistableKind(kind)
+}
+
+func (c Catalog) IsManuallyRegisterableKind(kind string) bool {
+	return c.IsRegisteredKind(kind) && strings.TrimSpace(kind) != "finding_supplement"
+}
+
 // RegisteredKinds returns all legal persisted Runtime evidence kinds in
 // deterministic order.
 func (c Catalog) RegisteredKinds() []string {

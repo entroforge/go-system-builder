@@ -42,7 +42,7 @@ func runCapture(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	claimID := flags.String("claim", "", "optional Claim id this step belongs to")
 	sequence := flags.Int("sequence", 0, "step sequence (default: next)")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *assignmentID == "" || *action == "" || *observed == "" {
 		fmt.Fprintln(stderr, "capture step requires --assignment, --action and --observed")

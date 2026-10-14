@@ -12,6 +12,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // TestS7StatusIncludesMetricsSummary proves the read-only board appends the
@@ -57,6 +58,7 @@ func TestS7StatusIncludesMetricsSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	planBytes = testfixture.HistoricalPlan(t, planBytes)
 	planBytes = append(planBytes, '\n')
 	sum := sha256.Sum256(planBytes)
 	planRel := filepath.Join(".claude", "review", "plans", "review-plan-cli-1.json")

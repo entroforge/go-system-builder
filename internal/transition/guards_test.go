@@ -13,6 +13,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/transition"
 	"github.com/entroforge/go-system-builder/internal/verification"
+	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 // TestLegacyEvidenceBackedStubsRemoved asserts FR-009: the legacy guard ids
@@ -168,37 +169,15 @@ func TestForbiddenEventBarrierPassesWithValidCleanRound(t *testing.T) {
 	root := t.TempDir()
 	setupRepoWithDefinition(t, root)
 	state := stateAtAcceptanceMap(7)
-	state["review"] = map[string]any{
-		"round":       float64(1),
-		"clean_round": float64(1),
-		"plan": map[string]any{
-			"plan_id": "PLAN-1", "path": "docs/review/plan.md", "sha256": "x",
-			"review_round": float64(1), "status": "clean",
-		},
-		"claims": map[string]any{
-			"CLM-1": map[string]any{
-				"lens": "delivery", "applicability": "applicable",
-				"disposition": "pass", "result_id": "RES-1",
-			},
-		},
-	}
-	state["evidence"] = []any{
-		map[string]any{
-			"id": "ev-cr", "kind": "clean_round", "status": "valid",
-			"baseline_generation": float64(1), "review_round": float64(1),
-			"path": "docs/reports/review/clean-round.md", "sha256": "x",
-			"produced_by": []any{"a"}, "responsibility_id": "VER-1", "scope_refs": []any{},
-			"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
-		},
-	}
-	if result := verification.EvaluateCleanRound(state); !result.Passed {
-		t.Fatalf("fixture must evaluate as a valid CleanRound before the Apply: %v", result.Reasons)
+	req039fixtures.SeedCleanRoundProjection(t, root, state)
+	if result := verification.EvaluateCleanRoundForRoot(root, state); !result.Passed {
+		t.Fatalf("fixture must verify as a valid CleanRound before Apply: %v", result.Reasons)
 	}
 	writeFullState(t, root, state)
 
 	err := applyT(t, root, "TR-015", 7, "orchestrator", map[string]string{
 		"acceptance_record":  "ev-acc",
-		"clean_round_record": "docs/reports/review/clean-round.md",
+		"clean_round_record": "clean-round-r1",
 	})
 	if err != nil && containsStr(err.Error(), "create_acc_without_clean_round") {
 		t.Fatalf("forbidden-event barrier must pass a valid CleanRound, got: %v", err)

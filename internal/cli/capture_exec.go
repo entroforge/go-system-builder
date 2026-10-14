@@ -134,7 +134,7 @@ func runCaptureExecInner(args []string, stdin io.Reader, stdout, stderr io.Write
 	maxArtifacts := flags.Int("max-artifacts", execMaxArtifactsDefault, "maximum produced/modified/deleted artifacts recorded per step")
 	artifactDepth := flags.Int("artifact-depth", execArtifactDepthDefault, "directory depth scanned under cwd for the artifact digest diff")
 	if err := parseWorkspaceFlags(flags, flagArgs); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *assignmentID == "" {
 		fmt.Fprintln(stderr, "capture exec requires --assignment")

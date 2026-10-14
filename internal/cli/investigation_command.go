@@ -87,7 +87,7 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*hypothesisID) == "" || strings.TrimSpace(*agentID) == "" {
 		fmt.Fprintln(stderr, "runtime investigation dispatch requires --case-id, --hypothesis-id and --agent-id")
@@ -397,7 +397,7 @@ func runRuntimeInvestigationHypothesisRegister(args []string, stdout, stderr io.
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*hypothesisID) == "" {
 		fmt.Fprintln(stderr, "runtime investigation hypothesis register requires --case-id and --id")
@@ -476,7 +476,7 @@ func runRuntimeInvestigationHypothesisResult(args []string, stdout, stderr io.Wr
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*hypothesisID) == "" {
 		fmt.Fprintln(stderr, "runtime investigation hypothesis result requires --case-id and --hypothesis-id")
@@ -553,7 +553,7 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*route) == "" {
 		fmt.Fprintln(stderr, "runtime investigation route requires --case-id and --route")
@@ -691,7 +691,7 @@ func runRuntimeInvestigationConsume(args []string, stdout, stderr io.Writer) int
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*caseID) == "" {
 		fmt.Fprintln(stderr, "runtime investigation consume requires --case-id")
@@ -792,7 +792,7 @@ func runRuntimeInvestigationProject(args []string, stdout, stderr io.Writer) int
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*bugID) == "" {
 		fmt.Fprintln(stderr, "runtime investigation project requires --bug-id; projection is compatibility only and does not authorize S9")
@@ -883,7 +883,7 @@ func runRuntimeInvestigationIngest(args []string, stdout, stderr io.Writer) int 
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*groupingRationale) == "" {
 		fmt.Fprintln(stderr, "runtime investigation ingest requires --grouping-rationale; intake must record why the exact Finding set is provisionally grouped")
@@ -1049,6 +1049,7 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 	root := flags.String("root", ".", "repository root")
 	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
+	operationID := flags.String("operation-id", "", "stable approval operation ID; preserve all inputs on retry")
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	contractPath := flags.String("file", "", "draft RepairContract path")
@@ -1064,7 +1065,7 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*contractPath) == "" || strings.TrimSpace(*approvedBy) == "" || strings.TrimSpace(*approvalHash) == "" || strings.TrimSpace(*approvalEvidenceID) == "" {
 		fmt.Fprintln(stderr, "runtime investigation contract approve requires --case-id, --file, --approved-by, --approval-hash and --approval-evidence-id; approval is the S8→S9 authority transaction")
@@ -1080,6 +1081,7 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 		}
 	}
 	snapshot, err := investigation.ApproveContract(resolveRootPath(*root, "."), resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.ContractRequest{
+		OperationID:          *operationID,
 		ExpectedRevision:     *expectedRevision,
 		CaseID:               strings.TrimSpace(*caseID),
 		ContractPath:         *contractPath,
@@ -1090,8 +1092,15 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 		OccurredAt:           occurredAt,
 	})
 	if err != nil {
+		if snapshot.Operation != nil {
+			_ = encodeJSON(stdout, map[string]any{"operation_receipt": snapshot.Operation, "operation_replayed": snapshot.OperationReplayed})
+		}
 		fmt.Fprintln(stderr, formatFailure("runtime investigation contract approve", err))
 		return 1
+	}
+	if snapshot.Operation != nil {
+		fmt.Fprintf(stderr, "approval operation %s committed at revision %d; inspect runtime investigation status for the current Case\n", snapshot.Operation.ID, snapshot.Operation.Revision)
+		return encodeJSON(stdout, map[string]any{"operation_receipt": snapshot.Operation, "operation_replayed": snapshot.OperationReplayed, "revision": snapshot.Revision})
 	}
 	pointer := investigationPointer(snapshot.State)
 	fmt.Fprintf(stderr, "repair contract approve: %s is approved for Case %s; next: S9 consume the approved Contract; do not create a BUG as authority\n", pointer["repair_contract_ref"], pointer["case_id"])
@@ -1123,7 +1132,7 @@ func runRuntimeInvestigationStatus(args []string, stdout, stderr io.Writer) int 
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	snapshot, err := runtime.NewStore(resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath)).Snapshot()
 	if err != nil {

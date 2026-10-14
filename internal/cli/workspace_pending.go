@@ -27,7 +27,7 @@ func runWorkspacePending(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	root := fs.String("root", ".", "Main control root")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	loaded, err := hookctx.LoadFull(*root, "")
 	if err != nil {

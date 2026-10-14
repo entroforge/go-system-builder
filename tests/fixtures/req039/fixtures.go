@@ -950,6 +950,9 @@ func SeedAcceptanceReady(t *testing.T, root string, state map[string]any) {
 			"producer_agent_id": agent, "producer_responsibility": responsibility,
 			"conclusion": conclusion, "created_at": "2026-07-30T00:00:00Z",
 		}
+		if wireKind == "clean_round" {
+			envelope["review_plan_id"] = state["review"].(map[string]any)["plan"].(map[string]any)["plan_id"]
+		}
 		if wireKind == "acceptance" || wireKind == "release_audit" {
 			manifestPath := "s10/" + wireKind + "-manifest.json"
 			manifestData := s10ManifestData(t, root, state, wireKind, 1)
@@ -1023,6 +1026,9 @@ func SeedReleaseAuditReady(t *testing.T, root string, state map[string]any) {
 			"runtime_id": runtimeID, "baseline_generation": 1, "review_round": 1,
 			"producer_agent_id": agent, "producer_responsibility": responsibility,
 			"conclusion": conclusion, "created_at": "2026-07-30T00:00:00Z",
+		}
+		if wireKind == "clean_round" {
+			envelope["review_plan_id"] = state["review"].(map[string]any)["plan"].(map[string]any)["plan_id"]
 		}
 		if wireKind == "acceptance" || wireKind == "release_audit" {
 			manifestPath := "s10/" + wireKind + "-manifest.json"

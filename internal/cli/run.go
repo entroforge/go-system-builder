@@ -65,7 +65,7 @@ func formatFailure(cmd string, err error) string {
 		return fmt.Sprintf("%s: %s See %s#%s.", cmd, msg, transition.ManualTargetPath(), strings.ToLower(id))
 	}
 	if errors.Is(err, runtime.ErrStaleRevision) {
-		return fmt.Sprintf("%s: %s. The command used an explicit revision assertion; normal stage retries should omit it. If an integration intentionally keeps the assertion, run `loop-harness status --root <root>` and retry with `--expected-revision <N>`; repeated integrity divergence may require `loop-harness runtime reconcile`.", cmd, msg)
+		return fmt.Sprintf("%s: %s. Runtime changed after this operation read its inputs, or an explicit revision assertion is stale. Reread `loop-harness status --root <root>` and retry against the current plan and inputs. Normal stage commands may omit --expected-revision; the commit still checks the revision used for preparation.", cmd, msg)
 	}
 	if errors.Is(err, runtime.ErrStaleRuntimeIdentity) {
 		return fmt.Sprintf("%s: %s. The runtime identity changed at a lifecycle boundary; reread status and rebuild the transition request against the current runtime.", cmd, msg)
@@ -100,7 +100,7 @@ func extractRuleID(msg string) string {
 // payloads in `internal/hook/adapter.go`.
 func bindUsage(flags *flag.FlagSet, label string) {
 	flags.Usage = func() {
-		fmt.Fprintf(flags.Output(), "Usage of %s:\n", label)
+		fmt.Fprintf(flags.Output(), "Usage: loop-harness %s [flags]\n", label)
 		flags.PrintDefaults()
 		fmt.Fprintf(flags.Output(), "\nSee %s (gate-level specification).\n", transition.ManualTargetPath())
 	}
@@ -148,7 +148,18 @@ func printTopLevelUsage(stdout io.Writer) {
 	fmt.Fprintf(stdout, "Manual: see %s (gate-level specification).\n", transition.ManualTargetPath())
 }
 
+type commandOutput struct {
+	io.Writer
+	help io.Writer
+}
+
+func (w commandOutput) HelpWriter() io.Writer { return w.help }
+
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return run(args, stdin, stdout, commandOutput{Writer: stderr, help: stdout})
+}
+
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: loop-harness <init|req|status|next|ready|validate|dry-run|hook|doctor|health|actions|runtime|team|s6|s7|tasks|contracts|capture|impact|verification|release-graph|e2e-coverage|scenario|design-foundation|s10|manual|explain>")
 		fmt.Fprintln(stderr, "manual:  see .claude/bin/loop-harness.md (gate-level specification)")
@@ -159,25 +170,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		printTopLevelUsage(stdout)
 		return 0
 	}
-	// Reject incompatible layouts before init, recovery, Hook or any other
-	// command can overwrite the old release's configuration or Runtime.
-	layoutRoot := "."
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--" {
-			break
-		}
-		if strings.HasPrefix(args[i], "--root=") || strings.HasPrefix(args[i], "-root=") {
-			layoutRoot = strings.SplitN(args[i], "=", 2)[1]
-		}
-		if (args[i] == "--root" || args[i] == "-root") && i+1 < len(args) {
-			layoutRoot = args[i+1]
-			i++
-		}
-	}
-	if err := projectlayout.Check(layoutRoot); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
+
 	switch args[0] {
 	case "version", "--version":
 		return runBuildInfo(stdout)
@@ -276,7 +269,7 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 	releaseUpstream := flags.String("release-upstream", "", "explicit final release destination (include remote when remote)")
 	asJSON := flags.Bool("json", false, "machine-readable state output")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *approvedBy == "" {
 		if identity := detectGitIdentity(*root); identity != "" {
@@ -411,7 +404,7 @@ func runREQList(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	asJSON := flags.Bool("json", false, "machine-readable output")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	summaries := classifyRequirements(*root)
 	if *asJSON {
@@ -491,7 +484,7 @@ func runProjection(args []string, nextOnly bool, stdout, stderr io.Writer) int {
 	bindUsage(flags, "projection")
 	root := flags.String("root", ".", "repository root")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	snapshot, err := runtime.NewStore(
 		filepath.Join(*root, ".claude/loop-state.json"),
@@ -539,7 +532,7 @@ func runReady(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "ready")
 	root := flags.String("root", ".", "repository root")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	report, err := controller.EvaluateReady(context.Background(), *root)
 	if err != nil {
@@ -630,7 +623,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "init")
 	root := flags.String("root", ".", "repository root")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if err := workspace.RequireMain(*root); err != nil {
 		fmt.Fprintln(stderr, err)
@@ -974,7 +967,7 @@ func runTeam(args []string, stdout, stderr io.Writer) int {
 	manifestPath := flags.String("manifest", "", "team manifest path relative to root")
 	templatePath := flags.String("request-template", "", "readback request template path relative to root")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *manifestPath == "" || *templatePath == "" {
 		fmt.Fprintln(stderr, "team launch requires --manifest and --request-template")
@@ -1063,6 +1056,8 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "repair-batch-scope":
 		return runBatchScopeRepair(args[1:], stdout, stderr)
+	case "operation":
+		return runRuntimeOperation(args[1:], stdout, stderr)
 	case "recover":
 		return runRuntimeRecover(args[1:], stdout, stderr)
 	case "rollover":
@@ -1083,7 +1078,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		resolvedState := resolveRootPath(*root, *statePath)
 		resolvedJournal := resolveRootPath(*root, *journalPath)
@@ -1107,7 +1102,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		resolvedState := *statePath
 		if !filepath.IsAbs(resolvedState) {
@@ -1153,7 +1148,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		var evidence stringListFlag
 		flags.Var(&evidence, "evidence", "required evidence kind=reference; repeatable")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if flags.NArg() != 0 {
 			fmt.Fprintln(stderr, "runtime transition: unexpected positional arguments; repeat --affected-paths for each path")
@@ -1250,7 +1245,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		taskPath := flags.String("task", "", "TASK path")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 registration time")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *manifestPath == "" || *taskID == "" || *taskPath == "" {
 			fmt.Fprintln(stderr, "runtime register-workgroup requires --manifest, --task-id and --task")
@@ -1307,7 +1302,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		planPath := flags.String("plan", "", "plan_report message path")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *agentID == "" || *planPath == "" {
 			fmt.Fprintln(stderr, "runtime agent-begin requires --agent-id and --plan")
@@ -1354,7 +1349,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		messagePath := flags.String("message", "", "Agent message path")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *agentID == "" || *event == "" || *messagePath == "" {
 			fmt.Fprintln(stderr, "runtime agent-event requires --agent-id, --event and --message")
@@ -1415,7 +1410,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		messagePath := flags.String("message", "", "completion_report message path")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *agentID == "" || *messagePath == "" {
 			fmt.Fprintln(stderr, "runtime task-complete requires --agent-id and --message")
@@ -1463,7 +1458,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		assignmentID := flags.String("assignment-id", "", "assignment to integrate")
 		agentID := flags.String("agent-id", "", "owning agent ID (optional, aids lookup)")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *assignmentID == "" {
 			fmt.Fprintln(stderr, "runtime task-integrate requires --assignment-id")
@@ -1591,6 +1586,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 		expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
+		operationID := flags.String("operation-id", "", "stable retry identity; same ID and canonical inputs return the original durable receipt")
 		planPath := flags.String("file", "", "ReviewPlan JSON path")
 		sourceRef := flags.String("source-ref", "", "revise: triggering Result/Finding evidence id")
 		affectedSurface := flags.String("affected-surface", "", "revise: path surface the revision may touch")
@@ -1599,6 +1595,10 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			parseArgs = args[2:]
 		}
 		if err := parseWorkspaceFlags(flags, parseArgs); err != nil {
+			return flagParseExitCode(err)
+		}
+		if revive && *operationID != "" {
+			fmt.Fprintln(stderr, "review-plan revive does not accept --operation-id")
 			return 2
 		}
 		if revive {
@@ -1618,6 +1618,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		if revise {
 			resolvedRevision := *expectedRevision
 			next, err := review.RevisePlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.ReviseRequest{
+				OperationID:      *operationID,
 				ExpectedRevision: resolvedRevision,
 				PlanPath:         resolveRootPath(*root, *planPath),
 				SourceRef:        *sourceRef,
@@ -1626,6 +1627,10 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				fmt.Fprintln(stderr, formatFailure("runtime review-plan revise", err))
 				return 1
+			}
+			if next.Operation != nil {
+				fmt.Fprintf(stderr, "operation %s: durable commit at revision %d (current revision %d)\n", next.Operation.ID, next.Operation.Revision, next.Revision)
+				return encodeJSON(stdout, map[string]any{"operation_receipt": next.Operation, "current_revision": next.Revision})
 			}
 			ptr := review.PlanPointerFromState(next.State)
 			fmt.Fprintf(stderr, "review-plan revise: %s now at revision %d (status %s); changed claims returned to planned\n", ptr.PlanID, ptr.Revision, ptr.Status)
@@ -1641,12 +1646,17 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		}
 		resolvedRevision := *expectedRevision
 		next, err := review.RegisterPlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.PlanRequest{
+			OperationID:      *operationID,
 			ExpectedRevision: resolvedRevision,
 			PlanPath:         resolveRootPath(*root, *planPath),
 		})
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime review-plan", err))
 			return 1
+		}
+		if next.Operation != nil {
+			fmt.Fprintf(stderr, "operation %s: durable commit at revision %d (current revision %d)\n", next.Operation.ID, next.Operation.Revision, next.Revision)
+			return encodeJSON(stdout, map[string]any{"operation_receipt": next.Operation, "current_revision": next.Revision})
 		}
 		ptr := review.PlanPointerFromState(next.State)
 		fmt.Fprintf(stderr, "review-plan: registered %s for round %d (status %s); dispatch reviewers via `runtime register-workgroup`, then consume results via `runtime review-result submit`\n",
@@ -1673,11 +1683,12 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 		expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
+		operationID := flags.String("operation-id", "", "stable retry identity; same ID and canonical inputs return the original durable receipt")
 		assignmentID := flags.String("assignment-id", "", "plan assignment the result answers")
 		resultPath := flags.String("result", "", "ReviewResult JSON path")
 		captureDir := flags.String("captures", "", "capture buffer dir (or the steps.jsonl file itself); empty encounter timelines absorb buffered steps")
 		if err := parseWorkspaceFlags(flags, verbArgs); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *assignmentID == "" || *resultPath == "" {
 			fmt.Fprintln(stderr, "runtime review-result requires --assignment-id <id> and --result <result.json>")
@@ -1697,6 +1708,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		next, err := review.SubmitResult(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.SubmitRequest{
+			OperationID:      *operationID,
 			ExpectedRevision: resolvedRevision,
 			AssignmentID:     *assignmentID,
 			ResultPath:       resolveRootPath(*root, *resultPath),
@@ -1705,6 +1717,10 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime review-result", err))
 			return 1
+		}
+		if next.Operation != nil {
+			fmt.Fprintf(stderr, "operation %s: durable commit at revision %d (current revision %d)\n", next.Operation.ID, next.Operation.Revision, next.Revision)
+			return encodeJSON(stdout, map[string]any{"operation_receipt": next.Operation, "current_revision": next.Revision})
 		}
 		ptr := review.PlanPointerFromState(next.State)
 		status := ""
@@ -1754,7 +1770,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		authorizedBy := flags.String("authorized-by", "", "scheduler identity authorizing a replacement finder (required when author != original finder)")
 		inRoundNote := flags.Bool("in-round-note", false, "declare an S7 in-round note from the original finder (exempt from the hypothesis_id + discriminator + expected_outcomes gate; must not carry hypothesis_id)")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *findingID == "" || *filePath == "" {
 			fmt.Fprintln(stderr, "runtime finding-supplement requires --finding <id> and --file <supplement.json>")
@@ -1796,7 +1812,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		messagePath := flags.String("message", "", "BUG message evidence path")
 		paramsRaw := flags.String("params", "", "JSON object of guard params")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *bugID == "" || *event == "" {
 			fmt.Fprintln(stderr, "runtime bug-event requires --bug-id and --event")
@@ -1859,7 +1875,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		// Anchor --state / --journal against --root so the verb works
 		// from any cwd (L3-S7 sandbox contract).
@@ -1895,6 +1911,9 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 // optional advanced assertion; the normal path lets the Writer use its
 // current locked snapshot.
 func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "scaffold" || args[0] == "lint") {
+		return runHumanDecisionAuthoring(args, stdout, stderr)
+	}
 	flags := flag.NewFlagSet("runtime human-decision", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	bindUsage(flags, "runtime human-decision")
@@ -1903,11 +1922,11 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	disposition := flags.String("disposition", "", "one of approve, defer, reject_defect, reject_acceptance, reject_release_audit, abort")
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
-	actor := flags.String("actor", "", "human decision actor")
+	actor := flags.String("actor", "", "execution role permitted by the transition (user or orchestrator); does not supply human approval")
 	decisionEvidence := flags.String("decision-evidence", "", "human_decision_record evidence reference")
 	findingEvidence := flags.String("finding-evidence", "", "finding_record evidence reference; required for reject_defect")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 
 	missing := make([]string, 0, 3)
@@ -1977,7 +1996,7 @@ func runRuntimeReconcilePolicyRef(args []string, stdout, stderr io.Writer) int {
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	checkOnly := flags.Bool("check", false, "report drift without writing state")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	// Anchor --state / --journal against --root so the verb works
 	// from any cwd (L3-S7 sandbox contract).
@@ -2036,7 +2055,7 @@ func runRuntimeRollover(args []string, stdout, stderr io.Writer) int {
 	approvedBy := flags.String("approved-by", "", "human approver identity")
 	approvalEvidence := flags.String("approval-evidence", "", "valid human_decision evidence ID produced by --approved-by")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if strings.TrimSpace(*approvedBy) == "" {
 		fmt.Fprintln(stderr, "runtime rollover requires --approved-by")
@@ -2250,7 +2269,7 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 	flags.Var(&producedBy, "produced-by", "evidence producer; repeatable")
 	flags.Var(&scopeRefs, "scope-ref", "evidence scope reference; repeatable")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *id == "" || *kind == "" || *path == "" || len(producedBy) == 0 {
 		fmt.Fprintln(stderr, "runtime evidence add requires --id, --kind, --path and --produced-by")
@@ -2311,7 +2330,7 @@ func runRuntimeChange(args []string, stdout, stderr io.Writer) int {
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 	inputPath := flags.String("input", "", "JSON Change Record input path")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *inputPath == "" {
 		fmt.Fprintln(stderr, "runtime change create requires --input")
@@ -2412,7 +2431,7 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	all := flags.Bool("all", false, "validate all Harness artifacts")
 	root := flags.String("root", ".", "repository root")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if !*all {
 		fmt.Fprintln(stderr, "validate requires --all")
@@ -2433,7 +2452,7 @@ func runDryRun(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	fixture := flags.String("fixture", "", "Hook input fixture")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *fixture == "" {
 		fmt.Fprintln(stderr, "dry-run requires --fixture")
@@ -2455,7 +2474,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	event := flags.String("event", "", "Claude Code Hook event")
 	root := flags.String("root", ".", "repository root")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *event == "" {
 		fmt.Fprintln(stderr, "hook requires --event")
@@ -2472,7 +2491,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if err := semantic.ValidateAgentDefinitions(*root); err != nil {
 		fmt.Fprintf(stderr, "doctor failed: %v\n", err)
@@ -2515,7 +2534,7 @@ func runHealth(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	failOnDegraded := flags.Bool("fail-on-degraded", false, "return exit 1 when historical runtime signals require inspection")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	out, err := metrics.FormatHealth(*root)
 	if err != nil {
@@ -2590,6 +2609,9 @@ func reportPolicyRefDrift(root, statePath, journalPath string, stdout, stderr io
 
 func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Writer, renderHook bool) int {
 	evaluationStarted := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	ctx = metrics.WithTiming(ctx)
 	var request policy.Input
 	if err := json.NewDecoder(input).Decode(&request); err != nil {
 		fmt.Fprintf(stderr, "decode Hook input: %v\n", err)
@@ -2600,7 +2622,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		return 1
 	}
 	// Resolve a registered Worker to its sole control Runtime without chdir.
-	rootContext, rootCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	rootContext, rootCancel := context.WithTimeout(ctx, 3*time.Second)
 	controlRoot, rootErr := workspace.ResolveControl(rootContext, root)
 	rootCancel()
 	if rootErr != nil {
@@ -2624,7 +2646,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	// A separately launched top-level Claude session has no native agent_id.
 	// Resolve only its durable session/root pair; never impersonate nested agents.
 	if request.AgentID == "" && request.TeammateName == "" && request.SessionID != "" && request.CWD != "" {
-		ownerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ownerCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		owner, err := workspace.SessionOwner(ownerCtx, root, request.CWD, request.SessionID)
 		cancel()
 		if err != nil {
@@ -2664,7 +2686,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		return runNativeObserverHook(root, request, stdout, stderr, evaluationStarted)
 	}
 	if request.Runtime.RuntimeID == "" {
-		context, err := hookctx.Load(root, request.AgentID)
+		context, err := hookctx.LoadContext(ctx, root, request.AgentID)
 		if err != nil {
 			// Keep the error until after the controller projection. A
 			// mutating PreToolUse must fail closed when the runtime facts
@@ -2694,7 +2716,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		request.Runtime.WorkspaceError = bindingErr.Error()
 	}
 	if request.Runtime.Workspace == nil && bindingErr == nil && bound != nil {
-		trusted, err := hookctx.Load(root, request.AgentID)
+		trusted, err := hookctx.LoadContext(ctx, root, request.AgentID)
 		if err != nil {
 			request.Runtime.WorkspaceError = err.Error()
 		} else {
@@ -2729,7 +2751,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		// `Decision` consumed downstream by the envelope and renderer; the
 		// controller only adds Quality Gate progress and (when applicable)
 		// auto-commits a single Transition before the safety verdict.
-		controlResult = runControlCycleForHook(root, request)
+		controlResult = runControlCycleForHookContext(ctx, root, request)
 		decision = projectControlDecision(controlResult)
 		if request.Event == "PreToolUse" && hookInputMayMutate(request) && request.Runtime.RuntimeID == "" && controlResult.Error != "" && runtimeCheckpointMissing(root) {
 			decision = policy.Decision{
@@ -2742,7 +2764,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 				MatchedRuleIDs: []string{policy.RuleRuntimeUnreadable},
 			}
 		}
-		refreshGuidanceFromController(root, &request, &decision, controlResult)
+		refreshGuidanceFromControllerContext(ctx, root, &request, &decision, controlResult)
 	}
 	// Lifecycle hooks are the agent's re-entry points. Inject only a bounded
 	// native context packet: SessionStart gets the current stage/next action;
@@ -2752,7 +2774,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	if request.Event == "SessionStart" || request.Event == "SubagentStart" {
 		var assignments []hookctx.AssignmentContext
 		if request.Event == "SubagentStart" {
-			if loaded, err := hookctx.LoadFull(root, request.AgentID); err == nil && loaded != nil {
+			if loaded, err := hookctx.LoadFullContext(ctx, root, request.AgentID); err == nil && loaded != nil {
 				assignments = loaded.Assignments
 			}
 		}
@@ -2816,6 +2838,14 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	// persisted. A platform timeout kills the process before this point, so a
 	// missing record remains a useful timeout signal rather than a fabricated
 	// timed_out=true value.
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(stderr, "Hook deadline exhausted: %v; inspect Runtime before retrying\n", err)
+		if policy.UnavailableDecision(request, err).Decision == "deny" {
+			return 2
+		}
+		return 0
+	}
+	controlResult.Timing = metrics.ReadTiming(ctx)
 	decision.ElapsedMS = time.Since(evaluationStarted).Milliseconds()
 	envelope := buildEnvelopeFromController(root, request, decision, controlResult, time.Now())
 	// envelopeWithQualityGate carries the layered Controller projection
@@ -2834,7 +2864,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		}
 		return 0
 	}
-	if err := audit.NewOutbox(filepath.Join(root, ".claude", "hook-decisions.jsonl")).Append(envelopeWithQualityGate); err != nil {
+	if err := audit.NewOutbox(filepath.Join(root, ".claude", "hook-decisions.jsonl")).AppendContext(ctx, envelopeWithQualityGate); err != nil {
 		// For denying decisions the deny payload is more important than the
 		// an audit-write error here would mask the deny. For all other decisions
 		// the audit trail is the only durable record, so its failure is fatal.
@@ -3160,6 +3190,10 @@ func runtimeIDString(state map[string]any) string {
 // single authority for Quality Gate progress and auto-Transition commits
 // (BUG-039-02 §4.1).
 func runControlCycleForHook(root string, request policy.Input) controller.ControlResult {
+	return runControlCycleForHookContext(contextForHook(request), root, request)
+}
+
+func runControlCycleForHookContext(ctx context.Context, root string, request policy.Input) controller.ControlResult {
 	controlReq := controller.ControlRequest{
 		Root:        root,
 		Event:       request.Event,
@@ -3172,7 +3206,7 @@ func runControlCycleForHook(root string, request policy.Input) controller.Contro
 		CWD:         request.CWD,
 		HookPayload: map[string]any{"cwd": request.CWD, "tool_response": request.ToolResponse},
 	}
-	result, err := controller.RunControlCycle(contextForHook(request), controlReq)
+	result, err := controller.RunControlCycle(ctx, controlReq)
 	if err != nil {
 		// RunControlCycle surfaces user-visible errors via the result
 		// struct; reaching here is reserved for programmer errors (e.g.
@@ -3253,7 +3287,11 @@ func projectControlDecision(result controller.ControlResult) policy.Decision {
 // refreshMilestoneWithGate so the milestone projection matches what the
 // hook emitted on the wire (BUG-039-07 wiring).
 func refreshGuidanceFromController(root string, request *policy.Input, decision *policy.Decision, result controller.ControlResult) {
-	persistGateForPreToolUse(root, request, decision, result)
+	refreshGuidanceFromControllerContext(context.Background(), root, request, decision, result)
+}
+
+func refreshGuidanceFromControllerContext(ctx context.Context, root string, request *policy.Input, decision *policy.Decision, result controller.ControlResult) {
+	persistGateForPreToolUseContext(ctx, root, request, decision, result)
 	if decision.Guidance != nil {
 		return
 	}
@@ -3299,6 +3337,10 @@ func refreshGuidanceFromController(root string, request *policy.Input, decision 
 // Only a wholly zero-valued gate (no Status at all, i.e. the cycle never ran)
 // is skipped.
 func persistGateForPreToolUse(root string, request *policy.Input, decision *policy.Decision, result controller.ControlResult) {
+	persistGateForPreToolUseContext(context.Background(), root, request, decision, result)
+}
+
+func persistGateForPreToolUseContext(ctx context.Context, root string, request *policy.Input, decision *policy.Decision, result controller.ControlResult) {
 	if request == nil || request.Event != "PreToolUse" {
 		return
 	}
@@ -3311,7 +3353,7 @@ func persistGateForPreToolUse(root string, request *policy.Input, decision *poli
 	}
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
-	if _, _, err := refreshMilestoneWithGate(root, statePath, journalPath, result.Snapshot, *decision.Guidance, request.Event, result.QualityGate); err != nil {
+	if _, _, err := refreshMilestoneWithGateContext(ctx, root, statePath, journalPath, result.Snapshot, *decision.Guidance, request.Event, result.QualityGate); err != nil {
 		// Persistence failure is non-fatal for the hook verdict: the
 		// wire envelope still carries quality_gate. Expose the bounded
 		// reason and the next action in the same packet so the Agent does
@@ -3426,6 +3468,25 @@ func envelopeWithQualityGateMap(envelope policy.DecisionEnvelope, result control
 	for k, v := range qualityGateEnvelopeFields(result.QualityGate) {
 		out[k] = v
 	}
+	if len(result.Timing) > 0 {
+		out["schema_version"] = "1.2.0"
+		timing := map[string]any{"phases": result.Timing}
+		if result.AssignmentID != "" {
+			timing["assignment_id"] = result.AssignmentID
+		}
+		if bound, ok := result.Snapshot.State["bound_req"].(map[string]any); ok {
+			if id, ok := bound["id"].(string); ok && id != "" {
+				timing["req_id"] = id
+			}
+		}
+		if baseline, ok := result.Snapshot.State["baseline"].(map[string]any); ok && baseline["generation"] != nil {
+			timing["baseline_generation"] = baseline["generation"]
+		}
+		if review, ok := result.Snapshot.State["review"].(map[string]any); ok && review["round"] != nil {
+			timing["review_round"] = review["round"]
+		}
+		out["timing"] = timing
+	}
 	return out
 }
 
@@ -3457,7 +3518,7 @@ func runImpact(args []string, stdout, stderr io.Writer) int {
 	var changed changedPaths
 	flags.Var(&changed, "changed", "changed path (repeatable)")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if len(changed) == 0 {
 		fmt.Fprintln(stderr, "impact analyze: at least one --changed path is required")
@@ -3535,7 +3596,7 @@ func runVerification(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	data, err := readRuntimeBytes(*root, *statePath)
 	if err != nil {
@@ -3547,7 +3608,7 @@ func runVerification(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "parse state: %v\n", err)
 		return 1
 	}
-	result := verification.EvaluateCleanRound(state)
+	result := verification.EvaluateCleanRoundForRoot(*root, state)
 	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		fmt.Fprintf(stderr, "encode result: %v\n", err)
@@ -3638,7 +3699,7 @@ func runReleaseGraph(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "release or installed project root")
 	installed := flags.Bool("installed", false, "validate the installed .claude asset layout")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	validate := releasegraph.ValidateStagedRelease
 	if *installed {
@@ -3668,7 +3729,7 @@ func runManual(args []string, stdout, stderr io.Writer) int {
 	target := flags.String("target", transition.ManualTargetPath(), "output path relative to root; defaults to .claude/bin/loop-harness.md next to the binary")
 	toStdout := flags.Bool("stdout", false, "write to stdout instead of --target")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	catalog, err := transition.LoadCatalog(*root)
 	if err != nil {
@@ -3722,7 +3783,7 @@ func runExplain(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	statePath := flags.String("state", ".claude/loop-state.json", "current Runtime state path; read-only")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	catalog, err := transition.LoadCatalog(*root)
 	if err != nil {
@@ -3788,8 +3849,8 @@ func runDocsCheck(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("docs check", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "document tree root")
-	if err := flags.Parse(args[1:]); err != nil {
-		return 2
+	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
+		return flagParseExitCode(err)
 	}
 	if err := doclinks.Validate(*root); err != nil {
 		fmt.Fprintln(stderr, err)

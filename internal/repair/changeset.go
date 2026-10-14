@@ -93,7 +93,7 @@ func ComputeChangeset(root string, request ChangesetRequest) (Changeset, error) 
 	sort.Strings(lines)
 	digest := sha256Bytes([]byte(strings.Join(lines, "\n")))
 	return Changeset{
-		SchemaVersion: "1.0.0", RecordType: "repair_changeset", ChangesetID: "repair-changeset-" + digest[:16],
+		SchemaVersion: "1.0.0", RecordType: "repair_changeset", ChangesetID: scopedChangesetID(request.SessionID, digest),
 		SessionID: request.SessionID, Source: source, BaseRef: request.BaseRef, HeadRef: request.HeadRef,
 		Artifacts: artifacts, Digest: digest, ComputedAt: nowOr(request.OccurredAt),
 	}, nil
@@ -119,8 +119,16 @@ func ValidateChangeset(root string, ref ArtifactRef) (Changeset, error) {
 	if err := decodeArtifact(root, ref, "repair-changeset.schema.json", &changeset); err != nil {
 		return Changeset{}, err
 	}
-	if changeset.RecordType != "repair_changeset" || len(changeset.Artifacts) == 0 {
+	if changeset.RecordType != "repair_changeset" || len(changeset.Artifacts) == 0 && changeset.Intent != "confirm" {
 		return Changeset{}, fmt.Errorf("artifact %s is not a non-empty repair changeset", ref.Path)
+	}
+	if changeset.Intent == "confirm" {
+		if len(changeset.Artifacts) != 0 || changeset.Digest != sha256Bytes(nil) {
+			return Changeset{}, errors.New("confirmation Changeset cannot carry actual changes or a non-empty-diff digest")
+		}
+		if err := exactSubjectSet(changeset.VerifiedSubjects, changeset.VerifiedSubjects, "verified_subjects", "verified_subjects"); err != nil {
+			return Changeset{}, err
+		}
 	}
 	return changeset, nil
 }
@@ -143,4 +151,8 @@ func normalizedPaths(paths []string) ([]string, error) {
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func scopedChangesetID(sessionID, digest string) string {
+	return "repair-changeset-" + sha256Bytes([]byte(sessionID + "\x00" + digest))[:32]
 }

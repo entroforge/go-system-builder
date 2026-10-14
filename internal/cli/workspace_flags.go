@@ -1,26 +1,48 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // Parse using Go's real flag grammar before interpreting any coordinates.
 // Root routing does not change cwd, argv, environment or another invocation.
 func parseWorkspaceFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	original := fs.Output()
+	var output bytes.Buffer
+	bindUsage(fs, fs.Name())
+	fs.SetOutput(&output)
+	err := fs.Parse(args)
+	fs.SetOutput(original)
+	if output.Len() > 0 {
+		if destination, ok := original.(interface{ HelpWriter() io.Writer }); ok && err == flag.ErrHelp {
+			_, _ = destination.HelpWriter().Write(output.Bytes())
+		} else {
+			_, _ = original.Write(output.Bytes())
+		}
+	}
+	if err != nil {
 		return err
+	}
+	if root := fs.Lookup("root"); root != nil {
+		if err := projectlayout.Check(root.Value.String()); err != nil {
+			fmt.Fprintln(fs.Output(), err)
+			return err
+		}
 	}
 	if fs.Lookup("root") == nil || fs.Name() == "hook" || fs.Name() == "dry-run" {
 		return nil
 	}
-	err := routeWorkspaceFlags(fs)
+	err = routeWorkspaceFlags(fs)
 	if err != nil {
 		fmt.Fprintln(fs.Output(), err)
 	}
@@ -28,6 +50,10 @@ func parseWorkspaceFlags(fs *flag.FlagSet, args []string) error {
 }
 
 func routeWorkspaceFlags(fs *flag.FlagSet) error {
+	if fs.Name() == "s7 lint" && fs.Lookup("author-only").Value.String() == "true" {
+		// Pure artifact lint has no Runtime authority to route or grant.
+		return nil
+	}
 	requested := fs.Lookup("root").Value.String()
 	worker, marked, err := workspace.PointerRoot(requested)
 	if err != nil {

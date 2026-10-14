@@ -103,8 +103,8 @@ func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
 		req039fixtures.WriteState(t, root, state)
 
 		result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
-			Root: root, Event: "PreToolUse", ToolName: "Bash",
-			ToolInput: map[string]any{"command": "go test ./..."},
+			Root: root, Event: "PreToolUse", ToolName: "Read",
+			ToolInput: map[string]any{"file_path": "README.md"},
 		})
 		if err != nil {
 			t.Fatalf("control cycle: %v", err)

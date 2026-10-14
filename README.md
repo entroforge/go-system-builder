@@ -1,6 +1,33 @@
 # Vibe Coding Documentation System
 
-Reusable documentation scaffolding for AI/Agent-assisted software delivery.
+Loop Harness 框架源码与可复用工程模板。此仓库用于开发、构建框架；安装后的业务项目有自己的指令、配置、Runtime 和交付文档。
+
+## 从哪里开始
+
+| 任务 | 入口 |
+| --- | --- |
+| 维护框架源码 | [源码维护指引](CLAUDE.md)、[目录与发布边界](packaging/README.md) |
+| 了解设计 | [框架设计 L1–L4](blueprint/README.md) |
+| 安装到新项目 | [安装指南](docs/guides/install.md) |
+| 在已安装项目中使用 | [入门](docs/guides/getting-started.md)、[操作与恢复](docs/runtime-operations.md) |
+| 查找模板与规范 | [文档导航](docs/README.md)、[文档地图](docs/DOCUMENT-MAP.md) |
+
+## 源码目录
+
+```text
+cmd/、internal/       Go 入口、实现与包内测试
+tests/               集成测试与合成夹具
+skills/、agents/     安装到目标项目的 Skill 与子代理定义源文件
+docs/                对外说明、协议、规则、空白模板与示例
+blueprint/           框架本身的正式设计，不进入目标项目
+packaging/、tools/   发布清单、安装投影、构建与维护工具
+.local/              本机维护资料、验证记录、包与回退备份；Git 忽略
+dist/、.claude/      本机生成物与本地安装状态；Git 忽略
+```
+
+`CLAUDE.md` 是维护本源码库的简短指令；`AGENTS-template.md` 是目标项目指令的模板，两者用途不同。根 `settings.json` 和 `loop-template.md` 也是安装源文件，`loop-harness.md` 由工具生成。
+
+带日期的修复报告、原始日志和源码备份统一放在 `.local/framework-maintenance/`，从该目录的 `README.md` 查找。它们不进入发布包，也不作为常驻 Agent 指令。需要长期共享的审计材料应另存团队工件库；本地归档不是远端备份。
 
 ## Entry Points
 
@@ -27,7 +54,8 @@ Existing projects retain their matching release; this layout does not support ov
 
 ## Repository Boundary
 
-This repository stores reusable templates, rules, and reference material only.
+This repository stores the reusable framework implementation, tests, build tools,
+templates, rules and reference material.
 
 See [packaging/README.md](packaging/README.md) for source and release boundaries,
 [docs/guides/install.md](docs/guides/install.md) for installation, and

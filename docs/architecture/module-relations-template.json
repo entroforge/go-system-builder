@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "modules": [
+    {
+      "id": "customers",
+      "owned_paths": [
+        "web/src/customers/",
+        "server/customers/"
+      ],
+      "cases_path": "docs/design/prototypes/customers/cases.json",
+      "contract_refs": [
+        "docs/dev/contracts/SYNC-010.md"
+      ],
+      "browser_applicability": "required",
+      "ui_paths": [
+        "web/src/customers/"
+      ]
+    },
+    {
+      "id": "orders",
+      "owned_paths": [
+        "web/src/orders/",
+        "server/orders/"
+      ],
+      "cases_path": "docs/design/prototypes/orders/cases.json",
+      "contract_refs": [
+        "docs/dev/contracts/SYNC-011.md"
+      ],
+      "browser_applicability": "required",
+      "ui_paths": [
+        "web/src/orders/"
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "id": "customer-status-api",
+      "paths": [
+        "server/customers/status.go"
+      ],
+      "provider_module_ids": [
+        "customers"
+      ],
+      "consumer_module_ids": [
+        "orders"
+      ],
+      "source_refs": [
+        "docs/dev/contracts/SYNC-011.md#customer-status"
+      ]
+    }
+  ]
+}

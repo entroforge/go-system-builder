@@ -70,8 +70,8 @@ func TestRepairExecutingWorkerIsBoundToAssignmentScope(t *testing.T) {
 	input.ToolName = "Bash"
 	input.ToolInput = map[string]any{"command": "python3 -c 'open(\"internal/service.go\", \"w\").write(\"x\")'"}
 	decision, blocked = policy.EvaluateAgentScoped(input)
-	if blocked || decision.Decision != "" {
-		t.Fatalf("in-scope Bash repair write should pass: blocked=%v decision=%#v", blocked, decision)
+	if !blocked || decision.Decision != "deny" {
+		t.Fatalf("arbitrary Python requires enforced isolation even when one literal target is in scope: blocked=%v decision=%#v", blocked, decision)
 	}
 
 	input.ToolInput = map[string]any{"command": "python3 -c 'open(\"web/app.tsx\", \"w\").write(\"x\")'"}

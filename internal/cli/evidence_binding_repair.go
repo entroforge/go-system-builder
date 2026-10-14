@@ -96,7 +96,7 @@ func runEvidenceBindingRepair(args []string, stdout, stderr io.Writer) int {
 	root := f.String("root", ".", "project root")
 	id := f.String("id", "", "single misbound document_review ID")
 	apply := f.String("apply-plan", "", "apply exactly the read-only JSON plan")
-	if err := f.Parse(args); err != nil {
+	if err := parseWorkspaceFlags(f, args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}

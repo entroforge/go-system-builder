@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
 )
@@ -26,6 +27,13 @@ func lifecycleSnapshot(root string) (runtime.Snapshot, string) {
 	snapshot, err := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).Snapshot()
 	if err != nil {
 		return runtime.Snapshot{}, "no readable runtime — bind a REQ first (req bind --approved-by <human identity>)"
+	}
+	data, err := json.Marshal(snapshot.State)
+	if err == nil {
+		err = schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", data)
+	}
+	if err != nil {
+		return runtime.Snapshot{}, fmt.Sprintf("unsupported or invalid Runtime; preserve it and use its matching writer: %v", err)
 	}
 	return snapshot, ""
 }
@@ -109,7 +117,7 @@ func runRuntimePause(args []string, stdout, stderr io.Writer) int {
 	reason := flags.String("reason", "", "why the loop is paused (recorded in the human decision artifact)")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *approvedBy == "" {
 		if identity := detectGitIdentity(*root); identity != "" {
@@ -171,7 +179,7 @@ func runRuntimeResume(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *approvedBy == "" {
 		if identity := detectGitIdentity(*root); identity != "" {
@@ -275,7 +283,7 @@ func runREQUnbind(args []string, stdout, stderr io.Writer) int {
 	reason := flags.String("reason", "", "why the binding is revoked (recorded durably)")
 	force := flags.Bool("force", false, "unbind even with in-flight tasks/teams (visible abandonment)")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *approvedBy == "" {
 		if identity := detectGitIdentity(*root); identity != "" {
@@ -367,7 +375,7 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 	reqPath := flags.String("req", "", "amended locked REQ path (version must strictly exceed the bound one)")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	if *approvedBy == "" {
 		if identity := detectGitIdentity(*root); identity != "" {

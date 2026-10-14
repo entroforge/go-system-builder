@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/verification"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -17,6 +18,9 @@ func TestBUG104S11ExplicitApproveE2E(t *testing.T) {
 	req039fixtures.SeedReleaseAuditReady(t, root, state)
 	req039fixtures.EnsureStateRoot(state, root)
 	writeSystemState(t, root, state)
+	if result := verification.EvaluateCleanRoundForRoot(root, req039fixtures.ReadState(t, root)); !result.Passed {
+		t.Fatalf("clean-round fixture invalid: %v", result.Reasons)
+	}
 
 	code, _, stderr := runHook(t, root, "PreToolUse", req039fixtures.PreToolUseBody(
 		"bug-104-red", "Bash", map[string]any{"command": "go test ./..."},

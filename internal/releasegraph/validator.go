@@ -277,6 +277,11 @@ func shouldSkipPathReference(raw string) bool {
 	if raw == "docs/project-map.md" {
 		return true
 	}
+	// S2 creates the real project relation graph. The release must ship its
+	// template and guide (required below), never a fake empty declaration.
+	if raw == "docs/architecture/module-relations.json" {
+		return true
+	}
 	// Live Design Foundation files are copied from *-template.md in the
 	// target project (DESIGN.md, Grammar, Evidence Field, portable snapshot).
 	// The factory ships the templates only; Skills must still name the live
@@ -347,5 +352,7 @@ var RequiredDocumentAssets = []string{
 	"docs/dev/tasks/index-template.md",
 	"docs/dev/tasks/TASK-template.md",
 	"docs/architecture/ARCHITECTURE-template.md",
+	"docs/architecture/module-relations-template.json",
+	"docs/related-module-verification.md",
 	"docs/reports/release-audits/TEMPLATE.md",
 }

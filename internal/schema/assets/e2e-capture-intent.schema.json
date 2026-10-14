@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/e2e-capture-intent.schema.json",
+  "title": "E2E invocation intent (requires Runtime registration, not execution evidence)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "mode",
+    "binding",
+    "profile_ref",
+    "prepared_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^e2e-run-[a-f0-9]{32}$"
+    },
+    "mode": {
+      "enum": [
+        "collection",
+        "execution"
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "baseline_generation",
+        "review_round",
+        "source_commit",
+        "subject_digest"
+      ],
+      "properties": {
+        "runtime_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseline_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_commit": {
+          "type": "string",
+          "pattern": "^([a-f0-9]{40}|[a-f0-9]{64})$"
+        },
+        "assignment_id": {
+          "type": "string"
+        },
+        "subject_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "profile_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "const": "docs/control/e2e-runner.json"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "collection_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "selected_test_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "prepared_at": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "execution"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "collection_sha256",
+          "selected_test_ids"
+        ]
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "collection_sha256"
+              ]
+            },
+            {
+              "required": [
+                "selected_test_ids"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

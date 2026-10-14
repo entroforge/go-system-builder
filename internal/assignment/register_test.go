@@ -11,13 +11,18 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignment"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 func TestRegisterWorkgroupAddsTaskTeamAndReadingAgents(t *testing.T) {
 	root := assignmentTestRoot(t)
-	dir := t.TempDir()
+	dir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	state := activeState(t, root, "verification", "running", 6)
@@ -66,7 +71,10 @@ func TestRegisterWorkgroupAddsTaskTeamAndReadingAgents(t *testing.T) {
 
 func TestRegisterWorkgroupRejectsAuthoringPlaceholderAgentID(t *testing.T) {
 	root := assignmentTestRoot(t)
-	dir := t.TempDir()
+	dir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	state := activeState(t, root, "verification", "running", 6)
@@ -160,6 +168,7 @@ func seedReviewPlan(t *testing.T, repoRoot string, dir string, state map[string]
 		"created_by":                      "orchestrator",
 		"created_at":                      "2026-01-01T00:00:00Z",
 	}
+	testfixture.ReviewPlan(t, repoRoot, state, plan, review.ResolveModuleScopeForRoot)
 	planData, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -193,12 +202,12 @@ func seedReviewPlan(t *testing.T, repoRoot string, dir string, state map[string]
 	for _, raw := range plan["assignments"].([]any) {
 		a := raw.(map[string]any)
 		assignmentsProjection[a["assignment_id"].(string)] = map[string]any{
-			"lens": "delivery", "claim_ids": a["claim_ids"], "status": "planned",
+			"lens": a["lens"], "claim_ids": a["claim_ids"], "status": "planned",
 			"agent_id": nil, "result_ref": nil,
 		}
 		for _, c := range a["claim_ids"].([]string) {
 			claimsProjection[c] = map[string]any{
-				"lens": "delivery", "applicability": "required", "disposition": "planned",
+				"lens": a["lens"], "applicability": "required", "disposition": "planned",
 				"assignment_id": a["assignment_id"], "result_id": nil, "finding_ids": []any{},
 			}
 		}
@@ -207,12 +216,21 @@ func seedReviewPlan(t *testing.T, repoRoot string, dir string, state map[string]
 		"lens": "qa", "applicability": "not_applicable", "disposition": "not_applicable",
 		"assignment_id": "", "result_id": nil, "finding_ids": []any{},
 	}
+	// Dispatch-only fixture: the independent scope assessment is already settled.
+	for id, raw := range claimsProjection {
+		if strings.HasPrefix(id, "claim-fixture-scope-") {
+			raw.(map[string]any)["disposition"] = "pass"
+		}
+	}
 	state["review"] = reviewMap
 }
 
 func TestRegisterRepairBindingRejectsManifestOwnerDrift(t *testing.T) {
 	root := assignmentTestRoot(t)
-	dir := t.TempDir()
+	dir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	state := activeState(t, root, "bug_resolution", "planning", 6)
@@ -282,14 +300,21 @@ func TestRegisterRepairBindingRejectsManifestOwnerDrift(t *testing.T) {
 	}
 }
 
-func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) {
+func TestRegisterWorkgroupRetainsLegacyDraftsWhenApplyFails(t *testing.T) {
 	root := assignmentTestRoot(t)
-	dir := t.TempDir()
+	dir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewPlan(t, root, dir, state)
 	writeJSON(t, statePath, state)
+	beforeState, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	manifestPath := filepath.Join(dir, "manifest.json")
 	copyManifest(t, root, manifestPath)
@@ -332,22 +357,25 @@ func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) 
 
 	for _, agentID := range []string{"agent-ver-req-gap", "agent-ver-module-complete"} {
 		activationPath := filepath.Join(root, ".claude", "evidence", "workgroup-delivery-round-1", "TASK-013-CLEANUP", "activation-"+agentID+".json")
-		if _, statErr := os.Stat(activationPath); !os.IsNotExist(statErr) {
-			t.Fatalf("failed registration left activation envelope %s (stat err=%v)", activationPath, statErr)
+		if _, statErr := os.Stat(activationPath); statErr != nil {
+			t.Fatalf("generic failure cleanup removed a published legacy draft %s: %v", activationPath, statErr)
 		}
 	}
 	finalState, readErr := os.ReadFile(statePath)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if string(finalState) == "" {
-		t.Fatal("runtime state unexpectedly empty after rejected registration")
+	if string(finalState) != string(beforeState) {
+		t.Fatal("failed registration authorized a retained legacy draft")
 	}
 }
 
 func TestRegisterWorkgroupRejectsWrongLoopStateWithoutMutation(t *testing.T) {
 	root := assignmentTestRoot(t)
-	dir := t.TempDir()
+	dir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
 	state := activeState(t, root, "planning", "design", 2)

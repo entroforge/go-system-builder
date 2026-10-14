@@ -27,8 +27,24 @@ type e2eScenario struct {
 	BrowserRequired bool
 }
 
+// A text scan is only a navigation hint. It cannot declare a selector,
+// environment, collection membership, or a reusable regression asset.
+type e2eCandidateCase struct {
+	ModuleRef string
+	CaseID    string
+}
+
+type e2eSourceCandidate struct {
+	Path          string
+	SHA256        string
+	PossibleCases []e2eCandidateCase
+}
+
 type e2eInventory struct {
-	Cases  []e2eScenario
+	Cases      []e2eScenario
+	Candidates []e2eSourceCandidate
+	// Assets is reserved for admitted runner collection records. A source
+	// mention never populates it.
 	Assets []E2EAsset
 }
 
@@ -49,14 +65,12 @@ type e2eScenarioJSON struct {
 
 var e2eSpecSuffixes = []string{".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx"}
 
-// discoverE2EInventory reads the existing S2 module package and maps each
-// required browser CASE to a repository Playwright spec that mentions its
-// CASE id. It intentionally does not infer selectors or environments from
-// prose: those remain optional author-owned asset metadata. A CASE without a
-// matching spec is still returned, which makes DraftPlan choose cold_start
-// and split the work instead of silently dropping coverage.
+// discoverE2EInventory reads the existing S2 CASE denominator and returns
+// possible source locations separately from admitted reusable assets. The
+// cases.json module plus CASE id is the identity; a bare CASE id is ambiguous
+// across modules. Source scanning cannot establish runner collection or PASS.
 func discoverE2EInventory(root string, state map[string]any) (e2eInventory, []string) {
-	var inventory e2eInventory
+	inventory := e2eInventory{Assets: []E2EAsset{}}
 	var diagnostics []string
 	moduleFilter := boundE2EModules(root, state)
 	prototypes := filepath.Join(root, "docs", "design", "prototypes")
@@ -85,6 +99,10 @@ func discoverE2EInventory(root string, state map[string]any) (e2eInventory, []st
 			diagnostics = append(diagnostics, fmt.Sprintf("decode %s: %v", filepath.ToSlash(filepath.Join("docs", "design", "prototypes", entry.Name(), "cases.json")), err))
 			continue
 		}
+		if document.Module != entry.Name() {
+			diagnostics = append(diagnostics, fmt.Sprintf("CASE module binding mismatch: %s declares %q", path, document.Module))
+			continue
+		}
 		for _, item := range document.Cases {
 			if !item.Required || !item.BrowserRequired || strings.TrimSpace(item.ID) == "" {
 				continue
@@ -100,9 +118,9 @@ func discoverE2EInventory(root string, state map[string]any) (e2eInventory, []st
 		return inventory, diagnostics
 	}
 
-	caseIDs := make(map[string]e2eScenario, len(inventory.Cases))
+	caseIDs := make(map[string][]e2eCandidateCase, len(inventory.Cases))
 	for _, item := range inventory.Cases {
-		caseIDs[item.ID] = item
+		caseIDs[item.ID] = append(caseIDs[item.ID], e2eCandidateCase{ModuleRef: "docs/design/prototypes/" + item.Module + "/cases.json", CaseID: item.ID})
 	}
 	scope := pathscope.New(root)
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -123,7 +141,7 @@ func discoverE2EInventory(root string, state map[string]any) (e2eInventory, []st
 			}
 			return nil
 		}
-		if !hasSuffix(path, e2eSpecSuffixes) {
+		if !entry.Type().IsRegular() || !hasSuffix(path, e2eSpecSuffixes) {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
@@ -138,30 +156,32 @@ func discoverE2EInventory(root string, state map[string]any) (e2eInventory, []st
 		rel = filepath.ToSlash(rel)
 		digest := sha256.Sum256(data)
 		sha := hex.EncodeToString(digest[:])
-		for caseID := range caseIDs {
-			if !strings.Contains(string(data), caseID) {
-				continue
+		candidate := e2eSourceCandidate{Path: rel, SHA256: sha}
+		for caseID, refs := range caseIDs {
+			if strings.Contains(string(data), caseID) {
+				candidate.PossibleCases = append(candidate.PossibleCases, refs...)
 			}
-			scenario := caseIDs[caseID]
-			inventory.Assets = append(inventory.Assets, E2EAsset{
-				AssetID: "e2e-asset:" + caseID + ":" + rel,
-				CaseRef: caseID, Path: rel, SHA256: sha,
-				// S7-7 (RC-07): a spec that merely mentions the CASE id — even
-				// in a comment — is not a regression asset by itself. Record
-				// the executability fingerprint the asset gate requires: the
-				// test-id selector surface, the module route/flow refs the
-				// CASE declares, and the module environment tag. The
-				// declaration is validated, not inferred from prose, so
-				// substring matching can never silently become
-				// "regression available".
-				SelectorRef: "testid:" + caseID,
-				RouteRef:    strings.Join(append([]string{scenario.Module}, scenario.FlowRefs...), ","),
-				Environment: "module=" + scenario.Module,
+		}
+		if len(candidate.PossibleCases) > 0 {
+			sort.Slice(candidate.PossibleCases, func(i, j int) bool {
+				a, b := candidate.PossibleCases[i], candidate.PossibleCases[j]
+				if a.ModuleRef != b.ModuleRef {
+					return a.ModuleRef < b.ModuleRef
+				}
+				return a.CaseID < b.CaseID
 			})
+			inventory.Candidates = append(inventory.Candidates, candidate)
 		}
 		return nil
 	})
-	sort.Slice(inventory.Cases, func(i, j int) bool { return inventory.Cases[i].ID < inventory.Cases[j].ID })
+	sort.Slice(inventory.Cases, func(i, j int) bool {
+		a, b := inventory.Cases[i], inventory.Cases[j]
+		if a.Module != b.Module {
+			return a.Module < b.Module
+		}
+		return a.ID < b.ID
+	})
+	sort.Slice(inventory.Candidates, func(i, j int) bool { return inventory.Candidates[i].Path < inventory.Candidates[j].Path })
 	sort.Slice(inventory.Assets, func(i, j int) bool { return inventory.Assets[i].AssetID < inventory.Assets[j].AssetID })
 	return inventory, diagnostics
 }

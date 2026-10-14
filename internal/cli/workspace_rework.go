@@ -36,7 +36,7 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 	owner := fs.String("agent", "", "registered owner")
 	reason := fs.String("reason", "", "required code correction")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	if *reason == "" {

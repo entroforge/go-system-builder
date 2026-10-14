@@ -29,38 +29,44 @@ type RepairUnit struct {
 }
 
 type ApprovedContract struct {
-	ContractID             string
-	CaseID                 string
-	Revision               int
-	Status                 string
-	SourceFindingIDs       []string
-	Units                  []RepairUnit
-	ProspectiveScope       []string
-	ForbiddenScope         []string
-	CompatibilityMigration string
-	Ref                    ContractRef
+	ContractID               string
+	CaseID                   string
+	Revision                 int
+	Status                   string
+	SourceFindingIDs         []string
+	Units                    []RepairUnit
+	ProspectiveScope         []string
+	ForbiddenScope           []string
+	CompatibilityMigration   string
+	StopEscalationConditions []string
+	Ref                      ContractRef
 }
 
 type SessionRequest struct {
-	Contract           ContractRef
-	SessionID          string
-	RuntimeID          string
-	ReqID              string
-	BaselineGeneration int
-	CreatedBy          string
-	OccurredAt         time.Time
+	Intent              string
+	ConfirmationSources []ArtifactRef
+	Contract            ContractRef
+	SessionID           string
+	RuntimeID           string
+	ReqID               string
+	BaselineGeneration  int
+	CreatedBy           string
+	OccurredAt          time.Time
 }
 
 type RepairSession struct {
-	SchemaVersion      string        `json:"schema_version"`
-	RecordType         string        `json:"record_type"`
-	SessionID          string        `json:"session_id"`
-	ContractRef        string        `json:"contract_ref"`
-	ContractSHA256     string        `json:"contract_sha256"`
-	RuntimeID          string        `json:"runtime_id"`
-	ReqID              string        `json:"req_id"`
-	BaselineGeneration int           `json:"baseline_generation"`
-	BaselineArtifacts  []ArtifactRef `json:"baseline_artifacts"`
+	Intent              string        `json:"intent,omitempty"`
+	ConfirmationSources []ArtifactRef `json:"confirmation_sources,omitempty"`
+	VerifiedSubjects    []ArtifactRef `json:"verified_subjects,omitempty"`
+	SchemaVersion       string        `json:"schema_version"`
+	RecordType          string        `json:"record_type"`
+	SessionID           string        `json:"session_id"`
+	ContractRef         string        `json:"contract_ref"`
+	ContractSHA256      string        `json:"contract_sha256"`
+	RuntimeID           string        `json:"runtime_id"`
+	ReqID               string        `json:"req_id"`
+	BaselineGeneration  int           `json:"baseline_generation"`
+	BaselineArtifacts   []ArtifactRef `json:"baseline_artifacts"`
 	// RC-15 (S9-H7/T2 shadow-field convergence): BaselineDigest and Status are
 	// shadow projections. The Runtime pointer under state.review.repair is the
 	// authority for the session's live status and the implementation baseline
@@ -152,6 +158,7 @@ type RepairUnitResult struct {
 }
 
 type RepairResultRequest struct {
+	VerifiedSubjects []ArtifactRef      `json:"verified_subjects,omitempty"`
 	Contract         ContractRef        `json:"contract"`
 	Session          ArtifactRef        `json:"session"`
 	Plan             ArtifactRef        `json:"plan"`
@@ -172,6 +179,8 @@ type RepairResultRequest struct {
 }
 
 type RepairResult struct {
+	Intent             string             `json:"intent,omitempty"`
+	VerifiedSubjects   []ArtifactRef      `json:"verified_subjects,omitempty"`
 	SchemaVersion      string             `json:"schema_version"`
 	RecordType         string             `json:"record_type"`
 	ResultID           string             `json:"result_id"`
@@ -203,16 +212,18 @@ type ChangesetRequest struct {
 }
 
 type Changeset struct {
-	SchemaVersion string        `json:"schema_version"`
-	RecordType    string        `json:"record_type"`
-	ChangesetID   string        `json:"changeset_id"`
-	SessionID     string        `json:"session_id"`
-	Source        string        `json:"source"`
-	BaseRef       string        `json:"base_ref,omitempty"`
-	HeadRef       string        `json:"head_ref,omitempty"`
-	Artifacts     []ArtifactRef `json:"artifacts"`
-	Digest        string        `json:"digest"`
-	ComputedAt    string        `json:"computed_at"`
+	Intent           string        `json:"intent,omitempty"`
+	VerifiedSubjects []ArtifactRef `json:"verified_subjects,omitempty"`
+	SchemaVersion    string        `json:"schema_version"`
+	RecordType       string        `json:"record_type"`
+	ChangesetID      string        `json:"changeset_id"`
+	SessionID        string        `json:"session_id"`
+	Source           string        `json:"source"`
+	BaseRef          string        `json:"base_ref,omitempty"`
+	HeadRef          string        `json:"head_ref,omitempty"`
+	Artifacts        []ArtifactRef `json:"artifacts"`
+	Digest           string        `json:"digest"`
+	ComputedAt       string        `json:"computed_at"`
 }
 
 type ImpactDecision struct {
@@ -231,6 +242,8 @@ type ImpactDecision struct {
 }
 
 type ChangeImpactRequest struct {
+	Session                   *ArtifactRef     `json:"session_ref,omitempty"`
+	VerifiedSubjects          []ArtifactRef    `json:"verified_subjects,omitempty"`
 	ImpactID                  string           `json:"impact_id"`
 	RuntimeID                 string           `json:"runtime_id"`
 	ReqID                     string           `json:"req_id"`
@@ -251,6 +264,8 @@ type ChangeImpactRequest struct {
 }
 
 type ChangeImpact struct {
+	Session                *ArtifactRef     `json:"session_ref,omitempty"`
+	VerifiedSubjects       []ArtifactRef    `json:"verified_subjects,omitempty"`
 	SchemaVersion          string           `json:"schema_version"`
 	RecordType             string           `json:"record_type"`
 	ImpactID               string           `json:"impact_id"`
@@ -283,40 +298,52 @@ type AssertionResult struct {
 	EvidenceRefs []string `json:"evidence_refs"`
 }
 
+// Legacy contracts identify a condition by its exact immutable contract SHA
+// and zero-based array index. No historical contract bytes are rewritten.
+type StopConditionAssessment struct {
+	ContractSHA256 string   `json:"contract_sha256"`
+	ConditionIndex int      `json:"condition_index"`
+	Outcome        string   `json:"outcome"`
+	Rationale      string   `json:"rationale"`
+	EvidenceRefs   []string `json:"evidence_refs"`
+}
+
 type TargetedReverificationRequest struct {
-	ReverificationID       string            `json:"reverification_id"`
-	RuntimeID              string            `json:"runtime_id"`
-	BugID                  string            `json:"bug_id,omitempty"`
-	CaseID                 string            `json:"case_id,omitempty"`
-	BaselineGeneration     int               `json:"baseline_generation"`
-	OriginalAssignmentID   string            `json:"original_assignment_id"`
-	PerformingAssignmentID string            `json:"performing_assignment_id"`
-	ContinuityReason       string            `json:"continuity_reason"`
-	ImpactID               string            `json:"impact_id"`
-	AssertionResults       []AssertionResult `json:"assertion_results"`
-	ScopeCompliance        string            `json:"scope_compliance"`
-	Result                 string            `json:"result"`
-	FailureClass           string            `json:"failure_class"`
-	PerformedAt            time.Time         `json:"performed_at"`
+	StopConditionAssessments []StopConditionAssessment `json:"stop_condition_assessments,omitempty"`
+	ReverificationID         string                    `json:"reverification_id"`
+	RuntimeID                string                    `json:"runtime_id"`
+	BugID                    string                    `json:"bug_id,omitempty"`
+	CaseID                   string                    `json:"case_id,omitempty"`
+	BaselineGeneration       int                       `json:"baseline_generation"`
+	OriginalAssignmentID     string                    `json:"original_assignment_id"`
+	PerformingAssignmentID   string                    `json:"performing_assignment_id"`
+	ContinuityReason         string                    `json:"continuity_reason"`
+	ImpactID                 string                    `json:"impact_id"`
+	AssertionResults         []AssertionResult         `json:"assertion_results"`
+	ScopeCompliance          string                    `json:"scope_compliance"`
+	Result                   string                    `json:"result"`
+	FailureClass             string                    `json:"failure_class"`
+	PerformedAt              time.Time                 `json:"performed_at"`
 }
 
 type TargetedReverification struct {
-	SchemaVersion          string            `json:"schema_version"`
-	RecordType             string            `json:"record_type"`
-	ReverificationID       string            `json:"reverification_id"`
-	RuntimeID              string            `json:"runtime_id"`
-	BugID                  string            `json:"bug_id,omitempty"`
-	CaseID                 string            `json:"case_id,omitempty"`
-	BaselineGeneration     int               `json:"baseline_generation"`
-	OriginalAssignmentID   string            `json:"original_assignment_id"`
-	PerformingAssignmentID string            `json:"performing_assignment_id"`
-	ContinuityReason       string            `json:"continuity_reason"`
-	ImpactID               string            `json:"impact_id"`
-	AssertionResults       []AssertionResult `json:"assertion_results"`
-	ScopeCompliance        string            `json:"scope_compliance"`
-	Result                 string            `json:"result"`
-	FailureClass           string            `json:"failure_class,omitempty"`
-	PerformedAt            string            `json:"performed_at"`
+	StopConditionAssessments []StopConditionAssessment `json:"stop_condition_assessments,omitempty"`
+	SchemaVersion            string                    `json:"schema_version"`
+	RecordType               string                    `json:"record_type"`
+	ReverificationID         string                    `json:"reverification_id"`
+	RuntimeID                string                    `json:"runtime_id"`
+	BugID                    string                    `json:"bug_id,omitempty"`
+	CaseID                   string                    `json:"case_id,omitempty"`
+	BaselineGeneration       int                       `json:"baseline_generation"`
+	OriginalAssignmentID     string                    `json:"original_assignment_id"`
+	PerformingAssignmentID   string                    `json:"performing_assignment_id"`
+	ContinuityReason         string                    `json:"continuity_reason"`
+	ImpactID                 string                    `json:"impact_id"`
+	AssertionResults         []AssertionResult         `json:"assertion_results"`
+	ScopeCompliance          string                    `json:"scope_compliance"`
+	Result                   string                    `json:"result"`
+	FailureClass             string                    `json:"failure_class,omitempty"`
+	PerformedAt              string                    `json:"performed_at"`
 }
 
 type HandoffRequest struct {

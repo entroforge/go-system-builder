@@ -1,6 +1,7 @@
 package investigation
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +21,8 @@ const contractNextCommand = "runtime investigation contract approve --root . --c
 
 // ContractRequest carries the caller's Runtime CAS revision and the human or
 // orchestrator identity that approves a draft RepairContract. Approval is a
-// single transaction: the immutable approved Contract and the next immutable
-// Case revision are written before the Runtime pointer is advanced.
+// single recoverable transaction: the immutable approved Contract, next immutable
+// Case revision, approval consumption and Runtime pointer share one bundle.
 //
 // RC-15 (S9-H5/H6) approval authority: ApprovalHash pins the exact draft
 // bytes the approver reviewed (sha256 of the on-disk draft; the server
@@ -33,6 +34,7 @@ const contractNextCommand = "runtime investigation contract approve --root . --c
 // DelegationEvidenceID, ApprovalEvidenceID instead names a technical review;
 // delegation.go enforces the human grant, scope, expiry and atomic use budget.
 type ContractRequest struct {
+	OperationID          string
 	ExpectedRevision     int
 	CaseID               string
 	ContractPath         string
@@ -52,6 +54,32 @@ type ContractRequest struct {
 // compatibility) remains only for legacy BUG projections and is not used by
 // the Case/Contract authority path.
 func ApproveContract(root, statePath, journalPath string, request ContractRequest) (runtime.Snapshot, error) {
+	return ApproveContractContext(context.Background(), root, statePath, journalPath, request)
+}
+
+func ApproveContractContext(ctx context.Context, root, statePath, journalPath string, request ContractRequest) (runtime.Snapshot, error) {
+	snapshot, err := approveContractContext(ctx, root, statePath, journalPath, request, nil)
+	// A concurrent identical caller may commit after our initial lookup but
+	// before preflight sees a consumed approval or advanced Case. Resolve that
+	// response from the journal; never create a second approval effect.
+	if err != nil && request.OperationID != "" && ctx.Err() == nil && strings.TrimSpace(root) != "" {
+		if absolute, rootErr := filepath.Abs(root); rootErr == nil {
+			_, prior, replayed, lookupErr := prepareContractOperation(ctx, absolute, statePath, journalPath, request)
+			if lookupErr != nil {
+				return snapshot, errors.Join(err, lookupErr)
+			}
+			if replayed {
+				return prior, nil
+			}
+		}
+	}
+	return snapshot, err
+}
+
+func approveContractContext(ctx context.Context, root, statePath, journalPath string, request ContractRequest, configureWriter func(*runtime.Store) *runtime.Store) (runtime.Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return runtime.Snapshot{}, err
+	}
 	if strings.TrimSpace(root) == "" {
 		return runtime.Snapshot{}, actionableContractError("repository root is required")
 	}
@@ -72,7 +100,11 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	approvalHash := strings.TrimSpace(request.ApprovalHash)
 	approvalEvidenceID := strings.TrimSpace(request.ApprovalEvidenceID)
 
-	store := runtime.NewStore(statePath, journalPath)
+	op, prior, replayed, err := prepareContractOperation(ctx, root, statePath, journalPath, request)
+	if err != nil || replayed {
+		return prior, err
+	}
+	store := runtime.NewStore(statePath, journalPath).WithContext(ctx)
 	current, err := store.Snapshot()
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before RepairContract approval: %w", err)
@@ -86,6 +118,9 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 		return runtime.Snapshot{}, err
 	}
 	if stringField(pointer["status"]) == "contract_approved" {
+		if op != nil {
+			return runtime.Snapshot{}, actionableContractError("Case is already approved; inspect or retry the original operation_id")
+		}
 		return resumeApprovedContract(root, current, pointer, request)
 	}
 	caseRel := stringField(pointer["path"])
@@ -222,12 +257,8 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	}
 	contractID := stringField(approved["repair_contract_id"])
 	approvedRel := filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "contracts", contractID+fmt.Sprintf("-r%d.json", caseRevision+1)))
-	approvedPath, err := repositoryPath(root, approvedRel)
-	if err != nil {
-		return runtime.Snapshot{}, actionableContractError("approved RepairContract path is invalid: %v", err)
-	}
-	if err := writeExclusive(approvedPath, approvedBytes); err != nil {
-		return runtime.Snapshot{}, fmt.Errorf("write approved RepairContract %s: %w", approvedRel, err)
+	if _, err := repositoryPath(root, approvedRel); err != nil {
+		return runtime.Snapshot{}, err
 	}
 	contractSHA := sha256Hex(approvedBytes)
 
@@ -240,31 +271,17 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	approvedCase["repair_contract_sha256"] = contractSHA
 	approvedCaseBytes, err := json.MarshalIndent(approvedCase, "", "  ")
 	if err != nil {
-		_ = os.Remove(approvedPath)
 		return runtime.Snapshot{}, fmt.Errorf("encode approved InvestigationCase: %w", err)
 	}
 	approvedCaseBytes = append(approvedCaseBytes, '\n')
 	if err := schema.NewEmbeddedValidator().ValidateBytes("review-investigation-case.schema.json", approvedCaseBytes); err != nil {
-		_ = os.Remove(approvedPath)
 		return runtime.Snapshot{}, actionableContractError("approved InvestigationCase schema is invalid before write: %v", err)
 	}
 	approvedCaseRel := filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "cases", request.CaseID+fmt.Sprintf("-r%d.json", caseRevision+1)))
-	approvedCasePath, err := repositoryPath(root, approvedCaseRel)
-	if err != nil {
-		_ = os.Remove(approvedPath)
-		return runtime.Snapshot{}, actionableContractError("approved InvestigationCase path is invalid: %v", err)
-	}
-	if err := writeExclusive(approvedCasePath, approvedCaseBytes); err != nil {
-		_ = os.Remove(approvedPath)
-		return runtime.Snapshot{}, fmt.Errorf("write approved InvestigationCase %s: %w", approvedCaseRel, err)
+	if _, err := repositoryPath(root, approvedCaseRel); err != nil {
+		return runtime.Snapshot{}, err
 	}
 	approvedCaseSHA := sha256Hex(approvedCaseBytes)
-	cleanup := func() {
-		if !runtimeReferencesApproval(statePath, approvedCaseRel, approvedCaseSHA, approvedRel, contractSHA) {
-			_ = os.Remove(approvedCasePath)
-			_ = os.Remove(approvedPath)
-		}
-	}
 
 	lifecycle, _ := current.State["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": stringField(lifecycle["state"]), "phase": lifecycle["phase"]}
@@ -272,12 +289,17 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	runtimeID := stringField(current.State["runtime_id"])
 	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	baseline, _ := baselineGeneration(current.State)
-	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(ctx)
+	if configureWriter != nil {
+		writer = configureWriter(writer)
+	}
 	evidenceIDs := []string{request.CaseID, contractID, approvalEvidenceID}
 	if delegation != nil {
 		evidenceIDs = append(evidenceIDs, request.DelegationEvidenceID)
 	}
-	snapshot, err := updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
+	snapshot, err := updateRuntime(writer, commitRevision, runtime.Mutation{
+		Operation:              op,
+		Artifacts:              []runtime.ImmutableArtifact{{Path: approvedRel, Data: approvedBytes}, {Path: approvedCaseRel, Data: approvedCaseBytes}},
 		EventID:                fmt.Sprintf("evt-repair-contract-approved-%s-r%d", contractID, commitRevision+1),
 		TransitionID:           "S8-REPAIR-CONTRACT-APPROVAL",
 		Event:                  "repair_contract_approved",
@@ -295,7 +317,25 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 		Message:                fmt.Sprintf("repair_contract_approved: %s for %s; next: S9 consume the approved Contract", contractID, request.CaseID),
 		OccurredAt:             approvedAt,
 		Apply: func(state map[string]any) error {
-			// Revalidate reusable authority and budget inside the Writer CAS.
+			// Re-read all mutable approval inputs inside CAS. Actor names and
+			// preflight hashes cannot stand in for current approval authority.
+			if data, err := os.ReadFile(draftPath); err != nil || sha256Hex(data) != approvalHash {
+				return errors.New("RepairContract draft changed before approval commit")
+			}
+			if data, err := os.ReadFile(casePath); err != nil || sha256Hex(data) != caseSHA {
+				return errors.New("InvestigationCase bytes changed before approval commit")
+			}
+			if err := validateContractBaseline(root, state, caseDocument); err != nil {
+				return err
+			}
+			if err := validateCausalClosureEvidence(root, state, caseDocument); err != nil {
+				return err
+			}
+			if delegation == nil {
+				if err := validateContractApprovalEvidence(root, state, strings.TrimSpace(request.ApprovedBy), approvalEvidenceID, commitRevision, request.CaseID, contractID, approvalHash); err != nil {
+					return err
+				}
+			}
 			if delegation != nil {
 				if _, err := validateDelegatedApproval(root, state, draft, request); err != nil {
 					return err
@@ -350,11 +390,9 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 			return nil
 		},
 	})
-	if err != nil {
-		cleanup()
-		return runtime.Snapshot{}, err
-	}
-	return snapshot, nil
+	// Unknown/pending outcomes retain their staged and published artifacts.
+	// The existing Runtime journal and pending marker own recovery.
+	return snapshot, err
 }
 
 // validateContractBaseline rechecks the S7 subject digest at the S8 authority
@@ -642,20 +680,6 @@ func integerValue(value any) (int, error) {
 func integerValueOrZero(value any) int {
 	result, _ := integerValue(value)
 	return result
-}
-
-func runtimeReferencesApproval(statePath, caseRel, caseSHA, contractRel, contractSHA string) bool {
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		return false
-	}
-	var state map[string]any
-	if json.Unmarshal(data, &state) != nil {
-		return false
-	}
-	review, _ := state["review"].(map[string]any)
-	pointer, _ := review["investigation"].(map[string]any)
-	return pointer != nil && stringField(pointer["path"]) == caseRel && stringField(pointer["sha256"]) == caseSHA && stringField(pointer["repair_contract_ref"]) == contractRel && stringField(pointer["repair_contract_sha256"]) == contractSHA
 }
 
 func actionableContractError(format string, args ...any) error {

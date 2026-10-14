@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/runtime-commit-pending-v2.1.schema.json",
+  "title": "Runtime pending commit with immutable S7 and Repair artifact publication",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifacts",
+    "previous_state_sha256",
+    "previous_revision",
+    "state_sha256",
+    "journal_event_sha256",
+    "request_id",
+    "idempotency_key",
+    "retain_last_transition",
+    "state",
+    "journal_event"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.1.0"
+    },
+    "previous_state_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "state_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "journal_event_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "previous_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "retain_last_transition": {
+      "type": "boolean"
+    },
+    "state": {
+      "type": "object",
+      "description": "Independently validated by the Runtime schema and semantic candidate validator."
+    },
+    "journal_event": {
+      "type": "object",
+      "description": "Independently validated by the Loop event schema, journal continuity and manifest anchor."
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "staging_path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^\\.claude/(evidence|review/plans|review/repair)/.+$"
+          },
+          "staging_path": {
+            "type": "string",
+            "pattern": "^\\.claude/operations/staging/[a-f0-9]{32}/[0-9]+\\.data$"
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

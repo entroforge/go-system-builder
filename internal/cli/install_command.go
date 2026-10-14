@@ -21,8 +21,8 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	sourceArg := flags.String("source", "", "extracted release root")
 	rootArg := flags.String("root", "", "new or empty target directory")
-	if err := flags.Parse(args); err != nil {
-		return 2
+	if err := parseWorkspaceFlags(flags, args); err != nil {
+		return flagParseExitCode(err)
 	}
 	if *sourceArg == "" || *rootArg == "" || flags.NArg() != 0 {
 		fmt.Fprintln(stderr, "usage: loop-harness install --source <extracted-release> --root <empty-target>")

@@ -129,6 +129,10 @@ var s10RequirementToken = regexp.MustCompile(`\b(?:FR|NFR)-[A-Z0-9]+(?:-[A-Z0-9]
 // decoded is an authority failure. Returning an empty baseline in that case
 // would silently hand the denominator back to the manifest author.
 func BuildS10ExternalBaseline(root string, state map[string]any, affectedPaths []string) (Baseline, error) {
+	return BuildS10ExternalBaselineWithFiles(diskS10Files{root: root}, state, affectedPaths)
+}
+
+func BuildS10ExternalBaselineWithFiles(files FileReader, state map[string]any, affectedPaths []string) (Baseline, error) {
 	baseline := Baseline{}
 	for _, path := range affectedPaths {
 		if strings.EqualFold(strings.TrimSpace(path), "all") {
@@ -158,7 +162,7 @@ func BuildS10ExternalBaseline(root string, state map[string]any, affectedPaths [
 			continue
 		}
 		id := stringValue(entry["id"])
-		data, err := readAuthoritativeS10File(root, stringValue(entry["path"]), stringValue(entry["sha256"]), "evidence "+id)
+		data, err := readAuthoritativeS10File(files, stringValue(entry["path"]), stringValue(entry["sha256"]), "evidence "+id)
 		if err != nil {
 			return Baseline{}, err
 		}
@@ -352,8 +356,12 @@ func S10AuthorityAvailable(state map[string]any) bool {
 // plan is hash-verified before its ids are admitted. A missing or drifted
 // source is an authority-construction error, not an empty denominator.
 func BuildS10InventoryAuthority(root string, state map[string]any, baseline Baseline) (InventoryAuthority, error) {
-	if strings.TrimSpace(root) == "" {
-		return InventoryAuthority{}, fmt.Errorf("S10 inventory authority requires a repository root")
+	return BuildS10InventoryAuthorityWithFiles(diskS10Files{root: root}, state, baseline)
+}
+
+func BuildS10InventoryAuthorityWithFiles(files FileReader, state map[string]any, baseline Baseline) (InventoryAuthority, error) {
+	if files == nil {
+		return InventoryAuthority{}, fmt.Errorf("S10 inventory authority requires a file view")
 	}
 	if !S10AuthorityAvailable(state) {
 		return InventoryAuthority{}, fmt.Errorf("S10 inventory authority is unavailable: current Runtime must contain a bound REQ and a pinned current-round ReviewPlan")
@@ -364,7 +372,7 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 	reqID := strings.TrimSpace(stringValue(bound["id"]))
 	reqPath := strings.TrimSpace(stringValue(bound["path"]))
 	reqSHA := strings.TrimSpace(stringValue(bound["sha256"]))
-	reqData, err := readAuthoritativeS10File(root, reqPath, reqSHA, "bound REQ")
+	reqData, err := readAuthoritativeS10File(files, reqPath, reqSHA, "bound REQ")
 	if err != nil {
 		return InventoryAuthority{}, err
 	}
@@ -407,7 +415,7 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 		if id == "" || path == "" || sha == "" {
 			return InventoryAuthority{}, fmt.Errorf("S10 inventory authority cannot use current %s document with missing id/path/sha256", kind)
 		}
-		if _, err := readAuthoritativeS10File(root, path, sha, kind+" "+id); err == nil {
+		if _, err := readAuthoritativeS10File(files, path, sha, kind+" "+id); err == nil {
 			verifiedPaths[aliasKey(kind, id, path, sha)] = path
 		} else if errors.Is(err, os.ErrNotExist) {
 			pending = append(pending, pendingRow{kind: kind, id: id, path: path, sha: sha})
@@ -428,7 +436,7 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 		if _, live := verifiedPaths[aliasKey(row.kind, row.id, row.path, row.sha)]; !live {
 			// No same-generation live twin: re-read the dead path so the
 			// original missing/drifted diagnostics surface as the hard error.
-			if _, err := readAuthoritativeS10File(root, row.path, row.sha, row.kind+" "+row.id); err != nil {
+			if _, err := readAuthoritativeS10File(files, row.path, row.sha, row.kind+" "+row.id); err != nil {
 				return InventoryAuthority{}, fmt.Errorf("S10 inventory authority %s %s: %w", row.kind, row.id, err)
 			}
 		}
@@ -443,7 +451,7 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 	planPointer := state["review"].(map[string]any)["plan"].(map[string]any)
 	planPath := strings.TrimSpace(stringValue(planPointer["path"]))
 	planSHA := strings.TrimSpace(stringValue(planPointer["sha256"]))
-	planData, err := readAuthoritativeS10File(root, planPath, planSHA, "pinned S7 ReviewPlan")
+	planData, err := readAuthoritativeS10File(files, planPath, planSHA, "pinned S7 ReviewPlan")
 	if err != nil {
 		return InventoryAuthority{}, err
 	}
@@ -549,21 +557,18 @@ func inventoryAuthorityIssues(inventory []CoverageItem, authority InventoryAutho
 	return issues
 }
 
-func readAuthoritativeS10File(root, path, wantSHA, label string) ([]byte, error) {
-	resolved, err := safeManifestPath(root, path)
-	if err != nil {
-		return nil, fmt.Errorf("S10 inventory authority %s: %w", label, err)
-	}
-	data, err := os.ReadFile(resolved)
+func readAuthoritativeS10File(files FileReader, path, wantSHA, label string) ([]byte, error) {
+	data, err := readCandidateFile(files, path)
 	if err != nil {
 		return nil, fmt.Errorf("S10 inventory authority %s is unreadable: %w", label, err)
 	}
+
 	if strings.TrimSpace(wantSHA) == "" {
 		return nil, fmt.Errorf("S10 inventory authority %s has no registered sha256", label)
 	}
 	sum := sha256.Sum256(data)
 	if hex.EncodeToString(sum[:]) != wantSHA {
-		return nil, fmt.Errorf("S10 inventory authority %s drifted: registered sha256 %s does not match disk", label, wantSHA)
+		return nil, fmt.Errorf("S10 inventory authority %s drifted: registered sha256 %s, observed %s", label, wantSHA, hex.EncodeToString(sum[:]))
 	}
 	return data, nil
 }
@@ -1070,80 +1075,7 @@ func ResolveS10Manifest(root, kind string, envelopeData []byte) ([]byte, string,
 // validators as the CLI and Quality Gate, so TR-015/TR-017 cannot be advanced
 // with only a structurally valid evidence row.
 func ValidateCurrentS10Evidence(root string, state map[string]any, kind string) error {
-	expectedKind := ManifestAcceptance
-	if kind == ManifestReleaseAudit || kind == "release_audit_record" {
-		expectedKind = ManifestReleaseAudit
-	}
-	items, _ := state["evidence"].([]any)
-	generation := nestedS10Int(state, "baseline", "generation")
-	round := nestedS10Int(state, "review", "round")
-	// RC-15 (S10-H2): the ledger is append-only; the newest matching
-	// registration supersedes older ones, and first-match would wedge on
-	// stale drift. Two-pass: (1) collect every matching row's identity,
-	// (2) verify only the newest row's envelope end-to-end.
-	var latest map[string]any
-	for _, raw := range items {
-		entry, _ := raw.(map[string]any)
-		if entry == nil || stringValue(entry["status"]) != "valid" {
-			continue
-		}
-		entryKind := stringValue(entry["kind"])
-		if (expectedKind == ManifestAcceptance && entryKind != ManifestAcceptance && entryKind != "acceptance_record") ||
-			(expectedKind == ManifestReleaseAudit && entryKind != ManifestReleaseAudit && entryKind != "release_audit_record") {
-			continue
-		}
-		entryGeneration := intValueS10(entry["generation"])
-		if entryGeneration == 0 {
-			entryGeneration = intValueS10(entry["baseline_generation"])
-		}
-		if entryGeneration != generation {
-			continue
-		}
-		if nestedS10Int(entry, "review_round", "") != round || round < 1 {
-			continue
-		}
-		path := stringValue(entry["path"])
-		sha := stringValue(entry["sha256"])
-		if path == "" || sha == "" {
-			continue
-		}
-		latest = entry
-	}
-	if latest == nil {
-		return fmt.Errorf("no valid %s evidence entry for the current baseline/round — record the artifact before advancing", expectedKind)
-	}
-	entry := latest
-	path := stringValue(entry["path"])
-	sha := stringValue(entry["sha256"])
-	artifactPath, err := safeManifestPath(root, path)
-	if err != nil {
-		return fmt.Errorf("current %s evidence %q path is invalid: %w", expectedKind, stringValue(entry["id"]), err)
-	}
-	data, err := os.ReadFile(artifactPath)
-	if err != nil {
-		return fmt.Errorf("current %s evidence %q is unreadable: %w", expectedKind, stringValue(entry["id"]), err)
-	}
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != sha {
-		return fmt.Errorf("current %s evidence %q sha256 drifted: registered %s, disk %s", expectedKind, stringValue(entry["id"]), sha, got)
-	}
-	manifestData, _, conclusion, err := readS10ManifestData(root, expectedKind, data)
-	if err != nil {
-		return err
-	}
-	baseline, err := BuildS10ExternalBaseline(root, state, nil)
-	if err != nil {
-		return fmt.Errorf("current %s evidence external baseline is unverifiable: %w", expectedKind, err)
-	}
-	if S10AuthorityAvailable(state) {
-		authority, err := BuildS10InventoryAuthority(root, state, baseline)
-		if err != nil {
-			return fmt.Errorf("current %s evidence authoritative inventory is unverifiable: %w", expectedKind, err)
-		}
-		_, err = ValidateForOutcomeWithBaselineAndAuthority(manifestData, expectedKind, conclusion, baseline, authority)
-		return err
-	}
-	_, err = ValidateForOutcomeWithBaseline(manifestData, expectedKind, conclusion, baseline)
+	_, err := ValidateS10Candidate(CandidateInput{State: state, Files: diskS10Files{root: root}, Kind: kind})
 	return err
 }
 

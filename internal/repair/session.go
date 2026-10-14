@@ -8,6 +8,10 @@ import (
 )
 
 func CreateRepairSession(root string, request SessionRequest) (RepairSession, ArtifactRef, error) {
+	return createRepairSession(root, request, writeImmutable)
+}
+
+func createRepairSession(root string, request SessionRequest, sink artifactSink) (RepairSession, ArtifactRef, error) {
 	contract, err := ValidateApprovedContractRef(root, request.Contract)
 	if err != nil {
 		return RepairSession{}, ArtifactRef{}, err
@@ -23,13 +27,36 @@ func CreateRepairSession(root string, request SessionRequest) (RepairSession, Ar
 	if err != nil {
 		return RepairSession{}, ArtifactRef{}, err
 	}
+	intent := request.Intent
+	if intent == "" {
+		intent = "implement"
+	}
+	if intent != "implement" && intent != "confirm" {
+		return RepairSession{}, ArtifactRef{}, fmt.Errorf("intent must be implement or confirm")
+	}
+	if intent == "implement" && len(request.ConfirmationSources) > 0 {
+		return RepairSession{}, ArtifactRef{}, fmt.Errorf("implement cannot carry confirmation_sources")
+	}
+	var subjects []ArtifactRef
+	if intent == "confirm" {
+		subjects, err = confirmationSubjects(root, request.ConfirmationSources, request.RuntimeID, request.ReqID, request.SessionID, contract)
+		if err != nil {
+			return RepairSession{}, ArtifactRef{}, err
+		}
+	}
 	document := RepairSession{
 		SchemaVersion: "1.0.0", RecordType: "repair_session", SessionID: request.SessionID,
 		ContractRef: contract.Ref.Path, ContractSHA256: contract.Ref.SHA256, RuntimeID: request.RuntimeID,
 		ReqID: request.ReqID, BaselineGeneration: request.BaselineGeneration, BaselineArtifacts: baselineArtifacts, BaselineDigest: baselineDigest,
 		Status: "planned", CreatedBy: request.CreatedBy, CreatedAtText: createdAt,
 	}
-	ref, err := writeImmutable(root, artifactRoot+"/sessions/"+request.SessionID+".json", "repair-session.schema.json", document)
+	if intent == "confirm" {
+		document.SchemaVersion = "1.1.0"
+		document.Intent = intent
+		document.ConfirmationSources = append([]ArtifactRef(nil), request.ConfirmationSources...)
+		document.VerifiedSubjects = subjects
+	}
+	ref, err := sink(root, scopedRepairPath("sessions", request.SessionID, request.RuntimeID, request.SessionID), "repair-session.schema.json", document)
 	if err != nil {
 		return RepairSession{}, ArtifactRef{}, err
 	}
@@ -49,6 +76,10 @@ func ValidateRepairSession(root string, ref ArtifactRef) (RepairSession, error) 
 }
 
 func CreateRepairPlan(root string, request PlanRequest) (RepairPlan, ArtifactRef, error) {
+	return createRepairPlan(root, request, writeImmutable)
+}
+
+func createRepairPlan(root string, request PlanRequest, sink artifactSink) (RepairPlan, ArtifactRef, error) {
 	contract, err := ValidateApprovedContractRef(root, request.Contract)
 	if err != nil {
 		return RepairPlan{}, ArtifactRef{}, err
@@ -103,10 +134,29 @@ func CreateRepairPlan(root string, request PlanRequest) (RepairPlan, ArtifactRef
 			AssertionIDs: append([]string(nil), unitAssertions...), DependsOn: append([]string(nil), unit.DependsOn...), ResourceLocks: append([]string(nil), unit.ResourceLocks...), Scope: append([]string(nil), scope...), ContractRef: contract.Ref.Path,
 		})
 	}
+	if sessionIntent(session) == "confirm" {
+		covered := map[string]ArtifactRef{}
+		for _, assignment := range document.Assignments {
+			refs := assignmentConfirmationSubjects(session, assignment)
+			if len(refs) == 0 {
+				return RepairPlan{}, ArtifactRef{}, fmt.Errorf("confirmation Assignment %s has no verification subjects; amend its approved unit scope", assignment.AssignmentID)
+			}
+			for _, ref := range refs {
+				covered[ref.Path] = ref
+			}
+		}
+		refs := []ArtifactRef{}
+		for _, ref := range covered {
+			refs = append(refs, ref)
+		}
+		if err := exactSubjectSet(refs, session.VerifiedSubjects, "confirmation Plan coverage", "Session verified_subjects"); err != nil {
+			return RepairPlan{}, ArtifactRef{}, err
+		}
+	}
 	if err := validateRepairPlanSemantics(root, document); err != nil {
 		return RepairPlan{}, ArtifactRef{}, err
 	}
-	ref, err := writeImmutable(root, artifactRoot+"/plans/"+request.PlanID+".json", "repair-plan.schema.json", document)
+	ref, err := sink(root, scopedRepairPath("plans", request.PlanID, session.RuntimeID, session.SessionID), "repair-plan.schema.json", document)
 	if err != nil {
 		return RepairPlan{}, ArtifactRef{}, err
 	}

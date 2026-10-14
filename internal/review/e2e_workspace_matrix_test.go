@@ -75,6 +75,7 @@ func writeColdStartPlan(t *testing.T, root, workspace string) string {
 		"created_by":                      "orchestrator",
 		"created_at":                      "2026-08-18T00:00:00Z",
 	}
+	scopeReviewFixtureFile(t, root, plan)
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -287,6 +288,7 @@ func TestSubmitResultRechecksRegressionAssetFingerprint(t *testing.T) {
 		"selector_ref": "testid:save-button", "route_ref": "settings/save",
 		"environment": "chromium/localhost:3000/profile=default",
 	}}
+	scopeReviewFixtureFile(t, root, raw)
 	regressionPath := filepath.Join(root, "plan-regression.json")
 	regressionBytes, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
@@ -321,7 +323,7 @@ func TestSubmitResultRechecksRegressionAssetFingerprint(t *testing.T) {
 	}
 }
 
-func TestRegisterPlanCleansNewWorkspaceWhenCASApplyFails(t *testing.T) {
+func TestRegisterPlanNeverAuthorizesWorkspaceWhenCASApplyFails(t *testing.T) {
 	workspace := "e2e-workspace/orphaned-plan"
 	root := t.TempDir()
 	state := coldStartState()
@@ -333,8 +335,15 @@ func TestRegisterPlanCleansNewWorkspaceWhenCASApplyFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid review projection must reject registration")
 	}
-	if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(workspace))); !os.IsNotExist(statErr) {
-		t.Fatalf("failed registration must clean its newly-created workspace, stat error=%v", statErr)
+	persisted, readErr := os.ReadFile(statePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(persisted), workspace) {
+		t.Fatal("rejected plan authorized its workspace")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".claude/review/plans", "review-plan-cs-1.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected plan published canonical artifact: %v", statErr)
 	}
 }
 

@@ -1,10 +1,35 @@
 package fileview
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// ForState resolves the declared source contract once for a production read.
+// It intentionally has no working-tree fallback when the REQ is unbound.
+func ForState(root string, state map[string]any) (*View, error) {
+	ref, err := DevelopmentRef(state)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateAuthority(root, state); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(root, "docs/control/loop-definition.json"))
+	if err != nil {
+		return nil, err
+	}
+	var definition struct {
+		FileSources []Rule `json:"file_sources"`
+	}
+	if err := json.Unmarshal(data, &definition); err != nil {
+		return nil, err
+	}
+	return New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), definition.FileSources)
+}
 
 type Reader interface {
 	ReadFile(string) ([]byte, error)

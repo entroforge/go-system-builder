@@ -22,7 +22,7 @@ func TestReviewResultCapturesAcceptsBufferDir(t *testing.T) {
 	root := worktreeProjectRoot(t)
 	dir := t.TempDir()
 
-	planPath := minimalReviewPlan(t, dir, "review-plan-captures-dir")
+	planPath := minimalReviewPlan(t, dir, "review-plan-captures-dir", root)
 	var stdout, stderr bytes.Buffer
 	if code := cli.Run([]string{
 		"runtime", "review-plan",

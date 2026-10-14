@@ -29,7 +29,7 @@ func runRuntimeS7BudgetDecision(args []string, stdout, stderr io.Writer) int {
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 	actor := flags.String("actor", "", "human decision actor")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	missing := make([]string, 0, 2)
 	if strings.TrimSpace(*decisionPath) == "" {

@@ -1,0 +1,540 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/e2e-runner-receipt.schema.json",
+  "title": "Controlled E2E adapter observation (not an import authorization)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "platform",
+    "run_id",
+    "mode",
+    "binding",
+    "profile_sha256",
+    "input_sha256",
+    "inputs",
+    "tools",
+    "command",
+    "attempted_at",
+    "stage",
+    "invoked",
+    "preparation_ms",
+    "elapsed_ms",
+    "exit_code",
+    "complete",
+    "outcome",
+    "tests",
+    "attempts",
+    "raw_events",
+    "output",
+    "problems"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "architecture",
+        "kernel_release"
+      ],
+      "properties": {
+        "os": {
+          "type": "string"
+        },
+        "architecture": {
+          "type": "string"
+        },
+        "kernel_release": {
+          "type": "string"
+        }
+      }
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^e2e-run-[a-f0-9]{32}$"
+    },
+    "mode": {
+      "enum": [
+        "collection",
+        "execution"
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "baseline_generation",
+        "review_round",
+        "source_commit",
+        "subject_digest"
+      ],
+      "properties": {
+        "runtime_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseline_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_commit": {
+          "type": "string",
+          "pattern": "^([a-f0-9]{40}|[a-f0-9]{64})$"
+        },
+        "assignment_id": {
+          "type": "string"
+        },
+        "subject_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "profile_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "profile_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "input_sha256": {
+      "type": "string",
+      "pattern": "^([a-f0-9]{64})?$"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "node": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "modules": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "browsers": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "system": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "isolator": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reporter": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "collection_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "command": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "selected_test_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "attempted_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage": {
+      "enum": [
+        "preparation",
+        "invocation",
+        "completed"
+      ]
+    },
+    "invoked": {
+      "type": "boolean"
+    },
+    "started_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "preparation_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "exit_code": {
+      "type": "integer",
+      "minimum": -1
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "enum": [
+        "pass",
+        "fail",
+        "unknown"
+      ]
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "path",
+          "project",
+          "selection_path",
+          "browser",
+          "title_path",
+          "case_refs",
+          "expected_status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project": {
+            "type": "string"
+          },
+          "selection_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "browser": {
+            "enum": [
+              "chromium",
+              "firefox",
+              "webkit"
+            ]
+          },
+          "title_path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "case_refs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "module_ref",
+                "case_id",
+                "oracle_ref",
+                "persona",
+                "data_profile"
+              ],
+              "properties": {
+                "module_ref": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "case_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "oracle_ref": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "persona": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "data_profile": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "expected_status": {
+            "enum": [
+              "passed",
+              "failed",
+              "skipped"
+            ]
+          }
+        }
+      }
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "execution_id",
+          "test_id",
+          "retry",
+          "status",
+          "duration_ms",
+          "errors",
+          "browser_page_observed",
+          "steps"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "test_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "retry": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "timedOut",
+              "skipped",
+              "interrupted"
+            ]
+          },
+          "duration_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "errors": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "browser_page_observed": {
+            "type": "boolean"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "category",
+                "title",
+                "duration_ms"
+              ],
+              "properties": {
+                "category": {
+                  "const": "pw:api"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "duration_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "raw_events": {
+      "type": "string"
+    },
+    "output": {
+      "type": "string"
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "invoked": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "stage": {
+            "const": "preparation"
+          },
+          "complete": {
+            "const": false
+          },
+          "outcome": {
+            "const": "unknown"
+          },
+          "exit_code": {
+            "const": -1
+          },
+          "tests": {
+            "maxItems": 0
+          },
+          "attempts": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "complete": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "started_at"
+        ],
+        "properties": {
+          "invoked": {
+            "const": true
+          },
+          "stage": {
+            "const": "completed"
+          },
+          "outcome": {
+            "enum": [
+              "pass",
+              "fail"
+            ]
+          },
+          "input_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "problems": {
+            "maxItems": 0
+          },
+          "tests": {
+            "minItems": 1
+          },
+          "command": {
+            "type": "array",
+            "minItems": 1
+          },
+          "tools": {
+            "required": [
+              "node",
+              "modules",
+              "browsers",
+              "system",
+              "isolator",
+              "reporter"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "execution"
+          },
+          "complete": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "collection_sha256",
+          "selected_test_ids"
+        ],
+        "properties": {
+          "attempts": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

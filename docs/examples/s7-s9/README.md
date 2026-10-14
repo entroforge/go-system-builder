@@ -139,3 +139,20 @@ after `commit`, and changeset filenames are content-hashed (they change
 when content does). Before authoring `repair-handoff.json`, re-read every
 referenced path+SHA from disk — the handoff validator compares against
 the current bytes, not against what an earlier verb printed.
+
+## Zero-change confirmation
+
+Use [confirmation-sources.json](confirmation-sources.json) with `runtime repair
+session open --intent confirm --confirmation-sources <file>`. Sources must be prior
+committed RepairHandoffs from the same Runtime, with exact hashes. Replace the
+placeholder handoff reference; do not hand-author a fake predecessor PASS.
+
+[confirmation-result.json](confirmation-result.json) and
+[confirmation-impact.json](confirmation-impact.json) use the existing Result and
+Impact verbs. Populate `verified_subjects` from the current Session (for a Result,
+only the subjects in that Assignment's scope), keep actual change lists empty,
+and supply current checks and decision coverage. Impact also binds the exact
+current `session_ref`. Compute Changeset from the Session, not explicit
+predecessor paths. PlanReport uses current passing checks in the legacy
+`red_checks` field. Independent targeted verification and a fresh complete S7
+remain required. See [runtime operations](../../runtime-operations.md#zero-change-confirmation-and-legacy-authority-restoration).

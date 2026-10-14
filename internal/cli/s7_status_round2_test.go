@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // TestS7StatusReportsRoundBudget proves the round counter / budget projection
@@ -85,6 +86,7 @@ func TestS7StatusReportsRoundBudget(t *testing.T) {
 	planMap := reviewMap["plan"].(map[string]any)
 	planRel := planMap["path"].(string)
 	planBytes := []byte(`{"schema_version":"1.0.0","review_plan_id":"review-plan-r2","review_round":2,"baseline_generation":1,"frozen_subjects":[],"claims":[{"claim_id":"claim-qa-1","lens":"qa","focus_key":"logic-state-error","target":"internal/example","assertion":"errors propagate","oracle":"no dropped error","method":"code review","applicability":"required","source_refs":["REQ-002"]}],"assignments":[{"assignment_id":"assignment-qa-r2","lens":"qa","claim_ids":["claim-qa-1"],"focus_keys":["logic-state-error"],"non_overlap_boundary":"owns static quality","execution_wave":"static"}]}`)
+	planBytes = testfixture.HistoricalPlan(t, planBytes)
 	planDir := filepath.Dir(filepath.Join(root, planRel))
 	if err := os.MkdirAll(planDir, 0o755); err != nil {
 		t.Fatal(err)

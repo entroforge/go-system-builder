@@ -414,6 +414,7 @@ func submitSiteLostBlocker(
 	assignment *PlanAssignment,
 	result *Result,
 	readiness *ReadinessError,
+	operation *loopruntime.Operation,
 ) (loopruntime.Snapshot, error) {
 	if err := validateSiteLostDeclarations(result); err != nil {
 		return loopruntime.Snapshot{}, err
@@ -458,34 +459,13 @@ func submitSiteLostBlocker(
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("encode site-lost blocker: %w", err)
 	}
-	if err := writeArtifact(root, blockerRel, blockerBytes); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	committed := false
-	defer func() {
-		if committed {
-			return
-		}
-		// If the CAS error was returned after a commit became visible, keep
-		// the immutable bytes so the evidence index cannot be orphaned. Only
-		// clean an artifact when the caller's revision is still persisted.
-		stateBytes, readErr := os.ReadFile(statePath)
-		if readErr != nil {
-			return
-		}
-		var persisted map[string]any
-		if json.Unmarshal(stateBytes, &persisted) != nil || intField(persisted["revision"]) != currentCommitRevision(request.ExpectedRevision, current) {
-			return
-		}
-		if path, pathErr := repositoryContainedPath(root, blockerRel); pathErr == nil {
-			_ = os.Remove(path)
-		}
-	}()
 	blockerSHA := sha256Of(blockerBytes)
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
-	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+	snapshot, err := updateRuntime(store, commitRevision, loopruntime.Mutation{
+		Operation:      operation,
+		Artifacts:      []loopruntime.ImmutableArtifact{{Path: blockerRel, Data: blockerBytes}},
 		EventID:        fmt.Sprintf("evt-review-site-lost-%s-r%d", result.ResultID, commitRevision+1),
 		TransitionID:   "REVIEW-RESULT",
 		Event:          "review_assignment_blocked",
@@ -552,7 +532,6 @@ func submitSiteLostBlocker(
 	if err != nil {
 		return snapshot, err
 	}
-	committed = true
 	return snapshot, &SiteLostBlockedError{Message: fmt.Sprintf(
 		"finding %s is not investigation-ready (%v) and the reviewer declared the scene unrecoverable: %s. "+
 			"Assignment %s is now blocked and stays in S7 — the result was NOT consumed, no Finding was registered and nothing was sealed (L3-S7 §9.1). "+

@@ -264,8 +264,8 @@ type recoveryPendingSource struct {
 
 // ApplyRecovery validates a candidate pair, quarantines the original bytes,
 // and atomically applies a new Runtime pair under the shared Runtime lock.
-// The active state is never parsed before quarantine, so malformed or BOM-
-// prefixed input remains recoverable. An interrupted apply is resumed from
+// Damaged legacy input remains recoverable, but recognized newer protocol
+// declarations are rejected before quarantine. An interrupted apply is resumed from
 // its durable marker and repeated application of one plan is idempotent.
 func ApplyRecovery(request RecoveryRequest) (RecoveryResult, error) {
 	normalizedRequest, err := normalizeRecoveryRequest(request)
@@ -296,6 +296,10 @@ func ApplyRecovery(request RecoveryRequest) (RecoveryResult, error) {
 		return RecoveryResult{}, &recoveryLockError{Cause: err}
 	}
 	defer release()
+
+	if err := CheckLegacyRecoverySources(normalizedRequest.StatePath, normalizedRequest.JournalPath); err != nil {
+		return RecoveryResult{}, err
+	}
 
 	markerPath := normalizedRequest.StatePath + ".recovery-pending.json"
 	marker, exists, err := readRecoveryMarker(markerPath)
@@ -347,7 +351,13 @@ func prepareRecovery(request RecoveryRequest) (preparedRecovery, error) {
 	if err != nil {
 		return preparedRecovery{}, fmt.Errorf("%w: %w", ErrRecoveryCandidateInvalid, err)
 	}
+	if err := checkLegacyRecoveryState(stateBytes); err != nil {
+		return preparedRecovery{}, err
+	}
 	journalBytes := append([]byte(nil), request.CandidateJournal...)
+	if err := checkLegacyRecoveryJournal(journalBytes); err != nil {
+		return preparedRecovery{}, err
+	}
 	if _, err := inspectJournalData(journalBytes); err != nil {
 		return preparedRecovery{}, fmt.Errorf("%w: candidate journal: %w", ErrRecoveryCandidateInvalid, err)
 	}
@@ -802,6 +812,28 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 	}
 	if err := verifyQuarantineManifest(marker.QuarantineDir, marker.Manifest); err != nil {
 		return RecoveryResult{}, fmt.Errorf("%w: verify quarantine: %w", ErrRecoveryPending, err)
+	}
+	for _, source := range []struct {
+		artifact RecoveryArtifact
+		journal  bool
+	}{{marker.Manifest.SourceState, false}, {marker.Manifest.SourceJournal, true}} {
+		if source.artifact.Exists {
+			if err := checkRecoveryProtocolFile(source.artifact.QuarantinePath, source.journal); err != nil {
+				return RecoveryResult{}, err
+			}
+		}
+	}
+	for _, source := range marker.Manifest.SourcePending {
+		if !source.Exists {
+			continue
+		}
+		data, err := os.ReadFile(source.QuarantinePath)
+		if err != nil {
+			return RecoveryResult{}, err
+		}
+		if err := checkLegacyRecoveryPending(data, strings.HasSuffix(source.Path, ".commit-pending.json")); err != nil {
+			return RecoveryResult{}, fmt.Errorf("quarantined %s: %w", source.Path, err)
+		}
 	}
 
 	stateData, stateExists, err := readOptionalFile(request.StatePath)

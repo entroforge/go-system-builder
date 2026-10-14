@@ -15,7 +15,7 @@ func CreateChangeImpact(root string, request ChangeImpactRequest) (ChangeImpact,
 	if strings.TrimSpace(request.RuntimeID) == "" || strings.TrimSpace(request.ReqID) == "" || strings.TrimSpace(request.AnalyzedBy) == "" {
 		return ChangeImpact{}, ArtifactRef{}, errors.New("runtime_id, req_id, and analyzed_by are required")
 	}
-	if request.BaselineGeneration < 1 || len(request.SourceBugIDs) == 0 && len(request.SourceCaseIDs) == 0 || len(request.ChangeTypes) == 0 || len(request.Decisions) == 0 || len(request.ChangedArtifacts) == 0 {
+	if request.BaselineGeneration < 1 || len(request.SourceBugIDs) == 0 && len(request.SourceCaseIDs) == 0 || len(request.ChangeTypes) == 0 || len(request.Decisions) == 0 || len(request.ChangedArtifacts) == 0 && request.Session == nil {
 		return ChangeImpact{}, ArtifactRef{}, errors.New("ChangeImpact requires positive baseline, a source Bug or Case id, change types, changed artifacts, and decisions")
 	}
 	// RC-14 (S9-M3): decision=reverify is the formal hand-off back to the
@@ -23,7 +23,29 @@ func CreateChangeImpact(root string, request ChangeImpactRequest) (ChangeImpact,
 	// declared obligation set; CommitChangeImpact registers that set on the
 	// Runtime pointer, and CommitRepairHandoff consumes it after the downstream
 	// TargetedReverification artifacts have been created and committed.
-	changed := append([]ArtifactRef(nil), request.ChangedArtifacts...)
+	var confirmSession RepairSession
+	if request.Session != nil {
+		var err error
+		confirmSession, err = ValidateRepairSession(root, *request.Session)
+		if err != nil {
+			return ChangeImpact{}, ArtifactRef{}, err
+		}
+		if sessionIntent(confirmSession) != "confirm" || len(request.ChangedArtifacts) != 0 {
+			return ChangeImpact{}, ArtifactRef{}, errors.New("confirmation impact requires confirm Session and empty changed_artifacts")
+		}
+		if request.RuntimeID != confirmSession.RuntimeID || request.ReqID != confirmSession.ReqID || request.BaselineGeneration != confirmSession.BaselineGeneration {
+			return ChangeImpact{}, ArtifactRef{}, errors.New("confirmation impact does not match Session identity")
+		}
+		if err := validateConfirmation(root, confirmSession); err != nil {
+			return ChangeImpact{}, ArtifactRef{}, err
+		}
+		if err := exactSubjectSet(request.VerifiedSubjects, confirmSession.VerifiedSubjects, "ChangeImpact verified_subjects", "Session verified_subjects"); err != nil {
+			return ChangeImpact{}, ArtifactRef{}, err
+		}
+	} else if len(request.VerifiedSubjects) > 0 {
+		return ChangeImpact{}, ArtifactRef{}, errors.New("verified_subjects require a confirmation session_ref")
+	}
+	changed := append([]ArtifactRef{}, request.ChangedArtifacts...)
 	for i := range changed {
 		if changed[i].ID == "" {
 			changed[i].ID = "changed-" + strings.NewReplacer("/", "-", "\\", "-").Replace(changed[i].Path)
@@ -32,7 +54,7 @@ func CreateChangeImpact(root string, request ChangeImpactRequest) (ChangeImpact,
 			return ChangeImpact{}, ArtifactRef{}, fmt.Errorf("changed artifact %d requires path and sha256", i)
 		}
 	}
-	for _, artifact := range changed {
+	for _, artifact := range append(append([]ArtifactRef{}, changed...), request.VerifiedSubjects...) {
 		covered := false
 		for _, decision := range request.Decisions {
 			for _, scope := range decision.Scope {
@@ -57,6 +79,11 @@ func CreateChangeImpact(root string, request ChangeImpactRequest) (ChangeImpact,
 		InvalidatedEvidenceIDs: sortedStrings(request.InvalidatedEvidenceIDs), SupersededEvidenceIDs: sortedStrings(request.SupersededEvidenceIDs),
 		RetainedEvidenceIDs: sortedStrings(request.RetainedEvidenceIDs), RequiredReverificationIDs: sortedStrings(request.RequiredReverificationIDs),
 		AnalyzedBy: request.AnalyzedBy, AnalyzedAt: nowOr(request.AnalyzedAt),
+	}
+	if request.Session != nil {
+		impact.SchemaVersion = "1.1.0"
+		impact.Session = request.Session
+		impact.VerifiedSubjects = append([]ArtifactRef(nil), request.VerifiedSubjects...)
 	}
 	if impact.EscalationLevel == "" {
 		impact.EscalationLevel = "assignment"
@@ -110,7 +137,8 @@ func CreateTargetedReverification(root string, request TargetedReverificationReq
 		return TargetedReverification{}, ArtifactRef{}, err
 	}
 	reverification := TargetedReverification{
-		SchemaVersion: "1.0.0", RecordType: "targeted_reverification", ReverificationID: request.ReverificationID,
+		StopConditionAssessments: request.StopConditionAssessments,
+		SchemaVersion:            "1.0.0", RecordType: "targeted_reverification", ReverificationID: request.ReverificationID,
 		RuntimeID: request.RuntimeID, BugID: request.BugID, CaseID: request.CaseID, BaselineGeneration: request.BaselineGeneration,
 		OriginalAssignmentID: request.OriginalAssignmentID, PerformingAssignmentID: request.PerformingAssignmentID,
 		ContinuityReason: request.ContinuityReason, ImpactID: request.ImpactID, AssertionResults: append([]AssertionResult(nil), request.AssertionResults...),
@@ -132,6 +160,9 @@ func CreateTargetedReverification(root string, request TargetedReverificationReq
 			reverification.FailureClass = "fail_same_cause"
 		}
 	}
+	if err := validateStopAssessmentShape(reverification); err != nil {
+		return TargetedReverification{}, ArtifactRef{}, err
+	}
 	ref, err := writeImmutable(root, filepath.Join(artifactRoot, "reverification", request.ReverificationID+".json"), "review-evidence.schema.json", reverification)
 	return reverification, ref, err
 }
@@ -143,6 +174,9 @@ func ValidateTargetedReverification(root string, ref ArtifactRef) (TargetedRever
 	}
 	if value.RecordType != "targeted_reverification" {
 		return TargetedReverification{}, fmt.Errorf("artifact %s is %q, not targeted_reverification", ref.Path, value.RecordType)
+	}
+	if err := validateStopAssessmentShape(value); err != nil {
+		return TargetedReverification{}, err
 	}
 	if value.OriginalAssignmentID == value.PerformingAssignmentID {
 		return TargetedReverification{}, errors.New("targeted reverification is not independent")

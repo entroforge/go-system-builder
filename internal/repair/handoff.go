@@ -55,6 +55,12 @@ func CreateRepairHandoff(root string, request HandoffRequest) (RepairHandoff, Ar
 		if target.ImpactID != impact.ImpactID {
 			return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff targeted reverification %s points to impact %q, want %q", target.ReverificationID, target.ImpactID, impact.ImpactID)
 		}
+		if err := validateStopConditionCoverage(contract, target); err != nil {
+			return RepairHandoff{}, ArtifactRef{}, err
+		}
+		if target.Result != "pass" || target.ScopeCompliance != "pass" {
+			return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff requires passing independent targeted reverification")
+		}
 	}
 	handoff := RepairHandoff{
 		SchemaVersion: "1.0.0", RecordType: "repair_handoff", HandoffID: request.HandoffID,

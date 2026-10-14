@@ -25,16 +25,19 @@ import (
 // `workspace-digest` prints the current verification-artifact digest an
 // E2E cold-start ReviewResult must bind (L3-S7 §3.5).
 func runS7Command(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "lint" {
+		return runS7Lint(args[1:], stdout, stderr)
+	}
 	if wantsHelp(args) {
 		name := compactHelpName(args)
 		if name == "" {
-			name = "<status|draft|manifest-draft|workspace-digest>"
+			name = "<status|draft|lint|manifest-draft|workspace-digest>"
 		}
 		printCommandHelp(stdout, "loop-harness s7 "+name, "S7 actions: draft/register the ReviewPlan, dispatch a manifest, submit typed Results, and inspect the status board.")
 		return 0
 	}
 	if len(args) == 0 || (args[0] != "status" && args[0] != "draft" && args[0] != "manifest-draft" && args[0] != "workspace-digest") {
-		fmt.Fprintln(stderr, "s7 requires <status|draft|manifest-draft|workspace-digest>")
+		fmt.Fprintln(stderr, "s7 requires <status|draft|lint|manifest-draft|workspace-digest>")
 		return 2
 	}
 	if args[0] == "workspace-digest" {
@@ -42,7 +45,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 		flags.SetOutput(stderr)
 		root := flags.String("root", ".", "repository root")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		return runS7WorkspaceDigest(*root, stdout)
 	}
@@ -53,7 +56,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 		assignmentID := flags.String("assignment", "", "ReviewPlan Assignment id to dispatch (required)")
 		out := flags.String("out", "", "write the draft manifest JSON here (default stdout)")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		if *assignmentID == "" {
 			fmt.Fprintln(stderr, "s7 manifest-draft requires --assignment <assignment-id>")
@@ -67,7 +70,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 		root := flags.String("root", ".", "repository root")
 		out := flags.String("out", "", "write the draft plan JSON here (default stdout)")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
+			return flagParseExitCode(err)
 		}
 		return runS7Draft(*root, *out, stdout)
 	}
@@ -76,7 +79,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	explain := flags.Bool("explain", false, "expand the wave-readiness one-liner into A-completeness / B-admission / next-verb lines")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
+		return flagParseExitCode(err)
 	}
 	return runS7Status(*root, stdout, *explain)
 }
@@ -161,10 +164,22 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 	}
 
 	plan, _, planErr := review.LoadPlan(root, state)
+	if planErr != nil {
+		fmt.Fprintf(stdout, "s7 status: cannot load registered ReviewPlan: %v; restore the pinned plan before interpreting completion\n", planErr)
+		return 1
+	}
 	if planErr == nil {
 		// Every ReviewResult must bind this exact digest; printing it here
 		// saves the reviewer from re-deriving the frozen-baseline hash
 		// (the submit-time verifier rejects mismatches).
+		if plan.ModuleScope != nil {
+			fmt.Fprintf(stdout, "module_scope: resolution=%s candidates=%d unresolved=%d input_digest=%s\n", plan.ModuleScope.Resolution, len(plan.ModuleScope.Candidates), len(plan.ModuleScope.UnresolvedInputs), plan.ModuleScope.InputDigest)
+			for _, d := range plan.ModuleScope.Dispositions {
+				fmt.Fprintf(stdout, "  module=%s action=%s verification=%v assessment=%v\n", d.ModuleID, d.Action, d.VerificationClaimIDs, d.AssessmentClaimIDs)
+			}
+		} else {
+			fmt.Fprintln(stdout, "module_scope: historical plan, unsupported for new execution")
+		}
 		fmt.Fprintf(stdout, "subject_digest: %s (every review-result submit must bind exactly this value)\n", review.SubjectDigest(plan))
 	}
 	dispositions := review.Dispositions(state)

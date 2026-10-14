@@ -31,8 +31,8 @@ func runWorktreeCreate(args []string, stdout, stderr io.Writer) int {
 	root := f.String("root", ".", "authority root")
 	id := f.String("assignment-id", "", "registered assignment")
 	branch := f.String("branch", "", "new temporary branch (default wt/<assignment>)")
-	if e := f.Parse(args); e != nil {
-		return 2
+	if e := parseWorkspaceFlags(f, args); e != nil {
+		return flagParseExitCode(e)
 	}
 	if *id == "" || filepath.Base(*id) != *id || strings.ContainsAny(*id, "/\\\x00") || (*id == ".." || *id == ".") {
 		fmt.Fprintln(stderr, "valid --assignment-id is required")
@@ -279,8 +279,8 @@ func runWorkspaceBind(args []string, stdout, stderr io.Writer) int {
 	root := f.String("root", ".", "authority root")
 	dev := f.String("dev-branch", "", "development branch")
 	up := f.String("release-upstream", "", "final release destination")
-	if e := f.Parse(args); e != nil {
-		return 2
+	if e := parseWorkspaceFlags(f, args); e != nil {
+		return flagParseExitCode(e)
 	}
 	binding, e := workspace.Bind(*root, *dev, *up)
 	if e != nil {

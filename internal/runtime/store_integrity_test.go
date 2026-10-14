@@ -123,8 +123,8 @@ func TestRemoveUnreferencedArtifactSkipsPendingOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RemoveUnreferencedArtifact without pending operation: %v", err)
 	}
-	if !removed {
-		t.Fatal("unreferenced artifact should be removed when the runtime is stable")
+	if removed {
+		t.Fatal("canonical history must be retained even with a stable revision and an empty caller reference list")
 	}
 }
 
