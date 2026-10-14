@@ -7,13 +7,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/verification"
+	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 type memoryFiles map[string][]byte
@@ -493,8 +498,12 @@ func TestMissingIsDeterministicallySorted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	want := []string{"evidence:acceptance_record", "evidence:clean_round_record"}
-	if len(result.Missing) != len(want) || result.Missing[0] != want[0] || result.Missing[1] != want[1] {
+	want := []string{
+		"cleanround:all_required_claims_pass", "cleanround:clean_round_snapshot_registered",
+		"cleanround:module_scope_current_and_consumed", "cleanround:review_plan_clean",
+		"evidence:acceptance_record", "evidence:clean_round_record",
+	}
+	if !reflect.DeepEqual(result.Missing, want) {
 		t.Fatalf("missing = %#v, want %#v", result.Missing, want)
 	}
 }
@@ -517,12 +526,13 @@ func TestAcceptanceGateRequiresStructuredS10Manifest(t *testing.T) {
 
 func TestAcceptanceGateConsumesStructuredS10Manifest(t *testing.T) {
 	evaluator := newTestEvaluator(t)
-	manifest := validS10Manifest(t, "acceptance")
+	manifest := []byte(strings.ReplaceAll(string(validS10Manifest(t, "acceptance")), "claim-1", "claim-qa-1"))
 	input := s10GateInput(t, "GATE-ACCEPTANCE-COMPLETE", "TR-015", "acceptance", map[string]any{
 		"audit_manifest_path":   "s10/acceptance-manifest.json",
 		"audit_manifest_sha256": sha256Hex(manifest),
 	})
 	input.Files.(memoryFiles)["s10/acceptance-manifest.json"] = manifest
+	bindS10CleanRound(t, &input)
 
 	result, err := evaluator.Evaluate(context.Background(), input)
 	if err != nil {
@@ -1628,4 +1638,43 @@ func containsConflictFragment(values []string, fragment string) bool {
 		}
 	}
 	return false
+}
+
+// A satisfied S10 gate needs the immutable S7 completion, not just envelopes.
+func bindS10CleanRound(t *testing.T, input *qualitygate.Input) {
+	t.Helper()
+	root := t.TempDir()
+	state := input.Snapshot.State
+	oldPlanPath := state["review"].(map[string]any)["plan"].(map[string]any)["path"].(string)
+	for path, data := range input.Files.(memoryFiles) {
+		// The scoped seed replaces this in-memory plan with a pinned plan.
+		if path == oldPlanPath {
+			continue
+		}
+		testfixture.Write(t, root, path, data)
+	}
+	req039fixtures.SeedCleanRoundProjection(t, root, state)
+	planID := state["review"].(map[string]any)["plan"].(map[string]any)["plan_id"]
+	for _, raw := range state["evidence"].([]any) {
+		row := raw.(map[string]any)
+		if row["kind"] != "clean_round" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, row["path"].(string)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		envelope["review_plan_id"] = planID
+		path := ".claude/evidence/fixtures/" + row["id"].(string) + ".json"
+		data = testfixture.Write(t, root, path, envelope)
+		row["path"], row["sha256"] = path, sha256Hex(data)
+	}
+	input.Root, input.Files = root, fileview.Disk{Root: root}
+	if result := verification.EvaluateCleanRoundForRoot(root, state); !result.Passed {
+		t.Fatalf("S10 clean fixture: %v", result.Reasons)
+	}
 }

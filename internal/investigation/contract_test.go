@@ -12,6 +12,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 func TestApproveContractRequiresExactCaseFindingCoverage(t *testing.T) {
@@ -273,7 +274,7 @@ func registerContractApprovalEvidence(t *testing.T, fixture *intakeFixture, cont
 
 func setContractReviewPlan(t *testing.T, fixture *intakeFixture) {
 	t.Helper()
-	planBytes := []byte(`{"review_plan_id":"review-plan-drift","frozen_subjects":[{"path":"internal/service/decoder.go","sha256":"` + strings.Repeat("b", 64) + `"}]}` + "\n")
+	planBytes := testfixture.HistoricalPlan(t, []byte(`{"schema_version":"1.0.0","review_round":1,"baseline_generation":3,"review_plan_id":"review-plan-drift","frozen_subjects":[{"path":"internal/service/decoder.go","sha256":"`+strings.Repeat("b", 64)+`"}]}`+"\n"))
 	planRel := ".claude/review/plans/review-plan-drift.json"
 	planPath := filepath.Join(fixture.root, filepath.FromSlash(planRel))
 	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {

@@ -19,7 +19,7 @@ import (
 func loadFixturePlan(t *testing.T) *Plan {
 	t.Helper()
 	root := t.TempDir()
-	data, err := os.ReadFile(writePlanFile(t, root))
+	data, err := os.ReadFile(writeStructuralPlanFile(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}

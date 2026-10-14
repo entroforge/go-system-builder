@@ -224,7 +224,13 @@ func ReviewProject(t *testing.T, root string, state, plan map[string]any) {
 	}
 	// Only fixture product/spec inputs are staged; Runtime and authoring plans
 	// must not become incidental product changes in subsequent scope checks.
-	for _, p := range []string{"docs", "internal", "server", "web", "tests", "src", "e2e", "evidence", "s10", "main.go", "go.mod", "go.sum"} {
+	fixtureInputs := []string{"docs", "internal", "server", "web", "tests", "src", "e2e", "evidence", "s10", "main.go", "go.mod", "go.sum", reqPath}
+	for _, raw := range documents {
+		if p, ok := raw.(map[string]any)["path"].(string); ok && !strings.HasPrefix(p, ".claude/") {
+			fixtureInputs = append(fixtureInputs, p)
+		}
+	}
+	for _, p := range uniqueFixtureStrings(fixtureInputs) {
 		if _, err := os.Stat(filepath.Join(root, p)); err == nil {
 			Git(t, root, "add", "--", p)
 		}

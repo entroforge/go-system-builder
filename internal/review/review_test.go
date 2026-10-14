@@ -98,6 +98,18 @@ func baseVerificationState() map[string]any {
 // one N/A e2e claim; all static wave.
 func writePlanFile(t *testing.T, root string) string {
 	t.Helper()
+	return writeFixturePlanFile(t, root, true)
+}
+
+// Structural validators do not execute a round or need Runtime authority.
+// Keep their historical shape separate from the executable 1.1 fixture.
+func writeStructuralPlanFile(t *testing.T, root string) string {
+	t.Helper()
+	return writeFixturePlanFile(t, root, false)
+}
+
+func writeFixturePlanFile(t *testing.T, root string, scoped bool) string {
+	t.Helper()
 	// The registration/submit gates verify frozen_subjects against disk. Keep
 	// this fixture honest by creating the subject and pinning its real digest.
 	subjectPath := filepath.Join(root, "internal", "example", "service.go")
@@ -155,7 +167,9 @@ func writePlanFile(t *testing.T, root string) string {
 		"created_by":                      "orchestrator",
 		"created_at":                      "2026-08-18T00:00:00Z",
 	}
-	scopeReviewFixtureFile(t, root, plan)
+	if scoped {
+		scopeReviewFixtureFile(t, root, plan)
+	}
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -412,7 +426,7 @@ func TestRegisterPlanRejectsDuplicate(t *testing.T) {
 
 func TestValidatePlanCoverageRules(t *testing.T) {
 	root := t.TempDir()
-	base, err := os.ReadFile(writePlanFile(t, root))
+	base, err := os.ReadFile(writeStructuralPlanFile(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
