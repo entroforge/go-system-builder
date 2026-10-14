@@ -70,7 +70,7 @@ export const noTests = true;`},
 				t.Fatal(err)
 			}
 			_, err = RegisterPlan(root, statePath, journalPath, PlanRequest{ExpectedRevision: 1, PlanPath: planPath})
-			if err == nil || !strings.Contains(err.Error(), "regression_available requires at least one fingerprinted reusable E2E asset") {
+			if err == nil || !strings.Contains(err.Error(), "has no module-qualified regression asset") {
 				t.Fatalf("uncollected source mention must be rejected: %v", err)
 			}
 			afterState, err := os.ReadFile(statePath)

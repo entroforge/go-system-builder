@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // ---------------------------------------------------------------------------
@@ -175,22 +178,13 @@ func SeedReviewResultPass(t *testing.T, root string, state map[string]any, assig
 // produces: every claim passed, machine CleanRound evidence registered.
 func SeedCleanRoundReady(t *testing.T, root string, state map[string]any) {
 	t.Helper()
-	SeedReviewPlanRound(t, root, state)
-	for _, spec := range reviewPlanFixtureIDs {
-		SeedReviewResultPass(t, root, state, spec.assignmentID)
-	}
-	round := reviewRoundFromState(state)
-	reviewMap := state["review"].(map[string]any)
-	reviewMap["clean_round"] = round
-	reviewMap["plan"].(map[string]any)["status"] = "clean"
+	SeedCleanRoundProjection(t, root, state)
 	state["lifecycle"] = map[string]any{"state": "verification", "phase": "clean", "phase_revision": 2}
 	if milestone, ok := state["milestone"].(map[string]any); ok {
+		milestone["stage"] = "S7"
+		milestone["lifecycle_state"] = "verification"
 		milestone["lifecycle_phase"] = "clean"
 	}
-	envelope := EvidenceEnvelope(state, "clean-round-r1", "clean_round", "round-consumer", "Clean Round Evaluator", "pass", map[string]any{
-		"review_round": round,
-	})
-	AppendEvidence(state, WriteEvidenceEnvelope(t, root, state, "clean-round-r1", "clean_round", "round-consumer", "Clean Round Evaluator", envelope, []any{}))
 }
 
 // SeedSealedObservationBatch puts the round into observation_sealed with one
@@ -332,6 +326,26 @@ func SeedCleanRoundProjection(t *testing.T, root string, state map[string]any) {
 		"created_by":                      "orchestrator",
 		"created_at":                      "2026-07-30T09:00:00Z",
 	}
+	// Completion fixtures bind actual immutable subjects and resolver inputs.
+	// The hook test seeds a completed QA assessment, then tests the exit.
+	subjectPath := "docs/dev/tasks/TASK-039-01-loop-definition.md"
+	subject, err := os.ReadFile(filepath.Join(root, subjectPath))
+	if os.IsNotExist(err) {
+		subject = testfixture.Write(t, root, subjectPath, "# TASK-039-01 fixture\n")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	planBody["frozen_subjects"].([]any)[0].(map[string]any)["sha256"] = Sha256Hex(subject)
+	testfixture.ReviewProject(t, root, state, planBody)
+	// This synthetic seed represents a completed stage. Freeze its delivered
+	// fixture once; subsequent hook writes must retain this REQ baseline.
+	state["bound_req"].(map[string]any)["workspace"].(map[string]any)["bound_commit"] = testfixture.Git(t, root, "rev-parse", "HEAD")
+	scope, err := review.ResolveModuleScopeForRoot(root, state, round, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testfixture.ScopePlan(t, planBody, scope)
+	testfixture.Write(t, root, ".claude/loop-state.json", state)
 	planBytes := append(mustJSONIndent(t, planBody), '\n')
 	planRel := ".claude/review/plans/review-plan-fixture-1.json"
 	planAbs := filepath.Join(root, filepath.FromSlash(planRel))
@@ -358,22 +372,54 @@ func SeedCleanRoundProjection(t *testing.T, root string, state map[string]any) {
 	reviewMap["claims"] = map[string]any{
 		"claim-qa-1": map[string]any{
 			"lens": "qa", "applicability": "required", "disposition": "pass",
-			"assignment_id": "assignment-qa-1", "result_id": "ev-result-assignment-qa-1", "finding_ids": []any{},
+			"assignment_id": "assignment-qa-1", "result_id": "review-result-assignment-qa-1", "finding_ids": []any{},
 		},
 	}
 	reviewMap["assignments"] = map[string]any{
 		"assignment-qa-1": map[string]any{
 			"lens": "qa", "claim_ids": []any{"claim-qa-1"}, "status": "consumed",
-			"agent_id": "agent-qa-1", "result_ref": "evidence/ev-result-assignment-qa-1.json",
+			"agent_id": "agent-qa-1", "result_ref": "evidence/review-result-assignment-qa-1.json",
 		},
 	}
 	if _, ok := reviewMap["observation_batch"]; !ok {
 		reviewMap["observation_batch"] = nil
 	}
-	envelope := EvidenceEnvelope(state, "clean-round-r1", "clean_round", "round-consumer", "Clean Round Evaluator", "pass", map[string]any{
-		"review_round": round,
+	plan, _, err := review.LoadPlan(root, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Persist the canonical Result fields as well as the evidence envelope.
+	result := EvidenceEnvelope(state, "review-result-assignment-qa-1", "review_result", "agent-qa-1", "QA", "pass", map[string]any{
+		"result_id": "review-result-assignment-qa-1", "review_plan_id": plan.ReviewPlanID,
+		"review_round": round, "assignment_id": "assignment-qa-1", "assignment_revision": 1,
+		"subject_digest": review.SubjectDigest(plan), "verification_artifact_digest": nil,
+		"claim_results": []any{map[string]any{"claim_id": "claim-qa-1", "conclusion": "pass", "observed": "independent fixture scope assessed", "evidence_refs": []string{"path:docs/architecture/module-relations.json#sha256=" + plan.ModuleScope.Dispositions[0].EvidenceRefs[0].SHA256}}},
+		"verdict":       "pass",
 	})
-	AppendEvidence(state, WriteEvidenceEnvelope(t, root, state, "clean-round-r1", "clean_round", "round-consumer", "Clean Round Evaluator", envelope, []any{}))
+	resultBytes := mustJSONIndent(t, result)
+	resultRel := ".claude/evidence/fixtures/review-result-assignment-qa-1.json"
+	testfixture.Write(t, root, resultRel, resultBytes)
+	upsertReviewFixtureEvidence(state, evidenceIndexEntry("review-result-assignment-qa-1", "review_result", resultRel, Sha256Hex(resultBytes), round, "agent-qa-1", "QA", []any{}))
+	row := reviewMap["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
+	row["result_ref"] = resultRel
+	envelope := EvidenceEnvelope(state, "clean-round-r1", "clean_round", "round-consumer", "Clean Round Evaluator", "pass", map[string]any{
+		"review_round": round, "review_plan_id": plan.ReviewPlanID,
+	})
+	cleanBytes := mustJSONIndent(t, envelope)
+	cleanRel := ".claude/evidence/fixtures/clean-round-r1.json"
+	testfixture.Write(t, root, cleanRel, cleanBytes)
+	upsertReviewFixtureEvidence(state, evidenceIndexEntry("clean-round-r1", "clean_round", cleanRel, Sha256Hex(cleanBytes), round, "round-consumer", "Clean Round Evaluator", []any{}))
+}
+
+func upsertReviewFixtureEvidence(state map[string]any, entry map[string]any) {
+	rows, _ := state["evidence"].([]any)
+	for i, raw := range rows {
+		if raw.(map[string]any)["id"] == entry["id"] {
+			rows[i] = entry
+			return
+		}
+	}
+	state["evidence"] = append(rows, entry)
 }
 
 func responsibilityForLens(lens string) string {

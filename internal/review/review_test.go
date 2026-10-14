@@ -155,6 +155,7 @@ func writePlanFile(t *testing.T, root string) string {
 		"created_by":                      "orchestrator",
 		"created_at":                      "2026-08-18T00:00:00Z",
 	}
+	scopeReviewFixtureFile(t, root, plan)
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +213,7 @@ func markDispatched(t *testing.T, root, statePath, journalPath string, snapshot 
 // refs no longer satisfy the evidence gate, so fixtures bind real files).
 func fixtureEvidenceRef(t *testing.T, root, name string) string {
 	t.Helper()
-	rel := "docs/reports/" + name
+	rel := ".claude/evidence/fixtures/" + name
 	path := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -757,7 +758,7 @@ func TestSubmitResultRejectsBuilderProducer(t *testing.T) {
 	_, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: snap.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "independence") {
+	if err == nil || !strings.Contains(err.Error(), "authored cumulative S6 changes") {
 		t.Fatalf("expected independence rejection, got %v", err)
 	}
 }
@@ -1184,7 +1185,7 @@ func TestRevisePlanInvalidatesConsumedResultsOnChangedClaims(t *testing.T) {
 		claim := raw.(map[string]any)
 		if claim["claim_id"] == "claim-qa-1" {
 			claim["assertion"] = "errors propagate AND surface in the typed result"
-			claim["source_refs"] = []string{"review-result-qa-1"}
+			claim["source_refs"] = append(claim["source_refs"].([]any), "review-result-qa-1")
 		}
 	}
 	out, _ := json.MarshalIndent(body, "", "  ")

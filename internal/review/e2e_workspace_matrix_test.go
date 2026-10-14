@@ -75,6 +75,7 @@ func writeColdStartPlan(t *testing.T, root, workspace string) string {
 		"created_by":                      "orchestrator",
 		"created_at":                      "2026-08-18T00:00:00Z",
 	}
+	scopeReviewFixtureFile(t, root, plan)
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -287,6 +288,7 @@ func TestSubmitResultRechecksRegressionAssetFingerprint(t *testing.T) {
 		"selector_ref": "testid:save-button", "route_ref": "settings/save",
 		"environment": "chromium/localhost:3000/profile=default",
 	}}
+	scopeReviewFixtureFile(t, root, raw)
 	regressionPath := filepath.Join(root, "plan-regression.json")
 	regressionBytes, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

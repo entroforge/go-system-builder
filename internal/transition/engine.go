@@ -147,6 +147,16 @@ func ApplyContext(ctx context.Context, root, statePath, journalPath string, requ
 		var err error
 		cleanRoundCheck, err = verification.PrepareCleanRoundForRoot(root, current)
 		if err != nil {
+			// Keep the catalog's strong-block diagnostic when preparation itself
+			// fails. The barrier still refuses without mutating Runtime.
+			if resolved.Spec.ID == "TR-015" || resolved.Spec.ID == "TR-017" {
+				failure := verification.EvaluateCleanRound(current)
+				failure.Passed = false
+				failure.Reasons = append(failure.Reasons, err.Error())
+				if blocked := enforceForbiddenEvents(root, catalog, resolved.Spec, current, func(map[string]any) verification.Result { return failure }); blocked != nil {
+					return loopruntime.Snapshot{}, blocked
+				}
+			}
 			return loopruntime.Snapshot{}, err
 		}
 		if evaluation := cleanRoundCheck(current); !evaluation.Passed {

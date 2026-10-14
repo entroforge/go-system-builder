@@ -17,6 +17,7 @@ import (
 // so LoadPlan can hash-verify it.
 func pinPlan(t *testing.T, root string, state map[string]any, plan map[string]any) {
 	t.Helper()
+	scopeReviewFixture(t, root, state, plan)
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -29,12 +30,14 @@ func pinPlan(t *testing.T, root string, state map[string]any, plan map[string]an
 	sum := sha256.Sum256(data)
 	reviewMap := state["review"].(map[string]any)
 	reviewMap["plan"] = map[string]any{
-		"plan_id":      plan["review_plan_id"],
-		"path":         path,
-		"sha256":       fmt.Sprintf("%x", sum[:]),
-		"revision":     1,
-		"review_round": plan["review_round"],
-		"status":       "running",
+		"plan_id":                         plan["review_plan_id"],
+		"path":                            path,
+		"sha256":                          fmt.Sprintf("%x", sum[:]),
+		"revision":                        1,
+		"review_round":                    plan["review_round"],
+		"status":                          "running",
+		"e2e_coverage_state":              plan["e2e_coverage_state"],
+		"verification_artifact_workspace": plan["verification_artifact_workspace"],
 	}
 	assignments := map[string]any{}
 	for _, raw := range plan["assignments"].([]any) {

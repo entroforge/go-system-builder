@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/review"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -105,7 +106,15 @@ func writeSystemState(t *testing.T, root string, state map[string]any) {
 	req039fixtures.EnsureStateRoot(state, root)
 	req039fixtures.CommitCurrentFixture(t, root)
 	if bound, ok := state["bound_req"].(map[string]any); ok {
-		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": strings.TrimSpace(runGitIn(t, root, "branch", "--show-current")), "release_upstream": "origin/release", "bound_commit": strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))}
+		boundCommit := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
+		if ptr := review.PlanPointerFromState(state); ptr != nil && ptr.Status == "clean" {
+			if binding, ok := bound["workspace"].(map[string]any); ok {
+				if pinned, ok := binding["bound_commit"].(string); ok && pinned != "" {
+					boundCommit = pinned
+				}
+			}
+		}
+		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": strings.TrimSpace(runGitIn(t, root, "branch", "--show-current")), "release_upstream": "origin/release", "bound_commit": boundCommit}
 	}
 	path := filepath.Join(root, ".claude", "loop-state.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

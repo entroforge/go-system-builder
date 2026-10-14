@@ -13,6 +13,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // TestRecheckCaptureDirtyWorkerCannotCertifyCommittedSubject proves that a
@@ -27,7 +28,7 @@ func TestRecheckCaptureDirtyWorkerCannotCertifyCommittedSubject(t *testing.T) {
 
 	workerPath := filepath.Join(t.TempDir(), "capture-worker")
 	runGit(t, root, "worktree", "add", "-b", "wt/capture-binding", workerPath, "HEAD")
-	planPath := minimalReviewPlan(t, workerPath, "review-plan-capture-binding")
+	planPath := minimalReviewPlan(t, workerPath, "review-plan-capture-binding", root)
 	writeRecheckCaptureReviewPlan(t, planPath, root, "review-plan-capture-binding")
 
 	var stdout, stderr bytes.Buffer
@@ -191,6 +192,7 @@ func writeRecheckCaptureReviewPlan(t *testing.T, path, authorityRoot, planID str
 		"dispatch_capacity_policy":        "coverage_complete",
 		"created_by":                      "recheck", "created_at": "2026-09-20T00:00:00Z",
 	}
+	testfixture.ReviewPlanFile(t, authorityRoot, plan, review.ResolveModuleScopeForRoot)
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)

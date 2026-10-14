@@ -399,6 +399,7 @@ func TestRegisterPlanEnforcesTR012RepairBaselineBinding(t *testing.T) {
 		},
 	}
 
+	writeState(t, root, state)
 	planPath := writePlanFile(t, root)
 	planData, err := os.ReadFile(planPath)
 	if err != nil {
@@ -460,6 +461,14 @@ func TestRegisterPlanEnforcesTR012RepairBaselineBinding(t *testing.T) {
 		"review_round": nil, "produced_by": []any{"orchestrator"}, "invalidated_by": nil,
 		"invalidation_rule": nil, "invalidation_reason": nil, "responsibility_id": "orchestrator", "scope_refs": []any{},
 	}}
+	scopeReviewFixture(t, root, state, planBody)
+	updatedPlan, err = json.MarshalIndent(planBody, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, append(updatedPlan, '\n'), 0644); err != nil {
+		t.Fatal(err)
+	}
 	statePath, journalPath := writeState(t, root, state)
 	if _, err := RegisterPlan(root, statePath, journalPath, PlanRequest{ExpectedRevision: 1, PlanPath: planPath}); err != nil {
 		t.Fatalf("TR-012 plan with complete repair baseline must register: %v", err)
@@ -488,6 +497,8 @@ func TestRegisterPlanEnforcesTR012RepairBaselineBinding(t *testing.T) {
 	// Use a fresh state because the successful registration above owns the
 	// round; the rejection assertion is about the same registration gate.
 	freshState := baseVerificationState()
+	freshState["bound_req"] = state["bound_req"]
+	freshState["documents"] = state["documents"]
 	freshState["review"] = state["review"]
 	freshState["evidence"] = state["evidence"]
 	freshStatePath, freshJournalPath := writeState(t, root, freshState)

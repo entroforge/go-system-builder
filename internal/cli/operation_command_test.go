@@ -38,7 +38,7 @@ func operationCLI(t *testing.T, args ...string) (int, []byte, string) {
 
 func TestRuntimeOperationCLICommitQueryReplayAndPending(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	plan := minimalReviewPlan(t, t.TempDir(), "review-plan-operation-cli")
+	plan := minimalReviewPlan(t, t.TempDir(), "review-plan-operation-cli", root)
 	args := []string{"runtime", "review-plan", "--root", root, "--file", plan, "--operation-id", "cli-plan-1", "--expected-revision", "1"}
 	code, first, diagnostic := operationCLI(t, args...)
 	if code != 0 {

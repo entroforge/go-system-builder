@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/verification"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -67,6 +68,9 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.SeedCleanRoundReady(t, root, state)
 	writeSystemState(t, root, state)
+	if result := verification.EvaluateCleanRoundForRoot(root, req039fixtures.ReadState(t, root)); !result.Passed {
+		t.Fatalf("clean-round fixture invalid: %v", result.Reasons)
+	}
 	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s7-tr009", "Bash", bash,
 		"TR-009", "acceptance", "", bugID)
 

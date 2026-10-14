@@ -19,7 +19,7 @@ func TestRuntimeOperationRecoversAfterActualSIGPIPE(t *testing.T) {
 		t.Skip("requires the actual built binary")
 	}
 	root := worktreeProjectRoot(t)
-	plan := minimalReviewPlan(t, t.TempDir(), "review-plan-sigpipe")
+	plan := minimalReviewPlan(t, t.TempDir(), "review-plan-sigpipe", root)
 	args := []string{"runtime", "review-plan", "--root", root, "--file", plan, "--operation-id", "sigpipe-plan-1", "--expected-revision", "1"}
 	reader, writer, err := os.Pipe()
 	if err != nil {

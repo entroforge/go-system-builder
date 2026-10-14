@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 func TestDiscoverE2EInventoryKeepsSourceCandidatesUnqualified(t *testing.T) {
@@ -78,6 +80,7 @@ func TestDraftPlanSplitsE2EByCaseAndFallsBackToColdStart(t *testing.T) {
 	state := baseDraftState(t)
 	state["bound_req"] = map[string]any{"path": "docs/requirements/REQ-TEST.md", "metadata": map[string]any{"ui_impact": "changed"}}
 
+	testfixture.ReviewProject(t, root, state, map[string]any{"claims": []any{}})
 	plan, _ := DraftPlanForRoot(root, state, 3)
 	if plan.E2ECoverageState != "cold_start" {
 		t.Fatalf("without matching specs E2E must be cold_start, got %q", plan.E2ECoverageState)

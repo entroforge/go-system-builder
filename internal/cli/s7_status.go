@@ -164,6 +164,10 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 	}
 
 	plan, _, planErr := review.LoadPlan(root, state)
+	if planErr != nil {
+		fmt.Fprintf(stdout, "s7 status: cannot load registered ReviewPlan: %v; restore the pinned plan before interpreting completion\n", planErr)
+		return 1
+	}
 	if planErr == nil {
 		// Every ReviewResult must bind this exact digest; printing it here
 		// saves the reviewer from re-deriving the frozen-baseline hash

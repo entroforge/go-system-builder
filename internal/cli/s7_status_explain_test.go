@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // TestS7StatusExplain proves the RC-12 Step A contract on `s7 status`:
@@ -151,6 +153,7 @@ func minimalS7ExplainState(t *testing.T, root string) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
+	planBytes = testfixture.HistoricalPlan(t, planBytes)
 	planBytes = append(planBytes, '\n')
 	planRel := filepath.Join(".claude", "review", "plans", "review-plan-explain-1.json")
 	state["review"].(map[string]any)["plan"] = map[string]any{
@@ -190,5 +193,23 @@ func writeS7ExplainRuntime(t *testing.T, root string, state map[string]any) {
 	}
 	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An unreadable pinned plan must never render a successful completion board.
+func TestS7StatusRejectsCorruptPinnedPlan(t *testing.T) {
+	root := t.TempDir()
+	state := minimalS7ExplainState(t, root)
+	writeS7ExplainRuntime(t, root, state)
+	ptr := state["review"].(map[string]any)["plan"].(map[string]any)
+	if err := os.WriteFile(filepath.Join(root, ptr["path"].(string)), []byte("tampered"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := runS7Status(root, &out, false); code != 1 {
+		t.Fatalf("status=%d output=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "drifted") || strings.Contains(out.String(), "all required claims dispositioned") {
+		t.Fatalf("misleading status: %s", out.String())
 	}
 }

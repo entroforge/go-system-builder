@@ -14,7 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // writeManifestDraftFixture builds a minimal runtime with a registered
@@ -65,6 +67,15 @@ func writeManifestDraftFixture(t *testing.T, root string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var plan map[string]any
+	if err := json.Unmarshal(planBytes, &plan); err != nil {
+		t.Fatal(err)
+	}
+	testfixture.ReviewPlan(t, root, state, plan, review.ResolveModuleScopeForRoot)
+	planBytes, err = json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	planBytes = append(planBytes, '\n')
 	sum := sha256.Sum256(planBytes)
 	planRel := filepath.Join(".claude", "review", "plans", "review-plan-cli-md-1.json")
@@ -78,12 +89,14 @@ func writeManifestDraftFixture(t *testing.T, root string) {
 		"round":       1,
 		"clean_round": nil,
 		"plan": map[string]any{
-			"plan_id":      "review-plan-cli-md-1",
-			"path":         filepath.ToSlash(planRel),
-			"sha256":       fmt.Sprintf("%x", sum[:]),
-			"revision":     1,
-			"review_round": 1,
-			"status":       "running",
+			"plan_id":                         "review-plan-cli-md-1",
+			"path":                            filepath.ToSlash(planRel),
+			"sha256":                          fmt.Sprintf("%x", sum[:]),
+			"revision":                        1,
+			"review_round":                    1,
+			"status":                          "running",
+			"e2e_coverage_state":              plan["e2e_coverage_state"],
+			"verification_artifact_workspace": plan["verification_artifact_workspace"],
 		},
 		"claims": map[string]any{},
 		"assignments": map[string]any{

@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/testfixture"
 )
 
 // ---------------------------------------------------------------------------
@@ -118,7 +120,7 @@ func worktreeProjectRoot(t *testing.T) string {
 // (S7-11/RC-07: bare ghost references are rejected by the evidence gate).
 func typedEvidenceRef(t *testing.T, root, name string) string {
 	t.Helper()
-	rel := "docs/reports/" + name
+	rel := ".claude/evidence/fixtures/" + name
 	path := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -147,7 +149,7 @@ func runGit(t *testing.T, root string, args ...string) {
 	}
 }
 
-func minimalReviewPlan(t *testing.T, dir, planID string) string {
+func minimalReviewPlan(t *testing.T, dir, planID, authorityRoot string) string {
 	t.Helper()
 	subjectPath := filepath.Join(dir, "internal", "example", "service.go")
 	if err := os.MkdirAll(filepath.Dir(subjectPath), 0o755); err != nil {
@@ -205,6 +207,7 @@ func minimalReviewPlan(t *testing.T, dir, planID string) string {
 		"created_by":                      "test",
 		"created_at":                      "2026-08-23T00:00:00Z",
 	}
+	testfixture.ReviewPlanFile(t, authorityRoot, plan, review.ResolveModuleScopeForRoot)
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +238,7 @@ func TestReviewPlanFromWorktreeWritesToSharedControlPlane(t *testing.T) {
 
 	// Write the plan in the worktree (simulating the Worker authoring
 	// it in its own checkout) and run review-plan with --root=root.
-	planPath := minimalReviewPlan(t, worktreePath, "review-plan-worktree")
+	planPath := minimalReviewPlan(t, worktreePath, "review-plan-worktree", root)
 
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{
@@ -307,7 +310,7 @@ func TestReviewResultFromWorktreeWritesToSharedControlPlane(t *testing.T) {
 	runGit(t, root, "worktree", "add", "-b", "wt/test", worktreePath, "HEAD")
 
 	// Register a plan under the project root first.
-	planPath := minimalReviewPlan(t, worktreePath, "review-plan-worktree-result")
+	planPath := minimalReviewPlan(t, worktreePath, "review-plan-worktree-result", root)
 	var stdout, stderr bytes.Buffer
 	if code := cli.Run([]string{
 		"runtime", "review-plan",
@@ -473,7 +476,7 @@ func TestReviewPlanWithoutExplicitRootWritesToCwdNotProjectRoot(t *testing.T) {
 	root := worktreeProjectRoot(t)
 	worktreePath := filepath.Join(t.TempDir(), "wt")
 	runGit(t, root, "worktree", "add", "-b", "wt/test", worktreePath, "HEAD")
-	planPath := minimalReviewPlan(t, worktreePath, "review-plan-no-root")
+	planPath := minimalReviewPlan(t, worktreePath, "review-plan-no-root", root)
 
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{

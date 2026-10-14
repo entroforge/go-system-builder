@@ -70,7 +70,7 @@ func TestFinalAuditCaptureExecRefsSubmit(t *testing.T) {
 func finalCaptureExecFixture(t *testing.T, planID, script string) (root, bufferDir, rawRef string) {
 	t.Helper()
 	root = worktreeProjectRoot(t)
-	planPath := minimalReviewPlan(t, t.TempDir(), planID)
+	planPath := minimalReviewPlan(t, t.TempDir(), planID, root)
 	var stdout, stderr bytes.Buffer
 	if code := cli.Run([]string{
 		"runtime", "review-plan",
@@ -173,7 +173,7 @@ func TestFinalAuditCaptureRejectsFrozenSubjectChangedDuringCommand(t *testing.T)
 	workerPath := filepath.Join(t.TempDir(), "capture-mutation-worker")
 	runGit(t, root, "worktree", "add", "-b", "wt/capture-mutation", workerPath, "HEAD")
 	planID := "review-plan-final-capture-mutation"
-	planPath := minimalReviewPlan(t, workerPath, planID)
+	planPath := minimalReviewPlan(t, workerPath, planID, root)
 	writeRecheckCaptureReviewPlan(t, planPath, root, planID)
 	var stdout, stderr bytes.Buffer
 	if code := cli.Run([]string{
@@ -228,7 +228,7 @@ func TestFinalAuditCaptureRejectsUndeclaredWorkerProductDrift(t *testing.T) {
 	workerPath := filepath.Join(t.TempDir(), "capture-undeclared-worker")
 	runGit(t, root, "worktree", "add", "-b", "wt/capture-undeclared", workerPath, "HEAD")
 	planID := "review-plan-final-capture-undeclared"
-	planPath := minimalReviewPlan(t, workerPath, planID)
+	planPath := minimalReviewPlan(t, workerPath, planID, root)
 	writeRecheckCaptureReviewPlan(t, planPath, root, planID)
 	var stdout, stderr bytes.Buffer
 	if code := cli.Run([]string{
