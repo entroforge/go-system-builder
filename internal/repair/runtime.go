@@ -2481,19 +2481,16 @@ func validateHandoffAgainstCurrentRepair(root string, state, pointer map[string]
 	if err := validateChangeImpactEvidenceLedger(root, state, pointer, impact, true); err != nil {
 		return err
 	}
-	{
-		if err := exactChangedArtifactSet(resultArtifacts, changeset.Artifacts, "RepairResult batch", "Changeset"); err != nil {
-			return err
-		}
-		if err := exactChangedArtifactSet(resultArtifacts, impact.ChangedArtifacts, "RepairResult batch", "ChangeImpact"); err != nil {
-			return err
-		}
-		if err := validateConfirmationImpact(root, state, pointer, results, impact); err != nil {
-			return err
-		}
-		return validateConfirmationChangeset(root, pointer, changeset)
+	if err := exactChangedArtifactSet(resultArtifacts, changeset.Artifacts, "RepairResult batch", "Changeset"); err != nil {
+		return err
 	}
-	return nil
+	if err := exactChangedArtifactSet(resultArtifacts, impact.ChangedArtifacts, "RepairResult batch", "ChangeImpact"); err != nil {
+		return err
+	}
+	if err := validateConfirmationImpact(root, state, pointer, results, impact); err != nil {
+		return err
+	}
+	return validateConfirmationChangeset(root, pointer, changeset)
 }
 
 func stateArtifactPaths(state map[string]any) []string {
