@@ -283,3 +283,25 @@ func TestMergeCapturedTimelineCheckedRejectsConflictingFindingAndClaim(t *testin
 		t.Fatalf("conflicting finding/claim correlation must be rejected, got %v", err)
 	}
 }
+
+func TestSanitizeCaptureChecksEveryEvidenceReference(t *testing.T) {
+	for index := 0; index < 3; index++ {
+		t.Run(fmt.Sprint(index), func(t *testing.T) {
+			refs := []string{"logs/first.txt", "logs/second.txt", "logs/third.txt"}
+			refs[index] = "logs/synthetic?password=synthetic-marker"
+			err := SanitizeCapture(CaptureStep{Action: "inspect", Observed: "response observed", Evidence: refs})
+			if err == nil {
+				t.Fatal("secret marker in a non-final evidence ref was missed")
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("evidence_refs[%d]", index)) {
+				t.Fatal("diagnostic does not locate the rejected reference", err)
+			}
+			if strings.Contains(err.Error(), "synthetic-marker") {
+				t.Fatal("diagnostic echoes the rejected value")
+			}
+		})
+	}
+	if err := SanitizeCapture(CaptureStep{Action: "inspect", Observed: "response observed", Evidence: []string{"logs/first.txt", "logs/second.txt", "logs/third.txt"}}); err != nil {
+		t.Fatal(err)
+	}
+}

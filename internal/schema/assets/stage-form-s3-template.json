@@ -1,0 +1,23 @@
+{
+  "stage": "S3",
+  "adapter": "planning_contract",
+  "title": "Complete the current contract batch and receive original planning evidence",
+  "instruction": "Use the frozen REQ, original registered design and conditional sources. Complete the CONTRACTS index and all applicable FE/BE/SYNC contracts. Fill only answer. Pass and applicability are your professional judgments; original contracts/scenario gates, human decisions and downstream independent review remain required.",
+  "questions": {
+    "conclusion": {
+      "question": "Has your exact contract batch self-review passed?",
+      "choices": [
+        "pass"
+      ]
+    },
+    "index_path": {
+      "question": "Where is the actual locked CONTRACTS index?"
+    },
+    "contract_paths": {
+      "question": "List the complete applicable locked FE/BE/SYNC contract paths."
+    },
+    "applicability": {
+      "question": "Set answer.applicability to an object with exactly FE, BE and SYNC. Each family value must be an object with exactly disposition and rationale: disposition is required or not_applicable; rationale is your concrete reason matching the original requirement/design scope. Do not use a string value or a verdict field."
+    }
+  }
+}

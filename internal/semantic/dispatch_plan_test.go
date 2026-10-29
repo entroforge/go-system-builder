@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,19 +76,68 @@ func TestDispatchNoWaveBarrierAndCapacity(t *testing.T) {
 	if strings.Join(next, ",") != "TASK-042-01,TASK-042-02,TASK-042-03" {
 		t.Fatal(next)
 	}
-	facts := map[string]DispatchFact{"TASK-042-01": {State: "integrated"}, "TASK-042-02": {State: "integrated"}, "TASK-042-03": {State: "running"}}
+	facts := map[string]DispatchFact{
+		"TASK-042-01": {State: workstate.Done, Integrated: true, DeliveryRecorded: true},
+		"TASK-042-02": {State: workstate.Done, Integrated: true, DeliveryRecorded: true},
+		"TASK-042-03": {State: workstate.Active},
+	}
 	rows, next := NextDispatch(p, facts, 1)
 	if strings.Join(next, ",") != "TASK-042-04" {
 		t.Fatal(rows, next)
+	}
+	row := func(id string) DispatchRow {
+		t.Helper()
+		for _, candidate := range rows {
+			if candidate.Task.ID == id {
+				return candidate
+			}
+		}
+		t.Fatalf("missing row %s", id)
+		return DispatchRow{}
+	}
+	if done := row("TASK-042-01"); done.State != workstate.Done || !done.Integrated || !done.DeliveryRecorded {
+		t.Fatalf("integrated result lost its separate facts: %+v", done)
+	}
+	if chosen := row("TASK-042-04"); chosen.State != workstate.Pending || !chosen.Eligible || !chosen.Dispatchable {
+		t.Fatalf("selected task did not expose eligible/dispatchable facts: %+v", chosen)
+	}
+	if waiting := row("TASK-042-05"); waiting.State != workstate.Pending || waiting.Eligible || waiting.Dispatchable || !strings.Contains(waiting.Reason, "TASK-042-03") {
+		t.Fatalf("unintegrated dependency was not represented separately: %+v", waiting)
 	}
 	_, next = NextDispatch(p, facts, 0)
 	if len(next) != 0 {
 		t.Fatal(next)
 	}
-	facts["TASK-042-01"] = DispatchFact{State: "reported"}
-	_, next = NextDispatch(p, facts, 3)
+	facts["TASK-042-01"] = DispatchFact{State: workstate.Active, DeliveryRecorded: true}
+	rows, next = NextDispatch(p, facts, 3)
 	if len(next) > 0 {
 		t.Fatal("reported must not release", next)
+	}
+	for _, candidate := range rows {
+		if candidate.Task.ID == "TASK-042-01" && (candidate.State != workstate.Active || candidate.Integrated || !candidate.DeliveryRecorded) {
+			t.Fatalf("delivery fact was confused with integration: %+v", candidate)
+		}
+		if candidate.Task.ID == "TASK-042-04" && (candidate.State != workstate.Pending || candidate.Eligible || candidate.Dispatchable) {
+			t.Fatalf("consumer was released before the predecessor integrated: %+v", candidate)
+		}
+	}
+	// A real Main merge can coexist with incomplete professional closing.
+	// Preserve that independent proof, but do not release the dependent TASK
+	// until its overall work state is done as well.
+	facts["TASK-042-01"] = DispatchFact{State: workstate.Active, Integrated: true, DeliveryRecorded: true}
+	rows, next = NextDispatch(p, facts, 3)
+	for _, id := range next {
+		if id == "TASK-042-04" {
+			t.Fatalf("Main integration proof alone released a dependency with incomplete closing: %v", next)
+		}
+	}
+	for _, candidate := range rows {
+		if candidate.Task.ID == "TASK-042-01" && (candidate.State != workstate.Active || !candidate.Integrated || !candidate.DeliveryRecorded) {
+			t.Fatalf("incomplete closing lost its separate Main integration proof: %+v", candidate)
+		}
+		if candidate.Task.ID == "TASK-042-04" && (candidate.State != workstate.Pending || candidate.Eligible || candidate.Dispatchable) {
+			t.Fatalf("Main integration proof alone released dependent TASK: %+v", candidate)
+		}
 	}
 }
 func TestNewPlanCannotBecomeLegacyByDeletingIndex(t *testing.T) {

@@ -1,0 +1,6 @@
+{
+  "operation": "exportFilteredRows",
+  "request": { "filters": "当前筛选条件" },
+  "success": { "content_type": "text/csv", "columns": ["id", "name"] },
+  "permission_denied": "403，返回权限拒绝结果"
+}

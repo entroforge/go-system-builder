@@ -1,35 +1,39 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// TestProtoHeaderFailureNamesMissingTokens pins round-3 NEW-3: the UI
-// prototype gate must name the page and the missing 4-field header tokens
-// instead of failing silently (the skill previously taught 3 fields).
-func TestProtoHeaderFailureNamesMissingTokens(t *testing.T) {
+func TestS2UIProjectionInventoriesFilesWithoutProfessionalValidation(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "docs", "design", "prototypes", "mod1")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	req := uiInventoryREQ(t, root, "docs/design/prototypes/investor-workbench/")
+	if err := writeCompleteUIDesignPackageForTest(root, "investor-workbench"); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"stories.md", "flows.md", "scenario-model.json", "fixture-contract.json", "cross-matrix.json", "cases.json", "scenario-coverage.json"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("x\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	// Existing but invalid authoring content must be diagnosed by the explicit
+	// scenario consumer, not parsed afresh during every ordinary tool call.
+	model := filepath.Join(root, "docs/design/prototypes/investor-workbench/scenario-model.json")
+	if err := os.WriteFile(model, []byte("unfinished JSON"), 0644); err != nil {
+		t.Fatal(err)
 	}
-	// index + page carrying only the 3 fields the old skill taught.
-	page := "<header class=\"proto-meta\"><span>更新: 2026-07-09</span><span>路由: /x</span><span><a href=\"index.html\">idx</a></span></header>"
-	for _, name := range []string{"index.html", "page.html"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(page), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	state := map[string]any{"bound_req": map[string]any{"path": req, "metadata": map[string]any{"ui_impact": "changed"}}}
+	projection := contractFor("S2", state, root)
+	if strings.Contains(strings.Join(projection.Missing, ","), "ui_design_package") {
+		t.Fatalf("passive projection ran professional validation: %v", projection.Missing)
 	}
-	_, err := hasCompleteUIDesignPackageForModule(root, "mod1")
-	if err == nil || !strings.Contains(err.Error(), "设计代数") {
-		t.Fatalf("missing 设计代数 must be named in the gate error, got: %v", err)
+	var out, diagnostic bytes.Buffer
+	if code := Run([]string{"scenario", "validate", "--module", "investor-workbench", "--root", root}, nil, &out, &diagnostic); code == 0 || !strings.Contains(diagnostic.String(), "scenario-model.json") {
+		t.Fatalf("explicit scenario check lost actual invalid input: %d %s %s", code, &out, &diagnostic)
+	}
+	if err := os.Remove(model); err != nil {
+		t.Fatal(err)
+	}
+	projection = contractFor("S2", state, root)
+	if !strings.Contains(strings.Join(projection.Missing, ","), "investor-workbench/scenario-model.json") {
+		t.Fatalf("inventory discarded the exact missing input: %v", projection.Missing)
 	}
 }

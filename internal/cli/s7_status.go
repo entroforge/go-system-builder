@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,17 +14,21 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/metrics"
+	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // runS7Command is the `loop-harness s7` dispatcher: `status` is the
 // read-only board, `draft` scaffolds a ReviewPlan, `manifest-draft`
 // scaffolds the reviewer team-manifest for one plan Assignment, and
-// `workspace-digest` prints the current verification-artifact digest an
-// E2E cold-start ReviewResult must bind (L3-S7 §3.5).
+// `workspace-digest` is a compatibility/diagnostic read of the current
+// artifact digest. Normal original questionnaires bind it in the consumer;
+// authors do not run this command to fill machine fields.
 func runS7Command(args []string, stdout, stderr io.Writer) int {
 	if wantsHelp(args) {
 		name := compactHelpName(args)
@@ -41,10 +46,15 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 		flags := flag.NewFlagSet("s7 workspace-digest", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		root := flags.String("root", ".", "repository root")
-		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
+		if err := flags.Parse(args[1:]); err != nil {
 			return 2
 		}
-		return runS7WorkspaceDigest(*root, stdout)
+		requestedRoot := *root
+		if err := routeWorkspaceFlags(flags); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		return runS7WorkspaceDigest(requestedRoot, stdout)
 	}
 	if args[0] == "manifest-draft" {
 		flags := flag.NewFlagSet("s7 manifest-draft", flag.ContinueOnError)
@@ -69,7 +79,7 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
-		return runS7Draft(*root, *out, stdout)
+		return runS7Draft(*root, *out, stdout, stderr)
 	}
 	flags := flag.NewFlagSet("s7 status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -87,6 +97,12 @@ func runS7Command(args []string, stdout, stderr io.Writer) int {
 // (RC-12 Step A): static-wave A-completeness, behavior-wave B-admission,
 // and the exact next CLI verb.
 func runS7Status(root string, stdout io.Writer, explain bool) int {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		fmt.Fprintf(stdout, "s7 status: resolve root: %v\n", err)
+		return 1
+	}
+	root = absoluteRoot
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
 	store := runtime.NewStore(statePath, journalPath)
@@ -99,6 +115,7 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 		return 1
 	}
 	state := snapshot.State
+	packetMode := runtime.PacketEnabled(state)
 
 	reviewMap, _ := state["review"].(map[string]any)
 	round := 0
@@ -124,8 +141,11 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 	}
 	if maxRounds > 0 && round >= maxRounds {
 		fmt.Fprintln(stdout, "budget: exhausted for opening another full S7 round")
-		fmt.Fprintln(stdout, "human decision required: increase_budget or return_to_governance")
-		fmt.Fprintln(stdout, "next: `loop-harness runtime s7-budget-decision --file <decision.json> --actor <user>`")
+		if context := stageS7BudgetDecisionQuestionnaireContext(root, policy.Input{}, snapshot); context != "" {
+			fmt.Fprintln(stdout, context)
+		} else {
+			fmt.Fprintln(stdout, "the current round may finish normally; a human budget decision is requested only when the original flow actually needs another full round, not merely because the counter reached its limit")
+		}
 	}
 	if cfg, ok := state["configuration"].(map[string]any); ok {
 		if repair, ok := cfg["repair"].(map[string]any); ok {
@@ -137,12 +157,28 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 	roundEntry, _ := reviewMap["round_entry"].(map[string]any)
 	seedRef := stringValue(roundEntry["review_plan_seed_ref"])
 	ptr := review.PlanPointerFromState(state)
+	if repairSeedAwaitingPlan(state) {
+		fmt.Fprintf(stdout, "seed_projection: awaiting professional refinement (seed=%s)\n", seedRef)
+		fmt.Fprintln(stdout, stageReviewPlanQuestionnaireContext(root, policy.Input{Event: "PreToolUse", AgentID: "Main", CWD: root}, runtime.Snapshot{State: state}))
+		return 0
+	}
 	if ptr == nil {
 		if seedRef != "" {
 			fmt.Fprintf(stdout, "seed_projection: missing (seed=%s is present in round_entry but review.plan is absent)\n", seedRef)
 			fmt.Fprintln(stdout, "next: reconcile the S9 handoff projection before drafting or registering another plan")
 		}
-		fmt.Fprintln(stdout, "(no ReviewPlan registered — create one and run `runtime review-plan --file <plan.json>`)")
+		if packetMode {
+			path := review.PlanQuestionnairePath(root, state)
+			if path == "" {
+				fmt.Fprintln(stdout, "ReviewPlan questionnaire preparation gap: Main/system must restore the current Runtime generation and round.")
+			} else if _, err := os.Stat(path); err != nil {
+				fmt.Fprintf(stdout, "ReviewPlan questionnaire: %s; preparation gap: %v; Main/system must prepare this exact questionnaire through the original listener.\n", path, err)
+			} else {
+				fmt.Fprintf(stdout, "ReviewPlan questionnaire: %s; Main fills the professional Claims, oracles, methods and assignments, then saves this file for original registration.\n", path)
+			}
+		} else {
+			fmt.Fprintln(stdout, "(no ReviewPlan registered — create one and run `runtime review-plan --file <plan.json>`)")
+		}
 		return 0
 	}
 	fmt.Fprintf(stdout, "plan: %s status=%s revision=%d e2e_coverage=%s\n",
@@ -165,7 +201,11 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 		// Every ReviewResult must bind this exact digest; printing it here
 		// saves the reviewer from re-deriving the frozen-baseline hash
 		// (the submit-time verifier rejects mismatches).
-		fmt.Fprintf(stdout, "subject_digest: %s (every review-result submit must bind exactly this value)\n", review.SubjectDigest(plan))
+		if packetMode {
+			fmt.Fprintf(stdout, "subject_digest: %s (machine-bound in the issued Reviewer questionnaire)\n", review.SubjectDigest(plan))
+		} else {
+			fmt.Fprintf(stdout, "subject_digest: %s (every review-result submit must bind exactly this value)\n", review.SubjectDigest(plan))
+		}
 	}
 	dispositions := review.Dispositions(state)
 	claimsByID := map[string]review.Claim{}
@@ -247,7 +287,11 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 			if queuedAgent, _ := row["queued_agent_id"].(string); queuedAgent != "" {
 				agent = fmt.Sprintf("(queued for %s)", queuedAgent)
 			} else {
-				agent = "(not dispatched — run `runtime register-workgroup`)"
+				if packetMode {
+					agent = "(not dispatched — Main selects the real Reviewer for original registration and dispatch)"
+				} else {
+					agent = "(not dispatched — run `runtime register-workgroup`)"
+				}
 			}
 		}
 		status := row["status"]
@@ -256,9 +300,7 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 		// (the recovery verb is `runtime agent-event blocker_resolved`).
 		line := fmt.Sprintf("  %s [%s] status=%s agent=%s", id, row["lens"], status, agent)
 		if status == "blocked" {
-			if ref, _ := row["blocker_ref"].(string); ref != "" {
-				line += fmt.Sprintf("\n    blocker_ref=%s (record `runtime agent-event --event blocker_resolved --agent-id <id> --message <file>` after the capture conditions are fixed, then resubmit)", ref)
-			}
+			line += "\n    " + strings.TrimSpace(s7BlockedAssignmentGuidance(root, state, id))
 		}
 		if queuedAgent, _ := row["queued_agent_id"].(string); queuedAgent != "" {
 			line += fmt.Sprintf("\n    queue_reason=%v (the platform TeammateIdle hook re-wakes %s with this Assignment envelope after the lock is released)", row["queue_reason"], queuedAgent)
@@ -292,10 +334,13 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 		return 0
 	}
 	if ptr.Status == "clean" {
-		fmt.Fprintln(stdout, "clean round: machine CleanRound registered — the next PreToolUse auto-commits TR-009 (do not invoke the transition CLI)")
+		fmt.Fprintln(stdout, "clean round: machine CleanRound registered; original Result completion continues Gate/TR-009 and prepares S10 acceptance. Pending exit recovery: loop-harness runtime review-continue --root <root>")
 		return 0
 	}
-	if len(pending) > 0 {
+	if packetMode {
+		fmt.Fprintf(stdout, "pending required claims: %d %v\n", len(pending), pending)
+		printS7PacketQuestionnaires(root, stdout, state, plan, pending)
+	} else if len(pending) > 0 {
 		fmt.Fprintf(stdout, "pending required claims: %d — next: dispatch/consume results via `runtime review-result submit`\n", len(pending))
 	} else {
 		fmt.Fprintln(stdout, "all required claims dispositioned; round consumer closes on the next submit")
@@ -316,6 +361,70 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 	return 0
 }
 
+// Read only the original plan, assignment and issued-packet facts. Domain
+// statuses remain domain facts; this board introduces no new work states.
+func printS7PacketQuestionnaires(root string, stdout io.Writer, state map[string]any, plan *review.Plan, pending []string) {
+	if plan == nil {
+		fmt.Fprintln(stdout, "Reviewer questionnaire preparation gap: Main/system must restore the registered ReviewPlan before resolving current responsibilities.")
+		return
+	}
+	if len(pending) == 0 {
+		fmt.Fprintln(stdout, "All required Claims have dispositions; Main/system follows the original round consumer's current routing facts.")
+		return
+	}
+	missing := map[string]bool{}
+	for _, id := range pending {
+		missing[id] = true
+	}
+	facts, _ := state["review"].(map[string]any)
+	assignments, _ := facts["assignments"].(map[string]any)
+	packets, packetErr := runtime.CurrentReviewResultPacketsContext(runtime.WithPacketBodyRoot(context.Background(), root), state, "")
+	packetByAssignment := map[string]int{}
+	for i, packet := range packets {
+		packetByAssignment[packet.Binding.AssignmentID] = i
+	}
+	if packetErr != nil {
+		fmt.Fprintf(stdout, "Reviewer questionnaire preparation gap: %v; Main/system must restore the original current packets.\n", packetErr)
+	}
+	for _, assignment := range plan.Assignments {
+		var claims []string
+		for _, id := range assignment.ClaimIDs {
+			if missing[id] {
+				claims = append(claims, id)
+			}
+		}
+		if len(claims) == 0 {
+			continue
+		}
+		row, _ := assignments[assignment.AssignmentID].(map[string]any)
+		owner := stringValue(row["agent_id"])
+		if owner == "" {
+			if queued := stringValue(row["queued_agent_id"]); queued != "" {
+				fmt.Fprintf(stdout, "dispatch pending: %s claims=%v queued Reviewer=%s reason=%v; Main follows the original queue/dependency release.\n", assignment.AssignmentID, claims, queued, row["queue_reason"])
+			} else {
+				fmt.Fprintf(stdout, "dispatch pending: %s claims=%v wave=%s; Main selects a real Reviewer and completes original registration/dispatch when dependencies allow.\n", assignment.AssignmentID, claims, assignment.ExecutionWave)
+			}
+			continue
+		}
+		path := ""
+		if i, issued := packetByAssignment[assignment.AssignmentID]; issued {
+			packet := packets[i]
+			binding := packet.Binding
+			source, err := questionnaireSourceRoot(root, state, assignment.AssignmentID, binding.OwnerAgentID, binding.RuntimeID, binding.BaselineGeneration)
+			if err == nil {
+				path, _ = filepath.Abs(filepath.Join(source, filepath.FromSlash(packet.AnswerPath)))
+			}
+		}
+		if path == "" {
+			fmt.Fprintf(stdout, "Reviewer questionnaire preparation gap: %s owner=%s claims=%v; Main/system must prepare the original current packet and exact answer path.\n", assignment.AssignmentID, owner, claims)
+		} else if _, err := os.Stat(path); err != nil {
+			fmt.Fprintf(stdout, "Reviewer questionnaire: %s; preparation gap: %v; Main/system must restore this issued answer for %s claims=%v.\n", path, err, assignment.AssignmentID, claims)
+		} else {
+			fmt.Fprintf(stdout, "Reviewer questionnaire: %s; %s owner=%s pending claims=%v; fill the professional answers and save this file for the original consumer.\n", path, assignment.AssignmentID, owner, claims)
+		}
+	}
+}
+
 // printS7WaveExplain renders the three-line --explain expansion of the wave
 // gate (RC-12 Step A): A-completeness counts the static-wave claims that
 // still need a final disposition, B-admission states whether the behavior
@@ -325,6 +434,14 @@ func runS7Status(root string, stdout io.Writer, explain bool) int {
 func printS7WaveExplain(stdout io.Writer, state map[string]any, plan *review.Plan, remaining int) {
 	fmt.Fprintf(stdout, "explain A-completeness: %d required static-wave claim(s) still awaiting a pass/finding/blocked disposition (static settled=%t)\n",
 		remaining, review.StaticClaimsSettled(state, plan))
+	if runtime.PacketEnabled(state) {
+		if remaining > 0 {
+			fmt.Fprintln(stdout, "explain B-admission: behavior dispatch waits for the remaining static Claim dispositions; Reviewers fill and save their exact questionnaires shown above.")
+		} else {
+			fmt.Fprintln(stdout, "explain B-admission: behavior dispatch is ADMITTED; Main selects real Reviewers for the pending Assignments shown above and uses original registration/dispatch.")
+		}
+		return
+	}
 	if remaining > 0 {
 		fmt.Fprintln(stdout, "explain B-admission: behavior-wave dispatch is BLOCKED — `runtime register-workgroup` rejects a behavior Assignment until A settles (L3-S7 §5.2-5.3)")
 		fmt.Fprintln(stdout, "explain next-verb: `loop-harness runtime review-result submit --assignment-id <static-assignment-id> --result <result.json>` to settle the remaining static claims, then re-run `loop-harness s7 status --explain`")
@@ -423,12 +540,12 @@ func readLifecycleCursor(state map[string]any) (string, string) {
 // to fix the stage instead of the plan. We surface this disclosure with
 // the current stage, the legal entry path (TR-006/TR-012/TR-016), and one
 // next action so the agent does not invent a parallel lifecycle.
-func runS7Draft(root, out string, stdout io.Writer) int {
+func runS7Draft(root, out string, stdout, stderr io.Writer) int {
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
 	snapshot, err := runtime.NewStore(statePath, journalPath).Snapshot()
 	if err != nil {
-		fmt.Fprintf(stdout, "read runtime: %v\n", err)
+		fmt.Fprintf(stderr, "read runtime: %v\n", err)
 		return 1
 	}
 	round := 0
@@ -450,15 +567,37 @@ func runS7Draft(root, out string, stdout io.Writer) int {
 			stage, round)
 		return 1
 	}
+	if out != "" {
+		requested, _ := filepath.Abs(out)
+		materials, _ := filepath.Abs(filepath.Join(root, ".claude/submissions"))
+		if strings.HasPrefix(requested, materials+string(filepath.Separator)) && filepath.Base(out) == "review-plan.json" && filepath.Clean(out) != filepath.Clean(reviewPlanQuestionnairePath(root, snapshot.State)) {
+			fmt.Fprintln(stderr, "preserve historical ReviewPlan materials; original preparation requires the exact current round questionnaire path")
+			return 1
+		}
+	}
+	// The original draft verb also restores listener-owned materials. Preserve
+	// an existing professional answer while repairing its derived guide.
+	if out != "" && filepath.Clean(out) == filepath.Clean(reviewPlanQuestionnairePath(root, snapshot.State)) {
+		message, prepareErr := prepareReviewPlanQuestionnaireContext(root, policy.Input{Event: "IntegrationComplete", AgentID: "Main", CWD: root}, snapshot)
+		fmt.Fprintln(stdout, message)
+		if prepareErr != nil {
+			return 1
+		}
+		return 0
+	}
 	plan, notes := review.DraftPlanForRoot(root, snapshot.State, round)
+	if plan == nil {
+		fmt.Fprintln(stderr, "prepare S7 draft: "+strings.Join(notes, "; "))
+		return 1
+	}
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
-		fmt.Fprintf(stdout, "encode draft: %v\n", err)
+		fmt.Fprintf(stderr, "encode draft: %v\n", err)
 		return 1
 	}
 	if out != "" {
 		if err := os.WriteFile(out, append(data, '\n'), 0o644); err != nil {
-			fmt.Fprintf(stdout, "write draft: %v\n", err)
+			fmt.Fprintf(stderr, "write draft: %v\n", err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "draft ReviewPlan written to %s\n", out)
@@ -466,9 +605,9 @@ func runS7Draft(root, out string, stdout io.Writer) int {
 		fmt.Fprintln(stdout, string(data))
 	}
 	for _, note := range notes {
-		fmt.Fprintf(stdout, "note: %s\n", note)
+		fmt.Fprintf(stderr, "note: %s\n", note)
 	}
-	fmt.Fprintln(stdout, "note: replace every TODO(planner) marker (target/assertion/oracle/method/na_rationale) with real facts before registration — the registration gate rejects the literal marker; if a whole lens ends up with zero required Claims, fill coverage_justification instead")
+	fmt.Fprintln(stderr, "note: replace every TODO(planner) marker (target/assertion/oracle/method/na_rationale) with real facts before registration — the registration gate rejects the literal marker; if a whole lens ends up with zero required Claims, fill coverage_justification instead")
 	return 0
 }
 
@@ -477,8 +616,25 @@ func runS7Draft(root, out string, stdout io.Writer) int {
 // exactly this value as verification_artifact_digest (L3-S7 §3.5); computing
 // it by hand is error-prone, so the submit-time error message points here.
 func runS7WorkspaceDigest(root string, stdout io.Writer) int {
-	statePath := filepath.Join(root, ".claude", "loop-state.json")
-	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
+	controlRoot := root
+	digestRoot := root
+	workerRoot, marked, err := workspace.PointerRoot(root)
+	if err != nil {
+		fmt.Fprintf(stdout, "resolve workspace pointer: %v\n", err)
+		return 1
+	}
+	if marked {
+		controlRoot, err = workspace.ResolveControl(context.Background(), root)
+		if err != nil {
+			fmt.Fprintf(stdout, "resolve Worker control Runtime: %v\n", err)
+			return 1
+		}
+		// The plan is owned by Main, while the cold-start evidence lives in
+		// the registered Worker's corresponding repository-relative path.
+		digestRoot = workerRoot
+	}
+	statePath := filepath.Join(controlRoot, ".claude", "loop-state.json")
+	journalPath := filepath.Join(controlRoot, ".claude", "loop-events.jsonl")
 	snapshot, err := runtime.NewStore(statePath, journalPath).Snapshot()
 	if err != nil {
 		fmt.Fprintf(stdout, "read runtime: %v\n", err)
@@ -489,7 +645,7 @@ func runS7WorkspaceDigest(root string, stdout io.Writer) int {
 		fmt.Fprintln(stdout, "no verification artifact workspace is pinned (the plan is not registered or e2e_coverage_state is not cold_start); E2E results do not bind a workspace digest")
 		return 0
 	}
-	digest, err := review.WorkspaceDigest(root, ptr.VerificationArtifactWorkspace)
+	digest, err := review.WorkspaceDigest(digestRoot, ptr.VerificationArtifactWorkspace)
 	if err != nil {
 		fmt.Fprintf(stdout, "compute workspace digest: %v\n", err)
 		return 1

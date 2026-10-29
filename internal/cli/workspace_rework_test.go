@@ -86,6 +86,35 @@ func TestWorkspaceReworkArchivesFailureAndResumesInterruptedFinalization(t *test
 	if next.Status != "ready" || next.ReworkRef == "" {
 		t.Fatalf("not ready after rework: %+v", next)
 	}
+	journal, err := os.ReadFile(fix.journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reworkEvidenceBound bool
+	for _, line := range bytes.Split(journal, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatal(err)
+		}
+		// Runtime journals encode the record kind in `event` and the original
+		// domain command in `transition_id`; match the committed workspace
+		// rework CAS, then verify its immutable receipt reference.
+		if event["event"] != "transition_committed" || event["transition_id"] != "WORKSPACE-REWORK" {
+			continue
+		}
+		ids, _ := event["evidence_ids"].([]any)
+		for _, raw := range ids {
+			if raw == next.ReworkRef {
+				reworkEvidenceBound = true
+			}
+		}
+	}
+	if !reworkEvidenceBound {
+		t.Fatal("original rework event does not bind the exact immutable ReworkRef")
+	}
 	if _, err = os.Stat(cpPath); !os.IsNotExist(err) {
 		t.Fatal("old checkpoint still active")
 	}

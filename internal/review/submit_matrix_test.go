@@ -2,10 +2,12 @@ package review
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -31,6 +33,26 @@ func dispatchedFixture(t *testing.T, root, statePath, journalPath string) (snaps
 		t.Fatal(err)
 	}
 	return snap.Revision, loaded
+}
+
+func TestAdvanceReviewerAgentUsesAcceptedAssignmentWithoutGenericPlan(t *testing.T) {
+	state := map[string]any{
+		"schema_version": "1.2.0",
+		"review": map[string]any{"assignments": map[string]any{
+			"assignment-review": map[string]any{"agent_id": "reviewer", "status": "consumed"},
+		}},
+		"entities": map[string]any{"agents": []any{
+			map[string]any{"id": "reviewer", "state": "reading"},
+		}},
+	}
+	result := &Result{ResultID: "review-result", AssignmentID: "assignment-review", ProducerAgentID: "reviewer"}
+	if err := advanceReviewerAgent(state, result, ".claude/evidence/review.json", time.Now().UTC()); err != nil {
+		t.Fatalf("accepted S7 professional answer required a generic PLAN checkpoint: %v", err)
+	}
+	agent := state["entities"].(map[string]any)["agents"].([]any)[0].(map[string]any)
+	if agent["state"] != "reported" || agent["completion_reported_ref"] != ".claude/evidence/review.json" {
+		t.Fatalf("original S7 receipt did not record delivery: %+v", agent)
+	}
 }
 
 func qaPassResult(t *testing.T, root string, plan *Plan) string {
@@ -580,7 +602,7 @@ func TestSubmitResultApplyRejectionCleansStagedArtifacts(t *testing.T) {
 	statePath, journalPath := writeState(t, root, baseVerificationState())
 	revision, plan := dispatchedFixture(t, root, statePath, journalPath)
 
-	// Park the QA reviewer in `reading`: submit passes every pre-CAS check,
+	// Park the QA reviewer in `queued`: submit passes every pre-CAS check,
 	// stages artifacts, then the Apply-time agent-state check rejects.
 	setAgentState := func(agentState string, rev int) int {
 		store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
@@ -604,15 +626,15 @@ func TestSubmitResultApplyRejectionCleansStagedArtifacts(t *testing.T) {
 		}
 		return next.Revision
 	}
-	revision = setAgentState("reading", revision)
+	revision = setAgentState("queued", revision)
 
 	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-orphan", "agent-qa-1", "pass",
 		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
 	_, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "requires working state") {
-		t.Fatalf("submit with a reading reviewer must be rejected, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "not an active owner") {
+		t.Fatalf("submit with a queued reviewer must be rejected, got %v", err)
 	}
 	artifact := filepath.Join(root, ".claude", "evidence", "loop-REQ-TEST", "g1", "reviews", "agent-qa-1", "review-result-qa-orphan.json")
 	if _, statErr := os.Stat(artifact); !os.IsNotExist(statErr) {
@@ -626,6 +648,58 @@ func TestSubmitResultApplyRejectionCleansStagedArtifacts(t *testing.T) {
 		ExpectedRevision: revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
 	}); err != nil {
 		t.Fatalf("resubmit after correction must succeed, got %v", err)
+	}
+}
+
+// Exercise the existing Store sequence without a production CAS test hook:
+// stage our bytes, commit an unrelated update, reject the stale CAS, then
+// clean against the current snapshot and save the same professional answer.
+func TestSubmitResultCleanupAfterUnrelatedRuntimeUpdateAllowsSameAnswer(t *testing.T) {
+	root := t.TempDir()
+	statePath, journalPath := writeState(t, root, baseVerificationState())
+	revision, plan := dispatchedFixture(t, root, statePath, journalPath)
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	before, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-cas-cleanup", "agent-qa-1", "pass",
+		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
+	rel := ".claude/evidence/loop-REQ-TEST/g1/reviews/agent-qa-1/review-result-qa-cas-cleanup.json"
+	staged := []byte(`{"staged":"this submit attempt"}`)
+	if err := writeArtifact(root, rel, staged); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Update(revision, loopruntime.Mutation{
+		EventID: "evt-test-unrelated-update", TransitionID: "TEST", Event: "test_unrelated_update",
+		Actor: "test", IdempotencyKey: "test:unrelated-update",
+		Apply: func(state map[string]any) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Update(revision, loopruntime.Mutation{
+		EventID: "evt-test-stale-review", TransitionID: "TEST", Event: "test_stale_review",
+		Actor: "test", IdempotencyKey: "test:stale-review",
+		Apply: func(state map[string]any) error { return nil },
+	})
+	if !errors.Is(err, loopruntime.ErrStaleRevision) {
+		t.Fatalf("concurrent Runtime update must reject the stale CAS: %v", err)
+	}
+	if removed, err := removeStagedArtifactIfUnreferenced(store, before.State, revision, rel, sha256Of(staged)); err != nil || removed {
+		t.Fatalf("old cleanup snapshot must retain staged artifact: removed=%v err=%v", removed, err)
+	}
+	latest, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := removeStagedArtifactIfUnreferenced(store, latest.State, latest.Revision, rel, sha256Of(staged)); err != nil || !removed {
+		t.Fatalf("current cleanup snapshot must remove our unindexed staged bytes: removed=%v err=%v", removed, err)
+	}
+	if _, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: latest.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
+	}); err != nil {
+		t.Fatalf("same answer and result ID must save after cleanup: %v", err)
 	}
 }
 

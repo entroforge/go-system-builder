@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/stage-answer-s7.schema.json",
+  "title": "S7 ReviewResult authoring answer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "instruction", "read", "questions", "answer"],
+  "properties": {
+    "title": {"type": "string", "minLength": 1},
+    "instruction": {"type": "string", "minLength": 1},
+    "read": {
+      "type": "array",
+      "maxItems": 16384,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "purpose"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "purpose": {"type": "string", "minLength": 1, "maxLength": 2048}
+        }
+      }
+    },
+    "questions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_results", "blocked_claims", "checks", "findings", "deviations", "site_lost", "verification_artifact_digest", "verdict"],
+      "properties": {
+        "claim_results": {"$ref": "#/$defs/question"},
+        "blocked_claims": {"$ref": "#/$defs/question"},
+        "checks": {"$ref": "#/$defs/question"},
+        "findings": {"$ref": "#/$defs/question"},
+        "deviations": {"$ref": "#/$defs/question"},
+        "site_lost": {"$ref": "#/$defs/question"},
+        "verification_artifact_digest": {"$ref": "#/$defs/question"},
+        "verdict": {"$ref": "#/$defs/question"}
+      }
+    },
+    "answer": {"$ref": "#/$defs/answer"}
+  },
+  "$defs": {
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question"],
+      "properties": {
+        "question": {"type": "string", "minLength": 1},
+        "choices": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "example": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "expected", "observed"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "expected": {"type": "string", "minLength": 1},
+            "observed": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_results", "blocked_claims", "checks", "findings", "deviations", "site_lost", "verification_artifact_digest", "verdict"],
+      "properties": {
+        "claim_results": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["claim_id", "conclusion", "method", "observed", "evidence_refs"],
+            "properties": {
+              "claim_id": {"type": "string", "pattern": "^claim-[A-Za-z0-9._-]+$"},
+              "conclusion": {"enum": [null, "pass", "fail"]},
+              "method": {"type": "string", "maxLength": 8192},
+              "observed": {"type": "string", "maxLength": 32768},
+              "evidence_refs": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 4096}}
+            }
+          }
+        },
+        "blocked_claims": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["claim_id", "blocking_finding_ids", "failed_precondition", "evidence_refs", "after_repair_required"],
+            "properties": {
+              "claim_id": {"type": "string", "pattern": "^claim-[A-Za-z0-9._-]+$"},
+              "blocking_finding_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+              "failed_precondition": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "detail"],
+                "properties": {
+                  "kind": {"enum": ["build", "start", "entry", "precondition"]},
+                  "detail": {"type": "string", "minLength": 1}
+                }
+              },
+              "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+              "after_repair_required": {"const": true}
+            }
+          }
+        },
+        "checks": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command", "result"],
+            "properties": {
+              "name": {"type": "string", "maxLength": 1024},
+              "command": {"type": "string", "minLength": 1, "maxLength": 8192},
+              "result": {"enum": ["pass", "fail"]},
+              "evidence_refs": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 4096}}
+            }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {"$ref": "finding.schema.json"}
+        },
+        "deviations": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 8192}},
+        "site_lost": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["finding_id", "reason"],
+            "properties": {
+              "finding_id": {"type": "string", "pattern": "^finding-[A-Za-z0-9._-]+$"},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 8192}
+            }
+          }
+        },
+        "verification_artifact_digest": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "verdict": {"enum": [null, "pass", "finding", "req_change_required", "release_blocked"]}
+      }
+    }
+  }
+}

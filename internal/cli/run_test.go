@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
-	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 )
 
 func TestValidateAllCommand(t *testing.T) {
@@ -214,13 +214,7 @@ func TestRuntimeReconcileCommandRestoresMissingJournalEvent(t *testing.T) {
 }
 
 func TestRuntimeTransitionCommandStartsLockedREQ(t *testing.T) {
-	root := func() string {
-		abs, err := filepath.Abs(filepath.Join("..", ".."))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return abs
-	}()
+	root := factory.Clone(t, filepath.Join("..", ".."))
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -407,6 +401,7 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 		wantStage string
 		wantSkill string
 		wantText  string
+		forbidden []string
 	}{
 		{
 			name:      "investigation is S8",
@@ -427,14 +422,48 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 			phase:     "repair_readback",
 			wantStage: "S9",
 			wantSkill: "bug-resolution",
-			wantText:  "repair",
+			wantText:  "prepares the original RepairSession",
+			forbidden: []string{"runtime repair status", "runtime repair session open"},
+		},
+		{
+			name:      "S9 planning uses original PlanReport answers",
+			phase:     "planning",
+			wantStage: "S9",
+			wantSkill: "bug-resolution",
+			wantText:  "private professional PlanReport",
+			forbidden: []string{"runtime repair dispatch", "runtime repair execution begin"},
+		},
+		{
+			name:      "S9 reproduction follows saved PlanReports",
+			phase:     "reproducing",
+			wantStage: "S9",
+			wantSkill: "bug-resolution",
+			wantText:  "original consumer",
+			forbidden: []string{"runtime repair execution begin"},
 		},
 		{
 			name:      "fixing continues dispatched builders",
 			phase:     "fixing",
 			wantStage: "S9",
 			wantSkill: "bug-resolution",
-			wantText:  "already-dispatched",
+			wantText:  "SubagentStop receives them",
+			forbidden: []string{"--check-location", "completion_report"},
+		},
+		{
+			name:      "S9 targeted answers use supplied paths",
+			phase:     "targeted_reverification",
+			wantStage: "S9",
+			wantSkill: "bug-resolution",
+			wantText:  "exact TargetedReverification answer for SubagentStop",
+			forbidden: []string{"runtime repair status", "commit ChangeImpact"},
+		},
+		{
+			name:      "S9 handoff is automatic with explicit incomplete recovery",
+			phase:     "ready_for_full_review",
+			wantStage: "S9",
+			wantSkill: "bug-resolution",
+			wantText:  "runtime repair handoff complete",
+			forbidden: []string{"runtime repair handoff create", "runtime repair handoff commit", "create and commit"},
 		},
 	}
 
@@ -450,14 +479,27 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 				t.Fatalf("next failed: code=%d stderr=%s", code, stderr.String())
 			}
 			out := stdout.String()
-			if !strings.Contains(out, `"stage":"`+tc.wantStage+`"`) {
+			var projection struct {
+				Stage        string `json:"stage"`
+				PrimarySkill string `json:"primary_skill"`
+				Action       string `json:"action"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &projection); err != nil {
+				t.Fatalf("next output is not a projection JSON object: %v; output=%s", err, out)
+			}
+			if projection.Stage != tc.wantStage {
 				t.Fatalf("unexpected stage projection: %s", out)
 			}
-			if !strings.Contains(out, `"primary_skill":"`+tc.wantSkill+`"`) {
+			if projection.PrimarySkill != tc.wantSkill {
 				t.Fatalf("unexpected skill projection: %s", out)
 			}
-			if !strings.Contains(out, tc.wantText) {
+			if !strings.Contains(projection.Action, tc.wantText) {
 				t.Fatalf("projection action should mention %q: %s", tc.wantText, out)
+			}
+			for _, stale := range tc.forbidden {
+				if strings.Contains(projection.Action, stale) {
+					t.Fatalf("projection action still contains obsolete instruction %q: %s", stale, out)
+				}
 			}
 		})
 	}
@@ -500,13 +542,7 @@ func TestNextProjectsCleanRoundAsS7(t *testing.T) {
 }
 
 func TestRuntimeRegisterWorkgroupCommand(t *testing.T) {
-	root := func() string {
-		abs, err := filepath.Abs(filepath.Join("..", ".."))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return abs
-	}()
+	root := factory.Clone(t, filepath.Join("..", ".."))
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -728,13 +764,7 @@ func TestRuntimeRegisterWorkgroupCommandAnchorsAgainstRoot(t *testing.T) {
 }
 
 func TestRuntimeAgentEventCommandRecordsReadback(t *testing.T) {
-	root := func() string {
-		abs, err := filepath.Abs(filepath.Join("..", ".."))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return abs
-	}()
+	root := factory.Clone(t, filepath.Join("..", ".."))
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -785,16 +815,11 @@ func TestRuntimeAgentEventCommandRecordsReadback(t *testing.T) {
 	}
 }
 
-// TestHookCommandLoadsRuntimeContextWhenInputOmitsIt is the rewrite of the
-// legacy "loading runtime context" test against the minimal safety model.
-// The Minimal Safety Policy (BE-039 §6) no longer matches an unactivated Agent
-// to HOOK_AGENT_NOT_ACTIVATED — activation is a Guidance concern, not a
-// permission verdict (REQ-039 §14.3). With no other safety rule triggered, the
-// Hook must emit permissionDecision="allow" and, when a payload is emitted
-// at all, surface the Controller's quality_gate (BUG-039-03 §4.1). An
-// activated Agent with an in-scope Write may produce no payload (silent
-// allow).
-func TestHookCommandLoadsRuntimeContextWhenInputOmitsIt(t *testing.T) {
+// TestHookCommandPreToolUseDoesNotRequireToolIdentityContext verifies that a
+// PreToolUse observation does not require an actor's tool/path grant. The
+// graph projection remains visible even when the platform payload omits its
+// runtime_context object.
+func TestHookCommandPreToolUseDoesNotRequireToolIdentityContext(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
 	if err := os.MkdirAll(filepath.Join(root, ".claude", "evidence"), 0o755); err != nil {
 		t.Fatal(err)
@@ -830,28 +855,19 @@ func TestHookCommandLoadsRuntimeContextWhenInputOmitsIt(t *testing.T) {
 		t.Fatalf("hook failed: code=%d stderr=%s", code, stderr.String())
 	}
 	out := strings.TrimSpace(stdout.String())
-	if out == "" {
-		return
-	}
 	var envelope map[string]any
 	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
-		t.Fatalf("expected silent allow (no payload) or schema-valid envelope, got %q: %v", out, err)
+		t.Fatalf("expected a graph-observation envelope, got %q: %v", out, err)
 	}
-	if _, hasHSP := envelope["hookSpecificOutput"]; hasHSP {
-		// Plain allow must not emit hookSpecificOutput on stdout.
-		return
-	}
-	// If a hookSpecificOutput is emitted it must be allow (no rule blocks).
 	if hsp, ok := envelope["hookSpecificOutput"].(map[string]any); ok {
-		if pd, _ := hsp["permissionDecision"].(string); pd != "allow" {
-			t.Fatalf("allow must surface permissionDecision=allow, got %q envelope=%v", pd, envelope)
+		if pd, _ := hsp["permissionDecision"].(string); pd == "deny" {
+			t.Fatalf("PreToolUse observer must not deny without tool identity context, got envelope=%v", envelope)
 		}
+	} else {
+		t.Fatalf("PreToolUse output omitted its graph-observation payload: %v", envelope)
 	}
-	if _, hasSys := envelope["systemMessage"]; hasSys {
-		// systemMessage may carry Controller Guidance but not a deny/block.
-		if strings.Contains(fmt.Sprintf("%v", envelope["systemMessage"]), "deny") {
-			t.Fatalf("allow envelope must not carry deny payload: %v", envelope)
-		}
+	if !strings.Contains(out, "QUALITY_GATE") {
+		t.Fatalf("PreToolUse output omitted graph progress feedback: %s", out)
 	}
 }
 
@@ -925,36 +941,23 @@ func copyDir(src, dst string) error {
 	return os.WriteFile(dst, data, 0o644)
 }
 
-// TestDryRunEnforcesFirstWriteBarrier pins the L4 §7.6 first-write barrier
-// on the wire path. The fixture carries an Agent in the `reading`
-// pre-plan state and an Edit on a product path (`src/app.go`) — neither
-// the control plane (`.claude/`), the reviewer report projections
-// (`docs/reports/`), nor a ReviewPlan verification workspace exempt the
-// path, so the dry-run envelope must surface the
-// `assignment_write_before_plan` block (REPLACE the previous
-// "minimal safety model allows unactivated write" assertion, which was
-// pinned before the L4 P1 rollout). `dry-run` always returns 0 — the
-// decision is JSON-encoded into the envelope on stdout.
-func TestDryRunEnforcesFirstWriteBarrier(t *testing.T) {
+// TestDryRunObservesFirstWriteWithoutToolDenial verifies that dry-run
+// reuses read-only ready diagnostics without enforcing a first-write rule.
+func TestDryRunObservesFirstWriteWithoutToolDenial(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	root := func() string {
-		abs, err := filepath.Abs(filepath.Join("..", ".."))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return abs
-	}()
+	root := factory.Clone(t, filepath.Join("..", ".."))
+	stageCLI(t, "init", "--root", root)
 	fixture := filepath.Join(root, "tests", "fixtures", "hook", "pretool-unactivated-write.json")
 
 	code := cli.Run([]string{"dry-run", "--root", root, "--fixture", fixture}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
-		t.Fatalf("dry-run always returns 0 (envelope-only), code=%d stderr=%s", code, stderr.String())
+		t.Fatalf("dry-run must return read-only diagnostics, code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "HOOK_ASSIGNMENT_WRITE_BEFORE_PLAN") {
-		t.Fatalf("dry-run envelope must surface the first-write barrier rule id, got %s", stdout.String())
+	if strings.Contains(stdout.String(), "HOOK_ASSIGNMENT_WRITE_BEFORE_PLAN") || strings.Contains(stdout.String(), `"decision":"deny"`) {
+		t.Fatalf("dry-run must not turn a product write into a tool denial: %s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), `"decision":"deny"`) {
-		t.Fatalf("dry-run envelope must carry decision=deny on a pre-plan product write, got %s", stdout.String())
+	if !strings.Contains(stdout.String(), "quality_gate") {
+		t.Fatalf("dry-run must retain quality-gate diagnostics: %s", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "HOOK_AGENT_NOT_ACTIVATED") {
 		t.Fatalf("legacy predicate HOOK_AGENT_NOT_ACTIVATED must not appear: %s", stdout.String())
@@ -964,15 +967,10 @@ func TestDryRunEnforcesFirstWriteBarrier(t *testing.T) {
 	}
 }
 
-// TestHookCommandBlocksFirstWriteBarrier pins the wire-path enforcement
-// of L4 §7.6: a dispatched Worker in `reading` (pre-plan) state writing
-// to a product path (`src/app.go`) must receive
-// permissionDecision=deny with `assignment_write_before_plan` as the
-// rule id. The legacy "minimal safety model never blocks an unactivated
-// write" assertion was retired with the L4 P1 rollout — see
-// `TestHookCommandAllowsFirstWriteBarrierExemptedSurfaces` for the
-// allowed-surface exemptions.
-func TestHookCommandBlocksFirstWriteBarrier(t *testing.T) {
+// TestHookCommandObservesProductWriteWithoutToolDenial verifies that a
+// PreToolUse event reports graph state without enforcing tool scope or a
+// first-write barrier.
+func TestHookCommandObservesProductWriteWithoutToolDenial(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root := copyPolicyToTempRoot(t)
 	input := `{
@@ -989,28 +987,23 @@ func TestHookCommandBlocksFirstWriteBarrier(t *testing.T) {
 
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
 	if code != 0 {
-		t.Fatalf("first-write barrier must deny a pre-plan product write: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+		t.Fatalf("PreToolUse observer failed for a pre-plan product write: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	out := stdout.String()
-	if !strings.Contains(out, policy.RuleAssignmentWriteBeforePlan) {
-		t.Fatalf("pre-plan product write must surface the first-write barrier rule id, got %s", out)
+	if strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Fatalf("PreToolUse observer must not deny a product write: %s", out)
 	}
-	if !strings.Contains(out, `"permissionDecision":"deny"`) {
-		t.Fatalf("pre-plan product write must render a deny: %s", out)
+	if !strings.Contains(out, "QUALITY_GATE") {
+		t.Fatalf("PreToolUse observer must retain graph progress feedback: %s", out)
 	}
 	if strings.Contains(out, "HOOK_AGENT_NOT_ACTIVATED") {
 		t.Fatalf("legacy HOOK_AGENT_NOT_ACTIVATED predicate must not surface: %s", out)
 	}
 }
 
-// TestHookCommandAllowsFirstWriteBarrierExemptedSurfaces confirms the
-// reviewer-allowed surfaces that L3-S7 §8 / L4 §10.4 carve out: writes to
-// the control plane (`.claude/`), reviewer report projections
-// (`docs/reports/`) and a ReviewPlan verification workspace are NOT
-// blocked by the first-write barrier — those are the surfaces a
-// dispatched Worker (and a reviewer) is expected to write before the
-// plan checkpoint.
-func TestHookCommandAllowsFirstWriteBarrierExemptedSurfaces(t *testing.T) {
+// TestHookCommandObservesToolsWithoutPathExceptions verifies that tool
+// paths are not filtered through first-write or per-agent ACL exceptions.
+func TestHookCommandObservesToolsWithoutPathExceptions(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
 	cases := []struct {
 		name string
@@ -1018,6 +1011,8 @@ func TestHookCommandAllowsFirstWriteBarrierExemptedSurfaces(t *testing.T) {
 	}{
 		{"control_plane", ".claude/loop-state.json"},
 		{"reviewer_reports", "docs/reports/BUG-039-15.md"},
+		{"product_file", "src/app.go"},
+		{"unregistered_path", "notes/unregistered.md"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1034,12 +1029,12 @@ func TestHookCommandAllowsFirstWriteBarrierExemptedSurfaces(t *testing.T) {
 			}`
 			var stdout, stderr bytes.Buffer
 			code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-			if code == 2 {
-				t.Fatalf("first-write barrier must allow %s: code=2 stdout=%s stderr=%s", tc.path, stdout.String(), stderr.String())
+			if code != 0 {
+				t.Fatalf("PreToolUse observer failed for %s: code=%d stdout=%s stderr=%s", tc.path, code, stdout.String(), stderr.String())
 			}
 			out := stdout.String()
-			if strings.Contains(out, policy.RuleAssignmentWriteBeforePlan) {
-				t.Fatalf("%s must not surface the first-write barrier, got %s", tc.path, out)
+			if strings.Contains(out, `"permissionDecision":"deny"`) || strings.Contains(out, "HOOK_ASSIGNMENT_WRITE_BEFORE_PLAN") {
+				t.Fatalf("PreToolUse observer must not enforce a path rule for %s: %s", tc.path, out)
 			}
 		})
 	}
@@ -1168,10 +1163,29 @@ type erroringWriter struct{}
 
 func (erroringWriter) Write(p []byte) (int, error) { return 0, fmt.Errorf("synthetic stdout failure") }
 
-// TestHookCommandFailsWhenHookctxLoadMissing keeps the quality gate honest
-// while making mutating PreToolUse fail closed: a missing runtime cannot
-// prove that an Edit is outside the frozen product surface.
-func TestHookCommandFailsWhenHookctxLoadMissing(t *testing.T) {
+func parseHookQualityGate(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		t.Fatalf("Hook output is not JSON: %v; output=%s", err, raw)
+	}
+	specific, _ := envelope["hookSpecificOutput"].(map[string]any)
+	additionalContext, _ := specific["additionalContext"].(string)
+	line := strings.SplitN(additionalContext, "\n", 2)[0]
+	const prefix = "QUALITY_GATE "
+	if !strings.HasPrefix(line, prefix) {
+		t.Fatalf("Hook output does not contain a QUALITY_GATE projection: %s", raw)
+	}
+	var qualityGate map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(line, prefix)), &qualityGate); err != nil {
+		t.Fatalf("QUALITY_GATE payload is not JSON: %v; line=%s", err, line)
+	}
+	return qualityGate
+}
+
+// TestHookCommandMissingRuntimeFailsOpenWithGateDiagnostic keeps the quality gate's
+// unreadable-runtime diagnostic visible while the tool listener fails open.
+func TestHookCommandMissingRuntimeFailsOpenWithGateDiagnostic(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
 	input := `{
 		"session_id":"session-1",
@@ -1183,26 +1197,25 @@ func TestHookCommandFailsWhenHookctxLoadMissing(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
 	if code != 0 {
-		t.Fatalf("missing runtime must block a mutating tool, got code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+		t.Fatalf("missing runtime must not turn the observer into a tool gate: code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 	}
 	out := stdout.String()
-	if !strings.Contains(out, `"permissionDecision":"deny"`) {
-		t.Fatalf("missing runtime must surface a deny decision: %s", out)
+	if strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Fatalf("missing runtime must not surface a tool denial: %s", out)
 	}
-	if !strings.Contains(out, "runtime_unreadable") {
-		t.Fatalf("deny must name runtime_unreadable: %s", out)
+	if !strings.Contains(out, "LOOP_RUNTIME_INVALID") {
+		t.Fatalf("missing runtime must surface its graph diagnostic: %s", out)
 	}
-	// The final safety projection is blocked because runtime facts are
-	// unreadable; the controller still records the recovery checkpoint.
-	if !strings.Contains(out, `\"status\":\"blocked\"`) {
-		t.Fatalf("missing runtime must drive quality_gate.status=blocked: %s", out)
+	qualityGate := parseHookQualityGate(t, out)
+	if qualityGate["status"] != "unknown" || qualityGate["error_code"] != "LOOP_RUNTIME_INVALID" {
+		t.Fatalf("missing runtime must project its unknown quality-gate diagnostic, got %#v", qualityGate)
 	}
 }
 
-// TestHookCommandFailsWhenPolicyLoadMissing pins the fail-closed contract
-// for missing docs/control/hook-policy.json — the Hook cannot render a verdict
-// without the policy document and must surface a load error on stderr.
-func TestHookCommandFailsWhenPolicyLoadMissing(t *testing.T) {
+// TestHookCommandPolicyMetadataFailureDoesNotDenyTool pins the observer's fail-open
+// policy-metadata behavior. Graph diagnostics remain visible even when the
+// policy document is unavailable; policy loading does not deny a tool.
+func TestHookCommandPolicyMetadataFailureDoesNotDenyTool(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1218,22 +1231,20 @@ func TestHookCommandFailsWhenPolicyLoadMissing(t *testing.T) {
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("missing policy must block the platform with exit 2, got %d", code)
+	if code != 0 {
+		t.Fatalf("missing policy metadata must not block the observed tool: got %d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "load policy") {
-		t.Fatalf("expected load-policy error on stderr, got %s", stderr.String())
+	if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("missing policy metadata must not create a tool denial: %s", stdout.String())
+	}
+	qualityGate := parseHookQualityGate(t, stdout.String())
+	if qualityGate["status"] != "unknown" || !strings.Contains(stdout.String(), "LOOP RECOVERY") {
+		t.Fatalf("policy metadata failure must preserve the unknown graph status and recovery context: gate=%#v output=%s", qualityGate, stdout.String())
 	}
 }
 
-// TestHookCommandPreservesAuditOnOutboxFailure exercises the audit failure
-// surface against the minimal safety model. When the audit outbox fails,
-// the evaluate() pipeline must still emit whatever payload it produced. The
-// legacy Batch 8 invariant (block-deny preserved through audit failure) is
-// trivially true in the minimal model because the Controller never blocks a
-// tool on quality non-satisfaction (BE-039 §3.2); only the locked artifact
-// / squash-merge decisions trigger block, and those are routed through the
-// Controller's final safety layer.
+// TestHookCommandPreservesAuditOnOutboxFailure verifies that an outbox
+// failure is diagnosed without converting the graph observer into a tool ACL.
 func TestHookCommandPreservesAuditOnOutboxFailure(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
 	// Force the audit outbox to be a directory so Append fails.
@@ -1255,25 +1266,20 @@ func TestHookCommandPreservesAuditOnOutboxFailure(t *testing.T) {
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("audit persistence failure must remain visible as exit 1, got %d", code)
+	}
 	if !strings.Contains(stderr.String(), "append Hook audit") {
 		t.Fatalf("expected append-audit error on stderr, got %s", stderr.String())
 	}
 	if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
-		t.Fatalf("deny payload must not appear on a path the minimal policy allows: %s", stdout.String())
+		t.Fatalf("observer audit failure must not create a tool denial: %s", stdout.String())
 	}
-	_ = code
 }
 
-// TestHookCommandPreservesBlockExitOnOutboxFailure rewrites the legacy
-// HS-001 block test against the minimal safety model. Under BUG-039-01 the
-// only retained block reasons are locked_artifact_write (BE-039 §6.1) and
-// squash_merge (BE-039 §6.2); the legacy HS-001 release-baseline block was
-// retired. When the audit outbox fails, the evaluate() pipeline must still
-// surface a load error on stderr; without an outbox write we cannot make
-// the deterministic block-exit-2 claim in this test path, so the assertion
-// is anchored on stderr-load-failure + the audit-side persistence policy
-// (where the durable block lives).
-func TestHookCommandPreservesBlockExitOnOutboxFailure(t *testing.T) {
+// TestHookCommandReportsOutboxFailureWithoutToolDeny keeps audit storage
+// failures diagnostic while preserving the observer's non-vetoing behavior.
+func TestHookCommandReportsOutboxFailureWithoutToolDeny(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
 	// Make the audit outbox a directory so Append fails.
 	if err := os.MkdirAll(filepath.Join(root, ".claude", "hook-decisions.jsonl"), 0o755); err != nil {
@@ -1293,27 +1299,20 @@ func TestHookCommandPreservesBlockExitOnOutboxFailure(t *testing.T) {
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("audit persistence failure must remain visible as exit 1, got %d", code)
+	}
 	if !strings.Contains(stderr.String(), "append Hook audit") {
 		t.Fatalf("expected append-audit error on stderr, got %s", stderr.String())
 	}
 	if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
-		t.Fatalf("allow path must not render a deny in the wire envelope: %s", stdout.String())
+		t.Fatalf("observer audit failure must not create a tool denial: %s", stdout.String())
 	}
-	// A 2-block decision would surface locked_artifact_write; that legacy
-	// payload must NOT appear because the minimal model + controller
-	// only renders a block when the state genuinely matches a locked
-	// artifact path.
-	if strings.Contains(stdout.String(), "locked_artifact_write") {
-		t.Fatalf("allow path must not surface locked_artifact_write: %s", stdout.String())
-	}
-	_ = code
 }
 
 // TestHookCommandFailsWhenStdoutWriteErrors drives the stdout.Write error
-// path inside evaluate(). The Controller-driven minimal safety model lets
-// the call through (no blocked decision is fired by the bare Edit on
-// src/app.go); an erroring stdout must surface as exit 1 without ever
-// claiming a block that wasn't actually returned.
+// path inside evaluate(). The graph observer does not deny this bare Edit;
+// an erroring stdout remains an output error rather than a tool decision.
 func TestHookCommandFailsWhenStdoutWriteErrors(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
 	input := `{
@@ -1329,10 +1328,8 @@ func TestHookCommandFailsWhenStdoutWriteErrors(t *testing.T) {
 		}
 	}`
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), erroringWriter{}, io.Discard)
-	// The allow path under the minimal model produces a recoverable wire
-	// envelope whose stdout.Write failure is surfaced as exit 1 (engine
-	// load/audit failed). A block decision would surface as exit 2, but
-	// this input must never trigger a block.
+	// The observer produces a recoverable wire envelope whose stdout.Write
+	// failure is surfaced as exit 1. It must not be rewritten as a tool denial.
 	if code == 2 {
 		t.Fatalf("allow path must not exit 2 on stdout.Write error: %d", code)
 	}
@@ -1352,8 +1349,8 @@ func TestHookCommandFailsWhenStdinIsNotJSON(t *testing.T) {
 	}
 }
 
-// A missing Bash classification table does not reject unrelated Edit events.
-// The controller still records the Hook envelope and quality-gate projection.
+// A missing Bash classification table does not suppress unrelated Edit events.
+// The observer still records the Hook envelope and quality-gate projection.
 func TestHookCommandIgnoresMissingProtectedCommandsTable(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
 	if err := os.Remove(filepath.Join(root, "docs", "control", "protected-commands.json")); err != nil && !os.IsNotExist(err) {
@@ -1376,16 +1373,15 @@ func TestHookCommandIgnoresMissingProtectedCommandsTable(t *testing.T) {
 		t.Fatalf("missing protected-commands table must NOT block Hook; got exit=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 	}
 	if strings.Contains(stderr.String(), "evaluate policy") || strings.Contains(stderr.String(), "load policy") {
-		t.Fatalf("must not surface evaluate/load errors for missing table; stderr=%s", stderr.String())
+		t.Fatalf("unrelated Edit must not surface a protected-command table error; stderr=%s", stderr.String())
 	}
-	// `table_unloaded` was a legacy audit-shape concept; the minimal
-	// model never emits it.
+	// `table_unloaded` is not a user-facing tool-permission result.
 	if strings.Contains(stdout.String(), "table_unloaded") {
-		t.Fatalf("minimal safety model must not surface legacy table_unloaded envelope field: %s", stdout.String())
+		t.Fatalf("observer must not surface legacy table_unloaded envelope field: %s", stdout.String())
 	}
-	// A pre-tool-use on a non-locked path produces permissionDecision=allow.
+	// A pre-tool-use on this path records graph feedback without a tool denial.
 	if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
-		t.Fatalf("minimal safety model must allow a non-locked Edit: %s", stdout.String())
+		t.Fatalf("observer must not deny an Edit because of the missing table: %s", stdout.String())
 	}
 }
 

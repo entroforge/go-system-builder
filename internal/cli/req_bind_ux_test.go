@@ -69,8 +69,46 @@ func TestREQListClassifiesStatusesAndSkipsTemplate(t *testing.T) {
 	if !strings.Contains(out, "REQ-098") || !strings.Contains(out, "bindable") {
 		t.Fatalf("req list missing locked classification: %q", out)
 	}
-	if !strings.Contains(out, "loop-harness req bind --req docs/requirements/REQ-098.md") {
-		t.Fatalf("req list must print the ready-to-bind command: %q", out)
+	for _, want := range []string{
+		"loop-harness req bind --req docs/requirements/REQ-098.md",
+		"--approved-by <actual-approver>",
+		"--dev-branch <development-branch>",
+		"--release-upstream <release-destination>",
+		"replace placeholders before execution",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("req list bind template missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestREQNextNamesOriginalBindingResponsibility(t *testing.T) {
+	root := newUXTestRoot(t, map[string]string{"REQ-098.md": lockedReqBody})
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run([]string{"init", "--root", root}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("init failed: code=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cli.Run([]string{"next", "--root", root}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("next failed: code=%d stderr=%s", code, stderr.String())
+	}
+	var next struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &next); err != nil {
+		t.Fatalf("decode next projection: %v", err)
+	}
+	for _, want := range []string{
+		"actual selected requirement", "human startup decision", "explicit project branch destinations",
+		"current binding request", "save normally", "TR-001", "S2",
+	} {
+		if !strings.Contains(next.Action, want) {
+			t.Fatalf("next projection action missing %q: %s", want, next.Action)
+		}
+	}
+	if strings.Contains(next.Action, "loop-harness req bind") || strings.Contains(next.Action, "<actual-approver>") {
+		t.Fatalf("normal S1 projection introduced a second binding route: %s", next.Action)
 	}
 }
 
@@ -156,8 +194,10 @@ func TestREQBindApprovedByHint(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("missing --approved-by must exit 2, got %d", code)
 	}
-	if !strings.Contains(stderr.String(), "requires --approved-by") {
-		t.Fatalf("missing identity guidance: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "--approved-by <actual-approver from this binding authorization>") ||
+		!strings.Contains(stderr.String(), "do not infer it from git user.name") ||
+		strings.Contains(stderr.String(), "detected git identity") || strings.Contains(stderr.String(), "Test") {
+		t.Fatalf("missing explicit approver guidance: %q", stderr.String())
 	}
 }
 

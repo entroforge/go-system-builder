@@ -20,7 +20,7 @@
     "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}},
     "unit_results": {
       "type": "array", "minItems": 1, "uniqueItems": true,
-      "items": {"type": "object", "additionalProperties": false, "required": ["unit_id", "status", "evidence_refs"], "properties": {"unit_id": {"type": "string", "minLength": 1}, "status": {"enum": ["pass", "fail", "blocked"]}, "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}
+      "items": {"type": "object", "additionalProperties": false, "required": ["unit_id", "status", "evidence_refs"], "properties": {"unit_id": {"type": "string", "minLength": 1}, "status": {"enum": ["pass", "fail", "blocked"]}, "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}, "implementation_summary": {"type": "string", "minLength": 1}, "restored_invariant_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}
     },
     "changed_artifacts": {
       "type": "array", "uniqueItems": true,
@@ -31,8 +31,16 @@
     "rollback_ref": {"type": "string"},
     "residual_risks": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "result": {"enum": ["pass", "fail", "blocked", "scope_changed"]},
-    "submitted_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"}
+    "submitted_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"},
+    "verdict": {"const": "completed"},
+    "before_fix_results": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["assertion_id", "observed_red", "evidence_refs"], "properties": {"assertion_id": {"type": "string", "minLength": 1}, "observed_red": {"type": "string", "minLength": 1}, "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}},
+    "detection_gap_artifacts": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "evidence_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "receipt": {"$ref": "repair-result-receipt.schema.json"}
   },
+  "allOf": [
+    {"if": {"required": ["receipt"]}, "then": {"required": ["verdict", "before_fix_results", "detection_gap_artifacts", "evidence_refs"], "properties": {"unit_results": {"items": {"required": ["implementation_summary", "restored_invariant_refs"]}}}}}
+  ],
   "$defs": {
     "ref": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"id": {"type": "string"}, "path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "status": {"enum": ["added", "modified", "deleted"]}}},
     "check": {"type": "object", "additionalProperties": false, "required": ["name", "command", "result", "evidence_refs"], "properties": {"name": {"type": "string", "minLength": 1}, "command": {"type": "string", "minLength": 1}, "result": {"enum": ["pass", "fail", "blocked"]}, "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}

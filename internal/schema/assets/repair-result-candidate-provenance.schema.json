@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/repair-result-candidate-provenance.schema.json",
+  "title": "Original S9 RepairResult candidate provenance",
+  "description": "Binds a professional answer to its issued packet and execution. It is not a delivery receipt and carries no self hash or predicted Runtime sequence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "packet_id", "packet_sha256", "issuance_event_id", "answer_sha256", "submitted_answer", "owner_agent_id", "runtime_id", "baseline_generation", "review_round", "execution_assignment_id", "execution_generation", "execution_sha256", "execution_root", "source_head", "base_commit", "plan_report_ref", "plan_report_sha256", "rework_ref", "rework_sha256", "worker_check_receipts", "owned_check_receipts"],
+  "properties": {
+    "private_submissions": {"type":"array","minItems":2,"maxItems":2,"items":{"type":"object","additionalProperties":false,"required":["kind","path","sha256"],"properties":{"kind":{"enum":["plan","result"]},"path":{"type":"string","pattern":"^\\.loop-submissions/native-s9/packet-[a-f0-9]{64}/(plan|result)\\.json$"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}}},
+    "local_evidence": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["authored_ref", "source_path", "path", "sha256"], "properties": {"authored_ref": {"type": "string", "minLength": 1}, "source_path": {"type": "string", "minLength": 1}, "path": {"type": "string", "pattern": "^\\.claude/evidence/s9/"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
+    "contract": {"const": "s9-repair-result-candidate-v1"},
+    "packet_id": {"type": "string", "pattern": "^packet-[a-f0-9]{64}$"},
+    "packet_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "issuance_event_id": {"type": "string", "pattern": "^evt-repair-result-packet-packet-[a-f0-9]{64}$"},
+    "answer_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "submitted_answer": {"$ref": "stage-answer-s9-result.schema.json#/$defs/answer"},
+    "owner_agent_id": {"type": "string", "minLength": 1},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "baseline_generation": {"type": "integer", "minimum": 1},
+    "review_round": {"type": "integer", "minimum": 1},
+    "execution_assignment_id": {"type": "string", "minLength": 1},
+    "execution_generation": {"type": "integer", "minimum": 1},
+    "execution_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "execution_root": {"type": "string", "minLength": 1},
+    "source_head": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"},
+    "base_commit": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"},
+    "plan_report_ref": {"type": "string", "minLength": 1},
+    "plan_report_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "completion_report_ref": {"type": "string", "minLength": 1},
+    "completion_report_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "completion_report_event_id": {"type": "string", "minLength": 1},
+    "rework_ref": {"type": "string"},
+    "rework_sha256": {"type": "string"},
+    "resume": {"$ref": "repair-result-work-packet.schema.json#/$defs/resume"},
+    "resume_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "worker_check_receipts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/tool_receipt"}},
+    "owned_check_receipts": {"type": "array", "maxItems": 1024, "items": {"type": "object", "additionalProperties": false, "required": ["worker_check_index", "receipt"], "properties": {"worker_check_index": {"type": "integer", "minimum": 0}, "receipt": {"$ref": "#/$defs/tool_receipt"}}}}
+  },
+  "allOf": [
+    {"if": {"required": ["resume"]}, "then": {"required": ["resume_sha256"]}},
+    {"if": {"required": ["resume_sha256"]}, "then": {"required": ["resume"]}}
+  ],
+  "$defs": {
+    "tool_receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "log_sha256", "checkout", "command", "profile_digest", "binding"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "log_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "checkout": {"type": "string", "minLength": 1},
+        "command": {"type": "string", "minLength": 1},
+        "profile_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "binding": {"type": "object", "additionalProperties": false, "required": ["runtime_id", "baseline_generation", "assignment_id", "owner", "execution_generation", "responsibility"], "properties": {"runtime_id": {"type": "string", "minLength": 1}, "baseline_generation": {"type": "integer", "minimum": 1}, "assignment_id": {"type": "string", "minLength": 1}, "owner": {"type": "string", "minLength": 1}, "execution_generation": {"type": "integer", "minimum": 1}, "responsibility": {"type": "string", "minLength": 1}}}
+      }
+    }
+  }
+}

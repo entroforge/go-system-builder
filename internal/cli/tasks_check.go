@@ -54,6 +54,9 @@ func runTasks(args []string, stdout, stderr io.Writer) int {
 	for _, load := range result.ReferenceLoads {
 		fmt.Fprintf(stdout, "  load: %s\n", load)
 	}
+	for _, advice := range result.GranularityAdvice {
+		fmt.Fprintf(stdout, "  advisory: %s [%v]: %s %s\n", advice.Kind, advice.TaskIDs, advice.Observation, advice.Question)
+	}
 	fmt.Fprintf(stdout, "tasks check: %d task(s) (%d cancelled), clauses %d/%d covered, dependencies acyclic — batch ready\n",
 		result.Tasks, result.Cancelled, result.ClausesCovered, result.ClausesTotal)
 	return 0

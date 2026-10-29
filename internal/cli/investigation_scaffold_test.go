@@ -81,8 +81,8 @@ func TestS8IntakeScaffold(t *testing.T) {
 	if units, ok := contract["repair_units"].([]any); !ok || len(units) != 1 {
 		t.Fatalf("RepairContract placeholder must carry the unit skeleton: %#v", contract["repair_units"])
 	}
-	if !strings.Contains(contract["next_verb"].(string), "runtime investigation contract approve") {
-		t.Fatalf("RepairContract placeholder must project the approve verb: %v", contract["next_verb"])
+	if !strings.Contains(contract["next_verb"].(string), "system-prepared human or bounded Driver decision application") || strings.Contains(contract["next_verb"].(string), "--approval-hash") {
+		t.Fatalf("RepairContract placeholder must direct the original author application without machine hash input: %v", contract["next_verb"])
 	}
 	if disclosure, _ := scaffold["disclosure"].(string); !strings.Contains(disclosure, "dry-run") {
 		t.Fatalf("scaffold must disclose its dry-run nature: %v", scaffold["disclosure"])

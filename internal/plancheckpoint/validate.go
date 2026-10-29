@@ -4,16 +4,20 @@ package plancheckpoint
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/entroforge/go-system-builder/internal/review"
-	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
+	"github.com/entroforge/go-system-builder/internal/runtimemeta"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/team"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 )
 
-func Validate(root string, snapshot runtime.Snapshot, agentID, ref string) error {
+func Validate(root string, snapshot runtimemeta.Snapshot, agentID, ref string) error {
 	if ref == "" {
 		return fmt.Errorf("plan_ref is required")
 	}
@@ -50,7 +54,17 @@ func Validate(root string, snapshot runtime.Snapshot, agentID, ref string) error
 	if runtimeID, _ := snapshot.State["runtime_id"].(string); runtimeID != "" && message["runtime_id"] != runtimeID {
 		return fmt.Errorf("plan_ref runtime_id does not match the current runtime")
 	}
-	ptr := review.PlanPointerFromState(snapshot.State)
+	record, canonical, err := assignmentrecord.ForOwner(snapshot.State, agentID)
+	if err != nil {
+		return err
+	}
+	if canonical {
+		return validateCanonicalPlan(root, record, message)
+	}
+	if _, exists := message["assignment_record_contract"]; exists {
+		return fmt.Errorf("S6 plan has no original canonical Assignment registration")
+	}
+	ptr := reviewmeta.FromState(snapshot.State)
 	assignmentID, _ := message["assignment_id"].(string)
 	if ptr != nil {
 		if revision := intValue(message["assignment_revision"]); revision != ptr.Revision {
@@ -88,7 +102,7 @@ func Validate(root string, snapshot runtime.Snapshot, agentID, ref string) error
 // RepairAssignment (repair-assignment-*) and maps it to the platform-safe
 // manifest id (assignment-s9-*); this function validates the latter while the
 // S9 domain PlanReport validates the former.
-func validateManifestPlanReportCheckpoint(root string, snapshot runtime.Snapshot, message map[string]any, agentID string) error {
+func validateManifestPlanReportCheckpoint(root string, snapshot runtimemeta.Snapshot, message map[string]any, agentID string) error {
 	assignmentID := strValue(message["assignment_id"])
 	teamID := strValue(message["team_id"])
 	taskID := strValue(message["task_id"])
@@ -170,6 +184,13 @@ func validateManifestPlanReportCheckpoint(root string, snapshot runtime.Snapshot
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return fmt.Errorf("decode dispatched team manifest: %w", err)
 	}
+	enabled, err := assignmentrecord.ManifestAssignmentRecordEnabled(manifestBytes)
+	if err != nil {
+		return err
+	}
+	if enabled {
+		return fmt.Errorf("S6 manifest requires its original canonical Assignment registration")
+	}
 	if manifest.RuntimeID != strValue(snapshot.State["runtime_id"]) {
 		return fmt.Errorf("plan_ref manifest runtime_id does not match the current runtime")
 	}
@@ -186,6 +207,66 @@ func validateManifestPlanReportCheckpoint(root string, snapshot runtime.Snapshot
 		return nil
 	}
 	return fmt.Errorf("plan_ref Assignment %s is not declared by manifest %s", assignmentID, manifestRef)
+}
+
+func validateCanonicalPlan(root string, record assignmentrecord.Record, message map[string]any) error {
+	sha, err := record.Digest()
+	if err != nil {
+		return err
+	}
+	if message["assignment_record_contract"] != record.Contract || message["assignment_record_sha256"] != sha || message["assignment_id"] != record.AssignmentID || intValue(message["assignment_revision"]) != record.Revision {
+		return fmt.Errorf("S6 PLAN does not bind the current Assignment identity, revision and digest")
+	}
+	if message["team_id"] != record.TeamID || message["task_id"] != record.Task.ID || message["agent_definition_ref"] != record.AgentDefinition.Ref {
+		return fmt.Errorf("S6 PLAN identity differs from its registered Assignment")
+	}
+	if _, exists := message["steps"]; exists {
+		return fmt.Errorf("S6 PLAN uses the closed thin professional answer schema")
+	}
+	if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
+		return assignmentinputs.Read(root, ref)
+	}); err != nil {
+		return err
+	}
+	paths := stringsValue(message["planned_paths"])
+	for _, path := range paths {
+		if !assignmentrecord.AllowsPath(record, path) {
+			return fmt.Errorf("S6 PLAN path %s is outside the canonical Assignment", path)
+		}
+	}
+	dependencies := stringsValue(message["dependencies"])
+	if len(dependencies) != len(record.DependsOn) {
+		return fmt.Errorf("S6 PLAN dependencies differ from the canonical Assignment: expected workgroup-local depends_on=%v; retain that exact set, not TASK prerequisites, input files or environment descriptions", record.DependsOn)
+	}
+	seen := map[string]bool{}
+	for _, dependency := range dependencies {
+		if seen[dependency] || !containsStringValue(record.DependsOn, dependency) {
+			return fmt.Errorf("S6 PLAN dependencies differ from the canonical Assignment: expected workgroup-local depends_on=%v; retain that exact set, not TASK prerequisites, input files or environment descriptions", record.DependsOn)
+		}
+		seen[dependency] = true
+	}
+	if err := validateClosingPlan(record, message); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateClosingPlan requires a closing-contract PLAN to map its assertions
+// to every frozen DoneWhen. PLAN text remains author-authored; this only
+// validates coverage and stable references.
+func validateClosingPlan(record assignmentrecord.Record, message map[string]any) error {
+	if record.ClosingContract == nil {
+		return nil
+	}
+	data, err := json.Marshal(message["assertion_checks"])
+	if err != nil {
+		return fmt.Errorf("encode S6 closing-contract PLAN assertion_checks: %w", err)
+	}
+	var assertions []assignmentresult.PlanAssertion
+	if err := json.Unmarshal(data, &assertions); err != nil {
+		return fmt.Errorf("decode S6 closing-contract PLAN assertion_checks: %w", err)
+	}
+	return assignmentresult.ValidatePlanClosingContract(record, assertions)
 }
 
 func containsStringValue(values []string, target string) bool {

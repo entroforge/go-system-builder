@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/repair-result-receipt.schema.json",
+  "title": "Original accepted S9 RepairResult receipt",
+  "description": "Stored in the original immutable RepairResult and bound by the original Runtime result ref. No self hash is included.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "provenance", "candidate_ref", "candidate_sha256", "result_id", "result_ref", "main_proof", "work_complete", "accepted_event_id", "accepted_idempotency_key", "accepted_after_runtime_revision", "accepted_sequence"],
+  "properties": {
+    "contract": {"const": "s9-repair-result-receipt-v1"},
+    "provenance": {"$ref": "repair-result-candidate-provenance.schema.json"},
+    "candidate_ref": {"type": "string", "pattern": "^\\.claude/review/repair/candidates/[a-f0-9]{64}\\.json$"},
+    "candidate_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "result_id": {"type": "string", "pattern": "^repair-result-[a-f0-9]{64}$"},
+    "result_ref": {"type": "string", "pattern": "^\\.claude/review/repair/results/repair-result-[a-f0-9]{64}\\.json$"},
+    "main_proof": {"$ref": "#/$defs/main_proof"},
+    "work_complete": {"const": true},
+    "accepted_event_id": {"type": "string", "pattern": "^evt-s9-issued-repair-result-packet-[a-f0-9]{64}$"},
+    "accepted_idempotency_key": {"type": "string", "pattern": "^runtime:s9:issued-repair-result:packet-[a-f0-9]{64}$"},
+    "accepted_after_runtime_revision": {"type": "integer", "minimum": 1},
+    "accepted_sequence": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "main_proof": {
+      "type": "object", "additionalProperties": false,
+      "required": ["checkpoint_ref", "checkpoint_sha256", "verified_facts", "verified_facts_sha256"],
+      "properties": {
+        "checkpoint_ref": {"type": "string", "minLength": 1},
+        "checkpoint_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "verified_facts_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "verified_facts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["assignment_id", "task_id", "baseline_generation", "assignment_record", "assignment_record_sha256", "source_branch", "source_head", "target_branch", "target_head", "merge_base", "merge_commit", "tested_head", "worktree_path", "changed_paths", "changed_paths_sha256", "canonical_main_facts", "completion_report_path", "completion_report_sha256", "verified_at", "idempotency_key", "check_receipts", "tool_check_receipts"],
+          "properties": {
+            "assignment_id": {"type": "string", "minLength": 1},
+            "task_id": {"type": ["string", "null"]},
+            "baseline_generation": {"type": "integer", "minimum": 1},
+            "assignment_record": {"type": ["object", "null"]},
+            "assignment_record_sha256": {"type": ["string", "null"]},
+            "source_branch": {"type": ["string", "null"], "minLength": 1},
+            "source_head": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"},
+            "target_branch": {"type": ["string", "null"], "minLength": 1},
+            "target_head": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40,64}$"},
+            "merge_base": {"type": ["string", "null"], "pattern": "^[a-f0-9]{40,64}$"},
+            "merge_commit": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"},
+            "tested_head": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"},
+            "worktree_path": {"type": ["string", "null"], "minLength": 1},
+            "changed_paths": {"type": ["array", "null"], "items": {"type": "string", "minLength": 1}},
+            "changed_paths_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+            "canonical_main_facts": {"type": ["object", "null"]},
+            "completion_report_path": {"type": ["string", "null"]},
+            "completion_report_sha256": {"type": ["string", "null"]},
+            "verified_at": {"type": "string", "minLength": 1},
+            "idempotency_key": {"type": ["string", "null"], "minLength": 1},
+            "check_receipts": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "tool_check_receipts": {"type": "array", "items": {"$ref": "repair-result-candidate-provenance.schema.json#/$defs/tool_receipt"}}
+          }
+        }
+      }
+    }
+  }
+}

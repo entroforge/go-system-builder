@@ -255,7 +255,12 @@ func writeResultFile(t *testing.T, root string, plan *Plan, assignmentID, result
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, resultID+".json")
+	// The input is an authoring artifact, so keep it on a non-product surface
+	// even when the fixture has a real Git baseline for the drift gate.
+	path := filepath.Join(root, "docs", "reports", resultID+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}

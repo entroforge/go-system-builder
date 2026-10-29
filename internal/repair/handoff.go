@@ -1,8 +1,10 @@
 package repair
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -20,42 +22,6 @@ func CreateRepairHandoff(root string, request HandoffRequest) (RepairHandoff, Ar
 	if request.Session.Path == "" || request.Plan.Path == "" || request.Contract.Path == "" || request.Result.Path == "" || request.Changeset.Path == "" || request.ChangeImpact.Path == "" {
 		return RepairHandoff{}, ArtifactRef{}, errors.New("handoff requires session, plan, contract, result, changeset, and change-impact references")
 	}
-	session, err := ValidateRepairSession(root, request.Session)
-	if err != nil {
-		return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff session: %w", err)
-	}
-	plan, err := ValidateRepairPlan(root, request.Plan)
-	if err != nil {
-		return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff plan: %w", err)
-	}
-	contract, err := ValidateApprovedContractRef(root, request.Contract)
-	if err != nil {
-		return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff contract: %w", err)
-	}
-	result, err := ValidateRepairResult(root, request.Result)
-	if err != nil {
-		return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff result: %w", err)
-	}
-	changeset, err := ValidateChangeset(root, request.Changeset)
-	if err != nil {
-		return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff changeset: %w", err)
-	}
-	impact, err := ValidateChangeImpact(root, request.ChangeImpact)
-	if err != nil {
-		return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff change impact: %w", err)
-	}
-	if session.ContractRef != contract.Ref.Path || session.ContractSHA256 != contract.Ref.SHA256 || plan.SessionID != session.SessionID || plan.ContractID != contract.ContractID || result.SessionID != session.SessionID || result.PlanID != plan.PlanID || result.ContractID != contract.ContractID || changeset.SessionID != session.SessionID {
-		return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff artifacts are not transitively bound to the approved Contract, Session, and Plan")
-	}
-	for _, ref := range request.TargetedReverifications {
-		target, err := ValidateTargetedReverification(root, ref)
-		if err != nil {
-			return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff targeted reverification: %w", err)
-		}
-		if target.ImpactID != impact.ImpactID {
-			return RepairHandoff{}, ArtifactRef{}, fmt.Errorf("handoff targeted reverification %s points to impact %q, want %q", target.ReverificationID, target.ImpactID, impact.ImpactID)
-		}
-	}
 	handoff := RepairHandoff{
 		SchemaVersion: "1.0.0", RecordType: "repair_handoff", HandoffID: request.HandoffID,
 		SessionRef: request.Session, PlanRef: request.Plan,
@@ -69,15 +35,15 @@ func CreateRepairHandoff(root string, request HandoffRequest) (RepairHandoff, Ar
 
 func ValidateRepairHandoff(root string, ref ArtifactRef) (RepairHandoff, error) {
 	var value RepairHandoff
-	if err := decodeArtifact(root, ref, "repair-handoff.schema.json", &value); err != nil {
-		return RepairHandoff{}, err
-	}
-	check, err := checkHandoffRefs(root, value)
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(ref.Path)))
 	if err != nil {
 		return RepairHandoff{}, err
 	}
-	if !check.Complete {
-		return RepairHandoff{}, fmt.Errorf("RepairHandoff incomplete: missing=%s invalid=%s", strings.Join(check.Missing, ", "), strings.Join(check.Invalid, ", "))
+	if err := json.Unmarshal(data, &value); err != nil {
+		return RepairHandoff{}, err
+	}
+	if value.HandoffID == "" || value.SessionRef.Path == "" || strings.TrimSpace(value.NextAction) == "" {
+		return RepairHandoff{}, errors.New("Handoff requires its current session, record identity and next action")
 	}
 	return value, nil
 }

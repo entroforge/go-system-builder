@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "checkout", "lock_ref", "lock_state", "observed_at", "point_in_time", "authorizes"],
+  "properties": {
+    "version": {"const": "1.0.0"},
+    "checkout": {"type": "string"},
+    "lock_ref": {"type": "string"},
+    "lock_state": {"enum": ["busy", "available", "not_created", "unknown"]},
+    "observed_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"},
+    "diagnostic": {"type": "string"},
+    "point_in_time": {"const": true},
+    "authorizes": {"const": false}
+  },
+  "allOf": [{"if": {"properties": {"lock_state": {"enum": ["busy", "available", "not_created"]}}}, "then": {"properties": {"checkout": {"minLength": 1}, "lock_ref": {"minLength": 1}}}}]
+}

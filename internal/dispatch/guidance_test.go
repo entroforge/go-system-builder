@@ -2,15 +2,16 @@ package dispatch
 
 import (
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"strings"
 	"testing"
 )
 
 func TestAdvisoryNamesEligibleAndUnintegratedWork(t *testing.T) {
 	b := Board{Plan: &semantic.DispatchPlan{Path: "docs/dev/tasks/index-REQ-042.md"}, Rows: []semantic.DispatchRow{
-		{Task: semantic.DispatchTask{ID: "TASK-042-01"}, State: "queued"},
-		{Task: semantic.DispatchTask{ID: "TASK-042-02"}, State: "reported"},
-		{Task: semantic.DispatchTask{ID: "TASK-042-03"}, State: "waiting", Reason: "await verified integration: TASK-042-02"},
+		{Task: semantic.DispatchTask{ID: "TASK-042-01"}, State: workstate.Pending, Eligible: true, Dispatchable: true},
+		{Task: semantic.DispatchTask{ID: "TASK-042-02"}, State: workstate.Active, DeliveryRecorded: true},
+		{Task: semantic.DispatchTask{ID: "TASK-042-03"}, State: workstate.Pending, Reason: "await verified integration: TASK-042-02"},
 	}}
 	got := strings.Join(Advisory(b), "\n")
 	for _, want := range []string{"eligible tasks", "TASK-042-01", "awaiting verified integration", "TASK-042-02", "waiting:", "actual available capacity"} {

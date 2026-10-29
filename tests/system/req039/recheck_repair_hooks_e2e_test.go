@@ -158,10 +158,16 @@ func seedRecheckS9Dispatch(t *testing.T) (string, repair.ArtifactRef, repair.Art
 		t.Fatal(err)
 	}
 	contractRef := repair.ContractRef{Path: contractRel, SHA256: auditSHA256(contractBytes)}
+	state := req039fixtures.BaseState(t, root, "bug_resolution", "planning", 4)
+	baseline, _ := state["baseline"].(map[string]any)
+	baselineGeneration, ok := baseline["generation"].(int)
+	if !ok {
+		t.Fatalf("fixture baseline generation has unexpected type: %#v", baseline["generation"])
+	}
 	session, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
 		Contract: contractRef, SessionID: "repair-session-recheck-s9",
-		RuntimeID: "loop-req039-recheck", ReqID: "REQ-039",
-		BaselineGeneration: 1, CreatedBy: "main",
+		RuntimeID: req039fixtures.RuntimeIDFromState(state), ReqID: "REQ-039",
+		BaselineGeneration: baselineGeneration, CreatedBy: "main",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +179,6 @@ func seedRecheckS9Dispatch(t *testing.T) (string, repair.ArtifactRef, repair.Art
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "planning", 4)
 	review := state["review"].(map[string]any)
 	review["repair"] = map[string]any{
 		"session_id": session.SessionID, "case_id": "investigation-case-recheck-s9",

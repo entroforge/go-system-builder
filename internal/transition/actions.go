@@ -16,11 +16,15 @@ package transition
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/docscope"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,14 +51,18 @@ type ActionResult struct {
 // Spec is the resolved transition spec; From / To are the pre-move cursor;
 // Evidence is the request evidence map; OccurredAt is the timestamp.
 type ActionContext struct {
-	Root       string
-	Spec       TransitionSpec
-	From       map[string]any
-	To         map[string]any
-	Evidence   map[string]string
-	OccurredAt time.Time
-	Params     map[string]any
-	Request    *Request
+	Root               string
+	Spec               TransitionSpec
+	From               map[string]any
+	To                 map[string]any
+	Evidence           map[string]string
+	OccurredAt         time.Time
+	Params             map[string]any
+	Request            *Request
+	EventID            string
+	BeforeRevision     int
+	AfterRevision      int
+	TransitionSequence int
 }
 
 var (
@@ -93,12 +101,13 @@ func ActionNames() []string {
 // from BUG-001 §4b.2(c). Calling it more than once is safe.
 func InitActionRegistry() {
 	newReg := map[string]ActionFn{
-		"bind_loop_req":             actionBindLoopREQ,
-		"record_loop_authorization": actionRecordLoopAuthorization,
-		"update_bound_req":          actionUpdateBoundREQ,
-		"register_locked_contracts": actionRegisterLockedContracts,
-		"register_design_documents": actionRegisterDesignDocuments,
-		"register_execution_batch":  actionRegisterExecutionBatch,
+		"planning_professional_rework": actionPlanningProfessionalRework,
+		"bind_loop_req":                actionBindLoopREQ,
+		"record_loop_authorization":    actionRecordLoopAuthorization,
+		"update_bound_req":             actionUpdateBoundREQ,
+		"register_locked_contracts":    actionRegisterLockedContracts,
+		"register_design_documents":    actionRegisterDesignDocuments,
+		"register_execution_batch":     actionRegisterExecutionBatch,
 		// BUG-PLANNING-SUBSTATE: only set_planning_phase_design remains
 		// from the planning phase-set family. The other six (initialize,
 		// contract_drafting, task_drafting, ui_prototype, rework,
@@ -464,22 +473,295 @@ func actionRoot(state map[string]any, ctx *ActionContext) string {
 	return ctx.Root
 }
 
-// actionRegisterLockedContracts runs on PTR-PLAN-02 (contracts→tasks):
-// it scans docs/dev/contracts/*.md for status=locked files and registers each
-// into documents[] (same-generation-same-id replaces, appendDocument) —
-// feeding the S3 exit gate that consumes documents[], and arming hook
-// write-protection for contracts (L3-S3 v4.0.1).
+// actionRegisterLockedContracts registers the accepted S3 batch on
+// PTR-PLAN-02. Packet-mode TR-002 retains that already-registered S3 source
+// set; it must not rescan contracts while registering S4 outputs.
 func actionRegisterLockedContracts(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	models, modelErr := sharedModelDocuments(state, ctx, true)
+	var accepted *acceptedS3ContractBatch
+	if ctx.Spec.ID == "PTR-PLAN-02" && loopruntime.PacketEnabled(state) {
+		if ctx.Request == nil || ctx.Request.SubmissionFollowupID == "" {
+			err := fmt.Errorf("S3 transition needs the received current S3 questionnaire; save the exact answer path supplied by the listener and let its original consumer continue")
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+		var err error
+		accepted, err = acceptedContractArtifacts(state, ctx)
+		if err != nil {
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+		if err := accepted.validateSources(actionRoot(state, ctx), ctx.Request.Files); err != nil {
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+	}
+	if ctx.Spec.ID == "TR-002" && loopruntime.PacketEnabled(state) {
+		if ctx.Request == nil || ctx.Request.SubmissionFollowupID == "" {
+			err := fmt.Errorf("TR-002 requires the current accepted S4 planning_task followup")
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+		// The S4 packet freezes the contracts already accepted at S3. TR-002
+		// must not rescan the repository and pull an unrelated contract into
+		// this generation; register_planning_tasks reopens the receipt and
+		// validates this same followup before registering the exact S4 outputs.
+		return ActionResult{Status: "committed", Detail: "retained the exact locked contract source set accepted at S3"}, nil
+	}
+	models, modelErr := sharedModelDocuments(state, ctx, true, accepted)
 	if modelErr != nil {
 		return ActionResult{Status: "failed", Detail: modelErr.Error()}, modelErr
 	}
-	registered, err := registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, projectlayout.Contracts, []string{"BE-", "FE-", "SYNC-", "CONTRACTS-"}, "contract", "locked")
+	registered := 0
+	var err error
+	if accepted != nil {
+		for _, ref := range accepted.contracts {
+			state["documents"] = appendDocument(state["documents"], map[string]any{
+				"id": ref.ID, "kind": "contract", "path": ref.Path, "version": ref.Version,
+				"sha256": ref.SHA256, "status": "locked", "generation": integerOf(state["baseline"].(map[string]any)["generation"]),
+				"author_agent_id": ctx.Request.Actor, "registered_at": ctx.OccurredAt.UTC().Format(time.RFC3339Nano),
+			})
+			registered++
+		}
+	} else {
+		registered, err = registerDocumentsFromDisk(actionRoot(state, ctx), state, ctx, projectlayout.Contracts, []string{"BE-", "FE-", "SYNC-", "CONTRACTS-"}, "contract", "locked")
+	}
 	if err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	}
 	return ActionResult{Status: "committed", MutationApplied: registered+models > 0,
 		Detail: fmt.Sprintf("registered %d locked contract(s) and %d shared input(s)", registered, models)}, nil
+}
+
+type acceptedS3ContractBatch struct {
+	contracts     []workpacket.Reference
+	subjects      map[string]workpacket.Subject
+	sharedOutputs map[string]bool
+}
+
+// Registration consumes the complete accepted source closure. It does not
+// redo the professional review or let a delayed followup adopt newer bytes.
+func (batch *acceptedS3ContractBatch) validateSources(root string, files fileview.Reader) error {
+	if files == nil {
+		files = fileview.Disk{Root: root}
+	}
+	paths := make([]string, 0, len(batch.subjects))
+	for path := range batch.subjects {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	if err := fileview.ReadFiles(files, paths, func(i int, data []byte, err error) error {
+		path := paths[i]
+		if err != nil {
+			return fmt.Errorf("read accepted S3 source %s: %w", path, err)
+		}
+		checkout, err := workpacket.ReadFile(root, path, 4<<20)
+		if err != nil {
+			return fmt.Errorf("read accepted S3 checkout source %s: %w", path, err)
+		}
+		if SHA256(data) != batch.subjects[path].SHA256 || SHA256(checkout) != batch.subjects[path].SHA256 {
+			return fmt.Errorf("accepted S3 source changed before registration: %s; preserve the accepted evidence and restore its source bytes for the original followup, or use controlled planning rework for a professional change", path)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if view, ok := files.(interface{ Verify() error }); ok {
+		return view.Verify()
+	}
+	return nil
+}
+
+func acceptedContractArtifacts(state map[string]any, ctx *ActionContext) (*acceptedS3ContractBatch, error) {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["submissions"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["followup_event_id"] != ctx.Request.SubmissionFollowupID {
+			continue
+		}
+		packet, found, err := loopruntime.FindContractPacket(state, fmt.Sprint(row["packet_id"]))
+		if err != nil || !found {
+			return nil, fmt.Errorf("S3 registration has no original contract packet: %v", err)
+		}
+		record, found, err := loopruntime.FindSubmission(state, packet.ID)
+		if err != nil || !found {
+			return nil, fmt.Errorf("S3 registration has no original reception: %v", err)
+		}
+		var files fileview.Reader = fileview.Disk{Root: actionRoot(state, ctx)}
+		if ctx.Request.Files != nil {
+			files = ctx.Request.Files
+		}
+		evidence, _ := state["evidence"].([]any)
+		for _, raw := range evidence {
+			ev, _ := raw.(map[string]any)
+			if ev["id"] != record.EvidenceID {
+				continue
+			}
+			data, err := files.ReadFile(fmt.Sprint(ev["path"]))
+			if err != nil || SHA256(data) != ev["sha256"] {
+				return nil, fmt.Errorf("S3 registration original evidence changed: %v", err)
+			}
+			var envelope struct {
+				Answer   workpacket.ContractAnswer `json:"contract_answer"`
+				Subjects []workpacket.Subject      `json:"subject_refs"`
+			}
+			if err := json.Unmarshal(data, &envelope); err != nil {
+				return nil, err
+			}
+			digest, err := workpacket.ContractAnswerDigest(envelope.Answer)
+			if err != nil || digest != record.ContentHash || envelope.Answer.IndexPath == nil {
+				return nil, fmt.Errorf("S3 registration original answer differs")
+			}
+			paths := append([]string{*envelope.Answer.IndexPath}, envelope.Answer.ContractPaths...)
+			batch := &acceptedS3ContractBatch{subjects: map[string]workpacket.Subject{}, sharedOutputs: map[string]bool{}}
+			frozen := map[string]bool{packet.Binding.Requirement.Path: true}
+			for _, ref := range packet.Inputs.Designs {
+				frozen[ref.Path] = true
+			}
+			for _, ref := range packet.Inputs.Sources {
+				frozen[ref.Path] = true
+			}
+			for _, path := range paths {
+				frozen[path] = true
+			}
+			for _, subject := range envelope.Subjects {
+				if _, duplicate := batch.subjects[subject.Path]; duplicate {
+					return nil, fmt.Errorf("S3 registration original evidence repeats source %s", subject.Path)
+				}
+				batch.subjects[subject.Path] = subject
+				if !frozen[subject.Path] {
+					batch.sharedOutputs[subject.Path] = true
+				}
+			}
+			refs := make([]workpacket.Reference, 0, len(paths))
+			for _, path := range paths {
+				found := false
+				for _, subject := range envelope.Subjects {
+					if subject.Path != path {
+						continue
+					}
+					refs = append(refs, workpacket.Reference{ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), Path: path, Version: subject.Version, SHA256: subject.SHA256})
+					found = true
+					break
+				}
+				if !found {
+					return nil, fmt.Errorf("S3 registration received contract is missing: %s", path)
+				}
+			}
+			if verified, ok := files.(interface{ Verify() error }); ok {
+				if err := verified.Verify(); err != nil {
+					return nil, err
+				}
+			}
+			batch.contracts = refs
+			return batch, nil
+		}
+		return nil, fmt.Errorf("S3 registration original evidence is missing")
+	}
+	return nil, fmt.Errorf("S3 registration original followup is missing")
+}
+
+type acceptedS4TaskPlanningBatch struct {
+	answer    workpacket.TaskPlanningAnswer
+	artifacts []workpacket.Reference
+}
+
+// acceptedTaskPlanningBatch reopens the original S4 receipt inside TR-002's
+// Writer transaction. Actions run after the engine moves the cursor, so only
+// the read-only projection is restored to the packet's original S4 entry.
+func acceptedTaskPlanningBatch(state map[string]any, ctx *ActionContext) (acceptedS4TaskPlanningBatch, error) {
+	if ctx == nil || ctx.Spec.ID != "TR-002" || ctx.Request == nil || ctx.Request.SubmissionFollowupID == "" {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 requires the current accepted S4 planning_task followup")
+	}
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["submissions"].([]any)
+	var packetID string
+	followupRows := 0
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row != nil && row["followup_event_id"] == ctx.Request.SubmissionFollowupID {
+			packetID, _ = row["packet_id"].(string)
+			followupRows++
+		}
+	}
+	if followupRows != 1 || packetID == "" {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 has no unique original S4 acceptance for its followup")
+	}
+	record, found, err := loopruntime.FindSubmission(state, packetID)
+	if err != nil || !found {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 followup has no original accepted S4 submission: %v", err)
+	}
+	packet, found, err := loopruntime.FindTaskPlanningPacket(state, packetID)
+	if err != nil || !found {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 followup has no original S4 packet: %v", err)
+	}
+	projection := make(map[string]any, len(state))
+	for key, value := range state {
+		projection[key] = value
+	}
+	projection["lifecycle"] = map[string]any{"state": "planning", "phase": "tasks", "phase_revision": packet.Binding.StageEntry}
+	if _, err := loopruntime.SubmissionFollowup(projection, ctx.Request.SubmissionFollowupID); err != nil {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 acceptance is no longer current: %w", err)
+	}
+	var files fileview.Reader = fileview.Disk{Root: actionRoot(state, ctx)}
+	if ctx.Request.Files != nil {
+		files = ctx.Request.Files
+	}
+	evidenceRows, _ := state["evidence"].([]any)
+	var evidence map[string]any
+	evidenceCount := 0
+	for _, raw := range evidenceRows {
+		row, _ := raw.(map[string]any)
+		if row != nil && row["id"] == record.EvidenceID {
+			evidence = row
+			evidenceCount++
+		}
+	}
+	producers, _ := evidence["produced_by"].([]any)
+	if evidenceCount != 1 || evidence["kind"] != "planning_task" || evidence["status"] != "valid" ||
+		integerOf(evidence["baseline_generation"]) != packet.Binding.Generation ||
+		evidence["responsibility_id"] != "Orchestrator" || len(producers) != 1 || producers[0] != "Main" || evidence["invalidated_by"] != nil {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 planning_task evidence registration is missing or changed")
+	}
+	evidencePath, _ := evidence["path"].(string)
+	cleanEvidencePath := filepath.Clean(evidencePath)
+	if evidencePath == "" || filepath.IsAbs(evidencePath) || filepath.ToSlash(cleanEvidencePath) != evidencePath || cleanEvidencePath == ".." || strings.HasPrefix(cleanEvidencePath, ".."+string(filepath.Separator)) {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 evidence path is invalid")
+	}
+	envelopeBytes, err := files.ReadFile(evidencePath)
+	if err != nil || SHA256(envelopeBytes) != evidence["sha256"] {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 evidence bytes differ from the registered hash: %s", evidencePath)
+	}
+	var envelope struct {
+		Answer      workpacket.TaskPlanningAnswer `json:"task_planning_answer"`
+		SubjectRefs []workpacket.Subject          `json:"subject_refs"`
+	}
+	if err := json.Unmarshal(envelopeBytes, &envelope); err != nil {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("decode TR-002 original S4 evidence: %w", err)
+	}
+	digest, err := workpacket.TaskPlanningAnswerDigest(envelope.Answer)
+	if err != nil || digest != record.ContentHash {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 professional answer differs from its accepted digest")
+	}
+	if err := loopruntime.ValidateTaskPlanningEnvelope(packet, record.EvidenceID, envelope.Answer, envelopeBytes); err != nil {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("revalidate TR-002 original S4 envelope: %w", err)
+	}
+	artifacts, err := loopruntime.TaskPlanningArtifacts(actionRoot(state, ctx), projection, packet, envelope.Answer, files)
+	if err != nil {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("revalidate complete TR-002 S4 batch and frozen source closure: %w", err)
+	}
+	subjects := make(map[string]workpacket.Subject, len(envelope.SubjectRefs))
+	for _, subject := range envelope.SubjectRefs {
+		subjects[subject.Path] = subject
+	}
+	for _, artifact := range artifacts {
+		subject, ok := subjects[artifact.Path]
+		if !ok || subject.Version != artifact.Version || subject.SHA256 != artifact.SHA256 {
+			return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 S4 accepted artifact differs from current source bytes: %s", artifact.Path)
+		}
+	}
+	if verified, ok := files.(interface{ Verify() error }); ok {
+		if err := verified.Verify(); err != nil {
+			return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 S4 source view moved during registration: %w", err)
+		}
+	}
+	return acceptedS4TaskPlanningBatch{answer: envelope.Answer, artifacts: artifacts}, nil
 }
 
 // actionRegisterExecutionBatch replaces the evidence-presence placeholder
@@ -489,7 +771,7 @@ func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (Act
 	if err := dispatchPlanDocuments(state, ctx, false); err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	}
-	if _, err := sharedModelDocuments(state, ctx, false); err != nil {
+	if _, err := sharedModelDocuments(state, ctx, false, nil); err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	}
 	if len(ctx.Evidence) == 0 {
@@ -547,16 +829,77 @@ func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (Act
 		}
 	}
 
-	return ActionResult{Status: "committed", MutationApplied: true,
-		Detail: fmt.Sprintf("registered %d complete task(s)", registered)}, nil
+	detail := fmt.Sprintf("registered %d complete task(s)", registered)
+	if workstate.SupportsAssignments(state["schema_version"]) {
+		start, err := captureS6MainStart(state, ctx, root)
+		if err != nil {
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+		detail = fmt.Sprintf("%s; s6_main_start_sha256=%s", detail, start.ReceiptSHA256)
+	}
+	return ActionResult{Status: "committed", MutationApplied: true, Detail: detail}, nil
 }
 
-// actionRegisterPlanningTasks runs on TR-002 (tasks→document_verification):
-// it registers the complete TASK batch into documents[], so S5's exit gates
-// and the independence check consume real registrations instead of seeded
-// fixtures. Unlike TR-003's register_execution_batch it carries no evidence
-// precondition — TR-002's required_evidence is empty (L3-S4 v4.0.1 B4).
+// actionRegisterPlanningTasks runs on TR-002 (tasks→document_verification).
+// Packet mode registers only the exact accepted S4 index and complete TASKs;
+// cancelled TASKs remain validated members of the batch but are not
+// registered. Legacy packet-off callers retain the disk-based path.
 func actionRegisterPlanningTasks(state map[string]any, ctx *ActionContext) (ActionResult, error) {
+	if ctx.Spec.ID == "TR-002" && loopruntime.PacketEnabled(state) {
+		batch, err := acceptedTaskPlanningBatch(state, ctx)
+		if err != nil {
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+		// Preserve the original index revision/registration contract. The
+		// accepted batch above already validated this exact REQ index.
+		if err := dispatchPlanDocuments(state, ctx, true); err != nil {
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+		generation := integerOf(state["baseline"].(map[string]any)["generation"])
+		root := actionRoot(state, ctx)
+		var files fileview.Reader = fileview.Disk{Root: root}
+		if ctx.Request.Files != nil {
+			files = ctx.Request.Files
+		}
+		indexPath := *batch.answer.IndexPath
+		actor := ctx.Request.Actor
+		registered := 0
+		for _, ref := range batch.artifacts {
+			if ref.Path == indexPath {
+				registered++
+				continue
+			}
+			data, err := files.ReadFile(ref.Path)
+			if err != nil || SHA256(data) != ref.SHA256 {
+				err = fmt.Errorf("accepted S4 TASK bytes changed during TR-002 registration: %s", ref.Path)
+				return ActionResult{Status: "failed", Detail: err.Error()}, err
+			}
+			status := ParseMarkdownField(string(data), "状态", "Status")
+			if status == "cancelled" {
+				continue
+			}
+			if status != "complete" {
+				err := fmt.Errorf("accepted S4 TASK status is %q, want complete or cancelled: %s", status, ref.Path)
+				return ActionResult{Status: "failed", Detail: err.Error()}, err
+			}
+			if err := refreshRuntimeTaskDocument(state, ref.ID, ref.Path, ref.SHA256); err != nil {
+				return ActionResult{Status: "failed", Detail: err.Error()}, err
+			}
+			state["documents"] = appendDocument(state["documents"], map[string]any{
+				"id": ref.ID, "kind": "task", "path": ref.Path, "version": ref.Version,
+				"sha256": ref.SHA256, "status": status, "generation": generation,
+				"author_agent_id": actor, "registered_at": ctx.OccurredAt.UTC().Format(time.RFC3339Nano),
+			})
+			registered++
+		}
+		if verified, ok := files.(interface{ Verify() error }); ok {
+			if err := verified.Verify(); err != nil {
+				return ActionResult{Status: "failed", Detail: err.Error()}, err
+			}
+		}
+		return ActionResult{Status: "committed", MutationApplied: registered > 0,
+			Detail: fmt.Sprintf("registered the accepted S4 dispatch index and %d complete TASK(s)", registered-1)}, nil
+	}
 	if err := dispatchPlanDocuments(state, ctx, true); err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
 	}
@@ -609,40 +952,25 @@ func registerDocumentsFromDisk(root string, state map[string]any, ctx *ActionCon
 	}
 	registered := 0
 	for _, entry := range entries {
-		name := entry.Name()
-		id := strings.TrimSuffix(name, ".md")
-		if entry.IsDir() || !strings.HasSuffix(name, ".md") ||
-			strings.Contains(strings.ToLower(name), "template") ||
-			strings.EqualFold(name, "README.md") ||
-			!hasAnyPrefix(id, prefixes) {
-			continue
-		}
-		rel := filepath.ToSlash(filepath.Join(dirRel, name))
-		data, err := files.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return registered, fmt.Errorf("read %s: %w", rel, err)
-		}
 		bound, _ := state["bound_req"].(map[string]any)
 		boundID, _ := bound["id"].(string)
-		if !docscope.Belongs(data, boundID) {
+		doc, member, err := registrationDocument(files, entry, dirRel, prefixes, boundID)
+		if err != nil {
+			return registered, err
+		}
+		if !member {
 			continue
 		}
-		status := ParseMarkdownField(string(data), "状态", "Status")
-		if status == "" {
-			// No status field: the file declares no batch membership (legacy
-			// fixture, README-like stub). Not part of this batch — skip.
-			continue
-		}
-		if status == "cancelled" {
-			// Cancelled declares the task out of the batch (S4 document
-			// status vocabulary) — skip instead of failing the partial-batch
-			// check, matching tasks check / TaskBatchComplete semantics.
-			continue
-		}
+		id, rel, status, data := doc.ID, doc.Path, doc.Status, doc.data
 		if status != wantStatus {
 			// Declares a different state: a real partial batch (e.g. a draft
 			// contract at TR-003). Failing here keeps subject fingerprint matching honest.
 			return registered, fmt.Errorf("%s status is %q, want %q — register refuses partial batches (fix the file or finish the batch)", rel, status, wantStatus)
+		}
+		if kind == "task" {
+			if err := refreshRuntimeTaskDocument(state, id, rel, SHA256(data)); err != nil {
+				return registered, err
+			}
 		}
 		version := ParseMarkdownField(string(data), "版本", "Version")
 		if version == "" {
@@ -657,9 +985,92 @@ func registerDocumentsFromDisk(root string, state map[string]any, ctx *ActionCon
 			"sha256": SHA256(data), "status": status, "generation": generation,
 			"author_agent_id": actor, "registered_at": occurredAt,
 		})
+		if kind == "task" {
+			// S8 spec rework re-locks the TASK at a new fingerprint while a
+			// prior-generation Assignment Record still pins the old one. The
+			// S6 dispatch projection then refuses both the replay branch
+			// (stale TASK fingerprint) and the revision branch (changed
+			// sources). Re-pin same-generation records to the re-locked TASK
+			// in this same Writer transaction so the record, the runtime
+			// entity and the locked document agree again.
+			repinStaleAssignmentTaskRefs(state, id, version, SHA256(data))
+		}
 		registered++
 	}
 	return registered, nil
+}
+
+// repinStaleAssignmentTaskRefs re-pins same-generation Assignment Records to
+// a re-locked TASK fingerprint. Without it, an S8-driven specification
+// rework leaves the prior S6 Assignment Record pointing at the pre-rework
+// TASK while the runtime entity already carries the new one, and S6 dispatch
+// refuses both branches. Work state and owner bindings are untouched; only
+// the TASK source ref (version/sha) is advanced. Best-effort: rows that do
+// not decode as records are left alone for the record validator.
+func repinStaleAssignmentTaskRefs(state map[string]any, taskID, version, sha256 string) {
+	entities, _ := state["entities"].(map[string]any)
+	if entities == nil {
+		return
+	}
+	baseline, _ := state["baseline"].(map[string]any)
+	generation := integerOf(baseline["generation"])
+	runtimeID, _ := state["runtime_id"].(string)
+	rows, _ := entities["assignments"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		if rid, _ := row["runtime_id"].(string); rid != runtimeID {
+			continue
+		}
+		if integerOf(row["baseline_generation"]) != generation {
+			continue
+		}
+		task, _ := row["task"].(map[string]any)
+		if task == nil {
+			continue
+		}
+		if tid, _ := task["id"].(string); tid != taskID {
+			continue
+		}
+		if cur, _ := task["sha256"].(string); cur == sha256 {
+			continue
+		}
+		task["version"] = version
+		task["sha256"] = sha256
+	}
+}
+
+// refreshRuntimeTaskDocument keeps the mutable Runtime TASK projection aligned
+// with an accepted/re-registered TASK document. Work state and owner facts are
+// independent lifecycle data, so this only refreshes the source path/hash.
+func refreshRuntimeTaskDocument(state map[string]any, taskID, path, sha256 string) error {
+	if taskID == "" || path == "" || sha256 == "" {
+		return fmt.Errorf("accepted TASK document identity/path/fingerprint is incomplete")
+	}
+	entities, _ := state["entities"].(map[string]any)
+	if entities == nil {
+		return nil
+	}
+	tasks, _ := entities["tasks"].([]any)
+	var found map[string]any
+	for _, raw := range tasks {
+		row, _ := raw.(map[string]any)
+		if row["id"] != taskID {
+			continue
+		}
+		if found != nil {
+			return fmt.Errorf("Runtime has duplicate TASK entity %s", taskID)
+		}
+		found = row
+	}
+	if found == nil {
+		return nil
+	}
+	found["path"] = path
+	found["sha256"] = sha256
+	return nil
 }
 
 func hasAnyPrefix(id string, prefixes []string) bool {
@@ -730,10 +1141,25 @@ func actionInvalidateAffectedEvidence(state map[string]any, ctx *ActionContext) 
 	all := false
 	if ctx.Request != nil {
 		changedPaths = append([]string(nil), ctx.Request.AffectedPaths...)
-		if len(changedPaths) == 1 && strings.TrimSpace(changedPaths[0]) == "all" {
-			all = true
-			changedPaths = nil
+	}
+	if ctx.Spec.ID == "TR-016" {
+		// S10's original re-review impact owns the scope. A save or later
+		// recovery Hook names its tool target, not the affected product.
+		ref := ctx.Evidence["change_impact_record"]
+		rows, _ := state["evidence"].([]any)
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if (row["id"] == ref || row["path"] == ref) && row["kind"] == "change_impact" {
+				if scope := toStringSlice(row["scope_refs"]); len(scope) > 0 {
+					changedPaths = scope
+				}
+				break
+			}
 		}
+	}
+	if len(changedPaths) == 1 && strings.TrimSpace(changedPaths[0]) == "all" {
+		all = true
+		changedPaths = nil
 	}
 	if !all && len(changedPaths) == 0 {
 		return ActionResult{Status: "failed", Detail: "affected_paths required for " + ctx.Spec.ID}, fmt.Errorf(
@@ -990,6 +1416,14 @@ func actionRecordHumanReleaseDecision(state map[string]any, ctx *ActionContext) 
 	if strings.TrimSpace(decisionRef) == "" {
 		return ActionResult{Status: "failed", Detail: "human release decision evidence missing"}, fmt.Errorf("record_human_release_decision: human_decision_record evidence missing")
 	}
+	if ctx.Spec.ID == "TR-027" {
+		// The human problem is the new intake source. Retire only the current
+		// S7/S8 entry pointers; their recorded observations and files remain.
+		if review, _ := state["review"].(map[string]any); review != nil {
+			review["observation_batch"] = nil
+			review["investigation"] = nil
+		}
+	}
 	return ActionResult{
 		Status: "committed",
 		Detail: fmt.Sprintf("human release decision %s recorded from evidence %s", ctx.Spec.Event, decisionRef),
@@ -1062,14 +1496,34 @@ func actionRegisterDesignDocuments(state map[string]any, ctx *ActionContext) (Ac
 		Detail: fmt.Sprintf("registered %d locked design document(s)", registered)}, nil
 }
 
-// actionInvalidateConsumedReviewEvidence runs on TR-004: the fix_required
-// record that triggered the rework loop is consumed by this commit — it
-// stays valid forever otherwise, and a fix that touches no registered
-// document would re-select TR-004 on every subsequent PreToolUse (the
-// livelock). Fingerprints still scope the *re-run* side (a
-// fix that changed documents already invalidates the old pass records by
-// subject mismatch); this action closes the no-drift half.
+// actionInvalidateConsumedReviewEvidence runs on TR-004. It retires the
+// exact current S5 reviewer batch and invalidates every accepted review from
+// that entry, so a fix that leaves registered documents byte-identical cannot
+// reuse an earlier PASS.
 func actionInvalidateConsumedReviewEvidence(state map[string]any, ctx *ActionContext) (ActionResult, error) {
+	if ctx == nil || ctx.Spec.ID != "TR-004" {
+		return ActionResult{Status: "failed", Detail: "TR-004 action context is missing"}, fmt.Errorf("invalidate current S5 review batch requires TR-004 context")
+	}
+	entry, entryOK := integerValue(ctx.From["phase_revision"])
+	generation, generationOK := integerValue(ctx.From["baseline_generation"])
+	currentEvidence := map[string]bool{}
+	if entryOK && generationOK {
+		currentEvidence = currentS5EntryEvidence(state, stringValue(state["runtime_id"]), generation, entry)
+	}
+	mutated := false
+	retiredTeams, retiredAgents, retiredExecutions := 0, 0, 0
+	if workstate.SupportsAssignments(state["schema_version"]) && entryOK && generationOK {
+		var err error
+		retiredTeams, retiredAgents, err = retireCurrentS5Teams(state, generation, entry)
+		if err != nil {
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+		retiredExecutions, err = retireCurrentS5Executions(state, stringValue(state["runtime_id"]), generation, entry)
+		if err != nil {
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
+		}
+		mutated = retiredTeams > 0 || retiredAgents > 0 || retiredExecutions > 0
+	}
 	items, _ := state["evidence"].([]any)
 	invalidated := 0
 	for _, raw := range items {
@@ -1078,20 +1532,131 @@ func actionInvalidateConsumedReviewEvidence(state map[string]any, ctx *ActionCon
 			continue
 		}
 		id, _ := item["id"].(string)
-		if !citedByTransition(ctx, id) {
+		if !citedByTransition(ctx, id) && !currentEvidence[id] {
 			continue
 		}
 		item["status"] = "invalid"
 		item["invalidated_by"] = ctx.Spec.ID
 		item["invalidation_rule"] = "consumed_fix_record"
-		item["invalidation_reason"] = "consumed by TR-004 (document fix routed back to planning); the affected responsibility re-runs on fresh fingerprints"
+		item["invalidation_reason"] = "consumed by TR-004; all review evidence from the retired S5 entry must be refreshed after the document fix"
 		invalidated++
 	}
+	mutated = mutated || invalidated > 0
 	return ActionResult{
 		Status:          "committed",
-		MutationApplied: invalidated > 0,
-		Detail:          fmt.Sprintf("%d consumed review record(s) invalidated", invalidated),
+		MutationApplied: mutated,
+		Detail:          fmt.Sprintf("retired %d current S5 team(s), %d reviewer(s), %d execution(s); invalidated %d review record(s)", retiredTeams, retiredAgents, retiredExecutions, invalidated),
 	}, nil
+}
+
+func currentS5EntryEvidence(state map[string]any, runtimeID string, generation, entry int) map[string]bool {
+	currentPackets := map[string]bool{}
+	entities, _ := state["entities"].(map[string]any)
+	packets, _ := entities["work_packets"].([]any)
+	for _, raw := range packets {
+		row, _ := raw.(map[string]any)
+		if row == nil || row["template_id"] != "s5-document-review-v1" {
+			continue
+		}
+		binding, _ := row["binding"].(map[string]any)
+		packetEntry, entryOK := integerValue(binding["stage_entry"])
+		packetGeneration, generationOK := integerValue(binding["generation"])
+		if entryOK && generationOK && binding["runtime_id"] == runtimeID && packetGeneration == generation && packetEntry == entry {
+			currentPackets[stringValue(row["packet_id"])] = true
+		}
+	}
+	evidence := map[string]bool{}
+	submissions, _ := entities["submissions"].([]any)
+	for _, raw := range submissions {
+		row, _ := raw.(map[string]any)
+		if row != nil && currentPackets[stringValue(row["packet_id"])] {
+			if id := stringValue(row["evidence_id"]); id != "" {
+				evidence[id] = true
+			}
+		}
+	}
+	return evidence
+}
+
+func retireCurrentS5Teams(state map[string]any, generation, entry int) (int, int, error) {
+	entities, _ := state["entities"].(map[string]any)
+	teams, _ := entities["teams"].([]any)
+	agents, _ := entities["agents"].([]any)
+	retiredTeams, retiredAgents := 0, 0
+	for _, raw := range teams {
+		team, _ := raw.(map[string]any)
+		if team == nil || team["kind"] != "document_verifier" {
+			continue
+		}
+		teamEntry, entryOK := integerValue(team["packet_stage_entry"])
+		teamGeneration, generationOK := integerValue(team["packet_generation"])
+		if !entryOK || !generationOK || teamEntry != entry || teamGeneration != generation || team["status"] == "retired" {
+			continue
+		}
+		team["status"] = "retired"
+		retiredTeams++
+		teamID := stringValue(team["id"])
+		for _, agentRaw := range agents {
+			agent, _ := agentRaw.(map[string]any)
+			if agent == nil || agent["team_id"] != teamID || (agent["role"] != "document-verifier" && agent["role"] != "document_verifier") {
+				continue
+			}
+			if err := workstate.RecordAgentActivity(state, agent, "stopped", "shutdown_approved"); err != nil {
+				return retiredTeams, retiredAgents, fmt.Errorf("retire document reviewer %s: %w", stringValue(agent["id"]), err)
+			}
+			retiredAgents++
+		}
+	}
+	return retiredTeams, retiredAgents, nil
+}
+
+func retireCurrentS5Executions(state map[string]any, runtimeID string, generation, entry int) (int, error) {
+	registry, _ := state["workspace"].(map[string]any)
+	if registry == nil {
+		return 0, nil
+	}
+	executions, _ := registry["executions"].(map[string]any)
+	if executions == nil {
+		return 0, nil
+	}
+	history, _ := registry["execution_history"].([]any)
+	retired := 0
+	for key, raw := range executions {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return retired, fmt.Errorf("encode workspace execution %s: %w", key, err)
+		}
+		var execution map[string]any
+		if err := json.Unmarshal(encoded, &execution); err != nil {
+			return retired, fmt.Errorf("decode workspace execution %s: %w", key, err)
+		}
+		stageEntry, entryOK := integerValue(execution["stage_entry"])
+		executionGeneration, generationOK := integerValue(execution["baseline_generation"])
+		if !entryOK || !generationOK || execution["purpose"] != "document_review" || execution["runtime_id"] != runtimeID || executionGeneration != generation || stageEntry != entry {
+			continue
+		}
+		execution["status"] = "retired"
+		history = append(history, execution)
+		delete(executions, key)
+		retired++
+	}
+	if retired > 0 {
+		registry["execution_history"] = history
+	}
+	return retired, nil
+}
+
+func integerValue(value any) (int, bool) {
+	switch number := value.(type) {
+	case float64:
+		return int(number), number == float64(int(number))
+	case int:
+		return number, true
+	case int64:
+		return int(number), int64(int(number)) == number
+	default:
+		return 0, false
+	}
 }
 
 func citedByTransition(ctx *ActionContext, id string) bool {

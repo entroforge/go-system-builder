@@ -29,3 +29,5 @@ func unlock(f *os.File) error {
 }
 
 func contended(err error) bool { return errors.Is(err, syscall.Errno(33)) }
+
+func probeContended(err error) bool { return contended(err) }

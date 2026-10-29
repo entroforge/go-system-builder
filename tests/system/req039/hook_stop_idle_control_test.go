@@ -16,6 +16,8 @@ package req039_test
 import (
 	"strings"
 	"testing"
+
+	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 // stopIdleFixture seeds one builder agent on TASK-039-01 with the given
@@ -63,10 +65,12 @@ func TestHOOK_TeammateIdle_PostPlanPreResult_Exit2(t *testing.T) {
 	}
 }
 
-// L4 §16.1: teammate with a registered Result may idle (awaiting consumer).
-func TestHOOK_TeammateIdle_ResultRegistered_Allows(t *testing.T) {
+// A terminal Agent label without its PLAN_REPORT or original Result is not a
+// registered delivery; the listener reminds the same owner to finish it.
+func TestHOOK_TeammateIdle_ReportedLabelWithoutDeliveryReminds(t *testing.T) {
 	root := freshRoot(t)
 	stopIdleFixture(t, root, map[string]any{"state": "reported"})
+	before := req039fixtures.ReadState(t, root)
 
 	code, stdout, stderr := runHook(t, root, "TeammateIdle", `{
 		"session_id":"session-l4-idle-reported",
@@ -75,16 +79,18 @@ func TestHOOK_TeammateIdle_ResultRegistered_Allows(t *testing.T) {
 		"team_name":"team-l4",
 		"transcript_path":"/tmp/claude/transcripts/builder-l4.jsonl"
 	}`)
-	if code != 0 {
-		t.Fatalf("idle with registered Result must be allowed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+	if code != 2 || !strings.Contains(stderr, "PLAN_REPORT") {
+		t.Fatalf("reported label without registered delivery must preserve the original responsibility: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
+	assertRuntimeCursorUnchanged(t, "TeammateIdle reminder", before, req039fixtures.ReadState(t, root))
 }
 
-// L4 §16.1: teammate blocked with a valid blocker may idle; Main consumes
-// the blocker.
-func TestHOOK_TeammateIdle_ValidBlocker_Allows(t *testing.T) {
+// A blocked Agent label without a registered blocker is not blocker evidence;
+// the same owner still receives the missing PLAN_REPORT reminder.
+func TestHOOK_TeammateIdle_BlockedLabelWithoutEvidenceReminds(t *testing.T) {
 	root := freshRoot(t)
 	stopIdleFixture(t, root, map[string]any{"state": "blocked"})
+	before := req039fixtures.ReadState(t, root)
 
 	code, stdout, stderr := runHook(t, root, "TeammateIdle", `{
 		"session_id":"session-l4-idle-blocked",
@@ -93,9 +99,10 @@ func TestHOOK_TeammateIdle_ValidBlocker_Allows(t *testing.T) {
 		"team_name":"team-l4",
 		"transcript_path":"/tmp/claude/transcripts/builder-l4.jsonl"
 	}`)
-	if code != 0 {
-		t.Fatalf("idle with valid blocker must be allowed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+	if code != 2 || !strings.Contains(stderr, "PLAN_REPORT") {
+		t.Fatalf("blocked label without registered blocker must preserve the original responsibility: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
+	assertRuntimeCursorUnchanged(t, "TeammateIdle reminder", before, req039fixtures.ReadState(t, root))
 }
 
 // Fail-open contract: a TeammateIdle payload naming a teammate the runtime
@@ -143,8 +150,8 @@ func TestHOOK_SubagentStop_PlanAsFinalResponse_Exit2(t *testing.T) {
 }
 
 // Official loop guard: stop_hook_active=true means the agent is already
-// continuing because of a previous stop hook — never block again.
-func TestHOOK_SubagentStop_StopHookActive_Allows(t *testing.T) {
+// continuing because of a previous stop reminder; do not repeat it.
+func TestHOOK_SubagentStop_StopHookActiveDoesNotRepeatReminder(t *testing.T) {
 	root := freshRoot(t)
 	stopIdleFixture(t, root, map[string]any{"plan_reported_ref": "plan_report:msg-9"})
 
@@ -157,14 +164,15 @@ func TestHOOK_SubagentStop_StopHookActive_Allows(t *testing.T) {
 		"stop_hook_active":true
 	}`)
 	if code != 0 {
-		t.Fatalf("stop_hook_active must allow (loop guard): code=%d stderr=%s", code, stderr)
+		t.Fatalf("stop_hook_active must not repeat the stop reminder: code=%d stderr=%s", code, stderr)
 	}
 }
 
-// L4 §16.1: a Sub-agent that finished and registered its Result may stop.
-func TestHOOK_SubagentStop_ResultRegistered_Allows(t *testing.T) {
+// A terminal Agent label without the original Result cannot satisfy Stop.
+func TestHOOK_SubagentStop_ReportedLabelWithoutDeliveryReminds(t *testing.T) {
 	root := freshRoot(t)
 	stopIdleFixture(t, root, map[string]any{"state": "reported"})
+	before := req039fixtures.ReadState(t, root)
 
 	code, stdout, stderr := runHook(t, root, "SubagentStop", `{
 		"session_id":"session-l4-stop-done",
@@ -174,16 +182,18 @@ func TestHOOK_SubagentStop_ResultRegistered_Allows(t *testing.T) {
 		"last_assistant_message":"TASK-039-01 complete; result registered.",
 		"stop_hook_active":false
 	}`)
-	if code != 0 {
-		t.Fatalf("stop with registered Result must be allowed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+	if code != 2 || !strings.Contains(stderr, "PLAN_REPORT") {
+		t.Fatalf("reported label without registered delivery must preserve the original responsibility: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
+	assertRuntimeCursorUnchanged(t, "SubagentStop reminder", before, req039fixtures.ReadState(t, root))
 }
 
-// L4 §16.1 / §15.2 P0-5: a teammate flipping an undispatched Team task to
-// in_progress via TaskUpdate is denied.
-func TestHOOK_PreToolUseTaskUpdate_UnauthorizedSelfClaim_Denied(t *testing.T) {
+// PreToolUse observes a TaskUpdate event but does not authorize individual
+// tools or claims.
+func TestHOOK_PreToolUseTaskUpdate_UnauthorizedSelfClaimIsObserved(t *testing.T) {
 	root := freshRoot(t)
 	stopIdleFixture(t, root, map[string]any{"plan_reported_ref": "plan_report:msg-1"})
+	before := req039fixtures.ReadState(t, root)
 
 	code, stdout, stderr := runHook(t, root, "PreToolUse", `{
 		"session_id":"session-l4-claim",
@@ -192,22 +202,16 @@ func TestHOOK_PreToolUseTaskUpdate_UnauthorizedSelfClaim_Denied(t *testing.T) {
 		"tool_name":"TaskUpdate",
 		"tool_input":{"taskId":"TASK-039-99","status":"in_progress"}
 	}`)
-	if code != 0 {
-		t.Fatalf("unauthorized self-claim must exit 2: code=%d stderr=%s stdout=%s", code, stderr, stdout)
-	}
-	if !strings.Contains(stdout, `"permissionDecision":"deny"`) {
-		t.Fatalf("self-claim must render permissionDecision=deny, got %s", stdout)
-	}
-	if !strings.Contains(stdout, "unauthorized_task_self_claim") {
-		t.Fatalf("deny must name unauthorized_task_self_claim, got %s", stdout)
-	}
+	after := req039fixtures.ReadState(t, root)
+	assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
 }
 
 // The same guard fires when the teammate assigns the task to itself via the
 // owner field instead of flipping status.
-func TestHOOK_PreToolUseTaskUpdate_OwnerSelfAssignment_Denied(t *testing.T) {
+func TestHOOK_PreToolUseTaskUpdate_OwnerSelfAssignmentIsObserved(t *testing.T) {
 	root := freshRoot(t)
 	stopIdleFixture(t, root, map[string]any{"plan_reported_ref": "plan_report:msg-1"})
+	before := req039fixtures.ReadState(t, root)
 
 	code, stdout, stderr := runHook(t, root, "PreToolUse", `{
 		"session_id":"session-l4-claim-owner",
@@ -216,17 +220,13 @@ func TestHOOK_PreToolUseTaskUpdate_OwnerSelfAssignment_Denied(t *testing.T) {
 		"tool_name":"TaskUpdate",
 		"tool_input":{"taskId":"TASK-039-99","owner":"builder-l4"}
 	}`)
-	if code != 0 {
-		t.Fatalf("owner self-assignment must exit 2: code=%d stderr=%s stdout=%s", code, stderr, stdout)
-	}
-	if !strings.Contains(stdout, "unauthorized_task_self_claim") {
-		t.Fatalf("owner self-assignment must name unauthorized_task_self_claim, got %s", stdout)
-	}
+	after := req039fixtures.ReadState(t, root)
+	assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
 }
 
-// Ordinary status updates on the agent's own dispatched task — including
-// marking it completed — are not claims and pass through.
-func TestHOOK_PreToolUseTaskUpdate_OwnedTaskUpdate_Allowed(t *testing.T) {
+// Owned TaskUpdate calls reach the graph listener without a per-tool
+// authorization result; the event itself does not advance Runtime.
+func TestHOOK_PreToolUseTaskUpdate_OwnedTaskUpdateIsObserved(t *testing.T) {
 	root := freshRoot(t)
 	stopIdleFixture(t, root, map[string]any{"plan_reported_ref": "plan_report:msg-1"})
 
@@ -234,6 +234,7 @@ func TestHOOK_PreToolUseTaskUpdate_OwnedTaskUpdate_Allowed(t *testing.T) {
 		`{"taskId":"TASK-039-01","status":"in_progress"}`,
 		`{"taskId":"TASK-039-01","status":"completed"}`,
 	} {
+		before := req039fixtures.ReadState(t, root)
 		code, stdout, stderr := runHook(t, root, "PreToolUse", `{
 			"session_id":"session-l4-owned",
 			"hook_event_name":"PreToolUse",
@@ -241,17 +242,17 @@ func TestHOOK_PreToolUseTaskUpdate_OwnedTaskUpdate_Allowed(t *testing.T) {
 			"tool_name":"TaskUpdate",
 			"tool_input":`+toolInput+`
 		}`)
-		if code == 2 {
-			t.Fatalf("owned task update %s must not be denied: stderr=%s stdout=%s", toolInput, stderr, stdout)
-		}
+		after := req039fixtures.ReadState(t, root)
+		assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
 	}
 }
 
-// The main session (no agent identity in the payload) owns scheduling and is
-// out of scope for the self-claim guard.
-func TestHOOK_PreToolUseTaskUpdate_MainSession_Allowed(t *testing.T) {
+// The main session TaskUpdate event is also observed without a per-tool
+// authorization result.
+func TestHOOK_PreToolUseTaskUpdate_MainSessionIsObserved(t *testing.T) {
 	root := freshRoot(t)
 	stopIdleFixture(t, root, map[string]any{})
+	before := req039fixtures.ReadState(t, root)
 
 	code, stdout, stderr := runHook(t, root, "PreToolUse", `{
 		"session_id":"session-l4-main",
@@ -259,9 +260,8 @@ func TestHOOK_PreToolUseTaskUpdate_MainSession_Allowed(t *testing.T) {
 		"tool_name":"TaskUpdate",
 		"tool_input":{"taskId":"TASK-039-99","status":"in_progress"}
 	}`)
-	if code == 2 {
-		t.Fatalf("main-session TaskUpdate must not be denied: stderr=%s stdout=%s", stderr, stdout)
-	}
+	after := req039fixtures.ReadState(t, root)
+	assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
 }
 
 // stopIdleNonVerificationFixture seeds one builder agent on TASK-039-01

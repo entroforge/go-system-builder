@@ -394,7 +394,7 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 	if row.OwnerAgentID != "agent-039-04" {
 		t.Fatalf("OwnerAgentID: got %q", row.OwnerAgentID)
 	}
-	if row.State != "in_progress" {
+	if row.State != "active" {
 		t.Fatalf("State: got %q", row.State)
 	}
 	if len(row.WritePaths) != 1 || row.WritePaths[0] != "internal/controller/" {
@@ -402,6 +402,58 @@ func TestLoadFullSurfacesActiveAssignmentsFromWorkgroupManifests(t *testing.T) {
 	}
 	if strings.Join(row.DoneWhen, "|") != "register the exact Assignment Result|preserve evidence refs" {
 		t.Fatalf("DoneWhen: got %+v", row.DoneWhen)
+	}
+}
+
+func TestLoadFullProjectsCanonicalTaskStatesBeforeAssignmentFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		state               string
+		event               string
+		wantRows            int
+		includePendingAgent bool
+		wantErrSub          string
+	}{
+		{name: "active task is surfaced", state: "active", event: "builder_activated", wantRows: 1},
+		{name: "pending task is not surfaced", state: "pending", event: "task_created", wantRows: 0},
+		{name: "mismatched event is rejected", state: "active", event: "task_created", wantErrSub: "matching original lifecycle event"},
+		{name: "task activity does not grant agent product scope", state: "active", event: "builder_activated", wantRows: 1, includePendingAgent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			agents := `[]`
+			if tc.includePendingAgent {
+				agents = `[{"id":"worker-039","state":"pending","last_lifecycle_event":"agent_created","task_ids":["TASK-039-CANONICAL"]}]`
+			}
+			state := `{"schema_version":"1.3.0","runtime_id":"loop-REQ-039","revision":1,"entities":{"agents":` + agents + `,"tasks":[{"id":"TASK-039-CANONICAL","state":"` + tc.state + `","last_lifecycle_event":"` + tc.event + `","owner_agent_ids":["worker-039"]}],"bugs":[],"teams":[]}}`
+			manifest := `{"assignments":[{"assignment_id":"assignment-039-canonical","responsibility_id":"BUILD-WORK-PACKAGE","role_family":"backend-builder","agent_id":"worker-039","write_paths":["internal/example/"],"status":"active"}]}`
+			writeJSONL(t, filepath.Join(root, ".claude", "loop-state.json"), state)
+			writeJSONL(t, filepath.Join(root, ".claude", "workgroups", "REQ-039", "TASK-039-CANONICAL", "manifest.json"), manifest)
+
+			agentID := ""
+			if tc.includePendingAgent {
+				agentID = "worker-039"
+			}
+			loaded, err := hookctx.LoadFull(root, agentID)
+			if tc.wantErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+					t.Fatalf("mismatched canonical TASK event error = %v, want substring %q", err, tc.wantErrSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load full: %v", err)
+			}
+			if len(loaded.Assignments) != tc.wantRows {
+				t.Fatalf("assignment rows = %+v, want %d", loaded.Assignments, tc.wantRows)
+			}
+			if tc.wantRows == 1 && loaded.Assignments[0].State != "active" {
+				t.Fatalf("canonical active TASK was not projected to shared status: %+v", loaded.Assignments[0])
+			}
+			if tc.includePendingAgent && (loaded.PolicyContext.Agent == nil || loaded.PolicyContext.Agent.LifecycleActivity() != "spawned" || len(loaded.PolicyContext.Agent.AllowedWritePaths) != 0) {
+				t.Fatalf("canonical active TASK widened inactive Agent product scope: %#v", loaded.PolicyContext.Agent)
+			}
+		})
 	}
 }
 

@@ -149,12 +149,7 @@ func renderOneOfPruning(target *jsonschema.ValidationError, original error) erro
 		fmt.Fprintf(&sb, "\n(other branches ruled out: %s; %s)",
 			strings.Join(others, ", "), fmt.Sprintf(verboseFooter, SchemaVerboseEnv))
 	} else {
-		names := make([]string, 0, len(branches))
-		for _, branch := range branches {
-			names = append(names, branch.name)
-		}
-		fmt.Fprintf(&sb, "; no target branch is identifiable (branches: %s). First error per branch:",
-			strings.Join(names, ", "))
+		sb.WriteString("; no target branch is identifiable. First error per branch:")
 		for _, branch := range branches {
 			fmt.Fprintf(&sb, "\n  %s: %s", branch.name, branch.firstError)
 		}
@@ -186,12 +181,7 @@ func renderAnyOfPruning(target *jsonschema.ValidationError, original error) erro
 		fmt.Fprintf(&sb, "\n(other branches ruled out: %s; %s)",
 			strings.Join(others, ", "), fmt.Sprintf(verboseFooter, SchemaVerboseEnv))
 	} else {
-		names := make([]string, 0, len(branches))
-		for _, branch := range branches {
-			names = append(names, branch.name)
-		}
-		fmt.Fprintf(&sb, "; no branch matches well enough (branches: %s). First error per branch:",
-			strings.Join(names, ", "))
+		sb.WriteString("; no branch matches well enough. First error per branch:")
 		for _, branch := range branches {
 			fmt.Fprintf(&sb, "\n  %s: %s", branch.name, branch.firstError)
 		}

@@ -1,0 +1,26 @@
+{
+  "id": "G08-03",
+  "version": "1.0.0",
+  "family": "missing_required_input",
+  "role": "document-verifier",
+  "public_input": "Identify a missing required source and preserve authored work while requesting recovery.",
+  "public_refs": [
+    "docs/control/agent-protocol.md"
+  ],
+  "fixture_refs": [
+    "internal/cli/assignment_context_e2e_test.go",
+    "tests/fixtures/req039/fixtures.go"
+  ],
+  "mechanism_oracle": {
+    "package": "./internal/cli",
+    "test": "TestNativeAssignmentContextRejectsMissingSourcesWithoutAuthorOverwrite"
+  },
+  "variables": {},
+  "external_resources": [
+    "go",
+    "git"
+  ],
+  "timeout_seconds": 300,
+  "legal_end": "The exact original required Test/subtest runs and passes; required skip or missing target is not success.",
+  "proof_scope": "Native original context rejects absent installed input without inventing fallback/overwriting professional plan."
+}

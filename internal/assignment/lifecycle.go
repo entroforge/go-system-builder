@@ -26,19 +26,27 @@
 package assignment
 
 import (
-	"crypto/sha256"
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/agentauth"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/dispatch"
+	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/identity"
+	"github.com/entroforge/go-system-builder/internal/integration"
+	"github.com/entroforge/go-system-builder/internal/repair"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 type AgentEventRequest struct {
@@ -48,21 +56,22 @@ type AgentEventRequest struct {
 	MessagePath      string
 	Params           map[string]any `json:"params,omitempty"`
 	OccurredAt       time.Time
+	// Process-local proof, never decoded from an authored message or CLI flags.
+	IssuedRepairResultBlocker *repair.IssuedRepairResultBlockerCapability `json:"-"`
+	// Main-issued S9 resolution proof. It is mutually exclusive with the
+	// Worker blocker proof and only authorizes blocker_resolved.
+	IssuedRepairResultResolution *repair.IssuedRepairResultResolutionCapability `json:"-"`
 }
 
-type agentMessage struct {
-	MessageType             string `json:"message_type"`
-	RuntimeID               string `json:"runtime_id"`
-	ExpectedRuntimeRevision int    `json:"expected_runtime_revision"`
-	AgentID                 string `json:"agent_id"`
-	TaskID                  string `json:"task_id"`
-	// Activation chain fields (verified at activation_sent — L3-S6
-	// complexity pass: previously schema-required but never checked, pure
-	// ceremony; now fail-closed against the registered readback file).
-	ApprovedReadbackMessageID string `json:"approved_readback_message_id,omitempty"`
-	ApprovedReadbackSHA256    string `json:"approved_readback_sha256,omitempty"`
-	Body                      string `json:"body,omitempty"`
+type issuedRepairResultLifecycleCapability interface {
+	MessageRef() string
+	EvidenceIDs() []string
+	ValidateLifecycleRequest(root, owner, event, messagePath string, beforeRevision, generation int) error
+	AcceptedReplay(ctx context.Context, root string, state map[string]any, owner, event, messagePath string) (bool, error)
+	ApplyLifecycleCAS(ctx context.Context, root string, state map[string]any, messageBytes []byte, owner, taskID string, beforeRevision, generation int) error
 }
+
+type agentMessage = agentauth.Message
 
 // expectedAgentMessageType returns the canonical message_type expected for a
 // given Agent event. The mapping is the engine's contract; mismatched
@@ -112,13 +121,78 @@ func AdvanceAgent(
 	root, statePath, journalPath string,
 	request AgentEventRequest,
 ) (loopruntime.Snapshot, error) {
+	return AdvanceAgentWithContext(context.Background(), root, statePath, journalPath, request)
+}
+
+// AdvanceAgentWithContext extends the original lifecycle CAS with opaque S9
+// blocker and Main resolution capabilities. Only those typed branches acquire
+// the original Main workspace lock; legacy callers retain their lock behavior.
+func AdvanceAgentWithContext(ctx context.Context, root, statePath, journalPath string, request AgentEventRequest) (loopruntime.Snapshot, error) {
+	blockerCapability := request.IssuedRepairResultBlocker
+	resolutionCapability := request.IssuedRepairResultResolution
+	if blockerCapability != nil && resolutionCapability != nil {
+		return loopruntime.Snapshot{}, fmt.Errorf("S9 Agent lifecycle accepts only one typed capability")
+	}
+	if blockerCapability != nil && request.Event != "work_blocked" {
+		return loopruntime.Snapshot{}, fmt.Errorf("S9 blocker capability only authorizes work_blocked")
+	}
+	if resolutionCapability != nil && request.Event != "blocker_resolved" {
+		return loopruntime.Snapshot{}, fmt.Errorf("S9 resolution capability only authorizes blocker_resolved")
+	}
+	var capability issuedRepairResultLifecycleCapability
+	if blockerCapability != nil {
+		capability = blockerCapability
+	} else if resolutionCapability != nil {
+		capability = resolutionCapability
+	}
 	if request.AgentID == "" || request.Event == "" {
 		return loopruntime.Snapshot{}, fmt.Errorf("agent_id and event are required")
 	}
 	if err := identity.ValidateAgentID(request.AgentID); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("runtime agent-event: %w", err)
 	}
-	data, err := os.ReadFile(request.MessagePath)
+	if capability != nil {
+		refs := capability.EvidenceIDs()
+		if capability.MessageRef() == "" || len(refs) != 2 || refs[0] != capability.MessageRef() || refs[0] == refs[1] {
+			return loopruntime.Snapshot{}, fmt.Errorf("S9 typed lifecycle capability has no complete immutable lifecycle refs")
+		}
+	}
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	var recovered *loopruntime.Snapshot
+	if capability != nil {
+		if ctx == nil {
+			return loopruntime.Snapshot{}, fmt.Errorf("typed S9 lifecycle requires the original caller context")
+		}
+		lockedCtx, unlock, err := integration.LockWorkspace(ctx, root)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		defer unlock()
+		ctx = lockedCtx
+		snapshot, err := store.Snapshot()
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		replayed, err := capability.AcceptedReplay(ctx, root, snapshot.State, request.AgentID, request.Event, request.MessagePath)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		if replayed {
+			return snapshot, nil
+		}
+		baseline, _ := snapshot.State["baseline"].(map[string]any)
+		if err := capability.ValidateLifecycleRequest(root, request.AgentID, request.Event, request.MessagePath, snapshot.Revision, dispatch.Number(baseline["generation"])); err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		recovered = &snapshot
+	}
+	var data []byte
+	var err error
+	if capability != nil {
+		data, err = workpacket.ReadFile(root, capability.MessageRef(), 1<<20)
+	} else {
+		data, err = os.ReadFile(request.MessagePath)
+	}
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read Agent message: %w", err)
 	}
@@ -151,15 +225,43 @@ func AdvanceAgent(
 		return loopruntime.Snapshot{}, fmt.Errorf("Agent message does not match event or Agent (event %q expects message_type %q, got %q)", request.Event, expectedType, message.MessageType)
 	}
 
-	stateData, err := os.ReadFile(statePath)
-	if err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
-	}
 	var current map[string]any
-	if err := json.Unmarshal(stateData, &current); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
+	if recovered != nil {
+		current = recovered.State
+	} else {
+		stateData, err := os.ReadFile(statePath)
+		if err != nil {
+			return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
+		}
+		if err := json.Unmarshal(stateData, &current); err != nil {
+			return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
+		}
+	}
+	validateIssuedTarget := func(state map[string]any) error {
+		if request.Event != "work_blocked" && request.Event != "blocker_resolved" {
+			return nil
+		}
+		protected, err := issuedRepairResultLifecycleTarget(state, request.AgentID, loopruntime.WithPacketBodyRoot(ctx, root))
+		if err != nil {
+			return err
+		}
+		if protected && capability == nil {
+			return fmt.Errorf("issued S9 target requires its private typed lifecycle capability; preserve the answer and use its original blocker receiver or Main resolution")
+		}
+		if capability != nil && !protected {
+			return fmt.Errorf("S9 typed lifecycle capability does not match a retained issued target")
+		}
+		return nil
+	}
+	if err := validateIssuedTarget(current); err != nil {
+		return loopruntime.Snapshot{}, err
 	}
 	runtimeID, _ := current["runtime_id"].(string)
+	baseline, _ := current["baseline"].(map[string]any)
+	generation := dispatch.Number(baseline["generation"])
+	if generation < 1 {
+		return loopruntime.Snapshot{}, fmt.Errorf("Agent lifecycle requires the current positive baseline generation")
+	}
 	commitRevision, err := commitRevision(request.ExpectedRevision, current)
 	if err != nil {
 		return loopruntime.Snapshot{}, err
@@ -174,29 +276,91 @@ func AdvanceAgent(
 		occurredAt = time.Now().UTC()
 	}
 	messageRef := repositoryPath(root, request.MessagePath)
-
-	// Load catalog (with agent entity_lifecycles.transitions) and resolve the
-	// (from, event) -> to pair.
-	catalog, err := transition.LoadCatalog(root)
-	if err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("load catalog: %w", err)
+	evidenceIDs := []string{messageRef}
+	if capability != nil {
+		messageRef = capability.MessageRef()
+		evidenceIDs = capability.EvidenceIDs()
+		if err := capability.ValidateLifecycleRequest(root, request.AgentID, request.Event, request.MessagePath, commitRevision, generation); err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		if len(evidenceIDs) != 2 || evidenceIDs[0] == evidenceIDs[1] || evidenceIDs[0] != messageRef {
+			return loopruntime.Snapshot{}, fmt.Errorf("S9 blocker capability has incomplete lifecycle evidence refs")
+		}
 	}
-	agentTransitions := agentEntityTransitions(catalog)
 
-	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	// Typed professional blockers record the current active responsibility
+	// directly. Generic lifecycle calls still resolve their catalog transition.
+	var agentTransitions agentEntityTransitionsResolver
+	if blockerCapability == nil {
+		catalog, err := transition.LoadCatalog(root)
+		if err != nil {
+			return loopruntime.Snapshot{}, fmt.Errorf("load catalog: %w", err)
+		}
+		agentTransitions = agentEntityTransitions(catalog)
+	}
+
 	mutation := loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-agent-%s-%s-r%d", request.AgentID, request.Event, commitRevision+1),
-		TransitionID:   "AGENT-LIFECYCLE",
-		Event:          request.Event,
-		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:agent:%s:%s:%d", request.AgentID, request.Event, commitRevision),
-		RuntimeID:      runtimeID,
-		From:           cursor,
-		To:             cursor,
-		EvidenceIDs:    []string{messageRef},
-		Message:        fmt.Sprintf("Recorded a schema-valid Agent lifecycle event (%s)", request.Event),
-		OccurredAt:     occurredAt,
+		EventID:            fmt.Sprintf("evt-agent-%s-%s-r%d", request.AgentID, request.Event, commitRevision+1),
+		TransitionID:       "AGENT-LIFECYCLE",
+		Event:              request.Event,
+		Actor:              "orchestrator",
+		IdempotencyKey:     fmt.Sprintf("runtime:agent:%s:%s:%d", request.AgentID, request.Event, commitRevision),
+		RuntimeID:          runtimeID,
+		BaselineGeneration: generation,
+		From:               cursor,
+		To:                 cursor,
+		EvidenceIDs:        evidenceIDs,
+		Message:            fmt.Sprintf("Recorded a schema-valid Agent lifecycle event (%s)", request.Event),
+		OccurredAt:         occurredAt,
 		Apply: func(state map[string]any) error {
+			currentBaseline, _ := state["baseline"].(map[string]any)
+			if state["runtime_id"] != runtimeID || dispatch.Number(currentBaseline["generation"]) != generation {
+				return fmt.Errorf("Agent lifecycle runtime/generation changed before its original CAS")
+			}
+			if err := validateIssuedTarget(state); err != nil {
+				return err
+			}
+			record, canonical, err := assignmentrecord.ForOwner(state, request.AgentID)
+			if err != nil {
+				return err
+			}
+			var authored map[string]any
+			if err := json.Unmarshal(data, &authored); err != nil {
+				return err
+			}
+			_, hasCanonicalPlan := authored["assignment_record_contract"]
+			if request.Event == "readback_submitted" && message.MessageType == "plan_report" && (canonical || hasCanonicalPlan) {
+				if err := plancheckpoint.Validate(root, loopruntime.Snapshot{State: state}, request.AgentID, messageRef); err != nil {
+					return err
+				}
+			}
+			if canonical && request.Event == "activation_sent" {
+				if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
+					return assignmentinputs.Read(root, ref)
+				}); err != nil {
+					return err
+				}
+				var projection map[string]any
+				if err := json.Unmarshal(data, &projection); err != nil {
+					return err
+				}
+				if err := assignmentrecord.ValidateProjection(record, projection); err != nil {
+					return err
+				}
+				if record.DispatchMode == "plan_checkpoint" {
+					entities, _ := state["entities"].(map[string]any)
+					agents, _ := entities["agents"].([]any)
+					for _, raw := range agents {
+						a, _ := raw.(map[string]any)
+						if a["id"] == request.AgentID {
+							ref, _ := a["readback_ref"].(string)
+							if err := plancheckpoint.Validate(root, loopruntime.Snapshot{State: state}, request.AgentID, ref); err != nil {
+								return err
+							}
+						}
+					}
+				}
+			}
 			entities, ok := state["entities"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("runtime entities must be an object")
@@ -211,17 +375,37 @@ func AdvanceAgent(
 				if message.TaskID != "" && !stringArrayContains(taskIDs, message.TaskID) {
 					return fmt.Errorf("Agent message TASK is outside assignment")
 				}
-				currentState, _ := agent["state"].(string)
+				projection, err := workstate.AgentProjection(agent, fmt.Sprint(state["schema_version"]))
+				if err != nil {
+					return fmt.Errorf("resolve Agent authorization activity: %w", err)
+				}
+				currentState := projection.Activity
 				resolvedTo, found := agentTransitions.resolve(currentState, request.Event)
+				if blockerCapability != nil && projection.Status == workstate.Active {
+					resolvedTo, found = "blocked", true
+				}
 				if !found {
 					return fmt.Errorf(
 						"Agent event %s is not legal from state %s (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped)",
 						request.Event, currentState)
 				}
-				if err := applyAgentEventParams(root, agent, request, message, commitRevision); err != nil {
+				if err := applyAgentEventParams(root, agent, fmt.Sprint(state["schema_version"]), request, message, commitRevision); err != nil {
 					return err
 				}
-				agent["state"] = resolvedTo
+				if capability != nil {
+					if err := capability.ApplyLifecycleCAS(ctx, root, state, data, request.AgentID, message.TaskID, commitRevision, generation); err != nil {
+						return err
+					}
+					if request.Event == "work_blocked" && blockerCapability != nil && blockerCapability.ClearResolvedBlockerIndex() {
+						// A Resume successor proves the immediately preceding resolution
+						// and retires its Agent pointer index in this same original CAS.
+						// The immutable history remains in evidence and the journal.
+						agent["blocker_resolved_ref"] = nil
+					}
+				}
+				if err := workstate.RecordAgentActivity(state, agent, resolvedTo, request.Event); err != nil {
+					return fmt.Errorf("record Agent work state and lifecycle event: %w", err)
+				}
 				if messageRef != "" {
 					agent[agentEventEvidenceKey(request.Event)] = messageRef
 					if request.Event == "readback_submitted" && agent["dispatch_mode"] == "plan_checkpoint" {
@@ -230,8 +414,35 @@ func AdvanceAgent(
 					}
 				}
 				agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+				config, configErr := loopruntime.DispatchConfig(state)
+				if configErr != nil {
+					return configErr
+				}
+				life, _ := state["lifecycle"].(map[string]any)
+				if config != nil && life["state"] == "building" && request.Event == "completion_acknowledged" {
+					bindings := map[string]any{}
+					tasks, _ := entities["tasks"].([]any)
+					for _, rawTask := range tasks {
+						task, _ := rawTask.(map[string]any)
+						owners, _ := task["owner_agent_ids"].([]any)
+						if !stringArrayContains(owners, request.AgentID) {
+							continue
+						}
+						ref, _ := task["completion_report_ref"].(string)
+						entries, _ := state["evidence"].([]any)
+						for _, rawEvidence := range entries {
+							ev, _ := rawEvidence.(map[string]any)
+							producers, _ := ev["produced_by"].([]any)
+							baseline, _ := state["baseline"].(map[string]any)
+							if ref != "" && ev["path"] == ref && ev["kind"] == "completion_report" && ev["status"] == "valid" && ev["invalidated_by"] == nil && stringArrayContains(producers, request.AgentID) && dispatch.Number(ev["baseline_generation"]) == dispatch.Number(baseline["generation"]) {
+								bindings[ref] = ev["sha256"]
+							}
+						}
+					}
+					agent["completion_acknowledged_reports"] = bindings
+				}
 				state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
-				return nil
+				return dispatch.ReconcilePressure(root, state)
 			}
 			return fmt.Errorf("Agent %s is not registered", request.AgentID)
 		},
@@ -241,10 +452,15 @@ func AdvanceAgent(
 
 // applyAgentEventParams applies event-specific param checks. These mirror
 // the prior implementation for the original 3 events and extend to all 12.
-func applyAgentEventParams(root string, agent map[string]any, request AgentEventRequest, message agentMessage, commitRevision int) error {
+func applyAgentEventParams(root string, agent map[string]any, schemaVersion string, request AgentEventRequest, message agentMessage, commitRevision int) error {
+	projection, err := workstate.AgentProjection(agent, schemaVersion)
+	if err != nil {
+		return fmt.Errorf("resolve Agent authorization activity: %w", err)
+	}
+	currentState := projection.Activity
 	switch request.Event {
 	case "readback_submitted":
-		if agent["state"] != "reading" {
+		if currentState != "reading" {
 			return fmt.Errorf("readback submission requires reading state")
 		}
 		// The plan_checkpoint flow submits a plan_report message type; the
@@ -268,7 +484,7 @@ func applyAgentEventParams(root string, agent map[string]any, request AgentEvent
 			return fmt.Errorf("unknown dispatch_mode %q (canonical: plan_checkpoint, plan_approval_required, one_shot)", mode)
 		}
 	case "understanding_approved":
-		if agent["state"] != "understanding_submitted" {
+		if currentState != "understanding_submitted" {
 			return fmt.Errorf("approval requires submitted understanding")
 		}
 	case "activation_sent":
@@ -280,7 +496,6 @@ func applyAgentEventParams(root string, agent map[string]any, request AgentEvent
 		if mode == "plan_checkpoint" {
 			legalFrom["understanding_submitted"] = true
 		}
-		currentState, _ := agent["state"].(string)
 		if !legalFrom[currentState] {
 			return fmt.Errorf("activation from %s requires dispatch_mode plan_checkpoint with a submitted plan report (or understanding_approved first)", currentState)
 		}
@@ -292,35 +507,39 @@ func applyAgentEventParams(root string, agent map[string]any, request AgentEvent
 		}
 		agent["activation_revision"] = commitRevision + 1
 	case "understanding_rejected":
-		if agent["state"] != "understanding_submitted" {
+		if currentState != "understanding_submitted" {
 			return fmt.Errorf("rejection requires submitted understanding")
 		}
 	case "document_conflict_reported":
-		if agent["state"] != "understanding_submitted" {
+		if currentState != "understanding_submitted" {
 			return fmt.Errorf("document_conflict_reported requires submitted understanding")
 		}
 	case "work_started":
-		if agent["state"] != "activated" {
+		if currentState != "activated" {
 			return fmt.Errorf("work_started requires activated state")
 		}
 	case "completion_reported":
-		if agent["state"] != "working" {
+		if currentState != "working" {
 			return fmt.Errorf("completion_reported requires working state")
 		}
 	case "completion_acknowledged":
-		if agent["state"] != "reported" {
+		if currentState != "reported" {
 			return fmt.Errorf("completion_acknowledged requires reported state")
 		}
 	case "work_blocked":
-		if agent["state"] != "working" {
+		if request.IssuedRepairResultBlocker != nil {
+			if projection.Status != workstate.Active {
+				return fmt.Errorf("S9 professional blocker requires an active responsibility")
+			}
+		} else if currentState != "working" {
 			return fmt.Errorf("work_blocked requires working state")
 		}
 	case "blocker_resolved":
-		if agent["state"] != "blocked" {
+		if currentState != "blocked" {
 			return fmt.Errorf("blocker_resolved requires blocked state")
 		}
 	case "shutdown_approved":
-		if agent["state"] != "blocked" {
+		if currentState != "blocked" {
 			return fmt.Errorf("shutdown_approved requires blocked state")
 		}
 	}
@@ -334,40 +553,7 @@ func applyAgentEventParams(root string, agent map[string]any, request AgentEvent
 // file's message_id. The fields were schema-required before but never
 // checked — ceremony; this makes them a guarantee.
 func verifyActivationReadbackChain(root string, agent map[string]any, message agentMessage) error {
-	ref, _ := agent["readback_ref"].(string)
-	if ref == "" {
-		return fmt.Errorf("activation chain: agent has no registered readback_ref — submit readback_submitted first")
-	}
-	path := ref
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(root, path)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("activation chain: registered readback %s unreadable: %w", ref, err)
-	}
-	sum := sha256.Sum256(data)
-	actual := fmt.Sprintf("%x", sum[:])
-	if message.ApprovedReadbackSHA256 == "" {
-		return fmt.Errorf("activation chain: approved_readback_sha256 is empty — set it to the sha256 of the readback message file (%s)", ref)
-	}
-	if message.ApprovedReadbackSHA256 != actual {
-		return fmt.Errorf(
-			"activation chain: approved_readback_sha256 %s… does not match registered readback %s (actual %s…) — recompute the hash of the readback message file and resubmit",
-			message.ApprovedReadbackSHA256[:12], ref, actual[:12])
-	}
-	var readback struct {
-		MessageID string `json:"message_id"`
-	}
-	if err := json.Unmarshal(data, &readback); err != nil {
-		return fmt.Errorf("activation chain: registered readback %s is not valid JSON: %w", ref, err)
-	}
-	if message.ApprovedReadbackMessageID == "" || message.ApprovedReadbackMessageID != readback.MessageID {
-		return fmt.Errorf(
-			"activation chain: approved_readback_message_id %q does not match registered readback message_id %q",
-			message.ApprovedReadbackMessageID, readback.MessageID)
-	}
-	return nil
+	return agentauth.VerifyActivationReadbackChain(root, agent, message)
 }
 
 // agentEventEvidenceKey returns the canonical evidence field name on the

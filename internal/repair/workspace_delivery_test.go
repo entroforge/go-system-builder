@@ -6,14 +6,17 @@ import (
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/repair"
+	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
-func TestWorkspaceCandidateFreezesSourceAndRejectsDirtyOrStaleAuthority(t *testing.T) {
+func TestWorkspaceCandidateFreezesAttemptAndPreservesHistoricalReads(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
 	ctx := context.Background()
 	for _, args := range [][]string{{"init", "-b", "test2"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.invalid"}} {
@@ -37,7 +40,7 @@ func TestWorkspaceCandidateFreezesSourceAndRejectsDirtyOrStaleAuthority(t *testi
 	if _, err := workspace.Git(ctx, root, "commit", "-m", "requirement input"); err != nil {
 		t.Fatal(err)
 	}
-	contractRef, contractSHA := writeRuntimeContract(t, root)
+	contractRef, contractSHA := writeRuntimeMigrationContract(t, root)
 	state["review"].(map[string]any)["investigation"] = map[string]any{"case_id": "investigation-case-1", "path": ".claude/review/investigation/cases/investigation-case-1-r2.json", "sha256": repeatHex("b", 64), "revision": 2, "status": "contract_approved", "source_finding_ids": []any{"finding-1"}, "observation_batch_id": "observation-batch-1", "updated_at": "2026-08-25T00:00:00Z", "repair_contract_ref": contractRef.Path, "repair_contract_sha256": contractSHA}
 	req039fixtures.WriteState(t, root, state)
 	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
@@ -52,7 +55,10 @@ func TestWorkspaceCandidateFreezesSourceAndRejectsDirtyOrStaleAuthority(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, planReportRef, err := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: "repair-assignment-unit-1", AgentID: "builder-1", ReportID: "repair-plan-report-1", PlanText: "restore the payload authority", RedChecks: []repair.RepairCheck{{Name: "original failure", Command: "test -f internal/api/payload.go", Result: "fail", EvidenceRefs: []string{"test://red"}}}, ProposedPaths: []string{"internal/api/payload.go"}})
+	if inside, err := workspace.Git(ctx, root, "rev-parse", "--is-inside-work-tree"); err != nil || inside != "true" {
+		t.Fatalf("actual passing precheck: %q %v", inside, err)
+	}
+	_, planReportRef, err := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: "repair-assignment-unit-1", AgentID: "builder-1", ReportID: "repair-plan-report-1", PlanText: "restore the payload authority", RedChecks: []repair.RepairCheck{{Name: "actual passing precheck", Command: "git rev-parse --is-inside-work-tree", Result: "pass", EvidenceRefs: []string{"test://actual-precheck"}}}, ProposedPaths: []string{"internal/api/payload.go"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,18 +78,72 @@ func TestWorkspaceCandidateFreezesSourceAndRejectsDirtyOrStaleAuthority(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := b.Plan(ctx, started.State, "assignment-s9-unit-1", "builder-1", authority.Assignment.Scope, authority.Checks, authority.Inputs)
+	for _, dir := range []string{"agents", "skills"} {
+		if err := os.MkdirAll(filepath.Join(root, ".claude", dir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e, err := b.Plan(ctx, started.State, "assignment-s9-unit-1", "builder-1", authority.Assignment.Scope, []string{"test -f internal/api/payload.go && test -d internal/api"}, authority.Inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b.Executions[e.AssignmentID] = e
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	persistWorkspace := func(event string) (loopruntime.Snapshot, error) {
+		current, err := store.Snapshot()
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		key := fmt.Sprintf("fixture-workspace-%s-r%d", event, current.Revision+1)
+		return store.Update(current.Revision, loopruntime.Mutation{
+			EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main",
+			RuntimeID: e.RuntimeID, BaselineGeneration: e.BaselineGeneration,
+			IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(),
+			Message: "persist original S9 Worker execution registry",
+			Apply: func(state map[string]any) error {
+				state["workspace"] = workspace.Encode(b)
+				return nil
+			},
+		})
+	}
+	if _, err := persistWorkspace("preparing"); err != nil {
+		t.Fatal(err)
+	}
 	if err = b.Materialize(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Bootstrap(e, executable); err != nil {
+		t.Fatal(err)
+	}
+	e.BootstrapSHA256, err = workspace.BootstrapDigest(e)
+	if err != nil {
 		t.Fatal(err)
 	}
 	e.Status = "ready"
 	b.Executions[e.AssignmentID] = e
+	started, err = persistWorkspace("ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := repair.RepairResultRequest{ResultID: "repair-result-worker", ProducerAgentID: e.AgentID, AssignmentID: e.AssignmentID, UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit"}}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: e.Checks[0], Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}
+	proposal.ScopeDeviations = []string{"The precheck assessed repository availability; payload behavior was not checked before implementation."}
+	noOp, noOpRef, err := repair.CreateWorkspaceCandidate(ctx, root, started.State, e, proposal)
+	if err != nil {
+		t.Fatalf("clean no-op candidate without migration/rollback references: %v", err)
+	}
+	if noOp.SourceHead != e.BaseCommit || len(noOp.Proposal.ChangedArtifacts) != 0 || noOp.Proposal.MigrationRef != "" || noOp.Proposal.RollbackRef != "" {
+		t.Fatalf("no-op candidate lost its actual HEAD/empty diff: %+v", noOp)
+	}
+	if _, err := repair.ValidateWorkspaceCandidate(root, started.State, e, noOpRef); err != nil {
+		t.Fatalf("no-op candidate does not match its actual Worker: %v", err)
+	}
+	// This assertion stops at the candidate boundary. No-op integration is
+	// deliberately not exercised by this original changed-source flow below.
 	writeFile(t, e.Path, "internal/api/payload.go", "package api\n")
-	proposal := repair.RepairResultRequest{ResultID: "repair-result-worker", ProducerAgentID: e.AgentID, AssignmentID: e.AssignmentID, UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit"}}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: authority.Checks[0], Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}
 	if _, _, err = repair.CreateWorkspaceCandidate(ctx, root, started.State, e, proposal); err == nil {
 		t.Fatal("untracked source was silently omitted")
 	}
@@ -93,8 +153,14 @@ func TestWorkspaceCandidateFreezesSourceAndRejectsDirtyOrStaleAuthority(t *testi
 	}
 	badProposal := proposal
 	badProposal.Checks = nil
-	if _, _, err := repair.CreateWorkspaceCandidate(ctx, root, started.State, e, badProposal); err == nil {
-		t.Fatal("invalid final result shape accepted before merge")
+	// Missing Main check facts do not make the Builder's candidate unreadable.
+	// Recording this draft must not promote it to an accepted Final.
+	pending, _, err := repair.CreateWorkspaceCandidate(ctx, root, started.State, e, badProposal)
+	if err != nil || len(pending.Proposal.Checks) != 0 {
+		t.Fatalf("candidate invented Main checks or rejected truthful missing work: %+v %v", pending, err)
+	}
+	if _, exists, err := repair.RegisteredWorkspaceResult(root, started.State, pending); err != nil || exists {
+		t.Fatalf("candidate without Main checks promoted itself to Final: %t %v", exists, err)
 	}
 	c, ref, err := repair.CreateWorkspaceCandidate(ctx, root, started.State, e, proposal)
 	if err != nil {
@@ -137,11 +203,39 @@ func TestWorkspaceCandidateFreezesSourceAndRejectsDirtyOrStaleAuthority(t *testi
 	if result.Result != "pass" {
 		t.Fatalf("domain result=%s", result.Result)
 	}
+	if len(result.ScopeDeviations) != 1 || result.ScopeDeviations[0] != proposal.ScopeDeviations[0] {
+		t.Fatalf("domain Result lost the actual reported deviation: %+v", result.ScopeDeviations)
+	}
+	if len(result.BeforeFixChecks) != 1 || result.BeforeFixChecks[0].Result != "pass" {
+		t.Fatalf("domain Result did not retain the actual passing precheck: %+v", result.BeforeFixChecks)
+	}
 	if _, exists, err := repair.RegisteredWorkspaceResult(root, finalized.State, c); err != nil || !exists {
 		t.Fatalf("verified result cannot resume: %v", err)
 	}
 	if finalized.State["lifecycle"].(map[string]any)["state"] != "bug_resolution" {
 		t.Fatal("candidate skipped independent verification/fresh S7")
+	}
+	// Recording the actual diff must also work when Main needs to assess a
+	// change outside the proposed scope. This is not integration approval.
+	writeFile(t, e.Path, "outside-assignment.txt", "actual deviation\n")
+	if _, err := workspace.Git(ctx, e.Path, "add", "outside-assignment.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.Git(ctx, e.Path, "commit", "-m", "record actual deviation"); err != nil {
+		t.Fatal(err)
+	}
+	deviationProposal := proposal
+	deviationProposal.ScopeDeviations = []string{"Main must assess outside-assignment.txt"}
+	deviation, _, err := repair.CreateWorkspaceCandidate(ctx, root, started.State, e, deviationProposal)
+	if err != nil {
+		t.Fatalf("actual out-of-scope diff could not be recorded: %v", err)
+	}
+	foundDeviation := false
+	for _, artifact := range deviation.Proposal.ChangedArtifacts {
+		foundDeviation = foundDeviation || artifact.Path == "outside-assignment.txt"
+	}
+	if !foundDeviation {
+		t.Fatal("candidate omitted actual out-of-scope diff")
 	}
 	e.Generation++
 	if _, err = repair.ValidateWorkspaceCandidate(root, started.State, e, ref); err == nil {
@@ -150,7 +244,16 @@ func TestWorkspaceCandidateFreezesSourceAndRejectsDirtyOrStaleAuthority(t *testi
 	e.Generation--
 	pointer := started.State["review"].(map[string]any)["repair"].(map[string]any)
 	pointer["status"] = "planning"
+	if _, err = repair.ValidateWorkspaceCandidate(root, started.State, e, ref); err != nil {
+		t.Fatalf("a phase label erased the existing candidate history: %v", err)
+	}
+	// Actual replacement of the recorded execution attempt retires this
+	// candidate's current association. A phase word alone grants no work ACL.
+	replacement := e
+	replacement.Generation++
+	b.Executions[e.AssignmentID] = replacement
+	started.State["workspace"] = workspace.Encode(b)
 	if _, err = repair.ValidateWorkspaceCandidate(root, started.State, e, ref); err == nil {
-		t.Fatal("revoked execution authority accepted")
+		t.Fatal("candidate borrowed a replacement execution attempt")
 	}
 }

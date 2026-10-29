@@ -38,11 +38,14 @@ func resumeApprovedContract(root string, current runtime.Snapshot, pointer map[s
 		return runtime.Snapshot{}, err
 	}
 	draft, err := os.ReadFile(filepath.Join(root, draftRel))
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return runtime.Snapshot{}, err
 	}
 	authority, _ := approved["delegated_authority"].(map[string]any)
-	if stringField(approved["case_id"]) != req.CaseID || stringField(approved["approval_hash"]) != req.ApprovalHash || sha256Hex(draft) != req.ApprovalHash || stringField(approved["approved_by"]) != req.ApprovedBy || stringField(approved["approval_evidence_id"]) != req.ApprovalEvidenceID || stringField(authority["delegation_evidence_id"]) != req.DelegationEvidenceID {
+	// The accepted immutable Contract and Case already carry the authority.
+	// A missing private draft cannot undo that receipt; if bytes are still
+	// present, changed professional content remains a conflicting retry.
+	if stringField(approved["case_id"]) != req.CaseID || stringField(approved["approval_hash"]) != req.ApprovalHash || (err == nil && sha256Hex(draft) != req.ApprovalHash) || stringField(approved["approved_by"]) != req.ApprovedBy || stringField(approved["approval_evidence_id"]) != req.ApprovalEvidenceID || stringField(authority["delegation_evidence_id"]) != req.DelegationEvidenceID {
 		return runtime.Snapshot{}, fmt.Errorf("Case already has a different approval; consume the current contract or use causal reassessment, do not overwrite it")
 	}
 	return current, nil

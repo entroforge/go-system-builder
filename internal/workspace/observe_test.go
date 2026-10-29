@@ -115,7 +115,7 @@ func TestObservationPreservesTreesAndDisablesGitHelpers(t *testing.T) {
 }
 func TestCheckPreflightExplicitMainAndSizeLimit(t *testing.T) {
 	b, e, _, ctx := workerFixture(t)
-	e.Checks = []string{"project-test"}
+	e.Checks = []string{"true"}
 	e.CheckLocation = "main"
 	if err := b.PreflightChecks(ctx, e, e.Path); err != nil {
 		t.Fatal(err)

@@ -143,7 +143,7 @@ func TestScenarioValidationRejectsBrokenReferencesAndOracles(t *testing.T) {
 	}
 }
 
-func TestScenarioValidationEnforcesProfileRatiosAndRequiredCoverage(t *testing.T) {
+func TestScenarioValidationReportsProfileRatiosAndPreservesRequiredCoverage(t *testing.T) {
 	for _, profile := range []string{"ordinary", "rule-dense", "critical"} {
 		t.Run(profile+" ratio", func(t *testing.T) {
 			root := newScenarioRoot(t, "investor-workbench", profile)
@@ -157,8 +157,25 @@ func TestScenarioValidationEnforcesProfileRatiosAndRequiredCoverage(t *testing.T
 				model["rules"].([]any)[0].(map[string]any)["branches"] = branches
 			}
 			writeModel(t, root, model)
-			if _, err := scenario.GenerateModule(root, "investor-workbench"); err == nil || !strings.Contains(err.Error(), "coverage ratio") {
-				t.Fatalf("profile %s accepted insufficient negative ratio/coverage", profile)
+			syncCrossMatrixToModel(t, root, model)
+			if _, err := scenario.GenerateModule(root, "investor-workbench"); err != nil {
+				t.Fatalf("profile %s rejected a ratio below its risk reference: %v", profile, err)
+			}
+			if _, err := scenario.ValidateModule(root, "investor-workbench", scenario.ValidateOptions{}); err != nil {
+				t.Fatalf("profile %s failed validation below its risk reference: %v", profile, err)
+			}
+			var coverage struct {
+				Ratio struct {
+					Positive, Negative int
+					Actual             float64 `json:"negative_to_positive"`
+					Reference          float64 `json:"minimum_negative_to_positive"`
+				} `json:"ratio"`
+			}
+			if err := json.Unmarshal(readScenarioFile(t, root, "scenario-coverage.json"), &coverage); err != nil {
+				t.Fatal(err)
+			}
+			if coverage.Ratio.Positive == 0 || coverage.Ratio.Actual >= coverage.Ratio.Reference {
+				t.Fatalf("risk ratio/count output was lost or not below reference: %+v", coverage.Ratio)
 			}
 		})
 	}
@@ -195,6 +212,7 @@ func TestScenarioValidationAcceptsConfiguredRatios(t *testing.T) {
 			}
 			model["rules"].([]any)[0].(map[string]any)["branches"] = branches
 			writeModel(t, root, model)
+			syncCrossMatrixToModel(t, root, model)
 			if _, err := scenario.GenerateModule(root, "investor-workbench"); err != nil {
 				t.Fatalf("configured %s ratio rejected: %v", profile, err)
 			}
@@ -442,6 +460,7 @@ func TestScenarioOracleSchemaParity(t *testing.T) {
 		missing  string
 	}{
 		{polarity: "positive", missing: "visible"},
+		{polarity: "positive", missing: "persisted_effects"},
 		{polarity: "negative", missing: "visible"},
 		{polarity: "negative", missing: "terminal_state"},
 		{polarity: "negative", missing: "persisted_effects"},
@@ -762,6 +781,7 @@ func validCrossMatrix(module string) map[string]any {
 		"module": module,
 		"entries": []any{
 			map[string]any{"fact": "fact-investor", "req_ref": "REQ-INV-001", "story": "S-001", "branch": "branch-allow"},
+			map[string]any{"fact": "fact-investor", "req_ref": "REQ-INV-001", "story": "S-001", "branch": "branch-reject"},
 		},
 	}
 }
@@ -813,6 +833,26 @@ func writeModel(t *testing.T, root string, model map[string]any) {
 	writeJSON(t, filepath.Join(root, "docs/design/prototypes/investor-workbench/scenario-model.json"), model)
 }
 
+// syncCrossMatrixToModel rewrites the module cross-matrix so every branch of
+// the freshly written model has exactly one covering cell. Tests that mutate
+// the model must call this after writeModel, otherwise the new branch-floor
+// check rejects the stale matrix — which is the intended production behavior.
+func syncCrossMatrixToModel(t *testing.T, root string, model map[string]any) {
+	t.Helper()
+	var entries []any
+	for _, rule := range model["rules"].([]any) {
+		for _, branch := range rule.(map[string]any)["branches"].([]any) {
+			entries = append(entries, map[string]any{
+				"fact": "fact-investor", "req_ref": "REQ-INV-001", "story": "S-001",
+				"branch": branch.(map[string]any)["id"],
+			})
+		}
+	}
+	writeJSON(t, filepath.Join(root, "docs/design/prototypes/investor-workbench/cross-matrix.json"), map[string]any{
+		"module": "investor-workbench", "entries": entries,
+	})
+}
+
 func writeSpecs(t *testing.T, root string, files map[string]string) {
 	t.Helper()
 	dir := filepath.Join(root, "web/e2e/investor-workbench")
@@ -862,5 +902,73 @@ func assertReportHasFields(t *testing.T, report scenario.Report) {
 		if !strings.Contains(text, field) {
 			t.Fatalf("report JSON lacks %q: %s", field, text)
 		}
+	}
+}
+
+func TestScenarioEmptyPersistedEffectsRemainPresentInGeneratedCases(t *testing.T) {
+	root := newScenarioRoot(t, "investor-workbench", "ordinary")
+	model := loadModel(t, root)
+	for _, value := range model["rules"].([]any)[0].(map[string]any)["branches"].([]any) {
+		value.(map[string]any)["oracle"].(map[string]any)["persisted_effects"] = []any{}
+	}
+	data, err := json.Marshal(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.NewEmbeddedValidator().ValidateBytes("scenario-model.schema.json", data); err != nil {
+		t.Fatal(err)
+	}
+	writeModel(t, root, model)
+	if _, err := scenario.GenerateModule(root, "investor-workbench"); err != nil {
+		t.Fatal(err)
+	}
+	generated := readScenarioFile(t, root, "cases.json")
+	if err := schema.NewEmbeddedValidator().ValidateBytes("scenario-cases.schema.json", generated); err != nil {
+		t.Fatal(err)
+	}
+	var cases struct {
+		Cases []struct {
+			Oracle map[string]json.RawMessage `json:"oracle"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(generated, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases.Cases) == 0 {
+		t.Fatal("no generated cases")
+	}
+	for _, item := range cases.Cases {
+		if string(item.Oracle["persisted_effects"]) != "[]" {
+			t.Fatalf("empty effects lost: %s", item.Oracle["persisted_effects"])
+		}
+	}
+	if _, err := scenario.ValidateModule(root, "investor-workbench", scenario.ValidateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScenarioPersistedEffectsStillRejectInvalidItems(t *testing.T) {
+	for _, polarity := range []string{"positive", "negative"} {
+		t.Run(polarity, func(t *testing.T) {
+			root := newScenarioRoot(t, "investor-workbench", "ordinary")
+			model := loadModel(t, root)
+			branches := model["rules"].([]any)[0].(map[string]any)["branches"].([]any)
+			index := 0
+			if polarity == "negative" {
+				index = 1
+			}
+			branches[index].(map[string]any)["oracle"].(map[string]any)["persisted_effects"] = []any{""}
+			data, err := json.Marshal(model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.NewEmbeddedValidator().ValidateBytes("scenario-model.schema.json", data); err == nil {
+				t.Fatal("schema accepted empty effect item")
+			}
+			writeModel(t, root, model)
+			if _, err := scenario.GenerateModule(root, "investor-workbench"); err == nil {
+				t.Fatal("engine accepted empty effect item")
+			}
+		})
 	}
 }

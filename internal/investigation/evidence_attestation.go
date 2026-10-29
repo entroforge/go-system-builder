@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/evidence"
+	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 )
 
 // EvidenceAttestationOptions configures ValidateEvidenceRefs.
@@ -43,6 +44,7 @@ type EvidenceAttestationOptions struct {
 	RequireKind        []string
 	RequireReviewRound int
 	RequireExecution   bool
+	AllowPaths         bool
 	ForbidSelfID       string
 }
 
@@ -64,7 +66,7 @@ func ValidateEvidenceRefs(refs []string, opts EvidenceAttestationOptions) error 
 			if ref == "" {
 				return fmt.Errorf("evidence_ref is empty")
 			}
-			if !strings.Contains(ref, "://") {
+			if strings.HasPrefix(ref, "runtime:") || !strings.Contains(ref, "://") {
 				return fmt.Errorf("evidence_ref %q is not an execution anchor (expected a scheme:// form)", ref)
 			}
 		}
@@ -77,10 +79,58 @@ func ValidateEvidenceRefs(refs []string, opts EvidenceAttestationOptions) error 
 	if opts.RequireSHA && strings.TrimSpace(opts.Root) == "" {
 		return fmt.Errorf("ValidateEvidenceRefs RequireSHA is set but no Root is supplied; provide a repository root to enable on-disk SHA verification")
 	}
+	if opts.AllowPaths {
+		remaining := make([]string, 0, len(refs))
+		for _, ref := range refs {
+			if strings.HasPrefix(ref, "path:") {
+				if len(opts.RequireKind) > 0 {
+					return fmt.Errorf("path evidence cannot satisfy indexed kind constraints")
+				}
+				if err := validateS8CapturedPathScope(ref, opts); err != nil {
+					return err
+				}
+				if err := evidence.ValidateFindingReference(opts.Root, ref); err != nil {
+					return err
+				}
+			} else {
+				remaining = append(remaining, ref)
+			}
+		}
+		if len(remaining) == 0 && len(refs) > 0 {
+			return nil
+		}
+		refs = remaining
+	}
 	return evidence.ValidateRefs(opts.State, refs, evidence.RefsOptions{
 		Root:               opts.Root,
 		RequireKinds:       opts.RequireKind,
 		RequireReviewRound: opts.RequireReviewRound,
 		ForbidSelfID:       opts.ForbidSelfID,
 	})
+}
+
+func validateS8CapturedPathScope(ref string, opts EvidenceAttestationOptions) error {
+	source, _, err := evidence.ParseFindingReference(ref)
+	if err != nil {
+		return err
+	}
+	prefix := ".claude/evidence/s8/"
+	if !strings.HasPrefix(source.Path, prefix) {
+		return fmt.Errorf("new S8 path evidence must use its original captured source")
+	}
+	packetID := strings.Split(strings.TrimPrefix(source.Path, prefix), "/")[0]
+	packets, err := loopruntime.HypothesisResultPackets(opts.State)
+	if err != nil {
+		return err
+	}
+	for _, packet := range packets {
+		if packet.ID != packetID {
+			continue
+		}
+		if packet.Binding.RuntimeID != stringField(opts.State["runtime_id"]) || packet.Binding.BaselineGeneration != baselineGenerationValue(opts.State) || (opts.RequireReviewRound > 0 && packet.Binding.ReviewRound != opts.RequireReviewRound) {
+			break
+		}
+		return nil
+	}
+	return fmt.Errorf("S8 captured path does not belong to the current Runtime generation/round")
 }

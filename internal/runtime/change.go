@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/change"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // ChangeRequest creates the one active Change Record carried by a Runtime.
@@ -43,6 +44,9 @@ func CreateChange(root, statePath, journalPath string, request ChangeRequest) (S
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if !workstate.Unified(current["schema_version"]) {
+		legacyChangeMap(changeMap)
+	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	commitRevision := snapshot.Revision
@@ -77,6 +81,16 @@ func CreateChange(root, statePath, journalPath string, request ChangeRequest) (S
 			return nil
 		},
 	})
+}
+
+func legacyChangeMap(value map[string]any) {
+	items, _ := value["work_items"].([]any)
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item["status"] == string(workstate.Pending) {
+			item["status"] = "open"
+		}
+	}
 }
 
 // assertBoundREQConsistency enforces REQ-001 FR-001 at the Change Record

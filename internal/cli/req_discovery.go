@@ -137,19 +137,23 @@ func bindableOnly(root string) []reqSummary {
 	return out
 }
 
-// soleBindableCommand returns the ready-to-run bind command when exactly one
-// REQ is bindable, for projection hints. Empty string otherwise; scan issues
-// degrade to silence rather than blocking projection.
+// soleBindableCommand returns the bind command template when exactly one REQ
+// is bindable, for projection hints. Its explicit authorization and branch
+// placeholders must be filled before execution. Empty string otherwise; scan
+// issues degrade to silence rather than blocking projection.
 func soleBindableCommand(root string) string {
 	candidates := bindableOnly(root)
 	if len(candidates) != 1 {
 		return ""
 	}
-	return "loop-harness req bind --req " + candidates[0].Path + " --approved-by <the human who locked it>"
+	return "loop-harness req bind --req " + candidates[0].Path +
+		" --approved-by <actual-approver> --dev-branch <development-branch> --release-upstream <release-destination>" +
+		" (replace placeholders before execution; use the human authorized for this binding and explicitly chosen project branch destinations)"
 }
 
-// detectGitIdentity returns the local git user.name for the --approved-by
-// hint. Empty when unavailable; the attestation itself stays explicit.
+// detectGitIdentity returns the local git user.name for legacy lifecycle-verb
+// input hints. REQ binding never uses this value as its approver. Empty when
+// unavailable; the attestation itself stays explicit.
 func detectGitIdentity(root string) string {
 	out, err := exec.Command("git", "-C", root, "config", "user.name").Output()
 	if err != nil {

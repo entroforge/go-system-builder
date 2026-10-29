@@ -18,28 +18,34 @@ type missingTokenRule struct {
 	nextStep string
 }
 
+var planningMissingTokenRules = []missingTokenRule{
+	{prefix: "evidence:planning_design_record", exact: true, meaning: "the S2 design questionnaire has not been received", nextStep: "complete the design/self-review and fill architecture_path plus conclusion at the exact questionnaire path shown in this Hook, then save"},
+	{prefix: "evidence:planning_contract_record", exact: true, meaning: "the S3 contract questionnaire has not been received", nextStep: "complete the contract work and professional answers at the exact questionnaire path shown in this Hook, then save"},
+	{prefix: "evidence:planning_task_record", exact: true, meaning: "the S4 task-planning questionnaire has not been received", nextStep: "complete the task split and professional answers at the exact questionnaire path shown in this Hook, then save"},
+}
+
 var builderBatchMissingTokenRules = []missingTokenRule{
 	{
 		prefix:   "batch:execution_batch_empty",
 		exact:    true,
 		meaning:  "no task documents are registered at the current generation — the TR-003 execution batch is missing",
-		nextStep: "check whether TR-003 committed; run `loop-harness runtime reconcile` if the state is inconsistent",
+		nextStep: "Main must finish or restore the stage's registered TASK batch; do not invent task completion",
 	},
 	{
 		prefix:   "evidence:completion_report",
 		exact:    true,
-		meaning:  "no qualified completion envelope exists at all",
-		nextStep: "run `runtime task-complete` for each unfinished TASK in the batch",
+		meaning:  "one or more reviewed TASKs have no qualified Builder Result; this does not prove a Builder has been prepared or started",
+		nextStep: "Main follows the current TASK progress: prepare an eligible unprepared TASK with s6 prepare, dispatch or resume its exact native brief, or resolve the actual returned blocker; integrate only a qualified received delivery",
 	},
 	{
 		prefix:   "evidence:completion_report:",
-		meaning:  "that TASK has no Builder Result envelope",
-		nextStep: "run `runtime task-complete` for the named TASK",
+		meaning:  "the named TASK has no qualified Builder Result; its preparation and native execution must be determined from actual progress",
+		nextStep: "Main prepares this TASK with s6 prepare if eligible and unprepared, otherwise dispatches or resumes its original brief or resolves the actual returned blocker; an absent Result is not proof of a running Builder",
 	},
 	{
 		prefix:   "checks:",
 		meaning:  "the completion envelope records a check that is not `pass`",
-		nextStep: "fix the failure and re-run `runtime task-complete`; the newer envelope supersedes the older one",
+		nextStep: "resolve the reported check failure; Main assigns any required rework, then save the current Result questionnaire with the actual check outcome",
 	},
 	{
 		prefix:   "scope_deviations:",
@@ -49,7 +55,7 @@ var builderBatchMissingTokenRules = []missingTokenRule{
 	{
 		prefix:   "integration_checkpoint:",
 		meaning:  "that TASK has no durable worktree integration checkpoint at `verified` or beyond",
-		nextStep: "run `runtime task-integrate --assignment-id <id>` for that assignment (or re-trigger the Builder's SubagentStop)",
+		nextStep: "Main follows the named Assignment's exact action in the current progress context: resolve unfinished Builder work through its original rework path, or integrate eligible delivery and run required Main checks",
 	},
 }
 
@@ -176,8 +182,8 @@ func RenderMissingTokenLegend(gateID string, missing []string) string {
 	unknown := unknownTokens(rules, missing)
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		fmt.Fprintf(&b, "- %s — no legend entry; inspect the gate implementation or run `loop-harness explain %s`.\n",
-			strings.Join(unknown, ", "), gateID)
+		fmt.Fprintf(&b, "- %s — no guidance entry; Main must resolve this stage requirement and provide its concrete work and questionnaire path.\n",
+			strings.Join(unknown, ", "))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -215,6 +221,8 @@ func RenderGateTokenLegend(gateID string) string {
 
 func gateRules(gateID string) ([]missingTokenRule, bool) {
 	switch gateID {
+	case "GATE-PLANNING-DESIGN-COMPLETE", "GATE-PLANNING-CONTRACTS-COMPLETE", "GATE-PLANNING-TASKS-COMPLETE":
+		return planningMissingTokenRules, true
 	case "GATE-BUILDER-BATCH-READY":
 		return builderBatchMissingTokenRules, true
 	case "GATE-VERIFY-CLEAN-ROUND-PASSED", "GATE-VERIFY-BLOCKING-FINDING",

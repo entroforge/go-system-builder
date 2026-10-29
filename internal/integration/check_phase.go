@@ -2,6 +2,7 @@ package integration
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"strings"
 )
@@ -10,6 +11,9 @@ import (
 // into static inspection plus mandatory post-merge checks; no active manifest
 // is rewritten during upgrade. Locked hints remain enforced in either mode.
 func AssignmentInspectConfig(a hookctx.AssignmentContext) (InspectConfig, error) {
+	if err := checkexec.ValidateProfiles(a.CheckProfiles, a.RequiredChecks, ""); err != nil {
+		return InspectConfig{}, err
+	}
 	cfg := InspectConfig{}
 	commands, locked := splitRequiredChecks(a.RequiredChecks)
 	cfg.LockedArtifacts = locked

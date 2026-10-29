@@ -11,16 +11,15 @@ import (
 	"github.com/entroforge/go-system-builder/internal/doclinks"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/adapter"
 	"github.com/entroforge/go-system-builder/internal/assignment"
-	"github.com/entroforge/go-system-builder/internal/audit"
 	"github.com/entroforge/go-system-builder/internal/change"
 	"github.com/entroforge/go-system-builder/internal/controller"
 	"github.com/entroforge/go-system-builder/internal/hook"
@@ -36,6 +35,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/team"
 	"github.com/entroforge/go-system-builder/internal/transition"
 	"github.com/entroforge/go-system-builder/internal/verification"
@@ -49,10 +49,10 @@ import (
 // convention already enforced for hook payloads in
 // `internal/hook/adapter.go` `message()`.
 //
-// A `runtime.ErrStaleRevision` (or any error wrapping it) is enriched with a
-// concrete next-action for callers that deliberately supplied an explicit
-// revision assertion. Normal stage commands leave that assertion omitted and
-// let the Writer consume the current Runtime under its lock.
+// ErrStaleRevision can come from either an explicit caller assertion or an
+// internal snapshot protecting a business object. The shared renderer cannot
+// infer which one occurred. Main checks the original receipt and responsibility
+// before deciding whether an uncommitted request is still valid.
 //
 // Recognized rule-id sources (in order of preference):
 //   - `guard <NAME> failed: ...`         → id = NAME.
@@ -65,7 +65,7 @@ func formatFailure(cmd string, err error) string {
 		return fmt.Sprintf("%s: %s See %s#%s.", cmd, msg, transition.ManualTargetPath(), strings.ToLower(id))
 	}
 	if errors.Is(err, runtime.ErrStaleRevision) {
-		return fmt.Sprintf("%s: %s. The command used an explicit revision assertion; normal stage retries should omit it. If an integration intentionally keeps the assertion, run `loop-harness status --root <root>` and retry with `--expected-revision <N>`; repeated integrity divergence may require `loop-harness runtime reconcile`.", cmd, msg)
+		return fmt.Sprintf("%s: %s. Main must inspect the original receipt and current responsibility (`loop-harness status --root <root>`), then continue only an uncommitted request whose original scope still holds. Preserve completed professional answers. A caller deliberately using CAS must refresh its own business snapshot; do not guess or increment revision numbers.", cmd, msg)
 	}
 	if errors.Is(err, runtime.ErrStaleRuntimeIdentity) {
 		return fmt.Sprintf("%s: %s. The runtime identity changed at a lifecycle boundary; reread status and rebuild the transition request against the current runtime.", cmd, msg)
@@ -120,7 +120,7 @@ func printTopLevelUsage(stdout io.Writer) {
 	fmt.Fprintln(stdout, "  next        Render next transition + missing preconditions (coarse)")
 	fmt.Fprintln(stdout, "  ready       Dry-run current Quality Gate checklist (diagnostics)")
 	fmt.Fprintln(stdout, "  validate    Validate runtime + journal against schema")
-	fmt.Fprintln(stdout, "  dry-run     Render an applied transition without writing")
+	fmt.Fprintln(stdout, "  dry-run     Read-only quality-gate diagnostics (ready compatibility; no Hook simulation)")
 	fmt.Fprintln(stdout, "  hook        Hook adapter entrypoints (PreToolUse, Stop, etc.)")
 	fmt.Fprintln(stdout, "  version     Executable platform and build identity")
 	fmt.Fprintln(stdout, "  install     Install a release into a fresh empty project (--source, --root)")
@@ -130,7 +130,7 @@ func printTopLevelUsage(stdout io.Writer) {
 	fmt.Fprintln(stdout, "  actions     Canonical Agent action catalog and compatibility notes")
 	fmt.Fprintln(stdout, "  runtime     Runtime helpers (including investigation intake, S9 repair transactions and terminal rollover)")
 	fmt.Fprintln(stdout, "  team        Team manifest + responsibility checks")
-	fmt.Fprintln(stdout, "  s6          S6 workgroup scaffolding + TASK generation")
+	fmt.Fprintln(stdout, "  s6          S6 TASK dispatch status and manifest preparation")
 	fmt.Fprintln(stdout, "  s7          S7 ReviewPlan drafting, manifest scaffold and status (read-only)")
 	fmt.Fprintln(stdout, "  s10         Acceptance/release-audit manifest validation and status (read-only)")
 	fmt.Fprintln(stdout, "  tasks       TASK discovery/coverage listing (read-only)")
@@ -262,6 +262,10 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 		return runREQUnbind(args[1:], stdout, stderr)
 	}
 	if args[0] == "amend" {
+		if wantsHelp(args[1:]) {
+			runREQAmend([]string{"--help"}, stdout, stdout)
+			return 0
+		}
 		return runREQAmend(args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("req bind", flag.ContinueOnError)
@@ -278,12 +282,17 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
+	return bindRequirement(*root, *reqPath, *approvedBy, *devBranch, *releaseUpstream, *repairPolicyPath, *repairPolicySHA, *asJSON, stdout, stderr)
+}
+
+// bindRequirement is the original TR-001 transaction shared by the normal
+// binding questionnaire and the explicit compatibility command, without a CLI subprocess.
+func bindRequirement(rootValue, reqValue, approverValue, devValue, releaseValue, policyValue, policySHAValue string, jsonOutput bool, stdout, stderr io.Writer) int {
+	root, reqPath, approvedBy := &rootValue, &reqValue, &approverValue
+	devBranch, releaseUpstream := &devValue, &releaseValue
+	repairPolicyPath, repairPolicySHA, asJSON := &policyValue, &policySHAValue, &jsonOutput
 	if *approvedBy == "" {
-		if identity := detectGitIdentity(*root); identity != "" {
-			fmt.Fprintf(stderr, "req bind requires --approved-by (detected git identity %q; rerun with --approved-by %q)\n", identity, identity)
-		} else {
-			fmt.Fprintln(stderr, "req bind requires --approved-by <human identity>")
-		}
+		fmt.Fprintln(stderr, "req bind requires --approved-by <actual-approver from this binding authorization>; do not infer it from git user.name")
 		return 2
 	}
 	binding, bindErr := workspace.Bind(*root, *devBranch, *releaseUpstream)
@@ -376,13 +385,6 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
-	// Preflight: refuse to burn a drifted control-plane fingerprint into a
-	// fresh baseline. Parse-level drift already fails closed above (catalog
-	// load); this catches a valid-but-changed definition or policy file.
-	if hint := controlPlaneDrift(*root, snapshot.State); hint != "" {
-		fmt.Fprintln(stderr, formatFailure("req bind", fmt.Errorf("control plane drifted: %s", hint)))
-		return 1
-	}
 	now := time.Now().UTC()
 	shaHex := transition.REQSHA256(data)
 	next, err := transition.Apply(*root, statePath, journalPath, transition.Request{
@@ -396,6 +398,26 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("req bind", err))
 		return 1
+	}
+	if runtime.PacketEnabled(next.State) {
+		absRoot, rootErr := filepath.Abs(*root)
+		if rootErr != nil {
+			fmt.Fprintln(stderr, "Binding recorded, but S2 preparation root is unavailable: "+rootErr.Error())
+			return 1
+		}
+		service := submission.Service{Root: absRoot, StatePath: filepath.Join(absRoot, ".claude/loop-state.json"), JournalPath: filepath.Join(absRoot, ".claude/loop-events.jsonl"), Validator: semantic.RuntimeCandidateValidator{}}
+		packet, prepareErr := service.IssueDesign(context.Background())
+		if prepareErr != nil {
+			fmt.Fprintln(stderr, "Binding recorded, but its S2 design questionnaire preparation failed: "+prepareErr.Error())
+			return 1
+		}
+		fmt.Fprintf(infoW, "S2 design view: %s; answer: %s\n", resolveRootPath(absRoot, packet.ViewPath), resolveRootPath(absRoot, packet.AnswerPath))
+		latest, readErr := runtime.NewStore(statePath, journalPath).Snapshot()
+		if readErr != nil {
+			fmt.Fprintln(stderr, "Binding and S2 preparation recorded, but the current Runtime could not be read: "+readErr.Error())
+			return 1
+		}
+		next = latest
 	}
 	if *asJSON {
 		return encodeJSON(stdout, next.State)
@@ -439,32 +461,6 @@ func runREQList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "\nmultiple bindable REQs: uniqueness is a human decision; rerun req bind with --req <path>")
 	}
 	return 0
-}
-
-// controlPlaneDrift compares the runtime-recorded definition/policy
-// fingerprints with the on-disk files; empty string means consistent.
-func controlPlaneDrift(root string, state map[string]any) string {
-	checks := []struct {
-		stateKey, rel string
-	}{
-		{"definition", projectlayout.Definition},
-		{"hook_control", projectlayout.Policy},
-	}
-	for _, check := range checks {
-		block, _ := state[check.stateKey].(map[string]any)
-		recorded, _ := block["sha256"].(string)
-		if recorded == "" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(check.rel)))
-		if err != nil {
-			return fmt.Sprintf("%s unreadable (%v) — run doctor", check.rel, err)
-		}
-		if actual := fmt.Sprintf("%x", sha256.Sum256(data)); actual != recorded {
-			return fmt.Sprintf("%s changed since the runtime was initialized — run `loop-harness doctor --root .` first; if it reports a policy_ref drift, reconcile with `runtime reconcile-policy-ref`, otherwise the control-plane change must be re-baselined (bind preflight refuses stale fingerprints)", check.rel)
-		}
-	}
-	return ""
 }
 
 func markdownField(content string, names ...string) string {
@@ -553,58 +549,57 @@ func projectNext(state, phase, root string) (string, string, string) {
 	cursor, _ := runtime.StageFor(state, phase, root)
 	switch state {
 	case "inactive":
-		action := "produce one human-locked REQ (docs/requirements/REQ-template.md + skills: requirement-funnel), then bind it"
-		skill := "requirement-funnel"
-		if cmd := soleBindableCommand(root); cmd != "" {
-			action = "bind the human-locked REQ: " + cmd + " (or tell the main session to bind it for you)"
-			skill = "loop-orchestration"
+		for _, req := range scanRequirements(root) {
+			if req.Status == "locked" {
+				return "S1", "loop-orchestration", "record the actual selected requirement, human startup decision and explicit project branch destinations in the supplied current binding request; save normally for original TR-001 and S2"
+			}
 		}
-		return "S0", skill, action
+		return "S0", "requirement-funnel", "complete the current requirement draft with the real user's goals, scope, constraints, acceptance criteria and unresolved decisions; record and save locked only after the human's actual lock of that version; the original lock-save listener then supplies the S1 handoff"
 	case "planning":
 		return cursor, "specification-planning", "complete the planning phase for " + phase
 	case "document_verification":
 		return "S5", "document-verification", "complete independent document verification"
 	case "building":
-		return "S6", "agent-dispatch", "complete Builder assignments (register each result via `runtime task-complete`; Main runs `runtime task-integrate` to merge, verify, acknowledge and clean the worktree)"
+		return "S6", "agent-dispatch", "Main follows actual TASK progress: prepare an eligible unprepared TASK with s6 prepare, dispatch its exact brief through native Agent/worktree, or integrate a received delivery. Use s6 status --advice when readiness is not yet shown; registration alone does not prove a Builder is running."
 	case "verification":
 		switch phase {
 		case "planned":
-			return "S7", PrimarySkillS7, "scaffold the ReviewPlan via `loop-harness s7 draft --out plan.json`, fill the TODO oracles, and register via `runtime review-plan --file plan.json`"
+			return "S7", PrimarySkillS7, "fill the original ReviewPlan questionnaire at the exact path supplied by the listener, including real Claim assertions, oracles and required coverage, then save for original registration"
 		case "running", "cannot_clean", "discovery_draining":
-			return "S7", "team-planning", "read `loop-harness s7 status`, scaffold each Assignment with `loop-harness s7 manifest-draft --assignment <id>`, register via `runtime register-workgroup`, and consume each Canonical ReviewResult via `runtime review-result submit`"
+			return "S7", "team-planning", "perform the assigned review using the current questionnaire at the exact path supplied by the listener; fill and save the answer. Natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback through the original consumer. Main owns dispatch, queue release and original round evaluation"
 		case "observation_sealed":
 			return "S7", "bug-resolution", "ObservationBatch sealed; the next PreToolUse auto-commits TR-008 to hand the batch to S8 — do not call the transition CLI"
 		case "clean":
-			return "S7", "acceptance-and-handoff", "machine CleanRound recorded; the next PreToolUse auto-commits TR-009 to advance into S10 — do not call the transition CLI"
+			return "S7", "acceptance-and-handoff", "machine CleanRound recorded; the original Result completion exit continues Gate/TR-009 and prepares S10 acceptance. Resume a pending exit with loop-harness runtime review-continue --root <root>"
 		}
-		return "S7", PrimarySkillS7, "recover the verification round with `loop-harness s7 status`; if no plan is registered, run `s7 draft`, otherwise scaffold the exact Assignment with `s7 manifest-draft` and register it"
+		return "S7", PrimarySkillS7, "continue from the current S7 Hook checkpoint and use the exact ReviewPlan or dispatched Claim questionnaire paths it supplies; save professional answers for the original consumers. Main retains plan registration, dispatch and queue release, and full-round evaluation"
 	case "bug_resolution":
 		switch phase {
 		case "investigation":
-			return "S8", "bug-resolution", "ingest or continue the InvestigationCase from the sealed ObservationBatch; do not create a BUG or reproduce the symptom"
+			return "S8", "bug-resolution", "investigate the current reported problem and actual observations using the supplied InvestigationCase questionnaire; the source may be sealed S7 observations or the actual human defect decision, not an invented Batch"
 		case "bug_report_review":
 			return "S8", "bug-resolution", "reconcile the legacy BUG projection into its InvestigationCase; new S8 work must not accept a BUG as the authority"
 		case "repair_readback":
-			return "S9", "bug-resolution", "open or recover the RepairSession with `runtime repair status` / `runtime repair session open`, then compile the bounded RepairPlan"
+			return "S9", "bug-resolution", "the next writable Main Hook prepares the original RepairSession and Contract-derived RepairPlan; Main owns Assignment dispatch, and the listeners supply each Builder's exact PlanReport questionnaire path"
 		case "planning":
-			return "S9", "bug-resolution", "dispatch each RepairAssignment with `runtime repair dispatch --assignment-id <assignment> --agent-id <agent>`, then each Builder submits an immutable PlanReport with `runtime repair plan-report submit --file <report.json>` (bind Session/Plan/Assignment, include at least one failing red pre-fix check); product writes stay denied until `runtime repair execution begin`"
+			return "S9", "bug-resolution", "Main selects and saves each unselected Builder in the original division; for a selected responsibility, use its exact prepared brief for native Agent/worktree dispatch or continue the same actor. If the original material is unavailable, Main/system restores its original preparation. Builders save their Plan and Result; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback"
 		case "reproducing":
-			return "S9", "bug-resolution", "the red pre-fix checks are recorded in the PlanReport; when every Assignment has reported, release implementation writes with `runtime repair execution begin`; inspect `runtime repair status` for missing reports"
+			return "S9", "bug-resolution", "Main selects any unselected Builder in the original division and uses each selected responsibility's exact prepared brief for native Agent/worktree dispatch or same-actor continuation. Builders save their Plan with real prechecks and their Result; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback"
 		case "fixing":
-			return "S9", "bug-resolution", "continue the already-dispatched bounded repair Builder(s) and submit one exact-unit result per Assignment with `runtime repair result submit --file <result.json>`"
+			return "S9", "bug-resolution", "native Builders use the supplied brief and save their private professional Plan/Result in the actual worktree; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback. When the candidate is recorded, Main immediately follows the supplied `runtime workspace integrate` command with the actual root, assignment and owner and repeatable --check-command for necessary real Main checks. Do not redispatch an accepted native candidate for another RepairResult questionnaire or wait for Final before Main integration. Existing frozen executions retain their exact original RepairResult questionnaire and recovery path"
 		case "targeted_reverification":
-			return "S9", "bug-resolution", "commit ChangeImpact and an independent TargetedReverification; follow `runtime repair status`"
+			return "S9", "bug-resolution", "the registered independent verifier saves the exact TargetedReverification answer; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback through the original Contract checks. Main retains integration and Handoff"
 		case "ready_for_full_review":
-			return "S9", "bug-resolution", "create and commit the complete RepairHandoff with `runtime repair handoff create/commit`; then S7 starts a fresh full round"
+			return "S9", "bug-resolution", repairHandoffPendingInstruction
 		}
-		return "S9", "bug-resolution", "recover the S9 RepairSession with `runtime repair status` and follow its next_action"
+		return "S9", "bug-resolution", "continue from the current S9 Hook checkpoint; follow its supplied questionnaire paths and recorded recovery action"
 	case "acceptance", "release_audit":
 		if state == "acceptance" {
-			return "S10", "acceptance-and-handoff", "freeze the finite coverage_inventory and responsibility matrix, answer one counterevidence question per item, validate the acceptance manifest with `loop-harness s10 manifest validate --file <path> --type acceptance`, then register the fingerprinted acceptance evidence; do not modify product code or jump to S11"
+			return "S10", "acceptance-and-handoff", "complete the existing acceptance manifest at the exact questionnaire path supplied by the listener: professional dispositions, counterevidence, references and conclusion; save for the original acceptance consumer and stage conditions"
 		}
-		return "S10", "acceptance-and-handoff", "complete all 8 release-audit areas and their counterevidence, validate the release-audit manifest with `loop-harness s10 manifest validate --file <path> --type release_audit`, then register the fingerprinted audit evidence; if any finding is blocking, route back through S7 or pause instead of forcing S11"
+		return "S10", "acceptance-and-handoff", "review this change's actual release risks using accepted acceptance results and applicable existing observations; save the exact supplied release-audit questionnaire for its original exit; eight themes are reading prompts, not required tasks or per-row counterevidence"
 	case "awaiting_human_release":
-		return "S11", "acceptance-and-handoff", "stop automation and submit one explicit runtime human-decision (approve, defer, reject_defect, reject_acceptance, reject_release_audit, or abort)"
+		return "S11", "acceptance-and-handoff", "present the current release materials and exact application to the human; after an actual explicit choice, faithfully fill disposition and optional reason in that application and save normally; the original listener records and follows its fixed exit automatically; empty disposition remains a waiting draft"
 	case "release_authorized":
 		return "S11", "acceptance-and-handoff", "S11 human-authorized terminal; Harness performs no merge, publication, deployment, or formal release"
 	case "aborted":
@@ -614,6 +609,19 @@ func projectNext(state, phase, root string) (string, string, string) {
 	default:
 		return "cross-stage", "loop-orchestration", "recover the runtime checkpoint"
 	}
+}
+
+func agentActivationNextMessage(state map[string]any, agentID string) string {
+	if runtime.PacketEnabled(state) {
+		if reviewerRole(state, agentID) {
+			return "activated. next: complete the assigned professional review; fill and save the exact ReviewResult questionnaire path supplied by the listener, including real Claim results and evidence. The original consumer records the answer and advances the graph as allowed; Main retains dispatch, queue release and full-round evaluation"
+		}
+		return "activated. next: complete the assigned TASK using its supplied sources and checks; fill and save the exact Builder Result questionnaire path supplied by the listener. The original consumer records completion and advances the graph as allowed; Main retains the original integration and required checks"
+	}
+	if reviewerRole(state, agentID) {
+		return "activated. next: (1) advance `work_started` when you begin; (2) write the Canonical ReviewResult (claim_results must equal the assignment's Claim set exactly; every fail Claim needs one Finding with a real encounter — see review-result.example.json) and submit via `runtime review-result submit --assignment-id <id> --result <file>`"
+	}
+	return "activated. next: (1) create the worktree if absent — `loop-harness runtime worktree-create --assignment-id <assignment-id>` — and record worktree_path/branch/target_branch on the assignment's workgroup manifest row (or .claude/assignments/<assignment-id>.json); (2) advance `work_started` when the Builder begins writing; (3) register completion with `runtime task-complete`"
 }
 
 func encodeJSON(w io.Writer, value any) int {
@@ -629,14 +637,27 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "init")
 	root := flags.String("root", ".", "repository root")
+	packet := flags.Bool("packet", true, "enable professional stage questionnaires on a new Runtime")
+	dispatchSelection := dispatchInitializationFlags(flags)
 	if err := parseWorkspaceFlags(flags, args); err != nil {
+		return 2
+	}
+	selectedDispatch, selectionErr := dispatchSelection()
+	if selectionErr != nil {
+		fmt.Fprintln(stderr, selectionErr)
 		return 2
 	}
 	if err := workspace.RequireMain(*root); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if err := writeInactiveRuntime(*root); err != nil {
+	var selectedPacket *bool
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "packet" {
+			selectedPacket = packet
+		}
+	})
+	if err := writeInactiveRuntimeWithOptions(*root, selectedPacket, selectedDispatch); err != nil {
 		fmt.Fprintf(stderr, "init failed: %v\n", err)
 		return 1
 	}
@@ -685,11 +706,41 @@ func regenerateManualBestEffort(root string) error {
 // Definition and Hook policy fingerprints match the local files. It is the
 // standard way to seed a freshly bootstrapped project.
 func writeInactiveRuntime(root string) error {
+	return writeInactiveRuntimeWithPacket(root, nil)
+}
+
+func writeInactiveRuntimeWithPacket(root string, selectedPacket *bool) error {
+	return writeInactiveRuntimeWithOptions(root, selectedPacket, nil)
+}
+
+func writeInactiveRuntimeWithOptions(root string, selectedPacket *bool, selectedDispatch *runtime.DispatchBackpressureConfig) error {
 	if err := projectlayout.Check(root); err != nil {
 		return err
 	}
 	markerPath := filepath.Join(root, ".claude/loop-init-pending.json")
 	if _, err := os.Lstat(markerPath); err == nil {
+		if selectedPacket != nil || selectedDispatch != nil {
+			data, err := os.ReadFile(markerPath)
+			if err != nil {
+				return err
+			}
+			var pending initPending
+			if err := json.Unmarshal(data, &pending); err != nil {
+				return err
+			}
+			if selectedPacket != nil && runtime.PacketEnabled(pending.FreshState) != *selectedPacket {
+				return fmt.Errorf("explicit packet selection conflicts with pending initialization; resume its original mode")
+			}
+			if selectedDispatch != nil {
+				original, err := runtime.DispatchConfig(pending.FreshState)
+				if err != nil {
+					return err
+				}
+				if original == nil || *original != *selectedDispatch {
+					return fmt.Errorf("explicit dispatch selection conflicts with pending initialization; resume its original configuration")
+				}
+			}
+		}
 		return completePendingInitialization(root, markerPath)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect pending initialization: %w", err)
@@ -698,12 +749,29 @@ func writeInactiveRuntime(root string) error {
 	if err != nil {
 		return err
 	}
+	if selectedPacket != nil {
+		full["configuration"].(map[string]any)["optimization"].(map[string]any)["packet"] = *selectedPacket
+	}
+	if selectedDispatch != nil {
+		if err := selectedDispatch.Validate(); err != nil {
+			return err
+		}
+		full["configuration"].(map[string]any)["optimization"].(map[string]any)["dispatch_backpressure"] = map[string]any{"max_unreceived_results": selectedDispatch.MaxUnreceivedResults, "resume_unreceived_results": selectedDispatch.ResumeUnreceivedResults}
+	}
+	encoded, err := json.Marshal(full)
+	if err != nil {
+		return err
+	}
+	if err := semantic.ValidateRuntimeBytes(root, encoded); err != nil {
+		return fmt.Errorf("validate initialization before publication: %w", err)
+	}
 	paths := []string{
 		filepath.Join(root, ".claude/loop-state.json"),
 		filepath.Join(root, ".claude/loop-events.jsonl"),
 		filepath.Join(root, ".claude/hook-decisions.jsonl"),
 		filepath.Join(root, ".claude/loop-state.json.rollover-pending.json"),
 		filepath.Join(root, ".claude/loop-state.json.lock"),
+		filepath.Join(root, ".claude/runtime-initialization.json"),
 	}
 	for _, path := range paths {
 		if _, err := os.Lstat(path); err == nil {
@@ -752,6 +820,17 @@ func completePendingInitialization(root, markerPath string) error {
 	if err := projectlayout.CheckRuntime(stateData); err != nil {
 		return err
 	}
+	if err := runtime.ValidateFreshInactiveState(pending.FreshState); err != nil {
+		return fmt.Errorf("pending initialization is not fresh inactive: %w", err)
+	}
+	if err := semantic.ValidateRuntimeBytes(root, stateData); err != nil {
+		return fmt.Errorf("validate pending initialization before publication: %w", err)
+	}
+	configuration, _ := pending.FreshState["configuration"].(map[string]any)
+	initializationReceipt, err := json.MarshalIndent(map[string]any{"schema_version": 1, "runtime_schema_version": pending.FreshState["schema_version"], "optimization": configuration["optimization"], "initial_state_sha256": fmt.Sprintf("%x", sha256.Sum256(append(stateData, '\n')))}, "", "  ")
+	if err != nil {
+		return err
+	}
 	files := []struct {
 		path string
 		data []byte
@@ -759,6 +838,21 @@ func completePendingInitialization(root, markerPath string) error {
 		{filepath.Join(root, ".claude/loop-state.json"), append(stateData, '\n')},
 		{filepath.Join(root, ".claude/loop-events.jsonl"), nil},
 		{filepath.Join(root, ".claude/hook-decisions.jsonl"), nil},
+		{filepath.Join(root, ".claude/runtime-initialization.json"), append(initializationReceipt, '\n')},
+	}
+	// Check every existing member before publishing a missing one. A known
+	// conflict must not leave a newly created partial pair beside that conflict.
+	for _, file := range files {
+		data, err := os.ReadFile(file.path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect pending initialization member: %w", err)
+		}
+		if !bytes.Equal(data, file.data) {
+			return fmt.Errorf("existing file conflicts with pending bootstrap: %s", file.path)
+		}
 	}
 	for _, file := range files {
 		if err := ensurePendingInitFile(file.path, file.data); err != nil {
@@ -857,7 +951,7 @@ func inactiveRuntimeState(root string, occurredAt time.Time) (map[string]any, er
 		defVersion = v
 	}
 	state := placeholder{
-		SchemaVersion: "1.1.0",
+		SchemaVersion: workstate.UnifiedVersion,
 		RuntimeID:     "loop-inactive",
 		Definition: map[string]any{
 			"path":    projectlayout.Definition,
@@ -893,18 +987,18 @@ func inactiveRuntimeState(root string, occurredAt time.Time) (map[string]any, er
 			"lifecycle_state": "inactive",
 			"lifecycle_phase": nil,
 			"objective":       "produce one human-locked requirement (binding is the S1 action)",
-			"action":          "produce one human-locked REQ (docs/requirements/REQ-template.md + skills: requirement-funnel), then bind it",
+			"action":          "complete the current REQ from docs/requirements/REQ-template.md using requirement-funnel, resolve blocking decisions and record only the human's actual lock of that version",
 			"protocol_ref":    "docs/control/agent-protocol.md#s0",
 			"manual_ref":      loopManualRef,
 			"primary_skill":   "requirement-funnel",
 			"read":            []any{"docs/requirements/"},
 			"missing":         []any{"human_locked_req"},
-			"done_when":       []any{"a locked REQ exists in docs/requirements/ — `req bind` (S1) initializes the runtime and fingerprints it"},
+			"done_when":       []any{"the current requirement is complete and the human's actual lock of that version is recorded"},
 			"human_required":  false,
 			"blocked":         false,
 			"blocker":         nil,
 			"event":           "init",
-			"instruction":     "LOOP RECOVERY: bind one human-locked REQ.",
+			"instruction":     "LOOP RECOVERY: complete the current requirement and faithfully record the human's actual lock.",
 			"recovery":        []any{"read docs/control/agent-protocol.md#s0", "if blocked read .claude/bin/loop-harness.md"},
 			"source_revision": 0,
 			"updated_at":      occurredAt.UTC().Format(time.RFC3339Nano),
@@ -925,19 +1019,23 @@ func inactiveRuntimeState(root string, occurredAt time.Time) (map[string]any, er
 			"clean_round": nil,
 		},
 		"configuration": map[string]any{
+			"optimization": map[string]any{"packet": true},
 			"repair": map[string]any{
-				"max_attempts_per_bug":       3,
-				"max_same_contract_failures": 2,
-				"max_full_review_rounds":     5,
+				"max_attempts_per_bug":        3,
+				"max_same_contract_failures":  2,
+				"max_full_review_rounds":      5,
+				"max_investigation_reentries": 5,
 			},
 		},
 		"hook_control": state.HookControl,
 		"documents":    []any{},
 		"entities": map[string]any{
-			"agents": []any{},
-			"tasks":  []any{},
-			"bugs":   []any{},
-			"teams":  []any{},
+			"work_packets": []any{},
+			"submissions":  []any{},
+			"agents":       []any{},
+			"tasks":        []any{},
+			"bugs":         []any{},
+			"teams":        []any{},
 		},
 		"evidence": []any{},
 		"blockers": []any{},
@@ -1019,6 +1117,10 @@ func runTeam(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "generate launch packages: %v\n", err)
 		return 1
 	}
+	if err := attachAssignmentContexts(*root, *manifestPath, manifestData, requests); err != nil {
+		fmt.Fprintf(stderr, "registered assignment sources: %v\n", err)
+		return 1
+	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(requests); err != nil {
@@ -1029,6 +1131,15 @@ func runTeam(args []string, stdout, stderr io.Writer) int {
 }
 
 func runRuntime(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "compact-packets" {
+		return runPacketBodyMaintenance(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "assignment-context" {
+		return runAssignmentContext(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "stage-answer" {
+		return runStageAnswer(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "workspace" {
 		return runRuntimeWorkspace(args[1:], stdout, stderr)
 	}
@@ -1037,6 +1148,9 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 1 && args[0] == "investigation" && wantsHelp(args) {
 		return runRuntimeInvestigation(args[1:], stdout, stderr)
 	}
+	if len(args) > 1 && args[0] == "recover" && wantsHelp(args) {
+		return runRuntimeRecover(args[1:], stdout, stderr)
+	}
 
 	if len(args) > 0 && args[0] == "repair-evidence-binding" {
 		return runEvidenceBindingRepair(args[1:], stdout, stderr)
@@ -1044,23 +1158,57 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "repair-batch-scope" {
 		return runBatchScopeRepair(args[1:], stdout, stderr)
 	}
-	if wantsHelp(args) {
+	if len(args) > 0 && args[0] == "task-receipt" {
+		return runTaskReceipt(args[1:], stdout, stderr)
+	}
+	// Lifecycle leaves expose their own registered flags without reading Runtime.
+	if len(args) > 1 && wantsHelp(args[1:]) {
+		switch args[0] {
+		case "pause":
+			runRuntimePause([]string{"--help"}, stdout, stdout)
+			return 0
+		case "resume":
+			runRuntimeResume([]string{"--help"}, stdout, stdout)
+			return 0
+		}
+	}
+	if wantsHelp(args) && (len(args) == 0 || args[0] != "register-workgroup") {
 		name := compactHelpName(args)
 		if name == "" {
 			name = "<stage-specific verb>"
+		}
+		if len(args) > 0 && args[0] == "review-plan" {
+			printReviewPlanRecoveryHelp(stdout)
+			return 0
+		}
+		if name == "review-continue" || name == "audit-prepare" {
+			description := "Resume an accepted machine CleanRound through the original Gate/TR-009, then prepare current S10 acceptance materials. Accepted Reviewer results are preserved."
+			if name == "audit-prepare" {
+				description = "Restore missing materials for the current S10 acceptance or release_audit responsibility through the original preparer. Existing reports are preserved; this does not repeat TR-009 or Reviewer reception."
+			}
+			printCommandHelp(stdout, "loop-harness runtime "+name+" --root <project-root> [--state <runtime-state>] [--journal <runtime-journal>]", description)
+			return 0
+		}
+		if name == "human-decision" {
+			printCommandHelp(stdout, "loop-harness runtime human-decision --root <project-root> --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> --actor Main [--reason <human-reason>]", "Record the human's explicit choice through its fixed transition; actor is a caller record, not authentication. --reason is optional. The system supplies the current decision path and association. --decision-evidence <existing-reference> is optional compatibility only, not a normal registration step. This command does not publish or deploy.")
+			return 0
 		}
 		if name == "transition" {
 			printCommandHelp(stdout, "loop-harness runtime transition --id <ID> --actor <role> [--affected-paths <repo-relative-path>]...", "Low-level recovery only. Repeat --affected-paths for multiple literal paths (including deleted paths); use all alone only for an explicitly authorized full sweep. --params does not supply affected paths. Normal continuation uses stage-specific verbs.")
 			return 0
 		}
-		printCommandHelp(stdout, "loop-harness runtime "+name, "Runtime actions are the CAS-owned mutation surface. Choose the stage-specific verb shown by `loop-harness actions`; diagnostics expose the next recovery action.")
+		printCommandHelp(stdout, "loop-harness runtime "+name, "Runtime actions are the CAS-owned mutation surface. Choose the stage-specific verb shown by `loop-harness actions`; diagnostics expose the next recovery action. S7/S10 recovery: review-continue resumes the original clean-round exit; audit-prepare restores current missing S10 materials.")
 		return 0
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "runtime requires <recover|reconcile|migrate-planning|reconcile-policy-ref|rollover|human-decision|s7-budget-decision|pause|resume|transition|change|evidence|register-workgroup|agent-begin|agent-event|task-complete|worktree-create|task-integrate|review-plan|review-result|finding-supplement|investigation|repair|bug-event|fingerprint>")
+		fmt.Fprintln(stderr, "runtime requires <recover|reconcile|compact-packets|migrate-planning|reconcile-policy-ref|rollover|human-decision|s7-budget-decision|pause|resume|transition|change|evidence|register-workgroup|agent-begin|agent-event|task-complete|task-receipt|worktree-create|task-integrate|review-plan|review-result|review-continue|audit-prepare|finding-supplement|investigation|repair|bug-event|fingerprint>")
 		return 2
 	}
 	switch args[0] {
+	case "review-continue":
+		return runRuntimeS7Recovery(args[1:], false, stdout, stderr)
+	case "audit-prepare":
+		return runRuntimeS7Recovery(args[1:], true, stdout, stderr)
 	case "repair-batch-scope":
 		return runBatchScopeRepair(args[1:], stdout, stderr)
 	case "recover":
@@ -1228,6 +1376,44 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, formatFailure("runtime transition", err))
 			return 1
 		}
+		if lifecycleState(next.State) == "planning" && stringValue(nestedStateValue(next.State, "lifecycle", "phase")) == "design" && runtime.PacketEnabled(next.State) {
+			absRoot, rootErr := filepath.Abs(*root)
+			if rootErr != nil {
+				fmt.Fprintln(stderr, rootErr)
+				return 1
+			}
+			service := submission.Service{Root: absRoot, StatePath: resolvedStatePath, JournalPath: resolvedJournalPath, Validator: semantic.RuntimeCandidateValidator{}}
+			packet, prepareErr := service.IssueDesign(context.Background())
+			if prepareErr != nil {
+				fmt.Fprintln(stderr, "Transition recorded, but S2 design preparation failed: "+prepareErr.Error())
+				return 1
+			}
+			fmt.Fprintf(stderr, "S2 design view: %s; answer: %s\n", resolveRootPath(absRoot, packet.ViewPath), resolveRootPath(absRoot, packet.AnswerPath))
+			current, readErr := runtime.NewStore(resolvedStatePath, resolvedJournalPath).Snapshot()
+			if readErr != nil {
+				fmt.Fprintln(stderr, readErr)
+				return 1
+			}
+			next = current
+		}
+		if (*transitionID == "TR-009" || *transitionID == "TR-015") && runtime.PacketEnabled(next.State) {
+			if kind := currentAuditKind(next.State); kind != "" {
+				if _, _, err := prepareAuditQuestionnaire(*root, next.State, kind); err != nil {
+					fmt.Fprintf(stderr, "S10 %s responsibility is current but its questionnaire preparation failed: %v\n", kind, err)
+					return 1
+				}
+			}
+		}
+		if (*transitionID == "TR-017" || *transitionID == "TR-019") && lifecycleState(next.State) == "awaiting_human_release" {
+			path, id, err := humanReleaseQuestionnairePath(*root, next.State)
+			if err == nil {
+				err = prepareHumanDecisionApplication(path, next.State, id)
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "S11 decision application preparation failed: %v\n", err)
+				return 1
+			}
+		}
 		if err := json.NewEncoder(stdout).Encode(next); err != nil {
 			fmt.Fprintf(stderr, "encode runtime transition: %v\n", err)
 			return 1
@@ -1248,13 +1434,41 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		manifestPath := flags.String("manifest", "", "team manifest path")
 		taskID := flags.String("task-id", "", "TASK ID")
 		taskPath := flags.String("task", "", "TASK path")
+		reviseAssignment := flags.String("revise-assignment", "", "issue the next revision of this canonical Assignment")
+		revisionIntentKey := flags.String("revision-intent-key", "", "stable idempotency key for an Assignment revision")
+		expectedRecordRef := flags.String("expected-record-ref", "", "expected prior RecordReference as JSON; pair with --expected-record-sha256")
+		expectedRecordSHA := flags.String("expected-record-sha256", "", "expected prior Assignment Record SHA-256; pair with --expected-record-ref")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 registration time")
+		if wantsHelp(args[1:]) {
+			flags.SetOutput(stdout)
+			flags.Usage()
+			return 0
+		}
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
 		if *manifestPath == "" || *taskID == "" || *taskPath == "" {
 			fmt.Fprintln(stderr, "runtime register-workgroup requires --manifest, --task-id and --task")
 			return 2
+		}
+		var revision *assignment.RevisionRequest
+		if *reviseAssignment != "" || *revisionIntentKey != "" || *expectedRecordRef != "" || *expectedRecordSHA != "" {
+			if *reviseAssignment == "" || *revisionIntentKey == "" {
+				fmt.Fprintln(stderr, "runtime register-workgroup revision requires both --revise-assignment and --revision-intent-key")
+				return 2
+			}
+			revision = &assignment.RevisionRequest{AssignmentID: *reviseAssignment, IntentKey: *revisionIntentKey}
+			if (*expectedRecordRef == "") != (*expectedRecordSHA == "") {
+				fmt.Fprintln(stderr, "runtime register-workgroup revision requires --expected-record-ref and --expected-record-sha256 together")
+				return 2
+			}
+			if *expectedRecordRef != "" {
+				if err := json.Unmarshal([]byte(*expectedRecordRef), &revision.ExpectedRecord); err != nil {
+					fmt.Fprintf(stderr, "runtime register-workgroup: invalid --expected-record-ref JSON: %v\n", err)
+					return 2
+				}
+				revision.ExpectedRecordSHA256 = *expectedRecordSHA
+			}
 		}
 		// Anchor --state / --journal relative paths against --root so the
 		// verb works from any cwd (e.g. a sandboxed shell whose cwd is not
@@ -1272,20 +1486,40 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			}
 			occurredAt = parsedAt
 		}
-		next, err := assignment.Register(*root, resolvedState, resolvedJournal, assignment.Request{
+		request := assignment.Request{
 			ExpectedRevision: resolvedRevision,
 			ManifestPath:     resolveRootPath(*root, *manifestPath),
 			TaskID:           *taskID,
 			TaskPath:         resolveRootPath(*root, *taskPath),
+			Revision:         revision,
 			OccurredAt:       occurredAt,
-		})
+		}
+		next, revisionReceipt, err := assignment.RegisterWithReceipt(*root, resolvedState, resolvedJournal, request)
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime register-workgroup", err))
 			return 1
 		}
-		if err := json.NewEncoder(stdout).Encode(next); err != nil {
+		var output any = next
+		if revisionReceipt != nil {
+			output = struct {
+				runtime.Snapshot
+				AssignmentRevisionReceipt assignment.RevisionAcceptanceReceipt `json:"assignment_revision_receipt"`
+			}{Snapshot: next, AssignmentRevisionReceipt: *revisionReceipt}
+		}
+		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			fmt.Fprintf(stderr, "encode workgroup registration: %v\n", err)
 			return 1
+		}
+		if runtime.PacketEnabled(next.State) {
+			if s, err := submission.New(*root); err != nil {
+				fmt.Fprintf(stderr, "workgroup registered; packet issuance deferred: %v\n", err)
+			} else if packets, err := s.Issue(""); err != nil {
+				fmt.Fprintf(stderr, "workgroup registered; packet issuance deferred: %v\n", err)
+			} else {
+				for _, p := range packets {
+					fmt.Fprintf(stderr, "S5 %s/%s: packet %s; answer %s\n", p.Binding.Owner, p.Binding.Responsibility, p.ViewPath, p.AnswerPath)
+				}
+			}
 		}
 		return 0
 	case "agent-begin":
@@ -1350,14 +1584,15 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 		expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
 		agentID := flags.String("agent-id", "", "Agent ID")
-		event := flags.String("event", "", "readback_submitted, understanding_approved, or activated")
+		event := flags.String("event", "", "original Agent lifecycle event, including blocker_resolved")
 		messagePath := flags.String("message", "", "Agent message path")
+		body := flags.String("body", "", "S7 blocker_resolved professional restoration explanation; machine message facts come from the original blocked responsibility")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
-		if *agentID == "" || *event == "" || *messagePath == "" {
-			fmt.Fprintln(stderr, "runtime agent-event requires --agent-id, --event and --message")
+		if *agentID == "" || *event == "" || (*messagePath == "" && *body == "") || (*messagePath != "" && *body != "") {
+			fmt.Fprintln(stderr, "runtime agent-event requires --agent-id, --event and exactly one of --message or --body (S7 blocker_resolved only)")
 			return 2
 		}
 		resolvedRevision := *expectedRevision
@@ -1370,28 +1605,26 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			}
 			occurredAt = parsedAt
 		}
-		next, err := assignment.AdvanceAgent(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), assignment.AgentEventRequest{
+		request := assignment.AgentEventRequest{
 			ExpectedRevision: resolvedRevision,
 			AgentID:          *agentID,
 			Event:            *event,
 			MessagePath:      resolveRootPath(*root, *messagePath),
 			OccurredAt:       occurredAt,
-		})
+		}
+		var next runtime.Snapshot
+		var err error
+		if *body != "" {
+			next, err = advanceS7BlockerWithBody(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), request, *body)
+		} else {
+			next, err = assignment.AdvanceAgent(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), request)
+		}
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime agent-event", err))
 			return 1
 		}
-		// The activation moment is where the next-step discipline is needed;
-		// print role-aware next actions instead of letting the agent discover
-		// them from a late failure (L3-S6/S7 complexity passes). Reviewers
-		// have no worktree and submit via review-result; Builders integrate
-		// via worktree + task-complete.
 		if *event == "activation_sent" {
-			if reviewerRole(next.State, *agentID) {
-				fmt.Fprintln(stderr, "activated. next: (1) advance `work_started` when you begin; (2) write the Canonical ReviewResult (claim_results must equal the assignment's Claim set exactly; every fail Claim needs one Finding with a real encounter — see review-result.example.json) and submit via `runtime review-result submit --assignment-id <id> --result <file>`")
-			} else {
-				fmt.Fprintln(stderr, "activated. next: (1) create the worktree if absent — `loop-harness runtime worktree-create --assignment-id <assignment-id>` — and record worktree_path/branch/target_branch on the assignment's workgroup manifest row (or .claude/assignments/<assignment-id>.json); (2) advance `work_started` when the Builder begins writing; (3) register completion with `runtime task-complete`")
-			}
+			fmt.Fprintln(stderr, agentActivationNextMessage(next.State, *agentID))
 		}
 		if err := json.NewEncoder(stdout).Encode(next); err != nil {
 			fmt.Fprintf(stderr, "encode Agent event: %v\n", err)
@@ -1431,7 +1664,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			}
 			occurredAt = parsedAt
 		}
-		next, err := assignment.CompleteTask(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), assignment.CompletionRequest{
+		next, accepted, err := assignment.CompleteTaskWithReceipt(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), assignment.CompletionRequest{
 			ExpectedRevision: resolvedRevision,
 			AgentID:          *agentID,
 			MessagePath:      resolveRootPath(*root, *messagePath),
@@ -1441,7 +1674,14 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, formatFailure("runtime task-complete", err))
 			return 1
 		}
-		if err := json.NewEncoder(stdout).Encode(next); err != nil {
+		var output any = next
+		if accepted.ResultRef != "" {
+			output = struct {
+				runtime.Snapshot
+				Acceptance assignment.ResultAcceptanceReceipt `json:"acceptance_receipt"`
+			}{Snapshot: next, Acceptance: accepted}
+		}
+		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			fmt.Fprintf(stderr, "encode Builder Result: %v\n", err)
 			return 1
 		}
@@ -1475,17 +1715,44 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 				resolvedRoot = abs
 			}
 		}
+		taskContext, cancelTask := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancelTask()
 		resolvedState := resolveRootPath(resolvedRoot, *statePath)
 		resolvedJournal := resolveRootPath(resolvedRoot, *journalPath)
-		snapshot, err := runtime.NewStore(resolvedState, resolvedJournal).Snapshot()
+		snapshot, err := runtime.NewStore(resolvedState, resolvedJournal).WithContext(taskContext).Snapshot()
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime task-integrate", err))
 			return 1
 		}
-		if binding, bindingErr := workspace.Decode(snapshot.State); bindingErr != nil {
+		binding, bindingErr := workspace.Decode(snapshot.State)
+		if bindingErr != nil {
 			fmt.Fprintln(stderr, bindingErr)
 			return 1
-		} else if binding != nil {
+		}
+		if packetBackedRepairResultStage(snapshot.State) {
+			packet, found, packetErr := typedRepairResultPacketForAssignmentContext(taskContext, resolvedRoot, snapshot.State, *assignmentID, *agentID)
+			if packetErr != nil {
+				fmt.Fprintln(stderr, formatFailure("runtime task-integrate", packetErr))
+				return 1
+			}
+			if found {
+				execution, executionFound, resolveErr := typedRepairResultExecution(binding, snapshot.State, packet)
+				if resolveErr != nil || !executionFound {
+					fmt.Fprintf(stderr, "runtime task-integrate: typed S9 packet requires its exact registered Worker execution; use the original workspace recovery route: %v\n", resolveErr)
+					return 1
+				}
+				if *agentID != "" && *agentID != execution.AgentID {
+					fmt.Fprintln(stderr, "runtime task-integrate: typed S9 owner mismatch")
+					return 1
+				}
+				forward := []string{"integrate", "--root", resolvedRoot, "--assignment", execution.AssignmentID, "--agent", execution.AgentID}
+				if *retry {
+					forward = append(forward, "--retry-preserved")
+				}
+				return runWorkspaceDeliveryContext(taskContext, forward, stdout, stderr)
+			}
+		}
+		if binding != nil {
 			if execution, ok := binding.Execution(*assignmentID, workspace.RuntimeID(snapshot.State), workspace.Generation(snapshot.State)); ok {
 				lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
 				if execution.DeliveryRef != "" || lifecycle["state"] == "bug_resolution" {
@@ -1497,7 +1764,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 					if *retry {
 						forward = append(forward, "--retry-preserved")
 					}
-					return runWorkspaceDelivery(forward, stdout, stderr)
+					return runWorkspaceDeliveryContext(taskContext, forward, stdout, stderr)
 				}
 			}
 		}
@@ -1536,7 +1803,12 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		if !guidance.Blocked {
 			a := findAssignmentForInput(loaded, input)
 			if a != nil {
-				cp, found, loadErr := integration.DefaultCheckpointStore().Load(integration.CheckpointPath(resolvedRoot, loaded.PolicyContext.RuntimeID, loaded.BaselineGeneration, a.AssignmentID))
+				checkpointPath, pathErr := checkpointPathForLoadedAssignment(resolvedRoot, loaded, *a)
+				if pathErr != nil {
+					fmt.Fprintln(stderr, pathErr)
+					return 1
+				}
+				cp, found, loadErr := integration.DefaultCheckpointStore().Load(checkpointPath)
 				if loadErr != nil {
 					fmt.Fprintln(stderr, loadErr)
 					return 1
@@ -1561,12 +1833,20 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		} else {
 			state = "integrated"
 		}
+		handoff := ""
+		if !guidance.Blocked {
+			updated, handoff = continueS6Integration(resolvedRoot, resolvedState, resolvedJournal, *assignmentID, updated)
+		}
 		fmt.Fprintf(stderr, "task-integrate: %s — %s\n", state, guidance.Action)
+		if handoff != "" {
+			fmt.Fprintln(stderr, handoff)
+		}
 		if len(guidance.Integration) > 0 {
 			fmt.Fprintf(stderr, "integration facts: %s\n", strings.Join(guidance.Integration, "; "))
 		}
 		payload := map[string]any{
 			"assignment_id": *assignmentID,
+			"handoff":       handoff,
 			"state":         state,
 			"blocked":       guidance.Blocked,
 			"blocker":       guidance.Blocker,
@@ -1584,6 +1864,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		// `revise` is the one controlled revision per round (§5.3).
 		revise := len(args) > 1 && args[1] == "revise"
 		revive := len(args) > 1 && args[1] == "revive"
+		frozenDiff := len(args) > 1 && args[1] == "frozen-diff"
 		flags := flag.NewFlagSet("runtime review-plan", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		bindUsage(flags, "runtime review-plan")
@@ -1595,11 +1876,24 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		sourceRef := flags.String("source-ref", "", "revise: triggering Result/Finding evidence id")
 		affectedSurface := flags.String("affected-surface", "", "revise: path surface the revision may touch")
 		parseArgs := args[1:]
-		if revise || revive {
+		if revise || revive || frozenDiff {
 			parseArgs = args[2:]
 		}
 		if err := parseWorkspaceFlags(flags, parseArgs); err != nil {
 			return 2
+		}
+		if frozenDiff {
+			diff, err := review.DiffFrozenSourcesForRoot(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath))
+			if err != nil {
+				fmt.Fprintln(stderr, formatFailure("runtime review-plan frozen-diff", err))
+				return 1
+			}
+			fmt.Fprintln(stderr, review.FrozenDiffReport(diff))
+			return encodeJSON(stdout, map[string]any{
+				"restore":  diff.Restore,
+				"missing":  diff.Missing,
+				"preserve": diff.Preserve,
+			})
 		}
 		if revive {
 			next, err := review.RevivePlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), *expectedRevision)
@@ -1616,6 +1910,10 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			})
 		}
 		if revise {
+			if *planPath == "" || *sourceRef == "" || *affectedSurface == "" {
+				fmt.Fprintln(stderr, "runtime review-plan revise requires --file <ReviewPlan.json> --source-ref <consumed-Result-or-Finding-id> --affected-surface <repo-relative-surface>; --file is a JSON file path")
+				return 2
+			}
 			resolvedRevision := *expectedRevision
 			next, err := review.RevisePlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.ReviseRequest{
 				ExpectedRevision: resolvedRevision,
@@ -1649,7 +1947,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		ptr := review.PlanPointerFromState(next.State)
-		fmt.Fprintf(stderr, "review-plan: registered %s for round %d (status %s); dispatch reviewers via `runtime register-workgroup`, then consume results via `runtime review-result submit`\n",
+		fmt.Fprintf(stderr, "review-plan: registered %s for round %d (status %s); dispatch the original reviewer responsibilities; each Reviewer fills and saves the exact questionnaire supplied by the listener\n",
 			ptr.PlanID, ptr.ReviewRound, ptr.Status)
 		return encodeJSON(stdout, map[string]any{
 			"plan_id":      ptr.PlanID,
@@ -1715,7 +2013,9 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		case "observation_sealed":
 			fmt.Fprintln(stderr, "review-result: consumed; ObservationBatch sealed — the next PreToolUse will auto-commit TR-008 to hand off to S8 (do not invoke the transition CLI)")
 		case "clean":
-			fmt.Fprintln(stderr, "review-result: consumed; machine CleanRound generated — the next PreToolUse will auto-commit TR-009 to advance into S10 (do not invoke the transition CLI)")
+			var handoff string
+			next, handoff = continueS7Acceptance(context.Background(), *root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), next)
+			fmt.Fprintln(stderr, "review-result: consumed; "+handoff)
 		case "paused":
 			fmt.Fprintln(stderr, "review-result: consumed; pause checkpoint recorded — route via TR-010 (req change) or TR-011 (release blocked)")
 		case "cannot_clean", "discovery_draining":
@@ -1750,7 +2050,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 		findingID := flags.String("finding", "", "finding id the supplement extends")
-		filePath := flags.String("file", "", "FindingSupplement JSON path")
+		filePath := flags.String("file", "", "professional observation JSON path; original consumer binds schema/id/time/hash")
 		authorizedBy := flags.String("authorized-by", "", "scheduler identity authorizing a replacement finder (required when author != original finder)")
 		inRoundNote := flags.Bool("in-round-note", false, "declare an S7 in-round note from the original finder (exempt from the hypothesis_id + discriminator + expected_outcomes gate; must not carry hypothesis_id)")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
@@ -1891,7 +2191,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 // The disposition is mapped to a fixed transition by the Runtime package; the
 // caller cannot supply a target state or transition ID. This makes the command
 // usable for both legacy S11 snapshots and the current human gateway while
-// keeping missing evidence and actor fail-closed. Runtime revision is an
+// recording explicit human dispositions without treating the caller as authentication. Runtime revision is an
 // optional advanced assertion; the normal path lets the Writer use its
 // current locked snapshot.
 func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
@@ -1903,9 +2203,10 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 	disposition := flags.String("disposition", "", "one of approve, defer, reject_defect, reject_acceptance, reject_release_audit, abort")
 	expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
-	actor := flags.String("actor", "", "human decision actor")
+	actor := flags.String("actor", "", "caller record, not authentication")
+	reason := flags.String("reason", "", "actual human decision reason, when supplied")
 	decisionEvidence := flags.String("decision-evidence", "", "human_decision_record evidence reference")
-	findingEvidence := flags.String("finding-evidence", "", "finding_record evidence reference; required for reject_defect")
+	findingEvidence := flags.String("finding-evidence", "", "optional existing finding_record evidence reference")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
@@ -1917,9 +2218,6 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 	if strings.TrimSpace(*actor) == "" {
 		missing = append(missing, "--actor")
 	}
-	if strings.TrimSpace(*decisionEvidence) == "" {
-		missing = append(missing, "--decision-evidence")
-	}
 	if len(missing) > 0 {
 		fmt.Fprintf(stderr, "runtime human-decision requires %s; choose --disposition approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort\n", strings.Join(missing, ", "))
 		return 2
@@ -1930,21 +2228,36 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runtime human-decision: %v; choose approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort\n", err)
 		return 2
 	}
-	if strings.TrimSpace(*disposition) == string(runtime.HumanReleaseDispositionRejectDefect) && strings.TrimSpace(*findingEvidence) == "" {
-		fmt.Fprintln(stderr, "runtime human-decision reject_defect requires --finding-evidence for finding_record")
-		return 2
-	}
 
 	evidence := map[string]string{"human_decision_record": strings.TrimSpace(*decisionEvidence)}
 	if strings.TrimSpace(*disposition) == string(runtime.HumanReleaseDispositionDefer) {
 		evidence["pause_record"] = "generated:pause_checkpoint"
 	}
-	if strings.TrimSpace(*disposition) == string(runtime.HumanReleaseDispositionRejectDefect) {
+	if strings.TrimSpace(*findingEvidence) != "" {
 		evidence["finding_record"] = strings.TrimSpace(*findingEvidence)
 	}
 
+	var params map[string]any
+	var runtimeID string
+	if strings.TrimSpace(*decisionEvidence) == "" {
+		snapshot, err := runtime.NewStore(resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath)).Snapshot()
+		if err != nil {
+			fmt.Fprintln(stderr, formatFailure("runtime human-decision", err))
+			return 1
+		}
+		path, id, err := humanReleaseQuestionnairePath(*root, snapshot.State)
+		if err != nil {
+			fmt.Fprintln(stderr, formatFailure("runtime human-decision", err))
+			return 1
+		}
+		params = map[string]any{"decision_id": id, "decision_path": path, "disposition": strings.TrimSpace(*disposition), "reason": *reason}
+		runtimeID = stringValue(snapshot.State["runtime_id"])
+		if *expectedRevision < 0 {
+			*expectedRevision = snapshot.Revision
+		}
+	}
 	next, err := transition.Apply(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), transition.Request{
-		TransitionID:     transitionID,
+		TransitionID: transitionID, Params: params, ExpectedRuntimeID: runtimeID,
 		ExpectedRevision: *expectedRevision,
 		Actor:            strings.TrimSpace(*actor),
 		Evidence:         evidence,
@@ -1952,6 +2265,20 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime human-decision", err))
 		return 1
+	}
+	if transitionID == "TR-028" || transitionID == "TR-029" {
+		decisionPath := stringValue(params["decision_path"])
+		if decisionPath == "" {
+			if entry := evidenceEntryByID(next.State, strings.TrimSpace(*decisionEvidence)); entry != nil {
+				decisionPath = resolveRootPath(*root, stringValue(entry["path"]))
+			}
+		}
+		paths, err := prepareAuditReworkQuestionnaires(*root, next.State, transitionID, decisionPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "Human decision is recorded, but S10 rework preparation failed: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stderr, "Human decision %s recorded at %s; reason: %s. Continue the current S10 report(s): %s. Existing observations are retained; the prior final outcome is cleared only once.\n", *disposition, decisionPath, *reason, strings.Join(paths, ", "))
 	}
 	return encodeJSON(stdout, next)
 }
@@ -2074,6 +2401,7 @@ func runRuntimeRollover(args []string, stdout, stderr io.Writer) int {
 	} else if note != "" {
 		fmt.Fprintf(stdout, "REQ %s (dual-fingerprint receipt: %s)\n", note, filepath.Join(record.ArchiveDir, "req-archive.json"))
 	}
+	fmt.Fprintln(stdout, stageEntryQuestionnaireContext(*root, policy.Input{Event: "SessionStart"}, runtime.Snapshot{State: freshState}))
 	return 0
 }
 
@@ -2256,6 +2584,13 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runtime evidence add requires --id, --kind, --path and --produced-by")
 		return 2
 	}
+	if message, guarded, err := packetPlanningEvidenceAddRefusal(*root, *statePath, *journalPath, *kind); err != nil {
+		fmt.Fprintln(stderr, formatFailure("runtime evidence add", err))
+		return 1
+	} else if guarded {
+		fmt.Fprintf(stderr, "runtime evidence add: %s\n", message)
+		return 1
+	}
 	var round *int
 	if *reviewRound != 0 {
 		round = reviewRound
@@ -2295,6 +2630,118 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 		"review_round":        entry["review_round"],
 		"baseline_generation": entry["baseline_generation"],
 	})
+}
+
+// packetPlanningEvidenceAddRefusal prevents the generic artifact-registration
+// command from bypassing a packet-mode Main planning answer's typed consumer.
+// A generic evidence artifact has neither the packet answer nor its trusted
+// Main authorization capability, so the caller must use the original answer
+// path and consumer. Legacy/no-packet evidence registration is unchanged.
+func packetPlanningEvidenceAddRefusal(root, statePath, journalPath, kind string) (string, bool, error) {
+	stageForKind := map[string]string{
+		"planning_design":   "design",
+		"planning_contract": "contracts",
+		"planning_task":     "tasks",
+	}
+	phase, planningKind := stageForKind[kind]
+	if !planningKind {
+		return "", false, nil
+	}
+
+	snapshot, err := runtime.NewStore(
+		resolveRootPath(root, statePath),
+		resolveRootPath(root, journalPath),
+	).Snapshot()
+	if err != nil {
+		return "", false, err
+	}
+	state := snapshot.State
+	if !runtime.PacketEnabled(state) {
+		return "", false, nil
+	}
+
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	if lifecycle["state"] != "planning" || lifecycle["phase"] != phase {
+		status := renderExecCommand([]string{"loop-harness", "status", "--root", root})
+		return fmt.Sprintf("packet-mode Main planning evidence kind %q cannot be registered directly; current cursor is %v/%v. Inspect the current Runtime with %s", kind, lifecycle["state"], lifecycle["phase"], status), true, nil
+	}
+
+	answerPath, issued, verified, err := currentIssuedPlanningAnswerPath(state, phase)
+	if err != nil {
+		return "", true, err
+	}
+
+	stage := map[string]string{"design": "S2", "contracts": "S3", "tasks": "S4"}[phase]
+	if !verified {
+		return fmt.Sprintf("Current %s questionnaire association is ambiguous or unavailable; Main must resolve the actual entry record, not register a parallel envelope.", stage), true, nil
+	}
+	if !issued {
+		return fmt.Sprintf("The current %s responsibility has no registered questionnaire. Its real stage-entry preparation is missing; Main must resolve that system gap, not manually issue or consume.", stage), true, nil
+	}
+	return fmt.Sprintf("Use the current %s answer at %s. Save the professional answer normally; the original listener records and advances it without a command or parallel envelope.", stage, resolveRootPath(root, answerPath)), true, nil
+}
+
+// currentIssuedPlanningAnswerPath only returns a path after the current
+// runtime binding and the uniquely registered typed packet agree. Disk files
+// are intentionally not consulted to infer issuance.
+func currentIssuedPlanningAnswerPath(state map[string]any, phase string) (path string, issued, verified bool, err error) {
+	switch phase {
+	case "design":
+		life := mapFieldCLI(state, "lifecycle")
+		if life["state"] != "planning" || life["phase"] != "design" {
+			return "", false, false, fmt.Errorf("S2 design is not the current entry")
+		}
+		rows, _ := mapFieldCLI(state, "entities")["work_packets"].([]any)
+		count := 0
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if row["template_id"] != "s2-design-v1" {
+				continue
+			}
+			binding, _ := row["binding"].(map[string]any)
+			if binding["runtime_id"] != state["runtime_id"] || integerValue(binding["generation"]) != integerValue(nestedStateValue(state, "baseline", "generation")) || integerValue(binding["stage_entry"]) != integerValue(life["phase_revision"]) {
+				continue
+			}
+			answer, ok := row["answer_path"].(string)
+			if !ok || strings.TrimSpace(answer) == "" {
+				return "", false, false, fmt.Errorf("current S2 design record has no readable answer path")
+			}
+			path = answer
+			count++
+		}
+		if count > 1 {
+			return "", false, false, fmt.Errorf("multiple S2 design questionnaires describe the current Runtime/generation/entry")
+		}
+		return path, count == 1, true, nil
+	case "contracts":
+		binding, designs, err := runtime.CurrentContractBinding(state)
+		if err != nil {
+			return "", false, false, err
+		}
+		packet, found, conflict := currentContractPlanningPacket(state, binding, designs)
+		if conflict {
+			return "", false, false, nil
+		}
+		if !found {
+			return "", false, true, nil
+		}
+		return packet.AnswerPath, true, true, nil
+	case "tasks":
+		binding, err := runtime.CurrentTaskPlanningBinding(state)
+		if err != nil {
+			return "", false, false, err
+		}
+		packet, found, conflict := currentTaskPlanningPacket(state, binding)
+		if conflict {
+			return "", false, false, nil
+		}
+		if !found {
+			return "", false, true, nil
+		}
+		return packet.AnswerPath, true, true, nil
+	default:
+		return "", false, false, fmt.Errorf("unknown planning phase %q", phase)
+	}
 }
 
 func runRuntimeChange(args []string, stdout, stderr io.Writer) int {
@@ -2431,7 +2878,7 @@ func runDryRun(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	bindUsage(flags, "dry-run")
 	root := flags.String("root", ".", "repository root")
-	fixture := flags.String("fixture", "", "Hook input fixture")
+	fixture := flags.String("fixture", "", "Hook fixture used only to label read-only quality-gate diagnostics")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
@@ -2445,7 +2892,35 @@ func runDryRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer file.Close()
-	return evaluate(*root, "", file, stdout, stderr, false)
+	var request policy.Input
+	if err := json.NewDecoder(file).Decode(&request); err != nil {
+		fmt.Fprintf(stderr, "decode fixture: %v\n", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	controlRoot, err := workspace.ResolveControl(ctx, *root)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(stderr, "dry-run root: %v\n", err)
+		return 1
+	}
+	controlRoot = nativeS6ControlRoot(controlRoot, request)
+	report, err := controller.EvaluateReady(context.Background(), controlRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "dry-run: %v\n", err)
+		return 1
+	}
+	gate := struct {
+		controller.ReadyReport
+		TransitionCommitted bool `json:"transition_committed"`
+	}{ReadyReport: report}
+	return encodeJSON(stdout, map[string]any{
+		"hook_event":       request.Event,
+		"hook_simulated":   false,
+		"evaluation_scope": report.EvaluationScope,
+		"instruction":      "Read-only ready diagnostics. The fixture only labels the event; no Hook, answer reception, audit, recovery or transition is executed. This does not predict Hook results or transition commitability.",
+		"quality_gate":     gate,
+	})
 }
 
 func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -2454,6 +2929,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	bindUsage(flags, "hook")
 	event := flags.String("event", "", "Claude Code Hook event")
 	root := flags.String("root", ".", "repository root")
+	progressMode := flags.String("progress-mode", "shadow", "progress observation: shadow or explicit diagnostic notify")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
@@ -2461,7 +2937,11 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "hook requires --event")
 		return 2
 	}
-	return evaluate(*root, *event, stdin, stdout, stderr, true)
+	if *progressMode != "shadow" && *progressMode != "notify" {
+		fmt.Fprintln(stderr, "progress-mode must be shadow or notify")
+		return 2
+	}
+	return evaluate(*root, *event, stdin, stdout, stderr, true, *progressMode == "notify")
 }
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {
@@ -2588,7 +3068,7 @@ func reportPolicyRefDrift(root, statePath, journalPath string, stdout, stderr io
 	return 1
 }
 
-func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Writer, renderHook bool) int {
+func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Writer, renderHook bool, progressNotify ...bool) int {
 	evaluationStarted := time.Now()
 	var request policy.Input
 	if err := json.NewDecoder(input).Decode(&request); err != nil {
@@ -2599,18 +3079,28 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "Hook argument event %q does not match input event %q\n", expectedEvent, request.Event)
 		return 1
 	}
+	if renderHook {
+		ctx, cancel := hookRequestContexts(contextForHook(request), hookOuterDeadline(evaluationStarted.Add(hookBudget(root, request))))
+		defer cancel()
+		request.Context = ctx
+		request.Context, _ = metrics.WithCallTimings(request.Context)
+	}
+	request.Context = fileview.WithReadCache(contextForHook(request))
+	request.Context = runtime.WithPacketBodyRoot(runtime.WithReviewResultReadCache(request.Context), root)
 	// Resolve a registered Worker to its sole control Runtime without chdir.
-	rootContext, rootCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	rootContext, rootCancel := context.WithTimeout(contextForHook(request), 3*time.Second)
 	controlRoot, rootErr := workspace.ResolveControl(rootContext, root)
 	rootCancel()
 	if rootErr != nil {
 		fmt.Fprintf(stderr, "workspace root unavailable: %v\n", rootErr)
-		if policy.UnavailableDecision(request, rootErr).Decision == "deny" {
-			return 2
-		}
+
 		return 0
 	}
-	root = controlRoot
+	root = nativeS6ControlRoot(controlRoot, request)
+	request = withHookReader(root, request)
+	if handled, code := nativeHookRoutes(root, request, stdout, stderr); handled {
+		return code
+	}
 	// Session boundaries maintain the diagnostic spool. This runs under the
 	// native outer Hook deadline; interrupted compaction is exactly-once on retry.
 	// Mutating PreToolUse never performs this maintenance.
@@ -2621,34 +3111,68 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 			}
 		}()
 	}
-	// A separately launched top-level Claude session has no native agent_id.
-	// Resolve only its durable session/root pair; never impersonate nested agents.
-	if request.AgentID == "" && request.TeammateName == "" && request.SessionID != "" && request.CWD != "" {
-		ownerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		owner, err := workspace.SessionOwner(ownerCtx, root, request.CWD, request.SessionID)
-		cancel()
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			if request.Event == "PreToolUse" {
-				return 2
+	if renderHook && request.Event == "PreCompact" {
+		// Professional facts are already owned by their original Writers.
+		// Do not receive private drafts, run a control cycle or emit context
+		// as a substitute for persistence. SessionStart reads current facts.
+		// The request reader was resolved before native/pending routes.
+		// Clear both Main aliases so the next observation can redeliver full
+		// guidance even when compaction is not followed by SessionStart.
+		owners := []string{request.EffectiveAgentID()}
+		if mainQuestionnaireViewer(request) {
+			owners = []string{request.EffectiveAgentID(), "", "Main"}
+		} else if reader, ok := contextForHook(request).Value(hookReaderKey{}).(*hookReader); ok {
+			if reader.Kind != "Worker" {
+				return 0
 			}
-			return 0
+			owners = []string{reader.Owner}
 		}
-		request.AgentID = owner
+		for _, owner := range owners {
+			_, reset := hook.PreparePlanningContext(root, request.SessionID, owner, request.Event, "", nil)
+			reset()
+		}
+		return 0
 	}
-	// Official TeammateIdle payloads carry teammate_name instead of agent_id
-	// (Claude Code 2.1.218). Normalize once so hookctx resolution, the
-	// Controller and the audit envelope all identify the same teammate
-	// instead of guessing (L4 §15.2 P0-1); the original payload fields stay
-	// on the Input untouched.
-	if request.AgentID == "" {
-		request.AgentID = request.TeammateName
+	if handled, code := hookReaderObservation(root, request, stdout, stderr); handled {
+		return code
 	}
+	request = observePlanningToolChange(root, request, stderr)
 	// PostToolUse(SendMessage) is a pure observer (L3-S7 §8, L4 §7.4): it
 	// never runs the Quality Gate, never persists a gate milestone, and
 	// never denies. It short-circuits here so no control-cycle machinery
 	// runs for it.
 	if request.Event == "PostToolUse" {
+		var postOutput bytes.Buffer
+		originalStdout := stdout
+		stdout = &postOutput
+		preparation := ""
+		defer func() { writePlanningPostOutput(originalStdout, postOutput.Bytes(), preparation) }()
+		// Observe ordinary successful tools before non-checkpoint Bash exits.
+		// The sampler owns only diagnostic caches and never a control cycle.
+		progressNotice, progressKnown, progressChanged := observeWorkProgress(root, request, stderr)
+		_, explicitSave := savedQuestionnairePath(request)
+		change := planningChangeFrom(request)
+		if (change.Active && planningMaterialSave(request, root)) || (!change.Active && (explicitSave || !progressKnown || progressChanged)) {
+			preparation = prepareCurrentPlanningAfterChange(root, request)
+		}
+		if handled, code := receiveSavedQuestionnaire(root, request, stdout, stderr); handled {
+			// Its receipt already describes the resulting stage and next work;
+			// do not append the now-obsolete pre-reception responsibility.
+			if postOutput.Len() > 0 {
+				preparation = ""
+			}
+			return code
+		}
+		if handled, code := runObservedQuestionnaireSaves(root, request, stdout, stderr, progressKnown, progressChanged); handled {
+			if postOutput.Len() > 0 {
+				preparation = ""
+			}
+			return code
+		}
+		if progressNotice != nil && len(progressNotify) > 0 && progressNotify[0] {
+			renderProgressNotice(stdout, progressNotice)
+			return 0
+		}
 		if request.ToolName == "Bash" {
 			if !dispatchGuidanceCheckpoint(request.Event, request) {
 				return 0
@@ -2663,57 +3187,52 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	if request.Event == "PostToolUseFailure" || request.Event == "ConfigChange" {
 		return runNativeObserverHook(root, request, stdout, stderr, evaluationStarted)
 	}
-	if request.Runtime.RuntimeID == "" {
+	controlResult, graphObserved := graphControlForHook(root, request)
+	graphPlanning := graphObserved && lifecycleState(controlResult.Snapshot.State) == "planning"
+	if graphObserved {
+		request.Runtime = controllerRuntimeContext(controlResult.Snapshot.State, root, request.Runtime)
+		request.Runtime.PacketMode = true
+		request.Runtime.Workspace, _ = workspace.Decode(controlResult.Snapshot.State)
+	}
+	if request.Event != "PreToolUse" && !graphObserved {
 		context, err := hookctx.Load(root, request.AgentID)
 		if err != nil {
-			// Keep the error until after the controller projection. A
-			// mutating PreToolUse must fail closed when the runtime facts
-			// needed to determine its write surface are unavailable.
+			// Let the graph cycle report unavailable progress without blocking
+			// the tool or guessing the current questionnaire.
 			request.Runtime = policy.RuntimeContext{}
 		} else {
 			request.Runtime = context
 		}
 	}
-	// Policy failure must use a platform-blocking exit for potentially mutating
-	// PreToolUse calls. Exit 1 is only a non-blocking Hook error in Claude Code.
-	// Leave explicit reads and lifecycle notifications available for diagnosis.
-	if _, err := policy.Load(filepath.Join(root, projectlayout.Policy)); err != nil {
-		fmt.Fprintf(stderr, "load policy: %v\n", err)
-		decision := policy.UnavailableDecision(request, err)
-		fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(decision))
-		if decision.Decision == "deny" {
+
+	stageAnswerContext := ""
+	if request.Event == "Stop" || hook.IsStopIdleEvent(request.Event) {
+		// Stop reminders read existing questionnaire paths; they do not issue
+		// packets, recover transactions or move the graph before the stop check.
+		stageAnswerContext = currentQuestionnaireLifecycleContext(root, request)
+	}
+	if handled, stopDecision := documentReviewStopPreflight(root, request); handled {
+		if isDenyingHookDecision(stopDecision.Decision) {
+			fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(stopDecision, stageAnswerContext))
 			return 2
 		}
 		return 0
 	}
-
-	// Bound mode reloads all facts from the sole control Runtime. A supplied
-	// runtime_context must not impersonate an activated Worker or skip its plan.
-	bound, bindingState, bindingErr := workspace.Load(root)
-	if bindingErr != nil && bindingState["workspace"] != nil {
-		request.Runtime.WorkspaceError = bindingErr.Error()
-	}
-	if request.Runtime.Workspace == nil && bindingErr == nil && bound != nil {
-		trusted, err := hookctx.Load(root, request.AgentID)
-		if err != nil {
-			request.Runtime.WorkspaceError = err.Error()
-		} else {
-			request.Runtime = trusted
+	if handled, stopDecision := workspaceWorkerStopPreflight(root, request); handled {
+		if isDenyingHookDecision(stopDecision.Decision) {
+			fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(stopDecision, stageAnswerContext))
+			return 2
 		}
-	}
-
-	if boundary, blocked := policy.WorkspaceBoundaryDecision(request); blocked {
-		fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(boundary))
-		return 2
+		return 0
 	}
 	// Main Stop is a preflight gate. It must run before the Controller because
 	// the Controller is allowed to commit one automatic transition and refresh
 	// the Runtime milestone; a Stop that is already known to be illegal must not
 	// mutate the cursor while discovering that fact (HOOK-B03).
-	var controlResult controller.ControlResult
 	var decision policy.Decision
 	mainStopBlocked := false
-	if request.Event == "Stop" {
+	s6ObservationReused := false
+	if request.Event == "Stop" && !(graphObserved && (lifecycleState(controlResult.Snapshot.State) == "acceptance" || lifecycleState(controlResult.Snapshot.State) == "release_audit" || lifecycleState(controlResult.Snapshot.State) == "awaiting_human_release" || lifecycleState(controlResult.Snapshot.State) == "inactive")) {
 		if stopDecision, blocked := hook.MainStopDecision(root, request); blocked {
 			decision = stopDecision
 			mainStopBlocked = true
@@ -2721,28 +3240,73 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	}
 
 	if !mainStopBlocked {
-		// The Hook entrypoint delegates the canonical control cycle to the
-		// internal/controller package. That cycle runs the eleven steps of
-		// BUG-039-02 §4.1 (snapshot → gate → optional one Transition →
-		// committed snapshot → milestone refresh → final safety →
-		// ControlResult). The minimal safety policy still produces the
-		// `Decision` consumed downstream by the envelope and renderer; the
-		// controller only adds Quality Gate progress and (when applicable)
-		// auto-commits a single Transition before the safety verdict.
-		controlResult = runControlCycleForHook(root, request)
+		// Ordinary professional tools observe current graph work. S7 handoff
+		// facts retain the original transition cycle; S8 routes use their Case consumers.
+		if !graphObserved {
+			controlResult, s6ObservationReused = s6ObservedControlForHook(root, request)
+		}
+		if !s6ObservationReused && !graphObserved {
+			controlResult = runControlCycleForHook(root, request)
+		}
 		decision = projectControlDecision(controlResult)
-		if request.Event == "PreToolUse" && hookInputMayMutate(request) && request.Runtime.RuntimeID == "" && controlResult.Error != "" && runtimeCheckpointMissing(root) {
-			decision = policy.Decision{
-				Decision:       "deny",
-				RuleID:         policy.RuleRuntimeUnreadable,
-				Reason:         "runtime facts are unreadable; mutating tools are blocked until the loop runtime is restored",
-				Recovery:       []string{"restore .claude/loop-state.json and .claude/loop-events.jsonl", "run `loop-harness runtime inspect --root .`", "retry the tool after the runtime becomes readable"},
-				Retry:          policy.RetryAfterRecoveryValidation,
-				HumanRequired:  false,
-				MatchedRuleIDs: []string{policy.RuleRuntimeUnreadable},
+		if request.Event == "PreToolUse" {
+			// Listening needs current graph metadata, not a second computation
+			// of tool permissions, authoring grants and working-identity proofs.
+			request.Runtime = policy.RuntimeContext{
+				RuntimeID:   stringValue(controlResult.Snapshot.State["runtime_id"]),
+				ProjectRoot: root,
+				PacketMode:  runtime.PacketEnabled(controlResult.Snapshot.State),
 			}
 		}
-		refreshGuidanceFromController(root, &request, &decision, controlResult)
+
+		if !s6ObservationReused && !graphObserved {
+			refreshGuidanceFromController(root, &request, &decision, controlResult)
+		}
+	}
+	if graphObserved && (request.Event == "Stop" || hook.IsStopIdleEvent(request.Event)) {
+		decision.AdditionalContext = stageAnswerContext
+	}
+	if request.Event == "PreToolUse" || request.Event == "SessionStart" || request.Event == "SubagentStart" || request.Event == "PreCompact" {
+		// A transition can change the questionnaire. Resolve its current path
+		// after the graph cycle, never from the incoming tool's write target.
+		if controlResult.QualityGate.TransitionCommitted && request.Event != "PreToolUse" {
+			if owner := request.EffectiveAgentID(); owner == "" || owner == "Main" {
+				state := controlResult.Snapshot.State
+				request.Runtime = controllerRuntimeContext(state, root, request.Runtime)
+				request.Runtime.Revision = controlResult.Snapshot.Revision
+				request.Runtime.CurrentStage, _ = runtime.StageFor(request.Runtime.CurrentState, request.Runtime.CurrentPhase, root)
+				request.Runtime.PacketMode = runtime.PacketEnabled(state)
+				baseline, _ := state["baseline"].(map[string]any)
+				review, _ := state["review"].(map[string]any)
+				request.Runtime.CurrentBaselineGeneration = integerValue(baseline["generation"])
+				request.Runtime.CurrentReviewRound = integerValue(review["round"])
+			} else if current, err := hookctx.Load(root, request.AgentID); err == nil {
+				request.Runtime = current
+			}
+		}
+		if handoff, handled := sessionStartS7QuestionnaireHandoff(root, request, controlResult); handled {
+			stageAnswerContext = handoff
+		} else {
+			if graphObserved {
+				stageAnswerContext = currentQuestionnaireLifecycleContextFromSnapshot(root, request, controlResult.Snapshot)
+			} else {
+				stageAnswerContext = currentQuestionnaireLifecycleContext(root, request)
+			}
+		}
+		decision.AdditionalContext = stageAnswerContext
+		// Automatic questionnaire preparation can publish the current path.
+		// Render Next from that snapshot instead of asking the author to issue it.
+		if stageAnswerContext != "" && !s6ObservationReused && !graphPlanning {
+			if latest, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).WithContext(contextForHook(request)).Snapshot(); err == nil {
+				var guidance policy.Guidance
+				if graphObserved {
+					guidance = graphGuidance(root, latest.State, request)
+				} else {
+					guidance = BuildGuidanceForState(root, latest.State, request.Event, request)
+				}
+				decision.Guidance = &guidance
+			}
+		}
 	}
 	// Lifecycle hooks are the agent's re-entry points. Inject only a bounded
 	// native context packet: SessionStart gets the current stage/next action;
@@ -2751,21 +3315,16 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	// fail-open and leaves the full Guidance packet as the source of truth.
 	if request.Event == "SessionStart" || request.Event == "SubagentStart" {
 		var assignments []hookctx.AssignmentContext
-		if request.Event == "SubagentStart" {
+		if owner := request.EffectiveAgentID(); !graphObserved && owner != "" && owner != "Main" {
 			if loaded, err := hookctx.LoadFull(root, request.AgentID); err == nil && loaded != nil {
 				assignments = loaded.Assignments
 			}
 		}
-		decision.AdditionalContext = hook.BuildLifecycleAdditionalContext(request.Event, request, decision, assignments)
-	}
-	// L4 §15.2 P0-5: the PreToolUse(TaskUpdate) self-claim guard needs an
-	// identified agent; the Controller cycle's safety input carries no Agent
-	// context, so the agent-scoped rule is evaluated here against the
-	// hookctx-resolved runtime.
-	if decision.Decision == "allow" && request.Event == "PreToolUse" {
-		if agentDecision, blocked := policy.EvaluateAgentScoped(request); blocked {
-			decision = agentDecision
+		delivery := stageAnswerContext
+		if delivery == "" {
+			delivery = assignmentContextLifecycle(root, request, assignments)
 		}
+		decision.AdditionalContext = hook.BuildLifecycleAdditionalContext(request.Event, request, decision, assignments, delivery)
 	}
 	// L4 §15.2 P0-2: TeammateIdle/SubagentStop use the real platform
 	// control — a block decision exits 2 with the feedback on stderr so the
@@ -2824,7 +3383,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	// quality_gate so an external auditor and the Agent see the same
 	// status (BUG-039-03 §4.1).
 	envelopeWithQualityGate := any(envelope)
-	if request.Event == "PreToolUse" {
+	if request.Event == "PreToolUse" && !graphObserved {
 		envelopeWithQualityGate = envelopeWithQualityGateMap(envelope, controlResult)
 	}
 	if !renderHook {
@@ -2834,7 +3393,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		}
 		return 0
 	}
-	if err := audit.NewOutbox(filepath.Join(root, ".claude", "hook-decisions.jsonl")).Append(envelopeWithQualityGate); err != nil {
+	if err := appendHookAudit(contextForHook(request), root, envelopeWithQualityGate); err != nil {
 		// For denying decisions the deny payload is more important than the
 		// an audit-write error here would mask the deny. For all other decisions
 		// the audit trail is the only durable record, so its failure is fatal.
@@ -2864,35 +3423,70 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	// exit code 2 with the feedback on stderr (routed back to that same
 	// agent); no stdout payload is emitted for the blocked stop/idle.
 	if hook.IsStopIdleEvent(request.Event) && isDenyingHookDecision(decision.Decision) {
-		fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(decision))
+		fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(decision, stageAnswerContext))
 		return 2
 	}
 	if request.Event == "Stop" && isDenyingHookDecision(decision.Decision) {
-		fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(decision))
+		fmt.Fprintln(stderr, hook.RenderStopBlockFeedback(decision, stageAnswerContext))
 		return 2
 	}
 	// PreToolUse uses the layered Controller-driven render path
 	// (PreToolUseWithQualityGate) so the wire envelope carries the
 	// quality-gate facts inside official additionalContext. Lifecycle events
 	// use the corresponding official event-specific output envelope.
+	if controlResult.Error != "" {
+		// Keep the original transition/Writer failure visible even when a
+		// current questionnaire replaces coarse guidance. Unknown is not a
+		// useful recovery action without the actual failing condition.
+		message := "Original control handoff: " + controlResult.Error
+		decision.AdditionalContext += "\n" + message
+		fmt.Fprintln(stderr, message)
+	}
 	deliveredReminder := func() {}
+	reminderPending := false
 	if request.Event == "PreToolUse" || request.Event == "SessionStart" {
-		if request.Event == "PreToolUse" && controlResult.QualityGate.Status == controller.StatusNotReady {
+		if request.Event == "PreToolUse" && stageAnswerContext == "" && controlResult.QualityGate.Status == controller.StatusNotReady {
 			if dev, err := fileview.DevelopmentRef(controlResult.Snapshot.State); err == nil {
 				decision.AdditionalContext += "\nSTAGE DELIVERY: formal inputs are read from committed " + dev + ". Commit the required documents/code/tests there before retrying; staged drafts and unmerged worker commits do not qualify. Explicit disk evidence follows its source contract."
 			}
 		}
 		msg, delivered := reminderDelivery(root, request)
 		if msg != "" {
-			decision.AdditionalContext += "\n" + msg
-			deliveredReminder = delivered
+			reminderPending = true
+			if request.Event == "SessionStart" {
+				before := decision.AdditionalContext
+				decision.AdditionalContext = hook.AppendLifecycleContext(before, msg)
+				if decision.AdditionalContext != before {
+					deliveredReminder = delivered
+				}
+			} else {
+				decision.AdditionalContext += "\n" + msg
+				deliveredReminder = delivered
+			}
 		}
 	}
 	var output []byte
 	var code int
 	var err error
-	if request.Event == "PreToolUse" {
-		output, code, err = hook.PreToolUseWithQualityGate(decision, controlResult)
+	if graphObserved {
+		context := decision.AdditionalContext
+		if decision.Guidance != nil {
+			context += "\n" + formatGuidanceInstruction(*decision.Guidance)
+			if len(decision.Guidance.Missing) > 0 {
+				context += "\nCurrent work remaining: " + strings.Join(decision.Guidance.Missing, ", ")
+			}
+		}
+		if request.Event == "Stop" || hook.IsStopIdleEvent(request.Event) {
+			output, err = json.Marshal(map[string]any{"systemMessage": context})
+		} else {
+			output, err = json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": request.Event, "additionalContext": context}})
+		}
+	} else if request.Event == "PreToolUse" {
+		if mainQuestionnaireViewer(request) && len(nativeS6Records(controlResult.Snapshot.State)) > 0 {
+			output, code, err = hook.PreToolUseS6Context(decision, controlResult)
+		} else {
+			output, code, err = hook.PreToolUseWithQualityGate(decision, controlResult)
+		}
 	} else {
 		output, code, err = hook.RenderWithAdditionalContext(root, request.Event, decision, request.Runtime, decision.AdditionalContext)
 	}
@@ -2902,6 +3496,85 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		}
 		fmt.Fprintf(stderr, "render Hook output: %v\n", err)
 		return 1
+	}
+	// Issued planning, S5 and native S6 Main observations share the presentation-only cache.
+	// Responsibility identity excludes observation revision churn. Reminders
+	// and control failures retain full delivery even when their text repeats.
+	responsibility := ""
+	contextStage := ""
+	forcePlanningDelivery := false
+	if graphObserved && mainQuestionnaireViewer(request) && decision.Guidance != nil && (decision.Guidance.Stage == "S2" || decision.Guidance.Stage == "S5") && !reminderPending && controlResult.Error == "" {
+		state := controlResult.Snapshot.State
+		baseline, _ := state["baseline"].(map[string]any)
+		lifecycle, _ := state["lifecycle"].(map[string]any)
+		identity, _ := json.Marshal([]any{state["runtime_id"], baseline["generation"], lifecycle["phase_revision"]})
+		responsibility = string(identity)
+		contextStage = decision.Guidance.Stage
+	}
+	if graphObserved && mainQuestionnaireViewer(request) && decision.Guidance != nil &&
+		(decision.Guidance.Stage == "S3" || decision.Guidance.Stage == "S4") {
+		state := controlResult.Snapshot.State
+		if row, rowErr := registeredPlanningRow(state); rowErr == nil && row != nil {
+			knownFailure := reminderPending || controlResult.Error != "" || decision.Decision != "allow" || len(controlResult.QualityGate.Conflicts) > 0 || controlResult.QualityGate.ErrorCode != ""
+			for _, kind := range []string{"preparation", "reception", "outlet"} {
+				if submission.PlanningDiagnostic(root, state, kind) != "" {
+					knownFailure = true
+				}
+			}
+			for _, key := range []string{"view_path", "answer_path"} {
+				path := stringValue(row[key])
+				if path == "" {
+					knownFailure = true
+					continue
+				}
+				if _, statErr := os.Stat(filepath.Join(root, path)); statErr != nil {
+					knownFailure = true
+				}
+			}
+			baseline, _ := state["baseline"].(map[string]any)
+			lifecycle, _ := state["lifecycle"].(map[string]any)
+			identity, _ := json.Marshal([]any{state["runtime_id"], baseline["generation"], lifecycle["state"], lifecycle["phase"], lifecycle["phase_revision"], row["packet_id"]})
+			responsibility, contextStage = string(identity), decision.Guidance.Stage
+			forcePlanningDelivery = knownFailure
+		}
+	}
+	if mainQuestionnaireViewer(request) && decision.Guidance != nil && decision.Guidance.Stage == "S6" &&
+		!reminderPending && controlResult.Error == "" && decision.Decision == "allow" &&
+		!controlResult.QualityGate.TransitionCommitted && len(controlResult.QualityGate.Conflicts) == 0 &&
+		controlResult.QualityGate.ErrorCode == "" &&
+		(controlResult.QualityGate.Status == controller.StatusNotReady || controlResult.QualityGate.Status == controller.StatusSatisfied) {
+		state := controlResult.Snapshot.State
+		records := nativeS6Records(state)
+		if len(records) > 0 {
+			refs := make([]any, 0, len(records))
+			for _, record := range records {
+				refs = append(refs, record.Reference())
+			}
+			baseline, _ := state["baseline"].(map[string]any)
+			lifecycle, _ := state["lifecycle"].(map[string]any)
+			identity, _ := json.Marshal([]any{state["runtime_id"], baseline["generation"], lifecycle["phase_revision"], refs})
+			responsibility, contextStage = string(identity), "S6"
+		}
+	}
+	if mainQuestionnaireViewer(request) && decision.Guidance != nil && decision.Guidance.Stage == "S7" &&
+		!reminderPending && controlResult.Error == "" && decision.Decision == "allow" &&
+		!controlResult.QualityGate.TransitionCommitted && len(controlResult.QualityGate.Conflicts) == 0 &&
+		controlResult.QualityGate.ErrorCode == "" {
+		state := controlResult.Snapshot.State
+		baseline := mapFieldCLI(state, "baseline")
+		lifecycle := mapFieldCLI(state, "lifecycle")
+		review := mapFieldCLI(state, "review")
+		// These are original registered facts; no frozen source closure or
+		// private author answer is inspected to deduplicate presentation.
+		identity, _ := json.Marshal([]any{state["runtime_id"], baseline["generation"], lifecycle["phase_revision"], review["round"], review["plan"]})
+		responsibility, contextStage = string(identity), "S7"
+	}
+	// Cache the actual error/reminder content too, so its later resolution is a
+	// changed delivery. Such feedback itself always retains its complete text.
+	fullOutput := output
+	output, commitContext := hook.PrepareResponsibilityContext(root, request.SessionID, request.EffectiveAgentID(), request.Event, contextStage, responsibility, output)
+	if forcePlanningDelivery {
+		output = fullOutput
 	}
 	output, commitNotice := hook.PrepareNotice(root, request.SessionID, request.EffectiveAgentID(), request.Event, output)
 	if len(output) > 0 {
@@ -2913,21 +3586,13 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 			return 1
 		}
 	}
+	commitContext()
 	commitNotice()
 	if request.Event != "PreToolUse" && isDenyingHookDecision(decision.Decision) {
 		return 2
 	}
 	deliveredReminder()
 	return code
-}
-
-func hookInputMayMutate(request policy.Input) bool {
-	switch request.ToolName {
-	case "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash":
-		return true
-	default:
-		return policy.IsMCPTool(request.ToolName)
-	}
 }
 
 // runNativeObserverHook consumes platform-native observation events without
@@ -2942,7 +3607,7 @@ func runNativeObserverHook(root string, request policy.Input, stdout, stderr io.
 	}
 	decision := hook.NativeObserverDecision(request, time.Since(started))
 	envelope := engine.Envelope(request, decision, time.Now())
-	if err := audit.NewOutbox(filepath.Join(root, ".claude", "hook-decisions.jsonl")).Append(envelope); err != nil {
+	if err := appendHookAudit(contextForHook(request), root, envelope); err != nil {
 		fmt.Fprintf(stderr, "append %s audit: %v\n", hook.NativeObserverSummary(request), err)
 		// This event is observation-only. Losing an audit row is reported on
 		// stderr, but must not turn a non-vetoing observer into an accidental
@@ -2950,11 +3615,6 @@ func runNativeObserverHook(root string, request policy.Input, stdout, stderr io.
 		return 0
 	}
 	return 0
-}
-
-func runtimeCheckpointMissing(root string) bool {
-	_, err := os.Stat(filepath.Join(root, ".claude", "loop-state.json"))
-	return os.IsNotExist(err)
 }
 
 // runPostToolUseHook handles the PostToolUse(SendMessage) observation path:
@@ -2979,6 +3639,10 @@ func runPostToolUseHook(root string, request policy.Input, stdout, stderr io.Wri
 		fmt.Fprintln(stdout, hook.RenderPostToolUseEnvelope(hook.PostToolUseObservation{Reason: "runtime unreadable"}))
 		return 0
 	}
+	if observation, captured := workerPlanDraftPostToolUse(root, request, snapshot); captured {
+		fmt.Fprintln(stdout, hook.RenderPostToolUseEnvelope(observation))
+		return 0
+	}
 	entities, _ := snapshot.State["entities"].(map[string]any)
 	rawAgents, _ := entities["agents"].([]any)
 	rows := make([]hook.AgentRow, 0, len(rawAgents))
@@ -2988,7 +3652,7 @@ func runPostToolUseHook(root string, request policy.Input, stdout, stderr io.Wri
 			continue
 		}
 		id, _ := agent["id"].(string)
-		state, _ := agent["state"].(string)
+		state := workstate.AgentActivity(agent)
 		mode, _ := agent["dispatch_mode"].(string)
 		rows = append(rows, hook.AgentRow{ID: id, State: state, DispatchMode: mode})
 	}
@@ -3154,6 +3818,30 @@ func runtimeIDString(state map[string]any) string {
 	return id
 }
 
+// A committed SessionStart handoff reports the next questionnaire without
+// chaining full draft preparation onto the completed transition transaction.
+func sessionStartS7QuestionnaireHandoff(root string, request policy.Input, result controller.ControlResult) (string, bool) {
+	state := result.Snapshot.State
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	if request.Event != "SessionStart" || !result.QualityGate.TransitionCommitted || !mainQuestionnaireViewer(request) || !runtime.PacketEnabled(state) || lifecycle["state"] != "verification" || review.PlanPointerFromState(state) != nil {
+		return "", false
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "S7 Main questionnaire preparation gap: Main/system must restore the project root: " + err.Error(), true
+	}
+	path := review.PlanQuestionnairePath(root, state)
+	if path == "" {
+		return "S7 Main questionnaire preparation gap: Main/system must restore the original current generation and round.", true
+	}
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+		return "S7 Main ReviewPlan questionnaire: " + path + ". Complete its professional Claims, oracles, methods and assignments, then save this exact file for the original consumer.", true
+	} else if os.IsNotExist(err) {
+		return "S7 Main ReviewPlan questionnaire: " + path + ". Preparation pending: the system will automatically prepare this exact questionnaire on the first tool PreToolUse. Main does not need to manually issue or retry.", true
+	}
+	return "S7 Main ReviewPlan questionnaire: " + path + ". Preparation gap: Main/system must restore access to this exact regular questionnaire file.", true
+}
+
 // runControlCycleForHook adapts the policy.Input the Hook transport emits
 // to the ControlRequest the internal/controller package expects, runs the
 // cycle, and returns the resulting ControlResult. The cycle itself is the
@@ -3188,15 +3876,53 @@ func runControlCycleForHook(root string, request policy.Input) controller.Contro
 			},
 		}
 	}
+	if result.QualityGate.TransitionCommitted && lifecycleState(result.Snapshot.State) == "planning" && stringValue(nestedStateValue(result.Snapshot.State, "lifecycle", "phase")) == "design" && runtime.PacketEnabled(result.Snapshot.State) {
+		absRoot, rootErr := filepath.Abs(root)
+		if rootErr != nil {
+			result.Warnings = append(result.Warnings, rootErr.Error())
+		} else {
+			statePath, journalPath := filepath.Join(absRoot, ".claude/loop-state.json"), filepath.Join(absRoot, ".claude/loop-events.jsonl")
+			service := submission.Service{Root: absRoot, StatePath: statePath, JournalPath: journalPath, Validator: semantic.RuntimeCandidateValidator{}}
+			if _, prepareErr := service.IssueDesign(contextForHook(request)); prepareErr != nil {
+				result.Warnings = append(result.Warnings, "Transition recorded, but S2 questionnaire preparation failed: "+prepareErr.Error())
+			} else if current, readErr := runtime.NewStore(statePath, journalPath).Snapshot(); readErr != nil {
+				result.Warnings = append(result.Warnings, readErr.Error())
+			} else {
+				result.Snapshot = current
+			}
+		}
+	}
+	if result.QualityGate.TransitionCommitted && (result.QualityGate.CandidateTransition == "TR-009" || result.QualityGate.CandidateTransition == "TR-015") && runtime.PacketEnabled(result.Snapshot.State) {
+		if kind := currentAuditKind(result.Snapshot.State); kind != "" {
+			if _, _, err := prepareAuditQuestionnaire(root, result.Snapshot.State, kind); err != nil {
+				result.Warnings = append(result.Warnings, auditPreparationFailureContext(root, result.Snapshot.State, err))
+			}
+		}
+	}
+
+	if result.QualityGate.TransitionCommitted && (result.QualityGate.CandidateTransition == "TR-017" || result.QualityGate.CandidateTransition == "TR-019") && lifecycleState(result.Snapshot.State) == "awaiting_human_release" {
+		path, id, err := humanReleaseQuestionnairePath(root, result.Snapshot.State)
+		if err == nil {
+			err = prepareHumanDecisionApplication(path, result.Snapshot.State, id)
+		}
+		if err != nil {
+			result.Warnings = append(result.Warnings, "S11 decision application preparation failed: "+err.Error())
+		}
+	}
+
 	return result
 }
 
 func contextForHook(request policy.Input) context.Context {
+	ctx := request.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if request.SessionID == "" {
-		return context.Background()
+		return ctx
 	}
 	type sessionKey struct{}
-	return context.WithValue(context.Background(), sessionKey{}, request.SessionID)
+	return context.WithValue(ctx, sessionKey{}, request.SessionID)
 }
 
 // projectControlDecision folds a ControlResult back into a policy.Decision
@@ -3257,7 +3983,7 @@ func refreshGuidanceFromController(root string, request *policy.Input, decision 
 	if decision.Guidance != nil {
 		return
 	}
-	if request.Event == "PreToolUse" && result.Snapshot.State != nil {
+	if result.Snapshot.State != nil && (request.Event == "PreToolUse" || result.QualityGate.TransitionCommitted) {
 		guidance := BuildGuidanceForState(root, result.Snapshot.State, request.Event, *request)
 		decision.Guidance = &guidance
 		return
@@ -3356,6 +4082,7 @@ func buildEnvelopeFromController(root string, request policy.Input, decision pol
 			HumanRequired: decision.HumanRequired,
 			EvaluatedAt:   evaluatedAt.UTC().Format(time.RFC3339Nano),
 			ElapsedMS:     decision.ElapsedMS,
+			CallPhases:    metrics.CompletedSpans(request.Context),
 		}
 		if decision.Guidance != nil {
 			envelope.Guidance = decision.Guidance
@@ -3567,58 +4294,6 @@ func hookTargetPath(input map[string]any) string {
 		}
 	}
 	return ""
-}
-
-// hasProtoMetaHeader enforces the 4-field header mandate from
-// docs/rules/ui-prototype.md §5: 设计代数 / 更新 / 路由 / index 链接.
-// All four tokens must appear in the file (any ordering); each is matched as a
-// fixed substring so the check stays decoupled from HTML structure.
-func hasProtoMetaHeader(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	body := string(data)
-	for _, marker := range []string{"设计代数", "更新", "路由", "index.html"} {
-		if !strings.Contains(body, marker) {
-			return false
-		}
-	}
-	return true
-}
-
-// hasStoryIDWithReqID verifies stories.md carries at least one S-NNN entry
-// referencing a REQ-id, per docs/rules/ui-prototype.md §6.
-func hasStoryIDWithReqID(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	body := string(data)
-	storyRe := regexp.MustCompile(`(?m)^#+\s*S-\d{3,}\b`)
-	reqRe := regexp.MustCompile(`REQ-\d{3,}`)
-	loc := storyRe.FindStringIndex(body)
-	if loc == nil {
-		return false
-	}
-	return reqRe.MatchString(body[loc[0]:])
-}
-
-// hasFlowIDWithReqID verifies flows.md carries at least one F-NNN entry
-// referencing a REQ-id, per docs/rules/ui-prototype.md §7.
-func hasFlowIDWithReqID(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	body := string(data)
-	flowRe := regexp.MustCompile(`(?m)^#+\s*F-\d{3,}\b`)
-	reqRe := regexp.MustCompile(`REQ-\d{3,}`)
-	loc := flowRe.FindStringIndex(body)
-	if loc == nil {
-		return false
-	}
-	return reqRe.MatchString(body[loc[0]:])
 }
 
 // runReleaseGraph validates a staged release tree by walking its Skill

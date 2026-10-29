@@ -15,95 +15,62 @@
 | a short router back into `AGENTS.md`, the Runtime Bookmark, and the current stage of `agent-protocol.md` | a second copy of the Main Spine |
 | consumed by Claude Code's built-in `/loop` scheduler | a REQ binder, a state machine, or a `/goal` replacement |
 
-The Hook control plane is the other automatic wake-up path. Lifecycle Hook
-events call the Controller, which refreshes `.claude/loop-state.json`'s
-`milestone` and emits `LOOP RECOVERY` guidance. `/loop` and this file are a
-fallback scheduler; they must resume the Controller's current REQ checkpoint,
-not invent a second plan.
-
-`/loop` only delivers this Prompt on a schedule. Engineering Loop binding,
-Runtime mutation, and Hook enforcement are owned by other components and are
-never triggered by this file.
+Hook events route actual saves and native returns to their original consumers.
+Read-only planning observations show the current responsibility without
+re-running its outlet. `/loop` is a fallback scheduler: it resumes the current
+REQ responsibility and does not bind a REQ, grant approval or create another plan.
 
 ## Wake-up algorithm
 
-On every wake-up, run in order. Do not skip reconcile, do not collapse steps,
-do not wait for the next wake-up before acting.
+If the latest Hook context already identifies the current responsibility,
+accurate output path and next action, continue that work directly. A wake-up
+alone is not a reason to re-read the library, reconcile Runtime or copy a REQ
+hash. After a new session, compaction or contradictory context, recover as follows:
 
-> **Skip gate (execute-first)** — If the previous turn of this conversation
-> already names (a) the bound locked REQ + SHA-256 baseline, (b) the current
-> Main Spine stage, and (c) `next.missing` + its `primary_skill`,
-> **skip directly to step 7**. The read sequence below is the fallback for
-> state-unknown wake-ups; running it on state-fresh wake-ups is the
-> `reader-bias verify-loop` anti-pattern (see `loop-orchestration` SKILL
-> §"Non-stop conditions"). State-fresh execution is the default;
-> state-unknown is the exception.
+1. Start with the latest Hook responsibility. If it is unavailable, read the
+   Runtime milestone and the relevant entry in `AGENTS.md`.
+2. Follow the current stage anchor in `docs/control/agent-protocol.md` and its
+   exact inputs/output references. Read only the direct upstream materials and
+   primary Skill needed for the action. Do not reconstruct paths or machine
+   fields from memory.
+3. Continue the missing professional work through `DRIVE()` in
+   `loop-orchestration`. Existing accepted facts remain valid unless the
+   original consumer reports otherwise. Investigate source drift only when
+   actual work or a diagnostic calls for it.
+4. Follow the original completion boundary: Main saves its current answer.
+   S7/S9 PreToolUse receives ready original answers through the original consumer,
+   with successful PostToolUse and Stop/SubagentStop fallback; reception does not
+   wait for a final message or returned reference. Report actual results and
+   unfinished work to Main when finished, without extra submit/done or activation.
+   S5/S6/S8 retain their original reference return and SubagentStop reception.
+   Distinguish reception, stage transition and next-material preparation.
+   A successful receipt with unfinished followup needs the named continuation,
+   not a new answer or an unrelated tool call to trigger progress.
+5. Continue across task completion, native return and recoverable failures.
+   Stop at an actual human decision, explicit user stop, or a real external
+   wait. Several valid implementations are not a reason to ask for a choice.
 
-```text
-1. Recover the Engineering Loop, not a new plan. Start from the most recent
-   Hook packet and its `Stage`, `Next`, and `Read in order` fields. If no packet
-   exists, read the Runtime `milestone`. The normal wake-up path does not call
-   `loop-harness`; use it only for initialization/binding, integrity recovery,
-   rollback/rollover, or the release Gateway.
+## Responsibility and recovery
 
-2. Read the map, not the entire library. After compact/new-session recovery,
-   follow the Hook packet's order: AGENTS.md, .claude/loop-state.json, the
-   current stage section of docs/control/agent-protocol.md, the bound locked REQ path,
-   and the one primary Skill.
+- Reuse original responsibility and accepted results; do not duplicate TASKs,
+  assignments or evidence after a wake-up.
+- Pick a low-risk reversible implementation within the authorized requirement.
+  An applicable existing human decision needs no second approval.
+- A completed TASK or local repair does not complete the REQ. The stage contract
+  and original consumers determine remaining review, integration and acceptance.
+- Native work follows its original brief or questionnaire. Only an already
+  registered frozen execution retains its named readback/approval/activation
+  recovery contract; do not copy those steps into new native work.
+- A Hook `warn`, `block` or missing item is not itself a human gateway. Follow
+  its concrete cause and recovery. Ordinary tools remain available for repair;
+  escalate only when the original domain actually requires a human decision.
+- Normal work needs no `status`/`next`/`reconcile` ritual. Read-only diagnostics
+  and supported original recovery commands remain available for a concrete
+  technical gap. Do not refresh accepted sources or hand-push a transition.
+- If Runtime is inactive with no bound REQ, follow `AGENTS.md`'s S0/S1 entry
+  using actual authorization. This wake-up supplies no authorization of its own.
 
-3. Confirm the bound locked REQ. Verify it is locked and its SHA-256 matches
-   the Runtime baseline. On mismatch, surface REQ_FINGERPRINT_MISMATCH and
-   stop; do not repair the baseline from this Prompt.
-
-4. Recover current stage, completed deliverables, and open work items from the
-   Hook packet, Runtime Milestone, and current artifacts.
-   Do not redo work whose evidence is already valid; do not skip work whose
-   evidence is missing, stale, or invalidated.
-
-5. Re-read the current stage's purpose and done_when in agent-protocol.md.
-
-6. Load only what the next action needs: direct upstream specs, exactly one
-   primary Methodology Skill (named by `next.primary_skill`), and risk-
-   triggered Best Practices.
-
-7. Pick the single next legal action: the most-forward missing deliverable
-   or evidence named by `next.missing`. Execute it now via DRIVE() in
-   `loop-orchestration`. Do not provide a technical-choice menu; pick the
-   lowest-risk reversible implementation and continue.
-
-8. Keep driving across TASKs, subagent returns, Hook `warn` or `block`, and
-   tool results. Do not stop because a TASK finished, a subagent reported, a
-   test failed, or several compliant implementations exist.
-
-9. Stop only at a real Human Gateway (see AGENTS.md), an asynchronous
-   external process already started, or Claude Code ending the turn.
-```
-
-## Mandated rules
-
-These come from the Loop Definition, the Main Spine, and the project entry
-contract. They are not interpretation.
-
-- **Idempotency** — two wake-ups in a row must never create the same TASK, Team, BUG, assignment, or evidence twice. Before creating any entity, check the Runtime.
-- **No technical-choice menus** — when several implementations satisfy the locked REQ, contracts, and rules, pick the lowest-risk reversible one, record the assumption, continue.
-- **No local-completion-as-REQ-completion** — finishing one TASK, one BUG repair, one targeted re-verification, or one browser flow is not REQ completion. Only a same-round complete Delivery + QA + E2E clean round opens acceptance.
-- **No authorization inventions** — this Prompt does not bind a REQ, does not replace `/goal`, does not start a schedule, does not approve release.
-- **No silent reporting** — do not report status and then wait for the next wake-up; execute the next action now.
-- **Activation first** — subagent work is expected to remain read-only until the main session approves the read-back and activates; Hook v1 reports recoverable violations as warnings.
-
-## Recovery contract
-
-If a Hook returns `warn` or `block` during this turn, follow its
-`recovery[]` sequence immediately and continue DRIVE(). `warn` keeps the
-original tool action proceeding (observation only); `block` requires human
-review and forms a Gateway.
-
-If `loop-harness next` returns `MISSING_DELIVERABLE`, the named missing work
-**is** the next action — that is not a blocker.
-
-If the Runtime is `inactive` or has no `bound_req`, this Prompt cannot drive
-any REQ work. Surface `NO_BOUND_REQ` and stop. Do not bind a REQ from this
-Prompt.
+S7 由 Main 组织整轮覆盖，Reviewer 只完成当前原责任的 Claims/CASE，采用实际浏览器、API、命令或状态方法。最后有效 Result 接收形成 CleanRound 后，同次完成出口接续原 Gate/TR-009，返回 S10 验收问卷准确位置；不等待下一次普通工具事件。接收、迁移和材料准备分别反馈。失败沿原 `loop-harness runtime review-continue --root <Main>` 复核当前干净出口；已进 S10 的缺失材料沿 `loop-harness runtime audit-prepare --root <Main>` 恢复，只补未完成工序并保留既有结果和报告，不重交 Reviewer 答案或手工复制 clean_round 绑定。
 
 ## Reference
 
@@ -114,10 +81,12 @@ Prompt.
 
 ## 临时 worktree 与阶段交付
 
-REQ 绑定必须显式提供 `--dev-branch <开发主分支>` 和 `--release-upstream <最终发布上游>`，远程发布目标包含 remote；没有 develop 默认值。项目根目录是当前 REQ 唯一权威。
+S1 原绑定答卷记录实际开发分支和最终发布上游；不猜默认分支。显式 `req bind` 保留为兼容与恢复入口，不是正常问卷之外的另一项手续。项目根目录保存当前 REQ 权威事实。
 
-派发前将上游正式 Markdown、代码和测试产出整理提交；不要自动提交用户无关变更。新 worktree 不含主会话未提交或仅暂存的文件。主会话用 `runtime worktree-create --assignment-id <id> --root <项目根目录>` 从绑定开发分支的明确 commit 创建；不要依赖平台默认分支或复制整个目录。明确不入 Git 的 evidence 单独按依赖交接，不能复制整个控制面。
+S2 在最终答卷前将正式上游设计提交到绑定开发分支，使 S3 能读取真实已提交来源。其他阶段同样在实际来源合同要求时提交相关产物；不要自动提交用户无关变更。新 worktree 不包含主会话未提交或仅暂存的文件。
 
-子会话在子分支提交成果并报告，主会话在项目根目录执行 `runtime task-integrate --assignment-id <id>`，生成合并提交、校验、接收并及时清理。集成不是 release；临时 worktree 不是交付终点。未回收、分支偏离、积压只提醒，不新增 Stop 或普通工具硬门禁。
+新原生 S6/S9 写入责任由 Main 携带准确 brief 通过 Claude Code Agent 派发，并使用原生 worktree 隔离。子会话提交实际成果并返回原引用，由原消费者接收；Main 另行完成集成和检查；原集成成功出口检查整批，满足 TR-006 后同次交付 S7 ReviewPlan/guide 的准确路径，不等待下一次无关工具动作。S6 失败保留已成立事实，按反馈重入原 `runtime task-integrate` 恢复未完成工序或出口，原检查点防止重复合并/接收。Main 检查失败留下 preserved/blocked 检查点时，先解决原环境/检查原因，再按原 pending 命令带 `--retry-preserved` 重试，裸重入保留原失败；已成功集成仅续出口没有该重试前置。已迁移 S7 的材料缺口用原 `s7 draft` 恢复。已有冻结执行保留其具名 `runtime worktree-create`、原登记及集成恢复流程，详见 `docs/workspace-execution-recovery.md`，不推广为新责任的启动前提。
 
-Gate 的输入来源由 loop-definition 的 file_sources 契约声明；正式交付读固定 Git tree，明确运行输入读磁盘，Runtime 读权威快照。未提交产出不能帮助阶段通过。允许汇总的 evidence 按 mutable_evidence_kinds 自动同步对应 SHA256；同步不改变结论或代际，也不抹除产品基线漂移。
+正式文件、私人答卷、运行证据和 Runtime 各有来源合同，不能统一要求全部对象先入 Git。固定 Git 来源只接受已提交产物，明确磁盘来源读实际文件，Runtime 读权威快照。集成不等于 release；临时 worktree 不等于交付完成。清理提醒不新增 Stop 或普通工具硬门禁。
+
+S9 先辨当前职责：实施／测试 Builder 按准确 brief 在实际 worktree 保存私人 flat PlanReport／Result；独立 Targeted（包括被这样派发的 test-builder）只答原 Targeted 请求，不交 Builder 计划或改产品。普通保存不接收 native Worker 专业事实，返回原引用后由 SubagentStop 接收；新版本 completed nochange 由系统先在该 Stop 保全原字节、所需证据和准确来源，再进入原消费者。已登记技术保源不等于接收，树清理后仍须复核；未保全或保全失败不能恢复丢失原字节，旧冻结合同不升级。Main 自己保存 ChangeImpact。具体字段与方法只读当前题面和 bug-resolution，不在唤醒时另建报告。Targeted 已接收而 Handoff 未完成时，沿反馈给出的原收尾入口只补缺口；普通 Pre／状态不触发交接。成功 TR-012 后 Main 填写并保存原 S7 ReviewPlan 问卷，seed 不等于 PASS，也不另做手工 review-plan 登记。旧已登记冻结来源保持原恢复。

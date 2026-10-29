@@ -12,7 +12,8 @@ import (
 )
 
 // TestCT03910_ConflictPreservesWorktreeViaSubagentStop covers SYNC-039 §12
-// CT-039-10: merge conflict / not-ready inspection preserves worktree + blocker.
+// CT-039-10: an unreported conflict keeps the worktree intact and Stop reminds
+// the worker to submit its original PLAN_REPORT/Result.
 func TestCT03910_ConflictPreservesWorktreeViaSubagentStop(t *testing.T) {
 	root := freshRoot(t)
 	runner := &req039fixtures.CLIRunner{}
@@ -35,7 +36,7 @@ func TestCT03910_ConflictPreservesWorktreeViaSubagentStop(t *testing.T) {
 	state["lifecycle"] = map[string]any{"state": "building", "phase": nil, "phase_revision": 0}
 	state["entities"] = map[string]any{
 		"agents": []any{map[string]any{
-			"id": "builder-ct10", "role": "builder", "state": "reported",
+			"id": "builder-ct10", "role": "builder", "state": "working",
 			"task_ids": []any{"TASK-039-01"}, "team_id": "team-ct10",
 		}},
 		"tasks": []any{map[string]any{"id": "TASK-039-01", "state": "review"}},
@@ -43,36 +44,22 @@ func TestCT03910_ConflictPreservesWorktreeViaSubagentStop(t *testing.T) {
 	}
 	writeSystemState(t, root, state)
 
-	assignmentManifest := map[string]any{
-		"assignment_id": "assignment-ct10",
-		"agent_id":      "builder-ct10",
-		"worktree_path": repo.wtPath,
-		"branch":        repo.branch,
-		"target_branch": "develop",
-	}
 	manifestDir := filepath.Join(root, ".claude", "assignments")
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	manifestRaw := `{"schema_version":"1.0.0","assignment_id":"assignment-ct10","agent_id":"builder-ct10","worktree_path":"` + repo.wtPath + `","branch":"` + repo.branch + `","target_branch":"develop"}`
-	_ = assignmentManifest
 	if err := os.WriteFile(filepath.Join(manifestDir, "assignment-ct10.json"), []byte(manifestRaw), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
+	before := req039fixtures.ReadState(t, root)
 	body := req039fixtures.SubagentStopBody("session-ct-039-10", "builder-ct10", "assignment-ct10")
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "SubagentStop", body)
-	if code != 0 {
-		t.Fatalf("SubagentStop failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+	if code != 2 || !strings.Contains(stderr, "subagent_stop_missing_result") || !strings.Contains(stderr, "PLAN_REPORT") {
+		t.Fatalf("SubagentStop must remind the worker to submit its actual delivery: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
-	out := stdout + stderr
-	for _, needle := range []string{"preserv", "block", "conflict", "not ready", "not_ready"} {
-		if strings.Contains(strings.ToLower(out), needle) {
-			goto preservedOK
-		}
-	}
-	t.Fatalf("CT-039-10 must surface preserve/blocker guidance on conflict, got: %s", out)
-preservedOK:
+	assertRuntimeCursorUnchanged(t, "SubagentStop missing-delivery reminder", before, req039fixtures.ReadState(t, root))
 	if _, err := os.Stat(repo.wtPath); err != nil {
 		t.Fatalf("CT-039-10 worktree must be preserved on conflict: %v", err)
 	}

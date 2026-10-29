@@ -61,7 +61,7 @@ func TestS2DualTrackConvergenceE2E(t *testing.T) {
 		t.Fatalf("bind with unknown impact must succeed (blocking happens at PTR-PLAN-01)")
 	}
 	if _, stderr, code := run("runtime", "transition", "--root", scratch,
-		"--id", "PTR-PLAN-01", "--expected-revision", "0", "--actor", "orchestrator"); code == 0 || !strings.Contains(stderr, "ui_impact_resolved") {
+		"--id", "PTR-PLAN-01", "--expected-revision", intStr(int(stageSnapshot(t, scratch).Revision)), "--actor", "orchestrator"); code == 0 || !strings.Contains(stderr, "ui_impact_resolved") {
 		t.Fatalf("unknown ui_impact must block PTR-PLAN-01 (wired guard), got code=%d stderr=%s", code, stderr)
 	}
 
@@ -114,21 +114,16 @@ func TestS2DualTrackConvergenceE2E(t *testing.T) {
 			},
 		}},
 	})
-	// convergence-1 carrier: cross-matrix (branch coverage + one reasoned cell)
+
+	// Both required behavior branches belong to the same current module.
 	writeJSONFile("cross-matrix.json", map[string]any{
 		"module": "workbench",
 		"entries": []any{
 			map[string]any{"fact": "fact-submitter", "req_ref": "REQ-300/FR-001", "story": "S-001", "branch": "b-allow"},
-			map[string]any{"fact": "fact-submitter", "req_ref": "REQ-300/FR-001", "story": "S-001", "no_branch_reason": "negative branch of the same rule covers the rejection cell"},
+			map[string]any{"fact": "fact-submitter", "req_ref": "REQ-300/FR-001", "story": "S-001", "branch": "b-reject"},
 		},
 	})
-	// wait — duplicate cell: same fact/req/story with both branch and reason is two cells; dedup key is fact|req|story. Fix: only one entry.
-	writeJSONFile("cross-matrix.json", map[string]any{
-		"module": "workbench",
-		"entries": []any{
-			map[string]any{"fact": "fact-submitter", "req_ref": "REQ-300/FR-001", "story": "S-001", "branch": "b-allow"},
-		},
-	})
+
 	// fixtures (after branches settle)
 	writeJSONFile("fixture-contract.json", map[string]any{
 		"module": "workbench", "fixtures": []any{map[string]any{"id": "fix-sub", "persona": "operator", "synthetic": true, "setup": []any{"seed"}, "cleanup": []any{"purge"}}}})
@@ -159,15 +154,32 @@ func TestS2DualTrackConvergenceE2E(t *testing.T) {
 		t.Fatalf("validate (full bridge incl.) failed: %s %s", out, stderr)
 	}
 
-	// --- completeness gate sees the eight-file package ---
+	// --- keep the same S2 authority after author-run design checks ---
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	state := readJSONMap(t, statePath)
-	writeJSONMap(t, statePath, state) // no-op; package already complete per hasCompleteUIDesignPackageForREQ path used by projection
+	writeJSONMap(t, statePath, state) // no-op; passive projection inventories files without rerunning scenario validation
 
 	// --- doctor: AutoSpecs — spec tree absent, expected before S6, must stay green ---
 	// validate --all checks the skill catalog too; seed it from the repo.
 	if _, stderr, code := run("validate", "--all", "--root", root); code != 0 {
 		t.Fatalf("validate --all must pass with absent spec trees (S6+ artifacts): %s", stderr)
+	}
+	// A project-wide structural result cannot certify this REQ's future S3
+	// batch or borrow another requirement's contracts.
+	if _, stderr, code := run("contracts", "check", "--root", root); code == 0 || !strings.Contains(stderr, "no original CONTRACTS index for REQ-300") {
+		t.Fatalf("current S3 consumer lost its original batch requirement: %d %s", code, stderr)
+	}
+	// Existing malformed contract references must still be checked by the
+	// project diagnostic while S2 is active; skipping contracts would hide it.
+	invalidContract := filepath.Join(root, "docs/dev/contracts/BE-999.md")
+	if err := os.WriteFile(invalidContract, []byte("# BE-999\n\nCASE-UNKNOWN-999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := run("validate", "--all", "--root", root); code == 0 || !strings.Contains(stderr, "CASE-UNKNOWN-999") {
+		t.Fatalf("project diagnostic skipped an existing invalid contract: %d %s", code, stderr)
+	}
+	if err := os.Remove(invalidContract); err != nil {
+		t.Fatal(err)
 	}
 
 	// --- AutoSpecs enforces once the spec tree exists: write an incomplete spec ---

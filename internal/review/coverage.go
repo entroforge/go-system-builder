@@ -1,6 +1,8 @@
 package review
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -24,10 +26,18 @@ func BuildCoverageInventory(state map[string]any) []CoverageItem {
 	return legacyBuildCoverageInventory(state)
 }
 
-// BuildCoverageInventoryForRoot reads the current-generation completion
-// envelope through its indexed path+sha256 when root is available. The
+// BuildCoverageInventoryForRoot reads the canonical S6 product snapshot when
+// one exists; historical runtimes use the indexed completion envelope. The
 // resulting changed-surface set is the denominator that S7 must cover.
 func BuildCoverageInventoryForRoot(root string, state map[string]any) []CoverageItem {
+	return BuildCoverageInventoryForRootContext(context.Background(), root, state)
+}
+
+func BuildCoverageInventoryForRootContext(ctx context.Context, root string, state map[string]any) []CoverageItem {
+	return coverageInventoryForProjection(buildS7BaselineProjection(root, state, ctx))
+}
+
+func coverageInventoryForProjection(projection s7BaselineProjection) []CoverageItem {
 	seen := map[string]bool{}
 	var items []CoverageItem
 	add := func(item CoverageItem) {
@@ -37,7 +47,6 @@ func BuildCoverageInventoryForRoot(root string, state map[string]any) []Coverage
 		seen[item.SourceRef] = true
 		items = append(items, item)
 	}
-	projection := buildS7BaselineProjection(root, state)
 	for _, ref := range projection.ChangedPaths {
 		add(CoverageItem{
 			ID:        "surface:" + ref,
@@ -60,8 +69,8 @@ func BuildCoverageInventoryForRoot(root string, state map[string]any) []Coverage
 // unverifiable projection" (diagnostics present) must use
 // ChangedPathsForRootDetailed — a nil return here is intentionally ambiguous
 // for backwards compatibility, and the S10 gate now fails closed on it.
-func ChangedPathsForRoot(root string, state map[string]any) []string {
-	paths, _ := ChangedPathsForRootDetailed(root, state)
+func ChangedPathsForRoot(root string, state map[string]any, contexts ...context.Context) []string {
+	paths, _ := ChangedPathsForRootDetailed(root, state, contexts...)
 	return paths
 }
 
@@ -71,8 +80,8 @@ func ChangedPathsForRoot(root string, state map[string]any) []string {
 // path set is not a denominator, and the caller must fail closed (the S10
 // gate reports external_baseline_unverifiable) rather than reconcile against
 // a partial or self-declared surface.
-func ChangedPathsForRootDetailed(root string, state map[string]any) ([]string, []string) {
-	projection := buildS7BaselineProjection(root, state)
+func ChangedPathsForRootDetailed(root string, state map[string]any, contexts ...context.Context) ([]string, []string) {
+	projection := buildS7BaselineProjection(root, state, contexts...)
 	if len(projection.Diagnostics) > 0 {
 		// An unverifiable projection is not a denominator: a caller that
 		// receives diagnostics alongside empty paths must fail closed rather
@@ -113,11 +122,55 @@ func legacyBuildCoverageInventory(state map[string]any) []CoverageItem {
 	return sortedCoverageItems(items)
 }
 
-func validateCoverageInventory(root string, state map[string]any, plan *Plan) error {
-	if err := validateS7BaselineProjection(root, state); err != nil {
+func validateCoverageInventory(root string, state map[string]any, plan *Plan, contexts ...context.Context) error {
+	ctx := baselineContext(contexts)
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	required := BuildCoverageInventoryForRoot(root, state)
+	if err := verifyProductBaselineDeclarationContext(ctx, root, state, plan); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return s7GateError(
+			"S7_PRODUCT_BASELINE",
+			"ReviewPlan does not carry the current canonical S6 product baseline",
+			[]string{err.Error()},
+			[]string{"re-draft from the pinned original TR-003 source and current official Main HEAD; do not hand-edit ProductBaseline or frozen_subjects"},
+			"loop-harness s7 draft --out plan.json",
+		)
+	}
+	return validateVerifiedCoverageInventory(root, state, plan, ctx)
+}
+
+// validateVerifiedCoverageInventory consumes only the baseline declaration
+// freshly verified by this caller. Canonical registration invokes the complete
+// coverage gate inside its Writer, so coverage and live source proof share one CAS.
+func validateVerifiedCoverageInventory(root string, state map[string]any, plan *Plan, ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Validation and the coverage denominator consume the same synchronous
+	// projection. No verified projection is retained across a Writer boundary.
+	var projection s7BaselineProjection
+	if plan.ProductBaseline != nil {
+		// The caller freshly reconstructed every original source and
+		// proved DeepEqual with this declaration. Its Paths are therefore the
+		// same verified denominator; do not reconstruct the whole source proof
+		// again within the same validation. Writer checks remain live.
+		for _, path := range plan.ProductBaseline.Paths {
+			projection.ChangedPaths = append(projection.ChangedPaths, path.Path)
+		}
+		sort.Strings(projection.ChangedPaths)
+	} else {
+		projection = buildS7BaselineProjection(root, state, ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateBuiltS7BaselineProjection(root, projection); err != nil {
+		return err
+	}
+	required := coverageInventoryForProjection(projection)
 	if len(required) == 0 {
 		return nil
 	}
@@ -130,7 +183,7 @@ func validateCoverageInventory(root string, state map[string]any, plan *Plan) er
 			"S7_PLAN_SURFACE_COVERAGE",
 			"ReviewPlan does not declare the complete S6 changed-surface inventory",
 			missing,
-			[]string{"copy the missing changed surfaces into coverage_inventory and add each source_ref to at least one Claim"},
+			[]string{"restore the machine-generated coverage_inventory through original S7 preparation, then add each source_ref to at least one focused Claim"},
 			"runtime review-plan --file plan.json",
 		)
 	}
@@ -185,7 +238,7 @@ func validateCoverageInventory(root string, state map[string]any, plan *Plan) er
 			"S7_PLAN_SURFACE_COVERAGE",
 			"ReviewPlan changed-surface coverage is incomplete",
 			missing,
-			[]string{"add each changed surface to frozen_subjects with its current SHA-256, then add the same source_ref to a focused QA or E2E Claim; keep target/oracle specific to that surface"},
+			[]string{"add each missing Claim source_ref to a focused QA or E2E Claim with a specific target and oracle; restore inconsistent machine projections through original S7 preparation, never hand-edit frozen_subjects or deletion preimage SHA-256"},
 			"runtime review-plan --file plan.json",
 		)
 	}

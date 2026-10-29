@@ -1,1008 +1,316 @@
-# L4 — Agent 调度与治理机制（Sub-agent / Agent Team Dispatch Governance）
-
-> 层：第四层｜机制域：跨 Stage Agent 调度、执行连续性与治理｜平台基线：Claude Code 2.1.218
->
-> 上游：L1 D1～D7 与五公理、L2 生命周期目标、所有需要委派职责的 L3 Stage
->
-> 下游：实现资产：Skill、Agent Definition、Schema、Harness、Hook、Assignment Record、测试和迁移任务
->
-> 状态：v0.5.0 目标设计。本文定义机制应达到的统一行为；§15 及各 L3 的当前事实节列出现有实现与目标的差距，不把设计意图写成既成事实。
-
-## 0. L4 的位置：为什么这不是另一份 L3
-
-L3 按 Stage 回答：
-
-- 这个阶段为什么存在；
-- 需要完成什么；
-- 哪些角色、产物和门共同形成阶段闭环；
-- 失败时回到哪个生命周期位置。
-
-L4 按跨阶段机制回答：
-
-- 同一类工具机制在多个 Stage 中如何保持一致；
-- Claude Code 平台对象、项目 Runtime 与持久化记录如何对齐；
-- 派发、消息、等待、idle、stop、恢复和收口的精确语义是什么；
-- Hook、Harness、Schema 和 Skill 各自承担哪一段责任；
-- 哪些 L3 只引用机制，不能各写一套变体。
-
-因此，Agent 调度不属于 S6 私有能力。S5 的独立文档审查、S6 的 Builder、S7 的 Delivery/QA/E2E、S8 的并行假设调查、S9 的修复与定向复验，都消费同一套调度治理机制。
-
-本 L4 是第一份跨 Stage 工具机制设计。L3 只声明“此处需要哪种派发模式和阶段特有完成条件”；派发细节以本文为唯一目标态设计。
-
-## 1. 问题定义与机制目标
-
-### 1.1 当前要解决的根问题
-
-Agent 委派不是一次 API 调用，而是一条跨多个控制面的执行链：
-
-1. Main Agent 判断是否值得委派；
-2. 选择普通 Sub-agent 还是 Agent Team teammate；
-3. 固定 TASK、责任、scope、依赖和完成条件；
-4. Worker 阅读真实项目文档并形成计划；
-5. Worker 持续执行并向 Main Agent 回报；
-6. Hook 识别过早 idle、过早 stop、缺计划、缺报告和越界；
-7. Runtime 记录持久事实；
-8. 结果被集成、验证或阶段 Gate 消费；
-9. 中断后能够恢复同一责任，而不是重新猜测上下文。
-
-任何一段没有闭合，都会产生典型失效：
-
-- 第一轮回读后 Worker 进入 idle，Main Agent 来不及第二轮授意；
-- 项目 Runtime 把 Agent 改回 active，但 Claude Code 平台会话没有被唤醒；
-- Main Agent 以为自己在等结果，实际 Worker 已停止或隐藏；
-- Worker 报告了计划，却没有继续执行；
-- Main Agent 没收到计划就自行接管已委派责任；
-- teammate idle 时被自动分配下一项任务，但上一项尚未集成或消费；
-- 同一事实分别存在于 Team task、Runtime agent、TASK state、message 和 evidence 中，彼此漂移；
-- Hook 只输出提醒，没有使用 Claude Code 的真实 decision control。
-
-### 1.2 目标
-
-本机制要实现：
-
-- **统一选择**：Main Agent 能确定何时自执行、何时用普通 Sub-agent、何时用 Agent Team；
-- **连续执行**：默认 Worker 回报计划后不停顿，直接完成 assignment；
-- **风险分层**：普通任务使用计划检查点，高风险任务使用原生 Plan approval；
-- **单一权威**：Assignment 是责任、scope、计划状态和结果状态的权威来源；
-- **真实控制**：Hook 使用平台支持的 continue/block/exit 语义，不用 Runtime 文案模拟唤醒；
-- **最少打断**：Main Agent 只在计划缺失、计划偏移、执行偏移、阻塞或完成时介入；
-- **可恢复**：同一 Agent 可继续时继续同一 Agent；不可继续时从持久 Assignment 和 checkpoint 重派；
-- **可观测收敛**：每个 assignment 能回答“当前在哪、还差什么、下一步由谁做”。
-- **容量不裁责任**：L3 可声明 `bounded_flow` 或 `coverage_complete`；物理并发容量只决定启动顺序，不得让 coverage-critical Stage 删除 required Assignment。
-
-### 1.3 非目标
-
-- 不用 Agent 数量制造“团队感”；但当独立 coverage/context 确实存在时，不以少 Agent 为优化目标；
-- 不要求所有任务都经过人工或 Main Agent 的计划批准；
-- 不把聊天记录当作需求、scope 或完成状态的权威来源；
-- 不让 Hook 判断业务设计优劣；
-- 不允许 teammate 自己扩大任务、创建需求或越过人闸；
-- 不用长协议弥补工具没有接线的问题；
-- 不为 Claude Code 2.1.218 以前的行为保留第二套协议；环境不满足时升级或修复环境。
+# L4 子代理工程衔接
 
-### 1.4 复杂度—收益减法审计
+## 1. 为什么工程治理需要与原生执行分开
 
-| 现有/候选机制 | 工程判断 | 处置 |
-|:--|:--|:--|
-| 所有 Worker 固定 readback → approval → activation | 协调、idle 和上下文切换成本高；普通可回滚任务没有等量风险收益 | 删除为默认，只在高风险任务保留原生 Plan approval |
-| 把 PLAN_REPORT 当第一轮 final response | 直接终止 Sub-agent 本轮，制造恢复/重派和“第二次授意” | 禁止；改为运行中 SendMessage，发送后连续执行 |
-| Main 对每份正常计划回复“批准开工” | 不改变 scope、权限或风险，只增加消息和等待 | 删除；计划无偏移时静默 |
-| 大而全的 readback 字段复制 TASK/契约 | 重复真相、增加 token、字段无人消费 | 收缩为 objective/paths/steps/checks/dependencies/risks |
-| Runtime 把状态改成 active 来模拟平台唤醒 | 两个控制面语义不相等，形成假恢复 | 删除；只用 SendMessage、exit 2 或平台 resume |
-| TeammateIdle 自动领取/分配下一 TASK | 上一结果可能未消费，绕过依赖、冲突和 WIP 重算 | 删除；idle 只处理当前 Assignment |
-| Team task、Runtime agent、消息、evidence 各存一份完成事实 | 多写者导致漂移，Gate 无法知道该信谁 | Assignment/Result 为工程权威，其他只投影 |
-| 用自造 hook 字段和 systemMessage 假装控制 | 测试通过但真实 Claude Code 不会继续 Worker | 删除；使用官方 payload 与 exit/decision control |
-| 每个 Stage 各写一套派发协议 | 漂移成本随 L3 数量线性增长，修一处不能全局生效 | 上移 L4；L3 只声明消费模式和阶段完成条件 |
-| 所有任务都建 Agent Team | Team token、冲突与收口成本对小任务收益不足 | 按 one-shot / Sub-agent / teammate 三路选择 |
-| 所有 Stage 固定 WIP=2/token budget | 容量易预测，但会让 S7 等 coverage-critical Stage 用漏检换短期成本 | 增加 stage capacity policy；默认 `bounded_flow`，S7 使用 `coverage_complete`，排队不裁 required coverage |
-| 强制周期性 PROGRESS 消息 | 常态噪声高，Main 注意力收益低 | 默认可选；只有长任务或超时诊断启用 |
-| 继续扩写 agent-protocol 长文 | 依赖模型读完、记住并自觉执行，不在自然路径上 | 协议只保留入口/不变量；细则埋入 Skill、Assignment、Hook、Result 和报错反馈 |
+委派工作的价值在于获得独立上下文、专业能力、并行工作或独立背书。要让这些价值成立，Main 必须交出明确责任和真实材料，执行者必须完成实际工作，结果还要被集成或下游专业消费者使用。一次 Agent 调用本身不会完成这条工程链。
 
-### 1.5 机制准入规则
+Claude Code 已经管理子代理的创建、执行、消息、等待、恢复和返回。若框架再维护一套 Team、读回、批准、激活、首写许可和运行状态，就容易把“工程责任已登记”误当作“平台已经执行”，或让已经运行的 Worker 等待一个多余许可。Main 也可能以为自己在等结果，实际却只派出了一次计划汇报。
 
-候选机制只有满足以下至少一项，才进入持久化控制面：
+因此，本机制将工程输入与工程交付放在原生生命周期两端衔接。平台负责真实执行；Main 负责明确工作、真实派发及接续；领域消费者与 Runtime Writer 负责工程事实。计划、独立性、来源、检查和人的决定仍由其原工程责任承担。
 
-1. 能阻止一个确定性非法转换或越权动作；
-2. 能产生下游必须消费的事实；
-3. 能减少 Main/Reviewer 的重复判断或重复取证。
+这承接 [L1](../l1-principles/L1-design-principles.md) 的权威分离、自然路径观测、正向反馈、独立背书和明确消费者。L3 说明各阶段需要哪些专业工作，本篇说明它们怎样共用原生子代理能力；不再定义一套平台调度协议。
 
-只用于解释、统计或展示的内容必须是计算视图，不新增 ID、生命周期和审批门。S7 的 Claims、Assignment 和 Result 是事实；静态/E2E/Discovery coverage、Ready/Queued/Dispatchable、Case ledger 和 dashboard 都是视图。`coverage_complete` 只保证 required work 不因平台容量被裁剪，不授权 Agent 无来源地递归扩大任务范围。
+## 2. 每一方拥有什么事实
 
-## 2. Claude Code 对象模型与项目权威
+| 所有者 | 承担的责任与事实 | 与其他部分的关系 |
+| --- | --- | --- |
+| Claude Code | 创建或恢复子代理、前后台执行、平台身份、消息、等待、结束和原生返回 | Main 使用其实际能力，不以 Runtime 状态模拟执行 |
+| Main | 专业分工、任务自包含、真实输入、准确引用、实际派发、依赖与容量安排、阻塞处理、集成和阶段收口 | Main 保持原主责，不替 Worker 填写专业结论 |
+| 角色与技能 | 专业能力、方法、职责边界及产物要求 | 工作说明选择适用内容，不增设通用启动手续 |
+| SubagentStart | 观察实际开始，提供必要短工程上下文 | 此时平台已经创建执行，不产生批准或开工状态 |
+| SubagentStop | 读取本人已有产物，关联原责任，调用原领域消费者并反馈具体缺项 | 记录本次工程交付，不管理平台存活 |
+| 原领域消费者与 Writer | 当前关联、专业答案接收、来源及必要工程条件、持久化记录 | 各领域保留实际检查范围，不外加通用认证层 |
+| 原阶段门与人类入口 | 判断阶段能否推进，消费相应真实决定 | 原生结束、答案完整和人的授权分别成立 |
 
-### 2.1 平台对象
+工程 owner 是专业责任名，平台 actor 是一次实际执行的来源标识；二者不要求相等。Runtime 记录哪项责任提交了什么，平台记录谁实际运行，两类事实通过准确交付关联。
 
-| 对象 | 平台语义 | 适合承担 |
-|:--|:--|:--|
-| Main session / lead | 当前会话的编排者和结果消费者 | 调度、例外判断、计划偏移判断、结果收口 |
-| 普通 Sub-agent | 一次独立执行上下文，最终结果返回调用者；实际可前台或后台运行 | 自包含的一次性研究、检查、隔离写入任务 |
-| 可寻址自定义 Sub-agent | 有稳定名称/ID，可在运行中通过 SendMessage 回报/纠偏，结束后可恢复 | 需要计划回执、worktree 隔离或中途指导的一次性责任 |
-| Agent Team teammate | 独立 Claude Code 会话，共享 Team task 视图，可直接 SendMessage | 持续执行、并行责任、计划回执、跨任务协作 |
-| Agent Definition | 角色静态边界、工具、模型和最大能力 | 定义“这个角色最多能做什么” |
-| Plan mode / Plan approval | teammate 只读规划并向 lead 请求批准 | 高风险任务的执行前审批 |
-| Task list | Claude Code 的协作和依赖视图 | 可视化 Ready/Pending/In Progress/Completed |
-| Worktree | 隔离修改和保留失败现场 | Builder/repair 等写入责任 |
-| SendMessage | Agent 间消息与运行中纠偏通道 | PLAN_REPORT、BLOCKER、CORRECTION、状态通知 |
+工作状态、专业结论、接收、集成、阶段游标和平台执行状态也应分别表达。字段属于哪类事实及写入规则见[事务核心](L4-state-transition-core.md)；责任修订、对象版本和旧交付见[修订机制](L4-revision-usage.md)。
 
-### 2.2 项目权威分工
+## 3. Main 怎样把责任交成一项可执行工作
 
-| 事实 | 唯一权威 | 平台对象的地位 |
-|:--|:--|:--|
-| 当前生命周期 Stage | .claude/loop-state.json | Team task 不决定 Stage |
-| assignment 身份、Owner、scope、revision | Assignment Record | spawn prompt 和 Team task 是投影 |
-| TASK/规格真相 | 已登记文档及指纹 | 消息只引用，不复制为新真相 |
-| plan 是否已回报 | Assignment Record 的 plan checkpoint | mailbox/transcript 是传输和审计来源 |
-| Worker 是否正在平台运行 | Claude Code teammate/subagent 状态 | Runtime 不能凭空唤醒平台 |
-| assignment 是否完成 | canonical Result + 消费检查 | Agent final text 不是完成状态 |
-| 写入是否可接受 | 实际 diff + integration/consumer gate | planned_paths 不是实际 diff |
-| Stage 是否可推进 | 对应 Quality Gate | teammate/task completed 不自动推进 Stage |
+### 3.1 先判断委派带来的实际收益
 
-核心原则：
+Main 需要判断工作能否自包含、输入是否可读、完成条件是否清楚，以及委派是否带来专业化、隔离、并行或独立性收益。高度交织的细小协调工作可以留在 Main；需要独立审查的责任则应真实交给不同执行者，不能因省去协调而由作者自签。
 
-> Runtime 记录工程事实，Claude Code 管理活会话；两者互相投影，但任何一方都不能伪装成另一方。
+正式责任与辅助研究要区分。S0 的方案研究、S2 的技术调查或 S10 的资料整理，可以使用原生子代理帮助 Main；它们不自动成为 Builder、Reviewer 或已获批准的领域任务。Main 仍按原阶段消费者汇总实际成果。
 
-跨 worktree 还有一条硬边界：
+角色数量不代表覆盖数量。S7 可以由同类角色承担不同独立验证面，实际责任由已登记 Claim 与分工确定；容量只改变执行顺序，不取消必要工作。
 
-> 产品写入面可以按 worktree 隔离；Assignment、plan、Result、checkpoint 等调度控制面必须解析到同一个项目级共享存储，并使用 CAS/revision 写入。它们不能跟随 Worker 当前 cwd 各写一份，也不能靠 git merge 汇总运行态。
+### 3.2 工作说明必须携带准确工程入口
 
-L4 只规定这个一致性契约；共享存储的具体路径、锁和事务格式由实现代码与 Schema 定义。PostToolUse/PreToolUse/Harness 若无法定位共享控制面必须失败并给出恢复动作，不得退化为写 Worker worktree 中的“本地真相”。
+原生任务应交付以下关系：当前责任为何存在；需要读取什么真实材料；工作范围与专业方法；实际完成条件和检查；准确的题目、brief 或答案位置；原生返回要携带什么；后续由谁接续。
 
-### 2.3 平台基线
+准备入口提供已知关联和准确路径，Main 将其原样带入实际派发。角色名、单个待办、队列顺序和平台 ID 都不能替代这一任务关联。同一角色可能同时承担多项责任，也可能在恢复后面对新的题目。
 
-本设计以 Claude Code 2.1.218 为最低能力基线，要求：
+例如，一项 S6 任务的交付说明应让 Builder 理解：
 
-- Agent Teams 已启用；
-- Agent/Task/SendMessage 能力可用；
-- teammate 支持计划批准；
-- SubagentStop 和 TeammateIdle 的真实 continue/block 能力必须由 doctor/system test 确认；若平台不支持，使用共享 checkpoint + 原 Assignment 重派，不模拟唤醒；
-- PostToolUse 能观察 SendMessage；
-- Hook 输入保留官方字段；
-- named Agent 可被 Main Agent 定向消息和恢复。
+> 读取原准备输出的准确 brief 和实际 TASK 及其输入；在平台创建的本人 worktree 中先记录专业计划，再实施、自检、提交产品并保存本人 Result。返回这个准确 brief 的绝对引用和本人 Result 的绝对路径。Main 接收后承担原集成与必要检查。
 
-平台拓扑还必须通过 doctor/系统测试确认以下行为，而不能靠名字猜测：
+这里描述任务结构，实际路径与专业字段必须来自本次准备输出。不能把示例路径、他人的答案或旧卷当成本人的工作材料。
 
-- 交互会话开启 Agent Teams 后，带 `name` 的 Agent 调用通常生成 teammate；使用调用级 `isolation` 或 fork 时仍是 Sub-agent；
-- `isolation: worktree` 写在 Agent Definition 中，不保证该 Definition 作为 teammate 运行时仍有隔离；
-- 自定义 Sub-agent 可被 SendMessage 寻址和恢复；内建 Explore/Plan 是 one-shot，不能作为需要恢复的 Worker；
-- 交互环境的 fork mode 可能让 Sub-agent 实际在后台运行，Skill 必须读取调用返回的真实拓扑，不能假设“我要求 foreground 就一定阻塞”。
+### 3.3 工程准备与平台执行分别发生
 
-doctor 应检查这些能力。缺失时的处理是升级 Claude Code、启用配置或修复安装，不是切换到一套弱化的旧版流程。
+S6 的 `s6 prepare --task … --role …` 登记原责任、固定输入并交付 brief；S5／S7／S8 从原登记与题目准备交付各人的 view／answer；S9 按批准合同、原分工及工序交付专业 brief 或定向验证题目。这些动作准备工程资料，不创建 Claude 进程。
 
-官方能力来源：
+随后 Main 通过 Claude Code 原生 Agent 实际派发。产品写入责任使用原生 worktree 隔离；新 S7 Reviewer／S9 独立 Targeted 的本轮正式主线是共享 Main checkout 的独立原生上下文，读取真实最终产品并填写各自普通唯一直卷。独立上下文不等于必须另建 worktree，Main 不代填结论。准确作者路径和新旧来源协议分别由 S7 issued 模板 SHA 与 Targeted 原责任 source contract 固定，不按文件存在猜测。Main 不能以“已登记”代替“已派发”，Hook 也不代 Main 启动。
 
-- [Agent Teams](https://code.claude.com/docs/en/agent-teams)
-- [Sub-agents](https://code.claude.com/docs/en/sub-agents)
-- [Hooks reference](https://code.claude.com/docs/en/hooks)
-- [Tools reference](https://code.claude.com/docs/en/tools-reference)
+实际 native worktree 只有在原消费者已有可验证 source binding 时才可接收；缺少绑定则反馈准确未接收，不把 cwd 或 Main 同名答案当资格。保留现有 frozen 责任的准确来源，不为支持只读角色直接套用 Builder Plan／Result adapter。共享 checkout 的控制原卷只沿原责任准确 proof 投影，不全目录忽略，不新增作者复制、提交、done 或普通工具限制。
 
-## 3. 派发前决策：先选执行拓扑，再写 Prompt
-
-### 3.1 是否委派
-
-Main Agent 按以下顺序判断：
-
-1. 责任是否足够独立，能由一个明确的产物或结论收口；
-2. 是否能给出真实文档入口、scope、依赖和 done_when；
-3. 委派是否带来上下文隔离、专业化、并行或独立性收益；
-4. 对普通 `bounded_flow` 责任，协调和回收成本是否低于 Main Agent 自执行成本；对 `coverage_complete` required responsibility，成本只影响拓扑和排队，不否决委派；
-5. 是否存在必须由不同 Agent 背书的独立性要求。
-
-以下情况默认不委派：
-
-- 只需一次很小的局部修改；
-- 责任与 Main Agent 当前工作高度交织，需要频繁来回；
-- TASK 尚未自包含；
-- 多人必须同时编辑同一表面；
-- 仅为了满足“使用了 Sub-agent”的形式要求。
-
-### 3.2 执行拓扑选择
-
-| 场景 | 选择 |
-|:--|:--|
-| 单次、自包含、只需最终结果 | 普通 Sub-agent |
-| 多个互相独立的一次性调查 | 多个后台 Sub-agent |
-| 需要计划中间回执、持续执行、直接纠偏，且必须 worktree 隔离 | 可寻址自定义 Sub-agent + 调用级 `isolation: worktree` |
-| 需要计划中间回执、持续执行、直接纠偏，且可按只读/路径分区 | Agent Team teammate |
-| 多责任共享 Task DAG、需要团队消息 | Agent Team |
-| 高风险且需要 lead 原生批准计划 | Agent Team teammate + Plan mode |
-| 需要独立审查/背书 | 不同 teammate 或不同 Sub-agent |
-| 高频来回、上下文不可拆 | Main Agent 自执行 |
-
-普通 Sub-agent 的 final response 是本轮结束。若业务需要“回计划后继续做”，PLAN_REPORT 必须在 Worker 仍运行时通过 SendMessage 发给 Main Agent，不能把计划写成 final response。若已错误结束，则用返回的 agent ID/name 恢复同一自定义 Sub-agent；恢复是异常路径，不是默认调度。
-
-Agent Teams 打开时，`name`、fork 和调用级 `isolation` 会影响 Agent 调用最终落成 Sub-agent 还是 teammate。派发器必须记录平台返回的真实 topology。需要原生 worktree 隔离时优先 Sub-agent；需要共享 Task DAG/原生 Plan approval 时优先 teammate。两者都需要时，不能假装平台自动同时提供：应拆分写表面、让 Main session 自身运行在隔离 worktree，或选择更重要的约束并在 Assignment 中明示。
-
-### 3.3 三种标准派发模式
-
-| dispatch_mode | 语义 | 默认用途 |
-|:--|:--|:--|
-| one_shot | Worker 完成全部责任后一次返回结果 | 自包含研究、轻量检查、无需中间治理 |
-| plan_checkpoint | Worker 先发送计划回执，不等批准，继续执行并最终交卷 | 默认 Builder、Verifier、QA、调查和修复任务 |
-| plan_approval_required | Worker 进入原生 Plan mode，lead 批准后才能实施 | 高风险、难回滚、scope 尚需确认的任务 |
-
-不得再用“所有 specialized Agent 都走硬两阶段”作为统一规则。
-
-派发身份是另一条低复杂度硬边界：manifest-draft 可以输出
-`TODO(planner):agent-id-...` 作为 authoring 草稿，但该值不是 Agent identity。
-readback 请求生成、`register-workgroup`、activation envelope、`runtime agent-event`、
-PostToolUse sender binding、auto-chain 和 `runtime agent-begin` 只接受非空、无控制字符且非占位符的真实平台 ID；不强制
-`agent-` 前缀。观察到非法可选身份时，PostToolUse 继续尝试已验证的
-`teammate_name`，找不到则 fail-open 且不伪造绑定。
-
-## 4. 风险分类：什么时候必须批准计划
-
-### 4.1 默认采用 plan_checkpoint 的条件
-
-以下条件同时成立时，计划是观测点而不是审批门：
-
-- assignment scope 已由上游 TASK/责任固定；
-- 修改发生在隔离 worktree；
-- 改动可回滚；
-- 不修改 locked truth；
-- 不执行发布、部署或外部不可恢复动作；
-- 实际 diff 会在集成时再次校验；
-- Required Checks 已知；
-- Main Agent 能在收到计划后通过 SendMessage 纠偏。
-
-这种情况下，让 Worker 等待批准的收益低于 idle、kill、上下文切换和调度停顿成本。
-
-### 4.2 触发 plan_approval_required
-
-任一条件成立就使用原生 Plan approval：
-
-- 数据库 migration、数据回填、不可逆数据变化；
-- 公共 API、共享 schema、事件协议或跨模块核心接口变化；
-- 权限、安全、密钥、支付、审计或合规边界；
-- 会影响多个 active assignment 的共享写表面；
-- 大范围删除、移动、生成或机械改写；
-- 需要扩大已锁定 TASK 的 prospective scope；
-- 任务定义仍有多个高成本解释；
-- worktree 不能提供足够隔离；
-- 失败后恢复成本显著高于一次计划审批等待。
-
-### 4.3 风险决定由谁做
-
-- 机械触发项由 dispatch planner 根据 TASK risk、路径和命令类型实算；
-- Main Agent 可以升级为 approval_required；
-- Worker 发现新风险时发送 BLOCKER/PLAN_ESCALATION，不得自降风险；
-- 降级 approval_required 必须产生新的 Assignment revision；
-- 人只在 REQ 变化、外部授权和不可派生业务决策上介入。
-
-## 5. Assignment：调度治理的唯一工程记录
-
-### 5.1 Assignment Record
-
-每次派发必须有一个权威 Assignment Record：
-
-| 字段组 | 必须表达 |
-|:--|:--|
-| identity | assignment_id、revision、task/responsibility ref、owner_agent_id、role |
-| topology | dispatch_mode、实际 agent/team identity、foreground/background/team、resume address |
-| authority | effective_scope、worktree/source/target；其他权限引用 Role/TASK，不复制全文 |
-| plan | status、reported_at、digest、planned_paths、approval ref（若适用） |
-| result | assignment status、result_ref、blocker_ref、integration/consumption ref |
-| recovery | last checkpoint、replacement provenance |
-
-Stage、generation、依赖、优先级、文档指纹、Closing Contract、Required Checks 和 expected outputs 已属于 TASK/责任的事实，Assignment 只保存引用或派发时指纹，不复制第二份可独立修改的内容。`dispatch_capacity_policy` 属于 Stage/ReviewPlan 权威；冲突、Ready/Queued/Dispatchable 和 active capacity 是调度器实算视图，不作为 Assignment 的第二套长期配置维护。
-
-### 5.2 一个事实只维护一次
-
-- Team task 从 TASK + Assignment 投影 subject、dependency、owner 和平台状态；
-- spawn prompt 从 Assignment 生成；
-- Agent Role 只提供静态最大能力；
-- PLAN_REPORT 更新 Assignment 的 plan checkpoint；
-- Completion Result 更新 result 状态；
-- Runtime task/agent 列表是聚合视图；
-- Gate 读取 Assignment/Result，不要求 Agent 手写重复 envelope。
-
-所有更新以 `assignment_id + revision` 做 CAS；Worker worktree 只承载产品差异和必要的工作产物，不承载可被 merge 的活调度状态。
-
-### 5.3 revision 规则
-
-以下变化必须生成新 revision：
-
-- Owner 变化；
-- dispatch_mode 变化；
-- effective_scope 扩大；
-- TASK/规格指纹变化；
-- Required Checks 实质变化；
-- worktree/target 变化；
-- 计划被判定为与 assignment 语义冲突。
-
-纯文字澄清、顺序调整或不改变授权边界的纠偏可以使用 SendMessage，不必制造 revision。
-
-### 5.4 两条正交状态线
-
-Assignment 主状态只表达责任是否向消费闭合：
-
-```text
-draft -> ready -> dispatched -> running -> result_submitted -> consumed
-                     |             |             |
-                     +----------> blocked <------+--> cancelled / replaced
-```
-
-计划状态是正交属性，不再膨胀成 reading/approved/activated/working 等第二套主生命周期：
-
-```text
-not_required
-missing -> reported -> drifted
-missing -> approval_pending -> approved
-                            -> rejected -> approval_pending
-```
-
-- `plan_checkpoint`：reported 即满足首写屏障；drifted 只阻止首次写入或触发纠偏；
-- `plan_approval_required`：approved 才满足写入屏障；
-- 平台的 running/idle/stopped 是活会话事实，不回写成 Assignment 的同名伪状态；
-- Team task 只有在 Result 被 stage consumer 接受后才由 Main/scheduler 标 completed，从而让原生依赖解锁与 `consumed` 对齐。
-
-### 5.5 Canonical Result
-
-每个执行型 Assignment 只交一份最小 Result：
-
-| 字段 | 目的 |
-|:--|:--|
-| assignment_id / revision | 防止结果投错责任或消费过期结果 |
-| outcome | completed / blocked / failed |
-| output_refs | 指向代码、报告、finding、证据或其他真实产物 |
-| actual_changed_paths | 与 effective_scope 做实际差异校验 |
-| checks | 命令/用例、退出状态、evidence refs；不复制日志全文 |
-| deviations / residual_risks | 暴露计划与实际差异及剩余不确定性 |
-| handoff | 下一消费者需要执行的一个明确动作 |
-
-Worker 提交 Result 不等于完成：Main/Stage consumer 验证、集成或吸收成功后才写 `consumed`。失败和阻塞也必须产出 Result/Blocker 引用，不能靠最后一条聊天猜测现场。
-
-## 6. 调度模型：复用 TASK DAG，分离覆盖承诺与物理容量
-
-### 6.1 一张权威图、一个即时冲突视图
-
-统一调度器复用已有 TASK 依赖 DAG，不另建第二份依赖图。每次调度时只计算：
-
-1. **依赖是否满足**：上游 Result 已 consumed，而不只是 Worker 声称完成；
-2. **即时冲突集**：当前候选与 active assignment 是否在写路径、共享 schema、migration、生成文件、独立性或稀缺工具上冲突。
-
-不持久化完整冲突图；只有真实冲突才在对应 Assignment/Blocker 上记录原因。这样保留可判定调度，又不引入需要持续同步的第二套项目图。
-
-### 6.2 Ready 条件
-
-assignment 只有同时满足以下条件才能进入 Ready Set：
-
-- 上游 L3 已产生该责任所需的权威输入；
-- 依赖已 consumed，而不只是 Worker 声称完成；
-- 没有与 active assignment 的未解决冲突；
-- Owner 和角色合法；
-- dispatch_mode 已确定；
-- worktree/只读边界可建立；
-- 没有必须先由人裁决的问题。
-
-满足这些语义条件即进入 Ready Set。平台并发槽是否空闲不改变 Ready，也不能使 Assignment 消失；调度器另计算 Dispatchable Set，槽位不足的 Ready Assignment 显示为 queued。
-
-### 6.3 优先级
-
-Ready assignment 默认按以下顺序：
-
-1. 关键路径；
-2. 解锁最多后续责任；
-3. 高不确定性、早反馈价值高；
-4. 可复用同一 Agent 当前上下文；
-5. 稳定 ID 顺序，保证调度可复现。
-
-### 6.4 Stage capacity policy
-
-Stage/ReviewPlan 必须从两个策略中选择一个：
-
-| policy | 适用 | 调度语义 |
-|:--|:--|:--|
-| `bounded_flow` | 普通 Builder、修复或协调成本可能高于并行收益的工作 | active slot 上限由真实平台槽位、明确资源约束和可观察的集成积压决定，不默认固定为 2；超出者保持 Ready/queued |
-| `coverage_complete` | S7 等“漏掉一个独立验证面会制造后续返工”的质量发现工作 | required Assignment 的逻辑数量、Ready/queued 集合和 token 支出不设上限；所有独立 scope 必须保留，平台槽位释放后持续补位 |
-
-两种策略都遵守：
-
-- 同一即时写冲突集默认只允许一个 Assignment active；冲突改变顺序，不取消责任；
-- 真实 platform capacity、账号、端口、数据集和 worktree 决定 Dispatchable Set；
-- `coverage_complete` 下禁止通过 token budget、`max_reviewers` 或固定 WIP 把 required Assignment 改成 N/A/cancelled，或合并成认知过载 scope；
-- `coverage_complete` 下仍须由初始 ReviewPlan 和一次受控 revision 闭合 required set；它不意味着每个 Result 都能继续产生新的 Assignment；
-- `bounded_flow` 的 WIP 也是 active concurrency 上限，不是 Backlog/Ready coverage 上限；
-- idle 不等于可以 self-claim 下一项，只有 scheduler 重新计算 Ready/Dispatchable 后才能派发。
-
-资源锁释放时，Assignment 状态、Claim disposition 与 queued Agent 的唤醒必须在同一消费事务内完成：Assignment 从 `planned/queued` 变为 `dispatched` 后，Agent 从 `queued` 进入 `reading`，再由正常 PLAN_REPORT/activation 必经路径继续。queued Agent 在尚未释放前不应被 stop/idle 门要求提交计划；释放后也不能直接跳过计划检查。
-
-## 7. 默认协议：双回执、单次连续执行
-
-### 7.1 现实原型
-
-该机制的现实原型不是“两次开工许可”，而是教师收两次材料：
-
-1. 第一次收计划，确认学生理解题目和答题路线；
-2. 第二次收最终试卷，检查实际结果。
-
-学生交完计划后继续答题。只有计划跑题、漏题或遇到阻塞时，教师才打断。
-
-### 7.2 正常时序
+## 4. 一项正常责任怎样完成交接
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant Main as Main Agent / Lead
-    participant Tool as Dispatch + Runtime
-    participant Worker as Addressable Sub-agent / Teammate
-    participant Hook as Claude Hooks
-    participant Consumer as Integrator / Reviewer / Gate
-
-    Main->>Tool: dispatch ready assignment
-    Tool-->>Worker: spawn prompt + Assignment ref
-    Worker->>Worker: read TASK/responsibility -> contracts -> REQ -> design/rules
-    Worker->>Main: SendMessage PLAN_REPORT (not final response)
-    Hook->>Tool: PostToolUse records plan checkpoint
-    Worker->>Worker: continue immediately; no approval wait
-    Worker->>Worker: implement/review/test
-    Worker->>Main: SendMessage BLOCKER/CORRECTION only when needed
-    Main-->>Worker: SendMessage correction only on drift
-    Worker->>Tool: submit canonical Result
-    Worker->>Main: SendMessage COMPLETION
-    Tool->>Consumer: integrate or consume Result
-    Consumer-->>Tool: accepted/blocked
+    participant M as Main
+    participant C as Claude Code
+    participant W as 子代理
+    participant H as Start／Stop Hook
+    participant D as 原领域消费者
+    M->>C: 真实派发，携带准确工程引用
+    C->>H: SubagentStart
+    H-->>W: 必要短工程上下文
+    W->>W: 读取真实材料、专业工作、自检、保存本人产物
+    C->>H: SubagentStop，实际来源与交付上下文
+    H->>D: 按准确责任读取并接收原产物
+    D-->>H: 原接收事实或具体缺项
+    C-->>M: 原生返回
+    M->>M: 读取原回执，处理阻塞、集成与阶段接续
 ```
 
-### 7.3 Worker 的硬指令
+图中的工程接收与平台返回是不同事实。Hook 接收不能证明平台执行已彻底结束；平台返回也不能证明专业交付已接受或 Main 已集成。
 
-plan_checkpoint 模式的 spawn instruction 必须明确：
+普通 Worker 工具事件保持安静。执行者无需等一次 Write、消息或工具回执来激活自己，也无需在专业计划之后机械等待 Main 回复“可以开工”。原明确批准要求仍在其原领域成立，不能由 Start 或普通保存产生。
 
-```text
-Read the assigned authoritative documents before the first mutation.
-Send one PLAN_REPORT to main/lead with the assignment ID/revision,
-objective, planned paths, implementation/review steps, required checks,
-dependencies, risks, and blockers.
-
-PLAN_REPORT is a checkpoint sent through SendMessage, not your final response
-and not the end of your turn.
-Do not wait for approval. Continue the assignment immediately after sending it.
-Stop only for a real blocker, an authority/scope conflict, or completion.
-```
+本机制只将 `SubagentStart` 和 `SubagentStop` 作为新 Worker 的工程生命周期接入点，用户所说的 end 对应后者。其他 Hook 仍可服务 Main 的阶段答卷、恢复和诊断，不能把删除的执行管理移到普通工具或消息事件中。
 
-不能只写“先汇报计划”，否则模型很容易把汇报解释成 final response。
-
-### 7.4 PLAN_REPORT 最小结构
+## 5. SubagentStart 补充什么，为什么不猜任务
 
-| 字段 | 作用 | 消费者 |
-|:--|:--|:--|
-| assignment_id / revision | 防止计划投错责任或过期 | PostToolUse、Main Agent |
-| objective | 暴露任务理解偏差 | Main Agent |
-| planned_paths | 与 effective_scope 做机械子集检查 | Harness/Hook |
-| steps | 让 Main Agent看见实现顺序和关键决策 | Main Agent |
-| assertion_checks | 防止只写代码不证明 Closing Contract | Main Agent、Result validator |
-| dependencies | 暴露错误 Ready 判断 | scheduler |
-| risks / blockers | 触发纠偏、审批升级或 blocked | Main Agent |
+官方 Start 事件提供平台身份与类型等字段，可注入 `additionalContext`；它不提供完整派发 Prompt，也不能阻止子代理创建。Main 因而必须在真实任务中携带准确工程引用。[官方 Start 定义](https://code.claude.com/docs/en/hooks#subagentstart)
 
-计划不复制整份 assignment，不重复机器已经知道的 allowed/forbidden 列表。
+当前适配器的 Start 提示强调当前专业路径、本人产物、真实检查与返回方式，不根据同角色或单个待办推断专属任务。需要长说明时，短上下文保留准确入口，由执行者读取实际 brief、view 和专业材料。
 
-### 7.5 计划检查
+Start 不是“已读完”的证明，不自动登记一个 running／active 状态，不生成计划批准，也不重新分配责任。恢复时再次收到 Start，只补实际上下文，不能抹掉已经接收的成果或增加新尝试。
 
-计划收到后分两层检查：
+没有正式工程关联的 Explore、Plan、研究或其他原生工作继续按本次任务执行。系统可说明不要猜测正式责任；不能因缺少 Builder Assignment 就阻止无关原生研究。
 
-- **机器立即检查**：assignment/revision 当前、planned_paths 在 scope 内、Required Checks 未缺失、依赖声明一致；
-- **Main Agent 异步判断**：目标理解、步骤是否偏题、是否漏关键集成边、是否触发高风险审批。
+实际事件身份可沿已有 Hook 审计记录保留。审计失败要作为可见诊断处理，不能因此制造一份替代执行记录或把平台已经创建的事实写成“未获启动许可”。
 
-机器检查失败时不允许第一次写入。Main Agent 语义判断正常时不回复；发现偏移时通过 SendMessage 发送 CORRECTION。
+## 6. 本人工作怎样保持专业性和连续性
 
-### 7.6 一次性首写屏障
+### 6.1 先读实际输入，再形成专业产物
 
-计划检查点应埋在第一次写入的必经之路：
+任务中的 brief、view 与角色方法帮助执行者理解工作；真正判断仍来自实际 REQ、设计、契约、TASK、代码、场景、观察或批准合同。可读摘要不能替代必要来源，也不能因题目已预填机器字段就默认专业结论。
 
-1. Worker 通过 SendMessage 发送稳定类型的 PLAN_REPORT；
-2. PostToolUse(SendMessage) 验证目标是 main/lead、assignment/revision 正确；
-3. Harness 将 digest 和 reported_at 原子写入 Assignment；
-4. Worker 首次调用 Write/Edit/NotebookEdit/写入型 Bash；
-5. PreToolUse 读取 Assignment；
-6. plan_checkpoint 模式且 plan.status != reported 时，拒绝本次写入并告诉 Worker先发送计划；
-7. plan 已记录后不再重复打扰。
+只读工作仍需要真实审查或调查。S5 的发现要定位材料偏差，S7 要判断本人 Claim，S8 要用判别观察支持或反驳假设。写入工作则须按真实范围实施并自检。专业方法与各阶段完成条件由对应 L3 定义。
 
-这是“先形成计划”的自助屏障，不是“等 Main Agent 批准”的停工门。
+角色继承 Claude Code 的原生工具能力，不维护框架工具白名单或黑名单。只读验证指不修改被审产品与已冻结治理事实，不禁止用 Edit、Write 或脚本完成本人答卷。工具名称不决定工程授权；真实批准、任务范围、专业独立性、来源和阶段门仍由原责任及消费者判定。用户的实际平台权限配置继续适用，角色目录校验不要求为了格式完整而填写工具 ACL。
 
-## 8. 高风险协议：原生 Plan approval
+### 6.2 计划保留为工作，取消通用握手
 
-### 8.1 时序
+S6／S9 实施者本人在工作前形成专业计划，然后继续实施和实际检查。计划与结果记录不同事实，不必为它们再各交一份通用 PLAN、消息信封、读回或激活证明。
 
-```mermaid
-sequenceDiagram
-    participant Main as Lead
-    participant Worker as Teammate in Plan mode
-    participant Runtime as Assignment Runtime
+Stop 同次接收计划和结果，不等于机器证明了计划撰写时间，也不能补造前置批准。发现未先计划应诚实说明偏差。原责任明确要求真正批准时，必须满足其原批准条件；任务指引不能把这些要求隐去。
 
-    Main->>Worker: dispatch approval_required assignment
-    Worker->>Worker: read-only investigation and plan
-    Worker->>Main: plan approval request
-    Main->>Runtime: validate assignment revision and risk criteria
-    alt approved
-        Main-->>Worker: plan approval response
-        Runtime->>Runtime: plan.status=approved
-        Worker->>Worker: exit Plan mode and execute
-    else rejected
-        Main-->>Worker: rejection + concrete correction
-        Runtime->>Runtime: plan.status=rejected
-        Worker->>Worker: remain in Plan mode and revise
-    end
-```
-
-### 8.2 与默认模式的区别
-
-| 维度 | plan_checkpoint | plan_approval_required |
-|:--|:--|:--|
-| 计划作用 | 早期观测 | 执行授权 |
-| 发送后 | 立即继续 | 等待 lead 批准 |
-| 写入屏障 | 只要求计划已发送 | 要求计划已 approved |
-| Main Agent 正常动作 | 静默 | approve/reject |
-| 适用成本 | 低 | 高，但由高风险定价 |
-
-### 8.3 禁止伪造批准
-
-- teammate 或其他 Agent 的消息不能充当用户权限批准；
-- Main Agent 只能在 assignment 授权边界内批准计划；
-- REQ 变化和外部不可派生授权仍交人；
-- approval 绑定 assignment revision，revision 变化后自动失效。
-
-## 9. 等待、消息和执行连续性的精确语义
-
-### 9.1 普通 Sub-agent
-
-| 运行方式 | Main Agent 行为 | 结果语义 |
-|:--|:--|:--|
-| 实际 foreground | Agent 调用阻塞到 Sub-agent 本轮完成 | 只适合必须先拿最终结果再继续；交互 fork mode 下不能假定一定 foreground |
-| 实际 background | Main 继续其他工作，最终结果通过 completion notification 到达 | 适合独立并行任务，不轮询 transcript/task row |
-| running addressable agent | Main/Worker 可通过 SendMessage 交换 PLAN_REPORT/CORRECTION | plan_checkpoint 的正常中间回执链 |
-| stopped addressable agent | Main 用 SendMessage(agent ID/name) 恢复同一上下文，平台在后台继续 | 仅用于误停、追加责任或纠偏，不作为正常计划链 |
-
-Sub-agent 的 canonical final result 仍通过 Agent completion 返回，但计划可以在运行中通过 SendMessage 到达 Main Agent。需要中途计划回执时必须使用可寻址的自定义 Sub-agent；内建 Explore/Plan 不返回可恢复 ID，不适用。若 Sub-agent 只把计划作为 final response，SubagentStop 应先阻止结束；已经结束时恢复同一 agent，不能新建一个“第二轮 Agent”。
-
-### 9.2 Agent Team teammate
-
-- teammate 通过 SendMessage 主动回报计划、blocker 和完成；
-- 消息自动到达 lead，lead 不轮询 mailbox；
-- teammate 发送 PLAN_REPORT 后继续当前 turn；
-- lead 可在 Worker 运行中发送 CORRECTION；
-- teammate idle 仍可被定向消息唤醒，但正常路径不依赖先 idle 再唤醒；
-- Team task 是调度视图，不是完成权威。
-
-### 9.3 Main Agent 如何等待
-
-Main Agent 不进入“等待计划后第二次授意”的 activation barrier。
-
-它遵循：
-
-1. 派发后继续调度其他 Ready responsibility；
-2. 不自执行已经委派的同一责任；
-3. 收到 PLAN_REPORT 时快速做偏移判断；
-4. 正常计划不回复；
-5. 没有其他 Ready 工作时，明确等待 teammate 完成，而不是宣布结束；
-6. 收到 completion 后进入消费/集成；
-7. 只有 blocker、drift、approval request 或 completion 需要产生响应。
+当前 S6 brief 给出计划、断言、oracle、完成条件索引与 Result 结构；S9 brief 给出本人三字段 PlanReport、真实前检及 Result 专业形状。作者填写真实内容，机器关联与接收记录由原适配器承担，详见[阶段答卷](L4-stage-form.md)。
 
-Plan mode 属于 approval_required Worker，不属于 lead 的普通等待状态。
+### 6.3 平台原生能力管理前后台与等待
 
-把“需要收到什么”直接映射到平台等待方式：
+前台调用未返回时，Worker 已可按任务工作；后台启动通知只说明平台接受了执行。Main 按真实平台状态安排其他工作或等待，不以固定时间推断完成、死亡或应重派。
 
-| Main 需要收到 | 派发/等待方式 | 禁止做法 |
-|:--|:--|:--|
-| 同步最终结果 | 实际 foreground Sub-agent；Agent 调用本身阻塞 | 再造一层轮询 |
-| 并行最终结果 | background Sub-agent；等待 completion notification | 读 transcript 猜完成、因 UI row 消失而重派 |
-| 计划 + 最终结果，计划不需批准 | 可寻址 Sub-agent 或 teammate；PLAN_REPORT 用 SendMessage，Main 继续调度，最终结果走 completion/COMPLETION | 把计划当 final、收到计划后再发“可以开始” |
-| 必须批准计划后执行 | teammate Plan mode；等待自动送达的 PLAN_APPROVAL_REQUEST | 用普通文本假装 approval protocol |
-| 已误停 Sub-agent 的第二次授意 | SendMessage 到原 agent ID/name，自动恢复后台执行 | 再次 Agent 调用创建新上下文 |
-
-因此不存在一个通用的“主会话等待模式”。foreground 的调用本身就是等待；background completion 和 teammate message 都由平台投递。调度 Skill 要做的是保持 assignment 未收口、继续处理其他 Ready 工作，并在没有本地工作时等待平台通知，而不是轮询、结束总任务或让 Worker 先 idle。
-
-### 9.4 消息类型
-
-统一使用：
-
-| 类型 | 方向 | 是否终止当前工作 |
-|:--|:--|:--|
-| PLAN_REPORT | Worker → Main | 否 |
-| PLAN_APPROVAL_REQUEST | Worker → Main | 是，停在 Plan mode |
-| PLAN_APPROVAL_RESPONSE | Main → Worker | 否，批准后继续 |
-| CORRECTION | Main → Worker | 否 |
-| BLOCKER | Worker → Main | 取决于是否仍有可做工作 |
-| PROGRESS | Worker → Main | 否，默认不强制 |
-| COMPLETION | Worker → Main | 是，进入 Result 消费 |
-| SHUTDOWN_REQUEST | Main → Worker | 是，仅团队收口 |
-
-不得为每个生命周期微状态创建一条强制消息。
-
-## 10. Hook 与 Harness 的真实控制契约
-
-### 10.1 Hook 事件地图
-
-| 事件 | 真实责任 |
-|:--|:--|
-| PreToolUse(Agent/Task) | 派发前检查 Assignment、dispatch_mode、worktree、stage capacity policy、Dispatchable slot、冲突和角色；不得因槽满删除 queued responsibility |
-| SubagentStart | 注入唯一匹配 Assignment 的真实 scope、`done_when`、Required Checks、连续执行语义和最小上下文 |
-| PostToolUse(SendMessage) | 捕获 PLAN_REPORT/BLOCKER/COMPLETION，更新 Assignment checkpoint |
-| PreToolUse(Write/Edit/Bash...) | 首写计划屏障、locked artifact、不可逆动作、scope 前置诊断 |
-| PreToolUse(TaskUpdate) | owner/status 变化必须对应有效 Assignment 和 scheduler 决策；阻止 teammate 擅自 self-claim 下一责任 |
-| TeammateIdle | 在平台支持真实 continue/block 控制且 doctor 已确认时，阻止未完成 teammate 进入 idle；只处理当前 assignment |
-| SubagentStop | 在平台支持真实 stop decision 且 doctor 已确认时，阻止普通 Sub-agent 以计划代替完成，或缺 Result 时停止 |
-| TaskCompleted | 防止 Team task 在 canonical Result 被消费前标 completed |
-| SessionStart | 从 Assignment/Result 重建调度板，识别失联 Worker |
-| PreCompact | 确保 Assignment、plan、result 和 resume address 已持久化 |
-
-### 10.2 TeammateIdle 决策矩阵
-
-Hook 必须使用官方 teammate_name、team_name、transcript_path 定位对象，不依赖平台不会提供的自造 agent_id。
-
-| 当前事实 | Hook 行为 |
-|:--|:--|
-| 无匹配 Assignment | 允许 idle，记录诊断；不得猜第一个 idle Agent |
-| plan_checkpoint 且计划未报告 | exit 2：要求发送 PLAN_REPORT 后继续 |
-| plan_approval_required 且等待批准 | 允许保持平台 Plan waiting；不得改成普通 active |
-| 计划已报告、assignment 未完成、无 blocker | exit 2：继续当前 assignment |
-| blocked 但没有 BLOCKER | exit 2：先提交 blocker |
-| blocked 且 BLOCKER 有效 | 允许 idle |
-| Result 缺失但 Worker 声称完成 | exit 2：提交 canonical Result |
-| Result 有效、等待消费 | 允许 idle；不自动分配下一项 |
-| assignment consumed | 允许 idle；scheduler 可另行派发 |
-
-exit 2 的 stderr 必须是给 teammate 的一条具体下一步，不能只输出 LOOP RECOVERY 长文。
-
-`exit 2` 和 `decision=block` 是目标平台控制，不得通过自造字段模拟。落地前必须用最新 Claude Code 的官方 payload 做 doctor/system test，确认反馈会回到同一活会话。若平台能力缺失或 payload 无法定位原 Agent，Hook 不得假装完成唤醒：持久化 Assignment checkpoint，报告一个可恢复 blocker，并由 scheduler 依据原 Assignment 重派。禁止因为一个未验证的平台假设再增加一套“虚拟 active”状态。
-
-### 10.3 SubagentStop 决策矩阵
-
-| 当前事实 | Hook 行为 |
-|:--|:--|
-| final response 只有计划，assignment 要求执行 | decision=block：计划不是完成，请继续 |
-| assignment 未完成且无 blocker | decision=block：继续当前责任 |
-| blocked 但无 BLOCKER | decision=block：先报告 blocker |
-| canonical Result 缺失 | decision=block：提交 Result |
-| Result 有效 | 允许 stop，父会话进入消费 |
-
-必须使用 stop_hook_active 避免 Hook 自身造成无限停止循环。
-
-### 10.4 Hook 输出纪律
-
-- 要让 teammate 继续，必须使用 Claude Code 支持的 exit 2 或 decision=block；
-- systemMessage 是用户提示；Agent 指引使用接线篇规定的 `hookSpecificOutput.additionalContext`；Stop/SubagentStop 上该字段会续跑，不用于回收软提醒；
-- exit 2/decision=block 只有在官方 payload doctor 通过后才作为强制控制；未通过时走 checkpoint + replacement，不制造假唤醒；
-- Runtime 状态变化不等于平台会话已唤醒；
-- Hook 只判机械事实和控制下一步，不判断计划的业务质量；
-- 所有官方输入字段必须无损进入 adapter；
-- 测试必须使用官方 payload，禁止靠额外 agent_id 让测试通过。
-
-### 10.4.1 临时 worktree 的调度责任
-
-派发与交付消费 [L4 Worktree](L4-worktree-governance.md) 的唯一生命周期。主会话从 REQ 开发绑定解析创建基线，确保上游正式产出已提交；运行 evidence 按声明交接，不复制整个控制面。Assignment 记录 source commit 与接收目标。
-
-子会话提交成果并报告，主会话在项目根目录合并、联合验证、接收和清理。SubagentStop 不运行完整测试/长合并，不要求已停止的子会话再次 stop 才完成清理；隔离中的子会话不承担根目录 merge。未回收与积压只产生给主会话的软提醒，不增加调度 stop/idle 矩阵的 block 条目。
-
-### 10.5 指引应埋在哪里
-
-`agent-protocol.md` 只保留调度入口、三种 dispatch_mode 和“哪里查权威”的短索引。持续执行所需指引分布在 Worker 的必经路径：
-
-| 载体/时机 | 埋入的唯一内容 | 为什么在这里 |
-|:--|:--|:--|
-| TASK / Closing Contract | responsibility、输入、done_when、Required Checks | 没有它就无法完成任务 |
-| Assignment generator | owner、真实 topology、scope、dispatch_mode、revision | 派发时必须生成，避免 Prompt 自由发挥 |
-| Agent Definition | 角色最大工具/写路径/专业方法边界 | 定义长期稳定能力，不复制单任务事实 |
-| dispatch Skill | 拓扑选择、风险分类、等待语义、异常恢复 | 只在 Main 准备委派时加载 |
-| spawn prompt | Assignment ref、最小读序、“PLAN_REPORT 不是 final，发送后继续” | Worker 第一轮必然接收 |
-| PLAN_REPORT schema | objective/paths/steps/checks/dependencies/risks | 填写动作本身暴露理解偏差 |
-| PostToolUse(SendMessage) | 记录计划/阻塞/完成 checkpoint | 消息发送必经路径 |
-| 首次 mutation 的 PreToolUse | 缺计划、revision 过期、approval 缺失的一个下一步 | 开工必经路径，只触发一次 |
-| PreToolUse(TaskUpdate) | 禁止未授权 self-claim/越权完成 | Team task 状态变化必经路径 |
-| TeammateIdle / SubagentStop | 计划不能当交卷、缺 Result 不能结束 | Worker 准备停下的最后必经路径 |
-| Result schema + consumer | actual diff、checks、deviation、消费确认 | “做完”变成下游可消费事实 |
-| SessionStart / PreCompact | 恢复地址、未消费结果、单一下一步 | 跨会话连续性的必经路径 |
-
-同一句规则只能有一个主承载点。其他位置最多放链接和一句触发提示，不能复制成长篇协议；错误反馈只给当前缺失事实和下一动作，不把整份 L4 注入 Worker。
-
-## 11. Main Agent 调度循环
-
-Main Agent 在任何 spawn、消息、idle、stop、result 或 SessionStart 后运行：
-
-```text
-DISPATCH_LOOP()
-1. Read current Stage and authoritative Assignment inventory.
-2. Read dispatch_capacity_policy; recompute DAG, conflicts, Ready Set, queued set, platform slots and Dispatchable Set.
-3. Consume inbound PLAN/BLOCKER/COMPLETION messages.
-4. For PLAN_REPORT:
-   - run mechanical checks;
-   - judge semantic drift;
-   - stay silent if aligned;
-   - send CORRECTION or revise/reassign if drifted.
-5. For BLOCKER:
-   - continue all unaffected work;
-   - resolve locally, revise assignment, route spec change, or ask human only at a real gateway.
-6. For COMPLETION:
-   - validate Result;
-   - integrate or pass to the stage-specific consumer;
-   - mark consumed only after that consumer succeeds.
-7. Dispatch the highest-priority Dispatchable assignment; on coverage_complete keep every other required Ready assignment queued and refill all free slots.
-8. If active workers remain and no Dispatchable work exists, wait; do not cancel Ready/queued work.
-9. Close teammates only after all their assignments are consumed or intentionally cancelled.
-```
-
-Main Agent 不能：
-
-- 在 Worker 回计划后机械回复“批准，可以开始”；
-- 因 teammate 暂时没有新消息就重派；
-- 抢做 active assignment；
-- 在 TeammateIdle 中直接分配未重新求值的下一 TASK；
-- 把 Team task completed 当作 Stage gate；
-- 因协调成本高而静默缩小任务范围。
-
-## 12. 中断、偏移与恢复
-
-### 12.1 计划缺失
-
-- 首写屏障拒绝第一次 mutation；
-- TeammateIdle/SubagentStop 阻止以无计划或只有计划的状态结束；
-- 反馈只要求发送 PLAN_REPORT 并继续；
-- 不需要 Main Agent 发第二轮 activation。
-
-### 12.2 计划偏移
-
-偏移分三级：
-
-| 级别 | 示例 | 处理 |
-|:--|:--|:--|
-| 可纠偏 | 顺序不佳、漏一个 owned check | SendMessage CORRECTION，继续同一 revision |
-| 授权变化 | 新增写路径、改 Required Checks、触发高风险 | 新 Assignment revision，必要时进入 Plan approval |
-| 规格冲突 | TASK/contract/REQ 无法共同成立 | 停止对应责任，走 L3 的 spec-change/human route |
-
-Main Agent 纠偏后不需要重新讲完整任务，只发送差异和原因。
-
-### 12.3 执行偏移
-
-- planned_paths 只是早期预测；
-- 实际 changed paths 由 git diff 或消费者实算；
-- scope 越界在 integration/Result consumer 阻断；
-- worktree 保留所有偏移现场；
-- 可回滚的普通偏移优先修回，不立即 kill/reassign；
-- 只有 Owner 不再可信、上下文损坏或平台 Agent 不可恢复时才替换。
-
-### 12.4 idle、hidden、stopped 与 killed
-
-必须区分：
-
-| 平台现象 | 含义 | 恢复 |
-|:--|:--|:--|
-| idle | 当前 turn 结束，teammate 仍可寻址 | 官方 continue/block 已验证时用 SendMessage/exit 2；否则保留 checkpoint 并由 scheduler 恢复/重派 |
-| hidden | UI 隐藏 idle row，不等于会话销毁 | 按名称/ID 消息唤醒 |
-| completed / TaskStop stopped | Sub-agent 本轮结束但仍可寻址 | SendMessage resume 原 agent ID/name，或消费结果 |
-| user-cancelled / killed | 用户在 UI 取消，或平台强制终止；SendMessage 可能拒绝自动恢复 | 保留现场；能由用户重开则恢复，否则按 checkpoint 重派 |
-| shutdown | teammate 被正常关闭 | 仅在 assignment consumed/cancelled 后允许 |
-| session lost | 平台上下文不可恢复 | 从持久 Assignment/plan/result/checkpoint 重派 |
-
-### 12.5 重派
-
-重派必须记录：
-
-- replacement_of_agent_id；
-- 原 assignment/revision；
-- 新 Owner；
-- 已完成计划和工作摘要；
-- worktree/checkpoint 接管方式；
-- 为什么不能继续原 Agent；
-- 独立性约束是否仍成立。
-
-禁止因一次 idle 就创建替代 Agent。
-
-## 13. 跨 L3 消费地图
-
-| L3 Stage | 典型责任 | 默认拓扑/模式 | Stage 特有消费 |
-|:--|:--|:--|:--|
-| S0 需求设计 | 辅助研究、方案对抗 | one_shot；Main 保持需求责任 | 结果仅供人和 Main 形成 REQ，不得替人锁定 |
-| S1 绑定 | 通常不委派 | Main | 生命周期授权不能由 Sub-agent 执行 |
-| S2 设计 | 模块设计、原型研究、技术调查 | plan_checkpoint Sub-agent/teammate；独立研究可 one_shot | 设计包/ADR 被 S2 收口 |
-| S3 契约 | FE/BE/SYNC 分面起草与对账 | Agent Team + plan_checkpoint | 契约锁定前由 Main/Stage gate 聚合 |
-| S4 TASK 拆分 | 模块拆分、DAG/Closing Contract 检查 | one_shot 或 plan_checkpoint | TASK batch、DAG 与整体派发计划交付 S5 |
-| S5 文档验证 | 两个独立 reviewer responsibility | Agent Team；read-only plan_checkpoint | 两份独立结论和包含派发计划的 exact subjects |
-| S6 构建 | frontend/backend/test Builder | 隔离写入优先 Sub-agent + worktree；路径可分时可用 teammate；默认 plan_checkpoint，高风险 approval | 批准计划的实时投影 + Builder Result + integration |
-| S7 完整验证 | DV/QA/E2E Claims 与独立验证面 | ReviewPlan DAG + 1..N Assignments + plan_checkpoint | 当前 round 的 ReviewResult、Finding 和 CleanRound/ObservationBatch |
-| S8 调查 | 多假设调查、Original Finder 责任 | 多 teammate plan_checkpoint；Investigator lifecycle bridge 已接入 Runtime，通用 PLAN_REPORT 按 fingerprinted manifest 绑定 | InvestigationCase/HypothesisResult/RepairContract；canonical BUG 仅为批准后的兼容投影；实际平台进程启动仍由 Claude/Agent Team 负责 |
-| S9 修复 | repair Builder、定向复验 | 隔离写入优先 Sub-agent；默认 plan_checkpoint，高风险 teammate approval | fix Result、影响失效、targeted reverify |
-| S10 验收审计 | 证据汇编、独立系统审计 | read-only teammate/one_shot | ACC 与 audit 结论 |
-| S11 发布闸 | 发布前信息整理 | read-only one_shot 可辅助 | 最终 release decision 仍由人 |
-
-所有 L3 可以增加 Stage 特有 done_when，但不得重定义：
-
-- PLAN_REPORT 是否终止 turn；
-- TeammateIdle 和 SubagentStop 的平台语义；
-- Assignment 生命周期；
-- dispatch_mode；
-- plan approval 风险规则；
-- Main Agent 的等待和纠偏方式。
-
-## 14. L1 准则与现实原型映射
-
-| L1 准则 | L4 落点 |
-|:--|:--|
-| D1 权威外置 | Assignment/Result/checkpoint 持久化；平台会话只承载活执行 |
-| D2 自然路径观测 | SendMessage、首写、idle、stop、task complete、session start 都有控制点 |
-| D3 门是顾问 | 默认计划不等批准；错误反馈给一个可执行下一步；高风险才停 |
-| D4 引导性产物 | PLAN_REPORT 的少量字段迫使 Worker 暴露理解、步骤和验证计划 |
-| D5 三级强制 | Prompt 引导 → 结构化消息/Assignment → 首写/stop/idle 机械控制 |
-| D6 三方收敛 | Worker 判断并执行，机器公证 scope/状态，Main/独立角色消费结论 |
-| D7 收敛可观测 | Ready/running/reported/consumed + plan/result checkpoint 显示单调进度 |
-| 公理一 原型 | 教师先收答题计划、后收试卷；工程上对应 kickoff plan + implementation handoff |
-| 公理二 分工 | Main 调度和判偏移，Worker 执行，Hook 判机械事实，人握需求/发布 |
-| 公理三 消费 | 每个 plan/result 字段都有 scheduler、Main、consumer 或 Gate 消费者 |
-| 公理四 成本 | 普通任务取消审批等待，高风险任务保留定价后的保险 |
-| 公理五 传达 | 纠偏原因随 CORRECTION，Hook 失败随下一步到达 Worker |
-
-## 15. 跨阶段消费与实现边界
-
-当前实现以代码、回归测试及 [L4 运行时控制面消费地图](L4-runtime-control-plane.md#14-跨-l3-消费地图) 为准。平台进程的启动、唤醒和恢复必须通过真实平台验证，不能仅凭 Runtime 状态或合成 payload 宣称成功。
-
-调度层的统一闭环只覆盖“谁负责、何时可写、何时可停、如何恢复”；它不替 S7/S8/S9 做业务判断。跨阶段当前结论如下：
-
-| 边界 | 调度层已经保证 | 仍不能声称已经保证 |
-|:--|:--|:--|
-| S7 → S8 | ReviewResult/ObservationBatch 的 Assignment、消息、CAS、exact-set 消费和 S8 入口指引；Investigator 已由专用 workgroup/Task/Agent/activation bridge 登记，通用 PLAN_REPORT 可按 manifest 绑定 | Claude/Agent Team 的实际进程启动仍是平台动作；Runtime 只登记控制面和恢复事实，不伪造外部 spawn 成功 |
-| S8 → S9 | approved RepairContract 才能打开 S9；Contract hash/revision 进入 Session/Plan；通用 PLAN_REPORT 可按 fingerprinted manifest 校验 | BUG projection、通用 PLAN_REPORT 和 S9 domain PlanReport 不自动互换；它们仍是不同契约，领域报告必须单独提交 |
-| S9 → S7 | Handoff、baseline、seed、round+1 和清理旧投影在 Runtime CAS 中形成可恢复事实 | seed 已等同完整 ReviewPlan；S9 的 `depends_on/resource_locks` 已被调度器执行；这些仍需最终 S7 注册/消费或后续专门实现 |
-
-调度机制的复杂度边界保持不变：保留首写屏障、PLAN_REPORT、Stop/Idle 控制、Assignment/CAS 和 exact-set 消费，因为每一项都有实际消费者和恢复动作；不新增第二套 Investigator lifecycle、CaseSet 或 S9 scheduler，除非先补齐明确的权威对象、next command、失败恢复和回归测试。涉及两个计划回报时，平台通用 `agent-message.plan_report` 只证明 Agent 已理解并可继续，S9 `repair-plan-report` 才证明领域执行计划已提交；两者不能用文档简称合并。
-
-## 16. 验收测试、指标与 Definition of Done
-
-### 16.1 必须有的系统测试
-
-| 场景 | 期望 |
-|:--|:--|
-| Sub-agent/teammate 发送 PLAN_REPORT 后继续调用工具 | 不进入 idle/stop，不需要 Main approval |
-| plan_checkpoint 首次写入前没有 PLAN_REPORT | PreToolUse 拒绝并指导发送计划后重试 |
-| PLAN_REPORT assignment/revision 错误 | 不记录 checkpoint，拒绝首写 |
-| planned_paths 超 scope | 计划标 drifted，Main 收到纠偏项 |
-| teammate 在计划前 idle | TeammateIdle exit 2，反馈送回同一 teammate |
-| teammate 计划后、完成前 idle | exit 2，继续当前 assignment |
-| teammate blocked 且 blocker 有效 | 允许 idle，Main 收到 blocker |
-| teammate Result 有效 | 允许 idle，等待 consumer，不自动分配下一项 |
-| 普通 Sub-agent 只返回计划 | SubagentStop block，要求继续工作 |
-| 普通 Sub-agent 完成并有 Result | 允许 stop，父会话收到结果 |
-| approval_required 未批准就写 | 拒绝 |
-| approval_required 批准后写 | 允许，approval 与 revision 对应 |
-| Main 运行中发送 CORRECTION | 同一 Agent 接收并继续，不重派 |
-| Sub-agent 把计划作为 final response | SubagentStop block；若已结束则 SendMessage 原 ID 恢复，不新建 Agent |
-| 开启 Agent Teams 后使用调用级 isolation | 真实 topology 记录为 Sub-agent，并得到 worktree 隔离 |
-| 隔离 Sub-agent 发送 PLAN_REPORT | Main 与 Worker 读取同一共享 Assignment checkpoint；worktree 中不产生第二份运行态 |
-| teammate 尝试 self-claim 未授权 Task | PreToolUse(TaskUpdate) 拒绝，等待 scheduler 派发 Assignment |
-| session 恢复时平台 Agent 不存在 | 从 Assignment/checkpoint 生成明确 replacement，不伪称 resume |
-| 两个 assignment 写冲突 | 第二个不进入 Dispatchable，保留责任并在锁释放后重新求值 |
-| `bounded_flow` active slots 已满 | 新 Assignment 保持 Ready/queued，不被取消；槽释放后派发 |
-| S7 `coverage_complete` 有 20 个 required Ready、平台 6 个槽 | 6 个 Dispatchable/running、14 个 queued；持续补位且 exact set 不减少 |
-| `coverage_complete` 配置 token budget/max_reviewers 试图裁 required Assignment | schema/dispatch gate 拒绝；成本只可观测，不可改变 required set |
-| 使用官方 TeammateIdle payload、无 agent_id | 精确定位 teammate，不猜测 |
-
-### 16.2 运营指标
-
-- dispatch 到 PLAN_REPORT 的时间；
-- PLAN_REPORT 到首次 mutation 的时间；
-- plan_checkpoint 被 Main 判偏移的比例；
-- 因缺计划触发首写屏障的比例；
-- 计划后误 idle/stop 的比例；
-- 同一 Agent 恢复成功率；
-- 因错误重派损失的 token 和时间；
-- 每 assignment Main Agent 消息次数；
-- approval_required 占比及实际捕获风险数；
-- stage capacity policy、Ready/queued/Dispatchable/active 数、cycle time、lead time；
-- coverage_complete required Assignment retention，目标 100%；
-- 因平台容量排队的时间与因 scope 冲突排队的时间；
-- plan 字段中没有消费者的比例；
-- Runtime 与 Claude Code 平台状态不一致次数。
-
-### 16.3 机制 Definition of Done
-
-只有以下条件全部成立，本 L4 才算落地：
-
-- 普通任务不再需要 readback 后第二次授意；
-- Worker 发送计划后在同一 turn 连续执行；
-- Main Agent 正常计划静默，只有例外才打断；
-- 高风险任务能稳定进入原生 Plan approval；
-- TeammateIdle/SubagentStop 使用真实平台控制；
-- Assignment 是 Owner、scope、plan、result 和 recovery 的唯一权威；
-- 隔离 worktree 与 Main 共享同一调度控制面，运行态不经 git merge 汇总；
-- Team task 与 Runtime 是一致投影；
-- 没有 Agent 因一次 idle 被无因重派；
-- 首写、完成、集成/消费和 Stage Gate 形成可判定闭环；
-- 所有受影响 L3 引用同一 L4，不再复制各自的派发协议；
-- `bounded_flow` 与 `coverage_complete` 可由 Stage 明确选择；物理容量只影响 Dispatchable/queue，不会裁掉 coverage-critical required Assignment；
-- 系统测试使用 Claude Code 2.1.218 官方 payload；
-- 指标能证明等待减少而偏移、越界和返工没有恶化。
-
-## 变更记录
-
-| 日期 | 版本 | 变更 | 依据 |
-|:--|:--|:--|:--|
-| 2026-08-20 | v0.3.0 | 增加机制准入规则；明确 Claims/Assignment/Result 为事实，coverage/ledger/board 为视图；限制 `coverage_complete` 不得递归扩张；补充 exit 2/decision=block 必须通过官方 payload doctor，失败时走 checkpoint + replacement | 终审发现调度设计仍可能引入重复控制面，并且不能把未验证的平台唤醒能力写成既成事实 |
-| 2026-08-20 | v0.2.0 | 新增 `bounded_flow / coverage_complete` Stage capacity policy；将 Ready 与 Dispatchable/physical slots 分离；S7 coverage-critical required Assignments 不受固定 WIP、Reviewer 数量或 token budget 裁剪，容量不足只进入 queued | S7 的 DV/QA/E2E 完整发现属于必要质量投入；通用 L4 若仍强制 WIP=2，会让 L3 设计无法落到真实 Agent/Task 派发必经路径 |
-| 2026-08-20 | v0.1.0 | 建立第一份 L4：统一 Sub-agent/Agent Team 派发模式、双回执连续执行、风险 Plan approval、Hook 控制、恢复与跨 L3 消费地图 | owner 指示：L4 为横跨多个 L3 的抽象工具层；两轮对话应改为计划回执后连续执行 |
-
-
-### 2026-09-18 · v0.4.0
-
-调度消费临时 worktree 机制，由主会话完成接收与清理，回收仅软提醒。
-
-
-## 共享模型与合同依赖（2026-09-19）
-
-TASK 是角色阅读入口，先交代范围和完成标准，再用精确链接展开合同、SYNC、模型。共同设计内容一致不要求整个 checkout SHA 相同；依赖真实共享产物的任务待回收后派发。 机制权威见 [L4 共享模型与合同治理](L4-shared-model-contract-governance.md)。
+原生消息用于必要沟通和纠偏，不要求周期性重复进度或把计划写成一次终止回答。适用的子代理可通过平台恢复保留上下文；具体能力见[官方子代理说明](https://code.claude.com/docs/en/sub-agents#resume-subagents)。框架不建立活性轮询、租约或自行重启进程。
 
+## 7. Stop 怎样定位本人责任
+
+### 7.1 准确引用优先于身份猜测
+
+Stop 使用原任务上下文、实际返回引用及当前已登记责任确定唯一候选。当前实现按完整引用边界匹配 brief、view 或 answer；仅出现同名角色、TASK 文字或路径子串不足以代签。
+
+候选还要符合本领域的当前 Runtime、代际、阶段入口、轮次、Case／Session／Plan 或后继责任条件。具体条件由原消费者承担，不能把所有领域统一成一个新身份对象或全历史认证流程。
+
+无准确匹配时，保留原生结果交 Main；同时命中多个真实责任时，也交 Main 解决。S9 同时带 Builder brief 与 Targeted 答案的返回，同样不能因先检查了 Builder 就替其签收。
+
+### 7.2 实际来源根与控制根分别定位
+
+平台回调的 cwd 可能仍是父工作区。写入责任返回本人 Result 的绝对路径，使接收器可以从同一仓库实际 worktree 中定位来源，再验证原工程关系；不能只按 cwd 借 Main 的同名文件。
+
+Runtime、journal 和原接收事实保留在绑定的控制根。本人工作区保存产品与私人专业文件，不复制一份可写 Runtime 再靠 Git 合并。控制根无法唯一解析或原来源丢失时，问题应交 Main／系统准备责任处理。
+
+已有独立安装或冻结 execution 继续读取其原登记根。已冻结来源不自动回落 Main，路径相同也不表示内容和接收身份相同。
+
+### 7.3 恢复后的新任务与旧引用
+
+恢复到新责任或新卷时，Main 应交付当前准确引用，Worker 返回这次实际使用的引用。平台 actor 变化本身不产生新工程责任；是否产生新责任或修订，由原领域变化决定。
+
+S5／S6／S7／S8／S9 复用同一有界任务读取器：读取最多 4 MiB 的 transcript 尾段，选择包含本责任准确引用的最新实际 user 任务，忽略 tool_result 中的旧引用，并保留最终文字用于歧义判断。S6 用当前工程记录的准确 brief，S9 同时考虑 Builder brief 和独立 Targeted 路径；不会因为先检查某个分支就抢收另一责任。
+
+转录不可读或尾段没有准确引用时，只能使用可读原任务和最终文字作有限回退，不承诺恢复任意长历史。Main 仍应交付当前准确引用，Worker 返回实际使用的 brief／Result 或问卷路径；多个真正责任并存时保留歧义交 Main，不能凭角色、队列或返回次序猜测。
+
+## 8. Stop 接收什么，反馈给谁
+
+### 8.1 接原消费者，保留专业语义
+
+官方 Stop 事件提供本人 transcript 路径、最终文字和 `stop_hook_active` 等信息。使用 `SubagentHandback` 的执行中，最终文字可能只是收尾；它不是所交报告。阻断反馈回到当前子代理，不能冒充通知父会话的渠道。[官方 Stop 定义](https://code.claude.com/docs/en/hooks#subagentstop)
+
+因此，正常接收读取本人准确专业文件和原证据，而不是仅凭最后一句 PASS。Handback 的文字可以帮助交接，但不能为捕获一份报告，再把 PostToolUse(SubagentHandback／SendMessage) 变成第三个结果接入点。
+
+Stop 适配器调用本责任原消费者。题目、来源、实际检查、状态和修订按该消费者的实际范围处理；不新造通用 Result、接收账本或另一套任务状态机。
+
+### 8.2 本人缺项与后继责任分别处理
+
+本人遗漏具体且能补齐的产物字段，可以收到准确修正反馈。真实 blocker、负向专业结论和未完成说明则按原语义交接；不能为正常返回强造 PASS。
+
+同事尚未交付、Main 尚未集成、后继阶段未完成，都不属于已经交付者的续跑理由。Stop 不执行长测试、合并、工作区准备或新平台派发；这些工作交原 owner。
+
+原生适配器在准确私人文件与原字段校验边界保留本人可修的错误，反馈具体字段、实际产物位置与原责任。首次 Stop 是否要求本人继续，由原阶段交接合同决定，不由通用错误类别统一强制。原阶段采用首次纠正时，以退出码 2 给出实际缺项；`stop_hook_active` 已为真时停止反复阻断，由 Main 接续。S9 按 [S9 §14.2](../l3-stages/L3-S9-repair.md#142-收尾未完成返回与恢复边界) 在首次 native 返回将真实未完成工作和具体拒错交 Main，不以第二次 Stop 或凑齐结论作为退出条件；原消费者继续拒收不合格结果。S6／S9 对部分无计划但有实际 blocker 的交接还有独立返回分支，放行均不创建完成回执。
+
+来源、控制面、准备和 Writer 故障，以及没有充分依据归给作者的错误，默认直接交 Main，保留原诊断、准确对象与已有产物。接收失败不能冒充完成；也不能仅按错误字符串猜测归属，要求本人无限续跑来补偿系统故障。原字段错误沿接收器传递，适配器不再重读整份答案来判断错误类别。
+
+### 8.3 反馈与原回执分别读取
+
+Stop 的诊断反馈属于当前子代理，不充当父会话通知。Main 的 `PostToolUse(Agent/Task)` 沿现有工具返回上下文提供接收摘要：除下述限定 S9 原消费者接续外保持只读；先按实际派发 prompt 的准确引用查询原责任，prompt 没有准确关联时才考虑返回文字中的引用；多项真正责任仍有歧义时交 Main 处理，不按角色或平台 actor 猜绑。
+
+摘要读取原接收记录，不读取或接收 Worker 私人答案。S5 即使已经推进到 S6，仍可按原 packet 查询回执；S7／S8 读取各自原回执；S9 区分 PlanReport、Builder Result 与 Targeted，不能将计划已接收说成整个 Builder 已完成。S6 复用原 Runtime 单责任提示，带出已登记 Result 的准确位置；提示本身不重验全部产品证据，也不替代原 task-receipt、Main 检查与集成。
+
+后台派发可能在工作完成前即时返回；此时没有接收事实不等于执行失败，Main 继续可开展的工作，依据实际原生执行和 Stop 诊断处理，不制造工具事件等待，也不猜测重派。这个出口不创建消息总线、ACK、第二份交接报告或完成状态；无法读取原回执时明确交 Main 保留现场调查。实际平台是否将此上下文交给模型，仍须真实运行验证。
+
+接受了本人交付、可结束本人执行、Main 已接收并集成、阶段出口成立，是不同完成点。原回执及具体阶段解释这些差别；平台事件本身不会把它们同时置为 done。
+
+## 9. 各阶段怎样使用这套衔接
+
+| 阶段责任 | 本人实际工作与产物 | Stop 接收 | Main 后续工作 |
+| --- | --- | --- | --- |
+| [S5](../l3-stages/L3-S5-document-verification.md) | 独立审查规格一致性或任务可执行性，填原结论与真实发现 | 原 S5 Submission | 汇总两路当前判断，按原门锁定或返工 |
+| [S6](../l3-stages/L3-S6-build.md) | 本人专业 Plan、实际实现／自检、产品提交与 Result | 原 Assignment Result／完成消费者 | 原集成、Main 必要检查、确认与清理、完整批次出口 |
+| [S7](../l3-stages/L3-S7-verification-round.md) | 本人 Claim／视角的真实验证、Result、Finding 与必要现场 | 原 ReviewResult | 按计划依赖继续，形成完整本轮收口 |
+| [S8](../l3-stages/L3-S8-finding-investigation.md) | 假设判别、观察、证据和 HypothesisResult | 原 HypothesisResult | 因果汇总、Case 路由、修复合同及真实批准 |
+| [S9 Builder](../l3-stages/L3-S9-repair.md) | 本人 PlanReport、真实前检／修复／自检、专业 Result | 原 PlanReport 与 RepairResult | 实际集成与检查、专业影响判断、独立复验及返回 S7 |
+| S9 Targeted | 独立检查实际修复树及 Contract 断言，填原定向验证卷 | 原 TargetedReverification | 完成必要后继责任，原 Handoff 出口准备新 S7 |
+
+S0～S4、S10、S11 的辅助专业协作同样使用原生平台；其正式 Main 答卷与人类入口仍由各自原消费者承接。本表列的是已接入正式 Worker 产物的路径，不为其余阶段增设专属派发器。
+
+Main 的规划、Case、分工、影响和验收是 Main 自己的工作；可以通过其原保存消费者接收。Main 普通消息、读取或保存不得扫描抢收 Worker 私人答案。反过来，Worker 的原生 Stop 也不替 Main 填后续卷。
+
+## 10. 写入任务的 Git 来源与 Main 集成
+
+### 10.1 平台创建 worktree，工程保留真实起点
+
+S6／S9 的输入以真实、已提交 Main 基线和原专业来源为依据。S6 准备固定实际 Main HEAD，并要求平台从包含该输入的 HEAD 创建本人 worktree；S9 还要考虑准备与实际创建之间依赖集成已使 Main 前进的情况。
+
+Worker 在本人 worktree 保存私人计划／结果，只提交实际产品。私人卷、Runtime 和 journal 不应被强制加入产品 Git 来满足交接手续。实际提交、范围、未完成事项及后续集成条件仍按原领域校验。
+
+当前接收器需要实际 Git 来源和真实分支，不能把 Main 文件当本人 Result。它记录交付坐标用于原集成，不从这些坐标反推出平台启动或批准事实。
+
+### 10.2 S6 的原交付链
+
+S6 Stop 读取本人计划与 Result，合入系统已知机器关联，校验原专业结构，再发布必要原产物并调用原完成消费者。工程记录中的实际 worktree、分支和起点用于后续 Integrator；作者不另交一个启动事件。
+
+Main 随后显式执行原 task-integrate，在实际合并树上运行必要检查，形成原确认及清理。Builder 自检不会代替 Main 检查；原已接收 Result 也不能单独释放尚未完成的依赖。
+
+### 10.3 S9 的原交付链
+
+S9 的 Main 题目是只读输入。Builder 在本人 worktree 保存三字段专业 PlanReport 与 Result；Stop 导入这份实际 Plan payload 到原接收位置，再调用原 PlanReport 和 Result 消费者。导入是适配器传递本人事实，不是 Main 模型代答，也不要求 Worker 跨隔离写 Main。
+
+返回后，适配器可记录 `native_delivery`：实际工作树、分支、基线及原责任关联，用于原 Result／集成消费者。它不含 bootstrap 或预留平台 session，不创建、启动或恢复 Agent。首次确定的来源按原重试保留，不能每次随 Main HEAD 漂移。
+
+候选接收后 Main 做真实集成及所选必要检查，再形成最终 Result。Main 影响判断和独立 Targeted 是后续不同专业责任；Targeted PASS 也不直接跳到 S10，完成后仍进入新完整 S7。
+
+更完整的范围、失败现场、集成和清理解释见[Worktree 治理](L4-worktree-governance.md)，保留执行根配置见[执行环境机制](L4-workspace-execution-profiles.md)。
 
 <a id="dispatch-plan"></a>
-## 17. 整体派发计划与持续并行执行
 
-> 规范修订：v0.5.0，2026-09-19。适用于新规划批次；本节定义正式机制；waves-v1 首版已接入计划解析、注册/冻结、S6 候选投影和 workgroup 注册校验。实际平台派发仍由 Main 执行，不把候选建议当作 Agent 已启动。
+## 11. 整体派发计划怎样支持持续释放
 
-### 17.1 对象与唯一权威
+### 11.1 计划是工作偏序，平台负责实际执行
 
-S4 必须交付每个 REQ 的整体派发计划，规范入口为 `docs/dev/tasks/index-REQ-<id>.md`；已有 index 可保留原路径并登记。计划沿用现有 index，不同时维护另一份 DISPATCH 和人工进度看板。
+S4 在原 REQ 任务索引中交付 `waves-v1` 整体派发计划，S5 审查，S6 消费。每个非取消 TASK 恰好出现一次，目标、范围、完成条件和检查继续引用 TASK；计划补充波次、资源与必要先后理由。
 
-| 对象 | 拥有的事实 | 消费方式 |
-|:--|:--|:--|
-| TASK | 目标、读写范围、真实产物依赖、交付物、Closing Contract | 计划链接引用；依赖和 scope 从 TASK 解析，不双写 |
-| 整体派发计划 | 当前 REQ 任务集合、推荐波次、并行依据、必要资源顺序、编排理由 | S4 交付，S5 审签，S6 消费 |
-| TR-003 execution batch | 当前 generation 批准计划指纹与精确 TASK 集合 | 执行分母；计划文档不能计作 TASK |
-| Assignment / Result / checkpoint | 实际 owner、尝试、结果及有效集成事实 | 复用控制面，不新增 Wave 生命周期 |
-| S6 实时清单 | 就绪、排队、执行、待集成、阻塞和完成的派生视图 | 可重建，不反向写权威状态 |
+任务依赖与资源顺序联合无环。同波默认可并行，共享只读源不自动构成依赖；无法隔离的写入、稀缺资源和真实产物依赖，需要清楚说明顺序。资源依赖不能为了画整齐波次凭空增加。
 
-开发主分支和发布上游只从 REQ 绑定读取。设计输入按上游约定读取已提交 Git tree；运行证据和控制事实遵循各自明确的来源契约。
+计划固定要做哪些工作及为什么这样安排；运行中的进度和平台状态从实际事实投影，不回填审签计划，也不让平台 task list 成为新的工程权威。具体作者方法见 [S4](../l3-stages/L3-S4-task-split.md)和[派发规则](../../docs/rules/dispatch-plan.md)。
 
-### 17.2 最小交付格式
+### 11.2 接收、完成与集成共同释放真实依赖
 
-计划声明所属 REQ、格式版本 `waves-v1`、计划修订号、文档状态；链接需求、合同与执行入口。正文按稳定局部编号 W1、W2…列出 TASK Markdown 文件链接，每个非取消 TASK 恰好出现一次，以 `- [ ]` 构成简洁工作清单。
+S6 候选需要原任务及计划已登记、来源当前适用、实际前置满足且无未解冲突。当前依赖释放读取前置的工程 done 与 verified integration，不能仅凭 Worker 返回、Result 已登记或单独 Main 合并事实释放。
 
-每波说明并行边界和放行依据；特殊资源顺序只在必要时记录具体对象、先后与原因。复用 TASK/manifest 的 required checks，不再复制验证命令。状态 complete 表示计划文档完整，不表示代码完成。
+例如，甲依赖任务一，乙依赖任务二：任务一已完成并经 Main 验证集成，而任务二仍在运行，甲可以先开始；不需要等整波所有成员齐交。容量不足时，甲仍是符合工程条件的候选，只是当前未安排平台执行。
 
-S5 冻结后，计划中的空框保持不变；实时勾选只在 S6 投影中由当前有效 verified 集成事实生成。Agent、完成时间、证据、依赖满足状态不得回填冻结计划或 TASK。导出的实时清单标明生成时刻和 runtime revision，只是快照。
+当前 `Eligible` 表示工程条件允许，`Dispatchable` 再考虑实际给定容量。建议优先级用于选择候选，不是新授权。Main 根据真实容量、冲突与接收积压安排原生派发；不会因建议中没列出某项就删除该责任。
 
-### 17.3 依赖、资源与波次
+### 11.3 保留覆盖，避免形成第二调度器
 
-1. 真实产物依赖只在 TASK 声明：消费者等待生产者的产物回到根目录开发分支并验证。只读相同模型、合同或需求不产生实现依赖。
-2. 资源冲突优先通过收窄写域、唯一 owner、拆公共修改或隔离资源解决；无法消除才明确串行次序。不能为了资源排队伪造 TASK 产物依赖。
-3. 波次从真实依赖的拓扑层推导，再考虑必要资源顺序。同波必须不存在内部依赖和未解决互斥；所有显式资源顺序与 TASK DAG 联合查环。
-4. 波次是推荐布局，不是整波屏障。某 TASK 的实际前置全部满足即可进入候选，无须等上一波无关慢任务。因资源次序延后的任务仍须遵守该明确次序。
-5. 同父目录不自动判冲突，不同文件不自动判安全；检查公共导出、lockfile、迁移编号、生成输出和可变测试资源。worktree 隔离不能证明合并或语义兼容。
-6. 宽路径重叠给具体诊断；首版不自动认定同文件不同区块可并行。需通过可执行的隔离/汇总办法或调整归属解决，不能用一句“安全”绕过已有 scope 控制。
+S7 保留全部必要 Claim 与独立验证面，S9 保留批准修复和必要复验。平台容量、token 或等待成本可以改变安排，不能把未做工作改成不适用或通过，也不授权无限扩大责任集合。
 
-容量只决定当次派发数量，不改变逻辑波次、依赖或必需集合。主会话/配置声明真实可用容量；工具展示 active、queued、待集成数和限制原因。无充分理由不固定 WIP=2，也不超过平台能力；不实现预测排程器或全局最优搜索。
+工程建议不自动创建代理、轮询活性或唤醒后续责任。当前新 S6 已在 Main 指引中避开旧 slot／capacity 接线，Main 使用原 brief 与集成事实继续。旧建议投影只在其支持入口有意义，不能作为所有原生任务的额外派发门。
 
-### 17.4 候选求值与实际派发
+## 12. 重放、阻塞、替换和来源丢失
 
-S4 对账、S6 投影和派发入口共用计划/依赖语义。S6 从批准计划与精确执行集合开始，对当前有效依赖消费、owner、Result、checkpoint、阻塞、即时冲突和容量重新求值；冲突应包含 reported 但尚未消费的写入责任。
+### 12.1 同一交付重放原事实
 
-在互相兼容的候选中，优先解锁下游多、位于关键依赖链或有早反馈价值的任务，最后按稳定 TASK ID 排序。没有工期数据时不宣称获得准确工期关键路径。
+重复 Stop 应由原消费者复用同一接收，不重复登记或推进。平台恢复产生不同 actor，也不改变原责任内容。同身份不同内容、责任被修订、换轮换代或被替换时，仍走原领域变化规则，不能把旧 PASS 绑定新输入。
 
-启动、恢复、结果到达、集成完成、阻塞变化和槽位释放均触发重算。派发入口在实际操作前复核版本、owner 与资源条件；建议清单不等于授权，更不证明平台 Agent 已启动。复用既有事务、消息与平台动作，不新建后台调度服务。
+S6 已关闭责任与 S9 已集成清理来源有明确迟到 Stop 处理。私人 worktree 被清理后，不应因此把已经完成的责任重新派出。当前已接收原产物持久化与后续 Git 来源验证各有用途，不能简单等同为“所有缓存删除后任何保存都能重放”。
 
-主会话按“计划 → 实时清单 → 下一批 TASK → 精确阅读清单”阅读；Builder 从自身 TASK 开始，按需查波次及前置。第一版优先扩展现有 `s6 status` 显示下一批，是否增加其他命令取决于真实动作，不在规范中假定尚不存在的命令可用。
+### 12.2 阻塞先交真实现场
 
-### 17.5 完成、恢复与提示边界
+缺输入、环境失败、契约冲突或实施未完成时，本人说明实际 blocker、已做观察和剩余工作。能够交接的真实阻塞可以结束本次原生执行；没有完成回执时，也不能把它写成已完成贡献。
 
-Worker 提交子分支，Main 按 [worktree 治理](L4-worktree-governance.md) 合并到根目录绑定开发分支、运行检查并登记有效 checkpoint，随后及时清理。结果上报、Agent 停止或仅存在 merge commit 都不能单独勾选完成或释放消费者；清理仍为软提醒。
+Main 结合原责任处理：补输入、解决环境、按原修订纠偏、走规格变更或等待真正人意。互不受影响的工作可继续，不能让一个阻塞无差别冻结整个阶段。
 
-失败只阻塞相关后代，无关兼容任务继续。恢复从批准计划和现有控制面重建；历史已失效或被当前尝试替代的成功不能继续满足依赖。视图与阶段门共用当前有效事实判定，防止看板与门结论不一致。
+### 12.3 恢复平台与修订工程责任分别判断
 
-缺派、闲置容量、待集成结果和待清理 worktree 在已有 Agent 可见通道给短提示，不新增 Stop/Tool 门禁。结构错误与冻结漂移进入已有阶段检查；真正缺前置或互斥使候选等待并显示原因。平台接线以实施时最新官方机制核验，不以终端显示代替 Agent 收到消息。
+Main 先看平台的实际执行与可恢复性，再看原产物及回执。可恢复同一上下文时使用原生恢复；原上下文确实不可恢复时，按原责任和有效现场重新交付。仅因暂时无消息、UI 隐藏、一次 Stop 或未收到 Stop，都不足以推断死亡并自动创建替代者。
 
-### 17.6 版本与验收契约
+改变 owner、范围、输入或原专业责任的行为，使用原修订记录，保留已接收同伴工作、原结果和失效范围。纯平台 actor 变化不需要新建 alias 表或工程任务。原 Task 源重锁等边界仍以对应 S6／修订篇为准，不能从 Assignment revision 自动推导全部来源已重签。
 
-S5 后修改成员、依赖、写域、波次或资源顺序走已有规划返工和重新审签；容量变化、实际进度和按真实前置提前启动不修改计划，不重做 S5。证据 SHA 自动刷新不适用于正式计划。
+### 12.4 已接收事实与未接收来源分别恢复
 
-历史执行 generation 缺少计划时明确标记 legacy，仍可恢复已有工作，不补造审签；新规划批次必须满足新契约。计划遗漏不能自证完整，需与当前 REQ TASK 声明和合同覆盖共同对账，包括不覆盖条款的 support TASK。
+未接收的产物需要准确实际来源。已登记独立根丢失不能回落 Main 借卷；S9 新私人 Plan 不存在时也不能拿 Main 草稿充当本人计划。若原 Plan 已接受，当前适配器有按原不可变回执继续的边界，而不是重做专业工作。
 
-机制验收必须覆盖：独立三任务同时候选；A→B 且慢 C 独立时 B 提前释放；只读模型两端并行；公共写入/外部资源冲突；资源顺序与 TASK 依赖联合环；跨 REQ/遗漏/重复/取消成员；未提交或审签后漂移；未集成不得完成；容量不足持续补位；恢复无重复 owner；失效历史 checkpoint 不复用；计划不污染 TASK 分母或 S2 设计主体。只完成模板或看板展示不足以证明本节已落地。
+已有冻结执行只服务原记录，保留原作者根、输入、批准和恢复入口。新普通责任不同时进入旧 launcher 与原生派发两条路径，也不把旧执行迁移成一份伪造的新批准。
 
-修订依据与取舍记录保留在根目录报告；本文拥有机制规则，L3 只拥有各阶段交付与审查责任。
+## 13. 观测怎样帮助 Main 理解交接
 
-### 17.7 首版适配边界
+| 观察面 | 应回答的问题 | 不能据此推导什么 |
+| --- | --- | --- |
+| 实际 Agent 调用和原生返回 | 是否真实派发，平台返回什么、是否仍在运行或可恢复 | 工程登记等于启动，后台接受等于完成 |
+| 原 Start／Stop payload 与已有 Hook 审计 | 哪次实际来源经过哪个工程接入点 | actor 等于 owner，Start 代表批准或已读 |
+| 准确任务引用及来源根 | 本次交付属于哪项责任，实际文件从哪里读取 | 同角色或同名文件可以互借 |
+| 原接收、证据与当前回执 | 哪份交付已接受、本人是否完成、还有谁负责什么 | 一份回执代表全阶段或真实产品验收 |
+| Git 来源、集成检查点与 Main 检查 | 哪份贡献进入什么树，必要检查是否真的完成 | 本人 PASS 等于合并树 PASS |
+| 原错误及恢复反馈 | 本人缺项、系统准备、Main 集成或人的等待卡在哪里 | 没有日志等于未执行，日志缺失等于可以重派 |
 
-waves-v1 使用具体仓库相对文件/目录写域，不接受 glob 作为新计划授权范围；共享可变资源在 TASK Resources 中以 `resource:<name>` 声明。重叠是 S4/S5 诊断，实际派发保守保留互斥，不靠模糊文本例外绕过。没有范围冲突的就绪项可在实际槽位内并行。
+可选诊断采样只解释其实际支持的责任，未知类型和平台 actor 不匹配保持未知。它不成为结果接收、重新派发或活性监管的依据。提示去重与停滞诊断的实际范围见[手续收敛](L4-procedure-reduction.md)。
 
-当前注册入口一 TASK 对应一个 Builder writer；正式输入和最终可写范围（write_paths 与 output_paths 的并集）必须与审核 TASK 一致。S6 新计划的完成判定共用当前 report、owner 和对应 checkpoint；检查点同时绑定 `completion_report_path` 与 `completion_report_sha256`，`verified_at` 只在集成检查成功时记录。报告内容改变或旧检查点缺少内容绑定时，必须重新运行集成检查；单纯 ack/cleanup 不得更新摘要或时间以追认报告。历史无这些字段的 legacy 检查点继续走原恢复路径，不当作新计划已验证事实。
+观测次数与工程次数要分开。重复平台回调、并发其他 owner 的写入和多个结果帧都可能发生；是否重复接收应读原事实，不能仅用相邻 Runtime revision 变化归因某个普通工具。
 
-容量由调用方显式给定；不声明容量时只展示状态而不选择实际批次。计划求值是确定性的启发式排序，非最优排程或自动唤醒器。
+## 14. 实现对应、现有边界与验证
 
-### 17.8 主会话实时派发摘要
+### 14.1 当前接线
 
-派发摘要在父会话 SessionStart 及 PostToolUse 的 Agent 返回、Harness register-workgroup/task-complete/task-integrate 检查点生成，进入已有 additionalContext 指引。摘要列出就绪候选、待回收结果和等待原因；每类最多四项，完整清单通过 s6 status 阅读。未声明容量时只说明逻辑候选，不推断实际槽位或声称已派发。
+| 责任 | 当前落点 |
+| --- | --- |
+| 原生接线优先、控制根解析 | [run.go](../../internal/cli/run.go)、[native_s6.go](../../internal/cli/native_s6.go) |
+| S6 工程准备及原生交付 | [s6_prepare.go](../../internal/cli/s6_prepare.go)、[native_s6.go](../../internal/cli/native_s6.go) |
+| S5／S7／S8 精确引用与原消费者 | [native_review_hooks.go](../../internal/cli/native_review_hooks.go) |
+| S9 私人 Plan／Result、返回 Git 来源与独立 Targeted | [native_s9.go](../../internal/cli/native_s9.go) |
+| 历史已锚定 C source-v1 来源兼容 | [native_s9_source.go](../../internal/cli/native_s9_source.go)、[原来源保全与复核](../../internal/repair/native_s9_source.go) |
+| 原领域接收及回执 | [submission](../../internal/submission)、[assignment](../../internal/assignment) |
+| TASK 偏序、依赖释放及候选投影 | [dispatch/board.go](../../internal/dispatch/board.go)、[semantic/dispatch_plan.go](../../internal/semantic/dispatch_plan.go) |
+| Main 与角色的实际使用说明 | [agent-dispatch](../../skills/agent-dispatch/SKILL.md)、[agent-protocol](../../docs/control/agent-protocol.md)、[角色定义](../../agents) |
 
-SubagentStop/TeammateIdle 不用普通 systemMessage 冒充父会话投递；异步 Agent 启动不是完成。Worker 不接收全局派发摘要，普通工具调用不重复扫描计划。投影失败只提醒检查，不改变既有 allow/block 判定。
+新 S9 Builder 的 D 合同由原 pin／brief 固定准确普通原稿 `.loop-submissions/native-s9/<原Plan packet>/plan.json` 和同目录 `result.json`；原 packet、AnswerPath／digest、typed 机器输入及旧 frozen 坐标不改，作者仍只填本人原有专业产物。系统核准确原稿路径未被 ignore、非 tracked／base 产品且真实 `??`，并按责任和原字节投影原稿。原 PlanReport 回执、pin 和登记执行共同确定该 packet 的本人私人运行产物区，区内未追踪中间产物不因缺引用而成为产品变化；这不排除整个 `.loop-submissions`、其他 packet 或真实产品 diff。被引用证据仍按原来源捕获与校验。平台默认生命周期不接管；原稿至少保留至来源后继结束与原 verified／ACK／cleanup_pending，不在 Stop 提前删最后一份原稿。原回收授权成立后，本责任私人运行产物可随该工作区回收，不新增作者清理手续。
+
+原 Stop 沿准确责任和实际来源进入原 Plan／Result／Candidate；actor 仅记录真实事件，不建立独立 actor→worktree 所有权证明。仅无失败的 Main Agent／Task completed Post、准确派发 prompt 唯一原 brief、返回 agentId 非空且非 Main，并满足相应来源证明时，可在原预算内续同一原 source／attempt。D 核同次结构化 worktreePath／worktreeBranch、原 execution 和冻结 pin 摘要，缺字段不从 prose 猜源；既有 C 核原 retained Stop actor 与已锚不可变来源。已保存 typed 优先、已收幂等，不从 prose／角色／目录首次造源、不要求作者重存或再 Stop。普通高频 Pre／Post 继续当前信息和原 Writer 恢复，不因完整 JSON 首次接收 Worker；Main 真实保存的原工序仍保留自身接收合同。Main 长集成／检查不进入 Stop。
+
+新 D 不默认创建 source-v1／ref；历史实际 C 锚及旧 frozen 继续原读取与冲突规则，不能移动旧稿或追溯升级。S7 Reviewer、S9 独立 Targeted 沿各自原题、原作者根和消费者，S6／S8／S10 的专业合同不扩展。精确接收、ignored 清理与先 Impact 后独立资源收尾见 [S9 §6.2](../l3-stages/L3-S9-repair.md#62-stop-接收原作者产物不代作专业判断)及 [Worktree §9.2](L4-worktree-governance.md#92-清理只处理确切已接收资源)。D 接线及完整平台验证仍待完成，有限 changed／nochange 隔离证据不替代真实 blocked、Targeted→fresh S7、OS sandbox、并发与安装验收。
+
+这些入口复用原领域机制，没有新增 actor 注册表、通用 Result 或平台启动器。任务读取与错误反馈受前述准确引用、有限读取和责任归属边界约束；Main 工具返回可提供原回执摘要；父会话是否实际看到仍须实际平台验证，不能由 Stop 的 stderr 推定。具名冻结恢复入口继续服务原记录；维护时沿公开调用链判断，不能看到旧 helper 就将其重新提升为正常前置。
+
+S8 无 Finding 的人类问题虽然可以准备调查材料，当前结果来源与合同链仍有批次依赖。S6 的正式 TASK 源重锁、S7 的真实验证覆盖、S9 的全批无差异交付、S10／S11 的真实专业和人意条件，也不能因原生派发接通就声称解决。具体差距留在各自 L3，本机制不代替其专业判断。
+
+### 14.2 验证应覆盖真实失败方式
+
+自动化要检查：Start 无确切责任不猜；普通 Worker 工具无接收或激活；Main 不抢收；同角色并发和相似路径不串卷；新旧责任和多重引用不误收；本人字段缺项有准确反馈；真实 blocker 可交接；重放及清理后迟到 Stop 不重复；来源丢失不借卷；Main 集成和阶段门仍单独成立。
+
+真实 Claude Code 验证还要确认实际派发、前台／后台、原生恢复、Hook payload、Handback 收尾与返回，以及 Main 能否据实际结果接续。机械调用和合成前置只证明其覆盖范围，不能代替真实宿主或业务质量。
+
+模拟答卷适合检查接线和流转，必须明示没有真实实施、审查或调查。有限实测也只证明相应源码、平台和用例；不能把旧报告存在、测试数量或本篇完整性当成当前完整原生矩阵已经通过。

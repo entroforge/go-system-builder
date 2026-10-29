@@ -56,7 +56,7 @@ audit evidence.
 - lock FE/BE/SYNC contracts before required UI Prototype Gate passes
 - bypass a Loop Definition guard or Hook decision
 - change sync/release commits with unrelated work
-- mark a task complete without a valid complete review round
+- declare the whole REQ delivery complete without a valid full review round
 - fix code while leaving related TASK/REV/QA/BUG/ACC/release evidence stale
 - use Engineering Loop automation to lock or change a requirement (REQ lock and amendment are human-only)
 - treat release architecture audit as human release approval

@@ -11,22 +11,19 @@ import (
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 )
 
-// PreToolUseWithQualityGate projects the Controller's layered result
-// (Quality Gate progress + minimal safety Decision) onto the official Claude
-// Code Hook PreToolUse envelope (BUG-039-03 §4.1 / REQ-039 §10.2 / SYNC-039
+// PreToolUseWithQualityGate projects the Controller's Quality Gate progress
+// onto the official Claude Code Hook PreToolUse envelope (BUG-039-03 §4.1 /
+// REQ-039 §10.2 / SYNC-039
 // §3.2 / §4).
 //
 // Mapping rules (per the BUG contract):
 //
-//   - quality_gate.status ∈ {not_ready, satisfied, unknown}
-//     → permissionDecision="allow", tool proceeds; Recovery Packet still
-//     surfaces missing / gate_id / fingerprint so the agent can resume.
-//   - quality_gate.status == "advanced"
-//     → permissionDecision="allow", transition_committed=true,
-//     observed_revision=N+1, next_cursor points at the post-commit cursor.
-//   - safety block (locked artifact / squash merge)
-//     → permissionDecision="deny", quality_gate.status="blocked".
-//   - "info" on PreToolUse still allows (lifecycle context only).
+//   - quality_gate.status ∈ {not_ready, satisfied, unknown} surfaces pending
+//     work in the Recovery Packet so the agent can resume.
+//   - quality_gate.status == "advanced" reports the committed transition,
+//     incremented revision and next cursor.
+//   - PreToolUse reports graph progress and recovery context; it does not
+//     authorize or deny individual tool calls.
 //
 // User-visible notices and model context are separate. Ordinary tool calls
 // carry a compact checkpoint; a committed stage change restores full guidance.
@@ -41,34 +38,28 @@ import (
 func PreToolUseWithQualityGate(decision policy.Decision, result controller.ControlResult) ([]byte, int, error) {
 	qg := normalizeQualityGate(result.QualityGate)
 
-	// Safety block: only the minimal policy may produce deny/block on
-	// PreToolUse. The Quality Gate status collapses to "blocked" exactly
-	// here, never as a side-effect of not_ready / unknown.
-	permissionDecision := "allow"
-	if decision.Decision == "block" || decision.Decision == "deny" {
-		permissionDecision = "deny"
-		qg.Status = controller.StatusBlocked
+	projection, _ := json.Marshal(qg)
+	var body strings.Builder
+	body.WriteString("QUALITY_GATE ")
+	body.Write(projection)
+	body.WriteByte('\n')
+	// AdditionalContext may contain the current responsibility's exact answer
+	// path. Put it before the potentially long Quality Gate recovery details so
+	// the existing bounded wire packet cannot cut that path off at its tail.
+	if decision.AdditionalContext != "" {
+		body.WriteString(decision.AdditionalContext)
+		body.WriteString("\n\n")
 	}
-
-	body := formatPreToolUseRecoveryPacket(decision, qg)
+	body.WriteString(boundedContext(formatPreToolUseRecoveryPacket(decision, qg)))
 	if decision.Guidance != nil {
+		body.WriteString("\n\n")
 		if qg.TransitionCommitted {
-			body += "\n\n" + formatGuidance(*decision.Guidance)
+			body.WriteString(formatGuidance(*decision.Guidance))
 		} else {
-			body += "\n\n" + compactGuidance(*decision.Guidance)
+			body.WriteString(compactGuidance(*decision.Guidance))
 		}
 	}
-
-	if decision.AdditionalContext != "" {
-		body += "\n\n" + decision.AdditionalContext
-	}
-	projection, _ := json.Marshal(qg)
-	body = "QUALITY_GATE " + string(projection) + "\n" + body
-	specific := map[string]any{"hookEventName": "PreToolUse", "additionalContext": boundedContext(body)}
-	if permissionDecision == "deny" {
-		specific["permissionDecision"] = "deny"
-		specific["permissionDecisionReason"] = boundedContext(body)
-	}
+	specific := map[string]any{"hookEventName": "PreToolUse", "additionalContext": body.String()}
 	payload := map[string]any{"hookSpecificOutput": specific, "systemMessage": qualityNotice(decision, qg)}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -87,8 +78,7 @@ func PreToolUseEnvelopeBytes(decision policy.Decision, result controller.Control
 }
 
 // normalizeQualityGate guarantees the JSON projection always carries
-// well-formed arrays (never nil), and keeps the controller's verbatim
-// status — never overrides not_ready / unknown with blocked or advanced.
+// well-formed arrays (never nil) and preserves the Controller's status.
 func normalizeQualityGate(qg controller.QualityGateResult) controller.QualityGateResult {
 	qg.Missing = nonNil(qg.Missing)
 	qg.EvidenceRefs = nonNil(qg.EvidenceRefs)
@@ -164,8 +154,19 @@ func formatPreToolUseRecoveryPacket(decision policy.Decision, qg controller.Qual
 	// the agent because only missing[] was rendered). Without them an
 	// unknown gate is un-actionable.
 	if len(qg.Conflicts) > 0 {
-		fmt.Fprintf(&b, " Conflicts: %s.", strings.Join(qg.Conflicts, "; "))
+		var conflicts []string
+		var transitionDiagnostics []string
 		for _, conflict := range qg.Conflicts {
+			if qg.ErrorCode == controller.CodeTransitionGua && strings.HasPrefix(conflict, "transition:") {
+				transitionDiagnostics = append(transitionDiagnostics, conflict)
+				continue
+			}
+			conflicts = append(conflicts, conflict)
+		}
+		if len(conflicts) > 0 {
+			fmt.Fprintf(&b, " Conflicts: %s.", strings.Join(conflicts, "; "))
+		}
+		for _, conflict := range conflicts {
 			if strings.HasSuffix(conflict, ":producer") {
 				for _, requirement := range qualitygate.ProducerRequirements(qg.GateID) {
 					fmt.Fprintf(&b, " Producer contract: %s requires %s.", requirement.Kind, strings.Join(requirement.Responsibilities, " or "))
@@ -174,9 +175,16 @@ func formatPreToolUseRecoveryPacket(decision policy.Decision, qg controller.Qual
 				break
 			}
 		}
+		for _, diagnostic := range transitionDiagnostics {
+			fmt.Fprintf(&b, " Transition diagnostic: %s.", diagnostic)
+			if qg.CandidateTransition != "" {
+				fmt.Fprintf(&b, " Read next (read-only): `loop-harness explain %s --root .`.", qg.CandidateTransition)
+			}
+		}
 	}
 
-	// For blocked decisions the agent needs the rule id + recovery.
+	// Include recorded rule and recovery details as graph context; these fields
+	// do not change the tool's permission decision.
 	if qg.Status == controller.StatusBlocked || decision.Decision == "block" || decision.Decision == "deny" {
 		if decision.RuleID != "" {
 			fmt.Fprintf(&b, " Rule: %s.", decision.RuleID)

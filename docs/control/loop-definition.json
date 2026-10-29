@@ -163,7 +163,7 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "Advance formal planning from design to contracts after the design quality gate passes. Gate readiness facts: an ARCHITECTURE-*.md whose top status line (状态/Status) declares `locked` plus a valid planning_design JSON envelope (responsibility Architect, conclusion pass — a markdown file as --path yields `evidence:<id>:schema`). Missing tokens `document:design:locked` / `evidence:planning_design_record` mean one of these is absent."
+          "description": "Advance formal planning from design to contracts after the original design quality gate passes. Main saves the issued S2 answer with architecture_path and conclusion pass; the original consumer records planning_design evidence and runs this outlet. The gate requires current design evidence and a real ARCHITECTURE-*.md whose top status line (状态/Status) declares locked, plus the bound requirement conditions. Missing tokens document:design:locked / evidence:planning_design_record identify the remaining gate work. Reception, committed transition and S3 material preparation are separate outcomes; authors do not create evidence envelopes or qualify by producer label."
         },
         {
           "id": "PTR-PLAN-02",
@@ -196,7 +196,122 @@
             "max_per_event": 1,
             "human_required": false
           },
-          "description": "Advance formal planning from contracts to tasks after the contract quality gate passes. Gate readiness facts: a contract declaring `Status: locked` on disk (or an already-registered locked contract in runtime documents[]) plus valid planning_contract evidence — the missing token `document:contract:locked` means neither was found; flip the contract's top status line（状态/Status）to locked."
+          "description": "Advance contracts to tasks through the original S3 gate and PTR-PLAN-02. In questionnaire mode the listener gives exact answer and output paths; Main saves one professional answer, and the original consumer checks the current bound REQ's complete locked contract batch and shared-model dependencies. The gate rechecks the accepted subjects before the original transaction registers them. Normal successful Post handling retains its original continuation. If the gate remains pending after reception, preserve the accepted answer, repair the concrete gap and execute the complete original runtime stage-answer recover command supplied by feedback. If the transition is already committed but next-material preparation failed, repair its named source gap and execute the supplied original runtime stage-answer issue command to prepare the current stage. Neither path requires refilling or resaving the accepted answer; arbitrary reads or material saves do not promise retry. An accepted answer is not a completed stage. Explicitly unpacketized legacy flows retain their existing disk/evidence path."
+        },
+        {
+          "id": "PTR-PLAN-03",
+          "from": "contracts",
+          "selector": "SEL-PLANNING-OUTCOME",
+          "automation": {
+            "eligible": false,
+            "human_boundary": false
+          },
+          "event": "planning_professional_rework",
+          "to": "design",
+          "actors": [
+            "orchestrator"
+          ],
+          "guards": [
+            "planning_rework_scope"
+          ],
+          "actions": [
+            "planning_professional_rework"
+          ],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "Main explicitly opens a fresh design entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections. Use runtime stage-answer rework; requirement changes retain the original human boundary."
+        },
+        {
+          "id": "PTR-PLAN-04",
+          "from": "contracts",
+          "selector": "SEL-PLANNING-OUTCOME",
+          "automation": {
+            "eligible": false,
+            "human_boundary": false
+          },
+          "event": "planning_professional_rework",
+          "to": "contracts",
+          "actors": [
+            "orchestrator"
+          ],
+          "guards": [
+            "planning_rework_scope"
+          ],
+          "actions": [
+            "planning_professional_rework"
+          ],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "Main explicitly opens a fresh contracts entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections. Use runtime stage-answer rework; requirement changes retain the original human boundary."
+        },
+        {
+          "id": "PTR-PLAN-05",
+          "from": "tasks",
+          "selector": "SEL-PLANNING-OUTCOME",
+          "automation": {
+            "eligible": false,
+            "human_boundary": false
+          },
+          "event": "planning_professional_rework",
+          "to": "design",
+          "actors": [
+            "orchestrator"
+          ],
+          "guards": [
+            "planning_rework_scope"
+          ],
+          "actions": [
+            "planning_professional_rework"
+          ],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "Main explicitly opens a fresh design entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections. Use runtime stage-answer rework; requirement changes retain the original human boundary."
+        },
+        {
+          "id": "PTR-PLAN-06",
+          "from": "tasks",
+          "selector": "SEL-PLANNING-OUTCOME",
+          "automation": {
+            "eligible": false,
+            "human_boundary": false
+          },
+          "event": "planning_professional_rework",
+          "to": "contracts",
+          "actors": [
+            "orchestrator"
+          ],
+          "guards": [
+            "planning_rework_scope"
+          ],
+          "actions": [
+            "planning_professional_rework"
+          ],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "Main explicitly opens a fresh contracts entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections. Use runtime stage-answer rework; requirement changes retain the original human boundary."
+        },
+        {
+          "id": "PTR-PLAN-07",
+          "from": "tasks",
+          "selector": "SEL-PLANNING-OUTCOME",
+          "automation": {
+            "eligible": false,
+            "human_boundary": false
+          },
+          "event": "planning_professional_rework",
+          "to": "tasks",
+          "actors": [
+            "orchestrator"
+          ],
+          "guards": [
+            "planning_rework_scope"
+          ],
+          "actions": [
+            "planning_professional_rework"
+          ],
+          "required_evidence": [],
+          "on_guard_failure": "reject",
+          "description": "Main explicitly opens a fresh tasks entry within the original locked REQ for a named professional reason; preserve REQ/S2/S3 frozen inputs and accepted history; invalidate only tasks, dispatch plans and downstream review projections. Use runtime stage-answer rework; requirement changes retain the original human boundary."
         }
       ]
     },
@@ -256,7 +371,7 @@
       "phases": {
         "investigation": {
           "description": "Investigators consume S7 encounter/raw evidence, form competing hypotheses and answer independent discriminator questions. Reproduction is an exception for missing or contradictory evidence, not an intake requirement.",
-          "entry_condition": "TR-008 or a human defect decision has opened an InvestigationCase with an exact source Finding set and a frozen baseline.",
+          "entry_condition": "TR-008 has handed the sealed ObservationBatch to investigation, or an actual human defect decision has entered the original intake route. Main saves the supplied intake rationale; the original consumer validates the source set and frozen baseline before creating the InvestigationCase.",
           "exit_condition": "The Case has a supported causal model, or an explicit route to investigate_more, specification rework, REQ decision, duplicate, or no-change."
         },
         "bug_report_review": {
@@ -594,7 +709,7 @@
         },
         {
           "id": "PTR-BUG-12",
-          "from": "investigation",
+          "from": "targeted_reverification",
           "selector": "SEL-BUG-OUTCOME",
           "automation": {
             "eligible": true,
@@ -781,6 +896,60 @@
             "blocker_recorded",
             "activation_scope_still_valid"
           ]
+        },
+        {
+          "from": "spawned",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
+        },
+        {
+          "from": "queued",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
+        },
+        {
+          "from": "reading",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
+        },
+        {
+          "from": "understanding_submitted",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
+        },
+        {
+          "from": "understanding_approved",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
+        },
+        {
+          "from": "activated",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
+        },
+        {
+          "from": "working",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
+        },
+        {
+          "from": "reported",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
+        },
+        {
+          "from": "blocked",
+          "event": "assignment_revision_issued",
+          "to": "stopped",
+          "guards": []
         }
       ]
     },
@@ -873,6 +1042,36 @@
             "blocker_recorded",
             "activation_scope_still_valid"
           ]
+        },
+        {
+          "from": "locked",
+          "event": "assignment_revision_issued",
+          "to": "in_progress",
+          "guards": []
+        },
+        {
+          "from": "in_progress",
+          "event": "assignment_revision_issued",
+          "to": "in_progress",
+          "guards": []
+        },
+        {
+          "from": "review",
+          "event": "assignment_revision_issued",
+          "to": "in_progress",
+          "guards": []
+        },
+        {
+          "from": "blocked",
+          "event": "assignment_revision_issued",
+          "to": "in_progress",
+          "guards": []
+        },
+        {
+          "from": "done",
+          "event": "assignment_revision_issued",
+          "to": "in_progress",
+          "guards": []
         }
       ]
     },
@@ -1041,7 +1240,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Planning completes when contracts are locked and the TASK batch is fully complete on disk (planning_complete), with clause coverage, DAG acyclicity, and closing contracts verified (tasks_checked). Gate readiness facts: a TASK declaring `Status: complete` on disk (or a registered complete task) plus valid planning_task evidence — the missing token `document:task:complete` means neither was found. On commit, locked contracts and complete tasks are registered into documents[]."
+      "description": "In questionnaire mode, the current S4 professional answer must be received by the original consumer. The gate checks the complete accepted REQ-scoped TASK/index batch, clause coverage, DAG and Closing Contracts; accepted source drift is reported as a concrete conflict. TR-002 revalidates the original reception and sources in its Writer transaction and registers that exact contract/TASK delivery before entering document_verification. An incomplete gate keeps the original followup retryable. Legacy packet-off planning retains its original checks and registration path."
     },
     {
       "id": "TR-003",
@@ -1247,7 +1446,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "A sealed ObservationBatch carries the exact immutable Finding set (with encounters, wall actions and evidence refs) into the S8 Runtime cursor. TR-008 records the cursor handoff; the next mandatory S8 verb is `runtime investigation ingest`, which creates the InvestigationCase after exact-set/hash/baseline validation. S8 consumes the facts and does not re-reproduce symptoms by default. No per-Finding BUG draft is created; any legacy BUG draft is only a compatibility projection of the Case.",
+      "description": "A sealed ObservationBatch carries the exact immutable Finding set (with encounters, wall actions and evidence refs) into S8 on the next Main PreToolUse. TR-008 records only the cursor handoff. Main then reads the supplied Batch/Findings and saves grouping_rationale in the exact S8 intake questionnaire; its original ingest consumer creates the InvestigationCase after exact-set/hash/baseline validation. The runtime investigation ingest command remains a direct domain/recovery entry, not a second required submission. S8 consumes the observed facts without re-reproducing symptoms by default. No per-Finding BUG draft is created; any legacy BUG draft is only a compatibility projection of the Case.",
       "from_phase": "observation_sealed"
     },
     {
@@ -1283,7 +1482,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Acceptance requires the machine CleanRound: every required Claim of the current ReviewPlan has a consumed pass Result, no current-round Finding exists, and the clean-round snapshot is recomputed by the clean_round_valid guard at promotion time."
+      "description": "The final accepted ReviewResult continues the original Gate/TR-009 in the same completion event, then prepares the current S10 acceptance questionnaire. Every required Claim of the current ReviewPlan needs a consumed PASS; clean_round_valid recomputes the snapshot, current product baseline and applicable E2E assets at promotion. Reception, transition and material preparation are separate facts. Resume a pending original exit with runtime review-continue; recover missing current S10 materials with runtime audit-prepare. PreToolUse remains a compatibility recovery path."
     },
     {
       "id": "TR-010",
@@ -1871,8 +2070,7 @@
         "record_human_release_decision"
       ],
       "required_evidence": [
-        "human_decision_record",
-        "finding_record"
+        "human_decision_record"
       ],
       "human_decision_scope": "runtime_release",
       "on_guard_failure": "reject",
@@ -2169,7 +2367,7 @@
     {
       "event": "write_before_agent_activation",
       "enforcement": "strong_block",
-      "reason": "Phase one is read-only."
+      "reason": "An existing frozen execution retains its recorded phase-one approval boundary. New native responsibilities follow their original professional contract without generic activation or ordinary-tool interception."
     },
     {
       "event": "write_outside_allowed_paths",
@@ -2235,7 +2433,7 @@
     },
     {
       "id": "INV-006",
-      "statement": "Agent phase one is read-only and phase two activation is explicit.",
+      "statement": "Native responsibilities follow their original professional inputs and actual domain approvals without a generic activation handshake. Only existing frozen executions retain their recorded phase-one and activation recovery boundary.",
       "enforcement": "combined"
     },
     {
@@ -2300,6 +2498,10 @@
       "source": "git_tree"
     },
     {
+      "path": "s10",
+      "source": "disk"
+    },
+    {
       "path": ".claude/evidence",
       "source": "disk"
     },
@@ -2337,6 +2539,10 @@
     },
     {
       "path": ".claude/agents",
+      "source": "disk"
+    },
+    {
+      "path": ".claude/skills",
       "source": "disk"
     },
     {

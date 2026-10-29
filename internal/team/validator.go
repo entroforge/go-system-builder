@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/entroforge/go-system-builder/internal/agentcontext"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -31,18 +33,20 @@ type disposition struct {
 }
 
 type assignment struct {
-	AssignmentID       string   `json:"assignment_id"`
-	Responsibility     string   `json:"responsibility_id"`
-	RoleFamily         string   `json:"role_family"`
-	AgentID            string   `json:"agent_id"`
-	AgentDefinitionRef string   `json:"agent_definition_ref"`
-	SkillRefs          []string `json:"skill_refs"`
-	ReadPaths          []string `json:"read_paths"`
-	WritePaths         []string `json:"write_paths"`
-	OutputPaths        []string `json:"output_paths"`
-	DependsOn          []string `json:"depends_on"`
-	ReuseDecision      string   `json:"reuse_decision"`
-	GroupingRationale  string   `json:"grouping_rationale"`
+	RequiredChecks     []string            `json:"required_checks"`
+	CheckProfiles      []checkexec.Profile `json:"check_profiles,omitempty"`
+	AssignmentID       string              `json:"assignment_id"`
+	Responsibility     string              `json:"responsibility_id"`
+	RoleFamily         string              `json:"role_family"`
+	AgentID            string              `json:"agent_id"`
+	AgentDefinitionRef string              `json:"agent_definition_ref"`
+	SkillRefs          []string            `json:"skill_refs"`
+	ReadPaths          []string            `json:"read_paths"`
+	WritePaths         []string            `json:"write_paths"`
+	OutputPaths        []string            `json:"output_paths"`
+	DependsOn          []string            `json:"depends_on"`
+	ReuseDecision      string              `json:"reuse_decision"`
+	GroupingRationale  string              `json:"grouping_rationale"`
 }
 
 type edge struct {
@@ -61,19 +65,6 @@ var mandatoryByWorkgroup = map[string][]string{
 	},
 	"e2e_browser":  {"E2E-USER-FLOW", "E2E-CONSOLE-NETWORK"},
 	"investigator": {"S8-CAUSAL-INVESTIGATION"},
-}
-
-var responsibilitySkills = map[string][]string{
-	"QA-UNIT-TEST":            {"testing-strategy"},
-	"QA-INTEGRATION-TEST":     {"testing-strategy"},
-	"QA-SECURITY":             {"security-review"},
-	"QA-PERFORMANCE":          {"performance-review"},
-	"QA-RELIABILITY":          {"reliability-review"},
-	"QA-MIGRATION":            {"database-change"},
-	"VER-INTEGRATION":         {"integration-verification"},
-	"E2E-USER-FLOW":           {"e2e-browser-testing", "playwright-e2e"},
-	"E2E-CONSOLE-NETWORK":     {"e2e-browser-testing", "playwright-e2e"},
-	"S8-CAUSAL-INVESTIGATION": {"bug-resolution"},
 }
 
 var riskResponsibilityByWorkgroup = map[string]map[string]string{
@@ -121,13 +112,32 @@ func ValidateBytes(data []byte) error {
 	for _, item := range value.ResponsibilityDispositions {
 		dispositions[item.ResponsibilityID] = item
 	}
-	for _, responsibility := range mandatoryByWorkgroup[value.WorkgroupKind] {
+	mandatory := mandatoryByWorkgroup[value.WorkgroupKind]
+	onlyGenericBehavior := value.WorkgroupKind == "e2e_browser" && len(value.Assignments) > 0
+	if value.WorkgroupKind == "e2e_browser" {
+		mandatory = nil
+		for _, item := range value.Assignments {
+			if item.Responsibility == "E2E-BEHAVIOR" {
+				mandatory = append(mandatory, "E2E-BEHAVIOR")
+			} else {
+				onlyGenericBehavior = false
+				mandatory = append(mandatory, mandatoryByWorkgroup["e2e_browser"]...)
+			}
+		}
+		if len(value.Assignments) == 0 {
+			mandatory = mandatoryByWorkgroup["e2e_browser"]
+		}
+	}
+	for _, responsibility := range mandatory {
 		if _, ok := dispositions[responsibility]; !ok {
 			return fmt.Errorf("missing mandatory responsibility %s", responsibility)
 		}
 	}
 	for _, tag := range value.RiskTags {
 		required := riskResponsibilityByWorkgroup[value.WorkgroupKind][tag.Tag]
+		if onlyGenericBehavior && tag.Tag == "regression" {
+			required = "E2E-BEHAVIOR"
+		}
 		if required == "" {
 			continue
 		}
@@ -140,9 +150,12 @@ func ValidateBytes(data []byte) error {
 	assignments := make(map[string]assignment, len(value.Assignments))
 	agents := make(map[string]struct{})
 	for _, item := range value.Assignments {
+		if err := checkexec.ValidateProfiles(item.CheckProfiles, item.RequiredChecks, ""); err != nil {
+			return err
+		}
 		assignments[item.AssignmentID] = item
 		agents[item.AgentID] = struct{}{}
-		for _, requiredSkill := range responsibilitySkills[item.Responsibility] {
+		for _, requiredSkill := range agentcontext.RequiredSkills(item.Responsibility) {
 			if !contains(item.SkillRefs, requiredSkill) {
 				return fmt.Errorf("responsibility %s requires skill %s", item.Responsibility, requiredSkill)
 			}

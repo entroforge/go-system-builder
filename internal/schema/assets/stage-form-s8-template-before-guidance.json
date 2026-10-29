@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "S8",
+  "adapter": "hypothesis_result",
+  "title": "S08 调查 · HypothesisResult",
+  "instruction": "只修改 answer 并保存本卷的准确路径；不手动 issue/consume、不另交 PLAN 或相同内容的报告。依据本卷冻结的 Case、Hypothesis、原来源边界与证据资料（S7 Finding encounter，或 S11 原人类缺陷决定），填写实际判别方法、证据、观察和结论。不要填写根因、路由、RepairContract、审批、ID 或 Assignment。新假设只写完整专业问题与来源，原消费者生成身份后等待 Main 派发。示例只说明 JSON 形状；finding-example 和 test:// 引用必须替换为本卷真实来源与实际执行证据，不能当作已存在的证据。",
+  "questions": {
+    "method": {
+      "question": "你如何判别这个假设与竞争解释？填写字符串，写出实际采用的方法与比较对象，不要把计划当作执行结果。受阻且无法得出结论时选 inconclusive，在此写明实际已做、未执行和受阻的判别操作。",
+      "example": {
+        "path": "answer.method",
+        "expected": "\"读取冻结请求和字段映射实现，比较必填字段在输入、映射前后与发送载荷中的值。\"",
+        "observed": "只写了‘分析代码’，没有实际操作或比较对象"
+      }
+    },
+    "evidence_refs": {
+      "question": "填写字符串数组，引用支持本次结果的现有注册证据或真实 execution anchor。新证据沿原证据登记路径进入，不编造引用；已知 index/hash 由系统核对，不手抄元数据。 人类来源可直接使用本卷提供的原决定 ID 或准确路径，不重复登记；原报告不证明本次判别已经执行。",
+      "example": {
+        "path": "answer.evidence_refs",
+        "expected": "[\"test://tests/save_payload_test.go#required-field-discriminator\"]",
+        "observed": "引用了未登记的文件名，或未真实执行的示例锚"
+      }
+    },
+    "source_boundary_refs": {
+      "question": "填写字符串数组，指出本卷冻结 Finding encounter 中实际使用的现场边界。finding:<本卷Finding ID> 引用整个现场；也可用 finding:<本卷Finding ID>#/encounter/... 引用原文中确实存在的 JSON Pointer。不能用任意 execution anchor 代替来源边界。 本卷来自人类报告且没有 Finding 时，使用本卷提供的原决定 ID 或准确路径；不要伪造 Finding、Claim 或 Batch。",
+      "example": {
+        "path": "answer.source_boundary_refs",
+        "expected": "[\"finding:finding-example\",\"finding:finding-example#/encounter/first_bad_checkpoint\"]",
+        "observed": "仅引用了 Case 标题，或引用不存在的 encounter 字段"
+      }
+    },
+    "observed": {
+      "question": "填写字符串，写出调查中实际观察到的事实；不要把推断写成观察。inconclusive 时在本字段说明已观察事实、具体阻塞、缺少什么和 Main 下一步；不要新增 blocker 字段或另交阻塞报告。若必需来源/证据根本缺失，报告 Main/系统准备缺口，不编造材料满足交卷。"
+    },
+    "counterfactual_or_discriminator": {
+      "question": "填写字符串，写出什么结果可以区分该假设与竞争假设；受阻时仍说明原判别条件及尚未取得哪项结果，不声称已执行。"
+    },
+    "result": {
+      "question": "给出对当前注册 Hypothesis 的本人专业判断。该结论由你作出，不由证据数量或绿色检查自动推导。证据不足或判别受阻时选 inconclusive，并在现有 method/observed 字段记录已做工作与缺口；该值不是 Case route、批准或整个阶段完成。",
+      "choices": [
+        "supported",
+        "refuted",
+        "inconclusive"
+      ]
+    },
+    "explains_finding_ids": {
+      "question": "填写字符串数组，如 [\"finding-example\"]，只选本卷 Case 中由该假设解释的实际 Finding ID；没有时填 []，不得与 does_not_explain 重复。"
+    },
+    "does_not_explain": {
+      "question": "填写字符串数组，如 [\"finding-example\"]，只选本卷 Case 中该假设仍不能解释的实际 Finding ID；没有时填 []，不得与 explains_finding_ids 重复或隐藏未解释项。"
+    },
+    "new_hypotheses": {
+      "question": "填写数组；无后续问题填 []，有则每项完整填写 statement、invariant、discriminator、expected_outcomes{support,refute}、source_finding_ids、evidence_refs 六组字段。有 Finding 时引用本卷 Case Finding 子集；人类来源没有 Finding 时 source_finding_ids 填 []。两种来源都须完整填写专业问题和真实证据。不要填写 ID、Assignment 或状态；原消费者生成身份并登记，Main 再决定专业派发并通过真实平台启动。",
+      "example": {
+        "path": "answer.new_hypotheses",
+        "expected": "[{\"statement\":\"必填字段在共享映射层被丢弃，而非服务端拒绝后被清空。\",\"invariant\":\"有效输入的必填字段必须保留到发送载荷。\",\"discriminator\":\"比较同一次调用在映射前后及发送边界的字段值。\",\"expected_outcomes\":{\"support\":\"映射前有值、映射后缺失且请求尚未发送。\",\"refute\":\"映射前后和发送载荷均保留该值。\"},\"source_finding_ids\":[\"finding-example\"],\"evidence_refs\":[\"test://tests/save_payload_test.go#required-field-discriminator\"]}]",
+        "observed": "只写了一个未经说明的原因猜测。"
+      }
+    }
+  }
+}

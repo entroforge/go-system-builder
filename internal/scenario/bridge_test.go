@@ -49,7 +49,10 @@ func bridgeFixture(t *testing.T, reqBody string) string {
 		"module": "investor-workbench", "fixtures": []any{map[string]any{"id": "fix", "persona": "op", "synthetic": true, "setup": []any{"s"}, "cleanup": []any{"c"}}},
 	})
 	writeJSON(t, filepath.Join(dir, "cross-matrix.json"), map[string]any{
-		"module": "investor-workbench", "entries": []any{map[string]any{"fact": "fact-x", "req_ref": "REQ-001/FR-001", "story": "S-001", "branch": "b-pos"}},
+		"module": "investor-workbench", "entries": []any{
+			map[string]any{"fact": "fact-x", "req_ref": "REQ-001/FR-001", "story": "S-001", "branch": "b-pos"},
+			map[string]any{"fact": "fact-x", "req_ref": "REQ-001/FR-001", "story": "S-001", "branch": "b-neg"},
+		},
 	})
 	if err := os.WriteFile(filepath.Join(dir, "stories.md"), []byte("# S-001\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -136,5 +139,109 @@ func TestBridgeSkipsWithoutBoundREQ(t *testing.T) {
 	}
 	if len(result.IgnoredEntries) == 0 {
 		t.Fatal("skip must be reported, not silent")
+	}
+}
+
+func TestBridgeCurrentTablesAndMultipleFRs(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"indented tab section", strings.Replace(bridgeReqBody, "## §C 具体需求", "  ##\t§C\t具体需求", 1) + "\n## §F 历史\n| AC-999 | old | FR-999 |\n", ""},
+		{"history outside current section", bridgeReqBody + "\n## §F 历史\n| AC-999 | old | FR-999 |\n", ""},
+		{"fenced history", bridgeReqBody + "\n~~~markdown\n| AC-999 | old | FR-999 |\n~~~\n", ""},
+		{"backtick history", bridgeReqBody + "\n```markdown\n| AC-999 | old | FR-999 |\n```\n", ""},
+		{"legacy with fenced section", "# REQ-001\n| FR-001 | submit | Must |\n| AC-001 | submit | FR-001 |\n```markdown\n## §C old\n| AC-999 | old | FR-999 |\n```\n", ""},
+		{"legacy fixture", "# REQ-001\n| FR-001 | submit | Must |\n| AC-001 | submit | FR-001 |\n", ""},
+		{"multiple covered", strings.Replace(bridgeReqBody, "| FR-002", "| FR-003", 1), ""},
+		{"multiple missing coverage", strings.Replace(bridgeReqBody, "| AC-001 | 机构可提交 | FR-001 |", "| AC-001 | 机构可提交 | FR-001, FR-002 |", 1), "REQ-001/FR-002"},
+		{"undeclared reference", strings.Replace(bridgeReqBody, "| AC-001 | 机构可提交 | FR-001 |", "| AC-001 | 机构可提交 | FR-001, FR-999 |", 1), "FR-999"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := bridgeFixture(t, tc.body)
+			if tc.name == "multiple covered" {
+				path := filepath.Join(root, "docs/design/prototypes/investor-workbench/scenario-model.json")
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = []byte(strings.Replace(string(data), `"REQ-001/FR-001"`, `"REQ-001/FR-001", "REQ-001/FR-003"`, 1))
+				if err := os.WriteFile(path, data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				reqPath := filepath.Join(root, "docs/requirements/REQ-001.md")
+				body := strings.Replace(tc.body, "| AC-001 | 机构可提交 | FR-001 |", "| AC-001 | 机构可提交 | FR-001，FR-003 |", 1)
+				if err := os.WriteFile(reqPath, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := scenario.RunBridge(root, true)
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("want %s, got %v", tc.want, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ReachedCases != 1 {
+				t.Fatalf("one AC must count once: %+v", got)
+			}
+		})
+	}
+}
+
+func TestBridgeMixedTargetsOrderAndEveryReference(t *testing.T) {
+	for _, tc := range []struct {
+		name, target, want string
+		reached, na        int
+	}{
+		{"FR first", "FR-001, NFR-001, §A4-1", "", 1, 2},
+		{"NFR first", "NFR-001，§A4-1、FR-001", "", 1, 2},
+		{"A4 first", "§A4-1; FR-001；NFR-001", "", 1, 2},
+		{"multiple NFR", "NFR-001, NFR-002", "", 0, 3},
+		{"NFR and A4", "§A4-1 NFR-001", "", 0, 3},
+		{"undeclared second NFR", "NFR-001, NFR-999", "NFR-999", 0, 0},
+		{"mixed missing NFR", "FR-001, NFR-999", "NFR-999", 0, 0},
+		{"uncovered FR after NFR", "NFR-001, FR-002", "REQ-001/FR-002", 0, 0},
+		{"uncovered FR after A4", "§A4-1, FR-002", "REQ-001/FR-002", 0, 0},
+		{"undeclared FR after A4", "§A4-1, FR-999", "FR-999", 0, 0},
+		{"free text after A4", "§A4-1, manual-check", "not endorsed N/A", 0, 0},
+		{"separators only", ",；、", "not endorsed N/A", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(bridgeReqBody, "| AC-001 | 机构可提交 | FR-001 |", "| AC-001 | 机构可提交 | "+tc.target+" |", 1)
+			body += "\n| NFR-002 | 可靠性 | stable | check |\n"
+			root := bridgeFixture(t, body)
+			for _, branches := range []bool{false, true} {
+				got, err := scenario.RunBridge(root, branches)
+				if tc.want != "" {
+					if err == nil || !strings.Contains(err.Error(), tc.want) {
+						t.Fatalf("want %q, got %v", tc.want, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.TotalAC != 3 || got.ReachedCases != tc.reached || got.EndorsedNA != tc.na {
+					t.Fatalf("counts: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestBridgeGuardWithoutModulesFindsFRInEveryPosition(t *testing.T) {
+	for _, target := range []string{"FR-001, NFR-001", "NFR-001, FR-001", "§A4-1, FR-001"} {
+		t.Run(target, func(t *testing.T) {
+			body := strings.Replace(bridgeReqBody, "| AC-001 | 机构可提交 | FR-001 |", "| AC-001 | 机构可提交 | "+target+" |", 1)
+			root := bridgeFixture(t, body)
+			if err := os.RemoveAll(filepath.Join(root, "docs/design/prototypes")); err != nil {
+				t.Fatal(err)
+			}
+			err := scenario.GuardBridgeChecked(root)
+			if err == nil || !strings.Contains(err.Error(), "FR-001") || !strings.Contains(err.Error(), "no module packages") {
+				t.Fatalf("missing FR package must be rejected: %v", err)
+			}
+		})
 	}
 }

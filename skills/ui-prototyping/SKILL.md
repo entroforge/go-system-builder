@@ -79,29 +79,6 @@ baseline — the running code IS the baseline. Do not redefine `S-NNN` /
 `F-NNN` ID rules (those belong to `user-story-design` /
 `user-flow-design`).
 
-## Inlined Methodology
-
-Loop Engineering uses two Skill categories: Methodology (reusable procedure
-for an engineering event, including entry, steps, output and stop conditions)
-and Best Practice (professional quality criteria and review techniques for
-one technical concern). Role identity is not a Skill; Builder, Document
-Verifier, Delivery Verifier, QA and E2E Browser identities belong to Agent
-Definitions. An Agent gains capability by combining one role definition, one
-task instance and the smallest applicable Skill set. Skill files must
-reference source documents by path. They must not copy REQ, contract, TASK,
-BUG or report bodies. The `ui` risk tag selects the complementary
-`ui-prototyping`, `user-story-design`, and `user-flow-design` Skills.
-Routing order: current runtime state and phase -> pending legal event -> one
-primary Methodology Skill -> Agent Definition kind -> task artifact and risk
-tags -> smallest applicable Best-practice set -> two-phase activation when a
-subagent is involved. Composition rules: one workflow event that requires
-reusable procedure has exactly one primary Methodology Skill; at most two
-secondary Methodology dependencies should be active for one action.
-Anti-patterns include `builder`, `verifier` or `qa` as a general-purpose
-role Skill; a Skill that reads or writes current Loop state as its own
-authority; a Skill containing a second state machine; copied REQ/contract/
-TASK/BUG content; and Best Practices loaded globally without applicability.
-
 ## Core Principle
 
 A prototype describes **the target** — what we are about to build. The
@@ -189,7 +166,7 @@ current target only, and contracts live elsewhere.
 
 | # | Field | Format | Example | Purpose |
 |---|---|---|---|---|
-| 1 | 设计代数 | `v{n}` | `v2` | Design generation; bumps when the S2 package is re-converged. Machine-checked. |
+| 1 | 设计代数 | `v{n}` | `v2` | Design generation; bumps when the S2 package is re-converged. Reviewed with the prototype; no fixed-substring machine check. |
 | 2 | 更新 | `YYYY-MM-DD` | `2026-07-09` | Last edit date. |
 | 3 | 路由 | `<strong>...</strong>` | `/layout/fund — overview`, `/layout/fund/:id — 父详情` | Page route plus slot label. Optional on dialogs / wizards / component mockups (omit if no route). |
 | 4 | index 链接 | `<a href="index.html">↩ 模块入口</a>` | link back | Present when an `index.html` hub exists for the module. |
@@ -395,7 +372,8 @@ A module prototype set is ready for contract lock when ALL of these hold:
 - [ ] If the REQ modifies an existing module: the test plan includes a
       full-module regression sweep enumerating every `F-NNN` and required CASE/PATH
 - [ ] The scenario four-pack is present; generated cases and coverage are current;
-      required allow/reject branch coverage is 100%; and the module ratio gate passes
+      required allow/reject branch coverage is 100%; profile positive/negative
+      ratios guide risk review without adding quotas or dropping real branches
 
 Failing any item is a `DV-SPEC-CONSISTENCY` finding; the prototype set
 returns to S2 rework.

@@ -69,6 +69,7 @@
       "type": "string",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
     },
+    "call_phases": {"type": "object", "description": "Completed request-local spans; nested durations overlap and are not summed as wall time.", "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["count", "sum_ms"], "properties": {"count": {"type": "integer", "minimum": 0}, "sum_ms": {"type": "integer", "minimum": 0}}}},
     "elapsed_ms": {
       "type": "integer",
       "minimum": 0,
@@ -129,10 +130,10 @@
         "lifecycle_state": {"type": "string", "minLength": 1},
         "lifecycle_phase": {"type": "string", "minLength": 1},
         "objective": {"type": "string", "minLength": 1},
-        "action": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "description": "Recipient-specific next action. An empty string means this event assigns no next action to this recipient; it does not relax source, Gate or professional answer requirements."},
         "protocol_ref": {"type": "string", "minLength": 1},
         "manual_ref": {"type": "string", "enum": ["loop-harness.md", ".claude/bin/loop-harness.md"]},
-        "primary_skill": {"type": "string", "minLength": 1},
+        "primary_skill": {"type": "string", "description": "Recipient-specific professional skill. An empty string means this event assigns no specialized skill to this recipient; it does not remove an existing responsibility or change acceptance requirements."},
         "read": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "read_order": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "missing": {"type": "array", "items": {"type": "string", "minLength": 1}},

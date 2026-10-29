@@ -7,8 +7,8 @@
 // caught by a single, fast, fixture-based system test.
 //
 // What this asserts:
-//   1. PreToolUse at the planning.design cursor surfaces
-//      permissionDecision=allow (Quality Gate never blocks tools).
+//   1. PreToolUse at the planning.design cursor surfaces graph progress
+//      without a per-tool permission decision.
 //   2. The wire envelope includes the quality_gate block with
 //      gate_id GATE-PLANNING-DESIGN-COMPLETE.
 //   3. The persisted milestone objective after a PreToolUse matches
@@ -16,8 +16,8 @@
 //      any required UI design package"), proving the Controller is
 //      driving the milestone projection end-to-end.
 //   4. Subsequent PreToolUse calls on the same root are idempotent:
-//      the Controller's CAS ensures the milestone stabilises and the
-//      tool is still allowed.
+//      the Controller's CAS ensures the milestone stabilises while the
+//      listener continues to report the current graph state.
 
 package req039_test
 
@@ -51,7 +51,7 @@ func TestS2_ToS11_CleanPath_Conformance(t *testing.T) {
 	}
 	env, qg := parseEnv(t, stdout)
 	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("S2 PreToolUse must allow: %v", pd)
+		t.Fatalf("S2 PreToolUse must not render a per-tool permission decision: %v", pd)
 	}
 	if gateID, _ := qg["gate_id"].(string); !strings.Contains(gateID, "GATE-PLANNING-DESIGN-COMPLETE") {
 		t.Fatalf("S2 gate_id must be GATE-PLANNING-DESIGN-COMPLETE, got %q", gateID)
@@ -73,13 +73,13 @@ func TestS2_ToS11_CleanPath_Conformance(t *testing.T) {
 		t.Fatalf("S2 milestone objective must be the canonical projection, got %q", objective)
 	}
 
-	// --- Step 3: a second PreToolUse is idempotent (CAS), still allowed,
+	// --- Step 3: a second PreToolUse is idempotent (CAS), still observable,
 	// and the milestone stabilises (no further revision drift).
 	revBefore, _ := persisted["revision"].(float64)
 	_, stdout2, _ := runHook(t, root, "PreToolUse", input)
 	env2, _ := parseEnv(t, stdout2)
 	if pd := env2["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("S2 second PreToolUse must still allow: %v", pd)
+		t.Fatalf("S2 second PreToolUse must not render a per-tool permission decision: %v", pd)
 	}
 	rawState2, _ := os.ReadFile(filepath.Join(root, ".claude", "loop-state.json"))
 	var persisted2 map[string]any

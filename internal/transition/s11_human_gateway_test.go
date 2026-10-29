@@ -60,7 +60,7 @@ func TestBUG104S11RoutesAreHumanBoundaries(t *testing.T) {
 	}{
 		"TR-025": {event: "human_release_approved", target: "release_authorized", actions: []string{"record_human_release_decision"}, evidence: []string{"human_decision_record"}},
 		"TR-026": {event: "human_release_deferred", target: "paused", actions: []string{"capture_pause_checkpoint", "record_human_release_decision"}, evidence: []string{"human_decision_record", "pause_record"}},
-		"TR-027": {event: "human_release_rejected_defect", target: "bug_resolution", actions: []string{"record_human_release_decision"}, evidence: []string{"human_decision_record", "finding_record"}},
+		"TR-027": {event: "human_release_rejected_defect", target: "bug_resolution", actions: []string{"record_human_release_decision"}, evidence: []string{"human_decision_record"}},
 		"TR-028": {event: "human_release_rejected_acceptance", target: "acceptance", actions: []string{"record_human_release_decision", "invalidate_human_release_acceptance_evidence"}, evidence: []string{"human_decision_record"}},
 		"TR-029": {event: "human_release_rejected_release_audit", target: "release_audit", actions: []string{"record_human_release_decision", "invalidate_human_release_release_audit_evidence"}, evidence: []string{"human_decision_record"}},
 		"TR-030": {event: "human_release_aborted", target: "aborted", actions: []string{"record_human_release_decision"}, evidence: []string{"human_decision_record"}, guards: []string{"human_abort_approved"}},

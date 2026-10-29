@@ -299,14 +299,11 @@ func advancePlanningToTasks(t *testing.T, root, statePath, journalPath string) {
 		[]byte("# ARCHITECTURE-test\n\n> 状态：locked\n> 版本：v1.0.0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// PTR-PLAN-02's contracts_checked guard demands at least one real
-	// contract on disk (the contractless-stage floor).
-	contractsDir := filepath.Join(tempRoot, "docs", "dev", "contracts")
-	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(contractsDir, "BE-test.md"),
-		[]byte("# BE-test\n\n> 状态：locked\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n"), 0o644); err != nil {
+	// Declare the same original REQ-scoped contract batch used by the close
+	// tests. Do not seed TASK completion or overwrite an English-status batch.
+	if _, err := os.Stat(filepath.Join(tempRoot, "docs/dev/contracts/CONTRACTS-test.md")); os.IsNotExist(err) {
+		seedPlanningContracts(t, tempRoot, false)
+	} else if err != nil {
 		t.Fatal(err)
 	}
 	for revision, id := range []string{"PTR-PLAN-01", "PTR-PLAN-02"} {
@@ -410,7 +407,6 @@ func seedPlanningArtifacts(t *testing.T, statePath string) {
 func seedPlanningArtifactsLang(t *testing.T, statePath string, english bool) {
 	t.Helper()
 	root := filepath.Dir(statePath)
-	contractsDir := filepath.Join(root, "docs", "dev", "contracts")
 	tasksDir := filepath.Join(root, "docs", "dev", "tasks")
 	archDir := filepath.Join(root, "docs", "architecture")
 	if err := os.MkdirAll(archDir, 0o755); err != nil {
@@ -424,10 +420,31 @@ func seedPlanningArtifactsLang(t *testing.T, statePath string, english bool) {
 		[]byte("# ARCHITECTURE-test\n\n"+archStatus+"\n> 版本：v1.0.0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
-		t.Fatal(err)
+	seedPlanningContracts(t, root, english)
+	status := func(value string) string {
+		if english {
+			return "> Status: " + value
+		}
+		return "> 状态：" + value
 	}
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := "# TASK-002-01\n\n" + status("complete") + "\n> Version: v1.0.0\n> Primary contract: BE-TEST\n\n" +
+		"## 3. Delivered Clauses\n\n" +
+		"| Contract | Delivered clauses |\n|:--|:--|\n| BE-TEST | §1 |\n\n" +
+		"## 7. Closing Contract\n\n```text\nassert BE-TEST §1 == satisfied\n```\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-002-01.md"), []byte(task), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedPlanningContracts declares one original current batch, without making
+// the TASK-completion assertion true in tests that deliberately omit TASKs.
+func seedPlanningContracts(t *testing.T, root string, english bool) {
+	t.Helper()
+	contractsDir := filepath.Join(root, "docs/dev/contracts")
+	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	status := func(value string) string {
@@ -436,23 +453,17 @@ func seedPlanningArtifactsLang(t *testing.T, statePath string, english bool) {
 		}
 		return "> 状态：" + value
 	}
-	index := "# CONTRACTS-test\n\n" + status("locked") + "\n> 版本：v1.0.0\n\n" +
+	index := "# CONTRACTS-test\n\n" + status("locked") + "\n> 版本：v1.0.0\n> 需求: REQ-002\n> Shared model policy: none\n> Shared model reason: This synthetic batch has no shared wire representation.\n\n" +
+		"## 合同清单\n\n| 合同ID | 类型 | 负责人 | 状态 | 版本 | 联调点 |\n|---|---|---|---|---|---|\n| BE-TEST | 后端 | Main | locked | v1.0.0 | N/A |\n\n" +
 		"## 需求覆盖矩阵\n\n" +
 		"| REQ source_ref | Rule → CASE | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n" +
 		"|:--|:--|:--|:--|:--|\n" +
-		"| REQ-test | — | — | BE-TEST §1 | — |\n"
+		"| REQ-002 | — | — | BE-TEST §1 | — |\n"
 	if err := os.WriteFile(filepath.Join(contractsDir, "CONTRACTS-test.md"), []byte(index), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(contractsDir, "BE-TEST.md"),
 		[]byte("# BE-TEST\n\n"+status("locked")+"\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	task := "# TASK-test\n\n" + status("complete") + "\n> Version: v1.0.0\n> Primary contract: BE-TEST\n\n" +
-		"## 3. Delivered Clauses\n\n" +
-		"| Contract | Delivered clauses |\n|:--|:--|\n| BE-TEST | §1 |\n\n" +
-		"## 7. Closing Contract\n\n```text\nassert BE-TEST §1 == satisfied\n```\n"
-	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-test.md"), []byte(task), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

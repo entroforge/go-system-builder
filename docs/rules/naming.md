@@ -44,7 +44,7 @@ Names must make traceability obvious.
 | frontend contract | `FE-{NNN}.md` | `FE-001.md` |
 | backend contract | `BE-{NNN}.md` | `BE-001.md` |
 | sync contract | `SYNC-{NNN}.md` | `SYNC-001.md` |
-| task | `TASK-{NNN}.md` | `TASK-001.md` |
+| task | `TASK-{NNN}.md`, multi-wave subtask `TASK-{NNN}-{NN}.md` (digits only, e.g. `TASK-001-01.md`) | `TASK-001.md` |
 | bug | `BUG-{NNN}.md` | `BUG-001.md` |
 | review | `REV-{NNN}.md` | `REV-001.md` |
 | acceptance | `ACC-{NNN}.md` | `ACC-001.md` |

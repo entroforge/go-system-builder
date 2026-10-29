@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -18,41 +19,56 @@ type taskDoc struct {
 // (L3-S7 §4.2 claim generation order, planner assist): every
 // current-generation TASK yields a delivery traceability claim; the union of
 // Builder-changed paths yields one independently dispatchable QA Assignment
-// per baseline focus; the E2E state is derived from the current CASE→spec
-// inventory (not_applicable only when the bound REQ explicitly has no UI
-// impact). The draft is still a scaffold when no stable CASE input exists —
+// per baseline focus; CASE/script discovery offers candidates while Main
+// chooses actual reuse. UI impact and browser discovery do not decide general E2E applicability. The
+// draft is still a scaffold when no stable CASE input exists —
 // its remaining TODO markers are intentionally rejected by registration.
 func DraftPlan(state map[string]any, round int) (*Plan, []string) {
 	return draftPlanForRoot("", state, round)
 }
 
-// DraftPlanForRoot is the production S7 draft path. It reads the immutable
-// completion envelope through the repository root so changed surfaces can be
-// frozen with their actual disk digest instead of relying on copied state.
+// DraftPlanForRoot is the production S7 draft path. Canonical S6 generations
+// are projected from the original machine snapshot and Main Git range;
+// historical runtimes use the immutable completion envelope path.
 func DraftPlanForRoot(root string, state map[string]any, round int) (*Plan, []string) {
 	return draftPlanForRoot(root, state, round)
 }
 
-func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []string) {
+func DraftPlanForRootContext(ctx context.Context, root string, state map[string]any, round int) (*Plan, []string) {
+	return draftPlanForRoot(root, state, round, ctx)
+}
+
+func draftPlanForRoot(root string, state map[string]any, round int, contexts ...context.Context) (*Plan, []string) {
+	ctx := baselineContext(contexts)
 	generation := baselineGeneration(state)
 	var notes []string
+	productBaseline, baselineErr := readCanonicalProductBaselineContext(ctx, root, state)
+	if baselineErr != nil {
+		return nil, []string{"canonical S6 product baseline cannot be verified: " + baselineErr.Error()}
+	}
 
 	var tasks []taskDoc
-	for _, raw := range stateDocuments(state) {
-		doc, _ := raw.(map[string]any)
-		if doc == nil || doc["kind"] != "task" {
-			continue
+	if productBaseline != nil {
+		for _, task := range productBaseline.Tasks {
+			tasks = append(tasks, taskDoc{id: task.ID, path: task.Path, sha256: task.SHA256})
 		}
-		if intField(doc["generation"]) != generation {
-			continue
+	} else {
+		for _, raw := range stateDocuments(state) {
+			doc, _ := raw.(map[string]any)
+			if doc == nil || doc["kind"] != "task" {
+				continue
+			}
+			if intField(doc["generation"]) != generation {
+				continue
+			}
+			id, _ := doc["id"].(string)
+			path, _ := doc["path"].(string)
+			sha, _ := doc["sha256"].(string)
+			if id == "" || path == "" {
+				continue
+			}
+			tasks = append(tasks, taskDoc{id: id, path: path, sha256: sha})
 		}
-		id, _ := doc["id"].(string)
-		path, _ := doc["path"].(string)
-		sha, _ := doc["sha256"].(string)
-		if id == "" || path == "" {
-			continue
-		}
-		tasks = append(tasks, taskDoc{id: id, path: path, sha256: sha})
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].id < tasks[j].id })
 
@@ -66,20 +82,35 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 		frozen = append(frozen, FrozenSubject{Path: task.path, SHA256: task.sha256, Kind: "task"})
 	}
 
-	projection := buildS7BaselineProjection(root, state)
-	for _, diagnostic := range projection.Diagnostics {
-		notes = append(notes, "S7 baseline projection: "+diagnostic+"; registration will reject an unverifiable completion artifact")
-	}
-	changedSubjects, subjectDiagnostics := changedSurfaceSubjects(root, projection.ChangedPaths)
-	for _, diagnostic := range subjectDiagnostics {
-		notes = append(notes, "S7 baseline projection: "+diagnostic+"; add a valid frozen subject before registration")
-	}
-	for _, subject := range changedSubjects {
-		if seenFrozen[subject.Path] {
-			continue
+	projection := s7BaselineProjection{}
+	if productBaseline != nil {
+		var err error
+		frozen, err = frozenSubjectsForProductBaseline(productBaseline)
+		if err != nil {
+			return nil, append(notes, "canonical S6 frozen subjects cannot be built: "+err.Error())
 		}
-		seenFrozen[subject.Path] = true
-		frozen = append(frozen, subject)
+		for _, path := range productBaseline.Paths {
+			projection.ChangedPaths = append(projection.ChangedPaths, path.Path)
+		}
+		for _, file := range productBaseline.UnattributedPaths {
+			notes = append(notes, "Main product change has no registered S6 contribution; it remains in full review coverage: "+file)
+		}
+	} else {
+		projection = buildS7BaselineProjection(root, state, ctx)
+		for _, diagnostic := range projection.Diagnostics {
+			notes = append(notes, "S7 baseline projection: "+diagnostic+"; registration will reject an unverifiable completion artifact")
+		}
+		changedSubjects, subjectDiagnostics := changedSurfaceSubjects(root, projection.ChangedPaths)
+		for _, diagnostic := range subjectDiagnostics {
+			notes = append(notes, "S7 baseline projection: "+diagnostic+"; add a valid frozen subject before registration")
+		}
+		for _, subject := range changedSubjects {
+			if seenFrozen[subject.Path] {
+				continue
+			}
+			seenFrozen[subject.Path] = true
+			frozen = append(frozen, subject)
+		}
 	}
 
 	claims := []Claim{}
@@ -97,7 +128,7 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 		claims = append(claims, Claim{
 			ClaimID: id, Lens: "delivery", Target: task.path,
 			Assertion:     task.id + " is delivered as locked: every acceptance obligation lands in the implementation",
-			Oracle:        "TODO(planner): the observable fact proving delivery for " + task.id,
+			Oracle:        "TODO(planner): for " + task.id + ", read its Closing Contract and name the observable postcondition, forbidden side effect and source evidence that distinguish pass from fail",
 			Method:        "requirement traceability review",
 			Applicability: "required",
 			SourceRefs:    []string{task.id, task.path},
@@ -132,6 +163,10 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 	// independent questions independently dispatchable: platform capacity may
 	// queue them, but it must not collapse six quality perspectives into one
 	// overloaded QA session.
+	qaSourceRefs := taskIDs(tasks)
+	if productBaseline != nil {
+		qaSourceRefs = sortedUniqueRefs(append(qaSourceRefs, projection.ChangedPaths...))
+	}
 	for _, focus := range []struct{ key, assertion string }{
 		{"design-boundary", "module boundaries, ownership and contracts are explicit; invalid crossings are rejected at the right layer"},
 		{"pattern-idiom-fit", "the implementation uses the project's established design patterns and idioms where they reduce coupling or risk"},
@@ -149,16 +184,16 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 			// (registration will reject a literal `TODO(planner)` literal
 			// with "TODO marker must be replaced"; surfacing it in `target`
 			// as well makes the gap visible at draft time).
-			target = "TODO(planner): path(s) to review for " + focus.key
-			method = "TODO(planner): the QA method (e.g. static code review, design walk) for " + focus.key
+			target = "TODO(planner): which actual changed paths and dependencies require " + focus.key + " review? Use the supplied baseline; report missing inputs to Main"
+			method = "TODO(planner): how will " + focus.key + " be inspected or exercised, and what observation would expose a violation? Use an actual review method or runnable check"
 		}
 		claims = append(claims, Claim{
 			ClaimID: id, Lens: "qa", Target: target,
 			Assertion:     focus.assertion,
-			Oracle:        "TODO(planner): the observable fact proving " + focus.key,
+			Oracle:        "TODO(planner): what observable condition makes " + focus.key + " pass or fail, and which source defines that condition?",
 			Method:        method,
 			Applicability: "required",
-			SourceRefs:    taskIDs(tasks),
+			SourceRefs:    qaSourceRefs,
 			FocusKey:      focus.key,
 		})
 		assignments = append(assignments, PlanAssignment{
@@ -172,100 +207,62 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 	}
 	notes = append(notes, "the six QA baseline Claims are independent quality questions; keep their plan-local claim_id values and merge Assignments only when the same-lens read set and non-overlap boundary remain truthful")
 
-	// E2E coverage state from the bound REQ's ui_impact (§4.2 step 6). The
-	// Planner consumes the actual S2 CASE catalog and the repository's
-	// Playwright spec mentions. A complete CASE→spec mapping is enough for
-	// regression_available; any missing required CASE conservatively falls
-	// back to cold_start while keeping one Assignment per CASE.
+	// Asset discovery is a source candidate projection. Main chooses the actual
+	// execution state; explicit known CASEs still need individual dispositions.
 	uiImpact := boundREQUIImpact(state)
 	if strings.TrimSpace(uiImpact) == "" {
 		// S7-9 (RC-07): a missing/mistyped ui_impact previously followed the
 		// same not_applicable branch as an explicit "none", silently dropping
 		// the whole E2E dimension. The draft refuses to choose for the
-		// Planner: only an explicit "none" may produce the N/A claim.
+		// Planner: UI impact alone never establishes general E2E N/A.
 		return nil, append(notes, "bound REQ metadata.ui_impact is empty or missing; the E2E coverage state cannot be derived — bind the REQ with an explicit ui_impact value (none | changed | unknown) via the requirement bind path, or add the metadata.ui_impact field, then re-draft (S7-9/RC-07: an empty ui_impact is an error, not an implicit not_applicable)")
+	}
+	inventory, discoveryDiagnostics := discoverE2EInventory(root, state, &Plan{ProductBaseline: productBaseline})
+	for _, diagnostic := range discoveryDiagnostics {
+		notes = append(notes, "E2E inventory: "+diagnostic+"; Main must resolve the original source gap, not assume an empty test library")
 	}
 	var e2eAssets []E2EAsset
 	var verificationWorkspace *string
-	e2eState := "regression_available"
-	switch uiImpact {
-	case "none":
-		e2eState = "not_applicable"
-		claims = append(claims, Claim{
-			ClaimID: "claim-e2e-na-1", Lens: "e2e", Target: "n/a",
-			Assertion:     "no user-observable behavior changed",
-			Oracle:        "impact analysis shows no user-visible surface",
-			Method:        "impact analysis",
-			Applicability: "not_applicable",
-			NARationale:   "bound REQ declares no UI impact; no entry point or browser-observable behavior is in scope",
-			// The id references the checklist template this N/A was checked
-			// against (RC-12: docs/design/NA-checklist-template.md); a bare
-			// rationale without a named checklist is not a verifiable N/A.
-			NAChecklistID: "na-checklist-template-1#bound_req#ui_impact",
-			SourceRefs:    []string{"bound_req"},
-		})
-		notes = append(notes, "E2E assessed as not_applicable from ui_impact=none; keep the explicit claim-e2e-na-1 Claim with source_refs and na_rationale (it is not dispatched), then verify against the real required surfaces (§4.3) before registering")
-	default:
-		inventory, discoveryDiagnostics := discoverE2EInventory(root, state)
-		for _, diagnostic := range discoveryDiagnostics {
-			notes = append(notes, "E2E inventory: "+diagnostic+"; registration will reject an unverifiable asset and cold_start remains the safe fallback")
-		}
-		e2eAssets = sortE2EAssets(inventory.Assets)
-		assetByCase := make(map[string]bool, len(e2eAssets))
-		for _, asset := range e2eAssets {
-			assetByCase[asset.CaseRef] = true
-		}
-		if len(inventory.Cases) > 0 {
-			allMapped := true
-			for _, scenario := range inventory.Cases {
-				if !assetByCase[scenario.ID] {
-					allMapped = false
-					break
-				}
-			}
-			e2eState = "cold_start"
-			if allMapped {
-				e2eState = "regression_available"
-				e2eAssets = sortE2EAssets(e2eAssets)
-			} else {
-				workspace := fmt.Sprintf("e2e-workspace/review-plan-draft-r%d", round)
-				verificationWorkspace = &workspace
-				notes = append(notes, fmt.Sprintf("E2E cold start: %d required CASE(s) are not mapped to reusable specs; the draft created one behavior Assignment per CASE and an isolated workspace", len(inventory.Cases)))
-			}
-			for index, scenario := range inventory.Cases {
-				claimID := fmt.Sprintf("claim-e2e-case-%d", index+1)
-				claims = append(claims, Claim{
-					ClaimID: claimID, Lens: "e2e",
-					Target:    e2eScenarioTarget(scenario),
-					Assertion: fmt.Sprintf("%s (%s) follows the declared CASE oracle without forbidden side effects", scenario.ID, scenario.Title),
-					Oracle:    e2eScenarioOracle(scenario), Method: "real-browser execution",
-					Applicability: "required", SourceRefs: e2eScenarioSourceRefs(scenario), FocusKey: scenario.ID,
-				})
-				assignments = append(assignments, PlanAssignment{
-					AssignmentID: fmt.Sprintf("assignment-e2e-case-%d", index+1), Lens: "e2e", ClaimIDs: []string{claimID},
-					FocusKeys:          []string{scenario.ID},
-					NonOverlapBoundary: "owns exactly " + scenario.ID + " and its declared PATH(s); do not repeat another CASE's oracle",
-					ExecutionWave:      "behavior",
-				})
-			}
-		} else {
-			e2eState = "cold_start"
-			workspace := fmt.Sprintf("e2e-workspace/review-plan-draft-r%d", round)
-			verificationWorkspace = &workspace
-			notes = append(notes, "E2E cold start: no required browser CASE inventory was discoverable; author the module CASE/PATH matrix, then replace the fallback claim before registration")
-			id := nextClaim("e2e", "flows")
+	e2eState := ""
+	notes = append(notes, "Main must decide e2e_coverage_state from actual behavior, assets and environment: regression_available reuses confirmed assets; cold_start prepares only missing assets in the original workspace; not_applicable requires the original justified N/A Claim. UI impact and browser discovery do not decide general behavior applicability.")
+	if uiImpact == "none" && len(inventory.Cases) == 0 {
+		notes = append(notes, "ui_impact=none and no discovered browser CASE establish only the browser candidate facts; assess API, command, state and other observable behavior before choosing E2E applicability. No N/A Claim has been inferred.")
+	}
+	for _, candidate := range inventory.Candidates {
+		notes = append(notes, fmt.Sprintf("Candidate script %s (observed sha256=%s), possible scenarios: %s. Text matches do not prove selectors, routes, environment or execution; resolve the actual binding in this ReviewPlan.", candidate.Path, candidate.SHA256, strings.Join(candidate.PossibleCases, ", ")))
+	}
+	if len(inventory.Cases) > 0 {
+		for index, scenario := range inventory.Cases {
+			claimID := fmt.Sprintf("claim-e2e-case-%d", index+1)
 			claims = append(claims, Claim{
-				ClaimID: id, Lens: "e2e", Target: "TODO(planner): persona/flow surface",
-				Assertion: "declared entry points produce the expected user-observable behavior",
-				Oracle:    "TODO(planner): the flow-level oracle with console/network evidence",
-				Method:    "real-browser execution", Applicability: "required", SourceRefs: taskIDs(tasks), FocusKey: "user-flow",
+				ClaimID: claimID, Lens: "e2e",
+				Target:    e2eScenarioTarget(scenario),
+				Assertion: fmt.Sprintf("%s (%s) follows the declared CASE oracle without forbidden side effects", scenario.ID, scenario.Title),
+				Oracle:    e2eScenarioOracle(scenario), Method: "real-browser execution",
+				Applicability: "required", SourceRefs: e2eScenarioSourceRefs(scenario), FocusKey: scenarioRef(scenario),
 			})
 			assignments = append(assignments, PlanAssignment{
-				AssignmentID: "assignment-e2e-flows", Lens: "e2e", ClaimIDs: []string{id},
-				NonOverlapBoundary: "owns the declared flows; cold-start spec authoring stays inside the verification workspace",
+				AssignmentID: fmt.Sprintf("assignment-e2e-case-%d", index+1), Lens: "e2e", ClaimIDs: []string{claimID},
+				FocusKeys:          []string{scenarioRef(scenario)},
+				NonOverlapBoundary: "owns exactly " + scenarioRef(scenario) + " and its declared PATH(s); do not repeat another CASE's oracle",
 				ExecutionWave:      "behavior",
+				BehaviorSurface:    "browser",
 			})
 		}
+	} else {
+		notes = append(notes, "No required browser CASE inventory was discoverable; Main must restore the actual scenario sources or supply a justified applicability decision, not assume a blank test library; set each required E2E Assignment behavior_surface to browser or non_browser from explicit source facts before drafting its manifest")
+		id := nextClaim("e2e", "flows")
+		claims = append(claims, Claim{
+			ClaimID: id, Lens: "e2e", Target: "TODO(planner): which existing scenario and source define this behavior? Name the actual browser, API, command or state entry; report missing scenario inputs to Main",
+			Assertion: "declared entry points produce the expected user-observable behavior",
+			Oracle:    "TODO(planner): after the declared fixture and actions, what visible/terminal state, persisted or forbidden effects and recovery distinguish pass from fail? Cite actual scenario evidence",
+			Method:    "TODO(planner): choose the actual browser, API, command or state method from the behavior sources", Applicability: "required", SourceRefs: taskIDs(tasks), FocusKey: "user-flow",
+		})
+		assignments = append(assignments, PlanAssignment{
+			AssignmentID: "assignment-e2e-flows", Lens: "e2e", ClaimIDs: []string{id},
+			NonOverlapBoundary: "owns the declared flows; cold-start spec authoring stays inside the verification workspace",
+			ExecutionWave:      "behavior",
+		})
 	}
 
 	if len(tasks) == 0 {
@@ -277,6 +274,7 @@ func draftPlanForRoot(root string, state map[string]any, round int) (*Plan, []st
 		ReviewPlanID:                  fmt.Sprintf("review-plan-draft-r%d", round),
 		ReviewRound:                   round,
 		BaselineGeneration:            generation,
+		ProductBaseline:               productBaseline,
 		FrozenSubjects:                frozen,
 		CoverageInventory:             BuildCoverageInventoryForRoot(root, state),
 		ChangeImpact:                  changeImpactFromPaths(changedList),
@@ -310,6 +308,18 @@ func taskIDs(tasks []taskDoc) []string {
 	return ids
 }
 
+func sortedUniqueRefs(refs []string) []string {
+	sort.Strings(refs)
+	out := refs[:0]
+	for _, ref := range refs {
+		if ref == "" || len(out) > 0 && out[len(out)-1] == ref {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
 func e2eScenarioTarget(scenario e2eScenario) string {
 	parts := []string{scenario.ID}
 	if scenario.Module != "" {
@@ -325,11 +335,14 @@ func e2eScenarioTarget(scenario e2eScenario) string {
 }
 
 func e2eScenarioSourceRefs(scenario e2eScenario) []string {
-	refs := []string{scenario.ID}
+	refs := []string{scenarioRef(scenario)}
 	for _, ref := range scenario.FlowRefs {
 		ref = strings.TrimSpace(ref)
 		if ref == "" || containsString(refs, ref) {
 			continue
+		}
+		if strings.HasPrefix(ref, "PATH-") {
+			ref = scenario.CasesPath + "#" + scenario.ID + "/" + ref
 		}
 		refs = append(refs, ref)
 	}

@@ -194,9 +194,10 @@ func writeScenarioFixture(t *testing.T, module string) string {
 		"module": module, "fixtures": []any{map[string]any{"id": "fixture-investor", "persona": "operator", "synthetic": true, "setup": []any{"seed-investor"}, "cleanup": []any{"delete-investor"}}},
 	})
 	writeScenarioJSONFile(t, filepath.Join(dir, "cross-matrix.json"), map[string]any{
-		"module": module, "entries": []any{map[string]any{
-			"fact": "fact-investor", "req_ref": "REQ-001", "story": "S-001", "branch": "branch-allow",
-		}},
+		"module": module, "entries": []any{
+			map[string]any{"fact": "fact-investor", "req_ref": "REQ-001", "story": "S-001", "branch": "branch-allow"},
+			map[string]any{"fact": "fact-investor", "req_ref": "REQ-001", "story": "S-001", "branch": "branch-reject"},
+		},
 	})
 	if err := os.WriteFile(filepath.Join(dir, "stories.md"), []byte("# S-001\n\nREQ-001\n"), 0o644); err != nil {
 		t.Fatal(err)

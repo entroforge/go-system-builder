@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/stage-answer-s6-result.schema.json",
+  "title": "S6 v1.2 Result draft",
+  "description": "Standalone Result scaffold. Null professional fields are intentionally incomplete. Runtime consumers must compare the copied machine binding with the current canonical Assignment Record and resolve evidence refs to actual bytes; this schema does neither.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "message_type",
+    "runtime_id",
+    "baseline_generation",
+    "assignment_id",
+    "assignment_revision",
+    "assignment_record_contract",
+    "assignment_record_sha256",
+    "agent_id",
+    "agent_definition_ref",
+    "task_id",
+    "team_id",
+    "summary",
+    "assertion_evidence",
+    "risks_blockers",
+    "scope_deviations",
+    "closing_assessment"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "message_type": {"const": "completion_report"},
+    "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+    "baseline_generation": {"type": "integer", "minimum": 1},
+    "assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
+    "assignment_revision": {"type": "integer", "minimum": 1},
+    "assignment_record_contract": {"enum": ["s6-v1.2", "s6-native-v1"]},
+    "assignment_record_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "agent_id": {"type": "string", "minLength": 1},
+    "agent_definition_ref": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "pattern": "^TASK-[A-Za-z0-9._-]+$"},
+    "team_id": {"type": "string", "minLength": 1},
+    "summary": {"type": ["string", "null"], "minLength": 1},
+    "assertion_evidence": {
+      "type": ["array", "null"],
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/assertionEvidence"}
+    },
+    "risks_blockers": {
+      "type": ["array", "null"],
+      "items": {"type": "string", "minLength": 1}
+    },
+    "scope_deviations": {
+      "type": ["array", "null"],
+      "items": {"type": "string", "minLength": 1}
+    },
+    "closing_assessment": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/closingAssessment"}
+      ]
+    }
+  },
+  "$defs": {
+    "assertionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assertion", "oracle", "evidence_refs"],
+      "properties": {
+        "assertion": {"type": "string", "minLength": 1},
+        "oracle": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "closingAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "conditions"],
+      "properties": {
+        "disposition": {"enum": ["complete", "incomplete", "blocked"]},
+        "conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/closingCondition"}
+        }
+      }
+    },
+    "closingCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["done_when_index", "judgment", "plan_assertion_indexes", "rationale"],
+      "properties": {
+        "done_when_index": {"type": "integer", "minimum": 0},
+        "judgment": {"enum": ["satisfied", "incomplete", "blocked"]},
+        "plan_assertion_indexes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 0}
+        },
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

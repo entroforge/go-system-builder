@@ -4,10 +4,55 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 )
 
 func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult, ArtifactRef, error) {
+	if request.issuedFinal != nil {
+		// The normal Main consumer already performed integration and checks.
+		// Build this report from its known responsibility and actual proposal.
+		b := request.issuedFinal.packet.Binding.Sources
+		if request.ResultID == "" || request.AssignmentID == "" || request.ProducerAgentID == "" {
+			return RepairResult{}, ArtifactRef{}, errors.New("Result requires its current record and responsibility")
+		}
+		if request.Result == "pass" {
+			if len(request.UnitResults) == 0 || !allChecksPass(request.Checks) {
+				return RepairResult{}, ArtifactRef{}, errors.New("passing Result requires actual unit results and completed Main checks")
+			}
+			for _, unit := range request.UnitResults {
+				if unit.Status != "pass" {
+					return RepairResult{}, ArtifactRef{}, errors.New("passing Result contains an unfinished unit")
+				}
+			}
+		}
+		document := RepairResult{
+			SchemaVersion: "1.0.0", RecordType: "repair_result", ResultID: request.ResultID,
+			SessionID: b.SessionID, PlanID: b.PlanID, ContractID: b.ContractID, BaselineGeneration: b.BaselineGeneration,
+			ProducerAgentID: request.ProducerAgentID, AssignmentID: request.AssignmentID,
+			BeforeFixChecks: append([]RepairCheck{}, request.BeforeFixChecks...), Checks: append([]RepairCheck{}, request.Checks...),
+			UnitResults: append([]RepairUnitResult{}, request.UnitResults...), ChangedArtifacts: append([]ChangedArtifact{}, request.ChangedArtifacts...),
+			ScopeDeviations: append([]string{}, request.ScopeDeviations...), MigrationRef: request.MigrationRef, RollbackRef: request.RollbackRef,
+			ResidualRisks: append([]string{}, request.ResidualRisks...), Result: request.Result, SubmittedAt: nowOr(request.OccurredAt),
+			Verdict: request.Verdict, BeforeFixResults: append([]RepairBeforeFixResult{}, request.BeforeFixResults...),
+			DetectionGapArtifacts: append([]string{}, request.DetectionGapArtifacts...), EvidenceRefs: append([]string{}, request.EvidenceRefs...), Receipt: request.Receipt,
+		}
+		if request.PlanReport.Path != "" {
+			document.PlanReportRef = &request.PlanReport
+		}
+		if request.issuedFinal.cleanup != nil {
+			if err := request.issuedFinal.cleanup(document); err != nil {
+				return RepairResult{}, ArtifactRef{}, err
+			}
+		}
+		ref, err := writeImmutable(root, artifactRoot+"/results/"+request.ResultID+".json", "repair-result.schema.json", document)
+		return document, ref, err
+	}
+	if request.Verdict != "" || request.Receipt != nil {
+		if request.issuedFinal == nil || request.Receipt == nil || !reflect.DeepEqual(request.Receipt, &request.issuedFinal.receipt) {
+			return RepairResult{}, ArtifactRef{}, errors.New("typed S9 RepairResult must enter through the private issued-result integration capability")
+		}
+	}
 	contract, err := ValidateApprovedContractRef(root, request.Contract)
 	if err != nil {
 		return RepairResult{}, ArtifactRef{}, err
@@ -69,15 +114,6 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 	if err != nil {
 		return RepairResult{}, ArtifactRef{}, err
 	}
-	if len(request.ChangedArtifacts) == 0 && (resultValue == "pass" || len(actualArtifacts) > 0) {
-		if len(actualArtifacts) == 0 {
-			return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult pass must enumerate changed artifacts")
-		}
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult must enumerate the actual Session diff before reporting a non-pass result")
-	}
-	if resultValue == "pass" && len(actualArtifacts) == 0 {
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("actual Session diff is empty; a passing RepairResult requires a repository change")
-	}
 	changed := append([]ChangedArtifact{}, request.ChangedArtifacts...)
 	seen := map[string]bool{}
 	for index := range changed {
@@ -134,22 +170,10 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 	scopeDeviations := append([]string{}, request.ScopeDeviations...)
 	residualRisks := append([]string{}, request.ResidualRisks...)
 	if len(beforeChecks) == 0 {
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult requires before_fix_checks proving the pre-fix failure; reuse the bound PlanReport red_checks")
-	}
-	if !hasFailedCheck(beforeChecks) {
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("before_fix_checks must contain a fail or blocked check")
+		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult requires actual before_fix_checks records; reuse the recorded PlanReport prechecks")
 	}
 	if resultValue == "pass" && !allChecksPass(checks) {
 		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult result=pass requires non-empty checks and every check to pass")
-	}
-	if resultValue == "pass" && len(scopeDeviations) > 0 {
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult result=pass cannot carry scope_deviations; route scope changes back through S8/S9 planning")
-	}
-	if contract.CompatibilityMigration != "" && resultValue == "pass" && strings.TrimSpace(request.MigrationRef) == "" {
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairContract declares compatibility_migration; RepairResult pass requires migration_ref")
-	}
-	if contract.CompatibilityMigration != "" && resultValue == "pass" && strings.TrimSpace(request.RollbackRef) == "" {
-		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairContract declares compatibility_migration; RepairResult pass requires rollback_ref")
 	}
 	document := RepairResult{
 		SchemaVersion: "1.0.0", RecordType: "repair_result", ResultID: request.ResultID, SessionID: session.SessionID,
@@ -157,9 +181,20 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 		ProducerAgentID: request.ProducerAgentID, AssignmentID: request.AssignmentID, BeforeFixChecks: beforeChecks, Checks: checks,
 		UnitResults: append([]RepairUnitResult{}, request.UnitResults...), ChangedArtifacts: changed, ScopeDeviations: scopeDeviations,
 		MigrationRef: request.MigrationRef, RollbackRef: request.RollbackRef, ResidualRisks: residualRisks, Result: resultValue, SubmittedAt: nowOr(request.OccurredAt),
+		Verdict: request.Verdict, BeforeFixResults: append([]RepairBeforeFixResult{}, request.BeforeFixResults...),
+		DetectionGapArtifacts: append([]string{}, request.DetectionGapArtifacts...), EvidenceRefs: append([]string{}, request.EvidenceRefs...),
+		Receipt: request.Receipt,
 	}
 	if request.PlanReport.Path != "" {
 		document.PlanReportRef = &ArtifactRef{ID: request.PlanReport.ID, Path: request.PlanReport.Path, SHA256: request.PlanReport.SHA256}
+	}
+	if request.issuedFinal != nil {
+		if request.issuedFinal.cleanup == nil {
+			return RepairResult{}, ArtifactRef{}, errors.New("typed S9 Result has no exact unaccepted staging cleanup capability")
+		}
+		if err := request.issuedFinal.cleanup(document); err != nil {
+			return RepairResult{}, ArtifactRef{}, fmt.Errorf("S9 staged Result conflicts with this exact retry: %w", err)
+		}
 	}
 	ref, err := writeImmutable(root, artifactRoot+"/results/"+request.ResultID+".json", "repair-result.schema.json", document)
 	if err != nil {
@@ -192,15 +227,6 @@ func ValidateRepairResult(root string, ref ArtifactRef) (RepairResult, error) {
 		seen[path] = true
 	}
 	return document, nil
-}
-
-func hasFailedCheck(checks []RepairCheck) bool {
-	for _, check := range checks {
-		if check.Result == "fail" || check.Result == "blocked" {
-			return true
-		}
-	}
-	return false
 }
 
 func allChecksPass(checks []RepairCheck) bool {

@@ -99,14 +99,38 @@ func TestDispatchCheckpointToolsAreInstalled(t *testing.T) {
 	for _, tool := range []string{"Agent", "Task", "Bash", "SendMessage", "SubagentHandback"} {
 		matched := false
 		for _, registration := range settings.Hooks["PostToolUse"] {
-			pattern, err := regexp.Compile(registration.Matcher)
-			if err != nil {
-				t.Fatal(err)
-			}
-			matched = matched || pattern.MatchString(tool)
+			matched = matched || installedHookMatcherMatches(t, registration.Matcher, tool)
 		}
 		if !matched {
 			t.Fatalf("PostToolUse matcher does not deliver %s", tool)
+		}
+	}
+}
+
+// Static registration semantics only; actual platform delivery is tested separately.
+func installedHookMatcherMatches(t *testing.T, matcher, tool string) bool {
+	t.Helper()
+	if matcher == "*" {
+		return true
+	}
+	pattern, err := regexp.Compile("^(?:" + matcher + ")$")
+	if err != nil {
+		t.Fatalf("unsupported matcher %q: %v", matcher, err)
+	}
+	return pattern.MatchString(tool)
+}
+
+func TestInstalledHookMatcherCoverageDoesNotInventTools(t *testing.T) {
+	for _, tc := range []struct {
+		matcher, tool string
+		want          bool
+	}{
+		{"*", "SendMessage", true}, {"Agent|Task|Bash", "Agent", true},
+		{"Agent|Task|Bash", "Read", false}, {"Read|Glob|Grep", "SendMessage", false},
+		{"Agent", "SubagentHandback", false}, {"mcp__.*", "Read", false},
+	} {
+		if got := installedHookMatcherMatches(t, tc.matcher, tc.tool); got != tc.want {
+			t.Fatalf("matcher %q tool %q: %t want %t", tc.matcher, tc.tool, got, tc.want)
 		}
 	}
 }

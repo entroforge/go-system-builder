@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
-	"os"
 	"path/filepath"
 	"sort"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/agentcontext"
 	"github.com/entroforge/go-system-builder/internal/catalog"
 	"github.com/entroforge/go-system-builder/internal/identity"
 )
@@ -50,19 +50,21 @@ type ReadbackRequest struct {
 	// integration that deliberately pins a launch package to a snapshot. The
 	// normal launch path leaves it nil; the Agent does not need Runtime's
 	// internal commit sequence.
-	ExpectedRuntimeRevision *int                `json:"expected_runtime_revision,omitempty"`
-	AgentID                 string              `json:"agent_id"`
-	AgentDefinitionRef      string              `json:"agent_definition_ref"`
-	TaskID                  string              `json:"task_id"`
-	BugID                   *string             `json:"bug_id"`
-	TeamID                  *string             `json:"team_id"`
-	OccurredAt              string              `json:"occurred_at"`
-	RoleFamily              string              `json:"role_family"`
-	Documents               []DocumentReference `json:"documents"`
-	Skills                  []SkillReference    `json:"skills"`
-	Scope                   MessageScope        `json:"scope"`
-	ClosingContractRef      string              `json:"closing_contract_ref"`
-	ReadbackFields          []string            `json:"readback_fields"`
+	ExpectedRuntimeRevision *int                    `json:"expected_runtime_revision,omitempty"`
+	AgentID                 string                  `json:"agent_id"`
+	AgentDefinitionRef      string                  `json:"agent_definition_ref"`
+	TaskID                  string                  `json:"task_id"`
+	BugID                   *string                 `json:"bug_id"`
+	TeamID                  *string                 `json:"team_id"`
+	OccurredAt              string                  `json:"occurred_at"`
+	RoleFamily              string                  `json:"role_family"`
+	Documents               []DocumentReference     `json:"documents"`
+	Skills                  []SkillReference        `json:"skills"`
+	Scope                   MessageScope            `json:"scope"`
+	ContextSelection        *agentcontext.Selection `json:"context_selection,omitempty"`
+	AssignmentContextRef    *agentcontext.Reference `json:"assignment_context_ref,omitempty"`
+	ClosingContractRef      string                  `json:"closing_contract_ref"`
+	ReadbackFields          []string                `json:"readback_fields"`
 }
 
 type LaunchOptions struct {
@@ -78,53 +80,6 @@ type launchManifest struct {
 	PlatformTeamID string       `json:"platform_team_id"`
 	WorkgroupID    string       `json:"workgroup_id"`
 	Assignments    []assignment `json:"assignments"`
-}
-
-// roleDefaultSkills mirrors each Agent Definition's skills: frontmatter.
-// Claude Code does not preload that frontmatter for Agent Team teammates, so
-// launch packages carry the same profile for explicit Skill-tool loading.
-var roleDefaultSkills = map[string][]string{
-	"frontend-builder": {
-		"frontend-engineering", "typescript-type-safety", "vue-router", "pinia",
-		"vitest", "eslint", "prettier", "vue-devtools", "ui-prototyping",
-		"user-story-design", "user-flow-design", "api-contracts",
-		"integration-verification", "testing-strategy", "code-quality",
-	},
-	"backend-builder": {
-		"backend-engineering", "domain-driven-design", "http-api-design", "gorm",
-		"openapi-swagger", "gin", "casbin-authorization", "structured-logging",
-		"s3-object-storage", "jwt-authentication", "dag-design", "api-contracts",
-		"database-change", "state-machine-design", "security-review", "reliability-review",
-		"performance-review", "integration-verification", "testing-strategy", "code-quality",
-	},
-	"test-builder": {
-		"testing-strategy", "vitest", "integration-verification", "api-contracts",
-		"database-change", "state-machine-design", "reliability-review", "code-quality",
-	},
-	"document-verifier": {
-		"document-verification", "specification-planning", "ui-prototyping",
-		"user-story-design", "user-flow-design", "api-contracts", "state-machine-design",
-		"database-change",
-	},
-	"delivery-verifier": {
-		"integration-verification", "frontend-engineering", "backend-engineering",
-		"api-contracts", "testing-strategy", "user-flow-design", "state-machine-design",
-		"database-change", "code-quality",
-	},
-	"qa": {
-		"testing-strategy", "code-quality", "frontend-engineering", "backend-engineering",
-		"api-contracts", "integration-verification", "security-review", "performance-review",
-		"reliability-review", "database-change", "state-machine-design", "vitest",
-	},
-	"e2e-tester": {
-		"e2e-browser-testing", "playwright-e2e", "testing-strategy", "user-flow-design",
-		"ui-prototyping", "frontend-engineering", "vue-router", "pinia", "api-contracts",
-		"integration-verification",
-	},
-	"investigator": {
-		"bug-resolution", "code-quality", "testing-strategy", "api-contracts",
-		"state-machine-design", "integration-verification",
-	},
 }
 
 func GenerateReadbackRequests(root string, data []byte, options LaunchOptions) ([]ReadbackRequest, error) {
@@ -153,13 +108,18 @@ func GenerateReadbackRequests(root string, data []byte, options LaunchOptions) (
 		if err := identity.ValidateAgentID(item.AgentID); err != nil {
 			return nil, fmt.Errorf("assignment %s: %w", item.AssignmentID, err)
 		}
-		skillNames := append([]string{"agent-dispatch"}, roleDefaultSkills[item.RoleFamily]...)
+		skillNames := agentcontext.LegacySkills(item.RoleFamily)
 		skillNames = append(skillNames, item.SkillRefs...)
 		skills, err := resolveSkills(root, skillNames)
 		if err != nil {
 			return nil, fmt.Errorf("assignment %s: %w", item.AssignmentID, err)
 		}
+		selection, err := agentcontext.Select(root, item.RoleFamily, []string{item.Responsibility}, item.SkillRefs)
+		if err != nil {
+			return nil, fmt.Errorf("assignment %s: context selection: %w", item.AssignmentID, err)
+		}
 		requests = append(requests, ReadbackRequest{
+			ContextSelection:        &selection,
 			SchemaVersion:           "1.0.0",
 			MessageType:             "readback_request",
 			MessageID:               "msg-readback-" + item.AssignmentID,
@@ -235,16 +195,11 @@ func resolveSkills(root string, names []string) ([]SkillReference, error) {
 			return nil, fmt.Errorf("unknown Skill %s", name)
 		}
 		source := filepath.ToSlash(filepath.Join(".claude", "skills", name, "SKILL.md"))
-		// The Skill file lives under .claude/skills/ in a running project and
-		// under skills/ in the template factory. Try both so the same binary
-		// works in either layout.
-		data, err := os.ReadFile(filepath.Join(root, ".claude", "skills", name, "SKILL.md"))
+		data, _, err := catalog.ReadSkillAsset(root, name)
 		if err != nil {
-			data, err = os.ReadFile(filepath.Join(root, "skills", name, "SKILL.md"))
-			if err != nil {
-				return nil, fmt.Errorf("read Skill %s: %w", name, err)
-			}
+			return nil, err
 		}
+
 		unique[name] = SkillReference{
 			Name:     name,
 			Category: spec.Category,

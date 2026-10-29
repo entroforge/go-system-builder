@@ -31,8 +31,16 @@ func TestS10ManifestValidateCommandPrintsDerivedSummary(t *testing.T) {
 	if result["valid"] != true || result["manifest_type"] != "acceptance" || result["inventory_count"] != float64(4) {
 		t.Fatalf("unexpected validation summary: %#v", result)
 	}
-	if !strings.Contains(result["next"].(string), "runtime evidence add") {
-		t.Fatalf("summary must tell the Agent how to register evidence: %#v", result)
+	for _, want := range []string{"current Hook", "save", "system records"} {
+		if !strings.Contains(result["next"].(string), want) {
+			t.Fatalf("summary must explain the normal report submission (%s): %#v", want, result)
+		}
+	}
+	if strings.Contains(result["next"].(string), "runtime evidence add") {
+		t.Fatal("diagnostic assigned manual system-envelope registration to the author")
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, data) {
+		t.Fatalf("diagnostic changed its source report: %v", err)
 	}
 }
 
@@ -48,7 +56,7 @@ func TestS10ManifestValidateCommandExplainsRecovery(t *testing.T) {
 	if code == 0 {
 		t.Fatal("incomplete S10 manifest must fail")
 	}
-	for _, want := range []string{"s10-audit-manifest.schema.json", "coverage_inventory", "loop-harness s10 manifest validate"} {
+	for _, want := range []string{"incomplete.json", "manifest_type", "next:", "current Hook Manifest"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr %q does not contain recovery hint %q", stderr.String(), want)
 		}
@@ -84,8 +92,13 @@ func TestS10ManifestValidateCommandAcceptsRoutedBlockedOutcome(t *testing.T) {
 	if result["valid"] != true || result["outcome"] != "blocked" {
 		t.Fatalf("unexpected blocked validation summary: %#v", result)
 	}
-	if !strings.Contains(result["next"].(string), "TR-018") {
-		t.Fatalf("blocked validation must explain its route: %#v", result)
+	for _, want := range []string{"blocked", "save", "original blocker route"} {
+		if !strings.Contains(result["next"].(string), want) {
+			t.Fatalf("blocked validation must explain its actual submission and route (%s): %#v", want, result)
+		}
+	}
+	if after, err := os.ReadFile(filepath.Join(root, "blocked-release-audit.json")); err != nil || !bytes.Equal(after, manifest) {
+		t.Fatalf("blocked diagnostic changed the report: %v", err)
 	}
 }
 
@@ -119,6 +132,7 @@ func TestS10StatusReportsTheCurrentRoundAndNextAction(t *testing.T) {
 	state := map[string]any{
 		"runtime_id": "loop-test", "revision": 17,
 		"lifecycle": map[string]any{"state": "acceptance", "phase": nil},
+		"baseline":  map[string]any{"generation": 1},
 		"review":    map[string]any{"round": 3}, "evidence": []any{},
 	}
 	data, err := json.Marshal(state)
@@ -145,8 +159,12 @@ func TestS10StatusReportsTheCurrentRoundAndNextAction(t *testing.T) {
 		t.Fatalf("unexpected S10 status: %#v", result)
 	}
 	acceptanceStatus := result["acceptance"].(map[string]any)
-	if acceptanceStatus["state"] != "missing" || !strings.Contains(result["next"].(string), "manifest") {
+	wantPath := "s10/loop-test/g1/r3/acceptance-manifest.json"
+	if acceptanceStatus["state"] != "missing" || acceptanceStatus["manifest_path"] != wantPath || !strings.Contains(result["next"].(string), filepath.Join(root, filepath.FromSlash(wantPath))) {
 		t.Fatalf("status must expose the missing manifest and next action: %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(wantPath))); !os.IsNotExist(err) {
+		t.Fatalf("status created an author questionnaire: %v", err)
 	}
 }
 
@@ -229,8 +247,31 @@ func TestS10StatusRejectsManifestFromStaleBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	acceptanceStatus := result["acceptance"].(map[string]any)
-	if acceptanceStatus["state"] != "invalid" || !strings.Contains(acceptanceStatus["error"].(string), "binding") {
-		t.Fatalf("stale S10 manifest must be invalid with a binding explanation: %#v", acceptanceStatus)
+	if acceptanceStatus["state"] != "missing" || acceptanceStatus["manifest_path"] != "s10/loop-test/g2/r2/acceptance-manifest.json" || acceptanceStatus["evidence_id"] != nil {
+		t.Fatalf("historical report must not satisfy or hide the current responsibility: %#v", acceptanceStatus)
+	}
+	// Even a row labelled as current cannot borrow the old report's conclusion.
+	entry := evidence[0].(map[string]any)
+	entry["baseline_generation"], entry["review_round"] = 2, 2
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = cli.Run([]string{"s10", "status", "--root", root}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("status after current-row drift: %d %s", code, &stderr)
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	acceptanceStatus = result["acceptance"].(map[string]any)
+	if acceptanceStatus["state"] != "invalid" || !strings.Contains(acceptanceStatus["error"].(string), "another responsibility or review round") {
+		t.Fatalf("current-labelled row borrowed a stale professional report: %#v", acceptanceStatus)
 	}
 }
 
@@ -317,7 +358,7 @@ func TestS10StatusReportsBlockedManifestRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := result["release_audit"].(map[string]any)
-	if release["state"] != "blocked" || !strings.Contains(release["next"].(string), "TR-018") {
+	if release["state"] != "blocked" || release["conclusion"] != "blocked" || release["manifest_path"] != "release-audit-manifest.json" || !strings.Contains(release["next"].(string), "original recorded return/blocker responsibility") {
 		t.Fatalf("status must expose the blocked route: %#v", release)
 	}
 }

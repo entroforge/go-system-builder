@@ -216,7 +216,8 @@ func checkConstraintRefs(idx *ContractIndex) []Finding {
 			if _, ok := idx.Evidence[id]; ok {
 				known = true
 			}
-			// ID prefix may be EVD/EX/DEBT/DCHK etc — evidence IDs live in research/evidence-field.md and may legitimately be absent on thin paths; treat EVD as verifiable without requiring the file.
+			// Thin paths may cite these prefixes without a separate registry.
+			// Recognizing their notation does not authenticate the evidence.
 			if strings.HasPrefix(id, "EVD-") || strings.HasPrefix(id, "EX-") || strings.HasPrefix(id, "DEBT-") || strings.HasPrefix(id, "DCHK-") {
 				// Allow EX/DEBT/DCHK without requiring registry if not tracked
 				known = true
@@ -430,9 +431,6 @@ func checkDerivationCompleteness(root string, idx *ContractIndex) []Finding {
 func checkSurfaceVersion(root string, idx *ContractIndex) []Finding {
 	var findings []Finding
 	kernelVer := readKernelVersion(root)
-	if kernelVer == "" {
-		return findings
-	}
 	// For each derivation pack, check Foundation version matches kernel
 	for _, pack := range idx.Derivations {
 		data, err := os.ReadFile(filepath.Join(root, pack.File))
@@ -442,7 +440,7 @@ func checkSurfaceVersion(root string, idx *ContractIndex) []Finding {
 		content := string(data)
 		// look for header line with Foundation: ...@v...
 		for _, line := range strings.Split(content, "\n") {
-			if strings.Contains(line, "Foundation") && strings.Contains(line, "@v") {
+			if kernelVer != "" && strings.Contains(line, "Foundation") && strings.Contains(line, "@v") {
 				if m := versionAtRe.FindString(line); m != "" {
 					if m != "@v"+kernelVer && m != "v"+kernelVer {
 						// normalize compare
@@ -458,32 +456,15 @@ func checkSurfaceVersion(root string, idx *ContractIndex) []Finding {
 					}
 				}
 			}
-			// Surface version
-			if strings.Contains(line, "Surface") && strings.Contains(line, "@v") {
-				// surface version should exist in idx.Surfaces
-				if m := versionAtRe.FindString(line); m != "" {
-					surID := ""
-					// try to extract SUR id nearby
-					for _, sid := range parseIDList(line) {
-						if strings.HasPrefix(sid, "SUR-") {
-							surID = sid
-							break
-						}
-					}
-					if surID != "" {
-						if _, ok := idx.Surfaces[surID]; !ok {
-							// surface id not in index, but version mismatch not applicable
-						}
-					}
-					_ = m
-				}
-			}
+		}
+		if ref := designHeaderValue(content, "Surface"); ref != "" && ref != "local" {
+			findings = append(findings, checkDeclaredSurfaceVersion(root, idx, pack.File, ref, kernelVer)...)
 		}
 	}
 	// Also check REQ Foundation reference version
 	changed, _ := listChangedREQs(root)
 	for _, req := range changed {
-		if req.FoundationRef == "" || req.FoundationRef == "local" || req.FoundationRef == "pending-foundation" {
+		if kernelVer == "" || req.FoundationRef == "" || req.FoundationRef == "local" || req.FoundationRef == "pending-foundation" {
 			continue
 		}
 		if m := versionAtRe.FindString(req.FoundationRef); m != "" {
@@ -526,58 +507,84 @@ func readKernelVersion(root string) string {
 
 func checkHandoffBudget(root string, idx *ContractIndex) []Finding {
 	var findings []Finding
-	kernelSec := readKernelSectionZero(root)
-	kernelLines := strings.Count(kernelSec, "\n") + 1
-	if strings.TrimSpace(kernelSec) == "" {
-		return findings
+	kernel, _ := os.ReadFile(filepath.Join(root, KernelRel))
+	card := kernelSectionZero(string(kernel))
+	changed, err := listChangedREQs(root)
+	if err != nil {
+		return []Finding{{Code: "handoff_packet_unmeasured", Severity: SeverityInfo, Path: "docs/requirements", Detail: "Cannot read the declared REQ set; handoff budget was not measured. Main should inspect the original inputs."}}
 	}
-	// Find first surface profile as representative (consumer)
-	surfacePath := ""
-	surfaceLines := 0
-	surfaceBytes := 0
-	// pick SUR-01 profile if exists
-	if sur, ok := idx.Surfaces["SUR-01"]; ok && sur.Profile != "" {
-		// profile field is like surface-profiles/consumer.md@v1.0.0
-		raw := sur.Profile
-		raw = strings.Trim(raw, "` ")
-		if idx := strings.Index(raw, "@"); idx >= 0 {
-			raw = raw[:idx]
-		}
-		surfacePath = raw
-		if !filepath.IsAbs(raw) && !strings.HasPrefix(raw, "docs/") {
-			// relative to docs/design
-			surfacePath = filepath.Join("docs", "design", raw)
-		}
-	}
-	if surfacePath == "" {
-		// fallback to first file in surface-profiles
-		surfacePath = "docs/design/surface-profiles/consumer.md"
-	}
-	if data, err := os.ReadFile(filepath.Join(root, surfacePath)); err == nil {
-		surfaceLines = strings.Count(string(data), "\n") + 1
-		surfaceBytes = len(data)
-	}
-	changed, _ := listChangedREQs(root)
 	for _, req := range changed {
+		if req.FoundationRef == "local" {
+			continue
+		}
+		lines, bytes := 0, 0
+		var sources, omitted []string
+		count := func(text, source string) {
+			sources = append(sources, source)
+			bytes += len(text)
+			if text != "" {
+				lines += strings.Count(text, "\n")
+				if !strings.HasSuffix(text, "\n") {
+					lines++
+				}
+			}
+		}
+		if card == "" {
+			omitted = append(omitted, KernelRel+" §0 (not readable/extractable)")
+		} else {
+			count(card, KernelRel+" §0")
+		}
 		pack, ok := idx.Derivations[req.ID]
-		if !ok {
-			continue
+		packPath := filepath.Join("docs", "design", "derivation", "REQ-"+req.ID+".md")
+		if ok {
+			packPath = pack.File
 		}
-		data, err := os.ReadFile(filepath.Join(root, pack.File))
-		if err != nil {
-			continue
+		data, readErr := os.ReadFile(filepath.Join(root, packPath))
+		if readErr != nil || !ok {
+			omitted = append(omitted, packPath+" (not readable/indexed), applicable Surface not identified")
+		} else {
+			count(string(data), packPath)
+			reference := designHeaderValue(string(data), "Surface")
+			surfaceID, _, _ := strings.Cut(reference, "@")
+			surface, found := idx.Surfaces[surfaceID]
+			if !found {
+				omitted = append(omitted, "Surface "+reference+" (no matching declared row)")
+			} else if strings.Trim(surface.Profile, "` ") == "inline" {
+				// A raw indexed row is an observable lower bound. Do not invent
+				// an inline packet format or treat unlocated prose as zero bytes.
+				text, err := os.ReadFile(filepath.Join(root, surface.File))
+				rows := strings.Split(string(text), "\n")
+				if err == nil && surface.Line > 0 && surface.Line <= len(rows) {
+					count(rows[surface.Line-1]+"\n", surface.File+":"+itoa(surface.Line)+" ("+surfaceID+" inline row)")
+				}
+				omitted = append(omitted, surfaceID+" inline table context and any prose outside the indexed row")
+			} else {
+				path, _, _ := strings.Cut(strings.Trim(surface.Profile, "` "), "@")
+				path = filepath.Clean(path)
+				if path == "." || filepath.IsAbs(path) || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+					omitted = append(omitted, surfaceID+" Profile (no explicit project-relative path)")
+				} else {
+					if !strings.HasPrefix(filepath.ToSlash(path), "docs/") {
+						path = filepath.Join("docs", "design", path)
+					}
+					if profile, err := os.ReadFile(filepath.Join(root, path)); err != nil {
+						omitted = append(omitted, path+" (not readable)")
+					} else {
+						count(string(profile), path)
+					}
+				}
+			}
 		}
-		derivLines := strings.Count(string(data), "\n") + 1
-		derivBytes := len(data)
-		totalLines := kernelLines + surfaceLines + derivLines
-		totalBytes := len(kernelSec) + surfaceBytes + derivBytes
-		if totalLines > 120 || totalBytes > 12*1024 {
-			findings = append(findings, Finding{
-				Code:     "handoff_packet_oversize",
-				Severity: SeverityWarning,
-				Path:     pack.File,
-				Detail:   "cold-start handoff packet for REQ-" + req.ID + " is " + itoa(totalLines) + " lines / " + itoa(totalBytes) + " bytes (budget ≤120 lines, ≤12KB at DESIGN.md §0 + SUR + Derivation)",
-			})
+		code := "handoff_packet_estimate"
+		detail := "REQ-" + req.ID + " counted source fragments: " + itoa(lines) + " lines / " + itoa(bytes) + " bytes; counted: " + strings.Join(sources, ", ") + ". This is a source-scope estimate, not the actual transmitted packet."
+		if len(omitted) > 0 {
+			code = "handoff_packet_unmeasured"
+			detail += " Not counted: " + strings.Join(omitted, "; ") + "."
+		}
+		detail += " Main checks the actual handoff; 120 lines / 12KB is a clarity target, not a stage gate or permission to remove necessary context."
+		findings = append(findings, Finding{Code: code, Severity: SeverityInfo, Path: packPath, Detail: detail})
+		if lines > 120 || bytes > 12*1024 {
+			findings = append(findings, Finding{Code: "handoff_packet_oversize", Severity: SeverityWarning, Path: packPath, Detail: "REQ-" + req.ID + " counted source fragments alone exceed the handoff target (120 lines / 12KB). " + detail})
 		}
 	}
 	return findings
@@ -588,7 +595,10 @@ func readKernelSectionZero(root string) string {
 	if err != nil {
 		return ""
 	}
-	content := string(data)
+	return kernelSectionZero(string(data))
+}
+
+func kernelSectionZero(content string) string {
 	// extract from ## 0. Next-agent card until next ## heading
 	re := regexp.MustCompile(`(?m)^##\s*0\.`)
 	loc := re.FindStringIndex(content)
@@ -597,7 +607,7 @@ func readKernelSectionZero(root string) string {
 	}
 	rest := content[loc[0]:]
 	// find next heading
-	nextRe := regexp.MustCompile(`(?m)^##\s*[1-9]`)
+	nextRe := regexp.MustCompile(`(?m)^##(?:[ \t]+|$)`)
 	if nl := nextRe.FindStringIndex(rest[1:]); nl != nil {
 		rest = rest[:nl[0]+1]
 	}

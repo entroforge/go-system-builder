@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -147,7 +149,7 @@ func TestWorkerObservationAdapterAndPwd(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.Executions[e.AssignmentID] = e
-	commands := []string{"pwd"}
+	commands := []string{"pwd", workspace.ReceiptInvocation(e)}
 	for _, c := range workspace.ObservationCommands(e) {
 		commands = append(commands, c)
 	}
@@ -160,5 +162,73 @@ func TestWorkerObservationAdapterAndPwd(t *testing.T) {
 		if d, handled := WorkspaceBoundaryDecision(in); !handled || d.Decision != "deny" {
 			t.Fatal("compound command accepted")
 		}
+	}
+}
+
+func TestWorkspacePolicyAcceptsOnlyFrozenOwnedCheckAdapter(t *testing.T) {
+	_, e := boundaryFixture(t)
+	e.BootstrapSHA256 = "frozen-bootstrap"
+	profile := checkexec.Profile{ID: "owned-check", Version: "1.0.0", CheckIndex: 0, Command: "true", Location: "worker", TimeoutSeconds: 10, EnvironmentPolicy: "declared_only", Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{}, Fixtures: []checkexec.FileRef{}, InputClosure: "whole_tree", SideEffects: "none", ReusePolicy: "never"}
+	e.WorkerChecks = []assignmentrecord.WorkerCheck{{Index: 0, Command: profile.Command, Profile: profile}}
+	base := Input{ToolName: "Bash", ToolInput: map[string]any{"command": workspace.OwnedCheckInvocation(e, 0)}}
+	if !workspaceAdapterCommand(base, e) {
+		t.Fatal("policy did not recognize the exact frozen owned-check command")
+	}
+	for _, command := range []string{
+		workspace.OwnedCheckInvocation(e, 0) + " --check 0",
+		workspace.OwnedCheckInvocation(e, 1),
+		workspace.OwnedCheckInvocation(e, 0) + "; true",
+	} {
+		base.ToolInput["command"] = command
+		if workspaceAdapterCommand(base, e) {
+			t.Fatalf("policy accepted a changed owned-check invocation: %s", command)
+		}
+	}
+}
+
+func TestNativeOwnedCheckExceptionUsesExactAuthorityWithOtherWorkspaceExecution(t *testing.T) {
+	b, e := boundaryFixture(t)
+	owner := "native-builder"
+	assignmentID := "native-assignment"
+	checkCommand := "go test ./internal/example"
+	native := NativeOwnedAssignment{
+		AssignmentID: assignmentID, OwnerAgentID: owner, WorktreePath: e.Path,
+		AssignmentRecordSHA256: "frozen-record-sha", OwnerState: "working",
+		ContextBound: true, PlanActivated: true,
+		Checks: []NativeOwnedCheck{{Index: 0, Command: checkCommand}},
+	}
+	agent := &AgentContext{ID: owner, State: "working", AssignmentID: assignmentID, DispatchMode: "plan_checkpoint", PlanReportedRef: "plan/report.json"}
+	input := Input{
+		Event: "PreToolUse", SessionID: "native-session", AgentID: owner, CWD: e.Path,
+		ToolName: "Bash", ToolInput: map[string]any{"command": workspace.NativeOwnedCheckInvocation(b.MainRoot, owner, 0)},
+		Runtime: RuntimeContext{
+			ProjectRoot: b.MainRoot, Workspace: b, RuntimeID: e.RuntimeID,
+			CurrentBaselineGeneration: e.BaselineGeneration, CurrentState: "building", CurrentStage: "S6",
+			Agent: agent, NativeOwnedAssignments: []NativeOwnedAssignment{native},
+		},
+	}
+	if decision, blocked := WorkspaceBoundaryDecision(input); blocked || decision.Decision == "deny" {
+		t.Fatalf("exact native owner check was denied because another Workspace execution is registered: %+v", decision)
+	}
+
+	// The exception is command-specific. Ordinary shell commands from the same
+	// owner CWD still hit the other-execution boundary.
+	input.ToolInput["command"] = "pwd"
+	if decision, blocked := WorkspaceBoundaryDecision(input); !blocked || decision.Decision != "deny" {
+		t.Fatalf("native authority widened to an unrelated shell command: %+v", decision)
+	}
+
+	// A modified invocation cannot borrow the trusted native authority.
+	input.ToolInput["command"] = workspace.NativeOwnedCheckInvocation(b.MainRoot, owner, 0) + " --check-index 1"
+	if decision, blocked := WorkspaceBoundaryDecision(input); !blocked || decision.Decision != "deny" {
+		t.Fatalf("modified native check invocation was accepted: %+v", decision)
+	}
+
+	// Nor can another platform Agent identity use the frozen owner's command.
+	input.ToolInput["command"] = workspace.NativeOwnedCheckInvocation(b.MainRoot, owner, 0)
+	input.AgentID = "different-agent"
+	input.Runtime.Agent = &AgentContext{ID: "different-agent", State: "working", AssignmentID: assignmentID, DispatchMode: "plan_checkpoint", PlanReportedRef: "plan/report.json"}
+	if decision, blocked := WorkspaceBoundaryDecision(input); !blocked || decision.Decision != "deny" {
+		t.Fatalf("different Agent identity borrowed native check authority: %+v", decision)
 	}
 }

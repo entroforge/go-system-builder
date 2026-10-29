@@ -1,0 +1,20 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "$id":"work-progress-notice.schema.json",
+ "title":"Bounded diagnostic work progress notice",
+ "type":"object",
+ "additionalProperties":false,
+ "required":["version","kind","current_gap","recovery_owner","last_progress_at","last_progress_kind","attempted_actions","repeats","reason","authorizes"],
+ "properties":{
+  "version":{"const":"1.0.0"},
+  "kind":{"const":"stall"},
+  "current_gap":{"type":"string","minLength":1,"maxLength":128},
+  "recovery_owner":{"type":"string","minLength":1,"maxLength":64},
+  "last_progress_at":{"type":"string","format":"date-time"},
+  "last_progress_kind":{"enum":["responsibility_facts","necessary_source_range"]},
+  "attempted_actions":{"type":"array","minItems":1,"maxItems":8,"uniqueItems":true,"items":{"enum":["Read","status","Glob","Grep","Write","Edit","MultiEdit","submission"]}},
+  "repeats":{"const":5},
+  "reason":{"const":"same responsibility gap and professional facts across repeated supported observations"},
+  "authorizes":{"const":false}
+ }
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/stage-answer-s4.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "instruction", "read", "questions", "answer"],
+  "properties": {
+    "title": {"type": "string", "minLength": 1},
+    "instruction": {"type": "string", "minLength": 1},
+    "read": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "purpose"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "purpose": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "questions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conclusion", "index_path", "task_paths"],
+      "properties": {
+        "conclusion": {"$ref": "#/$defs/question"},
+        "index_path": {"$ref": "#/$defs/question"},
+        "task_paths": {"$ref": "#/$defs/question"}
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conclusion", "index_path", "task_paths"],
+      "properties": {
+        "conclusion": {"enum": [null, "pass"]},
+        "index_path": {"type": ["string", "null"], "maxLength": 512},
+        "task_paths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 512}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question"],
+      "properties": {
+        "question": {"type": "string", "minLength": 1},
+        "choices": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "example": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "expected", "observed"],
+          "properties": {
+            "path": {"type": "string"},
+            "expected": {"type": "string"},
+            "observed": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

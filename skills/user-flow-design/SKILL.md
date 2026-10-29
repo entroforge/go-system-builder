@@ -30,7 +30,7 @@ checklist for S7 E2E Browser dispatch.
 
 - Locked REQ criteria and the reviewed user-story outcomes in
   `docs/design/prototypes/{module}/stories.md`.
-- Final module HTML prototypes (`index.html` plus page HTML files), including
+- For browser work, final module HTML prototypes (`index.html` plus page HTML files), including
   visible controls and states.
 - Roles, permissions, test data, entry surfaces, and contract-relevant
   effects.
@@ -40,8 +40,9 @@ checklist for S7 E2E Browser dispatch.
 
 ## Required Format
 
-The canonical structure lives in `docs/design/prototypes/USER-FLOW-template.md`
-and is preserved verbatim. Each flow entry in `flows.md` MUST carry:
+For browser flows, the canonical structure lives in
+`docs/design/prototypes/USER-FLOW-template.md` and is preserved verbatim.
+Each browser flow entry in `flows.md` MUST carry:
 
 - `F-NNN` zero-padded ID (per-module sequence, not per-REQ)
 - `source_refs` listing the REQ/decision/rule sources for the current behavior
@@ -60,9 +61,16 @@ and is preserved verbatim. Each flow entry in `flows.md` MUST carry:
   control in the affected prototype HTML to at least one `PATH-*` step,
   with explicit N/A rationale for unassigned controls
 
+S2 authors write and reconcile flows; S7 Reviewers read the locked flow package
+and execute only assigned Claims/CASE/PATHs. Main organizes the full module sweep.
+API, command and state-only behavior uses its actual operation flow and oracle;
+HTML, browser controls and PATHs are required only for browser behavior.
+
 ## Quality Criteria
 
 ### Derive Routes From Observable Outcomes
+
+S2 authors derive the route; S7 checks the assigned route against the accepted outcome without rewriting it.
 
 Start with a user-visible terminal result from a story, then work backward to
 the real entry point and forward again to validate the route. A route is
@@ -70,6 +78,8 @@ valid only when a person can recognize its success, failure, or recovery
 without reading source code or inspecting hidden state.
 
 ### Make Each Route A Linear Checklist
+
+S2 authors write the checklist; S7 follows the assigned existing checklist and records deviations.
 
 Use the per-flow `PATH-*` step identifier. Give each route one user goal,
 one declared entry, explicit preconditions, an ordered sequence of atomic
@@ -97,15 +107,24 @@ route.
 
 ### Design For Dispatch And Evidence
 
+S2 authors provide the flow directory; Main partitions it into complete-round coverage and Reviewers record their assigned observations.
+
 Provide a per-module flow directory that lets S7 assign explicit flow IDs
 to an `E2E-USER-FLOW` responsibility. Include flow goal, role, entry,
   terminal state, data/permission requirements, linked story, CASE and source
   refs, prototype area, priority, and required / N-A status. Keep the current
-  `flows.md` as the planned checklist; the E2E report mirrors
-assigned flow and `PATH-*` IDs and adds PASS/FAIL/BLOCKED plus
-screenshots, traces, and observations.
+  `flows.md` as the planned checklist. In S7, record the assigned flow/PATH
+observations in the original `claim_results.observed` and reference actual
+screenshots/traces in `evidence_refs`; no separate flow report is required.
+`claim_results.conclusion` is `pass` or `fail`, including `pass` for an expected
+rejection that actually succeeds. Only a confirmed current-round Finding that
+prevents a required precondition belongs in `blocked_claims`. An unavailable
+environment or an unexecuted check remains an actual gap returned to Main;
+do not write `BLOCKED` as a Claim conclusion or manufacture a product Finding.
 
 ### Audit Interaction Coverage
+
+S2 authors maintain the map; S7 checks the assigned coverage against it and reports gaps to Main.
 
 Maintain a module-level interaction map from every declared actionable
 control (button, menu, tab, link, dialog action, and meaningful keyboard
@@ -115,6 +134,8 @@ unvisited.
 
 ### Cross-Check Before Lock
 
+S2 authors complete this cross-check before lock; S7 reads the accepted sources and reports missing controls or contract links without editing specifications or FE contracts.
+
 Confirm that every step points to a visible prototype control or state,
 every flow terminal outcome realizes a user-story outcome, and every
 UI-driven field, status, error, permission, or side effect is available
@@ -122,12 +143,18 @@ to S3 contracts.
 
 ### Respect The Cross-REQ Module Regression Sweep
 
+Main owns this complete-round sweep; each Reviewer executes its assigned slice and reports missing coverage to Main.
+
 `docs/rules/ui-prototype.md §8` requires that any REQ modifying a module's
 current-truth package trigger a regression sweep of every `F-NNN` and required
 CASE/PATH in that module's `flows.md`. Reconcile new behavior into the current
 flow set; do not create a REQ-owned flow copy.
 
 ## Outputs
+
+S7 outputs are the issued Claim results and actual evidence, with passing expected
+rejections in `ClaimResult.observed` and evidence references. Only failed Claims
+use Finding encounter fields. The following authored outputs belong to S2:
 
 - Updated `docs/design/prototypes/{module}/flows.md` with one entry per
   material flow; each entry follows the canonical structure from
@@ -146,10 +173,14 @@ omitted controls and undeclared URL shortcuts are never implicit N/A.
 
 ## Stop Conditions
 
-Stop when a flow lacks a real entry, a visible expected result, enough data
+For S2 authoring, stop when a flow lacks a real entry, a visible expected result, enough data
 or permission information to run, a prototype control/state reference, a
 traceable user-story outcome, or `data-test` selectors that the prototype
-HTML must carry before S7 can dispatch it.
+HTML must carry before S7 can dispatch it. During S7, report the exact missing
+source/control or observed mismatch for the affected Claim; continue other safe
+assigned checks. Stop dangerous work for a real P0, preserving observations and
+gaps. Unclear applicability or unavailable environment goes to Main with concrete
+missing facts and actual attempts, without rewriting the flow or FE contract.
 
 ## Non-Goals
 

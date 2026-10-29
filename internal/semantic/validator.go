@@ -12,10 +12,14 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/catalog"
 	"github.com/entroforge/go-system-builder/internal/evidence"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/migration"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/scenario"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/team"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 type stateDefinition struct {
@@ -31,8 +35,9 @@ type stateDefinition struct {
 }
 
 type runtimeState struct {
-	RuntimeID  string `json:"runtime_id"`
-	Definition struct {
+	SchemaVersion string `json:"schema_version"`
+	RuntimeID     string `json:"runtime_id"`
+	Definition    struct {
 		Path   string `json:"path"`
 		SHA256 string `json:"sha256"`
 	} `json:"definition"`
@@ -48,15 +53,23 @@ type runtimeState struct {
 	} `json:"lifecycle"`
 	Entities struct {
 		Agents []struct {
-			State string `json:"state"`
+			State              string `json:"state"`
+			LastLifecycleEvent string `json:"last_lifecycle_event"`
 		} `json:"agents"`
 		Tasks []struct {
-			State string `json:"state"`
+			State              string `json:"state"`
+			LastLifecycleEvent string `json:"last_lifecycle_event"`
 		} `json:"tasks"`
 		Bugs []struct {
 			State string `json:"state"`
 		} `json:"bugs"`
 	} `json:"entities"`
+	Review struct {
+		Assignments map[string]struct {
+			Status             string `json:"status"`
+			LastLifecycleEvent string `json:"last_lifecycle_event"`
+		} `json:"assignments"`
+	} `json:"review"`
 }
 
 type reviewManifest struct {
@@ -109,9 +122,11 @@ func ValidateRepository(root string) error {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 	}
-	// Contracts check: S3's mechanical close runs with every repository
-	// validation — link references, fingerprint column, clause cells.
-	contractResult, err := ContractsCheck(root)
+	// Repository validation checks existing authoring artifacts project-wide.
+	// It cannot require an active S2 responsibility to have delivered S3's
+	// future batch. Current-REQ completion stays with ContractsCheck and the
+	// original S3 consumer; this diagnostic does not certify that delivery.
+	contractResult, err := contractsCheck(root, fileview.Disk{Root: root}, workpacket.Reference{}, nil)
 	if err != nil {
 		return fmt.Errorf("contracts: %w", err)
 	}
@@ -262,7 +277,15 @@ func ValidateAgentMessages(root string) error {
 }
 
 func ValidateReviewManifests(root string) error {
-	runtimeID, err := currentRuntimeID(root)
+	runtimeData, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
+	if err != nil {
+		return fmt.Errorf("read runtime for manifest validation: %w", err)
+	}
+	var state runtimeReachability
+	if err := json.Unmarshal(runtimeData, &state); err != nil {
+		return fmt.Errorf("decode runtime for manifest validation: %w", err)
+	}
+	statuses, err := state.s5ManifestStatuses(root)
 	if err != nil {
 		return err
 	}
@@ -274,11 +297,12 @@ func ValidateReviewManifests(root string) error {
 		if err := team.ValidateFile(root, relative); err != nil {
 			return fmt.Errorf("%s: %w", filepath.ToSlash(relative), err)
 		}
-		if err := validateReviewManifestReferences(root, relative, runtimeID); err != nil {
+		status := statuses[normalizeReachabilityReference(relative)]
+		if err := validateReviewManifestReferencesWithHistory(root, relative, state.RuntimeID, status.Bound && status.Historical); err != nil {
 			return err
 		}
 	}
-	if err := ValidateCrossManifestDependencies(root, refs); err != nil {
+	if err := ValidateCrossManifestDependencies(root, crossManifestDependencyRefs(refs, statuses)); err != nil {
 		return err
 	}
 	return nil
@@ -313,13 +337,41 @@ func currentAgentMessageRefs(root string) ([]string, error) {
 	}
 	var refs []string
 	for _, item := range state.Entities.Agents {
-		for _, raw := range []string{item.ReadbackRef, item.ActivationRef} {
-			if ref := referencePath(raw); ref != "" {
-				refs = append(refs, ref)
-			}
+		if ref := referencePath(item.ReadbackRef); ref != "" {
+			refs = append(refs, ref)
+		}
+		// Before activation_sent, plan_checkpoint Agents point activation_ref
+		// at a pre-staged capability envelope, not an agent-message. The
+		// activation revision is committed with the real activation message;
+		// legacy activated-state rows are kept compatible below.
+		if item.ActivationRef != "" && hasActivationMessage(state.SchemaVersion, item.State, item.LastLifecycleEvent, item.ActivationRevision) {
+			refs = append(refs, referencePath(item.ActivationRef))
 		}
 	}
 	return refs, nil
+}
+
+func hasActivationMessage(schemaVersion, state, event string, revision *int) bool {
+	if revision != nil {
+		return true
+	}
+	if schemaVersion == "1.3.0" {
+		switch event {
+		case "activation_sent", "work_started", "completion_reported", "completion_acknowledged", "work_blocked", "blocker_resolved", "integration_rework_requested":
+			return true
+		default:
+			return false
+		}
+	}
+	// Pre-1.3 runtimes used the Agent activity itself to distinguish a staged
+	// envelope from the activation message. Keep that compatibility seam for
+	// the legacy vocabulary while 1.3 uses its activation revision/event facts.
+	switch state {
+	case "activated", "working", "reported", "done", "blocked":
+		return true
+	default:
+		return false
+	}
 }
 
 func referencePath(ref string) string {
@@ -345,6 +397,10 @@ func ValidateReviewManifestReferences(root, relative, runtimeID string) error {
 }
 
 func validateReviewManifestReferences(root, relative, runtimeID string) error {
+	return validateReviewManifestReferencesWithHistory(root, relative, runtimeID, false)
+}
+
+func validateReviewManifestReferencesWithHistory(root, relative, runtimeID string, historicalS5 bool) error {
 	data, err := os.ReadFile(filepath.Join(root, relative))
 	if err != nil {
 		return fmt.Errorf("read %s: %w", filepath.ToSlash(relative), err)
@@ -358,14 +414,20 @@ func validateReviewManifestReferences(root, relative, runtimeID string) error {
 			filepath.ToSlash(relative), manifest.RuntimeID, runtimeID)
 	}
 	for _, doc := range manifest.Documents {
+		if historicalS5 {
+			if _, err := resolveReachablePath(root, filepath.ToSlash(relative)+" document "+doc.ID, doc.Path); err != nil {
+				return err
+			}
+			continue
+		}
 		actual, err := fileSHA256(filepath.Join(root, doc.Path))
 		if err != nil {
 			return fmt.Errorf("%s: document %s fingerprint: %w",
 				filepath.ToSlash(relative), doc.ID, err)
 		}
 		if actual != doc.SHA256 {
-			return fmt.Errorf("%s: document %s fingerprint mismatch: manifest=%s actual=%s — refresh runtime fingerprints via `loop-harness runtime fingerprint --root .`; team-manifest documents[].sha256 must be updated to match the new on-disk hash (see BUG-004 §8)",
-				filepath.ToSlash(relative), doc.ID, doc.SHA256, actual)
+			return fmt.Errorf("%s: document %s fingerprint mismatch: manifest=%s actual=%s — compare with the current registered source refs at manifest %s; keep any issued S5 manifest bytes unchanged and follow its original rework route",
+				filepath.ToSlash(relative), doc.ID, doc.SHA256, actual, filepath.ToSlash(relative))
 		}
 	}
 	return nil
@@ -407,6 +469,17 @@ func ValidateRuntimeBytes(root string, data []byte) error {
 	if err := validator.ValidateBytes("loop-state.schema.json", data); err != nil {
 		return err
 	}
+	var rawState map[string]any
+	if err := json.Unmarshal(data, &rawState); err != nil {
+		return err
+	}
+	dispatchConfig, err := runtime.DispatchConfig(rawState)
+	if err != nil {
+		return err
+	}
+	if _, exists := rawState["dispatch_pressure"]; exists && dispatchConfig == nil {
+		return fmt.Errorf("dispatch pressure requires explicit frozen dispatch configuration")
+	}
 
 	definitionData, err := os.ReadFile(filepath.Join(root, projectlayout.Definition))
 	if err != nil {
@@ -443,18 +516,33 @@ func ValidateRuntimeBytes(root string, data []byte) error {
 	}
 
 	for _, item := range state.Entities.Agents {
-		if !contains(definition.EntityLifecycles["agent"].States, item.State) {
+		activity, err := workstate.LegacyAgentActivity(state.SchemaVersion, item.State, item.LastLifecycleEvent)
+		if err != nil {
+			return fmt.Errorf("invalid Agent lifecycle activity: %w", err)
+		}
+		if !contains(definition.EntityLifecycles["agent"].States, activity) {
 			return fmt.Errorf("unknown Agent state %q", item.State)
 		}
 	}
 	for _, item := range state.Entities.Tasks {
-		if !contains(definition.EntityLifecycles["task"].States, item.State) {
+		activity, err := workstate.LegacyTaskActivity(state.SchemaVersion, item.State, item.LastLifecycleEvent)
+		if err != nil {
+			return fmt.Errorf("invalid TASK lifecycle activity: %w", err)
+		}
+		if !contains(definition.EntityLifecycles["task"].States, activity) {
 			return fmt.Errorf("unknown TASK state %q", item.State)
 		}
 	}
 	for _, item := range state.Entities.Bugs {
 		if !contains(definition.EntityLifecycles["bug"].States, item.State) {
 			return fmt.Errorf("unknown BUG state %q", item.State)
+		}
+	}
+	if workstate.Unified(state.SchemaVersion) {
+		for id, item := range state.Review.Assignments {
+			if _, err := workstate.LegacyReviewAssignmentActivity(state.SchemaVersion, item.Status, item.LastLifecycleEvent); err != nil {
+				return fmt.Errorf("invalid S7 Assignment %q lifecycle activity: %w", id, err)
+			}
 		}
 	}
 	return nil

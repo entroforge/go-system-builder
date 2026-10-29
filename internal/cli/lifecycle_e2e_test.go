@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 )
 
 // TestLifecycleVerbChainE2E walks the complete REQ authorization lifecycle
@@ -53,10 +54,12 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 
 	// --- enter: projection hint, then bind (auto-init + discovery) ---
 	must("init", "init", "--root", root)
+	initial := stateOf()
+	initial["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	writeJSONMap(t, filepath.Join(root, ".claude/loop-state.json"), initial)
 	next := must("next", "next", "--root", root)
-	if !strings.Contains(next, "bind the human-locked REQ") ||
-		!strings.Contains(next, "req bind --req docs/requirements/REQ-100.md") {
-		t.Fatalf("S0 projection must carry the ready-to-run bind command: %s", next)
+	if !strings.Contains(next, "supplied current binding request") || !strings.Contains(next, "save normally") {
+		t.Fatalf("S1 projection must name normal binding save: %s", next)
 	}
 	out := must("bind", "req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice")
 	if !strings.Contains(out, "bound REQ-100 v1.0.0") || !strings.Contains(out, "event req_bound") {
@@ -64,6 +67,15 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 	}
 	if state, phase := lifecycle(); state != "planning" || phase != "design" {
 		t.Fatalf("post-bind lifecycle = %s.%v, want planning.design", state, phase)
+	}
+
+	originalPacket, err := runtime.CurrentDesignPacket(stateOf())
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalView, err := os.ReadFile(filepath.Join(root, originalPacket.ViewPath))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// --- pause → resume (checkpoint verified and cleared) ---
@@ -105,6 +117,49 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 	}
 	if state["lifecycle"].(map[string]any)["state"] != "planning" {
 		t.Fatal("amend must land the runtime back in planning")
+	}
+
+	currentPacket, err := runtime.CurrentDesignPacket(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentPacket.Binding.Generation != 2 || currentPacket.Binding.StageEntry == originalPacket.Binding.StageEntry {
+		t.Fatalf("amend did not establish the current entry: %+v", currentPacket.Binding)
+	}
+	if _, found, err := runtime.FindDesignPacket(state, currentPacket.ID); err != nil || !found {
+		t.Fatalf("current packet not registered: %v", err)
+	}
+	for _, path := range []string{currentPacket.ViewPath, currentPacket.AnswerPath} {
+		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, filepath.Join(root, path)) {
+			t.Fatalf("amend output missing actual path %s: %s", path, out)
+		}
+	}
+	if !strings.Contains(out, fmt.Sprintf("revision %v)", state["revision"])) {
+		t.Fatalf("amend output must show latest revision: %s", out)
+	}
+	oldView, err := os.ReadFile(filepath.Join(root, originalPacket.ViewPath))
+	if err != nil || !bytes.Equal(oldView, originalView) {
+		t.Fatalf("old design view was changed: %v", err)
+	}
+	arch := "docs/architecture/ARCHITECTURE-100.md"
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, arch)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, arch), []byte("# Architecture\n> Status: locked\n> Version: v1.0.0\n\nAmended requirement design.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	commitStageFixture(t, root)
+	stageJSON(t, root, currentPacket.AnswerPath, map[string]any{"answer": map[string]any{"conclusion": "pass", "architecture_path": arch}})
+	body, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(root, currentPacket.AnswerPath)}, "cwd": root})
+	var saved, saveErr bytes.Buffer
+	if code := cli.Run([]string{"hook", "--event", "PostToolUse", "--root", root}, bytes.NewReader(body), &saved, &saveErr); code != 0 {
+		t.Fatalf("normal amended design save: %s %s", saved.String(), saveErr.String())
+	}
+	if state, phase := lifecycle(); state != "planning" || phase != "contracts" {
+		t.Fatalf("normal save did not continue to S3: %s.%v %s", state, phase, saved.String())
 	}
 
 	// --- unbind: archive disposition=unbound, REQ returns to the pool ---

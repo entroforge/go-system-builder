@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"os"
 	"path/filepath"
 )
@@ -60,6 +61,19 @@ func (b *ExecutionRegistry) PlanRebind(ctx context.Context, state map[string]any
 			return e, fmt.Errorf("relocation path must be canonical: %s", path)
 		}
 		e.Path = path
+		e.ToolCheckReceipts = append([]checkexec.ToolReceipt(nil), e.ToolCheckReceipts...)
+		for i := range e.ToolCheckReceipts {
+			ref := &e.ToolCheckReceipts[i]
+			rel, err := filepath.Rel(r.OldMainRoot, ref.Path)
+			if err != nil || !filepath.IsLocal(rel) {
+				return e, fmt.Errorf("tool receipt is outside original Main evidence")
+			}
+			ref.Path = filepath.Join(r.NewMainRoot, rel)
+		}
+		e.OwnedCheckReceipts, err = relocateOwnedCheckReceipts(r.OldMainRoot, r.NewMainRoot, e.OwnedCheckReceipts)
+		if err != nil {
+			return e, err
+		}
 		if e.Status != "complete" && e.Status != "retired" {
 			if err := next.ValidateExecution(ctx, e, false); err != nil {
 				return e, err
@@ -95,6 +109,22 @@ func (b *ExecutionRegistry) PlanRebind(ctx context.Context, state map[string]any
 		next.History = append(next.History, moved)
 	}
 	return &next, nil
+}
+
+// relocateOwnedCheckReceipts moves only the Runtime's evidence locator. The
+// captured ToolReceipt tuple and sealed bytes stay historical; in particular,
+// its former checkout is not rewritten into a new source claim.
+func relocateOwnedCheckReceipts(oldMain, newMain string, rows []OwnedCheckReceipt) ([]OwnedCheckReceipt, error) {
+	moved := append([]OwnedCheckReceipt(nil), rows...)
+	for i := range moved {
+		ref := &moved[i].Receipt
+		rel, err := filepath.Rel(oldMain, ref.Path)
+		if err != nil || !filepath.IsLocal(rel) {
+			return nil, fmt.Errorf("owned-check receipt is outside original Main evidence")
+		}
+		ref.Path = filepath.Join(newMain, rel)
+	}
+	return moved, nil
 }
 
 func (b *ExecutionRegistry) RelocatePointer(e Execution, oldMain string) error {

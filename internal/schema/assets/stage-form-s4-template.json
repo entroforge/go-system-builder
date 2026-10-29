@@ -1,0 +1,20 @@
+{
+  "stage": "S4",
+  "adapter": "task_planning",
+  "title": "Complete the current REQ task batch and dispatch plan",
+  "instruction": "Use the frozen locked REQ, complete locked contract set, clause universe, and registered upstream sources. Complete every actual TASK file, including any explicitly cancelled TASK, and one complete waves-v1 index. Review §3 clause coverage, §4 scope/output paths against all §6 assigned deliverables, §7 executable Closing Contracts, §8 real dependencies and DAG, and index membership. Fill only answer. Your pass is a professional self-review; the original tasks check and independent S5 review remain required. Ordinary task planning needs no fresh human approval; escalate only an actual REQ amendment or decision outside existing authorization.",
+  "questions": {
+    "conclusion": {
+      "question": "Have you professionally passed the full REQ task batch: cancelled-task coverage consequences, §3 clause mapping, §4 scope/output paths covering every §6 deliverable, §7 executable Closing Contracts, §8 dependency DAG, and waves-v1 index?",
+      "choices": [
+        "pass"
+      ]
+    },
+    "index_path": {
+      "question": "Where is the actual complete waves-v1 index for the frozen REQ?"
+    },
+    "task_paths": {
+      "question": "List every actual TASK in this REQ batch, including files explicitly marked cancelled. Keep clause mapping in TASK §3 and dependencies in TASK §8; the original checker independently reconciles coverage, DAG, status and plan membership."
+    }
+  }
+}

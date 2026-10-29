@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -52,7 +51,7 @@ func freezeWorkerSubmission(main, worker, path string, e workspace.Execution) (s
 		return "", fmt.Errorf("Worker lifecycle submission is not valid JSON")
 	}
 	h := sha256.Sum256(data)
-	dir := filepath.Join(filepath.Dir(integration.CheckpointPath(main, e.RuntimeID, e.BaselineGeneration, e.AssignmentID)), "submissions")
+	dir := filepath.Join(filepath.Dir(workspaceExecutionCheckpointPath(main, e)), "submissions")
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/docscope"
 	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/projectconventions"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"github.com/entroforge/go-system-builder/internal/sharedmodel"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // S4's mechanical close (L3-S4 v4.0.1). Division of labor: the CONTRACTS
@@ -24,20 +26,33 @@ var (
 	taskClauseNumber = regexp.MustCompile(`§\s*(\d+)`)
 	taskDepReference = regexp.MustCompile(`^TASK-[A-Z0-9]+(?:-[A-Z0-9]+)*$`)
 	taskContractCell = regexp.MustCompile(`^(FE|BE|SYNC)-[A-Z0-9]+(?:-[A-Z0-9]+)*$`)
+	// taskIDPattern is the single canonical TASK id shape shared by S4
+	// planning (this check), the runtime loop-state schema
+	// (^TASK-[0-9]{3,}(?:-[0-9]{2,})?$) and RegisterTask. A filename id
+	// that fails here is rejected at TR-002 instead of surfacing later
+	// at S5 workgroup registration.
+	taskIDPattern = regexp.MustCompile(`^TASK-[0-9]{3,}(?:-[0-9]{2,})?$`)
 )
 
 type TaskCheckResult struct {
-	Tasks          int      `json:"tasks"`
-	Cancelled      int      `json:"cancelled"`
-	ClausesTotal   int      `json:"clauses_total"`
-	ClausesCovered int      `json:"clauses_covered"`
-	Problems       []string `json:"problems,omitempty"`
+	ConventionsResolverVersion string                          `json:"conventions_resolver_version,omitempty"`
+	TaskConventions            []projectconventions.Projection `json:"task_conventions,omitempty"`
+	Tasks                      int                             `json:"tasks"`
+	Cancelled                  int                             `json:"cancelled"`
+	ClausesTotal               int                             `json:"clauses_total"`
+	ClausesCovered             int                             `json:"clauses_covered"`
+	Problems                   []string                        `json:"problems,omitempty"`
 	// ReferenceLoads are informational per-task context-budget figures
 	// (required-reading bytes + write-path count) for the S5 executability
 	// reviewer — deliberately NOT problems: avoiding subagent compact is a
 	// prompt-and-review concern, not a hard gate (L3-S5 v4.4.1).
-	ReferenceLoads []string `json:"reference_loads,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"`
+	ReferenceLoads            []string                  `json:"reference_loads,omitempty"`
+	Warnings                  []string                  `json:"warnings,omitempty"`
+	ContextAnalysisVersion    string                    `json:"context_analysis_version,omitempty"`
+	TaskContexts              []TaskContextSummary      `json:"task_contexts,omitempty"`
+	GranularityAdvice         []TaskGranularityAdvisory `json:"granularity_advice,omitempty"`
+	BehaviorProjectionVersion string                    `json:"behavior_projection_version,omitempty"`
+	BehaviorExamples          []TaskBehaviorProjection  `json:"behavior_examples,omitempty"`
 }
 
 type taskDocument struct {
@@ -49,8 +64,9 @@ type taskDocument struct {
 	clauses       []string // expanded "{contract} §{n}"
 	deps          []string
 	problems      []string // parse-level problems surfaced by TasksCheck
-	manifestPaths []string
 	writePaths    []string
+	scopeProblems []string
+	content       string
 }
 
 // TasksCheck is S4's exit-side reconciliation. It runs as the tasks_checked
@@ -148,6 +164,12 @@ func TasksCheckWithFiles(root string, files fileview.Reader, reqIDs ...string) (
 	for _, task := range tasks {
 		byID[task.id] = task
 		result.Problems = append(result.Problems, task.problems...)
+		if !taskIDPattern.MatchString(task.id) {
+			// S4 derives the registered S5 task entity id from the filename.
+			// Repair the authored task and its references here; manual S5
+			// registration is not an alternative to the original reception.
+			result.Problems = append(result.Problems, fmt.Sprintf("%s: TASK id %q does not match the canonical ^TASK-[0-9]{3,}(?:-[0-9]{2,})?$ shape required by the S5 runtime schema — use a numeric TASK id such as TASK-009-01 and update its filename and index/dependency references; Source REQ refs binds the task to its actual requirement, without manual S5 registration", task.rel, task.id))
+		}
 		if task.status == "cancelled" {
 			result.Cancelled++
 			continue
@@ -241,26 +263,21 @@ func TasksCheckWithFiles(root string, files fileview.Reader, reqIDs ...string) (
 
 	result.ClausesTotal = len(universe)
 	result.ClausesCovered = len(covered)
-	// Informational context-budget figures for the S5 reviewer (no
-	// thresholds — the compact-avoidance warning lives in the split prompt
-	// and the review checklist, not as a machine gate).
-	for _, task := range tasks {
-		if task.status == "cancelled" {
-			continue
-		}
-		readBytes := 0
-		for _, p := range task.manifestPaths {
-			clean := filepath.Clean(p)
-			if clean == "" || filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
-				continue
-			}
-			if data, err := files.ReadFile(filepath.Join(root, clean)); err == nil {
-				readBytes += len(data)
+	result.ContextAnalysisVersion = TaskContextAnalysisVersion
+	result.TaskContexts = analyzeTaskContexts(root, files, tasks)
+	result.GranularityAdvice = AnalyzeTaskGranularity(result.TaskContexts)
+	result.BehaviorProjectionVersion = TaskBehaviorProjectionVersion
+	result.BehaviorExamples = ProjectTaskBehavior(root, files, result.TaskContexts)
+	result.ConventionsResolverVersion = projectconventions.Version
+	result.TaskConventions = ProjectTaskConventions(root, files, result.TaskContexts, nil)
+	for _, context := range result.TaskContexts {
+		unresolved := 0
+		for _, ref := range context.Reading {
+			if ref.Status != "readable" || ref.Reason != "" {
+				unresolved++
 			}
 		}
-		result.ReferenceLoads = append(result.ReferenceLoads,
-			fmt.Sprintf("%s: required reading ~%dKB, write paths %d (reference only — avoid subagent compact; split or trim if it feels too big)",
-				task.id, readBytes/1024, len(task.writePaths)))
+		result.ReferenceLoads = append(result.ReferenceLoads, fmt.Sprintf("%s: required reading ~%dKB, legacy unspecified ~%dKB, unique analyzed total ~%dKB, write paths %d, unresolved inputs %d (reference only; bytes are not tokens or an automatic split threshold)", context.TaskID, context.BytesByMode["required"]/1024, context.BytesByMode["legacy_unspecified"]/1024, context.TotalUniqueBytes/1024, len(context.Writes), unresolved))
 	}
 	return result, nil
 }
@@ -328,6 +345,7 @@ func loadTaskDocumentsWithFiles(root string, files fileview.Reader) ([]*taskDocu
 		content := string(data)
 		task := &taskDocument{
 			id:       id,
+			content:  content,
 			rel:      "docs/dev/tasks/" + name,
 			hasClose: strings.Contains(content, "Closing Contract") && strings.Contains(content, "assert "),
 		}
@@ -345,24 +363,8 @@ func loadTaskDocumentsWithFiles(root string, files fileview.Reader) ([]*taskDocu
 			}
 		}
 		task.problems = append(task.problems, sharedmodel.Reading(root, task.rel, content, files)...)
-		for _, row := range sectionTable(content, "Document Manifest") {
-			if len(row) >= 4 {
-				p := sharedmodel.ReadingPath(root, task.rel, row[3])
-				if p != "" && p != "{path}" && !strings.HasPrefix(p, ":--") && p != "Path" {
-					task.manifestPaths = append(task.manifestPaths, p)
-				}
-			}
-		}
-		for _, row := range sectionTable(content, "Scope") {
-			if len(row) >= 2 && strings.Contains(strings.ToLower(row[0]), "write") {
-				for _, cell := range strings.Split(row[1], ",") {
-					p := strings.TrimSpace(strings.Trim(cell, "` "))
-					if p != "" && p != "{path}" && !strings.HasPrefix(p, ":--") {
-						task.writePaths = append(task.writePaths, p)
-					}
-				}
-			}
-		}
+		task.writePaths, task.scopeProblems = taskScopePaths(task.rel, content)
+
 		for _, row := range sectionTable(content, "Dependencies") {
 			cell := strings.TrimSpace(row[0])
 			isMarker := cell == "" || cell == "Dependency" || cell == "TASK-{id}" || cell == "N/A" || cell == "—" || cell == "-" || strings.HasPrefix(cell, ":--")
@@ -471,4 +473,106 @@ func normalizeClauseCell(cell string) string {
 		return strings.Join(parts, " ")
 	}
 	return parts[0] + " §" + strings.TrimPrefix(parts[1], "§")
+}
+
+// taskScopePaths is the sole interpretation of TASK prospective write paths.
+// Other Scope rows describe reads, outputs and prohibitions, not write grants.
+func taskScopePaths(ref, content string) (paths, problems []string) {
+	inScope := false
+	for n, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			if inScope {
+				break
+			}
+			inScope = strings.Contains(trimmed, "Scope")
+			continue
+		}
+		if !inScope || !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		cells := strings.Split(strings.TrimSuffix(strings.TrimPrefix(trimmed, "|"), "|"), "|")
+		if len(cells) == 0 || !strings.EqualFold(strings.TrimSpace(cells[0]), "prospective write paths") {
+			continue
+		}
+		var parsed []string
+		var err error
+		if len(cells) != 2 {
+			err = fmt.Errorf("expected one path-list cell")
+		} else {
+			parsed, err = parseTaskScopeList(strings.TrimSpace(cells[1]))
+		}
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s:%d: Scope prospective write paths %q: %v; use `internal/a.go`, `tests/a_test.go` or `simulation/products/`（仿真产品输出区）; plain comma-separated paths are also supported", ref, n+1, trimmed, err))
+		} else {
+			paths = append(paths, parsed...)
+		}
+	}
+	// An invalid declaration must never expose a usable partial write grant.
+	if len(problems) != 0 {
+		return nil, problems
+	}
+	return paths, problems
+}
+
+func parseTaskScopeList(cell string) ([]string, error) {
+	original := cell
+	code := strings.HasPrefix(cell, "`")
+	var paths []string
+	for {
+		cell = strings.TrimSpace(cell)
+		if cell == "" {
+			return nil, fmt.Errorf("empty path in %q", original)
+		}
+		var path string
+		if code {
+			if !strings.HasPrefix(cell, "`") {
+				return nil, fmt.Errorf("mixed bare/code paths or unexpected text %q", cell)
+			}
+			end := strings.Index(cell[1:], "`")
+			if end < 0 {
+				return nil, fmt.Errorf("unclosed code span %q", cell)
+			}
+			path, cell = cell[1:end+1], strings.TrimSpace(cell[end+2:])
+		} else {
+			path, cell, _ = strings.Cut(cell, ",")
+			path = strings.TrimSpace(path)
+			if strings.IndexFunc(path, unicode.IsSpace) >= 0 {
+				return nil, fmt.Errorf("bare path contains whitespace %q", path)
+			}
+			// Keep a trailing separator visible to the next iteration.
+			if strings.HasSuffix(original, ",") && cell == "" {
+				return nil, fmt.Errorf("empty trailing path in %q", original)
+			}
+		}
+		clean := filepath.ToSlash(filepath.Clean(path))
+		if path == "" || strings.IndexFunc(path, unicode.IsControl) >= 0 || path != strings.TrimSpace(path) || filepath.IsAbs(path) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.ContainsAny(path, "`*?{}[]<>\\:|,()（）\r\n\t") {
+			return nil, fmt.Errorf("invalid concrete repository-relative write paths: %q", path)
+		}
+		paths = append(paths, path)
+		if cell == "" {
+			return paths, nil
+		}
+		if !code {
+			continue
+		}
+		if strings.HasPrefix(cell, ",") {
+			cell = cell[1:]
+			continue
+		}
+		close := ""
+		if strings.HasPrefix(cell, "（") {
+			close = "）"
+		}
+		if strings.HasPrefix(cell, "(") {
+			close = ")"
+		}
+		if close != "" && strings.HasSuffix(cell, close) {
+			note := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(cell, "（"), "("), close)
+			if strings.TrimSpace(note) != "" && !strings.ContainsAny(note, "`()（）") {
+				return paths, nil
+			}
+		}
+		return nil, fmt.Errorf("unexpected or unpaired trailing text %q", cell)
+	}
 }

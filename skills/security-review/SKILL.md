@@ -22,6 +22,16 @@ Stop and escalate on exploitable critical findings or missing threat authority.
 ## Non-Goals
 Do not repair findings while acting as reviewer.
 
-## Inlined Methodology
+## Review method
 
-Team planning uses a mandatory responsibility baseline plus risk-triggered responsibilities plus scope partitioning plus conflict-graph constraints yielding one single-responsibility assignment per teammate. Agent count is the number of resulting assignments, not a fixed target. QA responsibilities include `QA-SECURITY`; this maps to the security-review scope. Risk-tag derivation: auth, permission or sensitive data -> `security`; API, event or shared schema -> `api`, `cross-component`; shared package or multi-module design -> `architecture`; existing behavior or historical BUG touched -> `regression`. Scope partitioning rules: distinct write ownership or repository boundary; independently testable Closing Contracts. Conflict-graph `must_separate` edges when responsibilities require different conclusion enums, one responsibility checks the other's authored or repaired output, security/release/permission enforcement needs independent evidence, scopes require incompatible Skills or tools, or combining them would exceed workload limits. One assignment may not exceed 30 files or 3 material modules. Teammate reuse requires same role family and responsibility ID, unchanged scope, matching fingerprints, and non-stale teammate state. QA workgroup gate must cover every triggered architecture, security, performance, reliability, and migration responsibility.
+Trace untrusted inputs across authentication, authorization, storage and outbound
+boundaries. Check both allowed and rejected identities, tenant/object ownership,
+validation before side effects, failure defaults and sensitive-data exposure.
+Use the actual threat model and dependency context; state the observed exploit
+condition and affected boundary with evidence, without repairing the reviewed
+product. Stop unsafe proof attempts and preserve the observed P0 and capture gaps.
+
+Main owns independent assignment and grouping under the current ReviewPlan. This
+method adds no actor count, file cap, activation or second security report. Missing
+threat authority or inaccessible evidence is a concrete Main recovery gap, not
+proof that the product passed or an excuse to invent a vulnerability.

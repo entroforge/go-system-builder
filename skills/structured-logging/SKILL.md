@@ -18,7 +18,7 @@ One observable implementation or scoped logging review conclusion.
 ## N/A Criteria
 N/A when no log-producing path, log schema, or operational diagnostic changes.
 ## Stop Conditions
-Stop on sensitive-data leakage, missing incident correlation, or logging that changes control flow.
+Correct correlation, sensitive-data handling and control-flow interference within the assigned logging change. Stop an unsafe disclosure attempt and preserve evidence; escalate an actual missing policy or out-of-scope decision rather than treating ordinary instrumentation defects as approval gates.
 ## Non-Goals
 Do not treat logs as a replacement for user-facing error contracts or metrics.
 

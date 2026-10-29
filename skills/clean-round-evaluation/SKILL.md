@@ -9,6 +9,13 @@ version: 1.1.0
 ## Authority
 The CleanRound is machine-owned (`docs/control/agent-protocol.md` #s7, `docs/control/loop-definition.json` TR-009 / `clean_round_valid`): the round consumer registers the snapshot inside the final `runtime review-result submit`, and TR-009's guard recomputes the full conjunction at promotion time. This skill is the read-only inspection entry — nobody hand-writes a clean-round record or an aggregate PASS.
 
+An issued S7 professional answer is another input to that same original consumer.
+Its durable receipt can project only the submitting Reviewer's responsibility
+to `done`. Inspect the original complete Claim set and round facts before
+evaluating the whole round. A Reviewer whose responsibility is `done` does not
+wait for another Reviewer; the adapter never infers a professional verdict
+from green checks.
+
 ## Entry Conditions
 - The Loop is in phase `verification.clean` (the consumer already closed the round), or `verification.running` with the final Claim Result about to land.
 - A ReviewPlan is registered for the current round and every required Claim has a consumed disposition (pass, or finding — finding rounds go to TR-008, never clean).

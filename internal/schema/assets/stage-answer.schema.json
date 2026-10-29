@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/stage-answer.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "instruction",
+    "read",
+    "questions",
+    "answer"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instruction": {
+      "type": "string",
+      "minLength": 1
+    },
+    "read": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "purpose"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "questions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conclusion",
+        "findings"
+      ],
+      "properties": {
+        "conclusion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question"
+          ],
+          "properties": {
+            "question": {
+              "type": "string",
+              "minLength": 1
+            },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "example": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "expected",
+                "observed"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                },
+                "observed": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "findings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question"
+          ],
+          "properties": {
+            "question": {
+              "type": "string",
+              "minLength": 1
+            },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "example": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "expected",
+                "observed"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                },
+                "observed": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conclusion",
+        "findings"
+      ],
+      "properties": {
+        "conclusion": {
+          "enum": [
+            null,
+            "pass",
+            "fix_required",
+            "req_change_required"
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "expected",
+              "observed"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "expected": {
+                "type": "string"
+              },
+              "observed": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

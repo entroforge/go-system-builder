@@ -98,17 +98,24 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 	} else if lifecycle["state"] != "building" {
 		return fail(fmt.Errorf("rework requires building or active repair authority"))
 	}
-	cpPath := integration.CheckpointPath(*root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID)
+	cpPath := workspaceExecutionCheckpointPath(*root, e)
 	cp, found, err := integration.DefaultCheckpointStore().Load(cpPath)
 	if err != nil {
 		return fail(err)
 	}
-	if !found && e.Status == "ready" && e.ReworkRef != "" && e.DeliveryRef == "" && loaded.PolicyContext.Agent != nil && loaded.PolicyContext.Agent.State == "working" {
+	if !found && e.Status == "ready" && e.ReworkRef != "" && e.DeliveryRef == "" && loaded.PolicyContext.Agent != nil && loaded.PolicyContext.Agent.LifecycleActivity() == "working" {
 		return encodeJSON(stdout, map[string]any{"execution": e, "rework_receipt": e.ReworkRef, "reused": true, "next": "resume Worker correction and submit a new report"})
 	}
 	persist := func(message string, apply func(map[string]any) error) error {
 		key := fmt.Sprintf("workspace-rework-r%d", snap.Revision+1)
-		next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE-REWORK", Event: "integration_rework_requested", Actor: "main", RuntimeID: e.RuntimeID, IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
+		// Bind both the assignment slot and the exact immutable rework receipt.
+		// The event actor is Main, so the slot ID is required to distinguish
+		// sibling assignments when an original typed packet is revalidated.
+		evidenceIDs := []string{e.AssignmentID}
+		if e.ReworkRef != "" {
+			evidenceIDs = append(evidenceIDs, e.ReworkRef)
+		}
+		next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE-REWORK", Event: "integration_rework_requested", Actor: "main", RuntimeID: e.RuntimeID, BaselineGeneration: workspace.Generation(snap.State), IdempotencyKey: key, EvidenceIDs: evidenceIDs, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
 			if apply != nil {
 				if err := apply(state); err != nil {
 					return err
@@ -140,6 +147,19 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 		}
 		if cp.WorktreePath != e.Path || cp.SourceBranch != e.Branch || cp.TargetBranch != e.TargetBranch {
 			return fail(fmt.Errorf("failed checkpoint coordinates differ"))
+		}
+		if a.AssignmentRecord != nil {
+			if a.AssignmentRecordSHA256 == "" {
+				return fail(fmt.Errorf("canonical S6 Assignment rework cannot resolve the current Record SHA; preserve this checkpoint and inspect the registered Assignment before recovery"))
+			}
+			recordRefJSON, marshalErr := json.Marshal(*a.AssignmentRecord)
+			if marshalErr != nil {
+				return fail(fmt.Errorf("encode current canonical Assignment Record reference: %w", marshalErr))
+			}
+			return fail(fmt.Errorf(
+				"canonical S6 Assignment rework starts a new immutable attempt; use `runtime register-workgroup --manifest <fresh-reviewed-manifest> --task-id %s --task <locked-task-source> --revise-assignment %s --revision-intent-key <stable-key> --expected-record-ref '%s' --expected-record-sha256 %s`",
+				a.TaskID, a.AssignmentID, string(recordRefJSON), a.AssignmentRecordSHA256,
+			))
 		}
 		receipt = reworkReceipt{e, cp, *reason}
 		data, _ := json.MarshalIndent(receipt, "", "  ")

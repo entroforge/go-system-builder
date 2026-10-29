@@ -146,3 +146,55 @@ func TestExecutionRegistryCannotOverrideRequirementAuthority(t *testing.T) {
 		t.Fatal("created execution registry without bound requirement authority")
 	}
 }
+
+func TestWorktreeReminderControlShapeDoesNotHideProductInputs(t *testing.T) {
+	key := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		path    string
+		control bool
+	}{
+		{".claude/worktree-reminders/" + key + ".txt", true},
+		{".claude/worktree-reminders/.delivery-1234567890", true},
+		{".claude/worktree-reminders/product.go", false},
+		{".claude/worktree-reminders/short.txt", false},
+		{".claude/worktree-reminders/" + strings.Repeat("A", 64) + ".txt", false},
+		{".claude/worktree-reminders/nested/" + key + ".txt", false},
+		{".claude/worktree-reminders/.delivery-script.go", false},
+		{"internal/api/payload.go", false},
+	} {
+		if got := ControlFile(tc.path); got != tc.control {
+			t.Fatalf("ControlFile(%q)=%t want=%t", tc.path, got, tc.control)
+		}
+	}
+	b, ctx := repository(t)
+	if err := os.WriteFile(filepath.Join(b.MainRoot, ".gitignore"), []byte(".worktrees/\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Git(ctx, b.MainRoot, "add", ".gitignore"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Git(ctx, b.MainRoot, "commit", "-m", "Expose control files for dirty-input regression"); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(b.MainRoot, ".claude/worktree-reminders")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	reminder := filepath.Join(dir, key+".txt")
+	if err := os.WriteFile(reminder, []byte("original advisory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.CleanInputs(ctx); err != nil {
+		t.Fatalf("original reminder blocked dispatch: %v", err)
+	}
+	product := filepath.Join(dir, "product.go")
+	if err := os.WriteFile(product, []byte("uncommitted input"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.CleanInputs(ctx); err == nil || !strings.Contains(err.Error(), "product.go") {
+		t.Fatalf("neighbor product input bypassed dirty guard: %v", err)
+	}
+	if _, err := os.Stat(reminder); err != nil {
+		t.Fatalf("CleanInputs mutated advisory: %v", err)
+	}
+}

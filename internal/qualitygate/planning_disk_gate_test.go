@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -127,6 +126,36 @@ func TestPlanningGatesStillRefuseWhenDiskAlsoLacks(t *testing.T) {
 	}
 }
 
+func TestPlanningContractsGateLeavesAnUnacceptedPacketAsMissing(t *testing.T) {
+	evaluator := newTestEvaluator(t)
+	input := planningInputForGate(t, "GATE-PLANNING-CONTRACTS-COMPLETE", "PTR-PLAN-02", "contracts", "planning_contract_record", "Contract Planner")
+	state := input.Snapshot.State
+	state["schema_version"] = "1.2.0"
+	state["configuration"] = map[string]any{"optimization": map[string]any{"packet": true}}
+	lifecycle := state["lifecycle"].(map[string]any)
+	lifecycle["phase_revision"] = float64(3)
+	state["entities"] = map[string]any{
+		"work_packets": []any{map[string]any{
+			"packet_id": "packet-unaccepted-s3", "template_id": "s3-contract-v1",
+			"binding": map[string]any{
+				"runtime_id": "loop-test", "generation": float64(1), "stage_entry": float64(3),
+				"stage": "S3", "owner": "Main",
+			},
+		}},
+		"submissions": []any{},
+	}
+	result, err := evaluator.Evaluate(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Status != qualitygate.StatusNotReady || result.ErrorCode != "" {
+		t.Fatalf("an issued but unaccepted S3 questionnaire should remain ordinary not_ready: status=%q error=%q conflicts=%v", result.Status, result.ErrorCode, result.Conflicts)
+	}
+	if len(result.Missing) != 1 || result.Missing[0] != "evidence:planning_contract_record" {
+		t.Fatalf("missing = %#v, want the unfilled S3 contract deliverable", result.Missing)
+	}
+}
+
 // TestPlanningDesignGateReadsDiskDeclaredArchitecture verifies that:
 // the S2 exit gate must accept a disk-declared locked architecture document
 // without a pre-existing documents[] registration (the registration happens
@@ -162,6 +191,7 @@ func TestPlanningDesignGateReadsDiskDeclaredArchitecture(t *testing.T) {
 				"runtime_id": "loop-test",
 				"lifecycle":  map[string]any{"state": "planning", "phase": "design", "phase_revision": float64(1)},
 				"baseline":   map[string]any{"generation": float64(1)},
+				"bound_req":  map[string]any{"id": "REQ-001", "path": "docs/requirements/REQ-001.md", "status": "locked"},
 				"review":     map[string]any{"round": float64(0)},
 				"documents": []any{ // req registered by bind; design NOT registered (organic pre-commit state)
 					map[string]any{"id": "REQ-001", "kind": "req", "path": "docs/requirements/REQ-001.md", "version": "v1.0.0", "sha256": sha256Hex(reqData), "status": "locked", "generation": float64(1)},
@@ -237,56 +267,19 @@ func TestDocumentPassGateFlagsRegisteredDocumentDrift(t *testing.T) {
 	}
 }
 
-// TestREVTemplateEnvelopeTeachesTheTruth verifies that the §0
-// envelope skeleton in REV-template.md, filled with real values, must
-// pass the evaluator's full field validation — if the template drifts
-// from what the machine checks (field renamed, conclusion vocabulary
-// changed), this test goes red.
-func TestREVTemplateEnvelopeTeachesTheTruth(t *testing.T) {
-	template, err := os.ReadFile(filepath.Join("..", "..", "docs", "reports", "review", "REV-template.md"))
-	if err != nil {
-		t.Fatalf("read REV-template: %v", err)
-	}
-	content := string(template)
-	start := strings.Index(content, "```json")
-	if start < 0 {
-		t.Fatalf("template §0 must carry a fenced JSON skeleton")
-	}
-	body := content[start+7:]
-	end := strings.Index(body, "```")
-	if end < 0 {
-		t.Fatalf("template §0 JSON block is not closed")
-	}
-	block := body[:end]
-
+// Frozen document-review records retain their complete original envelope
+// validation. Normal S5 authoring is covered from actual issued questionnaires;
+// a public professional template must not demand machine metadata copying.
+func TestFrozenDocumentReviewEnvelopeQualifiesOriginalGate(t *testing.T) {
 	contractData := []byte("# BE-001\n\n> 状态：locked\n> 版本：v1.0.0\n")
-	replace := map[string]string{
-		`"填写 REV-{runid}-{resp}（与文件名一致，机器互证）"`: `"ev-dv-spec"`,
-		`"document_review"`: `"document_review"`,
-		`"填写当前 runtime id（从 .claude/loop-state.json 顶部复制）"`:                                                                  `"loop-test"`,
-		`"填写当前 baseline generation（同上）"`:                                                                                     `1`,
-		`"填写你的 agent id（你是谁就写谁——独立性机器核对两条证据互异）"`:                                                                             `"dv-spec-1"`,
-		`"填写 DV-SPEC-CONSISTENCY 或 DV-TASK-EXECUTABILITY（激活信封指定的职责，错值 gate 直接 Unknown）"`:                                     `"DV-SPEC-CONSISTENCY"`,
-		`"审查完成后回填，三选一：pass / fix_required / req_change_required（与 gate 同词，全流程没有第二套枚举）"`:                                      `"pass"`,
-		`"仅 fix_required 时填 document_fix_required（触发 TR-004 回 planning）；pass 留空；req_change_required 时填 req_change_required"`: `""`,
-		`"填写 ISO 时间戳"`: `"2026-08-18T00:00:00Z"`,
+	envelope := map[string]any{
+		"schema_version": "1.0.0", "evidence_id": "ev-dv-spec", "kind": "document_review",
+		"runtime_id": "loop-test", "baseline_generation": 1,
+		"producer_agent_id": "dv-spec-1", "producer_responsibility": "DV-SPEC-CONSISTENCY",
+		"subject_refs": []any{map[string]any{"path": "docs/dev/contracts/BE-001.md", "version": "v1.0.0", "sha256": sha256Hex(contractData)}},
+		"conclusion":   "pass", "requested_event": "", "created_at": "2026-08-18T00:00:00Z",
 	}
-	filled := block
-	for old, newVal := range replace {
-		filled = strings.ReplaceAll(filled, old, newVal)
-	}
-	// subject_refs placeholder row → the real current documents set
-	manualNote := "手动从 .claude/loop-state.json 的 documents[] 逐条复制 {path, version, sha256}——多一少一都拒。故意没有自动命令：逐条抄写就是'我签的是哪一版'的对峙，这一步的笨拙是审查的锚"
-	filled = strings.ReplaceAll(filled,
-		`[`+"\n    "+`"`+manualNote+`"`+"\n  ]",
-		`[{"path": "docs/dev/contracts/BE-001.md", "version": "v1.0.0", "sha256": "`+sha256Hex(contractData)+`"}]`)
-	if strings.Contains(filled, "填写") || strings.Contains(filled, "手动从") {
-		t.Fatalf("test does not know how to fill the template anymore — template placeholders changed:\n%q", filled)
-	}
-	var envelope map[string]any
-	if err := json.Unmarshal([]byte(filled), &envelope); err != nil {
-		t.Fatalf("filled template envelope is not valid JSON: %v\n%s", err, filled)
-	}
+
 	envelopeData, _ := json.Marshal(envelope)
 
 	evaluator := newTestEvaluator(t)
@@ -330,7 +323,7 @@ func TestREVTemplateEnvelopeTeachesTheTruth(t *testing.T) {
 		}
 	}
 	if !qualified {
-		t.Fatalf("the template-taught envelope must qualify at the gate; got status=%q missing=%v conflicts=%v", result.Status, result.Missing, result.Conflicts)
+		t.Fatalf("the original frozen envelope must qualify at the gate; got status=%q missing=%v conflicts=%v", result.Status, result.Missing, result.Conflicts)
 	}
 }
 
@@ -392,48 +385,19 @@ func TestREVTemplateEnvelopeFixRequiredVariant(t *testing.T) {
 	}
 }
 
-// TestPlanningEnvelopeTeachesTheTruth pins the v4.5.4 fix: the JSON
-// skeleton taught in specification-planning's Planning Evidence Envelopes
-// section, filled with real values, must qualify the S2 design gate — a
-// markdown path or a missing --expected-revision-style mistake goes red.
-func TestPlanningEnvelopeTeachesTheTruth(t *testing.T) {
-	skill, err := os.ReadFile(filepath.Join("..", "..", "skills", "specification-planning", "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read skill: %v", err)
-	}
-	content := string(skill)
-	start := strings.Index(content, "```json")
-	if start < 0 {
-		t.Fatalf("skill must carry a fenced JSON envelope skeleton")
-	}
-	body := content[start+7:]
-	end := strings.Index(body, "```")
-	if end < 0 {
-		t.Fatalf("envelope skeleton not closed")
-	}
-	block := body[:end]
-
+// Existing packet-off records retain their original complete envelope reader.
+// Normal authoring is exercised by the CLI questionnaire tests; this fixture
+// is not a request to teach authors the internal persistence protocol.
+func TestFrozenPlanningEnvelopeQualifiesOriginalDesignGate(t *testing.T) {
 	archData := []byte("# ARCHITECTURE-001\n\n> 状态：locked\n> 版本：v1.0.0\n")
 	reqData := []byte("# REQ-001\n\n> 状态：locked\n> 版本：v1.0.0\n")
-	replace := map[string]string{
-		`"planning-{design|contracts|tasks}-pass"`:              `"planning-design-pass"`,
-		`"planning_design | planning_contract | planning_task"`: `"planning_design"`,
-		`"从 .claude/loop-state.json 顶部复制"`:                      `"loop-test"`,
-		`"{当前 baseline generation——数字，如 1}"`:                    `1`,
-		`"你的 agent id"`: `"architect-1"`,
-		`"Architect（S2）/ Contract Planner（S3）/ Task Planner（S4）——gate 按此词白名单，逐字匹配"`: `"Architect"`,
+	envelope := map[string]any{
+		"schema_version": "1.0.0", "evidence_id": "planning-design-pass", "kind": "planning_design",
+		"runtime_id": "loop-test", "baseline_generation": 1,
+		"producer_agent_id": "architect-1", "producer_responsibility": "Architect",
+		"subject_refs": []any{}, "conclusion": "pass", "created_at": "2026-08-18T00:00:00Z",
 	}
-	filled := block
-	for old, newVal := range replace {
-		filled = strings.ReplaceAll(filled, old, newVal)
-	}
-	if strings.Contains(filled, "{") && strings.Contains(filled, "替换") {
-		t.Fatalf("unfilled placeholder remains:\n%s", filled)
-	}
-	var envelope map[string]any
-	if err := json.Unmarshal([]byte(filled), &envelope); err != nil {
-		t.Fatalf("taught skeleton is not valid JSON: %v\n%s", err, filled)
-	}
+
 	envelopeData, _ := json.Marshal(envelope)
 
 	evaluator := newTestEvaluator(t)
@@ -475,6 +439,6 @@ func TestPlanningEnvelopeTeachesTheTruth(t *testing.T) {
 		}
 	}
 	if !qualified {
-		t.Fatalf("the taught planning envelope must qualify the S2 design gate; got status=%q missing=%v conflicts=%v", result.Status, result.Missing, result.Conflicts)
+		t.Fatalf("the original frozen planning envelope must qualify the S2 design gate; got status=%q missing=%v conflicts=%v", result.Status, result.Missing, result.Conflicts)
 	}
 }

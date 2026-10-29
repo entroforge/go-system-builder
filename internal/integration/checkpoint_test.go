@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 )
 
 // TestCheckpointStoreCASStale verifies that CompareAndSwap refuses to
@@ -87,6 +89,34 @@ func TestCheckpointStorePath(t *testing.T) {
 	want := "/repo/.claude/evidence/loop-REQ-039/g1/worktree/assignment-x/checkpoint.json"
 	if p != want {
 		t.Fatalf("path: got %q want %q", p, want)
+	}
+}
+
+func TestCheckpointStorePathForRecordPreservesR1AndSeparatesRevisions(t *testing.T) {
+	store := DefaultCheckpointStore()
+	ref := assignmentrecord.RecordReference{
+		RuntimeID: "loop-REQ-039", BaselineGeneration: 3,
+		AssignmentID: "assignment-core", Revision: 1,
+	}
+	r1 := filepath.Join("/repo", ".claude/evidence/loop-REQ-039/g3/worktree/assignment-core/checkpoint.json")
+	if got := store.PathForRecord("/repo", ref); got != r1 {
+		t.Fatalf("r1 Record path = %q, want legacy path %q", got, r1)
+	}
+	if got := CheckpointPathForRecord("/repo", ref); got != r1 {
+		t.Fatalf("public r1 Record path = %q, want %q", got, r1)
+	}
+	ref.Revision = 2
+	r2 := filepath.Join("/repo", ".claude/evidence/loop-REQ-039/g3/worktree/assignment-core/a2/checkpoint.json")
+	if got := store.PathForRecord("/repo", ref); got != r2 {
+		t.Fatalf("r2 Record path = %q, want revision slot %q", got, r2)
+	}
+	ref.Revision = 3
+	r3 := filepath.Join("/repo", ".claude/evidence/loop-REQ-039/g3/worktree/assignment-core/a3/checkpoint.json")
+	if got := store.PathForRecord("/repo", ref); got != r3 {
+		t.Fatalf("r3 Record path = %q, want revision slot %q", got, r3)
+	}
+	if got := store.PathForRecord("/repo", assignmentrecord.RecordReference{RuntimeID: "../escape", BaselineGeneration: 3, AssignmentID: "assignment-core", Revision: 2}); got != "" {
+		t.Fatalf("invalid Record coordinate path = %q, want empty", got)
 	}
 }
 

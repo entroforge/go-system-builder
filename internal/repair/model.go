@@ -1,6 +1,11 @@
 package repair
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+
+	runtimepkg "github.com/entroforge/go-system-builder/internal/runtime"
+)
 
 // ArtifactRef is the immutable repository reference shared by all S9
 // artifacts. ContractRef remains a distinct name at the API boundary because
@@ -29,16 +34,17 @@ type RepairUnit struct {
 }
 
 type ApprovedContract struct {
-	ContractID             string
-	CaseID                 string
-	Revision               int
-	Status                 string
-	SourceFindingIDs       []string
-	Units                  []RepairUnit
-	ProspectiveScope       []string
-	ForbiddenScope         []string
-	CompatibilityMigration string
-	Ref                    ContractRef
+	ContractID               string
+	CaseID                   string
+	Revision                 int
+	Status                   string
+	SourceFindingIDs         []string
+	Units                    []RepairUnit
+	ProspectiveScope         []string
+	ForbiddenScope           []string
+	CompatibilityMigration   string
+	StopEscalationConditions []string
+	Ref                      ContractRef
 }
 
 type SessionRequest struct {
@@ -99,7 +105,9 @@ type RepairPlan struct {
 }
 
 // RepairAssignment is the smallest dispatchable S9 work item. A unit has one
-// owner, one Contract binding and one explicit execution state; orchestration
+// owner, one Contract binding and one initial work status. New plans use the
+// five-state vocabulary; legacy plan status fields remain historical facts.
+// Live progress comes from the original Runtime/consumer, never this snapshot; orchestration
 // must not infer these facts from a free-form agent message.
 type RepairAssignment struct {
 	AssignmentID  string   `json:"assignment_id"`
@@ -130,6 +138,9 @@ type PlanReport struct {
 	ProposedPaths []string      `json:"proposed_paths"`
 	Status        string        `json:"status"`
 	ReportedAt    string        `json:"reported_at"`
+	// Receipt is present only for a PlanReport accepted from an issued S9
+	// questionnaire. Legacy direct reports remain byte-compatible when nil.
+	Receipt *runtimepkg.RepairPlanReportReceipt `json:"receipt,omitempty"`
 }
 
 type RepairCheck struct {
@@ -146,52 +157,149 @@ type ChangedArtifact struct {
 }
 
 type RepairUnitResult struct {
-	UnitID       string   `json:"unit_id"`
-	Status       string   `json:"status"`
+	UnitID                string   `json:"unit_id"`
+	Status                string   `json:"status"`
+	EvidenceRefs          []string `json:"evidence_refs"`
+	ImplementationSummary string   `json:"implementation_summary,omitempty"`
+	RestoredInvariantRefs []string `json:"restored_invariant_refs,omitempty"`
+}
+
+func (u RepairUnitResult) MarshalJSON() ([]byte, error) {
+	type wire RepairUnitResult
+	data, err := json.Marshal(wire(u))
+	if err != nil || u.ImplementationSummary == "" {
+		return data, err
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, err
+	}
+	refs := u.RestoredInvariantRefs
+	if refs == nil {
+		refs = []string{}
+	}
+	object["implementation_summary"] = u.ImplementationSummary
+	object["restored_invariant_refs"] = refs
+	return json.Marshal(object)
+}
+
+type RepairBeforeFixResult struct {
+	AssertionID  string   `json:"assertion_id"`
+	ObservedRed  string   `json:"observed_red"`
 	EvidenceRefs []string `json:"evidence_refs"`
 }
 
 type RepairResultRequest struct {
-	Contract         ContractRef        `json:"contract"`
-	Session          ArtifactRef        `json:"session"`
-	Plan             ArtifactRef        `json:"plan"`
-	ResultID         string             `json:"result_id"`
-	ProducerAgentID  string             `json:"producer_agent_id"`
-	UnitResults      []RepairUnitResult `json:"unit_results"`
-	ChangedArtifacts []ChangedArtifact  `json:"changed_artifacts"`
-	Result           string             `json:"result"`
-	AssignmentID     string             `json:"assignment_id"`
-	PlanReport       ArtifactRef        `json:"plan_report"`
-	BeforeFixChecks  []RepairCheck      `json:"before_fix_checks"`
-	Checks           []RepairCheck      `json:"checks"`
-	ScopeDeviations  []string           `json:"scope_deviations"`
-	MigrationRef     string             `json:"migration_ref"`
-	RollbackRef      string             `json:"rollback_ref"`
-	ResidualRisks    []string           `json:"residual_risks"`
-	OccurredAt       time.Time          `json:"occurred_at"`
+	Contract              ContractRef                     `json:"contract"`
+	Session               ArtifactRef                     `json:"session"`
+	Plan                  ArtifactRef                     `json:"plan"`
+	ResultID              string                          `json:"result_id"`
+	ProducerAgentID       string                          `json:"producer_agent_id"`
+	UnitResults           []RepairUnitResult              `json:"unit_results"`
+	Verdict               string                          `json:"verdict,omitempty"`
+	BeforeFixResults      []RepairBeforeFixResult         `json:"before_fix_results,omitempty"`
+	DetectionGapArtifacts []string                        `json:"detection_gap_artifacts,omitempty"`
+	EvidenceRefs          []string                        `json:"evidence_refs,omitempty"`
+	ChangedArtifacts      []ChangedArtifact               `json:"changed_artifacts"`
+	Result                string                          `json:"result"`
+	AssignmentID          string                          `json:"assignment_id"`
+	PlanReport            ArtifactRef                     `json:"plan_report"`
+	BeforeFixChecks       []RepairCheck                   `json:"before_fix_checks"`
+	Checks                []RepairCheck                   `json:"checks"`
+	ScopeDeviations       []string                        `json:"scope_deviations"`
+	MigrationRef          string                          `json:"migration_ref"`
+	RollbackRef           string                          `json:"rollback_ref"`
+	ResidualRisks         []string                        `json:"residual_risks"`
+	OccurredAt            time.Time                       `json:"occurred_at"`
+	Receipt               *runtimepkg.RepairResultReceipt `json:"receipt,omitempty"`
+	issued                *issuedRepairResultCapability
+	issuedFinal           *issuedRepairResultFinalCapability
+}
+
+func (r RepairResultRequest) MarshalJSON() ([]byte, error) {
+	type wire RepairResultRequest
+	data, err := json.Marshal(wire(r))
+	if err != nil || r.Verdict == "" {
+		return data, err
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, err
+	}
+	before := r.BeforeFixResults
+	if before == nil {
+		before = []RepairBeforeFixResult{}
+	}
+	gaps := r.DetectionGapArtifacts
+	if gaps == nil {
+		gaps = []string{}
+	}
+	evidence := r.EvidenceRefs
+	if evidence == nil {
+		evidence = []string{}
+	}
+	object["verdict"] = r.Verdict
+	object["before_fix_results"] = before
+	object["detection_gap_artifacts"] = gaps
+	object["evidence_refs"] = evidence
+	return json.Marshal(object)
 }
 
 type RepairResult struct {
-	SchemaVersion      string             `json:"schema_version"`
-	RecordType         string             `json:"record_type"`
-	ResultID           string             `json:"result_id"`
-	SessionID          string             `json:"session_id"`
-	PlanID             string             `json:"plan_id"`
-	ContractID         string             `json:"contract_id"`
-	BaselineGeneration int                `json:"baseline_generation"`
-	ProducerAgentID    string             `json:"producer_agent_id"`
-	AssignmentID       string             `json:"assignment_id"`
-	PlanReportRef      *ArtifactRef       `json:"plan_report_ref,omitempty"`
-	BeforeFixChecks    []RepairCheck      `json:"before_fix_checks"`
-	Checks             []RepairCheck      `json:"checks"`
-	UnitResults        []RepairUnitResult `json:"unit_results"`
-	ChangedArtifacts   []ChangedArtifact  `json:"changed_artifacts"`
-	ScopeDeviations    []string           `json:"scope_deviations"`
-	MigrationRef       string             `json:"migration_ref,omitempty"`
-	RollbackRef        string             `json:"rollback_ref,omitempty"`
-	ResidualRisks      []string           `json:"residual_risks"`
-	Result             string             `json:"result"`
-	SubmittedAt        string             `json:"submitted_at"`
+	SchemaVersion         string                          `json:"schema_version"`
+	RecordType            string                          `json:"record_type"`
+	ResultID              string                          `json:"result_id"`
+	SessionID             string                          `json:"session_id"`
+	PlanID                string                          `json:"plan_id"`
+	ContractID            string                          `json:"contract_id"`
+	BaselineGeneration    int                             `json:"baseline_generation"`
+	ProducerAgentID       string                          `json:"producer_agent_id"`
+	AssignmentID          string                          `json:"assignment_id"`
+	PlanReportRef         *ArtifactRef                    `json:"plan_report_ref,omitempty"`
+	BeforeFixChecks       []RepairCheck                   `json:"before_fix_checks"`
+	Checks                []RepairCheck                   `json:"checks"`
+	UnitResults           []RepairUnitResult              `json:"unit_results"`
+	ChangedArtifacts      []ChangedArtifact               `json:"changed_artifacts"`
+	ScopeDeviations       []string                        `json:"scope_deviations"`
+	MigrationRef          string                          `json:"migration_ref,omitempty"`
+	RollbackRef           string                          `json:"rollback_ref,omitempty"`
+	ResidualRisks         []string                        `json:"residual_risks"`
+	Result                string                          `json:"result"`
+	SubmittedAt           string                          `json:"submitted_at"`
+	Verdict               string                          `json:"verdict,omitempty"`
+	BeforeFixResults      []RepairBeforeFixResult         `json:"before_fix_results,omitempty"`
+	DetectionGapArtifacts []string                        `json:"detection_gap_artifacts,omitempty"`
+	EvidenceRefs          []string                        `json:"evidence_refs,omitempty"`
+	Receipt               *runtimepkg.RepairResultReceipt `json:"receipt,omitempty"`
+}
+
+func (r RepairResult) MarshalJSON() ([]byte, error) {
+	type wire RepairResult
+	data, err := json.Marshal(wire(r))
+	if err != nil || r.Verdict == "" {
+		return data, err
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, err
+	}
+	before := r.BeforeFixResults
+	if before == nil {
+		before = []RepairBeforeFixResult{}
+	}
+	gaps := r.DetectionGapArtifacts
+	if gaps == nil {
+		gaps = []string{}
+	}
+	evidence := r.EvidenceRefs
+	if evidence == nil {
+		evidence = []string{}
+	}
+	object["verdict"] = r.Verdict
+	object["before_fix_results"] = before
+	object["detection_gap_artifacts"] = gaps
+	object["evidence_refs"] = evidence
+	return json.Marshal(object)
 }
 
 type ChangesetRequest struct {
@@ -313,7 +421,7 @@ type TargetedReverification struct {
 	ContinuityReason       string            `json:"continuity_reason"`
 	ImpactID               string            `json:"impact_id"`
 	AssertionResults       []AssertionResult `json:"assertion_results"`
-	ScopeCompliance        string            `json:"scope_compliance"`
+	ScopeCompliance        string            `json:"scope_compliance,omitempty"`
 	Result                 string            `json:"result"`
 	FailureClass           string            `json:"failure_class,omitempty"`
 	PerformedAt            string            `json:"performed_at"`

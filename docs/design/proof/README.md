@@ -33,3 +33,9 @@ F2 Tile 可以使用候选 hex。F6 之后的 Anchor / Stress / Golden Flow 与�
 `portable/DESIGN.md`。模板工厂**不检入**该快照，也不检入 Anchor / Golden Flow HTML。
 
 不要手写该快照，不要把组件 API 塞入其中。查询现役组件请走 Storybook MCP（`tools/ui-lab/README.md`）。
+
+导出只传递来源中已有的 Token 路径和值，以及 DESIGN / Grammar 的明确摘录，
+不会添加字体、行高、间距、强调或阴影的默认设计。缺项标为“未提取”，
+需要时回到所列原文件判断；不要为导出补造条款，也不要将模板 Token 或
+快照视为已批准设计。快照不验证发布状态、适用表面、条款激活状态和完整性。
+源文件的真实读取错误会使导出失败，旧快照保留；不存在的可选文件则如实标缺。

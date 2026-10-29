@@ -2,6 +2,7 @@ package review
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"time"
 )
 
@@ -50,6 +51,10 @@ func ApplyRegisteredPlanProjection(state map[string]any, plan Plan, planPath, pl
 			"blocked_at":      nil,
 			"resource_locks":  locks,
 			"queue_reason":    nil,
+		}
+		row := assignmentsProjection[assignment.AssignmentID].(map[string]any)
+		if err := workstate.RecordReviewAssignmentActivity(state, row, "planned", "review_plan_registered"); err != nil {
+			return err
 		}
 	}
 	for _, claim := range plan.Claims {

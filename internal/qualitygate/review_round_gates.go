@@ -1,6 +1,7 @@
 package qualitygate
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -12,7 +13,21 @@ import (
 // ReviewPlan's exact Claim set (L3-S7 §10). It runs unconditionally — like
 // the S6 builder-batch evaluation — so the missing matrix names each unproven
 // Claim instead of only the aggregate evidence token.
-func applyCleanRoundGate(input Input, result *Evaluation) {
+func applyCleanRoundGate(input Input, result *Evaluation, contexts ...context.Context) {
+	if err := review.VerifyCurrentProductBaseline(input.Root, input.Snapshot.State, contexts...); err != nil {
+		result.Missing = append(result.Missing, "cleanround:product_baseline_invalid:"+err.Error())
+		result.Status = StatusNotReady
+		return
+	}
+	if review.HasPacketBoundE2EReceipts(input.Snapshot.State) {
+		reviewState, _ := input.Snapshot.State["review"].(map[string]any)
+		assignments, _ := reviewState["assignments"].(map[string]any)
+		if err := review.VerifySealedArtifactDigests(input.Root, input.Snapshot.State, review.PlanPointerFromState(input.Snapshot.State), assignments, contexts...); err != nil {
+			result.Missing = append(result.Missing, "cleanround:typed_e2e_execution_artifact_invalid:"+err.Error())
+			result.Status = StatusNotReady
+			return
+		}
+	}
 	evaluation := verification.EvaluateCleanRound(input.Snapshot.State)
 	if evaluation.Passed {
 		return

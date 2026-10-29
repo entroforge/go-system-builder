@@ -1,0 +1,14 @@
+package cli
+
+import (
+	"fmt"
+
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+)
+
+// Source guidance precedes input reads. Resume is a professional continuity
+// judgment; Git ancestry or authorship alone cannot prove the original reads.
+func nativeS6SourceAlignment(r assignmentrecord.Record, base, plan, result string) string {
+	branch := fmt.Sprintf("gsb/%s/r%d-fixed-source", r.AssignmentID, r.Revision)
+	return fmt.Sprintf("Fixed-source preparation before reading TASK/specifications/product or writing a Plan: the original fixed source is %s. Main may have advanced since this brief was prepared; native baseRef head alone does not establish that source. In your actual isolated worktree, inspect `git rev-parse HEAD` and `git status --porcelain --untracked-files=all`, then use the applicable branch below.\n\nFirst start, before any responsibility work: if HEAD equals %s, read the worktree-relative inputs there and continue normally. If HEAD differs, ONLY when you have not started this responsibility and have no existing Plan (%s), Result (%s), personal commits or uncommitted/untracked product work, align using this exact ordinary Git command: `git switch -c %s %s`. This creates a new branch and preserves the original branch/commits and Main's later contributions. Recheck HEAD equals the fixed source before reading TASK, specifications and product inputs. If the named branch already exists, the command fails safely: never force, reset, overwrite or delete it; preserve the worktree and ask Main to resolve that existing branch.\n\nNormal resume of this same responsibility: when your original execution context establishes that you started from the correct fixed source and subsequent changes are your own work for this responsibility, continue your existing Plan, implementation, self-checks and Result in this same worktree. Your own Plan, commits and uncommitted/untracked work are normal progress even when HEAD no longer equals the fixed source; preserve them and continue unfinished work. Do not run the first-start alignment command, reset, create a replacement branch or return a blocker merely because HEAD advanced or your worktree is dirty. Keep the original source binding; no framework begin, activation or new preparation is required.\n\nUnknown or mixed source: if you cannot confirm that original context, another source has been mixed in, or required original inputs are missing, preserve all existing files, commits and private professional artifacts and return the actual source/input blocker for Main recovery. A Plan's presence, commit author identity or `git merge-base --is-ancestor` alone does not establish when or where the original inputs were read; do not infer normal resume from those alone or recapture today's HEAD as the original source.\n\n", base, base, plan, result, s7CaptureShellQuote(branch), s7CaptureShellQuote(base))
+}

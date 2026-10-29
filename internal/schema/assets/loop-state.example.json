@@ -76,7 +76,8 @@
     "repair": {
       "max_attempts_per_bug": 3,
       "max_same_contract_failures": 2,
-      "max_full_review_rounds": 5
+      "max_full_review_rounds": 5,
+      "max_investigation_reentries": 5
     }
   },
   "hook_control": {

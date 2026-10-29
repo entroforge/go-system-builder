@@ -58,6 +58,15 @@ func TestCT03912_BuilderCompleteCommitsTR006NoManualCLI(t *testing.T) {
 	body := req039fixtures.PreToolUseBody("session-ct-039-12", "Bash", map[string]any{
 		"command": "go test ./...",
 	})
+	// This is the Main handoff; an unrelated fixture Worker does not own
+	// the next stage's planning questionnaire.
+	var input map[string]any
+	if err := json.Unmarshal([]byte(body), &input); err != nil {
+		t.Fatal(err)
+	}
+	input["agent_id"] = "Main"
+	mainBody, _ := json.Marshal(input)
+	body = string(mainBody)
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)
 	if code != 0 {
 		t.Fatalf("PreToolUse failed: code=%d stderr=%s", code, stderr)
@@ -120,9 +129,9 @@ func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
 
 // TestCT03914_EvidenceDrivenCorrectionPath pins CT-039-14 at the Hook
 // entry; the full finding→BUG→repair→full review chain is in system tests.
-// RC-04 (S8-1): bug_resolution.investigation freezes the product surface, so
-// the correction-path pin must use an allowed report surface, not a product
-// write. A product write in investigation is the hard deny the audit demands.
+// RC-04 (S8-1): investigation evidence and product changes remain subject to
+// the professional result consumer. PreToolUse observes either path without
+// enforcing a per-tool phase ACL or moving the graph on the tool event alone.
 func TestCT03914_EvidenceDrivenCorrectionPath(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
 	state := req039fixtures.BaseState(t, root, "bug_resolution", "investigation", 30)
@@ -136,8 +145,8 @@ func TestCT03914_EvidenceDrivenCorrectionPath(t *testing.T) {
 	}
 	req039fixtures.WriteState(t, root, state)
 
-	// Allowed surface: investigation artifacts belong under .claude/ or
-	// docs/reports/ (L3-S8, RC-04 phase_write_path_allowed).
+	// A report-path event remains observable while the current lifecycle gate
+	// and original consumer continue to own investigation validity.
 	result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
 		Root: root, Event: "PreToolUse", ToolName: "Edit",
 		ToolInput: map[string]any{"file_path": "docs/reports/bugs/BUG-039-14.md"},
@@ -145,11 +154,15 @@ func TestCT03914_EvidenceDrivenCorrectionPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("control cycle: %v", err)
 	}
-	if result.Decision.Decision != "allow" {
-		t.Fatalf("CT-039-14 correction path must allow tools, got %q", result.Decision.Decision)
+	if result.Decision.Decision == "deny" || result.Decision.Decision == "block" {
+		t.Fatalf("CT-039-14 listener must not deny a report-path tool, got %q", result.Decision.Decision)
+	}
+	if result.QualityGate.TransitionCommitted {
+		t.Fatal("a report-path tool event must not advance the lifecycle by itself")
 	}
 
-	// Product surface remains frozen in investigation — the RC-04 hard deny.
+	// Product-path observation still does not replace the investigation
+	// questionnaire, source validation or lifecycle gate.
 	productResult, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
 		Root: root, Event: "PreToolUse", ToolName: "Edit",
 		ToolInput: map[string]any{"file_path": "internal/controller/cycle.go"},
@@ -157,8 +170,11 @@ func TestCT03914_EvidenceDrivenCorrectionPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("control cycle: %v", err)
 	}
-	if productResult.Decision.Decision != "deny" {
-		t.Fatalf("CT-039-14 investigation must deny product writes, got %q", productResult.Decision.Decision)
+	if productResult.Decision.Decision == "deny" || productResult.Decision.Decision == "block" {
+		t.Fatalf("CT-039-14 listener must not deny a product write, got %q", productResult.Decision.Decision)
+	}
+	if productResult.QualityGate.TransitionCommitted {
+		t.Fatal("a product-path tool event must not advance the lifecycle by itself")
 	}
 }
 
@@ -170,6 +186,13 @@ func TestCT03915_S11StopsAutoAdvance(t *testing.T) {
 	req039fixtures.SeedAwaitingHumanRelease(t, root, state)
 	req039fixtures.WriteState(t, root, state)
 
+	statePath := filepath.Join(root, ".claude", "loop-state.json")
+	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
+	beforeStateBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJournalBytes, _ := os.ReadFile(journalPath)
 	runner := &req039fixtures.CLIRunner{}
 	before := req039fixtures.ReadState(t, root)
 	beforeLC, beforePh := req039fixtures.Lifecycle(before)
@@ -182,9 +205,10 @@ func TestCT03915_S11StopsAutoAdvance(t *testing.T) {
 	if runner.ManualTransitionCalls != 0 {
 		t.Fatalf("CT-039-15 must not require manual transition CLI")
 	}
-	_, qg := req039fixtures.ParseQualityGate(t, stdout)
-	if committed, _ := qg["transition_committed"].(bool); committed {
-		t.Fatalf("CT-039-15 terminal state must not commit transition, qg=%v", qg)
+	afterStateBytes, _ := os.ReadFile(statePath)
+	afterJournalBytes, _ := os.ReadFile(journalPath)
+	if string(beforeStateBytes) != string(afterStateBytes) || string(beforeJournalBytes) != string(afterJournalBytes) {
+		t.Fatal("S11 ordinary Pre mutated Runtime or journal instead of observing the human wait")
 	}
 
 	after := req039fixtures.ReadState(t, root)

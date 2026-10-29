@@ -1,0 +1,203 @@
+{
+  "version": "1.0.0",
+  "mode": "shadow",
+  "roles": {
+    "frontend-builder": {
+      "core": [
+        "agent-dispatch",
+        "frontend-engineering",
+        "typescript-type-safety",
+        "testing-strategy",
+        "code-quality"
+      ],
+      "legacy": [
+        "agent-dispatch",
+        "frontend-engineering",
+        "typescript-type-safety",
+        "vue-router",
+        "pinia",
+        "vitest",
+        "eslint",
+        "prettier",
+        "vue-devtools",
+        "ui-prototyping",
+        "user-story-design",
+        "user-flow-design",
+        "api-contracts",
+        "integration-verification",
+        "testing-strategy",
+        "code-quality"
+      ]
+    },
+    "backend-builder": {
+      "core": [
+        "agent-dispatch",
+        "backend-engineering",
+        "testing-strategy",
+        "code-quality"
+      ],
+      "legacy": [
+        "agent-dispatch",
+        "backend-engineering",
+        "domain-driven-design",
+        "http-api-design",
+        "gorm",
+        "openapi-swagger",
+        "gin",
+        "casbin-authorization",
+        "structured-logging",
+        "s3-object-storage",
+        "jwt-authentication",
+        "dag-design",
+        "api-contracts",
+        "database-change",
+        "state-machine-design",
+        "security-review",
+        "reliability-review",
+        "performance-review",
+        "integration-verification",
+        "testing-strategy",
+        "code-quality"
+      ]
+    },
+    "test-builder": {
+      "core": [
+        "agent-dispatch",
+        "testing-strategy",
+        "code-quality"
+      ],
+      "legacy": [
+        "agent-dispatch",
+        "testing-strategy",
+        "vitest",
+        "integration-verification",
+        "api-contracts",
+        "database-change",
+        "state-machine-design",
+        "reliability-review",
+        "code-quality"
+      ]
+    },
+    "document-verifier": {
+      "core": [
+        "agent-dispatch",
+        "document-verification"
+      ],
+      "legacy": [
+        "agent-dispatch",
+        "document-verification",
+        "specification-planning",
+        "ui-prototyping",
+        "user-story-design",
+        "user-flow-design",
+        "api-contracts",
+        "state-machine-design",
+        "database-change"
+      ]
+    },
+    "delivery-verifier": {
+      "core": [
+        "agent-dispatch",
+        "integration-verification"
+      ],
+      "legacy": [
+        "agent-dispatch",
+        "integration-verification",
+        "frontend-engineering",
+        "backend-engineering",
+        "api-contracts",
+        "testing-strategy",
+        "user-flow-design",
+        "state-machine-design",
+        "database-change",
+        "code-quality"
+      ]
+    },
+    "qa": {
+      "core": [
+        "agent-dispatch",
+        "testing-strategy",
+        "code-quality"
+      ],
+      "legacy": [
+        "agent-dispatch",
+        "testing-strategy",
+        "code-quality",
+        "frontend-engineering",
+        "backend-engineering",
+        "api-contracts",
+        "integration-verification",
+        "security-review",
+        "performance-review",
+        "reliability-review",
+        "database-change",
+        "state-machine-design",
+        "vitest"
+      ]
+    },
+    "e2e-tester": {
+      "core": ["agent-dispatch", "testing-strategy", "integration-verification"],
+      "legacy": ["agent-dispatch", "e2e-browser-testing", "playwright-e2e", "testing-strategy", "user-flow-design", "scenario-model-design", "integration-verification"]
+    },
+    "investigator": {
+      "core": [
+        "agent-dispatch",
+        "bug-resolution"
+      ],
+      "legacy": [
+        "agent-dispatch",
+        "bug-resolution",
+        "code-quality",
+        "testing-strategy",
+        "api-contracts",
+        "state-machine-design",
+        "integration-verification"
+      ]
+    }
+  },
+  "responsibility_skills": {
+    "QA-UNIT-TEST": [
+      "testing-strategy"
+    ],
+    "QA-INTEGRATION-TEST": [
+      "testing-strategy"
+    ],
+    "QA-SECURITY": [
+      "security-review"
+    ],
+    "QA-PERFORMANCE": [
+      "performance-review"
+    ],
+    "QA-RELIABILITY": [
+      "reliability-review"
+    ],
+    "QA-MIGRATION": [
+      "database-change"
+    ],
+    "VER-INTEGRATION": [
+      "integration-verification"
+    ],
+    "E2E-BEHAVIOR": ["integration-verification", "testing-strategy"],
+    "E2E-USER-FLOW": [
+      "e2e-browser-testing",
+      "playwright-e2e"
+    ],
+    "E2E-CONSOLE-NETWORK": [
+      "e2e-browser-testing",
+      "playwright-e2e"
+    ],
+    "S8-CAUSAL-INVESTIGATION": [
+      "bug-resolution"
+    ],
+    "DV-SPEC-CONSISTENCY": [
+      "document-verification",
+      "specification-planning",
+      "api-contracts"
+    ],
+    "DV-TASK-EXECUTABILITY": [
+      "document-verification",
+      "specification-planning",
+      "testing-strategy"
+    ]
+  }
+}

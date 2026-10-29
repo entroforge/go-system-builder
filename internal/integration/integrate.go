@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/metrics"
 )
 
@@ -19,6 +20,25 @@ type CheckpointStoreFactory func() *CheckpointStore
 
 // IntegrateConfig tunes Integrate's behaviour.
 type IntegrateConfig struct {
+	// WorkerPrivateEvidence contains only original accepted professional files.
+	// It is separate from captured logs and grants no directory-wide exemption.
+	WorkerPrivateEvidence map[string]string
+	// WorkerPrivateArea is the original responsibility's call-only scratch
+	// area; its frozen product boundaries are supplied alongside it.
+	WorkerPrivateArea          string
+	WorkerPrivateBaseCommit    string
+	WorkerPrivateWritePaths    []string
+	WorkerPrivateBaselinePaths []string
+	// WorkerIgnoredEvidence proves exact system-issued/accepted ignored bytes.
+	// Unknown ignored files always prevent removal, including when this is nil.
+	WorkerIgnoredEvidence map[string]string
+	// WorkerCleanupError defers an original receiver proof failure to resource
+	// cleanup, after an already accepted Final has exposed its successor.
+	WorkerCleanupError error
+	// WorkerLogEvidence is the original receiver's captured output projection.
+	// Verified cleanup may remove only these unchanged untracked copies; Main's
+	// immutable evidence remains the source for accepted Results.
+	WorkerLogEvidence map[string]string
 	// CheckpointStore selects the persistence backend. nil → default.
 	CheckpointStore *CheckpointStore
 	// CheckpointDir, when set, overrides the canonical evidence
@@ -50,7 +70,9 @@ type IntegrateConfig struct {
 // target_branch + baseline_generation) key. Re-calling Integrate with the
 // same idempotent key after the merge succeeded but before
 // acknowledgement (CT-039-17) resumes the state machine from `merged` and
-// does NOT re-merge.
+// does NOT re-merge. Opted-in S6 Records additionally select this checkpoint
+// by their already-resolved immutable revision; a later revision cannot read
+// the predecessor slot's verification or acknowledgement.
 //
 // The caller controls the merge step by setting IntegrateRequest.Cleanup.
 // Acknowledge is automatic once verified; a separate flag is provided so
@@ -99,25 +121,193 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 	}
 	runtimeID := cfg.RuntimeID
 	if runtimeID == "" {
-		runtimeID = "loop-REQ-039"
+		if req.Inspection.CanonicalResult != nil {
+			runtimeID = req.Inspection.CanonicalResult.AssignmentRecord.RuntimeID
+		} else {
+			runtimeID = "loop-REQ-039"
+		}
+	}
+	var canonical *canonicalResultFacts
+	projection := req.Inspection.AssignmentProjection
+	hasProjection := projection.ManifestRef != "" || projection.AssignmentRecord != nil || projection.AssignmentRecordSHA256 != "" || projection.AssignmentRevision != 0
+	if hasProjection {
+		canonical, err = resolveCanonicalResult(cfg.Root, runtimeID, projection)
+	} else if req.Inspection.CanonicalResult != nil {
+		canonical, err = resolveCanonicalResultByBinding(cfg.Root, runtimeID, *req.Inspection.CanonicalResult)
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("revalidate current canonical Assignment/Result: %w", err)
+	}
+	if canonical == nil && req.Inspection.CanonicalResult != nil || canonical != nil && req.Inspection.CanonicalResult == nil {
+		return Result{}, fmt.Errorf("inspection is missing or invents its canonical Result binding")
 	}
 	checkpointPath := cfg.CheckpointDir
-	if checkpointPath == "" {
+	if canonical != nil {
+		expectedCheckpointPath := store.PathForRecord(cfg.Root, canonical.Record.Reference())
+		if expectedCheckpointPath == "" {
+			return Result{}, fmt.Errorf("current canonical Assignment Record has no valid checkpoint path")
+		}
+		if checkpointPath != "" && filepath.Clean(checkpointPath) != filepath.Clean(expectedCheckpointPath) {
+			return Result{}, fmt.Errorf("canonical Main facts require the current Assignment revision checkpoint path")
+		}
+		checkpointPath = expectedCheckpointPath
+	} else if checkpointPath == "" {
 		checkpointPath = store.Path(cfg.Root, runtimeID, req.Inspection.BaselineGeneration, idempAssignment(req))
 	}
-
 	current, found, err := store.Load(checkpointPath)
 	if err != nil {
 		return Result{}, fmt.Errorf("load checkpoint: %w", err)
+	}
+	if canonical != nil && found {
+		if err := ValidateCheckpointRecordBinding(current, canonical.Record); err != nil {
+			return Result{Checkpoint: current}, err
+		}
+	}
+	readyMerge := ""
+	if found && current.State == StateReady {
+		readyMerge, err = RecoverUnrecordedMerge(ctx, gitRoot, current)
+		if err != nil {
+			return Result{Checkpoint: current}, err
+		}
+	}
+	if canonical != nil {
+		if canonical.Binding != *req.Inspection.CanonicalResult || req.Inspection.AssignmentID != canonical.Record.AssignmentID || req.Inspection.TaskID != canonical.Record.Task.ID || req.Inspection.BaselineGeneration != canonical.Record.BaselineGeneration || len(req.Inspection.EffectiveWritePaths) > 0 && !samePathSet(req.Inspection.EffectiveWritePaths, canonical.Record.EffectiveWritePaths) {
+			return Result{Checkpoint: current}, fmt.Errorf("inspection coordinates/scope differ from the current canonical Assignment")
+		}
+		// Recovery inspections may be reconstructed from a checkpoint and
+		// therefore omit transient projection fields. The current Record is
+		// the scope authority for the locked Git diff check below.
+		req.Inspection.EffectiveWritePaths = append([]string{}, canonical.Record.EffectiveWritePaths...)
+		for _, profile := range canonical.Record.CheckProfiles {
+			if profile.Location != "main" {
+				return Result{Checkpoint: current}, fmt.Errorf("required CheckProfile %s is not declared for Main execution", profile.ID)
+			}
+		}
+		cfg.RequiredChecks = append([]string{}, canonical.Record.RequiredChecks...)
+		cfg.CheckRunner = canonicalMainCheckRunner(canonical.Record, mainCheckBinding(canonical))
+	} else if found && current.CanonicalMainFacts != nil {
+		return Result{Checkpoint: current}, fmt.Errorf("legacy inspection cannot reuse a canonical v1.2 Main checkpoint")
+	}
+	if canonical != nil {
+		if blockers := canonicalClosingBlockers(canonical); len(blockers) > 0 {
+			return preserveCanonicalClosingPending(store, checkpointPath, current, found, req.Inspection, canonical.Record, blockers)
+		}
+		// A fresh/unmerged failed Inspect is already the original source of
+		// truth for a dirty worktree, missing commit, or other readiness cause.
+		// Preserve that concrete cause before asking Git to compute a merge base;
+		// an early Inspect blocker may intentionally leave SourceHead/MergeBase
+		// empty. Once a merge exists, retain the existing post-merge
+		// revalidation path below.
+		if !req.Inspection.Ready && current.MergeCommit == "" &&
+			(req.Inspection.SourceHead == "" || req.Inspection.TargetHead == "" || req.Inspection.MergeBase == "") {
+			reason := strings.Join(req.Inspection.Blockers, "; ")
+			if reason == "" {
+				reason = "inspect rejected integration"
+			}
+			return preserveFromInspection(cfg, req, canonical, reason)
+		}
+	}
+	canonicalGitFactsChanged := false
+	if canonical != nil {
+		base, sourceHead := req.Inspection.MergeBase, req.Inspection.SourceHead
+		alreadyMerged := found && (current.MergeCommit != "" || readyMerge != "")
+		if alreadyMerged {
+			base, sourceHead = current.MergeBase, current.SourceHead
+			if base == "" || sourceHead == "" || current.TargetBranch != req.Inspection.TargetBranch {
+				return Result{Checkpoint: current}, fmt.Errorf("canonical re-verification lacks the original merged Git coordinates")
+			}
+		} else {
+			// Inspection is a snapshot, not an authority for its own merge base.
+			// Recompute the base while holding the Main workspace lock so a
+			// caller cannot present the already-integrated source with a
+			// predecessor's old base and trick a fresh revision checkpoint into
+			// treating an empty merge as a new integration.
+			actualBase, baseErr := mergeBase(ctx, gitRoot, req.Inspection.SourceBranch, req.Inspection.TargetBranch)
+			if baseErr != nil || actualBase != base {
+				return preserveFromInspection(cfg, req, canonical, "canonical Main merge base changed after Inspect; fresh revision source inspection is required")
+			}
+			if canonical.Record.Revision > 1 {
+				priorMerges, mergeErr := canonicalPriorMainMerges(ctx, gitRoot, req.Inspection.TargetBranch, sourceHead)
+				if mergeErr != nil {
+					return Result{Checkpoint: current}, fmt.Errorf("inspect predecessor Main merge history: %w", mergeErr)
+				}
+				if len(priorMerges) > 0 {
+					if _, provenanceErr := resolveCanonicalPredecessorMain(ctx, cfg.Root, gitRoot, req.Inspection.TargetBranch, sourceHead, actualBase, canonical.Record, store, priorMerges); provenanceErr != nil {
+						reason := "canonical revision predecessor Main provenance could not be validated: " + provenanceErr.Error()
+						req.Inspection.Blockers = appendUniqueString(req.Inspection.Blockers, reason)
+						return preserveFromInspection(cfg, req, canonical, "canonical revision merge reuse is pending predecessor Main-provenance validation")
+					}
+				}
+			}
+			count, countErr := countCommitsBetween(ctx, gitRoot, actualBase, sourceHead)
+			if countErr != nil {
+				req.Inspection.Blockers = appendUniqueString(req.Inspection.Blockers, "canonical source Git history could not be verified")
+				return preserveFromInspection(cfg, req, canonical, "canonical source Git history could not be verified; fresh Main inspection is required")
+			}
+			if count == 0 {
+				if canonical.Record.Revision > 1 {
+					req.Inspection.Blockers = appendUniqueString(req.Inspection.Blockers, "canonical revision source is already integrated; predecessor Record and durable Main facts are not safely reusable yet")
+					return preserveFromInspection(cfg, req, canonical, "canonical revision merge reuse is pending predecessor Main-facts validation")
+				}
+				return preserveFromInspection(cfg, req, canonical, "canonical source has no commits beyond the current Main merge base")
+			}
+		}
+		actualSourceHead, sourceErr := retainedIntegrationSource(ctx, gitRoot, req.Inspection)
+		if sourceErr != nil || actualSourceHead != sourceHead {
+			return Result{Checkpoint: current}, fmt.Errorf("canonical source branch no longer resolves to its original inspected commit")
+		}
+		actualPaths, actualPathsSHA, pathsErr := canonicalGitChangedPaths(ctx, gitRoot, base, sourceHead)
+		if pathsErr != nil {
+			return Result{Checkpoint: current}, pathsErr
+		}
+		if !alreadyMerged && (req.Inspection.ChangedPathsSHA256 == "" || req.Inspection.ChangedPathsSHA256 != actualPathsSHA || !samePathSet(req.Inspection.ChangedPaths, actualPaths)) {
+			return Result{Checkpoint: current}, fmt.Errorf("canonical Inspection changed paths differ from the locked Main Git diff")
+		}
+		if outside := outsideWriteScope(actualPaths, canonical.Record.EffectiveWritePaths); len(outside) > 0 {
+			return Result{Checkpoint: current}, fmt.Errorf("%w: %s", ErrScopeViolation, strings.Join(outside, ", "))
+		}
+		if alreadyMerged && current.CanonicalMainFacts != nil &&
+			(current.CanonicalMainFacts.MergeBase != base || current.CanonicalMainFacts.SourceHead != sourceHead || current.CanonicalMainFacts.ChangedPathsSHA256 != actualPathsSHA || !samePathSet(current.CanonicalMainFacts.ChangedPaths, actualPaths)) {
+			canonicalGitFactsChanged = true
+		}
+		if alreadyMerged {
+			// A new accepted Result reuses the same recorded non-squash merge.
+			// Keep its original source, target and diff denominator while Main
+			// checks are rerun against the current Main tree.
+			req.Inspection.SourceHead = sourceHead
+			req.Inspection.MergeBase = base
+			req.Inspection.TargetHead = current.TargetHead
+		}
+		req.Inspection.ChangedPaths = actualPaths
+		req.Inspection.ChangedPathsSHA256 = actualPathsSHA
+	}
+	if canonical != nil && readyMerge != "" && req.Inspection.CompletionReportPath == "" && req.Inspection.CompletionReportSHA256 == "" {
+		// A ready checkpoint already pins the accepted Result in MainFacts,
+		// but its completion fields are written only after checks. Restore
+		// that original binding when reconstructing the interrupted request.
+		req.Inspection.CompletionReportPath = canonical.Binding.ResultPath
+		req.Inspection.CompletionReportSHA256 = canonical.Binding.ResultSHA256
 	}
 	completionBinding, reportChanged, bindingErr := resolveCompletionReportBinding(cfg.Root, req.Inspection, current, found)
 	if bindingErr != nil {
 		return Result{Checkpoint: current}, bindingErr
 	}
+	canonicalBindingChanged := false
+	if canonical != nil {
+		canonicalBindingChanged = current.CanonicalMainFacts == nil || current.CanonicalMainFacts.Binding != canonical.Binding
+		if canonicalBindingChanged {
+			reportChanged = true
+		}
+	}
 	// A verified/acknowledged/complete checkpoint is reusable only for the
 	// exact Result bytes it verified. A changed report re-enters the check
 	// stage while retaining MergeCommit, so recovery never merges twice.
-	reverifyResult := found && reportChanged && checkpointHasVerifiedStage(current)
+	reverifyResult := found && (reportChanged || canonicalGitFactsChanged) && checkpointHasVerifiedStage(current)
+	if canonical != nil && found && checkpointHasVerifiedStage(current) && !canonicalBindingChanged {
+		if err := validateCanonicalMainFacts(cfg.Root, checkpointPath, gitRoot, current, canonical); err != nil {
+			reverifyResult = true
+		}
+	}
 	if found && checkpointHasVerifiedStage(current) {
 		if current.MergeCommit == "" {
 			return preserveInvalidMergeReceipt(store, checkpointPath, current,
@@ -147,15 +337,24 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 		}
 	}
 
-	if !found || current.State != StateComplete || reverifyResult {
-		if err := checkoutBranch(ctx, gitRoot, req.Inspection.TargetBranch); err != nil {
-			if found {
-				return preserveAfterCAS(ctx, store, checkpointPath, current, current, err, ErrCheckFailed)
-			}
-			return Result{}, err
+	if !req.Inspection.Ready && canonical != nil && found && current.MergeCommit != "" &&
+		(canonicalBindingChanged || canonicalGitFactsChanged) && len(req.Inspection.Blockers) == 1 && req.Inspection.Blockers[0] == ErrMissingCommits.Error() {
+		if _, err := RecoveryBaseForCheckpoint(ctx, gitRoot, current); err != nil {
+			return Result{Checkpoint: current}, fmt.Errorf("canonical Result re-verification cannot reuse the recorded Main merge: %w", err)
 		}
+		// Inspect can report no new commits after the original source has
+		// already merged. The durable non-squash receipt and freshly verified
+		// original Git diff authorize only re-running Main checks for the new
+		// accepted Result; they do not grant a new merge.
+		req.Inspection.Ready = true
+		req.Inspection.Blockers = nil
 	}
-
+	if readyMerge != "" && !req.Inspection.Ready && len(req.Inspection.Blockers) == 1 && req.Inspection.Blockers[0] == ErrMissingCommits.Error() {
+		// The exact original merge explains only this readiness result.
+		// Other inspection failures still stop the original chain below.
+		req.Inspection.Ready = true
+		req.Inspection.Blockers = nil
+	}
 	if !req.Inspection.Ready {
 		// Post-merge ack/cleanup resume may arrive with Inspect Ready=false
 		// (ErrMissingCommits after merge). Do not overwrite a verified+
@@ -171,7 +370,21 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 				preservedAfterMerge) {
 			// Fall through and resume from the durable record.
 		} else {
-			return preserveFromInspection(cfg, req, "inspect rejected integration")
+			reason := "inspect rejected integration"
+			if canonical != nil && canonical.Record.Revision > 1 && containsString(req.Inspection.Blockers, ErrMissingCommits.Error()) {
+				req.Inspection.Blockers = appendUniqueString(req.Inspection.Blockers, "canonical revision source is already integrated; predecessor Record and durable Main facts are not safely reusable yet")
+				reason = "canonical revision merge reuse is pending predecessor Main-facts validation"
+			}
+			return preserveFromInspection(cfg, req, canonical, reason)
+		}
+	}
+
+	if !found || current.State != StateComplete || reverifyResult {
+		if err := checkoutBranch(ctx, gitRoot, req.Inspection.TargetBranch); err != nil {
+			if found {
+				return preserveAfterCAS(ctx, store, checkpointPath, current, current, err, ErrCheckFailed)
+			}
+			return Result{}, err
 		}
 	}
 
@@ -185,7 +398,7 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 	// CT-039-17: a previous call may have committed the merge but been
 	// interrupted before ack. We detect that by looking at the durable
 	// state and skip the merge when it has already happened.
-	if found && current.MergeCommit != "" && current.SourceHead != req.Inspection.SourceHead && req.Inspection.SourceHead != "" {
+	if found && (current.MergeCommit != "" || readyMerge != "") && current.SourceHead != req.Inspection.SourceHead && req.Inspection.SourceHead != "" {
 		return Result{}, fmt.Errorf("source changed after recorded merge; preserve worktree and reconcile new commits")
 	}
 	if found {
@@ -233,7 +446,7 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 		if current.AssignmentID != idempAssignment(req) || current.SourceBranch != req.Inspection.SourceBranch || current.TargetBranch != req.Inspection.TargetBranch || current.WorktreePath != req.Inspection.WorktreePath || current.BaselineGeneration != req.Inspection.BaselineGeneration {
 			return Result{}, fmt.Errorf("cleanup checkpoint identity mismatch")
 		}
-		source, err := revParse(ctx, gitRoot, current.SourceBranch)
+		source, err := retainedIntegrationSource(ctx, gitRoot, InspectionFromCheckpoint(current))
 		if err != nil || source != current.SourceHead {
 			return deferCleanup(store, checkpointPath, current, current, fmt.Errorf("cleanup source changed since verification"))
 		}
@@ -248,12 +461,8 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 	}
 
 	if found && current.State == StateReady {
-		recovered, err := recoverUnrecordedMerge(ctx, gitRoot, current)
-		if err != nil {
-			return Result{Checkpoint: current}, err
-		}
-		if recovered != "" {
-			current.MergeCommit = recovered
+		if readyMerge != "" {
+			current.MergeCommit = readyMerge
 			prior := current
 			prior.MergeCommit = ""
 			current.State = StateMerged
@@ -309,6 +518,44 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 	next.TargetBranch = req.Inspection.TargetBranch
 	next.TargetHead = req.Inspection.TargetHead
 	next.MergeBase = req.Inspection.MergeBase
+	if canonical != nil {
+		mainFacts := assignmentresult.MainFacts{
+			Binding:             canonical.Binding,
+			MainRoot:            gitRoot,
+			SourceHead:          req.Inspection.SourceHead,
+			MergeBase:           req.Inspection.MergeBase,
+			TargetBranch:        req.Inspection.TargetBranch,
+			MergeCommit:         next.MergeCommit,
+			ExecutionGeneration: canonical.ExecutionGeneration,
+			ChangedPaths:        append([]string{}, req.Inspection.ChangedPaths...),
+			ChangedPathsSHA256:  req.Inspection.ChangedPathsSHA256,
+		}
+		if !lessThan(next.State, StateVerified) && !reverifyResult && current.CanonicalMainFacts != nil {
+			mainFacts = *current.CanonicalMainFacts
+		}
+		if lessThan(next.State, StateVerified) || reverifyResult || canonicalBindingChanged {
+			mainFacts.TestedHead = ""
+			mainFacts.Checks = nil
+			next.CheckReceipts = nil
+			next.ToolCheckReceipts = nil
+			next.TestedHead = ""
+			next.VerifiedAt = ""
+		}
+		next.CanonicalMainFacts = &mainFacts
+		// The immutable ResultBinding is the Record authority once Main facts
+		// exist. Clear the early preserved-checkpoint slot label so checkpoint
+		// history does not carry a second copy of the same identity.
+		next.AssignmentRecord = nil
+		next.AssignmentRecordSHA256 = ""
+		next.ChangedPaths = nil
+		next.ChangedPathsSHA256 = ""
+	} else {
+		next.CanonicalMainFacts = nil
+	}
+	if canonical == nil && req.Inspection.ChangedPathsSHA256 != "" {
+		next.ChangedPaths = append([]string{}, req.Inspection.ChangedPaths...)
+		next.ChangedPathsSHA256 = req.Inspection.ChangedPathsSHA256
+	}
 	next.BaselineGeneration = req.Inspection.BaselineGeneration
 	next.IdempotencyKey = idem
 
@@ -323,17 +570,18 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 	}
 
 	// Step 2: perform the merge (unless durable record shows it already
-	// happened). We always use a plain `--no-ff` merge; never squash.
+	// happened). Changed deliveries use a plain `--no-ff` merge; never squash.
+	// No-change deliveries retain the current target without a merge operation.
 	// REQ-039 §13.6 forbids automatic merge when the integration tree
 	// has uncommitted changes — we check the integration tree here too
 	// so a dirty target branch is preserved instead of merged into.
 	if lessThan(next.State, StateMerged) {
-		clean, err := worktreeClean(ctx, gitRoot)
+		clean, err := mainWorktreeClean(ctx, gitRoot)
 		if err != nil {
-			return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrDirtyWorktree)
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, mainWorktreeCheckFailure(gitRoot, err), ErrDirtyWorktree)
 		}
 		if !clean {
-			return preserveAfterCAS(ctx, store, checkpointPath, current, next, ErrDirtyWorktree, ErrDirtyWorktree)
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, mainWorktreeDirtyFailure(gitRoot), ErrDirtyWorktree)
 		}
 		branch, err := defaultRunner.Run(ctx, gitRoot, "rev-parse", "--abbrev-ref", "HEAD")
 		if err != nil || strings.TrimSpace(branch) != strings.TrimPrefix(req.Inspection.TargetBranch, "refs/heads/") {
@@ -343,7 +591,7 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 		if err != nil || target != req.Inspection.TargetHead {
 			return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("target changed after inspection; inspect again"), ErrMergeConflict)
 		}
-		source, err := revParse(ctx, gitRoot, req.Inspection.SourceBranch)
+		source, err := retainedIntegrationSource(ctx, gitRoot, req.Inspection)
 		if err != nil || source != req.Inspection.SourceHead {
 			return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("source changed after inspection"), ErrMergeConflict)
 		}
@@ -351,31 +599,57 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 			return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrMergeConflict)
 		}
 
-		sourceHead, sourceErr := revParse(ctx, gitRoot, req.Inspection.SourceBranch)
+		sourceHead, sourceErr := retainedIntegrationSource(ctx, gitRoot, req.Inspection)
 		if sourceErr != nil || sourceHead != req.Inspection.SourceHead {
 			return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("source changed since inspection; re-inspect"), ErrMergeConflict)
+		}
+		actualPaths, actualPathsSHA, err := canonicalGitChangedPaths(ctx, gitRoot, req.Inspection.MergeBase, sourceHead)
+		if err != nil {
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrMergeConflict)
+		}
+		if req.Inspection.ChangedPathsSHA256 != "" &&
+			(actualPathsSHA != req.Inspection.ChangedPathsSHA256 || !samePathSet(actualPaths, req.Inspection.ChangedPaths)) {
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("source changed-path set differs from inspected Git facts; re-inspect"), ErrMergeConflict)
+		}
+		if len(req.Inspection.EffectiveWritePaths) > 0 {
+			if outside := outsideWriteScope(actualPaths, req.Inspection.EffectiveWritePaths); len(outside) > 0 {
+				return preserveAfterCAS(ctx, store, checkpointPath, current, next,
+					fmt.Errorf("%w: %s", ErrScopeViolation, strings.Join(outside, ", ")), ErrScopeViolation)
+			}
 		}
 		// Recheck the frozen paths under the integration lock immediately before
 		// merging. Rename detection is disabled so removals cannot hide a lock.
 		if len(req.Inspection.LockedPaths) > 0 {
-			base, err := mergeBase(ctx, gitRoot, req.Inspection.TargetBranch, sourceHead)
-			if err != nil {
-				return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrLockedArtifact)
-			}
-			changed, err := listChangedFiles(ctx, gitRoot, base, sourceHead)
-			if err != nil {
-				return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrLockedArtifact)
-			}
-			if hits := intersectLocked(changed, req.Inspection.LockedPaths); len(hits) > 0 {
+			if hits := intersectLocked(actualPaths, req.Inspection.LockedPaths); len(hits) > 0 {
 				return preserveAfterCAS(ctx, store, checkpointPath, current, next,
 					fmt.Errorf("%w: %s", ErrLockedArtifact, strings.Join(hits, ", ")), ErrLockedArtifact)
 			}
 		}
-		mergeCommit, err := performMerge(ctx, gitRoot, req.Inspection.SourceHead)
-		if err != nil {
-			return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrMergeConflict)
+		if canonical != nil {
+			latest, resolveErr := resolveCanonicalResultByBinding(cfg.Root, runtimeID, canonical.Binding)
+			if resolveErr != nil || latest == nil {
+				if resolveErr == nil {
+					resolveErr = fmt.Errorf("canonical Result no longer resolves")
+				}
+				return preserveAfterCAS(ctx, store, checkpointPath, current, next, resolveErr, ErrMissingCompletion)
+			}
+		}
+		// A professional no-change delivery still requires Main checks, but
+		// has nothing to merge. Retain the actual Main HEAD in the existing
+		// checkpoint coordinates instead of manufacturing a source commit.
+		mergeCommit := target
+		if canonical != nil || sourceHead != req.Inspection.MergeBase || len(actualPaths) != 0 {
+			mergeCommit, err = performMerge(ctx, gitRoot, req.Inspection.SourceHead)
+			if err != nil {
+				return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrMergeConflict)
+			}
 		}
 		next.MergeCommit = mergeCommit
+		if next.CanonicalMainFacts != nil {
+			facts := *next.CanonicalMainFacts
+			facts.MergeCommit = mergeCommit
+			next.CanonicalMainFacts = &facts
+		}
 		next.State = StateMerged
 		written, err := store.CompareAndSwap(checkpointPath, current, next)
 		if err != nil {
@@ -399,15 +673,24 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 					fmt.Errorf("%w: before verification", ErrCompletionReportChanged), ErrCompletionReportChanged)
 			}
 		}
+		if canonical != nil {
+			latest, resolveErr := resolveCanonicalResultByBinding(cfg.Root, runtimeID, canonical.Binding)
+			if resolveErr != nil || latest == nil {
+				if resolveErr == nil {
+					resolveErr = fmt.Errorf("canonical Result no longer resolves")
+				}
+				return preserveAfterCAS(ctx, store, checkpointPath, current, next, resolveErr, ErrMissingCompletion)
+			}
+		}
 		// Refuse to advance to verified if the target tree is now
 		// dirty (e.g. an external process wrote into the integration
 		// branch). The worktree-preserved recovery applies.
-		clean, err := worktreeClean(ctx, gitRoot)
+		clean, err := mainWorktreeClean(ctx, gitRoot)
 		if err != nil {
-			return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrDirtyWorktree)
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, mainWorktreeCheckFailure(gitRoot, err), ErrDirtyWorktree)
 		}
 		if !clean {
-			return preserveAfterCAS(ctx, store, checkpointPath, current, next, ErrDirtyWorktree, ErrDirtyWorktree)
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, mainWorktreeDirtyFailure(gitRoot), ErrDirtyWorktree)
 		}
 		checkedHead, err := revParse(ctx, gitRoot, "HEAD")
 		if err != nil {
@@ -421,27 +704,76 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 		// specified"). Any failing check stops the chain.
 		commands, _ := splitRequiredChecks(cfg.RequiredChecks)
 		if len(commands) > 0 {
-			for _, command := range commands {
+			var canonicalChecks []struct {
+				Index   int
+				Command string
+			}
+			if canonical != nil {
+				canonicalChecks = mainCheckIndexes(canonical.Record)
+				if len(canonicalChecks) != len(commands) {
+					return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("Main RequiredChecks sequence differs from the canonical Record"), ErrCheckFailed)
+				}
+			}
+			for commandIndex, command := range commands {
 				if cfg.CheckRunner == nil {
 					return preserveAfterCAS(ctx, store, checkpointPath, current, next, ErrCheckRunnerMissing, ErrCheckFailed)
 				}
-				checkCtx := context.WithValue(ctx, checkEvidenceKey{}, checkEvidence{Directory: filepath.Join(filepath.Dir(checkpointPath), "checks"), Receipts: &next.CheckReceipts})
+				priorReceipts := len(next.CheckReceipts)
+				checkCtx := context.WithValue(ctx, checkEvidenceKey{}, checkEvidence{Directory: filepath.Join(filepath.Dir(checkpointPath), "checks"), Receipts: &next.CheckReceipts, ToolReceipts: &next.ToolCheckReceipts})
 				if err := cfg.CheckRunner(checkCtx, gitRoot, command); err != nil {
 					next.FailureReason = fmt.Sprintf("integration check %s failed: %v", command, err)
 					next.LastErrorCode = "LOOP_INTEGRATION_CHECK_FAILED"
 					return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrCheckFailed)
 				}
+				if canonical != nil {
+					if len(next.CheckReceipts) != priorReceipts+1 {
+						return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("Main runner did not persist exactly one receipt for %s", command), ErrCheckFailed)
+					}
+					required := canonicalChecks[commandIndex]
+					if required.Command != command {
+						return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("Main runner command order differs from the canonical RequiredChecks sequence"), ErrCheckFailed)
+					}
+					profileDigest, profileErr := canonicalProfileDigest(canonical.Record, required.Index, command)
+					if profileErr != nil {
+						return preserveAfterCAS(ctx, store, checkpointPath, current, next, profileErr, ErrCheckFailed)
+					}
+					fact, factErr := captureMainCheckFact(cfg.Root, checkpointPath, next.CheckReceipts[priorReceipts], gitRoot, checkedHead, required.Index, command, mainCheckBinding(canonical), profileDigest)
+					if factErr != nil {
+						return preserveAfterCAS(ctx, store, checkpointPath, current, next, factErr, ErrCheckFailed)
+					}
+					if next.CanonicalMainFacts == nil {
+						return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("canonical Main checkpoint facts disappeared during checks"), ErrCheckFailed)
+					}
+					facts := *next.CanonicalMainFacts
+					facts.Checks = append(append([]assignmentresult.MainCheckFact(nil), facts.Checks...), fact)
+					next.CanonicalMainFacts = &facts
+				}
 			}
 		}
 		finalHead, headErr := revParse(ctx, gitRoot, "HEAD")
-		cleanAfter, cleanErr := worktreeClean(ctx, gitRoot)
-		if headErr != nil || cleanErr != nil || finalHead != checkedHead || !cleanAfter {
+		cleanAfter, cleanErr := mainWorktreeClean(ctx, gitRoot)
+		if cleanErr != nil {
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, mainWorktreeCheckFailure(gitRoot, cleanErr), ErrCheckFailed)
+		}
+		if !cleanAfter {
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, mainWorktreeDirtyFailure(gitRoot), ErrCheckFailed)
+		}
+		if headErr != nil || finalHead != checkedHead {
 			return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("integration target changed during checks"), ErrCheckFailed)
 		}
 		if err := verifyCheckTarget(ctx, gitRoot, next, finalHead); err != nil {
 			return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrCheckFailed)
 		}
 		next.TestedHead = finalHead
+		if canonical != nil {
+			if next.CanonicalMainFacts == nil {
+				return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("canonical Main checkpoint facts disappeared after checks"), ErrCheckFailed)
+			}
+			facts := *next.CanonicalMainFacts
+			facts.TestedHead = finalHead
+			facts.MergeCommit = next.MergeCommit
+			next.CanonicalMainFacts = &facts
+		}
 		// A check command can itself rewrite the completion report. Re-read
 		// after checks and refuse to certify a different Result.
 		if completionBinding.Bound {
@@ -455,9 +787,32 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 			}
 			completionBinding = latest
 		}
-		clean, err = worktreeClean(ctx, gitRoot)
-		if err != nil || !clean {
-			return preserveAfterCAS(ctx, store, checkpointPath, current, next, ErrDirtyWorktree, ErrDirtyWorktree)
+		if canonical != nil {
+			latest, resolveErr := resolveCanonicalResultByBinding(cfg.Root, runtimeID, canonical.Binding)
+			if resolveErr != nil || latest == nil {
+				if resolveErr == nil {
+					resolveErr = fmt.Errorf("canonical Result changed while Main checks ran")
+				}
+				return preserveAfterCAS(ctx, store, checkpointPath, current, next, resolveErr, ErrCompletionReportChanged)
+			}
+			if next.CanonicalMainFacts == nil {
+				return preserveAfterCAS(ctx, store, checkpointPath, current, next, fmt.Errorf("canonical Main checkpoint facts disappeared before verification"), ErrCheckFailed)
+			}
+			facts := *next.CanonicalMainFacts
+			facts.TestedHead = finalHead
+			facts.MergeCommit = next.MergeCommit
+			next.CanonicalMainFacts = &facts
+			next.TestedHead = finalHead
+			if err := validateCanonicalMainFacts(cfg.Root, checkpointPath, gitRoot, next, canonical); err != nil {
+				return preserveAfterCAS(ctx, store, checkpointPath, current, next, err, ErrCheckFailed)
+			}
+		}
+		clean, err = mainWorktreeClean(ctx, gitRoot)
+		if err != nil {
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, mainWorktreeCheckFailure(gitRoot, err), ErrDirtyWorktree)
+		}
+		if !clean {
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, mainWorktreeDirtyFailure(gitRoot), ErrDirtyWorktree)
 		}
 		next.State = StateVerified
 		if completionBinding.Bound {
@@ -513,26 +868,13 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 		if !req.Cleanup {
 			return Result{Checkpoint: current, Reused: found}, nil
 		}
-		if _, statErr := os.Stat(req.Inspection.WorktreePath); !os.IsNotExist(statErr) {
-			clean, err := worktreeClean(ctx, req.Inspection.WorktreePath)
-			if err != nil {
-				return deferCleanup(store, checkpointPath, current, next, err)
-			}
-			if !clean {
-				return deferCleanup(store, checkpointPath, current, next, ErrDirtyWorktree)
-			}
-			head, err := revParse(ctx, req.Inspection.WorktreePath, "HEAD")
-			if err != nil || head != next.SourceHead {
-				return deferCleanup(store, checkpointPath, current, next, fmt.Errorf("worktree HEAD changed since reception; preserve it"))
-			}
+		// The original cleanup helper owns the single coordinate/cleanliness
+		// check and recovery from an interrupted installation restoration.
+		if cfg.WorkerCleanupError != nil {
+			return deferCleanup(store, checkpointPath, current, next, cfg.WorkerCleanupError)
 		}
-
-		// Best-effort removal. If git worktree remove fails because
-		// the worktree is already gone (e.g. an earlier cleanup
-		// succeeded but the ack step was lost), we treat that as
-		// success — BE-039 §8 cleanup_response_loss_recovery says
-		// reconcile only from durable checkpoints.
-		if err := cleanupWorktree(ctx, gitRoot, req.Inspection.WorktreePath); err != nil {
+		area := WorkerPrivateAreaSpec{Path: cfg.WorkerPrivateArea, BaseCommit: cfg.WorkerPrivateBaseCommit, WritePaths: cfg.WorkerPrivateWritePaths, BaselinePaths: cfg.WorkerPrivateBaselinePaths}
+		if err := cleanupWorktree(ctx, gitRoot, req.Inspection.WorktreePath, current, area, cfg.WorkerLogEvidence, cfg.WorkerPrivateEvidence, cfg.WorkerIgnoredEvidence); err != nil {
 			return deferCleanup(store, checkpointPath, current, next, err)
 		}
 		next.State = StateComplete
@@ -546,6 +888,14 @@ func Integrate(ctx context.Context, req IntegrateRequest, cfg IntegrateConfig) (
 	}
 
 	return Result{Checkpoint: current, Reused: found}, nil
+}
+
+func mainWorktreeDirtyFailure(root string) error {
+	return fmt.Errorf("Main integration checkout %q is dirty; inspect with git -C %q status --short: %w", root, root, ErrDirtyWorktree)
+}
+
+func mainWorktreeCheckFailure(root string, cause error) error {
+	return fmt.Errorf("Main integration checkout %q clean check failed; inspect with git -C %q status --short: %w", root, root, cause)
 }
 
 // A stable HEAD alone does not identify the tree we intended to test. Recovery
@@ -586,6 +936,9 @@ func preserveAfterCAS(ctx context.Context, store *CheckpointStore, path string, 
 	written, err := store.CompareAndSwap(path, current, preserved)
 	if err != nil {
 		return Result{Checkpoint: preserved}, fmt.Errorf("persist preserved: %w", err)
+	}
+	if cause != nil {
+		return Result{Checkpoint: written}, fmt.Errorf("%v; Builder checkout %q preserved: %w", cause, written.WorktreePath, sentinel)
 	}
 	return Result{Checkpoint: written}, sentinel
 }
@@ -639,7 +992,7 @@ func checkpointResumeState(cp Checkpoint) string {
 // preserveFromInspection persists a preserved checkpoint when the
 // caller hands Integrate a non-ready Inspection. Existing durable progress
 // is retained; a new record is created through CAS.
-func preserveFromInspection(cfg IntegrateConfig, req IntegrateRequest, reason string) (Result, error) {
+func preserveFromInspection(cfg IntegrateConfig, req IntegrateRequest, canonical *canonicalResultFacts, reason string) (Result, error) {
 	store := cfg.CheckpointStore
 	if store == nil {
 		store = DefaultCheckpointStore()
@@ -649,7 +1002,13 @@ func preserveFromInspection(cfg IntegrateConfig, req IntegrateRequest, reason st
 		runtimeID = "loop-REQ-039"
 	}
 	checkpointPath := cfg.CheckpointDir
-	if checkpointPath == "" {
+	if canonical != nil {
+		expected := store.PathForRecord(cfg.Root, canonical.Record.Reference())
+		if expected == "" || checkpointPath != "" && filepath.Clean(checkpointPath) != filepath.Clean(expected) {
+			return Result{}, fmt.Errorf("preserved canonical checkpoint must use the current Assignment revision path")
+		}
+		checkpointPath = expected
+	} else if checkpointPath == "" {
 		checkpointPath = store.Path(cfg.Root, runtimeID, req.Inspection.BaselineGeneration, idempAssignment(req))
 	}
 
@@ -677,11 +1036,25 @@ func preserveFromInspection(cfg IntegrateConfig, req IntegrateRequest, reason st
 		LastErrorCode:      "LOOP_INTEGRATION_CONFLICT",
 		LockedDiff:         append([]string(nil), req.Inspection.LockedDiff...),
 	}
+	if canonical != nil {
+		ref := canonical.Record.Reference()
+		sha, err := canonical.Record.Digest()
+		if err != nil {
+			return Result{}, err
+		}
+		cp.AssignmentRecord = &ref
+		cp.AssignmentRecordSHA256 = sha
+	}
 	current, found, err := store.Load(checkpointPath)
 	if err != nil {
 		return Result{}, err
 	}
 	if found {
+		if canonical != nil {
+			if err := ValidateCheckpointRecordBinding(current, canonical.Record); err != nil {
+				return Result{Checkpoint: current}, err
+			}
+		}
 		return Result{Checkpoint: current, Reused: true}, nil
 	}
 	written, err := store.CompareAndSwap(checkpointPath, current, cp)
@@ -790,4 +1163,26 @@ func integrationDurationStatus(result Result, err error) string {
 	default:
 		return "success"
 	}
+}
+
+// The platform may delete a completed no-change source branch with its native
+// checkout. Preserve its original coordinates; the recorded empty range can
+// still resolve the same immutable Git object. A live/moved branch, a retained
+// checkout, canonical work or a nonempty range keeps its original checks.
+func retainedIntegrationSource(ctx context.Context, root string, in Inspection) (string, error) {
+	source, err := revParse(ctx, root, in.SourceBranch)
+	if err == nil {
+		return source, nil
+	}
+	if in.CanonicalResult != nil || in.SourceHead == "" || in.SourceHead != in.MergeBase || len(in.ChangedPaths) != 0 {
+		return "", err
+	}
+	if _, pathErr := os.Lstat(in.WorktreePath); !os.IsNotExist(pathErr) {
+		return "", err
+	}
+	paths, digest, rangeErr := canonicalGitChangedPaths(ctx, root, in.MergeBase, in.SourceHead)
+	if rangeErr != nil || len(paths) != 0 || digest != in.ChangedPathsSHA256 {
+		return "", err
+	}
+	return revParse(ctx, root, in.SourceHead)
 }

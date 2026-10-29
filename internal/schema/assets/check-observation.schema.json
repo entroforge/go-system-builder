@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "check-observation.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profile_digest",
+    "subject_digest",
+    "runner_digest",
+    "environment_digest",
+    "dependency_digest",
+    "fixture_digest",
+    "profile_id",
+    "profile_version",
+    "environment",
+    "verification_scope",
+    "reuse_eligible"
+  ],
+  "properties": {
+    "profile_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "subject_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "runner_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "environment_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "dependency_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "fixture_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "verification_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reuse_eligible": {
+      "const": false
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "runner",
+        "platform",
+        "kernel",
+        "binary_sha256",
+        "shell_sha256",
+        "libraries_sha256",
+        "filter_sha256",
+        "policy_sha256",
+        "authority_sha256",
+        "main_root",
+        "common_dir",
+        "worker_root",
+        "cwd",
+        "uid",
+        "gid",
+        "groups",
+        "available"
+      ],
+      "properties": {
+        "version": {
+          "const": "1.0.0"
+        },
+        "runner": {
+          "const": "worker_bubblewrap_seccomp_v1"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "kernel": {
+          "type": "string"
+        },
+        "binary_sha256": {
+          "type": "string"
+        },
+        "shell_sha256": {
+          "type": "string"
+        },
+        "libraries_sha256": {
+          "type": "string"
+        },
+        "filter_sha256": {
+          "type": "string"
+        },
+        "policy_sha256": {
+          "type": "string"
+        },
+        "authority_sha256": {
+          "type": "string"
+        },
+        "main_root": {
+          "type": "string"
+        },
+        "common_dir": {
+          "type": "string"
+        },
+        "worker_root": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "uid": {
+          "type": "integer"
+        },
+        "gid": {
+          "type": "integer"
+        },
+        "groups": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer"
+          }
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "diagnostic": {
+          "type": "string"
+        }
+      }
+    },
+    "permission_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "dependentRequired": {
+    "permissions": [
+      "permission_digest"
+    ],
+    "permission_digest": [
+      "permissions"
+    ]
+  }
+}

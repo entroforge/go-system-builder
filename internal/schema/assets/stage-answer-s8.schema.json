@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/stage-answer-s8.schema.json",
+  "title": "S8 HypothesisResult authoring answer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "instruction", "read", "questions", "answer"],
+  "properties": {
+    "title": {"type": "string", "minLength": 1},
+    "instruction": {"type": "string", "minLength": 1},
+    "read": {
+      "type": "array",
+      "maxItems": 16384,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "purpose"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "purpose": {"type": "string", "minLength": 1, "maxLength": 2048}
+        }
+      }
+    },
+    "questions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "evidence_refs", "source_boundary_refs", "observed", "counterfactual_or_discriminator", "result", "explains_finding_ids", "does_not_explain", "new_hypotheses"],
+      "properties": {
+        "method": {"$ref": "#/$defs/question"},
+        "evidence_refs": {"$ref": "#/$defs/question"},
+        "source_boundary_refs": {"$ref": "#/$defs/question"},
+        "observed": {"$ref": "#/$defs/question"},
+        "counterfactual_or_discriminator": {"$ref": "#/$defs/question"},
+        "result": {"$ref": "#/$defs/question"},
+        "explains_finding_ids": {"$ref": "#/$defs/question"},
+        "does_not_explain": {"$ref": "#/$defs/question"},
+        "new_hypotheses": {"$ref": "#/$defs/question"}
+      }
+    },
+    "answer": {"$ref": "#/$defs/answer"}
+  },
+  "$defs": {
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question"],
+      "properties": {
+        "question": {"type": "string", "minLength": 1},
+        "choices": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "example": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "expected", "observed"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "expected": {"type": "string", "minLength": 1},
+            "observed": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "expected_outcomes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["support", "refute"],
+      "properties": {
+        "support": {"type": "string", "maxLength": 8192},
+        "refute": {"type": "string", "maxLength": 8192}
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "evidence_refs", "source_boundary_refs", "observed", "counterfactual_or_discriminator", "result", "explains_finding_ids", "does_not_explain", "new_hypotheses"],
+      "properties": {
+        "method": {"type": "string", "maxLength": 8192},
+        "evidence_refs": {"type": "array", "maxItems": 4096, "items": {"type": "string", "maxLength": 4096}},
+        "source_boundary_refs": {"type": "array", "maxItems": 4096, "items": {"type": "string", "maxLength": 4096}},
+        "observed": {"type": "string", "maxLength": 32768},
+        "counterfactual_or_discriminator": {"type": "string", "maxLength": 32768},
+        "result": {"enum": [null, "supported", "refuted", "inconclusive"]},
+        "explains_finding_ids": {"type": "array", "maxItems": 512, "uniqueItems": true, "items": {"type": "string", "pattern": "^finding-[A-Za-z0-9._-]+$"}},
+        "does_not_explain": {"type": "array", "maxItems": 512, "uniqueItems": true, "items": {"type": "string", "pattern": "^finding-[A-Za-z0-9._-]+$"}},
+        "new_hypotheses": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["statement", "invariant", "discriminator", "expected_outcomes", "source_finding_ids", "evidence_refs"],
+            "properties": {
+              "statement": {"type": "string", "maxLength": 8192},
+              "invariant": {"type": "string", "maxLength": 8192},
+              "discriminator": {"type": "string", "maxLength": 8192},
+              "expected_outcomes": {"$ref": "#/$defs/expected_outcomes"},
+              "source_finding_ids": {"type": "array", "minItems": 0, "maxItems": 512, "uniqueItems": true, "items": {"type": "string", "pattern": "^finding-[A-Za-z0-9._-]+$"}},
+              "evidence_refs": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"type": "string", "minLength": 1, "maxLength": 4096}}
+            }
+          }
+        }
+      }
+    }
+  }
+}

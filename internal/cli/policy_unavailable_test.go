@@ -11,7 +11,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/cli"
 )
 
-func TestUnavailablePolicyUsesPlatformControl(t *testing.T) {
+func TestUnavailablePolicyDoesNotDenyAndKeepsGraphRecoveryVisible(t *testing.T) {
 	for _, broken := range []string{"missing", "invalid"} {
 		for _, tool := range []string{"Write", "Edit", "Bash", "PowerShell", "Agent", "TaskUpdate", "mcp__custom__read", "unknown-tool", "Read", "Grep", "Glob"} {
 			t.Run(broken+"/"+tool, func(t *testing.T) {
@@ -27,15 +27,15 @@ func TestUnavailablePolicyUsesPlatformControl(t *testing.T) {
 				payload, _ := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": map[string]any{"command": "loop-harness init && touch product", "file_path": "product.go"}})
 				var out, errout bytes.Buffer
 				code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, bytes.NewReader(payload), &out, &errout)
-				want := 2
-				if tool == "Read" || tool == "Grep" || tool == "Glob" {
-					want = 0
+				if code != 0 {
+					t.Fatalf("unavailable Hook policy must not block PreToolUse: exit=%d stdout=%s stderr=%s", code, &out, &errout)
 				}
-				if code != want {
-					t.Fatalf("exit=%d want=%d stdout=%s stderr=%s", code, want, &out, &errout)
+				if strings.Contains(out.String(), `"permissionDecision":"deny"`) {
+					t.Fatalf("unavailable Hook policy must not produce a tool denial: %s", &out)
 				}
-				if !strings.Contains(errout.String(), "external terminal") {
-					t.Fatalf("missing actionable recovery: %s", &errout)
+				qualityGate := parseHookQualityGate(t, out.String())
+				if qualityGate["status"] != "unknown" || !strings.Contains(out.String(), "LOOP RECOVERY") || !strings.Contains(out.String(), "recover the runtime checkpoint") {
+					t.Fatalf("unavailable Hook policy must preserve graph diagnostics and recovery guidance: gate=%#v stdout=%s", qualityGate, &out)
 				}
 				if _, err := os.Stat(filepath.Join(root, ".claude/loop-state.json")); !os.IsNotExist(err) {
 					t.Fatalf("error handler must not create a Runtime: %v", err)

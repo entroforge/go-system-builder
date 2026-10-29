@@ -18,7 +18,7 @@ One route-safe implementation or scoped navigation review conclusion.
 ## N/A Criteria
 N/A when no client-side routing or route-dependent behavior is affected.
 ## Stop Conditions
-Stop on ambiguous route ownership, redirect loops, or an unguarded authorization boundary.
+Correct redirect loops and route/guard wiring within the accepted routing and authorization contract. Report missing product ownership or authorization semantics requiring a new decision to Main; never invent them.
 ## Non-Goals
 Do not substitute URL changes for required user-flow interaction evidence.
 

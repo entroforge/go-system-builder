@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -24,9 +25,26 @@ type RequiredCheckRunner func(ctx context.Context, root, command string) error
 // production use; tests use it to inject a check runner and to skip the
 // completion-report check (which depends on a specific on-disk layout).
 type InspectConfig struct {
-	LockedArtifacts []string
+	// WorkerLogEvidence contains exact captured output identities supplied by the
+	// original domain receiver. Only untracked matching bytes may be projected;
+	// this is used only with ValidateDelivery, never as a general cleanliness bypass.
+	WorkerLogEvidence map[string]string
+	// WorkerPrivateEvidence is the exact original accepted professional input.
+	WorkerPrivateEvidence map[string]string
+	// WorkerPrivateArea and its frozen source facts are call-only data from the
+	// original native responsibility; they never authorize product changes.
+	WorkerPrivateArea          string
+	WorkerPrivateBaseCommit    string
+	WorkerPrivateWritePaths    []string
+	WorkerPrivateBaselinePaths []string
+	LockedArtifacts            []string
 	// RecoveryBase retains the original scope denominator for an already merged branch.
 	RecoveryBase string
+	// ReceivedSourceHead is an immutable source from the original domain
+	// receiver. With ValidateDelivery, a removed native checkout may reuse it
+	// only when its entire source range is empty. This never substitutes Main
+	// for Worker checks or changes the original branch/path coordinates.
+	ReceivedSourceHead string
 	// CheckRunner runs RequiredChecks. A missing executor fails closed when
 	// checks are declared; an empty RequiredChecks list still means none.
 	CheckRunner RequiredCheckRunner
@@ -48,7 +66,8 @@ type InspectConfig struct {
 //
 //   - completion report exists and parses
 //   - worktree tree is clean
-//   - source branch has commits beyond the merge base
+//   - source branch has commits beyond the merge base, or a professional
+//     delivery records work that required no source changes
 //   - target branch exists
 //   - required checks pass (when configured)
 //   - the source/target diff does not touch any locked artifact
@@ -79,18 +98,53 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	}
 
 	out := Inspection{
-		LockedPaths:        lockedArtifacts(cfg, req),
-		AssignmentID:       req.Assignment.AssignmentID,
-		TaskID:             req.Assignment.TaskID,
-		WorktreePath:       req.Assignment.WorktreePath,
-		SourceBranch:       req.Assignment.Branch,
-		TargetBranch:       targetBranch,
-		BaselineGeneration: req.BaselineGeneration,
-		NonSquashMode:      true, // invariant: this package never squash-merges
+		LockedPaths:          lockedArtifacts(cfg, req),
+		AssignmentID:         req.Assignment.AssignmentID,
+		TaskID:               req.Assignment.TaskID,
+		WorktreePath:         req.Assignment.WorktreePath,
+		SourceBranch:         req.Assignment.Branch,
+		TargetBranch:         targetBranch,
+		BaselineGeneration:   req.BaselineGeneration,
+		NonSquashMode:        true, // invariant: this package never squash-merges
+		EffectiveWritePaths:  append([]string{}, req.Assignment.WritePaths...),
+		AssignmentProjection: req.Assignment,
 	}
+	projection, err := cloneAssignmentProjection(req.Assignment)
+	if err != nil {
+		return Inspection{}, fmt.Errorf("copy canonical Assignment projection: %w", err)
+	}
+	out.AssignmentProjection = projection
 	addBlocker := func(reason string) {
 		out.Ready = false
 		out.Blockers = append(out.Blockers, reason)
+	}
+
+	canonical, err := resolveCanonicalResult(req.Root, req.RuntimeID, req.Assignment)
+	if err != nil {
+		addBlocker(fmt.Sprintf("canonical Assignment/Result binding failed: %v", err))
+		return out, nil
+	}
+	if canonical != nil {
+		out.CanonicalResult = &canonical.Binding
+		out.CompletionReportPath = canonical.Binding.ResultPath
+		out.CompletionReportSHA256 = canonical.Binding.ResultSHA256
+		out.EffectiveWritePaths = append([]string{}, canonical.Record.EffectiveWritePaths...)
+		if blockers := canonicalClosingBlockers(canonical); len(blockers) > 0 {
+			for _, blocker := range blockers {
+				addBlocker(blocker)
+			}
+			return out, nil
+		}
+		// v1.2 RequiredChecks are Main post-merge facts. Inspect uses the
+		// canonical scope and locks but does not treat worker-side checks as
+		// Main receipts or a completion verdict.
+		cfg.RequiredChecks = nil
+	}
+
+	// Domain delivery retains declared scope as professional context, without
+	// forwarding the generic S6 path ACL into Main integration.
+	if cfg.ValidateDelivery != nil && canonical == nil {
+		out.EffectiveWritePaths = nil
 	}
 
 	// 1. Completion report. We don't schema-validate here — that gate is
@@ -98,7 +152,10 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	//    Inspect only confirms the file is present and parseable so a
 	//    missing report is surfaced as an integration blocker, not as a
 	//    generic controller failure.
-	if !cfg.SkipCompletionCheck && cfg.ValidateDelivery == nil {
+	if canonical != nil {
+		out.CompletionReportPath = canonical.Binding.ResultPath
+		out.CompletionReportSHA256 = canonical.Binding.ResultSHA256
+	} else if !cfg.SkipCompletionCheck && cfg.ValidateDelivery == nil {
 		reportPath := completionReportPath(req.Root, req.Assignment.AssignmentID, req.RuntimeID, req.Assignment.CompletionRef, req.BaselineGeneration)
 		if reportPath == "" {
 			addBlocker("completion report missing: provide an explicit CompletionRef or valid current Runtime, generation and assignment identity")
@@ -127,23 +184,59 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 		out.CompletionReportSHA256 = reportSHA
 	}
 
-	// 2. Worktree clean.
-	clean, err := worktreeClean(ctx, req.Assignment.WorktreePath)
-	if err != nil {
-		return out, fmt.Errorf("worktree clean check: %w", err)
+	// 2. Inspect a live checkout normally. Claude Code may already have
+	// removed an accepted no-change native checkout and its temporary branch.
+	sourceRef, sourceRoot := req.Assignment.Branch, req.Assignment.WorktreePath
+	released := false
+	if canonical == nil && cfg.ValidateDelivery != nil && cfg.ReceivedSourceHead != "" {
+		if _, pathErr := os.Lstat(req.Assignment.WorktreePath); os.IsNotExist(pathErr) {
+			released = true
+			sourceRef, sourceRoot = cfg.ReceivedSourceHead, req.Root
+		}
 	}
-	if !clean {
-		addBlocker(ErrDirtyWorktree.Error())
-		return out, nil
+	if !released {
+		if canonical != nil && canonical.Record.Contract == assignmentrecord.NativeDeliveryContract {
+			if _, pathErr := os.Lstat(req.Assignment.WorktreePath); os.IsNotExist(pathErr) {
+				return out, fmt.Errorf("accepted native S6 checkout %q is missing; Main restores the original Git checkout/branch %q at accepted SourceHead %s, then retries the original task-integrate. The original Plan/Result are already retained in Main; do not recreate private answer caches, recapture HEAD, or add a new commit to repair source identity", req.Assignment.WorktreePath, req.Assignment.Branch, canonical.Accepted.SourceHead)
+			}
+		}
+		var logEvidence, privateEvidence map[string]string
+		var privateArea *WorkerPrivateAreaProjection
+		if canonical == nil && cfg.ValidateDelivery != nil {
+			logEvidence = cfg.WorkerLogEvidence
+			privateEvidence = cfg.WorkerPrivateEvidence
+			privateArea, err = ObserveWorkerPrivateArea(ctx, req.Assignment.WorktreePath, WorkerPrivateAreaSpec{
+				Path: cfg.WorkerPrivateArea, BaseCommit: cfg.WorkerPrivateBaseCommit,
+				WritePaths: cfg.WorkerPrivateWritePaths, BaselinePaths: cfg.WorkerPrivateBaselinePaths,
+			})
+			if err != nil {
+				return out, fmt.Errorf("observe original Worker private area: %w", err)
+			}
+		}
+		clean, err := workerWorktreeCleanWithPrivateArea(ctx, req.Root, req.Assignment.WorktreePath, privateArea, logEvidence, privateEvidence)
+		if err != nil {
+			workerRoot := req.Assignment.WorktreePath
+			return out, fmt.Errorf("Worker checkout %q clean check failed; inspect with git -C %q status --short: %w", workerRoot, workerRoot, err)
+		}
+		if !clean {
+			workerRoot := req.Assignment.WorktreePath
+			addBlocker(fmt.Sprintf("Worker checkout %q is dirty; inspect with git -C %q status --short: %s", workerRoot, workerRoot, ErrDirtyWorktree))
+			return out, nil
+		}
 	}
 
-	// 3. Source branch has commits.
-	sourceHead, err := revParse(ctx, req.Assignment.WorktreePath, req.Assignment.Branch)
-	if err != nil {
-		addBlocker(fmt.Sprintf("source branch head: %v", err))
+	// 3. Resolve the actual Git object, retaining the original metadata.
+	sourceHead, err := revParse(ctx, sourceRoot, sourceRef)
+	if err != nil || released && sourceHead != cfg.ReceivedSourceHead {
+		addBlocker(fmt.Sprintf("original source commit unavailable: %v", err))
 		return out, nil
 	}
 	out.SourceHead = sourceHead
+	if canonical != nil && canonical.Record.Contract == assignmentrecord.NativeDeliveryContract && canonical.Accepted.SourceHead != sourceHead {
+		addBlocker(fmt.Sprintf("native source commit changed after accepted Result; expected SourceHead %s at checkout %q branch %q. Main restores that exact accepted source for the original task-integrate, or uses the original named Assignment revision for genuinely new work; never recapture HEAD or rewrite the accepted Result", canonical.Accepted.SourceHead, req.Assignment.WorktreePath, req.Assignment.Branch))
+		return out, nil
+	}
+
 	if cfg.ValidateDelivery != nil {
 		if err := cfg.ValidateDelivery(ctx, out); err != nil {
 			addBlocker(err.Error())
@@ -167,7 +260,7 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	out.TargetHead = targetHead
 
 	// 5. Merge base + commit count.
-	base, err := mergeBase(ctx, targetRepo, req.Assignment.Branch, targetBranch)
+	base, err := mergeBase(ctx, targetRepo, sourceRef, targetBranch)
 	if err != nil {
 		addBlocker(fmt.Sprintf("merge base: %v", err))
 		return out, nil
@@ -187,24 +280,26 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	if err != nil {
 		return out, fmt.Errorf("count commits: %w", err)
 	}
-	if count == 0 {
+	if released && count != 0 {
+		addBlocker("removed Worker source has a nonempty Git range; Main must recover the original delivery")
+		return out, nil
+	}
+	if count == 0 && (cfg.ValidateDelivery == nil || canonical != nil) {
 		addBlocker(ErrMissingCommits.Error())
 		return out, nil
 	}
 
 	// 6. Enforce the Runtime lock set independently of task checks.
 	locked := out.LockedPaths
-	// The changed-file list feeds both the locked-artifact screen and the
-	// write-scope audit below; compute it once when either consumer needs
-	// it.
-	var changedFiles []string
-	if len(locked) > 0 || len(req.Assignment.WritePaths) > 0 {
-		files, err := listChangedFiles(ctx, targetRepo, base, sourceHead)
-		if err != nil {
-			return out, fmt.Errorf("list changed files: %w", err)
-		}
-		changedFiles = files
+	// Capture the full actual Git delta, even if this assignment has no lock
+	// or scope rule. The same immutable path set feeds both audits and the
+	// durable integration checkpoint.
+	changedFiles, changedDigest, err := canonicalGitChangedPaths(ctx, targetRepo, base, sourceHead)
+	if err != nil {
+		return out, fmt.Errorf("list changed files: %w", err)
 	}
+	out.ChangedPaths = changedFiles
+	out.ChangedPathsSHA256 = changedDigest
 	if len(locked) > 0 {
 		out.LockedDiff = intersectLocked(changedFiles, locked)
 		if len(out.LockedDiff) > 0 {
@@ -218,17 +313,18 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	//     assignment without WritePaths declares no scope, so the audit
 	//     is skipped rather than fabricated — the gap is visible in the
 	//     manifest, not hidden here. Out-of-scope files block the
-	//     integration and preserve the worktree.
+	//     integration and preserve the worktree. Domain delivery records the
+	//     deviation for Main judgment while retaining the actual diff.
 	if len(req.Assignment.WritePaths) > 0 {
 		out.OutOfScopeDiff = outsideWriteScope(changedFiles, req.Assignment.WritePaths)
-		if len(out.OutOfScopeDiff) > 0 {
+		if len(out.OutOfScopeDiff) > 0 && (cfg.ValidateDelivery == nil || canonical != nil) {
 			addBlocker(fmt.Sprintf("%s: %s", ErrScopeViolation.Error(), strings.Join(out.OutOfScopeDiff, ", ")))
 			return out, nil
 		}
 	}
 
 	// 7. Conflict detection via merge-tree.
-	conflicts, err := mergeTreeRuns(ctx, targetRepo, base, req.Assignment.Branch, targetBranch)
+	conflicts, err := mergeTreeRuns(ctx, targetRepo, base, sourceRef, targetBranch)
 	if err != nil {
 		return out, fmt.Errorf("merge-tree: %w", err)
 	}
@@ -239,6 +335,10 @@ func Inspect(ctx context.Context, req InspectRequest, cfg InspectConfig) (Inspec
 	}
 
 	// 8. Required checks.
+	if released && len(cfg.RequiredChecks) != 0 {
+		addBlocker("required Worker checks have no live checkout; Main must recover their original source")
+		return out, nil
+	}
 	commands, _ := splitRequiredChecks(cfg.RequiredChecks)
 	if len(commands) > 0 {
 		// Pre-merge checks must run in the delivered worker checkout. Running

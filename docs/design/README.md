@@ -54,7 +54,7 @@ plus `derivation/REQ-{id}.md`. They do not search `research/`, Grammar, or
    `docs/design/tokens/tokens.json` and run `loop-harness design-foundation emit-css --root .`.
    Do not brand-lock this factory's tokens.
 6. After a dated publish, each later UI REQ writes `derivation/REQ-{id}.md`.
-7. Optional: `loop-harness design-foundation export-portable --root .` writes a derived Google DESIGN.md under `docs/design/proof/portable/` (not authority).
+7. Optional: `loop-harness design-foundation export-portable --root .` writes source excerpts and token values to `docs/design/proof/portable/DESIGN.md` (not authority or design approval; missing excerpts are reported).
 
 If the product has no user-visible interface, record Foundation as `N/A` in
 `docs/project-map.md` and skip this tree until UI appears.

@@ -13,6 +13,13 @@ scope: all agents
 Chat communicates status, questions, decisions awaiting recording, and links.
 Versioned documents and structured evidence are the source of truth.
 
+When reporting progress on a Loop responsibility attempt, use `pending`,
+`active`, `blocked`, `done`, or `cancelled` as defined by the shared
+[state rule](state-machine.md#21-loop-responsibility-status). Report the stage
+cursor/gate, professional outcome, current receipt and platform session as
+separate facts. Exact existing payload values remain unchanged; do not ask an
+Agent to hand-author a generic status.
+
 ## Required Communication
 
 - Identify the runtime ID and the current state/`next` action that justifies
@@ -22,7 +29,7 @@ Versioned documents and structured evidence are the source of truth.
 - State blockers without silently reducing scope or acceptance.
 - Record baseline decisions before acting on them.
 - Use schema-valid Agent message envelopes for phase changes.
-- Treat completion reports as evidence requests, not authoritative state changes.
+- Treat completion reports as evidence requests, not authoritative state changes; the original receiver projects responsibility status.
 
 ## Subagent Boundary
 
@@ -56,4 +63,4 @@ procedures are owned by:
 - assuming idle means complete
 - silently treating missing evidence as N/A
 - calling release architecture audit “human approval”
-- asking a subagent to bypass runtime or Hook enforcement
+- asking a subagent to claim a runtime transition or stage approval without its original evidence

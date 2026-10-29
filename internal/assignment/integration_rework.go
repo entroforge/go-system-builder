@@ -3,6 +3,7 @@ package assignment
 import (
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // ApplyIntegrationRework is used only inside the Main workspace-rework CAS
@@ -10,6 +11,7 @@ import (
 // This is not a Worker-issued lifecycle approval.
 func ApplyIntegrationRework(state map[string]any, catalog *transition.Catalog, owner, taskID, receipt, reason string) error {
 	entities, _ := state["entities"].(map[string]any)
+	version := fmt.Sprint(state["schema_version"])
 	agents, _ := entities["agents"].([]any)
 	found := false
 	for _, raw := range agents {
@@ -17,12 +19,18 @@ func ApplyIntegrationRework(state map[string]any, catalog *transition.Catalog, o
 		if a["id"] != owner {
 			continue
 		}
-		from, _ := a["state"].(string)
+		projection, err := workstate.AgentProjection(a, version)
+		if err != nil {
+			return fmt.Errorf("resolve integration rework Agent activity: %w", err)
+		}
+		from := projection.Activity
 		to, ok := ResolveAgentTransition(catalog, from, "integration_rework_requested")
 		if !ok {
 			return fmt.Errorf("integration rework requires a reported owner and current rework catalog")
 		}
-		a["state"] = to
+		if err := workstate.RecordAgentActivity(state, a, to, "integration_rework_requested"); err != nil {
+			return fmt.Errorf("record integration rework Agent work state: %w", err)
+		}
 		delete(a, "completion_reported_ref")
 		delete(a, "completion_acknowledged_ref")
 		found = true
@@ -37,13 +45,19 @@ func ApplyIntegrationRework(state map[string]any, catalog *transition.Catalog, o
 		if task["id"] != taskID {
 			continue
 		}
-		from, _ := task["state"].(string)
+		projection, err := workstate.TaskProjection(task, version)
+		if err != nil {
+			return fmt.Errorf("resolve integration rework TASK activity: %w", err)
+		}
+		from := projection.Activity
 		to, ok := taskEntityTransitions(catalog).resolve(from, "integration_rework_requested")
 		if !ok {
 			return fmt.Errorf("integration rework requires TASK review state")
 		}
 		oldReport, _ = task["completion_report_ref"].(string)
-		task["state"] = to
+		if err := workstate.RecordTaskActivity(state, task, to, "integration_rework_requested"); err != nil {
+			return fmt.Errorf("record integration rework TASK work state: %w", err)
+		}
 		delete(task, "completion_report_ref")
 	}
 	evidence, _ := state["evidence"].([]any)

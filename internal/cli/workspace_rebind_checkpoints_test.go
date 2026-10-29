@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"os"
@@ -79,6 +80,23 @@ func TestRelocatedCheckpointRecoveryPreservesEvidence(t *testing.T) {
 }
 
 func quoteJSON(s string) string { data, _ := json.Marshal(s); return string(data) }
+
+func TestRelocatedCheckpointPreservesCapturedFactsAndOnlyMovesReceiptCoordinate(t *testing.T) {
+	old, newRoot := filepath.Join(t.TempDir(), "old"), t.TempDir()
+	e := workspace.Execution{AssignmentID: "assignment", BaselineGeneration: 1, Path: filepath.Join(old, ".worktrees/worker"), Branch: "worker", TargetBranch: "test2", Status: "complete"}
+	path := filepath.Join(old, ".claude/evidence/checks/receipt.json")
+	ref := checkexec.ToolReceipt{Path: path, SHA256: checkexec.Hash([]byte("receipt")), LogSHA256: checkexec.Hash([]byte("log")), Checkout: old, Command: "true", ProfileDigest: checkexec.Hash([]byte("profile")), Binding: checkexec.Binding{RuntimeID: "runtime", Generation: 1, AssignmentID: e.AssignmentID, Owner: "builder", ExecutionGeneration: 1, Responsibility: "main_required_integration"}}
+	cp := integration.Checkpoint{AssignmentID: e.AssignmentID, BaselineGeneration: 1, State: integration.StateComplete, WorktreePath: e.Path, SourceBranch: e.Branch, TargetBranch: e.TargetBranch, TestedHead: "tested", MergeCommit: "merge", CheckReceipts: []string{path}, ToolCheckReceipts: []checkexec.ToolReceipt{ref}}
+	got, err := relocatedCheckpoint(cp, e, workspace.RebindRequest{OldMainRoot: old, NewMainRoot: newRoot, Paths: map[string]string{e.Path: filepath.Join(newRoot, ".worktrees/worker")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := ref
+	expected.Path = filepath.Join(newRoot, ".claude/evidence/checks/receipt.json")
+	if len(got.ToolCheckReceipts) != 1 || got.ToolCheckReceipts[0] != expected || cp.ToolCheckReceipts[0] != ref {
+		t.Fatal("relocation mutated captured facts", got.ToolCheckReceipts)
+	}
+}
 
 func TestRelocationRejectsUnfinishedDelivery(t *testing.T) {
 	for _, state := range []string{"missing", integration.StateVerified, integration.StateCleanupPending, integration.StatePreserved} {

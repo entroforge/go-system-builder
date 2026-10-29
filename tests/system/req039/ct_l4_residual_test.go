@@ -1,7 +1,7 @@
 // ct_l4_residual_test.go — BUG-039-39 residual L3→L4 Hook CLI wrappers
 // for CT/AC contracts that already have contract-complete Hook paths.
-// CT-039-19 stays L3 (timeout inject). CT-039-04/AC-003 stay honest L3
-// until LockedArtifacts are threaded through Controller buildSafetyInput.
+// CT-039-19 stays L3 (timeout inject). CT-039-04/AC-003 remain integration
+// scenarios and do not make PreToolUse a per-tool authorization boundary.
 
 package req039_test
 
@@ -32,7 +32,7 @@ func TestCT03902_ContractsMissingCoverageExposesNotReadySystem(t *testing.T) {
 		t.Fatal("CT-039-02 must surface quality_gate envelope")
 	}
 	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("CT-039-02 must allow tool, got %v", pd)
+		t.Fatalf("CT-039-02 must not render a per-tool decision, got %v", pd)
 	}
 	status, _ := qg["status"].(string)
 	switch status {
@@ -42,8 +42,8 @@ func TestCT03902_ContractsMissingCoverageExposesNotReadySystem(t *testing.T) {
 	}
 }
 
-// TestCT03905_UnlockedSiblingWriteAllowsSystem covers CT-039-05 at L4.
-func TestCT03905_UnlockedSiblingWriteAllowsSystem(t *testing.T) {
+// TestCT03905_UnlockedSiblingWriteIsObservedSystem covers CT-039-05 at L4.
+func TestCT03905_UnlockedSiblingWriteIsObservedSystem(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "design", 1)
 	writeSystemState(t, root, state)
@@ -60,50 +60,48 @@ func TestCT03905_UnlockedSiblingWriteAllowsSystem(t *testing.T) {
 		t.Fatal("CT-039-05 must surface envelope")
 	}
 	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("CT-039-05 must allow unlocked sibling, got %v", pd)
+		t.Fatalf("CT-039-05 must not render a per-tool decision, got %v", pd)
 	}
 }
 
-// TestCT03906_GitSquashMergeBlocksSystem covers CT-039-06 at L4.
-func TestCT03906_GitSquashMergeBlocksSystem(t *testing.T) {
+// TestCT03906_GitSquashMergeIsObservedSystem covers CT-039-06 at L4. The
+// graph listener reports progress but leaves individual Git commands to the
+// caller's normal execution and repository rules.
+func TestCT03906_GitSquashMergeIsObservedSystem(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "design", 1)
 	writeSystemState(t, root, state)
+	before := req039fixtures.ReadState(t, root)
 
 	body := req039fixtures.PreToolUseBody("session-ct-039-06-sys", "Bash", map[string]any{
 		"command": "git merge --squash feature/req-039",
 	})
 	code, stdout, stderr := runHook(t, root, "PreToolUse", body)
-	if code != 0 {
-		t.Fatalf("CT-039-06 must exit 2 on squash: code=%d stderr=%s stdout=%s", code, stderr, stdout)
-	}
-	if !strings.Contains(stdout, "squash_merge") {
-		t.Fatalf("CT-039-06 must carry squash_merge reason: %s", stdout)
-	}
+	after := req039fixtures.ReadState(t, root)
+	assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
 }
 
-// TestCT03907_OrdinaryGitOpsAllowSystem covers CT-039-07 at L4.
-func TestCT03907_OrdinaryGitOpsAllowSystem(t *testing.T) {
+// TestCT03907_OrdinaryGitOpsIsObservedSystem covers CT-039-07 at L4.
+func TestCT03907_OrdinaryGitOpsIsObservedSystem(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "design", 1)
 	writeSystemState(t, root, state)
 
-	// RC-06 (S10-3): the protected-commands table is now wired into the
-	// PreToolUse enforce path, so `git push origin develop` (protected
-	// release-branch row) and `npm publish` (HS-005) are hard-denied by
-	// design. The allow surface here is ordinary non-release git work.
+	// PreToolUse observes graph progress for both routine and release-shaped
+	// commands; it does not classify commands or deny individual tools.
 	for _, command := range []string{
 		"git merge feature/req-039",
+		"git push origin develop",
 		"git status --porcelain",
-		"git log --oneline -5",
+		"npm publish",
 	} {
+		before := req039fixtures.ReadState(t, root)
 		body := req039fixtures.PreToolUseBody("session-ct-039-07-sys", "Bash", map[string]any{
 			"command": command,
 		})
 		code, stdout, stderr := runHook(t, root, "PreToolUse", body)
-		if code == 2 {
-			t.Fatalf("CT-039-07 must not block %q: stderr=%s stdout=%s", command, stderr, stdout)
-		}
+		after := req039fixtures.ReadState(t, root)
+		assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
 	}
 }
 
@@ -180,15 +178,16 @@ func TestCT03920_BuilderCompletionDurableRefSystem(t *testing.T) {
 	}
 }
 
-// TestAC002_NotReadyQualityGateDoesNotBlockToolSystem is the AC-002 twin of CT-039-02.
-func TestAC002_NotReadyQualityGateDoesNotBlockToolSystem(t *testing.T) {
+// TestAC002_NotReadyQualityGateIsObservedSystem is the AC-002 twin of CT-039-02.
+func TestAC002_NotReadyQualityGateIsObservedSystem(t *testing.T) {
 	TestCT03902_ContractsMissingCoverageExposesNotReadySystem(t)
 }
 
-// TestAC004_OnlySquashMergeBlocksGitOpsSystem covers AC-004 via Hook CLI twins of CT-06/07.
-func TestAC004_OnlySquashMergeBlocksGitOpsSystem(t *testing.T) {
-	TestCT03906_GitSquashMergeBlocksSystem(t)
-	TestCT03907_OrdinaryGitOpsAllowSystem(t)
+// TestAC004_PreToolUseObservesGitOpsWithoutDenySystem covers the listener
+// boundary through Hook CLI twins of CT-06/07.
+func TestAC004_PreToolUseObservesGitOpsWithoutDenySystem(t *testing.T) {
+	TestCT03906_GitSquashMergeIsObservedSystem(t)
+	TestCT03907_OrdinaryGitOpsIsObservedSystem(t)
 }
 
 // TestAC005_MilestonePersistsQualityGateSystem covers AC-005 at L4.
@@ -214,31 +213,30 @@ func TestAC005_MilestonePersistsQualityGateSystem(t *testing.T) {
 	}
 }
 
-// TestHOOK_PostCompact_D011SessionStartChainSystem elevates the honest D-011
-// PreCompact→SessionStart fallback to contract-complete L4 (no invent native PostCompact).
-func TestHOOK_PostCompact_D011SessionStartChainSystem(t *testing.T) {
+// The public recovery chain reads current durable facts; PreCompact does
+// not manufacture another checkpoint or require a matching cached sentence.
+func TestHOOK_PostCompact_D011SessionStartUsesOriginalFactsSystem(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "design", 4)
+	state["milestone"].(map[string]any)["objective"] = "STALE-D011-CACHED-OBJECTIVE"
 	writeSystemState(t, root, state)
-
-	code, stdout, stderr := runHook(t, root, "PreCompact",
-		`{"hook_event_name":"PreCompact","session_id":"session-d011"}`)
+	before := readSystemRuntimePair(t, root)
+	code, stdout, stderr := runHook(t, root, "PreCompact", `{"hook_event_name":"PreCompact","session_id":"session-d011"}`)
+	if code != 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("PreCompact did not remain silent: %d %s %s", code, stdout, stderr)
+	}
+	assertSystemRuntimePairUnchanged(t, before)
+	code, stdout, stderr = runHook(t, root, "SessionStart", `{"hook_event_name":"SessionStart","session_id":"session-d011-recover"}`)
 	if code != 0 {
-		t.Fatalf("PreCompact failed: code=%d stderr=%s", code, stderr)
+		t.Fatalf("SessionStart recovery failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
-	after := req039fixtures.ReadState(t, root)
-	ms, _ := after["milestone"].(map[string]any)
-	obj, _ := ms["objective"].(string)
-	if obj == "" {
-		t.Fatalf("PreCompact must persist objective: %v stdout=%s", ms, stdout)
+	for _, want := range []string{"S2 planning.design", "docs/control/agent-protocol.md#s2"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("current recovery lost %q: %s", want, stdout)
+		}
 	}
-
-	code, stdout, stderr = runHook(t, root, "SessionStart",
-		`{"hook_event_name":"SessionStart","session_id":"session-d011-recover"}`)
-	if code != 0 {
-		t.Fatalf("SessionStart fallback failed: code=%d stderr=%s", code, stderr)
+	if strings.Contains(stdout, "STALE-D011-CACHED-OBJECTIVE") {
+		t.Fatalf("stale cache became current authority: %s", stdout)
 	}
-	if !strings.Contains(stdout, obj) {
-		t.Fatalf("D-011 SessionStart must surface PreCompact objective %q, got %s", obj, stdout)
-	}
+	req039fixtures.AssertLifecycle(t, req039fixtures.ReadState(t, root), "planning", "design")
 }

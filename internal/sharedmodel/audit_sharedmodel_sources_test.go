@@ -22,6 +22,7 @@ import (
 // model until its ref moves.
 func TestAuditSharedModelCLIAndPinnedGitTree(t *testing.T) {
 	root := auditPilot(t)
+	auditDeclareContractMembers(t, root)
 	if code, out, errOut := auditCLI(t, root); code != 0 {
 		t.Fatalf("pilot contracts check code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
@@ -122,6 +123,7 @@ func TestAuditSharedModelRejectsNetworkSchemaReference(t *testing.T) {
 // symlink, even if the target bytes happen to be valid.
 func TestAuditSharedModelFormalGitRejectsModelSymlink(t *testing.T) {
 	root := auditPilot(t)
+	auditDeclareContractMembers(t, root)
 	auditGit(t, root, "init", "-qb", "development")
 	auditGit(t, root, "config", "user.name", "shared-model-audit")
 	auditGit(t, root, "config", "user.email", "shared-model-audit@example.invalid")
@@ -380,4 +382,17 @@ func auditCLI(t *testing.T, root string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"contracts", "check", "--root", root, "--json"}, strings.NewReader(""), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
+}
+
+// These source-view tests need a declared batch, not only a model table.
+// The actual pilot consumers are locked and unversioned; this helper creates
+// no Runtime registration or approval and does not claim a complete S3 run.
+func auditDeclareContractMembers(t *testing.T, root string) {
+	t.Helper()
+	path := "docs/dev/contracts/CONTRACTS-001.md"
+	data, err := os.ReadFile(filepath.Join(root, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditPut(t, root, path, string(data)+"\n## 合同清单\n| 合同ID | 类型 | 负责人 | 状态 | 版本 | 联调点 |\n|---|---|---|---|---|---|\n| FE-001 | frontend | fixture | locked | unversioned | SYNC-001 |\n| BE-001 | backend | fixture | locked | unversioned | SYNC-001 |\n| SYNC-001 | shared | fixture | locked | unversioned | N/A |\n")
 }

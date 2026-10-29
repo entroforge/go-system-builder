@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "check-profile.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "version",
+    "check_index",
+    "command",
+    "location",
+    "timeout_seconds",
+    "environment_policy",
+    "environment",
+    "dependencies",
+    "fixtures",
+    "input_closure",
+    "side_effects",
+    "reuse_policy"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "check_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "location": {
+      "enum": [
+        "main",
+        "worker"
+      ]
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 300
+    },
+    "environment_policy": {
+      "enum": [
+        "inherited",
+        "declared_only"
+      ]
+    },
+    "environment": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/file_ref"
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/file_ref"
+      }
+    },
+    "input_closure": {
+      "const": "whole_tree"
+    },
+    "side_effects": {
+      "enum": [
+        "unknown",
+        "none",
+        "disposable"
+      ]
+    },
+    "reuse_policy": {
+      "enum": [
+        "never",
+        "same_input_same_responsibility"
+      ]
+    },
+    "reuse_mode": {
+      "enum": [
+        "shadow",
+        "enabled"
+      ]
+    }
+  },
+  "$defs": {
+    "file_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

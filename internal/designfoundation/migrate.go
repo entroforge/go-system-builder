@@ -8,7 +8,7 @@ import (
 
 // MigratePlan is the conservative planner for v1 -> contract-v1.
 // It never auto-chooses investment tier, infers semantic role from color,
-// or promotes screenshots to Proof (L5 §10).
+// or promotes screenshots to Proof. This planner never writes source files.
 type MigratePlan struct {
 	Root     string        `json:"root"`
 	Target   string        `json:"target"`
@@ -47,6 +47,7 @@ func PlanMigrate(root, target string, dryRun bool) (*MigratePlan, error) {
 		Target: target,
 		DryRun: dryRun,
 		Mode:   idx.Mode,
+		Notes:  []string{"只读迁移诊断：不修改文件；--write 和 --dry-run=false 均 unsupported。按原文含义与列出的模板逐表映射，不生成 ID 或债务占位。"},
 	}
 	if idx.Mode == "contract-v1" {
 		plan.Notes = append(plan.Notes, "already on contract-v1; nothing to migrate")
@@ -58,11 +59,11 @@ func PlanMigrate(root, target string, dryRun bool) (*MigratePlan, error) {
 	}
 
 	// Kernel
-	plan.Files = append(plan.Files, planFile(root, KernelRel, kernelMarkers, "保留原文并在首表前插入 <!-- foundation-contract:v1 <marker> -->；unknown 列保留，未知 Binding 填 human-review 或 DEBT 占位"))
+	plan.Files = append(plan.Files, planFile(root, KernelRel, kernelMarkers, "对照 docs/design/DESIGN-template.md 的对应标记表；保留原文、已有 ID 和未知列，由原作者确认含义，不自动补 Binding、Proof 或 DEBT。"))
 	// Grammar
-	plan.Files = append(plan.Files, planFile(root, GrammarRel, grammarMarkers, "保留原文；coverage 每维显式 active/inherited/debt/N/A，未迁移维填 debt"))
+	plan.Files = append(plan.Files, planFile(root, GrammarRel, grammarMarkers, "对照 docs/design/design-language-template.md 的维度、语法、绑定表；保留原文，适用状态按真实依据判断，不把缺失维度自动标成 debt。"))
 	// Evidence field
-	plan.Files = append(plan.Files, planFile(root, "docs/design/research/evidence-field.md", evidenceMarkers, "保留 F/I/R/U 标记；每表前插入对应 evidence-* marker"))
+	plan.Files = append(plan.Files, planFile(root, "docs/design/research/evidence-field.md", evidenceMarkers, "对照 docs/design/research/evidence-field-template.md 的 evidence-* 表；保留原证据及 F/I/R/U，不为迁移编造新的证据。"))
 
 	surfaceDir := filepath.Join(root, "docs", "design", "surface-profiles")
 	if entries, err := os.ReadDir(surfaceDir); err == nil {
@@ -75,7 +76,7 @@ func PlanMigrate(root, target string, dryRun bool) (*MigratePlan, error) {
 				continue
 			}
 			rel := filepath.Join("docs", "design", "surface-profiles", e.Name())
-			plan.Files = append(plan.Files, planFile(root, rel, surfaceMarkers, "继承与变体表 marker 化；未列关系自动继承"))
+			plan.Files = append(plan.Files, planFile(root, rel, surfaceMarkers, "对照 docs/design/surface-profiles/surface-profile-template.md 的继承与变体表，按实际声明映射；迁移器不补关系。"))
 		}
 	}
 	derivDir := filepath.Join(root, "docs", "design", "derivation")
@@ -89,7 +90,7 @@ func PlanMigrate(root, target string, dryRun bool) (*MigratePlan, error) {
 				continue
 			}
 			rel := filepath.Join("docs", "design", "derivation", e.Name())
-			plan.Files = append(plan.Files, planFile(root, rel, derivationMarkers, "Active/Must-not/Bindings/Proof marker 化；LOCAL-* 不进全局 Index"))
+			plan.Files = append(plan.Files, planFile(root, rel, derivationMarkers, "对照 docs/design/derivation/DERIVATION-template.md 的 Active/Must-not/Bindings/Proof 表；保留现有局部与全局归属，不生成新的 ID。"))
 		}
 	}
 
@@ -97,14 +98,19 @@ func PlanMigrate(root, target string, dryRun bool) (*MigratePlan, error) {
 	for i := range plan.Files {
 		fm := &plan.Files[i]
 		if len(fm.MissingMarkers) > 0 {
-			fm.Unresolvable = append(fm.Unresolvable, "Binding/Proof 需人映射：static Checkability 需 DCHK 或内建检查覆盖；human-review 仅允许 human")
-			fm.ExpectedChanges = append(fm.ExpectedChanges, "marker 插入 + debt 占位 + 表头补齐，不自动选投资档位、推断语义色或晋升截图为 Proof")
-			fm.CandidateIDs = append(fm.CandidateIDs, "candidate IDs: LAW-01.. / GR-01.. / ROLE-* / PAT-* / SUR-* / PROOF-* / DEBT-* / EX-* (数字型至少两位)")
+			fm.Unresolvable = append(fm.Unresolvable, "原作者按实际含义映射 Binding/Proof；static 检查须有实际 DCHK 或原内建检查支持，专业判断不能因加标记变成机器证明。")
+			for _, marker := range fm.MissingMarkers {
+				var columns []string
+				for _, aliases := range requiredHeaders(marker) {
+					columns = append(columns, strings.Join(aliases, "/"))
+				}
+				fm.ExpectedChanges = append(fm.ExpectedChanges, "待作者映射 "+fm.Path+" 的 <!-- foundation-contract:v1 "+marker+" --> 对应表；现有解析器所需列："+strings.Join(columns, ", ")+"。仅诊断，未插入标记或修改表格。")
+			}
 		}
 	}
 	plan.Notes = append(plan.Notes,
-		"--dry-run 默认不写盘；--write 仅插入 marker、保留原文并生成 debt 占位",
-		"不得自动选择投资档位、把颜色推断为 semantic role、或把旧截图晋升为 Proof；写盘后仍需人完成语义映射并通过 check",
+		"不自动选择投资档位、把颜色推断为 semantic role，或把旧截图晋升为 Proof；缺失文件先判断实际适用性，不为齐表自动创建。",
+		"完成实际映射后可运行原 design-foundation check 查看结构诊断；检查绿色不代替设计语义、真实确认或产品证明。",
 	)
 	plan.Warnings = findings
 	return plan, nil
@@ -139,25 +145,4 @@ func planFile(root, rel string, want []string, preserveNote string) FileMigrate 
 	}
 	fm.MissingMarkers = missing
 	return fm
-}
-
-// WriteMigrate is intentionally conservative: with dryRun=true it does nothing.
-// With dryRun=false it inserts markers for files that are clearly legacy tables
-// without guessing semantics. Callers must still run check after write.
-func WriteMigrate(root string, plan *MigratePlan) ([]string, error) {
-	if plan.DryRun {
-		return nil, nil
-	}
-	// Minimal writer: for now only report that --write would insert markers.
-	// Actual insertion is out of scope for I2 dry-run DoD; we keep it safe and
-	// require human mapping for Binding/Proof.
-	var written []string
-	for _, f := range plan.Files {
-		if !f.Exists || len(f.MissingMarkers) == 0 {
-			continue
-		}
-		// Do not auto-write without explicit human mapping; surface as note.
-		written = append(written, f.Path+": needs human mapping for "+strings.Join(f.MissingMarkers, ","))
-	}
-	return written, nil
 }

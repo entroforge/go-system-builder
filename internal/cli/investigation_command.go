@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -64,8 +65,9 @@ func runRuntimeInvestigation(args []string, stdout, stderr io.Writer) int {
 // was only a free-form trace field: the Case could claim that a question had
 // an owner while Runtime had no Team, Task, Agent, or activation envelope for
 // that owner. The command deliberately reuses register-workgroup so the
-// normal CAS, manifest validation, task creation, and L4 activation path stay
-// authoritative.
+// original CAS, manifest validation and professional responsibility remain
+// authoritative. Claude Code owns native launch/resume; explicit legacy
+// authorization stays with its already registered execution contract.
 func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("runtime investigation dispatch", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -238,6 +240,9 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 		"validation":         map[string]any{"result": "pass", "missing_responsibilities": []any{}, "unresolved_conflicts": []any{}, "warnings": []any{}, "validated_at": time.Now().UTC().Format(time.RFC3339Nano)},
 	}
 	nextAction := fmt.Sprintf("send one generic PLAN_REPORT while still running, then submit `runtime investigation hypothesis result --case-id %s --hypothesis-id %s --assignment-id %s --method <...> --observed <...> --result <supported|refuted|inconclusive> --explains <finding> --source-boundary <ref> --evidence <ref> --counterfactual <...>`", *caseID, *hypothesisID, resolvedAssignmentID)
+	if runtime.PacketEnabled(snapshot.State) {
+		nextAction = "The original preparation supplies the exact registered S8 view/answer paths. Main carries those references into Claude Code native Agent; the Investigator reads the actual sources, saves only the professional answer and returns its exact reference. SubagentStop invokes the original Case consumer; ordinary tools do not activate or receive the work. Main or the owner may inspect the original receipt with `runtime stage-answer receipt --agent " + strings.TrimSpace(*agentID) + " --packet <packet-id>`."
+	}
 	task := map[string]any{
 		"task_id": taskID, "case_id": strings.TrimSpace(*caseID), "hypothesis_id": strings.TrimSpace(*hypothesisID), "assignment_id": resolvedAssignmentID,
 		"state": "reviewed", "objective": stringValue(hypothesis["discriminator"]),
@@ -544,7 +549,8 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 	detectionGapFile := flags.String("detection-gap-file", "", "s9_repair: JSON file with the detection gap")
 	canonicalCaseID := flags.String("canonical-case-id", "", "duplicate: the canonical Case id")
 	reassessmentEvidence := flags.String("reassessment-evidence", "", "S9 targeted-failure artifact path(s), comma-separated; required when reopening an approved Case")
-	noCompetingHypothesis := flags.String("no-competing-hypothesis", "", "explicit declaration that no competing hypothesis was credible; substitutes for a refuted result in causal closure (S8-4)")
+	competingAssessmentFile := flags.String("competing-hypothesis-assessment-file", "", "s9_repair: JSON file path with {hypothesis_ids, conclusion}; IDs must be current accepted supported/refuted discriminator results (never inconclusive or historical-only); mutually exclusive with --no-competing-hypothesis; use when credible alternatives were handled by accepted discriminators")
+	noCompetingHypothesis := flags.String("no-competing-hypothesis", "", "explicit declaration that no competing hypothesis was credible; substitutes for a refuted result in causal closure (S8-4); use only for actual absence, never when credible alternatives were handled by competing-hypothesis-assessment")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
 	if wantsHelp(args) {
 		flags.SetOutput(stdout)
@@ -600,6 +606,11 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatFailure("runtime investigation route", err))
 		return 1
 	}
+	competingAssessment, err := loadObject("competing-hypothesis-assessment-file", *competingAssessmentFile)
+	if err != nil {
+		fmt.Fprintln(stderr, formatFailure("runtime investigation route", err))
+		return 1
+	}
 	reassessmentRefs, err := loadCausalReassessmentEvidence(*root, *reassessmentEvidence)
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime investigation route", err))
@@ -619,6 +630,7 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 		CanonicalCaseID:                strings.TrimSpace(*canonicalCaseID),
 		CausalReassessmentEvidenceRefs: reassessmentRefs,
 		NoCompetingHypothesis:          strings.TrimSpace(*noCompetingHypothesis),
+		CompetingHypothesisAssessment:  competingAssessment,
 		OccurredAt:                     occurredAt,
 	})
 	if err != nil {
@@ -657,15 +669,15 @@ func investigationRouteNextAction(route string, pointer map[string]any) string {
 	switch route {
 	case "s9_repair":
 		caseID := stringValue(pointer["case_id"])
-		return fmt.Sprintf("draft the RepairContract for Case %s, use a matching human_decision, or (only with an explicit current bounded-repair grant) a repair_contract_review plus --delegation-evidence-id; then run `runtime investigation contract approve --case-id %s --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>`", caseID, caseID)
+		return fmt.Sprintf("draft the RepairContract for Case %s in the original supplied professional application, then save to fix its final review draft; Main/system prepares the original human or bounded Driver decision application at its exact path. Record only the actual decision and professional judgments there; the original Writer supplies identity, approval hash and evidence registration. Missing application preparation belongs to Main/system, not author-created metadata", caseID)
 	case "investigate_more":
-		return "register a new falsifiable hypothesis or submit its result before routing again"
+		return "append the actual new falsifiable question to the supplied original hypotheses application, or receive its genuine professional result before routing again; original registration is supplied internally"
 	case "duplicate":
 		return fmt.Sprintf("inspect canonical Case %s at %s and continue that Case; do not investigate this duplicate", stringValue(pointer["canonical_case_id"]), stringValue(pointer["canonical_case_ref"]))
 	case "s2_spec_rework":
-		return "consume the route with `runtime investigation consume --case-id <case>` to return to planning.design"
+		return "save the current original route judgment; the original consumer returns to planning.design after its actual conditions hold, without a separate manual consume"
 	case "s7_no_change":
-		return "consume the route with `runtime investigation consume --case-id <case>` to open a fresh S7 round"
+		return "save the current original no-change route judgment; the original consumer opens a fresh complete S7 round after its actual conditions hold, without a separate manual consume"
 	case "human_req_change":
 		return "pause at the human boundary with `runtime pause --reason <reason> --approved-by <human>`, then run `req amend`"
 	default:
@@ -1004,7 +1016,7 @@ func writeInvestigationCaseTemplate(root string, pointer map[string]any, target 
 		"root_invariant_assertions":  []string{"TODO(root-1: ...)"},
 		"detection_gap_assertions":   []string{"TODO(gap-1: ...)"},
 		"stop_escalation_conditions": []string{"TODO(when the repair must stop and escalate)"},
-		"next_verb":                  fmt.Sprintf("runtime investigation contract approve --case-id %s --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>", caseID),
+		"next_verb":                  "save the supplied original professional Contract application, then use its system-prepared human or bounded Driver decision application; Main/system owns missing preparation and machine binding",
 	}
 
 	document := map[string]any{
@@ -1093,8 +1105,15 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, formatFailure("runtime investigation contract approve", err))
 		return 1
 	}
+	prepared, prepareErr := prepareRepairEntry(resolveRootPath(*root, "."), resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), snapshot.State)
+	if prepareErr != nil {
+		fmt.Fprintln(stderr, "S8 Contract approval recorded; S9 entry preparation: "+prepareErr.Error())
+		return 1
+	}
+	snapshot.State = prepared
+	snapshot.Revision = integerValue(prepared["revision"])
 	pointer := investigationPointer(snapshot.State)
-	fmt.Fprintf(stderr, "repair contract approve: %s is approved for Case %s; next: S9 consume the approved Contract; do not create a BUG as authority\n", pointer["repair_contract_ref"], pointer["case_id"])
+	fmt.Fprintf(stderr, "repair contract approve: %s is approved for Case %s; original S9 entry prepared. Main continues: %s\n", pointer["repair_contract_ref"], pointer["case_id"], repairNextAction(snapshot.State, stringValue(mapFieldCLI(snapshot.State, "lifecycle")["phase"])))
 	return encodeJSON(stdout, map[string]any{
 		"case_id":                pointer["case_id"],
 		"case_path":              pointer["path"],
@@ -1143,7 +1162,7 @@ func runRuntimeInvestigationStatus(args []string, stdout, stderr io.Writer) int 
 		return encodeJSON(stdout, map[string]any{
 			"status":   "not_ingested",
 			"revision": snapshot.Revision,
-			"next":     "runtime investigation ingest --root <root> --grouping-rationale <reason>",
+			"next":     "Main/system prepares the original S8 intake application from the sealed batch or actual human report; fill grouping_rationale there and save without authoring source metadata",
 		})
 	}
 	if requested := strings.TrimSpace(*caseID); requested != "" && requested != stringValue(pointer["case_id"]) {
@@ -1171,7 +1190,12 @@ func runRuntimeInvestigationStatus(args []string, stdout, stderr io.Writer) int 
 	switch stringValue(pointer["status"]) {
 	case "contract_approved":
 		if repairRecovery == nil {
-			next = fmt.Sprintf("open S9 with `runtime repair session open --root %s --session-id <session> --created-by <agent>`; it consumes approved RepairContract (repair_contract_ref=%s)", *root, stringValue(pointer["repair_contract_ref"]))
+			repair := mapFieldCLI(review, "repair")
+			if stringValue(repair["session_id"]) != "" && repair["case_id"] == pointer["case_id"] {
+				next = repairNextAction(snapshot.State, stringValue(mapFieldCLI(snapshot.State, "lifecycle")["phase"]))
+			} else {
+				next = fmt.Sprintf("Main must complete the original S9 entry preparation for approved Case %s and its accepted RepairContract %s; preserve the recorded approval.", pointer["case_id"], pointer["repair_contract_ref"])
+			}
 		}
 	case "blocked":
 		next = "resolve the Case blocker, then re-read the Case board before continuing"
@@ -1339,16 +1363,103 @@ func investigationStatusBoard(root string, pointer map[string]any, state map[str
 			pendingHypotheses = append(pendingHypotheses, id)
 		}
 	}
+	var hypothesisResultPackets []any
+	packetMode := state != nil && runtime.PacketEnabled(state)
+	issuedHypothesisResult := false
+	unissuedDispatchedHypothesis := false
+	packetProjectionProblem := false
+	if packetMode {
+		packets, packetErr := runtime.CurrentHypothesisResultPackets(root, state, "")
+		if packetErr != nil {
+			return nil, fmt.Errorf("read current S8 issued questions: %w", packetErr)
+		}
+		for _, packet := range packets {
+			if packet.Binding.CaseID != stringValue(document["case_id"]) {
+				continue
+			}
+			row := map[string]any{
+				"packet_id":      packet.ID,
+				"owner_agent_id": packet.Binding.OwnerAgentID,
+				"assignment_id":  packet.Binding.AssignmentID,
+				"hypothesis_id":  packet.Binding.HypothesisID,
+				"status":         "issued",
+			}
+			receipt, accepted, receiptErr := runtime.VerifiedHypothesisResultReceipt(root, state, packet.ID, packet.Binding.OwnerAgentID)
+			if receiptErr != nil {
+				row["status"] = "invalid"
+				row["source_error"] = receiptErr.Error()
+				packetProjectionProblem = true
+			} else if accepted && receipt.PacketID == packet.ID && receipt.OwnerAgentID == packet.Binding.OwnerAgentID {
+				row["status"] = "accepted"
+			} else {
+				issuedHypothesisResult = true
+			}
+			viewPath, answerPath, pathsErr := hypothesisResultLifecyclePaths(context.Background(), root, state, packet, "", "")
+			if pathsErr != nil {
+				row["source_error"] = pathsErr.Error()
+				packetProjectionProblem = true
+			} else {
+				row["view_path"] = viewPath
+				row["answer_path"] = answerPath
+			}
+			row["receipt_command"] = "runtime stage-answer receipt --agent " + packet.Binding.OwnerAgentID + " --packet " + packet.ID
+			hypothesisResultPackets = append(hypothesisResultPackets, row)
+		}
+		for _, hypothesis := range hypotheses {
+			id := stringValue(hypothesis["hypothesis_id"])
+			if id == "" {
+				continue
+			}
+			if _, accepted := resultByHypothesis[id]; accepted {
+				continue
+			}
+			if investigationAssignmentDispatched(root, state, stringValue(hypothesis["assignment_id"])) {
+				hasPacket := false
+				for _, packet := range packets {
+					if packet.Binding.CaseID == stringValue(document["case_id"]) && packet.Binding.HypothesisID == id {
+						hasPacket = true
+						break
+					}
+				}
+				if !hasPacket {
+					unissuedDispatchedHypothesis = true
+				}
+			}
+		}
+	}
 	nextAction := "register one falsifiable hypothesis with `runtime investigation hypothesis register --case-id <case> --id <hypothesis> --assignment-id <assignment> --statement <...> --invariant <...> --discriminator <...> --support <...> --refute <...> --source-finding <finding> --evidence <current-evidence-id-or-test://repo-relative-path>`"
 	if len(pendingHypotheses) > 0 {
-		nextAction = "dispatch it with `runtime investigation dispatch --case-id <case> --hypothesis-id <hypothesis> --agent-id <agent>`, then submit runtime investigation hypothesis result"
+		nextAction = "dispatch it with `runtime investigation dispatch --case-id <case> --hypothesis-id <hypothesis> --agent-id <agent>`"
 	} else if len(awaitingResultHypotheses) > 0 {
 		nextAction = "submit it with `runtime investigation hypothesis result --case-id <case> --hypothesis-id <hypothesis> --assignment-id <assignment> --method <...> --observed <...> --result <supported|refuted|inconclusive> --explains <finding> --source-boundary <ref> --evidence <ref> --counterfactual <...>`"
 	} else if len(unexplained) == 0 && len(hypotheses) > 0 {
 		nextAction = "record the Case disposition with `runtime investigation route --case-id <case> --route <s9_repair|investigate_more|duplicate|s2_spec_rework|human_req_change|s7_no_change> --reason <...>`; for s9_repair also provide the root-cause and three evidence files"
 	}
-	if route := stringValue(document["route"]); route != "" {
+	if packetMode {
+		switch {
+		case packetProjectionProblem:
+			nextAction = "Main must inspect the original S8 packet, Case and registered execution source before continuing; do not edit or issue a replacement answer by hand"
+		case unissuedDispatchedHypothesis:
+			nextAction = "The Hook listener prepares the dispatched Investigator questionnaire and supplies its exact paths; queued Assignments wait for dispatch"
+		case issuedHypothesisResult:
+			nextAction = "Main passes the exact view_path and answer_path from hypothesis_result_packets into native Agent; the Investigator reads actual sources, saves the professional answer and returns its exact reference. SubagentStop invokes the original Case consumer; ordinary saves do not receive native results. Already registered frozen executions keep their original source/save consumer. Inspect the original receipt with its receipt_command"
+		}
+	}
+	if route := stringValue(document["route"]); route != "" && !issuedHypothesisResult && !unissuedDispatchedHypothesis && !packetProjectionProblem {
 		nextAction = investigationRouteNextAction(route, pointer)
+	}
+	// Aggregate historical Cases have no active Runtime configuration; do not
+	// project a guessed budget for them.
+	var reentryBudget *investigation.InvestigationBudgetStatus
+	if state != nil {
+		budget, err := investigation.InvestigationReentryBudget(state, document)
+		if err != nil {
+			return nil, err
+		}
+		reentryBudget = &budget
+		if budget.Exhausted && stringValue(document["route"]) == "investigate_more" {
+			nextAction += "; consecutive investigate_more route-registration budget is exhausted. Continue actual investigation in this Case through the supplied questions and original result consumer; submit a disposition only when evidence supports it. Do not resubmit investigate_more or invent another disposition to bypass the limit"
+		}
 	}
 	// RC-18 S8-H3: surface the baseline-drift warning on the status board so
 	// the investigator sees the stale-baseline fact at read time, not only in
@@ -1372,8 +1483,10 @@ func investigationStatusBoard(root string, pointer map[string]any, state map[str
 			"completed":        completedHypotheses,
 			"dispatch_unknown": unknownDispatchHypotheses,
 		},
-		"ready_for_contract": len(unexplained) == 0 && stringValue(document["route"]) == "s9_repair",
-		"next_action":        nextAction,
+		"investigation_reentry_budget": reentryBudget,
+		"hypothesis_result_packets":    hypothesisResultPackets,
+		"ready_for_contract":           len(unexplained) == 0 && stringValue(document["route"]) == "s9_repair",
+		"next_action":                  nextAction,
 	}, nil
 }
 

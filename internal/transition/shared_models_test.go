@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/sharedmodel"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func sharedFixture(t *testing.T) (string, map[string]any, *ActionContext) {
@@ -39,38 +41,38 @@ func sharedFixture(t *testing.T) (string, map[string]any, *ActionContext) {
 }
 func TestSharedDesignRegistrationAndFreeze(t *testing.T) {
 	root, state, ctx := sharedFixture(t)
-	n, err := sharedModelDocuments(state, ctx, true)
+	n, err := sharedModelDocuments(state, ctx, true, nil)
 	if err != nil || n != 4 {
 		t.Fatalf("registered %d: %v", n, err)
 	}
-	if _, err = sharedModelDocuments(state, ctx, false); err != nil {
+	if _, err = sharedModelDocuments(state, ctx, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "docs/architecture/data-model/request.json")
 	if err = os.WriteFile(path, []byte(`{"order_id":"changed-but-still-valid"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = sharedModelDocuments(state, ctx, false); err == nil || !strings.Contains(err.Error(), "changed since") {
+	if _, err = sharedModelDocuments(state, ctx, false, nil); err == nil || !strings.Contains(err.Error(), "changed since") {
 		t.Fatalf("drift accepted: %v", err)
 	}
 	// Legitimate replanning re-registers; freezing does not launder the old hash.
-	if _, err = sharedModelDocuments(state, ctx, true); err != nil {
+	if _, err = sharedModelDocuments(state, ctx, true, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = sharedModelDocuments(state, ctx, false); err != nil {
+	if _, err = sharedModelDocuments(state, ctx, false, nil); err != nil {
 		t.Fatal(err)
 	}
 }
 func TestSharedBaselineCannotDisappearAtFreeze(t *testing.T) {
 	root, state, ctx := sharedFixture(t)
-	if _, err := sharedModelDocuments(state, ctx, true); err != nil {
+	if _, err := sharedModelDocuments(state, ctx, true, nil); err != nil {
 		t.Fatal(err)
 	}
 	p := filepath.Join(root, "docs/dev/contracts/CONTRACTS-001.md")
 	if err := os.WriteFile(p, []byte("> Shared model policy: none\n> Shared model reason: UI-only\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sharedModelDocuments(state, ctx, false); err == nil {
+	if _, err := sharedModelDocuments(state, ctx, false, nil); err == nil {
 		t.Fatal("removed baseline accepted")
 	}
 }
@@ -88,5 +90,38 @@ func TestS3NaturalGuardRejectsSharedModelDrift(t *testing.T) {
 	}
 	if err := guardContractsCheckedFn(state, nil); err == nil || !strings.Contains(err.Error(), "must reference") {
 		t.Fatalf("natural guard accepted drift: %v", err)
+	}
+}
+
+func TestS3SharedRegistrationUsesAcceptedMembership(t *testing.T) {
+	for _, change := range []string{"unchanged", "unaccepted member", "missing member"} {
+		t.Run(change, func(t *testing.T) {
+			root, state, ctx := sharedFixture(t)
+			checked := sharedmodel.Check(root, ctx.Request.Files)
+			if len(checked.Problems) != 0 || len(checked.Files) != 4 {
+				t.Fatalf("model fixture: %+v", checked)
+			}
+			accepted := &acceptedS3ContractBatch{subjects: map[string]workpacket.Subject{}, sharedOutputs: map[string]bool{}}
+			for path, data := range checked.Files {
+				accepted.subjects[path] = workpacket.Subject{Path: path, SHA256: SHA256(data)}
+				accepted.sharedOutputs[path] = true
+			}
+			// A frozen upstream JSON is not automatically a shared model.
+			accepted.subjects["docs/architecture/unrelated.json"] = workpacket.Subject{Path: "docs/architecture/unrelated.json", SHA256: SHA256([]byte("{}"))}
+			switch change {
+			case "unaccepted member":
+				delete(accepted.subjects, "docs/architecture/data-model/request.json")
+			case "missing member":
+				accepted.sharedOutputs["docs/architecture/data-model/removed.json"] = true
+			}
+			count, err := sharedModelDocuments(state, ctx, true, accepted)
+			if change == "unchanged" {
+				if err != nil || count != 4 || len(sharedModelPaths(state)) != 4 {
+					t.Fatalf("exact accepted models: count=%d err=%v documents=%v", count, err, state["documents"])
+				}
+			} else if err == nil || len(state["documents"].([]any)) != 0 {
+				t.Fatalf("model set drift partially registered: %v %v", err, state["documents"])
+			}
+		})
 	}
 }

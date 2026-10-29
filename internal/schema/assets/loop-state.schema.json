@@ -710,7 +710,6 @@
                 "revision",
                 "status",
                 "source_finding_ids",
-                "observation_batch_id",
                 "updated_at"
               ],
               "properties": {
@@ -781,7 +780,6 @@
                 },
                 "source_finding_ids": {
                   "type": "array",
-                  "minItems": 1,
                   "uniqueItems": true,
                   "items": {
                     "type": "string",
@@ -1220,6 +1218,12 @@
               "type": "integer",
               "minimum": 1,
               "default": 2
+            },
+            "max_investigation_reentries": {
+              "description": "Maximum consecutive S8 investigate_more route registrations; does not limit actual investigation work. Absent legacy values use the independent S8 default, never the S7 review-round limit.",
+              "type": "integer",
+              "minimum": 1,
+              "default": 5
             },
             "max_full_review_rounds": {
               "type": "integer",

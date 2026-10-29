@@ -542,27 +542,24 @@ func TestL4AuditLostReceiptDoesNotAcceptUnrelatedMerge(t *testing.T) {
 	runGitIn(t, root, "merge", "--no-ff", "-m", "unrelated merge", "audit-unrelated")
 	unrelatedMerge := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
 
-	code, out, errout := runTaskIntegrate(t, root, "assignment-ti")
-	if code != 0 {
-		t.Fatalf("integration after unrelated merge: code=%d out=%s err=%s", code, out, errout)
-	}
-	recoveredRaw, err := os.ReadFile(checkpointPath)
+	checkpointBefore, err := os.ReadFile(checkpointPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var recovered map[string]any
-	if err := json.Unmarshal(recoveredRaw, &recovered); err != nil {
-		t.Fatal(err)
+	before := readSystemRuntimePair(t, root)
+	code, out, errout := runTaskIntegrate(t, root, "assignment-ti")
+	if code == 0 || !strings.Contains(errout, "no exact two-parent merge") || !strings.Contains(errout, "Main must inspect original target history") {
+		t.Fatalf("unrelated merge became a receipt or triggered another merge: code=%d out=%s err=%s", code, out, errout)
 	}
-	if state, _ := recovered["state"].(string); state != integration.StateComplete {
-		t.Fatalf("actual worker delivery did not complete: state=%v out=%s err=%s", state, out, errout)
+	checkpointAfter, err := os.ReadFile(checkpointPath)
+	if err != nil || string(checkpointBefore) != string(checkpointAfter) {
+		t.Fatalf("uncertain recovery rewrote ready checkpoint: %v", err)
 	}
-	mergeCommit, _ := recovered["merge_commit"].(string)
-	if mergeCommit == unrelatedMerge {
-		t.Fatalf("unrelated merge was mistaken for worker receipt: %s", mergeCommit)
+	assertSystemRuntimePairUnchanged(t, before)
+	if got := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop")); got != unrelatedMerge {
+		t.Fatalf("uncertain recovery changed target HEAD: %s -> %s", unrelatedMerge, got)
 	}
-	parents := strings.Fields(runGitIn(t, root, "show", "-s", "--format=%P", mergeCommit))
-	if len(parents) != 2 || parents[1] != sourceHead {
-		t.Fatalf("worker merge parents=%v, want second parent %s", parents, sourceHead)
+	if got := strings.TrimSpace(runGitIn(t, assignment.WorktreePath, "rev-parse", "HEAD")); got != sourceHead {
+		t.Fatalf("uncertain recovery changed or removed Worker: %s -> %s", sourceHead, got)
 	}
 }

@@ -38,7 +38,7 @@ func BuildPlanForCursor(inventory Inventory, targetCursor, confidence string) (P
 	if targetCursor == "" || strings.ContainsAny(targetCursor, " \t\r\n/\\") {
 		return Plan{}, &ValidationError{Code: ErrInvalidInventory, Field: "target_cursor", Reason: "target cursor is invalid"}
 	}
-	if confidence != PlanConfidenceConservative && confidence != PlanConfidenceFormalReplay {
+	if confidence != PlanConfidenceConservative && confidence != PlanConfidenceFormalReplay && confidence != PlanConfidenceOriginalPair {
 		return Plan{}, &ValidationError{Code: ErrInvalidInventory, Field: "confidence", Reason: "recovery confidence is invalid"}
 	}
 	inputs := append([]InventoryInput(nil), inventory.Inputs...)
@@ -55,6 +55,9 @@ func BuildPlanForCursor(inventory Inventory, targetCursor, confidence string) (P
 	}
 	if confidence == PlanConfidenceFormalReplay {
 		plan.BaseMode = PlanBaseArtifactReconstruction
+	}
+	if confidence == PlanConfidenceOriginalPair {
+		plan.BaseMode = PlanBaseCheckpointRestoration
 	}
 	payload, err := json.Marshal(planHashInput{
 		SchemaVersion: plan.SchemaVersion,

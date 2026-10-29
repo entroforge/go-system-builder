@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/repair-plan-report-work-packet.schema.json",
+  "title": "S9 PlanReport WorkPacket",
+  "description": "Neutral pre-execution authoring projection. Original approved repair sources, assignment registration and Runtime remain authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["packet_id", "template_id", "template_sha256", "binding", "inputs", "report_id", "issuance_event_id", "view_path", "answer_path", "draft"],
+  "properties": {
+    "packet_id": {"type": "string", "pattern": "^packet-[a-f0-9]{64}$"},
+    "template_id": {"const": "s9-plan-report-v1"},
+    "template_sha256": {"$ref": "#/$defs/sha256"},
+    "binding": {"$ref": "#/$defs/binding"},
+    "inputs": {"$ref": "#/$defs/inputs"},
+    "report_id": {"type": "string", "pattern": "^repair-plan-report-[a-f0-9]{64}$"},
+    "issuance_event_id": {"type": "string", "pattern": "^evt-repair-plan-report-packet-packet-[a-f0-9]{64}$"},
+    "view_path": {"type": "string", "pattern": "^\\.claude/work-packets/[^\\\\:#]+\\.json$"},
+    "answer_path": {"type": "string", "pattern": "^\\.claude/submissions/[^\\\\:#]+/answer\\.json$"},
+    "draft": {"$ref": "stage-answer-s9-plan.schema.json"}
+  },
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_id", "baseline_generation", "review_round", "case_id", "case_ref", "case_sha256", "contract_id", "contract_ref", "contract_sha256", "session_id", "session_ref", "session_sha256", "plan_id", "plan_ref", "plan_sha256", "repair_assignment_id", "repair_assignment_sha256", "manifest_assignment_id", "manifest_assignment_sha256", "team_id", "task_id", "task_ref", "task_sha256", "manifest_ref", "manifest_sha256", "owner_agent_id"],
+      "properties": {
+        "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+        "baseline_generation": {"type": "integer", "minimum": 1},
+        "review_round": {"type": "integer", "minimum": 1},
+        "case_id": {"type": "string", "pattern": "^investigation-case-[A-Za-z0-9._-]+$"},
+        "case_ref": {"$ref": "#/$defs/relative_ref"},
+        "case_sha256": {"$ref": "#/$defs/sha256"},
+        "contract_id": {"type": "string", "pattern": "^repair-contract-[A-Za-z0-9._-]+$"},
+        "contract_ref": {"$ref": "#/$defs/relative_ref"},
+        "contract_sha256": {"$ref": "#/$defs/sha256"},
+        "session_id": {"type": "string", "pattern": "^repair-session-[A-Za-z0-9._-]+$"},
+        "session_ref": {"$ref": "#/$defs/relative_ref"},
+        "session_sha256": {"$ref": "#/$defs/sha256"},
+        "plan_id": {"type": "string", "pattern": "^repair-plan-[A-Za-z0-9._-]+$"},
+        "plan_ref": {"$ref": "#/$defs/relative_ref"},
+        "plan_sha256": {"$ref": "#/$defs/sha256"},
+        "repair_assignment_id": {"type": "string", "pattern": "^repair-assignment-[A-Za-z0-9._-]+$"},
+        "repair_assignment_sha256": {"$ref": "#/$defs/sha256"},
+        "manifest_assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
+        "manifest_assignment_sha256": {"$ref": "#/$defs/sha256"},
+        "team_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+        "task_id": {"type": "string", "pattern": "^TASK-[A-Za-z0-9._-]+$"},
+        "task_ref": {"$ref": "#/$defs/relative_ref"},
+        "task_sha256": {"$ref": "#/$defs/sha256"},
+        "manifest_ref": {"$ref": "#/$defs/relative_ref"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "owner_agent_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"}
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case", "contract", "session", "plan", "task", "repair_assignment", "manifest_assignment", "prospective_scope", "forbidden_scope"],
+      "properties": {
+        "case": {"$ref": "review-investigation-case.schema.json"},
+        "contract": {"$ref": "repair-contract.schema.json"},
+        "session": {"$ref": "repair-session.schema.json"},
+        "plan": {"$ref": "repair-plan.schema.json"},
+        "task": {"$ref": "#/$defs/task"},
+        "repair_assignment": {"$ref": "repair-plan.schema.json#/properties/assignments/items"},
+        "manifest_assignment": {"$ref": "team-manifest.schema.json#/$defs/assignment"},
+        "prospective_scope": {"$ref": "#/$defs/scope"},
+        "forbidden_scope": {"$ref": "#/$defs/optional_scope"}
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "session_id", "plan_id", "assignment_id", "unit_ids", "scope", "depends_on", "resource_locks", "state", "objective", "instruction", "next_action"],
+      "properties": {
+        "task_id": {"type": "string", "pattern": "^TASK-[A-Za-z0-9._-]+$"},
+        "session_id": {"type": "string", "pattern": "^repair-session-[A-Za-z0-9._-]+$"},
+        "plan_id": {"type": "string", "pattern": "^repair-plan-[A-Za-z0-9._-]+$"},
+        "assignment_id": {"type": "string", "pattern": "^repair-assignment-[A-Za-z0-9._-]+$"},
+        "unit_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "scope": {"$ref": "#/$defs/scope"},
+        "depends_on": {"type": ["array", "null"], "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "resource_locks": {"type": ["array", "null"], "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "state": {"const": "reviewed"},
+        "objective": {"type": "string", "minLength": 1},
+        "instruction": {"type": "string", "minLength": 1},
+        "next_action": {"type": "string", "minLength": 1}
+      }
+    },
+    "scope": {"type": "array", "minItems": 1, "maxItems": 4096, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
+    "optional_scope": {"type": "array", "maxItems": 4096, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
+    "relative_ref": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "The packet builder also rejects absolute paths, traversal, backslashes, colons and non-canonical separators."},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

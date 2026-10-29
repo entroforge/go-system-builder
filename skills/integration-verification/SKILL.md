@@ -18,10 +18,33 @@ Integration evidence with environment and observed results.
 ## N/A Criteria
 N/A only when evidence proves no integration boundary exists.
 ## Stop Conditions
-Stop on mocked-away critical boundaries or unavailable authoritative environment.
+Stop the affected integration check when a critical boundary is mocked away or
+the authoritative environment is unavailable; report the exact missing boundary
+or prerequisite and actual attempts to Main, preserving observations and
+continuing other safe assigned checks. Do not claim the omitted integration
+verified. Real P0 or unsafe operations stop dangerous work with actual evidence
+and capture gaps.
 ## Non-Goals
 Do not substitute isolated unit tests for integration evidence.
 
-## Inlined Methodology
+## Review method
 
-Team planning uses a mandatory responsibility baseline plus risk-triggered responsibilities plus scope partitioning plus conflict-graph constraints yielding one single-responsibility assignment per teammate. Agent count is the number of resulting assignments, not a fixed target. Delivery Verification responsibilities include `VER-INTEGRATION` and `VER-REGRESSION`; these map to integration verification. Risk-tag derivation: API, event or shared schema -> `api`, `cross-component`; existing behavior or historical BUG touched -> `regression`; latency/batch/query/scale -> `performance`; goroutine/async/queue/retry/external service -> `reliability`, possibly `concurrency`. Scope partitioning rules: distinct write ownership or repository boundary; independently testable Closing Contracts; high merge-conflict paths. Conflict-graph `must_separate` edges when one responsibility checks the other's authored or repaired output, scopes require incompatible Skills or tools, or combining them would exceed workload limits. Teammate reuse requires unchanged scope, matching fingerprints, and non-stale teammate state. Delivery Verification workgroup gate requires every triggered integration/regression responsibility to be covered.
+For each assigned boundary, trace the real producer, serialization, transport,
+consumer and persistence or asynchronous effect. Compare both sides with the
+actual contract. Exercise success, rejection, timeout, retry, duplicate delivery
+and partial-failure paths that apply, including cleanup and recovery. State which
+services were real or mocked and what those observations can and cannot prove.
+Keep command/request outputs and observed state changes in the existing evidence
+locations and reference them from the assigned answer.
+
+Main owns complete-round coverage, scope, dependencies and independent dispatch
+through the current ReviewPlan. Each Reviewer executes the assigned Claims and
+boundaries, reporting uncovered surfaces to Main without adding a full-module
+sweep to every Assignment. Browser, API, command and state-based behavior use
+their actual product entry and method; browser assets apply only to browser work.
+Record passing rejection, terminal state, side effects and recovery in
+`ClaimResult.observed` and real evidence references. Only observed failed Claims
+create Findings; continue other safe assigned checks after ordinary Findings.
+Stop real P0 or dangerous operations with actual observations and capture gaps. Missing environments go to Main with actual attempts and missing
+sources; they do not become product Findings without observed product failure.
+This method neither creates a workgroup gate nor declares a clean round.

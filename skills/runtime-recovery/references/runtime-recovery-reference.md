@@ -61,7 +61,10 @@ extension; do not claim it exists merely because a journal is present.
   producer, conclusion, and subject-reference checks.
 - Artifact existence proves existence only; it does not prove that a gate
   passed.
-- Recovered Agent entries are inactive. Activation/readback must be repeated.
+- Document reconstruction does not revive a platform Agent or launch lease.
+  Original-pair restoration preserves its recorded professional facts; Main
+  checks the actual native context before choosing resume or a new dispatch.
+  Only existing frozen executions use their original recovery contract.
 - Recovery creates a new Runtime epoch and explicit lineage; it does not claim
   byte-identical continuity with the damaged projection.
 - A later artifact cannot skip an earlier failed gate.

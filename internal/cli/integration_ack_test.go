@@ -6,12 +6,40 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
+
+func TestControllerCheckpointPathUsesLoadedCurrentRecordRevision(t *testing.T) {
+	loaded := &hookctx.LoadedContext{
+		BaselineGeneration: 3,
+		PolicyContext:      policy.RuntimeContext{RuntimeID: "loop-ack-path"},
+	}
+	ref := assignmentrecord.RecordReference{
+		RuntimeID: "loop-ack-path", BaselineGeneration: 3, AssignmentID: "assignment-ack-path", Revision: 2,
+	}
+	assignment := hookctx.AssignmentContext{
+		AssignmentID: "assignment-ack-path", AssignmentRecord: &ref, AssignmentRevision: 2,
+		AssignmentRecordSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	got, err := checkpointPathForLoadedAssignment("/repo", loaded, assignment)
+	if err != nil || got != integration.CheckpointPathForRecord("/repo", ref) {
+		t.Fatalf("current r2 controller slot = %q, err %v", got, err)
+	}
+	assignment.AssignmentRecordSHA256 = ""
+	if _, err := checkpointPathForLoadedAssignment("/repo", loaded, assignment); err == nil {
+		t.Fatal("incomplete canonical projection fell back to the r1 checkpoint slot")
+	}
+	legacy := hookctx.AssignmentContext{AssignmentID: "legacy-ack-path"}
+	got, err = checkpointPathForLoadedAssignment("/repo", loaded, legacy)
+	if err != nil || got != integration.CheckpointPath("/repo", "loop-ack-path", 3, "legacy-ack-path") {
+		t.Fatalf("legacy controller slot = %q, err %v", got, err)
+	}
+}
 
 func TestIntegrationSelectionRequiresExactAssignmentAndOwner(t *testing.T) {
 	loaded := &hookctx.LoadedContext{Assignments: []hookctx.AssignmentContext{{AssignmentID: "a", OwnerAgentID: "builder"}, {AssignmentID: "b", OwnerAgentID: "builder"}}}

@@ -56,7 +56,7 @@ jobs:
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
 
       - name: Verify
-        run: make ci-verify
+        run: make ci-verify-full
 
       - name: Build release package
         run: make release-checksum VERSION="$VERSION"

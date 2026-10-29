@@ -1,5 +1,3 @@
 # L2 生命周期
 
-仅工厂维护；设计状态不代表已实现。
-
-- [L2-lifecycle-plan](L2-lifecycle-plan.md)
+[生命周期规划](L2-lifecycle-plan.md)定义 S0～S11 的目标、交接和失败路由。阶段的具体执行方式见 L3，共用机制见 L4。

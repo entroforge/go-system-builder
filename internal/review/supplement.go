@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // supplement.go implements the FindingSupplement append path (L3-S7 §3.6,
@@ -45,6 +47,10 @@ type SupplementRequest struct {
 	ExpectedRevision int
 	FindingID        string
 	FilePath         string
+	// AuthorAgentID is supplied only by an existing, accurately bound caller.
+	// The explicit compatibility CLI retains its attribution declaration;
+	// selecting a Finding never proves who made a new observation.
+	AuthorAgentID string
 	// AuthorizedBy records the scheduler identity that appointed a replacement
 	// finder when Author != the Finding's original_finder (L3-S8 §2.2: the
 	// original Agent may be unreachable; S8 never treats that as losing the
@@ -64,8 +70,8 @@ type SupplementReceipt struct {
 	FindingID    string
 	Path         string
 	SHA256       string
-	// Revision is the committed main-state revision of the CAS transaction
-	// that appended the entities.finding_supplements row.
+	// Revision is the commit revision on first reception, or the current
+	// read-only snapshot containing the same original accepted supplement.
 	Revision int
 }
 
@@ -116,6 +122,21 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 	if err != nil {
 		return SupplementReceipt{}, fmt.Errorf("read FindingSupplement: %w", err)
 	}
+	var originalInput map[string]json.RawMessage
+	_ = json.Unmarshal(data, &originalInput)
+	_, explicitArtifact := originalInput["hash"]
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		return SupplementReceipt{}, fmt.Errorf("read runtime: %w", err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(stateData, &current); err != nil {
+		return SupplementReceipt{}, fmt.Errorf("decode runtime: %w", err)
+	}
+	data, err = prepareSupplementInput(root, current, request, data)
+	if err != nil {
+		return SupplementReceipt{}, err
+	}
 	if err := schema.NewValidator(root).ValidateBytes("finding-supplement.schema.json", data); err != nil {
 		return SupplementReceipt{}, fmt.Errorf("FindingSupplement schema: %w", err)
 	}
@@ -139,14 +160,6 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 		return SupplementReceipt{}, err
 	}
 
-	stateData, err := os.ReadFile(statePath)
-	if err != nil {
-		return SupplementReceipt{}, fmt.Errorf("read runtime: %w", err)
-	}
-	var current map[string]any
-	if err := json.Unmarshal(stateData, &current); err != nil {
-		return SupplementReceipt{}, fmt.Errorf("decode runtime: %w", err)
-	}
 	round := currentReviewRound(current)
 	if round < 1 {
 		return SupplementReceipt{}, fmt.Errorf("no active review round; supplements attach to current-round Findings")
@@ -161,6 +174,15 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 	originalFinder := stringField(findingRow["original_finder"])
 	if supplement.Author != originalFinder && strings.TrimSpace(request.AuthorizedBy) == "" {
 		return SupplementReceipt{}, fmt.Errorf("supplement author %s is not the original finder %s; a replacement finder requires --authorized-by <scheduler identity> (L3-S8 §2.2)", supplement.Author, originalFinder)
+	}
+	if !explicitArtifact {
+		for _, row := range supplementRowsFromState(current) {
+			if row.SupplementID == supplement.SupplementID {
+				// prepareSupplementInput has verified the original bytes,
+				// professional content and frozen evidence. No new event or time.
+				return SupplementReceipt{SupplementID: row.SupplementID, FindingID: row.SupplementsFindingID, Path: row.Path, SHA256: row.SHA256, Revision: intField(current["revision"])}, nil
+			}
+		}
 	}
 
 	occurredAt := request.OccurredAt
@@ -294,6 +316,171 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 		SHA256:       supplementSHA,
 		Revision:     snapshot.Revision,
 	}, nil
+}
+
+// prepareSupplementInput adapts professional observations into the original
+// persisted artifact. It neither issues another questionnaire nor attributes
+// a new observation to the old finder without a real caller/declaration.
+// Explicit legacy artifacts retain their original hash validation unchanged.
+func prepareSupplementInput(root string, state map[string]any, request SupplementRequest, data []byte) ([]byte, error) {
+	if err := workpacket.ValidateUniqueJSON(data); err != nil {
+		return nil, fmt.Errorf("FindingSupplement JSON: %w", err)
+	}
+	var input map[string]any
+	if err := json.Unmarshal(data, &input); err != nil || input == nil {
+		return nil, fmt.Errorf("FindingSupplement must be a JSON object")
+	}
+	if request.AuthorAgentID != "" {
+		if declared, ok := input["author"]; ok && declared != request.AuthorAgentID {
+			return nil, fmt.Errorf("FindingSupplement author differs from the original bound caller")
+		}
+	}
+	// A complete historical artifact is already fixed. Do not rewrite its
+	// timestamps, hash or evidence to the current filesystem.
+	_, hasHash := input["hash"]
+	if hasHash {
+		return data, nil
+	}
+	if _, ok := input["schema_version"]; !ok {
+		input["schema_version"] = "1.0.0"
+	}
+	if _, ok := input["supplements_finding_id"]; !ok {
+		input["supplements_finding_id"] = request.FindingID
+	}
+	if request.AuthorAgentID != "" {
+		input["author"] = request.AuthorAgentID
+	}
+	if strings.TrimSpace(stringField(input["author"])) == "" {
+		return nil, fmt.Errorf("FindingSupplement has no actual author attribution: restore the original caller context; the explicit compatibility entry requires who made this new observation, not SHA, timestamps or a canonical envelope")
+	}
+	// Identify the professional observation before reading mutable evidence.
+	// A retry must resolve the original object, not sign today's bytes into a
+	// different identity or manufacture another observation after source drift.
+	if _, ok := input["supplement_id"]; !ok {
+		identity, err := json.Marshal(map[string]any{"runtime_id": state["runtime_id"], "generation": baselineGeneration(state), "round": currentReviewRound(state), "finding_id": request.FindingID, "observation": input})
+		if err != nil {
+			return nil, err
+		}
+		input["supplement_id"] = "supplement-" + sha256Of(identity)[:32]
+	}
+	for _, row := range supplementRowsFromState(state) {
+		if row.SupplementID != input["supplement_id"] {
+			continue
+		}
+		if row.SupplementsFindingID != request.FindingID || row.Author != input["author"] || row.ReviewRound != currentReviewRound(state) || row.BaselineGeneration != baselineGeneration(state) {
+			return nil, fmt.Errorf("FindingSupplement original responsibility differs from current professional input")
+		}
+		saved, err := workpacket.ReadFile(root, row.Path, resultReceiptReadLimit)
+		if err != nil || sha256Of(saved) != row.SHA256 {
+			return nil, fmt.Errorf("FindingSupplement original immutable artifact %s is missing or changed: %v", row.Path, err)
+		}
+		if err := schema.NewValidator(root).ValidateBytes("finding-supplement.schema.json", saved); err != nil {
+			return nil, err
+		}
+		var accepted map[string]any
+		if err := json.Unmarshal(saved, &accepted); err != nil {
+			return nil, err
+		}
+		if err := verifySupplementHash(saved, stringField(accepted["hash"])); err != nil {
+			return nil, err
+		}
+		if !sameSupplementProfessionalInput(input, accepted) {
+			return nil, fmt.Errorf("FindingSupplement original professional input differs; an accepted supplement is immutable")
+		}
+		var refs []string
+		if value, ok := accepted["evidence_refs"]; ok {
+			data, _ := json.Marshal(value)
+			if err := json.Unmarshal(data, &refs); err != nil {
+				return nil, err
+			}
+		}
+		if err := validateEvidenceRefs(root, state, refs, "original FindingSupplement"); err != nil {
+			return nil, err
+		}
+		return saved, nil
+	}
+	// Freeze local observations in the original reception, without changing
+	// the authoring file or refreshing an existing complete artifact.
+	if raw, ok := input["evidence_refs"]; ok {
+		refs, err := json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		var values []string
+		if err := json.Unmarshal(refs, &values); err != nil {
+			return nil, fmt.Errorf("FindingSupplement evidence_refs: %w", err)
+		}
+		result := Result{Findings: []Finding{{EvidenceRefs: values}}}
+		capturePath := ""
+		if finding := findFindingRow(state, request.FindingID); stringField(finding["assignment_id"]) != "" {
+			capturePath = CaptureFile(root, stringField(state["runtime_id"]), baselineGeneration(state), stringField(finding["assignment_id"]))
+		}
+		if err := bindIssuedPathEvidence(root, root, nil, &result, false, capturePath); err != nil {
+			return nil, err
+		}
+		if err := validateEvidenceRefs(root, state, result.Findings[0].EvidenceRefs, "FindingSupplement"); err != nil {
+			return nil, err
+		}
+		input["evidence_refs"] = result.Findings[0].EvidenceRefs
+	}
+	if _, ok := input["created_at"]; !ok {
+		now := request.OccurredAt
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		input["created_at"] = now.UTC().Format(time.RFC3339Nano)
+	}
+	canonical, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	hash, err := supplementContentHash(canonical)
+	if err != nil {
+		return nil, err
+	}
+	input["hash"] = hash
+	return json.Marshal(input)
+}
+
+func sameSupplementProfessionalInput(input, accepted map[string]any) bool {
+	for key, want := range input {
+		if key == "evidence_refs" {
+			wantRefs, wantOK := want.([]any)
+			gotRefs, gotOK := accepted[key].([]any)
+			if !wantOK || !gotOK || len(wantRefs) != len(gotRefs) {
+				return false
+			}
+			for i, raw := range wantRefs {
+				ref, ok := raw.(string)
+				got, gotOK := gotRefs[i].(string)
+				if !ok || !gotOK {
+					return false
+				}
+				if (strings.HasPrefix(ref, "path:") || strings.HasPrefix(ref, "command_output:")) && !strings.Contains(ref, "#sha256=") {
+					got = strings.SplitN(got, "#sha256=", 2)[0]
+				}
+				if ref != got {
+					return false
+				}
+			}
+			continue
+		}
+		if !reflect.DeepEqual(want, accepted[key]) {
+			return false
+		}
+	}
+	// Every accepted professional field must also have been in the input;
+	// only the original machine fields may have been generated at reception.
+	for key := range accepted {
+		switch key {
+		case "schema_version", "supplement_id", "supplements_finding_id", "author", "created_at", "hash":
+			continue
+		}
+		if _, ok := input[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // enforceSupplementGate implements the discriminator gate (L3-S7 §14.1:
@@ -501,9 +688,8 @@ func findFindingRow(state map[string]any, findingID string) map[string]any {
 
 // verifySupplementHash checks the supplement's independent content hash:
 // sha256 of the canonical JSON (compact, sorted keys) with the hash field
-// omitted. Producers can recompute it with `runtime finding-supplement`'s
-// documented rule; consumers can fingerprint supplements without trusting the
-// writer (L3-S7 §3.6).
+// omitted. The original input adapter computes it; consumers independently
+// verify the immutable artifact (L3-S7 §3.6).
 func verifySupplementHash(data []byte, declared string) error {
 	computed, err := supplementContentHash(data)
 	if err != nil {

@@ -21,7 +21,11 @@ const (
 	// InputKindRuntimePending identifies a Runtime pending-operation marker.
 	InputKindRuntimePending = "runtime_pending"
 	// InputKindArtifact identifies a document or evidence artifact.
-	InputKindArtifact = "artifact"
+	InputKindArtifact             = "artifact"
+	InputKindRuntimeSegment       = "runtime_journal_segment"
+	InputKindCheckpoint           = "runtime_checkpoint"
+	PlanConfidenceOriginalPair    = "original_pair"
+	PlanBaseCheckpointRestoration = "checkpoint_restoration"
 
 	// PlanBaseConservativeSeed is the RR-A fallback base mode.
 	PlanBaseConservativeSeed = "conservative_seed"

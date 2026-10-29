@@ -45,7 +45,7 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	locked, release, err := integration.LockWorkspace(ctx, *root)
 	if err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("lock Main workspace for original Worker launch: %w", err))
 	}
 	// Release the Git lock before the Worker starts; its adapters need that lock.
 	released := false
@@ -57,7 +57,7 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 	writer := runtime.NewWriter(filepath.Join(*root, ".claude/loop-state.json"), filepath.Join(*root, ".claude/loop-events.jsonl"), *root, semantic.RuntimeCandidateValidator{})
 	snap, err := writer.Snapshot()
 	if err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("read Runtime for original Worker launch: %w", err))
 	}
 	b, err := workspace.Decode(snap.State)
 	if err != nil {
@@ -73,12 +73,25 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 	if !ok || e.AgentID != *agent || e.Status != "ready" || e.BootstrapSHA256 == "" {
 		return fail(fmt.Errorf("launch requires current bootstrapped Worker owner"))
 	}
+	if e.Purpose == workspace.DocumentReviewPurpose {
+		p, err := workspace.DocumentReviewPacket(snap.State, e)
+		if err != nil {
+			return fail(err)
+		}
+		life, _ := snap.State["lifecycle"].(map[string]any)
+		if life["state"] != "document_verification" || stageAnswerEntry(life["phase_revision"]) != p.Binding.StageEntry {
+			return fail(fmt.Errorf("S5 review origin changed; restore the original receipt or rework dispatch"))
+		}
+		if err := b.ValidateDocumentReviewView(e, p); err != nil {
+			return fail(err)
+		}
+	}
 	if err = b.PreflightChecks(ctx, e, e.Path); err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("prepare original Worker checks for %s: %w", e.AssignmentID, err))
 	}
 	loaded, err := hookctx.LoadFull(*root, e.AgentID)
 	if err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("read original Worker context for %s: %w", e.AssignmentID, err))
 	}
 	if loaded.PolicyContext.Agent == nil {
 		return fail(fmt.Errorf("Worker owner is not registered"))
@@ -108,7 +121,7 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 	lease, err := filelock.Acquire(leaseCtx, filepath.Join(*root, ".claude/workspace-launch", e.RuntimeID, fmt.Sprintf("g%d-%s-e%d.lock", e.BaselineGeneration, e.AssignmentID, e.Generation)))
 	leaseCancel()
 	if err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("acquire original Worker launch lease for %s: %w", e.AssignmentID, err))
 	}
 	defer lease()
 	if e.PlatformSessionID != "" && !*resume {
@@ -120,13 +133,13 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 		}
 		e.PlatformSessionID, err = workspace.NewSessionID()
 		if err != nil {
-			return fail(err)
+			return fail(fmt.Errorf("create original Worker session ID for %s: %w", e.AssignmentID, err))
 		}
 		b.Executions[e.AssignmentID] = e
 		key := fmt.Sprintf("workspace-launch-r%d", snap.Revision+1)
 		_, err = writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: e.RuntimeID, IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: "reserve Worker platform session before child launch", Apply: func(state map[string]any) error { state["workspace"] = workspace.Encode(b); return nil }})
 		if err != nil {
-			return fail(err)
+			return fail(fmt.Errorf("reserve original Worker session for %s: %w", e.AssignmentID, err))
 		}
 	}
 	release()
@@ -137,7 +150,7 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 	}
 	log, err := os.CreateTemp(dir, "attempt-*.log")
 	if err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("create original Worker launch log for %s: %w", e.AssignmentID, err))
 	}
 	defer log.Close()
 	started := time.Now().UTC()
@@ -155,7 +168,7 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 		return fail(writeErr)
 	}
 	if err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("run original Worker process for %s: %w", e.AssignmentID, err))
 	}
 	return 0
 }

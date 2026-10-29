@@ -6,22 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/fileview"
-	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/entroforge/go-system-builder/internal/evidence"
-	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
-	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // Stable error codes returned on the QualityGate.ErrorCode field and on
@@ -73,29 +71,9 @@ func snapshotCursor(state map[string]any) (string, string) {
 	return stateName, phaseName
 }
 
-// RunControlCycle is the single PreToolUse entrypoint consumed by the Hook
-// adapter (and re-used by SessionStart/PreCompact in projection form). It
-// implements the eleven steps of BUG-039-02 §4.1 verbatim:
-//
-//  1. Parse Hook payload / tool name / input paths.
-//  2. Read a Runtime snapshot via runtime.Store for gate evaluation.
-//  3. Resolve current cursor, bound REQ, active assignment, Milestone.
-//  4. Compute affected paths.
-//  5. transition.LoadCatalog + ResolveAutomaticTransition for the cursor.
-//  6. qualitygate.Evaluator.Evaluate against the current cursor.
-//  7. On satisfied, call transition.Apply; the Writer re-reads the current
-//     Runtime under lock and commits at most one allowlisted Transition.
-//  8. A legacy explicit-CAS failure may re-read and recompute once; normal
-//     controller cycles do not supply a revision assertion.
-//  9. On success, refresh Milestone / Guidance / Journal (via the cli
-//     refreshMilestone helper).
-//  10. On the new cursor, run final safety (locked artifact / squash
-//     merge) via policy.Engine.Evaluate.
-//  11. Return ControlResult.
-//
-// CallerHooks MUST treat the Decision field as the authoritative tool
-// verdict; a non-block Decision always implies the tool may proceed
-// (BE-039 §3.2: "Quality not_ready must NOT map to tool block").
+// RunControlCycle observes the current graph, evaluates existing stage conditions
+// and commits at most one eligible automatic transition through transition.Apply.
+// Missing work and listener errors are progress feedback, never tool denials.
 func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, error) {
 	if strings.TrimSpace(req.Root) == "" {
 		return ControlResult{}, fmt.Errorf("controller: root is required")
@@ -112,11 +90,16 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = fileview.WithReadCache(ctx)
+	if view, ok := req.Files.(*fileview.View); ok {
+		req.Files = view.WithContext(ctx)
+	}
 
+	req.callContext = ctx
 	statePath, journalPath := controlRuntimePaths(req)
 
 	// --- Step 2: read snapshot revision N ---
-	store := runtime.NewStore(statePath, journalPath)
+	store := runtime.NewStore(statePath, journalPath).WithContext(ctx)
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		result.Error = fmt.Sprintf("read runtime: %v", err)
@@ -130,6 +113,29 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 
 	cursorState, cursorPhase := snapshotCursor(snapshot.State)
 	result.QualityGate.NextCursor = cursorString(cursorState, cursorPhase)
+	if req.SubmissionFollowupID != "" {
+		_, followupErr := runtime.SubmissionFollowup(snapshot.State, req.SubmissionFollowupID)
+		if errors.Is(followupErr, runtime.ErrSubmissionFollowupProcessed) || errors.Is(followupErr, runtime.ErrSubmissionFollowupOriginChanged) {
+			if errors.Is(followupErr, runtime.ErrSubmissionFollowupOriginChanged) {
+				latest, err := runtime.RecordSubmissionEvaluation(req.Root, statePath, journalPath, req.SubmissionFollowupID, semantic.RuntimeCandidateValidator{}, ctx)
+				if err != nil {
+					result.Error, result.ErrorCode = err.Error(), CodeRuntimeInval
+					return result, nil
+				}
+				snapshot = latest
+			}
+			result.Snapshot = snapshot
+			result.QualityGate.Status = StatusSatisfied
+			result.QualityGate.ObservedRevision = snapshot.Revision
+			s, p := snapshotCursor(snapshot.State)
+			result.QualityGate.NextCursor = cursorString(s, p)
+			return finishControlCycle(result), nil
+		}
+		if followupErr != nil {
+			result.Error, result.ErrorCode = followupErr.Error(), CodeRuntimeInval
+			return result, nil
+		}
+	}
 
 	// --- Step 5: build catalog + resolve automatic candidate ---
 	catalog, err := transition.LoadCatalog(req.Root)
@@ -138,8 +144,8 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		result.ErrorCode = CodeRuntimeInval
 		return result, nil
 	}
-	if req.Files == nil && len(catalog.Definition.MutableEvidenceKinds) > 0 {
-		if view, viewErr := productionFiles(req.Root, snapshot.State, catalog); viewErr == nil {
+	if cursorState != "acceptance" && cursorState != "release_audit" && !(cursorState == "planning" && cursorPhase == "design") && req.Files == nil && len(catalog.Definition.MutableEvidenceKinds) > 0 {
+		if view, viewErr := productionFiles(ctx, req.Root, snapshot.State, catalog); viewErr == nil {
 			req.Files = view // refresh and evaluation share the same pinned input snapshot
 			kinds := map[string]bool{}
 			for _, k := range catalog.Definition.MutableEvidenceKinds {
@@ -149,7 +155,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 			if req.recoveryWriter.Enabled() {
 				refreshWriter = runtime.NewOfflineRecoveryWriter(statePath, journalPath, req.Root, semantic.RuntimeCandidateValidator{}, req.recoveryWriter)
 			}
-			_, refreshErr := refreshWriter.RefreshEvidenceFingerprints(req.Root, kinds, view.ReadFile, func(path string) bool { source, err := view.Source(path); return err == nil && source == "disk" })
+			_, refreshErr := refreshWriter.WithContext(ctx).RefreshEvidenceFingerprints(req.Root, kinds, view.ReadFile, func(path string) bool { source, err := view.Source(path); return err == nil && source == "disk" })
 			if refreshErr != nil {
 				result.Warnings = append(result.Warnings, "evidence fingerprint refresh: "+refreshErr.Error())
 			} else if refreshed, readErr := store.Snapshot(); readErr == nil {
@@ -180,22 +186,22 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		// No auto-trigger candidate at the current cursor (planning already
 		// complete, terminal, or non-eligible phase). The cycle still
 		// returns a ControlResult; the final safety policy is what governs
-		// the tool.
+		// graph progress.
 		result.QualityGate.Status = StatusSatisfied
 		result.QualityGate.TransitionCommitted = false
 		result.Decision = allowDecision()
 		result.Snapshot = snapshot
-		return applyFinalSafety(result, req, snapshot, affected), nil
+		return finishControlCycle(result), nil
 	}
 	files := req.Files
-	if files == nil {
-		view, viewErr := productionFiles(req.Root, snapshot.State, catalog)
+	if files == nil && cursorState != "acceptance" && cursorState != "release_audit" && !(cursorState == "planning" && cursorPhase == "design") {
+		view, viewErr := productionFiles(ctx, req.Root, snapshot.State, catalog)
 		if viewErr != nil {
 			result.Error = viewErr.Error()
 			result.ErrorCode = CodeGateUnknown
 			result.QualityGate.ErrorCode = CodeGateUnknown
 			result.QualityGate.Missing = []string{viewErr.Error()}
-			return applyFinalSafety(result, req, snapshot, affected), nil
+			return finishControlCycle(result), nil
 		}
 		files = view
 		req.Files = view
@@ -209,7 +215,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		result.ErrorCode = CodeGateUnknown
 		result.Error = "quality cycle timed out"
 		result.QualityGate.TransitionCommitted = false
-		return applyFinalSafety(result, req, snapshot, affected), nil
+		return finishControlCycle(result), nil
 	}
 
 	// --- Step 5/7: selector seam — gate outcomes + requested events ---
@@ -274,6 +280,24 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		result.QualityGate.CandidateTransition = candidate.ID
 	}
 	metrics.ObserveGateEvaluation(req.Root, string(gateStatus))
+	if req.SubmissionFollowupID == "" && gateStatus == StatusSatisfied && candidate != nil && candidate.AutoTrigger != nil && candidate.AutoTrigger.Actor != "" {
+		if scoped, followupID, followupErr := currentPlanningFollowup(req.Root, snapshot.State, candidate); scoped {
+			if followupErr != nil || followupID == "" {
+				if followupErr == nil {
+					followupErr = fmt.Errorf("current planning submission followup is empty")
+				}
+				result.QualityGate.Status = StatusUnknown
+				result.QualityGate.ErrorCode = CodeTransitionGua
+				result.QualityGate.Conflicts = []string{followupErr.Error()}
+				result.Error = fmt.Sprintf("packet-mode planning transition requires its unique accepted Main followup: %v", followupErr)
+				result.ErrorCode = CodeTransitionGua
+				result.Decision = allowDecision()
+				result.Snapshot = snapshot
+				return finishControlCycle(result), nil
+			}
+			req.SubmissionFollowupID = followupID
+		}
+	}
 
 	// --- Step 7: optionally commit one transition ---
 	if gateStatus == StatusSatisfied && candidate != nil && candidate.AutoTrigger != nil && candidate.AutoTrigger.Actor != "" {
@@ -282,6 +306,20 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		// controller seam.
 		next, applyErr := transition.Apply(req.Root, statePath, journalPath, autoTransitionRequest(req, registry, snapshot, candidate, gateID, evaluation))
 		if applyErr != nil {
+			if req.SubmissionFollowupID != "" && (errors.Is(applyErr, runtime.ErrSubmissionFollowupProcessed) || errors.Is(applyErr, runtime.ErrSubmissionFollowupOriginChanged)) {
+				latest, err := runtime.RecordSubmissionEvaluation(req.Root, statePath, journalPath, req.SubmissionFollowupID, semantic.RuntimeCandidateValidator{}, ctx)
+				if err != nil {
+					result.Error, result.ErrorCode = err.Error(), CodeRuntimeInval
+					return result, nil
+				}
+				result.Snapshot = latest
+				result.QualityGate.Status = StatusSatisfied
+				result.QualityGate.TransitionCommitted = false
+				result.QualityGate.ObservedRevision = latest.Revision
+				s, p := snapshotCursor(latest.State)
+				result.QualityGate.NextCursor = cursorString(s, p)
+				return finishControlCycle(result), nil
+			}
 			// CAS stale: re-read, recompute once, and try again.
 			if errors.Is(applyErr, runtime.ErrStaleRevision) {
 				incrementMetricsCASConflicts()
@@ -310,6 +348,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 			result.QualityGate.ErrorCode = CodeTransitionGua
 			result.Error = applyErr.Error()
 			result.ErrorCode = CodeTransitionGua
+			result.QualityGate.Conflicts = []string{transitionApplyDiagnostic(candidate.ID, applyErr.Error())}
 			result.QualityGate.TransitionCommitted = false
 			result.Decision = allowDecision()
 			result.Snapshot = snapshot
@@ -326,9 +365,29 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 		cursorState, cursorPhase = snapshotCursor(next.State)
 		result.QualityGate.NextCursor = cursorString(cursorState, cursorPhase)
 	}
+	if req.SubmissionFollowupID != "" && !result.QualityGate.TransitionCommitted && gateStatus != StatusUnknown {
+		latest, err := runtime.RecordSubmissionEvaluation(req.Root, statePath, journalPath, req.SubmissionFollowupID, semantic.RuntimeCandidateValidator{}, ctx)
+		if err != nil {
+			result.QualityGate.Status = StatusUnknown
+			result.Error, result.ErrorCode = err.Error(), CodeRuntimeInval
+			return result, nil
+		}
+		snapshot = latest
+		result.Snapshot = latest
+		result.QualityGate.ObservedRevision = latest.Revision
+		s, p := snapshotCursor(latest.State)
+		result.QualityGate.NextCursor = cursorString(s, p)
+		if record, err := runtime.SubmissionFollowup(latest.State, req.SubmissionFollowupID); errors.Is(err, runtime.ErrSubmissionFollowupProcessed) && record.ControlStatus == "replaced" {
+			result.QualityGate.Status = StatusSatisfied
+			result.QualityGate.Missing = []string{}
+			result.QualityGate.EvidenceRefs = []string{}
+			result.QualityGate.CandidateTransition = ""
+			result.QualityGate.GateID = ""
+		}
+	}
 
 	// --- Step 10: final safety on the new cursor ---
-	return applyFinalSafety(result, req, snapshot, affected), nil
+	return finishControlCycle(result), nil
 }
 
 // evaluateGateWithBudget runs gate evaluation under a local quality-cycle
@@ -361,42 +420,10 @@ func evaluateGateWithBudget(
 	}
 }
 
-// applyFinalSafety runs the minimal safety policy on the committed snapshot
-// cursor and projects the tool decision. It is shared by the normal path and
-// the quality-cycle timeout degradation path.
-func applyFinalSafety(
-	result ControlResult,
-	req ControlRequest,
-	snapshot runtime.Snapshot,
-	affected []string,
-) ControlResult {
-	safetyInput := buildSafetyInput(req, snapshot, affected)
-	engine, err := policy.Load(filepath.Join(req.Root, projectlayout.Policy))
-	var decision policy.Decision
-	if err != nil {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("load hook-policy: %v", err))
-		decision = policy.UnavailableDecision(safetyInput, err)
-	} else {
-		decision, err = engine.Evaluate(safetyInput)
-		if err != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("safety evaluate: %v", err))
-			decision = policy.UnavailableDecision(safetyInput, err)
-		}
-	}
-	// Missing safety authority is a safety denial, distinct from quality
-	// not_ready/unknown, which must still let an authorized agent continue.
-	result.Decision = decision
-	if decision.Decision == "block" || decision.Decision == "deny" {
-		result.Decision.HumanRequired = decision.HumanRequired || decision.RuleID == policy.RuleLockedArtifactWrite
-		result.QualityGate.Status = StatusBlocked
-		return result
-	}
-
-	// Default: the tool may proceed regardless of gate progress. not_ready
-	// is the documented "continue working" signal.
-	if result.Decision.Decision == "" {
-		result.Decision = allowDecision()
-	}
+// finishControlCycle reports graph progress without deciding tool permissions.
+// Stage conditions and transition.Apply remain the flow authority.
+func finishControlCycle(result ControlResult) ControlResult {
+	result.Decision = allowDecision()
 	return result
 }
 
@@ -438,8 +465,8 @@ func recomputeAfterStale(
 		return out, 1, nil
 	}
 	files := req.Files
-	if files == nil {
-		view, viewErr := productionFiles(req.Root, refreshed.State, catalog)
+	if files == nil && cursorState != "acceptance" && cursorState != "release_audit" && !(cursorState == "planning" && cursorPhase == "design") {
+		view, viewErr := productionFiles(ctx, req.Root, refreshed.State, catalog)
 		if viewErr != nil {
 			return ControlResult{Snapshot: refreshed, Decision: allowDecision(), Error: viewErr.Error(), ErrorCode: CodeGateUnknown, QualityGate: QualityGateResult{Status: StatusUnknown, ErrorCode: CodeGateUnknown, Missing: []string{viewErr.Error()}}}, 1, nil
 		}
@@ -611,6 +638,7 @@ func evaluateAutomaticGates(
 	affected []string,
 	files qualityGateFiles,
 ) ([]automaticGateEval, bool) {
+	defer metrics.Span(ctx, "control/automatic_gates")()
 	deadline := time.Now().Add(budget)
 	results := make([]automaticGateEval, 0, len(candidates))
 	for _, spec := range candidates {
@@ -658,6 +686,7 @@ func buildTriggerFacts(
 	affected []string,
 	files qualityGateFiles,
 ) transition.TriggerFacts {
+	defer metrics.Span(req.callContext, "control/selector_facts")()
 	outcomes := make([]transition.GateOutcome, 0, len(results))
 	for _, item := range results {
 		outcomes = append(outcomes, transition.GateOutcome{
@@ -857,6 +886,43 @@ func projectGateResult(eval qualitygate.Evaluation) (ControlStatus, string, []st
 	return StatusUnknown, CodeGateUnknown, eval.Conflicts
 }
 
+const (
+	maxTransitionDiagnosticRunes  = 512
+	transitionDiagnosticTruncated = " …[truncated]"
+)
+
+// transitionApplyDiagnostic keeps the original Apply error available on the
+// wire without allowing an unbounded or multi-line error to dominate a Hook
+// packet. ControlResult.Error deliberately retains the untouched error for
+// internal callers; only this diagnostic projection is normalized and bounded.
+func transitionApplyDiagnostic(transitionID, reason string) string {
+	prefix := "transition:" + transitionID + ":"
+	reason = strings.ToValidUTF8(reason, "�")
+	reason = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, reason)
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" {
+		reason = "empty transition.Apply error"
+	}
+
+	remaining := maxTransitionDiagnosticRunes - len([]rune(prefix))
+	runes := []rune(reason)
+	if remaining > 0 && len(runes) > remaining {
+		marker := []rune(transitionDiagnosticTruncated)
+		keep := remaining - len(marker)
+		if keep < 0 {
+			marker = marker[:remaining]
+			keep = 0
+		}
+		reason = strings.TrimRight(string(runes[:keep]), " ") + string(marker)
+	}
+	return prefix + reason
+}
+
 // normalizeAffectedPaths derives a deterministic, non-empty list of
 // affected paths from the request. The Hook adapter is the preferred
 // source; for plain Edit/Write tools the cycle probes the file_path
@@ -892,82 +958,8 @@ func normalizeAffectedPaths(req ControlRequest) []string {
 	return nil
 }
 
-// buildSafetyInput projects the controller request onto the minimal
-// policy.Input contract. The Controller never re-reads the runtime here;
-// it uses the already-committed snapshot revision so the safety verdict
-// matches the cursor the agent just observed.
-func buildSafetyInput(req ControlRequest, snapshot runtime.Snapshot, affected []string) policy.Input {
-	lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
-	stateName, _ := lifecycle["state"].(string)
-	phaseName, _ := lifecycle["phase"].(string)
-	rt := policy.RuntimeContext{
-		RuntimeID:    stringValue(snapshot.State["runtime_id"]),
-		Revision:     snapshot.Revision,
-		ProjectRoot:  req.Root,
-		CurrentState: stateName,
-		CurrentPhase: stringValue(phaseName),
-		Agent:        req.Runtime.Agent,
-		// RC-04 (S7-3): preserve the dispatched-Assignment facts so the
-		// L4 first-write barrier stays awake on the controller safety path,
-		// which evaluates policy without a hookctx-resolved AgentContext.
-		AssignmentID:    req.Runtime.AssignmentID,
-		PlanReportedRef: req.Runtime.PlanReportedRef,
-		DispatchMode:    req.Runtime.DispatchMode,
-	}
-	if bound, ok := snapshot.State["bound_req"].(map[string]any); ok {
-		rt.BoundREQID, _ = bound["id"].(string)
-		rt.BoundREQPath, _ = bound["path"].(string)
-		if meta, ok := bound["metadata"].(map[string]any); ok {
-			rt.BoundREQUIImpact, _ = meta["ui_impact"].(string)
-		}
-	}
-	// The locked-artifact screen was previously only alive in unit tests —
-	// the wire path never threaded LockedArtifacts or the stage here, so
-	// lockedArtifactDecision never ran (S5 final-round F1). Project them
-	// with the same loader the hook transport uses.
-	rt.LockedArtifacts = hookctx.LockedArtifactsFromSnapshot(snapshot)
-	rt.CurrentStage = stageOf(snapshot.State)
-	// The reviewer product-write rule allows the ReviewPlan's declared
-	// verification artifact workspace (E2E cold-start spec/fixture surface).
-	// Without this projection the wire path hard-denies the one write
-	// surface a cold-start E2E Reviewer is supposed to use (L3-S7 §8).
-	if reviewState, ok := snapshot.State["review"].(map[string]any); ok {
-		if plan, ok := reviewState["plan"].(map[string]any); ok {
-			rt.VerificationWorkspace, _ = plan["verification_artifact_workspace"].(string)
-		}
-	}
-	if baseline, ok := snapshot.State["baseline"].(map[string]any); ok {
-		rt.CurrentBaselineGeneration = int(baseline["generation"].(float64))
-	}
-	var bindingErr error
-	rt.Workspace, bindingErr = workspace.Decode(snapshot.State)
-	if bindingErr != nil {
-		rt.WorkspaceError = bindingErr.Error()
-	}
-	return policy.Input{
-		CWD:       req.CWD,
-		SessionID: req.SessionID,
-		Event:     req.Event,
-		AgentID:   req.AgentID,
-		ToolName:  req.ToolName,
-		ToolInput: req.ToolInput,
-		TargetID:  req.TargetID,
-		Runtime:   rt,
-	}
-}
-
-// stageOf reads the milestone projection's stage label.
-func stageOf(state map[string]any) string {
-	if milestone, ok := state["milestone"].(map[string]any); ok {
-		if stage, ok := milestone["stage"].(string); ok {
-			return stage
-		}
-	}
-	return ""
-}
-
 func allowDecision() policy.Decision {
-	return policy.Decision{Decision: "allow", Reason: "no policy rule blocked this action", Retry: "not_applicable"}
+	return policy.Decision{Decision: "allow", Reason: "graph progress observed; continue the current work", Retry: "not_applicable"}
 }
 
 // controlRuntimePaths resolves the Runtime pair for one control request.
@@ -1066,6 +1058,7 @@ func autoTransitionRequest(
 ) transition.Request {
 	runtimeIdentity, _ := snapshot.State["runtime_id"].(string)
 	return transition.Request{
+		Context:                req.callContext,
 		TransitionID:           candidate.ID,
 		Files:                  transitionFiles(req.Files),
 		ExpectedRevision:       -1,
@@ -1077,9 +1070,11 @@ func autoTransitionRequest(
 		RequestID:              controlRequestID(req),
 		BaselineGeneration:     snapshotBaselineGeneration(snapshot.State),
 		GateID:                 gateID,
+		GateEvidenceRefs:       s5GateEvidenceRefs(candidate.ID, evaluation.EvidenceRefs),
 		GateFingerprint:        evaluation.Fingerprint,
 		ProducerResponsibility: gateProducerResponsibility(registry, gateID),
 		RecoveryWriter:         req.recoveryWriter,
+		SubmissionFollowupID:   req.SubmissionFollowupID,
 	}
 }
 
@@ -1294,7 +1289,7 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func productionFiles(root string, state map[string]any, catalog *transition.Catalog) (*fileview.View, error) {
+func productionFiles(ctx context.Context, root string, state map[string]any, catalog *transition.Catalog) (*fileview.View, error) {
 	if err := fileview.ValidateAuthority(root, state); err != nil {
 		return nil, err
 	}
@@ -1302,9 +1297,16 @@ func productionFiles(root string, state map[string]any, catalog *transition.Cata
 	if err != nil {
 		return nil, err
 	}
-	return fileview.New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+	return fileview.NewContext(ctx, root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
 }
 func transitionFiles(files qualityGateFiles) fileview.Reader {
 	view, _ := files.(fileview.Reader)
 	return view
+}
+
+func s5GateEvidenceRefs(transitionID string, refs []string) []string {
+	if transitionID != "TR-003" && transitionID != "TR-004" {
+		return nil
+	}
+	return append([]string(nil), refs...)
 }

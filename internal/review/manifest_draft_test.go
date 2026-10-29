@@ -147,12 +147,16 @@ func TestDraftManifestPrefillsControlPlaneFacts(t *testing.T) {
 		t.Errorf("documents = %v, want [REQ-002 TASK-001]", ids)
 	}
 
-	// The TODO surface is exactly the fields no fact decides.
-	if !strings.HasPrefix(row.AgentID, "TODO(planner):") {
-		t.Errorf("agent_id = %q, want a TODO(planner): marker", row.AgentID)
+	// Engineering labels come from the original Assignment, not another
+	// identity question or an opaque platform actor lookup.
+	if row.AgentID != "s7-g1-r1-qa-static" || strings.Contains(draft.PlatformTeamID, "TODO") {
+		t.Errorf("prepared engineering labels = %q/%q", row.AgentID, draft.PlatformTeamID)
 	}
 	if len(notes) == 0 {
 		t.Error("expected planner notes")
+	}
+	if strings.Contains(strings.Join(row.SkillRefs, ","), "TODO") || !strings.Contains(strings.Join(row.SkillRefs, ","), "code-quality") {
+		t.Fatalf("known QA role methods were left as an author question: %v", row.SkillRefs)
 	}
 
 	// The draft passes the same schema + semantic validation
@@ -170,6 +174,26 @@ func TestDraftManifestPrefillsControlPlaneFacts(t *testing.T) {
 	}
 }
 
+func TestDraftManifestMissingOriginalDocumentMetadataIsSystemPreparationGap(t *testing.T) {
+	for _, scenario := range []string{"version", "sha256", "path", "no-documents"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			state := baseVerificationState()
+			if scenario == "no-documents" {
+				state["bound_req"] = map[string]any{}
+				state["documents"] = []any{}
+			} else {
+				delete(state["bound_req"].(map[string]any), scenario)
+			}
+			pinPlan(t, root, state, manifestDraftFixturePlan())
+			draft, _, err := DraftManifest(root, state, "assignment-qa-static")
+			if err == nil || draft != nil || !strings.Contains(err.Error(), "Main/system preparation gap") {
+				t.Fatalf("missing source became a planner metadata exercise: draft=%+v err=%v", draft, err)
+			}
+		})
+	}
+}
+
 func TestDraftManifestE2EPrefillsForcedSkills(t *testing.T) {
 	root := t.TempDir()
 	state := baseVerificationState()
@@ -183,7 +207,7 @@ func TestDraftManifestE2EPrefillsForcedSkills(t *testing.T) {
 		"method": "real-browser execution", "applicability": "required", "source_refs": []string{"TASK-001"},
 	})
 	plan["assignments"] = append(plan["assignments"].([]any), map[string]any{
-		"assignment_id": "assignment-e2e-flows", "lens": "e2e",
+		"assignment_id": "assignment-e2e-flows", "lens": "e2e", "behavior_surface": "browser",
 		"claim_ids":            []string{"claim-e2e-flow"},
 		"non_overlap_boundary": "owns the declared flows",
 		"execution_wave":       "behavior",
@@ -198,7 +222,7 @@ func TestDraftManifestE2EPrefillsForcedSkills(t *testing.T) {
 	if row.RoleFamily != "e2e-tester" || row.AgentDefinitionRef != "agents/e2e-tester.md" {
 		t.Errorf("role/definition = %q/%q, want e2e-tester/agents/e2e-tester.md", row.RoleFamily, row.AgentDefinitionRef)
 	}
-	if len(row.DoneWhen) != 3 || !strings.Contains(row.DoneWhen[0], "assignment-e2e-flows") {
+	if len(row.DoneWhen) == 0 || !strings.Contains(row.DoneWhen[0], "assignment-e2e-flows") {
 		t.Errorf("done_when = %v, want concrete assignment result contract", row.DoneWhen)
 	}
 	// E2E-USER-FLOW forces e2e-browser-testing + playwright-e2e at

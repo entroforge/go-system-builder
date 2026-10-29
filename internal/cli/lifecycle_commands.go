@@ -1,19 +1,23 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
@@ -112,11 +116,7 @@ func runRuntimePause(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *approvedBy == "" {
-		if identity := detectGitIdentity(*root); identity != "" {
-			fmt.Fprintf(stderr, "runtime pause requires --approved-by (detected git identity %q; rerun with --approved-by %q)\n", identity, identity)
-		} else {
-			fmt.Fprintln(stderr, "runtime pause requires --approved-by <human identity>")
-		}
+		fmt.Fprintln(stderr, "runtime pause requires --approved-by <actual human decision attribution>; reuse the clear human decision, not Git identity")
 		return 2
 	}
 	snapshot, guidance := lifecycleSnapshot(*root)
@@ -217,6 +217,17 @@ func runRuntimeResume(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatFailure("runtime resume", err))
 		return 1
 	}
+	if lifecycleState(next.State) == "awaiting_human_release" {
+		path, id, err := humanReleaseQuestionnairePath(*root, next.State)
+		if err == nil {
+			err = prepareHumanDecisionApplication(path, next.State, id)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "Resume completed, but S11 application preparation failed: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stderr, "Current human decision application: %s\n", path)
+	}
 	fmt.Fprintf(stdout, "resumed to %v at revision %d (pause checkpoint verified and cleared)\n", cursorLabel(next.State["lifecycle"].(map[string]any)["state"].(string), next.State["lifecycle"].(map[string]any)["phase"]), next.Revision)
 	return 0
 }
@@ -240,7 +251,7 @@ func inFlightEntities(state map[string]any) []string {
 		if task == nil {
 			continue
 		}
-		if taskState, _ := task["state"].(string); taskState == "in_progress" || taskState == "review" || taskState == "blocked" {
+		if taskState := workstate.TaskActivity(task); taskState == "in_progress" || taskState == "review" || taskState == "blocked" {
 			if id, _ := task["id"].(string); id != "" {
 				out = append(out, "task "+id+" ("+taskState+")")
 			}
@@ -356,6 +367,7 @@ func runREQUnbind(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "unbound %s (was %s, revision %d; reason recorded; approved-by %s)\n", boundID, cursorLabel(state, phase), record.Revision, *approvedBy)
 	fmt.Fprintf(stdout, "  archived runtime: %s (disposition=unbound)\n", record.ArchiveDir)
 	fmt.Fprintf(stdout, "next: %s returned to the bindable pool — `req list` to pick the next target\n", boundID)
+	fmt.Fprintln(stdout, stageEntryQuestionnaireContext(*root, policy.Input{Event: "SessionStart"}, runtime.Snapshot{State: freshState}))
 	return 0
 }
 
@@ -370,11 +382,7 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *approvedBy == "" {
-		if identity := detectGitIdentity(*root); identity != "" {
-			fmt.Fprintf(stderr, "req amend requires --approved-by (detected git identity %q; rerun with --approved-by %q)\n", identity, identity)
-		} else {
-			fmt.Fprintln(stderr, "req amend requires --approved-by <human identity>")
-		}
+		fmt.Fprintln(stderr, "req amend requires --approved-by <actual human decision attribution>; reuse the clear human decision, not Git identity")
 		return 2
 	}
 	if *reqPath == "" {
@@ -388,7 +396,7 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 	}
 	state, _ := snapshotLifecycle(snapshot)
 	if state != "paused" {
-		fmt.Fprintf(stderr, "req amend: runtime is %q, not paused — pause it first (`runtime pause`) so the amendment starts from a checkpoint\n", state)
+		fmt.Fprintf(stderr, "req amend: runtime is %q, not paused — pause it first (`runtime pause --approved-by <actual human> --root <project root>`) so the amendment starts from a checkpoint; reuse the actual amendment decision attribution\n", state)
 		return 1
 	}
 	bound, _ := snapshot.State["bound_req"].(map[string]any)
@@ -457,6 +465,27 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatFailure("req amend", err))
 		return 1
 	}
+	if runtime.PacketEnabled(next.State) {
+		absRoot, rootErr := filepath.Abs(*root)
+		if rootErr != nil {
+			fmt.Fprintln(stderr, "Amendment recorded, but S2 preparation root is unavailable: "+rootErr.Error())
+			return 1
+		}
+		statePath, journalPath := filepath.Join(absRoot, ".claude/loop-state.json"), filepath.Join(absRoot, ".claude/loop-events.jsonl")
+		service := submission.Service{Root: absRoot, StatePath: statePath, JournalPath: journalPath, Validator: semantic.RuntimeCandidateValidator{}}
+		packet, prepareErr := service.IssueDesign(context.Background())
+		if prepareErr != nil {
+			fmt.Fprintln(stderr, "Amendment recorded, but its current S2 design questionnaire preparation failed: "+prepareErr.Error())
+			return 1
+		}
+		fmt.Fprintf(stdout, "S2 design view: %s; answer: %s\n", resolveRootPath(absRoot, packet.ViewPath), resolveRootPath(absRoot, packet.AnswerPath))
+		current, readErr := runtime.NewStore(statePath, journalPath).Snapshot()
+		if readErr != nil {
+			fmt.Fprintln(stderr, "Amendment and S2 preparation recorded, but current Runtime could not be read: "+readErr.Error())
+			return 1
+		}
+		next = current
+	}
 	baseline, _ := next.State["baseline"].(map[string]any)
 	invalid := 0
 	if items, ok := next.State["evidence"].([]any); ok {
@@ -469,7 +498,7 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "amended: bound %s → %s %s (baseline generation %d, revision %d)\n", boundID, id, version, tolerantInt(baseline["generation"]), next.Revision)
 	fmt.Fprintf(stdout, "  downstream evidence invalidated: %d item(s); old REQ stays locked (history)\n", invalid)
-	fmt.Fprintf(stdout, "  superseded REQ file: keep %s where it is — hook write-protection is path-based, so moving the file would drop it out of protection (its fingerprint already lives in runtime history)\n", boundID)
+	fmt.Fprintf(stdout, "  previous REQ baseline and downstream records remain available as history; current requirement: %s\n", *reqPath)
 	fmt.Fprintln(stdout, "next: continue from planning.design — the amendment already left the paused state (checkpoint cleared)")
 	return 0
 }

@@ -27,8 +27,8 @@ func TestBuildRecordCreatesTriggeredChecksForBugfix(t *testing.T) {
 	if record.RequiredChecks[0].ID != "CK-1" || record.RequiredChecks[0].Kind != "reproduction" {
 		t.Fatalf("unexpected first check: %#v", record.RequiredChecks[0])
 	}
-	if record.WorkItems[0].Status != "open" {
-		t.Fatalf("new work item status = %q, want open", record.WorkItems[0].Status)
+	if record.WorkItems[0].Status != "pending" {
+		t.Fatalf("new work item status = %q, want pending", record.WorkItems[0].Status)
 	}
 }
 
@@ -38,7 +38,7 @@ func TestRecordSummaryCountsOpenWorkAndChecks(t *testing.T) {
 		WorkItems: []WorkItem{
 			{ID: "W-1", Status: "active"},
 			{ID: "W-2", Status: "done"},
-			{ID: "W-3", Status: "open"},
+			{ID: "W-3", Status: "pending"},
 		},
 		RequiredChecks: []Check{
 			{ID: "CK-1", Status: "passed"},
@@ -58,7 +58,7 @@ func TestRecordSummaryCountsOpenWorkAndChecks(t *testing.T) {
 func TestNextStepReturnsReadyWorkBeforeItsChecks(t *testing.T) {
 	record := Record{
 		ID: "CHG-003", Summary: "feature", Class: "behavior feature", Risk: "low",
-		WorkItems:      []WorkItem{{ID: "W-1", Text: "implement feature", Status: "open", Owner: "main"}},
+		WorkItems:      []WorkItem{{ID: "W-1", Text: "implement feature", Status: "pending", Owner: "main"}},
 		RequiredChecks: []Check{{ID: "CK-1", Kind: "acceptance_test", Status: "open"}},
 	}
 	next := NextStep(record)
@@ -67,5 +67,27 @@ func TestNextStepReturnsReadyWorkBeforeItsChecks(t *testing.T) {
 	}
 	if next.Action != "implement W-1 and run CK-1" {
 		t.Fatalf("next action = %q", next.Action)
+	}
+}
+
+func TestDecodeLegacyOpenWorkItemProjectsToPendingAndEncodeWritesPending(t *testing.T) {
+	legacy := map[string]any{
+		"id":         "CHG-004",
+		"work_items": []any{map[string]any{"id": "W-1", "text": "implement feature", "status": "open"}},
+	}
+	record, err := Decode(legacy)
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if record.WorkItems[0].Status != "pending" {
+		t.Fatalf("decoded legacy work status = %q, want pending", record.WorkItems[0].Status)
+	}
+	encoded, err := Encode(record)
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	items := encoded["work_items"].([]any)
+	if got := items[0].(map[string]any)["status"]; got != "pending" {
+		t.Fatalf("encoded work status = %v, want pending", got)
 	}
 }

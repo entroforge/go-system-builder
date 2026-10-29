@@ -1,15 +1,7 @@
 package cli
 
-// stale_revision_hint_test.go — regression tests for the next-action hint
-// appended to runtime.ErrStaleRevision by formatFailure. Every verb that
-// goes through `--expected-revision` shares this rendering path, so the
-// hint has to survive any verb (register-workgroup, agent-event,
-// review-result submit, finding-supplement, etc.) without the caller
-// having to decode which verb raised the CAS conflict.
-//
-// The fix is at the formatFailure boundary (not at the verb handlers),
-// so these tests exercise the helper directly and assert the
-// actionable-next-action keywords the operator needs to recover.
+// Shared CAS feedback must preserve the original cause and identify recovery
+// ownership without guessing whether a number came from an author or adapter.
 
 import (
 	"errors"
@@ -20,10 +12,23 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 )
 
+func TestFormatFailureInternalCASDoesNotInventAuthorAssertion(t *testing.T) {
+	for _, command := range []string{"s6 prepare", "S8 result reception", "S11 decision application"} {
+		rendered := formatFailure(command, fmt.Errorf("original responsibility changed: %w", runtime.ErrStaleRevision))
+		for _, falseRecovery := range []string{"used an explicit revision", "--expected-revision <N>", "runtime reconcile"} {
+			if strings.Contains(rendered, falseRecovery) {
+				t.Errorf("%s invented author responsibility or persistence damage: %s", command, rendered)
+			}
+		}
+		if !strings.Contains(rendered, "Main") || !strings.Contains(rendered, "receipt") || !strings.Contains(rendered, "stale runtime revision") {
+			t.Errorf("%s omitted conflict ownership or original evidence: %s", command, rendered)
+		}
+	}
+}
+
 // TestFormatFailureStaleRevisionCarriesNextAction verifies the bare
 // runtime.ErrStaleRevision surfaces the recovery recipe in the rendered
-// line — every keyword the operator needs to recover from a CAS conflict
-// without reading source code must be present.
+// line while retaining a concrete original-state query and Main ownership.
 func TestFormatFailureStaleRevisionCarriesNextAction(t *testing.T) {
 	rendered := formatFailure("runtime register-workgroup", runtime.ErrStaleRevision)
 
@@ -37,10 +42,11 @@ func TestFormatFailureStaleRevisionCarriesNextAction(t *testing.T) {
 	}
 	// Next-action: the recovery recipe must be present.
 	for _, keyword := range []string{
-		"loop-harness status", // read current revision
-		"--root",              // required flag of the next command
-		"--expected-revision", // retry flag for the original verb
-		"runtime reconcile",   // durable cure for concurrent commits
+		"loop-harness status", // inspect the current responsibility
+		"--root",
+		"Main",
+		"receipt",
+		"business snapshot", // explicit CAS callers still own their assertion
 	} {
 		if !strings.Contains(rendered, keyword) {
 			t.Errorf("rendered line missing recovery keyword %q: %q", keyword, rendered)
@@ -62,8 +68,8 @@ func TestFormatFailureStaleRevisionWrapped(t *testing.T) {
 	if !strings.Contains(rendered, "loop-harness status") {
 		t.Fatalf("wrapped stale revision lost the next-action hint: %q", rendered)
 	}
-	if !strings.Contains(rendered, "--expected-revision") {
-		t.Fatalf("wrapped stale revision lost the retry flag: %q", rendered)
+	if !strings.Contains(rendered, "original receipt") {
+		t.Fatalf("wrapped stale revision lost its original recovery source: %q", rendered)
 	}
 }
 
@@ -91,8 +97,8 @@ func TestFormatFailureStaleRevisionAcrossVerbs(t *testing.T) {
 			if !strings.Contains(rendered, "loop-harness status") {
 				t.Errorf("verb %q lost the next-action status command: %q", verb, rendered)
 			}
-			if !strings.Contains(rendered, "runtime reconcile") {
-				t.Errorf("verb %q lost the runtime reconcile hint: %q", verb, rendered)
+			if !strings.Contains(rendered, "Main") || !strings.Contains(rendered, "receipt") {
+				t.Errorf("verb %q lost conflict ownership or original receipt: %q", verb, rendered)
 			}
 		})
 	}

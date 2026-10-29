@@ -160,7 +160,7 @@ func TestApproveContractRequiresApprovalReceipt(t *testing.T) {
 		ApprovedBy:       "main-session",
 		ApprovalHash:     hash(draftBytes),
 	})
-	if err == nil || !strings.Contains(err.Error(), "approval_evidence_id is required") {
+	if err == nil || !strings.Contains(err.Error(), "approval_evidence_id binding is missing") || !strings.Contains(err.Error(), "Main/system must recover") {
 		t.Fatalf("ApproveContract() error = %v, want approval evidence requirement", err)
 	}
 }

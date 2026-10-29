@@ -12,8 +12,20 @@ import (
 )
 
 func TestIsolatedCheckCannotWriteMainOrSourceWorker(t *testing.T) {
-	if _, err := exec.LookPath("bwrap"); err != nil {
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
 		t.Skip("Bubblewrap not installed")
+	}
+	// Check only host namespace availability here. This does not verify the
+	// runner's seccomp policy or file/network isolation assertions below.
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelProbe()
+	probe := exec.CommandContext(probeCtx, bwrap, "--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--", "/bin/true")
+	if output, err := probe.CombinedOutput(); err != nil {
+		if probeCtx.Err() == nil && strings.Contains(string(output), "bwrap: setting up uid map: Permission denied") {
+			t.Skipf("host denies Bubblewrap UID mapping; isolation assertions not executed: %s", output)
+		}
+		t.Fatalf("Bubblewrap namespace preflight: %v; output=%s", err, output)
 	}
 	b, e, _, ctx := workerFixture(t)
 	protected := filepath.Join(b.MainRoot, "protected.txt")

@@ -51,7 +51,10 @@
       "minimum": 1
     },
     "review_round": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1
     },
     "platform_team_id": {
@@ -73,13 +76,18 @@
       ]
     },
     "status": {
-      "enum": ["planned", "active", "complete", "stale", "closed"]
+      "enum": [
+        "planned",
+        "active",
+        "complete",
+        "stale",
+        "closed"
+      ]
     },
     "documents": {
       "type": "array",
       "minItems": 1,
-      "description": "Fingerprinted document references used for runtime verification. The bottom-up reading order is NOT enforced here; it is enforced on the readback-request template (see internal/schema/assets/readback-request.schema.json) because ordering is a launch-time concern, not a manifest-construction concern.",
-      "$comment": "BUG-002: positional kind/read_order lives in readback-request.schema.json, not here. BUG-004: documents[].sha256 is hand-maintained today; refresh coverage is partial (see D1/D2 in BUG-004 §8).",
+      "description": "系统准备的当前代际已登记来源；原阶段消费者冻结完整专业阅读闭包。内部完整 DTO 保留来源关联，不要求 Main 复制 Runtime 元数据。",
       "items": {
         "$ref": "#/$defs/reference"
       }
@@ -126,16 +134,27 @@
       "$ref": "#/$defs/validation"
     },
     "dispatched_at": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$",
       "description": "Timestamp of the workgroup dispatch (register-workgroup). Serves as the dispatch-time fact for recovery and audit; the angle machinery that consumed it is retired (L3-S7). Null until dispatch fires."
+    },
+    "assignment_record_contract": {
+      "enum": ["s6-v1.2", "s6-native-v1"]
     }
   },
   "$defs": {
     "reference": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "path", "version", "sha256"],
+      "required": [
+        "id",
+        "path",
+        "version",
+        "sha256"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -152,15 +171,18 @@
         "sha256": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$",
-          "description": "SHA-256 of the document file referenced by `path`. Verified against disk by semantic.validateReviewManifestReferences at validate --all time. Mismatches surface as fingerprint-mismatch errors. BUG-004 D5: future direction is to make this field optional and compute on validate; today it is required.",
-          "$comment": "BUG-004: refresh coverage today is loop-state.json only (via loop-harness runtime fingerprint); manifests and readback templates still require manual hash propagation when source documents change."
+          "description": "系统从原已接受来源准备的内容摘要；作者不计算或转写。接收和后续校验核对同一来源，漂移时恢复原字节或正式修订，不能自动刷新摘要。"
         }
       }
     },
     "riskTag": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tag", "source", "derivation"],
+      "required": [
+        "tag",
+        "source",
+        "derivation"
+      ],
       "properties": {
         "tag": {
           "enum": [
@@ -184,7 +206,10 @@
           "minLength": 1
         },
         "derivation": {
-          "enum": ["explicit", "inferred"]
+          "enum": [
+            "explicit",
+            "inferred"
+          ]
         }
       }
     },
@@ -204,7 +229,10 @@
           "$ref": "#/$defs/responsibilityId"
         },
         "disposition": {
-          "enum": ["assigned", "not_applicable"]
+          "enum": [
+            "assigned",
+            "not_applicable"
+          ]
         },
         "trigger": {
           "type": "string",
@@ -219,10 +247,16 @@
           }
         },
         "na_rationale": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "evidence_ref": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -263,7 +297,11 @@
           }
         },
         "dispatch_mode": {
-          "enum": ["plan_checkpoint", "plan_approval_required", "one_shot"],
+          "enum": [
+            "plan_checkpoint",
+            "plan_approval_required",
+            "one_shot"
+          ],
           "description": "L4 dispatch mode. plan_checkpoint (default): the Worker sends one PLAN_REPORT and continues immediately — Main stays silent when aligned. plan_approval_required: two-round readback -> approval -> activation for high-risk or irreversible work. one_shot: no plan checkpoint; only for idempotent single-action tasks."
         },
         "focus_keys": {
@@ -324,7 +362,10 @@
         },
         "integration_check_mode": {
           "type": "string",
-          "enum": ["legacy_pre_and_post_merge", "post_merge"],
+          "enum": [
+            "legacy_pre_and_post_merge",
+            "post_merge"
+          ],
           "description": "Omission preserves legacy pre/post checks. New assignments explicitly select post_merge for static inspection then merged-target required checks."
         },
         "required_checks": {
@@ -340,7 +381,7 @@
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "description": "Concrete closing predicates for this Assignment. SubagentStart projects these values into the Worker context; do not replace them with a generic completion reminder.",
+          "description": "Concrete closing predicates for this Assignment. SubagentStart projects these values into the Worker context; do not replace them with a generic completion reminder. For canonical S6 Builders (assignment_record_contract=s6-v1.2), use Worker-owned outcomes verifiable before Result submission; Main-owned required_checks and Result registration remain in the original integration/receipt workflow. Other Assignments keep their domain-specific predicates.",
           "items": {
             "type": "string",
             "minLength": 1
@@ -360,7 +401,11 @@
           }
         },
         "reuse_decision": {
-          "enum": ["create", "reuse", "replace"]
+          "enum": [
+            "create",
+            "reuse",
+            "replace"
+          ]
         },
         "grouping_rationale": {
           "type": "string",
@@ -392,13 +437,54 @@
           "type": "string",
           "minLength": 1,
           "description": "Integration branch the worktree merges back into (e.g. develop)."
+        },
+        "check_profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check_profile"
+          }
+        },
+        "closing_contract": {
+          "$ref": "#/$defs/closing_contract"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "closing_contract"
+            ]
+          },
+          "then": {
+            "required": [
+              "integration_check_mode"
+            ],
+            "properties": {
+              "integration_check_mode": {
+                "const": "post_merge"
+              },
+              "check_profiles": {
+                "items": {
+                  "properties": {
+                    "location": {
+                      "const": "main"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "separationEdge": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["left_assignment_id", "right_assignment_id", "reason"],
+      "required": [
+        "left_assignment_id",
+        "right_assignment_id",
+        "reason"
+      ],
       "properties": {
         "left_assignment_id": {
           "type": "string",
@@ -432,7 +518,11 @@
       ],
       "properties": {
         "result": {
-          "enum": ["pass", "warn", "block"]
+          "enum": [
+            "pass",
+            "warn",
+            "block"
+          ]
         },
         "missing_responsibilities": {
           "$ref": "#/$defs/strings"
@@ -468,6 +558,7 @@
         "QA-PERFORMANCE",
         "QA-RELIABILITY",
         "QA-MIGRATION",
+        "E2E-BEHAVIOR",
         "E2E-USER-FLOW",
         "E2E-CONSOLE-NETWORK",
         "S8-CAUSAL-INVESTIGATION"
@@ -488,6 +579,228 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "check_profile_file_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "check_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "check_index",
+        "command",
+        "location",
+        "timeout_seconds",
+        "environment_policy",
+        "environment",
+        "dependencies",
+        "fixtures",
+        "input_closure",
+        "side_effects",
+        "reuse_policy"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "check_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "enum": [
+            "main",
+            "worker"
+          ]
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        },
+        "environment_policy": {
+          "enum": [
+            "inherited",
+            "declared_only"
+          ]
+        },
+        "environment": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "value"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check_profile_file_ref"
+          }
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check_profile_file_ref"
+          }
+        },
+        "input_closure": {
+          "const": "whole_tree"
+        },
+        "side_effects": {
+          "enum": [
+            "unknown",
+            "none",
+            "disposable"
+          ]
+        },
+        "reuse_policy": {
+          "enum": [
+            "never",
+            "same_input_same_responsibility"
+          ]
+        },
+        "reuse_mode": {
+          "enum": [
+            "shadow",
+            "enabled"
+          ]
+        }
+      }
+    },
+    "worker_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "command",
+        "profile"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profile": {
+          "$ref": "#/$defs/check_profile",
+          "properties": {
+            "location": {
+              "const": "worker"
+            }
+          }
+        }
+      }
+    },
+    "closing_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "worker_checks"
+      ],
+      "properties": {
+        "contract": {
+          "const": "s6-closing-v1"
+        },
+        "worker_checks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/worker_check"
+          },
+          "maxItems": 64
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "assignment_record_contract"
+        ]
+      },
+      "then": {
+        "properties": {
+          "workgroup_kind": {
+            "const": "builder"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "assignments"
+        ],
+        "properties": {
+          "assignments": {
+            "contains": {
+              "required": [
+                "closing_contract"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "assignment_record_contract"
+        ],
+        "properties": {
+          "assignment_record_contract": {
+            "enum": ["s6-v1.2", "s6-native-v1"]
+          },
+          "workgroup_kind": {
+            "const": "builder"
+          }
+        }
+      }
+    }
+  ]
 }

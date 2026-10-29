@@ -19,6 +19,9 @@
 ## 2. Human Stage Summary
 
 This section is a human-facing summary. It must not override the Loop runtime.
+Status values in the baseline and stage-check tables describe those artifacts
+or gates; responsibility attempts use the separate five-state contract in
+[state-machine.md](rules/state-machine.md#21-loop-responsibility-status).
 
 | Field | Value |
 |:---|:---|
@@ -35,6 +38,7 @@ This section is a human-facing summary. It must not override the Loop runtime.
 | Artifact | Path | Status | Fingerprint / Version |
 |:---|:---|:---|:---|
 | rules | `docs/rules/README.md` | locked | {version} |
+| engineering conventions | `docs/rules/project-conventions.json` (optional) | absent / candidate / indexed | {source refs; no duplicated decisions} |
 | REQ | `docs/requirements/REQ-{id}.md` | {status} | {version/hash} |
 | design investment | `local / core / extended / N/A` | {复用、换手、Surface、风险依据} | upgrade when: {事实触发} |
 | design foundation | `docs/design/DESIGN.md` / local / N/A | missing / draft / in-review / provisional / published / superseded | {version or scope; `provisional` is not a lock; `published+PENDING` is a fake lock} |
@@ -45,7 +49,7 @@ This section is a human-facing summary. It must not override the Loop runtime.
 
 ## 4. PM Todo
 
-| REQ | Human stage | Completed evidence | Next action | Owner | Blocker | Acceptance remaining | Runtime ref |
+| REQ | Human stage | Accepted evidence refs | Next action | Owner | Blocker | Acceptance remaining | Runtime ref |
 |:---|:---|:---|:---|:---|:---|:---|:---|
 | REQ-{id} | {S0-S11} | {links} | {one action} | {role} | {none/item} | {evidence} | `{runtime-id}` |
 

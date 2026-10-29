@@ -1,17 +1,15 @@
 # E2E Tester Evidence: E2E-{id}
 
-> Status: draft / pass / finding / req_change_required / release_blocked / invalidated (ReviewResult verdict vocabulary; submit via `runtime review-result submit`)
+> Status: draft / pass / finding / req_change_required / release_blocked / invalidated (原 ReviewResult 专业结论的可读投影)
 > Runtime ref: `{runtime-id}`
 > Review round: {n}
 > Workgroup manifest: `{team-manifest-path}`
 > Assignment: `{assignment-id}`
 > Responsibility: E2E-USER-FLOW / E2E-CONSOLE-NETWORK
 > Agent: `{agent-id}`
-> Activation: `{activation-ref}`
-> Workspace (cold_start only): `e2e-workspace/{plan-id}/` — bind `verification_artifact_digest` from `loop-harness s7 workspace-digest` after the last spec/fixture write
+> Workspace (cold_start only): `e2e-workspace/{plan-id}/` — `verification_artifact_digest` 由原接收器从真实执行来源绑定与校验，作者不计算或抄写
 
-This Markdown is the human-readable projection; the machine authority is the Canonical
-ReviewResult JSON (`internal/schema/assets/review-result.example.json` is the scaffold).
+本 Markdown 是已完成专业工作的可读投影，不要求再交一份报告。正常原生 S7 读取原题，只填写本人 `answer`，保存并返回准确引用，由 `SubagentStop` 调原消费者接收；不增加通用 PLAN／激活。Runtime、轮次、责任与摘要等已知信息由系统投影。
 
 ## 1. Header
 
@@ -23,8 +21,8 @@ Module current-truth package + source REQ refs + review round + Runtime identity
 | source REQ refs | REQ-{id} / none |
 | review round | {n} |
 | runtime ref | `{runtime-id}` |
-| current scenario package | `docs/design/prototypes/{module}/` · `{sha256}` |
-| spec chain | current module spec `web/e2e/{module}/` `{sha256}` / contracts `{sha256}` / TASK `{sha256}` |
+| current scenario package | `docs/design/prototypes/{module}/` · 原卷固定来源 |
+| spec chain | current module spec `web/e2e/{module}/` / 原契约与 TASK 引用；指纹由系统绑定 |
 
 ## 2. Stack-State Table
 
@@ -171,9 +169,7 @@ ls docs/reports/e2e/screenshots/*.png
 pass / finding / req_change_required / release_blocked
 ```
 
-Submitted via `runtime review-result submit --assignment-id {id} --result {result.json}`
-(bind `subject_digest` from `loop-harness s7 status`; cold_start also binds
-`verification_artifact_digest` from `loop-harness s7 workspace-digest`).
+本人将实际逐命题判断、检查、Finding 和 verdict 写入原卷，返回准确引用。`subject_digest` 与 `verification_artifact_digest` 由原题目／接收器承接，作者保留预填或 null，不运行摘要命令补字段。本地证据只选择实际路径；原捕获／接收机制固定机器元数据，执行后真正修改脚本或夹具仍须重做受影响流程。
 
 Findings are symptoms. They enter S8 finding investigation before any repair
 Builder is activated.

@@ -98,7 +98,7 @@ func TestValidateManifestAcceptsCompleteAcceptanceAudit(t *testing.T) {
 	}
 }
 
-func TestValidateManifestRejectsMissingHardMetricCategory(t *testing.T) {
+func TestValidateManifestDoesNotInventHardMetricCategories(t *testing.T) {
 	data := []byte(`{
   "schema_version":"1.0.0","manifest_type":"acceptance","runtime_id":"loop-req-1","baseline_generation":1,"review_round":1,
   "coverage_inventory":[{"id":"REQ-1","category":"requirement","source_refs":["REQ-1"],"expected":"x","oracle":"y","owner":"Acceptance","evidence_refs":["ev-1"],"disposition":"pass"}],
@@ -107,13 +107,13 @@ func TestValidateManifestRejectsMissingHardMetricCategory(t *testing.T) {
   "metrics":{"requirement_coverage":1,"contract_coverage":1,"changed_path_coverage":1,"audit_area_coverage":1,"unknown_count":0,"unsupported_pass_count":0,"unowned_risk_count":0,"untracked_debt_count":0,"blocking_finding_count":0}
 }`)
 
-	_, err := Validate(data, "acceptance")
-	if err == nil || !strings.Contains(err.Error(), "contract") {
-		t.Fatalf("manifest without a contract category must be rejected explicitly: %v", err)
+	summary, err := Validate(data, "acceptance")
+	if err != nil || summary.InventoryCount != 1 {
+		t.Fatalf("professional report should not require invented contract rows: %+v %v", summary, err)
 	}
 }
 
-func TestValidateManifestRejectsIncompleteCoverageAndCounterevidence(t *testing.T) {
+func TestValidateManifestRecordsUnknownRowsButCompletionRejectsThem(t *testing.T) {
 	data := []byte(`{
   "schema_version":"1.0.0",
   "manifest_type":"acceptance",
@@ -126,14 +126,12 @@ func TestValidateManifestRejectsIncompleteCoverageAndCounterevidence(t *testing.
   "metrics":{"requirement_coverage":0,"contract_coverage":1,"changed_path_coverage":1,"audit_area_coverage":1,"unknown_count":0,"unsupported_pass_count":0,"unowned_risk_count":0,"untracked_debt_count":0,"blocking_finding_count":0}
 }`)
 
-	_, err := Validate(data, "acceptance")
-	if err == nil {
-		t.Fatal("incomplete manifest must be rejected")
+	summary, err := Validate(data, ManifestAcceptance)
+	if err != nil || summary.UnknownCount != 2 {
+		t.Fatalf("recorded unknown rows must remain visible despite claimed zero metrics: %+v %v", summary, err)
 	}
-	for _, want := range []string{"REQ-1", "unknown", "unknown_count"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q does not identify %q", err, want)
-		}
+	if err := currentS10FixtureCompletion(t, data, ManifestAcceptance, "pass"); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("unknown rows cannot complete S10: %v", err)
 	}
 }
 
@@ -160,8 +158,26 @@ func TestValidateBlockedManifestAllowsUnknownCounterevidenceWithoutEvidenceRefs(
 
 func TestValidateAcceptanceDoesNotRequireAuditAreaMetric(t *testing.T) {
 	data := validAcceptanceManifestWithoutAuditAreaMetric(t)
-	if _, err := Validate(data, ManifestAcceptance); err != nil {
-		t.Fatalf("acceptance manifest should not require release-only audit_area_coverage: %v", err)
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Outcome = "pass"
+	manifest.CoverageInventory = []CoverageItem{{ID: "actual-promise", Category: "requirement", Disposition: "unknown", Oracle: "", EvidenceRefs: []string{}}}
+	manifest.Counterevidence = nil
+	manifest.AuditAreas = nil
+	// Displayed numbers cannot erase the current author's unfinished observation.
+	manifest.Metrics = Metrics{RequirementCoverage: 1, ContractCoverage: 1, ChangedPathCoverage: 1}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := ValidateForOutcome(data, ManifestAcceptance, manifest.Outcome)
+	if err != nil {
+		t.Fatalf("professional unknown with no extra evidence/oracle should be recorded: %v", err)
+	}
+	if summary.UnknownCount != 1 || summary.AuditAreaCount != 0 || summary.Metrics.RequirementCoverage != 0 {
+		t.Fatalf("display metrics hid unfinished professional work or required release-only areas: %+v", summary)
 	}
 }
 
@@ -199,7 +215,7 @@ func validAcceptanceManifestWithoutAuditAreaMetric(t *testing.T) []byte {
 	return data
 }
 
-func TestValidateManifestRejectsMismatchedTypeAndDuplicateRows(t *testing.T) {
+func TestValidateManifestChecksResponsibilityWithoutRewritingDuplicateRows(t *testing.T) {
 	data := []byte(`{
   "schema_version":"1.0.0",
   "manifest_type":"release_audit",
@@ -219,35 +235,50 @@ func TestValidateManifestRejectsMismatchedTypeAndDuplicateRows(t *testing.T) {
 	if err == nil {
 		t.Fatal("mismatched or duplicate manifest must be rejected")
 	}
-	for _, want := range []string{"manifest_type", "release_audit", "duplicate"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q does not identify %q", err, want)
-		}
+	if !strings.Contains(err.Error(), "manifest_type") {
+		t.Fatalf("wrong responsibility must be rejected: %v", err)
+	}
+	summary, err := Validate(data, ManifestReleaseAudit)
+	if err != nil || summary.InventoryCount != 2 {
+		t.Fatalf("reader must preserve the two professionally authored rows: %+v %v", summary, err)
 	}
 }
 
-func TestValidateManifestRequiresReleaseAuditAreas(t *testing.T) {
+func TestValidateManifestAllowsRelevantReleaseAuditAreas(t *testing.T) {
 	data := []byte(`{
   "schema_version":"1.0.0",
   "manifest_type":"release_audit",
   "runtime_id":"loop-req-1",
   "baseline_generation":1,
   "review_round":1,
-  "coverage_inventory":[{"id":"A","category":"audit_area","source_refs":["x"],"expected":"x","oracle":"y","owner":"Release Auditor","evidence_refs":["ev"],"disposition":"pass"}],
-  "counterevidence":[{"id":"CE-A","inventory_id":"A","question":"what disproves x?","evidence_refs":["ev-ce"],"outcome":"pass"}],
-  "audit_areas":[{"id":"state_machine","conclusion":"pass","owner":"Release Auditor","evidence_refs":["ev"]}],
+  "coverage_inventory":[{"id":"A","category":"audit_area","source_refs":["x"],"expected":"x","oracle":"","owner":"Release Auditor","evidence_refs":[],"disposition":"pass"}],
+  "counterevidence":[],
+  "audit_areas":[{"id":"state_machine","conclusion":"pass","owner":"Release Auditor","evidence_refs":[]}],
   "risks":[],"technical_debt":[],"blocking_findings":[],
   "metrics":{"requirement_coverage":1,"contract_coverage":1,"changed_path_coverage":1,"audit_area_coverage":0.125,"unknown_count":0,"unsupported_pass_count":0,"unowned_risk_count":0,"untracked_debt_count":0,"blocking_finding_count":0}
 }`)
 
-	_, err := Validate(data, "release_audit")
-	if err == nil {
-		t.Fatal("release audit must require all audit areas")
+	summary, err := Validate(data, ManifestReleaseAudit)
+	if err != nil {
+		t.Fatalf("one relevant audit area needs no invented categories or counterevidence: %v", err)
 	}
-	for _, want := range []string{"audit_areas", "8", "missing"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q does not identify %q", err, want)
-		}
+	if summary.AuditAreaCount != 1 || summary.CounterevidenceCount != 0 || summary.UnsupportedPassCount != 0 || summary.UnknownCount != 0 {
+		t.Fatalf("relevant professional pass was treated as an evidence qualification: %+v", summary)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Outcome = "approved"
+	manifest.AuditAreas[0].Conclusion = "fail"
+	manifest.Metrics.AuditAreaCoverage = 1
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err = ValidateForOutcome(data, ManifestReleaseAudit, manifest.Outcome)
+	if err != nil || summary.UnknownCount != 1 || summary.Metrics.AuditAreaCoverage != 0 {
+		t.Fatalf("honest failed observation must be recorded and remain unfinished despite displayed 1.0: summary=%+v err=%v", summary, err)
 	}
 }
 
@@ -272,7 +303,7 @@ func TestValidateEvidenceArtifactAcceptsBlockedReleaseAudit(t *testing.T) {
 	}
 }
 
-func TestValidateEvidenceArtifactRejectsBlockedLedgerForApproval(t *testing.T) {
+func TestValidateEvidenceArtifactRecordsBlockedLedgerButRejectsCompletion(t *testing.T) {
 	root := t.TempDir()
 	manifest := blockedManifest(t, ManifestReleaseAudit)
 	manifestPath := filepath.Join(root, "release-audit-manifest.json")
@@ -288,8 +319,11 @@ func TestValidateEvidenceArtifactRejectsBlockedLedgerForApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateEvidenceArtifact(root, ManifestReleaseAudit, envelope); err == nil {
-		t.Fatal("an approval envelope must not accept a manifest with blocking findings")
+	if err := ValidateEvidenceArtifact(root, ManifestReleaseAudit, envelope); err != nil {
+		t.Fatalf("negative professional facts must be recordable: %v", err)
+	}
+	if err := currentS10FixtureCompletion(t, manifest, ManifestReleaseAudit, "approved"); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("approval text cannot override reported blockers: %v", err)
 	}
 }
 
@@ -364,7 +398,7 @@ func blockedManifest(t *testing.T, manifestType string) []byte {
 // RC-02 (S10-10): a P0 risk is business-blocking by definition. Parking it
 // as a monitored non-blocking risk lets a known blocker ride into S11; the
 // manifest must refuse it.
-func TestValidateManifestRejectsP0RiskAsNonBlocking(t *testing.T) {
+func TestValidateManifestPreservesProfessionalRiskClassification(t *testing.T) {
 	data := validAcceptanceManifest(t)
 	var decoded map[string]any
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -378,14 +412,13 @@ func TestValidateManifestRejectsP0RiskAsNonBlocking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal manifest: %v", err)
 	}
-	_, err = Validate(encoded, ManifestAcceptance)
-	if err == nil {
-		t.Fatal("a P0 risk must not be parkable as a non-blocking risk entering S11")
+	summary, err := Validate(encoded, ManifestAcceptance)
+	if err != nil || summary.BlockingFindingCount != 0 {
+		t.Fatalf("reader must preserve the author's risk classification: %+v %v", summary, err)
 	}
-	for _, want := range []string{"RISK-1", "P0", "blocking_findings"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q does not identify %q", err, want)
-		}
+	var recorded Manifest
+	if err := json.Unmarshal(encoded, &recorded); err != nil || len(recorded.Risks) != 1 || recorded.Risks[0].Severity != "P0" {
+		t.Fatalf("professional severity must remain available for review: %+v %v", recorded.Risks, err)
 	}
 }
 
@@ -480,4 +513,35 @@ func TestBuildS10InventoryAuthorityUsesPinnedRuntimeFacts(t *testing.T) {
 	if got, want := authority.ClaimIDs, []string{"claim-qa-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("claim authority = %#v, want %#v", got, want)
 	}
+}
+
+// Exercise the actual completion consumer independently from report ingestion.
+func currentS10FixtureCompletion(t *testing.T, data []byte, kind, conclusion string) error {
+	t.Helper()
+	root := t.TempDir()
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "manifest.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	key := "audit_manifest_path"
+	if kind == ManifestReleaseAudit {
+		key = "audit_manifest_path"
+	}
+	envelope, err := json.Marshal(map[string]any{key: "manifest.json", "conclusion": conclusion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "evidence.json"), envelope, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{
+		"runtime_id": manifest.RuntimeID,
+		"baseline":   map[string]any{"generation": manifest.BaselineGeneration},
+		"review":     map[string]any{"round": manifest.ReviewRound},
+		"evidence":   []any{map[string]any{"id": "current-report", "path": "evidence.json", "kind": kind, "status": "valid", "baseline_generation": manifest.BaselineGeneration, "review_round": manifest.ReviewRound}},
+	}
+	return ValidateCurrentS10Evidence(root, state, kind)
 }

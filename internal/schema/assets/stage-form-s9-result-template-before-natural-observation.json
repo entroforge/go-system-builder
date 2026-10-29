@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "S9",
+  "adapter": "repair_result",
+  "title": "S09 修复结果 · RepairResult",
+  "instruction": "Result 顶层及逐观察 evidence_refs 中的本地文件以本人已登记 Builder 根目录为基准，不以 Main 为基准。推荐 path:logs/check.txt，无需作者填写 hash；也接受带目录的相对路径或该 Builder 根目录内绝对文件路径。单文件名写 path:check.log 或 ./check.log，裸 token 作为旧证据标识保留。原接收器交接真实文件字节，缺失文件由原责任恢复后重试，不编造观察；URI 保持原义。migration_ref、rollback_ref 与 detection_gap_artifacts 保持各自原引用语义，不属于此文件交接。 新 native Builder 只在准确 brief 指定的实际 worktree 私人输出中填写顶层专业结论、逐断言观察、逐单元实施结果与资料引用，然后保存 brief 给出的私人 Result 路径；这是唯一专业完成答案，不另交 generic completion 或第二报告，不手动 issue/consume。已有检查、实际变更路径、身份与时间由系统带出，不用复制机器信息；无改动测试正常报告实际结果，不要求新 commit，实际有改动才由 Main 做 Git 集成，必要真实检查和独立复验仍须执行。示例只说明原字段形状，实际 assertion_id、unit_id、不变量引用取自本卷，证据必须真实。缺卷/来源缺失归 Main/系统准备，不退 legacy。 原 Main 题面是只读问题与来源，不是 native 私人输出位置；不要添加 answer 包装。普通保存只保留工作，返回准确 brief 与私人 Result 绝对路径，由 SubagentStop 调用原消费者；Main 不代写。已登记冻结旧执行仍按其原题面、包装和来源恢复，不重写旧绑定。",
+  "questions": {
+    "verdict": {
+      "question": "对本次修复给出专业结论。completed 仅说明本人按 Assignment 完成实施和自检；blocked、contract_conflict、stale 必须如实保留。阻塞/未执行事项用现有 unit_results 的 implementation_summary、证据和 residual_risks 说明实际尝试、缺口与下一责任，不新增字段或虚构观察；按原消费者反馈恢复。全绿检查不会替你作答。",
+      "choices": [
+        "completed",
+        "blocked",
+        "contract_conflict",
+        "stale"
+      ],
+      "example": {
+        "path": "verdict",
+        "expected": "\"blocked\"（仅为合法值示例，结论须本人判断）",
+        "observed": "依据全绿测试自动填写 completed"
+      }
+    },
+    "before_fix_results": {
+      "question": "对题干列出的每一个精确 assertion_id，记录本人真实修前观察及支持资料；observed_red 是历史字段名，已通过、未重现或被阻塞均须如实说明，不编造失败。PlanReport 中某条命令 fail 不能代替逐断言观察。",
+      "example": {
+        "path": "before_fix_results",
+        "expected": "[{\"assertion_id\":\"root-1\",\"observed_red\":\"修复前空白输入被成功保存，既有名称被覆盖；见实际响应与读回日志。\",\"evidence_refs\":[\"test://pre-fix-log\"]}]（覆盖本卷每个实际断言，不可省略）",
+        "observed": "复制 PlanReport 命令和 fail 字样，或未观察却编造 red"
+      }
+    },
+    "unit_results": {
+      "question": "对本卷每个 unit_id 记录实施或测试状态、具体实现摘要、支持资料和恢复的不变量引用。不得增加、删除或改写 unit_id。",
+      "choices": [
+        "pass",
+        "fail",
+        "blocked"
+      ],
+      "example": {
+        "path": "unit_results",
+        "expected": "[{\"unit_id\":\"repair-unit-1\",\"status\":\"pass\",\"evidence_refs\":[\"test://unit-green\"],\"implementation_summary\":\"空白值在写入前拒绝，既有状态保持，原边界测试已执行。\",\"restored_invariant_refs\":[\"root-1\"]}]（ID/引用取本卷，status 按实际结果）",
+        "observed": "只写已修改代码，漏字段或自造 unit_id"
+      }
+    },
+    "detection_gap_artifacts": {
+      "question": "列出与检测缺口有关的资料引用；没有相关资料时明确填写空数组。此字段不声明文件摘要或验证权限。",
+      "example": {
+        "path": "detection_gap_artifacts",
+        "expected": "[\"test://blank-name-regression\"] 或 []（按真实资料和原 Contract 要求）",
+        "observed": "在引用中附加自报 SHA"
+      }
+    },
+    "evidence_refs": {
+      "question": "列出支持本专业结论的实际资料路径或已有引用，不要求 URI 前缀；引用是定位线索，不能代替真实观察。",
+      "example": {
+        "path": "evidence_refs",
+        "expected": "[\"test://pre-fix-log\",\"test://unit-green\"]（引用本人实际观察资料）",
+        "observed": "把引用形式当成系统已验证"
+      }
+    },
+    "scope_deviations": {
+      "question": "列出实施时识别到的范围偏差；没有偏差时明确填写空数组。范围偏差不能由作者自行批准。",
+      "example": {
+        "path": "scope_deviations",
+        "expected": "[] 或 [\"必要测试入口未列入批准范围，已停止并交 Main 原恢复流程。\"]",
+        "observed": "将越界实施描述为已获授权"
+      }
+    },
+    "residual_risks": {
+      "question": "列出仍存在的残余风险；没有已知风险时明确填写空数组。",
+      "example": {
+        "path": "residual_risks",
+        "expected": "[] 或 [\"浏览器依赖不可用；未执行该检查，Main 需恢复环境后按原责任复验。\"]",
+        "observed": "因测试通过而省略未验证风险"
+      }
+    },
+    "migration_ref": {
+      "question": "提供本次实际需要的兼容/迁移依据，可引用已有批准 Contract 或真实资料；无需迁移或没有相关资料时可填空字符串，不因兼容文本非空而强制引用或另造报告。引用不表示迁移已执行或验证。",
+      "example": {
+        "path": "migration_ref",
+        "expected": "\"<本卷实际批准 Contract 路径>#compatibility_migration\"、已有真实资料路径或 \"\"（按实际需要填写；占位须换真实依据）",
+        "observed": "为满足非空而新造迁移报告，或把引用当迁移已验证"
+      }
+    },
+    "rollback_ref": {
+      "question": "提供本次实际需要的回滚依据，可引用真实 Git 基线/提交或已有资料；不需要或没有相关资料时可填空字符串，不与 migration_ref 强制成对，不编造 SHA 或另造报告。引用不表示回滚已执行或验证。",
+      "example": {
+        "path": "rollback_ref",
+        "expected": "\"<本次实际 Git 基线/提交引用>\"、已有真实资料路径或 \"\"（按实际需要填写；占位须换真实依据）",
+        "observed": "引用虚构提交，或把回滚依据等同于回滚能力已验证"
+      }
+    }
+  }
+}

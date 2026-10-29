@@ -22,6 +22,18 @@ Stop on ambiguous authority, two legal next states, or unrecoverable persisted s
 ## Non-Goals
 Do not implement a second hidden state machine in prose.
 
+For Loop responsibility progress, use the shared five-state model in
+[`docs/rules/state-machine.md`](../../docs/rules/state-machine.md#21-loop-responsibility-status).
+Runtime 1.3 stores it on Agent, TASK, and S7 ReviewAssignment work-state
+fields. Runtime 1.1/1.2 retains its original compatibility format without
+in-place rewrite. Approval and activation remain separate event evidence; an
+`active` work state does not grant write permission. Other Team, Bug, phase,
+and Runtime protocol fields keep their exact meanings and are not generic
+statuses for Agents to author. The TASK planning document's `Status: complete`
+means that the document is ready for its original gate, not that the
+implementation responsibility is `done`. Stage position and professional
+result remain separate.
+
 ## Operating Procedure
 1. List durable states, event facts, actor/owner, guards, actions, persistence fields, and recovery semantics. Keep lifecycle state separate from DAG dependency ordering.
 2. Build the transition table before code: `from state + event + guard -> to state + idempotent action`; record invalid events as rejected without mutation.
@@ -44,4 +56,4 @@ Do not implement a second hidden state machine in prose.
 
 ## Inlined Methodology
 
-The Loop uses a layered state model: a top-level Loop state plus constrained phase machines for complex stages plus independent Agent/TASK/BUG lifecycles. The top-level state answers "after interruption, which engineering stage must resume"; the phase answers "within that stage, which guarded method step is currently active"; entity lifecycles answer "what may this specific Agent, TASK or BUG do now". The main trunk is `inactive -> planning -> document_verification -> building -> verification -> acceptance -> release_audit -> awaiting_human_release`. `bug_resolution` handles correction work, `paused` is a resumable wait state, and `awaiting_human_release` is a non-terminal human decision gateway. Only `release_authorized` and `aborted` are terminal states eligible for rollover; a human approve decision reaches `release_authorized` without executing a release. Correction loops never bypass the trunk. Three constrained phase machines: `planning`, `verification`, `bug_resolution`. Agent lifecycle: `spawned -> reading -> understanding_submitted -> understanding_approved -> activated -> working -> reported -> done`, plus `blocked` and `stopped`. TASK lifecycle: `candidate -> reviewed -> locked -> in_progress -> review -> done`. Invalid transition policy: undefined or guard-failing events do not change state, execute no side effect, record a rejected event, report the failed guard. Idempotency uses CAS revision checks; one committed transition per runtime revision. The 16 preservation invariants (INV-001..INV-016) map to enforcement layers (schema, hook, guard, combined).
+The Loop uses a layered persisted protocol: a top-level Loop cursor, constrained phase machines, and entity/event facts. The top-level cursor answers "after interruption, which engineering stage must resume"; a phase answers "within that stage, which guarded method step is active"; approval, activation, and lifecycle events retain their original evidence meaning. Runtime 1.3 Agent, TASK, and S7 ReviewAssignment work-state fields carry the shared five-state responsibility progress; legacy Runtime 1.1/1.2 Agent/TASK lifecycle values (`spawned -> reading -> understanding_submitted -> understanding_approved -> activated -> working -> reported -> done` and `candidate -> reviewed -> locked -> in_progress -> review -> done`) remain in their original compatibility format without in-place rewrite. The main trunk is `inactive -> planning -> document_verification -> building -> verification -> acceptance -> release_audit -> awaiting_human_release`. `bug_resolution` handles correction work, `paused` is a resumable wait state, and `awaiting_human_release` is a non-terminal human decision gateway. Only `release_authorized` and `aborted` are terminal states eligible for rollover; a human approve decision reaches `release_authorized` without executing a release. Correction loops never bypass the trunk. Three constrained phase machines: `planning`, `verification`, `bug_resolution`. Do not treat activation evidence as `active` work state or infer write permission from `active`; never ask an Agent to fill Runtime state fields. Invalid transition policy: undefined or guard-failing events do not change state, execute no side effect, record a rejected event, report the failed guard. Idempotency uses CAS revision checks; one committed transition per runtime revision. The 16 preservation invariants (INV-001..INV-016) map to enforcement layers (schema, hook, guard, combined).

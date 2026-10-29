@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +20,7 @@ var recoveryInputFiles = []string{
 	".claude/loop-state.json.fingerprint-pending.json",
 	".claude/loop-state.json.rollover-pending.json",
 	".claude/loop-state.json.recovery-pending.json",
+	".claude/loop-state.json.journal-rotation-pending.json",
 	projectlayout.Definition,
 	projectlayout.Policy,
 }
@@ -70,7 +72,19 @@ func Inspect(root, reqPath string) (Inventory, error) {
 		return Inventory{}, fmt.Errorf("inventory selected req: %w", err)
 	}
 
-	for _, relativePath := range recoveryInputFiles {
+	segmentPaths, err := runtime.JournalSegmentPaths(filepath.Join(resolvedRoot, ".claude/loop-events.jsonl"))
+	if err != nil {
+		return Inventory{}, err
+	}
+	inputFiles := append([]string(nil), recoveryInputFiles...)
+	for _, full := range segmentPaths {
+		rel, err := repositoryRelativePath(resolvedRoot, full)
+		if err != nil {
+			return Inventory{}, err
+		}
+		inputFiles = append(inputFiles, rel)
+	}
+	for _, relativePath := range inputFiles {
 		fullPath := filepath.Join(resolvedRoot, filepath.FromSlash(relativePath))
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			continue
@@ -316,9 +330,12 @@ func inputKind(relativePath string) string {
 		return InputKindRuntimeState
 	case ".claude/loop-events.jsonl":
 		return InputKindRuntimeJournal
-	case ".claude/loop-state.json.commit-pending.json", ".claude/loop-state.json.fingerprint-pending.json", ".claude/loop-state.json.rollover-pending.json", ".claude/loop-state.json.recovery-pending.json":
+	case ".claude/loop-state.json.commit-pending.json", ".claude/loop-state.json.fingerprint-pending.json", ".claude/loop-state.json.rollover-pending.json", ".claude/loop-state.json.recovery-pending.json", ".claude/loop-state.json.journal-rotation-pending.json":
 		return InputKindRuntimePending
 	default:
+		if strings.HasPrefix(relativePath, ".claude/loop-events.jsonl.archive.") {
+			return InputKindRuntimeSegment
+		}
 		if strings.HasPrefix(relativePath, projectlayout.Requirements+"/") && strings.HasPrefix(filepath.Base(filepath.FromSlash(relativePath)), "REQ-") {
 			return InputKindREQ
 		}

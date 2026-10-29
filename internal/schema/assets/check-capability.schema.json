@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "check-capability.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runner",
+    "available",
+    "fully_verified",
+    "checks"
+  ],
+  "properties": {
+    "runner": {
+      "enum": [
+        "main_shell",
+        "worker_isolated"
+      ]
+    },
+    "available": {
+      "type": "boolean"
+    },
+    "fully_verified": {
+      "const": false
+    },
+    "shell": {
+      "type": "string"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "status",
+          "verification_scope"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "unverified",
+              "unavailable",
+              "entrance_available"
+            ]
+          },
+          "tool": {
+            "type": "string"
+          },
+          "executable": {
+            "type": "string"
+          },
+          "verification_scope": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "failure": {
+            "$ref": "#/$defs/failure"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "category",
+        "owner",
+        "check",
+        "observed",
+        "repair",
+        "retry_condition"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "CHECK_CAPABILITY_MISSING",
+            "CHECK_PROCESS_EXIT",
+            "CHECK_TIMEOUT",
+            "CHECK_CANCELLED",
+            "CHECK_DIAGNOSTIC_IO",
+            "CHECK_INPUT_DRIFT",
+            "CHECK_UNCLASSIFIED"
+          ]
+        },
+        "category": {
+          "enum": [
+            "capability_missing",
+            "process_exit",
+            "timeout",
+            "cancelled",
+            "diagnostic_io",
+            "input_drift",
+            "unclassified_failure"
+          ]
+        },
+        "owner": {
+          "type": "string"
+        },
+        "check": {
+          "type": "string"
+        },
+        "observed": {
+          "type": "string"
+        },
+        "repair": {
+          "type": "string"
+        },
+        "retry_condition": {
+          "type": "string"
+        },
+        "receipt_ref": {
+          "type": "string"
+        },
+        "log_ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

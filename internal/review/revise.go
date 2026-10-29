@@ -1,10 +1,13 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
@@ -15,6 +18,7 @@ import (
 // ReviseRequest drives `runtime review-plan revise` — the one controlled
 // ReviewPlan revision per round (L3-S7 §3.2, §5.3).
 type ReviseRequest struct {
+	Context          context.Context `json:"-"`
 	ExpectedRevision int
 	PlanPath         string
 	SourceRef        string
@@ -44,15 +48,9 @@ func RevisePlan(
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read revised ReviewPlan: %w", err)
 	}
-	if err := schema.NewValidator(root).ValidateBytes("review-plan.schema.json", data); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan schema: %w", err)
-	}
-	var next Plan
-	if err := json.Unmarshal(data, &next); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("decode revised ReviewPlan: %w", err)
-	}
-	if err := ValidatePlan(&next); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan coverage: %w", err)
+
+	if !json.Valid(data) {
+		return loopruntime.Snapshot{}, &PlanAnswerError{fmt.Errorf("revised ReviewPlan file %s must contain JSON; --file expects a JSON file path, not Markdown or inline JSON", request.PlanPath)}
 	}
 
 	stateData, err := os.ReadFile(statePath)
@@ -63,12 +61,30 @@ func RevisePlan(
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
+	data, err = preparePlanAssets(root, data, current, request.Context)
+	if err != nil {
+		return loopruntime.Snapshot{}, fmt.Errorf("prepare ReviewPlan assets: %w", err)
+	}
+	if err := schema.NewValidator(root).ValidateBytes("review-plan.schema.json", data); err != nil {
+		return loopruntime.Snapshot{}, &PlanAnswerError{fmt.Errorf("revised ReviewPlan schema: %w", err)}
+	}
+	var next Plan
+	if err := json.Unmarshal(data, &next); err != nil {
+		return loopruntime.Snapshot{}, fmt.Errorf("decode revised ReviewPlan: %w", err)
+	}
+	if err := ValidatePlan(&next); err != nil {
+		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan coverage: %w", err)
+	}
+
 	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
 		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
 	}
 	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	currentPlan, ptr, err := LoadPlan(root, current)
 	if err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validateAuthoredBehaviorSurfaces(&next, currentPlan); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	switch ptr.Status {
@@ -91,7 +107,10 @@ func RevisePlan(
 	if next.ReviewRound != currentPlan.ReviewRound || next.BaselineGeneration != currentPlan.BaselineGeneration {
 		return loopruntime.Snapshot{}, fmt.Errorf("a revision keeps the review_round and baseline_generation; a changed baseline is a stale round, not a revision")
 	}
-	if err := verifyFrozenSubjects(root, &next, current); err != nil {
+	if !reflect.DeepEqual(next.ProductBaseline, currentPlan.ProductBaseline) {
+		return loopruntime.Snapshot{}, fmt.Errorf("a ReviewPlan revision cannot replace or move the pinned S6 product baseline; start a new review round for a new Main commit")
+	}
+	if err := verifyFrozenSubjects(root, &next, current, request.Context); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan frozen subject baseline: %w", err)
 	}
 	if err := verifyRegressionAssetFingerprints(root, &next); err != nil {
@@ -101,6 +120,9 @@ func RevisePlan(
 		return loopruntime.Snapshot{}, err
 	}
 	if err := validateCoverageInventory(root, current, &next); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
+	if err := validateKnownE2ECaseCoverage(request.Context, root, current, &next); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	if err := validateRepairRoundBaseline(root, current, &next); err != nil {
@@ -119,6 +141,62 @@ func RevisePlan(
 	}
 	if len(changed) == 0 {
 		return loopruntime.Snapshot{}, fmt.Errorf("the revision changes no Claim; nothing to revise")
+	}
+	changedSet := map[string]bool{}
+	for _, claimID := range changed {
+		changedSet[claimID] = true
+	}
+	metadataChangedAssignments := map[string]bool{}
+	oldOwnerByClaim := map[string]string{}
+	newOwnerByClaim := map[string]string{}
+	for _, previousAssignment := range currentPlan.Assignments {
+		for _, claimID := range previousAssignment.ClaimIDs {
+			oldOwnerByClaim[claimID] = previousAssignment.AssignmentID
+		}
+	}
+	for _, nextAssignment := range next.Assignments {
+		for _, claimID := range nextAssignment.ClaimIDs {
+			newOwnerByClaim[claimID] = nextAssignment.AssignmentID
+		}
+	}
+	for _, nextAssignment := range next.Assignments {
+		previousAssignment := findPlanAssignment(currentPlan, nextAssignment.AssignmentID)
+		if previousAssignment == nil {
+			continue
+		}
+		previousDigest, err := planAssignmentDigest(previousAssignment)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		nextDigest, err := planAssignmentDigest(&nextAssignment)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		if previousDigest == nextDigest {
+			continue
+		}
+		metadataChangedAssignments[nextAssignment.AssignmentID] = true
+		// Assignment-level changes are part of the accepted execution scope.
+		// Reset every Claim that remains under the changed Assignment so its
+		// previous Result cannot survive with a changed boundary/lock/wave.
+		for _, claimID := range nextAssignment.ClaimIDs {
+			changedSet[claimID] = true
+		}
+	}
+	// Ownership is part of a Claim's accepted execution context. A plan may
+	// delete an old Assignment and move an otherwise unchanged Claim into a
+	// newly named Assignment; comparing metadata only by AssignmentID would
+	// leave the old disposition/result attached to that Claim. Treat every
+	// owner change (including removal) as a touched Claim so the old result is
+	// invalidated and the new Assignment must obtain a fresh answer.
+	for claimID, previousOwner := range oldOwnerByClaim {
+		if nextOwner := newOwnerByClaim[claimID]; nextOwner != previousOwner {
+			changedSet[claimID] = true
+			metadataChangedAssignments[previousOwner] = true
+			if nextOwner != "" {
+				metadataChangedAssignments[nextOwner] = true
+			}
+		}
 	}
 
 	// Persist v2 as a new immutable pinned artifact; the pointer path+sha
@@ -144,12 +222,7 @@ func RevisePlan(
 	}
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
-	changedSet := map[string]bool{}
-	for _, claimID := range changed {
-		changedSet[claimID] = true
-	}
-
-	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
 		EventID:        fmt.Sprintf("evt-review-revise-%s-r%d", next.ReviewPlanID, commitRevision+1),
 		TransitionID:   "REVIEW-PLAN-REVISE",
@@ -163,6 +236,15 @@ func RevisePlan(
 			next.ReviewPlanID, len(changed), request.SourceRef),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
+			if err := verifyFrozenSubjects(root, &next, state, request.Context); err != nil {
+				return fmt.Errorf("canonical product baseline changed before ReviewPlan revision commit: %w", err)
+			}
+			if err := validateKnownE2ECaseCoverage(store.Context(), root, state, &next); err != nil {
+				return err
+			}
+			if err := verifyRegressionAssetFingerprints(root, &next); err != nil {
+				return err
+			}
 			reviewMap, ok := state["review"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("runtime review section must be an object")
@@ -203,13 +285,16 @@ func RevisePlan(
 				status := "planned"
 				agentID := any(nil)
 				resultRef := any(nil)
+				resultReceipt := any(nil)
+				resultReceiptPresent := false
 				queuedAgentID := any(nil)
 				blockerRef := any(nil)
 				blockedAt := any(nil)
 				if existing != nil {
-					status, _ = existing["status"].(string)
+					status = workstate.ReviewAssignmentActivity(existing)
 					agentID = existing["agent_id"]
 					resultRef = existing["result_ref"]
+					resultReceipt, resultReceiptPresent = existing["result_receipt"]
 					queuedAgentID = existing["queued_agent_id"]
 					blockerRef = existing["blocker_ref"]
 					blockedAt = existing["blocked_at"]
@@ -217,7 +302,7 @@ func RevisePlan(
 				// An assignment containing a changed claim must produce a
 				// new result: reset consumption so review-result submit is
 				// reachable again.
-				touched := false
+				touched := metadataChangedAssignments[assignment.AssignmentID]
 				for _, claimID := range assignment.ClaimIDs {
 					if changedSet[claimID] {
 						touched = true
@@ -232,6 +317,7 @@ func RevisePlan(
 					status = "planned"
 					agentID = nil
 					resultRef = nil
+					resultReceipt = nil
 				}
 				// Carry the declared resource_locks forward; a plan
 				// revision may declare different locks, in which case the
@@ -250,7 +336,7 @@ func RevisePlan(
 						queueReason = existing["queue_reason"]
 					}
 				}
-				newAssignments[assignment.AssignmentID] = map[string]any{
+				assignmentRow := map[string]any{
 					"lens":            assignment.Lens,
 					"claim_ids":       claimIDs,
 					"status":          status,
@@ -262,6 +348,16 @@ func RevisePlan(
 					"resource_locks":  locks,
 					"queue_reason":    queueReason,
 				}
+				if err := workstate.RecordReviewAssignmentActivity(state, assignmentRow, status, "review_plan_revised"); err != nil {
+					return err
+				}
+				// Keep the optional receipt's legacy shape untouched. Packet-mode
+				// v1.2 rows carry an explicit null on new/revised Assignments so a
+				// touched assignment cannot retain its previous acceptance receipt.
+				if resultReceiptPresent || typedResultReceiptsEnabled(state) {
+					assignmentRow["result_receipt"] = resultReceipt
+				}
+				newAssignments[assignment.AssignmentID] = assignmentRow
 			}
 			newClaims := map[string]any{}
 			for _, claim := range next.Claims {
@@ -305,7 +401,7 @@ func RevisePlan(
 				}
 				if id, _ := entry["id"].(string); invalidate[id] && entry["status"] == "valid" {
 					entry["status"] = "invalid"
-					entry["invalidated_by"] = next.ReviewPlanID + "@r2"
+					entry["invalidated_by"] = fmt.Sprintf("%s@r%d", next.ReviewPlanID, nextRevision)
 					entry["invalidation_reason"] = "plan_revision"
 					entry["invalidation_rule"] = "review_plan_revision"
 				}
@@ -319,7 +415,7 @@ func RevisePlan(
 		// marker. Cleanup must be serialized with Runtime writers and must
 		// retain the artifact whenever recovery could still publish a pointer
 		// to it.
-		cleanupStore := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+		cleanupStore := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 		if _, cleanupErr := cleanupStore.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{
 			ExpectedRevision: commitRevision,
 			ArtifactPath:     planRel,

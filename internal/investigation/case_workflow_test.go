@@ -653,6 +653,7 @@ func TestUpdateCaseRouteAcceptsExplicitNoCompetingHypothesis(t *testing.T) {
 
 func TestUpdateCaseRouteCanReopenInvestigateMoreAfterNewEvidence(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
+	setInvestigationReentryLimit(t, fixture, 1)
 	pointer := investigationPointer(t, fixture)
 	register := investigation.HypothesisRequest{
 		ExpectedRevision:     1,
@@ -1033,9 +1034,9 @@ func mustRead(t *testing.T, path string) []byte {
 }
 
 // TestInvestigateMoreLivelockCapRejects covers RC-15 (S9-T2/L1): after the
-// investigate_more attempt chain reaches the livelock cap (default 5) the
-// route verb fails closed with an actionable converge instruction instead of
-// allowing another silent re-entry. Each attempt is legitimately fresh: the
+// investigate_more route chain reaches its independent cap (default 5), the
+// route verb refuses another registration and explains how actual professional
+// investigation can continue in the same Case. Each attempt is fresh: the
 // test registers a new hypothesis with new evidence before re-routing, which
 // is exactly the mechanical unlock the fingerprint gate requires — proving
 // the cap bites on content-valid re-entry chains, not just stale ones.
@@ -1092,9 +1093,21 @@ func TestInvestigateMoreLivelockCapRejects(t *testing.T) {
 		}
 	}
 
-	// The 6th route hits the cap even though a fresh hypothesis could be
-	// registered: the Case must converge on a concrete disposition now.
+	// Real evidence can still be registered at the limit. The rejected sixth
+	// route must describe the route-registration budget, not lack of progress.
 	pointer = investigationPointer(t, fixture)
+	if _, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
+		ExpectedRevision: currentRuntimeRevision(t, fixture), ExpectedCaseRevision: integerPointerRevision(pointer), ExpectedCaseSHA256: pointer["sha256"].(string),
+		CaseID: caseID, HypothesisID: "hypothesis-after-cap", AssignmentID: "assignment-after-cap",
+		Statement: "a second boundary drops the value", Invariant: "the value survives", Discriminator: "compare both boundaries",
+		ExpectedOutcomes: map[string]any{"support": "the second boundary drops the value", "refute": "the second boundary preserves the value"},
+		SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"evidence://actual-new-observation-after-cap"},
+	}); err != nil {
+		t.Fatalf("actual investigation at the limit: %v", err)
+	}
+	pointer = investigationPointer(t, fixture)
+	beforeState := mustRead(t, fixture.statePath)
+	beforeJournal := mustRead(t, fixture.journalPath)
 	_, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
 		ExpectedRevision:     currentRuntimeRevision(t, fixture),
 		ExpectedCaseRevision: integerPointerRevision(pointer),
@@ -1106,8 +1119,22 @@ func TestInvestigateMoreLivelockCapRejects(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected investigate_more route beyond the livelock cap to fail")
 	}
-	if !strings.Contains(err.Error(), "investigate_more attempts exhausted") {
+	if !strings.Contains(err.Error(), "investigate_more route-registration budget exhausted") {
 		t.Fatalf("expected livelock cap error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "without new") || !strings.Contains(err.Error(), "Keep the same Case") {
+		t.Fatalf("budget error must preserve real progress and continuation: %v", err)
+	}
+	if string(beforeState) != string(mustRead(t, fixture.statePath)) || string(beforeJournal) != string(mustRead(t, fixture.journalPath)) {
+		t.Fatal("exhausted budget changed Runtime or journal")
+	}
+	// An omitted route deterministically selecting investigate_more obeys the same cap.
+	_, err = investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
+		ExpectedRevision: currentRuntimeRevision(t, fixture), ExpectedCaseRevision: integerPointerRevision(pointer), ExpectedCaseSHA256: pointer["sha256"].(string),
+		CaseID: caseID, RouteReason: "automatic continuation",
+	})
+	if err == nil || !strings.Contains(err.Error(), "route-registration budget exhausted") {
+		t.Fatalf("implicit route bypassed budget: %v", err)
 	}
 }
 
@@ -1233,6 +1260,22 @@ func setStateReviewPlan(t *testing.T, fixture *intakeFixture, planID, planRel, p
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(fixture.statePath, append(updated, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setInvestigationReentryLimit(t *testing.T, fixture *intakeFixture, limit int) {
+	t.Helper()
+	var state map[string]any
+	if err := json.Unmarshal(mustRead(t, fixture.statePath), &state); err != nil {
+		t.Fatal(err)
+	}
+	state["configuration"].(map[string]any)["repair"].(map[string]any)["max_investigation_reentries"] = limit
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.statePath, append(data, '\n'), 0644); err != nil {
 		t.Fatal(err)
 	}
 }

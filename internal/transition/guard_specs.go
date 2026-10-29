@@ -23,9 +23,10 @@ type GuardSpec struct {
 
 // guardSpecRegistry maps guard IDs to their one-sentence documentation.
 var guardSpecRegistry = map[string]GuardSpec{
+	"planning_rework_scope": {ID: "planning_rework_scope", Check: "The current packet-mode S3/S4 entry keeps its authorized locked REQ; the named Main request supplies the professional reason and the original Writer invalidates dependent planning projections."},
 	"acc_complete": {
 		ID:    "acc_complete",
-		Check: "A valid acceptance evidence entry for the current baseline generation and review round exists in runtime.evidence[] and its registered sha256 still matches the on-disk acceptance record (RC-06 S10-14: invalidated, stale-round or drifted ACC envelopes are rejected, not attested).",
+		Check: "The latest valid acceptance report for the current responsibility, baseline generation and review round records pass with no reported unfinished rows or blockers; this reads professional completion, not historical source proofs.",
 	},
 	"activation_scope_still_valid": {
 		ID:    "activation_scope_still_valid",
@@ -93,7 +94,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"clean_round_still_valid": {
 		ID:    "clean_round_still_valid",
-		Check: "verification.EvaluateCleanRound still reports a passing clean round at the current baseline generation, so neither baselines nor evidence drifted between round capture and release.",
+		Check: "verification.EvaluateCleanRound recomputes completion from current registered round facts, including its ReviewPlan, required Claims, invalidations and blockers; it does not reverify every product file's current bytes.",
 	},
 	"completion_report_complete": {
 		ID:    "completion_report_complete",
@@ -177,7 +178,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"release_audit_approved": {
 		ID:    "release_audit_approved",
-		Check: "A valid release_audit evidence entry for the current baseline generation and review round exists in runtime.evidence[] and its registered sha256 still matches the on-disk audit record (RC-06 S10-14: the guard resolves and re-hashes the artifact instead of attesting an evidence map).",
+		Check: "The latest valid release audit for the current responsibility, baseline generation and review round records approved or approved_with_risk with no reported unfinished rows or blockers; this reads professional completion, not historical source proofs.",
 	},
 	"repair_activation_recorded": {
 		ID:    "repair_activation_recorded",
@@ -277,7 +278,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"contracts_checked": {
 		ID:    "contracts_checked",
-		Check: "S3's mechanical close (semantic.ContractsCheck) runs at PTR-PLAN-02: contract token references resolve against REQ FR tables and module packages, clause cells point at known contracts, and fingerprint columns match disk.",
+		Check: "S3 typed reception checks the declared current-REQ delivery and source view with semantic.ContractsCheck: REQ/CASE references and contract clauses resolve, shared models and examples validate, and system-maintained source fingerprints match. PTR-PLAN-02 rechecks the accepted delivery for registration. Existing disk-based compatibility flows retain their original checks; fingerprint columns are not an author obligation.",
 	},
 	"tasks_checked": {
 		ID:    "tasks_checked",

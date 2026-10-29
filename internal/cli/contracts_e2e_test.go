@@ -67,10 +67,12 @@ func TestS3ContractPipelineE2E(t *testing.T) {
   ]}]
 }`)
 	write("docs/design/prototypes/wb/fixture-contract.json", `{"module": "wb", "fixtures": [{"id": "fixture-wb", "persona": "operator", "synthetic": true, "setup": ["seed"], "cleanup": ["purge"]}]}`)
-	write("docs/design/prototypes/wb/cross-matrix.json", `{"module": "wb", "entries": [{"fact": "fact-wb", "req_ref": "REQ-500/FR-501", "story": "S-001", "branch": "branch-allow"}]}`)
+	write("docs/design/prototypes/wb/cross-matrix.json", `{"module": "wb", "entries": [{"fact": "fact-wb", "req_ref": "REQ-500/FR-501", "story": "S-001", "branch": "branch-allow"}, {"fact":"fact-wb", "req_ref":"REQ-500/FR-501", "story":"S-001", "branch":"branch-reject"}]}`)
 	write("docs/design/prototypes/wb/cases.json", `{"cases":[{"id":"CASE-WB-001"},{"id":"CASE-WB-002"}]}`)
 	write("docs/design/prototypes/wb/stories.md", "# S-001\n")
 	write("docs/design/prototypes/wb/flows.md", "# F-001\n\n### PATH-SUBMIT\n")
+
+	write("docs/dev/contracts/CONTRACTS-500.md", cliContractBatchFixture("REQ-500", "BE-501", "v1.0.0")+"| REQ-500/FR-501 | — | BE-501 §2 / BE-501 §3 | — |\n")
 
 	// --- green: a contract whose references all resolve ---
 	write("docs/dev/contracts/BE-501.md", ""+
@@ -100,7 +102,13 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 		return s
 	}())
 
-	// --- registration via PTR-PLAN-02: bind, then fire the transition ---
+	// This historical disk-registration fixture deliberately uses packet-off
+	// mode. Current questionnaire mode is covered by the original-consumer
+	// tests and must reject this direct, unreceived transition path.
+	if _, stderr, code := run("init", "--root", root, "--packet=false"); code != 0 {
+		t.Fatalf("initialize explicit legacy contract fixture: %s", stderr)
+	}
+	// --- legacy registration via PTR-PLAN-02: bind, then fire the transition ---
 	if _, stderr, code := run("req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "bob"); code != 0 {
 		t.Fatalf("bind failed: %s", stderr)
 	}
@@ -122,7 +130,7 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	var contractEntry map[string]any
 	for _, raw := range docs {
 		doc, _ := raw.(map[string]any)
-		if doc != nil && doc["kind"] == "contract" {
+		if doc != nil && doc["kind"] == "contract" && doc["path"] == "docs/dev/contracts/BE-501.md" {
 			contractEntry = doc
 		}
 	}
@@ -140,6 +148,8 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	// --- same-generation rework: revise + re-lock → replace, not stack ---
 	revise := strings.Replace(readFile(t, root, "docs/dev/contracts/BE-501.md"), "v1.0.0", "v1.1.0", 1)
 	write("docs/dev/contracts/BE-501.md", revise)
+	write("docs/dev/contracts/CONTRACTS-500.md", cliContractBatchFixture("REQ-500", "BE-501", "v1.1.0")+"| REQ-500/FR-501 | — | BE-501 §2 / BE-501 §3 | — |\n")
+	commitStageFixture(t, root)
 	// bump revision by a no-op evidence-free transition is not available; use direct state edit to allow re-fire
 	state = readJSONMap(t, statePath)
 	state["lifecycle"] = map[string]any{"state": "planning", "phase": "contracts", "phase_revision": float64(1)}
@@ -157,8 +167,8 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 			count++
 		}
 	}
-	if count != 1 {
-		t.Fatalf("same-generation re-lock must replace not stack, got %d contract entries", count)
+	if count != 2 {
+		t.Fatalf("same-generation re-lock must retain one index and one member without stacking, got %d contract entries", count)
 	}
 	_ = sha
 }
@@ -211,7 +221,12 @@ func TestPTRPLAN02BlocksOnBrokenBridge(t *testing.T) {
 	write("docs/requirements/REQ-700.md", "# REQ-700\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：none\n\n"+
 		"| 编号 | 模块 | 需求 | 服务于 | 优先级 |\n|:--|:--|:--|:--|:--|\n| FR-701 | wb7 | 提交 | A1 | Must |\n"+
 		"| 编号 | 验收标准 | 指向 |\n|:--|:--|:--|\n| AC-701 | 提交成功 | FR-701 |\n")
+	write("docs/dev/contracts/CONTRACTS-700.md", cliContractBatchFixture("REQ-700", "BE-700", "v1.0.0")+"| REQ-700/FR-701 | — | BE-700 §1 | — |\n")
+
 	var stdout, stderr bytes.Buffer
+	if code := cli.Run([]string{"init", "--root", root, "--packet=false"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("legacy bridge fixture init: %s", &stderr)
+	}
 	if code := cli.Run([]string{"req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "bob"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("bind failed: %s", stderr.String())
 	}
@@ -266,4 +281,10 @@ func TestContractsReverseClosureUsesModelAsAuthority(t *testing.T) {
 	if code == 0 || !strings.Contains(stderr.String(), "CASE-WB-002") {
 		t.Fatalf("tampered cases.json must be caught against the model authority, got: %s", stderr.String())
 	}
+}
+
+// A diagnostic or legacy consumer still needs an actual declared batch;
+// an arbitrary contract elsewhere cannot satisfy its current requirement.
+func cliContractBatchFixture(reqID, contractID, version string) string {
+	return fmt.Sprintf("# CONTRACTS %s\n\n> 需求：%s\n> 状态：locked\n> 版本：%s\n> Shared model policy: none\n> Shared model reason: This fixture has no shared wire model.\n\n## 合同清单\n\n| 合同ID | 类型 | 负责人 | 状态 | 版本 | 联调点 |\n|:---|:---|:---|:---|:---|:---|\n| %s | 后端 | orchestrator | locked | %s | N/A |\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:---|:---|:---|:---|\n", reqID, reqID, version, contractID, version)
 }

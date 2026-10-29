@@ -15,12 +15,9 @@ type lockContextKey struct{}
 // LockWorkspace covers inspection as well as merge/check/cleanup. Calls from
 // the same controller operation share ownership through context, never globally.
 func LockWorkspace(ctx context.Context, root string) (context.Context, func(), error) {
-	path, err := filepath.Abs(root)
+	path, err := canonicalLockRoot(root)
 	if err != nil {
 		return ctx, nil, err
-	}
-	if p, err := filepath.EvalSymlinks(path); err == nil {
-		path = p
 	}
 	if held, _ := ctx.Value(lockContextKey{}).(string); held == path {
 		return ctx, func() {}, nil
@@ -32,4 +29,15 @@ func LockWorkspace(ctx context.Context, root string) (context.Context, func(), e
 		return ctx, nil, errors.Join(ErrIntegrationBusy, err)
 	}
 	return context.WithValue(ctx, lockContextKey{}, path), release, nil
+}
+
+func canonicalLockRoot(root string) (string, error) {
+	path, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	if p, err := filepath.EvalSymlinks(path); err == nil {
+		path = p
+	}
+	return path, nil
 }

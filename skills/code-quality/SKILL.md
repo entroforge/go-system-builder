@@ -9,19 +9,55 @@ version: 1.0.0
 Quality guidance only. Stage routing lives in `docs/control/agent-protocol.md`; team scope comes from the current manifest and runtime evidence; the reusable review method is inlined below.
 ## Applicability
 Apply to code changes, QA module-code, and reuse/abstraction responsibilities.
+For an S8 Investigator, apply these methods only to the assigned hypothesis and
+causal discriminator; automatic loading does not create a ReviewPlan responsibility.
+S6 implementation and S7 review retain their original obligations.
 ## Required Inputs
-Read changed code, local conventions, tests, public contracts, and dependency boundaries.
+For implementation/review, read the code in the assigned change or review scope,
+local conventions, tests, public contracts and dependency boundaries. For S8,
+read the issued hypothesis, frozen source evidence and code/contracts relevant
+to its discriminator; no code change is required.
 ## Quality Criteria
 Check correctness clarity, naming, cohesion, dependency direction, duplication, useful reuse, abstraction timing, hardcoding, magic values, oversized units, dead/debug code, and error handling.
 ## Outputs
-Maintainable implementation or one auditable quality conclusion.
+For implementation/review, maintainable implementation or one auditable quality
+conclusion in the assigned artifact. For S8, record only the hypothesis's actual
+method, observations and evidence in the original HypothesisResult; no separate
+QA conclusion or report is required.
 ## N/A Criteria
-N/A only when no executable or configuration code is in scope.
+For implementation/review, N/A only when no executable or configuration code is
+in scope. For S8, explain in the original HypothesisResult when no code-quality
+method is relevant to the assigned discriminator; absence of a code change alone
+does not decide applicability.
 ## Stop Conditions
-Stop when improvement requires unrelated refactoring or contract change.
+For S6 implementation, fix defects found by your own checks within the authorized
+TASK and preserve its acceptance oracle. Escalate unrelated refactoring, scope
+expansion or a required contract decision to Main. For independent review, report
+findings without repairing the product; use the original stage route for repair.
 ## Non-Goals
 Do not optimize for fewer lines or speculative abstraction.
 
-## Inlined Methodology
+## Review method
 
-Team planning uses a mandatory responsibility baseline plus risk-triggered responsibilities plus scope partitioning plus conflict-graph constraints yielding one single-responsibility assignment per teammate. Agent count is the number of resulting assignments, not a fixed target. QA baseline responsibilities include `QA-MODULE-CODE` and `QA-REUSE-ABSTRACTION`; these map to the code-quality scope. Risk-tag derivation: frontend view or interaction -> `ui`, `frontend`; API, event or shared schema -> `api`, `cross-component`; persistence or migration -> `database`, `migration`; auth, permission or sensitive data -> `security`; shared package or multi-module design -> `architecture`; existing behavior or historical BUG touched -> `regression`. Scope partitioning rules: distinct write ownership or repository boundary; independent module or bounded-context responsibility; incompatible Best Practices or tool needs; high merge-conflict paths; independently testable Closing Contracts. One assignment may not exceed 30 files or 3 material modules (the §8.2 builder sizing rule). Conflict-graph `must_separate` edges when responsibilities require different conclusion enums, one responsibility checks the other's authored or repaired output, security/release/permission enforcement needs independent evidence, scopes require incompatible Skills or tools, or combining them would exceed workload limits. Teammate reuse requires same role family and responsibility ID, unchanged scope, matching fingerprints, current prior read-back/activation, no unresolved report/BUG/blocked-task conflicts, valid independence, and non-stale teammate state.
+For S6 implementation, trace the assigned TASK, its Done when conditions and
+your own Plan assertions through the implementation and caller, using the linked
+contracts as the acceptance authority. Run actual self-checks and correct in-scope
+defects before delivery; this work continues the current TASK. For S7 review, trace
+the assigned ReviewPlan Claim from its actual contract to implementation and caller.
+For S8 investigation, trace only the assigned hypothesis/discriminator through the relevant contract, implementation
+and caller; do not expand it into full-chain validation or unrelated review.
+Inspect normal and failure paths, state changes, ownership, error propagation and
+boundary conversions. Explain a concrete correctness or maintenance consequence
+for each finding; name the entry point and the first broken invariant. Distinguish
+useful shared behavior from coincidental similarity before proposing abstraction.
+For independent review work, preserve evidence in the assigned answer instead of
+editing the product. Reviewer-discovered repair follows Main's original stage route;
+Builder self-check corrections within the current TASK do not require a new S9 route.
+
+For S6, use the original TASK, Done when, your own Plan assertions, contracts and
+assigned scope; this skill does not require a future S7 ReviewPlan. For S7, use the current ReviewPlan's Claims,
+scope and independence constraints. In S8, record the hypothesis's actual observations and
+evidence in its original HypothesisResult, without modifying product or formal
+tests, adopting module test ratios or requiring test rewrites. Main owns
+specialist selection and compatible grouping under team-planning; this method does
+not create another actor-count, file-count or dispatch gate.

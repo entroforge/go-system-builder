@@ -65,6 +65,16 @@ func TestReady_SatisfiedPlanningContracts(t *testing.T) {
 	if report["status"] != "satisfied" {
 		t.Fatalf("status=%v, want satisfied; full=%#v", report["status"], report)
 	}
+	if report["evaluation_scope"] != "quality_gate" {
+		t.Fatalf("evaluation_scope=%v, want quality_gate; full=%#v", report["evaluation_scope"], report)
+	}
+	if report["transition_guards_evaluated"] != false {
+		t.Fatalf("ready must explicitly report that transition guards were not evaluated; full=%#v", report)
+	}
+	instruction, _ := report["instruction"].(string)
+	if strings.Contains(instruction, "auto-advances") || !strings.Contains(instruction, "did not evaluate transition guards") || !strings.Contains(instruction, "may attempt") {
+		t.Fatalf("satisfied instruction must distinguish gate satisfaction from transition commitability, got %q", instruction)
+	}
 	if report["gate_id"] != "GATE-PLANNING-CONTRACTS-COMPLETE" {
 		t.Fatalf("gate_id=%v", report["gate_id"])
 	}

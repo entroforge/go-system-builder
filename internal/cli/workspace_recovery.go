@@ -89,11 +89,24 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 			return fail(err)
 		}
 		a.WritePaths = authority.Assignment.Scope
-		a.RequiredChecks = authority.Checks
+		if len(a.RequiredChecks) == 0 {
+			fmt.Fprintln(stderr, "S9 Main checks remain pending: Main must select and execute necessary checks during integration; preparing this Worker does not mark checks passed")
+		}
+	} else if lifecycle["state"] == "document_verification" && verb == "replace" {
+		old, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State))
+		if !ok || old.AgentID != *owner || old.Purpose != workspace.DocumentReviewPurpose {
+			return fail(fmt.Errorf("S5 replacement requires the original registered document-review execution"))
+		}
+		if _, err := workspace.DocumentReviewPacket(snap.State, old); err != nil {
+			return fail(err)
+		}
+		if *checkLocation != "" {
+			return fail(fmt.Errorf("document-review replacement cannot select a product check runner"))
+		}
 	} else if lifecycle["state"] != "building" {
 		return fail(fmt.Errorf("recovery requires an executing assignment"))
 	}
-	cpPath := integration.CheckpointPath(*root, workspace.RuntimeID(snap.State), workspace.Generation(snap.State), *id)
+	cpPath := workspaceAssignmentCheckpointPath(*root, workspace.RuntimeID(snap.State), workspace.Generation(snap.State), *a)
 	if _, found, err := integration.DefaultCheckpointStore().Load(cpPath); err != nil {
 		return fail(err)
 	} else if found {

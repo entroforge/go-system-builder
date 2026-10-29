@@ -147,7 +147,7 @@ func TestS7BudgetDecisionIncreaseLeavesControllerOnAutomaticRetryPath(t *testing
 	if result["pending_transition"] != "TR-012" {
 		t.Fatalf("pending transition=%v, want TR-012", result["pending_transition"])
 	}
-	if !strings.Contains(result["next"].(string), "next PreToolUse retries TR-012 automatically") {
+	if !strings.Contains(result["next"].(string), "original pending TR-012 consumer must continue through its actual save/recovery outlet") {
 		t.Fatalf("increase result must disclose automatic retry path: %#v", result)
 	}
 
@@ -168,7 +168,7 @@ func TestS7BudgetDecisionIncreaseLeavesControllerOnAutomaticRetryPath(t *testing
 	}
 
 	// After the same CAS commit, the normal next projection must no longer
-	// stop at the exhausted budget. The next PreToolUse can retry TR-012.
+	// stop at the exhausted budget. Its actual completion/recovery outlet can resume TR-012.
 	stdout.Reset()
 	stderr.Reset()
 	if code := cli.Run([]string{"next", "--root", root}, strings.NewReader(""), &stdout, &stderr); code != 0 {

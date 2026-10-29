@@ -18,7 +18,7 @@ One persistence-safe implementation or scoped GORM review conclusion.
 ## N/A Criteria
 N/A when no GORM-managed model, query, or migration changes.
 ## Stop Conditions
-Stop on unsafe migration, unspecified transaction semantics, or unbounded query work.
+Resolve query bounds and transaction mechanisms within the assigned model and contracts. Use isolated data for reversible diagnostics. Report a missing semantic decision, unavailable authoritative source or unauthorized destructive migration to Main; do not invent business consistency rules.
 ## Non-Goals
 Do not infer schema compatibility without the database-change practice.
 

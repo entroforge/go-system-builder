@@ -14,7 +14,7 @@
     "base_ref": {"type": "string"},
     "head_ref": {"type": "string"},
     "artifacts": {
-      "type": "array", "minItems": 1,
+      "type": "array",
       "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"id": {"type": "string"}, "path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "status": {"enum": ["added", "modified", "deleted"]}}}
     },
     "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

@@ -2,6 +2,9 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,5 +51,43 @@ func TestMissingCheckRunnerCannotPass(t *testing.T) {
 	result, err := RunCheck(context.Background(), t.TempDir(), "must run", nil)
 	if err == nil || result.Status != "fail" {
 		t.Fatalf("missing executor passed: %#v %v", result, err)
+	}
+}
+
+func TestCheckRunnerTypedFailureMatchesActualReceipt(t *testing.T) {
+	root := t.TempDir()
+	err := CommandCheckRunner(context.Background(), root, "printf 'actual-error'; exit 17")
+	var failure *checkexec.Failure
+	if !errors.As(err, &failure) || failure.Category != "process_exit" || failure.ReceiptRef == "" || failure.LogRef == "" {
+		t.Fatalf("lost real typed error: %v", err)
+	}
+	data, readErr := os.ReadFile(failure.ReceiptRef)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var receipt struct {
+		Failure *checkexec.Failure `json:"failure"`
+		Status  string             `json:"status"`
+		Exit    int                `json:"exit_code"`
+	}
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != "fail" || receipt.Exit != 17 || receipt.Failure.Category != "process_exit" || receipt.Failure.ReceiptRef != failure.ReceiptRef {
+		t.Fatal("receipt guessed assertion or lost source", receipt)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err = CommandCheckRunner(ctx, root, "exec sleep 30")
+	if !errors.As(err, &failure) || failure.Category != "timeout" {
+		t.Fatalf("timeout is not typed: %v", err)
+	}
+	// Original receipt publication failure remains a check failure, never PASS.
+	parent := filepath.Join(root, "not-a-directory")
+	os.WriteFile(parent, []byte("file"), 0600)
+	ctx = context.WithValue(context.Background(), checkEvidenceKey{}, checkEvidence{Directory: parent})
+	err = CommandCheckRunner(ctx, root, "true")
+	if !errors.As(err, &failure) || failure.Category != "diagnostic_io" {
+		t.Fatalf("diagnostic error misclassified: %v", err)
 	}
 }

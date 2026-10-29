@@ -23,12 +23,13 @@ func TestS9EvidenceChainRequiresImpactAndIndependentReverification(t *testing.T)
 	if err != nil || impact.RecordType != "change_impact" || impactRef.SHA256 == "" {
 		t.Fatalf("CreateChangeImpact() = %#v, %v", impact, err)
 	}
-	if _, _, err := repair.CreateTargetedReverification(root, repair.TargetedReverificationRequest{
-		ReverificationID: "reverify-1", RuntimeID: "loop-REQ-001", BugID: "BUG-001", BaselineGeneration: 1,
-		OriginalAssignmentID: "assignment-builder", PerformingAssignmentID: "assignment-builder", ImpactID: impact.ImpactID,
-		AssertionResults: []repair.AssertionResult{{AssertionID: "assert-1", Result: "pass", EvidenceRefs: []string{"test://reverify-log"}}}, ScopeCompliance: "pass", Result: "pass",
-	}); err == nil || !strings.Contains(err.Error(), "independent") {
-		t.Fatalf("same assignment should be rejected: %v", err)
+	plan := repair.RepairPlan{Assignments: []repair.RepairAssignment{{AssignmentID: "assignment-builder"}}}
+	owners := map[string]string{"assignment-builder": "builder"}
+	if _, err := repair.ValidateVerificationDispatch(plan, "assignment-builder", "builder", owners); err == nil || !strings.Contains(err.Error(), "not independent") {
+		t.Fatalf("Main selected the actual implementer as independent: %v", err)
+	}
+	if _, err := repair.ValidateVerificationDispatch(plan, "assignment-builder", "qa", owners); err != nil {
+		t.Fatalf("actual independent choice was rejected: %v", err)
 	}
 	reverify, reverifyRef, err := repair.CreateTargetedReverification(root, repair.TargetedReverificationRequest{
 		ReverificationID: "reverify-1", RuntimeID: "loop-REQ-001", BugID: "BUG-001", BaselineGeneration: 1,
@@ -229,7 +230,7 @@ func TestRepairResultRejectsUnreportedSessionChanges(t *testing.T) {
 
 func TestRepairResultAllowsBlockedOutcomeWithoutRepositoryDiff(t *testing.T) {
 	root := t.TempDir()
-	contractRef, _ := writeRuntimeContract(t, root)
+	contractRef, _ := writeRuntimeMigrationContract(t, root)
 	_, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
 		Contract: contractRef, SessionID: "repair-session-no-diff", RuntimeID: "loop-REQ-039",
 		ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main",
@@ -256,9 +257,87 @@ func TestRepairResultAllowsBlockedOutcomeWithoutRepositoryDiff(t *testing.T) {
 	if result.Result != "blocked" || len(result.ChangedArtifacts) != 0 || ref.SHA256 == "" {
 		t.Fatalf("blocked no-diff result = %#v ref=%#v", result, ref)
 	}
+	passing, passingRef, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{
+		Contract: contractRef, Session: sessionRef, Plan: planRef, ResultID: "repair-result-passing-no-diff",
+		ProducerAgentID: "builder", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{".claude/evidence/recheck.log"}}},
+		Result:          "pass",
+		BeforeFixChecks: []repair.RepairCheck{{Name: "pre-fix", Command: "go test ./...", Result: "fail", EvidenceRefs: []string{".claude/evidence/red.log"}}},
+		Checks:          []repair.RepairCheck{{Name: "current result", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{".claude/evidence/recheck.log"}}},
+	})
+	if err != nil {
+		t.Fatalf("passing no-diff result without migration/rollback references should be persisted: %v", err)
+	}
+	if passing.Result != "pass" || len(passing.ChangedArtifacts) != 0 || passing.MigrationRef != "" || passing.RollbackRef != "" || passingRef.SHA256 == "" {
+		t.Fatalf("passing no-diff result = %#v ref=%#v", passing, passingRef)
+	}
 }
 
-func TestRepairPlanCreatesExplicitAssignmentAndPlanReportRequiresRedCheck(t *testing.T) {
+func TestRepairResultAllowsEmptyAssignmentContributionAfterSiblingChanges(t *testing.T) {
+	root := t.TempDir()
+	contractRef := writeScopedRuntimeContract(t, root)
+	session, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
+		Contract: contractRef, SessionID: "repair-session-sibling-diff", RuntimeID: "loop-REQ-039", ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, planRef, err := repair.CreateRepairPlan(root, repair.PlanRequest{Contract: contractRef, Session: sessionRef, PlanID: "repair-plan-sibling-diff", CreatedBy: "main"})
+	if err != nil || len(plan.Assignments) != 2 {
+		t.Fatalf("original two-assignment Plan: %+v %v", plan, err)
+	}
+	path := writeFile(t, root, "internal/api/payload.go", "package api\n")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := []repair.RepairCheck{{Name: "original failure", Command: "go test ./...", Result: "fail", EvidenceRefs: []string{".claude/evidence/red.log"}}}
+	after := []repair.RepairCheck{{Name: "actual current checks", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{".claude/evidence/current.log"}}}
+	_, _, err = repair.SubmitRepairResult(root, repair.RepairResultRequest{
+		Contract: contractRef, Session: sessionRef, Plan: planRef, ResultID: "repair-result-sibling-api", ProducerAgentID: "api-builder", AssignmentID: plan.Assignments[0].AssignmentID,
+		UnitResults:      []repair.RepairUnitResult{{UnitID: "unit-api", Status: "pass", EvidenceRefs: []string{".claude/evidence/api.log"}}},
+		ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/payload.go", SHA256: fileHash(data), Status: "added"}}, BeforeFixChecks: before, Checks: after, Result: "pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := repair.ComputeSessionChangeset(root, session)
+	if err != nil || len(actual) != 1 {
+		t.Fatalf("Session must retain the sibling's actual source diff: %+v %v", actual, err)
+	}
+	result, ref, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{
+		Contract: contractRef, Session: sessionRef, Plan: planRef, ResultID: "repair-result-sibling-store", ProducerAgentID: "store-builder", AssignmentID: plan.Assignments[1].AssignmentID,
+		UnitResults: []repair.RepairUnitResult{{UnitID: "unit-store", Status: "pass", EvidenceRefs: []string{".claude/evidence/store.log"}}}, BeforeFixChecks: before, Checks: after, Result: "pass",
+	})
+	if err != nil || result.Result != "pass" || len(result.ChangedArtifacts) != 0 || ref.SHA256 == "" {
+		t.Fatalf("another Assignment's diff required this passing Assignment to invent a contribution: %+v %+v %v", result, ref, err)
+	}
+}
+
+func writeRuntimeMigrationContract(t *testing.T, root string) (repair.ContractRef, string) {
+	t.Helper()
+	ref, _ := writeRuntimeContract(t, root)
+	path := filepath.Join(root, filepath.FromSlash(ref.Path))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["compatibility_migration"] = "preserve the existing public boundary"
+	data, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref.SHA256 = fileHash(data)
+	return ref, ref.SHA256
+}
+
+func TestRepairPlanCreatesExplicitAssignmentAndRecordsActualPrecheck(t *testing.T) {
 	root := t.TempDir()
 	contractRef, _ := writeRuntimeContract(t, root)
 	_, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{Contract: contractRef, SessionID: "repair-session-plan-report", RuntimeID: "loop-REQ-039", ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main"})
@@ -272,11 +351,11 @@ func TestRepairPlanCreatesExplicitAssignmentAndPlanReportRequiresRedCheck(t *tes
 	if len(plan.Assignments) != len(plan.Units) || plan.Assignments[0].UnitIDs[0] != plan.Units[0].ID {
 		t.Fatalf("plan assignments do not partition units: %#v", plan.Assignments)
 	}
-	_, _, err = repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: plan.Assignments[0].AssignmentID, AgentID: "builder", ReportID: "repair-plan-report-green-only", PlanText: "write the fix", RedChecks: []repair.RepairCheck{{Name: "pre-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, ProposedPaths: []string{"internal/api/payload.go"}})
-	if err == nil || !strings.Contains(err.Error(), "fail or blocked") {
-		t.Fatalf("green-only plan report should be rejected: %v", err)
+	_, _, err = repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: plan.Assignments[0].AssignmentID, AgentID: "builder", ReportID: "repair-plan-report-green-only", PlanText: "write the fix", RedChecks: []repair.RepairCheck{{Name: "pre-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, ProposedPaths: []string{"docs/requirements/REQ-039.md"}})
+	if err != nil {
+		t.Fatalf("green-only plan report should be recorded: %v", err)
 	}
-	report, ref, err := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: plan.Assignments[0].AssignmentID, AgentID: "builder", ReportID: "repair-plan-report-red", PlanText: "write the fix", RedChecks: []repair.RepairCheck{{Name: "pre-fix", Command: "go test ./...", Result: "fail", EvidenceRefs: []string{"test://red"}}}, ProposedPaths: []string{"internal/api/payload.go"}})
+	report, ref, err := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: plan.Assignments[0].AssignmentID, AgentID: "builder", ReportID: "repair-plan-report-red", PlanText: "write the fix", RedChecks: []repair.RepairCheck{{Name: "pre-fix", Command: "go test ./...", Result: "fail", EvidenceRefs: []string{".claude/evidence/red.log"}}}, ProposedPaths: []string{"internal/api/payload.go"}})
 	if err != nil || report.Status != "reported" || ref.SHA256 == "" {
 		t.Fatalf("red plan report = %#v %v", report, err)
 	}
@@ -559,12 +638,8 @@ func TestRepairPlanRejectsUnitWithoutExplicitAssertionDeclaration(t *testing.T) 
 	}
 }
 
-// TestTargetedReverificationRejectsUnanchoredContinuityReason is the RC-09
-// (S9-11) negative case: continuity_reason used to be silently defaulted to
-// "independent verification after repair", letting the original-finder
-// continuity be satisfied by auto-generated prose. A reason with no evidence
-// anchor is now rejected at the artifact boundary.
-func TestTargetedReverificationRejectsUnanchoredContinuityReason(t *testing.T) {
+// Optional continuity text retains the actual authored content and grants no proof.
+func TestTargetedReverificationPreservesOptionalContinuityWithoutInventedProof(t *testing.T) {
 	root := t.TempDir()
 	contractRef, _ := writeRuntimeContract(t, root)
 	_, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
@@ -582,23 +657,17 @@ func TestTargetedReverificationRejectsUnanchoredContinuityReason(t *testing.T) {
 		ImpactID: "impact-continuity", AssertionResults: []repair.AssertionResult{{AssertionID: "symptom-1", Result: "pass", EvidenceRefs: []string{"test://symptom"}}},
 		ScopeCompliance: "pass", Result: "pass",
 	}
-	for _, reason := range []string{"", "independent verification after repair", "a thorough manual recheck with no anchor"} {
+	for i, reason := range []string{"", "independent verification after repair", "a manual recheck with no anchor", "test://verifier-run: actual continuity observation", "evidence/reverify-red.json shows the original failure"} {
 		request := base
+		request.ReverificationID = "reverify-continuity-" + string(rune('a'+i))
 		request.ContinuityReason = reason
-		if _, _, err := repair.CreateTargetedReverification(root, request); err == nil || !strings.Contains(err.Error(), "continuity_reason must cite at least one evidence reference") {
-			t.Fatalf("continuity_reason %q must be rejected for lacking an evidence anchor, got %v", reason, err)
+		value, ref, err := repair.CreateTargetedReverification(root, request)
+		if err != nil || value.ContinuityReason != reason {
+			t.Fatalf("optional continuity was rejected or fabricated: %+v %v", value, err)
 		}
-	}
-	// Anchored reasons are accepted.
-	request := base
-	request.ContinuityReason = "test://verifier-run: independent verification after repair"
-	request.ReverificationID = "reverify-continuity-anchored"
-	if _, _, err := repair.CreateTargetedReverification(root, request); err != nil {
-		t.Fatalf("anchored continuity_reason must be accepted: %v", err)
-	}
-	request.ReverificationID = "reverify-continuity-evidence-path"
-	request.ContinuityReason = "evidence/reverify-red.json shows the original failure"
-	if _, _, err := repair.CreateTargetedReverification(root, request); err != nil {
-		t.Fatalf("evidence-path continuity_reason must be accepted: %v", err)
+		read, err := repair.ValidateTargetedReverification(root, ref)
+		if err != nil || read.ContinuityReason != reason {
+			t.Fatalf("stored continuity differs from the actual authored observation: %+v %v", read, err)
+		}
 	}
 }

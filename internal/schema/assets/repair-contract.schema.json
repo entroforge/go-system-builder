@@ -17,7 +17,7 @@
     "case_id": {"type": "string", "pattern": "^investigation-case-[A-Za-z0-9._-]+$"},
     "revision": {"type": "integer", "minimum": 1},
     "status": {"enum": ["draft", "approved"]},
-    "source_finding_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "source_finding_ids": {"type": "array", "minItems": 0, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "root_cause_statement": {"type": "string", "minLength": 1},
     "violated_invariant": {"type": "string", "minLength": 1},
     "causal_model_ref": {"type": "string", "minLength": 1},

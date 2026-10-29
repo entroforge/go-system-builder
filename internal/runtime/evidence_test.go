@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -111,12 +112,32 @@ func TestRecordEvidenceRejectsIncompleteS10ArtifactBeforeMutation(t *testing.T) 
 	statePath := filepath.Join(root, "loop-state.json")
 	journalPath := filepath.Join(root, "loop-events.jsonl")
 	writeExampleRuntime(t, statePath)
-	envelope := []byte(`{"schema_version":"1.0.0","evidence_id":"EV-ACC-001","kind":"acceptance","runtime_id":"loop-example","baseline_generation":1,"producer_agent_id":"agent-1","producer_responsibility":"Acceptance","conclusion":"pass"}`)
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalBefore, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(stateBefore, &current); err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := json.Marshal(map[string]any{
+		"schema_version": "1.0.0", "evidence_id": "EV-ACC-001", "kind": "acceptance_record",
+		"runtime_id": current["runtime_id"], "baseline_generation": current["baseline"].(map[string]any)["generation"],
+		"review_round":      current["review"].(map[string]any)["round"],
+		"producer_agent_id": "agent-1", "producer_responsibility": "Acceptance", "conclusion": "pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "acceptance.json"), envelope, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
+	_, err = runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
 		ExpectedRevision: 1,
 		ID:               "EV-ACC-001",
 		Kind:             "acceptance",
@@ -126,19 +147,24 @@ func TestRecordEvidenceRejectsIncompleteS10ArtifactBeforeMutation(t *testing.T) 
 		Validator:        testCandidateValidator(),
 	})
 	if err == nil {
-		t.Fatal("incomplete acceptance evidence must be rejected before mutation")
-	}
-	for _, want := range []string{"audit_manifest_path", "S10", "manifest"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q does not identify recovery field %q", err, want)
+		t.Error("incomplete acceptance evidence must be rejected before mutation")
+	} else {
+		for _, want := range []string{"audit_manifest_path", "S10", "manifest"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not identify the original missing report reference %q", err, want)
+			}
 		}
 	}
 	state, readErr := os.ReadFile(statePath)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if !strings.Contains(string(state), `"revision": 1`) {
-		t.Fatalf("rejected S10 evidence must not mutate runtime: %s", state)
+	journal, readErr := os.ReadFile(journalPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(state) != string(stateBefore) || string(journal) != string(journalBefore) {
+		t.Fatal("missing professional report changed Runtime or journal")
 	}
 }
 
@@ -175,6 +201,26 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 	statePath := filepath.Join(root, "loop-state.json")
 	journalPath := filepath.Join(root, "loop-events.jsonl")
 	writeExampleRuntime(t, statePath)
+
+	// The fixture's real responsibility must match its system envelope. The
+	// caller still omits ReviewRound: inheritance, not duplicate author input.
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(stateData, &current); err != nil {
+		t.Fatal(err)
+	}
+	current["runtime_id"] = "loop-test"
+	current["review"].(map[string]any)["round"] = 2
+	stateData, err = json.MarshalIndent(current, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, append(stateData, '\n'), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "manifest_type": "acceptance",
@@ -274,6 +320,7 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordEvidence(acceptance) failed: %v", err)
 	}
+	found := false
 	for _, raw := range next.State["evidence"].([]any) {
 		item := raw.(map[string]any)
 		if item["id"] == "acc-record-r2" {
@@ -281,10 +328,94 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 			if got != "2" {
 				t.Fatalf("acceptance entry review_round = %s, want 2 (inherited from envelope)", got)
 			}
-			return
+			found = true
+			break
 		}
 	}
-	t.Fatalf("acceptance evidence entry not found after registration")
+	if !found {
+		t.Fatal("acceptance evidence entry not found after registration")
+	}
+	t.Run("conflicting explicit recording round", func(t *testing.T) {
+		envelope["evidence_id"] = "acc-conflicting-round"
+		freshEnvelope, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(envPath, freshEnvelope, 0644); err != nil {
+			t.Fatal(err)
+		}
+		stateBefore, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journalBefore, err := os.ReadFile(journalPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrongRound := 7
+		_, err = runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
+			ExpectedRevision: -1, ID: "acc-conflicting-round", Kind: "acceptance", Path: "acc-env.json",
+			ReviewRound: &wrongRound, ProducedBy: []string{"orchestrator"}, ResponsibilityID: "Acceptance", Validator: testCandidateValidator(),
+		})
+		if err == nil || !strings.Contains(err.Error(), "S10 recording review round") {
+			t.Errorf("conflicting caller round overrode the existing report association: %v", err)
+		}
+		stateAfter, _ := os.ReadFile(statePath)
+		journalAfter, _ := os.ReadFile(journalPath)
+		if !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(journalBefore, journalAfter) {
+			t.Error("conflicting recording round changed Runtime or journal")
+		}
+	})
+	for _, field := range []string{"runtime_id", "baseline_generation", "review_round", "coverage_inventory"} {
+		t.Run("report association "+field, func(t *testing.T) {
+			original := manifest[field]
+			defer func() { manifest[field] = original }()
+			wantError := "referenced report association"
+			if field == "coverage_inventory" {
+				manifest[field] = "not an array of professional dispositions"
+				wantError = "evidence manifest is invalid"
+			} else if field == "runtime_id" {
+				manifest[field] = "loop-other"
+			} else {
+				manifest[field] = 7
+			}
+			changed, _ := json.Marshal(manifest)
+			if err := os.WriteFile(filepath.Join(root, "m.json"), changed, 0644); err != nil {
+				t.Fatal(err)
+			}
+			stateBefore, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journalBefore, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A fresh registration must reach the report association guard rather
+			// than being rejected by the already-recorded envelope's duplicate ID.
+			id := "acc-record-r2-" + field
+			envelope["evidence_id"] = id
+			freshEnvelope, err := json.Marshal(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(envPath, freshEnvelope, 0644); err != nil {
+				t.Fatal(err)
+			}
+			_, err = runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
+				ExpectedRevision: -1, ID: id, Kind: "acceptance", Path: "acc-env.json",
+				ProducedBy: []string{"orchestrator"}, ResponsibilityID: "Acceptance", Validator: testCandidateValidator(),
+			})
+			if err == nil || !strings.Contains(err.Error(), wantError) {
+				t.Errorf("a matching envelope accepted an invalid referenced report (%s): %v", wantError, err)
+			}
+			stateAfter, _ := os.ReadFile(statePath)
+			journalAfter, _ := os.ReadFile(journalPath)
+			if string(stateBefore) != string(stateAfter) || string(journalBefore) != string(journalAfter) {
+				t.Error("mismatched report changed Runtime or journal")
+			}
+		})
+	}
 }
 
 func sha256ForTest(data []byte) string {

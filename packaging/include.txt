@@ -68,6 +68,8 @@ docs/examples/dispatch-plan/project/docs/dev/tasks/TASK-042-05.md
 docs/examples/dispatch-plan/project/docs/dev/tasks/TASK-042-06.md
 docs/examples/dispatch-plan/project/docs/dev/tasks/index-REQ-042.md
 docs/examples/dispatch-plan/project/docs/requirements/REQ-042.md
+docs/examples/s6-builder/README.md
+docs/examples/s6-builder/workgroup-manifest.json
 docs/examples/s10/README.md
 docs/examples/s10/acceptance-manifest.json
 docs/examples/s10/release-audit-manifest.json
@@ -118,6 +120,7 @@ docs/rules/communication.md
 docs/rules/design-foundation.md
 docs/rules/dispatch-plan.md
 docs/rules/error-handling.md
+docs/rules/project-conventions-template.json
 docs/rules/git-branch-release.md
 docs/rules/naming.md
 docs/rules/release-architecture-audit.md
@@ -140,3 +143,4 @@ docs/runtime-batch-scope-repair.md
 docs/runtime-evidence-binding-repair.md
 docs/runtime-portability.md
 docs/workspace-integration.md
+docs/workspace-execution-recovery.md

@@ -86,7 +86,7 @@ func TestS6DispatchCLIUsesReviewedGitInputs(t *testing.T) {
 	if e := json.Unmarshal(wire, &packet); e != nil {
 		t.Fatal(e)
 	}
-	for _, want := range []string{"eligible tasks", "TASK-042-01", "TASK-042-02", "TASK-042-03"} {
+	for _, want := range []string{"S6 current Main action: dispatch_ready", "eligible tasks", "TASK-042-01", "TASK-042-02", "TASK-042-03"} {
 		if !strings.Contains(packet.HookSpecificOutput.AdditionalContext, want) {
 			t.Fatalf("missing Agent context %s: %s", want, wire)
 		}
@@ -103,6 +103,66 @@ func TestS6DispatchCLIUsesReviewedGitInputs(t *testing.T) {
 		t.Fatalf("%s %v", stdout.String(), e)
 	}
 	before, _ := os.ReadFile(statePath)
+	journalBefore, _ := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl"))
+	for _, tc := range []struct {
+		name              string
+		flags             []string
+		budget            *int
+		next, recommended int
+	}{
+		{"unknown capacity", nil, nil, 0, 0},
+		{"explicit zero", []string{"--capacity", "0"}, intPointer(0), 0, 0},
+		{"declared capacity", []string{"--capacity", "3"}, intPointer(3), 3, 3},
+		{"advisory ceiling", []string{"--capacity", "3", "--max-unreceived-results", "1"}, intPointer(1), 3, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout.Reset()
+			stderr.Reset()
+			adviceArgs := append([]string{"s6", "status", "--root", root, "--advice", "--json"}, tc.flags...)
+			if code := cli.Run(adviceArgs, strings.NewReader(""), &stdout, &stderr); code != 0 {
+				t.Fatalf("%d %s", code, stderr.String())
+			}
+			var result struct {
+				Next   []string `json:"next"`
+				Advice struct {
+					Budget      *int     `json:"dispatch_budget"`
+					Recommended []string `json:"recommended_tasks"`
+					Advisory    bool     `json:"advisory_only"`
+				} `json:"reception_advice"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if (result.Advice.Budget == nil) != (tc.budget == nil) || (tc.budget != nil && *result.Advice.Budget != *tc.budget) || len(result.Next) != tc.next || len(result.Advice.Recommended) != tc.recommended || !result.Advice.Advisory {
+				t.Fatalf("wrong capacity or authority: %s", stdout.String())
+			}
+			if tc.budget == nil && (strings.Contains(stdout.String(), "capacity exhausted") || strings.Contains(stdout.String(), "declare_capacity")) {
+				t.Fatalf("unknown capacity became a dispatch prerequisite: %s", &stdout)
+			}
+			stdout.Reset()
+			textArgs := append([]string{"s6", "status", "--root", root, "--advice"}, tc.flags...)
+			if code := cli.Run(textArgs, nil, &stdout, &stderr); code != 0 {
+				t.Fatalf("text status: %d %s", code, &stderr)
+			}
+			if tc.budget == nil {
+				for _, want := range []string{"total capacity unknown", "Next batch: not calculated", "original s6 prepare readiness checks", "not a registration, permission or prepare prerequisite"} {
+					if !strings.Contains(stdout.String(), want) {
+						t.Fatalf("missing unknown capacity guidance %q: %s", want, &stdout)
+					}
+				}
+				if strings.Contains(stdout.String(), "capacity exhausted") || strings.Contains(stdout.String(), "total capacity 0") {
+					t.Fatalf("unknown capacity reported as zero: %s", &stdout)
+				}
+			} else if tc.name == "explicit zero" && (!strings.Contains(stdout.String(), "total capacity 0") || !strings.Contains(stdout.String(), "available capacity exhausted")) {
+				t.Fatalf("explicit zero capacity lost original slot semantics: %s", &stdout)
+			}
+		})
+	}
+	afterAdvice, _ := os.ReadFile(statePath)
+	journalAfter, _ := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl"))
+	if !bytes.Equal(before, afterAdvice) || !bytes.Equal(journalBefore, journalAfter) {
+		t.Fatal("advice mutated original runtime/journal")
+	}
 	// A dirty copy must not alter the approved Git input or write runtime state.
 	path := filepath.Join(root, p.Path)
 	os.WriteFile(path, []byte("dirty uncommitted plan"), 0644)
@@ -116,3 +176,5 @@ func TestS6DispatchCLIUsesReviewedGitInputs(t *testing.T) {
 		t.Fatal("status mutated runtime")
 	}
 }
+
+func intPointer(value int) *int { return &value }

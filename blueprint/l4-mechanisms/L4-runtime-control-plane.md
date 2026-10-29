@@ -1,433 +1,414 @@
-# L4 — 运行时控制面与横切治理机制（Runtime Control Plane & Cross-cutting Governance）
+# L4 运行控制面
 
-> 层：第四层｜机制域：权威状态、指纹体系、证据链、追溯分母链、精确集求值、门禁分类学、写屏障家族、观测采集与脱敏、暂停/阻塞/终止保障、会话恢复投影、错误信息契约、债务与兼容性登记
->
-> 上游：L1 D1～D7 与五公理；L2 生命周期目标、全局规则与「REQ 授权生命周期」概念层
->
-> 姊妹篇（五家族）：[L4 Agent 调度与治理](L4-agent-dispatch-governance.md)=「谁在责任上行动」——拓扑、PLAN_REPORT、等待/idle/stop、恢复的对象模型与 Hook 决策矩阵；[L4 权威状态机与迁移事务核心](L4-state-transition-core.md)=「事实住哪、怎样变更才算合法」——存储模型、单写者、崩溃写序、实体生命周期索引、guard/action 引擎与自动推进仲裁；[L4 Runtime revision 使用与命令协调](L4-revision-usage.md)=「revision 谁需要知道」——内部提交序号、单主会话默认命令、对象版本边界与复杂度准入；[L4 Hook 与平台事件接线](L4-hook-platform-wiring.md)=「决策如何坐上平台总线」——事件注册、payload 契约、输出/退出码契约、fail-open/closed 态度分界；**本文档=「内容怎样才算合规」**——指纹与证据规则、追溯分母、精确集求值、人闸与人机界面契约、错误信息契约、债务登记等数据契约与行为准则层。
->
-> 层内权威声明（本文件成立的前提）：**凡列入本目录的机制域，其目标态定义以本文为唯一权威**。L2 中同名全局规则只保留"存在与用途"的声明；各 L3 只写"本阶段消费哪种实例化"。L3 正文与本文件冲突时，先核对代码现状，再按 L1 第五部分演化协议回改落后的一方。唯一的显式外移：「注意力分配/渐进披露」是文档写作纪律而非运行时机制，权威仍在 [L3-README](../l3-stages/L3-README.md#注意力分配原则各-l3-sn-的共用判定尺本节是唯一权威各-stage-只引用不复述)。
->
-> 状态：v0.4.0。每节区分【目标态设计】与【当前实现】；差距在 §15 显式列出，不把意图写成既成事实。v0.3 起存储与引擎类细节移交姊妹篇，本文收敛为内容合规规则层。
+## 1. 为什么需要共同的事实与判定规则
 
-## 0. 本文件的准入逻辑
+一个需求会经过规划、审查、实现、验证、调查、修复、验收和人的决定。同一份材料在不同阶段承担不同用途：任务文档可以说明实现义务，Builder 的结果可以证明交付已经被接收，Main 的检查说明集成后的表现，独立验证则回答产品是否满足承诺。这些事实彼此关联，不能互相替代。
 
-《Agent 调度与治理》进入第四层的理由不是"它讲的是共用的东西"，而是它满足一条完整的判据：存在一个可以独立建模的机制域——有自己的对象模型（Assignment Record）、正交状态线、消息契约、Hook 决策矩阵、风险规则与恢复语义——该域被五个以上 stage 以相同方式消费，且任何 L3 单独定义都会产生变体漂移。
+如果各阶段分别解释“有效证据”“覆盖完整”“已经完成”，就容易出现三种偏移：拿旧结论支持新对象，拿材料存在代替实际工作，或者把某个局部检查通过当作整个生命周期可以前进。本机制统一这些跨阶段规则，使人类与 agent 能回答：当前依据是什么、它对哪个对象仍然成立、由谁消费、未完成义务在哪里、下一步为什么合法。
 
-对剩下的全部 S0～S11 内容用同一条判据重新筛过，得到本文的十三个域。四个曾考虑但**被拒收**的候选及理由（拒收同样是结论的一部分）：
+这里的控制面是工程事实与流程判定的协作关系。Main 仍负责选择工作、真实派发、判断适用性和闭环；Claude Code 负责原生子代理执行；专业消费者接收实际产物；Runtime Writer 记录事实。Controller 组合已有质量条件和转换入口，不增加子代理启动许可、等待队列或第二套专业状态机。
 
-| 拒收候选 | 理由 |
-|:--|:--|
-| 三角色自审（implementer/e2e-tester/maintainer） | D4 方法论逼问，载体是模板字段与 skill，不是可独立建模的运行时机制；身份叫法差异在相应 L3 内修正即可 |
-| TASK 依赖 DAG 与批次调度 | 已被调度文档 §6 完整覆盖（一张权威图、Ready/Dispatchable 分离），重复建域即制造第二控制面 |
-| 三角色自审之外的审查 checklist（五问+半问等） | 同拒收理由一；属模板与 skill 层 |
-| Release-ready package 独立成域 | 它只是人闸交接物的一种形状，机械骨架已由 §7.2 人闸契约承载；作为字段规范记录于该节，不足独立机制 |
+本篇承接 [L1](../l1-principles/L1-design-principles.md) 的权威外置、自然路径、三方收敛与收敛可观测原则。持久化和转换事务由[状态机核心](L4-state-transition-core.md)定义，版本坐标由 [revision 机制](L4-revision-usage.md)定义，答卷接收由[阶段答卷](L4-stage-form.md)定义。本文解释这些机制共同使用的内容规则，保留理解它们为何配合所需的上下文。
 
-另有一条结构事实促成本文件的存在：即使不新增域，v0.1.0 之前的现状是这些机制的**定义散落在最先需要它们的那个 L3 里**（CAS 写在 S1、指纹家族写在 S7、exact-set 散在三份纠错文档、脱敏闸写在 S7 capture 节），后来者只能从实例反推通用规则，正是层定义要消除的"各自写一套变体"。
+## 2. 事实住在哪里，谁对它负责
 
----
+### 2.1 一套权威记录，多种内容与视图
 
-## 1. 权威状态机制（D1）
+`.claude/loop-state.json` 是当前工程事实的权威记录；`.claude/loop-events.jsonl` 记录已经发生的事务事件；专业文件保存实际设计、观察、计划、结论和依据。三者共同支持重读和解释，但职责不同：Runtime 的指针不能代替专业内容，文件中的自述也不能自行改写 Runtime。
 
-### 1.1 单一权威与单一写者
+| 事实 | 生产与接收责任 | 下游使用方式 |
+| --- | --- | --- |
+| 需求与文档基线 | 人形成需求共识，绑定、规划及修订事务登记准确来源 | 按本次身份、代际、路径与指纹读取 |
+| 工作与验证承诺 | Main 依据设计、任务和验证目的确定责任及覆盖 | 按已接受的任务集、Plan、Claim 与分工开展工作 |
+| 专业结果 | 本人做实际工作，原消费者接收本人答案与产物 | 读取相应专业结论、发现和当前接收状态 |
+| Git 贡献与 Main 检查 | 集成器观察真实来源、合并和检查结果 | 区分 Worker 交付、Main 集成、检查与资源回收 |
+| 影响、失效及重验 | 原修订或修复消费者记录具体影响与处置 | 判断哪些依据仍适用、哪些义务必须重新完成 |
+| 人的决定 | 人先明确选择，Main 通过原入口如实记录 | 只消费该候选、该次决定实际授予的权限 |
 
-- `.claude/loop-state.json` 是唯一的工程事实源；`journal` 只追加；终态周期整体归档到 `runtime-archive`（带 disposition），REQ 文件状态只是给浏览者的可读性镜像。
-- **所有权威写入都经 Runtime Store/Writer 完成，由单写者内部串行化并自动分配 revision**。Hook 是触发器不是存储：PostToolUse(SendMessage) 捕获 PLAN_REPORT 后落库走的也是同一条 Runtime 写路径，不自带第二套存储；revision 的 Agent-facing 边界见 [revision 篇](L4-revision-usage.md)。
-- 板（board）、CLI 回执、hook 投影都是**只读视图**；视图不参与判定真值，与权威不一致时触发 reconcile 而非互相说服。
-- 调度控制面（Assignment/plan/Result/checkpoint）必须解析到项目级共享存储，不跟随 Worker worktree cwd 各写一份，也不靠 git merge 汇总运行态（详接调度篇 §2.2 的硬边界）。
+看板、`status`、`next`、Hook 上下文和恢复摘要从这些事实投影。它们不能各自保存一份可独立推进的生命周期，也不能把摘要中的“完成”写回专业结果。平台进程存在、结束或恢复，是执行事件；它们不直接证明工程交付完成。
 
-已绑定 Runtime 的 Writer 在读取当前状态、验证候选状态及重放 pending 操作之前，统一核对 `bound_req.workspace.project_root` 与实际 root/state/journal 坐标。普通 Writer 只接受该根目录下的 `.claude/loop-state.json` 和 `.claude/loop-events.jsonl`；复制到 worker 的状态、自定义文件坐标和产生另一把锁的文件别名不能成为第二个写者。项目目录别名可解析到同一真实目录。恢复计划的离线候选构建必须使用显式恢复能力，不能通过普通 CLI 路径参数或仅凭目录名称取得豁免。
+### 2.2 作者表达与机器记录各用自己的形状
 
-### 1.2 请求体 vs 持久记录双形态约定
+作者填写专业判断、理由、观察和实际引用。系统从原责任中绑定身份、generation、round、对象版本、来源和提交关联，生成持久记录。请求、答卷、专业产物、证据索引和接收回执各有自己的契约，不能拿作者草稿按完整持久记录校验，再要求作者补齐系统字段。
 
-所有接受 `--file <request>.json` 的动词遵守同一形状区分：
+同样，不能把“一张表里写了谁批准”当成身份认证。`actor`、`produced_by` 等说明调用或生产责任，实际人的授权仍来自明确的人机交互和原人类入口。业务身份、Runtime revision、需求代际、验证轮次、对象 revision 和内容哈希的用途见 [revision 机制](L4-revision-usage.md)，不能以其中一个代替全部坐标。
 
-| 形态 | 键风格 | 典型差异 | 校验者 |
-|:--|:--|:--|:--|
-| 请求体（authoring 文件） | 引用式键：`session_ref`、`occurred_at`、`source_refs` | 不含运行时派生字段（无 `record_type`、`revision`、approved hash） | CLI 解析 + 请求契约一致性测试 |
-| 持久记录（artifact/schema） | 身份键：`session_id`、`reported_at`，并含 `record_type`、revision、hash 等由 Runtime 填写的字段 | 由 Runtime 在事务内产出 | artifact schema |
+### 2.3 一条交付链中的不同事实
 
-不要拿请求文件去对持久化 schema 校验；约定由 `TestS7S9RequestExamplesTrackRequestContracts` 防漂移，适用于未来一切新增 `--file` 动词。
+以一个增加查询行为的 TASK 为例：Builder 在原生工作区完成实现、自测、产品提交和 Result，结束事件接收的是本人的交付。Main 随后集成，在实际集成结果上完成所选必需检查。独立验证再依据本轮 Plan 检查查询行为、拒绝路径和相关约束。这三项工作分别形成自己的事实；前一项完成帮助后一项开始，不替后一项给出结论。
 
-### 1.3 崩溃安全原则
+若独立验证发现拒绝路径错误，保留本轮发现，交 S8 调查并形成适用的修复约束。S9 的实现与定向复验可以证明这次修复断言，再返回 S7 完成新轮。不能修改原报告或刷新其哈希，把“当时确实发现问题”的轮次改成从未出现问题。这正是区分当前效力与历史事实的用途。
 
-原则句仅此一条：**半完成状态必须可从磁盘无损重建，而不是可推理出来**。写序细节（marker 协议、恢复顺序、原子原语）与对账三角（doctor / validate --all / reconcile 各自能修什么）的唯一权威见 [状态机核心篇 §4/§9](L4-state-transition-core.md)。
+### 2.4 保留事实与保存全文是不同决策
 
-### 1.4 身份的最小纪律
+多阶段协作需要保留责任、专业判断和接收事实，但这些逻辑职责不要求每一层都复制全部内容。一个 Reviewer 的题目、私人答案、已接收 Result 和接收记录回答不同问题；Runtime 为了说明“这份责任已经签发”，不必再次携带完整题目。历史材料需要长期可追溯，也不意味着每次 Hook 都要解析全部历史正文。
 
-进入 Runtime 实体投影、PostToolUse sender binding 和 auto-chain 的 agent 标识必须非空、无控制字符、非 authoring 占位符（`TODO(planner):...` 在注册即被拒绝并指正）；不强制统一前缀，不对合法平台 ID 收紧格式。人侧 actor 一律是仓库内自我声明（`--approved-by` / `--actor`），**不是身份认证**——这一信任边界适用于全部人闸（§7.3）。
+存储减负以作者行为不变为前提：Main 和 Worker 收到的责任、题目、材料及其适用版本不变，已交付的读取路径保持可用，答案字段、正常保存、原生结束和回执语义不变。框架承担内容定位、完整性检查和恢复，不增加作者查询、清理、迁移、重存、手填摘要或提交命令，也不收缩普通工具权限。已经接收的工作不因内部存储调整重新履职。
 
----
+| 对象 | 必须保留的事实 | 存储与生命周期选择 |
+| --- | --- | --- |
+| Plan、Result、Finding、调查和修复产物 | 专业判断、来源、版本、适用范围及原接收关联 | 保留原专业产物；不为减少文件数合并不同专业责任 |
+| 签发、责任与接收记录 | 谁收到什么责任、哪份结果已接收、后继是否完成 | 主状态保存必要索引和准确引用，避免重复正文；响应回执可从原事实投影，不成为第二份接收权威 |
+| 已签发工作包 | 原题目、冻结输入、模板身份、绑定及派生身份 | 正文独立保存，主状态引用；保持原 packet 结构和历史内容，不从当前 Plan 或最新模板替换原题目 |
+| 可填写答案与展示文件 | 作者实际填写的内容，以及本责任可读的交付视图 | 保留原路径和交互；展示可从原冻结正文恢复，未接收私人答案不能被模板覆盖或据文件存在推导已接收 |
+| 证据来源快照 | 当时实际使用的字节及其来源、执行者和责任 | 会变化或随工作区消失的来源需要捕获；共享相同字节不合并责任或执行事实 |
+| pending、暂存归属和 checkpoint | 中断位置、准确提交配对及恢复所需内容 | 保留原恢复能力；只在原事务证明不再需要后清理，不能凭文件年龄或一次失败响应删除 |
+| 统计、诊断和提示去重 | 定位故障与避免重复提示所需的信息 | 与业务权威分离；分别定义保留窗口、重建方式和失败影响，不作为接收、阶段推进或权限依据 |
 
-## 2. Revision 语义指针
+每项新增持久材料都要明确独有事实、生产者、消费者、读取时机、可重建来源和保留边界。没有独有事实的副本，应说明为何需要交付或恢复副本；不能仅以“方便以后查”让它永久进入主状态。
 
-revision 的统一语义、对象版本分层、Agent-facing 命令默认值、可选 CAS 和复杂度准入统一见 [L4 Runtime revision 使用与命令协调](L4-revision-usage.md)。本文件只消费其中的结果：指纹、generation、review round、证据 validity 和对象 hash 各自承担自己的事实身份，不借 revision 代言。
+### 2.5 主状态索引与不可变工作包正文
 
----
+主状态承担当前游标、责任状态、接收关联和正文定位。工作包索引必须足以按 packet、owner、责任、代际、轮次及原阶段合同选择准确对象，并绑定正文引用、内容摘要、类型／格式和原签发身份。具体字段由各阶段原合同和相应 Schema 定义，不把 S7 的坐标强加给全部阶段，也不让作者填写这些索引字段。 S9 RepairResult 的轻索引另保留从原正文派生的 `execution_locator`（原 Assignment、执行代次及工作根），避免只读提示从已变化的执行登记猜测原路径；实际消费仍核对完整正文与索引投影，locator 不能另行授权。
 
-## 3. 指纹体系（sha256 家族）
+正文保存原完整 packet，包括冻结 inputs、draft、模板摘要、绑定和原派生身份。第一层简化是把完整正文从主状态移出，不同时拆散其内部格式或新建通用模板重建系统。现有工作包交付文件若满足不可变内容和恢复要求，可以复用；展示文件和权威正文若需要分别存在，应明确其关系，避免无理由增加第三份全文。文件路径本身不证明签发，读取仍需核对索引摘要、原签发关联和适用来源。 展示格式仍由原 subtype 决定：S7 展示完整 packet，S9 的既有展示是原 Draft 及其准确控制根下的 Read 路径投影。维护校验这些原展示内容，保留正确既有字节，缺失时按该 subtype 补齐；不得把 S9 Draft 展示误判为不完整权威正文，也不得把它统一改成另一种交付格式。
 
-一个算法、多种用途；每种用途都有明确的生产者与消费者，都机器可公证（D6）：
+纯快照进度投影与完整工作包消费使用不同入口：前者保留已经持有的责任、路径和接收事实，不重读正文／journal或重新验源；context取消不把已知事实抹成缺材料。需要比较作者答案与默认问卷时，才在原预算内读取所选正文；不能确认则表达比较未知，不伪造缺包或新接收。
 
-| 指纹 | 定义 | 生产者 | 主要消费者 |
-|:--|:--|:--|:--|
-| documents[] 登记指纹 | 文档 path/version/sha256 入册 | PTR-PLAN-01/02、TR-002 等 transition 的 register action | registered-document drift 复核、exact-subject 门（S5） |
-| REQ 基线指纹 | bound_req 登记的 sha256，每次规格类迁移前按上游声明的 Git tree 重算比对 | req bind | TR-004/007/023 的 `req_baseline_unchanged` guard |
-| frozen_subjects / subject_digest | 轮内冻结主体集（path+sha 排序列表的聚合 sha256） | ReviewPlan 注册 | ReviewResult 强校验字段、`s7 status` 看板披露、TR-008/TR-009 边界 |
-| baseline digest | ObservationBatch / handoff / clean snapshot 携带的基线快照哈希 | seal / handoff / snapshot 事务 | S8 intake 四硬门、S9 session open、S10 复算 |
-| workspace digest | E2E 验证工件目录 sha256（sorted 相对路径:文件哈希行） | `s7 workspace-digest` | cold_start 轮 result 提交与 seal 收口的闭环校验 |
-| changeset 工件对 | 每 changed artifact 的 path + 内容 sha256（删除件带 base/last-good sha） | changeset compute | ChangeImpact、TargetedReverification 绑定 |
-| 权威事务哈希 | Case revision sha、Contract approved hash、handoff ref+SHA | route / approve / handoff commit | 下游每一跳的前置校验 |
-| activation 哈希链 | plan_report 文件字节级哈希链 | agent lifecycle 事务 | readback/activation fail-closed 实校验 |
+读取按用途分层：
 
-> **收敛方向（RC-10 Step B — 已落地）**：`ComputeTriple`/`ComputeRevisionPair`（`internal/runtime/fingerprint.go`）产出三元 `state_hash + evidence_hash + baseline_hash` 与二元 `state_revision + evidence_generation`；首个消费者为 `RefreshFingerprints` 输出 `FingerprintResult.Triple`。八家族表仍保留：切换是逐消费者的迁移事务。
+1. 普通观察先读取状态与索引，检查索引结构和身份唯一性，筛选当前责任；不为生成下一步提示重建全部历史题目。
+2. 交付、接收或重放准确责任时，读取所选正文，核对内容身份和该消费者实际要求的来源、责任及接收事实。已接收重放优先使用原接收关联，不依赖私人答案仍然存在。
+3. checkpoint 恢复、完整性诊断和具名历史核验检查相应历史及其所引用内容。普通索引读取成功不宣称历史正文已经全量验真；遇到本次所需正文缺失或冲突，保留准确故障，不跳过或改用相似对象。
 
-冻结不变量与受控例外：
+同次调用可以复用准确不可变正文的解析和校验结果，当前责任资格、工作树和可变来源仍在原边界核对。减少读取范围不能隐藏重复身份、畸形索引或未知格式；缓存不能成为事实来源。物理格式变化的发布、旧实例兼容和恢复要求见[状态机核心 §8.4](L4-state-transition-core.md#84-工作包正文外置的事务与兼容边界)。
 
-- **轮内冻结基线漂移 → 整轮 stale**（产品代码、CASE/PATH、配置均属冻结面）；
-- **局部失效例外**：E2E spec 自身在其 Result 之后被修改，只 invalid 该 Result 及显式依赖它的 Claims，不宣告整轮 stale——这是精确失效原则而非宽松放行；
-- 代际隔离：generation/amend 使下游证据全量失效；旧轮 evidence 永不污染新轮分母。
+### 2.6 简化范围与实现边界
 
----
+优先减少主状态全文和当前责任读取时的历史遍历，再减少同次调用的重复序列化、解码和证明。S7 与 S9 等阶段采用同一存储分工，可以按消费者逐步接入；只移出 S7 draft 不等于消除全部工作包膨胀。现有准确来源缓存继续使用，不通过叠加缓存替代读取范围的改进。
 
-## 4. 证据链机制（D6 / C3）
+S9 工作包中的共同冻结来源、不同责任捕获的相同证据字节可以进一步复用，但内容共享必须保留各自来源、责任和实际执行关联，交付视图仍由框架提供。只有测量证明收益后才扩展这一层；完整工作包外置不以引入全局对象库、引用计数、垃圾回收或后台服务为前提。既有 Git 固定来源能否替代捕获，取决于原来源合同和恢复可达性，不能只因哈希相同就换来源。
 
-### 4.1 公共信封
+checkpoint 保持当前完整恢复语义和最近两套的保留范围，先随主状态精简；增量快照、降低保存频率和异步保存不属于本次存储简化。专业结果、暂存 intent、事务 pending 和后继记录的区别继续保留，不因它们都叫“中间文件”就合并。临时材料的清理由原机制核对状态、pending 和保留 checkpoint 的引用，不要求 Agent 维护。
 
-一切证据共享最小公共字段：`id / kind / path / sha256 / produced_by (+producer_responsibility) / conclusion / review_round / status(valid|invalid)`；kind 决定其余特有字段。规划类信封（planning_design / planning_contract / planning_task）与审查类信封（document_review 及 REV 系列）只是 kind 的差异，不允许任何一个 stage 私自增删公共字段——新增公共字段是本节的修订事项。kind 注册表与槽位由 evidence catalog 控制；pipeline-owned kind 会显式堵死手工登记路径（如 finding_supplement）。
+当前实现对 S7 ReviewResult、S9 PlanReport 和 RepairResult 支持 `packet-body-ref-v1`，原完整 packet 保存至 `.claude/packet-bodies/<sha256>.json`，索引保留原绑定、签发、作者路径及正文摘要／大小／格式；普通 Snapshot 不展开正文。新签发由原 Writer 在 pending 前发布正文，其他 subtype 继续内嵌。旧内嵌状态由框架维护命令 `runtime compact-packets` 沿原 Writer 验证原签发、恢复缺失展示并提交表示切换，维护重放不新增事实；该命令不是作者交卷步骤。旧 pending 不隐式迁移，未知格式具名拒绝。
 
-### 4.2 失效的四条家族
+当前每套保留 checkpoint 都保存独立正文副本，批准的恢复计划也封存所需正文，恢复先安装已核验正文再提交原引用。主状态与 checkpoint 的 state JSON 缩小，但完整恢复材料仍包含原题目，不声称 checkpoint 总字节或文件数同比减少。全局正文暂无 GC，避免删除 pending、归档及恢复所需字节；共同来源去重仍待收益验证。`DraftPlanForRoot` 生成当前 Plan 草稿，不能恢复历史题目；原 canonical、签发和来源校验继续由准确正文及原消费者承担。
 
-| 家族 | 触发 | 粒度 |
-|:--|:--|:--|
-| 代际型 | amend / generation bump | 全部下游证据失效 |
-| 轮际型 | 新 review round 开启 | 旧轮证据不入新轮分母 |
-| 修复型 | ChangeImpact 提交 / 受控 plan revise | 类型化规则字段：`invalidation_rule=change_impact_<status>`、`plan_revision`；失效与替代在同一事务内落账 |
-| 人闸型 | S11 驳回处置 | 按 evidence kind 粗粒度：reject_acceptance（TR-028）失效 acceptance+acceptance_record+release_audit+release_audit_record；reject_release_audit（TR-029）仅失效 audit 两类、保留 acceptance（S11 不读正文原因，按 kind 失效是有意取舍） |
+## 3. 一项证据怎样组成
 
-四类证据命运词汇全域统一：`invalidated`（行为依据已变）/ `superseded`（已有 fresh replacement）/ `retained`（依赖图证明无关，须附理由）/ `required_reverification`（必须在定向复验或下一完整轮重新执行）。
+### 3.1 文件、专业结论、索引与引用
 
-### 4.3 干净轮能量函数（承接 L2 总览授权）
+证据首先要回答一个具体问题，例如“哪些场景经过了独立验证”“修复后的断言是否成立”“人对哪个候选作了什么选择”。专业产物保存问题的实际答案，证据索引让其他消费者定位它并判断当前效力。
 
-L2 总览规定「必需维度集合的权威定义归第四层门禁语义设计」，定义居所即本节。「未满足的必需验证维度数」由 `verification.EvaluateCleanRound` 的七项命名检查承载（当前实现核对日 2026-08-28）：
+Runtime 的 `evidence[]` 使用 `id`、`kind`、`path`、`sha256`、`status`、`baseline_generation`、`review_round`、`produced_by`、`responsibility_id`、`scope_refs` 及失效信息表达索引关联。结论按相应专业产物读取，不能假定所有索引项都另存一份统一的 `conclusion`。专业信封的 `producer_responsibility` 与索引的 `responsibility_id` 也不能混成作者要复制的两套身份。
 
-1. `review_round_started` —— 当前 review round ≥ 1；
-2. `review_plan_clean` —— 本轮 ReviewPlan 存在、同轮且 status=clean；
-3. `all_required_claims_pass` —— 每条 required Claim disposition=pass 且绑定已消费 Result；N/A 保持 not_applicable；
-4. `no_findings_current_round` —— 本轮存在已确认 Finding 即否决干净路径；
-5. `no_invalidated_pass_evidence` —— 本轮 result/finding/batch/clean 快照四类证据不得有 invalid；
-6. `no_open_blocking_bugs` —— 仅 P0 计入阻断，closed P0 必须有含其 ID 的当轮 targeted_reverification；
-7. `clean_round_snapshot_registered` —— 必须存在本轮 valid 的机器 clean_round 快照（TR-009 只认机器快照）。
+各字段的用途应一起理解：
 
-主干推进使未满足项单调不增（D7）；机器分母之外的事实（P1～P3 风险、AC 来源真实性）由 S10 人工层补充，不属于该能量函数。
+- `id` 指向已经登记的那项依据，路径说明内容位置，哈希标识相应字节。
+- `kind` 说明它是哪类依据，生产者与责任说明谁承担这项工作。
+- 代际、轮次和范围说明它适用于什么对象；`valid` 只表示尚未按原规则失效。
+- 失效原因说明为什么不能继续使用。保留记录使后续能够解释当时发生过什么。
 
----
+“文件存在”“被登记”“当前有效”“足以支持这个结论”是四个不同判断。一个当前有效的调查记录，仍不一定能满足独立复验的证据要求；一个哈希匹配的通过报告，也不自动证明其中的工作真实、充分。
 
-### 4.4 Evidence 合并后的指纹同步
+### 3.2 类别、要求槽位与生产入口
 
-Evidence 文件可能在多个 worktree 交付汇总后改变。对于契约允许汇总/更新的 evidence，sha256 是当前内容的绑定缓存：Hook 发现变化时自动刷新对应绑定，不因这种变化单独产生 hash-mismatch 拒绝、暂停、额外批准或“证明来自合并”的门禁。
+[证据目录](../../internal/evidence/catalog.go)分别定义可登记的类别、转换所需的证据槽位、兼容类别偏好、机器生成依据和恢复导入白名单。例如，转换要求的 `acceptance_record` 槽位与登记类别 `acceptance` 不要求同名；`generated:` 依据由原事务生成，不要求作者另写一份文件。可登记也不等于可以从外部导入后直接信任。
 
-来源由上游契约指定（见状态机核心 §5.4）。刷新只作用于当前 Runtime 中仍适用的 evidence 记录及明确引用它的派生绑定；同路径存在多个引用时统一刷新引用闭包，派生 manifest 若被改写则再同步其绑定。锁内重读、原子提交、失败恢复和幂等沿用单一 Writer，不允许文件和状态各更新一半后继续推进。
+证据应通过原消费者形成。S5 审查、S6 交付、S8 调查和 S9 修复都有各自的接收关联；通用登记不能替代本人履职或补造已接收事实。[通用登记入口](../../internal/runtime/evidence.go)明确拒绝手工登记 `finding_supplement`、`repair_result_blocker` 和 `repair_result_resolution`，因为这些记录必须与所属索引、消息或阻塞指针在原事务内共同成立。
 
-哈希刷新不改变结论、责任、generation、review round、valid/invalid、审批事实或接收状态；新字节仍经过正常 schema 与语义检查。旧轮、已失效和归档证据不借刷新恢复有效。
+这种原则不意味着通用入口已经替每个类别实施全部专业校验。例如，S10 正常保存消费者处理专业报告，后续登记保留当前 Runtime、代际和轮次关联；不能宣称登记时又完成了一遍报告语义审查。接收强度必须指明具体消费者。
 
-产品源文件、locked REQ/contract、冻结测试主体与被测 commit 不属于可变 evidence 缓存；它们沿用原有变更/失效规则。不能因为一个 manifest 位于 evidence 目录，就同时刷新它绑定的产品基线。不要以全量 fingerprint 命令替代定向 evidence 同步。
+## 4. 来源与指纹为什么必须区分用途
 
-验收必须分别覆盖：多树汇总的合法 evidence 自动同步并正常消费；结论或代际不合法仍被原规则识别；产品基线漂移不能被刷新抹除。
+### 4.1 每个指纹都应有对象和消费者
 
-## 5. 追溯分母链（单一验证分母）
+SHA-256 标识字节相同，不负责判断内容正确。共同采用同一个算法，不意味着所有指纹可以相互替换。
 
-### 5.1 设计对象
+| 指纹或绑定 | 固定的对象 | 主要用途 |
+| --- | --- | --- |
+| `bound_req` | 本次绑定的需求内容 | 检查执行范围是否仍来自原需求共识 |
+| `documents[]` | 已登记的设计、契约、任务等正式材料 | 发现基线漂移、构造审查对象、核对下游输入 |
+| `frozen_subjects` 与 `subject_digest` | 某次验证 Plan 明确冻结的主体及其集合 | 把结果归到该次验证对象，识别主体变化 |
+| 产品基线与 Git 提交 | 原开发起点、实际变更和集成后的产品 | 检查验证对象是否覆盖实际交付及残余变化 |
+| Case、Contract、Handoff 的版本与哈希 | 某次调查结论、批准约束或交接 | 防止下游消费另一版原因、修复范围或返回依据 |
+| Changeset 与检查来源绑定 | 实际修改、删除及检查时的输入 | 将影响判断、定向复验和 Main 检查归到准确对象 |
+| 证据项的路径与哈希 | 该专业依据的实际字节 | 检查引用是否指向已经登记的内容 |
 
-L2 全局规则点名：**S2 场景包的 `case.id` 是 S2→S7 验证链的唯一分母；REQ 验收标准（AC）与 CASE 必须双向可达**。这个机制是一个贯穿六个 stage 的数据契约，此前散落在五份 L3 的各自小节里，此处统一定义其成员与守恒规则：
+原生子代理并不需要补建通用 activation 哈希链来获得执行资格。原记录中保留的执行指纹只服务该记录恢复，不能成为新责任的启动要求。
 
-```text
-AC ──(bridge)──> FR ──> Rule/Branch ──> CASE(case.id)
-                        PATH/Story（用户轨补充维度）
-CASE ──(contracts check 反向闭合)──> 契约条款 cell `{contract-id} §n`
-条款 ──(tasks check 正向覆盖)──> TASK §3 Delivered Clauses
-CASE ──(e2e_assets 绑定)──> E2E Claim 的 path + CASE id + SHA
-CASE ──(ACC 第 3 节)──> 每个 AC 行的 expected/evidence/result
-```
+### 4.2 按声明的来源读取
 
-### 5.2 五条守恒规则
+正式产品和文档使用其契约声明的提交来源；专业运行材料可以按原规则从磁盘读取。`file_sources` 与原文件视图决定哪些内容来自 Git、哪些来自工作目录。存在一个磁盘副本，不代表所有消费者都应绕过提交来源；位于 `evidence/` 目录，也不构成可信性的独立证明。
 
-1. **单一生产者**：`cases.json`、`scenario-coverage.json` 由 `scenario generate` 从 scenario-model/facts×stories 规则原子生成；手写副本不存在合法地位，`scenario validate` 以字节比对守住这一点（源与投影不双写的投影纪律）。
-2. **反向闭合**：每条 CASE 至少映射一条契约条款；每条款至少一个 TASK；断裂即 gate 红（ContractsCheck 五类机械工作）。cell `{contract-id} §n` 是稳定语义单位，不是实现章节号。
-3. **受控 N/A 只有两种权威出口**：NFR id 或 REQ §A4 未决项指针；e2e lens 上表现为 `applicability=not_applicable` + na_rationale + source_refs 指回影响分析。沉默格（coverage matrix 中未解释的组合）必须被 cross-matrix 检测暴露为缺口而不是留白通过。
-4. **断链定位返回**：bridge/check 失败的报错携带 token/clause/CASE/SHA 定位（公理五），修对应层产物后仅重审受影响职责——不要求全链重来。
-5. **冻结联动**：CASE/PATH 属 §3 冻结面，其变更使整轮 stale 并要求重新生成——分母在验证开始后不再漂移。
+控制根、实际工作区、产品观察位置和 Git 共同目录可能不同。验源必须使用该责任的准确根，不能把 Main 的同名文件当作 Worker 本人的产物。来源和集成的完整约束见 [Worktree 治理](L4-worktree-governance.md)，产品验证的冻结与实际观察见 [S7](../l3-stages/L3-S7-verification-round.md)。
 
-### 5.3 各段消费方式（各 L3 据此声明，不重述规则）
+### 4.3 聚合哈希只提供诊断视图
 
-S0 保证 AC 可判定并持有 §A4 出口；S2 生产分母；S3/S4 反向闭合；S5 把闭合纳入独立审查 subjects；S7 用 CASE 绑定 e2e_assets 与 focus_key（focus_key 不是 angle registry 的复活，只回答"哪类上下文一起读"）；S10 沿 ACC 逐 AC 回收证据。任何 stage 发现"第二套 case 编号体系"即违规。
+[ComputeTriple](../../internal/runtime/fingerprint.go)从登记项的 `path:sha256` 排序聚合出 `state_hash`、`evidence_hash`、`baseline_hash`。其中 `state_hash` 聚合的是文档登记指纹，不是整个 Runtime JSON；`baseline_hash` 组合文档、证据和绑定需求。它们帮助比较登记内容，不替代原来各用途的强校验。
 
----
+例如，只改变证据的效力状态而没有改变路径和 SHA，不一定改变这组三元哈希。缺少路径或哈希的行也不会成为完整性证明。因此聚合值相等不能推出“所有专业结论仍适用”，更不能据此跳过原消费者的身份、效力、范围或文件核对。
 
-## 6. 精确集求值纪律（exact-set）
+### 4.4 登记、冻结与操作保护是不同强度
 
-### 6.1 三条公设
+登记建立内容和工程事实的关联，冻结表示某次审查或验证不允许悄然换对象，操作保护则在具体入口限制不合法的写入。登记后仍可能存在受控返工；需要变更冻结对象时，应走原修订、失效或重开路径。不能因为文件写着 `locked`，就宣称所有工具、所有工作区和外部进程都已受到物理保护。
 
-跨 stage 反复出现同一个求值原语——"拿完整声明的有限集合做精确匹配求值，而不是抽样或代表性判断"。其规则本体在此统一定义（直接对抗失效目录中的 Eroding Goals 与 Goodhart）：
+每项保护都要指出触发阶段、实际对象、允许的专业写入与恢复方式。新原生 Worker 的普通工具不再由通用激活或全局身份读回把守；其范围首先来自真实任务、角色、工作区和平台能力，原消费者在接收时核对工程约束。具体写保护与平台接线的适用范围交给 [Hook 接线](L4-hook-platform-wiring.md)，不能在本篇隐含恢复一层执行审批。
 
-1. **集合先于结论固化**：被求值的承诺面必须在求值开始前完整枚举并持久化；事后缩小集合换取绿灯是非法操作（防"这次先算了"）。
-2. **覆盖是划分，不是采样**：同一求值域内的成员关系构成互斥完备划分（如 Assignment 带 non_overlap_boundary），允许 N/A 但不允许遗漏；沉默不是不适用。
-3. **豁免个体化且需背书**：每个 not_applicable 都要有理由与来源（接 §5.2 规则 3）；blocked 成员不退出集合——以 `blocked_by_confirmed_finding` 投影保留义务（必带 blocking finding id、failed_precondition、evidence_refs、after_repair_required=true），阻塞解除后义务立即复活。
+## 5. 引用如何解析，解析能证明到哪一步
 
-### 6.2 全系统实例清单
+兼容证据选择器遇到登记 ID 与原信封 ID 不符时，仍视为关联冲突。只有同一次求值中，另一条登记以信封真实 ID 独立通过了当前要求，并且两者的规范化路径、文件摘要、类别、Runtime、代际、适用轮次及专业生产者一致，才把错误 ID 那一行从本次冲突中排除。这是读侧识别同一原事实，不重写索引、摘要或信封，不建立替换表，也不借另一份无关 PASS 遮盖坏证据。
 
-| 求值点 | 承诺集 | 机器判定 |
-|:--|:--|:--|
-| S4 tasks check | 条款宇宙 ↔ TASK §3 双向覆盖 + DAG 无环 | 结构检查六项 |
-| S7 ReviewPlan 注册 | required claims 集、assignments 对 claims 的互斥精确覆盖（exact-set Claim↔Assignment）、TASK 进 source_refs（缺失即拒）、cold_start 单 Assignment 不得独占全部 required e2e Claims 且跨 ≥2 focus 维度 | overlap / overload validator |
-| S7 submit→seal | ObservationBatch.finding_ids == 本轮 immutable findings 的 exact set；drained_assignment_ids 记录已 drain 的责任集 | intake 四硬门的第一道 |
-| S9 RepairResult | changed_artifacts 与会话真实 diff 做 exact-set 比对（多报 extra_or_changed / 少报 missing_or_changed 两栏差集列出）；repair_units 结果齐全性 | result submit 硬门 |
-| S9 TargetedReverification | 每 Contract 每 assertion 一一对应（symptom-N / root-N / gap-N 兼容别名 detection-N） | targeted commit 完备性门 |
-| S10 coverage_inventory | 本次变更声明的有限审查全集开局固化，不得为通过而临时缩小 | ACC 映射 + UNKNOWN=0 等硬指标 |
+别名不计作额外证据；真实合格 ID 先去重，再满足原最低数量与独立性要求。若要求两份却只有一份真实合格记录，反馈是证据不足，不能把已证明的别名重新算成 Schema 冲突。不可读、坏 JSON、生产责任不符或没有合格替代仍走原错误路径；新 packet 的准确当前性筛选也保持原规则。
 
-### 6.3 差集报告的标准形
+已经登记的依据可以按原 ID 引用，支持的公共解析器也接受 `runtime:<id>`。这两种写法指向同一项记录，不另建别名，不修改原产物。例如，`ev-observation` 与 `runtime:ev-observation` 都应保留该记录原来的失效信息。
 
-exact-set 不匹配的错误输出统一为两栏差集：missing（承诺了未兑现）/ extra（出现了未承诺），分别附下一步动词。它是 §12 错误契约在覆盖场景下的专用形态；任何新的 exact-set 消费点直接继承，不为单点发明第三种报告格式。
+[ValidateRefs](../../internal/evidence/semantic.go)对 Runtime 引用检查登记存在、`valid`、没有失效标记、当前代际，以及调用者要求的类别、轮次和禁止自引条件。提供实际根时还读取原文件、核对 SHA；不提供根时只是相应元数据检查。调用者需要文件证明时，不能用元数据模式的成功代替它。
 
----
+`runtime:` 只剥离一次。显式的 `runtime:test://example` 仍要求存在对应登记项，不能借 ID 中的 URI 字样逃过检查。另一方面，裸 `test://…` 等执行锚点在该公共函数中只按引用形状处理；它没有连接外部执行器验证这次测试真实发生。专业消费者必须解释锚点对应的日志、环境和执行事实。
 
-## 7. 门禁行为准则与人机界面（D2 / D3）
+这是一项公共引用能力，不代表所有局部读取器都已采用相同解析。某个入口若仍只按原 ID 查找，不能通过重新登记别名解决关联缺失。应由 Main 或系统检查该入口和原责任，保留专业依据的原身份；S8 的具体边界见 [S8](../l3-stages/L3-S8-finding-investigation.md)。
 
-### 7.1 迁移形态学与引擎本体（指针）
+## 6. 证据效力怎样变化
 
-迁移 ID 五类形态（TR 主生命周期 / GTR 人闸边界 / PTR 子相位及命名纪律 / runtime-authority 专用事务如 `S8-REPAIR-CONTRACT-APPROVAL` / 阶段 cursor）与 guard/action 引擎机制、auto_trigger 仲裁的唯一权威已上移至 [状态机核心篇 §2/§5/§6](L4-state-transition-core.md)；本文件不再维护该表。CI 一致性（`TestProtocolTransitionIdsResolvable` 等）作为两侧共用的守卫继续有效。
+### 6.1 历史发生过，与现在仍能使用
 
-本域在本文件只保留三条**行为准则**：
+失效描述依据不再足以支持当前结论，不抹除已经发生的审查、接收、Git 合并或人的决定。历史来源可以在原消费者明确允许时用于解释原贡献；这不能把历史 PASS 恢复为当前 PASS。
 
-1. 迁移内要持久化的副产物一律在 action 里原子完成，不留"下一步自己补"的尾巴；
-2. quality gate 挂在工具调用的自然路径上评估——阶段不放行时正确反应是继续补产物（工作不中断），只有不可逆动作被硬阻断（D3 的执行干预 vs 生命周期推进之辨）；
-3. 声明存在的每个 guard/action/gate 必须能被 CI 解析到注册处，无主孤儿非法。
+| 变化 | 对当前依据的影响 | 后续责任 |
+| --- | --- | --- |
+| 需求修订并进入新代际 | 原代下游不能支撑新代结论 | 从新共识重新确定受影响工作与验证 |
+| 开启新的完整验证轮 | 原轮结果不计新轮覆盖 | 完成本轮 Plan 中的实际验证义务 |
+| 冻结主体或产品基线发生变化 | 原结果与验证对象可能失配 | 按原基线与影响规则失效、返工或重开验证 |
+| 受控计划修订、修复或局部依据变化 | 具体受影响结果、Claim 或批准关联需要重新判断 | 记录保留、替代、失效及必须重验的理由 |
+| S11 驳回验收 | 验收结论及后续审计结论失去当前效力 | 回到相应专业责任处理 |
+| S11 驳回审计 | 处置审计结论，保留仍适用的验收观察 | 重新完成审计并形成新的人类交接 |
 
-### 7.2 人闸机械形态契约
+需求换代的失效范围由原换代事务处理；局部影响通过明确的变更集合、范围与规则判断。[影响计算](../../internal/impact/analysis.go)按需求、契约、任务及范围重叠等规则求值，缺少 `scope_refs` 的依据按全表面敏感处理，已经失效的项保留原原因。它需要被真实消费者调用，不能理解为一个已经监听所有外部编辑的全局监视器。
 
-REQ 七动词生命周期（bind/pause/resume/amend/unbind/abort/approve；生命周期语义的概念定义归 L2「REQ 授权生命周期」，本节定义其在 runtime 的机械形态）与 S11 六枚举处置共享同一骨架：
+专业判断仍要补足机械规则看不出的影响。路径没有相交，不足以证明共享模型、行为约束或运行环境完全不受影响；反过来，也不能因为一次局部修复就无依据地抹除全部历史。
 
-1. **结构性停机两层**：loop-definition 标 `eligible=false + human_boundary=true`（辅 forbidden event 如 automated_s11_decision）→ Controller 对该 cursor 返回空自动候选。两层独立起作用。
-2. **固定处置枚举 + 专用动词**：人只能从预定义处置选择（S11 六枚举 approve/defer/reject_defect/reject_acceptance/reject_release_audit/abort ↔ TR-025..030）；每个处置映射固定去向，不接受自由 target-state。
-3. **人闸只做三件事**：记名（actor 自我声明）、留证（decision evidence 绑定 Runtime identity、disposition、当前 release context 和一次性 decision ID）、选去向。approve 只记录授权，永不执行 merge/publish/deploy/release；rollover 是独立 API 而非闸的一部分。Runtime revision 由 Writer 内部记录，不是人闸输入。
-4. **交接物压缩视图的最小字段（目标态）**：交给人的一切就绪包应含——关键事实 IDs and hashes、已完成范围、可信依据、唯一未决事实、影响与残余风险、建议处置、恢复点、automation stops 声明。当前无独立 runtime entity/schema（诚实缺口，§15）。
-5. **零副作用拒绝**：未知处置、缺证据或业务 context 不匹配一律非零退出且不产生状态变更；内部 revision 冲突由 Writer/命令协调处理，不转化为正常 Agent 操作税。
+### 6.2 可变证据的指纹同步
 
-### 7.3 阶段锁定时序契约
+有些专业运行材料允许在原责任内汇总，内层依据的字节变化会使外层引用哈希需要同步。如果每次同步都要求作者手抄机器字段，会把引用维护变成第二套工作。因此定义以 `mutable_evidence_kinds` 声明可以同步的类别，交 Writer 处理相应绑定。
 
-「registered ≠ 物理冻结」三分法：登记（获得指纹合法性）→ 可控返工（合法流程更新并重登记）→ 硬拦截（阶段感知写保护激活）。S0 锁定→S1 bind 窗口依赖人锁定纪律并有诚实缺口标注。新 stage 冻结语义沿用此三分法，不允许未声明的中间强度。
+[同步实现](../../internal/runtime/evidence_refresh.go)限定为当前代际、无轮次或当前轮次、仍有效且属于允许类别的证据。引用闭包按内层到外层处理，只在原规则允许写入的来源上更新已识别的证据引用；`subject_refs`、`frozen_subjects`、`baseline`、`bound_req` 等冻结内容不随此刷新。
 
-### 7.4 歧义裁决原则（fail-closed on ambiguity）
+同步维护的是字节关联，不能改变专业结论、审批、代际、轮次、效力或失效原因。缺文件继续是缺文件，不能拿空内容重新绑定；产品变化、需求变化和冻结主体变化不能靠刷新 SHA 消除。
 
-凡是机器面对多个并发信号竞争同一决策点的场合，一律不猜：
+这也不是每个 Hook 都必经的步骤。[Controller](../../internal/controller/cycle.go)在适用的质量求值路径中同步允许的证据，并让刷新与评估共用已固定的文件视图；当前验收、发布审计及设计规划路径有独立边界。原生提前返回和只投影路径不会因此自动执行全量刷新。需要正式结论时，仍由原专业消费者承担其效力判断。
 
-- selector 唯一事实源：verdict 类信号走单一 selector（SEL-*-OUTCOME）；两个候选并存时 Controller 拒绝评估（空 candidates 或失败闭合），绝不按隐式优先级挑选；
-- 确实需要排序的，层级必须写成定义而不是调度器的习惯：如 Case mixed-route 的权威顺序 REQ > spec > repair > duplicate > no-change；上表实算时只能引用该定义；
-- 对象无法识别时不猜测绑定：PostToolUse 定位不到 agent 即静默跳过（观察路径 fail-open），屏障拦截不到对象即整体 fail-closed——两个方向都是定义内的行为（§8）。
+## 7. 追溯与有限集合怎样防止义务消失
 
----
+### 7.1 从人的承诺走到实际验证
 
-## 8. 写屏障家族（D2 / D5）
+需求验收标准说明人期待什么；设计中的规则、故事、场景说明产品应如何表现；契约把跨模块行为固定下来；TASK 安排实现和验证责任；S7 的 Claim 则确定本轮需要独立回答的问题；S10 回到需求判断交付是否足够。
 
-policy engine 的 deny 规则是跨 stage 沉淀的核心资产，六条主规则：
+这条关系应能双向追溯：从某条验收标准找到设计和实际依据，也能从某项实现或验证说明它服务了哪个承诺。场景生成、契约覆盖和任务检查是其中不同的消费者，不应各自重新编号一套同义对象。生成投影应从原模型重新生成，不能同时手改源模型和一份自称权威的投影。
 
-| rule | 语义 | 适用相位 | 识别依赖 |
-|:--|:--|:--|:--|
-| `locked_artifact_write` | 写入命中 locked artifact 即拒绝 | 全局（building 起） | 仅路径匹配 |
-| `reviewer_product_write` | 验证相位产品面写入拒绝（验证者只许写报告面与 workspace） | verification | 仅路径+相位，不依赖身份 |
-| `assignment_write_before_plan` | 计划回执落库前的首次写入拒绝（首写屏障） | 派发执行责任 | 依赖三级 agent 识别；主会话豁免 |
-| `repair_write_before_execution` | 领域 PlanReport 通过并 execution begin 之前产品写拒绝 | bug_resolution planning/reproducing | 同上 |
-| `repair_assignment_scope` | fixing 相位逐工具校验写面 ⊆ 经 PlanReport 绑定的 Assignment scope | fixing | 同上 |
-| `unauthorized_task_self_claim` | teammate 不得认领未被派发的 Team task | TaskUpdate 面 | Team payload |
+追溯不能把所有专业问题压成同一个数字分母。行为场景、非功能约束、共享模型和变更风险有不同形态；没有界面的需求也有真实义务。哪些项目适用、怎样表达不适用，应有原设计依据和可解释理由，不能通过留空或删除承诺换取覆盖率。
 
-统一语义约束：
+### 7.2 只有已定义的有限集合才做精确匹配
 
-- 拒绝信息 = 命中规则 token + 含义 + 下一个动词（missing-token 词表模式全套共享）；
-- 豁免面对齐：`.claude/`、`docs/reports/`、计划声明的 `verification_artifact_workspace`；
-- 控制面不可读 **fail-closed**（宁停勿盲放行）；对象无法识别时观察类路径**静默降级**——两个方向均在 §7.5 定义之内；
-- 发布面：`protected_commands.json` **已不再作为 Hook 拦截依据**（hook-policy 的 extension_protected_commands 置空，且有测试注释锁死"Hook no longer loads docs/control/protected-commands.json"；分类器仅供 Bash 变异路径分析）。发布保护的现状 = S11 结构性停机 + 人操作纪律，这是有意边界而非待办（事实核查与归属见《[Hook 接线](L4-hook-platform-wiring.md)》§10）。
+当原契约要求“这些成员必须全部交付”时，应先固定集合，再比较实际结果。精确匹配回答的是承诺是否遗漏、重叠或多出，不能代替成员内容的专业质量判断。
 
----
+| 原消费点 | 已定义的承诺 | 完整性的含义 |
+| --- | --- | --- |
+| S3、S4 | 当前条款、场景和 TASK 关系 | 有实现责任、验证责任与可解释的依赖，不丢必要行为 |
+| S5 → S6 | 原审查及 TR-003 接受的任务批次 | 实现按原锁定集履约，修订或取消走真实处置 |
+| S7 Plan | 必需 Claims 与 Assignment 分工 | 按原规则完整覆盖，说明不重叠边界及不适用项 |
+| S7 封存 | 本轮实际发现集合 | ObservationBatch 指向准确发现，不漏掉负面观察 |
+| S9 | 已批准修复范围及定向复验断言 | 按原 Result、Changeset、Contract 和复验消费者完成责任 |
+| S10 | 本次实际验收和审计范围 | 沿实际义务与风险形成结论，并保留未知和未解决事项 |
 
-## 9. 观测采集与脱敏治理
+例如，Plan 声明三个必需 Claim，只返回两个 PASS 时，应指出缺少哪一个及其责任人。若第三个被真实发现阻塞，保留阻塞与修复后重验义务；不能把它从集合删掉后宣布完整。差集反馈应说明缺少与多出的成员，并给出原集合和下一动作。
 
-### 9.1 目标态设计
+精确集纪律有明确适用边界。它不意味着 S9 每次接收都重扫完整物理目录，也不意味着 S10 必须凑齐固定类别或为每行重复写反证。实际要求由 [S7](../l3-stages/L3-S7-verification-round.md)、[S9](../l3-stages/L3-S9-repair.md) 和 [S10](../l3-stages/L3-S10-acceptance-audit.md)的现行契约定义，不能把某个消费者的局部强检查推广成全局手续。
 
-一切自动进入 journal/evidence/timeline 的观测内容都必须过同一道脱敏闸，规则属于本文件而不属于采集工具：
+## 8. 干净轮究竟证明什么
 
-- **敏感值模式表**：password/token/secret/api-key/bearer 的键名与常见值型模式命中即拒绝写入，报错指明命中的字段——采集端不自行维护放行例外；
-- **exec 面加固**：capture exec 对 argv 中的机密形参硬拒；终端流输出以占位符改写后回流，防止 secret 泄漏进日志与 evidence；
-- **缓冲纪律**：步骤缓冲不可读时显式 warn 而非静默丢弃；提交侧 `--captures <dir>` 会把 encounter.timeline 为空的 Finding 自动并入 steps.jsonl，使 step-bound evidence 校验随之生效——采集不是装饰，并入即受证据校验约束；
-- **诚实边界**：harness 提供捕获协议与 CLI；浏览器/console/network 的注入式采集属产品侧 wrapper（manual 已写契约，实现归产品，不算 harness 缺口）。
+干净轮表示当前完整验证轮按原计划收口，没有遗留妨碍该轮出口的事实。它使阶段推进有可重读的机器依据；它不是“程序没有任何问题”的证明，也不代替验收价值判断。
 
-### 9.2 当前实现
+[EvaluateCleanRound](../../internal/verification/clean_round.go)对 Runtime 执行七项检查：
 
-双闸门脱敏、argv 硬拒、占位符改写已在 capture step/exec 落地并被回归测试覆盖（R10 类问题封堵）；注入式 wrapper 待产品侧。
+| 检查 | 机械条件及含义 |
+| --- | --- |
+| 本轮已经开始 | `review.round >= 1`，没有轮次就没有本轮通过 |
+| Plan 已干净收口 | 存在属于当前轮的 Plan 指针，状态为 `clean` |
+| 必需 Claims 已消费通过 | 每项必需 Claim 为 PASS 且有 Result；不适用项保留原不适用处置 |
+| 本轮没有 Findings | 本轮真实发现不能被后来一份 PASS 抹掉 |
+| 相关证据没有失效 | 当前轮的 Result、Finding、ObservationBatch、CleanRound 不能有 `invalid` 项 |
+| 没有未解决阻断 BUG | 开放阻断项不能通过；已关闭阻断项还需要当前轮定向复验关联 |
+| 机器快照已经登记 | 当前轮存在有效的 `clean_round` 证据项 |
 
----
+阻断 BUG 包括 P0，以及明确 `blocking=true` 的其他严重度 BUG。实现也兼容恢复数据中的字符串 `"true"`。`accepted`、`assigned`、`fixing`、`retesting`、`investigating`、`pending_approval` 都属于仍开放的阻断状态；非 P0 没有明确阻断标记，不会仅凭严重度被这项检查视为阻断。
 
-## 10. 暂停、阻塞与终止保障（D7 / C4）
+这里的边界必须清楚：该函数只读 Runtime，不执行测试、不读取所有报告、不重新核对产品 Git 基线。已关闭 BUG 的复验关联目前接受 `scope_refs` 中的 BUG ID，也兼容路径包含该 ID 的记录；这个关联检查本身不证明报告内容充分或复验独立。即使本轮有后来替代的 PASS，相关旧项仍为 `invalid` 时也会阻断当前检查，不会在这里自动忽略。
 
-### 10.1 暂停是单一结构
+因此，机器快照应由原验证消费者产生，真实基线与来源仍由相应阶段入口核对。TR-009 的产品基线边界不能推导为所有后续转换都重做同样验证。S9 定向复验支持修复断言，返回 S7 后仍要完成新轮；S10 消费已有有效验证事实，继续判断实际验收与审计范围。
 
-所有通向 paused 的迁移收敛到同一检查点结构：`capture_pause_checkpoint` 产出一等公民 `pause_record`（游标 + 指纹 + generation + round）。TR-010/TR-011 以 `pause_checkpoint_recorded` 为 guard；TR-018（审计阻断）与 TR-026（defer）在 action 里生成 pause_record。resume 前**逐文件核对暂停时刻指纹，漂移即拒**；漂移了走 amend（generation+1 下游全失效）。
+## 9. 质量条件怎样形成合法推进
 
-### 10.2 Blocker 模型：阻塞必留痕，解除必有动词
+### 9.1 控制周期只组合已有机制
 
-任何 blocked 状态必须同时满足：(a) 看板可见（含 blocker 引用与恢复指引）；(b) 存在命名解除动词并把解除证据经 Runtime 落账。当前三种解除载体并存：
+在实际需要自动推进的入口，[RunControlCycle](../../internal/controller/cycle.go)按当前游标工作：
 
-| 阶段 | 阻塞呈现 | 解除载体 |
-|:--|:--|:--|
-| S7 | Assignment blocked 行 + blocker_ref 投影 | `runtime agent-event --event blocker_resolved --message <file>` |
-| S8 | Clarification 类阻塞 | FindingSupplement（discriminator 判别门：hypothesis_id+discriminator+expected_outcomes 或 `--in-round-note`，二者互斥） |
-| S9 | targeted 复验被环境/外部阻塞 | 先解除阻塞再 `runtime repair targeted resume --actor --reason` 回原 checkpoint |
+1. 读取当前 Runtime 和原接收后继关联，取得本次适用的转换目录。
+2. 为当前游标确定自动候选，按声明来源和有界预算求值质量条件。
+3. 根据有效事实和已定义 selector 确定候选；存在真实竞争或歧义时保留冲突。
+4. 条件满足且候选允许自动执行时，调用原 `transition.Apply`；由原守卫、action、Writer 和 CAS 决定是否提交。
+5. 返回实际提交后的游标，或者当前缺项、冲突与恢复动作。一次控制周期最多提交一个转换。
 
-合并为通用 Blocker 实体是待决演进（§15）；合并前共同不变量即 (a)+(b)，禁止出现没有解除动词或看板不可见的第四种 blocked。
+质量条件满足和转换能够提交分属两步。例如材料满足了 Gate，但 `contracts_checked` 守卫发现缺少合法契约，Apply 仍应拒绝。此时保留原游标和具体守卫诊断，不能把 Gate 的 `satisfied` 直接显示成阶段已推进。
 
-### 10.3 终止保障
+多个合法分支应由原 selector 或明确的领域路由确定，不依赖代码遍历顺序、隐式优先级或哪个 Hook 先到。S8 的原因与修复路由、S9 的修复工序仍由原领域消费者处理；Controller 不另定义一份路由表。
 
-纠错预算集中在运行时配置（如 `configuration.repair.max_full_review_rounds`、单缺陷尝试上限），在看板披露 `(round N of M)`。超限 = 升格为人的信号并暂停；连续重入而能量函数不降同样视为振荡信号（D7）。预算是收敛判据的执行形式——"还在修"不等于"在收敛"。
+### 9.2 有界求值与真实并发
 
----
+质量求值受 `quality_cycle_timeout` 和调用预算约束，默认预算为 15 秒，同时仍受入口或平台外层时限限制。超时或来源不可判定时返回 `unknown`，不当作零缺项，也不以加大作者证明负担掩盖环境问题。
 
-## 11. 会话恢复与投影包（D1 / D3）
+CAS 冲突表示当前事实已经变化。控制周期重读、重新求值并进行一次有界重试；不能把旧结论直接套到新 revision，也不能无限重放直到成功。转换守卫失败、候选冲突和来源缺失保留具体诊断，质量反馈本身继续允许普通工具用于补工作。真正的操作保护和平台 Stop 控制按 [Hook 接线](L4-hook-platform-wiring.md)分别处理。
 
-- **SessionStart 恢复包内容契约**：当前位置（stage/round 与预算消耗）、board 三桶（running/queued/blocked）、未消费 Result、required Claim 覆盖缺口、seed/handoff provenance（若有）、**唯一下一步**（含可直接复制的下一命令）。
-- **PreCompact** 保证 Assignment/plan/result/checkpoint 已持久化后才允许压缩。
-- 渐进披露三原则作用于恢复面（原则本体在 L3-README 文档纪律节）：恢复包只给最小集，方法论按步骤加载。
-- 无法识别对象时恢复逻辑静默降级；从权威状态重建永远优于从记忆续写。
+### 9.3 已接收事实与后继处理分开记
 
----
+专业答案接收成功后，后继处理可能还没完成。原接收事务记录稳定的 `followup_event_id` 及原阶段、入口坐标，后继消费者据此判断是否已经处理。转换成功时，其后继消费状态与转换事实共同提交；响应丢失后再处理同一事件，不得继续推动新的阶段。
 
-## 12. 错误信息契约与词汇边界（公理五）
+某次求值 `not_ready` 可以表示这次后继检查已经处理，但其他专业工作仍未齐；`unknown` 则保留可恢复的未决处理。作者不应因此重新填写一份已经接收的答案，也不能自行复制一个新事件 ID。原阶段入口变化后，旧后继不能借当前游标获得新含义。答卷接收、重放与修订的完整设计见[阶段答卷](L4-stage-form.md)。
 
-### 12.1 七字段错误结构
+## 10. 实际入口与进度视图怎样使用
 
-面向 agent 的拒绝/失败反馈向以下结构收敛（推广到全部 CLI/hook/gate/transition 拒绝）：
+### 10.1 不让控制周期重新接管原生执行
 
-```text
-code              机器可分类的错误码（typed error）
-observed          观察到的反例事实
-expected          期望成立的条件
-owner             当前动作归属（谁修）
-next_action       一个可直接执行的下一动词
-preserves         本方案保住了什么现场（可选）
-```
+同步接收的内部减负按 [Hook 机制分层](L4-hook-platform-wiring.md#102-各层工作与复用边界)实施：同次分流复用准确快照，固定对象和 registry 解析可复用，Writer 仍核当前事实；阶段接收和后继内部拆分不增加作者操作。冷数据物理迁移和跨进程调度只有在兼容与执行归属实际落地后才能记作能力，不能把缓存或等待下一次 Pre 等同于自动接续。
 
-配套两个全局开关：schema oneOf 判别剪枝（只报目标分支真实叶子错误；`LOOP_HARNESS_SCHEMA_VERBOSE=1` 恢复全集）；stale 类错误一律 §2 三段式。exact-set 场景追加两栏差集标准形（§6.3）。造错句成本高是对的——它是传达公理的主载体。
+完整控制周期是具名消费者可以调用的能力，不是每次工具操作都要经过的全局审批。在 [Hook 入口](../../internal/cli/run.go)中，原生 S6、S9 和审查／调查接线优先处理；当前多个阶段使用 [graphControlForHook](../../internal/cli/controller.go)读取工程进度并提供当前责任上下文，而不重复执行全部质量门。
 
-### 12.2 词汇边界
+Main 保存本人答案可以触发原准备、接收和后继；新原生 Worker 则由 `SubagentStart` 衔接输入、`SubagentStop` 接收实际产物，普通工具保存不抢收答案。S7 已封存交接仍可进入原控制周期；S8、S9 的变化交给原 Case 或修复消费者。只投影函数本身是只读的，不意味着整个 Hook 没有具名业务写入。
 
-| 近义词组 | 边界 |
-|:--|:--|
-| 通用 `plan_report` vs 领域 PlanReport（`repair_plan_report`） | 前者是平台生命周期检查点；后者是领域执行计划证据。不可互换（细节归调度篇） |
-| assignment id 前缀族 | `assignment-*` 通用；平台别名 `assignment-s9-*` 仅作 generic checkpoint 绑定；领域 `repair-assignment-*`；Runtime 字段 `assignment_owners`。新增拼写先入表 |
-| complete ≠ done ≠ integrated | TASK 文档完成 ≠ Builder Result submitted ≠ consumed/integrated；三条状态线不合并 |
-| 计划批准 vs 合同批准 | dispatch_mode 的 plan approval ≠ RepairContract 的 contract approve；对象、动词、迁移完全不同 |
-| epoch 三兄弟 | generation（基线代际）/ review_round（验证轮次）/ revision（见 [L4 revision 使用篇](L4-revision-usage.md)；Runtime 只作内部提交序号，对象版本另行定义）；引用时必须带限定词 |
-| angle 与 focus_key | angle 生命周期已删除；focus_key 只是 Assignment 分组的上下文维度提示，不是第二套检查分类 registry |
+这些边界使执行和工程判定保持配合：Worker 能开展实际工作，Main 能看到缺项，真正的提交仍经原消费者。不能因为底层存在完整 Gate、旧 Team 或旧恢复函数，就把它们重新塞进原生 Agent 的每次调用。
 
----
+### 10.2 看见一个状态，先看它描述的对象
 
-## 13. 债务与兼容性决策登记
+| 视图 | 回答的问题 | 不应据此推导的事实 |
+| --- | --- | --- |
+| `status`、`next` | 当前阶段、已有工作和下一步概览 | 全量实时 Gate 已求值、所有转换守卫已通过 |
+| `ready` | 当前自动候选的质量条件与缺项 | 可以手工推动转换、下一次普通事件必然提交 |
+| 领域看板与原回执 | 指定 Plan、Case、交付、集成或报告的当前事实 | 全阶段完成、发布已获授权 |
+| Hook 上下文 | 本次事件相关的责任、准确材料和下一动作 | 启动另一层执行机制的许可 |
+| Milestone | 可恢复的进度摘要 | 独立于 Runtime 的新权威或新状态机 |
 
-L2 全局规则「债务登记」（类型/影响/成本/负责人，债可累积但必须可视可排期）与 owner 后兼容裁定（2026-08-18：兼容不是默认美德，每次选择兼容须登记决策理由、影响面与移除路径；**无登记的兼容即无声负债**）需要一个机制居所，定于此：
+[ready](../../internal/controller/ready.go)只读求值，明确返回 `evaluation_scope=quality_gate`、`transition_guards_evaluated=false`，不调用 Apply。没有自动候选时也可返回 `satisfied`，并说明沿当前阶段继续；这可能是人类边界、领域消费者入口或终态，不能解释为全局完成。
 
-【目标态】两类一等登记对象，随验收汇编一并入册并在 S11 就绪包可见：
-- `tech_debt_entry`：type / impact / cost / owner / tracking_artifact；
-- `compat_decision`：rationale / affected_surface / removal_path（责任人 + 触发条件）；不移除的兼容每隔周期复核一次登记仍有效。
+Controller 的 `advanced`、`satisfied`、`not_ready`、`unknown` 等描述本次控制结果；`transition_committed` 才说明本次是否真实提交。它们与责任的 `pending/active/blocked/done/cancelled` 不在同一维度。接口保留的 `blocked` 值也不能只凭字面转换成某个 Worker 的阻断事实。
 
-【当前实现】仅模板与 prose 承载（ACC/release audit 模板的债务节），无独立 runtime entity/kind——这是 §15 显式登记的目标缺口，不是已完成能力。在此之前，"债是否存在"以验收材料正文为准，机器不做宣称。
+正常继续工作时，使用已经交付的准确上下文和回执，不为刷新信心反复执行整套 `status → ready → reconcile`。只有缺少上下文、出现矛盾、来源漂移或明确恢复诊断时，才重读相应事实。使用原则见[编排指引](../../skills/loop-orchestration/SKILL.md)，具体入口以本阶段现行消费者为准。
 
----
+## 11. 本人完成与恢复上下文
 
-## 14. 跨 L3 消费地图
+### 11.1 同一责任只有原消费者能确认完成
 
-●=核心消费 ○=轻量消费 −=不适用。消费细节归各 L3，本表保证全覆盖与无重复定义。
+责任进度使用[五态模型](L4-state-transition-core.md#unified-work-state)。开始事实、明确阻断、原消费者接受完成、原取消或替代事实共同形成投影；状态本身不授予权限，也不重新定义专业完成条件。
 
-| 机制域 | S0 | S1 | S2 | S3 | S4 | S5 | S6 | S7 | S8 | S9 | S10 | S11 |
-|:--|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| 权威状态/单写者协调 | ○ | ● | ○ | ○ | ○ | ○ | ● | ● | ● | ● | ● | ● |
-| 指纹体系 | ○(sha 可算) | ● | ○ | ○ | − | ● | ● | ● | ● | ● | ● | ○(对账) |
-| 证据链/失效家族 | − | ○ | ○ | ○ | ○ | ● | ● | ● | ○ | ● | ● | ●(kind 型失效) |
-| 能量函数七检查 | − | − | − | − | − | − | − | ●(生产) | − | − | ●(复算) | ○(间接) |
-| 追溯分母链 | ○(AC 判定性+§A4) | − | ●(生产) | ●(反向闭合) | ●(正向覆盖) | ○(subjects) | − | ●(assets/绑定) | ○(boundary refs) | ○ | ●(逐 AC 回收) | ○ |
-| 精确集求值 | − | − | − | − | ●(宇宙↔TASK) | ○ | ○ | ●(claims/answers/batch) | ○(exact findings) | ●(units/artifacts/assertions) | ●(inventory 固化) | − |
-| 门禁分类学/人闸契约 | ●(锁定手势) | ● | ○ | ○ | ○ | ○ | ○ | ● | ● | ● | ● | ● |
-| 歧义裁决原则 | − | − | − | − | − | − | ○ | ●(selector) | ●(route 层级) | ● | ●(selector) | ●(空候选停机) |
-| 写屏障家族 | − | − | − | − | − | ○(审后不改稿) | ● | ● | ● | ● | − | ○(protected cmds) |
-| 观测采集与脱敏 | − | − | − | − | − | − | ○ | ● | ○(supplement 敏感值) | ○ | ○ | − |
-| 暂停/Blocker/终止保障 | − | ●(控制面动词) | ○ | ○ | − | ○ | ○ | ● | ● | ● | ○ | ●(defer/abort) |
-| 恢复投影/SessionStart | − | ○ | ○ | ○ | ○ | ○ | ● | ● | ● | ● | ○ | ○ |
-| 错误契约/词汇边界 | ○ | ○ | ○ | ○ | ○ | ○ | ● | ● | ● | ● | ● | ● |
-| 债务/兼容性登记 | − | − | ○(ADR 备选) | ○(breaking 决策) | − | − | − | − | − | − | ●(登记时机) | ○(包内可见) |
+Plan 被接收只完成计划交付，不能使实现责任 `done`。Builder 已交付而 Main 尚未集成，应显示 Main 的剩余责任；审查本人已经返回而同伴还未完成，不应阻止本人结束。历史 blocker 被接收只说明曾经阻塞，当前继续 `blocked` 需要仍未解决且与本责任匹配的事实。
 
----
+当前阻塞必须能回答：阻断什么、依据是什么、谁能解除、解除后从哪里继续。不同阶段沿自己的发现、补充调查、修复阻塞或环境恢复入口处理。没有一个需要作者另建的全局 Blocker 登记库；也不能仅凭 idle、工具失败或长时间没有新采样生成阻塞与替换执行。
 
-<a id="runtime-fact-boundary"></a>
+### 11.2 Milestone 帮助恢复，不能代替原材料
 
-## 15. 当前事实边界（诚实条款）
+恢复摘要应把当前需求、阶段、代际／轮次、原责任、准确题目和产物引用、未完成工作、人类边界及下一动作连起来。它的目的在于压缩后继续原工作，避免重新猜测工程状态，不要求每个作者先遍历整个 Runtime、journal 和全部机制文档。
 
-截至 2026-08-28：
+[Milestone 刷新](../../internal/cli/controller.go)在实际调用的入口通过 Writer 更新，保留最后一次真实转换；稳定投影相同则避免无意义的重复写入。刷新失败应暴露原因并保留恢复动作，不能改成作者已完成，也不能无条件重跑已经接收的工作。
 
-1. `protected_commands.json` **已退出 Hook 主拦截路径**（2026-08-28 核实：hook-policy extension_protected_commands 置空 + 测试锁死不再加载；分类器仅供 Bash 变异路径分析）。发布保护的现状由 S11 结构性停机与人操作纪律承担，属有意边界；若未来要恢复命令级硬拦，须走《Hook 接线》§9 治理流程。
-2. 三种 Blocker 解除载体（§10.2）并存是有意的兼容现状；统一前禁止新增第四种事件名。
-3. legacy PTR-BUG-02/04/08 别名仍在 schema/协议中以兼容投影存在，均已标注 legacy-only。
-4. 仍是目标态、暂无代码落点的部分：request/persisted 双形态约定的 schema 化校验（现由示例 README + 测试守护）、§7.3 的人闸交接物最小字段（无独立 entity/schema）、§13 债务登记实体、protected commands 接线、三种 Blocker 合并。写代码时不得以"文档已写"推定已实现。
-5. encounter 字段集是否提升为独立 schema、TR-016 是否改为消费 rich change-impact（现为 AffectedPaths，分母偏窄），均为待 owner 裁决项。
-6. L3 尾部审计块是历史记录；冲突时以各 L3「当前事实」小节及代码为准。本次审查据此修正了 L3-S5 的 two-phase-activation 残留与 L3-S10 干净轮分母旧口径（angle）。
-7. RC-10 段轮转已落地（2026-08-28）：journal 10k 行阈值触发 `maybeRotateJournalLocked` 归档为 `loop-events.jsonl.archive.<seq>.jsonl` 段（marker 事务+段感知 `inspectJournal`/`journalLineCount`/`journalContains`，见《状态机核心篇》§11）；§3 指纹家族收敛方向为三元 hash + 二元 revision（收敛事务待设计）；review-result submit CAS 事务新增 per-phase 时长指标 `loop_s7_submit_phase_ms`（best-effort，`internal/review/submit.go` + `internal/metrics/s7.go`）。三者均为观测/登记，不新增任何强制。
+不能保证每个事件都重新写 Milestone。原生提前返回与图投影有各自范围；公开 `PreCompact` 在既有诊断维护后静默返回，不运行控制周期或为压缩另写阶段摘要。它不是收取未交答卷、替 Worker 保存私有工作或冻结全部进程状态的机会。重新进入时，SessionStart 从原工程事实取得当前责任和准确路径；Main 结合真实原生返回和原消费者当前事实继续，缺少专业产物仍然是缺少产物。
 
----
+完整 Runtime／journal 检查点恢复与按文档重建具有不同能力。若导入材料没有签发、接收或后继索引，不能凭当前文件看起来齐全就补造这些历史事实。具体边界见[状态机核心](L4-state-transition-core.md)及[阶段答卷](L4-stage-form.md)。
 
-## 16. L1 映射与 DoD
+## 12. 暂停、预算与有限恢复
 
-| 准则 | 本文落点 |
-|:--|:--|
-| D1 权威外置 | §1 全节；§11 恢复从权威重建；§5 分母链让"覆盖了多少"可从产物重读 |
-| D2 自然路径 | §7.2 gate 挂 PreToolUse；§8 屏障埋在写路径；§9 采集挂在动作路径上 |
-| D3 门是顾问 | §7.4 registered≠冻结；deny 信息=指导；structural stop 只在人闸与不可逆 |
-| D4 引导性产物 | §1.2 请求体字段逼问作者填真值；§12.1 错误字段逼问运行时报真相 |
-| D5 三级强制 | §8 屏障分级与豁免设计；强制的每一级都有名字 |
-| D6 三方收敛 | §3 指纹机器公证；§4 证据链独立背书；§6 覆盖划分对抗抽样式绿灯 |
-| D7 收敛可观测 | §4.3 能量函数七检查；§10.3 预算与振荡升格 |
-| 公理一～五 | §2 词词典（原型：版本号制度）；§1 分工；§14 每格有消费者；§10.3 保险定价；§12 理由随机制走 |
-| 失效目录 | Eroding Goals/Goodhart → §6 精确集；Shifting the Burden → §5.2 受控 N/A；冰山 → §4.3/§10.3 |
+### 12.1 暂停保存可解释的继续位置
 
-**DoD**：十三个域均有权威代码落点或 §15 显式缺口登记；各 L3 修订不再复制机制定义；新增跨 stage 手法先入本文件再入 stage 文档；CI（迁移 ID 可解析、示例契约追踪、指引动词存在性三类测试）持续绿灯。
+暂停表示原执行范围暂时不能继续，需要保留原位置和待决事项。原暂停动作记录来源状态／相位、入口版本、代际、轮次、原因、需要的人类动作及登记文档指纹，供原恢复入口使用。它不把普通专业缺项都升级成人类决策。
 
-## 变更记录
+[CapturePauseCheckpoint](../../internal/transition/actions.go)保存 `documents[]` 对应的指纹；[恢复动作](../../internal/transition/engine.go)重读记录中的文件，漂移或缺失则拒绝恢复。这个检查点不是整个工作目录和所有外部环境的快照。恢复还要满足原需求、权限和领域前置；新需求共识需要修订换代，不能改检查点中的 SHA 来假装原基线未变。
 
-| 日期 | 版本 | 变更 | 依据 |
-|:--|:--|:--|:--|
-| 2026-08-28 | v0.3.0 | 四家族定位定稿：迁移 ID 形态学、guard/action 引擎、auto_trigger 仲裁、崩溃写序与对账命令的本体移交新立的《权威状态机与迁移事务核心》，事件注册/payload/输出/失败态度移交新立的《Hook 与平台事件接线》；本文件收敛为内容合规规则与词汇词典层。事实更正：protected_commands 已于早前批次退出 Hook 主拦截路径（先前版本误标为"接线待办"） | owner 批准的基石抽取批次；两份子代理代码事实核查 |
-| 2026-08-28 | v0.2.0 | 按《调度篇》的 L4 准入逻辑复审全文：明确本文件为其覆盖域的唯一权威定义处（去除指向 L2/L3 的权威倒挂）；新增五个机制域——追溯分母链（单一验证分母规则的本体化）、精确集求值纪律（含差集报告标准形）、观测采集与脱敏治理、歧义裁决原则（selector fail-closed/显式层级）、债务与兼容性决策登记；人闸契约补交接物最小字段；词汇边界增 focus_key 条目；附四项拒收候选及理由 | owner 复核：L4 逻辑应与调度篇同构——定义机制而非综述；追问是否还有漏网机制 |
-| 2026-08-28 | v0.1.0 | 初版：对 S0～S11 全量文档审查后，把 Agent 调度之外贯穿多个 stage 的九个机制域统一沉淀；承接 L2 能量函数权威定义授权；记录已修正的两处 L3 残留与若干诚实缺口 | owner 指示：全面回顾 L3 设计理念，检查与 L1/L2 一致性，将跨 Stage 贯穿机制沉淀为单独的 L4 设计汇总 |
+S7 的阻断决定、审计阻断和 S11 的 `defer` 等通过原事务进入暂停。S11 恢复后，原入口形成新的人类决定申请，不继承旧选择。批准、暂停、恢复、修订、终止和实际发布的语义分别见 [S1](../l3-stages/L3-S1-bind.md)与 [S11](../l3-stages/L3-S11-release-gate.md)。
 
+### 12.2 预算限制重复尝试，不用次数代替原因
 
-### 2026-09-18 · v0.4.0
+单次 Hook 的执行时限与业务重试预算分开。普通 S2～S4 packet 提示直接消费当前图和已有快照，不重复全套质量周期；正式保存和原后继仍执行原来源、授权与阶段条件。短调用从本次内部工作 context 派生，外层子进程边界处理尚未协作取消的等待；具体时限和恢复语义见[Hook 接线](L4-hook-platform-wiring.md#10-十秒预算与中断恢复)。它不新增每阶段预算表，也不授予跳过 Writer 或证据门的权限。
 
-定义允许汇总 evidence 的自动指纹同步与产品基线边界。
+完整验证轮、修复尝试及受控计划修订有各自的有限预算。预算应从实际轮次与尝试记录求值，并说明当前消耗、上限、未解决事实和可选处置。例如开启新 S7 轮次时检查 `max_full_review_rounds`；超限应走原预算决定或返回治理，而不是偷偷加一轮。
 
+反复返回同一位置、重交同样内容、重复通知但没有新事实，是需要 Main 检查的收敛信号。系统并没有对每个工具动作自动计算一个严格递减的全局势函数。诊断性重试预算耗尽也不构成质量豁免，更不能据此宣布完成。
 
-### 可变证据类别的配置投影
+### 12.3 离线重放是显式恢复能力
 
-`docs/control/loop-definition.json.mutable_evidence_kinds` 是自动刷新证据索引哈希的类别白名单。Hook 在 Gate 评估前，通过 Writer 同步当前 generation/round、仍有效的这些证据的实际内容指纹；来源读取仍服从 `file_sources`。自动刷新不改变结论、状态、失效原因、历史记录、REQ/正式产出基线或冻结的 clean-round/人工授权绑定。工作树汇总导致的字节变化不要求额外合并证明。缺失文件保留缺失事实，不能用空内容重新绑定。
+[RecoveryReplay](../../internal/controller/replay.go)只对明确的暂存 Runtime／journal 成对执行，拒绝活动 Runtime 路径及越界来源；私有恢复能力不能由普通 Hook payload 或重定向参数开启。它按原控制周期逐步重放，默认最多 32 步，遇到未就绪、未知、冲突、人类边界、没有自动候选或无进展时停止并保留轨迹。
 
+这项能力用于检查或恢复暂存事实，不是正常会话的自动连跳模式，也不创造缺少的授权、专业执行或接收历史。若原 pending 事务能够确定性恢复，就完成原事务；若来源冲突，应保留现场并诊断，而不是换一份当前文件蒙混恢复。
 
-## 共享模型与合同依赖（2026-09-19）
+### 12.4 人类边界保留真实选择
 
-共同模型及其本地输入闭包复用 documents[] 的 design 身份、基线与审查 subjects，不新增 registry 或独立状态机。 机制权威见 [L4 共享模型与合同治理](L4-shared-model-contract-governance.md)。
+遇到需要人的决定时，应交付当前候选、已完成范围、依据、未决事实、残余风险、允许选择及其后果，说明自动化停在哪里、选择后从哪里继续。摘要可以帮助人理解，但不能自行形成一条决定证据。
 
+人的处置使用原入口的固定选项和固定去向，系统绑定当前对象并处理重复消费；未知选择、过期关联或缺少真实决定不能靠自动挑选目标状态解决。S11 的六种选择只记录相应授权或返工处置，批准不执行发布，恢复不复用旧决定。其他人类入口仍消费自己的权限范围，不能拿一份有限技术授权替代需求变更或发布授权。
 
-## 整体派发计划的控制面契约（2026-09-19）
+## 13. 错误反馈怎样让责任继续
 
-[L4 整体派发计划](L4-agent-dispatch-governance.md#dispatch-plan) 拥有编排机制。控制面仅登记批准计划的文档身份/指纹与所属 REQ、generation，复用 TASK、assignment、Result 和集成事实；不新增 Wave registry、独立执行数据库或持久化 Ready/conflict 图。
+反馈应使收到它的人能判断“这是我的专业工作，还是需要 Main／系统处理的故障”。可操作的表达包含稳定错误类别、观察事实、期望条件、责任主体、准确材料及下一动作；涉及已有贡献时，还要说明保留什么、是否已经发生写入。现有 CLI 和 Hook 不统一使用一个七字段 JSON，不能只因字段标题齐全就认为反馈可用。
 
-计划使用独立的 `dispatch_plan` 文档身份（已接入 schema 的独立类型），不得借 `task` 或 `design` 混入任务分母或 S2 架构判定。S5 subjects 纳入该身份；S6 分母只取批准 TASK 集合，并与计划成员精确一致。正式计划的 SHA 不属于 mutable evidence 自动同步范围。
+| 情况 | 应解释的内容 | 正确继续方式 |
+| --- | --- | --- |
+| 专业工作未完成 | 缺少哪个观察、断言、结果或交付 | 本人完成当前准确题目中的实际工作 |
+| 来源或题目准备失败 | 哪项原输入缺失、漂移或不能读取 | Main／系统修复来源与准备，不让 Worker 猜元数据 |
+| 真实并发 | 原观察坐标与当前事实的差异 | 重读、重新求值，在原责任内有界重试 |
+| 转换守卫失败 | 候选、原守卫及具体原因 | 保留游标，按原消费者解决，不手推转换 |
+| 环境检查失败 | 执行位置、真实命令、环境或权限错误 | 修环境后重跑原检查，区分代码问题 |
+| 已接收但后继失败 | 接收回执与未完成后继 | 恢复后继，不重新创造一份接收事实 |
+| 人类边界 | 当前候选、影响、残余风险及所需选择 | 明确交给人，等待真实决定 |
 
-TASK 是真实产物依赖权威；计划只补成员、波次与必要资源顺序。运行投影从当前有效尝试、结果与 checkpoint 重建，历史失效记录不能满足依赖；看板、候选求值和质量门共用事实解码。平台容量是运行配置，调整容量不改计划版本。
+`unknown` 表示当前不能可靠判定，不能显示成 PASS，也不能一概解释为作者漏填。Controller 对 Apply 失败保留原守卫原因，并以有界、规范化的诊断输出；有限集合缺项应定位原承诺，不能只报“覆盖不足”。
 
-waves-v1 在新入口按绑定 REQ 收敛发现范围，legacy 保留兼容诊断。验收须证明当前 REQ 范围闭合、两路 subjects 精确、计划不污染其他文档语义、恢复后候选一致且无重复 owner。
+平台 Stop 反馈还要分清本人可修正的问题与 Main／系统故障。当前原生接线首次遇到某些来源错误仍可能阻止一次结束，未全面实现这种分类；不能把设计要求写成已经处处成立。具体输出通道、退出码、再次 Stop 和可见性边界归 [Hook 接线](L4-hook-platform-wiring.md)与[子代理工程衔接](L4-agent-dispatch-governance.md)。
 
-修订记录：2026-09-19 · dispatch-plan-v1，将计划交付、审签和持续派发纳入正式设计；首版适配边界见 [L4 §17.7](L4-agent-dispatch-governance.md#177-首版适配边界)。
+## 14. 观测为什么要与专业依据分开
+
+### 14.1 每类记录帮助定位不同问题
+
+| 记录 | 用于回答的问题 | 能力边界 |
+| --- | --- | --- |
+| Runtime 与 journal | 哪项工程事实在什么事务中改变 | 不自动保存全部产品执行过程 |
+| Hook 决策记录 | 哪个事件、规则、责任与 revision 形成了什么反馈 | 不等于父会话收到全部信息，也不证明工作完成 |
+| 质量求值、CAS、接收和集成指标 | 时间花在哪里，是否竞争，哪个环节反复失败 | 次数和耗时不授予权限，不产生 PASS |
+| Capture 时间线与执行输出 | 专业工作中实际做了什么、观察了什么 | 需绑定正确对象、执行来源与适用环境 |
+| 工作进度采样 | 是否反复读取而没有新增可见事实 | 未覆盖或采样失败不是“没有工作”的证明 |
+
+指标采用有限类别和必要关联，避免把整段错误、命令或个人信息塞进标签。[观测缓冲](../../internal/metrics/observations.go)让生产者不等待汇总锁；[汇总维护](../../internal/metrics/compact.go)记录已消费项，避免中断恢复后重复计数。适用的 SessionStart、PreCompact 入口可以维护缓冲，但原生提前返回并不保证经过它们。统计失败应如实报告，不补造一次“已超时”或“已执行”的记录。
+
+工作进度诊断的默认模式、通知预算与未覆盖范围见[手续收敛](L4-procedure-reduction.md)。诊断可以帮助 Main 决定去读哪个原回执，不能自行接管 Claude Code 的执行存活、重新派发或取消责任。
+
+### 14.2 专业采集应保留真实观察和限制
+
+`capture step` 记录有限的动作、观察和依据；[capture exec](../../internal/cli/capture_exec.go)包装一次真实命令，保留退出结果、有界输出、相关产物及采集来源。命令失败应保留失败观察，截断要标明，缺失采集不能用一条自行编写的成功时间线填平。
+
+采集文件或输出 SHA 只绑定所保留的字节。作为通过依据使用时，仍需核对该次执行与 Plan、责任、提交和冻结主体的关联。[CaptureProvenance](../../internal/review/capture_provenance.go)在无法关联有效 Plan 等情况下可以标为仅供诊断，不能把它升级为通过证明。浏览器、网络或产品侧注入式采集仍需要相应实际入口，不能由框架命令的存在推导已经采集。
+
+### 14.3 脱敏是入口责任，当前没有全局存储保证
+
+设计要求敏感值不进入证据、时间线、错误或审计记录；应保存脱敏后的必要事实与引用，保留被隐藏、缺失和截断的说明。`capture step` 使用模式检查，`capture exec` 在命令参数与输出流上实施相应拒绝或占位处理，但模式检查不是任意机密识别能力。
+
+[SanitizeCapture](../../internal/review/workspace.go)分别检查 action、observed 和每项 `evidence_refs`；一个后续安全引用不能掩盖前面的敏感值。[原生失败与配置观察器](../../internal/hook/native_observer.go)在写入审计前对外部 error、工具名、路径及来源文本复用这些有限模式，先检查完整值再限长；命中时整字段保留隐藏说明，不把一次诊断过滤变成工具否决。正常短错误继续提供线索。
+
+[审计 Outbox](../../internal/audit/outbox.go)只负责追加、去重和持久化调用者记录，不改写身份、来源摘要或任意专业内容。原生开始／结束观察使用固定描述，普通信封不复制原 ToolInput／ToolResponse；事件指纹保存其稳定散列，用于区分实际事件和相同重试。敏感错误被隐藏后文案相同，也不能把两次不同的失败合并。领域错误、其他日志和新增采集入口仍须按自身实际输入处理必要字段，不能仅凭使用同一存储目录就宣称获得全局脱敏保证；既有模式也不识别任意未知机密。
+
+## 15. 控制成本、维护入口与实现边界
+
+正常工作应读取本责任所需的有限事实，在自然接收点完成校验；不为了刷新提示反复重建全部证据历史。轻量观察、完整一致性诊断、专业来源验证与产品实际检查各有用途，需要明确入口、成本及失败责任。
+
+可缓存的是同一可执行文件内不可变的嵌入 Schema 编译结果。[编译缓存](../../internal/schema/compiled_cache.go)按准确资产协调并发编译，每次输入仍重新验证；失败编译不长期保留。兼容磁盘 Schema 沿独立读取和编译路径处理。Runtime、专业答案、来源校验和专业结论不能借这项优化跨责任缓存。
+
+| 维护或调查的对象 | 应从哪里追到实际消费者 |
+| --- | --- |
+| 证据类别、引用与效力 | [evidence](../../internal/evidence)、[登记](../../internal/runtime/evidence.go)、[影响计算](../../internal/impact/analysis.go) |
+| 自动推进、歧义及只读诊断 | [控制周期](../../internal/controller/cycle.go)、[ready](../../internal/controller/ready.go)、[原转换](../../internal/transition/engine.go) |
+| 当前事件到底做了什么 | [Hook 入口](../../internal/cli/run.go)、[图投影及恢复摘要](../../internal/cli/controller.go)、[Hook 事件选点](L4-hook-anchor-catalog.md) |
+| 完整验证与上下游交接 | [干净轮检查](../../internal/verification/clean_round.go)、[S7](../l3-stages/L3-S7-verification-round.md)、[S10](../l3-stages/L3-S10-acceptance-audit.md) |
+| 原生任务与实际集成 | [子代理工程衔接](L4-agent-dispatch-governance.md)、[Worktree 治理](L4-worktree-governance.md) |
+| 项目知识与共用约束 | [项目级设计基础](L4-project-design-foundation.md)、[共享模型与合同治理](L4-shared-model-contract-governance.md) |
+
+开发指引、角色、技能、公共概览和生成手册表达同一分工：Main 保存本人判断，原生 Worker 返回专业产物，原消费者接收；事件观察不等于每次都刷新控制周期。S10 主题用于相关性判断，不形成固定数量任务。维护时直接修改实际生成源与当前入口，不能通过恢复旧 Team、激活或重复登记机制迁就失效提示。
+
+新增跨阶段约束，应能说明它保护哪个真实义务、由谁生产和消费、何时失效、怎样观测及恢复、增加多少正常工作成本。风险、兼容性与债务应在原设计或审计责任中形成可解释的决策；当前没有一个供所有阶段另行登记的统一债务实体，也不应为追求表面完整新增无消费者的审批步骤。
+
+判断本机制是否成立，要看读者能否从原承诺追到当前依据，分清已接收、当前有效、专业充分和合法推进，并在失败后找到原责任继续。机制代码的存在只说明某条能力有实现落点；它不能单独证明实际产品工作、独立判断或人的授权已经发生。

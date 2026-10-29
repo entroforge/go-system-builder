@@ -43,7 +43,7 @@ type Branch struct {
 type Oracle struct {
 	Visible              []string `json:"visible,omitempty"`
 	TerminalState        string   `json:"terminal_state,omitempty"`
-	PersistedEffects     []string `json:"persisted_effects,omitempty"`
+	PersistedEffects     []string `json:"persisted_effects"`
 	ForbiddenSideEffects []string `json:"forbidden_side_effects,omitempty"`
 	Rejection            string   `json:"rejection,omitempty"`
 	ExpectedState        string   `json:"expected_state,omitempty"`

@@ -17,6 +17,7 @@ type baselineBoundary struct {
 	trackedDirs map[string]bool
 	worktrees   []string
 	gitOK       bool
+	headOK      bool
 	cache       map[string]bool
 }
 
@@ -37,6 +38,7 @@ func newBaselineBoundary(root string) baselineBoundary {
 	b.cache = map[string]bool{}
 	// Include HEAD ownership so a staged deletion cannot acquire cache exemption.
 	if head, e := exec.Command("git", "-C", rootAbs, "ls-tree", "-r", "--name-only", "-z", "HEAD").Output(); e == nil {
+		b.headOK = true
 		data = append(data, head...)
 	}
 	for _, p := range strings.Split(string(data), "\x00") {
@@ -171,7 +173,7 @@ func excludedBaselinePaths(root string, paths []string) map[string]bool {
 	// cannot reclassify its files, including legacy logs without provenance.
 	excluded := map[string]bool{}
 	for _, p := range paths {
-		if b.hasTracked(p) && !isControlPlanePath(p, false) {
+		if b.hasTracked(p) && !isControlPlanePath(p, false, root) {
 			delete(excluded, p)
 			continue
 		}
@@ -184,7 +186,7 @@ func excludedBaselinePaths(root string, paths []string) map[string]bool {
 				break
 			}
 		}
-		if ignoreBaselinePath(p) || foreign {
+		if ignoreBaselinePath(p, root) || foreign {
 			excluded[p] = true
 		}
 	}

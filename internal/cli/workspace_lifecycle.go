@@ -34,9 +34,18 @@ func runWorkspaceLifecycle(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "lifecycle submission requires current bootstrapped owner")
 		return 1
 	}
-	command, flagName, name := "agent-begin", "--plan", "plan.json"
-	if verb == "report" {
-		command, flagName, name = "task-complete", "--message", "completion.json"
+	paths, err := b.WorkerSubmissionPaths(e)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
-	return runRuntime([]string{command, "--root", e.Path, "--agent-id", e.AgentID, flagName, filepath.Join(e.Path, ".claude/submissions", name)}, stdout, stderr)
+	command, flagName, path := "agent-begin", "--plan", paths.Plan
+	if verb == "report" {
+		if e.Purpose == workspace.DocumentReviewPurpose {
+			fmt.Fprintln(stderr, "document review completion uses the issued answer receipt, not a Builder Result")
+			return 1
+		}
+		command, flagName, path = "task-complete", "--message", paths.Completion
+	}
+	return runRuntime([]string{command, "--root", e.Path, "--agent-id", e.AgentID, flagName, filepath.Join(e.Path, filepath.FromSlash(path))}, stdout, stderr)
 }

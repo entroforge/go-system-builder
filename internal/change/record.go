@@ -6,6 +6,8 @@ package change
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 type Scope struct {
@@ -143,9 +145,7 @@ func BuildRecord(input Input) (Record, error) {
 		record.Unknowns = []string{}
 	}
 	for i := range record.WorkItems {
-		if record.WorkItems[i].Status == "" {
-			record.WorkItems[i].Status = "open"
-		}
+		record.WorkItems[i].Status = canonicalWorkStatus(record.WorkItems[i].Status)
 		if record.WorkItems[i].DependsOn == nil {
 			record.WorkItems[i].DependsOn = []string{}
 		}
@@ -203,10 +203,14 @@ func Decode(value map[string]any) (Record, error) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		return Record{}, fmt.Errorf("decode change record: %w", err)
 	}
+	for i := range record.WorkItems {
+		record.WorkItems[i].Status = canonicalWorkStatus(record.WorkItems[i].Status)
+	}
 	return record, nil
 }
 
 func Encode(record Record) (map[string]any, error) {
+	record = canonicalRecord(record)
 	data, err := json.Marshal(record)
 	if err != nil {
 		return nil, fmt.Errorf("encode change record: %w", err)
@@ -222,12 +226,12 @@ func Summarize(record Record) Summary {
 	var summary Summary
 	summary.ID, summary.Summary, summary.Class, summary.Risk = record.ID, record.Summary, record.Class, record.Risk
 	for _, item := range record.WorkItems {
-		switch item.Status {
-		case "active":
+		switch canonicalWorkStatus(item.Status) {
+		case string(workstate.Active):
 			summary.WorkItems.Active++
-		case "open", "blocked":
+		case string(workstate.Pending), string(workstate.Blocked):
 			summary.WorkItems.Open++
-		case "done":
+		case string(workstate.Done):
 			summary.WorkItems.Done++
 		}
 	}
@@ -257,7 +261,8 @@ func Summarize(record Record) Summary {
 func NextStep(record Record) Next {
 	var work *WorkItem
 	for i := range record.WorkItems {
-		if record.WorkItems[i].Status == "open" || record.WorkItems[i].Status == "active" {
+		status := canonicalWorkStatus(record.WorkItems[i].Status)
+		if status == string(workstate.Pending) || status == string(workstate.Active) {
 			work = &record.WorkItems[i]
 			break
 		}
@@ -331,7 +336,23 @@ func copyStrings(values []string) []string {
 }
 
 func validWorkStatus(status string) bool {
-	return map[string]bool{"open": true, "active": true, "done": true, "blocked": true, "cancelled": true}[status]
+	return status == "open" || workstate.Valid(workstate.Status(status))
+}
+
+func canonicalWorkStatus(status string) string {
+	if status == "" || status == "open" {
+		return string(workstate.Pending)
+	}
+	return status
+}
+
+func canonicalRecord(record Record) Record {
+	workItems := append([]WorkItem(nil), record.WorkItems...)
+	for i := range workItems {
+		workItems[i].Status = canonicalWorkStatus(workItems[i].Status)
+	}
+	record.WorkItems = workItems
+	return record
 }
 
 func validCheckStatus(status string) bool {

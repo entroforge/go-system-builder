@@ -219,10 +219,11 @@ func TestValidatePlanNotApplicableRequiresNAClaim(t *testing.T) {
 func TestRegisterPlanRejectsTaskCoverageGap(t *testing.T) {
 	root := t.TempDir()
 	state := baseVerificationState()
+	putCaseScopeFile(t, root, "docs/dev/tasks/TASK-101.md", "# TASK-101\n")
 	state["documents"] = []any{
 		map[string]any{
 			"id": "TASK-101", "kind": "task", "path": "docs/dev/tasks/TASK-101.md",
-			"version": "v1.0.0", "sha256": strings.Repeat("2", 64),
+			"version": "v1.0.0", "sha256": sha256Of([]byte("# TASK-101\n")),
 			"status": "locked", "generation": 1,
 		},
 	}

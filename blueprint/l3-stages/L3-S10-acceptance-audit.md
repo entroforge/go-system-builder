@@ -1,526 +1,339 @@
-# L3-S10 — 验收与发布审计（Acceptance & Audit）
+# L3-S10 验收与发布审计
 
-> 层：第三层 ｜ 上游：L2 §S10 ｜ 前置：S7 当前 review round 已形成有效 clean round ｜ 下游：S11 `awaiting_human_release`，或回 S7 / paused
->
-> 阅读顺序：§1～§3 先回答“验收和审计各自要证明什么、为什么不能把 clean round 直接当 release”；§4 再按审查全集、反证审查、验收材料、审计八区、风险分流和 S11 handoff 展开；§5～§9 审计职责、Agent 协作、当前实现边界、出口和易错点。本文把目标工作流、Agent 引导和现有代码能力分开记录。
+## 1. 干净轮之后，为什么还需要验收和审计
 
-## 1. 第一层：S10 的立意与目标
+S7 的干净轮回答：当前验证计划的必要断言已经完成，本轮没有留下使该轮不能通过的发现或无效结果。它使交付具有可引用的验证基础，却不能独自回答“人的需求是否被完整兑现”和“这次交付能否被安全接管”。测试通过、需求验收、工程审计和人类发布授权，是四种不同责任。
 
-### 1.1 为什么需要 S10
+例如，一个订单接口通过了当前接口测试，但需求还承诺老客户端在兼容窗口内继续使用；新字段可能要求先迁移数据再部署服务，回滚也可能只能回滚代码、不能恢复已经改写的数据。接口测试仍有价值，验收则要把兼容承诺与实际行为对应起来，审计还要判断发布顺序和数据恢复安排是否成立。把这些判断留给“测试全绿”会漏掉真实交付条件；无差别重跑全部验证又不能自动消除这些问题。
 
-S7 的 clean round 只说明：当前 review round 的 Delivery、QA、E2E 和阻断 BUG 条件已经收敛。它还没有回答两个更高层的问题：
+因此，S10 安排两个依次完成的专业步骤：
 
-- **验收**：REQ 的每条 acceptance criterion、每条 TASK Closing Contract 是否都能落到本轮有效证据，交付和运维是否具备接管条件；
-- **发布审计**：本次变更是否破坏了系统级不变量，例如状态机出口、事务边界、并发幂等、数据迁移、调用点、可观测性和发布回滚路径。
+| 步骤 | 核心问题 | 判断对象 |
+| --- | --- | --- |
+| 需求验收 `acceptance` | 这次交付兑现了什么承诺，还有什么未兑现？ | 锁定 REQ、适用契约、TASK 完成约定与实际交付 |
+| 发布审计 `release_audit` | 已验收的交付是否保全相关系统不变量，风险能否被明确接管？ | 本次相关的状态、事务、并发、数据、运行、运维与发布安排 |
 
-因此 S10 是一个“从验证事实到发布判断材料”的**反捷径审计阶段**。它不追求尽快把 Runtime 推进到 S11，而是主动证明“这个 REQ 是否真的被完整开发、审查、检验和准备接管”。验收对照用户/需求承诺，审计对照系统性质；二者都不是再次实现功能，也不是提前替人发布。
+两个步骤共同把工程事实翻译成人能作决定的材料。它们不代替 [S11 发布门禁](L3-S11-release-gate.md)的真人裁决，也不在审查时修改产品、锁定需求或规格。设计依据来自 [L1 设计原则](../l1-principles/L1-design-principles.md)中的统一事实、独立审查、可解释交接和人类边界；阶段关系见 [L2 生命周期](../l2-lifecycle/L2-lifecycle-plan.md)。
 
-S10 的第一原则是：**最短路径永远不是工程上的最优路径**。Agent 不得因为已有一个 clean round、两份 evidence 或测试全绿，就想当然地认定可以交付。它必须先建立一个有限且可审计的审查全集，再逐项寻找支持证据和反证；凡是没有检查、没有证据或无法解释的项目，都只能是 `UNKNOWN`，不能伪装成 PASS、N/A 或非阻断风险。
+## 2. 输入和责任：先弄清审什么，再选择怎样审
 
-### 1.2 阶段目标与完成定义
+### 2.1 验收基础必须是本次交付
 
-| 项目 | 定义 |
-|:--|:--|
-| 输入 | S7 当前 round 的 clean-round record 与 hash；locked REQ；当前 contracts/TASKs/module truth；所有有效 review/build/BUG/repair evidence；部署、迁移、回滚、运维资料 |
-| 要搞清楚 | 每条 REQ AC 和 Closing Contract 的证据落点；基线与 evidence 是否仍有效；变更是否破坏系统级不变量；非阻断风险和技术债由谁跟踪；人到闸后要做什么 |
-| 核心工作 | 固化审查全集与责任 → 复验 clean round → 组装 ACC 并逐条做 REQ/contract/CASE 映射 → 核对交付运维与回滚 → 逐项做反证审查 → 执行 8 个审计区 → 分类 audit finding → 组装 S11 handoff |
-| 输出 | coverage inventory / responsibility matrix / counterevidence ledger；ACC 文档与 acceptance evidence；release architecture audit；风险/TD ledger；S11 release-ready package；必要的 change impact 或 pause/finding 路由 |
-| 目标完成 | 审查全集已冻结且 100% disposition；ACC 的每条承诺均有当前有效证据并完成反证；审计无阻断（或明确 approved with non-blocking risks）；clean round 在到闸时仍有效；发布包、剩余风险和人类动作清晰 |
-| 下一阶段 | TR-017 → S11 `awaiting_human_release`；验收差异 → TR-016 回 S7 新轮；审计阻断 → TR-018 paused；REQ/不可逆动作 → 相应人工闸 |
+S10 继承当前完整、有效的 [S7 验证轮](L3-S7-verification-round.md)。[S9](L3-S9-repair.md)的一次定向复验只能说明相应修复断言；修复后准备好的新轮种子也只是下一轮工作起点。两者都不能替代完成的干净轮。
 
-### 1.2.1 审查全集与客观完成指标
+Main 需要结合以下材料理解当前责任：
 
-“穷举所有情况”不能解释成穷举无限输入组合，而要解释成：**穷举本次变更声明过的有限审查全集**。审查全集在 S10 一开始固化为 `coverage_inventory`，不得在最后为了让结论通过而临时缩小。
+| 材料 | 使用目的 |
+| --- | --- |
+| 锁定 REQ 与成功标准 | 回到人的目标、范围、业务规则、非功能约束与实际承诺，避免只验收容易演示的部分 |
+| 适用设计、契约和 TASK 完成约定 | 解释模块协作、共享模型、兼容责任、拒绝分支及完成条件如何落实 |
+| 当前 S7 计划、已接收结果与干净轮事实 | 复用已经完成的必要验证，判断观察是否真正适用于本次验收对象 |
+| 真实集成结果、变化范围与交付材料 | 识别配置、依赖、数据、调用方和运维方面的实际影响 |
+| S8、S9 的相关调查、修复及影响结论 | 理解修复了什么、原先为什么漏检、哪些旧观察仍可使用 |
+| 已知风险、技术债与操作安排 | 明确剩余影响、处理责任、部署与恢复条件，避免工程通过后无人接管 |
 
-至少必须覆盖：
+系统提供已知关联、材料路径和已有承诺原文，不替作者推导新的验收标准。若 REQ 本身含糊，应指出缺失并交给有权决定的人，不能在报告里悄悄补写承诺，再宣称产品已经符合它。
 
-| 审查面 | 必须穷举的对象 |
-|:--|:--|
-| 需求 | 每条 REQ acceptance criterion、每条用户承诺 |
-| 合同与任务 | 每条 FE/BE/SYNC/API/数据合同、每条 TASK Closing Contract |
-| 行为场景 | 正常、异常、边界、空值、重复、权限、拒绝、恢复 |
-| 系统不变量 | 状态机、事务/UoW、并发/幂等、数据/identity、迁移、调用拓扑、可观测性 |
-| 证据链 | S7 当前 clean round、changed paths、baseline、hash、失效/替代证据 |
-| 发布准备 | 部署顺序、兼容窗口、迁移执行、运行验证、回滚、运维接管 |
-| 项目管理 | 范围外变更、技术债、剩余风险、owner、tracking artifact、恢复点 |
+### 2.2 Main 汇入真实专业工作
 
-S10 不使用模糊加权评分。完成必须同时满足以下硬指标：
+| 参与者 | 本人责任 |
+| --- | --- |
+| Main／验收负责人 | 理解需求与当前交付，安排实际审查，汇入结果与作者归属，处理矛盾，形成准确验收结论 |
+| 发布审计负责人及必要专业审查者 | 按真实风险检查相关系统与操作条件，报告观察、未完成工作及风险判断 |
+| 实现者、原验证者和操作负责人 | 提供本人已有结果、说明适用边界，回答具体问题，接管实际剩余工作 |
+| Claude Code | 为 Main 必要的专业委托提供原生子代理上下文、执行、返回与沟通 |
+| Hook、原消费者与 Runtime Writer | 给出准确报告位置，接收当前答案，维护登记、幂等与阶段事实，反馈本步出口和下一责任 |
+| 人类 | 决定需求变化、不可逆操作、风险接受和最终发布选择 |
 
-```text
-REQ coverage = 100%
-Contract / Closing Contract coverage = 100%
-Declared changed-path disposition = 100%
-Audit-area completion = 100% (release_audit only)
-Unanswered UNKNOWN = 0
-Unowned risk = 0
-Untracked debt = 0
-Unsupported PASS = 0
-Blocking finding = 0
-```
+独立性取决于实际参与情况。让实现者换一个 owner 名字并不能形成独立审查；Main 必须真实安排、通知并获得必要的独立意见，保留报告来源。也不要求每条验收项都新派一个子代理：已有独立验证确实适用时，直接复用其观察；只有具体缺口、矛盾、本步特有风险或必要独立判断才增加工作。
 
-`N/A` 也必须有权威来源和理由；它不是降低分母的快捷方式。若审查全集本身不完整，S10 仍未完成。
+S10 不创建框架 Team、启动许可或另一套派发器。Main 通过 Claude Code 原生机制进行必要委托，向执行者说明实际问题、材料和输出要求；阶段报告仍由 Main 汇入当前责任。平台子代理返回一段“通过”不能直接完成 S10，更不能替真人批准发布。
 
-指标按 manifest 类型解释，不把 release-audit 的审计区硬塞进 acceptance：
-`acceptance` 必须满足 requirement、contract、changed_path 三类 coverage；
-`release_audit` 在此基础上必须满足八个 `audit_area` 的 coverage。两类 manifest
-都必须清零 UNKNOWN、unsupported PASS、unowned risk、untracked debt 和 blocking
-finding。`docs/examples/s10/acceptance-manifest.json` 因此不包含
-`audit_area_coverage`；只有 `release-audit-manifest.json` 需要该指标。
-
-机器清单不能通过“空类别”伪造覆盖：`requirement`、`contract` 和
-`changed_path` 必须各有至少一条显式审查行；release-audit manifest 还必须有
-`audit_area` 行。若某个硬类别确实不适用，也要写成带 `source_refs`、证据和
-`na_reason` 的 `not_applicable` 行，而不是把类别从清单中删除。
-
-### 1.3 Overview：输入、主步骤与输出
-
-```mermaid
-flowchart LR
-    subgraph INPUT["Input"]
-        I1["S7 clean-round record + hash"]
-        I2["locked REQ + acceptance criteria"]
-        I3["contracts / TASK Closing Contracts"]
-        I4["current implementation + valid evidence"]
-        I5["migration / rollback / operations material"]
-        I6["release scope + changed paths"]
-    end
-
-    subgraph S10["S10 Acceptance & Audit"]
-        T0["T0 固化审查全集与责任分工"] --> T1["T1 验证入口与 clean round"]
-        T1 --> T2["T2 组装 ACC 逐条映射"]
-        T2 --> T3["T3 核对交付、迁移、回滚与运维"]
-        T3 --> T4["T4 反证审查与 acceptance gate"]
-        T4 --> T5["T5 执行系统级发布审计"]
-        T5 --> T6["T6 分类风险并组装 S11 包"]
-    end
-
-    subgraph OUTPUT["Output"]
-        O1["ACC + criterion/evidence map"]
-        O2["release architecture audit"]
-        O3["non-blocking risk / TD ledger"]
-        O4["release-ready handoff"]
-        O5["S7 new complete round"]
-        O6["paused / human escalation"]
-        O7["coverage + counterevidence ledger"]
-    end
-
-    I1 --> T0
-    I2 --> T0
-    I3 --> T0
-    I4 --> T1
-    I2 --> T2
-    I3 --> T2
-    I5 --> T3
-    I6 --> T3
-    I6 --> T0
-    T2 --> O1
-    T4 --> O7
-    T5 --> O2
-    T6 --> O3
-    T6 --> O4
-    T6 --> O5
-    T5 --> O6
-```
-
-### 1.4 S10 的边界与当前保证
-
-- S10 包含两个连续的 top-level state：`acceptance` 与 `release_audit`；没有独立 phase machine，TR-015 是验收→审计，TR-017 是审计→S11；
-- S10 不拥有发布权，也不执行 merge、publish、deploy 或 formal release；它只生成工程证据并把控制交给 S11；
-- `clean_round_still_valid` 是真实语义 guard：会调用 `verification.EvaluateCleanRound` 重算当前状态，而不是只相信缓存的 `review.clean_round`；
-- ACC 和 release audit 的**Markdown 正文仍没有领域 schema 消费者**；但二者现在必须配套一个机器可读的 S10 manifest。Gate 消费 `s10-audit-manifest.schema.json` 定义的 coverage inventory、counterevidence、硬指标和 release audit 八区，不把 Markdown 总体 PASS 当作逐项机检；
-- `record_acc`、`record_release_audit` action 主要确认 transition evidence context 非空，不把正文内容转换进 Runtime；
-- acceptance/release audit 的 requested routes 共用 selector。若同一时刻既有 `acceptance_completed` 又有 `acceptance_review_required`，或既有 audit approved 又有 audit blocked，Controller 应 fail closed，而不是猜优先级；
-- `S9 → S10` 是非法路径。S9 的唯一出口是 TR-012/等价的 S7 新轮入口；只有该新轮重新形成 clean round 后，S10 才能开始；
-- S10 对产品代码、REQ、合同和 TASK 是只读审查阶段。任何新的产品代码修改都意味着当前 clean round 不再是最新事实，必须回到 S7，而不是在 S10 内“顺手修完再继续”；
-- S10 当前的“完整性”由 manifest 的结构/交叉项校验、Gate 的 runtime/baseline/round/hash 绑定，以及 ACC/审计正文的人工解释共同承载；不能把机器 manifest 通过描述成 Markdown 正文已自动理解，也不能反过来绕过 manifest。
-
-## 2. 第二层：S10 的任务分解
-
-| 任务 | 要解决的问题 | 主要动作 | 阶段产出 |
-|:--|:--|:--|:--|
-| T0 固化审查全集与责任分工 | Agent 是否明确本次要穷举什么、由谁独立检查、哪些结论不能互相代填 | 从 REQ/合同/TASK/changed paths/风险标签生成 coverage inventory，按独立责任分派审查者 | coverage inventory、responsibility matrix |
-| T1 验证入口与 clean round | 进入 S10 的是不是当前代际、当前轮、仍有效的完整验证事实 | 复算 clean round；核对 REQ fingerprint、review round、validity、P0 BUG 与 targeted refs；发现漂移就回 S7 | clean-round anchor ledger、entry decision |
-| T2 组装 ACC | “做了什么”能否逐条回到 REQ、CASE/PATH、contract 和 evidence | 逐条复制 REQ AC/source refs；映射期望、oracle、证据、结果；覆盖正/负分支与 module regression | ACC 文档、criterion→evidence map |
-| T3 交付与运维准备 | 能不能接管、部署、迁移和回滚 | 写 deployment order、migration/data handling、runtime health、rollback、operations handoff、剩余风险/TD | release readiness ledger、risk/TD entries |
-| T4 反证审查与 acceptance gate | ACC 是否真实完整，是否存在被“总体 PASS”掩盖的反例或未知项 | 对每条 coverage item 提出反证问题；清零 UNKNOWN/unsupported PASS；再登记 acceptance envelope 并触发 TR-015 | coverage + counterevidence ledger、acceptance evidence、`release_audit` cursor |
-| T5 发布架构审计 | 本次改动是否破坏跨模块系统性质 | 按 state machine、transaction/UoW、concurrency/idempotency、data/migration、call sites/topology、observability、verification、docs/release scope 八区审计 | audit report、ARA findings、APPROVED/APPROVED_WITH_NON_BLOCKING_RISKS/BLOCKED |
-| T6 风险分流与 S11 handoff | 审计结果如何转成唯一、可读、不可误解的人类决策包 | 证据/覆盖缺口 → S7；产品/架构缺陷 → S8；blocking → pause；REQ/不可逆 → human；通过则汇总 clean-round/ACC/audit hash、残余风险、建议和 automation-stops | release-ready package 或 correction/pause route |
-
-T2 的逐条映射、T5 的系统级审计和 T6 的风险裁决必须分开。ACC PASS 不能替 audit PASS，audit APPROVED 也不能替 human release approval。
-
-## 3. 从 clean round 到 S11 handoff 的完整工作流
+## 3. 两个步骤怎样形成闭环
 
 ```mermaid
 flowchart TD
-    IN["S7 clean_round_record<br/>当前 round + baseline"] --> T0["T0 固化审查全集<br/>按责任分派独立审查"]
-    T0 --> T1["T1 重算 clean round<br/>核对 REQ fingerprint 与 evidence validity"]
-    T1 --> VALID{"clean round 仍有效？"}
-    VALID -->|"否"| TR16["补 acceptance_review_required<br/>+ change_impact，再触发 TR-016"]
-    TR16 --> S7["verification.delivery<br/>新完整轮"]
-    VALID -->|"是"| ACCDOC["T2 ACC：逐条 REQ AC / Closing Contract<br/>映射 CASE/PATH 与有效 evidence"]
-    ACCDOC --> OPS["T3 交付、迁移、回滚、运维<br/>登记非阻断风险与 TD"]
-    OPS --> ADV["T4 反证审查：主动找反例、未知和 unsupported PASS"]
-    ADV --> ACCGATE{"coverage=100% 且 UNKNOWN=0？"}
-    ACCGATE -->|"否"| ACCDOC
-    ACCGATE -->|"是"| TR15["TR-015 acceptance_completed<br/>acceptance → release_audit"]
-
-    TR15 --> AUDIT["T5 八区 release architecture audit"]
-    AUDIT --> OUTCOME{"Audit outcome"}
-    OUTCOME -->|"correctable / functional defect"| CHANGE["记录 finding / change impact"]
-    CHANGE --> TR16B["TR-016 acceptance_review_required<br/>invalidate + round++ + delivery"]
-    TR16B --> S7
-    OUTCOME -->|"blocked invariant / migration / operations"| TR18["TR-018 release_audit_blocked<br/>paused + checkpoint"]
-    OUTCOME -->|"REQ or irreversible decision"| HUMAN["GTR-002 / GTR-003<br/>paused + human action"]
-    OUTCOME -->|"approved"| PACKAGE["T6 release-ready package<br/>clean round + ACC + audit + risks + human actions"]
-    PACKAGE --> TR17{"TR-017 gate<br/>audit + ACC + clean round still valid"}
-    TR17 -->|"否"| AUDIT
-    TR17 -->|"是"| S11["awaiting_human_release<br/>S11 human gateway"]
+    CLEAN["S7 当前完整干净轮"] --> ENTRY["TR-009：准备准确验收报告"]
+    ENTRY --> ACC["核对承诺、适用观察、接管条件"]
+    ACC --> SAVE["保存当前专业报告"]
+    SAVE -->|"草稿或已报告未完成"| ACC
+    SAVE -->|"验收完成，TR-015"| AUDIT["准备发布审计，引用验收结论"]
+    AUDIT --> RISK["审查相关系统与发布风险"]
+    RISK -->|"审计完成，TR-017"| HUMAN["S11：呈现材料，等待真人决定"]
+    SAVE -->|"明确需要重验且返回条件成立"| VERIFY["原返回路径：S7 新完整轮"]
+    RISK -->|"明确阻断且暂停条件成立"| PAUSE["原暂停与恢复路径"]
 ```
 
-注意：当前 TR-016 的失效 action 仍取触发迁移的 `AffectedPaths`，而不是从 ACC discrepancy 或 rich change-impact 文档自动推导完整受影响集合。进入回归轮前，主会话必须人工核对实际 changed paths 与 invalidation 结果。
+这条链路有三个不同的完成点：专业工作完成、专业报告被接收、阶段事务成功。写了 `pass` 不证明第一点；Runtime 记录了报告不证明第三点。正常完成保存负责尝试本步原出口，并反馈实际到达的位置，不让作者另填登记证书或等待下一次普通工具事件补业务。
 
-## 4. 第三层：每项任务如何被引导和承载
+## 4. 需求验收：将承诺、观察和结论连起来
 
-### 4.0 T0 — 固化审查全集与责任分工
+### 4.1 从承诺出发，解释对应关系
 
-主会话在 S10 第一动作不是填模板，而是建立 `coverage_inventory` 和
-`responsibility_matrix`：
+Main 先读 REQ 的目标与成功标准，再结合适用契约和 TASK 完成约定，确认实际交付是否包含所有必要责任。模块、接口、CASE 或测试名只是帮助定位的材料，验收最终仍要回答人的承诺。
 
-1. 从 locked REQ、设计、合同、TASK Closing Contracts、S7 ReviewPlan/Claims、S9 ChangeImpact 和 changed paths 收集审查对象；
-2. 把每个对象归入需求、行为、架构、数据、发布、运维或项目管理审查面；
-3. 为每个审查面安排独立责任。一个 Agent 可以承担一个低风险小面，但不能因为方便把所有审查压给一个 Agent；
-4. 明确哪些 Agent 不能审查自己编写或修复的内容；
-5. 把每项的 `source`、`expected`、`oracle`、`owner`、`evidence slot`、`counterevidence question` 固化后再开始审查。
+每项判断应能解释：承诺来自哪里，预期行为是什么，现有哪次观察直接支持它，观察覆盖什么角色、数据和环境条件，尚未检查什么。如果同一结果支持多个相关承诺，可以共同引用；不能把“某个测试执行过”直接替换成“需求已经兑现”。
 
-审查全集不是越大越好。只纳入受当前 REQ、合同、TASK、changed paths 和风险触发的对象；但一旦纳入，就必须完成。这样既避免“形式上穷举无限场景”的无效工作，也防止 Agent 通过缩小范围获取假完成。
+例如，需求承诺“重复请求不能产生重复扣款”。已有 S7 集成结果真实验证了相同幂等键的重复提交，可以直接支持相应判断；如果它只覆盖串行重复，而实现引入了并发创建路径，就需要检查并发条件下是否仍满足承诺。补查由这个明确缺口引出，不由 evidence 数组是否为空引出。
 
-### 4.1 T1 — clean-round 入口复验
+系统当前按材料文件交付题干，并不自动把一份 REQ 分解为每条验收标准。Main 必须阅读整份原文，保留必要的逐项解释；不能只为整个文件写一句“已看，pass”就把文件中的不同承诺全部视为完成。发现不同子项结论不一致时，应在现有报告中说清各项结果，整体不能盖过尚未完成的部分。
 
-S10 的第一问不是“ACC 模板填完了吗”，而是“支撑 ACC 的验证事实还是真的吗”。应依次核对：
+### 4.2 复用验证，同时检验结论能否成立
 
-- Runtime `review.round` 与 clean-round record 的 round、baseline generation、ID/hash；
-- `clean_round` evidence 文件仍可读、指纹匹配、status=valid；
-- REQ 和当前文档 fingerprint 没有漂移；
-- Delivery、QA、E2E team/responsibility 的 current-round PASS/N/A 仍齐；
-- P0 BUG 没有停在 investigating/pending_approval/accepted/assigned/fixing/retesting；closed P0 有 targeted evidence；
-- 本轮相关 evidence 没有被 invalidated。
+已有 S7 观察可直接使用，但需要判断其对象、版本、运行条件和断言是否适用。相关反例用于追问“什么事实会推翻这个结论”，例如拒绝访问、异常数据、边界、重试、恢复或兼容场景；不是每条报告都必须另造一份反证表、测试任务和日志。
 
-`verification.EvaluateCleanRound` 确实执行这些类别的复算，但它的分母仍有明确边界。当前实现已从「按 evidence kind 收集」演进为对 Claim 精确集的七项命名检查：
+一次实际观察可以同时支持正常行为及相关反例判断。若需要单独表达反证问题，使用现有 `counterevidence` 字段，保留实际问题和结果；没有额外内容时数组可以为空。缺少检查必须保留 `unknown` 和原因，不能把未知改成“不适用”，也不能以非阻断风险的名义把一个尚未判断的必要承诺视作通过。
 
-| 检查 | 当前实现 |
-|:--|:--|
-| `review_round_started` | 当前 review round ≥ 1 |
-| `review_plan_clean` | 本轮已注册 ReviewPlan、与当前轮同轮且 status=clean（round consumer 只在最后一份 required Claim 落 pass 后写 clean） |
-| `all_required_claims_pass` | 精确集求值：每条 required Claim 的 disposition=pass 且绑定已消费 Result；N/A Claim 保持 not_applicable——沉默不是不适用 |
-| `no_findings_current_round` | 本轮存在已确认 Finding 即否决干净路径，后续补 pass 不救回 |
-| `no_invalidated_pass_evidence` | 本轮 review_result / finding / observation_batch / clean_round 四类证据出现 status=invalid 即失败；planning/building 证据不影响，也不替 rich impact ledger 做反向推理 |
-| `no_open_blocking_bugs` | 只把 severity=`P0` 作为 blocking；closed P0 必须有含该 BUG ID 的 current-round valid `targeted_reverification` |
-| `clean_round_snapshot_registered` | 必须存在本轮 status=valid 的 `clean_round` 快照证据；TR-009 绑定机器快照，agent 手写聚合不算 |
+不适用判断同样需要专业理由，例如本次根本没有数据迁移对象；没有对象时不新建一行来填 `not_applicable`。对已有确实不适用的责任说明一次原因即可，不为理由制造证据或引用。
 
-机器分母里没有 angle 或 team-manifest responsibility 维度——早期按 evidence kind 收集的分母已被上述精确集检查取代。
+### 4.3 验收包含可接管性
 
-因此 T1 的 ledger 必须补充机器没有表达的事实，尤其是 P1～P3 风险、每条 AC 的来源和真实 evidence 内容。
+可交付不只是用户路径可演示。与本次变化相关时，需要把实现结果翻译为后续操作者能够使用的安排：
 
-### 4.2 T2 — ACC 的逐条验收映射
+| 方面 | 需要解释的实际问题 |
+| --- | --- |
+| 交付范围 | 哪些模块、接口、配置、依赖和数据被改变，哪些明确不在本次范围 |
+| 部署顺序 | 服务、客户端、配置、开关和依赖是否有先后关系，兼容窗口怎样维持 |
+| 数据处理 | 迁移前提、历史数据、校验、重复执行和不可逆步骤如何处理 |
+| 运行验证 | 发布后看哪些实际用户路径、健康状态、指标和日志，异常由谁判断 |
+| 恢复安排 | 代码回滚能恢复什么，数据还需怎样补救，何时需要人工介入 |
+| 运维接管 | 操作说明、告警、人工控制入口和实际责任人是否可用 |
+| 剩余债务 | 当前选择留下什么影响，谁后续处理，在哪里继续跟踪 |
 
-`docs/reports/acceptance/ACC-template.md` 的核心结构是：
+这些是判断视角，不是必须为所有项目生成七份产物。已有可用说明直接引用；确有风险和债务才记录。专业验收不能授权执行生产迁移、不可逆操作或正式发布。
 
-1. REQ、module current truth、contracts、tasks 的指纹化基线；
-2. clean round 三组 manifest/round/result/validity 与 open blocking BUG 状态；
-3. 每条 REQ source_ref、Rule/CASE/Story/PATH 的 expected、evidence、result；
-4. module scenario 的 allow/reject branch、coverage profile 和 regression；
-5. delivered scope、deployment order、migration/data handling、runtime verification、rollback、operations handoff；
-6. 非阻断风险、owner、Tracking artifact 与最终 `passed/blocked`。
+## 5. 发布审计：从已验收交付检查相关系统风险
 
-实际填写时，ACC 不应只复制“Delivery PASS”。每一条 AC 都要回答：
+验收完成后，审计引用已接收的验收结论和相关观察，不复制整张 REQ／Contract／Claim 表重新答一遍。它把注意力移到跨模块、跨状态和跨运行边界的风险：局部行为看起来正确时，系统整体是否仍能一致运行、失败恢复和被操作者理解。
 
-- 它的权威来源是什么；
-- 它对应哪个 CASE/PATH/contract assertion；
-- 哪个 evidence 直接观察了 expected behavior；
-- 若 N/A，依据是哪个允许的 N/A 理由，而不是空白；
-- 是否有负向分支、权限/异常/边界 oracle；
-- 证据是不是 current round、current baseline、valid 且 subject/fingerprint 对齐。
+八类主题帮助审计者发现遗漏，但由实际变化决定相关性与检查深度：
 
-当前 gate 的机器地板分成两层：`GATE-ACCEPTANCE-COMPLETE` 仍先要求一条 `acceptance_record`（responsibility=`Acceptance` 或 `Orchestrator`，conclusion=`pass`）和一条当前 round `clean_round_record`（`Clean Round Evaluator` 或 `Orchestrator`，conclusion=`pass`），随后还必须消费一个绑定当前 runtime/baseline/review round 的、哈希匹配且通过 `s10-audit-manifest.schema.json` 的 acceptance manifest。`GATE-RELEASE-AUDIT-APPROVED` 同样要求 acceptance、clean round、release-audit evidence 及其当前绑定的 release-audit manifest。quality-gate evaluator 会验证通用 envelope 的 runtime/baseline/producer/subject/fingerprint/conclusion，并消费 manifest 的 coverage、counterevidence、风险/债务/阻断指标和 release audit 八区；它仍不会解析 ACC criterion 表或 Markdown 正文，因此正文语义和逐条业务真实性仍由 S10 Agent/人审阅。
+| 主题 | 为什么要问 | 有意义的检查方向 |
+| --- | --- | --- |
+| 状态转换 | 局部成功可能掩盖无出口的状态或无法恢复的责任 | 进入与退出条件、失败和取消、重试后的去向、依赖是否会永久等待 |
+| 事务与会话 | 多步骤写入可能只完成一部分，错误记录也可能沿用已失效事务 | 原子边界、回滚、错误保存、跨会话写入、长 I/O 与事务持有范围 |
+| 并发与幂等 | 串行测试通过不能证明重复事件与多个执行者安全 | 唯一性、竞争、重启、重复提交与失败后重试的实际行为 |
+| 数据、身份与迁移 | 新字段和约束可能与历史数据、默认值或实际身份语义冲突 | 正式迁移入口、历史冲突、枚举一致性、执行后校验与数据补救 |
+| 调用点与运行拓扑 | 一个入口更新不代表后台任务、管理入口和其他消费者同步更新 | 真实调用链、依赖注入、共享与隔离状态、运行配置及调用方兼容 |
+| 可观测性与错误 | 能失败但无法定位和接管，仍然不是可管理的交付 | 错误上下文、稳定诊断信息、指标和日志、控制面状态与操作说明 |
+| 验证证据 | 只测替身或单实例，可能没有观察本次真正改变的运行条件 | 适用 S7 结果、真实数据／迁移／并发路径、环境限制和未执行项 |
+| 文档与发布范围 | 代码正确也可能因交付范围不清或操作顺序错误而失效 | 文档与实际一致性、范围外变更、依赖顺序、回滚与风险接管 |
 
-`counterevidence.outcome=unknown` 可以暂时没有 `evidence_refs`，因为它表达的是
-“尚未找到足以判定的反证”，不是伪造一条证据；但该 UNKNOWN 仍会阻断通过，必须
-在 S10 内补查并重新生成不可变 manifest。`pass`、`refuted` 等已判定结果必须带
-证据引用。对 TR-018，`pause_record` 是 transition action 生成的后置证据，不是
-进入 gate 前需要手工绑定的前置条件；Release Auditor 只需提交结构完整的 blocked
-release-audit evidence，Controller 在满足条件时自动生成 pause checkpoint 并提交
-TR-018。不要手工调用 `runtime transition` 伪造该记录。
+例如，唯一键变更却没有检查历史冲突、关键数据库行为只测了替身、回滚说明没有覆盖真实数据后果，都是需要认真判断的具体问题。审计者应按实际影响明确阻断或可接管风险，不能用测试数量抵消它们，也不能把所有问题机械归类为同一种严重度。
 
-`record_acc` action 也只把当前 transition 的 evidence context 作为已记录事实，不把 ACC 的映射写进 Runtime。因此 T2 的逐条完整性目前主要由模板、主会话复核和文件指纹共同承载。
+主题已有结构化落点 `audit_areas[]`：`id` 对应主题，`conclusion` 为 `pass`／`not_applicable`／`unknown`／`fail`，有实际归属和输出时保留 `owner`／`evidence_refs`。主题与现有 ID 的对应为：状态转换 `state_machine`；事务与会话 `transaction_uow`；并发与幂等 `concurrency_idempotency`；数据、身份与迁移 `data_migration`；调用点与运行拓扑 `call_sites_topology`；可观测性与错误 `observability_errors`；验证证据 `verification_evidence`；文档与发布范围 `docs_release_scope`。实际风险／债务／阻断分别保留在 `risks`／`technical_debt`／`blocking_findings`，必要观察和 N/A 解释可复用关联库存行的 `oracle`／`na_reason`；不增加主题报告或必填八行。
 
-### 4.3 T3 — 交付、迁移、回滚与运维准备
+八类主题不是八个必做任务，不要求每类都有独立 Agent、证据、N/A 行或新产物。若使用 `audit_areas` 报告实际主题结论，保留这些专业答案；该字段不是系统自动生成的资格证书。已填写主题中的未知或失败同样需要处理，不能因为主题列表是可选的就忽略已经报告的问题。
 
-验收材料必须把“功能通过”翻译成“可以被接管”：
+## 6. 风险、未知和阻断怎样影响决定
 
-| 维度 | 至少要说明 |
-|:--|:--|
-| 交付范围 | 哪些 module/interface/config/data 被改，哪些被明确排除 |
-| 部署顺序 | 前后端、配置、依赖、feature flag、兼容窗口的顺序 |
-| 数据迁移 | 迁移脚本、前置条件、执行后校验、历史数据处理、重复执行策略 |
-| 运行验证 | health、关键用户路径、指标/日志、告警观察窗口 |
-| 回滚 | 代码回滚、数据补救/反向迁移、不可逆步骤的人工处理 |
-| 运维接管 | runbook、on-call、manual control、owner、已知风险 |
-| 技术债 | 类型、影响、成本、负责人、Tracking artifact；向后兼容选择要说明移除条件 |
+未知表示尚不足以判断，失败表示已有观察不符合预期，阻断表示当前问题使本步不能按正向完成。它们应分别说明实际含义，而不是都改成一个总体“有风险可发布”。
 
-`L2` 的“技术债登记”当前并没有独立 runtime/entity 结构；ACC 第 5 节的 non-blocking risk 表和 TD 链接是现有承载。不要在没有真实消费者的情况下再造一份 debt registry。
+非阻断风险可以在工程结论成立后交给 S11。报告应让人明白影响、实际处理责任和可落实的后续安排；已有本地工作记录可以承担跟踪，不强制另开固定拼写的票据。`tracking_ref` 或 `recovery_point` 没有真实内容时可以留空，不伪造恢复点。
 
-### 4.4 T4 — 反证审查、acceptance gate 与 TR-015
+风险严重度是一项专业描述，不能单独代替阻断判断：有 P1 标签不自动被机器拒收，低严重度也不自动允许忽略必要的未完成工作。风险和技术债的 owner 是否缺失会影响进度显示，但显示数值并不能证明风险已被实际接管。Main 仍须完成必要沟通，使 S11 看到真实剩余问题。
 
-反证审查是 S10 的必经步骤，不是发生争议时才追加的补充工作。它必须在 acceptance evidence 登记前完成。
+对于需求定义、架构边界或项目基础的争议，报告具体影响并交回有权处理的路径。S10 不通过修改锁定材料消除失败，也不把风险接受当作 REQ、Kernel 或发布操作的授权。
 
-对每一条 coverage item，审查者至少回答：
+## 7. 产物：一份专业报告，同源生成可读结果
 
-- 什么事实会证明当前 PASS 是错的？
-- 是否检查了拒绝、异常、权限、边界、重复和恢复路径？
-- 当前证据是否真的观察了 expected/oracle，而不是只证明代码执行过？
-- 是否存在只在 mock、happy path 或单实例下成立的假通过？
-- 是否存在 changed path、配置、迁移、文档或调用点没有被任何 Claim/证据覆盖？
-- 若结论是 N/A，权威来源、适用边界和理由是什么？
+### 7.1 Manifest 的职责
 
-反证问题没有得到证据回答时，结果只能为 `UNKNOWN`。`UNKNOWN` 不能进入 acceptance PASS，也不能被改写成 `APPROVED_WITH_NON_BLOCKING_RISKS`。
+S10 的 Manifest 是现有机器可读专业报告，不是子代理分派清单。验收和发布审计各有一份当前报告，由系统在本步入口准备，并提供准确绝对路径。作者保存这份报告，系统登记并生成可读投影，不要求另写 Markdown、证据封套、来源证书或重复汇总。
 
-要进入 `release_audit`，目标上需要：ACC 完整、clean round 仍有效、REQ baseline 未漂移。实际链路是：
+| 字段 | 表达什么 | 谁负责 |
+| --- | --- | --- |
+| `schema_version`、`manifest_type`、`runtime_id`、`baseline_generation`、`review_round` | 报告属于哪个当前责任与轮次 | 系统根据准确路径和当前 Runtime 带入 |
+| `coverage_inventory` | 已知材料及其专业判断 | 系统带出行标识、来源、承诺原文和已知 owner；Main 填真实结论与必要解释 |
+| `counterevidence` | 确有单独表达价值的反例问题和观察 | 专业作者；可复用已有观察，无额外内容时留空 |
+| `audit_areas` | 已实际表达的相关审计主题结论 | 专业作者；不是必须填满的八项清单 |
+| `risks`、`technical_debt` | 真实剩余影响、处理责任和后续位置 | 专业作者及实际接管者 |
+| `blocking_findings` | 已报告的业务阻断及对应去向 | 专业作者；总体正结论不能抵消它 |
+| `metrics` | 从已报告数据派生的进度显示 | 系统计算，不由作者维护 |
+| `outcome` | 当前验收或审计的明确专业结论 | Main 汇入实际工作后填写，草稿留空 |
 
-- `GATE-ACCEPTANCE-COMPLETE`：`acceptance_record/pass` + current-round `clean_round_record/pass` + current-bound, hash-matched acceptance manifest；
-- `GATE-RELEASE-AUDIT-APPROVED`：current-round clean-round evidence + current-bound acceptance manifest + release-audit manifest with all eight areas and zero blocking/unknown/unsupported-pass/unowned-risk/untracked-debt metrics；
-- TR-015 guards：`acc_complete` + `clean_round_still_valid`；前者是 evidence-backed attestation，后者调用 `EvaluateCleanRound`；
-- TR-015 action：`record_acc`；没有额外的 ACC 领域解析；
-- 成功后 top-level state 进入 `release_audit`。
+`coverage_inventory` 行的 `expected` 是系统预填的原始承诺基线（所提供 REQ／CONTRACTS／BE／TASK 材料正文），不是让 Main 另写“应该怎样”；保留系统提供的实际承诺，`source_refs` 指向材料；`disposition` 是作者的判断。`oracle` 可写实际观察、判断依据和未完成原因，不是另一个必须满足格式的证明。`evidence_refs` 有真实可用输出时引用，也允许为空，不能为了非空而创造日志。
 
-如果 ACC 发现需要补验收或重新验证，目标是形成 `acceptance_review_required` + `change_impact_record`，由 TR-016：
+正常保存从当前准确路径绑定顶层机器字段并重算指标；作者不必补回省略的机器段，也不靠手填旧 Runtime／轮次改变本次责任。系统已有的行标识和来源关联保持原投影；可选风险或反证对象不要求作者编内部编号、抄父行编号或另注册其实际文件来源。专业内容仍须说明具体问题与实际影响，省略机器编号不能省略判断。
 
-1. `invalidate_affected_evidence`；
-2. `review.round++`、清空 `clean_round`；
-3. 回到 `verification.delivery`。
-
-当前 TR-016 没有语义 guard，且 action 的影响输入仍来自触发该 transition 的工具调用 paths。它可以记录“重做完整轮”，但不能证明 rich ACC discrepancy 中列出的每个旧 evidence 都已被准确失效。
-
-### 4.5 T5 — release architecture audit
-
-审计不是又一次 code review，而是沿 R-P05 的八个系统不变量区域逐项问“这次变更后系统还站得住吗”：
-
-| 审计区 | 核心问题 | 常见证据 |
-|:--|:--|:--|
-| state machine | 新状态有进入/退出条件吗？retry/dependency 会不会卡死？ | loop-definition、transition tests、控制面输出 |
-| transaction/UoW/session | 写入是否跨错 session？长 I/O 是否持有写事务？失败是否 rollback？ | service code、DB traces、failure recorder |
-| concurrency/idempotency | 多 worker claim/lease 是否安全？重复事件/重启/重复创建是否幂等？ | DB constraint、integration/concurrency tests |
-| data model/identity/migration | identity/default/enum 是否一致？历史数据是否满足新约束？migration 可验证/回滚吗？ | schema、migration、数据样本、dry-run/apply checks |
-| call sites/runtime topology | 新参数、DI、共享/隔离状态是否在所有入口同步？ | grep call sites、后台 loop、admin API、真实路径测试 |
-| observability/errors | 是否有稳定短错误码、上下文日志、指标和控制面可诊断状态？ | logs、metrics、diagnostic SQL、runbook |
-| verification evidence | 是否验证真实 DB/migration/concurrency/runtime path，而非只测 mock？ | S7、Builder、integration/e2e evidence |
-| docs/release scope | BUG/TD/REV/QA/ACC 与代码一致吗？范围外变更、部署顺序、回滚是否写清？ | diff、reports、ACC、runbook、release notes |
-
-`docs/reports/release-audits/TEMPLATE.md` 是 16 节的人类填写模板，R-P05 规定的是上述 8 个审计区和 8 类典型阻断原因。当前没有 parser 强制 16 节都填满，也没有 parser 强制阻断表逐项对应 R-P05；审计者仍需在报告中显式写 PASS/FAIL/NA、证据和处理要求。
-
-阻断类型包括：状态无出口、迁移未进正式发布路径、raw SQL 未对真实 schema 验证、唯一键变更未查历史冲突、并发创建只靠 SELECT、关键 DB 行为只测 mock、范围外代码混入、failure recorder 使用无效 session。任何一项应 BLOCK，不以“本轮测试绿”抵消。
-
-审计结论只能是 `APPROVED`、`APPROVED_WITH_NON_BLOCKING_RISKS` 或 `BLOCKED`。`approved_with_risk` 仍然只表示工程审计允许把风险交给 S11，不表示人已经批准发布。
-
-### 4.6 T6 — 风险分流与 S11 package
-
-| 发现类型 | 目标路由 | 说明 |
-|:--|:--|:--|
-| ACC 映射不足、功能/合同问题 | TR-016 → S7 新完整轮；若形成 blocking finding，进入 S8 | 不在 S10 直接改产品代码 |
-| 证据/覆盖缺口（无产品缺陷） | 补齐 S10 事实；需要重新验证时 TR-016 → S7 新完整轮 | 不能用总体 PASS 覆盖缺口 |
-| 产品/架构/数据缺陷 | 记录 finding 与 change impact → S8 → S9 → S7 新完整轮 | S10 不直接修改产品代码；S9 唯一出口是 S7 |
-| 架构/迁移/运维阻断 | TR-018 → paused + checkpoint | 等待人工处理/恢复；不包装成 approved_with_risk |
-| locked REQ 必须变化 | GTR-002 或对应 REQ gateway → paused | S10 不修改 REQ |
-| 不可逆生产/安全/合规动作 | GTR-003 → paused | 先交人工，不把动作塞进 audit PASS |
-| 无阻断，仅非阻断风险 | `APPROVED_WITH_NON_BLOCKING_RISKS` → S11 | 风险要有 owner、tracking 和建议处置 |
-| 全部审计通过 | `APPROVED` → S11 | 仍只生成 handoff，不执行 release |
-
-S11 package 至少包含：clean-round ID/hash、ACC ID/hash、release audit ID/hash、runtime ID/baseline/review round、已完成范围、唯一未决事实、影响/残余风险、建议处置、恢复点和明确的 `automation stops` 声明。它是给人做决策的压缩视图，不是把全部过程 evidence 再复制一遍。
-
-### 4.7 主会话的 Agent Team 编排
-
-S10 的 Agent 数量不设固定上限；数量由 `coverage_inventory` 的独立责任面、风险和工作量决定。Token 成本不是此阶段的首要优化目标，漏审和错误发布的返工成本才是。
-
-推荐的最小责任面包括：
-
-| 责任面 | 主要问题 | 独立性要求 |
-|:--|:--|:--|
-| Requirement Acceptance | 每条 REQ AC/合同/TASK 是否有当前证据 | 不由单纯实现者独自签结论 |
-| Architecture / Code Audit | 系统不变量、设计模式、边界、可维护性和调用拓扑是否成立 | 不由本次修复 Builder 独自签结论 |
-| Data / Migration / Operations | 历史数据、迁移、部署、回滚、监控和接管是否真实可行 | 需要对应运行/数据经验 |
-| Evidence Integrity | round、baseline、hash、changed paths、失效关系是否一致 | 与内容审查分离 |
-| Adversarial Review | 专门寻找为什么不能发布、哪里可能是假通过 | 不承担“帮忙凑 PASS”的目标 |
-
-主会话负责：
-
-1. 根据审查全集拆分责任，而不是按 Agent 数量反向设计任务；
-2. 让无写冲突的独立审查并行，要求每个 Agent 先回报计划后连续执行；
-3. 消费每个 Agent 的结构化结果、反证问题和缺口，不把多个 PASS 简单投票；
-4. 解决审查冲突并保守处理未解决分歧；
-5. 只有所有责任面都完成、`UNKNOWN=0`、阻断项清零，才组装 S11 package。
-
-S10 Agent 的“完成”不是交一份看起来完整的 Markdown，而是让主会话可以沿
-`coverage item → question → evidence → conclusion → owner/route` 逐条复核。
-
-## 5. 职责分布与覆盖审计
-
-### 5.1 职能落点
-
-| 职能 | 主责 | 承载位置 | 当前消费者 |
-|:--|:--|:--|:--|
-| clean-round 事实 | S7 Clean Round Evaluator / Orchestrator | `clean_round` evidence + Runtime review state | T1、TR-015/TR-017 guards |
-| 逐条需求验收 | Acceptance owner / Orchestrator | ACC 第 3 节、S10 acceptance manifest、scenario coverage、evidence map | Gate 校验 manifest；正文由人审阅 |
-| 交付与运维接管 | Builder/Delivery/Operations owner | ACC 第 4 节、runbook、migration/rollback | S11 人类决策 |
-| 系统级审计 | Architect / Release Auditor | release audit 8 区、S10 release-audit manifest、ARA findings、Final Decision | Gate 校验 manifest；TR-017/018 消费 envelope |
-| 风险/TD 裁决 | Orchestrator + owner | ACC 风险表、TD、audit non-blocking table | 人与后续周期 |
-| transition/gate | Controller + transition engine | generic envelope、journal、cursor | 自动推进一条 allowlisted transition |
-| release authorization | Human | S11 human decision evidence | TR-025～TR-030 |
-
-### 5.2 应有的分工与重叠控制
-
-- S7 负责产生观察事实，S10 负责汇编和系统级判断；S10 不重写 S7 的 PASS，也不把 audit 变成普通 reviewer 的第四个角度；
-- Acceptance owner 逐条回答“承诺是否满足”，Release Auditor 回答“系统性质是否仍成立”；两个角色的 evidence 和结论不能互相代填；
-- Builder 可以提供 migration/check/runbook 事实，但不能独自把 release audit 标成 APPROVED；
-- non-blocking risk 必须保留 owner 和 tracking artifact，不能因为不阻断就从 package 中删掉；
-- S10 把人类需要的材料压缩成 package，S11 只做价值/风险/时机决策，不重新开展工程审计；
-- 审计发现 defect 后沿 S8/S9/S7 链回去，不能在 S10 直接把修复写进当前 release package；任何 S10 新发现的产品或架构缺陷，都必须沿 S8 → S9 → S7 新完整轮返回。
-
-### 5.3 当前实现与未闭合缺口
-
-1. **ACC/审计 Markdown 正文由 manifest 渲染（RC-11）**：gate 仍不解析正文语义；机器完整性由配套 S10 manifest 单一来源承载，正文用 `loop-harness s10 manifest render` 从 manifest 生成，作为人类解释投影，不再是手工维护的第二载体（C-5 关闭：消除 Markdown/manifest 漂移面）；
-2. **`record_acc`/`record_release_audit` 仍只确认 evidence context**：不会把 Markdown 正文摘要写进 Runtime；manifest 在 evidence 注册前和 Gate 消费时分别校验；
-3. **acceptance gate 不再是单通用证据门**：除 acceptance + current clean-round 外，还要求绑定、哈希匹配且通过 S10 acceptance manifest 的 coverage/counterevidence/metrics；
-4. **release-audit approval 同样显式要求 current clean-round**：`GATE-RELEASE-AUDIT-APPROVED` 同时消费当前轮 clean-round、acceptance 和 release-audit manifest；manifest 与当前 runtime、baseline、S7 round 绑定，并重新校验哈希；
-5. **`release_audit_approved` 仍不解析 Markdown 三枚举或 ARA prose**：它消费结构化八区与 blocking/风险硬指标，Markdown 的解释和最终责任仍由 Release Auditor/人审阅；
-7. **clean-round 分母有意偏窄**：只语义阻断 P0 BUG，P1～P3 不影响 clean-round guard；
-8. **TR-016 影响失效输入错位**：使用当前工具 `AffectedPaths`，不消费 rich acceptance change-impact 内容；空/错 paths 可静默无失效；
-9. **acceptance/release audit 没有独立业务 entity**：Runtime 只保留 evidence refs 与 top-level state，无法查询“哪条 AC 已验收”的结构化实体；
-10. **requested route 可能冲突**：同一 cursor 同时满足 complete/review-required 或 approved/blocked 时 selector fail closed，没有自动优先级；
-11. **审计阻断→paused 的 pause checkpoint 不携带领域级 ARA 条目**：仍需依赖 audit evidence/报告给人解释；
-12. **技术债没有独立载体**：当前靠 ACC/audit 风险表 + TD reference，L2 若写成独立 debt registry 会超过实现；
-13. **当前 policy 对 release commands 的硬边界不完整**：`protected_commands.json` 和 classifier 有发布命令表，但主 `policy.Engine.Evaluate` 实际硬处理的是 locked-artifact write 与 squash merge；其它命令的拦截不能仅凭表存在来宣称已生效。
-14. **当前 S10 没有直接以工作树快照证明 CleanRound 之后没有新的产品代码修改**：正常 S9 路径由 TR-012 → 新 S7 → TR-009 保证；若有 S10 直接写代码的入口，必须将其视为流程缺口并回到 S7，而不是由 S10 自己消化。
-
-### 5.4 关键取舍
-
-| 问题 | 设计选择 | 原因与当前代价 |
-|:--|:--|:--|
-| clean round 与 acceptance | 保留两道门，入口复算 clean round，manifest 锁定逐条覆盖与反证，ACC 补人类语义 | 防止总体绿代替逐条验收；Markdown 解释仍不自动解析 |
-| acceptance 与 audit | 两份产物、两个责任面 | 需求承诺与系统不变量不同分母；材料更长但结论更清楚 |
-| 反证审查 | 每项增加一个反证问题和一次有证据的反向检查；复用同一 coverage ID，不新增 Runtime 状态 | 能识别总体 PASS、mock-only 和漏路径造成的假通过；成本由有限审查全集控制，不重复执行 S7 全部 Claim |
-| approved_with_risk | 允许把非阻断风险交给 S11 | 风险可见且不伪装为 zero-risk；人决定是否接受时机 |
-| audit block | paused，不自动猜修复顺序 | 架构/迁移/运维阻断可能需要跨团队或人决策 |
-| S10 到 S11 | 只交 handoff，不执行 release | 永久分离工程判断与发布授权；S10 manifest 通过也不等于 S11 人类授权 |
-
-## 6. L1 准则如何嵌入 S10
-
-| L1 准则 | S10 中的实际落点 |
-|:--|:--|
-| D1 权威外置 | ACC、audit、S10 manifest、Runtime evidence、fingerprints、journal 与 risk/TD links 落盘；正文与 Runtime 仍不是完全同构 |
-| D2 自然路径观测 | PreToolUse 评估 TR-015/016/017/018；clean-round guard 在 transition 时重新计算 |
-| D3 门是顾问 | missing acceptance/audit/clean-round evidence 会给出下一步；coverage inventory、反证账本和当前责任面进一步指出哪条 AC、哪个审计区或哪个反证问题缺失 |
-| D4 引导性产物 | coverage inventory、counterevidence ledger、ACC criterion map、migration/rollback 表、audit 八区和 sign-off questions 把抽象“可发布”变成可逐项回答的材料 |
-| D5 三级强制 | Skill/template 引导；S10 manifest schema + envelope/hash 约束结构；Gate/guard 控制 state route；Markdown 正文语义仍主要靠人 |
-| D6 三方收敛 | Acceptance owner、Release Auditor、Orchestrator/人类在不同层收敛；不得由 Builder 自己完成所有结论 |
-| D7 收敛可观测 | clean round、manifest、ACC/audit refs、risk/TD、pause checkpoint、S11 package 形成可审计轨迹；Markdown 正文内容未进入 state machine |
-| 公理一 原型 | 对应 release acceptance、architecture review、operational readiness、change control 与 human release gate |
-| 公理二 分工 | 验收、审计、风险 owner、Controller、人类授权分开；当前 agent identity 仍不是本地认证 |
-| 公理三 消费 | clean round 供 acceptance/audit，S10 manifest 供 Gate，ACC/audit 正文供审计/人，audit 供 S11；Gate 不消费 Markdown prose |
-| 公理四 成本 | 不重复执行 S7 的逐 Claim 验证；只对当前 release scope 做系统审计，但对声明的审查全集不省略反证步骤 |
-| 公理五 传达 | `acceptance pass`、`audit approved`、`approved_with_risk`、`awaiting_human_release`、`release_authorized` 用不同词和不同责任，不能合并成“已发布” |
-
-## 7. 产出、出口门槛与失败路由
-
-### 7.1 正式产出
-
-- current clean-round revalidation ledger 与 REQ/baseline/round fingerprint 对账；
-- coverage inventory、responsibility matrix 与 counterevidence ledger；
-- ACC 文档：基线、clean round、逐条 REQ/CASE/PATH/contract 映射、scenario acceptance、交付运维、风险和结论；
-- acceptance evidence envelope 与 TR-015 handoff；
-- release architecture audit：changed paths、八区检查、证据、ARA findings、非阻断风险、三枚举结论；
-- audit evidence envelope 与 TR-017/TR-018 route evidence；
-- release-ready package：clean-round/ACC/audit IDs and hashes、impact、风险、建议、恢复点和 `automation stops`；
-- 若需回归/暂停，记录 change impact、finding、pause checkpoint 和下一步 owner。
-
-### 7.2 目标出口判定与当前机器地板
-
-| 维度 | 目标判定 | 当前机器实际检查 |
-|:--|:--|:--|
-| Clean round | 当前基线/当前轮仍 valid，四项 clean-round checks 全 PASS | `EvaluateCleanRound` 复算；分母只含 verification relevant evidence、P0 BUG |
-| ACC | 每条 AC/Closing Contract/CASE/PATH 都有 valid evidence 或有依据的 N/A | 一条 acceptance envelope + current clean-round envelope + valid bound S10 manifest；不解析 Markdown 正文 |
-| Operations | 部署、迁移、运行验证、回滚、接管均有 owner 和 evidence | ACC 正文人工维护；无领域 gate |
-| Audit | 八区均有结论，阻断项为零或被正确路由，非阻断风险有 owner | 一条 release-audit envelope + valid bound S10 manifest with all 8 areas; 不解析 Markdown prose |
-| S10 handoff | 所有 refs/hashes/风险/建议/恢复点清晰且 automation stops | TR-017 需要 audit envelope + acceptance envelope + current clean-round evidence，package 正文不被 gate 读取 |
-| Release authority | S10 只把决策交 S11，不产生授权 | `awaiting_human_release` 无自动候选；真正人闸由 TR-025～030 |
-| Anti-shortcut | coverage=100%、UNKNOWN=0、unsupported PASS=0、所有风险有 owner/tracking | S10 manifest validator + acceptance/release Gate machine-check these ledger metrics; Markdown 解释与发布包仍需人工复核 |
-
-### 7.3 失败路由
-
-| 情况 | 去向 |
-|:--|:--|
-| clean round missing/stale/invalidated 或 REQ fingerprint drift | 留/回 S7，形成新完整轮；不组装旧事实的 ACC |
-| 某条 AC/Closing Contract 无证据 | 留 acceptance，补映射或回 S7；不以一条 overall PASS 覆盖空洞 |
-| ACC 发现功能缺陷 | 记录 finding → S8；accepted 后走 S9，修复后必须新完整轮 |
-| acceptance 需要重新验证且 impact 已登记 | TR-016 → S7 `verification.delivery`；先核对失效范围 |
-| migration/transaction/concurrency/state/observability 阻断 | TR-018 → paused，保留 audit report 和 checkpoint |
-| locked REQ 必须改变 | GTR-002 / REQ amendment → paused，人修订后新 generation |
-| 不可逆生产/安全/合规动作 | GTR-003 → paused，等待人批准 |
-| audit approved with non-blocking risks | 进入 S11，package 必须突出风险和 owner |
-| audit fully approved | TR-017 → S11；不执行 merge/publish/deploy/release |
-| acceptance/release-audit route conflict | Controller fail closed；先清理互斥 requested evidence，不猜优先级 |
-
-## 8. 易错点与渐进披露
-
-### 8.1 易错点
-
-1. 把 S7 clean round 当作 ACC，跳过逐条 REQ/Closing Contract 映射；
-2. 只复制 Delivery/QA/E2E 的总体 PASS，不核对每条 AC 的 expected、oracle 和 evidence；
-3. 用空白或 free-text 代替 N/A 理由；
-4. 把 ACC PASS 当作 release audit PASS；两者的分母和责任不同；
-5. 把 audit `APPROVED_WITH_NON_BLOCKING_RISKS` 写成无风险通过；风险必须进 owner/TD/package；
-6. 认为 `record_acc` 会解析 ACC 正文；当前 action 只记录 evidence context，必须先用 `s10 manifest validate` 并在 envelope 中携带 manifest 引用；
-7. 认为 release-audit envelope 会解析 Markdown 的 8 个审计区或 ARA 表；Gate 只消费结构化 manifest 的八区和硬指标，正文仍需人工审阅；
-8. acceptance review 触发 TR-016 后，忘记核对当前工具 `AffectedPaths` 是否覆盖实际 discrepancy；
-9. 同时留下 `acceptance_completed` 与 `acceptance_review_required`，让 selector conflict；
-10. 把 paused 当作 audit 失败后自动可继续；需要人恢复、REQ amendment 或 abort；
-11. 把 S10 的 `awaiting_human_release` 当作发布成功；它只是人工决策入口；
-12. 因 `protected_commands.json` 存在，就假定所有 deploy/publish/formal-release 命令已被主 Hook 硬拦；当前 policy Evaluate 的实际接线更窄；
-13. 在 S10 直接修代码或修改 locked REQ；正确路由是 S8/S9、planning 或 human amendment；
-14. 只在 ACC/audit 写风险，不写 owner、tracking artifact、恢复点和人需要做的选择；
-15. 把“已有 clean round”当作 S10 的全部工作，跳过需求逐条映射和系统级反证；
-16. 把没有检查过的项目写成 N/A，或把 UNKNOWN 降级成非阻断风险；
-17. 只让一个 Agent 同时承担验收、架构、运行和反证审查，然后把一份总体 PASS 当作独立结论；
-18. S10 发现问题后直接修改代码，再回填一份 audit 说明；任何产品修改都必须回 S8/S9/S7；
-19. 以“审查范围太大”为理由临时删除 coverage item；范围只能依据 REQ、changed paths 和风险触发规则调整，并留下理由。
-
-### 8.2 阅读预算
-
-- **只想理解 S10 主线**：读 §1.1～§1.3、§2、§3、§7.3；
-- **正在写 ACC**：重点读 §4.1～§4.4，配合 `ACC-template.md`、REQ、contracts、TASK Closing Contracts 和 S7 clean-round evidence；
-- **正在做发布审计**：重点读 §4.5～§4.6，配合 R-P05、`docs/reports/release-audits/TEMPLATE.md` 和 changed paths；
-- **正在组装 S11 包**：读 §4.6、§7.2，确保人只看到汇总事实、风险、建议和恢复点；
-- **正在维护 harness**：必须读 §5.3，并对照 `verification.EvaluateCleanRound`、quality-gate registry/evaluator、TR-015～018 actions/guards、Controller selector 与 `AffectedPaths`；
-- **S11 人类消费者**：只需读 package、ACC 结论、审计结论、风险和建议；不要把 S10 evidence envelope 本身当成发布授权。
-
-## 9. S10 Agent 操作卡
-
-每次进入 S10，主会话和审查 Agent 都按以下顺序工作：
-
-```text
-1. 确认这是 S7 新完整轮产生的 clean round；S9 不能直达 S10。
-2. 固化 coverage_inventory 和 responsibility_matrix，不先填 PASS。
-3. 逐条建立 source → expected → oracle → evidence → conclusion。
-4. 对每条结论提出反证问题，并记录反证证据或显式 UNKNOWN。
-5. 完成部署、迁移、回滚、运行和运维接管审查。
-6. 完成八个系统不变量审计，并处理所有 finding、风险和技术债。
-7. 复核 coverage=100%、UNKNOWN=0、unsupported PASS=0、unowned risk=0。
-8. 组装带 hash、影响、风险、建议和 automation-stops 的 S11 package。
-9. 让 Hook 自动推进；不要手推 transition，也不要执行发布动作。
+### 7.2 用现有字段表达未完成和完成
+
+以下仅展示同一系统行中的专业字段片段，不是可提交的新报告，也不提供应复制的 ID、路径或机器关联：
+
+```json
+{
+  "oracle": "已有串行重复提交观察符合预期；并发创建条件尚未观察，暂不能判断整项承诺。",
+  "evidence_refs": [],
+  "disposition": "unknown"
+}
 ```
 
-若任何一步无法完成，正确动作是停在当前阶段补事实，或沿明确路由回
-S7/S8/S9/paused；不是缩短流程来换取“已完成”。
+补齐实际检查后，在当前行继续填写实际事实，而不是另交一份“证明已完成”的登记单：
 
+```json
+{
+  "oracle": "已复核现有集成输出中的串行重复与两个并发请求，均只形成一次扣款；适用条件与本次交付一致。",
+  "evidence_refs": [],
+  "disposition": "pass"
+}
+```
 
-## 共享模型与合同依赖（2026-09-19）
+示例不证明任何真实项目通过。实际输出已有可用位置时应填写，行结论的真实性仍由真实审查工作承担。必要内容可以在同一已有观察中表达，不因引用为空而凭空新增工作。
 
-沿既有 AC/CASE/合同/TASK 链回收共同模型的真实消费及协议行为证据，不建立第二套验收编号。 机制权威见 [L4 共享模型与合同治理](../l4-mechanisms/L4-shared-model-contract-governance.md)。
+行级 `disposition`、反证 `outcome` 和主题 `conclusion` 使用 `pass`、`not_applicable`、`unknown`、`fail`；整份报告的 `outcome` 使用下一节的阶段结论，两者不能混用。反证问题得到回答后也不用另造 `refuted` 等本报告不采用的同义状态。字段形态见[现有示例](../../docs/examples/s10/README.md)，数组项使用已有对象结构，不能把风险或反证对象写成字符串。
+
+### 7.3 投影和指标的含义
+
+[验收模板](../../docs/reports/acceptance/ACC-template.md)与[审计模板](../../docs/reports/release-audits/TEMPLATE.md)说明人类可读投影的内容。正常正向出口成功后，系统从同一 Manifest 生成可读文件；作者不再手填模板。若出口已提交而投影写入失败，工程事实仍然已提交，应报告具体输出缺口并修复，不能称整次事务已经回滚。
+
+指标只描述报告中的数据。没有某类对象时，覆盖值可以为零；没有逐行引用时，不生成缺引用资格门；反过来，显示满覆盖也不能证明承诺被穷尽、独立性成立或风险已经接管。已经写入的未知、失败和阻断必须保留在实际判断中，手填零指标或总体正结论不能抹去它们。
+
+## 8. 报告接收与本步完成是两道不同判断
+
+### 8.1 先允许真实报告进入
+
+普通保存先读取当前准确路径，解码现有字段类型并关联本步责任。空 `outcome` 表示草稿：报告原地保留，不登记最终结果、不推断通过，也不自动选负向路由。作者可继续实际工作和正常使用工具。
+
+明确填写本步允许的最终结论后，原消费者通过 Runtime Writer 登记事实。报告中包含未知、失败或阻断，并不是拒绝记录真实情况的理由；登记也不授予完成。JSON 不可读、字段类型错误或路径不属于当前责任时，应反馈具体路径、问题和修正位置，不让作者猜另一份问卷。
+
+责任进度仍沿用 `pending`、`active`、`blocked`、`done`、`cancelled` 五种状态；验收／审计是阶段位置，`pass` 等是专业结论，草稿是尚未明确结论的报告。它们不合并成另一套状态，也不由一个单词互相推断。
+
+### 8.2 再判断正向完成
+
+| 本步 | 最终 `outcome` | 该结论的含义与出口 |
+| --- | --- | --- |
+| 验收 | `pass` | 声明验收完成；当前报告无已报告未完成／阻断，且当前干净轮条件成立时，经 TR-015 进入发布审计 |
+| 验收 | `review_required` | 明确要求返回验证；使用原返回路由及其必要影响材料，不走发布审计正向出口 |
+| 发布审计 | `approved` | 相关工程审计完成；条件成立时经 TR-017 交 S11 |
+| 发布审计 | `approved_with_risk` | 工程结论完成并如实保留非阻断风险；同样交 S11，由人决定是否接受 |
+| 发布审计 | `blocked` | 明确报告阻断，尝试原暂停路径；不交 S11 作为已通过审计 |
+
+两类正向出口都读取已报告的覆盖行、反证问题、审计主题和阻断项。存在非 `pass`／`not_applicable` 的已报告行，或存在 `blocking_findings`，就不能按正向完成。没有被作者报告的遗漏不会因这项检查而自动被机器发现；专业工作仍须覆盖实际责任。
+
+当前报告的查找依据是本责任、本代际和本轮次的最新有效记录，不是账本中任意一条旧 PASS。审计出口还需要当前验收通过事实。单独改总体结论、删除未完成文字或借用旧轮报告，不能替代真正补齐工作。
+
+### 8.3 当前干净轮条件实际保证什么
+
+TR-015、TR-017 仍通过 `EvaluateCleanRound` 读取当前 Runtime 的验证事实，包括本轮计划、必要断言处置、发现、证据失效与阻断情况。只有一次 targeted pass、刚创建新轮或一个手写 clean-round 汇总，都不足以满足该条件。
+
+这里没有在每次保存或普通 Hook 里重新扫描、认证全部上游来源。TR-009 进入验收时具有产品基线复核；TR-015／TR-017 的本阶段完成读取当前已登记轮次与专业报告，不再重复同一套完整产品基线证明。不能由此推导“这些出口已经证明当前所有文件与原验证对象完全相同”。
+
+若期间发生真实产品、配置、迁移或权威材料变化，Main 必须判断原观察是否仍适用；使验证基础失效的变化应走原影响处置和 S7 完整重验路径。维持准确登记和如实报告变化，才使状态条件与真实交付一致；文档不能把未实现的全盘漂移识别写成现有保证。
+
+## 9. Hook 怎样衔接，怎样避免重新形成控制抽象
+
+### 9.1 入口准备属于原阶段交接
+
+S7 经 TR-009 进入验收时，原入口准备验收报告。验收经 TR-015 完成时，原入口准备发布审计报告。TR-017 完成后准备 S11 既有人类材料与决定入口。每次交接只准备下一准确责任，不在一次保存中跑完多个专业步骤。
+
+当前验收草稿以已绑定 REQ、当前代际登记的 contract／task 文件为材料行，提供整份原文及来源。发布审计草稿主要引用已验收结果，不自动复制完整验收表，也不默认填入八类审计任务。文件级材料交付不等于机器已经完成逐承诺分析。
+
+普通 `PreToolUse`、`Stop` 只读当前责任和材料位置，不创建草稿、重做审查或推进业务。若缺少应由入口准备的报告，应明确给出准确预期路径及接线问题；不靠下一次普通事件偷偷补建。
+
+缺稿反馈还必须交付可执行的原准备恢复入口：Main 解决具名原因后调用原准备器，系统从当前 S10 责任恢复缺失材料，保留已有报告，不重跑 TR-009、重接 Reviewer Result 或要求作者重建机器来源。阶段已经转换而材料未准备好，应明确报告这两个事实。入口与失败编排见 [S7→S10 指引编排](../l4-mechanisms/L4-agent-guidance.md#s7s10-的分层与事件编排)。
+
+### 9.2 保存只完成当前一步
+
+Main 正常保存准确报告，`PostToolUse` 识别当前保存事实；编辑器、脚本或 MCP 都可以承载，不要求某一种命令文字或额外提交指令。正常接收链路依次完成：
+
+1. 读取实际保存内容，处理草稿或明确结论，带入当前机器关联并派生指标。
+2. 对本次内容生成登记标识及机器封套，通过原 `RecordEvidence` 和原子 Writer 记录。
+3. 对正向且无已报告未完成／阻断的答案，或作者明确选择的负向结论，尝试当前 Controller 原出口。
+4. 返回实际登记结果、未完成项、事务是否提交和下一准确位置；正向出口成功后生成可读投影。
+
+这些环节没有新增子代理启动前提。Main 不调用 AgentBegin、不手工生成证据封套、不手工 `runtime evidence add`，也不为阶段推进调用第二套登记流程。显式 validate、render 和原命令可用于具体故障诊断与维护，不是正常专业作者的必经步骤。
+
+### 9.3 并发和重复由原事实维护
+
+同份内容已经接收且仍停在本步时，重复保存不重复登记，但可以继续尝试尚未完成的原出口。否则，一次出口失败就会被“幂等：已处理”永久吞掉。出口已完成、游标已经改变时，旧卷回放不能再次完成本步或创建新责任。
+
+真实补充产生新内容，沿原登记记录其事实，并由当前责任的最新匹配记录表达更新。并发与修订冲突由原 Writer／CAS 处理，不让作者再填一份来源一致性问卷。返回原责任时保留可用观察、清除旧最终结论，让作者据实际退回原因重新判断；不能把历史 PASS 自动视为新的答案。
+
+## 10. 未完成、发现问题和返回路径
+
+### 10.1 先区分材料缺口和验证失效
+
+没有找到某次输出、一个解释尚不清楚、某个相关风险尚未判断时，可以在当前报告继续工作。保持 `unknown`、说明实际缺口和责任，不必为了保存草稿先选返工，也不让普通工具使用被未知项锁住。
+
+如果已有观察相互矛盾、产品行为不符合承诺，或真实变化使原验证基础失效，就不能只润色报告直到总体通过。应留下真实问题与影响，按原返回、调查或人类决定路径处理。
+
+| 情况 | 处置原则与边界 |
+| --- | --- |
+| 本步尚缺解释或适用观察，未确定需要产品／完整验证变化 | 在当前原报告补充，保留未完成状态，不伪造引用 |
+| 验收明确要求重验 | `review_required` 进入原 TR-016 返回流程；需要真实影响材料，成功后回 S7 新完整轮 |
+| 产品、架构或数据缺陷 | 保留观察并交回原发现／调查路径；S8 确认原因，S9 获批修复，再回 S7，S10 不直接修产品 |
+| 审计明确阻断 | `blocked` 尝试 TR-018，记录审计并捕获原暂停检查点，等待处理与恢复 |
+| 锁定需求、规格或项目基础需要有权修改 | 报告实际影响并交原人类／所有者决定路径，专业报告本身不授予修改权 |
+| 不可逆生产操作或发布授权问题 | 交给人类，不借审计通过执行操作 |
+| 工程结论完成且只有可接管非阻断风险 | 如实保留风险后交 S11，不替人接受风险 |
+
+“产品问题交 S8”表达专业分流方向，不代表 S10 保存发现文字就能无条件直接切到 S8。必须使用实际存在的返回／发现入口及其必要材料；不能为了满足路由伪造 Finding、影响记录或暂停证据。
+
+### 10.2 负向报告接收，不等于负向事务已提交
+
+`review_required` 是 Main 明确要求回到 S7 开展完整重验的专业决定。它不等于已经修改了产品，也不自动确认原因或授予修复权。保存时先接收原验收报告，再从原决定和当前 ReviewPlan 的冻结范围派生原 `change_impact_record`，交给 TR-016；系统不从自然语言猜测文件路径，不为返回而制造 Changeset、Case、Final Result 或产品修改记录。
+
+原影响信封绑定已接收报告与原计划的准确来源摘要，作用范围保存在既有 `scope_refs`。TR-016 的失效动作读取该原范围；保存报告或后续恢复工具的文件路径不能替代产品影响。事务仍检查原完整轮预算，清除本轮干净标记并开启新轮；成功后直接交付新轮 S7 Main 的准确计划工序。原轮次观察保留为历史，新轮需要重新登记实际专业计划和独立验证，不能继承旧 PASS 作为新完成。
+
+来源计划缺失、字节变化、代际或轮次不符、冻结范围为空时，报告可以已接收而返回未完成。反馈必须同时说明这两个事实，并指向 Main 应恢复的原计划或指针；作者不重填验收，也不补来源证明。恢复原材料后，Main 的正常完成事件沿已接收且内容未变的报告继续原消费者，不能顺手接收修改过但未提交的新专业内容。普通 Pre 和 Stop 不负责补造返回材料。预算不足则沿原人类预算决定处理，不能降低预算门或隐藏未完成返回。
+
+新轮的产品基线检查将原 Runtime 已登记的 S10 信封及其准确 Manifest、同源可读投影视为控制历史；它们需要与登记来源匹配。不会放行整个 `s10` 目录，同目录的未知文件仍属于需要说明的变更。这一边界避免“已经接收验收，却在重验登记时把验收自己的报告当作产品修改”。
+
+发布审计 `blocked` 的原 TR-018 则以动作生成暂停检查点，正常路径可进入 `paused`；作者无需先手填 `pause_record`。实际是否成功仍以事务反馈和当前游标为准。后续沿原检查点恢复，不能把“已暂停”当成审计通过或发布许可。
+
+### 10.3 人类退回 S10
+
+S11 可以退回验收或发布审计。应携带人的真实理由与准确材料位置，保留已有观察，清除被退回步骤的旧最终结论，再针对实际问题补工作。不能用旧 `pass` 自动再次完成，也不能无差别清空全部有效结果迫使重复审查。退回后的重新完成仍沿本步原出口返回 S11，由人对当前材料重新作决定。
+
+## 11. 交给 S11 的材料应该让人看懂什么
+
+TR-017 表示工程审计完成并进入 `awaiting_human_release`。Main 应能向人解释：本次需求与实际交付是什么，验收结论如何得出，哪些系统与操作风险已检查，哪些风险仍然存在，谁接管，发布和恢复需要哪些真实条件。
+
+系统复用已接收 S10 报告和准确路径提供人类材料，不要求另填一张机器元数据表，也不复制全部过程证据。可读报告用于理解结论，原始观察用于必要追溯，两者都不能替人作决定。
+
+S11 原决定应用只由 Main 忠实填写真人选择的 `disposition` 和可选 `reason`。`decision`／`decision_id`／`approved_by`／`runtime_id`／`scope`／`target_cursor` 都是系统元数据，保留系统提供的值或空白；空元数据不表示真人漏答，适用值由原 Writer 在接收时提供。
+
+S11 未收到真实选择时保持等待。S10 的 `approved` 是工程审计结论；它既不代表人的批准，也不执行 merge、publish、deploy 或正式 release。若真人随后拒绝缺陷、验收或审计，按相应原路处理，而不是把曾经到达 S11 当作永久通过。
+
+## 12. 观测与恢复：用事实定位卡在哪里
+
+S10 的观测应该帮助区分入口接线、专业未完成、登记失败和出口失败，而不是再搭一个审查控制面。
+
+| 观察位置 | 应显示的事实 | 能解决的问题 |
+| --- | --- | --- |
+| 当前 Hook 上下文 | 本步种类、准确绝对路径、已有材料与允许结论 | 作者是否在正确责任、是否拿到真实题干 |
+| 草稿保存反馈 | `outcome` 未答、具体未完成材料与原因、原路径 | 是否还在工作，而非误判为拒收或自动返工 |
+| 正式接收反馈 | 本次登记标识、明确结论、已报告未完成与阻断 | 报告是否进入原账本，哪些真实问题仍存在 |
+| 出口反馈 | 实际 TR、当前游标、缺失项、冲突和具体错误 | 已接收但未推进，还是阶段已完成 |
+| 原 Runtime 账本与事件 | 当前责任／轮次、有效登记、事务修订与转换 | 重复提交是否写入、实际完成的是哪一步 |
+| 下一步准备与投影反馈 | 下一准确报告／人类入口、可读输出位置或写入错误 | 业务事实已提交但后续材料是否缺失 |
+| 只读 `s10 status` | 当前已登记报告、结论、已报告进度和下一动作 | 恢复时定位原责任，不重做全套来源证明 |
+
+恢复时先读当前游标，再读当前报告及实际错误。可读文件写入失败、草稿准备失败、Runtime 并发冲突和业务材料不足，需要不同修复；不能统一表现为“再点一次通过”。普通重复保存应保持幂等，并只接续尚未完成的本步出口。已经跨阶段的旧保存不应带来新的业务作用。
+
+维护者可针对具体缺口使用既有诊断命令，但正常作者只在准确报告里继续实际专业工作。所有观测都应保留“已报告”这一含义，不能将汇总数字描述为系统已经独立证明真实性、穷尽覆盖或实际独立性。
+
+## 13. 实现对应与适用边界
+
+### 13.1 从使用入口追到原事务
+
+| 设计责任 | 当前落点 |
+| --- | --- |
+| Main 的 S10 操作契约和专业方法 | [主会话阶段指引](../../docs/control/agent-protocol.md#s10)、[验收与交接技能](../../skills/acceptance-and-handoff/SKILL.md) |
+| 当前报告字段、接收、进度派生与完成读取 | [acceptance/manifest.go](../../internal/acceptance/manifest.go) |
+| 准备准确报告、草稿处理、正常保存、幂等和出口反馈 | [audit_questionnaire.go](../../internal/cli/audit_questionnaire.go) |
+| 原阶段交接后的下一报告与人类入口准备 | [CLI 控制循环接线](../../internal/cli/run.go) |
+| 当前专业报告与干净轮的出口求值 | [质量门求值](../../internal/qualitygate/evaluator.go)、[门定义](../../internal/qualitygate/registry.go) |
+| 原 TR-015～TR-018、当前完成守卫与原子转换 | [生命周期定义](../../docs/control/loop-definition.json)、[转换守卫](../../internal/transition/guards.go)、[转换引擎](../../internal/transition/engine.go) |
+| 同源可读投影和只读诊断 | [Markdown 生成](../../internal/acceptance/markdown.go)、[S10 命令](../../internal/cli/s10_command.go) |
+| 跨阶段答卷、事实与 Hook 分工 | [阶段答卷机制](../l4-mechanisms/L4-stage-form.md)、[状态转换核心](../l4-mechanisms/L4-state-transition-core.md)、[Hook 平台接线](../l4-mechanisms/L4-hook-platform-wiring.md) |
+
+### 13.2 机械接收不替代专业真实性
+
+当前接收读取已有 Go 字段类型和本步报告，不把固定类别数、库存精确集、八类审计齐全、引用注册资格、角色名字或逐行证据非空作为验收资格。正常保存负责当前机器关联；报告中的自然语言含义仍须由专业工作保证。
+
+现有部分辅助接口仍能重建上游材料与变化范围，但其存在不意味着正常接收和每个出口都调用它们。当前 S10 完成读取已登记报告及其指向的当前 Manifest，并不全面复核来源哈希，也不认证所有引用指向的观察。本轮状态条件有效，也不等于磁盘、HEAD 或材料内容永不漂移。Main 需要如实处理真实变化和重新判断适用性。
+
+当前草稿按文件提供原文，没有逐条抽取并认证全部自然语言承诺；当前完成检查能够阻止已报告未知、失败和阻断被总体正结论覆盖，但不能发现作者没有报告的每项遗漏。专业独立性、N/A 理由和风险接管同样没有被字符串检查证明。
+
+这些边界不能用恢复一套启动／证据资格抽象来掩盖，也不能解释为无需真实审查。S10 的可信度来自明确承诺、适用观察、实际独立意见、诚实的未完成项和原事务交接共同成立。自动化链路验证、真实 Claude Code 执行与产品验收分别提供证据，任何一类都不独自替代另外两类。

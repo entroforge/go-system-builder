@@ -34,6 +34,114 @@
       "type": "integer",
       "minimum": 0
     },
+    "product_baseline": {
+      "type": "object",
+      "description": "Optional for historical plans. Canonical S6 generations require the exact shared machine projection from the original TR-003 start through the pinned S7 final Main commit.",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "runtime_id",
+        "baseline_generation",
+        "start_receipt_sha256",
+        "start_commit",
+        "final_commit",
+        "project_root",
+        "development_branch",
+        "tasks",
+        "contributions",
+        "paths",
+        "digest"
+      ],
+      "properties": {
+        "contract": {"const": "s7-product-baseline-v1"},
+        "runtime_id": {"type": "string", "minLength": 1},
+        "baseline_generation": {"type": "integer", "minimum": 1},
+        "start_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "start_commit": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+        "final_commit": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+        "project_root": {"type": "string", "minLength": 1},
+        "development_branch": {"type": "string", "minLength": 1},
+        "tasks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "path", "version", "sha256"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "path": {"type": "string", "minLength": 1},
+              "version": {"type": "string", "minLength": 1},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        "contributions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "assignment_record",
+              "assignment_record_sha256",
+              "result_ref",
+              "result_sha256",
+              "checkpoint_ref",
+              "checkpoint_sha256",
+              "merge_commit",
+              "tested_head",
+              "main_facts_sha256"
+            ],
+            "properties": {
+              "assignment_record": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["runtime_id", "baseline_generation", "assignment_id", "assignment_revision"],
+                "properties": {
+                  "runtime_id": {"type": "string", "minLength": 1},
+                  "baseline_generation": {"type": "integer", "minimum": 1},
+                  "assignment_id": {"type": "string", "minLength": 1},
+                  "assignment_revision": {"type": "integer", "minimum": 1}
+                }
+              },
+              "assignment_record_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "result_ref": {"type": "string", "minLength": 1},
+              "result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "checkpoint_ref": {"type": "string", "minLength": 1},
+              "checkpoint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "merge_commit": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+              "tested_head": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+              "main_facts_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "status", "sha256", "blob_oid"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "status": {"enum": ["added", "modified", "deleted"]},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "blob_oid": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+              "preimage_commit": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+              "deleted_by_commit": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"}
+            },
+            "allOf": [
+              {
+                "if": {"properties": {"status": {"const": "deleted"}}},
+                "then": {"required": ["preimage_commit", "deleted_by_commit"]}
+              }
+            ]
+          }
+        },
+        "unattributed_paths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "frozen_subjects": {
       "type": "array",
       "minItems": 1,
@@ -74,7 +182,7 @@
         "required": ["asset_id", "case_ref", "path", "sha256"],
         "properties": {
           "asset_id": {"type": "string", "minLength": 1},
-          "case_ref": {"type": "string", "minLength": 1},
+          "case_ref": {"type": "string", "minLength": 1, "description": "Exact docs/design/prototypes/<module>/cases.json#CASE reference. New submissions resolve legacy bare CASE IDs only when unique within the declared scenario sources."},
           "path": {"type": "string", "minLength": 1},
           "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "selector_ref": {"type": "string"},
@@ -221,6 +329,10 @@
           "execution_wave": {
             "enum": ["static", "behavior"],
             "description": "static = DV/QA white-box Claims (Wave A); behavior = E2E and specialty Claims that unlock only after every required static Claim has a disposition (L3-S7 §5)."
+          },
+          "behavior_surface": {
+            "enum": ["browser", "non_browser"],
+            "description": "Explicit behavior source fact for E2E responsibility/method selection. Missing historical values retain the frozen browser contract; Main must decide this field before registering a newly authored Plan. Do not infer from ui_impact or free prose."
           },
           "resource_locks": {
             "type": "array",

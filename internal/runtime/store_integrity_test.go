@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -785,6 +786,17 @@ func TestRecoverPendingOperationsCompletesValidCommitBeforeArtifactRecovery(t *t
 		t.Fatal(err)
 	}
 
+	markerPath := statePath + ".commit-pending.json"
+	markerBefore := mustRead(t, markerPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := writer.WithContext(ctx).RecoverPendingOperations(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled recovery started new work: %v", err)
+	}
+	if !bytes.Equal(markerBefore, mustRead(t, markerPath)) {
+		t.Fatal("cancellation discarded durable recovery material")
+	}
+
 	completed, err := writer.RecoverPendingOperations()
 	if err != nil {
 		t.Fatalf("RecoverPendingOperations() error = %v", err)
@@ -912,6 +924,26 @@ func TestCommitAppendFailureLeavesRecoverableMarkerAndWriterFinishesPair(t *test
 	}
 	stateBeforeRead := mustRead(t, statePath)
 	markerBeforeRead := mustRead(t, statePath+".commit-pending.json")
+	var pending map[string]any
+	if err := json.Unmarshal(markerBeforeRead, &pending); err != nil {
+		t.Fatal(err)
+	}
+	pendingState, err := json.MarshalIndent(pending["state"], "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingState = append(pendingState, '\n')
+	if !bytes.Equal(stateBeforeRead, pendingState) || pending["state_sha256"] != sha256HexForTest(stateBeforeRead) {
+		t.Fatal("pending target hash/document differs from the actual committed state bytes")
+	}
+	pendingEvent, err := json.Marshal(pending["journal_event"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingEvent = append(pendingEvent, '\n')
+	if pending["journal_event_sha256"] != sha256HexForTest(pendingEvent) {
+		t.Fatal("pending event hash omits or differs from the exact compact event plus LF")
+	}
 	if _, err := runtime.NewStore(statePath, journalPath).Snapshot(); err == nil || !strings.Contains(err.Error(), "pending") {
 		t.Fatalf("read-only Snapshot error = %v, want pending commit diagnostic", err)
 	}
@@ -947,6 +979,13 @@ func TestCommitAppendFailureLeavesRecoverableMarkerAndWriterFinishesPair(t *test
 		t.Fatalf("commit marker remains after recovery: %v", err)
 	}
 	journal := mustRead(t, journalPath)
+	wantJournal := append(append([]byte(nil), journalBeforeFailure...), pendingEvent...)
+	if !bytes.Equal(journal, wantJournal) {
+		t.Fatal("recovery did not append exactly the pending event bytes including LF")
+	}
+	if !bytes.Equal(mustRead(t, statePath), stateBeforeRead) {
+		t.Fatal("recovery changed the already committed state document")
+	}
 	if !strings.Contains(string(journal), "evt-append-failure") {
 		t.Fatalf("recovered journal does not contain committed event: %q", journal)
 	}

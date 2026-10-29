@@ -1,0 +1,17 @@
+{
+  "stage": "S2",
+  "adapter": "planning_design",
+  "title": "Complete the current design and receive its original planning evidence",
+  "instruction": "Read the current REQ and supplied design/template/material paths. Complete the actual architecture boundaries, data/state/error/recovery, integration and contract decisions; record relevant alternatives, risks and necessary real human direction judgments in the existing ADR/materials, reusing already established decisions. Reuse the current affected module truth: update applicable UI/scenario work for UI changes, or service behavior/scenario work when relevant without UI; do not invent unrelated work. Check applicable scenario bridge/generate/validate results as real design work. Then self-review the actual deliverables. The system supplies the architecture registration batch and its unlocked items: architecture_path identifies this report's architecture, while the outlet may also register other batch members, including legacy documents without explicit REQ ownership. Resolve the actual document gaps. Preserve an unused alternative as an explicitly unadopted discussion in the actual architecture or ADR rather than a separate active architecture awaiting registration; do not falsely lock it, invent a different REQ owner, or copy the batch into author fields. S3 consumes the locked REQ, registered architectures, the complete file sets of all non-template modules under docs/design/prototypes/, accepted ADRs associated with this REQ, and dependencies reached through actual supported source references. This source scope does not expand the current requirement's design changes: do not redesign unrelated modules, delete historical materials or split the REQ to shrink the source set. Before the final answer, commit the formal upstream materials (locked architecture, applicable module/scenario files, accepted ADRs and referenced design sources) to the bound development Git source so S3 can read the same content from Git and disk. Use the existing binding; do not guess a branch or copy Git hashes into the answer. Fill only the existing answer.conclusion and answer.architecture_path; keep conclusion empty while work or necessary judgment is unfinished. A pass is this professional self-review, not an independent certification of every task. Saving receives the answer, evaluates the original stage outlet and prepares the next questionnaire as separate results; inspect any named gap. No routine issue, evidence registration or repeated report is required.",
+  "questions": {
+    "conclusion": {
+      "question": "After the actual design work and necessary human direction judgments, has your design self-review passed? Leave this field empty/null while unfinished; actual missing work will be reported without recording a passing decision.",
+      "choices": [
+        "pass"
+      ]
+    },
+    "architecture_path": {
+      "question": "What is the actual current docs/architecture/ARCHITECTURE-*.md path reviewed by this report? Use the supplied architecture template and current project materials; finish/lock the actual design when ready. Check the system-supplied registration batch and its unlocked items: this one path does not limit the outlet to one architecture. The system reads the documents; do not copy the batch, hashes, evidence IDs or permissions into new author fields."
+    }
+  }
+}

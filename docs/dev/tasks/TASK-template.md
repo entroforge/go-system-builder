@@ -3,27 +3,29 @@
 > Status: draft
 > Reading policy: linked-v1
 > Dispatch policy: waves-v1
-> （draft=still writing；complete=the document is finished——required across the whole batch at TR-002, says nothing about implementation（那是 S6 的事）；cancelled=out of the batch, its §3 clause declarations drop out of coverage so any gap resurfaces）
+> （document status: draft=still writing；complete=the planning document is finished and eligible for its original gate——required for every non-cancelled TASK at TR-002, says nothing about implementation；cancelled=excluded from active dispatch and clause coverage, retained in the full S4 delivery batch so any coverage gap resurfaces. Responsibility progress uses the separate five-state model in `docs/rules/state-machine.md`; do not infer implementation `done` from this line.）
 > Version: v1.0.0
-> Source REQ refs: REQ-{id} / none
+> Source REQ refs: REQ-{id}
 > Module current truth: `docs/design/prototypes/{module}/` / N/A
 > Primary contract: {FE/BE/SYNC-id}
 > Closing Contract: TASK-{id}#closing-contract
-> Runtime ref: `{runtime-id}`
-> Execution: runtime owns assignment, owner, completion and integration; do not fill them into this frozen TASK.
+> Execution: runtime owns assignment, owner, responsibility status and integration; do not fill them into this frozen TASK.
+
+TASK ID 使用数字段：例如 `TASK-009` 或 `TASK-009-01`，文件名与标题一致；业务或模块名放在 Objective，不放进 ID。模板中的 `{id}` 按对应 REQ、合同或 TASK 的实际编号替换。当前 REQ 批次中的每份 TASK（含支撑或取消任务）均在 Source REQ refs 声明实际 REQ；支撑任务的空条款声明不等于没有来源。
 
 ## 1. Objective
 
 {One testable objective and user-visible value.}
 
-<!-- 一句话测试：能用一句话说出本任务的交付物吗？说不成一句、或出现"以及/然后"——回去拆。
-builder 应能在单个上下文区间内完成本任务（中途 compact 丢任务信息是灾难性表现；按 §2/§4 的量感觉会撞，拆小或裁清单）。拆分纪律全文见 specification-planning step 11。 -->
+<!-- 用一句话解释本任务的交付目标，再按独立完成判据、责任和真实变更耦合判断是否拆分。
+结合 §2 读集、§4 写入范围及执行中的 compact/返工观察调查粒度；句式、文件数或一次 compact 不能单独决定拆分，也不能据此省略必要输入。拆分纪律全文见 specification-planning step 11。 -->
 
 ## 2. Document Manifest
 
 Read order for the builder. Fingerprints, versions, and lock state live in
 runtime documents[] (.claude/loop-state.json) — this table never hand-copies
-them.
+them. Paths in this manifest resolve relative to this TASK file's directory,
+not the repository root.
 
 | Order | Kind | ID | Path | Clauses | Purpose | Mode |
 |:---|:---|:---|:---|:---|:---|:---|
@@ -61,51 +63,109 @@ module regression sweep.
 
 ## 4. Scope
 
-| Type | Paths / Commands |
+| Type | Paths / Applicable operations |
 |:---|:---|
 | read paths | `{path}` |
 | prospective write paths | `{path}` |
 | forbidden paths | `.claude/loop-state.json`, `{path}` |
-| allowed command classes | test / lint / build / read-only |
-| output paths | `{implementation/test/report paths}` |
+| applicable checks / operations | {necessary test, lint, build or inspection operations and their purpose} |
+| output paths | `{implementation/test/professional-evidence paths}` |
 
-Dynamic permission is the intersection of Agent Definition, manifest, this
-scope, activation, runtime state, and Hook policy.
+This scope records the planned dispatch and integration-check boundaries for
+the TASK. Cover the product outputs promised in §6, including necessary tests,
+wiring and saved professional evidence, with concrete repository-relative paths.
+Use comma-separated concrete paths, preferably one inline code span per path:
+`internal/a.go`, `tests/a_test.go`. Plain `internal/a.go, tests/a_test.go`
+(without code delimiters in the actual cell) is also supported. A complete code
+list may end with one paired Chinese or English parenthetical note, for example
+`simulation/products/`（仿真产品输出区）; the note is not part of the scope.
+Keep other explanations after this table. Do not mix bare and code paths, insert
+notes between paths, leave trailing text or unclosed delimiters, use placeholders,
+globs, repository-root scope or escaping paths. Only prospective write paths
+supply the reviewed write boundary; other rows do not enlarge it. `tasks check`
+and the original S4 reception report malformed cells at their TASK and Scope line
+before freezing; S5 and Assignment preparation consume those same parsed paths.
+
+Applicable operations explain the work and check responsibility; they are not
+a command whitelist. Runtime Plan/Result locations are supplied with the later
+actual responsibility and are not future paths to invent here.
+Hook events observe progress and provide reminders; they do not
+authorize or deny individual tool calls by identity, path, or scope.
 
 ## 5. Selected Skills
 
+Record additional skills needed for this TASK's actual risk or responsibility.
+The original role and assignment supply default skills; do not repeat their
+metadata here. Remove the example row when no additional selection is needed.
+
 | Skill | Category | Source | Version | Applicability |
 |:---|:---|:---|:---|:---|
-| agent-dispatch | methodology | `.claude/skills/agent-dispatch/SKILL.md` | 1.0.0 | teammate dispatch (plan_checkpoint) |
 | {skill} | best-practice | `.claude/skills/{skill}/SKILL.md` | {version} | {risk/responsibility} |
 
 ## 6. Outputs And Evidence
+
+### 6.1 This TASK's assigned deliverables
+
+Keep only outputs owned by this TASK's dispatched responsibility. A Builder
+produces implementation, its scoped tests, actual self-check evidence and a
+professional completion result; each independent reviewer receives a separate original assignment.
 
 | Output | Path | Acceptance |
 |:---|:---|:---|
 | implementation | `{path}` | {contract assertion} |
 | tests | `{path}` | {behavior/failure coverage} |
-| completion report | `{agent-message-path}` | schema-valid |
-| delivery evidence | `docs/reports/review/REV-{id}.md` | assigned dimension result |
-| QA evidence | `docs/reports/qa/QA-{id}.md` | assigned dimension result |
-| E2E evidence | `docs/reports/e2e/E2E-{id}.md` | real-browser flow result |
+| professional evidence (when saved separately) | `{actual product/test evidence path}` | {observable result and conditions} |
+| completion result | original Result entry supplied by the actual later responsibility | explain Closing Contract conditions, actual checks and blockers |
+
+Plan/Result paths, schemas and submission details belong to that later supplied
+entry. S4 states the handoff meaning without pre-creating an Assignment, runtime
+message path or unavailable schema. Remove inapplicable product/evidence rows;
+keep concrete paths for every actual file deliverable.
+
+### 6.2 Subsequent consumption and independent verification
+
+These responsibilities retain their original gates and required coverage.
+They are not additional Builder outputs or permission to author another role's
+evidence. Keep only applicable downstream responsibilities and describe the
+necessary input, coverage and handoff. Runtime owns the actual assignment and
+receipt references; the later responsibility supplies its result entry. The
+legacy report paths below apply only when that original responsibility actually
+uses them; they create no default separate report obligation.
+
+| Responsibility / consumer | Evidence or action | Acceptance |
+|:---|:---|:---|
+| Main / integration | bound development branch and integration receipt | original required checks pass after integration |
+| Delivery Verifier | original result entry (legacy: `docs/reports/review/REV-{id}.md`) | assigned dimension result |
+| QA | original result entry (legacy: `docs/reports/qa/QA-{id}.md`) | assigned dimension result |
+| E2E | original result entry (legacy: `docs/reports/e2e/E2E-{id}.md`) | assigned behavior verification; real-browser flow where browser verification applies |
 
 ## 7. Closing Contract
+
+Cover observable behavior, this responsibility's own checks, its reviewed
+scope, and a usable handoff. Use as many assertions as the actual conditions
+need; the four examples below are not a line-count requirement. These are
+professional completion criteria, not commands executed by the checker.
 
 ```text
 assert {contract clause} == satisfied
 assert {verification command} == pass
-assert changed_paths subset_of activated_write_paths
-assert scope_deviations == []
+assert actual changes stay within the reviewed TASK and assigned write scope
+assert completion_result explains each condition and any actual scope deviation
 ```
 
+An actual deviation must be reported and resolved through the original scope
+and change process; reporting it alone does not authorize a wider scope.
+
 ## 8. Dependencies
+
+When there are no dependencies, keep the table body empty; do not add placeholder
+rows such as `（无）` or `N/A`. Only valid `TASK-*` references are machine-tracked.
 
 | Dependency | Required artifact / verification |
 |:---|:---|
 | TASK-{id} | {committed artifact integrated and verified on the bound development branch} |
 
-依赖列只认 `TASK-*` 引用——只有 TASK 引用进入 DAG（`tasks check` 的环检测与拓扑）。assignment 级依赖不被机检追踪，需要跨任务顺序时写成 TASK 依赖或在收尾契约中声明。
+依赖列使用合法数字 TASK ID（如 `TASK-009-01`）——只有 TASK 引用进入 DAG（`tasks check` 的环检测与拓扑）。assignment 级依赖不被机检追踪，需要跨任务顺序时写成 TASK 依赖或在收尾契约中声明。
 
 ## 9. Execution entry
 

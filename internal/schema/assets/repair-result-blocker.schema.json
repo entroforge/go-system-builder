@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/repair-result-blocker.schema.json",
+  "title": "Original S9 RepairResult blocker artifact",
+  "description": "Preserves one full issued professional answer and its exact execution/message tuple. Acceptance coordinates and self hashes are intentionally absent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "schema_version", "packet_id", "packet_sha256", "issuance_event_id", "binding", "execution_assignment_id", "execution_generation", "execution_root", "platform_session_id", "base_commit", "source_head", "answer_path", "submitted_answer", "answer_sha256", "message_ref", "message_sha256"],
+  "properties": {
+    "contract": {"const": "s9-repair-result-blocker-v1"},
+    "schema_version": {"const": "1.0.0"},
+    "packet_id": {"type": "string", "pattern": "^packet-[a-f0-9]{64}$"},
+    "packet_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "issuance_event_id": {"type": "string", "pattern": "^evt-repair-result-packet-packet-[a-f0-9]{64}$"},
+    "binding": {"$ref": "repair-result-work-packet.schema.json#/$defs/binding"},
+    "execution_assignment_id": {"type": "string", "pattern": "^(repair-)?assignment-[A-Za-z0-9._-]+$"},
+    "execution_generation": {"type": "integer", "minimum": 1},
+    "execution_root": {"type": "string", "minLength": 1},
+    "platform_session_id": {"type": "string"},
+    "base_commit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+    "source_head": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+    "answer_path": {"type": "string", "pattern": "^\\.claude/submissions/[^\\\\:#]+/[^\\\\:#]+/answer\\.json$"},
+    "submitted_answer": {
+      "$ref": "stage-answer-s9-result.schema.json#/$defs/answer",
+      "properties": {
+        "verdict": {"enum": ["blocked", "contract_conflict", "stale"]},
+        "before_fix_results": {"type": "array"},
+        "unit_results": {"type": "array"},
+        "detection_gap_artifacts": {"type": "array"},
+        "evidence_refs": {"type": "array"},
+        "scope_deviations": {"type": "array"},
+        "residual_risks": {"type": "array"},
+        "migration_ref": {"type": "string"},
+        "rollback_ref": {"type": "string"}
+      }
+    },
+    "answer_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "message_ref": {"type": "string", "pattern": "^\\.claude/evidence/[^/]+/g[1-9][0-9]*/S9/blocker-messages/packet-[a-f0-9]{64}/[a-f0-9]{64}\\.json$"},
+    "message_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

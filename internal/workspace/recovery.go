@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,20 @@ func (b *ExecutionRegistry) ReplaceExecution(ctx context.Context, state map[stri
 	}
 	if old.DeliveryRef != "" {
 		return Execution{}, fmt.Errorf("immutable delivery requires domain recovery before replacement")
+	}
+	if old.Purpose == DocumentReviewPurpose {
+		if _, received, err := runtime.FindSubmission(state, old.WorkPacketID); err != nil {
+			return Execution{}, err
+		} else if received {
+			return Execution{}, fmt.Errorf("received document review requires domain recovery, not execution replacement")
+		}
+		if _, err := DocumentReviewPacket(state, old); err != nil {
+			return Execution{}, err
+		}
+		life, _ := state["lifecycle"].(map[string]any)
+		if life["state"] != "document_verification" || old.StageEntry == nil || intValue(life["phase_revision"]) != *old.StageEntry {
+			return Execution{}, fmt.Errorf("document review origin changed; use the original rework route")
+		}
 	}
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
 		return Execution{}, err
@@ -42,12 +57,20 @@ func (b *ExecutionRegistry) ReplaceExecution(ctx context.Context, state map[stri
 	}
 	// Retain the originally frozen source, not Main's newer HEAD.
 	e.CheckLocation = old.CheckLocation
+	e.CheckProfiles = old.CheckProfiles
 	e.BaseCommit = old.BaseCommit
 	e.Inputs = old.Inputs
+	e.Purpose = old.Purpose
+	e.WorkPacketID = old.WorkPacketID
+	e.StageEntry = old.StageEntry
 	e.Generation = old.Generation + 1
 	key := fmt.Sprintf("%s-g%d-e%d", id, e.BaselineGeneration, e.Generation)
 	e.Path = filepath.Join(b.MainRoot, ".worktrees", key)
 	e.Branch = "codex/" + key
+	e, err = b.ReplaceDispatchContext(old, e)
+	if err != nil {
+		return Execution{}, err
+	}
 	old.Status = "retired"
 	b.History = append(b.History, old)
 	b.Executions[id] = e

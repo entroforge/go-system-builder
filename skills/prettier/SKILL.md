@@ -18,7 +18,7 @@ Reproducible formatting configuration or scoped formatting evidence.
 ## N/A Criteria
 N/A when no formatter-managed files or configuration are affected.
 ## Stop Conditions
-Stop on conflicting formatters, repository-wide unscoped churn, or generated-file corruption.
+Resolve formatter configuration and scoped formatting within repository conventions. Preserve generated files and unrelated work; report an actual conflicting policy or required out-of-scope change to Main.
 ## Non-Goals
 Do not treat formatting success as code-quality or test evidence.
 

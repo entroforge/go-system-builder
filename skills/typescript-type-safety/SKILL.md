@@ -18,7 +18,7 @@ One type-safe implementation or a scoped type-safety review conclusion with comm
 ## N/A Criteria
 N/A when no TypeScript code, declarations, or compiler configuration is affected.
 ## Stop Conditions
-Stop on an unmodelled runtime input, unresolved type-check failure, or incompatible public type change.
+Model runtime inputs and diagnose type-check failures within the assigned scope. Report a required incompatible public-contract change or missing authoritative input to Main; an unresolved check remains unfinished work, not an automatic approval request.
 ## Non-Goals
 Do not use types to invent runtime behavior or replace runtime validation.
 

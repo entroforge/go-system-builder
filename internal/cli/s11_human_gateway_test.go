@@ -16,10 +16,20 @@ func TestRuntimeHumanDecisionRequiresFailClosedInputs(t *testing.T) {
 		t.Fatalf("missing human decision inputs exit code = %d, want 2; stderr=%q", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "--disposition") ||
-		!strings.Contains(stderr.String(), "--actor") ||
-		!strings.Contains(stderr.String(), "--decision-evidence") {
+		!strings.Contains(stderr.String(), "--actor") {
 		t.Fatalf("missing-input error is not actionable: %q", stderr.String())
 	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cli.Run([]string{"runtime", "human-decision", "--help"}, nil, &stdout, &stderr); code != 0 {
+		t.Fatalf("human decision help failed: %d %s", code, stderr.String())
+	}
+	for _, text := range []string{"--root", "approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort", "--actor Main", "--reason", "not authentication", "optional compatibility"} {
+		if !strings.Contains(stdout.String(), text) {
+			t.Errorf("human decision help omitted %q: %s", text, stdout.String())
+		}
+	}
+
 }
 
 func TestRuntimeHumanDecisionTreatsRevisionAsOptional(t *testing.T) {
@@ -29,7 +39,6 @@ func TestRuntimeHumanDecisionTreatsRevisionAsOptional(t *testing.T) {
 		"--root", t.TempDir(),
 		"--disposition", "approve",
 		"--actor", "release-owner",
-		"--decision-evidence", "decision-104",
 	}, strings.NewReader(""), &stdout, &stderr)
 
 	if code == 2 || strings.Contains(stderr.String(), "requires --expected-revision") {
@@ -67,10 +76,7 @@ func TestRuntimeHumanDecisionRejectDefectRequiresFindingEvidence(t *testing.T) {
 		"--decision-evidence", "decision-104",
 	}, strings.NewReader(""), &stdout, &stderr)
 
-	if code != 2 {
-		t.Fatalf("missing finding evidence exit code = %d, want 2; stderr=%q", code, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--finding-evidence") {
-		t.Fatalf("missing finding-evidence error is not actionable: %q", stderr.String())
+	if code == 2 || strings.Contains(stderr.String(), "requires --finding-evidence") {
+		t.Fatalf("a human defect decision must not require prior finding registration: code=%d stderr=%q", code, stderr.String())
 	}
 }

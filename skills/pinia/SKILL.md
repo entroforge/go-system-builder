@@ -18,7 +18,7 @@ One store-safe implementation or scoped state-management review conclusion.
 ## N/A Criteria
 N/A when no shared client state is created or changed.
 ## Stop Conditions
-Stop on duplicate authority, circular store coupling, or insecure persistence.
+Correct duplicate state ownership, circular coupling and unsafe persistence within the assigned client-state contract. Report a necessary behavior/authority change outside the TASK to Main; do not silently add a second source of truth.
 ## Non-Goals
 Do not store server truth indefinitely without freshness and invalidation rules.
 

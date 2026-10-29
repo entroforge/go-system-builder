@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // runRuntimeS7BudgetDecision is the human gateway for an exhausted S7
@@ -91,7 +93,7 @@ func runRuntimeS7BudgetDecision(args []string, stdout, stderr io.Writer) int {
 			pending = "TR-016"
 		}
 		result["pending_transition"] = pending
-		result["next"] = fmt.Sprintf("the next PreToolUse retries %s automatically; do not revive old agents or hand-push the transition", pending)
+		result["next"] = fmt.Sprintf("budget recorded; the original pending %s consumer must continue through its actual save/recovery outlet; ordinary PreToolUse reads do not retry it or receive an old answer", pending)
 	}
 	return encodeJSON(stdout, result)
 }
@@ -107,7 +109,7 @@ func s7DecisionPathRelative(root, path string) (string, error) {
 	return relative, nil
 }
 
-func s7BudgetGateRequired(state map[string]any) bool {
+func s7BudgetGateRequired(state map[string]any, roots ...string) bool {
 	lifecycle, _ := state["lifecycle"].(map[string]any)
 	stateName, _ := lifecycle["state"].(string)
 	phase, _ := lifecycle["phase"].(string)
@@ -119,7 +121,47 @@ func s7BudgetGateRequired(state map[string]any) bool {
 	configuration, _ := state["configuration"].(map[string]any)
 	repair, _ := configuration["repair"].(map[string]any)
 	maxRounds := integerValue(repair["max_full_review_rounds"])
-	return maxRounds > 0 && round >= maxRounds
+	if maxRounds < 1 || round < maxRounds {
+		return false
+	}
+	if stateName != "acceptance" {
+		return true
+	}
+	// Merely finishing the final allowed clean round is not a request for
+	// another round. Acceptance may still pass normally. Read only its latest
+	// existing current-scope receipt, without rerunning gates or Git chains.
+	if len(roots) == 0 || roots[0] == "" {
+		return false
+	}
+	needed, _ := s7AcceptedReviewRequiresNewRound(roots[0], state)
+	return needed
+}
+
+func s7AcceptedReviewRequiresNewRound(root string, state map[string]any) (bool, error) {
+	round := integerValue(nestedStateValue(state, "review", "round"))
+	rows := stateEvidence(state)
+	for i := len(rows) - 1; i >= 0; i-- {
+		row, _ := rows[i].(map[string]any)
+		if row["kind"] != "acceptance" || row["status"] != "valid" || row["invalidated_by"] != nil ||
+			integerValue(row["baseline_generation"]) != integerValue(nestedStateValue(state, "baseline", "generation")) || integerValue(row["review_round"]) != round {
+			continue
+		}
+		data, err := workpacket.ReadFile(root, stringValue(row["path"]), 20<<20)
+		if err != nil || workpacket.Digest(data) != row["sha256"] {
+			return false, fmt.Errorf("original accepted acceptance source %s is missing or changed; Main/system restores its exact receipt before a budget decision: %v", stringValue(row["path"]), err)
+		}
+		var accepted struct {
+			RuntimeID  string `json:"runtime_id"`
+			Conclusion string `json:"conclusion"`
+			Generation int    `json:"baseline_generation"`
+			Round      int    `json:"review_round"`
+		}
+		if json.Unmarshal(data, &accepted) != nil || accepted.RuntimeID != state["runtime_id"] || accepted.Generation != integerValue(nestedStateValue(state, "baseline", "generation")) || accepted.Round != round {
+			return false, fmt.Errorf("original accepted acceptance source %s has different Runtime/generation/round bindings; Main/system restores its original source", stringValue(row["path"]))
+		}
+		return accepted.Conclusion == "review_required", nil
+	}
+	return false, nil
 }
 
 func s7MaxRounds(state map[string]any) int {
@@ -128,14 +170,19 @@ func s7MaxRounds(state map[string]any) int {
 	return integerValue(repair["max_full_review_rounds"])
 }
 
-func applyS7BudgetGateway(next *nextProjection, state map[string]any) {
-	if !s7BudgetGateRequired(state) {
+func applyS7BudgetGateway(next *nextProjection, state map[string]any, roots ...string) {
+	if !s7BudgetGateRequired(state, roots...) {
 		return
 	}
 	next.Stage = "S7"
 	next.ProtocolRef = "docs/control/agent-protocol.md#s7"
 	next.Objective = "obtain the human decision for an exhausted S7 full-review budget"
-	next.Action = "stop automation and submit `runtime s7-budget-decision --file <decision.json> --actor <user>` with increase_budget or return_to_governance"
+	next.Action = "read the exact prepared S7 budget decision application; after the human actually chooses, Main fills only decision, the genuinely increased maximum when applicable, and reason, then saves that same application"
+	if len(roots) > 0 {
+		if path, _, err := s7BudgetDecisionApplicationForState(roots[0], state); err == nil {
+			next.Read = append(next.Read, path)
+		}
+	}
 	next.PrimarySkill = PrimarySkillS7
 	next.Missing = []string{"s7_budget_decision"}
 	next.DoneWhen = []string{"the decision is recorded in Runtime evidence", "increase_budget updates max_full_review_rounds or return_to_governance routes to planning"}

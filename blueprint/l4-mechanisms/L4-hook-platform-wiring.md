@@ -1,206 +1,603 @@
-# L4 — Hook 与平台事件接线治理（Hook & Platform Wiring Governance）
+# L4 Hook 接线
 
-> 层：第四层｜机制域：Hook 事件注册、payload 契约、输出/退出码决策契约、失败态度（fail-open / fail-closed）、身份识别链、guidance 与执法分界
->
-> 上游：L1 D2（自然路径执法）与公理五；Claude Code Hooks 平台能力基线；全部依赖事件总线的 L3 Stage
->
-> 四家族分工：[L4 Agent 调度与治理](L4-agent-dispatch-governance.md)定义「谁在责任上行动」（含 TeammateIdle/SubagentStop 的**决策矩阵本体**）；[L4 权威状态机与迁移事务核心](L4-state-transition-core.md)定义「事实如何合法变更」（含 gate/auto_trigger 引擎机制）；[L4 运行时控制面](L4-runtime-control-plane.md)定义「写什么内容合规」（屏障规则表、脱敏闸等）；**本文档定义这些决策如何坐上同一条平台总线**——payload 怎么进来、结果怎么回去、出错时朝哪个方向失败。另外：平台 Hook 锚点随版本扩展，其目录、触发语义与选点审查流程的唯一权威是 [L4 Claude Code Hook 锚点全图](L4-hook-anchor-catalog.md)——本文 §2 的十类注册项是从该目录选出的**消费快照，不是平台边界**。
->
-> 状态：v0.3.0。【当前实现】小节均为代码核对结论（核对日 2026-08-28），附证据位置；未经验证的平台假设在 §10 显式披露。
+## 1. 为什么事件接线需要独立设计
 
-## 0. 准入逻辑：为什么这配一份独立 L4
+工程流程有自己的责任、产物、状态与完成条件，Claude Code 则提供工具、子代理、会话和事件。Hook 把两者接在自然发生的工作边界上：开始时交付必要上下文，结束时接收实际产物，Main 正常保存时衔接本人的专业消费者。它使流程不依赖作者记住一串额外登记命令。
 
-基石五问自测：
+这条连接也容易产生误解：输出了文字，不等于模型收到；进程返回失败，不等于平台拒绝动作；子代理停止，不等于交付已合格；收到父会话 Agent 返回，也不等于可以代收私有答卷。因此输入、责任路由、输出对象、退出码与失败处理需要统一设计，不能让每个 handler 自行解释。
 
-1. 自有对象模型？——有且是全系统唯一的事件侧接口契约：`policy.Input`（官方 payload 无损入口）、`policy.Decision` 六值判定、wire envelope 输出形状（§3–§4）。
-2. 五个以上 stage 深度消费？——全部 twelve stages 的每一次工具调用、会话启动、压缩、停机都经它（S6 写面、S7 提交与冻结、S8/S9 双屏障、S5 locked artifact、S11 自动化停机……无一例外）。
-3. 独立失败面？——有：识别失败、控制面不可读、超时、payload 字段缺失；fail-open 还是 fail-closed 是本域的核心设计题且曾反复返工。
-4. 平台边界接线契约？——它是四家族中与外部平台耦合最深的一个（Claude Code hooks 的 matcher/exit-code/payload 语义），且没有任何别的文档 owns 它。
-5. 风险分级与验收？——有：事件分类学（observe/guidance/enforce）、迁移白名单治理、doctor 一致性检查、专项回归测试组。
+本篇定义平台总线与工程消费者之间的接线契约。[事件选点](L4-hook-anchor-catalog.md)解释为什么选择某个事件，[子代理工程衔接](L4-agent-dispatch-governance.md)定义任务与责任，[阶段答卷](L4-stage-form.md)定义专业接收，[运行控制面](L4-runtime-control-plane.md)定义事实、证据效力与推进条件，[状态机核心](L4-state-transition-core.md)定义合法事务。Hook 负责把已有能力准确接入，不再维护执行调度、启动审批、存活监测或第二份工程流程。
 
-五问全中。此前它的碎片散在 settings.json、internal/hook/*、internal/migration/templates.go、docs/control/hook-policy.json 和各 L3 的 hook 表格里——典型"人人消费、无人定义"。
+接线的机制取舍与整改收口由[工作流边界与收敛设计](L4-workflow-convergence.md)约束。减少作者操作须同时核运行和维护成本；先删除不必要依赖、合并重复生产、复用原能力，再修必要断点。以下接收、反馈和恢复合同保留其实际支持范围，不因一个故障扩展成通用协调器，也不以新增普通工具门禁或作者手续补偿接线问题。
 
-## 1. 问题定义与本域目标
+## 2. 注册、命令与执行预算
 
-Hook 是 D2 的物理载体：所有把控必须挂在结构上必经的路径上。但若每个 handler 自行决定 payload 解析、反馈格式和失败方向，就会出现历史上真实发生过的失效：自造字段假装唤醒、warn 被悄悄升格成 block、audit 决策泄漏进用户可见通道、测试靠专用伪字段通过而真实平台不工作。
+### 2.1 使用同一个真实入口
 
-本域目标（全域不变量）：
+模板的 [settings.json](../../settings.json)安装到目标项目的 `.claude/settings.json`。当前十类事件均调用同一二进制和 CLI 入口，例如：
 
-- **单一总线**：所有事件走同一个二进制 `.claude/bin/loop-harness hook --event <E>`，路由收敛于 CLI 的唯一 evaluate 入口；不允许第二个直接注册的命令。
-- **官方 payload 无损进入**：平台上有的字段一个不丢地到达策略层；策略层永不发明平台上不存在的输入。
-- **输出可预测**：给定决策值与事件类别，envelope 形状、退出码、stderr 用途完全确定（§4 表）。
-- **失败方向是设计而非事故**：每条路径的 fail-open / fail-closed 都有名有姓、有注释、有测试（§5）。
-- **绝不模拟平台**：Runtime/Hook 都不得伪造"平台已被唤醒/已阻止"的事实（继承调度篇 §10.2 的铁律，本文管其在接线层的表达）。
-
-## 2. 事件注册面
-
-### 2.1 事件消费契约
-
-注册集以本表为设计契约；超时是 Hook 短事务预算，不容纳完整测试或长合并。安装配置、迁移模板、policy 与 schema 同步消费：
-
-| 事件 | matcher | 行为类别 |
-|:--|:--|:--|
-| `PreToolUse` | `Write\|Edit\|MultiEdit\|Bash\|NotebookEdit\|Task\|TaskUpdate\|Agent\|mcp__.*` | enforce（§4；PowerShell 仍按 B11 暂缓）|
-| `PostToolUse` | `SendMessage\|Agent\|Task\|SubagentHandback\|Bash` | observe + 主会话交付/调度提醒；不能撤销已完成动作 |
-| `PostToolUseFailure` | `*` | observe（原生失败审计；不阻断）|
-| `SessionStart` / `SubagentStart` | （全匹配） | guidance（Agent 上下文）|
-| `PreCompact` | （全匹配） | persist（保存恢复检查点；不靠输出注入上下文）|
-| `SubagentStop` / `TeammateIdle` | （全匹配） | enforce（stop/idle 决策，矩阵本体在调度篇）|
-| `Stop` | （全匹配） | enforce（Main 收工门）|
-| `ConfigChange` | `*` | observe（治理配置变更审计；不阻断）|
-
-四条治理规则：
-
-1. **占格先过选点审查**：平台上可用格子远不止当前十类（全集见[锚点全图](L4-hook-anchor-catalog.md)，含 PermissionRequest / TaskCompleted / FileChanged 等 ◐ 候选）。任何新增/退出都先过该目录 §5 六问，再同步三处：本表、迁移白名单、目录状态列——不允许只改 settings。迁移模板中的禁词（PermissionRequest / TaskCompleted）含义是"**未经评审不得接线**"；ConfigChange 已经完成本轮审查，作为只审计观察器接线。
-2. **protected_events 对账**：docs/control/hook-policy.json 的 `protected_events` 必须与 settings 注册集完全一致；doctor 校验 `hook_control.policy_ref` 与磁盘 policy 文件的 version+sha256 一致性，漂移时提示 `runtime reconcile-policy-ref`。
-3. ** TASK 模板中的 SendMessage 仍是禁词**：TASK 正文不得指挥 Worker 直接发消息——消息纪律属于 agent-message schema 与调度篇，模板只承载任务事实。
-4. dry-run（`renderHook=false`）与真实 hook 走同一 evaluate 路径，仅 output 渠道不同——保证被测即所运。
-
-## 3. Payload 契约（输入面）
-
-`policy.Input` 是全部事件的唯一入口类型；官方字段清单及其地位（设计+当前实现一致）：
-
-| 字段 | 来源 | 地位 |
-|:--|:--|:--|
-| session_id / hook_event_name / tool_name / tool_input | 平台通用 payload | 通用 |
-| agent_id | SubagentStop 等携带 | 官方；允许缺失 |
-| agent_type | SubagentStart 携带 | 官方；用于唯一匹配 Assignment 简报，不得凭它猜测多个责任 |
-| tool_use_id | 工具事件携带 | 官方；用于区分同一回合内的原生失败审计 |
-| file_path / error / source | ConfigChange、PostToolUseFailure/SessionStart 携带 | 官方可选；缺失时仍保留事件审计，不发明值 |
-| teammate_name / team_name | TeammateIdle 官方 2.1.218 payload | 官方；识别链一级来源 |
-| transcript_path / agent_transcript_path / last_assistant_message / stop_hook_active | SubagentStop 官方 payload | 官方；`stop_hook_active` 用于防 hook 自激循环 |
-
-输入同时保留 `cwd`、`tool_response` 与事件声明的 worktree 字段，缺失时不捏造。`CLAUDE_PROJECT_DIR` 用于项目权威根，`cwd` 用于路径/执行环境分类，二者不能混用。
-
-三条铁律：
-
-1. **无损透传**：以上字段逐一进入 Input，可缺失、不可改写、不可丢弃（omitempty 只是序列化整洁，不是许可丢字段）。
-2. **禁止发明输入**：任何"为了测试好写而在 payload 里约定私有 agent_id"的做法违宪；测试必须用官方 payload 形状（历史反面教材：自造 agent_id 曾让 TeammateIdle 测试全绿而真实环境不可用）。
-3. **有效身份回退一次**：`EffectiveAgentID = AgentID 否则 TeammateName`；回退到此为止，再往下是 §6 识别链的事。
-
-## 4. 输出与决策契约（Output 面）
-
-### 4.1 决策值六集合的 wire 行为
-
-| Decision | stdout | exit | stderr | 说明 |
-|:--|:--|:--|:--|:--|
-| allow | 无附加信息时空；有 Agent 指引时使用受支持事件的 `hookSpecificOutput.additionalContext` | 0 | − | 不因附带指引改变工具权限 |
-| info | 同 allow，附加阶段与下一步 | 0 | − | 状态投影进入 Agent 上下文 |
-| warn | 受支持事件的 `hookSpecificOutput.additionalContext` 含事实与恢复动作 | 0 | − | **永远不许升格为 block**；Stop/idle 上持久化后由主会话下一可注入事件投递 |
-| audit | 空 | 0 | − | 只落 `.claude/hook-decisions.jsonl`，用户不可见（戒律三）；记录 `elapsed_ms` |
-| deny / block @PreToolUse | `hookSpecificOutput` 中 permissionDecision="deny" + permissionDecisionReason=恢复包 | **0** | − | 合法 JSON 决策；不混用 exit 2 的 stderr 通道 |
-| block @TeammateIdle/SubagentStop | **stdout 静默** | **2** | 单行具体下一步 | 反馈必须经 stderr 回到同一活会话 |
-
-adapter 三戒律（本域宪法，源码注释已固化）：① adapter 不拥有生命周期合法性，只渲染 Controller 结论与正向指导；② 永不把 warn 提升为 block；③ audit 判定零协议输出。
-
-### 4.2 PreToolUse 的 quality_gate 投影
-
-内部 envelope / outbox 保留 `quality_gate` 结构（status/gate_id/candidate_transition/observed_revision/fingerprint/missing/evidence_refs/error_code/conflicts/transition_committed/next_cursor）。Claude Code wire 只使用官方字段：将同一投影中的关键事实和恢复动作序列化为 `hookSpecificOutput.additionalContext`，不依赖平台识别自造的 `quality_gate` 对象。`error_code`/`conflicts` 同时保留在内部机器投影与 Agent 可读恢复包中。
-
-内部 rule anchor 可以继续使用代码常量的稳定内部命名；跨进程的
-`DecisionEnvelope.rule_id` 和 `matched_rule_ids` 在序列化边界统一为
-`HOOK_[A-Z0-9_]+`。这样既不破坏内部 recovery anchor，也避免不同消费者拿到
-两套不可验证的规则身份。原生 `ConfigChange`/`PostToolUseFailure` 的审计 envelope
-以稳定 payload fingerprint 参与 decision identity：同一 payload 重试幂等，不同
-文件路径、错误或来源各自保留审计行；audit-only 写失败只报告而不改变原工具结果。
-
-### 4.3 Agent 可见性与投递对象
-
-设计始终跟随[最新官方 Hooks Reference](https://code.claude.com/docs/en/hooks)，不能因本机版本旧而保留错误 wire。`systemMessage` 在同步 Hook 中用于用户提示，PreToolUse allow/ask 的 permissionDecisionReason 也不能代替 Agent 上下文。SessionStart/SubagentStart 的 additionalContext 放在 hookSpecificOutput 内，不能写在顶层。
-
-Stop/SubagentStop 的 additionalContext 会让会话继续，不能用于 worktree 回收软提醒。SubagentStop 的执行反馈属于子会话；需要主会话处理的回收提醒先写 checkpoint，在父会话 PostToolUse(Agent)、PreToolUse 或 SessionStart 投递。去重按事实版本与接收会话；仅成功输出后的投递记录不能冒充 Agent 已处理。
-
-Agent 工具 `tool_response.status=async_launched` 是启动而非完成。使用 SubagentHandback 的子会话从该工具 `tool_input.message` 收集报告，不能将最终 closing text 当正文。报告抵达仍不等于已提交、已合并或已接收。
-
-父会话 Agent 返回（兼容旧 Task 工具）以及 Bash 中 Harness 的 register-workgroup、task-complete、task-integrate 完成后，直接在现有 PostToolUse 提醒中追加 S6 只读派发投影；此路径不运行 Controller 迁移周期。普通 Bash、异步启动、worker 上下文和非 building 阶段不投递派发摘要。SendMessage 的 plan checkpoint 观察和自动激活保持独立语义。
-
-PreCompact、WorktreeCreate/Remove 等丢弃消息字段的事件不承担 Agent 提醒。上下文限制长度，完整信息以权威记录路径引用。必须在最新 Claude Code 的隔离测试项目验证实际 Agent 接收和接收对象；仅 JSON 合法、stdout 有字或本地 CLI 可执行均不能宣称平台验收完成。
-
-WorktreeCreate 如需接线，先完成 [Worktree 机制](L4-worktree-governance.md)的创建实现；该事件替代平台默认创建，不能当只读观察器注册。
-
-## 5. 失败态度矩阵（本域核心设计）
-
-两条对偶原则，适用范围精确到事件×条件，不是全局开关：
-
-- **屏障类fail-closed**：受控写入路径上当控制面不可读、阶段无法解析时宁可拦截（unreadable stage 不得静默解锁 locked artifact；mutating PreToolUse 在 runtime 不可读时产出 typed block）。
-- **观察/停止判定类 fail-open**：对象无法识别、Payload 不足以定位责任时不猜绑不伪造——PostToolUse 识别失败=静默 observation、SubagentStop/TeammateIdle 无法定位已知 assignment 或属 one_shot/approval 派单/blocked 有据/completion 已报时一律放行。
-- 共同下限：**两种方向的分支都必须有解释注释与测试**；出现第三种"没想清楚就放行/拦住"即为违宪。
-
-当前实现分布（核对日 2026-08-28）：PostToolUse 全程 observer 永不阻断；stop/idle 六条 allow 快捷出口集中在 StopIdleDecision；dynamic Bash 写变异解析不出路径时反手 fail-closed；主策略 Evaluate 无规则命中默认 allow（fail-open 兜底），首写屏障等 agent-scoped 规则仅在 PreToolUse 且前置决策为 allow 时追加求值。
-
-## 6. 身份识别链
-
-四级顺序识别（PostToolUse 的发送者绑定为例，PreToolUse 经同一 CLI 入口做两级补齐后加载 hookctx）：
-
-```text
-payload agent_id → teammate_name（顶层）→ tool_input.teammate_name → 唯一活跃候选兜底
+```sh
+"$CLAUDE_PROJECT_DIR"/.claude/bin/loop-harness hook --event SubagentStop --root "$CLAUDE_PROJECT_DIR"
 ```
 
-约束：兜底级只在恰好存在唯一处于计划形成态的 agent 时命中；authoring 占位符（`TODO(planner):…`）在任何一级都不得成为身份（有反向测试锁定）；四级全空 = 未识别，按 §5 矩阵行动；主会话（无 Agent 上下文）天然在 agent-scoped 规则之外，屏障对其一律豁免。
+引号必须保留完整路径。事件名同时来自注册参数和平台输入，入口核对两者一致；配置写成一个事件、payload 却说另一个事件时应报错，不静默转成另一条业务路径。stdout 留给平台协议，诊断写 stderr，不在命令前后拼接调试输出。
 
-## 7. Guidance 与 Enforcement 的分界
+| 注册类别 | 当前注册范围 | 在本项目中的用途 |
+| --- | --- | --- |
+| `SessionStart` | 无 matcher 限制 | Main 恢复当前责任与必要入口准备 |
+| `PreToolUse` | `*` | 进度与当前材料提示；S7／S9 高频监听就绪原答卷；不按工具身份或 scope 决定许可 |
+| `PostToolUse` | `*` | Main 本人保存、相关材料变化、适用的父返回和诊断观察；包括自定义工具，消费者仍核对成功状态和当前责任 |
+| `SubagentStart`、`SubagentStop` | 无角色 matcher 限制 | 新原生子代理的上下文与专业交付衔接 |
+| `Stop`、`TeammateIdle` | 无 matcher 限制 | 原收尾与兼容责任判断，按实际分支反馈 |
+| `PostToolUseFailure`、`ConfigChange` | `*` | 适用路径的原生失败与配置变化审计 |
+| `PreCompact` | 无 matcher 限制 | 既有诊断缓冲维护；静默，不创建阶段恢复事实 |
 
-| 类别 | 事件 | 物理表现 | 消费者 |
-|:--|:--|:--|:--|
-| observe | PostToolUse(SendMessage) | 不产 permissionDecision、不动 lifecycle、无 exit 信号 | CLI 落 plan checkpoint（控制面的屏障有了触发事实）|
-| observe | PostToolUseFailure / ConfigChange | 原生信号只落 audit，不改变原操作 | S7/S8 证据消费者、治理审计 |
-| guidance | SessionStart / SubagentStart / PreToolUse / PostToolUse | `hookSpecificOutput={hookEventName, additionalContext}`；短包只放当前位置/读序/下一步 | Main/Worker 重入座与交付提醒 |
-| checkpoint | PreCompact | 持久化；由后续可注入事件重新投递 | 压缩恢复 |
-| enforce | PreToolUse；Stop；SubagentStop；TeammateIdle | deny/exit2/decision block | 工具调用方、Main、Worker |
+PostToolUse 使用 `*` matcher 监听全部工具，包括自定义工具。列入监听只表示该工具成功后可以进入监听器，不表示每次都提交答卷。特别是 Read、Glob、Grep 服务有限观察和原接续，不能成为新 Worker 的第三个必经接收点。
 
-判别尺（借用 L3-README 注意力分配三问）：观察信息喂给 Runtime 记录；指导喂给人与 Main 的注意力；只有确定非法/不可逆才用平台强制。guidance 文案的最小可执行性有专门测试锁定（deny 恢复包必须含九要素：LOOP RECOVERY/Next/ProtocolRef/ManualRef/Read in order/Agent Team 等）。
+### 2.2 注册存在，不代表所有分支都执行
 
-## 8. 与其余三家族的边界（防重复定义）
+当前注册均为同步 command Hook；PostToolUse 平台超时为 30 秒，其他事件为 10 秒，未配置 `async` 或 `onFailure`。较长上限用于 [S4 接收及 S5 当次准备](L4-agent-guidance.md#s4-s5-guidance)的有限内部预算，普通事件仍受原 6/8 秒工作/进程预算约束，不是每次工具调用的等待目标。`worktree.baseRef: head` 配合原生工作区使用，未注册 WorktreeCreate 来替换默认创建。PermissionRequest、TaskCompleted 等也不属于当前注册集；平台有某项能力，不构成本项目必须启用它的理由。
 
-| 内容 | 权威所在 | 本文角色 |
-|:--|:--|:--|
-| TeammateIdle/SubagentStop 决策矩阵（何时 block 何时 idle） | 调度篇 §10.2/10.3 | 只管把 block 变成 exit 2 + stderr 到达同一会话 |
-| 首写屏障等六条规则的内容与豁免面 | 控制面篇 §8 | 只管 evaluate 入口在 PreToolUse 上的追加求值次序 |
-| gate/auto_trigger 的引擎机制与候选仲裁 | 状态机核心篇 §6 | 只管 quality_gate 结果投影回 wire |
-| 采集/脱敏闸的内容规则 | 控制面篇 §9 | 本文不涉及 |
+同一事件可能被原生专用接线提前处理，也可能进入 Main 的投影、专业消费者或旧记录恢复。注册表不能被解释为“每个事件都跑整个 Controller”。相同角色并发、前后台原生执行和恢复事件都要保留这种分支关系。
 
-## 9. 治理流程
+事件、matcher、命令和超时的逐项选择归[事件选点](L4-hook-anchor-catalog.md)。注册变化须同步安装配置、[模板检查](../../internal/migration/templates.go)、[策略中的事件声明](../../docs/control/hook-policy.json)与相应测试；事件名对账只是第一层，不能代替实际触发和输出验证。
 
-- 新增/修改任何 handler：先在本文件登记事件类别与失败态度 → 过 §5 矩阵问答 → 补三类测试（官方 payload 行为、失败方向、豁免面）→ migration 白名单如有变动双写 → doctor 过 policy_ref 一致性。
-- 移除决策：如 protected_commands 从 hook 主链路退出那样（§10），必须在 hook-policy schema 保留兼容字段的同时把"`不再被咨询`"写成带出处的注释事实，防止后来者误以为清单仍在执法。
+## 3. 输入契约：观察平台事实，不制造平台事实
 
-## 10. 当前事实边界（诚实条款）
+### 3.1 保留实际消费字段的原义
 
-核对日 2026-08-28：
+平台 JSON 从 stdin 进入 [policy.Input](../../internal/policy/engine.go)。字段可能随事件不同而缺失，应按照当前事件解释，不把所有字段都设成各阶段共同必填。
 
-1. **doctor 与平台 smoke 的职责分开**：`doctor` 只做仓库内静态一致性（manual agreement、repository schema 集合、evidence catalog、policy_ref 漂移）；`health` 读取累计运行信号和 Hook 时延。`make platform-smoke` 会在真实进程边界执行 settings 中的命令与官方 payload，Claude CLI 存在且可运行时还报告版本；`make platform-smoke-required` 在没有可运行 Claude CLI 时以环境债退出 77。它不伪造完整 Claude 会话，exit-2 是否让同一 teammate 继续仍需在 disposable project 中按本节验收步骤实测。
-2. **protected_commands 已退出 hook 执法**：`extension_protected_commands` 置空且有测试注释锁死"Hook no longer loads docs/control/protected-commands.json"；分类器仅供 Bash 变异路径分析使用。发布保护的现状 = S11 结构性停机 + 人操作纪律，这是有意为之的现状而非未完成事项（相应更正控制面篇 §15 的早期表述）。
-3. Stop-idle 判定所依赖的全部决策逻辑收敛在 StopIdleDecision；Main 的 Stop 收工门收敛在 MainStopDecision，并在 Controller cycle 之前 preflight，避免已知非法收工先触发自动迁移或 milestone 写入；两者输出纪律（exit 2 stderr 单行下一步）由 CLI 层执行。
-4. SessionStart 的 additionalContext 只承载压缩后的阶段/下一步；SubagentStart 只有唯一 Assignment 匹配时才承载 scope/完成条件，歧义时不猜。完整事实仍在 Guidance、Assignment Record 和 Runtime。
-5. PostToolUseFailure/ConfigChange 是 audit-only：它们补平台原生信号，不替换已有 wrapper，也不假装拥有拦截能力；写 audit 失败保持 fail-open。
-6. 一切 timeouts 固定 10s：若某 handler 未来需要更长预算，超时后的半途状态必须满足状态机篇的可恢复要求，而不是靠加长 timeout 掩盖。
+| 字段组 | 本项目消费方式 | 需要守住的区别 |
+| --- | --- | --- |
+| `hook_event_name`、`session_id`、`cwd` | 确认事件、会话及实际工作环境 | 会话身份与工程责任、控制根不同 |
+| `agent_id`、`agent_type` | 观察原生执行者及类型 | 类型不等于任务，平台 actor 不强求等于工程 owner |
+| `tool_name`、`tool_use_id`、`tool_input`、`tool_response` | 识别真实保存、相关返回和工具观察 | 工具成功、异步启动与专业接收不同 |
+| `transcript_path`、`agent_transcript_path`、`last_assistant_message` | 在适用返回中寻找准确任务与产物引用 | 父会话转录、子会话转录与最后收尾文字不同 |
+| `stop_hook_active` | 避免 Stop 纠正反复阻止同一执行结束 | 它不是履职完成或业务豁免 |
+| `teammate_name`、`team_name` | 原团队事件及已登记记录的兼容识别 | 不为新原生任务预建 Team 或平台身份 |
+| `file_path`、`error`、`source` | 适用的原生观察和审计 | 缺失时不补造错误、测试或来源事实 |
 
-> 本域的缺陷登记册属于目标项目的本地迭代产物，不随模板仓库发布。推进候选锚点时，应在目标项目的 `docs/reports/bugs/` 登记册中建立工单，并在完成后回写本域状态列。
+Input 是有类型的消费结构，不是自动保存所有未知 JSON 字段的原始转发器。新增官方字段要检查是否真的被保存、传入需要它的消费者；不能宣称平台任意新增字段已无损进入全部策略。内部的 `facts`、`runtime_context`、`target_id` 等兼容载体，也不能当作平台已经证明完成的字段。
 
-## 11. DoD
+平台集成测试应使用真实事件形状；库级测试可以构造内部事实，但应明确它验证的是领域逻辑。不能把通过测试私有字段注入的事实称为真实平台执行、阅读或接收证据。
 
-- 十类事件注册、白名单、protected_events 三处一致，doctor 可对账；
-- 任何事件新增 handler 前都有类别与失败态度登记，任何失败分支都有测试；
-- 输出契约表（§4.1）覆盖全部六种决策值且与源码注释一致；
-- 无自造 payload 字段存活于任何测试；
-- 平台验收入口：先运行 `make platform-smoke`，再在装有 Claude Code 的 disposable project 运行 `make platform-smoke-required` 并记录版本、官方 payload、SubagentStop/TeammateIdle 的 exit-2 同会话继续结果；不要把 `doctor passed` 解读为该实测已完成。
+### 3.2 任务内容和转录各有用途
 
-## 变更记录
+Main 应在实际原生任务中提供准确 brief、view、answer 和必要材料。Start 的短提示帮助执行者理解如何使用这些材料，不负责按角色认领一份答案。Stop 从实际任务与返回中关联原责任，再读取本人真正保存的专业产物。
 
-| 日期 | 版本 | 变更 | 依据 |
-|:--|:--|:--|:--|
-| 2026-08-28 | v0.1.1 | 边界叙事修正：明确七个注册锚点是消费快照而非平台边界；事件准入规则改写为「占格先过《Hook 锚点全图》六问」，禁词重定性为"未经评审不得接线"；头部挂接锚点全图为平台侧唯一权威 | owner 指示：文档逻辑不应限制只能用现有 hook 挂点；建立平台锚点全集文档供迭代对照审查 |
-| 2026-08-28 | v0.2.1 | 对齐质量门诊断字段与 Hook schema；明确内部 rule id 到 `HOOK_*` wire id 的边界转换、原生观察事件按 payload 去重、audit-only 写失败 fail-open，以及 Assignment 歧义不猜绑 | S10-WALK-A 与 HOOK-B07/B09/B06 回归审查 |
-| 2026-08-28 | v0.2.0 | 接入 MCP PreToolUse 通配与未知工具兜底、Main Stop 收工门、elapsed_ms 时延审计、SessionStart/SubagentStart additionalContext，以及 PostToolUseFailure/ConfigChange 原生审计观察器；明确 B08/B10/B11 仍为按数据触发的后续项 | HOOK-B01/B03/B04/B05/B06/B07/B09 实装与契约测试 |
-| 2026-08-28 | v0.1.0 | 初版：把散落在 settings/migration/internal.hook/hook-policy 各处的事件注册、payload、输出契约、失败态度、识别链、guidance 分界统一为本域唯一权威定义；核实并纠正 protected_commands 已退出 hook 主链路的事实；承接调度篇遗留的真实平台 doctor 缺口的验收归属 | owner 批准的基石抽取批次（其一）；五问自测见 §0 |
+`last_assistant_message` 可能只有收尾文字，不能一律按完整报告解析。转录也有读取范围和写入时序限制，不能假设最后一行总含最新内容。当前原生专业责任复用有界尾段读取，优先选择包含当前准确引用的最新真实 user 任务，忽略 tool_result；有限回退和恢复任务变更后的引用边界见[子代理工程衔接](L4-agent-dispatch-governance.md)。返回准确当前引用，有助于避免用旧任务内容关联新交付。
+
+## 4. 根目录与入口优先级
+
+### 4.1 控制根与执行位置分开保留
+
+注册命令以 `CLAUDE_PROJECT_DIR` 定位初始 Harness 和 `--root`。进入 [evaluate](../../internal/cli/run.go) 后，先解析已有工作区关联；原生隔离工作区没有旧 bootstrap 时，可以在同一 Git 仓库的工作区中寻找唯一、已绑定的工程权威。找不到或有多个候选时不任选一个，不因为路径中出现 `.claude` 就接管该目录。
+
+`cwd` 仍说明本次实际执行环境，不随控制根解析被改写。原生 S6／S9 的 Plan 和 Result 可能在 Worker 工作区，原工程 Runtime 则在 Main 权威根。接收必须同时保留这两个位置，不能把 Main 的同名答案借给缺少产物的 Worker。完整根、路径与 Git 约束见 [Worktree 治理](L4-worktree-governance.md)。
+
+旧独立顶层会话可以使用已登记的 session／root 关联恢复 owner；它不为新子代理补造身份，不把一个未识别的嵌套执行伪装成 Main。
+
+读者分类仅决定展示，不充当作者资格。既存 S9 Result 的当前材料与接收事实由原 `s9PacketQuestionnaireLifecycleContext` 生产，不由通用 reader 重拼来源；精确路径选择原责任，当前 registered execution 的 Purpose 区分 native 渠道与旧冻结渠道，实际资格仍由原保存消费者核 owner／代次／来源／批准／Git／CAS。[S9 §12](../l3-stages/L3-S9-repair.md#12-重放阻塞解决与历史执行恢复)保留旧记录恢复；这不为新原生工作增加注册或启动动作。
+
+### 4.2 真实路由顺序就是边界的一部分
+
+当前主入口按以下关系处理，而不是让所有模块都消费同一事件：
+
+1. 解码 JSON，核对注册事件，解析控制根与实际执行位置。
+2. 原生路由对平台 `SubagentStop` 且 `agent_id` 非空、非 Main 的输入，在初始只读 Snapshot 明确返回 `ErrPendingRuntimeOperation` 时，以原 Writer 和原候选校验恢复一次，再丢弃旧路由缓存并重读 Snapshot。恢复前不从 pending 推断阶段或作者；恢复后仅当前 S7／S9 继续同一原事件的原接收分流；native 明确不适用的已激活／冻结独立责任仍进入原后续分支，重建的只读 reader 在当前公开请求内生效。其他阶段本事件结束而不新增专业接收。Main 在实际控制根的 `PreToolUse`、`SessionStart` 和成功 `PostToolUse` 遇到同一类型化 pending 时，也在原预算内调用原 Writer 恢复一次；恢复成功刷新路由与只读 reader，继续同一实际事件，不能以提示提前吞掉该事件。成功的原 Main 保存仍由后续原路径适配接收；SessionStart 不凭文件存在重构一次保存。S7／S9 Pre 可按准确责任与本人原答卷就绪条件调用原消费者，成功 Post／Stop 兜底；只恢复 Writer 不证明接收发生。恢复失败报告具体系统故障并放行工具，保留原输入。没有 pending 或不适用的事件保留原路由：Main 返回，再询问 S6、S9、审查／调查接线；已处理就返回，不再进入旧激活、通用监听或 Stop/Idle 规则。
+3. 未被原生分支处理的成功工具事件，进入适用的保存、材料变化、父返回或旧观察路径；失败与配置观察进入具名审计。
+4. 其余事件读取当前工程投影；需要原控制周期的入口才求值阶段条件与转换。
+5. 在实际适用的收尾、恢复、审计和输出边界完成对应动作。
+
+既存 S9 Result 保存适配在上述 pending／Main 返回之后、S6／S9 普通静默之前处理成功显式 Result Post 的窄分流；不整体前移包含 Main 准备的通用保存。精确当前 source 的 `Purpose == native_delivery` 在 S9 自然事件监听中沿原来源／就绪校验处理；`Purpose == ""` 且原 selector 确认旧独立来源时，调用原 Result 保存消费者；其他渠道或来源错误给具体诊断，不当成 native 静默。Main guard、原消费者资格与当前 CAS 保留。该分流使 mixed native＋frozen 工程中的 opaque 精确 frozen 保存先按所选来源处理，避免被 broad native 普通静默提前吞掉。
+
+上述 pending 恢复是共享基础机制副作用：合法原 Writer 可能完成 S5／S6／S8 等阶段的配对、checkpoint 或原日志维护；它不授权消费这些阶段的新答卷。恢复、刷新和 S7／S9 原消费者共用本次 Hook 原绝对截止点，不新增时间或后台执行者。恢复失败反馈系统故障，已恢复不等于已接收；真实责任、准确引用、来源和原答卷完整性仍由原消费者核对。超时、强制终止或此后没有可用事件时，自动最终接续尚无保证；不要求作者重写、重存或调用无关工具触发。
+
+公共 Snapshot 读取或验证失败时，保留本次实际错误，不把它当成没有责任、没有候选或接收成功。能识别 Main 时，在 Pre、成功 Post 或 SessionStart 的 `additionalContext` 给出原 Runtime 路径与错误，说明当前阶段及接收不可核验，保留原答卷与回执，由 Main 恢复原来源后再检查原回执；普通工具继续。无法核实责任的 Helper／Unknown 普通 Pre／Post 保持静默，不推断 Main 或借角色认领工作。SubagentStart 可以给不带阶段和责任归属的系统故障上下文；SubagentStop 的 `systemMessage` 是用户侧提示，不能宣称已经送达父会话或模型。后续真实 Main 事件独立读取当前来源；没有后续事件，不承诺跨会话必达，也不新增通知队列或恢复状态。临时短观察失败后，同一请求的正常 Snapshot 若成功，以该成功快照重建 reader；取消后不再读取或恢复。
+
+这使已有旧恢复分支可以继续解释原记录，同时不被新责任误用。某个 helper 存在，或者其名字包含 native、Stop，不代表新原生事件实际经过它。调查和变更必须从公开入口追到实际调用点。
+
+## 5. 新原生 Worker 的开始、执行与结束
+
+### 5.1 Start 提供上下文，执行由平台负责
+
+原生 Start 的提示说明：按 Main 实际任务中的准确材料开展专业工作，保存本人产物，使用原生返回，结束时由原消费者接收。新原生路径不要求先登记平台 actor、建立 Team、通用读回、激活、AgentBegin 或框架 launcher。
+
+平台的 SubagentStart 可以向子代理注入上下文，不能阻止子代理创建；Stop 的纠正反馈则会影响该执行是否继续。输出字段必须按相应事件使用。[官方事件契约](https://code.claude.com/docs/en/hooks#subagentstart)
+
+下面只是上下文输出的形状示意，不是供作者填写的工程记录：
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SubagentStart",
+    "additionalContext": "请按 Main 实际任务中的准确简报开展工作，保存本人产物并原生返回引用。"
+  }
+}
+```
+
+### 5.2 普通工具不管理新原生执行，S7／S9 监听原答卷
+
+S7／S9 的自然事件接收合同如下：S7／S9 以高频 `PreToolUse` 观察当前准确责任及其本人原答卷；成功 `PostToolUse` 与 `Stop`／`SubagentStop` 复用同一原接收器兜底。真实任务／actor 与原 issued 引用、来源根必须唯一关联，不能按角色、最近文件或 Main 同名卷猜选。只在原专业字段、必要观察和来源满足原消费者条件时自动接收；可解析 JSON、路径存在或平台停止本身都不证明工作完成。系统以已保存的原答案和原消费者条件认定可接收，不推断作者未写出的隐含意图；接收后的修改沿原修订合同处理。不增加 submit、done、marker、状态字段、重存或额外工具调用。未完成稿保留原样，普通工具继续；状态查询仍只读。接收回执与原后继保持幂等，已收不重复接收；系统故障给原责任和准确恢复入口，不代做 Main 长检查、集成或专业判断。旧冻结责任继续使用原格式和来源合同。
+
+监听先用已有当前责任坐标定位本人，再读取并验证选中的原题和来源；索引不授权消费，原消费者仍核实发行、作者、来源和专业条件。无关责任的正文缺损不能被误报为本人未完成；本人准确来源损坏或共享索引不可用须投影具体系统故障，不能以零匹配静默吞错。高频未就绪与已收重放只做当前责任必要观察，不反复完整接收；S9 已固定 typed 输入继续同一原 attempt，已接收 Candidate／Final 复用原回执，实际来源与集成资格仍在原边界核对。恢复入口可能执行已有必要读取或发布，不能未经验证将其当作纯读取或一律缩减校验。
+
+原消费者提交、回执重建／验证、阶段出口和下一材料准备是不同事实。原提交成功后回执读取失败时，保留已成立提交和具体系统原因；未验证的回执不冒充完整成功，也不要求作者重填或误报未收。由实际 Main 入口接续原回执或原出口，已收的 Worker 不为制造下一事件重复履职。无可用执行者或来源时如实标明未完成，不承诺后台自动最终恢复。
+
+S5／S6／S8 保留原普通工具静默与 Start／Stop 合同，不由本次扩展新接收能力。角色、任务范围、批准约束和独立责任继续成立。
+
+Start 也不凭 `agent_type` 猜任务。一个同角色执行者可能承担不同责任，或者只是与当前工程无关的临时任务。只有实际准确引用能将其交付关联到原消费者，不能因为“恰好只有一个候选”就把它认领为当前责任。
+
+### 5.3 Stop 接收本人产物，不代替 Main 集成
+
+原生 Stop 先确定唯一的当前责任及真实产物位置，再调用原消费者。S5／S8 沿原 Stop 接收审查或调查答案；S6 接收本人 Plan／Result 与真实 Git 贡献；S7／S9 的 Stop 兜底与 Pre 高频监听复用各自原消费者。专业字段、当前关联和原批准约束仍由各自消费者检查。
+
+无法准确关联、多个真正责任并存、迟到通知指向已经关闭的责任时，应保留原现场交 Main，不借用另一个答案、不重新打开已关闭交付。真实 blocker 可以如实返回，不能逼作者填写完成结论来换取结束。
+
+本人可修正的专业缺项通过具体反馈交本人继续；已接收的交付不因为同事未交、Main 未合并或资源未回收而让本人再次履职。长检查、合并、ACK 和资源回收由 Main 的原集成入口在普通工作中执行，不能塞进十秒 Stop。 Main 收到 `Agent/Task` 工具返回时，可通过现有 PostToolUse 上下文读取准确责任的原接收摘要；除 S9 已开始的准确原来源／尝试符合下述条件时可接续原消费者一次外，这条提示保持只读。S9 仅在无失败的 completed 平台返回、实际派发 prompt 唯一准确原 issued brief、tool_response.agentId 非空且非 Main，并按 D 的结构化 worktreePath／worktreeBranch 对应原 execution／冻结 pin，或按历史 C 的原 retained Stop actor 证明来源时，在同一请求原预算内复核当前责任后接续一次；D 不以 Stop 作为前置，不新捕获、不从 prose／启动／角色／最新文件猜选。原 typed 优先、已收幂等，失败保留具体诊断且不增加作者保存或 Stop，其他阶段与旧来源保持原边界。转录关联与父会话反馈的边界见[子代理工程衔接](L4-agent-dispatch-governance.md#83-反馈与原回执分别读取)。
+
+原生接收只在准确私人产物读取、JSON 解析和原专业字段校验边界认定本人可修的问题，并保留具体位置。首次返回是否采用纠正续跑由所属阶段合同决定；采用该方式时可使用 exit 2 反馈，不能从错误类别推出所有阶段都须阻止首次结束。S9 按 [S9 §14.2](../l3-stages/L3-S9-repair.md#142-收尾未完成返回与恢复边界) 首次交回真实未完成工作及具体拒错，由 Main 区分继续原专业责任、恢复来源与系统后继，不以第二次 Stop 或凑齐结论为退出条件。来源、控制面、准备、Writer 及无法可靠归属的错误直接交 Main 恢复，保留原始诊断，不让本人猜测改答案。`stop_hook_active=true` 时不重复阻断；放行不把未接收工作改成完成。具体实现见 [S6](../../internal/cli/native_s6.go)、[S9](../../internal/cli/native_s9.go)与[审查／调查接线](../../internal/cli/native_review_hooks.go)。
+
+## 6. Main 的自然工作与收尾
+
+### 6.1 本人保存调用本人消费者
+
+Main 的 SessionStart 可以恢复当前阶段并进行该入口已有的必要准备。PreToolUse 主要提供进度和准确材料；在未走只投影分支的具名路径中，仍可能运行原控制周期或准备，不能笼统称整个事件永远只读。它不按工具类型、平台身份、scope 或旧 activation 给予许可、拒绝普通工具。
+
+Main 的成功 PostToolUse 先处理有限诊断观察、真实材料变化、本人的准确答案保存及原接续，再按适用工具处理父返回或旧观察。S2～S4 真实材料变化可以触发缺题准备；S2 沿原已签发模板恢复缺失投影，保留已有作者内容，已接收答案丢失时提示恢复原文而不生成空白草稿。已经接受的 S4 后继也可在原成功读取事件接续；这与重新收取 Worker 私有答卷不同。具体阶段例外归[阶段答卷](L4-stage-form.md)，不能用一句“所有 Post 只观察”抹掉已落地的正常入口。
+
+新原生 Worker 的 Write、Bash 或消息不接收交付，Main 的 Read、保存或 Agent 返回同样不能抢收。父返回在适用路径上可以提醒待集成事实，但当前新原生分支会提前处理部分 Agent／Task／Handback 返回，不能保证每次父返回都会输出集成摘要。
+
+### 6.2 Main Stop 看 Main 的剩余责任
+
+Main 的收尾与 Worker 本人结束分开。原 Main Stop 前置检查在已知不应结束时先反馈，避免为了发现该事实先推进转换或刷新摘要。规划缺项、已确定而未派发的审查责任、已返回而未消费的结果等，按当前原记录处理。
+
+Main Stop 目前不是对所有阶段重验全部产品与证据的通用门；S10、人类等待和终态有自己的投影与领域消费者。它不替人作决定，也不将“Main 没被 Hook 阻止结束”解释为发布授权。
+
+旧 TeammateIdle 和固定 execution 的收尾继续使用其原责任与回执。新原生任务不为满足这些兼容分支新增通用 Plan 或完成报告；`stop_hook_active` 的防循环也不授予完成资格。
+
+## 7. 输出给谁，怎样影响继续
+
+### 7.1 内部判断与平台协议分别表达
+
+内部 Decision 的 `allow/info/warn/audit/deny/block` 是实现载体，不是所有事件通用的官方六枚举。当前 [PreToolUse 渲染器](../../internal/hook/pretooluse.go)输出进度与 `additionalContext`，不设置 `permissionDecision`。旧 [adapter](../../internal/hook/adapter.go)仍有渲染 deny 的能力，不能由此推导当前普通工具路径已执行该策略。
+
+| 实际结果 | 当前输出方式 | 退出及含义 |
+| --- | --- | --- |
+| 正常且无需补充 | 可静默 | 0，回到平台原流程 |
+| 支持上下文的正常事件 | `hookSpecificOutput` 中使用对应 `hookEventName` 和 `additionalContext` | 0，传递原责任材料与下一动作 |
+| 面向用户的简短提示 | 适用事件的 `systemMessage` | 不等于模型已经收到专业上下文 |
+| 具名原生观察审计 | 追加审计，协议 stdout 静默 | 0，不改变原操作结果 |
+| 需要本人继续的 Stop 纠正 | stderr 给准确问题与下一动作，stdout 静默 | 2，按本项目所用平台 Stop 方式反馈 |
+| 允许结束的软提醒 | 适用的用户提示或后续 Main 上下文 | 0，不借 Stop 的继续机制通知别人 |
+| 输入、通用审计或输出故障 | stderr 诊断；按实际故障路径退出 | 1 不等于本项目发出了工具 deny |
+
+`systemMessage` 在同步 Hook 中是用户侧提示，不能代替模型上下文。Stop／SubagentStop 的继续反馈送到相应执行，不能用作发给父会话的软通知；本项目选择 stderr／exit 2 做纠正，不把普通提醒放进会继续执行的 Stop 上下文。[官方输入输出契约](https://code.claude.com/docs/en/hooks#hook-input-and-output)
+
+### 7.2 只渲染已经成立的事实
+
+质量投影保留原 `status`、候选、观察 revision、缺项、冲突与 `transition_committed`。只有真实提交才显示推进；图投影没有运行该轮 Gate 时，不补造一个通过或 `advanced`。原生接收回执与领域缺项也不应被统一渲染器改成新的结论。
+
+`warn` 不升级成阻断，`audit` 不泄漏成控制输出。整个 stdout 应是一个当前事件能消费的协议结果，不能夹入测试日志、第二个 JSON 或调试横幅。接收已经提交但输出失败时，应按原回执恢复，而不是因为没有看到成功提示就重新创建一份交付。
+
+## 8. 上下文、提示与重复投递
+
+Hook 交付哪些内容、与入口和专业材料怎样分工，由 [Agent 指引的分层与交付](L4-agent-guidance.md) 定义。本篇解释其事件和输出边界；不能在 Hook 文案中另设阶段门或让展示缓存产生业务事实。
+
+### 8.1 有限背景不能挤掉当前工作
+
+上下文先交付当前阶段、本人责任、准确题目和答案位置、具体缺项及下一动作，再补读序、范围和可选候选。Worker 应能根据 Main 的真实任务开始工作；缺少准确路径是准备或路由问题，不能只扔一个 Runtime 路径让其猜责任。
+
+当前有几种不同的长度处理，不能统称为“所有内容最多 800 字”：
+
+- [生命周期上下文](../../internal/hook/lifecycle.go)以约 800 个 Unicode 字符安排简短背景和可选细节；已有完整责任交付优先保留，放不下的可选背景省略。
+- 某些过长的旧背景构造会回退到原入口引用；不能据此承诺所有分支永远给出完整题目路径。应优先修正准备与信息排序，避免把正常工作变成恢复阅读。
+- [进度显示](../../internal/hook/progress.go)的 480 字符限制只作用于简短用户提示，不代表模型上下文被同样截断。
+- 通用较长上下文另有有界截断；准确责任交付应放在背景之前。专用原生输出与图投影也不是全都经过同一个长度函数。
+
+背景压缩不应改变专业条件、裁掉路径尾部或把必需命令截成不可执行的片段。需要很多细节时，交付准确专业材料入口，由相应题目解释本人的工作。
+
+### 8.2 展示与模型上下文分别去重，不减少责任
+
+普通 PreToolUse 的显示去重按会话、执行者和稳定事实判断，忽略单纯 revision 抖动。它只移除重复 `systemMessage`，保留模型上下文、缺项、冲突、审计及拒绝反馈。SessionStart／SubagentStart 等重新进入时要能重新看到必要信息。
+
+S2 的普通只读投影另有模型上下文去重：已知会话、执行者和当前责任下，完整内容与上次成功交付相同，才改为简短的继续提示。新错误、缺项、路径或责任变化重新交付完整内容；会话开始与上下文压缩边界重置。缺少会话或缓存不可读时保守交付全文。这项能力只在已接线的 S2 图投影启用，不推广为其他阶段的通用上下文删减。
+
+S2 的 UI 投影只盘点需求所引用模块的必要文件并指出准确缺失位置，不在每次普通工具前重跑完整场景验证；文件存在不表示语义通过。完整验证仍是专业设计工作，按照场景规则使用原 `scenario` 命令执行。
+
+提示缓存和软提醒的投递标记只在 stdout 写出成功后更新。输出失败不应提前缓存成“已经通知”；缓存丢失、竞争或损坏至多导致多提醒一次，不能成为权限或完成依据。成功写出也只说明本进程交出了输出，不证明平台已经注入，更不证明接收者理解并完成了工作。
+
+Main 的集成软提醒从原 checkpoint 和待处理贡献生成，经适用的父会话事件投递。同一事实未变可以去重；事实变化后重新提示。不在 Worker Stop 中用“继续执行”来催 Main 合并，也不因提醒预算耗尽改变集成事实。实际 [reminderDelivery](../../internal/cli/worktree.go)有适用会话与分支限制，不是全体 Main 回调的通知保证。
+
+## 9. 失败方向按事件与责任决定
+
+### 9.1 没有全局“失败就拦”开关
+
+| 失败位置或情况 | 当前处理与应保留的事实 | 后续责任 |
+| --- | --- | --- |
+| JSON 无法解码、注册事件不一致 | 报输入诊断，不伪造另一类事件 | 修复调用或输入 |
+| 控制根无法解析 | 诊断后允许平台原流程，不猜权威目录 | Main／系统检查原绑定与目录 |
+| 普通进度或来源不可判定 | 保留未知或具体准备问题，不发工具 deny | 继续可开展的工作，修原准备或来源 |
+| 原生 Stop 没有唯一责任 | 不猜绑、不借同事答案 | Main 核对实际任务与返回 |
+| 已知责任有专业缺项 | 原消费者拒收，保留准确缺项与原产物 | 本人按该责任修正或如实返回 blocker |
+| 原生 Stop 来源、准备或未知故障 | 保留准确对象与原诊断，exit 0 交 Main，不创建完成事实 | Main 修原来源或接收接缝，不要求作者猜改答案 |
+| 已接收但后继或输出失败 | 保留已经成立的接收与未完成后继 | 恢复原后继，不重复制造接收 |
+| 原生审计写入失败 | stderr 诊断，适用观察分支仍 exit 0 | 修审计环境，不改原工具成功事实 |
+| 通用审计、序列化或 stdout 失败 | 当前部分通用路径 exit 1，不能概括为全部静默成功 | 区分协议故障与业务拒绝，查询原事实 |
+| 旧记录的 Stop／Idle 问题 | 沿其具名消费者、回执与防循环逻辑处理 | 不将旧执行手续推广到新原生任务 |
+
+失败方向须同时说明适用范围。原生普通事件提前返回时，可能根本没有执行通用审计或恢复；不能承诺每个工具失败都有一条记录。通用路径的审计失败与原生观察器的审计失败也有不同退出方式，不能混成同一个全局策略。
+
+### 9.2 纠正只延续本人可完成的工作
+
+Stop 反馈需要说明实际缺项、准确位置、本人下一动作；没有这些信息，只让执行者“再试一次”容易形成循环。原生路径尊重 `stop_hook_active`，不因同样缺项无限拦截。放行后 Main 根据原记录处理未完成工作，不以放行冒充质量豁免。
+
+真实 blocker、作者已交付、同伴未完成、Main 待集成和系统缺源分别属于不同责任。收尾判断应消费当前事实，不能仅凭历史 blocker、一个 terminal 字串或一段最终聊天让全部工作自动完成。
+
+新原生 Start／Stop 只负责专业衔接，旧分支中仍存在的首写、激活或通用身份链不成为恢复捷径。源文件漂移、当前批准不符、重复提交和 pending 事务交原领域入口及 Writer 判断，不另造 Hook 级修订协议。
+
+## 10. 十秒预算与中断恢复
+
+短 Hook 可以做必要的有界读、上下文准备、专业接收与原后继事务。完整产品测试、长合并、工作区创建、检查环境修复和资源清理应在普通工作中完成。把耗时任务搬到 Hook 内，会使平台超时与专业失败难以区分。
+
+### 10.1 机制减负的作者契约
+
+Hook 优化由框架承担复杂度。Main 仍填写原专业字段并正常保存，Worker 仍返回原责任的准确交付引用；正常原接收、适用阶段出口与下一责任准备在本次交接编排完成。优化不得新增字段、摘要、身份声明、提交命令、确认、查询或重存步骤，不得以“做一次普通工具调用”作为后继调度条件，也不得缩小普通工具权限来降低负载。真实专业缺项才交回作者，指明原字段或材料；系统中断不改变专业判断。
+
+接收、转换和材料准备各有原事实及幂等边界。内部拆分使系统能续原工作，不使作者承担多次提交。若后继失败，原接收仍成立，交接同时表达已完成事实和具名缺口；已接收作者可以结束。普通只读事件不恢复业务或替后台执行者调度。没有跨进程持久执行者和可靠结果投递时，不能宣称开启 `async` 或后台 goroutine 已经实现自动恢复。
+
+### 10.2 各层工作与复用边界
+
+接收变慢有两类原因：一次操作携带了过多数据，以及相同数据被多次处理。前者由主状态与正文分工解决，后者要沿真实调用链消除。单个函数有缓存，不代表其调用者使用了缓存；一个入口传入 context，也不代表底层 Git、锁和历史验证遵循同一预算。减负必须同时约束读取范围、结果复用和事务边界。
+
+| 层次 | 框架承担的工作 | 一致性与交付边界 |
+| --- | --- | --- |
+| 事件分流 | 一次定位控制根、读取原快照，以原事件和当前责任选择 S6／S9／审查处理器；无关处理器不重复初始化 | 只复用本次分流读取；处理器发生业务变更后，后续读取使用提交结果或新快照；快照不授予 Writer 权限 |
+| 固定来源与验证 | 复用已编译内嵌 schema、准确 Git 对象和同一快照的 packet／发行事件解析；答案只读一次并绑定实际字节 | 复用键包括来源身份与相应游标；取消不返回缓存成功；当前工作树、磁盘证据和锁内资格仍按原边界核对 |
+| 当前数据与历史 | 同一次可信快照对 registry 建索引，避免逐责任重复重建所有历史题目；固定对象按需读取 | 原历史题目及原模板字节继续可读；未知、重复或畸形 registry 不因索引而被忽略；物理冷存储迁移须有独立兼容证明，不能先删 draft 再用当前模板重建 |
+| 有界并行 | 独立且不可变来源的读取、计算可以并行，限制 Git 与 I/O 并发；确定性地返回原来源对应的错误 | 不并行修改同一 Runtime；不把共享可变 map、当前工作树检查或来源授权当作纯计算；失败／取消须等待已启动工作结束 |
+| 原接收事务 | 锁外准备候选、锁内核当前业务坐标和必要来源，沿原 Writer 提交；同答重放返回原事实 | 暂存、pending、已接收和后继待续分别处理；不能因为暂存文件存在而要求作者删文件、改 ID 或重填 |
+| 原后继与提示 | 正常本次继续原出口、准备下一责任并一次投递；后台只可维护可重建缓存、统计和诊断 | 接收和后继具有不同失败结果；原回执不能被过时提示覆盖；延后工作必须有实际执行与交付归属 |
+
+同次解码、重建和证明的复用不以新增状态版本为前提。主状态与正文的存储分工由[运行控制面 §2.4～§2.6](L4-runtime-control-plane.md#24-保留事实与保存全文是不同决策)定义，格式切换和恢复由[状态机核心 §8.4](L4-state-transition-core.md#84-工作包正文外置的事务与兼容边界)约束。Hook 使用准确索引选择本次责任，再读取所需正文；不另建一份 packet 权威或把全部历史完整核验放进普通观察。新格式必须有明确的 reader／Schema 能力，不能假定旧二进制支持；仅完成内存缓存不能宣称主状态已经缩小。
+
+#### 10.2.1 一次专业返回怎样完成
+
+以 S7 Reviewer 返回为例，原生结束事件承担一次准确接收及其适用交接。内部按下列顺序组织，不要求作者多交一次，也不通过下一次普通工具调用调度剩余步骤。
+
+| 环节 | 必要工作 | 可移除的重复工作 |
+| --- | --- | --- |
+| 分流与责任定位 | 以原事件、控制根、准确引用和初始状态选出原消费者；歧义保留诊断 | 无关阶段初始化、每个适配器单独加载同一状态、仅凭角色扫描私人答案 |
+| 固定本次输入 | 原接收边界读取一次作者答案，绑定实际根、packet、owner、责任坐标和字节，生成内部输入 | 服务层校验后只传路径、下一层重新打开文件并重复校验 |
+| 准备与证明 | 校验该答案、原签发、冻结来源、当前适用性，构造候选及待发布产物 | 同一历史 registry／journal 反复解码，逐 packet 查找时再次重建全部 packet，重复启动相同固定 Git 对象读取 |
+| Writer 提交 | 恢复原 pending，核对最新资格、来源连续性和 CAS，按原顺序发布与接收 | 把已验证的不可变题目和固定对象再完整重建，或者把无关统计写入放在业务锁内 |
+| 原后继与反馈 | 依据实际接收状态执行适用出口和材料准备，明确本人完成与剩余责任 | 从头再接收答案、无条件发行不适用的下一工作包、仅为投影再次运行全部质量门 |
+
+最后一份 Result 仍须在原交接中走适用 Gate／TR-009 和 S10 材料准备；普通中间 Result 不因此执行终态出口。准备、接收和转换有不同事务身份，内部拆分用于准确续接，不等于强制拆成多个平台事件。真实产品测试、集成等长工作仍由原专业责任在普通执行中完成。
+
+#### 10.2.2 复用的是准确输入和计算，不是通行结论
+
+同次请求的内部读取对象携带身份、来源、快照及验证条件，不接受作者提供的“已验证”标志。对象只在匹配条件下复用；实现可以使用已有 context、不可变结构和索引，不要求增加持久状态机。
+
+| 数据或计算 | 复用依据 | 仍须检查的变化 |
+| --- | --- | --- |
+| 作者答案 | 原来源根、准确路径／packet、owner 和本次读取字节；同次有限续跑继续使用这份输入 | 新保存按新输入处理；已接收回执恢复不要求私人答案存在，显式提交不同内容仍走原冲突规则 |
+| registry 与 packet 重建 | 准确 registry 内容、格式及 packet 身份；同一快照建索引一次 | 新快照重新核对责任投影和重复身份；不跨请求凭 map 地址或 revision 相同推定内容相同 |
+| journal 解析与签发事件查找 | 准确事件字节、起始序号及已解析索引 | 当前 state／journal 配对、追加后的游标和本次所选事件关联 |
+| 固定 Git 内容及冻结来源投影 | 原仓库、准确 commit／blob、输入集合和适用合同；必要来源先验真 | HEAD、分支、磁盘证据、工作树及 Runtime 责任变化不能从固定对象缓存推出 |
+| 候选序列化和结构校验 | 相同候选字节、Schema／验证条件和仍成立的不可变来源 | Writer 当前资格、落盘字节、事务配对和独立恢复入口的适用核验 |
+
+产品基线证明拆成固定来源的重建与当前连续性检查。固定贡献、原签发和精确 Git 对象的成功解析可以同次复用；锁内仍确认本次提交针对原 Plan、责任及当前产品状态。锁外与锁内各有目的，不能简单删除第二次检查，也不能因两次都叫“验证基线”而把所有固定来源重新构建两遍。
+
+漂移扫描先按原规则识别实际待判断路径，再验证决定其归类所需的准确控制产物。不得先逐份证明所有历史 packet，再只为建立少量排除路径而使用结果；已经选定的多份 packet 共享本次 registry／journal 索引。未知同目录文件不能因邻近合法产物而获得豁免，独立历史诊断仍保留完整核验能力。
+
+请求 context 必须贯通基线、签发证明、Git 视图、锁及审计入口。局部时限取本地上限与父请求剩余时间的较小值；不得在耗时子调用中另起 `context.Background()`，导致丢失预算、取消和缓存。取消前后的边界按 §10.3 处理，不通过缓存成功掩盖取消。旧无 context API 可以服务其具名兼容调用，但不能从有界 Hook 路径悄然退回该入口。
+
+#### 10.2.3 转录与审计也属于接收成本
+
+任务转录用于定位原生执行实际收到的责任，不能替代 Runtime 的签发、来源和接收事实。读取器按块从尾部寻找最近一个命中当前准确引用的真实 user 任务，保持 JSON 行边界，忽略工具结果中的引用，并保留最终消息中多责任冲突的原判定。分块是 I/O 优化，不改变任务选择算法；不能只取最后一条助手消息、角色名称或任意固定 200 行就推断 owner。
+
+尾部搜索与兼容 fallback 共享本次累计读取和时间上限，已读数据不得再由另一入口重复读取。没有准确匹配、越过读取边界和转录不可读要能分别诊断；未定位到任务不证明责任不存在或已完成。只有等价性验证覆盖恢复、多引用、超长行和原别名后，才可替换原 fallback。普通无关事件不读转录，不要求作者缩短会话或换新 Agent 来降低成本。
+
+审计保留真实事件与 `decision_id` 去重语义，但不能每次追加都重解码全部历史。可以复用可重建索引或按完整性可验证的段处理；索引必须与对应日志内容和游标关联，丢失、损坏或日志变化不能默默吞掉事件。并发追加继续由原互斥边界协调，锁等待遵循父请求预算。此项优化不引入第二个业务事实源，也不靠取消审计、忽略写失败或不受管理的后台写入换取低耗时。
+
+业务提交、审计完成和响应交付分别记录含义。后两者失败不能抹掉已持久接收；反馈必须保留已知事实与实际缺口。尚未成功交付的部分 stdout 不作为成功回执。诊断和统计的失败不会创造工具 deny 或专业拒收，按原事件的输出边界报告。
+
+### 10.3 暂存、中断与原事务续跑
+
+| 中断位置 | 原事实 | 框架恢复规则 |
+| --- | --- | --- |
+| 未暂存 | 无接收提交 | 原答案保持，原接收可以再次执行；不得解释为内容非法 |
+| 已暂存、尚无 durable pending | 文件存在但 Runtime 未接收 | 原机制在锁内核归属、引用与准确字节，安全清理或复用原暂存；不能将通用“文件已存在”变成作者手续 |
+| durable pending 已形成 | 原提交可能尚未发布完整 | 原 Writer 先恢复原事务，再识别回执；不删除 pending 引用产物 |
+| 接收已提交、后继未完成 | 专业责任已交付 | 只续原出口／准备，不重新消费答案、不要求作者重交 |
+
+显式取消、工作预算耗尽与事务已进入 pending 分开处理。显式取消不开始新提交；内部工作 deadline 到达后，仅允许原请求预留的有限尾段继续原准确输入、原事务恢复或原后继，不重读答案、不开始无关业务，也不为每个子步骤重新发放时间。所有尾段共享原外层进程截止点。安全清理仍须通过原锁、pending、引用和字节检查。外层进程中断仍可能终止收尾，后续原接收必须能识别并续同一次未完成暂存，不能仅靠一次 best-effort 删除保证恢复。
+
+续跑入口先确定已经完成到哪一步：有 pending 则恢复原配对，已有接收则跳过答案消费，只剩材料准备则只补原材料。尚未接收的同次有限续跑可以复用固定输入与仍有效的准备结果，当前资格和可变来源重新核对；并发冲突不能无限刷新 revision。已完成后继的重放保持无新业务作用。不能把“再调用一次顶层函数”当作所有中断位置的统一恢复设计。
+
+没有跨进程执行者时，强制终止后无法保证无人触发即自动续跑。这是框架执行能力的边界，不能用“系统负责恢复”的文案假装已经解决，也不能要求作者通过重存未变答案或制造普通工具事件承担调度。已有具名恢复入口只处理原记录对应的异常续接，不成为正常交卷的第二步。
+
+外层超时必须保留子进程已返回的具体 stderr，并说明本次传输未完成；部分 stdout 不能冒充成功。传输退出、内容校验、持久接收和后继准备是不同维度；不为表达系统超时而统一阻止工具或强制 Worker 继续写专业答案。真实超时计数不能与内容非法计数混为一谈。
+
+### 10.4 实现落点、依赖与尚未闭合的路径
+
+以下“当前实现”指工作区代码；本轮核心定向已覆盖取消投影、展示兼容、后继预算及真实checkpoint恢复。完整CLI曾到包级时限而未完成，真实平台尚未复测，不以中间版本包级通过或局部短基准宣称整仓／整Hook性能验收完成。
+
+正常关键路径应在既定预算内留有余量。当前普通 Hook 外层进程上限为八秒，内部通常预留两秒返回余量；S4 保存有独立特例，不能把普通预算描述为所有事件的统一事实。减负先减少工作，不通过提高时限、减少专业覆盖、删除验源或收缩工具权限宣称修复。
+
+| 层次 | 当前实现 | 保留边界与后续验收 |
+| --- | --- | --- |
+| 原生分流 | [native_hook_routes](../../internal/cli/native_hook_routes.go)共享适配器初始快照 | 共享限于原分流；写入后读取新快照，不据旧快照授予 Writer 资格 |
+| 答案输入 | [服务接收](../../internal/submission/review_result.go)通过不透明 `IssuedResultInput` 向 [原消费者](../../internal/review/result_packet.go)携带一次读取／校验的答案及准确绑定 | 新显式保存读取新内容，原消费者仍核责任和来源；回执恢复不依赖私人答案 |
+| registry／journal | [漂移检查](../../internal/review/workspace.go)先看实际变化路径，批量核对应工作包；[所选正文缓存](../../internal/runtime/review_result_read_cache.go)与 [journal 缓存](../../internal/controlproof/journal_read_cache.go)贯通请求 | 全局索引结构、格式及唯一性仍核；所选正文和签发验真；具名全历史诊断保留完整读取 |
+| 基线与 Git | [buildsurface](../../internal/buildsurface/read.go)及 [Git](../../internal/buildsurface/git.go)接父 context，准确固定对象与 Main receipt 计算同次复用 | 当前 HEAD、分支、工作树、磁盘证据和锁内来源继续重核；局部取消／超时保留原错误链，不写成内容拒错或 Plan stale |
+| 暂存与恢复 | [SubmitResult](../../internal/review/submit.go)区分 pending、原回执及本次已暂存输入；[有限尾段](../../internal/review/deadline_tail.go)锚定原工作截止时间 | Result 清理／恢复／已接收交接共享原截止后 1.4 秒，Plan 尾段为 400 毫秒；显式取消不启动新提交。锁内仍有产物准备，尚无跨进程执行者 |
+| 任务定位 | [分块读取器](../../internal/cli/native_task_transcript.go)按 64 KiB 从尾部定位，近尾命中即停；兼容头部 fallback 共用描述符、区间缓存和累计预算 | 原尾／头各 4 MiB 有效覆盖范围保留，累计最多 8 MiB 且不重读重叠字节；取消不切换任务算法 |
+| 审计 | [Outbox](../../internal/audit/outbox.go)继承请求／原完成尾段预算，去重索引绑定准确日志路径、完整 SHA256 和字节游标，丢失或失配可重建 | 热路径仍完整流式哈希日志并解码 ID 索引，为 O(日志字节数)，未实现恒定时间追加；事件先持久化，索引失败明确表达原事件已追加 |
+| 外层观测 | [进程预算入口](../../internal/cli/hook_budget.go)通过既有 metrics observation 保存真实传输失败，[health](../../internal/metrics/metrics.go)独立识别 | 不等待审计／统计长锁，不虚构内部阶段或接收事实；同步小文件发布仍受原文件系统能力约束 |
+| 状态存储 | [原 Writer](../../internal/runtime/packet_body.go)支持 S7 ReviewResult、S9 PlanReport／RepairResult 的 `packet-body-ref-v1` 轻索引和不可变完整正文；旧状态有显式框架维护入口 | 其他 subtype 继续内嵌。原 pending 不隐式迁移；checkpoint 与批准的恢复计划保留独立正文副本。无 GC、来源内部去重或异步执行者 |
 
 
-### 2026-09-18 · v0.3.0
+实现依赖以减少正常路径工作为先：先贯通原请求 context 和固定答案输入，消除嵌套历史扫描及固定来源重复计算；状态正文外置独立推进，不作为上述修复的前置条件。转录、审计的历史扫描与观测同步收敛。各层变更都保留原消费者、Writer 和后继身份，不各自创造一套恢复调度器。并行化只用于已证明独立且不可变的读取，不能用并发掩盖本应删除的重复工作。
 
-明确 Agent 消息通道、主子会话投递边界和报告/启动区别。
+原生 S7 Stop 当前不会无条件发行下一 Reviewer 问卷，最后结果仍沿 [continueS7Acceptance](../../internal/cli/s7_handoff.go)续原干净轮出口。不能继续以“每次都干两件重活”解释所有当前耗时，也不能让下一普通 Pre 成为接收后继的调度条件。真实基线漂移、受控修订及 Main 的专业工作仍走原领域路径。
 
-### 2026-09-19 · PLAN_REPORT 的 worker 交接
+对同步 I/O、Schema 校验和内核持久化不能承诺任意指令处中断；context 的检查与外层进程边界共同约束。pending 前停止不适用的新提交，pending 后遵循原配对恢复。平台处理非零退出和超时的方式与项目领域接收不同，不能用一个退出码推导工具被拒或专业结果已接收；项目未配置 `onFailure`。[平台契约](https://code.claude.com/docs/en/hooks#timeouts)
 
-PostToolUse(SendMessage) 的 control root 始终是 REQ 权威根目录；非根 `cwd` 提交的 `plan_ref` 必须通过当前 Agent 的已登记 Assignment 核对 worktree 归属和同仓库身份，再从该执行目录读取。拒绝未登记 worker、越界路径、符号链接和不匹配的报告身份，不能用根目录同名旧文件替代 worker 报告。
+### 10.5 存储减负的行为等价与性能验收
 
-合法 worker 报告按内容哈希导入根目录 `.claude/evidence/plan-handoffs/`，登记与自动推进使用同一个归一化引用；根目录原有报告流程保留。导入文件不能覆盖已有不同内容，报告拒绝或 Runtime 登记失败后的 additionalContext 必须呈现最终失败原因，不能残留 `plan_report observed`。PostToolUse 仍以 exit 0 反馈观察结果，不升级为平台阻断。
+存储减负不能通过减少 Agent 输入、改变答案或减少专业责任证明成功。验收必须覆盖以下边界：
+
+| 场景 | 必须保持的行为 |
+| --- | --- |
+| 原责任交付与历史题目恢复 | 原 packet 身份、冻结题目、输入、准确引用和作者路径保持一致；新模板不改写原责任 |
+| 原答案接收与重复返回 | 同一答案沿原消费者接收，同答重放返回原事实；不同 owner、轮次、内容或真实来源漂移保留原拒错 |
+| 普通工具与当前责任观察 | 工具权限不变；索引先选当前责任，不重建无关历史正文，不以普通工具调用触发延期提交 |
+| 中断与并发 | 正文发布前后、引用 pending 前后、state／journal 配对、checkpoint 发布各中断位置均能按原事实恢复；不丢失责任、不重复接收、不让作者清文件或换 ID |
+| 旧实例与缺失材料 | 原内嵌记录、旧 pending／checkpoint 可按受支持格式读取；已有正文而展示缺失可准确恢复；可信正文缺失或冲突返回具名故障 |
+| 最后一份专业结果 | 接收、适用阶段出口和下一材料仍沿原交接完成；后继失败如实区分，已接收作者不重交 |
+
+性能验证固定当前责任、答案及产品规模，分别增加历史工作包数量、历史正文体积和当前责任数，对照普通 Hook 与真实接收的墙钟耗时、锁等待、读取字节、正文解码／重建次数及主状态／checkpoint 体积。应证明当前责任读取不再随无关历史正文总量全量重建；必要索引和 journal 检查仍可能随记录数量增长，不承诺整次 Hook 恒定时间。组件基准、端到端本地调用与真实平台仿真分别报告，不互相替代。
+
+主状态体积、增长量和来源类型用于解释耗时，不以未经校准的固定 500 KB 阈值直接判定降级、阻断动作或向 Agent 增加例行提醒。已有恢复硬上限保留；容量异常应指出框架存储边界，不能要求减少 Claim、合并专业责任或缩短答案来适应实现负担。采样和统计不额外重复读取全部正文，也不通过加长 Hook 时限宣称性能问题已解决。
+
+### 10.6 整条接收链的验收与观测
+
+执行时使用[接收、指引与恢复验收清单](L4-hook-acceptance-checklist.md)，按条目记录正常终点、故障注入、增长与交付证据；其中指引专项检查实际渠道、连续事件、接手责任、可执行恢复和作者动作差异。清单是本节及原阶段合同的验收展开，不增加正常交付步骤。
+
+存储验收之外，接收减负必须覆盖实际入口到回执和原后继的完整链路。固定当前答案和产品规模，分别增加历史 packet 数、registry 正文大小、journal／审计日志长度、转录长度、并发返回数；必要时再单独增加当前产品规模。一次只改变一个主要变量，避免把“换了 Agent／机器变空闲后成功”当作某项优化的因果证明。
+
+| 验收对象 | 必须观察或注入的条件 | 通过条件 |
+| --- | --- | --- |
+| 输入一致性 | 两层之间改动作者文件，同次恢复及下一次显式保存 | 本次始终消费同一原输入；新保存按新内容处理；回执与落盘结果一致 |
+| 解析与来源复用 | 多份历史 packet、同一 journal、多次固定 Git 对象读取 | 不出现逐责任重复重建全 registry；复用命中实际生产链，变更内容／游标／来源后不误用 |
+| 当前连续性 | 锁外准备后改变责任、Plan、HEAD、产品文件或实际证据 | 原冲突仍被发现，缓存不替代 Writer 与可变来源检查 |
+| 预算与取消 | 基线 Git 中途取消、审计锁竞争、临近工作 deadline、显式取消 | 子调用不另获完整时限；显式取消不续新提交；原 pending 与受限原输入尾段保持各自语义 |
+| 任务定位 | 恢复任务、多引用、工具结果伪引用、超长 JSON 行、边界截断及无匹配 | 与原准确责任规则等价；命中早停，fallback 不重复放大预算；未知不选错责任 |
+| 事务与出口 | 暂存、pending、接收、最后 Result、转换和材料准备各中断窗口 | 原接收与阶段事实不丢失、不重复；只续未完成步骤，已接收作者不重交 |
+| 外围失败 | 审计写入失败、外层强制终止、部分 stdout、已接收后响应丢失 | 分开报告传输、审计、接收与后继；不伪造成功，不把工具非阻断当作接收成功 |
+
+观测同时记录墙钟总时长、外层进程结果、实际使用的内部／外部预算、阶段耗时及关键调用次数，至少能分辨分流、转录、registry／journal、固定来源、工作树扫描、锁等待、候选校验、提交、checkpoint、审计和后继。嵌套 span 不能相加冒充总耗时。取消、超时、专业拒错、并发冲突和已接收后继未完成分别计数，不把所有失败写成 rejected。
+
+外层传输失败使用既有 metrics observation spool 的一项独立 family，当前 family 预算由十八项调整为十九项：生产者为原外层进程，消费者为 doctor／health。series 仅按固定事件与失败类型区分，实际进程预算保存为聚合范围，不按毫秒值扩展标签；正常成功事件不增加这份失败观察。
+
+外层预算耗尽是独立失败事实，即使低于按平台时限计算的告警线也不能漏报。内部进程可能来不及写完成指标，外层应通过有界、具名的传输诊断保留实际事件和失败原因，不伪造内部未完成阶段耗时或未经确认的接收状态。观测本身遵循预算，不在故障尾段再触发全历史扫描或新的长锁等待；持久诊断失败须明确其限制。
+
+普通 PreToolUse 是进度与材料监听，未完成观察保留未知和准确诊断，工具按原非阻断合同继续。旧 `UnavailableDecision` 或兼容 adapter 的 deny 分支不定义当前普通入口；不能因性能故障恢复“所有非只读工具 deny”，也不能因 exit 0 就宣称专业接收或阶段求值成功。真正的来源、批准、责任与转换条件继续在原具名领域消费者／Writer 执行。
+
+组件测试证明局部边界，本地端到端调用证明原链路，真实平台仿真证明事件触发和反馈交付。各自记录源码版本、环境及实际执行范围；测试未运行或被其他进程暂停不能记为通过。只有生产调用次数、增长曲线和正常／中断交接一起符合合同，才能认定减负闭环。
+
+### 10.7 已复现交接断点的收敛设计
+
+本轮仅收敛验收 A01／A03／A04／A05 与 A02 工具错误，不将完整平台、全部强杀窗口或增长矩阵并入修复完成条件；SIM-17／11 的整体关闭仍按 §10.6 验收。
+
+| 边界 | 机制安排 | 必须保留的约束 |
+| --- | --- | --- |
+| 进程死亡后的原入口 | 取得 OS 锁后，对明确证明原 PID 已退出的兼容标记立即回收；未知所有者仍按原兼容规则处理 | 活进程不能因标记变老被驱逐；不要求作者删锁或等待标记过期 |
+| Main 返回摘要 | 原请求 context 传入正文、回执与诊断读取；取消后只保留已有责任与接收未知的准确表达 | 不另起 Background，不把取消说成专业拒收，不从新 I/O 推导完成 |
+| 框架显示诊断 | 按原生产者的准确文件名、有限内容形状和安全路径分类；原暂存文件也只认准确发布格式 | 不豁免 diagnostics 整目录或未知邻居；诊断不授予接收／恢复权 |
+| S9 私人运行产物与本地证据 | 原 PlanReport 回执、source pin 和登记执行确定本责任 packet 私人区；其中未追踪的中间产物不算产品变化。实际引用的本地证据仍按原来源捕获并核对字节 | 不以引用、内容或扩展名要求逐项证明 scratch；真实 tracked／staged 产品变化、原稿和引用证据变化仍按原合同处理，不排除其他 packet 或整套 `.loop-submissions` |
+| smoke 预算检查 | 按现行事件配置合同分别校验 PostToolUse 与其余事件 | 不调整产品预算，不把直接进程测试当真实平台验收 |
+
+先以原独立失败用例证明修复，再覆盖相邻拒绝条件及 S7 正常交接；真实 S9 和完整矩阵分别记录，未运行不记为通过。
+
+S9 的同一私人区分类必须贯通 Candidate 与 Main Inspect，不能只在第一个入口放行；原稿和被引用证据继续按各自来源与字节核验。clean 投影本身不授权清理。原 `cleanup_pending`、Main 检查与 ACK 等适用回收授权成立后，本责任私人运行产物可以随原工作区回收，不要求把每个中间文件变成引用证据；Main 的原不可变证据继续保留。真实产品变化、已改原稿、其他责任或未获授权的未知邻项仍沿原条件处理，不以强制 Git 删除掩盖它们。
+
+实现分工：Runtime 原锁入口识别死亡兼容标记；Main 返回将原请求交给只读 Service 和诊断；共享 `diagnosticstorage` 只识别显示存储，供 S7 漂移、S9 基线和集成检查使用；S9 原消费者从原回执、pin 和登记执行确定本人私人区，引用证据沿原 candidate provenance 保存，原集成与授权清理分别消费适用事实，不新增作者字段、清理命令或持久接收状态。
+
+
+D 的新普通原稿、精确 `??` 产品投影、live source 接续及清理安全须按 [S9 §4／§6.2](../l3-stages/L3-S9-repair.md#4-原生工作区与专业材料怎样交付)与 [Worktree §9.2](L4-worktree-governance.md#92-清理只处理确切已接收资源)同步实施；此为目标合同，不将隔离原型说成现行生产。新任务不默认 C source-v1／ref，旧实际锚和 frozen 原坐标继续读取。D Main 返回接续复核准确 live source／同一 attempt，历史 C 复核其实际不可变来源。高频观察涵盖支持的工具，但完整 JSON 不证明作者完成，不能新增 done、人工提交、工具 ACL 或全目录 ignore。原稿、typed attempt、证据与 Git 坐标仍在原边界核对。
+
+最后 Final 后先原 Impact 准备再独立资源清理；本人私人区在原回收授权成立后可随原工作区回收，未获授权的其他责任／未知邻项、原稿或引用证据的实际冲突仍保树并反馈专业后继与 cleanup_pending。原资源恢复不重做检查／Final。枚举→删除非原子、真实安装 ignored 分类、大目录成本和 S7／独立 Targeted／正常 OS sandbox 验收仍待完成，不能由 Hook exit 0 代替。
+
+S7 Reviewer／独立 Targeted 的本轮正式接线限定共享 Main checkout 的本人普通唯一直卷，沿各自原接收器处理。S7 由原模板 SHA 决定新旧 issued 路径并保持历史 packet digest；Targeted 由原责任明确的 source contract 选择路径，优先复用原权威字段，不按存在文件猜协议，不创建第二接收账本。共享根仅凭原 issued／原责任准确 proof 识别控制单文件，核对 `??`、非 HEAD/index 和产品范围冲突，未知 sibling 与 tracked/staged 同名仍拒绝；不宽排 `.loop-submissions`。
+
+S7 Reviewer／独立 Targeted 由 Pre 高频监听就绪本人结果，成功 Post／Stop 兜底；原消费者认定完整性，不能只因 JSON 可解析而接收。Main 只恢复系统缺口，不代填。S7 接收后仍按原完整轮／CleanRound 出口；Targeted 接收后仅续原 Handoff／fresh S7，出口失败不要求重做观察。实际 native worktree 缺已成立的原 source binding 时明确未接收，不回落 Main 同名卷或套 Builder adapter；旧 frozen 责任仍按原合同。共享原卷不进入 Builder worktree 清理，新能力须分别完成源码、安装和真实正常权限验证。
+
+### 10.8 从原接收事实到全部接手入口的接线
+
+§10.7 的独立断点通过后，仍须检查同一事实经过的全部入口。接线单位是“事实生产者 → 消费者 → 实际反馈渠道 → 后继／恢复”，不能只列需要修改的报错文件。先确定各边的来源、所有者、失效条件和验证方式，再估算实现与测试范围。
+
+两条原链分别为：S7 原生派发 → Reviewer 保存本人原卷 → 自然事件调用原 ReviewResult 消费者 → Main 接收本人结果和整轮事实 → 原 Batch／TR-008 进入 S8，或原 CleanRound／TR-009 准备 S10；S9 原生派发 → Builder 保存本人 Plan／Result → 自然事件调用原消费者 → Main 集成与检查 → Final／Impact → 独立 Targeted 原接收 → Handoff／新 S7。适用的 ACK／清理由原集成负责。实际调用可能在任一边中断；再次进入时从原事实继续，不能把执行登记、消息发送或一次成功退出当作接收完成。
+
+#### 原事实的分工与接手
+
+| 已有事实／状态 | 权威来源 | Main 必须获得的下一步 | 禁止推导的结论 |
+| --- | --- | --- | --- |
+| 已登记 execution，尚无 candidate | 当前 execution、原 Plan／Result packet、原消费者回执 | 说明“候选尚未形成”，交付原责任、准确 brief／答案引用、已接受部分和具名接收缺口；沿原接收恢复或修正实际未完成工作 | `ready` 不等于已交付；空 DeliveryRef 不是底层文件路径错误，也不能证明 Plan 未接受 |
+| Plan 已接受，Result 未形成 candidate | 原 PlanReport 回执与当前 Result 责任 | 保留已收 Plan，只续原 Result 接收；有专业遗漏才由原 Builder 修正，有来源／事务问题由 Main 恢复 | 不重复 Plan，不把环境或事务失败改写成专业拒收 |
+| DeliveryRef／SHA 仅有一项或来源损坏 | 原 execution 登记与原 candidate 来源 | 指明不完整或损坏的准确来源，由 Main 恢复原来源与绑定 | 不退回 legacy consumer，不发行替代 candidate，不要求作者重填机器字段 |
+| candidate 已接受，Main 集成未完成 | 原 candidate、execution 与集成 checkpoint | 给出准确 integrate 命令、必要 Main 检查与尚未完成步骤 | 不等待 Final 才开始集成，不续跑已交付 Builder 来重交结果 |
+| Final 已接受，ACK／清理未完成 | 原 Result 回执与原 checkpoint | 仅续 ACK／清理；保留结果、Main 检查和不可变证据 | 不再 merge、检查或接收已完成部分，不以清理失败否认 Final |
+| 无法在当前请求核验某项事实 | 已取得的索引／回执与实际读取错误 | 保留已知责任和路径，明确本次未知及准确恢复入口 | 不把取消、超时或缺诊断解释为未接收、内容非法或权限不足 |
+
+执行登记与原问卷之间的关联必须使用已有 assignment、owner、generation 和原 packet 绑定；诊断仅解释同一责任最近的尝试，不能授予接收或恢复权。需要共用的投影只在请求内组织上述事实，不增加提示专用账本、持久状态或新的作者输入。
+
+#### 必须共同核对的接线面
+
+| 接线面 | 生产／消费落点 | 本层交付与约束 |
+| --- | --- | --- |
+| 原生接收 | `native_s9.go`、原 submission／repair 消费者 | 分别保留 Plan、candidate、Final 的实际事实和具体失败；预算、来源与写入归原消费者 |
+| Main 返回与普通进度 | `native_main_return.go`、S9 listener／observer、原回执 API | 同一责任的接受状态、责任人、准确引用与下一动作一致；S7／S9 Pre 与成功 Post／Stop 在准确责任／来源绑定和原答卷就绪时复用原接收器；其余进度观察只读；不把即时发送回执当完成 |
+| 具名集成／恢复 | `workspace_delivery.go`、原 Inspect／Integrate／Result／checkpoint | 先解释当前前置事实，再读取候选来源；尚无候选、来源损坏和已收后继失败各有明确语义，并继承原请求 context |
+| 平台派发／继续 | 原生 Agent、客户端支持的同 actor 继续工具、原 Start／Stop 与返回通知 | 按实际客户端接口继续原 actor，保留原工作树和责任；核对请求、实际 Hook payload 与执行结果三者，不只统计模型请求里的参数 |
+| 阶段／角色投影与渲染 | `controller.go`、原阶段投影、Hook adapter／progress | Main 专属下一步不发给已完成 Worker；合法空动作不生成 `Next: .`，也不补通用 reconcile 指令充数 |
+| 角色、方法、帮助与验收工具 | 已安装角色／Skill、动作目录、平台兼容说明、smoke 与测试夹具 | 用当前真实合同校验；链接目标、旧措辞或不完整夹具不能冒充专业义务已交付，也不能据此放宽生产来源检查 |
+
+显示合同还须贯通结构化 schema：未给当前接收者分配后继动作或专项时，`action`／`primary_skill` 仍提供字符串字段但允许为空，必填数组保持空数组；缺字段、错误类型仍拒绝。晚返回 Worker 不预加载 Main 的审计模板、方法或专项，不仅省略空 `Next`，还要明确本事件没有分配新的 S10 审计责任。Main 的真实审计材料与动作保持完整，原接收状态仍由原回执提供。
+
+平台继续接口与工程接收接口分别负责执行和事实。当前客户端若使用 `SendMessage(to=原 actor)` 继续，消息成功只建立发送事实；实际完成通知到达后，Main 应从真实通知及原只读进度获得接手信息。S7／S9 仍由 Pre 观察就绪原答卷，成功 Post／Stop 兜底；不把发送或停止本身当接收。是否需要扩展返回适配入口，应由实际事件载体决定，不能把 SendMessage 的即时返回直接包装成“Worker 已返回”。没有受支持的同 actor 接口时明确报告平台兼容缺口，不暗中创建新 actor 或新工作树。
+
+#### 修改范围与验收编排
+
+落地前分别探查：① 原接收事实到 Main／集成恢复；② 平台继续及阶段／角色显示；③ 原回归的合同、夹具和检查器。探查交付明确文件、调用边、可复用能力、生产与测试改动、依赖和工作量。跨层接口先确定，由单一任务拥有共享文件，其余任务通过明确输入／输出对接，避免并行改同一入口。
+
+验收必须包含无候选、Plan 已收、候选已收、损坏来源、Final 后清理、请求取消和晚返回，检查事实、反馈渠道及实际副作用。合法推荐日志继续通过原候选、集成与清理；未知脚本、邻居、已跟踪／授权产品与字节变化仍保留拒绝。测试先说明本次进入哪个原入口、预期完成哪一边，再断言 revision／journal 幂等；第一次续完尚未完成的 TR-009 不等于重复接收。
+
+已有回归红灯逐项归因，分别记录生产接线缺陷、旧合同断言、缺少真实事件或来源的夹具、以及尚未定位的正常成本／中断问题。修测试时保留原专业义务与反例；不得统一换短语、提高时限、扩大忽略、降低来源检查或减少生命周期断言来取得通过。修改后先审完整调用边及相邻入口，再运行对应反例、原链和发布检查。真实平台、完整强杀和整链增长分别记录，未执行不继承旧轮次的通过标签。
+
+### 10.9 接收失败的具名续接、失败交付与单次提示
+
+§10.8 定义了接线面，但“Main 恢复原消费者”还必须落实为可执行入口；已收事实的正确投影也不能替代执行时点、跨请求错误交付和单次组装。基础接线已进入原 `consume`、native 接收核心、失败发布与 Main 组装，native flat Result 和原 Targeted 请求均有具名入口；仿真又发现具体拒绝原因丢失和输入消失后仍给无效恢复动作，下文明确其待实施的校正合同，不将设计补齐记为实现已通过。S7／S9 正常交付由 Pre 高频监听与成功 Post／Stop 兜底调用原消费者；显式 Main 恢复只是同一消费者的技术入口，不是每次交付的新手续。此前本地验证范围见[实现记录](../../.local/framework-maintenance/hook-handoff-implementation-20261026/RESULT.md)。
+
+#### 执行、接收与失败分别判断
+
+| 实际执行载体／工程事实 | 本次交付 | 动作边界 |
+| --- | --- | --- |
+| Agent／Task 明确 `status=async_launched` 或一致的 `isAsync=true`，尚无本次返回 | 明确本次只是后台启动；保留已有准确责任、已收部分及适用的旧尝试背景 | 不把未收当故障，不要求读取尚不存在的 Stop 诊断或恢复尚未失败的事务；Main 可继续真实独立工作 |
+| Agent／Task 明确完成返回 | 投影原 Plan、candidate、Final 和本次适用失败 | 有专业遗漏才续原作者；系统缺口交 Main 的准确恢复操作 |
+| 返回字段缺失、相互矛盾或没有受支持的执行事实 | 明确本次执行状态未知，保留独立已知的原接收事实 | 不根据自然语言或 `ready` 推断运行／结束，也不制造轮询和等待手续 |
+| SendMessage 即时成功 | 仅说明消息已发送 | 不伪装为 Worker 返回；S7／S9 的自然事件按原条件观察本人答卷，Stop 兜底 |
+| 同 actor 的真实完成通知到 Main | Main 获得实际返回；原只读进度提供准确工程交接 | 验证通知之后 Main 的实际模型上下文及下一动作；SDK 有通知本身不证明完整交接 |
+
+执行字段解析位于 Main 工具返回的公共适配层，覆盖其已有 S5／S6／S7／S8／S9 subject，不在各阶段复制一套平台状态。原领域事实、拒错与阶段出口不改写；适用的既有接受／失败不能因一次新启动被抹除。旧 S9 不可达返回分支及与公共选择冲突的文案一并清理。普通进度没有实际执行字段时只表达未知，不借此要求 Main 排查一个尚未证实的失败。
+
+#### 按持久窗口确定恢复入口
+
+复用现有 `runtime stage-answer consume --root <Main-root> --path <准确原输入>` 作为显式恢复入口，由 `native_s9_recovery.go` 按准确路径接入原 native 或 Targeted 消费者，不另建恢复调度器。Owner、packet、generation 和来源仍从原签发／登记核对；命令不接受作者补机器身份。typed 输入继续走原 Service；运行时只为具备实际原输入和已实现能力的窗口生成命令。
+
+| 窗口 | 输入及原消费者 | Main 的技术动作／保留条件 |
+| --- | --- | --- |
+| 私人 flat Plan／Result 已返回，native 适配未完成且原输入仍可用 | 新 D 精确 `.loop-submissions/native-s9/<原Plan packet>/result.json` 及同目录 `plan.json`；旧 issued／冻结来源保留原路径；原 native adapter | `consume` 按准确原路径选择唯一当前责任，复用与 Stop 相同的适配／接收核心；Plan 已收则复用原回执；不伪造 SubagentStop、不为纯系统接续唤醒 Worker、不发替代 packet |
+| 原 typed Result 已发行且系统适配输入仍可用，candidate 未收 | 准确原 `/S9-result/.../answer.json`；`SaveRepairResultFrom` | 直接复用已有 typed `consume`；先修具体来源／环境，再续原消费者，不从 flat 文件重写已保存输入；文件曾写出不等于它在私人 worktree 清理后仍有持久副本 |
+| 原 Writer 已有 staged／durable pending | 原固定输入、pending 和配对 Writer | Main 的 Pre／SessionStart／成功 Post 在原预算内恢复原配对 Writer，刷新后延续同一实际事件；失败给出具体系统诊断及原恢复入口。同次 CLI 仍可交付已知后继。不以当前私人文件替换已固定输入，不把通用 recover 当 native adapter |
+| candidate 已收，Main 集成／检查未完成 | 原 candidate／execution／checkpoint | 交付原准确 `runtime workspace integrate` 及实际检查选择；不重做专业接收 |
+| Final 已收，ACK／清理未完成 | 原 Final／checkpoint／冻结证据及原 Impact 准备 | 若最后 Final 已进入影响工序，先补原 Impact 准备并交付后继，再独立续 ACK／清理；不重新 merge、检查或消费私人答案 |
+| Targeted 私人请求已返回，原独立结果尚未接收且输入仍可用 | 原准确 Targeted answer 和既有 performing assignment／Impact 选择；原 Targeted 消费者 | `consume` 的具名选择也复用该消费者，保留实际独立性、blocker 和同键异文拒错；不能给独立 verifier 套用 Builder flat 适配 |
+| Targeted 已收，Handoff／新 S7 准备未完成 | 原 Targeted 回执及原出口 | 复用已有 `runtime repair handoff complete`；不再接收或要求 verifier 重做观察 |
+| 未接收私人输入或其必需 source 已丢失，且没有原消费者可识别的固定副本/pending | 原准确责任、已收部分、捕获的失败及缺失坐标 | 如实交 Main 处理来源缺失；不输出以失效路径为现成输入的 consume 命令，不以 hash、同名目录或 Main 草稿替代原内容 |
+
+恢复选择必须区分原 draft、真正已保存的适配输入和 pending 的固定输入，不能仅凭“文件存在”认定已完成适配。无冻结输入时，显式恢复读取本次实际文件并沿原校验固定；不能声称此前未捕获的字节已被保留。正常已收结果查询／系统后继恢复与一次新的显式专业修改分别处理，同身份异文仍由原消费者拒绝。
+
+专业拒错后，未接收且未被原 staged/pending 事务固定的内容，仍允许原作者按原题目更正，并经正常专业交付重新适配；保留一份错误不将该草稿冻结为终身不可改。技术 `consume` 则重放其实际固定输入，不能把 Main 改过的 flat 文件当成原技术重试。已接收/已固定输入的同身份异文、原作者合法新稿和同答重放须按各自窗口判断，不能只见路径或 packet ID 相同就混为一类。
+
+typed 文件是原适配器的派生输入；文件非空不证明已接收或存在暂存事务。原适配器在同一原工作区锁内首次生成输入，且原消费者明确在创建 Candidate 前拒错时，可以核对本次实际写入字节后撤回该次派生输入，使原作者继续填写原稿；不得撤回已有固定事务或另一并发写入。原消费者提供发生阶段和原错误，不能靠错误文案、展示诊断或角色猜测是否已固定。历史非空输入缺少上述本次事实时，正常观察不扫描历史；只有准确原作者自然事件携带已经就绪且与派生输入不同的专业原稿，才在同一原锁内有界核验原不可变 Candidate 的身份、摘要和来源。确认未接收且未固定后，沿原消费者检查本次新稿；不先接收已经被作者更正的旧稿。空稿、未就绪稿和缺失原稿不构成新专业交付，继续保留原输入的技术恢复。未能完成核验时保留原输入并报告未知，不把查验失败解释为不存在暂存。Main 的技术重试与原作者专业更正分别选择原消费者，不新增提交动作、持久诊断权威或另一套接收状态。
+
+真实 worktree／Result 路径只能来自原登记、准确实际返回或原尝试已捕获的结构化引用。诊断只提供导航，不能授予来源效力；具名入口仍核 canonical worktree、准确原 packet／owner／代次、prepared Git baseline、当前来源和原拒错。来源未确定时明确缺少哪个实际引用，不猜目录、不按角色或唯一邻居选责任。已收 Plan 不因 Result 恢复而重新导入；历史或损坏 typed 来源仍不得回落 legacy。
+
+恢复选择先读原接收和 pending 事实，再确定所需输入形态与实际可用性。命令生成只作必要的有限存在/可读性观察，不在普通进度里重放 Git 或内容闭包；实际消费仍重新核完整资格。观察因取消或 I/O 失败无法确认时标明未知，不能凭旧诊断断言文件仍在。输入可用也不保证专业校验通过；具体作者缺项仍交原作者，系统接续只处理未完成的技术边。
+
+来源丢失交接必须明确：哪项 Plan/candidate/Final 已收，哪份未收输入/工作区缺失，最后捕获的具体错误，是否存在原固定输入或 pending，以及由 Main 处理哪项条件。原固定副本存在时给它的准确入口；只有原路径/摘要而无字节时，明确本次无法技术重放。Main 在平台原有能力内继续同一作者的真实专业工作或恢复实际环境；若原绑定来源不能恢复，保留阻塞及缺少的证明，不默认重建同名 worktree、代写答案或替换原责任。不能把环境丢失自动归为 S8 根因改变，也不能用“请恢复来源”掩盖已知无法重放的限制。
+
+本次不增加全量未接收草稿备份、Git/worktree 资源重建器或新的来源替换协议；既有 candidate 已收、无产品改动的后继仍按 S9 §7.3 成立，不能缩成必须有 commit 或私人目录。新建来源替代/跨工作区恢复若需要超出原绑定能力，应单独设计原证明和后继，不能让作者靠手工试错获得隐含支持。这里的明确阻塞不算自动恢复成功，验收须分别报告来源仍在的可恢复路径与真实不可恢复窗口。
+
+#### 在原预算内交付已捕获的失败
+
+当前工作约 6 秒、进程约 8 秒。工作 context 过期之后，不能再读最新 Snapshot、正文、Git 或全文件观察来构造失败诊断。设计在请求开始时，从同一原父 context 和绝对进程截止点建立工作与诊断发布两个有界分支；发布使用原预留区间，所有分支受原外层截止点约束。进程截止点从外层传入，不以子进程启动或每个 helper 的当前时间重新计时；直接调用及旧入口没有该发布 context 时不擅自补发预算。显式取消一并结束发布。
+
+已有 `hookCompletionContext`／`ResultCompletionContext` 只服务已接受 Result 的完成尾段，不能用于失败接收以获得新的业务或诊断时间。新的发布分支只允许序列化已捕获事实及原诊断小文件的有限 I/O，不运行接收、恢复、审计历史扫描或重新核业务来源。同步文件 I/O 仍受原外层进程约束，不承诺任意指令处可取消。
+
+原接收过程在已有选择／读取点积累请求内尝试数据：准确原责任绑定、实际输入引用与已经读取的字节观察、已到达的适配窗口、实际错误及是否中断。失败后不再为了说明“发生了什么”读一次业务闭包。Plan 的部分接受等工程事实仍由后续请求的原回执确认，诊断不形成第二接收记录。
+
+复用每责任已有的 `.claude/diagnostics/native-s9/<原key摘要>.json`，不增加按事件保存的诊断历史或提示账本。已有记录在原 `scope/runtime/message/files` 上包含有限的 `attempt` 对象：`kind`（Builder／Targeted）、`responsibility_ref`、`owner`、`stage`（已经到达的原接收窗口）、`input_ref`、`typed_input_ref`、`failure_kind` 和 `observed_at`。未取得的输入引用显式为空；不包含答案正文、已收状态机或 actor 别名。`failure_kind` 只来自真实类型化错误或明确传输事实，无法分类时为 unknown；发布者不分析错误英文关键词来判作者责任。原四字段及带 attempt 的诊断继续读取，不要求迁移。
+
+同一小文件最多保留两个解释事实：现有 `message/files/attempt` 表达一份实际尝试；新增可选 `consumer_failure` 仅保留同责任原消费者已捕获的一份具体失败，内容限为其 `message/files/attempt`。当前尝试本身就是该消费者失败时不重复保存一份；后来的前置失败要覆盖实际尝试时，才将已有具体原因保留于此。到达原消费者后实际取得的新拒错替换原保留原因；尚未到达消费者的路径/环境恢复失败不能擦除它。原调用点须明确是否进入消费者，不按错误字符串或模糊阶段大小猜测。没有旧消费者失败时不制造该项，已有实际尝试可在明确原窗口后复用，不先补扫私人输入。
+
+发布只合并同 scope 的原小记录和请求内捕获信息；不累计无限错误、不存答案正文。该读-合并-原子替换必须在原发布预算内保证并发不丢具体失败，可复用已有短文件互斥能力；不持 Runtime 业务锁或集成长锁。互斥/发布失败明确为诊断交付失败，不延长原绝对截止点、不影响原业务接收。记录总量仍受原 64 KiB 上限约束，确切新形状和必要发布锁同时接入原存储识别，不能扩大 diagnostics 目录豁免。
+
+作用域由原稳定责任／来源绑定推导，不能因同次 Plan 接收改变 phase 而失效，也不能借无关 revision 失效；新责任、代次、source 变化和较新已收事实须抑制旧故障动作。`files` 只保留原读取已经取得的观察，不为填齐它在失败尾段重新读文件；缺少观察不授予接收或恢复权。
+
+诊断可展示性和恢复资格分别判断。原责任仍可关联时，文件消失、草稿变化或较弱恢复失败不能让已捕获的具体错误变成空白；反馈以“原消费者当时拒绝什么”表达，并将当前已知缺失或未核实状态分开说明。普通观察不为展示它重新读取所有观察文件的正文/摘要；文件观察不是当前业务证明。原回执优先决定哪些责任仍未完成：Plan 已收不清掉尚未收 Result 的原因；对应 candidate/Final/Targeted 已收则不继续催原缺项，新专业输入须经原消费者重新判定，不能用旧拒错声称新稿仍非法。
+
+诊断采取有界原子替换，失败不改变原接收结果；配套更新 `diagnosticstorage` 的准确字段形状及 native-s9 暂存文件规则，仍只识别原生产者的有限文件，不豁免整个目录。记录是保留的实际尝试与至多一份原消费者失败；没有可靠顺序证据时不冒称最近或当前已重验，当前原回执始终优先。写入失败须在原输出渠道说明交付限制。
+
+本轮失败交付的验收对象是“已选中原责任、已捕获失败 → 保留诊断 → 下一 Main 请求获得具体原因及准确操作”。若原进程在捕获／发布前被强杀、原父请求已取消或文件系统无法发布，只保留实际 stderr／外层传输失败及明确未知；不伪造一个可绑定的专业错误。原 metrics 仍是聚合观测，不能把某项聚合超时配给某个 owner。完整强杀及无人触发恢复保持独立能力边界。
+
+#### 一次组装与全部投影同步
+
+`currentQuestionnaireLifecycleContextFromSnapshot` 在当前 S9 Main 分支只调用一个责任投影生产者：已由 `s9PacketQuestionnaireLifecycleContext` 承接的 dispatch 不再在外层预先计算／拼接第二份；未承接分支才调用原 fallback。去掉重复调用和读取，不在最后靠字符串去重或截断掩盖它。Verifier 与 Builder 的真实并行责任仍分别保留。
+
+Main 返回、普通 dispatcher／lead、具名 integrate 和 CLI 失败反馈使用同一请求内事实与动作选择，至少输出准确责任、已收部分、适用的具体失败、恢复窗口及可执行命令／真实前置条件。命令在机制可用后才出现，按 shell 字面参数引用。阶段协议负责正常交付与显式恢复的边界；`agent-dispatch` 负责技术交接；`bug-resolution` 负责专业方法；brief 提供准确输入／输出；它们都不能再以纯系统失败为由统一要求原 Worker 再返回一次。其他阶段尚未覆盖的恢复能力明确保留原边界，不用一条通用承诺冒充实现。
+
+#### 修复拆分与通过条件
+
+先冻结准确输入、尝试捕获和动作选择接口，再分层实施：恢复核心／`consume`、诊断发布与准确存储识别、执行时点及全部反馈、原组装层去重、安装指引与平台证据。共享文件只归一个任务；原 native orchestration 由恢复任务接入诊断任务提供的接口，避免并行改 `native_s9.go`。运行时能力与安装指引同批收口，不先生成尚不存在的恢复命令。
+
+必须将 F03／F04 的独立反例转成正式合同测试，并增加：flat／typed／pending 各窗口实际执行反馈命令；Plan 已收而 Result 接收超时后的新 Main 请求；显式取消／原绝对截止点已过／发布失败；同答幂等、同键异文、错误 worktree／owner／代次、部分 candidate／Final 与 Targeted 原出口；一次完整投影的调用与来源读取次数；真实完成通知之后 Main 的模型上下文及实际接手动作。测试变体重新插入恢复 Worker、异步误报、丢错误或双调用时必须失败。已选测试数、SDK 通知存在或观察型探针通过不能代替这些关系的通过；真实平台未运行单独标待验。
+
+本轮实施也暴露了规划不足：持久窗口表必须在动手前逐项接到“公开入口 → 实际反馈 → 可执行原命令 → 原回执与后继”，并标明所有生产文件、测试入口和任务所有者。不能以 helper 已存在替代公开接线已闭合。特别是 pending 的读入口早退与领域回执自身的命令生成，都须列入调用边；派发实现前完成这张闭合表，写明预期改动范围和集中验证集合；集成后只修约定合同的失败，新增议题另行规划。
+
+### PreCompact 与压缩后的恢复
+
+专业结果、阶段事实和恢复依据在原消费者执行时已经由 Writer 保存。PreCompact 没有新的专业输入，不能为了补一份摘要而临时收卷、运行阶段控制周期或遍历全部证明。公开 Hook 在既有诊断维护后静默返回；原生提前返回的职责仍沿原边界，不额外要求每个 Worker 做维护。
+
+压缩后的 SessionStart 从 Runtime、原责任与已接受产物重新取得当前阶段、准确路径和下一动作。Milestone 可以帮助导航，但只是原工程事实的摘要，不保证每次压缩前重写，也不要求恢复时逐字重放旧提示。已经接受的工作不因提示丢失而重做，未提交的私人草稿也不会因压缩而变成已接收结果。框架不承诺替作者保存全部工作记忆或进程状态，不依靠 PreCompact 输出保证模型记住任务。
+
+## 11. 审计和观测怎样帮助查错
+
+[通用审计信封](../../internal/policy/engine.go)关联事件、会话、Runtime、观察 revision、执行者、规则、决定及耗时；适用的质量投影与原 Hook 输出共同来自相应控制结果。跨进程规则身份统一为现有 `HOOK_*` 形式，内部常量仍可保留原命名。
+
+策略版本与 SHA 说明实际加载的配置。Runtime 中的 `hook_control.policy_ref` 若与磁盘策略不一致，应诊断归属偏差；具名 `runtime reconcile-policy-ref --check` 只检查，实际同步走其原 Writer 路径。这不是新的生命周期转换、需求修订或执行授权，不能靠改引用恢复已经失效的专业结论。
+
+原生失败和配置观察使用稳定 payload 指纹参与 decision identity，使同一次重试可以去重，不同路径、错误或来源保留不同观察。原生专用 Start／Stop 也可以记录生命周期观察，但这不等于所有早退分支都已记审计，更不产生新的平台执行事实。
+
+[原生观察器](../../internal/hook/native_observer.go)只保存必要、有限字段；其失败错误和配置元数据先按既有 Capture 模式检查完整值，再限长，命中时用隐藏说明代替整字段。它不复制原工具输入／输出，也不因过滤而否决已发生的动作。事件指纹仍按原稳定输入计算，保持不同事件与同一重试的区别。
+
+[Outbox](../../internal/audit/outbox.go)负责追加、去重和持久化，不统一改写工程事实或识别任意机密。其他错误和采集入口仍承担写入前处理责任，既有模式的范围见[运行控制面](L4-runtime-control-plane.md)。限长、散列和模式检查各有用途，不能混称全局脱敏保证。
+
+同次调用在内存累计已经结束的阶段：Runtime 锁等待与持有、journal 扫描、候选校验、持久化、来源读取和原专业接收。已存在的 Hook 决策记录可带 `call_phases`，以阶段路径、调用次数和毫秒累计值表达；原生接收的既有观察在调用结束时追加，避免只记录接收前的耗时。`doctor`／`health` 从同一 outbox 展示这些数据，不在被测路径另取 metrics 锁、不新增阶段日志，也不向普通工具调用输出计时提示。嵌套阶段有重叠，不能把各段总和当作墙钟时间；没有完成的 span 不进入统计。
+
+来源读取次数表示逻辑调用，不能直接当成 Git 进程数。原计时分别呈现实际 Git 调用、固定对象复用、目录读取和分支核对；自动门、selector 来源准备、转换预检、锁内校验和具名 action 则帮助定位预算落在哪段。用同事件、来源和提交结果对账，不以最后报错的 action 名称推断它独占整个预算。
+
+计时记录说明实际测到了什么。平台先终止进程时，可能没有末尾审计或计时，不能补写一次 `timed_out=true` 冒充原进程观察。需要结合平台日志、原消费者回执、pending 与指标定位。采样与日志有助于找责任，不替代测试结果、独立判断或人的决定。
+
+## 12. 接线怎样验证，哪些工具不能误读
+
+### 12.1 验证层次分别回答不同问题
+
+| 验证层次 | 应覆盖的内容 | 不能代替的证明 |
+| --- | --- | --- |
+| 静态注册与安装检查 | 事件、matcher、路径引号、超时、安装位置、策略声明 | 真实事件确实触发并投递 |
+| 输入与渲染测试 | 实际字段、嵌套结构、退出码、stdout／stderr 分工、合法 UTF-8 | Claude 接收了对应上下文 |
+| 公开消费者测试 | 准确引用、同角色并发、本人产物、重复 Stop、Main／Worker 分离、真实缺源 | 一个真实模型完成了专业工作 |
+| 配置命令的进程测试 | 从 settings 命令到二进制、stdin、输出及退出的实际边界 | 角色加载、后台返回与同会话继续 |
+| 真实 Claude 隔离测试 | 实际版本、触发事件、前后台与恢复、收到反馈的会话 | 目标产品已通过独立质量验收 |
+
+真实平台测试必须记录执行器版本、实际转录、Hook 输入与输出、退出、专业接收回执及接收会话。特别要确认准确题目是否到达 Worker、Stop 反馈是否到达本人、Main 是否收到应由其处理的交接；stdout 有字不是接收证明。用模拟答案测试接线时，应明确没有执行产品建设与独立产品判断。
+
+### 12.2 当前 smoke 与诊断入口的限制
+
+[platform smoke 脚本](../../tools/claude-hook-smoke.sh)检查静态注册、已知的 match-all／MCP-wide matcher 形式和直接 Harness 进程，并检测 Claude CLI 安装；当前认可 `*` 注册，按 PostToolUse 30 秒、其他已注册事件 10 秒核对预算。它不启动真实专业会话，也不执行完整客户端 matcher 引擎；未知 matcher 形式需要实际平台证据。安装检测或直接进程通过仍不能证明真实事件触发、同 actor 继续和反馈交付。
+
+`doctor` 处理静态结构和约定，`health` 提供累计运行信号，`ready` 只读诊断当前质量条件。它们各自有用途，不互相充当“实际 agent 已收工”的证明；普通继续不需要反复运行全套诊断。
+
+`dry-run --fixture` 是现有 `ready` 质量条件诊断的兼容入口：fixture 仅提供事件标签，返回当前质量条件、缺项和观测修订，不执行 Hook、接收答案、恢复写入、记录审计或提交转换。输出明确标注不模拟 Hook，也不证明转换可提交；它不建设第二套事件预演引擎。日常只读诊断直接使用 `ready`，不以额外诊断命令作为 agent 开始或结束工作的条件。
+
+## 13. 修改接线时需要共同维护什么
+
+新增或改变事件，应先说明具体消费者、为什么现有事件不够、实际输入是什么、输出发给谁、能否影响继续、故障时保留什么、正常成本是多少。然后同步注册与安装、输入字段、路由优先级、专业消费者、输出适配、审计与验证；不能只加一个 matcher，就让角色或作者承担未说明的机制。
+
+| 维护面 | 实际入口或约束 |
+| --- | --- |
+| 注册与安装 | [settings](../../settings.json)、[模板检查](../../internal/migration/templates.go)、[策略事件声明](../../docs/control/hook-policy.json) |
+| CLI 和根解析 | [run.go](../../internal/cli/run.go)、[workspace](../../internal/workspace) |
+| 原生责任 | [native_s6.go](../../internal/cli/native_s6.go)、[native_s9.go](../../internal/cli/native_s9.go)、[native_review_hooks.go](../../internal/cli/native_review_hooks.go) |
+| 进度与恢复 | [controller.go](../../internal/cli/controller.go)、[projection.go](../../internal/cli/projection.go)、[运行控制面](L4-runtime-control-plane.md) |
+| 输出与继续反馈 | [pretooluse.go](../../internal/hook/pretooluse.go)、[adapter.go](../../internal/hook/adapter.go)、[lifecycle.go](../../internal/hook/lifecycle.go)、[mainstop.go](../../internal/hook/mainstop.go) |
+| 提示与实际集成提醒 | [progress.go](../../internal/hook/progress.go)、[worktree.go](../../internal/cli/worktree.go) |
+
+原策略、兼容 adapter 与恢复命令可以保留对原记录的支持，但其注释、测试或操作材料中的旧身份链、激活和全事件门禁表述不能重新成为新责任前置。若删除或旁路一项能力，应说明它还有哪些消费者，防止后来者误以为“字段仍存在，所以普通执行仍受它控制”。
+
+本机制承载 L1 的自然路径、可执行反馈与有限约束。判断接线是否正确，应看当前责任能否在真实平台上获得准确材料、完成专业工作、由原消费者接收，并在失败后回到正确的人或执行继续。不能以一个合法 JSON、一张事件表或全部 handler 都返回 0 代替这个判断。

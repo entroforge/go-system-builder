@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vibe-coding.local/schemas/review-result.schema.json",
   "title": "S7 Canonical ReviewResult",
-  "description": "The single structured result one Assignment submits (L3-S7 §3.5). claim_results must equal the Assignment's Claim set exactly; every fail Claim references a Finding with a real encounter. Submitted via `loop-harness runtime review-result submit`.",
+  "description": "The single structured result one Assignment submits (L3-S7 §3.5). claim_results and blocked_claims cover the Assignment exactly, except a validated P0 safety stop may leave unobserved Claims. Every fail Claim references a Finding with a real encounter. The issued professional answer is received by the original consumer at native SubagentStop; the explicit submit command is a domain recovery entry.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -63,7 +63,7 @@
     },
     "claim_results": {
       "type": "array",
-      "description": "The pass/fail answers. Together with blocked_claims this must equal the Assignment's Claim set exactly — no missing entries, no extras, no Claim answered twice. not_applicable is a ReviewPlan disposition, never a Reviewer conclusion.",
+      "description": "The pass/fail answers. Together with blocked_claims this covers the Assignment exactly unless a validated P0 safety stop leaves unobserved Claims. No extras or Claim answered twice; omitted Claims never imply PASS. not_applicable is a ReviewPlan disposition, never a Reviewer conclusion.",
       "items": {
         "type": "object",
         "additionalProperties": false,

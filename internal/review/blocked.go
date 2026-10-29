@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,7 +30,7 @@ import (
 
 // validateBlockedClaims enforces the full §3.5 validation chain for every
 // blocked_claims entry. Anything missing rejects the whole submit atomically.
-func validateBlockedClaims(root string, state map[string]any, plan *Plan, assignment *PlanAssignment, result *Result) error {
+func validateBlockedClaims(root string, state map[string]any, plan *Plan, assignment *PlanAssignment, result *Result, pathRoots ...string) error {
 	if len(result.BlockedClaims) == 0 {
 		return nil
 	}
@@ -124,30 +125,25 @@ func validateBlockedClaims(root string, state map[string]any, plan *Plan, assign
 				if len(finding.EvidenceRefs) == 0 {
 					return fmt.Errorf("blocked claim %s uses current finding %s as evidence, but that Finding has no evidence_refs", blocked.ClaimID, ref)
 				}
+				if err := validateEvidenceRefs(root, state, finding.EvidenceRefs, "blocked claim "+blocked.ClaimID, pathRoots...); err != nil {
+					return err
+				}
 				continue
 			}
-			entry, ok := confirmedEvidence[ref]
+			// Local evidence has already been bound by the original answer
+			// adapter. It need not be registered again under an unrelated ID.
+			if strings.HasPrefix(ref, "path:") || strings.HasPrefix(ref, "command_output:") {
+				if err := validateEvidenceRefs(root, state, []string{ref}, "blocked claim "+blocked.ClaimID, pathRoots...); err != nil {
+					return err
+				}
+				continue
+			}
+			entry, ok := confirmedEvidence[strings.TrimPrefix(ref, "runtime:")]
 			if !ok {
 				return fmt.Errorf("blocked claim %s references evidence %s which is not a valid current-round evidence entry", blocked.ClaimID, ref)
 			}
-			path, ok := entry["path"].(string)
-			if !ok || strings.TrimSpace(path) == "" {
-				return fmt.Errorf("blocked claim %s evidence %s has no artifact path", blocked.ClaimID, ref)
-			}
-			sha, ok := entry["sha256"].(string)
-			if !ok || len(sha) != 64 {
-				return fmt.Errorf("blocked claim %s evidence %s has no artifact digest", blocked.ClaimID, ref)
-			}
-			artifactPath, err := repositoryContainedPath(root, path)
-			if err != nil {
-				return fmt.Errorf("blocked claim %s evidence %s path is outside repository: %w", blocked.ClaimID, ref, err)
-			}
-			data, err := os.ReadFile(artifactPath)
-			if err != nil {
-				return fmt.Errorf("blocked claim %s evidence %s artifact is unreadable: %w", blocked.ClaimID, ref, err)
-			}
-			if sha256Of(data) != sha {
-				return fmt.Errorf("blocked claim %s evidence %s artifact digest drifted", blocked.ClaimID, ref)
+			if err := validateIndexedEvidence(root, entry, ref, "blocked claim "+blocked.ClaimID); err != nil {
+				return err
 			}
 		}
 		if !blocked.AfterRepairRequired {
@@ -462,29 +458,17 @@ func submitSiteLostBlocker(
 		return loopruntime.Snapshot{}, err
 	}
 	committed := false
+	blockerSHA := sha256Of(blockerBytes)
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	defer func() {
 		if committed {
 			return
 		}
-		// If the CAS error was returned after a commit became visible, keep
-		// the immutable bytes so the evidence index cannot be orphaned. Only
-		// clean an artifact when the caller's revision is still persisted.
-		stateBytes, readErr := os.ReadFile(statePath)
-		if readErr != nil {
-			return
-		}
-		var persisted map[string]any
-		if json.Unmarshal(stateBytes, &persisted) != nil || intField(persisted["revision"]) != currentCommitRevision(request.ExpectedRevision, current) {
-			return
-		}
-		if path, pathErr := repositoryContainedPath(root, blockerRel); pathErr == nil {
-			_ = os.Remove(path)
-		}
+		// The original Writer lock proves no pending commit or references
+		// remain before deleting staged bytes, including an uncertain CAS.
+		_, _ = removeStagedArtifactIfUnreferenced(store, current, commitRevision, blockerRel, blockerSHA)
 	}()
-	blockerSHA := sha256Of(blockerBytes)
-
-	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
 		EventID:        fmt.Sprintf("evt-review-site-lost-%s-r%d", result.ResultID, commitRevision+1),
 		TransitionID:   "REVIEW-RESULT",
@@ -498,6 +482,9 @@ func submitSiteLostBlocker(
 			result.AssignmentID, readiness.FindingID, reason),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
+			if err := validateIssuedResultRequest(root, state, request, result, false); err != nil {
+				return err
+			}
 			reviewMap, ok := state["review"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("runtime review section must be an object")
@@ -507,7 +494,7 @@ func submitSiteLostBlocker(
 			if row == nil {
 				return fmt.Errorf("assignment %s is not registered in the runtime projection; dispatch it via `runtime register-workgroup` first", assignment.AssignmentID)
 			}
-			if status, _ := row["status"].(string); status == "result_submitted" || status == "consumed" {
+			if status := workstate.ReviewAssignmentActivity(row); status == "result_submitted" || status == "consumed" {
 				return fmt.Errorf("assignment %s already has a consumed ReviewResult; one Assignment submits exactly one Result (L3-S7 §3.5)", assignment.AssignmentID)
 			}
 			agentID, _ := row["agent_id"].(string)
@@ -517,7 +504,9 @@ func submitSiteLostBlocker(
 			if agentID != result.ProducerAgentID {
 				return fmt.Errorf("ReviewResult producer %s does not match the dispatched Agent %s for assignment %s", result.ProducerAgentID, agentID, assignment.AssignmentID)
 			}
-			row["status"] = "blocked"
+			if err := workstate.RecordReviewAssignmentActivity(state, row, "blocked", "review_assignment_blocked"); err != nil {
+				return err
+			}
 			row["queue_reason"] = "site_lost:" + readiness.FindingID
 			row["blocker_ref"] = blockerRel
 			row["blocked_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
@@ -528,10 +517,15 @@ func submitSiteLostBlocker(
 				if agent["id"] != agentID {
 					continue
 				}
-				if currentState, _ := agent["state"].(string); currentState != "working" {
-					return fmt.Errorf("reviewer Agent %s is %s; a site_lost BLOCKER requires working state", agentID, currentState)
+				currentState := workstate.AgentActivity(agent)
+				readingPlanCheckpoint := currentState == "reading" &&
+					(agent["dispatch_mode"] == "plan_checkpoint" || agent["dispatch_mode"] == "one_shot")
+				if currentState != "working" && !readingPlanCheckpoint {
+					return fmt.Errorf("reviewer Agent %s is %s; a site_lost BLOCKER requires an active Reviewer assignment", agentID, currentState)
 				}
-				agent["state"] = "blocked"
+				if err := workstate.RecordAgentActivity(state, agent, "blocked", "work_blocked"); err != nil {
+					return err
+				}
 				agent["work_blocked_ref"] = blockerRel
 				agent["blocker_resolved_ref"] = nil
 				agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)

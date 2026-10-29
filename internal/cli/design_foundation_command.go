@@ -115,40 +115,31 @@ func runDesignFoundationMigrate(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "design-foundation migrate")
 	root := flags.String("root", ".", "repository root")
 	to := flags.String("to", "contract-v1", "migration target (only contract-v1)")
-	write := flags.Bool("write", false, "write markers (default is dry-run)")
+	write := flags.Bool("write", false, "unsupported: automatic migration writes are unavailable; use the read-only preview")
 	dryRun := flags.Bool("dry-run", true, "preview without writing")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
-	}
-	// --write overrides dry-run
-	isDryRun := *dryRun
-	for _, a := range args {
-		if a == "--write" {
-			isDryRun = false
-			break
-		}
-	}
-	if *write {
-		isDryRun = false
 	}
 	if *to != "contract-v1" {
 		fmt.Fprintln(stderr, "design-foundation migrate: only --to contract-v1 is supported")
 		return 2
 	}
-	plan, err := designfoundation.PlanMigrate(*root, *to, isDryRun)
+	// Always render what was actually performed: a read-only plan. Unsupported
+	// write intent cannot turn that preview into a successful migration.
+	plan, err := designfoundation.PlanMigrate(*root, *to, true)
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("design-foundation migrate", err))
 		return 1
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(plan)
-	if !isDryRun {
-		if written, werr := designfoundation.WriteMigrate(*root, plan); werr == nil && len(written) > 0 {
-			for _, line := range written {
-				fmt.Fprintln(stderr, line)
-			}
-		}
+	if err := enc.Encode(plan); err != nil {
+		fmt.Fprintln(stderr, formatFailure("design-foundation migrate preview", err))
+		return 1
+	}
+	if *write || !*dryRun {
+		fmt.Fprintln(stderr, "design-foundation migrate: automatic writes are unsupported; no files changed. The JSON is a read-only preview: map the original files using the listed templates, markers and columns. No IDs, debts or Proof were generated.")
+		return 1
 	}
 	return 0
 }

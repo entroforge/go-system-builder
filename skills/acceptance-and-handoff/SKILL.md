@@ -1,171 +1,107 @@
 ---
 name: acceptance-and-handoff
-description: Use when a valid clean round enters acceptance, release audit, or human release handoff
+description: Use when a current complete clean round enters acceptance or release audit and prepares the existing human handoff
 category: methodology
 version: 1.3.0
 ---
 # Acceptance And Handoff
 
-## Role doctrine
-
-This Skill is not a “move the Loop to S11” checklist. It is the method for a
-senior acceptance owner / release auditor to prove that the entire REQ was
-developed, reviewed, tested, and prepared for handoff. The shortest path is
-the worst path for this project: never treat an existing clean round, a green aggregate,
-or a complete-looking Markdown file as proof that the declared scope was
-covered.
-
-Unknown is unfinished. An unchecked case cannot become `N/A`; a targeted check
-cannot become a full review; and a non-blocking risk still needs an owner,
-tracking artifact, impact, and recovery point.
-
 ## Authority
-Automation stops before squash merge, main-branch publication, or formal release. Runtime authority lives in `docs/control/loop-definition.json`; the stage contract lives in `docs/control/agent-protocol.md`; the method summary is inlined below.
+
+Follow the installed [S10 stage contract](../../docs/control/agent-protocol.md#s10) and `docs/control/loop-definition.json`.
+
+Acceptance checks the actual REQ commitments and applicable Closing Contracts.
+Release audit checks the system and operational concerns relevant to this change.
+They are two professional steps, using the existing Manifest at the exact path
+supplied by the system.
 
 ## Entry Conditions
-- A `clean_round_valid` evidence record exists and is referenced by ID and hash.
-- The Loop is in top-level `acceptance` or `release_audit`.
-- The locked REQ fingerprint still matches the runtime baseline.
-- The clean round was produced by a fresh complete S7 round. S9 never enters
-  S10 directly; targeted re-verification only permits the return to S7.
+
+The current responsibility is acceptance or release audit after a complete S7
+clean round. A targeted check or fresh S7 seed is not a complete clean round.
 
 ## Required Inputs
-| Input | Path / field | Why |
-|:---|:---|:---|
-| Clean-round record | runtime evidence ID/hash | acceptance and audit anchor |
-| Locked baseline | runtime `bound_req` + REQ fingerprint | ACC source of truth |
-| ACC inputs | REQ acceptance criteria, Closing Contracts, evidence map | assemble acceptance evidence |
-| Release architecture | design docs, deployment config, migration/rollback | release audit scope |
-| Operations readiness | runbooks, observability, on-call | operational gate |
-| Evidence fingerprints | runtime `evidence[]` | detect stale acceptance evidence |
+
+Read the current S7 results, commitment text, existing expectations and material
+paths supplied for this responsibility.
+
+The system supplies known responsibility/round associations and machine
+summaries. Do not copy IDs, hashes, receipts, metrics or source certificates.
+Responsibility progress uses the existing five states `pending/active/blocked/done/cancelled`;
+professional outcomes, stage cursors and the human decision remain distinct.
 
 ## Procedure
-1. **Freeze the audit universe.** Build a `coverage_inventory` from the locked
-   REQ, design, contracts, TASK Closing Contracts, S7 Claims, S9 ChangeImpact,
-   changed paths, and risk tags. Include requirements, behavior branches,
-   architecture invariants, data/migration, operations, evidence integrity,
-   and project-management risks. Do not shrink this list later to obtain PASS.
-2. **Plan independent responsibility.** Use as many read-only reviewers as the
-   inventory and risk require: requirement acceptance, architecture/code,
-   data/migration/operations, evidence integrity, and adversarial review are
-   separate concerns when their conclusions or authorship differ. The main
-   session integrates results; it does not count duplicate PASS results as
-   coverage.
-3. **Re-verify the clean-round anchor.** Confirm it is current, valid,
-   fingerprinted, and generated after the latest repair. If stale or if the
-   product tree moved after the round, stop and require a new complete S7.
-4. **Assemble the ACC.** Map every REQ acceptance criterion and every TASK
-   Closing Contract to a current PASS/N/A evidence ID. For each row record
-   source, expected behavior, oracle, evidence, result, and the relevant
-   negative/boundary/recovery branch.
-5. **Check delivery and operations.** Confirm delivered scope, deployment
-   order, migration/data handling, runtime health, rollback or data remedy,
-   monitoring, alerting, on-call ownership, and technical-debt tracking.
-6. **Run the counterevidence review before acceptance.** For every inventory
-   item ask what would disprove the conclusion. Check rejection, error,
-   permission, boundary, duplicate, retry, restart, multi-instance, mock-only,
-   and stale-document failure modes where applicable. Record evidence for the
-   counterexample check. Any unanswered item remains `UNKNOWN` and blocks.
-7. **Check objective completion.** Require requirement/contract/changed-path/
-   audit coverage of 100%, zero `UNKNOWN`, zero unsupported PASS, zero
-   unowned risks, zero untracked debt, and zero blocking findings. Only then
-   run `loop-harness s10 manifest validate --file <manifest.json> --type acceptance`
-   and register an envelope carrying `audit_manifest_path` plus its SHA-256;
-   only then request TR-015 (`acceptance_completed` → `release_audit`).
-8. **Execute the release architecture audit.** Review the eight system areas:
-   state machine; transaction/UoW/session; concurrency/idempotency; data
-   model/identity/migration; call sites/runtime topology; observability/errors;
-   verification evidence; and documentation/release scope. Each area needs a
-   conclusion, evidence, counterevidence check, and route for any gap.
-9. **Classify findings.** A product or architecture defect returns through
-   S8→S9→S7; a correctable acceptance discrepancy returns to a new complete
-   S7; an architectural/migration/operations blocker pauses; an REQ or
-   irreversible decision goes to the matching human Gateway.
-10. **Prepare the S11 package only after reconciliation.** Include clean-round
-    ID/hash, coverage metrics, ACC ID/hash, audit ID/hash, baseline generation,
-    completed scope, unresolved fact, impact, residual risks and owners,
-    recommendation, recovery point, and an explicit `automation stops`.
-    Request TR-017. Never request, attempt, or proxy merge, publication,
-    deployment, or formal release.
 
-## Design Foundation feedback transaction
-
-Any S7 Finding, counterevidence item, visual regression, usability test, or subsequent REQ that contradicts or falsifies an active `LAW-* / ANTI-* / INV-* / GR-* / ROLE-* / PAT-* / SUR-*` (or shows an `EX-*` boundary is wrong) enters the `skills/design-foundation` feedback transaction — it is not closed by writing a report:
-
-1. **Record fact** — source observation (`Finding` ID / S7 counterevidence row / visual-qa result / REQ `PROOF-*`), violated or falsified constraint IDs, and `REQ-* / PROOF-*` path.
-2. **Classify** — local fix (module package only) / module Pattern or `CP-*` candidate / global Grammar/Token/Component extension (`ADR-*` / `DFD-*`) / scoped `EX-*` / Kernel breaking change (human re-confirm).
-3. **Update only the classified authority** — list affected edges `Grammar / Surface / Derivation / Token / component / Proof`; do not silently promote a local composition to global.
-4. **Replay** — re-run affected-edge reference/binding checks (`loop-harness design-foundation check`) and one minimal replay (second `changed` REQ cold-start or affected Proof state).
-5. **Close on evidence** — receipt fields `Source observation / Affected constraint IDs / Classification / Changed edges / Replay evidence / Status open/closed` must be present and resolvable; checker validates refs/paths, human judges whether Kernel should change. `open` until both pass; never close on report completion alone.
-
-Carriers reuse existing authority (no new Feedback DB): local fix → source Finding + repair/verification evidence; module pattern → `CP-*`; global extension → `ADR-*`/`DFD-*` + updated tables; exception → `EX-*`; breaking change → `DFD-*` + human re-publish. This Skill and `docs/control/agent-protocol.md` #s7 / #s10 are the entry points; filling `docs/reports/design-foundation/FOUNDATION-REPLAY-template.md` after two REQs does not count as wired.
-
-## Machine-checked S10 artifact
-
-The human ACC and release-audit Markdown is rendered from the JSON manifest —
-the manifest is the single source, the Markdown is its human-readable
-projection. Its shape authority is
-`internal/schema/assets/s10-audit-manifest.schema.json`.
-Copyable starting shapes are `docs/examples/s10/acceptance-manifest.json` and
-`docs/examples/s10/release-audit-manifest.json`; replace their placeholder
-facts with the current Runtime evidence.
-The normal handoff is:
-
-```text
-loop-harness s10 manifest validate --root <root> \
-  --file <manifest.json> --type <acceptance|release_audit>
-loop-harness s10 manifest render --root <root> \
-  --file <manifest.json> [--output <report.md>]
-loop-harness runtime evidence add --root <root> \
-  --expected-revision <N> --id <id> --kind <acceptance|release_audit> \
-  --path <envelope.json> --produced-by <agent> --responsibility <role>
-```
-
-The envelope JSON must contain the immutable manifest reference:
-`"audit_manifest_path": "<manifest.json>"` and
-`"audit_manifest_sha256": "<64 lowercase hex characters>"`. The validator
-derives the hard metrics from the frozen rows and rejects unresolved
-`UNKNOWN`, unsupported `PASS`, missing owners/evidence, or an incomplete
-release-audit eight-area set. The hard inventory categories `requirement`,
-`contract`, and `changed_path` must each have an explicit row; use an
-evidence-backed `not_applicable` row rather than omitting a category. If the
-gate names `s10:<type>_manifest:<id>`,
-correct the manifest or envelope and register a new fingerprint; do not edit
-the previously registered artifact in place.
-
-For a routed non-passing outcome, validate with the matching mode:
-`--outcome review_required` for acceptance (TR-016 back to S7), or
-`--outcome blocked` for release audit (TR-018 to `paused`). These modes keep
-the unresolved rows and blocker route visible, while still requiring the
-complete inventory, counterevidence links, and evidence bindings.
+1. Personally check the commitments and relevant counterexamples. Record actual
+   observations, professional conclusions, evidence locations/output, risks and
+   unfinished reasons in the existing fields. The existing oracle field may
+   explain an actual observation; it is not another proof format.
+2. Reuse real S7 findings, checks and other existing observations when they apply.
+   One observation may support a main conclusion and its related counterexample;
+   do not invent another test, task, evidence artifact or summary for each row.
+3. Review actual delivery, compatibility, migration, rollback and operations
+   concerns. The eight audit themes are useful questions, not mandatory counts.
+   No applicable object means no invented N/A row, citation or task. Not checked
+   is unfinished, not automatically N/A or PASS.
+4. Main arranges and actually notifies any necessary independent reviewer.
+   Actual independence concerns participation in the work, not the spelling of
+   an owner/role field. Report real risk impact, who handles it and a usable
+   follow-up location; existing local work records are valid locations.
+5. If a review exposes a product, architecture or REQ problem, report it and
+   follow the existing return or human-decision route. Do not patch product or
+   locked requirement/specification files inside S10. Any genuine change that
+   invalidates the current verification needs the original S7 work again.
 
 ## Outputs
-- ACC evidence record (criterion → evidence mapping, baseline, clean-round reference).
-- Coverage inventory and counterevidence ledger with objective completion metrics.
-- Release architecture audit evidence.
-- `awaiting_human_release` handoff record with all referenced evidence IDs and hashes.
 
-## Exit Conditions
-- Release audit passes and control is explicitly handed to a human at the
-  non-terminal `awaiting_human_release` decision gateway.
+Fill the explicit professional outcome for the current acceptance/release-audit
+step and save the supplied Manifest. Unknown, failed or incomplete reports are
+recorded honestly and do not imply that the stage is complete. Leave actual
+missing work visible in the same file; no new report/state is required.
+
+The normal receiver reads existing field types and current responsibility,
+records through the original atomic Writer and projects the same content to the
+human-readable ACC/audit report. You do not maintain a second envelope, summary,
+Markdown report or registration transaction. Do not manually issue/consume or
+run `runtime evidence add` as a normal author step. Explicit validate/render
+commands remain diagnostic tools when addressing a concrete reported problem.
 
 ## Stop Conditions
-Stop immediately and surface to the human if any of:
-- The clean-round evidence is missing, invalid, or superseded.
-- ACC cannot map a required acceptance criterion to valid evidence.
-- The audit universe is incomplete, contains `UNKNOWN`, or has unsupported PASS conclusions.
-- A changed path has no requirement/contract/task/evidence disposition.
-- Release audit has a blocking finding (architecture drift, missing migration/rollback, operations not ready).
-- A product or architecture defect is found and someone proposes fixing it inside S10; route back through S8/S9/S7.
-- An irreversible action (merge, publish, deploy, release) is requested without separate human approval.
-- The locked REQ fingerprint no longer matches the runtime baseline.
+
+Actual unfinished work prevents completion and is reported to its current owner;
+it does not block ordinary tools or prevent recording an honest report.
+The Hook can show current recorded outcomes, unanswered/unknown/failed rows,
+reported blockers, material paths and the next responsibility. It cannot prove
+all natural-language promises were exhaustively checked, authenticate evidence
+or judge actual independence. Do not turn counts, fixed categories, evidence
+array size, tracking-ticket spelling or source hashes into acceptance tests.
+Machine metrics describe reported progress, not reality or release approval.
+
+## Exit Conditions
+
+A complete acceptance save follows the original TR-015 path to the next accurate
+audit questionnaire. A complete relevant audit follows TR-017 to the existing
+S11 handoff. The current complete S7 clean-round condition still applies; the
+normal completion exit does not wait for another Pre to repeat source proofs.
+The existing `review_required`/`blocked` routes preserve actual unfinished work.
+
+An explicit acceptance `review_required` returns to a complete S7 round through
+TR-016. The system derives its original impact input from the received decision
+and the current ReviewPlan's frozen scope; this does not assert product changes.
+Do not create a Changeset, RepairSession, Finding or duplicate impact report to
+obtain a return. Main restores any specifically reported missing original plan
+or scope. The received acceptance stays received; normal Main completion resumes
+that original consumer after source recovery. Do not refill or resave unchanged
+acceptance. The original full-review budget still applies, and the new S7 plan
+requires actual professional judgment and independent review.
 
 ## Non-Goals
-- Do not merge, publish, deploy, or formally release — acceptance never performs release. Hook Policy does not block these commands, so the constraint is procedural: reaching S11 raises a `release_ready` Gateway package and the human decides whether release proceeds.
-- Do not replace the clean-round evaluator with a narrative assertion. Delegate the machine recomputation to `clean-round-evaluation`, then perform the S10 anchor and counterevidence review described above.
-- Do not modify the locked REQ or specifications to make acceptance pass.
-- Do not modify product code in S10. Any such modification invalidates the release candidate and requires a fresh S7 round.
 
-## Inlined Methodology
+S11 reuses accepted S10 readable reports, real residual risks and exact paths; no duplicate human package or metadata form. TR-017 prepares materials once; ordinary Pre/Stop only reads. The human explicitly chooses one of the six dispositions. Main faithfully fills the supplied application’s original `disposition` and optional `reason` and saves; PostToolUse automatically records/consumes through the existing Writer and fixed outlet. Without a real human choice leave disposition empty and wait: drafts do not write Runtime or default to approval. The Hook does not authenticate identity or demand extra confirmation/proof fields; the system supplies metadata/caller attribution. The original human-decision command is compatibility/recovery, not normal author work or a second submission. Return routes carry actual reason/paths to S8/S10; retain observations but clear the returned S10 step’s old final conclusion. No consumed old application is reused. S10 does not merge, publish, deploy or formally release
+on the human's behalf. Removing tool blocking does not grant release approval,
+and recording an audit does not stand in for a human decision.
 
-The Loop uses a layered state model: a top-level Loop state plus constrained phase machines for complex stages plus independent Agent/TASK/BUG lifecycles. The main trunk is `inactive -> planning -> document_verification -> building -> verification -> acceptance -> release_audit -> awaiting_human_release`. `bug_resolution` handles correction work; `paused` is a resumable wait state. Only `release_authorized` and `aborted` are terminal states eligible for rollover. Correction loops never bypass the trunk. `awaiting_human_release` is a non-terminal human decision gateway where automation stops; a human approve decision reaches `release_authorized` without executing a release: Hooks must strong-block squash merge, production deployment, and formal release when initiated by Loop automation. Invalid transition policy: undefined or guard-failing events do not change state, execute no side effect, record a rejected event, report the failed guard, and pause on repeated runtime-integrity failure. Idempotency uses compare-and-swap or equivalent revision checks; one committed transition per runtime revision; idempotency keys for state-changing actions; stale writers reload instead of overwriting. The 16 preservation invariants (INV-001..INV-016) map to enforcement layers (schema, hook, guard, combined). ACC and release architecture audit reference the clean-round record by ID and hash; later changes do not rewrite the record.
+If the review identifies a Design Foundation issue, report the actual affected
+constraint and use its existing owner/decision route. This does not require a
+second receipt, a new task matrix or an unrelated replay to receive the S10
+report. A professional report cannot authorize a Kernel or REQ change.

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
@@ -10,23 +11,31 @@ import (
 	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
-const readyInstruction = "produce listed missing work; do not call transition CLI; next PreToolUse auto-advances when satisfied"
+const (
+	readyEvaluationScope        = "quality_gate"
+	readyInstructionNotReady    = "follow each listed missing responsibility through its original preparation, reception or recovery boundary; do not call transition CLI or repeat an accepted answer"
+	readyInstructionSatisfied   = "quality gate evidence conditions are satisfied; ready did not evaluate transition guards or verify commitability; the original stage reception/followup may attempt the transition; follow its actual receipt, not another observation; do not call transition CLI"
+	readyInstructionNoCandidate = "no automatic transition candidate exists at this cursor; ready is read-only and does not evaluate transition guards; continue from current cursor guidance; do not call transition CLI"
+	readyInstructionUnknown     = "quality gate could not determine readiness; inspect error_code/conflicts and continue from the current cursor; ready does not evaluate transition guards; do not call transition CLI"
+)
 
 // ReadyReport is the read-only diagnostics projection for `loop-harness ready`.
 // It dry-runs the current cursor's Quality Gate using the same candidate
 // selection and evaluator as RunControlCycle, but never calls transition.Apply.
 type ReadyReport struct {
-	Cursor              string   `json:"cursor"`
-	Stage               string   `json:"stage"`
-	GateID              string   `json:"gate_id"`
-	Status              string   `json:"status"`
-	Missing             []string `json:"missing"`
-	CandidateTransition string   `json:"candidate_transition"`
-	Instruction         string   `json:"instruction"`
-	HumanRequired       bool     `json:"human_required"`
-	ObservedRevision    int      `json:"observed_revision"`
-	ErrorCode           string   `json:"error_code,omitempty"`
-	Conflicts           []string `json:"conflicts,omitempty"`
+	Cursor                    string   `json:"cursor"`
+	Stage                     string   `json:"stage"`
+	GateID                    string   `json:"gate_id"`
+	Status                    string   `json:"status"`
+	EvaluationScope           string   `json:"evaluation_scope"`
+	TransitionGuardsEvaluated bool     `json:"transition_guards_evaluated"`
+	Missing                   []string `json:"missing"`
+	CandidateTransition       string   `json:"candidate_transition"`
+	Instruction               string   `json:"instruction"`
+	HumanRequired             bool     `json:"human_required"`
+	ObservedRevision          int      `json:"observed_revision"`
+	ErrorCode                 string   `json:"error_code,omitempty"`
+	Conflicts                 []string `json:"conflicts,omitempty"`
 }
 
 // EvaluateReady dry-runs the active Quality Gate at the current Runtime cursor.
@@ -36,8 +45,12 @@ func EvaluateReady(ctx context.Context, root string) (ReadyReport, error) {
 		ctx = context.Background()
 	}
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
+	// Do not create a lock directory/file while diagnosing an uninitialized root.
+	if _, err := os.Stat(statePath); err != nil {
+		return ReadyReport{}, fmt.Errorf("read runtime: %w", err)
+	}
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
-	store := runtime.NewStore(statePath, journalPath)
+	store := runtime.NewStore(statePath, journalPath).WithContext(ctx)
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		return ReadyReport{}, fmt.Errorf("read runtime: %w", err)
@@ -48,11 +61,12 @@ func EvaluateReady(ctx context.Context, root string) (ReadyReport, error) {
 	stage, _ := runtime.StageFor(cursorState, cursorPhase, root)
 
 	report := ReadyReport{
-		Cursor:           cursorString(cursorState, cursorPhase),
-		Stage:            stage,
-		Missing:          []string{},
-		Instruction:      readyInstruction,
-		ObservedRevision: snapshot.Revision,
+		Cursor:                    cursorString(cursorState, cursorPhase),
+		Stage:                     stage,
+		EvaluationScope:           readyEvaluationScope,
+		TransitionGuardsEvaluated: false,
+		Missing:                   []string{},
+		ObservedRevision:          snapshot.Revision,
 	}
 
 	catalog, err := transition.LoadCatalog(root)
@@ -68,14 +82,16 @@ func EvaluateReady(ctx context.Context, root string) (ReadyReport, error) {
 	candidates := automaticCandidatesFor(catalog, cursor)
 	if len(candidates) == 0 {
 		report.Status = string(StatusSatisfied)
+		report.Instruction = readyInstructionNoCandidate
 		report.Missing = []string{}
 		return report, nil
 	}
 
 	req := ControlRequest{Root: root, Event: "PreToolUse"}
-	files, fileErr := productionFiles(root, snapshot.State, catalog)
+	files, fileErr := productionFiles(ctx, root, snapshot.State, catalog)
 	if fileErr != nil {
 		report.Status = string(StatusUnknown)
+		report.Instruction = readyInstructionUnknown
 		report.ErrorCode = CodeGateUnknown
 		report.Missing = []string{fileErr.Error()}
 		return report, nil
@@ -84,6 +100,7 @@ func EvaluateReady(ctx context.Context, root string) (ReadyReport, error) {
 	evalResults, timedOut := evaluateAutomaticGates(ctx, budget, evaluator, req, snapshot, candidates, nil, files)
 	if timedOut {
 		report.Status = string(StatusUnknown)
+		report.Instruction = readyInstructionUnknown
 		report.ErrorCode = CodeGateUnknown
 		return report, nil
 	}
@@ -91,6 +108,7 @@ func EvaluateReady(ctx context.Context, root string) (ReadyReport, error) {
 	facts := buildTriggerFacts(evaluator, req, snapshot, candidates, evalResults, nil, files)
 	if conflict, conflictIDs := detectSelectorEvidenceConflict(facts, evalResults); conflict {
 		report.Status = string(StatusUnknown)
+		report.Instruction = readyInstructionUnknown
 		report.ErrorCode = CodeTriggerConfl
 		report.Conflicts = conflictIDs
 		report.Missing = mergeCandidateMissing(evalResults)
@@ -102,6 +120,7 @@ func EvaluateReady(ctx context.Context, root string) (ReadyReport, error) {
 		var conflict *transition.TriggerConflictError
 		if asConflict(err, &conflict) {
 			report.Status = string(StatusUnknown)
+			report.Instruction = readyInstructionUnknown
 			report.ErrorCode = CodeTriggerConfl
 			report.Conflicts = append([]string{}, conflict.CandidateIDs...)
 			report.Missing = mergeCandidateMissing(evalResults)
@@ -128,6 +147,14 @@ func EvaluateReady(ctx context.Context, root string) (ReadyReport, error) {
 
 	gateStatus, gateError, conflicts := projectGateResult(evaluation)
 	report.Status = string(gateStatus)
+	switch gateStatus {
+	case StatusSatisfied:
+		report.Instruction = readyInstructionSatisfied
+	case StatusNotReady:
+		report.Instruction = readyInstructionNotReady
+	default:
+		report.Instruction = readyInstructionUnknown
+	}
 	report.GateID = gateID
 	report.Missing = nonNilStrings(evaluation.Missing)
 	report.ErrorCode = gateError

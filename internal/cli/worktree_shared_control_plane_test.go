@@ -427,24 +427,54 @@ func markAssignmentDispatched(t *testing.T, root, assignmentID, agentID string) 
 	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatal(err)
 	}
+	assignments := state["review"].(map[string]any)["assignments"].(map[string]any)
+	row := assignments[assignmentID].(map[string]any)
+	lens, _ := row["lens"].(string)
+	role := map[string]string{"delivery": "delivery-verifier", "qa": "qa", "e2e": "e2e-tester"}[lens]
+	kind := map[string]string{"delivery": "delivery_verifier", "qa": "qa", "e2e": "e2e_browser"}[lens]
+	teamID := "team-wt-" + assignmentID
+	manifestRef := ".claude/workgroups/wt/" + assignmentID + ".json"
+	// This helper supplies synthetic registered dispatch facts, not a platform
+	// launch. Keep its explicitly empty method selection in an original source;
+	// real registration and selected-method delivery have separate integration tests.
+	manifest := map[string]any{
+		"runtime_id": state["runtime_id"], "baseline_generation": state["baseline"].(map[string]any)["generation"],
+		"review_round": state["review"].(map[string]any)["round"], "workgroup_id": teamID, "workgroup_kind": kind,
+		"assignments": []any{map[string]any{"assignment_id": assignmentID, "agent_id": agentID, "role_family": role, "claim_ids": row["claim_ids"], "skill_refs": []string{}}},
+	}
+	manifestData, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, manifestRef)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, manifestRef), manifestData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	teams, _ := state["entities"].(map[string]any)["teams"].([]any)
+	team := map[string]any{"id": teamID, "platform_team_id": teamID, "kind": kind, "status": "planned", "manifest_ref": manifestRef, "responsibility_ids": []any{}, "agent_ids": []any{agentID}, "review_round": state["review"].(map[string]any)["round"]}
+	if state["schema_version"] != "1.1.0" {
+		team["manifest_sha256"] = fmt.Sprintf("%x", sha256.Sum256(manifestData))
+	}
+	teams = append(teams, team)
+	state["entities"].(map[string]any)["teams"] = teams
 	// Register the agent entity so submit's producer check finds it.
 	agents, _ := state["entities"].(map[string]any)["agents"].([]any)
 	agents = append(agents, map[string]any{
 		"id":                  agentID,
-		"role":                "delivery-verifier",
+		"role":                role,
 		"state":               "working",
 		"task_ids":            []any{},
-		"team_id":             "team-wt-test",
-		"definition_ref":      "agents/delivery.md",
-		"prompt_ref":          ".claude/workgroups/wt/m.json#" + agentID,
+		"team_id":             teamID,
+		"definition_ref":      "agents/" + role + ".md",
+		"prompt_ref":          manifestRef + "#" + assignmentID,
 		"readback_ref":        nil,
 		"activation_ref":      nil,
 		"activation_revision": nil,
 		"updated_at":          "2026-08-23T00:00:00Z",
 	})
 	state["entities"].(map[string]any)["agents"] = agents
-	assignments := state["review"].(map[string]any)["assignments"].(map[string]any)
-	row := assignments[assignmentID].(map[string]any)
 	row["status"] = "dispatched"
 	row["agent_id"] = agentID
 	claims := state["review"].(map[string]any)["claims"].(map[string]any)

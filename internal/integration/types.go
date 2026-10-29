@@ -24,6 +24,9 @@ package integration
 import (
 	"errors"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/assignmentresult"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 )
 
@@ -92,19 +95,33 @@ type CheckResult struct {
 // this struct to Integrate so the decision is reproducible from a recorded
 // snapshot (idempotency).
 type Inspection struct {
-	Ready          bool          `json:"ready"`
-	Blockers       []string      `json:"blockers,omitempty"`
-	AssignmentID   string        `json:"assignment_id,omitempty"`
-	TaskID         string        `json:"task_id,omitempty"`
-	WorktreePath   string        `json:"worktree_path,omitempty"`
-	SourceBranch   string        `json:"source_branch,omitempty"`
-	TargetBranch   string        `json:"target_branch,omitempty"`
-	SourceHead     string        `json:"source_head,omitempty"`
-	TargetHead     string        `json:"target_head,omitempty"`
-	MergeBase      string        `json:"merge_base,omitempty"`
-	RequiredChecks []CheckResult `json:"required_checks,omitempty"`
-	LockedPaths    []string      `json:"locked_paths,omitempty"`
-	LockedDiff     []string      `json:"locked_diff,omitempty"`
+	Ready        bool     `json:"ready"`
+	Blockers     []string `json:"blockers,omitempty"`
+	AssignmentID string   `json:"assignment_id,omitempty"`
+	TaskID       string   `json:"task_id,omitempty"`
+	WorktreePath string   `json:"worktree_path,omitempty"`
+	SourceBranch string   `json:"source_branch,omitempty"`
+	TargetBranch string   `json:"target_branch,omitempty"`
+	SourceHead   string   `json:"source_head,omitempty"`
+	TargetHead   string   `json:"target_head,omitempty"`
+	MergeBase    string   `json:"merge_base,omitempty"`
+	// ChangedPaths and ChangedPathsSHA256 capture the full Git-derived
+	// merge-base..source-head path set. They are computed by Inspect, never
+	// accepted from a completion message, and compared again under Integrate's
+	// workspace lock before merge.
+	ChangedPaths        []string `json:"changed_paths,omitempty"`
+	ChangedPathsSHA256  string   `json:"changed_paths_sha256,omitempty"`
+	EffectiveWritePaths []string `json:"effective_write_paths,omitempty"`
+	// AssignmentProjection is copied from the original Hook projection so
+	// Integrate can re-resolve opt-in and Record authority under its workspace
+	// lock. It is input to validation, never an authority by itself.
+	AssignmentProjection hookctx.AssignmentContext `json:"assignment_projection,omitempty"`
+	// CanonicalResult binds an opted-in v1.2 inspection to the original
+	// Runtime Assignment Record and currently accepted Result.
+	CanonicalResult *CanonicalResultBinding `json:"canonical_result,omitempty"`
+	RequiredChecks  []CheckResult           `json:"required_checks,omitempty"`
+	LockedPaths     []string                `json:"locked_paths,omitempty"`
+	LockedDiff      []string                `json:"locked_diff,omitempty"`
 	// OutOfScopeDiff lists changed files not covered by the assignment's
 	// declared WritePaths (L3-S6 §7.4 condition 4). Non-empty means the
 	// integration is refused and the worktree preserved.
@@ -164,22 +181,33 @@ type Checkpoint struct {
 	// Builder Result whose contents were covered by the successful checks.
 	// They are written only when the verified transition succeeds and are
 	// preserved unchanged by acknowledgement and cleanup.
-	CompletionReportPath   string   `json:"completion_report_path,omitempty"`
-	CompletionReportSHA256 string   `json:"completion_report_sha256,omitempty"`
-	AssignmentID           string   `json:"assignment_id"`
-	TaskID                 string   `json:"task_id,omitempty"`
-	SourceBranch           string   `json:"source_branch,omitempty"`
-	SourceHead             string   `json:"source_head,omitempty"`
-	TargetBranch           string   `json:"target_branch,omitempty"`
-	TargetHead             string   `json:"target_head,omitempty"`
-	MergeBase              string   `json:"merge_base,omitempty"`
-	MergeCommit            string   `json:"merge_commit,omitempty"`
-	BaselineGeneration     int      `json:"baseline_generation"`
-	State                  string   `json:"state"`
-	Revision               int64    `json:"revision"`
-	IdempotencyKey         string   `json:"idempotency_key,omitempty"`
-	CheckReceipts          []string `json:"check_receipts,omitempty"`
-	TestedHead             string   `json:"tested_head,omitempty"`
+	CompletionReportPath   string `json:"completion_report_path,omitempty"`
+	CompletionReportSHA256 string `json:"completion_report_sha256,omitempty"`
+	// AssignmentRecord and AssignmentRecordSHA256 identify the current Record
+	// revision for early canonical checkpoints that do not yet carry
+	// CanonicalMainFacts. Once Main facts exist, their ResultBinding is the
+	// sole duplicated-free Record authority; these optional fields remain
+	// empty. Legacy checkpoints keep their original wire shape.
+	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
+	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
+	AssignmentID           string                            `json:"assignment_id"`
+	TaskID                 string                            `json:"task_id,omitempty"`
+	SourceBranch           string                            `json:"source_branch,omitempty"`
+	SourceHead             string                            `json:"source_head,omitempty"`
+	TargetBranch           string                            `json:"target_branch,omitempty"`
+	TargetHead             string                            `json:"target_head,omitempty"`
+	MergeBase              string                            `json:"merge_base,omitempty"`
+	ChangedPaths           []string                          `json:"changed_paths,omitempty"`
+	ChangedPathsSHA256     string                            `json:"changed_paths_sha256,omitempty"`
+	CanonicalMainFacts     *assignmentresult.MainFacts       `json:"canonical_main_facts,omitempty"`
+	MergeCommit            string                            `json:"merge_commit,omitempty"`
+	BaselineGeneration     int                               `json:"baseline_generation"`
+	State                  string                            `json:"state"`
+	Revision               int64                             `json:"revision"`
+	IdempotencyKey         string                            `json:"idempotency_key,omitempty"`
+	CheckReceipts          []string                          `json:"check_receipts,omitempty"`
+	ToolCheckReceipts      []checkexec.ToolReceipt           `json:"tool_check_receipts,omitempty"`
+	TestedHead             string                            `json:"tested_head,omitempty"`
 	// WorktreePath is persisted so the loader's coordinate fallback chain
 	// can recover the worktree location from this durable record alone
 	// (L3-S6 §11.2 "worktree 元数据分裂" — the checkpoint previously never
@@ -204,6 +232,13 @@ type Checkpoint struct {
 //	<root>/.claude/evidence/<runtime_id>/g<gen>/worktree/<assignment_id>/checkpoint.json
 func CheckpointPath(root, runtimeID string, baselineGeneration int, assignmentID string) string {
 	return DefaultCheckpointStore().Path(root, runtimeID, baselineGeneration, assignmentID)
+}
+
+// CheckpointPathForRecord returns the revision-aware slot for an already
+// resolved current Assignment Record. It is a formatter only; callers must
+// resolve the current Record from Runtime before selecting this path.
+func CheckpointPathForRecord(root string, ref assignmentrecord.RecordReference) string {
+	return DefaultCheckpointStore().PathForRecord(root, ref)
 }
 
 // ErrLockedArtifact is returned when the inspect-time diff touches a locked

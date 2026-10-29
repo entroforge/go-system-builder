@@ -105,6 +105,14 @@ func TestInspectDirtyTreeReportsBlocker(t *testing.T) {
 	if !containsBlocker(insp.Blockers, ErrDirtyWorktree.Error()) {
 		t.Fatalf("expected dirty-worktree blocker, got %v", insp.Blockers)
 	}
+	for _, want := range []string{
+		"Worker checkout \"" + wt + "\" is dirty",
+		"git -C \"" + wt + "\" status --short",
+	} {
+		if !containsBlocker(insp.Blockers, want) {
+			t.Fatalf("Worker dirty blocker %v does not identify exact root/inspection command %q", insp.Blockers, want)
+		}
+	}
 }
 
 func TestInspectMissingCommitsReportsBlocker(t *testing.T) {

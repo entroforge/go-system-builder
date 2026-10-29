@@ -14,27 +14,18 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
-// TestAuditCommittedStageSourcesE2E exercises the source contract through the
-// real Hook/controller path. The authority root starts at a committed REQ but
-// has no committed architecture document. A Builder-like execution worktree
-// commits that document on a child branch; the authority must still report
-// not_ready. The same bytes are then staged and left dirty, with the same
-// result, before the authority development branch commits them and advances.
-//
-// The planning_design envelope is deliberately kept under the root control
-// plane (.claude/evidence), which is an explicit disk source. It therefore
-// proves that a stage may consume disk evidence while formal Markdown is
-// required to come from the pinned development-branch Git tree. The Hook is
-// invoked with cwd pointing at the execution worktree while --root points at
-// the authority root, so a cwd mix-up cannot silently make the child branch
-// count as delivered.
-func TestAuditCommittedStageSourcesE2E(t *testing.T) {
+// S2 receives the authority checkout's actual design. The original S3 source
+// consumer freezes committed inputs and rejects missing or dirty authority
+// sources. A child checkout cannot substitute for either responsibility.
+func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 	root := auditSourceRoot(t)
 	state := systemPlanningState(t, root, "design", 1)
 	req039fixtures.EnsureStateRoot(state, root)
+	writeAuditFile(t, root, "docs/design/README.md", "# Design sources\n")
 	// This commits the REQ, loop definition and policy, but no architecture
 	// document. .claude remains an ignored control-plane directory.
 	writeSystemState(t, root, state)
@@ -66,34 +57,53 @@ func TestAuditCommittedStageSourcesE2E(t *testing.T) {
 		t.Fatalf("child branch must not make the root disk evidence the blocker, got missing=%v", qg["missing"])
 	}
 
-	// An untracked copy in the authority checkout is still not a Git-tree
-	// input. The disk evidence remains consumable, so the missing fact should
-	// continue to name only the formal document.
+	// Receiving S2 work does not require committing each professional save.
+	// Its exit registers the actual authority design for the next consumer.
 	writeAuditFile(t, root, architecturePath, string(architecture))
 	_, qg = auditHook(t, root, executionRoot, "audit-untracked")
-	auditWantNotReady(t, qg, "untracked formal document")
-
-	// Staging changes the index only; the pinned commit is unchanged.
-	runGitIn(t, root, "add", architecturePath)
-	_, qg = auditHook(t, root, executionRoot, "audit-staged")
-	auditWantNotReady(t, qg, "staged formal document")
-
-	// Once the same document is committed on the bound development branch,
-	// the next real Hook may advance PTR-PLAN-01. This also proves the disk
-	// evidence was valid and consumed by the same source snapshot.
-	runGitIn(t, root, "commit", "-qm", "authority architecture")
-	_, qg = auditHook(t, root, executionRoot, "audit-authority-commit")
 	if status := stringValueAudit(qg["status"]); status != "satisfied" && status != "advanced" {
-		t.Fatalf("committed formal document must satisfy/advance the gate, got status=%q qg=%v", status, qg)
+		t.Fatalf("actual authority design must satisfy S2, got status=%q qg=%v", status, qg)
 	}
 	if committed, _ := qg["transition_committed"].(bool); !committed {
-		t.Fatalf("committed formal document must commit the automatic transition, qg=%v", qg)
+		t.Fatalf("received S2 design must commit the automatic transition, qg=%v", qg)
 	}
 	if !strings.Contains(gotEvidenceRefsAudit(qg), "ev-audit-design") {
 		t.Fatalf("disk evidence must remain usable after the formal commit, qg=%v", qg)
 	}
 	final := req039fixtures.ReadState(t, root)
 	req039fixtures.AssertLifecycle(t, final, "planning", "contracts")
+	// The legacy Hook fixture above has no packet configuration. Enable the
+	// current S3 reader only in this in-memory fixture, retaining the actual
+	// registered REQ/design sources. This is not a Runtime migration or an
+	// assertion that S3 issuance succeeded.
+	final["schema_version"] = "1.2.0"
+	final["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	before := readSystemRuntimePair(t, root)
+	resolve := func(wantError string) {
+		t.Helper()
+		view, err := fileview.New(root, "refs/heads/test-development", []fileview.Rule{{Path: ".", Source: "git_tree"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs, err := runtime.ResolveContractInputs(root, final, view)
+		if wantError != "" {
+			if err == nil || !strings.Contains(err.Error(), wantError) || !strings.Contains(err.Error(), architecturePath) {
+				t.Fatalf("S3 source failure must identify %s and %q: %v", architecturePath, wantError, err)
+			}
+		} else if err != nil || len(inputs.Designs) != 1 || inputs.Designs[0].SHA256 != architectureSHA {
+			t.Fatalf("S3 failed to freeze the actual committed design: %+v %v", inputs.Designs, err)
+		}
+		assertSystemRuntimePairUnchanged(t, before)
+	}
+	resolve("read S3 source through original file view")
+	// Staging still does not deliver a committed S3 input.
+	runGitIn(t, root, "add", architecturePath)
+	resolve("read S3 source through original file view")
+	runGitIn(t, root, "commit", "-qm", "authority architecture")
+	resolve("")
+	writeAuditFile(t, root, architecturePath, string(architecture)+"\nUncommitted source change.\n")
+	resolve("S3 frozen input differs from original checkout SHA")
+	writeAuditFile(t, root, architecturePath, string(architecture))
 
 	// A dirty test can pass in the execution checkout while still being absent
 	// from the authority commit. Keep this explicit because a green test run

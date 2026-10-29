@@ -1,5 +1,3 @@
-# L1 原则
+# L1 设计原则
 
-仅工厂维护；设计状态不代表已实现。
-
-- [L1-design-principles](L1-design-principles.md)
+[设计原则](L1-design-principles.md)定义使命、约束、设计决策与四层分工，是所有下层设计的依据。

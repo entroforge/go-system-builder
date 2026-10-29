@@ -108,6 +108,17 @@ func WorkspaceBoundaryDecision(input Input) (Decision, bool) {
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
 		return deny(err.Error())
 	}
+	if decision, blocked := NativeOwnedCheckDecision(input); blocked {
+		return decision, true
+	}
+	// A native owner WorkerCheck is the only authenticated operation that may
+	// run from its Record-frozen native checkout when the workspace registry
+	// also contains unrelated checkouts. The native authority predicate binds
+	// the command, Agent, session, Runtime, activated PLAN and exact CWD; normal
+	// commands continue through the ordinary workspace boundary below.
+	if nativeOwnedCheckBoundaryAdapter(input, control) {
+		return Decision{}, false
+	}
 	cwd, err := workspace.Canonical(input.CWD)
 	if err != nil {
 		return deny(err.Error())
@@ -192,6 +203,9 @@ func WorkspaceBoundaryDecision(input Input) (Decision, bool) {
 		}
 		if worker {
 			allowed := strings.HasPrefix(filepath.ToSlash(physicalRel), ".claude/submissions/")
+			if paths, err := b.WorkerSubmissionPaths(execution); err == nil && paths.Contains(filepath.ToSlash(physicalRel)) {
+				allowed = true
+			}
 			for _, scope := range execution.WritePaths {
 				if workspace.PathMatchesScope(filepath.ToSlash(rel), filepath.ToSlash(scope)) && workspace.PathMatchesScope(filepath.ToSlash(physicalRel), filepath.ToSlash(scope)) {
 					allowed = true
@@ -206,12 +220,43 @@ func WorkspaceBoundaryDecision(input Input) (Decision, bool) {
 	return Decision{}, false
 }
 
+func nativeOwnedCheckBoundaryAdapter(input Input, controlRoot string) bool {
+	if input.Event != "PreToolUse" || input.ToolName != "Bash" {
+		return false
+	}
+	command, _ := input.ToolInput["command"].(string)
+	for _, assignment := range input.Runtime.NativeOwnedAssignments {
+		for _, check := range assignment.Checks {
+			if command == workspace.NativeOwnedCheckInvocation(controlRoot, assignment.OwnerAgentID, check.Index) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func workspaceAdapterCommand(input Input, e workspace.Execution) bool {
 	if e.BootstrapSHA256 == "" || input.ToolName != "Bash" {
 		return false
 	}
 	command, _ := input.ToolInput["command"].(string)
+	if e.Purpose == workspace.DocumentReviewPurpose {
+		for _, verb := range []string{"begin", "answer", "receipt", "review-check"} {
+			if command == workspace.WorkerInvocation(e, verb) {
+				return true
+			}
+		}
+		for _, cmd := range workspace.ObservationCommands(e) {
+			if command == cmd {
+				return true
+			}
+		}
+		return false
+	}
 	if command == workspace.WorkerInvocation(e, "commit") || command == workspace.WorkerInvocation(e, "deliver") || command == workspace.WorkerInvocation(e, "begin") || command == workspace.WorkerInvocation(e, "report") {
+		return true
+	}
+	if command == workspace.ReceiptInvocation(e) {
 		return true
 	}
 	for _, cmd := range workspace.ObservationCommands(e) {
@@ -224,11 +269,16 @@ func workspaceAdapterCommand(input Input, e workspace.Execution) bool {
 			return true
 		}
 	}
+	for i := range e.WorkerChecks {
+		if command == workspace.OwnedCheckInvocation(e, i) {
+			return true
+		}
+	}
 	return false
 }
 
 func workerControlAsset(path string) bool {
-	for _, prefix := range []string{".git", ".claude/inputs", ".claude/bin", ".claude/agents", ".claude/skills", ".claude/settings.json", ".claude/settings.local.json", ".claude/loop-workspace.json", ".claude/loop-bootstrap.json", ".claude/loop-state.json", ".claude/loop-events.jsonl"} {
+	for _, prefix := range []string{".git", ".claude/inputs", ".claude/bin", ".claude/agents", ".claude/skills", ".claude/runtime-checkpoints", ".claude/settings.json", ".claude/settings.local.json", ".claude/loop-workspace.json", ".claude/loop-bootstrap.json", ".claude/loop-state.json", ".claude/loop-events.jsonl"} {
 		if path == prefix || strings.HasPrefix(path, prefix+"/") {
 			return true
 		}

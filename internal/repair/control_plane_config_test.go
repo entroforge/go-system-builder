@@ -18,11 +18,11 @@ import (
 // of every open RepairSession and, worse, surfaced in the Session diff as an
 // unclaimable phantom change once capture stopped recording it.
 //
-// The classification is a single exact path added to the control-plane set —
+// The classification is an exact file path added to the control-plane set —
 // the same class as .claude/loop-state.json — covering capture, the authority
-// gate, and the Session diff uniformly. It does not widen to .claude/ as a
-// whole: any other .claude file stays authority-relevant, as the negative
-// control below proves.
+// gate, and the Session diff uniformly. Known generated-control directories
+// have separate explicit coverage below. Neither exemption widens to .claude/
+// as a whole: any other .claude file stays authority-relevant.
 
 const multiJSONRel = ".claude/multi.json"
 
@@ -166,6 +166,92 @@ func TestCaptureBaselineExcludesMultiJSON(t *testing.T) {
 		t.Fatal("fresh baseline must still capture ordinary product source")
 	}
 	if !paths[".claude/other-local.json"] {
-		t.Fatal("fresh baseline must still capture non-exempt .claude files — the exemption names exactly one file")
+		t.Fatal("fresh baseline must still capture unknown .claude files outside the explicit control-plane paths")
+	}
+}
+
+func TestGeneratedControlDirectoriesDoNotSelfPolluteBaselineOrChangeset(t *testing.T) {
+	root := t.TempDir()
+	runGit(t, root, "init")
+	controlPaths := []string{
+		".claude/submissions/current.json",
+		".claude/work-packets/current.json",
+		".claude/assignment-context/current.json",
+		".claude/runtime-checkpoints/current.json",
+		".claude/hook-notices/current.json",
+		".claude/hook-metrics/current.json",
+	}
+	for _, path := range controlPaths {
+		writeFile(t, root, path, "{\"revision\":1}\n")
+	}
+	productRel := "internal/api/payload.go"
+	otherClaudeRel := ".claude/other-local.json"
+	productPath := writeFile(t, root, productRel, "package api\n\nfunc Current() {}\n")
+	otherClaudePath := writeFile(t, root, otherClaudeRel, "{\"note\":\"authority relevant\"}\n")
+	contractRef, _ := writeRuntimeContract(t, root)
+	session, _, err := repair.CreateRepairSession(root, repair.SessionRequest{
+		Contract: contractRef, SessionID: "repair-session-generated-control", RuntimeID: "loop-REQ-039",
+		ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := map[string]bool{}
+	for _, artifact := range session.BaselineArtifacts {
+		baseline[artifact.Path] = true
+	}
+	for _, path := range controlPaths {
+		if baseline[path] {
+			t.Errorf("generated control-plane output %s entered the fresh Session baseline", path)
+		}
+	}
+	for _, path := range []string{productRel, otherClaudeRel} {
+		if !baseline[path] {
+			t.Errorf("authority-relevant path %s was omitted from the fresh Session baseline", path)
+		}
+	}
+
+	for _, path := range controlPaths {
+		writeFile(t, root, path, "{\"revision\":2}\n")
+	}
+	writeFile(t, root, productRel, "package api\n\nfunc Current() { /* implementation change */ }\n")
+	writeFile(t, root, otherClaudeRel, "{\"note\":\"changed authority-relevant sibling\"}\n")
+	changeset, err := repair.ComputeSessionChangeset(root, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]bool{}
+	for _, artifact := range changeset {
+		byPath[artifact.Path] = true
+	}
+	for _, path := range controlPaths {
+		if byPath[path] {
+			t.Errorf("generated control-plane change %s self-polluted the Session changeset", path)
+		}
+	}
+	for _, path := range []string{productRel, otherClaudeRel} {
+		if !byPath[path] {
+			t.Errorf("real authority change %s is missing from Session changeset: %#v", path, changeset)
+		}
+	}
+	productData, err := os.ReadFile(productPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherClaudeData, err := os.ReadFile(otherClaudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range changeset {
+		switch artifact.Path {
+		case productRel:
+			if artifact.SHA256 != fileHash(productData) {
+				t.Errorf("product changeset digest = %s, want current bytes %s", artifact.SHA256, fileHash(productData))
+			}
+		case otherClaudeRel:
+			if artifact.SHA256 != fileHash(otherClaudeData) {
+				t.Errorf("unknown .claude sibling digest = %s, want current bytes %s", artifact.SHA256, fileHash(otherClaudeData))
+			}
+		}
 	}
 }

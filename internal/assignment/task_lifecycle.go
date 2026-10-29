@@ -32,6 +32,7 @@ import (
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 type TaskEventRequest struct {
@@ -107,7 +108,11 @@ func AdvanceTask(
 				if task["id"] != request.TaskID {
 					continue
 				}
-				currentState, _ := task["state"].(string)
+				projection, err := workstate.TaskProjection(task, fmt.Sprint(state["schema_version"]))
+				if err != nil {
+					return fmt.Errorf("resolve TASK authorization activity: %w", err)
+				}
+				currentState := projection.Activity
 				resolvedTo, found := taskTransitions.resolve(currentState, request.Event)
 				if !found {
 					return fmt.Errorf(
@@ -117,7 +122,9 @@ func AdvanceTask(
 				if err := applyTaskEventGuards(task, request, resolvedTo); err != nil {
 					return err
 				}
-				task["state"] = resolvedTo
+				if err := workstate.RecordTaskActivity(state, task, resolvedTo, request.Event); err != nil {
+					return fmt.Errorf("record TASK work state and lifecycle event: %w", err)
+				}
 				task["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 				state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 				return nil

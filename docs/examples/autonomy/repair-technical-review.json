@@ -1,15 +1,9 @@
 {
-  "decision": "approve_bounded_repair",
-  "runtime_id": "loop-REQ-EXAMPLE",
-  "case_id": "investigation-case-EXAMPLE",
-  "contract_id": "repair-contract-EXAMPLE",
-  "approval_hash": "REPLACE_WITH_EXACT_DRAFT_SHA256",
-  "reviewed_by": "main-driver",
-  "delegation_evidence_id": "ev-repair-delegation-REQ-EXAMPLE",
+  "decision": "",
   "requirements_unchanged": false,
   "business_semantics_unchanged": false,
   "reversible": false,
   "scope_complete": false,
-  "evidence_refs": ["REPLACE_WITH_REGISTERED_CURRENT_SUPPORTING_EVIDENCE_ID"],
-  "rationale": "Replace after tracing production entry, transaction, scope, compatibility and rollback; do not merely flip these booleans."
+  "evidence_refs": [],
+  "rationale": "审查实际生产入口、事务、完整范围、兼容性和可逆性后填写；不能只把四项判断翻成 true。"
 }

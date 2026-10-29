@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/review"
 )
 
 func TestMainStopDecisionBlocksOnlyHardPendingReviewWork(t *testing.T) {
@@ -44,9 +45,14 @@ func TestMainStopDecisionBlocksOnlyHardPendingReviewWork(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			plan := &review.Plan{}
+			for id := range tc.assignments {
+				plan.Assignments = append(plan.Assignments, review.PlanAssignment{AssignmentID: id})
+			}
 			decision, blocked := mainStopDecisionForState(map[string]any{
-				"review": map[string]any{"assignments": tc.assignments},
-			}, policy.Input{Event: "Stop"})
+				"lifecycle": map[string]any{"state": "verification", "phase": "running"},
+				"review":    map[string]any{"round": 1, "plan": map[string]any{"plan_id": "current", "path": "plan.json", "review_round": 1, "status": "running"}, "assignments": tc.assignments},
+			}, policy.Input{Event: "Stop"}, plan)
 			if blocked != tc.wantBlocked {
 				t.Fatalf("blocked=%v, want %v; decision=%#v", blocked, tc.wantBlocked, decision)
 			}

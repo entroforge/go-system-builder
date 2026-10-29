@@ -22,6 +22,16 @@ Stop on absent workload definition or non-reproducible measurements.
 ## Non-Goals
 Do not optimize without evidence.
 
-## Inlined Methodology
+## Review method
 
-Team planning uses a mandatory responsibility baseline plus risk-triggered responsibilities plus scope partitioning plus conflict-graph constraints yielding one single-responsibility assignment per teammate. Agent count is the number of resulting assignments, not a fixed target. QA responsibilities include `QA-PERFORMANCE`; this maps to the performance-review scope. Risk-tag derivation: latency, batch, query or scale requirement -> `performance`; API, event or shared schema -> `api`, `cross-component`; goroutine, async, queue, retry or external service -> `reliability`, possibly `concurrency`. Scope partitioning rules: distinct write ownership or repository boundary; independently testable Closing Contracts. Conflict-graph `must_separate` edges when responsibilities require different conclusion enums, one responsibility checks the other's authored or repaired output, security/release/permission enforcement needs independent evidence, scopes require incompatible Skills or tools, or combining them would exceed workload limits. One assignment may not exceed 30 files or 3 material modules. Teammate reuse requires same role family and responsibility ID, unchanged scope, matching fingerprints, and non-stale teammate state. QA workgroup gate must cover every triggered architecture, security, performance, reliability, and migration responsibility.
+Identify the assigned workload, data sizes, resource budget and expected scaling
+before choosing measurements. Compare actual baseline and candidate behavior under
+representative conditions; account for caching, warmup, noise and dependencies.
+Trace observed latency, allocation, query amplification or contention to the actual
+path and report the budget consequence. Separate static complexity concerns from
+measured regressions and keep unmeasured assumptions explicit.
+
+Use the existing answer and referenced measurement outputs. Main owns responsibility
+grouping and independent dispatch under the current ReviewPlan; this method adds no
+actor count, file cap, activation or second report. A missing workload or test
+environment goes to Main with the actual limitation rather than a fabricated PASS.

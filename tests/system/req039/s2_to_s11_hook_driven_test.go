@@ -42,7 +42,7 @@ func TestS2ToS11_HookDrivenCleanPath(t *testing.T) {
 	req039fixtures.WritePlanningTaskPass(t, root, state)
 	writeSystemState(t, root, state)
 	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "spine-s4", "Edit",
-		map[string]any{"file_path": "docs/dev/tasks/TASK-039-01-loop-definition.md"},
+		map[string]any{"file_path": "docs/dev/tasks/TASK-039-01.md"},
 		"TR-002", "document_verification", "", bugID)
 
 	// S5 → S6 (TR-003)

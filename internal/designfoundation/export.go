@@ -1,6 +1,7 @@
 package designfoundation
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,8 +15,14 @@ func ExportPortable(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	kernel, _ := os.ReadFile(filepath.Join(root, KernelRel))
-	grammar, _ := os.ReadFile(filepath.Join(root, GrammarRel))
+	kernel, err := readPortableSource(root, KernelRel)
+	if err != nil {
+		return "", err
+	}
+	grammar, err := readPortableSource(root, GrammarRel)
+	if err != nil {
+		return "", err
+	}
 	body := renderPortable(tf, string(kernel), string(grammar))
 	path := filepath.Join(root, PortableRel)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -27,106 +34,98 @@ func ExportPortable(root string) (string, error) {
 	return path, nil
 }
 
+// Optional documents may be absent; an actual read error must not publish an
+// apparently successful partial snapshot over the previous one.
+func readPortableSource(root, rel string) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(root, rel))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("portable source %s: %w", rel, err)
+	}
+	return data, nil
+}
+
 func renderPortable(tf *tokenFile, kernel, grammar string) string {
 	var b strings.Builder
-	b.WriteString("---\n")
-	b.WriteString("version: alpha\n")
-	b.WriteString("name: Project Design Foundation snapshot\n")
-	b.WriteString("description: Derived from DESIGN.md + tokens.json. Not the project authority. Do not put component APIs here.\n")
-	b.WriteString("omitted:\n")
-	b.WriteString("  - section: components\n")
-	b.WriteString("    reason: Query the live UI Lab / Storybook MCP instead of re-implementing components from prose\n")
-	b.WriteString("colors:\n")
-	for _, leaf := range tf.SemanticColors() {
-		name := strings.TrimPrefix(leaf.Path, "color.")
-		name = strings.ReplaceAll(name, ".", "-")
-		b.WriteString("  ")
-		b.WriteString(name)
-		b.WriteString(": ")
-		b.WriteString(quoteYAML(leaf.Value))
-		b.WriteString("\n")
-	}
-	b.WriteString("typography:\n")
-	b.WriteString("  body:\n")
-	b.WriteString("    fontFamily: system-ui\n")
-	b.WriteString("    fontSize: 16px\n")
-	b.WriteString("    fontWeight: 400\n")
-	b.WriteString("    lineHeight: 1.5\n")
-	b.WriteString("rounded:\n")
-	for _, leaf := range tf.leaves {
-		if !strings.HasPrefix(leaf.Path, "rounded.") {
+	b.WriteString("---\nversion: alpha\nname: Project Design Foundation snapshot\n")
+	b.WriteString("description: Source excerpts and token values only; not approval or project authority.\n")
+	b.WriteString("omitted:\n  - section: components\n    reason: Component APIs remain in the current component source, outside this snapshot.\n")
+	// Keep the existing categories, but preserve the actual token paths rather
+	// than inventing a body style or mapping unrelated tokens to a fixed schema.
+	for _, group := range []struct{ name, prefix string }{
+		{"colors", "color."}, {"typography", "font."}, {"rounded", "rounded."}, {"spacing", "space."},
+	} {
+		var leaves []tokenLeaf
+		if group.name == "colors" {
+			leaves = tf.SemanticColors()
+		} else {
+			for _, leaf := range tf.leaves {
+				if strings.HasPrefix(leaf.Path, group.prefix) {
+					leaves = append(leaves, leaf)
+				}
+			}
+		}
+		if len(leaves) == 0 {
+			fmt.Fprintf(&b, "%s: {}\n", group.name)
 			continue
 		}
-		b.WriteString("  ")
-		b.WriteString(strings.TrimPrefix(leaf.Path, "rounded."))
-		b.WriteString(": ")
-		b.WriteString(leaf.Value)
-		b.WriteString("\n")
-	}
-	b.WriteString("spacing:\n")
-	for _, leaf := range tf.leaves {
-		if !strings.HasPrefix(leaf.Path, "space.") {
-			continue
+		fmt.Fprintf(&b, "%s:\n", group.name)
+		for _, leaf := range leaves {
+			fmt.Fprintf(&b, "  %s: %s\n", quoteYAML(leaf.Path), quoteYAML(leaf.Value))
 		}
-		b.WriteString("  ")
-		b.WriteString(strings.TrimPrefix(leaf.Path, "space."))
-		b.WriteString(": ")
-		b.WriteString(leaf.Value)
+	}
+	b.WriteString("---\n\n# DESIGN.md (derived snapshot)\n\n")
+	fmt.Fprintf(&b, "_Generated %s. Authority remains `%s`, `%s` and `%s`._\n\n", time.Now().UTC().Format("2006-01-02"), KernelRel, GrammarRel, TokensJSONRel)
+	b.WriteString("本文件只传递下列来源片段与已解析的 Token 值，不验证发布状态、适用表面、条款激活状态、完整性或批准。未提取不表示 N/A，也不要求补造文件；缺少依据时回到原来源判断。模板初始值不会因导出变成已批准设计。\n\n")
+	b.WriteString("## Token values\n\n")
+	fmt.Fprintf(&b, "来源：`%s`；按原路径列值，引用沿原 Token 解析器展开。不从数值推断字体用途、强调规则或组件用法。\n\n", TokensJSONRel)
+	if len(tf.leaves) == 0 {
+		b.WriteString("未提取到 Token 值。\n")
+	}
+	for _, leaf := range tf.leaves {
+		fmt.Fprintf(&b, "- `%s` = %s", leaf.Path, quoteYAML(leaf.Value))
+		if leaf.Description != "" {
+			fmt.Fprintf(&b, " — %s", leaf.Description)
+		}
 		b.WriteString("\n")
 	}
-	b.WriteString("---\n\n")
-	b.WriteString("# DESIGN.md (derived snapshot)\n\n")
-	b.WriteString("_Generated ")
-	b.WriteString(time.Now().UTC().Format("2006-01-02"))
-	b.WriteString(". Authority remains `docs/design/DESIGN.md` and `docs/design/tokens/tokens.json`._\n\n")
-	b.WriteString("## Overview\n\n")
-	if thesis := extractSection(kernel, "Design Thesis"); thesis != "" {
-		b.WriteString(thesis)
-		b.WriteString("\n\n")
-	} else {
-		b.WriteString("Starter snapshot. Publish Project Design Foundation (F6) before treating this file as brand direction.\n\n")
+	b.WriteString("\n## Kernel excerpts\n\n")
+	for _, title := range []string{"Next-agent card", "Design Thesis", "Anti-principles", "Rejected direction"} {
+		writePortableExcerpt(&b, KernelRel, title, extractSection(kernel, title))
 	}
-	b.WriteString("## Colors\n\n")
-	b.WriteString("Semantic roles only. Emphasis is scarce: `action.promise` is the single promise-type action color.\n\n")
-	for _, leaf := range tf.SemanticColors() {
-		fmt.Fprintf(&b, "- **%s (%s):** %s\n", leaf.Path, leaf.Value, leaf.Description)
+	b.WriteString("## Grammar excerpts\n\n")
+	for _, title := range []string{"Compilation and selection rules", "Variant catalog", "Semantic roles and patterns"} {
+		writePortableExcerpt(&b, GrammarRel, title, extractSection(grammar, title))
 	}
-	b.WriteString("\n## Typography\n\n")
-	b.WriteString("Body stays readable; headlines carry hierarchy, not decoration. Metadata uses the meta size and content.meta color.\n\n")
-	b.WriteString("## Layout\n\n")
-	if layout := extractGrammarDimension(grammar, "Composition"); layout != "" {
-		b.WriteString(layout)
-		b.WriteString("\n\n")
-	} else {
-		b.WriteString("Use the space scale (xs–xl). Do not invent page-level spacing tokens.\n\n")
+	b.WriteString("### Dimension excerpts\n\n")
+	fmt.Fprintf(&b, "来源：`%s` 的同名章节或旧格式维度行；保留原片段，不将 coverage 状态行解释成具体设计指令。\n\n", GrammarRel)
+	var missing []string
+	for _, dimension := range []string{"Information", "Composition", "Color", "Typography", "Shape & Surface", "Image & Icon", "Interaction", "Content", "Motion"} {
+		if text := extractGrammarDimension(grammar, dimension); text != "" {
+			fmt.Fprintf(&b, "#### %s\n\n%s\n\n", dimension, text)
+		} else {
+			missing = append(missing, dimension)
+		}
 	}
-	b.WriteString("## Elevation & Depth\n\n")
-	b.WriteString("Prefer tonal layers (`surface.page` vs `surface.raised`) over heavy shadows unless Grammar says otherwise.\n\n")
-	b.WriteString("## Shapes\n\n")
-	b.WriteString("Corner radius comes from `rounded.*`. Mixing sharp and fully round in one view needs a Grammar exception.\n\n")
-	b.WriteString("## Do's and Don'ts\n\n")
-	if anti := extractSection(kernel, "Anti-principles"); anti != "" {
-		b.WriteString(anti)
-		b.WriteString("\n\n")
-	} else if rej := extractSection(kernel, "Rejected direction"); rej != "" {
-		b.WriteString(rej)
-		b.WriteString("\n\n")
+	if len(missing) > 0 {
+		fmt.Fprintf(&b, "未提取到同名章节或维度行：%s。其他选择规则仍须查阅原 Grammar。\n", strings.Join(missing, ", "))
 	}
-	b.WriteString("- Do use `action.promise` for at most one primary commitment per screen.\n")
-	b.WriteString("- Don't introduce hex values that are absent from tokens.json.\n")
-	b.WriteString("- Don't re-implement a live Storybook component from this file.\n")
-	b.WriteString("- Don't treat pixel snapshot equality as proof the Design Thesis is correct.\n")
 	return b.String()
 }
 
+func writePortableExcerpt(b *strings.Builder, source, title, text string) {
+	fmt.Fprintf(b, "### %s\n\n来源：`%s` 的 `%s` 章节。\n\n", title, source, title)
+	if text == "" {
+		b.WriteString("未提取到该章节的内容；不生成替代设计指令。\n\n")
+		return
+	}
+	b.WriteString(text)
+	b.WriteString("\n\n")
+}
+
 func quoteYAML(v string) string {
-	if strings.ContainsAny(v, ":#{}[]&*?|>'\"%@`") || strings.HasPrefix(v, "#") {
-		return `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
-	}
-	if strings.HasPrefix(v, "#") {
-		return `"` + v + `"`
-	}
-	return `"` + v + `"`
+	// JSON strings are valid YAML scalars, including escaped quotes/newlines.
+	encoded, _ := json.Marshal(v)
+	return string(encoded)
 }
 
 var heading = regexp.MustCompile(`(?m)^##+ `)
@@ -160,7 +159,7 @@ func extractGrammarDimension(grammar, dimension string) string {
 
 // grammarDimensionRows collects a dimension's rows from the per-Law compile
 // tables when the Grammar carries no standalone heading for it. Empty cells
-// return nothing so the caller keeps its honest fallback text.
+// return nothing so the caller reports that no excerpt was extracted.
 func grammarDimensionRows(grammar, dimension string) string {
 	if grammar == "" {
 		return ""

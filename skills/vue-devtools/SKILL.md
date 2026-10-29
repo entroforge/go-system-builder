@@ -18,7 +18,7 @@ One diagnosis record, performance observation, or targeted debugging conclusion.
 ## N/A Criteria
 N/A when the issue can be demonstrated and resolved without Vue runtime inspection.
 ## Stop Conditions
-Stop on inaccessible reproduction, sensitive data exposure, or a diagnosis without observable evidence.
+Use reversible local diagnostics to establish a reproducible observation within the TASK. Protect sensitive data and report unavailable required sources/environment with actual attempts; do not turn an evidence gap into a fabricated conclusion.
 ## Non-Goals
 Do not use DevTools observations as a replacement for automated verification.
 

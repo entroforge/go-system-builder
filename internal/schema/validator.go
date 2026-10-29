@@ -91,6 +91,24 @@ func (v *Validator) ValidateFile(schemaName, dataPath string) error {
 // matches an embedded schema, that schema is used; otherwise it is treated as
 // a disk path for backward compatibility.
 func (v *Validator) ValidateBytes(schemaName string, data []byte) error {
+	if stripDir(schemaName) == "loop-state.schema.json" {
+		var header struct {
+			Version string `json:"schema_version"`
+		}
+		if err := json.Unmarshal(data, &header); err != nil {
+			return fmt.Errorf("decode runtime schema version: %w", err)
+		}
+		switch header.Version {
+		case "1.1.0":
+			schemaName = "loop-state-v1.1.schema.json"
+		case "1.2.0":
+			schemaName = "loop-state-v1.2.schema.json"
+		case "1.3.0":
+			schemaName = "loop-state-v1.3.schema.json"
+		default:
+			return fmt.Errorf("unsupported runtime schema version")
+		}
+	}
 	compiled, err := v.compileSchema(schemaName)
 	if err != nil {
 		return err
@@ -214,10 +232,16 @@ func messageBranchFor(message map[string]any) string {
 	case "readback_response":
 		return "readbackResponse"
 	case "plan_report":
+		if message["assignment_record_contract"] == "s6-v1.2" || message["assignment_record_contract"] == "s6-native-v1" {
+			return "s6PlanReport"
+		}
 		return "planReport"
 	case "activation":
 		return "activation"
 	case "completion_report":
+		if message["assignment_record_contract"] == "s6-v1.2" || message["assignment_record_contract"] == "s6-native-v1" {
+			return "s6CompletionReport"
+		}
 		return "completionReport"
 	case "work_start", "completion_ack", "blocker_report", "blocker_resolution", "shutdown_approval":
 		return "lifecycleEvent"
@@ -231,7 +255,7 @@ func messageBranchFor(message map[string]any) string {
 func (v *Validator) compileSchema(schemaName string) (*jsonschema.Schema, error) {
 	name := stripDir(schemaName)
 	if AssetExists(name) {
-		return v.compiler.Compile(name)
+		return compileEmbeddedSchema(name)
 	}
 	// Backward-compat: treat as a disk path.
 	return v.compiler.Compile(v.resolve(schemaName))

@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"encoding/json"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestDesignFoundationCheckIsAdvisoryOnTemplateFactory(t *testing.T) {
-	root := filepath.Join("..", "..")
+	root := factory.Clone(t, filepath.Join("..", ".."))
 	stdout, stderr, code := runCLI(t, root, "design-foundation", "check", "--root", root)
 	if code != 0 {
 		t.Fatalf("factory check must exit 0: code=%d stdout=%s stderr=%s", code, stdout, stderr)

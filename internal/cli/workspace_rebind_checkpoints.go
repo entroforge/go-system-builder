@@ -21,7 +21,7 @@ type relocationCheckpoint struct {
 func relocationCheckpoints(root string, b *workspace.ExecutionRegistry, req workspace.RebindRequest) ([]relocationCheckpoint, error) {
 	var records []relocationCheckpoint
 	for _, e := range b.Executions {
-		path := integration.CheckpointPath(root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID)
+		path := workspaceExecutionCheckpointPath(root, e)
 		cp, found, err := integration.DefaultCheckpointStore().Load(path)
 		if err != nil {
 			return nil, err
@@ -71,6 +71,16 @@ func relocatedCheckpoint(cp integration.Checkpoint, e workspace.Execution, req w
 		}
 		after.CheckReceipts = append(after.CheckReceipts, next)
 	}
+	after.ToolCheckReceipts = nil
+	for _, ref := range cp.ToolCheckReceipts {
+		ref.Path, err = move(ref.Path)
+		if err != nil {
+			return integration.Checkpoint{}, err
+		}
+		// Keep original checkout, binding and both byte digests. Relocation is
+		// not permission to reuse checks in another checkout.
+		after.ToolCheckReceipts = append(after.ToolCheckReceipts, ref)
+	}
 	after.PreviousMainRoots = append(append([]string(nil), cp.PreviousMainRoots...), req.OldMainRoot)
 	return after, nil
 }
@@ -95,7 +105,7 @@ func planTerminalRelocation(ctx context.Context, b *workspace.ExecutionRegistry,
 			return nil, fmt.Errorf("relocation checkpoint execution mismatch")
 		}
 		seen[e.AssignmentID] = true
-		expectedPath, _ := filepath.Rel(req.NewMainRoot, integration.CheckpointPath(req.NewMainRoot, e.RuntimeID, e.BaselineGeneration, e.AssignmentID))
+		expectedPath, _ := filepath.Rel(req.NewMainRoot, workspaceExecutionCheckpointPath(req.NewMainRoot, e))
 		expected, err := relocatedCheckpoint(record.Before, e, req)
 		if err != nil {
 			return nil, err
@@ -109,7 +119,7 @@ func planTerminalRelocation(ctx context.Context, b *workspace.ExecutionRegistry,
 	}
 	for id, e := range b.Executions {
 		if !seen[id] {
-			_, found, err := integration.DefaultCheckpointStore().Load(integration.CheckpointPath(req.NewMainRoot, e.RuntimeID, e.BaselineGeneration, id))
+			_, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(req.NewMainRoot, e))
 			if err != nil {
 				return nil, err
 			}

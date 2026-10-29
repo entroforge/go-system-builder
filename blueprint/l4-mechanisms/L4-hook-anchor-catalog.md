@@ -1,172 +1,191 @@
-# L4 — Claude Code Hook 锚点全图与选点审查（Platform Anchor Catalog）
+# L4 Hook 事件选点
 
-> 层：第四层｜性质：**平台侧事实库 + 选点审查纪律**。本文不定义我们的策略——它忠实收录 Claude Code 平台全部 Hook 锚点的触发时机、可阻断性与通信契约，并规定"何时允许为一个 stage 挂上新锚点"的审查流程。
->
-> 权威来源：官方 Hooks Reference（https://code.claude.com/docs/en/hooks ，目录核对日 **2026-08-28**，消息/worktree 契约复核日 **2026-09-18**，文中标注的 v2.1.x 行为以官方页面为准）；owner 知识库 `/Users/lisonghao/SebsVault/LLM/Hook/Layer1-Hook.md` 提供了最初九段生命周期框架。两者冲突处以官方为准，已知差异登记在 §6。
->
-> 四家族分工下的位置：[Hook 与平台事件接线](L4-hook-platform-wiring.md)回答"**我们这边**怎么收发"（payload 输入、envelope 输出、失败态度）；本文回答"**平台上有哪些格子**、每个格子什么时候响、响的时候能干什么、以及凭什么决定占用哪个格子"。接线篇的十类锚点是从本目录选出的消费子集，不是平台的边界。
+## 1. 选点解决的是工程交接问题
 
-## 0. 为什么这份目录必须是独立的 L4
+Hook 不是越多越可靠。选得过早，事实还没形成就要求交卷；选得过晚，事情已经发生却假装还能阻止；选错接收对象，消息虽然输出却没有到达需要行动的会话；多个事件重复承担同一责任，又会增加等待、准备和重试成本。
 
-选点错误是整类失效的源头：挂晚了（不可逆动作之后才发现）、挂错了（用了不允许阻断的锚点当门）、挂重了（每工具调用的常驻税）、漏挂了（以为没有格子可挂就自造轮子模拟平台）。此前系统里没有任何一处能回答"一共有哪些格子"；本目录补上这一层后：
+因此，选择事件首先要说明哪个真实工程交接需要系统参与。例如，原生 Worker 开始时需要知道怎样使用 Main 交付的材料，结束时需要将本人产物交回原消费者；Main 保存规划或验收答案时，需要自然接收并继续原流程。这些目的决定事件的用途，事件名称和平台能力不反过来创造一项工程责任。
 
-- 各 L3 提出执法需求时，先到 §1 找天然格子，找不到才考虑发明机制；
-- wiring 篇 §2 注册表的每次增删都能对照本目录给出依据；
-- 平台升级带来的新锚点/新语义有一个明确的核对入口（§6 复核条款）。
+本篇保留平台能力的阅读地图、当前选择理由、未采用能力的取舍及变更规则。平台的完整事件与参数以[官方参考](https://code.claude.com/docs/en/hooks)为查阅入口，不固定一个事件总数，也不把平台支持误写成本项目全部采用。具体输入、输出、路由与失败处理归 [Hook 接线](L4-hook-platform-wiring.md)，专业事实和合法推进归[运行控制面](L4-runtime-control-plane.md)。
 
-## 1. 锚点目录（按生命周期分组；事件全集以最新官方页面为准）
+## 2. 先分清选择的四个对象
 
-消费状态图例：●已接线｜◐候选（进入评审即可论证）｜○观察（暂无对应失控）｜△明确不采用（理由见备注）。
+### 2.1 事件、过滤、处理器与消费者
 
-### 一・会话初始化
+一个事件经过四层选择，最后才可能形成工程变化：
 
-| 锚点 | 触发时机 | 能否阻断 | matcher 对象 | 状态 |
-|:--|:--|:--|:--|:--|
-| `SessionStart` | 新会话 / resume / clear / fork | 否（stderr 仅调试可见；可注入 additionalContext / 设 watchPaths / CLAUDE_ENV_FILE 落环境变量 / reloadSkills） | source（startup/resume/clear/fork） | ● |
-| `Setup` | 仅 `--init-only` 或 `-p --init/--maintenance`（CI 单次准备） | 否 | trigger（init/maintenance） | ○ |
-| `InstructionsLoaded` | CLAUDE.md / .claude/rules 加载（启动急载 + 会话中懒载） | 否，纯观测；输出字段被丢弃 | load_reason | ○ |
+| 层次 | 需要确定的问题 | 常见误读 |
+| --- | --- | --- |
+| 平台事件 | 什么时候发生，平台当时掌握什么事实 | 看见名称中有 Stop、Completed 就当作工程完成 |
+| 注册与 matcher | 哪些事件实例会调用本项目命令 | 注册过就认为全部来源都受到监视 |
+| 处理器与实际分支 | 本次是否进入 Main、原生 Worker 或旧记录路径 | 同一事件在所有会话中做相同工作 |
+| 原工程消费者 | 是否接收了准确产物，怎样记录或继续 | 监听成功、stdout 有字就等于交付成立 |
 
-### 二・用户输入段（每一 turn）
+例如，PostToolUse 监听 Write，说明可以观察一次成功写入。只有写入属于本人当前准确答案并满足原接收条件时，才可能调用原消费者。新原生 Worker 即使触发相同工具事件，仍提前返回，等原生 Stop 接收本人产物。
 
-| 锚点 | 触发时机 | 能否阻断 | matcher 对象 | 状态 |
-|:--|:--|:--|:--|:--|
-| `UserPromptSubmit` | 用户提交 prompt、Claude 处理之前 | 是（decision:block / exit 2）；明文 stdout 即注入上下文；**默认超时仅 30s** | 无（每条都触发） | ◐ |
-| `UserPromptExpansion` | 斜杠命令/MCP prompt 展开为正式 prompt 前——覆盖"直敲 `/skill` 绕过 PreToolUse(Skill)"的那条路 | 是 | command_name | ○ |
-| `MessageDisplay` | 助手文本分批渲染到屏幕时 | 不能拦，但可用 displayContent **改写显示内容**（transcript 与 Claude 所见不受影响；适合脱敏显示） | 无 | ◐ |
+### 2.2 按工作边界阅读平台能力
 
-### 三・工具调用段（agentic loop 内）
+| 要处理的工程问题 | 平台能力的阅读方向 | 本项目的选择原则 |
+| --- | --- | --- |
+| 进入或恢复会话 | SessionStart、Setup、指令加载相关事件 | 使用真实重入点，恢复当前责任；不以加载事件证明作者已理解材料 |
+| 人的输入与方向修正 | 用户输入、命令展开相关事件 | 原需求及人类决定入口继续负责授权，不增一份自动人闸 |
+| 普通工具进度与保存 | Pre／Post 工具事件、失败与批次事件 | 提示、观察和专业接收分别落在正确时机 |
+| 子代理专业交付 | SubagentStart、SubagentStop | 使用原生开始和结束，保持平台执行与工程接收分工 |
+| 主会话与团队收尾 | Stop、TeammateIdle、平台 Task 事件 | 本人、Main 与旧团队责任分别判断，不用平台任务状态替代领域完成 |
+| 文件、配置与工作区变化 | FileChanged、ConfigChange、目录和 Worktree 相关事件 | 区分观察、创建替代、资源处置，不因事件到达就改工程事实 |
+| 压缩与终止 | PreCompact、PostCompact、SessionEnd 等 | 保存与恢复准确事实；不能把终止回调当成必达交付点 |
+| 通知、显示及外部表单 | Notification、MessageDisplay、Elicitation 相关事件 | 明确真正的接收者，不通过显示修改或表单响应补造专业批准 |
 
-| 锚点 | 触发时机 | 能否阻断 | matcher 对象 | 状态 |
-|:--|:--|:--|:--|:--|
-| `PreToolUse` | 工具参数生成后、执行前；**唯一能在事前拦工具的点** | 是：permissionDecision `deny>`defer`>`ask`>`allow`（最严优先）+ `updatedInput` 改参；exit 2 无视任何 JSON 强制拦 | tool_name（当前模板覆盖内置写工具、Task/Agent 与 `mcp__<srv>__<tool>`；PowerShell 见 B11） | ● |
-| `PermissionRequest` | 即将对需要授权的动作弹权限框（或对无法弹窗的场景自动拒前） | 特殊：只有返回 decision 对象才生效（behavior allow/deny + updatedPermissions）；**exit 2 而 decision 缺席时不改变流程** | tool_name | ◐ |
-| `PostToolUse` | 工具成功完成之后 | 不能撤销动作；可 updatedToolOutput 改写结果回传 Claude、可 additionalContext、可 classifierContext 给 auto 分类器递条子（v2.1.236+） | tool_name | ● |
-| `PostToolUseFailure` | 工具开始执行后失败（抛错/MCP isError） | 不能；可给纠错反馈与告警。权限被拒/参数校验失败而根本没执行的不触发 | tool_name | ● |
-| `PostToolBatch` | 同批并行工具全部落定、下一轮模型调用之前 | 是（decision:block 或 continue:false 停住循环等待下一轮） | 无；输入携带整批 tool_calls 数组 | ◐ |
-| `PermissionDenied` | **仅 auto 模式**：分类器拒绝工具调用后 | 不能翻案；唯一输出是 hookSpecificOutput.retry=true 允许模型换法重试 | tool_name | ○ |
+这张地图帮助查找自然边界，不定义所有事件的通用协议。新增选择前，应核对对应事件的实际版本、输入、处理器支持和输出对象；不能从同组的另一个事件类推。当前框架使用同步 command 处理器，其他处理器类型也不构成默认扩展方向。
 
-### 四・子代理与团队任务
+## 3. 当前十类事件为什么被采用
 
-| 锚点 | 触发时机 | 能否阻断 | matcher 对象 | 状态 |
-|:--|:--|:--|:--|:--|
-| `SubagentStart` | 经 Agent 工具召唤子代理 | 否；可向子代理注入 additionalContext | agent_type | ● |
-| `SubagentStop` | 子代理完成、即将交卷 | 是（decision:block + reason 使其继续干；exit 2 同效；受 stop_hook_active 与连续 8 次 block 上限约束） | agent_type | ● |
-| `TaskCreated` | TaskCreate 创建任务时 | 是（exit 2 或 decision:block → 任务删除，reason 回给创建者） | 无 | ◐ |
-| `TaskCompleted` | 任务被标 completed（显式 TaskUpdate 或 teammate 带 in-progress 任务收工） | 是：exit 2 = 打回不关；continue:false = 整个 teammate 停机 | 无 | ◐ |
-| `TeammateIdle` | 团队成员一轮结束将 idle | 是：exit 2 = 带着 stderr 继续干；continue:false = 彻底停机 | 无（输入 teammate_name/team_name） | ● |
+### 3.1 注册快照与消费范围
 
-### 五・回合结束与会话终止
+当前 [settings.json](../../settings.json)注册如下事件，全部调用原 Harness 入口；PostToolUse 平台超时为 30 秒，其他事件为 10 秒。表中“职责”解释采用理由，不承诺每次触发都写入 Runtime。
 
-| 锚点 | 触发时机 | 能否阻断 | matcher 对象 | 状态 |
-|:--|:--|:--|:--|:--|
-| `Stop` | 主会话 agent 说完话准备收工（用户打断不触发；API 故障走 StopFailure） | 是；未派发责任或未消费 Result 时 exit 2 继续同一 Main 回合 | 无 | ● |
-| `StopFailure` | API 错误导致的异常收工 | 完全无决策权；除 terminalSequence 外输出被丢弃 | error 类型 | ○ |
-| `SessionEnd` | 会话终止（clear/resume 切换等）；**默认超时仅 1.5s**，预决算上限 60s 可经环境变量覆盖 | 否 | reason | ○ |
+| 事件 | 当前 matcher | 采用理由与实际责任 |
+| --- | --- | --- |
+| `SessionStart` | 无限制 | Main 新进入或恢复时重建当前责任、准确材料与下一步，完成该入口必要准备 |
+| `PreToolUse` | `*` | 在正常工作前提供当前进度与缺项；不按工具、平台身份或 scope 授权／拒绝 |
+| `PostToolUse` | `*` | 从成功保存及相关材料变化衔接 Main 本人消费者，观察适用父返回和进度 |
+| `SubagentStart` | 无角色限制 | 给原生 Worker 短工程提示，说明按实际任务材料工作 |
+| `SubagentStop` | 无角色限制 | 按准确当前引用接收本人实际专业产物，反馈缺项或真实 blocker |
+| `TeammateIdle` | 无限制 | 保留已有旧团队及固定责任的收尾语义，新原生流程不依赖它开工或收卷 |
+| `Stop` | 无限制 | 对 Main 的实际剩余责任进行适用收尾判断，不替代全部领域门或人的决定 |
+| `PostToolUseFailure` | `*` | 在适用路径记录实际工具失败，补充诊断而不改写原操作结果 |
+| `ConfigChange` | `*` | 对适用配置变化保留审计观察，不由配置事件自动创建业务责任 |
+| `PreCompact` | 无限制 | 既有诊断维护后静默结束；后续入口从原持久事实恢复 |
 
-### 六・环境、工作树、通知、压缩与弹窗
+PreToolUse 与 PostToolUse 的 `*` 都覆盖工具事件，包括 MCP 等自定义工具；不能只给 Pre 注册全工具，就声称自定义工具保存已经接入。Post 消费者继续检查成功状态、本人当前责任、准确答案及实际变化，不因注册扩大而扫描或抢收其他人的私人答案。matcher 的语义应结合事件理解，不能只按文本包含某个 MCP 正则字串判断。
 
-| 锚点 | 触发时机 | 能否阻断 | matcher 对象 | 状态 |
-|:--|:--|:--|:--|:--|
-| `CwdChanged` | `cd` 等导致工作目录变化 | 否；可动态设 watchPaths / 写环境变量 | 无 | ○ |
-| `DirectoryAdded` | 会话中期 `/add-dir` 或 SDK 注册新根（启动期 `--add-dir` 不算） | 否；后台异步跑 | source | ○ |
-| `FileChanged` | 被 watch 的文件**无论被谁**改写（工具/Bash/仓库外进程） | 否；价值在于覆盖工具途径之外的变更 | 双角色：watch 清单（`\|` 分隔的字面文件名）+ 生效过滤器 | ◐ |
-| `WorktreeCreate` | 创建隔离工作树（--worktree / isolation / 后台会话）；**配置即替换默认 git 行为**，须在 stdout 末行交回路径 | 是（失败=建树失败；官方做符号链接安全筛） | 无（输入 slug 名） | ◐ |
-| `WorktreeRemove` | 隔离树移除 | 输出消息字段丢弃；失败且目录仍存在时按平台移除失败处理，不用于向 Agent 提醒 | 无（输入 worktree_path） | ○ |
-| `Notification` | 平台通知发出（permission_prompt 约延迟 6 秒去抖） | 否；terminalSequence 仍有效 | notification_type | ○ |
-| `PreCompact` | 上下文压缩前 | 是（manual 压缩报给人；自动恢复型压缩被拦则底层错误浮出） | trigger（manual/auto） | ● |
-| `PostCompact` | 压缩完成后（携带 compact_summary） | 否 | trigger | ○ |
-| `ConfigChange` | 会话中设置类文件变动 | 只审计；policy_settings 层不可拦，不把观察器伪装成门禁 | source（settings 文件类别） | ● |
-| `Elicitation` | MCP server 请求弹窗填表前 | 是（程序化代答或 exit 2 拒绝） | mcp_server_name | ○ |
-| `ElicitationResult` | 弹窗填完、结果回传 server 前 | 是（可改写或置 decline） | mcp_server_name | ○ |
+### 3.2 会话恢复与普通工具为什么分开
 
----
+SessionStart 的价值在于执行者失去会话上下文后，仍能从原工程事实继续。提示应指向当前准确题目与原责任，不重新讲全部生命周期，也不要求每次恢复重做已经接受的工作。它不能保证外部进程、私有草稿或后台执行一定存活。
 
-## 2. 全体锚点共享的平台机制
+PreToolUse 提供及时的正常工作提示，可以让 Main 知道现在缺什么。它不应因尚未满足阶段出口就禁掉补工作需要的工具。当前部分具名路径仍可准备材料或运行原控制周期，因而“没有工具 deny”与“整个 Hook 永不写状态”不同，不能在选点说明中混用。
 
-这些语义属于每一个格子，挂任何锚点前都要过一遍：
+PostToolUse 已在成功动作之后，适合衔接实际保存与观察；失败动作交失败事件，不能用一份空成功输出冒充保存。Main 保存本人答案与 Worker 返回本人产物分别调用原消费者，不能在两个事件中重复提交同一份交付。
 
-**输入面**：公共字段（session_id / transcript_path / cwd / hook_event_name，子代理上下文附 agent_id / agent_type）之外各锚点另有专属字段——关键的记 here：PreToolUse 三件套 tool_name/tool_input/tool_use_id 且**文件工具的 file_path 保证绝对路径、Windows 反斜杠**；Stop 家族携带 stop_hook_active、last_assistant_message、background_tasks、session_crons；SessionStart 携带 source 并可拿 model 字段。
+### 3.3 收尾、失败观察与压缩为什么分开
 
-**输出面三层**：通用字段 `continue / stopReason / suppressOutput / systemMessage / terminalSequence`（多数事件接受但部分丢弃，见目录"能干啥"列）；顶层 `decision(+reason)` 用于块式控制（非 PreToolUse 家族）；`hookSpecificOutput` 富控对象（permissionDecision、updatedInput、updatedToolOutput、additionalContext 等，hookEventName 必填）。字符串统一 10000 字符封顶。**首字符决定解析**：stdout 以 `{` 开头按 JSON 解析，否则当明文（三类事件会把明文喂进上下文）。
+Main Stop 处理 Main 仍可行动的责任，例如待派发或待消费的审查工作。Worker Stop 处理本人专业交付。TeammateIdle 保留旧团队的专门边界；三者不是一套可以互换的“所有人必须继续”信号。
 
-**退出码三档**：0 成功（JSON 生效）；2 阻断（**无视同批 JSON 的 allow**——语义上不存在"JSON 说放行但 exit 2"的中间态；PreToolUse 同义于 deny）；其余非零一般是非阻塞错误继续执行（per-event 例外：WorktreeCreate 任何非零即建树失败）。schema 校验失败的 JSON 也是非阻塞错误——**这也是静默失效的主要来源**：拼错字段名的门等于没装，handler 上线必须配 wire 级测试而非只测业务逻辑。
+失败与配置观察有独立价值：一个帮助定位工具或环境问题，一个帮助解释治理配置何时改变。框架选择只审计使用它们，不意味着该事件已经证明产品失败原因、自动重试或新的授权。原生专用分支和入口失败仍可能使某次事件不进入通用审计，不能承诺全量捕获。
 
-**并行与优先级**：同一事件的全部命中 handler 并行执行；跨 settings 层的同名 handler 去重，插件副本不去重；决策取最严（deny > defer > ask > allow）。一对孪生含义：多道屏障不会互相跳过，但也意味着一道宽松的新 handler 不可能稀释既有 deny；反过来，任何新 handler 都要假设自己可能与全系统所有旧 handler 同时命中。
+PreCompact 静默执行既有诊断维护，不收专业草稿、不运行阶段控制周期，也不另写 Milestone 来保证上下文保留。后续 SessionStart 从原责任与已接收记录恢复准确工作；已有专业事实和原生真实返回是继续工作的依据。具体分工见 [Hook 接线](L4-hook-platform-wiring.md)。
 
-**Matcher 语法陷阱**：逗号分隔要求 v2.1.191+；连字符纳入精确匹配集要求 v2.1.195+，之前的 `code-reviewer` 这类名字会被当**未锚定正则**误伤同名前缀——精确名一律手写 `^…$` 锚定；`FileChanged` / `StopFailure` 只接受字母数字下划线与 `|`。`if` 字段按权限规则语法对工具名+参数联合过滤（尽力而为，Bash 解析不了时 fail-open——**硬门禁止放在 if 里**）。MCP 工具命名 `mcp__<server>__<tool>`，服务器通配必须带 `.*` 后缀；插件内置 server 使用带插件名的 scoped 前缀。
+## 4. 原生子代理为什么只依赖开始与结束
 
-**Handler 五类型与事件支持矩阵**：command（shell/exec 两种形态）、http（POST body 进、响应体出；**仅 2xx+JSON 体可产生决策**，连接失败一律继续）、mcp_tool、prompt（单轮 LLM 判定 `{ok}`）、agent（≤50 轮带工具的验证者，实验性）。全部五类的只有十三个（八成是决策型锚点：Pre/Post 族、Stop 族、Permission 族、Task/Teammate/Prompt 入口族）；SessionStart/Setup 只支持 command+mcp_tool——**想在会话起点放 prompt 型判定目前不成立**。
+### 4.1 工程衔接不接管平台执行
 
-**超时预算**：默认 600s（command/http/mcp_tool），特例：UserPromptSubmit 30s、MessageDisplay 10s、SessionEnd 1.5s。超时=取消+无决策：**PreToolUse 的 command 家族超时不会拦工具，会落入正常权限流**——不能指望慢门当闸（Agent SDK callback 形态除外，其超时会拦）。
+Main 通过 Claude Code 原生 Agent 实际派发，携带准确 brief、题目、答案位置与材料。SubagentStart 提供一般工程提示，不按角色认领工作，不批准平台创建；执行、消息、前后台、等待与恢复仍由 Claude Code 管理。
 
-**异步**：仅 command 型可 `"async": true`；后台跑、下一 turn 交付 additionalContext/systemMessage，期间不具备任何控制力（exception：`asyncRewake` 形态 exit 2 可唤醒空闲会话）；`-p` 会话结束时被杀。
+Worker 在自己的实际位置做专业工作：形成必要计划、实施或观察、执行真实检查、保存本人产物，再原生返回准确引用。SubagentStop 定位本人的唯一当前责任，调用原专业消费者。提交是否成立由原消费者判断，不由平台结束字串、闲置状态或最后聊天单独决定。
 
-**权限与信任**：hooks 无沙箱、以宿主进程 OS 权限运行（知识库警示原文："像审查生产代码一样审查 hook 脚本"）；workspace trust 先于 settings 类 hook 装载（`-p` 视为信任，仓库自带 .claude/settings.json 会直接生效——审别人的仓库前用 `disableAllHooks` 或 `--bare`）；settings 合并而非覆盖、managed 层不可被下层关闭；企业可 `allowManagedHooksOnly` 收口；HTTP 白名单 `allowedHttpHookUrls` 适用于包括 managed 在内的全部来源。子代理继承 settings/plugins/skills 的 hooks（tool 事件同样触发，输入带 agent 身份）。skills/agents frontmatter 可携 hooks：subagent 的只在存活期有效（其 Stop 会被转换为 SubagentStop），skill 的注册后全会话有效（可 `once:true`）。
+增加逐工具的激活、首写许可、通用计划回执或“派发开始”事件，会把执行重新套进框架抽象。原生 Worker 的普通工具事件因此静默，不接收、不激活，也不扫描别人的答案。具体任务、独立性和实际接收边界见[子代理工程衔接](L4-agent-dispatch-governance.md)。
 
-### 2.1 消息消费者与最新机制
+### 4.2 Main 的其他事件仍然有独立用途
 
-同步 `systemMessage` 面向用户；Agent 上下文按事件放入 `hookSpecificOutput.additionalContext`，必须声明 hookEventName。PreCompact 丢弃消息字段；Stop/SubagentStop 的 additionalContext 会续跑，不能承载 worktree 纯提示。具体选点、输出协议与验收统一消费 [接线篇 §4](L4-hook-platform-wiring.md#4-输出与决策契约output-面)。
+Worker 只依赖 Start／Stop，不表示 Main 的恢复、本人保存、必要提醒和人类入口都被删除。S0～S4 的材料准备，S5 的独立审查，S6 的显式集成，S7～S9 的专业交接，S10 的验收审计与 S11 的真实决定，各自使用原入口。
 
-PostToolUse 的 Agent 完成结果和 SubagentHandback 报告属于不同工具路径；前者 async_launched 不代表交付，后者读取 tool_input.message。扩展这两个 matcher 复用既有 PostToolUse：责任明确为报告观察和主会话回收提示，失败时不阻断，接收状态仍由 Integrator 决定，不另立完成事实源。
+Main 的成功 Post 不能抢收 Worker 私有答案；父 Agent 返回也不能绕过原生 Stop。当前部分新原生父返回会提前结束监听，不保证都追加集成摘要。Main 应结合实际原生返回和原回执闭环，不为补摘要新增一层唤醒或提交协议。
 
-S6 派发提示复用同一 PostToolUse 事件，matcher 包含 Bash 和兼容 Task。Bash 仅在 Harness 注册工作组、完成上报、集成动作结束时产生只读摘要；普通命令立即返回。投递对象限定父会话，保持异步启动、非 building 阶段与子会话边界，不新增审批或迁移入口。验收覆盖 settings matcher 到真实 Hook 命令路由及 Runtime 不变断言。
+本人已交付时，同事未完成、Main 未集成和资源待回收分别交相应责任处理。Stop 的纠正是让本人补实际缺项，不是让已完成者代替其他人工作。长检查与合并不因为 Stop 正好发生就搬进 Hook。
 
-WorktreeCreate 是创建替代器，不是观察点。当前未具备完整创建/恢复实现时保留候选，不先挂空 Hook；WorktreeRemove 也不替代项目接收/清理事务。
+## 5. 尚未采用的能力怎样判断
 
-## 3. 当前消费组合的选取理由（为何恰是这十类）
+未注册不等于平台没有，也不等于以后一定要补齐。只有存在实际失效、明确消费者和有收益的边界，才考虑采用；否则保留平台原生行为和已有工程入口。
 
-现役十类锚点各自对应一条 D2 自然路径：PreToolUse=一切写的必经之门（gate/屏障/gate 引擎投影全在这）；PostToolUse(SendMessage)=计划回执与 blocker/completion 的必经信道（观察者）；PostToolUseFailure=原生失败信号；SubagentStop+TeammateIdle=Worker 收工的两个出口；Stop=Main 收工门；SessionStart/PreCompact=跨会话连续性的两个端点；SubagentStart=派发瞬间的简报注入；ConfigChange=治理资产变更的第二只眼。它们的共同点是责任边界清晰、没有引入第二套状态机，且每个占用都有可验证收益。
+| 能力方向 | 可能解决的问题 | 采用前必须厘清的工程边界 |
+| --- | --- | --- |
+| UserPromptSubmit／命令展开事件 | 方向改变时更早交付必要上下文 | 不重复创建需求状态，不把普通技术选择都变成人类审批；说明现有 Main 上下文为何不足 |
+| FileChanged／目录变化事件 | 看见工具链之外的相关文件变化 | 明确观察范围、动态目录和变更消费者；文件变化不是新专业结论，也不直接收卷 |
+| PostToolBatch | 需要一批操作落定后再做有限关联判断 | 批次边界是否真等于领域提交点；不能将批次完成当作多份产物原子接收 |
+| TaskCreated／TaskCompleted | 如果工程确实消费平台任务表，可观察其状态变化 | 平台 Task 与正式 TASK、Assignment 和原 Result 是不同对象；不能为接 Hook 维护第二份任务真值 |
+| PermissionRequest／PermissionDenied | 处理平台工具权限交互 | 说明权限范围及人机边界；不能借平台工具许可产生需求变更或发布批准 |
+| WorktreeCreate | 工程确有理由接管默认工作区创建 | 必须完成真实创建、路径交付、失败恢复和资源责任；不能只注册一个提示器 |
+| WorktreeRemove | 需要观察或承接特定平台资源移除 | 与工程接收、集成 ACK、未提交材料和清理事务明确分工，不以移除事件证明贡献已合格 |
+| MessageDisplay／Notification | 降低显示噪声或提供用户通知 | 显示改变不清理全部转录与证据；通知不等于模型上下文或本人履职完成 |
+| InstructionsLoaded／Setup | 特定安装、加载或维护诊断 | 加载成功不等于 agent 已阅读理解，不应形成新的通用读回许可 |
+| PostCompact／SessionEnd／异常停止事件 | 对已有恢复或结束问题补诊断 | 终止和异常不保证具备完整产物，不作为唯一接收通道或自动重启依据 |
+| 外部表单、模型切换等事件 | 项目确实需要对应的专门集成 | 先找到工程消费者和实际收益；不因平台新增事件自动扩充本框架职责 |
 
-其余锚点未被接线不是因为平台不给，而是各自的理由见目录状态列：要不尚无对应失控（○），要不是明确收益但要过评审（◐），要不与治理模型冲突需要 owner 先裁（PermissionRequest：它替用户行使批准权，触到人闸模型的边界——这正是当初迁移模板把它列入禁词的动机；解禁前任何人不得接线）。**十类是一个快照，不是天花板。**
+有几项选择尤其需要避免误判：
 
-## 4. 候选锚点评估备忘（◐ 项的既知收益与前置条件）
+- TaskCompleted 描述平台任务的完成尝试，不能据名称替代工程消费者的接收事实。本项目目前也没有为它建立正式 TASK 映射。[平台任务事件](https://code.claude.com/docs/en/hooks#taskcompleted)
+- FileChanged 属文件观察，需要自己的范围和 matcher 语义；不能把工具 matcher 的写法无条件照搬过去，更不能用它事前阻止已发生的编辑。[文件观察事件](https://code.claude.com/docs/en/hooks#filechanged)
+- WorktreeCreate 接管默认创建行为；只为记录一个开始通知而注册它，会让框架承担真实创建责任。当前原生隔离继续使用平台默认能力。[工作区创建事件](https://code.claude.com/docs/en/hooks#worktreecreate)
 
-> 各候选与现役锚点的问题应在目标项目本地的 `docs/reports/bugs/` 登记册中操作化——推进任一候选时以对应条目为工单底稿，完成后回写本目录状态列；本模板仓库不保存具体项目的缺陷登记册。
+例如，为了让 Builder “每次写文件就同步 Result”而增加 FileChanged，会在专业工作尚未完成时反复接收中间状态，制造保存与收卷的重复关系。若实际问题是外部编辑导致冻结材料漂移，应调查的是观察范围、失效与恢复消费者，不能把漂移检测改造成逐工具执行监管。
 
-| 锚点 | 既知收益 | 前置条件 / 风险 |
-|:--|:--|:--|
-| `Stop` | **● 已接线**：主会话有未派发责任或未消费 Result 时阻止收工；活跃后台 Worker 不误拦 | 受 stop_hook_active 与平台连续 block 上限约束；判定直接读已有 review assignments |
-| `PostToolUseFailure` | **● 已接线**：补平台原生失败信号，作为 wrapper/probe 的第二信号源 | 只是 audit 信号；冻结窗口的语义仍归控制面篇 §9 |
-| `FileChanged` | locked artifact / frozen subjects 目前靠主动 fingerprint 刷新发现漂移；此锚点可让**仓库外进程**的篡改也被看见 | matcher 即 watch 清单（字面文件名）；列表须动态化（配合 SessionStart/CwdChanged 下发 watchPaths） |
-| `ConfigChange` | **● 已接线**：治理资产（loop-definition / hook-policy / settings）运行期被改的第二只眼 | audit-only；policy_settings 层拦不住，不能伪装成 enforce |
-| `UserPromptSubmit` | Main 会话指令入口的投影/护栏（当前恢复包只在 SessionStart；会话中途的方向修正没有承载格） | 30s 默认超时短；每 turn 高频 |
-| `PostToolBatch` | 批次级跨工具校验（如 S9 修复中的双写一致性、批量导入后的总量核对） | block 会停在下一轮模型调用前——确认这不是想要的粒度再用 |
-| `TaskCreated` / `TaskCompleted` | Team task 生命面的两道合规门（依赖存在性；completion 必须对准调度篇 canonical Result 的 consumed 事实） | TaskCompleted 情况二（teammate 带活任务收工）会被 stopId le 重叠覆盖——分工须在调度篇划清；迁移模板当前把两者列入禁词，接线前先走演化协议解禁 |
-| `MessageDisplay` | 显示面脱敏（补足证据面已有 capture 脱敏的最后一块可见性缝隙） | 仅影响渲染不改 transcript——不能冒充真正的 secret scrub |
-| `WorktreeCreate` | 接管 S6/S9 隔离树的创建以复用登记逻辑；官方符号链接安全筛免费获得 | 配置即整体替换默认 git 行为；`.worktreeinclude` 失效，抄送逻辑须自己做 |
-| `PermissionRequest` | 代表用户自动批准已白名单化的只读操作，减少弹窗噪声 | **触碰人闸模型**（谁有权说 yes）；此前列入迁移禁词。解禁条件：先修订控制面篇 §7.2 人闸契约，界定机器可代批的范围并由 owner 批准 |
+当前 [模板检查](../../internal/migration/templates.go)明确排除 PermissionRequest 和 TaskCompleted 注册。其他未采用能力也没有因此自动获得消费者；采用或退出都需要同步真实设计与实现。不能把候选清单当成待执行任务表。
 
-## 5. 选点审查规则（新锚点准入的必答题）
+## 6. 时机、事实和接收者怎样共同决定选点
 
-任何一个 stage 或机制想占用新格子（或在既有格子上加 handler），提出者在动 settings 之前回答六问，答案写入 PR 描述并同步本目录状态列：
+### 6.1 要的事实是否已经产生
 
-1. **格子责任问**：这个失控有没有已经被占用的天然格子承担？（D2 不重复设岗——同一时刻别造两道同义门。）
-2. **时序有效性问**：锚点的判定时刻是否在要防的动作之前？事后格子（Post 族）只能善后不能设防；混合需求拆两个格子。
-3. **失败方向问**：新 handler 属 fail-open 还是 fail-closed？该锚点的退出码/JSON 能力支持这个方向吗？（例：PermissionRequest 的 exit 2 是空转的；PreToolUse 的 command 超时是不拦的。）方向与 wiring 篇 §5 矩阵一致吗？
-4. **常驻成本问**：触发频率 × 超时预算是什么量级？落在 30s/10s/1.5s 特例区间里的有没有重估？
-5. **并行干涉问**：与全系统现存 handler 同事件并发时，最严优先原则会让它放大还是架空谁？跨域重叠区（Task 族 vs 调度篇；PreCompact vs checkpoint 协议）拿到归属文档背书了吗？
-6. **三写同步问**：settings 注册、migration 白名单、本目录状态列是否同一提交更新？
+选择事件时，应把要公证的事实具体写出来。例如“答案已保存”“当前 Result 已接收”“来源已合并”“检查已经完成”分别发生在不同位置。一个事件名字接近，不足以证明它携带了那个事实。
 
-连答六问全绿才可接线。退出一律反向走（先摘 settings，再清理白名单，最后改状态列并在 §5.1 注销理由）。
+Pre 事件可以在工作前提示，但此时没有真实执行结果。Post 成功可以证明相应工具动作已完成，但不能说明专业答案已经合格。原生 Stop 提供接收机会，但实际产物可能缺失或不完整；这正是原消费者仍然必要的原因。
 
-### 5.1 已注销锚点（防空位幽灵）
+任意文件编辑、Bash 脚本写入、MCP 工具或外部进程，也不都由当前成功监听完整覆盖。已有保存观察与消费者各有识别范围，不应宣称注册 Post 就建成了完整文件监视系统。新增来源时先核实准确路径、执行位置和保存关联。
 
-（空——首个注销发生时在此登记锚点名、日期、注销理由与残留清理项。）
+### 6.2 输出是否会到达需要行动的人
 
-## 6. 复核条款与来源差异
+执行者需要补专业字段，应在其本人仍能继续的边界反馈；Main 需要集成，应在父会话可见入口提示；只有审计用途的观察，应保留审计事实，不伪装成控制指令。用户看到提示、模型收到上下文、某项工程事实已被接收，分别验证。
 
-- **复核触发**：Claude Code 版本 bump、接线清单变更、或任一评审依据到龄（>6 个月）时，重新抓取官方页 diff 本目录；diff 结果记入变更记录。
-- **2026-08-28 核对时的已知差异**（知识库 Layer1 → 官方现状）：①"其他非零退出码终止整个会话"已不成立——现行语义多为非阻塞错误继续执行（WorktreeCreate 除外）；②permissionDecision 共四值 deny/defer/ask/allow，其中 defer 仅在 `-p` 集成方有效；③知识库未收录 `DirectoryAdded`；④prompt/agent 型 handler 已成体系并有自己的分事件 ok:false 语义，不只是 KB 所述两种返回形态。
-- 本文所有平台行为的最终解释权在官方页面；发现矛盾先修本文件再谈接线。
+Start 与 Stop 对上下文的作用不同；软提醒若误放在继续控制字段中，会把已经完成的人留在工作循环。PreCompact 也不能因为“即将丢上下文”就被用作所有消息的补发点。具体字段、退出与可见性见 [Hook 接线](L4-hook-platform-wiring.md)。
 
-## 变更记录
+## 7. 每个事件都要支付成本
 
-| 日期 | 版本 | 变更 | 依据 |
-|:--|:--|:--|:--|
-| 2026-08-28 | v0.2.0 | 将 Stop、PostToolUseFailure、ConfigChange 从候选转为已接线，并同步十类消费组合；明确 PostToolUseFailure/ConfigChange 仅补审计信号，不创建第二套状态机 | HOOK-B03/B07/B09 实装与契约测试 |
-| 2026-08-28 | v0.1.0 | 初版：收录平台 31 个 Hook 锚点（九段生命周期分组 × 触发/阻断/matcher/消费状态）、全体共享机制（输入输出三层/退出码/并行优先级/matcher 语法陷阱/五类 handler 支持矩阵/超时与异步/权限信任）、现役七锚点选取理由、十个◐候选评估备忘、六问选点审查流程与注销登记制度 | owner 指示：文档不得把现用七锚点表述成边界；读 SebsVault/LLM/Hook 知识库并对照官方最新文档建立锚点全图供后续迭代对照审查 |
+### 7.1 看真实触发频率和实际路径
 
+每工具事件的轻微成本会重复出现，且往往与其他用户配置、插件或角色携带的 handler 一起发生。评估应包含进程启动、控制根解析、读取规模、准备、锁等待、序列化、模型上下文及提示打断，而不只看一个业务函数的运行时间。
 
-### 2026-09-18 · v0.3.0
+平台外层预算不是每次正常耗时。普通事件保持 6 秒工作、8 秒进程上限；[S4 成功 Main Post 的接收与交接](L4-agent-guidance.md#s4-s5-guidance)使用有限的 26/28 秒上限，由 PostToolUse 的 30 秒平台上限覆盖。应使用实际路径的计时和必要观测比较收益，避免用增加超时掩盖重复准备、反复扫描历史或重复求值。
 
-复核最新官方消息/worktree 协议，完成 PostToolUse matcher 扩展选点设计。
+当前成功工具的工作进度观察默认是 shadow，通知需要明确启用；未知、等待、已完成或读取范围不足不能被强判停滞。新原生普通事件也会提前返回，因此这项观察不是覆盖所有 agent 的存活监控。成本和边界见[手续收敛](L4-procedure-reduction.md)。
+
+### 7.2 并发和重复不会消除原事实责任
+
+同一逻辑可能通过多条正常事件再次到达。接收幂等由原责任、内容与接收事实保证，事务并发由 Writer 处理；不能只凭一份显示去重缓存声称“不可能重复提交”。选择新事件应列清与现有准备、接收、后继和通知的重叠。
+
+多个匹配 handler 还可能并行运行，当前工程不能依赖它们按注册文字顺序修改共享文件。平台具有多种 handler 类型，也不意味着应该在 Hook 内再启动一名专业审查者；当前 command 接线的职责是衔接已有专业工作。[平台处理器与并行规则](https://code.claude.com/docs/en/hooks#hook-handler-fields)
+
+不能通过第二个宽松 handler 解除原消费者的拒收，也不能通过一个新 handler 补造缺少的批准。恢复仍从原 Runtime、产物与接收记录继续，独立责任仍需真实派发。
+
+## 8. 变更选点前要回答的六个问题
+
+新增、替换、退出事件，或者在已有事件上增加处理，应形成能供维护者审查的明确设计：
+
+1. **真实问题与责任。** 防止哪个已经观察到的失效，由谁行动、谁消费结果？现有自然入口为什么不足？
+2. **时机与事实。** 事件发生时是否已经具备所需依据？缺失或晚到怎样处理？不要把观察机会写成来源证明。
+3. **输出与失败。** 发给 Worker、Main、用户还是只审计？实际平台支持哪种表达，失败由谁恢复，是否会意外阻止或延续执行？
+4. **正常成本。** 频率、读取范围、等待、上下文和重复通知增加多少？能否减少一份已有手续或利用原接收点？
+5. **并行与权威。** 与现有 handler、领域消费者、旧执行和外部配置怎样共存？是否出现第二份状态、重复接收、角色猜绑或权限扩张？
+6. **同步与验证。** settings、安装／旧生成表面、policy、输入、实际路由、输出、文档和验证怎样共同更新？怎样证明收益到达了正确接收者？
+
+这些问题用于建立具体共识，不要求作者另填一张无消费者审批表。需求中的真实权限和人类边界仍按原入口处理，不能用“新增事件”绕过它们。
+
+退出也要说明原来保护或承接的责任去了哪里。先找出真实消费者、未完成记录和兼容范围，再移除相应注册与分支；不因主配置已删除就宣称旧独立执行、其他配置层或恢复材料同时消失。现行正文直接表达最终规则，变更原因和验收证据保存到维护记录。
+
+## 9. 注册、安装与验证的实际边界
+
+### 9.1 不同安装表面不能混为一份配置
+
+新项目通过[安装入口](../../internal/cli/install_command.go)把根模板 `settings.json` 放入 `.claude/settings.json`。当前安装面向新或空目录，不通过覆盖已有活动工程完成升级。事件选择的同步要核对真正安装后的路径与命令，不能只看工厂仓库文件。
+
+[旧独立执行 bootstrap](../../internal/workspace/bootstrap.go)也生成十类事件，但其 matcher 全为 `*`，配置服务已登记 execution，不等于新原生工作区必须安装同一套 bootstrap。它与模板的有限 Post 工具集合有不同消费范围。恢复按原冻结记录进行，不为让两张表看起来相同而改写正在使用的执行环境。
+
+本项目的事件集也不代表平台没有其他来源的 Hook。排查重复提示或意外继续时，应检查用户、插件、角色及适用配置，而不是仅凭根 settings 没有某个 handler 就否定实际观察。
+
+### 9.2 验证选择的收益和代价
+
+静态检查要比较实际事件集合、matcher 语义、命令、预算及安装表面。当前模板注册与 policy 的 `protected_events` 应共同维护；精确文本检查与语义覆盖不同，已有 smoke 的旧 matcher 检查限制见 [Hook 接线](L4-hook-platform-wiring.md)。
+
+机制验证应覆盖 Main／Worker、准确引用、同角色并发、旧记录、未知来源、前后台、重复结束及失败方向。已通过且源码未变的证据可以准确复用，不应为文档数量机械重复全部测试；新增或变化的表面则补针对性验证。
+
+真实平台验证还要确认事件确实触发、命令确实运行、信息到达正确会话、原消费者记录实际接收，以及普通工作没有承担新手续。安装检测、合成 payload、进程测试和真实模型执行各自报告范围；产品质量另行验收，不能从事件表或机制测试推导。
+
+平台升级、实际输出变化、matcher 行为变化、Hook 注册改变或真实运行偏离假设时，应重新核对相关官方契约和实际实现。发现问题先明确责任与影响，再修正文档、指引或接线；不能在正文末尾追加一段新规则，让读者自己判断哪一版优先。

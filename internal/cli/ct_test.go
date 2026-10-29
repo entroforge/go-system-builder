@@ -24,10 +24,8 @@ func ctFixture(t *testing.T) string {
 // TestCT03901_DesignGateSatisfiedCommitsPTR_PLAN_01 covers CT-039-01 from
 // SYNC-039 §12. The Controller evaluates the planning.design cursor
 // against the contract set. When the design contract set is complete
-// (locked design + req documents present) the gate is satisfied and the
-// Controller commits PTR-PLAN-01, advancing the cursor to planning.contracts
-// while still emitting permissionDecision=allow (BE-039 §5.2 / REQ-039
-// §10.2 — quality gates never block tools).
+// (locked design + req documents present) the listener commits PTR-PLAN-01,
+// advancing the cursor to planning.contracts; the Hook carries no tool ACL.
 //
 // The CLI test exercises the public surface: a PreToolUse against an Edit
 // of the design document must surface quality_gate.status=satisfied with
@@ -53,7 +51,7 @@ func TestCT03901_DesignGateSatisfiedCommitsPTR_PLAN_01(t *testing.T) {
 		t.Fatal("CT-039-01 must surface a quality_gate envelope")
 	}
 	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("CT-039-01 must allow the tool (Quality Gate never blocks): %v", pd)
+		t.Fatalf("CT-039-01 observer must not emit a tool permission decision: %v", pd)
 	}
 	if gateID, _ := qg["gate_id"].(string); !strings.Contains(gateID, "GATE-PLANNING-DESIGN-COMPLETE") {
 		t.Fatalf("CT-039-01 must surface GATE-PLANNING-DESIGN-COMPLETE, got %q", gateID)
@@ -63,8 +61,7 @@ func TestCT03901_DesignGateSatisfiedCommitsPTR_PLAN_01(t *testing.T) {
 // TestCT03902_ContractsMissingCoverageExposesNotReady covers CT-039-02
 // from SYNC-039 §12. With planning.contracts and an incomplete contract
 // record, the Quality Gate must return not_ready (or unknown when the
-// catalog cannot enumerate dependents) while still emitting
-// permissionDecision=allow.
+// catalog cannot enumerate dependents) without a tool permission decision.
 func TestCT03902_ContractsMissingCoverageExposesNotReady(t *testing.T) {
 	root := ctFixture(t)
 	state := planningState(t, root, "contracts", 1)
@@ -86,7 +83,7 @@ func TestCT03902_ContractsMissingCoverageExposesNotReady(t *testing.T) {
 		t.Fatal("CT-039-02 must surface a quality_gate envelope")
 	}
 	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("CT-039-02 must allow the tool (not_ready is non-blocking): %v", pd)
+		t.Fatalf("CT-039-02 observer must not emit a tool permission decision: %v", pd)
 	}
 	status, _ := qg["status"].(string)
 	switch status {
@@ -132,43 +129,42 @@ func TestCT03903_TwoConcurrentSameRevisionLosesDuplicateCommit(t *testing.T) {
 	}
 }
 
-// TestCT03904_LockedExactContractWriteBlocks covers CT-039-04 from
-// SYNC-039 §12. A Write to a locked exact path with complete manifest
-// identity (id/kind/path/version/sha256/locked_from_stage/
-// baseline_generation) must surface permissionDecision=deny with
-// reason=locked_artifact_write (the only retained Write block reason
-// under the minimal safety policy, BE-039 §6.1).
-func TestCT03904_LockedExactContractWriteBlocks(t *testing.T) {
-	// Direct policy-engine path: the Controller's buildSafetyInput
-	// does not currently thread LockedArtifacts from snapshot
-	// (BUG-039-02 B1 follow-up). The engine unit test in
-	// tests/policy/minimal_policy_test.go covers the exact-path block
-	// under the unit-test path. Here we pin the CLI-level wiring
-	// contract: the same input through the engine surfaces a block.
+// TestCT03904_LockedExactContractWriteIsObserved covers CT-039-04 from
+// SYNC-039 §12. A locked exact path remains subject to its professional
+// consumer and gate; the PreToolUse listener does not enforce the write.
+func TestCT03904_LockedExactContractWriteIsObserved(t *testing.T) {
 	root := ctFixture(t)
-	policyBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "hook-policy.json"))
-	if err != nil {
-		t.Fatal(err)
+	state := planningState(t, root, "contracts", 1)
+	writeACState(t, root, state)
+	input := `{
+		"session_id":"session-ct-039-04",
+		"hook_event_name":"PreToolUse",
+		"agent_id":"agent-1",
+		"tool_name":"Edit",
+		"tool_input":{"file_path":"docs/dev/contracts/BE-039-loop-controller.md"}
+	}`
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr); code != 0 {
+		t.Fatalf("locked-path observation failed: code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(string(policyBytes), "HOOK_LOCKED_ARTIFACT_WRITE") {
-		t.Fatalf("hook-policy.json must declare HOOK_LOCKED_ARTIFACT_WRITE: %s", string(policyBytes))
+	env, qg := parseQualityGateField(t, stdout.String())
+	if env == nil || qg == nil {
+		t.Fatalf("CT-039-04 must retain the graph observation: %s", stdout.String())
 	}
-	if !strings.Contains(string(policyBytes), "HOOK_SQUASH_MERGE") {
-		t.Fatalf("hook-policy.json must declare HOOK_SQUASH_MERGE: %s", string(policyBytes))
+	if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("locked path must not be denied by PreToolUse: %s", stdout.String())
 	}
 }
 
-// TestCT03905_UnlockedSiblingWriteAllows covers CT-039-05 from
-// SYNC-039 §12. A Write to an unlocked sibling of a locked artifact
-// (different filename, same directory) must NOT block — the minimal
-// safety engine only matches the exact path of a fully-identified
-// locked artifact (BE-039 §6.1).
-func TestCT03905_UnlockedSiblingWriteAllows(t *testing.T) {
+// TestCT03905_UnlockedSiblingWriteIsObserved covers CT-039-05 from
+// SYNC-039 §12. A neighboring document path is observed by the Hook, while
+// the professional artifact checks remain in their original consumer.
+func TestCT03905_UnlockedSiblingWriteIsObserved(t *testing.T) {
 	root := ctFixture(t)
 	state := planningState(t, root, "design", 1)
 	writeACState(t, root, state)
 
-	// An Edit on a path that is not a locked artifact must be allowed.
+	// The Hook reports graph progress without making an artifact-path decision.
 	input := `{
 		"session_id":"session-ct-039-05",
 		"hook_event_name":"PreToolUse",
@@ -185,15 +181,14 @@ func TestCT03905_UnlockedSiblingWriteAllows(t *testing.T) {
 		t.Fatal("CT-039-05 must surface a quality_gate envelope")
 	}
 	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("CT-039-05 must allow an unlocked sibling write: %v", pd)
+		t.Fatalf("CT-039-05 observer must not return a permission decision: %v", pd)
 	}
 }
 
-// TestCT03906_GitSquashMergeBlocks covers CT-039-06 from SYNC-039 §12.
-// `git merge --squash` is the second retained block reason under the
-// minimal safety boundary (BE-039 §6.2). The tokenized resolver
-// (internal/classifier) must prove the command and surface a block.
-func TestCT03906_GitSquashMergeBlocks(t *testing.T) {
+// TestCT03906_GitSquashMergeIsObserved covers CT-039-06 from SYNC-039 §12.
+// Command classification is feedback for the graph; PreToolUse does not
+// deny the tool. Lifecycle gates remain responsible for stage progression.
+func TestCT03906_GitSquashMergeIsObserved(t *testing.T) {
 	root := ctFixture(t)
 	state := planningState(t, root, "design", 1)
 	writeACState(t, root, state)
@@ -207,26 +202,20 @@ func TestCT03906_GitSquashMergeBlocks(t *testing.T) {
 	}`
 	var stdout, stderr bytes.Buffer
 	if code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr); code != 0 {
-		t.Fatalf("CT-039-06 must exit 2 (block exit) on squash merge: code=%d stderr=%s", code, stderr.String())
+		t.Fatalf("CT-039-06 observer failed: code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "squash_merge") {
-		t.Fatalf("CT-039-06 envelope must carry reason=squash_merge: %s", stdout.String())
+	if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("CT-039-06 PreToolUse must not deny the command: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "QUALITY_GATE") {
+		t.Fatalf("CT-039-06 must retain graph progress feedback: %s", stdout.String())
 	}
 }
 
-// TestCT03907_OrdinaryGitOpsAllow covers CT-039-07 from SYNC-039 §12.
-// Ordinary merge / push commands must NOT be blocked by the minimal safety
-// policy. Only `git merge --squash` (and the gh-PR equivalent) trigger the
-// squash_merge block (BE-039 §6.2).
-//
-// RC-06 (S10-3): the former `git push origin develop` and
-// `npm publish --dry-run` rows asserted that unclassified push/publish was
-// allowed. With the protected-commands table now wired into the PreToolUse
-// enforce path, `git push origin develop` matches the protected
-// release-branch row and npm publish is HS-005 — both are hard-denied by
-// design (see internal/policy/protected_release_test.go). The allow surface
-// here is ordinary non-release git work.
-func TestCT03907_OrdinaryGitOpsAllow(t *testing.T) {
+// TestCT03907_PreToolUseObservesGitOps covers CT-039-07 from SYNC-039 §12.
+// Ordinary and release-like commands alike reach the graph listener without
+// a per-command tool denial; release approval remains a lifecycle condition.
+func TestCT03907_PreToolUseObservesGitOps(t *testing.T) {
 	root := ctFixture(t)
 	state := planningState(t, root, "design", 1)
 	writeACState(t, root, state)
@@ -238,6 +227,8 @@ func TestCT03907_OrdinaryGitOpsAllow(t *testing.T) {
 		{"ordinary merge", "git merge feature/req-039"},
 		{"git status", "git status --porcelain"},
 		{"git log", "git log --oneline -5"},
+		{"squash merge", "git merge --squash feature/req-039"},
+		{"release push", "git push origin develop"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,8 +241,11 @@ func TestCT03907_OrdinaryGitOpsAllow(t *testing.T) {
 			}`
 			var stdout, stderr bytes.Buffer
 			code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-			if code == 2 {
-				t.Fatalf("CT-039-07 must NOT block ordinary git op %q: stderr=%s stdout=%s", tc.command, stderr.String(), stdout.String())
+			if code != 0 {
+				t.Fatalf("CT-039-07 observer failed for %q: code=%d stderr=%s stdout=%s", tc.command, code, stderr.String(), stdout.String())
+			}
+			if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+				t.Fatalf("PreToolUse must not deny %q: %s", tc.command, stdout.String())
 			}
 		})
 	}
@@ -337,17 +331,16 @@ func TestCT03909_CleanWorktreeStopEmitsIntegrationGuidance(t *testing.T) {
 	}
 }
 
-// TestQualityGateAllowPolicy_NeverBlocksOnNonRetainedPredicates covers the
-// minimal-safety boundary: Quality Gate verdicts never block tools except
-// locked_artifact_write and squash_merge (BE-039 §3.2 / REQ-039 §10.2).
+// TestQualityGateObserverDoesNotDenyRepresentativeTools covers the listener
+// contract: PreToolUse reports gate progress but does not deny tool calls.
 // Formerly mislabeled CT-039-10; SYNC CT-039-10 is conflict/dirty preserve.
-func TestQualityGateAllowPolicy_NeverBlocksOnNonRetainedPredicates(t *testing.T) {
+func TestQualityGateObserverDoesNotDenyRepresentativeTools(t *testing.T) {
 	root := ctFixture(t)
 	state := planningState(t, root, "design", 1)
 	writeACState(t, root, state)
 
-	// Drive a representative set of PreToolUse inputs that should each
-	// return permissionDecision=allow.
+	// Drive representative tool inputs and assert they remain graph
+	// observations without a permission decision.
 	cases := []struct {
 		name      string
 		toolName  string
@@ -369,9 +362,12 @@ func TestQualityGateAllowPolicy_NeverBlocksOnNonRetainedPredicates(t *testing.T)
 			})
 			var stdout, stderr bytes.Buffer
 			code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, bytes.NewReader(inputJSON), &stdout, &stderr)
-			if code == 2 {
-				t.Fatalf("CT-039-10 forbids blocking on non-retained predicates (tool=%s): stderr=%s stdout=%s",
-					tc.toolName, stderr.String(), stdout.String())
+			if code != 0 {
+				t.Fatalf("CT-039-10 observer failed (tool=%s): code=%d stderr=%s stdout=%s",
+					tc.toolName, code, stderr.String(), stdout.String())
+			}
+			if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+				t.Fatalf("CT-039-10 listener must not deny (tool=%s): %s", tc.toolName, stdout.String())
 			}
 		})
 	}

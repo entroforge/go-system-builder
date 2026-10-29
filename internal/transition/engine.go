@@ -1,6 +1,7 @@
 package transition
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -13,9 +14,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/builderbatch"
+	"github.com/entroforge/go-system-builder/internal/buildsurface"
 	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/impact"
+	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/repairpolicy"
+	"github.com/entroforge/go-system-builder/internal/review"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/verification"
@@ -39,6 +44,7 @@ type LockedREQ struct {
 }
 
 type Request struct {
+	Context          context.Context `json:"-"`
 	Files            fileview.Reader
 	TransitionID     string
 	ExpectedRevision int
@@ -55,15 +61,21 @@ type Request struct {
 	OccurredAt    time.Time
 	Params        map[string]any
 	// Journal audit fields propagated into the runtime Store (SYNC-039 §7).
-	RequestID              string
-	BaselineGeneration     int
-	GateID                 string
+	RequestID          string
+	BaselineGeneration int
+	GateID             string
+	// GateEvidenceRefs preserves the complete S5 gate proof, including both
+	// reviewers when RequiredEvidence has only one document_review slot.
+	GateEvidenceRefs       []string
 	GateFingerprint        string
 	ProducerResponsibility string
 	// RecoveryWriter is an explicit capability for recovery-plan replay over
 	// a temporary Runtime pair. A zero capability selects the strict active
 	// authority writer; paths never select recovery mode implicitly.
 	RecoveryWriter loopruntime.OfflineRecoveryCapability
+	// SubmissionFollowupID binds this control request to one accepted domain
+	// result and its original cursor. The origin/result are read from Runtime.
+	SubmissionFollowupID string
 }
 
 type resolvedTransition struct {
@@ -75,9 +87,19 @@ type resolvedTransition struct {
 }
 
 func Apply(root, statePath, journalPath string, request Request) (loopruntime.Snapshot, error) {
+	request.Context = buildsurface.WithReadCache(request.Context)
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
+	}
+	normalRelease := normalHumanReleaseRequest(request)
+	if normalRelease {
+		bound := make(map[string]string, len(request.Evidence)+1)
+		for key, value := range request.Evidence {
+			bound[key] = value
+		}
+		bound["human_decision_record"] = stringValue(request.Params["decision_id"])
+		request.Evidence = bound
 	}
 	evidenceIDs := evidenceValues(request.Evidence)
 	// Apply is an explicit mutation boundary. Its writer may recover a durable
@@ -86,11 +108,24 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if request.RecoveryWriter.Enabled() {
 		store = loopruntime.NewOfflineRecoveryWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}, request.RecoveryWriter)
 	}
+	store = store.WithContext(request.Context)
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
 	}
 	current := snapshot.State
+	if normalRelease {
+		if replay, err := humanReleaseReplay(root, current, request); err != nil {
+			return loopruntime.Snapshot{}, err
+		} else if replay {
+			return snapshot, nil
+		}
+	}
+	if request.SubmissionFollowupID != "" {
+		if _, err := loopruntime.SubmissionFollowup(current, request.SubmissionFollowupID); err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+	}
 	currentLifecycle, ok := current["lifecycle"].(map[string]any)
 	if !ok {
 		return loopruntime.Snapshot{}, fmt.Errorf("runtime lifecycle must be an object")
@@ -111,12 +146,12 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("load transition catalog: %w", err)
 	}
-	if request.Files == nil {
+	if request.Files == nil && !normalRelease && request.TransitionID != "PTR-PLAN-01" {
 		if ref, err := fileview.DevelopmentRef(current); err == nil {
 			if err := fileview.ValidateAuthority(root, current); err != nil {
 				return loopruntime.Snapshot{}, err
 			}
-			view, err := fileview.New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
+			view, err := fileview.NewContext(store.Context(), root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
 			if err != nil {
 				return loopruntime.Snapshot{}, err
 			}
@@ -127,7 +162,7 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if err != nil {
 		return loopruntime.Snapshot{}, err
 	}
-	if request.Files == nil && resolved.Spec.AutoTrigger != nil {
+	if request.Files == nil && resolved.Spec.AutoTrigger != nil && request.TransitionID != "PTR-PLAN-01" {
 		_, err := fileview.DevelopmentRef(current)
 		return loopruntime.Snapshot{}, err
 	}
@@ -141,8 +176,11 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if err := enforceForbiddenEvents(catalog, resolved.Spec, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
-	if err := validateRequest(root, current, resolved.Spec, request); err != nil {
-		return loopruntime.Snapshot{}, err
+	endPreflight := metrics.Span(request.Context, "transition/preflight_validation")
+	preflightErr := validateRequest(root, current, resolved.Spec, request, true)
+	endPreflight()
+	if preflightErr != nil {
+		return loopruntime.Snapshot{}, preflightErr
 	}
 	fromCursor := cursor(currentState, currentPhase)
 	targetState := resolved.Spec.To
@@ -176,8 +214,9 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if request.BaselineGeneration > 0 {
 		baselineGen = request.BaselineGeneration
 	}
+	eventID := mutationEventID(request.TransitionID, commitRevision)
 	mutation := loopruntime.Mutation{
-		EventID:                fmt.Sprintf("evt-%s-r%d", strings.ToLower(request.TransitionID), commitRevision+1),
+		EventID:                eventID,
 		TransitionID:           resolved.Spec.ID,
 		Event:                  resolved.Spec.Event,
 		Actor:                  request.Actor,
@@ -197,6 +236,11 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 		ProducerResponsibility: request.ProducerResponsibility,
 		BoundaryReset:          resolved.Spec.ID == "TR-001",
 		Apply: func(state map[string]any) error {
+			if request.SubmissionFollowupID != "" {
+				if _, err := loopruntime.SubmissionFollowup(state, request.SubmissionFollowupID); err != nil {
+					return err
+				}
+			}
 			// Direct-check guards resolve disk paths from state["root"]. The
 			// writer re-reads state from disk before invoking this closure, so
 			// the default must live HERE: without it guards fall back to "." and
@@ -239,13 +283,24 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 				}
 			}
 
-			if view, ok := request.Files.(interface{ Verify() error }); ok {
+			if view, ok := request.Files.(interface{ Verify() error }); ok && !normalRelease && request.TransitionID != "PTR-PLAN-01" {
 				if err := view.Verify(); err != nil {
 					return err
 				}
 			}
-			if err := validateRequest(root, state, resolved.Spec, request); err != nil {
-				return err
+			if normalRelease {
+				if stringValue(state["runtime_id"]) != stringValue(current["runtime_id"]) || latestReleaseAuditID(state) != latestReleaseAuditID(current) {
+					return fmt.Errorf("human decision no longer addresses the current release")
+				}
+				if err := recordHumanReleaseDecision(root, state, request); err != nil {
+					return err
+				}
+			}
+			endValidation := metrics.Span(request.Context, "transition/locked_validation")
+			validationErr := validateRequest(root, state, resolved.Spec, request)
+			endValidation()
+			if validationErr != nil {
+				return validationErr
 			}
 
 			// Human decisions authorize one committed transition only. Consume
@@ -255,88 +310,6 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 				decisionRef := strings.TrimSpace(request.Evidence["human_decision_record"])
 				if err := loopruntime.ConsumeHumanDecisionEvidence(state, decisionRef, resolved.Spec.ID, occurredAt); err != nil {
 					return fmt.Errorf("transition %s: consume human_decision evidence: %w", resolved.Spec.ID, err)
-				}
-			}
-			// RC-15 (S10-H2): TR-027 reject_defect drops the cursor from
-			// awaiting_human_release directly to bug_resolution.investigation.
-			// S8 ingest requires a sealed observation_batch pointer with
-			// batch_id/path/sha256/finding_ids; without a fresh S7 round,
-			// construct a minimal placeholder batch from the dispatched finding
-			// evidence and pin the pointer in state so ingest can proceed.
-			if resolved.Spec.ID == "TR-027" {
-				if review, _ := state["review"].(map[string]any); review != nil {
-					if batch, _ := review["observation_batch"].(map[string]any); batch == nil {
-						if root, _ := state["root"].(string); root != "" {
-							// finding_ids must carry real Finding ids: S8 intake validates
-							// every entry against the entities.findings rows
-							// (exactFindingSet + validateFindingArtifacts). The
-							// finding_record evidence reference counts only when it is
-							// itself a finding-* id; otherwise the placeholder batch
-							// covers the findings the rejection sends back to S8.
-							findingIDs := []string{}
-							if findingRef := strings.TrimSpace(request.Evidence["finding_record"]); strings.HasPrefix(findingRef, "finding-") {
-								findingIDs = append(findingIDs, findingRef)
-							} else if entities, _ := state["entities"].(map[string]any); entities != nil {
-								rawFindings, _ := entities["findings"].([]any)
-								for _, rawFinding := range rawFindings {
-									findingRow, _ := rawFinding.(map[string]any)
-									if findingRow == nil {
-										continue
-									}
-									if id := stringValue(findingRow["finding_id"]); strings.HasPrefix(id, "finding-") {
-										findingIDs = append(findingIDs, id)
-									}
-								}
-							}
-							baseline := baselineGeneration(state)
-							runtimeID := stringValue(state["runtime_id"])
-							planPtr, _ := review["plan"].(map[string]any)
-							subjectDigest, _ := planPtr["sha256"].(string)
-							batchID := fmt.Sprintf("observation-batch-tr027-%s-%d", runtimeID, occurredAt.UnixNano())
-							doc := map[string]any{
-								"schema_version":       "1.0.0",
-								"observation_batch_id": batchID,
-								"runtime_id":           runtimeID,
-								"baseline_generation":  baseline,
-								"subject_digest":       subjectDigest,
-								"finding_ids":          findingIDs,
-								"claim_coverage_summary": map[string]any{
-									"total_required": 1, "pass": 0, "finding": 1,
-									"not_applicable": 0, "blocked": 0, "blocked_claims": []any{},
-									"plan_revision": 1,
-								},
-								"unobserved_claim_ids": []string{},
-								"sealed_by":            "tr027_placeholder",
-								"sealed_at":            occurredAt.UTC().Format(time.RFC3339Nano),
-							}
-							batchBytes, err := json.Marshal(doc)
-							if err != nil {
-								return fmt.Errorf("transition %s: encode TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
-							}
-							batchPath := filepath.Join(".claude", "review", "observation-batches", batchID+".json")
-							absPath, err := filepath.Abs(filepath.Join(root, batchPath))
-							if err != nil {
-								return fmt.Errorf("transition %s: resolve TR-027 placeholder observation batch path: %w", resolved.Spec.ID, err)
-							}
-							// A state pointer to a batch file that never reached disk
-							// would wedge S8 intake on an unexplainable sha mismatch;
-							// persist errors fail the TR-027 transition instead.
-							if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-								return fmt.Errorf("transition %s: persist TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
-							}
-							if err := os.WriteFile(absPath, batchBytes, 0o644); err != nil {
-								return fmt.Errorf("transition %s: persist TR-027 placeholder observation batch: %w", resolved.Spec.ID, err)
-							}
-							review["observation_batch"] = map[string]any{
-								"batch_id":     batchID,
-								"path":         batchPath,
-								"sha256":       sha256Sum(batchBytes),
-								"finding_ids":  findingIDs,
-								"drain_policy": "complete_required_claims",
-								"sealed_at":    occurredAt.UTC().Format(time.RFC3339Nano),
-							}
-						}
-					}
 				}
 			}
 
@@ -361,7 +334,32 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 				guardResults[index]["detail"] = "Guard evaluated successfully."
 			}
 
-			actionContext := &ActionContext{Root: root, Spec: resolved.Spec, From: fromCursor, To: toCursor, Evidence: request.Evidence, OccurredAt: occurredAt, Params: request.Params, Request: &request}
+			beforeRevision := integerOf(state["revision"])
+			journalCursor, _ := state["journal"].(map[string]any)
+			transitionSequence := integerOf(journalCursor["last_sequence"]) + 1
+			actionFrom := fromCursor
+			if resolved.Spec.ID == "TR-004" {
+				// The document-review batch is identified by the cursor entry and
+				// baseline that existed before this transition. Keep these facts
+				// local to the action context; persisted transition cursors retain
+				// their original state/phase shape.
+				actionFrom = map[string]any{"state": fromCursor["state"], "phase": fromCursor["phase"]}
+				if value, ok := lifecycle["phase_revision"]; ok {
+					actionFrom["phase_revision"] = value
+				}
+				if currentBaseline, ok := state["baseline"].(map[string]any); ok {
+					if value, ok := currentBaseline["generation"]; ok {
+						actionFrom["baseline_generation"] = value
+					}
+				}
+			}
+			actionContext := &ActionContext{
+				Root: root, Spec: resolved.Spec, From: actionFrom, To: toCursor,
+				Evidence: request.Evidence, OccurredAt: occurredAt, Params: request.Params,
+				Request: &request, EventID: eventID,
+				BeforeRevision: beforeRevision, AfterRevision: beforeRevision + 1,
+				TransitionSequence: transitionSequence,
+			}
 			if err := dispatchAction("capture_pause_checkpoint", actionResults, state, actionContext); err != nil {
 				return err
 			}
@@ -413,7 +411,12 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 				state["pause"] = nil
 			}
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
-			if view, ok := request.Files.(interface{ Verify() error }); ok {
+			if request.SubmissionFollowupID != "" {
+				if err := loopruntime.StampSubmissionTransition(state, request.SubmissionFollowupID, mutationEventID(request.TransitionID, commitRevision)); err != nil {
+					return err
+				}
+			}
+			if view, ok := request.Files.(interface{ Verify() error }); ok && !normalRelease && request.TransitionID != "PTR-PLAN-01" {
 				return view.Verify()
 			}
 			return nil
@@ -422,10 +425,24 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 
 	// Inject the root-aware semantic validator at the composition boundary.
 	// Runtime owns the commit boundary but does not import this package.
+	var next loopruntime.Snapshot
 	if request.ExpectedRevision < 0 {
-		return store.UpdateCurrent(mutation)
+		next, err = store.UpdateCurrent(mutation)
+	} else {
+		next, err = store.Update(request.ExpectedRevision, mutation)
 	}
-	return store.Update(request.ExpectedRevision, mutation)
+	if err != nil && request.SubmissionFollowupID != "" {
+		if latest, readErr := store.Snapshot(); readErr == nil {
+			if _, checkErr := loopruntime.SubmissionFollowup(latest.State, request.SubmissionFollowupID); errors.Is(checkErr, loopruntime.ErrSubmissionFollowupProcessed) || errors.Is(checkErr, loopruntime.ErrSubmissionFollowupOriginChanged) {
+				return latest, checkErr
+			}
+		}
+	}
+	return next, err
+}
+
+func mutationEventID(transitionID string, revision int) string {
+	return fmt.Sprintf("evt-%s-r%d", strings.ToLower(transitionID), revision+1)
 }
 
 // enforceForbiddenEvents is the Apply-time consumer of the Loop Definition's
@@ -509,12 +526,68 @@ func resolveCatalog(catalog *Catalog, id, currentState string, currentPhase any)
 	return resolvedTransition{}, fmt.Errorf("unknown transition %q", id)
 }
 
-func validateRequest(root string, state map[string]any, spec TransitionSpec, request Request) error {
+func validateRequest(root string, state map[string]any, spec TransitionSpec, request Request, deferTR006BatchProof ...bool) error {
+	request.Context = buildsurface.WithReadCache(request.Context)
+	if err := request.Context.Err(); err != nil {
+		return err
+	}
+	if normalHumanReleaseRequest(request) {
+		return validateNormalHumanRelease(request)
+	}
+	// Apply's preflight retains all other request checks. The original gate
+	// and Writer/CAS validate the complete TR-006 batch; direct callers and
+	// the locked Apply call retain the full proof by default.
+	if spec.ID == "TR-006" && !(len(deferTR006BatchProof) > 0 && deferTR006BatchProof[0]) {
+		// The original Writer must prove the canonical batch regardless of
+		// which compatible report kind the caller binds to the evidence slot.
+		// A legacy aggregate cannot substitute for missing current Main facts.
+		canonical, err := buildsurface.SelectCanonicalContext(request.Context, root, state)
+		if err != nil {
+			return fmt.Errorf("transition TR-006 current batch source: %w", err)
+		}
+		if canonical {
+			if _, err := buildsurface.ReadContext(request.Context, root, state); err != nil {
+				return fmt.Errorf("transition TR-006 current canonical Main batch: %w", err)
+			}
+		} else {
+			batch := builderbatch.EvaluateLegacy(root, state, request.Files)
+			if len(batch.Conflicts) > 0 {
+				return fmt.Errorf("transition TR-006 current Builder batch conflicts: %s", strings.Join(batch.Conflicts, ", "))
+			}
+			if !batch.Ready {
+				return fmt.Errorf("transition TR-006 current Builder batch is incomplete: %s", strings.Join(batch.Missing, ", "))
+			}
+		}
+	}
+	if spec.ID == "TR-009" {
+		if err := review.VerifyCurrentProductBaseline(root, state, request.Context); err != nil {
+			return fmt.Errorf("transition %s current product baseline: %w", spec.ID, err)
+		}
+	}
+	if spec.ID == "TR-009" && review.HasPacketBoundE2EReceipts(state) {
+		reviewState, _ := state["review"].(map[string]any)
+		assignments, _ := reviewState["assignments"].(map[string]any)
+		if err := review.VerifySealedArtifactDigests(root, state, review.PlanPointerFromState(state), assignments, request.Context); err != nil {
+			return fmt.Errorf("transition TR-009 typed E2E execution artifact: %w", err)
+		}
+	}
 	if request.Actor == "" {
 		return fmt.Errorf("transition actor is required")
 	}
 	if len(spec.Actors) > 0 && !contains(spec.Actors, request.Actor) {
 		return fmt.Errorf("actor %q cannot execute %s", request.Actor, spec.ID)
+	}
+	if spec.ID == "TR-003" || spec.ID == "TR-004" {
+		for _, ref := range request.GateEvidenceRefs {
+			if err := validateCurrentEvidenceWithFiles(root, state, "document_review_record", ref, request.Files, request.Context); err != nil {
+				return fmt.Errorf("transition %s gate proof: %w", spec.ID, err)
+			}
+		}
+		if spec.ID == "TR-003" {
+			if err := loopruntime.ValidateCurrentDocumentReviewRevisions(root, state, request.Files); err != nil {
+				return fmt.Errorf("transition %s current revision: %w", spec.ID, err)
+			}
+		}
 	}
 	seen := map[string]bool{}
 	catalog := evidence.DefaultCatalog()
@@ -527,12 +600,36 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 			return fmt.Errorf("transition %s reuses evidence %s for multiple requirements", spec.ID, ref)
 		}
 		seen[ref] = true
+		if (spec.ID == "TR-015" || spec.ID == "TR-016" || spec.ID == "TR-017" || spec.ID == "TR-018") &&
+			(kind == "acceptance_record" || kind == "release_audit_record" || kind == "clean_round_record") {
+			// S10 consumes the selected recorded report; its current professional
+			// completion is handled by the original guards, not a source hash.
+			items, _ := state["evidence"].([]any)
+			baseline, _ := state["baseline"].(map[string]any)
+			review, _ := state["review"].(map[string]any)
+			matched := false
+			for _, raw := range items {
+				item, _ := raw.(map[string]any)
+				if item == nil || (item["id"] != ref && item["path"] != ref) {
+					continue
+				}
+				actualKind, _ := item["kind"].(string)
+				matched = item["status"] == "valid" && catalog.Accepts(kind, actualKind) &&
+					integer(item["baseline_generation"]) == integer(baseline["generation"]) &&
+					integer(item["review_round"]) == integer(review["round"])
+				break
+			}
+			if !matched {
+				return fmt.Errorf("transition %s evidence %s does not identify its current recorded S10 responsibility", spec.ID, kind)
+			}
+			continue
+		}
 		if generatedEvidenceKind(kind) {
 			if err := validateGeneratedEvidence(state, kind, ref, request); err != nil {
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
 		} else if !(spec.ID == "TR-001" || (spec.ID == "TR-020" && kind == "req_lock_record")) {
-			if err := validateCurrentEvidenceWithFiles(root, state, kind, ref, request.Files); err != nil {
+			if err := validateCurrentEvidenceWithFiles(root, state, kind, ref, request.Files, request.Context); err != nil {
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
 		}
@@ -574,10 +671,21 @@ func generatedEvidenceReferenceMatches(ref, canonical string) bool {
 	return ref == canonical
 }
 
-func validateCurrentEvidence(root string, state map[string]any, requiredKind, ref string) error {
-	return validateCurrentEvidenceWithFiles(root, state, requiredKind, ref, nil)
+func validateCurrentEvidence(root string, state map[string]any, requiredKind, ref string, contexts ...context.Context) error {
+	return validateCurrentEvidenceWithFiles(root, state, requiredKind, ref, nil, contexts...)
 }
-func validateCurrentEvidenceWithFiles(root string, state map[string]any, requiredKind, ref string, files fileview.Reader) error {
+func validateCurrentEvidenceWithFiles(root string, state map[string]any, requiredKind, ref string, files fileview.Reader, contexts ...context.Context) error {
+	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
+	ctx = buildsurface.WithReadCache(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if view, ok := files.(*fileview.View); ok {
+		files = view.WithContext(ctx)
+	}
 	items, _ := state["evidence"].([]any)
 	var evidenceItem map[string]any
 	for _, raw := range items {
@@ -619,12 +727,30 @@ func validateCurrentEvidenceWithFiles(root string, state map[string]any, require
 		files = fileview.Disk{Root: root}
 	}
 	data, err := files.ReadFile(clean)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
 		return fmt.Errorf("read reference %q: %w", ref, err)
 	}
 	want, _ := evidenceItem["sha256"].(string)
 	if actual := SHA256(data); want == "" || actual != want {
 		return fmt.Errorf("reference %q fingerprint mismatch", ref)
+	}
+	if requiredKind == "builder_report_record" && actualKind == "completion_report" {
+		snapshot, err := buildsurface.ReadContext(ctx, root, state)
+		if err != nil {
+			return fmt.Errorf("canonical builder report source: %w", err)
+		}
+		matched := false
+		for _, contribution := range snapshot.Contributions {
+			if contribution.ResultRef == rel {
+				matched = true
+			}
+		}
+		if !matched {
+			return fmt.Errorf("canonical builder report is not part of the current proven Main batch")
+		}
 	}
 	return nil
 }
@@ -762,10 +888,6 @@ func dispositionForHumanDecisionEvent(event string) string {
 	}
 }
 
-func sha256Sum(data []byte) string {
-	return fmt.Sprintf("%x", sha256.Sum256(data))
-}
-
 func stringValue(value any) string {
 	text, _ := value.(string)
 	return text
@@ -811,7 +933,9 @@ func dispatchAction(name string, results []map[string]any, state map[string]any,
 		results[index]["detail"] = "Action is not registered."
 		return fmt.Errorf("transition %s action %s is not registered", ctx.Spec.ID, name)
 	}
+	endAction := metrics.Span(ctx.Request.Context, "transition/action/"+name)
 	result, err := action(state, ctx)
+	endAction()
 	results[index]["result"] = result.Status
 	results[index]["detail"] = result.Detail
 	if err != nil {

@@ -71,6 +71,79 @@ func TestValidateRuntimeReferencesChecksNonEmptyFiles(t *testing.T) {
 	})
 }
 
+func TestValidateAgentMessagesDistinguishesStagedEnvelopeFromActivation(t *testing.T) {
+	fixture := writeSemanticReferenceFixture(t)
+	runtimePath := filepath.Join(fixture.root, ".claude", "loop-state.json")
+	data, err := os.ReadFile(runtimePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	agent := state["entities"].(map[string]any)["agents"].([]any)[0].(map[string]any)
+	activationRef := "docs/teams/reference/activation-envelope.json"
+	writeSemanticJSON(t, fixture.root, activationRef, map[string]any{
+		"agent_id": "agent-reference-test", "allowed_tools": []string{"Read"},
+		"allowed_write_paths": []string{}, "allowed_command_classes": []string{},
+	})
+	// In Runtime 1.3, registration projects an Agent as active while its
+	// lifecycle event is still workgroup_registered. That is not an activation
+	// message: activation_revision remains nil until activation_sent commits.
+	agent["state"], agent["last_lifecycle_event"], agent["activation_ref"], agent["activation_revision"] = "active", "workgroup_registered", activationRef, nil
+	writeSemanticJSON(t, fixture.root, ".claude/loop-state.json", state)
+	if err := semantic.ValidateAgentMessages(fixture.root); err != nil {
+		t.Fatalf("1.3 registered capability envelope was treated as an Agent message: %v", err)
+	}
+	if err := semantic.ValidateRuntimeReachability(fixture.root); err != nil {
+		t.Fatalf("1.3 registered capability envelope was not reachable: %v", err)
+	}
+
+	agent["last_lifecycle_event"], agent["activation_revision"] = "activation_sent", float64(8)
+	writeSemanticJSON(t, fixture.root, ".claude/loop-state.json", state)
+	if err := semantic.ValidateAgentMessages(fixture.root); err == nil {
+		t.Fatal("malformed activation message was skipped after a real activation revision")
+	}
+}
+
+func TestValidateAgentMessagesCancellationDoesNotInventAnActivation(t *testing.T) {
+	for version, activity := range map[string]string{"1.2.0": "stopped", "1.3.0": "cancelled"} {
+		t.Run(version, func(t *testing.T) {
+			fixture := writeSemanticReferenceFixture(t)
+			data, err := os.ReadFile(filepath.Join(fixture.root, ".claude/loop-state.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var state map[string]any
+			if err := json.Unmarshal(data, &state); err != nil {
+				t.Fatal(err)
+			}
+			state["schema_version"] = version
+			agent := state["entities"].(map[string]any)["agents"].([]any)[0].(map[string]any)
+			ref := "docs/teams/reference/activation-envelope.json"
+			writeSemanticJSON(t, fixture.root, ref, map[string]any{
+				"agent_id": "agent-reference-test", "allowed_tools": []string{"Read"},
+				"allowed_write_paths": []string{}, "allowed_command_classes": []string{},
+			})
+			agent["state"], agent["last_lifecycle_event"] = activity, "shutdown_approved"
+			agent["activation_ref"], agent["activation_revision"] = ref, nil
+			writeSemanticJSON(t, fixture.root, ".claude/loop-state.json", state)
+			if err := semantic.ValidateAgentMessages(fixture.root); err != nil {
+				t.Fatalf("cancellation invented a prior activation message: %v", err)
+			}
+			if err := semantic.ValidateRuntimeReachability(fixture.root); err != nil {
+				t.Fatalf("original staged source was not reachable: %v", err)
+			}
+			agent["activation_revision"] = float64(8)
+			writeSemanticJSON(t, fixture.root, ".claude/loop-state.json", state)
+			if err := semantic.ValidateAgentMessages(fixture.root); err == nil {
+				t.Fatal("cancellation skipped the actual activation source schema")
+			}
+		})
+	}
+}
+
 func writeSemanticReferenceFixture(t *testing.T) semanticReferenceFixture {
 	t.Helper()
 	root := isolatedSemanticProject(t)
@@ -139,17 +212,18 @@ func writeSemanticReferenceFixture(t *testing.T) semanticReferenceFixture {
 		t.Fatalf("initialized runtime entities have unexpected shape: %#v", state["entities"])
 	}
 	entities["agents"] = []any{map[string]any{
-		"id":                  "agent-reference-test",
-		"role":                "backend-builder",
-		"state":               "reading",
-		"task_ids":            []any{"TASK-001"},
-		"team_id":             "team-reference-test",
-		"definition_ref":      "agents/backend-builder.md",
-		"prompt_ref":          "agents/backend-builder.md",
-		"readback_ref":        messagePath,
-		"activation_ref":      nil,
-		"activation_revision": nil,
-		"updated_at":          "2026-09-21T00:00:00Z",
+		"id":                   "agent-reference-test",
+		"role":                 "backend-builder",
+		"state":                "active",
+		"last_lifecycle_event": "workgroup_registered",
+		"task_ids":             []any{"TASK-001"},
+		"team_id":              "team-reference-test",
+		"definition_ref":       "agents/backend-builder.md",
+		"prompt_ref":           "agents/backend-builder.md",
+		"readback_ref":         messagePath,
+		"activation_ref":       nil,
+		"activation_revision":  nil,
+		"updated_at":           "2026-09-21T00:00:00Z",
 	}}
 	entities["teams"] = []any{map[string]any{
 		"id":                 "team-reference-test",

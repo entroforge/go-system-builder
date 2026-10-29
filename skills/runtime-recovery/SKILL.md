@@ -60,7 +60,7 @@ Classify the result:
 | Observation | Correct route |
 |:---|:---|
 | State is readable/semantic-valid and only journal tail is missing | `runtime reconcile`, after verifying the exact missing event |
-| State, journal, or JSON encoding is malformed; BOM is present; schema/semantic validation fails | `recover plan` → `recover apply` |
+| State, journal, or JSON encoding is malformed; BOM is present; schema/semantic validation fails | `recover plan` → `recover apply`; issued packet/reception indices require the latest original checkpoint |
 | A recovery/commit/fingerprint/rollover pending marker exists | Complete it through an explicit writer/recovery path; never repair it from a read-only command |
 | Source files changed after planning | Reject the plan and inspect/plan again |
 | Trusted sources disagree or replay reaches an unknown gate | Stop; surface the conflict/unknown gate; do not guess |
@@ -72,8 +72,19 @@ quarantine and rebuild conservatively than to mutate an ambiguous Runtime.
 
 ```bash
 .claude/bin/loop-harness runtime recover plan \
-  --root . --req docs/requirements/REQ-NNN.md
+  --root . --req docs/requirements/REQ-NNN.md \
+  --dev-branch <bound-development-branch> --release-upstream <bound-release-destination>
 ```
+
+For an issued 1.2 Runtime, take the `latest_checkpoint` path from `recover
+inspect` and add `--checkpoint <that-manifest-path>` to the plan command.
+The resulting `checkpoint_restoration` / `original_pair` plan preserves the
+original pair and cursor; it does not import answers or replay processed
+followups. Review the exact owner, activation, revision lineage, invalidated
+evidence and transition stamps. Document reconstruction cannot recreate them.
+The original matching REQ, plan artifacts and independent Worker sources must
+still verify. Apply refuses a live Worker launch lease, a later checkpoint,
+changed known facts or a Runtime already closed by bind/unbind/rollover.
 
 Review the generated plan before approval. Confirm all of the following:
 
@@ -87,8 +98,9 @@ Review the generated plan before approval. Confirm all of the following:
   `planning.design` / S2.
 - Candidate state and journal are under the plan directory and have recorded
   SHA-256 values.
-- The plan does not revive agents, leases, activations, or unverified BUG/TASK
-  progress.
+- Artifact reconstruction does not revive agents, leases, activations, or
+  unverified BUG/TASK progress. A checkpoint restores only their exact original
+  durable facts, with stopped Workers and validated sources.
 
 Never modify a plan to make it pass review. A changed input invalidates it.
 
@@ -103,7 +115,8 @@ Never modify a plan to make it pass review. A changed input invalidates it.
 
 Apply must quarantine the old bytes, validate the candidate pair, write a
 durable pending marker, replace state and journal atomically, write the
-recovery manifest, and retire only the exact planned pending sources. If the
+recovery manifest, and retire only the exact planned pending sources and journal
+rotation segments. The quarantine preserves their original bytes. If the
 process stops, rerun the same approved apply; do not create a second plan
 unless inputs drifted.
 

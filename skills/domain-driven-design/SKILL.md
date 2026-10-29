@@ -18,7 +18,7 @@ One domain-model decision or a scoped domain-design review conclusion.
 ## N/A Criteria
 N/A when the change is purely mechanical and does not alter domain ownership or rules.
 ## Stop Conditions
-Stop on undefined invariant, mixed bounded-context vocabulary, or an aggregate with unbounded consistency scope.
+Resolve implementation structure and vocabulary against the authoritative bounded-context design. Report missing business invariants or a required context/consistency change outside the TASK to Main; ordinary aggregate mechanics need no extra approval.
 ## Non-Goals
 Do not force tactical DDD patterns onto simple CRUD behavior without a domain reason.
 

@@ -26,10 +26,10 @@ The goal is to make AI/Agent delivery traceable, reviewable, and safe to coordin
 7. UI-impacting requirements must pass UI Design Package Gate before FE/BE/SYNC contract lock.
 8. A human-locked REQ plus an Engineering Loop binding (`loop-harness req bind`) is required before formal contracts, tasks, Agent Teams, or implementation. Claude `/loop` is a separate lifetime — it only delivers the Layer 2 Wake-up Prompt and does not bind a REQ or replace `/goal`.
 9. Locked contracts define Builder boundaries.
-10. Sub agents prove understanding before activation.
-11. Document Verifiers approve contract/task logic before Builder activation.
-12. S7 runs Delivery Verifier, QA, and E2E Browser workgroups through single-responsibility sub agents in Agent Teams.
-13. S7 blocking findings enter S8 root-cause investigation, then accepted canonical BUGs enter S9 Builder repair plus original-responsibility targeted re-check.
+10. Native subagents receive explicit professional work and original inputs; ordinary work needs no generic read-back or activation handshake. Real domain approvals and frozen legacy recovery keep their original boundaries.
+11. Document Verifiers independently check contract/task logic before the implementation baseline is accepted.
+12. Main dispatches S7 Delivery Verifier, QA and applicable E2E responsibilities through native subagents, with exact questionnaire paths and independent conclusions; an Agent Team is not a prerequisite.
+13. A sealed S7 ObservationBatch enters an S8 InvestigationCase. An approved repair Contract then governs S9 repair and independent targeted re-verification before a fresh S7 round.
 14. Development, verification, findings, and fixes repeat until one complete deep review round fully passes.
 15. Release audit starts only after that clean review round.
 16. Loop mode stops before human release approval and squash merge.

@@ -174,3 +174,96 @@ func TestResponseLossRecoversExactMergeAndAbsentWorktree(t *testing.T) {
 		t.Fatal("main moved")
 	}
 }
+
+func TestProfessionalNoChangeDeliveryChecksWithoutMerge(t *testing.T) {
+	for _, advanceTarget := range []bool{false, true} {
+		name := "same_head"
+		if advanceTarget {
+			name = "main_advanced"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			root, wt, previous, cfg, git := newRecoveryGitRepo(t)
+			git(wt, "reset", "--hard", previous.MergeBase)
+			if advanceTarget {
+				if err := os.WriteFile(filepath.Join(root, "main-only"), []byte("unrelated Main work"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				git(root, "add", "main-only")
+				git(root, "commit", "-m", "unrelated Main work")
+			}
+			head, count := git(root, "rev-parse", "HEAD"), git(root, "rev-list", "--all", "--count")
+			validated := 0
+			in, err := Inspect(ctx, InspectRequest{Root: root, Assignment: assignmentContext(wt, "feature", "test2"), TargetBranch: "test2", BaselineGeneration: 1}, InspectConfig{
+				ValidateDelivery: func(_ context.Context, in Inspection) error {
+					validated++
+					if in.SourceHead != previous.MergeBase {
+						t.Fatalf("professional source changed: %+v", in)
+					}
+					return nil
+				},
+			})
+			if err != nil || !in.Ready || validated != 1 || len(in.ChangedPaths) != 0 {
+				t.Fatalf("no-change professional Inspect: %+v err=%v validated=%d", in, err, validated)
+			}
+			checks := 0
+			cfg.RequiredChecks = []string{"test -f base && test ! -e change"}
+			cfg.CheckRunner = func(ctx context.Context, dir, command string) error {
+				checks++
+				if dir != root {
+					t.Fatalf("Main check ran at %s, want %s", dir, root)
+				}
+				return CommandCheckRunner(ctx, dir, command)
+			}
+			request := IntegrateRequest{Inspection: in, Acknowledge: true, Cleanup: true}
+			result, err := Integrate(ctx, request, cfg)
+			if err != nil || result.Checkpoint.State != StateComplete || checks != 1 {
+				t.Fatalf("no-change integration: %+v err=%v checks=%d", result, err, checks)
+			}
+			if result.Checkpoint.MergeCommit != head || result.Checkpoint.TestedHead != head || result.Checkpoint.TargetHead != head {
+				t.Fatalf("checkpoint did not retain actual Main HEAD: %+v", result.Checkpoint)
+			}
+			if git(root, "rev-parse", "HEAD") != head || git(root, "rev-list", "--all", "--count") != count {
+				t.Fatal("no-change delivery manufactured a commit")
+			}
+			again, err := Integrate(ctx, request, cfg)
+			if err != nil || !again.Reused || again.Checkpoint.State != StateComplete || checks != 1 {
+				t.Fatalf("complete replay repeated work: %+v err=%v checks=%d", again, err, checks)
+			}
+		})
+	}
+}
+
+func TestProfessionalNoChangeDeliveryRetriesRealFailedMainCheck(t *testing.T) {
+	ctx := context.Background()
+	root, wt, previous, cfg, git := newRecoveryGitRepo(t)
+	git(wt, "reset", "--hard", previous.MergeBase)
+	in, err := Inspect(ctx, InspectRequest{Root: root, Assignment: assignmentContext(wt, "feature", "test2"), TargetBranch: "test2", BaselineGeneration: 1}, InspectConfig{
+		ValidateDelivery: func(context.Context, Inspection) error { return nil },
+	})
+	if err != nil || !in.Ready {
+		t.Fatalf("no-change inspection: %+v %v", in, err)
+	}
+	head, count := git(root, "rev-parse", "HEAD"), git(root, "rev-list", "--all", "--count")
+	condition := filepath.Join(t.TempDir(), "environment-ready")
+	cfg.RequiredChecks = []string{"test -f '" + strings.ReplaceAll(condition, "'", "'\\''") + "'"}
+	checks := 0
+	cfg.CheckRunner = func(ctx context.Context, dir, command string) error {
+		checks++
+		return CommandCheckRunner(ctx, dir, command)
+	}
+	failed, err := Integrate(ctx, IntegrateRequest{Inspection: in}, cfg)
+	if !errors.Is(err, ErrCheckFailed) || failed.Checkpoint.State != StatePreserved || checks != 1 {
+		t.Fatalf("real failed Main check was hidden: %+v %v checks=%d", failed, err, checks)
+	}
+	if err := os.WriteFile(condition, []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := Integrate(ctx, IntegrateRequest{Inspection: in, RetryPreserved: true, Acknowledge: true, Cleanup: true}, cfg)
+	if err != nil || retried.Checkpoint.State != StateComplete || checks != 2 {
+		t.Fatalf("no-change Main check recovery: %+v %v checks=%d", retried, err, checks)
+	}
+	if retried.Checkpoint.MergeCommit != head || retried.Checkpoint.TestedHead != head || git(root, "rev-parse", "HEAD") != head || git(root, "rev-list", "--all", "--count") != count {
+		t.Fatal("no-change failed-check recovery manufactured a commit or lost Main HEAD")
+	}
+}

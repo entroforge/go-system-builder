@@ -8,7 +8,8 @@
 //   - every required Claim has a consumed pass Result (N/A Claims carry a
 //     plan-level disposition with source and rationale);
 //   - no Finding exists for the current round;
-//   - no current-round review evidence has been invalidated;
+//   - no unresolved current-round review evidence is invalid (explicitly
+//     superseded historical Results are retained outside current qualification);
 //   - no business-blocking BUG is open (and closed blockers carry targeted
 //     re-verification);
 //   - the machine CleanRound snapshot is registered as evidence.
@@ -20,6 +21,8 @@ package verification
 import (
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/impact"
 	"github.com/entroforge/go-system-builder/internal/review"
@@ -115,8 +118,9 @@ func EvaluateCleanRound(state map[string]any) Result {
 	}
 	result.Checks = append(result.Checks, checkFindings)
 
-	// Check 5: no_invalidated_pass_evidence — no current-round review
-	// evidence (result/finding/batch/clean snapshot) may be invalid.
+	// Check 5: no_invalidated_pass_evidence. The original revision Writer
+	// explicitly retires touched Results; their immutable history is not a
+	// current obligation. All other invalid review evidence still blocks.
 	checkInvalid := CheckResult{Name: "no_invalidated_pass_evidence", Passed: true}
 	for _, entry := range evidenceEntries(state) {
 		if readInt(entry["review_round"]) != currentRound {
@@ -129,6 +133,9 @@ func EvaluateCleanRound(state map[string]any) Result {
 			continue
 		}
 		if status, _ := entry["status"].(string); status == "invalid" {
+			if supersededPlanResult(state, ptr, dispositions, entry) {
+				continue
+			}
 			checkInvalid.Passed = false
 			id, _ := entry["id"].(string)
 			checkInvalid.Detail = fmt.Sprintf("evidence %s is invalid but belongs to the current round", id)
@@ -176,6 +183,46 @@ func EvaluateCleanRound(state map[string]any) Result {
 		}
 	}
 	return result
+}
+
+// Read only the original revision Writer's explicit projection. No latest-wins
+// inference, file scan or new validity store. Like Claim dispositions, this
+// projection relies on the original Writer's state/journal consistency checks.
+func supersededPlanResult(state map[string]any, ptr *review.PlanPointer, claims map[string]review.ClaimDisposition, entry map[string]any) bool {
+	if ptr == nil || ptr.Revision < 2 || ptr.ReviewRound != readReviewRound(state) ||
+		entry["kind"] != "review_result" || entry["invalidation_rule"] != "review_plan_revision" || entry["invalidation_reason"] != "plan_revision" {
+		return false
+	}
+	baseline, _ := state["baseline"].(map[string]any)
+	if generation := readInt(baseline["generation"]); generation < 1 || readInt(entry["baseline_generation"]) != generation {
+		return false
+	}
+	marker, _ := entry["invalidated_by"].(string)
+	suffix, matched := strings.CutPrefix(marker, ptr.PlanID+"@r")
+	revision, err := strconv.Atoi(suffix)
+	if !matched || err != nil || revision < 2 || revision > ptr.Revision || strconv.Itoa(revision) != suffix {
+		return false
+	}
+	id, _ := entry["id"].(string)
+	path, _ := entry["path"].(string)
+	if id == "" || path == "" {
+		return false
+	}
+	for _, claim := range claims {
+		if claim.ResultID == id {
+			return false
+		}
+	}
+	reviewState, _ := state["review"].(map[string]any)
+	assignments, _ := reviewState["assignments"].(map[string]any)
+	for _, raw := range assignments {
+		row, _ := raw.(map[string]any)
+		receipt, _ := row["result_receipt"].(map[string]any)
+		if row["result_ref"] == path || receipt["result_id"] == id {
+			return false
+		}
+	}
+	return true
 }
 
 // evidenceEntries returns the evidence array as a slice of maps.

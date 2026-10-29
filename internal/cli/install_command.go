@@ -21,7 +21,14 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	sourceArg := flags.String("source", "", "extracted release root")
 	rootArg := flags.String("root", "", "new or empty target directory")
+	packet := flags.Bool("packet", true, "enable professional stage questionnaires in the new installation")
+	dispatchSelection := dispatchInitializationFlags(flags)
 	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	selectedDispatch, selectionErr := dispatchSelection()
+	if selectionErr != nil {
+		fmt.Fprintln(stderr, selectionErr)
 		return 2
 	}
 	if *sourceArg == "" || *rootArg == "" || flags.NArg() != 0 {
@@ -139,7 +146,12 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	}); err != nil {
 		return fail(err)
 	}
-	if code := runInit([]string{"--root", stage}, io.Discard, stderr); code != 0 {
+	initArgs := []string{"--root", stage}
+	initArgs = append(initArgs, fmt.Sprintf("--packet=%t", *packet))
+	if selectedDispatch != nil {
+		initArgs = append(initArgs, "--dispatch-max-unreceived-results", fmt.Sprint(selectedDispatch.MaxUnreceivedResults), "--dispatch-resume-unreceived-results", fmt.Sprint(selectedDispatch.ResumeUnreceivedResults))
+	}
+	if code := runInit(initArgs, io.Discard, stderr); code != 0 {
 		return code
 	}
 	if err := releasegraph.ValidateInstalledProject(stage); err != nil {

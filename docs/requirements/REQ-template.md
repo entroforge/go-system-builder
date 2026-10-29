@@ -4,6 +4,7 @@
 
 > 名称：{需求名称}
 > 状态：draft / locked / changed / archived
+> （此状态跟踪 REQ 文档自身的生命周期，不记录责任进度；责任进度使用 `docs/rules/state-machine.md` 的五态语义。）
 > （draft→locked 的翻转由 agent 依据人类在对话中的明确"锁定"拍板执行，见 skills: requirement-funnel）
 > Owner：{产品/用户}
 > PM / Architect：{姓名}
@@ -11,15 +12,17 @@
 > 创建日期：YYYY-MM-DD
 > UI impact：none / changed / unknown
 
-> `UI impact` 是 `状态：locked` 的强制顶部字段，`req bind` 只解析这一处（§C 的回显必须与之一致，不一致会被拒绝）。值必须三选一：`none` / `changed` / `unknown`。`unknown` 会触发规划暂停门禁，需在 §D 澄清后才能推进 S2。
+> `UI impact` 是 `状态：locked` 的强制顶部字段，原绑定接收只解析这一处（`req bind` CLI仅兼容恢复）（§C 的回显必须与之一致，不一致会被拒绝）。值必须三选一：`none` / `changed` / `unknown`。`unknown` 会触发规划暂停门禁，需在 §D 澄清后才能推进 S2。
 
 <!-- 给 agent（固定阅读，2 行）：
 若预期效果可能改界面：先按 design-foundation 判定 local/core/extended；local 使用模块推导，core/extended 缺覆盖才走 F0–F6；再按 §A→§B→§C 推进。
-提案纪律与自审见 requirement-funnel skill——上交唯一合格形态是完整方案，开放问题禁止上交。 -->
+提案纪律与自审见 requirement-funnel skill——先完成调查与完整提案，再把真实未决的意图和价值选择交人；已明确的决定不重复索取。 -->
+
+> S0负责真实需求判断和人的明确锁定，不另交S0问卷/证据。已明确锁定并启动可直接承接S1原四问题，无需机械再次批准；只有锁定时，启动授权仍留空等待。姓名/日期是原决定记录，不是身份认证。下游设计/合同/测试栏按责任阶段维护，不要求S0提前填写或造N/A。
 
 ## §A 理念（Why）
 
-> A1 不是人的原话：你接收并理解人的表述后，过滤口语歧义、补全隐含前提，整理成结构化复述，交人确认"这就是我想说的"。原话会歧义；对话不入册，整理稿才是权威。
+> A1 是对真实意图的结构化理解：消除口语歧义，核实隐含前提，依据已有明确决定形成整理稿。仅在真实意图仍有关键歧义时交人澄清；已确认的同一内容不为填写 A1 再确认。原始材料可作来源，需求共识以经消歧的整理稿为准，不能将推断写成已获批准的事实。
 
 | 字段 | 内容 |
 |:--|:--|
@@ -77,7 +80,7 @@
 |:--|:--|:--|:--|:--|:--|:--|
 | {流程} | {输入} | {输出} | {状态} | {异常} | {谁能做/谁被拒} | {证据} |
 
-验收标准（换个人来判，结果一样；**指向列填写规则**——S0 阶段只需保证 `FR-{id}` 指向 §C 真实存在的 FR 行；其余两种合法值是"经背书的 N/A"：`NFR-{id}`（须在下方非功能需求表声明）或 `§A4-{条目}`（指向"明确不做"表的某一行）。自由文本（如"人工检查"）会在 S2 收口时被机器拒绝。示例：`FR-003` ✅ / `NFR-002` ✅ / `§A4-2` ✅ / `上线后观察` ❌）：
+验收标准（换个人来判，结果一样；**指向列填写规则**——多个引用用逗号分隔，可混合 `FR-{id}`、`NFR-{id}`、`§A4-{条目}`。FR/NFR 须已声明；含 FR 仍须对应真实覆盖，附带 NFR/§A4 不免除 FR 覆盖。S0 只填引用，CASE 由后续设计完成。无 FR 时才可用 NFR 或 §A4 背书 N/A；自由文本（如“人工检查”）不是合法引用）：
 
 | 编号 | 标准 | 指向 |
 |:--|:--|:--|
@@ -104,6 +107,8 @@
 
 UI 影响（任何涉及前端页面、组件、交互、可见状态、错误展示、权限展示或响应式布局变化的需求必须填写本区；`UI impact = changed` 时必须先完成 UI Design Package Gate 才能锁定 FE/BE/SYNC 合同）：
 
+本模板中的 `pending/ready`、`open/closed`、`complete/PASS/approved` 等值依字段而定，表示资料包、问题、证据、专业结论或 Gate 事实，不是责任进度状态。责任 attempt 使用 `pending/active/blocked/done/cancelled`；其余字段仍按原文档/Schema/消费者填写，不从中推导实现责任 `done`。参见 [`docs/rules/state-machine.md`](../rules/state-machine.md#21-loop-responsibility-status)。
+
 | 字段 | 内容 |
 |:--|:--|
 | UI impact（引自顶部） | none / changed / unknown（顶部 blockquote 是唯一被 `parseUIImpact` 解析的位置，本节只回显，不独立声明） |
@@ -112,8 +117,8 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 | Surface | `SUR-0X@vX.Y.Z` / `local` / `N/A`（Core/Extended 使用 `SUR-*@version`；`local` 仅用于模块级推导；旧值 `consumer/operations` 视为 `SUR-01` 别名） |
 | Design posture | `local` / `inherit` / `extend` / `exception`（`local` 仅配合 `local` Foundation；`extend` 须在 Derivation Note 写清新增语法及是否候选晋升；`exception` 须同时有 `docs/design/decisions/EX-*.md` (legacy `docs/design/exceptions/EX-*.md` still recognized)） |
 | Derivation note | `docs/design/derivation/REQ-{id}.md` / `N/A`（`changed` 时由 S2 填写且必须为可解析路径；`local` 亦需模块 Derivation；S0 可留 pending） |
-| 模块当前真相包 | `docs/design/prototypes/<module>/`（index.html + stories.md + flows.md + scenario-model.json + cross-matrix.json + cases.json + scenario-coverage.json + fixture-contract.json + *.html）/ N/A |
-| 原型门禁状态 | N/A / pending / ready |
+| 模块当前真相包 | UI impact=`changed`：`docs/design/prototypes/<module>/` 的 UI 包（含 HTML/index）；UI impact=`none` 但有 AC→FR 或服务行为真相变化：同目录 7 文件服务行为包（`scenario-model.json`、`fixture-contract.json`、`cross-matrix.json`、`stories.md`、`flows.md`、生成的 `cases.json`、`scenario-coverage.json`，无 HTML/PATH/浏览器 spec；若变化无可引用 FR 则走 REQ amendment）；仅当所有 AC 都指向已声明 NFR 或 §A4 且模块行为不变时为 N/A |
+| 模块行为/原型包状态 | N/A / pending / ready（N/A 不能仅由 UI impact=`none` 推出；FR-targeted AC 必须保留 CASE） |
 
 > 真相包齐备性、S/F-NNN 完整性与 branch 覆盖率由 S2 的 `loop-harness scenario validate` 校验，不在本节自查。
 
@@ -123,19 +128,19 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 |:--|:--|:--|:--|:--|:--|
 | Q-001 | {问题} | 范围 / 流程 / 状态 / API / 权限 / 验收 | 是 / 否 | open / closed | {结论} |
 
-## §E 锁定记录与逐层拍板（locked 行的拍板权在人；拍板行与自审由 agent 依拍板凭证填写）
+## §E 锁定、必要决定与自审记录
+
+锁定与真实价值选择由人决定，Main 如实记录。一次决定可以覆盖多个层次；没有发生过的独立确认不填写为事实。
 
 | 日期 | 操作 | 操作人 | 说明 |
 |:--|:--|:--|:--|
 | YYYY-MM-DD | locked | {PM / Architect} | 用户确认范围；UI impact={none/changed/unknown} 已随顶部字段固化 |
 
-逐层拍板记录（compaction 后的拍板凭证——对话不是权威，未落盘的拍板等于没发生）：
+实际必要决定的记录（复用已明确的人意，不要求§A/§B/§C分别重复批准；未发生的决定留空，不造拍板）：
 
 | 层 | 日期 | 拍板人 | 方式 |
 |:--|:--|:--|:--|
-| §A | YYYY-MM-DD | {人} | 对话确认 |
-| §B | YYYY-MM-DD | {人} | 对话确认 |
-| §C | YYYY-MM-DD | {人} | 对话确认 |
+| {实际涉及的层，如 §A／§B／§C} | {实际决定日期} | {实际决定者} | {实际决定及适用范围；可引用同一次决定} |
 
 {agent 自审结论——提议锁定前全审的输出，一段话：审过什么、修了什么、留了什么旁注}
 
@@ -143,11 +148,11 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 
 <!-- 活矩阵唯一居所在 CONTRACTS-{id} 索引；REQ 是锁定基线，agent 不填写本表 -->
 
-### 派生 UI 设计包
+### 派生模块行为 / UI 设计包
 
-| 模块原型集 | 路径 | 状态 | 覆盖需求 |
+| 模块行为 / 原型集 | 路径 | 状态 | 覆盖需求 |
 |:--|:--|:--|:--|
-| <module> | `docs/design/prototypes/<module>/` | N/A / pending / ready | FR-{id} |
+| <module> | `docs/design/prototypes/<module>/` | UI 包 / 7 文件服务行为包 / N/A（仅所有 AC 均有 NFR 或 §A4 背书且模块行为不变） | FR-{id} |
 
 ### 派生合同
 
@@ -158,9 +163,9 @@ UI 影响（任何涉及前端页面、组件、交互、可见状态、错误�
 
 ### 条款覆盖
 
-| REQ 条款 / source_ref | Rule → CASE → Story → PATH → Spec | 合同条款 | TASK | 验证证据 | 状态 |
+| REQ 条款 / source_ref | Rule → CASE → Story → F-flow；browser-required 时再加 PATH → Playwright Spec | 合同条款 | TASK | 验证证据 | 状态 |
 |:--|:--|:--|:--|:--|:--|
-| REQ-{id}/FR-{id} | BR-{id} → CASE-{id} → S-{id} → F-{id} → PATH-{id} → `web/e2e/{module}/*.spec.ts` | FE/BE/SYNC-{id} §{n} | TASK-{id} | REV/QA/E2E/BUG/ACC-{id} | planned / covered / verified |
+| REQ-{id}/FR-{id} | BR-{id} → CASE-{id} → S-{id} → F-{id}; 若 `browser_required=true` 再到 PATH-{id} → `web/e2e/{module}/*.spec.ts`；服务 CASE 用适用的原生服务测试验证 | FE/BE/SYNC-{id} §{n} | TASK-{id} | REV/QA/E2E/BUG/ACC-{id} | planned / covered / verified |
 
 ### 模块当前真相映射
 
@@ -168,9 +173,14 @@ REQ 只能作为来源，不能创建需求私有设计或测试副本。任何�
 
 | 模块 | Rule / CASE | Story | PATH | Spec | Round evidence |
 |:--|:--|:--|:--|:--|:--|
-| {module} | `scenario-model.json` / `cases.json` | `stories.md` / S-{id} | `flows.md` / F-{id} / PATH-{id} | `web/e2e/{module}/` | REV/QA/E2E round {n} |
+| {module} | `scenario-model.json` / `cases.json` | `stories.md` / S-{id} | `flows.md` / F-{id}; browser-required 才需 PATH-{id} | `web/e2e/{module}/`（browser-required 时）或服务原生测试 | REV/QA/E2E round {n} |
 
 ### 批次下游索引
+
+下表的 `draft / executing / completed` 是下游索引或证据工件的原有跟踪值，
+`pending / complete / PASS / passed / valid` 是对应证据/闸门结果值；它们都不是
+责任状态。单项责任进度遵循 `docs/rules/state-machine.md` 的五态规则，并由原
+接收者的当前 Runtime/receipt 投影；保留这些模板字段的原值，不让 Agent 手工填写通用状态。
 
 | 关系 | 文档 | 路径 | 状态 |
 |:--|:--|:--|:--|

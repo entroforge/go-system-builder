@@ -131,7 +131,7 @@ func TestProjectRules_MaxRoleCount_Violation(t *testing.T) {
 	})
 	writeChecks(t, root, DesignChecks{
 		Version: 1, Foundation: "docs/design/DESIGN.md@v1.0.0",
-		Rules: []DesignCheckRule{{ID: "DCHK-01", Source: "LAW-01", Type: "max_role_count", Role: "action.promise", Scope: "viewport", Max: intPtr(1), Targets: []string{"docs/design/prototypes/**/*.html"}}},
+		Rules: []DesignCheckRule{{ID: "DCHK-01", Source: "LAW-01", Type: "max_role_count", Role: "action.promise", Scope: "file", Max: intPtr(1), Targets: []string{"docs/design/prototypes/**/*.html"}}},
 	})
 	report, _ := Check(root)
 	found := false
@@ -155,7 +155,7 @@ func TestProjectRules_MaxRoleCount_Pass(t *testing.T) {
 	})
 	writeChecks(t, root, DesignChecks{
 		Version: 1, Foundation: "docs/design/DESIGN.md@v1.0.0",
-		Rules: []DesignCheckRule{{ID: "DCHK-01", Source: "LAW-01", Type: "max_role_count", Role: "action.promise", Scope: "viewport", Max: intPtr(1), Targets: []string{"docs/design/prototypes/**/*.html"}}},
+		Rules: []DesignCheckRule{{ID: "DCHK-01", Source: "LAW-01", Type: "max_role_count", Role: "action.promise", Scope: "file", Max: intPtr(1), Targets: []string{"docs/design/prototypes/**/*.html"}}},
 	})
 	report, _ := Check(root)
 	for _, f := range report.Findings {

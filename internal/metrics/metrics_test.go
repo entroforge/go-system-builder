@@ -3,6 +3,7 @@ package metrics_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -289,22 +290,18 @@ func TestPruneDeadFamiliesRemovesLegacyRoundLabels(t *testing.T) {
 // requires retiring a dead family in the same change (or extending the
 // maxTrackedFamilies comment with the new producer/consumer pair).
 func TestTrackedFamilyBudget(t *testing.T) {
-	// The field names of the persisted Snapshot are observable through the
-	// on-disk JSON; count loop_* keys in a snapshot that observed one round.
-	root := t.TempDir()
-	_ = metrics.RecordGateEvaluation(root, "satisfied")
-	_ = metrics.RecordS7RoundShape(root, 1, 1, 1, 1)
-	raw, err := os.ReadFile(filepath.Join(root, metrics.DefaultRelativePath))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Seven core + nine S7 + two S5 + one independent outer Hook transport
+	// family. Count declared JSON fields, including omitempty fields that do
+	// not appear in an otherwise populated snapshot on disk.
+	const reviewedFamilyBudget = 19
+	typ := reflect.TypeOf(metrics.Snapshot{})
 	families := 0
-	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.Contains(line, `"loop_`) {
+	for i := 0; i < typ.NumField(); i++ {
+		if strings.HasPrefix(typ.Field(i).Tag.Get("json"), "loop_") {
 			families++
 		}
 	}
-	if families > 16 {
-		t.Fatalf("metrics snapshot tracks %d loop_* families, budget is 16:\n%s", families, raw)
+	if families != reviewedFamilyBudget {
+		t.Fatalf("metrics Snapshot declares %d loop_* families, reviewed budget is %d", families, reviewedFamilyBudget)
 	}
 }

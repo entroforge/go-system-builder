@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/stage-answer-s3.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "instruction",
+    "read",
+    "questions",
+    "answer"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instruction": {
+      "type": "string",
+      "minLength": 1
+    },
+    "read": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "purpose"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "questions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conclusion",
+        "index_path",
+        "contract_paths",
+        "applicability"
+      ],
+      "properties": {
+        "conclusion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question"
+          ],
+          "properties": {
+            "question": {
+              "type": "string",
+              "minLength": 1
+            },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "example": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "expected",
+                "observed"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                },
+                "observed": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "index_path": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question"
+          ],
+          "properties": {
+            "question": {
+              "type": "string",
+              "minLength": 1
+            },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "example": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "expected",
+                "observed"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                },
+                "observed": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "contract_paths": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question"
+          ],
+          "properties": {
+            "question": {
+              "type": "string",
+              "minLength": 1
+            },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "example": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "expected",
+                "observed"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                },
+                "observed": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "applicability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question"
+          ],
+          "properties": {
+            "question": {
+              "type": "string",
+              "minLength": 1
+            },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "example": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "expected",
+                "observed"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                },
+                "observed": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conclusion",
+        "index_path",
+        "contract_paths",
+        "applicability"
+      ],
+      "properties": {
+        "conclusion": {
+          "enum": [
+            null,
+            "pass"
+          ]
+        },
+        "index_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "contract_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "applicability": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "FE": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "disposition",
+                "rationale"
+              ],
+              "properties": {
+                "disposition": {
+                  "enum": [
+                    "required",
+                    "not_applicable"
+                  ]
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              }
+            },
+            "BE": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "disposition",
+                "rationale"
+              ],
+              "properties": {
+                "disposition": {
+                  "enum": [
+                    "required",
+                    "not_applicable"
+                  ]
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              }
+            },
+            "SYNC": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "disposition",
+                "rationale"
+              ],
+              "properties": {
+                "disposition": {
+                  "enum": [
+                    "required",
+                    "not_applicable"
+                  ]
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

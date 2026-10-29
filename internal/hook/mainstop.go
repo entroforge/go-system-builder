@@ -6,8 +6,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // Rule IDs for the Main Stop gate. Main Stop is intentionally separate from
@@ -36,15 +39,26 @@ func MainStopDecision(root string, input policy.Input) (policy.Decision, bool) {
 	if err != nil {
 		return policy.Decision{}, false
 	}
-	return mainStopDecisionForState(snapshot.State, input)
+	var plan *review.Plan
+	if assignment.ReviewRoundOpenForDispatch(snapshot.State) {
+		plan, _, _ = review.LoadPlan(root, snapshot.State)
+	}
+	return mainStopDecisionForState(snapshot.State, input, plan)
 }
 
-func mainStopDecisionForState(state map[string]any, input policy.Input) (policy.Decision, bool) {
+func mainStopDecisionForState(state map[string]any, input policy.Input, plans ...*review.Plan) (policy.Decision, bool) {
 	if input.Event != "Stop" || input.StopHookActive || state == nil {
 		return policy.Decision{}, false
 	}
 	if decision, blocked := planningStopDecision(state); blocked {
 		return decision, true
+	}
+	if !assignment.ReviewRoundOpenForDispatch(state) {
+		return policy.Decision{}, false
+	}
+	var plan *review.Plan
+	if len(plans) > 0 {
+		plan = plans[0]
 	}
 
 	review, ok := state["review"].(map[string]any)
@@ -66,38 +80,37 @@ func mainStopDecisionForState(state map[string]any, input policy.Input) (policy.
 		if !ok {
 			continue
 		}
-		if pendingDispatch(id, row) {
-			return mainStopPendingDispatch(id), true
+		version := stringValue(state["schema_version"])
+		if pendingDispatch(id, row, version) && plan != nil {
+			if locks, err := assignment.ReviewDispatchPrerequisite(state, plan, id); err == nil && locks == "" {
+				return mainStopPendingDispatch(id), true
+			}
 		}
-		if unconsumedResult(id, row) {
+		if unconsumedResult(id, row, version) {
 			return mainStopUnconsumedResult(id), true
 		}
 	}
 	return policy.Decision{}, false
 }
 
-func pendingDispatch(id string, row map[string]any) bool {
-	status := stringValue(row["status"])
-	if status != "planned" && status != "queued" && status != "ready" {
+func pendingDispatch(id string, row map[string]any, versions ...string) bool {
+	if workstate.ReviewAssignmentActivity(row, versions...) != "planned" {
 		return false
 	}
 	return strings.TrimSpace(stringValue(row["agent_id"])) == "" &&
+		strings.TrimSpace(stringValue(row["queued_agent_id"])) == "" &&
 		strings.TrimSpace(stringValue(row["result_ref"])) == ""
 }
 
-func unconsumedResult(id string, row map[string]any) bool {
-	if stringValue(row["status"]) == "consumed" {
+func unconsumedResult(id string, row map[string]any, versions ...string) bool {
+	activity := workstate.ReviewAssignmentActivity(row, versions...)
+	if activity == "consumed" {
 		return false
 	}
 	if strings.TrimSpace(stringValue(row["result_ref"])) != "" {
 		return true
 	}
-	switch stringValue(row["status"]) {
-	case "result_submitted", "submitted", "awaiting_consumption":
-		return true
-	default:
-		return false
-	}
+	return activity == "result_submitted"
 }
 
 func mainStopPendingDispatch(id string) policy.Decision {
@@ -105,7 +118,7 @@ func mainStopPendingDispatch(id string) policy.Decision {
 		Decision:       "deny",
 		RuleID:         RuleMainStopPendingDispatch,
 		Reason:         fmt.Sprintf("Main cannot finish while ReviewPlan assignment %s is ready but has not been dispatched", id),
-		Recovery:       []string{"continue DRIVE and dispatch the highest-priority queued assignment", "after dispatch, let the next Stop check re-evaluate the remaining ReviewPlan work"},
+		Recovery:       []string{fmt.Sprintf("continue the current S7 preparation and dispatch ready assignment %s with its exact view/answer references; preserve waiting assignments", id), "after dispatch, let the next Stop check re-evaluate the remaining ReviewPlan work"},
 		Retry:          policy.RetryAfterRecoveryValidation,
 		MatchedRuleIDs: []string{RuleMainStopPendingDispatch},
 	}
@@ -157,7 +170,7 @@ func planningStopDecision(state map[string]any) (policy.Decision, bool) {
 	return policy.Decision{
 		Decision: "deny", RuleID: rule, MatchedRuleIDs: []string{rule},
 		Reason:   "Current planning stage still has work. Stage handoff or workload size does not require another user approval.",
-		Recovery: []string{"Continue DRIVE at the current S3/S4 contract; produce the next deliverable and evidence, without calling status/next or forcing a transition.", "If the user explicitly requested a stop, or an actual approval/external wait is required, explain that fact and end. This is one bounded reminder: stop_hook_active allows the next Stop, including repeated failure or no progress."},
+		Recovery: []string{"Continue the current S3/S4 responsibility using its exact guidance. If the professional answer is already accepted, follow its named recovery instead of creating another delivery. Use status/next when needed to diagnose a concrete gap; repeated unchanged queries do not advance the stage.", "If the user explicitly requested a stop, or an actual approval/external wait is required, explain that fact and end. This is one bounded reminder: stop_hook_active allows the next Stop, including repeated failure or no progress."},
 		Retry:    policy.RetryAfterRecoveryValidation,
 	}, true
 }

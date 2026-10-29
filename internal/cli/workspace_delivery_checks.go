@@ -26,7 +26,7 @@ func verifiedDomainChecks(root string, e workspace.Execution, cp integration.Che
 		return nil, fmt.Errorf("domain checks require tested_head")
 	}
 	checks := map[string]repair.RepairCheck{}
-	allowed := filepath.Dir(integration.CheckpointPath(root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID))
+	allowed := filepath.Dir(workspaceExecutionCheckpointPath(root, e))
 	for _, path := range cp.CheckReceipts {
 		physical, err := workspace.Canonical(path)
 		if err != nil {

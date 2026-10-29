@@ -6,31 +6,34 @@
 
 - **Path**: `loop-harness.md`
 - **Harness version**: dev
-- **Loop definition SHA-256**: `8981b9ca17f54cdeb79a6e6da40ca22b3bdf71f1de030c8044b6559740a457ae`
+- **Loop definition SHA-256**: `1476e8beb8766d26564829587dbb8a8e4aac88e013cb33d945df63f9eb223bdf`
 
 ---
 
 ## Controller recovery protocol
 
-The Hook is an event trigger for the Loop Controller, not only a guard. On `SessionStart`, `PreCompact`, `SubagentStart`, `SubagentStop`, and `TeammateIdle`, the Controller reads the Runtime, refreshes the resumable Milestone through CAS, and delivers recovery context through supported Agent-visible events. PreCompact persists only; Stop-family advisory output must not force continuation.
+Hooks observe current responsibilities and connect natural delivery boundaries. Native Start gives bounded context; native Stop invokes the original professional consumer. Main saves its own questionnaires through their existing consumers. Ordinary Worker tools do not receive answers, activate work or run every stage gate. Milestone is an existing recovery cache, not proof that each event committed or context was delivered.
 
 ### Bootstrap binding boundary
+
+S6 owners can query `runtime task-receipt --agent-id <owner> --assignment-id <id>`; registered Workers use the exact builder_receipt_command returned by prepare. The read-only receipt distinguishes current qualified delivery, own pending checks and Main integration; checks_source=original_report does not claim new check execution. Lost registered evidence and changed TASK input go to Main recovery/rework. The receipt neither advances TR-006 nor replaces S7 or S9 RepairResult completion.
 
 `revision` has no global maximum. A Hook/controller checkpoint may advance the inactive bootstrap runtime before `TR-001`; binding lets the Writer read and commit the current Runtime under lock, archives the complete inactive state/journal pair, and installs a new `loop-REQ-*` runtime at revision `0` with an empty active journal. The `binding_receipt` carries `event=req_bound`, the approved REQ, and source runtime hashes. Do not edit revision by hand or reuse a pre-bind runtime snapshot after binding; the runtime identity changes and stale identities are rejected.
 
 1. Read the `Next` action and current `Stage` from the Hook packet, then follow its `Read in order` list.
 2. Read the linked `docs/control/agent-protocol.md#sN` section before acting.
-3. If blocked or the Runtime is unclear, read this Manual. Use `runtime reconcile` only when the Hook reports an integrity/CAS recovery condition; do not call `status`/`next` during normal continuation. When the live Quality Gate checklist is unclear, run `loop-harness ready` (diagnostics; never hand-push a Transition from it). `doctor` is structural schema/manual/policy_ref only — not stage readiness or runtime health; use `loop-harness health` for cumulative runtime signals. For the complete S7→S8→S9→S7→S10 action sequence and compatibility notes, run `loop-harness actions`.
+3. If blocked or the Runtime is unclear, read this Manual. Use `runtime reconcile` only for a provable journal/state integrity gap, not an ordinary CAS conflict; status is optional diagnostics, never a per-tool prerequisite. When the live Quality Gate checklist is unclear, run `loop-harness ready` (diagnostics; never hand-push a Transition from it). `doctor` is structural schema/manual/policy_ref only — not stage readiness or runtime health; use `loop-harness health` for cumulative runtime signals. For the complete S7→S8→S9→S7→S10 action sequence and compatibility notes, run `loop-harness actions`.
 4. Execute the one missing deliverable/evidence named by Hook/`ready` `missing[]`; do not invent a parallel lifecycle.
-5. `SubagentStop` returns a short integration action. Main runs `runtime task-integrate --assignment-id <id> --root <main-root>` to inspect, merge into the REQ-bound development branch, check, persist completion_ack, and clean up. No develop fallback or automatic Main checkout. On `TeammateIdle`, inspect current progress and re-wake the same teammate when appropriate.
-6. Builder completion is registered with `runtime task-complete` — one atomic command (message validation + evidence envelope derivation + Agent/TASK advance + evidence registration); the legacy `agent-event completion_reported` + `runtime evidence add` dual write still works but produces a thinner envelope. In bound mode, Main runs `runtime workspace prepare --assignment <id> --agent <owner>` and `runtime workspace launch` before Worker product writes. The registered execution supplies the worktree, branch, target and frozen SHA; resolve uncommitted inputs first and keep Main in its original checkout. Use the returned begin/commit/report/check commands. S9 uses a reported immutable candidate via workspace deliver, followed by Main integration and the ordinary final RepairResult; independent verification and fresh S7 remain required. Legacy manual worktrees require explicit adoption before entering bound mode. See docs/workspace-integration.md for the new binding interface and its current limits.
-7. In S7 (verification) the round is driven by runtime verbs, not by hand-pushed transitions: scaffold and register the ReviewPlan (`s7 draft`, inspect `coverage_inventory`/`e2e_assets`, then `runtime review-plan --file <plan.json>`), dispatch reviewers (`s7 manifest-draft`, `runtime register-workgroup`), consume each Assignment's Canonical ReviewResult (`runtime review-result submit --assignment-id <id> --result <result.json>`; required evidence refs are typed, and observation steps land via `capture step --finding <id> --claim <id>` / `--captures`), and revise a running plan once per round (`runtime review-plan revise`). `loop-harness s7 status` is the board: it prints the plan line, the round counter (current / `max_full_review_rounds`), the `round_entry` block (which TR re-entered the round and its seed/handoff/impact refs) plus the `seed_projection` line when a plan is registered from the S9 seed, the `subject_digest` every result must bind, claim dispositions, any blocked assignment's `blocker_ref` and the recovery verb `runtime agent-event --event blocker_resolved --agent-id <id> --message <file>`, and the single next action; a cold-start E2E round also has `loop-harness s7 workspace-digest` for the `verification_artifact_digest` the E2E result must bind. Re-entering S7 via TR-012 (post S9 repair) re-runs the same verbs from a generated seed: `.claude/review/repair/s7-seeds/review-plan-s9-round-<N>.json` is baseline-complete (it carries the changed-artifact `frozen_subjects`, the change-impact source_refs, and the current-generation TASK coverage) but not a finished plan — the Planner still refines Claims, Assignments and `non_overlap_boundary` per `docs/control/agent-protocol.md#s7`; refresh the frozen shas if the tree moved, refine the Claim set if needed, then `runtime review-plan --file <seed>`. the change-impact evidence is the source of truth: the registered plan must derive `frozen_subjects`, `coverage_inventory`, and a Claim source_ref from every `changed_artifacts` path/SHA it carries; QA reports additionally carry the §5 Targeted Re-verification table alongside §2–§4, and the round counter tells you which round you are on. A no-repair batch returns via TR-022 (`findings_resolved_without_repair`) instead of TR-012 and runs the same S7 verbs without a seed. A rejected command includes the missing facts, repair action, next command, verification command and protocol ref; fix those facts and resubmit the same artifact. The machine exits are automatic — a sealed ObservationBatch or a machine CleanRound commits TR-008/TR-009 on the next PreToolUse; do not invoke the transition CLI for them. If the PostToolUse auto-activation chain did not fire for a dispatched Worker, recover with `runtime agent-begin --agent-id <id> --plan <plan-report.json>`. Full verb walkthrough: `docs/control/agent-protocol.md#s7`.
-Before registering an S7 draft, inspect its CASE-level E2E Assignments. `s7 draft` projects required browser CASEs from `docs/design/prototypes/<module>/cases.json`; a complete CASE→Playwright spec mapping produces `regression_available` and SHA-pinned `e2e_assets`, while any missing mapping produces `cold_start`, an `e2e-workspace/<round>` write surface, and one behavior Assignment per CASE. If no readable CASE inventory exists, the remaining `TODO(planner)` is intentional and registration explains the missing S2 input. Typed path evidence may use `path:<repo-relative>#sha256=<64-hex>` for drift detection; bare `path:` is compatibility-only existence evidence.
-8. In S9 (bug_resolution), consume only the approved RepairContract: open the RepairSession, compile the RepairPlan, dispatch each Assignment with `runtime repair dispatch --assignment-id <assignment> --agent-id <agent>`, send the generic PLAN_REPORT and submit the S9 domain PlanReport, then wait for `runtime repair execution begin` before product writes. Use `runtime repair status` for each Assignment's owner/report/result, `queue_reason`, `lock_state` and next action; do not create a second scheduler or edit Runtime state by hand.
-9. If `s7 status` reports `round N of M` with N >= M, finish draining the current round but do not open another one. Submit the human artifact through `runtime s7-budget-decision --file <decision.json> --actor <user>`; `increase_budget` atomically raises `max_full_review_rounds` and leaves the pending round-opening transition to retry, while `return_to_governance` records the decision, invalidates downstream review evidence, resets the review projection, and routes through GTR-006 to planning. The decision file is persisted as scoped `human_decision` evidence; Runtime revision is assigned internally by the Writer.
-10. In S10 (acceptance_and_audit), treat the stage as a read-only audit, not a final shortcut: run `s10 status`, freeze the finite coverage inventory and responsibility matrix, record one counterevidence check per item, and validate the machine manifest before registering the human-readable ACC or release-audit envelope. The manifest must prove 100% requirement/contract/changed-path/audit-area coverage with zero UNKNOWN, unsupported PASS, unowned risk, untracked debt, or blocking finding. If any product or architecture defect appears, return through S8 → S9 → a fresh complete S7; never use S9 → S10 or edit product code in S10. Only a current clean package may reach S11.
+5. Main reads the native return and original receipt. S6 uses the supplied `runtime task-integrate --assignment-id <id> --root <main-root>`; S9 uses its supplied `runtime workspace integrate` command and necessary Main checks. Do not use one command for both contracts or re-wake a completed Worker for Main integration. No develop fallback or automatic Main checkout.
+6. In new native S6, Main runs `s6 prepare --root <authority-root> --task <TASK> --role <Builder-role>` and passes its exact brief into Claude Code native Agent with worktree isolation (`worktree.baseRef: head`). No preselected platform IDs, Team, workspace prepare/launch, generic begin or activation. Builder saves its professional plan before implementation, continues with real TASK self-checks, commits products, saves Result and returns its exact brief and absolute Result reference. SubagentStart supplies short engineering context; SubagentStop invokes the original Result consumer. Ordinary save hooks do not receive native S6 delivery. Main explicitly runs `runtime task-integrate --assignment-id <id>` for the actual merge, required Main checks, ACK and cleanup. Rework uses `s6 prepare --revise-assignment <id> --revision-intent-key <stable-key>` through the original revision Writer. The exact TR-003 batch and TR-006 gate remain. Frozen s6-v1.2/workspace assignments keep their original recovery commands; never launch the same responsibility twice. See `docs/examples/s6-builder/README.md` and `docs/control/agent-protocol.md#s6`.
+7. In S7, Main fills and saves the exact Hook-supplied ReviewPlan path; the original RegisterPlan consumer validates and registers it. Do not run `s7 draft` or `runtime review-plan` to submit a duplicate plan in the normal path. Main still dispatches the registered Assignments through `s7 manifest-draft` and `runtime register-workgroup`. Main actually dispatches native Agents with exact references. Each Reviewer saves and returns its exact answer for SubagentStop; the original consumer binds Claim/source facts and registers Findings or the round result. Do not run `runtime review-result submit` or copy subject digests and other machine metadata on the normal path. Use typed evidence and the real capture flow when the assigned questionnaire asks for them; the consumer binds its source and digest. `loop-harness s7 status` is a read-only board for plan, round, seed, claim dispositions, blockers, and next action. In TR-012 re-entry, the generated `.claude/review/repair/s7-seeds/review-plan-s9-round-<N>.json` supplies the changed-artifact baseline and TASK coverage; use the exact current ReviewPlan path the Hook prepares from that seed. A substantive change to an already registered plan follows the original controlled revision. A no-repair batch returns via TR-022 and runs the same S7 review. The Hook advances a sealed ObservationBatch; the final accepted ReviewResult continues the original CleanRound Gate/TR-009 and S10 material preparation in the same completion event. Recover a named pending clean exit with `runtime review-continue`; restore missing current S10 drafts with `runtime audit-prepare`. If the Hook explicitly reports that a lifecycle follow-up did not run, follow that named recovery action. Full role and dispatch contract: `docs/control/agent-protocol.md#s7`.
+The supplied ReviewPlan includes its `coverage_inventory` and `e2e_assets`; inspect their current content and answer the professional questions without recreating machine fields. For a live timeline capture, use `loop-harness capture step --finding <id> --claim <id>` only when the assigned answer requires it; the original save consumer binds the buffer. If an explicitly named legacy/recovery command rejects an artifact, follow its missing facts, repair, next, verify, and reference details rather than inventing a command.
+S7 questionnaire preparation uses the module's CASE inventory and Playwright mapping to propose the E2E Assignments. A complete CASE→spec mapping can use `regression_available`; missing mappings use `cold_start`, an `e2e-workspace/<round>` write surface, and one behavior Assignment per CASE. If CASE inventory is missing, the Hook names that input gap for Main; do not run `s7 draft` to reconstruct a second plan. In the ReviewPlan answer, Main resolves any professional coverage decision shown by the exact questionnaire. Evidence paths can be supplied as `path:<repo-relative>`; the original consumer binds current source and hashes.
+8. Main follows the approved RepairContract and records actual professional division. Carry each exact prepared brief into native Agent with worktree isolation. Each Builder saves its private PlanReport before implementation, continues repair/self-checks, then saves and returns its private Result with the exact brief and absolute Result reference. SubagentStop imports professional Plan/Result through the original consumers; there is no separate plan acceptance wait. Main integrates the candidate with necessary checks before Final, then saves ChangeImpact and actually dispatches independent Targeted verification per approved Contract. The verifier returns its exact answer for Stop reception, without a Builder PlanReport or product writes. First incomplete native returns give Main the original rejection and exact gap without claiming completion. Once necessary work is complete, its original outlet records Handoff and the fresh S7 seed; no extra Handoff report, next-Hook wait or duplicate delivery. If Targeted was accepted but Handoff or S7 preparation failed, follow the supplied `runtime repair handoff complete --root <Main-root>` recovery to finish only the pending exit. The completed outlet supplies the original S7 ReviewPlan questionnaire and guide; Main completes and saves that questionnaire. Missing paths or preparation belong to Main/system. Existing frozen executions retain their named recovery contract. See `docs/control/agent-protocol.md#s9`.
+9. If `s7 status` reports `round N of M` with N >= M, finish draining the current round but do not open another one. The actual completion outlet supplies the original budget application. Record only the actual human choice, increased maximum when applicable and reason, then save that exact application. An empty choice grants nothing. `increase_budget` raises `max_full_review_rounds` and resumes the pending successor; `return_to_governance` follows GTR-006 to planning. The original Writer supplies decision metadata and scoped human_decision evidence. `runtime s7-budget-decision --file <decision.json> --actor <user>` remains an explicit legacy/recovery interface, not another normal submission.
+10. Main fills the actual acceptance or release-audit Manifest at the supplied exact path and saves once. Explain requirement dispositions, applicable observations, counterevidence, unknowns and actual risks. Eight audit themes are relevance prompts, not a row quota or mandatory new work. The original consumer derives its envelope and metrics; do not run a second validate/render/evidence submission. Unknowns and blockers remain unfinished, while explicit outcomes may be recorded without authorizing advance. S10 does not repair product code; changed products return through investigation/repair and fresh complete S7. Actual human choice remains in S11.
 11. Some authority transactions carry runtime-issued ids that are not TRs and therefore do not appear in the Contents index above: `S8-REPAIR-CONTRACT-APPROVAL` (runtime investigation contract approve — the S8→S9 authority; PTR-BUG-08 is its legacy-catalog alias), plus the entity/record CAS ids (REVIEW-RESULT, REVIEW-PLAN-STALE, S7-BUDGET-DECISION, AGENT-LIFECYCLE, BUG-LIFECYCLE, EVIDENCE-RECORD). They are driven by their runtime verbs, never by `runtime transition`.
-12. Stop only at a human Gateway, an external asynchronous wait, or the end of the current turn.
+12. A native Worker returns its actual artifacts or honest blocker and ends its own execution. Main continues its remaining duties; an unknown human decision or external wait is explicit, not a reason to invent more Worker work.
 
 The persisted `.claude/loop-state.json` `milestone` is a recovery cache, not a second state machine. `docs/control/loop-definition.json` and the Transition Engine remain the authority for legal lifecycle changes.
 
@@ -38,9 +41,27 @@ During BUG investigation, answer why E2E did not cover or fail the gap (`skills/
 
 ---
 
+## Approved requirement amendment {#approved-requirement-amendment}
+
+Reuse the actual conversation decision approving the specific correction; do not ask for the same approval again or require the human to type a command verbatim. Record the actual decision attribution with --approved-by, not Git identity. An undecided amendment still waits for the human decision.
+
+If the bound Runtime is not already paused, record its checkpoint with the existing command (skip this step when already paused):
+
+```sh
+loop-harness runtime pause --root <project-root> --approved-by <actual-human> --reason <approved-correction>
+```
+
+Apply only the approved correction to the same REQ ID, keep its top status locked, raise its semantic version above the bound version, and commit the amended REQ on the bound development branch (for example develop). Then use the existing domain receiver:
+
+```sh
+loop-harness req amend --root <project-root> --req docs/requirements/REQ-<id>.md --approved-by <actual-human>
+```
+
+Read the exact current S2 questionnaire view/answer paths returned by the original amendment outlet and continue its professional work. The original transaction records the decision, new generation and downstream invalidation; do not assemble evidence bindings, hand-run TR-020, resume the old checkpoint after amendment, or guess a generation directory. If the transaction is recorded but questionnaire preparation fails, retain that fact and follow its actual preparation error and original listener continuation; do not resubmit an already accepted amendment or invent a path.
+
 ## S11 Human decision gateway
 
-`awaiting_human_release` is a non-terminal human gateway. The Controller has no automatic candidate or decision at this cursor. Submit exactly one finite disposition with the explicit Runtime command:
+`awaiting_human_release` is a non-terminal human gateway. The Controller has no automatic candidate or decision at this cursor. Present the actual materials; after a real explicit human choice, Main fills disposition and optional reason in the exact current application and saves normally. Empty disposition remains waiting. The explicit Runtime command below is compatibility/recovery only:
 
 ```bash
 loop-harness runtime human-decision \
@@ -56,14 +77,14 @@ Human approval records release authorization only. Harness has no squash merge, 
 ## Contents
 
 - [`TR-001`](#tr-001) inactive → planning — Start exactly one Loop for the named locked REQ.
-- [`TR-002`](#tr-002) planning → document_verification — Planning completes when contracts are locked and the TASK batch is fully complete on disk (planning_complete), with clause coverage, DAG acyclicity, and closing contracts verified (tasks_checked).
+- [`TR-002`](#tr-002) planning → document_verification — In questionnaire mode, the current S4 professional answer must be received by the original consumer.
 - [`TR-003`](#tr-003) document_verification → building — Lock only the exact contract and task versions jointly verified.
 - [`TR-004`](#tr-004) document_verification → planning — Non-REQ document findings return to planning.
 - [`TR-005`](#tr-005) document_verification → paused — REQ changes always return control to the human.
 - [`TR-006`](#tr-006) building → verification — Start a complete review round after every TASK in the TR-003 exact execution batch has a Builder Result with passing checks, no unapproved scope deviations, and a verified integration checkpoint.
 - [`TR-007`](#tr-007) building → planning — Non-REQ execution conflicts return through planning and document verification.
-- [`TR-008`](#tr-008) verification → bug_resolution — A sealed ObservationBatch carries the exact immutable Finding set (with encounters, wall actions and evidence refs) into the S8 Runtime cursor.
-- [`TR-009`](#tr-009) verification → acceptance — Acceptance requires the machine CleanRound: every required Claim of the current ReviewPlan has a consumed pass Result, no current-round Finding exists, and the clean-round snapshot is recomputed by the clean_round_valid guard at promotion time.
+- [`TR-008`](#tr-008) verification → bug_resolution — A sealed ObservationBatch carries the exact immutable Finding set (with encounters, wall actions and evidence refs) into S8 on the next Main PreToolUse.
+- [`TR-009`](#tr-009) verification → acceptance — The final accepted ReviewResult continues the original Gate/TR-009 in the same completion event, then prepares the current S10 acceptance questionnaire.
 - [`TR-010`](#tr-010) verification → paused — A ReviewResult verdict of req_change_required pauses the loop for a human REQ decision.
 - [`TR-011`](#tr-011) verification → paused — A ReviewResult verdict of release_blocked pauses the loop for a human release decision.
 - [`TR-012`](#tr-012) bug_resolution → verification — Only the ready_for_full_review handoff checkpoint for an approved RepairContract may enter a complete Delivery + QA + E2E Browser round; targeted re-verification never substitutes for that round.
@@ -94,15 +115,20 @@ _Phase: bug_resolution_
 - [`PTR-BUG-11`](#ptr-bug-11) reproducing → fixing — Only the explicit execution checkpoint releases implementation writes.
 - [`PTR-BUG-05`](#ptr-bug-05) fixing → targeted_reverification — Every repair invalidates affected historical PASS evidence before recheck.
 - [`PTR-BUG-06`](#ptr-bug-06) targeted_reverification → ready_for_full_review — A targeted pass never substitutes for the full review round; it records the S9-to-S7 handoff checkpoint.
-- [`PTR-BUG-12`](#ptr-bug-12) investigation → targeted_reverification — After an environmental or authority blocker is resolved, reopen the existing targeted verification checkpoint; runtime hard-checks status=blocked, failure_route=blocked, and a non-empty resolution reason.
+- [`PTR-BUG-12`](#ptr-bug-12) targeted_reverification → targeted_reverification — After an environmental or authority blocker is resolved, reopen the existing targeted verification checkpoint; runtime hard-checks status=blocked, failure_route=blocked, and a non-empty resolution reason.
 - [`PTR-BUG-07`](#ptr-bug-07) targeted_reverification → investigation — Failed repair verification returns to the same InvestigationCase for causal reassessment; it does not create a new BUG draft unless the causal model genuinely differs.
 
 See [Legacy (PTR-BUG)](#legacy-ptr-bug) at the end of this Manual for the legacy compatibility transitions (PTR-BUG-01..04, PTR-BUG-08).
 
 _Phase: planning_
 
-- [`PTR-PLAN-01`](#ptr-plan-01) design → contracts — Advance formal planning from design to contracts after the design quality gate passes.
-- [`PTR-PLAN-02`](#ptr-plan-02) contracts → tasks — Advance formal planning from contracts to tasks after the contract quality gate passes.
+- [`PTR-PLAN-01`](#ptr-plan-01) design → contracts — Advance formal planning from design to contracts after the original design quality gate passes.
+- [`PTR-PLAN-02`](#ptr-plan-02) contracts → tasks — Advance contracts to tasks through the original S3 gate and PTR-PLAN-02.
+- [`PTR-PLAN-03`](#ptr-plan-03) contracts → design — Main explicitly opens a fresh design entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections.
+- [`PTR-PLAN-04`](#ptr-plan-04) contracts → contracts — Main explicitly opens a fresh contracts entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections.
+- [`PTR-PLAN-05`](#ptr-plan-05) tasks → design — Main explicitly opens a fresh design entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections.
+- [`PTR-PLAN-06`](#ptr-plan-06) tasks → contracts — Main explicitly opens a fresh contracts entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections.
+- [`PTR-PLAN-07`](#ptr-plan-07) tasks → tasks — Main explicitly opens a fresh tasks entry within the original locked REQ for a named professional reason; preserve REQ/S2/S3 frozen inputs and accepted history; invalidate only tasks, dispatch plans and downstream review projections.
 
 _Global_
 
@@ -140,7 +166,7 @@ If a binding is missing, retry with the command above; run `loop-harness explain
 
 _planning → document_verification_
 
-Planning completes when contracts are locked and the TASK batch is fully complete on disk (planning_complete), with clause coverage, DAG acyclicity, and closing contracts verified (tasks_checked). Gate readiness facts: a TASK declaring `Status: complete` on disk (or a registered complete task) plus valid planning_task evidence — the missing token `document:task:complete` means neither was found. On commit, locked contracts and complete tasks are registered into documents[].
+In questionnaire mode, the current S4 professional answer must be received by the original consumer. The gate checks the complete accepted REQ-scoped TASK/index batch, clause coverage, DAG and Closing Contracts; accepted source drift is reported as a concrete conflict. TR-002 revalidates the original reception and sources in its Writer transaction and registers that exact contract/TASK delivery before entering document_verification. An incomplete gate keeps the original followup retryable. Legacy packet-off planning retains its original checks and registration path.
 
 - `planning_complete` [semantic_check] — At least one current-baseline contract document has status=locked with a matching on-disk markdown Status field (contracts are registered by PTR-PLAN-02), AND every docs/dev/tasks/TASK-*.md declares status complete or cancelled with at least one complete (the batch is registered by TR-002's own register_planning_tasks action). Fingerprints are owned by registration and reachability, not re-checked here.
 - `tasks_checked` [semantic_check] — S4's mechanical close (semantic.TasksCheck) runs at TR-002: the TASK batch is fully complete (cancelled tasks excluded), every task has an existing primary contract and a Closing Contract block, clause coverage between the CONTRACTS index universe and TASK §3 declarations closes in both directions, and the §8 dependency graph is acyclic (cycle path reported).
@@ -212,7 +238,7 @@ Evidence: `builder_report_record`
 Evidence bindings (copy into `runtime transition`):
 
 - `builder_report_record`: `--evidence builder_report_record=<reference>`
-  Accepted kinds: `builder_report`, `agent_completion`
+  Accepted kinds: `builder_report`, `agent_completion`, `completion_report`
 
 If a binding is missing, retry with the command above; run `loop-harness explain TR-006` to inspect current candidates.
 
@@ -237,37 +263,37 @@ If a binding is missing, retry with the command above; run `loop-harness explain
 
 _verification → bug_resolution_
 
-A sealed ObservationBatch carries the exact immutable Finding set (with encounters, wall actions and evidence refs) into the S8 Runtime cursor. TR-008 records the cursor handoff; the next mandatory S8 verb is `runtime investigation ingest`, which creates the InvestigationCase after exact-set/hash/baseline validation. S8 consumes the facts and does not re-reproduce symptoms by default. No per-Finding BUG draft is created; any legacy BUG draft is only a compatibility projection of the Case.
+A sealed ObservationBatch carries the exact immutable Finding set (with encounters, wall actions and evidence refs) into S8 on the next Main PreToolUse. TR-008 records only the cursor handoff. Main then reads the supplied Batch/Findings and saves grouping_rationale in the exact S8 intake questionnaire; its original ingest consumer creates the InvestigationCase after exact-set/hash/baseline validation. The runtime investigation ingest command remains a direct domain/recovery entry, not a second required submission. S8 consumes the observed facts without re-reproducing symptoms by default. No per-Finding BUG draft is created; any legacy BUG draft is only a compatibility projection of the Case.
 
 - `observation_batch_sealed` [semantic_check] — _no spec_
 
 Evidence: `observation_batch_record`
 
-Evidence bindings (copy into `runtime transition`):
+Diagnostic evidence slots for the original sealed batch. The next Main PreToolUse invokes the original transition; authors do not copy these bindings or submit another Result.
 
 - `observation_batch_record`: `--evidence observation_batch_record=<reference>`
   Accepted kinds: `observation_batch`
 
-If a binding is missing, retry with the command above; run `loop-harness explain TR-008` to inspect current candidates.
+If the handoff is incomplete, Main inspects the original sealed batch and `loop-harness explain TR-008` feedback. Preserve accepted Reviewer answers. After the transition, fill and save the supplied S8 intake; its original consumer creates the Case.
 
 ### `TR-009` {#tr-009}
 
 _verification → acceptance_
 
-Acceptance requires the machine CleanRound: every required Claim of the current ReviewPlan has a consumed pass Result, no current-round Finding exists, and the clean-round snapshot is recomputed by the clean_round_valid guard at promotion time.
+The final accepted ReviewResult continues the original Gate/TR-009 in the same completion event, then prepares the current S10 acceptance questionnaire. Every required Claim of the current ReviewPlan needs a consumed PASS; clean_round_valid recomputes the snapshot, current product baseline and applicable E2E assets at promotion. Reception, transition and material preparation are separate facts. Resume a pending original exit with runtime review-continue; recover missing current S10 materials with runtime audit-prepare. PreToolUse remains a compatibility recovery path.
 
 - `clean_round_valid` [semantic_check] — _no spec_
 
 Evidence: `clean_round_record`
 
-Evidence bindings (copy into `runtime transition`):
+Diagnostic evidence slots for the original machine CleanRound. The final accepted ReviewResult invokes Gate/TR-009 and prepares S10 in the same completion event; authors do not copy these bindings.
 
 - `clean_round_record`: `--evidence clean_round_record=<reference>`
   Accepted kinds: `clean_round`
 
-If a binding is missing, retry with the command above; run `loop-harness explain TR-009` to inspect current candidates.
+Reception, transition and material preparation are separate facts. After resolving a named original Gate failure, resume with `loop-harness runtime review-continue --root <root>`; after entering S10, restore missing current materials with `loop-harness runtime audit-prepare --root <root>`. Existing reports and accepted Reviewer answers are preserved; material recovery does not repeat TR-009.
 
-S10 acceptance machine artifact (required before the Controller can consume the acceptance evidence):
+For normal S10, save the supplied professional Manifest; its original consumer records the artifact. Explicit unpacketized/recovery commands only:
 
 ```text
 loop-harness s10 manifest validate --root <root> \
@@ -277,7 +303,7 @@ loop-harness runtime evidence add --root <root> \
   --path <envelope.json> --produced-by <agent> --responsibility <role>
 ```
 
-The envelope must contain `audit_manifest_path` and `audit_manifest_sha256`. The manifest must have a frozen `coverage_inventory` with explicit `requirement`, `contract`, and `changed_path` rows (use evidence-backed `not_applicable`, never an omitted hard category), exactly one counterevidence row per item, and zero UNKNOWN/unsupported PASS/unowned risk/untracked debt/blocking finding metrics. Start from the copyable shape `docs/examples/s10/acceptance-manifest.json` when useful. Run `loop-harness s10 status --root <root>` to see the current round and the next recovery action. Do not call `runtime transition` manually.
+The original consumer supplies `audit_manifest_path` and `audit_manifest_sha256`. Use the current professional Manifest to explain actual coverage and counterevidence; a path or row count is not proof of product behavior. Resolve unknowns and blocking findings and identify the owner/disposition of remaining risks. `s10 status` is optional read-only progress; do not call `runtime transition` manually.
 
 ### `TR-010` {#tr-010}
 
@@ -377,8 +403,8 @@ _acceptance → release_audit_
 
 Release audit starts only from current ACC and clean-round evidence.
 
-- `acc_complete` [semantic_check] — A valid acceptance evidence entry for the current baseline generation and review round exists in runtime.evidence[] and its registered sha256 still matches the on-disk acceptance record (RC-06 S10-14: invalidated, stale-round or drifted ACC envelopes are rejected, not attested).
-- `clean_round_still_valid` [semantic_check] — verification.EvaluateCleanRound still reports a passing clean round at the current baseline generation, so neither baselines nor evidence drifted between round capture and release.
+- `acc_complete` [semantic_check] — The latest valid acceptance report for the current responsibility, baseline generation and review round records pass with no reported unfinished rows or blockers; this reads professional completion, not historical source proofs.
+- `clean_round_still_valid` [semantic_check] — verification.EvaluateCleanRound recomputes completion from current registered round facts, including its ReviewPlan, required Claims, invalidations and blockers; it does not reverify every product file's current bytes.
 
 Evidence: `acceptance_record`, `clean_round_record`
 
@@ -391,7 +417,7 @@ Evidence bindings (copy into `runtime transition`):
 
 If a binding is missing, retry with the command above; run `loop-harness explain TR-015` to inspect current candidates.
 
-S10 acceptance machine artifact (required before the Controller can consume the acceptance evidence):
+For normal S10, save the supplied professional Manifest; its original consumer records the artifact. Explicit unpacketized/recovery commands only:
 
 ```text
 loop-harness s10 manifest validate --root <root> \
@@ -401,7 +427,7 @@ loop-harness runtime evidence add --root <root> \
   --path <envelope.json> --produced-by <agent> --responsibility <role>
 ```
 
-The envelope must contain `audit_manifest_path` and `audit_manifest_sha256`. The manifest must have a frozen `coverage_inventory` with explicit `requirement`, `contract`, and `changed_path` rows (use evidence-backed `not_applicable`, never an omitted hard category), exactly one counterevidence row per item, and zero UNKNOWN/unsupported PASS/unowned risk/untracked debt/blocking finding metrics. Start from the copyable shape `docs/examples/s10/acceptance-manifest.json` when useful. Run `loop-harness s10 status --root <root>` to see the current round and the next recovery action. Do not call `runtime transition` manually.
+The original consumer supplies `audit_manifest_path` and `audit_manifest_sha256`. Use the current professional Manifest to explain actual coverage and counterevidence; a path or row count is not proof of product behavior. Resolve unknowns and blocking findings and identify the owner/disposition of remaining risks. `s10 status` is optional read-only progress; do not call `runtime transition` manually.
 
 ### `TR-016` {#tr-016}
 
@@ -428,9 +454,9 @@ _release_audit → awaiting_human_release_
 
 Approved or approved-with-risk audit reaches the human release boundary.
 
-- `release_audit_approved` [semantic_check] — A valid release_audit evidence entry for the current baseline generation and review round exists in runtime.evidence[] and its registered sha256 still matches the on-disk audit record (RC-06 S10-14: the guard resolves and re-hashes the artifact instead of attesting an evidence map).
-- `acc_complete` [semantic_check] — A valid acceptance evidence entry for the current baseline generation and review round exists in runtime.evidence[] and its registered sha256 still matches the on-disk acceptance record (RC-06 S10-14: invalidated, stale-round or drifted ACC envelopes are rejected, not attested).
-- `clean_round_still_valid` [semantic_check] — verification.EvaluateCleanRound still reports a passing clean round at the current baseline generation, so neither baselines nor evidence drifted between round capture and release.
+- `release_audit_approved` [semantic_check] — The latest valid release audit for the current responsibility, baseline generation and review round records approved or approved_with_risk with no reported unfinished rows or blockers; this reads professional completion, not historical source proofs.
+- `acc_complete` [semantic_check] — The latest valid acceptance report for the current responsibility, baseline generation and review round records pass with no reported unfinished rows or blockers; this reads professional completion, not historical source proofs.
+- `clean_round_still_valid` [semantic_check] — verification.EvaluateCleanRound recomputes completion from current registered round facts, including its ReviewPlan, required Claims, invalidations and blockers; it does not reverify every product file's current bytes.
 
 Evidence: `release_audit_record`, `acceptance_record`, `clean_round_record`
 
@@ -445,7 +471,7 @@ Evidence bindings (copy into `runtime transition`):
 
 If a binding is missing, retry with the command above; run `loop-harness explain TR-017` to inspect current candidates.
 
-The release-audit evidence must point to a separately validated manifest:
+Normal Main save validates the current release-audit Manifest and records its evidence. The commands below are explicit unpacketized/recovery examples:
 
 ```text
 loop-harness s10 manifest validate --root <root> \
@@ -455,7 +481,7 @@ loop-harness runtime evidence add --root <root> \
   --path <envelope.json> --produced-by <agent> --responsibility "Release Auditor"
 ```
 
-The manifest must include all eight audit areas from `internal/schema/assets/s10-audit-manifest.schema.json`; use `docs/examples/s10/release-audit-manifest.json` as the copyable shape. Markdown audit prose does not replace this machine-checked ledger.
+Eight audit themes guide relevance; use applicable actual observations rather than manufacturing eight rows. The supplied professional Manifest carries the outcome, evidence and risk disposition; Markdown prose alone is not its accepted record.
 
 ### `TR-018` {#tr-018}
 
@@ -476,7 +502,7 @@ Evidence bindings (copy into `runtime transition`):
 
 If a binding is missing, retry with the command above; run `loop-harness explain TR-018` to inspect current candidates.
 
-The BLOCKED release-audit evidence must preserve its machine-readable blocker ledger:
+A blocked audit preserves actual observations and blockers in the current Manifest. Main normally saves that exact answer for original TR-018. Explicit unpacketized/recovery examples:
 
 ```text
 loop-harness s10 manifest validate --root <root> \
@@ -486,7 +512,7 @@ loop-harness runtime evidence add --root <root> \
   --path <envelope.json> --produced-by <agent> --responsibility "Release Auditor"
 ```
 
-Keep the blocking finding, route, evidence references, and all eight audit areas in the manifest. Let the Controller take TR-018 to `paused`; do not call `runtime transition` manually.
+Keep actual blockers, their evidence and next responsibility in the Manifest. Original TR-018 records the pause; do not call `runtime transition` or manufacture audit rows.
 
 ### `TR-019` {#tr-019}
 
@@ -518,14 +544,14 @@ A changed locked REQ starts a new planning generation.
 
 Evidence: `human_decision_record`, `req_lock_record`
 
-Evidence bindings (copy into `runtime transition`):
+Low-level diagnostic evidence slots only; not the normal amendment entry. Follow [Approved requirement amendment](#approved-requirement-amendment); the original receiver binds these facts, not the author.
 
 - `human_decision_record`: `--evidence human_decision_record=<reference>`
   Accepted kinds: `human_decision`
 - `req_lock_record`: `--evidence req_lock_record=<reference>`
   Accepted kinds: `human_decision`
 
-If a binding is missing, retry with the command above; run `loop-harness explain TR-020` to inspect current candidates.
+These slots describe the original transaction for diagnosis; use the normal amendment entry above rather than composing or retrying a transition.
 
 ### `TR-021` {#tr-021}
 
@@ -644,14 +670,12 @@ Route a human defect rejection to bug-resolution investigation with its finding 
 
 _No guards._
 
-Evidence: `human_decision_record`, `finding_record`
+Evidence: `human_decision_record`
 
 Evidence bindings (copy into `runtime transition`):
 
 - `human_decision_record`: `--evidence human_decision_record=<reference>`
   Accepted kinds: `human_decision`
-- `finding_record`: `--evidence finding_record=<reference>`
-  Accepted kinds: `finding`, `bug`
 
 If a binding is missing, retry with the command above; run `loop-harness explain TR-027` to inspect current candidates.
 
@@ -789,7 +813,7 @@ If a binding is missing, retry with the command above; run `loop-harness explain
 
 ### `PTR-BUG-12` {#ptr-bug-12}
 
-_investigation → targeted_reverification_
+_targeted_reverification → targeted_reverification_
 
 After an environmental or authority blocker is resolved, reopen the existing targeted verification checkpoint; runtime hard-checks status=blocked, failure_route=blocked, and a non-empty resolution reason. A new independent TargetedReverification is still required, and this transition never authorizes a repair or a pass.
 
@@ -818,7 +842,7 @@ If a binding is missing, retry with the command above; run `loop-harness explain
 
 _design → contracts_
 
-Advance formal planning from design to contracts after the design quality gate passes. Gate readiness facts: an ARCHITECTURE-*.md whose top status line (状态/Status) declares `locked` plus a valid planning_design JSON envelope (responsibility Architect, conclusion pass — a markdown file as --path yields `evidence:<id>:schema`). Missing tokens `document:design:locked` / `evidence:planning_design_record` mean one of these is absent.
+Advance formal planning from design to contracts after the original design quality gate passes. Main saves the issued S2 answer with architecture_path and conclusion pass; the original consumer records planning_design evidence and runs this outlet. The gate requires current design evidence and a real ARCHITECTURE-*.md whose top status line (状态/Status) declares locked, plus the bound requirement conditions. Missing tokens document:design:locked / evidence:planning_design_record identify the remaining gate work. Reception, committed transition and S3 material preparation are separate outcomes; authors do not create evidence envelopes or qualify by producer label.
 
 - `ui_impact_resolved` [semantic_check] — runtime.bound_req.metadata.ui_impact is not `unknown`, so the planning phase is not paused on the SM-003 gate waiting for §11 of the REQ to clarify UI impact.
 
@@ -826,10 +850,50 @@ Advance formal planning from design to contracts after the design quality gate p
 
 _contracts → tasks_
 
-Advance formal planning from contracts to tasks after the contract quality gate passes. Gate readiness facts: a contract declaring `Status: locked` on disk (or an already-registered locked contract in runtime documents[]) plus valid planning_contract evidence — the missing token `document:contract:locked` means neither was found; flip the contract's top status line（状态/Status）to locked.
+Advance contracts to tasks through the original S3 gate and PTR-PLAN-02. In questionnaire mode the listener gives exact answer and output paths; Main saves one professional answer, and the original consumer checks the current bound REQ's complete locked contract batch and shared-model dependencies. The gate rechecks the accepted subjects before the original transaction registers them. Normal successful Post handling retains its original continuation. If the gate remains pending after reception, preserve the accepted answer, repair the concrete gap and execute the complete original runtime stage-answer recover command supplied by feedback. If the transition is already committed but next-material preparation failed, repair its named source gap and execute the supplied original runtime stage-answer issue command to prepare the current stage. Neither path requires refilling or resaving the accepted answer; arbitrary reads or material saves do not promise retry. An accepted answer is not a completed stage. Explicitly unpacketized legacy flows retain their existing disk/evidence path.
 
-- `contracts_checked` [semantic_check] — S3's mechanical close (semantic.ContractsCheck) runs at PTR-PLAN-02: contract token references resolve against REQ FR tables and module packages, clause cells point at known contracts, and fingerprint columns match disk.
+- `contracts_checked` [semantic_check] — S3 typed reception checks the declared current-REQ delivery and source view with semantic.ContractsCheck: REQ/CASE references and contract clauses resolve, shared models and examples validate, and system-maintained source fingerprints match. PTR-PLAN-02 rechecks the accepted delivery for registration. Existing disk-based compatibility flows retain their original checks; fingerprint columns are not an author obligation.
 - `scenario_bridge_checked` [semantic_check] — S2's AC↔CASE bridge (scenario.GuardBridgeChecked) runs at PTR-PLAN-02: every AC of the bound REQ reaches a rule via FR source_refs (with branches), or carries an endorsed N/A (NFR id / §A4). With no module packages at all, only fully N/A-endorsed REQs pass — an AC pointing at FR- with nothing citing it is a broken denominator.
+
+### `PTR-PLAN-03` {#ptr-plan-03}
+
+_contracts → design_
+
+Main explicitly opens a fresh design entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections. Use runtime stage-answer rework; requirement changes retain the original human boundary.
+
+- `planning_rework_scope` [evidence_attestation] — The current packet-mode S3/S4 entry keeps its authorized locked REQ; the named Main request supplies the professional reason and the original Writer invalidates dependent planning projections.
+
+### `PTR-PLAN-04` {#ptr-plan-04}
+
+_contracts → contracts_
+
+Main explicitly opens a fresh contracts entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections. Use runtime stage-answer rework; requirement changes retain the original human boundary.
+
+- `planning_rework_scope` [evidence_attestation] — The current packet-mode S3/S4 entry keeps its authorized locked REQ; the named Main request supplies the professional reason and the original Writer invalidates dependent planning projections.
+
+### `PTR-PLAN-05` {#ptr-plan-05}
+
+_tasks → design_
+
+Main explicitly opens a fresh design entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections. Use runtime stage-answer rework; requirement changes retain the original human boundary.
+
+- `planning_rework_scope` [evidence_attestation] — The current packet-mode S3/S4 entry keeps its authorized locked REQ; the named Main request supplies the professional reason and the original Writer invalidates dependent planning projections.
+
+### `PTR-PLAN-06` {#ptr-plan-06}
+
+_tasks → contracts_
+
+Main explicitly opens a fresh contracts entry within the original locked REQ for a named professional reason; preserve accepted history and invalidate dependent planning projections. Use runtime stage-answer rework; requirement changes retain the original human boundary.
+
+- `planning_rework_scope` [evidence_attestation] — The current packet-mode S3/S4 entry keeps its authorized locked REQ; the named Main request supplies the professional reason and the original Writer invalidates dependent planning projections.
+
+### `PTR-PLAN-07` {#ptr-plan-07}
+
+_tasks → tasks_
+
+Main explicitly opens a fresh tasks entry within the original locked REQ for a named professional reason; preserve REQ/S2/S3 frozen inputs and accepted history; invalidate only tasks, dispatch plans and downstream review projections. Use runtime stage-answer rework; requirement changes retain the original human boundary.
+
+- `planning_rework_scope` [evidence_attestation] — The current packet-mode S3/S4 entry keeps its authorized locked REQ; the named Main request supplies the professional reason and the original Writer invalidates dependent planning projections.
 
 ## Global transitions
 

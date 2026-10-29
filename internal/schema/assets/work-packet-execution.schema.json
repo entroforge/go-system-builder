@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/work-packet-execution.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet",
+    "execution_root",
+    "execution_generation",
+    "owner",
+    "authoring_path",
+    "frozen_input_root"
+  ],
+  "properties": {
+    "packet": {
+      "$ref": "work-packet.schema.json"
+    },
+    "execution_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authoring_path": {
+      "enum": [
+        ".claude/submissions/stage-answer.json",
+        ".loop-submissions/stage-answer.json"
+      ]
+    },
+    "frozen_input_root": {
+      "const": ".claude/inputs"
+    }
+  }
+}

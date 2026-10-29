@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"strings"
 )
 
@@ -13,12 +14,12 @@ func Advisory(b Board) []string {
 	}
 	ready, reported, waiting := []string{}, []string{}, []string{}
 	for _, row := range b.Rows {
-		switch row.State {
-		case "ready", "queued":
+		switch {
+		case row.State == workstate.Pending && row.Eligible:
 			ready = append(ready, row.Task.ID)
-		case "reported":
+		case row.DeliveryRecorded && !row.Integrated:
 			reported = append(reported, row.Task.ID)
-		case "waiting", "blocked":
+		case row.State == workstate.Blocked || row.State == workstate.Pending && !row.Eligible:
 			waiting = append(waiting, row.Task.ID+": "+row.Reason)
 		}
 	}

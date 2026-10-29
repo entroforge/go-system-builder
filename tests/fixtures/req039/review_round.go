@@ -42,6 +42,37 @@ var reviewPlanFixtureIDs = []struct {
 	{"claim-e2e-1", "assignment-e2e-1", "e2e", "agent-e2e-1"},
 }
 
+// A frozen subject must have real bytes even when the test seeds upstream
+// review facts directly. Prefer the actual registered task in a stage chain;
+// never silently fill a missing registered source.
+func reviewFrozenTaskSubject(t *testing.T, root string, state map[string]any) map[string]any {
+	t.Helper()
+	path := "docs/dev/tasks/TASK-039-01-loop-definition.md"
+	registered := false
+	if documents, ok := state["documents"].([]any); ok {
+		for _, raw := range documents {
+			doc, _ := raw.(map[string]any)
+			if doc["kind"] == "task" {
+				path, _ = doc["path"].(string)
+				registered = true
+				break
+			}
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(root, path))
+	if os.IsNotExist(err) && !registered {
+		data = []byte("# TASK-039-01\n\n> Status: complete\n> Version: v1.0.2\n\nReviewed fixture delivery.\n")
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		err = os.WriteFile(filepath.Join(root, path), data, 0644)
+	}
+	if err != nil {
+		t.Fatalf("freeze original fixture TASK %s: %v", path, err)
+	}
+	return map[string]any{"path": path, "sha256": Sha256Hex(data), "kind": "task"}
+}
+
 // SeedReviewPlanRound registers a minimal ReviewPlan in the state and writes
 // the pinned plan file under <root>/.claude/review/plans/. The phase moves to
 // running. Reviewer agents are registered as working so review-result submit
@@ -72,10 +103,8 @@ func SeedReviewPlanRound(t *testing.T, root string, state map[string]any) {
 	planBody := map[string]any{
 		"schema_version": "1.0.0", "review_plan_id": "review-plan-fixture-1",
 		"review_round": round, "baseline_generation": 1,
-		"frozen_subjects": []any{
-			map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
-		},
-		"claims": claims, "assignments": assignments,
+		"frozen_subjects": []any{reviewFrozenTaskSubject(t, root, state)},
+		"claims":          claims, "assignments": assignments,
 		"e2e_coverage_state":              "regression_available",
 		"verification_artifact_workspace": nil,
 		"dispatch_capacity_policy":        "coverage_complete",
@@ -309,9 +338,7 @@ func SeedCleanRoundProjection(t *testing.T, root string, state map[string]any) {
 	planBody := map[string]any{
 		"schema_version": "1.0.0", "review_plan_id": "review-plan-fixture-1",
 		"review_round": round, "baseline_generation": 1,
-		"frozen_subjects": []any{
-			map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "sha256": strings.Repeat("1", 64), "kind": "task"},
-		},
+		"frozen_subjects": []any{reviewFrozenTaskSubject(t, root, state)},
 		"claims": []any{
 			map[string]any{
 				"claim_id": "claim-qa-1", "lens": "qa", "target": "internal/example",

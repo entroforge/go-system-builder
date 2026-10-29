@@ -46,10 +46,16 @@ func TestStopIdleRecoveryUsesAssignmentKind(t *testing.T) {
 		if strings.Contains(strings.Join(d.Recovery, " "), "review-result") {
 			t.Fatal("builder directed to ReviewResult")
 		}
-		agent.ReviewAssignment = true
-		d = stopIdleBlock(event, agent)
-		if !strings.Contains(strings.Join(d.Recovery, " "), "review-result") {
-			t.Fatal("review assignment missing canonical result path")
+		for _, questionnaire := range []policy.AgentContext{
+			{ID: "reviewer", AssignmentID: "assignment-review", ReviewAssignment: true},
+			{ID: "investigator", AssignmentID: "assignment-investigate", HypothesisResultAssignment: true},
+			{ID: "document-reviewer", DocumentReviewAssignment: true},
+		} {
+			d = stopIdleBlock(event, &questionnaire)
+			feedback := strings.Join(d.Recovery, " ")
+			if !strings.Contains(feedback, "exact issued") || strings.Contains(feedback, "PLAN_REPORT") || strings.Contains(feedback, "runtime review-result submit") {
+				t.Fatalf("%s questionnaire recovery retained generic PLAN or manual CLI: %s", event, feedback)
+			}
 		}
 	}
 }

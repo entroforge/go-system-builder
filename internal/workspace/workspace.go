@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/processtree"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 )
@@ -30,26 +33,48 @@ type ExecutionRegistry struct {
 	BoundHead  string               `json:"bound_head"`
 	Executions map[string]Execution `json:"executions"`
 }
+
+// NativeDeliveryPurpose marks a Git source observed at native SubagentStop.
+// It is a delivery fact for original consumers, never a prepared Worker/session.
+const NativeDeliveryPurpose = "native_delivery"
+
 type Execution struct {
-	CheckLocation      string            `json:"check_location,omitempty"`
-	ReworkRef          string            `json:"rework_ref,omitempty"`
-	PlatformSessionID  string            `json:"platform_session_id,omitempty"`
-	AssignmentID       string            `json:"assignment_id"`
-	RuntimeID          string            `json:"runtime_id"`
-	BaselineGeneration int               `json:"baseline_generation"`
-	Generation         int               `json:"execution_generation"`
-	AgentID            string            `json:"agent_id"`
-	Path               string            `json:"worktree_path"`
-	Branch             string            `json:"branch"`
-	TargetBranch       string            `json:"target_branch"`
-	BaseCommit         string            `json:"base_commit"`
-	Status             string            `json:"status"`
-	WritePaths         []string          `json:"write_paths"`
-	Checks             []string          `json:"required_checks"`
-	Inputs             map[string]string `json:"inputs"`
-	BootstrapSHA256    string            `json:"bootstrap_sha256,omitempty"`
-	DeliveryRef        string            `json:"delivery_ref,omitempty"`
-	DeliverySHA256     string            `json:"delivery_sha256,omitempty"`
+	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
+	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
+	ToolCheckReceipts      []checkexec.ToolReceipt           `json:"tool_check_receipts,omitempty"`
+	WorkerChecks           []assignmentrecord.WorkerCheck    `json:"worker_checks,omitempty"`
+	OwnedCheckReceipts     []OwnedCheckReceipt               `json:"owned_check_receipts,omitempty"`
+	CheckProfiles          []checkexec.Profile               `json:"check_profiles,omitempty"`
+	Purpose                string                            `json:"purpose,omitempty"`
+	WorkPacketID           string                            `json:"work_packet_id,omitempty"`
+	StageEntry             *int                              `json:"stage_entry,omitempty"`
+	CheckLocation          string                            `json:"check_location,omitempty"`
+	ReworkRef              string                            `json:"rework_ref,omitempty"`
+	PlatformSessionID      string                            `json:"platform_session_id,omitempty"`
+	AssignmentID           string                            `json:"assignment_id"`
+	RuntimeID              string                            `json:"runtime_id"`
+	BaselineGeneration     int                               `json:"baseline_generation"`
+	Generation             int                               `json:"execution_generation"`
+	AgentID                string                            `json:"agent_id"`
+	Path                   string                            `json:"worktree_path"`
+	Branch                 string                            `json:"branch"`
+	TargetBranch           string                            `json:"target_branch"`
+	BaseCommit             string                            `json:"base_commit"`
+	Status                 string                            `json:"status"`
+	WritePaths             []string                          `json:"write_paths"`
+	Checks                 []string                          `json:"required_checks"`
+	Inputs                 map[string]string                 `json:"inputs"`
+	BootstrapSHA256        string                            `json:"bootstrap_sha256,omitempty"`
+	DeliveryRef            string                            `json:"delivery_ref,omitempty"`
+	DeliverySHA256         string                            `json:"delivery_sha256,omitempty"`
+}
+
+// OwnedCheckReceipt is a separately indexed owner-run check receipt. Its
+// worker_check_index belongs only to the immutable Assignment closing
+// contract; it never aliases Main RequiredChecks indexes.
+type OwnedCheckReceipt struct {
+	WorkerCheckIndex int                   `json:"worker_check_index"`
+	Receipt          checkexec.ToolReceipt `json:"receipt"`
 }
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -187,6 +212,23 @@ func (b *ExecutionRegistry) Validate(ctx context.Context, root string) error {
 	}
 	return nil
 }
+
+// ValidateRecoveryCheckout checks the original registry against the checkout
+// and the sealed recovery candidate. The damaged active Runtime cannot supply
+// authority during reviewed recovery; ordinary Validate still reads it.
+func (b *ExecutionRegistry) ValidateRecoveryCheckout(ctx context.Context, root string, candidate map[string]any) error {
+	if err := b.ValidateAuthority(candidate); err != nil {
+		return err
+	}
+	actual, err := inspectCheckout(ctx, root)
+	if err != nil {
+		return err
+	}
+	if actual.MainRoot != b.MainRoot || actual.CommonDir != b.CommonDir || actual.Branch != b.Branch {
+		return fmt.Errorf("recovery workspace differs from the original registry; do not auto-checkout")
+	}
+	return nil
+}
 func (b *ExecutionRegistry) Execution(id, runtimeID string, generation int) (Execution, bool) {
 	e, ok := b.Executions[id]
 	return e, ok && e.RuntimeID == runtimeID && e.BaselineGeneration == generation
@@ -208,7 +250,21 @@ func ControlFile(path string) bool {
 	case ".claude/loop-state.json", ".claude/loop-events.jsonl", ".claude/loop-metrics.json":
 		return true
 	}
-	for _, prefix := range []string{".claude/evidence/", ".claude/workgroups/", ".claude/workspace-launch/", ".claude/review/", ".claude/hook"} {
+	if strings.HasPrefix(p, ".claude/worktree-reminders/") {
+		name := strings.TrimPrefix(p, ".claude/worktree-reminders/")
+		if strings.HasSuffix(name, ".txt") {
+			key := strings.TrimSuffix(name, ".txt")
+			decoded, err := hex.DecodeString(key)
+			if len(key) == 64 && err == nil && hex.EncodeToString(decoded) == key {
+				return true
+			}
+		}
+		// The original reminder publisher uses os.CreateTemp(".delivery-").
+		if suffix, ok := strings.CutPrefix(name, ".delivery-"); ok && suffix != "" && strings.Trim(suffix, "0123456789") == "" {
+			return true
+		}
+	}
+	for _, prefix := range []string{".claude/evidence/", ".claude/workgroups/", ".claude/workspace-launch/", ".claude/runtime-checkpoints/", ".claude/assignment-context/", ".claude/review/", ".claude/hook"} {
 		if strings.HasPrefix(p, prefix) {
 			return true
 		}
@@ -224,6 +280,23 @@ func (b *ExecutionRegistry) CleanInputs(ctx context.Context) error {
 	}
 	var dirty []string
 	rows := strings.Split(out, "\x00")
+	normalUntracked := map[string]bool{}
+	seen := map[string]bool{}
+	for i := 0; i < len(rows); i++ {
+		row := rows[i]
+		if len(row) >= 4 {
+			path := row[3:]
+			if seen[path] {
+				normalUntracked[path] = false
+			} else {
+				seen[path] = true
+				normalUntracked[path] = row[:2] == "??"
+			}
+		}
+		if len(row) >= 3 && strings.ContainsAny(row[:2], "RC") {
+			i++
+		}
+	}
 	for i := 0; i < len(rows); i++ {
 		row := rows[i]
 		if len(row) >= 3 && strings.ContainsAny(row[:2], "RC") {
@@ -237,6 +310,15 @@ func (b *ExecutionRegistry) CleanInputs(ctx context.Context) error {
 			continue
 		}
 		p := row[3:]
+		if normalUntracked[p] && metrics.IsTemporaryPath(p) {
+			recognized, err := metrics.RecognizeTemporary(ctx, b.MainRoot, p)
+			if err != nil {
+				return fmt.Errorf("inspect metrics temporary: %w", err)
+			}
+			if recognized {
+				continue
+			}
+		}
 		if ControlFile(p) {
 			continue
 		}
@@ -299,8 +381,17 @@ func (b *ExecutionRegistry) Plan(ctx context.Context, state map[string]any, id, 
 	if old, ok := b.Executions[id]; ok {
 		gen = old.Generation + 1
 	}
+	for _, old := range b.History {
+		if old.AssignmentID == id && old.Generation >= gen {
+			gen = old.Generation + 1
+		}
+	}
 	key := fmt.Sprintf("%s-g%d-e%d", id, Generation(state), gen)
 	e := Execution{AssignmentID: id, RuntimeID: RuntimeID(state), BaselineGeneration: Generation(state), Generation: gen, AgentID: agent, Path: filepath.Join(b.MainRoot, ".worktrees", key), Branch: "codex/" + key, TargetBranch: b.Branch, BaseCommit: head, Status: "preparing", WritePaths: append([]string{}, scope...), Checks: append([]string{}, checks...), Inputs: map[string]string{}}
+	e, err = b.bindAssignmentRecord(state, e)
+	if err != nil {
+		return Execution{}, err
+	}
 	for _, p := range inputPaths {
 		clean := filepath.Clean(p)
 		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
@@ -372,6 +463,44 @@ func (b *ExecutionRegistry) PublishPointer(e Execution) error {
 // ValidateInputs detects control-plane artifact drift even for ignored files
 // which do not appear in the committed Worker tree.
 func (b *ExecutionRegistry) ValidateInputs(e Execution) error {
+	location := e.CheckLocation
+	if location == "" {
+		location = "worker"
+	}
+	if len(e.WorkerChecks) > 64 {
+		return fmt.Errorf("frozen WorkerChecks exceed their bounded size")
+	}
+	if err := checkexec.ValidateProfiles(e.CheckProfiles, e.Checks, location); err != nil {
+		return err
+	}
+	workerCommands := make([]string, len(e.WorkerChecks))
+	workerProfiles := make([]checkexec.Profile, len(e.WorkerChecks))
+	for i, check := range e.WorkerChecks {
+		if check.Index != i || check.Command != check.Profile.Command || check.Profile.CheckIndex != i {
+			return fmt.Errorf("WorkerChecks are not the frozen contiguous owner-check projection")
+		}
+		workerCommands[i] = check.Command
+		workerProfiles[i] = check.Profile
+	}
+	if len(workerProfiles) != 0 {
+		if err := checkexec.ValidateProfiles(workerProfiles, workerCommands, "worker"); err != nil {
+			return fmt.Errorf("frozen WorkerChecks: %w", err)
+		}
+	}
+	for _, profile := range e.CheckProfiles {
+		for _, ref := range append(append([]checkexec.FileRef{}, profile.Dependencies...), profile.Fixtures...) {
+			if e.Inputs[ref.Path] != ref.SHA256 {
+				return fmt.Errorf("check profile lacks original frozen source: %s", ref.Path)
+			}
+		}
+	}
+	for _, check := range e.WorkerChecks {
+		for _, ref := range append(append([]checkexec.FileRef{}, check.Profile.Dependencies...), check.Profile.Fixtures...) {
+			if e.Inputs[ref.Path] != ref.SHA256 {
+				return fmt.Errorf("WorkerCheck profile lacks original frozen source: %s", ref.Path)
+			}
+		}
+	}
 	for path, expected := range e.Inputs {
 		resolved, err := Canonical(filepath.Join(b.MainRoot, filepath.FromSlash(path)))
 		if err != nil {
@@ -425,6 +554,11 @@ func (b *ExecutionRegistry) ValidateExecution(ctx context.Context, e Execution, 
 	}
 	if e.BootstrapSHA256 != "" {
 		if err := b.ValidateBootstrap(e); err != nil {
+			return err
+		}
+	}
+	if e.BootstrapSHA256 != "" {
+		if err := b.ValidateDispatchContext(e); err != nil {
 			return err
 		}
 	}
@@ -539,7 +673,23 @@ func ResolveControl(ctx context.Context, root string) (string, error) {
 		return "", fmt.Errorf("worker pointer does not identify its bound main workspace")
 	}
 	e, ok := b.Execution(p.ID, RuntimeID(snapshot.State), Generation(snapshot.State))
-	if !ok || e.AssignmentID != p.ID || e.Path != worker || e.RuntimeID != p.Runtime || e.Generation != p.Gen || e.Status != "ready" || e.TargetBranch != b.Branch {
+	retiredReview := false
+	if !ok || e.Path != worker || e.Generation != p.Gen {
+		// A retired S5 directory still locates its original controller for
+		// receipts and cancellation notices. Domain consumers keep deciding
+		// whether an answer is current or an already received replay.
+		for _, historical := range b.History {
+			if historical.Purpose != DocumentReviewPurpose || historical.Status != "retired" || historical.AssignmentID != p.ID || historical.Path != worker || historical.RuntimeID != p.Runtime || historical.RuntimeID != RuntimeID(snapshot.State) || historical.BaselineGeneration != Generation(snapshot.State) || historical.Generation != p.Gen {
+				continue
+			}
+			if _, err := DocumentReviewPacket(snapshot.State, historical); err != nil {
+				return "", err
+			}
+			e, ok, retiredReview = historical, true, true
+			break
+		}
+	}
+	if !ok || e.AssignmentID != p.ID || e.Path != worker || e.RuntimeID != p.Runtime || e.Generation != p.Gen || (e.Status != "ready" && !retiredReview) || e.TargetBranch != b.Branch {
 		return "", fmt.Errorf("stale or unregistered worker pointer")
 	}
 	// A second control state is not a fallback: it is an ambiguous authority.
@@ -592,8 +742,45 @@ func (b *ExecutionRegistry) ValidateAuthority(state map[string]any) error {
 		return fmt.Errorf("execution registry differs from REQ-bound project root/development branch")
 	}
 	for _, e := range b.Executions {
+		if err := ValidateAssignmentRecord(state, e); err != nil {
+			return err
+		}
+		if len(e.WorkerChecks) > 64 {
+			return fmt.Errorf("execution WorkerChecks exceed their bounded size")
+		}
 		if e.TargetBranch != b.Branch {
 			return fmt.Errorf("execution %s target differs from REQ-bound development branch", e.AssignmentID)
+		}
+		if len(e.ToolCheckReceipts) > 64 {
+			return fmt.Errorf("execution tool receipt index exceeds its bounded size")
+		}
+		if len(e.OwnedCheckReceipts) > 1024 {
+			return fmt.Errorf("execution owned-check receipt index exceeds its bounded size")
+		}
+		for _, ref := range e.ToolCheckReceipts {
+			if ref.Binding != CheckBinding(e) || e.CheckLocation == "main" {
+				return fmt.Errorf("registered tool receipt differs from execution responsibility")
+			}
+			found := false
+			for _, p := range e.CheckProfiles {
+				if p.Command == ref.Command && p.Digest() == ref.ProfileDigest {
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("registered tool receipt differs from original profile")
+			}
+		}
+		seenOwnedSHA, seenOwnedPath := map[string]bool{}, map[string]bool{}
+		for _, row := range e.OwnedCheckReceipts {
+			if row.WorkerCheckIndex < 0 || row.WorkerCheckIndex >= len(e.WorkerChecks) {
+				return fmt.Errorf("registered owned-check receipt index is outside the original WorkerChecks")
+			}
+			check := e.WorkerChecks[row.WorkerCheckIndex]
+			if row.Receipt.Binding != CheckBinding(e) || row.Receipt.Command != check.Command || row.Receipt.ProfileDigest != check.Profile.Digest() || row.Receipt.Path == "" || row.Receipt.SHA256 == "" || seenOwnedSHA[row.Receipt.SHA256] || seenOwnedPath[row.Receipt.Path] {
+				return fmt.Errorf("registered owned-check receipt differs from original WorkerCheck")
+			}
+			seenOwnedSHA[row.Receipt.SHA256], seenOwnedPath[row.Receipt.Path] = true, true
 		}
 	}
 	return nil

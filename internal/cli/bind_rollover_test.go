@@ -17,6 +17,13 @@ import (
 )
 
 func TestREQBindArchivesControllerTouchedInactiveRuntimeAndStartsAtRevisionZero(t *testing.T) {
+	for _, rotated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rotated=%t", rotated), func(t *testing.T) { testREQBindArchivesInactiveRuntime(t, rotated) })
+	}
+}
+
+func testREQBindArchivesInactiveRuntime(t *testing.T, rotated bool) {
+	t.Helper()
 	root := newBindTestRoot(t)
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
@@ -28,8 +35,21 @@ func TestREQBindArchivesControllerTouchedInactiveRuntimeAndStartsAtRevisionZero(
 		"last_event_id": "evt-milestone-r8",
 	}
 	writeJSONMap(t, statePath, state)
-	if err := os.WriteFile(journalPath, validArchiveJournalForCLI("loop-inactive", 8, "evt-milestone-r8"), 0o644); err != nil {
+	completeJournal := validArchiveJournalForCLI("loop-inactive", 8, "evt-milestone-r8")
+	if err := os.WriteFile(journalPath, completeJournal, 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if rotated {
+		lines := bytes.SplitAfter(completeJournal, []byte("\n"))
+		for path, data := range map[string][]byte{
+			journalPath + ".archive.3.jsonl": bytes.Join(lines[:3], nil),
+			journalPath + ".archive.6.jsonl": bytes.Join(lines[3:6], nil),
+			journalPath:                      bytes.Join(lines[6:], nil),
+		} {
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -42,8 +62,12 @@ func TestREQBindArchivesControllerTouchedInactiveRuntimeAndStartsAtRevisionZero(
 		t.Fatalf("req bind must accept a controller-touched inactive runtime: code=%d stderr=%s", code, stderr.String())
 	}
 	bound := readJSONMap(t, statePath)
-	if got := bound["revision"]; got != float64(0) {
-		t.Fatalf("bound runtime revision = %v, want 0", got)
+	wantCurrentRevision := float64(0)
+	if runtime.PacketEnabled(bound) {
+		wantCurrentRevision = 1
+	}
+	if got := bound["revision"]; got != wantCurrentRevision {
+		t.Fatalf("current revision after original bind plus S2 preparation = %v, want %v", got, wantCurrentRevision)
 	}
 	if got := bound["runtime_id"]; got != "loop-REQ-099" {
 		t.Fatalf("bound runtime id = %v, want loop-REQ-099", got)
@@ -67,8 +91,12 @@ func TestREQBindArchivesControllerTouchedInactiveRuntimeAndStartsAtRevisionZero(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(journal) != 0 {
-		t.Fatalf("bound runtime journal must start empty, got %q", journal)
+	if runtime.PacketEnabled(bound) {
+		if lines := strings.Split(strings.TrimSpace(string(journal)), "\n"); len(lines) != 1 || !strings.Contains(lines[0], "PACKET-ISSUE") {
+			t.Fatalf("new Runtime journal should contain only its S2 preparation, not the archived source: %q", journal)
+		}
+	} else if len(journal) != 0 {
+		t.Fatalf("non-packet bind journal must start empty: %q", journal)
 	}
 	archives, err := filepath.Glob(filepath.Join(root, ".claude", "runtime-archive", "loop-inactive-r8-*"))
 	if err != nil {
@@ -81,8 +109,12 @@ func TestREQBindArchivesControllerTouchedInactiveRuntimeAndStartsAtRevisionZero(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(archivedJournal), "evt-milestone-r8") {
-		t.Fatalf("bind archive did not preserve pre-bind journal: %s", archivedJournal)
+	if !bytes.Equal(archivedJournal, completeJournal) || receipt["source_journal_sha256"] != sha256Hex(completeJournal) {
+		t.Fatalf("bind archive/receipt did not preserve the complete pre-bind journal: receipt=%v journal=%s", receipt, archivedJournal)
+	}
+	segments, err := runtime.JournalSegmentPaths(journalPath)
+	if err != nil || len(segments) != 0 {
+		t.Fatalf("bound Runtime inherited bootstrap segments: %v err=%v", segments, err)
 	}
 }
 
@@ -469,8 +501,16 @@ func TestREQBindRecoversInterruptedRolloverBeforeBinding(t *testing.T) {
 		t.Fatalf("pending rollover marker still exists: %v", err)
 	}
 	journal := mustReadFile(t, journalPath)
-	if len(journal) != 0 {
-		t.Fatalf("journal = %q, want empty journal for the new bound runtime", journal)
+	bound := readJSONMap(t, statePath)
+	if bound["binding_receipt"].(map[string]any)["target_revision"] != float64(0) {
+		t.Fatal("original binding boundary no longer starts at zero")
+	}
+	if runtime.PacketEnabled(bound) {
+		if lines := strings.Split(strings.TrimSpace(string(journal)), "\n"); len(lines) != 1 || !strings.Contains(lines[0], "PACKET-ISSUE") {
+			t.Fatalf("new bound Runtime journal must contain only original S2 preparation: %q", journal)
+		}
+	} else if len(journal) != 0 {
+		t.Fatalf("non-packet new bound Runtime journal must be empty: %q", journal)
 	}
 }
 

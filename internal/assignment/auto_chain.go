@@ -35,9 +35,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // AutoChainOutcome reports what the auto-chain observed and did.
@@ -129,7 +132,11 @@ func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
 	if mode != "plan_checkpoint" {
 		return AutoChainOutcome{AgentID: in.AgentID, Reason: "dispatch_mode " + mode + " is not plan_checkpoint (auto-chain is plan_checkpoint only)"}, nil
 	}
-	currentState, _ := agent["state"].(string)
+	projection, err := workstate.AgentProjection(agent, fmt.Sprint(snapshot.State["schema_version"]))
+	if err != nil {
+		return AutoChainOutcome{}, fmt.Errorf("auto-chain: resolve Agent activity: %w", err)
+	}
+	currentState := projection.Activity
 	activationRef, _ := agent["activation_ref"].(string)
 	agentDefRef, _ := agent["definition_ref"].(string)
 	teamID, _ := agent["team_id"].(string)
@@ -156,6 +163,27 @@ func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
 	}
 	envelopeSource.AgentDefinitionRef = agentDefRef
 	envelopeSource.AgentID = in.AgentID
+	record, canonical, err := assignmentrecord.ForOwner(snapshot.State, in.AgentID)
+	if err != nil {
+		return AutoChainOutcome{}, err
+	}
+	if canonical {
+		ref := record.Reference()
+		envelopeSource.AssignmentRecord = &ref
+		sha, err := record.Digest()
+		if err != nil {
+			return AutoChainOutcome{}, err
+		}
+		envelopeSource.AssignmentRecordSHA256 = sha
+		if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
+			return assignmentinputs.Read(in.Root, ref)
+		}); err != nil {
+			return AutoChainOutcome{}, err
+		}
+		envelopeSource.WritePaths = append([]string(nil), record.EffectiveWritePaths...)
+		envelopeSource.OutputPaths = nil
+		envelopeSource.SkillRefs = append([]string(nil), record.SkillRefs...)
+	}
 	runtimeID := runtimeIDFromSnapshot(snapshot)
 	workgroupID := teamID
 	expectedRevision := in.ExpectedRevision
@@ -199,7 +227,11 @@ func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
 	case "understanding_submitted", "activated":
 		// Resume below at the matching step.
 	default:
-		return AutoChainOutcome{AgentID: in.AgentID, FinalState: currentState, Reason: "agent state is " + currentState + " — auto-chain is idempotent; nothing to do"}, nil
+		finalState := currentState
+		if workstate.Unified(snapshot.State["schema_version"]) {
+			finalState = string(projection.Status)
+		}
+		return AutoChainOutcome{AgentID: in.AgentID, FinalState: finalState, Reason: "original activity is " + currentState + " — auto-chain is idempotent; nothing to do"}, nil
 	}
 	var activationID, correlationID string
 	if currentState == "reading" || currentState == "understanding_submitted" {
@@ -285,10 +317,14 @@ func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
 	}); err != nil {
 		return AutoChainOutcome{}, fmt.Errorf("auto-chain: work_started: %w", err)
 	}
+	finalState := "working"
+	if workstate.Unified(snapshot.State["schema_version"]) {
+		finalState = string(workstate.Active)
+	}
 	return AutoChainOutcome{
 		Chained:      true,
 		AgentID:      in.AgentID,
-		FinalState:   "working",
+		FinalState:   finalState,
 		ActivationID: activationID,
 		Note:         "plan_checkpoint auto-activation: chained readback_submitted -> activation_sent -> work_started in one PostToolUse(SendMessage) observation",
 	}, nil
@@ -393,6 +429,18 @@ func legacyEnvelopeOverride(root, statePath, journalPath, agentID string) (*Acti
 	}
 	if ref, _ := agent["activation_ref"].(string); ref != "" {
 		return nil, nil
+	}
+	record, canonical, err := assignmentrecord.ForOwner(snapshot.State, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if canonical {
+		ref := record.Reference()
+		sha, err := record.Digest()
+		if err != nil {
+			return nil, err
+		}
+		return &ActivationSourceEntry{AgentID: agentID, AgentDefinitionRef: record.AgentDefinition.Ref, SkillRefs: record.SkillRefs, WritePaths: record.EffectiveWritePaths, AssignmentRecord: &ref, AssignmentRecordSHA256: sha}, nil
 	}
 	var taskID string
 	if taskIDs, _ := agent["task_ids"].([]any); len(taskIDs) > 0 {

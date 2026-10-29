@@ -44,9 +44,9 @@ Project-instance files such as `AGENTS.md`, `docs/project-map.md`, `docs/require
 - No `loop-harness req bind` on a human-locked REQ, no Engineering Loop and no contract lock, formal task split, Agent Team, Builder dispatch, or implementation branch.
 - Engineering Loop binding and Claude `/loop` are independent lifetimes. `/loop` only delivers the Layer 2 Wake-up Prompt; `req bind` supplies engineering authorization, so no separate `/goal` is required.
 - No locked contract, no Builder execution.
-- No approved task read-back, no sub agent activation.
-- No Document Verifier approval, no Builder activation.
+- Native subagents work from an explicit professional responsibility and its original inputs; no generic read-back or activation handshake is required.
+- Implementation requires the accepted document-verification baseline; explicit domain approvals and frozen legacy recovery retain their own conditions.
 - No Delivery Verifier, QA, and E2E Browser evidence, no loop completion.
 - No clean full-depth Delivery + QA + E2E review round, no release audit.
-- Delivery Verifier / QA / E2E Browser findings enter S8 root-cause investigation before becoming accepted canonical BUGs for Builder repair.
+- A sealed S7 ObservationBatch enters S8 investigation; an InvestigationCase and an approved repair Contract establish the subsequent S9 repair responsibility.
 - No human release approval, no squash merge to `master/main`.

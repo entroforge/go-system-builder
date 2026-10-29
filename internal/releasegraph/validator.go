@@ -44,6 +44,8 @@ var markdownPathPattern = regexp.MustCompile("`([A-Za-z0-9_./-]+\\.(md|json|sh|y
 // informational ("see the embedded schema") and must not be flagged as
 // dangling references.
 var embeddedAssetPatterns = []string{
+	"project-conventions.schema.json",
+	"task-conventions.schema.json",
 	"loop-state.schema.json",
 	"loop-state.example.json",
 	"loop-event.schema.json",
@@ -75,6 +77,7 @@ var disallowedReleasePathPrefixes = []string{
 }
 
 var disallowedInstanceGlobs = []string{
+	"docs/rules/project-conventions.json",
 	"docs/dev/tasks/TASK-[0-9]*.md",
 	"docs/requirements/REQ-[0-9]*.md",
 	"docs/control/loop-definition.json.bak-*",
@@ -270,11 +273,21 @@ func shouldSkipPathReference(raw string) bool {
 	if strings.HasPrefix(raw, ".claude/") {
 		return true
 	}
+	// Native stage answers are created in the target project at runtime, not
+	// shipped in a release. Clean the path first so an escape from this root
+	// cannot exempt an unrelated static dependency.
+	if strings.HasPrefix(filepath.ToSlash(filepath.Clean(raw)), ".loop-submissions/") {
+		return true
+	}
 	// The project map is created by the installer from
 	// docs/project-map-template.md. It is intentionally absent from the
 	// distributable template because it is instance-specific, but methodology
 	// Skills must still name the path agents consume after initialization.
 	if raw == "docs/project-map.md" {
+		return true
+	}
+	// Optional project-specific index, authored from the shipped empty template.
+	if raw == "docs/rules/project-conventions.json" {
 		return true
 	}
 	// Live Design Foundation files are copied from *-template.md in the
@@ -336,6 +349,7 @@ var RequiredDocumentAssets = []string{
 	"docs/control/agent-protocol.md",
 	"docs/project.yaml",
 	"docs/project-map-template.md",
+	"docs/rules/project-conventions-template.json",
 	"docs/requirements/REQ-template.md",
 	"docs/design/tokens/README.md",
 	"docs/design/tokens/tokens.json",

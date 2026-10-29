@@ -80,7 +80,7 @@ Every page HTML file carries a 4-field current-truth header in a dark gradient
 | 3 | 路由 | route + slot label | `/layout/fund — overview` (optional on dialogs/wizards) |
 | 4 | index 链接 | `<a href="index.html">↩ 模块入口</a>` | link back to module hub |
 
-The four tokens (`设计代数 / 更新 / 路由 / index 链接`) are machine-checked as fixed substrings in every page HTML — a page missing any of them fails the UI prototype gate with the missing tokens named.
+Review these header fields as part of the prototype review, applying the route and hub-link exceptions above. The UI prototype gate does not machine-check these four fixed substrings.
 
 REQ ID, lock status, owner, and related contracts are explicitly **dropped** — they are noise given the "only final version" rule, and they live elsewhere (REQ file, `CONTRACTS-{id}.md` index, git history).
 

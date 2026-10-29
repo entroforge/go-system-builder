@@ -28,7 +28,7 @@ This Skill identifies affected artifacts and marks evidence; it does not approve
 2. Classify each change by type: requirement, design, contract, task, implementation, test, configuration, database, dependency, documentation_only.
 3. Invoke `loop-harness impact analyze --root . --changed <path>...` to compute impacted evidence from the runtime traceability graph.
 4. Apply the Always-Invalidates responsibilities for each change type (e.g. contract change always invalidates delivery/integration evidence scoped to that contract).
-5. Expand with Conditional Expansion using scope and dependency closure (UI, integration, security, migration, regression as applicable).
+5. Expand with Conditional Expansion using scope and dependency closure (UI, integration, security, migration, regression as applicable). Follow the actual providers/consumers, shared models, API/event/auth/configuration and journey/data paths in existing approved materials. REQ prototype links are discovery hints. Removing an edge or changing ownership still requires inspecting previously known consumers; do not erase them from impact by looking only at the new graph. No mandatory module graph or unconditional whole-project fallback is required.
 6. Traverse both directions from each changed artifact — forward to downstream evidence, reverse to upstream specifications. Store source/target IDs, relation type, rule ID, decision, rationale per edge.
 7. Decide new status per impacted evidence: `invalid` (changed or integrity conflict), `superseded` (replaced, retained for audit), `retain` (requires positive proof — absence of a known path is not proof of no impact).
 8. Escalate conservatively when traceability is missing, behavior crosses trust boundaries, provenance is unknown, fingerprints drifted, or security/migration impact is uncertain. Narrowest defensible level: assignment → workgroup → review round → baseline (pause for human).
@@ -45,7 +45,7 @@ This Skill identifies affected artifacts and marks evidence; it does not approve
 
 ## Stop Conditions
 Stop immediately and surface to the human if any of:
-- A changed artifact has no traceability links.
+- Missing traceability: Main restores the actual relationship sources or arranges bounded investigation; do not silently exclude consumers. This alone does not create a new human approval requirement.
 - Impact cannot be bounded (escalate to baseline and pause).
 - Working-tree fingerprints disagree with the runtime snapshot.
 - A `documentation_only` change cannot prove no normative clause or executable instruction changed.

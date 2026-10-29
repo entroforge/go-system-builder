@@ -73,6 +73,9 @@ func RenderWithRoot(root, event string, decision policy.Decision, rt policy.Runt
 // PreToolUse and stop-control events intentionally keep their existing wire
 // shapes even if a caller supplies context.
 func RenderWithAdditionalContext(root, event string, decision policy.Decision, rt policy.RuntimeContext, additionalContext string) ([]byte, int, error) {
+	if (event == "SessionStart" || event == "SubagentStart") && additionalContext == "" && decision.Guidance != nil {
+		additionalContext = BuildLifecycleAdditionalContext(event, policy.Input{Runtime: rt}, decision, nil)
+	}
 	switch decision.Decision {
 	case "allow":
 		if decision.Guidance == nil {
@@ -173,9 +176,12 @@ func formatGuidance(guidance policy.Guidance) string {
 	b.WriteString("Objective: ")
 	b.WriteString(guidance.Objective)
 	b.WriteString(". ")
-	b.WriteString("Next: ")
-	b.WriteString(guidance.Action)
-	b.WriteString(". Read ")
+	if strings.TrimSpace(guidance.Action) != "" {
+		b.WriteString("Next: ")
+		b.WriteString(guidance.Action)
+		b.WriteString(". ")
+	}
+	b.WriteString("Read ")
 	b.WriteString(guidance.ProtocolRef)
 	b.WriteString("; if blocked, read ")
 	b.WriteString(guidance.ManualRef)
@@ -232,6 +238,13 @@ func renderPreToolUsePayload(body, permission string) ([]byte, error) {
 func renderSystemMessage(body, event, additionalContext string) ([]byte, error) {
 	switch event {
 	case "SessionStart", "SubagentStart", "PostToolUse", "PreToolUse":
+		if event == "SessionStart" || event == "SubagentStart" {
+			context := ComposeLifecycleContext(additionalContext, "")
+			if context == "" {
+				context = ComposeLifecycleContext(body, "")
+			}
+			return json.Marshal(map[string]any{"systemMessage": compactNotice(body), "hookSpecificOutput": map[string]any{"hookEventName": event, "additionalContext": context}})
+		}
 		context := body
 		if additionalContext != "" {
 			if context != "" {

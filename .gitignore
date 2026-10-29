@@ -1,6 +1,11 @@
 # Local Claude / agent runtime state (workspace-local; never commit)
 .claude/
 
+# Project-instance files (local to each target project; never commit back)
+AGENTS.md
+/docs/project-map.md
+/docs/requirements/REQ-[0-9]*.md
+
 # Go build and test artifacts
 /bin/
 /build/
@@ -24,6 +29,10 @@ coverage.html
 *.swp
 *.swo
 *~
+
+# Python tooling artifacts
+__pycache__/
+*.pyc
 
 # Operating-system files
 .DS_Store

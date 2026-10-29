@@ -2,37 +2,42 @@ package cli
 
 import (
 	"fmt"
-	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/entroforge/go-system-builder/internal/scenario"
 )
 
 var uiModuleReferencePattern = regexp.MustCompile(`docs/design/prototypes/([a-z0-9]+(?:-[a-z0-9]+)*)/`)
 
-// hasCompleteUIDesignPackageForREQ binds the UI gate to the current REQ's
-// explicit module references. A package in an unrelated module never satisfies
-// this check, and every referenced module must pass both shape and scenario
-// semantics checks.
-func hasCompleteUIDesignPackageForREQ(root, reqPath string) (bool, error) {
+// inspectUIDesignPackageFilesForREQ is a passive inventory, not professional
+// validation. Ordinary guidance must not parse/generate/validate whole scenario
+// packages; authors run the scenario checks as part of their design work.
+func inspectUIDesignPackageFilesForREQ(root, reqPath string) error {
 	modules, err := modulesBoundToREQ(root, reqPath)
 	if err != nil {
-		return false, err
+		return err
 	}
 	for _, module := range modules {
-		complete, err := hasCompleteUIDesignPackageForModule(root, module)
+		directory, prototypesPath, exists, err := secureUIDesignModuleDirectory(root, module)
 		if err != nil {
-			return false, err
+			return err
 		}
-		if !complete {
-			return false, nil
+		if !exists {
+			return fmt.Errorf("missing module directory docs/design/prototypes/%s", module)
+		}
+		for _, name := range []string{"index.html", "stories.md", "flows.md", "scenario-model.json", "fixture-contract.json", "cross-matrix.json", "cases.json", "scenario-coverage.json"} {
+			exists, err := validateUIDesignFile(filepath.Join(directory, name), prototypesPath)
+			if err != nil {
+				return fmt.Errorf("module %s: %s: %w", module, name, err)
+			}
+			if !exists {
+				return fmt.Errorf("missing docs/design/prototypes/%s/%s", module, name)
+			}
 		}
 	}
-	return true, nil
+	return nil
 }
 
 func modulesBoundToREQ(root, reqPath string) ([]string, error) {
@@ -62,66 +67,6 @@ func modulesBoundToREQ(root, reqPath string) ([]string, error) {
 		return nil, fmt.Errorf("UI-impact REQ must contain at least one explicit module path under docs/design/prototypes/<module>/")
 	}
 	return modules, nil
-}
-
-func hasCompleteUIDesignPackageForModule(root, module string) (bool, error) {
-	directory, prototypesRealPath, exists, err := secureUIDesignModuleDirectory(root, module)
-	if err != nil || !exists {
-		return false, err
-	}
-	for _, name := range []string{
-		"index.html", "stories.md", "flows.md", "scenario-model.json",
-		"fixture-contract.json", "cross-matrix.json", "cases.json",
-		"scenario-coverage.json",
-	} {
-		exists, err := validateUIDesignFile(filepath.Join(directory, name), prototypesRealPath)
-		if err != nil {
-			return false, fmt.Errorf("module %s: required file %s: %w", module, name, err)
-		}
-		if !exists {
-			return false, nil
-		}
-	}
-	pagePaths := make([]string, 0)
-	if err := pathscope.WalkDir(root, directory, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("path %s is a symlink", path)
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if strings.HasSuffix(entry.Name(), ".html") && entry.Name() != "index.html" {
-			if _, err := validateUIDesignFile(path, prototypesRealPath); err != nil {
-				return err
-			}
-			pagePaths = append(pagePaths, path)
-		}
-		return nil
-	}); err != nil {
-		return false, fmt.Errorf("module %s: inspect pages: %w", module, err)
-	}
-	if !hasProtoMetaHeader(filepath.Join(directory, "index.html")) {
-		return missingProtoHeaderError(directory, "index.html")
-	}
-	if len(pagePaths) == 0 {
-		return false, fmt.Errorf("module %s: no page HTML beyond index.html — the package needs at least one page", module)
-	}
-	for _, pagePath := range pagePaths {
-		if !hasProtoMetaHeader(pagePath) {
-			return missingProtoHeaderError(directory, pagePath)
-		}
-	}
-	if !hasStoryIDWithReqID(filepath.Join(directory, "stories.md")) ||
-		!hasFlowIDWithReqID(filepath.Join(directory, "flows.md")) {
-		return false, nil
-	}
-	if _, err := scenario.ValidateModule(root, module, scenario.ValidateOptions{}); err != nil {
-		return false, fmt.Errorf("module %s: scenario package validation: %w", module, err)
-	}
-	return true, nil
 }
 
 func secureUIDesignModuleDirectory(root, module string) (string, string, bool, error) {
@@ -204,21 +149,4 @@ func boundREQPathFromState(state map[string]any) string {
 	bound, _ := state["bound_req"].(map[string]any)
 	path, _ := bound["path"].(string)
 	return path
-}
-
-// missingProtoHeaderError names the page and the missing header tokens so a
-// failed UI gate is self-repairing (the 4-field header is taught in
-// skills/ui-prototyping; BUG round-3 NEW-3: the gate used to fail silently).
-func missingProtoHeaderError(directory, rel string) (bool, error) {
-	data, err := os.ReadFile(filepath.Join(directory, rel))
-	if err != nil {
-		return false, fmt.Errorf("page %s: unreadable: %w", rel, err)
-	}
-	var missing []string
-	for _, marker := range []string{"设计代数", "更新", "路由", "index.html"} {
-		if !strings.Contains(string(data), marker) {
-			missing = append(missing, marker)
-		}
-	}
-	return false, fmt.Errorf("page %s: missing 4-field proto-meta header token(s) %v — every page HTML carries 设计代数 / 更新 / 路由 / index 链接 (see skills/ui-prototyping)", rel, missing)
 }

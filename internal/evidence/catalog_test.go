@@ -13,7 +13,7 @@ func TestDefaultCatalogSeparatesSlotsFromRegisteredKinds(t *testing.T) {
 		slot string
 		want []string
 	}{
-		{slot: "builder_report_record", want: []string{"builder_report", "agent_completion"}},
+		{slot: "builder_report_record", want: []string{"builder_report", "agent_completion", "completion_report"}},
 		{slot: "team_manifest_record", want: []string{"builder_report", "team_manifest"}},
 		{slot: "planning_design_record", want: []string{"planning_design"}},
 		{slot: "pause_record", want: []string{"human_decision"}},
@@ -90,5 +90,33 @@ func TestCatalogExposesImportAllowlistAndCompatibilityPreference(t *testing.T) {
 	}
 	if catalog.IsImportableKind("team_manifest_record") {
 		t.Fatal("requirement-slot alias must not become an importable persisted kind")
+	}
+}
+
+func TestS9LifecycleEvidenceKindsAreRegisteredButPipelineOwned(t *testing.T) {
+	catalog := evidence.DefaultCatalog()
+	for _, kind := range []string{"repair_result_blocker", "repair_result_resolution"} {
+		if !catalog.IsRegisteredKind(kind) {
+			t.Fatalf("S9 lifecycle kind %q must be a persisted evidence kind", kind)
+		}
+		if catalog.IsImportableKind(kind) {
+			t.Fatalf("S9 lifecycle kind %q must not be importable", kind)
+		}
+		if catalog.HasSlot(kind) {
+			t.Fatalf("S9 lifecycle kind %q must not create a gate slot", kind)
+		}
+		for _, slot := range []string{
+			"req_lock_record", "loop_authorization_record", "human_decision_record", "pause_record",
+			"activation_record", "builder_report_record", "team_manifest_record", "completion_report",
+			"document_review_record", "contract_set_record", "task_batch_record", "planning_design_record",
+			"planning_contract_record", "planning_task_record", "delivery_review_record", "review_result_record",
+			"finding_record", "observation_batch_record", "bug_batch_record", "root_cause_record", "repair_record",
+			"repair_plan", "repair_plan_report", "targeted_reverification_record", "clean_round_record",
+			"acceptance_record", "release_audit_record", "change_impact_record",
+		} {
+			if catalog.Accepts(slot, kind) {
+				t.Fatalf("S9 lifecycle kind %q unexpectedly satisfies gate slot %q", kind, slot)
+			}
+		}
 	}
 }

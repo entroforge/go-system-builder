@@ -61,7 +61,7 @@ the workspace execution record; Main retains its bound checkout and branch.
 
 Branch creation requires a permitted Loop transition and an activated assignment
 whose scope includes the branch operation. This rule defines branch shape; the
-Loop Definition, runtime, activation, and Hooks enforce timing.
+Loop Definition, runtime and original domain gates determine timing; Hooks report progress and missing duties.
 
 ## 6. Merge Rules
 
@@ -113,8 +113,8 @@ Only an explicit human release approval may authorize squash merge to
 
 ## 10. Human Release Handoff
 
-The handoff identifies the actual bound integration branch, tested commit,
-project release branch and release evidence. The human release owner performs
+The S11 handoff reuses accepted S10 readable reports, the actual bound integration branch/tested commit, real residual risks and exact paths; it is not another evidence checklist or metadata form. TR-017 prepares once; ordinary Pre/Stop only reads. After a real human six-way choice, Main faithfully fills the prepared application’s original `disposition` and optional `reason` and saves. PostToolUse automatically invokes the existing Writer to record/consume and follow the fixed outlet. Without a real choice leave disposition empty: drafts do not write Runtime or default to approval. The Hook does not authenticate identity or require extra confirmation/proofs; metadata is system supplied. Original human-decision commands are compatibility/recovery, not normal tasks. Return routes carry actual reason/paths, preserving observations and clearing the returned S10 step’s old final conclusion.
+The human release owner performs
 release and post-release synchronization through the project’s approved process.
 Do not place automatic checkout, pull, squash or push commands in Main’s
 engineering continuation. A protected release target requires its own human

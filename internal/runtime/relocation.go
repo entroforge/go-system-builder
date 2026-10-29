@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"time"
 )
@@ -57,7 +58,9 @@ func (s *Store) RelocateWorkspace(before Snapshot, registry map[string]any, id, 
 				if !ok || !exists {
 					return Snapshot{}, fmt.Errorf("relocation execution mismatch")
 				}
-				row["worktree_path"] = prior["worktree_path"]
+				if err := normalizeRelocatedExecution(row, prior, oldRoot, newRoot); err != nil {
+					return Snapshot{}, err
+				}
 			}
 		case []any:
 			previous, _ := old[key].([]any)
@@ -70,7 +73,9 @@ func (s *Store) RelocateWorkspace(before Snapshot, registry map[string]any, id, 
 				if !ok || !exists {
 					return Snapshot{}, fmt.Errorf("relocation history malformed")
 				}
-				row["worktree_path"] = prior["worktree_path"]
+				if err := normalizeRelocatedExecution(row, prior, oldRoot, newRoot); err != nil {
+					return Snapshot{}, err
+				}
 			}
 		}
 	}
@@ -88,7 +93,7 @@ func (s *Store) RelocateWorkspace(before Snapshot, registry map[string]any, id, 
 	if err != nil {
 		return Snapshot{}, err
 	}
-	release, err := acquireLock(s.statePath+".lock", 5*time.Second)
+	release, err := s.acquireLock(s.statePath+".lock", 5*time.Second)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -178,4 +183,39 @@ func (s *Store) RelocateWorkspace(before Snapshot, registry map[string]any, id, 
 		state["workspace"], state["root"] = registry, newRoot
 		return nil
 	}})
+}
+
+// PlanRebind moves only evidence locators. Normalize exactly that declared
+// old-root/new-root mapping before the original full registry comparison;
+// captured checkout, hashes, command, profile and binding remain immutable.
+func normalizeRelocatedExecution(row, prior map[string]any, oldRoot, newRoot string) error {
+	row["worktree_path"] = prior["worktree_path"]
+	for _, field := range []string{"tool_check_receipts", "owned_check_receipts"} {
+		current, _ := row[field].([]any)
+		previous, _ := prior[field].([]any)
+		if len(current) != len(previous) {
+			return fmt.Errorf("relocation cannot change %s membership", field)
+		}
+		for i, raw := range current {
+			ref, ok := raw.(map[string]any)
+			old, existed := previous[i].(map[string]any)
+			if !ok || !existed {
+				return fmt.Errorf("relocation %s is malformed", field)
+			}
+			if field == "owned_check_receipts" {
+				ref, ok = ref["receipt"].(map[string]any)
+				old, existed = old["receipt"].(map[string]any)
+				if !ok || !existed {
+					return fmt.Errorf("relocation owned-check receipt is malformed")
+				}
+			}
+			oldPath, _ := old["path"].(string)
+			rel, err := filepath.Rel(oldRoot, oldPath)
+			if !filepath.IsAbs(oldPath) || err != nil || !filepath.IsLocal(rel) || ref["path"] != filepath.Join(newRoot, rel) {
+				return fmt.Errorf("relocation receipt locator differs from its exact original Main mapping")
+			}
+			ref["path"] = oldPath
+		}
+	}
+	return nil
 }

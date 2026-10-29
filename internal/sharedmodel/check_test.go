@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +69,36 @@ func TestSharedModelFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestSharedModelDecoratedREQOwnerUsesOriginalCurrentBatch(t *testing.T) {
+	root := pilot(t)
+	old := filepath.Join(root, "docs/dev/contracts/CONTRACTS-001.md")
+	data, err := os.ReadFile(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(old); err != nil {
+		t.Fatal(err)
+	}
+	put(t, root, "docs/dev/contracts/CONTRACTS-CUSTOM.md", "> 需求: [REQ-001](../../requirements/REQ-001.md)\n"+string(data))
+	for _, name := range []string{"FE-001.md", "BE-001.md", "SYNC-001.md"} {
+		p := filepath.Join(root, "docs/dev/contracts", name)
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		put(t, root, "docs/dev/contracts/"+name, strings.ReplaceAll(string(data), "CONTRACTS-001.md", "CONTRACTS-CUSTOM.md"))
+	}
+	r := Check(root, fileview.Disk{Root: root}, "REQ-001")
+	if len(r.Problems) != 0 || r.Rows != 2 {
+		t.Fatalf("original decorated batch was skipped or rejected: %+v", r)
+	}
+	put(t, root, "docs/architecture/data-model/request.json", `{"order_id":42}`)
+	r = Check(root, fileview.Disk{Root: root}, "REQ-001")
+	if !strings.Contains(strings.Join(r.Problems, "\n"), "valid example") {
+		t.Fatalf("selected current source did not check its real example: %+v", r)
+	}
+}
 func TestSharedModelClosureAndRecursion(t *testing.T) {
 	root := pilot(t)
 	put(t, root, "docs/architecture/data-model/orders.schema.json", `{"$defs":{"request":{"$ref":"request.schema.json"},"response":{"type":"object"}}}`)
@@ -104,7 +133,7 @@ func TestConsumerProviderPilot(t *testing.T) {
 	c.UseLoader(&viewLoader{root: root, files: files, loaded: map[string][]byte{}})
 	compile := func(fragment string) *jsonschema.Schema {
 		t.Helper()
-		s, e := c.Compile((&url.URL{Scheme: "file", Path: filepath.Join(root, "docs/architecture/data-model/orders.schema.json"), Fragment: fragment}).String())
+		s, e := c.Compile(schemaFileURL(filepath.Join(root, "docs/architecture/data-model/orders.schema.json"), fragment))
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -262,5 +291,92 @@ func TestProductionEvidenceCannotStandInForModel(t *testing.T) {
 	r := Check(root, diskRuleView{fileview.Disk{Root: root}})
 	if !strings.Contains(strings.Join(r.Problems, "\n"), "require git_tree") {
 		t.Fatal(r.Problems)
+	}
+}
+
+func TestSharedModelConsumerRegisteredExamples(t *testing.T) {
+	for _, tc := range []struct{ name, extra, path, data, want string }{
+		{name: "registered valid and structural negative"},
+		{name: "unknown schema", extra: "[foreign](../../architecture/data-model/foreign.json)\n", path: "docs/architecture/data-model/foreign.json", data: `{"type":"object"}`, want: "undeclared shared model input"},
+		{name: "example fragment is not registered", extra: "[fragment](../../architecture/data-model/request.json#/order_id)\n", want: "undeclared shared model input"},
+		{name: "missing registered example", path: "docs/architecture/data-model/request.json", data: "__missing__", want: "request.json"},
+		{name: "invalid registered valid", path: "docs/architecture/data-model/request.json", data: `{"order_id":42}`, want: "valid example"},
+		{name: "passing registered negative", path: "docs/architecture/data-model/invalid-request.json", data: `{"order_id":"completed"}`, want: "unexpectedly passes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := pilot(t)
+			contract := "docs/dev/contracts/FE-001.md"
+			data, err := os.ReadFile(filepath.Join(root, contract))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Keep schema references mandatory while also consuming registered instances.
+			content := strings.Replace(string(data), "## Shared model inputs", "## Shared model inputs\n[valid](../../architecture/data-model/request.json)\n[negative](../../architecture/data-model/invalid-request.json)\n"+tc.extra, 1)
+			put(t, root, contract, content)
+			if tc.path != "" {
+				if tc.data == "__missing__" {
+					if err := os.Remove(filepath.Join(root, tc.path)); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					put(t, root, tc.path, tc.data)
+				}
+			}
+			result := Check(root, fileview.Disk{Root: root})
+			if tc.want != "" {
+				if !strings.Contains(strings.Join(result.Problems, "\n"), tc.want) {
+					t.Fatalf("want %s, got %v", tc.want, result.Problems)
+				}
+				return
+			}
+			if len(result.Problems) > 0 {
+				t.Fatal(result.Problems)
+			}
+		})
+	}
+	t.Run("examples belong to their row consumers", func(t *testing.T) {
+		root := pilot(t)
+		index := "docs/dev/contracts/CONTRACTS-001.md"
+		data, err := os.ReadFile(filepath.Join(root, index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		put(t, root, index, strings.Replace(string(data), "[FE](FE-001.md) [BE](BE-001.md) [SYNC](SYNC-001.md)", "[BE](BE-001.md) [SYNC](SYNC-001.md)", 1))
+		contract := "docs/dev/contracts/FE-001.md"
+		data, err = os.ReadFile(filepath.Join(root, contract))
+		if err != nil {
+			t.Fatal(err)
+		}
+		put(t, root, contract, strings.Replace(string(data), "## Shared model inputs", "## Shared model inputs\n[valid](../../architecture/data-model/request.json)\n", 1))
+		result := Check(root, fileview.Disk{Root: root})
+		if !strings.Contains(strings.Join(result.Problems, "\n"), "undeclared shared model input docs/architecture/data-model/request.json") {
+			t.Fatal(result.Problems)
+		}
+	})
+}
+
+func TestSharedModelNonePolicyReason(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		reject      bool
+	}{
+		{"real Chinese object and array rationale", "> Shared model reason: 本服务只有一个提供方，无第二消费方；权威形状为 {\"quantity\":0,\"version\":0}，批量示例为 [{\"quantity\":1,\"version\":1}]，另建共享模型会制造重复权威。\n", false},
+		{"missing reason", "", true},
+		{"empty reason", "> Shared model reason:\n", true},
+		{"whitespace reason", "> Shared model reason:   \t\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := pilot(t)
+			put(t, root, "docs/dev/contracts/CONTRACTS-001.md", "> Shared model policy: none\n"+tc.field)
+			r := Check(root, fileview.Disk{Root: root})
+			problems := strings.Join(r.Problems, "\n")
+			if tc.reject {
+				if !strings.Contains(problems, "policy none requires a concrete Shared model reason") {
+					t.Fatalf("missing/empty reason accepted: %+v", r)
+				}
+			} else if len(r.Problems) != 0 {
+				t.Fatalf("real JSON punctuation rejected: %v", r.Problems)
+			}
+		})
 	}
 }

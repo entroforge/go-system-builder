@@ -2,16 +2,20 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/processtree"
+	"github.com/entroforge/go-system-builder/internal/schema"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-var observationViews = []string{"cwd", "status", "diff", "staged", "log"}
+var observationViews = []string{"cwd", "status", "diff", "staged", "log", "check-capabilities", "check-reuse", "check-running"}
 
 func ObservationCommands(e Execution) map[string]string {
 	commands := map[string]string{}
@@ -19,6 +23,12 @@ func ObservationCommands(e Execution) map[string]string {
 		commands[view] = WorkerInvocation(e, "observe") + " --view " + view
 	}
 	return commands
+}
+
+// ReceiptInvocation is a fixed read-only query for this registered Builder.
+func ReceiptInvocation(e Execution) string {
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+	return quote(filepath.Join(e.Path, ".claude/bin/loop-harness")) + " runtime task-receipt --root " + quote(e.Path) + " --assignment-id " + quote(e.AssignmentID) + " --agent-id " + quote(e.AgentID)
 }
 
 // ValidateObservationEnvironment rejects inherited Git overrides before even
@@ -60,6 +70,44 @@ func (b *ExecutionRegistry) Observe(ctx context.Context, e Execution, view strin
 	}
 	args := []string{"--no-pager", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false"}
 	switch view {
+	case "check-running":
+		rows, err := b.CheckRuns(e)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(rows)
+	case "check-reuse":
+		return json.NewEncoder(output).Encode(b.CheckReuse(ctx, e))
+	case "check-capabilities":
+		source := e.Path
+		if e.CheckLocation == "main" {
+			source = b.MainRoot
+		}
+		report := checkexec.MainCapabilities(ctx, source, e.Checks)
+		if e.CheckLocation != "main" {
+			report.Runner = "worker_isolated"
+			if err := b.PreflightChecks(ctx, e, source); err != nil {
+				report.Available = false
+				report.Checks = append(report.Checks, checkexec.Entrance{Status: "unavailable", Scope: "actual original isolation preflight", Failure: checkexec.New("capability_missing", "environment owner", "worker isolation", err)})
+			}
+		} else if len(e.WorkerChecks) != 0 {
+			if err := b.PreflightOwnedChecks(ctx, e, source); err != nil {
+				report.Available = false
+				report.Checks = append(report.Checks, checkexec.Entrance{Status: "unavailable", Scope: "Record-frozen WorkerCheck isolation", Failure: checkexec.New("capability_missing", "environment owner", "WorkerChecks", err)})
+			} else {
+				for _, check := range e.WorkerChecks {
+					report.Checks = append(report.Checks, checkexec.Entrance{Command: check.Command, Status: "available", Scope: "Record-frozen WorkerCheck on isolated disposable copy"})
+				}
+			}
+		}
+		data, err := json.Marshal(report)
+		if err != nil {
+			return err
+		}
+		if err := schema.NewEmbeddedValidator().ValidateBytes("check-capability.schema.json", data); err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(report)
 	case "cwd":
 		_, err := fmt.Fprintln(output, e.Path)
 		return err
@@ -72,7 +120,7 @@ func (b *ExecutionRegistry) Observe(ctx context.Context, e Execution, view strin
 	case "log":
 		args = append(args, "log", "--no-ext-diff", "--no-textconv", "--no-show-signature", "-20", "--oneline")
 	default:
-		return fmt.Errorf("unknown observation view; choose cwd, status, diff, staged or log")
+		return fmt.Errorf("unknown observation view; choose cwd, status, diff, staged, log, check-capabilities or check-reuse")
 	}
 	binary, err := exec.LookPath("git")
 	if err != nil {

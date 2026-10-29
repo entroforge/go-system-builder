@@ -11,11 +11,7 @@
     "revision",
     "status",
     "source_finding_ids",
-    "observation_batch_id",
-    "observation_batch_ref",
-    "observation_batch_sha256",
     "baseline_generation",
-    "baseline_digest",
     "grouping_rationale",
     "unexplained_finding_ids",
     "failure_boundary_refs",
@@ -38,7 +34,6 @@
     "status": {"enum": ["investigating", "contract_review", "contract_approved", "routed", "blocked", "closed"]},
     "source_finding_ids": {
       "type": "array",
-      "minItems": 1,
       "uniqueItems": true,
       "items": {"type": "string", "minLength": 1}
     },
@@ -76,7 +71,17 @@
     "no_competing_hypothesis": {
       "type": "string",
       "minLength": 1,
-      "description": "Explicit declaration that no competing hypothesis was credible enough to warrant a discriminator; substitutes for the refuted-hypothesis result in causal closure (S8-4)."
+      "description": "Explicit declaration that no competing hypothesis was credible enough to warrant a discriminator; substitutes for the refuted-hypothesis result in causal closure (S8-4). Use only for actual absence; when credible alternatives were handled by accepted discriminators, use competing_hypothesis_assessment instead."
+    },
+    "competing_hypothesis_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hypothesis_ids", "conclusion"],
+      "description": "How current accepted discriminators handled credible alternatives. Distinct from declaring alternatives absent; cannot coexist with no_competing_hypothesis. IDs must resolve to current supported/refuted results, never inconclusive or historical-only results.",
+      "properties": {
+        "hypothesis_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "conclusion": {"type": "string", "minLength": 1}
+      }
     },
     "repair_contract_ref": {"type": ["string", "null"]},
     "repair_contract_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
@@ -157,7 +162,7 @@
             "refute": {"type": "string", "minLength": 1}
           }
         },
-        "source_finding_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "source_finding_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "status": {"enum": ["open", "supported", "refuted", "inconclusive"]}
       }
     },
@@ -175,8 +180,11 @@
         "counterfactual_or_discriminator": {"type": "string", "minLength": 1},
         "result": {"enum": ["supported", "refuted", "inconclusive"]},
         "explains_finding_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "does_not_explain": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
-      }
+        "does_not_explain": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "receipt": {"$ref": "hypothesis-result-receipt.schema.json"},
+        "new_hypotheses": {"type": "array", "items": {"$ref": "#/$defs/hypothesis"}}
+      },
+      "dependentRequired": {"receipt": ["new_hypotheses"], "new_hypotheses": ["receipt"]}
     }
   }
 }

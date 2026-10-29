@@ -14,7 +14,11 @@ import (
 )
 
 func compactGuidance(g policy.Guidance) string {
-	s := fmt.Sprintf("LOOP RECOVERY — Stage %s %s. Next: %s. Read %s; if blocked, read %s.", g.Stage, g.LifecycleState, g.Action, g.ProtocolRef, g.ManualRef)
+	s := fmt.Sprintf("LOOP RECOVERY — Stage %s %s. ", g.Stage, g.LifecycleState)
+	if strings.TrimSpace(g.Action) != "" {
+		s += "Next: " + g.Action + ". "
+	}
+	s += fmt.Sprintf("Read %s; if blocked, read %s.", g.ProtocolRef, g.ManualRef)
 	if len(g.Questions) > 0 {
 		s += " Preflight questions: " + strings.Join(g.Questions, " | ")
 	}
@@ -38,6 +42,9 @@ func qualityNotice(d policy.Decision, q controller.QualityGateResult) string {
 		stage = d.Guidance.Stage + " " + d.Guidance.LifecycleState
 	}
 	s := fmt.Sprintf("Loop | %s | %s", stage, q.Status)
+	if strings.TrimSpace(d.AdditionalContext) != "" {
+		s += " | Details: see Hook additionalContext"
+	}
 	switch {
 	case q.Status == controller.StatusBlocked:
 		s += " | " + d.RuleID + ": " + d.Reason
@@ -52,7 +59,7 @@ func qualityNotice(d policy.Decision, q controller.QualityGateResult) string {
 	case len(q.Missing) > 0:
 		s += " | Missing: " + strings.Join(q.Missing, "; ")
 	}
-	if d.Guidance != nil {
+	if d.Guidance != nil && strings.TrimSpace(d.Guidance.Action) != "" {
 		s += " | Next: " + d.Guidance.Action
 	}
 	return compactNotice(s)

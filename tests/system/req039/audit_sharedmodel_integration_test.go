@@ -12,6 +12,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
+	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 func seedS3AuditFrozenModel(t *testing.T) (string, string, string, []byte) {
@@ -195,10 +196,11 @@ func TestS3AuditUnrelatedImplementationChangeMerges(t *testing.T) {
 	}
 }
 
-// Root writes remain protected; this control isolates the missing merge input
-// from a general failure to project shared model rows into policy.
-func TestS3AuditFrozenModelRootWriteBlocked(t *testing.T) {
+// A write event on a frozen path is observed for graph progress. The
+// Integrator's domain check above still determines merge eligibility.
+func TestS3AuditFrozenModelRootWriteIsObservedWithoutAdvance(t *testing.T) {
 	root, _, model, _ := seedS3AuditFrozenModel(t)
+	before := req039fixtures.ReadState(t, root)
 	payload, err := json.Marshal(map[string]any{
 		"hook_event_name": "PreToolUse", "tool_name": "Write", "cwd": root,
 		"tool_input": map[string]any{"file_path": filepath.Join(root, model), "content": "changed"},
@@ -208,7 +210,6 @@ func TestS3AuditFrozenModelRootWriteBlocked(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	code := runCLI(t, []string{"hook", "--event", "PreToolUse", "--root", root}, bytes.NewReader(payload), &stdout, &stderr)
-	if code != 0 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) || !strings.Contains(stdout.String(), "locked") {
-		t.Fatalf("root frozen model write was not denied: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	after := req039fixtures.ReadState(t, root)
+	assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout.String(), stderr.String(), before, after)
 }

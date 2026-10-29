@@ -21,8 +21,8 @@ func TestHookRegistrationCoversDelegationTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"Write|Edit|MultiEdit|Bash|NotebookEdit|Task|TaskUpdate|Agent|mcp__.*"`) {
-		t.Fatalf("PreToolUse must invoke the controller before Agent/Task/TaskUpdate delegation: %s", data)
+	if !strings.Contains(string(data), `"PreToolUse": [{"matcher":"*"`) {
+		t.Fatalf("PreToolUse must listen to tool events, including reads and delegation: %s", data)
 	}
 	if !strings.Contains(string(data), `"Stop"`) {
 		t.Fatalf("Stop must invoke the Main收工门: %s", data)
@@ -40,66 +40,69 @@ func TestMainEntryRoutesThroughReadableSpine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(data)
-	for _, required := range []string{"docs/control/agent-protocol.md", "S0", "S11", "DRIVE()"} {
+	content := strings.Join(strings.Fields(string(data)), " ")
+	for _, required := range []string{
+		"docs/control/agent-protocol.md", ".claude/loop-state.json", "S0", "S11", "DRIVE()",
+		"Describe each responsibility attempt with one status:",
+		"`pending`", "`active`", "`blocked`", "`done`", "`cancelled`",
+		"The five values describe a responsibility attempt only.",
+		"Use `done` consistently for completion.",
+		"Each progress reminder gives the exact current questionnaire path.",
+		"awaiting_human_release", "Release requires separate human approval.",
+	} {
 		if !strings.Contains(content, required) {
-			t.Fatalf("AGENTS-template.md must route through readable Main Spine: missing %q", required)
+			t.Fatalf("AGENTS-template.md must state the current Main workflow contract: missing %q", required)
 		}
 	}
 }
 
-// TestValidateTemplatesRejectsMissingRequiredField covers the
-// "missing migrated field" branch (templates.go:113-117). When a
-// contract file is missing a required field, ValidateTemplates must
-// surface a clear error.
-func TestValidateTemplatesRejectsMissingRequiredField(t *testing.T) {
+// TestValidateTemplatesRequiresQuestionnaireGuidance ensures AGENTS carries
+// the current user-facing workflow contract rather than implementation-only
+// Hook policy details.
+func TestValidateTemplatesRequiresQuestionnaireGuidance(t *testing.T) {
 	dir := t.TempDir()
-	// Provide a partial scaffold that is missing key required fields.
-	// Use the AGENTS-template.md contract which requires
-	// "Delivery Verifier Team：" to be FORBIDDEN; if we leave it in
-	// but skip the required "QA Team：" that's a no-op (both are
-	// forbidden, not required). So we use a different approach:
-	// create a partial hook-policy.json (no rules) which causes the
-	// validator to short-circuit on the settings check, or supply a
-	// settings.json missing the 6 canonical events.
-	if err := os.WriteFile(filepath.Join(dir, "AGENTS-template.md"), []byte("# AGENTS\nplaceholder\n"), 0o644); err != nil {
+	root := filepath.Join("..", "..")
+	agents, err := os.ReadFile(filepath.Join(root, "AGENTS-template.md"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	// A settings.json with the wrong event set fails the settings
-	// validation: missing "PreToolUse" must trigger the missing-field
-	// error.
-	bad := []byte(`{"hooks":{"SessionStart":[{"hooks":[]}]}}`)
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), bad, 0o644); err != nil {
+	withoutPath := strings.ReplaceAll(
+		strings.Join(strings.Fields(string(agents)), " "),
+		"Each progress reminder gives the exact current questionnaire path.",
+		"Progress reminders give the questionnaire location.",
+	)
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS-template.md"), []byte(withoutPath), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := migration.ValidateTemplates(dir); err == nil {
-		t.Fatal("ValidateTemplates must fail on a settings.json missing the canonical events")
+	err = migration.ValidateTemplates(dir)
+	if err == nil || !strings.Contains(err.Error(), "exact current questionnaire path") {
+		t.Fatalf("ValidateTemplates must require the current questionnaire guidance, got %v", err)
 	}
 }
 
 // TestValidateTemplatesRejectsForbiddenField covers the
-// "contains migrated responsibility" branch (templates.go:118-122).
+// "contains migrated responsibility" branch.
 // When a contract file still contains an obsolete team/route
 // marker, ValidateTemplates must surface a clear error.
 func TestValidateTemplatesRejectsForbiddenField(t *testing.T) {
 	dir := t.TempDir()
-	// AGENTS-template.md with the forbidden "Delivery Verifier Team："
-	// string still present.
-	if err := os.WriteFile(filepath.Join(dir, "AGENTS-template.md"), []byte("# AGENTS\nDelivery Verifier Team：yes\n"), 0o644); err != nil {
+	root := filepath.Join("..", "..")
+	agents, err := os.ReadFile(filepath.Join(root, "AGENTS-template.md"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	// Minimal valid settings.json so the validator reaches the
-	// per-file checks.
-	valid := []byte(`{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":".claude/bin/loop-harness hook --event PreToolUse"}]}],"SessionStart":[{"hooks":[{"type":"command","command":".claude/bin/loop-harness hook --event SessionStart"}]}],"SubagentStart":[{"hooks":[{"type":"command","command":".claude/bin/loop-harness hook --event SubagentStart"}]}],"SubagentStop":[{"hooks":[{"type":"command","command":".claude/bin/loop-harness hook --event SubagentStop"}]}],"TeammateIdle":[{"hooks":[{"type":"command","command":".claude/bin/loop-harness hook --event TeammateIdle"}]}],"PreCompact":[{"hooks":[{"type":"command","command":".claude/bin/loop-harness hook --event PreCompact"}]}]}}`)
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), valid, 0o644); err != nil {
+	// Start from a valid user-facing contract so this reaches the forbidden
+	// team-marker check in ValidateTemplates.
+	agents = append(agents, []byte("\nDelivery Verifier Team：yes\n")...)
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS-template.md"), agents, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := migration.ValidateTemplates(dir)
+	err = migration.ValidateTemplates(dir)
 	if err == nil {
 		t.Fatal("ValidateTemplates must fail when AGENTS-template.md contains the forbidden team marker")
 	}
 	if !strings.Contains(err.Error(), "Delivery Verifier Team") {
-		t.Logf("note: forbidden-field error did not mention the marker (got: %v)", err)
+		t.Fatalf("forbidden-field error did not mention the marker: %v", err)
 	}
 }
 

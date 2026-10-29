@@ -20,6 +20,12 @@
     },
     {
       "$ref": "#/$defs/lifecycleEvent"
+    },
+    {
+      "$ref": "#/$defs/s6PlanReport"
+    },
+    {
+      "$ref": "#/$defs/s6CompletionReport"
     }
   ],
   "$defs": {
@@ -264,6 +270,101 @@
         }
       }
     },
+    "s9BlockerMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional S9 blocker message shape only. This schema does not prove packet issuance, answer bytes, owner identity, or lifecycle authority.",
+      "required": [
+        "packet_id",
+        "packet_sha256",
+        "answer_path",
+        "answer_sha256"
+      ],
+      "properties": {
+        "packet_id": {
+          "type": "string",
+          "pattern": "^packet-[a-f0-9]{64}$"
+        },
+        "packet_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "answer_path": {
+          "type": "string",
+          "pattern": "^\\.claude/submissions/[^\\\\:#]+/[^\\\\:#]+/answer\\.json$"
+        },
+        "answer_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Canonical nine-field professional answer digest. This field is only a declaration until the original typed consumer verifies the packet and answer."
+        }
+      }
+    },
+    "s9ResolutionMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional S9 resolution message shape only. This schema does not authenticate Main or grant a blocker-resolved capability.",
+      "required": [
+        "decision",
+        "rationale",
+        "evidence_refs",
+        "packet_id",
+        "packet_sha256",
+        "blocker_ref",
+        "blocker_sha256",
+        "execution_assignment_id",
+        "execution_generation",
+        "execution_sha256"
+      ],
+      "properties": {
+        "decision": {
+          "const": "retry"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Author-declared references only; shape validity does not establish that evidence exists or is verified."
+        },
+        "packet_id": {
+          "type": "string",
+          "pattern": "^packet-[a-f0-9]{64}$"
+        },
+        "packet_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "blocker_ref": {
+          "type": "string",
+          "pattern": "^\\.claude/evidence/[^/]+/g[1-9][0-9]*/S9/blockers/packet-[a-f0-9]{64}/[a-f0-9]{64}\\.json$"
+        },
+        "blocker_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "execution_assignment_id": {
+          "type": "string",
+          "pattern": "^(repair-)?assignment-[A-Za-z0-9._-]+$",
+          "description": "Shape only. The original typed consumer must resolve this ID against the registered execution."
+        },
+        "execution_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Shape only. The original typed consumer verifies the registered generation."
+        },
+        "execution_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Shape only. The original typed consumer verifies the execution projection digest."
+        }
+      }
+    },
     "readbackRequest": {
       "allOf": [
         {
@@ -335,6 +436,102 @@
             },
             "readback_fields": {
               "$ref": "#/$defs/uniqueStrings"
+            },
+            "context_selection": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "profile_version",
+                "profile_sha256",
+                "mode",
+                "role",
+                "selected",
+                "legacy_skills",
+                "authorization_skill_refs"
+              ],
+              "properties": {
+                "profile_version": {
+                  "const": "1.0.0"
+                },
+                "profile_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "mode": {
+                  "enum": [
+                    "shadow",
+                    "legacy"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "legacy_skills": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "authorization_skill_refs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "selected": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "name",
+                      "source",
+                      "sha256",
+                      "reasons"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "source": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "assignment_context_ref": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "sha256"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
             }
           },
           "x-warn-required": [
@@ -693,6 +890,38 @@
                 "fingerprint_change",
                 "scope_change"
               ]
+            },
+            "assignment_record": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "runtime_id",
+                "baseline_generation",
+                "assignment_id",
+                "assignment_revision"
+              ],
+              "properties": {
+                "runtime_id": {
+                  "type": "string",
+                  "pattern": "^loop-[A-Za-z0-9._-]+$"
+                },
+                "baseline_generation": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "assignment_id": {
+                  "type": "string",
+                  "pattern": "^assignment-[A-Za-z0-9._-]+$"
+                },
+                "assignment_revision": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "assignment_record_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
             }
           },
           "x-warn-required": [
@@ -761,7 +990,49 @@
             },
             "body": {
               "type": "string"
+            },
+            "s9_blocker": {
+              "$ref": "#/$defs/s9BlockerMessage"
+            },
+            "s9_resolution": {
+              "$ref": "#/$defs/s9ResolutionMessage"
             }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "s9_blocker"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message_type": {
+                "const": "blocker_report"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "s9_resolution"
+            ]
+          },
+          "then": {
+            "properties": {
+              "message_type": {
+                "const": "blocker_resolution"
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "s9_blocker",
+              "s9_resolution"
+            ]
           }
         },
         {
@@ -873,6 +1144,312 @@
             "status",
             "summary"
           ]
+        }
+      ]
+    },
+    "s6PlanReport": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Explicit S6 canonical Assignment thin professional PLAN; authority is bound to the original Runtime record.",
+          "required": [
+            "agent_definition_ref",
+            "agent_id",
+            "bug_id",
+            "correlation_id",
+            "message_id",
+            "message_type",
+            "occurred_at",
+            "runtime_id",
+            "schema_version",
+            "task_id",
+            "team_id",
+            "assignment_id",
+            "assignment_revision",
+            "assignment_record_contract",
+            "assignment_record_sha256",
+            "objective",
+            "planned_paths",
+            "assertion_checks",
+            "dependencies",
+            "risks_blockers"
+          ],
+          "properties": {
+            "schema_version": {},
+            "message_type": {
+              "const": "plan_report"
+            },
+            "message_id": {},
+            "correlation_id": {},
+            "runtime_id": {},
+            "expected_runtime_revision": {},
+            "agent_id": {},
+            "agent_definition_ref": {},
+            "task_id": {},
+            "bug_id": {},
+            "team_id": {},
+            "occurred_at": {},
+            "assignment_id": {
+              "type": "string",
+              "pattern": "^assignment-[A-Za-z0-9._-]+$"
+            },
+            "assignment_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "objective": {
+              "type": "string",
+              "minLength": 8
+            },
+            "planned_paths": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "assertion_checks": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "assertion",
+                  "oracle"
+                ],
+                "properties": {
+                  "assertion": {
+                    "type": "string",
+                    "minLength": 4
+                  },
+                  "oracle": {
+                    "type": "string",
+                    "minLength": 4
+                  },
+                  "done_when_indexes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            },
+            "dependencies": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "risks_blockers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "assignment_record_contract": {
+              "enum": ["s6-v1.2", "s6-native-v1"]
+            },
+            "assignment_record_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      ]
+    },
+    "s6ResultAssertionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertion",
+        "oracle",
+        "evidence_refs"
+      ],
+      "properties": {
+        "assertion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "oracle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "s6ClosingAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "conditions"],
+      "properties": {
+        "disposition": {
+          "enum": ["complete", "incomplete", "blocked"]
+        },
+        "conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/s6ClosingCondition"
+          }
+        }
+      }
+    },
+    "s6ClosingCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["done_when_index", "judgment", "plan_assertion_indexes", "rationale"],
+      "properties": {
+        "done_when_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "judgment": {
+          "enum": ["satisfied", "incomplete", "blocked"]
+        },
+        "plan_assertion_indexes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "s6CompletionReport": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "message_type",
+            "runtime_id",
+            "baseline_generation",
+            "assignment_id",
+            "assignment_revision",
+            "assignment_record_contract",
+            "assignment_record_sha256",
+            "agent_id",
+            "agent_definition_ref",
+            "task_id",
+            "team_id",
+            "summary",
+            "assertion_evidence",
+            "risks_blockers",
+            "scope_deviations",
+            "message_id",
+            "correlation_id",
+            "bug_id",
+            "occurred_at"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "1.0.0"
+            },
+            "message_type": {
+              "const": "completion_report"
+            },
+            "runtime_id": {
+              "type": "string",
+              "pattern": "^loop-[A-Za-z0-9._-]+$"
+            },
+            "baseline_generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "assignment_id": {
+              "type": "string",
+              "pattern": "^assignment-[A-Za-z0-9._-]+$"
+            },
+            "assignment_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "assignment_record_contract": {
+              "enum": ["s6-v1.2", "s6-native-v1"]
+            },
+            "assignment_record_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "agent_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "agent_definition_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "task_id": {
+              "type": "string",
+              "pattern": "^TASK-[A-Za-z0-9._-]+$"
+            },
+            "team_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assertion_evidence": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/s6ResultAssertionEvidence"
+              }
+            },
+            "risks_blockers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "scope_deviations": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "closing_assessment": {
+              "$ref": "#/$defs/s6ClosingAssessment"
+            },
+            "message_id": {},
+            "correlation_id": {},
+            "occurred_at": {},
+            "bug_id": {},
+            "expected_runtime_revision": {}
+          },
+          "description": "Explicit canonical S6 professional Result. Acceptance and machine facts belong to original Runtime and Main integration consumers."
         }
       ]
     }

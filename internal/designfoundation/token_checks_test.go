@@ -155,7 +155,7 @@ func TestTokenChecks_GeneratedAssetUnverifiable(t *testing.T) {
 		}
 	}
 	if !foundAnchor {
-		t.Fatalf("expected generated_asset_unverifiable for anchor HTML with var but no link/digest, got %#v", report.Findings)
+		t.Fatalf("expected generated_asset_unverifiable for anchor HTML with var but no source-hint text, got %#v", report.Findings)
 	}
 	anchorPath := filepath.Join(root, "docs/design/proof/anchor-screens/consumer.html")
 	orig, _ := os.ReadFile(anchorPath)
@@ -163,7 +163,7 @@ func TestTokenChecks_GeneratedAssetUnverifiable(t *testing.T) {
 	report2, _ := Check(root)
 	for _, f := range report2.Findings {
 		if f.Code == "generated_asset_unverifiable" && strings.Contains(f.Path, "anchor-screens/consumer.html") {
-			t.Fatalf("with digest, should not emit unverifiable, got %#v", report2.Findings)
+			t.Fatalf("with a source-hint comment, the text precondition should pass (not digest authentication), got %#v", report2.Findings)
 		}
 	}
 }

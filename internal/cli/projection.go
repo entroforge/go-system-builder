@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/change"
+	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // stageContract is the executable projection contract consumed by status and
@@ -30,16 +32,17 @@ type stageContract struct {
 const PrimarySkillS7 = "loop-orchestration"
 
 var projectionContracts = map[string]stageContract{
-	"S0":                 {"produce one human-locked requirement (draft via requirement-funnel; binding is the S1 action)", []string{"docs/requirements/"}, []string{"human_locked_req"}, []string{"a locked REQ exists in docs/requirements/ — `req bind` (S1) initializes the runtime and fingerprints it"}},
+	"S0":                 {"produce one human-locked requirement (draft via requirement-funnel; human explicitly locks, Main records locked status and the decision; save through an editor, script or copy tool; binding is the S1 action)", []string{"docs/requirements/"}, []string{"human_locked_req"}, []string{"the current requirement is complete and the human's actual lock of that version is recorded"}},
+	"S1":                 {"bind the selected locked requirement using the actual startup decision and explicit project branch destinations", []string{"docs/requirements/", "docs/control/agent-protocol.md#s1"}, []string{"current_binding_choices"}, []string{"the original TR-001 records the selected committed requirement, actual startup decision and branch destinations, and supplies the current S2 responsibility"}},
 	"S2":                 {"complete architecture and any required UI design package", []string{"bound REQ", projectlayout.Architecture + "/", "docs/design/", "docs/rules/"}, []string{"architecture_record"}, []string{"architecture decisions cover the contract boundary", "any UI-impacting module has a complete target design package"}},
-	"S3":                 {"complete the development contract set", []string{"bound REQ", projectlayout.Architecture + "/", "docs/design/", "docs/dev/contracts/"}, []string{"locked_contract_set"}, []string{"at least one contract set is locked and traces to the REQ"}},
-	"S4":                 {"complete an executable TASK batch", []string{"bound REQ", "docs/dev/contracts/", "docs/dev/tasks/"}, []string{"complete_task_batch"}, []string{"at least one TASK is complete and every contract clause has TASK coverage"}},
+	"S3":                 {"complete the development contract set", []string{"bound REQ", projectlayout.Architecture + "/", "docs/design/", "docs/dev/contracts/"}, []string{"locked_contract_set"}, []string{"the current bound REQ applicable locked contract batch and shared sources are accepted"}},
+	"S4":                 {"complete an executable TASK batch", []string{"bound REQ", "docs/dev/contracts/", "docs/dev/tasks/"}, []string{"complete_task_batch"}, []string{"the complete current TASK batch is accepted, with clause coverage and executable dependencies"}},
 	"S5":                 {"independently verify and atomically lock the specification chain", []string{"bound REQ", projectlayout.Architecture + "/", "docs/design/", "docs/dev/contracts/", "docs/dev/tasks/"}, []string{"joint_document_pass"}, []string{"document-verification responsibilities pass with current fingerprints"}},
-	"S6":                 {"implement the locked TASK batch", []string{"bound REQ", "locked contracts", "locked TASKs", "docs/control/agent-protocol.md#s6"}, []string{"builder_completion_reports", "verified_integration_checkpoints"}, []string{"every TASK in the TR-003 batch has a Builder Result with passing checks, no unapproved scope deviations, and a verified integration checkpoint (register results via `runtime task-complete`; no team manifest is required)"}},
+	"S6":                 {"implement the locked TASK batch", []string{"bound REQ", "locked contracts", "locked TASKs", "docs/control/agent-protocol.md#s6"}, []string{"builder_completion_reports", "verified_integration_checkpoints"}, []string{"every TASK in the TR-003 batch has a Builder Result with passing checks and no unapproved scope deviations, saved at the exact Result path supplied by the listener for the original Result consumer; Main verifies the required integration checkpoints"}},
 	"S7":                 {"complete one current full verification round", []string{"bound REQ", "locked specification chain", "Builder evidence", "docs/control/agent-protocol.md#s7"}, []string{"review_plan"}, []string{"every required Claim of the registered ReviewPlan has a consumed pass Result; findings seal into the ObservationBatch (TR-008), otherwise the machine CleanRound closes the round (TR-009)"}},
-	"S8":                 {"turn the sealed ObservationBatch into evidence-backed InvestigationCase dispositions", []string{"sealed ObservationBatch", "locked specification chain", "implementation"}, []string{"investigation_case", "causal_model_or_route"}, []string{"every Finding is covered by a Case route and every s9_repair Case has an approved RepairContract"}},
+	"S8":                 {"investigate the current reported problem and actual observations to form an evidence-backed InvestigationCase disposition", []string{"actual current source: sealed S7 observations or the human-reported problem", "locked specification chain", "implementation"}, []string{"investigation_case", "causal_model_or_route"}, []string{"the current reported problem has a Case disposition; actual Findings, when present, are covered by the Case route; every s9_repair Case has an approved RepairContract"}},
 	"S9":                 {"execute approved RepairContracts and target-reverify them", []string{"approved RepairContract", "locked specification chain", "implementation"}, []string{"targeted_reverification"}, []string{"repair evidence is current and the Contract assertions pass"}},
-	"S10":                {"complete acceptance and release audit", []string{"bound REQ", "current clean round", "docs/reports/acceptance/ACC-template.md", projectlayout.ReleaseAudits + "/TEMPLATE.md", "docs/rules/release-architecture-audit.md", ".claude/skills/acceptance-and-handoff/SKILL.md"}, []string{"coverage_inventory", "counterevidence_ledger", "acceptance_record", "release_audit"}, []string{"coverage inventory is frozen and 100% dispositioned", "counterevidence is recorded for every coverage item", "UNKNOWN, unsupported PASS, unowned risk, untracked debt, and blocking finding are all zero", "S9 changes have returned through a fresh S7 clean round; no S9→S10 shortcut"}},
+	"S10":                {"complete acceptance and release audit", []string{"bound REQ", "current clean round", "docs/reports/acceptance/ACC-template.md", projectlayout.ReleaseAudits + "/TEMPLATE.md", "docs/rules/release-architecture-audit.md", ".claude/skills/acceptance-and-handoff/SKILL.md"}, []string{"acceptance_record", "release_audit"}, []string{"the current Manifest explains actual requirement dispositions, applicable observations and counterevidence", "unknowns and blocking findings are resolved; remaining risks have actual owners and dispositions", "S9 changes have returned through a fresh S7 clean round; no S9→S10 shortcut"}},
 	"S11":                {"present the release-ready package to the human and record one explicit decision", []string{"acceptance record", "release audit", "release-ready package"}, []string{"human_decision"}, []string{"one explicit S11 decision is recorded or the Gateway remains awaiting a decision"}},
 	"release_authorized": {"S11 human-authorized terminal", []string{"human decision record"}, []string{}, []string{"human authorization is recorded; Harness performs no merge, publication, deployment, or formal release"}},
 	"aborted":            {"aborted terminal Runtime", []string{"human decision record"}, []string{}, []string{"automation remains stopped and only an eligible human-authorized rollover may start a new Runtime"}},
@@ -63,19 +66,20 @@ type statusProjection struct {
 }
 
 type nextProjection struct {
-	Stage         string   `json:"stage"`
-	ProtocolRef   string   `json:"protocol_ref"`
-	Objective     string   `json:"objective"`
-	Action        string   `json:"action"`
-	Read          []string `json:"read"`
-	PrimarySkill  string   `json:"primary_skill"`
-	Missing       []string `json:"missing"`
-	DoneWhen      []string `json:"done_when"`
-	Then          string   `json:"then"`
-	HumanRequired bool     `json:"human_required"`
-	ChangeID      string   `json:"change_id,omitempty"`
-	WorkItemID    string   `json:"work_item_id,omitempty"`
-	CheckIDs      []string `json:"check_ids,omitempty"`
+	Stage         string            `json:"stage"`
+	ProtocolRef   string            `json:"protocol_ref"`
+	Objective     string            `json:"objective"`
+	Action        string            `json:"action"`
+	Read          []string          `json:"read"`
+	PrimarySkill  string            `json:"primary_skill"`
+	Missing       []string          `json:"missing"`
+	DoneWhen      []string          `json:"done_when"`
+	Then          string            `json:"then"`
+	HumanRequired bool              `json:"human_required"`
+	ChangeID      string            `json:"change_id,omitempty"`
+	WorkItemID    string            `json:"work_item_id,omitempty"`
+	CheckIDs      []string          `json:"check_ids,omitempty"`
+	mainPlanning  *mainPlanningNext `json:"-"`
 }
 
 func buildStatusProjection(state map[string]any, stage, lifecycle string, phase any, root string) statusProjection {
@@ -84,7 +88,7 @@ func buildStatusProjection(state map[string]any, stage, lifecycle string, phase 
 		RuntimeID: state["runtime_id"], Revision: state["revision"], BoundREQ: state["bound_req"],
 		Stage: stage, Lifecycle: lifecycle, Phase: phase, Objective: contract.Objective,
 		Completed: completedStages(stage), OpenItems: contract.Missing,
-		ActiveWork: activeRuntimeWork(state), HumanGateway: projectedGateway(state, stage),
+		ActiveWork: activeRuntimeWork(state), HumanGateway: projectedGateway(state, stage, root),
 	}
 	if record, ok := projectedChange(state); ok {
 		summary := change.Summarize(record)
@@ -94,13 +98,27 @@ func buildStatusProjection(state map[string]any, stage, lifecycle string, phase 
 	return projection
 }
 
-func buildNextProjection(state map[string]any, stage, skill, action, root string) nextProjection {
+func buildNextProjection(state map[string]any, stage, skill, action, root string, mainViewer ...bool) nextProjection {
 	contract := contractFor(stage, state, root)
 	projection := nextProjection{
 		Stage: stage, ProtocolRef: protocolReference(stage), Objective: contract.Objective,
 		Action: action, Read: resolveBoundREQRead(contract.Read, state), PrimarySkill: skill,
 		Missing: contract.Missing, DoneWhen: contract.DoneWhen, Then: "recompute",
 		HumanRequired: stage == "S11" || stage == "paused" || stage == "aborted",
+	}
+	if stage == "S6" && len(nativeS6Records(state)) > 0 {
+		projection.Action = nativeS6MainGuidance(root, state)
+		projection.DoneWhen = []string{
+			"each assigned Builder saves its own professional plan, implements its reviewed TASK, runs real self-checks and returns the Result through native SubagentStop",
+			"Main explicitly integrates the original delivery, runs required Main checks, records ACK and completes cleanup; the full reviewed batch Gate remains required",
+		}
+	}
+	showMainPlanning := len(mainViewer) == 0 || mainViewer[0]
+	if showMainPlanning {
+		if planning := mainPlanningNextForState(state, stage); planning != nil {
+			projection.Action = planning.Action
+			projection.mainPlanning = planning
+		}
 	}
 	if record, ok := projectedChange(state); ok {
 		next := change.NextStep(record)
@@ -111,7 +129,7 @@ func buildNextProjection(state map[string]any, stage, skill, action, root string
 		projection.Missing = changeOpenItems(record)
 		projection.DoneWhen = []string{"all Change Record work items are done", "all required checks are passed or evidence-backed N/A"}
 	}
-	applyS7BudgetGateway(&projection, state)
+	applyS7BudgetGateway(&projection, state, root)
 	return projection
 }
 
@@ -130,7 +148,7 @@ func projectedChange(state map[string]any) (change.Record, bool) {
 func changeOpenItems(record change.Record) []string {
 	items := make([]string, 0)
 	for _, work := range record.WorkItems {
-		if work.Status == "open" || work.Status == "active" || work.Status == "blocked" {
+		if work.Status == "pending" || work.Status == "open" || work.Status == "active" || work.Status == "blocked" {
 			items = append(items, work.ID+": "+work.Text)
 		}
 	}
@@ -162,19 +180,28 @@ func contractFor(stage string, state map[string]any, root string) stageContract 
 	contract.DoneWhen = cloneStrings(contract.DoneWhen)
 	switch stage {
 	case "S2":
-		if hasMarkdownArtifact(root, projectlayout.Architecture, "ARCHITECTURE-*.md", "") {
-			contract.Missing = []string{"contract_set"}
-			if boundREQHasUIImpact(state) {
-				complete, _ := hasCompleteUIDesignPackageForREQ(root, boundREQPathFromState(state))
-				if !complete {
-					contract.Missing = []string{"ui_design_package"}
-				}
+		// Keep the projection scoped to S2. An architecture artifact on disk
+		// does not prove that the current design was accepted, and it cannot
+		// imply the S3 contract set or S4 task batch.
+		if currentDesignReceived(state) {
+			// Reception is authoritative even when its original stage outlet
+			// still needs work. The questionnaire feedback names that work.
+			contract.Missing = nil
+		}
+		if boundREQHasUIImpact(state) {
+			if err := inspectUIDesignPackageFilesForREQ(root, boundREQPathFromState(state)); err != nil {
+				contract.Missing = appendUnique(contract.Missing, "ui_design_package: "+err.Error())
 			}
 		}
 	case "S3":
 		// Stay inside the current stage until its quality gate commits the
 		// advance. A filename (even a locked one) is not current REQ evidence.
 		contract.Missing = []string{"locked_contract_set", "planning_contract_record"}
+		if row, err := registeredPlanningRow(state); err == nil && row != nil {
+			if record, found, err := runtime.FindSubmission(state, stringValue(row["packet_id"])); err == nil && found && record.Owner == "Main" && record.OriginState == "planning" && record.OriginPhase == "contracts" && record.OriginEntry == tolerantInt(mapFieldCLI(state, "lifecycle")["phase_revision"]) {
+				contract.Missing = nil
+			}
+		}
 	case "S4":
 		switch {
 		case !hasMarkdownArtifact(root, projectlayout.Contracts, "CONTRACTS-*.md", "locked"):
@@ -193,9 +220,9 @@ func contractFor(stage string, state map[string]any, root string) stageContract 
 	case "S10":
 		switch lifecycleState(state) {
 		case "acceptance":
-			contract.Missing = []string{"coverage_inventory", "counterevidence_ledger", "acceptance_manifest"}
+			contract.Missing = []string{"current_acceptance_manifest"}
 		case "release_audit":
-			contract.Missing = []string{"audit_areas:8", "counterevidence_ledger", "release_audit_manifest", "s11_handoff"}
+			contract.Missing = []string{"current_release_audit_manifest"}
 		}
 	case "S11":
 		if lifecycleState(state) == "awaiting_human_release" {
@@ -205,6 +232,30 @@ func contractFor(stage string, state map[string]any, root string) stageContract 
 		}
 	}
 	return contract
+}
+
+// currentDesignReceived reads only the current responsibility and reception
+// facts. A document on disk or an older stage's accepted answer is insufficient.
+func currentDesignReceived(state map[string]any) bool {
+	if !runtime.PacketEnabled(state) {
+		return false
+	}
+	baseline, _ := state["baseline"].(map[string]any)
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	if lifecycle["state"] != "planning" || lifecycle["phase"] != "design" {
+		return false
+	}
+	binding := workpacket.PlanningBinding{
+		RuntimeID:  stringValue(state["runtime_id"]),
+		Generation: integerValue(baseline["generation"]),
+		StageEntry: integerValue(lifecycle["phase_revision"]),
+	}
+	packet, issued, conflict := currentDesignPlanningPacket(state, workpacket.DesignPacket{Binding: binding})
+	if !issued || conflict {
+		return false
+	}
+	record, found, err := runtime.FindSubmission(state, packet.ID)
+	return err == nil && found && record.PacketID == packet.ID && record.OriginState == "planning" && record.OriginPhase == "design" && record.OriginEntry == binding.StageEntry
 }
 
 func cloneStrings(values []string) []string {
@@ -323,13 +374,43 @@ func resolveBoundREQRead(read []string, state map[string]any) []string {
 			reqPath = path
 		}
 	}
-	result := append([]string(nil), read...)
-	for i := range result {
-		if result[i] == "bound REQ" {
-			result[i] = reqPath
+	result := make([]string, 0, len(read))
+	for _, ref := range read {
+		if ref == "bound REQ" {
+			result = append(result, reqPath)
+			continue
 		}
+		kind := map[string]string{"locked contracts": "contract", "locked TASKs": "task"}[ref]
+		if kind != "" {
+			if paths := currentLockedReadPaths(state, kind); len(paths) > 0 {
+				result = append(result, paths...)
+				continue
+			}
+		}
+		result = append(result, ref)
 	}
 	return result
+}
+
+// Read categories are diagnostic projections of original document rows. They
+// grant no source authority and never infer registration from directory files.
+func currentLockedReadPaths(state map[string]any, kind string) []string {
+	baseline, _ := state["baseline"].(map[string]any)
+	generation := tolerantInt(baseline["generation"])
+	rows, _ := state["documents"].([]any)
+	seen := map[string]bool{}
+	var paths []string
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		path, _ := row["path"].(string)
+		if row["kind"] != kind || row["status"] != "locked" || tolerantInt(row["generation"]) != generation || path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func protocolReference(stage string) string {
@@ -342,6 +423,7 @@ func protocolReference(stage string) string {
 func completedStages(stage string) []string {
 	known := map[string][]string{
 		"S0":      {},
+		"S1":      {"S0"},
 		"S2":      {"S0", "S1"},
 		"S3":      {"S0", "S1", "S2"},
 		"S4":      {"S0", "S1", "S2", "S3"},
@@ -392,24 +474,23 @@ func stringValue(value any) string {
 	return text
 }
 
-func projectedGateway(state map[string]any, stage string) any {
-	if s7BudgetGateRequired(state) {
+func projectedGateway(state map[string]any, stage string, roots ...string) any {
+	if s7BudgetGateRequired(state, roots...) {
 		return map[string]any{
-			"type":             "s7_budget_gateway",
-			"human_required":   true,
-			"decision_command": "loop-harness runtime s7-budget-decision --file <decision.json> --actor <user>",
-			"decisions":        []string{"increase_budget", "return_to_governance"},
-			"guidance":         "the current S7 round may finish, but no new full review round opens until the human decision is recorded",
+			"type":            "s7_budget_gateway",
+			"human_required":  true,
+			"decision_fields": []string{"decision", "new_max_full_review_rounds (only an actual increase)", "reason"},
+			"decisions":       []string{"increase_budget", "return_to_governance"},
+			"guidance":        "Use the exact prepared original budget application. Main records only the human's actual decision and reason, plus a genuinely higher maximum for increase_budget; save to invoke the original Writer and fixed successor. Do not copy Runtime metadata, author evidence or supply an actor command. An empty choice does not authorize another round.",
 		}
 	}
 	switch lifecycleState(state) {
 	case "awaiting_human_release":
 		return map[string]any{
-			"type":             "human_release_gateway",
-			"human_required":   true,
-			"decision_command": "loop-harness runtime human-decision --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> --actor <user|orchestrator> --decision-evidence <ref>",
-			"dispositions":     []string{"approve", "defer", "reject_defect", "reject_acceptance", "reject_release_audit", "abort"},
-			"finding_evidence": "--finding-evidence <ref> is required for reject_defect",
+			"type":           "human_release_gateway",
+			"human_required": true,
+			"dispositions":   []string{"approve", "defer", "reject_defect", "reject_acceptance", "reject_release_audit", "abort"},
+			"guidance":       "Read the current S10 materials and exact application path supplied by the original stage entry. After the human explicitly chooses, Main fills only disposition and optional reason and saves that application; the original Writer records and consumes the decision and follows its fixed exit. Empty disposition keeps waiting. System metadata and evidence registration are automatic; reject_defect hands the actual human problem to S8 without requiring a Finding. Approval records authorization and does not publish or deploy.",
 		}
 	case "release_authorized":
 		return map[string]any{

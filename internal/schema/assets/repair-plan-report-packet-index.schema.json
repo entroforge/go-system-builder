@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "repair-plan-report-packet-index.schema.json",
+  "title": "S9 PlanReport WorkPacket immutable body index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet_id",
+    "template_id",
+    "template_sha256",
+    "binding",
+    "report_id",
+    "issuance_event_id",
+    "view_path",
+    "answer_path",
+    "storage_format",
+    "body_ref"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "pattern": "^packet-[a-f0-9]{64}$"
+    },
+    "template_id": {
+      "const": "s9-plan-report-v1"
+    },
+    "template_sha256": {
+      "$ref": "repair-plan-report-work-packet.schema.json#/$defs/sha256"
+    },
+    "binding": {
+      "$ref": "repair-plan-report-work-packet.schema.json#/$defs/binding"
+    },
+    "report_id": {
+      "type": "string",
+      "pattern": "^repair-plan-report-[a-f0-9]{64}$"
+    },
+    "issuance_event_id": {
+      "type": "string",
+      "pattern": "^evt-repair-plan-report-packet-packet-[a-f0-9]{64}$"
+    },
+    "view_path": {
+      "type": "string",
+      "pattern": "^\\.claude/work-packets/[^\\\\:#]+\\.json$"
+    },
+    "answer_path": {
+      "type": "string",
+      "pattern": "^\\.claude/submissions/[^\\\\:#]+/answer\\.json$"
+    },
+    "storage_format": {
+      "const": "packet-body-ref-v1"
+    },
+    "body_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "format": {
+          "const": "packet-json-v1"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^\\.claude/packet-bodies/[0-9a-f]{64}\\.json$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20971520
+        }
+      }
+    }
+  }
+}

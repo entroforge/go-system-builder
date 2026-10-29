@@ -47,6 +47,10 @@ func Check(root string) (Report, error) {
 	if na, err := foundationNA(root); err != nil {
 		return report, err
 	} else if na {
+		changedREQs, err := listChangedREQs(root)
+		if err != nil {
+			return report, err
+		}
 		report.Skipped = true
 		report.Findings = append(report.Findings, Finding{
 			Code:     "foundation_na",
@@ -54,6 +58,14 @@ func Check(root string) (Report, error) {
 			Path:     "docs/project-map.md",
 			Detail:   "project map marks Design Foundation N/A; skip UI language checks",
 		})
+		for _, req := range changedREQs {
+			report.Findings = append(report.Findings, Finding{
+				Code:     "foundation_na_conflict",
+				Severity: SeverityWarning,
+				Path:     req.Path,
+				Detail:   "docs/project-map.md declares Design Foundation N/A or no product surfaces, but " + req.Path + " declares locked UI impact=changed. Main must reconcile the original project/REQ facts; this advisory does not choose an investment tier or require a no-UI proof package. UI language checks remain skipped.",
+			})
+		}
 		return report, nil
 	}
 
@@ -186,6 +198,10 @@ func Check(root string) (Report, error) {
 		return report, err
 	}
 	report.Findings = append(report.Findings, hexFindings...)
+	report.Findings = append(report.Findings, Finding{
+		Code: "design_token_scope", Severity: SeverityInfo, Path: "docs/design",
+		Detail: "Built-in color checks recognize finite hex/rgb/hsl patterns in docs/design lowercase .html/.css text, excluding templates, README, style-tiles, portable snapshots and managed worktrees; src/ and other product code are outside this scan. Only declared color.primitive.* var references and scoped HTML source hints are checked after published contract-v1. An existing tokens.css can be compared with the current in-memory emitter; no browser consumption or inline-digest authentication is implied. Optional project rules use their own configured targets.",
+	})
 
 	dupFindings, err := LintDuplicateComponents(root)
 	if err != nil {

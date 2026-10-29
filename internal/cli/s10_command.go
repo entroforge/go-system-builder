@@ -15,17 +15,16 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 )
 
-// runS10Command exposes the small S10 tool surface used by the Agent at the
-// point where the work is naturally produced. It deliberately has no write
-// operation: validation and status make the next evidence-registration step
-// explicit, while Runtime transitions remain Controller-owned.
+// runS10Command retains explicit diagnostic interfaces. Normal authors fill
+// and save the exact current Hook questionnaire; its original consumer records
+// the report and handles this step's outlet, without a second envelope.
 func runS10Command(args []string, stdout, stderr io.Writer) int {
 	if wantsHelp(args) {
 		name := compactHelpName(args)
 		if name == "" {
 			name = "<status|manifest init|manifest validate|manifest render|manifest scaffold>"
 		}
-		printCommandHelp(stdout, "loop-harness s10 "+name, "S10 is a read-only macro audit: inspect status, validate the finite manifest, render its Markdown report, scaffold a copyable manifest/envelope shape, and route defects back through S7→S8→S9.")
+		printCommandHelp(stdout, "loop-harness s10 "+name, "S10 diagnostics inspect existing records or show legacy shapes. For normal work, fill the existing fields at the exact Manifest path supplied by the current Hook and save that file; the system records it and handles this step. Diagnostics do not supply the author conclusion or require manual evidence registration.")
 		return 0
 	}
 	if len(args) == 0 {
@@ -63,12 +62,12 @@ func runS10Manifest(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "repository root")
 	file := flags.String("file", "", "S10 manifest JSON path relative to repository root")
 	kind := flags.String("type", "", "manifest type: acceptance or release_audit (default: read manifest_type)")
-	outcome := flags.String("outcome", "pass", "evidence outcome: pass, review_required, approved, approved_with_risk, or blocked")
+	outcome := flags.String("outcome", "pass", "diagnostic outcome argument: pass, review_required, approved, approved_with_risk, or blocked; does not fill the questionnaire conclusion")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
 	if strings.TrimSpace(*file) == "" {
-		fmt.Fprintln(stderr, "s10 manifest validate requires --file <manifest.json>; next: write the finite coverage_inventory and counterevidence ledger first")
+		fmt.Fprintln(stderr, "s10 manifest validate requires --file <manifest.json>; use the exact current Hook Manifest path. Normal authors fill its existing professional fields and save; no separate ledger or envelope is required.")
 		return 2
 	}
 	manifestPath, err := safeS10Path(*root, *file)
@@ -78,7 +77,7 @@ func runS10Manifest(args []string, stdout, stderr io.Writer) int {
 	}
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "s10 manifest validate: read %s: %v; next: provide the manifest path from the current S10 assignment\n", *file, err)
+		fmt.Fprintf(stderr, "s10 manifest validate: read %s: %v; next: read the exact Manifest path supplied by the current Hook and save that existing questionnaire\n", *file, err)
 		return 1
 	}
 	manifestType := strings.TrimSpace(*kind)
@@ -87,21 +86,21 @@ func runS10Manifest(args []string, stdout, stderr io.Writer) int {
 			ManifestType string `json:"manifest_type"`
 		}
 		if err := json.Unmarshal(data, &header); err != nil {
-			fmt.Fprintf(stderr, "s10 manifest validate: %v\n", err)
+			fmt.Fprintf(stderr, "s10 manifest validate %s: %v; next: correct the reported fields in this file; normal submission uses the exact current Hook Manifest and its save receiver\n", *file, err)
 			return 1
 		}
 		manifestType = header.ManifestType
 	}
 	summary, err := validateS10ManifestForRepository(*root, data, manifestType, strings.TrimSpace(*outcome))
 	if err != nil {
-		fmt.Fprintf(stderr, "s10 manifest validate: %v\n", err)
+		fmt.Fprintf(stderr, "s10 manifest validate %s: %v; next: correct the reported fields in this file; normal submission uses the exact current Hook Manifest and its save receiver\n", *file, err)
 		return 1
 	}
-	next := "create a fingerprinted acceptance/release-audit evidence envelope pointing to this immutable manifest, then register it with `loop-harness runtime evidence add --id <id> --kind <acceptance|release_audit> --path <envelope.json> --produced-by <agent> --responsibility <role>`; let the Controller evaluate the next gate and do not call runtime transition"
+	next := "This diagnostic did not submit a report or choose its conclusion. Fill the existing fields at the exact Manifest path supplied by the current Hook and save it; the system records the professional report and handles this step. Do not create or manually register an envelope."
 	if strings.TrimSpace(*outcome) == "blocked" {
-		next = "register the blocked release-audit envelope with `loop-harness runtime evidence add`, then let the Controller take TR-018 to paused; do not call runtime transition"
+		next = "Record the actual blocked conclusion and reason in the current Hook Manifest and save it; the system records that report and handles its original blocker route. This diagnostic did not submit it; no manual envelope registration is needed."
 	} else if strings.TrimSpace(*outcome) == "review_required" {
-		next = "register the review-required acceptance envelope with `loop-harness runtime evidence add`, then let the Controller route TR-016 back to S7; do not call runtime transition"
+		next = "Record the actual review_required conclusion and unfinished work in the current Hook Manifest and save it; the system records that report and handles its original return route. This diagnostic did not submit it; no manual envelope registration is needed."
 	}
 	return encodeJSON(stdout, map[string]any{
 		"valid":                 true,
@@ -116,16 +115,9 @@ func runS10Manifest(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
-// runS10ManifestInit (RC-18 F-H2) emits the missing manifest scaffold: the
-// `scaffold` verb covers the evidence envelope, but the manifest itself — the
-// finite coverage_inventory plus counterevidence ledger the schema requires —
-// previously had to be copied out of the examples by reading source. The
-// template carries the full s10-audit-manifest.schema.json required set
-// (including metrics.audit_area_coverage for release_audit) with every
-// agent-supplied fact as a <PLACEHOLDER>, so it can never validate or be
-// registered verbatim: filling the placeholders is the work. `--emit-template
-// -` writes to stdout; any other path is written exclusively (never
-// overwriting an existing file). Dry-run: Runtime state is untouched.
+// runS10ManifestInit retains a diagnostic template emitter. Normal authors use
+// the already prepared current questionnaire instead of copying this legacy
+// shape, its machine metadata or placeholder metrics into another report.
 func runS10ManifestInit(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("s10 manifest init", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -138,7 +130,7 @@ func runS10ManifestInit(args []string, stdout, stderr io.Writer) int {
 	}
 	kind := strings.TrimSpace(*manifestType)
 	if kind != "acceptance" && kind != "release_audit" {
-		fmt.Fprintln(stderr, "s10 manifest init requires --type acceptance or --type release_audit; next: pick the manifest the current cursor needs, then fill every <PLACEHOLDER> and run `loop-harness s10 manifest validate --file <path> --type <type>`")
+		fmt.Fprintln(stderr, "s10 manifest init requires --type acceptance or --type release_audit for a diagnostic template. For normal work, fill and save the exact current Hook Manifest; initialization is not an author prerequisite.")
 		return 2
 	}
 	template := s10ManifestTemplate(kind)
@@ -150,7 +142,7 @@ func runS10ManifestInit(args []string, stdout, stderr io.Writer) int {
 	data = append(data, '\n')
 	target := strings.TrimSpace(*emitTemplate)
 	if target == "-" || target == "" {
-		fmt.Fprintln(stderr, "s10 manifest init: manifest template below (stdout; dry-run, not written to disk) — replace every <PLACEHOLDER>, then validate with `loop-harness s10 manifest validate --file <path> --type "+kind+"`")
+		fmt.Fprintln(stderr, "s10 manifest init: legacy diagnostic template below (stdout; no Runtime change). For normal "+kind+" work, fill and save the existing exact Hook questionnaire; do not copy its machine metadata or create another report.")
 		if _, err := stdout.Write(data); err != nil {
 			fmt.Fprintf(stderr, "s10 manifest init: write stdout: %v\n", err)
 			return 1
@@ -182,14 +174,12 @@ func runS10ManifestInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "s10 manifest init: close %s: %v\n", target, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "wrote %s manifest template to %s; replace every <PLACEHOLDER>, then validate with `loop-harness s10 manifest validate --file %s --type %s`\n", kind, target, target, kind)
+	fmt.Fprintf(stdout, "wrote diagnostic %s template to %s; normal work uses the exact current Hook Manifest and its existing fields. Save that questionnaire; no separate envelope or manual registration is needed.\n", kind, target)
 	return 0
 }
 
-// s10ManifestTemplate builds the minimal-yet-complete manifest shape for the
-// requested type. Fields the schema requires but only the audit can fill stay
-// <PLACEHOLDER>; nothing outside the schema's additionalProperties:false set
-// is emitted, so the filled template cannot be rejected for unknown fields.
+// s10ManifestTemplate preserves the legacy diagnostic shape. Placeholder
+// metadata and metrics are not normal author obligations.
 func s10ManifestTemplate(manifestType string) map[string]any {
 	metrics := map[string]any{
 		"requirement_coverage":   "<COVERAGE-0-TO-1>",
@@ -216,9 +206,9 @@ func s10ManifestTemplate(manifestType string) map[string]any {
 				"category":      "<requirement|contract|changed_path>",
 				"source_refs":   []any{"<SOURCE-REF>"},
 				"expected":      "<EXPECTED-CLAIM>",
-				"oracle":        "<FALSIFYING-ORACLE>",
+				"oracle":        "<OPTIONAL-JUDGMENT-OR-OBSERVATION>",
 				"owner":         "<OWNER-ROLE>",
-				"evidence_refs": []any{"<EVIDENCE-ID>"},
+				"evidence_refs": []any{"<EXISTING-FILE-OR-OUTPUT-IF-AVAILABLE>"},
 				"disposition":   "<pass|not_applicable|unknown|fail>",
 			},
 		},
@@ -239,21 +229,15 @@ func s10ManifestTemplate(manifestType string) map[string]any {
 	}
 }
 
-// runS10ManifestScaffold (RC-18 F-H2) writes a copyable starting shape for
-// the S10 evidence envelope — the missing scaffold the manifest examples did
-// not cover. The envelope is the fingerprinted artifact `runtime evidence
-// add --kind acceptance|release_audit` registers, so the template carries the
-// required conclusion plus the audit_manifest_path/sha256 binding to a
-// manifest the caller has already validated. `--type accepted|blocked` picks
-// the release-audit conclusion; every fact an Agent must supply stays a
-// <PLACEHOLDER> so the scaffold can never be registered verbatim. The
-// command is dry-run: it never writes Runtime state.
+// runS10ManifestScaffold preserves a diagnostic envelope example for explicit
+// compatibility work. Normal questionnaire saves already supply this internal
+// record; authors do not construct or register it.
 func runS10ManifestScaffold(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("s10 manifest scaffold", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	bindUsage(flags, "s10 manifest scaffold")
 	kind := flags.String("type", "accepted", "conclusion to scaffold: accepted or blocked")
-	manifestPath := flags.String("manifest", "s10/manifest.json", "validated S10 manifest path the envelope binds (repository-relative)")
+	manifestPath := flags.String("manifest", "s10/manifest.json", "manifest path shown by the legacy diagnostic example (repository-relative)")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
@@ -276,7 +260,7 @@ func runS10ManifestScaffold(args []string, stdout, stderr io.Writer) int {
 		"conclusion":              conclusion,
 		"audit_manifest_path":     manifest,
 		"audit_manifest_sha256":   "<SHA256-OF-MANIFEST-FILE>",
-		"disclosure":              "dry-run scaffold only — replace every <PLACEHOLDER> with current Runtime facts, then register with `loop-harness runtime evidence add --id <id> --kind release_audit --path <envelope.json> --produced-by <agent> --responsibility <role>`; never edit a registered envelope in place",
+		"disclosure":              "Legacy diagnostic example only, not a normal author task. Fill the existing fields at the exact current Hook Manifest path and save it; the system supplies machine metadata, records the report and handles this step. Do not copy this envelope or manually register evidence.",
 	}
 	if conclusion == "accepted" {
 		envelope["conclusion"] = "approved"
@@ -288,7 +272,7 @@ func runS10ManifestScaffold(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	data = append(data, '\n')
-	fmt.Fprintln(stderr, "s10 manifest scaffold: envelope template below (stdout; dry-run, not written to disk)")
+	fmt.Fprintln(stderr, "s10 manifest scaffold: legacy diagnostic example below (stdout; no Runtime change). Normal authors save the exact current Hook questionnaire, not this envelope.")
 	_, err = stdout.Write(data)
 	if err != nil {
 		fmt.Fprintf(stderr, "s10 manifest scaffold: write stdout: %v\n", err)
@@ -297,10 +281,9 @@ func runS10ManifestScaffold(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runS10ManifestRender renders the 16-section ACC/release-audit Markdown
-// from a validated manifest (RC-11 C-5: the Markdown is a projection of the
-// manifest, not a second hand-maintained carrier). The manifest must pass the
-// same validation the Gate runs; output goes to stdout or --output.
+// runS10ManifestRender is the retained explicit diagnostic renderer. Normal
+// completion uses the existing RenderMarkdown projection at its save outlet;
+// authors do not maintain a second report or run this CLI to submit one.
 func runS10ManifestRender(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("s10 manifest render", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -313,7 +296,7 @@ func runS10ManifestRender(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if strings.TrimSpace(*file) == "" {
-		fmt.Fprintln(stderr, "s10 manifest render requires --file <manifest.json>; next: validate the manifest first with `loop-harness s10 manifest validate --file <path>`")
+		fmt.Fprintln(stderr, "s10 manifest render requires --file <manifest.json>; next: use the exact current Hook Manifest path; normal work is filled and saved there, without a separate diagnostic step")
 		return 2
 	}
 	manifestPath, err := safeS10Path(*root, *file)
@@ -323,7 +306,7 @@ func runS10ManifestRender(args []string, stdout, stderr io.Writer) int {
 	}
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "s10 manifest render: read %s: %v; next: validate the manifest first with `loop-harness s10 manifest validate --file <path>`\n", *file, err)
+		fmt.Fprintf(stderr, "s10 manifest render: read %s: %v; next: use the exact current Hook Manifest path; normal work is filled and saved there, without a separate diagnostic step\n", *file, err)
 		return 1
 	}
 	manifestType := strings.TrimSpace(*kind)
@@ -337,16 +320,13 @@ func runS10ManifestRender(args []string, stdout, stderr io.Writer) int {
 		}
 		manifestType = header.ManifestType
 	}
-	// A routed outcome keeps its unresolved rows by design; rendering must
-	// not require a clean ledger, only the completeness the Gate enforces
-	// either way. The repository-aware helper also applies the shared baseline
-	// and authoritative inventory checks when the current Runtime is available.
+	// Keep this legacy diagnostic path separate from the normal save outlet.
 	summary, err := validateS10ManifestForRepository(*root, data, manifestType, "review_required")
 	if err != nil {
 		summary, err = validateS10ManifestForRepository(*root, data, manifestType, "blocked")
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "s10 manifest render: %v; next: fix the named rows with `loop-harness s10 manifest validate --file <path>`, then re-render\n", err)
+		fmt.Fprintf(stderr, "s10 manifest render: %v; next: normal authors continue the exact current Hook questionnaire and save its professional fields; this diagnostic does not register or submit a report\n", err)
 		return 1
 	}
 	var manifest acceptance.Manifest
@@ -428,7 +408,7 @@ func runS10Status(args []string, stdout, stderr io.Writer) int {
 		Guardrails: []string{
 			"S9 has no direct S10 exit; every repair must return through a fresh S7 clean round",
 			"S10 is read-only for product code, locked REQ, contracts, and TASKs",
-			"UNKNOWN, unsupported PASS, unowned risk, untracked debt, and blocking finding must be zero before S11",
+			"Main owns the professional conclusion and actual remaining work; displayed metrics do not certify coverage or evidence sufficiency",
 		},
 	}
 	switch lifecycle {
@@ -443,145 +423,116 @@ func runS10Status(args []string, stdout, stderr io.Writer) int {
 }
 
 func inspectS10Artifact(root string, state map[string]any, manifestType string) s10ArtifactStatus {
-	result := s10ArtifactStatus{
-		State: "missing",
-		Next:  "produce the " + manifestType + " manifest, validate it, then register a fingerprinted evidence envelope",
-	}
-	runtimeID := stringValue(state["runtime_id"])
-	currentGeneration := integerValue(nestedStateValue(state, "baseline", "generation"))
-	currentRound := integerValue(nestedStateValue(state, "review", "round"))
-	wantedKinds := map[string]bool{manifestType: true}
-	if manifestType == "acceptance" {
-		wantedKinds["acceptance_record"] = true
+	result := s10ArtifactStatus{State: "missing"}
+	path, pathErr := auditQuestionnairePath(root, state, manifestType)
+	if pathErr == nil {
+		result.ManifestPath = path
+		result.Next = fmt.Sprintf("Continue the current %s questionnaire at %s; Main supplies any missing responsibility materials.", manifestType, filepath.Join(root, filepath.FromSlash(path)))
 	} else {
-		wantedKinds["release_audit_record"] = true
+		result.Next = "Main must resolve the current questionnaire path: " + pathErr.Error()
 	}
-	// The evidence ledger is append-only and RecordEvidence rejects duplicate
-	// ids, so recovery from a bad registration means registering a NEW id.
-	// Select the LAST matching valid entry: the newest registration supersedes
-	// earlier ones (RC-15 S10-H2), and first-match would wedge the board on a
-	// stale row forever.
 	var selected map[string]any
 	for _, raw := range stateEvidence(state) {
 		entry, _ := raw.(map[string]any)
-		if entry == nil || !wantedKinds[stringValue(entry["kind"])] || stringValue(entry["status"]) != "valid" {
-			continue
+		kind := stringValue(entry["kind"])
+		if (kind == manifestType || kind == manifestType+"_record") && stringValue(entry["status"]) == "valid" &&
+			integerValue(entry["baseline_generation"]) == integerValue(nestedStateValue(state, "baseline", "generation")) &&
+			integerValue(entry["review_round"]) == integerValue(nestedStateValue(state, "review", "round")) && entry["invalidated_by"] == nil {
+			selected = entry
 		}
-		selected = entry
 	}
-	{
-		entry := selected
-		if entry == nil {
-			return result
-		}
-		if entry["invalidated_by"] != nil {
-			return s10InvalidArtifact(result, "evidence is invalidated; register a new current S10 evidence envelope")
-		}
-		if integerValue(entry["baseline_generation"]) != currentGeneration || integerValue(entry["review_round"]) != currentRound {
-			return s10InvalidArtifact(result, "evidence binding is stale; baseline_generation and review_round must match the current Runtime")
-		}
-		result.EvidenceID = stringValue(entry["id"])
-		path := stringValue(entry["path"])
-		evidencePath, pathErr := safeS10Path(root, path)
-		if pathErr != nil {
-			return s10InvalidArtifact(result, pathErr.Error())
-		}
-		data, err := os.ReadFile(evidencePath)
-		if err != nil {
-			return s10InvalidArtifact(result, "evidence artifact unreadable: "+err.Error())
-		}
-		if sha256HexForArtifact(data) != stringValue(entry["sha256"]) {
-			return s10InvalidArtifact(result, "evidence artifact hash mismatch; register a new immutable envelope")
-		}
-		var envelope struct {
-			RuntimeID          string `json:"runtime_id"`
-			BaselineGeneration int    `json:"baseline_generation"`
-			ReviewRound        int    `json:"review_round"`
-			Conclusion         string `json:"conclusion"`
-			ManifestPath       string `json:"audit_manifest_path"`
-			ManifestSHA        string `json:"audit_manifest_sha256"`
-		}
-		if err := json.Unmarshal(data, &envelope); err != nil || envelope.ManifestPath == "" || envelope.ManifestSHA == "" {
-			return s10InvalidArtifact(result, "audit_manifest_path and audit_manifest_sha256 are required")
-		}
-		if envelope.RuntimeID != runtimeID || envelope.BaselineGeneration != currentGeneration || envelope.ReviewRound != currentRound {
-			return s10InvalidArtifact(result, "evidence binding is stale; runtime_id, baseline_generation, and review_round must match the current Runtime")
-		}
-		result.ManifestPath = envelope.ManifestPath
-		result.Conclusion = strings.TrimSpace(envelope.Conclusion)
-		manifestFile, pathErr := safeS10Path(root, envelope.ManifestPath)
-		if pathErr != nil {
-			return s10InvalidArtifact(result, pathErr.Error())
-		}
-		manifestData, err := os.ReadFile(manifestFile)
-		if err != nil {
-			return s10InvalidArtifact(result, "manifest unreadable: "+err.Error())
-		}
-		if sha256HexForArtifact(manifestData) != envelope.ManifestSHA {
-			return s10InvalidArtifact(result, "manifest hash mismatch; do not edit in place, regenerate and re-register")
-		}
-		// RC-16: status/gate single source. The same qualitygate.S10ExternalBaseline
-		// builder that feeds the gate's ValidateForOutcomeWithBaseline is used here,
-		// so `s10 status` and the gate can never diverge on the external denominator.
-		baseline, baselineErr := qualitygate.S10ExternalBaseline(root, state, nil)
-		if baselineErr != nil {
-			return s10InvalidArtifact(result, "external changed-surface baseline is unverifiable: "+baselineErr.Error()+"; next: restore the current-generation completion artifacts so the changed-surface denominator can be re-derived, then re-run `s10 status`")
-		}
-		var summary acceptance.Summary
-		if acceptance.S10AuthorityAvailable(state) {
-			authority, authorityErr := acceptance.BuildS10InventoryAuthority(root, state, baseline)
-			if authorityErr != nil {
-				return s10InvalidArtifact(result, "authoritative inventory is unverifiable: "+authorityErr.Error()+"; next: restore the current bound REQ, contract/TASK registrations, and pinned S7 ReviewPlan")
-			}
-			summary, err = acceptance.ValidateForOutcomeWithBaselineAndAuthority(manifestData, manifestType, result.Conclusion, baseline, authority)
-		} else {
-			summary, err = acceptance.ValidateForOutcomeWithBaseline(manifestData, manifestType, result.Conclusion, baseline)
-		}
-		if err != nil {
-			return s10InvalidArtifact(result, err.Error())
-		}
-		var manifestBinding struct {
-			RuntimeID          string `json:"runtime_id"`
-			BaselineGeneration int    `json:"baseline_generation"`
-			ReviewRound        int    `json:"review_round"`
-		}
-		if err := json.Unmarshal(manifestData, &manifestBinding); err != nil || manifestBinding.RuntimeID != runtimeID || manifestBinding.BaselineGeneration != currentGeneration || manifestBinding.ReviewRound != currentRound {
-			return s10InvalidArtifact(result, "manifest binding is stale; runtime_id, baseline_generation, and review_round must match the current Runtime")
-		}
-		result.InventoryCount = summary.InventoryCount
-		result.CounterevidenceCount = summary.CounterevidenceCount
-		result.AuditAreaCount = summary.AuditAreaCount
-		result.EvidenceRefsCount = len(summary.EvidenceRefs)
-		result.Metrics = summary.Metrics
-		// RC-16: routed outcomes are no longer surfaced before the strict
-		// reference audit — the same missingS10EvidenceRefs audit the gate
-		// applies must pass for every outcome, so `s10 status` cannot declare
-		// a route ready on a ledger the gate would reject.
-		if missing := missingS10EvidenceRefsInStateWithSelf(root, state, result.EvidenceID, summary.EvidenceRefs); len(missing) > 0 {
-			return s10InvalidArtifact(result, "manifest references evidence not registered as current valid Runtime evidence: "+strings.Join(missing, ", ")+"; ids match runtime evidence verbatim — copy them from `.claude/loop-state.json` evidence[].id; register those evidence artifacts first, then regenerate and re-register this manifest")
-		}
-		if result.Conclusion == "blocked" || result.Conclusion == "review_required" {
-			// Routed outcomes keep their unresolved rows by design
-			// (acceptance.ValidateForOutcomeWithBaseline); the route itself is
-			// the actionable fact once the ledger audit passes.
-			result.State = result.Conclusion
-			if result.Conclusion == "blocked" {
-				result.Next = "let the Controller take TR-018 to paused with the recorded blocker; do not call runtime transition"
-			} else {
-				result.Next = "let the Controller route TR-016 back to S7 for a fresh complete round; do not call runtime transition"
-			}
-			return result
-		}
-		result.State = "ready"
-		result.Next = "let the Controller evaluate the S10 gate; do not call runtime transition or release commands"
+	if selected == nil {
 		return result
 	}
+	result.EvidenceID = stringValue(selected["id"])
+	envelopePath, err := safeS10Path(root, stringValue(selected["path"]))
+	if err != nil {
+		return s10InvalidArtifact(result, err.Error())
+	}
+	data, err := os.ReadFile(envelopePath)
+	if err != nil {
+		return s10InvalidArtifact(result, "recorded report unreadable: "+err.Error())
+	}
+	var envelope struct {
+		ManifestPath string `json:"audit_manifest_path"`
+		Conclusion   string `json:"conclusion"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return s10InvalidArtifact(result, err.Error())
+	}
+	if envelope.ManifestPath == "" {
+		return s10InvalidArtifact(result, "the recorded report has no questionnaire path")
+	}
+	result.ManifestPath = envelope.ManifestPath
+	manifestPath, err := safeS10Path(root, result.ManifestPath)
+	if err != nil {
+		return s10InvalidArtifact(result, err.Error())
+	}
+	data, err = os.ReadFile(manifestPath)
+	if err != nil {
+		return s10InvalidArtifact(result, "questionnaire unreadable: "+err.Error())
+	}
+	var manifest acceptance.Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return s10InvalidArtifact(result, err.Error())
+	}
+	if manifest.ManifestType != manifestType || manifest.RuntimeID != stringValue(state["runtime_id"]) ||
+		manifest.BaselineGeneration != integerValue(nestedStateValue(state, "baseline", "generation")) ||
+		manifest.ReviewRound != integerValue(nestedStateValue(state, "review", "round")) {
+		return s10InvalidArtifact(result, "this questionnaire belongs to another responsibility or review round")
+	}
+	result.Conclusion = strings.TrimSpace(envelope.Conclusion)
+	result.InventoryCount = len(manifest.CoverageInventory)
+	result.CounterevidenceCount = len(manifest.Counterevidence)
+	result.AuditAreaCount = len(manifest.AuditAreas)
+	result.Metrics = acceptance.DeriveMetrics(manifest) // Display only.
+	for _, item := range manifest.CoverageInventory {
+		result.EvidenceRefsCount += len(item.EvidenceRefs)
+	}
+	if result.Conclusion == "review_required" || result.Conclusion == "blocked" {
+		result.State = result.Conclusion
+		result.Next = fmt.Sprintf("The author reported %s in %s; follow the original recorded return/blocker responsibility.", result.Conclusion, manifestPath)
+		return result
+	}
+	var pending []string
+	for _, item := range manifest.CoverageInventory {
+		if item.Disposition == "" || item.Disposition == "unknown" || item.Disposition == "fail" || item.Disposition == "blocked" {
+			pending = append(pending, fmt.Sprintf("%s (%s): %s", item.Expected, item.ID, item.Disposition))
+		}
+	}
+	for _, item := range manifest.Counterevidence {
+		if item.Outcome != "pass" && item.Outcome != "not_applicable" {
+			pending = append(pending, item.Question+": "+item.Outcome)
+		}
+	}
+	for _, item := range manifest.AuditAreas {
+		if item.Conclusion != "pass" && item.Conclusion != "not_applicable" {
+			pending = append(pending, item.ID+": "+item.Conclusion)
+		}
+	}
+	for _, item := range manifest.BlockingFindings {
+		pending = append(pending, fmt.Sprintf("reported blocker: %+v", item))
+	}
+	if result.Conclusion == "" {
+		pending = append(pending, "the author has not supplied the overall conclusion")
+	}
+	if (manifestType == "acceptance" && result.Conclusion != "pass") || (manifestType == "release_audit" && result.Conclusion != "approved" && result.Conclusion != "approved_with_risk") {
+		pending = append(pending, "the author's conclusion is "+result.Conclusion)
+	}
+	if len(pending) != 0 {
+		result.State = "pending"
+		result.Next = fmt.Sprintf("Main continues %s at %s: %s. This report has not completed the current step.", manifestType, manifestPath, strings.Join(pending, "; "))
+		return result
+	}
+	result.State = "ready"
+	result.Next = fmt.Sprintf("The author recorded %s at %s; the normal save outlet performs this step's original transition and supplies the next responsibility.", result.Conclusion, manifestPath)
+	return result
 }
 
 func s10InvalidArtifact(result s10ArtifactStatus, message string) s10ArtifactStatus {
 	result.State = "invalid"
 	result.Error = message
-	result.Next = "correct the named S10 artifact, validate it, and register a new fingerprinted evidence envelope"
+	result.Next = "Main must resolve the specific read/path issue above at the current questionnaire; do not create a second envelope"
 	return result
 }
 

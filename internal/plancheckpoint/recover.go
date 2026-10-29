@@ -4,7 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/runtimemeta"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"os"
 	"path/filepath"
@@ -12,8 +13,29 @@ import (
 )
 
 // ActivatedRef derives a missing observation from the existing validated
-// activation chain. It never writes Runtime or trusts a working-state label.
-func ActivatedRef(root string, snapshot runtime.Snapshot, agentID string) (string, error) {
+// activation chain. Native delivery returns its received professional plan,
+// without claiming approval or activation. It never writes Runtime.
+func ActivatedRef(root string, snapshot runtimemeta.Snapshot, agentID string) (string, error) {
+	record, found, recordErr := assignmentrecord.ForOwner(snapshot.State, agentID)
+	if recordErr != nil {
+		return "", recordErr
+	}
+	if found && record.Contract == assignmentrecord.NativeDeliveryContract {
+		entities, _ := snapshot.State["entities"].(map[string]any)
+		rows, _ := entities["agents"].([]any)
+		for _, raw := range rows {
+			a, _ := raw.(map[string]any)
+			if a["id"] == agentID {
+				ref := strValue(a["plan_reported_ref"])
+				if ref == "" {
+					return "", nil
+				}
+				return ref, Validate(root, snapshot, agentID, ref)
+			}
+		}
+		return "", nil
+	}
+
 	entities, _ := snapshot.State["entities"].(map[string]any)
 	rows, _ := entities["agents"].([]any)
 	for _, raw := range rows {
@@ -51,6 +73,15 @@ func ActivatedRef(root string, snapshot runtime.Snapshot, agentID string) (strin
 		}
 		if m["message_type"] != "activation" || m["agent_id"] != agentID || m["runtime_id"] != snapshot.State["runtime_id"] || m["task_id"] != p["task_id"] || m["team_id"] != p["team_id"] {
 			return "", fmt.Errorf("activation identity differs from current plan")
+		}
+		record, canonical, err := assignmentrecord.ForOwner(snapshot.State, agentID)
+		if err != nil {
+			return "", err
+		}
+		if canonical {
+			if err := assignmentrecord.ValidateProjection(record, m); err != nil {
+				return "", err
+			}
 		}
 		sum := sha256.Sum256(plan)
 		if m["approved_readback_sha256"] != fmt.Sprintf("%x", sum) || m["approved_readback_message_id"] != p["message_id"] {

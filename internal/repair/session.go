@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 func CreateRepairSession(root string, request SessionRequest) (RepairSession, ArtifactRef, error) {
@@ -67,7 +69,7 @@ func CreateRepairPlan(root string, request PlanRequest) (RepairPlan, ArtifactRef
 		return RepairPlan{}, ArtifactRef{}, fmt.Errorf("created_by is required")
 	}
 	document := RepairPlan{
-		SchemaVersion: "1.0.0", RecordType: "repair_plan", PlanID: request.PlanID, SessionID: session.SessionID,
+		SchemaVersion: "1.1.0", RecordType: "repair_plan", PlanID: request.PlanID, SessionID: session.SessionID,
 		ContractID: contract.ContractID, ContractRef: contract.Ref.Path, ContractSHA256: contract.Ref.SHA256,
 		Units: append([]RepairUnit(nil), contract.Units...), ProspectiveScope: append([]string(nil), contract.ProspectiveScope...),
 		ForbiddenScope: append([]string(nil), contract.ForbiddenScope...), ExecutionPolicy: "coverage_complete", CreatedBy: request.CreatedBy, CreatedAt: nowOr(request.OccurredAt),
@@ -99,7 +101,7 @@ func CreateRepairPlan(root string, request PlanRequest) (RepairPlan, ArtifactRef
 				unit.ID)
 		}
 		document.Assignments = append(document.Assignments, RepairAssignment{
-			AssignmentID: "repair-assignment-" + unit.ID, UnitIDs: []string{unit.ID}, Status: "queued",
+			AssignmentID: "repair-assignment-" + unit.ID, UnitIDs: []string{unit.ID}, Status: string(workstate.Pending),
 			AssertionIDs: append([]string(nil), unitAssertions...), DependsOn: append([]string(nil), unit.DependsOn...), ResourceLocks: append([]string(nil), unit.ResourceLocks...), Scope: append([]string(nil), scope...), ContractRef: contract.Ref.Path,
 		})
 	}

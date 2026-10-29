@@ -5,6 +5,7 @@ package dispatch
 import (
 	"crypto/sha256"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"path/filepath"
 	"strings"
 
@@ -16,11 +17,15 @@ import (
 )
 
 type Board struct {
-	Plan     *semantic.DispatchPlan `json:"plan,omitempty"`
-	Rows     []semantic.DispatchRow `json:"rows,omitempty"`
-	Next     []string               `json:"next,omitempty"`
-	Legacy   bool                   `json:"legacy"`
-	Revision any                    `json:"runtime_revision"`
+	Pressure        *Pressure              `json:"configured_backpressure,omitempty"`
+	RuntimeID       string                 `json:"-"`
+	Generation      int                    `json:"-"`
+	ReceptionAdvice *ReceptionAdvice       `json:"reception_advice,omitempty"`
+	Plan            *semantic.DispatchPlan `json:"plan,omitempty"`
+	Rows            []semantic.DispatchRow `json:"rows,omitempty"`
+	Next            []string               `json:"next,omitempty"`
+	Legacy          bool                   `json:"legacy"`
+	Revision        any                    `json:"runtime_revision"`
 }
 
 func Number(v any) int {
@@ -31,6 +36,12 @@ func Number(v any) int {
 		return int(n)
 	}
 	return 0
+}
+
+func sourceBoard(state map[string]any, legacy bool) Board {
+	baseline, _ := state["baseline"].(map[string]any)
+	runtimeID, _ := state["runtime_id"].(string)
+	return Board{Legacy: legacy, Revision: state["revision"], RuntimeID: runtimeID, Generation: Number(baseline["generation"])}
 }
 func View(root string, state map[string]any) (*fileview.View, error) {
 	ref, e := fileview.DevelopmentRef(state)
@@ -45,7 +56,9 @@ func View(root string, state map[string]any) (*fileview.View, error) {
 }
 func Load(root string, state map[string]any, capacity int) (Board, error) {
 	if !qualitygate.HasDispatchPlan(state) {
-		return Board{Legacy: true, Revision: state["revision"]}, nil
+		b := sourceBoard(state, true)
+		err := applyConfiguredPressure(root, state, &b)
+		return b, err
 	}
 	files, err := View(root, state)
 	if err != nil {
@@ -54,7 +67,7 @@ func Load(root string, state map[string]any, capacity int) (Board, error) {
 	return LoadWithFiles(root, state, files, capacity)
 }
 func LoadWithFiles(root string, state map[string]any, files fileview.Reader, capacity int) (Board, error) {
-	board := Board{Revision: state["revision"]}
+	board := sourceBoard(state, false)
 	bound, _ := state["bound_req"].(map[string]any)
 	req, _ := bound["id"].(string)
 	p, err := semantic.LoadDispatchPlan(root, files, req)
@@ -112,8 +125,8 @@ func LoadWithFiles(root string, state map[string]any, files fileview.Reader, cap
 	facts := map[string]semantic.DispatchFact{}
 	active := 0
 	for id, p := range progress {
-		facts[id] = semantic.DispatchFact{State: p.State, Reason: p.Reason}
-		if p.State == "running" {
+		facts[id] = semantic.DispatchFact{State: p.State, Reason: p.Reason, Integrated: p.Integrated, DeliveryRecorded: p.DeliveryRecorded}
+		if p.State == workstate.Active && !p.DeliveryRecorded {
 			active++
 		}
 	}
@@ -122,6 +135,9 @@ func LoadWithFiles(root string, state map[string]any, files fileview.Reader, cap
 		slots = 0
 	}
 	board.Rows, board.Next = semantic.NextDispatch(p, facts, slots)
+	if err := applyConfiguredPressure(root, state, &board); err != nil {
+		return board, err
+	}
 	if v, ok := files.(interface{ Verify() error }); ok {
 		if err := v.Verify(); err != nil {
 			return board, err
@@ -147,26 +163,26 @@ func CheckRegistration(root string, state map[string]any, taskID string) error {
 		return nil
 	}
 	// Evaluate only actual constraints: suggested priority is not an authorization gate.
-	facts := map[string]string{}
+	facts := map[string]bool{}
 	for _, r := range b.Rows {
-		facts[r.Task.ID] = r.State
+		facts[r.Task.ID] = r.Integrated && r.State == workstate.Done
 	}
 	for _, r := range b.Rows {
 		if r.Task.ID != taskID {
 			continue
 		}
 		switch r.State {
-		case "integrated", "running", "reported", "blocked":
+		case workstate.Done, workstate.Active, workstate.Blocked, workstate.Cancelled:
 			return fmt.Errorf("TASK %s already has an owner/result: %s", taskID, r.State)
 		}
 		for _, dep := range append(append([]string{}, r.Task.Dependencies...), r.Task.Before...) {
-			if facts[dep] != "integrated" {
+			if !facts[dep] {
 				return fmt.Errorf("TASK %s awaits verified integration of %s", taskID, dep)
 			}
 		}
 		for _, other := range b.Rows {
 			switch other.State {
-			case "running", "reported", "blocked":
+			case workstate.Active, workstate.Blocked:
 				if semantic.DispatchConflict(r.Task, other.Task) {
 					return fmt.Errorf("TASK %s conflicts with active %s", taskID, other.Task.ID)
 				}

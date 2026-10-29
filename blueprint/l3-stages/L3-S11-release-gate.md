@@ -1,355 +1,250 @@
-# L3-S11 — 人工发布闸（Human Release Gateway）
+# L3-S11 人工发布门禁
 
-> 层：第三层 ｜ 上游：S10 release-ready package ｜ 状态：`awaiting_human_release` ｜ 下游：`release_authorized`、`paused`、S8、S10 或 `aborted`
->
-> 阅读顺序：§1～§3 先回答“为什么必须停机等人、人的决策是什么、决策之后去哪里”；§4 再映射 package、固定命令、六条路由、暂停/归档和真实发布边界；§5～§8 审计分工、当前硬约束、出口和易错点。S6～S11 尚未完成机制优化，本文不把“有一条本地 decision 记录”表述成已完成身份认证或已执行发布。
+## 1. 工程条件成立之后，为什么还要等人决定
 
-> **Revision 口径**：Runtime `revision` 是 Writer 内部提交序号，不是 S11 人闸条件、人类授权凭证或 Agent 的正常输入。S11 人只选择 disposition；主会话提交当前 package/context 和 decision ID，Writer 负责锁内校验、一次性消费、提交与 revision 记录。显式 revision 仅是集成/恢复调用者可选的高级断言，统一边界见 [L4 Runtime revision 使用与命令协调](../l4-mechanisms/L4-revision-usage.md)。
+S10 已经完成需求验收与相关发布审计，说明当前工程工作可以形成可解释的交付结论。它仍不能替项目负责人决定是否在此刻接受剩余风险：业务价值、运营窗口、用户影响、资源安排和组织责任，并不由一组绿色测试或一个审计结论自动决定。
 
-## 1. 第一层：S11 的立意与目标
+S11 将这项决定留给人。它把当前候选交付、已接收结论和真实剩余风险交给人，要求明确选择，并将选择转成可追溯、可恢复的固定去向。没有选择就继续等待；沉默、超时、Agent 建议和材料齐全，都不能代替批准。
 
-### 1.1 为什么需要 S11
+需要分清三个事实：
 
-S10 可以证明工程材料足够完整、clean round 仍有效、系统级发布审计通过或只剩已显式登记的非阻断风险，但它不能替项目负责人决定“现在是否承担这些风险并发布”。这个判断涉及时机、业务价值、合规、运营窗口和责任归属，不能由测试绿、audit PASS 或 Controller 的默认行为推断。
+| 事实 | 回答的问题 | 谁负责 |
+| --- | --- | --- |
+| 达到工程交接条件 | 承诺是否兑现，相关工程风险是否已审查？ | S7～S10 的实际专业工作 |
+| 获得发布授权 | 是否接受当前风险与时机，允许本次交付进入发布安排？ | 人类在 S11 明确决定 |
+| 实际执行发布 | 是否已合并、推送、发布制品、部署，以及运行结果如何？ | 另行授权的实际操作与外部发布流程 |
 
-S11 的核心不是继续做工程工作，而是**结构性停机，把一个压缩后的 release-ready package 交给人，并要求人从有限且有固定去向的决策枚举中选一个**。没有决策、超时、沉默、命令缺参都不能当作 approve。
+S11 的批准只记录第二项，不执行第三项。`release_authorized` 是发布授权状态，不是“已经上线”。这一分离落实 [L1 设计原则](../l1-principles/L1-design-principles.md)中人握出口、职责分工和统一事实的要求；生命周期关系见 [L2](../l2-lifecycle/L2-lifecycle-plan.md)。
 
-### 1.2 阶段目标与完成定义
+## 2. 从 S1 的目标与授权回到当前交付
 
-| 项目 | 定义 |
-|:--|:--|
-| 输入 | S10 的 clean-round/ACC/release-audit IDs and hashes；Runtime identity/baseline/context；已完成范围；唯一未决事实；影响、非阻断风险、建议、恢复点；`automation stops` 声明 |
-| 要搞清楚 | 人是否批准当前 release 风险；若不批准，是暂缓、缺陷退回、验收退回、审计退回还是中止；下一步允许回到哪里；是否需要新一轮完整验证 |
-| 核心工作 | 校验 package 与当前 Runtime → 停止自动候选 → 让人选择固定六枚举 → 校验语义 decision scope → 由 Writer 原子提交对应固定 transition → 留下可审计决策 |
-| 输出 | `human_decision_record`；固定 TR-025～TR-030 的 state/journal 变化；必要的 pause checkpoint、finding evidence 或定向失效记录 |
-| 目标完成 | 恰有一个显式 decision 被持久化；去向与 disposition 一一对应；approve 只表示 release authorization，实际 merge/publish/deploy/formal release 仍在 Harness 外由人执行 |
-| 下一阶段 | approve → `release_authorized`；defer → paused；reject_defect → S8；reject_acceptance → S10 acceptance；reject_release_audit → S10 release_audit；abort → `aborted` |
+[S1 需求绑定](L3-S1-bind.md)明确执行哪个需求、开发目标与发布目标；它让后续工作有执行范围，不提前批准最终发布。S11 需要让人看懂本次实际交付与这个范围的关系，避免把“已经允许开发”理解成“任何后来产物都可自动发布”。
 
-### 1.3 Overview：输入、主步骤与输出
+候选交付由当前 REQ、代际、验证轮与已接收 S10 结论定位，并结合实际集成结果、目标和交付材料解释。Main 应说明它实现了什么、会影响谁、发布和恢复需要哪些实际条件。发现范围外变化、候选改变或观察不再适用时，应明确处理，不能把旧批准移用给新的交付。
 
-```mermaid
-flowchart LR
-    subgraph INPUT["Input"]
-        I1["S10 release-ready package"]
-        I2["clean round + ACC + audit hashes"]
-        I3["runtime identity / baseline"]
-        I4["risks + recommendation + recovery point"]
-        I5["human decision authority"]
-    end
+当前系统主要依据原 Runtime、当前验收／审计记录和阶段入口来关联决定，没有在 S11 重新证明全部 Git HEAD、文件、运行环境和生产制品。Main 对真实候选的解释及变化判断仍是必要责任；不能把已有机器关联描述成“任意发布对象的来源已经全部认证”。
 
-    subgraph S11["S11 Human Release Gateway"]
-        T1["T1 校验交接包与当前 Runtime"] --> T2["T2 结构性停机，无自动候选"]
-        T2 --> T3["T3 人选择唯一 disposition"]
-        T3 --> T4["T4 固定映射、语义 scope 与 decision ID 校验"]
-        T4 --> T5["T5 记录决策并执行固定去向"]
-    end
+## 3. 给人的材料应当怎样组织
 
-    subgraph OUTPUT["Output"]
-        O1["release_authorized"]
-        O2["paused + checkpoint"]
-        O3["S8 defect investigation"]
-        O4["S10 acceptance / release audit"]
-        O5["aborted terminal"]
-        O6["human decision journal"]
-    end
+### 3.1 让人作决定，而不是再做一遍工程审计
 
-    I1 --> T1
-    I2 --> T1
-    I3 --> T1
-    I4 --> T1
-    I5 --> T3
-    T1 --> T2
-    T5 --> O1
-    T5 --> O2
-    T5 --> O3
-    T5 --> O4
-    T5 --> O5
-    T5 --> O6
-```
+S11 复用 [S10](L3-S10-acceptance-audit.md)已接收的验收与审计报告、相关观察和真实风险。人可以沿报告追溯细节，但正常交接应先让人理解：
 
-### 1.4 S11 的边界与当前保证
+- 本次需求、实际交付范围、目标及主要变化是什么。
+- 验收与工程审计给出了什么结论，关键依据和适用限制是什么。
+- 还有什么真实风险、未决问题或操作前提，影响及处理责任是什么。
+- 对当前交付建议怎样处置，各选择会回到哪里。
+- 已接收报告、原专业报告与必要操作材料的准确位置。
 
-- `awaiting_human_release` 是**非终态的人类 Gateway**，但对 Loop 自动推进而言没有 automatic candidate；Controller 在该 cursor 不评估或提交任何 S11 decision；
-- 六枚举与 transition ID 固定映射，CLI 不接受任意 target state 或 transition ID；这是 S11 最强的结构性约束；
-- human decision 的 transition 有 `human_decision_scope=runtime_release`，校验 evidence 属于当前 Runtime、当前 release package/context 和当前 verb scope；一次性 decision ID、固定 transition 和 Writer 事务负责防止旧决定重放；
-- TR-025 的 `release_authorized` 只记录授权，不执行 merge、publication、deployment 或 formal release；
-- `--actor` 是命令参数和 evidence/Runtime 中的字符串，当前本地文件 Runtime 不负责认证这个字符串背后是否真为人；
-- `docs/control/protected-commands.json` 和 classifier 已描述多类发布命令，但主 `policy.Engine.Evaluate` 当前实际硬处理的是 locked-artifact write 与 squash merge；不能仅凭命令表存在就声称所有 deploy/publish/release 命令已被 S11 硬拦；
-- 终态只有 `release_authorized` 和 `aborted`。后续 runtime rollover 是独立的、仍需 human `runtime_rollover` evidence 的归档/新周期操作，不是 S11 自动动作。
+这是一种理解顺序，不是要求再造一份固定字段齐全的决策包。没有风险时不编造风险；没有某种恢复任务时不硬填任务；没有“唯一未决事实”也不制造一个问题来满足格式。人不需要抄写哈希、轮次、证据标识和修订算术。
 
-## 2. 第二层：S11 的任务分解
+当前上下文从本轮已登记的验收／审计记录给出原专业报告和可读投影路径，并展示已报告风险的影响、owner 与后续位置。它并不自动完整理解自然语言报告，也不能凭路径存在证明材料充分。Main 需要将真实内容解释清楚，保留专业作者归属，不把机器汇总当成替人判断。
 
-| 任务 | 要解决的问题 | 主要动作 | 阶段产出 |
-|:--|:--|:--|:--|
-| T1 校验交接包 | 人看到的材料是不是 S10 生成的当前事实 | 对照 Runtime identity/context/baseline、clean round、ACC、audit fingerprints、风险和恢复点；缺项则不进入决策 | package validation record |
-| T2 结构性停机 | 是否存在默认推进、超时批准或 Agent 代替人选项 | Controller 对 awaiting cursor 返回空候选；禁止自动 S11 event；显式显示六选项 | human gateway state |
-| T3 人做唯一决策 | 当前风险应批准、暂缓、退回哪一层或中止 | 人阅读压缩包并选择 `approve/defer/reject_defect/reject_acceptance/reject_release_audit/abort` | selected disposition |
-| T4 固定映射与校验 | 决策是否只授权当前 Runtime/context/current verb | CLI switch 映射固定 transition；检查 actor、decision ID、decision evidence；reject_defect 额外要求 finding evidence | validated transition request |
-| T5 固定路由与留痕 | 决策之后的工程去向是否可恢复、不可歧义 | 提交 TR-025～TR-030；写 journal；必要时生成 pause、定向失效或 finding route | state/phase/checkpoint/decision record |
-| T6 终态与下一周期 | approve 后是否被误解成已发布；终态如何归档 | 人在 Harness 外执行 release；若开始下一周期，再用独立 rollover approval/evidence | release operation or fresh inactive runtime |
+### 3.2 材料不足时怎样继续
 
-S11 不重新审查 ACC 或 audit 的正文。若人需要补工程事实，应选择 reject_acceptance/reject_release_audit，回 S10 重做；若发现产品缺陷，应选择 reject_defect，回 S8，而不是在 S11 直接修改代码。
+准确材料缺失、无法读取或本次候选不清楚时，指出具体文件和原责任，先补齐实际交接。已有工程结论需要返工时，使用相应返回选择；普通疑问可以阅读和解释，不必每次都退回一个阶段。
 
-## 3. 从 release-ready package 到固定决策的完整工作流
+S11 不重开一轮隐含的工程审查。人的问题如果揭示缺陷，应进入调查；如果质疑验收或审计，应回对应专业步骤。不能在 S11 一边修改产品或锁定依据，一边继续使用原已通过材料批准。
+
+## 4. 参与者与等待边界
+
+| 参与者 | 本人责任 |
+| --- | --- |
+| 人类 | 阅读足以理解候选和风险的材料，明确选择处置，并在实际需要时说明理由 |
+| Main | 如实呈现交付与风险，解释选项，将人的明确原意填写到当前申请，反馈真实去向并交接后续责任 |
+| S10 专业负责人 | 提供已接收结论和已有材料，接收验收或审计返工，不用旧结论自动跳过新问题 |
+| 原消费者与 Runtime Writer | 维护当前申请关联、固定路由、并发校验、决定登记与一次消费事实 |
+| Claude Code 与 Hook | 承载 Main 的读取、沟通和正常保存；显示准确材料及等待原因，不代替人选择 |
+| 外部发布或周期管理执行者 | 在各自真实授权下执行发布、归档或开启新周期，不由 S11 自动代行 |
+
+S11 不创建子代理派发器，也不需要“发布批准 Agent”。必要的专业问题可由 Main 沿原机制委托，但审查者的建议不构成人类决定。`actor`、`approved_by` 和调用者标识是记录，不是外部身份认证；Main 如实承接人意是履职要求，不能由换一个名字满足。
+
+等待停止的是未经决定的阶段推进。Main 仍可读取、解释材料和正常使用工具，不因尚未批准就禁止所有工作。Controller 对 `awaiting_human_release` 不产生自动发布决定；即使已有证据齐备，也没有默认 `approve`。系统没有以等待超时自动批准或自动中止的语义。
+
+## 5. 六种选择为什么有不同去向
+
+六种处置把人的意思与下一项真实责任对应起来。理由补充细节，不能用自由文字指定任意目标状态。
+
+| `disposition` | 人的意思 | 原固定出口 | 后续责任 |
+| --- | --- | --- | --- |
+| `approve` | 接受当前交付与风险，记录发布授权 | TR-025 → `release_authorized` | 按另行授权执行实际发布；本阶段不执行发布操作 |
+| `defer` | 现在暂不作最终发布安排，保留以后继续的依据 | TR-026 → `paused` | 保存原暂停检查点；真实决定恢复后回门禁重新选择 |
+| `reject_defect` | 发现产品、架构或数据方面的问题，需要调查 | TR-027 → `bug_resolution.investigation` | S8 接收人的真实问题或已有发现，确认原因与后续路线 |
+| `reject_acceptance` | 对需求兑现或验收判断不满意，需要补验收 | TR-028 → `acceptance` | S10 处理真实理由，重新形成验收及下游审计结论 |
+| `reject_release_audit` | 对系统、运维或发布风险判断不满意 | TR-029 → `release_audit` | 保留有效验收，返工相关发布审计 |
+| `abort` | 中止当前工程周期 | TR-030 → `aborted` | 保留中止事实和历史；后续周期管理另行决定 |
+
+`defer` 不是一种隐含批准，也不同于终止；`reject_acceptance` 与 `reject_release_audit` 有不同失效范围；`reject_defect` 是调查入口，不是直接授权 Builder 修复。固定六种选择使状态恢复不依赖对任意人类文字的猜测，同时让必要理由保留真实问题。
 
 ```mermaid
 flowchart TD
-    IN["S10 package<br/>awaiting_human_release"] --> CHECK["T1 对照 Runtime identity、baseline、hash、风险与恢复点"]
-    CHECK --> READY{"交接包完整且仍对应当前状态？"}
-    READY -->|"否"| HOLD["不做 decision<br/>补包或回 S10"]
-    READY -->|"是"| STOP["T2 Controller 无自动候选<br/>automation stops"]
-    STOP --> HUMAN["T3 人选择唯一 disposition"]
-    HUMAN --> CMD["runtime human-decision<br/>固定六枚举 + 语义 scope + decision evidence"]
-    CMD --> VALID{"参数、语义 scope、decision ID、evidence 都有效？"}
-    VALID -->|"否"| RETRY["零状态副作用<br/>修正命令/补 evidence/重新阅读 package"]
-    RETRY --> CMD
-
-    VALID -->|"approve"| AP["TR-025<br/>record human authorization"]
-    VALID -->|"defer"| DEF["TR-026<br/>capture pause checkpoint"]
-    VALID -->|"reject_defect"| DEFECT["TR-027 + finding_record<br/>bug_resolution.investigation"]
-    VALID -->|"reject_acceptance"| ACC["TR-028<br/>invalidate acceptance + audit evidence"]
-    VALID -->|"reject_release_audit"| AUDIT["TR-029<br/>invalidate release-audit evidence"]
-    VALID -->|"abort"| ABORT["TR-030<br/>record abort"]
-
-    AP --> AUTH["release_authorized<br/>仍不执行发布"]
-    DEF --> PAUSE["paused + S11 checkpoint<br/>resume / amend / abort"]
-    DEFECT --> S8["S8 investigation<br/>须重新形成 canonical BUG"]
-    ACC --> S10A["S10 acceptance<br/>重新组装 ACC"]
-    AUDIT --> S10B["S10 release_audit<br/>重新执行审计"]
-    ABORT --> TERMINAL["aborted terminal"]
-
-    AUTH --> EXTERNAL["人/外部发布流程<br/>merge / publish / deploy / release"]
+    INPUT["S10 已接收结论与当前交付"] --> WAIT["S11 准备当前申请，等待真人选择"]
+    WAIT -->|"无明确选择"| WAIT
+    WAIT --> SAVE["Main 如实填写选择与必要理由，正常保存"]
+    SAVE --> WRITE["原 Writer：登记、消费、固定出口"]
+    WRITE -->|"approve"| AUTH["发布授权；实际发布另行执行"]
+    WRITE -->|"defer"| PAUSE["暂停并保留检查点"]
+    WRITE -->|"reject_defect"| S8["原 S8 调查"]
+    WRITE -->|"reject_acceptance"| ACC["原 S10 验收"]
+    WRITE -->|"reject_release_audit"| AUDIT["原 S10 发布审计"]
+    WRITE -->|"abort"| ABORT["中止当前周期"]
+    PAUSE -->|"真实恢复，TR-019"| NEW["新空申请，重新等待真人"]
+    ACC -->|"完成实际返工并经审计"| NEW
+    AUDIT -->|"完成实际返工"| NEW
+    NEW --> WAIT
 ```
 
-六条路由不是六种“意见标签”，而是六个不同的状态恢复语义。尤其 `approve` 只写授权记录；`reject_defect` 只把 finding evidence 带回 BUG 调查入口，当前 transition 不自动把该 finding 转成 canonical BUG entity。
+## 6. 正常交互：一次真实选择，保存原申请
 
-## 4. 第三层：每项任务如何被引导和承载
+### 6.1 原入口准备，普通事件展示
 
-### 4.1 T1 — release-ready package 的最小交接结构
+TR-017 完成进入 S11 时，原交接入口准备当前申请，给出准确绝对路径。申请保留既有格式，其中机器元数据由系统带入，`disposition` 初始为空。Main 不另建表格、登记凭据或命令草稿让人重复批准。
 
-S10 交给人的不是整个 Runtime，而是一张可在短时间内完成判断的决策包。至少要有：
+普通 `PreToolUse`、`Stop` 只读已有材料和当前申请位置，不创建申请、不补业务、不消费决定。若应存在的申请缺失，要给出准确预期路径与准备故障，由原入口／系统恢复；不能通过反复普通工具事件掩盖缺失。
 
-- **当前事实**：Runtime ID、baseline generation、REQ 版本/fingerprint、review round 和 package/context identity；
-- **已完成什么**：交付范围、主要变更、clean-round ID/hash、ACC ID/hash、audit ID/hash；
-- **为什么可信**：每个引用文件的当前指纹、validity、关键验证结论；
-- **唯一未决事实**：人需要承担或决定的具体风险，不用“请审阅全部材料”代替；
-- **影响与建议**：用户/数据/运维/合规影响，APPROVED 或 APPROVED_WITH_NON_BLOCKING_RISKS 的理由；
-- **恢复点**：defer、reject 或重新启动时应回到哪个 state/phase，以及哪些 evidence 会失效；
-- **停止声明**：明确 automation stops，Harness 不 merge/publish/deploy/release。
+### 6.2 只有真实选择才填写
 
-当前没有独立 `release_ready_package` Runtime entity 或专用 JSON schema。package 主要由 ACC、audit、generic evidence 和 S10/agent handoff 文档组成。S11 的 transition 只要求 `human_decision_record`，不会重新解析 S10 package 的所有 hash 和风险表；因此 T1 必须由人/主会话先做对账。Runtime revision 可以作为内部审计回执展示，但不属于 T1 的人工输入。
+人明确选择后，Main 只将实际意思填入原 `disposition` 和可选 `reason`。以下是现有专业字段片段，表示尚无选择的草稿，不是要另建的申请：
 
-### 4.2 T2 — 结构性停机与无自动候选
-
-结构性停机由两层共同实现：
-
-1. `docs/control/loop-definition.json` 把 TR-025～TR-030 标为 `eligible=false`、`human_boundary=true`，并列出 `automated_s11_decision` forbidden event；
-2. `internal/controller/cycle.go` 对 `awaiting_human_release`、`release_authorized`、`aborted` 返回空 automatic candidates，不会因为 evidence 恰好齐全而自行选 approve。
-
-这意味着自然 `PreToolUse` 只会维持可用/等待状态，不会提交一个默认 S11 decision。若命令缺参、未知 disposition、当前 package/context 不匹配或 evidence 不合格，CLI 返回失败且不写 state/journal。
-
-但“无自动 transition”不等于“所有 shell 命令都被 S11 禁止”：
-
-- Hook policy 的硬路径明确包含 locked-artifact write 和 squash merge；
-- protected command JSON/classifier 能识别 `git push` protected branch、tag、`gh release`、`gh pr merge`、npm publish、terraform/kubectl/aws 等形状；
-- 当前 `policy.Engine.Evaluate` 的主实现并没有调用 `MatchProtectedCommands` 来统一阻断这些命令。
-
-所以 S11 的核心保证是“不会自动做决定、不会由 transition 执行 release”，而不是“任何 Agent 发出的发布命令都已被一条统一 Hook 规则拒绝”。
-
-### 4.3 T3/T4 — 固定 human-decision 命令与 scope
-
-目标态的唯一 CLI 入口是：
-
-```bash
-loop-harness runtime human-decision \
-  --disposition <approve|defer|reject_defect|reject_acceptance|reject_release_audit|abort> \
-  --actor <user-or-operator-id> \
-  --decision-evidence <human-decision-reference>
+```json
+{
+  "disposition": "",
+  "reason": ""
+}
 ```
 
-Runtime revision 由 Writer 在普通命令中自动生成；`--expected-revision <N>` 仅是外部集成或恢复工具可主动选择的高级断言。主会话和人类操作手册不得把它当作正常前置，也不得先读取 `X` 再计算 `X+1`。
+例如，人明确表示“验收对兼容承诺的解释不足，请补验收”，可在当前原申请写：
 
-额外规则：
+```json
+{
+  "disposition": "reject_acceptance",
+  "reason": "请补充说明兼容窗口内老客户端的承诺如何得到验证，再重新提交验收结论。"
+}
+```
 
-- `reject_defect` 必须再提供 `--finding-evidence <finding-reference>`；
-- `defer` 会绑定 `pause_record=generated:pause_checkpoint`，由 TR-026 的 action 生成实际 checkpoint；
-- CLI 通过 `runtime.HumanReleaseTransitionID` 做固定 switch，不允许用户传 `--target-state` 或任意 transition ID；
-- transition 层的 `human_decision_scope=runtime_release` 要求当前有效 `human_decision` evidence 绑定当前 Runtime、release package/context、disposition 和一次性 decision ID；`human_decision_scope` 是 Loop Definition 中 transition 的语义前缀，不是决策 artifact 字段；
-- evidence 登记和 fixed transition 应由同一个 Runtime Writer 事务完成，或由 Runtime 生成中间 evidence；Agent 不负责预测下一 revision；
-- Runtime Writer 在内部处理锁、提交序号和幂等消费；revision 变化不会成为人类重放保护的操作协议；
-- `record_human_release_decision` 只记录 evidence/transition event，不把 decision 内容扩写成 release operation。
+示例只是解释字段，不构成本项目的真实决定。Main 不能因为认为下一步合理而替人选；也不要求人使用某一句逐字命令、补 `human_confirmed` 字段或复制身份／哈希来证明意图。若人的意思含糊到无法确定去向，先澄清实际决定，保持当前选择为空。
 
-当前本地信任边界仍有限：`--actor` 是字符串，transition scope 校验的是字符串和 evidence scope，不是外部身份认证、签名或组织权限校验。谁能写入当前项目的有效 human-decision evidence，谁就可能在本地模型中满足“由某 actor 产生”的形式；这属于已知设计边界，不能写成“已验证真人身份”。
+### 6.3 保存由原入口接收
 
-### 4.4 T5 — 六种 disposition 的真实语义
+Main 正常保存准确申请，编辑、脚本或 MCP 均可承载。`PostToolUse` 识别当前申请的真实保存，读取原两个字段，沿原 Writer 记录并消费决定，执行固定出口。作者不另运行 `runtime human-decision`、不手工登记证据，也不等待下一次 Pre 补推进。
 
-| disposition | transition | 去向 | 当前 action/附加事实 | 不能误解为 |
-|:--|:--|:--|:--|:--|
-| `approve` | TR-025 | `release_authorized` | 记录 `human_release_approved` 与 human decision evidence | 已 merge、已发布、已部署 |
-| `defer` | TR-026 | `paused` | 先 capture S11 pause checkpoint，再记录 decision；后续可 resume/amend/abort | 超时自动批准或自动 abort |
-| `reject_defect` | TR-027 | `bug_resolution.investigation` | 记录 decision，并要求 `finding_record` | 已自动创建 canonical BUG；当前不会自动执行 S8 调查 |
-| `reject_acceptance` | TR-028 | `acceptance` | 记录 decision；失效 acceptance、acceptance_record、release-audit 类 evidence | 全部 Runtime evidence 都作废 |
-| `reject_release_audit` | TR-029 | `release_audit` | 记录 decision；只失效 release-audit 类 evidence，保留 acceptance evidence | 自动改代码或自动重跑审计 |
-| `abort` | TR-030 | `aborted` | 记录 decision；有 `human_abort_approved` guard | 已发布或已归档新周期 |
+空选择只保留草稿，不写成 Runtime 决定；未知选择或字段类型错误给出当前路径和准确修正反馈，不默认为批准。保存成功只说明文件保存，业务结果仍看原 Writer 的实际反馈。
 
-#### reject_defect 的关键边界
+## 7. 决定怎样与当前责任关联并只消费一次
 
-TR-027 的 `required_evidence` 是 `human_decision_record` + `finding_record`，但 action 只是 `record_human_release_decision`。它不会调用 S8 的 `record_finding_batch`，不会核对 finding 内容，也不会创建 `entities.bugs[]`。因此进入 S8 后，主会话仍需把 finding evidence 纳入调查 ledger，并走现有 BUG 登记/调查流程；不能把 TR-027 成功当成 canonical BUG 已存在。
+### 7.1 系统关联，作者不做修订算术
 
-#### reject_acceptance / reject_release_audit 的失效范围
+当前申请的位置由 Runtime、代际、轮次、已登记发布审计身份和既有阶段入口修订共同定位。阶段入口修订 `lifecycle.phase_revision` 用于区分重新进入门禁的责任，不是人需要填写的字段，也不是另加一套尝试状态。
 
-TR-028 的 action 会把当前 valid 的 `acceptance`、`acceptance_record`、`release_audit`、`release_audit_record` 全部标记 invalid；TR-029 只处理 `release_audit` 与 `release_audit_record`。两条 action 按 evidence `kind` 做粗粒度失效，不读取人写的 reject reason 或具体 criterion/audit section，也不会自动开始 review round。回到 S10 后，新的 acceptance/audit 仍需重新登记并通过对应 gate。
+正常接收使用当前快照的 Runtime 身份与修订提交原 Writer，在锁内再核对当前发布审计身份。这样处理真实并发，防止在同一次写入中把选择交给已经变化的工程责任。作者不需要复制这些坐标、自己生成决定标识或另交来源证明。内部快照冲突交由 Main 核对原决定回执和当前申请后恢复原转换；它可能来自无关提交，不能因此归因作者数字错误、要求重新选择或自动重试。保留这项 CAS 是为了保护保存读取到转换接收之间的原申请范围，不能直接改成当前值写入后默认人类已同意另一份发布。
 
-### 4.5 T6 — paused、terminal 与下一周期
+这种关联仍有边界：它读取当前已登记审计身份，不重新审计其全部来源，不独立认证人看到的 Git HEAD 或实际制品。真实候选变化应先由 Main 如实处理，不可把本地 CAS 解释为已经证明所有外部对象不变。
 
-`defer` 进入 paused 后，T6 的恢复路径是：
+### 7.2 原 Writer 内的逻辑提交
 
-- `runtime resume` / TR-019：校验当前 pause checkpoint 和 baselines unchanged，恢复 pause 时保存的 state、phase、entities；
-- REQ 必须改变：TR-020，人类重新锁定 REQ 后 bump baseline generation，并让下游 evidence 失效；
-- abort：走 human decision `abort`，到 `aborted`。
+原 `HumanReleaseTransitionID` 将六种选择映射到 TR-025～TR-030。正常申请路径校验调用者非空、选择与固定出口一致、当前申请标识及路径可用，再进入原 Writer。
 
-`release_authorized` 和 `aborted` 才是 rollover 允许的终态。归档新周期需要独立 `runtime.Store.Rollover`：
+同一业务提交在原事实中完成：记录人类决定、登记 `human_decision`、标记被哪个固定 TR 消费、执行该 TR 的原动作和状态变化。`consumed_by`、`consumed_at` 保留一次消费的结果，不允许同一授权继续批准另一责任。原状态与事件写入、并发冲突和中断恢复沿用 Runtime 机制。
 
-- current runtime 必须处于这两个终态之一；
-- fresh state 必须是合法 inactive Runtime；
-- `ApprovedBy`、`EvidenceID` 必填；
-- evidence 必须是 valid `human_decision`，由 approved actor 产生，并 scope 到当前 Runtime 的 `runtime_rollover:<runtime_id>` 语义动作；提交 revision 由 Writer 内部记录；
-- rollover 会把旧 state/journal 归档，再替换为 fresh runtime。
+“一次逻辑提交”不是一次文件写入。决定文件、状态／事件持久化和后续材料准备有各自 I/O 边界；不能承诺后续文件输出失败会回滚已经提交的决定，也不能仅凭申请文件存在断言消费成功。实际结果必须以原账本和事务反馈为准。
 
-Rollover 是外部周期管理动作，不是 S11 approve 的自动后续，也不代表 Harness 执行了发布。
+### 7.3 重放与新决定分开
 
-## 5. 职责分布与覆盖审计
+原 Apply 可以识别相同决定标识、路径、答案和已完成固定出口，返回已有事实而不重复业务。正常保存跨阶段旧申请时，也不能重新执行决定或清空返工者的新工作。已消费申请属于历史记录，不通过改其内容来表达新的选择。
 
-### 5.1 职能落点
+重新进入 S11 时，必须有当前入口的新申请，即使 REQ、轮次甚至审计记录未改变。新的阶段进入与新的明确选择承担这一次责任；原决定不会因内容仍看起来适用就变成可反复使用的授权。
 
-| 职能 | 主责 | 承载位置 | 当前消费者 |
-|:--|:--|:--|:--|
-| package 汇编 | S10 Orchestrator/Acceptance/Auditor | ACC、audit、handoff package | 人、S11 context |
-| package 当前性复核 | 人/主会话 | Runtime identity/context、hash、风险对账 | human decision |
-| 自动停机 | Controller + Loop Definition | no automatic candidates、forbidden event | PreToolUse/Controller |
-| 决策输入校验 | CLI + transition engine | disposition switch、语义 decision scope、decision ID | TR-025～030 |
-| 价值/风险决定 | Human | human_decision evidence | 固定 S11 route |
-| 状态写入 | transition engine/runtime writer | state、journal、pause/entity checkpoint | recovery/rollover |
-| 实际发布执行 | Human / external release system | Harness 外部 | 不属于 S11 transition |
+现有 `runtime human-decision` 和显式 evidence 参数保留为兼容／恢复入口，沿各自实际校验处理原记录。它们不是正常作者的第二次提交，也不能用旧命令要求恢复额外人工登记职责。维护时应先确定原决定是否已经接收，避免将恢复当作重复批准。
 
-### 5.2 应有的分工与重叠控制
+## 8. 暂缓之后怎样恢复
 
-- S10 提供工程事实，S11 人只决定是否承担当前风险和时机；人不应在 S11 通过命令参数重写工程结论；
-- Controller 只执行人已经选择的固定 route，不替人选择 disposition；
-- `approve` 的授权记录与 merge/publish/deploy 的执行必须分离，执行方仍需遵守组织发布流程；
-- defect rejection 回 S8 后重新 canonicalize；不要在 S11 直接把 finding 当 repair ticket；
-- acceptance rejection 与 audit rejection 有不同失效范围，不能用一个“重新验收”模糊处理；
-- defer 保留可恢复 checkpoint，避免人暂不决定时丢失 S10 cursor、phase 和 entities；
-- 每个 decision 只能作用于一个 Runtime、一个 package/context、一个 lifecycle verb 和一个 decision ID，避免同一批准被复用到其他动作。
+人选择 `defer` 后，TR-026 捕获原 S11 暂停检查点并进入 `paused`，保留回到哪项责任的依据。它不会等待某个时长后自动批准，也不自动中止。
 
-### 5.3 当前实现与未闭合缺口
+恢复本身需要真实的人类决定，沿原暂停／恢复入口执行。TR-019 核对检查点与必要基线，恢复原责任；如果暂停期间依据漂移，应处理实际变化和原修订路径，而不是强行恢复旧结论。恢复决定和发布决定是不同用途，不能把已经消费的 defer 当成 resume 或 approve。
 
-1. **S11 package 无独立 schema/entity**：TR-025～030 不重新解析 S10 package 的 hash、风险和建议；
-2. **本地 actor 未认证**：`--actor` 和 evidence producer 是字符串关系，不是外部身份/签名校验；
-3. **protected command 表未完全接入主 policy**：classifier 能识别多类发布命令，但 `policy.Engine.Evaluate` 主路径当前只直接处理 locked-artifact write 与 squash merge；
-4. **TR-025 不执行 release side effect**：这符合授权/执行分离，但需要外部流程消费 `release_authorized`，Runtime 不会自动确认发布结果；
-5. **TR-027 不创建 BUG entity**：只记录 finding evidence，S8 入口需要后续人工/主会话补齐调查和 BUG mapping；
-6. **TR-027 不自动将 phase 细节写入调查报告**：top-level state 进入 bug_resolution，具体 evidence/phase 由后续流程负责；
-7. **TR-028/029 只按 evidence kind 粗粒度失效**：不按具体 AC、audit section 或人类理由精确失效；
-8. **TR-028/029 不自动新开 review round**：返回 S10 后需由验收/审计自然路径决定是否重做，旧 invalid evidence 可能影响下一步检查；
-9. **defer 的恢复依赖 checkpoint**：如果 package/decision evidence 没有在当前 revision 正确登记，恢复会停在人工修复；
-10. **abort guard 本体是 evidence-backed**：真正 scope 校验来自 transition human-decision validation，不是 guard registry 的语义 body；
-11. **rollover 是独立 API/流程**：S11 approve 不会自动 archive/reset，也不会自动进入下一 REQ；
-12. **无自动超时语义**：Gateway 可以无限等待，这是避免默认批准的设计选择，但运营上需要外部提醒/owner，当前 Runtime 不负责提醒；
-13. **“无自动候选”与“禁止所有 agent 命令”不是同一件事**：S11 的 transition 停机真实存在，命令层完整人闸仍需继续补强。
+回到 `awaiting_human_release` 时，由原恢复入口准备新的空申请。即使发布审计没有产生新记录，也应根据这次真实阶段入口定位新责任；不能复用已消费的旧申请。普通 Pre／Stop 继续只展示，不承担准备或自动补选。
 
-### 5.4 关键取舍
+Main 应向人说明现在仍待决定什么、已有材料是否继续适用和准确新申请在哪里。若恢复已成功但新申请准备失败，应如实报告当前已恢复状态与准备缺口，不能把它描述成仍未恢复，也不能用旧决定继续向批准推进。
 
-| 问题 | 设计选择 | 原因与当前代价 |
-|:--|:--|:--|
-| 如何防默认批准 | no automatic candidates + fixed six-value switch | 结构上没有默认 route；代价是等待没有自动提醒/超时策略 |
-| 如何表达复杂人意见 | 六个固定语义，而非自由文本 target state | route 可审计、可恢复；细节理由仍在 decision evidence/package |
-| approve 是否执行发布 | 永久分离授权和执行 | 防 Harness 越权；依赖外部流程读取授权状态 |
-| reject 是否全部作废 | acceptance/audit 定向失效，defect 带 finding 回 S8 | 保留可复用的未受影响事实；当前失效粒度偏粗 |
-| human 身份如何处理 | local actor + scoped evidence + one-time decision ID | 满足本地 Runtime 的最小可审计模型；不宣称身份认证 |
-| defer 如何处理 | paused + checkpoint，无自动 abort | 不让时间代替价值判断；需要外部 owner 提醒 |
+## 9. 三种退回怎样交到原专业责任
 
-## 6. L1 准则如何嵌入 S11
+### 9.1 缺陷退回：真实问题先进入调查
 
-| L1 准则 | S11 中的实际落点 |
-|:--|:--|
-| D1 权威外置 | human decision、state/journal、pause checkpoint、rollover archive 落盘；package 正文与 Runtime 仍是两种载体 |
-| D2 自然路径观测 | 人类命令通过 transition engine/Writer 事务写入，Controller 自然路径只负责发现等待状态，不自动代决策 |
-| D3 门是顾问 | CLI 缺参/语义 context 不匹配/无 scope evidence 会拒绝并给出修复方向；不会把 package 内容缺口自动定位到某一节 |
-| D4 引导性产物 | S10 package 的五要素、唯一未决事实、影响、建议、恢复点和 automation-stops 声明压缩人类判断成本 |
-| D5 三级强制 | fixed CLI/transition schema、human scope/one-time decision、no-candidate/forbidden event 共同控制；本地身份认证和完整命令阻断仍弱 |
-| D6 三方收敛 | S10 工程事实、S11 人的风险判断、Harness 的状态落盘分开；Harness 不替人做价值判断 |
-| D7 收敛可观测 | 每个 disposition 有 event、revision、evidence、state/phase outcome；defer/abort/approve 成为明确终点或 checkpoint |
-| 公理一 原型 | 对应真实 release approval、change deferral、defect rejection、acceptance/audit rework、abort 与 rollover |
-| 公理二 分工 | 工程判断、人类授权、外部发布执行三者分离；actor 认证仍在系统边界外 |
-| 公理三 消费 | 人消费 package，Controller 消费固定 disposition，recovery/rollover 消费 checkpoint/decision evidence；不把一条 approve 当作发布完成 |
-| 公理四 成本 | S11 只读汇总包，不重复加载全套过程资料；需要工程事实时按 reject 路由回 S10/S8 |
-| 公理五 传达 | 六枚举有固定词、固定去向和不同 evidence 需求；`release_authorized`、`paused`、`aborted` 不能互相替代 |
+`reject_defect` 将人的真实问题或已有发现交给 [S8](L3-S8-finding-investigation.md)，不要求先注册一个占位 Finding 才允许接收人的决定。没有 S7 发现批次时，可以用本次已消费决定作为真实来源，建立调查 Case，并围绕实际问题提出假设和调查任务。
 
-## 7. 产出、出口门槛与失败路由
+原 TR-027 清除当前批次／调查入口指针以建立这次入口，保留历史文件和已记录观察。人的描述是调查依据，不自动等于已确认根因、正式 BUG 或获批修复合同；不能在 S11 直接派 Builder 修改产品。
 
-### 7.1 正式产出
+原 S8 消费者识别经 TR-027 消费的人类决定，把其准确标识、路径和已固定摘要交给调查题目；没有 Finding 时，相关数组保持为空。Case 的原修订历史保留最初来源，Investigator 返回沿原来源边界校验，合同批准继续核对该来源和冻结产品基线。Main 无须把人的问题另登记成 Finding，也不抄写来源摘要或批准元数据。实际调查结论、合同范围与真实批准仍分别由原责任形成，进入 S8 本身不代表已经完成修复；具体机制与边界见 S8。
 
-- 当前 Runtime/context 对齐的 release-ready package；
-- valid `human_decision_record` 及其 Runtime/verb/decision-ID scope；
-- TR-025～TR-030 对应的 transition journal event；
-- defer 的 pause checkpoint，或 reject_defect 的 finding evidence；
-- reject_acceptance/reject_release_audit 的 invalidation records；
-- approve/abort 的 terminal state，或返回 S8/S10 的明确 cursor；
-- 若进入下一周期，独立 rollover record、archive state/journal fingerprints 和 fresh inactive runtime。
+### 9.2 验收退回：保留观察，重新判断承诺
 
-### 7.2 目标出口判定与当前机器地板
+`reject_acceptance` 使验收与下游发布审计类有效记录失效，回到 S10 验收。失效表达需要新结论，不意味着所有已有观察都错误，也不清空全部工程事实。
 
-| 维度 | 目标判定 | 当前机器实际检查 |
-|:--|:--|:--|
-| Package currentness | package refs/hashes 与 Runtime identity/baseline/round 一致 | transition 不解析 package；依赖人/主会话对账 |
-| Human choice | 恰有一个六枚举 disposition，无默认/自由 target | CLI fixed switch，未知值/缺参 exit 2 |
-| Decision freshness | evidence valid，scope 绑定 Runtime/package context/disposition/decision ID，Writer 一次性消费 | transition 接受可选显式 revision 断言；正常路径由当前 cursor、scope 和一次性 decision ID 完成消费 |
-| Route safety | 每个 disposition 只到声明的固定 state/phase | `HumanReleaseTransitionID` + catalog 固定 TR；无 arbitrary target |
-| Release separation | approve 只记录授权，外部执行单独发生 | TR-025 只有 record action；Harness 不执行 release |
-| Rework correctness | acceptance/audit rejection 只失效对应 evidence，defect 带 finding 回 S8 | TR-028/029 按 kind 粗粒度失效；TR-027 不创建 BUG |
-| Pause/recovery | defer 保存可验证 checkpoint，resume 恢复原 state/phase/entities | TR-026/TR-019 有 checkpoint/restore；需有效 pause/decision evidence |
-| New cycle | rollover 只从 release_authorized/aborted 开始且有人类 rollover approval | Store.Rollover 有终态、fresh inactive、scope/producer 检查；不是 S11 自动动作 |
+原交接将本次决定路径与真实理由交给原报告，保留专业观察，清除验收及下游审计的旧最终 `outcome`。有现成行时追加真实来源引用；没有行时才以实际理由形成待处理内容，不造模板任务。该准备对同一决定只做一次，旧申请回放不能清掉返工者后来补写的答案。
 
-### 7.3 失败路由
+验收负责人应围绕人的真实问题完成补审。旧行的 `pass` 可以作为原观察保留，却不是对新问题的自动回答；新最终结论必须由实际返工得出。验收完成仍经 TR-015，审计在当前验收依据上再作结论，然后经 TR-017 回 S11 新申请。
 
-| 情况 | 去向 |
-|:--|:--|
-| package 缺 hash、风险、恢复点或与当前 Runtime 不一致 | 不做 decision，回 S10 补 package/重做相应证据 |
-| CLI 缺 disposition/actor/decision evidence | exit 2，零 state/journal 副作用；补齐后重新命令 |
-| human decision evidence scope/context 无效 | transition reject；重新创建当前 `runtime_release` 语义 scope 的 evidence |
-| `approve` 后有人要求 Harness 自动 merge/deploy/publish | 拒绝越权；由外部人工发布流程执行并留组织审计 |
-| `defer` | TR-026 → paused；等待 `runtime resume`、REQ amendment 或 abort |
-| `reject_defect` | TR-027 → S8；主会话必须把 finding evidence 纳入调查并创建/核对 canonical BUG |
-| `reject_acceptance` | TR-028 → S10 acceptance；旧 acceptance/audit evidence 已失效，重新组装 ACC |
-| `reject_release_audit` | TR-029 → S10 release_audit；旧 audit evidence 已失效，重新审计 |
-| `abort` | TR-030 → aborted；不执行发布，也不自动新开 Runtime |
-| 需要新周期 | 仅在 release_authorized/aborted 后走独立 rollover，并提供 `runtime_rollover` human approval |
-| protected command 未被主 policy 拦截 | 不把命令表存在当作成功；停止操作，走外部人工授权/组织发布流程并记录机制缺口 |
+### 9.3 审计退回：保留验收，补相关发布判断
 
-## 8. 易错点与渐进披露
+`reject_release_audit` 只使发布审计类有效记录失效，保留原验收事实，回 S10 发布审计。原报告接收人的理由与准确决定路径，保留观察并清除被退回审计的最终结论。
 
-### 8.1 易错点
+两种 S10 退回当前按证据种类失效，不逐条解析人类理由后计算精确验收项或主题影响集，也不自动开启新 S7 轮。Main 需要判断具体问题是否只是审查不足，还是已经涉及真实产品、需求或验证基础变化；后一种情况应继续原返工／完整验证路径，不能只重填批准。
 
-1. 把 `awaiting_human_release` 当作 release success；它只是等待人；
-2. 以为没有自动候选就等于所有发布/部署命令都被 Hook 硬拦；两者是不同控制面；
-3. 用 `approve` 作为 Harness 自动 merge/publish/deploy 的授权；TR-025 明确不执行副作用；
-4. 传入任意 target state 或 transition ID；CLI 只接受六个 disposition；
-5. 重用旧 package/context 或 decision ID 的 human decision evidence；固定 transition 和一次性消费会拒绝，不能绕过；
-6. 认为 `--actor user` 已完成真人认证；当前只是本地字符串和 evidence scope；
-7. `reject_defect` 后直接让 Builder 修复；TR-027 只带 finding evidence 回 S8，不是 accepted BUG；
-8. `reject_acceptance`/`reject_release_audit` 后复用旧 invalid evidence；对应 evidence 已被 action 标 invalid；
-9. 认为 reject acceptance 会自动开启新 review round；TR-028 只回 S10 并失效旧 acceptance/audit evidence；
-10. defer 后直接改 `.claude/loop-state.json` 让系统继续；应通过 pause/resume/amend/abort 受控入口；
-11. 把 `release_authorized` 当作下一 Runtime 已经 rollover；归档/新周期需要独立 rollover approval；
-12. 认为超时会自动 abort 或 approve；当前没有 timeout transition；
-13. 把人类 decision record 当作完整 package 内容的替代品；transition 不重新解析 S10 正文；
-14. 在 S11 发现 REQ/架构问题仍继续包装 approve；正确动作是 reject_acceptance/reject_release_audit 或 REQ pause。
+决定提交与后续返工材料准备是不同边界。出现“决定已记录，但 S10 准备失败”时，保持已提交去向，修复明确报告路径与材料，不能声称未消费，也不能靠普通事件再选一次处置。
 
-### 8.2 阅读预算
+## 10. 批准、中止、实际发布与下一周期
 
-- **人只想做一次决策**：读 S10 package 的当前事实、唯一未决、影响、建议、恢复点和 automation-stops；再读 §4.4 的六路由表；
-- **正在执行 human-decision CLI**：读 §4.3，确认 disposition、actor、decision evidence 和 reject_defect 的 finding evidence；显式 expected revision 仅在集成/恢复调用者主动选择时使用，不属于流程逻辑；
-- **发生 reject/defer**：读 §4.4～§4.5 与 §7.3 的对应路由，不重读全部 ACC/audit；
-- **正在维护 harness**：必须读 §5.3，并对照 `runtime/s11_migration.go`、`cli/run.go`、`transition/engine.go` 的 human scope、Controller no-candidate、TR-025～030 actions 与 policy/classifier 接线；
-- **准备下一周期**：额外读 §4.5 的 rollover 条件；不要把 S11 transition 与 Store.Rollover 混成一个阶段动作。
+### 10.1 授权不执行外部动作
+
+`approve` 经 TR-025 记录当前发布授权；`abort` 经 TR-030 记录当前周期中止。两者都不在转换动作中合并分支、推送、发布制品或部署，也不在 Runtime 中自动确认生产运行成功。
+
+实际发布由对应执行者依据真实目标与授权安排，遵守实际操作责任并留下真实运行结果。发布失败、制品变化、窗口变化或需要新的不可逆操作时，应处理实际问题，不能借一条旧授权无限扩展动作范围。
+
+门禁等待和授权记录不是完整命令拦截器。不能因为没有自动候选，就宣称任意 shell、MCP 或外部系统的发布动作均被 Hook 阻止；同样，工具能够执行也不构成人类授权。S11 的职责是准确维护决定与去向。
+
+### 10.2 终态与独立周期管理
+
+`awaiting_human_release` 是等待位置，`paused` 是可恢复位置；它们不是可直接归档的新周期终态。当前 Runtime 的终态包括 `release_authorized`、`aborted`。
+
+需要开始下一周期时，使用原独立 rollover 流程。它检查当前终态、合法的新 inactive Runtime、归档对象和针对周期切换的真实授权，并保存原状态／事件的可追溯归档。发布批准不代替这项授权，中止也不自动创建下一需求。具体绑定与周期边界见 S1，状态和恢复规则见 [L4 状态转换核心](../l4-mechanisms/L4-state-transition-core.md)。
+
+归档表示周期事实被保存与切换，不表示产品已经发布。授权、实际操作、周期管理应分别留下真实结果，不能由一个终态名称推断另外两件事已经完成。
+
+## 11. 观测、错误和恢复如何帮助人继续
+
+S11 的观测应让 Main 回答：现在在等谁、正在决定哪个交付、申请是否被接收、实际到了哪里、后续哪项工作仍未准备好。
+
+| 观察点 | 应展示的事实 | 用来区分的问题 |
+| --- | --- | --- |
+| 当前上下文 | 本轮已登记验收／审计、可读与原报告位置、实际风险、当前申请路径和六个去向 | 是否拿到正确责任与足够交接材料 |
+| 草稿反馈 | 选择未答，不登记决定；继续等待真实人意 | 尚无决定，不是默认拒绝或批准 |
+| 字段与路径反馈 | 具体读取／解码问题、准确当前路径和允许选项 | 是准备缺口、类型错误还是错用旧申请 |
+| 原 Writer 结果 | 本次决定标识、实际处置、固定 TR、当前游标 | 文件保存是否已经转成决定事实 |
+| 消费记录 | `consumed_by`、`consumed_at` 和原事件 | 哪个操作已经使用该决定，是否只是重放 |
+| 退回与恢复材料 | 真实理由、新责任位置、观察保留情况、新申请是否为空 | 是否正确交接，旧结论有没有跳过返工 |
+| 后续准备错误 | 已提交的去向、具体未生成文件或失败原因 | 事务已完成而输出缺失，还是事务未提交 |
+
+恢复先看实际当前游标与消费记录，再处理文件；不要仅凭一句成功文字或一份申请推断状态。真实并发冲突应读取当前责任，不能盲目按旧快照覆盖。输入错误和空选择不应产生批准，已消费旧申请也不应重新推进。
+
+身份与意图不由这些本地记录认证。系统可以记录 Main 提交了什么，并维护其工程消费事实，但不能从字符串和本地文件证明人实际说过什么。Main 需要如实承接人的原意，不能用流程自动化掩盖缺少真实决定。
+
+## 12. 实现对应与当前边界
+
+| 设计责任 | 当前落点 |
+| --- | --- |
+| 主会话的人类交接职责与正常保存方法 | [S11 操作指引](../../docs/control/agent-protocol.md#s11)、[验收与交接技能](../../skills/acceptance-and-handoff/SKILL.md) |
+| 读取 S10 材料、定位／准备申请、草稿与保存反馈 | [human_release_questionnaire.go](../../internal/cli/human_release_questionnaire.go) |
+| 原阶段入口与恢复入口的准备 | [CLI 控制接线](../../internal/cli/run.go)、[生命周期命令](../../internal/cli/lifecycle_commands.go) |
+| 六选择固定映射与终态定义 | [s11_migration.go](../../internal/runtime/s11_migration.go)、[生命周期定义](../../docs/control/loop-definition.json) |
+| 正常决定的关联、登记与重放 | [human_release.go](../../internal/transition/human_release.go)、[转换引擎](../../internal/transition/engine.go) |
+| 一次消费与定向退回 | [authorization.go](../../internal/runtime/authorization.go)、[原转换动作](../../internal/transition/actions.go) |
+| S10 观察保留与最终结论重开 | [audit_questionnaire.go](../../internal/cli/audit_questionnaire.go) |
+| 人类问题进入原调查 | [S8 intake](../../internal/investigation/intake.go)、[原假设工作流](../../internal/investigation/case_workflow.go) |
+| 自动候选停止与独立归档 | [Controller](../../internal/controller/cycle.go)、[Runtime Store](../../internal/runtime/store.go) |
+| 跨阶段责任、答卷与 Hook 分工 | [阶段答卷](../l4-mechanisms/L4-stage-form.md)、[修订机制](../l4-mechanisms/L4-revision-usage.md)、[Hook 接线](../l4-mechanisms/L4-hook-platform-wiring.md) |
+
+现有机制维护当前已登记责任、固定路由、原子状态／事件写入和正常幂等，不提供外部身份认证、全产品来源重证明或真实发布执行。部分兼容接口保留各自历史参数与证据要求，不能将这些维护入口复制为正常作者的额外义务。
+
+责任进度仍沿用 `pending`、`active`、`blocked`、`done`、`cancelled`；生命周期位置、六种选择、一次消费和实际发布结果表达不同事实，不另造一套执行状态机。跨阶段返回应遵守目标阶段真实机制；尤其，人类缺陷入口可用不等于后续调查／合同链全部成立。
+
+验证需要区分本地自动化夹具、真实 Claude Code 的保存与交接、实际人类选择及外部发布。模拟决定可以验证固定去向与幂等，不能证明已经取得本项目真实发布授权；一份设计文档或批准记录也不能证明产品已经上线。

@@ -2,7 +2,7 @@
 
 > 模块：{module}
 > 当前真相：本文件维护模块完整动线集合；不创建 per-REQ/per-round 副本
-> 关联原型：`docs/design/prototypes/{module}/index.html` + 当前 `*.html`
+> 关联原型：有界面时引用 `docs/design/prototypes/{module}/index.html` + 当前 `*.html`；纯服务路径不创建 HTML
 > 关联场景：`scenario-model.json` / `cases.json` / `scenario-coverage.json` / `fixture-contract.json`
 
 ## 使用方式
@@ -16,6 +16,12 @@
 “失败后重试”。共享的登录、种子数据或准备动作写在本文档的共享前置中，
 路径只引用它们，避免重复。路径数量不设上限；可按真实业务场景增删字段，
 但当前仍成立的路径 ID 不可随意复用；不再成立的路径从当前集合移除，历史由 Git 和 round 报告保存。
+
+故事与场景引用的动线 ID 必须出现在 Markdown 标题中；目录表不替代定义。
+`F-NNN` 恰好三位数字，例如 `### F-001：导入请求处理`。无界面时直接按该
+标题描述调用方/worker 的入口、前置、操作、响应、持久效果和拒绝恢复，不创建
+PATH、HTML 或浏览器 spec。有界面的独立浏览器路径使用 `PATH-*`，可以在同一
+标题关联其操作动线，如下例；browser-required CASE 必须引用实际 PATH。
 
 ## 1. 模块范围与路径目录
 
@@ -44,7 +50,7 @@ destructive / boundary / other；它只用于检索，不限制路径设计。
      “业务说明”“辅助断言”“可访问性检查”等小节；不要把不同终点的
      用户决策压缩回同一张分支表。 -->
 
-### PATH-CREATE-SUCCESS：{path title}
+### F-001 / PATH-CREATE-SUCCESS：{path title}
 
 | 项 | 内容 |
 |:---|:---|
@@ -89,9 +95,12 @@ destructive / boundary / other；它只用于检索，不限制路径设计。
 
 ## 5. E2E 执行规则
 
+以下浏览器要求只适用于 browser-required CASE。纯服务动线沿自身入口验证响应、
+持久状态、拒绝副作用和恢复，不创建 PATH/spec，也不以无浏览器为由省略行为验证。
+
 - [ ] 路径目录中的每个 `required` 路径均有独立的步骤级 E2E 证据，或有已批准的 N/A 理由。
 - [ ] 每个 browser-required CASE 都有至少一个 required PATH，且 module spec 同时引用 CASE ID 与完整 PATH ID。
-- [ ] required allow/reject branch coverage = 100%；比例门满足 module `coverage_profile`。
+- [ ] required allow/reject branch coverage = 100%；正反数量比例仅作风险参考，不凑分支、不作为拒收门槛。
 - [ ] 每条 negative PATH 逐项断言 `visible`、`terminal_state`、`persisted_effects`、`forbidden_side_effects`、`rejection`、`expected_state`、`recovery`；`recovery: N/A` 携带 rule `source_refs` 中的来源与非空理由。
 - [ ] E2E 从每条路径声明的入口开始；没有使用未声明的 URL 直跳、API 调用、手改状态或隐藏浏览器状态。
 - [ ] 每个步骤后的可见结果均被断言；重要终点保留截图、trace、console/network 摘要或等价证据。

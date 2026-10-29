@@ -125,48 +125,12 @@ func validateDelegatedApproval(root string, state, draft map[string]any, req Con
 	if err := repair.ValidateContractExecutionMap(draftBytes); err != nil {
 		return nil, err
 	}
-	grantRow, grant, boundPolicy, err := resolveRepairAuthority(root, state, req.DelegationEvidenceID)
+	grantRow, grant, err := repairReviewAuthority(root, state, req.DelegationEvidenceID)
 	if err != nil {
 		return nil, err
 	}
-	generation, err := baselineGeneration(state)
-	if err != nil {
-		return nil, err
-	}
-	bound, _ := state["bound_req"].(map[string]any)
-	if grant.Decision != "delegate_bounded_repair" || grant.DecisionID != req.DelegationEvidenceID || grant.RuntimeID != stringField(state["runtime_id"]) || grant.BaselineGeneration != generation || grant.REQSHA256 == "" || grant.REQSHA256 != stringField(bound["sha256"]) || stringField(bound["status"]) != "locked" {
-		return nil, fmt.Errorf("delegation does not bind this locked REQ/runtime/generation")
-	}
-	// The grant must come from the recorded requirement approver, not the Driver.
-	if grant.ApprovedBy == "" || grant.ApprovedBy != stringField(bound["approved_by"]) || !containsStringAny(grantRow["produced_by"], grant.ApprovedBy) || grant.Reviewer == "" || grant.Reviewer == grant.ApprovedBy || grant.Reviewer != req.ApprovedBy {
+	if grant.Reviewer != req.ApprovedBy {
 		return nil, fmt.Errorf("delegation human/reviewer identity mismatch")
-	}
-	if !containsStringAny(grantRow["scope_refs"], "s8_repair_delegation:"+grant.RuntimeID) {
-		return nil, fmt.Errorf("delegation scope mismatch")
-	}
-	expires, err := time.Parse(time.RFC3339, grant.ExpiresAt)
-	if (!boundPolicy || grant.ExpiresAt != "") && (err != nil || !time.Now().Before(expires)) {
-		return nil, fmt.Errorf("delegation expiry missing or expired")
-	}
-	if grant.MaxContracts < 1 || delegationUseCount(state, req.DelegationEvidenceID) >= grant.MaxContracts {
-		return nil, fmt.Errorf("delegation contract budget exhausted or invalid")
-	}
-	if len(grant.AllowedPaths) == 0 {
-		return nil, fmt.Errorf("delegation allowed_paths is empty")
-	}
-	for _, path := range append(append([]string{}, grant.AllowedPaths...), grant.ForbiddenPaths...) {
-		if err := literalRepositoryPath(root, path); err != nil {
-			return nil, err
-		}
-	}
-	// Re-read locked REQ bytes. No use across an unrecorded REQ change.
-	reqPath := stringField(bound["path"])
-	if err := literalRepositoryPath(root, reqPath); err != nil {
-		return nil, err
-	}
-	reqBytes, err := os.ReadFile(filepath.Join(root, reqPath))
-	if err != nil || sha256Hex(reqBytes) != grant.REQSHA256 {
-		return nil, fmt.Errorf("locked REQ bytes drifted")
 	}
 	paths, err := stringSlice(draft["prospective_scope"], "prospective_scope")
 	if err != nil {
@@ -209,6 +173,12 @@ func validateDelegatedApproval(root string, state, draft map[string]any, req Con
 	for _, id := range review.EvidenceRefs {
 		if id == req.ApprovalEvidenceID || id == req.DelegationEvidenceID {
 			return nil, fmt.Errorf("technical review evidence cannot be its own authority")
+		}
+		if strings.HasPrefix(id, "path:") {
+			if err := ValidateEvidenceRefs([]string{id}, EvidenceAttestationOptions{AllowPaths: true, State: state, Root: root, RequireSHA: true, RequireReviewRound: currentReviewRound(state)}); err != nil {
+				return nil, fmt.Errorf("technical review supporting file evidence: %w", err)
+			}
+			continue
 		}
 		rows, _ := state["evidence"].([]any)
 		kind := ""
@@ -278,4 +248,107 @@ func resolveRepairAuthority(root string, state map[string]any, id string) (map[s
 	}
 	grant = RepairDelegation{Decision: "delegate_bounded_repair", DecisionID: id, RuntimeID: stringField(state["runtime_id"]), REQSHA256: stringField(bound["sha256"]), BaselineGeneration: generation, ApprovedBy: p.ApprovedBy, Reviewer: p.Reviewer, AllowedPaths: p.AllowedPaths, ForbiddenPaths: p.ForbiddenPaths, MaxContracts: p.MaxContracts, ExpiresAt: p.ExpiresAt}
 	return map[string]any{"sha256": sha, "produced_by": []any{p.ApprovedBy}, "scope_refs": []any{"s8_repair_delegation:" + grant.RuntimeID}}, grant, true, nil
+}
+
+// ContractReviewAuthority selects existing, currently valid authority for the
+// original Driver review. It creates no grant and does not approve a contract.
+// Ambiguous explicit grants are reported rather than silently choosing one.
+func ContractReviewAuthority(root string, state map[string]any) (string, string, error) {
+	config, _ := state["configuration"].(map[string]any)
+	repairConfig, _ := config["repair"].(map[string]any)
+	pin, _ := repairConfig["bound_policy"].(map[string]any)
+	if sha := stringField(pin["sha256"]); sha != "" {
+		id := "binding-policy:" + sha
+		_, grant, err := repairReviewAuthority(root, state, id)
+		if err == nil {
+			return id, grant.Reviewer, nil
+		}
+		// A stale pin cannot grant authority. An explicit valid grant may still do so.
+	}
+	var ids []string
+	var reviewers []string
+	var sources []string
+	rows, _ := state["evidence"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if stringField(row["kind"]) != "human_decision" || stringField(row["status"]) != "valid" {
+			continue
+		}
+		id := stringField(row["id"])
+		_, grant, err := repairReviewAuthority(root, state, id)
+		if err == nil {
+			ids = append(ids, id)
+			reviewers = append(reviewers, grant.Reviewer)
+			sources = append(sources, id+" ("+stringField(row["path"])+")")
+		}
+	}
+	if len(ids) == 1 {
+		return ids[0], reviewers[0], nil
+	}
+	if len(ids) > 1 {
+		return "", "", fmt.Errorf("multiple existing bounded repair grants apply: %s; Main must resolve their actual authority before preparing the technical review", strings.Join(sources, ", "))
+	}
+	return "", "", nil
+}
+
+func repairReviewAuthority(root string, state map[string]any, id string) (map[string]any, RepairDelegation, error) {
+	grantRow, grant, boundPolicy, err := resolveRepairAuthority(root, state, id)
+	if err != nil {
+		return nil, RepairDelegation{}, err
+	}
+	if err := validateRepairDelegation(root, state, grantRow, grant, boundPolicy, id); err != nil {
+		return nil, RepairDelegation{}, err
+	}
+
+	return grantRow, grant, nil
+}
+
+// ValidateRepairDelegation applies the original grant constraints before its
+// original evidence Writer receives a system-bound author projection.
+func ValidateRepairDelegation(root string, state map[string]any, grant RepairDelegation) error {
+	row := map[string]any{"produced_by": []string{grant.ApprovedBy}, "scope_refs": []string{"s8_repair_delegation:" + grant.RuntimeID}}
+	return validateRepairDelegation(root, state, row, grant, false, grant.DecisionID)
+}
+
+func validateRepairDelegation(root string, state, grantRow map[string]any, grant RepairDelegation, boundPolicy bool, id string) error {
+	generation, err := baselineGeneration(state)
+	if err != nil {
+		return err
+	}
+	bound, _ := state["bound_req"].(map[string]any)
+	if grant.Decision != "delegate_bounded_repair" || grant.DecisionID != id || grant.RuntimeID != stringField(state["runtime_id"]) || grant.BaselineGeneration != generation || grant.REQSHA256 == "" || grant.REQSHA256 != stringField(bound["sha256"]) || stringField(bound["status"]) != "locked" {
+		return fmt.Errorf("delegation does not bind this locked REQ/runtime/generation")
+	}
+	// The grant must come from the recorded requirement approver, not the Driver.
+	if grant.ApprovedBy == "" || grant.ApprovedBy != stringField(bound["approved_by"]) || !containsStringAny(grantRow["produced_by"], grant.ApprovedBy) || grant.Reviewer == "" || grant.Reviewer == grant.ApprovedBy {
+		return fmt.Errorf("delegation human/reviewer identity mismatch")
+	}
+	if !containsStringAny(grantRow["scope_refs"], "s8_repair_delegation:"+grant.RuntimeID) {
+		return fmt.Errorf("delegation scope mismatch")
+	}
+	expires, err := time.Parse(time.RFC3339, grant.ExpiresAt)
+	if (!boundPolicy || grant.ExpiresAt != "") && (err != nil || !time.Now().Before(expires)) {
+		return fmt.Errorf("delegation expiry missing or expired")
+	}
+	if grant.MaxContracts < 1 || delegationUseCount(state, id) >= grant.MaxContracts {
+		return fmt.Errorf("delegation contract budget exhausted or invalid")
+	}
+	if len(grant.AllowedPaths) == 0 {
+		return fmt.Errorf("delegation allowed_paths is empty")
+	}
+	for _, path := range append(append([]string{}, grant.AllowedPaths...), grant.ForbiddenPaths...) {
+		if err := literalRepositoryPath(root, path); err != nil {
+			return err
+		}
+	}
+	// Re-read locked REQ bytes. No use across an unrecorded REQ change.
+	reqPath := stringField(bound["path"])
+	if err := literalRepositoryPath(root, reqPath); err != nil {
+		return err
+	}
+	reqBytes, err := os.ReadFile(filepath.Join(root, reqPath))
+	if err != nil || sha256Hex(reqBytes) != grant.REQSHA256 {
+		return fmt.Errorf("locked REQ bytes drifted")
+	}
+	return nil
 }

@@ -2,6 +2,7 @@
 
 - [共享模型](shared-model/README.md)
 - [整体派发计划](dispatch-plan/README.md)
+- [S6 Builder 派发](s6-builder/README.md)
 - [S7–S9调查与修复](s7-s9/README.md)
 - [S10验收与审计](s10/README.md)
 

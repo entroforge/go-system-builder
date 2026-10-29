@@ -1,73 +1,54 @@
-# REV — Document Verification Record {runid}-{resp}
+# REV 文档审查专业记录
 
-> 本模板两部分：§0 是必产物的**证据信封**（激活后第一件事就复制落盘——每个字段带一行"填什么"，写骨架的过程就是读懂自己要交什么）；§1 起是**条件产物**——只有出现 finding 才写的审查报告。双 PASS 不写报告（没有人读"都挺好"）。
+本模板说明文档审查应记录的专业内容，不是新的必填答卷或证据信封生成教程。当前 S5 使用系统发行的独占专业答卷：审查者填写 `answer.conclusion` 和真实 `answer.findings`，保存并原生返回准确引用；原消费者生成、登记 `document_review` 证据及回执。已有结构化 Finding 无需再抄成一份 Markdown 报告，PASS 也不另写“全部正常”的总结。
 
-## 0. 证据信封（必产物——document_review_record）
+系统提供准确来源、责任和输出位置。作者不填写 Runtime、代际、版本、SHA、证据编号、轮次或时间，不建立第二份来源表，也不自行拼装、登记或重新签署证据信封。缺少原题目或来源时报告 Main／系统恢复，不从当前文件补造历史来源。
 
-落盘到 `docs/reports/review/REV-{runid}-{resp}.json`，11 个字段（10 个机器校验；`created_at` 仅归档）：
+## 1. 审查对象与读序
 
-```json
-{
-  "schema_version": "1.0.0",
-  "evidence_id": "填写 REV-{runid}-{resp}（与文件名一致，机器互证）",
-  "kind": "document_review",
-  "runtime_id": "填写当前 runtime id（从 .claude/loop-state.json 顶部复制）",
-  "baseline_generation": "填写当前 baseline generation（同上）",
-  "producer_agent_id": "填写你的 agent id（你是谁就写谁——独立性机器核对两条证据互异）",
-  "producer_responsibility": "填写 DV-SPEC-CONSISTENCY 或 DV-TASK-EXECUTABILITY（激活信封指定的职责，错值 gate 直接 Unknown）",
-  "subject_refs": [
-    "手动从 .claude/loop-state.json 的 documents[] 逐条复制 {path, version, sha256}——多一少一都拒。故意没有自动命令：逐条抄写就是'我签的是哪一版'的对峙，这一步的笨拙是审查的锚"
-  ],
-  "conclusion": "审查完成后回填，三选一：pass / fix_required / req_change_required（与 gate 同词，全流程没有第二套枚举）",
-  "requested_event": "仅 fix_required 时填 document_fix_required（触发 TR-004 回 planning）；pass 与 req_change_required 都留空（后者走人闸，见注 4）",
-  "created_at": "填写 ISO 时间戳"
-}
-```
+系统给出的原卷列出准确 REQ、设计、契约、全部任务与派发计划，以及原 S3／S4 接受闭包中的适用模块场景材料。以下表格只说明阅读目的，不要求作者再填写文件版本或摘要。
 
-注 1：`review_round` 字段**不写**——S5 是轮 0，缺省即正确；误填反而静默失配。
-注 2（**登记——教学链此前漏了这步**）：信封写盘后必须登记进 runtime 才被 gate 看到。`docs/reports/review` 遵循 `file_sources` 的根目录 `git_tree` 来源；登记后先将信封提交并集成到当前 REQ 绑定的开发分支，再由 Hook/Gate 消费。未提交或仅 staged 的文件不会成为正式 Gate 输入：
-`.claude/bin/loop-harness runtime evidence add --id REV-{runid}-{resp} --kind document_review --path docs/reports/review/REV-{runid}-{resp}.json --produced-by <你的 agent id> --responsibility <你的职责>`
-`--kind` 必须与信封内的 `kind` 同词（都用 `document_review`）。这是 evidence 命令，不是 transition 命令——"不调 transition"的纪律不禁止它。
-**重签规则（fix 回路第二轮起）**：`runtime evidence add` 拒绝重复 ID（旧条目即使已 invalid 也占 ID）——重签时给 ID 加轮次后缀：`REV-{runid}-{resp}-r2`、`-r3`…（信封 `evidence_id` 与文件名同步改），旧信封文件保留作历史。
-注 3：字段口径 = 11 个字段（10 个机器校验；`created_at` 仅归档）+ 1 个故意不写的 `review_round`。
-注 4：`req_change_required` 分支的 `requested_event` **留空**——TR-005 是人闸路径（runtime → paused），由人提交，不走 requested_event 自动路由；只有 `fix_required` 填 `document_fix_required`。词汇映射：信封结论词 `req_change_required`（gate 词汇）在人闸处对应 protocol 的 `req_amendment`（= `req amend` 命令路径，S1-S4 同名）——两个命名空间，一处映射，别造第三个词。
+| 对象 | 阅读目的 |
+| --- | --- |
+| 已锁定 REQ | 验收标准、FR／NFR、范围与真实约束 |
+| 架构与契约 | 模块边界、接口、共享模型、错误与拒绝语义是否一致 |
+| 全部 TASK 与整体计划 | 范围、上下文、依赖、自检和收尾能否实际交付 |
+| 适用模块当前事实 | 场景、fixture、跨需求约束、故事、流程和生成覆盖是否承接原承诺 |
 
-## 1. Fingerprinted Inputs（以下仅在有 finding 时随报告填写）
+服务行为场景包保留七项材料；`browser_required:false` 只免浏览器 HTML／PATH／spec，不免服务 CASE 和相应 oracle。输入丢失或漂移时停止背书该对象，不换一份同名 live 文件继续签原来源。
 
-| Kind | ID | Path | Version | SHA-256 |
-|:---|:---|:---|:---|:---|
-| REQ | REQ-{id} | `docs/requirements/REQ-{id}.md` | {version} | `{sha256}` |
-| architecture | ARCHITECTURE-{id} | `docs/architecture/ARCHITECTURE-{id}.md` | {version} | `{sha256}` |
-| contract | {id} | `docs/dev/contracts/{id}.md` | {version} | `{sha256}` |
-| TASK | TASK-{id} | `docs/dev/tasks/TASK-{id}.md` | {version} | `{sha256}` |
-| module current truth | {module} | `docs/design/prototypes/{module}/` (scenario four-pack + stories/flows/index/*.html) | current | `{sha256}` |
+## 2. 专业结论
 
-## 2. Assigned Conclusion
+| 结论 | 使用条件 |
+| --- | --- |
+| `pass` | 本责任已实际审查原准确资料，未发现问题；原 `findings` 保持空集合 |
+| `fix_required` | REQ 含义清楚，修正规划、契约或任务即可满足；填写可定位的实际差距 |
+| `req_change_required` | REQ 自身冲突、含糊或缺少必要人的决定；如实报告，不能代替人批准变更 |
 
-| Scope | Expected behavior / criterion | Result | Evidence |
-|:---|:--|:--|:--|
-| {module/clause/path} | {criterion} | pass / fail / n/a（须记理由与证据） | {command/path/sample} |
+不适用必须有实际依据；未检查、材料缺失和无证据不能包装成不适用或 PASS。
 
-N/A requires a recorded rationale and evidence.
+## 3. 发现项
 
-## 3. Findings
+原答卷每项只填写专业内容：
 
-| Finding ID | Severity | Location | Expected | Observed | Evidence | Canonical BUG |
-|:--|:--|:--|:--|:--|:--|:--|
-| REV-F001 | P0/P1/P2/P3 | `{path:line}` | {contract/REQ} | {fact} | {evidence} | BUG-{id} / pending / n/a |
+| 字段 | 应回答的问题 |
+| --- | --- |
+| `path` | 哪份已提供的被审材料、哪个必要锚点有问题 |
+| `expected` | 根据需求或契约，本应具备什么内容或行为 |
+| `observed` | 实际看到了什么差距、矛盾或缺失 |
 
-缺失型 finding（如 NFR 未落地）的 Location 填"应出现处"（如 `docs/dev/contracts/CONTRACTS-<id>.md §索引`），Observed 记 `absent`。Findings 随信封 conclusion=fix_required 走 TR-004 回 planning 修复——本 assignment 不修、也不进 BUG 生命周期（那是 S7 起的事）。
+缺失型发现定位“应出现处”，并明确实际缺失。例如 NFR 没有对应契约条款，应指向相关契约索引及该 NFR，不能只写“缺覆盖”。S5 发现由原负结论返回规划处理，不由 reviewer 顺手修复，也不擅自转成 S7 起的问题调查／修复生命周期。
 
-## 4. Checks
+已有历史专业报告确需继续阅读时，可保留其原严重性、位置、预期、实际观察和真实证据；作者不为让记录看起来完整而补造 Finding ID、BUG ID、数量或摘要。
 
-| Check | Command / Method | Result | Evidence ref |
-|:--|:--|:--|:--|
-| tasks check | `loop-harness tasks check`（覆盖/DAG 机器已判，消费其结论不重算） | pass / fail / blocked / not_run | `{ref}` |
-| {check} | `{command}` | pass / fail / blocked / not_run | `{ref}` |
+## 4. 检查依据与未完成
 
-## 5. Result
+消费原问卷冻结的结构检查、覆盖与 DAG 摘要，不为抄报告重复运行同一检查。专业审查继续判断语义一致性、真实可执行性、负向分支及适用风险专项。仅在具体诊断或原明确兼容恢复需要时运行原提供的检查，按实际结果区分通过、失败、阻塞和未运行。
 
-```text
-Conclusion: pass | fix_required | req_change_required
-Requested lifecycle event: (none) | document_fix_required
-```
+材料缺项、来源漂移、丧失独立性或必要问题无法判断时，说明准确对象和缺口并交 Main；不能默认 PASS，也不通过刷新摘要、重写旧结论或手工登记信封绕过原消费者。
+
+## 5. 保存、接收与历史格式
+
+保存系统提供的本人原答卷，并原生返回准确引用。`SubagentStop` 接原领域消费者；原回执分别说明本人责任、阶段位置及后续 owner。合法负结论可以完成本人审查，同时使全阶段继续等待规划修正或人的决定。
+
+旧完整 `document_review_record` 信封只作为已记录历史格式，由原兼容消费者读取和恢复。其原身份、来源摘要和登记仍受原约束；保留内部 Schema 不意味着新作者要重新组装该格式。只有旧格式却缺原记录、准确题目或机器关联时，由 Main／系统报告并恢复原来源，不要求 reviewer 抄 Runtime、计算摘要、生成证据 ID、补时间或重建一份新信封。

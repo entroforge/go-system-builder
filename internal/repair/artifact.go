@@ -1,21 +1,27 @@
 package repair
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/diagnosticstorage"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/metrics"
+	runtimepkg "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 const artifactRoot = ".claude/review/repair"
@@ -88,6 +94,9 @@ func writeImmutable(root, relative, schemaName string, document any) (ArtifactRe
 	if err != nil {
 		return ArtifactRef{}, fmt.Errorf("encode %s: %w", relative, err)
 	}
+	if len(data) > 20<<20 {
+		return ArtifactRef{}, fmt.Errorf("immutable S9 artifact %s exceeds 20 MiB after final serialization; reduce professional answer content", relative)
+	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes(schemaName, data); err != nil {
 		return ArtifactRef{}, fmt.Errorf("validate %s: %w", relative, err)
 	}
@@ -95,21 +104,37 @@ func writeImmutable(root, relative, schemaName string, document any) (ArtifactRe
 	if err != nil {
 		return ArtifactRef{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return ArtifactRef{}, fmt.Errorf("create artifact directory: %w", err)
+	relativeRef, err := relativePath(root, path)
+	if err != nil {
+		return ArtifactRef{}, err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	parent, name, err := workpacket.OpenParent(root, relativeRef, true)
+	if err != nil {
+		return ArtifactRef{}, fmt.Errorf("open immutable artifact parent: %w", err)
+	}
+	defer parent.Close()
+	file, err := parent.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return ArtifactRef{}, fmt.Errorf("write immutable artifact %s: %w", relative, err)
 	}
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()
-		_ = os.Remove(path)
+		_ = parent.Remove(name)
 		return ArtifactRef{}, fmt.Errorf("write immutable artifact %s: %w", relative, err)
 	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = parent.Remove(name)
+		return ArtifactRef{}, fmt.Errorf("sync immutable artifact %s: %w", relative, err)
+	}
 	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+		_ = parent.Remove(name)
 		return ArtifactRef{}, fmt.Errorf("close immutable artifact %s: %w", relative, err)
+	}
+	// Preserve an artifact when parent durability is unknown. Cleanup must use
+	// the original Writer's pending/reference/SHA checks, never an eager remove.
+	if err := runtimepkg.SyncDirectory(filepath.Dir(path)); err != nil {
+		return ArtifactRef{}, fmt.Errorf("sync immutable artifact parent %s: %w", relative, err)
 	}
 	return fileRef(relative, data), nil
 }
@@ -119,7 +144,11 @@ func readArtifact(root string, ref ArtifactRef, schemaName string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	rel, err := relativePath(root, path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := workpacket.ReadFile(root, rel, 20<<20)
 	if err != nil {
 		return nil, fmt.Errorf("read artifact %s: %w", ref.Path, err)
 	}
@@ -178,12 +207,12 @@ func scopeAllows(path string, prospective, forbidden []string) error {
 //
 // RC-03 (EH-8) narrowing: the exclusion is explicit, not blanket ".claude".
 // Known control-plane subtrees (.claude/review, .claude/evidence,
-// .claude/workgroups and the mutable state files) are skipped, but an
-// unexpected .claude path (e.g., .claude/foo/product.go) is treated as
-// product surface — a repair that hides product writes under .claude must be
-// visible to the Session diff instead of silently excluded. Any legitimate
-// control-plane write must be under the known subtrees; product writes under
-// .claude remain product drift.
+// .claude/workgroups, the explicit machine-output directories, and mutable
+// state files) are skipped, but an unexpected .claude path (e.g.,
+// .claude/foo/product.go) is treated as product surface — a repair that hides
+// product writes under .claude must be visible to the Session diff instead of
+// silently excluded. Any legitimate control-plane write must be under the
+// known paths; product writes under .claude remain product drift.
 func captureRepositoryBaseline(root string, protected ...ArtifactRef) ([]ArtifactRef, string, error) {
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -207,7 +236,18 @@ func captureRepositoryBaseline(root string, protected ...ArtifactRef) ([]Artifac
 			return nil
 		}
 		relSlash := filepath.ToSlash(rel)
-		if (scope.Excludes(path) && !boundary.hasTracked(relSlash)) || ignoreBaselinePath(relSlash) || boundary.excludes(relSlash) || (entry.IsDir() && boundary.discoverEnvironment(relSlash)) {
+		// HEAD, index and the Session's historical members always win over a
+		// temporary name. A missing/unavailable Git proof grants no exception.
+		if boundary.gitOK && boundary.headOK && !boundary.hasTracked(relSlash) && metrics.IsTemporaryPath(relSlash) {
+			recognized, err := metrics.RecognizeTemporary(context.Background(), rootAbs, relSlash)
+			if err != nil {
+				return fmt.Errorf("inspect metrics temporary %s: %w", relSlash, err)
+			}
+			if recognized {
+				return nil
+			}
+		}
+		if (scope.Excludes(path) && !boundary.hasTracked(relSlash)) || ignoreBaselinePath(relSlash, rootAbs) || boundary.excludes(relSlash) || (entry.IsDir() && boundary.discoverEnvironment(relSlash)) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -221,7 +261,7 @@ func captureRepositoryBaseline(root string, protected ...ArtifactRef) ([]Artifac
 			return nil
 		}
 		if parts[0] == ".claude" {
-			if isControlPlanePath(relSlash, entry.IsDir()) {
+			if isControlPlanePath(relSlash, entry.IsDir(), rootAbs) {
 				if entry.IsDir() {
 					return filepath.SkipDir
 				}
@@ -287,16 +327,39 @@ func captureRepositoryBaseline(root string, protected ...ArtifactRef) ([]Artifac
 // bookkeeping (#11) and dependency/build caches (#13: vite pre-bundle
 // metadata, dist output, coverage) regenerate during ordinary verification
 // runs and are never authority-relevant.
-func ignoreBaselinePath(rel string) bool {
-	if isControlPlanePath(rel, false) {
+func ignoreBaselinePath(rel string, roots ...string) bool {
+	if isControlPlanePath(rel, false, roots...) {
 		return true
 	}
 
 	return false
 }
 
-func isControlPlanePath(rel string, isDir bool) bool {
-	_ = isDir
+var auditIndexScratchPattern = regexp.MustCompile(`^\.claude/hook-audit-index-[0-9]+\.scratch$`)
+
+func isControlPlanePath(rel string, isDir bool, roots ...string) bool {
+	if !isDir && len(roots) > 0 && diagnosticstorage.Recognizes(context.Background(), roots[0], rel) {
+		return true
+	}
+	// This exact scratch belongs to rebuildable audit cache publication. It is
+	// not an accepted audit event or any professional receipt/authority.
+	if !isDir && auditIndexScratchPattern.MatchString(rel) {
+		if len(roots) == 0 {
+			return true
+		}
+		info, err := os.Lstat(filepath.Join(roots[0], filepath.FromSlash(rel)))
+		return err == nil && info.Mode().IsRegular()
+	}
+	// Do not prune the body directory: a neighboring product file must remain
+	// visible. Only actual complete packets with a matching content identity are
+	// storage projections. Missing/corrupt candidates conservatively remain in
+	// the product inventory and cannot silently acquire a directory exemption.
+	if !isDir && len(roots) > 0 && strings.HasPrefix(rel, ".claude/packet-bodies/") {
+		recognized, err := runtimepkg.ClassifyPacketBodyStoragePathsContext(context.Background(), roots[0], []string{rel})
+		if err == nil && len(recognized) == 1 {
+			return true
+		}
+	}
 	// .claude/multi.json is the local session launcher's environment/profile
 	// file (model and connection settings, including local credentials). The
 	// harness never reads it; the launcher rewrites it on every session start
@@ -311,13 +374,17 @@ func isControlPlanePath(rel string, isDir bool) bool {
 	// Hook decision journals append on every hook evaluation; they are
 	// control-plane bookkeeping and must never enter a session baseline
 	// (a captured copy goes stale on the builders' own next hook call).
-	if rel == ".claude/hook-decisions.jsonl" {
+	if rel == ".claude/hook-decisions.jsonl" || rel == ".claude/hook-decisions.jsonl.index" {
 		return true
 	}
 	if strings.HasPrefix(rel, ".claude/") && (strings.HasSuffix(rel, ".lock") || strings.HasSuffix(rel, ".lock.process")) {
 		return true
 	}
-	for _, prefix := range []string{".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/"} {
+	for _, prefix := range []string{
+		".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/",
+		".claude/submissions/", ".claude/work-packets/", ".claude/assignment-context/",
+		".claude/runtime-checkpoints/", ".claude/hook-notices/", ".claude/hook-metrics/",
+	} {
 		if rel == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(rel, prefix) {
 			return true
 		}
@@ -515,7 +582,7 @@ func ComputeSessionChangeset(root string, session RepairSession) ([]ArtifactRef,
 		// contain the other exempt classes (capture already excluded them), so
 		// this filter is a no-op except for paths reclassified after session
 		// open.
-		if ignoreBaselinePath(path) {
+		if ignoreBaselinePath(path, root) {
 			continue
 		}
 		base[path] = artifact
@@ -562,16 +629,64 @@ func ComputeSessionChangesetRecord(root string, session RepairSession) (Changese
 	if err != nil {
 		return Changeset{}, err
 	}
-	if len(artifacts) == 0 {
-		return Changeset{}, errors.New("actual Session diff is empty")
+	return repairChangesetRecord(session.SessionID, "session_diff", artifacts)
+}
+
+// CurrentRepairResultChangeset projects the existing accepted Final Result
+// batch for both Impact and Handoff. It does not rescan the working directory
+// or replay Contract/Plan/source qualification.
+func CurrentRepairResultChangeset(root string, state map[string]any) (Changeset, error) {
+	pointer := repairPointer(state)
+	results, err := currentRepairResults(root, pointer)
+	if err != nil {
+		return Changeset{}, err
 	}
+	return repairResultChangeset(stringField(pointer["session_id"]), results)
+}
+
+// Read the existing accepted Final batch without replaying upstream proofs.
+func currentRepairResults(root string, pointer map[string]any) ([]RepairResult, error) {
+	refs, err := currentRepairResultRefs(pointer)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]RepairResult, 0, len(refs))
+	for _, ref := range refs {
+		data, err := workpacket.ReadFile(root, ref.Path, 20<<20)
+		if err != nil {
+			return nil, err
+		}
+		var result RepairResult
+		if err := json.Unmarshal(data, &result); err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func repairResultChangeset(sessionID string, results []RepairResult) (Changeset, error) {
+	changed, err := aggregateRepairResultArtifacts(results)
+	if err != nil {
+		return Changeset{}, err
+	}
+	artifacts := make([]ArtifactRef, 0, len(changed))
+	for _, item := range changed {
+		artifacts = append(artifacts, ArtifactRef{Path: item.Path, SHA256: item.SHA256, Status: item.Status})
+	}
+	return repairChangesetRecord(sessionID, "explicit", artifacts)
+}
+
+func repairChangesetRecord(sessionID, source string, artifacts []ArtifactRef) (Changeset, error) {
 	lines := make([]string, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		lines = append(lines, artifact.Path+":"+artifact.SHA256)
 	}
 	sort.Strings(lines)
 	digest := sha256Bytes([]byte(strings.Join(lines, "\n")))
-	return Changeset{SchemaVersion: "1.0.0", RecordType: "repair_changeset", ChangesetID: "repair-changeset-" + digest[:16], SessionID: session.SessionID, Source: "session_diff", Artifacts: artifacts, Digest: digest, ComputedAt: nowOr(time.Time{})}, nil
+	changeset := Changeset{SchemaVersion: "1.0.0", RecordType: "repair_changeset", SessionID: sessionID, Source: source, Artifacts: append([]ArtifactRef{}, artifacts...), Digest: digest, ComputedAt: nowOr(time.Time{})}
+	changeset.ChangesetID = repairChangesetID(changeset)
+	return changeset, nil
 }
 
 func exactIDs(expected, actual []string) error {

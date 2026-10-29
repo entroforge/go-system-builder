@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "S5",
+  "adapter": "document_review",
+  "authoring_schema": "stage-answer.schema.json",
+  "responsibilities": {
+    "DV-SPEC-CONSISTENCY": {
+      "title": "S05 文档审查 · 规格一致性",
+      "question": "请核对同一冻结版本的 REQ→设计→合同→TASK：AC 到条款及收尾检查的链路、NFR 落点、跨文档边界、错误与负向路径，以及适用的模块场景包和 CASE 覆盖。整条规格链是否一致？"
+    },
+    "DV-TASK-EXECUTABILITY": {
+      "title": "S05 文档审查 · 任务可执行性",
+      "question": "请逐 TASK 检查单一职责、上下文可行性、真实依赖、自包含资料和可验证的收尾条件，并审查整体并行编排；消费所提供的结构机检结果。依据冻结输入，按 Skill 中的条件检查数据迁移、外部依赖与高风险专项。当前任务批次是否足以开工并交付？"
+    }
+  },
+  "instruction": "阅读指定冻结资料，完成本责任的审查，在 answer.conclusion 选择结论；有问题才补充 answer.findings，然后保存当前准确答卷路径。只编辑 answer。结论选择：pass（通过）＝本责任未发现问题；fix_required（修正文档）＝REQ 含义明确，修正设计、合同或 TASK 即可满足；req_change_required（需求待人决策）＝REQ 本身存在歧义、冲突或缺失，须由人类明确或变更需求，此选项不表示已获变更授权。通过时 findings 保持预填 []，不用写“无问题”报告；有问题才填写具体位置、应有内容和实际缺口。不用抄身份、指纹或机检汇总。conclusion 为 null 表示尚未选择。普通 plan_checkpoint 不另交 PLAN、信封或重复报告；显式审批模式仍遵循原审批指引。普通保存不接收审查结果，也不要求等待保存回执；完成审查后，在原生返回中携带本问卷或答案的准确引用，由 SubagentStop 调用原消费者接收并说明下一责任人。若因失去独立性、缺失来源等真实阻塞无法形成结论，保留 conclusion 为 null，直接返回真实阻塞、未完成工作和准确原引用交 Main 恢复；不要为退出选择假结论。未接收不算 PASS 或责任完成。Main 的汇总由系统生成。",
+  "choices": [
+    "pass",
+    "fix_required",
+    "req_change_required"
+  ],
+  "findings_question": "无问题：保持预填 []。有问题：逐项填写 path（read 中的具体文件路径，可附锚点）、expected（应有内容）、observed（实际缺口）。只记录可定位的问题，不另写报告或重复抄机检汇总。",
+  "finding_example": {
+    "path": "docs/dev/tasks/TASK-001.md#checks",
+    "expected": "给出能运行的完成检查。",
+    "observed": "只写了完成，未说明如何验证。"
+  }
+}

@@ -355,7 +355,7 @@ func TestE2E_ErrorDSLAndLegacyMigration_E2E(t *testing.T) {
 	if !hasPrim {
 		t.Fatalf("direct primitive var must be flagged primitive_consumption, got %#v", report4.Findings)
 	}
-	// The semantic-only second file must not trigger primitive, but may trigger generated_asset check if missing link/digest
+	// The semantic-only second file must not trigger primitive, but may lack source-hint text; a hint does not authenticate a digest.
 }
 
 func TestE2E_StrictIsPerProject_AndValidateAllExcludesFoundation(t *testing.T) {

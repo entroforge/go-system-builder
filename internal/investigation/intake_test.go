@@ -18,6 +18,7 @@ import (
 )
 
 type intakeFixture struct {
+	hookBinary  string // Optional production-process platform acceptance path.
 	root        string
 	statePath   string
 	journalPath string

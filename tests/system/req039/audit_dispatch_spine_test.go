@@ -197,7 +197,7 @@ func assertDispatchDocuments(t *testing.T, state map[string]any, fixture dispatc
 func requireDispatchHookTransition(t *testing.T, runner *req039fixtures.CLIRunner, root, session, tool string, input map[string]any, wantTransition, wantState, wantPhase string) map[string]any {
 	t.Helper()
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", req039fixtures.PreToolUseBody(session, tool, input))
-	if code != 0 && code != 2 {
+	if code != 0 {
 		t.Fatalf("Hook %s failed: code=%d stdout=%s stderr=%s", session, code, stdout, stderr)
 	}
 	qg := req039fixtures.ParseHookQualityGate(t, stdout)
@@ -269,13 +269,11 @@ func TestAuditDispatchPlanHookSpineCommittedSubjectsAndFreeze(t *testing.T) {
 	}
 
 	for _, path := range append([]string{fixture.planPath}, fixture.taskPaths[0]) {
+		before := req039fixtures.ReadState(t, root)
 		code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse",
 			req039fixtures.PreToolUseBody("dispatch-freeze-"+filepath.Base(path), "Edit", map[string]any{"file_path": path}))
-		// The Hook protocol carries a deny in JSON while the CLI exits zero;
-		// direct CLI adapters may use the conventional exit-2 safety result.
-		if (code != 0 && code != 2) || !strings.Contains(stdout, `"permissionDecision":"deny"`) || !strings.Contains(strings.ToLower(stdout+stderr), "locked_artifact_write") {
-			t.Fatalf("S6 frozen dispatch artifact was not protected: path=%s code=%d stdout=%s stderr=%s", path, code, stdout, stderr)
-		}
+		after := req039fixtures.ReadState(t, root)
+		assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
 	}
 	if runner.ManualTransitionCalls != 0 {
 		t.Fatalf("dispatch Hook spine invoked manual transition CLI %d times", runner.ManualTransitionCalls)

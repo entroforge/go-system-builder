@@ -2,8 +2,7 @@
 // not_applicable gate, the draft exemplar and the human-readable checklist
 // template (docs/design/NA-checklist-template.md):
 //
-//  1. The draft's E2E N/A claim must carry an na_checklist_id that names
-//     the template, so every scaffolded N/A is verifiable against it.
+//  1. UI facts cannot stand in for Main completing the N/A checklist.
 //  2. The S7_NA_CHECKLIST_MISSING remediation must point the planner at
 //     the template file, not a vague section reference.
 package review
@@ -14,23 +13,15 @@ import (
 	"testing"
 )
 
-func TestDraftPlanNAChecklistIDReferencesTemplate(t *testing.T) {
+func TestDraftPlanDoesNotInventNAChecklistDecision(t *testing.T) {
 	plan, _ := DraftPlanForRoot(t.TempDir(), baseDraftState(t), 1)
 	if plan == nil {
 		t.Fatal("DraftPlanForRoot returned nil plan")
 	}
-	found := false
 	for _, claim := range plan.Claims {
-		if claim.Applicability != "not_applicable" {
-			continue
+		if claim.Lens == "e2e" && (claim.Applicability == "not_applicable" || claim.NAChecklistID != "") {
+			t.Fatalf("UI impact alone cannot establish a completed N/A checklist: %+v", claim)
 		}
-		found = true
-		if !strings.Contains(claim.NAChecklistID, "na-checklist-template-1") {
-			t.Fatalf("N/A claim %s must reference the checklist template id, got %q", claim.ClaimID, claim.NAChecklistID)
-		}
-	}
-	if !found {
-		t.Fatal("ui_impact=none draft must scaffold the explicit N/A claim")
 	}
 }
 

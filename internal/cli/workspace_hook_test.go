@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
-func TestBoundHookRejectsWrongDirectoryBeforeRuntimeMutation(t *testing.T) {
+func TestBoundHookObservesWrongDirectoryWithoutToolACL(t *testing.T) {
 	for _, kind := range []string{"main_in_worker", "main_writes_worker", "forged_runtime", "unknown_worker", "invalid_binding"} {
 		t.Run(kind, func(t *testing.T) {
 			fix := newRuntimeFixture(t)
@@ -59,21 +60,54 @@ func TestBoundHookRejectsWrongDirectoryBeforeRuntimeMutation(t *testing.T) {
 			case "unknown_worker":
 				payload["agent_id"] = "builder"
 			}
-			before, _ := os.ReadFile(fix.statePath)
-			journalBefore, _ := os.ReadFile(fix.journalPath)
+			beforeBytes, err := os.ReadFile(fix.statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var before map[string]any
+			if err := json.Unmarshal(beforeBytes, &before); err != nil {
+				t.Fatal(err)
+			}
 			data, _ := json.Marshal(payload)
 			var out, stderr bytes.Buffer
 			code := evaluate(root, "PreToolUse", bytes.NewReader(data), &out, &stderr, true)
-			if code != 2 {
-				t.Fatalf("exit=%d stdout=%s stderr=%s", code, &out, &stderr)
+			if code != 0 {
+				t.Fatalf("PreToolUse observer failed: exit=%d stdout=%s stderr=%s", code, &out, &stderr)
 			}
-			if bytes.Contains(stderr.Bytes(), []byte("load policy")) {
-				t.Fatalf("did not route to Main policy: %s", &stderr)
+			if bytes.Contains(out.Bytes(), []byte(`"permissionDecision":"deny"`)) {
+				t.Fatalf("PreToolUse observer must not deny identity or path scope: %s", &out)
 			}
-			after, _ := os.ReadFile(fix.statePath)
-			journalAfter, _ := os.ReadFile(fix.journalPath)
-			if !bytes.Equal(before, after) || !bytes.Equal(journalBefore, journalAfter) {
-				t.Fatal("denied boundary advanced Runtime before rejection")
+			afterBytes, err := os.ReadFile(fix.statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var after map[string]any
+			if err := json.Unmarshal(afterBytes, &after); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before["lifecycle"], after["lifecycle"]) {
+				var envelope struct {
+					HookSpecificOutput struct {
+						AdditionalContext string `json:"additionalContext"`
+					} `json:"hookSpecificOutput"`
+				}
+				if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+					t.Fatal(err)
+				}
+				line := bytes.SplitN([]byte(envelope.HookSpecificOutput.AdditionalContext), []byte("\n"), 2)[0]
+				prefix := []byte("QUALITY_GATE ")
+				if !bytes.HasPrefix(line, prefix) {
+					t.Fatalf("lifecycle changed without quality-gate diagnostics: %s", &out)
+				}
+				var gate struct {
+					TransitionCommitted bool `json:"transition_committed"`
+				}
+				if err := json.Unmarshal(bytes.TrimPrefix(line, prefix), &gate); err != nil {
+					t.Fatal(err)
+				}
+				if !gate.TransitionCommitted {
+					t.Fatalf("lifecycle changed without a committed quality-gate transition: before=%v after=%v gate=%v", before["lifecycle"], after["lifecycle"], gate)
+				}
 			}
 			if _, err := os.Stat(filepath.Join(e.Path, ".claude/loop-state.json")); !os.IsNotExist(err) {
 				t.Fatal("Hook created a second Runtime")

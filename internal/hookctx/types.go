@@ -1,6 +1,10 @@
 package hookctx
 
-import "github.com/entroforge/go-system-builder/internal/policy"
+import (
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
+	"github.com/entroforge/go-system-builder/internal/policy"
+)
 
 // AssignmentContext is the read-only view of one active agent assignment as
 // projected into the Hook Context. It is sourced from runtime.entities.tasks[]
@@ -9,28 +13,41 @@ import "github.com/entroforge/go-system-builder/internal/policy"
 // here intentionally do NOT include any path the loader could mutate — the
 // Hook is observation-only on the runtime, per SYNC-039 §3 / §8.
 type AssignmentContext struct {
-	AssignmentID       string `json:"assignment_id"`
-	TaskID             string `json:"task_id"`
-	OwnerAgentID       string `json:"owner_agent_id"`
-	RoleFamily         string `json:"role_family,omitempty"`
-	AgentDefinitionRef string `json:"agent_definition_ref,omitempty"`
-	WorktreePath       string `json:"worktree_path,omitempty"`
-	Branch             string `json:"branch,omitempty"`
-	TargetBranch       string `json:"target_branch,omitempty"`
-	State              string `json:"state"`
-	ManifestRef        string `json:"manifest_ref,omitempty"`
-	ReportStatus       string `json:"report_status,omitempty"`
-	CompletionRef      string `json:"completion_ref,omitempty"`
-	CompletionAckRef   string `json:"completion_ack_ref,omitempty"`
+	BaselineGeneration  int               `json:"baseline_generation,omitempty"`
+	AcknowledgedReports map[string]string `json:"acknowledged_reports,omitempty"`
+	AssignmentID        string            `json:"assignment_id"`
+	// AssignmentRecord binds an explicitly opted-in S6 projection to the
+	// immutable Runtime Record. The digest is separate from its stable identity
+	// tuple so downstream projections can verify both identity and exact bytes.
+	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
+	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
+	AssignmentRevision     int                               `json:"assignment_revision,omitempty"`
+	TaskID                 string                            `json:"task_id"`
+	OwnerAgentID           string                            `json:"owner_agent_id"`
+	RoleFamily             string                            `json:"role_family,omitempty"`
+	AgentDefinitionRef     string                            `json:"agent_definition_ref,omitempty"`
+	WorktreePath           string                            `json:"worktree_path,omitempty"`
+	Branch                 string                            `json:"branch,omitempty"`
+	TargetBranch           string                            `json:"target_branch,omitempty"`
+	State                  string                            `json:"state"`
+	ManifestRef            string                            `json:"manifest_ref,omitempty"`
+	ReportStatus           string                            `json:"report_status,omitempty"`
+	CompletionRef          string                            `json:"completion_ref,omitempty"`
+	CompletionAckRef       string                            `json:"completion_ack_ref,omitempty"`
 	// WritePaths is the effective union of manifest write_paths and output_paths.
-	WritePaths []string `json:"write_paths,omitempty"`
+	WritePaths  []string `json:"write_paths,omitempty"`
+	ReadPaths   []string `json:"read_paths,omitempty"`
+	OutputPaths []string `json:"output_paths,omitempty"`
+	SkillRefs   []string `json:"skill_refs,omitempty"`
+	DependsOn   []string `json:"depends_on,omitempty"`
 	// RequiredChecks carries the assignment's declared integration-check
 	// commands (workgroup manifest `required_checks`). The Controller wires
 	// them plus a real runner into Inspect/Integrate, so the `verified`
 	// checkpoint state reflects executed checks (L3-S6 §11.2 "Integration
 	// checks 未接线").
-	IntegrationCheckMode string   `json:"integration_check_mode,omitempty"`
-	RequiredChecks       []string `json:"required_checks,omitempty"`
+	IntegrationCheckMode string              `json:"integration_check_mode,omitempty"`
+	CheckProfiles        []checkexec.Profile `json:"check_profiles,omitempty"`
+	RequiredChecks       []string            `json:"required_checks,omitempty"`
 	// DoneWhen is the assignment's concrete closing contract from the
 	// workgroup manifest. It is projected into SubagentStart so the Worker
 	// sees the actual completion predicates instead of a generic reminder.
@@ -85,6 +102,7 @@ type IntegrationCheck struct {
 // the Safety Policy continues to consume LoadedContext.PolicyContext
 // directly.
 type LoadedContext struct {
+	DispatchBackpressure  bool                   `json:"-"`
 	PolicyContext         policy.RuntimeContext  `json:"policy_context"`
 	Assignments           []AssignmentContext    `json:"assignments,omitempty"`
 	IntegrationCheckpoint *IntegrationCheckpoint `json:"integration_checkpoint,omitempty"`

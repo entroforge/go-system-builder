@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/repair-result-work-packet.schema.json",
+  "title": "S9 RepairResult WorkPacket",
+  "description": "Neutral professional result projection. Original repair authorities, candidate receipt, checks, and Main integration remain with their original consumers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["packet_id", "template_id", "template_sha256", "binding", "inputs", "result_id", "issuance_event_id", "view_path", "answer_path", "draft"],
+  "properties": {
+    "packet_id": {"type": "string", "pattern": "^packet-[a-f0-9]{64}$"},
+    "template_id": {"const": "s9-repair-result-v1"},
+    "template_sha256": {"$ref": "#/$defs/sha256"},
+    "binding": {"$ref": "#/$defs/binding"},
+    "inputs": {"$ref": "#/$defs/inputs"},
+    "result_id": {"type": "string", "pattern": "^repair-result-[a-f0-9]{64}$"},
+    "issuance_event_id": {"type": "string", "pattern": "^evt-repair-result-packet-packet-[a-f0-9]{64}$"},
+    "view_path": {"type": "string", "pattern": "^\\.claude/work-packets/[^\\\\:#]+\\.json$"},
+    "answer_path": {"type": "string", "pattern": "^\\.claude/submissions/[^\\\\:#]+/[^\\\\:#]+/answer\\.json$"},
+    "draft": {"$ref": "stage-answer-s9-result.schema.json"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "relative_ref": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\:#][^\\\\:#]*$"},
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sources", "plan_report_ref", "plan_report_sha256", "execution_sha256", "rework_ref", "rework_sha256"],
+      "properties": {
+        "sources": {"$ref": "repair-plan-report-work-packet.schema.json#/$defs/binding"},
+        "plan_report_ref": {"$ref": "#/$defs/relative_ref"},
+        "plan_report_sha256": {"$ref": "#/$defs/sha256"},
+        "execution_sha256": {"$ref": "#/$defs/sha256"},
+        "rework_ref": {"type": "string", "pattern": "^$|^[^/\\\\:#][^\\\\:#]*$"},
+        "rework_sha256": {"type": "string", "pattern": "^(|[a-f0-9]{64})$"},
+        "resume": {"$ref": "#/$defs/resume"}
+      }
+    },
+    "resume": {
+      "type": "object", "additionalProperties": false,
+      "required": ["predecessor_packet_id", "predecessor_packet_sha256", "blocker_ref", "blocker_sha256", "resolution_message_ref", "resolution_message_sha256", "resolution_event_id", "resolution_idempotency_key", "resolution_before_revision", "resolution_after_revision", "resolution_sequence"],
+      "properties": {
+        "predecessor_packet_id": {"type": "string", "pattern": "^packet-[a-f0-9]{64}$"},
+        "predecessor_packet_sha256": {"type": "string"},
+        "blocker_ref": {"$ref": "#/$defs/relative_ref"},
+        "blocker_sha256": {"type": "string"},
+        "resolution_message_ref": {"$ref": "#/$defs/relative_ref"},
+        "resolution_message_sha256": {"type": "string"},
+        "resolution_event_id": {"type": "string"},
+        "resolution_idempotency_key": {"type": "string"},
+        "resolution_before_revision": {"type": "integer", "minimum": 0},
+        "resolution_after_revision": {"type": "integer", "minimum": 0},
+        "resolution_sequence": {"type": "integer", "minimum": 0}
+      }
+    },
+    "inputs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sources", "plan_report", "execution", "rework_receipt"],
+      "properties": {
+        "sources": {"$ref": "repair-plan-report-work-packet.schema.json#/$defs/inputs"},
+        "plan_report": {"$ref": "repair-plan-report.schema.json"},
+        "execution": {"$ref": "#/$defs/execution"},
+        "rework_receipt": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/rework_receipt"}]}
+      }
+    },
+    "record_reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["runtime_id", "baseline_generation", "assignment_id"],
+      "properties": {
+        "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+        "baseline_generation": {"type": "integer", "minimum": 1},
+        "assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"}
+      }
+    },
+    "worker_check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["index", "command", "profile"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "command": {"type": "string", "minLength": 1},
+        "profile": {"$ref": "check-profile.schema.json"}
+      }
+    },
+    "execution": {
+      "type": "object", "additionalProperties": false,
+      "description": "Stable workspace.Execution definition projection; status, runner receipts, ReworkRef, and delivery pointers are intentionally excluded.",
+      "required": ["check_location", "assignment_id", "runtime_id", "baseline_generation", "execution_generation", "agent_id", "worktree_path", "branch", "target_branch", "base_commit", "write_paths", "required_checks", "inputs"],
+      "properties": {
+        "assignment_record": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/record_reference"}]},
+        "assignment_record_sha256": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "worker_checks": {"anyOf": [{"type": "null"}, {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/worker_check"}}]},
+        "check_profiles": {"type": "array", "maxItems": 1024, "items": {"$ref": "check-profile.schema.json"}},
+        "purpose": {"type": ["string", "null"], "minLength": 1},
+        "work_packet_id": {"type": ["string", "null"], "minLength": 1},
+        "stage_entry": {"type": ["integer", "null"], "minimum": 0},
+        "check_location": {"enum": ["main", "worker"]},
+        "platform_session_id": {"type": ["string", "null"], "minLength": 1},
+        "assignment_id": {"type": "string", "pattern": "^assignment-[A-Za-z0-9._-]+$"},
+        "runtime_id": {"type": "string", "pattern": "^loop-[A-Za-z0-9._-]+$"},
+        "baseline_generation": {"type": "integer", "minimum": 1},
+        "execution_generation": {"type": "integer", "minimum": 1},
+        "agent_id": {"type": "string", "minLength": 1},
+        "worktree_path": {"type": "string", "minLength": 1},
+        "branch": {"type": "string", "minLength": 1},
+        "target_branch": {"type": "string", "minLength": 1},
+        "base_commit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+        "write_paths": {"type": "array", "uniqueItems": true, "maxItems": 4096, "items": {"type": "string", "minLength": 1}},
+        "required_checks": {"type": "array", "uniqueItems": true, "maxItems": 1024, "items": {"type": "string", "minLength": 1}},
+        "inputs": {"type": "object", "additionalProperties": {"type": "string"}},
+        "bootstrap_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [{
+        "if": {"required": ["purpose"], "properties": {"purpose": {"const": "native_delivery"}}},
+        "then": {
+          "properties": {"check_location": {"const": "main"}},
+          "not": {"anyOf": [{"required": ["bootstrap_sha256"]}, {"required": ["platform_session_id"]}]}
+        },
+        "else": {"required": ["bootstrap_sha256"]}
+      }]
+    },
+    "rework_receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["execution", "checkpoint", "reason"],
+      "properties": {
+        "execution": {"type": "object", "description": "Original execution snapshot captured by workspace rework."},
+        "checkpoint": {"type": "object", "description": "Original failed, unverified integration checkpoint."},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

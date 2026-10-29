@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -58,9 +59,6 @@ func ComputeChangeset(root string, request ChangesetRequest) (Changeset, error) 
 	if err != nil {
 		return Changeset{}, err
 	}
-	if len(paths) == 0 {
-		return Changeset{}, errors.New("changeset contains no changed artifacts")
-	}
 	artifacts := make([]ArtifactRef, 0, len(paths))
 	for _, path := range paths {
 		var data []byte
@@ -92,11 +90,24 @@ func ComputeChangeset(root string, request ChangesetRequest) (Changeset, error) 
 	}
 	sort.Strings(lines)
 	digest := sha256Bytes([]byte(strings.Join(lines, "\n")))
-	return Changeset{
-		SchemaVersion: "1.0.0", RecordType: "repair_changeset", ChangesetID: "repair-changeset-" + digest[:16],
+	changeset := Changeset{
+		SchemaVersion: "1.0.0", RecordType: "repair_changeset",
 		SessionID: request.SessionID, Source: source, BaseRef: request.BaseRef, HeadRef: request.HeadRef,
 		Artifacts: artifacts, Digest: digest, ComputedAt: nowOr(request.OccurredAt),
-	}, nil
+	}
+	changeset.ChangesetID = repairChangesetID(changeset)
+	return changeset, nil
+}
+
+func repairChangesetID(changeset Changeset) string {
+	id := "repair-changeset-" + changeset.Digest[:16]
+	if len(changeset.Artifacts) == 0 {
+		// Empty content has one digest across all Sessions. Keep the original
+		// immutable records separate using their existing source coordinates.
+		coordinates, _ := json.Marshal([]string{changeset.SessionID, changeset.Source, changeset.BaseRef, changeset.HeadRef})
+		id += "-" + sha256Bytes(coordinates)[:16]
+	}
+	return id
 }
 
 func gitBlob(root, revision, path string) ([]byte, error) {
@@ -119,8 +130,8 @@ func ValidateChangeset(root string, ref ArtifactRef) (Changeset, error) {
 	if err := decodeArtifact(root, ref, "repair-changeset.schema.json", &changeset); err != nil {
 		return Changeset{}, err
 	}
-	if changeset.RecordType != "repair_changeset" || len(changeset.Artifacts) == 0 {
-		return Changeset{}, fmt.Errorf("artifact %s is not a non-empty repair changeset", ref.Path)
+	if changeset.RecordType != "repair_changeset" {
+		return Changeset{}, fmt.Errorf("artifact %s is not a repair changeset", ref.Path)
 	}
 	return changeset, nil
 }

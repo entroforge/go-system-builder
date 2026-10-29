@@ -1,16 +1,27 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/diagnosticstorage"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/entroforge/go-system-builder/internal/buildsurface"
+	"github.com/entroforge/go-system-builder/internal/metrics"
+	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/targetedauthoring"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // ---------------------------------------------------------------------------
@@ -24,6 +35,22 @@ import (
 // of every file under dir. An empty or missing workspace digests to the
 // empty-string hash (the registered cold-start baseline).
 func WorkspaceDigest(root, workspaceRel string) (string, error) {
+	return WorkspaceDigestContext(context.Background(), root, workspaceRel)
+}
+
+// WorkspaceDigestContext always reads the current workspace; it caches no disk verdict.
+func WorkspaceDigestContext(ctx context.Context, root, workspaceRel string) (digest string, readErr error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	defer func() {
+		if ctx.Err() != nil {
+			digest, readErr = "", ctx.Err()
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if workspaceRel == "" {
 		return "", nil
 	}
@@ -41,6 +68,9 @@ func WorkspaceDigest(root, workspaceRel string) (string, error) {
 	_ = entries
 	var lines []string
 	err = filepath.Walk(abs, func(path string, info os.FileInfo, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err != nil {
 			return err
 		}
@@ -55,6 +85,9 @@ func WorkspaceDigest(root, workspaceRel string) (string, error) {
 			return err
 		}
 		data, err := os.ReadFile(path)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			return err
 		}
@@ -71,7 +104,11 @@ func WorkspaceDigest(root, workspaceRel string) (string, error) {
 // prepareVerificationWorkspace validates and creates the E2E cold-start
 // workspace: it must live under e2e-workspace/ inside the repository so the
 // reviewer write-scope rule and the digest recomputation can see it.
-func prepareVerificationWorkspace(root string, plan *Plan) (string, error) {
+func prepareVerificationWorkspace(root string, plan *Plan, contexts ...context.Context) (string, error) {
+	ctx := reviewRequestContext(contexts)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if plan.VerificationArtifactWorkspace == nil || strings.TrimSpace(*plan.VerificationArtifactWorkspace) == "" {
 		return "", nil
 	}
@@ -86,10 +123,13 @@ func prepareVerificationWorkspace(root string, plan *Plan) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("verification_artifact_workspace must stay inside repository: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return "", fmt.Errorf("create verification workspace: %w", err)
 	}
-	digest, err := WorkspaceDigest(root, workspace)
+	digest, err := WorkspaceDigestContext(ctx, root, workspace)
 	if err != nil {
 		return "", err
 	}
@@ -137,6 +177,12 @@ func repositoryContainedPath(root, rel string) (string, error) {
 	return abs, nil
 }
 
+// VerifyFrozenSubjects reuses the original read-only S7 subject verifier.
+// The caller must first establish the Plan's pinned identity and current scope.
+func VerifyFrozenSubjects(root string, plan *Plan, state map[string]any) error {
+	return verifyFrozenSubjects(root, plan, state)
+}
+
 // verifyFrozenSubjects proves that the registered ReviewPlan still describes
 // the bytes on disk. SubjectDigest only fingerprints the plan declarations;
 // it must not be mistaken for a disk-baseline check. A changed or missing
@@ -147,9 +193,21 @@ func repositoryContainedPath(root, rel string) (string, error) {
 // product drift — the plan is stale even though the hand-written list hashes
 // clean. Allowed write surfaces (.claude/, docs/reports/, e2e-workspace/) are
 // excluded from the drift scan.
-func verifyFrozenSubjects(root string, plan *Plan, state map[string]any) error {
+func verifyFrozenSubjects(root string, plan *Plan, state map[string]any, contexts ...context.Context) error {
+	if err := reviewRequestContext(contexts).Err(); err != nil {
+		return err
+	}
 	if plan == nil {
 		return fmt.Errorf("frozen subject verification requires a plan")
+	}
+	if buildsurface.HasCanonical(state) {
+		if err := verifyProductBaselineDeclarationContext(reviewRequestContext(contexts), root, state, plan); err != nil {
+			return err
+		}
+		return verifyCanonicalFrozenWorktree(root, plan, state, contexts...)
+	}
+	if plan.ProductBaseline != nil {
+		return fmt.Errorf("ReviewPlan declares a canonical product baseline but Runtime has no canonical S6 Assignment registry")
 	}
 	for _, subject := range plan.FrozenSubjects {
 		if strings.TrimSpace(subject.Path) == "" {
@@ -175,7 +233,7 @@ func verifyFrozenSubjects(root string, plan *Plan, state map[string]any) error {
 			return fmt.Errorf("frozen subject %s is unreadable: %w", subject.Path, readErr)
 		}
 		if subject.Kind == "deleted" {
-			return fmt.Errorf("frozen deleted subject %s reappeared on disk", subject.Path)
+			return fmt.Errorf("frozen deleted subject %s reappeared on disk; restore its absence before registration", subject.Path)
 		}
 		actual := sha256Of(data)
 		if actual != subject.SHA256 {
@@ -183,8 +241,12 @@ func verifyFrozenSubjects(root string, plan *Plan, state map[string]any) error {
 		}
 	}
 	if root != "" {
-		if drift, err := detectUndeclaredProductDrift(root, plan); err == nil && len(drift) > 0 {
-			return fmt.Errorf("frozen baseline drift: undeclared product file(s) %s outside frozen_subjects; add them to frozen_subjects or revert the change (RC-03 dual-source: declared set ∪ git diff baseline)", strings.Join(drift, ", "))
+		drift, err := detectUndeclaredProductDriftWithState(root, plan, state, root, contexts...)
+		if errors.Is(err, errResultPacketDriftProof) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if err == nil && len(drift) > 0 {
+			return fmt.Errorf("frozen baseline drift: undeclared product file(s) %s outside frozen_subjects; they remain in full review coverage. Revert only actual TASK product changes; never delete unassigned process or note files to force registration", strings.Join(drift, ", "))
 		}
 	}
 	return nil
@@ -261,41 +323,243 @@ func deletionCorroborated(root string, state map[string]any, plan *Plan, subject
 // Non-git repositories (e.g., TempDir fixtures) degrade gracefully: no extra
 // drift is reported when git is unavailable.
 func detectUndeclaredProductDrift(root string, plan *Plan) ([]string, error) {
+	return detectUndeclaredProductDriftWithState(root, plan, nil, root)
+}
+
+var errResultPacketDriftProof = errors.New("S7 issued control artifact source cannot be verified")
+
+func reviewRequestContext(contexts []context.Context) context.Context {
+	if len(contexts) > 0 && contexts[0] != nil {
+		return contexts[0]
+	}
+	return context.Background()
+}
+
+func detectUndeclaredProductDriftWithState(root string, plan *Plan, state map[string]any, authorityRoot string, contexts ...context.Context) ([]string, error) {
+	parent := loopruntime.WithReviewResultReadCache(reviewRequestContext(contexts))
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
+	// Read the actual worktree first. Only paths that survive the ordinary
+	// classification below need an original S7 packet issuance proof.
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	output, err := exec.CommandContext(ctx, "git", "-C", root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames").CombinedOutput()
+	cancel()
+	if err != nil {
+		if parent.Err() != nil {
+			return nil, parent.Err()
+		}
+		return nil, err
+	}
+	controlPaths := map[string]bool{}
+	// S11's consumed defect decision is an original control artifact, not a
+	// product change. Recognize only its exact current record; sibling files
+	// and unregistered decisions remain subject to the product drift check.
+	evidenceRows, _ := state["evidence"].([]any)
+	for _, raw := range evidenceRows {
+		if err := parent.Err(); err != nil {
+			return nil, err
+		}
+		row, _ := raw.(map[string]any)
+		path := stringField(row["path"])
+		// S10's original recorded reports remain control history when it
+		// returns to S7. Unknown files beside them are still product drift.
+		kind := stringField(row["kind"])
+		if (kind == "acceptance" || kind == "release_audit" || kind == "change_impact") && strings.HasPrefix(path, "s10/") && workpacket.CheckPath(root, path) == nil {
+			data, err := workpacket.ReadFile(root, path, 20<<20)
+			if err == nil && workpacket.Digest(data) == row["sha256"] {
+				controlPaths[path] = true
+				var envelope struct {
+					Path string `json:"audit_manifest_path"`
+					SHA  string `json:"audit_manifest_sha256"`
+				}
+				if (kind == "acceptance" || kind == "release_audit") && json.Unmarshal(data, &envelope) == nil && filepath.Dir(envelope.Path) == filepath.Dir(path) {
+					manifest, err := workpacket.ReadFile(root, envelope.Path, 20<<20)
+					if err == nil && workpacket.Digest(manifest) == envelope.SHA {
+						controlPaths[envelope.Path] = true
+						controlPaths[strings.TrimSuffix(envelope.Path, ".json")+".md"] = true
+					}
+				}
+			}
+		}
+		if row["kind"] == "human_decision" && row["status"] == "valid" && row["consumed_by"] == "TR-027" &&
+			intField(row["baseline_generation"]) == baselineGeneration(state) && intField(row["review_round"]) == plan.ReviewRound &&
+			strings.HasPrefix(path, ".claude/decisions/") && workpacket.CheckPath(root, path) == nil {
+			controlPaths[path] = true
+		}
+	}
+	// Existing packet records name the exact question/answer files from all
+	// stages, including earlier rounds. Sibling files are not implied by them.
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["work_packets"].([]any)
+	for _, raw := range rows {
+		if err := parent.Err(); err != nil {
+			return nil, err
+		}
+		row, _ := raw.(map[string]any)
+		if typedResultReceiptsEnabled(state) && row["template_id"] == "s7-review-result-v1" {
+			// Typed S7 rows need their original issuance proof below, even
+			// when their exact answer lives on the submissions surface.
+			continue
+		}
+		for _, key := range []string{"view_path", "answer_path"} {
+			path, _ := row[key].(string)
+			if strings.HasPrefix(path, ".claude/submissions/") && workpacket.CheckPath(root, path) == nil {
+				controlPaths[path] = true
+			}
+		}
+	}
+	if questionnaire := PlanQuestionnairePath(root, state); questionnaire != "" {
+		if rel, err := filepath.Rel(root, strings.TrimSuffix(questionnaire, ".json")+".md"); err == nil {
+			controlPaths[filepath.ToSlash(rel)] = true
+		}
+	}
 	scope := pathscope.New(root)
 	frozen := make(map[string]bool, len(plan.FrozenSubjects))
 	for _, subject := range plan.FrozenSubjects {
-		frozen[normalizeSurface(subject.Path)] = true
-	}
-	output, err := exec.Command("git", "-C", root, "status", "--porcelain", "--no-renames").CombinedOutput()
-	if err != nil {
-		return nil, err
+		frozen[normalizeGitStatusPath(subject.Path)] = true
 	}
 	var drift []string
-	for _, line := range strings.Split(string(output), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	normalUntracked := map[string]bool{}
+	exactStatusPath := map[string]bool{}
+	seenStatus := map[string]bool{}
+	for _, entry := range strings.Split(string(output), "\x00") {
+		if entry == "" {
 			continue
 		}
-		// Porcelain format: XY<space>path[ -> orig] — with --no-renames the
-		// path is always the last field.
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		// NUL mode keeps spaces, tabs, quotes and newlines inside the path.
+		// With --no-renames porcelain v1 emits `XY path` for each entry.
+		if len(entry) < 4 || entry[2] != ' ' {
+			return nil, fmt.Errorf("invalid NUL-delimited Git status entry")
+		}
+		rel := normalizeGitStatusPath(entry[3:])
+		if rel == "" {
+			return nil, fmt.Errorf("Git status contains an unsafe product path")
+		}
+		if !seenStatus[rel] {
+			normalUntracked[rel] = entry[:2] == "??"
+			exactStatusPath[rel] = entry[3:] == rel
+			seenStatus[rel] = true
+		} else {
+			normalUntracked[rel] = false
+			exactStatusPath[rel] = false
+		}
+		if frozen[rel] {
 			continue
 		}
-		rawPath := fields[len(fields)-1]
-		// Handle quoted paths (core.quotepath) by trimming quotes.
-		rawPath = strings.Trim(rawPath, "\"'")
-		rel := normalizeSurface(filepath.ToSlash(rawPath))
-		if rel == "" || frozen[rel] {
+		if controlPaths[rel] {
 			continue
 		}
-		if scope.Excludes(rel) || isAllowedDriftSurface(rel) {
+		// An untracked symlink or file named .claude is not the control
+		// directory, even though Git reports it as one bare path.
+		if rel == ".claude" {
+			info, statErr := os.Lstat(filepath.Join(root, ".claude"))
+			if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("%w: inspect control directory: %w", errResultPacketDriftProof, statErr)
+			}
+			if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				drift = append(drift, rel)
+				continue
+			}
+		}
+		if scope.Excludes(rel) || isAllowedDriftSurface(rel) || diagnosticstorage.Recognizes(parent, root, rel) {
 			continue
 		}
 		drift = append(drift, rel)
 	}
+	// Git can report a staged deletion and an untracked replacement under the
+	// same name. First aggregate every status; only an exclusively untracked
+	// temporary can be classified as metrics storage.
+	remaining := drift[:0]
+	for _, path := range drift {
+		if normalUntracked[path] && exactStatusPath[path] && !frozen[path] && metrics.IsTemporaryPath(path) {
+			recognized, err := metrics.RecognizeTemporary(parent, root, path)
+			if err != nil {
+				return nil, fmt.Errorf("%w: inspect metrics temporary: %w", errResultPacketDriftProof, err)
+			}
+			if recognized {
+				continue
+			}
+		}
+		remaining = append(remaining, path)
+	}
+	drift = remaining
+	storagePaths, err := loopruntime.ClassifyPacketBodyStoragePathsContext(parent, root, drift)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errResultPacketDriftProof, err)
+	}
+	for _, path := range storagePaths {
+		controlPaths[path] = true
+	}
+	remaining = drift[:0]
+	for _, path := range drift {
+		if !controlPaths[path] {
+			remaining = append(remaining, path)
+		}
+	}
+	drift = remaining
+	if typedResultReceiptsEnabled(state) {
+		paths, err := loopruntime.VerifyReviewResultPacketControlPathsContext(parent, authorityRoot, state, drift)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errResultPacketDriftProof, err)
+		}
+		for _, path := range paths {
+			if strings.HasPrefix(path, ".loop-submissions/s7/") && (!normalUntracked[path] || frozen[path]) {
+				continue
+			}
+			if err := workpacket.CheckPath(root, path); err != nil {
+				return nil, fmt.Errorf("%w: %w", errResultPacketDriftProof, err)
+			}
+			controlPaths[path] = true
+		}
+		remaining := drift[:0]
+		for _, path := range drift {
+			if !controlPaths[path] {
+				remaining = append(remaining, path)
+			}
+		}
+		drift = remaining
+	}
+	// Independent Targeted has its own registered TASK/manifest authority;
+	// proximity to a legitimate questionnaire grants no exception.
+	if filepath.Clean(root) == filepath.Clean(authorityRoot) {
+		paths, err := targetedauthoring.ControlPaths(authorityRoot, state, drift, parent)
+		if err != nil {
+			return nil, fmt.Errorf("Targeted original control source: %w", err)
+		}
+		allowed := map[string]bool{}
+		for _, path := range paths {
+			if normalUntracked[path] && !frozen[path] {
+				if err := workpacket.CheckPath(root, path); err != nil {
+					return nil, err
+				}
+				allowed[path] = true
+			}
+		}
+		remaining := drift[:0]
+		for _, path := range drift {
+			if !allowed[path] {
+				remaining = append(remaining, path)
+			}
+		}
+		drift = remaining
+	}
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	sort.Strings(drift)
 	return drift, nil
+}
+
+// normalizeGitStatusPath canonicalizes separators and dot segments without
+// trimming whitespace, which may be part of a legitimate Git path.
+func normalizeGitStatusPath(value string) string {
+	value = strings.ReplaceAll(value, "\\", "/")
+	value = filepath.ToSlash(filepath.Clean(value))
+	if value == "." || value == ".." || strings.HasPrefix(value, "../") || filepath.IsAbs(value) {
+		return ""
+	}
+	return value
 }
 
 func isAllowedDriftSurface(rel string) bool {
@@ -330,6 +594,9 @@ func isAllowedDriftSurface(rel string) bool {
 }
 
 func isControlPlaneDriftPath(rel string) bool {
+	if worktreeReminderPath.MatchString(rel) || mainReviewPlanAuthoringPath.MatchString(rel) || assignmentDispatchContextPath.MatchString(rel) {
+		return true
+	}
 	// .claude/glm.json is a tracked but constantly-rewritten local model
 	// config (model switching rewrites it); pinning or drift-flagging it
 	// stales every round on an unrelated local toggle.
@@ -349,7 +616,7 @@ func isControlPlaneDriftPath(rel string) bool {
 	if strings.HasPrefix(rel, ".claude/") && (strings.HasSuffix(rel, ".lock") || strings.HasSuffix(rel, ".lock.process")) {
 		return true
 	}
-	for _, prefix := range []string{".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/"} {
+	for _, prefix := range []string{".claude/review/", ".claude/evidence/", ".claude/workgroups/", ".claude/plans/", ".claude/bin/", ".claude/runtime-checkpoints/"} {
 		if rel == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(rel, prefix) {
 			return true
 		}
@@ -357,10 +624,27 @@ func isControlPlaneDriftPath(rel string) bool {
 	return false
 }
 
+// Matches the original workspace.DispatchContextSource output, not its directory.
+var assignmentDispatchContextPath = regexp.MustCompile(`^\.claude/assignment-context/[a-f0-9]{64}/g[1-9][0-9]*/[A-Za-z0-9][A-Za-z0-9._-]*-e[1-9][0-9]*\.json$`)
+
+var worktreeReminderPath = regexp.MustCompile(`^\.claude/worktree-reminders/[0-9a-f]{64}\.txt$`)
+var mainReviewPlanAuthoringPath = regexp.MustCompile(`^\.claude/submissions/[A-Za-z0-9._-]+/g[1-9][0-9]*/S7/r[1-9][0-9]*/review-plan\.json$`)
+
 // verifyResultArtifactDigest binds an E2E result to the workspace digest it
 // actually ran against (L3-S7 §3.5): results from a workspace that has since
 // drifted are stale, not submittable.
 func verifyResultArtifactDigest(root string, plan *Plan, ptr *PlanPointer, result *Result, lens string) error {
+	return verifyResultArtifactDigestAt(root, plan, ptr, result, lens)
+}
+
+// verifyResultArtifactDigestAt is the packet-backed variant: authority and
+// the pinned plan remain in Main, while the mutable cold-start workspace may
+// live in the Assignment's registered execution checkout.
+func verifyResultArtifactDigestAt(workspaceRoot string, plan *Plan, ptr *PlanPointer, result *Result, lens string, contexts ...context.Context) error {
+	ctx := baselineContext(contexts)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if lens != "e2e" {
 		return nil
 	}
@@ -370,12 +654,12 @@ func verifyResultArtifactDigest(root string, plan *Plan, ptr *PlanPointer, resul
 		}
 		return nil
 	}
-	digest, err := WorkspaceDigest(root, ptr.VerificationArtifactWorkspace)
+	digest, err := WorkspaceDigestContext(ctx, workspaceRoot, ptr.VerificationArtifactWorkspace)
 	if err != nil {
 		return err
 	}
 	if result.VerificationArtifactDigest == nil || *result.VerificationArtifactDigest == "" {
-		return fmt.Errorf("E2E results on a cold-start workspace must bind verification_artifact_digest; compute it with `loop-harness s7 workspace-digest` after the spec/fixture write")
+		return fmt.Errorf("E2E result is missing its system-bound verification_artifact_digest; Main/system must restore the original answer adapter against the actual execution workspace, without asking the author to calculate a digest")
 	}
 	if *result.VerificationArtifactDigest != digest {
 		return fmt.Errorf("verification artifact digest mismatch: result binds %s but the workspace now digests to %s; re-run the flows against the current spec before submitting", *result.VerificationArtifactDigest, digest)
@@ -383,13 +667,10 @@ func verifyResultArtifactDigest(root string, plan *Plan, ptr *PlanPointer, resul
 	return nil
 }
 
-// verifyRegressionAssetFingerprints proves that a regression_available plan
-// still points at the exact files it claims to reuse. Cold-start assets are
-// authored inside the pinned workspace and are checked by WorkspaceDigest.
+// verifyRegressionAssetFingerprints checks every selected reusable asset,
+// including partial reuse in cold_start. Newly authored workspace assets are
+// checked separately by WorkspaceDigest.
 func verifyRegressionAssetFingerprints(root string, plan *Plan) error {
-	if plan.E2ECoverageState != "regression_available" {
-		return nil
-	}
 	for _, asset := range sortE2EAssets(plan.E2EAssets) {
 		path, err := repositoryContainedPath(root, asset.Path)
 		if err != nil {
@@ -397,7 +678,7 @@ func verifyRegressionAssetFingerprints(root string, plan *Plan) error {
 				"S7_E2E_ASSET_FINGERPRINT",
 				fmt.Sprintf("E2E asset %s is outside the repository", asset.AssetID),
 				[]string{err.Error()},
-				[]string{"use the exact repository-relative CASE/PATH file and regenerate its sha256"},
+				[]string{"select the exact repository-relative CASE/PATH file in the original plan; the plan consumer binds its fingerprint"},
 				"runtime review-plan --file plan.json",
 			)
 		}
@@ -439,98 +720,247 @@ func verifyRegressionAssetFingerprints(root string, plan *Plan) error {
 // against disk. If all of them still match, the consumed evidence is
 // byte-valid (the aggregate moved only through later artifact revisions)
 // and the assignment passes; any missing or changed anchor fails closed.
-func verifySealedArtifactDigests(root string, ptr *PlanPointer, assignments map[string]any) error {
+func verifySealedArtifactDigests(root string, ptr *PlanPointer, assignments map[string]any, state map[string]any, candidateAssignmentID, candidateExecutionRoot string, contexts ...context.Context) error {
+	return verifySealedArtifactDigestsWithMode(root, ptr, assignments, state, candidateAssignmentID, candidateExecutionRoot, true, contexts...)
+}
+
+// VerifySealedArtifactDigests rechecks accepted packet-backed E2E Result
+// receipts against their currently registered execution checkouts. It is
+// shared by the quality gate and TR-009's direct transition guard. Legacy
+// Result rows keep their original close-time validation path.
+func VerifySealedArtifactDigests(root string, state map[string]any, ptr *PlanPointer, assignments map[string]any, contexts ...context.Context) error {
+	ctx := loopruntime.WithReviewResultReadCache(buildsurface.WithReadCache(baselineContext(contexts)))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if state == nil || ptr == nil {
+		return errors.New("typed S7 sealed artifact verification requires the accepted Runtime and current Plan")
+	}
+	currentPtr := PlanPointerFromState(state)
+	if currentPtr == nil || *currentPtr != *ptr {
+		return errors.New("typed S7 sealed artifact verification received a non-current Plan projection")
+	}
+	// The projection argument is retained for source compatibility, but the
+	// accepted Runtime is the authority for which E2E rows the gate must check.
+	// Ignoring caller-supplied projections prevents an empty/stale projection
+	// from suppressing a packet-backed row.
+	reviewState, _ := state["review"].(map[string]any)
+	currentAssignments, _ := reviewState["assignments"].(map[string]any)
+	if currentAssignments == nil {
+		return errors.New("typed S7 sealed artifact verification has no current Assignment registry")
+	}
+	return verifySealedArtifactDigestsWithMode(root, ptr, currentAssignments, state, "", "", false, ctx)
+}
+
+func HasPacketBoundE2EReceipts(state map[string]any) bool {
+	reviewState, _ := state["review"].(map[string]any)
+	assignments, _ := reviewState["assignments"].(map[string]any)
+	for _, raw := range assignments {
+		row, _ := raw.(map[string]any)
+		if row == nil || row["lens"] != "e2e" || workstate.ReviewAssignmentActivity(row) != "consumed" {
+			continue
+		}
+		receipt, _ := row["result_receipt"].(map[string]any)
+		if receipt != nil && stringField(receipt["packet_id"]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func verifySealedArtifactDigestsWithMode(root string, ptr *PlanPointer, assignments map[string]any, state map[string]any, candidateAssignmentID, candidateExecutionRoot string, includeLegacy bool, contexts ...context.Context) error {
+	ctx := loopruntime.WithReviewResultReadCache(buildsurface.WithReadCache(baselineContext(contexts)))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if ptr.VerificationArtifactWorkspace == "" {
 		return nil
 	}
-	current, err := WorkspaceDigest(root, ptr.VerificationArtifactWorkspace)
-	if err != nil {
-		return err
-	}
 	for id, raw := range assignments {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		row, _ := raw.(map[string]any)
-		if row == nil || row["lens"] != "e2e" || row["status"] != "consumed" {
+		if row == nil || row["lens"] != "e2e" || workstate.ReviewAssignmentActivity(row) != "consumed" {
 			continue
+		}
+		artifactRoot := root
+		packetBound := false
+		if id == candidateAssignmentID {
+			if candidateExecutionRoot == "" {
+				return fmt.Errorf("assignment %s has no authenticated execution root for seal-time verification", id)
+			}
+			artifactRoot = candidateExecutionRoot
+			packetBound = true
+		} else {
+			receipt, _ := row["result_receipt"].(map[string]any)
+			packetID := stringField(receipt["packet_id"])
+			if packetID != "" {
+				packetBound = true
+				if state == nil {
+					return fmt.Errorf("assignment %s packet receipt has no Runtime source for verification", id)
+				}
+				accepted, found, err := IssuedResultReceiptContext(ctx, root, state, packetID, stringField(row["agent_id"]))
+				if err != nil {
+					return fmt.Errorf("assignment %s original packet receipt: %w", id, err)
+				}
+				if !found || accepted.ExecutionRoot == "" {
+					return fmt.Errorf("assignment %s has no accepted execution-root receipt", id)
+				}
+				artifactRoot = accepted.ExecutionRoot
+			} else if !includeLegacy {
+				continue
+			}
+		}
+		if packetBound && !includeLegacy && state == nil {
+			return fmt.Errorf("assignment %s packet receipt has no Runtime source for verification", id)
+		}
+		current, err := WorkspaceDigestContext(ctx, artifactRoot, ptr.VerificationArtifactWorkspace)
+		if err != nil {
+			return fmt.Errorf("assignment %s execution workspace digest: %w", id, err)
 		}
 		bound, _ := row["artifact_digest"].(string)
-		if bound == "" || bound == current {
+		if bound == current {
 			continue
 		}
-		if err := verifyResultWorkspaceAnchors(root, ptr.VerificationArtifactWorkspace, id, row); err != nil {
+		if bound == "" {
+			return fmt.Errorf("assignment %s result_ref %s has no original artifact_digest for execution workspace %s; Main must restore the original machine binding, not infer dependencies from missing metadata", id, stringField(row["result_ref"]), filepath.Join(artifactRoot, ptr.VerificationArtifactWorkspace))
+		}
+		var plan *Plan
+		if state != nil && bound != sha256Of(nil) {
+			var err error
+			plan, _, err = LoadPlan(root, state)
+			if err != nil {
+				return err
+			}
+		}
+		if err := verifyResultWorkspaceAnchors(root, artifactRoot, ptr.VerificationArtifactWorkspace, id, row, plan); err != nil {
 			return fmt.Errorf("assignment %s consumed a result against workspace digest %s, but the workspace now digests to %s; the round is stale (L3-S7 §10.3): %w", id, bound, current, err)
 		}
 	}
-	return nil
+	return ctx.Err()
 }
 
-// verifyResultWorkspaceAnchors re-verifies every workspace-relative typed
-// path anchor (path:<workspace-relative>#sha256=<hex>) that a consumed
-// result pinned. It returns nil only when at least one anchor was verified
-// and none drifted; results that pinned no workspace anchor cannot be
-// re-verified and fail closed.
-func verifyResultWorkspaceAnchors(root, workspaceRel, assignmentID string, row map[string]any) error {
+// verifyResultWorkspaceAnchors re-verifies the dependencies declared in the
+// original result. Missing declarations are unknown, never proof that a result
+// did not use the workspace. Historical receipts retain their original bytes.
+func verifyResultWorkspaceAnchors(root, executionRoot, workspaceRel, assignmentID string, row map[string]any, plans ...*Plan) error {
 	resultRel, _ := row["result_ref"].(string)
 	if resultRel == "" {
 		return fmt.Errorf("consumed row has no result_ref; its workspace anchors cannot be re-verified")
 	}
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(resultRel)))
+	data, err := workpacket.ReadFile(root, resultRel, resultReceiptReadLimit)
 	if err != nil {
 		return fmt.Errorf("read consumed result %s: %w", resultRel, err)
 	}
-	var result struct {
-		Checks []struct {
-			EvidenceRefs []string `json:"evidence_refs"`
-		} `json:"checks"`
-		ClaimResults []struct {
-			EvidenceRefs []string `json:"evidence_refs"`
-		} `json:"claim_results"`
-	}
+	var result Result
 	if err := json.Unmarshal(data, &result); err != nil {
 		return fmt.Errorf("decode consumed result %s: %w", resultRel, err)
 	}
-	workspaceAbs := filepath.Clean(filepath.Join(root, filepath.FromSlash(workspaceRel)))
-	check := func(ref string) error {
-		if !strings.HasPrefix(ref, "path:") {
-			return nil
-		}
-		refPath := strings.TrimPrefix(ref, "path:")
-		shaIdx := strings.Index(refPath, "#sha256=")
-		if shaIdx < 0 {
-			return nil
-		}
-		rel := filepath.Clean(filepath.FromSlash(refPath[:shaIdx]))
-		abs := filepath.Clean(filepath.Join(root, rel))
-		if !strings.HasPrefix(abs, workspaceAbs+string(filepath.Separator)) && abs != workspaceAbs {
-			return nil // anchored outside the workspace: not ours to re-verify
-		}
-		want := refPath[shaIdx+len("#sha256="):]
-		fileData, err := os.ReadFile(abs)
-		if err != nil {
-			return fmt.Errorf("anchor %s no longer resolvable: %w", ref, err)
-		}
-		if got := sha256Of(fileData); got != want {
-			return fmt.Errorf("anchor %s changed after consumption (now %s)", ref, got)
-		}
+	count, err := verifyWorkspaceDependencyRefs(executionRoot, workspaceRel, &result)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
 		return nil
 	}
-	for _, c := range result.Checks {
-		for _, ref := range c.EvidenceRefs {
-			if err := check(ref); err != nil {
-				return err
-			}
+	// The empty-workspace hash is an existing machine proof of no files at
+	// consumption. Later additions cannot have changed a dependency from it.
+	if stringField(row["artifact_digest"]) == sha256Of(nil) {
+		return nil
+	}
+	for _, plan := range plans {
+		if resultUsesBoundReuseAssets(plan, &result) {
+			return verifyRegressionAssetFingerprints(executionRoot, plan)
 		}
 	}
-	for _, c := range result.ClaimResults {
-		for _, ref := range c.EvidenceRefs {
-			if err := check(ref); err != nil {
-				return err
+	return missingWorkspaceDependencies(executionRoot, workspaceRel, assignmentID, resultRel)
+}
+
+// The author names actual scripts/fixtures in the existing claim/check refs;
+// bindIssuedPathEvidence supplies hashes from the authenticated execution root.
+// Command output establishes observations, not the script/fixture dependency.
+func verifyWorkspaceDependencyRefs(executionRoot, workspaceRel string, result *Result) (int, error) {
+	workspaceAbs, err := repositoryContainedPath(executionRoot, workspaceRel)
+	if err != nil {
+		return 0, fmt.Errorf("resolve registered execution workspace: %w", err)
+	}
+	var groups [][]string
+	for _, claim := range result.ClaimResults {
+		groups = append(groups, claim.EvidenceRefs)
+	}
+	for _, check := range result.Checks {
+		groups = append(groups, check.EvidenceRefs)
+	}
+	count := 0
+	for _, refs := range groups {
+		for _, ref := range refs {
+			if !strings.HasPrefix(ref, "path:") {
+				continue
 			}
+			rel, digest, err := parsePathEvidenceRef(ref)
+			if err != nil {
+				return count, err
+			}
+			// Resolve containment before reading, including symlink protection.
+			abs, err := repositoryContainedPath(executionRoot, rel)
+			if err != nil {
+				return count, err
+			}
+			if !strings.HasPrefix(abs, workspaceAbs+string(filepath.Separator)) {
+				continue
+			}
+			if digest == "" {
+				return count, fmt.Errorf("workspace dependency %s has no original bound digest; restore the original result consumer, do not author a hash", ref)
+			}
+			data, err := os.ReadFile(abs)
+			if err != nil {
+				return count, fmt.Errorf("anchor %s no longer resolvable: %w", ref, err)
+			}
+			if got := sha256Of(data); got != digest {
+				return count, fmt.Errorf("anchor %s changed after consumption (now %s); restore the original asset bytes and retry the original seal; if restoration is impossible, Main must resolve this affected accepted result through original round recovery before reusing PASS (runtime review-plan revise requires a legal round status, real --source-ref/--affected-surface and an actual Claim change; metadata gaps alone do not authorize a revision)", ref, got)
+			}
+			count++
 		}
 	}
-	// A result that pinned no workspace anchors declared no dependency on
-	// the workspace (e.g. a repo-spec re-run); workspace growth cannot have
-	// invalidated it, so there is nothing to re-verify.
-	return nil
+	return count, nil
+}
+
+// A selected reusable asset is already bound by the original Plan consumer.
+// Require coverage for every executed Claim before using those existing
+// bindings as proof; a partial reuse declaration does not explain other work.
+func resultUsesBoundReuseAssets(plan *Plan, result *Result) bool {
+	if plan == nil || len(result.ClaimResults) == 0 {
+		return false
+	}
+	boundTargets := map[string]bool{}
+	for _, asset := range plan.E2EAssets {
+		if _, _, err := caseReferenceParts(asset.CaseRef); err == nil && asset.Path != "" && asset.SHA256 != "" {
+			boundTargets[asset.CaseRef] = true
+		}
+	}
+	coveredClaims := map[string]bool{}
+	for _, claim := range plan.Claims {
+		declared, covered := false, true
+		for _, ref := range claim.SourceRefs {
+			if _, _, err := caseReferenceParts(ref); err != nil {
+				continue
+			}
+			declared = true
+			covered = covered && boundTargets[ref]
+		}
+		coveredClaims[claim.ClaimID] = declared && covered
+	}
+	for _, executed := range result.ClaimResults {
+		if !coveredClaims[executed.ClaimID] {
+			return false
+		}
+	}
+	return true
+}
+
+func missingWorkspaceDependencies(executionRoot, workspaceRel, assignmentID, resultRel string) error {
+	return fmt.Errorf("assignment %s result %s has unknown script/fixture dependencies in execution workspace %s: claim_results[].evidence_refs or checks[].evidence_refs must name the actual used paths (path:<repository-relative-script-or-fixture>); execution logs do not replace dependency refs. If original dependency bytes are known and can be restored, restore them and retry the original seal. Otherwise hand this missing proof to Main for original round recovery before reusing PASS; accepted results stay immutable. runtime review-plan revise requires a legal round status, real --source-ref/--affected-surface and an actual Claim change; do not invent a Claim change for this metadata gap. For a new original answer, name actual used scripts/fixtures in those evidence_refs and let the original answer consumer bind hashes", assignmentID, resultRel, filepath.Join(executionRoot, filepath.FromSlash(workspaceRel)))
 }
 
 // projectedAssignments returns the assignment projection as it will look
@@ -549,8 +979,10 @@ func projectedAssignments(state map[string]any, currentAssignment *PlanAssignmen
 	if result.VerificationArtifactDigest != nil {
 		digest = *result.VerificationArtifactDigest
 	}
+	runtimeID := stringField(state["runtime_id"])
+	resultRef := filepath.ToSlash(filepath.Join(".claude", "evidence", runtimeID, fmt.Sprintf("g%d", baselineGeneration(state)), "reviews", result.ProducerAgentID, result.ResultID+".json"))
 	out[currentAssignment.AssignmentID] = map[string]any{
-		"lens": currentAssignment.Lens, "status": "consumed",
+		"lens": currentAssignment.Lens, "status": "consumed", "result_ref": resultRef,
 		"agent_id": result.ProducerAgentID, "artifact_digest": digest,
 	}
 	return out
@@ -592,8 +1024,8 @@ func SanitizeCapture(step CaptureStep) error {
 		"action":   step.Action,
 		"observed": step.Observed,
 	}
-	for _, ref := range step.Evidence {
-		fields["evidence_ref"] = ref
+	for index, ref := range step.Evidence {
+		fields[fmt.Sprintf("evidence_refs[%d]", index)] = ref
 	}
 	for name, value := range fields {
 		for _, pattern := range secretPatterns {
@@ -720,6 +1152,22 @@ func mergeCapturedTimelineChecked(findings []Finding, steps []CaptureStep) error
 		if len(findings[index].Encounter.Timeline) == 0 {
 			mergeCapturedTimeline(findings[index:index+1], group)
 		}
+	}
+	return nil
+}
+
+// verifyCanonicalFrozenWorktree complements a canonical declaration freshly
+// verified in the same synchronous validation with live disk and drift checks.
+func verifyCanonicalFrozenWorktree(root string, plan *Plan, state map[string]any, contexts ...context.Context) error {
+	if err := verifyCanonicalFrozenSubjectFiles(root, plan, contexts...); err != nil {
+		return err
+	}
+	drift, err := detectUndeclaredProductDriftWithState(root, plan, state, root, contexts...)
+	if err != nil {
+		return fmt.Errorf("canonical frozen baseline drift scan: %w", err)
+	}
+	if len(drift) > 0 {
+		return fmt.Errorf("frozen baseline drift: undeclared product file(s) %s outside frozen_subjects; revert or include them in a newly authorized review round", strings.Join(drift, ", "))
 	}
 	return nil
 }

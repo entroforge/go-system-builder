@@ -17,6 +17,24 @@ import (
 	"strings"
 )
 
+// ReferenceID decodes one existing runtime: prefix and identifies index refs.
+// It neither rewrites the original ref nor registers an alias. A typed ref
+// stays index-bound even when its ID contains ://; bare execution anchors do not.
+func ReferenceID(ref string) (id string, indexed bool, err error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", false, fmt.Errorf("evidence_ref %q is empty", ref)
+	}
+	if strings.HasPrefix(ref, "runtime:") {
+		id = strings.TrimPrefix(ref, "runtime:")
+		if strings.TrimSpace(id) == "" {
+			return "", false, fmt.Errorf("evidence_ref %q requires runtime:<evidence-id>", ref)
+		}
+		return id, true, nil
+	}
+	return ref, !strings.Contains(ref, "://"), nil
+}
+
 // RefsOptions configures ValidateRefs.
 type RefsOptions struct {
 	// Root is the repository root for file reads. Empty disables on-disk SHA
@@ -35,7 +53,7 @@ type RefsOptions struct {
 // ValidateRefs validates that every ref in refs is a current, valid, SHA-
 // verified runtime evidence entry. The checks are:
 //
-//  1. entry exists with id == ref
+//  1. entry exists with id == ref, or the id after one runtime: prefix
 //  2. entry.status == "valid" and entry.invalidated_by == nil
 //  3. entry.baseline_generation == state baseline.generation
 //  4. entry kind in RequireKinds when non-empty
@@ -44,7 +62,7 @@ type RefsOptions struct {
 //  7. artifact file exists under Root, is readable, and its sha256 matches
 //     entry.sha256 (when Root != "" and entry.path != "")
 //
-// Refs that look like external execution anchors (contain "://") are treated as execution evidence:
+// Non-Runtime refs that look like external execution anchors (contain "://") are treated as execution evidence:
 // they are validated for non-emptiness but do not require a runtime evidence
 // index entry. This keeps existing tests and command/trace refs working while
 // still catching phantom runtime evidence ids that claim to be index entries.
@@ -81,7 +99,11 @@ func ValidateRefs(state map[string]any, refs []string, opts RefsOptions) error {
 		if ref == "" {
 			return fmt.Errorf("evidence_ref %q is empty", ref)
 		}
-		if ref == strings.TrimSpace(opts.ForbidSelfID) && ref != "" {
+		id, indexed, err := ReferenceID(ref)
+		if err != nil {
+			return err
+		}
+		if forbidden := strings.TrimSpace(opts.ForbidSelfID); forbidden != "" && (ref == forbidden || id == forbidden) {
 			return fmt.Errorf("evidence_ref %q must not self-reference the envelope", ref)
 		}
 		// Execution-anchor refs (scheme://) are not runtime
@@ -89,10 +111,12 @@ func ValidateRefs(state map[string]any, refs []string, opts RefsOptions) error {
 		// File-style `evidence/…` paths are runtime evidence ids and must be
 		// validated as index entries (RC-14: phantom `evidence/phantom.json`
 		// must be rejected).
-		if strings.Contains(ref, "://") {
+		// A typed Runtime reference must pass the index checks even when the
+		// ID happens to contain a URI. It is never an execution anchor.
+		if !indexed {
 			continue
 		}
-		entry, ok := byID[ref]
+		entry, ok := byID[id]
 		if !ok {
 			return fmt.Errorf("evidence_ref %q is not a valid current-generation evidence id; register the evidence with `runtime evidence add` or use an execution anchor like test://", ref)
 		}

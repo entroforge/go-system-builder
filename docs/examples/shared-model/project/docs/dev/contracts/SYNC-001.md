@@ -7,6 +7,12 @@
 - [Request](../../architecture/data-model/orders.schema.json#/$defs/request)
 - [Response](../../architecture/data-model/orders.schema.json#/$defs/response)
 
+## Declared obligations
+
+| 本合同条款 | Promise | Frontend responsibility | Backend responsibility |
+|:---|:---|:---|:---|
+| SYNC-001 §1 | [Cancel order](#cancel-order): shared request/response, terminal outcomes and rejection side effects. | FE-001 §1 | BE-001 §1 |
+
 <a id="cancel-order"></a>
 ## Cancel order — §1
 

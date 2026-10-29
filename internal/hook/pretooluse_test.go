@@ -87,6 +87,52 @@ func TestPreToolUseNotReadyAllowsTool(t *testing.T) {
 	}
 }
 
+func TestPreToolUseTransitionGuardDiagnosticIncludesReadOnlyEntry(t *testing.T) {
+	diagnostic := "transition:PTR-PLAN-02:guard contracts_checked failed: contracts_checked: no contracts found under docs/dev/contracts"
+	result := controller.ControlResult{
+		Decision: policy.Decision{Decision: "allow"},
+		QualityGate: controller.QualityGateResult{
+			Status:              controller.StatusUnknown,
+			GateID:              "GATE-PLANNING-CONTRACTS-COMPLETE",
+			CandidateTransition: "PTR-PLAN-02",
+			ErrorCode:           controller.CodeTransitionGua,
+			Missing:             []string{},
+			Conflicts:           []string{diagnostic},
+			TransitionCommitted: false,
+			NextCursor:          "planning.contracts",
+		},
+	}
+
+	output, exitCode, err := hook.PreToolUseWithQualityGate(result.Decision, result)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("transition guard diagnostic must allow tool, exit=%d", exitCode)
+	}
+	_, specific, qg := decodeHookOutput(t, output)
+	if specific["permissionDecision"] != nil {
+		t.Fatalf("transition guard failure must not become a platform denial: %v", specific["permissionDecision"])
+	}
+	if qg["status"] != "unknown" || qg["error_code"] != controller.CodeTransitionGua || qg["transition_committed"] != false {
+		t.Fatalf("Hook JSON lost the transition failure state: %#v", qg)
+	}
+	conflicts, _ := qg["conflicts"].([]any)
+	if len(conflicts) != 1 || conflicts[0] != diagnostic {
+		t.Fatalf("Hook JSON lost the original bounded diagnostic: %#v", qg["conflicts"])
+	}
+	context, _ := specific["additionalContext"].(string)
+	for _, want := range []string{
+		"Transition diagnostic: " + diagnostic,
+		"loop-harness explain PTR-PLAN-02 --root .",
+		"Next cursor: planning.contracts",
+	} {
+		if !strings.Contains(context, want) {
+			t.Fatalf("Hook context missing %q: %q", want, context)
+		}
+	}
+}
+
 // TestPreToolUseAdvancedCommitsTransition — when the controller reports
 // TransitionCommitted=true the layered output must surface
 // permissionDecision="allow", transition_committed=true, and the post-commit
@@ -128,10 +174,8 @@ func TestPreToolUseAdvancedCommitsTransition(t *testing.T) {
 	}
 }
 
-// TestPreToolUseSafetyBlockDeniesTool — locked-artifact / squash-merge
-// safety block must surface as permissionDecision="deny" with
-// quality_gate.status="blocked". CT-039-04 / CT-039-06 from SYNC-039.
-func TestPreToolUseSafetyBlockDeniesTool(t *testing.T) {
+// Legacy policy decisions do not become platform tool denials.
+func TestPreToolUseReportsLegacyBlockWithoutDenyingTool(t *testing.T) {
 	result := controller.ControlResult{
 		QualityGate: controller.QualityGateResult{
 			Status:              controller.StatusBlocked,
@@ -158,8 +202,8 @@ func TestPreToolUseSafetyBlockDeniesTool(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	_, specific, qg := decodeHookOutput(t, output)
-	if specific["permissionDecision"] != "deny" {
-		t.Fatalf("safety block MUST deny, got %v", specific["permissionDecision"])
+	if specific["permissionDecision"] == "deny" || specific["permissionDecisionReason"] != nil {
+		t.Fatalf("graph listener must not deny tools, got %#v", specific)
 	}
 	if qg["status"] != "blocked" {
 		t.Fatalf("expected quality_gate.status=\"blocked\", got %v", qg["status"])

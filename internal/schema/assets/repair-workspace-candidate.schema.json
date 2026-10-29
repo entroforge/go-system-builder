@@ -61,6 +61,7 @@
     },
     "proposal": {
       "type": "object"
-    }
+    },
+    "provenance": {"$ref": "repair-result-candidate-provenance.schema.json"}
   }
 }

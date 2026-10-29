@@ -1,14 +1,41 @@
 # L4 跨阶段机制
 
-仅工厂维护；设计状态不代表已实现。
+本层解释多个阶段共用的对象、来源、事务、执行衔接、事件与恢复边界。阅读从当前问题进入；正文既保留设计理由，也说明实际消费者和已知实现限制。各阶段在 L3 解释何时、为什么使用这些机制，不另起一套跨阶段协议。
 
-- [L4-agent-dispatch-governance](L4-agent-dispatch-governance.md)
-- [L4-hook-anchor-catalog](L4-hook-anchor-catalog.md)
-- [L4-hook-platform-wiring](L4-hook-platform-wiring.md)
-- [L4-project-design-foundation](L4-project-design-foundation.md)
-- [L4-revision-usage](L4-revision-usage.md)
-- [L4-runtime-control-plane](L4-runtime-control-plane.md)
-- [L4-shared-model-contract-governance](L4-shared-model-contract-governance.md)
-- [L4-state-transition-core](L4-state-transition-core.md)
-- [L4-worktree-governance](L4-worktree-governance.md)
-- [L4-workspace-execution-profiles](L4-workspace-execution-profiles.md)
+## 按依赖关系阅读
+
+| 机制 | 负责的问题 | 与其他机制怎样配合 |
+| --- | --- | --- |
+| [工作流边界与收敛](L4-workflow-convergence.md) | 辅助思考与质量下限、协议确定性、机制总成本、整改范围和停止扩展条件 | 先判断机制是否必要及支持到哪里，再设计交接与选择适用验收；不新增作者手续 |
+| [状态与迁移事务](L4-state-transition-core.md) | 权威事实、责任五态、单写者、输入契约、短事务和中断恢复 | 先区分领域事实、接收和阶段迁移，再理解其他机制的提交边界 |
+| [修订与命令协调](L4-revision-usage.md) | Runtime 提交序号、领域对象版本、来源修订、比较并交换与重放 | 保持原责任和历史，作者不手抄机器序号 |
+| [阶段答卷](L4-stage-form.md) | 真实输入、题目与私人答案、专业接收、待续及下一责任准备 | 复用原阶段消费者，Main 保存与 Worker 原生结束各有入口 |
+| [Agent 指引的分层与交付](L4-agent-guidance.md) | 入口、阶段合同、专业方法、具体责任、事件交付与恢复反馈的权威分工 | 先定义职责，再编排提示；同步变更来源及其投影，避免残留规则和重复负担 |
+| [手续收敛](L4-procedure-reduction.md) | 消除重复载体、机器字段、逐步许可和无消费者操作 | 保留专业事实与实际责任，解释反馈、观察和完成的区别 |
+| [子代理工程衔接](L4-agent-dispatch-governance.md) | 准确任务交付、原生创建与恢复、Start/Stop、返回和整体派发计划 | Claude Code 负责运行，Main 负责分工、依赖和工程接收 |
+| [工作区与集成](L4-worktree-governance.md) | 开发基线、隔离、真实交付、Main 集成、恢复与清理 | 本人交付、贡献已集成和阶段完成分别成立 |
+| [检查执行与旧执行恢复](L4-workspace-execution-profiles.md) | 检查位置、环境闭包、实际回执、有限复用及搬迁 | 新原生自检与 Main 检查分开，旧 execution 恢复不成为新启动前提 |
+| [运行控制与证据](L4-runtime-control-plane.md) | 证据索引、来源、效力、失效、控制周期、干净轮投影与诊断 | 原消费者判断资格；状态摘要与指纹不替代真实执行或专业结论 |
+| [Hook 接线](L4-hook-platform-wiring.md) | 平台输入、实际路由、接收对象、输出、预算和故障呈现 | 解释原生早返回、Main 自然保存与控制辅助路径的区别 |
+| [Hook 接收与指引验收清单](L4-hook-acceptance-checklist.md) | 正常交接、中断恢复、存储兼容、增长成本及指引与机制缺口的验收方法 | 将现行合同转成可取证的检查项；区分组件、本地整链和真实平台证据，不增加作者手续 |
+| [Hook 事件选点](L4-hook-anchor-catalog.md) | 当前接入的事件、采用理由、未采用方向与接入成本 | 平台语义查官方入口，项目路由和限制查接线正文 |
+| [项目级设计基础](L4-project-design-foundation.md) | 跨需求设计证据、内核、语法、表面、推导、证明与反馈 | 约束当前需求的交互与视觉设计，不替代 S2 架构工作 |
+| [共享模型与契约治理](L4-shared-model-contract-governance.md) | 共同模型与协议、同源消费、准确冻结、有界阅读和真实实现依赖 | 结构、业务语义、任务依赖与独立验证各守原权威 |
+
+这也是维护机制时的推荐调查顺序。处理一个阶段无需先读完所有机制；先读相关 L3，再沿实际依赖展开。例如研究 S6，先明确任务与输入、原生交付和集成，再查检查器或 Hook；研究 S3，先理解共同语义与源闭包，再查接收与事务。
+
+## 共同边界
+
+工作责任使用[五态模型](L4-state-transition-core.md#unified-work-state)，平台运行、专业结论、文档成熟度、集成检查点和资源状态各有用途，不能合成一套大状态机。
+
+Claude Code 创建、运行、等待与恢复子代理。Main 交付准确责任并处理工程交接，`SubagentStart` 和 `SubagentStop` 接入原生边界。准备材料、工程 owner 或 Runtime 记录不证明平台进程已启动；普通 Worker 工具事件不激活或接收专业结果。
+
+Main 的规划、影响、验收和真实决定使用各自原保存消费者。接收、迁移和下一材料准备不一定属于同一事务；观察到一个成功不能推断后续全完成。旧记录的恢复入口只服务其原合同，不重建新责任的读回、激活或 launcher 层。
+
+正式来源由[输入契约](L4-state-transition-core.md#input-contract)及各消费者定义。已提交规格、本人私人答卷、运行证据和 Runtime 快照分别核对，不能把某一种 Git 或磁盘规则推广为全部对象的通用门。
+
+## 怎样判断机制说明已经完整
+
+读者应能说明它解决什么真实失效、权威归谁、工作怎样进入、谁消费产物、怎样判断完成、失败在哪里继续，以及哪些保证尚未落地。链接、字段与测试只能支持这些判断，不能替代设计推导。
+
+维护遵循 [Blueprint 编写与调查范式](../README.md#blueprint-编写与调查范式禁止删除本节)。实现偏差在相关正文中说明影响；调查流水账、试验报告和版本迁移记录留在维护档案，不能堆进机制正文。

@@ -16,6 +16,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // These tests exercise the S6 projection through Board.Load, rather than
@@ -34,7 +35,7 @@ func TestAuditDispatchCapacityAndEarlyRelease(t *testing.T) {
 		t.Fatalf("capacity two selected %v, want %v", got, want)
 	}
 
-	// TASK-01 and TASK-02 are integrated.  TASK-03 is still running, so one
+	// TASK-01 and TASK-02 have verified integration. TASK-03 is still active, so one
 	// of two total slots remains available.  TASK-04 can start immediately;
 	// the wave label does not create a barrier, while TASK-05 still waits for
 	// the unintegrated TASK-03.
@@ -48,7 +49,8 @@ func TestAuditDispatchCapacityAndEarlyRelease(t *testing.T) {
 	if got, want := board.Next, []string{"TASK-042-04"}; !sameStrings(got, want) {
 		t.Fatalf("early release selected %v, want %v", got, want)
 	}
-	if row := auditDispatchRow(board, "TASK-042-05"); row.State != "waiting" || !strings.Contains(row.Reason, "TASK-042-03") {
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-05"), workstate.Pending, false, false, false, false)
+	if row := auditDispatchRow(board, "TASK-042-05"); !strings.Contains(row.Reason, "TASK-042-03") {
 		t.Fatalf("TASK-042-05 must wait for the live predecessor, got %+v", row)
 	}
 }
@@ -63,10 +65,8 @@ func TestAuditDispatchReportedAndAssignmentRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-01"); row.State != "reported" {
-		t.Fatalf("reported result without checkpoint must remain reported, got %+v", row)
-	}
-	if row := auditDispatchRow(board, "TASK-042-04"); row.State != "waiting" || !strings.Contains(row.Reason, "TASK-042-01") {
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-01"), workstate.Active, false, true, false, false)
+	if row := auditDispatchRow(board, "TASK-042-04"); row.State != workstate.Pending || row.Eligible || row.Dispatchable || !strings.Contains(row.Reason, "TASK-042-01") {
 		t.Fatalf("consumer released before integration: %+v", row)
 	}
 
@@ -77,9 +77,7 @@ func TestAuditDispatchReportedAndAssignmentRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-01"); row.State != "integrated" {
-		t.Fatalf("checkpoint recovery did not integrate current result: %+v", row)
-	}
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-01"), workstate.Done, true, true, false, false)
 	if got, want := board.Next, []string{"TASK-042-04"}; !sameStrings(got, want) {
 		t.Fatalf("checkpoint recovery selected %v, want %v", got, want)
 	}
@@ -87,25 +85,21 @@ func TestAuditDispatchReportedAndAssignmentRecovery(t *testing.T) {
 	// Reassignment/revocation makes the old worktree checkpoint stale.  The
 	// projection must wait until the registered assignment points back to the
 	// checkpoint that belongs to this result.
-	auditDispatchSetAgentPrompt(state, "builder-01", "manifest#assignment-revoked")
+	auditDispatchSetAgentPrompt(state, "builder-01", ".claude/workgroups/audit/manifest.json#assignment-revoked")
 	board, err = Load(root, state, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-01"); row.State != "reported" {
-		t.Fatalf("revoked assignment still integrated: %+v", row)
-	}
-	if row := auditDispatchRow(board, "TASK-042-04"); row.State != "waiting" || !strings.Contains(row.Reason, "TASK-042-01") {
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-01"), workstate.Active, false, true, false, false)
+	if row := auditDispatchRow(board, "TASK-042-04"); row.State != workstate.Pending || row.Eligible || row.Dispatchable || !strings.Contains(row.Reason, "TASK-042-01") {
 		t.Fatalf("consumer released after assignment revoke: %+v", row)
 	}
-	auditDispatchSetAgentPrompt(state, "builder-01", "manifest#assignment-01")
+	auditDispatchSetAgentPrompt(state, "builder-01", ".claude/workgroups/audit/manifest.json#assignment-01")
 	board, err = Load(root, state, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-01"); row.State != "integrated" {
-		t.Fatalf("assignment recovery did not restore integration: %+v", row)
-	}
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-01"), workstate.Done, true, true, false, false)
 }
 
 func TestAuditDispatchVerifiedAtRefreshAndInvalidation(t *testing.T) {
@@ -122,10 +116,8 @@ func TestAuditDispatchVerifiedAtRefreshAndInvalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-01"); row.State != "reported" {
-		t.Fatalf("Result newer than verified_at was accepted: %+v", row)
-	}
-	if row := auditDispatchRow(board, "TASK-042-04"); row.State != "waiting" || !strings.Contains(row.Reason, "TASK-042-01") {
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-01"), workstate.Active, false, true, false, false)
+	if row := auditDispatchRow(board, "TASK-042-04"); row.State != workstate.Pending || row.Eligible || row.Dispatchable || !strings.Contains(row.Reason, "TASK-042-01") {
 		t.Fatalf("consumer released after Result refresh: %+v", row)
 	}
 	auditDispatchWriteCheckpoint(t, root, state, "TASK-042-01", "assignment-01", "2026-09-19T13:00:00Z")
@@ -133,9 +125,7 @@ func TestAuditDispatchVerifiedAtRefreshAndInvalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-01"); row.State != "integrated" {
-		t.Fatalf("new verification checkpoint did not recover Result: %+v", row)
-	}
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-01"), workstate.Done, true, true, false, false)
 
 	// Evidence invalidation has the same recovery shape: it blocks the
 	// consumer, and clearing the invalidation only restores the already hashed
@@ -145,17 +135,13 @@ func TestAuditDispatchVerifiedAtRefreshAndInvalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-02"); row.State != "reported" {
-		t.Fatalf("invalidated evidence still integrated: %+v", row)
-	}
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-02"), workstate.Active, false, true, false, false)
 	auditDispatchSetEvidenceInvalidated(state, "ev-TASK-042-02", nil)
 	board, err = Load(root, state, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-02"); row.State != "integrated" {
-		t.Fatalf("evidence recovery did not restore integration: %+v", row)
-	}
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-02"), workstate.Done, true, true, false, false)
 }
 
 // Content changes invalidate integration even when created_at is retained.
@@ -172,9 +158,7 @@ func TestAuditDispatchMutableResultInvalidatesOldCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := auditDispatchRow(board, "TASK-042-01"); row.State != "reported" {
-		t.Fatalf("mutable Result reused old checkpoint: %+v", row)
-	}
+	assertAuditDispatchFacts(t, auditDispatchRow(board, "TASK-042-01"), workstate.Active, false, true, false, false)
 }
 
 // TestAuditDispatchRuntimeWriterRefreshPath reaches the same Runtime API used
@@ -259,7 +243,7 @@ func TestAuditDispatchRuntimeWriterMutableResultInvalidatesOldCheckpoint(t *test
 	progress := qualitygate.PlannedBuilderProgress(qualitygate.Input{
 		Root: fixture.root, Snapshot: snapshot, Files: fileview.Disk{Root: fixture.root},
 	})["TASK-001"]
-	if progress.State != "reported" {
+	if progress.State != workstate.Active || progress.Integrated || !progress.DeliveryRecorded {
 		t.Fatalf("Writer-refreshed mutable Result reused old checkpoint: %+v", progress)
 	}
 }
@@ -272,6 +256,7 @@ type auditDispatchRuntimeRefreshCase struct {
 func auditDispatchRuntimeRefreshFixture(t *testing.T) auditDispatchRuntimeRefreshCase {
 	t.Helper()
 	root := t.TempDir()
+	auditDispatchWriteLegacyManifest(t, root)
 	claude := filepath.Join(root, ".claude")
 	if err := os.MkdirAll(claude, 0o755); err != nil {
 		t.Fatal(err)
@@ -313,10 +298,14 @@ func auditDispatchRuntimeRefreshFixture(t *testing.T) auditDispatchRuntimeRefres
 		"completion_report_ref": reportPath,
 	}}
 	state["entities"].(map[string]any)["agents"] = []any{map[string]any{
-		"id": "builder", "role": "builder", "state": "reported", "task_ids": []any{"TASK-001"},
-		"team_id": nil, "definition_ref": "docs/control/loop-definition.json", "prompt_ref": "manifest#assignment-001",
+		"id": "builder", "role": "backend-builder", "state": "reported", "task_ids": []any{"TASK-001"},
+		"team_id": "team-builder", "definition_ref": "agents/backend-builder.md", "prompt_ref": ".claude/workgroups/audit/manifest.json#assignment-001",
 		"readback_ref": nil, "activation_ref": nil, "activation_revision": nil,
 		"updated_at": "2026-09-19T10:00:00Z",
+	}}
+	state["entities"].(map[string]any)["teams"] = []any{map[string]any{
+		"id": "team-builder", "platform_team_id": "platform-team-builder", "kind": "builder", "status": "active",
+		"agent_ids": []any{"builder"}, "manifest_ref": ".claude/workgroups/audit/manifest.json", "responsibility_ids": []any{"BUILD-WORK-PACKAGE"}, "review_round": nil,
 	}}
 	state["evidence"] = []any{map[string]any{
 		"id": "ev-runtime-refresh", "kind": "completion_report", "path": reportPath,
@@ -374,17 +363,19 @@ func TestAuditDispatchConflictRecoveryAndLegacyProjection(t *testing.T) {
 		{ID: "TASK-B", Wave: 1, Writes: []string{"shared/output"}},
 	}}
 	rows, next := semantic.NextDispatch(plan, map[string]semantic.DispatchFact{
-		"TASK-A": {State: "running", Reason: "active"},
+		"TASK-A": {State: workstate.Active, Reason: "active"},
 	}, 1)
-	if len(next) != 0 || auditDispatchSemanticRow(rows, "TASK-B").State != "waiting" {
+	if len(next) != 0 || auditDispatchSemanticRow(rows, "TASK-B").State != workstate.Pending || auditDispatchSemanticRow(rows, "TASK-B").Eligible || auditDispatchSemanticRow(rows, "TASK-B").Dispatchable {
 		t.Fatalf("active write conflict was released: rows=%+v next=%v", rows, next)
 	}
 	rows, next = semantic.NextDispatch(plan, map[string]semantic.DispatchFact{
-		"TASK-A": {State: "integrated", Reason: "verified"},
+		"TASK-A": {State: workstate.Done, Reason: "verified", Integrated: true, DeliveryRecorded: true},
 	}, 1)
-	if !sameStrings(next, []string{"TASK-B"}) || auditDispatchSemanticRow(rows, "TASK-B").State != "ready" {
+	if !sameStrings(next, []string{"TASK-B"}) {
 		t.Fatalf("conflict recovery did not release TASK-B: rows=%+v next=%v", rows, next)
 	}
+	assertAuditDispatchFacts(t, auditDispatchSemanticRow(rows, "TASK-A"), workstate.Done, true, true, false, false)
+	assertAuditDispatchFacts(t, auditDispatchSemanticRow(rows, "TASK-B"), workstate.Pending, false, false, true, true)
 
 	root, state := boardFixture(t)
 	docs := state["documents"].([]any)
@@ -424,6 +415,7 @@ func auditDispatchAddIntegrated(t *testing.T, root string, state map[string]any,
 
 func auditDispatchAddReport(t *testing.T, root string, state map[string]any, taskID, agentID, assignment string) {
 	t.Helper()
+	auditDispatchWriteLegacyManifest(t, root)
 	evidenceID := "ev-" + taskID
 	reportPath := ".claude/evidence/run/g1/assignments/" + assignment + "/" + evidenceID + ".json"
 	subject := auditDispatchTaskSubject(t, state, taskID)
@@ -442,13 +434,23 @@ func auditDispatchAddReport(t *testing.T, root string, state map[string]any, tas
 		"id": taskID, "state": "review", "owner_agent_ids": []any{agentID}, "completion_report_ref": reportPath,
 	})
 	auditDispatchUpsertEntity(state, "agents", agentID, map[string]any{
-		"id": agentID, "state": "reported", "prompt_ref": "manifest#" + assignment,
+		"id": agentID, "role": "backend-builder", "state": "reported", "task_ids": []any{taskID},
+		"team_id": "team-" + agentID, "definition_ref": "agents/backend-builder.md", "prompt_ref": ".claude/workgroups/audit/manifest.json#" + assignment,
+	})
+	auditDispatchUpsertEntity(state, "teams", "team-"+agentID, map[string]any{
+		"id": "team-" + agentID, "platform_team_id": "platform-team-" + agentID, "kind": "builder", "status": "active",
+		"agent_ids": []any{agentID}, "manifest_ref": ".claude/workgroups/audit/manifest.json", "responsibility_ids": []any{"BUILD-WORK-PACKAGE"}, "review_round": nil,
 	})
 	auditDispatchUpsertEvidence(state, map[string]any{
 		"id": evidenceID, "kind": "completion_report", "path": reportPath,
 		"sha256": fmt.Sprintf("%x", sha256.Sum256(b)), "status": "valid", "baseline_generation": 1,
 		"invalidated_by": nil, "produced_by": []any{agentID},
 	})
+}
+
+func auditDispatchWriteLegacyManifest(t *testing.T, root string) {
+	t.Helper()
+	auditDispatchWriteJSON(t, root, ".claude/workgroups/audit/manifest.json", map[string]any{"schema_version": "1.0.0"})
 }
 
 func auditDispatchTaskSubject(t *testing.T, state map[string]any, taskID string) map[string]any {
@@ -612,6 +614,13 @@ func auditDispatchRow(board Board, taskID string) semantic.DispatchRow {
 		}
 	}
 	return semantic.DispatchRow{Task: semantic.DispatchTask{ID: taskID}, State: "missing"}
+}
+
+func assertAuditDispatchFacts(t *testing.T, row semantic.DispatchRow, state workstate.Status, integrated, deliveryRecorded, eligible, dispatchable bool) {
+	t.Helper()
+	if row.State != state || row.Integrated != integrated || row.DeliveryRecorded != deliveryRecorded || row.Eligible != eligible || row.Dispatchable != dispatchable {
+		t.Fatalf("dispatch row facts = %+v, want state=%s integrated=%t delivery_recorded=%t eligible=%t dispatchable=%t", row, state, integrated, deliveryRecorded, eligible, dispatchable)
+	}
 }
 
 func auditDispatchSemanticRow(rows []semantic.DispatchRow, taskID string) semantic.DispatchRow {

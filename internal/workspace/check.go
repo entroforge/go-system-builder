@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"io"
 	"io/fs"
 	"os"
@@ -28,7 +29,11 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 	if e.CheckLocation == "main" {
 		return "", fmt.Errorf("this execution selected Main checks; report committed work and use Main integration, never run an unsandboxed Worker check")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	if p, ok := ProfileAt(e, index); ok {
+		ctx = checkexec.WithProfile(ctx, p)
+		ctx = checkexec.WithBinding(ctx, checkexec.Binding{RuntimeID: e.RuntimeID, Generation: e.BaselineGeneration, AssignmentID: e.AssignmentID, Owner: e.AgentID, ExecutionGeneration: e.Generation, Responsibility: "owned_check"})
+	}
+	ctx, cancel := checkexec.CheckTimeout(ctx)
 	defer cancel()
 	if index < 0 || index >= len(e.Checks) || strings.HasPrefix(strings.TrimSpace(e.Checks[index]), "locked:") {
 		return "", fmt.Errorf("select a declared executable check index")
@@ -42,6 +47,11 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 	if err := b.ValidateInputs(e); err != nil {
 		return "", err
 	}
+	if _, profiled := ProfileAt(e, index); profiled && e.BootstrapSHA256 != "" {
+		if err := b.ValidateBootstrap(e); err != nil {
+			return "", err
+		}
+	}
 	scratch, err := os.MkdirTemp("", "loop-worker-check-")
 	if err != nil {
 		return "", err
@@ -51,21 +61,51 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 	if err != nil {
 		return "", err
 	}
+	var observation *checkexec.Observation
+	var reuseDecision *checkexec.ReuseDecision
+	if p, ok := ProfileAt(e, index); ok {
+		observed, err := checkexec.ObserveProfile(ctx, scratch, p)
+		if err != nil {
+			return "", err
+		}
+		permissions := b.observeCheckPermissions(ctx, e, scratch)
+		observed.Permissions = &permissions
+		observed.PermissionDigest = permissions.Digest()
+		observation = &observed
+		guard := checkexec.CurrentReuseGuard(ctx)
+		decision := checkexec.DecideReuse(filepath.Join(b.MainRoot, ".claude/evidence/workspace-checks"), checkexec.ReuseRequest{Profile: p, Observation: observed, Binding: CheckBinding(e), Checkout: e.Path, Fresh: guard.Fresh, NewHypothesis: guard.NewHypothesis}, e.ToolCheckReceipts)
+		reuseDecision = &decision
+		if decision.Action == "reuse" {
+			if err := b.ValidateInputs(e); err != nil {
+				return "", err
+			}
+			fmt.Fprintln(output, "Worker check reused original accepted receipt:", decision.ReceiptRef)
+			return decision.ReceiptRef, nil
+		}
+	}
 	dir := filepath.Join(b.MainRoot, ".claude/evidence/workspace-checks")
 	if err = os.MkdirAll(dir, 0700); err != nil {
-		return "", err
+		return "", checkexec.New("diagnostic_io", "environment owner", e.Checks[index], err)
 	}
 	dir, err = os.MkdirTemp(dir, e.AssignmentID+"-")
 	if err != nil {
-		return "", err
+		return "", checkexec.New("diagnostic_io", "environment owner", e.Checks[index], err)
 	}
 	log, err := os.OpenFile(filepath.Join(dir, "output.log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		return "", err
+		return "", checkexec.New("diagnostic_io", "environment owner", e.Checks[index], err)
 	}
 	started := time.Now().UTC()
 	err = runIsolatedCheck(ctx, b.MainRoot, b.CommonDir, e.Path, scratch, e.Checks[index], io.MultiWriter(output, log))
 	closeErr := log.Close()
+	if p, ok := ProfileAt(e, index); ok && err == nil {
+		after, afterErr := checkexec.ObserveProfile(ctx, scratch, p)
+		permissions := b.observeCheckPermissions(ctx, e, scratch)
+		after.PermissionDigest = permissions.Digest()
+		if afterErr != nil || after.SubjectDigest != observation.SubjectDigest || after.EnvironmentDigest != observation.EnvironmentDigest || after.RunnerDigest != observation.RunnerDigest || after.PermissionDigest != observation.PermissionDigest {
+			err = checkexec.New("input_drift", "environment owner", e.Checks[index], fmt.Errorf("profile inputs/environment/runner changed during check"))
+		}
+	}
 	if err == nil {
 		err = closeErr
 	}
@@ -75,11 +115,36 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 		status = "fail"
 		reason = err.Error()
 	}
-	receipt := map[string]any{"version": 1, "runtime_id": e.RuntimeID, "assignment_id": e.AssignmentID, "execution_generation": e.Generation, "baseline_generation": e.BaselineGeneration, "check_index": index, "command": e.Checks[index], "snapshot_sha256": hash, "started_at": started, "elapsed_ms": time.Since(started).Milliseconds(), "status": status, "error": reason, "output": filepath.Join(dir, "output.log"), "disposable_copy": true}
-	data, _ := json.MarshalIndent(receipt, "", "  ")
+	failure := checkexec.Classify(ctx, "environment owner", e.Checks[index], err)
+	if closeErr != nil {
+		failure = checkexec.New("diagnostic_io", "environment owner", e.Checks[index], closeErr)
+	}
 	path := filepath.Join(dir, "receipt.json")
+	if failure != nil {
+		failure.ReceiptRef = path
+		failure.LogRef = filepath.Join(dir, "output.log")
+	}
+	binding, _ := checkexec.CurrentBinding(ctx)
+	receipt := map[string]any{"reuse_decision": reuseDecision, "check_binding": binding, "profile_observation": observation, "failure": failure, "version": 1, "runtime_id": e.RuntimeID, "assignment_id": e.AssignmentID, "execution_generation": e.Generation, "baseline_generation": e.BaselineGeneration, "check_index": index, "command": e.Checks[index], "snapshot_sha256": hash, "started_at": started, "elapsed_ms": time.Since(started).Milliseconds(), "status": status, "error": reason, "output": filepath.Join(dir, "output.log"), "disposable_copy": true}
+	data, _ := json.MarshalIndent(receipt, "", "  ")
+	if observation != nil {
+		receipt["version"] = 2
+		sealed, sealErr := checkexec.SealReceipt(receipt, filepath.Join(dir, "output.log"))
+		if sealErr != nil {
+			return "", checkexec.New("diagnostic_io", "environment owner", e.Checks[index], sealErr)
+		}
+		data = sealed
+	}
 	if writeErr := publishBootstrapFile(path, data, 0600); writeErr != nil {
-		return "", writeErr
+		return "", checkexec.New("diagnostic_io", "environment owner", e.Checks[index], writeErr)
+	}
+	if captureErr := checkexec.CaptureReceipt(ctx, path, e.Path, data); captureErr != nil {
+		return path, checkexec.New("diagnostic_io", "environment owner", e.Checks[index], captureErr)
+	}
+	if failure != nil {
+		failure.ReceiptRef = path
+		failure.LogRef = filepath.Join(dir, "output.log")
+		return path, failure
 	}
 	return path, err
 }

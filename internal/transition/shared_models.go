@@ -13,7 +13,7 @@ import (
 
 // Shared inputs use the existing design document lifecycle. The stable path
 // identity includes examples and local schema dependencies, not only root files.
-func sharedModelDocuments(state map[string]any, ctx *ActionContext, register bool) (int, error) {
+func sharedModelDocuments(state map[string]any, ctx *ActionContext, register bool, accepted *acceptedS3ContractBatch) (int, error) {
 	root := actionRoot(state, ctx)
 	var files fileview.Reader = fileview.Disk{Root: root}
 	if ctx.Request != nil && ctx.Request.Files != nil {
@@ -24,6 +24,22 @@ func sharedModelDocuments(state map[string]any, ctx *ActionContext, register boo
 	result := sharedmodel.Check(root, files, reqID)
 	if len(result.Problems) > 0 {
 		return 0, fmt.Errorf("shared model baseline: %s", strings.Join(result.Problems, "; "))
+	}
+	if accepted != nil {
+		// The checker identifies model members; the accepted envelope supplies
+		// their authority. Neither arbitrary JSON inputs nor current bytes can
+		// silently replace the original professional source closure.
+		for path, data := range result.Files {
+			subject, found := accepted.subjects[path]
+			if !found || subject.SHA256 != SHA256(data) {
+				return 0, fmt.Errorf("shared model %s differs from the accepted S3 source closure; preserve the original evidence and recover its sources before registration", path)
+			}
+		}
+		for path := range accepted.sharedOutputs {
+			if _, found := result.Files[path]; !found {
+				return 0, fmt.Errorf("shared model %s disappeared from the accepted S3 source closure", path)
+			}
+		}
 	}
 	baseline, _ := state["baseline"].(map[string]any)
 	generation := integerOf(baseline["generation"])
@@ -39,7 +55,10 @@ func sharedModelDocuments(state map[string]any, ctx *ActionContext, register boo
 			}
 			path, _ := d["path"].(string)
 			b, err := files.ReadFile(filepath.Join(root, path))
-			if err != nil || SHA256(b) != d["sha256"] {
+			if err != nil {
+				return 0, fmt.Errorf("read S3 registered shared model %s: %w", path, err)
+			}
+			if SHA256(b) != d["sha256"] {
 				return 0, fmt.Errorf("shared model %s changed since S3 registration; revise and re-review the design baseline", path)
 			}
 			if _, ok := result.Files[path]; !ok {

@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
 // Review-driven coverage: the scenarios the E2E chain and unit tests left
@@ -81,11 +83,12 @@ func TestUnbindForceRecordsInFlight(t *testing.T) {
 		"bugs":   []any{},
 		"teams":  []any{},
 		"tasks": []any{map[string]any{
-			"id":              "TASK-001",
-			"state":           "in_progress",
-			"path":            "docs/dev/tasks/TASK-001.md",
-			"sha256":          "0000000000000000000000000000000000000000000000000000000000000000",
-			"owner_agent_ids": []any{},
+			"id":                   "TASK-001",
+			"state":                "active",
+			"last_lifecycle_event": "builder_activated",
+			"path":                 "docs/dev/tasks/TASK-001.md",
+			"sha256":               "0000000000000000000000000000000000000000000000000000000000000000",
+			"owner_agent_ids":      []any{},
 		}},
 	}
 	writeJSONMap(t, statePath, state)
@@ -281,7 +284,7 @@ func TestRolloverArchivesCRLFREQ(t *testing.T) {
 		"path":           ".claude/decisions/rollover.json",
 		"sha256":         fmt.Sprintf("%x", sha256.Sum256(decisionBody)),
 		"produced_by":    []any{"alice"},
-		"scope_refs":     []any{"runtime_rollover:loop-REQ-208@0"},
+		"scope_refs":     []any{fmt.Sprintf("runtime_rollover:%v@%v", state["runtime_id"], state["revision"])},
 		"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
 		"responsibility_id": nil,
 	}}
@@ -302,30 +305,59 @@ func TestRolloverArchivesCRLFREQ(t *testing.T) {
 	}
 }
 
-// TestBindPreflightsControlPlaneDrift pins the preflight: a valid-but-
-// changed loop-definition must be refused instead of silently burning a
-// stale fingerprint into a fresh baseline.
-func TestBindPreflightsControlPlaneDrift(t *testing.T) {
+// Binding establishes the original REQ facts; metadata maintenance does not
+// become a full-source qualification or a definition-change approval.
+func TestREQBindKeepsControlMetadataMaintenanceAtOriginalBoundary(t *testing.T) {
 	root := newUXTestRoot(t, map[string]string{"REQ-209.md": "# REQ-209\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：none\n"})
-	var stdout, stderr bytes.Buffer
-	if code := cli.Run([]string{"init", "--root", root}, strings.NewReader(""), &stdout, &stderr); code != 0 {
-		t.Fatalf("init failed: %s", stderr.String())
+	var out, diagnostic bytes.Buffer
+	if code := cli.Run([]string{"init", "--root", root}, nil, &out, &diagnostic); code != 0 {
+		t.Fatalf("init: %d %s", code, &diagnostic)
 	}
-	defPath := filepath.Join(root, "docs", "control", "loop-definition.json")
-	data, err := os.ReadFile(defPath)
+	path := filepath.Join(root, "docs/control/loop-definition.json")
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(defPath, append(data, []byte("\n")...), 0o644); err != nil {
+	current := append(append([]byte(nil), data...), '\n')
+	if err := os.WriteFile(path, current, 0644); err != nil {
 		t.Fatal(err)
 	}
-	stdout.Reset()
-	stderr.Reset()
-	code := cli.Run([]string{"req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
-	if code == 0 {
-		t.Fatal("bind must refuse a drifted control plane")
+	out.Reset()
+	diagnostic.Reset()
+	if code := cli.Run([]string{"req", "bind", "--root", commitStageFixture(t, root), "--dev-branch", "test-development", "--release-upstream", "origin/release", "--approved-by", "alice"}, nil, &out, &diagnostic); code != 0 {
+		t.Fatalf("valid binding gained an obsolete fingerprint qualification: %d %s", code, &diagnostic)
 	}
-	if !strings.Contains(stderr.String(), "control plane drifted") || !strings.Contains(stderr.String(), "doctor") {
-		t.Fatalf("drift refusal must route to doctor, got: %s", stderr.String())
+	bound := stageSnapshot(t, root)
+	if bound.State["bound_req"].(map[string]any)["id"] != "REQ-209" || bound.State["lifecycle"].(map[string]any)["phase"] != "design" {
+		t.Fatal("original binding or S2 handoff missing", bound.State["lifecycle"])
+	}
+	if actual, err := os.ReadFile(path); err != nil || !bytes.Equal(actual, current) {
+		t.Fatal("binding changed the supplied definition", err)
+	}
+	// A separate maintenance fixture change exercises the original metadata
+	// consumer. It is not another normal binding step or a human approval.
+	maintenance := append(append([]byte(nil), current...), '\n')
+	if err := os.WriteFile(path, maintenance, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, beforeJournal := s6CanonicalRuntimePair(t, root)
+	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
+	if _, err := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).RefreshFingerprints(root); err != nil {
+		t.Fatalf("original metadata maintenance: %v", err)
+	}
+	refreshed := stageSnapshot(t, root)
+	if refreshed.State["definition"].(map[string]any)["sha256"] != fmt.Sprintf("%x", sha256.Sum256(maintenance)) {
+		t.Fatal("metadata consumer did not record actual control bytes")
+	}
+	for _, field := range []string{"runtime_id", "revision", "bound_req", "lifecycle", "baseline", "entities", "evidence", "authorization"} {
+		before, _ := json.Marshal(bound.State[field])
+		after, _ := json.Marshal(refreshed.State[field])
+		if !bytes.Equal(before, after) {
+			t.Fatalf("metadata maintenance changed business fact %s", field)
+		}
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil || !bytes.Equal(journal, beforeJournal) {
+		t.Fatal("metadata maintenance invented a business event", err)
 	}
 }

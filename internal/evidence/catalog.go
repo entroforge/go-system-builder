@@ -285,6 +285,8 @@ var defaultRegisteredKinds = []string{
 	"targeted_reverification",
 	"repair_plan",
 	"repair_plan_report",
+	"repair_result_blocker",
+	"repair_result_resolution",
 }
 
 // defaultImportableKinds is an explicit recovery trust boundary. Keep this
@@ -300,6 +302,10 @@ var defaultRegisteredKinds = []string{
 // external evidence set and the only authorized producer is the in-CAS
 // review.SubmitSupplement path. Add `finding_supplement` here only when the
 // import boundary is intentionally widened.
+// S9 repair_result_blocker and repair_result_resolution are likewise
+// pipeline-owned: the original lifecycle CAS writes their evidence rows with
+// the Agent pointer/message or blocker artifact. They are persisted kinds,
+// but are not generic imports or gate evidence slots.
 var defaultImportableKinds = []string{
 	"acceptance",
 	"bug",
@@ -344,7 +350,9 @@ var defaultSlots = map[string]SlotSpec{
 		AcceptedKinds: []string{"agent_activation"},
 	},
 	"builder_report_record": {
-		AcceptedKinds: []string{"builder_report", "agent_completion"},
+		// Canonical completion_report is conditionally qualified by the
+		// original transition consumer against its complete Main source chain.
+		AcceptedKinds: []string{"builder_report", "agent_completion", "completion_report"},
 	},
 	"team_manifest_record": {
 		// The self-named alias is deliberately retained: catalog_test.go

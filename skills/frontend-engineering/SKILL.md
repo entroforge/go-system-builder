@@ -6,7 +6,7 @@ version: 1.1.0
 ---
 # Frontend Engineering
 ## Authority
-Quality guidance only. Stage routing lives in `docs/control/agent-protocol.md`; Skill routing authority comes from the current assignment and risk tags; the reusable method summary is inlined below.
+Quality guidance only. Stage routing lives in `docs/control/agent-protocol.md`. Apply this method to the actual assigned technical concern.
 ## Applicability
 Apply to frontend paths and the `frontend` risk tag.
 ## Required Inputs
@@ -18,10 +18,13 @@ Implementation choices or one scoped review conclusion with evidence.
 ## N/A Criteria
 N/A only when no browser-delivered behavior or presentation changes.
 ## Stop Conditions
-Stop on missing UI authority, inaccessible required behavior, or contract conflict.
+Resolve component, fixture and reversible diagnostic choices within the accepted UI/FE design. Report missing authoritative design, a required behavior that cannot be implemented within scope, or a necessary contract change to Main; ordinary implementation uncertainty needs no extra approval.
 ## Non-Goals
 Do not invent product behavior or replace integration testing.
 
-## Inlined Methodology
-
-Loop Engineering uses two Skill categories: Methodology (reusable procedure for an engineering event, including entry, steps, output and stop conditions) and Best Practice (professional quality criteria and review techniques for one technical concern). Role identity is not a Skill; Builder, Document Verifier, Delivery Verifier, QA and E2E Browser identities belong to Agent Definitions. An Agent gains capability by combining one role definition, one task instance and the smallest applicable Skill set. Skill files must reference source documents by path. They must not copy REQ, contract, TASK, BUG or report bodies. Best-practice selection maps the `frontend` risk tag to the `frontend-engineering` Skill. Routing order: current runtime state and phase -> pending legal event -> one primary Methodology Skill -> Agent Definition kind -> task artifact and risk tags -> smallest applicable Best-practice set -> two-phase activation when a subagent is involved. Composition rules: one workflow event that requires reusable procedure has exactly one primary Methodology Skill; at most two secondary Methodology dependencies should be active for one action. Anti-patterns include `builder`, `verifier` or `qa` as a general-purpose role Skill; a Skill that reads or writes current Loop state as its own authority; a Skill containing a second state machine; copied REQ/contract/TASK/BUG content; and Best Practices loaded globally without applicability.
+## Implementation method
+Trace each assigned behavior from the accepted UI/FE design to its component,
+state owner and API boundary. Reuse applicable components and semantic tokens.
+Implement loading, empty, error and permission states, keyboard interaction and
+responsive behavior, then check the affected components and integration paths.
+Record actual observations and remaining gaps in the supplied professional outputs.

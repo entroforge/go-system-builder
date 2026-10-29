@@ -56,7 +56,10 @@ func dispatchPlanDocuments(state map[string]any, ctx *ActionContext, register bo
 					d, _ := raw.(map[string]any)
 					if d["kind"] == "task" && d["id"] == t.ID && integerOf(d["generation"]) == generation {
 						b, e := files.ReadFile(filepath.Join(root, t.Path))
-						ok = e == nil && d["sha256"] == SHA256(b)
+						if e != nil {
+							return fmt.Errorf("read S4 registered TASK %s (%s): %w", t.ID, t.Path, e)
+						}
+						ok = d["sha256"] == SHA256(b)
 					}
 				}
 				if !ok {

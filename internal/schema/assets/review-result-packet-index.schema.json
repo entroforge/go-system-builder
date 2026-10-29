@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/review-result-packet-index.schema.json",
+  "title": "S7 ReviewResult immutable packet body index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet_id",
+    "template_id",
+    "template_sha256",
+    "binding",
+    "result_id",
+    "issuance_event_id",
+    "view_path",
+    "answer_path",
+    "storage_format",
+    "body_ref"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "pattern": "^packet-[a-f0-9]{64}$"
+    },
+    "template_id": {
+      "const": "s7-review-result-v1"
+    },
+    "template_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "binding": {
+      "$ref": "#/$defs/binding"
+    },
+    "result_id": {
+      "type": "string",
+      "pattern": "^review-result-[a-f0-9]{64}$"
+    },
+    "issuance_event_id": {
+      "type": "string",
+      "pattern": "^evt-review-result-packet-packet-[a-f0-9]{64}$"
+    },
+    "view_path": {
+      "type": "string",
+      "pattern": "^\\.claude/work-packets/[^\\\\:]+\\.json$"
+    },
+    "answer_path": {
+      "type": "string",
+      "pattern": "^(\\.claude/submissions/[^\\\\:]+|\\.loop-submissions/s7/packet-[a-f0-9]{64}/[A-Za-z0-9._-]+)/answer\\.json$"
+    },
+    "storage_format": {
+      "const": "packet-body-ref-v1"
+    },
+    "body_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "format": {
+          "const": "packet-json-v1"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^\\.claude/packet-bodies/[0-9a-f]{64}\\.json$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20971520
+        }
+      }
+    }
+  },
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "baseline_generation",
+        "review_plan_id",
+        "review_plan_ref",
+        "review_plan_sha256",
+        "review_plan_revision",
+        "review_round",
+        "assignment_id",
+        "assignment_sha256",
+        "owner_agent_id",
+        "claim_ids",
+        "subject_digest",
+        "verification_artifact_digest"
+      ],
+      "properties": {
+        "runtime_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "baseline_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_plan_id": {
+          "type": "string",
+          "pattern": "^review-plan-[A-Za-z0-9._-]+$"
+        },
+        "review_plan_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "review_plan_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "review_plan_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "review_round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "assignment_id": {
+          "type": "string",
+          "pattern": "^assignment-[A-Za-z0-9._-]+$"
+        },
+        "assignment_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "owner_agent_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "claim_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^claim-[A-Za-z0-9._-]+$"
+          }
+        },
+        "subject_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "verification_artifact_digest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claims",
+        "frozen_subjects"
+      ],
+      "properties": {
+        "methods": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "purpose"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^(\\.claude/)?skills/[A-Za-z0-9][A-Za-z0-9._-]*/SKILL\\.md$"
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          }
+        },
+        "method_source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifest_ref",
+            "sha256"
+          ],
+          "properties": {
+            "manifest_ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "claims": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "claim_id",
+              "lens",
+              "target",
+              "assertion",
+              "oracle",
+              "method",
+              "applicability",
+              "source_refs"
+            ],
+            "properties": {
+              "claim_id": {
+                "type": "string",
+                "pattern": "^claim-[A-Za-z0-9._-]+$"
+              },
+              "lens": {
+                "enum": [
+                  "delivery",
+                  "qa",
+                  "e2e"
+                ]
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              },
+              "assertion": {
+                "type": "string",
+                "minLength": 1
+              },
+              "oracle": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required_evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "applicability": {
+                "enum": [
+                  "required",
+                  "not_applicable"
+                ]
+              },
+              "na_rationale": {
+                "type": "string"
+              },
+              "na_checklist_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_refs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "focus_key": {
+                "type": "string"
+              },
+              "depends_on": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "resource_locks": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "frozen_subjects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16384,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "kind": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

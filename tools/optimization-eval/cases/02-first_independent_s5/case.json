@@ -1,0 +1,26 @@
+{
+  "id": "G08-02",
+  "version": "1.0.0",
+  "family": "first_independent_s5",
+  "role": "document-verifier",
+  "public_input": "Independently review the frozen documents and submit your own justified verdict.",
+  "public_refs": [
+    "docs/control/agent-protocol.md"
+  ],
+  "fixture_refs": [
+    "internal/cli/stage_answer_e2e_test.go",
+    "tests/fixtures/req039/fixtures.go"
+  ],
+  "mechanism_oracle": {
+    "package": "./internal/cli",
+    "test": "TestStageAnswerLastSaveReceivesAndRoutesOriginalS5/pass"
+  },
+  "variables": {},
+  "external_resources": [
+    "go",
+    "git"
+  ],
+  "timeout_seconds": 300,
+  "legal_end": "The exact original required Test/subtest runs and passes; required skip or missing target is not success.",
+  "proof_scope": "Two original independent mandatory reviewers and original TR-003 routing; professional answers are authored test fixtures."
+}

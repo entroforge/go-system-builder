@@ -1,205 +1,169 @@
 ---
 name: agent-dispatch
-description: Use when spawning, reassigning, or reactivating any specialized Builder or Reviewer Agent; covers the three dispatch modes (plan_checkpoint continuous execution by default, plan_approval_required for high-risk work, one_shot for idempotent single actions)
+description: Use when delegating professional responsibilities to Claude Code native Agents and receiving existing artifacts at Start/Stop
 category: methodology
-version: 1.0.0
+version: 2.0.0
 ---
-# Agent Dispatch
+# Native Agent Dispatch
+
+Claude Code owns creation, foreground/background execution, messages, wait and resume. Main chooses professional responsibilities and carries exact engineering references into native Agent. Engineering owners are responsibility labels; observe actual platform IDs separately. A Claude Team or preselected opaque ID is not required.
 
 ## Authority
-Dispatch modes and the agent lifecycle are defined in `docs/control/loop-definition.json` (`entity_lifecycles.agent`) and this Skill; the runtime events are executed by `loop-harness runtime agent-event` / `runtime task-complete`.
+
+Use the current stage in `docs/control/agent-protocol.md` and original legal transitions in `docs/control/loop-definition.json`. Runtime and original domain Writers own engineering facts; this Skill creates no execution lifecycle.
 
 ## Entry Conditions
-- An Agent Definition exists under `agents/<role>.md`.
-- A validated team manifest assignment exists (S7 reviewer assignments carry `claim_ids`; S6 builders carry the TASK binding).
-- The document chain (TASK/BUG → contracts → REQ → design) is readable and fingerprinted.
+
+Main has a concrete original engineering responsibility, actual inputs and exact original artifact references. Keep explicit professional approval and independence before applicable work.
 
 ## Required Inputs
-| Input | Path / field | Why |
-|:--|:--|:--|
-| Assignment | manifest `assignments[]` (agent_id, dispatch_mode, scope) | dispatch coordinates and mode |
-| Document chain | locked REQ/design/contracts/TASK | what the Worker must read first |
-| Runtime state | `.claude/loop-state.json` | CAS revision for every event |
 
-## Dispatch modes
-| mode | flow | use when |
-|:--|:--|:--|
-| `plan_checkpoint` (default) | Worker reads assignment → sends ONE PLAN_REPORT (message_type `plan_report`) → **continues immediately**; Main stays silent when aligned, sends CORRECTION only on semantic drift | ordinary work — the vast majority |
-| `plan_approval_required` | readback (`readback_response`) → Main `understanding_approved` → activation envelope | high-risk or irreversible work (destructive tests, production-adjacent data, spec changes) |
-| `one_shot` | single idempotent action, no plan checkpoint | trivial fire-and-forget tasks |
+The current stage, exact original brief or view/answer, actual frozen subjects and professional role/method. Missing paths or lost registered sources belong to Main/system preparation, not guessed responsibilities.
 
 ## Procedure
-1. Launch the Worker with the assignment (register-workgroup already stamped `dispatch_mode` on the agent row; default `plan_checkpoint`).
-2. `plan_checkpoint`: the Worker sends one PLAN_REPORT — assignment_id/revision, objective, planned paths, steps, assertion checks, dependencies, risks — and starts working without waiting. Main reviews asynchronously; silence means aligned, CORRECTION means drift. The PLAN_REPORT file must satisfy the `planReport` branch of the agent-message schema (all 20 required fields — base envelope plus plan body; steps are `{description, target}` objects, assertion_checks are `{assertion, oracle}` objects); write it from the complete example below, not from memory — a malformed report fails the auto-chain and costs a manual `runtime agent-begin` recovery. Send it with the plan file path as a SendMessage `plan_ref` parameter: the PostToolUse(SendMessage) observer chains reading → activated → working automatically. The checkpoint binding is source-specific: S7 assignments are checked against the current ReviewPlan; S6/S8/S9 assignments are checked against the fingerprinted workgroup manifest, with generic non-S7 `assignment_revision=1`. For S9, the platform `assignment-s9-*` alias is distinct from the domain `repair-assignment-*`; the generic checkpoint never replaces the domain repair report.
-3. `plan_approval_required`: the Worker submits a readback; Main approves (`understanding_approved`) before the activation envelope is accepted.
-4. Register the plan/readback with `loop-harness runtime agent-event --event readback_submitted --message <file>`; then `activation_sent` (the hash chain binds the envelope to the submitted plan/readback file bytes — compute with `shasum -a 256 <file>` / `sha256sum <file>` after writing it). On the `plan_checkpoint` path this step is what the observer automates; run it by hand only when the auto-chain did not fire.
-5. `work_started` → work → `runtime task-complete` (Builders) or `runtime review-result submit` (S7 Reviewers).
 
-### PLAN_REPORT file — complete minimal example
-```json
-{
-  "schema_version": "1.0.0",
-  "message_type": "plan_report",
-  "message_id": "msg-plan-<agent>-0001",
-  "correlation_id": "corr-<agent>-0001",
-  "runtime_id": "<from .claude/loop-state.json runtime_id>",
-  "expected_runtime_revision": <current revision>,
-  "agent_id": "<your agent id>",
-  "agent_definition_ref": "agents/<role>.md",
-  "task_id": "<TASK-id or null>",
-  "bug_id": null,
-  "team_id": "<workgroup id>",
-  "occurred_at": "<RFC3339 now>",
-  "assignment_id": "<assignment id>",
-  "assignment_revision": 1,
-  "objective": "<one sentence, at least 8 chars>",
-  "planned_paths": ["<paths you will read or write>"],
-  "steps": [
-    {"description": "what you will do", "target": "<path or artifact>"}
-  ],
-  "assertion_checks": [
-    {"assertion": "what must hold", "oracle": "how you will know"}
-  ],
-  "dependencies": [],
-  "risks_blockers": []
-}
-```
-A full worked example: `internal/schema/assets/agent-message.examples.json` (the `plan_report` entry).
+Choose the applicable stage path below, carry its exact references into native Agent, and receive real artifacts through Start/Stop. Main follows original integration and domain closure.
 
-After writing the file, send it — `plan_ref` is a SendMessage parameter, never a field of the JSON:
+## Native S6 (s6-native-v1)
 
-```text
-SendMessage(tool_input: {teammate_name: <your agent id>, message_type: "plan_report", plan_ref: <the plan file path>})
-```
+Main runs `s6 prepare --root <Main> --task <TASK> --role <role>` and carries its
+exact brief into native Agent with worktree isolation. Preparation is not launch.
+The brief supplies this responsibility's fixed source, control/method references,
+worktree-relative product inputs, private Plan/Result paths and adjacent author
+fields. Main's later HEAD is not a replacement source. Use the brief's exact
+source-alignment/recovery instructions; preserve existing work and branches.
+Historical briefs retain their original contract.
 
-### Do not confuse platform PLAN_REPORT with a domain plan report
+Builder reads the actual TASK and applicable methods, saves the professional
+Plan before implementation, then continues implementation and real self-checks
+without another activation or save receipt. Commit completed deliverables, save
+the supplied professional Result and return the exact brief and absolute Result
+reference. Fill only author fields; original consumers supply identity, source
+fingerprints and registered dependencies. Before or after forming a Plan, use
+the brief's minimal blocked Result at the same supplied Result path for a real
+blocker. Preserve any Plan and evidence, describe unfinished work and return the
+exact references; do not invent checks, a Plan or PASS to exit. This return does
+not establish acceptance or TASK completion.
 
-`message_type=plan_report` is the generic platform checkpoint. It proves that a
-platform-dispatched Agent understood its Assignment and lets PostToolUse and
-the Agent lifecycle release the normal first-write checkpoint. It is not a
-stage-specific authorization or completion record.
+Stop invokes the original receiver. Main inspects its actual acceptance or
+specific failure. Accepted complete work follows original checks/integration;
+accepted full blocked/incomplete Results follow the feedback's closing-checkpoint
+and named revision path, without editing the accepted answer. Restore actual
+source/environment/reception gaps. Only unreceived, still-current author-owned
+corrections resume the original responsibility. A returned actor with no accepted
+Result is not proof it is still running. Preserve accepted work. Rework uses
+`s6 prepare --revise-assignment <id> --revision-intent-key <stable-key>` through
+the original revision Writer; changing
+the locked TASK/specification instead follows TR-007 to planning and renewed
+independent document review.
 
-S9 has a second, domain-specific artifact: `record_type=repair_plan_report`,
-submitted with `runtime repair plan-report submit --file <report.json>`. It
-must bind the RepairSession/RepairPlan/RepairAssignment, expose the assertion
-map, and include a red or blocked pre-fix check before
-`runtime repair execution begin` can release product writes. A domain
-`repair_plan_report` must not be passed as `SendMessage(plan_ref=...)`, and a
-generic PLAN_REPORT does not replace the S9 domain submission. If both gates
-apply, submit the generic checkpoint first and the domain artifact second.
+After successful integration, the original integration completion outlet checks
+the entire TR-003 batch. Incomplete batches retain concrete remaining work; a
+qualified batch follows TR-006 and prepares the exact S7 ReviewPlan and guide in
+that same completion response. A transition/preparation failure retains already
+completed integration and names its original recovery entry. Re-enter the original
+`runtime task-integrate` command when directed to resume unfinished integration,
+checks or the S6 exit; its checkpoints prevent duplicate merge and acceptance.
+If failed Main checks left the checkpoint preserved/blocked, first resolve the
+stated environment/check cause, then use the original pending command with
+`--retry-preserved`; a bare replay retains that failure. Already successful
+integration that only needs its exit continued requires no such retry flag.
+After migration to S7, restore missing materials through the supplied original
+`s7 draft --root <Main> --out <original-path>` entry. Preserve received Builder
+Results and completed merge/acceptance facts; an unrelated tool call is not a
+continuation trigger.
+Optional `s6 status --capacity <total-slots> --advice` only recommends a batch;
+unknown capacity leaves eligible TASKs visible without another prerequisite.
+
+## Native S5 / S7 / S8
+
+Main's original registration/questionnaire preparation supplies the exact view and private answer. Carry both references into native Agent. S5 reviews its independent document dimension; S7 answers its assigned Claims/lens; S8 investigates its registered Hypothesis. Read actual frozen subjects, perform the professional work, save the original answer and return its exact reference. For new S7 work, dispatch an independent native context sharing Main's checkout and its actual frozen product. The system supplies one ordinary `.loop-submissions/s7/.../answer.json` questionnaire; fill only its `answer`, without another flat form, copy or submission action. Main never authors the Reviewer conclusion. A separate execution/bootstrap/session is not required. Existing issued templates and registered independent sources retain their original exact paths; a missing or unbound native worktree source never falls back to Main's same-named answer.
+
+No duplicate generic plan is required. Keep ReviewPlan waves/dependencies, actual independence, source facts, Case/Contract judgments and real approval. Main owns further division, Case routing and stage closure. The same role may have several responsibilities; role, start order and actor name do not identify a questionnaire.
+
+For S8, Main freezes the experiment-specific scope, stopping and unresolved
+conditions in the original Hypothesis `discriminator`, with predictions in
+`expected_outcomes`. General product/specification read-only limits accompany
+the issued question. The first native return may hand an incomplete answer and
+its concrete diagnostic to Main; the original consumer still rejects invalid
+answers. Main restores sources or asks the author to continue. Do not force a
+verdict or another Stop merely to end native execution. See the
+[investigation role](../../agents/investigator.md) for the assigned work and
+[stage protocol](../../docs/control/agent-protocol.md#s8) for Case/approval duties.
+
+## Native S9
+
+Main reads its original division/recovery question, approved Contract and RepairPlan,
+then carries the exact prepared brief into Claude Code native Agent with worktree
+isolation. Preparation does not start the Agent. Builder implementation and assigned
+no-change tests use [the S9 authoring method](../bug-resolution/SKILL.md#issued-s9-planreport-adapter):
+private flat PlanReport before work, real implementation/tests and self-checks, then
+private flat Result. Main-root questions are read-only; the exact brief owns output
+paths. Report actual results and unfinished work to Main when finished. PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. Reception does not wait for a final message or returned reference.
+Main integrates accepted Candidates and runs necessary checks before Final/Impact;
+an accepted Worker does not wait for Final or refill its Result.
+
+An explicitly independent Targeted verifier, including test-builder in that role,
+uses only the original Targeted request and answer path. New verifier responsibilities use an independent native context sharing the actual final Main checkout and the system-supplied ordinary `.loop-submissions/s9/.../targeted-....json` original. The original registered TASK fixes its source protocol; existing responsibilities retain their issued paths. Main never fills the independent answer. It performs actual required
+observations without product writes, Builder PlanReport/Result or a new commit, then
+returns the exact answer reference. PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. Preserve actual independence and Contract assertions.
+The original completion outlet hands off to fresh S7; Main saves the original new
+S7 ReviewPlan questionnaire rather than manually registering a second plan.
+
+Returned Git coordinates may be recorded as `native_delivery` for original Result/Main
+integration. They contain no bootstrap or reserved Claude session and do not create
+or resume an Agent. For newly prepared completed no-change S9 work, the system
+preserves exact authored inputs, required local evidence and the original Git source
+at the natural reception boundary before Plan reception. A registered immutable technical source
+allows the original consumers to revalidate after cleanup; it is not acceptance.
+Missing or failed preservation cannot recover lost bytes. S9 ready original answers use PreToolUse reception with successful PostToolUse and Stop/SubagentStop fallback; frozen sources keep their original contract. Platform 2.1.311
+isolated runs verified files surviving through Stop and subsequent cleanup; full
+harness preservation/reception acceptance remains pending.
+
+## Start and Stop
+
+Start supplies bounded context and observes actual facts; it does not guess a task or approve work. S7/S9 PreToolUse listens for ready original answers, with successful PostToolUse and Stop/SubagentStop fallback; S5/S6/S8 retain their original ordinary-tool reception contract. Ordinary tools require no activation. Stop selects the exact engineering reference and invokes the original consumer with actual artifacts. Unknown or multiple references remain Main's handoff; never claim another responsibility by role or queue order.
+
+Return real blockers and unfinished work honestly on the first Stop; rejected or
+missing artifacts remain unaccepted and Main receives the exact diagnostic and
+recovery responsibility. Do not require another Stop or invented fields to exit.
+Ended execution, accepted delivery, Main integration and stage completion are separate. Real human approval stays in its original domain; Start never grants it. To continue an ended native actor, use Claude Code's supported
+`SendMessage(to=<actual original agent ID>, message=<exact original task direction>)`.
+Carry the current exact brief/answer references and preserve its existing worktree.
+Do not use a fresh Agent invocation or rely on an Agent resume parameter to
+continue that actor; report a compatibility gap if the platform cannot continue
+it. No actor alias or replacement work item repairs that gap.
+
+SendMessage success confirms sending, not a Worker return or accepted result.
+The continued actor runs in the background. Wait for its actual completion
+notification and original SubagentStop, then read the original consumer's receipt
+or current delivery. A stopped notification is not a completed professional
+return. There need not be another Agent PostToolUse for this continuation.
+See [platform compatibility](../../docs/claude-platform-compatibility.md) and the
+[official resume contract](https://code.claude.com/docs/en/sub-agents#resume-subagents).
+On clients with incomplete continuation support, preserve original work and
+report the exact platform limitation without silently creating another actor.
+
+After a native return or completion notification, Main checks the original consumer's current receipt or accepted delivery. An explicit asynchronous launch means execution has started; it does not establish reception or a reception failure. A returned actor without a receipt is not proof that professional work is still running. Receiver preparation, source and concurrent-commit failures belong to Main: preserve the exact responsibility, accepted work and concrete diagnostic. For S9 only, when current feedback supplies the exact original native private input, saved typed answer or Targeted answer and a recovery command, Main runs `runtime stage-answer consume --root <Main-root> --path <exact-original-input>`. This reuses the original adapter and consumer; it does not author a Worker answer or require another Worker Start/Stop. Missing exact input or binding remains a named Main/system preparation gap; do not guess a neighboring path. An accepted PlanReport is preserved while its original Result continues; an accepted candidate goes to Main integration/checks. An accepted Targeted answer with unfinished Handoff uses the supplied `runtime repair handoff complete` continuation. Resume the original actor only for concrete unfinished professional work, carrying the actual original references. Changed responsibility or input follows its original revision path. These S9 recovery capabilities do not establish a universal native consume route for S5/S6/S7/S8; follow each original stage's named recovery.
+
+For S6/S9, an accepted delivery or candidate with pending Main integration/checks is already a Worker handoff; Main continues its own original action instead of resuming the Worker to wait for a Final. After checking that current original receipt, tell the user what this owner completed, what the named consumer still owes, the evidence scope and the concrete next action. Reuse work_complete/consumer_pending/waiting_on; do not request another report or call pending Main work a completed stage.
+
+## Frozen compatibility
+
+Only an existing registered legacy execution or frozen teammate responsibility uses [frozen-execution.md](frozen-execution.md). Its workspace launcher, generic readback/activation and save consumers are not prerequisites for new native work. Preserve historical sources/approval and avoid duplicate launch. S10/S11 keep their current Main/professional collaboration and real human-decision contracts; this Skill creates no dispatcher for them.
 
 ## Outputs
-- Agent lifecycle events under CAS (journal-visible).
-- PLAN_REPORT / readback evidence files bound by the activation hash chain.
+
+Original professional artifacts and their original receipts or concrete blockers; actual native execution facts stay with Claude Code.
 
 ## Exit Conditions
-- The Worker reaches `reported` (result submitted) and the controller consumes it; or a BLOCKER path resolves; or shutdown is approved.
+
+The delegated responsibility returned its actual artifacts or honest blocker. Main follows the original receiver/integration facts; execution ending alone does not prove domain acceptance.
 
 ## Stop Conditions
-- Activation hash mismatch (plan file drifted) — recompute and resubmit.
-- Requested scope exceeds the Agent Definition — revise the assignment, never widen silently.
-- `plan_approval_required` work without an approval — do not self-activate.
+
+Report missing actual sources, lost independence, explicit approval still pending, or an ambiguous original reference to Main with the actual unfinished work and exact original reference. A blocked native return may end the platform turn without completing the engineering responsibility. Main resolves the source or assignment and resumes original work as appropriate; do not manufacture a verdict to satisfy an exit check.
 
 ## Non-Goals
-- Do not treat "no reply from Main" as permission for the main session to do the delegated work.
-- Do not add approval rounds to ordinary `plan_checkpoint` work "to be safe" — that is the complexity this mode exists to remove.
-- Do not use `one_shot` for anything with side effects.
 
-## Inlined Methodology
-Loop Engineering dispatches Agents in three modes. The default is continuous execution: one structured PLAN_REPORT is the checkpoint — it makes the plan inspectable and correctable while the work proceeds, without a synchronous approval wait. The two-round readback → approval → activation flow remains for genuinely high-risk or irreversible work, and the activation hash chain (`approved_readback_sha256`) applies in both modes: the envelope proves which plan the Worker actually saw. The first-write barrier (PreToolUse) blocks a dispatched Worker's first product mutation until its PLAN_REPORT is recorded, whenever the hook payload identifies the sender; on platforms whose payloads carry no agent identity the barrier stays dormant (the reviewer product-write freeze and the PLAN_REPORT phase contract in every agent card carry the invariant instead). PostToolUse(SendMessage) observes the report automatically via its three-level identification ladder (payload agent_id → teammate_name → sole agent awaiting its plan checkpoint).
-
-## Recovery without repeated idle loops
-
-Treat a validated plan and its activation chain as the checkpoint; a missing
-legacy observation marker alone is not a reason to resend the plan. A failed
-PostToolUse persistence receipt is not successful registration. Use the stated
-recovery path and retain the current Assignment identity.
-
-TeammateIdle has no documented `stop_hook_active` input. The Harness permits at
-most two identical continuation reminders per session/agent/evidence state,
-then allows idle with `LOOP RECOVERY STALLED`. This does not complete the task,
-release write permissions, revoke the Assignment, or waive a safety denial.
-Main consumes the diagnostic and investigates the existing worker/checkpoint;
-never infer a dead worker from chat silence alone. Cache failure also surfaces
-an explicit diagnostic instead of endlessly demanding the same plan.
-
-## Execution completion and bounded waiting
-
-Use the existing assignment expected_outputs/done_when/checks/stop_conditions to state the deliverable, required checks, failure route and completion condition. Do not create a parallel progress ledger. Short commands should be awaited to completion. For long commands use the platform's completion notification or bounded status retrieval; fixed multi-minute sleep is not a substitute for observing a process. Backoff/rate-limit waits are permitted only when they address a concrete condition.
-
-A repeated check must have a reason: changed code/configuration, interrupted execution, invalid evidence, a new falsifiable hypothesis, or a mandated independent/post-integration verification. Consume current valid evidence rather than re-running for reassurance. Never reuse a candidate-tree pass as a merged-tree pass or an author's result as an independent conclusion. Record each run's actual tree, command, exit status and required case collection using existing evidence receipts.
-
-If the same failure and code fingerprint recur without new information, switch to bounded diagnosis or report the blocker to the Driver; do not repeat identical work indefinitely. Elapsed time alone is not a reason to kill a productive worker. The Driver resolves/reassigns through the supported lifecycle and continues unblocked work; it must not launch a second writer into the same assignment. After the declared checks and deliverables are complete, submit the Result and let the Driver consume it instead of inventing further review rounds.
-
-## Current platform identity
-
-For Claude Code >=2.1.178, do not call TeamCreate/TeamDelete or enforce Agent
-team_name: teams are session-managed. Bind the real platform actor to the
-registered Runtime assignment/owner; missing or ambiguous identity requires
-repairing that mapping, never guessing from the only waiting task. Prefer one
-role-bearing subagent unless peer coordination benefits the assignment. See
-`docs/claude-platform-compatibility.md` for platform acceptance boundaries.
-
-
-### Worktree integration handoff
-
-Keep Main in its original checkout. Pin each Worker to the approved main HEAD
-and explicitly register its target branch; do not assume develop. Resolve
-uncommitted source/document inputs before dispatch without automatic add/stash.
-SubagentStop returns a pending action; Main runs
-`runtime task-integrate --assignment-id <id> --root <main-root>`.
-That command records verification, then completion_ack through the Agent
-lifecycle, then cleanup. Retry cleanup_pending without discarding the verified
-result. `runtime workspace pending` reconstructs outstanding deliveries from
-durable reports/checkpoints after a restart. An owner with multiple worktrees
-is acknowledged only after all of its deliveries are verified.
-
-Read docs/workspace-integration.md before using workspace prepare. It installs
-the native Harness and trusted role/skill assets, freezes dispatch input hashes,
-and publishes a bootstrap receipt before ready. Main stays in its own checkout.
-Use the returned `check_commands` verbatim for declared Linux sandbox checks;
-they run in disposable copies and do not create source commits or replace
-post-merge verification. Worker CLI routing permits its own lifecycle reports,
-not Main approvals or scheduling. Use `workspace launch` from Main to start the installed role in the prepared
-Worker. Main stays in its original checkout. Resume only the recorded session
-with `--resume`. The launch exit is not assignment completion.
-Use returned `begin_command`, `commit_command`, and `report_command` verbatim;
-write plan.json, commit.json, and completion.json under `.claude/submissions`.
-For S9, first register the domain PlanReport and begin repair execution on Main;
-then prepare/launch. After generic completion, submit repair-result.json with
-`s9_delivery_command`. Main integrates that immutable candidate before registering
-the final RepairResult; independent verification and fresh S7 remain required.
-See `docs/workspace-integration.md` for explicit adoption, replacement and relocation.
-
-
-## Temporary worktrees and committed stage delivery
-
-Bind both destinations explicitly with `req bind --dev-branch <branch> --release-upstream <upstream>`; neither defaults to develop or the remote default. The project's authority root and this development branch own retained changes.
-
-Before dispatch, commit the required stage documents, code and tests to that branch. Create/reuse registered temporary worktrees with `runtime worktree-create --root <authority-root> --assignment-id <id>`. Git worktrees share Git objects, but have separate indexes and working files: staged and dirty parent changes are absent. Native Claude Code base-ref defaults must be checked against the binding.
-
-Workers commit scoped results and report. Main reviews them and runs `runtime task-integrate --root <authority-root> --assignment-id <id>`: normal merge commit, verification, acknowledgement, cleanup. This is development integration, not release. Failed integration preserves the checkout; retry the same assignment. Do not discard unreceived work or create replacement worktrees indefinitely.
-
-Stage gates consume each input from the source declared in the upstream file contract. Formal deliverables use one pinned Git tree; only explicitly allowed evidence/runtime inputs use disk. Dirty files cannot satisfy formal stage delivery. Worktree backlog reminders are advisory, delivered to Main through Agent-visible context, and never authorize deleting unknown worktrees.
-
-## Contract reading and shared implementation dependencies
-
-A Builder enters through its TASK: goal, allowed changes, dependencies, closing
-assertions, then ordered links to local responsibility, SYNC operation and shared
-model. Follow [shared-model reading rules in the factory](../../docs/rules/shared-model-contracts.md) (after installation: [project rule](../../docs/rules/shared-model-contracts.md)).
-Do not recursively expand all background links. A shared implementation task
-must be integrated before dependent worktrees start; independent generation from
-the same committed schema can run in parallel. Compare shared design inputs,
-not whole checkout commit equality. Actual consumption needs tests, not just a
-model reference in the completion report.
-
-## Overall dispatch plan (waves-v1)
-
-Follow [factory dispatch rules](../../docs/rules/dispatch-plan.md), or after installation
-[project dispatch rules](../../docs/rules/dispatch-plan.md). S4 delivers the REQ's
-index as an ordered wave checklist; S5 reviews and freezes it with TASKs. S6 reads
-that plan and `s6 status --capacity <actual total slots>` before dispatch, then
-recomputes after integration or capacity release. Start every compatible ready
-TASK within actual capacity; do not wait for unrelated tasks in an earlier wave.
-Only verified integration into the root development branch releases consumers.
-Never write runtime progress back into frozen plans or TASKs.
+No platform scheduler, Team/actor lookup, launcher, session reservation, generic activation or duplicate Result. Do not replace original professional Writers, gates or human decisions.

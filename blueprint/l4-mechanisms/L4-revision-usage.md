@@ -1,159 +1,247 @@
-# L4 — Runtime revision 使用与命令协调
+# L4 修订标识与命令协调
 
-> 层：第四层｜机制域：Runtime revision 的内部序号、单写者协调、命令默认语义、对象版本边界与复杂度准入
->
-> 上游：L1 D1/D3/D4/D7 与五公理；L2 生命周期目标；全部 L3 Stage
->
-> 姊妹篇：[L4 权威状态机与迁移事务核心](L4-state-transition-core.md)负责“事实怎样原子写入与恢复”；[L4 运行时控制面与横切治理](L4-runtime-control-plane.md)负责“内容和证据怎样合规”；本文只负责“revision 到底是什么、谁需要知道、命令怎样不把它变成人工操作税”。
->
-> 权威声明：**revision 是 Runtime 内部的提交序号，不是 Agent 的正常业务输入，不是防篡改机制，也不是人类授权凭证。**各 L3 只声明消费哪一种对象事实；revision 的统一语义、外部可见性和迁移规则以本文为准。
->
-> 状态：v0.1.0（2026-09-01）。Runtime 写入命令已支持省略 `--expected-revision`；参数仅作为显式高级断言保留。本文件记录统一契约，不把内部提交序号重新变成人工操作步骤。
+## 1. 为什么不能让专业作者维护提交序号
 
-## 0. 准入逻辑
+工程中的“版本”可能表示一次控制面提交，也可能表示一份任务分工、一版调查事实或一次验证计划。若不同入口都叫它 revision，又把这些数字当成作者必填参数，Main 和 Worker 就会为普通流转反复查状态、计算下一数字、补登记，并把真正的内容冲突误解成参数过期。
 
-revision 横跨 S1～S11，并同时出现在 Runtime、ReviewPlan、Case、Contract、Assignment 和证据记录中。此前各 L3 把它分别解释成 CAS、证据新鲜度、审批防重放、计划修订号和对象版本，导致 Agent 在正常流转时必须反复读取、计算和传递数字。它满足 L4 的“共享机制域 + 独立失败面 + 多 Stage 消费”准入条件，但准入结果不是把实现细节继续下沉给每个 Stage，而是收敛成一条最小外部契约。
+例如，Worker 正在依据明确任务完成工作，另一个结果被接收使 Runtime 多了一次提交。前者的题目不一定改变；让他因此重新填写数字，既不能证明实现正确，也不能判断任务是否已被替换。反过来，任务对象确实换了版本，即使恰好拿到一个新的 Runtime 数字，也不能继续消费旧答案。
 
-## 1. 运行模型与总原则
+本机制将内部提交协调交给 Writer，将领域事实版本交给原对象与消费者，将实际专业判断留给作者。它不是取消锁、并发检查或真实变化保护，而是让每一项约束承担准确职责。
 
-本项目的正式运行模型是：**一个 REQ 对应一个 active Runtime、一个主会话负责推进，一个 Runtime Writer 负责写控制面**。Worker 负责产出被分配的 artifact；Hook 和 Controller 负责触发、投影和提醒；它们不应让 Agent 自己维护第二套 Runtime 写协议。
+[状态与事务核心](L4-state-transition-core.md)定义权威根、成对存储和恢复协议；本文解释标识的意义、谁生成、正常操作怎样使用，以及冲突后怎样继续。设计依据来自 [L1](../l1-principles/L1-design-principles.md)的统一事实、明确反馈和最小必要操作成本。
 
-因此：
+## 2. 几种关联轴分别回答什么
 
-1. Runtime Writer 在内部使用文件锁、原子写、pending marker 和 journal，保证一次提交不会被半写或互相覆盖；这些是实现细节，不是 Agent 操作步骤。
-2. `revision` 在每次 Runtime 提交时由 Writer 自动递增，用于 journal 的 `before_revision/after_revision`、崩溃恢复、审计排序和诊断定位。
-3. 正常命令不要求 Agent 读取或计算 revision。命令应在 Writer 锁内读取当前 Runtime，校验当前状态，应用动作并提交；省略参数不能退化为“让 Agent 自己查数再重试”。
-4. `--expected-revision` 可以保留为高级调用者的显式断言、外部集成或恢复工具的兼容参数，但不是正常 Stage 路径的必填参数。
-5. 如果两个 CLI 命令必须共同完成一个业务动作，优先提供一个原子复合命令；不要求 Agent 在两个命令之间手工传递 `X`、`X+1`。
+| 标识或版本 | 表达的事实 | 不能替代什么 |
+| --- | --- | --- |
+| Runtime `revision` | 原 Runtime 普通业务提交的内部序号，供写入协调、事件和恢复使用 | 不证明业务授权、来源字节、专业完成或对象版本 |
+| `runtime_id` | 当前活动或历史工程周期身份 | 不因修订数相同就允许跨周期重放 |
+| `baseline.generation` | 锁定需求及下游依据所属代际 | 不表示验证轮次、Case 版本或提交次数 |
+| `review.round` | 当前完整验证的轮次 | 不等于 ReviewPlan 修订数，也不因一次定向验证通过就增加完整验证结论 |
+| 阶段入口关联 | 这次进入某项责任的位置，使用已有 `phase_revision` 等原事实 | 不要求作者计算新的尝试号，也不等于完整 Runtime 版本 |
+| ReviewPlan 指针的 revision | 本轮计划的受控修订身份 | 计划 JSON 不因此多一项作者手填的全局提交序号 |
+| Case `revision` | 原 Case 中假设、观察、因果及路由事实的不可变修订 | 不等于每次 Runtime 登记都需要改 Case |
+| RepairContract `revision` | 当前合同与其所依据 Case 修订的绑定 | 当前批准要求匹配原 Case，不能用 Runtime 数字代替 |
+| Assignment Record 的 `assignment_revision` | 同一工程分工的原责任版本及前后继关系 | 不证明 TASK 正式来源已重新冻结，也不代表平台执行恢复次数 |
+| SHA-256、对象路径和来源引用 | 实际固定内容及其来源关联 | 本地摘要不认证外部身份，也不自动证明内容语义充分 |
+| 决定、提交及修订意图标识 | 某项业务动作与原接收／消费的对应关系 | 不是可以用给任意下一动作的通用许可 |
 
-### 1.1 单写者不等于取消所有物理安全
+Runtime 内部序号在普通业务提交中递增；指纹等明确状态维护和周期身份重置有各自协议，不都表现为“同一个数字加一”。序号如何配对 journal 以事务核心为准。
 
-“不考虑并发”在这里的含义是：不为假设存在的多个业务 Agent 增加操作门槛。它不意味着删除文件锁、原子 rename、journal 或崩溃恢复，因为 Hook 进程、命令进程、重试和进程崩溃仍然是文件系统层面的事实。物理写入必须串行化；Agent 不必感知串行化过程。
+### 2.1 用一个例子区分全局提交与对象修订
 
-## 2. revision 的用途边界
+假设 Runtime 当前提交序号为 42，活动 Case 是第 6 版，相应合同草稿依据的也是 Case 第 6 版。登记另一项合法材料后，Runtime 可以来到 43，Case 和合同仍依据原事实，不需要一起改为 7 或 43。
 
-| 问题 | revision 是否负责 | 正确机制 |
-|:--|:--|:--|
-| 记录 Runtime 提交顺序 | 是 | Writer 自动生成 `before/after_revision` 和 journal sequence |
-| 崩溃恢复时判断 state/journal 是否成对 | 是，作为内部一致性字段 | pending marker、state/journal 对账和原子写序 |
-| 防止两个底层进程同时写文件 | 不是单独负责 | 文件锁；revision 只是锁内的一致性字段 |
-| 检测 artifact 被修改 | 否 | artifact SHA-256、登记指纹和 baseline digest |
-| 认证 `actor` 是不是真人 | 否 | 当前系统不提供身份认证；actor 只是审计记名 |
-| 判断 REQ/代码/CASE 是否属于同一代 | 否 | `generation`、`review_round`、对象 hash 和 source refs |
-| 防止 S11 decision 重复执行 | 不应单独负责 | 固定 disposition→transition、当前 cursor、幂等键和一次性 evidence ID |
-| 让 Agent 知道下一步是什么 | 否 | Hook/status 的 `next` 投影和命令回执 |
+若调查随后形成新的 Case 事实，原消费者生成 Case 第 7 版。此前依据第 6 版的合同是否仍完整，应重新判断；不能仅把合同里的数字改成当前 Runtime 序号来通过批准。当前合同批准会核对合同 revision 与实际 Case revision，系统生成和维护关联，Main 负责确认修复意图是否适用。
 
-revision 不是密码学防篡改边界。手工修改 state 中的数字不能被 revision 本身阻止；真正的文件身份来自 SHA，真正的提交完整性来自 state/journal/pending 的一致性检查。把 revision 写入 decision scope 也不能替代 artifact hash、生命周期状态或一次性消费语义。
+### 2.2 标识有相同后缀，不代表相同语义
 
-## 3. Agent-facing 命令契约
+以下是系统生成的 Assignment Record 引用形状，仅用于解释对象身份，不是专业作者要另填的表单：
 
-### 3.1 正常路径
-
-正常路径的最小交互是：Agent 读取 Hook/status 给出的当前对象和唯一 `next`，提供业务输入，调用对应命令，消费回执。回执可以展示 committed revision，但不得要求 Agent 把它复制到下一条命令。
-
-目标调用形态：
-
-```text
-runtime <verb> <business-input>
-  → Writer lock
-  → read current Runtime/object pointer
-  → validate current cursor, identity, hashes and semantic guards
-  → apply one action
-  → assign revision and append journal
-  → return next/status projection
+```json
+{
+  "runtime_id": "loop-example",
+  "baseline_generation": 2,
+  "assignment_id": "assignment-example",
+  "assignment_revision": 3
+}
 ```
 
-如果命令发现当前状态不再允许该业务动作，应按状态机语义返回一个明确的下一动作；不能把所有状态变化都包装成“请重新计算 revision”。
+这里的 3 是 Assignment 对象版本，不是 Runtime 的第 3 次提交。`registration_revision` 等字段可以另记对象在哪次 Runtime 提交登记；它与对象自己的 revision 也不应混用。文件名中的 `rN`、内部事件名中的数字或摘要后缀，同样要按原生成规则解释，不能凭外观推断授权或当前效力。
 
-### 3.2 高级 CAS
+## 3. 正常作者怎样工作，系统怎样提交
 
-外部集成、恢复工具或明确需要“只有当我看到的快照仍然未变才提交”的调用者可以传 `--expected-revision`。此时它是调用者主动选择的更强前置条件，失败后由工具按 current/expected/next-action 三字段解释。该参数不能成为 Stage 说明、Skill、Agent prompt 或人类操作手册的必读项。
+### 3.1 作者消费责任和反馈
 
-### 3.3 多步业务动作
+Main 和 Worker 使用系统提供的当前题目、真实对象、专业输入和准确路径，完成本人工作并正常交付。系统负责机器关联、版本选择和原事务接收，回执说明已记录什么、实际缺什么以及下一责任。
 
-证据登记随后立即触发 transition 时，应由一个领域命令在同一个 Writer 事务内完成，或由 Runtime 内部生成并消费中间 evidence。不得让 Agent：
+正常流程不要求作者先读 X、算 X+1、把数字复制进下一命令，也不要求为一次保存重复登记中间证据。显示 committed revision 可以帮助维护者诊断，不构成下一步的手抄输入。
 
-- 先读 `X`，再手工计算 `X+1`；
-- 把 Runtime revision 写入 decision artifact；
-- 用 revision 代替 artifact SHA 或对象 identity；
-- 为了重试普通动作而阅读完整 `loop-state.json`。
+```mermaid
+flowchart LR
+    TASK["当前责任与实际材料"] --> WORK["作者完成专业工作"]
+    WORK --> SAVE["保存或原生交付准确产物"]
+    SAVE --> DOMAIN["原消费者解析责任及必要对象绑定"]
+    DOMAIN --> WRITER["Writer 锁内核对并提交"]
+    WRITER --> RECEIPT["原事实、未完成项与下一责任"]
+```
 
-S11 的 decision scope 应绑定 disposition、Runtime identity、当前可接受的 release package/context 和一次性 decision ID；不再把每次 evidence registration 产生的 Runtime revision 暴露为人工交接协议。
+### 3.2 正常当前值路径
 
-## 4. 对象版本的分层
+Store 的 `UpdateCurrent` 在锁内读取当前 Runtime，校验本次业务 mutation，分配内部提交序号并记录事件。支持省略修订断言的入口使用这个语义；底层 `Update` 的负值请求也进入当前值路径。
 
-不同对象仍然可以有自己的版本字段，但它们不是同一个 Runtime revision，也不要求 Agent 手工推进：
+在服务内部，为确定事件或兼容幂等标识而读取一次快照，不等于要求作者提供该数字；也不意味着锁内可以略过当前对象、游标、代际与必要来源检查。省略全局断言后，业务安全依赖原消费者重新核对真正相关的事实，不能只靠一个较宽松的 Update 接受过期内容。
 
-| 对象 | 版本的真实意义 | Agent 的正常消费方式 |
-|:--|:--|:--|
-| Runtime `revision` | Runtime 提交序号、审计/恢复游标 | 读取 status/next；不计算、不复制 |
-| ReviewPlan `revision` | 同一 review round 的计划修订代号 | 调用 register/revise；使用命令生成的 ID、hash 和缺口 |
-| InvestigationCase `revision` | Case 的不可变事实/假设/路由历史 | 使用 `case_id`、当前 hash 和 status 给出的下一动作 |
-| RepairContract `revision` | Contract 与批准时 Case 事实的绑定版本 | 使用 approved Contract ref/hash；不在 S9 就地改版本 |
-| Assignment revision | Assignment/结果交接的对象版本 | 使用 Assignment ID 和生成的 checkpoint；不手工编号 |
-| `generation` / `review_round` | 需求基线代际/验证轮次 | 由当前 status 和 evidence context 给出；不能用 Runtime revision 替代 |
+例如原转换 Apply、证据登记、Assignment 和 Case 的部分入口已经有当前值分支。真实的领域条件不满足时，仍按原规则拒绝；作者不需要通过修改 Runtime 数字绕过它。
 
-对象版本需要防止的是对象事实被静默替换；这个目的由不可变 artifact、SHA、source refs 和对象级消费规则完成。Runtime revision 只负责 Runtime 提交序列，不应跨对象复制语义。
+### 3.3 参数默认值属于适配器责任
 
-## 5. 各 Stage 的消费规则
+高级命令可以保留 `--expected-revision`，正常入口应把它作为可选断言。Go 请求中的整型零值不自动表示“省略”：现有接口通常以负值代表当前值路径，非负值则是具体断言。调用适配器需要准确选择原 API，不能因忘填字段把 0 变成普通作者的新前置。
 
-| Stage | 只需要关心的事实 | 不应要求 Agent 做的事 |
-|:--|:--|:--|
-| S1 | 候选 REQ、`--approved-by`、绑定回执 | 手算 bootstrap revision；把 CAS 当成绑定授权本身 |
-| S6 | 当前 Assignment、Owner、scope、checks 和真实 diff | 手工维护 Assignment revision；为普通 Builder Result 复制 Runtime revision |
-| S7 | ReviewPlan/Claim/Assignment/Result 的 ID、SHA、round 和 `next` | 把 Runtime revision 当 ReviewPlan revision；为普通 result submit 先查数再传 CAS |
-| S8 | Case ID/hash、Finding exact set、Hypothesis/Result、Contract readiness | 手工推进 Case revision；把 Runtime revision 写入因果 artifact |
-| S9 | approved Contract ref/hash、Assignment、实际 diff、targeted assertion | 手工计算 Contract/Runtime revision；为每个 repair unit 维护第二套版本号 |
-| S10 | coverage inventory、evidence SHA、baseline/generation、release package | 用 Runtime revision 代替审计分母或 package currentness |
-| S11 | 当前 release package、六枚举 disposition、一次性 decision ID | 不手工维护 Runtime revision；不把 `scope@revision` 作为人类操作前提 |
+作者也不应被要求向问卷加一个 `-1` 来选择内部模式。问卷只表达原专业字段，系统在入口承担默认值与提交协调。
 
-各 L3 只保留对本阶段有业务意义的 generation、round、object ID/hash 和 fixed transition；涉及 Runtime revision 的地方只引用本文，不再复制 CAS 解释和手工注册步骤。
+## 4. 显式 CAS 解决什么，什么时候使用
 
-## 6. 替代性防护组合
+CAS 是比较并交换：调用者明确要求“只有观察时的 Runtime 提交仍然是当前值，才接受本次动作”。它适合有意关联旧快照的外部集成、恢复或必要的内部边界，不是业务完成本身。
 
-在单主会话模型下，最小且足够的防护组合是：
+| 情况 | 应如何处理 |
+| --- | --- |
+| 普通专业保存，没有要求整个 Runtime 保持原提交 | 用支持该语义的当前值入口，检查原业务对象与责任 |
+| 外部集成有意要求整份观察快照未变 | 显式传 expected revision，冲突后由集成决定是否重新求值 |
+| 已冻结对象的版本或来源发生变化 | 处理真实对象冲突，不因省略 Runtime 断言而放行 |
+| Runtime 换了身份但数字重新出现 | 按新身份重新定位，不能只调整 expected revision |
+| 原业务已经接受，但返回响应丢失 | 先读取原接收／消费事实，不直接用新数字重复业务 |
 
-1. **单写者 + 文件锁**：控制物理写入顺序，Agent 不感知。
-2. **状态机 cursor + fixed transition**：保证当前业务状态只接受合法动作。
-3. **幂等键 + evidence/record ID**：重复提交同一业务动作时返回已有结果或明确拒绝。
-4. **artifact SHA + baseline/generation/round**：判断输入事实是否发生业务意义上的变化。
-5. **journal + revision**：记录已经发生的提交并支持恢复、审计和诊断。
+显式 CAS 冲突不会自动说明业务做错，也不必然说明 journal 损坏。反馈应区分预期与当前事实、哪个业务判断需要重作、哪项原动作可以继续。`reconcile` 只修复它能够核对的持久化缺尾，不治疗正常的两次提交竞争。
 
-只有当实证表明存在第二写者、外部集成或同一动作的不可接受重复风险时，才增加显式 CAS 或 revision scope。新增门禁必须同时给出威胁、消费者、失败恢复动作和操作成本；没有这四项，不得通过复杂度评审。
+当前若机器适配器内部使用了快照 CAS，作者仍不应承担查数字的职责。应由系统读取当前责任，确认是同一工作可接续、真实变化需重作，还是原提交已完成。不能无条件循环重试，也不能把所有 stale 都解释成“请加一重试”。
 
-## 7. 当前实现迁移要求
+S7 原生收卷仍保留内部快照 CAS：原消费者在提交前根据本轮已有结果准备不可变的 CleanRound 或 ObservationBatch，再由 Writer 同时登记本人结果与轮次收口。并发期间已有结果集合改变时，直接改成当前值提交不能保证这些预备产物仍与本轮一致。冲突不表示专业答案错误；Main 应先查原回执及当前责任，已接收则结束该交付，仍有效但未接收则通过 Claude Code 原生恢复同一子代理，让原 Stop 接续已有答卷。责任真正改变时走原修订，不能循环换数字、重复审查或轮询阶段完成来代替接收恢复。
 
-当前 `internal/runtime.Store.Update` 在内部使用文件锁和 `expectedRevision`，但普通入口已经把“当前值读取、提交序号分配和写入”收回 Writer；CLI 不再先读 Runtime 再回填 revision。仍需保持以下边界：
+## 5. 对象修订怎样保留专业连续性
 
-1. 普通 Runtime 命令将 `--expected-revision` 作为可选显式断言；省略时由 Writer 在锁内读取当前值并执行，不能退化为 CLI 先读后把数字回填。
-2. `runtime evidence add`、`runtime human-decision` 等紧邻的业务动作提供原子复合入口，或由 Runtime 负责生成 evidence scope。
-3. S11 human decision scope 移除 Runtime revision 后缀，改由当前 cursor、decision ID、package/context identity 和 fixed transition 防止错用。
-4. Case/Contract/Assignment 的对象版本继续由 Runtime/对象 API 生成；CLI 仍可为外部恢复保留显式 revision/hash 断言，但普通 Agent 路径只消费 status/next。
-5. 删除 L3、Agent Protocol、Manual 中要求 Agent 复制 `X`、`X+1` 或“先查 revision 再注册”的操作说明；保留内部迁移和审计说明。
+### 5.1 S5：具名审查修订
 
-任何未来重新强制要求 `--expected-revision` 的命令都必须被标为实现回归，不能被描述成 Agent 正常流转的理论必要条件。
+已经接收的审查需要重新判断时，Main 用原接收标识与具体理由请求具名修订。原机制生成后继题目及尝试关联，同一理由的恢复复用原发行；不同意图不能无声覆盖同一后继。
 
-## 8. 复杂度评审规则
+旧接受记录保留为历史，新责任尚未回答时，旧 PASS 和同事的 PASS 不能替它完成阶段出口。题目或答案派生文件丢失时，可按原支持范围重建投影，不再次发行一个新尝试。具体审查方法与出口见 [S5](../l3-stages/L3-S5-document-verification.md)。
 
-revision 相关设计进入复杂度评审时，必须回答：
+### 5.2 S6：Assignment 修订
 
-- 本项目声明的运行模型是否真的允许多个业务写者？
-- 该门禁防的是覆盖、篡改、重放、错误路由还是崩溃恢复中的哪一个？
-- 是否已有更直接的机制承担该职责？
-- 正常路径是否增加读取、计算、复制、重试或人工决策步骤？
-- 门禁失败后，系统能否自动恢复，还是把内部实现细节转嫁给 Agent？
+Assignment 修订绑定原 Record、来源与修订意图，系统选择下一对象版本并登记后继。原接口可以携带成对的前驱 Record 引用与摘要，避免“看的是前驱 A，却覆盖了前驱 B”；这些关联由准备入口带出，不要求 Worker 手动编号。
 
-“理论上更安全”不是通过理由。若收益只出现在未声明的多写者模型，而成本每次正常流转都会发生，则应删除外部门禁或将其降为内部实现/高级可选断言。
+同一意图对应不同输入字节、不同前驱或不同责任时应拒绝。同一前驱的竞争修改不能产生两个同时有效后继；旧贡献和接收仍保留历史，新责任只消费准确当前版本。原生迟到的旧答案不能因为 Runtime 数字更大就升级为当前交付。
 
-## 9. 与其他 L4 的关系
+当前 S6 准备入口使用稳定的修订意图键区分一次真实修订，Main 按实际工作提供该意图；原准备负责解析前驱与生成版本。这个业务关联不是 Runtime 数字，也不是 Worker 的新启动手续。同一意图重试保持原关联，不能每次随机换键来绕过冲突。
 
-- [状态机与迁移事务核心](L4-state-transition-core.md)：实现单写者、锁、原子写、journal 和恢复；不得把内部 `Update(expectedRevision, ...)` 形状直接当作 Agent 协议。
-- [运行时控制面与横切治理](L4-runtime-control-plane.md)：引用本文的 revision 语义；证据新鲜度、artifact SHA、generation 和 round 不再借 revision 代言。
-- [Agent 调度与治理](L4-agent-dispatch-governance.md)：Assignment revision 只属于调度对象；普通 Worker 不手工推进它。
-- 各 L3：只声明业务事实和本阶段消费点；正常路径按 `next` 执行，不复制本文件的机制细节。
+分工修订不自动证明正式 TASK 来源已重新审查或锁定，也不替代 Main 对实际旧贡献的集成、替换和影响判断。S6 的正式源边界见 [实现阶段](../l3-stages/L3-S6-build.md)，实际原生派发仍由 Claude Code 承载。
 
-## 变更记录
+### 5.3 S7：计划修订与验证换轮
 
-| 日期 | 版本 | 变更 |
-|:--|:--|:--|
-| 2026-09-01 | v0.1.0 | 明确单 REQ/单主会话/单 Runtime Writer 的运行模型；将 revision 降为内部提交序号；拆分 CAS、指纹、身份、代际、重放和崩溃恢复职责；规定 Agent-facing 命令默认不要求手工 revision，并登记 CLI/文档迁移要求 |
+本轮计划指针的 revision 用于识别受控规划修订；它不等于 `review.round`，也不要求 Planner 在专业 Plan JSON 里手填 Runtime revision。新完整轮、同轮受控发现修订和纯恢复具有不同条件，不能靠改数字互换。
+
+受控修订在原 Writer 事务内清除受影响 Claim／Assignment 的旧结果引用，并将相应历史 Result 标为因计划修订失效。来源记录使用实际接受的计划修订号，恢复到后续修订时也不能继续写死为 r2。旧文件和失效记录保留，不通过改成 valid 或删除来收口。
+
+干净轮读取这份既有投影：同计划、同代同轮、准确已接受修订且当前责任不再引用的历史 Result，不再作为当前失效义务；其他 invalid、当前仍用的旧结果和 Finding 继续阻断。当前责任仍需实际新结果，单有较新的 PASS 不构成替代关系。该纯判定不另建效力账本，也不重新认证任意手改状态；原 Writer 一致性、接收来源及正式退出门的产品和资产检查各自保留。
+
+S9 返回准备的下一轮种子，首次专业登记使用原种子入口；不能把它误计为随意重写旧计划，也不能把新种子当成干净轮。具体条件、次数和失效影响见 [S7](../l3-stages/L3-S7-verification-round.md)。
+
+### 5.4 S8／S9：Case、合同和获批意图
+
+Case 修订生成新的不可变文件并更新原指针。消费者核对 Case 身份、对象 revision 与摘要；必要时锁内重读原文和调查派发关联。另一项不相关的 Runtime 事件与 Case 本身已变化，是两种不同冲突。
+
+合同批准依据准确 Case 与最终稿内容；修复责任消费获批合同，不在 S9 就地改合同版本。版本绑定保持“调查事实 → 批准意图 → 实际修复”的连续性，不能以修改版本号代替新的调查或批准。专业边界见 [S8](../l3-stages/L3-S8-finding-investigation.md)和 [S9](../l3-stages/L3-S9-repair.md)。
+
+## 6. 旧事实、重复保存和新内容怎样区分
+
+### 6.1 重放先识别原接收
+
+原答案已经接受而响应丢失时，应从原接收记录判断是否发生过同一动作，而不是重做全套工作或新增一个近似答案。正常幂等关联需要准确责任、对象、答案和来源；Runtime revision 只是审计坐标，不独自证明这些条件。
+
+回执还要表达“曾接受”和“当前仍有效”的区别。已经被替换的旧提交可以准确返回历史事实，却不能据此重新完成当前责任；无法找到原接受则不能借一份同名文件补造历史。
+
+### 6.2 保存与回执读取不必具有相同前提
+
+不同原消费者有不同恢复入口，不能将一处行为推广为全系统通用保证。例如 S8 独立 HypothesisResultReceipt 查询可从原 Case／事件读取已接受事实，不读作者文件；当前 Save 路径即使先发现旧回执，仍会读取私人答案并核对内容后才确认同答。
+
+因此，响应丢失后“读原回执”与“再保存一遍原答案”不是同一个接口承诺。私人文件或工作区缺失时，应使用已支持的原回执／恢复入口，报告当前接线范围；不能宣称每个普通 Save 都能在源文件删除后成功，也不能据此要求重做已记录的专业工作。
+
+### 6.3 新专业内容走原领域规则
+
+未接受草稿可在当前题目中继续完善。已经接受的不可变答案需要修订时，用原具名修订或替换路径；S10 当前专业报告允许实际补充经原保存形成新内容登记，以当前匹配记录表达新结论。两种产物契约不能互相覆盖。
+
+内容摘要、机器内容标识和原接收关联负责区分这些情况；相同 ID 加不同内容不应被当成正常幂等。当前读取是否复核全部旧哈希，以该消费者实际职责为准，不能以摘要字段存在就宣称已经全面认证来源。
+
+## 7. 多步交接怎样避免让作者串联数字
+
+### 7.1 领域接收与阶段接续各用原事实
+
+专业结果被接收、阶段转换完成、下一责任材料准备好，是不同事实。有的消费者将相关变化放进同一领域事务，有的使用原接收关联继续出口；不要求作者为各步计算前后 Runtime 数字。
+
+S2～S4 的 submission followup 关联原 packet、Runtime、代际及阶段入口，表达这次接收还有哪项控制工作可继续。原出口没有完成时，当前责任可以沿该关联重新求值；生命周期已经改变或原提交已替换后，旧接受只是历史，不得借一个更大的 revision 重新取得作用。
+
+控制评估过不等于阶段转换已完成。否则，第一次遇到 NotReady 就会让“已评估”永久吞掉后续接续；反过来，已完成出口的重放也不能再创建一次转换。状态判断应消费原接收和阶段事实，而不是简单比较提交序号。
+
+#### S3→S4：先选原接续责任，再验证当前来源
+
+S4 的契约来源由本 Runtime、同代、同一锁定 REQ 的原 S3 接收及 PTR-PLAN-02 接续确定。系统先在原 packet/submission 索引上核对 owner、阶段、`origin_entry`、`advanced` 与准确转换关联；同一规划链多次返工时，取进入本次 S4 之前最近一次真实完成该接续的 S3 阶段入口。这里比较的是原单调阶段入口及已成立的接续关系，不是 packet ID、文件时间、全局 Runtime revision，或“哪份证据碰巧还 valid”。仅在 S4 内重做 TASK 不产生新的 S3 来源。
+
+选定后，才读取该责任的原 packet、接收证据和准确契约集合，验证身份、当前效力、字节与设计/契约闭包。原索引或转换关联缺失、同入口责任重复、所选证据失效/损坏、与当前正式来源不一致，都应具体拒绝；不能退回较早的有效 S3 来掩盖当前损坏。明确由正式返工失效的旧证据仍是历史，它的 `invalid` 不构成当前 S4 缺项，也无需为选择当前来源读取旧证据正文。历史结构完整性由原 Store/checkpoint 保证，不通过这次选择器重新认证全部历史。
+
+S4 已签发后沿该责任冻结的原输入核验，不在重放或普通观察时换绑另一份 S3。来源选择只返回原对象及闭包，不新增 current-source 账本或作者字段；若接续索引无法证明选择，应报告缺失关系，沿原接收/接续恢复，不能通过目录重扫补造。具体作用于 [S3 的登记交接](../l3-stages/L3-S3-contracts.md#113-登记与-s4-的接续)和 [S4 的原输入](../l3-stages/L3-S4-task-split.md)。本规则明确原来源选择；历史证据的失效不得在选择当前责任前阻断当前 S4。
+
+### 7.2 接收后的真实未完成仍要可见
+
+S10 正常保存可以先记录一个仍含 unknown 的明确报告；专业条件不齐时，停在当前责任。真正补齐后经原保存继续本步 TR-015／TR-017，不因上次已有登记就直接返回“处理过了”。新一份登记改变 Runtime 数字，不代表 unknown 自动变 pass。
+
+S11 的正常申请将明确决定、登记、一次消费及固定去向沿原 Writer 提交。申请元数据和当前候选关联由系统提供；人只作实际选择。defer 恢复或 S10 返工后再进 S11，系统使用原阶段入口定位新申请，即使审计报告未变也不能重用旧选择。详见 [S10](../l3-stages/L3-S10-acceptance-audit.md)与 [S11](../l3-stages/L3-S11-release-gate.md)。
+
+### 7.3 产物准备失败不改变既成提交
+
+Writer 已提交而派生题目、可读报告或下一份材料未生成时，应准确反馈哪项事实已经成立、哪份输出缺失。原恢复按支持范围补齐，不通过重算 revision 来重复专业接收或人类批准。
+
+不可变修订产物可以先暂存，再由原事务引用；写入失败后的清理也必须核对是否已引用或 pending 仍可能引用。不能把“本次调用返回错误”当作可以无条件删除候选的依据。存储与恢复顺序见事务核心。
+
+## 8. 冲突应该按实际影响分流
+
+| 现场 | 需要判断什么 | 正确接续 |
+| --- | --- | --- |
+| 只有无关 Runtime 提交增加 | 当前对象、题目、来源和责任是否仍相同 | 支持当前值的原入口继续；内部快照断言冲突由系统明确处理，不让作者猜数字 |
+| 原对象新增真实修订 | 原专业答案是否仍适用当前事实 | 沿原版本／修订路径重新交付或重判，不能只替换全局序号 |
+| 轮次或代际改变 | 旧结果是否属于新的完整验证或需求 | 使用当前责任和必要新工作，保留历史，不借旧 PASS 填新分母 |
+| 同一意图指向不同字节或前驱 | 是否把不同业务当成同一次重试 | 明确拒绝并保留原记录，处理实际冲突 |
+| 已有原接受，响应丢失 | 是否已完成本人工作，出口是否仍未完成 | 读取原回执；本人交付和阶段接续分别恢复 |
+| Worker 迟到或恢复带有旧题目 | 原生返回到底对应哪项当前或历史责任 | 按准确引用与原版本消费，不按角色或最近一次全局数字猜测 |
+| 换了 Runtime 身份但修订数重现 | 是否跨了绑定／归档边界 | 回当前周期定位，不重放旧请求 |
+| 状态与事件不成对、有 pending 或未知摘要 | 是否为明确可恢复的持久化窗口 | 沿原 Writer／恢复流程处理，不把它当普通 CAS 冲突 |
+
+原生恢复尤其需要保留“平台继续运行”和“工程题目换版”的区别。恢复同一子代理不授权沿用任何旧题目，也不必然要求创建新工程责任。Main 应真实交付当前准确题目；原生结束接收按原引用和消费者判定当前或历史作用，不再叠加平台身份映射、启动许可或第二份版本登记。
+
+## 9. 对外反馈与复杂度约束
+
+### 9.1 反馈先讲工作，再按需讲内部数字
+
+正常反馈应让作者知道当前责任、具体缺口、准确材料位置和下一 owner。高级诊断可展示期望／当前修订、Runtime 身份、原对象引用、事件与消费记录，以便定位冲突。
+
+不能把所有错误统一变成“先读 loop-state.json 再重试”。`formatFailure` 保留原错误，将原回执与当前责任的核对交给 Main；只有原请求确实未提交、原范围仍成立时，才继续原动作。通用出口无法判断修订号来自主动选择 CAS 的集成，还是内部捕获的快照，不据此归因作者传错数字。主动使用 CAS 的集成负责重新理解它所断言的业务快照，也不能盲目给数字加一。普通并发不证明持久化损坏，不能据此要求 `reconcile`。
+
+冲突后读取原事实，并不等于重新执行全部来源证明。每项核对由原对象和消费者定义；不允许通过增加一个通用版本资格层，重新引入已经移除的读回、激活或逐工具许可。
+
+### 9.2 新的修订约束应说明具体收益
+
+引入或保留一项外部修订断言，应说明它防止的是覆盖、错对象、重放、错误路由还是中断恢复，实际由哪个消费者使用，失败后怎样恢复，以及给正常工作增加什么成本。
+
+首先检查是否已有更直接的对象引用、内容身份、阶段位置、原接收或一次消费规则承担它。若约束只是在内部记录提交顺序，应留在 Writer 和诊断中；若确有必要保持某份已观察快照，则让适配器或明确选择该语义的集成承担，不推广为所有专业作者的操作协议。
+
+复杂度判断也不能取消必要的物理安全。正常作者不填 CAS，不意味着删除进程锁、候选验证、成对事件和 pending 恢复。它们在不同层解决不同失败面，不因界面简化而消失。
+
+## 10. 实现对应与仍需准确区分的边界
+
+### 10.1 从作者入口到原 Writer
+
+| 设计责任 | 当前落点 |
+| --- | --- |
+| 当前值提交、显式 CAS、Runtime 身份与恢复 | [runtime/store.go](../../internal/runtime/store.go)、[状态与事务核心](L4-state-transition-core.md) |
+| 转换当前值分支与原锁内业务校验 | [transition/engine.go](../../internal/transition/engine.go) |
+| 证据登记、接收重放与内部关联 | [runtime/evidence.go](../../internal/runtime/evidence.go)、[submission_control.go](../../internal/runtime/submission_control.go) |
+| Assignment 对象引用与修订接收 | [assignmentrecord/record.go](../../internal/assignmentrecord/record.go)、[assignment/record_revision.go](../../internal/assignment/record_revision.go) |
+| 原生 S6 修订准备 | [s6_prepare_revision.go](../../internal/cli/s6_prepare_revision.go)、[native_s6.go](../../internal/cli/native_s6.go) |
+| S5 具名修订与原后继关系 | [document_review_revision.go](../../internal/runtime/document_review_revision.go) |
+| S7 Plan 与指针修订的区别 | [review/types.go](../../internal/review/types.go)、[reviewmeta/pointer.go](../../internal/reviewmeta/pointer.go) |
+| Case 版本和合同绑定 | [case_workflow.go](../../internal/investigation/case_workflow.go)、[contract.go](../../internal/investigation/contract.go) |
+| S8 原结果保存与独立回执读取 | [hypothesis_result_receipt.go](../../internal/investigation/hypothesis_result_receipt.go)、[提交适配](../../internal/submission/hypothesis_result.go) |
+| 原生返回的准确题目选择 | [native_review_hooks.go](../../internal/cli/native_review_hooks.go) |
+| 人类申请与固定决定消费 | [human_release_questionnaire.go](../../internal/cli/human_release_questionnaire.go)、[原转换接收](../../internal/transition/human_release.go) |
+| 作者命令默认和 stale 提示 | [CLI 入口](../../internal/cli/run.go)、[主会话指引](../../docs/control/agent-protocol.md) |
+
+### 10.2 不能把目标契约写成全入口已无差异
+
+原生 S6 修订准备使用当前值提交。原 Writer 仍在锁内核对准确前任 Record、摘要、锁定 TASK、来源与修订意图；事件和幂等身份由原 Record 与意图确定。无关 Runtime 提交不改变这份工作，但同一 Assignment 已换版、权威来源不可核对或生命周期不允许修订时，原消费者仍拒绝。显式调用者主动要求的全局 CAS 保持原语义。
+
+S8 和 S11 保留内部快照 CAS，原因各自明确：S8 在提交不可变下一版 Case 前，已经形成绑定准确提交事件、Runtime 修订与 journal 序号的回执；S11 保存时观察的申请属于准确 Runtime、基线、轮次、阶段入口和发布审计，保存读取到原转换接收之间仍需保护这份观察。直接改为当前值写入会使回执或人类选择错绑，不能为减少一次冲突删掉真实承诺，也不为它们另建通用提交协议。
+
+这些保护可能因无关提交而更保守地拒绝。S8 的原始谱系和 journal 核对也可能先发现读到的快照与实际持久记录不同；不能自动将该诊断降格为无害并发。由 Main 检查原回执、当前 Case／派发或 S11 申请及原人类决定，确认真实范围后沿原消费者恢复。专业作者保留原答案，无需重填、重存、查数字或等待另一次 Hook。发布范围真实改变须重新取得相应人类判断；技术重试不能代替它。
+
+当前幂等和回执也有领域差别：旧接受、新答案、后继责任及阶段接续不能用一个“版本相同”布尔统一代替。私人答案缺失、来源已变或阶段已离开时，实际可恢复范围以原消费者及回执入口为准，不承诺任意重放都成功。
+
+本机制不认证人的身份、不凭 Runtime 数字保证产品语义，也不因存在对象摘要就声称全部读取都重证来源。统一修订职责的目标，是让真实工程变化被准确处理，让无关的内部提交保持为系统工作，而不是构造另一层控制抽象。

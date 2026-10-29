@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "S9",
+  "adapter": "repair_plan_report",
+  "title": "S09 修复计划 · PlanReport",
+  "instruction": "新 native Builder 只在准确 brief 指定的实际 worktree 私人输出中填写顶层 plan、red_checks 和 proposed_paths，然后保存 brief 给出的私人 PlanReport 路径。依据本卷的批准 Contract、计划和本人责任，说明实施前计划与真实前检结果或阻塞；不另交 generic PLAN 或激活报告，不手动 issue/consume。证据引用形式不证明命令已执行；示例仅说明 JSON 形状，须换成本人实际计划、命令、路径和证据。不要抄身份、hash、revision、审批、状态或时间；缺卷/来源缺失归 Main/系统准备，不退 legacy 猜命令。 原 Main 题面是只读问题与来源，不是 native 私人输出位置；不要添加 answer 包装。本人正常保存原稿；系统在后续自然 PreToolUse 观察就绪原稿，成功的保存 PostToolUse 与 Stop／SubagentStop 在准确来源成立时兜底调用同一原消费者。正常汇报可引用原材料，返回路径不是额外接收前提；Main 不代写。已登记冻结旧执行仍按其原题面、包装和来源恢复，不重写旧绑定。",
+  "questions": {
+    "plan": {
+      "question": "说明本 Assignment 开始写入前的具体实施计划、依赖顺序和关键边界。计划不可代替后续实际实施与复验。",
+      "example": {
+        "path": "plan",
+        "expected": "\"先复核本卷 root 断言，按依赖修复所属 unit，补检测缺口测试并运行原必要检查；发现 scope 不足返回原恢复流程。\"",
+        "observed": "只写‘修复问题’"
+      }
+    },
+    "red_checks": {
+      "question": "填写对象数组，每项包含 name、command、result、evidence_refs（字符串数组）。command 记录本人实际做过的前检或尝试；result 按真实结果填写 pass、fail 或 blocked，不强制造 red。前检命令记录过去的工作，不冻结为 Main 后续检查命令；Main 按修复目标与实际改动选择并执行必要检查。证据可填本人实际 Builder 根目录下的日志路径或已有引用，不要求 URI 前缀；PlanReport 保留原作者引用与来源上下文，不代表 Result 接收器已归档仅出现在 PlanReport 的文件；没有执行条件时如实记录尝试、缺失条件与现有证据，不冒充已执行或 fail，不另造 blocker 字段。",
+      "choices": [
+        "fail",
+        "pass",
+        "blocked"
+      ],
+      "example": {
+        "path": "red_checks",
+        "expected": "[{\"name\":\"空白名称反例\",\"command\":\"python3 -m unittest tests.test_blank_name\",\"result\":\"fail\",\"evidence_refs\":[\"test://pre-fix-log\"]}]",
+        "observed": "只有命令/结论，缺 name、result 或实际 evidence_refs；未执行却填 fail"
+      }
+    },
+    "proposed_paths": {
+      "question": "列出本责任计划修改的相对路径；无产品改动时填写空数组。依据专业责任与批准范围制定计划，范围不足交 Main 判断；产品范围不排除系统明确给出的本人问卷或证据路径。",
+      "example": {
+        "path": "proposed_paths",
+        "expected": "[] 表示无产品改动；[\"server.py\",\"tests/test_blank_name.py\"] 表示实际拟改路径",
+        "observed": "缺少数组；拟改范围不足或有偏差时应记录实际情况，交 Main 专业判断"
+      }
+    }
+  }
+}

@@ -187,6 +187,71 @@ func TestRunControlCycleNeverBlocksOnNotReady(t *testing.T) {
 	}
 }
 
+func TestRunControlCycleReportsSatisfiedGateGuardFailure(t *testing.T) {
+	state := stateFromAsset(t, "loop-state.example.json")
+	state["lifecycle"] = map[string]any{"state": "planning", "phase": "contracts", "phase_revision": 0}
+	dir := writeLoopState(t, state)
+	if err := copyLoopDefinition(t, projectRoot, dir); err != nil {
+		t.Fatal(err)
+	}
+	store := runtime.NewStore(filepath.Join(dir, ".claude", "loop-state.json"), filepath.Join(dir, ".claude", "loop-events.jsonl"))
+	before, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
+		Root:     dir,
+		Event:    "PreToolUse",
+		ToolName: "Read",
+		Files:    fileview.Disk{Root: dir},
+		GateEvaluator: dualSatisfiedEvaluator{gates: map[string]qualitygate.Status{
+			"GATE-PLANNING-CONTRACTS-COMPLETE": qualitygate.StatusSatisfied,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RunControlCycle: %v", err)
+	}
+	if result.QualityGate.Status != controller.StatusUnknown || result.QualityGate.ErrorCode != controller.CodeTransitionGua {
+		t.Fatalf("satisfied gate with rejected guard must be unknown/LOOP_TRANSITION_GUARD, got status=%q code=%q error=%q", result.QualityGate.Status, result.QualityGate.ErrorCode, result.Error)
+	}
+	if result.Decision.Decision != "allow" {
+		t.Fatalf("transition guard failure must keep the tool allowed, got %q", result.Decision.Decision)
+	}
+	if result.QualityGate.TransitionCommitted {
+		t.Fatal("guard failure must not report a committed transition")
+	}
+	if len(result.QualityGate.Missing) != 0 {
+		t.Fatalf("satisfied gate must keep missing empty, got %v", result.QualityGate.Missing)
+	}
+	if result.QualityGate.CandidateTransition != "PTR-PLAN-02" {
+		t.Fatalf("candidate transition=%q, want PTR-PLAN-02", result.QualityGate.CandidateTransition)
+	}
+	if result.QualityGate.NextCursor != "planning.contracts" {
+		t.Fatalf("failed Apply must retain the pre-Apply cursor, got %q", result.QualityGate.NextCursor)
+	}
+	if !strings.Contains(result.Error, "guard contracts_checked failed:") {
+		t.Fatalf("ControlResult.Error must retain the original guard failure, got %q", result.Error)
+	}
+	if len(result.QualityGate.Conflicts) != 1 {
+		t.Fatalf("expected one transition diagnostic, got %v", result.QualityGate.Conflicts)
+	}
+	diagnostic := result.QualityGate.Conflicts[0]
+	if !strings.HasPrefix(diagnostic, "transition:PTR-PLAN-02:") || !strings.Contains(diagnostic, "guard contracts_checked failed:") {
+		t.Fatalf("wire diagnostic lost transition or original guard identity: %q", diagnostic)
+	}
+	if !strings.Contains(diagnostic, result.Error) {
+		t.Fatalf("wire diagnostic lost the actual guard reason: %q", diagnostic)
+	}
+	after, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision || result.Snapshot.Revision != before.Revision {
+		t.Fatalf("failed guard must not commit Runtime: before=%d result=%d after=%d", before.Revision, result.Snapshot.Revision, after.Revision)
+	}
+}
+
 func TestRunControlCycleHandlesTerminalCursor(t *testing.T) {
 	// S11 awaiting_human_release is a human gateway, not an automatic
 	// transition surface. The cycle must never auto-advance or submit a human
@@ -620,8 +685,11 @@ func TestResolveQualityCycleBudgetDefaultsToTwoSeconds(t *testing.T) {
 	if got := controller.ResolveQualityCycleBudget(nil, 0); got != controller.DefaultQualityCycleBudget {
 		t.Fatalf("default budget = %v, want %v", got, controller.DefaultQualityCycleBudget)
 	}
-	if controller.DefaultQualityCycleBudget != 2*time.Second {
-		t.Fatalf("DefaultQualityCycleBudget = %v, want 2s", controller.DefaultQualityCycleBudget)
+	// r99: S5 document gates verify the full locked source closure plus
+	// per-reviewer envelopes (~6s observed); the default covers that with
+	// headroom while keeping runaway evaluations bounded.
+	if controller.DefaultQualityCycleBudget != 15*time.Second {
+		t.Fatalf("DefaultQualityCycleBudget = %v, want 15s", controller.DefaultQualityCycleBudget)
 	}
 }
 
@@ -728,7 +796,7 @@ func TestRunControlCycleRecordsLabeledGateMetrics(t *testing.T) {
 	}
 }
 
-func TestNoAutomaticCandidateStillEnforcesProtectedCommands(t *testing.T) {
+func TestNoAutomaticCandidateObservesWithoutToolPolicy(t *testing.T) {
 	for _, cursor := range []string{"inactive", "release_authorized", "aborted"} {
 		for _, table := range []string{"[]", "{bad", "missing"} {
 			t.Run(cursor+"/"+table, func(t *testing.T) {
@@ -754,8 +822,8 @@ func TestNoAutomaticCandidateStillEnforcesProtectedCommands(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if result.Decision.Decision != "deny" || !strings.Contains(result.Decision.Reason, "protected_commands table unreadable") {
-					t.Fatalf("no-candidate safety bypass: %+v", result.Decision)
+				if result.Decision.Decision != "allow" {
+					t.Fatalf("graph listener must not deny tools: %+v", result.Decision)
 				}
 			})
 		}

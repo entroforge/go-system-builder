@@ -49,7 +49,7 @@ func TestAuditDispatchStatusJSONReadOnlyAndCapacity(t *testing.T) {
 	}
 }
 
-func TestAuditDispatchStatusDeclaresCapacityAndLegacyRecovery(t *testing.T) {
+func TestAuditDispatchStatusUnknownCapacityAndLegacyRecovery(t *testing.T) {
 	root := auditCLIPlanFixture(t)
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"s6", "status", "--root", root}, strings.NewReader(""), &stdout, &stderr)
@@ -58,12 +58,17 @@ func TestAuditDispatchStatusDeclaresCapacityAndLegacyRecovery(t *testing.T) {
 	}
 	for _, want := range []string{
 		"S6 dispatch plan:",
-		"Next batch: []",
-		"Declare actual platform capacity with --capacity",
+		"total capacity unknown",
+		"Next batch: not calculated",
+		"Optional --capacity supplies total slots for a batch recommendation",
+		"not a registration, permission or prepare prerequisite",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("capacity guidance missing %q:\n%s", want, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "capacity exhausted") || strings.Contains(stdout.String(), "total capacity 0") {
+		t.Fatalf("omitted capacity was presented as exhausted slots: %s", &stdout)
 	}
 
 	legacy := s6Fixture(t)

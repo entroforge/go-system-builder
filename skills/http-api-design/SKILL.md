@@ -18,7 +18,7 @@ One contract-aligned HTTP design or a scoped API review conclusion.
 ## N/A Criteria
 N/A when no HTTP boundary is changed.
 ## Stop Conditions
-Stop on ambiguous side effects, undocumented compatibility impact, or authorization semantics that cannot be expressed.
+Resolve implementation and diagnostic choices within the authorized contract. Report ambiguous externally visible effects, compatibility or authorization meaning when resolving them requires changing the baseline or a decision outside existing authorization; do not silently invent those semantics.
 ## Non-Goals
 Do not replace shared schema compatibility review owned by `api-contracts`.
 
@@ -26,7 +26,7 @@ Do not replace shared schema compatibility review owned by `api-contracts`.
 1. Define resource identity, operation intent, request/response representation, authorization rule, and side effect before choosing URI and method.
 2. Choose HTTP method/status/header semantics; explicitly state idempotency, pagination ordering, conditional/caching behavior, and async completion if clients observe them.
 3. Validate request boundary inputs and return the shared error envelope with a stable application code.
-4. Update the locked contract/OpenAPI together and test successful, malformed, unauthorized, conflict, and retry behavior.
+4. Keep implementation/OpenAPI aligned with the authoritative contract and test successful, malformed, unauthorized, conflict, and retry behavior. A required locked-contract change follows the original design rework route.
 
 ## Evidence Checklist
 - Method/URI/status table plus request/response/error schemas.

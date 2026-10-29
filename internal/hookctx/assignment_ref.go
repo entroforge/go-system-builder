@@ -2,6 +2,7 @@ package hookctx
 
 import (
 	"encoding/json"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,7 +95,12 @@ func fillAssignmentRow(row *AssignmentContext, a workgroupAssignment) {
 	row.AgentDefinitionRef = a.AgentDefinitionRef
 	row.ResponsibilityIDs = append(row.ResponsibilityIDs, a.ResponsibilityID)
 	row.WritePaths = assignmentWritePaths(a.WritePaths, a.OutputPaths, a.Scope)
+	row.ReadPaths = append([]string{}, a.ReadPaths...)
+	row.OutputPaths = append([]string{}, a.OutputPaths...)
+	row.SkillRefs = append([]string{}, a.SkillRefs...)
+	row.DependsOn = append([]string{}, a.DependsOn...)
 	row.RequiredChecks = append([]string(nil), a.RequiredChecks...)
+	row.CheckProfiles = append([]checkexec.Profile(nil), a.CheckProfiles...)
 	row.IntegrationCheckMode = a.IntegrationCheckMode
 	row.DoneWhen = append([]string(nil), a.DoneWhen...)
 	row.ReportStatus = a.Status

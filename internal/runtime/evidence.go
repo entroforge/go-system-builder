@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 // so it participates in the same revision CAS and journal contract as every
 // other Runtime mutation.
 type EvidenceRequest struct {
+	Context          context.Context `json:"-"`
 	ExpectedRevision int
 	ID               string
 	Kind             string
@@ -27,6 +30,7 @@ type EvidenceRequest struct {
 	ScopeRefs        []string
 	OccurredAt       time.Time
 	Validator        CandidateValidator
+	Submission       *SubmissionRequest
 }
 
 // IsRegisteredEvidenceKind reports whether kind can be persisted by
@@ -39,12 +43,23 @@ func IsRegisteredEvidenceKind(kind string) bool {
 // mutation. It rejects absolute or escaping paths, missing artifacts, invalid
 // kinds, empty producers, duplicate IDs, and stale revisions before commit.
 func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest) (Snapshot, error) {
+	if request.Submission != nil {
+		frozen := *request.Submission
+		frozen.AnswerJSON = append([]byte(nil), frozen.AnswerJSON...)
+		request.Submission = &frozen
+	}
 	if request.ID == "" {
 		return Snapshot{}, fmt.Errorf("evidence id is required")
 	}
 	catalog := evidence.DefaultCatalog()
 	if !catalog.IsRegisteredKind(request.Kind) {
 		return Snapshot{}, fmt.Errorf("unsupported evidence kind %q; registered kinds: %s; note: the Quality Gate records S10 artifacts as acceptance_record/release_audit_record, but registration uses --kind acceptance or --kind release_audit (bind --review-round to the current round; S10 envelopes also auto-inherit it from the envelope file)", request.Kind, strings.Join(catalog.RegisteredKinds(), ", "))
+	}
+	switch strings.TrimSpace(request.Kind) {
+	case "repair_result_blocker":
+		return Snapshot{}, fmt.Errorf("evidence kind %q is pipeline-owned: only the original S9 work_blocked lifecycle CAS may append its blocker artifact evidence; manual evidence registration would split the blocker pointer, immutable message, and evidence row", request.Kind)
+	case "repair_result_resolution":
+		return Snapshot{}, fmt.Errorf("evidence kind %q is pipeline-owned: only the original S9 blocker_resolved lifecycle CAS may append its resolution evidence; manual evidence registration would split the Agent resolution pointer, immutable message, and evidence row", request.Kind)
 	}
 	// finding_supplement is pipeline-owned: review.SubmitSupplement persists
 	// the entities.finding_supplements index row and the evidence entry in one
@@ -70,7 +85,17 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read evidence artifact: %w", err)
 	}
-	if err := acceptance.ValidateEvidenceArtifact(root, request.Kind, data); err != nil {
+	type s10Association struct {
+		RuntimeID          string `json:"runtime_id"`
+		BaselineGeneration int    `json:"baseline_generation"`
+		ReviewRound        int    `json:"review_round"`
+	}
+	var s10Binding s10Association
+	if isS10RoundScopedKind(request.Kind) {
+		if err := json.Unmarshal(data, &s10Binding); err != nil {
+			return Snapshot{}, fmt.Errorf("read S10 recording association: %w", err)
+		}
+	} else if err := acceptance.ValidateEvidenceArtifact(root, request.Kind, data); err != nil {
 		return Snapshot{}, err
 	}
 	// S10 evidence must bind to the current review round (L3-S10 §4.2): the
@@ -84,58 +109,51 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		}
 	}
 
-	store := NewWriter(statePath, journalPath, root, request.Validator)
+	store := NewWriter(statePath, journalPath, root, request.Validator).WithContext(request.Context)
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
 	}
 	current := snapshot.State
+	// S3 performs its professional reception inside the atomic Apply below.
+	// Other submission kinds retain their existing preflight behavior.
+	if request.Submission != nil && request.Kind != "planning_contract" {
+		if _, err := prepareSubmission(root, current, request, data); errors.Is(err, errSubmissionAccepted) {
+			return snapshot, nil
+		} else if err != nil {
+			return Snapshot{}, err
+		}
+	}
 	if err := validateDocumentRegistration(current, request, data); err != nil {
 		return Snapshot{}, err
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	from := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
-	// S10 registration must consume the same authoritative finite inventory
-	// as the Quality Gate once the Runtime has entered a real review round.
-	// Keep the round-zero bootstrap fixture/legacy path structural-only; a
-	// production S10 state has a bound REQ and pinned ReviewPlan, which makes
-	// the non-self-declared denominator reconstructible here as well.
-	if isS10RoundScopedKind(request.Kind) && acceptance.S10AuthorityAvailable(current) {
-		manifestType := "acceptance"
-		if request.Kind == "release_audit" || request.Kind == "release_audit_record" {
-			manifestType = "release_audit"
+	// The public recording entry must also read the existing professional
+	// report; it cannot assume the normal save receiver already validated it.
+	if isS10RoundScopedKind(request.Kind) {
+		baseline, _ := current["baseline"].(map[string]any)
+		review, _ := current["review"].(map[string]any)
+		if s10Binding.RuntimeID != runtimeID || !hypothesisJSONEqual(baseline["generation"], s10Binding.BaselineGeneration) || !hypothesisJSONEqual(review["round"], s10Binding.ReviewRound) {
+			return Snapshot{}, fmt.Errorf("S10 report does not describe the current responsibility/round")
 		}
-		var envelope struct {
-			Conclusion string `json:"conclusion"`
+		if request.ReviewRound != nil && *request.ReviewRound != s10Binding.ReviewRound {
+			return Snapshot{}, fmt.Errorf("S10 recording review round does not match the existing report; omit the override to inherit its current round")
 		}
-		if err := json.Unmarshal(data, &envelope); err != nil || strings.TrimSpace(envelope.Conclusion) == "" {
-			return Snapshot{}, fmt.Errorf("S10 %s evidence requires a non-empty conclusion before authoritative inventory validation", manifestType)
-		}
-		// RC-15 (S10-H1): validate the manifest the envelope RESOLVES to, not
-		// the envelope bytes themselves — the envelope carries registration
-		// metadata (kind, evidence_id, ...) that no manifest decoder may be
-		// asked to accept under DisallowUnknownFields.
-		manifestData, _, envelopeConclusion, resolveErr := acceptance.ResolveS10Manifest(root, request.Kind, data)
-		if resolveErr != nil {
-			return Snapshot{}, resolveErr
-		}
-		// Keep `data` as the registered file's original bytes: the evidence
-		// row's recorded sha256 and the board's on-disk hash check bind to the
-		// envelope file; only the validators below consume the resolved
-		// manifest bytes.
-		s10ManifestData := manifestData
-		envelope.Conclusion = envelopeConclusion
-		baseline, baselineErr := acceptance.BuildS10ExternalBaseline(root, current, nil)
-		if baselineErr != nil {
-			return Snapshot{}, fmt.Errorf("S10 external baseline is unverifiable: %w; restore the current-generation completion/change-impact artifacts", baselineErr)
-		}
-		authority, authorityErr := acceptance.BuildS10InventoryAuthority(root, current, baseline)
-		if authorityErr != nil {
-			return Snapshot{}, fmt.Errorf("S10 authoritative inventory is unverifiable: %w; restore the current bound REQ, contract/TASK registrations, and pinned S7 ReviewPlan", authorityErr)
-		}
-		if _, err := acceptance.ValidateForOutcomeWithBaselineAndAuthority(s10ManifestData, manifestType, strings.TrimSpace(envelope.Conclusion), baseline, authority); err != nil {
+		reportData, reportType, conclusion, err := acceptance.ResolveS10Manifest(root, request.Kind, data)
+		if err != nil {
 			return Snapshot{}, err
+		}
+		var reportBinding s10Association
+		if err := json.Unmarshal(reportData, &reportBinding); err != nil {
+			return Snapshot{}, fmt.Errorf("read S10 referenced report association: %w", err)
+		}
+		if reportBinding != s10Binding {
+			return Snapshot{}, fmt.Errorf("S10 referenced report association does not match the recording responsibility/round")
+		}
+		if _, err := acceptance.ValidateForOutcome(reportData, reportType, conclusion); err != nil {
+			return Snapshot{}, fmt.Errorf("S10 %s evidence manifest is invalid: %w", reportType, err)
 		}
 	}
 
@@ -166,6 +184,24 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		Message:        "Recorded a current fingerprinted evidence artifact.",
 		OccurredAt:     occurredAt,
 		Apply: func(state map[string]any) error {
+			if isS10RoundScopedKind(request.Kind) {
+				baseline, _ := state["baseline"].(map[string]any)
+				review, _ := state["review"].(map[string]any)
+				if state["runtime_id"] != s10Binding.RuntimeID || !hypothesisJSONEqual(baseline["generation"], s10Binding.BaselineGeneration) || !hypothesisJSONEqual(review["round"], s10Binding.ReviewRound) {
+					return fmt.Errorf("current S10 responsibility changed before recording")
+				}
+			}
+			var submission SubmissionRecord
+			if request.Submission != nil {
+				var err error
+				submission, err = prepareSubmission(root, state, request, data)
+				if err != nil {
+					return err
+				}
+			}
+			if err := validateDocumentRegistration(state, request, data); err != nil {
+				return err
+			}
 			items, ok := state["evidence"].([]any)
 			if !ok {
 				return fmt.Errorf("runtime evidence must be an array")
@@ -207,12 +243,38 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 				"scope_refs":          scopeRefs,
 			})
 			state["evidence"] = items
+			if request.Submission != nil {
+				if err := appendSubmission(state, submission); err != nil {
+					return err
+				}
+			}
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			return nil
 		},
 	}
 	if request.ExpectedRevision < 0 {
-		return store.UpdateCurrent(mutation)
+		next, err := store.UpdateCurrent(mutation)
+		if err != nil && request.Submission != nil {
+			// The journal rejects duplicate event IDs before Apply. Resolve a
+			// concurrent replay from the atomically committed reception row,
+			// never from the artifact's mere presence or the outer error text.
+			latest, readErr := store.Snapshot()
+			if readErr == nil {
+				if request.Kind == "planning_contract" {
+					if _, accepted, findErr := FindSubmission(latest.State, request.Submission.PacketID); findErr != nil || !accepted {
+						return next, err
+					}
+				}
+				_, replayErr := prepareSubmission(root, latest.State, request, data)
+				if errors.Is(replayErr, errSubmissionAccepted) {
+					return latest, nil
+				}
+				if errors.Is(replayErr, ErrSubmissionConflict) {
+					return Snapshot{}, replayErr
+				}
+			}
+		}
+		return next, err
 	}
 	return store.Update(request.ExpectedRevision, mutation)
 }
@@ -296,6 +358,22 @@ func s10EnvelopeReviewRound(data []byte) (int, bool) {
 func validateDocumentRegistration(state map[string]any, req EvidenceRequest, data []byte) error {
 	if req.Kind != "document_review" {
 		return nil
+	}
+	if req.Submission == nil && PacketEnabled(state) {
+		life, _ := state["lifecycle"].(map[string]any)
+		baseline, _ := state["baseline"].(map[string]any)
+		entities, _ := state["entities"].(map[string]any)
+		rows, _ := entities["work_packets"].([]any)
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			b, _ := row["binding"].(map[string]any)
+			entry, eErr := integerField(b, "stage_entry")
+			currentEntry, cErr := integerField(life, "phase_revision")
+			g, gErr := integerField(baseline, "generation")
+			if eErr == nil && cErr == nil && gErr == nil && life["state"] == "document_verification" && entry == currentEntry && numberBindingGeneration(b) == g && b["runtime_id"] == state["runtime_id"] && b["responsibility"] == req.ResponsibilityID {
+				return fmt.Errorf("issued S5 responsibility requires its saved-answer consumer; manual evidence registration cannot bypass its current attempt")
+			}
+		}
 	}
 	bound, _ := state["bound_req"].(map[string]any)
 	if bound == nil || bound["id"] == nil || bound["id"] == "" {

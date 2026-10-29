@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,11 +218,29 @@ func TestIntegrateDirtyTreeDuringVerifyPreserves(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
+	if !errors.Is(err, ErrDirtyWorktree) {
+		t.Fatalf("dirty Main error = %v, want ErrDirtyWorktree", err)
+	}
+	if !strings.Contains(err.Error(), "Main integration checkout") || !strings.Contains(err.Error(), f.root) || !strings.Contains(err.Error(), f.wt) {
+		t.Fatalf("returned error lost checkout ownership: %v", err)
+	}
+	wantRoot := f.root
+	for _, want := range []string{
+		"Main integration checkout \"" + wantRoot + "\" is dirty",
+		"git -C \"" + wantRoot + "\" status --short",
+	} {
+		if !strings.Contains(res.Checkpoint.FailureReason, want) {
+			t.Fatalf("Main dirty failure reason %q does not identify exact root/inspection command %q", res.Checkpoint.FailureReason, want)
+		}
+	}
 	if res.Checkpoint.State != StatePreserved {
 		t.Fatalf("expected preserved, got %s", res.Checkpoint.State)
 	}
 	if res.Checkpoint.LastErrorCode != "LOOP_INTEGRATION_PARTIAL" {
 		t.Fatalf("expected LOOP_INTEGRATION_PARTIAL, got %s", res.Checkpoint.LastErrorCode)
+	}
+	if res.Checkpoint.MergeCommit != "" || !f.fr.worktrees[f.root+":"+f.wt] || f.fr.branchHeads["develop"] != "base-commit" {
+		t.Fatalf("dirty Main integration advanced or removed work: merge=%q registered=%t develop=%q", res.Checkpoint.MergeCommit, f.fr.worktrees[f.root+":"+f.wt], f.fr.branchHeads["develop"])
 	}
 }
 

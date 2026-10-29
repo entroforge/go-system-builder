@@ -55,6 +55,11 @@ func TestCreateChangeStoresRecordWithCASAndJournal(t *testing.T) {
 	}
 	if got, ok := next.State["change"].(map[string]any); !ok || got["id"] != "CHG-001" {
 		t.Fatalf("stored change = %#v", next.State["change"])
+	} else {
+		items := got["work_items"].([]any)
+		if status := items[0].(map[string]any)["status"]; status != "open" {
+			t.Fatalf("legacy Runtime work status = %v, want open", status)
+		}
 	}
 	var event map[string]any
 	journal, err := os.ReadFile(journalPath)

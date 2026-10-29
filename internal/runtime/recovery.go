@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -102,6 +103,10 @@ type RecoveryRequest struct {
 	// SourcePendingSHA256 fingerprints pre-existing commit/fingerprint/rollover markers.
 	// Recovery quarantines and retires only these known Runtime marker paths.
 	SourcePendingSHA256 map[string]string
+	// ValidateRestore is an application capability recomposed by the original
+	// Main recovery entrypoint, including marker-only retries. It runs under
+	// the Runtime lock before the first active replacement.
+	ValidateRestore func(state map[string]any, journal []byte) error
 
 	Approver   string
 	OccurredAt time.Time
@@ -358,6 +363,17 @@ func prepareRecovery(request RecoveryRequest) (preparedRecovery, error) {
 	}
 	if err := validateRecoveryPair(state, journalBytes); err != nil {
 		return preparedRecovery{}, fmt.Errorf("%w: candidate pair: %w", ErrRecoveryCandidateInvalid, err)
+	}
+	if hasIssuedIndices(state) {
+		if err := ValidateCheckpointIndices(request.Root, state, journalBytes); err != nil {
+			return preparedRecovery{}, fmt.Errorf("%w: indices: %w", ErrRecoveryCandidateInvalid, err)
+		}
+		if request.ValidateRestore == nil {
+			return preparedRecovery{}, fmt.Errorf("%w: indexed recovery requires the original Main source/launch validator", ErrRecoveryCandidateInvalid)
+		}
+		if err := request.ValidateRestore(state, journalBytes); err != nil {
+			return preparedRecovery{}, err
+		}
 	}
 
 	stateSHA := sha256Hex(stateBytes)
@@ -724,7 +740,10 @@ func verifyRecoverySourceExists(artifact string, expected *bool, actual bool) er
 }
 
 func inspectRecoveryPendingSources(request RecoveryRequest) ([]recoveryPendingSource, error) {
-	known := knownRecoverySourcePendingPaths(request.StatePath)
+	known, err := recoverySourcePaths(request, nil)
+	if err != nil {
+		return nil, err
+	}
 	knownSet := make(map[string]struct{}, len(known))
 	for _, path := range known {
 		knownSet[filepath.Clean(path)] = struct{}{}
@@ -861,6 +880,15 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 	if err := verifyPostApplyPendingRetired(request); err != nil {
 		return RecoveryResult{}, err
 	}
+	// A sealed recovery can outlive the mutable checkpoint directory. Restore
+	// the bounded backup before releasing its original pending marker; failure
+	// remains a retry of this pair, never a second domain reception.
+	if hasIssuedIndices(prepared.state) {
+		writer := NewWriter(request.StatePath, request.JournalPath, request.Root, request.Validator)
+		if err := writer.publishCheckpointLocked(); err != nil {
+			return RecoveryResult{}, fmt.Errorf("checkpoint restored Runtime (recovery pending retained): %w", err)
+		}
+	}
 
 	if err := injectRecoveryFailure(request, RecoveryBeforeManifest); err != nil {
 		return RecoveryResult{}, err
@@ -883,7 +911,11 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 }
 
 func verifyPostApplyPendingRetired(request RecoveryRequest) error {
-	for _, path := range knownRecoverySourcePendingPaths(request.StatePath) {
+	paths, err := recoverySourcePaths(request, nil)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
 		data, exists, err := readOptionalFile(path)
 		if err != nil {
 			return fmt.Errorf("post-apply pending marker check: %w", err)
@@ -914,7 +946,11 @@ func retireRecoverySourcePending(request RecoveryRequest, artifacts []RecoveryAr
 		byPath[artifact.Path] = artifact
 	}
 	removed := false
-	for _, path := range knownRecoverySourcePendingPaths(request.StatePath) {
+	paths, err := recoverySourcePaths(request, artifacts)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
 		relative := recoveryPath(request.Root, path)
 		artifact, planned := byPath[relative]
 		data, exists, err := readOptionalFile(path)
@@ -1069,12 +1105,7 @@ func ensureRecoveryQuarantine(request RecoveryRequest, stateData []byte, stateEx
 	}
 	pendingArtifacts := make([]RecoveryArtifact, 0, len(pendingSources))
 	for _, source := range pendingSources {
-		name := "commit-pending.json"
-		if strings.HasSuffix(source.path, ".fingerprint-pending.json") {
-			name = "fingerprint-pending.json"
-		} else if strings.HasSuffix(source.path, ".rollover-pending.json") {
-			name = "rollover-pending.json"
-		}
+		name := filepath.Base(source.path)
 		artifact := recoveryArtifact(request.Root, source.path, source.data, true, filepath.Join(dir, name))
 		if err := writeImmutableBytes(artifact.QuarantinePath, source.data); err != nil {
 			return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("quarantine pending marker: %w", err)
@@ -1294,4 +1325,54 @@ func recoveryPath(root, path string) string {
 		}
 	}
 	return filepath.ToSlash(path)
+}
+
+// Rotation archives are original pair members. A complete replacement journal
+// must quarantine and retire them with the same marker, including retries
+// after some segments were already retired. Arbitrary paths remain forbidden.
+func recoverySourcePaths(request RecoveryRequest, artifacts []RecoveryArtifact) ([]string, error) {
+	paths := knownRecoverySourcePendingPaths(request.StatePath)
+	segments, err := journalSegmentPaths(request.JournalPath)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, p := range paths {
+		seen[p] = true
+	}
+	add := func(p string) error {
+		if seen[p] {
+			return nil
+		}
+		if filepath.Dir(p) != filepath.Dir(request.JournalPath) || !strings.HasPrefix(p, request.JournalPath+".archive.") {
+			return fmt.Errorf("%w: unsupported recovery pair member %s", ErrRecoveryCandidateInvalid, p)
+		}
+		if _, ok := parseArchiveSeq(p); !ok {
+			return fmt.Errorf("%w: invalid journal archive", ErrRecoveryCandidateInvalid)
+		}
+		seen[p] = true
+		segments = append(segments, p)
+		return nil
+	}
+	// Deduplicate initial discovery before adding frozen paths.
+	discovered := append([]string(nil), segments...)
+	segments = nil
+	for _, p := range discovered {
+		if err := add(p); err != nil {
+			return nil, err
+		}
+	}
+	for p := range request.SourcePendingSHA256 {
+		if err := add(p); err != nil {
+			return nil, err
+		}
+	}
+	for _, a := range artifacts {
+		p := filepath.Join(request.Root, filepath.FromSlash(a.Path))
+		if err := add(p); err != nil {
+			return nil, err
+		}
+	}
+	sort.Strings(segments)
+	return append(paths, segments...), nil
 }

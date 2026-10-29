@@ -10,6 +10,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // ---------------------------------------------------------------------------
@@ -458,6 +459,33 @@ func TestSubmitResultSiteLostRecordsAssignmentBlocker(t *testing.T) {
 	root := t.TempDir()
 	statePath, journalPath := writeState(t, root, baseVerificationState())
 	revision, plan := dispatchedFixture(t, root, statePath, journalPath)
+	// A plan_checkpoint Reviewer may save its issued professional answer while
+	// still in the original reading state; no generic PLAN/start command is
+	// required before the S7 answer is consumed.
+	stateBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stateBytes, &state); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range state["entities"].(map[string]any)["agents"].([]any) {
+		agent := raw.(map[string]any)
+		if agent["id"] == "agent-qa-1" {
+			if err := workstate.RecordAgentActivity(state, agent, "reading", "readback_started"); err != nil {
+				t.Fatal(err)
+			}
+			agent["dispatch_mode"] = "plan_checkpoint"
+		}
+	}
+	stateBytes, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, stateBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// Ordinary finding whose encounter is not investigation-ready: no
 	// last_good_checkpoint. The reviewer declares the scene unrecoverable.

@@ -18,7 +18,7 @@ Lint-clean scoped changes or a review conclusion with command evidence.
 ## N/A Criteria
 N/A when the changed code is outside the configured lint surface.
 ## Stop Conditions
-Stop on a rule conflict, broad disable, or formatter-driven semantic change.
+Resolve lint/configuration conflicts within the TASK and repository conventions. Avoid broad disables or formatter-driven semantic changes; report a required out-of-scope policy decision to Main while continuing separable work.
 ## Non-Goals
 Do not encode product rules only in lint configuration.
 

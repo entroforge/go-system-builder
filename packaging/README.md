@@ -25,7 +25,7 @@ rules are additional protection, not the inclusion policy.
 
 Before publishing:
 
-1. Run source checks with `make ci-verify`.
+1. Run complete source and release checks with `make ci-verify-full` (`make ci-verify` is the lighter PR/main gate).
 2. Inspect the archive and run the staged release checks (`make doctor-staged`):
    `release-graph validate`, `init`, `doctor` and `validate --all` in a disposable copy.
 3. Verify extracted bytes with `tools/release-manifest.py` before initialization

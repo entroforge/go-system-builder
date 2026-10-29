@@ -47,6 +47,26 @@ func applyObservation(s *Snapshot, o observation, count int64) error {
 		v.Count += count
 		v.SumMS += o.Duration
 		s.IntegrationDuration[o.Label] = v
+	case "hook_transport_failure":
+		normalized, err := normalizeHookTransportObservation(o)
+		if err != nil || count < 1 {
+			return fmt.Errorf("invalid Hook transport observation")
+		}
+		o = normalized
+		v := s.HookTransportFailures[o.Label]
+		v.Count += count
+		v.SumMS += o.Duration
+		mergeProcessBudgetBounds(&v.ProcessBudgetMinMS, &v.ProcessBudgetMaxMS, o.ProcessBudgetMinMS, o.ProcessBudgetMaxMS)
+		s.HookTransportFailures[o.Label] = v
+	case "submission_save":
+		if !validSubmissionOutcome(o.Label) || o.Duration < 0 || count < 1 {
+			return fmt.Errorf("invalid submission save observation")
+		}
+		s.SubmissionSaves[o.Label] += count
+		v := s.SubmissionSaveDuration[o.Label]
+		v.Count += count
+		v.SumMS += o.Duration
+		s.SubmissionSaveDuration[o.Label] = v
 	default:
 		return fmt.Errorf("unknown metrics observation %q", o.Kind)
 	}
@@ -112,6 +132,12 @@ func (s *Store) scanObservations(snap *Snapshot, force bool) error {
 		if err = json.Unmarshal(data, &o); err != nil {
 			return fmt.Errorf("metrics observation %s: %w", name, err)
 		}
+		if o.Kind == "hook_transport_failure" {
+			o, err = normalizeHookTransportObservation(o)
+			if err != nil {
+				return fmt.Errorf("metrics observation %s: %w", name, err)
+			}
+		}
 		if err = applyObservation(snap, o, 1); err != nil {
 			return err
 		}
@@ -131,6 +157,9 @@ func (s *Store) scanObservations(snap *Snapshot, force bool) error {
 		v := summary.Totals[key]
 		v.Observation.Kind, v.Observation.Label = o.Kind, o.Label
 		v.Observation.Duration += o.Duration
+		if o.Kind == "hook_transport_failure" {
+			mergeProcessBudgetBounds(&v.Observation.ProcessBudgetMinMS, &v.Observation.ProcessBudgetMaxMS, o.ProcessBudgetMinMS, o.ProcessBudgetMaxMS)
+		}
 		v.Count++
 		summary.Totals[key] = v
 		summary.Consumed[name] = true

@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "team-manifest-REQ-999-TASK-999-01",
+  "version": "v1.0.0",
+  "runtime_id": "loop-REQ-999-example",
+  "req_id": "REQ-999",
+  "baseline_generation": 1,
+  "review_round": null,
+  "platform_team_id": "replace-with-current-platform-team-id",
+  "workgroup_id": "workgroup-REQ-999-TASK-999-01",
+  "workgroup_kind": "builder",
+  "status": "planned",
+  "documents": [
+    {
+      "id": "REQ-999",
+      "path": "docs/requirements/REQ-999.md",
+      "version": "v1.0.0",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "ARCH-999",
+      "path": "docs/architecture/ARCH-999.md",
+      "version": "v1.0.0",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "BE-999",
+      "path": "docs/dev/contracts/BE-999.md",
+      "version": "v1.0.0",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "TASK-999-01",
+      "path": "docs/dev/tasks/TASK-999-01.md",
+      "version": "v1.0.0",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "id": "dispatch-plan:REQ-999",
+      "path": "docs/dev/tasks/index-REQ-999.md",
+      "version": "1",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "risk_tags": [],
+  "responsibility_dispositions": [
+    {
+      "responsibility_id": "BUILD-WORK-PACKAGE",
+      "disposition": "assigned",
+      "trigger": "One locked TASK has one bounded Builder owner.",
+      "assignment_ids": [
+        "assignment-build-TASK-999-01"
+      ],
+      "na_rationale": null,
+      "evidence_ref": null
+    }
+  ],
+  "assignments": [
+    {
+      "assignment_id": "assignment-build-TASK-999-01",
+      "responsibility_id": "BUILD-WORK-PACKAGE",
+      "role_family": "backend-builder",
+      "scope": [
+        "Replace with this TASK's bounded backend responsibility."
+      ],
+      "agent_id": "replace-with-current-platform-agent-id",
+      "agent_definition_ref": ".claude/agents/backend-builder.md",
+      "skill_refs": [
+        "agent-dispatch",
+        "backend-engineering",
+        "testing-strategy",
+        "code-quality"
+      ],
+      "read_paths": [
+        "docs/requirements/REQ-999.md",
+        "docs/architecture/ARCH-999.md",
+        "docs/dev/contracts/BE-999.md",
+        "docs/dev/tasks/TASK-999-01.md"
+      ],
+      "write_paths": [
+        "src/replace-with-task-owned-path"
+      ],
+      "required_checks": [
+        "replace with the exact required check from the TASK"
+      ],
+      "done_when": [
+        "replace with a concrete Worker-owned outcome from the TASK"
+      ],
+      "output_paths": [],
+      "depends_on": [],
+      "dispatch_mode": "plan_checkpoint",
+      "reuse_decision": "create",
+      "grouping_rationale": "One owner for one bounded locked TASK.",
+      "status": "planned"
+    }
+  ],
+  "separation_edges": [],
+  "planned_agent_count": 1,
+  "max_parallel_agents": 1,
+  "quantity_rationale": "One Builder owns the single bounded TASK.",
+  "validation": {
+    "result": "warn",
+    "missing_responsibilities": [],
+    "unresolved_conflicts": [],
+    "warnings": [
+      "Synthetic example only; replace with current validation output."
+    ],
+    "validated_at": "2000-01-01T00:00:00Z"
+  },
+  "assignment_record_contract": "s6-v1.2"
+}

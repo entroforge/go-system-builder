@@ -51,11 +51,43 @@ func TestLoaderBuildsPolicyContextFromRuntimeAndActivation(t *testing.T) {
 	if context.BoundREQUIImpact != "changed" {
 		t.Fatalf("UI-impact metadata not propagated to runtime context: %s", context.BoundREQUIImpact)
 	}
-	if context.Agent == nil || context.Agent.State != "activated" {
+	if context.Agent == nil || context.Agent.State != "active" || context.Agent.LifecycleActivity() != "activated" {
 		t.Fatalf("unexpected Agent context: %#v", context.Agent)
 	}
 	if len(context.Agent.AllowedWritePaths) != 1 || context.Agent.AllowedWritePaths[0] != "src/" {
 		t.Fatalf("activation scope not loaded: %#v", context.Agent)
+	}
+}
+
+func TestLoaderProjectsCanonicalAgentStatusWithOriginalLifecycleActivity(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"schema_version":"1.3.0","runtime_id":"loop-test","revision":1,"entities":{"agents":[{"id":"agent-1","state":"active","last_lifecycle_event":"work_started"}],"tasks":[],"teams":[],"bugs":[]}}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := hookctx.Load(root, "agent-1")
+	if err != nil {
+		t.Fatalf("load canonical Agent: %v", err)
+	}
+	if loaded.Agent == nil || loaded.Agent.State != "active" || loaded.Agent.LifecycleActivity() != "working" {
+		t.Fatalf("canonical status and original activity were not kept distinct: %#v", loaded.Agent)
+	}
+}
+
+func TestLoaderRejectsCanonicalAgentStatusWithoutMatchingOriginalEvent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"schema_version":"1.3.0","runtime_id":"loop-test","revision":1,"entities":{"agents":[{"id":"agent-1","state":"active","last_lifecycle_event":"completion_acknowledged"}],"tasks":[],"teams":[],"bugs":[]}}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hookctx.Load(root, "agent-1"); err == nil || !strings.Contains(err.Error(), "matching original lifecycle event") {
+		t.Fatalf("mismatched canonical state/event was not rejected: %v", err)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestDiscoverE2EInventoryMapsRequiredCasesToSpecFingerprints(t *testing.T) {
+func TestDiscoverE2EInventoryOffersCandidatesWithoutAssetDeclarations(t *testing.T) {
 	root := t.TempDir()
 	moduleDir := filepath.Join(root, "docs", "design", "prototypes", "settings")
 	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
@@ -34,24 +34,24 @@ func TestDiscoverE2EInventoryMapsRequiredCasesToSpecFingerprints(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inventory, diagnostics := discoverE2EInventory(root, map[string]any{})
+	inventory, diagnostics := discoverE2EInventory(root, map[string]any{"bound_req": caseScopeREQ(t, root, "docs/design/prototypes/settings/\n")})
 	if len(diagnostics) != 0 {
 		t.Fatalf("unexpected discovery diagnostics: %v", diagnostics)
 	}
 	if len(inventory.Cases) != 2 {
 		t.Fatalf("cases=%d, want 2 required browser cases: %+v", len(inventory.Cases), inventory.Cases)
 	}
-	if len(inventory.Assets) != 2 {
-		t.Fatalf("assets=%d, want one asset per mapped CASE: %+v", len(inventory.Assets), inventory.Assets)
+	if len(inventory.Candidates) != 1 {
+		t.Fatalf("candidates=%d, want one script hint: %+v", len(inventory.Candidates), inventory.Candidates)
 	}
-	for _, asset := range inventory.Assets {
-		if asset.Path != specRel || len(asset.SHA256) != 64 || !strings.HasPrefix(asset.CaseRef, "CASE-") {
+	for _, asset := range inventory.Candidates {
+		if asset.Path != specRel || len(asset.SHA256) != 64 || len(asset.PossibleCases) != 2 || !strings.Contains(asset.PossibleCases[0], "/settings/cases.json#CASE-") {
 			t.Fatalf("invalid asset fingerprint: %+v", asset)
 		}
 	}
 }
 
-func TestDraftPlanSplitsE2EByCaseAndFallsBackToColdStart(t *testing.T) {
+func TestDraftPlanKeepsAssetReuseUndecidedUntilMainChooses(t *testing.T) {
 	root := t.TempDir()
 	moduleDir := filepath.Join(root, "docs", "design", "prototypes", "settings")
 	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
@@ -75,10 +75,10 @@ func TestDraftPlanSplitsE2EByCaseAndFallsBackToColdStart(t *testing.T) {
 	state["bound_req"] = map[string]any{"path": "docs/requirements/REQ-TEST.md", "metadata": map[string]any{"ui_impact": "changed"}}
 
 	plan, _ := DraftPlanForRoot(root, state, 3)
-	if plan.E2ECoverageState != "cold_start" {
-		t.Fatalf("without matching specs E2E must be cold_start, got %q", plan.E2ECoverageState)
+	if plan.E2ECoverageState != "" {
+		t.Fatalf("without a professional choice E2E must remain undecided, got %q", plan.E2ECoverageState)
 	}
-	if plan.VerificationArtifactWorkspace == nil || len(plan.E2EAssets) != 0 {
+	if plan.VerificationArtifactWorkspace != nil || len(plan.E2EAssets) != 0 {
 		t.Fatalf("cold-start draft must expose a workspace and no reusable assets: workspace=%v assets=%+v", plan.VerificationArtifactWorkspace, plan.E2EAssets)
 	}
 	if got := countLensAssignments(plan, "e2e"); got != 2 {
@@ -98,8 +98,8 @@ func TestDraftPlanSplitsE2EByCaseAndFallsBackToColdStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, _ = DraftPlanForRoot(root, state, 3)
-	if plan.E2ECoverageState != "regression_available" || len(plan.E2EAssets) != 2 || plan.VerificationArtifactWorkspace != nil {
-		t.Fatalf("complete CASE->spec mapping must be regression_available: state=%q assets=%d workspace=%v", plan.E2ECoverageState, len(plan.E2EAssets), plan.VerificationArtifactWorkspace)
+	if plan.E2ECoverageState != "" || len(plan.E2EAssets) != 0 || plan.VerificationArtifactWorkspace != nil {
+		t.Fatalf("CASE text matches must not decide regression availability: state=%q assets=%d workspace=%v", plan.E2ECoverageState, len(plan.E2EAssets), plan.VerificationArtifactWorkspace)
 	}
 	if got := countLensAssignments(plan, "e2e"); got != 2 {
 		t.Fatalf("regression E2E assignments=%d, want one per required CASE", got)
@@ -114,4 +114,33 @@ func countLensAssignments(plan *Plan, lens string) int {
 		}
 	}
 	return count
+}
+
+func TestE2ECandidatesKeepCollidingModuleCASEsAndExactTokenBoundaries(t *testing.T) {
+	root := t.TempDir()
+	for _, m := range []string{"alpha", "beta"} {
+		dir := filepath.Join(root, "docs/design/prototypes", m)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "cases.json"), []byte(`{"cases":[{"id":"CASE-001","required":true,"browser_required":true,"flow_refs":["PATH-001"]}]}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "web"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"alpha.spec.ts": "// CASE-001 is only a comment", "other.spec.ts": "CASE-0010"} {
+		if err := os.WriteFile(filepath.Join(root, "web", name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inventory, diagnostics := discoverE2EInventory(root, map[string]any{"bound_req": caseScopeREQ(t, root, "docs/design/prototypes/alpha/\ndocs/design/prototypes/beta/\n")})
+	if len(diagnostics) != 0 || len(inventory.Cases) != 2 || len(inventory.Candidates) != 1 {
+		t.Fatalf("lost or conflated source: %+v %v", inventory, diagnostics)
+	}
+	refs := inventory.Candidates[0].PossibleCases
+	if len(refs) != 2 || refs[0] != "docs/design/prototypes/alpha/cases.json#CASE-001" || refs[1] != "docs/design/prototypes/beta/cases.json#CASE-001" {
+		t.Fatalf("wrong identity hints: %v", refs)
+	}
 }

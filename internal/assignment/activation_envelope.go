@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/schema"
@@ -37,21 +38,25 @@ import (
 // internal/hookctx/loadActivation. Field names mirror the activationFile struct
 // in hookctx/loader.go (must stay byte-compatible).
 type ActivationEnvelope struct {
-	AgentID               string   `json:"agent_id"`
-	AllowedTools          []string `json:"allowed_tools"`
-	AllowedWritePaths     []string `json:"allowed_write_paths"`
-	AllowedCommandClasses []string `json:"allowed_command_classes"`
+	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
+	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
+	AgentID                string                            `json:"agent_id"`
+	AllowedTools           []string                          `json:"allowed_tools"`
+	AllowedWritePaths      []string                          `json:"allowed_write_paths"`
+	AllowedCommandClasses  []string                          `json:"allowed_command_classes"`
 }
 
 // ActivationSourceEntry is the row of the workgroup manifest that drives an
 // activation envelope. Only the fields the envelope needs are listed — the
 // caller is responsible for sourcing the rest.
 type ActivationSourceEntry struct {
-	AgentID            string
-	AgentDefinitionRef string
-	SkillRefs          []string
-	WritePaths         []string
-	OutputPaths        []string
+	AssignmentRecord       *assignmentrecord.RecordReference
+	AssignmentRecordSHA256 string
+	AgentID                string
+	AgentDefinitionRef     string
+	SkillRefs              []string
+	WritePaths             []string
+	OutputPaths            []string
 }
 
 // PreStageActivationEnvelope writes a plan_checkpoint activation envelope
@@ -97,10 +102,12 @@ func buildActivationEnvelope(agentID string, source ActivationSourceEntry) Activ
 	writePaths := effectiveActivationWritePaths(source.WritePaths, source.OutputPaths)
 	commandClasses := commandClassesForSkills(source.SkillRefs)
 	return ActivationEnvelope{
-		AgentID:               agentID,
-		AllowedTools:          tools,
-		AllowedWritePaths:     writePaths,
-		AllowedCommandClasses: commandClasses,
+		AssignmentRecord:       source.AssignmentRecord,
+		AssignmentRecordSHA256: source.AssignmentRecordSHA256,
+		AgentID:                agentID,
+		AllowedTools:           tools,
+		AllowedWritePaths:      writePaths,
+		AllowedCommandClasses:  commandClasses,
 	}
 }
 
@@ -264,6 +271,10 @@ func BuildPlanCheckpointActivationMessage(
 	cloned["allowed_write_paths"] = envelope.AllowedWritePaths
 	cloned["allowed_tools"] = envelope.AllowedTools
 	cloned["allowed_command_classes"] = envelope.AllowedCommandClasses
+	if envelope.AssignmentRecord != nil {
+		cloned["assignment_record"] = envelope.AssignmentRecord
+		cloned["assignment_record_sha256"] = envelope.AssignmentRecordSHA256
+	}
 	if len(envelope.AllowedWritePaths) > 0 {
 		cloned["output_paths"] = envelope.AllowedWritePaths
 	}

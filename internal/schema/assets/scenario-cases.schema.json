@@ -17,7 +17,7 @@
       "properties": {
         "visible": {"$ref": "#/$defs/strings"},
         "terminal_state": {"type": "string", "minLength": 1},
-        "persisted_effects": {"$ref": "#/$defs/strings"},
+        "persisted_effects": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "forbidden_side_effects": {"$ref": "#/$defs/strings"}
       }
     },
@@ -27,7 +27,7 @@
       "properties": {
         "visible": {"$ref": "#/$defs/strings"},
         "terminal_state": {"type": "string", "minLength": 1},
-        "persisted_effects": {"$ref": "#/$defs/strings"},
+        "persisted_effects": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "forbidden_side_effects": {"$ref": "#/$defs/strings"},
         "rejection": {"type": "string", "minLength": 1},
         "expected_state": {"type": "string", "minLength": 1},
@@ -58,7 +58,7 @@
       "properties": {
         "visible": {"$ref": "#/$defs/strings"},
         "terminal_state": {"type": "string", "minLength": 1},
-        "persisted_effects": {"$ref": "#/$defs/strings"},
+        "persisted_effects": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "forbidden_side_effects": {"$ref": "#/$defs/strings"},
         "rejection": {"type": "string", "minLength": 1},
         "expected_state": {"type": "string", "minLength": 1},

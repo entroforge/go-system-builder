@@ -1,0 +1,730 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/submission-receipt.schema.json",
+  "title": "Cross-domain submission receipt projection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet_id",
+    "accepted",
+    "responsibility_status",
+    "work_complete",
+    "current_stage",
+    "domain_refs",
+    "waiting_on",
+    "next_action",
+    "field_errors"
+  ],
+  "properties": {
+    "attempt_status": {"enum": ["rejected"], "description": "Current save attempt only; accepted and responsibility_status retain the durable earlier reception."},
+    "packet_id": {
+      "type": "string"
+    },
+    "accepted": {
+      "type": "boolean"
+    },
+    "responsibility_status": {
+      "enum": [
+        "accepted",
+        "not_accepted",
+        "replaced",
+        "candidate_accepted",
+        "main_result_accepted",
+        "main_result_accepted_rework_required",
+        "main_result_accepted_owner_status_unavailable",
+        "blocker_recorded",
+        "blocker_resolution_recorded"
+      ]
+    },
+    "work_complete": {
+      "type": "boolean"
+    },
+    "consumer_owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "consumer_pending": {
+      "type": "boolean"
+    },
+    "current_stage": {
+      "type": "string",
+      "minLength": 1
+    },
+    "domain_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "waiting_on": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason",
+          "owner",
+          "ref"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ref": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "next_action": {
+      "type": "string",
+      "minLength": 1
+    },
+    "field_errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pointer",
+          "expected",
+          "observed",
+          "repair"
+        ],
+        "properties": {
+          "pointer": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "string"
+          },
+          "repair": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "error": {
+      "type": "string",
+      "minLength": 1
+    },
+    "submission_key": {
+      "type": "string",
+      "pattern": "^([a-f0-9]{64}|review-result-[a-f0-9]{64}|runtime:investigation-case:investigation-case-[A-Za-z0-9._-]+:[1-9][0-9]*|runtime:s9:issued-plan-report:packet-[a-f0-9]{64}|runtime:s9:issued-repair-candidate:packet-[a-f0-9]{64}|runtime:s9:issued-repair-result:packet-[a-f0-9]{64}|runtime:agent:[A-Za-z0-9._-]+:(work_blocked|blocker_resolved):[1-9][0-9]*)$"
+    },
+    "status": {
+      "$ref": "work-status.schema.json"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "work_complete": {
+            "const": true
+          }
+        },
+        "required": [
+          "work_complete"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "responsibility_status": {
+            "enum": [
+              "accepted",
+              "candidate_accepted",
+              "main_result_accepted"
+            ]
+          },
+          "domain_refs": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "accepted",
+          "responsibility_status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "accepted": {
+            "const": false
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "then": {
+        "properties": {
+          "work_complete": {
+            "const": false
+          },
+          "responsibility_status": {
+            "const": "not_accepted"
+          }
+        },
+        "required": [
+          "work_complete",
+          "responsibility_status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "accepted": {
+            "const": true
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "then": {
+        "properties": {
+          "packet_id": {
+            "minLength": 1
+          },
+          "domain_refs": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "const": "not_accepted"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": false
+          },
+          "work_complete": {
+            "const": false
+          }
+        },
+        "required": [
+          "accepted",
+          "work_complete"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "const": "replaced"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "work_complete": {
+            "const": false
+          }
+        },
+        "required": [
+          "accepted",
+          "work_complete",
+          "submission_key",
+          "domain_refs"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "const": "candidate_accepted"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "submission_key": {
+            "pattern": "^runtime:s9:issued-repair-candidate:packet-[a-f0-9]{64}$"
+          },
+          "domain_refs": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "accepted",
+          "submission_key",
+          "domain_refs"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "submission_key": {
+            "pattern": "^runtime:s9:issued-repair-candidate:packet-[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "submission_key"
+        ]
+      },
+      "then": {
+        "properties": {
+          "responsibility_status": {
+            "const": "candidate_accepted"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "const": "candidate_accepted"
+          },
+          "work_complete": {
+            "const": true
+          }
+        },
+        "required": [
+          "responsibility_status",
+          "work_complete"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "consumer_owner": {
+            "const": "main"
+          },
+          "consumer_pending": {
+            "const": true
+          },
+          "domain_refs": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "accepted",
+          "submission_key",
+          "consumer_owner",
+          "consumer_pending"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "submission_key": {
+            "pattern": "^runtime:s9:issued-repair-result:packet-[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "submission_key"
+        ]
+      },
+      "then": {
+        "properties": {
+          "responsibility_status": {
+            "enum": [
+              "main_result_accepted",
+              "main_result_accepted_rework_required",
+              "main_result_accepted_owner_status_unavailable"
+            ]
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "enum": [
+              "main_result_accepted",
+              "main_result_accepted_rework_required",
+              "main_result_accepted_owner_status_unavailable"
+            ]
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "submission_key": {
+            "pattern": "^runtime:s9:issued-repair-result:packet-[a-f0-9]{64}$"
+          },
+          "domain_refs": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "accepted",
+          "submission_key",
+          "domain_refs"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "const": "main_result_accepted"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "work_complete": {
+            "const": true
+          },
+          "consumer_owner": {
+            "const": "main"
+          },
+          "consumer_pending": {
+            "const": true
+          },
+          "domain_refs": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "accepted",
+          "work_complete",
+          "submission_key",
+          "domain_refs",
+          "consumer_owner",
+          "consumer_pending"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "enum": [
+              "main_result_accepted_rework_required",
+              "main_result_accepted_owner_status_unavailable"
+            ]
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "work_complete": {
+            "const": false
+          },
+          "consumer_owner": {
+            "const": "main"
+          },
+          "consumer_pending": {
+            "const": true
+          },
+          "domain_refs": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "accepted",
+          "work_complete",
+          "submission_key",
+          "domain_refs",
+          "consumer_owner",
+          "consumer_pending"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "consumer_owner"
+        ]
+      },
+      "then": {
+        "required": [
+          "consumer_pending"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "consumer_pending"
+        ]
+      },
+      "then": {
+        "required": [
+          "consumer_owner"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "consumer_pending": {
+            "const": true
+          }
+        },
+        "required": [
+          "consumer_pending"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "consumer_owner": {
+            "minLength": 1
+          }
+        },
+        "required": [
+          "accepted",
+          "consumer_owner"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "const": "done"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "work_complete": {
+            "const": true
+          },
+          "accepted": {
+            "const": true
+          }
+        },
+        "required": [
+          "work_complete",
+          "accepted"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "work_complete": {
+            "const": true
+          }
+        },
+        "required": [
+          "work_complete",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "done"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "const": "blocker_recorded"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "work_complete": {
+            "const": false
+          },
+          "consumer_owner": {
+            "const": "main"
+          },
+          "consumer_pending": {
+            "const": true
+          },
+          "submission_key": {
+            "pattern": "^runtime:agent:[A-Za-z0-9._-]+:work_blocked:[1-9][0-9]*$"
+          },
+          "domain_refs": {
+            "minItems": 2
+          },
+          "status": {
+            "enum": [
+              "blocked",
+              "active"
+            ]
+          }
+        },
+        "required": [
+          "accepted",
+          "work_complete",
+          "domain_refs",
+          "consumer_owner",
+          "consumer_pending",
+          "status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "submission_key": {
+            "pattern": "^runtime:agent:[A-Za-z0-9._-]+:work_blocked:[1-9][0-9]*$"
+          }
+        },
+        "required": [
+          "submission_key"
+        ]
+      },
+      "then": {
+        "properties": {
+          "responsibility_status": {
+            "const": "blocker_recorded"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "responsibility_status": {
+            "const": "blocker_resolution_recorded"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "work_complete": {
+            "const": false
+          },
+          "consumer_owner": {
+            "const": "main"
+          },
+          "consumer_pending": {
+            "const": true
+          },
+          "submission_key": {
+            "pattern": "^runtime:agent:[A-Za-z0-9._-]+:blocker_resolved:[1-9][0-9]*$"
+          },
+          "domain_refs": {
+            "minItems": 2
+          },
+          "status": {
+            "const": "active"
+          }
+        },
+        "required": [
+          "accepted",
+          "work_complete",
+          "domain_refs",
+          "consumer_owner",
+          "consumer_pending",
+          "status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "submission_key": {
+            "pattern": "^runtime:agent:[A-Za-z0-9._-]+:blocker_resolved:[1-9][0-9]*$"
+          }
+        },
+        "required": [
+          "submission_key"
+        ]
+      },
+      "then": {
+        "properties": {
+          "responsibility_status": {
+            "const": "blocker_resolution_recorded"
+          }
+        },
+        "required": [
+          "responsibility_status"
+        ]
+      }
+    }
+  ]
+}

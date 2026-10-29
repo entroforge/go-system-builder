@@ -16,6 +16,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"strings"
 )
 
@@ -116,3 +117,10 @@ func EnvelopeFromState(assignmentID, state, idempotencyKey string, baselineGener
 // depend on internal/integration at compile time, but it does need to
 // promise that any future helper here does not block the context.
 var _ = context.Background
+
+// ResolveIntegrationCheckpointPathForRecord formats the slot of a Record
+// already resolved by the caller from current original Runtime authority.
+// It neither upgrades legacy checkpoints nor trusts a revision read from one.
+func ResolveIntegrationCheckpointPathForRecord(root string, ref assignmentrecord.RecordReference) string {
+	return assignmentrecord.IntegrationCheckpointPath(root, ref)
+}

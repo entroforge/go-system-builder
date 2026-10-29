@@ -13,12 +13,18 @@ import (
 // these observations; summary mutations read only the legacy base, avoiding
 // double-counting. These are diagnostics, never authorization evidence.
 type observation struct {
-	Kind     string `json:"kind"`
-	Label    string `json:"label"`
-	Duration int64  `json:"duration_ms"`
+	Kind               string `json:"kind"`
+	Label              string `json:"label"`
+	Duration           int64  `json:"duration_ms"`
+	ProcessBudgetMinMS *int64 `json:"process_budget_min_ms,omitempty"`
+	ProcessBudgetMaxMS *int64 `json:"process_budget_max_ms,omitempty"`
 }
 
 func observe(root, kind, label string, duration int64) error {
+	return observeRecord(root, observation{Kind: kind, Label: label, Duration: duration})
+}
+
+func observeRecord(root string, record observation) error {
 	if strings.TrimSpace(root) == "" {
 		return fmt.Errorf("metrics: root is required")
 	}
@@ -31,7 +37,7 @@ func observe(root, kind, label string, duration int64) error {
 		return err
 	}
 	defer os.Remove(f.Name())
-	if err = json.NewEncoder(f).Encode(observation{kind, label, duration}); err != nil {
+	if err = json.NewEncoder(f).Encode(record); err != nil {
 		f.Close()
 		return err
 	}

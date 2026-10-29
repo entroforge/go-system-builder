@@ -120,6 +120,32 @@ func writeSystemState(t *testing.T, root string, state map[string]any) {
 	}
 }
 
+func assertRuntimeCursorUnchanged(t *testing.T, context string, before, after map[string]any) {
+	t.Helper()
+	beforeState, beforePhase := req039fixtures.Lifecycle(before)
+	afterState, afterPhase := req039fixtures.Lifecycle(after)
+	if beforeState != afterState || beforePhase != afterPhase || req039fixtures.LastTransitionID(before) != req039fixtures.LastTransitionID(after) {
+		t.Fatalf("%s unexpectedly advanced Runtime: before=%s.%s/%s after=%s.%s/%s",
+			context,
+			beforeState, beforePhase, req039fixtures.LastTransitionID(before),
+			afterState, afterPhase, req039fixtures.LastTransitionID(after))
+	}
+}
+
+func assertPreToolUseObservedWithoutDenyOrAdvance(t *testing.T, code int, stdout, stderr string, before, after map[string]any) {
+	t.Helper()
+	if code != 0 {
+		t.Fatalf("PreToolUse listener failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, `"permissionDecision":"deny"`) {
+		t.Fatalf("PreToolUse graph listener must not deny a tool call: %s", stdout)
+	}
+	if !strings.Contains(stdout, "QUALITY_GATE") {
+		t.Fatalf("PreToolUse must render graph progress: %s", stdout)
+	}
+	assertRuntimeCursorUnchanged(t, "PreToolUse observation", before, after)
+}
+
 // systemPlanningState returns a schema-valid loop-state.json fixture
 // for the requested phase / revision. It mirrors the planningState
 // helper in internal/cli/ac_test.go (same fix-up: zero-SHA for

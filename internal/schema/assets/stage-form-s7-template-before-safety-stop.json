@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "S7",
+  "adapter": "review_result",
+  "title": "S07 验证 · ReviewResult",
+  "instruction": "只修改 answer。对本卷列出的每个 Claim 给出本人实际判断；blocked_claims 只用于被本轮已确认 Finding 阻断的 Claim。明确填写 Result verdict。保留所有机器题干与来源。 本地证据只选择真实 path:相对路径 或 command_output:原捕获路径；摘要、bytes、truncated 和资产 digest 由原接收机制绑定，不手算或抄 Runtime。",
+  "questions": {
+    "claim_results": {
+      "question": "逐项执行本 Assignment 的 Claim，逐项填写 {\"claim_id\":\"本卷实际Claim ID\",\"conclusion\":\"pass\",\"method\":\"实际采用的方法\",\"observed\":\"实际观察\",\"evidence_refs\":[\"path:docs/reports/review/实际证据.txt\"]}；conclusion 只用 pass/fail。无法执行且被本轮已确认 Finding 阻断的 Claim 改填 blocked_claims，同一 Claim 不在两处重复。不要把未执行写成 pass。",
+      "choices": [
+        "pass",
+        "fail"
+      ]
+    },
+    "blocked_claims": {
+      "question": "没有被本轮已确认 Finding 阻断的 Claim 时保留 []。仅在该 Finding 使 build/start/entry/precondition 无法执行时，按需添加 {\"claim_id\":\"实际Claim ID\",\"blocking_finding_ids\":[\"本轮已确认finding-ID\"],\"failed_precondition\":{\"kind\":\"start\",\"detail\":\"实际失效前提\"},\"evidence_refs\":[\"path:docs/reports/review/实际证据.txt\"],\"after_repair_required\":true}；kind 只用 build/start/entry/precondition，after_repair_required 必须为 true。时间、预算或人手不足不能填写为 Finding 阻断。",
+      "example": {
+        "path": "answer.blocked_claims",
+        "expected": "每个阻断项指向本轮已确认 Finding，并要求修复后重做。",
+        "observed": "当前启动前提被已确认 Finding 阻断。"
+      }
+    },
+    "checks": {
+      "question": "没有实际运行的检查时保留 []。每次已运行检查按需添加 {\"name\":\"检查名（可选）\",\"command\":\"实际运行命令\",\"result\":\"pass\",\"evidence_refs\":[\"path:docs/reports/review/实际检查输出.txt\"]}；command/result 必填，result 只用 pass/fail，name/evidence_refs 可选。不要把计划中的命令写成已运行。"
+    },
+    "findings": {
+      "question": "无 fail Claim 时保留 []；每个 fail Claim 恰好一个实际观察到的 Finding。仅在确有问题时按此形状添加并全部替换为实际内容：{\"claim_id\":\"本卷实际fail Claim ID\",\"severity\":\"P2\",\"expected\":\"应有行为\",\"authority_refs\":[\"要求该行为的REQ/契约/CASE路径及条目\"],\"observed\":\"实际偏差\",\"observation_mode\":\"code_inspection\",\"encounter\":{\"journey_summary\":\"从实际检查入口到首次偏差的经过\",\"inspection_entry\":\"实际文件:行号\",\"symbol_trail\":\"实际调用或数据流路径\",\"last_good_checkpoint\":\"偏差发生前最后正常状态\",\"wall_action\":\"暴露偏差的实际动作\",\"first_bad_checkpoint\":\"首次异常及位置\",\"terminal_state\":\"本次检查结束时的状态\"},\"reproducibility\":\"once_with_deterministic_trace\",\"evidence_refs\":[\"path:docs/reports/review/实际证据.txt\"]}。以上示例专业字段均需实际填写；schema_version、finding_id、lens 由系统从原packet/Claim绑定，不要求作者填写。只有同卷确需给 site_lost 或其他真实关联使用明确标签时，才可显式提供 finding_id；显式冲突仍拒绝。severity 只用 P0/P1/P2/P3，reproducibility 只用 always/intermittent/once_with_deterministic_trace，按已执行样本选取。visible_impact 位于 Finding 顶层；副作用写入 encounter.side_effects 字符串数组，不能在 Finding 顶层添加 side_effects。encounter 总需 journey_summary（至少8字）、wall_action、first_bad_checkpoint；按真实 observation_mode 补齐：user_flow 需 entrypoint、timeline、terminal_state；api_flow 需 entrypoint、request_summary、response_summary、terminal_state；command_flow 需 command、exit_code（整数）、terminal_state；state_transition 需 before_state、after_state、terminal_state；code_inspection 需 inspection_entry、symbol_trail。timeline 每步形状为 {\"sequence\":1,\"action\":\"实际动作\",\"observed_checkpoint\":\"该步观察\",\"evidence_refs\":[\"path:docs/reports/review/该步实际证据.txt\"]}，sequence 为从1开始的正整数。普通 Finding 还需 last_good_checkpoint、terminal_state，每个已记录 timeline 步骤有 evidence_refs。可安全执行时继续其余必需 Claim；Finding 不等于要求暂停或改成 PASS。仅真实无法取得的现场证据在 encounter.capture_gaps 字符串数组写明缺什么、无法取得的原因及调查影响；P0/安全/数据破坏风险下停止危险采集，如实保留 capture_gaps，不为补卷重做危险操作。不要填根因或修复方案。 evidence_refs 使用原 typed 引用，例如 path:docs/reports/review/check-output.txt、command_output:原实际捕获路径 或 runtime:实际已登记证据ID，替换为真实引用，不填裸路径。"
+    },
+    "deviations": {
+      "question": "没有实际偏差时保留 []；有偏差时填字符串数组，例如 [\"实际执行与本卷约定的差异及具体原因\"]，不另造偏差对象或重复 Finding。"
+    },
+    "site_lost": {
+      "question": "通常保留 []。仅普通 Finding 的真实 encounter 确实无法恢复、无法补齐调查现场时，按需添加 {\"finding_id\":\"该实际finding-ID\",\"reason\":\"哪些现场已丢失、为何无法恢复\"}；两个字段都必填。这会记录本人阻塞并留在 S7，不表示已完成。P0/安全/数据破坏 Finding 不用此项，按 findings 题记录实际 capture_gaps。"
+    },
+    "verification_artifact_digest": {
+      "question": "机器字段：保留系统预填或 null，由原生结束时的原答卷适配器从实际来源绑定；作者不计算或抄写摘要，原消费者继续校验源连续性。"
+    },
+    "verdict": {
+      "question": "明确填写本 Assignment 的实际专业结论：全部 Claim 实际通过用 pass；有 fail Finding 或 blocked_claims 用 finding，普通 Finding 仍继续本轮可执行的必需检查；仅专业判断确需需求变更或阻止发布时分别用 req_change_required/release_blocked。不得使用 fail 作为 verdict，不为通过流转把 Finding 改成 pass。",
+      "choices": [
+        "pass",
+        "finding",
+        "req_change_required",
+        "release_blocked"
+      ]
+    }
+  }
+}

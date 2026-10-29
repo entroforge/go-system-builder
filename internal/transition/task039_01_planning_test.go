@@ -248,7 +248,7 @@ func TestTASK03901CatalogRejectsMultipleAutomaticCandidatesWithoutSelector(t *te
 		for key, value := range transitions[0].(map[string]any) {
 			clone[key] = value
 		}
-		clone["id"] = "PTR-PLAN-03"
+		clone["id"] = "PTR-PLAN-99"
 		clone["event"] = "planning_design_rework"
 		clone["to"] = "design"
 		delete(clone, "selector")

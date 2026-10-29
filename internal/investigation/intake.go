@@ -96,9 +96,9 @@ type failedPrecondition struct {
 	Detail string `json:"detail"`
 }
 
-// Ingest consumes the sealed ObservationBatch pointer in state.review,
-// verifies the pinned artifact and exact Finding set, writes the initial Case,
-// and commits the state.review.investigation pointer with one Runtime CAS.
+// Ingest consumes the current sealed ObservationBatch, or the actual human
+// defect decision consumed by TR-027 when no current Batch exists. Both write
+// the original Case and investigation pointer through the same Runtime CAS.
 func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime.Snapshot, error) {
 	if strings.TrimSpace(root) == "" {
 		return runtime.Snapshot{}, actionableError("repository root is required")
@@ -127,52 +127,83 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 			stringField(lifecycle["state"]), stringField(lifecycle["phase"]), intakePhaseNext)
 	}
 
-	pointer, err := observationBatchPointer(root, current.State)
-	if err != nil {
-		return runtime.Snapshot{}, err
-	}
-	batchPath, err := repositoryPath(root, pointer.Path)
-	if err != nil {
-		return runtime.Snapshot{}, actionableError("observation_batch.path is invalid: %v", err)
-	}
-	batchBytes, err := os.ReadFile(batchPath)
-	if err != nil {
-		return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q is missing or unreadable: %v", pointer.Path, err)
-	}
-	actualBatchSHA := sha256Hex(batchBytes)
-	if actualBatchSHA != pointer.SHA256 {
-		return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q sha256 drifted: state pins %s but disk is %s", pointer.Path, pointer.SHA256, actualBatchSHA)
-	}
-	if err := schema.NewValidator(root).ValidateBytes("observation-batch.schema.json", batchBytes); err != nil {
-		return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q schema is invalid: %v", pointer.Path, err)
-	}
-	var batch observationBatch
-	if err := json.Unmarshal(batchBytes, &batch); err != nil {
-		return runtime.Snapshot{}, actionableError("decode sealed ObservationBatch %q: %v", pointer.Path, err)
-	}
-	if batch.ObservationBatchID != pointer.BatchID {
-		return runtime.Snapshot{}, actionableError("observation_batch batch_id mismatch: state pins %q but the file declares %q", pointer.BatchID, batch.ObservationBatchID)
-	}
-	if batch.RuntimeID != stringField(current.State["runtime_id"]) {
-		return runtime.Snapshot{}, actionableError("observation_batch runtime_id %q does not match Runtime %q", batch.RuntimeID, stringField(current.State["runtime_id"]))
-	}
 	baselineGeneration, err := baselineGeneration(current.State)
 	if err != nil {
 		return runtime.Snapshot{}, actionableError("Runtime baseline.generation is missing: %v", err)
 	}
-	if batch.BaselineGeneration != baselineGeneration {
-		return runtime.Snapshot{}, actionableError("observation_batch baseline_generation %d does not match Runtime baseline_generation %d", batch.BaselineGeneration, baselineGeneration)
+	var pointer batchPointer
+	var batch observationBatch
+	humanID, humanPath := "", ""
+	review, _ := current.State["review"].(map[string]any)
+	if currentBatch, _ := review["observation_batch"].(map[string]any); currentBatch == nil {
+		rows, _ := current.State["evidence"].([]any)
+		for index := len(rows) - 1; index >= 0; index-- {
+			row, _ := rows[index].(map[string]any)
+			if stringField(row["kind"]) != "human_decision" || integerValueOrZero(row["baseline_generation"]) != baselineGeneration || integerValueOrZero(row["review_round"]) != integerValueOrZero(review["round"]) {
+				continue
+			}
+			if stringField(row["consumed_by"]) != "TR-027" {
+				continue
+			}
+			source, sourceErr := humanDefectSource(root, current.State, []string{stringField(row["id"])})
+			if sourceErr != nil {
+				return runtime.Snapshot{}, actionableError("Main must restore the original human defect source: %v", sourceErr)
+			}
+			humanID, humanPath = source[0], source[1]
+			break
+		}
 	}
-	if err := exactFindingSet(pointer.FindingIDs, batch.FindingIDs); err != nil {
-		return runtime.Snapshot{}, actionableError("observation_batch Finding IDs are not an exact set: %v", err)
+	if humanID == "" && stringField(s8Map(current.State["last_transition"])["transition_id"]) == "TR-027" {
+		return runtime.Snapshot{}, actionableError("Main must restore the original human_decision consumed by TR-027; no Finding or ObservationBatch is required for that human report")
 	}
-	if err := validateFindingArtifacts(root, current.State, pointer.FindingIDs); err != nil {
-		return runtime.Snapshot{}, actionableError("sealed ObservationBatch Finding artifacts are not investigation-ready: %v", err)
+
+	if humanID == "" {
+		pointer, err = observationBatchPointer(root, current.State)
+		if err != nil {
+			return runtime.Snapshot{}, err
+		}
+		batchPath, err := repositoryPath(root, pointer.Path)
+		if err != nil {
+			return runtime.Snapshot{}, actionableError("observation_batch.path is invalid: %v", err)
+		}
+		batchBytes, err := os.ReadFile(batchPath)
+		if err != nil {
+			return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q is missing or unreadable: %v", pointer.Path, err)
+		}
+		actualBatchSHA := sha256Hex(batchBytes)
+		if actualBatchSHA != pointer.SHA256 {
+			return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q sha256 drifted: state pins %s but disk is %s", pointer.Path, pointer.SHA256, actualBatchSHA)
+		}
+		if err := schema.NewValidator(root).ValidateBytes("observation-batch.schema.json", batchBytes); err != nil {
+			return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q schema is invalid: %v", pointer.Path, err)
+		}
+		if err := json.Unmarshal(batchBytes, &batch); err != nil {
+			return runtime.Snapshot{}, actionableError("decode sealed ObservationBatch %q: %v", pointer.Path, err)
+		}
+		if batch.ObservationBatchID != pointer.BatchID {
+			return runtime.Snapshot{}, actionableError("observation_batch batch_id mismatch: state pins %q but the file declares %q", pointer.BatchID, batch.ObservationBatchID)
+		}
+		if batch.RuntimeID != stringField(current.State["runtime_id"]) {
+			return runtime.Snapshot{}, actionableError("observation_batch runtime_id %q does not match Runtime %q", batch.RuntimeID, stringField(current.State["runtime_id"]))
+		}
+		if batch.BaselineGeneration != baselineGeneration {
+			return runtime.Snapshot{}, actionableError("observation_batch baseline_generation %d does not match Runtime baseline_generation %d", batch.BaselineGeneration, baselineGeneration)
+		}
+		if err := exactFindingSet(pointer.FindingIDs, batch.FindingIDs); err != nil {
+			return runtime.Snapshot{}, actionableError("observation_batch Finding IDs are not an exact set: %v", err)
+		}
+		if err := validateFindingArtifacts(root, current.State, pointer.FindingIDs); err != nil {
+			return runtime.Snapshot{}, actionableError("sealed ObservationBatch Finding artifacts are not investigation-ready: %v", err)
+		}
+	}
+	sourceID := batch.ObservationBatchID
+	if humanID != "" {
+		sourceID = humanID
 	}
 
 	caseID := request.CaseID
 	if strings.TrimSpace(caseID) == "" {
-		caseID = "investigation-case-" + batch.ObservationBatchID
+		caseID = "investigation-case-" + sourceID
 	}
 	if !validCaseID(caseID) {
 		return runtime.Snapshot{}, actionableError("case_id %q is invalid; use investigation-case-<token>", caseID)
@@ -192,9 +223,31 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		return runtime.Snapshot{}, fmt.Errorf("inspect InvestigationCase artifact %s: %w", caseRel, err)
 	}
 
-	caseBytes, err := buildInitialCase(caseID, batch, caseRel, pointer.SHA256, request.GroupingRationale, baselineGeneration)
+	caseBytes, err := buildInitialCase(caseID, batch, pointer.Path, pointer.SHA256, request.GroupingRationale, baselineGeneration)
 	if err != nil {
 		return runtime.Snapshot{}, err
+	}
+	if humanID != "" {
+		var document map[string]any
+		if err := json.Unmarshal(caseBytes, &document); err != nil {
+			return runtime.Snapshot{}, err
+		}
+		for _, key := range []string{"observation_batch_id", "observation_batch_ref", "observation_batch_sha256"} {
+			delete(document, key)
+		}
+		document["source_finding_ids"] = []string{}
+		document["unexplained_finding_ids"] = []string{}
+		document["failure_boundary_refs"] = []string{humanID, humanPath}
+		digest, baselineErr := humanBaselineDigest(root, current.State)
+		if baselineErr != nil {
+			return runtime.Snapshot{}, actionableError("%v", baselineErr)
+		}
+		document["baseline_digest"] = digest
+		caseBytes, err = json.MarshalIndent(document, "", "  ")
+		if err != nil {
+			return runtime.Snapshot{}, err
+		}
+		caseBytes = append(caseBytes, '\n')
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("review-investigation-case.schema.json", caseBytes); err != nil {
 		return runtime.Snapshot{}, actionableError("InvestigationCase schema is invalid before write: %v", err)
@@ -226,25 +279,44 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		"observation_batch_id": batch.ObservationBatchID,
 		"updated_at":           occurredAt.UTC().Format(time.RFC3339Nano),
 	}
+	if humanID != "" {
+		delete(pointerMap, "observation_batch_id")
+	}
 	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	snapshot, err := updateRuntime(store, request.ExpectedRevision, runtime.Mutation{
 		EventID:                fmt.Sprintf("evt-investigation-case-%s-r%d", caseID, commitRevision+1),
 		TransitionID:           "INVESTIGATION-CASE-INGESTED",
 		Event:                  "transition_committed",
 		Actor:                  "orchestrator",
-		IdempotencyKey:         fmt.Sprintf("runtime:investigation-ingest:%s:%d", batch.ObservationBatchID, commitRevision),
+		IdempotencyKey:         fmt.Sprintf("runtime:investigation-ingest:%s:%d", sourceID, commitRevision),
 		RuntimeID:              runtimeID,
 		From:                   cursor,
 		To:                     cursor,
-		EvidenceIDs:            []string{batch.ObservationBatchID},
+		EvidenceIDs:            []string{sourceID},
 		RequestID:              "investigation-ingest",
 		BaselineGeneration:     baselineGeneration,
 		GateID:                 "S8-INVESTIGATION-INTAKE",
 		GateFingerprint:        "sha256:investigation-intake-v1",
 		ProducerResponsibility: "Investigation Intake",
-		Message:                fmt.Sprintf("investigation_case_ingested: %s consumes %s", caseID, batch.ObservationBatchID),
+		Message:                fmt.Sprintf("investigation_case_ingested: %s consumes %s", caseID, sourceID),
 		OccurredAt:             occurredAt,
 		Apply: func(state map[string]any) error {
+			if humanID != "" {
+				var original map[string]any
+				if err := json.Unmarshal(caseBytes, &original); err != nil {
+					return err
+				}
+				if _, err := humanCaseSource(root, state, original); err != nil {
+					return err
+				}
+				digest, err := humanBaselineDigest(root, state)
+				if err != nil {
+					return err
+				}
+				if digest != stringField(original["baseline_digest"]) {
+					return errors.New("human report frozen baseline changed during intake; Main restores the original source")
+				}
+			}
 			review, ok := state["review"].(map[string]any)
 			if !ok {
 				return actionableError("Runtime review section is missing; restore state.review before retry")
@@ -590,6 +662,13 @@ func writeExclusive(path string, data []byte) error {
 	if err := file.Close(); err != nil {
 		_ = os.Remove(path)
 		return err
+	}
+	// The immutable Case file must be durably named before the original
+	// Runtime pointer transaction can refer to it. If the directory sync fails,
+	// retain the file: its directory-entry durability is uncertain and a blind
+	// unlink could destroy an artifact that recovery must inspect.
+	if err := runtime.SyncDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync parent directory for immutable Case %s (retained for recovery): %w", path, err)
 	}
 	return nil
 }

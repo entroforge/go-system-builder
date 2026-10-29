@@ -1,15 +1,21 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"time"
 )
+
+func isolatedCheckArguments(main, common, worker, scratch, command string) []string {
+	return []string{"--unshare-all", "--share-net", "--seccomp", "3", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run", "--ro-bind", main, main, "--ro-bind", common, common, "--bind", scratch, worker, "--chdir", worker, "--", "/bin/sh", "-c", command}
+}
 
 func runIsolatedCheck(ctx context.Context, main, common, worker, scratch, command string, output io.Writer) error {
 	binary, err := exec.LookPath("bwrap")
@@ -26,14 +32,21 @@ func runIsolatedCheck(ctx context.Context, main, common, worker, scratch, comman
 	// NETLINK_ROUTE setup Bubblewrap performs for a new namespace. Seccomp
 	// instead denies socket creation/connections and io_uring, including Unix
 	// sockets which could otherwise reach host services through read-only paths.
-	cmd := exec.CommandContext(ctx, binary, "--unshare-all", "--share-net", "--seccomp", "3", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run", "--ro-bind", main, main, "--ro-bind", common, common, "--bind", scratch, worker, "--chdir", worker, "--", "/bin/sh", "-c", command)
+	cmd := exec.CommandContext(ctx, binary, isolatedCheckArguments(main, common, worker, scratch, command)...)
+	if p, ok := checkexec.CurrentProfile(ctx); ok {
+		env, err := p.CommandEnvironment()
+		if err != nil {
+			return err
+		}
+		cmd.Env = env
+	}
 	cmd.ExtraFiles = []*os.File{filter}
 	cmd.Stdout, cmd.Stderr = output, output
 	cmd.WaitDelay = time.Second
 	return cmd.Run()
 }
 
-func checkSocketFilter() (*os.File, error) {
+func checkSocketProgram() ([]byte, error) {
 	var arch uint32
 	var blocked []uint32
 	switch runtime.GOARCH {
@@ -58,11 +71,21 @@ func checkSocketFilter() (*os.File, error) {
 		program = append(program, instruction{0x15, 0, 1, nr}, instruction{0x06, 0, 0, 0x00050001})
 	}
 	program = append(program, instruction{0x06, 0, 0, 0x7fff0000})
+	var encoded bytes.Buffer
+	err := binary.Write(&encoded, binary.LittleEndian, program)
+	return encoded.Bytes(), err
+}
+
+func checkSocketFilter() (*os.File, error) {
+	program, err := checkSocketProgram()
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.CreateTemp("", "loop-worker-seccomp-")
 	if err != nil {
 		return nil, err
 	}
-	if err = binary.Write(f, binary.LittleEndian, program); err == nil {
+	if _, err = f.Write(program); err == nil {
 		_, err = f.Seek(0, 0)
 	}
 	if err != nil {

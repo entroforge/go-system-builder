@@ -39,7 +39,7 @@ func WritePlanningContractPass(t *testing.T, root string, state map[string]any) 
 func WritePlanningTaskPass(t *testing.T, root string, state map[string]any) {
 	t.Helper()
 	EnsureStateRoot(state, root)
-	taskPath := "docs/dev/tasks/TASK-039-01-loop-definition.md"
+	taskPath := "docs/dev/tasks/TASK-039-01.md"
 	data := []byte("# TASK-039-01\n\n> Status: complete\n> Version: v1.0.2\n> Primary contract: BE-039\n\n" +
 		"## 3. Delivered Clauses\n\n| Contract | Delivered clauses |\n|:--|:--|\n| BE-039 | §1 |\n\n" +
 		"## 7. Closing Contract\n\n```text\nassert BE-039 §1 == satisfied\n```\n")

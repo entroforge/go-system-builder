@@ -18,7 +18,7 @@ Passing focused tests or a scoped test-quality review conclusion with command ev
 ## N/A Criteria
 N/A when no JavaScript or TypeScript executable behavior is affected.
 ## Stop Conditions
-Stop on nondeterministic tests, untestable required behavior, or mocks that contradict the contract.
+Diagnose nondeterminism and correct mocks/assertions within the assigned test scope. Report a genuinely untestable acceptance oracle or missing authoritative inputs to Main; retain failed or unrun checks honestly rather than inventing green evidence.
 ## Non-Goals
 Do not use coverage counts as a substitute for behavior assertions.
 

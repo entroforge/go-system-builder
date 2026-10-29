@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,16 +9,17 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
-	"github.com/entroforge/go-system-builder/internal/controller"
 )
 
 func TestMainStopHookBlocksUnconsumedReviewResult(t *testing.T) {
 	root := acFixtureRoot(t)
 	state := planningState(t, root, "design", 1)
 	seedSatisfiedPlanningDesign(t, root, state)
+	state["lifecycle"] = map[string]any{"state": "verification", "phase": "running", "phase_revision": 1}
 	state["review"] = map[string]any{
 		"round":       1,
 		"clean_round": nil,
+		"plan":        map[string]any{"plan_id": "current", "path": "plan.json", "review_round": 1, "status": "running"},
 		"assignments": map[string]any{
 			"assignment-qa-1": map[string]any{
 				"lens":       "qa",
@@ -30,19 +30,6 @@ func TestMainStopHookBlocksUnconsumedReviewResult(t *testing.T) {
 			},
 		},
 	}
-	writeACState(t, root, state)
-	control, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
-		Root: root, Event: "Stop", SessionID: "session-main",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !control.QualityGate.TransitionCommitted {
-		t.Fatalf("fixture must expose an automatic migration before Stop preflight: status=%q gate=%q missing=%v conflicts=%v error=%q", control.QualityGate.Status, control.QualityGate.GateID, control.QualityGate.Missing, control.QualityGate.Conflicts, control.Error)
-	}
-	// The probe above intentionally proves that this fixture would mutate if
-	// the Controller ran first. Restore the pre-hook snapshot before exercising
-	// the actual CLI path.
 	writeACState(t, root, state)
 	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
 		t.Fatal(err)

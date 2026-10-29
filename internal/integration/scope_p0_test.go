@@ -50,6 +50,35 @@ func TestInspectOutOfScopeDiffPreservesWorktree(t *testing.T) {
 	}
 }
 
+// Domain delivery keeps scope deviations visible for Main's judgment without
+// turning the S6 path audit into a separate S9 integration prerequisite.
+func TestInspectDomainDeliveryRecordsOutOfScopeDiffWithoutACL(t *testing.T) {
+	fr, restore := runFakeRunner(t)
+	defer restore()
+	root, wt := setupCleanTree(t, fr)
+	fr.fileContents["feature-commit:internal/order/handler.go"] = "new"
+	fr.fileContents["feature-commit:internal/unrelated/rogue.go"] = "new"
+	req := InspectRequest{
+		Root:         root,
+		Assignment:   scopeAssignment(wt, "feature", "develop", []string{"internal/order/**"}),
+		TargetBranch: "develop", BaselineGeneration: 1,
+	}
+	validated := false
+	insp, err := Inspect(context.Background(), req, InspectConfig{ValidateDelivery: func(_ context.Context, actual Inspection) error {
+		validated = actual.SourceHead == "feature-commit"
+		return nil
+	}})
+	if err != nil || !insp.Ready || !validated {
+		t.Fatalf("domain delivery not ready: validated=%t blockers=%v err=%v", validated, insp.Blockers, err)
+	}
+	if len(insp.OutOfScopeDiff) != 1 || insp.OutOfScopeDiff[0] != "internal/unrelated/rogue.go" || len(insp.ChangedPaths) != 2 || insp.ChangedPathsSHA256 == "" {
+		t.Fatalf("domain delivery lost actual diff/deviation metadata: %+v", insp)
+	}
+	if len(insp.AssignmentProjection.WritePaths) != 1 || insp.AssignmentProjection.WritePaths[0] != "internal/order/**" || len(insp.EffectiveWritePaths) != 0 {
+		t.Fatalf("domain scope must remain context without a forwarded ACL: %+v", insp)
+	}
+}
+
 // TestInspectInScopeDiffPassesAudit: the same diff with both files inside
 // the declared scope passes the audit and stays ready.
 func TestInspectInScopeDiffPassesAudit(t *testing.T) {

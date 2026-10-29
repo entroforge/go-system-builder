@@ -13,9 +13,10 @@ the documentation and Harness that the method itself runs on.
 A **Loop** binds exactly one human-locked REQ and drives it, as a state machine,
 from the locked requirement to the human release handoff. It slices the path
 into a finite set of machine-checkable states. Every state admits only the
-transitions the Loop Definition allows; every transition requires evidence;
-every evidence can be invalidated. Human-only boundaries are blocked by Hook;
-recoverable process gaps are surfaced as Hook warnings with recovery steps.
+transitions the Loop Definition allows, subject to their declared domain
+conditions. Evidence can become invalid. Human decisions remain in their
+original application; Hook feedback names missing work and its next owner
+without turning ordinary tools into approval gates.
 
 The goal of Loop Engineering is not to let the model work without constraint. It
 is to let Claude Code, inside one human-locked requirement scope, continuously
@@ -35,7 +36,7 @@ The whole loop has one simple control shape:
 ```mermaid
 graph LR
     H1["**Human**<br/>locks REQ"]:::human
-    M["**Loop automation**<br/>prototype gate → design → contracts<br/>→ TASK → Team → agent dispatch (plan_checkpoint)<br/>→ specialized Builder → Verifier → QA → E2E Tester<br/>→ BUG repair → full re-review<br/>→ ACC → Release Architecture Audit"]:::auto
+    M["**Loop automation**<br/>prototype gate → design → contracts<br/>→ TASK → native Agent dispatch<br/>→ specialized Builder → Verifier → QA → E2E Tester<br/>→ BUG repair → full re-review<br/>→ ACC → Release Architecture Audit"]:::auto
     G["**Human**<br/>S11 decision gateway"]:::human
     H2["**Human**<br/>squash merge + formal release"]:::human
     H1 ==> M ==> G ==> H2
@@ -103,8 +104,8 @@ human locks REQ
 -> UI Design Package Gate (if UI impact)
 -> design and contracts
 -> TASK decomposition
--> Agent Team creation
--> agent dispatch (plan_checkpoint)
+-> Main supplies exact professional task references
+-> Claude Code native Agent dispatch
 -> specialized Builder development
 -> Delivery Verifier + QA + E2E Tester
 -> finding investigation and canonical BUG reports
@@ -133,7 +134,7 @@ and one mutability rule.
 | **Locked REQ** | `docs/requirements/REQ-xxx.md` | what is required | only via human change control | **human only** |
 | **Loop Definition** | `docs/control/loop-definition.json` | which transition is legal in the current state | versioned design doc | design phase (human) |
 | **Loop Runtime** | `.claude/loop-state.json` | current facts + resumable Milestone | Writer-owned current-state commit sequence; lifecycle transitions use the Transition Engine and Milestone refresh uses the Runtime Store | **single Runtime control plane** |
-| **Evidence** | `docs/reports/**/*.{md,json}` | that something was done and is still valid | can be marked invalid by impact-analysis | the activated Agent that owns it |
+| **Evidence** | `docs/reports/**/*.{md,json}` | that something was done and is still valid | can be marked invalid by impact-analysis | the professional responsibility that produced it |
 
 Chat, `docs/project.yaml`, `docs/project-map.md`, TASK bodies and REQ Todo blocks are **not**
 runtime authorities. They are human summaries.
@@ -163,7 +164,7 @@ Each layer answers exactly one question and does not cross its boundary.
 | Current runtime | `.claude/loop-state.json` | what the current facts are | **current state** |
 | Methodology + practices | `.claude/skills/` | which method applies to an event | advisory |
 | Agent definitions | `.claude/agents/` | who a role is and its maximum capability | boundary |
-| Hook policy | `docs/control/hook-policy.json` | whether an action is blocked | **enforcement** |
+| Hook listener | Hook events | current questionnaire path, missing duties and next action | **progress observation** |
 | Loop Controller / Milestone | Hook events + `milestone` field in `.claude/loop-state.json` | where the Agent is and what it should do next | **recovery guidance** |
 | Harness CLI | `.claude/bin/loop-harness` | who executes validation, transition, audit | **mechanism** |
 
@@ -178,13 +179,13 @@ graph TB
     Runtime["Loop Runtime<br/>what is the current fact"]:::runtime
     Skills["Skills<br/>which method applies"]:::skill
     Agents["Agent Definitions<br/>who is this role"]:::agent
-    Policy["Hook Policy<br/>is this action blocked"]:::hook
+    Policy["Hook listener<br/>questionnaire path + missing duties"]:::hook
     Harness["Harness CLI<br/>who executes"]:::harness
     Protocol --> Definition --> Runtime
     Protocol --> Skills
     Protocol --> Agents
     Protocol --> Policy
-    Runtime -.->|validates input| Policy
+    Runtime -.->|current progress| Policy
     Policy -.->|invokes| Harness
     Skills -.->|routed into| Agents
     Definition -.->|referenced by| Harness
@@ -214,7 +215,7 @@ concern.
 | **Methodology + Best-practice Skills** | how to do it well | state authority, role identity |
 | **Agent Definition** | who does it (identity, tools, permissions) | per-instance scope, methodology |
 | **Task Prompt** | what to do this specific time | role doctrine, methodology |
-| **Hooks** | trigger recovery guidance and enforce which boundaries cannot be crossed | full engineering methodology |
+| **Hooks** | observe progress, deliver the exact questionnaire path and missing duties, trigger original graph progression | tool authorization, full engineering methodology |
 | **Human** | requirements and release decisions | mid-loop engineering |
 
 Two consequences worth stating explicitly, because they explain the shape of
@@ -379,7 +380,7 @@ On-demand Methodology Skills route by state and event:
 | `planning.*` | `specification-planning` |
 | `document_verification` | `document-verification` |
 | Agent `spawned` through `activated` | `agent-dispatch` |
-| `building` after activation | none; TASK plus selected Best Practices |
+| `building` with reviewed TASK | none; TASK plus selected Best Practices |
 | team creation, reuse, reconstruction | `team-planning` |
 | `verification.planned` | `loop-orchestration` (ReviewPlan authoring) |
 | `verification.running` / `cannot_clean` / `discovery_draining` | `team-planning` (Claim-bound reviewer dispatch; see `.claude/bin/loop-harness s7 status`) |
@@ -409,128 +410,88 @@ globally without applicability.
 
 ## 8. Call Chain: One Transition
 
-The Orchestrator never declares a state transition directly. Every advance goes
-through `transition.Apply`, which is the only writer of `.claude/loop-state.json`.
-The Writer reads the current Runtime under lock; an explicit revision
-assertion is an optional integration/recovery choice, not a normal stage step.
+The professional consumer receives Main's saved answer or a native Worker's
+returned artifact. The Runtime Writer records the accepted facts; the original
+followup evaluates stage conditions and uses `transition.Apply` for an eligible
+stage change. These are distinct commits, not a second author command chain.
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant Main as Main session Orchestrator
-    participant Skill as loop-orchestration
-    participant Def as docs/control/loop-definition.json
-    participant RT as .claude/loop-state.json
-    participant Engine as transition engine
-    participant Journal as .claude/loop-events.jsonl
-    Main->>Skill: load orchestration
-    Skill->>RT: read current state (revision N)
-    Skill->>Def: enumerate legal events + guards
-    Def-->>Skill: candidate transitions + required evidence
-    Skill->>RT: check evidence is present and current
-    Skill-->>Main: report unique legal action and required Skill
-    Main->>Engine: transition.Apply(id, expected_rev=N, evidence)
-    Engine->>RT: read + schema validate + compare revision
-    Engine->>Def: resolve transition spec
-    Engine->>Engine: validate actor, guards, evidence
-    alt any check fails
-        Engine-->>Main: error, no mutation, revision unchanged
-    else all checks pass
-        Engine->>Engine: build next snapshot (rev N+1)
-        Engine->>RT: atomic rename temp file
-        Engine->>Journal: append event JSONL
-        Engine-->>Main: return next snapshot
+    participant Author as Main or native Worker
+    participant Consumer as Original professional consumer
+    participant Writer as Runtime Writer
+    participant Engine as Original transition engine
+    Author->>Consumer: Main save or native SubagentStop delivery
+    Consumer->>Writer: Validate and record current professional facts
+    Writer-->>Consumer: Accepted receipt and original followup
+    Consumer->>Engine: Continue that followup
+    Engine->>Engine: Evaluate current domain conditions and guards
+    alt missing work or conflict
+        Engine-->>Consumer: Concrete missing work and next owner
+    else eligible transition
+        Engine->>Writer: Commit original stage change
+        Writer-->>Consumer: New cursor and recorded event
     end
+    Consumer-->>Author: Reception facts and remaining responsibility
 ```
 
-Key invariants:
-
-- The snapshot is committed before the journal append. The one recoverable
-  window is closed by `runtime reconcile` at startup using `last_transition`.
-- Any failed check produces no mutation; the state is unchanged and a rejected
-  event is recorded.
-- A stale writer reloads and recomputes; it never merges or overwrites runtime.
+The Writer owns process locking, candidate validation, paired state/journal
+updates and pending recovery. Normal authors do not read a revision and supply
+N+1. Explicit CAS remains an integration/recovery choice. A recorded delivery
+can survive an interrupted stage followup; resume that original followup rather
+than rewriting the answer or issuing another responsibility. Read-only status
+does not repair pending writes. Use the supplied original recovery action when
+necessary, preserving accepted facts and the actual source workspace.
 
 ---
 
-## 9. Agent Activation (three dispatch modes)
+## 9. Native Agent dispatch and delivery
 
-Dispatch defaults to `plan_checkpoint` continuous execution: the Worker sends
-one structured PLAN_REPORT (`skills/agent-dispatch/SKILL.md` has the complete
-file example) and continues immediately — the PostToolUse(SendMessage)
-observer chains reading → activated → working automatically, and Main stays
-silent when aligned (CORRECTION only on semantic drift). The two-round
-read-back → approval → activation flow below is the `plan_approval_required`
-exception for genuinely high-risk or irreversible work; `one_shot` covers
-idempotent single actions. Once the main session delegates an assignment, the
-Driver's next work is that Agent's plan checkpoint (or approval chain); it
-must not complete the delegated responsibility itself unless the assignment is
-revoked or reassigned.
+Main chooses the professional responsibility and passes its exact brief or
+view/answer references to Claude Code native Agent. Claude Code owns creation,
+foreground/background work, messages, wait and resume. Runtime records the
+engineering responsibility; it does not create a platform Team or reserve an
+opaque actor ID. The same role can have several responsibilities, so use exact
+references rather than role names or launch order.
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant Main as Main session
-    participant Cli as .claude/bin/loop-harness team launch
-    participant Agent as subagent
-    participant RT as .claude/loop-state.json
-    participant Hook as PreToolUse Hook
-    participant Out as report
-    Main->>Cli: team launch --manifest
-    Cli-->>Main: one readback_request envelope per assignment
-    rect rgb(255, 243, 224)
-        Note over Agent: plan_approval_required only: phase one read-only
-        Main->>Agent: send readback_request with fingerprinted paths
-        Agent->>Agent: read TASK -> CONTRACTS -> REQ -> DESIGN -> RULES
-        Agent-->>Main: readback_response (ready / conflict / missing)
-        Agent->>Hook: any Write attempt
-        Hook->>RT: Agent state != activated
-        Hook-->>Agent: warn + recovery instructions
-    end
-    Main->>Main: compare readback against current document versions
-    alt ready and fingerprints match
-        Main->>RT: agent-event understanding_approved (Writer commit; internal revision)
-        Main->>Agent: send activation envelope
-        Main->>RT: agent-event activation_sent (Writer commit; verifies approved_readback_sha256)
-    else conflict or missing
-        Main->>Agent: understanding_rejected -> back to reading
-    end
-    rect rgb(232, 245, 233)
-        Note over Agent: Phase two: bounded write (in the assignment worktree)
-        Main->>RT: agent-event work_started
-        Agent->>Out: write assigned output
-        Agent->>Hook: PreToolUse Write
-        Hook->>RT: Agent=working AND path in scope AND fingerprint matches
-        Hook-->>Agent: allow
-        Agent-->>Main: completion_report
-    end
-    Main->>RT: runtime task-complete (one atomic Builder Result: envelope + Agent reported + TASK review + evidence)
-    Main->>Hook: SubagentStop -> Inspect (scope/locked/merge-tree/required checks) -> non-squash merge -> verified checkpoint (or `runtime task-integrate` explicitly when the payload cannot identify the assignment)
-    Main->>RT: the stage's own gate evaluates the batch (S6: TR-006 / TR-007)
+    participant Main
+    participant Agent as Claude Code native Agent
+    participant Receiver as Original domain consumer
+    Main->>Agent: Exact responsibility, inputs and professional output paths
+    Agent->>Agent: Read inputs, perform assigned work, save actual artifacts
+    Agent-->>Receiver: SubagentStop with exact returned references
+    Receiver-->>Main: Original accepted facts or concrete missing work
+    Main->>Main: Integrate contributions and complete remaining stage duties
 ```
 
-The effective activation scope is the intersection of six conditions:
+| Responsibility | Work and delivery |
+| --- | --- |
+| S5 / S7 / S8 independent work | Read the exact question and frozen subjects, perform the assigned review or investigation, save the private answer and return its reference. Native Stop invokes the original consumer. |
+| S6 Builder | Main uses `s6 prepare --task <TASK> --role <role>`, then native Agent with worktree isolation. The Builder saves its professional plan before implementing, self-checks, commits actual products and returns the exact brief and absolute Result path. Main receives and integrates separately. |
+| S9 Builder | Read the approved repair inputs. Save the professional PlanReport before implementation in the actual native worktree, continue repair/self-checks, then return the brief and private Result. Stop imports those artifacts; Main integrates and runs necessary checks. |
+| S9 independent Targeted verifier | Verify the assigned Contract assertions against the actual post-repair tree without product writes. Save and return the exact Targeted answer for Stop reception. |
+| Main planning, impact, acceptance and human decision | Main saves its own exact questionnaire through the existing Main consumer. It does not fill or receive a Worker's private answer on that person's behalf. |
 
-```text
-Agent Definition maximum
-AND team-manifest single responsibility
-AND TASK allowed paths
-AND activation envelope allowed paths
-AND current runtime lifecycle
-AND Hook policy
-```
+Start supplies short context; ordinary Worker tools and saves preserve work but
+do not activate or receive professional delivery. The returned artifacts carry
+actual observations and honest blockers, not copied machine metadata. A missing
+path or source goes to Main with its concrete preparation problem.
 
-Anything outside the intersection is out of scope and must be corrected before
-the assignment is considered valid. An activation is invalidated by a document
-fingerprint change, a task or responsibility replacement, a baseline generation
-change, an explicit revoke, a pause, or a scope-expansion request.
+The native responsibility can end after its actual work or blocker is returned.
+Accepted delivery, Main integration, stage closure and human authorization are
+separate facts; an already delivered Worker does not wait for peers or future
+stages. Main reads the original receiver/integration facts before continuing.
 
-The Hook in this chain observes the boundary (may this Agent write this path
-now?) and emits either a human-only block or a recoverable warning. On
-lifecycle events it also re-seats the Agent at the current Milestone and points
-to the exact protocol/manual anchors. It does not encode the complete
-methodology that defines how the work should be done; that remains in the
-stage protocol and Skill loaded by the Agent Definition.
+An explicit `plan_approval_required` responsibility still waits for its original
+domain approval; ordinary `plan_checkpoint` work continues without a second
+approval. Existing registered frozen executions retain their exact inputs and
+[recovery contract](../../skills/agent-dispatch/frozen-execution.md). Their
+launcher, readback and activation machinery are not new native prerequisites.
+Use the current [stage protocol](../control/agent-protocol.md) and
+[native dispatch method](../../skills/agent-dispatch/SKILL.md) for exact inputs
+and outputs; this guide defines no additional submission sequence.
 
 ---
 
@@ -641,16 +602,17 @@ before any later runtime operation. Only this clean Runtime may be bound to the
 next locked REQ. `init` is bootstrap-only and refuses to overwrite existing
 runtime files; rerun it if its own bootstrap marker remains after interruption.
 
-### Any finding means the REQ is not yet done
+### A blocking finding keeps the REQ acceptance gate open
 
-There is no "REQ complete with known minor issues" middle state. Either a clean
-round passes, or any blocking Delivery Verifier, QA, or E2E Browser finding
-forces S8 finding investigation through `bug_resolution` (TR-008). The finding
-is reproduced, root cause is investigated, a canonical BUG is written and
-accepted, a Builder reads the BUG plus the original specification chain, the fix
-is dispatched (plan_checkpoint), the **original finding responsibility** re-verifies,
-affected historical PASS evidence is invalidated, and a complete Delivery,
-QA, and E2E Browser round runs again. Local re-verification alone never ends
+There is no accepted REQ with known blocking issues. Either a clean round
+passes, or any blocking Delivery Verifier, QA, or E2E Browser finding
+forces S8 finding investigation through `bug_resolution` (TR-008). The original encounter and evidence
+enter S8 causal investigation. Main routes the Case and obtains the required
+approval for its RepairContract; a BUG Markdown file is an optional projection.
+Main supplies the approved repair context to native Builders, integrates real
+contributions and arranges an actually independent Targeted verifier. Affected
+evidence is handled through the original impact judgment, then a fresh complete
+verification round runs. Local re-verification alone never ends
 the Loop.
 
 Forbidden outcomes:
@@ -678,7 +640,7 @@ Warn-and-self-correct (recoverable process completeness):
 - closing a TASK without required critical evidence
 - a Skill that should be loaded is missing
 - document links or versions are stale
-- Agent Team responsibilities are incomplete
+- required professional coverage has an unassigned mandatory responsibility or one without a current accepted outcome
 - a BUG lacks root cause or reproduction evidence
 - Verifier or QA lacks valid evidence
 - impact analysis was not run after a repair
@@ -741,10 +703,42 @@ in the Harness. Reusable methods and best practices live in the Skill catalog.
 ## 16. Verify
 
 ```bash
-make verify          # test + test-race + doctor + validate + build
+make ci-verify       # PR checks: static analysis, core tests, critical seams, focused race, doctor/validate/build
+make ci-verify-full  # complete tests/race plus release installation validation
+make verify          # alias for ci-verify-full
 .claude/bin/loop-harness doctor --root .
 .claude/bin/loop-harness validate --all --root .
 ```
+
+PR and main CI run `make ci-verify`. This runs all discovered packages except
+`internal/cli`, `internal/integration`, `internal/investigation`, and
+`tests/system/...` with `-short`. The three large scenario packages instead run
+the explicit critical-seam selections in `make test-ci-smoke`: native S5/S6/S7/S8/S9
+Start/Stop reception, malformed answer and source ownership, Hook tool freedom,
+S10/S11 handoff and human decision authority, integration failure/resume,
+checkpoint CAS, process cleanup and Case approval. The race selection covers
+Runtime, recovery, locks, schemas, check execution, controller, Hook, audit,
+submission and integration checkpoints. The separate Runtime portability workflow
+continues to check Linux, Windows and macOS.
+
+Full S0–S11 scenario matrices, compatibility launchers, recovery combinations,
+system suites and full race instrumentation run through `make ci-verify-full`.
+They are required by the release workflow. For a complete Actions run without
+publishing, manually run the **CI** workflow on the desired ref with **full**
+enabled; this uses a separate concurrency group from PR checks. A workflow on a
+new branch is available in the Actions UI after its definition reaches the
+default branch. Locally, initialize Runtime before either verification target
+with `go run ./cmd/loop-harness init --root .`.
+
+PR tests use a five-minute per-package limit and the job has a fifteen-minute
+limit; full tests retain the thirty-minute per-package limit and a manual full
+job has a two-hour limit. These are failure bounds, not expected durations. A
+local full run can override `TEST_TIMEOUT` when needed. No retries hide failures.
+When adding coverage, keep focused logic tests in the regular package suite and
+add a critical CLI/integration/Case seam to `test-ci-smoke` when appropriate;
+large scenario combinations belong in the complete suite. All existing tests
+remain enabled there. Packaged source and installed release graphs are both
+validated by `doctor-staged`, so full verification builds that archive once.
 
 ### Runtime and transitions
 

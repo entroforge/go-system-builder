@@ -9,7 +9,11 @@ import (
 
 // DefaultQualityCycleBudget is the controller quality-evaluation deadline when
 // loop-definition.json omits quality_cycle_timeout (ARCHITECTURE-039 §14.1).
-const DefaultQualityCycleBudget = 2 * time.Second
+// S5 document gates verify the full locked source closure plus per-reviewer
+// envelopes (r99: 31 documents, dual envelopes, full SHA checks), which
+// exceeds the original 2s on real projects; 15s covers the observed ~6s
+// evaluations with headroom while keeping runaway evaluations bounded.
+const DefaultQualityCycleBudget = 15 * time.Second
 
 // ResolveQualityCycleBudget returns the quality-cycle deadline for one
 // RunControlCycle call. An explicit request override wins; otherwise the value

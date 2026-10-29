@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workspace"
@@ -15,7 +16,21 @@ import (
 )
 
 func TestWorkspaceRebindRealCLI(t *testing.T) {
+	for _, withReceipt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tool-receipt=%t", withReceipt), func(t *testing.T) { testWorkspaceRebindRealCLI(t, withReceipt) })
+	}
+}
+
+func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
+	t.Helper()
 	fix := newRuntimeFixture(t)
+	if withReceipt {
+		// Tool profiles/receipts belong to the existing v1.2 format. Initialize
+		// this fixture in that format before any Writer operation, not by an
+		// in-flight migration or a weakened candidate validator.
+		fix.state["schema_version"] = "1.2.0"
+		fix.state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": false}
+	}
 	for _, args := range [][]string{{"init", "-b", "test2"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.invalid"}, {"add", "docs"}, {"commit", "-m", "base"}} {
 		if out, err := runGit(t, fix.root, args...); err != nil {
 			t.Fatalf("%s %v", out, err)
@@ -48,6 +63,41 @@ func TestWorkspaceRebindRealCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Status = "ready"
+	var originalReceipt checkexec.ToolReceipt
+	var receiptBytes []byte
+	if withReceipt {
+		profile := checkexec.Profile{ID: "CP-RELOCATION", Version: "v1", CheckIndex: 0, Command: "true", Location: "worker", TimeoutSeconds: 1, EnvironmentPolicy: "declared_only", Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{}, Fixtures: []checkexec.FileRef{}, InputClosure: "whole_tree", SideEffects: "none", ReusePolicy: "never"}
+		e.Checks, e.CheckProfiles = []string{profile.Command}, []checkexec.Profile{profile}
+		observation, err := checkexec.ObserveProfile(context.Background(), e.Path, profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Join(fix.root, ".claude/evidence/workspace-checks/relocation-fixture")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		log := filepath.Join(dir, "output.log")
+		// Synthetic tool facts test exact byte/provenance coordinates. No actual
+		// isolated Worker check or product-quality conclusion is claimed.
+		if err := os.WriteFile(log, []byte("Synthetic relocation fixture output.\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		receiptBytes, err = checkexec.SealReceipt(map[string]any{"version": 2, "command": profile.Command, "status": "pass", "output": log, "profile_observation": observation, "check_binding": workspace.CheckBinding(e)}, log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "receipt.json")
+		if err := os.WriteFile(path, receiptBytes, 0600); err != nil {
+			t.Fatal(err)
+		}
+		ctx := checkexec.WithReceiptCapture(checkexec.WithBinding(checkexec.WithProfile(context.Background(), profile), workspace.CheckBinding(e)), func(ref checkexec.ToolReceipt) { originalReceipt = ref })
+		if err := checkexec.CaptureReceipt(ctx, path, e.Path, receiptBytes); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.AcceptToolReceipt(&e, originalReceipt); err != nil {
+			t.Fatal(err)
+		}
+	}
 	b.Executions[e.AssignmentID] = e
 	state["workspace"] = workspace.Encode(b)
 	data, err = json.Marshal(state)
@@ -89,6 +139,23 @@ func TestWorkspaceRebindRealCLI(t *testing.T) {
 		bad[field] = "unrelated"
 		if _, err := writerBefore.RelocateWorkspace(sourceSnapshot, bad, "invalid", "test"); err == nil {
 			t.Fatalf("accepted field %s", field)
+		}
+	}
+	if withReceipt {
+		for _, field := range []string{"path", "checkout", "sha256", "log_sha256", "command", "profile_digest", "check_binding", "removed"} {
+			bad := workspace.Encode(next)
+			row := bad["executions"].(map[string]any)[e.AssignmentID].(map[string]any)
+			ref := row["tool_check_receipts"].([]any)[0].(map[string]any)
+			if field == "removed" {
+				delete(row, "tool_check_receipts")
+			} else if field == "path" {
+				ref[field] = filepath.Join(moved, ".claude/evidence/workspace-checks/another/receipt.json")
+			} else {
+				ref[field] = "changed-captured-fact"
+			}
+			if _, err := writerBefore.RelocateWorkspace(sourceSnapshot, bad, "invalid-tool-"+field, "test"); err == nil {
+				t.Fatalf("relocation changed captured %s", field)
+			}
 		}
 	}
 	reader := runtime.NewStore(statePathBefore, journalPathBefore)
@@ -154,6 +221,29 @@ func TestWorkspaceRebindRealCLI(t *testing.T) {
 	afterJournal, err := os.ReadFile(journalPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if withReceipt {
+		registered, _, err := workspace.Load(moved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs := registered.Executions[e.AssignmentID].ToolCheckReceipts
+		expected := originalReceipt
+		rel, err := filepath.Rel(old, originalReceipt.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected.Path = filepath.Join(moved, rel)
+		if len(refs) != 1 || refs[0] != expected {
+			t.Fatalf("relocation changed captured facts: %+v", refs)
+		}
+		got, err := os.ReadFile(expected.Path)
+		if err != nil || !bytes.Equal(got, receiptBytes) {
+			t.Fatalf("relocation rewrote original receipt bytes: %v", err)
+		}
+		if _, err := checkexec.VerifyToolReceipt(filepath.Join(moved, ".claude/evidence/workspace-checks"), refs[0]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	lines := bytes.Split(bytes.TrimSpace(afterJournal), []byte("\n"))
 	var event, after map[string]any

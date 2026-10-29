@@ -1,0 +1,6 @@
+{
+  "objective": "实现筛选结果导出。",
+  "write_paths": ["src/export.js", "tests/export.test.js"],
+  "dependencies": [],
+  "closing_contract": ["有权限时导出当前筛选结果。", "无权限时返回 403。", "CSV 列顺序为 id、name。"]
+}

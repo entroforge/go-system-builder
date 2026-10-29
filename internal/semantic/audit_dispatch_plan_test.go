@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 func TestAuditDispatchPlanResourcesHeadingLevels(t *testing.T) {
@@ -207,18 +208,26 @@ func TestAuditDispatchPlanNextDispatchFacts(t *testing.T) {
 		t.Fatalf("fixture not dispatchable: plan=%+v err=%v", plan, err)
 	}
 	facts := map[string]DispatchFact{
-		"TASK-042-01": {State: "integrated"},
-		"TASK-042-02": {State: "integrated"},
-		"TASK-042-03": {State: "running"},
+		"TASK-042-01": {State: workstate.Done, Integrated: true, DeliveryRecorded: true},
+		"TASK-042-02": {State: workstate.Done, Integrated: true, DeliveryRecorded: true},
+		"TASK-042-03": {State: workstate.Active},
 	}
 	rows, next := NextDispatch(plan, facts, 1)
 	if strings.Join(next, ",") != "TASK-042-04" {
 		t.Fatalf("ready successor was not released independently of W1: next=%v rows=%v", next, rows)
 	}
-	facts["TASK-042-01"] = DispatchFact{State: "reported"}
-	_, next = NextDispatch(plan, facts, 3)
+	facts["TASK-042-01"] = DispatchFact{State: workstate.Active, DeliveryRecorded: true}
+	rows, next = NextDispatch(plan, facts, 3)
 	if len(next) != 0 {
 		t.Fatalf("reported predecessor incorrectly released its consumer: %v", next)
+	}
+	for _, row := range rows {
+		if row.Task.ID == "TASK-042-01" && (row.State != workstate.Active || row.Integrated || !row.DeliveryRecorded) {
+			t.Fatalf("delivery fact was confused with integration: %+v", row)
+		}
+		if row.Task.ID == "TASK-042-04" && (row.State != workstate.Pending || row.Eligible || row.Dispatchable) {
+			t.Fatalf("unintegrated predecessor released successor eligibility: %+v", row)
+		}
 	}
 }
 

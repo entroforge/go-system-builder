@@ -67,12 +67,15 @@ func routeWorkspaceFlags(fs *flag.FlagSet) error {
 		}
 	}
 	var artifacts []string
+	reviewAdapter := fs.Name() == "runtime workspace answer" || fs.Name() == "runtime workspace receipt" || fs.Name() == "runtime workspace review-check"
 	switch fs.Name() {
-	case "projection", "ready", "validate", "doctor", "health", "explain", "req list", "runtime repair status", "runtime workspace status", "runtime workspace check", "runtime workspace pending", "runtime workspace commit", "runtime workspace deliver", "runtime workspace begin", "runtime workspace report", "runtime workspace observe":
+	case "runtime workspace answer", "runtime workspace receipt", "runtime workspace review-check":
+	case "projection", "ready", "validate", "doctor", "health", "explain", "req list", "runtime repair status", "runtime workspace status", "runtime workspace check", "runtime workspace pending", "runtime workspace commit", "runtime workspace deliver", "runtime workspace begin", "runtime workspace report", "runtime workspace observe", "s7 workspace-digest":
 	case "runtime agent-begin":
 		artifacts = []string{"plan"}
 	case "runtime task-complete":
 		artifacts = []string{"message"}
+	case "runtime task-receipt":
 	case "runtime agent-event":
 		switch fs.Lookup("event").Value.String() {
 		case "readback_started", "readback_submitted", "document_conflict_reported", "work_started", "completion_reported", "work_blocked":
@@ -84,7 +87,7 @@ func routeWorkspaceFlags(fs *flag.FlagSet) error {
 		return fmt.Errorf("%s requires the bound Main session; Worker root routing does not grant scheduling or integration authority", fs.Name())
 	}
 	var execution workspace.Execution
-	if len(artifacts) > 0 || fs.Name() == "runtime workspace observe" || fs.Name() == "runtime workspace check" || (fs.Name() == "runtime workspace commit" || fs.Name() == "runtime workspace deliver" || fs.Name() == "runtime workspace begin" || fs.Name() == "runtime workspace report") {
+	if reviewAdapter || len(artifacts) > 0 || fs.Name() == "runtime task-receipt" || fs.Name() == "runtime workspace observe" || fs.Name() == "runtime workspace check" || (fs.Name() == "runtime workspace commit" || fs.Name() == "runtime workspace deliver" || fs.Name() == "runtime workspace begin" || fs.Name() == "runtime workspace report") {
 		binding, state, err := workspace.Load(main)
 		if err != nil {
 			return err
@@ -95,7 +98,10 @@ func routeWorkspaceFlags(fs *flag.FlagSet) error {
 		matched := false
 		for _, e := range binding.Executions {
 			ownerFlag := "agent-id"
-			if fs.Name() == "runtime workspace observe" || fs.Name() == "runtime workspace check" || (fs.Name() == "runtime workspace commit" || fs.Name() == "runtime workspace deliver" || fs.Name() == "runtime workspace begin" || fs.Name() == "runtime workspace report") {
+			if fs.Name() == "runtime task-receipt" && fs.Lookup("assignment-id").Value.String() != e.AssignmentID {
+				continue
+			}
+			if reviewAdapter || fs.Name() == "runtime workspace observe" || fs.Name() == "runtime workspace check" || (fs.Name() == "runtime workspace commit" || fs.Name() == "runtime workspace deliver" || fs.Name() == "runtime workspace begin" || fs.Name() == "runtime workspace report") {
 				ownerFlag = "agent"
 				if fs.Lookup("assignment").Value.String() != e.AssignmentID {
 					continue
@@ -108,6 +114,9 @@ func routeWorkspaceFlags(fs *flag.FlagSet) error {
 		}
 		if !matched {
 			return fmt.Errorf("Worker command agent-id differs from its registered owner")
+		}
+		if reviewAdapter && execution.Purpose != workspace.DocumentReviewPurpose {
+			return fmt.Errorf("document answer adapter requires a registered S5 review execution")
 		}
 	}
 	for _, name := range []string{"state", "journal"} {

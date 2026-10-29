@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "S8",
+  "adapter": "hypothesis_result",
+  "title": "S08 调查 · HypothesisResult",
+  "instruction": "只修改 answer 并保存本卷的准确路径；不手动 issue/consume、不另交 PLAN 或相同内容的报告。依据本卷冻结的 Case、Hypothesis、原来源边界与证据资料（S7 Finding encounter，或 S11 原人类缺陷决定），填写实际判别方法、证据、观察和结论。不要填写根因、路由、RepairContract、审批、ID 或 Assignment。新假设只写完整专业问题与来源，原消费者生成身份后等待 Main 派发。示例只说明 JSON 形状；finding-example 和示例文件路径必须替换为本卷真实来源与本人实际保存的证据，不能当作已存在的证据。 通用边界：产品代码、正式测试、锁定规格和正式环境配置只读；可读取、执行已有检查，在题目允许的安全隔离条件下实验并保存证据。临时探针不授权持久修改。该判别的实验范围、停止与未决条件在 inputs.hypothesis.discriminator；支持/反驳预期在 expected_outcomes。缺少安全条件则停止相关操作并如实返回，不猜造 scope/stop_condition 字段。",
+  "questions": {
+    "method": {
+      "question": "你如何判别这个假设与竞争解释？填写字符串，写出实际采用的方法与比较对象，不要把计划当作执行结果。受阻且无法得出结论时选 inconclusive，在此写明实际已做、未执行和受阻的判别操作。",
+      "example": {
+        "path": "answer.method",
+        "expected": "\"读取冻结请求和字段映射实现，比较必填字段在输入、映射前后与发送载荷中的值。\"",
+        "observed": "只写了‘分析代码’，没有实际操作或比较对象"
+      }
+    },
+    "evidence_refs": {
+      "question": "填写字符串数组，复用 inputs.evidence_refs 的原 ref，runtime:<id> 不另登记别名。新日志、命令输出、截图或观察文件可保存在本人准确 answer.json 同目录；引用 path:<相对本人 checkout 根目录的实际文件路径>，不填写 hash、不登记证据。原接收器读取实际文件、固定摘要并保存共享证据，Case 结果保留可验证引用；同答重试不会重新签署已变文件，缺失、越界或显式 hash 不符会拒绝。method 写实际操作、工作目录、条件与结果，observed 区分观察和推断。文件内容摘要只证明保存字节，不证明命令实际执行。原冻结 Finding 引用保持原样并按原摘要核验，不从新文件重绑。真实已有 execution anchor 保持兼容，但 scheme:// 只验形状，不可编造 URI 充当执行证据。人类原决定可引用本卷决定 ID/准确路径，不重复登记；它不证明新判别已执行。FindingSupplement 仅用于原发现者或明确授权替代者补充原现场，不要求为普通实验文件另写报告。必需来源缺失时保留原卷和实际诊断交 Main/系统。",
+      "example": {
+        "path": "answer.evidence_refs",
+        "expected": "[\"path:investigation/field-boundary.txt\"]",
+        "observed": "引用了不存在的示例文件，或把未实际执行的命令写成证据"
+      }
+    },
+    "source_boundary_refs": {
+      "question": "填写字符串数组，指出本卷冻结 Finding encounter 中实际使用的现场边界。finding:<本卷Finding ID> 引用整个现场；也可用 finding:<本卷Finding ID>#/encounter/... 引用原文中确实存在的 JSON Pointer。不能用任意 execution anchor 代替来源边界。 本卷来自人类报告且没有 Finding 时，使用本卷提供的原决定 ID 或准确路径；不要伪造 Finding、Claim 或 Batch。",
+      "example": {
+        "path": "answer.source_boundary_refs",
+        "expected": "[\"finding:finding-example\",\"finding:finding-example#/encounter/first_bad_checkpoint\"]",
+        "observed": "仅引用了 Case 标题，或引用不存在的 encounter 字段"
+      }
+    },
+    "observed": {
+      "question": "填写字符串，写出调查中实际观察到的事实；不要把推断写成观察。inconclusive 时在本字段说明已观察事实、具体阻塞、缺少什么和 Main 下一步；不要新增 blocker 字段或另交阻塞报告。若必需来源/证据根本缺失，报告 Main/系统准备缺口，不编造材料满足交卷。"
+    },
+    "counterfactual_or_discriminator": {
+      "question": "填写字符串，写出什么结果可以区分该假设与竞争假设；受阻时仍说明原判别条件及尚未取得哪项结果，不声称已执行。"
+    },
+    "result": {
+      "question": "给出对当前注册 Hypothesis 的本人专业判断。该结论由你作出，不由证据数量或绿色检查自动推导。证据不足或判别受阻时选 inconclusive，并在现有 method/observed 字段记录已做工作与缺口；该值不是 Case route、批准或整个阶段完成。",
+      "choices": [
+        "supported",
+        "refuted",
+        "inconclusive"
+      ]
+    },
+    "explains_finding_ids": {
+      "question": "填写字符串数组，如 [\"finding-example\"]，只选本卷 Case 中由该假设解释的实际 Finding ID；没有时填 []，不得与 does_not_explain 重复。"
+    },
+    "does_not_explain": {
+      "question": "填写字符串数组，如 [\"finding-example\"]，只选本卷 Case 中该假设仍不能解释的实际 Finding ID；没有时填 []，不得与 explains_finding_ids 重复或隐藏未解释项。"
+    },
+    "new_hypotheses": {
+      "question": "填写数组；无后续问题填 []，有则每项完整填写 statement、invariant、discriminator、expected_outcomes{support,refute}、source_finding_ids、evidence_refs 六组字段。有 Finding 时引用本卷 Case Finding 子集；人类来源没有 Finding 时 source_finding_ids 填 []。两种来源都须完整填写专业问题和真实证据。不要填写 ID、Assignment 或状态；原消费者生成身份并登记，Main 再决定专业派发并通过真实平台启动。 判别特有范围、停止和未决条件写在 discriminator；支持/反驳观察写在 expected_outcomes，不新增字段。 本次取得的新文件可在新问题 evidence_refs 使用同样 path:<本人 checkout 内实际文件路径>；原消费者统一固定真实摘要，Main 再派发，不为新问题编造引用。",
+      "example": {
+        "path": "answer.new_hypotheses",
+        "expected": "[{\"statement\":\"必填字段在共享映射层被丢弃，而非服务端拒绝后被清空。\",\"invariant\":\"有效输入的必填字段必须保留到发送载荷。\",\"discriminator\":\"比较同一次调用在映射前后及发送边界的字段值。\",\"expected_outcomes\":{\"support\":\"映射前有值、映射后缺失且请求尚未发送。\",\"refute\":\"映射前后和发送载荷均保留该值。\"},\"source_finding_ids\":[\"finding-example\"],\"evidence_refs\":[\"path:investigation/field-boundary.txt\"]}]",
+        "observed": "只写了一个未经说明的原因猜测。"
+      }
+    }
+  }
+}

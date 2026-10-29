@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/review"
 )
 
 const (
@@ -47,6 +48,12 @@ func NativeObserverDecision(input policy.Input, elapsed time.Duration) policy.De
 func boundedObserverValue(value string) string {
 	const limit = 240
 	value = strings.TrimSpace(value)
+	// Inspect the complete external field before truncation can separate a
+	// credential from its marker. Reuse the existing finite capture policy;
+	// withholding audit text neither rejects the tool nor rewrites authority.
+	if err := review.SanitizeCapture(review.CaptureStep{Observed: value}); err != nil {
+		return "[withheld: capture secret pattern]"
+	}
 	if len(value) <= limit {
 		return value
 	}

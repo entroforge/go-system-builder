@@ -13,84 +13,91 @@ import (
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
-// TestHOOK_PreCompact_PersistsMilestoneViaHookCLI covers HOOK-PreCompact at
-// L3: real Hook CLI persists a resumable milestone checkpoint (FR-014).
-func TestHOOK_PreCompact_PersistsMilestoneViaHookCLI(t *testing.T) {
+// PreCompact has no professional input and must not invent recovery facts.
+func TestHOOK_PreCompact_IsSilentAndPreservesOriginalFactsViaHookCLI(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "design", 3)
 	writeSystemState(t, root, state)
-	beforeRev := req039fixtures.Revision(state)
-
-	code, stdout, stderr := runHook(t, root, "PreCompact",
-		`{"hook_event_name":"PreCompact","session_id":"session-hook-precompact"}`)
+	before := readSystemRuntimePair(t, root)
+	code, stdout, stderr := runHook(t, root, "PreCompact", `{"hook_event_name":"PreCompact","session_id":"session-hook-precompact"}`)
 	if code != 0 {
 		t.Fatalf("PreCompact Hook failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	if strings.TrimSpace(stdout) != "" {
-		t.Fatalf("PreCompact must persist without discarded output, got %s", stdout)
+		t.Fatalf("PreCompact emitted discarded recovery instructions: %s", stdout)
 	}
-
-	after := req039fixtures.ReadState(t, root)
-	ms, _ := after["milestone"].(map[string]any)
-	if ms == nil {
-		t.Fatal("PreCompact must leave a milestone on disk")
-	}
-	if obj, _ := ms["objective"].(string); obj == "" {
-		t.Fatalf("PreCompact milestone must carry objective: %v", ms)
-	}
-	if event, _ := ms["event"].(string); event != "PreCompact" {
-		t.Fatalf("milestone.event want PreCompact, got %q", event)
-	}
-	if rev := req039fixtures.Revision(after); rev < beforeRev {
-		t.Fatalf("PreCompact must not regress revision: before=%v after=%v", beforeRev, rev)
-	}
+	assertSystemRuntimePairUnchanged(t, before)
 }
 
-// TestHOOK_PostCompact_SessionStartFallback covers HOOK-PostCompact via the
-// contract fallback (REQ-039 D-011): when PostCompact is unavailable, the
-// next SessionStart restores the same PreCompact-persisted milestone.
+// SessionStart reconstructs the current responsibility without replaying an
+// old milestone as the execution authority. No native PostCompact is invented.
 func TestHOOK_PostCompact_SessionStartFallback(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "contracts", 5)
+	state["milestone"].(map[string]any)["objective"] = "STALE-CACHED-OBJECTIVE"
 	writeSystemState(t, root, state)
-
-	code, _, stderr := runHook(t, root, "PreCompact",
-		`{"hook_event_name":"PreCompact","session_id":"session-hook-postcompact-pre"}`)
+	before := readSystemRuntimePair(t, root)
+	code, stdout, stderr := runHook(t, root, "PreCompact", `{"hook_event_name":"PreCompact","session_id":"session-hook-postcompact-pre"}`)
+	if code != 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("PreCompact changed its silent boundary: %d %s %s", code, stdout, stderr)
+	}
+	assertSystemRuntimePairUnchanged(t, before)
+	code, stdout, stderr = runHook(t, root, "SessionStart", `{"hook_event_name":"SessionStart","session_id":"session-hook-postcompact-recover"}`)
 	if code != 0 {
-		t.Fatalf("PreCompact failed: code=%d stderr=%s", code, stderr)
+		t.Fatalf("SessionStart fallback failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
-	persisted := req039fixtures.ReadState(t, root)
-	ms, _ := persisted["milestone"].(map[string]any)
-	wantObjective, _ := ms["objective"].(string)
-	if wantObjective == "" {
-		t.Fatal("PreCompact must persist objective for PostCompact fallback")
+	for _, want := range []string{"S3 planning.contracts", "docs/control/agent-protocol.md#s3"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("recovery lost the current responsibility %q: %s", want, stdout)
+		}
 	}
+	if strings.Contains(stdout, "STALE-CACHED-OBJECTIVE") {
+		t.Fatalf("recovery repeated stale execution instructions: %s", stdout)
+	}
+	req039fixtures.AssertLifecycle(t, req039fixtures.ReadState(t, root), "planning", "contracts")
+}
 
-	// Host lacks PostCompact: SessionStart is the recovery path.
-	code, stdout, stderr := runHook(t, root, "SessionStart",
-		`{"hook_event_name":"SessionStart","session_id":"session-hook-postcompact-recover"}`)
-	if code != 0 {
-		t.Fatalf("SessionStart fallback failed: code=%d stderr=%s", code, stderr)
+// Byte snapshots distinguish a silent observation from an unseen Writer event.
+func readSystemRuntimePair(t *testing.T, root string) map[string]*string {
+	t.Helper()
+	pair := map[string]*string{}
+	for _, name := range []string{"loop-state.json", "loop-events.jsonl"} {
+		path := filepath.Join(root, ".claude", name)
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			pair[path] = nil
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := string(data)
+		pair[path] = &value
 	}
-	if !strings.Contains(stdout, wantObjective) {
-		t.Fatalf("PostCompact→SessionStart fallback must surface objective %q, got %s", wantObjective, stdout)
-	}
-	after := req039fixtures.ReadState(t, root)
-	afterMS, _ := after["milestone"].(map[string]any)
-	gotObjective, _ := afterMS["objective"].(string)
-	if gotObjective != wantObjective {
-		t.Fatalf("fallback milestone objective want %q got %q", wantObjective, gotObjective)
+	return pair
+}
+func assertSystemRuntimePairUnchanged(t *testing.T, pair map[string]*string) {
+	t.Helper()
+	for path, want := range pair {
+		data, err := os.ReadFile(path)
+		if want == nil && os.IsNotExist(err) {
+			continue
+		}
+		if want == nil || err != nil || string(data) != *want {
+			t.Fatalf("observation changed original Runtime/journal %s: %v", path, err)
+		}
 	}
 }
 
 // TestHOOK_SubagentStart_DelegationPreflightViaHookCLI covers HOOK-SubagentStart
-// at L3: real Hook CLI emits delegation preflight questions (worktree / team /
-// agent dispatch) without requiring a manual transition CLI.
+// at L3: the Hook reminds the Main session about the registered assignment's
+// professional work and supplied source/answer paths.
 func TestHOOK_SubagentStart_DelegationPreflightViaHookCLI(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "tasks", 7)
 	state["lifecycle"] = map[string]any{"state": "building", "phase": nil, "phase_revision": 0}
 	writeSystemState(t, root, state)
+	before := req039fixtures.ReadState(t, root)
 
 	code, stdout, stderr := runHook(t, root, "SubagentStart", `{
 		"session_id":"session-hook-subagent-start",
@@ -102,24 +109,19 @@ func TestHOOK_SubagentStart_DelegationPreflightViaHookCLI(t *testing.T) {
 		t.Fatalf("SubagentStart Hook failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	out := strings.ToLower(stdout)
-	for _, needle := range []string{"subagent", "worktree", "team"} {
+	for _, needle := range []string{"subagent", "preflight questions", "professional work and checks", "source and answer paths"} {
 		if !strings.Contains(out, needle) {
-			t.Fatalf("SubagentStart must surface delegation preflight mentioning %q, got %s", needle, stdout)
+			t.Fatalf("SubagentStart must surface current assignment guidance %q, got %s", needle, stdout)
 		}
 	}
-	if !strings.Contains(out, "readback") && !strings.Contains(out, "activation") && !strings.Contains(out, "phase") {
-		t.Fatalf("SubagentStart must mention the dispatch plan/readback flow, got %s", stdout)
-	}
+	assertRuntimeCursorUnchanged(t, "SubagentStart reminder", before, req039fixtures.ReadState(t, root))
 }
 
 // TestHOOK_TeammateIdle_HookCLIEmitsGuidance pins TeammateIdle Hook CLI entry
 // with the official Claude Code 2.1.218 payload shape (teammate_name/
-// team_name/transcript_path; no self-made agent_id or facts). The fixture
-// teammate idles before its PLAN_REPORT checkpoint, so the L4 §16.1 control
-// applies: exit 2 with the feedback on stderr, routed back to the same
-// teammate. BUG-039-37 wires HandleTeammateIdleForController into
-// reconcileGuidance; this fixture may still no-op milestone fingerprint when
-// guidance matches.
+// team_name/transcript_path; no self-made agent_id or facts). This sparse
+// fixture has no registered Workgroup Assignment, so TeammateIdle must stay
+// advisory and return the current graph recovery packet without a denial.
 func TestHOOK_TeammateIdle_HookCLIEmitsGuidance(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "tasks", 8)
@@ -140,6 +142,7 @@ func TestHOOK_TeammateIdle_HookCLIEmitsGuidance(t *testing.T) {
 		"bugs":  []any{}, "teams": []any{},
 	}
 	writeSystemState(t, root, state)
+	before := req039fixtures.ReadState(t, root)
 
 	code, stdout, stderr := runHook(t, root, "TeammateIdle", `{
 		"session_id":"session-hook-teammate-idle",
@@ -148,14 +151,15 @@ func TestHOOK_TeammateIdle_HookCLIEmitsGuidance(t *testing.T) {
 		"team_name":"team-idle",
 		"transcript_path":"/tmp/claude/transcripts/builder-idle-1.jsonl"
 	}`)
-	if code != 2 {
-		t.Fatalf("TeammateIdle before PLAN_REPORT must exit 2 (real platform control): code=%d stderr=%s stdout=%s", code, stderr, stdout)
+	if code != 0 {
+		t.Fatalf("unregistered TeammateIdle must remain advisory: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
-	for _, needle := range []string{"teammate_idle_resume_assignment", "builder-idle-1", "PLAN_REPORT"} {
-		if !strings.Contains(stderr, needle) {
-			t.Fatalf("TeammateIdle stderr feedback must contain %q, got %s", needle, stderr)
+	for _, needle := range []string{"LOOP RECOVERY", "re-wake the same teammate", "current-round assignment report is missing"} {
+		if !strings.Contains(strings.ToLower(stdout), strings.ToLower(needle)) {
+			t.Fatalf("TeammateIdle must surface current advisory guidance %q, got %s", needle, stdout)
 		}
 	}
+	assertRuntimeCursorUnchanged(t, "TeammateIdle reminder", before, req039fixtures.ReadState(t, root))
 	after := req039fixtures.ReadState(t, root)
 	ms, _ := after["milestone"].(map[string]any)
 	raw, _ := json.Marshal(ms)
@@ -167,14 +171,9 @@ func TestHOOK_TeammateIdle_HookCLIEmitsGuidance(t *testing.T) {
 	_ = raw
 }
 
-// TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI pins TeammateIdle
-// Branch 4 at L4: complete assignment + completion report → idle is
-// allowed; the scheduler (not the Hook) is the only writer of the next
-// assignment. L4 §15.2 P2-5 retired the in-TeammateIdle allocation, so
-// the fixture now asserts the negative: TASK-039-05 stays untouched and
-// the revision is unchanged. Teammates must not self-claim Team tasks
-// (`unauthorized_task_self_claim` is the gate that would block the same
-// TaskUpdate from a teammate).
+// TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI pins a fully registered
+// one-shot assignment with its completion source. TeammateIdle is a read-only
+// listener: it never allocates or claims the next task.
 func TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI(t *testing.T) {
 	root := freshRoot(t)
 	state := systemPlanningState(t, root, "tasks", 12)
@@ -190,9 +189,10 @@ func TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI(t *testing.T) {
 		"agents": []any{map[string]any{
 			"id": "builder-idle-alloc", "role": "builder", "state": "idle",
 			"task_ids": []any{"TASK-039-04"}, "team_id": "workgroup-039-04",
-			"definition_ref": "defs/builder.md", "prompt_ref": ".claude/workgroups/REQ-039/TASK-039-04/manifest.json",
+			"definition_ref": "defs/builder.md", "prompt_ref": ".claude/workgroups/REQ-039/TASK-039-04/manifest.json#assignment-039-04",
 			"readback_ref": "readback.md", "activation_ref": "activation.json",
 			"activation_revision": 1, "updated_at": "2026-07-30T00:00:00Z",
+			"dispatch_mode":           "one_shot",
 			"completion_reported_ref": completionRef,
 		}},
 		"tasks": []any{
@@ -209,11 +209,23 @@ func TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI(t *testing.T) {
 				"sha256":          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			},
 		},
-		"bugs":  []any{},
-		"teams": []any{},
+		"bugs": []any{},
+		"teams": []any{map[string]any{
+			"id": "workgroup-039-04", "manifest_ref": ".claude/workgroups/REQ-039/TASK-039-04/manifest.json",
+			"responsibility_ids": []any{"BUILD-WORK-PACKAGE"}, "agent_ids": []any{"builder-idle-alloc"},
+		}},
 	}
-	writeSystemState(t, root, state)
 
+	taskPath := filepath.Join(root, "docs", "dev", "tasks", "TASK-039-04.md")
+	taskBytes := []byte("# TASK-039-04\n\nOne-shot worker delivery fixture.\n")
+	if err := os.MkdirAll(filepath.Dir(taskPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskPath, taskBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state["entities"].(map[string]any)["tasks"].([]any)[0].(map[string]any)["sha256"] = req039fixtures.Sha256Hex(taskBytes)
+	writeSystemState(t, root, state)
 	wgDir := filepath.Join(root, ".claude", "workgroups", "REQ-039", "TASK-039-04")
 	if err := os.MkdirAll(wgDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -248,18 +260,14 @@ func TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI(t *testing.T) {
 	code, stdout, stderr := runHook(t, root, "TeammateIdle", `{
 		"session_id":"session-hook-teammate-alloc",
 		"hook_event_name":"TeammateIdle",
-		"agent_id":"builder-idle-alloc"
+		"teammate_name":"builder-idle-alloc",
+		"team_name":"workgroup-039-04",
+		"transcript_path":"/tmp/claude/transcripts/builder-idle-alloc.jsonl"
 	}`)
 	if code != 0 {
 		t.Fatalf("TeammateIdle idle Hook failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
-	lower := strings.ToLower(stdout)
-	if !strings.Contains(lower, "scheduler") {
-		t.Fatalf("TeammateIdle Branch 4 must name the scheduler as next-task owner, got %s", stdout)
-	}
-	if !strings.Contains(lower, "idle") && !strings.Contains(lower, "next") {
-		t.Fatalf("TeammateIdle Branch 4 must mention idle/next, got %s", stdout)
-	}
+	assertRuntimeCursorUnchanged(t, "TeammateIdle completion notice", before, req039fixtures.ReadState(t, root))
 
 	after := req039fixtures.ReadState(t, root)
 	if rev := req039fixtures.Revision(after); rev != beforeRev {

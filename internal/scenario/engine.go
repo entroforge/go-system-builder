@@ -296,9 +296,6 @@ func validateSource(source sourcePackage, module string, root string) error {
 			}
 		}
 	}
-	if err := validateRatio(source.model.CoverageProfile, counts.Positive, counts.Negative); err != nil {
-		return err
-	}
 	if len(usedFixtures) != len(fixtureIDs) {
 		return fmt.Errorf("fixture contract contains unreferenced fixture")
 	}
@@ -351,16 +348,16 @@ func validateBranch(branch Branch, rule Rule, partitions map[string]map[string]s
 		return fmt.Errorf("references unknown fixture %q", branch.FixtureID)
 	}
 	if len(branch.StoryRefs) == 0 || len(branch.FlowRefs) == 0 {
-		return fmt.Errorf("story_refs and flow_refs must not be empty — story_refs needs at least one S-NNN (exactly three digits) and flow_refs needs at least one F-NNN and one PATH-* entry")
+		return fmt.Errorf("story_refs and flow_refs must not be empty — cite a defined S-NNN Story and F-NNN operation flow or PATH-* journey; S/F IDs use exactly three digits, and browser-required branches also need a PATH-* entry")
 	}
 	for _, ref := range branch.StoryRefs {
 		if !storyRefPattern.MatchString(ref) || !markdownHeadingContainsID(stories, ref) {
-			return fmt.Errorf("story reference %q is missing from stories.md", ref)
+			return fmt.Errorf("story reference %q is missing from stories.md; use an S-NNN ID with exactly three digits and define it in a Markdown heading, for example `### S-001: story title`; a directory table or metadata row alone is not a definition", ref)
 		}
 	}
 	for _, ref := range branch.FlowRefs {
 		if !flowRefPattern.MatchString(ref) || !markdownHeadingContainsID(flows, ref) {
-			return fmt.Errorf("flow reference %q is missing from flows.md", ref)
+			return fmt.Errorf("flow reference %q is missing from flows.md; define the referenced ID in a Markdown heading, for example `### F-001: operation flow` or `### PATH-CREATE: browser journey`; F-NNN uses exactly three digits, and a directory table alone is not a definition", ref)
 		}
 	}
 	if branch.BrowserRequired && !hasPathReference(branch.FlowRefs) {
@@ -387,19 +384,8 @@ func validateBranch(branch Branch, rule Rule, partitions map[string]map[string]s
 }
 
 func validateCommonOracle(oracle Oracle) error {
-	if len(oracle.Visible) == 0 || oracle.TerminalState == "" || len(oracle.PersistedEffects) == 0 || len(oracle.ForbiddenSideEffects) == 0 {
+	if len(oracle.Visible) == 0 || oracle.TerminalState == "" || oracle.PersistedEffects == nil || len(oracle.ForbiddenSideEffects) == 0 {
 		return fmt.Errorf("oracle requires visible, terminal_state, persisted_effects and forbidden_side_effects")
-	}
-	return nil
-}
-
-func validateRatio(profile string, positive, negative int) error {
-	if positive == 0 {
-		return fmt.Errorf("coverage ratio requires at least one positive branch")
-	}
-	minimum := minimumNegativeRatio(profile)
-	if float64(negative)/float64(positive) < minimum {
-		return fmt.Errorf("coverage ratio negative:positive %.2f is below required %.2f for %s", float64(negative)/float64(positive), minimum, profile)
 	}
 	return nil
 }

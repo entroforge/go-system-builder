@@ -18,7 +18,7 @@ One Gin-safe implementation or scoped handler and middleware review conclusion.
 ## N/A Criteria
 N/A when no Gin HTTP serving path is affected.
 ## Stop Conditions
-Stop on unhandled panic behavior, ambiguous middleware order, or a handler that owns undeclared domain rules.
+Resolve panic handling and middleware ordering within the specified service/auth contract. Report a required new domain rule or unavailable authoritative source to Main; keep ordinary implementation and reversible diagnostics within the TASK.
 ## Non-Goals
 Do not use framework binding defaults as the sole security boundary.
 

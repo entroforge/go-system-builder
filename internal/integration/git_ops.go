@@ -31,6 +31,9 @@ type gitRunner interface {
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, root string, args ...string) (string, error) {
+	if len(args) == 5 && args[0] == "ls-files" && args[1] == "--others" && args[2] == "--ignored" && args[3] == "--exclude-standard" && args[4] == "-z" {
+		return boundedIgnoredInventory(ctx, root, args...)
+	}
 	return runGit(ctx, root, nil, args...)
 }
 

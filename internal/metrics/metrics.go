@@ -7,6 +7,7 @@ package metrics
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,12 +31,13 @@ const (
 	metricMilestoneRefreshFailures = "loop_milestone_refresh_failures_total"
 	metricRecoveryPackets          = "loop_recovery_packets_total"
 	metricIntegrationDuration      = "loop_integration_duration_ms"
-	// Hook registrations currently use the Claude Code default command
-	// timeout configured by this repository. Forty percent is the early
+	metricSubmissionSave           = "loop_submission_save_total"
+	metricSubmissionSaveDuration   = "loop_submission_save_duration_ms"
+	// Match the shipped platform budgets (PostToolUse has an S4 handoff
+	// ceiling). Forty percent is the early
 	// warning point: PreToolUse command timeouts can silently let the tool
 	// proceed, so operators need signal before the platform budget is near.
-	defaultHookTimeoutMS         int64 = 10000
-	hookTimingWarningThresholdMS int64 = defaultHookTimeoutMS * 40 / 100
+	defaultHookTimeoutMS int64 = 10000
 )
 
 // DurationStats aggregates observed integration durations per status label.
@@ -46,13 +48,16 @@ type DurationStats struct {
 
 // Snapshot is the durable on-disk metrics document.
 type Snapshot struct {
-	GateEvaluations                map[string]int64         `json:"loop_gate_evaluations_total"`
-	TransitionCommits              map[string]int64         `json:"loop_transition_commits_total"`
-	CASConflicts                   int64                    `json:"loop_cas_conflicts_total"`
-	MilestoneRefreshFailures       int64                    `json:"loop_milestone_refresh_failures_total"`
-	MilestoneRefreshFailureReasons map[string]int64         `json:"loop_milestone_refresh_failure_reasons,omitempty"`
-	RecoveryPackets                int64                    `json:"loop_recovery_packets_total"`
-	IntegrationDuration            map[string]DurationStats `json:"loop_integration_duration_ms"`
+	GateEvaluations                map[string]int64              `json:"loop_gate_evaluations_total"`
+	TransitionCommits              map[string]int64              `json:"loop_transition_commits_total"`
+	CASConflicts                   int64                         `json:"loop_cas_conflicts_total"`
+	MilestoneRefreshFailures       int64                         `json:"loop_milestone_refresh_failures_total"`
+	MilestoneRefreshFailureReasons map[string]int64              `json:"loop_milestone_refresh_failure_reasons,omitempty"`
+	RecoveryPackets                int64                         `json:"loop_recovery_packets_total"`
+	IntegrationDuration            map[string]DurationStats      `json:"loop_integration_duration_ms"`
+	SubmissionSaves                map[string]int64              `json:"loop_submission_save_total,omitempty"`
+	SubmissionSaveDuration         map[string]DurationStats      `json:"loop_submission_save_duration_ms,omitempty"`
+	HookTransportFailures          map[string]HookTransportStats `json:"loop_hook_transport_failures,omitempty"`
 	// S7 verification-round series (L3-S7 §14.2 machine-collectible subset;
 	// see s7.go).
 	S7Assignments        map[string]int64         `json:"loop_s7_assignments,omitempty"`
@@ -93,6 +98,9 @@ func emptySnapshot() Snapshot {
 		TransitionCommits:              map[string]int64{},
 		MilestoneRefreshFailureReasons: map[string]int64{},
 		IntegrationDuration:            map[string]DurationStats{},
+		SubmissionSaves:                map[string]int64{},
+		SubmissionSaveDuration:         map[string]DurationStats{},
+		HookTransportFailures:          map[string]HookTransportStats{},
 		S7Assignments:                  map[string]int64{},
 		S7Claims:                       map[string]int64{},
 		S7PlanRevision:                 map[string]int64{},
@@ -144,6 +152,15 @@ func (s *Store) readBase() (Snapshot, error) {
 	if snap.IntegrationDuration == nil {
 		snap.IntegrationDuration = map[string]DurationStats{}
 	}
+	if snap.SubmissionSaves == nil {
+		snap.SubmissionSaves = map[string]int64{}
+	}
+	if snap.SubmissionSaveDuration == nil {
+		snap.SubmissionSaveDuration = map[string]DurationStats{}
+	}
+	if snap.HookTransportFailures == nil {
+		snap.HookTransportFailures = map[string]HookTransportStats{}
+	}
 	if snap.S7Assignments == nil {
 		snap.S7Assignments = map[string]int64{}
 	}
@@ -189,6 +206,10 @@ func RecordIntegrationDuration(root, status string, durationMS int64) error {
 }
 
 func (s *Store) mutate(apply func(*Snapshot)) error {
+	return s.mutateWith(apply, atomicWriteMetrics)
+}
+
+func (s *Store) mutateWith(apply func(*Snapshot), write func(string, []byte) error) error {
 	if strings.TrimSpace(s.root) == "" {
 		return errors.New("metrics: root is required")
 	}
@@ -212,31 +233,41 @@ func (s *Store) mutate(apply func(*Snapshot)) error {
 	if err != nil {
 		return fmt.Errorf("encode metrics: %w", err)
 	}
-	if err := atomicWriteMetrics(s.path, append(data, '\n')); err != nil {
+	if err := write(s.path, append(data, '\n')); err != nil {
 		return fmt.Errorf("write metrics: %w", err)
 	}
 	return nil
 }
 
 // maxTrackedFamilies documents the RC-17 family budget: the durable snapshot
-// tracks sixteen loop_* families — seven core control-plane families plus
-// nine S7 round/outcome families — and every one is wired at both ends:
+// tracks nineteen loop_* families — seven core control-plane families plus
+// nine S7 round/outcome families, two S5 save families and one outer Hook
+// transport failure family. Every one is wired
+// at both ends:
 //   - core seven: recorded by controller/cycle.go, cli/controller.go,
 //     cli/run.go and integration/integrate.go; rendered by FormatDoctor /
 //     FormatHealth;
-//   - S9 nine: recorded from review submit/supplement (RecordS7RoundShape,
+//   - S7 nine: recorded from review submit/supplement (RecordS7RoundShape,
 //     RecordS7ResultSubmit, RecordS7SubmitPhase, ...); all rendered by
 //     FormatS7 (cli/s7_status.go).
+//   - S5 two: one bounded observation per recognized Save invocation from
+//     submission/service.go; counters and durations rendered by FormatDoctor
+//     and FormatHealth. These include replay and are not first-submit metrics.
+//   - outer Hook transport one: ObserveHookTransportFailure from
+//     cli/hook_budget.go records actual outer process failures through the
+//     existing observation spool; FormatDoctor / FormatHealth render it and
+//     HealthDegraded consumes it. Labels are bounded event/outcome pairs;
+//     actual process budget ranges are statistics, never series dimensions.
 //
 // The audit's "15→≤10, remove S7PlanRevision as zero-consumer" does not
 // survive contact with the wiring: S7PlanRevision has live producers
 // (RecordS7RoundShape via review/supplement.go and review/submit.go) and a
 // live renderer (FormatS7), so it is kept and documented instead of cut. The
-// cap is therefore a review guard, not a quota — adding a seventeenth family
+// cap is therefore a review guard, not a quota — adding a twentieth family
 // requires either retiring a dead one in the same change or extending this
 // comment with the new producer/consumer pair. Enforced by
 // TestTrackedFamilyBudget.
-const maxTrackedFamilies = 16
+const maxTrackedFamilies = 19
 
 // pruneDeadFamilies trims unparseable labels out of the round-keyed S7 maps
 // before the snapshot is persisted. Round-keyed families may only carry
@@ -272,14 +303,39 @@ func pruneDeadFamilies(snap *Snapshot) {
 }
 
 func atomicWriteMetrics(path string, data []byte) error {
+	return atomicWriteMetricsWith(path, data, metricsWriteHooks{})
+}
+
+// Private hooks let tests pause the real publisher at its filesystem
+// boundaries without adding synchronization to production callers.
+type metricsWriteHooks struct {
+	created      func(*os.File) error
+	write        func(*os.File, []byte) error
+	beforeRename func() error
+}
+
+func atomicWriteMetricsWith(path string, data []byte, hooks metricsWriteHooks) error {
 	dir := filepath.Dir(path)
-	file, err := os.CreateTemp(dir, ".loop-metrics-*.tmp")
+	file, err := createMetricsTemp(dir)
 	if err != nil {
 		return err
 	}
 	tempPath := file.Name()
 	defer os.Remove(tempPath)
-	if _, err := file.Write(data); err != nil {
+	if hooks.created != nil {
+		if err := hooks.created(file); err != nil {
+			file.Close()
+			return err
+		}
+	}
+	write := hooks.write
+	if write == nil {
+		write = func(file *os.File, data []byte) error {
+			_, err := file.Write(data)
+			return err
+		}
+	}
+	if err := write(file, data); err != nil {
 		file.Close()
 		return err
 	}
@@ -289,6 +345,11 @@ func atomicWriteMetrics(path string, data []byte) error {
 	}
 	if err := file.Close(); err != nil {
 		return err
+	}
+	if hooks.beforeRename != nil {
+		if err := hooks.beforeRename(); err != nil {
+			return err
+		}
 	}
 	if err := os.Rename(tempPath, path); err != nil {
 		return err
@@ -300,6 +361,25 @@ func atomicWriteMetrics(path string, data []byte) error {
 	defer f.Close()
 	_ = f.Sync()
 	return nil
+}
+
+// createMetricsTemp owns the reserved v1 name independently of CreateTemp's
+// undocumented random-suffix encoding. Exclusive creation preserves any
+// existing file, including one that happens to have the same name.
+func createMetricsTemp(dir string) (*os.File, error) {
+	for tries := 0; tries < 100; tries++ {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, err
+		}
+		name := fmt.Sprintf(".loop-metrics-v1-%x.tmp", random)
+		file, err := os.OpenFile(filepath.Join(dir, name), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return file, err
+	}
+	return nil, fmt.Errorf("create metrics temporary file: too many name collisions")
 }
 
 // FormatDoctor renders a human-readable metrics summary for loop-harness doctor.
@@ -317,6 +397,8 @@ func FormatDoctor(root string) (string, error) {
 	writeLabeledCounter(&b, metricMilestoneRefreshFailures, "reason", snap.MilestoneRefreshFailureReasons)
 	fmt.Fprintf(&b, "  %s %d\n", metricRecoveryPackets, snap.RecoveryPackets)
 	writeDurationStats(&b, metricIntegrationDuration, snap.IntegrationDuration)
+	writeSubmissionSaves(&b, snap)
+	writeHookTransportFailures(&b, snap)
 	hookTiming, err := readHookTiming(root)
 	if err != nil {
 		return "", err
@@ -351,6 +433,8 @@ func FormatHealth(root string) (string, error) {
 	fmt.Fprintf(&b, "  %s=%d\n", metricMilestoneRefreshFailures, snap.MilestoneRefreshFailures)
 	writeLabeledCounter(&b, metricGateEvaluations, "status", snap.GateEvaluations)
 	writeHookTimingStats(&b, timing)
+	writeSubmissionSaves(&b, snap)
+	writeHookTransportFailures(&b, snap)
 	if degraded {
 		b.WriteString("  next: inspect runtime state/journal with `loop-harness runtime reconcile`\n")
 	}
@@ -372,15 +456,15 @@ func HealthDegraded(root string) (bool, error) {
 }
 
 func healthDegraded(snap Snapshot, timing map[string]hookTimingStats) bool {
-	if snap.CASConflicts > 0 || snap.MilestoneRefreshFailures > 0 {
+	if snap.CASConflicts > 0 || snap.MilestoneRefreshFailures > 0 || len(snap.HookTransportFailures) > 0 {
 		return true
 	}
 	if snap.GateEvaluations["unknown"] > 0 {
 		return true
 	}
-	for _, stats := range timing {
+	for event, stats := range timing {
 		for _, sample := range stats.samples {
-			if sample >= hookTimingWarningThresholdMS {
+			if sample >= hookPlatformTimeoutMS(event)*40/100 {
 				return true
 			}
 		}
@@ -390,6 +474,7 @@ func healthDegraded(snap Snapshot, timing map[string]hookTimingStats) bool {
 
 type hookTimingStats struct {
 	samples []int64
+	phases  map[string]DurationStats
 }
 
 // readHookTiming reads the durable Hook decision outbox without adding a
@@ -413,8 +498,9 @@ func readHookTiming(root string) (map[string]hookTimingStats, error) {
 			continue
 		}
 		var record struct {
-			HookEvent string `json:"hook_event"`
-			ElapsedMS *int64 `json:"elapsed_ms"`
+			HookEvent string                   `json:"hook_event"`
+			ElapsedMS *int64                   `json:"elapsed_ms"`
+			Phases    map[string]DurationStats `json:"call_phases"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
 			return nil, fmt.Errorf("decode Hook timing outbox: %w", err)
@@ -427,6 +513,18 @@ func readHookTiming(root string) (map[string]hookTimingStats, error) {
 		}
 		event := normalizeLabel(record.HookEvent, "unknown")
 		stats := timing[event]
+		if stats.phases == nil {
+			stats.phases = map[string]DurationStats{}
+		}
+		for name, span := range record.Phases {
+			if span.Count < 0 || span.SumMS < 0 {
+				return nil, fmt.Errorf("invalid completed Hook phase %s", name)
+			}
+			total := stats.phases[name]
+			total.Count += span.Count
+			total.SumMS += span.SumMS
+			stats.phases[name] = total
+		}
 		const maxSamples = 256
 		if len(stats.samples) == maxSamples {
 			copy(stats.samples, stats.samples[1:])
@@ -468,10 +566,33 @@ func writeHookTimingStats(b *strings.Builder, timing map[string]hookTimingStats)
 		p95 := samples[index]
 		max := samples[len(samples)-1]
 		fmt.Fprintf(b, "  loop_hook_evaluation_duration_ms{event=%q} count=%d p95_ms=%d max_ms=%d\n", event, len(samples), p95, max)
-		if p95 >= hookTimingWarningThresholdMS || max >= hookTimingWarningThresholdMS {
-			fmt.Fprintf(b, "  WARNING: Hook event %q is at or above %d%% of the %dms timeout; a platform timeout can bypass PreToolUse enforcement\n", event, hookTimingWarningThresholdMS*100/defaultHookTimeoutMS, defaultHookTimeoutMS)
+		names := make([]string, 0, len(timing[event].phases))
+		for name := range timing[event].phases {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			span := timing[event].phases[name]
+			fmt.Fprintf(b, "  loop_hook_completed_phase_ms{event=%q,phase=%q} count=%d sum_ms=%d (nested spans overlap)\n", event, name, span.Count, span.SumMS)
+		}
+
+		timeoutMS := hookPlatformTimeoutMS(event)
+		thresholdMS := timeoutMS * 40 / 100
+		if p95 >= thresholdMS || max >= thresholdMS {
+			fmt.Fprintf(b, "  WARNING: Hook event %q is at or above 40%% of the %dms platform timeout", event, timeoutMS)
+			if event == "PreToolUse" {
+				fmt.Fprint(b, "; progress observation may be incomplete while ordinary tools continue")
+			}
+			fmt.Fprintln(b)
 		}
 	}
+}
+
+func hookPlatformTimeoutMS(event string) int64 {
+	if event == "PostToolUse" {
+		return 30000
+	}
+	return defaultHookTimeoutMS
 }
 
 func writeLabeledCounter(b *strings.Builder, name, labelKey string, values map[string]int64) {

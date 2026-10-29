@@ -66,6 +66,10 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 		return "", errors.New("fakeRunner: empty args")
 	}
 	switch args[0] {
+	case "ls-files":
+		if len(args) > 1 && args[1] == "--others" {
+			return "", nil
+		}
 	case "status":
 		if len(args) >= 2 && args[1] == "--porcelain" {
 			if f.workdirClean[root] {
@@ -139,7 +143,7 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 			rng := args[4]
 			parts := strings.SplitN(rng, "..", 2)
 			if len(parts) == 2 {
-				return strings.ReplaceAll(f.diffNameOnly(parts[0], parts[1]), "\n", "\x00"), nil
+				return f.diffNameOnly(parts[0], parts[1]), nil
 			}
 		}
 	case "merge-tree":
@@ -365,7 +369,10 @@ func (f *fakeRunner) diffNameOnly(base, head string) string {
 			diff = append(diff, k)
 		}
 	}
-	return strings.Join(diff, "\n")
+	if len(diff) == 0 {
+		return ""
+	}
+	return strings.Join(diff, "\x00") + "\x00"
 }
 
 // fakeRunnerT is a tiny shim that lets tests grab a fresh fakeRunner

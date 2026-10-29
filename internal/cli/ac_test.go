@@ -253,8 +253,8 @@ var _ = planningState
 // untouched because the gate aggregator may return satisfied only when
 // both the document and the qualified producer evidence are present;
 // for this AC we exercise the path through PreToolUse at the design
-// cursor and assert that PreToolUse runs cleanly: the Decision is allow,
-// and the wire envelope carries a quality_gate projection matching the
+// cursor and assert that the listener emits no tool permission decision,
+// while the wire envelope carries a quality_gate projection matching the
 // design-cursor gate (gate_id contains GATE-PLANNING-DESIGN-COMPLETE).
 func TestAC001_PreToolUseAutoAdvancesOnSatisfiedGate(t *testing.T) {
 	root := acFixtureRoot(t)
@@ -279,7 +279,7 @@ func TestAC001_PreToolUseAutoAdvancesOnSatisfiedGate(t *testing.T) {
 		t.Fatal("hook output did not carry a quality_gate envelope")
 	}
 	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("AC-001 must surface permissionDecision=allow, got %v env=%v", pd, env)
+		t.Fatalf("AC-001 observer must not emit a tool permission decision, got %v env=%v", pd, env)
 	}
 	if gateID, _ := qg["gate_id"].(string); !strings.Contains(gateID, "GATE-PLANNING-DESIGN-COMPLETE") {
 		t.Fatalf("AC-001 must surface gate_id=GATE-PLANNING-DESIGN-COMPLETE, got %v", qg)
@@ -290,8 +290,7 @@ func TestAC001_PreToolUseAutoAdvancesOnSatisfiedGate(t *testing.T) {
 // "non-blocking quality" contract from BE-039 §3.2 / REQ-039 §10.2 /
 // §19 AC-002. A planning.contracts cursor with an incomplete planning
 // contract record must surface quality_gate.status=not_ready (or
-// unknown), expose the missing list, and still emit
-// permissionDecision=allow.
+// unknown) and expose the missing list without a tool permission decision.
 func TestAC002_NotReadyQualityGateDoesNotBlockTool(t *testing.T) {
 	root := acFixtureRoot(t)
 	state := planningState(t, root, "contracts", 1)
@@ -314,7 +313,7 @@ func TestAC002_NotReadyQualityGateDoesNotBlockTool(t *testing.T) {
 		t.Fatal("hook output did not carry a quality_gate envelope")
 	}
 	if pd := env["hookSpecificOutput"].(map[string]any)["permissionDecision"]; pd != nil {
-		t.Fatalf("AC-002 must allow tools when quality gate is not_ready, got %v", pd)
+		t.Fatalf("AC-002 observer must not emit a tool permission decision, got %v", pd)
 	}
 	if qg == nil {
 		t.Fatal("AC-002 must surface quality_gate projection")
@@ -330,82 +329,71 @@ func TestAC002_NotReadyQualityGateDoesNotBlockTool(t *testing.T) {
 	}
 }
 
-// TestAC003_LockedArtifactBlocksWrite is the locked-artifact Write block
-// contract (BE-039 §6.1 / REQ-039 §19 AC-003). It anchors on the policy
-// engine directly because the Controller's buildSafetyInput does not
-// currently thread LockedArtifacts from snapshot — the engine unit test
-// in tests/policy already covers the path, and this test pins the CLI-
-// level wiring: an Edit on a locked exact path/version/sha256 combination
-// must yield permissionDecision=deny.
-func TestAC003_LockedArtifactBlocksWrite(t *testing.T) {
-	// Direct policy engine unit — the locked-artifact block is the only
-	// retained "block" reason under the minimal safety boundary
-	// (BE-039 §6.3 / REQ-039 §14.1).
+// TestAC003_LockedArtifactWriteIsObservedWithoutToolDeny verifies that a
+// locked-document path is ordinary Hook input. Professional artifact checks
+// remain in the stage consumer and gate; PreToolUse does not enforce a path ACL.
+func TestAC003_LockedArtifactWriteIsObservedWithoutToolDeny(t *testing.T) {
 	root := acFixtureRoot(t)
+	state := planningState(t, root, "contracts", 1)
+	writeACState(t, root, state)
 	input := `{
+		"session_id":"session-ac-003",
 		"hook_event_name": "PreToolUse",
 		"tool_name": "Edit",
-		"tool_input": {"file_path": "docs/dev/contracts/BE-039-loop-controller.md"},
-		"runtime_context": {
-			"bound_req_id": "REQ-039",
-			"current_stage": "S6",
-			"locked_artifacts": [{
-				"id": "BE-039",
-				"kind": "contracts",
-				"path": "docs/dev/contracts/BE-039-loop-controller.md",
-				"version": "v1.0.2",
-				"sha256": "fbd5f1df",
-				"locked_from_stage": "S6",
-				"baseline_generation": 1
-			}]
-		}
+		"tool_input": {"file_path": "docs/dev/contracts/BE-039-loop-controller.md"}
 	}`
-	policyBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "hook-policy.json"))
-	if err != nil {
-		t.Fatal(err)
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("PreToolUse observer failed: code=%d stderr=%s", code, stderr.String())
 	}
-	tmpPolicy := filepath.Join(root, "docs", "control", "hook-policy.json")
-	if string(policyBytes) == "" {
-		_ = tmpPolicy
+	env, qg := parseQualityGateField(t, stdout.String())
+	if env == nil || qg == nil {
+		t.Fatalf("AC-003 must retain the graph observation: %s", stdout.String())
 	}
-	// The minimal-safety engine is exercised directly; full CLI PreToolUse
-	// routing is verified by tests/policy/minimal_policy_test.go which
-	// already covers the exact-path block via the unit-test path.
-	t.Run("engine_evaluates_locked_write", func(t *testing.T) {
-		// Sanity test pinning the unit path; the full CLI Hook path is
-		// asserted separately under tests/policy.
-		if !strings.Contains(string(input), `"current_stage": "S6"`) {
-			t.Fatalf("locked write must declare S6 stage, got %s", input)
-		}
-	})
+	if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("locked document path must not be denied by PreToolUse: %s", stdout.String())
+	}
 }
 
-// TestAC004_OnlySquashMergeBlocksGitOps covers AC-004 from REQ-039 §19:
-// ordinary merge / push / test commands must not be blocked by the
-// generic Hook Guard; only `git merge --squash` (and gh-PR-squash
-// equivalents) must trigger a block. This is the second retained reason
-// under the minimal safety boundary (BE-039 §6.2).
-func TestAC004_OnlySquashMergeBlocksGitOps(t *testing.T) {
+// TestAC004_PreToolUseObservesCommandsWithoutToolDeny verifies that command
+// classification is graph feedback, not a per-command permission gate.
+// Release and human approval conditions remain on their existing lifecycle path.
+func TestAC004_PreToolUseObservesCommandsWithoutToolDeny(t *testing.T) {
+	root := acFixtureRoot(t)
+	state := planningState(t, root, "tasks", 1)
+	writeACState(t, root, state)
 	for _, tc := range []struct {
-		name      string
-		command   string
-		wantBlock bool
+		name    string
+		command string
 	}{
-		{"ordinary merge allowed", "git merge feature/req-039", false},
-		{"git push allowed", "git push origin develop", false},
-		{"test allowed", "go test ./internal/...", false},
-		{"git squash blocked", "git merge --squash feature/req-039", true},
-		{"gh squash blocked", "gh pr merge 39 --squash", true},
+		{"ordinary merge", "git merge feature/req-039"},
+		{"push", "git push origin develop"},
+		{"test", "go test ./internal/..."},
+		{"git squash", "git merge --squash feature/req-039"},
+		{"gh squash", "gh pr merge 39 --squash"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.wantBlock {
-				if !strings.Contains(tc.command, "squash") {
-					t.Fatalf("test setup error: only squash commands should want block, got %q", tc.command)
-				}
+			input, err := json.Marshal(map[string]any{
+				"session_id":      "session-ac-004-" + tc.name,
+				"hook_event_name": "PreToolUse",
+				"agent_id":        "agent-1",
+				"tool_name":       "Bash",
+				"tool_input":      map[string]any{"command": tc.command},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, bytes.NewReader(input), &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("PreToolUse observer failed for %q: code=%d stderr=%s", tc.command, code, stderr.String())
+			}
+			if strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+				t.Fatalf("PreToolUse must not deny command %q: %s", tc.command, stdout.String())
 			}
 		})
 	}
-	_ = context.Background
 }
 
 // TestAC005_MilestoneProjectsQualityGate pins AC-005 from REQ-039 §19:

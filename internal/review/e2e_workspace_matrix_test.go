@@ -64,7 +64,7 @@ func writeColdStartPlan(t *testing.T, root, workspace string) string {
 				"non_overlap_boundary": "owns logic/state", "execution_wave": "static",
 			},
 			map[string]any{
-				"assignment_id": "assignment-e2e-1", "lens": "e2e", "claim_ids": []string{"claim-e2e-1"},
+				"assignment_id": "assignment-e2e-1", "lens": "e2e", "behavior_surface": "browser", "claim_ids": []string{"claim-e2e-1"},
 				"non_overlap_boundary": "owns the declared flows; spec authoring stays inside the verification workspace",
 				"execution_wave":       "behavior",
 			},
@@ -281,9 +281,21 @@ func TestSubmitResultRechecksRegressionAssetFingerprint(t *testing.T) {
 	}
 	raw["e2e_coverage_state"] = "regression_available"
 	raw["verification_artifact_workspace"] = nil
+	casePath := "docs/design/prototypes/settings/cases.json"
+	if err := os.MkdirAll(filepath.Join(root, filepath.Dir(casePath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, casePath), []byte(`{"cases":[{"id":"CASE-001"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range raw["claims"].([]any) {
+		claim := entry.(map[string]any)
+		if claim["lens"] == "e2e" {
+			claim["source_refs"] = []any{casePath + "#CASE-001"}
+		}
+	}
 	raw["e2e_assets"] = []any{map[string]any{
-		"asset_id": "asset-settings", "case_ref": "CASE-001", "path": "e2e/settings-save.spec.ts",
-		"sha256":       sha256Of(assetBytes),
+		"case_ref": casePath + "#CASE-001", "path": "e2e/settings-save.spec.ts",
 		"selector_ref": "testid:save-button", "route_ref": "settings/save",
 		"environment": "chromium/localhost:3000/profile=default",
 	}}
@@ -313,6 +325,10 @@ func TestSubmitResultRechecksRegressionAssetFingerprint(t *testing.T) {
 	if err := os.WriteFile(assetPath, []byte("test('settings save', 'changed')"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	acceptedBytes, err := os.ReadFile(filepath.Join(root, snap.State["review"].(map[string]any)["plan"].(map[string]any)["path"].(string)))
+	if err != nil || !SamePlanAnswer(regressionBytes, acceptedBytes) {
+		t.Fatalf("original professional answer must replay after machine completion and later asset drift: %v", err)
+	}
 	resultPath := writeE2EResultFile(t, root, plan, "review-result-e2e-regression", "")
 	if _, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: snap.Revision, AssignmentID: "assignment-e2e-1", ResultPath: resultPath,
@@ -321,7 +337,7 @@ func TestSubmitResultRechecksRegressionAssetFingerprint(t *testing.T) {
 	}
 }
 
-func TestRegisterPlanCleansNewWorkspaceWhenCASApplyFails(t *testing.T) {
+func TestRegisterPlanFailureRetainsEmptyDirectoryWithoutRegisteringAuthority(t *testing.T) {
 	workspace := "e2e-workspace/orphaned-plan"
 	root := t.TempDir()
 	state := coldStartState()
@@ -333,8 +349,23 @@ func TestRegisterPlanCleansNewWorkspaceWhenCASApplyFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid review projection must reject registration")
 	}
-	if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(workspace))); !os.IsNotExist(statErr) {
-		t.Fatalf("failed registration must clean its newly-created workspace, stat error=%v", statErr)
+	entries, readErr := os.ReadDir(filepath.Join(root, filepath.FromSlash(workspace)))
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("prepared empty directory must remain without artifacts: %v %v", entries, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".claude/review/plans/review-plan-cs-1.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("unreferenced failed Plan was not cleaned: %v", statErr)
+	}
+	body, readErr := os.ReadFile(statePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var actual map[string]any
+	if err := json.Unmarshal(body, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if PlanPointerFromState(actual) != nil {
+		t.Fatal("a prepared directory was mistaken for a registered Plan")
 	}
 }
 

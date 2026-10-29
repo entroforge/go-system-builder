@@ -36,6 +36,15 @@ func TestContractSelectsCommittedAndDiskInputs(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	if source, err := v.Source("docs/a.md"); err != nil || source != "git_tree" {
+		t.Fatalf("Git source query = %q, %v", source, err)
+	}
+	if source, err := v.Source("runtime/evidence.json"); err != nil || source != "disk" {
+		t.Fatalf("disk source query = %q, %v", source, err)
+	}
+	if _, err := v.Source("../escape"); err == nil {
+		t.Fatal("source query accepted an escaping path")
+	}
 	data, e := v.ReadFile("docs/a.md")
 	if e != nil || string(data) != "committed" {
 		t.Fatalf("dirty qualified: %s %v", data, e)

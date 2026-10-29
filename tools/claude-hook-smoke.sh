@@ -2,14 +2,14 @@
 # Process-boundary smoke for Claude Code Hooks.
 #
 # This command deliberately has two scopes:
-#   1. always: execute the configured Hook command with official payload shapes;
+#   1. always: inspect Harness registrations and invoke the supplied Harness
+#      directly with representative Hook payloads;
 #   2. optional: confirm a real Claude CLI is installed for the interactive
-#      same-session exit-2 acceptance described in the platform Hook reference.
+#      continuation checks described in the platform Hook reference.
 #
 # It never starts an interactive Claude session, spends API budget, or edits
-# product files. The latter acceptance still needs a disposable project and a
-# human-observed teammate because only Claude Code can prove its continuation
-# semantics after a Hook exits 2.
+# product files. Actual event routing and continuation still need a disposable
+# Claude session; direct Harness calls cannot prove platform behavior.
 set -euo pipefail
 
 root="$(pwd)"
@@ -61,17 +61,41 @@ if [ -z "$harness_bin" ]; then
 fi
 [ -x "$harness_bin" ] || { echo "platform smoke: executable Harness not found at $harness_bin; run `make build` or pass --harness" >&2; exit 1; }
 
-# Validate the exact settings-to-command boundary instead of merely grepping
-# for event names. Python is used only as a JSON parser; no repository files
-# are written by this smoke.
+# Static inspection only: this does not execute the registered shell command
+# or reproduce Claude Code's JavaScript matcher engine. Process cases below
+# invoke --harness directly; use a disposable root for Hook-owned diagnostics.
 python3 - "$settings" <<'PY'
 import json
+import shlex
 import sys
 
 path = sys.argv[1]
 with open(path, encoding="utf-8") as handle:
     settings = json.load(handle)
 hooks = settings.get("hooks", {})
+
+def targets_event(hook, event):
+    if hook.get("type") != "command":
+        return False
+    try:
+        argv = shlex.split(hook.get("command", ""))
+    except ValueError:
+        return False
+    if len(argv) < 3 or argv[0].rsplit("/", 1)[-1] != "loop-harness" or argv[1] != "hook":
+        return False
+    events = []
+    for index, arg in enumerate(argv[2:], 2):
+        if arg == "--event" and index + 1 < len(argv):
+            events.append(argv[index + 1])
+        elif arg.startswith("--event="):
+            events.append(arg[len("--event="):])
+    return events == [event]
+
+def recognized_mcp_coverage(matcher):
+    # These forms have known platform semantics. Do not approximate arbitrary
+    # JavaScript regular expressions with Python re or search command text.
+    return matcher is None or matcher in ("", "*", "mcp__.*", "^mcp__.*", "mcp__.*$", "^mcp__.*$")
+
 events = [
     "PreToolUse", "SessionStart", "SubagentStart", "SubagentStop",
     "TeammateIdle", "Stop", "PostToolUse", "PostToolUseFailure",
@@ -84,22 +108,24 @@ for event in events:
     commands = []
     for registration in registrations:
         for hook in registration.get("hooks", []):
-            if hook.get("type") == "command":
+            if targets_event(hook, event):
                 commands.append(hook)
     if not commands:
-        raise SystemExit(f"platform smoke: {event} has no command hook")
-    if not any(f"hook --event {event}" in hook.get("command", "") for hook in commands):
-        raise SystemExit(f"platform smoke: {event} command does not target the same Harness event")
+        raise SystemExit(f"platform smoke: {event} has no recognized same-event Harness command registration")
     for hook in commands:
         timeout = hook.get("timeout", 10)
-        limit = 10
+        limit = 30 if event == "PostToolUse" else 10
         if timeout > limit or timeout <= 0:
             raise SystemExit(f"platform smoke: {event} timeout {timeout}s outside 1..{limit}s")
 
-pretool = json.dumps(hooks.get("PreToolUse", []))
-if "mcp__.*" not in pretool:
-    raise SystemExit("platform smoke: PreToolUse matcher does not cover mcp__.*")
-print(f"PASS settings boundary: {path}")
+for event in ("PreToolUse", "PostToolUse"):
+    if not any(
+        recognized_mcp_coverage(registration.get("matcher"))
+        and any(targets_event(hook, event) for hook in registration.get("hooks", []))
+        for registration in hooks.get(event, [])
+    ):
+        raise SystemExit(f"platform smoke: no recognized match-all or MCP-wide {event} Harness registration; other matcher forms require Claude platform verification")
+print(f"PASS Harness registrations (static; limited matcher forms): {path}")
 PY
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/loop-harness-platform-smoke.XXXXXX")"
@@ -136,6 +162,15 @@ run_case subagent-stop SubagentStop \
   '{"hook_event_name":"SubagentStop","session_id":"platform-smoke-session","agent_id":"platform-smoke-agent","agent_type":"general-purpose","stop_hook_active":false,"last_assistant_message":"platform hook smoke"}' 0
 run_case pretool-read PreToolUse \
   '{"hook_event_name":"PreToolUse","session_id":"platform-smoke-session","tool_name":"Read","tool_use_id":"platform-smoke-tool","tool_input":{"file_path":"README.md"}}' 0
+run_case pretool-mcp PreToolUse \
+  '{"hook_event_name":"PreToolUse","session_id":"platform-smoke-session","tool_name":"mcp__memory__search_nodes","tool_use_id":"platform-smoke-mcp","tool_input":{"query":"hook smoke"}}' 0
+# A failed non-writing payload checks the PostToolUse process boundary without
+# receiving any author-edited questionnaire already present in this root.
+# Successful custom-tool reception is exercised in disposable test fixtures.
+run_case posttool-mcp-failed PostToolUse \
+  '{"hook_event_name":"PostToolUse","session_id":"platform-smoke-session","tool_name":"mcp__sandbox__execute","tool_use_id":"platform-smoke-mcp-save","tool_input":{},"tool_response":{"is_error":true}}' 0
+
+echo "PASS direct Harness payload processes (no Claude event routing or MCP server invoked)"
 
 if command -v "$claude_bin" >/dev/null 2>&1; then
   set +e
@@ -155,7 +190,7 @@ if command -v "$claude_bin" >/dev/null 2>&1; then
       echo "UNVERIFIED Claude version: $detected_version; reference is 2.1.276. Check docs/claude-platform-compatibility.md before deployment."
       if [ "$require_platform" -eq 1 ]; then exit 78; fi
     fi
-    echo "ACCEPTANCE REQUIRED: in a disposable project, observe a real TeammateIdle/SubagentStop exit-2 continuation and record the Claude version."
+    echo "UNVERIFIED platform behavior: actual Hook routing and SubagentStop continuation require a disposable Claude session."
   fi
 else
   if [ "$require_platform" -eq 1 ]; then

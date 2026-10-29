@@ -19,8 +19,11 @@ report, and temporary review-artifact surfaces remain allowed; undeclared
 product files in the execution checkout are recorded as product drift and
 reject that PASS.
 
-Older hand-authored `capture step` JSON remains readable. Hash-bound manual
-`path:` evidence under ordinary repository surfaces continues to support
-diagnostic and review flows. A path rewritten to point into the automatic
+Older complete `capture step` JSON remains readable under its original frozen
+recovery contract. For a new professional answer, select an actual local
+`path:` reference; the original receiver fixes its content digest. Authors
+do not compute or copy SHA, bytes or truncation metadata. An already accepted
+reference retains its original content binding; current bytes cannot replace
+a missing historical digest. A path rewritten to point into the automatic
 capture `exec` surface is treated as automatic evidence and cannot bypass the
 capture provenance check by omitting `--captures`.

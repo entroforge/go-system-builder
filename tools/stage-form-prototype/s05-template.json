@@ -1,0 +1,45 @@
+{
+  "stage": "S05",
+  "adapter": "document_review_demo",
+  "title": "S05 文档审查",
+  "instruction": "只修改 answer。conclusion 为 null 时是草稿；完整保存即交卷。接收后无需登记证据或推进阶段。",
+  "roles": {
+    "reviewer-spec": {
+      "key": "spec",
+      "title": "规格一致性",
+      "responsibility": "DV-SPEC-CONSISTENCY",
+      "question": "需求、合同和任务是否表达同一承诺？"
+    },
+    "reviewer-task": {
+      "key": "task",
+      "title": "任务可执行性",
+      "responsibility": "DV-TASK-EXECUTABILITY",
+      "question": "Builder 能否在声明范围、依赖和完成判据下完成任务？"
+    }
+  },
+  "read": [
+    { "path": "fixtures/requirement.json", "purpose": "确认用户目标、范围和验收标准。" },
+    { "path": "fixtures/contracts.json", "purpose": "对照导出协议、权限拒绝和数据格式。" },
+    { "path": "fixtures/tasks.json", "purpose": "检查任务边界、依赖和完成判据。" }
+  ],
+  "questions": {
+    "conclusion": {
+      "choices": ["pass", "fix_required", "req_change_required"],
+      "meaning": {
+        "pass": "审查通过。",
+        "fix_required": "规格或任务须修正。",
+        "req_change_required": "需要人重新裁定需求。"
+      }
+    },
+    "findings": {
+      "question": "若未通过，指出具体位置、预期与实际观察。通过时填 []。",
+      "required_when": ["fix_required", "req_change_required"],
+      "example": {
+        "path": "fixtures/contracts.json",
+        "expected": "没有导出权限时返回拒绝结果。",
+        "observed": "权限拒绝结果没有被定义。"
+      }
+    }
+  },
+  "answer_template": { "conclusion": null, "findings": [] }
+}

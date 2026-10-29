@@ -34,6 +34,9 @@ func WorkerInvocation(e Execution, verb string) string {
 // Repository hooks remain enabled. The caller serializes shared Git mutations;
 // no cwd, checkout, stash, reset or automatic add-all is performed.
 func (b *ExecutionRegistry) Commit(ctx context.Context, e Execution, request CommitRequest) (CommitReceipt, error) {
+	if e.Purpose == DocumentReviewPurpose {
+		return CommitReceipt{}, fmt.Errorf("document review executes no product commit; save the issued answer")
+	}
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
 		return CommitReceipt{}, err
 	}
@@ -48,7 +51,7 @@ func (b *ExecutionRegistry) Commit(ctx context.Context, e Execution, request Com
 	}
 	allowed := map[string]bool{}
 	for _, p := range request.Paths {
-		if !filepath.IsLocal(p) || filepath.ToSlash(filepath.Clean(p)) != p || p == "." || (p == ".git" || strings.HasPrefix(p, ".git/")) || strings.HasPrefix(p, ".claude/") {
+		if !filepath.IsLocal(p) || filepath.ToSlash(filepath.Clean(p)) != p || p == "." || (p == ".git" || strings.HasPrefix(p, ".git/")) || strings.HasPrefix(p, ".claude/") || p == ".loop-submissions" || strings.HasPrefix(p, ".loop-submissions/") {
 			return CommitReceipt{}, fmt.Errorf("commit requires literal product file paths: %s", p)
 		}
 		physical, err := CanonicalProspective(filepath.Join(e.Path, filepath.FromSlash(p)))

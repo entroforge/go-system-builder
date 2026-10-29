@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -13,7 +14,9 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/classifier"
+	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/workspace"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // Minimal Safety Policy — REQ-039 v2.0.0 §14 / BE-039 v1.0.2 §6.
@@ -94,9 +97,32 @@ const (
 // (controller, hookctx, adapter) still consume. The enforce path no longer
 // reads it; it remains as a data carrier until BUG-02/03 migrate callers.
 type AgentContext struct {
-	ReviewAssignment      bool     `json:"review_assignment,omitempty"`
-	ID                    string   `json:"id"`
-	State                 string   `json:"state"`
+	// DocumentReviewAssignment marks an owner with a current issued S5
+	// questionnaire. It is a read-only Hook projection, not Runtime state.
+	DocumentReviewAssignment bool `json:"-"`
+	ReviewAssignment         bool `json:"review_assignment,omitempty"`
+	// HypothesisResultAssignment is projected only from a registered S8
+	// Investigator whose exact issued packet or accepted original receipt is
+	// bound to this Assignment. It identifies the responsibility for
+	// completion projection; fresh write paths are a separate grant.
+	HypothesisResultAssignment bool `json:"hypothesis_result_assignment,omitempty"`
+	// RepairResultAssignment marks the current typed S9 execution responsibility.
+	// It prevents generic completion state from standing in for the original
+	// candidate receipt and its owner-check proof.
+	RepairResultAssignment bool `json:"repair_result_assignment,omitempty"`
+	// Original resolution retires the old scope until a new Resume is issued.
+	RepairResultResumePending bool   `json:"-"`
+	ID                        string `json:"id"`
+	State                     string `json:"state"`
+	// Activity and LifecycleEvent preserve the original lifecycle facts used
+	// by authorization checks. State is the shared five-state projection and
+	// must never be used as a work permission.
+	Activity              string   `json:"-"`
+	LifecycleEvent        string   `json:"-"`
+	DocumentConflictRef   string   `json:"-"`
+	WorkBlockedRef        string   `json:"-"`
+	BlockerResolvedRef    string   `json:"-"`
+	ShutdownApprovedRef   string   `json:"-"`
 	AllowedTools          []string `json:"allowed_tools"`
 	AllowedWritePaths     []string `json:"allowed_write_paths"`
 	AllowedCommandClasses []string `json:"allowed_command_classes"`
@@ -121,6 +147,47 @@ type AgentContext struct {
 	TaskIDs               []string `json:"task_ids,omitempty"`
 	TeamID                string   `json:"team_id,omitempty"`
 	CompletionReportedRef string   `json:"completion_reported_ref,omitempty"`
+}
+
+// LifecycleActivity returns the original lifecycle activity for legacy
+// authorization predicates. Hook context supplies it from the current
+// state/event pair. Directly constructed legacy contexts retain exact legacy
+// compatibility; a canonical status without its event never implies an
+// activity such as "working".
+func (a *AgentContext) LifecycleActivity() string {
+	if a == nil {
+		return ""
+	}
+	if a.Activity != "" {
+		return a.Activity
+	}
+	activity, err := workstate.LegacyAgentActivity("1.2.0", a.State, "")
+	if err != nil {
+		return ""
+	}
+	return activity
+}
+
+// NativeOwnedAssignment is a trusted, read-only projection for the exact
+// native S6 WorkerCheck adapter. Hook context loading fills it from the
+// current canonical Assignment Record and frozen manifest; hook JSON cannot
+// supply it.
+type NativeOwnedAssignment struct {
+	AssignmentID           string             `json:"-"`
+	OwnerAgentID           string             `json:"-"`
+	WorktreePath           string             `json:"-"`
+	AssignmentRecordSHA256 string             `json:"-"`
+	OwnerState             string             `json:"-"`
+	ContextBound           bool               `json:"-"`
+	PlanActivated          bool               `json:"-"`
+	Checks                 []NativeOwnedCheck `json:"-"`
+}
+
+// NativeOwnedCheck is the command identity copied from a current frozen
+// ClosingContract. It is not a check result or a generic command grant.
+type NativeOwnedCheck struct {
+	Index   int    `json:"-"`
+	Command string `json:"-"`
 }
 
 // TeamSummary is a lightweight view of a registered team manifest consumed by
@@ -151,27 +218,58 @@ type LockedArtifact struct {
 // the two retained decisions. The remaining fields are data carriers for
 // downstream consumers and are preserved until BUG-02/03 migrate them away.
 type RuntimeContext struct {
-	Workspace                 *workspace.ExecutionRegistry `json:"-"`
-	WorkspaceError            string                       `json:"-"`
-	RuntimeID                 string                       `json:"runtime_id"`
-	Revision                  int                          `json:"revision"`
-	BoundREQID                string                       `json:"bound_req_id,omitempty"`
-	BoundREQPath              string                       `json:"bound_req_path"`
-	BoundREQUIImpact          string                       `json:"bound_req_ui_impact"`
-	Agent                     *AgentContext                `json:"agent"`
-	CurrentState              string                       `json:"current_state"`
-	CurrentPhase              string                       `json:"current_phase"`
-	Paused                    bool                         `json:"paused"`
-	CleanRound                any                          `json:"clean_round"`
-	CurrentReviewRound        int                          `json:"current_review_round"`
-	EvidenceValidCount        int                          `json:"evidence_valid_count"`
-	OpenBlockingBugs          int                          `json:"open_blocking_bugs"`
-	Teams                     []TeamSummary                `json:"teams,omitempty"`
-	LastActivityAt            string                       `json:"last_activity_at,omitempty"`
-	ProjectRoot               string                       `json:"project_root,omitempty"`
-	CurrentStage              string                       `json:"current_stage,omitempty"`
-	CurrentBaselineGeneration int                          `json:"current_baseline_generation,omitempty"`
-	LockedArtifacts           []LockedArtifact             `json:"locked_artifacts,omitempty"`
+	// Only the trusted Runtime loader supplies authoring grants. They cannot
+	// be supplied through a Hook's runtime_context JSON.
+	PacketMode            bool     `json:"-"`
+	WorkPacketAnswerPaths []string `json:"-"`
+	// WorkerSubmissionPaths are exact local lifecycle filenames derived from
+	// the current receipt-bound frozen assignment context. They grant no
+	// product scope and are not decoded from Hook input.
+	WorkerSubmissionPaths []string `json:"-"`
+	// MainPlanningAnswerPaths are exact unsubmitted S2/S3/S4 Main paths
+	// projected from the current typed Runtime packet. They grant no Worker
+	// identity or broader submission-directory access.
+	MainPlanningAnswerPaths []string `json:"-"`
+	// ReviewResultAnswerPaths are the exact persisted S7 packet authoring
+	// paths projected by hookctx from the current Runtime. They are not
+	// caller-supplied write grants and are never decoded from runtime_context.
+	ReviewResultAnswerPaths []string `json:"-"`
+	// HypothesisResultAnswerPaths are the exact current S8 issued answer
+	// paths projected from the original Case/dispatch/journal authority.
+	// They are not supplied by hook JSON and grant no directory scope.
+	HypothesisResultAnswerPaths []string `json:"-"`
+	// RepairPlanReportAnswerPaths are exact S9 pre-execution questionnaire
+	// paths projected from the original Runtime packet issuer. They grant no
+	// product-write authority and are distinct from the post-execution repair
+	// Assignment scope.
+	RepairPlanReportAnswerPaths []string `json:"-"`
+	// RepairResultAnswerPaths are exact post-execution answer files projected
+	// from the current registered Worker packet/source. They grant no product
+	// writes and are independent from the earlier PlanReport questionnaire.
+	RepairResultAnswerPaths     []string                     `json:"-"`
+	RepairResultResolutionPaths []string                     `json:"-"`
+	Workspace                   *workspace.ExecutionRegistry `json:"-"`
+	WorkspaceError              string                       `json:"-"`
+	NativeOwnedAssignments      []NativeOwnedAssignment      `json:"-"`
+	RuntimeID                   string                       `json:"runtime_id"`
+	Revision                    int                          `json:"revision"`
+	BoundREQID                  string                       `json:"bound_req_id,omitempty"`
+	BoundREQPath                string                       `json:"bound_req_path"`
+	BoundREQUIImpact            string                       `json:"bound_req_ui_impact"`
+	Agent                       *AgentContext                `json:"agent"`
+	CurrentState                string                       `json:"current_state"`
+	CurrentPhase                string                       `json:"current_phase"`
+	Paused                      bool                         `json:"paused"`
+	CleanRound                  any                          `json:"clean_round"`
+	CurrentReviewRound          int                          `json:"current_review_round"`
+	EvidenceValidCount          int                          `json:"evidence_valid_count"`
+	OpenBlockingBugs            int                          `json:"open_blocking_bugs"`
+	Teams                       []TeamSummary                `json:"teams,omitempty"`
+	LastActivityAt              string                       `json:"last_activity_at,omitempty"`
+	ProjectRoot                 string                       `json:"project_root,omitempty"`
+	CurrentStage                string                       `json:"current_stage,omitempty"`
+	CurrentBaselineGeneration   int                          `json:"current_baseline_generation,omitempty"`
+	LockedArtifacts             []LockedArtifact             `json:"locked_artifacts,omitempty"`
 	// VerificationWorkspace is the S7 ReviewPlan's verification artifact
 	// write surface (E2E cold-start spec/fixture/evidence). The reviewer
 	// product-write deny allows writes only inside it plus the control-plane
@@ -194,8 +292,10 @@ type RuntimeContext struct {
 }
 
 type Input struct {
-	CWD          string         `json:"cwd,omitempty"`
-	ToolResponse map[string]any `json:"tool_response,omitempty"`
+	// Internal transport lifetime, never an authored/persisted payload field.
+	Context      context.Context `json:"-"`
+	CWD          string          `json:"cwd,omitempty"`
+	ToolResponse map[string]any  `json:"tool_response,omitempty"`
 	scope        *pathscope.Worktrees
 	SessionID    string          `json:"session_id"`
 	Event        string          `json:"hook_event_name"`
@@ -462,6 +562,12 @@ func (e *Engine) Evaluate(input Input) (Decision, error) {
 // its PLAN_REPORT is recorded (L4 §15.2 P1-3 close-out).
 func EvaluateAgentScoped(input Input) (Decision, bool) {
 	input = withPathScope(input)
+	if decision, blocked := NativeOwnedCheckDecision(input); blocked {
+		return decision, true
+	}
+	if decision, blocked := workPacketWriteDecision(input); blocked {
+		return decision, true
+	}
 	if decision, blocked := repairAssignmentScopeDecision(input); blocked {
 		return decision, true
 	}
@@ -570,6 +676,12 @@ func repairAssignmentScopeDecision(input Input) (Decision, bool) {
 	for _, path := range paths {
 		if repairControlPathAllowed(input, path) {
 			continue
+		}
+		if input.Runtime.Agent != nil && input.Runtime.Agent.RepairResultResumePending {
+			decision := repairAssignmentBlock(input, path)
+			decision.Reason = "the original S9 resolution retired this attempt; only a verified new Resume successor may authorize product writes"
+			decision.Recovery = []string{"wait for Main's verified new Resume issuance; do not reuse the old answer or product scope"}
+			return decision, true
 		}
 		if input.Runtime.Agent == nil || input.Runtime.Agent.RepairAssignmentID == "" {
 			return repairAssignmentBlock(input, path), true
@@ -691,8 +803,20 @@ func assignmentWriteBeforePlanDecision(input Input) (Decision, bool) {
 		if agent == nil {
 			return Decision{}, false
 		}
-		if agent.DispatchMode != "plan_checkpoint" && agent.State != "spawned" && agent.State != "queued" && agent.State != "reading" {
-			return Decision{}, false
+		activity := agent.LifecycleActivity()
+		if agent.DispatchMode != "plan_checkpoint" {
+			switch activity {
+			case "spawned", "queued", "reading":
+				// Keep the original pre-plan activity gate.
+			default:
+				if activity == "" && workstate.Valid(workstate.Status(agent.State)) {
+					// A canonical state without its original lifecycle event is
+					// malformed context, not evidence that the pre-plan barrier
+					// has already been crossed.
+					return assignmentWriteBeforePlanBlock(input)
+				}
+				return Decision{}, false
+			}
 		}
 		if agent.PlanReportedRef != "" || agent.DispatchMode == "one_shot" {
 			return Decision{}, false
@@ -721,19 +845,35 @@ func assignmentWriteBeforePlanDecision(input Input) (Decision, bool) {
 func assignmentWriteBeforePlanBlock(input Input) (Decision, bool) {
 	agent := input.Runtime.Agent
 	subject := "dispatched assignment"
+	recovery := []string{
+		"send the PLAN_REPORT via SendMessage with message_type=plan_report — the PostToolUse(SendMessage) observer records the plan checkpoint (plan_reported_ref) automatically",
+		"then continue — no approval wait in plan_checkpoint mode",
+	}
 	if input.Runtime.AssignmentID != "" {
 		subject = "assignment " + input.Runtime.AssignmentID
 	} else if agent != nil {
 		subject = fmt.Sprintf("agent %s (%s)", agent.ID, agent.State)
 	}
+	reason := fmt.Sprintf("%s has no recorded plan checkpoint; send the PLAN_REPORT (message_type plan_report) first — Main stays silent when the plan is aligned (L4 §7.4)", subject)
+	if agent != nil && input.EffectiveAgentID() != "" && agent.ID == input.EffectiveAgentID() {
+		if execution, ok := workspaceExecution(input); ok && input.Runtime.Workspace != nil {
+			paths, pathsErr := input.Runtime.Workspace.WorkerSubmissionPaths(execution)
+			if pathsErr == nil && paths.Plan != "" {
+				planPath := filepath.Join(execution.Path, filepath.FromSlash(paths.Plan))
+				beginCommand := workspace.WorkerInvocation(execution, "begin")
+				reason = fmt.Sprintf("%s has no activated PLAN checkpoint; save the current registered plan and begin the exact Worker execution (L4 §7.4)", subject)
+				recovery = []string{
+					"complete and save the PLAN draft at the exact registered path " + planPath,
+					"then run the exact registered workspace begin command: " + beginCommand,
+				}
+			}
+		}
+	}
 	return Decision{
 		Decision: "deny",
 		RuleID:   RuleAssignmentWriteBeforePlan,
-		Reason:   fmt.Sprintf("%s has no recorded plan checkpoint; send the PLAN_REPORT (message_type plan_report) first — Main stays silent when the plan is aligned (L4 §7.4)", subject),
-		Recovery: []string{
-			"send the PLAN_REPORT via SendMessage with message_type=plan_report — the PostToolUse(SendMessage) observer records the plan checkpoint (plan_reported_ref) automatically",
-			"then continue — no approval wait in plan_checkpoint mode",
-		},
+		Reason:   reason,
+		Recovery: recovery,
 	}, true
 }
 
@@ -763,6 +903,20 @@ func firstWritePathAllowed(input Input, rawPath string) bool {
 		return true
 	}
 	rel := reviewerRelativePath(input, rawPath)
+	if rel == ".loop-submissions" || strings.HasPrefix(rel, ".loop-submissions/") {
+		return workerPlanDraftAllowed(input, rawPath)
+	}
+	if input.Runtime.PacketMode && (rel == ".claude/submissions" || strings.HasPrefix(rel, ".claude/submissions/")) {
+		if rel == ".claude/submissions/plan.json" || rel == ".claude/submissions/completion.json" {
+			return true
+		}
+		if reviewResultAnswerAllowed(input, rawPath) {
+			return true
+		}
+		// Issued answer grants are loaded only after the original activated
+		// plan validates. Other submission files retain their own protocols.
+		return workPacketAnswerAllowed(input, rawPath)
+	}
 	if rel == ".claude" || strings.HasPrefix(rel, ".claude/") {
 		return true
 	}
@@ -914,6 +1068,18 @@ func phaseProductWriteFrozen(input Input) bool {
 // docs/reports/release-audits/ for release-audit reports — docs/rules/change-control
 // §2) so audit work stays inside the control/report surfaces.
 func phaseWritePathAllowed(input Input, rawPath string) bool {
+	if reviewResultAnswerAllowed(input, rawPath) {
+		return true
+	}
+	if hypothesisResultAnswerAllowed(input, rawPath) {
+		return true
+	}
+	if repairPlanReportAnswerAllowed(input, rawPath) {
+		return true
+	}
+	if workPacketAnswerAllowed(input, rawPath) {
+		return true
+	}
 	if temporaryWorktreePath(input, rawPath) {
 		return true
 	}
@@ -981,6 +1147,18 @@ func reviewerRelativePath(input Input, rawPath string) string {
 }
 
 func reviewerWritePathAllowed(input Input, rawPath string) bool {
+	if reviewResultAnswerAllowed(input, rawPath) {
+		return true
+	}
+	if workerSubmissionPathAllowed(input, rawPath) {
+		return true
+	}
+	if repairPlanReportAnswerAllowed(input, rawPath) {
+		return true
+	}
+	if workPacketAnswerAllowed(input, rawPath) {
+		return true
+	}
 	if temporaryWorktreePath(input, rawPath) {
 		return true
 	}
@@ -1459,28 +1637,29 @@ func (artifact LockedArtifact) complete() bool {
 }
 
 type DecisionEnvelope struct {
-	SchemaVersion           string    `json:"schema_version"`
-	DecisionID              string    `json:"decision_id"`
-	PolicyID                string    `json:"policy_id"`
-	PolicyVersion           string    `json:"policy_version"`
-	PolicySHA256            string    `json:"policy_sha256"`
-	HookEvent               string    `json:"hook_event"`
-	SessionID               string    `json:"session_id"`
-	RuntimeID               *string   `json:"runtime_id"`
-	ObservedRuntimeRevision *int      `json:"observed_runtime_revision"`
-	AgentID                 *string   `json:"agent_id"`
-	TargetID                *string   `json:"target_id"`
-	MatchedRuleIDs          []string  `json:"matched_rule_ids"`
-	Decision                string    `json:"decision"`
-	RuleID                  *string   `json:"rule_id"`
-	Reason                  string    `json:"reason"`
-	Missing                 []string  `json:"missing"`
-	Recovery                []string  `json:"recovery"`
-	Retry                   string    `json:"retry"`
-	HumanRequired           bool      `json:"human_required"`
-	EvaluatedAt             string    `json:"evaluated_at"`
-	ElapsedMS               int64     `json:"elapsed_ms"`
-	Guidance                *Guidance `json:"guidance,omitempty"`
+	SchemaVersion           string                           `json:"schema_version"`
+	DecisionID              string                           `json:"decision_id"`
+	PolicyID                string                           `json:"policy_id"`
+	PolicyVersion           string                           `json:"policy_version"`
+	PolicySHA256            string                           `json:"policy_sha256"`
+	HookEvent               string                           `json:"hook_event"`
+	SessionID               string                           `json:"session_id"`
+	RuntimeID               *string                          `json:"runtime_id"`
+	ObservedRuntimeRevision *int                             `json:"observed_runtime_revision"`
+	AgentID                 *string                          `json:"agent_id"`
+	TargetID                *string                          `json:"target_id"`
+	MatchedRuleIDs          []string                         `json:"matched_rule_ids"`
+	Decision                string                           `json:"decision"`
+	RuleID                  *string                          `json:"rule_id"`
+	Reason                  string                           `json:"reason"`
+	Missing                 []string                         `json:"missing"`
+	Recovery                []string                         `json:"recovery"`
+	Retry                   string                           `json:"retry"`
+	HumanRequired           bool                             `json:"human_required"`
+	EvaluatedAt             string                           `json:"evaluated_at"`
+	ElapsedMS               int64                            `json:"elapsed_ms"`
+	CallPhases              map[string]metrics.DurationStats `json:"call_phases,omitempty"`
+	Guidance                *Guidance                        `json:"guidance,omitempty"`
 }
 
 func (e *Engine) Envelope(input Input, decision Decision, evaluatedAt time.Time) DecisionEnvelope {
@@ -1546,6 +1725,7 @@ func (e *Engine) Envelope(input Input, decision Decision, evaluatedAt time.Time)
 		HumanRequired:           humanRequired,
 		EvaluatedAt:             evaluatedAt.UTC().Format(time.RFC3339Nano),
 		ElapsedMS:               decision.ElapsedMS,
+		CallPhases:              metrics.CompletedSpans(input.Context),
 		// Guidance is supplied by the Loop Controller, not the policy engine;
 		// the minimal safety engine only emits a Decision.
 	}

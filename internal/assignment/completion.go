@@ -1,6 +1,7 @@
 package assignment
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -9,14 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/dispatch"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // CompletionRequest drives the canonical S6 Builder Result registration.
 type CompletionRequest struct {
+	Context         context.Context `json:"-"`
+	NativeAgentID   string
+	NativeSessionID string
+	// NativePlanPath is supplied by the native Stop receiver, never an activation.
+	NativePlanPath   string
 	ExpectedRevision int
 	AgentID          string
 	MessagePath      string
@@ -49,25 +57,57 @@ type envelopeCheckOut struct {
 	Result  string `json:"result"`
 }
 
-// CompleteTask is the canonical S6 completion path: ONE command produces
-// the Builder Result fact once. It validates the completion message,
-// derives the completion_report evidence envelope from it (identity,
-// fingerprints and subject refs are tool-generated — the Builder does not
-// hand-write a second artifact), and atomically advances the Agent
-// (working→reported), applies the TASK builder_reported side effect, and
-// appends the evidence index entry under a single revision CAS
-// (L3-S6 §7.3 / P1). The legacy dual write — agent-event + a separate
-// `runtime evidence add` — is no longer required on this path.
+// CompleteTask is the compatibility entry point for the original result
+// command. It deliberately preserves the old Snapshot return shape while the
+// canonical S6 consumer can also expose its immutable receipt.
 func CompleteTask(
 	root, statePath, journalPath string,
 	request CompletionRequest,
 ) (loopruntime.Snapshot, error) {
+	snapshot, _, err := CompleteTaskWithReceipt(root, statePath, journalPath, request)
+	return snapshot, err
+}
+
+// CompleteTaskWithReceipt dispatches only an explicitly Record-bound S6
+// message to the canonical Result consumer. The legacy branch remains in its
+// original helper and keeps its existing evidence and lifecycle semantics.
+func CompleteTaskWithReceipt(
+	root, statePath, journalPath string,
+	request CompletionRequest,
+) (loopruntime.Snapshot, ResultAcceptanceReceipt, error) {
 	if request.AgentID == "" {
-		return loopruntime.Snapshot{}, fmt.Errorf("agent_id is required")
+		return loopruntime.Snapshot{}, ResultAcceptanceReceipt{}, fmt.Errorf("agent_id is required")
 	}
 	data, err := os.ReadFile(request.MessagePath)
 	if err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("read completion message: %w", err)
+		return loopruntime.Snapshot{}, ResultAcceptanceReceipt{}, fmt.Errorf("read completion message: %w", err)
+	}
+	if hasCanonicalResultMarker(data) {
+		if len(data) > canonicalResultMessageLimit {
+			return loopruntime.Snapshot{}, ResultAcceptanceReceipt{}, fmt.Errorf("completion message exceeds the 1 MiB limit")
+		}
+		return completeCanonicalTaskWithReceipt(root, statePath, journalPath, request, data)
+	}
+	snapshot, err := completeTaskLegacy(root, statePath, journalPath, request, data)
+	return snapshot, ResultAcceptanceReceipt{}, err
+}
+
+// completeTaskLegacy retains the original completion_report path for
+// Assignments that did not explicitly opt into the S6 v1.2 Record contract.
+// CompleteTaskWithReceipt rejects canonical opt-in owners before this legacy
+// path can accept a worker-authored legacy conclusion.
+//
+// completeTaskLegacy preserves the pre-S6 completion_report flow for an
+// Assignment that has no canonical Record opt-in. It validates the original
+// completion message and atomically updates the Agent, TASK and evidence
+// index through the same Runtime Writer.
+func completeTaskLegacy(
+	root, statePath, journalPath string,
+	request CompletionRequest,
+	data []byte,
+) (loopruntime.Snapshot, error) {
+	if request.AgentID == "" {
+		return loopruntime.Snapshot{}, fmt.Errorf("agent_id is required")
 	}
 	if err := schema.NewValidator(root).ValidateBytes("agent-message.schema.json", data); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("completion message schema: %w", err)
@@ -97,6 +137,9 @@ func CompleteTask(
 	var current map[string]any
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
+	}
+	if err := rejectLegacyCompletionForS6Owner(root, current, request.AgentID); err != nil {
+		return loopruntime.Snapshot{}, err
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	if message.RuntimeID != "" && message.RuntimeID != runtimeID {
@@ -172,17 +215,18 @@ func CompleteTask(
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 
-	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	mutation := loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-complete-%s-%s-r%d", request.AgentID, message.TaskID, commitRevision+1),
-		TransitionID:   "BUILDER-RESULT",
-		Event:          "completion_reported",
-		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:complete:%s:%s:%d", request.AgentID, message.TaskID, commitRevision),
-		RuntimeID:      runtimeID,
-		From:           cursor,
-		To:             cursor,
-		EvidenceIDs:    []string{evidenceID},
+		EventID:            fmt.Sprintf("evt-complete-%s-%s-r%d", request.AgentID, message.TaskID, commitRevision+1),
+		TransitionID:       "BUILDER-RESULT",
+		Event:              "completion_reported",
+		Actor:              "orchestrator",
+		IdempotencyKey:     fmt.Sprintf("runtime:complete:%s:%s:%d", request.AgentID, message.TaskID, commitRevision),
+		RuntimeID:          runtimeID,
+		BaselineGeneration: generation,
+		From:               cursor,
+		To:                 cursor,
+		EvidenceIDs:        []string{evidenceID},
 		Message: fmt.Sprintf("Registered the canonical Builder Result for %s (completion evidence %s)",
 			message.TaskID, evidenceID),
 		OccurredAt: occurredAt,
@@ -193,7 +237,10 @@ func CompleteTask(
 			if err := applyCompletionTask(state, message, taskTransitions, envelopeRel, occurredAt); err != nil {
 				return err
 			}
-			return appendCompletionEvidence(state, evidenceID, envelopeRel, envelopeSHA, request.AgentID, generation, message.ChangedPaths, occurredAt)
+			if err := appendCompletionEvidence(state, evidenceID, envelopeRel, envelopeSHA, request.AgentID, generation, message.ChangedPaths, occurredAt); err != nil {
+				return err
+			}
+			return dispatch.ReconcilePressure(root, state)
 		},
 	}
 	return updateRuntime(store, request.ExpectedRevision, mutation)
@@ -224,8 +271,28 @@ func applyCompletionAgent(
 		if !stringArrayContains(taskIDs, message.TaskID) {
 			return fmt.Errorf("completion message TASK is outside assignment")
 		}
-		currentState, _ := agent["state"].(string)
+		version := fmt.Sprint(state["schema_version"])
+		projection, err := workstate.AgentProjection(agent, version)
+		if err != nil {
+			return fmt.Errorf("resolve completion Agent activity: %w", err)
+		}
+		currentState := projection.Activity
 		if currentState == "reported" || currentState == "done" {
+			if workstate.Unified(version) && currentState == "done" {
+				return fmt.Errorf("completed Assignment requires an explicit revision before accepting another Result")
+			}
+			config, configErr := loopruntime.DispatchConfig(state)
+			if configErr != nil {
+				return configErr
+			}
+			life, _ := state["lifecycle"].(map[string]any)
+			if config != nil && life["state"] == "building" {
+				if err := workstate.RecordAgentActivity(state, agent, "reported", "completion_reported"); err != nil {
+					return fmt.Errorf("record repeated completion Agent activity: %w", err)
+				}
+				delete(agent, "completion_acknowledged_ref")
+				delete(agent, "completion_acknowledged_reports")
+			}
 			// Keep the latest canonical Result aligned with the TASK.
 			agent["completion_reported_ref"] = resultRef
 			agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
@@ -237,7 +304,18 @@ func applyCompletionAgent(
 				"completion requires working state (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped), agent is %s",
 				currentState)
 		}
-		agent["state"] = resolvedTo
+		if err := workstate.RecordAgentActivity(state, agent, resolvedTo, "completion_reported"); err != nil {
+			return fmt.Errorf("record completion Agent work state: %w", err)
+		}
+		config, configErr := loopruntime.DispatchConfig(state)
+		if configErr != nil {
+			return configErr
+		}
+		life, _ := state["lifecycle"].(map[string]any)
+		if config != nil && life["state"] == "building" {
+			delete(agent, "completion_acknowledged_ref")
+			delete(agent, "completion_acknowledged_reports")
+		}
 		if resultRef != "" {
 			agent["completion_reported_ref"] = resultRef
 		}
@@ -268,7 +346,12 @@ func applyCompletionTask(
 		if task["id"] != message.TaskID {
 			continue
 		}
-		currentState, _ := task["state"].(string)
+		version := fmt.Sprint(state["schema_version"])
+		projection, err := workstate.TaskProjection(task, version)
+		if err != nil {
+			return fmt.Errorf("resolve completion TASK activity: %w", err)
+		}
+		currentState := projection.Activity
 		switch currentState {
 		case "review", "done":
 			task["completion_report_ref"] = envelopeRel
@@ -280,7 +363,9 @@ func applyCompletionTask(
 				"TASK %s cannot accept a Builder Result from state %s (canonical Task states: candidate, reviewed, locked, in_progress, review, blocked, done, cancelled)",
 				message.TaskID, currentState)
 		}
-		task["state"] = resolvedTo
+		if err := workstate.RecordTaskActivity(state, task, resolvedTo, "builder_reported"); err != nil {
+			return fmt.Errorf("record completion TASK work state: %w", err)
+		}
 		task["completion_report_ref"] = envelopeRel
 		task["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 		return nil

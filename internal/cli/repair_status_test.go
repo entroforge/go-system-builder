@@ -48,7 +48,7 @@ func TestRuntimeRepairStatusProjectsBlockedResultRecovery(t *testing.T) {
 
 func TestRuntimeRepairTargetedResumeReopensBlockedVerification(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "investigation", 0)
+	state := req039fixtures.BaseState(t, root, "bug_resolution", "targeted_reverification", 0)
 	state["review"].(map[string]any)["repair"] = map[string]any{
 		"session_id": "repair-session-blocked", "case_id": "investigation-case-1", "contract_id": "repair-contract-1",
 		"contract_ref": ".claude/review/investigation/contracts/repair-contract-1.json", "contract_sha256": strings.Repeat("a", 64),

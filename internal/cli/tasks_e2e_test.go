@@ -13,7 +13,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/cli"
 )
 
-// TestS4TaskSplitPipelineE2E walks the S4 exit path end to end (L3-S4 v4.0.1):
+// TestS4TaskSplitPipelineE2E walks the legacy packet-off S4 exit path:
 // tasks check red/green with named problems → TR-002 dual guards (planning
 // complete pointing at PTR-PLAN-02, tasks_checked surfacing batch problems at
 // guard level) → register_planning_tasks with EMPTY evidence (TR-002's
@@ -117,6 +117,11 @@ func TestS4TaskSplitPipelineE2E(t *testing.T) {
 	}
 
 	// --- planning_complete points at PTR-PLAN-02 when nothing is registered ---
+	// Direct transitions and empty evidence exercise the retained legacy path.
+	// The questionnaire path is covered by task_planning_answer_e2e_test.go.
+	if _, stderr, code := run("init", "--root", root, "--packet=false"); code != 0 {
+		t.Fatalf("legacy packet-off init failed: %s", stderr)
+	}
 	if _, stderr, code := run("req", "bind", "--dev-branch", "test-development", "--release-upstream", "origin/release", "--root", commitStageFixture(t, root), "--approved-by", "bob"); code != 0 {
 		t.Fatalf("bind failed: %s", stderr)
 	}
@@ -292,6 +297,65 @@ func TestTasksCheckFlagsNonTaskDependency(t *testing.T) {
 	}
 }
 
+// TestTasksCheckRejectsNonCanonicalTaskID verifies the S4→S5 handoff guard:
+// a TASK filename id that the runtime schema and workgroup registration
+// reject (e.g. TASK-REQ-001-01) must already fail tasks check at TR-002,
+// not surface later at S5 registration.
+func TestTasksCheckRejectsNonCanonicalTaskID(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"docs/dev/contracts", "docs/dev/tasks", "docs/requirements"} {
+		if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(rel, content string) {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("docs/dev/contracts/BE-800.md", "# BE-800\n\n> 状态：locked\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n")
+	write("docs/dev/contracts/CONTRACTS-800.md", "# CONTRACTS-800\n\n> 状态：locked\n> 版本：v1.0.0\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:--|:--|:--|:--|\n| REQ-800/FR-801 | — | BE-800 §1 | — |\n")
+	write("docs/dev/tasks/TASK-REQ-800-01.md", "# TASK-REQ-800-01\n\n> Status: complete\n> Version: v1.0.0\n> Primary contract: BE-800\n\n"+
+		"## 3. Delivered Clauses\n\n| Contract | Delivered clauses |\n|:--|:--|\n| BE-800 | §1 |\n\n"+
+		"## 7. Closing Contract\n\n```text\nassert BE-800 §1 == satisfied\n```\n\n"+
+		"## 8. Dependencies\n\n| Dependency | Required evidence | Status |\n|:--|:--|:--|\n| N/A | — | — |\n")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"tasks", "check", "--root", root}, strings.NewReader(""), &stdout, &stderr)
+	if code == 0 || !strings.Contains(stderr.String(), "TASK-REQ-800-01") || !strings.Contains(stderr.String(), "does not match") {
+		t.Fatalf("non-canonical TASK id must be rejected with the canonical shape, got exit %d: %s", code, stderr.String())
+	}
+}
+
+// TestTasksCheckAcceptsNumericSubSuffix pins the canonical multi-wave shape:
+// TASK-800-01 passes the id gate (other problems may still fire).
+func TestTasksCheckAcceptsNumericSubSuffix(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"docs/dev/contracts", "docs/dev/tasks", "docs/requirements"} {
+		if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(rel, content string) {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("docs/dev/contracts/BE-800.md", "# BE-800\n\n> 状态：locked\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n")
+	write("docs/dev/contracts/CONTRACTS-800.md", "# CONTRACTS-800\n\n> 状态：locked\n> 版本：v1.0.0\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:--|:--|:--|:--|\n| REQ-800/FR-801 | — | BE-800 §1 | — |\n")
+	write("docs/dev/tasks/TASK-800-01.md", "# TASK-800-01\n\n> Status: complete\n> Version: v1.0.0\n> Primary contract: BE-800\n\n"+
+		"## 3. Delivered Clauses\n\n| Contract | Delivered clauses |\n|:--|:--|\n| BE-800 | §1 |\n\n"+
+		"## 7. Closing Contract\n\n```text\nassert BE-800 §1 == satisfied\n```\n\n"+
+		"## 8. Dependencies\n\n| Dependency | Required evidence | Status |\n|:--|:--|:--|\n| N/A | — | — |\n")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"tasks", "check", "--root", root}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("canonical TASK-800-01 must pass tasks check, got exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "batch ready") {
+		t.Fatalf("canonical batch must report ready, got: %s", stdout.String())
+	}
+}
+
 // TestContractsCheckFlagsClauseNumberDrift verifies that an index cell
 // citing a §n the target contract never declares must be flagged.
 func TestContractsCheckFlagsClauseNumberDrift(t *testing.T) {
@@ -305,11 +369,23 @@ func TestContractsCheckFlagsClauseNumberDrift(t *testing.T) {
 		}
 	}
 	write("docs/dev/contracts/BE-810.md", "# BE-810\n\n> 状态：locked\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n")
-	write("docs/dev/contracts/CONTRACTS-810.md", "# CONTRACTS-810\n\n> 状态：locked\n> 版本：v1.0.0\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:--|:--|:--|:--|\n| REQ-810/FR-811 | — | BE-810 §2 | — |\n")
+	write("docs/dev/contracts/CONTRACTS-810.md", cliContractBatchFixture("REQ-810", "BE-810", "v1.0.0")+"| REQ-810/FR-811 | — | BE-810 §2 | — |\n")
+	if err := os.MkdirAll(filepath.Join(root, "docs/requirements"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	write("docs/requirements/REQ-810.md", "# REQ-810\n> 状态：locked\n> 版本：v1.0.0\n\n| 编号 | 模块 | 需求 | 服务于 | 优先级 |\n|:---|:---|:---|:---|:---|\n| FR-811 | fixture | Original behavior | A1 | Must |\n")
+
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"contracts", "check", "--root", root}, strings.NewReader(""), &stdout, &stderr)
-	if code == 0 || !strings.Contains(stderr.String(), "never declares that clause number") {
+	if code == 0 || (!strings.Contains(stderr.String(), "BE-810 §2") || !strings.Contains(stderr.String(), "本合同条款") || !strings.Contains(stderr.String(), "does not declare that clause")) {
 		t.Fatalf("clause number drift must be flagged, got: %s", stderr.String())
+	}
+	index := "docs/dev/contracts/CONTRACTS-810.md"
+	write(index, strings.Replace(readFile(t, root, index), "BE-810 §2", "BE-810 §1", 1))
+	stdout.Reset()
+	stderr.Reset()
+	if code := cli.Run([]string{"contracts", "check", "--root", root}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("the actual declared clause must pass after correcting only its citation: %d %s", code, &stderr)
 	}
 }
 
@@ -328,11 +404,23 @@ func TestContractsCheckClauseNumberPrecision(t *testing.T) {
 	// Target declares only §10; the index cites §1 — substring matching
 	// used to let this pass.
 	write("docs/dev/contracts/BE-820.md", "# BE-820\n\n> 状态：locked\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §10 | — |\n")
-	write("docs/dev/contracts/CONTRACTS-820.md", "# CONTRACTS-820\n\n> 状态：locked\n> 版本：v1.0.0\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:--|:--|:--|:--|\n| REQ-820/FR-821 | — | BE-820 §1 | — |\n")
+	write("docs/dev/contracts/CONTRACTS-820.md", cliContractBatchFixture("REQ-820", "BE-820", "v1.0.0")+"| REQ-820/FR-821 | — | BE-820 §1 | — |\n")
+	if err := os.MkdirAll(filepath.Join(root, "docs/requirements"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	write("docs/requirements/REQ-820.md", "# REQ-820\n> 状态：locked\n> 版本：v1.0.0\n\n| 编号 | 模块 | 需求 | 服务于 | 优先级 |\n|:---|:---|:---|:---|:---|\n| FR-821 | fixture | Original behavior | A1 | Must |\n")
+
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"contracts", "check", "--root", root}, strings.NewReader(""), &stdout, &stderr)
-	if code == 0 || !strings.Contains(stderr.String(), "never declares that clause number") {
+	if code == 0 || (!strings.Contains(stderr.String(), "BE-820 §1") || !strings.Contains(stderr.String(), "本合同条款") || !strings.Contains(stderr.String(), "does not declare that clause")) {
 		t.Fatalf("§1-vs-§10 precision must flag the drift, got: %s", stderr.String())
+	}
+	index := "docs/dev/contracts/CONTRACTS-820.md"
+	write(index, strings.Replace(readFile(t, root, index), "BE-820 §1", "BE-820 §10", 1))
+	stdout.Reset()
+	stderr.Reset()
+	if code := cli.Run([]string{"contracts", "check", "--root", root}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("the actual declared clause must pass after correcting only its citation: %d %s", code, &stderr)
 	}
 }
 
@@ -357,12 +445,33 @@ func TestTasksCheckReportsReferenceLoads(t *testing.T) {
 	write("docs/dev/tasks/TASK-830-01.md", "# TASK-830-01\n\n> Status: complete\n> Version: v1.0.0\n> Primary contract: BE-830\n\n"+
 		"## 2. Document Manifest\n\n| Order | Kind | ID | Path | Clauses |\n|:--|:--|:--|:--|:--|\n| 1 | contract | BE-830 | `docs/dev/contracts/BE-830.md` | §1 |\n| 2 | req | REQ-830 | `docs/requirements/REQ-830.md` | FR |\n\n"+
 		"## 3. Delivered Clauses\n\n| Contract | Delivered clauses |\n|:--|:--|\n| BE-830 | §1 |\n\n"+
-		"## 4. Scope\n\n| Type | Paths / Commands |\n|:--|:--|\n| read paths | `docs/dev/contracts/BE-830.md` |\n| prospective write paths | `internal/x/a.go`, `internal/x/b.go` |\n\n"+
-		"## 7. Closing Contract\n\n```text\nassert BE-830 §1 == satisfied\n```\n")
+		"## 4. Scope\n\n| Type | Paths / Commands |\n|:--|:--|\n| read paths | `docs/dev/contracts/BE-830.md` |\n| prospective write paths | `internal/x/a.go`, `tests/test_x.py` |\n\n"+
+		"## 7. Closing Contract\n\n```text\nassert python3 -m unittest discover -s tests == pass\n```\n")
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"tasks", "check", "--root", root}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("tasks check failed: %s", stderr.String())
+	}
+	var jsonOut, jsonErr bytes.Buffer
+	if code := cli.Run([]string{"tasks", "check", "--root", root, "--json"}, nil, &jsonOut, &jsonErr); code != 0 {
+		t.Fatalf("advisory changed original gate: %s", jsonErr.String())
+	}
+	var analysis map[string]any
+	if err := json.Unmarshal(jsonOut.Bytes(), &analysis); err != nil {
+		t.Fatal(err)
+	}
+	if analysis["context_analysis_version"] != "1.0.0" || len(analysis["task_contexts"].([]any)) != 1 {
+		t.Fatalf("structured oracle/reading advice missing: %s", jsonOut.String())
+	}
+	advice, _ := analysis["granularity_advice"].([]any)
+	for _, item := range advice {
+		kind := item.(map[string]any)["kind"]
+		if kind == "closing_oracle_unresolved" || kind == "multiple_write_modules" {
+			t.Fatalf("speculative advisory retained: %s", jsonOut.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "closing_oracle_unresolved") || strings.Contains(stdout.String(), "multiple_write_modules") {
+		t.Fatal("CLI still requests speculative proof")
 	}
 	out := stdout.String()
 	if !strings.Contains(out, "TASK-830-01: required reading ~") || !strings.Contains(out, "write paths 2") || !strings.Contains(out, "reference only") {

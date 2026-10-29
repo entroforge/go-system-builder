@@ -132,7 +132,7 @@ func TestNoticeCacheFailureIsFailOpen(t *testing.T) {
 		}
 	}
 }
-func TestConcurrentNoticeWritersPreserveModelAndSafety(t *testing.T) {
+func TestConcurrentNoticeWritersPreserveProgressContext(t *testing.T) {
 	root := t.TempDir()
 	b := progressPacket(t, 1, "a", false)
 	var wg sync.WaitGroup
@@ -153,8 +153,24 @@ func TestConcurrentNoticeWritersPreserveModelAndSafety(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		out, commit := PrepareNotice(root, "s", "a", "PreToolUse", deny)
 		commit()
-		if unpack(t, out)["systemMessage"] == nil {
-			t.Fatal("denial hidden")
+		specific := unpack(t, out)["hookSpecificOutput"].(map[string]any)
+		if specific["additionalContext"] == nil || specific["permissionDecision"] == "deny" {
+			t.Fatal("listener lost progress context or denied the tool")
+		}
+	}
+}
+
+func TestEmptyActionDoesNotRenderNextAcrossContextAndNotice(t *testing.T) {
+	for _, action := range []string{"", " \t\n", "read original receipt"} {
+		g := policy.Guidance{Stage: "S10", LifecycleState: "acceptance", Action: action, Objective: "preserve accepted work", ProtocolRef: "protocol", ManualRef: "manual", Blocked: true, Blocker: "original source unavailable", HumanRequired: true}
+		for _, text := range []string{compactGuidance(g), formatGuidance(g), qualityNotice(policy.Decision{Guidance: &g}, controller.QualityGateResult{Status: controller.StatusUnknown})} {
+			if strings.Contains(text, "Next:") != (strings.TrimSpace(action) != "") {
+				t.Fatalf("action=%q: %s", action, text)
+			}
+		}
+		text := compactGuidance(g)
+		if !strings.Contains(text, g.Blocker) || !strings.Contains(text, "Human Gateway") || !strings.Contains(text, "Read protocol") {
+			t.Fatal(text)
 		}
 	}
 }

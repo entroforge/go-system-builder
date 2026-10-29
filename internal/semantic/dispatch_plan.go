@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -105,7 +106,7 @@ func (f planningFiles) Source(p string) (string, error) {
 	if s, ok := f.Reader.(interface{ Source(string) (string, error) }); ok {
 		return s.Source(p)
 	}
-	return "git_tree", nil // explicit authoring reader
+	return "disk", nil // an explicit authoring reader is not a committed view
 }
 
 // LoadDispatchPlan validates the selected REQ's plan and membership against
@@ -186,6 +187,7 @@ func LoadDispatchPlan(root string, files fileview.Reader, req string) (*Dispatch
 	required := false
 	byID := map[string]*taskDocument{}
 	for _, t := range tasks {
+		p.Problems = append(p.Problems, t.scopeProblems...)
 		b, e := files.ReadFile(filepath.Join(root, t.rel))
 		if e != nil {
 			return nil, e
@@ -269,12 +271,6 @@ func LoadDispatchPlan(root string, files fileview.Reader, req string) (*Dispatch
 			}
 		}
 		dt := DispatchTask{ID: id, Path: t.rel, Wave: wave, Dependencies: t.deps, Writes: t.writePaths}
-		for _, write := range dt.Writes {
-			clean := filepath.ToSlash(filepath.Clean(write))
-			if filepath.IsAbs(write) || clean == ".." || strings.HasPrefix(clean, "../") || strings.ContainsAny(write, "*?{[") {
-				p.Problems = append(p.Problems, "waves-v1 requires concrete repository-relative write paths: "+id+" "+write)
-			}
-		}
 
 		if len(dt.Writes) == 0 {
 			p.Problems = append(p.Problems, "TASK needs concrete prospective write paths: "+id)
@@ -398,11 +394,19 @@ func WriteOverlap(a, b string) bool {
 	return a == "." || b == "." || a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
-type DispatchFact struct{ State, Reason string }
+type DispatchFact struct {
+	State                        workstate.Status
+	Reason                       string
+	Integrated, DeliveryRecorded bool
+}
 type DispatchRow struct {
-	Task   DispatchTask `json:"task"`
-	State  string       `json:"state"`
-	Reason string       `json:"reason,omitempty"`
+	Task             DispatchTask     `json:"task"`
+	State            workstate.Status `json:"status"`
+	Integrated       bool             `json:"integrated"`
+	DeliveryRecorded bool             `json:"delivery_recorded"`
+	Eligible         bool             `json:"eligible"`
+	Dispatchable     bool             `json:"dispatchable"`
+	Reason           string           `json:"reason,omitempty"`
 }
 
 // NextDispatch is deterministic and wave-barrier-free. capacity is available
@@ -413,7 +417,7 @@ func NextDispatch(p *DispatchPlan, facts map[string]DispatchFact, capacity int) 
 	busy := []DispatchTask{}
 	for _, t := range p.Tasks {
 		f := facts[t.ID]
-		if f.State != "" && f.State != "integrated" {
+		if f.State != "" && (f.State != workstate.Done || !f.Integrated) {
 			busy = append(busy, t)
 		}
 	}
@@ -437,34 +441,38 @@ func NextDispatch(p *DispatchPlan, facts map[string]DispatchFact, capacity int) 
 		return tasks[i].ID < tasks[j].ID
 	})
 	for _, t := range tasks {
-		row := DispatchRow{Task: t, State: "ready"}
+		row := DispatchRow{Task: t, State: workstate.Pending, Eligible: true}
 		if f := facts[t.ID]; f.State != "" {
 			row.State = f.State
+			row.Integrated = f.Integrated
+			row.DeliveryRecorded = f.DeliveryRecorded
+			row.Eligible = false
 			row.Reason = f.Reason
 			rows = append(rows, row)
 			continue
 		}
 		for _, d := range append(append([]string{}, t.Dependencies...), t.Before...) {
-			if facts[d].State != "integrated" {
-				row.State = "waiting"
+			if !facts[d].Integrated || facts[d].State != workstate.Done {
+				row.Eligible = false
 				row.Reason = "await verified integration: " + d
 				break
 			}
 		}
-		if row.State == "ready" {
+		if row.Eligible {
 			for _, b := range busy {
 				if DispatchConflict(t, b) {
-					row.State = "waiting"
+					row.Eligible = false
 					row.Reason = "write/resource conflict: " + b.ID
 					break
 				}
 			}
 		}
-		if row.State == "ready" {
+		if row.Eligible {
 			if capacity <= 0 {
-				row.State = "queued"
+				row.Dispatchable = false
 				row.Reason = "available capacity exhausted"
 			} else {
+				row.Dispatchable = true
 				next = append(next, t.ID)
 				busy = append(busy, t)
 				capacity--

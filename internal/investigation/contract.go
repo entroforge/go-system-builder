@@ -16,7 +16,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
-const contractNextCommand = "runtime investigation contract approve --root . --case-id <case> --file <draft> --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>"
+const contractNextCommand = "continue the current original S8 Contract/decision application at its supplied path; authors give only actual professional decisions, while Main/system recovers existing binding and evidence internally"
 
 // ContractRequest carries the caller's Runtime CAS revision and the human or
 // orchestrator identity that approves a draft RepairContract. Approval is a
@@ -176,13 +176,13 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	// reported first so callers fix the Case/draft before pinning the
 	// approval receipt. Then validate the human-boundary receipt.
 	if approvalHash == "" {
-		return runtime.Snapshot{}, actionableContractError("approval_hash is required; pin the exact draft bytes reviewed by the approver")
+		return runtime.Snapshot{}, actionableContractError("approval_hash binding is missing; Main/system must recover the fixed presented draft and its original decision application; do not ask the author to calculate or copy a hash")
 	}
 	if approvalHash != sha256Hex(draftBytes) {
-		return runtime.Snapshot{}, actionableContractError("approval_hash does not match the draft on disk: pinned %s but draft is %s; re-read the draft and record the decision against the current bytes", approvalHash, sha256Hex(draftBytes))
+		return runtime.Snapshot{}, actionableContractError("approval_hash does not match the draft on disk: pinned %s but draft is %s; preserve the original decision and present the current fixed draft for a fresh actual decision; the system supplies its binding", approvalHash, sha256Hex(draftBytes))
 	}
 	if approvalEvidenceID == "" {
-		return runtime.Snapshot{}, actionableContractError("approval_evidence_id is required; cite valid human_decision evidence for this S8 approval")
+		return runtime.Snapshot{}, actionableContractError("approval_evidence_id binding is missing; Main/system must recover the original decision receipt; the author gives the actual choice in the supplied application without evidence registration")
 	}
 	var delegation map[string]any
 	if request.DelegationEvidenceID != "" {
@@ -230,6 +230,8 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 		return runtime.Snapshot{}, fmt.Errorf("write approved RepairContract %s: %w", approvedRel, err)
 	}
 	contractSHA := sha256Hex(approvedBytes)
+	cleanupWriter := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	cleanupContract := func() { _, _ = cleanupApprovalArtifact(cleanupWriter, current, approvedRel, contractSHA) }
 
 	approvedCase := cloneMap(caseDocument)
 	approvedCase["revision"] = caseRevision + 1
@@ -240,30 +242,28 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	approvedCase["repair_contract_sha256"] = contractSHA
 	approvedCaseBytes, err := json.MarshalIndent(approvedCase, "", "  ")
 	if err != nil {
-		_ = os.Remove(approvedPath)
+		cleanupContract()
 		return runtime.Snapshot{}, fmt.Errorf("encode approved InvestigationCase: %w", err)
 	}
 	approvedCaseBytes = append(approvedCaseBytes, '\n')
 	if err := schema.NewEmbeddedValidator().ValidateBytes("review-investigation-case.schema.json", approvedCaseBytes); err != nil {
-		_ = os.Remove(approvedPath)
+		cleanupContract()
 		return runtime.Snapshot{}, actionableContractError("approved InvestigationCase schema is invalid before write: %v", err)
 	}
 	approvedCaseRel := filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "cases", request.CaseID+fmt.Sprintf("-r%d.json", caseRevision+1)))
 	approvedCasePath, err := repositoryPath(root, approvedCaseRel)
 	if err != nil {
-		_ = os.Remove(approvedPath)
+		cleanupContract()
 		return runtime.Snapshot{}, actionableContractError("approved InvestigationCase path is invalid: %v", err)
 	}
 	if err := writeExclusive(approvedCasePath, approvedCaseBytes); err != nil {
-		_ = os.Remove(approvedPath)
+		cleanupContract()
 		return runtime.Snapshot{}, fmt.Errorf("write approved InvestigationCase %s: %w", approvedCaseRel, err)
 	}
 	approvedCaseSHA := sha256Hex(approvedCaseBytes)
 	cleanup := func() {
-		if !runtimeReferencesApproval(statePath, approvedCaseRel, approvedCaseSHA, approvedRel, contractSHA) {
-			_ = os.Remove(approvedCasePath)
-			_ = os.Remove(approvedPath)
-		}
+		_, _ = cleanupApprovalArtifact(cleanupWriter, current, approvedCaseRel, approvedCaseSHA)
+		cleanupContract()
 	}
 
 	lifecycle, _ := current.State["lifecycle"].(map[string]any)
@@ -295,6 +295,11 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 		Message:                fmt.Sprintf("repair_contract_approved: %s for %s; next: S9 consume the approved Contract", contractID, request.CaseID),
 		OccurredAt:             approvedAt,
 		Apply: func(state map[string]any) error {
+			if stringField(caseDocument["observation_batch_id"]) == "" {
+				if err := validateContractBaseline(root, state, caseDocument); err != nil {
+					return err
+				}
+			}
 			// Revalidate reusable authority and budget inside the Writer CAS.
 			if delegation != nil {
 				if _, err := validateDelegatedApproval(root, state, draft, request); err != nil {
@@ -363,6 +368,25 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 // approval must independently re-read the sealed ObservationBatch and any
 // current ReviewPlan pointer before it can transfer authority to S9.
 func validateContractBaseline(root string, state, caseDocument map[string]any) error {
+	if stringField(caseDocument["observation_batch_id"]) == "" {
+		if _, err := humanCaseSource(root, state, caseDocument); err != nil {
+			return err
+		}
+		digest, err := humanBaselineDigest(root, state)
+		if err != nil {
+			return err
+		}
+		if pin := stringField(caseDocument["baseline_digest"]); pin == "" || pin != digest {
+			return errors.New("human Case baseline_digest is missing or drifted; Main must restore/reassess the original frozen product baseline, not create an ObservationBatch")
+		}
+		if warning := stringField(s8Map(state["review"])["investigation_baseline_drift"]); warning != "" {
+			return errors.New(warning)
+		}
+		return nil
+	}
+	if len(stringSliceValues(caseDocument["source_finding_ids"])) == 0 {
+		return errors.New("a Batch repair contract requires its original non-empty Finding set")
+	}
 	pinnedDigest := strings.TrimSpace(stringField(caseDocument["baseline_digest"]))
 	if pinnedDigest == "" {
 		return errors.New("Case baseline_digest is missing; re-ingest from a sealed ObservationBatch")
@@ -462,7 +486,7 @@ func validateContractApprovalEvidence(root string, state map[string]any, approve
 			return nil
 		}
 	}
-	return fmt.Errorf("contract approval evidence %q must be valid human_decision evidence produced by %q and scoped to %s; register the decision artifact with `runtime evidence add --kind human_decision --scope-ref %s` before approving the Contract", evidenceID, approvedBy, semanticScope, semanticScope)
+	return fmt.Errorf("contract approval evidence %q must be valid human_decision evidence produced by %q and scoped to %s; continue the original decision application with the actual human choice, and let Main/system recover its original evidence binding without authoring metadata or manual registration", evidenceID, approvedBy, semanticScope)
 }
 
 // validateContractApprovalArtifact binds JSON approval records to the Case,
@@ -542,11 +566,11 @@ func activeCasePointer(state map[string]any, caseID string) (map[string]any, err
 }
 
 func exactFindingSetWithDetails(caseIDs, contractIDs []string) error {
-	left, err := normalizeSet(caseIDs, "InvestigationCase.source_finding_ids")
+	left, err := normalizeOptionalSet(caseIDs, "InvestigationCase.source_finding_ids")
 	if err != nil {
 		return err
 	}
-	right, err := normalizeSet(contractIDs, "RepairContract.source_finding_ids")
+	right, err := normalizeOptionalSet(contractIDs, "RepairContract.source_finding_ids")
 	if err != nil {
 		return err
 	}
@@ -644,18 +668,8 @@ func integerValueOrZero(value any) int {
 	return result
 }
 
-func runtimeReferencesApproval(statePath, caseRel, caseSHA, contractRel, contractSHA string) bool {
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		return false
-	}
-	var state map[string]any
-	if json.Unmarshal(data, &state) != nil {
-		return false
-	}
-	review, _ := state["review"].(map[string]any)
-	pointer, _ := review["investigation"].(map[string]any)
-	return pointer != nil && stringField(pointer["path"]) == caseRel && stringField(pointer["sha256"]) == caseSHA && stringField(pointer["repair_contract_ref"]) == contractRel && stringField(pointer["repair_contract_sha256"]) == contractSHA
+func cleanupApprovalArtifact(writer *runtime.Store, current runtime.Snapshot, path, sha string) (bool, error) {
+	return writer.RemoveUnreferencedArtifact(runtime.ArtifactCleanupRequest{ExpectedRevision: current.Revision, ArtifactPath: path, ArtifactSHA256: sha, ReferencedPaths: stateStringReferences(current.State, path)})
 }
 
 func actionableContractError(format string, args ...any) error {

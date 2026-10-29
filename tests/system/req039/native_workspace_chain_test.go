@@ -2,6 +2,7 @@ package req039_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"os"
@@ -10,10 +11,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entroforge/go-system-builder/internal/dispatch"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/workspace"
+	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 // Exercise registration -> real worktree -> canonical completion -> integration
@@ -36,8 +39,20 @@ func TestNativeWorkerAdapterChain(t *testing.T) {
 				if runtime.GOOS != "linux" {
 					t.Skip("Worker isolation requires native Linux acceptance")
 				}
-				if _, err := exec.LookPath("bwrap"); err != nil {
+				bwrap, err := exec.LookPath("bwrap")
+				if err != nil {
 					t.Skip("Bubblewrap not installed")
+				}
+				// This namespace probe only checks host availability; it does
+				// not certify the Worker execution or isolation assertions.
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				probe := exec.CommandContext(ctx, bwrap, "--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--", "/bin/true")
+				if output, err := probe.CombinedOutput(); err != nil {
+					if ctx.Err() == nil && strings.Contains(string(output), "bwrap: setting up uid map: Permission denied") {
+						t.Skipf("host denies Bubblewrap UID mapping; Worker adapter chain not executed: %s", output)
+					}
+					t.Fatalf("Bubblewrap namespace preflight: %v; output=%s", err, output)
 				}
 			}
 			nativeWorkerAdapterChain(t, binary, location)
@@ -161,8 +176,9 @@ func nativeWorkerAdapterChain(t *testing.T, harnessBinary, location string) {
 			t.Fatal(err)
 		}
 		execution := bindingForHooks.Executions[aid]
-		hookProbe := func(tool string, input map[string]any, want int) {
+		hookProbe := func(tool string, input map[string]any) {
 			t.Helper()
+			before := req039fixtures.ReadState(t, root)
 			payload, _ := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "agent_id": agent, "cwd": worker, "tool_name": tool, "tool_input": input})
 			cmd := exec.Command(harnessBinary, "hook", "--event", "PreToolUse", "--root", worker)
 			cmd.Dir = worker
@@ -176,16 +192,15 @@ func nativeWorkerAdapterChain(t *testing.T, harnessBinary, location string) {
 					t.Fatal(err)
 				}
 			}
-			if code != want {
-				t.Fatalf("Hook %s %v exit=%d want=%d: %s", tool, input, code, want, got)
-			}
+			after := req039fixtures.ReadState(t, root)
+			assertPreToolUseObservedWithoutDenyOrAdvance(t, code, string(got), "", before, after)
 		}
-		hookProbe("Write", map[string]any{"file_path": filepath.Join(worker, ".claude/submissions/plan.json")}, 0)
-		hookProbe("Bash", map[string]any{"command": "pwd"}, 0)
-		hookProbe("Bash", map[string]any{"command": workspace.ObservationCommands(execution)["status"]}, 0)
-		hookProbe("Bash", map[string]any{"command": workspace.WorkerInvocation(execution, "begin")}, 0)
-		hookProbe("Bash", map[string]any{"command": "git status --short"}, 2)
-		hookProbe("Write", map[string]any{"file_path": filepath.Join(root, output)}, 2)
+		hookProbe("Write", map[string]any{"file_path": filepath.Join(worker, ".claude/submissions/plan.json")})
+		hookProbe("Bash", map[string]any{"command": "pwd"})
+		hookProbe("Bash", map[string]any{"command": workspace.ObservationCommands(execution)["status"]})
+		hookProbe("Bash", map[string]any{"command": workspace.WorkerInvocation(execution, "begin")})
+		hookProbe("Bash", map[string]any{"command": "git status --short"})
+		hookProbe("Write", map[string]any{"file_path": filepath.Join(root, output)})
 		writeRecheckPlan(t, filepath.Join(worker, ".claude/submissions/plan.json"), recheckWorkerSpec{suffix: item.suffix, agentID: agent, taskID: task, assignment: aid, output: output})
 		run("runtime", "workspace", "begin", "--assignment", aid, "--agent", agent)
 		target := filepath.Join(worker, output)

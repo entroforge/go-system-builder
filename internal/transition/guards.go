@@ -114,6 +114,7 @@ func GuardNames() []string {
 // forbidden until that inventory lands.
 func InitGuardRegistry() {
 	newFns := map[string]GuardFn{
+		"planning_rework_scope": guardPlanningReworkScope,
 		// Top-level / planning / verification / bug guards.
 		// TR-001's former stub guards (req_exists / req_locked /
 		// req_questions_non_blocking / pm_context_matches_req) were removed:
@@ -318,15 +319,8 @@ func guardCleanRoundValidFn(state map[string]any, _ map[string]string) error {
 	return nil
 }
 
-// guardACCCurrentFn is the real body behind TR-015/TR-017's acc_complete
-// guard (RC-06, S10-14 — formerly an evidenceBackedGuard stub that accepted
-// any non-empty evidence map). It requires a CURRENT acceptance evidence
-// entry in runtime.evidence[] whose on-disk artifact still matches its
-// registered sha256: an invalidated, stale-round, or drifted ACC no longer
-// satisfies the release-audit precondition. The same resolution rules as
-// the engine's validateCurrentEvidence apply (status=valid, current baseline
-// generation, current review round, fingerprint match), so the guard cannot
-// be satisfied by a re-used or re-hashed envelope.
+// guardACCCurrentFn reads the current recorded acceptance conclusion and
+// explicitly unfinished/blocker rows; it does not re-prove historical sources.
 func guardACCCurrentFn(state map[string]any, _ map[string]string) error {
 	root, _ := state["root"].(string)
 	if root == "" {
@@ -338,10 +332,7 @@ func guardACCCurrentFn(state map[string]any, _ map[string]string) error {
 	return nil
 }
 
-// guardReleaseAuditCurrentFn is the real body behind TR-017's
-// release_audit_approved guard (RC-06, S10-14 — same stub lineage as
-// acc_complete). It requires a CURRENT release_audit evidence entry whose
-// registered fingerprint still matches the on-disk audit record.
+// guardReleaseAuditCurrentFn reads the current recorded audit completion facts.
 func guardReleaseAuditCurrentFn(state map[string]any, _ map[string]string) error {
 	root, _ := state["root"].(string)
 	if root == "" {
@@ -581,6 +572,9 @@ func guardUIIImpactResolvedFn(state map[string]any, _ map[string]string) error {
 // happens on the natural path (PTR-PLAN-02 evaluation), not as a voluntary
 // CLI invocation (L3-S3 v4.0.1: D2 wiring).
 func guardContractsCheckedFn(state map[string]any, _ map[string]string) error {
+	if loopruntime.PacketEnabled(state) {
+		return guardAcceptedS3(state)
+	}
 	root, _ := state["root"].(string)
 	if root == "" {
 		root = "."
@@ -604,6 +598,9 @@ func guardContractsCheckedFn(state map[string]any, _ map[string]string) error {
 // evaluation — the single-denominator rule made a natural-path gate instead
 // of a voluntary `scenario bridge` invocation (D2).
 func guardScenarioBridgeCheckedFn(state map[string]any, _ map[string]string) error {
+	if loopruntime.PacketEnabled(state) {
+		return guardAcceptedS3(state)
+	}
 	root, _ := state["root"].(string)
 	if root == "" {
 		root = "."
@@ -612,6 +609,31 @@ func guardScenarioBridgeCheckedFn(state map[string]any, _ map[string]string) err
 		return fmt.Errorf("scenario_bridge_checked: %w", err)
 	}
 	return nil
+}
+
+// guardAcceptedS3 reads the current durable reception; the original CAS
+// already checked these same professional contract and scenario materials.
+func guardAcceptedS3(state map[string]any) error {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["submissions"].([]any)
+	bound, _ := state["bound_req"].(map[string]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if superseded, _ := row["superseded_by"].(string); superseded != "" {
+			continue
+		}
+		packet, found, err := loopruntime.FindContractPacket(state, fmt.Sprint(row["packet_id"]))
+		if err != nil {
+			return err
+		}
+		if !found || packet.Binding.Requirement.ID != bound["id"] || packet.Binding.Requirement.Version != bound["version"] || packet.Binding.Requirement.SHA256 != bound["sha256"] {
+			continue
+		}
+		if _, err := loopruntime.SubmissionFollowup(state, fmt.Sprint(row["followup_event_id"])); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("S3 requires the received current contract questionnaire; save its existing answer before advancing")
 }
 
 // guardTasksCheckedFn runs S4's mechanical close (batch quality: coverage,

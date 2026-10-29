@@ -28,7 +28,27 @@ type Result struct {
 var linkRE = regexp.MustCompile(`\[[^\]]+\]\(([^\s)]+)\)`)
 var fenceRE = regexp.MustCompile("(?ms)^```[^\n]*\n.*?^```[^\n]*$")
 var fieldRE = regexp.MustCompile(`(?m)^>\s*Shared model policy:\s*(\S+)\s*$`)
-var requirementRE = regexp.MustCompile(`(?m)^>\s*(?:需求|REQ|Requirement)\s*[:：]\s*(REQ-[A-Z0-9-]+)\s*$`)
+var requirementHeaderRE = regexp.MustCompile(`(?m)^>\s*(?:需求|REQ|Requirement)\s*[:：]\s*(.*)$`)
+var requirementIDRE = regexp.MustCompile(`\bREQ-[A-Z0-9]+(?:-[A-Z0-9]+)*\b`)
+
+// IndexRequirement shares original S3's declaration identity, including
+// Markdown labels/links. It selects a source; it grants no approval authority.
+func IndexRequirement(content string) (string, error) {
+	owner := ""
+	for _, header := range requirementHeaderRE.FindAllStringSubmatch(content, -1) {
+		ids := requirementIDRE.FindAllString(header[1], -1)
+		if len(ids) == 0 {
+			return "", fmt.Errorf("S3 CONTRACTS index requirement declaration %q is missing a document ID", header[1])
+		}
+		for _, id := range ids {
+			if owner != "" && owner != id {
+				return "", fmt.Errorf("S3 CONTRACTS index requirement declaration %q is ambiguous", header[1])
+			}
+			owner = id
+		}
+	}
+	return owner, nil
+}
 
 // Section returns an H2 section, including numbered H2 headings.
 func Section(s, name string) string {
@@ -107,6 +127,8 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 		return r
 	}
 	expected := map[string]map[string]bool{}
+	// Instances are consumer-scoped baseline examples, never schema authorities.
+	examples := map[string]map[string]bool{}
 	// A contract index is not necessarily a one-file batch. Keep authority
 	// checks grouped by the effective REQ so unrelated requirements do not
 	// reject one another during an all-index authoring check.
@@ -124,15 +146,19 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 			continue
 		}
 		content := string(b)
-		declaredReq := requirementRE.FindStringSubmatch(content)
+		declaredReq, err := IndexRequirement(content)
+		if err != nil {
+			r.Problems = append(r.Problems, rel+": "+err.Error())
+			continue
+		}
 		reqScope := fallbackRequirement(e.Name())
-		if declaredReq != nil {
-			reqScope = declaredReq[1]
+		if declaredReq != "" {
+			reqScope = declaredReq
 		}
 		if len(reqIDs) > 0 && reqIDs[0] != "" {
 			req := reqIDs[0]
-			if declaredReq != nil {
-				if declaredReq[1] != req {
+			if declaredReq != "" {
+				if declaredReq != req {
 					continue
 				}
 			} else if e.Name() != "CONTRACTS-"+strings.TrimPrefix(req, "REQ-")+".md" {
@@ -140,7 +166,7 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 			}
 			// A filename fallback is the bound batch's effective REQ. It is
 			// deliberately applied only after the existing selection rule above.
-			if declaredReq == nil {
+			if declaredReq == "" {
 				reqScope = req
 			}
 		}
@@ -155,7 +181,7 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 		}
 		if m[1] == "none" {
 			reason := regexp.MustCompile(`(?m)^>\s*Shared model reason:\s*(.+)$`).FindStringSubmatch(content)
-			if reason == nil || strings.TrimSpace(reason[1]) == "" || strings.Contains(reason[1], "{") {
+			if reason == nil || strings.TrimSpace(reason[1]) == "" {
 				r.Problems = append(r.Problems, rel+": policy none requires a concrete Shared model reason")
 			}
 			continue
@@ -210,7 +236,7 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 			compiler := jsonschema.NewCompiler()
 			compiler.UseLoader(loader)
 			compiler.DefaultDraft(jsonschema.Draft2020)
-			schemaURL := (&url.URL{Scheme: "file", Path: filepath.Join(root, p), Fragment: f}).String()
+			schemaURL := schemaFileURL(filepath.Join(root, p), f)
 			sch, err := compiler.Compile(schemaURL)
 			if err != nil {
 				fail(fmt.Errorf("schema %s: %w", key(p, f), err))
@@ -221,6 +247,7 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 			if len(consumers) == 0 {
 				fail(fmt.Errorf("declare consumer contract links"))
 			}
+			var rowConsumers []string
 			for _, ref := range consumers {
 				cp, cf, err := Resolve(root, rel, ref)
 				if err != nil {
@@ -228,7 +255,7 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 					continue
 				}
 				base := filepath.Base(cp)
-				if filepath.Dir(cp) != projectlayout.Contracts || !strings.HasSuffix(base, ".md") || !(strings.HasPrefix(base, "FE-") || strings.HasPrefix(base, "BE-") || strings.HasPrefix(base, "SYNC-")) {
+				if filepath.ToSlash(filepath.Dir(cp)) != projectlayout.Contracts || !strings.HasSuffix(base, ".md") || !(strings.HasPrefix(base, "FE-") || strings.HasPrefix(base, "BE-") || strings.HasPrefix(base, "SYNC-")) {
 					fail(fmt.Errorf("consumer must be a FE/BE/SYNC contract: %s", cp))
 					continue
 				}
@@ -236,6 +263,7 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 					expected[cp] = map[string]bool{}
 				}
 				expected[cp][key(p, f)] = true
+				rowConsumers = append(rowConsumers, cp)
 				cb, err := files.ReadFile(filepath.Join(root, cp))
 				if err != nil {
 					fail(err)
@@ -282,9 +310,17 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 				err = sch.Validate(instance)
 				if i == 4 && err != nil {
 					fail(fmt.Errorf("valid example %s rejected: %w", ep, err))
+					continue
 				}
 				if i == 5 && err == nil {
 					fail(fmt.Errorf("structural negative %s unexpectedly passes; business negatives belong in CASE/CT", ep))
+					continue
+				}
+				for _, cp := range rowConsumers {
+					if examples[cp] == nil {
+						examples[cp] = map[string]bool{}
+					}
+					examples[cp][ep] = true
 				}
 			}
 		}
@@ -303,7 +339,7 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 				r.Problems = append(r.Problems, cp+": "+err.Error())
 				continue
 			}
-			if strings.HasSuffix(rp, ".json") && !definitions[key(rp, rf)] {
+			if strings.HasSuffix(rp, ".json") && !definitions[key(rp, rf)] && !examples[cp][key(rp, rf)] {
 				r.Problems = append(r.Problems, cp+": undeclared shared model input "+key(rp, rf))
 			}
 		}
@@ -324,6 +360,16 @@ func Check(root string, files fileview.Reader, reqIDs ...string) Result {
 	return r
 }
 
+// schemaFileURL preserves native absolute paths as URL paths, including
+// drive letters on Windows and escaped filename characters on every platform.
+func schemaFileURL(path, fragment string) string {
+	path = filepath.ToSlash(path)
+	if filepath.VolumeName(path) != "" && !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return (&url.URL{Scheme: "file", Path: path, Fragment: fragment}).String()
+}
+
 type viewLoader struct {
 	root       string
 	files      fileview.Reader
@@ -339,7 +385,13 @@ func (l *viewLoader) Load(raw string) (any, error) {
 	if u.Scheme != "file" || u.Host != "" {
 		return nil, fmt.Errorf("remote schema dependency is not pinned locally: %s", raw)
 	}
-	rel, err := filepath.Rel(l.root, filepath.FromSlash(u.Path))
+	path := filepath.FromSlash(u.Path)
+	// A drive-qualified file URL uses /C:/..., whereas filepath expects C:\...
+	// on Windows. UNC paths and POSIX paths retain their leading slash.
+	if len(u.Path) > 1 && u.Path[0] == '/' && filepath.VolumeName(filepath.FromSlash(u.Path[1:])) != "" {
+		path = filepath.FromSlash(u.Path[1:])
+	}
+	rel, err := filepath.Rel(l.root, path)
 	if err != nil {
 		return nil, err
 	}
@@ -420,7 +472,7 @@ func schemaResourceIDs(root, rel string, data []byte) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	base := (&url.URL{Scheme: "file", Path: filepath.Join(root, filepath.FromSlash(rel))}).String()
+	base := schemaFileURL(filepath.Join(root, filepath.FromSlash(rel)), "")
 	ids := map[string]bool{}
 	collectSchemaResourceIDs(value, base, 2020, true, ids)
 	return ids, nil
@@ -626,7 +678,7 @@ func Reading(root, rel, content string, files fileview.Reader) []string {
 						compiler := jsonschema.NewCompiler()
 						compiler.UseLoader(&viewLoader{root: root, files: files, loaded: map[string][]byte{}})
 						abs, _ := filepath.Abs(filepath.Join(root, p))
-						_, err = compiler.Compile((&url.URL{Scheme: "file", Path: abs, Fragment: f}).String())
+						_, err = compiler.Compile(schemaFileURL(abs, f))
 					} else if !hasAnchor(string(b), f) {
 						err = fmt.Errorf("missing Markdown anchor %s#%s (use explicit stable anchors)", p, f)
 					}

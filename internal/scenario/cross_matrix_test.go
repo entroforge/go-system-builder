@@ -1,6 +1,7 @@
 package scenario_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,54 @@ func writeCrossMatrix(t *testing.T, root, module string, matrix map[string]any) 
 // TestCrossMatrixRequiredAndValidated pins the carrier: a module package
 // without cross-matrix.json is incomplete, and references must resolve.
 func TestCrossMatrixRequiredAndValidated(t *testing.T) {
+	// Exercise each shipped template entry unchanged in shape against real fixture values.
+	template, err := os.ReadFile(filepath.Join("..", "..", "docs/design/prototypes/cross-matrix-template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template = []byte(strings.NewReplacer("example-module", "investor-workbench", "FACT-EXAMPLE", "fact-investor", "REQ-<id>/FR-<id>", "REQ-INV-001", "S-002", "S-001", "branch-<id>", "branch-allow").Replace(string(template)))
+	var matrix map[string]any
+	if err := json.Unmarshal(template, &matrix); err != nil {
+		t.Fatal(err)
+	}
+	entries := matrix["entries"].([]any)
+	if len(entries) != 2 {
+		t.Fatalf("expected the two shipped example entries, got %d", len(entries))
+	}
+	for i, entry := range entries {
+		templateRoot := newScenarioRoot(t, "investor-workbench", "ordinary")
+		// Entries are exercised alone: trim the model to the single branch
+		// the entry covers (or drop the uncovered required branch for a
+		// no_branch_reason entry) — otherwise the new branch-floor check
+		// (correctly) rejects the half-covered matrix.
+		singleModel := loadModel(t, templateRoot)
+		branches := singleModel["rules"].([]any)[0].(map[string]any)["branches"].([]any)
+		if want, ok := entry.(map[string]any)["branch"].(string); ok {
+			kept := []any{}
+			for _, b := range branches {
+				if b.(map[string]any)["id"].(string) == want {
+					kept = append(kept, b)
+				}
+			}
+			if len(kept) != 1 {
+				t.Fatalf("shipped template entry %d covers unknown branch %q", i, want)
+			}
+			singleModel["rules"].([]any)[0].(map[string]any)["branches"] = kept
+		} else {
+			// no_branch_reason entry: make the uncovered branch optional so
+			// the floor does not fire for this single-cell exercise.
+			for _, b := range branches {
+				b.(map[string]any)["required"] = false
+			}
+		}
+		writeModel(t, templateRoot, singleModel)
+		matrix["entries"] = []any{entry}
+		writeCrossMatrix(t, templateRoot, "investor-workbench", matrix)
+		if _, err := scenario.GenerateModule(templateRoot, "investor-workbench"); err != nil {
+			t.Fatalf("shipped template entry %d must generate with fixture references: %v", i, err)
+		}
+	}
+
 	root := newScenarioRoot(t, "investor-workbench", "ordinary")
 	if err := os.Remove(filepath.Join(root, "docs/design/prototypes", "investor-workbench", "cross-matrix.json")); err != nil {
 		t.Fatal(err)
@@ -49,8 +98,15 @@ func TestCrossMatrixRequiredAndValidated(t *testing.T) {
 		t.Fatalf("cell without branch or reason must fail, got %v", err)
 	}
 
-	// A no-branch reason is a valid cell.
+	// A no-branch reason is a valid cell shape. The model branches are marked
+	// optional here so the shape check is isolated from the branch floor
+	// (which is pinned separately below).
 	root = newScenarioRoot(t, "investor-workbench", "ordinary")
+	optionalModel := loadModel(t, root)
+	for _, b := range optionalModel["rules"].([]any)[0].(map[string]any)["branches"].([]any) {
+		b.(map[string]any)["required"] = false
+	}
+	writeModel(t, root, optionalModel)
 	writeCrossMatrix(t, root, "investor-workbench", map[string]any{
 		"module": "investor-workbench",
 		"entries": []any{map[string]any{
@@ -112,7 +168,7 @@ func TestCrossMatrixJoinsBoundREQ(t *testing.T) {
 		wantErr string
 	}{
 		{"undeclared FR", cell(map[string]any{"branch": "branch-allow", "req_ref": "REQ-INV-001/FR-999"}), "does not declare"},
-		{"foreign REQ", cell(map[string]any{"branch": "branch-allow", "req_ref": "REQ-OTHER/FR-001"}), "bound REQ"},
+		{"foreign REQ not cited by this branch", cell(map[string]any{"branch": "branch-allow", "req_ref": "REQ-OTHER/FR-001"}), "never cites"},
 		{"branch rule never cites the cell", cell(map[string]any{"branch": "branch-allow", "req_ref": "REQ-INV-001/FR-001"}), "never cites"},
 		{"trivial no-branch reason", cell(map[string]any{"no_branch_reason": "."}), "not a rationale"},
 	}
@@ -134,7 +190,10 @@ func TestCrossMatrixJoinsBoundREQ(t *testing.T) {
 		model := loadModel(t, root)
 		model["rules"].([]any)[0].(map[string]any)["source_refs"] = []any{"REQ-INV-001/FR-001"}
 		writeModel(t, root, model)
-		writeCrossMatrix(t, root, "investor-workbench", cell(map[string]any{"branch": "branch-allow", "req_ref": "REQ-INV-001/FR-001"}))
+		writeCrossMatrix(t, root, "investor-workbench", map[string]any{"module": "investor-workbench", "entries": []any{
+			cell(map[string]any{"branch": "branch-allow", "req_ref": "REQ-INV-001/FR-001"})["entries"].([]any)[0],
+			cell(map[string]any{"branch": "branch-reject", "req_ref": "REQ-INV-001/FR-001"})["entries"].([]any)[0],
+		}})
 		if _, err := scenario.GenerateModule(root, "investor-workbench"); err != nil {
 			t.Fatalf("cell joining a citing rule must pass, got %v", err)
 		}
@@ -172,4 +231,70 @@ func TestCrossMatrixCompletenessFloor(t *testing.T) {
 			t.Fatalf("unhunted fact must fail, got %v", err)
 		}
 	})
+}
+
+// TestCrossMatrixRequiredBranchFloor pins the branch floor: every required
+// branch must appear in at least one cell with a branch reference. A
+// no_branch_reason cell covers the cell, not the branch.
+func TestCrossMatrixRequiredBranchFloor(t *testing.T) {
+	t.Run("unhunted required branch", func(t *testing.T) {
+		root := newScenarioRoot(t, "investor-workbench", "ordinary")
+		writeCrossMatrix(t, root, "investor-workbench", map[string]any{"module": "investor-workbench", "entries": []any{
+			map[string]any{"fact": "fact-investor", "req_ref": "REQ-INV-001", "story": "S-001", "branch": "branch-allow"},
+		}})
+		if _, err := scenario.GenerateModule(root, "investor-workbench"); err == nil || !strings.Contains(err.Error(), `never hunts required branch "branch-reject"`) {
+			t.Fatalf("unhunted required branch must fail, got %v", err)
+		}
+	})
+	t.Run("optional branch needs no cell", func(t *testing.T) {
+		root := newScenarioRoot(t, "investor-workbench", "ordinary")
+		optionalModel := loadModel(t, root)
+		optionalModel["rules"].([]any)[0].(map[string]any)["branches"].([]any)[1].(map[string]any)["required"] = false
+		writeModel(t, root, optionalModel)
+		writeCrossMatrix(t, root, "investor-workbench", map[string]any{"module": "investor-workbench", "entries": []any{
+			map[string]any{"fact": "fact-investor", "req_ref": "REQ-INV-001", "story": "S-001", "branch": "branch-allow"},
+		}})
+		if _, err := scenario.GenerateModule(root, "investor-workbench"); err != nil {
+			t.Fatalf("optional branch without a cell must pass, got %v", err)
+		}
+	})
+	t.Run("reason-only cell does not cover the branch", func(t *testing.T) {
+		root := newScenarioRoot(t, "investor-workbench", "ordinary")
+		optionalModel := loadModel(t, root)
+		for _, b := range optionalModel["rules"].([]any)[0].(map[string]any)["branches"].([]any) {
+			b.(map[string]any)["required"] = false
+		}
+		optionalModel["rules"].([]any)[0].(map[string]any)["branches"].([]any)[0].(map[string]any)["required"] = true
+		writeModel(t, root, optionalModel)
+		writeCrossMatrix(t, root, "investor-workbench", map[string]any{"module": "investor-workbench", "entries": []any{
+			map[string]any{"fact": "fact-investor", "req_ref": "REQ-INV-001", "story": "S-001", "no_branch_reason": "covered elsewhere by an equivalent branch"},
+		}})
+		if _, err := scenario.GenerateModule(root, "investor-workbench"); err == nil || !strings.Contains(err.Error(), `never hunts required branch "branch-allow"`) {
+			t.Fatalf("reason-only cell must not cover a required branch, got %v", err)
+		}
+	})
+}
+
+func TestCrossMatrixSameCellDifferentBranches(t *testing.T) {
+	for _, duplicate := range []bool{false, true} {
+		t.Run(map[bool]string{false: "different branches", true: "same branch"}[duplicate], func(t *testing.T) {
+			root := newScenarioRoot(t, "investor-workbench", "ordinary")
+			second := "branch-reject"
+			if duplicate {
+				second = "branch-allow"
+			}
+			writeCrossMatrix(t, root, "investor-workbench", map[string]any{"module": "investor-workbench", "entries": []any{
+				map[string]any{"fact": "fact-investor", "req_ref": "REQ-INV-001", "story": "S-001", "branch": "branch-allow"},
+				map[string]any{"fact": "fact-investor", "req_ref": "REQ-INV-001", "story": "S-001", "branch": second},
+			}})
+			_, err := scenario.GenerateModule(root, "investor-workbench")
+			if duplicate {
+				if err == nil || !strings.Contains(err.Error(), "duplicates") {
+					t.Fatalf("want duplicate error, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }

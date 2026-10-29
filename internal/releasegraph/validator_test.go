@@ -55,6 +55,35 @@ func TestValidateStagedReleaseStillRejectsDanglingQualifiedPath(t *testing.T) {
 	}
 }
 
+func TestValidateStagedReleaseAllowsRuntimeSubmissionPathsOnly(t *testing.T) {
+	for _, test := range []struct {
+		name, reference string
+		wantError       bool
+	}{
+		{"S7 answer", ".loop-submissions/s7/.../answer.json", false},
+		{"S9 targeted answer", ".loop-submissions/s9/.../targeted-....json", false},
+		{"similar static path", ".loop-submissions-other/missing/file.json", true},
+		{"escape to static path", ".loop-submissions/../docs/missing/file.md", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := minimalStage(t)
+			writeStageFile(t, root, ".claude/bin/loop-harness", "binary")
+			if err := os.Chmod(filepath.Join(root, ".claude/bin/loop-harness"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeStageFile(t, root, "skills/example/SKILL.md", "---\nname: example\n---\nRead `"+test.reference+"`.\n")
+			err := releasegraph.ValidateStagedRelease(root)
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "does not exist") {
+					t.Fatalf("missing static reference must still fail: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("runtime submission is not a release dependency: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateStagedReleaseAllowsInstanceDesignFoundationLiveFiles(t *testing.T) {
 	root := minimalStage(t)
 	writeStageFile(t, root, ".claude/bin/loop-harness", "binary")

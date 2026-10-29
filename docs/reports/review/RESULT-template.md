@@ -5,12 +5,9 @@
 > ReviewPlan: {review-plan-id} (round {n}, revision {n})
 > Assignment: {assignment-id} — lens {delivery|qa|e2e}
 > Agent: {agent-id}
-> Verdict submitted via `runtime review-result submit --assignment-id {assignment-id}`
+> Verdict: 由原答卷及原消费者接收记录投影
 
-This Markdown file is the human-readable projection of one Canonical
-ReviewResult. The machine authority is the JSON submitted to
-`runtime review-result submit` (scaffold: `review-result.example.json`);
-this template documents the same fields for review and audit.
+本 Markdown 是原 ReviewResult 的可读投影，不是必须另交的第二份结果。正常 S7 在已发行原卷中填写本人专业 `answer`，保存并返回准确引用，由 `SubagentStop` 调原消费者接收。下表的身份、轮次、代际和摘要均从原记录投影，作者不计算、抄写或拼装机器封套。保留的显式 Canonical Result 入口只用于具名兼容／恢复，不是正常原卷的前置。
 
 ## §1 Result identity
 
@@ -19,8 +16,10 @@ this template documents the same fields for review and audit.
 | result_id | review-result-{...} |
 | review_plan_id / review_round | {plan} / {round} |
 | baseline_generation | {n} |
-| subject_digest | sha256 over the plan's frozen_subjects (copy the value from `loop-harness s7 status` — the submit verifier rejects any other value) |
-| verification_artifact_digest | cold-start E2E only: sha256 of the workspace content, copied from `loop-harness s7 workspace-digest` after the last spec/fixture write; null otherwise |
+| subject_digest | 系统绑定原计划的冻结对象摘要；作者保留原卷机器预填，不抄 Runtime |
+| verification_artifact_digest | 冷启动 E2E 的实际资产摘要，由原接收器绑定并校验；原卷预填或 null 均不要求作者计算 |
+
+本地证据在原卷中选择 `path:<实际相对路径>` 或 `command_output:<原实际捕获路径>`。原接收／捕获机制固定摘要、字节数和截断信息，消费时核对原来源，不能刷新旧摘要掩盖漂移。
 
 ## §2 Claim results (exact set)
 

@@ -41,6 +41,48 @@ func TestValidateRuntimeRejectsUnknownLifecycleState(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeRequiresMatchingUnifiedS7AssignmentEvent(t *testing.T) {
+	root := isolatedSemanticProject(t)
+	runtimePath := filepath.Join(root, ".claude", "loop-state.json")
+	data, err := os.ReadFile(runtimePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["schema_version"] != "1.3.0" {
+		t.Fatalf("fresh fixture format = %v, want 1.3.0", state["schema_version"])
+	}
+	review := state["review"].(map[string]any)
+	review["assignments"] = map[string]any{
+		"assignment-qa-1": map[string]any{
+			"lens":                 "qa",
+			"claim_ids":            []any{},
+			"status":               "pending",
+			"last_lifecycle_event": "review_plan_registered",
+		},
+	}
+	valid, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := semantic.ValidateRuntimeBytes(root, valid); err != nil {
+		t.Fatalf("matching S7 Assignment event rejected: %v", err)
+	}
+
+	row := review["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
+	row["status"] = "active"
+	invalid, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := semantic.ValidateRuntimeBytes(root, invalid); err == nil {
+		t.Fatal("mismatched S7 Assignment status/event was accepted")
+	}
+}
+
 func TestValidateRuntimeFileAcceptsFreshInactiveState(t *testing.T) {
 	root := isolatedSemanticProject(t)
 	if err := semantic.ValidateRuntimeFile(root, ".claude/loop-state.json"); err != nil {
@@ -349,11 +391,11 @@ func TestValidateReviewManifestReferencesMismatchErrorIncludesHint(t *testing.T)
 	if err == nil {
 		t.Fatal("expected fingerprint mismatch to fail")
 	}
-	if !strings.Contains(err.Error(), "loop-harness runtime fingerprint") {
-		t.Fatalf("error should include BUG-004 D5 recovery hint, got: %v", err)
+	if !strings.Contains(err.Error(), "current registered source refs") {
+		t.Fatalf("error should identify the current source recovery route, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "BUG-004") {
-		t.Fatalf("error should mention BUG-004, got: %v", err)
+	if !strings.Contains(err.Error(), "docs/teams/team-a/manifest.json") {
+		t.Fatalf("error should include the exact manifest path, got: %v", err)
 	}
 }
 

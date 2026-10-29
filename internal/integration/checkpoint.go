@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 )
 
 // CheckpointStore persists durable integration checkpoints. The store
@@ -88,6 +90,14 @@ func (s *CheckpointStore) Path(root, runtimeID string, baselineGeneration int, a
 		assignmentID,
 		"checkpoint.json",
 	)
+}
+
+// PathForRecord selects the checkpoint slot for an already resolved current
+// Assignment Record. Record resolution is owned by the caller; this formatter
+// does not establish current authority. Revision one retains the legacy path,
+// while later revisions receive a separate history directory.
+func (s *CheckpointStore) PathForRecord(root string, ref assignmentrecord.RecordReference) string {
+	return assignmentrecord.IntegrationCheckpointPath(root, ref)
 }
 
 // IdempotencyKey builds the canonical idempotency key per BUG-039-05 §4.1:

@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/hypothesis-result-receipt.schema.json",
+  "title": "Original S8 HypothesisResult receipt",
+  "description": "Stored in the original immutable Case revision. The containing Case SHA is derived from the original pointer/revision history, avoiding self-reference.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "submitted_answer",
+    "packet_id",
+    "owner_agent_id",
+    "runtime_id",
+    "assignment_id",
+    "team_id",
+    "task_id",
+    "task_ref",
+    "manifest_ref",
+    "execution_root",
+    "issuance_event_id",
+    "accepted_event_id",
+    "accepted_idempotency_key",
+    "successor_case_ref",
+    "packet_sha256",
+    "answer_sha256",
+    "assignment_sha256",
+    "task_sha256",
+    "manifest_sha256",
+    "baseline_generation",
+    "review_round",
+    "accepted_after_runtime_revision",
+    "accepted_sequence",
+    "successor_case_revision"
+  ],
+  "properties": {
+    "contract": {
+      "const": "s8-hypothesis-result-receipt-v1"
+    },
+    "submitted_answer": {
+      "allOf": [
+        {
+          "$ref": "stage-answer-s8.schema.json#/$defs/answer"
+        },
+        {
+          "properties": {
+            "result": {
+              "enum": [
+                "supported",
+                "refuted",
+                "inconclusive"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "packet_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "owner_agent_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtime_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assignment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "team_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "manifest_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issuance_event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "accepted_event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "accepted_idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "successor_case_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packet_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "answer_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "assignment_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "task_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "baseline_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "review_round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "accepted_after_runtime_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "accepted_sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "successor_case_revision": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

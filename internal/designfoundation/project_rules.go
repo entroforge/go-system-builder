@@ -137,76 +137,39 @@ func checkProjectRules(root string, idx *ContractIndex) []Finding {
 				out = append(out, Finding{Code: "project_rule_unverifiable", Severity: SeverityWarning, Path: DesignChecksRel, Detail: r.ID + " targets matched no files: " + strings.Join(r.Targets, ",")})
 				continue
 			}
-			// need marker data-design-role
-			hasMarker := false
-			total := 0
-			perFile := map[string]int{}
-			roleRe := regexp.MustCompile(`data-design-role\s*=\s*["']([^"']*)["']`)
-			for _, rel := range files {
-				data, err := os.ReadFile(filepath.Join(root, rel))
-				if err != nil {
-					continue
-				}
-				matches := roleRe.FindAllStringSubmatch(string(data), -1)
-				c := 0
-				for _, m := range matches {
-					hasMarker = true
-					// value may be space-separated list
-					for _, tok := range strings.Fields(m[1]) {
-						// support dot or slash normalized; compare exact or suffix
-						if tok == r.Role || strings.HasSuffix(tok, "."+r.Role) || strings.HasSuffix(tok, "/"+r.Role) || tok == strings.ReplaceAll(r.Role, ".", "-") {
-							c++
-						} else if strings.Contains(m[1], r.Role) {
-							// fallback substring for color.action.promise matching "action.promise"
-							if strings.Contains(tok, r.Role) {
-								c++
-							}
-						}
-					}
-					// also count comma-separated
-					if c == 0 && strings.Contains(m[1], ",") {
-						for _, part := range strings.Split(m[1], ",") {
-							if strings.TrimSpace(part) == r.Role || strings.Contains(strings.TrimSpace(part), r.Role) {
-								c++
-							}
-						}
-					}
-				}
-				// If no structured split matched but marker exists, try simple contains
-				if c == 0 && hasMarker {
-					// fallback: count occurrences of role string inside data-design-role values
-					for _, m := range matches {
-						if strings.Contains(m[1], r.Role) {
-							c++
-						}
-					}
-				}
-				perFile[rel] = c
-				total += c
-			}
-			if !hasMarker {
-				out = append(out, Finding{Code: "project_rule_unverifiable", Severity: SeverityWarning, Path: DesignChecksRel, Detail: r.ID + " max_role_count requires HTML data-design-role markers in targets but none found — add data-design-role or UI Lab role mapping"})
-				continue
-			}
 			scope := strings.ToLower(strings.TrimSpace(r.Scope))
 			if scope == "" {
 				scope = "file"
 			}
-			violated := false
-			if scope == "viewport" || scope == "file" {
-				for rel, c := range perFile {
-					if c > *r.Max {
-						out = append(out, Finding{Code: "project_rule_violation", Severity: SeverityWarning, Path: rel, Detail: r.ID + " (" + r.Source + ") max_role_count role=" + r.Role + " scope=" + scope + " max=" + itoa(*r.Max) + " got " + itoa(c) + " in " + rel})
-						violated = true
+			if scope != "file" {
+				out = append(out, Finding{Code: "project_rule_unverifiable", Severity: SeverityWarning, Path: DesignChecksRel, Detail: r.ID + " max_role_count requested scope=" + scope + "; only file-text scope is supported. Visibility, viewport and rendered state remain unverified; use the existing actual Proof for those judgments."})
+				continue
+			}
+			roleRe := regexp.MustCompile(`data-design-role\s*=\s*["']([^"']*)["']`)
+			for _, rel := range files {
+				data, err := os.ReadFile(filepath.Join(root, rel))
+				if err != nil {
+					out = append(out, Finding{Code: "project_rule_unverifiable", Severity: SeverityWarning, Path: rel, Detail: r.ID + " file-text target could not be read"})
+					continue
+				}
+				matches := roleRe.FindAllStringSubmatch(string(data), -1)
+				if len(matches) == 0 {
+					out = append(out, Finding{Code: "project_rule_unverifiable", Severity: SeverityWarning, Path: rel, Detail: r.ID + " max_role_count file-text target has no data-design-role attributes; no static count is available. This does not require adding a role registry or certify actual UI behavior."})
+					continue
+				}
+				count := 0
+				for _, match := range matches {
+					for _, token := range strings.Fields(strings.ReplaceAll(match[1], ",", " ")) {
+						if token == r.Role || strings.HasSuffix(token, "."+r.Role) || strings.HasSuffix(token, "/"+r.Role) || token == strings.ReplaceAll(r.Role, ".", "-") {
+							count++ // one matching attribute, regardless of repeated labels
+							break
+						}
 					}
 				}
-			} else {
-				if total > *r.Max {
-					out = append(out, Finding{Code: "project_rule_violation", Severity: SeverityWarning, Path: DesignChecksRel, Detail: r.ID + " (" + r.Source + ") max_role_count role=" + r.Role + " total " + itoa(total) + " exceeds max " + itoa(*r.Max)})
-					violated = true
+				if count > *r.Max {
+					out = append(out, Finding{Code: "project_rule_violation", Severity: SeverityWarning, Path: rel, Detail: r.ID + " (" + r.Source + ") max_role_count file-text role=" + r.Role + " max=" + itoa(*r.Max) + " got " + itoa(count) + " matching attributes in " + rel + "; visibility, viewport and rendered state are not evaluated"})
 				}
 			}
-			_ = violated
 
 		case "forbid_binding":
 			subj := strings.TrimSpace(r.Subject)
@@ -276,7 +239,7 @@ func checkProjectRules(root string, idx *ContractIndex) []Finding {
 				continue
 			}
 			if len(r.Allow) == 0 {
-				out = append(out, Finding{Code: "project_rule_unverifiable", Severity: SeverityWarning, Path: DesignChecksRel, Detail: r.ID + " token_scope requires allow selectors"})
+				out = append(out, Finding{Code: "project_rule_unverifiable", Severity: SeverityWarning, Path: DesignChecksRel, Detail: r.ID + " token_scope requires allow text-marker hints (not DOM selectors)"})
 				continue
 			}
 			targets := r.Targets
@@ -299,16 +262,24 @@ func checkProjectRules(root string, idx *ContractIndex) []Finding {
 				if tokVar != "" && !strings.Contains(body, tokVar) && !strings.Contains(body, tok) {
 					continue
 				}
-				allowedFound := false
-				for _, sel := range r.Allow {
-					if selectorMatches(body, strings.TrimSpace(sel)) {
-						allowedFound = true
-						break
+				allowedFound, unsupported := false, false
+				for _, hint := range r.Allow {
+					marker, supported := allowTextMarker(hint)
+					if !supported {
+						unsupported = true
+						continue
 					}
+					allowedFound = allowedFound || strings.Contains(body, marker)
 				}
-				if !allowedFound {
-					out = append(out, Finding{Code: "project_rule_violation", Severity: SeverityWarning, Path: rel, Detail: r.ID + " (" + r.Source + ") token_scope token=" + tok + " used outside allow " + strings.Join(r.Allow, ",") + " in " + rel})
+				detail := r.ID + " (" + r.Source + ") token_scope file-text token=" + tok + " in " + rel
+				if unsupported {
+					out = append(out, Finding{Code: "project_rule_unverifiable", Severity: SeverityWarning, Path: rel, Detail: detail + "; complex/unsupported allow selectors are not interpreted. DOM binding remains unverified; use existing actual Proof."})
+				} else if !allowedFound {
+					out = append(out, Finding{Code: "project_rule_violation", Severity: SeverityWarning, Path: rel, Detail: detail + "; none of the allow marker texts occur in this file: " + strings.Join(r.Allow, ",") + ". This is a text precondition, not a DOM relationship judgment."})
+				} else {
+					out = append(out, Finding{Code: "project_rule_observation", Severity: SeverityInfo, Path: rel, Detail: detail + "; token and an allow marker text co-occur. Their element relationship remains unverified; existing Derivation/Proof carries that judgment."})
 				}
+
 			}
 
 		case "required_import":
@@ -435,67 +406,24 @@ func expandTargets(root string, patterns []string) ([]string, *Finding) {
 	return out, nil
 }
 
-func selectorMatches(body, sel string) bool {
-	sel = strings.TrimSpace(sel)
-	if sel == "" {
-		return false
+// allowTextMarker accepts a small text-hint notation, not CSS selectors.
+// A substring occurrence is not proof that a token belongs to that element.
+func allowTextMarker(hint string) (string, bool) {
+	hint = strings.TrimSpace(hint)
+	if strings.HasPrefix(hint, "[") && strings.HasSuffix(hint, "]") {
+		hint = strings.TrimSuffix(strings.TrimPrefix(hint, "["), "]")
+	} else if strings.HasPrefix(hint, ".") || strings.HasPrefix(hint, "#") {
+		hint = hint[1:]
 	}
-	if strings.HasPrefix(sel, "[") && strings.HasSuffix(sel, "]") {
-		inner := strings.Trim(sel, "[]")
-		for i, ch := range inner {
-			if ch == '=' || ch == '~' || ch == '|' || ch == '^' || ch == '$' || ch == '*' {
-				inner = inner[:i]
-				break
-			}
-		}
-		inner = strings.TrimSpace(inner)
-		if inner == "" {
-			return false
-		}
-		return strings.Contains(body, inner)
+	if hint == "" {
+		return "", false
 	}
-	if strings.HasPrefix(sel, ".") {
-		cls := strings.TrimPrefix(sel, ".")
-		cls = strings.TrimSpace(cls)
-		if cls == "" {
-			return false
-		}
-		return strings.Contains(body, cls)
-	}
-	if strings.HasPrefix(sel, "#") {
-		id := strings.TrimPrefix(sel, "#")
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return false
-		}
-		return strings.Contains(body, id)
-	}
-	if strings.Contains(sel, "[") {
-		start := strings.Index(sel, "[")
-		end := strings.Index(sel, "]")
-		if start >= 0 && end > start {
-			attr := sel[start+1 : end]
-			for i, ch := range attr {
-				if ch == '=' {
-					attr = attr[:i]
-					break
-				}
-			}
-			attr = strings.TrimSpace(attr)
-			if attr != "" && strings.Contains(body, attr) {
-				tag := strings.TrimSpace(sel[:start])
-				if tag != "" && tag != "*" {
-					if strings.Contains(strings.ToLower(body), "<"+strings.ToLower(tag)) {
-						return true
-					}
-					return true
-				}
-				return true
-			}
-			return false
+	for _, ch := range hint {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
+			return "", false
 		}
 	}
-	return strings.Contains(body, sel)
+	return hint, true
 }
 
 func expandGlob(root, pattern string) ([]string, error) {

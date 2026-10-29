@@ -6,25 +6,34 @@
 // and writes every mutation through the runtime's single-writer CAS.
 package review
 
+import (
+	"github.com/entroforge/go-system-builder/internal/buildsurface"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
+)
+
 // Plan mirrors review-plan.schema.json — the single authority for one
 // review round's coverage, Claims and Assignment DAG projection.
 type Plan struct {
-	SchemaVersion                 string           `json:"schema_version"`
-	ReviewPlanID                  string           `json:"review_plan_id"`
-	ReviewRound                   int              `json:"review_round"`
-	BaselineGeneration            int              `json:"baseline_generation"`
-	FrozenSubjects                []FrozenSubject  `json:"frozen_subjects"`
-	CoverageInventory             []CoverageItem   `json:"coverage_inventory,omitempty"`
-	E2EAssets                     []E2EAsset       `json:"e2e_assets,omitempty"`
-	ChangeImpact                  *ChangeImpact    `json:"change_impact"`
-	Claims                        []Claim          `json:"claims"`
-	Assignments                   []PlanAssignment `json:"assignments"`
-	E2ECoverageState              string           `json:"e2e_coverage_state"`
-	VerificationArtifactWorkspace *string          `json:"verification_artifact_workspace"`
-	DispatchCapacityPolicy        string           `json:"dispatch_capacity_policy"`
-	CoverageJustification         *string          `json:"coverage_justification"`
-	CreatedBy                     string           `json:"created_by"`
-	CreatedAt                     string           `json:"created_at"`
+	SchemaVersion      string `json:"schema_version"`
+	ReviewPlanID       string `json:"review_plan_id"`
+	ReviewRound        int    `json:"review_round"`
+	BaselineGeneration int    `json:"baseline_generation"`
+	// ProductBaseline is present for generations whose original TR-003
+	// dispatch source and S6 Main receipts are machine-verifiable. It is
+	// optional only for historical plans created before that contract existed.
+	ProductBaseline               *buildsurface.Snapshot `json:"product_baseline,omitempty"`
+	FrozenSubjects                []FrozenSubject        `json:"frozen_subjects"`
+	CoverageInventory             []CoverageItem         `json:"coverage_inventory,omitempty"`
+	E2EAssets                     []E2EAsset             `json:"e2e_assets,omitempty"`
+	ChangeImpact                  *ChangeImpact          `json:"change_impact"`
+	Claims                        []Claim                `json:"claims"`
+	Assignments                   []PlanAssignment       `json:"assignments"`
+	E2ECoverageState              string                 `json:"e2e_coverage_state"`
+	VerificationArtifactWorkspace *string                `json:"verification_artifact_workspace"`
+	DispatchCapacityPolicy        string                 `json:"dispatch_capacity_policy"`
+	CoverageJustification         *string                `json:"coverage_justification"`
+	CreatedBy                     string                 `json:"created_by"`
+	CreatedAt                     string                 `json:"created_at"`
 }
 
 // E2EAsset is one existing CASE/PATH asset that a regression_available round
@@ -45,11 +54,7 @@ type E2EAsset struct {
 
 // FrozenSubject is one fingerprinted product/config/test/spec surface the
 // round binds.
-type FrozenSubject struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Kind   string `json:"kind,omitempty"`
-}
+type FrozenSubject = reviewmeta.FrozenSubject
 
 // ChangeImpact carries the change-surface summary the Planner consumed. On a
 // TR-012 re-entry, SourceRefs must include the current change_impact evidence
@@ -60,37 +65,11 @@ type ChangeImpact struct {
 }
 
 // Claim is one auditable proposition a Reviewer must answer (L3-S7 §3.3).
-type Claim struct {
-	ClaimID          string   `json:"claim_id"`
-	Lens             string   `json:"lens"`
-	Target           string   `json:"target"`
-	Assertion        string   `json:"assertion"`
-	Oracle           string   `json:"oracle"`
-	Method           string   `json:"method"`
-	RequiredEvidence []string `json:"required_evidence,omitempty"`
-	Applicability    string   `json:"applicability"`
-	NARationale      string   `json:"na_rationale,omitempty"`
-	// NAChecklistID is the explicit N/A checklist the claim's not_applicable
-	// disposition was proven against (S7-9/RC-07). An e2e N/A claim without
-	// one is a silent dimension drop, not a conclusion.
-	NAChecklistID string   `json:"na_checklist_id,omitempty"`
-	SourceRefs    []string `json:"source_refs"`
-	FocusKey      string   `json:"focus_key,omitempty"`
-	DependsOn     []string `json:"depends_on,omitempty"`
-	ResourceLocks []string `json:"resource_locks,omitempty"`
-}
+type Claim = reviewmeta.Claim
 
 // PlanAssignment is the Claim responsibility grouping inside the plan
 // (L3-S7 §3.4). The dispatch artifact (team manifest) binds to it by id.
-type PlanAssignment struct {
-	AssignmentID       string   `json:"assignment_id"`
-	Lens               string   `json:"lens"`
-	ClaimIDs           []string `json:"claim_ids"`
-	FocusKeys          []string `json:"focus_keys,omitempty"`
-	NonOverlapBoundary string   `json:"non_overlap_boundary"`
-	ExecutionWave      string   `json:"execution_wave"`
-	ResourceLocks      []string `json:"resource_locks,omitempty"`
-}
+type PlanAssignment = reviewmeta.PlanAssignment
 
 // Result mirrors review-result.schema.json — the Canonical ReviewResult.
 type Result struct {

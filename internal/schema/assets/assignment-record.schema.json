@@ -1,0 +1,627 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/assignment-record.schema.json",
+  "title": "S6 canonical Assignment Record",
+  "description": "Immutable machine-authored dispatch charter for an explicitly opted-in S6 Builder Assignment. This record contains no professional PLAN_REPORT or Result answers and grants no activation or completion state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract",
+    "runtime_id",
+    "baseline_generation",
+    "registration_revision",
+    "assignment_id",
+    "assignment_revision",
+    "task",
+    "manifest",
+    "agent_definition",
+    "team_id",
+    "responsibility_id",
+    "owner_agent_id",
+    "role_family",
+    "dispatch_mode",
+    "read_paths",
+    "skill_refs",
+    "depends_on",
+    "done_when",
+    "required_checks",
+    "check_profiles",
+    "scope_basis",
+    "effective_write_paths",
+    "context_sources"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "contract": {
+      "enum": ["s6-v1.2", "s6-native-v1"]
+    },
+    "runtime_id": {
+      "type": "string",
+      "pattern": "^loop-[A-Za-z0-9._-]+$"
+    },
+    "baseline_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "registration_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Runtime Writer commit revision that created this entity; distinct from assignment_revision."
+    },
+    "assignment_id": {
+      "type": "string",
+      "pattern": "^assignment-[A-Za-z0-9._-]+$"
+    },
+    "assignment_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "task": {
+      "$ref": "#/$defs/sourceReference",
+      "properties": {
+        "kind": {
+          "const": "task"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^TASK-[A-Za-z0-9._-]+$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "version",
+        "ref",
+        "sha256"
+      ]
+    },
+    "manifest": {
+      "$ref": "#/$defs/sourceReference",
+      "properties": {
+        "kind": {
+          "const": "manifest"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "version",
+        "ref",
+        "sha256"
+      ]
+    },
+    "agent_definition": {
+      "$ref": "#/$defs/sourceReference",
+      "properties": {
+        "kind": {
+          "const": "agent_definition"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "ref",
+        "sha256"
+      ]
+    },
+    "team_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "responsibility_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "owner_agent_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "role_family": {
+      "enum": [
+        "backend-builder",
+        "frontend-builder",
+        "test-builder"
+      ]
+    },
+    "dispatch_mode": {
+      "enum": [
+        "plan_checkpoint",
+        "plan_approval_required",
+        "one_shot"
+      ]
+    },
+    "read_paths": {
+      "$ref": "#/$defs/strings"
+    },
+    "skill_refs": {
+      "$ref": "#/$defs/nonEmptyStrings"
+    },
+    "depends_on": {
+      "$ref": "#/$defs/strings"
+    },
+    "done_when": {
+      "$ref": "#/$defs/nonEmptyStrings"
+    },
+    "required_checks": {
+      "$ref": "#/$defs/strings"
+    },
+    "check_profiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/checkProfile"
+      }
+    },
+    "integration_check_mode": {
+      "const": "post_merge"
+    },
+    "closing_contract": {
+      "$ref": "#/$defs/closingContract"
+    },
+    "scope_basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_scope",
+        "manifest_write_paths",
+        "manifest_output_paths",
+        "task_write_paths"
+      ],
+      "properties": {
+        "manifest_scope": {
+          "$ref": "#/$defs/nonEmptyStrings"
+        },
+        "manifest_write_paths": {
+          "$ref": "#/$defs/strings"
+        },
+        "manifest_output_paths": {
+          "$ref": "#/$defs/strings"
+        },
+        "task_write_paths": {
+          "$ref": "#/$defs/nonEmptyStrings"
+        }
+      }
+    },
+    "effective_write_paths": {
+      "$ref": "#/$defs/nonEmptyStrings"
+    },
+    "context_sources": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/contextSource"
+      },
+      "description": "Original hash-bound manifest/TASK/role inputs, declared document sources, authorized Skills and CheckProfile dependencies, plus actual frozen context sources resolved by the caller."
+    },
+    "source_snapshots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/sourceSnapshot"
+      },
+      "description": "Optional immutable content-addressed snapshots of exact original source bytes. Historical Records may omit this field."
+    },
+    "revision_issuance": {
+      "$ref": "#/$defs/revisionIssuance",
+      "description": "Optional Writer-authored receipt binding an r2+ Assignment revision to its intent and immediately preceding Record. Historical Records are not backfilled."
+    }
+  },
+  "$defs": {
+    "strings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "nonEmptyStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "sourceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "recordReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "baseline_generation",
+        "assignment_id",
+        "assignment_revision"
+      ],
+      "properties": {
+        "runtime_id": {
+          "type": "string",
+          "pattern": "^loop-[A-Za-z0-9._-]+$"
+        },
+        "baseline_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "assignment_id": {
+          "type": "string",
+          "pattern": "^assignment-[A-Za-z0-9._-]+$"
+        },
+        "assignment_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_ref",
+        "source_kind",
+        "source_sha256",
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "source_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_kind": {
+          "enum": [
+            "agent_definition",
+            "authorized_skill",
+            "check_profile_dependency",
+            "check_profile_fixture",
+            "worker_check_profile_dependency",
+            "worker_check_profile_fixture",
+            "frozen_input",
+            "manifest",
+            "manifest_document",
+            "task",
+            "embedded_schema",
+            "embedded_context_profile"
+          ]
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "revisionIssuance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_key",
+        "request_digest",
+        "previous_record",
+        "previous_record_sha256"
+      ],
+      "properties": {
+        "intent_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "request_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "previous_record": {
+          "$ref": "#/$defs/recordReference"
+        },
+        "previous_record_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "contextSource": {
+      "$ref": "#/$defs/sourceReference",
+      "properties": {
+        "kind": {
+          "enum": [
+            "agent_definition",
+            "authorized_skill",
+            "check_profile",
+            "check_profile_dependency",
+            "check_profile_fixture",
+            "worker_check_profile_dependency",
+            "worker_check_profile_fixture",
+            "frozen_input",
+            "manifest",
+            "manifest_document",
+            "task",
+            "embedded_schema",
+            "embedded_context_profile"
+          ]
+        }
+      }
+    },
+    "checkProfileFileRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "checkProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "check_index",
+        "command",
+        "location",
+        "timeout_seconds",
+        "environment_policy",
+        "environment",
+        "dependencies",
+        "fixtures",
+        "input_closure",
+        "side_effects",
+        "reuse_policy"
+      ],
+      "properties": {
+        "reuse_mode": {
+          "enum": [
+            "shadow",
+            "enabled"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "check_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "enum": [
+            "main",
+            "worker"
+          ]
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        },
+        "environment_policy": {
+          "enum": [
+            "inherited",
+            "declared_only"
+          ]
+        },
+        "environment": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "value"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/checkProfileFileRef"
+          }
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/checkProfileFileRef"
+          }
+        },
+        "input_closure": {
+          "const": "whole_tree"
+        },
+        "side_effects": {
+          "enum": [
+            "unknown",
+            "none",
+            "disposable"
+          ]
+        },
+        "reuse_policy": {
+          "enum": [
+            "never",
+            "same_input_same_responsibility"
+          ]
+        }
+      }
+    },
+    "workerCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "command",
+        "profile"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profile": {
+          "$ref": "#/$defs/checkProfile",
+          "properties": {
+            "location": {
+              "const": "worker"
+            }
+          }
+        }
+      }
+    },
+    "closingContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "worker_checks"
+      ],
+      "properties": {
+        "contract": {
+          "const": "s6-closing-v1"
+        },
+        "worker_checks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/workerCheck"
+          },
+          "maxItems": 64
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "closing_contract"
+        ]
+      },
+      "then": {
+        "required": [
+          "integration_check_mode"
+        ],
+        "properties": {
+          "integration_check_mode": {
+            "const": "post_merge"
+          },
+          "check_profiles": {
+            "items": {
+              "properties": {
+                "location": {
+                  "const": "main"
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "integration_check_mode"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "revision_issuance"
+        ]
+      },
+      "then": {
+        "properties": {
+          "assignment_revision": {
+            "minimum": 2
+          }
+        }
+      }
+    }
+  ]
+}

@@ -13,133 +13,91 @@ import (
 	"github.com/entroforge/go-system-builder/internal/scenario"
 )
 
-func TestUIDesignPackageRequiresEveryREQBoundModuleAndScenarioOutputs(t *testing.T) {
+func uiInventoryREQ(t *testing.T, root, modules string) string {
+	t.Helper()
+	path := "docs/requirements/REQ-001.md"
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, path), []byte("# REQ-001\n"+modules), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestUIDesignInventoryRequiresEveryREQBoundModuleAndOutput(t *testing.T) {
 	root := t.TempDir()
-	reqPath := filepath.Join(root, "docs", "requirements", "REQ-001.md")
-	if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
-		t.Fatal(err)
+	req := uiInventoryREQ(t, root, "docs/design/prototypes/investor-workbench/")
+	if err := inspectUIDesignPackageFilesForREQ(root, req); err == nil || !strings.Contains(err.Error(), "investor-workbench") {
+		t.Fatalf("missing module diagnostic: %v", err)
 	}
-	if err := os.WriteFile(reqPath, []byte("# REQ-001\n\nAffected module: docs/design/prototypes/investor-workbench/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	complete, err := hasCompleteUIDesignPackageForREQ(root, "docs/requirements/REQ-001.md")
-	if err == nil && complete {
-		t.Fatal("missing current module scenario package must fail the UI design gate")
-	}
-
 	if err := writeCompleteUIDesignPackageForTest(root, "investor-workbench"); err != nil {
 		t.Fatal(err)
 	}
-	complete, err = hasCompleteUIDesignPackageForREQ(root, "docs/requirements/REQ-001.md")
-	if err != nil || !complete {
-		t.Fatalf("complete current module package was rejected: complete=%v err=%v", complete, err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "design", "prototypes", "investor-workbench", "page.html"), []byte("page without metadata"), 0o644); err != nil {
+	if err := inspectUIDesignPackageFilesForREQ(root, req); err != nil {
 		t.Fatal(err)
 	}
-	complete, _ = hasCompleteUIDesignPackageForREQ(root, "docs/requirements/REQ-001.md")
-	if complete {
-		t.Fatal("a page without the required prototype metadata header must fail the UI design gate")
-	}
-
-	if err := os.WriteFile(reqPath, []byte("# REQ-001\n\nAffected modules: docs/design/prototypes/investor-workbench/ and docs/design/prototypes/portfolio/\n"), 0o644); err != nil {
+	required := filepath.Join(root, "docs/design/prototypes/investor-workbench/cases.json")
+	if err := os.Remove(required); err != nil {
 		t.Fatal(err)
 	}
-	complete, _ = hasCompleteUIDesignPackageForREQ(root, "docs/requirements/REQ-001.md")
-	if complete {
-		t.Fatal("a second unbound module must fail the UI design gate")
+	if err := inspectUIDesignPackageFilesForREQ(root, req); err == nil || !strings.Contains(err.Error(), "investor-workbench/cases.json") {
+		t.Fatalf("missing file diagnostic: %v", err)
+	}
+	if err := writeCompleteUIDesignPackageForTest(root, "investor-workbench"); err != nil {
+		t.Fatal(err)
+	}
+	uiInventoryREQ(t, root, "docs/design/prototypes/investor-workbench/ and docs/design/prototypes/portfolio/")
+	if err := inspectUIDesignPackageFilesForREQ(root, req); err == nil || !strings.Contains(err.Error(), "portfolio") {
+		t.Fatalf("second module diagnostic: %v", err)
 	}
 }
 
-func TestUIImpactREQWithoutExplicitModuleBindingFailsClosed(t *testing.T) {
+func TestUIImpactREQWithoutExplicitModuleBindingReportsGap(t *testing.T) {
 	root := t.TempDir()
-	reqPath := filepath.Join(root, "docs", "requirements", "REQ-002.md")
-	if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(reqPath, []byte("# REQ-002\n\nUI impact: changed\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := modulesBoundToREQ(root, "docs/requirements/REQ-002.md")
-	if err == nil || !strings.Contains(err.Error(), "explicit module") {
-		t.Fatalf("missing explicit module binding accepted: %v", err)
+	req := uiInventoryREQ(t, root, "UI impact: changed")
+	if err := inspectUIDesignPackageFilesForREQ(root, req); err == nil || !strings.Contains(err.Error(), "explicit module") {
+		t.Fatalf("missing binding diagnostic: %v", err)
 	}
 }
 
-func TestUIDesignPackageRejectsExternalModuleSymlink(t *testing.T) {
-	root := t.TempDir()
-	externalRoot := t.TempDir()
-	if err := writeCompleteUIDesignPackageForTest(externalRoot, "investor-workbench"); err != nil {
+func TestUIDesignInventoryRejectsExternalModuleSymlink(t *testing.T) {
+	root, external := t.TempDir(), t.TempDir()
+	req := uiInventoryREQ(t, root, "docs/design/prototypes/investor-workbench/")
+	if err := writeCompleteUIDesignPackageForTest(external, "investor-workbench"); err != nil {
 		t.Fatal(err)
 	}
-	prototypesRoot := filepath.Join(root, "docs", "design", "prototypes")
-	if err := os.MkdirAll(prototypesRoot, 0o755); err != nil {
+	prototypes := filepath.Join(root, "docs/design/prototypes")
+	if err := os.MkdirAll(prototypes, 0755); err != nil {
 		t.Fatal(err)
 	}
-	createSymlinkOrSkip(t,
-		filepath.Join(externalRoot, "docs", "design", "prototypes", "investor-workbench"),
-		filepath.Join(prototypesRoot, "investor-workbench"),
-	)
-
-	complete, err := hasCompleteUIDesignPackageForModule(root, "investor-workbench")
-	if complete || err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") {
-		t.Fatalf("external module symlink must fail closed: complete=%v err=%v", complete, err)
+	createSymlinkOrSkip(t, filepath.Join(external, "docs/design/prototypes/investor-workbench"), filepath.Join(prototypes, "investor-workbench"))
+	if err := inspectUIDesignPackageFilesForREQ(root, req); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("external module must not be traversed: %v", err)
 	}
 }
 
-func TestUIDesignPackageRejectsSymlinkRequiredFiles(t *testing.T) {
-	requiredFiles := []string{
-		"index.html", "stories.md", "flows.md", "scenario-model.json",
-		"fixture-contract.json", "cross-matrix.json", "cases.json",
-		"scenario-coverage.json",
-	}
-	for _, name := range requiredFiles {
+func TestUIDesignInventoryRejectsSymlinkRequiredFiles(t *testing.T) {
+	for _, name := range []string{"index.html", "stories.md", "flows.md", "scenario-model.json", "fixture-contract.json", "cross-matrix.json", "cases.json", "scenario-coverage.json"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
+			req := uiInventoryREQ(t, root, "docs/design/prototypes/investor-workbench/")
 			if err := writeCompleteUIDesignPackageForTest(root, "investor-workbench"); err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(root, "docs", "design", "prototypes", "investor-workbench", name)
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			external := filepath.Join(t.TempDir(), name)
-			if err := os.WriteFile(external, data, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			path := filepath.Join(root, "docs/design/prototypes/investor-workbench", name)
 			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
+			external := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(external, []byte("external"), 0644); err != nil {
+				t.Fatal(err)
+			}
 			createSymlinkOrSkip(t, external, path)
-
-			complete, err := hasCompleteUIDesignPackageForModule(root, "investor-workbench")
-			if complete || err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") {
-				t.Fatalf("symlink required file %s must fail closed: complete=%v err=%v", name, complete, err)
+			if err := inspectUIDesignPackageFilesForREQ(root, req); err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("required file must not be followed: %v", err)
 			}
 		})
-	}
-}
-
-func TestUIDesignPackageRejectsExternalHTMLPageSymlink(t *testing.T) {
-	root := t.TempDir()
-	if err := writeCompleteUIDesignPackageForTest(root, "investor-workbench"); err != nil {
-		t.Fatal(err)
-	}
-	pagePath := filepath.Join(root, "docs", "design", "prototypes", "investor-workbench", "page.html")
-	if err := os.Remove(pagePath); err != nil {
-		t.Fatal(err)
-	}
-	externalPage := filepath.Join(t.TempDir(), "external.html")
-	if err := os.WriteFile(externalPage, []byte("设计代数 更新 路由 index.html"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	createSymlinkOrSkip(t, externalPage, pagePath)
-
-	complete, err := hasCompleteUIDesignPackageForModule(root, "investor-workbench")
-	if complete || err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") {
-		t.Fatalf("external HTML page symlink must fail closed: complete=%v err=%v", complete, err)
 	}
 }
 
@@ -179,9 +137,10 @@ func writeCompleteUIDesignPackageForTest(root, module string) error {
 		}}},
 	}
 	fixture := map[string]any{"module": module, "fixtures": []any{map[string]any{"id": "fixture", "persona": "operator", "synthetic": true, "setup": []any{"seed"}, "cleanup": []any{"cleanup"}}}}
-	crossMatrix := map[string]any{"module": module, "entries": []any{map[string]any{
-		"fact": "fact-investor", "req_ref": "REQ-001", "story": "S-001", "branch": "branch-allow",
-	}}}
+	crossMatrix := map[string]any{"module": module, "entries": []any{
+		map[string]any{"fact": "fact-investor", "req_ref": "REQ-001", "story": "S-001", "branch": "branch-allow"},
+		map[string]any{"fact": "fact-investor", "req_ref": "REQ-001", "story": "S-001", "branch": "branch-reject"},
+	}}
 	for name, value := range map[string]any{"scenario-model.json": model, "fixture-contract.json": fixture, "cross-matrix.json": crossMatrix} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/stage-answer-s9-result.schema.json",
+  "description": "Local files in top-level and nested Result evidence_refs use the registered Builder source root, never Main. Result reception captures path: files (no author hash needed), slash-containing relative file refs and absolute files contained in that root; URI refs remain unchanged and bare tokens remain opaque identifiers (use path:check.log or ./check.log for a local filename). Migration, rollback and detection-gap artifact references keep their original meaning and are not captured. Missing Result source files require restoring the original source before reception. Plan-only refs retain their original source context and are not captured by the Result receiver.",
+  "title": "S9 RepairResult authoring answer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "instruction", "read", "questions", "answer"],
+  "properties": {
+    "title": {"type": "string", "minLength": 1},
+    "instruction": {"type": "string", "minLength": 1},
+    "read": {
+      "type": "array", "maxItems": 16384,
+      "items": {"type": "object", "additionalProperties": false, "required": ["path", "purpose"], "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "purpose": {"type": "string", "minLength": 1, "maxLength": 2048}
+      }}
+    },
+    "questions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["verdict", "before_fix_results", "unit_results", "detection_gap_artifacts", "evidence_refs", "scope_deviations", "residual_risks", "migration_ref", "rollback_ref"],
+      "properties": {
+        "verdict": {"$ref": "#/$defs/question"},
+        "before_fix_results": {"$ref": "#/$defs/question"},
+        "unit_results": {"$ref": "#/$defs/question"},
+        "detection_gap_artifacts": {"$ref": "#/$defs/question"},
+        "evidence_refs": {"$ref": "#/$defs/question"},
+        "scope_deviations": {"$ref": "#/$defs/question"},
+        "residual_risks": {"$ref": "#/$defs/question"},
+        "migration_ref": {"$ref": "#/$defs/question"},
+        "rollback_ref": {"$ref": "#/$defs/question"}
+      }
+    },
+    "answer": {"$ref": "#/$defs/answer"}
+  },
+  "$defs": {
+    "question": {
+      "type": "object", "additionalProperties": false, "required": ["question"],
+      "properties": {
+        "question": {"type": "string", "minLength": 1},
+        "choices": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "example": {"type": "object", "additionalProperties": false, "required": ["path", "expected", "observed"], "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "expected": {"type": "string", "minLength": 1},
+          "observed": {"type": "string", "minLength": 1}
+        }}
+      }
+    },
+    "string_ref_array": {
+      "type": "array", "maxItems": 4096, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+    },
+    "before_fix_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["assertion_id", "observed_red", "evidence_refs"],
+      "properties": {
+        "assertion_id": {"type": "string", "pattern": "^(symptom|root|gap)-[0-9]+$"},
+        "observed_red": {"type": "string", "minLength": 1, "maxLength": 32768},
+        "evidence_refs": {"$ref": "#/$defs/string_ref_array", "minItems": 1}
+      }
+    },
+    "unit_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["unit_id", "status", "evidence_refs", "implementation_summary", "restored_invariant_refs"],
+      "properties": {
+        "unit_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "status": {"enum": ["pass", "fail", "blocked"]},
+        "evidence_refs": {"$ref": "#/$defs/string_ref_array", "minItems": 1},
+        "implementation_summary": {"type": "string", "minLength": 1, "maxLength": 32768},
+        "restored_invariant_refs": {"$ref": "#/$defs/string_ref_array"}
+      }
+    },
+    "answer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["verdict", "before_fix_results", "unit_results", "detection_gap_artifacts", "evidence_refs", "scope_deviations", "residual_risks", "migration_ref", "rollback_ref"],
+      "properties": {
+        "verdict": {"anyOf": [{"type": "null"}, {"enum": ["completed", "blocked", "contract_conflict", "stale"]}]},
+        "before_fix_results": {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/before_fix_result"}}]},
+        "unit_results": {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/unit_result"}}]},
+        "detection_gap_artifacts": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/string_ref_array"}]},
+        "evidence_refs": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/string_ref_array", "minItems": 1}]},
+        "scope_deviations": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/string_ref_array"}]},
+        "residual_risks": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/string_ref_array"}]},
+        "migration_ref": {"type": ["string", "null"], "maxLength": 4096},
+        "rollback_ref": {"type": ["string", "null"], "maxLength": 4096}
+      }
+    }
+  }
+}

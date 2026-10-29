@@ -1,11 +1,5 @@
-// manifest_draft_validation_note_test.go proves the disclosure fix
-// applied to DraftManifest: the returned `notes` always carry one
-// line that names the validation five-tuple (result /
-// missing_responsibilities / unresolved_conflicts / warnings /
-// validated_at), enumerates the legal value of `result`, and points
-// at the team-manifest schema as the authority for the shape. The
-// E2E tester that first hit the schema rejection by hand is what
-// motivated this fix; the test guards against regression.
+// The draft disclosure identifies preparation metadata and preserves the original
+// registration validator as the authority; Main need not rewrite machine tuples.
 package review
 
 import (
@@ -112,10 +106,7 @@ func writeManifestDraftFixtureForNoteTest(t *testing.T, root string) {
 	}
 }
 
-// TestDraftManifestValidationDisclosureNote asserts the note is
-// present, names the five required tuple fields, enumerates at
-// least the legal `result` values, and points at the
-// team-manifest schema as the shape authority.
+// TestDraftManifestValidationDisclosureNote rejects misleading PASS and manual metadata guidance.
 func TestDraftManifestValidationDisclosureNote(t *testing.T) {
 	root := t.TempDir()
 	writeManifestDraftFixtureForNoteTest(t, root)
@@ -128,7 +119,7 @@ func TestDraftManifestValidationDisclosureNote(t *testing.T) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatal(err)
 	}
-	_, notes, err := DraftManifest(root, state, "assignment-qa-static")
+	draft, notes, err := DraftManifest(root, state, "assignment-qa-static")
 	if err != nil {
 		t.Fatalf("DraftManifest: %v", err)
 	}
@@ -141,22 +132,22 @@ func TestDraftManifestValidationDisclosureNote(t *testing.T) {
 	rendered := buffer.String()
 
 	for _, want := range []string{
-		"validation",
-		"missing_responsibilities",
-		"unresolved_conflicts",
-		"warnings",
-		"validated_at",
-		"team-manifest schema",
-		"hand-fill",
+		"validation uses the existing pass|warn|block schema",
+		"warn and its timestamp describe this generated draft",
+		"not professional review or registration acceptance",
+		"original register-workgroup validates the completed manifest",
+		"no manual validation tuple or timestamp is required",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("validation disclosure note missing %q:\n%s", want, rendered)
 		}
 	}
-
-	// Sanity: the literal value set "pass | warnings | fail" must be
-	// disclosed so a planner does not invent an out-of-set result.
-	if !strings.Contains(rendered, "pass") || !strings.Contains(rendered, "warnings") || !strings.Contains(rendered, "fail") {
-		t.Errorf("validation disclosure must enumerate the legal `result` values (pass/warnings/fail):\n%s", rendered)
+	if draft.Validation.Result != "warn" || len(draft.Validation.Warnings) == 0 {
+		t.Errorf("incomplete draft must disclose preparation warnings, got %+v", draft.Validation)
+	}
+	for _, unwanted := range []string{"hand-fill", "pass|warnings|fail", "pre-filled as pass"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Errorf("obsolete validation guidance %q:\n%s", unwanted, rendered)
+		}
 	}
 }

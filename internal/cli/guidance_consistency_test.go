@@ -1,12 +1,12 @@
 package cli_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"unicode"
 )
 
 // TestGuidanceVerbsExistInRuntime keeps the guidance chain honest: every
@@ -101,8 +101,8 @@ func TestProtocolTransitionIdsResolvable(t *testing.T) {
 }
 
 // TestAgentProtocolStaysRunbookScoped prevents intermediate audit material from
-// being promoted into the Main Spine again. The protocol is an English
-// constitution/route table; S7-S9 control-plane detail is owned by the L3/L4
+// being promoted into the Main Spine again. The protocol is a professional
+// runbook/route table; S7-S9 control-plane detail is owned by the L3/L4
 // documents and must not return as a protocol anchor.
 func TestAgentProtocolStaysRunbookScoped(t *testing.T) {
 	root := filepath.Join("..", "..")
@@ -111,9 +111,10 @@ func TestAgentProtocolStaysRunbookScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range string(data) {
-		if unicode.Is(unicode.Han, r) {
-			t.Fatalf("%s contains Han character %q; keep the Main Spine in English", path, r)
+	for stage := 0; stage <= 11; stage++ {
+		anchor := fmt.Sprintf("{#s%d}", stage)
+		if !strings.Contains(string(data), anchor) {
+			t.Fatalf("%s lost its stage entry %s", path, anchor)
 		}
 	}
 	if strings.Contains(string(data), "s7s9-control-plane-map") {

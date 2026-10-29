@@ -39,10 +39,23 @@ stable skip.
 | Module package | `docs/design/prototypes/<module>/` | Current module truth (S2) |
 
 `DESIGN.md` must stay short. Token values, component APIs, and page catalogs
-do not belong there. Google DESIGN.md, if used at all, is a derived snapshot
+do not belong there. Portable DESIGN.md, if used at all, is a derived snapshot
 under `docs/design/proof/portable/` (legacy `docs/design/portable/` still recognized) and is not the project authority.
+It carries existing source excerpts and token paths/values, without default
+typography, spacing or emphasis decisions. Missing excerpts are reported;
+exporting starter values does not approve them. Check applicability and
+publication against the original Foundation, not the snapshot.
 
 Control logic: this rule and `skills/design-foundation/SKILL.md`.
+
+For legacy Foundation format diagnosis, use
+`loop-harness design-foundation migrate --to contract-v1 --dry-run`.
+The read-only plan identifies each original file, its existing template,
+missing markers and parser-required columns. Authors map the actual meaning
+while preserving existing IDs, unknown columns and design evidence. Automatic
+writes are unsupported: `--write` or `--dry-run=false` returns nonzero and
+changes no files; any JSON output is still a preview. Do not generate debt,
+infer product choices or promote screenshots to Proof just to migrate a table.
 Procedure: `.claude/skills/design-foundation/SKILL.md` (template: `skills/design-foundation/SKILL.md`).
 
 ## 3. Trigger
@@ -70,6 +83,11 @@ Foundation. They do not start F1–F6.
    upgrade to Core. Do not promote a local primitive or hex to project scope.
    `N/A` is only for products with no user-visible UI. Investment (`local/core/extended`)
    and F2 path (`thin/full`) are orthogonal — a thin Core is still Core.
+   The advisory check reports each locked `UI impact=changed` REQ that conflicts
+   with the map's N/A/no-surfaces declaration, while keeping UI language checks
+   skipped. Main reconciles the original facts; no no-UI proof package or
+   automatic investment upgrade is required. `--strict` uses the existing
+   warning exit behavior.
 2. Read `DESIGN.md`.
 3. Classify it as `missing`, `draft`, `in-review`, `provisional`, `published` and covering
    the surface, `published` but unable to cover a new surface, `superseded`, or `N/A`.
@@ -86,10 +104,23 @@ Foundation. They do not start F1–F6.
    product role — use the thin path instead.
 5. If Foundation is `published` (confirmation dates recorded, not PENDING):
    S0 records the version reference only
-   (`DESIGN.md@version`, `SUR-*@version`, posture). S2 **only reads the cold-start
-   handoff packet** — `DESIGN.md` §0 Next-agent card + current `SUR-*` diff +
-   current `derivation/REQ-{id}.md` — budgeted together ≤120 lines / ≤12 KB;
-   open `design-language.md` only if the card cannot answer Must not. The SUR
+   (`DESIGN.md@version`, the applicable `SUR-*`, posture; a separate Profile
+   uses its actual version, while `inline` follows the Kernel version).
+   The advisory check compares the Derivation's Surface reference with the
+   original Kernel row and Profile header, plus any declared Kernel inheritance.
+   It reports unknown/unreadable sources or unsupported version formats as
+   unverified. A table row may reference the Profile file directly without
+   copying its version into another registry. Matching versions do not prove
+   design compatibility or approval. S2 starts with the cold-start
+   handoff packet — `DESIGN.md` §0 Next-agent card + current `SUR-*` diff +
+   current `derivation/REQ-{id}.md` — with a clarity target of 120 lines / 12 KB.
+   The advisory estimate follows the Derivation's actual Surface declaration;
+   it never substitutes SUR-01 for other surfaces. Inline rows are counted as
+   partial material, with table context/prose and unreadable inputs explicitly
+   listed as uncounted. Main checks the actual delivered material; preserve
+   necessary context and expand the source when needed. This budget is not
+   a stage gate or a requirement to create another packet file. Open
+   `design-language.md` if the card cannot answer Must not. The SUR
    diff is `DESIGN.md` §8 (`inline`) until a second surface exists. Write
    the Derivation Note (active LAW/ANTI/INV by ID, Must not by ID, one macro
    composition, one stress state) before expanding the module package. Do not
@@ -106,6 +137,34 @@ routed once (`active/inherited/debt/N/A`); only `active` dimensions get a
 Project checks in `design-checks.json` must each cite a source `LAW/ANTI/INV`;
 ad-hoc case lint (e.g. banning a single green hex) is not a generic engine rule
 until it is declared there.
+
+Binding checks validate known color-token paths and regular-file existence for
+literal project-relative filenames. They do not resolve extensionless imports,
+aliases or component registries. A valid token cannot hide another explicitly
+missing file in the same list. Existence and accepted ID notation do not prove
+actual product use; use the existing Derivation and Proof for that judgment,
+without creating another registry or per-binding approval process.
+
+`max_role_count` supports `scope=file` (also the default): it counts matching
+`data-design-role` attribute text once per attribute, including hidden text.
+`viewport` and other scopes are unverified; file counts do not decide rendered
+visibility. `token_scope` is a file-text precheck: `allow` accepts simple marker
+hints such as `.class`, `#id`, `[attribute-name]` or literal names, not general
+CSS selectors. Co-occurrence does not verify that the token belongs to an
+allowed element; missing marker text is only a text-precondition diagnosis.
+Use existing actual Proof for viewport/element relationships. Do not modify
+correct UI to satisfy a claimed browser judgment this tool cannot make.
+
+Built-in color scans cover finite hex/rgb/hsl text in `docs/design` lowercase
+HTML/CSS, excluding templates, README, style tiles, portable snapshots and
+managed worktrees. They do not cover `src/`, computed styles or browser
+execution. After published contract-v1, primitive checks only observe declared
+`color.primitive.*` var-reference text; definitions are not product consumption.
+HTML `tokens.css`/`Generated from ...` text is a source hint, not an authenticated
+digest or proof of loaded styles. Only an already present `tokens.css` is
+compared with the existing in-memory emitter; check never creates or overwrites
+it. Absence reports that comparison was not performed, without requiring a new
+asset or scanner. Optional project rules retain their own explicit targets.
 
 ## 5. Conflict order
 

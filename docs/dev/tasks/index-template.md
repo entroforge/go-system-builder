@@ -8,7 +8,9 @@
 入口：[需求](../../requirements/REQ-{id}.md) · [合同](../contracts/CONTRACTS-{id}.md)
 规则：[整体派发计划](../../rules/dispatch-plan.md)
 
-Status=complete 只表示计划文档完成。提交 TASK 与计划后再进入 S5。
+TASK 链接使用实际数字编号，如 `TASK-009-01` 对应文件 `TASK-009-01.md`；不把业务或模块名写进 TASK ID。取消 TASK 保留在完整 S4 交付批次及原答卷 task_paths 中，退出下方活动派发计划与条款覆盖；其退出造成的覆盖缺口仍须补齐。
+
+Status=complete 只表示静态计划文档完成并可交原 gate；不表示任一 Builder 责任为 `done`。责任进度按 `docs/rules/state-machine.md` 的五态语义查看，实时执行进度不得回填到本文。将正式 TASK 与计划提交至绑定开发分支，再保存原 S4 答卷，由原消费者检查并交接 S5；普通规划不要求另一次人类审批。
 下列空框是静态计划，冻结后不回填；实时进度用 `loop-harness s6 status --capacity <实际并发总槽位>` 查看。
 
 ## W1 · 输入齐备的独立任务并行

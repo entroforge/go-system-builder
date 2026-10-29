@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "S5",
+  "adapter": "document_review",
+  "authoring_schema": "stage-answer.schema.json",
+  "responsibilities": {
+    "DV-SPEC-CONSISTENCY": {
+      "title": "S05 文档审查 · 规格一致性",
+      "question": "请核对同一冻结版本的 REQ→设计→合同→TASK：AC 到条款及收尾检查的链路、NFR 落点、跨文档边界、错误与负向路径，以及适用的模块场景包和 CASE 覆盖。整条规格链是否一致？"
+    },
+    "DV-TASK-EXECUTABILITY": {
+      "title": "S05 文档审查 · 任务可执行性",
+      "question": "请逐 TASK 检查单一职责、上下文可行性、真实依赖、自包含资料和可验证的收尾条件，并审查整体并行编排；消费所提供的结构机检结果。依据冻结输入，按 Skill 中的条件检查数据迁移、外部依赖与高风险专项。当前任务批次是否足以开工并交付？"
+    }
+  },
+  "instruction": "阅读指定冻结资料，完成本责任的问题，只填写 answer.conclusion 和 answer.findings，再保存当前准确答卷路径。null 表示未回答；发现问题也在这一份答卷中定位。普通 plan_checkpoint 不另交 PLAN、信封或重复报告；显式审批模式仍遵循原审批指引。保存反馈会说明未完成项或下一责任人。Main 的汇总由系统生成。",
+  "choices": [
+    "pass",
+    "fix_required",
+    "req_change_required"
+  ],
+  "findings_question": "通过填写 []；未通过时记录实际问题的路径、预期和观察。",
+  "finding_example": {
+    "path": "docs/dev/tasks/TASK-001.md#checks",
+    "expected": "给出能运行的完成检查。",
+    "observed": "只写了完成，未说明如何验证。"
+  }
+}

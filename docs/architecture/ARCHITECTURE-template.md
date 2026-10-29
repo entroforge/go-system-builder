@@ -48,11 +48,11 @@ flowchart LR
 
 | 实体 | 状态机文档 | 说明 |
 |:---|:---|:---|
-| {实体} | `docs/architecture/state/{entity}.md` | {说明} |
+| {实体} | {适用时链接实际状态机文档，如 `[状态机](state/entity.md)`；否则说明不适用} | {说明} |
 
 ## 7. 数据模型
 
-见 `docs/architecture/data-model/model.md`。
+仅在实际需要独立数据模型时链接已编写的来源，写法示例：`[数据模型](data-model/model.md)`。仅在实际采用时填写真实链接；不适用时说明理由，不默认要求创建该文件。
 
 ## 8. 接口契约
 

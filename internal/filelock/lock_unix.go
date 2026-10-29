@@ -14,3 +14,7 @@ func unlock(f *os.File) error  { return syscall.Flock(int(f.Fd()), syscall.LOCK_
 func contended(err error) bool {
 	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR)
 }
+
+func probeContended(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+}

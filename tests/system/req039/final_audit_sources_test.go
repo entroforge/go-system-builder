@@ -5,21 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 )
 
-// TestFinalAuditReviewTemplatePathRequiresCommittedGitSource follows the REV
-// template's documented docs/reports/review path through the real evidence
-// CLI and Hook. A planning_design envelope keeps the fixture at the design
-// gate; the source rule is shared by the template's document_review kind. The
-// CLI accepts the envelope while it is an untracked docs/reports/review file;
-// productionFiles then applies the catalog root git_tree rule, so the same
-// Runtime row is invisible to the gate until the envelope is committed. This
-// is the concrete evidence/template source mismatch; it does not refresh or
-// alter a frozen product subject.
-func TestFinalAuditReviewTemplatePathRequiresCommittedGitSource(t *testing.T) {
+// The actual S2 evidence consumer reads its registered envelope from disk,
+// including the reports directory. This planning_design fixture makes no
+// claim about the separate S5 document_review consumer or template.
+func TestPlanningDesignEvidenceUsesRegisteredDiskSource(t *testing.T) {
 	t.Setenv("GIT_AUTHOR_NAME", "Final audit")
 	t.Setenv("GIT_AUTHOR_EMAIL", "final-audit@example.invalid")
 	t.Setenv("GIT_COMMITTER_NAME", "Final audit")
@@ -68,27 +61,20 @@ func TestFinalAuditReviewTemplatePathRequiresCommittedGitSource(t *testing.T) {
 		t.Fatalf("template-path evidence registration failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 
-	// The registered row exists, but the pinned Git view cannot see its
-	// untracked artifact. The gate must report an unreadable evidence conflict
-	// rather than accidentally accepting the root working tree.
+	// Registration and consumption use the same original disk artifact;
+	// authors do not commit an extra envelope before normal S2 continuation.
+	if tracked := strings.TrimSpace(runGitIn(t, root, "ls-files", "--", reviewPath)); tracked != "" {
+		t.Fatalf("fixture envelope was unexpectedly committed: %s", tracked)
+	}
 	_, qg := auditHook(t, root, root, "final-audit-template-untracked")
-	t.Logf("uncommitted template envelope gate: status=%v conflicts=%v missing=%v", qg["status"], qg["conflicts"], qg["missing"])
-	if status := stringValueAudit(qg["status"]); status != "unknown" {
-		t.Fatalf("uncommitted template review envelope must make the gate unknown, status=%q qg=%v", status, qg)
-	}
-	if conflicts := fmt.Sprint(qg["conflicts"]); !strings.Contains(conflicts, "evidence:ev-final-audit-template-source:unreadable") {
-		t.Fatalf("uncommitted template envelope must be reported unreadable, conflicts=%v qg=%v", qg["conflicts"], qg)
-	}
-
-	runGitIn(t, root, "add", reviewPath)
-	runGitIn(t, root, "commit", "-qm", "commit template review envelope")
-	_, qg = auditHook(t, root, root, "final-audit-template-committed")
-	t.Logf("committed template envelope gate: status=%v transition_committed=%v evidence_refs=%v", qg["status"], qg["transition_committed"], qg["evidence_refs"])
 	if status := stringValueAudit(qg["status"]); status != "satisfied" && status != "advanced" {
-		t.Fatalf("committed template review envelope must satisfy/advance the gate, status=%q qg=%v", status, qg)
+		t.Fatalf("registered disk design envelope must satisfy S2, status=%q qg=%v", status, qg)
 	}
 	if committed, _ := qg["transition_committed"].(bool); !committed {
-		t.Fatalf("committed template review envelope must commit the automatic transition, qg=%v", qg)
+		t.Fatalf("registered disk envelope must continue its original transition, qg=%v", qg)
+	}
+	if !strings.Contains(gotEvidenceRefsAudit(qg), "ev-final-audit-template-source") {
+		t.Fatalf("S2 did not consume the actually registered envelope: %v", qg)
 	}
 }
 

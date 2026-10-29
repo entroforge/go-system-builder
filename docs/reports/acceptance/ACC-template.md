@@ -1,131 +1,39 @@
 # Acceptance Evidence: ACC-{id}
 
-> Status: draft / passed / blocked / invalidated
-> Runtime ref: `{runtime-id}`
-> Source REQ refs: REQ-{id} / none
-> Accepted module current truth: `docs/design/prototypes/{module}/`
-> Baseline generation: {n}
-> Clean review round: {n}
-> Clean-round evidence: `{review-evidence-ref}`
-> PM / Architect: {name}
+> 本文是已接收 S10 Manifest 的人类可读投影，由正常完成出口生成。
+> 作者只填写系统给出的当前 Manifest，不手工再填本模板，也不另写 envelope、hash 或汇总。
+> 以下栏目说明投影内容，不是第二份交付清单；真实值由当前报告带出。
 
-> 填写纪律：先冻结审查全集，再填写结论。不能因为某项尚未检查就写成
-> `N/A`，也不能用一条总体 PASS 代替逐条证据。每项结论都必须回答“什么
-> 事实会证明它是错的”；找不到反证证据时写 `UNKNOWN`，不得进入 passed。
+> Clean review round: 系统显示原 S7 当前轮次，不由作者重复填写。
+> Clean-round evidence: 系统显示原 S7 已记录结果的位置，不新增来源证明。
+> human release approval：由 S11 真人另行决定，本投影不授予批准。
 
-## 1. Fingerprinted Baseline
+## 1. 本次责任与材料
 
-| Artifact | Path | Version | SHA-256 |
+显示本次 REQ、适用 Closing Contract、当前 S7 clean round、材料路径与实际审查者。
+机器关联、已有承诺原文、owner 和派生指标由系统提供。没有合同或变更对象时不补 N/A 行。
+
+## 2. 实际验收结果
+
+| 现有承诺 / 材料 | 本人实际观察或判断依据 | 实际输出位置（如有） | 结论 / 未完成原因 |
 |:---|:---|:---|:---|
-| REQ | `docs/requirements/REQ-{id}.md` | {version} | `{sha256}` |
-| module current truth | `docs/design/prototypes/{module}/` (scenario four-pack + stories/flows/index/*.html) | current | `{sha256/N/A}` |
-| contracts | `docs/dev/contracts/CONTRACTS-{id}.md` | {version} | `{sha256}` |
-| tasks | `docs/dev/tasks/index-REQ-{id}.md` | {version} | `{sha256}` |
+| {系统提供的目标与来源} | {已报告的观察；保留原作者归属} | {真实文件或输出位置} | {pass / not_applicable / unknown / fail及原因} |
 
-## 1.1 Audit Universe And Responsibility
+Main汇入实际审查结果，对照每项真实承诺和适用合同确认结果。适用的已有 S7 观察可直接引用；
+只有具体缺口、矛盾或本步特有风险才补检查，不默认新增测试、日志或逐行反证。
+相关反例可与主行复用同一次观察。必要独立审查须真实安排、通知并完成，不能用 owner 名字证明。
+未检查保持 unknown，不能冒称不适用或通过；确不适用说明一次原因。
 
-审查全集只纳入本 REQ、合同、TASK、S7/S9 证据、changed paths 和风险触发
-的对象；冻结后不得为获取 PASS 而删项。
+## 3. 相关交付风险与剩余工作
 
-| Inventory ID | 审查面 / 来源 | Expected / Oracle | Owner / 独立审查者 | Evidence slot | Counterevidence question | Status |
-|:---|:---|:---|:---|:---|:---|:---|
-| COV-001 | {REQ / contract / path / risk} | {expected + oracle} | {owner} | {evidence ref} | {what would falsify PASS?} | pass / N/A / UNKNOWN / fail |
+只显示本次实际相关的交付、迁移、回滚、运维风险、影响、责任与处置。
+没有相关风险不造任务；真实未完成项不可省略。不强制票据拼写、恢复引用或登记证据 ID。
 
-Minimum metrics: requirement coverage 100%; contract/Closing Contract coverage
-100%; declared changed-path disposition 100%; `UNKNOWN=0`; unsupported PASS 0;
-audit-area completion 100%; blocking findings 0; unowned risk 0; untracked
-debt 0. `N/A` requires an authoritative source and an explicit reason. The
-machine manifest must contain at least one explicit `requirement`, `contract`,
-and `changed_path` row. If a hard category is genuinely outside scope, keep it
-in the inventory as an evidence-backed `not_applicable` row; an omitted
-category is not 100% coverage.
+## 4. 专业结论与下一步
 
-Machine companion: save the finite ledger as JSON and validate it before
-registering the acceptance evidence:
+Manifest 的最终 `outcome` 由作者明确填写 `pass` 或 `review_required`；空值是草稿，不自动返工。
+记录成功不等于专业完成；明确 unknown/fail 或阻断不能当完成推进。
+验收完成后原 TR-015 进入 release audit，并提供下一准确卷；不等下一 Pre 或手工 transition。
+验收通过不是发布批准，S11 真人仍须作出原发布决定。
 
-```text
-loop-harness s10 manifest validate --file <acceptance-manifest.json> --type acceptance
-```
-
-If the acceptance result is intentionally `REVIEW_REQUIRED`, validate the
-same structurally complete ledger with `--outcome review_required`; unresolved
-rows remain visible and the registered envelope is routed by the Controller
-through TR-016 back to a fresh S7 round. Do not relabel an unresolved result as
-PASS.
-
-Copyable JSON shape: `docs/examples/s10/acceptance-manifest.json`.
-
-The acceptance evidence envelope must point to that immutable file with
-`audit_manifest_path` and `audit_manifest_sha256`. The shape authority is
-`internal/schema/assets/s10-audit-manifest.schema.json`; the Quality Gate
-consumes the ledger, not a free-form overall PASS. After validation, register
-the envelope with `runtime evidence add` and let the Controller request
-TR-015.
-
-## 2. Clean Round
-
-| Evidence | Workgroup manifest | Review round | Result | Validity |
-|:---|:---|:---|:---|:---|
-| Delivery verification | `{manifest/ref}` | {n} | PASS | current |
-| QA | `{manifest/ref}` | {n} | PASS | current |
-| E2E Browser | `{manifest/ref}` | {n} | PASS | current |
-| open blocking BUGs | `{bug-index/ref}` | {n} | none | current |
-
-All required dimensions must be PASS or evidence-backed N/A in the same round.
-
-## 3. Requirement Acceptance
-
-| REQ source_ref / Rule / CASE / Story / PATH / Spec | Expected / Oracle | Evidence | Counterevidence check | Owner | Result |
-|:---|:---|:---|:---|:---|:---|
-| REQ-{id}/FR-{id} / BR-{id} / CASE-{id} / S-{id} / F-{id} / PATH-{id} / `web/e2e/{module}/*.spec.ts` | {behavior and oracle} | {REV/QA/E2E/test/sample} | {disproof attempted + evidence or UNKNOWN} | {owner} | pass / N/A / UNKNOWN / fail |
-
-### Module scenario acceptance
-
-| Gate | Expected | Evidence | Result |
-|:---|:---|:---|:---|
-| required allow branches | 100% | `scenario-coverage.json` | pass / fail |
-| required reject branches | 100% | `scenario-coverage.json` | pass / fail |
-| positive/negative ratio | meets `coverage_profile` | `scenario-coverage.json` | pass / fail |
-| module regression | all current required CASE/PATH | E2E round {n} | pass / fail |
-
-### Counterevidence Ledger
-
-| Inventory ID / AC | What would falsify the conclusion? | Check performed | Evidence | Outcome |
-|:---|:---|:---|:---|:---|
-| {COV-001 / REQ source} | {rejection, boundary, retry, stale or other disproof} | {command / scenario / review} | {ref} | pass / N/A / UNKNOWN / fail |
-
-## 4. Delivery And Operations
-
-| Item | Value | Evidence / Owner |
-|:---|:---|:---|
-| delivered scope | {modules/interfaces/config/data} | {TASK/commit} |
-| deployment order | {steps} | {runbook/owner} |
-| migration/data handling | {steps/N/A} | {script/evidence} |
-| runtime verification | {health/critical path} | {command/result} |
-| rollback | {method} | {owner} |
-| operations handoff | {monitoring/alerts/manual controls} | {owner} |
-
-## 5. Remaining Non-blocking Risks
-
-| Risk | Severity | Impact / recovery point | Owner | Tracking artifact |
-|:---|:---|:---|:---|:---|
-| {risk} | P3 | {impact / recovery point} | {owner} | {REQ/BUG/TD} |
-
-## 5.1 Objective Completion
-
-| Metric | Required | Observed |
-|:---|:---:|:---:|
-| REQ / contract / Closing Contract coverage | 100% | {value} |
-| Declared changed-path disposition | 100% | {value} |
-| Unanswered `UNKNOWN` | 0 | {value} |
-| Unsupported PASS | 0 | {value} |
-| Unowned risks / untracked debt | 0 | {value} |
-
-## 6. Decision
-
-```text
-passed / blocked
-```
-
-Acceptance does not authorize release. The next evidence is a release
-architecture audit; final publication still requires human release approval.
+现字段示意见 [S10 examples](../../examples/s10/README.md)；示例路径不是真实任务路径。

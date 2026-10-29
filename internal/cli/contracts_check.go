@@ -50,5 +50,6 @@ func runContracts(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "contracts check: %d contract(s), %d token ref(s), %d clause cell(s), %d fingerprint(s) — all reconciled\n",
 		result.Contracts, result.TokenRefs, result.Clauses, result.Fingerprints)
+	fmt.Fprintln(stdout, "Clause scope: numbered declarations in each target's 本合同条款 column; S3/S5 must review promise semantics and coverage.")
 	return 0
 }

@@ -119,12 +119,18 @@ func TestS6StatusBoardReflectsBatch(t *testing.T) {
 		"scope_deviations: internal/other/rogue.go",
 		"integration: verified checkpoint present",
 		"TASK-B",
-		"completion: no Builder Result (run `runtime task-complete`)",
+		"completion: no Builder Result; no exact Result path is available from a current registered Builder questionnaire",
 		"integration: no verified checkpoint (run `runtime task-integrate` after completion)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("board missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "runtime task-complete") {
+		t.Fatalf("S6 status still asks the Builder to run a manual completion command: %s", out)
+	}
+	if strings.Contains(out, "Main fills") || strings.Contains(out, "fill and save the exact Result questionnaire") {
+		t.Fatalf("S6 status assigns Builder Result authoring to Main: %s", out)
 	}
 }
 

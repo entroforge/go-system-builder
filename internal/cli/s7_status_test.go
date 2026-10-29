@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/metrics"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -124,5 +125,39 @@ func TestS7StatusIncludesMetricsSummary(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("s7 status output lacks %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestS7PacketStatusShowsPreparationAndDispatchGaps(t *testing.T) {
+	root := t.TempDir()
+	plan := &review.Plan{ReviewPlanID: "plan-current", ReviewRound: 2, BaselineGeneration: 1,
+		Assignments: []review.PlanAssignment{
+			{AssignmentID: "assignment-missing", ClaimIDs: []string{"claim-b"}},
+			{AssignmentID: "assignment-queued", ClaimIDs: []string{"claim-c"}},
+		}}
+	state := map[string]any{
+		"runtime_id": "runtime-current",
+		"review": map[string]any{
+			"plan": map[string]any{"plan_id": "plan-current", "revision": 1, "review_round": 2, "sha256": "current-plan-digest"},
+			"assignments": map[string]any{
+				"assignment-missing": map[string]any{"agent_id": "reviewer-b"},
+				"assignment-queued":  map[string]any{"queued_agent_id": "reviewer-c", "queue_reason": "platform capacity"},
+			},
+		},
+	}
+	before, _ := json.Marshal(state)
+	var out bytes.Buffer
+	printS7PacketQuestionnaires(root, &out, state, plan, []string{"claim-b", "claim-c"})
+	for _, want := range []string{"preparation gap: assignment-missing", "Main/system", "assignment-queued", "reviewer-c", "platform capacity"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in packet status: %s", want, &out)
+		}
+	}
+	if strings.Contains(out.String(), "review-result submit") || strings.Contains(out.String(), "<TASK>") {
+		t.Fatalf("packet status requested manual delivery: %s", &out)
+	}
+	after, _ := json.Marshal(state)
+	if !bytes.Equal(before, after) {
+		t.Fatal("status projection mutated original facts")
 	}
 }

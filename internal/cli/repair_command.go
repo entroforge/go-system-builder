@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,8 +17,11 @@ import (
 	"time"
 
 	assignmentpkg "github.com/entroforge/go-system-builder/internal/assignment"
+	"github.com/entroforge/go-system-builder/internal/catalog"
 	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func runRuntimeRepair(args []string, stdout, stderr io.Writer) int {
@@ -64,9 +69,12 @@ func runRuntimeRepair(args []string, stdout, stderr io.Writer) int {
 		}
 		return runRuntimeRepairChangesetCompute(args[2:], stdout, stderr)
 	case "impact":
-		if len(args) < 2 || (args[1] != "commit" && args[1] != "create") {
-			fmt.Fprintln(stderr, "runtime repair impact requires <create|commit>")
+		if len(args) < 2 || (args[1] != "commit" && args[1] != "create" && args[1] != "prepare") {
+			fmt.Fprintln(stderr, "runtime repair impact requires <prepare|create|commit>")
 			return 2
+		}
+		if args[1] == "prepare" {
+			return runRuntimeRepairImpactPrepare(args[2:], stdout, stderr)
 		}
 		if args[1] == "create" {
 			return runRuntimeRepairImpactCreate(args[2:], stdout, stderr)
@@ -85,8 +93,11 @@ func runRuntimeRepair(args []string, stdout, stderr io.Writer) int {
 		}
 		return runRuntimeRepairTargetedCommit(args[2:], stdout, stderr)
 	case "handoff":
+		if len(args) > 1 && args[1] == "complete" {
+			return runRuntimeRepairHandoffComplete(args[2:], stdout, stderr)
+		}
 		if len(args) < 2 || (args[1] != "commit" && args[1] != "create") {
-			fmt.Fprintln(stderr, "runtime repair handoff requires <create|commit>")
+			fmt.Fprintln(stderr, "runtime repair handoff requires <create|commit|complete>")
 			return 2
 		}
 		if args[1] == "create" {
@@ -99,6 +110,40 @@ func runRuntimeRepair(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runtime repair: unknown operation %q\n", args[0])
 		return 2
 	}
+}
+
+// runRuntimeRepairImpactPrepare resumes only the original preparation after
+// accepted Final integration. It neither replays Builder work nor commits Impact.
+func runRuntimeRepairImpactPrepare(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("runtime repair impact prepare", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	bindUsage(fs, "runtime repair impact prepare")
+	root := fs.String("root", ".", "repository root")
+	state := fs.String("state", ".claude/loop-state.json", "runtime state path")
+	journal := fs.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
+	if err := parseWorkspaceFlags(fs, args); err != nil {
+		return 2
+	}
+	snapshot, err := runtime.NewStore(resolveRootPath(*root, *state), resolveRootPath(*root, *journal)).Snapshot()
+	if err != nil {
+		fmt.Fprintln(stderr, formatFailure("runtime repair impact prepare", err))
+		return 1
+	}
+	if lifecycleState(snapshot.State) != "bug_resolution" || stringValue(repairPointerCLI(snapshot.State)["status"]) != "impact_reconciliation" {
+		fmt.Fprintln(stderr, "runtime repair impact prepare requires the current S9 impact_reconciliation responsibility; no questionnaire or Runtime was changed")
+		return 1
+	}
+	path, err := prepareRepairImpactQuestionnaire(*root, snapshot.State)
+	if err != nil {
+		fmt.Fprintln(stderr, formatFailure("runtime repair impact prepare", err))
+		return 1
+	}
+	fmt.Fprintln(stderr, "Original ChangeImpact questionnaire prepared; existing professional answers are preserved. Complete and save this exact file for its original consumer; no Builder resubmission or hand-authored machine IDs are needed.")
+	return encodeJSON(stdout, map[string]any{"questionnaire_path": path, "revision": snapshot.Revision})
+}
+
+func repairImpactPreparationRecovery(root string) string {
+	return "`loop-harness runtime repair impact prepare --root " + s7CaptureShellQuote(root) + "`"
 }
 
 type repairCLIFlags struct {
@@ -131,6 +176,27 @@ func repairExpected(f *repairCLIFlags) (int, error) {
 	return f.expected, nil
 }
 
+// repairAgentDefinition preserves an explicit operator-supplied path. When
+// omitted, use catalog's single-layout authority so an installed checkout
+// resolves below .claude/agents and a factory checkout resolves below agents/.
+// The catalog never falls back across layouts when an installed asset is
+// missing.
+func repairAgentDefinition(root, role, requested string, explicit bool) (string, []byte, error) {
+	if explicit {
+		path := filepath.ToSlash(requested)
+		data, err := os.ReadFile(resolveRootPath(root, requested))
+		if err != nil {
+			return "", nil, fmt.Errorf("read explicitly selected Agent Definition %q: %w", requested, err)
+		}
+		return path, data, nil
+	}
+	data, path, err := catalog.ReadAgentAsset(root, role)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve Agent Definition for %s from the selected asset layout: %w", role, err)
+	}
+	return path, data, nil
+}
+
 // runRuntimeRepairDispatch materializes one S9 RepairAssignment as a normal
 // builder workgroup. All assignments are dispatched before execution begins
 // so every Builder can submit its domain PlanReport; dependency and lock
@@ -144,23 +210,20 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	assignmentID := fs.String("assignment-id", "", "RepairAssignment id")
 	agentID := fs.String("agent-id", "", "Builder Agent id")
 	roleFamily := fs.String("role-family", "backend-builder", "Builder role family")
-	definitionRef := fs.String("agent-definition", "agents/backend-builder.md", "Builder Agent Definition path")
+	definitionRef := fs.String("agent-definition", "", "Builder Agent Definition path (default follows the installed asset layout)")
 	independentVerification := fs.Bool("independent-verification", false, "dispatch the independent verifier assignment for the targeted reverification of --assignment-id (identity registration only: no product writes, test-builder verifier)")
 	if err := parseWorkspaceFlags(fs, args); err != nil {
 		return 2
 	}
+	explicitFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
 	// RC-18: a verification identity is registered by the same dispatch chain
 	// but has a fixed shape — an independent test-builder that writes no
 	// product file — so its defaults follow the flag instead of the builder
 	// defaults; an explicitly passed flag always wins.
 	if *independentVerification {
-		explicit := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
-		if !explicit["role-family"] {
+		if !explicitFlags["role-family"] {
 			*roleFamily = "test-builder"
-		}
-		if !explicit["agent-definition"] {
-			*definitionRef = ".claude/agents/test-builder.md"
 		}
 	}
 	if strings.TrimSpace(*assignmentID) == "" || strings.TrimSpace(*agentID) == "" {
@@ -281,9 +344,9 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runtime repair dispatch: baseline.generation is not ready; restore the current baseline before dispatch")
 		return 1
 	}
-	definitionBytes, err := os.ReadFile(resolveRootPath(root, *definitionRef))
+	definitionPath, definitionBytes, err := repairAgentDefinition(root, *roleFamily, *definitionRef, explicitFlags["agent-definition"])
 	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", fmt.Errorf("read Agent Definition (dispatch derives the worker capability set — allowed tools, write paths, command classes — from the definition file, so it must exist in the repository): %w", err)))
+		fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", err))
 		return 1
 	}
 	protocolBytes, err := os.ReadFile(filepath.Join(root, projectlayout.Protocol))
@@ -313,7 +376,7 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 	if reviewRound > 0 {
 		reviewRoundValue = reviewRound
 	}
-	definitionPath := filepath.ToSlash(*definitionRef)
+	definitionPath = filepath.ToSlash(definitionPath)
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "manifest_id": manifestID, "version": "1.0.0", "runtime_id": stringValue(snapshot.State["runtime_id"]),
 		"req_id": reqID, "baseline_generation": baselineGeneration, "review_round": reviewRoundValue,
@@ -340,12 +403,24 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		"validation":         map[string]any{"result": "pass", "missing_responsibilities": []any{}, "unresolved_conflicts": []any{}, "warnings": []any{}, "validated_at": time.Now().UTC().Format(time.RFC3339Nano)},
 	}
 	taskObjective := "execute the approved RepairAssignment and restore its mapped assertions"
-	taskInstruction := "Read the approved RepairContract and PlanReport contract; send one generic PLAN_REPORT, submit the S9 domain PlanReport, wait for execution begin, then implement only this Assignment scope."
-	taskNextAction := "send one PLAN_REPORT with plan_ref, submit runtime repair plan-report, and continue when execution begins"
+	taskInstruction := "Read the approved RepairContract and supplied materials, perform actual prechecks, and record your PlanReport. Main then prepares the actual work location; implement or test your Assignment and record its RepairResult."
+	taskNextAction := "record your own PlanReport, then Main prepares the actual work location for implementation or testing"
 	if verificationMode {
 		taskObjective = fmt.Sprintf("independently re-execute the approved RepairContract assertions of %s and record the targeted reverification artifact", target.AssignmentID)
 		taskInstruction = "Read the approved RepairContract, RepairSession and RepairPlan; do not modify any product file; re-execute the contract assertions on the post-repair tree and commit `runtime repair targeted commit` with performing_assignment_id set to this verification assignment."
 		taskNextAction = "re-execute the contract assertions independently and submit the targeted reverification artifact"
+	}
+	if runtime.PacketEnabled(snapshot.State) {
+		taskInstruction = "Follow the exact native S9 brief supplied by Main. Use Claude Code native worktree isolation; perform actual prechecks and personally save your professional PlanReport before implementation. Continue the repair and real self-checks without activation or per-tool receipt, commit products when needed and save your professional Result in the actual worktree. Natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback through the original consumers; no extra path return or submission is required. Main owns actual integration and necessary checks; no workspace prepare/launch, Team or platform ID is required."
+		taskNextAction = "Main passes the exact prepared native S9 brief to Claude Code Agent; Builder saves its professional Plan and Result, natural events observe ready answers, and Main integrates an accepted candidate"
+		if verificationMode {
+			taskInstruction = "Read the approved RepairContract, RepairSession and RepairPlan; independently re-execute the Contract assertions on the actual post-repair tree without modifying product files. Fill and save the exact TargetedReverification questionnaire supplied at the original targeted checkpoint. Natural PreToolUse and successful PostToolUse observe a ready answer, with Stop/SubagentStop as fallback through the original consumer; no extra path return or submission is required. Main supplies the original answer and TASK/manifest to the native Worker."
+			taskNextAction = "independently check the Contract assertions and save the exact TargetedReverification answer for natural observation by the original consumer"
+			if answerPath, pathErr := repairTargetedQuestionnairePath(root, snapshot.State, dispatchAssignmentID); pathErr == nil {
+				taskInstruction += " Original answer path: " + answerPath + "; Main/system prepares this file when that responsibility becomes current."
+				taskNextAction += ": " + answerPath
+			}
+		}
 	}
 	task := map[string]any{
 		"task_id": taskID, "session_id": stringValue(pointer["session_id"]), "plan_id": plan.PlanID, "assignment_id": dispatchAssignmentID,
@@ -353,6 +428,17 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		"state": "reviewed", "objective": taskObjective,
 		"instruction": taskInstruction,
 		"next_action": taskNextAction,
+	}
+	if verificationMode && runtime.PacketEnabled(snapshot.State) {
+		task["targeted_authoring"] = repair.NewTargetedAuthoring(snapshot.State, target.AssignmentID, dispatchAssignmentID, *agentID)
+		// The verifier is not registered yet. Its freshly generated original TASK
+		// fixes the new protocol; selectors later verify the registered TASK digest.
+		if legacy, pathErr := repairLeadQuestionnairePath(root, snapshot.State, "targeted-reverification-"+dispatchSlug(dispatchAssignmentID)+".json"); pathErr == nil {
+			if normal, pathErr := repair.TargetedSharedAnswerPath(root, legacy); pathErr == nil {
+				task["instruction"] = "Read the approved RepairContract, RepairSession and RepairPlan. In an independent native context sharing Main's checkout, inspect the actual Final product and perform the Contract assertions. Fill and save only your exact original Targeted answer at " + normal + " when prepared. Natural PreToolUse and successful PostToolUse observe a ready answer, with Stop/SubagentStop as fallback through the original consumer. Main does not author the independent result. No Builder PlanReport/Result, product changes, extra path return, submission or commit is required."
+				task["next_action"] = "Main dispatches an independent context sharing the final Main checkout with this exact Targeted answer: " + normal
+			}
+		}
 	}
 	manifestBytes, err := marshalInvestigationDispatch(manifest)
 	if err != nil {
@@ -399,12 +485,20 @@ func runRuntimeRepairDispatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatFailure("runtime repair dispatch", err))
 		return 1
 	}
+	if runtime.PacketEnabled(snapshot.State) {
+		fmt.Fprintf(stderr, "RepairAssignment %s (%s) dispatched to %s; manifest/task were generated internally (do not pass --manifest); next: %s\n", dispatchAssignmentID, manifestAssignmentID, *agentID, taskNextAction)
+		response := map[string]any{"assignment_id": dispatchAssignmentID, "agent_id": *agentID, "workgroup_id": workgroupID, "task_id": taskID, "manifest_path": manifestRel, "task_path": taskRel, "revision": next.Revision, "next_action": taskNextAction}
+		if verificationMode {
+			response["independent_verification"], response["original_assignment_id"] = true, target.AssignmentID
+		}
+		return encodeJSON(stdout, response)
+	}
 	if verificationMode {
 		fmt.Fprintf(stderr, "Independent verification assignment %s (%s) dispatched to %s; manifest/task were generated internally (do not pass --manifest); next: re-execute the RepairContract assertions and commit `runtime repair targeted commit --actor %s` with performing_assignment_id=%s\n", dispatchAssignmentID, manifestAssignmentID, *agentID, *agentID, dispatchAssignmentID)
 		return encodeJSON(stdout, map[string]any{"assignment_id": dispatchAssignmentID, "agent_id": *agentID, "workgroup_id": workgroupID, "task_id": taskID, "manifest_path": manifestRel, "task_path": taskRel, "revision": next.Revision, "independent_verification": true, "original_assignment_id": target.AssignmentID, "next_action": "re-execute the contract assertions independently, then commit the targeted reverification with performing_assignment_id set to this verification assignment"})
 	}
-	fmt.Fprintf(stderr, "RepairAssignment %s dispatched to %s; manifest/task were generated internally (do not pass --manifest); next: (optional) send the generic PLAN_REPORT so the platform auto-chain records the checkpoint — the S9 authority is the domain `runtime repair plan-report` below and does not require it\n", target.AssignmentID, *agentID)
-	return encodeJSON(stdout, map[string]any{"assignment_id": target.AssignmentID, "agent_id": *agentID, "workgroup_id": workgroupID, "task_id": taskID, "manifest_path": manifestRel, "task_path": taskRel, "revision": next.Revision, "next_action": "send one generic PLAN_REPORT with plan_ref, then submit the S9 domain runtime repair plan-report"})
+	fmt.Fprintf(stderr, "RepairAssignment %s dispatched to %s; manifest/task were generated internally (do not pass --manifest); next: record the Builder PlanReport, then Main normally prepares its actual work location\n", target.AssignmentID, *agentID)
+	return encodeJSON(stdout, map[string]any{"assignment_id": target.AssignmentID, "agent_id": *agentID, "workgroup_id": workgroupID, "task_id": taskID, "manifest_path": manifestRel, "task_path": taskRel, "revision": next.Revision, "next_action": "record the Builder PlanReport, then Main normally prepares its actual work location"})
 }
 
 func runRuntimeRepairSessionOpen(args []string, stdout, stderr io.Writer) int {
@@ -469,7 +563,11 @@ func runRuntimeRepairPlanCompile(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatFailure("runtime repair plan compile", err))
 		return 1
 	}
-	fmt.Fprintf(stderr, "S9 RepairPlan %s compiled; next: dispatch each RepairAssignment, submit one domain PlanReport per Builder, then begin execution\n", plan.PlanID)
+	if _, err := prepareRepairEntry(common.root, resolveRootPath(common.root, common.state), resolveRootPath(common.root, common.journal), snapshot.State); err != nil {
+		fmt.Fprintln(stderr, "S9 RepairPlan compiled; Main division draft preparation: "+err.Error())
+		return 1
+	}
+	fmt.Fprintf(stderr, "S9 RepairPlan %s compiled; next: dispatch each RepairAssignment; each Builder records its own PlanReport before Main prepares its normal work location\n", plan.PlanID)
 	return encodeJSON(stdout, map[string]any{"plan": plan, "artifact_ref": ref, "revision": snapshot.Revision})
 }
 
@@ -512,7 +610,7 @@ func runRuntimeRepairPlanReportSubmit(args []string, stdout, stderr io.Writer) i
 		return 1
 	}
 	_ = report
-	fmt.Fprintln(stderr, "PlanReport accepted; next: runtime repair execution begin")
+	fmt.Fprintln(stderr, "PlanReport recorded; Main owns normal work startup and preparation of this Builder’s actual work location")
 	return encodeJSON(stdout, map[string]any{"report": report, "artifact_ref": ref, "revision": snapshot.Revision})
 }
 
@@ -890,13 +988,31 @@ func runRuntimeRepairStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	response := map[string]any{"repair": pointer, "revision": snapshot.Revision, "next": pointer["next_action"]}
 	if stringValue(pointer["plan_ref"]) != "" {
-		board, boardErr := repairAssignmentBoard(*root, pointer)
+		board, boardErr := repairAssignmentBoard(*root, snapshot.State, runtime.PacketEnabled(snapshot.State))
 		if boardErr != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime repair status", boardErr))
 			return 1
 		}
 		response["board"] = board
 		response["next"] = board["next_action"]
+		if runtime.PacketEnabled(snapshot.State) && (stringValue(pointer["status"]) == "ready_for_full_review" || stringValue(pointer["handoff_ref"]) != "") {
+			if projection := repairHandoffProjectionContext(*root, snapshot.State); projection != "" {
+				response["next"], board["next_action"] = projection, projection
+			}
+		}
+		if runtime.PacketEnabled(snapshot.State) && s9RepairResultStage(snapshot.State) {
+			rows, next := repairResultPacketStatus(*root, snapshot.State)
+			response["repair_result_packets"] = rows
+			response["next"], board["next_action"] = next, next
+		}
+		if runtime.PacketEnabled(snapshot.State) && s9PlanReportPreExecutionState(snapshot.State) {
+			rows, _, reportErr := repairPlanReportPacketStatus(*root, snapshot.State, board)
+			if reportErr != nil {
+				fmt.Fprintln(stderr, formatFailure("runtime repair status", reportErr))
+				return 1
+			}
+			response["plan_report_packets"] = rows
+		}
 	}
 	if resultPath, ok := pointer["result_ref"].(string); ok && strings.TrimSpace(resultPath) != "" {
 		summary, summaryErr := readRepairResultSummary(*root, resultPath)
@@ -909,12 +1025,230 @@ func runRuntimeRepairStatus(args []string, stdout, stderr io.Writer) int {
 	return encodeJSON(stdout, response)
 }
 
+func s9RepairResultStage(state map[string]any) bool {
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	return lifecycle["state"] == "bug_resolution" && lifecycle["phase"] == "fixing"
+}
+
+// Native Result packets are derived machine inputs. The author uses the
+// original Plan's native brief and frozen worktree-relative professional path.
+func nativeRepairResultStatusPaths(root string, state map[string]any, packet workpacket.RepairResultPacket, execution map[string]any) (string, string, error) {
+	plans, err := runtime.CurrentRepairPlanReportPackets(root, state, packet.Binding.Sources.OwnerAgentID)
+	if err != nil {
+		return "", "", fmt.Errorf("read original native Plan packet: %w", err)
+	}
+	var original *workpacket.RepairPlanReportPacket
+	for i := range plans {
+		if plans[i].Binding == packet.Binding.Sources {
+			if original != nil {
+				return "", "", fmt.Errorf("multiple original native Plan packets for this Result")
+			}
+			original = &plans[i]
+		}
+	}
+	if original == nil {
+		return "", "", fmt.Errorf("original native Plan packet is unavailable for this Result")
+	}
+	brief, pin, _ := nativeS9Paths(*original)
+	brief = resolveRootPath(root, brief)
+	if info, err := os.Stat(brief); err != nil {
+		return "", "", fmt.Errorf("original native brief %s: %w", brief, err)
+	} else if !info.Mode().IsRegular() {
+		return "", "", fmt.Errorf("original native brief %s is not a regular file", brief)
+	}
+	planPath, resultPath, err := nativeS9AuthorPaths(root, *original)
+	if err != nil {
+		return "", "", fmt.Errorf("original native author paths: %w", err)
+	}
+	// New private originals pin the source contract in the frozen execution.
+	// Older native responsibilities use their previously frozen paths instead.
+	if planPath != original.AnswerPath {
+		expected := stringValue(mapFieldCLI(execution, "inputs")[pin])
+		if expected == "" {
+			return "", "", fmt.Errorf("original native author source %s is not pinned by its execution", pin)
+		}
+		raw, readErr := workpacket.ReadFile(root, pin, 4096)
+		if readErr != nil {
+			return "", "", fmt.Errorf("original native author source %s: %w", pin, readErr)
+		}
+		if workpacket.Digest(raw) != expected {
+			return "", "", fmt.Errorf("original native author source %s differs from the frozen execution", pin)
+		}
+	}
+	worker := stringValue(execution["worktree_path"])
+	if !filepath.IsAbs(worker) || filepath.Clean(worker) != worker {
+		return "", "", fmt.Errorf("original native Worker root is unavailable or noncanonical")
+	}
+	return brief, filepath.Join(worker, filepath.FromSlash(resultPath)), nil
+}
+
+func repairResultPacketStatus(root string, state map[string]any) ([]any, string) {
+	packets, err := runtime.RepairResultPacketsContext(runtime.WithPacketBodyRoot(context.Background(), root), state)
+	if err != nil {
+		return []any{}, "Runtime S9 Result packet registry needs recovery before status can verify it: " + err.Error()
+	}
+	baseline, _ := state["baseline"].(map[string]any)
+	reviewState, _ := state["review"].(map[string]any)
+	round := intFieldCLI(reviewState["round"])
+	generation := intFieldCLI(baseline["generation"])
+	rows := []any{}
+	var problems, issuedActions []string
+	anyStale, anyIssued, allComplete := false, false, len(packets) > 0
+	for _, packet := range packets {
+		binding := packet.Binding.Sources
+		if binding.RuntimeID != stringValue(state["runtime_id"]) || binding.BaselineGeneration != generation || binding.ReviewRound != round {
+			continue
+		}
+		status := "issued"
+		currentErr := runtime.VerifyRepairResultPacketIssue(root, state, packet)
+		if currentErr == nil {
+			currentErr = runtime.VerifyRepairResultPacketCurrent(root, state, packet)
+		}
+		execution, executionErr := runtime.RepairResultExecution(state, packet)
+		if currentErr == nil && executionErr != nil {
+			currentErr = executionErr
+		}
+		native := executionErr == nil && execution["purpose"] == workspace.NativeDeliveryPurpose
+		viewPath, answerPath := packet.ViewPath, packet.AnswerPath
+		if currentErr != nil {
+			status = "stale_or_preserved"
+			anyStale = true
+			allComplete = false
+			problems = append(problems, binding.RepairAssignmentID+": "+currentErr.Error())
+		} else {
+			receipt, accepted, receiptErr := runtime.VerifiedRepairResultCandidateReceipt(root, state, packet.ID, binding.OwnerAgentID)
+			if receiptErr != nil {
+				status = "candidate_receipt_unavailable"
+				anyStale = true
+				allComplete = false
+				problems = append(problems, binding.RepairAssignmentID+": "+receiptErr.Error())
+			} else if accepted {
+				complete, completeErr := repair.RepairResultWorkComplete(root, state, packet.ID, binding.OwnerAgentID)
+				if completeErr != nil {
+					status = "candidate_accepted_owner_proof_unavailable"
+					anyStale = true
+					allComplete = false
+					problems = append(problems, binding.RepairAssignmentID+": "+completeErr.Error())
+				} else if complete {
+					status = "worker_complete_main_pending"
+				} else {
+					status = "candidate_accepted_preserve_and_recover"
+					anyStale = true
+					allComplete = false
+				}
+				_ = receipt
+			} else {
+				allComplete = false
+				if native {
+					viewPath, answerPath, err = nativeRepairResultStatusPaths(root, state, packet, execution)
+					if err != nil {
+						status = "stale_or_preserved"
+						anyStale = true
+						problems = append(problems, binding.RepairAssignmentID+": "+err.Error())
+					}
+				}
+				if status == "issued" {
+					anyIssued = true
+					issuedActions = append(issuedActions, fmt.Sprintf("Assignment %s owner=%s: original brief/question %s; author answer %s", binding.RepairAssignmentID, binding.OwnerAgentID, viewPath, answerPath))
+				}
+			}
+		}
+		row := map[string]any{
+			"packet_id": packet.ID, "repair_assignment_id": binding.RepairAssignmentID,
+			"manifest_assignment_id": binding.ManifestAssignmentID, "owner_agent_id": binding.OwnerAgentID,
+			"status":          status,
+			"receipt_command": fmt.Sprintf("runtime stage-answer receipt --agent %s --packet %s", binding.OwnerAgentID, packet.ID),
+		}
+		if !native && executionErr == nil || native && status == "issued" {
+			row["view_path"], row["answer_path"] = viewPath, answerPath
+		}
+		rows = append(rows, row)
+	}
+	if anyStale {
+		next := "Preserve original S9 candidate evidence; a frozen source, packet, or owner-check proof needs the original named rework/recovery path. Do not submit a legacy Result."
+		if len(problems) > 0 {
+			next += " Current detail: " + strings.Join(problems, "; ")
+		}
+		return rows, next
+	}
+	if len(rows) == 0 {
+		if handoffs := s9KnownMainHandoffsContext(context.Background(), root, runtime.Snapshot{State: state}); handoffs != "" {
+			return rows, handoffs
+		}
+		return rows, "Continue the original native Builder responsibility using its exact prepared brief; when the candidate is recorded Main performs the original integration and actual checks. If original material is unavailable, Main/system restores that original preparation; existing frozen executions retain their original recovery path."
+	}
+	if anyIssued {
+		return rows, "Builders follow their original responsibilities and save their own answers: " + strings.Join(issuedActions, "; ") + ". Natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback; an accepted candidate still requires original Main integration."
+	}
+	if allComplete {
+		commands := []string{}
+		for _, row := range rows {
+			packet := row.(map[string]any)
+			commands = append(commands, fmt.Sprintf("runtime workspace integrate --root %q --assignment %q --agent %q --check-command <actual necessary Main check command>", root, packet["manifest_assignment_id"], packet["owner_agent_id"]))
+		}
+		return rows, "Worker candidates and own checks are complete; Main performs actual integration and records Final using: " + strings.Join(commands, "; ") + ". Main selects and runs checks for the actual repair; repeat --check-command for multiple checks. Use this typed S9 workspace command, not generic runtime task-integrate."
+	}
+	return rows, "keep the original S9 execution active and follow its named recovery action"
+}
+
+func s9PlanReportPreExecutionState(state map[string]any) bool {
+	lifecycle, _ := state["lifecycle"].(map[string]any)
+	return lifecycle["state"] == "bug_resolution" &&
+		(lifecycle["phase"] == "planning" || lifecycle["phase"] == "reproducing")
+}
+
+func repairPlanReportPacketStatus(root string, state map[string]any, board map[string]any) ([]any, []string, error) {
+	packets, err := runtime.CurrentRepairPlanReportPackets(root, state, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	missing := []string{}
+	if raw, ok := board["missing_reports"].([]string); ok {
+		missing = append(missing, raw...)
+	}
+	byAssignment := map[string]bool{}
+	rows := make([]any, 0, len(packets))
+	for _, packet := range packets {
+		if err := runtime.VerifyRepairPlanReportPacketIssue(root, state, packet); err != nil {
+			return nil, nil, fmt.Errorf("S9 packet %s original issuance proof: %w", packet.ID, err)
+		}
+		if err := runtime.VerifyRepairPlanReportCurrent(root, state, packet); err != nil {
+			return nil, nil, fmt.Errorf("S9 packet %s current dispatch proof: %w", packet.ID, err)
+		}
+		status := "issued"
+		if receipt, accepted, err := runtime.VerifiedRepairPlanReportReceipt(root, state, packet.ID, packet.Binding.OwnerAgentID); err != nil {
+			return nil, nil, err
+		} else if accepted {
+			if receipt.WorkComplete {
+				return nil, nil, fmt.Errorf("S9 PlanReport packet %s receipt incorrectly claims work completion", packet.ID)
+			}
+			status = "accepted"
+		}
+		byAssignment[packet.Binding.RepairAssignmentID] = true
+		rows = append(rows, map[string]any{
+			"packet_id": packet.ID, "assignment_id": packet.Binding.RepairAssignmentID,
+			"owner_agent_id": packet.Binding.OwnerAgentID, "status": status,
+			"view_path": packet.ViewPath, "answer_path": packet.AnswerPath,
+			"receipt_command": fmt.Sprintf("runtime stage-answer receipt --agent %s --packet %s", packet.Binding.OwnerAgentID, packet.ID),
+		})
+	}
+	unissued := []string{}
+	for _, assignmentID := range missing {
+		if !byAssignment[assignmentID] {
+			unissued = append(unissued, assignmentID)
+		}
+	}
+	sort.Strings(unissued)
+	return rows, unissued, nil
+}
+
 // repairAssignmentBoard is a read-only projection of the complete S9 batch.
 // The RepairPlan remains the static authority; report/result refs and the
 // Runtime phase provide progress. Keeping this projection derived means
 // recovery can show every Assignment, dependency, lock and missing artifact
 // without adding a second mutable scheduler state.
-func repairAssignmentBoard(root string, pointer map[string]any) (map[string]any, error) {
+func repairAssignmentBoard(root string, state map[string]any, packetMode bool) (map[string]any, error) {
+	pointer := repairPointerCLI(state)
 	planRef := repair.ArtifactRef{Path: stringValue(pointer["plan_ref"]), SHA256: stringValue(pointer["plan_sha256"])}
 	plan, err := repair.ValidateRepairPlan(root, planRef)
 	if err != nil {
@@ -1003,18 +1337,18 @@ func repairAssignmentBoard(root string, pointer map[string]any) (map[string]any,
 		}
 		if result, ok := results[assignment.AssignmentID]; ok {
 			row["result"] = result.Result
-			row["status"] = "completed"
+			row["status"] = workstate.Done
 			if result.Result != "pass" {
-				row["status"] = "blocked"
+				row["status"] = workstate.Blocked
 				blocked = append(blocked, assignment.AssignmentID)
 			}
 		} else {
 			missingResults = append(missingResults, assignment.AssignmentID)
-			status := "awaiting_plan_report"
+			status := workstate.Pending
 			if _, ok := reports[assignment.AssignmentID]; ok {
-				status = "reported"
+				status = workstate.Active
 				if phase == "repairing" || stringValue(pointer["status"]) == "repairing" {
-					status = "executing"
+					status = workstate.Active
 				}
 			}
 			dependencyBlock := ""
@@ -1038,14 +1372,14 @@ func repairAssignmentBoard(root string, pointer map[string]any) (map[string]any,
 				}
 			}
 			if dependencyBlock != "" {
-				status = "queued"
+				status = workstate.Pending
 				row["queue_reason"] = dependencyBlock
 				queued = append(queued, assignment.AssignmentID)
 			} else if lockBlock != "" {
-				status = "queued"
+				status = workstate.Pending
 				row["queue_reason"] = lockBlock
 				queued = append(queued, assignment.AssignmentID)
-			} else if status == "reported" || status == "executing" {
+			} else if status == workstate.Active {
 				ready = append(ready, assignment.AssignmentID)
 			}
 			row["status"] = status
@@ -1077,27 +1411,46 @@ func repairAssignmentBoard(root string, pointer map[string]any) (map[string]any,
 	status := stringValue(pointer["status"])
 	switch status {
 	case "planning", "reproducing":
-		if len(missingReports) > 0 {
+		if packetMode {
+			next = repairPlanningNextAction(state, root)
+		} else if len(missingReports) > 0 {
 			next = "submit one S9 PlanReport for each missing Assignment: " + strings.Join(missingReports, ", ")
 		} else {
-			next = "all S9 PlanReports are present; run `runtime repair execution begin` to release the first-write barrier"
+			next = "recorded Builder Plans are ready for Main to prepare their actual work locations with runtime workspace prepare"
 		}
 	case "repairing":
 		if len(blocked) > 0 {
 			next = "inspect blocked RepairResults " + strings.Join(blocked, ", ") + "; route the causal failure to S8"
 		} else if len(ready) > 0 {
-			next = "submit the exact-unit RepairResult for ready Assignment " + ready[0]
+			if packetMode {
+				next = "the selected Builder continues the original responsibility for ready Assignment " + ready[0] + "; natural events observe its saved Result and Main integrates an accepted candidate"
+			} else {
+				next = "submit the exact-unit RepairResult for ready Assignment " + ready[0]
+			}
 		} else if len(queued) > 0 {
 			next = "wait for queued Assignment dependencies/locks; inspect each queue_reason before retrying"
 		} else if len(missingResults) > 0 {
-			next = "submit one exact-unit RepairResult for each remaining Assignment"
+			if packetMode {
+				next = "continue each remaining original Builder responsibility and save its exact Result; natural events observe ready answers and Main integrates accepted candidates"
+			} else {
+				next = "submit one exact-unit RepairResult for each remaining Assignment"
+			}
 		}
 	case "impact_reconciliation":
 		next = "compute the session-wide Changeset, then commit ChangeImpact"
+		if packetMode {
+			next = "Main fills and saves the exact ChangeImpact questionnaire supplied by the listener; the original consumer records its professional change analysis. If missing, resume original preparation with " + repairImpactPreparationRecovery(root)
+		}
 	case "targeted_reverification":
 		next = "submit the independent targeted reverification"
+		if packetMode {
+			next = "the registered independent verifier fills and saves the exact TargetedReverification questionnaire; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback through the original consumer"
+		}
 	case "ready_for_full_review":
 		next = "create and commit the complete RepairHandoff; S7 then registers a fresh full ReviewPlan"
+		if packetMode {
+			next = repairHandoffPendingInstruction
+		}
 	}
 	return map[string]any{
 		"plan_id":         plan.PlanID,

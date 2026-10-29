@@ -17,6 +17,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/controller"
 	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/recovery"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -134,6 +135,8 @@ type recoveryPlanDocument struct {
 	DocumentSHA256         string                           `json:"document_sha256"`
 	ImportFindings         []recovery.ImportFinding         `json:"import_findings,omitempty"`
 	ReplayTrace            []controller.RecoveryReplayTrace `json:"replay_trace,omitempty"`
+	CheckpointPath         string                           `json:"checkpoint_path,omitempty"`
+	CandidatePacketBodies  map[string]string                `json:"candidate_packet_bodies,omitempty"`
 	ReplayStopReason       controller.ReplayStopReason      `json:"replay_stop_reason,omitempty"`
 }
 
@@ -147,10 +150,11 @@ type recoveryActiveRuntime struct {
 }
 
 type recoveryInspectOutput struct {
-	SchemaVersion string                    `json:"schema_version"`
-	REQ           recovery.REQBinding       `json:"req"`
-	Inputs        []recovery.InventoryInput `json:"inputs"`
-	ActiveRuntime recoveryActiveRuntime     `json:"active_runtime"`
+	SchemaVersion    string                    `json:"schema_version"`
+	REQ              recovery.REQBinding       `json:"req"`
+	Inputs           []recovery.InventoryInput `json:"inputs"`
+	ActiveRuntime    recoveryActiveRuntime     `json:"active_runtime"`
+	LatestCheckpoint string                    `json:"latest_checkpoint,omitempty"`
 }
 
 func runRuntimeRecover(args []string, stdout, stderr io.Writer) int {
@@ -178,6 +182,11 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 	rootFlag := flags.String("root", ".", "repository root")
 	planFlag := flags.String("plan", "", "approved recovery plan path")
 	approvedBy := flags.String("approved-by", "", "human recovery approver identity")
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		flags.Usage()
+		return 0
+	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
@@ -195,16 +204,25 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatFailure("runtime recover apply", fmt.Errorf("resolve root symlinks: %w", err)))
 		return 1
 	}
+	locked, release, err := integration.LockWorkspace(context.Background(), root)
+	if err != nil {
+		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", err))
+		return 1
+	}
+	defer release()
+	guard, releaseSources := checkpointRecoveryGuard(locked, root)
+	defer releaseSources()
 	// Once the durable marker exists it is the authoritative crash-recovery
 	// source. Probe/resume it under the Runtime lock before any mutable plan
 	// file or repository input is read.
 	if result, resumeErr := runtime.ApplyRecovery(runtime.RecoveryRequest{
-		Root:        root,
-		StatePath:   filepath.Join(root, ".claude", "loop-state.json"),
-		JournalPath: filepath.Join(root, ".claude", "loop-events.jsonl"),
-		Approver:    strings.TrimSpace(*approvedBy),
-		OccurredAt:  time.Now().UTC(),
-		Validator:   semantic.RuntimeCandidateValidator{},
+		Root:            root,
+		StatePath:       filepath.Join(root, ".claude", "loop-state.json"),
+		JournalPath:     filepath.Join(root, ".claude", "loop-events.jsonl"),
+		Approver:        strings.TrimSpace(*approvedBy),
+		OccurredAt:      time.Now().UTC(),
+		Validator:       semantic.RuntimeCandidateValidator{},
+		ValidateRestore: guard,
 	}); resumeErr == nil {
 		return encodeRecoveryApplyResult(stdout, result)
 	} else if !errors.Is(resumeErr, runtime.ErrRecoveryNoPending) {
@@ -233,12 +251,16 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 	document, err := readRecoveryPlan(planPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return resumePendingRecovery(root, strings.TrimSpace(*approvedBy), stdout, stderr)
+			return resumePendingRecovery(root, strings.TrimSpace(*approvedBy), guard, stdout, stderr)
 		}
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", err))
 		return 1
 	}
 	if err := validateRecoveryPlanDocument(document); err != nil {
+		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", err))
+		return 1
+	}
+	if err := verifyCheckpointPlanSource(root, document); err != nil {
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", err))
 		return 1
 	}
@@ -266,6 +288,12 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", invalidRecoveryPlan(fmt.Errorf("read candidate journal: %w", err))))
 		return 1
 	}
+	if document.CheckpointPath != "" && len(candidateState) > 0 {
+		if err := restoreRecoveryCandidatePacketBodies(locked, root, document, candidateState); err != nil {
+			fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", invalidRecoveryPlan(err)))
+			return 1
+		}
+	}
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
 	sourceStateExists := recoveryInputExists(document.Inputs, recovery.InputKindRuntimeState, ".claude/loop-state.json")
@@ -286,6 +314,7 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 		SourceStateExists:      &sourceStateExists,
 		SourceJournalExists:    &sourceJournalExists,
 		SourcePendingSHA256:    sourcePendingSHA256,
+		ValidateRestore:        guard,
 		Approver:               *approvedBy,
 		OccurredAt:             time.Now().UTC(),
 		Validator:              semantic.RuntimeCandidateValidator{},
@@ -297,14 +326,15 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 	return encodeRecoveryApplyResult(stdout, result)
 }
 
-func resumePendingRecovery(root, approvedBy string, stdout, stderr io.Writer) int {
+func resumePendingRecovery(root, approvedBy string, guard func(map[string]any, []byte) error, stdout, stderr io.Writer) int {
 	result, err := runtime.ApplyRecovery(runtime.RecoveryRequest{
-		Root:        root,
-		StatePath:   filepath.Join(root, ".claude", "loop-state.json"),
-		JournalPath: filepath.Join(root, ".claude", "loop-events.jsonl"),
-		Approver:    approvedBy,
-		OccurredAt:  time.Now().UTC(),
-		Validator:   semantic.RuntimeCandidateValidator{},
+		ValidateRestore: guard,
+		Root:            root,
+		StatePath:       filepath.Join(root, ".claude", "loop-state.json"),
+		JournalPath:     filepath.Join(root, ".claude", "loop-events.jsonl"),
+		Approver:        approvedBy,
+		OccurredAt:      time.Now().UTC(),
+		Validator:       semantic.RuntimeCandidateValidator{},
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", err))
@@ -378,7 +408,7 @@ func verifyRecoveryStableInputs(root string, document recoveryPlanDocument) erro
 func stableRecoveryInputHashes(inputs []recovery.InventoryInput) map[string]string {
 	result := make(map[string]string, len(inputs))
 	for _, input := range inputs {
-		if input.Kind == recovery.InputKindRuntimeState || input.Kind == recovery.InputKindRuntimeJournal || input.Kind == recovery.InputKindRuntimePending {
+		if input.Kind == recovery.InputKindRuntimeState || input.Kind == recovery.InputKindRuntimeJournal || input.Kind == recovery.InputKindRuntimePending || input.Kind == recovery.InputKindRuntimeSegment || input.Kind == recovery.InputKindCheckpoint {
 			continue
 		}
 		result[input.Path] = input.SHA256
@@ -455,7 +485,7 @@ func recoveryInputExists(inputs []recovery.InventoryInput, kind, path string) bo
 func recoveryPendingInputHashes(root string, inputs []recovery.InventoryInput) map[string]string {
 	result := make(map[string]string)
 	for _, input := range inputs {
-		if input.Kind != recovery.InputKindRuntimePending || input.Path == ".claude/loop-state.json.recovery-pending.json" {
+		if (input.Kind != recovery.InputKindRuntimePending && input.Kind != recovery.InputKindRuntimeSegment) || input.Path == ".claude/loop-state.json.recovery-pending.json" {
 			continue
 		}
 		result[filepath.Join(root, filepath.FromSlash(input.Path))] = input.SHA256
@@ -471,6 +501,12 @@ func runRuntimeRecoverPlan(args []string, stdout, stderr io.Writer) int {
 	reqPath := flags.String("req", "", "explicit locked REQ path")
 	dev := flags.String("dev-branch", "", "explicit REQ development branch")
 	upstream := flags.String("release-upstream", "", "explicit release destination")
+	checkpoint := flags.String("checkpoint", "", "explicit latest complete Runtime checkpoint manifest")
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		flags.Usage()
+		return 0
+	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
@@ -490,7 +526,13 @@ func runRuntimeRecoverPlan(args []string, stdout, stderr io.Writer) int {
 	}
 	inventory.REQ.Workspace = &binding
 
-	document, planPath, err := persistRecoveryPlan(inventory.Root, inventory)
+	var document recoveryPlanDocument
+	var planPath string
+	if strings.TrimSpace(*checkpoint) != "" {
+		document, planPath, err = persistCheckpointRecoveryPlan(inventory.Root, inventory, *checkpoint)
+	} else {
+		document, planPath, err = persistRecoveryPlan(inventory.Root, inventory)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover plan", err))
 		return 1
@@ -507,6 +549,11 @@ func persistRecoveryPlan(root string, inventory recovery.Inventory) (recoveryPla
 	if err != nil {
 		return recoveryPlanDocument{}, "", fmt.Errorf("build conservative recovery plan: %w", err)
 	}
+	createdAt := time.Now().UTC()
+	state, err := recoverySeedRuntime(root, inventory, createdAt)
+	if err != nil {
+		return recoveryPlanDocument{}, "", fmt.Errorf("build recovery format: %w", err)
+	}
 	recoveryRoot := filepath.Join(root, ".claude", "recovery")
 	if err := os.MkdirAll(recoveryRoot, 0o755); err != nil {
 		return recoveryPlanDocument{}, "", fmt.Errorf("create recovery root: %w", err)
@@ -517,13 +564,8 @@ func persistRecoveryPlan(root string, inventory recovery.Inventory) (recoveryPla
 	}
 	defer os.RemoveAll(temporaryDir)
 
-	createdAt := time.Now().UTC()
 	statePath := filepath.Join(temporaryDir, "candidate-state.json")
 	journalPath := filepath.Join(temporaryDir, "candidate-events.jsonl")
-	state, err := inactiveRuntimeState(root, createdAt)
-	if err != nil {
-		return recoveryPlanDocument{}, "", fmt.Errorf("build recovery seed runtime: %w", err)
-	}
 	stateData, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return recoveryPlanDocument{}, "", fmt.Errorf("encode recovery seed runtime: %w", err)
@@ -803,6 +845,11 @@ func runRuntimeRecoverInspect(args []string, stdout, stderr io.Writer) int {
 	bindUsage(flags, "runtime recover inspect")
 	root := flags.String("root", ".", "repository root")
 	reqPath := flags.String("req", "", "explicit locked REQ path")
+	if wantsHelp(args) {
+		flags.SetOutput(stdout)
+		flags.Usage()
+		return 0
+	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
@@ -821,6 +868,8 @@ func runRuntimeRecoverInspect(args []string, stdout, stderr io.Writer) int {
 		Inputs:        inventory.Inputs,
 		ActiveRuntime: inspectActiveRuntime(inventory),
 	}
+	// Location only: plan still verifies the complete source and current facts.
+	output.LatestCheckpoint, _ = runtime.LatestRuntimeCheckpoint(inventory.Root)
 	if err := encodeJSON(stdout, output); err != 0 {
 		return err
 	}
