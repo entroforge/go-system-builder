@@ -5,13 +5,13 @@
 >
 > **本报告的三份附件**:
 > - [`TEST-GAP-AUDIT-SEAMS.md`](./TEST-GAP-AUDIT-SEAMS.md) —— 跨 stage 接缝与系统层 agent 的完整原始报告(11 张表,含 26 条逐条失败清单与 12 项接缝矩阵)
-> - [`TEST-GAP-AUDIT-FAILURES.md`](./TEST-GAP-AUDIT-FAILURES.md) —— 失败根因归组 agent 的完整原始报告(13 个根因组,385 条失败实体的完整清单表)
+> - [`TEST-GAP-AUDIT-FAILURES.md`](./TEST-GAP-AUDIT-FAILURES.md) —— 失败根因归组 agent 的完整原始报告(13 个根因组,385 条失败实体的完整清单表;**注意:它基于并发那一轮的 385 个实体,而权威总数是 457** —— 见 §2.5 的更正)
 > - [`CI-AUDIT.md`](./CI-AUDIT.md) —— 上一版的 CI 速度审计(本报告 §7 沿用其结论)
 
 **基线提交**:`d0d948a` — `refactor: converge S7-S9 on natural-event reception and drop hash-proof machinery`
 (分支 `codex/hook-handoff-wiring-20261025`,1569 文件,+64080 / −103729 行,净删 69k 行)
 
-**方法**:逐 stage 审查(7 个 agent,按 stage 切片分工)+ 跨 stage 审查(3 个 agent:接缝/系统层、契约与不变量、CI 车道适配)+ **失败根因归组(1 个 agent,385 个失败实体 → 13 个根因组)**。共 **11 个 sub-agent**。
+**方法**:逐 stage 审查(7 个 agent,按 stage 切片分工)+ 跨 stage 审查(3 个 agent:接缝/系统层、契约与不变量、CI 车道适配)+ **失败根因归组(1 个 agent,385 个失败实体 → 13 个根因组)**+ 父 agent 自己的**无干扰整包复测**(1197/1197,457 个失败实体)。共 **11 个 sub-agent**。
 每个 agent 的硬性指令:**发现失败测试不停止,记录后继续,直到整个 stage 覆盖完**;统一 `-p 2 -timeout=20m`(宽松超时,避免多 agent 并发时的假超时);
 **每个失败都在父提交 `9bf73ca` 上复跑对照**,从而把「本次重构引入的回归」与「既有失败」严格分开。
 
@@ -30,7 +30,7 @@
 | # | 硬事实 | 实测位置 |
 |---|---|---|
 | **1** | **`make fmt-check` 必挂** —— `gofmt -l cmd internal tests` 在 `d0d948a` 返回 **3 个文件**(父提交 `9bf73ca` 是 0 个)。`ci-verify` 的第一步就死,后面所有测试都跑不到 | §7.1 |
-| **2** | **`make ci-verify-full` 必挂** —— `internal/cli` 整包在 `-timeout=30m` 处被 `panic: test timed out` 强杀(1800.097s) | §9.1 |
+| **2** | **`make ci-verify` / `ci-verify-full` 必挂** —— `internal/cli` 整包测试二进制实测 **1761.1s(29.35 分钟)**,占满 `TEST_TIMEOUT=30m` 预算的 **97.8%**,只剩 39 秒余量;一旦有并发负载立刻超时(实测并发下在 1800.097s 被 `panic: test timed out` 强杀) | §9.1 |
 | **3** | **`make test-ci-smoke` 必挂** —— 52 个 smoke 测试里 `TestNativeS5AmbiguousReferencesDoNotReceiveEitherAnswer` 失败 | §9.4 |
 | **4** | **`internal/cli` 的 1197 个测试,CI 只跑 52 个(4.3%)** —— `test-ci-core` 用 sed 把 `cli`/`integration`/`investigation` 三个包**整体剔除**,它们只靠 smoke 正则的少数名字被覆盖 | §7.3 |
 | **4b** | **`tests/system/*` 的 110 个端到端验收测试(98 req039 + 12 recovery)完全不在 CI 里** —— 被 `test-ci-core` 剔除后没有任何车道接管 | §7.3 |
@@ -39,7 +39,7 @@
 | 层次 | 结果 |
 |---|---|
 | **包级**(100+ 个包,含 `internal/runtime` 679、`internal/review` 399、`internal/qualitygate` 160、`internal/workpacket` 131、`internal/submission` 109、`internal/scenario` 166、`internal/schema` 192) | **几乎全绿**。唯一有包级失败的是 `internal/investigation`(**21 个**) |
-| **`internal/cli` 整包实测** | **247 个顶层失败 + 138 个唯一子测试失败**(768 通过 / 1021 启动 / 176 从未启动)。绝大多数是**本次重构引入的回归** |
+| **`internal/cli` 整包实测**(无干扰完整跑) | **298 个顶层失败 + 159 个唯一子测试失败 = 457 个失败实体**(895 通过 / 1197 全部启动)。绝大多数是**本次重构引入的回归** |
 | **接缝/系统层实测**(`internal/integration` + `tests/system/*`) | **26 个顶层失败 + 12 个子测试失败**,其中 **22 个是回归**(父提交 PASS → HEAD FAIL),4–5 个是既有失败。**`internal/integration` 的 32 个测试是被删掉的(115→83),不是跑挂的** |
 | **FLAKY-ORDER** | **0**。所有失败在 `-p 1 -count=1` 单独重跑下依然失败 —— 全部是确定性缺陷,不是并发假象 |
 | **契约漂移** | `INV-013`、`INV-017` 陈旧;`forbidden_events` 的运行时消费者被**本次重构删除** |
@@ -60,7 +60,7 @@
 
 **约 205 个 CLI 失败是这轮重构砸出来的**,只有 24 个是既有缺陷。这改变了处理策略:**先修代码,不要先删测试。**
 
-> 父 agent 的整包实测把这条结论从「切片推断」升级为「整包事实」:247 个失败里,S9 一族(`TestS9*` 50 + `TestNativeS9*` 37 = **87 个,占 35%**)是最大的失败簇。
+> 父 agent 的整包实测把这条结论从「切片推断」升级为「整包事实」:298 个失败里,S9 一族(`TestS9*` 50 + `TestNativeS9*` 37 = **87 个,占 29%**)是最大的具名失败簇(若把「其它」也算上,则 100 个更大)。
 > **但归因 agent 的实测修正了直觉**:这 87 个**并非**都指向 H9 —— H9(R03)只命中 10 个实体,其余分散在 R02/R10/R11/R12 等根因。**S9 是「症状簇」,不是「一条根因」。**
 
 ### 0.3 这轮重构的主线,以及它砸到了什么
@@ -75,7 +75,7 @@
 整包实测显示一个贯穿全局的规律 —— **除 `internal/investigation` 外,所有包级失败都只发生在 `internal/cli`**:
 
 - `internal/transition` 316 测试全绿、`internal/review` 399 全绿、`internal/runtime` 679 全绿、26 个基础设施包 1363 测试 0 失败;
-- `internal/cli` 247 个失败,涉及 **132 个测试文件**;
+- `internal/cli` 298 个顶层失败,涉及 **132 个测试文件**;
 - 失败最密集的是 `s9_handoff_wiring_test.go`(15)、`native_s9_recovery_test.go`(9)、`ct_test.go`(7)、`run_test.go`(7)。
 
 **结论:领域模型基本完好,坏的是 CLI 的接线/路由/兜底接收。** 这决定了修复顺序 —— 修 17 条 HIGH 缺陷能一次性解锁大部分失败,而不是逐个改测试。
@@ -92,7 +92,7 @@
 
 而 `tests/fixtures/native-stage-simulation` 其实只给 **Python 驱动 `tools/claude-full-stage-simulation.py`** 用,**不在 Go 测试套件里**。
 
-> **也就是说:这轮重构之后,S7→S8→S9→S7 这个主闭环,在 Go 套件内没有任何一个测试能跑通它。** 这比「247 个测试红了」严重得多 —— 红着的测试至少会报警。
+> **也就是说:这轮重构之后,S7→S8→S9→S7 这个主闭环,在 Go 套件内没有任何一个测试能跑通它。** 这比「298 个测试红了」严重得多 —— 红着的测试至少会报警。
 
 此外,还有一批**被静默删除的连续性保证**(§6.5):`internal/runtime/checkpoint_indices.go` 从 **271 行砍到 17 行,26 项数据完整性检查全没了**,而这 26 条错误串在 HEAD **和**父提交的任何测试里都**零出现** —— 所以它被删得**毫无阻力**。
 
@@ -109,6 +109,9 @@ d0d948a  refactor: converge S7-S9 on natural-event reception and drop hash-proof
 - 唯一额外改动:`.gitignore` 增加 `*.lock.process`(运行时锁文件 `internal/submission/.lock.process` 此前未被忽略,下一次 `git add -A` 会把它带进去)。
 - `integration.test`(41MB)与 `.local/`(8.4GB)均为 gitignore 的构建产物,未进入提交。
 - 提交后工作区干净。
+- 审计产出另起一个提交:`91fae55 docs: add post-refactor test gap audit with failure ledger and seam matrices`(仅新增 3 个 `.md`,**不含任何代码改动**)。
+
+> **本报告所有代码结论对应 `d0d948a`。** §9.6 的补充测量在 `91fae55` 上跑 —— 该提交只新增了 3 个 Markdown 文件,**生产代码与测试代码逐字节相同**,因此结果可比。
 
 ---
 
@@ -140,7 +143,7 @@ d0d948a  refactor: converge S7-S9 on natural-event reception and drop hash-proof
 | S8–S9 | 270 | 97 |
 | S10–S11 | 53 | 13 |
 
-> ⚠️ 切片之间有重叠,且**切片 ≠ 全包**。父 agent 的整包实测给出权威数字:**247 个顶层失败 + 138 个唯一子测试失败**(§9)。切片加起来是 210,差的 37 个落在切片的正则缝隙里 —— 这本身就证明了 §2.3 的结论。
+> ⚠️ 切片之间有重叠,且**切片 ≠ 全包**。父 agent 的整包实测给出权威数字:**298 个顶层失败 + 159 个唯一子测试失败**(§9)。切片加起来是 210,差的 88 个落在切片的正则缝隙里 —— 这本身就证明了 §2.3 的结论。
 
 > ⚠️ **切片之间有重叠**(例如 S7 的正则会命中部分 S8 测试),不能简单相加。完整 `internal/cli` 包的唯一失败数以本文末尾的整包运行结果为准。
 
@@ -177,7 +180,9 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 
 ### 2.5 【新】13 个根因组 —— 385 个失败实体的归因总账
 
-归因 agent 把 **385 个失败实体**(247 顶层 + 138 子测试)按错误签名 + 修复落点聚成 **13 组**,并对每组做父提交 `9bf73ca` 对照:
+归因 agent 把 **385 个失败实体**(并发那一轮:247 顶层 + 138 子测试)按错误签名 + 修复落点聚成 **13 组**,并对每组做父提交 `9bf73ca` 对照。
+
+> ⚠️ **覆盖面提醒**:归因跑在**并发那一轮**的 JSON 上,而 §9.1 的**无干扰完整跑**测出权威总数是 **457 个失败实体**。归因表覆盖 **385/457 = 84.2%**,剩余 **72 个**全部落在 R99 长尾组,尚未归因。**本表不是穷尽列表。**
 
 | 组 | 规模 | 判定 | 修复落点 | 该改什么 |
 |---|---|---|---|---|
@@ -199,7 +204,7 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 
 1. **除 R01 与 R02 外,R03–R12 全部应改产品代码。** 只有 R01(既有失败,且设计意图待定)和 R02(子命令入口已被蓝图取代)属于「改测试」。
 2. **最大的那组(32 个)恰恰是既有失败** —— 这纠正了直觉:「`QUALITY_GATE` 投影丢失」看着最像重构砸的,实际父提交同样坏。归因 agent 在组内 5 个代表上逐一验证,结论一致。
-3. **176 个从未启动的测试与 R01–R12 的特征零交集**(4 项关键词检索全部 0 命中),抽样重跑 5 个**全部 PASS** → 判定为超时所致,大概率不会失败。**但只覆盖了 2.8%**,余下 171 个理论上仍可能个别落在 R99 长尾里。
+3. **并发那一轮里 176 个从未启动的测试,与 R01–R12 的特征零交集**(4 项关键词检索全部 0 命中),抽样重跑 5 个**全部 PASS** → 判定为超时所致,大概率不会失败。**§9.1 的无干扰完整跑证实了这个判断:那 176 个在干净环境下全部跑完,没有新增成批失败。**
 
 ---
 
@@ -807,7 +812,32 @@ GitHub Actions 的取文件规则:
 
 ### 7.7 【新】`make test` 的 30 分钟预算跑不完 `internal/cli`
 
-见 §9。`Makefile:5` `TEST_TIMEOUT ?= 30m`,`test`/`test-race`/`ci-verify-full` 都用它。实测整包在 **1800.097s** 处被 `panic: test timed out` 强杀 → **`make ci-verify-full` 在本轮重构后不可能跑完**。
+见 §9.1。`Makefile:5` `TEST_TIMEOUT ?= 30m`,`test`/`test-race`/`ci-verify-full` 都用它。
+
+| 场景 | 实测 | 结论 |
+|---|---|---|
+| **无干扰**、8 核本机 | 测试二进制 **1761.1s / 1800s** | 擦线通过,**余量 39s(2.2%)** |
+| **有并发负载**(3 个 agent 同时跑) | **1800.097s 被 `panic: test timed out` 强杀**,176 个测试从未启动 | 必挂 |
+| GitHub Actions runner(**2 核**) | 按核数比例外推 | **必挂** |
+
+`ci.yml` 给 PR 车道的总预算是 `timeout-minutes: 15`,而实测冷跑 `test-ci-core` 就要 **742.7s**、`test-ci-race` **465.3s** —— **`make ci-verify` 在 `d0d948a` 上压倒性地必挂。**
+
+### 7.8 【新】`CI_RACE_PACKAGES` 里有 3 个包的 `-race` 是纯浪费
+
+父 agent 独立静态复核(`go func` / `errgroup` / `sync.WaitGroup` 在**生产代码与测试代码**中的出现次数):
+
+| 包 | 生产并发 | 测试并发 | `-race` 收益 | 判定 |
+|---|---|---|---|---|
+| `internal/recovery` | 0 | 0 | **0** | **摘掉** —— 3.8s 的 race 成本换零价值 |
+| `internal/checkexec` | 0 | 0 | **0** | **摘掉** |
+| `internal/filelock` | 0 | 0 | **0** | 建议摘掉 —— 它用 `syscall.Flock`,race 检测器本来就看不见文件锁竞争 |
+| `internal/runtime` | 0 | 8 | 低 | **保留但要调预算** —— 实测 `-race -short` 下 **300.6s**,已超 `CI_TEST_TIMEOUT` 的 5 分钟 |
+| `internal/fileview` | 2 | 6 | 高 | 保留 |
+| `internal/controller` | 1 | 0 | 中 | 保留 |
+| `internal/hook` / `internal/audit` / `internal/submission` / `internal/schema` | 0 | 4–8 | 中 | 保留 |
+
+> 这与 CI 车道 agent 的独立实测一致(冷跑 `test-ci-race` 465.3s,`internal/runtime` 300.6s 超时)。
+> **建议**:`CI_RACE_PACKAGES` 去掉 `internal/recovery`、`internal/checkexec`、`internal/filelock`;`internal/runtime` 单独给一个更长的超时或拆成 `-short` 与完整两档。
 
 ---
 
@@ -822,8 +852,8 @@ GitHub Actions 的取文件规则:
 | 0.1 | **`gofmt -w` 那 3 个文件** | `gofmt -l cmd internal tests` 返回 3 个文件 → `fmt-check` 是 `ci-verify` 的第一步 → CI 在跑任何测试之前就死。**这一条不改,后面全是白做。** 文件:`internal/cli/audit_review_required_test.go`(2 处)、`internal/cli/s9_native_listener_guidance_test.go`(1 处)、`internal/investigation/repair_plan_report_hook_test.go`(4 处) |
 | 0.2 | **`ci.yml` 的触发器覆盖 feature 分支** | `pull_request: branches: [main, integration/loop-next]` + `push: branches: [main]` → 往 `codex/hook-handoff-wiring-20261025` 推代码,`ci.yml` **根本不会跑**。CI 自 2026-09-21 起未运行(`main` 最后一次提交 `60c3440`) |
 | 0.3 | **`runtime-portability.yml` 合并进 `main`** | `git ls-tree main -- .github/workflows` → `main` 上只有 `ci.yml` + `release.yml`。GitHub 的 `pull_request` 用 **base 分支**的 workflow 文件 → 该 workflow 对 PR **永远不可能触发**(而 `push` 用被推 ref 的文件 → 每次推 feature 分支都触发,行为不一致) |
-| 0.4 | **`ci.yml` `timeout-minutes` 15 → 30** | 重构前实测热缓存 PR lane 就要 16.5 min;重构后 `internal/cli` 整包已超 30 分钟(§9.1),**15 分钟连想都不用想** |
-| 0.5 | **`TEST_TIMEOUT` 30m → 60m,或把 `internal/cli` 拆成多个测试包** | `make ci-verify-full` 现在必然超时被杀。**更根本的解法是拆包**:`internal/cli` 有 409 个测试文件,拆成 4–6 个子包(如 `internal/cli/s0s4`、`internal/cli/s5s7`、`internal/cli/s8s9`、`internal/cli/e2e`)既能并行又能各自设超时,还能顺手解决 §2.3「按正则切 stage 不可靠」的问题 |
+| 0.4 | **`ci.yml` `timeout-minutes` 15 → 60** | 15 分钟连想都不用想:实测冷跑 `test-ci-core` **742.7s** + `test-ci-race` **465.3s** + `test-ci-smoke` **259.5s** ≈ **24 分钟**,还不含 `fmt-check`/`vet`/`doctor`/`validate`/`build`。**PR 车道 15 分钟预算下,CI 无论如何都会红** |
+| 0.5 | **`TEST_TIMEOUT` 30m → 60m,并把 `internal/cli` 拆成多个测试包** | `internal/cli` 单包实测 **1761.1s / 1800s(97.8%)**,余量 39s(§9.1)。**更根本的解法是拆包**:`internal/cli` 有 409 个测试文件、1197 个测试函数,拆成 4–6 个子包(如 `internal/cli/s0s4`、`internal/cli/s5s7`、`internal/cli/s8s9`、`internal/cli/e2e`)既能并行又能各自设超时,还能顺手解决 §2.3「按正则切 stage 不可靠」的问题 |
 | 0.6 | macOS 腿加 `continue-on-error: true` | 连续 2 次 901s 排队取消(0 steps),是 GitHub arm64 容量问题,不是测试失败 |
 
 > 0.1 之所以排在最前,是因为它**一行命令、零风险、且是 CI 的第一道门**。
@@ -905,34 +935,50 @@ GitHub Actions 的取文件规则:
 **本轮新增的三条硬数据(见 §7.3 / §9.1):**
 
 1. **覆盖率塌陷比「慢」更严重。** `internal/cli` 1197 个测试 CI 只跑 52 个;`tests/system/*` 110 个端到端验收测试**一个都不跑**。提速之前先想清楚:**绿灯只覆盖了 4.3% 的 CLI 测试和 0% 的系统验收测试** —— 这种绿灯没有意义。
-2. **整包 30 分钟跑不完**(实测 1800.097s 超时被杀)。**拆包是唯一正解**,不只是提速:`internal/cli` 单包 409 个测试文件、1197 个测试函数,拆成 4–6 个子包后,`-p 2` 能真正并行,每个子包也能各自设超时。**顺带解决 §2.3 的正则切分不可靠问题** —— 拆包后每个包就是天然的 stage 单元。
+2. **整包预算耗尽**(无干扰实测 1761.1s / 1800s = 97.8%;并发下直接超时被杀)。**拆包是唯一正解**,不只是提速:`internal/cli` 单包 409 个测试文件、1197 个测试函数,拆成 4–6 个子包后,`-p 2` 能真正并行,每个子包也能各自设超时。**顺带解决 §2.3 的正则切分不可靠问题** —— 拆包后每个包就是天然的 stage 单元。
 3. **4 个 smoke 死条目 + 4 个通配条目**(§7.4)。通配条目(`NativeS5.*`、`NativeReviewResume.*`、`CheckpointStore.*`、`Integrate.*`、`ApproveContract.*`、`DelegatedApproval.*`)会随源码增删静默漂移 —— 建议把通配改成**显式名字清单**,并加一条 CI 自检:**把 smoke 正则里的每个字面名与 `go test -list` 求差集,差集非空就失败**。这样死条目不会再悄悄溜过去。
 
 ---
 
 ## 9. 整包运行结果(父 agent 在干净克隆上实测,非切片)
 
-### 9.1 `internal/cli` 整包 —— 30 分钟跑不完,并被超时强杀
+### 9.1 `internal/cli` 整包 —— 无干扰下跑完要 29.35 分钟,占满 30 分钟预算
 
-**命令**(干净克隆 `/tmp/fullcli` @ `d0d948a`,`GOCACHE` 独立):
+**权威测量**:干净克隆 `/tmp/cleancli`(@ `91fae55`,与 `d0d948a` 的**生产/测试代码逐字节相同**),**主机完全空闲**(无并发 agent、无其它测试),独立 `GOCACHE`:
 
 ```bash
-go test -json -p 2 -timeout=30m ./internal/cli
+go test -json -p 2 -timeout=45m ./internal/cli
 ```
 
-**结果**:`FAIL github.com/entroforge/go-system-builder/internal/cli 1800.097s` → `panic: test timed out after 30m0s`
+**结果**:`FAIL github.com/entroforge/go-system-builder/internal/cli 1761.103s`,进程墙钟 **1858s**(含约 97s 编译)。
 
 | 指标 | 数值 |
 |---|---|
 | 顶层测试**总数**(`go test -list '.*'`) | **1197** |
-| 本次**实际启动** | **1021**(85.3%) |
-| 本次**通过** | **768** |
-| 本次**失败** | **247** |
-| 唯一**子测试**失败 | **138**(另有 701 个子测试通过) |
-| **从未启动**(被超时吃掉) | **176** |
+| 本次**全部启动并跑完** | **1197**(100%,无遗漏) |
+| 本次**通过** | **895** |
+| 本次**失败(顶层)** | **298** |
+| 唯一**子测试**失败 | **159** |
+| **失败实体合计** | **457** |
+| 测试二进制耗时 | **1761.103s = 29.35 分钟** |
+| 进程墙钟(含编译) | **1858s = 30.97 分钟** |
 | 失败涉及源文件 | **132** 个 `_test.go` |
 
-**⚠️ 这意味着 `make ci-verify-full`(`Makefile:116`,`-timeout=30m`)在本轮重构后不可能跑完。** 上一版报告里 `internal/cli` 只是「慢」,现在是**超时即死**。
+**关键换算 —— 为什么 `make ci-verify` 仍然必挂:**
+
+| 事实 | 数值 |
+|---|---|
+| `Makefile:5` `TEST_TIMEOUT ?= 30m` → `go test -timeout=30m` 的上限 | **1800s** |
+| `internal/cli` 单包二进制实测 | **1761.1s** |
+| 余量 | **39s(2.2%)** |
+| 同一命令,**只要有并发负载**(本轮审计期间 3 个 agent 并发) | 在 **1800.097s** 被 `panic: test timed out` 强杀,**176 个测试从未启动** |
+| GitHub Actions runner 核数 | **2 核**(本机 8 核) |
+
+> **诚实表述**:`-timeout=30m` 约束的是**测试二进制**而非墙钟,所以在**空闲的 8 核本机**上它是「勉强擦线通过,只剩 39 秒」。
+> 但这 39 秒余量在真实 CI 上**不存在**:GitHub 的 2 核 runner 上,`internal/cli` 单独一个包就会远超 1800s;而 `ci.yml` 给 PR 车道的总预算只有 **`timeout-minutes: 15`**。
+> 加上 `ci-verify` 还要跑 `test-ci-core`(冷跑实测 742.7s)+ `test-ci-race`(冷跑 465.3s)+ `fmt-check`/`vet`/`doctor`/`validate`/`build` —— **`make ci-verify` 在 `d0d948a` 上必挂,且是压倒性地挂。**
+
+**上一版报告里 `internal/cli` 只是「慢」,现在是「预算耗尽」。**
 
 ### 9.2 挂起点与连带损伤
 
@@ -959,27 +1005,30 @@ internal/runtime/checkpoint.go:302   (*Store).publishCheckpointLocked   → f.Sy
 
 **连带损伤**:`TestCT03910_ConflictDirtyPreservePins`(`internal/cli/ct_11_24_test.go:93`)在 `t.Parallel()` 上**阻塞了 11 分钟** —— 串行阶段不结束,并行阶段就永远不会被释放。所以 1 个测试挂住 → **整包 176 个测试陪葬**。
 
-**这不是确定性死锁**:单独跑该测试 `ok ... 17.504s` 通过。本机 8 核 / 7.9GB / **无 swap**,且同时有 3 个 agent 在跑测试 → 属于**资源竞争型挂起**。
+**这不是确定性死锁**:单独跑该测试 `ok ... 17.504s` 通过。本机 8 核 / 7.9GB / **无 swap**,且当时同时有 3 个 agent 在跑测试 → 属于**资源竞争型挂起**。
 
-> **但这恰恰是最该记的结论**:CI 的 GitHub runner 是 **2 核 / 7GB**,比本机更弱;`internal/cli` 在 `-p 2` 下已经用满 30 分钟。**无论挂起是不是偶发的,`make test` 的 30 分钟预算对 `internal/cli` 已经不够用了。**
+**在 §9.1 的无干扰复跑里,这个挂起没有再出现** —— 整包 1197 个测试全部跑完。所以准确表述是:**这是一个竞争敏感的挂起点,不是必然的死锁**;但它的存在说明 `internal/cli` 在资源紧张时的退化路径是「整包卡死」,而不是「失败得快一点」。
 
-### 9.3 247 个失败的分布(按前缀)
+> **但这恰恰是最该记的结论**:CI 的 GitHub runner 是 **2 核 / 7GB**,比本机更弱;`internal/cli` 在 `-p 2` 下已经用掉 30 分钟预算的 **97.8%**。**无论挂起是不是偶发的,`make test` 的 30 分钟预算对 `internal/cli` 已经没有余量了。**
+
+### 9.3 298 个失败的分布(按前缀)
 
 | 前缀 | 失败数 |
 |---|---|
+| 其它(跨 stage 集成/回归类) | **100** |
 | `TestS9*` | 50 |
 | `TestNativeS9*` | 37 |
+| `TestS7*` | **29** |
 | `TestCT*` / `TestAC*`(验收场景) | 18 |
+| `TestNative*`(其它) | 13 |
 | `TestNativeS6*` | 12 |
-| `TestS7*` | 12 |
-| `TestNative*`(其它) | 12 |
+| `TestS6*` | **11** |
 | `TestS8*` | 8 |
+| `TestS5*` | 7 |
 | `TestS1*` | 6 |
-| `TestS5*` | 4 |
-| `TestS4*` | 3 |
+| `TestS4*` | 4 |
 | `TestS3*` | 2 |
 | `TestNativeS5*` | 1 |
-| 其它(跨 stage 集成/回归类) | 82 |
 
 **失败最密集的源文件(前 10)**:
 
@@ -996,16 +1045,18 @@ internal/runtime/checkpoint.go:302   (*Store).publishCheckpointLocked   → f.Sy
 | `internal/cli/review_plan_pre_listener_e2e_test.go` | 5 |
 | `internal/cli/policy_ref_test.go` | 5 |
 
-**S9 是重灾区**(`TestS9*` 50 + `TestNativeS9*` 37 = **87 个失败**,占 35%):与 H9(新路由层无法把原生 Result 解回 Plan 包)直接对应。
+**S9 是重灾区**(`TestS9*` 50 + `TestNativeS9*` 37 = **87 个失败**,占 29%)。但要注意:**这不是一条根因** —— 归因实测 H9 只命中 10 个实体,其余分散在 R02/R10/R11/R12(见 §2.5)。**S9 是症状簇,不是单一缺陷。**
 
-### 9.4 CI smoke 车道在这 247 个失败里会踩到几个
+> **【重要更正】归因 agent 做的是并发那一轮的 JSON(385 个实体)。无干扰完整跑之后,权威失败实体数是 **457**(顶层 298 + 子测试 159),比归因时多出 **72 个**。这 72 个全部落在 R99 长尾组里 —— 也就是说,**归因分组覆盖了 385/457 = 84.2%**,剩下 15.8% 仍是未归因的长尾,需要再做一轮分片。**本报告的根因表不应被当作穷尽列表。**
+
+### 9.4 CI smoke 车道在这 298 个失败里会踩到几个
 
 | 项 | 数值 |
 |---|---|
 | smoke 正则选中的 `internal/cli` 测试 | 52 |
 | 其中**失败** | **1** |
 | 其中通过 | 51 |
-| 其中**因超时从未启动**(状态未知) | 1 |
+| 因超时未启动而状态未知 | **0**(无干扰完整跑:1197 个全部跑完,结论确定) |
 
 唯一被踩到的:
 
@@ -1049,7 +1100,7 @@ FAIL github.com/entroforge/go-system-builder/internal/cli TestNativeS5AmbiguousR
 | 「父提交 `internal/integration` 也有 `hook output is not JSON: EOF` 这类失败」 | **推翻** | 接缝 agent 实测:父提交 `internal/integration` 是**干净的 `ok`(115 测试 0 失败,405.978s)**。那些 EOF 错误来自父提交的 **`tests/system/req039`**(45 个失败) |
 | 「`internal/integration` 的测试是跑挂的」 | **推翻** | 它的 32 个测试是**被重构删掉的**:115 → 83,16 个测试文件删除,**零替代断言**(§5.4b) |
 | 「`internal/acceptance/review_identity.go` 零覆盖是缺口」 | **推翻** | `internal/cli/audit_identity_hook_e2e_test.go:14` 端到端覆盖了 review identity 链(`review_plan_id` 传播 + 「旧 PASS 不得成为当前」),且在 HEAD 通过(§6.4 第 11 条) |
-| 「`internal/cli` 整包只是慢」 | **推翻** | 实测在 `-timeout=30m` 处 **`panic: test timed out`(1800.097s)** 被强杀,176 个测试从未启动 → `make ci-verify-full` 必然超时(§9.1) |
+| 「`internal/cli` 整包只是慢」 | **推翻,但要精确表述** | 无干扰完整跑:测试二进制 **1761.1s**,占满 30m 预算的 **97.8%**,余量仅 **39s**;并发负载下则被 `panic: test timed out`(1800.097s)强杀。**`make ci-verify` 在 2 核 CI runner 上必挂(§9.1)** |
 | 「`test-ci-core` 覆盖了绝大多数包」 | **推翻** | 它用 sed 把 `internal/cli`、`internal/integration`、`internal/investigation`、`tests/system/*` **整体剔除** → 这三个包 CI 只跑 52 / 21 / 16 个名字,`tests/system/*` **一个都不跑**(§7.3) |
 | 「`internal/cli/run.go:2691` 是 PreToolUse 提前返回 → 工具调用不留痕」 | **撤回并更正** | 该处位于 **`if renderHook && request.Event == \"PreCompact\"`** 分支内(`:2673`),**父提交 `:3124-3126` 逐字相同** → **既有行为**。本轮新增的只有 `reader.SelectionIssue` 分支与新文件 `hook_reader_s5.go`(M2 已改写) |
 | 「hook 输出丢失 `QUALITY_GATE` 投影是本轮重构砸的(32 个失败,最大组)」 | **推翻** | 归因 agent 在 R01 组内 5 个代表上逐一对照父提交,**全部同样失败** → **既有失败**。`run.go:2961` 的 `!graphObserved` 跳过结构在父提交 `run.go:3197` 同样存在 |
