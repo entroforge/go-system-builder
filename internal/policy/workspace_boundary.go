@@ -236,7 +236,7 @@ func nativeOwnedCheckBoundaryAdapter(input Input, controlRoot string) bool {
 }
 
 func workspaceAdapterCommand(input Input, e workspace.Execution) bool {
-	if e.BootstrapSHA256 == "" || input.ToolName != "Bash" {
+	if input.ToolName != "Bash" {
 		return false
 	}
 	command, _ := input.ToolInput["command"].(string)

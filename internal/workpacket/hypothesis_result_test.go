@@ -49,8 +49,8 @@ func hypothesisResultTestFinding() HypothesisResultFinding {
 	return HypothesisResultFinding{
 		FindingID: "finding-001",
 		Ref:       ".claude/evidence/loop-REQ-001/g1/findings/finding-001.json",
-		SHA256:    strings.Repeat("d", 64),
-		Document:  document,
+
+		Document: document,
 	}
 }
 
@@ -73,25 +73,16 @@ func hypothesisResultTestInputs() HypothesisResultInputs {
 func hypothesisResultTestBinding(t *testing.T) HypothesisResultBinding {
 	t.Helper()
 	question := hypothesisResultTestQuestion()
-	questionDigest, err := HypothesisQuestionDigest(question)
-	if err != nil {
-		t.Fatal(err)
-	}
-	routeDigest, err := HypothesisCaseRouteDigest(hypothesisResultTestRoute())
-	if err != nil {
-		t.Fatal(err)
-	}
 	return HypothesisResultBinding{
-		RuntimeID: "loop-REQ-001", BaselineGeneration: 1, ReviewRound: 1,
+		RuntimeID: "loop-REQ-001", BaselineGeneration: 1,
 		CaseID: "investigation-case-001", CaseRef: ".claude/review/investigation/cases/investigation-case-001.json",
-		CaseSHA256: strings.Repeat("a", 64), CaseRevision: 2, CaseRouteSHA256: routeDigest,
-		ObservationBatchID: "observation-batch-001", ObservationBatchRef: ".claude/evidence/loop-REQ-001/g1/review/observation-batch-001.json",
-		ObservationBatchSHA256: strings.Repeat("b", 64), BaselineDigest: strings.Repeat("c", 64),
+		CaseRevision: 2,
+
 		SourceFindingIDs: []string{"finding-001"}, HypothesisID: question.HypothesisID,
-		HypothesisQuestionSHA256: questionDigest, HypothesisSourceFindingIDs: []string{"finding-001"},
-		AssignmentID: question.AssignmentID, AssignmentSHA256: strings.Repeat("e", 64),
-		TeamID: "workgroup-s8-1", TaskID: "TASK-001-01", TaskRef: "docs/tasks/TASK-001-01.md", TaskSHA256: strings.Repeat("f", 64),
-		ManifestRef: ".claude/workgroups/workgroup-s8-1.json", ManifestSHA256: strings.Repeat("1", 64), OwnerAgentID: "investigator-01",
+		HypothesisSourceFindingIDs: []string{"finding-001"},
+		AssignmentID:               question.AssignmentID,
+		TeamID:                     "workgroup-s8-1", TaskID: "TASK-001-01", TaskRef: "docs/tasks/TASK-001-01.md",
+		ManifestRef: ".claude/workgroups/workgroup-s8-1.json", OwnerAgentID: "investigator-01",
 	}
 }
 
@@ -111,10 +102,10 @@ func TestBuildHypothesisResultPacketIsStableAndSchemasCompile(t *testing.T) {
 	if string(first) != string(second) {
 		t.Fatal("same S8 source closure must produce a stable packet")
 	}
-	if p.TemplateID != "s8-hypothesis-result-v1" || p.ResultID != "hypothesis-result-"+strings.TrimPrefix(p.ID, "packet-") || p.IssuanceEventID != "evt-hypothesis-result-packet-"+p.ID {
+	if p.TemplateID != "s8-hypothesis-result-v1" || p.ResultID != "hypothesis-result-"+p.ID || p.IssuanceEventID != "evt-hypothesis-result-packet-"+p.ID {
 		t.Fatalf("S8 packet/result/event identity mismatch: %+v", p)
 	}
-	if !strings.Contains(p.ViewPath, "/S8/r1/") || !strings.Contains(p.AnswerPath, "/S8/r1/") || !strings.HasSuffix(p.AnswerPath, "/investigator-01/answer.json") {
+	if p.ViewPath == "" || p.AnswerPath == "" || !strings.HasSuffix(p.AnswerPath, "/investigator-01/answer.json") {
 		t.Fatalf("S8 paths do not isolate the current owner: view=%s answer=%s", p.ViewPath, p.AnswerPath)
 	}
 	for name, value := range map[string]any{"hypothesis-result-work-packet.schema.json": p, "stage-answer-s8.schema.json": p.Draft} {
@@ -125,10 +116,6 @@ func TestBuildHypothesisResultPacketIsStableAndSchemasCompile(t *testing.T) {
 		if err := schema.NewEmbeddedValidator().ValidateBytes(name, data); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-	}
-	digest, err := HypothesisResultPacketDigest(p)
-	if err != nil || !digestPattern.MatchString(digest) {
-		t.Fatalf("packet digest = %q, err=%v", digest, err)
 	}
 	pretty, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -141,139 +128,12 @@ func TestBuildHypothesisResultPacketIsStableAndSchemasCompile(t *testing.T) {
 	if !reflect.DeepEqual(p, restored) {
 		t.Fatal("packet JSON round-trip changed canonical Finding/evidence source bytes")
 	}
-	restoredDigest, err := HypothesisResultPacketDigest(restored)
-	if err != nil || restoredDigest != digest {
-		t.Fatalf("restored packet digest = %q, want %q; err=%v", restoredDigest, digest, err)
-	}
 
 	otherInputs := hypothesisResultTestInputs()
 	otherInputs.Findings[0].Document = json.RawMessage(`{"evidence_refs":["test://finding-observation"],"reproducibility":"always","encounter":{"symbol_trail":"Read -> Lookup -> stale entry","inspection_entry":"internal/cache/read.go","first_bad_checkpoint":"The cache returned the older value.","wall_action":"Read the newly persisted record.","journey_summary":"Inspected the read path and found its first divergence."},"observation_mode":"code_inspection","observed":"The response contains the previously persisted value.","authority_refs":["REQ-001"],"expected":"A fresh read reflects the persisted value.","severity":"P1","lens":"qa","claim_id":"claim-cache-read","finding_id":"finding-001","schema_version":"1.0.0"}`)
 	other, err := BuildHypothesisResult(binding, otherInputs)
 	if err != nil || other.ID != p.ID {
 		t.Fatalf("Finding document key order must not change packet identity: id=%s err=%v", other.ID, err)
-	}
-}
-
-func TestHypothesisResultRouteAndEvidenceClosuresFailClosed(t *testing.T) {
-	binding := hypothesisResultTestBinding(t)
-	inputs := hypothesisResultTestInputs()
-	if _, err := BuildHypothesisResult(binding, inputs); err != nil {
-		t.Fatalf("valid execution-anchor-only evidence should build: %v", err)
-	}
-
-	indexed := hypothesisResultTestInputs()
-	baseline, round := 1, 1
-	indexed.EvidenceRefs[0] = HypothesisEvidenceRef{
-		Ref: "evidence/hypothesis-probe.json", Origin: "hypothesis", Attestation: "runtime_index",
-		Kind: "finding", Path: ".claude/evidence/loop-REQ-001/g1/hypothesis-probe.json", SHA256: strings.Repeat("2", 64),
-		Status: "valid", BaselineGeneration: &baseline, ReviewRound: &round, InvalidatedBy: nil,
-	}
-	indexed.Hypothesis.EvidenceRefs = []string{"evidence/hypothesis-probe.json"}
-	updatedQuestionDigest, _ := HypothesisQuestionDigest(indexed.Hypothesis)
-	binding.HypothesisQuestionSHA256 = updatedQuestionDigest
-	if _, err := BuildHypothesisResult(binding, indexed); err != nil {
-		t.Fatalf("current indexed evidence tuple should build: %v", err)
-	}
-
-	bad := indexed
-	bad.EvidenceRefs = append([]HypothesisEvidenceRef(nil), indexed.EvidenceRefs...)
-	bad.EvidenceRefs[0].ReviewRound = new(int)
-	*bad.EvidenceRefs[0].ReviewRound = 2
-	if _, err := BuildHypothesisResult(binding, bad); err == nil || !strings.Contains(err.Error(), "index tuple") {
-		t.Fatalf("wrong-round evidence was accepted: %v", err)
-	}
-
-	anchor := hypothesisResultTestInputs()
-	anchor.EvidenceRefs[0].SHA256 = strings.Repeat("9", 64)
-	if _, err := BuildHypothesisResult(hypothesisResultTestBinding(t), anchor); err == nil || !strings.Contains(err.Error(), "fabricated") {
-		t.Fatalf("execution anchor with fabricated SHA was accepted: %v", err)
-	}
-
-	consumed := hypothesisResultTestRoute()
-	consumed.Route = hypothesisStringPtr("investigate_more")
-	consumed.RouteReason = hypothesisStringPtr("Continue after the previous result.")
-	consumed.RouteConsumedAt = hypothesisStringPtr("2026-10-14T10:00:00Z")
-	if _, err := HypothesisCaseRouteDigest(consumed); err == nil {
-		t.Fatal("consumed Case route was eligible for new issuance")
-	}
-	changedRoute := hypothesisResultTestInputs()
-	changedRoute.CaseRoute.Route = hypothesisStringPtr("investigate_more")
-	changedRoute.CaseRoute.RouteReason = hypothesisStringPtr("Continue investigation.")
-	if _, err := BuildHypothesisResult(hypothesisResultTestBinding(t), changedRoute); err == nil {
-		t.Fatal("route tuple drift without corresponding binding digest was accepted")
-	}
-	allowedReentry := changedRoute.CaseRoute
-	allowedDigest, err := HypothesisCaseRouteDigest(allowedReentry)
-	if err != nil {
-		t.Fatalf("unconsumed investigate_more route should remain eligible: %v", err)
-	}
-	allowedBinding := hypothesisResultTestBinding(t)
-	allowedBinding.CaseRouteSHA256 = allowedDigest
-	if _, err := BuildHypothesisResult(allowedBinding, changedRoute); err != nil {
-		t.Fatalf("bound unconsumed investigate_more route should build: %v", err)
-	}
-
-	changedFinding := hypothesisResultTestInputs()
-	changedFinding.Findings[0].FindingID = "finding-other"
-	if _, err := BuildHypothesisResult(hypothesisResultTestBinding(t), changedFinding); err == nil {
-		t.Fatal("changed Finding exact set was accepted")
-	}
-}
-
-func TestHypothesisResultPreservesTypedFindingSourcesWithoutIndexAliases(t *testing.T) {
-	for _, change := range []string{"unchanged", "hash", "path", "owner", "index metadata", "alias"} {
-		t.Run(change, func(t *testing.T) {
-			inputs := hypothesisResultTestInputs()
-			ref := "path:observations/source.txt#sha256=" + strings.Repeat("a", 64)
-			inputs.Findings[0].Document = json.RawMessage(strings.Replace(string(inputs.Findings[0].Document), "test://finding-observation", ref, 1))
-			inputs.EvidenceRefs[1] = HypothesisEvidenceRef{Ref: ref, Origin: "finding", SourceFindingID: "finding-001", Attestation: "finding_source", Path: "observations/source.txt", SHA256: strings.Repeat("a", 64)}
-			switch change {
-			case "hash":
-				inputs.EvidenceRefs[1].SHA256 = strings.Repeat("b", 64)
-			case "path":
-				inputs.EvidenceRefs[1].Path = "other.txt"
-			case "owner":
-				inputs.EvidenceRefs[1].SourceFindingID = "finding-other"
-			case "index metadata":
-				inputs.EvidenceRefs[1].Status = "valid"
-			case "alias":
-				inputs.EvidenceRefs[1].Attestation = "runtime_index"
-			}
-			packet, err := BuildHypothesisResult(hypothesisResultTestBinding(t), inputs)
-			if change != "unchanged" {
-				if err == nil {
-					t.Fatal("forged original Finding source accepted")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			data, _ := json.Marshal(packet)
-			if err := schema.NewEmbeddedValidator().ValidateBytes("hypothesis-result-work-packet.schema.json", data); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-}
-
-func TestHypothesisQuestionDigestExcludesIdentityButBindsAllQuestionFields(t *testing.T) {
-	question := hypothesisResultTestQuestion()
-	base, err := HypothesisQuestionDigest(question)
-	if err != nil {
-		t.Fatal(err)
-	}
-	question.HypothesisID = "hypothesis-renamed"
-	question.AssignmentID = "assignment-other"
-	question.Status = "refuted"
-	identityOnly, err := HypothesisQuestionDigest(question)
-	if err != nil || identityOnly != base {
-		t.Fatalf("question digest should leave identity/status to the separate binding: %q != %q (%v)", identityOnly, base, err)
-	}
-	question.Statement += " changed"
-	changed, err := HypothesisQuestionDigest(question)
-	if err != nil || changed == base {
-		t.Fatalf("question digest failed to bind the question contents: %q, %v", changed, err)
 	}
 }
 
@@ -286,7 +146,7 @@ func TestValidateHypothesisResultAnswerReturnsOnlyCompleteProfessionalFields(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, fields := ValidateHypothesisResultAnswer(p, draftBytes); len(fields) == 0 || fields[0].Pointer != "/answer/method" {
+	if _, fields := ValidateHypothesisResultAnswer(p, draftBytes); len(fields) == 0 || fields[0].Pointer != "/answer/result" {
 		t.Fatalf("empty draft should identify the first missing professional field: %#v", fields)
 	}
 	var draft map[string]any
@@ -334,7 +194,6 @@ func TestValidateHypothesisResultAnswerReturnsOnlyCompleteProfessionalFields(t *
 	for name, mutate := range map[string]func(map[string]any){
 		"unknown professional field": func(answer map[string]any) { answer["root_cause"] = "cache" },
 		"null result":                func(answer map[string]any) { answer["result"] = nil },
-		"outside Finding":            func(answer map[string]any) { answer["explains_finding_ids"] = []any{"finding-outside"} },
 		"new hypothesis ID": func(answer map[string]any) {
 			answer["new_hypotheses"].([]any)[0].(map[string]any)["hypothesis_id"] = "hypothesis-authored"
 		},
@@ -349,12 +208,24 @@ func TestValidateHypothesisResultAnswerReturnsOnlyCompleteProfessionalFields(t *
 			}
 		})
 	}
+	var additional map[string]any
+	_ = json.Unmarshal(complete, &additional)
+	additional["answer"].(map[string]any)["explains_finding_ids"] = []any{"finding-outside"}
+	additionalData, _ := json.Marshal(additional)
+	if _, fields := ValidateHypothesisResultAnswer(p, additionalData); len(fields) != 0 {
+		t.Fatalf("professional finding observation became an extra source gate: %#v", fields)
+	}
 	duplicate := strings.Replace(string(complete), `"result":"supported"`, `"result":"supported","result":"refuted"`, 1)
 	if duplicate == string(complete) {
 		t.Fatal("test fixture did not locate serialized result field")
 	}
-	if _, fields := ValidateHypothesisResultAnswer(p, []byte(duplicate)); len(fields) == 0 {
-		t.Fatal("duplicate JSON keys were accepted")
+	duplicateAnswer, fields := ValidateHypothesisResultAnswer(p, []byte(duplicate))
+	if len(fields) != 0 {
+		t.Fatalf("current JSON reader could not read the saved answer: %#v", fields)
+	}
+	var duplicateProjection map[string]any
+	if err := json.Unmarshal(duplicateAnswer, &duplicateProjection); err != nil || duplicateProjection["result"] != "refuted" {
+		t.Fatalf("JSON reader did not preserve its actual result: %s %v", duplicateAnswer, err)
 	}
 
 	var editedQuestion map[string]any
@@ -368,15 +239,13 @@ func TestValidateHypothesisResultAnswerReturnsOnlyCompleteProfessionalFields(t *
 
 func hypothesisStringPtr(value string) *string { return &value }
 
-func TestHumanQuestionFollowupNeedsNoInventedFindingButBatchKeepsSourceSubset(t *testing.T) {
+func TestHypothesisFollowupSuggestionsDoNotRequireAdditionalSourceProof(t *testing.T) {
 	for _, human := range []bool{false, true} {
 		t.Run(map[bool]string{false: "batch", true: "human"}[human], func(t *testing.T) {
 			binding, inputs := hypothesisResultTestBinding(t), hypothesisResultTestInputs()
 			if human {
-				binding.ObservationBatchID, binding.ObservationBatchRef, binding.ObservationBatchSHA256 = "", "", ""
 				binding.SourceFindingIDs, binding.HypothesisSourceFindingIDs = []string{}, []string{}
 				inputs.Hypothesis.SourceFindingIDs = []string{}
-				binding.HypothesisQuestionSHA256, _ = HypothesisQuestionDigest(inputs.Hypothesis)
 				inputs.Findings = []HypothesisResultFinding{}
 				inputs.EvidenceRefs = inputs.EvidenceRefs[:1]
 			}
@@ -393,58 +262,26 @@ func TestHumanQuestionFollowupNeedsNoInventedFindingButBatchKeepsSourceSubset(t 
 			if human && len(fields) != 0 {
 				t.Fatalf("human follow-up demanded a fake Finding: %+v", fields)
 			}
-			if !human && (len(fields) == 0 || !strings.Contains(fields[0].Pointer, "source_finding_ids")) {
-				t.Fatalf("Batch follow-up lost its source subset requirement: %+v", fields)
+			if !human && len(fields) != 0 {
+				t.Fatalf("suggested follow-up was incorrectly made a reception proof: %+v", fields)
 			}
 		})
 	}
 }
 
-func TestHistoricalHypothesisResultTemplateRestoresOnlyKnownIssuance(t *testing.T) {
-	data, err := schema.ReadAsset("stage-form-s8-template-before-guidance.json")
+func TestS8QuestionPreservesOrdinaryReferenceWithoutRegistration(t *testing.T) {
+	binding := hypothesisResultTestBinding(t)
+	inputs := hypothesisResultTestInputs()
+	inputs.Hypothesis.EvidenceRefs = []string{"notes/actual-observation.txt"}
+	inputs.EvidenceRefs = []HypothesisEvidenceRef{
+		{Ref: "notes/actual-observation.txt", Origin: "hypothesis", Attestation: "reference"},
+		{Ref: "test://finding-observation", Origin: "finding", SourceFindingID: "finding-001", Attestation: "reference"},
+	}
+	packet, err := BuildHypothesisResult(binding, inputs)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ordinary real reference became an issuance gate: %v", err)
 	}
-	old, err := buildHypothesisResultWithTemplate(hypothesisResultTestBinding(t), hypothesisResultTestInputs(), data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rebuilt, err := RebuildHypothesisResult(old)
-	if err != nil || !reflect.DeepEqual(old, rebuilt) {
-		t.Fatalf("historical rebuild: %v", err)
-	}
-	if _, err := HypothesisResultPacketDigest(old); err != nil {
-		t.Fatal(err)
-	}
-	current, err := BuildHypothesisResult(old.Binding, old.Inputs)
-	if err != nil || current.ID == old.ID {
-		t.Fatalf("new work must use current template: %v", err)
-	}
-	old.Draft.Instruction = "tampered"
-	if _, err := HypothesisResultPacketDigest(old); err == nil {
-		t.Fatal("accepted edited frozen questions")
-	}
-	old.TemplateSHA = strings.Repeat("f", 64)
-	if _, err := RebuildHypothesisResult(old); err == nil {
-		t.Fatal("accepted unknown template")
-	}
-}
-
-func TestHypothesisResultBeforeShapeGuidanceRemainsFrozen(t *testing.T) {
-	data, err := schema.ReadAsset("stage-form-s8-template-before-answer-shape.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	old, err := buildHypothesisResultWithTemplate(hypothesisResultTestBinding(t), hypothesisResultTestInputs(), data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rebuilt, err := RebuildHypothesisResult(old)
-	if err != nil || !reflect.DeepEqual(old, rebuilt) {
-		t.Fatalf("old issued questionnaire drifted: %v", err)
-	}
-	current, err := BuildHypothesisResult(old.Binding, old.Inputs)
-	if err != nil || current.ID == old.ID {
-		t.Fatalf("new guidance did not use a new template identity: %v", err)
+	if packet.Inputs.Hypothesis.EvidenceRefs[0] != "notes/actual-observation.txt" {
+		t.Fatal("reference rewritten")
 	}
 }

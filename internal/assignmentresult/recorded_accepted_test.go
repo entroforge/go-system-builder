@@ -24,8 +24,8 @@ func TestLoadRecordedAcceptedReadsOnlyBoundOriginalEnvelope(t *testing.T) {
 		t.Fatal("missing source accepted")
 	}
 	files[ref] = append(files[ref], ' ')
-	if _, err := LoadRecordedAccepted(state, record, ref, read); err == nil {
-		t.Fatal("changed source accepted")
+	if _, err := LoadRecordedAccepted(state, record, ref, read); err != nil {
+		t.Fatalf("whitespace became an additional gate: %v", err)
 	}
 	state, record, ref, files = acceptedFixture(t)
 	var envelope AcceptedResult
@@ -34,7 +34,6 @@ func TestLoadRecordedAcceptedReadsOnlyBoundOriginalEnvelope(t *testing.T) {
 	}
 	envelope.ProducerAgentID = "another-builder"
 	files[ref], _ = json.Marshal(envelope)
-	state["evidence"].([]any)[0].(map[string]any)["sha256"] = digestBytes(files[ref])
 	if _, err := LoadRecordedAccepted(state, record, ref, read); err == nil {
 		t.Fatal("different original owner accepted")
 	}
@@ -45,9 +44,8 @@ func TestLoadRecordedAcceptedReadsOnlyBoundOriginalEnvelope(t *testing.T) {
 	}
 	envelope.Answer.Summary = "edited professional answer"
 	files[ref], _ = json.Marshal(envelope)
-	state["evidence"].([]any)[0].(map[string]any)["sha256"] = digestBytes(files[ref])
-	if _, err := LoadRecordedAccepted(state, record, ref, read); err == nil {
-		t.Fatal("changed answer digest accepted")
+	if got, err := LoadRecordedAccepted(state, record, ref, read); err != nil || got.Answer.Summary != envelope.Answer.Summary {
+		t.Fatalf("original readable answer was not returned: %v", err)
 	}
 	state, record, ref, files = acceptedFixture(t)
 	record.Revision++

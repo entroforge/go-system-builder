@@ -142,13 +142,12 @@ func TestRecoverPendingJournalRotationTruncatesActiveWithArchivedPrefix(t *testi
 		t.Fatal(err)
 	}
 	marker := map[string]any{
-		"schema_version":  "1.0.0",
-		"archived_file":   archiveFile,
-		"archived_sha256": sha256HexForTest(archivedSeq),
-		"archived_count":  99,
-		"tail_sequence":   100,
-		"tail_event_id":   "evt-arch-100",
-		"started_at":      "2026-08-29T00:00:00Z",
+		"schema_version": "1.0.0",
+		"archived_file":  archiveFile,
+		"archived_count": 99,
+		"tail_sequence":  100,
+		"tail_event_id":  "evt-arch-100",
+		"started_at":     "2026-08-29T00:00:00Z",
 	}
 	if err := os.WriteFile(statePath+".journal-rotation-pending.json", mustJSON(t, marker), 0o644); err != nil {
 		t.Fatal(err)
@@ -204,13 +203,12 @@ func TestRecoverPendingJournalRotationAcceptsAlreadyTruncatedActiveTail(t *testi
 		t.Fatal(err)
 	}
 	marker := map[string]any{
-		"schema_version":  "1.0.0",
-		"archived_file":   archiveFile,
-		"archived_sha256": sha256HexForTest(archivedSeq),
-		"archived_count":  99,
-		"tail_sequence":   100,
-		"tail_event_id":   "evt-arch-100",
-		"started_at":      "2026-08-29T00:00:00Z",
+		"schema_version": "1.0.0",
+		"archived_file":  archiveFile,
+		"archived_count": 99,
+		"tail_sequence":  100,
+		"tail_event_id":  "evt-arch-100",
+		"started_at":     "2026-08-29T00:00:00Z",
 	}
 	markerPath := statePath + ".journal-rotation-pending.json"
 	if err := os.WriteFile(markerPath, mustJSON(t, marker), 0o644); err != nil {
@@ -267,13 +265,12 @@ func TestRecoverPendingJournalRotationRetainsMarkerOnStateJournalMismatch(t *tes
 		t.Fatal(err)
 	}
 	marker := map[string]any{
-		"schema_version":  "1.0.0",
-		"archived_file":   archiveFile,
-		"archived_sha256": sha256HexForTest(archivedSeq),
-		"archived_count":  99,
-		"tail_sequence":   100,
-		"tail_event_id":   "evt-arch-100",
-		"started_at":      "2026-08-29T00:00:00Z",
+		"schema_version": "1.0.0",
+		"archived_file":  archiveFile,
+		"archived_count": 99,
+		"tail_sequence":  100,
+		"tail_event_id":  "evt-arch-100",
+		"started_at":     "2026-08-29T00:00:00Z",
 	}
 	if err := os.WriteFile(statePath+".journal-rotation-pending.json", mustJSON(t, marker), 0o644); err != nil {
 		t.Fatal(err)

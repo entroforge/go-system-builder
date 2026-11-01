@@ -1,12 +1,12 @@
 package submission
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -52,7 +52,8 @@ func (s *Service) IssueContracts(ctx context.Context) (workpacket.ContractPacket
 		}
 		p = candidate
 	}
-	if p.ID == "" {
+	registered := p.ID != ""
+	if !registered {
 		inputs, err := runtime.ResolveContractInputs(s.Root, snap.State, s.Files)
 		if err != nil {
 			return p, err
@@ -65,20 +66,25 @@ func (s *Service) IssueContracts(ctx context.Context) (workpacket.ContractPacket
 	if err := ctx.Err(); err != nil {
 		return p, err
 	}
-	if _, err := runtime.RecordContractPacket(s.Root, s.StatePath, s.JournalPath, p, s.Files, s.Validator); err != nil {
-		return p, err
-	}
-	view, _ := json.MarshalIndent(p, "", "  ")
-	view = append(view, '\n')
-	actual, err := workpacket.PublishBounded(s.Root, p.ViewPath, view, int64(len(view)))
+	view, answer, err := publishPlanningFiles(s.Root, registered, p.ViewPath, p.AnswerPath, workpacket.ContractAnswerReadLimit(p), func(view, answer string) (any, any) {
+		candidate := p
+		candidate.ViewPath, candidate.AnswerPath = view, answer
+		return candidate, candidate.Draft
+	})
 	if err != nil {
 		return p, err
 	}
-	if !bytes.Equal(actual, view) {
-		return p, fmt.Errorf("published contract view differs from original issuance")
-	}
-	draft, _ := json.MarshalIndent(p.Draft, "", "  ")
-	if _, err := workpacket.PublishBounded(s.Root, p.AnswerPath, append(draft, '\n'), workpacket.ContractAnswerReadLimit(p)); err != nil {
+	p.ViewPath, p.AnswerPath = view, answer
+	if _, err := runtime.RecordContractPacket(s.Root, s.StatePath, s.JournalPath, p, s.Files, s.Validator); err != nil {
+		// A concurrent issuer may have registered its own exclusively created
+		// paths. Return that original responsibility instead of adopting ours.
+		latest, snapshotErr := s.snapshot()
+		if snapshotErr == nil {
+			winner, ok, findErr := runtime.FindContractPacket(latest.State, p.ID)
+			if findErr == nil && ok && winner.Binding == p.Binding {
+				return winner, nil
+			}
+		}
 		return p, err
 	}
 	return p, nil
@@ -123,83 +129,74 @@ func (s *Service) SaveContracts(ctx context.Context, path string) (Receipt, erro
 	if err != nil {
 		return Receipt{}, err
 	}
-	data, err := workpacket.ReadFile(s.Root, p.AnswerPath, workpacket.ContractAnswerReadLimit(p))
-	if err != nil {
-		return s.unreceivedContractReceipt(snap, p, err), err
-	}
-	answer, issues := workpacket.ValidateContractAnswer(p, data)
-	if len(issues) > 0 {
-		err := fmt.Errorf("contract answer %s", planningFieldDiagnostic(issues[0]))
-		r := s.unreceivedContractReceipt(snap, p, err)
-		r.FieldErrors = issues
-		return r, err
-	}
-	digest, err := workpacket.ContractAnswerDigest(answer)
-	if err != nil {
-		return Receipt{}, err
-	}
 	prior, accepted, err := runtime.FindSubmission(snap.State, p.ID)
 	if err != nil {
 		return Receipt{}, err
 	}
-	id := "ev-submission-" + workpacket.Digest([]byte("submission:"+p.ID))
-	envelopePath := ""
+	data, readErr := workpacket.ReadFile(s.Root, p.AnswerPath, workpacket.ContractAnswerReadLimit(p))
+	var answer workpacket.ContractAnswer
+	if readErr == nil {
+		var issues []workpacket.FieldError
+		answer, issues = workpacket.ValidateContractAnswer(p, data)
+		if len(issues) > 0 {
+			err := fmt.Errorf("contract answer %s", planningFieldDiagnostic(issues[0]))
+			r := s.unreceivedContractReceipt(snap, p, err)
+			r.FieldErrors = issues
+			return r, err
+		}
+	} else if !accepted {
+		return s.unreceivedContractReceipt(snap, p, readErr), readErr
+	}
+	var next runtime.Snapshot
 	if accepted {
-		if prior.ContentHash != digest {
-			return rejected(snap, p.ID, runtime.ErrSubmissionConflict), runtime.ErrSubmissionConflict
-		}
-		if _, followupErr := runtime.SubmissionFollowup(snap.State, prior.FollowupID); errors.Is(followupErr, runtime.ErrSubmissionFollowupOriginChanged) && (prior.ControlStatus == "pending" || prior.ControlStatus == "no_transition") {
-			// Replaying a historical answer cannot resume an outlet whose
-			// original entry was replaced by professional planning rework.
-			return s.contractReceipt(snap, p)
-		}
-		id = prior.EvidenceID
-		found := false
-		for _, ev := range evidenceRows(snap.State) {
-			if ev["id"] == id {
-				envelopePath = text(ev["path"])
-				found = true
-				break
+		if readErr == nil {
+			recorded, err := readPlanningEvidence(s.Root, snap.State, prior.EvidenceID)
+			if err != nil {
+				return s.contractComparisonUnknown(snap, p, prior, err)
+			}
+			original, err := runtime.ContractAnswerFromEvidence(recorded)
+			if err != nil {
+				return s.contractComparisonUnknown(snap, p, prior, err)
+			}
+			if !reflect.DeepEqual(answer, original) {
+				return rejected(snap, p.ID, runtime.ErrSubmissionConflict), runtime.ErrSubmissionConflict
 			}
 		}
-		if !found {
-			return Receipt{}, fmt.Errorf("original planning evidence missing")
+		if _, followupErr := runtime.SubmissionFollowup(snap.State, prior.FollowupID); errors.Is(followupErr, runtime.ErrSubmissionFollowupOriginChanged) && prior.ControlStatus == "pending" {
+			return s.contractReceipt(snap, p)
 		}
+		next = snap
 	} else {
-		arch, err := runtime.ContractArtifacts(s.Root, snap.State, p, answer, s.Files)
+		artifacts, err := runtime.ContractArtifacts(s.Root, snap.State, p, answer, s.Files)
 		if err != nil {
 			return s.unreceivedContractReceipt(snap, p, err), err
 		}
-		envelope, err := workpacket.ContractEvidence(p, id, arch, answer, time.Now().UTC())
+		id := "ev-submission-" + p.ID
+		envelope, err := workpacket.ContractEvidence(p, id, artifacts, answer, time.Now().UTC())
 		if err != nil {
 			return Receipt{}, err
 		}
-		encoded, _ := json.MarshalIndent(envelope, "", "  ")
+		encoded, err := json.MarshalIndent(envelope, "", "  ")
+		if err != nil {
+			return Receipt{}, err
+		}
 		encoded = append(encoded, '\n')
-		envelopePath = ".claude/evidence/submissions/" + p.ID + "/" + workpacket.Digest(encoded) + ".json"
-		stored, err := workpacket.PublishBounded(s.Root, envelopePath, encoded, int64(len(encoded)))
-		if err != nil {
-			return Receipt{}, err
+		if err := ctx.Err(); err != nil {
+			return rejected(snap, p.ID, err), err
 		}
-		if !bytes.Equal(stored, encoded) {
-			err := fmt.Errorf("S3 published evidence differs from this reception: %s", envelopePath)
+		preferred := ".claude/evidence/submissions/" + p.ID + "/answer.json"
+		next, err = runtime.RecordEvidence(s.Root, s.StatePath, s.JournalPath, runtime.EvidenceRequest{Context: ctx, ExpectedRevision: -1, ID: id, Kind: "planning_contract", Path: preferred, ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: s.Validator, Submission: &runtime.SubmissionRequest{PacketID: p.ID, Owner: "Main", AnswerJSON: data, EvidenceJSON: encoded, Files: s.Files, Authorize: func(root string, state map[string]any) error {
+			if err := s.validateContractChecks(state, p, answer); err != nil {
+				return err
+			}
+			if verified, ok := s.Files.(interface{ Verify() error }); ok {
+				return verified.Verify()
+			}
+			return nil
+		}}})
+		if err != nil {
 			return s.unreceivedContractReceipt(snap, p, err), err
 		}
-	}
-	if err := ctx.Err(); err != nil {
-		return rejected(snap, p.ID, err), err
-	}
-	next, err := runtime.RecordEvidence(s.Root, s.StatePath, s.JournalPath, runtime.EvidenceRequest{Context: ctx, ExpectedRevision: -1, ID: id, Kind: "planning_contract", Path: envelopePath, ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: s.Validator, Submission: &runtime.SubmissionRequest{PacketID: p.ID, Owner: "Main", AnswerJSON: data, Files: s.Files, Authorize: func(root string, state map[string]any) error {
-		if err := s.validateContractChecks(state, p, answer); err != nil {
-			return err
-		}
-		if verified, ok := s.Files.(interface{ Verify() error }); ok {
-			return verified.Verify()
-		}
-		return nil
-	}}})
-	if err != nil {
-		return s.unreceivedContractReceipt(snap, p, err), err
 	}
 	RecordPlanningDiagnostic(s.Root, snap.State, "reception", "")
 	record, found, err := runtime.FindSubmission(next.State, p.ID)
@@ -207,9 +204,7 @@ func (s *Service) SaveContracts(ctx context.Context, path string) (Receipt, erro
 		return Receipt{}, fmt.Errorf("contract reception has no durable original record")
 	}
 	if record.ControlStatus != "pending" {
-		if _, err := runtime.SubmissionFollowup(next.State, record.FollowupID); record.ControlStatus != "no_transition" || err != nil {
-			return s.contractReceipt(next, p)
-		}
+		return s.contractReceipt(next, p)
 	}
 	result, controlErr := controller.RunControlCycle(ctx, controller.ControlRequest{Root: s.Root, CWD: s.Root, StatePath: s.StatePath, JournalPath: s.JournalPath, Event: "PostToolUse", ToolName: "Write", SubmissionFollowupID: record.FollowupID, Files: s.Files})
 	preparation := ""
@@ -251,6 +246,19 @@ func (s *Service) SaveContracts(ctx context.Context, path string) (Receipt, erro
 	return r, nil
 }
 
+// The original receipt survives even when a newly saved expression cannot be
+// compared with the accepted professional answer. Main restores only that
+// unavailable source; the existing result is not replaced or fabricated.
+func (s *Service) contractComparisonUnknown(snap runtime.Snapshot, p workpacket.ContractPacket, prior runtime.SubmissionRecord, cause error) (Receipt, error) {
+	r, err := s.contractReceipt(snap, p)
+	if err != nil {
+		return r, err
+	}
+	r.NextAction += " 原答卷已接收；当前新表达与既有专业结论是否相同未知，Main 恢复原专业来源后判断，无需重交已收答案。原因：" + cause.Error()
+	r.WaitingOn = append(r.WaitingOn, Waiting{Reason: "original_professional_answer", Owner: "Main", Ref: prior.EvidenceID})
+	return r, nil
+}
+
 func (s *Service) validateContractChecks(state map[string]any, p workpacket.ContractPacket, answer workpacket.ContractAnswer) error {
 	bound, _ := state["bound_req"].(map[string]any)
 	if text(bound["id"]) != p.Binding.Requirement.ID {
@@ -276,30 +284,15 @@ func (s *Service) contractReceipt(snap runtime.Snapshot, p workpacket.ContractPa
 	if !found {
 		return rejected(snap, p.ID, fmt.Errorf("contract answer not received")), nil
 	}
-	key := workpacket.Digest([]byte("submission:" + p.ID))
-	if record.Owner != "Main" || record.Key != key || record.FollowupID != workpacket.Digest([]byte(key+":after-domain")) || record.OriginState != "planning" || record.OriginPhase != "contracts" || record.OriginEntry != p.Binding.StageEntry {
+	if record.Owner != "Main" || record.OriginState != "planning" || record.OriginPhase != "contracts" || record.OriginEntry != p.Binding.StageEntry {
 		return r, fmt.Errorf("contract receipt original responsibility differs")
 	}
 	for _, ev := range evidenceRows(snap.State) {
 		if ev["id"] != record.EvidenceID {
 			continue
 		}
-		data, err := workpacket.ReadFile(s.Root, text(ev["path"]), workpacket.ContractEvidenceReadLimit(p))
-		if err != nil || workpacket.Digest(data) != ev["sha256"] || ev["kind"] != "planning_contract" {
+		if ev["kind"] != "planning_contract" {
 			return r, fmt.Errorf("original contract evidence no longer matches")
-		}
-		var value map[string]json.RawMessage
-		json.Unmarshal(data, &value)
-		var answer workpacket.ContractAnswer
-		if err := json.Unmarshal(value["contract_answer"], &answer); err != nil {
-			return r, fmt.Errorf("original S3 professional answer malformed")
-		}
-		if err := runtime.ValidateContractEnvelope(p, record.EvidenceID, answer, data); err != nil {
-			return r, err
-		}
-		digest, err := workpacket.ContractAnswerDigest(answer)
-		if err != nil || digest != record.ContentHash {
-			return r, fmt.Errorf("contract receipt professional digest differs")
 		}
 		r.SubmissionKey = record.Key
 		r.Accepted = true
@@ -312,7 +305,7 @@ func (s *Service) contractReceipt(snap runtime.Snapshot, p workpacket.ContractPa
 			r.ResponsibilityStatus = "replaced"
 		}
 		life, _ := snap.State["lifecycle"].(map[string]any)
-		if record.ControlStatus == "replaced" || ev["status"] == "invalid" || ((record.ControlStatus == "pending" || record.ControlStatus == "no_transition") && (life["state"] != "planning" || life["phase"] != "contracts" || number(life["phase_revision"]) != p.Binding.StageEntry)) {
+		if record.ControlStatus == "replaced" || ev["status"] == "invalid" || (record.ControlStatus == "pending" && (life["state"] != "planning" || life["phase"] != "contracts" || number(life["phase_revision"]) != p.Binding.StageEntry)) {
 			r.WorkComplete = false
 			r.ResponsibilityStatus = "replaced"
 		}
@@ -410,7 +403,7 @@ func ContractDeliveryGuidance(root string, packet workpacket.ContractPacket, fil
 			}
 		}
 		if len(committed) > 0 {
-			sourceHint = fmt.Sprintf("\nS3 outputs can change in this entry. Before saving this answer, commit the applicable completed Git-sourced professional files to bound development branch %s: %s; include their Git-sourced model/example dependencies. REQ/S2 inputs stay frozen. The answer and Runtime use their supplied disk paths.", strings.TrimPrefix(view.Ref, "refs/heads/"), strings.Join(committed, ", "))
+			sourceHint = fmt.Sprintf("\nS3 outputs can change in this entry. The selected git_tree source reads bound development branch %s for these professional files: %s, including their applicable Git-sourced model/example dependencies. Missing selected-source material is reported at its actual path. REQ/S2 inputs stay frozen. The answer and Runtime use their supplied disk paths.", strings.TrimPrefix(view.Ref, "refs/heads/"), strings.Join(committed, ", "))
 		}
 	}
 	for index, path := range paths {

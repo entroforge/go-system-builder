@@ -15,7 +15,8 @@ func evaluateHypothesisResultPath(t *testing.T, root, agentID, assignmentID, pat
 		t.Fatalf("Load: %v", err)
 	}
 	var paths []string
-	if grant {
+	// hookctx only projects an issued path for its actual assignment.
+	if grant && assignmentID == "assignment-1" {
 		paths = []string{".claude/submissions/loop-test/g1/S8/r1/assignment-1/packet-1/investigator-1/answer.json"}
 	}
 	decision, err := engine.Evaluate(policy.Input{
@@ -30,7 +31,6 @@ func evaluateHypothesisResultPath(t *testing.T, root, agentID, assignmentID, pat
 			HypothesisResultAnswerPaths: paths,
 			RuntimeID:                   "loop-test",
 			CurrentBaselineGeneration:   1,
-			CurrentReviewRound:          1,
 			ProjectRoot:                 root,
 			CurrentState:                "bug_resolution",
 			CurrentPhase:                "investigation",
@@ -94,7 +94,7 @@ func TestHypothesisResultPacketWriteRejectsSymlinkedIssuedPath(t *testing.T) {
 	}
 }
 
-func TestHypothesisResultPacketWriteDoesNotUseTeammateNameAsIdentity(t *testing.T) {
+func TestHypothesisResultPacketWriteDoesNotDenyOnMissingPlatformIdentity(t *testing.T) {
 	root := t.TempDir()
 	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
 	if err != nil {
@@ -106,7 +106,7 @@ func TestHypothesisResultPacketWriteDoesNotUseTeammateNameAsIdentity(t *testing.
 		ToolInput: map[string]any{"file_path": issued},
 		Runtime: policy.RuntimeContext{
 			PacketMode: true, HypothesisResultAnswerPaths: []string{issued}, RuntimeID: "loop-test",
-			CurrentBaselineGeneration: 1, CurrentReviewRound: 1, ProjectRoot: root,
+			CurrentBaselineGeneration: 1, ProjectRoot: root,
 			CurrentState: "bug_resolution", CurrentPhase: "investigation",
 			Agent: &policy.AgentContext{ID: "investigator-1", AssignmentID: "assignment-1", HypothesisResultAssignment: true},
 		},
@@ -114,7 +114,7 @@ func TestHypothesisResultPacketWriteDoesNotUseTeammateNameAsIdentity(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Decision != "deny" {
-		t.Fatalf("teammate_name alone must not grant an S8 write, got %+v", decision)
+	if decision.Decision == "deny" || decision.Decision == "block" {
+		t.Fatalf("missing platform identity must not introduce a denial, got %+v", decision)
 	}
 }

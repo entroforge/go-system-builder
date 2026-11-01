@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +10,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -115,7 +112,7 @@ func graphGuidance(root string, state map[string]any, request policy.Input) poli
 			guidance.Read = append([]string(nil), guidance.ReadOrder...)
 			guidance.Recovery = []string{"only if blocked: inspect the recorded source/preparation failure with Main", "optional recovery: .claude/loop-state.json", "optional recovery: " + guidance.ProtocolRef, "optional recovery: " + loopManualRef}
 		}
-		if runtime.PacketEnabled(state) && lifecycle["state"] == "bug_resolution" && s9ProfessionalPhase(stringValue(lifecycle["phase"])) && !s7BudgetGateRequired(state, root) {
+		if runtime.PacketEnabled(state) && lifecycle["state"] == "bug_resolution" && s9ProfessionalPhase(stringValue(lifecycle["phase"])) {
 			guidance.Missing = nil // Actual missing fields/owners come with the current exact questionnaire.
 			guidance.ReadOrder = s9QuestionnaireReadOrder(root, state, request)
 			guidance.Read = append([]string(nil), guidance.ReadOrder...)
@@ -159,7 +156,7 @@ func s8QuestionnaireReadOrder(root string, state map[string]any, request policy.
 		for _, row := range objectSliceAny(entities["work_packets"]) {
 			binding := mapFieldCLI(row, "binding")
 			if row["template_id"] != "s8-hypothesis-result-v1" || binding["owner_agent_id"] != owner || binding["runtime_id"] != state["runtime_id"] || binding["case_id"] != investigationPointer(state)["case_id"] ||
-				tolerantInt(binding["baseline_generation"]) != tolerantInt(mapFieldCLI(state, "baseline")["generation"]) || tolerantInt(binding["review_round"]) != tolerantInt(mapFieldCLI(state, "review")["round"]) {
+				tolerantInt(binding["baseline_generation"]) != tolerantInt(mapFieldCLI(state, "baseline")["generation"]) {
 				continue
 			}
 			source, err := questionnaireSourceRoot(root, state, stringValue(binding["assignment_id"]), owner, stringValue(binding["runtime_id"]), tolerantInt(binding["baseline_generation"]))
@@ -185,14 +182,6 @@ func s8QuestionnaireReadOrder(root string, state map[string]any, request policy.
 	}
 	batchRef, _ := investigationLeadBatchReference(state)
 	appendPath(batchRef)
-	batch := mapFieldCLI(mapFieldCLI(state, "review"), "observation_batch")
-	for _, id := range stringSliceAny(batch["finding_ids"]) {
-		for _, finding := range objectSliceAny(entities["findings"]) {
-			if finding["finding_id"] == id {
-				appendPath(stringValue(finding["path"]))
-			}
-		}
-	}
 	appendPath(stringValue(investigationPointer(state)["path"]))
 	appendPath(stringValue(mapFieldCLI(state, "bound_req")["path"]))
 	for _, document := range objectSliceAny(state["documents"]) {
@@ -231,7 +220,6 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 	if lifecycleState == "bug_resolution" && lifecyclePhase != "investigation" {
 		next.Action = repairNextAction(state, lifecyclePhase, root)
 	}
-	applyS7BudgetGateway(&next, state, root)
 
 	guidance := policy.Guidance{
 		RuntimeID:      stringValue(state["runtime_id"]),
@@ -287,7 +275,7 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 	if lifecycleState == "bug_resolution" && lifecyclePhase != "investigation" {
 		guidance.Automation = []string{
 			"Main saves its own division/impact answers; native Workers save their original Plan/Result for PreToolUse observation, with successful PostToolUse and Stop/SubagentStop fallback through the original consumers",
-			"Main saves the original Builder division and uses its exact prepared brief with Claude Code native Agent/worktree; a missing professional question is recovered through that same division save, not a workspace or session launcher",
+			"Main saves the original Builder division and uses its exact prepared brief with Claude Code native Agent/worktree; Main/system handles a missing original question or preparation source without repeating the division answer",
 			"Existing frozen registered executions retain their exact original recovery coordinates; native work never falls back to that startup protocol",
 			"Main uses the exact current `runtime workspace integrate --root <Main-root> --assignment <execution-assignment-id> --agent <owner-agent-id>` command supplied with the S9 candidate, adding --check-command for each actual necessary Main check; do not substitute generic runtime task-integrate",
 		}
@@ -420,11 +408,8 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 		applyS7RecoveryProjection(root, state, &guidance)
 	}
 
-	// S8 entry source line: when the lifecycle flipped into bug_resolution
-	// via TR-008 (ObservationBatch handoff), the recovery packet must carry
-	// the exact source fact — observation_batch id and finding count — so a
-	// compacted Agent can re-bind to the right sealed batch without reading
-	// the milestone log. Read from state.review.observation_batch.
+	// S8 may expose an existing historical batch for navigation; the new
+	// handoff uses accepted Findings directly and requires no batch proof.
 	if lifecycleState == "bug_resolution" && (event == "SessionStart" || event == "PreCompact") {
 		applyS8EntryProjection(state, &guidance)
 		applyS9RepairProjection(root, state, &guidance)
@@ -436,10 +421,8 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 	// on every normal recovery packet.
 	if lifecycleState == "acceptance" || lifecycleState == "release_audit" {
 		if mainQuestionnaireViewer(input) {
-			if !s7BudgetGateRequired(state, root) {
-				applyS10Guidance(&guidance)
-				guidance.Action = stageAuditQuestionnaireContext(root, input, runtime.Snapshot{State: state})
-			}
+			applyS10Guidance(&guidance)
+			guidance.Action = stageAuditQuestionnaireContext(root, input, runtime.Snapshot{State: state})
 		} else {
 			// The global cursor may advance while an original Reviewer returns.
 			// Its original consumer/receipt still describes that responsibility;
@@ -466,12 +449,6 @@ func buildGuidance(root string, state map[string]any, event string, input policy
 		if qualitygate.HasDispatchPlan(state) {
 			guidance.Automation = append(guidance.Automation, "read the approved overall dispatch plan and `loop-harness s6 status --capacity <actual total slots>`; dispatch compatible ready tasks, integrate reported results promptly and refill slots without waiting for unrelated tasks in a prior wave")
 		}
-	}
-	if mainQuestionnaireViewer(input) && s7BudgetGateRequired(state, root) {
-		guidance.Action = stageS7BudgetDecisionQuestionnaireContext(root, input, runtime.Snapshot{State: state})
-		guidance.ReadOrder = s7BudgetDecisionQuestionnairePaths(root, state)
-		guidance.Automation = []string{"the original completion outlet or SessionStart prepares this exact budget application; ordinary reads do not create it", "after the human actually chooses, fill only decision, the actual increased maximum when applicable, and reason; save the same application for original Writer reception and successor", "empty choice grants nothing; do not copy Runtime metadata, register evidence or invoke a manual transition"}
-		guidance.Recovery = []string{"Main/system restores missing original decision preparation or accepted sources; do not invent another approval or repeat an already received professional report"}
 	}
 
 	guidance.Instruction = formatGuidanceInstruction(guidance)
@@ -507,7 +484,7 @@ func investigationNextAction(root string, state map[string]any) string {
 	reviewMap, _ := state["review"].(map[string]any)
 	casePointer, _ := reviewMap["investigation"].(map[string]any)
 	if casePointer == nil {
-		return "form the InvestigationCase from its actual current source: sealed S7 observations or the human-reported problem; use the supplied current intake questionnaire, without inventing a Batch or Finding"
+		return "form the InvestigationCase from its actual current source: accepted S7 observations or the human-reported problem; use the supplied current intake questionnaire, without inventing a Batch or Finding"
 	}
 	caseID := stringValue(casePointer["case_id"])
 	if caseID == "" {
@@ -560,7 +537,7 @@ func repairPlanningNextAction(state map[string]any, root string) string {
 			missing = append(missing, id+" (owner "+owner+")")
 			continue
 		}
-		brief, _, _ := nativeS9Paths(workpacket.RepairPlanReportPacket{ID: packet.id, ViewPath: packet.view})
+		brief := nativeS9BriefPath(workpacket.RepairPlanReportPacket{ID: packet.id, BriefPath: packet.brief, ViewPath: packet.view})
 		if root != "" {
 			brief = resolveRootPath(root, brief)
 		}
@@ -595,7 +572,7 @@ func repairNextAction(state map[string]any, phase string, roots ...string) strin
 		}
 		return repairPlanningNextAction(state, root)
 	case "repairing":
-		return "native Builders use the supplied brief and save their private professional Plan/Result in the actual worktree. Natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback. When the candidate is recorded, Main immediately follows the supplied `runtime workspace integrate` command with the actual root, assignment and owner and repeatable --check-command for necessary real Main checks. Do not redispatch an accepted native candidate for another RepairResult questionnaire or wait for Final before Main integration. Existing frozen executions retain their exact original RepairResult questionnaire and recovery path"
+		return "native Builders use the supplied brief and save their private professional Plan/Result in the actual worktree. Natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback. When the candidate is recorded, Main immediately follows the supplied `runtime workspace integrate` command with the actual root, assignment and owner and repeatable --check-command for necessary real Main checks. Do not redispatch an accepted native candidate for another RepairResult questionnaire or wait for Final before Main integration."
 	case "impact_reconciliation":
 		return "Main fills and saves the exact ChangeImpact questionnaire supplied by the listener; the original consumer records its professional change analysis. The independent verifier saves its separately supplied TargetedReverification answer; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback through the original Contract checks"
 	case "targeted_reverification":
@@ -663,7 +640,6 @@ func applyS7RecoveryProjection(root string, state map[string]any, guidance *poli
 	// supersedes it with the precise `claim:<id>` matrix (L3-S7 §8), so
 	// drop the bare aggregate so the Agent does not see redundant noise.
 	guidance.Missing = stripMissingTokens(guidance.Missing, "claim_results")
-	round := integerValue(reviewMap["round"])
 	ptr := review.PlanPointerFromState(state)
 
 	planDesc := "no ReviewPlan registered"
@@ -673,18 +649,13 @@ func applyS7RecoveryProjection(root string, state map[string]any, guidance *poli
 		planStatus = ptr.Status
 	}
 	guidance.Automation = append(guidance.Automation,
-		fmt.Sprintf("S7 review round %d: plan %s", round, planDesc),
+		fmt.Sprintf("S7 review: plan %s", planDesc),
 	)
 	if planStatus == "stale" {
-		guidance.Action = s7RecoveryNextAction(root, state, planStatus, round, nil, nil, nil, nil, nil)
-		guidance.Missing = []string{"Main: recover the frozen baseline and original stale ReviewPlan"}
-		guidance.Recovery = append([]string{fmt.Sprintf("S7 recovery: round %d, plan %s; next: %s", round, planDesc, guidance.Action)}, guidance.Recovery...)
+		guidance.Action = s7RecoveryNextAction(root, state, planStatus, nil, nil, nil, nil, nil)
+		guidance.Missing = []string{"Main: inspect the actual changed material and update the original ReviewPlan questionnaire"}
+		guidance.Recovery = append([]string{fmt.Sprintf("S7 recovery: plan %s; next: %s", planDesc, guidance.Action)}, guidance.Recovery...)
 		return
-	}
-	if maxRounds := s7MaxRounds(state); maxRounds > 0 && round >= maxRounds {
-		guidance.Automation = append(guidance.Automation,
-			fmt.Sprintf("S7 budget: current round %d of %d may drain. Only an actual request for another full round requires a human choice in the system-prepared budget application; ordinary acceptance does not require another approval", round, maxRounds),
-		)
 	}
 
 	blockedAgents := blockedAgentIDs(state)
@@ -721,7 +692,7 @@ func applyS7RecoveryProjection(root string, state map[string]any, guidance *poli
 				running = append(running, label)
 			}
 			// A dispatched Assignment's Canonical ReviewResult is pending
-			// until `runtime review-result submit` consumes it.
+			// until the original ReviewResult consumer records it.
 			unconsumed = append(unconsumed, id)
 		}
 	}
@@ -738,36 +709,26 @@ func applyS7RecoveryProjection(root string, state map[string]any, guidance *poli
 		guidance.Missing = appendUnique(guidance.Missing, "claim:"+claimID)
 	}
 
-	// Ordinary Findings make the round non-clean before the original consumer
-	// seals its Batch. A missing Batch pointer during draining is normal.
+	// A received Finding is handed to S8 with any unfinished responsibilities.
+	// A legacy batch, when present, is only an existing historical reference.
 	if planStatus == "cannot_clean" || planStatus == "discovery_draining" {
 		guidance.Automation = append(guidance.Automation,
-			"S7 round status="+planStatus+": confirmed Findings retain safe remaining required Claims; cannot_clean/discovery_draining ≠ end — finish the remaining required Claims listed in Missing",
-			s7ObservationBatchLine(reviewMap))
+			"S7 status="+planStatus+": hand accepted Findings and unfinished responsibilities to S8 through the original outlet; Main may arrange remaining safe work")
 	}
 	for _, label := range blocked {
 		guidance.Automation = append(guidance.Automation, s7BlockedAssignmentGuidance(root, state, firstAssignmentID(label)))
 	}
 
-	next := s7RecoveryNextAction(root, state, planStatus, round, running, queued, blocked, unconsumed, gaps)
+	next := s7RecoveryNextAction(root, state, planStatus, running, queued, blocked, unconsumed, gaps)
 	guidance.Action = next
 	guidance.Recovery = append([]string{
-		fmt.Sprintf("S7 recovery: round %d, plan %s; coverage gaps=%d; next: %s", round, planDesc, len(gaps), next),
+		fmt.Sprintf("S7 recovery: plan %s; coverage gaps=%d; next: %s", planDesc, len(gaps), next),
 	}, guidance.Recovery...)
 }
 
-// applyS8EntryProjection adds the S8 entry source line that tells a
-// compacted Agent which ObservationBatch is currently recorded for S8.
-// It does not infer the transition event from a Batch pointer. The pointer is read from
-// state.review.observation_batch (the same path the sealed handoff
-// document writes — L3-S7 §3.7). When no batch is present (defensive),
-// the projection is skipped: S8 entry without a sealed batch would be a
-// control-plane contradiction the rest of the harness must surface, not
-// the recovery packet.
-//
-// The line is appended to the Automation block (positive guidance), and
-// mirrored as the first Recovery line so a PreCompact that drops
-// Automation still preserves the source fact.
+// applyS8EntryProjection exposes an existing legacy batch reference when one
+// is present; S8 intake consumes the original accepted Findings and does not
+// require an additional batch proof.
 func applyS8EntryProjection(state map[string]any, guidance *policy.Guidance) {
 	reviewMap, _ := state["review"].(map[string]any)
 	if reviewMap == nil {
@@ -781,63 +742,28 @@ func applyS8EntryProjection(state map[string]any, guidance *policy.Guidance) {
 		guidance.Automation = append(guidance.Automation, line)
 		guidance.Recovery = append([]string{line}, guidance.Recovery...)
 	}
-	batch, _ := reviewMap["observation_batch"].(map[string]any)
-	if batch == nil {
-		return
-	}
-	id := stringValue(batch["batch_id"])
-	if id == "" {
-		return
-	}
-	drain := stringValue(batch["drain_policy"])
-	findingIDs, _ := batch["finding_ids"].([]any)
-	count := len(findingIDs)
-	line := fmt.Sprintf("S8 current ObservationBatch %s (%d findings, drain_policy=%s)",
-		id, count, drain)
-	guidance.Automation = append(guidance.Automation, line)
-	guidance.Recovery = append([]string{line}, guidance.Recovery...)
-}
-
-// s7ObservationBatchLine renders the current ObservationBatch pointer (id,
-// drain_policy, finding count) as one compact recovery line. Absence is
-// normal until the original consumer seals the round's findings.
-func s7ObservationBatchLine(reviewMap map[string]any) string {
-	batch, _ := reviewMap["observation_batch"].(map[string]any)
-	if batch == nil {
-		return "S7 ObservationBatch: not sealed yet; no Batch pointer is required while remaining required Claims drain"
-	}
-	id := stringValue(batch["batch_id"])
-	if id == "" {
-		id = "observation-batch(unknown)"
-	}
-	drain := stringValue(batch["drain_policy"])
-	if drain == "" {
-		drain = "complete_required_claims"
-	}
-	findingIDs, _ := batch["finding_ids"].([]any)
-	return fmt.Sprintf("S7 ObservationBatch %s: drain_policy=%s; %d finding(s) sealed", id, drain, len(findingIDs))
 }
 
 // s7RecoveryNextAction computes the single next action for a verification
 // recovery packet. The order is deterministic: finish in-flight Results
-// first, then unblock, then dispatch queued coverage, then close the round.
-func s7RecoveryNextAction(root string, state map[string]any, planStatus string, round int, running, queued, blocked, unconsumed, gaps []string) string {
+// first, then unblock, then dispatch queued coverage, then complete the review.
+func s7RecoveryNextAction(root string, state map[string]any, planStatus string, running, queued, blocked, unconsumed, gaps []string) string {
 	switch planStatus {
 	case "stale":
-		return "Main must resolve the original baseline drift feedback and recover the original ReviewPlan through its existing revive/revise path; queued dispatch and old answers await a valid plan" + ". " + s7PinnedSourceRecovery(root)
+		return "Main addresses the actual change in the current ReviewPlan questionnaire; ordinary saving continues the original plan consumer" + ". " + s7PinnedSourceRecovery(root)
 	case "observation_sealed":
-		return "the sealed ObservationBatch hands off to S8 automatically: the next PreToolUse auto-commits TR-008 — do not invoke the transition CLI"
+		return "the original accepted Findings and unfinished responsibilities continue to S8 through TR-008; follow any explicit pending outlet feedback without asking the author to save again"
 	case "clean":
 		return "the original final ReviewResult exit continues Gate/TR-009 and prepares S10 acceptance; resume a pending original exit with loop-harness runtime review-continue --root <root>"
 	case "paused":
-		return "resolve the recorded pause verdict checkpoint; the round resumes only through the human gateway (TR-010/TR-011)"
+		return "resolve the recorded pause verdict checkpoint; review resumes only through the human gateway (TR-010/TR-011)"
 	case "planned", "":
-		return fmt.Sprintf("complete and save the current round %d ReviewPlan questionnaire at the exact path supplied by the listener; resolve the professional TODOs and required coverage", round)
+		return fmt.Sprintf("complete and save the current ReviewPlan questionnaire at the exact path supplied by the listener; resolve the professional TODOs and required coverage")
 	}
-	// running / cannot_clean / discovery_draining: coverage continues even
-	// after an ordinary finding (drain_policy=complete_required_claims).
+	// Running responsibilities remain attributable even when a Finding has
+	// already been handed to S8.
 	if len(running) > 0 {
-		return fmt.Sprintf("Reviewer %s uses the exact ReviewResult answer: ordinarily finish required safe checks; a real P0 stops dangerous continuation and records actual capture gaps; a real incomplete return names the missing observation/source and returns to Main for the same responsibility. Save and return that original reference for SubagentStop and the original consumer", running[0])
+		return fmt.Sprintf("Reviewer %s uses the original ReviewResult answer, performs the assigned safe checks, and saves the actual conclusion or blocked work. Natural events observe that answer; Stop provides fallback. A real P0 stops dangerous work, and unfinished responsibility is handed to Main", running[0])
 	}
 	if len(blocked) > 0 {
 		return strings.TrimSpace(s7BlockedAssignmentGuidance(root, state, firstAssignmentID(blocked[0])))
@@ -851,7 +777,7 @@ func s7RecoveryNextAction(root string, state map[string]any, planStatus string, 
 	if len(gaps) > 0 {
 		return "claim coverage gaps remain without an assignment (" + strings.Join(gaps, ", ") + "); inspect `loop-harness s7 status` and repair the dispatch"
 	}
-	return "all required Claims are dispositioned; the original round consumer evaluates sealing and the listener reports the next stage"
+	return "the original consumer uses the accepted conclusions and required responsibilities to continue the appropriate stage outlet"
 }
 
 // s7Bucket renders one assignment bucket for the recovery packet, keeping
@@ -1042,10 +968,7 @@ func refreshMilestoneWithGate(root, statePath, journalPath string, snapshot runt
 	milestone := guidanceMapWithGate(persistedGuidance, controller.QualityGateResult{}, event, snapshot.Revision+1, now, gate)
 	from := lifecycleCursor(snapshot.State)
 	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	idempotencyKey := milestoneIdempotencyWithGate(guidance, gate)
-	if s6Observation {
-		idempotencyKey = fmt.Sprintf("%s:r%d", idempotencyKey, snapshot.Revision)
-	}
+	idempotencyKey := fmt.Sprintf("milestone:%s:r%d", guidance.RuntimeID, snapshot.Revision+1)
 	updated, err := store.Update(snapshot.Revision, runtime.Mutation{
 		EventID:              fmt.Sprintf("evt-milestone-refreshed-r%d", snapshot.Revision+1),
 		TransitionID:         "MILESTONE-REFRESH",
@@ -1249,7 +1172,6 @@ func qualityGateMap(gate controller.QualityGateResult) map[string]any {
 		"gate_id":              gate.GateID,
 		"candidate_transition": gate.CandidateTransition,
 		"observed_revision":    gate.ObservedRevision,
-		"fingerprint":          gate.Fingerprint,
 		"missing":              missing,
 		"evidence_refs":        evidenceRefs,
 		"transition_committed": gate.TransitionCommitted,
@@ -1315,7 +1237,7 @@ func stableMilestoneProjection(milestone map[string]any) map[string]any {
 
 func gateHasIdentity(gate controller.QualityGateResult) bool {
 	return gate.Status != "" || gate.GateID != "" || gate.CandidateTransition != "" ||
-		gate.Fingerprint != "" || len(gate.Missing) > 0 || len(gate.EvidenceRefs) > 0 ||
+		len(gate.Missing) > 0 || len(gate.EvidenceRefs) > 0 ||
 		len(gate.Conflicts) > 0 || gate.ErrorCode != "" || gate.TransitionCommitted || gate.NextCursor != ""
 }
 
@@ -1338,12 +1260,9 @@ func milestoneIdempotency(g policy.Guidance) string {
 // gate change produces a new Journal key while observation-only revision
 // changes remain idempotent (BUG-039-07 §4.1 step 3, REQ-039 §17).
 func milestoneIdempotencyWithGate(g policy.Guidance, gate controller.QualityGateResult) string {
-	payload := stableMilestoneProjection(guidanceMapWithGate(
-		g, controller.QualityGateResult{}, "", g.Revision, time.Time{}, gate,
-	))
-	data, _ := json.Marshal(payload)
-	sum := sha256.Sum256(data)
-	return "milestone:" + hex.EncodeToString(sum[:])
+	// Legacy helper kept for existing callers; actual Writer idempotency uses
+	// the original Runtime and next revision in refreshMilestoneWithGate.
+	return fmt.Sprintf("milestone:%s:r%d:%s", g.RuntimeID, g.Revision, gate.GateID)
 }
 
 func lifecycleCursor(state map[string]any) map[string]any {
@@ -1728,10 +1647,10 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	}
 	correctionAction := "re-wake the same subagent to remediate the blockers and resubmit the report"
 	if assignment.AssignmentRecord != nil {
-		correctionAction = fmt.Sprintf("Main: preserve the failed checkpoint. If source changes or a new report are required, author a fresh manifest and use runtime register-workgroup --revise-assignment %s --revision-intent-key <new-intent> with the original locked TASK; do not reopen this Record. For an environment-only failure, retry the original integration after resolving the cause.", assignment.AssignmentID)
+		correctionAction = fmt.Sprintf("Main: preserve the failed checkpoint. If source changes or a new report are required, author a fresh manifest and use runtime register-workgroup --revise-assignment %s with the original locked TASK; do not reopen this Record. For an environment-only failure, retry the original integration after resolving the cause.", assignment.AssignmentID)
 	}
 	if nativeS6Assignment(snapshot.State, assignment.OwnerAgentID) {
-		correctionAction = fmt.Sprintf("Main: preserve the failed checkpoint. Source/report correction uses s6 prepare --task %s --role %s --revise-assignment %s --revision-intent-key <stable-key>, then Claude Code native execution; no platform Team or launcher. For an environment-only failure, retry the original integration after resolving the cause.", assignment.TaskID, assignment.RoleFamily, assignment.AssignmentID)
+		correctionAction = fmt.Sprintf("Main: preserve the failed checkpoint. Source/report correction uses s6 prepare --task %s --role %s --revise-assignment %s, then Claude Code native execution; no platform Team or launcher. For an environment-only failure, retry the original integration after resolving the cause.", assignment.TaskID, assignment.RoleFamily, assignment.AssignmentID)
 	}
 	if packetBackedRepairResultStage(snapshot.State) {
 		packet, found, err := typedRepairResultPacketForAssignment(root, snapshot.State, assignment.AssignmentID, assignment.OwnerAgentID)
@@ -1834,29 +1753,13 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		prior = priorCheckpoint.State
 	}
 	if priorFound && priorCheckpoint.State == integration.StateReady {
-		merge, recoverErr := integration.RecoverUnrecordedMerge(ctx, root, priorCheckpoint)
-		if recoverErr != nil {
-			return policy.Guidance{}, snapshot, recoverErr
-		}
-		if merge != "" {
-			recovered := priorCheckpoint
-			recovered.MergeCommit, recovered.State = merge, integration.StateMerged
-			recovered.FailureReason, recovered.LastErrorCode = "", ""
-			written, err := integration.DefaultCheckpointStore().CompareAndSwap(priorPath, priorCheckpoint, recovered)
-			if err != nil {
-				return policy.Guidance{}, snapshot, err
-			}
-			priorCheckpoint, prior = written, written.State
-		}
+		return policy.Guidance{}, snapshot, fmt.Errorf("merge outcome is unknown after interruption; Main must inspect the original worktree and preserve the checkpoint")
 	}
-
-	resumeMerged := priorFound && priorCheckpoint.MergeCommit != ""
-	if resumeMerged {
-		head, err := fileview.Resolve(root, "refs/heads/"+assignment.Branch)
-		if err != nil || head != priorCheckpoint.SourceHead {
-			return policy.Guidance{}, snapshot, fmt.Errorf("source changed after reception; preserve and reconcile")
-		}
+	resumeState := prior
+	if prior == integration.StatePreserved || prior == integration.StateBlocked {
+		resumeState = priorCheckpoint.ResumeState
 	}
+	resumeMerged := priorFound && (resumeState == integration.StateMerged || resumeState == integration.StateVerified || resumeState == integration.StateAcknowledged || resumeState == integration.StateCleanupPending || resumeState == integration.StateComplete)
 	acknowledge, cleanup := assignment.CompletionAckRef != "", assignment.CompletionAckRef != ""
 	if prior == integration.StateVerified ||
 		prior == integration.StateAcknowledged ||
@@ -1880,7 +1783,6 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	for _, artifact := range loaded.PolicyContext.LockedArtifacts {
 		inspectReq.LockedPaths = append(inspectReq.LockedPaths, artifact.Path)
 	}
-	recoveryBase := ""
 	retry := input.Facts["integration_retry"]
 	if retry {
 		cpPath := priorPath
@@ -1888,52 +1790,25 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		if err != nil {
 			return policy.Guidance{}, snapshot, err
 		}
-		if !found || (cp.State != integration.StatePreserved && cp.State != integration.StateBlocked && cp.State != integration.StateMerged) {
-			return policy.Guidance{}, snapshot, fmt.Errorf("retry requires an existing preserved/blocked/merged checkpoint")
+		if !found {
+			return policy.Guidance{}, snapshot, fmt.Errorf("no integration checkpoint exists; --retry-preserved requires an existing preserved/blocked/merged checkpoint. Resolve the original inspection cause, then run `loop-harness runtime task-integrate --root %s --assignment-id %s --agent-id %s`", s6RecoveryShellQuote(root), s6RecoveryShellQuote(assignment.AssignmentID), s6RecoveryShellQuote(assignment.OwnerAgentID))
+		}
+		if cp.State != integration.StatePreserved && cp.State != integration.StateBlocked && cp.State != integration.StateMerged {
+			return policy.Guidance{}, snapshot, fmt.Errorf("retry requires an existing preserved/blocked/merged checkpoint; current checkpoint_state=%s. Continue the original `loop-harness runtime task-integrate --root %s --assignment-id %s --agent-id %s` without --retry-preserved", cp.State, s6RecoveryShellQuote(root), s6RecoveryShellQuote(assignment.AssignmentID), s6RecoveryShellQuote(assignment.OwnerAgentID))
 		}
 		if cp.AssignmentID != assignment.AssignmentID || cp.SourceBranch != assignment.Branch || cp.TargetBranch != targetBranch || cp.BaselineGeneration != loaded.BaselineGeneration || cp.WorktreePath != assignment.WorktreePath {
 			return policy.Guidance{}, snapshot, fmt.Errorf("retry checkpoint coordinates or original scope missing/mismatched")
 		}
-		// A builder may append a corrective commit, but cannot replace the
-		// historical source ancestry when reusing this assignment.
-		if cp.SourceHead != "" {
-			cmd := exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", cp.SourceHead, assignment.Branch)
-			if err := cmd.Run(); err != nil {
-				return policy.Guidance{}, snapshot, fmt.Errorf("retry source no longer descends from recorded source head")
-			}
-		} else if cp.MergeCommit != "" || cp.MergeBase != "" {
-			return policy.Guidance{}, snapshot, fmt.Errorf("retry checkpoint has incomplete historical source identity")
-		}
-		recoveryBase = cp.MergeBase
-		if cp.MergeCommit != "" {
-			recoveryBase, err = integration.RecoveryBaseForCheckpoint(ctx, root, cp)
-			if err != nil {
-				return policy.Guidance{}, snapshot, err
-			}
-		}
+
 	}
 	inspectConfig, err := integration.AssignmentInspectConfig(*assignment)
 	if err != nil {
 		return policy.Guidance{}, snapshot, err
 	}
-	inspectConfig.RecoveryBase = recoveryBase
+	inspectConfig.ObserveWorktree = nativeS6Assignment(snapshot.State, assignment.OwnerAgentID)
 	inspectConfig.CheckRunner = integration.ProfileCheckRunner(assignment.CheckProfiles, checkexec.Binding{RuntimeID: loaded.PolicyContext.RuntimeID, Generation: workspace.Generation(snapshot.State), AssignmentID: assignment.AssignmentID, Owner: assignment.OwnerAgentID, Responsibility: "main_required_integration"})
 	var inspectResult integration.Inspection
-	reinspectReady := false
-	if prior == integration.StateReady {
-		currentTarget, resolveErr := fileview.Resolve(root, "refs/heads/"+targetBranch)
-		if resolveErr != nil {
-			return policy.Guidance{}, snapshot, resolveErr
-		}
-		reinspectReady = currentTarget != priorCheckpoint.TargetHead
-		if reinspectReady {
-			if priorCheckpoint.MergeBase == "" || exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", priorCheckpoint.TargetHead, currentTarget).Run() != nil {
-				return policy.Guidance{}, snapshot, fmt.Errorf("ready target history changed; reconcile before retry")
-			}
-			inspectConfig.RecoveryBase = priorCheckpoint.MergeBase
-		}
-	}
-	if (prior == integration.StateReady && !reinspectReady) || prior == integration.StateMerged || prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
+	if resumeMerged {
 		cpPath := priorPath
 		cp, found, loadErr := integration.DefaultCheckpointStore().Load(cpPath)
 		if loadErr != nil || !found {
@@ -1943,7 +1818,6 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 			return policy.Guidance{}, snapshot, fmt.Errorf("cleanup assignment identity mismatch")
 		}
 		inspectResult = integration.InspectionFromCheckpoint(cp)
-		inspectResult, err = integration.RefreshCompletionBinding(root, loaded.PolicyContext.RuntimeID, assignment.CompletionRef, inspectResult)
 	} else {
 		inspectResult, err = integration.Inspect(ctx, inspectReq, inspectConfig)
 	}
@@ -1952,31 +1826,20 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		guidance.Blocked = true
 		guidance.Blocker = "worktree inspection failed: " + err.Error()
 		guidance.Missing = appendUnique(guidance.Missing, "worktree_inspect")
-		guidance.Action = "repair the worktree state and retry runtime task-integrate"
+		guidance.Action = "repair the reported worktree state while retaining the accepted responsibility"
+		guidance, _, recoveryErr := s6IntegrationRecoveryGuidance(root, loaded, *assignment, guidance)
+		if recoveryErr != nil {
+			return policy.Guidance{}, snapshot, recoveryErr
+		}
 		guidance.Instruction = formatGuidanceInstruction(guidance)
 		return guidance, snapshot, nil
 	}
 
-	if reinspectReady && inspectResult.Ready {
-		if inspectResult.SourceHead != priorCheckpoint.SourceHead {
-			return policy.Guidance{}, snapshot, fmt.Errorf("ready source changed; reconcile before retry")
-		}
-		refreshed := priorCheckpoint
-		refreshed.TargetHead = inspectResult.TargetHead
-		written, writeErr := integration.DefaultCheckpointStore().CompareAndSwap(priorPath, priorCheckpoint, refreshed)
-		if writeErr != nil {
-			return policy.Guidance{}, snapshot, writeErr
-		}
-		priorCheckpoint = written
-	}
 	if !inspectResult.Ready {
 		if resumeMerged || prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
 			// Post-merge follow-up: force Ready so Integrate resumes
 			// ack/cleanup without re-running the merge gate (BUG-039-38).
 			inspectResult = inspectionForAckCleanup(*assignment, inspectResult, targetBranch, loaded.BaselineGeneration)
-			if inspectResult.SourceHead == "" {
-				inspectResult.SourceHead = priorCheckpoint.SourceHead
-			}
 		} else {
 			// Preserve rejected pre-merge inspections in the Integrator's
 			// original durable store. Milestone text alone cannot drive rework.
@@ -2013,6 +1876,8 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 				guidance.Action = correctionAction
 				guidance.Instruction = formatGuidanceInstruction(guidance)
 			}
+			guidance.Integration = appendUniqueStrings(guidance.Integration, inspectResult.WorktreeObservation...)
+			guidance.Instruction = formatGuidanceInstruction(guidance)
 			return guidance, snapshot, nil
 		}
 	}
@@ -2051,15 +1916,28 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	}
 
 	if errors.Is(err, integration.ErrCleanupPending) {
-		// Verification remains durable. Report cleanup separately and project
-		// cleanup_pending, never overwrite it with preserved.
-		updated, _, perr := persistSubagentCheckpoint(root, statePath, journalPath, snapshot, &inspectResult, targetBranch, event, integration.StateCleanupPending)
-		if perr != nil {
-			return policy.Guidance{}, snapshot, perr
+		// The original checkpoint already records a resumed cleanup's facts.
+		// Publish the first state change without rewriting the same Runtime
+		// projection on every pending retry (or restoring an old S6 milestone
+		// after S7 has begun). Guidance below always supplies the current cause,
+		// including recovery before the first Runtime projection was written.
+		updated := snapshot
+		if prior != integration.StateCleanupPending {
+			var perr error
+			updated, _, perr = persistSubagentCheckpoint(root, statePath, journalPath, snapshot, &inspectResult, targetBranch, event, integration.StateCleanupPending)
+			if perr != nil {
+				return policy.Guidance{}, snapshot, perr
+			}
 		}
+		// The original Integrator has already verified and acknowledged this
+		// Result. Resource retention is a Main follow-up, not a missing report.
 		guidance := buildGuidance(root, updated.State, event, input)
-		guidance.Action = "integration verified; cleanup pending: preserve and inspect remaining worktree files before retrying cleanup"
-		guidance.Integration = appendUniqueStrings(guidance.Integration, err.Error(), "checkpoint_state=cleanup_pending")
+		guidance.Blocked = false
+		guidance.Blocker = ""
+		guidance.Missing = nil
+		guidance.Action = "integration verified; completion_ack recorded; Main must preserve and inspect the remaining worktree files before retrying cleanup"
+		guidance.Integration = appendUniqueStrings(guidance.Integration, err.Error(), "checkpoint_state=cleanup_pending", "completion_ack recorded")
+		guidance.Integration = appendUniqueStrings(guidance.Integration, inspectResult.WorktreeObservation...)
 		guidance.Instruction = formatGuidanceInstruction(guidance)
 		return guidance, updated, nil
 	}
@@ -2082,6 +1960,7 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 				guidance.Blocker = integrationResult.Checkpoint.FailureReason
 				guidance.Action = "preserve the worktree and branch; inspect the required-check receipt and log, correct the execution environment or failing check, then retry the integration; do not weaken required checks"
 			}
+			guidance.Integration = appendUniqueStrings(guidance.Integration, inspectResult.WorktreeObservation...)
 			guidance.Instruction = formatGuidanceInstruction(guidance)
 			updated, _, perr := persistSubagentCheckpoint(root, statePath, journalPath, snapshot, &inspectResult, targetBranch, event, "preserved")
 			if perr == nil && updated.Revision != 0 {
@@ -2093,7 +1972,8 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		guidance.Blocked = true
 		guidance.Blocker = "integration failed: " + err.Error()
 		guidance.Missing = appendUnique(guidance.Missing, "integration_failure")
-		guidance.Action = "investigate the integration failure; the worktree is preserved"
+		guidance.Action = "investigate the integration failure and retain the original source"
+		guidance.Integration = appendUniqueStrings(guidance.Integration, inspectResult.WorktreeObservation...)
 		guidance.Instruction = formatGuidanceInstruction(guidance)
 		return guidance, snapshot, nil
 	}
@@ -2102,8 +1982,9 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		guidance := buildGuidance(root, snapshot.State, event, input)
 		guidance.Blocked = true
 		guidance.Blocker = "existing integration checkpoint is " + integrationResult.Checkpoint.State + ": " + integrationResult.Checkpoint.FailureReason
-		guidance.Action = "resolve the recorded blocker, then run runtime task-integrate --assignment-id " + assignment.AssignmentID + " --retry-preserved"
+		guidance.Action = fmt.Sprintf("resolve the recorded blocker, then run `loop-harness runtime task-integrate --root %s --assignment-id %s --agent-id %s --retry-preserved`", s6RecoveryShellQuote(root), s6RecoveryShellQuote(assignment.AssignmentID), s6RecoveryShellQuote(assignment.OwnerAgentID))
 		guidance.Integration = []string{"checkpoint_state=" + integrationResult.Checkpoint.State}
+		guidance.Integration = appendUniqueStrings(guidance.Integration, inspectResult.WorktreeObservation...)
 		guidance.Instruction = formatGuidanceInstruction(guidance)
 		return guidance, snapshot, nil
 	}
@@ -2131,20 +2012,21 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		guidance.Blocked = false
 		guidance.Blocker = ""
 		guidance.Integration = appendUniqueStrings(guidance.Integration,
-			fmt.Sprintf("worktree integrated to state=%s", integratedState),
+			fmt.Sprintf("source branch integrated to state=%s", integratedState),
 			"milestone persist deferred: "+err.Error(),
 		)
 		if finishedNative || prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
 			guidance.Integration = appendUniqueStrings(guidance.Integration,
 				"completion_ack recorded; worktree cleanup follow-up applied",
 			)
-			guidance.Action = fmt.Sprintf("worktree integration advanced to %s", integratedState)
+			guidance.Action = fmt.Sprintf("source branch integration advanced to %s", integratedState)
 		} else {
 			guidance.Integration = appendUniqueStrings(guidance.Integration,
 				"retry runtime task-integrate to finish acknowledgement and cleanup",
 			)
-			guidance.Action = fmt.Sprintf("worktree integration advanced to %s; preserve worktree until acknowledged", integratedState)
+			guidance.Action = fmt.Sprintf("source branch integration advanced to %s; preserve worktree until acknowledged", integratedState)
 		}
+		guidance.Integration = appendUniqueStrings(guidance.Integration, inspectResult.WorktreeObservation...)
 		guidance.Instruction = formatGuidanceInstruction(guidance)
 		return guidance, snapshot, nil
 	}
@@ -2157,16 +2039,16 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 	guidance.Blocker = ""
 	if finishedNative || prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
 		guidance.Integration = appendUniqueStrings(guidance.Integration,
-			fmt.Sprintf("worktree integrated to state=%s", integratedState),
+			fmt.Sprintf("source branch integrated to state=%s", integratedState),
 			"completion_ack recorded; worktree cleanup follow-up applied",
 		)
-		guidance.Action = fmt.Sprintf("worktree integration advanced to %s", integratedState)
+		guidance.Action = fmt.Sprintf("source branch integration advanced to %s", integratedState)
 	} else {
 		guidance.Integration = appendUniqueStrings(guidance.Integration,
-			fmt.Sprintf("worktree integrated to state=%s", integratedState),
+			fmt.Sprintf("source branch integrated to state=%s", integratedState),
 			"retry runtime task-integrate to finish acknowledgement and cleanup",
 		)
-		guidance.Action = fmt.Sprintf("worktree integration advanced to %s; preserve worktree until acknowledged", integratedState)
+		guidance.Action = fmt.Sprintf("source branch integration advanced to %s; preserve worktree until acknowledged", integratedState)
 	}
 	guidance.Instruction = formatGuidanceInstruction(guidance)
 
@@ -2181,19 +2063,21 @@ func HandleSubagentStopForController(ctx context.Context, root string, snapshot 
 		guidance.Blocker = ""
 		if finishedNative || prior == integration.StateVerified || prior == integration.StateAcknowledged || prior == integration.StateCleanupPending || prior == integration.StateComplete {
 			guidance.Integration = appendUniqueStrings(guidance.Integration,
-				fmt.Sprintf("worktree integrated to state=%s", integratedState),
+				fmt.Sprintf("source branch integrated to state=%s", integratedState),
 				"completion_ack recorded; worktree cleanup follow-up applied",
 			)
-			guidance.Action = fmt.Sprintf("worktree integration advanced to %s", integratedState)
+			guidance.Action = fmt.Sprintf("source branch integration advanced to %s", integratedState)
 		} else {
 			guidance.Integration = appendUniqueStrings(guidance.Integration,
-				fmt.Sprintf("worktree integrated to state=%s", integratedState),
+				fmt.Sprintf("source branch integrated to state=%s", integratedState),
 				"retry runtime task-integrate to finish acknowledgement and cleanup",
 			)
-			guidance.Action = fmt.Sprintf("worktree integration advanced to %s; preserve worktree until acknowledged", integratedState)
+			guidance.Action = fmt.Sprintf("source branch integration advanced to %s; preserve worktree until acknowledged", integratedState)
 		}
 		guidance.Instruction = formatGuidanceInstruction(guidance)
 	}
+	guidance.Integration = appendUniqueStrings(guidance.Integration, inspectResult.WorktreeObservation...)
+	guidance.Instruction = formatGuidanceInstruction(guidance)
 	return guidance, snapshot, nil
 }
 
@@ -2219,17 +2103,15 @@ func typedRepairResultPacketForAssignment(root string, state map[string]any, ass
 	runtimeID, _ := state["runtime_id"].(string)
 	sessionID, _ := pointer["session_id"].(string)
 	planRef, _ := pointer["plan_ref"].(string)
-	planSHA, _ := pointer["plan_sha256"].(string)
 	currentGeneration := integerValue(baseline["generation"])
-	currentRound := integerValue(reviewMap["round"])
-	if runtimeID == "" || sessionID == "" || planRef == "" || planSHA == "" || currentGeneration <= 0 || currentRound <= 0 {
+	if runtimeID == "" || sessionID == "" || planRef == "" || currentGeneration <= 0 {
 		return workpacket.RepairResultPacket{}, false, nil
 	}
 	allMatches := make([]workpacket.RepairResultPacket, 0, 1)
 	for _, packet := range packets {
 		binding := packet.Binding.Sources
-		if binding.RuntimeID != runtimeID || binding.BaselineGeneration != currentGeneration || binding.ReviewRound != currentRound ||
-			binding.SessionID != sessionID || binding.PlanRef != planRef || binding.PlanSHA256 != planSHA ||
+		if binding.RuntimeID != runtimeID || binding.BaselineGeneration != currentGeneration ||
+			binding.SessionID != sessionID || binding.PlanRef != planRef ||
 			binding.ManifestAssignmentID != assignmentID && binding.RepairAssignmentID != assignmentID {
 			continue
 		}
@@ -2578,8 +2460,6 @@ func persistSubagentCheckpoint(root, statePath, journalPath string, snapshot run
 		fmt.Sprintf("branch=%s", inspection.SourceBranch),
 		fmt.Sprintf("target_branch=%s", targetBranch),
 		fmt.Sprintf("status=%s", integratedState),
-		fmt.Sprintf("source_head=%s", inspection.SourceHead),
-		fmt.Sprintf("merge_base=%s", inspection.MergeBase),
 	}
 	if len(inspection.OutOfScopeDiff) > 0 {
 		integrationEntries = append(integrationEntries, fmt.Sprintf("out_of_scope=%s", strings.Join(inspection.OutOfScopeDiff, ",")))

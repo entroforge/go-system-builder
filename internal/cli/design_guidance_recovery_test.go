@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -52,25 +52,31 @@ func TestS2PendingOutletRetainsActualGapAcrossObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := designGuidanceHook(t, root, "PreToolUse", "Read", arch)
-	if !strings.Contains(output, p.AnswerPath) || !strings.Contains(output, "Restore its original authored bytes") {
-		t.Fatalf("accepted missing answer was hidden: %s", output)
+	if !strings.Contains(output, "already recorded") || !strings.Contains(output, "document:design:locked") || strings.Contains(output, "Restore its original authored bytes") {
+		t.Fatalf("original accepted result or actual material gap was not preserved: %s", output)
 	}
-	designGuidanceHook(t, root, "PostToolUse", "Write", arch)
-	if _, err := os.Stat(filepath.Join(root, p.AnswerPath)); !os.IsNotExist(err) {
-		t.Fatalf("accepted answer recreated: %v", err)
-	}
-	stageJSON(t, root, p.AnswerPath, designDraft(p))
-	writeContractSource(t, root, arch, "# ARCHITECTURE-039\n> Status: locked\n> Version: v1.0.0\n")
 	before := stageSnapshot(t, root)
-	if receipt, err = service.SaveDesign(context.Background(), p.AnswerPath); err != nil || !receipt.WorkComplete {
-		t.Fatalf("original outlet did not resume: %+v %v", receipt, err)
+	prior, found, err := runtime.FindSubmission(before.State, p.ID)
+	if err != nil || !found || prior.ControlStatus != "pending" {
+		t.Fatalf("original pending submission: %+v %v", prior, err)
+	}
+	designGuidanceHook(t, root, "PreToolUse", "Write", arch)
+	writeContractSource(t, root, arch, "# ARCHITECTURE-039\n> Status: locked\n> Version: v1.0.0\n")
+	post := designGuidanceHook(t, root, "PostToolUse", "Write", arch)
+	if _, err := os.Stat(filepath.Join(root, p.AnswerPath)); !os.IsNotExist(err) {
+		t.Fatalf("accepted private answer recreated: %v", err)
+	}
+	after := stageSnapshot(t, root)
+	actual, found, err := runtime.FindSubmission(after.State, p.ID)
+	if err != nil || !found || actual.ControlStatus != "advanced" || actual.Key != prior.Key || actual.EvidenceID != prior.EvidenceID || len(after.State["evidence"].([]any)) != len(before.State["evidence"].([]any)) {
+		t.Fatalf("material save did not continue the original outlet: %+v %v; %s", actual, err, post)
 	}
 	if diagnostic := submission.PlanningDiagnostic(root, before.State, "outlet"); diagnostic != "" {
 		t.Fatalf("successful outlet retained failure: %s", diagnostic)
 	}
 }
 
-func TestS2MissingQuestionnaireRestoresOriginalFilesOnMaterialChange(t *testing.T) {
+func TestS2MissingQuestionnaireRestoresViewWithoutInventingPrivateAnswer(t *testing.T) {
 	root, p := newDesignFixture(t, "none")
 	stageJSON(t, root, p.AnswerPath, designDraft(p))
 	authored, err := os.ReadFile(filepath.Join(root, p.AnswerPath))
@@ -98,9 +104,24 @@ func TestS2MissingQuestionnaireRestoresOriginalFilesOnMaterialChange(t *testing.
 	if err := os.Remove(filepath.Join(root, p.AnswerPath)); err != nil {
 		t.Fatal(err)
 	}
-	designGuidanceHook(t, root, "PostToolUse", "Write", "docs/architecture/ARCHITECTURE-039.md")
-	if _, err := os.Stat(filepath.Join(root, p.AnswerPath)); err != nil {
+	output = designGuidanceHook(t, root, "PostToolUse", "Write", "docs/architecture/ARCHITECTURE-039.md")
+	if _, err := os.Stat(filepath.Join(root, p.AnswerPath)); !os.IsNotExist(err) {
+		t.Fatalf("unreceived private answer was invented: %v", err)
+	}
+	if !strings.Contains(output, "missing author's answer is unknown") {
+		t.Fatalf("missing original work was not reported as unknown: %s", output)
+	}
+	if current := stageSnapshot(t, root); current.Revision != before.Revision {
+		t.Fatal("missing answer changed the original issuance")
+	}
+	// The actual author can still save their own recovered work at the issued path.
+	designGuidanceHook(t, root, "PreToolUse", "Write", p.AnswerPath)
+	if err := os.WriteFile(filepath.Join(root, p.AnswerPath), authored, 0600); err != nil {
 		t.Fatal(err)
+	}
+	designGuidanceHook(t, root, "PostToolUse", "Write", p.AnswerPath)
+	if _, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, p.ID); err != nil || !found {
+		t.Fatalf("actual author save did not reach the original receiver: found=%t err=%v", found, err)
 	}
 }
 
@@ -149,17 +170,9 @@ func TestS3PreparationFailureSurvivesReadAndClearsAfterActualRepair(t *testing.T
 
 func TestS2RecoveryKeepsPreviouslyIssuedTemplate(t *testing.T) {
 	root, current := newDesignFixture(t, "none")
-	// Model a prior release with its own template digest and packet identity.
+	// Model the original responsibility issued with earlier guidance.
 	prior := current
 	prior.Draft.Instruction = "Earlier issued design instructions."
-	prior.TemplateSHA = workpacket.Digest([]byte(prior.Draft.Instruction))
-	identity, _ := json.Marshal(struct {
-		Binding     workpacket.PlanningBinding
-		TemplateSHA string
-	}{prior.Binding, prior.TemplateSHA})
-	prior.ID = "packet-" + workpacket.Digest(identity)
-	prior.ViewPath = strings.ReplaceAll(current.ViewPath, current.ID, prior.ID)
-	prior.AnswerPath = strings.ReplaceAll(current.AnswerPath, current.ID, prior.ID)
 	data, _ := json.Marshal(prior)
 	var row map[string]any
 	if err := json.Unmarshal(data, &row); err != nil {
@@ -168,6 +181,7 @@ func TestS2RecoveryKeepsPreviouslyIssuedTemplate(t *testing.T) {
 	state := stageSnapshot(t, root).State
 	state["entities"].(map[string]any)["work_packets"] = []any{row}
 	fixtures.WriteState(t, root, state)
+	stageJSON(t, root, prior.ViewPath, prior)
 	stageJSON(t, root, prior.AnswerPath, designDraft(prior))
 	service, err := submission.New(root)
 	if err != nil {
@@ -217,7 +231,7 @@ func TestS2CLIRecoverUsesSameDiskAuthorityAsOriginalSave(t *testing.T) {
 	if diagnostic := submission.PlanningDiagnostic(root, before.State, "outlet"); diagnostic != "" {
 		t.Fatal(diagnostic)
 	}
-	if diagnostic := submission.PlanningDiagnostic(root, after.State, "preparation"); !strings.Contains(diagnostic, arch) {
+	if diagnostic := submission.PlanningDiagnostic(root, after.State, "preparation"); !strings.Contains(diagnostic, "docs/design") {
 		t.Fatalf("S3 source failure lost: %s", diagnostic)
 	}
 }

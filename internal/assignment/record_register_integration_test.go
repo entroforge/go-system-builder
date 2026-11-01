@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -47,6 +48,9 @@ func TestRegisterS6CommitsRecordAndCanonicalActivationScopeTogether(t *testing.T
 	}
 	if err := json.Unmarshal(encodedRecord, &record); err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedRecord), `"sha256"`) || strings.Contains(string(encodedRecord), `"source_sha256"`) {
+		t.Fatalf("new Assignment Record registered historical digest fields: %s", encodedRecord)
 	}
 	if err := ValidateRecord(record); err != nil {
 		t.Fatalf("registered record is invalid: %v", err)
@@ -91,12 +95,15 @@ func TestRegisterS6CommitsRecordAndCanonicalActivationScopeTogether(t *testing.T
 	if activation.AgentID != record.OwnerAgentID || !reflect.DeepEqual(activation.AllowedWritePaths, record.EffectiveWritePaths) {
 		t.Fatalf("activation scope %v for %s does not match canonical record scope %v for %s", activation.AllowedWritePaths, activation.AgentID, record.EffectiveWritePaths, record.OwnerAgentID)
 	}
-	recordDigest, err := record.Digest()
-	if err != nil {
-		t.Fatal(err)
+	if activation.AssignmentRecord == nil || *activation.AssignmentRecord != record.Reference() {
+		t.Fatalf("pre-staged envelope does not bind the original Assignment without a digest: %+v", activation)
 	}
-	if activation.AssignmentRecord == nil || *activation.AssignmentRecord != record.Reference() || activation.AssignmentRecordSHA256 != recordDigest {
-		t.Fatalf("pre-staged envelope does not bind the canonical Assignment ref/digest: %+v", activation)
+	for _, profile := range record.CheckProfiles {
+		for _, source := range append(append([]checkexec.FileRef{}, profile.Dependencies...), profile.Fixtures...) {
+			if source.Path == "" {
+				t.Fatalf("registered CheckProfile lost its original source path: %+v", source)
+			}
+		}
 	}
 	// The manifest's raw write scope is src. Registration must project the
 	// narrower reviewed intersection stored in the canonical Assignment.
@@ -216,7 +223,7 @@ func TestRegisterS6RejectsInvalidClosingContractBeforeWriterCommit(t *testing.T)
 	}
 }
 
-func TestRegisterS6RejectsWorkerClosingProfileSourceDriftBeforeWriterCommit(t *testing.T) {
+func TestRegisterS6KeepsWorkerProfileResponsibilityWhenSourceChanges(t *testing.T) {
 	fixture := newRecordRegistrationFixture(t, recordRegistrationFixtureOptions{})
 	const workerPath = "src/pkg/worker_input.go"
 	configureRegistrationClosing(t, &fixture, assignmentrecord.ClosingContractVersion, "post_merge", "main", true)
@@ -245,26 +252,17 @@ func TestRegisterS6RejectsWorkerClosingProfileSourceDriftBeforeWriterCommit(t *t
 	}
 	state, statePath, journalPath := prepareRegistrationRuntime(t, fixture)
 	writeRegistrationJSON(t, statePath, state)
-	beforeState, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = Register(fixture.root, statePath, journalPath, Request{
+	next, err := Register(fixture.root, statePath, journalPath, Request{
 		ExpectedRevision: 8,
 		ManifestPath:     filepath.Join(fixture.root, filepath.FromSlash(fixture.manifestRef)),
-		TaskID:           fixture.taskID,
-		TaskPath:         filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
-		OccurredAt:       time.Date(2026, 10, 14, 12, 12, 0, 0, time.UTC),
+		TaskID:           fixture.taskID, TaskPath: filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
+		OccurredAt: time.Date(2026, 10, 14, 12, 12, 0, 0, time.UTC),
 	})
-	if err == nil || !strings.Contains(err.Error(), "formal file view and checkout differ") {
-		t.Fatalf("Worker CheckProfile source drift error = %v", err)
+	if err != nil {
+		t.Fatalf("changed Worker source blocked original registration: %v", err)
 	}
-	afterState, readErr := os.ReadFile(statePath)
-	if readErr != nil || !bytes.Equal(beforeState, afterState) {
-		t.Fatalf("rejected Worker profile drift changed Runtime state: read err=%v", readErr)
-	}
-	if _, statErr := os.Stat(journalPath); !os.IsNotExist(statErr) {
-		t.Fatalf("rejected Worker profile drift wrote Runtime journal (stat err=%v)", statErr)
+	if agent := registrationAgent(next.State, "agent-s6-registration"); agent == nil || recordRegistrationString(agent["activation_ref"]) == "" {
+		t.Fatalf("original Worker responsibility was not registered: %v", agent)
 	}
 }
 
@@ -309,57 +307,25 @@ func TestRegisterLegacyManifestDoesNotCreateAssignmentRecords(t *testing.T) {
 	}
 }
 
-func TestRegisterS6SourceDriftLeavesRuntimePairAndActivationUntouched(t *testing.T) {
+func TestRegisterS6KeepsOriginalResponsibilityWhenSourceChanges(t *testing.T) {
 	fixture := newRecordRegistrationFixture(t, recordRegistrationFixtureOptions{})
 	manifestPath := filepath.Join(fixture.root, filepath.FromSlash(fixture.manifestRef))
 	state, statePath, journalPath := prepareRegistrationRuntime(t, fixture)
 	writeRegistrationJSON(t, statePath, state)
-	beforeState, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeJournal, journalErr := os.ReadFile(journalPath)
-	if journalErr != nil && !os.IsNotExist(journalErr) {
-		t.Fatal(journalErr)
-	}
-
 	dependency := filepath.Join(fixture.root, "src", "pkg", "input.go")
-	if err := os.WriteFile(dependency, []byte("package pkg\n// uncommitted source drift\n"), 0o644); err != nil {
+	if err := os.WriteFile(dependency, []byte("package pkg\n// current source changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = Register(fixture.root, statePath, journalPath, Request{
-		ExpectedRevision: 8,
-		ManifestPath:     manifestPath,
-		TaskID:           fixture.taskID,
-		TaskPath:         filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
-		OccurredAt:       time.Date(2026, 10, 14, 12, 2, 0, 0, time.UTC),
+	next, err := Register(fixture.root, statePath, journalPath, Request{
+		ExpectedRevision: 8, ManifestPath: manifestPath, TaskID: fixture.taskID,
+		TaskPath:   filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
+		OccurredAt: time.Date(2026, 10, 14, 12, 2, 0, 0, time.UTC),
 	})
-	if err == nil || !strings.Contains(err.Error(), "formal file view and checkout differ") {
-		t.Fatalf("source drift error = %v", err)
-	}
-	afterState, err := os.ReadFile(statePath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("changed source blocked original registration: %v", err)
 	}
-	if !bytes.Equal(beforeState, afterState) {
-		t.Fatal("rejected source drift changed Runtime state")
-	}
-	afterJournal, afterJournalErr := os.ReadFile(journalPath)
-	if journalErr == nil {
-		if afterJournalErr != nil || !bytes.Equal(beforeJournal, afterJournal) {
-			t.Fatal("rejected source drift changed Runtime journal")
-		}
-	} else if !os.IsNotExist(afterJournalErr) {
-		t.Fatalf("rejected source drift left or changed Runtime journal: %v", afterJournalErr)
-	}
-	activationPath := activationEnvelopePath(fixture.root, "workgroup-s6-registration", fixture.taskID, "agent-s6-registration")
-	if _, statErr := os.Stat(activationPath); !os.IsNotExist(statErr) {
-		t.Fatalf("rejected source drift left activation artifact %s (stat err=%v)", activationPath, statErr)
-	}
-	if entries, readErr := os.ReadDir(filepath.Dir(activationPath)); readErr == nil && len(entries) != 0 {
-		t.Fatalf("rejected source drift left staged activation files: %v", entries)
-	} else if readErr != nil && !os.IsNotExist(readErr) {
-		t.Fatal(readErr)
+	if agent := registrationAgent(next.State, "agent-s6-registration"); agent == nil || recordRegistrationString(agent["activation_ref"]) == "" {
+		t.Fatalf("original responsibility was not registered: %v", agent)
 	}
 }
 
@@ -383,23 +349,21 @@ func prepareRegistrationRuntimeVersion(t *testing.T, fixture recordRegistrationF
 	state["revision"] = float64(8)
 	delete(state, "milestone")
 	state["last_transition"] = nil
-	state["definition"] = registrationFingerprint(t, fixture.root, "docs/control/loop-definition.json", "1.3.0")
-	state["hook_control"].(map[string]any)["policy_ref"] = registrationFingerprint(t, fixture.root, "docs/control/hook-policy.json", "v2.0.0")
+	state["definition"] = registrationReference(t, fixture.root, "docs/control/loop-definition.json", "1.3.0")
+	state["hook_control"].(map[string]any)["policy_ref"] = registrationReference(t, fixture.root, "docs/control/hook-policy.json", "v2.0.0")
 	state["lifecycle"] = map[string]any{"state": "building", "phase": nil, "phase_revision": float64(0)}
 	state["bound_req"] = map[string]any{
-		"path": "docs/requirements/REQ-001.md", "version": "v1.0.0", "sha256": strings.Repeat("1", 64),
+		"path": "docs/requirements/REQ-001.md", "version": "v1.0.0",
 		"id": "REQ-001", "status": "locked", "approved_by": "user", "approved_at": "2026-10-14T00:00:00Z",
-		"workspace": map[string]any{"project_root": fixture.root, "dev_branch": "main", "release_upstream": "main", "bound_commit": "baseline"},
+		"workspace": map[string]any{"project_root": fixture.root, "dev_branch": "main", "release_upstream": "main"},
 	}
-	taskSHA := registrationSHA(fixture.task)
 	indexRef := "docs/dev/tasks/index-REQ-001.md"
-	indexBytes, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(indexRef)))
-	if err != nil {
+	if _, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(indexRef))); err != nil {
 		t.Fatal(err)
 	}
 	state["documents"] = []any{
-		map[string]any{"id": fixture.taskID, "kind": "task", "path": fixture.taskRef, "version": "v1.0.0", "sha256": taskSHA, "status": "locked", "generation": float64(1)},
-		map[string]any{"id": "dispatch-plan:REQ-001", "kind": "dispatch_plan", "path": indexRef, "version": "1", "sha256": registrationSHA(indexBytes), "status": "locked", "generation": float64(1)},
+		map[string]any{"id": fixture.taskID, "kind": "task", "path": fixture.taskRef, "version": "v1.0.0", "status": "locked", "generation": float64(1)},
+		map[string]any{"id": "dispatch-plan:REQ-001", "kind": "dispatch_plan", "path": indexRef, "version": "1", "status": "locked", "generation": float64(1)},
 	}
 	state["baseline"] = map[string]any{"generation": float64(1), "captured_at": "2026-10-14T00:00:00Z"}
 	state["entities"] = map[string]any{
@@ -438,13 +402,12 @@ func narrowRegistrationFixtureScope(t *testing.T, fixture recordRegistrationFixt
 	gitRegistration(t, fixture.root, "commit", "-m", "review narrow assignment authority")
 }
 
-func registrationFingerprint(t *testing.T, root, path, version string) map[string]any {
+func registrationReference(t *testing.T, root, path, version string) map[string]any {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
-	if err != nil {
+	if _, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path))); err != nil {
 		t.Fatal(err)
 	}
-	return map[string]any{"path": path, "version": version, "sha256": registrationSHA(data)}
+	return map[string]any{"path": path, "version": version}
 }
 
 func writeRegistrationJSON(t *testing.T, path string, value any) {
@@ -510,8 +473,9 @@ func TestRegisterS6AgentBeginRunsCanonicalThinPlanToWorking(t *testing.T) {
 	if err := json.Unmarshal(activationData, &activation); err != nil {
 		t.Fatal(err)
 	}
-	if activation["assignment_record_sha256"] != mustRecordDigest(t, record) || !reflect.DeepEqual(activation["allowed_write_paths"], []any{"src/pkg"}) {
-		t.Fatalf("activation message projection = %v / %v", activation["assignment_record_sha256"], activation["allowed_write_paths"])
+	requireActivationRecord(t, activation, record.Reference())
+	if !reflect.DeepEqual(activation["allowed_write_paths"], []any{"src/pkg"}) {
+		t.Fatalf("activation message scope = %v", activation["allowed_write_paths"])
 	}
 	if _, err := os.Stat(filepath.Join(fixture.root, filepath.FromSlash(stagedRef))); err != nil {
 		t.Fatalf("original pre-staged activation envelope %s is not recoverable: %v", stagedRef, err)
@@ -520,27 +484,6 @@ func TestRegisterS6AgentBeginRunsCanonicalThinPlanToWorking(t *testing.T) {
 }
 
 func TestRegisterS6PlanAndActivationGuardsRejectTamperedProjectionAndRevision(t *testing.T) {
-	t.Run("PLAN record digest", func(t *testing.T) {
-		fixture, statePath, journalPath, record, _ := registerAgentBeginFixture(t, true)
-		planPath := writeThinS6Plan(t, fixture, record, "msg-s6-plan-bad-digest", "corr-s6-plan-bad-digest")
-		data, err := os.ReadFile(planPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var plan map[string]any
-		if err := json.Unmarshal(data, &plan); err != nil {
-			t.Fatal(err)
-		}
-		plan["assignment_record_sha256"] = strings.Repeat("0", 64)
-		writeRegistrationJSON(t, planPath, plan)
-		beforeState, beforeJournal := registrationPairBytes(t, statePath, journalPath)
-		_, _, err = AgentBegin(fixture.root, statePath, journalPath, AgentBeginRequest{ExpectedRevision: -1, AgentID: record.OwnerAgentID, PlanPath: planPath})
-		if err == nil || !strings.Contains(err.Error(), "does not bind the current Assignment") {
-			t.Fatalf("tampered thin PLAN digest error = %v", err)
-		}
-		assertRegistrationPairUnchanged(t, statePath, journalPath, beforeState, beforeJournal)
-	})
-
 	t.Run("activation scope projection", func(t *testing.T) {
 		fixture, statePath, journalPath, record, _ := registerAgentBeginFixture(t, true)
 		planPath := writeThinS6Plan(t, fixture, record, "msg-s6-plan-bad-projection", "corr-s6-plan-bad-projection")
@@ -588,25 +531,26 @@ func TestRegisterS6PlanAndActivationGuardsRejectTamperedProjectionAndRevision(t 
 	})
 }
 
-func TestRegisterS6AgentBeginRejectsChangedRecordSourceWithoutRuntimeMutation(t *testing.T) {
+func TestRegisterS6AgentBeginKeepsOriginalResponsibilityWhenSourceChanges(t *testing.T) {
 	fixture, statePath, journalPath, record, _ := registerAgentBeginFixture(t, true)
 	planPath := writeThinS6Plan(t, fixture, record, "msg-s6-plan-source-drift", "corr-s6-plan-source-drift")
-	beforeState, beforeJournal := registrationPairBytes(t, statePath, journalPath)
 	sourcePath := filepath.Join(fixture.root, filepath.FromSlash(record.AgentDefinition.Ref))
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(sourcePath, append(data, []byte("\n<!-- post-registration drift -->\n")...), 0o644); err != nil {
+	if err := os.WriteFile(sourcePath, append(data, []byte("\n<!-- later source edit -->\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = AgentBegin(fixture.root, statePath, journalPath, AgentBeginRequest{
+	snapshot, outcome, err := AgentBegin(fixture.root, statePath, journalPath, AgentBeginRequest{
 		ExpectedRevision: -1, AgentID: record.OwnerAgentID, PlanPath: planPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "changed after registration") {
-		t.Fatalf("changed source error = %v", err)
+	if err != nil || !outcome.Chained || outcome.FinalState != "working" {
+		t.Fatalf("original AgentBegin after source edit: %+v %v", outcome, err)
 	}
-	assertRegistrationPairUnchanged(t, statePath, journalPath, beforeState, beforeJournal)
+	if agent := registrationAgent(snapshot.State, record.OwnerAgentID); agent == nil || agent["state"] != "working" {
+		t.Fatalf("original Agent responsibility lost: %v", agent)
+	}
 }
 
 func TestRegisterS6AgentBeginResumesOriginalActivationAndUsesRecordWithoutEnvelope(t *testing.T) {
@@ -684,8 +628,9 @@ func TestRegisterS6AgentBeginResumesOriginalActivationAndUsesRecordWithoutEnvelo
 		if err := json.Unmarshal(data, &projection); err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(projection["allowed_write_paths"], []any{"src/pkg"}) || projection["assignment_record_sha256"] != mustRecordDigest(t, record) {
-			t.Fatalf("recovered activation widened or detached from the Record: paths=%v record_sha=%v", projection["allowed_write_paths"], projection["assignment_record_sha256"])
+		requireActivationRecord(t, projection, record.Reference())
+		if !reflect.DeepEqual(projection["allowed_write_paths"], []any{"src/pkg"}) {
+			t.Fatalf("recovered activation widened scope: paths=%v", projection["allowed_write_paths"])
 		}
 	})
 
@@ -706,14 +651,26 @@ func TestRegisterS6AgentBeginResumesOriginalActivationAndUsesRecordWithoutEnvelo
 			t.Fatal(err)
 		}
 		broadenRegistrationManifest(t, fixture)
-		beforeState, beforeJournal := registrationPairBytes(t, statePath, journalPath)
-		_, _, err = AgentBegin(fixture.root, statePath, journalPath, AgentBeginRequest{
+		snapshot, outcome, err := AgentBegin(fixture.root, statePath, journalPath, AgentBeginRequest{
 			ExpectedRevision: -1, AgentID: record.OwnerAgentID, PlanPath: planPath,
 		})
-		if err == nil || !strings.Contains(err.Error(), "manifest-s6-registration.json changed after registration") {
-			t.Fatalf("changed manifest error = %v", err)
+		if err != nil || !outcome.Chained || outcome.FinalState != "working" {
+			t.Fatalf("recover original responsibility after manifest edit: %+v %v", outcome, err)
 		}
-		assertRegistrationPairUnchanged(t, statePath, journalPath, beforeState, beforeJournal)
+		agent := registrationAgent(snapshot.State, record.OwnerAgentID)
+		activationRef := recordRegistrationString(agent["activation_ref"])
+		data, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(activationRef)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var projection map[string]any
+		if err := json.Unmarshal(data, &projection); err != nil {
+			t.Fatal(err)
+		}
+		requireActivationRecord(t, projection, record.Reference())
+		if !reflect.DeepEqual(projection["allowed_write_paths"], []any{"src/pkg"}) {
+			t.Fatalf("manifest edit widened the original responsibility: %v", projection["allowed_write_paths"])
+		}
 	})
 }
 
@@ -787,17 +744,16 @@ func registerAgentBeginConfiguredFixtureVersion(t *testing.T, narrowScope bool, 
 
 func writeThinS6Plan(t *testing.T, fixture recordRegistrationFixture, record Record, messageID, correlationID string) string {
 	t.Helper()
-	digest := mustRecordDigest(t, record)
 	message := map[string]any{
 		"schema_version": "1.0.0", "message_type": "plan_report", "message_id": messageID, "correlation_id": correlationID,
 		"runtime_id": record.RuntimeID, "agent_id": record.OwnerAgentID, "agent_definition_ref": record.AgentDefinition.Ref,
 		"task_id": record.Task.ID, "bug_id": nil, "team_id": record.TeamID, "occurred_at": "2026-10-14T12:31:00Z",
 		"assignment_id": record.AssignmentID, "assignment_revision": record.Revision,
-		"assignment_record_contract": AssignmentRecordContract, "assignment_record_sha256": digest,
-		"objective":        "Implement the reviewed S6 TASK inside its locked scope",
-		"planned_paths":    []string{"src/pkg/input.go"},
-		"assertion_checks": []any{map[string]any{"assertion": "TASK behavior is implemented", "oracle": "the selected required check passes"}},
-		"dependencies":     []string{}, "risks_blockers": []string{},
+		"assignment_record_contract": AssignmentRecordContract,
+		"objective":                  "Implement the reviewed S6 TASK inside its locked scope",
+		"planned_paths":              []string{"src/pkg/input.go"},
+		"assertion_checks":           []any{map[string]any{"assertion": "TASK behavior is implemented", "oracle": "the selected required check passes"}},
+		"dependencies":               []string{}, "risks_blockers": []string{},
 	}
 	if record.ClosingContract != nil {
 		indexes := make([]int, len(record.DoneWhen))
@@ -811,13 +767,12 @@ func writeThinS6Plan(t *testing.T, fixture recordRegistrationFixture, record Rec
 
 func buildS6ActivationProjection(t *testing.T, fixture recordRegistrationFixture, record Record, planPath string, revision int, messageID, correlationID string) map[string]any {
 	t.Helper()
-	digest := mustRecordDigest(t, record)
 	ref := record.Reference()
 	activation, err := BuildPlanCheckpointActivationMessage(
 		fixture.root, record.RuntimeID, record.OwnerAgentID, record.AgentDefinition.Ref, record.Task.ID, record.TeamID,
 		revision, planPath,
 		ActivationSourceEntry{
-			AssignmentRecord: &ref, AssignmentRecordSHA256: digest, AgentID: record.OwnerAgentID,
+			AssignmentRecord: &ref, AgentID: record.OwnerAgentID,
 			AgentDefinitionRef: record.AgentDefinition.Ref, SkillRefs: record.SkillRefs,
 			WritePaths: record.EffectiveWritePaths,
 		},
@@ -853,13 +808,16 @@ func registrationAgent(state map[string]any, agentID string) map[string]any {
 	return nil
 }
 
-func mustRecordDigest(t *testing.T, record Record) string {
+func requireActivationRecord(t *testing.T, message map[string]any, want assignmentrecord.RecordReference) {
 	t.Helper()
-	digest, err := record.Digest()
+	data, err := json.Marshal(message["assignment_record"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	return digest
+	var got assignmentrecord.RecordReference
+	if err := json.Unmarshal(data, &got); err != nil || got != want {
+		t.Fatalf("activation lost its actual Assignment responsibility: %+v %v", got, err)
+	}
 }
 
 func mustRelative(t *testing.T, root, path string) string {

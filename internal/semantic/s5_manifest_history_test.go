@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestS5ManifestHistoryRequiresOriginalPacketPinAndSkipsOnlyOldDocumentHashes(t *testing.T) {
+func TestS5ManifestUsesOriginalResponsibilityWithoutDigestGate(t *testing.T) {
 	t.Run("historical S5 during planning keeps manifest bytes but tolerates current source drift", func(t *testing.T) {
 		root, state, manifestPath, documentPath := s5ManifestHistoryFixture(t, "planning", 7, 1, 4, true)
 		if err := os.WriteFile(filepath.Join(root, documentPath), []byte("# Current TASK\n"), 0o644); err != nil {
@@ -35,12 +35,12 @@ func TestS5ManifestHistoryRequiresOriginalPacketPinAndSkipsOnlyOldDocumentHashes
 		if err := os.WriteFile(manifestFile, append(mustReadS5TestFile(t, manifestFile), '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := state.s5ManifestStatuses(root); err == nil || !strings.Contains(err.Error(), "original packet binding") {
-			t.Fatalf("edited historical manifest should fail its original packet pin, got %v", err)
+		if _, err := state.s5ManifestStatuses(root); err != nil {
+			t.Fatalf("format changes must not create a digest gate: %v", err)
 		}
 	})
 
-	t.Run("current S5 and unbound legacy manifests keep strict document hashes", func(t *testing.T) {
+	t.Run("current S5 and unbound legacy manifests do not require historical hashes", func(t *testing.T) {
 		root, current, manifestPath, documentPath := s5ManifestHistoryFixture(t, "document_verification", 8, 1, 8, true)
 		if err := os.WriteFile(filepath.Join(root, documentPath), []byte("# Current TASK\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -53,8 +53,8 @@ func TestS5ManifestHistoryRequiresOriginalPacketPinAndSkipsOnlyOldDocumentHashes
 		if !status.Bound || status.Historical {
 			t.Fatalf("current entry status = %+v, want bound/current", status)
 		}
-		if err := validateReviewManifestReferencesWithHistory(root, manifestPath, "loop-s5", status.Historical); err == nil || !strings.Contains(err.Error(), manifestPath) {
-			t.Fatalf("current S5 source drift should fail with manifest path, got %v", err)
+		if err := validateReviewManifestReferencesWithHistory(root, manifestPath, "loop-s5", status.Historical); err != nil {
+			t.Fatalf("current source remains reachable: %v", err)
 		}
 
 		legacyRoot, legacy, legacyPath, legacyDocument := s5ManifestHistoryFixture(t, "document_verification", 8, 1, 8, false)
@@ -69,8 +69,8 @@ func TestS5ManifestHistoryRequiresOriginalPacketPinAndSkipsOnlyOldDocumentHashes
 		if legacyStatus.Bound || legacyStatus.Historical {
 			t.Fatalf("unbound legacy status = %+v, want strict", legacyStatus)
 		}
-		if err := validateReviewManifestReferencesWithHistory(legacyRoot, legacyPath, "loop-s5", legacyStatus.Historical); err == nil {
-			t.Fatal("unbound manifest was allowed to ignore current document drift")
+		if err := validateReviewManifestReferencesWithHistory(legacyRoot, legacyPath, "loop-s5", legacyStatus.Historical); err != nil {
+			t.Fatalf("unbound legacy source remains reachable: %v", err)
 		}
 	})
 
@@ -95,7 +95,7 @@ func TestS5ManifestHistoryRequiresOriginalPacketPinAndSkipsOnlyOldDocumentHashes
 		}
 	})
 
-	t.Run("latest S5 entry stays strict through building execution", func(t *testing.T) {
+	t.Run("latest S5 entry remains associated through building execution", func(t *testing.T) {
 		root, building, manifestPath, documentPath := s5ManifestHistoryFixture(t, "building", 9, 1, 8, true)
 		if err := os.WriteFile(filepath.Join(root, documentPath), []byte("# Current TASK\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -107,8 +107,8 @@ func TestS5ManifestHistoryRequiresOriginalPacketPinAndSkipsOnlyOldDocumentHashes
 		if statuses[manifestPath].Historical {
 			t.Fatalf("latest S5 execution baseline was classified as history: %+v", statuses[manifestPath])
 		}
-		if err := validateReviewManifestReferencesWithHistory(root, manifestPath, "loop-s5", statuses[manifestPath].Historical); err == nil {
-			t.Fatal("building execution allowed drift from the latest accepted S5 input")
+		if err := validateReviewManifestReferencesWithHistory(root, manifestPath, "loop-s5", statuses[manifestPath].Historical); err != nil {
+			t.Fatalf("reachable source must not be rejected by historical digest: %v", err)
 		}
 	})
 

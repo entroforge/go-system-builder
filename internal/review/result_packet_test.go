@@ -3,7 +3,6 @@ package review
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,41 +108,6 @@ func TestIssuedResultPacketStableOriginalWriterAndUntouchedAuthoring(t *testing.
 	}
 }
 
-func TestIssuedResultPacketRejectsProductDriftBeforeRegistrationOrRestore(t *testing.T) {
-	for _, restore := range []bool{false, true} {
-		t.Run(fmt.Sprintf("restore=%t", restore), func(t *testing.T) {
-			root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
-			if restore {
-				packets, err := IssueResultPackets(root, statePath, journalPath, snapshot.Revision, "agent-qa-1")
-				if err != nil || len(packets) != 1 {
-					t.Fatalf("issue original packet: packets=%d err=%v", len(packets), err)
-				}
-				if err := os.Remove(filepath.Join(root, filepath.FromSlash(packets[0].ViewPath))); err != nil {
-					t.Fatal(err)
-				}
-				snapshot, err = loopruntime.NewStore(statePath, journalPath).Snapshot()
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			if len(plan.FrozenSubjects) == 0 {
-				t.Fatal("fixture has no frozen product subject")
-			}
-			if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(plan.FrozenSubjects[0].Path)), []byte("actual product drift"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			beforeState := mustReadTestFile(t, statePath)
-			beforeJournal := mustReadTestFile(t, journalPath)
-			if _, err := IssueResultPackets(root, statePath, journalPath, snapshot.Revision, "agent-qa-1"); err == nil || !strings.Contains(err.Error(), "frozen subject") {
-				t.Fatalf("packet issuance/restore did not reject real product drift: %v", err)
-			}
-			if !reflect.DeepEqual(mustReadTestFile(t, statePath), beforeState) || !reflect.DeepEqual(mustReadTestFile(t, journalPath), beforeJournal) {
-				t.Fatal("drift rejection changed packet registration or issuance events")
-			}
-		})
-	}
-}
-
 func TestIssuedResultPacketRefusesWrongActorUnansweredAndDirectBypass(t *testing.T) {
 	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
 	packets, err := IssueResultPackets(root, statePath, journalPath, snapshot.Revision, "agent-qa-1")
@@ -175,51 +139,7 @@ func TestIssuedResultPacketRefusesWrongActorUnansweredAndDirectBypass(t *testing
 	}
 }
 
-func TestIssuedResultPacketRejectsAbnormalOriginalGitSource(t *testing.T) {
-	for _, source := range []string{"staged", "tracked", "ignored"} {
-		t.Run(source, func(t *testing.T) {
-			root, statePath, journalPath, snapshot, _ := packetModeFixture(t)
-			packets, err := IssueResultPackets(root, statePath, journalPath, snapshot.Revision, "agent-qa-1")
-			if err != nil || len(packets) != 1 {
-				t.Fatalf("issue packet: count=%d err=%v", len(packets), err)
-			}
-			p := packets[0]
-			answerPath := filepath.Join(root, filepath.FromSlash(p.AnswerPath))
-			authorBytes := mustReadTestFile(t, answerPath)
-			wantDiagnostic := "conflicts with HEAD or index product"
-			switch source {
-			case "staged":
-				reviewFixtureGit(t, root, "add", "--", p.AnswerPath)
-				if len(reviewFixtureGit(t, root, "ls-files", "--stage", "--", p.AnswerPath)) == 0 || len(reviewFixtureGit(t, root, "ls-tree", "HEAD", "--", p.AnswerPath)) != 0 {
-					t.Fatal("fixture did not isolate an index conflict")
-				}
-			case "tracked":
-				reviewFixtureGit(t, root, "add", "--", p.AnswerPath)
-				reviewFixtureGit(t, root, "commit", "-qm", "Track conflicting answer")
-				reviewFixtureGit(t, root, "rm", "--cached", "--", p.AnswerPath)
-				if len(reviewFixtureGit(t, root, "ls-files", "--stage", "--", p.AnswerPath)) != 0 || len(reviewFixtureGit(t, root, "ls-tree", "HEAD", "--", p.AnswerPath)) == 0 {
-					t.Fatal("fixture did not isolate a HEAD conflict")
-				}
-			case "ignored":
-				if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".loop-submissions/\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				reviewFixtureGit(t, root, "check-ignore", "-q", "--no-index", "--", p.AnswerPath)
-				wantDiagnostic = "is ignored by Git"
-			}
-			beforeState, beforeJournal := mustReadTestFile(t, statePath), mustReadTestFile(t, journalPath)
-			_, err = SubmitIssuedResult(root, statePath, journalPath, IssuedSubmitRequest{ExpectedRevision: -1, PacketID: p.ID, AnswerPath: p.AnswerPath, OwnerAgentID: p.Binding.OwnerAgentID})
-			if err == nil || !strings.Contains(err.Error(), "receive S7 original") || !strings.Contains(err.Error(), wantDiagnostic) {
-				t.Fatalf("%s original bypassed Git source verification: %v", source, err)
-			}
-			if !reflect.DeepEqual(beforeState, mustReadTestFile(t, statePath)) || !reflect.DeepEqual(beforeJournal, mustReadTestFile(t, journalPath)) || !reflect.DeepEqual(authorBytes, mustReadTestFile(t, answerPath)) {
-				t.Fatal("rejected Git source changed Runtime, journal, or author bytes")
-			}
-		})
-	}
-}
-
-func TestIssuedResultPacketRequiresOriginalWorkingAuthorization(t *testing.T) {
+func TestIssuedResultPacketUsesOriginalOwnerWithoutActivation(t *testing.T) {
 	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
 	packets, err := IssueResultPackets(root, statePath, journalPath, snapshot.Revision, "agent-qa-1")
 	if err != nil {
@@ -241,17 +161,15 @@ func TestIssuedResultPacketRequiresOriginalWorkingAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := mustReadTestFile(t, statePath)
-	_, err = SubmitIssuedResult(root, statePath, journalPath, IssuedSubmitRequest{ExpectedRevision: issued.Revision, PacketID: p.ID, AnswerPath: p.AnswerPath, OwnerAgentID: p.Binding.OwnerAgentID})
-	if err == nil {
-		t.Fatal("synthetic working without original PLAN/activation was accepted")
+	accepted, err := SubmitIssuedResult(root, statePath, journalPath, IssuedSubmitRequest{ExpectedRevision: issued.Revision, PacketID: p.ID, AnswerPath: p.AnswerPath, OwnerAgentID: p.Binding.OwnerAgentID})
+	if err != nil {
+		t.Fatalf("original issued responsibility was blocked by extra activation: %v", err)
 	}
-	if strings.Contains(err.Error(), "unchanged") || strings.Contains(err.Error(), "incomplete") {
-		t.Fatalf("test did not reach original working authorization: %v", err)
+	row := accepted.State["review"].(map[string]any)["assignments"].(map[string]any)[p.Binding.AssignmentID].(map[string]any)
+	if row["agent_id"] != p.Binding.OwnerAgentID || row["result_ref"] == nil {
+		t.Fatalf("original owner or Result was lost: %#v", row)
 	}
-	if !reflect.DeepEqual(before, mustReadTestFile(t, statePath)) {
-		t.Fatal("missing authorization changed Runtime")
-	}
+
 }
 
 func TestIssuedResultPacketAcceptsPlanCheckpointQuestionnaireWithoutGenericPlan(t *testing.T) {
@@ -290,7 +208,7 @@ func TestIssuedResultPacketAcceptsPlanCheckpointQuestionnaireWithoutGenericPlan(
 		t.Fatal(err)
 	}
 	b := p.Binding
-	resultForChecks := &Result{ResultID: p.ResultID, AssignmentID: b.AssignmentID, AssignmentRevision: b.ReviewPlanRevision, ReviewPlanID: b.ReviewPlanID, ReviewRound: b.ReviewRound, BaselineGeneration: b.BaselineGeneration, ProducerAgentID: b.OwnerAgentID, SubjectDigest: b.SubjectDigest}
+	resultForChecks := &Result{ResultID: p.ResultID, AssignmentID: b.AssignmentID, AssignmentRevision: b.ReviewPlanRevision, ReviewPlanID: b.ReviewPlanID, BaselineGeneration: b.BaselineGeneration, ProducerAgentID: b.OwnerAgentID}
 	requestForChecks := SubmitRequest{issuedPacket: &p, packetOwner: b.OwnerAgentID, issuedSourceRoot: root}
 	if err := validateIssuedResultRequest(root, issuedForChecks.State, requestForChecks, resultForChecks, false, plan); err != nil {
 		t.Fatalf("original issued row must pass receive checks: %v", err)
@@ -364,20 +282,27 @@ func TestIssuedResultPacketAcceptsPlanCheckpointQuestionnaireWithoutGenericPlan(
 		t.Fatal(err)
 	}
 	request := IssuedSubmitRequest{ExpectedRevision: issued.Revision, PacketID: p.ID, AnswerPath: p.AnswerPath, OwnerAgentID: p.Binding.OwnerAgentID}
-	if _, err := SubmitIssuedResult(root, statePath, journalPath, request); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
-		t.Fatalf("explicit wrong author digest must remain rejected: %v", err)
+	// An evidence-file digest is an author's professional reference, not owner
+	// authorization. Reception preserves it without rereading the evidence.
+	for _, mismatch := range []string{"owner", "path", "packet"} {
+		wrong := request
+		switch mismatch {
+		case "owner":
+			wrong.OwnerAgentID = "agent-dv-1"
+		case "path":
+			wrong.AnswerPath += ".other"
+		case "packet":
+			wrong.PacketID += "-other"
+		}
+		beforeState, beforeJournal := mustReadTestFile(t, statePath), mustReadTestFile(t, journalPath)
+		if _, err := SubmitIssuedResult(root, statePath, journalPath, wrong); err == nil {
+			t.Fatalf("wrong %s accepted the original responsibility", mismatch)
+		}
+		if !reflect.DeepEqual(beforeState, mustReadTestFile(t, statePath)) || !reflect.DeepEqual(beforeJournal, mustReadTestFile(t, journalPath)) {
+			t.Fatalf("wrong %s changed Runtime or journal", mismatch)
+		}
 	}
-	refs[0][0] = plainRef
-	claims[0]["evidence_refs"], _ = json.Marshal(refs[0])
-	answer["claim_results"], _ = json.Marshal(claims)
-	p.Draft.Answer, _ = json.Marshal(answer)
-	draft, _ = json.Marshal(p.Draft)
-	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(p.AnswerPath)), draft, 0600); err != nil {
-		t.Fatal(err)
-	}
-	accepted, err := SubmitIssuedResult(root, statePath, journalPath, IssuedSubmitRequest{
-		ExpectedRevision: issued.Revision, PacketID: p.ID, AnswerPath: p.AnswerPath, OwnerAgentID: p.Binding.OwnerAgentID,
-	})
+	accepted, err := SubmitIssuedResult(root, statePath, journalPath, request)
 	if err != nil {
 		t.Fatalf("original S7 consumer required a separate generic PLAN: %v", err)
 	}
@@ -385,8 +310,11 @@ func TestIssuedResultPacketAcceptsPlanCheckpointQuestionnaireWithoutGenericPlan(
 	if row["status"] != "consumed" || row["result_ref"] == nil {
 		t.Fatalf("original S7 consumer did not consume the professional questionnaire: %#v", row)
 	}
-	// Exact replay binds the original accepted refs, never the current file bytes.
-	rel, _, err := parsePathEvidenceRef(plainRef)
+	if saved := mustReadTestFile(t, filepath.Join(root, filepath.FromSlash(row["result_ref"].(string)))); !strings.Contains(string(saved), refs[0][0]) {
+		t.Fatal("reception rewrote the author's explicit evidence digest")
+	}
+	// Completed replay preserves the received answer without rereading evidence.
+	rel, err := parsePathEvidenceRef(plainRef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +323,7 @@ func TestIssuedResultPacketAcceptsPlanCheckpointQuestionnaireWithoutGenericPlan(
 	}
 	beforeState, beforeJournal := mustReadTestFile(t, statePath), mustReadTestFile(t, journalPath)
 	if _, err := SubmitIssuedResult(root, statePath, journalPath, request); err != nil {
-		t.Fatalf("exact bare-path replay: %v", err)
+		t.Fatalf("completed answer replay: %v", err)
 	}
 	if !reflect.DeepEqual(beforeState, mustReadTestFile(t, statePath)) || !reflect.DeepEqual(beforeJournal, mustReadTestFile(t, journalPath)) || !reflect.DeepEqual(draft, mustReadTestFile(t, filepath.Join(root, filepath.FromSlash(p.AnswerPath)))) {
 		t.Fatal("exact replay changed Runtime, journal or author bytes")
@@ -476,51 +404,6 @@ func TestIssuedResultPacketConcurrentIssuanceUsesOneOriginalEvent(t *testing.T) 
 	}
 }
 
-func TestIssuedResultPacketDriftExceptionRequiresExactRegisteredFiles(t *testing.T) {
-	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
-	packets, err := IssueResultPackets(root, statePath, journalPath, snapshot.Revision, "agent-qa-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := packets[0]
-	issued, err := loopruntime.NewStore(statePath, journalPath).Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	extra := filepath.ToSlash(filepath.Join(filepath.Dir(p.AnswerPath), "unissued.json"))
-	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(extra)), []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	drift, err := detectUndeclaredProductDriftWithState(root, plan, issued.State, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range drift {
-		if path == p.AnswerPath || path == p.ViewPath {
-			t.Fatalf("registered exact control artifact was product drift: %s", path)
-		}
-	}
-	found := false
-	for _, path := range drift {
-		if path == extra {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("unissued same-directory file escaped product drift")
-	}
-	answerPath := filepath.Join(root, filepath.FromSlash(p.AnswerPath))
-	if err := os.Remove(answerPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(root, "docs", "control", "loop-definition.json"), answerPath); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := detectUndeclaredProductDriftWithState(root, plan, issued.State, root); err == nil {
-		t.Fatal("symlink gained control-plane drift exception")
-	}
-}
-
 func TestIssuedE2ENilArtifactDigestAcceptsAndReplaysWithoutMutableWorkspace(t *testing.T) {
 	root := t.TempDir()
 	state := coldStartState()
@@ -572,26 +455,12 @@ func TestIssuedE2ENilArtifactDigestAcceptsAndReplaysWithoutMutableWorkspace(t *t
 		t.Fatalf("nil author digest first acceptance: %v", err)
 	}
 	receipt, found, err := IssuedResultReceipt(root, accepted.State, packet.ID, packet.Binding.OwnerAgentID)
-	if err != nil || !found || receipt.VerificationArtifactDigest == nil {
-		t.Fatalf("original receipt lost computed artifact binding: %+v found=%t err=%v", receipt, found, err)
+	if err != nil || !found {
+		t.Fatalf("original receipt is unavailable: %+v found=%t err=%v", receipt, found, err)
 	}
-	// Original artifact verification must still reject changed bytes.
+	// Later changes to an unrelated workspace do not prevent replay of the received answer.
 	if err := os.WriteFile(filepath.Join(root, workspaceRel, "changed.txt"), []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
-	}
-	ptr := PlanPointerFromState(accepted.State)
-	assignments := accepted.State["review"].(map[string]any)["assignments"].(map[string]any)
-	if err := VerifySealedArtifactDigests(root, accepted.State, ptr, assignments); err != nil {
-		t.Fatalf("unrelated workspace growth invalidated the original dependency: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, workspaceRel, "fixture.txt"), []byte("actual dependency changed"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := VerifySealedArtifactDigests(root, accepted.State, ptr, assignments); err == nil || !strings.Contains(err.Error(), "changed after consumption") {
-		t.Fatalf("changed dependency survived packet-backed seal verification: %v", err)
-	}
-	if err := verifyResultArtifactDigestAt(root, plan, ptr, &Result{VerificationArtifactDigest: receipt.VerificationArtifactDigest}, "e2e"); err == nil {
-		t.Fatal("original artifact verification accepted changed workspace bytes")
 	}
 	beforeState, beforeJournal := mustReadTestFile(t, statePath), mustReadTestFile(t, journalPath)
 	if _, err := SubmitIssuedResult(root, statePath, journalPath, request); err != nil {

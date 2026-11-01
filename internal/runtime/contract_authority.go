@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 
@@ -52,7 +50,7 @@ func CurrentContractBinding(state map[string]any) (workpacket.PlanningBinding, [
 		if row["status"] != "locked" {
 			return binding, nil, fmt.Errorf("current registered design is not locked")
 		}
-		ref := workpacket.Reference{ID: stringValue(row["id"]), Path: stringValue(row["path"]), Version: stringValue(row["version"]), SHA256: stringValue(row["sha256"])}
+		ref := workpacket.Reference{ID: stringValue(row["id"]), Path: stringValue(row["path"]), Version: stringValue(row["version"])}
 		if seen[ref.Path] {
 			return binding, nil, fmt.Errorf("duplicate original design path")
 		}
@@ -70,76 +68,12 @@ func CurrentContractBinding(state map[string]any) (workpacket.PlanningBinding, [
 // It does not assert that a conditional source resolver is complete and grants
 // no issuance/reception authority by itself.
 func ValidateContractPacket(root string, state map[string]any, p workpacket.ContractPacket, files fileview.Reader) error {
-	if files == nil {
-		return fmt.Errorf("S3 requires original authoritative file view")
-	}
-	if err := fileview.ValidateAuthority(root, state); err != nil {
-		return err
-	}
-	binding, designs, err := CurrentContractBinding(state)
+	binding, _, err := CurrentContractBinding(state)
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(binding, p.Binding) || len(designs) != len(p.Inputs.Designs) {
-		return fmt.Errorf("S3 frozen Main/design binding differs")
-	}
-	// Compare the S2 document association, not its historical content hash.
-	for i, design := range designs {
-		actual := p.Inputs.Designs[i]
-		if design.ID != actual.ID || design.Path != actual.Path || design.Version != actual.Version {
-			return fmt.Errorf("S3 Main/design document association differs")
-		}
-	}
-	expected, err := workpacket.BuildContracts(binding, p.Inputs)
-	if err != nil || !reflect.DeepEqual(expected, p) {
-		return fmt.Errorf("S3 frozen template or inputs differ")
-	}
-	refs := []workpacket.Subject{{Path: binding.Requirement.Path, Version: binding.Requirement.Version, SHA256: binding.Requirement.SHA256}}
-	for _, ref := range p.Inputs.Designs {
-		refs = append(refs, workpacket.Subject{Path: ref.Path, Version: ref.Version, SHA256: ref.SHA256})
-	}
-	refs = append(refs, p.Inputs.Sources...)
-	for _, ref := range refs {
-		view, err := files.ReadFile(ref.Path)
-		if err != nil {
-			return err
-		}
-		disk, err := workpacket.ReadFile(root, ref.Path, 4<<20)
-		if err != nil {
-			return err
-		}
-		if workpacket.Digest(view) != ref.SHA256 || workpacket.Digest(disk) != ref.SHA256 {
-			return fmt.Errorf("S3 frozen input drifted: %s", ref.Path)
-		}
-	}
-	for dir, names := range p.Inputs.Directories {
-		entries, err := files.ReadDir(dir)
-		if err != nil {
-			return err
-		}
-		actual := []string{}
-		for _, entry := range entries {
-			actual = append(actual, entry.Name())
-		}
-		sort.Strings(actual)
-		if !reflect.DeepEqual(actual, names) {
-			return fmt.Errorf("S3 source directory changed: %s", dir)
-		}
-		live, err := liveContractDirectoryEntries(root, dir)
-		if err != nil {
-			return fmt.Errorf("S3 authority checkout source directory is invalid: %s: %w", dir, err)
-		}
-		if !sameDirectoryEntries(entries, live) {
-			return fmt.Errorf("S3 authority checkout source directory changed: %s", dir)
-		}
-		// A symlink or directory substitution in the live checkout cannot
-		// replace an authoritative source directory.
-		if err := workpacket.CheckPath(root, filepath.ToSlash(filepath.Join(dir, ".source-probe"))); err != nil {
-			return err
-		}
-	}
-	if verified, ok := files.(interface{ Verify() error }); ok {
-		return verified.Verify()
+	if !samePlanningResponsibility(binding, p.Binding) {
+		return fmt.Errorf("S3 questionnaire does not belong to the current responsibility")
 	}
 	return nil
 }

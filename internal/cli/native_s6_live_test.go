@@ -68,12 +68,6 @@ func runClaudeNativeS6Live(t *testing.T, name string, background bool) {
 	}
 	state := stageSnapshot(t, root).State
 	state["schema_version"] = "1.3.0"
-	for _, raw := range state["documents"].([]any) {
-		row := raw.(map[string]any)
-		if row["path"] == taskPath {
-			row["sha256"] = workpacket.Digest(taskBytes)
-		}
-	}
 	stageJSON(t, root, ".claude/loop-state.json", state)
 	if _, err := workspace.Git(t.Context(), root, "add", taskPath); err != nil {
 		t.Fatal(err)

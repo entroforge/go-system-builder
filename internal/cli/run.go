@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -36,9 +35,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
-	"github.com/entroforge/go-system-builder/internal/team"
 	"github.com/entroforge/go-system-builder/internal/transition"
-	"github.com/entroforge/go-system-builder/internal/verification"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -135,7 +132,6 @@ func printTopLevelUsage(stdout io.Writer) {
 	fmt.Fprintln(stdout, "  s10         Acceptance/release-audit manifest validation and status (read-only)")
 	fmt.Fprintln(stdout, "  tasks       TASK discovery/coverage listing (read-only)")
 	fmt.Fprintln(stdout, "  contracts   Locked contract set inspection (read-only)")
-	fmt.Fprintln(stdout, "  capture     Observation capture buffer (console/network/step evidence)")
 	fmt.Fprintln(stdout, "  impact      Evidence invalidation analysis")
 	fmt.Fprintln(stdout, "  verification Verification round evaluators")
 	fmt.Fprintln(stdout, "  release-graph Release-graph topological assertions")
@@ -211,12 +207,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runActions(args[1:], stdout, stderr)
 	case "runtime":
 		return runRuntime(args[1:], stdout, stderr)
-	case "team":
-		return runTeam(args[1:], stdout, stderr)
 	case "impact":
 		return runImpact(args[1:], stdout, stderr)
-	case "verification":
-		return runVerification(args[1:], stdout, stderr)
 	case "release-graph":
 		return runReleaseGraph(args[1:], stdout, stderr)
 	case "manual":
@@ -233,8 +225,6 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runContracts(args[1:], stdout, stderr)
 	case "s6":
 		return runS6Command(args[1:], stdout, stderr)
-	case "capture":
-		return runCapture(args[1:], stdin, stdout, stderr)
 	case "s7":
 		return runS7Command(args[1:], stdout, stderr)
 	case "s10":
@@ -275,22 +265,21 @@ func runREQ(args []string, stdout, stderr io.Writer) int {
 	reqPath := flags.String("req", "", "locked REQ path (default: auto-discover the sole bindable REQ)")
 	approvedBy := flags.String("approved-by", "", "human approver identity")
 	repairPolicyPath := flags.String("repair-policy", "", "project-approved repair policy path; applies only to this new binding")
-	repairPolicySHA := flags.String("repair-policy-sha256", "", "explicit SHA256 of the approved repair policy")
 	devBranch := flags.String("dev-branch", "", "explicit REQ development branch")
 	releaseUpstream := flags.String("release-upstream", "", "explicit final release destination (include remote when remote)")
 	asJSON := flags.Bool("json", false, "machine-readable state output")
 	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 		return 2
 	}
-	return bindRequirement(*root, *reqPath, *approvedBy, *devBranch, *releaseUpstream, *repairPolicyPath, *repairPolicySHA, *asJSON, stdout, stderr)
+	return bindRequirement(*root, *reqPath, *approvedBy, *devBranch, *releaseUpstream, *repairPolicyPath, *asJSON, stdout, stderr)
 }
 
 // bindRequirement is the original TR-001 transaction shared by the normal
 // binding questionnaire and the explicit compatibility command, without a CLI subprocess.
-func bindRequirement(rootValue, reqValue, approverValue, devValue, releaseValue, policyValue, policySHAValue string, jsonOutput bool, stdout, stderr io.Writer) int {
+func bindRequirement(rootValue, reqValue, approverValue, devValue, releaseValue, policyValue string, jsonOutput bool, stdout, stderr io.Writer) int {
 	root, reqPath, approvedBy := &rootValue, &reqValue, &approverValue
 	devBranch, releaseUpstream := &devValue, &releaseValue
-	repairPolicyPath, repairPolicySHA, asJSON := &policyValue, &policySHAValue, &jsonOutput
+	repairPolicyPath, asJSON := &policyValue, &jsonOutput
 	if *approvedBy == "" {
 		fmt.Fprintln(stderr, "req bind requires --approved-by <actual-approver from this binding authorization>; do not infer it from git user.name")
 		return 2
@@ -305,7 +294,6 @@ func bindRequirement(rootValue, reqValue, approverValue, devValue, releaseValue,
 		fmt.Fprintln(stderr, viewErr)
 		return 1
 	}
-	binding.BoundCommit = view.Commit
 	// Info lines go to stderr in --json mode so stdout stays a single valid
 	// JSON document for scripts.
 	infoW := io.Writer(stdout)
@@ -386,14 +374,13 @@ func bindRequirement(rootValue, reqValue, approverValue, devValue, releaseValue,
 		}
 	}
 	now := time.Now().UTC()
-	shaHex := transition.REQSHA256(data)
 	next, err := transition.Apply(*root, statePath, journalPath, transition.Request{
 		Files: view, TransitionID: "TR-001", ExpectedRevision: -1, ExpectedRuntimeID: "loop-inactive", Actor: "user",
 		Evidence: map[string]string{
-			"req_lock_record":           *reqPath + "@" + shaHex,
+			"req_lock_record":           *reqPath,
 			"loop_authorization_record": "approved-by:" + *approvedBy,
 		},
-		REQ: &transition.LockedREQ{Workspace: &binding, ID: id, Path: *reqPath, Version: version, SHA256: shaHex, ApprovedBy: *approvedBy, ApprovedAt: now.Format(time.RFC3339Nano), RepairPolicyPath: *repairPolicyPath, RepairPolicySHA256: *repairPolicySHA}, OccurredAt: now,
+		REQ: &transition.LockedREQ{Workspace: &binding, ID: id, Path: *reqPath, Version: version, ApprovedBy: *approvedBy, ApprovedAt: now.Format(time.RFC3339Nano), RepairPolicyPath: *repairPolicyPath}, OccurredAt: now,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("req bind", err))
@@ -570,7 +557,7 @@ func projectNext(state, phase, root string) (string, string, string) {
 		case "observation_sealed":
 			return "S7", "bug-resolution", "ObservationBatch sealed; the next PreToolUse auto-commits TR-008 to hand the batch to S8 — do not call the transition CLI"
 		case "clean":
-			return "S7", "acceptance-and-handoff", "machine CleanRound recorded; the original Result completion exit continues Gate/TR-009 and prepares S10 acceptance. Resume a pending exit with loop-harness runtime review-continue --root <root>"
+			return "S7", "acceptance-and-handoff", "The original Reviewer conclusions permit TR-009 and prepare S10 acceptance. Resume a pending exit with loop-harness runtime review-continue --root <root>"
 		}
 		return "S7", PrimarySkillS7, "continue from the current S7 Hook checkpoint and use the exact ReviewPlan or dispatched Claim questionnaire paths it supplies; save professional answers for the original consumers. Main retains plan registration, dispatch and queue release, and full-round evaluation"
 	case "bug_resolution":
@@ -586,7 +573,7 @@ func projectNext(state, phase, root string) (string, string, string) {
 		case "reproducing":
 			return "S9", "bug-resolution", "Main selects any unselected Builder in the original division and uses each selected responsibility's exact prepared brief for native Agent/worktree dispatch or same-actor continuation. Builders save their Plan with real prechecks and their Result; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback"
 		case "fixing":
-			return "S9", "bug-resolution", "native Builders use the supplied brief and save their private professional Plan/Result in the actual worktree; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback. When the candidate is recorded, Main immediately follows the supplied `runtime workspace integrate` command with the actual root, assignment and owner and repeatable --check-command for necessary real Main checks. Do not redispatch an accepted native candidate for another RepairResult questionnaire or wait for Final before Main integration. Existing frozen executions retain their exact original RepairResult questionnaire and recovery path"
+			return "S9", "bug-resolution", "native Builders use the supplied brief and save their private professional Plan/Result in the actual worktree; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback. When the candidate is recorded, Main immediately follows the supplied `runtime workspace integrate` command with the actual root, assignment and owner and repeatable --check-command for necessary real Main checks. Do not redispatch an accepted native candidate for another RepairResult questionnaire or wait for Final before Main integration."
 		case "targeted_reverification":
 			return "S9", "bug-resolution", "the registered independent verifier saves the exact TargetedReverification answer; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback through the original Contract checks. Main retains integration and Handoff"
 		case "ready_for_full_review":
@@ -612,16 +599,10 @@ func projectNext(state, phase, root string) (string, string, string) {
 }
 
 func agentActivationNextMessage(state map[string]any, agentID string) string {
-	if runtime.PacketEnabled(state) {
-		if reviewerRole(state, agentID) {
-			return "activated. next: complete the assigned professional review; fill and save the exact ReviewResult questionnaire path supplied by the listener, including real Claim results and evidence. The original consumer records the answer and advances the graph as allowed; Main retains dispatch, queue release and full-round evaluation"
-		}
-		return "activated. next: complete the assigned TASK using its supplied sources and checks; fill and save the exact Builder Result questionnaire path supplied by the listener. The original consumer records completion and advances the graph as allowed; Main retains the original integration and required checks"
-	}
 	if reviewerRole(state, agentID) {
-		return "activated. next: (1) advance `work_started` when you begin; (2) write the Canonical ReviewResult (claim_results must equal the assignment's Claim set exactly; every fail Claim needs one Finding with a real encounter — see review-result.example.json) and submit via `runtime review-result submit --assignment-id <id> --result <file>`"
+		return "complete the assigned professional review and save the exact ReviewResult questionnaire supplied by the listener; the original consumer records your answer and Main coordinates any remaining work"
 	}
-	return "activated. next: (1) create the worktree if absent — `loop-harness runtime worktree-create --assignment-id <assignment-id>` — and record worktree_path/branch/target_branch on the assignment's workgroup manifest row (or .claude/assignments/<assignment-id>.json); (2) advance `work_started` when the Builder begins writing; (3) register completion with `runtime task-complete`"
+	return "complete the assigned TASK using its supplied sources and checks, then save the exact Builder Result questionnaire supplied by the listener; Main handles integration and required checks"
 }
 
 func encodeJSON(w io.Writer, value any) int {
@@ -682,15 +663,10 @@ func regenerateManualBestEffort(root string) error {
 	if err != nil {
 		return fmt.Errorf("load catalog: %w", err)
 	}
-	defData, err := os.ReadFile(filepath.Join(root, projectlayout.Definition))
-	if err != nil {
-		return fmt.Errorf("read loop-definition.json: %w", err)
-	}
 	target := transition.ManualTargetPath()
 	markdown := transition.RenderManual(catalog.Definition, transition.ManualOptions{
-		TargetPath:           target,
-		HarnessVersion:       "dev",
-		LoopDefinitionSHA256: fmt.Sprintf("%x", sha256.Sum256(defData)),
+		TargetPath:     target,
+		HarnessVersion: "dev",
 	})
 	fullTarget := filepath.Join(root, target)
 	if err := os.MkdirAll(filepath.Dir(fullTarget), 0o755); err != nil {
@@ -827,7 +803,7 @@ func completePendingInitialization(root, markerPath string) error {
 		return fmt.Errorf("validate pending initialization before publication: %w", err)
 	}
 	configuration, _ := pending.FreshState["configuration"].(map[string]any)
-	initializationReceipt, err := json.MarshalIndent(map[string]any{"schema_version": 1, "runtime_schema_version": pending.FreshState["schema_version"], "optimization": configuration["optimization"], "initial_state_sha256": fmt.Sprintf("%x", sha256.Sum256(append(stateData, '\n')))}, "", "  ")
+	initializationReceipt, err := json.MarshalIndent(map[string]any{"schema_version": 1, "runtime_schema_version": pending.FreshState["schema_version"], "optimization": configuration["optimization"]}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -956,7 +932,6 @@ func inactiveRuntimeState(root string, occurredAt time.Time) (map[string]any, er
 		Definition: map[string]any{
 			"path":    projectlayout.Definition,
 			"version": defVersion,
-			"sha256":  fmt.Sprintf("%x", sha256.Sum256(defData)),
 		},
 		Revision: 0,
 		Lifecycle: map[string]any{
@@ -968,7 +943,6 @@ func inactiveRuntimeState(root string, occurredAt time.Time) (map[string]any, er
 			"policy_ref": map[string]any{
 				"path":    projectlayout.Policy,
 				"version": policyMetadata.Version,
-				"sha256":  fmt.Sprintf("%x", sha256.Sum256(policyData)),
 			},
 			"mode":                 policyMetadata.Mode,
 			"health":               "healthy",
@@ -1015,16 +989,13 @@ func inactiveRuntimeState(root string, occurredAt time.Time) (map[string]any, er
 			"captured_at": nil,
 		},
 		"review": map[string]any{
-			"round":       0,
 			"clean_round": nil,
 		},
 		"configuration": map[string]any{
 			"optimization": map[string]any{"packet": true},
 			"repair": map[string]any{
-				"max_attempts_per_bug":        3,
-				"max_same_contract_failures":  2,
-				"max_full_review_rounds":      5,
-				"max_investigation_reentries": 5,
+				"max_attempts_per_bug":       3,
+				"max_same_contract_failures": 2,
 			},
 		},
 		"hook_control": state.HookControl,
@@ -1058,76 +1029,6 @@ func extractDefinitionVersion(data []byte) (string, bool) {
 		return probe.SchemaVersion, true
 	}
 	return "", false
-}
-
-func runTeam(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "launch" {
-		fmt.Fprintln(stderr, "team requires <launch>")
-		return 2
-	}
-	flags := flag.NewFlagSet("team launch", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	bindUsage(flags, "team launch")
-	root := flags.String("root", ".", "repository root")
-	manifestPath := flags.String("manifest", "", "team manifest path relative to root")
-	templatePath := flags.String("request-template", "", "readback request template path relative to root")
-	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
-	}
-	if *manifestPath == "" || *templatePath == "" {
-		fmt.Fprintln(stderr, "team launch requires --manifest and --request-template")
-		return 2
-	}
-	manifestData, err := os.ReadFile(filepath.Join(*root, *manifestPath))
-	if err != nil {
-		fmt.Fprintf(stderr, "read team manifest: %v\n", err)
-		return 1
-	}
-	templateData, err := os.ReadFile(filepath.Join(*root, *templatePath))
-	if err != nil {
-		fmt.Fprintf(stderr, "read request template: %v\n", err)
-		return 1
-	}
-	var request team.ReadbackRequest
-	if err := json.Unmarshal(templateData, &request); err != nil {
-		fmt.Fprintf(stderr, "decode request template: %v\n", err)
-		return 1
-	}
-	if err := schemaValidate(*root, "readback-request.schema.json", templateData); err != nil {
-		fmt.Fprintf(stderr, "validate request template: %v\n", err)
-		return 1
-	}
-	occurredAt, err := time.Parse(time.RFC3339Nano, request.OccurredAt)
-	if err != nil {
-		fmt.Fprintf(stderr, "parse request occurred_at: %v\n", err)
-		return 1
-	}
-	expectedRuntimeRevision := -1
-	if request.ExpectedRuntimeRevision != nil {
-		expectedRuntimeRevision = *request.ExpectedRuntimeRevision
-	}
-	requests, err := team.GenerateReadbackRequests(*root, manifestData, team.LaunchOptions{
-		TaskID:                  request.TaskID,
-		BugID:                   request.BugID,
-		ExpectedRuntimeRevision: expectedRuntimeRevision,
-		Documents:               request.Documents,
-		OccurredAt:              occurredAt,
-	})
-	if err != nil {
-		fmt.Fprintf(stderr, "generate launch packages: %v\n", err)
-		return 1
-	}
-	if err := attachAssignmentContexts(*root, *manifestPath, manifestData, requests); err != nil {
-		fmt.Fprintf(stderr, "registered assignment sources: %v\n", err)
-		return 1
-	}
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(requests); err != nil {
-		fmt.Fprintf(stderr, "encode launch packages: %v\n", err)
-		return 1
-	}
-	return 0
 }
 
 func runRuntime(args []string, stdout, stderr io.Writer) int {
@@ -1177,12 +1078,8 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		if name == "" {
 			name = "<stage-specific verb>"
 		}
-		if len(args) > 0 && args[0] == "review-plan" {
-			printReviewPlanRecoveryHelp(stdout)
-			return 0
-		}
 		if name == "review-continue" || name == "audit-prepare" {
-			description := "Resume an accepted machine CleanRound through the original Gate/TR-009, then prepare current S10 acceptance materials. Accepted Reviewer results are preserved."
+			description := "Continue the accepted S7 results through TR-009, then prepare current S10 acceptance materials. Accepted Reviewer results are preserved."
 			if name == "audit-prepare" {
 				description = "Restore missing materials for the current S10 acceptance or release_audit responsibility through the original preparer. Existing reports are preserved; this does not repeat TR-009 or Reviewer reception."
 			}
@@ -1197,11 +1094,11 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			printCommandHelp(stdout, "loop-harness runtime transition --id <ID> --actor <role> [--affected-paths <repo-relative-path>]...", "Low-level recovery only. Repeat --affected-paths for multiple literal paths (including deleted paths); use all alone only for an explicitly authorized full sweep. --params does not supply affected paths. Normal continuation uses stage-specific verbs.")
 			return 0
 		}
-		printCommandHelp(stdout, "loop-harness runtime "+name, "Runtime actions are the CAS-owned mutation surface. Choose the stage-specific verb shown by `loop-harness actions`; diagnostics expose the next recovery action. S7/S10 recovery: review-continue resumes the original clean-round exit; audit-prepare restores current missing S10 materials.")
+		printCommandHelp(stdout, "loop-harness runtime "+name, "Runtime actions are the CAS-owned mutation surface. Choose the stage-specific verb shown by `loop-harness actions`; diagnostics expose the next recovery action. S7/S10 recovery: review-continue resumes the original S7 exit; audit-prepare restores current missing S10 materials.")
 		return 0
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "runtime requires <recover|reconcile|compact-packets|migrate-planning|reconcile-policy-ref|rollover|human-decision|s7-budget-decision|pause|resume|transition|change|evidence|register-workgroup|agent-begin|agent-event|task-complete|task-receipt|worktree-create|task-integrate|review-plan|review-result|review-continue|audit-prepare|finding-supplement|investigation|repair|bug-event|fingerprint>")
+		fmt.Fprintln(stderr, "runtime requires <recover|reconcile|compact-packets|migrate-planning|reconcile-policy-ref|rollover|human-decision|pause|resume|transition|change|evidence|register-workgroup|agent-begin|agent-event|task-complete|task-receipt|worktree-create|task-integrate|review-continue|audit-prepare|finding-supplement|investigation|repair|bug-event>")
 		return 2
 	}
 	switch args[0] {
@@ -1217,8 +1114,6 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		return runRuntimeRollover(args[1:], stdout, stderr)
 	case "human-decision":
 		return runRuntimeHumanDecision(args[1:], stdout, stderr)
-	case "s7-budget-decision":
-		return runRuntimeS7BudgetDecision(args[1:], stdout, stderr)
 	case "pause":
 		return runRuntimePause(args[1:], stdout, stderr)
 	case "resume":
@@ -1292,10 +1187,9 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		reqID := flags.String("req-id", "", "locked REQ ID for TR-001")
 		reqPath := flags.String("req-path", "", "locked REQ path for TR-001")
 		reqVersion := flags.String("req-version", "", "locked REQ version for TR-001")
-		reqSHA256 := flags.String("req-sha256", "", "locked REQ SHA-256 for TR-001")
 		reqApprovedBy := flags.String("req-approved-by", "", "locked REQ approver for TR-001")
 		reqApprovedAt := flags.String("req-approved-at", "", "locked REQ approval time for TR-001")
-		paramsRaw := flags.String("params", "", "JSON object of guard params (used by generated-evidence transitions like PTR-BUG-02)") // deprecated: legacy compatibility
+		paramsRaw := flags.String("params", "", "JSON object of guard params")
 		var affectedPaths stringListFlag
 		flags.Var(&affectedPaths, "affected-paths", "affected repository-relative path; repeat for multiple paths; use all alone for an explicit full sweep")
 		var evidence stringListFlag
@@ -1363,7 +1257,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		var req *transition.LockedREQ
 		if *reqID != "" {
 			req = &transition.LockedREQ{
-				ID: *reqID, Path: *reqPath, Version: *reqVersion, SHA256: *reqSHA256,
+				ID: *reqID, Path: *reqPath, Version: *reqVersion,
 				ApprovedBy: *reqApprovedBy, ApprovedAt: *reqApprovedAt,
 			}
 		}
@@ -1435,9 +1329,8 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		taskID := flags.String("task-id", "", "TASK ID")
 		taskPath := flags.String("task", "", "TASK path")
 		reviseAssignment := flags.String("revise-assignment", "", "issue the next revision of this canonical Assignment")
-		revisionIntentKey := flags.String("revision-intent-key", "", "stable idempotency key for an Assignment revision")
-		expectedRecordRef := flags.String("expected-record-ref", "", "expected prior RecordReference as JSON; pair with --expected-record-sha256")
-		expectedRecordSHA := flags.String("expected-record-sha256", "", "expected prior Assignment Record SHA-256; pair with --expected-record-ref")
+		revisionIntentKey := flags.String("revision-intent-key", "", "optional legacy idempotency key for an Assignment revision")
+		expectedRecordRef := flags.String("expected-record-ref", "", "expected prior RecordReference as JSON")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 registration time")
 		if wantsHelp(args[1:]) {
 			flags.SetOutput(stdout)
@@ -1452,22 +1345,17 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		var revision *assignment.RevisionRequest
-		if *reviseAssignment != "" || *revisionIntentKey != "" || *expectedRecordRef != "" || *expectedRecordSHA != "" {
-			if *reviseAssignment == "" || *revisionIntentKey == "" {
-				fmt.Fprintln(stderr, "runtime register-workgroup revision requires both --revise-assignment and --revision-intent-key")
+		if *reviseAssignment != "" || *revisionIntentKey != "" || *expectedRecordRef != "" {
+			if *reviseAssignment == "" {
+				fmt.Fprintln(stderr, "runtime register-workgroup revision requires --revise-assignment")
 				return 2
 			}
 			revision = &assignment.RevisionRequest{AssignmentID: *reviseAssignment, IntentKey: *revisionIntentKey}
-			if (*expectedRecordRef == "") != (*expectedRecordSHA == "") {
-				fmt.Fprintln(stderr, "runtime register-workgroup revision requires --expected-record-ref and --expected-record-sha256 together")
-				return 2
-			}
 			if *expectedRecordRef != "" {
 				if err := json.Unmarshal([]byte(*expectedRecordRef), &revision.ExpectedRecord); err != nil {
 					fmt.Fprintf(stderr, "runtime register-workgroup: invalid --expected-record-ref JSON: %v\n", err)
 					return 2
 				}
-				revision.ExpectedRecordSHA256 = *expectedRecordSHA
 			}
 		}
 		// Anchor --state / --journal relative paths against --root so the
@@ -1586,13 +1474,12 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		agentID := flags.String("agent-id", "", "Agent ID")
 		event := flags.String("event", "", "original Agent lifecycle event, including blocker_resolved")
 		messagePath := flags.String("message", "", "Agent message path")
-		body := flags.String("body", "", "S7 blocker_resolved professional restoration explanation; machine message facts come from the original blocked responsibility")
 		occurredAtValue := flags.String("occurred-at", "", "RFC3339 event time")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
 			return 2
 		}
-		if *agentID == "" || *event == "" || (*messagePath == "" && *body == "") || (*messagePath != "" && *body != "") {
-			fmt.Fprintln(stderr, "runtime agent-event requires --agent-id, --event and exactly one of --message or --body (S7 blocker_resolved only)")
+		if *agentID == "" || *event == "" || *messagePath == "" {
+			fmt.Fprintln(stderr, "runtime agent-event requires --agent-id, --event and --message")
 			return 2
 		}
 		resolvedRevision := *expectedRevision
@@ -1612,13 +1499,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			MessagePath:      resolveRootPath(*root, *messagePath),
 			OccurredAt:       occurredAt,
 		}
-		var next runtime.Snapshot
-		var err error
-		if *body != "" {
-			next, err = advanceS7BlockerWithBody(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), request, *body)
-		} else {
-			next, err = assignment.AdvanceAgent(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), request)
-		}
+		next, err := assignment.AdvanceAgent(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), request)
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime agent-event", err))
 			return 1
@@ -1752,28 +1633,12 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 				return runWorkspaceDeliveryContext(taskContext, forward, stdout, stderr)
 			}
 		}
-		if binding != nil {
-			if execution, ok := binding.Execution(*assignmentID, workspace.RuntimeID(snapshot.State), workspace.Generation(snapshot.State)); ok {
-				lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
-				if execution.DeliveryRef != "" || lifecycle["state"] == "bug_resolution" {
-					if *agentID != "" && *agentID != execution.AgentID {
-						fmt.Fprintln(stderr, "integration owner mismatch")
-						return 1
-					}
-					forward := []string{"integrate", "--root", resolvedRoot, "--assignment", execution.AssignmentID, "--agent", execution.AgentID}
-					if *retry {
-						forward = append(forward, "--retry-preserved")
-					}
-					return runWorkspaceDeliveryContext(taskContext, forward, stdout, stderr)
-				}
-			}
-		}
 		loaded, err := hookctx.LoadFull(resolvedRoot, *agentID)
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime task-integrate", err))
 			return 1
 		}
-		matched := false
+		var matched *hookctx.AssignmentContext
 		known := make([]string, 0, len(loaded.Assignments))
 		for i := range loaded.Assignments {
 			row := loaded.Assignments[i]
@@ -1781,19 +1646,23 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 				known = append(known, row.AssignmentID)
 			}
 			if row.AssignmentID == *assignmentID && (*agentID == "" || row.OwnerAgentID == *agentID) {
-				matched = true
+				if matched != nil {
+					fmt.Fprintf(stderr, "runtime task-integrate: assignment %q has multiple registered responsibilities; Main must resolve the original records\n", *assignmentID)
+					return 1
+				}
+				matched = &loaded.Assignments[i]
 			}
 		}
-		if !matched {
+		if matched == nil {
 			fmt.Fprintf(stderr, "runtime task-integrate: assignment %q is not registered (worktree coordinates or agent row missing); known assignments: %s\n",
 				*assignmentID, strings.Join(known, ", "))
 			return 1
 		}
 		input := policy.Input{
 			Event:    "SubagentStop",
-			AgentID:  *agentID,
+			AgentID:  matched.OwnerAgentID,
 			TargetID: *assignmentID,
-			Facts:    map[string]bool{"agent_report_complete": true, "integration_retry": *retry},
+			Facts:    map[string]bool{"integration_retry": *retry},
 		}
 		guidance, updated, err := HandleSubagentStopForController(context.Background(), resolvedRoot, snapshot, loaded, "SubagentStop", input)
 		if err != nil {
@@ -1829,7 +1698,12 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		}
 		state := ""
 		if guidance.Blocked {
-			state = "preserved/blocked"
+			state = "blocked"
+			guidance, state, err = s6IntegrationRecoveryGuidance(resolvedRoot, loaded, *matched, guidance)
+			if err != nil {
+				fmt.Fprintln(stderr, formatFailure("runtime task-integrate recovery", err))
+				return 1
+			}
 		} else {
 			state = "integrated"
 		}
@@ -1838,6 +1712,9 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			updated, handoff = continueS6Integration(resolvedRoot, resolvedState, resolvedJournal, *assignmentID, updated)
 		}
 		fmt.Fprintf(stderr, "task-integrate: %s — %s\n", state, guidance.Action)
+		if guidance.Blocker != "" {
+			fmt.Fprintf(stderr, "blocker: %s\n", guidance.Blocker)
+		}
 		if handoff != "" {
 			fmt.Fprintln(stderr, handoff)
 		}
@@ -1850,6 +1727,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			"state":         state,
 			"blocked":       guidance.Blocked,
 			"blocker":       guidance.Blocker,
+			"action":        guidance.Action,
 			"integration":   guidance.Integration,
 			"revision":      updated.Revision,
 		}
@@ -1858,183 +1736,6 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
-	case "review-plan":
-		// S7 entry verb (L3-S7 §4.1): validates and pins the ReviewPlan,
-		// initializes claim/assignment projections, phase -> running.
-		// `revise` is the one controlled revision per round (§5.3).
-		revise := len(args) > 1 && args[1] == "revise"
-		revive := len(args) > 1 && args[1] == "revive"
-		frozenDiff := len(args) > 1 && args[1] == "frozen-diff"
-		flags := flag.NewFlagSet("runtime review-plan", flag.ContinueOnError)
-		flags.SetOutput(stderr)
-		bindUsage(flags, "runtime review-plan")
-		root := flags.String("root", ".", "repository root")
-		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
-		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-		expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
-		planPath := flags.String("file", "", "ReviewPlan JSON path")
-		sourceRef := flags.String("source-ref", "", "revise: triggering Result/Finding evidence id")
-		affectedSurface := flags.String("affected-surface", "", "revise: path surface the revision may touch")
-		parseArgs := args[1:]
-		if revise || revive || frozenDiff {
-			parseArgs = args[2:]
-		}
-		if err := parseWorkspaceFlags(flags, parseArgs); err != nil {
-			return 2
-		}
-		if frozenDiff {
-			diff, err := review.DiffFrozenSourcesForRoot(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath))
-			if err != nil {
-				fmt.Fprintln(stderr, formatFailure("runtime review-plan frozen-diff", err))
-				return 1
-			}
-			fmt.Fprintln(stderr, review.FrozenDiffReport(diff))
-			return encodeJSON(stdout, map[string]any{
-				"restore":  diff.Restore,
-				"missing":  diff.Missing,
-				"preserve": diff.Preserve,
-			})
-		}
-		if revive {
-			next, err := review.RevivePlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), *expectedRevision)
-			if err != nil {
-				fmt.Fprintln(stderr, formatFailure("runtime review-plan revive", err))
-				return 1
-			}
-			ptr := review.PlanPointerFromState(next.State)
-			fmt.Fprintf(stderr, "review-plan revive: %s now at revision %d (status %s); baseline re-check clean, no claim touched\n", ptr.PlanID, ptr.Revision, ptr.Status)
-			return encodeJSON(stdout, map[string]any{
-				"plan_id":  ptr.PlanID,
-				"revision": ptr.Revision,
-				"status":   ptr.Status,
-			})
-		}
-		if revise {
-			if *planPath == "" || *sourceRef == "" || *affectedSurface == "" {
-				fmt.Fprintln(stderr, "runtime review-plan revise requires --file <ReviewPlan.json> --source-ref <consumed-Result-or-Finding-id> --affected-surface <repo-relative-surface>; --file is a JSON file path")
-				return 2
-			}
-			resolvedRevision := *expectedRevision
-			next, err := review.RevisePlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.ReviseRequest{
-				ExpectedRevision: resolvedRevision,
-				PlanPath:         resolveRootPath(*root, *planPath),
-				SourceRef:        *sourceRef,
-				AffectedSurface:  *affectedSurface,
-			})
-			if err != nil {
-				fmt.Fprintln(stderr, formatFailure("runtime review-plan revise", err))
-				return 1
-			}
-			ptr := review.PlanPointerFromState(next.State)
-			fmt.Fprintf(stderr, "review-plan revise: %s now at revision %d (status %s); changed claims returned to planned\n", ptr.PlanID, ptr.Revision, ptr.Status)
-			return encodeJSON(stdout, map[string]any{
-				"plan_id":  ptr.PlanID,
-				"revision": ptr.Revision,
-				"status":   ptr.Status,
-			})
-		}
-		if *planPath == "" {
-			fmt.Fprintln(stderr, "runtime review-plan requires --file <plan.json>")
-			return 2
-		}
-		resolvedRevision := *expectedRevision
-		next, err := review.RegisterPlan(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.PlanRequest{
-			ExpectedRevision: resolvedRevision,
-			PlanPath:         resolveRootPath(*root, *planPath),
-		})
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime review-plan", err))
-			return 1
-		}
-		ptr := review.PlanPointerFromState(next.State)
-		fmt.Fprintf(stderr, "review-plan: registered %s for round %d (status %s); dispatch the original reviewer responsibilities; each Reviewer fills and saves the exact questionnaire supplied by the listener\n",
-			ptr.PlanID, ptr.ReviewRound, ptr.Status)
-		return encodeJSON(stdout, map[string]any{
-			"plan_id":      ptr.PlanID,
-			"review_round": ptr.ReviewRound,
-			"status":       ptr.Status,
-			"revision":     next.Revision,
-		})
-	case "review-result":
-		// S7 Canonical ReviewResult submit (L3-S7 §9.1): one CAS consumes
-		// the result, registers immutable Findings, updates claim
-		// dispositions, and runs the round consumer (seal / clean / pause).
-		// The documented invocation carries the `submit` verb word.
-		verbArgs := args[1:]
-		if len(verbArgs) > 0 && verbArgs[0] == "submit" {
-			verbArgs = verbArgs[1:]
-		}
-		flags := flag.NewFlagSet("runtime review-result", flag.ContinueOnError)
-		flags.SetOutput(stderr)
-		bindUsage(flags, "runtime review-result")
-		root := flags.String("root", ".", "repository root")
-		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
-		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-		expectedRevision := flags.Int("expected-revision", -1, "expected runtime revision")
-		assignmentID := flags.String("assignment-id", "", "plan assignment the result answers")
-		resultPath := flags.String("result", "", "ReviewResult JSON path")
-		captureDir := flags.String("captures", "", "capture buffer dir (or the steps.jsonl file itself); empty encounter timelines absorb buffered steps")
-		if err := parseWorkspaceFlags(flags, verbArgs); err != nil {
-			return 2
-		}
-		if *assignmentID == "" || *resultPath == "" {
-			fmt.Fprintln(stderr, "runtime review-result requires --assignment-id <id> and --result <result.json>")
-			return 2
-		}
-		resolvedRevision := *expectedRevision
-		resolvedCaptures := ""
-		if *captureDir != "" {
-			resolvedCaptures = resolveRootPath(*root, *captureDir)
-			// Accept both the buffer directory and the steps.jsonl file; a
-			// directory passed through silently loaded zero steps otherwise.
-			if info, statErr := os.Stat(resolvedCaptures); statErr == nil && info.IsDir() {
-				resolvedCaptures = filepath.Join(resolvedCaptures, "steps.jsonl")
-			}
-			if info, statErr := os.Stat(resolvedCaptures); statErr != nil || info.IsDir() {
-				fmt.Fprintf(stderr, "note: --captures buffer not found at %s; findings keep their own timelines\n", resolvedCaptures)
-			}
-		}
-		next, err := review.SubmitResult(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.SubmitRequest{
-			ExpectedRevision: resolvedRevision,
-			AssignmentID:     *assignmentID,
-			ResultPath:       resolveRootPath(*root, *resultPath),
-			CaptureDir:       resolvedCaptures,
-		})
-		if err != nil {
-			fmt.Fprintln(stderr, formatFailure("runtime review-result", err))
-			return 1
-		}
-		ptr := review.PlanPointerFromState(next.State)
-		status := ""
-		if ptr != nil {
-			status = ptr.Status
-		}
-		switch status {
-		case "observation_sealed":
-			fmt.Fprintln(stderr, "review-result: consumed; ObservationBatch sealed — the next PreToolUse will auto-commit TR-008 to hand off to S8 (do not invoke the transition CLI)")
-		case "clean":
-			var handoff string
-			next, handoff = continueS7Acceptance(context.Background(), *root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), next)
-			fmt.Fprintln(stderr, "review-result: consumed; "+handoff)
-		case "paused":
-			fmt.Fprintln(stderr, "review-result: consumed; pause checkpoint recorded — route via TR-010 (req change) or TR-011 (release blocked)")
-		case "cannot_clean", "discovery_draining":
-			fmt.Fprintf(stderr, "review-result: consumed; round is %s — %d required claim(s) still need results before the batch seals\n",
-				status, len(review.UndispositionedRequired(next.State)))
-		default:
-			fmt.Fprintf(stderr, "review-result: consumed; round running — %d required claim(s) remaining\n",
-				len(review.UndispositionedRequired(next.State)))
-		}
-		pending := review.UndispositionedRequired(next.State)
-		if pending == nil {
-			pending = []string{}
-		}
-		return encodeJSON(stdout, map[string]any{
-			"assignment_id":  *assignmentID,
-			"plan_status":    status,
-			"pending_claims": pending,
-			"revision":       next.Revision,
-		})
 	case "finding-supplement":
 		// S7/S8 FindingSupplement append (L3-S7 §3.6, L3-S8 §2.2): the
 		// original finder — or a scheduler-authorized replacement — appends
@@ -2050,7 +1751,7 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
 		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
 		findingID := flags.String("finding", "", "finding id the supplement extends")
-		filePath := flags.String("file", "", "professional observation JSON path; original consumer binds schema/id/time/hash")
+		filePath := flags.String("file", "", "professional observation JSON path; original consumer binds the existing responsibility and event identity")
 		authorizedBy := flags.String("authorized-by", "", "scheduler identity authorizing a replacement finder (required when author != original finder)")
 		inRoundNote := flags.Bool("in-round-note", false, "declare an S7 in-round note from the original finder (exempt from the hypothesis_id + discriminator + expected_outcomes gate; must not carry hypothesis_id)")
 		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
@@ -2076,7 +1777,6 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			"supplement_id":          receipt.SupplementID,
 			"supplements_finding_id": receipt.FindingID,
 			"path":                   receipt.Path,
-			"sha256":                 receipt.SHA256,
 			"revision":               receipt.Revision,
 		})
 	case "investigation":
@@ -2149,36 +1849,6 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 		if err := json.NewEncoder(stdout).Encode(next); err != nil {
 			fmt.Fprintf(stderr, "encode BUG event: %v\n", err)
 			return 1
-		}
-		return 0
-	case "fingerprint":
-		flags := flag.NewFlagSet("runtime fingerprint", flag.ContinueOnError)
-		flags.SetOutput(stderr)
-		bindUsage(flags, "runtime fingerprint")
-		root := flags.String("root", ".", "repository root")
-		statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
-		journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-		if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-			return 2
-		}
-		// Anchor --state / --journal against --root so the verb works
-		// from any cwd (L3-S7 sandbox contract).
-		resolvedState := resolveRootPath(*root, *statePath)
-		resolvedJournal := resolveRootPath(*root, *journalPath)
-		result, err := runtime.NewWriter(resolvedState, resolvedJournal, *root, semantic.RuntimeCandidateValidator{}).RefreshFingerprints(*root)
-		if err != nil {
-			fmt.Fprintf(stderr, "runtime fingerprint failed: %v\n", err)
-			return 1
-		}
-		fmt.Fprintf(stdout, "updated=%d unchanged=%d missing=%d drifted=%d\n", len(result.Updated), len(result.Unchanged), len(result.Missing), len(result.Drifted))
-		for _, p := range result.Updated {
-			fmt.Fprintf(stdout, "updated  %s\n", p)
-		}
-		for _, p := range result.Drifted {
-			fmt.Fprintf(stdout, "drifted  %s (recorded baseline preserved; use the change/review or evidence registration workflow)\n", p)
-		}
-		for _, p := range result.Missing {
-			fmt.Fprintf(stdout, "missing  %s\n", p)
 		}
 		return 0
 	default:
@@ -2283,74 +1953,34 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 	return encodeJSON(stdout, next)
 }
 
-// runRuntimeReconcilePolicyRef realigns `hook_control.policy_ref` with the
-// Hook policy document on disk (BUG-039-12; REQ-039 §11, SYNC-039 §6-7).
-//
-// This is the fix path that `loop-harness doctor` names when it detects policy
-// reference drift. It deliberately reuses Store.RefreshFingerprints rather than
-// writing policy_ref directly: fingerprint refresh is the single canonical
-// non-semantic housekeeping writer, it goes through the runtime lock, the
-// the mandatory semantic validator and atomic write, and it does not bump the revision or
-// append a journal entry. Realigning an audit snapshot is not a Loop transition,
-// so it must not look like one in the journal.
-//
-// --check reports drift without writing, for use in CI or a pre-flight probe.
+// The legacy reconcile command remains callable without computing a file digest.
+// It reports the policy that the current process will load; it does not claim
+// that a pathname or version proves historical bytes have not changed.
 func runRuntimeReconcilePolicyRef(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("runtime reconcile-policy-ref", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	bindUsage(flags, "runtime reconcile-policy-ref")
 	root := flags.String("root", ".", "repository root")
-	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
-	journalPath := flags.String("journal", ".claude/loop-events.jsonl", "runtime journal path")
-	checkOnly := flags.Bool("check", false, "report drift without writing state")
+	flags.String("state", ".claude/loop-state.json", "legacy state path")
+	flags.String("journal", ".claude/loop-events.jsonl", "legacy journal path")
+	flags.Bool("check", false, "inspect the currently available policy")
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
-	// Anchor --state / --journal against --root so the verb works
-	// from any cwd (L3-S7 sandbox contract).
-	resolvedState := resolveRootPath(*root, *statePath)
-	resolvedJournal := resolveRootPath(*root, *journalPath)
-	store := runtime.NewStore(resolvedState, resolvedJournal)
-	before, err := store.InspectPolicyRef(*root)
+	path := filepath.Join(*root, projectlayout.Policy)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime reconcile-policy-ref", err))
+		fmt.Fprintf(stderr, "policy unavailable: %v\n", err)
 		return 1
 	}
-	if before.Missing {
-		fmt.Fprintln(stderr, "runtime reconcile-policy-ref failed: runtime state has no hook_control.policy_ref; re-bind the runtime")
+	var doc struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		fmt.Fprintf(stderr, "policy unavailable: %v\n", err)
 		return 1
 	}
-	if before.FileMissing {
-		fmt.Fprintf(stderr, "runtime reconcile-policy-ref failed: hook policy %s does not exist on disk\n", before.Path)
-		return 1
-	}
-	if !before.Drifted() {
-		fmt.Fprintf(stdout, "policy_ref already consistent path=%s version=%s\n", before.Path, before.RecordedVersion)
-		return 0
-	}
-	if *checkOnly {
-		fmt.Fprintf(stderr, "policy_ref drifted path=%s version recorded=%s on-disk=%s sha256 recorded=%s on-disk=%s\n",
-			before.Path, before.RecordedVersion, before.OnDiskVersion, before.RecordedSHA256, before.OnDiskSHA256)
-		return 1
-	}
-	if _, err := runtime.NewWriter(resolvedState, resolvedJournal, *root, semantic.RuntimeCandidateValidator{}).RefreshFingerprints(*root); err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime reconcile-policy-ref", err))
-		return 1
-	}
-	after, err := store.InspectPolicyRef(*root)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("runtime reconcile-policy-ref", err))
-		return 1
-	}
-	if after.Drifted() {
-		fmt.Fprintf(stderr, "runtime reconcile-policy-ref failed: policy_ref still drifted after refresh (version=%s sha256=%s)\n",
-			after.RecordedVersion, after.RecordedSHA256)
-		return 1
-	}
-	fmt.Fprintf(stdout, "policy_ref reconciled path=%s version %s -> %s\n", after.Path, before.RecordedVersion, after.RecordedVersion)
-	if before.RecordedSHA256 != after.RecordedSHA256 {
-		fmt.Fprintf(stdout, "policy_ref sha256 %s -> %s\n", before.RecordedSHA256, after.RecordedSHA256)
-	}
+	fmt.Fprintf(stdout, "policy available path=%s version=%s; historical contents are not verified\n", projectlayout.Policy, doc.Version)
 	return 0
 }
 
@@ -2399,7 +2029,7 @@ func runRuntimeRollover(args []string, stdout, stderr io.Writer) int {
 	if note, err := archiveREQOnRollover(*root, record.ArchiveDir, *approvedBy, now); err != nil {
 		fmt.Fprintf(stderr, "runtime rollover: warning: REQ archival skipped: %v\n", err)
 	} else if note != "" {
-		fmt.Fprintf(stdout, "REQ %s (dual-fingerprint receipt: %s)\n", note, filepath.Join(record.ArchiveDir, "req-archive.json"))
+		fmt.Fprintf(stdout, "REQ %s (archive receipt: %s)\n", note, filepath.Join(record.ArchiveDir, "req-archive.json"))
 	}
 	fmt.Fprintln(stdout, stageEntryQuestionnaireContext(*root, policy.Input{Event: "SessionStart"}, runtime.Snapshot{State: freshState}))
 	return 0
@@ -2433,7 +2063,6 @@ func archiveREQOnRollover(root, archiveDir, approvedBy string, occurredAt time.T
 	if err != nil {
 		return "", fmt.Errorf("read bound REQ %s: %w", cleanRel, err)
 	}
-	shaBefore := fmt.Sprintf("%x", sha256.Sum256(reqData))
 	flipped, ok := flipStatusLineToArchived(string(reqData))
 	if !ok {
 		return "", nil // already archived or not locked; leave untouched
@@ -2441,7 +2070,6 @@ func archiveREQOnRollover(root, archiveDir, approvedBy string, occurredAt time.T
 	if err := atomicWriteREQFile(filepath.Join(root, filepath.FromSlash(cleanRel)), []byte(flipped)); err != nil {
 		return "", fmt.Errorf("write archived REQ %s: %w", cleanRel, err)
 	}
-	shaAfter := fmt.Sprintf("%x", sha256.Sum256([]byte(flipped)))
 	receipt := map[string]any{
 		"schema_version": "1.0.0",
 		"event":          "req_archived",
@@ -2449,7 +2077,6 @@ func archiveREQOnRollover(root, archiveDir, approvedBy string, occurredAt time.T
 		"req": map[string]any{
 			"id": reqID, "path": reqPath,
 			"status_before": "locked", "status_after": "archived",
-			"sha256_before": shaBefore, "sha256_after": shaAfter,
 		},
 		"approved_by": approvedBy,
 		"occurred_at": occurredAt.UTC().Format(time.RFC3339Nano),
@@ -2461,13 +2088,7 @@ func archiveREQOnRollover(root, archiveDir, approvedBy string, occurredAt time.T
 	if err := atomicWriteREQFile(filepath.Join(archiveDir, "req-archive.json"), append(receiptData, '\n')); err != nil {
 		return "", fmt.Errorf("write REQ archive receipt: %w", err)
 	}
-	short := func(s string) string {
-		if len(s) > 12 {
-			return s[:12]
-		}
-		return s
-	}
-	return fmt.Sprintf("%s status locked → archived (sha %s… → %s…)", reqID, short(shaBefore), short(shaAfter)), nil
+	return fmt.Sprintf("%s status locked → archived", reqID), nil
 }
 
 // flipStatusLineToArchived rewrites the first top-of-file 状态/Status line
@@ -2573,7 +2194,6 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 	kind := flags.String("kind", "", "evidence kind")
 	path := flags.String("path", "", "evidence artifact path relative to repository root")
 	responsibility := flags.String("responsibility", "", "owning responsibility ID")
-	reviewRound := flags.Int("review-round", 0, "review round; omit for non-round evidence")
 	var producedBy, scopeRefs stringListFlag
 	flags.Var(&producedBy, "produced-by", "evidence producer; repeatable")
 	flags.Var(&scopeRefs, "scope-ref", "evidence scope reference; repeatable")
@@ -2591,10 +2211,6 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "runtime evidence add: %s\n", message)
 		return 1
 	}
-	var round *int
-	if *reviewRound != 0 {
-		round = reviewRound
-	}
 	next, err := runtime.RecordEvidence(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), runtime.EvidenceRequest{
 		ExpectedRevision: *expectedRevision,
 		ID:               *id,
@@ -2602,7 +2218,6 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 		Path:             *path,
 		ProducedBy:       append([]string(nil), producedBy...),
 		ResponsibilityID: *responsibility,
-		ReviewRound:      round,
 		ScopeRefs:        append([]string(nil), scopeRefs...),
 		Validator:        semantic.RuntimeCandidateValidator{},
 	})
@@ -2626,8 +2241,6 @@ func runRuntimeEvidence(args []string, stdout, stderr io.Writer) int {
 		"kind":                *kind,
 		"revision":            next.Revision,
 		"path":                entry["path"],
-		"sha256":              entry["sha256"],
-		"review_round":        entry["review_round"],
 		"baseline_generation": entry["baseline_generation"],
 	})
 }
@@ -2662,7 +2275,7 @@ func packetPlanningEvidenceAddRefusal(root, statePath, journalPath, kind string)
 
 	lifecycle, _ := state["lifecycle"].(map[string]any)
 	if lifecycle["state"] != "planning" || lifecycle["phase"] != phase {
-		status := renderExecCommand([]string{"loop-harness", "status", "--root", root})
+		status := "loop-harness status --root " + s7CaptureShellQuote(root)
 		return fmt.Sprintf("packet-mode Main planning evidence kind %q cannot be registered directly; current cursor is %v/%v. Inspect the current Runtime with %s", kind, lifecycle["state"], lifecycle["phase"], status), true, nil
 	}
 
@@ -2687,32 +2300,17 @@ func packetPlanningEvidenceAddRefusal(root, statePath, journalPath, kind string)
 func currentIssuedPlanningAnswerPath(state map[string]any, phase string) (path string, issued, verified bool, err error) {
 	switch phase {
 	case "design":
-		life := mapFieldCLI(state, "lifecycle")
-		if life["state"] != "planning" || life["phase"] != "design" {
-			return "", false, false, fmt.Errorf("S2 design is not the current entry")
+		packet, found, err := runtime.CurrentIssuedDesignPacket(state)
+		if err != nil {
+			return "", false, false, err
 		}
-		rows, _ := mapFieldCLI(state, "entities")["work_packets"].([]any)
-		count := 0
-		for _, raw := range rows {
-			row, _ := raw.(map[string]any)
-			if row["template_id"] != "s2-design-v1" {
-				continue
-			}
-			binding, _ := row["binding"].(map[string]any)
-			if binding["runtime_id"] != state["runtime_id"] || integerValue(binding["generation"]) != integerValue(nestedStateValue(state, "baseline", "generation")) || integerValue(binding["stage_entry"]) != integerValue(life["phase_revision"]) {
-				continue
-			}
-			answer, ok := row["answer_path"].(string)
-			if !ok || strings.TrimSpace(answer) == "" {
-				return "", false, false, fmt.Errorf("current S2 design record has no readable answer path")
-			}
-			path = answer
-			count++
+		if !found {
+			return "", false, true, nil
 		}
-		if count > 1 {
-			return "", false, false, fmt.Errorf("multiple S2 design questionnaires describe the current Runtime/generation/entry")
+		if strings.TrimSpace(packet.AnswerPath) == "" {
+			return "", false, false, fmt.Errorf("current S2 design record has no readable answer path")
 		}
-		return path, count == 1, true, nil
+		return packet.AnswerPath, true, true, nil
 	case "contracts":
 		binding, designs, err := runtime.CurrentContractBinding(state)
 		if err != nil {
@@ -2787,9 +2385,6 @@ func runRuntimeChange(args []string, stdout, stderr io.Writer) int {
 	if bound, ok := state["bound_req"].(map[string]any); ok {
 		if input.REQRef == "" {
 			input.REQRef, _ = bound["id"].(string)
-		}
-		if input.REQSHA == "" {
-			input.REQSHA, _ = bound["sha256"].(string)
 		}
 	}
 	record, err := change.BuildRecord(input)
@@ -3016,56 +2611,10 @@ func runHealth(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// reportPolicyRefDrift surfaces divergence between the Hook policy reference
-// recorded in `hook_control.policy_ref` and the policy document on disk
-// (BUG-039-12; REQ-039 §11, SYNC-039 §6-7).
-//
-// `policy_ref` is a bind-time snapshot of the enforced safety boundary. When
-// `docs/control/hook-policy.json` is rewritten in place the snapshot goes stale, and
-// the runtime keeps attributing Hook decisions to a policy version/digest that
-// is no longer what the Hook actually loads — an audit inconsistency rather
-// than a runtime failure. doctor is the detector; the fix path it names is
-// `runtime reconcile-policy-ref`.
-//
-// A repository with no runtime state yet is not a finding: doctor also runs on
-// unbound checkouts, so a missing state file is skipped silently.
+// Policy digest drift is no longer a doctor qualification; the actual policy
+// is loaded at the original Hook entry and its availability is reported there.
 func reportPolicyRefDrift(root, statePath, journalPath string, stdout, stderr io.Writer) int {
-	resolvedState := statePath
-	if !filepath.IsAbs(resolvedState) {
-		resolvedState = filepath.Join(root, resolvedState)
-	}
-	if _, err := os.Stat(resolvedState); err != nil {
-		return 0
-	}
-	resolvedJournal := journalPath
-	if !filepath.IsAbs(resolvedJournal) {
-		resolvedJournal = filepath.Join(root, resolvedJournal)
-	}
-	drift, err := runtime.NewStore(resolvedState, resolvedJournal).InspectPolicyRef(root)
-	if err != nil {
-		fmt.Fprintf(stderr, "doctor failed: inspect hook policy reference: %v\n", err)
-		return 1
-	}
-	if !drift.Drifted() {
-		fmt.Fprintf(stdout, "doctor: hook_control.policy_ref consistent (version=%s)\n", drift.RecordedVersion)
-		return 0
-	}
-	switch {
-	case drift.Missing:
-		fmt.Fprintln(stderr, "doctor failed: runtime state has no hook_control.policy_ref; re-bind the runtime or run: loop-harness runtime reconcile-policy-ref --root .")
-	case drift.FileMissing:
-		fmt.Fprintf(stderr, "doctor failed: hook policy %s recorded in hook_control.policy_ref does not exist on disk\n", drift.Path)
-	default:
-		fmt.Fprintf(stderr, "doctor failed: hook_control.policy_ref drifted from %s\n", drift.Path)
-		if drift.VersionDrifted() {
-			fmt.Fprintf(stderr, "  version recorded=%s on-disk=%s\n", drift.RecordedVersion, drift.OnDiskVersion)
-		}
-		if drift.SHADrifted() {
-			fmt.Fprintf(stderr, "  sha256  recorded=%s on-disk=%s\n", drift.RecordedSHA256, drift.OnDiskSHA256)
-		}
-		fmt.Fprintln(stderr, "  fix: loop-harness runtime reconcile-policy-ref --root .")
-	}
-	return 1
+	return 0
 }
 
 func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Writer, renderHook bool, progressNotify ...bool) int {
@@ -3098,6 +2647,14 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	}
 	root = nativeS6ControlRoot(controlRoot, request)
 	request = withHookReader(root, request)
+	if request.Event == "SessionStart" || request.Event == "PreCompact" || request.Event == "Stop" {
+		if _, _, attempted, err := continueOriginalS2Pending(root, request); attempted {
+			if err != nil {
+				fmt.Fprintf(stderr, "S2 original followup pending: %v\n", err)
+			}
+			refreshRecoveredHookReader(root, request)
+		}
+	}
 	if handled, code := nativeHookRoutes(root, request, stdout, stderr); handled {
 		return code
 	}
@@ -3135,6 +2692,16 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	}
 	if handled, code := hookReaderObservation(root, request, stdout, stderr); handled {
 		return code
+	}
+	if handled, code := observeMainS9Impact(root, request, stdout); handled {
+		return code
+	}
+	s9BriefObservation := observeMainS9Brief(root, request)
+	s7PlanObservation := observeMainS7ReviewPlan(root, request)
+	if s7PlanObservation.Attempted {
+		// The original consumer may commit or leave a pending Writer, even
+		// when it reports an error. Project the rest of this event afresh.
+		refreshRecoveredHookReader(root, request)
 	}
 	request = observePlanningToolChange(root, request, stderr)
 	// PostToolUse(SendMessage) is a pure observer (L3-S7 §8, L4 §7.4): it
@@ -3277,9 +2844,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 				request.Runtime.CurrentStage, _ = runtime.StageFor(request.Runtime.CurrentState, request.Runtime.CurrentPhase, root)
 				request.Runtime.PacketMode = runtime.PacketEnabled(state)
 				baseline, _ := state["baseline"].(map[string]any)
-				review, _ := state["review"].(map[string]any)
 				request.Runtime.CurrentBaselineGeneration = integerValue(baseline["generation"])
-				request.Runtime.CurrentReviewRound = integerValue(review["round"])
 			} else if current, err := hookctx.Load(root, request.AgentID); err == nil {
 				request.Runtime = current
 			}
@@ -3307,6 +2872,16 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 				decision.Guidance = &guidance
 			}
 		}
+	}
+	if s9BriefObservation.Context != "" {
+		// The current preparation result must not be discarded by the bounded
+		// lifecycle-context appender before the original renderer sees it.
+		decision.AdditionalContext = strings.TrimSpace(s9BriefObservation.Context + "\n\n" + decision.AdditionalContext)
+	}
+	if s7PlanObservation.Context != "" {
+		// A receipt or a source failure belongs to this event and must reach
+		// the original renderer rather than be discarded by context deduplication.
+		decision.AdditionalContext = strings.TrimSpace(s7PlanObservation.Context + "\n\n" + decision.AdditionalContext)
 	}
 	// Lifecycle hooks are the agent's re-entry points. Inject only a bounded
 	// native context packet: SessionStart gets the current stage/next action;
@@ -3408,7 +2983,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	// full DecisionEnvelope already landed in the outbox above, so skip the
 	// Render call (whose audit branch writes a SECOND, sparse record via
 	// appendAuditLine — the dual-write defect DV-1 / QA-1 §4 T2).
-	if decision.Decision == "audit" {
+	if decision.Decision == "audit" && s9BriefObservation.Context == "" && s7PlanObservation.Context == "" {
 		return 0
 	}
 	if request.Event == "PreToolUse" || decision.Guidance != nil {
@@ -3447,7 +3022,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	if request.Event == "PreToolUse" || request.Event == "SessionStart" {
 		if request.Event == "PreToolUse" && stageAnswerContext == "" && controlResult.QualityGate.Status == controller.StatusNotReady {
 			if dev, err := fileview.DevelopmentRef(controlResult.Snapshot.State); err == nil {
-				decision.AdditionalContext += "\nSTAGE DELIVERY: formal inputs are read from committed " + dev + ". Commit the required documents/code/tests there before retrying; staged drafts and unmerged worker commits do not qualify. Explicit disk evidence follows its source contract."
+				decision.AdditionalContext += "\nSTAGE DELIVERY: formal inputs use the selected fileview for bound development source " + dev + ". Follow the concrete missing or unreadable source feedback; each input retains its declared source contract."
 			}
 		}
 		msg, delivered := reminderDelivery(root, request)
@@ -3566,14 +3141,14 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		review := mapFieldCLI(state, "review")
 		// These are original registered facts; no frozen source closure or
 		// private author answer is inspected to deduplicate presentation.
-		identity, _ := json.Marshal([]any{state["runtime_id"], baseline["generation"], lifecycle["phase_revision"], review["round"], review["plan"]})
+		identity, _ := json.Marshal([]any{state["runtime_id"], baseline["generation"], lifecycle["phase_revision"], review["plan"]})
 		responsibility, contextStage = string(identity), "S7"
 	}
 	// Cache the actual error/reminder content too, so its later resolution is a
 	// changed delivery. Such feedback itself always retains its complete text.
 	fullOutput := output
 	output, commitContext := hook.PrepareResponsibilityContext(root, request.SessionID, request.EffectiveAgentID(), request.Event, contextStage, responsibility, output)
-	if forcePlanningDelivery {
+	if forcePlanningDelivery || s9BriefObservation.Context != "" || s7PlanObservation.Context != "" {
 		output = fullOutput
 	}
 	output, commitNotice := hook.PrepareNotice(root, request.SessionID, request.EffectiveAgentID(), request.Event, output)
@@ -4118,7 +3693,6 @@ func qualityGateEnvelopeFields(qg controller.QualityGateResult) map[string]any {
 			"gate_id":              qg.GateID,
 			"candidate_transition": qg.CandidateTransition,
 			"observed_revision":    qg.ObservedRevision,
-			"fingerprint":          qg.Fingerprint,
 			"missing":              missing,
 			"evidence_refs":        evidenceRefs,
 			"error_code":           qg.ErrorCode,
@@ -4242,51 +3816,6 @@ func countAlreadyInvalid(impacts []impactanalysis.EvidenceImpact) int {
 	return n
 }
 
-// runVerification exposes the clean-round evaluation as a CLI subcommand.
-//
-// Usage:
-//
-//	loop-harness verification clean-round --root .
-func runVerification(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: loop-harness verification clean-round --root .")
-		return 2
-	}
-	if args[0] != "clean-round" {
-		fmt.Fprintf(stderr, "unknown verification subcommand %q\n", args[0])
-		return 2
-	}
-	flags := flag.NewFlagSet("verification clean-round", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	bindUsage(flags, "verification clean-round")
-	root := flags.String("root", ".", "repository root")
-	statePath := flags.String("state", ".claude/loop-state.json", "runtime state path")
-	if err := parseWorkspaceFlags(flags, args[1:]); err != nil {
-		return 2
-	}
-	data, err := readRuntimeBytes(*root, *statePath)
-	if err != nil {
-		fmt.Fprintf(stderr, "read state: %v\n", err)
-		return 1
-	}
-	var state map[string]any
-	if err := json.Unmarshal(data, &state); err != nil {
-		fmt.Fprintf(stderr, "parse state: %v\n", err)
-		return 1
-	}
-	result := verification.EvaluateCleanRound(state)
-	out, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		fmt.Fprintf(stderr, "encode result: %v\n", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, string(out))
-	if !result.Passed {
-		return 1
-	}
-	return 0
-}
-
 func hookTargetPath(input map[string]any) string {
 	for _, key := range []string{"file_path", "path", "notebook_path"} {
 		if value, _ := input[key].(string); value != "" {
@@ -4350,15 +3879,9 @@ func runManual(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "manual: load catalog: %v\n", err)
 		return 1
 	}
-	defData, err := os.ReadFile(filepath.Join(*root, projectlayout.Definition))
-	if err != nil {
-		fmt.Fprintf(stderr, "manual: read loop-definition.json: %v\n", err)
-		return 1
-	}
 	markdown := transition.RenderManual(catalog.Definition, transition.ManualOptions{
-		TargetPath:           filepath.ToSlash(*target),
-		HarnessVersion:       "dev",
-		LoopDefinitionSHA256: fmt.Sprintf("%x", sha256.Sum256(defData)),
+		TargetPath:     filepath.ToSlash(*target),
+		HarnessVersion: "dev",
 	})
 	if *toStdout {
 		fmt.Fprint(stdout, markdown)

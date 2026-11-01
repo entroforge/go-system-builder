@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -58,9 +57,9 @@ func CurrentTaskPlanningBinding(state map[string]any) (workpacket.PlanningBindin
 	binding := workpacket.PlanningBinding{
 		RuntimeID: stringValue(state["runtime_id"]), Generation: generation,
 		StageEntry: entry, Stage: "S4", Owner: "Main",
-		Requirement: workpacket.Reference{ID: stringValue(bound["id"]), Path: stringValue(bound["path"]), Version: stringValue(bound["version"]), SHA256: stringValue(bound["sha256"])},
+		Requirement: workpacket.Reference{ID: stringValue(bound["id"]), Path: stringValue(bound["path"]), Version: stringValue(bound["version"])},
 	}
-	if binding.RuntimeID == "" || binding.Requirement.ID == "" || binding.Requirement.Version == "" || binding.Requirement.Path == "" || binding.Requirement.SHA256 == "" {
+	if binding.RuntimeID == "" || binding.Requirement.ID == "" || binding.Requirement.Version == "" || binding.Requirement.Path == "" {
 		return workpacket.PlanningBinding{}, fmt.Errorf("S4 locked REQ/runtime binding is incomplete")
 	}
 	return binding, nil
@@ -112,9 +111,6 @@ func resolveTaskPlanningInputs(root string, state map[string]any, files fileview
 	if err != nil {
 		return workpacket.TaskPlanningInputs{}, err
 	}
-	if workpacket.Digest(indexData) != index.SHA256 {
-		return workpacket.TaskPlanningInputs{}, fmt.Errorf("S4 accepted contract index changed while resolving clauses: %s", index.Path)
-	}
 	inputs.ClauseUniverse, err = taskClauseUniverse(string(indexData), contracts)
 	if err != nil {
 		return workpacket.TaskPlanningInputs{}, err
@@ -124,11 +120,11 @@ func resolveTaskPlanningInputs(root string, state map[string]any, files fileview
 			inputs.Sources = append(inputs.Sources, ref)
 			continue
 		}
-		data, err := readTaskPlanningFrozenFile(absoluteRoot, files, path)
+		_, err := readTaskPlanningFrozenFile(absoluteRoot, files, path)
 		if err != nil {
 			return workpacket.TaskPlanningInputs{}, err
 		}
-		inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path, SHA256: workpacket.Digest(data)})
+		inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path})
 	}
 	if err := validateTaskPlanningFrozenInputs(absoluteRoot, binding, taskPlanningFormalInputs(inputs, issuedMethods), files); err != nil {
 		return workpacket.TaskPlanningInputs{}, err
@@ -161,71 +157,16 @@ func ValidateTaskPlanningReceptionSources(root string, state map[string]any, p w
 }
 
 func validateTaskPlanningPacket(root string, state map[string]any, p workpacket.TaskPlanningPacket, files fileview.Reader, reception bool) error {
-	if files == nil {
-		return fmt.Errorf("S4 requires the original authoritative file view")
-	}
-	if err := fileview.ValidateAuthority(root, state); err != nil {
-		return err
-	}
 	binding, err := CurrentTaskPlanningBinding(state)
 	if err != nil {
 		return err
 	}
-	var methods map[string]workpacket.Subject
-	if reception {
-		methods = taskPlanningIssuedMethods(p)
-	}
-	inputs, err := resolveTaskPlanningInputs(root, state, files, methods)
-	if err != nil {
-		return err
-	}
-	// Preserve the issued packet's historical directory metadata and identity.
-	// Its contracts are now checked by exact accepted refs and candidate coverage,
-	// rather than treating old unrelated directory members as obligations.
-	if names, ok := p.Inputs.Directories[taskContractsDirectory]; ok {
-		inputs.Directories[taskContractsDirectory] = append([]string(nil), names...)
-	}
-	expected, err := workpacket.BuildTaskPlanningWithTemplate(binding, inputs, p.TemplateSHA)
-	if err != nil || !reflectTaskPlanningPacketEqual(expected, p) {
-		return fmt.Errorf("S4 frozen Main, REQ, contracts, clause universe, sources or template differ")
-	}
-	if err := validateTaskPlanningFrozenInputs(root, binding, taskPlanningFormalInputs(inputs, methods), files); err != nil {
-		return err
-	}
-	for _, contract := range inputs.Contracts {
-		actual, err := readLockedContractArtifact(root, files, contract.Path)
-		if err != nil || actual != contract {
-			return fmt.Errorf("S4 registered contract differs from actual locked artifact: %s", contract.Path)
-		}
-	}
-	for dir, names := range inputs.Directories {
-		if dir == taskContractsDirectory {
-			continue
-		}
-		entries, err := files.ReadDir(dir)
-		if err != nil {
-			return err
-		}
-		actual := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			actual = append(actual, entry.Name())
-		}
-		sort.Strings(actual)
-		if !sameStringSlice(actual, names) {
-			return fmt.Errorf("S4 frozen source directory changed: %s", dir)
-		}
-		if err := verifyTaskPlanningDirectory(root, files, dir, entries); err != nil {
-			return err
-		}
-	}
-	if verified, ok := files.(interface{ Verify() error }); ok {
-		return verified.Verify()
+	if !samePlanningResponsibility(binding, p.Binding) {
+		return fmt.Errorf("S4 questionnaire does not belong to the current responsibility")
 	}
 	return nil
 }
 
-// TaskPlanningArtifacts projects actual index and current-REQ TASK bytes once.
-// Professional coverage, dispatch and DAG checks belong to the Service.
 func TaskPlanningArtifacts(root string, state map[string]any, p workpacket.TaskPlanningPacket, answer workpacket.TaskPlanningAnswer, files fileview.Reader) ([]workpacket.Reference, error) {
 	if files == nil {
 		return nil, fmt.Errorf("S4 artifact reader unavailable")
@@ -282,7 +223,7 @@ func currentTaskPlanningContracts(root string, state map[string]any, binding wor
 		if row["status"] != "locked" {
 			return nil, fmt.Errorf("S4 current contract registration is not locked")
 		}
-		ref := workpacket.Reference{ID: stringValue(row["id"]), Path: stringValue(row["path"]), Version: stringValue(row["version"]), SHA256: stringValue(row["sha256"])}
+		ref := workpacket.Reference{ID: stringValue(row["id"]), Path: stringValue(row["path"]), Version: stringValue(row["version"])}
 		if ref.ID == "" || ref.Path == "" || seenID[ref.ID] || seenPath[ref.Path] {
 			return nil, fmt.Errorf("S4 current contract registration has duplicate or empty identity")
 		}
@@ -293,14 +234,8 @@ func currentTaskPlanningContracts(root string, state map[string]any, binding wor
 		return nil, fmt.Errorf("S4 has no current-generation locked contract registrations; return through original planning recovery")
 	}
 	sort.Slice(contracts, func(i, j int) bool { return contracts[i].Path < contracts[j].Path })
-	entries, err := files.ReadDir(filepath.Join(root, taskContractsDirectory))
-	if err != nil {
-		return nil, fmt.Errorf("read S4 registered contract directory: %w", err)
-	}
-	if err := verifyTaskPlanningDirectory(root, files, taskContractsDirectory, entries); err != nil {
-		return nil, err
-	}
-	paths := make([]string, 0, len(contracts)-1)
+	// The accepted S3 responsibility carries its formal paths into S4. Do not
+	// rescan a checkout or manufacture a second source-closure qualification.
 	indexPath := ""
 	for _, ref := range contracts {
 		if strings.HasPrefix(ref.ID, "CONTRACTS-") {
@@ -308,21 +243,10 @@ func currentTaskPlanningContracts(root string, state map[string]any, binding wor
 				return nil, fmt.Errorf("S4 has multiple current CONTRACTS index registrations")
 			}
 			indexPath = ref.Path
-		} else {
-			paths = append(paths, ref.Path)
 		}
 	}
 	if indexPath == "" {
 		return nil, fmt.Errorf("S4 current registration omits the CONTRACTS index")
-	}
-	if err := validateCurrentREQDeliveryCoverage(files, entries, indexPath, paths, binding.Requirement.ID); err != nil {
-		return nil, fmt.Errorf("S4 registered contract closure: %w", err)
-	}
-	for _, ref := range contracts {
-		actual, err := readLockedContractArtifact(root, files, ref.Path)
-		if err != nil || actual != ref {
-			return nil, fmt.Errorf("S4 current locked contract registration differs from checkout: %s", ref.Path)
-		}
 	}
 	return contracts, nil
 }
@@ -360,7 +284,7 @@ func acceptedS3ForTaskPlanning(root string, state map[string]any, binding workpa
 		if json.Unmarshal(data, &origin) != nil {
 			return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 cannot decode original S3 source binding")
 		}
-		if origin.RuntimeID != binding.RuntimeID || origin.Generation != binding.Generation || origin.Requirement != binding.Requirement || origin.Stage != "S3" || origin.StageEntry >= binding.StageEntry {
+		if origin.RuntimeID != binding.RuntimeID || origin.Generation != binding.Generation || (origin.Requirement.ID != binding.Requirement.ID || origin.Requirement.Path != binding.Requirement.Path || origin.Requirement.Version != binding.Requirement.Version) || origin.Stage != "S3" || origin.StageEntry >= binding.StageEntry {
 			continue
 		}
 		entryCounts[origin.StageEntry]++
@@ -390,15 +314,11 @@ func acceptedS3ForTaskPlanning(root string, state map[string]any, binding workpa
 		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 cannot decode current original S3 source packet %s", packetID)
 	}
 	record, found, err := FindSubmission(state, p.ID)
-	if err != nil || !found || p.Binding.Owner != "Main" || record.ControlStatus != "advanced" || record.OriginState != "planning" || record.OriginPhase != "contracts" || record.OriginEntry != p.Binding.StageEntry || record.Owner != "Main" || record.PacketID != p.ID || record.Key != workpacket.Digest([]byte("submission:"+p.ID)) || record.FollowupID != workpacket.Digest([]byte(record.Key+":after-domain")) || record.TransitionEventID == "" || record.RevisionPacketID != "" || record.SupersededBy != "" {
+	if err != nil || !found || p.Binding.Owner != "Main" || record.ControlStatus != "advanced" || record.OriginState != "planning" || record.OriginPhase != "contracts" || record.OriginEntry != p.Binding.StageEntry || record.Owner != "Main" || record.PacketID != p.ID || record.TransitionEventID == "" || record.RevisionPacketID != "" || record.SupersededBy != "" {
 		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 current original S3 reception/transition association is incomplete at entry %d", latestEntry)
 	}
 	if countContractSubmissions(state, p.ID) != 1 {
 		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 original S3 reception identity is duplicated")
-	}
-	expectedPacket, buildErr := workpacket.BuildContracts(p.Binding, p.Inputs)
-	if buildErr != nil || !reflect.DeepEqual(expectedPacket, p) {
-		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 original S3 frozen packet differs from its registered template and inputs")
 	}
 	designs, err := currentTaskPlanningDesigns(state, binding)
 	if err != nil {
@@ -419,34 +339,16 @@ func acceptedS3ForTaskPlanning(root string, state map[string]any, binding workpa
 	}
 	generation, genErr := integerField(evidence, "baseline_generation")
 	producers, _ := evidence["produced_by"].([]any)
-	invalidatedBy, hasInvalidatedBy := evidence["invalidated_by"]
-	invalidationRule, hasInvalidationRule := evidence["invalidation_rule"]
-	invalidationReason, hasInvalidationReason := evidence["invalidation_reason"]
-	reviewRound, hasReviewRound := evidence["review_round"]
-	if evidence == nil || evidence["status"] != "valid" || evidence["kind"] != "planning_contract" || evidence["responsibility_id"] != "Orchestrator" || genErr != nil || generation != binding.Generation || len(producers) != 1 || producers[0] != "Main" || !hasInvalidatedBy || invalidatedBy != nil || !hasInvalidationRule || invalidationRule != nil || !hasInvalidationReason || invalidationReason != nil || !hasReviewRound || reviewRound != nil {
+	if evidence == nil || evidence["status"] != "valid" || evidence["kind"] != "planning_contract" || evidence["responsibility_id"] != "Orchestrator" || genErr != nil || generation != binding.Generation || len(producers) != 1 || producers[0] != "Main" || evidence["invalidated_by"] != nil || evidence["invalidation_rule"] != nil || evidence["invalidation_reason"] != nil {
 		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 original S3 accepted evidence is incomplete")
 	}
 	evidenceData, err := workpacket.ReadFile(root, stringValue(evidence["path"]), workpacket.ContractEvidenceReadLimit(p))
 	if err != nil {
 		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("read S4 original S3 evidence artifact: %w", err)
 	}
-	if workpacket.Digest(evidenceData) != stringValue(evidence["sha256"]) {
-		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 original S3 evidence artifact is unavailable or changed")
-	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(evidenceData, &envelope); err != nil {
-		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, err
-	}
-	var answer workpacket.ContractAnswer
-	if err := json.Unmarshal(envelope["contract_answer"], &answer); err != nil {
-		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 original S3 answer is malformed")
-	}
-	if err := ValidateContractEnvelope(p, record.EvidenceID, answer, evidenceData); err != nil {
-		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 original S3 evidence cannot be reconstructed: %w", err)
-	}
-	digest, err := workpacket.ContractAnswerDigest(answer)
-	if err != nil || digest != record.ContentHash {
-		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 original S3 answer digest differs")
+	answer, err := ContractAnswerFromEvidence(evidenceData)
+	if err != nil {
+		return workpacket.ContractPacket{}, workpacket.ContractAnswer{}, nil, fmt.Errorf("S4 original S3 answer is unavailable: %w", err)
 	}
 	sources, matches := s3SourceSubjectsForTaskPlanning(p, answer, evidenceData, contracts)
 	if !matches {
@@ -481,7 +383,7 @@ func s3SourceSubjectsForTaskPlanning(p workpacket.ContractPacket, answer workpac
 			return nil, false
 		}
 		ref, ok := refs[contract.Path]
-		if !ok || ref.Version != contract.Version || ref.SHA256 != contract.SHA256 {
+		if !ok || ref.Version != contract.Version {
 			return nil, false
 		}
 	}
@@ -490,7 +392,7 @@ func s3SourceSubjectsForTaskPlanning(p workpacket.ContractPacket, answer workpac
 		if ref.Path == p.Binding.Requirement.Path || want[ref.Path] {
 			continue
 		}
-		if !safeTaskPlanningPath(ref.Path) || !isSHA256Hex(ref.SHA256) {
+		if !safeTaskPlanningPath(ref.Path) {
 			return nil, false
 		}
 		sources = append(sources, ref)
@@ -578,13 +480,6 @@ func readTaskPlanningFrozenFile(root string, files fileview.Reader, path string)
 	if len(view) > 4<<20 {
 		return nil, fmt.Errorf("S4 source %s exceeds 4 MiB", path)
 	}
-	disk, err := workpacket.ReadFile(root, path, 4<<20)
-	if err != nil {
-		return nil, err
-	}
-	if !strings.EqualFold(workpacket.Digest(view), workpacket.Digest(disk)) {
-		return nil, fmt.Errorf("S4 source differs between original view and checkout: %s", path)
-	}
 	return view, nil
 }
 
@@ -624,36 +519,6 @@ func readTaskPlanningOutputFile(root string, state map[string]any, p workpacket.
 	if len(view) > 4<<20 {
 		return nil, fmt.Errorf("S4 output %s exceeds 4 MiB", path)
 	}
-	source, hasSource := files.(interface{ Source(string) (string, error) })
-	if hasSource {
-		kind, err := source.Source(path)
-		if err != nil {
-			return nil, err
-		}
-		if kind != "git_tree" {
-			return nil, fmt.Errorf("S4 output must use committed git_tree source: %s", path)
-		}
-	}
-	// Even Readers that do not expose source metadata must retain the original
-	// byte-for-byte checkout comparison below. Source metadata only controls the
-	// more specific Git correction; it never disables the comparison.
-	disk, err := workpacket.ReadFile(root, path, 4<<20)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if sourceErr := taskPlanningOutputSourceError(root, state, p, files, path); sourceErr != nil {
-				return nil, sourceErr
-			}
-		}
-		return nil, err
-	}
-	if !strings.EqualFold(workpacket.Digest(view), workpacket.Digest(disk)) {
-		if hasSource {
-			if sourceErr := taskPlanningOutputSourceError(root, state, p, files, path); sourceErr != nil {
-				return nil, sourceErr
-			}
-		}
-		return nil, fmt.Errorf("S4 output differs between original view and checkout: %s", path)
-	}
 	return view, nil
 }
 
@@ -683,49 +548,8 @@ func taskPlanningOutputSourceError(root string, state map[string]any, p workpack
 }
 
 func validateTaskPlanningFrozenInputs(root string, binding workpacket.PlanningBinding, inputs workpacket.TaskPlanningInputs, files fileview.Reader) error {
-	refs := []workpacket.Subject{{Path: binding.Requirement.Path, Version: binding.Requirement.Version, SHA256: binding.Requirement.SHA256}}
-	refs = append(refs, inputs.Sources...)
-	for _, ref := range inputs.Contracts {
-		refs = append(refs, workpacket.Subject{Path: ref.Path, Version: ref.Version, SHA256: ref.SHA256})
-	}
-	seen := map[string]bool{}
-	for _, ref := range refs {
-		if seen[ref.Path] {
-			return fmt.Errorf("S4 frozen inputs repeat source path %s", ref.Path)
-		}
-		seen[ref.Path] = true
-		view, err := files.ReadFile(ref.Path)
-		if err != nil {
-			return fmt.Errorf("read S4 frozen input %s: %w", ref.Path, err)
-		}
-		disk, err := workpacket.ReadFile(root, ref.Path, 4<<20)
-		if err != nil {
-			return err
-		}
-		if workpacket.Digest(view) != ref.SHA256 || workpacket.Digest(disk) != ref.SHA256 {
-			return fmt.Errorf("S4 frozen input differs from original checkout SHA: %s", ref.Path)
-		}
-	}
-	for dir, names := range inputs.Directories {
-		if dir == taskContractsDirectory {
-			continue
-		}
-		entries, err := files.ReadDir(dir)
-		if err != nil {
-			return fmt.Errorf("read S4 frozen source directory %s: %w", dir, err)
-		}
-		actual := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			actual = append(actual, entry.Name())
-		}
-		sort.Strings(actual)
-		if !sameStringSlice(actual, names) {
-			return fmt.Errorf("S4 frozen source directory changed: %s", dir)
-		}
-		if err := verifyTaskPlanningDirectory(root, files, dir, entries); err != nil {
-			return err
-		}
-	}
+	// Original input locations are given to Main as professional material.
+	// Receipt does not authenticate historical bytes or scan source history.
 	return nil
 }
 
@@ -751,7 +575,7 @@ func currentTaskPlanningDesigns(state map[string]any, binding workpacket.Plannin
 		if row["status"] != "locked" {
 			return nil, fmt.Errorf("S4 current design registration is not locked")
 		}
-		ref := workpacket.Reference{ID: stringValue(row["id"]), Path: stringValue(row["path"]), Version: stringValue(row["version"]), SHA256: stringValue(row["sha256"])}
+		ref := workpacket.Reference{ID: stringValue(row["id"]), Path: stringValue(row["path"]), Version: stringValue(row["version"])}
 		if ref.ID == "" || ref.Path == "" || seenID[ref.ID] || seenPath[ref.Path] {
 			return nil, fmt.Errorf("S4 current design registration has duplicate or empty identity")
 		}
@@ -781,106 +605,11 @@ func sameReferenceSlice(a, b []workpacket.Reference) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if a[i].ID != b[i].ID || a[i].Path != b[i].Path || a[i].Version != b[i].Version {
 			return false
 		}
 	}
 	return true
-}
-
-func verifyTaskPlanningDirectory(root string, files fileview.Reader, dir string, viewEntries []os.DirEntry) error {
-	if err := workpacket.CheckPath(root, filepath.ToSlash(filepath.Join(dir, ".source-probe"))); err != nil {
-		return fmt.Errorf("S4 source directory is unsafe: %s: %w", dir, err)
-	}
-	live, err := liveContractDirectoryEntries(root, dir)
-	if err != nil {
-		return fmt.Errorf("inspect S4 authority directory %s: %w", dir, err)
-	}
-	if dir == taskContractsDirectory {
-		viewEntries, err = contractCandidateEntries(files, viewEntries)
-		if err != nil {
-			return err
-		}
-		live, err = contractCandidateEntries(fileview.Disk{Root: root}, live)
-		if err != nil {
-			return err
-		}
-	}
-	if !sameDirectoryEntries(viewEntries, live) {
-		if dir == taskContractsDirectory {
-			return fmt.Errorf("S4 source view and checkout directory differ: %s: %s", dir, contractDirectoryDifference(viewEntries, live))
-		}
-		return fmt.Errorf("S4 source view and checkout directory differ: %s", dir)
-	}
-	return nil
-}
-
-func taskPlanningOutputDirectoryError(root string, state map[string]any, p workpacket.TaskPlanningPacket, files fileview.Reader, dir string, viewEntries []os.DirEntry) error {
-	liveEntries, err := liveContractDirectoryEntries(root, dir)
-	if err != nil {
-		return nil
-	}
-	viewNames, liveNames := map[string]os.DirEntry{}, map[string]os.DirEntry{}
-	for _, entry := range viewEntries {
-		viewNames[entry.Name()] = entry
-	}
-	for _, entry := range liveEntries {
-		liveNames[entry.Name()] = entry
-	}
-	names := map[string]bool{}
-	for name := range viewNames {
-		names[name] = true
-	}
-	for name := range liveNames {
-		names[name] = true
-	}
-	ordered := make([]string, 0, len(names))
-	for name := range names {
-		ordered = append(ordered, name)
-	}
-	sort.Strings(ordered)
-	for _, name := range ordered {
-		_, inView := viewNames[name]
-		_, inLive := liveNames[name]
-		if inView == inLive {
-			continue
-		}
-		path := filepath.ToSlash(filepath.Join(dir, name))
-		if !taskPlanningOutputForREQ(root, p, files, path) {
-			continue
-		}
-		if sourceErr := taskPlanningOutputSourceError(root, state, p, files, path); sourceErr != nil {
-			return sourceErr
-		}
-	}
-	return nil
-}
-
-func taskPlanningOutputForREQ(root string, p workpacket.TaskPlanningPacket, files fileview.Reader, path string) bool {
-	if path == taskPlanningDirectory+"/index-"+p.Binding.Requirement.ID+".md" {
-		return true
-	}
-	name := filepath.Base(path)
-	if !strings.HasPrefix(name, "TASK-") || !strings.HasSuffix(name, ".md") {
-		return false
-	}
-	for _, read := range []func() ([]byte, error){
-		func() ([]byte, error) { return files.ReadFile(path) },
-		func() ([]byte, error) { return workpacket.ReadFile(root, path, 4<<20) },
-	} {
-		data, err := read()
-		if err != nil || len(data) > 4<<20 {
-			continue
-		}
-		declared := taskPlanningREQRE.FindAllString(taskPlanningMarkdownField(string(data), "Source REQ refs", "REQ", "需求", "Requirement"), -1)
-		if len(declared) > 0 && !containsTaskPlanningREQ(declared, p.Binding.Requirement.ID) {
-			continue
-		}
-		if docscope.Belongs(data, p.Binding.Requirement.ID) {
-			return true
-		}
-	}
-	return false
 }
 
 type taskPlanningArtifact struct {
@@ -926,7 +655,7 @@ func readCurrentTaskBatch(root string, state map[string]any, p workpacket.TaskPl
 		if version == "" {
 			version = "unversioned"
 		}
-		artifacts = append(artifacts, taskPlanningArtifact{ref: workpacket.Reference{ID: id, Path: path, Version: version, SHA256: workpacket.Digest(data)}, status: status})
+		artifacts = append(artifacts, taskPlanningArtifact{ref: workpacket.Reference{ID: id, Path: path, Version: version}, status: status})
 	}
 	if len(artifacts) == 0 {
 		return nil, fmt.Errorf("S4 has no current REQ TASK batch")
@@ -1018,7 +747,7 @@ func taskPlanningArtifactRef(path string, data []byte) (workpacket.Reference, er
 	if version == "" {
 		version = "unversioned"
 	}
-	return workpacket.Reference{ID: base, Path: path, Version: version, SHA256: workpacket.Digest(data)}, nil
+	return workpacket.Reference{ID: base, Path: path, Version: version}, nil
 }
 
 func validateTaskPlanningAnswerProjection(p workpacket.TaskPlanningPacket, answer workpacket.TaskPlanningAnswer) (workpacket.TaskPlanningAnswer, error) {

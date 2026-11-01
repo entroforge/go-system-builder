@@ -78,7 +78,7 @@ func TestOwnedReceiptAcceptsCapturedFailedFactAndKeepsOnlyLatestForReuse(t *test
 	if err := f.binding.Materialize(f.ctx, e); err != nil {
 		t.Fatalf("materialize frozen owner check checkout: %v", err)
 	}
-	e.BootstrapSHA256 = "fixture-bootstrap"
+
 	first := captureOwnedReceiptFixture(t, f.binding, e, 0, "pass", false)
 	if err := f.binding.AcceptOwnedCheckReceipt(&e, 0, first); err != nil {
 		t.Fatalf("accept process-captured WorkerCheck receipt: %v", err)
@@ -90,7 +90,7 @@ func TestOwnedReceiptAcceptsCapturedFailedFactAndKeepsOnlyLatestForReuse(t *test
 	if err := f.binding.AcceptOwnedCheckReceipt(&e, 0, second); err != nil {
 		t.Fatalf("accept captured failed check as a machine fact: %v", err)
 	}
-	if len(e.OwnedCheckReceipts) != 2 || e.OwnedCheckReceipts[0].Receipt.SHA256 != first.SHA256 || e.OwnedCheckReceipts[1].Receipt.SHA256 != second.SHA256 {
+	if len(e.OwnedCheckReceipts) != 2 || e.OwnedCheckReceipts[0].Receipt.Path != first.Path || e.OwnedCheckReceipts[1].Receipt.Path != second.Path {
 		t.Fatal("owned receipt history was rewritten or evicted")
 	}
 	latest := latestOwnedCheckReceipts(e.OwnedCheckReceipts, 0)
@@ -140,21 +140,25 @@ func TestOwnedCheckObservationUsesTheRunnerDisposableCopy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".claude", "excluded"), []byte("excluded\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	profile := checkexec.Profile{ID: "owned-copy-profile", Version: "1.0.0", CheckIndex: 0, Command: "true", Location: "worker", TimeoutSeconds: 10, EnvironmentPolicy: "declared_only", Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{}, Fixtures: []checkexec.FileRef{}, InputClosure: "whole_tree", SideEffects: "none", ReusePolicy: "never"}
 	canonical, err := Canonical(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, observation, err := ObserveOwnedCheckSource(context.Background(), canonical, profile)
-	if err != nil {
+	copyRoot := t.TempDir()
+	if err := copyCheckTreeWithoutDigest(context.Background(), canonical, copyRoot); err != nil {
 		t.Fatal(err)
 	}
-	hash, err := CheckSnapshotDigest(context.Background(), canonical)
-	if err != nil {
+	if data, err := os.ReadFile(filepath.Join(copyRoot, "input.md")); err != nil || string(data) != "source\n" {
+		t.Fatalf("runner copy lacks original input: %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(copyRoot, ".claude")); !os.IsNotExist(err) {
+		t.Fatalf("runner copy included private .claude: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(copyRoot, "input.md"), []byte("copy only\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot != hash || len(snapshot) != 64 || observation.ProfileDigest != profile.Digest() || observation.SubjectDigest == snapshot {
-		t.Fatalf("collector and runner copy observations diverged: snapshot=%s digest=%s observation=%+v", snapshot, hash, observation)
+	if data, err := os.ReadFile(filepath.Join(canonical, "input.md")); err != nil || string(data) != "source\n" {
+		t.Fatalf("runner copy modified original: %q %v", data, err)
 	}
 }
 
@@ -194,10 +198,7 @@ func TestRunOwnedCheckCapturesTheOriginalIsolatedRunnerReceipt(t *testing.T) {
 	if err := f.binding.Bootstrap(e, executable); err != nil {
 		t.Fatalf("bootstrap owner check execution: %v", err)
 	}
-	e.BootstrapSHA256, err = BootstrapDigest(e)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	f.binding.Executions[e.AssignmentID] = e
 	f.state["workspace"] = Encode(f.binding)
 	saveControlState(t, f.binding.MainRoot, f.state)
@@ -228,7 +229,7 @@ func TestRunOwnedCheckCapturesTheOriginalIsolatedRunnerReceipt(t *testing.T) {
 	if err := f.binding.AcceptOwnedCheckReceipt(&e, 0, result.ToolReceipt); err != nil {
 		t.Fatalf("original Workspace Writer helper rejected the captured owner receipt: %v", err)
 	}
-	if len(e.OwnedCheckReceipts) != 1 || e.OwnedCheckReceipts[0].Receipt.SHA256 != result.ToolReceipt.SHA256 {
+	if len(e.OwnedCheckReceipts) != 1 || e.OwnedCheckReceipts[0].Receipt.Path != result.ToolReceipt.Path {
 		t.Fatal("original Workspace receipt helper did not append the captured fact")
 	}
 	if err := result.Attempt.Finish(result.ReceiptPath, runErr); err != nil {
@@ -260,20 +261,19 @@ func captureOwnedReceiptFixture(t *testing.T, binding *ExecutionRegistry, e Exec
 	if corruptOwner {
 		owner = "agent-other"
 	}
-	snapshot := checkexec.Hash([]byte("actual copied source fixture"))
 	snapshotFacts := map[string]any{"runtime_id": e.RuntimeID, "baseline_generation": e.BaselineGeneration, "assignment_id": e.AssignmentID, "owner_agent_id": owner, "execution_generation": e.Generation, "bootstrap_sha256": "fixture-bootstrap"}
 	raw := map[string]any{
 		"version": 2, "runtime_id": e.RuntimeID, "baseline_generation": e.BaselineGeneration,
 		"assignment_id": e.AssignmentID, "execution_generation": e.Generation,
-		"check_index": index, "command": check.Command, "snapshot_sha256": snapshot,
+		"check_index": index, "command": check.Command,
 		"started_at": "2026-10-14T00:00:00Z", "elapsed_ms": 1, "status": status,
 		"error": "", "output": logPath, "disposable_copy": true,
 		"check_binding": CheckBinding(e), "profile_observation": observation,
-		"assignment_record": e.AssignmentRecord, "assignment_record_sha256": e.AssignmentRecordSHA256,
+		"assignment_record":  e.AssignmentRecord,
 		"worker_check_index": index, "worker_check_contract": "s6-closing-v1",
 		"worker_check_snapshot": snapshotFacts,
 	}
-	data, err := checkexec.SealReceipt(raw, logPath)
+	data, err := checkexec.SealReceipt(raw)
 	if err != nil {
 		t.Fatal(err)
 	}

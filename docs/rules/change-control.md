@@ -29,9 +29,10 @@ Chat never changes a baseline.
 ## 3. Runtime Effects
 
 Legal state transitions and guards are defined by the Loop Definition. An
-approved baseline change must update fingerprints, run impact analysis, and
-invalidate affected assignments, activations, PASS evidence, ACC, and release
-audit evidence.
+approved baseline change is assessed for its actual impact on assignments,
+activations, PASS evidence, ACC and release audit evidence. Preserve the original
+facts and update or reverify what the actual change affects; no fingerprint
+registration or digest comparison is needed to make this assessment.
 
 ## 4. Change Request Fields
 
@@ -73,8 +74,7 @@ Inside an active loop:
 
 ## Maintenance and reviewed baselines
 
-`runtime fingerprint` and `runtime reconcile-policy-ref` maintain Harness
-definition/policy metadata. They cannot approve changed REQs, registered design,
-contracts, dispatch plans, TASKs or evidence by replacing recorded hashes.
-Fingerprint drift remains visible until the existing change/review or evidence
-registration workflow establishes a new valid baseline.
+The existing change and review workflow handles changes to REQs, design,
+contracts, dispatch plans, TASKs and evidence. A real approval applies to its
+actual object and decision; replacing machine metadata does not grant approval.
+Do not require a fingerprint command or digest to continue this workflow.

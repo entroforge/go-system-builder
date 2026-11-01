@@ -66,7 +66,7 @@ func TestNativeS9FailurePublicationDoesNotRereadCapturedInput(t *testing.T) {
 	path := filepath.Join(root, "answer.json")
 	a := newNativeS9AttemptCapture(t.Context(), root, attemptDeliverySnapshot(), "plan-original", "builder-original", "Builder")
 	a.ObserveInput(path, []byte("already-read"))
-	// No file exists. Publishing must retain the original digest, not observe
+	// No file exists. Publishing must retain the original read observation, not observe
 	// a missing path by doing a new business read after failure.
 	if err := a.Publish(t.Context(), errors.New("original typed failure")); err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestNativeS9FailurePublicationDoesNotRereadCapturedInput(t *testing.T) {
 	if err := json.Unmarshal(data, &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.Files[path] != workpacket.Digest([]byte("already-read")) {
+	if value.Files[path] != "readable" {
 		t.Fatal("captured bytes replaced with a later observation")
 	}
 }
@@ -237,7 +237,7 @@ func TestNativeS9SavedTypedInputMissingRetainsOriginalWindowWithoutWriting(t *te
 	root := t.TempDir()
 	snap := attemptDeliverySnapshot()
 	typed := filepath.Join(root, "original-typed-answer.json")
-	expected := workpacket.Digest([]byte("original already-read fixed typed input"))
+	expected := "readable"
 	a := newNativeS9AttemptCapture(t.Context(), root, snap, "plan-original", "builder-original", "Builder")
 	a.SetInput(filepath.Join(root, "original-flat-result.json"))
 	a.SetTypedInput(typed)
@@ -279,10 +279,10 @@ func TestNativeS9SavedTypedInputMissingRetainsOriginalWindowWithoutWriting(t *te
 
 func TestNativeS9MissingObservationExceptionIsOnlyForExactSavedTypedInput(t *testing.T) {
 	for _, tc := range []struct{ name, stage, typedRef, observed string }{
-		{"prepared-is-not-saved", "typed_result_prepared", "exact", workpacket.Digest([]byte("read"))},
-		{"different-typed-coordinate", "typed_result_saved", "different", workpacket.Digest([]byte("read"))},
-		{"not-a-byte-digest", "typed_result_saved", "exact", "unreadable: actual original error"},
-		{"another-original-input-changed", "typed_result_saved", "exact", workpacket.Digest([]byte("read"))},
+		{"prepared-is-not-saved", "typed_result_prepared", "exact", "readable"},
+		{"different-typed-coordinate", "typed_result_saved", "different", "readable"},
+		{"unreadable-observation", "typed_result_saved", "exact", "unreadable: actual original error"},
+		{"another-original-input-changed", "typed_result_saved", "exact", "readable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -296,7 +296,7 @@ func TestNativeS9MissingObservationExceptionIsOnlyForExactSavedTypedInput(t *tes
 			}
 			a.value.Files[path] = tc.observed
 			if tc.name == "another-original-input-changed" {
-				a.value.Files[filepath.Join(root, "different-original-input.json")] = workpacket.Digest([]byte("original other input"))
+				a.value.Files[filepath.Join(root, "different-original-input.json")] = "readable"
 			}
 			if err := a.Publish(t.Context(), context.DeadlineExceeded); err != nil {
 				t.Fatal(err)

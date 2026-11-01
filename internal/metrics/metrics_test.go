@@ -239,61 +239,15 @@ func TestProcessCountersMirrorLegacySemantics(t *testing.T) {
 	}
 }
 
-// TestPruneDeadFamiliesRemovesLegacyRoundLabels exercises the RC-17 family
-// hygiene pass: a round-keyed S7 map carrying a label the round vocabulary
-// cannot parse (legacy or corrupt writer) must not survive another mutation,
-// because retainS7Rounds skips it when computing retention and FormatS7 can
-// never render it — it would be dead weight in every future snapshot.
-func TestPruneDeadFamiliesRemovesLegacyRoundLabels(t *testing.T) {
-	root := t.TempDir()
-	// Record a live round so the store exists with wired data.
-	if err := metrics.RecordS7RoundShape(root, 2, 3, 4, 5); err != nil {
-		t.Fatal(err)
-	}
-	// Corrupt the on-disk snapshot with a legacy unparseable round label.
-	path := filepath.Join(root, metrics.DefaultRelativePath)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Add a legacy unparseable round label alongside the live one (do not
-	// remove the live entry — the prune must delete only the dead label).
-	patched := strings.Replace(string(raw), `"2": 5`, `"2": 5,
-		"round-legacy": 9`, 1)
-	if patched == string(raw) {
-		t.Fatalf("expected to patch the S7PlanRevision entry in:\n%s", raw)
-	}
-	if err := os.WriteFile(path, []byte(patched), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Any later mutation must prune the dead label.
-	if err := metrics.RecordS7RoundShape(root, 3, 1, 1, 1); err != nil {
-		t.Fatal(err)
-	}
-	snap, err := metrics.NewStore(root).Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, legacy := snap.S7PlanRevision["round-legacy"]; legacy {
-		t.Fatalf("legacy round label survived prune: %v", snap.S7PlanRevision)
-	}
-	if snap.S7PlanRevision["2"] != 5 {
-		t.Fatalf("live round 2 entry lost in prune: %v", snap.S7PlanRevision)
-	}
-	if snap.S7PlanRevision["3"] != 1 {
-		t.Fatalf("live round 3 entry lost in prune: %v", snap.S7PlanRevision)
-	}
-}
-
 // TestTrackedFamilyBudget pins the RC-17 family budget: the durable snapshot
 // must track at most maxTrackedFamilies loop_* families. Growing the set
 // requires retiring a dead family in the same change (or extending the
 // maxTrackedFamilies comment with the new producer/consumer pair).
 func TestTrackedFamilyBudget(t *testing.T) {
-	// Seven core + nine S7 + two S5 + one independent outer Hook transport
+	// Seven core + two S7 + two S5 + one independent outer Hook transport
 	// family. Count declared JSON fields, including omitempty fields that do
 	// not appear in an otherwise populated snapshot on disk.
-	const reviewedFamilyBudget = 19
+	const reviewedFamilyBudget = 12
 	typ := reflect.TypeOf(metrics.Snapshot{})
 	families := 0
 	for i := 0; i < typ.NumField(); i++ {

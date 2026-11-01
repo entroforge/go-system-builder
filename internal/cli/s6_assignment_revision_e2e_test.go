@@ -15,7 +15,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 type s6RevisionCLIOutput struct {
@@ -45,15 +44,17 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 		"--revision-intent-key", "revision-paired-flags-negative",
 		"--expected-record-ref", `{"runtime_id":"x"}`,
 	}, nil, &badOut, &badErr)
-	if badCode != 2 || !strings.Contains(badErr.String(), "requires --expected-record-ref and --expected-record-sha256 together") {
-		t.Fatalf("unpaired Record assertion code=%d stderr=%s", badCode, badErr.String())
+	if badCode == 0 || !strings.Contains(badErr.String(), "stale Assignment revision") {
+		t.Fatalf("wrong original Record accepted: code=%d stderr=%s", badCode, badErr.String())
 	}
 	assertS6RevisionPairUnchanged(t, statePath, journalPath, beforeBadState, beforeBadJournal)
+	staleRef := fixture.record.Reference()
+	staleRef.Revision++
 	staleCode, _, staleErr := runS6RevisionCLI(fixture.root, ".claude/workgroups/manifest-s6-native-context.json",
 		fixture.record.Task.ID, fixture.record.Task.Ref, fixture.record.AssignmentID,
-		"revision-stale-record-negative", fixture.record.Reference(), strings.Repeat("0", 64))
+		"revision-stale-record-negative", staleRef)
 	if staleCode == 0 || !strings.Contains(staleErr, "stale Assignment revision") {
-		t.Fatalf("stale Record SHA was not rejected by the original Writer: code=%d stderr=%s", staleCode, staleErr)
+		t.Fatalf("stale Record revision was not rejected by the original Writer: code=%d stderr=%s", staleCode, staleErr)
 	}
 	assertS6RevisionPairUnchanged(t, statePath, journalPath, beforeBadState, beforeBadJournal)
 
@@ -100,7 +101,7 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 		t.Fatalf("read original ACK artifact %s: %v", oldACKRef, err)
 	}
 	oldResultBytes, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(acceptedResult.ResultRef)))
-	if err != nil || workpacket.Digest(oldResultBytes) != acceptedResult.ResultSHA256 {
+	if err != nil {
 		t.Fatalf("read original accepted Result artifact: %v", err)
 	}
 
@@ -112,10 +113,6 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	r1SHA, err := fixture.record.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	r2ManifestPath := ".claude/workgroups/manifest-s6-native-context.json"
 	s6WriteRevisionManifest(t, fixture.root, r2ManifestPath, "r2", "agent-s6-native-context-r2")
 	r2ManifestBytes, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(r2ManifestPath)))
@@ -123,7 +120,7 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 		t.Fatal(err)
 	}
 	issuedR2, outR2, errout := runS6RevisionCLI(fixture.root, r2ManifestPath, fixture.record.Task.ID, fixture.record.Task.Ref,
-		fixture.record.AssignmentID, "s6-revision-intent-r2", fixture.record.Reference(), r1SHA)
+		fixture.record.AssignmentID, "s6-revision-intent-r2", fixture.record.Reference())
 	if issuedR2 != 0 {
 		t.Fatalf("issue r2 through register-workgroup: code=%d stderr=%s stdout=%s", issuedR2, errout, outR2)
 	}
@@ -133,12 +130,8 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 	if err != nil || !found {
 		t.Fatalf("load issued r2 Record: found=%v err=%v", found, err)
 	}
-	r2IssuedSHA, err := r2IssuedRecord.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	if r2Output.Receipt.AssignmentRecord != r2Ref || r2Output.Receipt.Revision != 2 ||
-		r2Output.Receipt.AssignmentRecordSHA256 != r2IssuedSHA || r2Output.Receipt.RuntimeEventID == "" ||
+		r2Output.Receipt.RuntimeEventID == "" ||
 		r2Output.Receipt.RuntimeCommitRevision != r2IssuedRecord.RegistrationRevision ||
 		!r2Output.Receipt.Current || r2Output.Receipt.Replayed {
 		t.Fatalf("r2 CLI did not return its original first-issue receipt: %+v", r2Output.Receipt)
@@ -181,7 +174,7 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 		t.Fatal(err)
 	}
 	recoveredCode, recoveredOut, recoveredErr := runS6RevisionCLI(fixture.root, r2ManifestPath, fixture.record.Task.ID, fixture.record.Task.Ref,
-		fixture.record.AssignmentID, "s6-revision-intent-r2", fixture.record.Reference(), r1SHA)
+		fixture.record.AssignmentID, "s6-revision-intent-r2", fixture.record.Reference())
 	if recoveredCode != 0 {
 		t.Fatalf("same-intent call did not recover the recorded pending Writer candidate: code=%d stderr=%s stdout=%s", recoveredCode, recoveredErr, recoveredOut)
 	}
@@ -199,7 +192,7 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 	assertS6RevisionPairMatchesSnapshot(t, stateAfterRecovery, journalAfterRecovery, targetStateBytes, targetJournal)
 	stateBeforeExactReplay, journalBeforeExactReplay := append([]byte(nil), stateAfterRecovery...), append([]byte(nil), journalAfterRecovery...)
 	replayCode, replayOut, replayErr := runS6RevisionCLI(fixture.root, r2ManifestPath, fixture.record.Task.ID, fixture.record.Task.Ref,
-		fixture.record.AssignmentID, "s6-revision-intent-r2", fixture.record.Reference(), r1SHA)
+		fixture.record.AssignmentID, "s6-revision-intent-r2", fixture.record.Reference())
 	if replayCode != 0 {
 		t.Fatalf("exact r2 replay: code=%d stderr=%s stdout=%s", replayCode, replayErr, replayOut)
 	}
@@ -213,14 +206,10 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 	if err != nil || !found {
 		t.Fatalf("load current r2 Record: found=%v err=%v", found, err)
 	}
-	r2SHA, err := r2Record.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	r3ManifestPath := ".claude/workgroups/manifest-s6-native-context-r3.json"
 	s6WriteRevisionManifest(t, fixture.root, r3ManifestPath, "r3", "agent-s6-native-context-r3")
 	r3Code, r3Out, r3Err := runS6RevisionCLI(fixture.root, r3ManifestPath, fixture.record.Task.ID, fixture.record.Task.Ref,
-		fixture.record.AssignmentID, "s6-revision-intent-r3", r2Record.Reference(), r2SHA)
+		fixture.record.AssignmentID, "s6-revision-intent-r3", r2Record.Reference())
 	if r3Code != 0 {
 		t.Fatalf("issue r3: code=%d stderr=%s stdout=%s", r3Code, r3Err, r3Out)
 	}
@@ -242,7 +231,7 @@ func TestS6AssignmentRevisionCLIReceiptPendingRecoveryAndHistoricalReplay(t *tes
 		t.Fatal(err)
 	}
 	historicalCode, historicalOut, historicalErr := runS6RevisionCLI(fixture.root, r2ManifestPath, fixture.record.Task.ID, fixture.record.Task.Ref,
-		fixture.record.AssignmentID, "s6-revision-intent-r2", fixture.record.Reference(), r1SHA)
+		fixture.record.AssignmentID, "s6-revision-intent-r2", fixture.record.Reference())
 	if historicalCode != 0 {
 		t.Fatalf("historical r2 replay after r3: code=%d stderr=%s stdout=%s", historicalCode, historicalErr, historicalOut)
 	}
@@ -272,10 +261,6 @@ func TestS6AssignmentRevisionSamePredecessorConcurrentIntentsOnlyOneWinner(t *te
 	if err != nil || !found {
 		t.Fatalf("load predecessor Record: found=%v err=%v", found, err)
 	}
-	previousSHA, err := previous.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	manifests := []string{
 		".claude/workgroups/manifest-s6-concurrent-a.json",
 		".claude/workgroups/manifest-s6-concurrent-b.json",
@@ -298,7 +283,7 @@ func TestS6AssignmentRevisionSamePredecessorConcurrentIntentsOnlyOneWinner(t *te
 			defer group.Done()
 			<-start
 			results[i].code, results[i].stdout, results[i].stderr = runS6RevisionCLI(root, manifests[i], taskID, taskPath,
-				previous.AssignmentID, "s6-concurrent-intent-"+owners[i], previous.Reference(), previousSHA)
+				previous.AssignmentID, "s6-concurrent-intent-"+owners[i], previous.Reference())
 		}(i)
 	}
 	close(start)
@@ -370,14 +355,15 @@ func s6WriteRevisionManifest(t *testing.T, root, path, suffix, owner string) {
 	stageJSON(t, root, path, manifest)
 }
 
-func runS6RevisionCLI(root, manifestPath, taskID, taskPath, assignmentID, intent string, previous assignmentrecord.RecordReference, previousSHA string) (int, string, string) {
+func runS6RevisionCLI(root, manifestPath, taskID, taskPath, assignmentID, intent string, previous assignmentrecord.RecordReference) (int, string, string) {
 	refBytes, _ := json.Marshal(previous)
 	var stdout, stderr bytes.Buffer
-	code := cli.Run([]string{
+	args := []string{
 		"runtime", "register-workgroup", "--root", root, "--manifest", manifestPath,
 		"--task-id", taskID, "--task", taskPath, "--revise-assignment", assignmentID,
-		"--revision-intent-key", intent, "--expected-record-ref", string(refBytes), "--expected-record-sha256", previousSHA,
-	}, nil, &stdout, &stderr)
+		"--revision-intent-key", intent, "--expected-record-ref", string(refBytes),
+	}
+	code := cli.Run(args, nil, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 

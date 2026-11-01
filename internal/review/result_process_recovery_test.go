@@ -86,7 +86,7 @@ func resultProcessCommand(t *testing.T, mode string, request resultProcessReques
 }
 
 func TestReviewResultKilledAfterPublicationRecoversInFreshProcess(t *testing.T) {
-	for _, mode := range []string{"original-answer", "tampered-artifact", "missing-intent"} {
+	for _, mode := range []string{"original-answer", "different-answer", "tampered-artifact", "unknown-marker"} {
 		t.Run(mode, func(t *testing.T) {
 			root, sp, jp, before, plan := packetModeFixture(t)
 			const id = "review-result-real-process-kill"
@@ -125,8 +125,8 @@ func TestReviewResultKilledAfterPublicationRecoversInFreshProcess(t *testing.T) 
 				}
 			}
 			published := mustReadTestFile(t, artifact)
-			if _, err := os.Stat(artifact + ".staging.json"); err != nil {
-				t.Fatalf("publication lacks original ownership intent: %v", err)
+			if _, err := os.Stat(artifact + ".staging.json"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("publication created an ownership marker: %v", err)
 			}
 			if err := child.Process.Kill(); err != nil {
 				t.Fatal(err)
@@ -156,62 +156,42 @@ func TestReviewResultKilledAfterPublicationRecoversInFreshProcess(t *testing.T) 
 				if err := os.WriteFile(artifact, append(published, ' '), 0600); err != nil {
 					t.Fatal(err)
 				}
-			case "missing-intent":
-				if err := os.Remove(artifact + ".staging.json"); err != nil {
+			case "different-answer":
+				data := mustReadTestFile(t, input)
+				data = []byte(strings.Replace(string(data), "observed claim-qa-1", "new professional observation", 1))
+				if err := os.WriteFile(input, data, 0600); err != nil {
 					t.Fatal(err)
 				}
-			}
-			ageSentinel := func() {
-				t.Helper()
-				// Negative ownership cases isolate that boundary from the
-				// separately asserted immediate-recovery requirement. This is a
-				// test-only time fixture, never an author recovery instruction.
-				old := time.Now().Add(-time.Minute)
-				if err := os.Chtimes(sp+".lock", old, old); err != nil {
+			case "unknown-marker":
+				if err := os.WriteFile(artifact+".staging.json", []byte("unknown historical content"), 0600); err != nil {
 					t.Fatal(err)
 				}
-			}
-			if mode != "original-answer" {
-				ageSentinel()
 			}
 			currentArtifact := mustReadTestFile(t, artifact)
 			for replay := 0; replay < 2; replay++ {
 				output, err := resultProcessCommand(t, "resume", in).CombinedOutput()
-				if mode != "original-answer" {
-					if err == nil {
-						t.Fatalf("unsafe %s accepted: %s", mode, output)
-					}
-					want := "bytes drifted"
-					if mode == "missing-intent" {
-						want = "without this submission's ownership intent"
-					}
-					if !strings.Contains(string(output), want) {
-						t.Fatalf("negative recovery rejected for the wrong boundary; want %q: %s", want, output)
-					}
-					if !bytes.Equal(stateBytes, mustReadTestFile(t, sp)) || !bytes.Equal(journalBytes, mustReadTestFile(t, jp)) || !bytes.Equal(currentArtifact, mustReadTestFile(t, artifact)) {
-						t.Fatal("failed recovery changed original facts or untrusted artifact")
-					}
-					break
-				}
 				if err != nil {
-					t.Errorf("fresh process cannot immediately resume original transaction: %v\n%s", err, output)
-					if !strings.Contains(string(output), "context deadline exceeded") && !strings.Contains(string(output), "runtime lock timeout") {
-						return
-					}
-					ageSentinel()
-					output, err = resultProcessCommand(t, "resume", in).CombinedOutput()
-					if err != nil {
-						t.Fatalf("control with expired compatibility sentinel also failed: %v\n%s", err, output)
-					}
-					t.Log("CONTROL ONLY: original answer recovered after aging the dead compatibility sentinel; immediate recovery above remains FAILED")
+					t.Fatalf("fresh process cannot receive original responsibility past unknown publication: %v\n%s", err, output)
 				}
 				got, err := loopruntime.NewStore(sp, jp).Snapshot()
 				if err != nil || got.Revision != before.Revision+1 {
 					t.Fatalf("reception not exactly once after replay %d: revision=%d error=%v", replay, got.Revision, err)
 				}
-				if !bytes.Equal(published, mustReadTestFile(t, artifact)) {
-					t.Fatal("recovery replaced exact original artifact")
+				if !bytes.Equal(currentArtifact, mustReadTestFile(t, artifact)) {
+					t.Fatal("recovery changed unregistered original publication")
 				}
+				row := resultPacketAssignmentRow(got.State, "assignment-qa-1")
+				ref := row["result_receipt"].(map[string]any)["result_ref"].(string)
+				if filepath.Join(root, ref) == artifact {
+					t.Fatal("fresh process adopted unregistered file")
+				}
+				if _, err := os.Stat(filepath.Join(root, ref)); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "unknown-marker" && string(mustReadTestFile(t, artifact+".staging.json")) != "unknown historical content" {
+					t.Fatal("unknown marker changed")
+				}
+
 			}
 			t.Log(fmt.Sprintf("actual process kill and fresh-process recovery checked: %s", mode))
 		})

@@ -14,7 +14,7 @@ import (
 )
 
 func TestDraftPlanDoesNotInventNAChecklistDecision(t *testing.T) {
-	plan, _ := DraftPlanForRoot(t.TempDir(), baseDraftState(t), 1)
+	plan, _ := DraftPlanForRoot(t.TempDir(), baseDraftState(t))
 	if plan == nil {
 		t.Fatal("DraftPlanForRoot returned nil plan")
 	}

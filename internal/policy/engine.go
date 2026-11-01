@@ -2,7 +2,8 @@ package policy
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
@@ -26,7 +27,7 @@ import (
 //
 //   - locked_artifact_write  — the affected path matches a LockedArtifact
 //     manifest entry whose identity is complete (ID/kind/path/version/
-//     sha256/locked_from_stage/baseline_generation).
+//     locked_from_stage/baseline_generation).
 //   - retired_layout_write — a known mutation path would recreate docs/product.
 //   - squash_merge           — tokenized resolver proves the command is a
 //     git merge --squash or gh pr merge --squash.
@@ -173,14 +174,13 @@ func (a *AgentContext) LifecycleActivity() string {
 // current canonical Assignment Record and frozen manifest; hook JSON cannot
 // supply it.
 type NativeOwnedAssignment struct {
-	AssignmentID           string             `json:"-"`
-	OwnerAgentID           string             `json:"-"`
-	WorktreePath           string             `json:"-"`
-	AssignmentRecordSHA256 string             `json:"-"`
-	OwnerState             string             `json:"-"`
-	ContextBound           bool               `json:"-"`
-	PlanActivated          bool               `json:"-"`
-	Checks                 []NativeOwnedCheck `json:"-"`
+	AssignmentID  string             `json:"-"`
+	OwnerAgentID  string             `json:"-"`
+	WorktreePath  string             `json:"-"`
+	OwnerState    string             `json:"-"`
+	ContextBound  bool               `json:"-"`
+	PlanActivated bool               `json:"-"`
+	Checks        []NativeOwnedCheck `json:"-"`
 }
 
 // NativeOwnedCheck is the command identity copied from a current frozen
@@ -206,7 +206,6 @@ type LockedArtifact struct {
 	Kind               string `json:"kind"`
 	Path               string `json:"path"`
 	Version            string `json:"version"`
-	SHA256             string `json:"sha256"`
 	LockedFromStage    string `json:"locked_from_stage"`
 	BaselineGeneration int    `json:"baseline_generation"`
 }
@@ -260,8 +259,6 @@ type RuntimeContext struct {
 	CurrentState                string                       `json:"current_state"`
 	CurrentPhase                string                       `json:"current_phase"`
 	Paused                      bool                         `json:"paused"`
-	CleanRound                  any                          `json:"clean_round"`
-	CurrentReviewRound          int                          `json:"current_review_round"`
 	EvidenceValidCount          int                          `json:"evidence_valid_count"`
 	OpenBlockingBugs            int                          `json:"open_blocking_bugs"`
 	Teams                       []TeamSummary                `json:"teams,omitempty"`
@@ -282,13 +279,12 @@ type RuntimeContext struct {
 	// (assignment_id keyed, RC-04 S7-3): the first-write barrier reads these
 	// instead of requiring Runtime.Agent, so every PreToolUse evaluation
 	// path sees the barrier even when no AgentContext was resolved.
-	AssignmentID     string `json:"assignment_id,omitempty"`
-	PlanReportedRef  string `json:"plan_reported_ref,omitempty"`
-	DispatchMode     string `json:"dispatch_mode,omitempty"`
-	RepairStatus     string `json:"repair_status,omitempty"`
-	RepairSessionID  string `json:"repair_session_id,omitempty"`
-	RepairPlanRef    string `json:"repair_plan_ref,omitempty"`
-	RepairPlanSHA256 string `json:"repair_plan_sha256,omitempty"`
+	AssignmentID    string `json:"assignment_id,omitempty"`
+	PlanReportedRef string `json:"plan_reported_ref,omitempty"`
+	DispatchMode    string `json:"dispatch_mode,omitempty"`
+	RepairStatus    string `json:"repair_status,omitempty"`
+	RepairSessionID string `json:"repair_session_id,omitempty"`
+	RepairPlanRef   string `json:"repair_plan_ref,omitempty"`
 }
 
 type Input struct {
@@ -427,7 +423,6 @@ type Engine struct {
 	rules         map[string]Rule
 	policyID      string
 	policyVersion string
-	policySHA256  string
 	mode          string
 }
 
@@ -444,7 +439,6 @@ func Load(path string) (*Engine, error) {
 		rules:         make(map[string]Rule, len(doc.Rules)),
 		policyID:      doc.PolicyID,
 		policyVersion: doc.Version,
-		policySHA256:  fmt.Sprintf("%x", sha256.Sum256(data)),
 		mode:          doc.Mode,
 	}
 	for _, rule := range doc.Rules {
@@ -676,12 +670,6 @@ func repairAssignmentScopeDecision(input Input) (Decision, bool) {
 	for _, path := range paths {
 		if repairControlPathAllowed(input, path) {
 			continue
-		}
-		if input.Runtime.Agent != nil && input.Runtime.Agent.RepairResultResumePending {
-			decision := repairAssignmentBlock(input, path)
-			decision.Reason = "the original S9 resolution retired this attempt; only a verified new Resume successor may authorize product writes"
-			decision.Recovery = []string{"wait for Main's verified new Resume issuance; do not reuse the old answer or product scope"}
-			return decision, true
 		}
 		if input.Runtime.Agent == nil || input.Runtime.Agent.RepairAssignmentID == "" {
 			return repairAssignmentBlock(input, path), true
@@ -1068,6 +1056,9 @@ func phaseProductWriteFrozen(input Input) bool {
 // docs/reports/release-audits/ for release-audit reports — docs/rules/change-control
 // §2) so audit work stays inside the control/report surfaces.
 func phaseWritePathAllowed(input Input, rawPath string) bool {
+	if unidentifiedBugResolutionControlPath(input, rawPath) {
+		return true
+	}
 	if reviewResultAnswerAllowed(input, rawPath) {
 		return true
 	}
@@ -1631,7 +1622,6 @@ func (artifact LockedArtifact) complete() bool {
 		artifact.Kind != "" &&
 		artifact.Path != "" &&
 		artifact.Version != "" &&
-		artifact.SHA256 != "" &&
 		artifact.LockedFromStage != "" &&
 		artifact.BaselineGeneration > 0
 }
@@ -1641,7 +1631,6 @@ type DecisionEnvelope struct {
 	DecisionID              string                           `json:"decision_id"`
 	PolicyID                string                           `json:"policy_id"`
 	PolicyVersion           string                           `json:"policy_version"`
-	PolicySHA256            string                           `json:"policy_sha256"`
 	HookEvent               string                           `json:"hook_event"`
 	SessionID               string                           `json:"session_id"`
 	RuntimeID               *string                          `json:"runtime_id"`
@@ -1688,27 +1677,24 @@ func (e *Engine) Envelope(input Input, decision Decision, evaluatedAt time.Time)
 		recovery = []string{}
 	}
 	retry = canonicalRetry(decision.Decision, retry)
-	identity := fmt.Sprintf(
-		"%s|%s|%s|%d|%s|%s|%s|%s|%s|%s",
-		input.SessionID,
-		input.Event,
-		input.Runtime.RuntimeID,
-		input.Runtime.Revision,
-		input.AgentID,
-		input.TargetID,
-		input.ToolUseID,
-		e.policySHA256,
-		strings.Join(decision.MatchedRuleIDs, ","),
-		eventFingerprint(input),
-	)
+	// Native tool IDs identify actual platform events. Without one, do not
+	// collapse different observations: allocate a fresh diagnostic ID.
+	identity, _ := json.Marshal([]string{input.SessionID, input.Event, input.Runtime.RuntimeID, input.AgentID, input.TargetID, input.ToolUseID})
+	if input.ToolUseID == "" {
+		var nonce [16]byte
+		if _, err := rand.Read(nonce[:]); err == nil {
+			identity = append(identity, nonce[:]...)
+		} else {
+			identity = append(identity, []byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid()))...)
+		}
+	}
 	wireRuleID := canonicalWireRuleID(decision.RuleID)
 	wireMatchedRuleIDs := canonicalWireRuleIDs(matchedRuleIDs)
 	return DecisionEnvelope{
 		SchemaVersion:           "1.1.0",
-		DecisionID:              fmt.Sprintf("hook-decision-%x", sha256.Sum256([]byte(identity))),
+		DecisionID:              "hook-decision-" + base64.RawURLEncoding.EncodeToString(identity),
 		PolicyID:                e.policyID,
 		PolicyVersion:           e.policyVersion,
-		PolicySHA256:            e.policySHA256,
 		HookEvent:               input.Event,
 		SessionID:               input.SessionID,
 		RuntimeID:               runtimeID,
@@ -1729,29 +1715,6 @@ func (e *Engine) Envelope(input Input, decision Decision, evaluatedAt time.Time)
 		// Guidance is supplied by the Loop Controller, not the policy engine;
 		// the minimal safety engine only emits a Decision.
 	}
-}
-
-// eventFingerprint separates distinct native observation payloads when the
-// platform does not provide a ToolUseID. It deliberately hashes only stable
-// input facts so retries of the same event remain idempotent while different
-// ConfigChange/PostToolUseFailure payloads are not collapsed by the outbox.
-func eventFingerprint(input Input) string {
-	payload := struct {
-		ToolName  string         `json:"tool_name,omitempty"`
-		FilePath  string         `json:"file_path,omitempty"`
-		Error     string         `json:"error,omitempty"`
-		Source    string         `json:"source,omitempty"`
-		ToolInput map[string]any `json:"tool_input,omitempty"`
-	}{
-		ToolName:  input.ToolName,
-		FilePath:  input.FilePath,
-		Error:     input.Error,
-		Source:    input.Source,
-		ToolInput: input.ToolInput,
-	}
-	data, _ := json.Marshal(payload)
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("event-%x", sum[:])
 }
 
 // canonicalWireRuleID is the boundary adapter between the internal rule

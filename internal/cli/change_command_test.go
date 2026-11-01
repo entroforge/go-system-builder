@@ -35,6 +35,9 @@ func TestRuntimeChangeCreateCommandBuildsChecksFromInput(t *testing.T) {
 	if err := json.Unmarshal(state, &stateMap); err != nil {
 		t.Fatal(err)
 	}
+	// Current Runtime binding contains the original REQ identity, with no
+	// registered digest. Older inputs may still contain obsolete values.
+	delete(stateMap["bound_req"].(map[string]any), "sha256")
 	stateMap["journal"] = map[string]any{
 		"path":          ".claude/loop-events.jsonl",
 		"last_sequence": 0,
@@ -50,7 +53,7 @@ func TestRuntimeChangeCreateCommandBuildsChecksFromInput(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "loop-events.jsonl"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	input := []byte(`{"id":"CHG-001","summary":"fix timeout","class":"bugfix","risk":"medium","scope":{"include":["internal/client/**"],"exclude":[]},"work_items":[{"id":"W-1","text":"fix timeout","owner":"main","write_paths":["internal/client/**"]}]}`)
+	input := []byte(`{"id":"CHG-001","req_sha256":"obsolete-nonstandard","summary":"fix timeout","class":"bugfix","risk":"medium","scope":{"include":["internal/client/**"],"exclude":[]},"work_items":[{"id":"W-1","text":"fix timeout","owner":"main","write_paths":["internal/client/**"]}],"workspace":{"base_sha":"obsolete-oid"}}`)
 	inputPath := filepath.Join(root, "change-input.json")
 	if err := os.WriteFile(inputPath, input, 0o644); err != nil {
 		t.Fatal(err)
@@ -76,5 +79,8 @@ func TestRuntimeChangeCreateCommandBuildsChecksFromInput(t *testing.T) {
 	}
 	if !strings.Contains(string(stateAfter), `"id": "CHG-001"`) {
 		t.Fatalf("Change Record was not stored: %s", stateAfter)
+	}
+	if strings.Contains(string(stateAfter), `"req_sha256"`) || strings.Contains(string(stateAfter), `"base_sha"`) {
+		t.Fatalf("new Change copied historical digest or Git OID: %s", stateAfter)
 	}
 }

@@ -120,9 +120,8 @@ func seedReviewBindPlan(t *testing.T, repoRoot string, state map[string]any, spe
 			"status": status, "e2e_coverage_state": "not_applicable",
 			"verification_artifact_workspace": nil, "submitted_at": "2026-01-01T00:00:00Z",
 		},
-		"claims":            map[string]any{},
-		"assignments":       map[string]any{},
-		"observation_batch": nil,
+		"claims":      map[string]any{},
+		"assignments": map[string]any{},
 	}
 	claimsProjection := reviewMap["claims"].(map[string]any)
 	assignmentsProjection := reviewMap["assignments"].(map[string]any)
@@ -200,16 +199,16 @@ func registerFixtureWorkgroup(t *testing.T, root, dir string, state map[string]a
 	return err
 }
 
-// §14.1: behavior E2E 在静态 Claims 未完成前启动 —— DAG/gate 阻止。
-func TestReviewBindBlocksBehaviorWaveBeforeStaticSettles(t *testing.T) {
+// Independent behavior work is not delayed by an unrelated static wave.
+func TestReviewBindAllowsIndependentBehaviorBeforeStaticSettles(t *testing.T) {
 	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewBindPlan(t, root, state, reviewBindSpec{behaviorWave: []string{"assignment-ver-regression"}})
 
 	err := registerFixtureWorkgroup(t, root, dir, state, nil)
-	if err == nil || !strings.Contains(err.Error(), "behavior-wave") {
-		t.Fatalf("behavior-wave dispatch before the static set settles must be rejected, got %v", err)
+	if err != nil {
+		t.Fatalf("independent behavior dispatch was blocked: %v", err)
 	}
 }
 

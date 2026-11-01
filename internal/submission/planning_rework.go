@@ -39,8 +39,9 @@ func (s *Service) ReworkPlanning(ctx context.Context, target, reason string) (Pl
 	if err != nil {
 		return r, err
 	}
-	requestID := "planning-rework:" + workpacket.Digest([]byte(target+":"+r.Reason))
-	replay, err := runtime.PlanningReworkReplay(snap.State, s.JournalPath, requestID, target)
+	life, _ := snap.State["lifecycle"].(map[string]any)
+	requestID := fmt.Sprintf("planning-rework:%s:%s:%v", text(snap.State["runtime_id"]), target, life["phase_revision"])
+	replay, err := runtime.PlanningReworkReplay(snap.State, s.JournalPath, r.Reason, target)
 	if err != nil {
 		return r, err
 	}

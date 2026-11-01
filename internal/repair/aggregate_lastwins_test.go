@@ -7,12 +7,12 @@ import "testing"
 func TestAggregateRepairResultArtifactsLastWins(t *testing.T) {
 	results := []RepairResult{
 		{ResultID: "r1", ChangedArtifacts: []ChangedArtifact{
-			{Path: "shared.go", SHA256: "aaa", Status: "modified"},
-			{Path: "only-r1.go", SHA256: "bbb", Status: "modified"},
+			{Path: "shared.go", Status: "modified"},
+			{Path: "only-r1.go", Status: "modified"},
 		}},
 		{ResultID: "r2", ChangedArtifacts: []ChangedArtifact{
-			{Path: "shared.go", SHA256: "ccc", Status: "modified"},
-			{Path: "only-r2.go", SHA256: "ddd", Status: "modified"},
+			{Path: "shared.go", Status: "deleted"},
+			{Path: "only-r2.go", Status: "modified"},
 		}},
 	}
 	got, err := aggregateRepairResultArtifacts(results)
@@ -23,8 +23,8 @@ func TestAggregateRepairResultArtifactsLastWins(t *testing.T) {
 	for _, artifact := range got {
 		byPath[artifact.Path] = artifact
 	}
-	if byPath["shared.go"].SHA256 != "ccc" {
-		t.Fatalf("shared.go: want later sha ccc, got %q", byPath["shared.go"].SHA256)
+	if byPath["shared.go"].Status != "deleted" {
+		t.Fatalf("shared.go lost later status: %+v", byPath["shared.go"])
 	}
 	if _, ok := byPath["only-r1.go"]; !ok {
 		t.Fatal("only-r1.go must survive aggregation")

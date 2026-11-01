@@ -2,8 +2,6 @@ package cli_test
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -66,8 +64,6 @@ func TestS11NormalSaveSuppliesMachineMetadataForEveryDisposition(t *testing.T) {
 				t.Fatalf("normal save did not consume its one fixed exit: cursor=%v revision=%d/%d feedback=%s", cursor, after.Revision, before.Revision, feedback)
 			}
 			id := strings.TrimSuffix(filepath.Base(path), ".json")
-			body, _ := os.ReadFile(path)
-			digest := sha256.Sum256(body)
 			answer := readS10QuestionnaireState(t, path)
 			if answer["decision_id"] != id || answer["runtime_id"] != before.State["runtime_id"] || answer["approved_by"] != "Main" || answer["disposition"] != tc.disposition || answer["reason"] != reason || answer["scope"] != "runtime_release:"+before.State["runtime_id"].(string) {
 				t.Fatalf("Writer did not supply the original decision metadata: %v", answer)
@@ -79,8 +75,14 @@ func TestS11NormalSaveSuppliesMachineMetadataForEveryDisposition(t *testing.T) {
 					continue
 				}
 				recorded++
-				if row["id"] != id || row["consumed_by"] != tc.transition || row["sha256"] != hex.EncodeToString(digest[:]) || row["baseline_generation"] != before.State["baseline"].(map[string]any)["generation"] || row["review_round"] != before.State["review"].(map[string]any)["round"] {
+				if row["id"] != id || row["consumed_by"] != tc.transition || row["baseline_generation"] != before.State["baseline"].(map[string]any)["generation"] {
 					t.Fatalf("machine evidence was not bound to the actual saved choice: %v", row)
+				}
+				if _, exists := row["sha256"]; exists {
+					t.Fatalf("decision recorded an obsolete digest: %v", row)
+				}
+				if _, exists := row["review_round"]; exists {
+					t.Fatalf("decision recorded an obsolete review round: %v", row)
 				}
 				if produced, ok := row["produced_by"].([]any); !ok || len(produced) != 1 || produced[0] != "Main" {
 					t.Fatalf("machine caller attribution = %v", row["produced_by"])

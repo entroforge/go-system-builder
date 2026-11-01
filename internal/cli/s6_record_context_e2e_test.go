@@ -18,7 +18,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/schema"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
@@ -36,8 +35,8 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 	boundREQ := beforeRegistration.State["bound_req"].(map[string]any)
 	boundREQPath := boundREQ["path"].(string)
 	boundREQBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(boundREQPath)))
-	if err != nil || workpacket.Digest(boundREQBytes) != boundREQ["sha256"] {
-		t.Fatalf("original bound REQ bytes do not match Runtime: %v", err)
+	if err != nil {
+		t.Fatalf("read original bound REQ: %v", err)
 	}
 	bindingEvent := s6RecordContextJournalEvent(t, root, 0)
 	runtimeID := beforeRegistration.State["runtime_id"].(string)
@@ -48,12 +47,11 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 		t.Fatalf("original Main workspace binding journal does not bind event/idempotency/Runtime: %v", bindingEvent)
 	}
 	boundWorkspace := boundREQ["workspace"].(map[string]any)
-	head, err := workspace.Git(context.Background(), root, "rev-parse", "refs/heads/test-development")
-	if err != nil {
-		t.Fatal(err)
+	if boundWorkspace["project_root"] != root || boundWorkspace["dev_branch"] != "test-development" {
+		t.Fatalf("req workspace CLI did not bind the actual Main root and branch: %v", boundWorkspace)
 	}
-	if boundWorkspace["project_root"] != root || boundWorkspace["dev_branch"] != "test-development" || boundWorkspace["bound_commit"] != head {
-		t.Fatalf("req workspace CLI did not bind the actual Main Git commit: %v", boundWorkspace)
+	if _, exists := boundWorkspace["bound_commit"]; exists {
+		t.Fatalf("new Main workspace binding registered a Git OID: %v", boundWorkspace)
 	}
 	var lockedTask bool
 	for _, raw := range beforeRegistration.State["documents"].([]any) {
@@ -77,12 +75,8 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("original registration did not persist the canonical Assignment Record: found=%v err=%v", found, err)
 	}
-	if record.Task.ID != taskID || record.Task.Ref != taskPath || record.OwnerAgentID != "agent-s6-native-context" || record.Contract != assignmentrecord.AssignmentRecordContract {
-		t.Fatalf("canonical Record lost TASK/owner/contract binding: %+v", record)
-	}
-	recordDigest, err := record.Digest()
-	if err != nil {
-		t.Fatal(err)
+	if record.Task.ID != taskID || record.Task.Ref != taskPath || record.OwnerAgentID != "agent-s6-native-context" || record.RoleFamily != "backend-builder" || record.Contract != assignmentrecord.AssignmentRecordContract {
+		t.Fatalf("canonical Record lost TASK/owner/role/contract binding: %+v", record)
 	}
 	if record.RegistrationRevision != registered.Revision {
 		t.Fatalf("Record registration revision=%d, current Main revision=%d", record.RegistrationRevision, registered.Revision)
@@ -101,8 +95,8 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 		t.Fatalf("invalid original native context binding: %+v", binding)
 	}
 	contextBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(binding.Context.Path)))
-	if err != nil || workpacket.Digest(contextBytes) != binding.Context.SHA256 {
-		t.Fatalf("native context bytes do not match the committed binding: %v", err)
+	if err != nil {
+		t.Fatalf("read original native context: %v", err)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("native-assignment-context.schema.json", contextBytes); err != nil {
 		t.Fatalf("native context schema: %v", err)
@@ -127,8 +121,8 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 		t.Fatalf("context does not bind the Record Runtime/baseline: %+v", contextView)
 	}
 	if contextView.Dispatch.AssignmentRecord == nil || *contextView.Dispatch.AssignmentRecord != record.Reference() ||
-		contextView.Dispatch.AssignmentRevision != record.Revision || contextView.Dispatch.AssignmentRecordSHA256 != recordDigest {
-		t.Fatalf("native Dispatch differs from canonical Record reference/revision/digest: dispatch=%+v record=%+v sha=%s", contextView.Dispatch, record.Reference(), contextView.Dispatch.AssignmentRecordSHA256)
+		contextView.Dispatch.AssignmentRevision != record.Revision {
+		t.Fatalf("native Dispatch differs from canonical Record reference/revision: dispatch=%+v record=%+v", contextView.Dispatch, record.Reference())
 	}
 	if contextView.Dispatch.Owner != record.OwnerAgentID || contextView.Dispatch.TaskID != record.Task.ID || contextView.Dispatch.TeamID != record.TeamID ||
 		contextView.Dispatch.Role != record.RoleFamily || contextView.Dispatch.ManifestRef != record.Manifest.Ref {
@@ -142,7 +136,6 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 		"runtime_id": record.RuntimeID, "baseline_generation": record.BaselineGeneration,
 		"assignment_id": record.AssignmentID, "assignment_revision": record.Revision,
 		"assignment_record_contract": assignmentrecord.AssignmentRecordContract,
-		"assignment_record_sha256":   recordDigest,
 		"agent_id":                   record.OwnerAgentID,
 		"task_id":                    record.Task.ID,
 		"team_id":                    record.TeamID,
@@ -159,7 +152,7 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 			t.Fatalf("native Result draft filled/omitted professional field %s: %v", field, contextView.ResultDraft)
 		}
 	}
-	for _, forbidden := range []string{"plan_ref", "plan_sha256", "status", "checks", "changed_paths", "reviewed_paths"} {
+	for _, forbidden := range []string{"assignment_record_sha256", "plan_ref", "plan_sha256", "status", "checks", "changed_paths", "reviewed_paths"} {
 		if _, exists := contextView.ResultDraft[forbidden]; exists {
 			t.Errorf("native Result draft invented %s", forbidden)
 		}
@@ -169,8 +162,8 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 		t.Fatalf("native owner Result draft was not published: %v", err)
 	}
 	var resultDraft map[string]any
-	if err := json.Unmarshal(resultBytes, &resultDraft); err != nil || resultDraft["summary"] != nil || resultDraft["assignment_record_sha256"] != recordDigest {
-		t.Fatalf("native Result artifact differs from frozen context: %v %v", resultDraft, err)
+	if err := json.Unmarshal(resultBytes, &resultDraft); err != nil || resultDraft["summary"] != nil || resultDraft["assignment_id"] != record.AssignmentID || resultDraft["agent_id"] != record.OwnerAgentID || resultDraft["task_id"] != record.Task.ID {
+		t.Fatalf("native Result artifact does not identify its original responsibility: %v %v", resultDraft, err)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("agent-message.schema.json", resultBytes); err == nil {
 		t.Fatal("blank S6 Result draft unexpectedly passed the professional completion schema")
@@ -188,7 +181,7 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 	if err := json.Unmarshal(preservedResult, &tamperedResult); err != nil {
 		t.Fatal(err)
 	}
-	tamperedResult["assignment_record_sha256"] = strings.Repeat("0", 64)
+	tamperedResult["assignment_id"] = "assignment-other-responsibility"
 	tamperedBytes, err := json.MarshalIndent(tamperedResult, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +204,7 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	if contextView.PlanPath == "" || contextView.PlanDraft["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract ||
-		contextView.PlanDraft["assignment_record_sha256"] != recordDigest || contextView.PlanDraft["assignment_revision"] != float64(record.Revision) {
+		contextView.PlanDraft["assignment_id"] != record.AssignmentID || contextView.PlanDraft["agent_id"] != record.OwnerAgentID || contextView.PlanDraft["assignment_revision"] != float64(record.Revision) {
 		t.Fatalf("PLAN draft is not bound to its canonical Record: path=%q draft=%v", contextView.PlanPath, contextView.PlanDraft)
 	}
 	professionalQuestions := []string{"/objective", "/planned_paths", "/assertion_checks", "/dependencies", "/risks_blockers"}
@@ -240,8 +233,8 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 		t.Fatal("blank PLAN draft unexpectedly passes the professional PLAN_REPORT schema")
 	}
 	schemaBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(contextView.Schema.Path)))
-	if err != nil || workpacket.Digest(schemaBytes) != contextView.Schema.SHA256 {
-		t.Fatalf("native PLAN schema source is not the frozen embedded schema: %v", err)
+	if err != nil || !json.Valid(schemaBytes) {
+		t.Fatalf("native PLAN schema source is unavailable or invalid JSON: %v", err)
 	}
 
 	var plan map[string]any
@@ -287,9 +280,8 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("AgentBegin lost canonical Assignment Record: found=%v err=%v", found, err)
 	}
-	afterDigest, err := afterRecord.Digest()
-	if err != nil || afterDigest != recordDigest || afterRecord.Reference() != record.Reference() {
-		t.Fatalf("PLAN reception changed canonical Assignment authority: digest=%s err=%v", afterDigest, err)
+	if afterRecord.Reference() != record.Reference() || afterRecord.OwnerAgentID != record.OwnerAgentID || afterRecord.Task.ID != record.Task.ID || afterRecord.RoleFamily != record.RoleFamily {
+		t.Fatalf("PLAN reception changed canonical Assignment responsibility: %+v", afterRecord)
 	}
 	finalJournalEvent := s6RecordContextJournalEvent(t, root, 0)
 	for _, field := range []string{"event_id", "idempotency_key", "runtime_id", "transition_id"} {
@@ -298,7 +290,7 @@ func TestS6NativeAssignmentContextPlanBeginUsesCanonicalRecord(t *testing.T) {
 		}
 	}
 	finalREQ, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(boundREQPath)))
-	if err != nil || !bytes.Equal(finalREQ, boundREQBytes) || workpacket.Digest(finalREQ) != boundREQ["sha256"] {
+	if err != nil || !bytes.Equal(finalREQ, boundREQBytes) {
 		t.Fatalf("S6 CLI chain changed originally bound REQ bytes: %v", err)
 	}
 }
@@ -332,7 +324,7 @@ func TestS6NativeClosingContextKeepsAssessmentEditableAcrossRetry(t *testing.T) 
 		t.Fatalf("decode closing context reference: %v / %s", err, output)
 	}
 	contextBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(binding.Context.Path)))
-	if err != nil || workpacket.Digest(contextBytes) != binding.Context.SHA256 {
+	if err != nil {
 		t.Fatalf("read the frozen closing context: %v", err)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("native-assignment-context.schema.json", contextBytes); err != nil {
@@ -416,9 +408,69 @@ func TestS6NativeClosingContextKeepsAssessmentEditableAcrossRetry(t *testing.T) 
 	}
 }
 
+func TestS6CanonicalResultIgnoresLegacyDigestButProtectsActualResponsibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, value, errorText string
+	}{
+		{name: "historical digest"},
+		{name: "wrong assignment", field: "assignment_id", value: "assignment-other", errorText: "current Assignment Record binding"},
+		{name: "wrong owner", field: "agent_id", value: "another-builder", errorText: "does not match Agent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := readyS6CanonicalResultCLI(t)
+			answer := s6CanonicalCompletionMessage(fixture, "msg-original-legacy-digest", "The actual professional judgment remains unchanged.")
+			answer["assignment_record_sha256"] = "legacy-nonstandard-value"
+			if tc.field != "" {
+				answer[tc.field] = tc.value
+			}
+			path := ".claude/messages/s6-legacy-value.json"
+			stageJSON(t, fixture.root, path, answer)
+			beforeState, beforeJournal := s6CanonicalRuntimePair(t, fixture.root)
+			code, output, diagnostic := s6RunCanonicalTaskComplete(fixture, path)
+			if tc.errorText != "" {
+				if code == 0 || !strings.Contains(diagnostic, tc.errorText) {
+					t.Fatalf("wrong actual responsibility accepted: %d %s %s", code, output, diagnostic)
+				}
+				s6AssertCanonicalRuntimePair(t, fixture.root, beforeState, beforeJournal)
+				return
+			}
+			if code != 0 {
+				t.Fatalf("historical digest rejected by original Result consumer: %d %s %s", code, output, diagnostic)
+			}
+			accepted := s6DecodeCanonicalTaskCompleteOutput(t, output).Acceptance
+			result := s6ReadCLIResultEnvelope(t, fixture.root, accepted)
+			if !accepted.Current || result.AssignmentRecord != fixture.record.Reference() || result.Answer.Summary != answer["summary"] {
+				t.Fatalf("original responsibility or professional judgment changed: %+v", result)
+			}
+			var original map[string]any
+			data, err := os.ReadFile(filepath.Join(fixture.root, path))
+			if err != nil || json.Unmarshal(data, &original) != nil || original["assignment_record_sha256"] != "legacy-nonstandard-value" {
+				t.Fatalf("original historical value was changed: %s %v", data, err)
+			}
+		})
+	}
+}
+
 func TestS6CanonicalResultCLIAcceptanceReplayAndCurrentReceipt(t *testing.T) {
 	fixture := readyS6CanonicalResultCLI(t)
+	unknownPath := filepath.Join(fixture.root, ".claude", "evidence", fixture.record.RuntimeID, "g1", "assignments", fixture.record.OwnerAgentID, "unrelated-user-note.txt")
+	if err := os.MkdirAll(filepath.Dir(unknownPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unknownPath, []byte("original user note remains here\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	resultFilesBefore := s6CanonicalResultFiles(t, fixture.root, fixture.record)
+	checkNoNewArtifacts := func() {
+		t.Helper()
+		if after := s6CanonicalResultFiles(t, fixture.root, fixture.record); !reflect.DeepEqual(after, resultFilesBefore) {
+			t.Fatalf("rejected Result changed assignment artifact paths: before=%v after=%v", resultFilesBefore, after)
+		}
+		note, err := os.ReadFile(unknownPath)
+		if err != nil || !bytes.Contains(note, []byte("original user note remains here")) {
+			t.Fatalf("rejected Result removed or overwrote an unrelated user note: %v", err)
+		}
+	}
 
 	badSchema := s6CanonicalCompletionMessage(fixture, "msg-s6-cli-fake-checks", "Worker supplied fake machine checks")
 	badSchema["checks"] = []any{map[string]any{"command": "go test ./src/pkg", "result": "pass"}}
@@ -430,12 +482,10 @@ func TestS6CanonicalResultCLIAcceptanceReplayAndCurrentReceipt(t *testing.T) {
 		t.Fatalf("schema accepted Worker machine claims: code=%d stderr=%s", code, errout)
 	}
 	s6AssertCanonicalRuntimePair(t, fixture.root, beforeState, beforeJournal)
-	if after := s6CanonicalResultFiles(t, fixture.root, fixture.record); !reflect.DeepEqual(after, resultFilesBefore) {
-		t.Fatalf("schema-rejected Result staged assignment artifacts: before=%v after=%v", resultFilesBefore, after)
-	}
+	checkNoNewArtifacts()
 
 	badTuple := s6CanonicalCompletionMessage(fixture, "msg-s6-cli-bad-tuple", "Record tuple should match the original binding")
-	badTuple["assignment_record_sha256"] = strings.Repeat("0", 64)
+	badTuple["assignment_revision"] = fixture.record.Revision + 1
 	badTuplePath := ".claude/messages/s6-result-bad-tuple.json"
 	stageJSON(t, fixture.root, badTuplePath, badTuple)
 	beforeState, beforeJournal = s6CanonicalRuntimePair(t, fixture.root)
@@ -444,9 +494,7 @@ func TestS6CanonicalResultCLIAcceptanceReplayAndCurrentReceipt(t *testing.T) {
 		t.Fatalf("CLI accepted a drifted canonical Record tuple: code=%d stderr=%s", code, errout)
 	}
 	s6AssertCanonicalRuntimePair(t, fixture.root, beforeState, beforeJournal)
-	if after := s6CanonicalResultFiles(t, fixture.root, fixture.record); !reflect.DeepEqual(after, resultFilesBefore) {
-		t.Fatalf("tuple-rejected Result staged assignment artifacts: before=%v after=%v", resultFilesBefore, after)
-	}
+	checkNoNewArtifacts()
 
 	firstSource := []byte("package pkg\n// first accepted evidence bytes\n")
 	if err := os.WriteFile(filepath.Join(fixture.root, filepath.FromSlash(fixture.sourceRef)), firstSource, 0o644); err != nil {
@@ -458,31 +506,23 @@ func TestS6CanonicalResultCLIAcceptanceReplayAndCurrentReceipt(t *testing.T) {
 	beforeFirst := stageSnapshot(t, fixture.root)
 	firstOutput := stageCLI(t, "runtime", "task-complete", "--root", fixture.root, "--agent-id", fixture.record.OwnerAgentID, "--message", firstPath)
 	first := s6DecodeCanonicalTaskCompleteOutput(t, firstOutput)
-	if first.Revision != beforeFirst.Revision+1 || first.Acceptance.ResultRef == "" || first.Acceptance.ResultSHA256 == "" ||
-		first.Acceptance.ResultRevision != 1 || len(first.Acceptance.AnswerDigest) != 64 || first.Acceptance.Replayed || !first.Acceptance.Current {
+	if first.Revision != beforeFirst.Revision+1 || first.Acceptance.ResultRef == "" ||
+		first.Acceptance.ResultRevision != 1 || first.Acceptance.Replayed || !first.Acceptance.Current {
 		t.Fatalf("first original CLI Result output = revision %d, receipt %+v", first.Revision, first.Acceptance)
 	}
 	s6AssertCurrentResultRefs(t, first.State, fixture.record, first.Acceptance.ResultRef)
 	firstAccepted := s6ReadCLIResultEnvelope(t, fixture.root, first.Acceptance)
-	if firstAccepted.Conclusion != "submitted" || firstAccepted.ResultRevision != 1 || firstAccepted.AnswerDigest != first.Acceptance.AnswerDigest ||
-		firstAccepted.AssignmentRecord != fixture.record.Reference() || len(firstAccepted.ResolvedEvidenceRefs) != 1 {
+	if firstAccepted.Conclusion != "submitted" || firstAccepted.ResultRevision != 1 ||
+		firstAccepted.AssignmentRecord != fixture.record.Reference() || firstAccepted.Answer.Summary != firstMessage["summary"] ||
+		len(firstAccepted.Answer.AssertionEvidence) != 1 || len(firstAccepted.Answer.AssertionEvidence[0].EvidenceRefs) != 1 || firstAccepted.Answer.AssertionEvidence[0].EvidenceRefs[0] != fixture.sourceRef {
 		t.Fatalf("first canonical Result envelope = %+v", firstAccepted)
-	}
-	firstResolved := firstAccepted.ResolvedEvidenceRefs[0]
-	if firstResolved.Ref != fixture.sourceRef || firstResolved.SHA256 != workpacket.Digest(firstSource) {
-		t.Fatalf("first Result did not snapshot the actual evidence bytes: %+v", firstResolved)
-	}
-	firstSnapshot, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(firstResolved.Path)))
-	if err != nil || !bytes.Equal(firstSnapshot, firstSource) {
-		t.Fatalf("first durable evidence snapshot differs from source: %v", err)
 	}
 	s6AssertCanonicalBuilderTaskReceipt(t, fixture, first.Acceptance.ResultRef)
 
 	afterFirstState, afterFirstJournal := s6CanonicalRuntimePair(t, fixture.root)
 	replayedOutput := stageCLI(t, "runtime", "task-complete", "--root", fixture.root, "--agent-id", fixture.record.OwnerAgentID, "--message", firstPath)
 	replayed := s6DecodeCanonicalTaskCompleteOutput(t, replayedOutput)
-	if replayed.Revision != first.Revision || replayed.Acceptance.ResultRef != first.Acceptance.ResultRef ||
-		replayed.Acceptance.ResultSHA256 != first.Acceptance.ResultSHA256 || replayed.Acceptance.AnswerDigest != first.Acceptance.AnswerDigest || replayed.Acceptance.ResultRevision != 1 ||
+	if replayed.Revision != first.Revision || replayed.Acceptance.ResultRef != first.Acceptance.ResultRef || replayed.Acceptance.ResultRevision != 1 ||
 		!replayed.Acceptance.Replayed || !replayed.Acceptance.Current {
 		t.Fatalf("same-body CLI replay changed its original receipt or Runtime revision: %+v", replayed)
 	}
@@ -497,14 +537,14 @@ func TestS6CanonicalResultCLIAcceptanceReplayAndCurrentReceipt(t *testing.T) {
 	stageJSON(t, fixture.root, secondPath, secondMessage)
 	secondOutput := stageCLI(t, "runtime", "task-complete", "--root", fixture.root, "--agent-id", fixture.record.OwnerAgentID, "--message", secondPath)
 	second := s6DecodeCanonicalTaskCompleteOutput(t, secondOutput)
-	if second.Revision != first.Revision+1 || second.Acceptance.ResultRevision != 2 || second.Acceptance.AnswerDigest == first.Acceptance.AnswerDigest || second.Acceptance.ResultRef == first.Acceptance.ResultRef ||
+	if second.Revision != first.Revision+1 || second.Acceptance.ResultRevision != 2 || second.Acceptance.ResultRef == first.Acceptance.ResultRef ||
 		second.Acceptance.Replayed || !second.Acceptance.Current {
 		t.Fatalf("new answer/key did not create the current Result revision 2: revision=%d receipt=%+v", second.Revision, second.Acceptance)
 	}
 	s6AssertCurrentResultRefs(t, second.State, fixture.record, second.Acceptance.ResultRef)
 	secondAccepted := s6ReadCLIResultEnvelope(t, fixture.root, second.Acceptance)
-	if len(secondAccepted.ResolvedEvidenceRefs) != 1 || secondAccepted.ResolvedEvidenceRefs[0].SHA256 != workpacket.Digest(secondSource) {
-		t.Fatalf("Result revision 2 did not snapshot the new actual source: %+v", secondAccepted.ResolvedEvidenceRefs)
+	if secondAccepted.Answer.Summary != secondMessage["summary"] || secondAccepted.AssignmentRecord != fixture.record.Reference() {
+		t.Fatalf("Result revision 2 lost the new professional answer or responsibility: %+v", secondAccepted)
 	}
 	s6AssertCanonicalBuilderTaskReceipt(t, fixture, second.Acceptance.ResultRef)
 
@@ -518,19 +558,6 @@ func TestS6CanonicalResultCLIAcceptanceReplayAndCurrentReceipt(t *testing.T) {
 	s6AssertCurrentResultRefs(t, historical.State, fixture.record, second.Acceptance.ResultRef)
 	s6AssertCanonicalRuntimePair(t, fixture.root, beforeHistoricalState, beforeHistoricalJournal)
 
-	if err := os.WriteFile(filepath.Join(fixture.root, filepath.FromSlash(firstResolved.Path)), []byte("tampered durable Result snapshot\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	beforeTamperedState, beforeTamperedJournal := s6CanonicalRuntimePair(t, fixture.root)
-	resultFilesBeforeTamperReject := s6CanonicalResultFiles(t, fixture.root, fixture.record)
-	code, _, errout = s6RunCanonicalTaskComplete(fixture, firstPath)
-	if code == 0 || !strings.Contains(errout, "snapshot") {
-		t.Fatalf("CLI accepted a tampered historical durable snapshot: code=%d stderr=%s", code, errout)
-	}
-	s6AssertCanonicalRuntimePair(t, fixture.root, beforeTamperedState, beforeTamperedJournal)
-	if after := s6CanonicalResultFiles(t, fixture.root, fixture.record); !reflect.DeepEqual(after, resultFilesBeforeTamperReject) {
-		t.Fatalf("failed historical replay wrote assignment artifacts: before=%v after=%v", resultFilesBeforeTamperReject, after)
-	}
 }
 
 type s6CanonicalResultCLIFixture struct {
@@ -542,9 +569,12 @@ type s6CanonicalResultCLIFixture struct {
 	oracle          string
 }
 
-func readyS6CanonicalResultCLI(t *testing.T) s6CanonicalResultCLIFixture {
+func readyS6CanonicalResultCLI(t *testing.T, configure ...func(string)) s6CanonicalResultCLIFixture {
 	t.Helper()
 	root, taskID, taskPath := newS6RecordContextFixture(t)
+	for _, apply := range configure {
+		apply(root)
+	}
 	stageCLI(t, "runtime", "register-workgroup", "--root", root,
 		"--manifest", ".claude/workgroups/manifest-s6-native-context.json",
 		"--task-id", taskID, "--task", taskPath)
@@ -564,24 +594,43 @@ func readyS6CanonicalResultCLI(t *testing.T) s6CanonicalResultCLIFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workpacket.Digest(contextBytes) != contextBinding.Context.SHA256 {
-		t.Fatal("native context bytes differ from their original binding")
-	}
 	var contextView struct {
-		PlanPath    string         `json:"plan_draft_path"`
-		ResultPath  string         `json:"result_path"`
-		ResultDraft map[string]any `json:"result_draft"`
+		RuntimeID   string                  `json:"runtime_id"`
+		Generation  int                     `json:"baseline_generation"`
+		Dispatch    agentcontext.Assignment `json:"dispatch"`
+		PlanPath    string                  `json:"plan_draft_path"`
+		ResultPath  string                  `json:"result_path"`
+		ResultDraft map[string]any          `json:"result_draft"`
 	}
 	if err := json.Unmarshal(contextBytes, &contextView); err != nil || contextView.PlanPath == "" || contextView.ResultPath == "" || contextView.ResultDraft == nil {
 		t.Fatalf("decode native PLAN/Result draft paths: plan=%q result=%q err=%v", contextView.PlanPath, contextView.ResultPath, err)
+	}
+	if contextView.RuntimeID != record.RuntimeID || contextView.Generation != record.BaselineGeneration ||
+		contextView.Dispatch.AssignmentID != record.AssignmentID || contextView.Dispatch.Owner != record.OwnerAgentID ||
+		contextView.Dispatch.TaskID != record.Task.ID || contextView.Dispatch.AssignmentRevision != record.Revision ||
+		contextView.Dispatch.AssignmentRecord == nil || *contextView.Dispatch.AssignmentRecord != record.Reference() {
+		t.Fatalf("native context does not identify the original responsibility: %+v", contextView.Dispatch)
+	}
+	assertOriginalTuple := func(kind string, value map[string]any) {
+		t.Helper()
+		if value["runtime_id"] != record.RuntimeID || value["assignment_id"] != record.AssignmentID ||
+			value["assignment_revision"] != float64(record.Revision) || value["agent_id"] != record.OwnerAgentID ||
+			value["task_id"] != record.Task.ID {
+			t.Fatalf("%s does not identify the original responsibility: %v", kind, value)
+		}
 	}
 	resultBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(contextView.ResultPath)))
 	if err != nil {
 		t.Fatalf("read the actual native Result template: %v", err)
 	}
 	var resultDraft map[string]any
-	if err := json.Unmarshal(resultBytes, &resultDraft); err != nil || !s6SameJSONValue(resultDraft, contextView.ResultDraft) {
-		t.Fatalf("native Result artifact differs from its immutable context template: err=%v", err)
+	if err := json.Unmarshal(resultBytes, &resultDraft); err != nil {
+		t.Fatalf("decode original Result template: %v", err)
+	}
+	assertOriginalTuple("context Result draft", contextView.ResultDraft)
+	assertOriginalTuple("original Result draft", resultDraft)
+	if resultDraft["baseline_generation"] != float64(record.BaselineGeneration) {
+		t.Fatalf("original Result draft has another generation: %v", resultDraft["baseline_generation"])
 	}
 	planBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(contextView.PlanPath)))
 	if err != nil {
@@ -591,6 +640,7 @@ func readyS6CanonicalResultCLI(t *testing.T) s6CanonicalResultCLIFixture {
 	if err := json.Unmarshal(planBytes, &plan); err != nil {
 		t.Fatal(err)
 	}
+	assertOriginalTuple("original Plan draft", plan)
 	assertion := "The implementation satisfies the TASK closing assertion."
 	oracle := "Run the registered package check and inspect its reported result."
 	plan["objective"] = "Implement the registered TASK within its reviewed package scope."
@@ -669,9 +719,6 @@ func s6ReadCLIResultEnvelope(t *testing.T, root string, receipt assignment.Resul
 	body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(receipt.ResultRef)))
 	if err != nil {
 		t.Fatalf("read original Result envelope: %v", err)
-	}
-	if workpacket.Digest(body) != receipt.ResultSHA256 {
-		t.Fatal("CLI acceptance receipt SHA differs from the original Result bytes")
 	}
 	var result assignmentresult.AcceptedResult
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -762,10 +809,10 @@ func s6AssertCanonicalRuntimePair(t *testing.T, root string, state, journal []by
 	}
 }
 
-func s6CanonicalResultFiles(t *testing.T, root string, record assignmentrecord.Record) map[string]string {
+func s6CanonicalResultFiles(t *testing.T, root string, record assignmentrecord.Record) map[string]bool {
 	t.Helper()
 	base := filepath.Join(root, ".claude", "evidence", record.RuntimeID, "g1", "assignments", record.OwnerAgentID)
-	files := map[string]string{}
+	files := map[string]bool{}
 	err := filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
 		if os.IsNotExist(walkErr) {
 			return nil
@@ -776,15 +823,11 @@ func s6CanonicalResultFiles(t *testing.T, root string, record assignmentrecord.R
 		if entry.IsDir() {
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
 		relative, err := filepath.Rel(base, path)
 		if err != nil {
 			return err
 		}
-		files[filepath.ToSlash(relative)] = workpacket.Digest(data)
+		files[filepath.ToSlash(relative)] = true
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) {
@@ -857,9 +900,8 @@ func newS6RecordContextFixtureWithReadSources(t *testing.T, extraSources map[str
 		s6RecordContextDocument("dispatch-plan:REQ-039", "dispatch_plan", indexPath, "1", indexBytes),
 	}
 	fixtures.WriteState(t, root, state)
-	// Prove that the original CLI rejects a branch whose committed REQ bytes
-	// differ from the bound baseline without changing the Runtime pair. Then
-	// establish the actual Main binding through that same original CLI.
+	// The same original REQ identity remains bound when the selected branch
+	// carries different text. Then select the actual development branch.
 	const mismatchedBranch = "s6-context-mismatched-req"
 	if _, err := workspace.Git(context.Background(), root, "checkout", "-b", mismatchedBranch); err != nil {
 		t.Fatal(err)
@@ -876,31 +918,14 @@ func newS6RecordContextFixtureWithReadSources(t *testing.T, extraSources map[str
 	if _, err := workspace.Git(context.Background(), root, "checkout", "test-development"); err != nil {
 		t.Fatal(err)
 	}
-	statePath := filepath.Join(root, ".claude/loop-state.json")
-	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
-	stateBeforeReject, err := os.ReadFile(statePath)
-	if err != nil {
+	changedOutput := stageCLI(t, "req", "workspace", "--root", root, "--dev-branch", mismatchedBranch, "--release-upstream", "origin/release")
+	var changed map[string]any
+	if err := json.Unmarshal([]byte(changedOutput), &changed); err != nil {
 		t.Fatal(err)
 	}
-	journalBeforeReject, err := os.ReadFile(journalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rejectedOut, rejectedErr bytes.Buffer
-	rejectedCode := cli.Run([]string{"req", "workspace", "--root", root, "--dev-branch", mismatchedBranch, "--release-upstream", "origin/release"}, nil, &rejectedOut, &rejectedErr)
-	if rejectedCode == 0 || !strings.Contains(rejectedErr.String(), "declared branch does not contain the bound REQ bytes") {
-		t.Fatalf("REQ-mismatched development branch was not rejected: code=%d stderr=%s stdout=%s", rejectedCode, rejectedErr.String(), rejectedOut.String())
-	}
-	stateAfterReject, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	journalAfterReject, err := os.ReadFile(journalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(stateBeforeReject, stateAfterReject) || !bytes.Equal(journalBeforeReject, journalAfterReject) {
-		t.Fatal("rejected mismatched branch changed the original Runtime state/journal pair")
+	changedWorkspace, _ := changed["workspace"].(map[string]any)
+	if changed["id"] != reqID || changed["path"] != reqPath || changedWorkspace["dev_branch"] != mismatchedBranch {
+		t.Fatalf("original REQ responsibility or selected branch changed: %s", changedOutput)
 	}
 	stageCLI(t, "req", "workspace", "--root", root, "--dev-branch", "test-development", "--release-upstream", "origin/release")
 
@@ -908,8 +933,8 @@ func newS6RecordContextFixtureWithReadSources(t *testing.T, extraSources map[str
 		"id": "profile-s6-native-context", "version": "v1.0.0", "check_index": 0,
 		"command": "go test ./src/pkg", "location": "worker", "timeout_seconds": 30,
 		"environment_policy": "declared_only", "environment": []any{},
-		"dependencies":  []any{map[string]any{"path": "src/pkg/input.go", "sha256": workpacket.Digest([]byte("package pkg\n"))}},
-		"fixtures":      []any{map[string]any{"path": "testdata/input.txt", "sha256": workpacket.Digest([]byte("registered profile input\n"))}},
+		"dependencies":  []any{map[string]any{"path": "src/pkg/input.go"}},
+		"fixtures":      []any{map[string]any{"path": "testdata/input.txt"}},
 		"input_closure": "whole_tree", "side_effects": "none", "reuse_policy": "never",
 	}
 	documents := []any{
@@ -947,12 +972,12 @@ func newS6RecordContextFixtureWithReadSources(t *testing.T, extraSources map[str
 	return root, taskIDSeed, taskPath
 }
 
-func s6RecordContextDocument(id, kind, path, version string, data []byte) map[string]any {
-	return map[string]any{"id": id, "kind": kind, "path": path, "version": version, "sha256": workpacket.Digest(data), "status": "locked", "generation": 1}
+func s6RecordContextDocument(id, kind, path, version string, _ []byte) map[string]any {
+	return map[string]any{"id": id, "kind": kind, "path": path, "version": version, "status": "locked", "generation": 1}
 }
 
-func s6ManifestReference(id, path, version string, data []byte) map[string]any {
-	return map[string]any{"id": id, "path": path, "version": version, "sha256": workpacket.Digest(data)}
+func s6ManifestReference(id, path, version string, _ []byte) map[string]any {
+	return map[string]any{"id": id, "path": path, "version": version}
 }
 
 func s6RecordContextJournalEvent(t *testing.T, root string, index int) map[string]any {

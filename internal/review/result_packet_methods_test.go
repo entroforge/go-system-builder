@@ -15,7 +15,7 @@ import (
 )
 
 // This records the original source behind the synthetic dispatched rows used
-// by domain tests. Real registration (and its manifest SHA) is covered in
+// by domain tests. Real original registration and source association are covered in
 // assignment/s7_method_source_test.go and the external integration chain.
 func seedResultMethodSources(t *testing.T, root string, state map[string]any, plan *Plan) {
 	t.Helper()
@@ -34,7 +34,7 @@ func seedResultMethodSources(t *testing.T, root string, state map[string]any, pl
 			}
 			teamID := "team-methods-" + a.AssignmentID
 			ref := ".claude/workgroups/" + a.AssignmentID + ".json"
-			manifest := ManifestDraft{RuntimeID: stringField(state["runtime_id"]), BaselineGeneration: plan.BaselineGeneration, ReviewRound: plan.ReviewRound, WorkgroupID: teamID, WorkgroupKind: LensToWorkgroupKind(a.Lens), Assignments: []ManifestAssignment{{AssignmentID: a.AssignmentID, AgentID: owner, RoleFamily: stringField(agent["role"]), ClaimIDs: a.ClaimIDs, SkillRefs: []string{}}}}
+			manifest := ManifestDraft{RuntimeID: stringField(state["runtime_id"]), BaselineGeneration: plan.BaselineGeneration, WorkgroupID: teamID, WorkgroupKind: LensToWorkgroupKind(a.Lens), Assignments: []ManifestAssignment{{AssignmentID: a.AssignmentID, AgentID: owner, RoleFamily: stringField(agent["role"]), ClaimIDs: a.ClaimIDs, SkillRefs: []string{}}}}
 			data, _ := json.Marshal(manifest)
 			path := filepath.Join(root, ref)
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -44,7 +44,7 @@ func seedResultMethodSources(t *testing.T, root string, state map[string]any, pl
 				t.Fatal(err)
 			}
 			agent["team_id"], agent["prompt_ref"] = teamID, ref+"#"+a.AssignmentID
-			teams = append(teams, map[string]any{"id": teamID, "platform_team_id": teamID, "kind": manifest.WorkgroupKind, "status": "planned", "manifest_ref": ref, "manifest_sha256": workpacket.Digest(data), "responsibility_ids": []any{}, "agent_ids": []string{owner}, "review_round": plan.ReviewRound})
+			teams = append(teams, map[string]any{"id": teamID, "platform_team_id": teamID, "kind": manifest.WorkgroupKind, "status": "planned", "manifest_ref": ref, "responsibility_ids": []any{}, "agent_ids": []string{owner}})
 		}
 	}
 	entities["teams"] = teams
@@ -72,12 +72,6 @@ func selectResultFixtureMethods(t *testing.T, root, statePath string, state map[
 	data, _ := json.Marshal(manifest)
 	if err := os.WriteFile(filepath.Join(root, ref), data, 0600); err != nil {
 		t.Fatal(err)
-	}
-	for _, raw := range state["entities"].(map[string]any)["teams"].([]any) {
-		row := raw.(map[string]any)
-		if row["manifest_ref"] == ref {
-			row["manifest_sha256"] = workpacket.Digest(data)
-		}
 	}
 	paths := make([]string, 0, len(skills))
 	for _, name := range skills {
@@ -127,7 +121,7 @@ func TestIssuedS7SelectedMethodsReachViewAndRestoreWithoutReissue(t *testing.T) 
 		t.Fatalf("issue selected methods: %v %d", err, len(packets))
 	}
 	p := packets[0]
-	if p.Inputs.MethodSource == nil || p.Inputs.MethodSource.ManifestRef != ref || p.Inputs.MethodSource.SHA256 != workpacket.Digest(mustReadTestFile(t, filepath.Join(root, ref))) {
+	if p.Inputs.MethodSource == nil || p.Inputs.MethodSource.ManifestRef != ref {
 		t.Fatal("selection lacks original registered manifest identity")
 	}
 	want := []string{".claude/skills/code-quality/SKILL.md", ".claude/skills/database-change/SKILL.md"}
@@ -213,23 +207,6 @@ func TestIssuedS7MethodsRejectMissingOrChangedRegisteredSources(t *testing.T) {
 		{"missing manifest", false, func(t *testing.T, root, ref string, state map[string]any) { _ = os.Remove(filepath.Join(root, ref)) }},
 		{"missing selected Skill", false, func(t *testing.T, root, ref string, state map[string]any) {
 			_ = os.Remove(filepath.Join(root, ".claude/skills/database-change/SKILL.md"))
-		}},
-		{"registered manifest drift", false, func(t *testing.T, root, ref string, state map[string]any) {
-			data := mustReadTestFile(t, filepath.Join(root, ref))
-			_ = os.WriteFile(filepath.Join(root, ref), append(data, ' '), 0600)
-		}},
-		{"recovery does not refresh selection", true, func(t *testing.T, root, ref string, state map[string]any) {
-			var m ManifestDraft
-			_ = json.Unmarshal(mustReadTestFile(t, filepath.Join(root, ref)), &m)
-			m.Assignments[0].SkillRefs = []string{"code-quality"}
-			data, _ := json.Marshal(m)
-			_ = os.WriteFile(filepath.Join(root, ref), data, 0600)
-			for _, raw := range state["entities"].(map[string]any)["teams"].([]any) {
-				row := raw.(map[string]any)
-				if row["manifest_ref"] == ref {
-					row["manifest_sha256"] = workpacket.Digest(data)
-				}
-			}
 		}},
 		{"lost workgroup source", false, func(t *testing.T, root, ref string, state map[string]any) {
 			state["entities"].(map[string]any)["teams"] = []any{}

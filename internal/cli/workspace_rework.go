@@ -2,20 +2,19 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
-	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
@@ -91,12 +90,8 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 		return fail(fmt.Errorf("rework assignment is unregistered"))
 	}
 	lifecycle, _ := snap.State["lifecycle"].(map[string]any)
-	if lifecycle["state"] == "bug_resolution" {
-		if _, err = repair.ResolveWorkspaceAuthority(*root, snap.State, *id, *owner); err != nil {
-			return fail(err)
-		}
-	} else if lifecycle["state"] != "building" {
-		return fail(fmt.Errorf("rework requires building or active repair authority"))
+	if lifecycle["state"] != "building" {
+		return fail(fmt.Errorf("rework requires building"))
 	}
 	cpPath := workspaceExecutionCheckpointPath(*root, e)
 	cp, found, err := integration.DefaultCheckpointStore().Load(cpPath)
@@ -135,38 +130,53 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(err)
 		}
-		if err = json.Unmarshal(data, &receipt); err != nil {
+		var stored struct {
+			Execution  json.RawMessage `json:"execution"`
+			Checkpoint json.RawMessage `json:"checkpoint"`
+			Reason     string          `json:"reason"`
+		}
+		if err = json.Unmarshal(data, &stored); err != nil {
+			return fail(err)
+		}
+		if len(stored.Checkpoint) != 0 {
+			if receipt.Checkpoint, err = integration.DecodeCheckpoint(stored.Checkpoint); err != nil {
+				return fail(err)
+			}
+		}
+		receipt.Reason = stored.Reason
+		if receipt.Execution, err = workspace.DecodeExecution(stored.Execution); err != nil {
 			return fail(err)
 		}
 		if receipt.Execution.AssignmentID != e.AssignmentID || receipt.Execution.Generation != e.Generation || receipt.Execution.RuntimeID != e.RuntimeID {
 			return fail(fmt.Errorf("rework receipt identity mismatch"))
 		}
 	} else {
-		if e.Status != "ready" || !found || (cp.State != integration.StatePreserved && cp.State != integration.StateBlocked) || cp.TestedHead != "" || a.CompletionAckRef != "" {
+		if e.Status != "ready" || !found || (cp.State != integration.StatePreserved && cp.State != integration.StateBlocked) || a.CompletionAckRef != "" || cp.VerifiedAt != "" {
 			return fail(fmt.Errorf("rework requires a failed, unverified integration checkpoint; verified or acknowledged delivery cannot be reopened"))
+		}
+		if cp.ResumeState != integration.StatePending && cp.ResumeState != integration.StateMerged {
+			return fail(fmt.Errorf("previous integration outcome is unknown; preserve the checkpoint for Main to inspect"))
 		}
 		if cp.WorktreePath != e.Path || cp.SourceBranch != e.Branch || cp.TargetBranch != e.TargetBranch {
 			return fail(fmt.Errorf("failed checkpoint coordinates differ"))
 		}
 		if a.AssignmentRecord != nil {
-			if a.AssignmentRecordSHA256 == "" {
-				return fail(fmt.Errorf("canonical S6 Assignment rework cannot resolve the current Record SHA; preserve this checkpoint and inspect the registered Assignment before recovery"))
-			}
-			recordRefJSON, marshalErr := json.Marshal(*a.AssignmentRecord)
-			if marshalErr != nil {
-				return fail(fmt.Errorf("encode current canonical Assignment Record reference: %w", marshalErr))
+			if a.RoleFamily == "" {
+				return fail(fmt.Errorf("canonical S6 rework cannot resolve the original Builder role for %s; preserve the checkpoint and inspect its registered responsibility", a.AssignmentID))
 			}
 			return fail(fmt.Errorf(
-				"canonical S6 Assignment rework starts a new immutable attempt; use `runtime register-workgroup --manifest <fresh-reviewed-manifest> --task-id %s --task <locked-task-source> --revise-assignment %s --revision-intent-key <stable-key> --expected-record-ref '%s' --expected-record-sha256 %s`",
-				a.TaskID, a.AssignmentID, string(recordRefJSON), a.AssignmentRecordSHA256,
+				"canonical S6 Assignment rework follows its original current responsibility; use `loop-harness s6 prepare --root %q --task %s --role %s --revise-assignment %s`",
+				*root, a.TaskID, a.RoleFamily, a.AssignmentID,
 			))
 		}
 		receipt = reworkReceipt{e, cp, *reason}
 		data, _ := json.MarshalIndent(receipt, "", "  ")
-		hash := sha256.Sum256(data)
-		e.ReworkRef = filepath.ToSlash(filepath.Join(filepath.Dir(cpPath), "rework", hex.EncodeToString(hash[:])+".json"))
+		path, err := reworkTransactionPath(filepath.Join(filepath.Dir(cpPath), "rework"), data)
+		if err != nil {
+			return fail(err)
+		}
+		e.ReworkRef = filepath.ToSlash(path)
 		e.ReworkRef, _ = filepath.Rel(*root, e.ReworkRef)
-		path := filepath.Join(*root, e.ReworkRef)
 		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			return fail(err)
 		}
@@ -200,7 +210,6 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 		}
 		e.Status = "preparing"
 		e.DeliveryRef = ""
-		e.DeliverySHA256 = ""
 		b.Executions[*id] = e
 		if err = persist("preserve failed delivery and explicitly reopen original scope: "+*reason, func(state map[string]any) error {
 			return assignment.ApplyIntegrationRework(state, catalog, *owner, a.TaskID, e.ReworkRef, *reason)
@@ -208,12 +217,25 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 			return fail(err)
 		}
 	}
+	archive := filepath.Join(*root, e.ReworkRef) + ".checkpoint.json"
 	if found {
-		if cp.Revision != receipt.Checkpoint.Revision || cp.SourceHead != receipt.Checkpoint.SourceHead || cp.State != receipt.Checkpoint.State {
+		if !sameReworkCheckpoint(cp, receipt.Checkpoint) {
 			return fail(fmt.Errorf("checkpoint changed during rework recovery"))
 		}
-		if err = os.Rename(cpPath, filepath.Join(*root, e.ReworkRef)+".checkpoint.json"); err != nil {
+		if err = os.Link(cpPath, archive); err != nil && !os.IsExist(err) {
 			return fail(err)
+		}
+		archived, ok, err := integration.DefaultCheckpointStore().Load(archive)
+		if err != nil || !ok || !sameReworkCheckpoint(archived, receipt.Checkpoint) {
+			return fail(fmt.Errorf("archived checkpoint differs from the original rework transaction"))
+		}
+		if err = os.Remove(cpPath); err != nil {
+			return fail(err)
+		}
+	} else {
+		archived, ok, err := integration.DefaultCheckpointStore().Load(archive)
+		if err != nil || !ok || !sameReworkCheckpoint(archived, receipt.Checkpoint) {
+			return fail(fmt.Errorf("original rework checkpoint archive is unavailable; preserve the transaction"))
 		}
 	}
 	e.Status = "ready"
@@ -222,4 +244,50 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	return encodeJSON(stdout, map[string]any{"execution": e, "rework_receipt": e.ReworkRef, "next": "resume Worker, correct the original scope, commit and report again; S9 requires a new immutable candidate"})
+}
+
+func sameReworkCheckpoint(a, b integration.Checkpoint) bool {
+	return a.Revision == b.Revision && a.State == b.State && a.ResumeState == b.ResumeState &&
+		a.AssignmentID == b.AssignmentID && a.BaselineGeneration == b.BaselineGeneration &&
+		a.WorktreePath == b.WorktreePath && a.SourceBranch == b.SourceBranch && a.TargetBranch == b.TargetBranch
+}
+
+// Allocate under the workspace lock. An unpublished Runtime transition can
+// reuse its already-written intent; an archived prior attempt never aliases it.
+func reworkTransactionPath(dir string, payload []byte) (string, error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	max := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "operation-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(name, "operation-"), ".json"))
+		if err != nil || n < 1 {
+			continue
+		}
+		if n > max {
+			max = n
+		}
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path + ".checkpoint.json"); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		old, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		if string(old) == string(payload) {
+			return path, nil
+		}
+	}
+	return filepath.Join(dir, fmt.Sprintf("operation-%d.json", max+1)), nil
 }

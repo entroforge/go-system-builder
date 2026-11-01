@@ -2,11 +2,11 @@ package cli
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -103,8 +103,17 @@ func TestFreshInitializationUses13WithExplicitPacketChoice(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if receipt["runtime_schema_version"] != "1.3.0" || receipt["initial_state_sha256"] != fmt.Sprintf("%x", sha256.Sum256(stateData)) {
-				t.Fatal("initialization receipt does not bind the published state")
+			if receipt["runtime_schema_version"] != "1.3.0" || !reflect.DeepEqual(receipt["optimization"], state["configuration"].(map[string]any)["optimization"]) {
+				t.Fatal("initialization receipt lost the published format or explicit packet choice")
+			}
+			if _, exists := receipt["initial_state_sha256"]; exists {
+				t.Fatal("initialization minted a machine state proof")
+			}
+			if state["runtime_id"] == "" || state["lifecycle"].(map[string]any)["state"] != "inactive" {
+				t.Fatal("fresh initialization lost its original Runtime or invented active work")
+			}
+			if journal, err := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl")); err != nil || len(journal) != 0 {
+				t.Fatalf("fresh initialization invented domain events: %s (%v)", journal, err)
 			}
 			before := append([]byte(nil), stateData...)
 			if code := Run([]string{"init", "--root", root, "--packet"}, nil, &out, &stderr); code == 0 {
@@ -254,7 +263,7 @@ func TestRecoveryFormatPreservesEmptySourcesAndRefusesIssuedFacts(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			inventory := recovery.Inventory{Inputs: []recovery.InventoryInput{{Kind: recovery.InputKindRuntimeState, Path: ".claude/loop-state.json", SHA256: fmt.Sprintf("%x", sha256.Sum256(data))}}}
+			inventory := recovery.Inventory{Inputs: []recovery.InventoryInput{{Kind: recovery.InputKindRuntimeState, Path: ".claude/loop-state.json"}}}
 			seed, err := recoverySeedRuntime(root, inventory, time.Now().UTC())
 			if mode == "legacy" || mode == "1.3 empty" {
 				if err != nil || seed["schema_version"] != fresh["schema_version"] {
@@ -305,6 +314,61 @@ func TestPendingInitializationConflictDoesNotPublishMissingMembers(t *testing.T)
 			after, err := os.ReadFile(marker)
 			if err != nil || !bytes.Equal(before, after) {
 				t.Fatal("conflict rewrote pending source")
+			}
+		})
+	}
+}
+
+func TestPendingInitializationAcceptsAbsentReviewNumberAndLegacyZero(t *testing.T) {
+	for _, scenario := range []string{"absent", "legacy-zero", "started-review"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := initFormatRoot(t)
+			fresh, err := inactiveRuntimeState(root, time.Now().UTC())
+			if err != nil {
+				t.Fatal(err)
+			}
+			review := fresh["review"].(map[string]any)
+			if _, exists := review["round"]; exists {
+				t.Fatal("new inactive Runtime manufactures a review number")
+			}
+			repair := fresh["configuration"].(map[string]any)["repair"].(map[string]any)
+			for _, key := range []string{"max_full_review_rounds", "max_investigation_reentries"} {
+				if _, exists := repair[key]; exists {
+					t.Fatalf("new inactive Runtime manufactures %s", key)
+				}
+			}
+			if scenario == "legacy-zero" {
+				review["round"] = 0
+			}
+			if scenario == "started-review" {
+				review["round"] = 1
+			}
+			marker := filepath.Join(root, ".claude/loop-init-pending.json")
+			putInitMap(t, marker, initPending{SchemaVersion: "1.0.0", FreshState: fresh})
+			var out, stderr bytes.Buffer
+			code := Run([]string{"init", "--root", root}, nil, &out, &stderr)
+			if scenario == "started-review" {
+				if code == 0 {
+					t.Fatal("pending initialization accepted a started review")
+				}
+				if _, err := os.Stat(filepath.Join(root, ".claude/loop-state.json")); !os.IsNotExist(err) {
+					t.Fatal("non-fresh pending state was published")
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("original init recovery: %d %s", code, stderr.String())
+			}
+			published := initMap(t, root)["review"].(map[string]any)
+			if scenario == "absent" {
+				if _, exists := published["round"]; exists {
+					t.Fatal("init recovery added a review number")
+				}
+			} else if published["round"] != float64(0) {
+				t.Fatal("init recovery rewrote original zero sentinel")
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatal("completed pending initialization marker was retained")
 			}
 		})
 	}

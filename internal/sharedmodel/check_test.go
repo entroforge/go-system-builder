@@ -231,8 +231,11 @@ func TestSharedInputsUsePinnedGitView(t *testing.T) {
 	}
 	git("add", ".")
 	git("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "changed example")
-	if view.Verify() == nil {
-		t.Fatal("moving input ref accepted")
+	if err := view.Verify(); err != nil {
+		t.Fatalf("moving branch blocked source selection: %v", err)
+	}
+	if r := Check(root, view); len(r.Problems) == 0 {
+		t.Fatal("moving branch did not expose its current malformed example")
 	}
 }
 

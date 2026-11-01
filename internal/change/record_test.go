@@ -4,9 +4,9 @@ import "testing"
 
 func TestBuildRecordCreatesTriggeredChecksForBugfix(t *testing.T) {
 	record, err := BuildRecord(Input{
-		ID:      "CHG-001",
-		REQRef:  "REQ-002",
-		REQSHA:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ID:     "CHG-001",
+		REQRef: "REQ-002",
+
 		Summary: "fix timeout mapping",
 		Class:   "bugfix",
 		Risk:    "medium",

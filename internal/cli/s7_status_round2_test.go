@@ -13,10 +13,9 @@ import (
 	"github.com/entroforge/go-system-builder/internal/cli"
 )
 
-// TestS7StatusReportsRoundBudget proves the round counter / budget projection
-// the S7 round-2 Main agent uses to orient itself (L3-S7 complexity review
-// round-5 gap: "no documented way to confirm this is round N of M").
-func TestS7StatusReportsRoundBudget(t *testing.T) {
+// Legacy numbered responsibilities retain their original paths and facts,
+// without turning numeric compatibility data into a budget projection.
+func TestS7StatusPreservesLegacyResponsibilityWithoutBudgetStatistics(t *testing.T) {
 	root := t.TempDir()
 	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "schema", "assets", "loop-state.example.json"))
 	if err != nil {
@@ -51,7 +50,7 @@ func TestS7StatusReportsRoundBudget(t *testing.T) {
 			"status": "running", "e2e_coverage_state": "not_applicable",
 			"submitted_at": "2026-08-24T07:00:00Z",
 		},
-		"claims": map[string]any{}, "assignments": map[string]any{}, "observation_batch": nil,
+		"claims": map[string]any{}, "assignments": map[string]any{},
 	}
 	state["entities"] = map[string]any{
 		"agents": []any{
@@ -111,15 +110,17 @@ func TestS7StatusReportsRoundBudget(t *testing.T) {
 		t.Fatalf("s7 status exit=%d output=%s", code, out.String())
 	}
 	got := out.String()
+	if strings.Contains(got, "round 2 of 5") || strings.Contains(got, "budget:") {
+		t.Fatalf("legacy numbers became budget statistics: %s", got)
+	}
 	for _, want := range []string{
-		"S7 review board (round 2 of 5)",
+		"S7 review board",
 		"status=blocked",
-		"blocker_ref=.claude/evidence/loop-REQ-S7ROUND/g1/review-blockers/review-result-qa-r2-sitelost-site-lost.json",
-		"blocker_resolved",
+		"this responsibility is unfinished",
 		"round_entry: TR-012 (S9 handoff seed)",
 		"seed_projection: present",
 		"focus=logic-state-error target=internal/example",
-		"pending required claims: 1",
+		"pending responsibility claims: 1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("s7 status missing %q:\n%s", want, got)
@@ -144,7 +145,7 @@ func TestS7StatusReportsSeedProjectionGap(t *testing.T) {
 			"review_plan_seed_ref": ".claude/review/repair/s7-seeds/review-plan-s9-round-2.json",
 		},
 		"plan":   nil,
-		"claims": map[string]any{}, "assignments": map[string]any{}, "observation_batch": nil,
+		"claims": map[string]any{}, "assignments": map[string]any{},
 	}
 	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)

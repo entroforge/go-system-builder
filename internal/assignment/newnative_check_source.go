@@ -13,7 +13,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/team"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -22,12 +21,11 @@ import (
 // fallback: native checks require the checkout coordinate to be part of the
 // immutable manifest source.
 type NativeCheckSource struct {
-	Checkout       string
-	Branch         string
-	TargetBranch   string
-	Head           string
-	ManifestRef    string
-	ManifestSHA256 string
+	Checkout     string
+	Branch       string
+	TargetBranch string
+	Head         string
+	ManifestRef  string
 }
 
 // ResolveFrozenNativeCheckSource resolves the native owner's source checkout
@@ -45,12 +43,7 @@ func ResolveFrozenNativeCheckSource(root string, state map[string]any, record as
 	if !found {
 		return out, fmt.Errorf("native check has no current canonical Assignment Record")
 	}
-	currentSHA, err := current.Digest()
-	if err != nil {
-		return out, err
-	}
-	recordSHA, err := record.Digest()
-	if err != nil || current.Reference() != record.Reference() || currentSHA != recordSHA {
+	if current.Reference() != record.Reference() {
 		return out, fmt.Errorf("native check Assignment Record is not the current original Record")
 	}
 	if record.ClosingContract == nil || len(record.ClosingContract.WorkerChecks) == 0 {
@@ -64,9 +57,6 @@ func ResolveFrozenNativeCheckSource(root string, state map[string]any, record as
 	manifestBytes, err := assignmentinputs.Read(mainRoot, record.Manifest.Ref)
 	if err != nil {
 		return out, fmt.Errorf("read Record-frozen workgroup manifest: %w", err)
-	}
-	if workpacket.Digest(manifestBytes) != record.Manifest.SHA256 {
-		return out, fmt.Errorf("Record-frozen workgroup manifest bytes changed")
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("team-manifest.schema.json", manifestBytes); err != nil {
 		return out, err
@@ -155,20 +145,11 @@ func ResolveFrozenNativeCheckSource(root string, state map[string]any, record as
 	if targetBranch == "" || targetBranch != devBranch {
 		return out, fmt.Errorf("native worktree target differs from the current REQ development branch")
 	}
-	head, err := workspace.Git(context.Background(), checkout, "rev-parse", "HEAD")
-	if err != nil {
-		return out, fmt.Errorf("resolve native worktree source HEAD: %w", err)
-	}
-	if strings.TrimSpace(head) == "" {
-		return out, fmt.Errorf("native worktree source HEAD is empty")
-	}
 	out = NativeCheckSource{
-		Checkout:       checkout,
-		Branch:         coordinate.Branch,
-		TargetBranch:   targetBranch,
-		Head:           strings.TrimSpace(head),
-		ManifestRef:    record.Manifest.Ref,
-		ManifestSHA256: record.Manifest.SHA256,
+		Checkout:     checkout,
+		Branch:       coordinate.Branch,
+		TargetBranch: targetBranch,
+		ManifestRef:  record.Manifest.Ref,
 	}
 	return out, nil
 }

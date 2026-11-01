@@ -78,7 +78,7 @@ func TestNativeS9FlatValidationFeedbackUsesPrivateFileFields(t *testing.T) {
 }
 
 func TestNativeS9LegacyPlanValidationKeepsOriginalEnvelopeFeedback(t *testing.T) {
-	root, worker, packet, _, _ := nativeS9LegacyWorkerFixture(t)
+	root, worker, packet, _, _ := nativeS9WorkerFixture(t)
 	draft := packet.Draft
 	draft.Answer = json.RawMessage(`{"plan":"","red_checks":[],"proposed_paths":[]}`)
 	data, err := json.Marshal(draft)
@@ -92,7 +92,7 @@ func TestNativeS9LegacyPlanValidationKeepsOriginalEnvelopeFeedback(t *testing.T)
 	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, packet.AnswerPath), draft); err != nil {
 		t.Fatal(err)
 	}
-	err = importNativeS9PlanReport(context.Background(), root, worker, packet, nil, &bytes.Buffer{})
+	err = receiveNativeS9ReadyPlan(context.Background(), root, worker, packet, nil, &bytes.Buffer{}, nil)
 	var fields *workpacket.AnswerError
 	if !errors.As(err, &fields) || fields.Fields[0] != original[0] {
 		t.Fatalf("legacy wrapped feedback changed: %+v %v", fields, err)

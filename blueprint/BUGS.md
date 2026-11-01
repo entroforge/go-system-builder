@@ -307,7 +307,7 @@ Worker 不会读 blueprint，所以这句对 Worker 无效。
 
 **现象.** 原仿真同一答案或 Plan 在后续接收成功，首次却收到 `Consumer rejection: context deadline exceeded`，并同时出现拒收、Plan 注册中断、材料准备延期等提示。超时不能证明内容非法，缺少回执也不能证明未提交。
 
-**设计.** 按 [Hook §10.2～§10.3](l4-mechanisms/L4-hook-platform-wiring.md#102-各层工作与复用边界)贯通一次准确输入与分段恢复：未提交时复用原输入，pending 形成后恢复原事务，接收成立后只续原出口／材料。反馈分别表达专业字段错误、来源故障、并发冲突、传输中断和已接收后继未完成；不要求作者改内容、重存、删产物或换 ID。
+**设计.** 按 [Hook §10.2～§10.3](l4-mechanisms/L4-hook-platform-wiring.md#102-删除证明工作再合并必要读取)贯通一次准确输入与分段恢复：未提交时复用原输入，pending 形成后恢复原事务，接收成立后只续原出口／材料。反馈分别表达专业字段错误、来源故障、并发冲突、传输中断和已接收后继未完成；不要求作者改内容、重存、删产物或换 ID。
 
 **实现状态.** 一次答案输入已贯通服务与原消费者，pending／回执／本次暂存按进度续接，基线 context 和取消错误链已接通。Result 尾段锚定原工作截止后 1.4 秒，Plan 为 400 毫秒，延迟返回不重新发放预算。冻结验收曾发现 OS 锁释放后，遗留兼容标记的 30 秒过期窗口超过新进程约 5 秒锁预算，阻断立即恢复。本轮原锁入口已改为：证明原 PID 退出后立即回收标记，已知活进程不因标记年龄被驱逐；未知旧格式仍沿原兼容规则。[真实进程回归](../internal/review/result_process_recovery_test.go)继续检验新进程原入口恢复、同答幂等与篡改／缺失 intent 拒绝，不能用执行 defer 的 panic 测试代替。仍无跨进程自动执行者，强制终止后的无人触发恢复不在已实现能力内。
 
@@ -445,7 +445,7 @@ agent 给出的机制判定与实测：
 | 原生返回与后继 | 已接收和出口／材料失败须区别；重跑整链会放大故障 | 先认原事实再续未完成步骤，不重收作者答案 |
 | 审计追加 | 每次扫描历史去重，锁另设 30 秒上限 | 保留事件和去重，采用可验证复用／索引，等待受父请求约束 |
 
-**设计依据.** [Hook §10.2](l4-mechanisms/L4-hook-platform-wiring.md#102-各层工作与复用边界)定义一次接收顺序、准确复用、当前连续性与外围读取；[§10.3](l4-mechanisms/L4-hook-platform-wiring.md#103-暂存中断与原事务续跑)定义恢复；[§10.4](l4-mechanisms/L4-hook-platform-wiring.md#104-实现落点依赖与尚未闭合的路径)标明现状和依赖；[§10.6](l4-mechanisms/L4-hook-platform-wiring.md#106-整条接收链的验收与观测)定义整链验收。各阶段保持原责任、原消费者和原 Writer，不新建接收状态机。
+**设计依据.** [Hook §10.2](l4-mechanisms/L4-hook-platform-wiring.md#102-删除证明工作再合并必要读取)定义一次接收顺序、准确复用、当前连续性与外围读取；[§10.3](l4-mechanisms/L4-hook-platform-wiring.md#103-中断按最小持久事实恢复)定义恢复；[§10.4](l4-mechanisms/L4-hook-platform-wiring.md#104-历史实现与新目标分别记录)标明现状和依赖；[§10.6](l4-mechanisms/L4-hook-platform-wiring.md#106-三阶段组合验收与运行成本)定义整链验收。各阶段保持原责任、原消费者和原 Writer，不新建接收状态机。
 
 **范围与现状.** 一次输入、按实际路径批量证明、基线／固定 Git 的请求预算与复用、按进度恢复、审计索引及外层失败观测已在工作区接入生产调用链；锁内仍核实际磁盘证据，取消／局部超时不写成内容非法或 Plan stale。当前原生 S7 Stop 不无条件发行下一 Reviewer 问卷，最后结果仍可续 S10；不能继续用“每次接收必做两件重活”概括当前机制。主修是减少实际工作及按进度续接，不是增加预算、无条件拆成两个平台事件、等待下一普通工具或交给 Main 手工 submit。
 
@@ -453,13 +453,13 @@ agent 给出的机制判定与实测：
 
 **冻结验收复现的机制缺口.** 除 SIM-11 的死亡进程兼容锁外，[Main 返回取消检查](../internal/cli/hook_acceptance_cancellation_linux_test.go)证明 S9 摘要在请求取消后仍打开原工作包正文，相关 lookup／diagnostic 仍另起 Background；[诊断与基线检查](../internal/integration/hook_diagnostic_acceptance_test.go)证明原机制发布的 `.claude/diagnostics/planning/` 准确诊断文件会进入未声明产品漂移，进而阻断原 Gate。两者都不能靠让作者补字段、删诊断或重开验证轮解决。[S9 证据路径检查](../internal/cli/hook_acceptance_s9_evidence_test.go)还证明，按指引推荐的 `path:logs/check.txt` 保存检查证据后，原候选消费者以未跟踪日志导致 Worker 不干净而拒收；不能用额外证据提交／清理掩盖交接缺口。
 
-**验收后的定向收敛.** 按 [Hook §10.7](l4-mechanisms/L4-hook-platform-wiring.md#107-已复现交接断点的收敛设计)补齐上述边界：Main 返回的正文、只读回执与 S9 诊断继承父 context；显示诊断按准确文件和有限内容分类，共用于 S7 产品漂移、S9 基线和集成检查；S9 原消费者只投影本次已捕获且字节匹配的未跟踪日志输出，贯通候选、Main 集成及已验证后的清理，Main 不可变证据保留。未知邻居、源码、已跟踪或已在原 Session 基线中的文件、变更字节仍保留原拒绝条件；未增加作者字段、日志提交／忽略手续或工具门禁。[S9 交接回归](../internal/cli/s9_preferred_evidence_integration_test.go)覆盖推荐路径到 Main Final／清理及证据保留，补足仅候选通过的缺口。原 smoke 工具按 PostToolUse 30 秒、其他事件 10 秒校验，不改产品时限。该轮四项原失败与相邻负例的证据按原版本保留；后补真实平台结果见下，适用中断、增长及现规模预算失败仍使 SIM-17／11 保持开放。
+**验收后的定向收敛.** 按 [Hook §10.7](l4-mechanisms/L4-hook-platform-wiring.md#107-原稿路径产品变化与资源处理)补齐上述边界：Main 返回的正文、只读回执与 S9 诊断继承父 context；显示诊断按准确文件和有限内容分类，共用于 S7 产品漂移、S9 基线和集成检查；S9 原消费者只投影本次已捕获且字节匹配的未跟踪日志输出，贯通候选、Main 集成及已验证后的清理，Main 不可变证据保留。未知邻居、源码、已跟踪或已在原 Session 基线中的文件、变更字节仍保留原拒绝条件；未增加作者字段、日志提交／忽略手续或工具门禁。[S9 交接回归](../internal/cli/s9_preferred_evidence_integration_test.go)覆盖推荐路径到 Main Final／清理及证据保留，补足仅候选通过的缺口。原 smoke 工具按 PostToolUse 30 秒、其他事件 10 秒校验，不改产品时限。该轮四项原失败与相邻负例的证据按原版本保留；后补真实平台结果见下，适用中断、增长及现规模预算失败仍使 SIM-17／11 保持开放。
 
 **前轮真实平台复验边界.** 原四项失败及相邻边界、smoke 和安装定向验证有实际通过记录；真实 S9 虽最终形成 Main 集成检查、Final 和 complete，仍经历首次 Stop 超时、未引用临时脚本拒收、额外本地忽略及替代 actor 继续，不能算连续平台通过。模型请求的 `Agent.resume` 在实际 Hook 输入中消失并启动新 actor，该轮随后按实际同 actor 继续合同修正指引及检查器；最新会话的 actual-ID 技术辅助及成功域链另见下文，不能改写此前失败。该次观察到的空 DeliveryRef 底层报错、`Next: .` 与旧 smoke 描述已由下述接线修订处理，不再列为当前未修改项。该前轮不能证明完整增长、全部适用中断或无额外指引直通。
 
-**接线补齐.** 按 [Hook §10.8](l4-mechanisms/L4-hook-platform-wiring.md#108-从原接收事实到全部接手入口的接线)，以原责任绑定贯通 Main 返回、普通 dispatch／lead 提示与具名 integrate：区分未形成 candidate、来源不完整、部分已收及 Final 后 ACK／清理；typed 责任的缺源或旧代次不得回落 legacy。Result 的原诊断关联唯一同 Sources 的 PlanReport；同 owner 的邻居不能替代或污染本责任。取消只令尚未读取的细节未知，保留已知索引与引用，不把未刷新当来源损坏或重新收卷要求。Final 后只读原固定证明和清理所需冻结证据，不重建已完成专业闭包。平台继续、晚 Worker 的材料与反馈 schema 同步按接收者编排，原回归逐项区分合同、夹具与生产缺陷。选定扩大回归及原14项红灯已逐项通过；这只覆盖其实际断言，未证明全部接手边闭合，真实平台与完整增长／中断矩阵仍分别待验。
+**接线补齐.** 按 [Hook §10.8](l4-mechanisms/L4-hook-platform-wiring.md#108-原结论到下一责任的最小分流)，以原责任绑定贯通 Main 返回、普通 dispatch／lead 提示与具名 integrate：区分未形成 candidate、来源不完整、部分已收及 Final 后 ACK／清理；typed 责任的缺源或旧代次不得回落 legacy。Result 的原诊断关联唯一同 Sources 的 PlanReport；同 owner 的邻居不能替代或污染本责任。取消只令尚未读取的细节未知，保留已知索引与引用，不把未刷新当来源损坏或重新收卷要求。Final 后只读原固定证明和清理所需冻结证据，不重建已完成专业闭包。平台继续、晚 Worker 的材料与反馈 schema 同步按接收者编排，原回归逐项区分合同、夹具与生产缺陷。选定扩大回归及原14项红灯已逐项通过；这只覆盖其实际断言，未证明全部接手边闭合，真实平台与完整增长／中断矩阵仍分别待验。
 
-**接线残留及本轮实现.** 独立审查确认的四项残留已按 [Hook §10.9](l4-mechanisms/L4-hook-platform-wiring.md#109-接收失败的具名续接失败交付与单次提示)接入：原 flat／typed／Targeted 具名 Main 续接、原预算内捕获失败的跨请求交付、启动／完成／未知的公共返回适配、单一 dispatch 组装。Skill 同步移除系统故障统一要求 Worker 重返；pending 的 Main 公开反馈接回原 Writer recover，领域回执命令也提供字面参数引用。具体源码与分批验证见[本轮记录](../.local/framework-maintenance/hook-handoff-implementation-20261026/RESULT.md)；当时尚不能据此关闭真实渠道接手或增长/中断；最新具体渠道证据见下。通用 recover 仍不承担 native 适配，R2 正常链未命中的故障投影另修。
+**接线残留及本轮实现.** 独立审查确认的四项残留已按 [Hook §10.9](l4-mechanisms/L4-hook-platform-wiring.md#109-失败交付与具名异常恢复)接入：原 flat／typed／Targeted 具名 Main 续接、原预算内捕获失败的跨请求交付、启动／完成／未知的公共返回适配、单一 dispatch 组装。Skill 同步移除系统故障统一要求 Worker 重返；pending 的 Main 公开反馈接回原 Writer recover，领域回执命令也提供字面参数引用。具体源码与分批验证见[本轮记录](../.local/framework-maintenance/hook-handoff-implementation-20261026/RESULT.md)；当时尚不能据此关闭真实渠道接手或增长/中断；最新具体渠道证据见下。通用 recover 仍不承担 native 适配，R2 正常链未命中的故障投影另修。
 
 **最新真实平台证据（f4，已结束）.** [S9→S11 正式报告](../.local/framework-maintenance/global-retest-20261026T025354Z/S9-S11-ACCEPTANCE.md)及[机器证据](../.local/framework-maintenance/global-retest-20261026T025354Z/S9-S11-ACCEPTANCE-EVIDENCE.json)证明：C1 六项完整集合实际进入 Main/Builder，Result 包含修前已满足者；原独立 Targeted、自动 Handoff、fresh S7 完整轮、S10/S11 到 `release_authorized/rev70`。这是带技术辅助的域链成功：Main 经 actual actor ID 恢复原 Builder，未补领域答案。机械 `verify exit1` 唯一失败是 run-2 执行者过早 SIGINT 前约 2.75 秒启动的额外 actor 有 Start 无 Stop、无领域产物，不能称自然全绿。原 [SINGLE 失败报告](../.local/framework-maintenance/global-retest-20261026T025354Z/SINGLE-PLATFORM-ACCEPTANCE.md)中的 5/6 拒错及 source 消失保持原结论。
 
@@ -481,7 +481,7 @@ agent 给出的机制判定与实测：
 
 **仍需解决的问题.** 超时可能丢失当前进度、错误诊断或必要交接反馈；外层真实失败已接入现有 observation spool 和 health，低于平台告警线也保留。必须区分“工具继续”“观察未完成”“领域已接收”与“阶段已推进”，不把其中一个当作另一个的证明。
 
-**修复方向.** 与 SIM-17 共用轻量分流、准确状态复用和有界观测；按 [Hook §10.6](l4-mechanisms/L4-hook-platform-wiring.md#106-整条接收链的验收与观测)保留外层传输失败事实及已知接收信息。废弃“所有非只读工具 deny”和仅缩短 Pre 时限的旧建议。领域来源、批准、责任与转换条件继续由原消费者／Writer 核对，不能用放宽接收换取非阻断。
+**修复方向.** 与 SIM-17 共用轻量分流、准确状态复用和有界观测；按 [Hook §10.6](l4-mechanisms/L4-hook-platform-wiring.md#106-三阶段组合验收与运行成本)保留外层传输失败事实及已知接收信息。废弃“所有非只读工具 deny”和仅缩短 Pre 时限的旧建议。领域来源、批准、责任与转换条件继续由原消费者／Writer 核对，不能用放宽接收换取非阻断。
 
 **验收.** 普通 Pre 超时／未知不新增工具 deny，不发布部分成功，不制造接收或阶段事实；真实领域缺项仍在原入口拒收。保持作者权限与交付动作不变。
 
@@ -501,7 +501,7 @@ agent 给出的机制判定与实测：
 
 原问卷恢复依赖原冻结内容和受支持的模板身份。`DraftPlanForRoot` 生成当前 ReviewPlan 草稿，不是历史问卷恢复器；不得用当前 Plan 或最新模板补造旧题目。正文先发布、引用后提交，旧格式、缺失展示文件、pending、checkpoint 和归档的兼容要求由[状态机核心 §8.4](l4-mechanisms/L4-state-transition-core.md#84-工作包正文外置的事务与兼容边界)统一定义。
 
-已有 16 MiB checkpoint 状态硬上限保留；不新增未经测量校准的固定 500 KB 降级阈值。验收按 [Hook §10.5](l4-mechanisms/L4-hook-platform-wiring.md#105-存储减负的行为等价与性能验收)同时检查作者行为等价、历史恢复、最终结果交接与增长场景下的实际成本，不能以缓存命中或文件缩小代替。
+已有 16 MiB checkpoint 状态硬上限保留；不新增未经测量校准的固定 500 KB 降级阈值。验收按 [Hook §10.5](l4-mechanisms/L4-hook-platform-wiring.md#105-存储只服务原内容与当前责任)同时检查作者行为等价、历史恢复、最终结果交接与增长场景下的实际成本，不能以缓存命中或文件缩小代替。
 
 **实现状态.** 工作区已实现 S7 ReviewResult、S9 PlanReport／RepairResult 的轻索引、完整不可变正文、按责任读取、原 Writer 新写及显式旧状态维护，并接入旧 pending 和独立 checkpoint／恢复计划正文副本。其他阶段仍内嵌，无 GC 或正文内部共同来源去重。主状态精简不等于删除完整恢复内容。已有实现不证明代表增长下成本或所有兼容窗口通过；适用证据继续按行为等价、独立恢复及真实读取成本分开保留待证。f4 域链和预算失败不能单独归因或认证该存储改造。
 
@@ -514,7 +514,7 @@ agent 给出的机制判定与实测：
 
 **当前落点.** [分块定位器](../internal/cli/native_task_transcript.go)已接入 Review 与 S6 入口，按 64 KiB 倒序读取，近尾准确命中立即停止；原尾／头各 4 MiB 覆盖范围保留，fallback 共用累计 8 MiB 上限及区间缓存，重叠字节不重复读取。普通无关事件继续跳过转录。诊断 helper 区分匹配、边界、读取失败与取消，兼容字符串入口保持原交付形式。
 
-**设计.** 按 [Hook §10.2.3](l4-mechanisms/L4-hook-platform-wiring.md#1023-转录与审计也属于接收成本)分块倒序读取，命中原准确任务即停，fallback 共用累计读取及时间预算。保留真实 user 任务、原引用边界、历史别名、多责任冲突和工具结果排除规则。任务定位不替代原 packet／owner／来源证明。
+**设计.** 按 [Hook §10.2.3](l4-mechanisms/L4-hook-platform-wiring.md#1023-有界转录与审计)分块倒序读取，命中原准确任务即停，fallback 共用累计读取及时间预算。保留真实 user 任务、原引用边界、历史别名、多责任冲突和工具结果排除规则。任务定位不替代原 packet／owner／来源证明。
 
 不直接改成任意最后 200 行或 256 KB，不用最终助手消息无条件替代真实任务，也不要求作者缩短会话或换 Agent。无匹配、越界和 I/O 失败分别可诊断，不能静默选错责任。分块早停和累计预算已有实现；任务选择/恢复等价及代表性增长效果仍按适用证据和同任务实际读取字节、解析行数及整链耗时判断，不因 f4 最终域链成功就宣布成本验收完成。
 

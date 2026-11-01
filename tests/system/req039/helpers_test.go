@@ -17,8 +17,6 @@ package req039_test
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -105,7 +103,7 @@ func writeSystemState(t *testing.T, root string, state map[string]any) {
 	req039fixtures.EnsureStateRoot(state, root)
 	req039fixtures.CommitCurrentFixture(t, root)
 	if bound, ok := state["bound_req"].(map[string]any); ok {
-		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": strings.TrimSpace(runGitIn(t, root, "branch", "--show-current")), "release_upstream": "origin/release", "bound_commit": strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))}
+		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": strings.TrimSpace(runGitIn(t, root, "branch", "--show-current")), "release_upstream": "origin/release"}
 	}
 	path := filepath.Join(root, ".claude", "loop-state.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -132,7 +130,9 @@ func assertRuntimeCursorUnchanged(t *testing.T, context string, before, after ma
 	}
 }
 
-func assertPreToolUseObservedWithoutDenyOrAdvance(t *testing.T, code int, stdout, stderr string, before, after map[string]any) {
+// assertPreToolUseAllowedWithoutAdvance applies to every audience. Receiving
+// Main graph navigation is a separate responsibility.
+func assertPreToolUseAllowedWithoutAdvance(t *testing.T, code int, stdout, stderr string, before, after map[string]any) {
 	t.Helper()
 	if code != 0 {
 		t.Fatalf("PreToolUse listener failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
@@ -140,20 +140,40 @@ func assertPreToolUseObservedWithoutDenyOrAdvance(t *testing.T, code int, stdout
 	if strings.Contains(stdout, `"permissionDecision":"deny"`) {
 		t.Fatalf("PreToolUse graph listener must not deny a tool call: %s", stdout)
 	}
-	if !strings.Contains(stdout, "QUALITY_GATE") {
-		t.Fatalf("PreToolUse must render graph progress: %s", stdout)
-	}
 	assertRuntimeCursorUnchanged(t, "PreToolUse observation", before, after)
+}
+
+func assertPreToolUseObservedWithoutDenyOrAdvance(t *testing.T, code int, stdout, stderr string, before, after map[string]any) {
+	t.Helper()
+	assertPreToolUseAllowedWithoutAdvance(t, code, stdout, stderr, before, after)
+	if !strings.Contains(stdout, "QUALITY_GATE") {
+		t.Fatalf("Main PreToolUse must render graph progress: %s", stdout)
+	}
+}
+
+func assertWorkerPreToolUseAllowedWithoutAdvance(t *testing.T, code int, stdout, stderr string, before, after map[string]any) {
+	t.Helper()
+	assertPreToolUseAllowedWithoutAdvance(t, code, stdout, stderr, before, after)
+	if strings.Contains(stdout, "QUALITY_GATE") || strings.Contains(stdout, "LOOP RECOVERY") {
+		t.Fatalf("Worker event received Main graph navigation: %s", stdout)
+	}
+	beforeEntities, _ := json.Marshal(before["entities"])
+	afterEntities, _ := json.Marshal(after["entities"])
+	if !bytes.Equal(beforeEntities, afterEntities) {
+		t.Fatalf("ordinary Worker tool event changed registered responsibilities: before=%s after=%s", beforeEntities, afterEntities)
+	}
 }
 
 // systemPlanningState returns a schema-valid loop-state.json fixture
 // for the requested phase / revision. It mirrors the planningState
-// helper in internal/cli/ac_test.go (same fix-up: zero-SHA for
-// definition/policy, full bound_req, configuration block) so the
-// PostCommitValidator accepts the persisted state.
+// helper in internal/cli/ac_test.go (full bound_req and configuration
+// block). Bind the actual Definition once when creating the state;
+// later writes must preserve the binding so real drift remains visible.
 func systemPlanningState(t *testing.T, root, phase string, revision int) map[string]any {
 	t.Helper()
-	const zeroSHA = "0000000000000000000000000000000000000000000000000000000000000000"
+	if _, err := os.ReadFile(filepath.Join(root, "docs", "control", "loop-definition.json")); err != nil {
+		t.Fatal(err)
+	}
 	stageLetter := "2"
 	switch phase {
 	case "design":
@@ -176,15 +196,12 @@ func systemPlanningState(t *testing.T, root, phase string, revision int) map[str
 	if err := os.WriteFile(reqPath, reqBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reqSum := sha256.Sum256(reqBytes)
-	reqSHA := hex.EncodeToString(reqSum[:])
 	return map[string]any{
 		"schema_version": "1.1.0",
 		"runtime_id":     "loop-system-test",
 		"definition": map[string]any{
 			"path":    "docs/control/loop-definition.json",
 			"version": "1.1.0",
-			"sha256":  "b6d545f83b7b31c9a140a1a96770c8866ebf7ef4f482c51687dfbacf38de0908",
 		},
 		"revision": float64(revision),
 		"lifecycle": map[string]any{
@@ -227,7 +244,6 @@ func systemPlanningState(t *testing.T, root, phase string, revision int) map[str
 			"id":          "REQ-039",
 			"path":        "docs/requirements/REQ-039.md",
 			"version":     "v1.0.0",
-			"sha256":      reqSHA,
 			"status":      "locked",
 			"approved_by": "user",
 			"approved_at": "2026-07-30T00:00:00Z",

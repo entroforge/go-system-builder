@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -69,11 +68,7 @@ func commitCoreReceiptCandidate(t *testing.T, e workspace.Execution, expected in
 	if err := os.WriteFile(filepath.Join(e.Path, "src/value_test.go"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
-	head, err := workspace.Git(context.Background(), e.Path, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	stageJSON(t, e.Path, ".loop-submissions/commit.json", workspace.CommitRequest{ExpectedHead: head, Message: "Record the owned regression candidate", Paths: []string{"src/value.go", "src/value_test.go"}})
+	stageJSON(t, e.Path, ".loop-submissions/commit.json", workspace.CommitRequest{Message: "Record the owned regression candidate", Paths: []string{"src/value.go", "src/value_test.go"}})
 	stageCLI(t, "runtime", "workspace", "commit", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID)
 }
 
@@ -90,7 +85,7 @@ func TestBuilderReceiptOriginalFailureReworkAndCurrentResubmission(t *testing.T)
 	var out, errOut bytes.Buffer
 	cli.Run([]string{"runtime", "task-integrate", "--root", f.root, "--assignment-id", e.AssignmentID, "--agent-id", e.AgentID}, nil, &out, &errOut)
 	cp, found, err := integration.DefaultCheckpointStore().Load(integration.CheckpointPath(f.root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID))
-	if err != nil || !found || cp.TestedHead != "" || (cp.State != integration.StatePreserved && cp.State != integration.StateBlocked) {
+	if err != nil || !found || (cp.State != integration.StatePreserved && cp.State != integration.StateBlocked) {
 		t.Fatalf("actual failing integration not preserved: %+v %v %s %s", cp, err, out.String(), errOut.String())
 	}
 	stageCLI(t, "runtime", "workspace", "rework", "--root", f.root, "--assignment", e.AssignmentID, "--agent", e.AgentID, "--reason", "Correct the owned regression oracle and rerun the declared check")

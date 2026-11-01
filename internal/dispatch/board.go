@@ -3,7 +3,6 @@
 package dispatch
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	"path/filepath"
@@ -75,16 +74,40 @@ func LoadWithFiles(root string, state map[string]any, files fileview.Reader, cap
 		return board, err
 	}
 	board.Plan = p
-	if len(p.Problems) > 0 {
-		return board, fmt.Errorf("dispatch plan: %s", strings.Join(p.Problems, "; "))
+	baseline, _ := state["baseline"].(map[string]any)
+	generation := Number(baseline["generation"])
+	docs, _ := state["documents"].([]any)
+	for _, raw := range docs {
+		d, _ := raw.(map[string]any)
+		if Number(d["generation"]) != generation || (d["kind"] != "task" && d["kind"] != "dispatch_plan") {
+			continue
+		}
+		path, _ := d["path"].(string)
+		if _, e := files.ReadFile(filepath.Join(root, path)); e != nil {
+			return board, fmt.Errorf("read registered dispatch input %s: %w", path, e)
+		}
 	}
-	if p.Path == "" {
-		return board, fmt.Errorf("registered dispatch plan disappeared; return to planning")
+	return ProjectSelectedPlan(root, state, files, p, capacity)
+}
+
+// ProjectSelectedPlan reuses the caller's selected plan while projecting the
+// current Runtime's ownership, dependencies and integration facts. It checks
+// the existing registration identities but does not re-read TASKs or index.
+// files remains the original source reader for existing progress consumers.
+func ProjectSelectedPlan(root string, state map[string]any, files fileview.Reader, p *semantic.DispatchPlan, capacity int) (Board, error) {
+	board := sourceBoard(state, false)
+	board.Plan = p
+	if p == nil {
+		return board, fmt.Errorf("selected dispatch plan is unavailable")
+	}
+	bound, _ := state["bound_req"].(map[string]any)
+	if req, _ := bound["id"].(string); p.REQ != req {
+		return board, fmt.Errorf("selected dispatch plan belongs to a different REQ")
 	}
 	baseline, _ := state["baseline"].(map[string]any)
 	generation := Number(baseline["generation"])
 	docs, _ := state["documents"].([]any)
-	expected := map[string]bool{}
+	expected := map[string]string{}
 	found := false
 	for _, raw := range docs {
 		d, _ := raw.(map[string]any)
@@ -95,13 +118,9 @@ func LoadWithFiles(root string, state map[string]any, files fileview.Reader, cap
 			continue
 		}
 		path, _ := d["path"].(string)
-		b, e := files.ReadFile(filepath.Join(root, path))
-		if e != nil || fmt.Sprintf("%x", sha256.Sum256(b)) != d["sha256"] {
-			return board, fmt.Errorf("registered dispatch input drift: %s", path)
-		}
 		if d["kind"] == "task" {
 			id, _ := d["id"].(string)
-			expected[id] = true
+			expected[id] = path
 		} else {
 			if path != p.Path {
 				return board, fmt.Errorf("dispatch plan identity mismatch")
@@ -109,12 +128,22 @@ func LoadWithFiles(root string, state map[string]any, files fileview.Reader, cap
 			found = true
 		}
 	}
+	if len(p.Problems) > 0 {
+		return board, fmt.Errorf("dispatch plan: %s", strings.Join(p.Problems, "; "))
+	}
+	if p.Path == "" {
+		return board, fmt.Errorf("registered dispatch plan disappeared; return to planning")
+	}
 	if !found {
 		return board, fmt.Errorf("dispatch plan has not passed S4 registration")
 	}
 	for _, t := range p.Tasks {
-		if !expected[t.ID] {
+		path, exists := expected[t.ID]
+		if !exists {
 			return board, fmt.Errorf("unregistered TASK %s", t.ID)
+		}
+		if filepath.Clean(filepath.FromSlash(path)) != filepath.Clean(filepath.FromSlash(t.Path)) {
+			return board, fmt.Errorf("registered TASK %s path %s differs from dispatch plan path %s", t.ID, path, t.Path)
 		}
 		delete(expected, t.ID)
 	}
@@ -125,7 +154,7 @@ func LoadWithFiles(root string, state map[string]any, files fileview.Reader, cap
 	facts := map[string]semantic.DispatchFact{}
 	active := 0
 	for id, p := range progress {
-		facts[id] = semantic.DispatchFact{State: p.State, Reason: p.Reason, Integrated: p.Integrated, DeliveryRecorded: p.DeliveryRecorded}
+		facts[id] = semantic.DispatchFact{State: p.State, Unknown: p.Unknown, Reason: p.Reason, Integrated: p.Integrated, DeliveryRecorded: p.DeliveryRecorded}
 		if p.State == workstate.Active && !p.DeliveryRecorded {
 			active++
 		}
@@ -162,6 +191,14 @@ func CheckRegistration(root string, state map[string]any, taskID string) error {
 	if b.Legacy {
 		return nil
 	}
+	return CheckBoardRegistration(b, taskID)
+}
+
+// CheckBoardRegistration uses the freshly projected Runtime facts in board.
+func CheckBoardRegistration(b Board, taskID string) error {
+	if b.Legacy {
+		return nil
+	}
 	// Evaluate only actual constraints: suggested priority is not an authorization gate.
 	facts := map[string]bool{}
 	for _, r := range b.Rows {
@@ -170,6 +207,9 @@ func CheckRegistration(root string, state map[string]any, taskID string) error {
 	for _, r := range b.Rows {
 		if r.Task.ID != taskID {
 			continue
+		}
+		if r.Unknown {
+			return fmt.Errorf("TASK %s has unknown current ownership: %s", taskID, r.Reason)
 		}
 		switch r.State {
 		case workstate.Done, workstate.Active, workstate.Blocked, workstate.Cancelled:
@@ -195,7 +235,7 @@ func CheckRegistration(root string, state map[string]any, taskID string) error {
 
 // ValidateWorkPackage binds the actual workgroup input and write authorization
 // to the reviewed TASK, rather than merely checking the requested TASK ID.
-func ValidateWorkPackage(root string, state map[string]any, taskID, taskPath string, taskBytes []byte, writes []string, writers int) error {
+func ValidateWorkPackage(root string, state map[string]any, taskID, taskPath string, _ []byte, writes []string, writers int) error {
 	life, _ := state["lifecycle"].(map[string]any)
 	if life["state"] != "building" || !qualitygate.HasDispatchPlan(state) {
 		return nil
@@ -204,6 +244,12 @@ func ValidateWorkPackage(root string, state map[string]any, taskID, taskPath str
 	if e != nil {
 		return e
 	}
+	return ValidateBoardWorkPackage(root, b, taskID, taskPath, writes, writers)
+}
+
+// ValidateBoardWorkPackage checks the original selected TASK and write scope
+// without reopening or comparing a second copy of its source material.
+func ValidateBoardWorkPackage(root string, b Board, taskID, taskPath string, writes []string, writers int) error {
 	if writers != 1 {
 		return fmt.Errorf("planned TASK %s requires exactly one writer assignment", taskID)
 	}
@@ -215,17 +261,6 @@ func ValidateWorkPackage(root string, state map[string]any, taskID, taskPath str
 		expected, _ := filepath.Abs(filepath.Join(root, row.Task.Path))
 		if abs != expected {
 			return fmt.Errorf("workgroup TASK path differs from reviewed plan")
-		}
-		files, e := View(root, state)
-		if e != nil {
-			return e
-		}
-		reviewed, e := files.ReadFile(row.Task.Path)
-		if e != nil {
-			return e
-		}
-		if sha256.Sum256(reviewed) != sha256.Sum256(taskBytes) {
-			return fmt.Errorf("workgroup TASK bytes differ from committed reviewed input")
 		}
 		if len(writes) == 0 {
 			return fmt.Errorf("planned Builder must declare write_paths")
@@ -246,7 +281,7 @@ func ValidateWorkPackage(root string, state map[string]any, taskID, taskPath str
 				return fmt.Errorf("write path %s exceeds reviewed TASK %s", write, taskID)
 			}
 		}
-		return files.Verify()
+		return nil
 	}
 	return fmt.Errorf("TASK outside reviewed plan: %s", taskID)
 }

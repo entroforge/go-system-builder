@@ -27,11 +27,11 @@ func TestS7LifecycleListenerProjectsPathsWithoutCompletingResponsibility(t *test
 		t.Fatal(err)
 	}
 	packet, err := workpacket.BuildReviewResult(workpacket.ReviewResultBinding{
-		RuntimeID: "loop-S7-life", BaselineGeneration: 1, ReviewRound: 1,
+		RuntimeID: "loop-S7-life", BaselineGeneration: 1,
 		ReviewPlanID: "review-plan-life", ReviewPlanRef: "absent-plan.json", ReviewPlanRevision: 1,
-		ReviewPlanSHA256: strings.Repeat("a", 64), AssignmentID: "assignment-qa-life",
-		AssignmentSHA256: strings.Repeat("b", 64), OwnerAgentID: "reviewer-life",
-		ClaimIDs: []string{"claim-life"}, SubjectDigest: strings.Repeat("c", 64),
+		AssignmentID: "assignment-qa-life",
+		OwnerAgentID: "reviewer-life",
+		ClaimIDs:     []string{"claim-life"},
 	}, workpacket.ReviewResultInputs{
 		Claims:         json.RawMessage(`[{"claim_id":"claim-life","lens":"qa","target":"service","assertion":"errors propagate","oracle":"error response","method":"inspection","applicability":"required","source_refs":["REQ-life"]}]`),
 		FrozenSubjects: json.RawMessage(`[{"path":"service.go","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]`),
@@ -49,7 +49,7 @@ func TestS7LifecycleListenerProjectsPathsWithoutCompletingResponsibility(t *test
 	state["baseline"].(map[string]any)["generation"] = 1
 	state["lifecycle"] = map[string]any{"state": "verification", "phase": "running"}
 	plan := map[string]any{"plan_id": packet.Binding.ReviewPlanID, "path": packet.Binding.ReviewPlanRef,
-		"sha256": packet.Binding.ReviewPlanSHA256, "revision": 1, "review_round": 1, "status": "running"}
+		"revision": 1, "status": "running"}
 	state["review"] = map[string]any{"round": 1, "plan": plan, "assignments": map[string]any{
 		packet.Binding.AssignmentID: map[string]any{"status": "dispatched", "agent_id": packet.Binding.OwnerAgentID,
 			"lens": "qa", "claim_ids": []any{"claim-life"}, "result_ref": nil},

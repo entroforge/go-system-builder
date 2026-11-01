@@ -40,8 +40,8 @@ func (b *ExecutionRegistry) Launch(ctx context.Context, e Execution, binary, rol
 	if err != nil {
 		return err
 	}
-	if e.PlatformSessionID == "" || e.BootstrapSHA256 == "" || !safeID.MatchString(role) {
-		return fmt.Errorf("launch requires persisted session identity, bootstrap and installed role")
+	if e.PlatformSessionID == "" || !safeID.MatchString(role) {
+		return fmt.Errorf("launch requires persisted session identity and installed role")
 	}
 	rolePath := filepath.Join(e.Path, ".claude/agents", role+".md")
 	if info, err := os.Stat(rolePath); err != nil || !info.Mode().IsRegular() {

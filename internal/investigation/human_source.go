@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/entroforge/go-system-builder/internal/evidence"
-	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
@@ -24,8 +23,8 @@ func humanCaseSource(root string, state, document map[string]any) ([]string, err
 			return nil, fmt.Errorf("human Case original revision is unavailable; Main must restore its original source")
 		}
 		data, err := workpacket.ReadFile(root, stringField(first["path"]), hypothesisResultPacketReadLimit)
-		if err != nil || workpacket.Digest(data) != stringField(first["sha256"]) {
-			return nil, fmt.Errorf("human Case original revision bytes/SHA differ: %v", err)
+		if err != nil {
+			return nil, fmt.Errorf("human Case original revision unavailable: %v", err)
 		}
 		if err := schema.NewEmbeddedValidator().ValidateBytes("review-investigation-case.schema.json", data); err != nil {
 			return nil, err
@@ -41,12 +40,9 @@ func humanCaseSource(root string, state, document map[string]any) ([]string, err
 		return nil, fmt.Errorf("human Case original identity/generation differs from the current Case")
 	}
 	for _, candidate := range []map[string]any{original, document} {
-		if len(stringSliceValues(candidate["source_finding_ids"])) > 0 || stringField(candidate["observation_batch_id"]) != "" || stringField(candidate["observation_batch_ref"]) != "" || stringField(candidate["observation_batch_sha256"]) != "" {
-			return nil, fmt.Errorf("human Case cannot replace a Finding/ObservationBatch source")
+		if len(stringSliceValues(candidate["source_finding_ids"])) > 0 {
+			return nil, fmt.Errorf("human Case cannot replace a Finding source")
 		}
-	}
-	if pin := stringField(original["baseline_digest"]); pin != "" && pin != stringField(document["baseline_digest"]) {
-		return nil, fmt.Errorf("human Case original baseline_digest was changed; Main must reassess the original baseline")
 	}
 	return humanDefectSource(root, state, stringSliceValues(original["failure_boundary_refs"]))
 }
@@ -99,12 +95,9 @@ func humanDefectSource(root string, state map[string]any, refs []string) ([]stri
 		return nil, fmt.Errorf("human Case requires its original human_decision consumed by TR-027")
 	}
 	id, path := stringField(found["id"]), stringField(found["path"])
-	if err := ValidateEvidenceRefs([]string{id}, EvidenceAttestationOptions{State: state, Root: root, RequireSHA: true, RequireKind: []string{"human_decision"}, RequireReviewRound: currentReviewRound(state)}); err != nil {
-		return nil, fmt.Errorf("original human decision: %w", err)
-	}
 	data, err := workpacket.ReadFile(root, path, 1<<20)
-	if err != nil || workpacket.Digest(data) != stringField(found["sha256"]) {
-		return nil, fmt.Errorf("original human decision bytes/SHA differ: %v", err)
+	if err != nil {
+		return nil, fmt.Errorf("original human decision unavailable: %v", err)
 	}
 	var decision struct {
 		ID          string `json:"decision_id"`
@@ -122,22 +115,4 @@ func humanDefectSource(root string, state map[string]any, refs []string) ([]stri
 		return nil, fmt.Errorf("original human decision does not describe this Runtime's S11 defect rejection")
 	}
 	return []string{id, path}, nil
-}
-
-func humanBaselineDigest(root string, state map[string]any) (string, error) {
-	plan, ptr, err := review.LoadPlan(root, state)
-	if err != nil {
-		return "", fmt.Errorf("Main must restore the existing frozen ReviewPlan for the human report: %w", err)
-	}
-	generation, err := baselineGeneration(state)
-	if err != nil {
-		return "", err
-	}
-	if plan.BaselineGeneration != generation || plan.ReviewRound != currentReviewRound(state) || ptr.ReviewRound != plan.ReviewRound || len(plan.FrozenSubjects) == 0 {
-		return "", fmt.Errorf("human report requires the original current-round/generation frozen product subjects; Main restores that source, not a fabricated Finding or Batch")
-	}
-	if err := review.VerifyFrozenSubjects(root, plan, state); err != nil {
-		return "", err
-	}
-	return review.SubjectDigest(plan), nil
 }

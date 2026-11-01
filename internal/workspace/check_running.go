@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,21 +14,8 @@ func (b *ExecutionRegistry) BeginCheckRun(ctx context.Context, e Execution, inde
 	if index < 0 || index >= len(e.Checks) {
 		return nil, fmt.Errorf("select a declared check index")
 	}
-	subject, err := checkexec.TreeDigest(ctx, e.Path)
-	if err != nil {
-		return nil, err
-	}
-	profile := "legacy"
-	if p, ok := ProfileAt(e, index); ok {
-		profile = p.Digest()
-	}
-	data, _ := json.Marshal(struct {
-		Binding                             checkexec.Binding
-		Checkout                            string
-		Index                               int
-		Command, Profile, Source, Bootstrap string
-	}{CheckBinding(e), e.Path, index, e.Checks[index], profile, subject, e.BootstrapSHA256})
-	return checkexec.BeginRun(ctx, filepath.Join(b.MainRoot, ".claude/evidence/check-runs"), checkexec.Hash(data), CheckBinding(e))
+	binding := CheckBinding(e)
+	return checkexec.BeginInvocation(ctx, filepath.Join(b.MainRoot, ".claude/evidence/check-runs"), binding, index, "workspace")
 }
 
 func (b *ExecutionRegistry) CheckRuns(e Execution) ([]checkexec.RunRecord, error) {

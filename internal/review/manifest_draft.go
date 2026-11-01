@@ -1,6 +1,7 @@
 package review
 
 import (
+	"encoding/base64"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,6 +10,29 @@ import (
 	"github.com/entroforge/go-system-builder/internal/agentcontext"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 )
+
+// ManifestIDForPlan relates an unnumbered Plan's existing Assignment to its
+// prepared manifest using the manifest's existing machine-owned ID. The
+// reversible encoding is an engineering identity, not an integrity proof.
+// Numbered historical manifests retain their original IDs.
+func ManifestIDForPlan(planID, assignmentID string) string {
+	if planID == "" || assignmentID == "" {
+		return ""
+	}
+	encode := base64.RawURLEncoding.EncodeToString
+	return "team-manifest-p." + encode([]byte(planID)) + "." + encode([]byte(assignmentID))
+}
+
+// ManifestIDForPlanRevision identifies a new execution of an existing
+// Assignment after a real Plan amendment. Plan revision is an existing
+// content version, not a review round or an author-provided receipt.
+func ManifestIDForPlanRevision(planID, assignmentID string, revision int) string {
+	base := ManifestIDForPlan(planID, assignmentID)
+	if base == "" || revision < 2 {
+		return base
+	}
+	return fmt.Sprintf("%s.p%d", base, revision)
+}
 
 // ---------------------------------------------------------------------------
 // Reviewer workgroup manifest draft (L3-S7 §13 audit known-friction: the
@@ -29,7 +53,6 @@ type ManifestDraft struct {
 	RuntimeID                  string                `json:"runtime_id"`
 	ReqID                      string                `json:"req_id"`
 	BaselineGeneration         int                   `json:"baseline_generation"`
-	ReviewRound                int                   `json:"review_round"`
 	PlatformTeamID             string                `json:"platform_team_id"`
 	WorkgroupID                string                `json:"workgroup_id"`
 	WorkgroupKind              string                `json:"workgroup_kind"`
@@ -45,12 +68,12 @@ type ManifestDraft struct {
 	Validation                 ManifestValidation    `json:"validation"`
 }
 
-// ManifestDocument is one fingerprinted document reference.
+// ManifestDocument is one original document reference. Historical manifests
+// may contain a digest; newly prepared manifests do not copy or require it.
 type ManifestDocument struct {
 	ID      string `json:"id"`
 	Path    string `json:"path"`
 	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
 }
 
 // ManifestRiskTag is a risk annotation; the draft emits none.
@@ -143,14 +166,14 @@ func roleFamilyDefinitionRef(roleFamily string) string {
 // visible without asking the Worker to infer it from a role name.
 func assignmentDoneWhen(kind, assignmentID string, claimIDs []string) []string {
 	claims := strings.Join(claimIDs, ", ")
-	result := fmt.Sprintf("fill and save the exact issued professional answer for %s for assigned Claims [%s], and return its exact reference for original-consumer reception; ending the native turn does not establish acceptance", assignmentID, claims)
-	evidence := "for an ordinary complete result, each assigned Claim has a disposition and the required evidence is referenced"
+	result := fmt.Sprintf("inspect the assigned responsibility %s and Claims [%s], then save actual observations and conclusion in the issued professional answer; natural events receive it", assignmentID, claims)
+	evidence := "record actual observations and useful evidence; distinguish unfinished work and leave it for Main"
 	if kind == "e2e_browser" {
-		evidence = "follow the original Plan's applicability decisions; for an ordinary complete result, execute assigned required behavior through its declared entry and method and reference their actual evidence, with every assigned Claim answered as pass/fail or a legitimate product-blocked Claim; unclear applicability goes to Main for original Plan recovery, not a new Claim conclusion"
+		evidence = "follow the actual Plan and exercise applicable assigned behavior through its stated entry; report observations, limits and unclear applicability to Main"
 	}
 	return []string{result, evidence,
-		"run every declared required check before reporting ordinary completion; for a real P0, stop dangerous work, preserve observed Claim conclusions and the actual P0 Finding with genuine capture gaps, and omit unanswered Claim rows; the original consumer validates the P0 and derives unobserved Claims",
-		"if sources or the environment prevent a conclusion, preserve actual observations and return the original responsibility reference and obstacle to Main; leave the responsibility incomplete without inventing a verdict, product Finding or blocked Claim"}
+		"perform applicable professional checks; for a real P0, stop dangerous work and preserve observations and actual gaps",
+		"if sources or the environment prevent completion, report the actual obstacle and available observations; blocked does not require a product Finding"}
 }
 
 // DraftManifest scaffolds a register-workgroup team manifest for one
@@ -158,7 +181,7 @@ func assignmentDoneWhen(kind, assignmentID string, claimIDs []string) []string {
 // plane proves is pre-filled: identity (runtime/REQ/baseline/round), the
 // lens-derived workgroup kind and role family, the exact Claim set with
 // focus keys and non-overlap boundary, the mandatory responsibility
-// dispositions for the kind, the fingerprinted REQ/TASK documents, and the
+// dispositions for the kind, the registered REQ/TASK documents, and the
 // reviewer write surface. Fields no fact decides (agent identity, skill set
 // beyond schema-forced minimums) carry TODO(planner) markers listed in the
 // returned notes.
@@ -203,20 +226,12 @@ func DraftManifest(root string, state map[string]any, assignmentID string) (*Man
 		}
 	}
 	if planned.ExecutionWave == "behavior" {
-		note := "behavior-wave Assignment: register-workgroup rejects it until every required static Claim has a disposition (L3-S7 §5.2-5.3)"
-		if remaining := RemainingStaticClaims(state, plan); remaining > 0 {
-			note += fmt.Sprintf("; wave readiness: %d static-wave claim(s) still awaiting a disposition", remaining)
-		}
-		notes = append(notes, note)
+		notes = append(notes, "Main coordinates the actual dependencies and execution environment for this behavior responsibility")
 	}
 
 	runtimeID, _ := state["runtime_id"].(string)
 	bound, _ := state["bound_req"].(map[string]any)
 	reqID, _ := bound["id"].(string)
-	round := ptr.ReviewRound
-	if round == 0 {
-		round = currentReviewRound(state)
-	}
 	generation := baselineGeneration(state)
 
 	// Reuse a platform team only when registered facts name a single team.
@@ -236,26 +251,28 @@ func DraftManifest(root string, state map[string]any, assignmentID string) (*Man
 		}
 	}
 	if len(platformTeams) != 1 {
-		platformTeamID = fmt.Sprintf("s7-g%d-r%d-review", generation, round)
+		platformTeamID = fmt.Sprintf("s7-g%d-%s-review", generation, reviewArtifactKey(state))
 	}
 	notes = append(notes, "platform_team_id is the prepared logical engineering group label; it does not create or identify a Claude Code platform Team")
 
 	suffix := strings.TrimPrefix(assignmentID, "assignment-")
 	workgroupID := "workgroup-" + suffix
 	if workgroupTaken[workgroupID] {
-		workgroupID = fmt.Sprintf("workgroup-%s-r%d", suffix, round)
+		workgroupID = fmt.Sprintf("workgroup-%s-%s", suffix, reviewArtifactKey(state))
+	}
+	if workgroupTaken[workgroupID] && ptr.Revision > 1 {
+		workgroupID = fmt.Sprintf("workgroup-%s-%s-p%d", suffix, reviewArtifactKey(state), ptr.Revision)
 	}
 	notes = append(notes, "workgroup_id/manifest_id are prepared engineering identifiers for this original responsibility; Main does not need to invent or copy internal labels")
 
-	// Fingerprinted documents: the bound REQ plus every current-generation
-	// TASK the round freezes (the runtime verifies sha256 against disk).
+	// Preserve the original source locations and versions. Historical digests
+	// are not part of a new manifest or a qualification for preparation.
 	documents := []ManifestDocument{}
 	if reqID != "" {
 		documents = append(documents, ManifestDocument{
 			ID:      reqID,
 			Path:    stringField(bound["path"]),
 			Version: stringField(bound["version"]),
-			SHA256:  stringField(bound["sha256"]),
 		})
 	}
 	for _, raw := range stateDocuments(state) {
@@ -271,15 +288,14 @@ func DraftManifest(root string, state map[string]any, assignmentID string) (*Man
 			ID:      id,
 			Path:    stringField(doc["path"]),
 			Version: stringField(doc["version"]),
-			SHA256:  stringField(doc["sha256"]),
 		})
 	}
 	if len(documents) == 0 {
-		return nil, nil, fmt.Errorf("S7 Main/system preparation gap: no original bound REQ or current-generation TASK document references; restore the original source registration, do not author IDs, versions or SHA values")
+		return nil, nil, fmt.Errorf("S7 Main/system preparation gap: no original bound REQ or current-generation TASK document references; restore the original source registration")
 	}
 	for _, document := range documents {
-		if document.Path == "" || document.Version == "" || document.SHA256 == "" {
-			return nil, nil, fmt.Errorf("S7 Main/system preparation gap: original document %s is missing its registered path, version or SHA; restore its original source registration, do not ask the author to supply machine metadata", document.ID)
+		if document.Path == "" || document.Version == "" {
+			return nil, nil, fmt.Errorf("S7 Main/system preparation gap: original document %s is missing its registered path or version; restore its original source registration", document.ID)
 		}
 	}
 
@@ -332,7 +348,39 @@ func DraftManifest(root string, state map[string]any, assignmentID string) (*Man
 	}
 	notes = append(notes, "write_paths describe the Reviewer questionnaire/evidence responsibility and the registered verification_artifact_workspace; they are not a tool ACL")
 
-	agentID := fmt.Sprintf("s7-g%d-r%d-%s", generation, round, suffix)
+	agentID := fmt.Sprintf("s7-g%d-%s-%s", generation, reviewArtifactKey(state), suffix)
+	// A real Plan amendment may require the same Assignment to be carried out
+	// again while the original Reviewer, prompt and packet remain in flight.
+	// Never reassign that original owner to the amended responsibility.
+	priorOwner := false
+	agents, _ := entities["agents"].([]any)
+	agentTaken := map[string]bool{}
+	for _, raw := range agents {
+		row, _ := raw.(map[string]any)
+		id := stringField(row["id"])
+		if id != "" {
+			agentTaken[id] = true
+		}
+		if id == agentID {
+			priorOwner = true
+		}
+	}
+	if priorOwner && ptr.Revision > 1 {
+		agentID = fmt.Sprintf("%s-p%d", agentID, ptr.Revision)
+		workgroupID = fmt.Sprintf("workgroup-%s-%s-p%d", suffix, reviewArtifactKey(state), ptr.Revision)
+	}
+	if agentTaken[agentID] {
+		base := agentID
+		for n := 2; agentTaken[agentID]; n++ {
+			agentID = fmt.Sprintf("%s-%d", base, n)
+		}
+	}
+	if workgroupTaken[workgroupID] {
+		base := workgroupID
+		for n := 2; workgroupTaken[workgroupID]; n++ {
+			workgroupID = fmt.Sprintf("%s-%d", base, n)
+		}
+	}
 	notes = append(notes, "agent_id is the prepared engineering owner label for this exact original Assignment, not an opaque platform agent_id; Main may select an actual replacement owner without changing the professional scope or independence requirements")
 
 	roleFamily := lensToRoleFamily(planned.Lens)
@@ -369,14 +417,17 @@ func DraftManifest(root string, state map[string]any, assignmentID string) (*Man
 		Status:   "planned",
 	}
 
+	manifestID := ManifestIDForPlan(ptr.PlanID, assignmentID)
+	if ptr.Revision > 1 {
+		manifestID = ManifestIDForPlanRevision(ptr.PlanID, assignmentID, ptr.Revision)
+	}
 	draft := &ManifestDraft{
 		SchemaVersion:              "1.0.0",
-		ManifestID:                 "team-manifest-" + suffix,
+		ManifestID:                 manifestID,
 		Version:                    "v1.0.0",
 		RuntimeID:                  runtimeID,
 		ReqID:                      reqID,
 		BaselineGeneration:         generation,
-		ReviewRound:                round,
 		PlatformTeamID:             platformTeamID,
 		WorkgroupID:                workgroupID,
 		WorkgroupKind:              kind,

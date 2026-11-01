@@ -16,7 +16,6 @@ import (
 type Plan struct {
 	SchemaVersion      string `json:"schema_version"`
 	ReviewPlanID       string `json:"review_plan_id"`
-	ReviewRound        int    `json:"review_round"`
 	BaselineGeneration int    `json:"baseline_generation"`
 	// ProductBaseline is present for generations whose original TR-003
 	// dispatch source and S6 Main receipts are machine-verifiable. It is
@@ -43,10 +42,9 @@ type Plan struct {
 // the route/entry point it covers and the environment it was recorded on —
 // not merely that a spec file mentions the CASE id.
 type E2EAsset struct {
-	AssetID     string `json:"asset_id"`
+	AssetID     string `json:"asset_id,omitempty"`
 	CaseRef     string `json:"case_ref"`
 	Path        string `json:"path"`
-	SHA256      string `json:"sha256"`
 	SelectorRef string `json:"selector_ref,omitempty"`
 	RouteRef    string `json:"route_ref,omitempty"`
 	Environment string `json:"environment,omitempty"`
@@ -73,23 +71,20 @@ type PlanAssignment = reviewmeta.PlanAssignment
 
 // Result mirrors review-result.schema.json — the Canonical ReviewResult.
 type Result struct {
-	SchemaVersion              string                `json:"schema_version"`
-	ResultID                   string                `json:"result_id"`
-	AssignmentID               string                `json:"assignment_id"`
-	AssignmentRevision         int                   `json:"assignment_revision"`
-	ReviewPlanID               string                `json:"review_plan_id"`
-	ReviewRound                int                   `json:"review_round"`
-	BaselineGeneration         int                   `json:"baseline_generation"`
-	ProducerAgentID            string                `json:"producer_agent_id"`
-	SubjectDigest              string                `json:"subject_digest"`
-	VerificationArtifactDigest *string               `json:"verification_artifact_digest"`
-	ClaimResults               []ClaimResult         `json:"claim_results"`
-	BlockedClaims              []BlockedClaim        `json:"blocked_claims,omitempty"`
-	Checks                     []ResultCheck         `json:"checks,omitempty"`
-	Findings                   []Finding             `json:"findings,omitempty"`
-	Deviations                 []string              `json:"deviations,omitempty"`
-	SiteLost                   []SiteLostDeclaration `json:"site_lost,omitempty"`
-	Verdict                    string                `json:"verdict"`
+	SchemaVersion      string                `json:"schema_version"`
+	ResultID           string                `json:"result_id"`
+	AssignmentID       string                `json:"assignment_id"`
+	AssignmentRevision int                   `json:"assignment_revision"`
+	ReviewPlanID       string                `json:"review_plan_id"`
+	BaselineGeneration int                   `json:"baseline_generation"`
+	ProducerAgentID    string                `json:"producer_agent_id"`
+	ClaimResults       []ClaimResult         `json:"claim_results"`
+	BlockedClaims      []BlockedClaim        `json:"blocked_claims,omitempty"`
+	Checks             []ResultCheck         `json:"checks,omitempty"`
+	Findings           []Finding             `json:"findings,omitempty"`
+	Deviations         []string              `json:"deviations,omitempty"`
+	SiteLost           []SiteLostDeclaration `json:"site_lost,omitempty"`
+	Verdict            string                `json:"verdict"`
 }
 
 // BlockedClaim is the Reviewer-facing declaration the tool projects to
@@ -101,7 +96,7 @@ type BlockedClaim struct {
 	ClaimID             string             `json:"claim_id"`
 	BlockingFindingIDs  []string           `json:"blocking_finding_ids"`
 	FailedPrecondition  FailedPrecondition `json:"failed_precondition"`
-	EvidenceRefs        []string           `json:"evidence_refs"`
+	EvidenceRefs        []string           `json:"evidence_refs,omitempty"`
 	AfterRepairRequired bool               `json:"after_repair_required"`
 }
 
@@ -148,12 +143,12 @@ type Finding struct {
 	Severity        string       `json:"severity"`
 	Blocking        *bool        `json:"blocking,omitempty"`
 	Expected        string       `json:"expected"`
-	AuthorityRefs   []string     `json:"authority_refs"`
+	AuthorityRefs   []string     `json:"authority_refs,omitempty"`
 	Observed        string       `json:"observed"`
-	ObservationMode string       `json:"observation_mode"`
+	ObservationMode string       `json:"observation_mode,omitempty"`
 	Encounter       Encounter    `json:"encounter"`
-	Reproducibility string       `json:"reproducibility"`
-	EvidenceRefs    []string     `json:"evidence_refs"`
+	Reproducibility string       `json:"reproducibility,omitempty"`
+	EvidenceRefs    []string     `json:"evidence_refs,omitempty"`
 	CorrelationRefs []string     `json:"correlation_refs,omitempty"`
 	VisibleImpact   string       `json:"visible_impact,omitempty"`
 	NegativeFacts   []string     `json:"negative_facts,omitempty"`
@@ -163,7 +158,7 @@ type Finding struct {
 
 // Encounter is the real operation scene of one observation.
 type Encounter struct {
-	JourneySummary      string         `json:"journey_summary"`
+	JourneySummary      string         `json:"journey_summary,omitempty"`
 	Entrypoint          string         `json:"entrypoint,omitempty"`
 	ScenarioRef         string         `json:"scenario_ref,omitempty"`
 	RuntimeContext      string         `json:"runtime_context,omitempty"`
@@ -171,8 +166,8 @@ type Encounter struct {
 	InitialStateRef     string         `json:"initial_state_ref,omitempty"`
 	Timeline            []TimelineStep `json:"timeline,omitempty"`
 	LastGoodCheckpoint  string         `json:"last_good_checkpoint,omitempty"`
-	WallAction          string         `json:"wall_action"`
-	FirstBadCheckpoint  string         `json:"first_bad_checkpoint"`
+	WallAction          string         `json:"wall_action,omitempty"`
+	FirstBadCheckpoint  string         `json:"first_bad_checkpoint,omitempty"`
 	BlockedContinuation string         `json:"blocked_continuation,omitempty"`
 	TerminalState       string         `json:"terminal_state,omitempty"`
 	StateDeltaRefs      []string       `json:"state_delta_refs,omitempty"`
@@ -223,7 +218,6 @@ type Supplement struct {
 	Discriminator        string   `json:"discriminator,omitempty"`
 	HypothesisID         string   `json:"hypothesis_id,omitempty"`
 	CreatedAt            string   `json:"created_at"`
-	Hash                 string   `json:"hash"`
 }
 
 // LensToResponsibility maps a plan lens to the producer responsibility
@@ -251,4 +245,14 @@ func LensToWorkgroupKind(lens string) string {
 		return "e2e_browser"
 	}
 	return ""
+}
+
+// Identity returns the original plan relationship; a missing legacy number stays unknown.
+func (p Plan) Identity() reviewmeta.Identity {
+	return reviewmeta.ArtifactIdentity(p.ReviewPlanID)
+}
+
+// Identity returns the result's original plan relationship, without numeric ordering.
+func (r Result) Identity() reviewmeta.Identity {
+	return reviewmeta.ArtifactIdentity(r.ReviewPlanID)
 }

@@ -3,6 +3,7 @@ package workpacket
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -10,19 +11,18 @@ import (
 
 func taskPlanningFixture(t *testing.T) TaskPlanningPacket {
 	t.Helper()
-	req := []byte("locked REQ")
 	inputs := TaskPlanningInputs{
 		Contracts: []Reference{
-			{ID: "FE-001", Path: "docs/dev/contracts/FE-001.md", Version: "v1.0.0", SHA256: Digest([]byte("fe"))},
-			{ID: "CONTRACTS-001", Path: "docs/dev/contracts/CONTRACTS-001.md", Version: "v1.0.0", SHA256: Digest([]byte("index"))},
+			{ID: "FE-001", Path: "docs/dev/contracts/FE-001.md", Version: "v1.0.0"},
+			{ID: "CONTRACTS-001", Path: "docs/dev/contracts/CONTRACTS-001.md", Version: "v1.0.0"},
 		},
-		Sources:        []Subject{{Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1.0.0", SHA256: Digest([]byte("design"))}},
+		Sources:        []Subject{{Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1.0.0"}},
 		Directories:    map[string][]string{"docs/dev/contracts": {"CONTRACTS-001.md", "FE-001.md"}},
 		ClauseUniverse: []TaskClause{{ContractID: "FE-001", Section: 1}},
 	}
 	p, err := BuildTaskPlanning(PlanningBinding{
 		RuntimeID: "runtime-001", Generation: 2, StageEntry: 4, Stage: "S4", Owner: "Main",
-		Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1.0.0", SHA256: Digest(req)},
+		Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1.0.0"},
 	}, inputs)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestBuildTaskPlanningPreservesBoundREQPathWithDescriptiveSuffix(t *testing.
 	binding := base.Binding
 	binding.Requirement = Reference{
 		ID: "REQ-039", Path: "docs/requirements/REQ-039-loop-control-plane.md",
-		Version: "v2.1.0", SHA256: Digest([]byte("frozen REQ-039")),
+		Version: "v2.1.0",
 	}
 	p, err := BuildTaskPlanning(binding, base.Inputs)
 	if err != nil {
@@ -128,17 +128,21 @@ func TestValidateTaskPlanningAnswerRequiresExplicitCompleteAnswer(t *testing.T) 
 	}
 }
 
-func TestTaskPlanningAnswerDigestCanonicalizesTaskSet(t *testing.T) {
+func TestTaskPlanningAnswerCanonicalizesActualTaskSet(t *testing.T) {
+	p := taskPlanningFixture(t)
 	one := TaskPlanningAnswer{Conclusion: stringPointer("pass"), IndexPath: stringPointer("docs/dev/tasks/index-REQ-001.md"), TaskPaths: []string{"docs/dev/tasks/TASK-REQ-001-02.md", "docs/dev/tasks/TASK-REQ-001-01.md"}}
 	two := one
 	two.TaskPaths = []string{one.TaskPaths[1], one.TaskPaths[0]}
-	a, err := TaskPlanningAnswerDigest(one)
+	a, err := validateTaskPlanningEvidenceAnswer(p, one)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := TaskPlanningAnswerDigest(two)
-	if err != nil || a != b {
-		t.Fatalf("answer digest must ignore path discovery order: %s %s %v", a, b, err)
+	b, err := validateTaskPlanningEvidenceAnswer(p, two)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a.TaskPaths, b.TaskPaths) {
+		t.Fatalf("actual task paths depend on discovery order: %v / %v", a.TaskPaths, b.TaskPaths)
 	}
 }
 
@@ -149,9 +153,9 @@ func TestTaskPlanningEvidenceProjectsExactCanonicalSubjectsAndAnswer(t *testing.
 		"docs/dev/tasks/TASK-REQ-001-02.md", "docs/dev/tasks/TASK-REQ-001-01.md",
 	}}
 	artifacts := []Reference{
-		{ID: "TASK-REQ-001-02", Path: "docs/dev/tasks/TASK-REQ-001-02.md", Version: "v1.0.0", SHA256: Digest([]byte("task 2"))},
-		{ID: "index-REQ-001", Path: index, Version: "v1.0.0", SHA256: Digest([]byte("index"))},
-		{ID: "TASK-REQ-001-01", Path: "docs/dev/tasks/TASK-REQ-001-01.md", Version: "v1.0.0", SHA256: Digest([]byte("task 1"))},
+		{ID: "TASK-REQ-001-02", Path: "docs/dev/tasks/TASK-REQ-001-02.md", Version: "v1.0.0"},
+		{ID: "index-REQ-001", Path: index, Version: "v1.0.0"},
+		{ID: "TASK-REQ-001-01", Path: "docs/dev/tasks/TASK-REQ-001-01.md", Version: "v1.0.0"},
 	}
 	envelope, err := TaskPlanningEvidence(p, "E-S4", artifacts, answer, time.Date(2026, 10, 14, 1, 2, 3, 0, time.FixedZone("other", 3600)))
 	if err != nil {
@@ -214,9 +218,9 @@ func TestTaskPlanningEvidenceIncludesActualCancelledTaskWithoutChangingProfessio
 	pass, index := "pass", "docs/dev/tasks/index-REQ-001.md"
 	answer := TaskPlanningAnswer{Conclusion: &pass, IndexPath: &index, TaskPaths: []string{"docs/dev/tasks/TASK-001.md"}}
 	artifacts := []Reference{
-		{Path: index, Version: "v1.0.0", SHA256: Digest([]byte("index"))},
-		{Path: "docs/dev/tasks/TASK-001.md", Version: "v1.0.0", SHA256: Digest([]byte("complete"))},
-		{Path: "docs/dev/tasks/TASK-002.md", Version: "v1.0.0", SHA256: Digest([]byte("cancelled"))},
+		{Path: index, Version: "v1.0.0"},
+		{Path: "docs/dev/tasks/TASK-001.md", Version: "v1.0.0"},
+		{Path: "docs/dev/tasks/TASK-002.md", Version: "v1.0.0"},
 	}
 	envelope, err := TaskPlanningEvidence(p, "E-S4", artifacts, answer, time.Now())
 	if err != nil {
@@ -242,7 +246,7 @@ func TestTaskPlanningInheritsLargeAcceptedContractSet(t *testing.T) {
 	inputs := p.Inputs
 	for i := 2; i <= 96; i++ {
 		id := fmt.Sprintf("FE-%03d", i)
-		inputs.Contracts = append(inputs.Contracts, Reference{ID: id, Path: "docs/dev/contracts/" + id + ".md", Version: "v1.0.0", SHA256: Digest([]byte(id))})
+		inputs.Contracts = append(inputs.Contracts, Reference{ID: id, Path: "docs/dev/contracts/" + id + ".md", Version: "v1.0.0"})
 	}
 	if got, err := BuildTaskPlanning(p.Binding, inputs); err != nil || len(got.Inputs.Contracts) != 97 {
 		t.Fatalf("large accepted S3 set cannot enter S4: size=%d err=%v", len(got.Inputs.Contracts), err)

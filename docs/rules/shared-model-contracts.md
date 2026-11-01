@@ -30,7 +30,10 @@ This adapter validates JSON Schema using local files; it does not claim to valid
 If shared data is not applicable, declare `> Shared model policy: none` and a concrete `> Shared model reason: ...`. Old indexes without a policy produce a legacy warning: they are not verified by this mechanism. New planning and independent S5 review require an explicit applicable policy. Other protocol formats require a supported adapter or an explicitly reviewed legacy limitation, never a false `none` declaration.
 
 `contracts check` is an authoring check on disk, available for autonomous
-self-review and diagnosis without an extra submission obligation. Formal S3 checks read the declared committed Git view. S3 registers locally loaded schema dependencies and sample files as design documents. S5 review subjects include them; freezing rejects drift or a silently reduced input set. Model hashes are not mutable evidence hashes.
+self-review and diagnosis without an extra submission obligation. S3 and S5 use
+the actual declared schema dependencies and sample files as professional inputs;
+missing required material is reported by its path and responsibility. No model
+hash or evidence hash is required to identify or receive those materials.
 
 ## Reading and execution
 
@@ -49,10 +52,12 @@ not require creating a front end or Mock when neither exists. Check generated ou
 Split a foundation TASK only for a real shared implementation dependency. Independent generation into separate output paths may run concurrently. Merge a required shared implementation back into the bound development branch before creating dependent worktrees. Shared design identity compares the referenced file closure, not whole checkout commit equality.
 
 Substantive changes to accepted models/protocols or frozen upstream sources
-follow [change control](change-control.md); re-review affected subjects rather
-than refreshing their hashes as evidence. Current unreceived S3 outputs remain
-editable even when the author has marked their documents `locked`; complete
-self-review and required Git delivery before saving the original answer. Worker integration consumes the Runtime frozen-document set and rejects modifications, deletions and renames of those files before merging. Assignment write scope and required checks do not override that set. Preserve [scenario truth](scenario-model.md) and existing CASE/AC coverage; do not create a second test denominator.
+follow [change control](change-control.md); review affected subjects and actual
+changes. Current unreceived S3 outputs remain editable even when the author has
+marked their documents `locked`; complete the professional self-review and save
+the original answer. Main handles actual scope and integration; do not require a
+separate commit or hash just to receive an answer. Preserve [scenario truth](scenario-model.md)
+and existing CASE/AC coverage; do not create a second test denominator.
 
 For a runnable, explicitly synthetic consumer example, see [the shared-model pilot](../examples/shared-model/README.md). It demonstrates this adapter; it does not certify a target product.
 

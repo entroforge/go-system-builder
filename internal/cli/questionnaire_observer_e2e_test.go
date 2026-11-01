@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -106,12 +107,24 @@ func TestS6MainObservationKeepsBuilderAnswersPrivateAndOwnerSaveUsesOriginalCons
 	if strings.Contains(observed, "SUBMISSION RECEIPT") || strings.Contains(observed, "questionnaire saved") {
 		t.Fatalf("Main's observation received a delegated partial answer: %s", observed)
 	}
+	failed := observedQuestionnaireHookAs(t, fixture.root, fixture.record.OwnerAgentID, "Bash", map[string]any{"command": "false"}, map[string]any{"is_error": true})
+	if strings.Contains(failed, "questionnaire saved") {
+		t.Fatalf("failed tool observed a partial answer: %s", failed)
+	}
+	read := observedQuestionnaireHookAs(t, fixture.root, fixture.record.OwnerAgentID, "Read", map[string]any{"file_path": filepath.Join(fixture.root, fixture.resultPath)}, map[string]any{})
+	if strings.Contains(read, "questionnaire saved") {
+		t.Fatalf("read observed a partial answer: %s", read)
+	}
 
 	// This frozen consumer returns the owner's actual professional error;
 	// Main's unrelated tools do not inspect or submit the partial answer.
 	correction := observedQuestionnaireHookAs(t, fixture.root, fixture.record.OwnerAgentID, "Bash", map[string]any{"command": "true"}, map[string]any{})
 	if !strings.Contains(correction, fixture.resultPath) || !strings.Contains(correction, "Correct the specific validation feedback") || !strings.Contains(correction, "assertion_evidence") || strings.Contains(correction, "Main should fill") {
 		t.Fatalf("the registered Builder lost its own precise validation feedback: %s", correction)
+	}
+	explicit := observedQuestionnaireHookAs(t, fixture.root, fixture.record.OwnerAgentID, "Write", map[string]any{"file_path": filepath.Join(fixture.root, fixture.resultPath)}, map[string]any{})
+	if !strings.Contains(explicit, fixture.resultPath) || !strings.Contains(explicit, "Correct the specific validation feedback") {
+		t.Fatalf("the owner's explicit save did not reach the original consumer: %s", explicit)
 	}
 
 	s6AssertCanonicalRuntimePair(t, fixture.root, beforeState, beforeJournal)
@@ -183,8 +196,8 @@ func TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave(t *testing
 	claims[0].(map[string]any)["oracle"] = "The locked acceptance obligations map to observed implementation evidence."
 	stageJSON(t, root, ".claude/submissions/loop-REQ-WORKTREE/g1/S7/r1/review-plan.json", plan)
 	out = observedQuestionnaireHook(t, root, "mcp__sandbox__execute", map[string]any{}, map[string]any{})
-	if !strings.Contains(out, "S7 Main ReviewPlan questionnaire saved") || !strings.Contains(out, path) || !strings.Contains(out, "original validation feedback") {
-		t.Fatalf("partial professional plan did not reach original consumer: %s", out)
+	if !strings.Contains(out, path) || !strings.Contains(out, "original validation feedback") {
+		t.Fatalf("natural observation did not report actual validation feedback: %s", out)
 	}
 	if stageSnapshot(t, root).Revision != before {
 		t.Fatal("incomplete professional plan changed Runtime")
@@ -202,7 +215,7 @@ func TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave(t *testing
 		t.Fatalf("complete script save was not registered: %s", out)
 	}
 	accepted := stageSnapshot(t, root).Revision
-	if replay := entryQuestionnaireHook(t, root, "PostToolUse", path); !strings.Contains(replay, "already received") || stageSnapshot(t, root).Revision != accepted {
+	if replay := entryQuestionnaireHook(t, root, "PostToolUse", path); strings.Contains(replay, "review-plan: registered") || strings.Contains(replay, "review-plan: revised") || stageSnapshot(t, root).Revision != accepted {
 		t.Fatalf("registered plan replay was not idempotent: %s", replay)
 	}
 }
@@ -368,11 +381,35 @@ func TestPlanningObserverMissingPacketWaitsForCommitAndPreservesReadChange(t *te
 	if out := hook("PostToolUse", "Write"); !strings.Contains(out, "additionalContext") || !strings.Contains(out, "read Git blob "+source) {
 		t.Fatalf("explicit source repair lost preparation feedback: %s", out)
 	}
+	beforeRetry := stageSnapshot(t, root)
 	for i := 0; i < 3; i++ {
-		hook("PreToolUse", "Bash")
-		if out := hook("PostToolUse", "Bash"); strings.Contains(out, "S3 Contracts questionnaire could not") {
-			t.Fatalf("unchanged tool repeated preparation: %s", out)
+		pre := hook("PreToolUse", "Bash")
+		post := hook("PostToolUse", "Bash")
+		// Repeated visible diagnostics are allowed; they do not receive an
+		// answer or create a new current responsibility.
+		if !strings.Contains(pre, "read Git blob "+source) && !strings.Contains(post, "read Git blob "+source) {
+			t.Fatalf("original preparation failure disappeared: pre=%s post=%s", pre, post)
 		}
+		if stageSnapshot(t, root).Revision != beforeRetry.Revision || strings.Contains(post, `"accepted":true`) {
+			t.Fatalf("unchanged observation fabricated a reception: %s", post)
+		}
+	}
+	// A damaged paired-event observation does not invent acceptance and does
+	// not prevent the next natural source commit from preparing the original.
+	hook("PreToolUse", "Bash")
+	identity, _ := json.Marshal([]string{"planning-boundary", "", root, "tool-boundary", "Bash"})
+	encoded := base64.RawURLEncoding.EncodeToString(identity)
+	cacheParts := []string{root, ".claude", "hook-context", "planning-tools"}
+	for len(encoded) > 100 {
+		cacheParts = append(cacheParts, encoded[:100])
+		encoded = encoded[100:]
+	}
+	cacheParts = append(cacheParts, encoded+".json")
+	if err := os.WriteFile(filepath.Join(cacheParts...), []byte("damaged observation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out := hook("PostToolUse", "Bash"); strings.Contains(out, `"accepted":true`) || stageSnapshot(t, root).Revision != beforeRetry.Revision {
+		t.Fatalf("damaged observation fabricated a reception: %s", out)
 	}
 	hook("PreToolUse", "Bash")
 	fixtures.CommitCurrentFixture(t, root)

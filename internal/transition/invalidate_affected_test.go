@@ -54,6 +54,35 @@ func TestInvalidateAffectedEvidencePreservesRepairBatchEvidence(t *testing.T) {
 	}
 }
 
+func TestReviewRequiredWithoutChangedProductPathsDoesNotInvalidateEvidence(t *testing.T) {
+	transition.InitActionRegistry()
+	fn, ok := transition.LookupAction("invalidate_affected_evidence")
+	if !ok {
+		t.Fatal("invalidate_affected_evidence not registered")
+	}
+	for _, requestPaths := range [][]string{nil, {"s10/acceptance-manifest.json"}} {
+		prior := validEvidenceIndex("ev-prior-review", "delivery_review", nil)
+		decision := validEvidenceIndex("ev-review-required", "change_impact", nil)
+		delete(prior, "sha256")
+		delete(decision, "sha256")
+		state := map[string]any{
+			"baseline": map[string]any{"generation": 1},
+			"evidence": []any{prior, decision},
+		}
+		ctx := &transition.ActionContext{
+			Spec:     transition.TransitionSpec{ID: "TR-016"},
+			Evidence: map[string]string{"change_impact_record": "ev-review-required"},
+			Request:  &transition.Request{AffectedPaths: requestPaths},
+		}
+		if _, err := fn(state, ctx); err != nil {
+			t.Fatalf("request paths %v: a review decision without product edits was rejected: %v", requestPaths, err)
+		}
+		if evidenceByID(state, "ev-prior-review")["status"] != "valid" {
+			t.Fatalf("request paths %v: the tool target was treated as a product change", requestPaths)
+		}
+	}
+}
+
 func validEvidenceIndex(id, kind string, scope []any) map[string]any {
 	if scope == nil {
 		scope = []any{}

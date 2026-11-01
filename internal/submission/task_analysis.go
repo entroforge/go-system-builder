@@ -1,7 +1,6 @@
 package submission
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -30,10 +29,14 @@ func (s *Service) freezeTaskAnalysis(p workpacket.Packet, reqID string) (workpac
 	if err != nil {
 		return p, err
 	}
+	inputs := make([]workpacket.Reference, len(p.Inputs))
+	for i, ref := range p.Inputs {
+		inputs[i] = workpacket.Reference{ID: ref.ID, Path: ref.Path, Version: ref.Version}
+	}
 	artifact := workpacket.TaskAnalysisArtifact{
 		SchemaVersion:     "1.0.0",
 		ParserVersion:     semantic.TaskContextAnalysisVersion,
-		Inputs:            p.Inputs,
+		Inputs:            inputs,
 		TaskContexts:      taskData,
 		GranularityAdvice: adviceData,
 		StructuralCheck:   structuralCheckProjection(structural),
@@ -44,8 +47,8 @@ func (s *Service) freezeTaskAnalysis(p workpacket.Packet, reqID string) (workpac
 		return p, err
 	}
 	approved := []projectconventions.Reference{}
-	for _, ref := range p.Inputs {
-		approved = append(approved, projectconventions.Reference{ID: ref.ID, Path: ref.Path, Version: ref.Version, SHA256: ref.SHA256})
+	for _, ref := range inputs {
+		approved = append(approved, projectconventions.Reference{ID: ref.ID, Path: ref.Path, Version: ref.Version})
 	}
 	artifact.ConventionsResolverVersion = projectconventions.Version
 	artifact.TaskConventions, err = json.Marshal(semantic.ProjectTaskConventions(s.Root, s.Files, tasks, approved))
@@ -57,16 +60,29 @@ func (s *Service) freezeTaskAnalysis(p workpacket.Packet, reqID string) (workpac
 		return p, err
 	}
 	data = append(data, '\n')
-	digest := workpacket.Digest(data)
-	path := filepath.ToSlash(filepath.Join(".claude/work-packets/analysis", digest+".json"))
-	stored, err := workpacket.PublishBounded(s.Root, path, data, 2<<20)
-	if err != nil {
-		return p, err
+	// A prior pathname alone does not establish that an unissued analysis is
+	// this responsibility's original. Preserve it and choose an unused slot;
+	// the existing Runtime writer records the slot actually used.
+	for n := 0; ; n++ {
+		name := p.ID + ".json"
+		if n > 0 || len(name) > 200 {
+			name = fmt.Sprintf("candidate-%d.json", n)
+		}
+		path := filepath.ToSlash(filepath.Join(".claude/work-packets/analysis", name))
+		created, err := workpacket.PublishNewBounded(s.Root, path, data, 2<<20)
+		if err != nil {
+			return p, err
+		}
+		if created {
+			return workpacket.BindTaskAnalysis(p, &workpacket.TaskAnalysisRef{Path: path, ParserVersion: semantic.TaskContextAnalysisVersion})
+		}
+		// The analysis is optional advisory material. If the directory itself
+		// is occupied by an unknown non-directory, retain that object and issue
+		// the original responsibility without manufacturing an analysis gate.
+		if err := workpacket.CheckPath(s.Root, ".claude/work-packets/analysis/probe.json"); err != nil {
+			return p, nil
+		}
 	}
-	if !bytes.Equal(stored, data) {
-		return p, fmt.Errorf("frozen task analysis conflicts with existing bytes")
-	}
-	return workpacket.BindTaskAnalysis(p, &workpacket.TaskAnalysisRef{Path: path, SHA256: digest, ParserVersion: semantic.TaskContextAnalysisVersion})
 }
 
 func structuralCheckProjection(result semantic.TaskCheckResult) *workpacket.TaskStructuralCheck {

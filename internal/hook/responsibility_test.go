@@ -1,6 +1,7 @@
 package hook_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	loopassignment "github.com/entroforge/go-system-builder/internal/assignment"
+	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/policy"
@@ -346,7 +348,7 @@ func TestConsumedS7ReviewResultCompletesReviewerResponsibility(t *testing.T) {
 	}
 }
 
-func TestS7ReviewResultReceiptRejectsMismatchAndStaleState(t *testing.T) {
+func TestS7ReviewResultUsesOriginalOwnerAndConsumedResponsibility(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(map[string]any)
@@ -398,8 +400,8 @@ func TestS7ReviewResultReceiptRejectsMismatchAndStaleState(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root, state, agent := canonicalReviewerReceiptFixture(t)
 			tc.mutate(state)
-			if hook.ReviewResultConsumed(root, state, agent) {
-				t.Fatal("mismatched or stale ReviewResult satisfied the current assignment")
+			if consumed, want := hook.ReviewResultConsumed(root, state, agent), tc.name != "result owner mismatch"; consumed != want {
+				t.Fatalf("consumed=%v, want %v for the original owner and recorded responsibility", consumed, want)
 			}
 		})
 	}
@@ -433,12 +435,12 @@ func TestCompletedReviewerWaitingForIdleUsesConsumedReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, controlled = hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-	if !controlled || decision.Decision != "deny" {
+	if !controlled || decision.Decision != "warn" {
 		t.Fatalf("reported Reviewer without a consumed ReviewResult must remain responsible, got %#v controlled=%v", decision, controlled)
 	}
 }
 
-func TestStopIdleS7OneShotAndManifestBlockerNeedCanonicalProof(t *testing.T) {
+func TestStopIdleS7UnreceivedRemainsIncompleteWithoutBlocking(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		mode           string
@@ -457,14 +459,14 @@ func TestStopIdleS7OneShotAndManifestBlockerNeedCanonicalProof(t *testing.T) {
 				manifest["assignments"].([]any)[0].(map[string]any)["status"] = tc.manifestStatus
 			})
 			decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-			if !controlled || decision.Decision != "deny" {
-				t.Fatalf("unconsumed S7 assignment bypassed the Result requirement: %#v controlled=%v", decision, controlled)
+			if !controlled || decision.Decision != "warn" || !strings.Contains(decision.Reason, "not complete") {
+				t.Fatalf("unconsumed S7 assignment must be reported without blocking: %#v controlled=%v", decision, controlled)
 			}
 		})
 	}
 }
 
-func TestStopIdleBoundS7OwnerFailsClosedOnMissingOrMismatchedContext(t *testing.T) {
+func TestStopIdleBoundS7OwnerReportsMissingOrMismatchedContextWithoutBlocking(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, root string)
@@ -485,14 +487,185 @@ func TestStopIdleBoundS7OwnerFailsClosedOnMissingOrMismatchedContext(t *testing.
 			editCanonicalReviewerRuntime(t, root, func(state, _ map[string]any) { unconsumeCanonicalReviewer(state) })
 			tc.mutate(t, root)
 			decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-			if !controlled || decision.Decision != "deny" {
-				t.Fatalf("known Runtime-bound S7 owner with unusable context was not blocked: %#v controlled=%v", decision, controlled)
+			if !controlled || decision.Decision != "warn" {
+				t.Fatalf("unknown S7 responsibility did not produce a nonblocking notice: %#v controlled=%v", decision, controlled)
 			}
-			if decision.Reason == "" || !containsHookTestText(decision.Reason, "cannot be verified") {
-				t.Fatalf("binding failure lacks an actionable reason: %#v", decision)
+			if !containsHookTestText(decision.Reason, "Main/system") || !containsHookTestText(decision.Reason, "not been established as received") {
+				t.Fatalf("binding notice lost ownership or uncertainty: %#v", decision)
 			}
 			if _, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "not-registered"}); controlled {
 				t.Fatal("unknown Agent must preserve the original fail-open behavior")
+			}
+		})
+	}
+}
+
+// Exercise the public Hook transport: an unresolved binding stays unknown and
+// must not block or manufacture receipt for an answered or unanswered worker.
+func TestPublicHookS7MissingBindingDoesNotBlockOrInventReceipt(t *testing.T) {
+	for _, received := range []bool{false, true} {
+		for _, event := range []string{"SubagentStop", "TeammateIdle"} {
+			t.Run(fmt.Sprintf("received=%t/%s", received, event), func(t *testing.T) {
+				root := writeCanonicalReviewerRuntime(t)
+				writeHookTestLoopDefinition(t, root)
+				policyBytes, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writeHookTestArtifact(root, "docs/control/hook-policy.json", policyBytes); err != nil {
+					t.Fatal(err)
+				}
+				if !received {
+					editCanonicalReviewerRuntime(t, root, func(state, _ map[string]any) { unconsumeCanonicalReviewer(state) })
+				}
+				if err := os.Remove(filepath.Join(root, ".claude/workgroups/REQ-001/team-review/manifest.json")); err != nil {
+					t.Fatal(err)
+				}
+				statePath := filepath.Join(root, ".claude", "loop-state.json")
+				before, err := os.ReadFile(statePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				payload, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": "reviewer-1", "session_id": "native-review-parent", "cwd": root})
+				var out, diag bytes.Buffer
+				code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(payload), &out, &diag)
+				if code != 0 {
+					t.Fatalf("unknown binding blocked Hook: %d %s %s", code, out.String(), diag.String())
+				}
+				message := out.String() + diag.String()
+				if !strings.Contains(message, "Main/system") || !strings.Contains(message, "not been established as received") {
+					t.Fatalf("missing nonblocking Main notice: %s", message)
+				}
+				after, err := os.ReadFile(statePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(before, after) {
+					t.Fatal("unknown binding changed actual Runtime or receipt")
+				}
+			})
+		}
+	}
+}
+
+func TestPublicHookS7BoundUnreceivedAndReceivedStayTruthful(t *testing.T) {
+	for _, received := range []bool{false, true} {
+		for _, event := range []string{"SubagentStop", "TeammateIdle"} {
+			t.Run(fmt.Sprintf("received=%t/%s", received, event), func(t *testing.T) {
+				root := writeCanonicalReviewerRuntime(t)
+				writeHookTestLoopDefinition(t, root)
+				policyBytes, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writeHookTestArtifact(root, "docs/control/hook-policy.json", policyBytes); err != nil {
+					t.Fatal(err)
+				}
+				if !received {
+					editCanonicalReviewerRuntime(t, root, func(state, _ map[string]any) { unconsumeCanonicalReviewer(state) })
+				}
+				path := filepath.Join(root, ".claude", "loop-state.json")
+				before, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				payload, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": "reviewer-1", "session_id": "s7-bound-parent", "cwd": root})
+				var out, diag bytes.Buffer
+				code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(payload), &out, &diag)
+				if code != 0 {
+					t.Fatalf("original S7 responsibility blocked end: %d %s %s", code, out.String(), diag.String())
+				}
+				message := out.String() + diag.String()
+				if !received && (!strings.Contains(message, "Main/system") || !strings.Contains(message, "not complete")) {
+					t.Fatalf("unreceived work was not reported honestly: %s", message)
+				}
+				after, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(before, after) {
+					t.Fatal("ending event changed original receipt or Runtime")
+				}
+			})
+		}
+	}
+}
+
+func TestPublicHookS7ActualBlockedRemainsUnfinished(t *testing.T) {
+	for _, event := range []string{"SubagentStop", "TeammateIdle"} {
+		t.Run(event, func(t *testing.T) {
+			root := writeOriginalS7WorkBlockedRuntime(t)
+			policyBytes, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeHookTestArtifact(root, "docs/control/hook-policy.json", policyBytes); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, ".claude", "loop-state.json")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": "reviewer-1", "session_id": "s7-blocked-parent", "cwd": root})
+			var out, diag bytes.Buffer
+			code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(payload), &out, &diag)
+			if code != 0 {
+				t.Fatalf("actual blocker could not be handed to Main: %d %s %s", code, out.String(), diag.String())
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("blocked return changed original Runtime or invented a receipt")
+			}
+		})
+	}
+}
+
+func TestPublicHookS9UnknownBindingReportsWithoutBlocking(t *testing.T) {
+	for _, event := range []string{"SubagentStop", "TeammateIdle"} {
+		t.Run(event, func(t *testing.T) {
+			root := writeCanonicalReviewerRuntime(t)
+			writeHookTestLoopDefinition(t, root)
+			policyBytes, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeHookTestArtifact(root, "docs/control/hook-policy.json", policyBytes); err != nil {
+				t.Fatal(err)
+			}
+			editCanonicalReviewerRuntime(t, root, func(state, _ map[string]any) {
+				state["schema_version"] = "1.2.0"
+				state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+				state["lifecycle"].(map[string]any)["state"] = "bug_resolution"
+				state["lifecycle"].(map[string]any)["phase"] = "fixing"
+				review := state["review"].(map[string]any)
+				review["assignments"] = map[string]any{}
+				review["repair"] = map[string]any{"session_id": "session-original", "plan_ref": "plan-original.json", "assignment_owners": map[string]any{"repair-a": "reviewer-1", "repair-b": "reviewer-1"}}
+			})
+			path := filepath.Join(root, ".claude", "loop-state.json")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": "reviewer-1", "session_id": "s9-unknown-parent", "cwd": root})
+			var out, diag bytes.Buffer
+			code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(payload), &out, &diag)
+			if code != 0 {
+				t.Fatalf("unknown S9 binding blocked Hook: %d %s %s", code, out.String(), diag.String())
+			}
+			message := out.String() + diag.String()
+			if !strings.Contains(message, "Main/system") || !strings.Contains(message, "not been established as received") {
+				t.Fatalf("missing original S9 uncertainty: %s", message)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("unknown S9 binding changed Runtime or receipt")
 			}
 		})
 	}
@@ -502,8 +675,8 @@ func TestStopIdleAcceptsOnlyOriginalOrCanonicalS7Blocker(t *testing.T) {
 	t.Run("original work_blocked event", func(t *testing.T) {
 		root := writeOriginalS7WorkBlockedRuntime(t)
 		decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-		if controlled {
-			t.Fatalf("validated original blocker should let the same Reviewer idle: %#v", decision)
+		if controlled && decision.Decision == "deny" {
+			t.Fatalf("original blocker must not prevent the Reviewer from returning: %#v", decision)
 		}
 	})
 	t.Run("site lost blocker", func(t *testing.T) {
@@ -521,8 +694,8 @@ func TestStopIdleAcceptsOnlyOriginalOrCanonicalS7Blocker(t *testing.T) {
 			manifest["assignments"].([]any)[0].(map[string]any)["status"] = "blocked"
 		})
 		decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-		if !controlled || decision.Decision != "deny" {
-			t.Fatalf("bare Agent/manifest blocked status authorized ending: %#v controlled=%v", decision, controlled)
+		if !controlled || decision.Decision != "warn" {
+			t.Fatalf("bare Agent/manifest blocked status lost unfinished guidance: %#v controlled=%v", decision, controlled)
 		}
 	})
 	t.Run("site lost index without source file", func(t *testing.T) {
@@ -532,8 +705,8 @@ func TestStopIdleAcceptsOnlyOriginalOrCanonicalS7Blocker(t *testing.T) {
 			t.Fatal(err)
 		}
 		decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-		if !controlled || decision.Decision != "deny" {
-			t.Fatalf("missing site_lost source file authorized ending: %#v controlled=%v", decision, controlled)
+		if controlled && decision.Decision == "deny" {
+			t.Fatalf("missing site_lost source file blocked the original return: %#v controlled=%v", decision, controlled)
 		}
 	})
 }
@@ -560,8 +733,8 @@ func TestStopIdleSiteLostBlockerPreservesActiveRoundStatuses(t *testing.T) {
 			if tc.allowed && controlled {
 				t.Fatalf("site_lost blocker stopped being valid while the round accepts results: %#v", decision)
 			}
-			if !tc.allowed && (!controlled || decision.Decision != "deny") {
-				t.Fatalf("site_lost blocker authorized ending for inactive plan status %q: %#v controlled=%v", tc.status, decision, controlled)
+			if !tc.allowed && controlled && decision.Decision == "deny" {
+				t.Fatalf("inactive blocker must not block return for status %q: %#v controlled=%v", tc.status, decision, controlled)
 			}
 		})
 	}
@@ -571,9 +744,9 @@ func canonicalReviewerReceiptFixture(t *testing.T) (string, map[string]any, *pol
 	t.Helper()
 	root := t.TempDir()
 	plan := &review.Plan{
-		SchemaVersion: "1.0.0", ReviewPlanID: "review-plan-r3", ReviewRound: 3,
+		SchemaVersion: "1.0.0", ReviewPlanID: "review-plan-r3",
 		BaselineGeneration: 7,
-		FrozenSubjects:     []review.FrozenSubject{{Path: "internal/example.go", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		FrozenSubjects:     []review.FrozenSubject{{Path: "internal/example.go"}},
 		Assignments:        []review.PlanAssignment{{AssignmentID: "assignment-qa-1", Lens: "qa", ClaimIDs: []string{"claim-qa-1"}}},
 	}
 	planBytes, err := json.Marshal(plan)
@@ -592,9 +765,9 @@ func canonicalReviewerReceiptFixture(t *testing.T) (string, map[string]any, *pol
 		"runtime_id": "loop-s7-test", "baseline_generation": 7, "review_round": 3,
 		"producer_agent_id": "reviewer-1", "producer_responsibility": "QA",
 		"review_plan_id": plan.ReviewPlanID, "assignment_id": "assignment-qa-1",
-		"assignment_revision": 2, "subject_digest": review.SubjectDigest(plan),
-		"claim_results":  []any{map[string]any{"claim_id": "claim-qa-1", "conclusion": "pass"}},
-		"blocked_claims": []any{}, "verdict": "pass",
+		"assignment_revision": 2,
+		"claim_results":       []any{map[string]any{"claim_id": "claim-qa-1", "conclusion": "pass"}},
+		"blocked_claims":      []any{}, "verdict": "pass",
 	}
 	resultBytes, err := json.Marshal(resultEnvelope)
 	if err != nil {

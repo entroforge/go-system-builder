@@ -2,8 +2,6 @@ package assignmentresult
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,15 +21,13 @@ type SubjectReference struct {
 	Kind    string `json:"kind"`
 	Path    string `json:"path"`
 	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
 }
 
 // ResolvedEvidence identifies the actual bytes snapshotted by the original
 // consumer. The author's logical Ref confers no source or check authority.
 type ResolvedEvidence struct {
-	Ref    string `json:"ref"`
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Ref  string `json:"ref"`
+	Path string `json:"path"`
 }
 
 // AcceptedResult is an original completion evidence envelope. Submitted is
@@ -48,23 +44,13 @@ type AcceptedResult struct {
 	Conclusion             string                           `json:"conclusion"`
 	TaskID                 string                           `json:"task_id"`
 	AssignmentRecord       assignmentrecord.RecordReference `json:"assignment_record"`
-	AssignmentRecordSHA256 string                           `json:"assignment_record_sha256"`
 	ResultRevision         int                              `json:"result_revision"`
-	SourceHead             string                           `json:"source_head,omitempty"`
 	SubmissionKey          string                           `json:"submission_key"`
-	AnswerDigest           string                           `json:"answer_digest"`
 	Answer                 Answer                           `json:"answer"`
 	WorkerCheckFacts       []WorkerCheckFact                `json:"worker_check_facts,omitempty"`
-	ToolClosureDigest      string                           `json:"tool_closure_digest,omitempty"`
 	PlanRef                string                           `json:"plan_ref"`
-	PlanSHA256             string                           `json:"plan_sha256"`
 	ResolvedEvidenceRefs   []ResolvedEvidence               `json:"resolved_evidence_refs"`
 	CreatedAt              string                           `json:"created_at"`
-}
-
-func digestBytes(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 func validRelative(ref string) bool {
@@ -103,9 +89,7 @@ func loadAccepted(state map[string]any, record assignmentrecord.Record, resultRe
 	if err != nil || !found {
 		return result, fmt.Errorf("Result has no current original Assignment registration: %v", err)
 	}
-	registeredSHA, err := registered.Digest()
-	expectedSHA, digestErr := record.Digest()
-	if err != nil || digestErr != nil || registered.Reference() != record.Reference() || registeredSHA != expectedSHA {
+	if registered.Reference() != record.Reference() {
 		return result, fmt.Errorf("Result reader does not use the current original Assignment")
 	}
 	if read == nil || !validRelative(resultRef) {
@@ -132,9 +116,6 @@ func loadAccepted(state map[string]any, record assignmentrecord.Record, resultRe
 	data, err := boundedRead(resultRef)
 	if err != nil {
 		return result, fmt.Errorf("registered Result source %s is unavailable: %w", resultRef, err)
-	}
-	if digestBytes(data) != index["sha256"] {
-		return result, fmt.Errorf("registered Result source %s changed", resultRef)
 	}
 	return validateAcceptedEnvelopeMode(record, index, data, boundedRead, recordedOnly)
 }
@@ -188,8 +169,8 @@ func LoadSupersededAccepted(
 		return zero, fmt.Errorf("historical Result evidence identity is ambiguous: %w", err)
 	}
 	data, err := boundedRead(resultRef)
-	if err != nil || digestBytes(data) != index["sha256"] {
-		return zero, fmt.Errorf("registered historical Result source is missing or changed")
+	if err != nil {
+		return zero, fmt.Errorf("registered historical Result source is unavailable: %w", err)
 	}
 	return validateAcceptedEnvelope(previousRecord, index, data, boundedRead)
 }
@@ -242,7 +223,7 @@ func validateSupersededRecordPair(state map[string]any, previous, successor assi
 	if err != nil {
 		return fmt.Errorf("read original Assignment Record history: %w", err)
 	}
-	storedPrevious, found, err := assignmentrecord.FindRecordRevision(records, previous.Reference())
+	_, found, err := assignmentrecord.FindRecordRevision(records, previous.Reference())
 	if err != nil || !found {
 		return fmt.Errorf("previous Assignment Record is absent from original Runtime history: %v", err)
 	}
@@ -250,28 +231,12 @@ func validateSupersededRecordPair(state map[string]any, previous, successor assi
 	if err != nil || !found {
 		return fmt.Errorf("successor Assignment Record is absent from original Runtime history: %v", err)
 	}
-	previousSHA, err := previous.Digest()
-	if err != nil {
-		return err
-	}
-	storedPreviousSHA, err := storedPrevious.Digest()
-	if err != nil || storedPreviousSHA != previousSHA {
-		return fmt.Errorf("previous Assignment Record differs from its original Runtime bytes")
-	}
-	successorSHA, err := successor.Digest()
-	if err != nil {
-		return err
-	}
-	storedSuccessorSHA, err := storedSuccessor.Digest()
-	if err != nil || storedSuccessorSHA != successorSHA {
-		return fmt.Errorf("successor Assignment Record differs from its original Runtime bytes")
-	}
 	_, found, err = assignmentrecord.FindRecord(records, previous.RuntimeID, previous.BaselineGeneration, previous.AssignmentID)
 	if err != nil || !found {
 		return fmt.Errorf("Assignment Record history is not unique and continuous: %v", err)
 	}
 	issuance := storedSuccessor.RevisionIssuance
-	if issuance == nil || issuance.PreviousRecord != previous.Reference() || issuance.PreviousRecordSHA256 != previousSHA {
+	if issuance == nil || issuance.PreviousRecord != previous.Reference() {
 		return fmt.Errorf("successor Assignment Record does not issue from the exact previous Record")
 	}
 	return nil
@@ -290,9 +255,6 @@ func validateAcceptedEnvelopeMode(record assignmentrecord.Record, index map[stri
 	if index["kind"] != "completion_report" || number(index["baseline_generation"]) != record.BaselineGeneration || index["responsibility_id"] != "BUILD-WORK-PACKAGE" {
 		return result, fmt.Errorf("Result has invalid original evidence registration")
 	}
-	if digestBytes(data) != index["sha256"] {
-		return result, fmt.Errorf("registered Result source is missing or changed")
-	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&result); err != nil {
@@ -301,18 +263,8 @@ func validateAcceptedEnvelopeMode(record assignmentrecord.Record, index map[stri
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return result, fmt.Errorf("Result must contain exactly one JSON envelope")
 	}
-	sha, err := record.Digest()
-	if err != nil {
-		return result, err
-	}
-	if result.SchemaVersion != "1.0.0" || result.Kind != "completion_report" || result.Conclusion != "submitted" || result.EvidenceID != index["id"] || result.RuntimeID != record.RuntimeID || result.BaselineGeneration != record.BaselineGeneration || result.ProducerAgentID != record.OwnerAgentID || result.ProducerResponsibility != "BUILD-WORK-PACKAGE" || result.TaskID != record.Task.ID || result.AssignmentRecord != record.Reference() || result.AssignmentRecordSHA256 != sha || result.ResultRevision < 1 || result.SubmissionKey == "" || result.CreatedAt == "" {
+	if result.SchemaVersion != "1.0.0" || result.Kind != "completion_report" || result.Conclusion != "submitted" || result.EvidenceID != index["id"] || result.RuntimeID != record.RuntimeID || result.BaselineGeneration != record.BaselineGeneration || result.ProducerAgentID != record.OwnerAgentID || result.ProducerResponsibility != "BUILD-WORK-PACKAGE" || result.TaskID != record.Task.ID || result.AssignmentRecord != record.Reference() || result.ResultRevision < 1 || result.SubmissionKey == "" || result.CreatedAt == "" {
 		return result, fmt.Errorf("Result does not bind its original Assignment revision")
-	}
-	if record.Contract == assignmentrecord.NativeDeliveryContract {
-		_, err := hex.DecodeString(result.SourceHead)
-		if err != nil || (len(result.SourceHead) != 40 && len(result.SourceHead) != 64) || strings.ToLower(result.SourceHead) != result.SourceHead {
-			return result, fmt.Errorf("native Result has no actual accepted Git source commit")
-		}
 	}
 	if !containsOwner(index["produced_by"], record.OwnerAgentID) {
 		return result, fmt.Errorf("Result evidence does not bind its original owner")
@@ -320,69 +272,13 @@ func validateAcceptedEnvelopeMode(record assignmentrecord.Record, index map[stri
 	if _, err := time.Parse(time.RFC3339Nano, result.CreatedAt); err != nil {
 		return result, fmt.Errorf("Result has an invalid original acceptance time: %w", err)
 	}
-	if len(result.SubjectRefs) != 1 || result.SubjectRefs[0] != (SubjectReference{ID: record.Task.ID, Kind: "task", Path: record.Task.Ref, Version: record.Task.Version, SHA256: record.Task.SHA256}) {
+	if len(result.SubjectRefs) != 1 || result.SubjectRefs[0].ID != record.Task.ID || result.SubjectRefs[0].Kind != "task" || result.SubjectRefs[0].Path != record.Task.Ref || result.SubjectRefs[0].Version != record.Task.Version {
 		return result, fmt.Errorf("Result subjects differ from the registered TASK")
 	}
-	if recordedOnly {
-		answerSHA, err := AnswerDigest(result.Answer)
-		if err != nil || answerSHA != result.AnswerDigest {
-			return result, fmt.Errorf("Result professional answer digest changed")
-		}
-		return result, nil
-	}
-	if !validRelative(result.PlanRef) {
-		return result, fmt.Errorf("Result plan source must be authority relative")
-	}
-	planBytes, err := read(result.PlanRef)
-	if err != nil || digestBytes(planBytes) != result.PlanSHA256 {
-		return result, fmt.Errorf("accepted Result PLAN source changed")
-	}
-	var plan struct {
-		MessageType        string          `json:"message_type"`
-		AgentID            string          `json:"agent_id"`
-		RuntimeID          string          `json:"runtime_id"`
-		AssignmentID       string          `json:"assignment_id"`
-		AssignmentRevision int             `json:"assignment_revision"`
-		RecordSHA256       string          `json:"assignment_record_sha256"`
-		Assertions         []PlanAssertion `json:"assertion_checks"`
-	}
-	if err := json.Unmarshal(planBytes, &plan); err != nil || plan.MessageType != "plan_report" || plan.AgentID != record.OwnerAgentID || plan.RuntimeID != record.RuntimeID || plan.AssignmentID != record.AssignmentID || plan.AssignmentRevision != record.Revision || plan.RecordSHA256 != sha {
-		return result, fmt.Errorf("Result PLAN does not bind its original Assignment revision")
-	}
-	if err := ValidateAnswer(result.Answer, plan.Assertions); err != nil {
-		return result, err
-	}
-	if err := ValidateClosingAssessment(record, plan.Assertions, result.Answer); err != nil {
-		return result, err
-	}
-	if err := ValidateWorkerClosure(record, result, read); err != nil {
-		return result, fmt.Errorf("validate accepted Worker check closure: %w", err)
-	}
-	answerSHA, err := AnswerDigest(result.Answer)
-	if err != nil || answerSHA != result.AnswerDigest {
-		return result, fmt.Errorf("Result professional answer digest changed")
-	}
-	refs := map[string]bool{}
-	for _, assertion := range result.Answer.AssertionEvidence {
-		for _, ref := range assertion.EvidenceRefs {
-			refs[ref] = true
-		}
-	}
-	seen := map[string]bool{}
-	sourcePrefix := fmt.Sprintf(".claude/evidence/%s/g%d/assignments/%s/", record.RuntimeID, record.BaselineGeneration, record.OwnerAgentID)
-	for _, source := range result.ResolvedEvidenceRefs {
-		if !refs[source.Ref] || seen[source.Ref] || !validRelative(source.Path) || !strings.HasPrefix(source.Path, sourcePrefix) {
-			return result, fmt.Errorf("Result has invalid or duplicate resolved evidence")
-		}
-		seen[source.Ref] = true
-		body, err := read(source.Path)
-		if err != nil || digestBytes(body) != source.SHA256 {
-			return result, fmt.Errorf("Result evidence snapshot %s changed", source.Ref)
-		}
-	}
-	if len(seen) != len(refs) {
-		return result, fmt.Errorf("Result lacks resolved assertion evidence")
-	}
+	// The original acceptance already saved the author's professional answer.
+	// Replaying it must not re-read private plans, source snapshots or historic
+	// evidence to authenticate bytes that were accepted earlier.
+
 	return result, nil
 }
 
@@ -428,18 +324,11 @@ func acceptedHistory(state map[string]any, record assignmentrecord.Record, read 
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].ResultRevision < results[j].ResultRevision })
 	keys := map[string]bool{}
-	identities := map[string]bool{}
 	for i, result := range results {
-		closureDigest, err := EffectiveToolClosureDigest(record, result)
-		if err != nil {
-			return nil, fmt.Errorf("Result history has invalid tool closure identity: %w", err)
-		}
-		identity := result.AnswerDigest + "\x00" + closureDigest
-		if result.ResultRevision != i+1 || keys[result.SubmissionKey] || identities[identity] {
-			return nil, fmt.Errorf("Result history has duplicate key, content identity or non-contiguous revision")
+		if result.ResultRevision != i+1 || keys[result.SubmissionKey] {
+			return nil, fmt.Errorf("Result history has duplicate key or non-contiguous revision")
 		}
 		keys[result.SubmissionKey] = true
-		identities[identity] = true
 	}
 	return results, nil
 }

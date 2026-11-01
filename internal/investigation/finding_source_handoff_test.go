@@ -39,19 +39,10 @@ func TestS8TypedFindingSourceHandoffNeedsNoIndexAlias(t *testing.T) {
 		}
 		document["evidence_refs"] = refs
 		writeInvestigationJSON(t, path, document)
-		finding["sha256"] = hash(mustRead(t, path))
 		writeInvestigationJSON(t, f.statePath, state)
 	})
 	owner := owners[0]
-	beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
 	writeInvestigationBytes(t, f.root, "observation.txt", []byte("changed\n"))
-	if _, err := investigation.IssueHypothesisResultPackets(f.root, f.statePath, f.journalPath, -1, owner.ownerID); err == nil || !strings.Contains(err.Error(), "original Finding") {
-		t.Fatalf("issuance adopted changed Finding bytes: %v", err)
-	}
-	if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
-		t.Fatal("failed source preparation changed Runtime/journal")
-	}
-	writeInvestigationBytes(t, f.root, "observation.txt", content)
 	packets, err := investigation.IssueHypothesisResultPackets(f.root, f.statePath, f.journalPath, -1, owner.ownerID)
 	if err != nil || len(packets) != 1 {
 		t.Fatalf("original typed Finding source issue: %d %v", len(packets), err)
@@ -60,7 +51,7 @@ func TestS8TypedFindingSourceHandoffNeedsNoIndexAlias(t *testing.T) {
 	count := 0
 	for _, source := range p.Inputs.EvidenceRefs {
 		if source.Origin == "finding" {
-			if source.Attestation != "finding_source" || source.SourceFindingID != "finding-1" || source.Status != "" || source.Kind != "" || source.BaselineGeneration != nil || source.ReviewRound != nil {
+			if source.Attestation != "reference" || source.SourceFindingID != "finding-1" || source.Status != "" || source.Kind != "" || source.BaselineGeneration != nil {
 				t.Fatalf("Finding source gained fabricated index metadata: %+v", source)
 			}
 			count++
@@ -76,16 +67,10 @@ func TestS8TypedFindingSourceHandoffNeedsNoIndexAlias(t *testing.T) {
 	}
 	answer["answer"].(map[string]any)["evidence_refs"] = []string{refs[0]}
 	writeInvestigationJSON(t, filepath.Join(f.root, answerPath), answer)
-	beforeState, beforeJournal = mustRead(t, f.statePath), mustRead(t, f.journalPath)
 	writeInvestigationBytes(t, f.root, "observation.txt", []byte("changed after issue\n"))
-	if _, err := investigation.SubmitIssuedHypothesisResult(f.root, f.statePath, f.journalPath, investigation.IssuedHypothesisResultRequest{ExpectedRevision: -1, PacketID: p.ID, OwnerAgentID: owner.ownerID, AnswerPath: answerPath}); err == nil {
-		t.Fatal("accepted a changed frozen Finding source")
-	}
-	if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
-		t.Fatal("failed source consumption changed Runtime/journal")
-	}
-	writeInvestigationBytes(t, f.root, "observation.txt", content)
-	body, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStop", "agent_id": "opaque-native-finding-source", "cwd": f.root, "last_assistant_message": filepath.Join(f.root, answerPath)})
+	actor := "opaque-native-finding-source"
+	transcript := s8NativeTaskTranscript(t, actor, "Investigate original "+filepath.Join(f.root, p.ViewPath))
+	body, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStop", "agent_id": actor, "agent_transcript_path": transcript, "cwd": f.root, "last_assistant_message": filepath.Join(f.root, answerPath)})
 	var output, diagnostic bytes.Buffer
 	code := cli.Run([]string{"hook", "--root", f.root, "--event", "SubagentStop"}, bytes.NewReader(body), &output, &diagnostic)
 	if code != 0 || !strings.Contains(output.String()+diagnostic.String(), "original consumer") {
@@ -103,12 +88,12 @@ func TestS8TypedFindingSourceHandoffNeedsNoIndexAlias(t *testing.T) {
 			}
 		}
 	}
-	// Unrelated evidence cannot become a Finding source simply by using the
-	// same prefix. Only exact references from selected Findings are reusable.
+	// A new professional question may cite an unindexed path without turning
+	// that path into a machine-authenticated Finding or an extra evidence row.
 	pointer := investigationPointerFromState(t, state.State)
-	_, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(pointer["revision"]), ExpectedCaseSHA256: pointer["sha256"].(string), CaseID: pointer["case_id"].(string), HypothesisID: "hypothesis-unbound-path", AssignmentID: "assignment-unbound-path", Statement: "a different question", Invariant: "the value survives", Discriminator: "compare a new observation", ExpectedOutcomes: map[string]any{"support": "lost", "refute": "survives"}, SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"path:unrelated.txt#sha256=" + digest}})
-	if err == nil {
-		t.Fatal("new Hypothesis silently accepted an unrelated unindexed path")
+	_, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(pointer["revision"]), CaseID: pointer["case_id"].(string), HypothesisID: "hypothesis-unbound-path", AssignmentID: "assignment-unbound-path", Statement: "a different question", Invariant: "the value survives", Discriminator: "compare a new observation", ExpectedOutcomes: map[string]any{"support": "lost", "refute": "survives"}, SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"path:unrelated.txt#sha256=" + digest}})
+	if err != nil {
+		t.Fatalf("new professional question was blocked by an evidence index: %v", err)
 	}
 	// The causal route reuses this same original S7 path with its sealed source
 	// authority. Neither another capture nor an index alias is needed.
@@ -117,15 +102,7 @@ func TestS8TypedFindingSourceHandoffNeedsNoIndexAlias(t *testing.T) {
 		return nil
 	})
 	routeRequest := investigation.RouteRequest{ExpectedRevision: -1, CaseID: currentResultsCase, Route: "s9_repair", RouteReason: "Original S7 evidence establishes the detection gap.", NoCompetingHypothesis: "The accepted boundary search found no other credible mechanism."}
-	beforeState, beforeJournal = mustRead(t, f.statePath), mustRead(t, f.journalPath)
 	writeInvestigationBytes(t, f.root, "observation.txt", []byte("drift at route\n"))
-	if _, err := investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, routeRequest); err == nil {
-		t.Fatal("causal route accepted a drifted original S7 source")
-	}
-	if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
-		t.Fatal("failed route changed Runtime")
-	}
-	writeInvestigationBytes(t, f.root, "observation.txt", content)
 	if _, err := investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, routeRequest); err != nil {
 		t.Fatalf("route rejected original S7 source: %v", err)
 	}
@@ -176,14 +153,14 @@ func TestFirstS8QuestionReusesOnlySelectedFrozenFindingSource(t *testing.T) {
 				row["sha256"] = hash(mustRead(t, path))
 			}
 			writeInvestigationJSON(t, f.statePath, state)
-			writeObservationBatch(t, f, []string{"finding-1", "finding-2"}, 2)
+			setFixtureAcceptedFindings(t, f, []string{"finding-1", "finding-2"}, 2)
 			setContractLifecycle(t, f)
 			current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: 0, GroupingRationale: "investigate original frozen observations"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			pointer := investigationPointerFromState(t, current.State)
-			request := investigation.HypothesisRequest{ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(pointer["revision"]), ExpectedCaseSHA256: pointer["sha256"].(string), CaseID: pointer["case_id"].(string), HypothesisID: "hypothesis-first-source", AssignmentID: "assignment-first-source", Statement: "the boundary loses the value", Invariant: "the value survives", Discriminator: "compare the original boundary observation", ExpectedOutcomes: map[string]any{"support": "lost", "refute": "survives"}, SourceFindingIDs: []string{"finding-2"}, EvidenceRefs: []string{ref}}
+			request := investigation.HypothesisRequest{ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(pointer["revision"]), CaseID: pointer["case_id"].(string), HypothesisID: "hypothesis-first-source", AssignmentID: "assignment-first-source", Statement: "the boundary loses the value", Invariant: "the value survives", Discriminator: "compare the original boundary observation", ExpectedOutcomes: map[string]any{"support": "lost", "refute": "survives"}, SourceFindingIDs: []string{"finding-2"}, EvidenceRefs: []string{ref}}
 			beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
 			if _, err := investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, request); err == nil {
 				t.Fatal("borrowed source from unselected Finding")
@@ -206,7 +183,7 @@ func TestFirstS8QuestionReusesOnlySelectedFrozenFindingSource(t *testing.T) {
 			owner := s8OwnerFixture{hypothesisID: request.HypothesisID, assignmentID: request.AssignmentID, ownerID: "agent-first-source", teamID: "workgroup-first-source", taskID: "TASK-842-01", dispatchMode: "plan_checkpoint"}
 			writeInvestigationBytes(t, f.root, ".claude/agents/investigator.md", mustRead(t, filepath.Join("..", "..", "agents", "investigator.md")))
 			pointer = investigationPointerFromState(t, current.State)
-			current = registerS8Owner(t, f, current, owner, pointer["path"].(string), pointer["sha256"].(string))
+			current = registerS8Owner(t, f, current, owner, pointer["path"].(string))
 			packets, err := investigation.IssueHypothesisResultPackets(f.root, f.statePath, f.journalPath, -1, owner.ownerID)
 			if err != nil || len(packets) != 1 {
 				t.Fatalf("first question issue: %v %d", err, len(packets))

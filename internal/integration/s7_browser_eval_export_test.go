@@ -37,7 +37,7 @@ func TestExportS7BrowserEvaluation(t *testing.T) {
 		t.Fatal("export root must be separate from product root")
 	}
 	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
-	for _, path := range []string{statePath + ".commit-pending.json", statePath + ".fingerprint-pending.json", statePath + ".rollover-pending.json", statePath + ".journal-rotation-pending.json", filepath.Join(root, ".claude/loop-pending.json")} {
+	for _, path := range []string{statePath + ".commit-pending.json", statePath + ".rollover-pending.json", statePath + ".journal-rotation-pending.json", filepath.Join(root, ".claude/loop-pending.json")} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("refuse existing pending control operation: %s (%v)", path, err)
 		}
@@ -91,7 +91,7 @@ func TestExportS7BrowserEvaluation(t *testing.T) {
 			return err
 		}
 		writeFixtureFile(t, root, filepath.ToSlash(rel), data)
-		subjects = append(subjects, review.FrozenSubject{Path: filepath.ToSlash(rel), SHA256: digestHex(data), Kind: "product_code"})
+		subjects = append(subjects, review.FrozenSubject{Path: filepath.ToSlash(rel), Kind: "product_code"})
 		return nil
 	})
 	if err != nil {
@@ -137,7 +137,7 @@ func TestExportS7BrowserEvaluation(t *testing.T) {
 	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
 	writeJSONFixture(t, statePath, state)
 	workspace := "e2e-workspace/review-plan-browser-eval"
-	plan := &review.Plan{SchemaVersion: "1.0.0", ReviewPlanID: "review-plan-browser-eval", ReviewRound: 1, BaselineGeneration: 1, FrozenSubjects: subjects, E2ECoverageState: "cold_start", VerificationArtifactWorkspace: &workspace, DispatchCapacityPolicy: "coverage_complete", CreatedBy: "evaluation-fixture", CreatedAt: now}
+	plan := &review.Plan{SchemaVersion: "1.0.0", ReviewPlanID: "review-plan-browser-eval", BaselineGeneration: 1, FrozenSubjects: subjects, E2ECoverageState: "cold_start", VerificationArtifactWorkspace: &workspace, DispatchCapacityPolicy: "coverage_complete", CreatedBy: "evaluation-fixture", CreatedAt: now}
 	for _, item := range []struct{ id, lens, target, assertion, oracle, method, wave string }{
 		{"dv", "delivery", "docs/design/prototypes/settings", "Settings delivery matches the locked CASE/PATH contract", "Trace both CASEs to the actual UI and service behavior; do not infer PASS from fixture setup", "traceability inspection", "static"},
 		{"qa", "qa", "settings implementation", "Validation and persistence boundaries preserve the stated contract", "Inspect validation, state updates and error boundaries against REQ-001", "code inspection", "static"},
@@ -149,7 +149,7 @@ func TestExportS7BrowserEvaluation(t *testing.T) {
 	}
 	// Use the original inventory's existing executable assets, not cold-start
 	// authoring, when this prepared product already contains reusable specs.
-	inventoryPlan, notes := review.DraftPlanForRoot(root, state, 1)
+	inventoryPlan, notes := review.DraftPlanForRoot(root, state)
 	if inventoryPlan == nil || len(inventoryPlan.E2EAssets) == 0 {
 		t.Fatalf("prepared browser product has no original reusable E2E assets: %v", notes)
 	}

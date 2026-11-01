@@ -30,18 +30,17 @@ type DesignDraft struct {
 	Answer      DesignAnswer        `json:"answer"`
 }
 type DesignPacket struct {
-	ID          string          `json:"packet_id"`
-	TemplateID  string          `json:"template_id"`
-	TemplateSHA string          `json:"template_sha256"`
-	Binding     PlanningBinding `json:"binding"`
-	ViewPath    string          `json:"view_path"`
-	AnswerPath  string          `json:"answer_path"`
-	Draft       DesignDraft     `json:"draft"`
+	ID         string          `json:"packet_id"`
+	TemplateID string          `json:"template_id"`
+	Binding    PlanningBinding `json:"binding"`
+	ViewPath   string          `json:"view_path"`
+	AnswerPath string          `json:"answer_path"`
+	Draft      DesignDraft     `json:"draft"`
 }
 
 func BuildDesign(binding PlanningBinding) (DesignPacket, error) {
 	req := binding.Requirement
-	if binding.Stage != "S2" || binding.Owner != "Main" || !safeComponent(binding.RuntimeID) || binding.Generation < 1 || binding.StageEntry < 0 || req.ID == "" || req.Version == "" || !safeRelative(req.Path) || !digestPattern.MatchString(req.SHA256) {
+	if binding.Stage != "S2" || binding.Owner != "Main" || !safeComponent(binding.RuntimeID) || binding.Generation < 1 || binding.StageEntry < 0 || req.ID == "" || req.Version == "" || !safeRelative(req.Path) {
 		return DesignPacket{}, fmt.Errorf("S2 requires the actual Main stage and frozen requirement binding")
 	}
 	data, err := schema.ReadAsset("stage-form-s2-template.json")
@@ -58,15 +57,17 @@ func BuildDesign(binding PlanningBinding) (DesignPacket, error) {
 	if template.Stage != "S2" || template.Adapter != "planning_design" || len(template.Questions) != 2 {
 		return DesignPacket{}, fmt.Errorf("unregistered S2 design template")
 	}
-	templateSHA := Digest(data)
-	identity, _ := json.Marshal(struct {
-		Binding     PlanningBinding
-		TemplateSHA string
-	}{binding, templateSHA})
-	id := "packet-" + Digest(identity)
+	// Stage identity comes from the issued Main responsibility, not prompt bytes.
+	id := planningPacketID(binding)
 	base := fmt.Sprintf("%s/g%d/S2/e%d/%s", binding.RuntimeID, binding.Generation, binding.StageEntry, id)
-	p := DesignPacket{ID: id, TemplateID: "s2-design-v1", TemplateSHA: templateSHA, Binding: binding, ViewPath: ".claude/work-packets/" + base + ".json", AnswerPath: ".claude/submissions/" + base + "/Main/answer.json", Draft: DesignDraft{Title: template.Title, Instruction: template.Instruction, Read: []ReadItem{{Path: req.Path, Purpose: "Current locked requirement: identify its actual commitments, UI impact and existing materials."}, {Path: "docs/architecture/ARCHITECTURE-template.md", Purpose: "Architecture output template: define actual boundaries, data/state/error/recovery and contract decisions."}, {Path: "docs/design/decisions/ADR-template.md", Purpose: "Record decisions, alternatives, risks and the actual human direction judgment when needed; do not infer approval from a label."}, {Path: "docs/design/prototypes/README.md", Purpose: "Find existing affected module truth. UI changed: update applicable UI/scenario package; no UI but service behavior affected: update applicable service behavior package; do not manufacture unrelated deliverables."}, {Path: "docs/rules/scenario-model.md", Purpose: "Use actual AC/FR/behavior relations, observations and oracles; complete applicable scenario checks as design work, not a second receipt."}, {Path: "docs/design/derivation/DERIVATION-template.md", Purpose: "For actual UI changes, derive the current module surface from the project design foundation and existing module materials."}, {Path: "docs/rules/design-foundation.md", Purpose: "Conditional UI design guidance; absent project-specific foundation is a concrete material gap, not permission to invent its contents."}}, Questions: template.Questions}}
+	p := DesignPacket{ID: id, TemplateID: "s2-design-v1", Binding: binding, ViewPath: ".claude/work-packets/" + base + ".json", AnswerPath: ".claude/submissions/" + base + "/Main/answer.json", Draft: DesignDraft{Title: template.Title, Instruction: template.Instruction, Read: []ReadItem{{Path: req.Path, Purpose: "Current locked requirement: identify its actual commitments, UI impact and existing materials."}, {Path: "docs/architecture/ARCHITECTURE-template.md", Purpose: "Architecture output template: define actual boundaries, data/state/error/recovery and contract decisions."}, {Path: "docs/design/decisions/ADR-template.md", Purpose: "Record decisions, alternatives, risks and the actual human direction judgment when needed; do not infer approval from a label."}, {Path: "docs/design/prototypes/README.md", Purpose: "Find existing affected module truth. UI changed: update applicable UI/scenario package; no UI but service behavior affected: update applicable service behavior package; do not manufacture unrelated deliverables."}, {Path: "docs/rules/scenario-model.md", Purpose: "Use actual AC/FR/behavior relations, observations and oracles; complete applicable scenario checks as design work, not a second receipt."}, {Path: "docs/design/derivation/DERIVATION-template.md", Purpose: "For actual UI changes, derive the current module surface from the project design foundation and existing module materials."}, {Path: "docs/rules/design-foundation.md", Purpose: "Conditional UI design guidance; absent project-specific foundation is a concrete material gap, not permission to invent its contents."}}, Questions: template.Questions}}
 	return p, nil
+}
+
+// planningPacketID encodes the pre-existing stage responsibility without
+// deriving identity from professional content or a template digest.
+func planningPacketID(binding PlanningBinding) string {
+	return fmt.Sprintf("packet-%d-%s-g%d-%s-e%d-Main", len(binding.RuntimeID), binding.RuntimeID, binding.Generation, binding.Stage, binding.StageEntry)
 }
 
 func ValidateDesignAnswer(p DesignPacket, data []byte) (DesignAnswer, []FieldError) {
@@ -89,14 +90,6 @@ func ValidateDesignAnswer(p DesignPacket, data []byte) (DesignAnswer, []FieldErr
 	return answer, nil
 }
 
-func DesignAnswerDigest(answer DesignAnswer) (string, error) {
-	data, err := json.Marshal(answer)
-	if err != nil {
-		return "", err
-	}
-	return Digest(data), nil
-}
-
 // ValidateUniqueJSON shares the authoring duplicate-key boundary with adapters.
 func ValidateUniqueJSON(data []byte) error { return rejectDuplicateKeys(data) }
 
@@ -107,5 +100,5 @@ func DesignEvidence(p DesignPacket, id string, architecture Reference, answer De
 		return nil, fmt.Errorf("planning evidence differs from professional answer or actual architecture")
 	}
 	req := p.Binding.Requirement
-	return map[string]any{"schema_version": "1.0.0", "evidence_id": id, "kind": "planning_design", "runtime_id": p.Binding.RuntimeID, "baseline_generation": p.Binding.Generation, "producer_agent_id": p.Binding.Owner, "producer_responsibility": "Orchestrator", "subject_refs": []Subject{{Path: req.Path, Version: req.Version, SHA256: req.SHA256}, {Path: architecture.Path, Version: architecture.Version, SHA256: architecture.SHA256}}, "conclusion": *answer.Conclusion, "created_at": at.UTC().Format(time.RFC3339Nano)}, nil
+	return map[string]any{"schema_version": "1.0.0", "evidence_id": id, "kind": "planning_design", "runtime_id": p.Binding.RuntimeID, "baseline_generation": p.Binding.Generation, "producer_agent_id": p.Binding.Owner, "producer_responsibility": "Orchestrator", "subject_refs": []Subject{{Path: req.Path, Version: req.Version}, {Path: architecture.Path, Version: architecture.Version}}, "conclusion": *answer.Conclusion, "created_at": at.UTC().Format(time.RFC3339Nano)}, nil
 }

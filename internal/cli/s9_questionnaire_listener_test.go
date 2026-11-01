@@ -50,8 +50,8 @@ func newS9ListenerFixture(t *testing.T, result bool) s9ListenerFixture {
 		"assignment_owners": map[string]any{"repair-assignment-listener": "builder-listener"},
 	}}
 	binding := workpacket.RepairPlanReportBinding{
-		RuntimeID: "loop-s9-listener", BaselineGeneration: 1, ReviewRound: 1,
-		SessionID: "repair-session-listener", PlanRef: ".claude/repair-plan.json", PlanSHA256: strings.Repeat("a", 64),
+		RuntimeID: "loop-s9-listener", BaselineGeneration: 1,
+		SessionID: "repair-session-listener", PlanRef: ".claude/repair-plan.json",
 		RepairAssignmentID: "repair-assignment-listener", ManifestAssignmentID: "assignment-s9-listener", OwnerAgentID: "builder-listener",
 	}
 	prefix := ".claude/submissions/loop-s9-listener/g1/" + stage + "/r1/repair-assignment-listener/packet-listener/builder-listener/"
@@ -67,11 +67,7 @@ func newS9ListenerFixture(t *testing.T, result bool) s9ListenerFixture {
 			"assignment_id": binding.ManifestAssignmentID, "runtime_id": binding.RuntimeID, "baseline_generation": 1, "execution_generation": 1,
 			"agent_id": binding.OwnerAgentID, "worktree_path": worker, "status": "ready", "rework_ref": "", "check_location": "worker",
 		}
-		projected, err := runtime.ProjectRepairResultExecution(execution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		row["binding"] = map[string]any{"sources": bindingRow, "execution_sha256": workpacket.Digest(projected), "rework_ref": ""}
+		row["binding"] = map[string]any{"sources": bindingRow, "rework_ref": ""}
 		originalExecution := map[string]any{}
 		for key, value := range execution {
 			originalExecution[key] = value
@@ -122,7 +118,7 @@ func (f s9ListenerFixture) artifact(t *testing.T, path string, document map[stri
 	if err := os.WriteFile(full, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	return map[string]any{"path": path, "sha256": workpacket.Digest(data)}
+	return map[string]any{"path": path}
 }
 
 func TestS9ListenerExistingPacketsReadOnlyWithoutIssueRecoveryOrReceiptProof(t *testing.T) {
@@ -232,11 +228,6 @@ func TestS9ListenerMissingResultSelectsOnlyItsRegisteredOwner(t *testing.T) {
 			execution["agent_id"], execution["assignment_id"], execution["worktree_path"] = owner, manifest, secondRoot
 			delete(execution, "delivery_ref")
 			delete(execution, "delivery_sha256")
-			projection, err := runtime.ProjectRepairResultExecution(execution)
-			if err != nil {
-				t.Fatal(err)
-			}
-			mapFieldCLI(second, "binding")["execution_sha256"] = workpacket.Digest(projection)
 			mapFieldCLI(mapFieldCLI(f.state, "workspace"), "executions")[manifest] = execution
 			mapFieldCLI(repairPointerCLI(f.state), "assignment_owners")[assignment] = owner
 			entities := mapFieldCLI(f.state, "entities")

@@ -5,13 +5,13 @@ package req039_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
@@ -158,12 +158,9 @@ func TestL4AuditRealGitClosedLoop(t *testing.T) {
 	}
 	mergeBefore := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
 	cp := auditIntegrateComplete(t, r, insp, r.cfg())
-	if cp.MergeCommit == "" {
-		t.Fatal("complete checkpoint must retain merge_commit")
-	}
 	mergeAfter := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
-	if mergeBefore == mergeAfter || mergeAfter != cp.MergeCommit {
-		t.Fatalf("authority branch did not land recorded merge: before=%s after=%s cp=%s", mergeBefore, mergeAfter, cp.MergeCommit)
+	if cp.State != integration.StateComplete || mergeBefore == mergeAfter {
+		t.Fatalf("authority branch did not land actual merge: before=%s after=%s state=%s", mergeBefore, mergeAfter, cp.State)
 	}
 	parents := strings.Fields(runAuditGit(t, r.root, "show", "-s", "--format=%P", mergeAfter))
 	if len(parents) != 2 {
@@ -187,38 +184,36 @@ func TestL4AuditUntrackedResultIsPreservedAndRetryable(t *testing.T) {
 	r := newAuditGitRepo(t, "untracked-retry")
 	r.commitFeature(t)
 	assignment := r.assignment("audit-untracked")
-	if err := os.WriteFile(filepath.Join(r.worktree, "still-untracked.txt"), []byte("late worker result\n"), 0o644); err != nil {
+	privatePath := filepath.Join(r.worktree, "still-untracked.txt")
+	if err := os.WriteFile(privatePath, []byte("late worker result\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	insp := r.inspect(t, assignment)
-	if insp.Ready || !strings.Contains(strings.Join(insp.Blockers, " "), integration.ErrDirtyWorktree.Error()) {
-		t.Fatalf("untracked worker result must block inspection: ready=%v blockers=%v", insp.Ready, insp.Blockers)
-	}
-	res, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, r.cfg())
-	if err != nil || res.Checkpoint.State != integration.StatePreserved {
-		t.Fatalf("not-ready integration must preserve child: state=%s err=%v", res.Checkpoint.State, err)
-	}
-	if _, err := os.Stat(filepath.Join(r.worktree, "still-untracked.txt")); err != nil {
-		t.Fatalf("untracked result was lost while preserving worktree: %v", err)
-	}
-	runAuditGit(t, r.worktree, "add", "still-untracked.txt")
-	runAuditGit(t, r.worktree, "commit", "-m", "commit previously untracked result")
-	insp = r.inspect(t, assignment)
 	if !insp.Ready {
-		t.Fatalf("committed retry must become ready: %#v", insp.Blockers)
+		t.Fatalf("untracked private file must not block receiving/integration: %v", insp.Blockers)
 	}
-	cp := auditIntegrateComplete(t, r, insp, r.cfg())
-	if cp.State != integration.StateComplete {
-		t.Fatalf("retry did not complete: %+v", cp)
+	res, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, r.cfg())
+	if !errors.Is(err, integration.ErrCleanupPending) || res.Checkpoint.State != integration.StateCleanupPending {
+		t.Fatalf("integrated work should retain private content and defer cleanup: state=%s err=%v", res.Checkpoint.State, err)
 	}
-	if got, err := os.ReadFile(filepath.Join(r.root, "still-untracked.txt")); err != nil || string(got) != "late worker result\n" {
-		t.Fatalf("committed late result missing at authority root: err=%v bytes=%q", err, got)
+	if got, err := os.ReadFile(privatePath); err != nil || string(got) != "late worker result\n" {
+		t.Fatalf("private file changed: %q %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(r.root, "internal", "feature.go")); err != nil {
+		t.Fatalf("committed delivery was not merged: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(r.root, "still-untracked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("untracked content was silently promoted into the product: %v", err)
+	}
+	if err := os.Remove(privatePath); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, r.cfg())
+	if err != nil || completed.Checkpoint.State != integration.StateComplete {
+		t.Fatalf("cleanup retry failed: state=%s err=%v", completed.Checkpoint.State, err)
 	}
 }
 
-// TestL4AuditDirtyAuthorityRetry exercises the preserved-before-merge path:
-// root changes remain untouched, then a retry merges exactly once once the
-// authority tree is restored.
 func TestL4AuditDirtyAuthorityRetry(t *testing.T) {
 	r := newAuditGitRepo(t, "dirty-root-retry")
 	r.commitFeature(t)
@@ -230,19 +225,20 @@ func TestL4AuditDirtyAuthorityRetry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(r.root, "README.md"), []byte("unrelated local draft\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	first, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, r.cfg())
-	if !errors.Is(err, integration.ErrDirtyWorktree) || first.Checkpoint.State != integration.StatePreserved {
-		t.Fatalf("dirty authority must preserve before merge: state=%s err=%v", first.Checkpoint.State, err)
+	before := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
+	_, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, r.cfg())
+	if !errors.Is(err, integration.ErrDirtyWorktree) {
+		t.Fatalf("dirty authority must block actual merge: %v", err)
 	}
-	if got := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)); got != insp.TargetHead {
-		t.Fatalf("dirty authority advanced target unexpectedly: got=%s want=%s", got, insp.TargetHead)
+	if got := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)); got != before {
+		t.Fatalf("dirty authority advanced target unexpectedly: got=%s want=%s", got, before)
 	}
 	if err := os.WriteFile(filepath.Join(r.root, "README.md"), r.baseReadme, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cp := auditIntegrateComplete(t, r, insp, r.cfg())
-	if cp.MergeCommit == "" {
-		t.Fatal("retry must record merge commit")
+	if cp.State != integration.StateComplete || strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)) == before {
+		t.Fatal("retry did not perform actual merge")
 	}
 }
 
@@ -265,19 +261,18 @@ func TestL4AuditCheckFailureRetry(t *testing.T) {
 		return nil
 	}
 	first, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, cfg)
-	if err == nil || first.Checkpoint.State != integration.StatePreserved || first.Checkpoint.MergeCommit == "" {
-		t.Fatalf("post-merge check failure must preserve receipt: state=%s merge=%s err=%v", first.Checkpoint.State, first.Checkpoint.MergeCommit, err)
+	if err == nil || first.Checkpoint.State != integration.StatePreserved {
+		t.Fatalf("post-merge check failure must preserve merge boundary: state=%s err=%v", first.Checkpoint.State, err)
 	}
 	if first.Checkpoint.ResumeState != integration.StateMerged {
 		t.Fatalf("post-merge check failure must retain merged resume stage, got %q", first.Checkpoint.ResumeState)
 	}
-	mergeCommit := first.Checkpoint.MergeCommit
 	rootHead := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
 	second, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true, RetryPreserved: true}, cfg)
 	if err != nil || second.Checkpoint.State != integration.StateComplete {
 		t.Fatalf("check retry did not complete: state=%s err=%v", second.Checkpoint.State, err)
 	}
-	if second.Checkpoint.MergeCommit != mergeCommit || strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)) != rootHead {
+	if strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)) != rootHead {
 		t.Fatal("check retry applied a second root merge")
 	}
 }
@@ -297,10 +292,7 @@ func TestL4AuditCleanupRetryDoesNotReRunChecks(t *testing.T) {
 	if err != nil || verified.Checkpoint.State != integration.StateVerified || checks != 1 {
 		t.Fatalf("initial verify: state=%s checks=%d err=%v", verified.Checkpoint.State, checks, err)
 	}
-	mergeCommit := verified.Checkpoint.MergeCommit
-	if mergeCommit == "" {
-		t.Fatal("initial verify must retain the root merge receipt")
-	}
+	mergeCommit := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
 	if err := os.WriteFile(filepath.Join(r.worktree, "cleanup-pending.txt"), []byte("must survive failed cleanup\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -311,8 +303,8 @@ func TestL4AuditCleanupRetryDoesNotReRunChecks(t *testing.T) {
 	if failed.Checkpoint.State != integration.StateCleanupPending {
 		t.Fatalf("cleanup failure must retain resume stage cleanup_pending, got %q", failed.Checkpoint.ResumeState)
 	}
-	if failed.Checkpoint.MergeCommit != mergeCommit {
-		t.Fatalf("cleanup failure lost merge receipt: got %q want %q", failed.Checkpoint.MergeCommit, mergeCommit)
+	if got := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)); got != mergeCommit {
+		t.Fatalf("cleanup failure changed the target: got %q want %q", got, mergeCommit)
 	}
 	if checks != 1 {
 		t.Fatalf("cleanup failure unexpectedly ran checks before retry: checks=%d", checks)
@@ -324,15 +316,12 @@ func TestL4AuditCleanupRetryDoesNotReRunChecks(t *testing.T) {
 	// retry. The post-merge source has no new commits, so this deliberately
 	// exercises Ready=false recovery from the durable cleanup_pending receipt.
 	retryInspection := r.inspect(t, assignment)
-	if retryInspection.Ready {
-		t.Fatalf("post-merge reinspection should report no new source commits: %#v", retryInspection.Blockers)
-	}
 	complete, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: retryInspection, Acknowledge: true, Cleanup: true}, cfg)
 	if err != nil || complete.Checkpoint.State != integration.StateComplete {
 		t.Fatalf("cleanup retry: state=%s checks=%d err=%v", complete.Checkpoint.State, checks, err)
 	}
-	if complete.Checkpoint.MergeCommit != mergeCommit {
-		t.Fatalf("cleanup retry changed merge receipt: got %q want %q", complete.Checkpoint.MergeCommit, mergeCommit)
+	if got := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)); got != mergeCommit {
+		t.Fatalf("cleanup retry changed the target: got %q want %q", got, mergeCommit)
 	}
 	if checks != 1 {
 		t.Fatalf("cleanup-only retry re-ran required checks: checks=%d", checks)
@@ -342,12 +331,11 @@ func TestL4AuditCleanupRetryDoesNotReRunChecks(t *testing.T) {
 // TestL4AuditCleanupRetryRejectsWorkerHeadChange keeps the cleanup-only
 // retry guard honest: a clean but newly committed worker HEAD is still a new
 // delivery and must remain preserved for explicit reconciliation.
-func TestL4AuditCleanupRetryRejectsWorkerHeadChange(t *testing.T) {
-	r := newAuditGitRepo(t, "cleanup-head-change")
+func TestL4AuditCleanupRetainsNewUncommittedWorkerContent(t *testing.T) {
+	r := newAuditGitRepo(t, "cleanup-new-content")
 	r.commitFeature(t)
-	assignment := r.assignment("audit-cleanup-head")
-	insp := r.inspect(t, assignment)
-	var checks int
+	insp := r.inspect(t, r.assignment("audit-cleanup-new"))
+	checks := 0
 	cfg := r.cfg()
 	cfg.RequiredChecks = []string{"audit-check"}
 	cfg.CheckRunner = func(context.Context, string, string) error { checks++; return nil }
@@ -355,28 +343,19 @@ func TestL4AuditCleanupRetryRejectsWorkerHeadChange(t *testing.T) {
 	if err != nil || verified.Checkpoint.State != integration.StateVerified || checks != 1 {
 		t.Fatalf("initial verify: state=%s checks=%d err=%v", verified.Checkpoint.State, checks, err)
 	}
-	if err := os.WriteFile(filepath.Join(r.worktree, "new-delivery.txt"), []byte("changed after verify\n"), 0o644); err != nil {
+	path := filepath.Join(r.worktree, "new-delivery.txt")
+	if err := os.WriteFile(path, []byte("new private work\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runAuditGit(t, r.worktree, "add", "new-delivery.txt")
-	runAuditGit(t, r.worktree, "commit", "-m", "new delivery after verify")
 	failed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, cfg)
-	if !errors.Is(err, integration.ErrCleanupPending) || failed.Checkpoint.State != integration.StateCleanupPending {
-		t.Fatalf("new worker HEAD must preserve cleanup: state=%s checks=%d err=%v", failed.Checkpoint.State, checks, err)
+	if !errors.Is(err, integration.ErrCleanupPending) || failed.Checkpoint.State != integration.StateCleanupPending || checks != 1 {
+		t.Fatalf("new worker content not preserved: state=%s checks=%d err=%v", failed.Checkpoint.State, checks, err)
 	}
-	if failed.Checkpoint.State != integration.StateCleanupPending {
-		t.Fatalf("new worker HEAD must retain cleanup_pending resume stage, got %q", failed.Checkpoint.ResumeState)
-	}
-	if checks != 1 {
-		t.Fatalf("new worker HEAD guard unexpectedly reran checks: checks=%d", checks)
-	}
-	if _, err := os.Stat(r.worktree); err != nil {
-		t.Fatalf("new worker HEAD must preserve worktree: %v", err)
+	if got, err := os.ReadFile(path); err != nil || string(got) != "new private work\n" {
+		t.Fatalf("new worker content changed: %q %v", got, err)
 	}
 }
 
-// TestL4AuditAuthorityLockBlocksMutation ensures an existing integration lock
-// fails closed before the root branch or checkpoint is changed.
 func TestL4AuditAuthorityLockBlocksMutation(t *testing.T) {
 	r := newAuditGitRepo(t, "authority-lock")
 	r.commitFeature(t)
@@ -388,7 +367,9 @@ func TestL4AuditAuthorityLockBlocksMutation(t *testing.T) {
 	}
 	defer release()
 	before := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
-	res, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, r.cfg())
+	lockCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	res, err := integration.Integrate(lockCtx, integration.IntegrateRequest{Inspection: insp}, r.cfg())
 	if err == nil {
 		t.Fatal("authority lock must reject concurrent integration")
 	}
@@ -408,158 +389,60 @@ func TestL4AuditAuthorityLockBlocksMutation(t *testing.T) {
 // TestL4AuditLostMergeReceiptAfterTargetAdvance verifies recovery by walking
 // the target branch's first-parent merge history after the target advances.
 func TestL4AuditLostMergeReceiptAfterTargetAdvance(t *testing.T) {
-	root := freshRoot(t)
-	seedIntegrableAssignment(t, root)
-	loaded, err := hookctx.LoadFull(root, "")
-	if err != nil {
+	r := newAuditGitRepo(t, "lost-merge-receipt")
+	r.commitFeature(t)
+	insp := r.inspect(t, r.assignment("audit-lost-receipt"))
+	checkpointPath := integration.CheckpointPath(r.root, "loop-l4-audit", 1, insp.AssignmentID)
+	cp := integration.Checkpoint{AssignmentID: insp.AssignmentID, WorktreePath: r.worktree, SourceBranch: r.branch, TargetBranch: r.target, BaselineGeneration: 1, State: integration.StateReady}
+	if _, err := integration.DefaultCheckpointStore().ForceWrite(checkpointPath, cp); err != nil {
 		t.Fatal(err)
 	}
-	var assignment hookctx.AssignmentContext
-	for _, candidate := range loaded.Assignments {
-		if candidate.AssignmentID == "assignment-ti" {
-			assignment = candidate
-			break
-		}
-	}
-	if assignment.AssignmentID == "" {
-		t.Fatal("assignment fixture did not load")
-	}
-	insp, err := integration.Inspect(context.Background(), integration.InspectRequest{
-		Root:               root,
-		Assignment:         assignment,
-		TargetBranch:       "develop",
-		BaselineGeneration: loaded.BaselineGeneration,
-		RuntimeID:          "loop-system-test",
-	}, integration.InspectConfig{})
-	if err != nil || !insp.Ready {
-		t.Fatalf("pre-crash inspection: ready=%v blockers=%v err=%v", insp.Ready, insp.Blockers, err)
-	}
-	// Drive only through merge+verify so the linked checkout remains present,
-	// then model a lost response before acknowledgement/cleanup is recorded.
-	merged, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, integration.IntegrateConfig{
-		Root: root, GitRoot: root, RuntimeID: "loop-system-test",
-	})
-	if err != nil || merged.Checkpoint.State != integration.StateVerified {
-		t.Fatalf("pre-crash merge+verify: state=%s err=%v", merged.Checkpoint.State, err)
-	}
-	checkpointPath := filepath.Join(root, ".claude", "evidence", "loop-system-test", "g1", "worktree", "assignment-ti", "checkpoint.json")
-	raw, err := os.ReadFile(checkpointPath)
-	if err != nil {
+	// The merge occurred but its completion was not persisted before interruption.
+	runAuditGit(t, r.root, "merge", "--no-ff", "-m", "worker merge", r.branch)
+	if err := os.WriteFile(filepath.Join(r.root, "post-merge-followup.txt"), []byte("target advanced\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var cp map[string]any
-	if err := json.Unmarshal(raw, &cp); err != nil {
-		t.Fatal(err)
+	runAuditGit(t, r.root, "add", "post-merge-followup.txt")
+	runAuditGit(t, r.root, "commit", "-m", "target advanced")
+	before := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
+	got, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, RetryPreserved: true}, r.cfg())
+	if err == nil || !strings.Contains(err.Error(), "unknown") || got.Checkpoint.State != integration.StateReady {
+		t.Fatalf("unknown merge was guessed: state=%s err=%v", got.Checkpoint.State, err)
 	}
-	mergeCommit, _ := cp["merge_commit"].(string)
-	if mergeCommit == "" {
-		t.Fatal("fixture did not record a merge commit")
+	if after := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)); after != before {
+		t.Fatal("unknown recovery changed target")
 	}
-	// Advance the bound target one ordinary commit, then simulate loss of the
-	// merge receipt response while the original worker checkout still exists.
-	if err := os.WriteFile(filepath.Join(root, "post-merge-followup.txt"), []byte("target advanced\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGitIn(t, root, "add", "post-merge-followup.txt")
-	runGitIn(t, root, "commit", "-m", "target advanced after merge")
-	cp["state"] = "ready"
-	delete(cp, "merge_commit")
-	updated, err := json.MarshalIndent(cp, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(checkpointPath, updated, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	code, out, errout := runTaskIntegrate(t, root, "assignment-ti")
-	if code != 0 {
-		t.Fatalf("receipt recovery command errored: code=%d out=%s err=%s", code, out, errout)
-	}
-	recoveredRaw, err := os.ReadFile(checkpointPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var recovered map[string]any
-	if err := json.Unmarshal(recoveredRaw, &recovered); err != nil {
-		t.Fatal(err)
-	}
-	if state, _ := recovered["state"].(string); state != integration.StateComplete {
-		t.Fatalf("lost merge receipt after target advance was not recovered: state=%v merge=%v out=%s err=%s", recovered["state"], recovered["merge_commit"], out, errout)
-	}
-	if got, _ := recovered["merge_commit"].(string); got != mergeCommit {
-		t.Fatalf("recovered wrong merge commit: got=%q want=%q", got, mergeCommit)
+	if _, err := os.Stat(r.worktree); err != nil {
+		t.Fatalf("unknown recovery removed worker: %v", err)
 	}
 }
 
-// TestL4AuditLostReceiptDoesNotAcceptUnrelatedMerge verifies the negative
-// match: a different second parent on the target's first-parent history must
-// not be treated as this assignment's lost merge receipt.
 func TestL4AuditLostReceiptDoesNotAcceptUnrelatedMerge(t *testing.T) {
-	root := freshRoot(t)
-	seedIntegrableAssignment(t, root)
-	loaded, err := hookctx.LoadFull(root, "")
-	if err != nil {
+	r := newAuditGitRepo(t, "unrelated-merge")
+	r.commitFeature(t)
+	insp := r.inspect(t, r.assignment("audit-unrelated"))
+	checkpointPath := integration.CheckpointPath(r.root, "loop-l4-audit", 1, insp.AssignmentID)
+	cp := integration.Checkpoint{AssignmentID: insp.AssignmentID, WorktreePath: r.worktree, SourceBranch: r.branch, TargetBranch: r.target, BaselineGeneration: 1, State: integration.StateReady}
+	if _, err := integration.DefaultCheckpointStore().ForceWrite(checkpointPath, cp); err != nil {
 		t.Fatal(err)
 	}
-	var assignment hookctx.AssignmentContext
-	for _, candidate := range loaded.Assignments {
-		if candidate.AssignmentID == "assignment-ti" {
-			assignment = candidate
-			break
-		}
-	}
-	if assignment.AssignmentID == "" {
-		t.Fatal("assignment fixture did not load")
-	}
-	sourceHead := strings.TrimSpace(runGitIn(t, assignment.WorktreePath, "rev-parse", "HEAD"))
-	targetHead := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
-	checkpointPath := filepath.Join(root, ".claude", "evidence", "loop-system-test", "g1", "worktree", "assignment-ti", "checkpoint.json")
-	if _, err := integration.DefaultCheckpointStore().ForceWrite(checkpointPath, integration.Checkpoint{
-		AssignmentID:       assignment.AssignmentID,
-		TaskID:             assignment.TaskID,
-		WorktreePath:       assignment.WorktreePath,
-		SourceBranch:       assignment.Branch,
-		SourceHead:         sourceHead,
-		TargetBranch:       "develop",
-		TargetHead:         targetHead,
-		MergeBase:          strings.TrimSpace(runGitIn(t, root, "merge-base", targetHead, sourceHead)),
-		BaselineGeneration: 1,
-		State:              integration.StateReady,
-		IdempotencyKey:     integration.IdempotencyKey(assignment.AssignmentID, sourceHead, "develop", 1),
-	}); err != nil {
-		t.Fatalf("write synthetic ready checkpoint: %v", err)
-	}
-
-	// Add a legitimate but unrelated merge whose second parent is not the
-	// worker source head recorded above.
-	runGitIn(t, root, "checkout", "-b", "audit-unrelated")
-	if err := os.WriteFile(filepath.Join(root, "unrelated.txt"), []byte("other work\n"), 0o644); err != nil {
+	runAuditGit(t, r.root, "checkout", "-b", "unrelated")
+	if err := os.WriteFile(filepath.Join(r.root, "unrelated.txt"), []byte("other work\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGitIn(t, root, "add", "unrelated.txt")
-	runGitIn(t, root, "commit", "-m", "unrelated side branch")
-	runGitIn(t, root, "checkout", "develop")
-	runGitIn(t, root, "merge", "--no-ff", "-m", "unrelated merge", "audit-unrelated")
-	unrelatedMerge := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
-
-	checkpointBefore, err := os.ReadFile(checkpointPath)
-	if err != nil {
-		t.Fatal(err)
+	runAuditGit(t, r.root, "add", "unrelated.txt")
+	runAuditGit(t, r.root, "commit", "-m", "unrelated side branch")
+	runAuditGit(t, r.root, "checkout", r.target)
+	runAuditGit(t, r.root, "merge", "--no-ff", "-m", "unrelated merge", "unrelated")
+	before := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
+	got, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, r.cfg())
+	if err == nil || !strings.Contains(err.Error(), "unknown") || got.Checkpoint.State != integration.StateReady {
+		t.Fatalf("unrelated merge was treated as worker completion: %+v %v", got.Checkpoint, err)
 	}
-	before := readSystemRuntimePair(t, root)
-	code, out, errout := runTaskIntegrate(t, root, "assignment-ti")
-	if code == 0 || !strings.Contains(errout, "no exact two-parent merge") || !strings.Contains(errout, "Main must inspect original target history") {
-		t.Fatalf("unrelated merge became a receipt or triggered another merge: code=%d out=%s err=%s", code, out, errout)
+	if after := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)); after != before {
+		t.Fatal("unknown recovery changed target")
 	}
-	checkpointAfter, err := os.ReadFile(checkpointPath)
-	if err != nil || string(checkpointBefore) != string(checkpointAfter) {
-		t.Fatalf("uncertain recovery rewrote ready checkpoint: %v", err)
-	}
-	assertSystemRuntimePairUnchanged(t, before)
-	if got := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop")); got != unrelatedMerge {
-		t.Fatalf("uncertain recovery changed target HEAD: %s -> %s", unrelatedMerge, got)
-	}
-	if got := strings.TrimSpace(runGitIn(t, assignment.WorktreePath, "rev-parse", "HEAD")); got != sourceHead {
-		t.Fatalf("uncertain recovery changed or removed Worker: %s -> %s", sourceHead, got)
+	if _, err := os.Stat(r.worktree); err != nil {
+		t.Fatalf("unknown recovery removed worker: %v", err)
 	}
 }

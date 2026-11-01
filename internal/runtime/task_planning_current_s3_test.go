@@ -2,73 +2,120 @@ package runtime_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/transition"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // Append a real BuildContracts packet and ContractEvidence receipt, retaining
 // the prior packet, submission and evidence as formal rework does.
-func appendTaskPlanningS3(t *testing.T, root string, state map[string]any, entry int) {
+func appendTaskPlanningS3(t *testing.T, root string, state map[string]any, _ int) {
 	t.Helper()
-	entities := state["entities"].(map[string]any)
-	rows := entities["work_packets"].([]any)
-	data, _ := json.Marshal(rows[0])
-	var old workpacket.ContractPacket
-	if err := json.Unmarshal(data, &old); err != nil {
-		t.Fatal(err)
-	}
-	old.Binding.StageEntry = entry
-	p, err := workpacket.BuildContracts(old.Binding, old.Inputs)
+	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
+	current, err := runtime.NewStore(statePath, journalPath).Snapshot()
 	if err != nil {
 		t.Fatal(err)
+	}
+	files := fileview.Disk{Root: root}
+	reworked, err := transition.Apply(root, statePath, journalPath, transition.Request{
+		Files: files, TransitionID: "PTR-PLAN-06", ExpectedRevision: current.Revision,
+		ExpectedRuntimeID: current.State["runtime_id"].(string), Actor: "orchestrator",
+		ProducerResponsibility: "Main", RequestID: "s3-rework-fixture", Params: map[string]any{"reason": "Update the current contracts."},
+	})
+	if err != nil {
+		t.Fatalf("original S3 rework transition: %v", err)
+	}
+	binding, _, err := runtime.CurrentContractBinding(reworked.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := runtime.ResolveContractInputs(root, reworked.State, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := workpacket.BuildContracts(binding, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := runtime.RecordContractPacket(root, statePath, journalPath, packet, files, semantic.RuntimeCandidateValidator{})
+	if err != nil {
+		t.Fatalf("original S3 packet Writer: %v", err)
 	}
 	evidenceData, err := os.ReadFile(filepath.Join(root, ".claude/evidence/E-S3-001.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var envelope struct {
-		Answer   workpacket.ContractAnswer `json:"contract_answer"`
-		Subjects []workpacket.Subject      `json:"subject_refs"`
+	var previous struct {
+		Answer workpacket.ContractAnswer `json:"contract_answer"`
 	}
-	if err := json.Unmarshal(evidenceData, &envelope); err != nil {
+	if err := json.Unmarshal(evidenceData, &previous); err != nil {
 		t.Fatal(err)
 	}
-	artifacts := []workpacket.Reference{}
-	for _, raw := range state["documents"].([]any) {
-		row := raw.(map[string]any)
-		if row["kind"] == "contract" {
-			artifacts = append(artifacts, workpacket.Reference{ID: row["id"].(string), Path: row["path"].(string), Version: row["version"].(string), SHA256: row["sha256"].(string)})
-		}
+	artifacts := []workpacket.Reference{
+		{ID: "CONTRACTS-001", Path: *previous.Answer.IndexPath, Version: "v1.0.0"},
+		{ID: "FE-001", Path: previous.Answer.ContractPaths[0], Version: "v1.0.0"},
 	}
-	e, err := workpacket.ContractEvidence(p, "E-S3-CURRENT", artifacts, envelope.Answer, time.Now().UTC())
+	evidence, err := workpacket.ContractEvidence(packet, "E-S3-CURRENT", artifacts, previous.Answer, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err = json.Marshal(e)
+	data, err := json.Marshal(evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeBytes(t, root, ".claude/evidence/E-S3-CURRENT.json", data)
-	packetData, _ := json.Marshal(p)
-	var row map[string]any
-	if err := json.Unmarshal(packetData, &row); err != nil {
+	const evidencePath = ".claude/evidence/E-S3-CURRENT.json"
+	writeBytes(t, root, evidencePath, data)
+	draft := packet.Draft
+	draft.Answer = previous.Answer
+	answerJSON, err := json.Marshal(draft)
+	if err != nil {
 		t.Fatal(err)
 	}
-	entities["work_packets"] = append(rows, row)
-	key := workpacket.Digest([]byte("submission:" + p.ID))
-	entities["submissions"] = append(entities["submissions"].([]any), map[string]any{
-		"submission_key": key, "packet_id": p.ID, "owner": "Main", "content_sha256": mustContractAnswerDigest(t, envelope.Answer), "evidence_id": "E-S3-CURRENT", "followup_event_id": workpacket.Digest([]byte(key + ":after-domain")), "control_status": "advanced", "origin_state": "planning", "origin_phase": "contracts", "origin_entry": entry, "transition_event_id": "evt-current-PTR-PLAN-02",
+	paths := append([]string{*previous.Answer.IndexPath}, previous.Answer.ContractPaths...)
+	accepted, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
+		ExpectedRevision: issued.Revision, ID: "E-S3-CURRENT", Kind: "planning_contract", Path: evidencePath,
+		ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: semantic.RuntimeCandidateValidator{},
+		Submission: &runtime.SubmissionRequest{PacketID: packet.ID, Owner: "Main", AnswerJSON: answerJSON, Files: files,
+			Authorize: func(root string, _ map[string]any) error {
+				checked, err := semantic.ContractsCheckBatch(root, files, binding.Requirement, paths)
+				if err != nil {
+					return err
+				}
+				if checked.Contracts == 0 || len(checked.Problems) != 0 {
+					return fmt.Errorf("original contract check: %+v", checked)
+				}
+				return nil
+			}},
 	})
-	state["evidence"] = append(state["evidence"].([]any), map[string]any{
-		"id": "E-S3-CURRENT", "kind": "planning_contract", "baseline_generation": 1, "responsibility_id": "Orchestrator", "produced_by": []any{"Main"}, "status": "valid", "path": ".claude/evidence/E-S3-CURRENT.json", "sha256": workpacket.Digest(data), "review_round": nil, "invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
+	if err != nil {
+		t.Fatalf("original S3 rework evidence Writer: %v", err)
+	}
+	receipt, found, err := runtime.FindSubmission(accepted.State, packet.ID)
+	if err != nil || !found {
+		t.Fatalf("original rework receipt: %t %v", found, err)
+	}
+	advanced, err := transition.Apply(root, statePath, journalPath, transition.Request{
+		Files: files, TransitionID: "PTR-PLAN-02", ExpectedRevision: accepted.Revision, ExpectedRuntimeID: binding.RuntimeID,
+		Actor: "orchestrator", SubmissionFollowupID: receipt.FollowupID,
 	})
-	state["lifecycle"].(map[string]any)["phase_revision"] = entry + 1
+	if err != nil {
+		t.Fatalf("original reworked S3 -> S4 transition: %v", err)
+	}
+	for key := range state {
+		delete(state, key)
+	}
+	for key, value := range advanced.State {
+		state[key] = value
+	}
 }
 
 func TestTaskPlanningCurrentS3IgnoresInvalidReworkHistory(t *testing.T) {
@@ -103,7 +150,7 @@ func TestTaskPlanningBadCurrentS3NeverFallsBack(t *testing.T) {
 			s["evidence"].([]any)[1].(map[string]any)["status"] = "invalid"
 		}},
 		{"missing evidence", "accepted evidence", func(t *testing.T, root string, s map[string]any) { s["evidence"] = s["evidence"].([]any)[:1] }},
-		{"changed bytes", "unavailable or changed", func(t *testing.T, root string, s map[string]any) {
+		{"malformed evidence", "original S3 answer is unavailable", func(t *testing.T, root string, s map[string]any) {
 			writeBytes(t, root, ".claude/evidence/E-S3-CURRENT.json", []byte("{}"))
 		}},
 		{"missing bytes", "read S4 original S3 evidence", func(t *testing.T, root string, s map[string]any) {
@@ -139,8 +186,14 @@ func TestTaskPlanningBadCurrentS3NeverFallsBack(t *testing.T) {
 		{"wrong packet owner", "reception/transition association", func(t *testing.T, root string, s map[string]any) {
 			s["entities"].(map[string]any)["work_packets"].([]any)[1].(map[string]any)["binding"].(map[string]any)["owner"] = "Other"
 		}},
-		{"wrong packet requirement", "lacks its matching source packet", func(t *testing.T, root string, s map[string]any) {
-			s["entities"].(map[string]any)["work_packets"].([]any)[1].(map[string]any)["binding"].(map[string]any)["requirement"].(map[string]any)["sha256"] = workpacket.Digest([]byte("other requirement"))
+		{"wrong packet requirement ID", "lacks its matching source packet", func(t *testing.T, root string, s map[string]any) {
+			s["entities"].(map[string]any)["work_packets"].([]any)[1].(map[string]any)["binding"].(map[string]any)["requirement"].(map[string]any)["id"] = "REQ-OTHER"
+		}},
+		{"wrong packet requirement path", "lacks its matching source packet", func(t *testing.T, root string, s map[string]any) {
+			s["entities"].(map[string]any)["work_packets"].([]any)[1].(map[string]any)["binding"].(map[string]any)["requirement"].(map[string]any)["path"] = "docs/requirements/REQ-OTHER.md"
+		}},
+		{"wrong packet requirement version", "lacks its matching source packet", func(t *testing.T, root string, s map[string]any) {
+			s["entities"].(map[string]any)["work_packets"].([]any)[1].(map[string]any)["binding"].(map[string]any)["requirement"].(map[string]any)["version"] = "v999.0.0"
 		}},
 		{"duplicate submission", "reception identity is duplicated", func(t *testing.T, root string, s map[string]any) {
 			e := s["entities"].(map[string]any)
@@ -194,13 +247,13 @@ func rewriteTaskPlanningCurrentEvidence(t *testing.T, root string, state map[str
 	for _, raw := range state["documents"].([]any) {
 		r := raw.(map[string]any)
 		if r["kind"] == "contract" {
-			artifacts = append(artifacts, workpacket.Reference{ID: r["id"].(string), Path: r["path"].(string), Version: r["version"].(string), SHA256: r["sha256"].(string)})
+			artifacts = append(artifacts, workpacket.Reference{ID: r["id"].(string), Path: r["path"].(string), Version: r["version"].(string)})
 		}
 	}
 	if kind == "contract" {
-		artifacts[0].SHA256 = workpacket.Digest([]byte("different contract bytes"))
+		artifacts[0].Version = "different-version"
 	} else {
-		p.Inputs.Designs[0].SHA256 = workpacket.Digest([]byte("different design bytes"))
+		p.Inputs.Designs[0].Version = "different-version"
 		p, err = workpacket.BuildContracts(p.Binding, p.Inputs)
 		if err != nil {
 			t.Fatal(err)
@@ -215,19 +268,12 @@ func rewriteTaskPlanningCurrentEvidence(t *testing.T, root string, state map[str
 		t.Fatal(err)
 	}
 	writeBytes(t, root, ".claude/evidence/E-S3-CURRENT.json", data)
-	state["evidence"].([]any)[1].(map[string]any)["sha256"] = workpacket.Digest(data)
-	oldID := row.(map[string]any)["packet_id"].(string)
 	packetData, _ := json.Marshal(p)
 	var packetRow map[string]any
 	if err := json.Unmarshal(packetData, &packetRow); err != nil {
 		t.Fatal(err)
 	}
 	entities["work_packets"].([]any)[1] = packetRow
-	record := entities["submissions"].([]any)[1].(map[string]any)
-	if oldID != p.ID {
-		key := workpacket.Digest([]byte("submission:" + p.ID))
-		record["packet_id"], record["submission_key"], record["followup_event_id"] = p.ID, key, workpacket.Digest([]byte(key+":after-domain"))
-	}
 }
 
 func TestTaskPlanningTasksOnlyReworkKeepsOriginalS3(t *testing.T) {

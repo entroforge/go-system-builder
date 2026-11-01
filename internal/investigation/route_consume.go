@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
@@ -63,8 +64,9 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 	}
 	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
+	eventID := fmt.Sprintf("evt-s8-route-consume-%s-r%d", request.CaseID, commitRevision+1)
 	return updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-s8-route-consume-%s-r%d", request.CaseID, commitRevision+1),
+		EventID:                eventID,
 		TransitionID:           "S8-ROUTE-CONSUME",
 		Event:                  "investigation_route_consumed",
 		Actor:                  actor,
@@ -76,7 +78,6 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 		RequestID:              "s8-route-consume",
 		BaselineGeneration:     baselineGenerationValue(current.State),
 		GateID:                 "S8-ROUTE-CONSUME",
-		GateFingerprint:        "sha256:s8-route-consume-v1",
 		ProducerResponsibility: "S8 Route Consumer",
 		OccurredAt:             at,
 		Apply: func(state map[string]any) error {
@@ -89,15 +90,13 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 			active["route_consumer"] = "S8-ROUTE-CONSUME"
 			switch route {
 			case "s7_no_change":
-				round := integerValueOrZero(review["round"]) + 1
-				review["round"] = round
+				delete(review, "round")
 				review["clean_round"] = nil
 				review["plan"] = nil
 				review["claims"] = map[string]any{}
 				review["assignments"] = map[string]any{}
-				review["observation_batch"] = nil
 				review["investigation"] = nil
-				review["round_entry"] = map[string]any{"transition_id": "S8-ROUTE-CONSUME", "round": round, "baseline_generation": baselineGenerationValue(state), "change_impact_ref": nil}
+				review["round_entry"] = map[string]any{"transition_id": "S8-ROUTE-CONSUME", "plan_id": reviewmeta.NewPlanID(stringField(state["runtime_id"]), eventID), "baseline_generation": baselineGenerationValue(state), "change_impact_ref": nil}
 				setLifecycleValue(state, "verification", "running")
 			case "s2_spec_rework":
 				active["status"] = "closed"

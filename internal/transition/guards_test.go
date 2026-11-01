@@ -5,14 +5,9 @@
 package transition_test
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/transition"
-	"github.com/entroforge/go-system-builder/internal/verification"
 )
 
 // TestLegacyEvidenceBackedStubsRemoved asserts FR-009: the legacy guard ids
@@ -91,133 +86,26 @@ func TestSemanticGuardsResolvedAndHashed(t *testing.T) {
 	}
 }
 
-// TestForbiddenEventsBlocksACCWithoutCleanRound locks RC-06 (S10-2): the
-// strong_block forbidden_events table is now consumed at Apply time. TR-015
-// (acceptance→release_audit) must be refused when the machine CleanRound
-// does not pass, no matter what evidence refs the caller supplies — the
-// journal must stay untouched.
-func TestForbiddenEventsBlocksACCWithoutCleanRound(t *testing.T) {
-	root := t.TempDir()
-	setupRepoWithDefinition(t, root)
-	state := stateAtAcceptanceMap(7)
-	writeFullState(t, root, state)
-	statePath := filepath.Join(root, ".claude", "loop-state.json")
-	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
-
-	_, err := applyFixture(root, statePath, journalPath, transition.Request{
-		TransitionID:     "TR-015",
-		ExpectedRevision: 7,
-		Actor:            "orchestrator",
-		Evidence: map[string]string{
-			"acceptance_record":  "ev-acc",
-			"clean_round_record": "docs/reports/review/clean-round.md",
-		},
-	})
-	if err == nil {
-		t.Fatal("TR-015 must be rejected when no valid clean round exists (forbidden event create_acc_without_clean_round)")
-	}
-	if !containsStr(err.Error(), "create_acc_without_clean_round") {
-		t.Fatalf("error must name the forbidden event, got: %v", err)
-	}
-	// The refusal must be pre-Apply: revision unchanged, no journal row.
-	data, readErr := os.ReadFile(statePath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	var after map[string]any
-	if err := json.Unmarshal(data, &after); err != nil {
+// The S10 transitions consume their accepted professional reports without a second S7 verification gate.
+func TestS10TransitionsDoNotRecheckS7(t *testing.T) {
+	catalog, err := transition.LoadCatalog("../..")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := after["revision"].(float64); got != 7 {
-		t.Fatalf("revision moved to %v for a refused mutation; the barrier must be pre-Apply", got)
+	for _, id := range []string{"TR-015", "TR-017"} {
+		spec, ok := catalog.Transitions[id]
+		if !ok {
+			t.Fatalf("missing %s", id)
+		}
+		for _, guard := range spec.Guards {
+			if guard == "clean_round_still_valid" || guard == "clean_round_valid" {
+				t.Fatalf("%s retains old S7 gate %s", id, guard)
+			}
+		}
 	}
-	journal, _ := os.ReadFile(journalPath)
-	if len(strings.TrimSpace(string(journal))) != 0 {
-		t.Fatalf("journal must stay empty for a forbidden-event refusal, got %d bytes", len(journal))
+	if _, ok := transition.LookupGuard("clean_round_still_valid"); ok {
+		t.Fatal("old repeated S7 guard remains registered")
 	}
-}
-
-// TestForbiddenEventsBlocksReleaseAuditWithoutACC extends the S10-2 barrier
-// to TR-017: the release audit cannot reach the human release boundary on a
-// failed CleanRound evaluation either.
-func TestForbiddenEventsBlocksReleaseAuditWithoutACC(t *testing.T) {
-	root := t.TempDir()
-	setupRepoWithDefinition(t, root)
-	state := stateAtReleaseAuditMap(9)
-	writeFullState(t, root, state)
-
-	err := applyT(t, root, "TR-017", 9, "release_auditor", map[string]string{
-		"release_audit_record": "docs/reports/release-audits/audit.md",
-		"acceptance_record":    "ev-acc",
-		"clean_round_record":   "docs/reports/review/clean-round.md",
-	})
-	if err == nil {
-		t.Fatal("TR-017 must be rejected when no valid clean round exists (forbidden event run_release_audit_without_acc)")
-	}
-	if !containsStr(err.Error(), "forbidden event") {
-		t.Fatalf("error must name the forbidden event, got: %v", err)
-	}
-}
-
-// TestForbiddenEventBarrierPassesWithValidCleanRound proves the S10-2 barrier
-// is a real predicate, not an unconditional TR-015/TR-017 deny: a state whose
-// CleanRound evaluates PASS gets past the forbidden-event check (the Apply may
-// still fail later on evidence resolution, but never with the forbidden-event
-// error).
-func TestForbiddenEventBarrierPassesWithValidCleanRound(t *testing.T) {
-	root := t.TempDir()
-	setupRepoWithDefinition(t, root)
-	state := stateAtAcceptanceMap(7)
-	state["review"] = map[string]any{
-		"round":       float64(1),
-		"clean_round": float64(1),
-		"plan": map[string]any{
-			"plan_id": "PLAN-1", "path": "docs/review/plan.md", "sha256": "x",
-			"review_round": float64(1), "status": "clean",
-		},
-		"claims": map[string]any{
-			"CLM-1": map[string]any{
-				"lens": "delivery", "applicability": "applicable",
-				"disposition": "pass", "result_id": "RES-1",
-			},
-		},
-	}
-	state["evidence"] = []any{
-		map[string]any{
-			"id": "ev-cr", "kind": "clean_round", "status": "valid",
-			"baseline_generation": float64(1), "review_round": float64(1),
-			"path": "docs/reports/review/clean-round.md", "sha256": "x",
-			"produced_by": []any{"a"}, "responsibility_id": "VER-1", "scope_refs": []any{},
-			"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
-		},
-	}
-	if result := verification.EvaluateCleanRound(state); !result.Passed {
-		t.Fatalf("fixture must evaluate as a valid CleanRound before the Apply: %v", result.Reasons)
-	}
-	writeFullState(t, root, state)
-
-	err := applyT(t, root, "TR-015", 7, "orchestrator", map[string]string{
-		"acceptance_record":  "ev-acc",
-		"clean_round_record": "docs/reports/review/clean-round.md",
-	})
-	if err != nil && containsStr(err.Error(), "create_acc_without_clean_round") {
-		t.Fatalf("forbidden-event barrier must pass a valid CleanRound, got: %v", err)
-	}
-}
-
-// stateAtAcceptanceMap returns a minimal acceptance-phase state for the S10-2
-// forbidden-event barrier tests (no clean round registered).
-func stateAtAcceptanceMap(rev int) map[string]any {
-	state := stateAtVerificationMap(rev)
-	state["lifecycle"] = map[string]any{"state": "acceptance", "phase": nil, "phase_revision": float64(1)}
-	return state
-}
-
-// stateAtReleaseAuditMap mirrors stateAtAcceptanceMap for the release_audit state.
-func stateAtReleaseAuditMap(rev int) map[string]any {
-	state := stateAtVerificationMap(rev)
-	state["lifecycle"] = map[string]any{"state": "release_audit", "phase": nil, "phase_revision": float64(1)}
-	return state
 }
 
 // TestAngleLifecycleRemoved locks the L3-S7 retirement: the angle_complete

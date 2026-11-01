@@ -12,6 +12,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workspace"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -82,7 +83,7 @@ func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
 		if err := os.WriteFile(log, []byte("Synthetic relocation fixture output.\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		receiptBytes, err = checkexec.SealReceipt(map[string]any{"version": 2, "command": profile.Command, "status": "pass", "output": log, "profile_observation": observation, "check_binding": workspace.CheckBinding(e)}, log)
+		receiptBytes, err = checkexec.SealReceipt(map[string]any{"version": 2, "command": profile.Command, "status": "pass", "output": log, "profile_observation": observation, "check_binding": workspace.CheckBinding(e)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -100,6 +101,16 @@ func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
 	}
 	b.Executions[e.AssignmentID] = e
 	state["workspace"] = workspace.Encode(b)
+	legacyRegistry := state["workspace"].(map[string]any)
+	legacyRegistry["bound_head"] = map[string]any{"legacy": true}
+	legacyRegistry["historical_detail"] = map[string]any{"business": []any{nil, "kept"}}
+	legacyExecution := legacyRegistry["executions"].(map[string]any)[e.AssignmentID].(map[string]any)
+	legacyExecution["base_commit"] = []any{1.0}
+	legacyExecution["bootstrap_sha256"] = 42.0
+	legacyExecution["historical_detail"] = []any{map[string]any{"note": "kept"}}
+	if withReceipt {
+		legacyExecution["tool_check_receipts"].([]any)[0].(map[string]any)["historical_detail"] = map[string]any{"note": "original receipt extension"}
+	}
 	data, err = json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +125,7 @@ func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
 	}
 	old := fix.root
 	moved := filepath.Join(t.TempDir(), "moved")
-	req := workspace.RebindRequest{RuntimeID: workspace.RuntimeID(state), OldMainRoot: old, OldCommonDir: b.CommonDir, NewMainRoot: moved, NewCommonDir: filepath.Join(moved, ".git"), Branch: b.Branch, ExpectedHead: b.BoundHead, Paths: map[string]string{e.Path: filepath.Join(moved, ".worktrees", filepath.Base(e.Path))}}
+	req := workspace.RebindRequest{RuntimeID: workspace.RuntimeID(state), OldMainRoot: old, OldCommonDir: b.CommonDir, NewMainRoot: moved, NewCommonDir: filepath.Join(moved, ".git"), Branch: b.Branch, Paths: map[string]string{e.Path: filepath.Join(moved, ".worktrees", filepath.Base(e.Path))}}
 	if err = os.Rename(old, moved); err != nil {
 		t.Fatal(err)
 	}
@@ -134,15 +145,19 @@ func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
 	journalPathBefore := filepath.Join(moved, ".claude/loop-events.jsonl")
 	writerBefore := runtime.NewWriter(statePathBefore, journalPathBefore, moved, semantic.RuntimeCandidateValidator{})
 	sourceSnapshot := runtime.Snapshot{Revision: int(state["revision"].(float64)), State: state}
-	for _, field := range []string{"integration_branch", "bound_head", "runtime_id"} {
+	for _, field := range []string{"integration_branch", "runtime_id"} {
 		bad := workspace.Encode(next)
-		bad[field] = "unrelated"
+		if field == "runtime_id" {
+			bad["executions"].(map[string]any)[e.AssignmentID].(map[string]any)[field] = "unrelated"
+		} else {
+			bad[field] = "unrelated"
+		}
 		if _, err := writerBefore.RelocateWorkspace(sourceSnapshot, bad, "invalid", "test"); err == nil {
 			t.Fatalf("accepted field %s", field)
 		}
 	}
 	if withReceipt {
-		for _, field := range []string{"path", "checkout", "sha256", "log_sha256", "command", "profile_digest", "check_binding", "removed"} {
+		for _, field := range []string{"path", "checkout", "command", "binding", "removed"} {
 			bad := workspace.Encode(next)
 			row := bad["executions"].(map[string]any)[e.AssignmentID].(map[string]any)
 			ref := row["tool_check_receipts"].([]any)[0].(map[string]any)
@@ -167,7 +182,7 @@ func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
 	if _, err := writerBefore.RelocateWorkspace(stale, workspace.Encode(next), "invalid", "test"); err == nil {
 		t.Fatal("stale revision accepted")
 	}
-	for _, suffix := range []string{".commit-pending.json", ".fingerprint-pending.json", ".rollover-pending.json", ".journal-rotation-pending.json"} {
+	for _, suffix := range []string{".commit-pending.json", ".rollover-pending.json", ".journal-rotation-pending.json"} {
 		if err := os.WriteFile(statePathBefore+suffix, []byte("{}"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -180,7 +195,6 @@ func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
 	}
 	for _, change := range []func(*workspace.RebindRequest){
 		func(r *workspace.RebindRequest) { r.RuntimeID = "wrong" },
-		func(r *workspace.RebindRequest) { r.ExpectedHead = "wrong" },
 		func(r *workspace.RebindRequest) { r.Branch = "test3" },
 		func(r *workspace.RebindRequest) { r.NewCommonDir = filepath.Join(moved, "wrong") },
 		func(r *workspace.RebindRequest) { r.Paths = map[string]string{e.Path: moved} },
@@ -211,6 +225,10 @@ func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
 		if code := Run([]string{"runtime", "workspace", "rebind", "--root", moved, "--request", request, "--reason", "review relocation"}, bytes.NewReader(nil), &out, &stderr); code != 0 {
 			t.Fatalf("valid PlanRebind but CLI returned %d: %s", code, stderr.String())
 		}
+	}
+	transactions, err := os.ReadDir(filepath.Join(moved, ".claude/evidence/workspace-relocations"))
+	if err != nil || len(transactions) != 1 || transactions[0].Name() != "operation-1.json" {
+		t.Fatalf("relocation replay did not retain one non-hash transaction: %v %v", transactions, err)
 	}
 	statePath := filepath.Join(moved, ".claude/loop-state.json")
 	journalPath := filepath.Join(moved, ".claude/loop-events.jsonl")
@@ -249,6 +267,17 @@ func testWorkspaceRebindRealCLI(t *testing.T, withReceipt bool) {
 	var event, after map[string]any
 	json.Unmarshal(lines[len(lines)-1], &event)
 	json.Unmarshal(afterState, &after)
+	newRegistry := after["workspace"].(map[string]any)
+	newExecution := newRegistry["executions"].(map[string]any)[e.AssignmentID].(map[string]any)
+	if !reflect.DeepEqual(newRegistry["bound_head"], map[string]any{"legacy": true}) || !reflect.DeepEqual(newExecution["base_commit"], []any{1.0}) || newExecution["bootstrap_sha256"] != 42.0 {
+		t.Fatalf("relocation rewrote historical Runtime machine fields: bound=%#v base=%#v bootstrap=%#v", newRegistry["bound_head"], newExecution["base_commit"], newExecution["bootstrap_sha256"])
+	}
+	if !reflect.DeepEqual(newRegistry["historical_detail"], legacyRegistry["historical_detail"]) || !reflect.DeepEqual(newExecution["historical_detail"], legacyExecution["historical_detail"]) {
+		t.Fatal("relocation changed unknown historical Runtime data")
+	}
+	if withReceipt && !reflect.DeepEqual(newExecution["tool_check_receipts"].([]any)[0].(map[string]any)["historical_detail"], legacyExecution["tool_check_receipts"].([]any)[0].(map[string]any)["historical_detail"]) {
+		t.Fatal("relocation changed unknown receipt data")
+	}
 	digest := func(v any) string {
 		data, _ := json.MarshalIndent(v, "", "  ")
 		return fmt.Sprintf("%x", sha256.Sum256(append(data, '\n')))

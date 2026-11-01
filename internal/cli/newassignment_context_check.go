@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/assignment"
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -30,12 +30,10 @@ import (
 type nativeCheckAuthority struct {
 	Assignment    hookctx.AssignmentContext
 	Record        assignmentrecord.Record
-	RecordSHA     string
 	Binding       assignmentContextBinding
 	Context       nativeAssignmentContext
 	Source        assignment.NativeCheckSource
 	ActivationRef string
-	ActivationSHA string
 }
 
 // runNativeAssignmentCheck selects only a check index from the current Record.
@@ -100,17 +98,16 @@ func runNativeAssignmentCheck(args []string, stdout, stderr io.Writer) int {
 	check := authority.Record.ClosingContract.WorkerChecks[*index]
 	source := workspace.NativeCheckSource{
 		Checkout: authority.Source.Checkout, Branch: authority.Source.Branch,
-		TargetBranch: authority.Source.TargetBranch, Head: authority.Source.Head,
-		ManifestRef: authority.Source.ManifestRef, ManifestSHA256: authority.Source.ManifestSHA256,
+		TargetBranch: authority.Source.TargetBranch,
+		ManifestRef:  authority.Source.ManifestRef,
 	}
 	request := workspace.NativeOwnedCheckRequest{
 		RuntimeID: authority.Record.RuntimeID, BaselineGeneration: authority.Record.BaselineGeneration,
 		AssignmentID: authority.Record.AssignmentID, OwnerAgentID: authority.Record.OwnerAgentID,
-		Record: authority.Record.Reference(), RecordSHA256: authority.RecordSHA, RecordData: authority.Record,
+		Record: authority.Record.Reference(), RecordData: authority.Record,
 		ContextGeneration: authority.Binding.Generation, ContextRef: authority.Binding.Context,
-		ContextSHA256: authority.Binding.Context.SHA256,
-		ActivationRef: authority.ActivationRef, ActivationSHA256: authority.ActivationSHA,
-		Check: check, Source: source,
+		ActivationRef: authority.ActivationRef,
+		Check:         check, Source: source,
 	}
 	run, runErr := workspace.CoordinateNativeRun(ctx, canonicalRoot, request, stdout)
 	if run.ToolReceipt.Path == "" {
@@ -126,16 +123,15 @@ func runNativeAssignmentCheck(args []string, stdout, stderr io.Writer) int {
 		return fail(fmt.Errorf("native WorkerCheck returned no process-captured receipt"))
 	}
 	wrapper := assignment.NativeOwnedCheckReceipt{
-		CheckIndex: check.Index, Command: check.Command, ProfileDigest: check.Profile.Digest(),
-		Record: authority.Record.Reference(), RecordSHA256: authority.RecordSHA,
+		CheckIndex: check.Index, Command: check.Command,
+		Record:    authority.Record.Reference(),
 		RuntimeID: authority.Record.RuntimeID, BaselineGeneration: authority.Record.BaselineGeneration,
 		AssignmentID: authority.Record.AssignmentID, OwnerAgentID: authority.Record.OwnerAgentID,
 		ExecutionGeneration: 0, NativeContextGeneration: authority.Binding.Generation,
-		NativeContextRef: authority.Binding.Context.Path, NativeContextSHA256: authority.Binding.Context.SHA256,
-		ActivationRef: authority.ActivationRef, ActivationSHA256: authority.ActivationSHA,
-		Checkout: authority.Source.Checkout, SourceBranch: authority.Source.Branch,
-		TargetBranch: authority.Source.TargetBranch, SourceHead: authority.Source.Head,
-		SourceSnapshotSHA256: run.SnapshotSHA256, ToolReceipt: run.ToolReceipt,
+		NativeContextRef: authority.Binding.Context.Path,
+		ActivationRef:    authority.ActivationRef,
+		Checkout:         authority.Source.Checkout, SourceBranch: authority.Source.Branch,
+		TargetBranch: authority.Source.TargetBranch, ToolReceipt: run.ToolReceipt,
 	}
 	var acceptErr error
 	if run.Reused {
@@ -229,21 +225,17 @@ func resolveNativeCheckAuthority(root string, snapshot runtime.Snapshot, owner s
 	if record.DispatchMode != "plan_checkpoint" {
 		return out, fmt.Errorf("native WorkerCheck requires the original plan_checkpoint dispatch; other approval modes retain their original gate")
 	}
-	if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) { return assignmentinputs.Read(root, ref) }); err != nil {
-		return out, fmt.Errorf("current Assignment Record sources are not verifiable: %w", err)
-	}
-	recordSHA, err := record.Digest()
-	if err != nil {
-		return out, err
+	if err := assignmentrecord.ValidateRecord(record); err != nil {
+		return out, fmt.Errorf("current Assignment responsibility is invalid: %w", err)
 	}
 	context, err := verifyFixedContext(root, state, *selected, binding)
 	if err != nil {
 		return out, fmt.Errorf("native WorkerCheck fixed context: %w", err)
 	}
-	if context.Dispatch.AssignmentRecord == nil || *context.Dispatch.AssignmentRecord != record.Reference() || context.Dispatch.AssignmentRecordSHA256 != recordSHA {
+	if context.Dispatch.AssignmentRecord == nil || *context.Dispatch.AssignmentRecord != record.Reference() {
 		return out, fmt.Errorf("native context does not project the current Assignment Record")
 	}
-	activationRef, activationSHA, err := validatedNativeActivation(root, snapshot, owner, agent, activated)
+	activationRef, err := validatedNativeActivation(root, snapshot, owner, agent, activated, record.Contract == assignmentrecord.NativeDeliveryContract)
 	if err != nil {
 		return out, err
 	}
@@ -251,33 +243,31 @@ func resolveNativeCheckAuthority(root string, snapshot runtime.Snapshot, owner s
 	if err != nil {
 		return out, err
 	}
-	out = nativeCheckAuthority{Assignment: *selected, Record: record, RecordSHA: recordSHA, Binding: binding, Context: context, Source: source, ActivationRef: activationRef, ActivationSHA: activationSHA}
+	out = nativeCheckAuthority{Assignment: *selected, Record: record, Binding: binding, Context: context, Source: source, ActivationRef: activationRef}
 	return out, nil
 }
 
-func validatedNativeActivation(root string, snapshot runtime.Snapshot, owner string, agent map[string]any, activatedPlanRef string) (string, string, error) {
+func validatedNativeActivation(root string, snapshot runtime.Snapshot, owner string, agent map[string]any, activatedPlanRef string, nativeDelivery bool) (string, error) {
 	activationRef, _ := agent["activation_ref"].(string)
 	if activationRef == "" {
-		return "", "", fmt.Errorf("native WorkerCheck has no current original activation artifact")
+		if nativeDelivery {
+			return "", nil
+		}
+		return "", fmt.Errorf("native WorkerCheck has no current original activation artifact")
 	}
-	before, err := workpacket.ReadFile(root, activationRef, 1<<20)
+	_, err := workpacket.ReadFile(root, activationRef, 1<<20)
 	if err != nil {
-		return "", "", fmt.Errorf("read current original activation artifact: %w", err)
+		return "", fmt.Errorf("read current original activation artifact: %w", err)
 	}
-	sha := workpacket.Digest(before)
 	planRef, err := plancheckpoint.ActivatedRef(root, snapshot, owner)
 	if err != nil || planRef == "" || planRef != activatedPlanRef {
-		return "", "", fmt.Errorf("native WorkerCheck PLAN/activation changed during source validation")
+		return "", fmt.Errorf("native WorkerCheck PLAN/activation changed during source validation")
 	}
-	after, err := workpacket.ReadFile(root, activationRef, 1<<20)
-	if err != nil || workpacket.Digest(after) != sha {
-		return "", "", fmt.Errorf("native WorkerCheck activation bytes changed during source validation")
-	}
-	return activationRef, sha, nil
+	return activationRef, nil
 }
 
 func validateCapturedNativeToolReceipt(root string, authority nativeCheckAuthority, wrapper assignment.NativeOwnedCheckReceipt, expectedPassed bool) error {
-	if err := assignment.ValidateNativeOwnedCheckReceipt(authority.Record, authority.Binding.Generation, authority.Binding.Context.Path, authority.Binding.Context.SHA256, authority.ActivationRef, authority.ActivationSHA, authority.Source, wrapper); err != nil {
+	if err := assignment.ValidateNativeOwnedCheckReceipt(authority.Record, authority.Binding.Generation, authority.Binding.Context.Path, authority.ActivationRef, authority.Source, wrapper); err != nil {
 		return err
 	}
 	receiptRoot := filepath.Join(root, ".claude/evidence")
@@ -314,7 +304,7 @@ func acceptNativeOwnedCheckReceipt(root, owner string, receipt assignment.Native
 		if err != nil {
 			return fmt.Errorf("revalidate native WorkerCheck before receipt acceptance: %w", err)
 		}
-		if err := assignment.ValidateNativeOwnedCheckReceipt(current.Record, current.Binding.Generation, current.Binding.Context.Path, current.Binding.Context.SHA256, current.ActivationRef, current.ActivationSHA, current.Source, receipt); err != nil {
+		if err := assignment.ValidateNativeOwnedCheckReceipt(current.Record, current.Binding.Generation, current.Binding.Context.Path, current.ActivationRef, current.Source, receipt); err != nil {
 			return err
 		}
 		previous, err := decodeNativeOwnedCheckReceipts(contextAgent(snapshot.State, owner))
@@ -323,8 +313,8 @@ func acceptNativeOwnedCheckReceipt(root, owner string, receipt assignment.Native
 		}
 		registered := false
 		for _, item := range previous {
-			if item.ToolReceipt.SHA256 == receipt.ToolReceipt.SHA256 {
-				if !reflect.DeepEqual(item, receipt) {
+			if item.ToolReceipt.Path == receipt.ToolReceipt.Path {
+				if !sameNativeCheckReceipt(item, receipt) {
 					return fmt.Errorf("native check receipt replay differs from its original Runtime binding")
 				}
 				registered = true
@@ -336,7 +326,7 @@ func acceptNativeOwnedCheckReceipt(root, owner string, receipt assignment.Native
 		if len(previous) >= 1024 {
 			return fmt.Errorf("native owned_check_receipts reached its non-evicting 1024-entry limit")
 		}
-		key := "native-worker-check:" + receipt.ToolReceipt.SHA256
+		key := "native-worker-check:" + base64.RawURLEncoding.EncodeToString([]byte(receipt.ToolReceipt.Path))
 		_, err = writer.Update(snapshot.Revision, runtime.Mutation{
 			EventID: key, TransitionID: "NATIVE-WORKER-CHECK", Event: "native_worker_check_received",
 			Actor: owner, RuntimeID: receipt.RuntimeID, BaselineGeneration: receipt.BaselineGeneration,
@@ -347,7 +337,7 @@ func acceptNativeOwnedCheckReceipt(root, owner string, receipt assignment.Native
 				if err != nil {
 					return fmt.Errorf("native WorkerCheck authority changed during receipt write: %w", err)
 				}
-				if err := assignment.ValidateNativeOwnedCheckReceipt(latest.Record, latest.Binding.Generation, latest.Binding.Context.Path, latest.Binding.Context.SHA256, latest.ActivationRef, latest.ActivationSHA, latest.Source, receipt); err != nil {
+				if err := assignment.ValidateNativeOwnedCheckReceipt(latest.Record, latest.Binding.Generation, latest.Binding.Context.Path, latest.ActivationRef, latest.Source, receipt); err != nil {
 					return err
 				}
 				row := contextAgent(state, owner)
@@ -356,11 +346,11 @@ func acceptNativeOwnedCheckReceipt(root, owner string, receipt assignment.Native
 					return err
 				}
 				for _, item := range stored {
-					if item.ToolReceipt.SHA256 == receipt.ToolReceipt.SHA256 {
-						if reflect.DeepEqual(item, receipt) {
+					if item.ToolReceipt.Path == receipt.ToolReceipt.Path {
+						if sameNativeCheckReceipt(item, receipt) {
 							return nil
 						}
-						return fmt.Errorf("native check receipt digest is already bound to different facts")
+						return fmt.Errorf("native check receipt path is already bound to different facts")
 					}
 				}
 				if len(stored) >= 1024 {
@@ -384,6 +374,11 @@ func acceptNativeOwnedCheckReceipt(root, owner string, receipt assignment.Native
 		return err
 	}
 	return runtime.ErrStaleRevision
+}
+
+// Receipt identity uses the actual recorded responsibility and check.
+func sameNativeCheckReceipt(a, b assignment.NativeOwnedCheckReceipt) bool {
+	return reflect.DeepEqual(a, b)
 }
 
 func decodeNativeOwnedCheckReceipts(agent map[string]any) ([]assignment.NativeOwnedCheckReceipt, error) {

@@ -68,10 +68,9 @@ func TestBuildTransitionEvidenceUsesCatalogGeneratedReference(t *testing.T) {
 	}
 }
 
-// BUG-039-35: OrganicSpine after TR-006 keeps S6 builder_report (round=1) while
-// WriteVerificationDimensionPass adds team_manifest (round=2). PTR-VERIFY-01
-// must bind the current-round team_manifest, not the stale builder_report alias.
-func TestBuildTransitionEvidencePrefersCurrentRoundTeamManifest(t *testing.T) {
+// Kind preference remains useful even when historical rows carry different
+// irrelevant review numbers.
+func TestBuildTransitionEvidencePrefersCatalogKindWithoutRoundBinding(t *testing.T) {
 	snapshot := runtime.Snapshot{
 		Revision: 1,
 		State: map[string]any{
@@ -79,11 +78,11 @@ func TestBuildTransitionEvidencePrefersCurrentRoundTeamManifest(t *testing.T) {
 			"evidence": []any{
 				map[string]any{
 					"id": "ev-team", "kind": "builder_report", "path": "evidence/ev-team.json",
-					"status": "valid", "baseline_generation": 1, "review_round": 1,
+					"status": "valid", "baseline_generation": 1, "review_round": 2,
 				},
 				map[string]any{
 					"id": "ev-manifest-delivery", "kind": "team_manifest", "path": "evidence/ev-manifest-delivery.json",
-					"status": "valid", "baseline_generation": 1, "review_round": 2,
+					"status": "valid", "baseline_generation": 1, "review_round": 1,
 				},
 				map[string]any{
 					"id": "ev-delivery-pass", "kind": "delivery_review", "path": "evidence/ev-delivery-pass.json",
@@ -120,11 +119,11 @@ func TestBuildTransitionEvidenceFallsBackToBuilderReportForTeamManifest(t *testi
 			"evidence": []any{
 				map[string]any{
 					"id": "ev-completion-1", "kind": "agent_completion", "path": "evidence/ev-completion-1.json",
-					"status": "valid", "baseline_generation": 1, "review_round": 1,
+					"status": "valid", "baseline_generation": 1, "review_round": 9,
 				},
 				map[string]any{
 					"id": "ev-team", "kind": "builder_report", "path": "evidence/ev-team.json",
-					"status": "valid", "baseline_generation": 1, "review_round": 1,
+					"status": "valid", "baseline_generation": 1, "review_round": 9,
 				},
 			},
 		},

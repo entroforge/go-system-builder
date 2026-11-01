@@ -21,7 +21,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/schema"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -207,21 +206,24 @@ func prepareCoreBuilder(t *testing.T, f stageAnswerFixture, profile string) work
 		args = append(args, "--context-profile", profile)
 	}
 	output := stageCLI(t, args...)
-	var parsed struct {
-		workspace.Execution
+	var execution workspace.Execution
+	var metadata struct {
 		Mode string `json:"context_mode"`
 	}
-	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(output), &execution); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(output), &metadata); err != nil {
 		t.Fatal(err)
 	}
 	want := "shadow"
 	if profile == "backend-core" {
 		want = "enabled"
 	}
-	if parsed.Mode != want {
-		t.Fatalf("actual prepare mode %s want %s", parsed.Mode, want)
+	if metadata.Mode != want {
+		t.Fatalf("actual prepare mode %s want %s; prepare output: %s", metadata.Mode, want, output)
 	}
-	return parsed.Execution
+	return execution
 }
 
 func TestWorkspacePrepareFreezesCanonicalDeclaredReadSources(t *testing.T) {
@@ -274,24 +276,21 @@ func TestWorkspacePrepareFreezesCanonicalDeclaredReadSources(t *testing.T) {
 	bound := snapshot.State["bound_req"].(map[string]any)
 	devBranch := bound["workspace"].(map[string]any)["dev_branch"].(string)
 	head, err := workspace.Git(context.Background(), root, "rev-parse", "refs/heads/"+devBranch)
-	if err != nil || head != e.BaseCommit {
-		t.Fatalf("prepared base is not the bound development commit: base=%s branch=%s err=%v", e.BaseCommit, head, err)
+	if err != nil || head == "" {
+		t.Fatalf("bound development branch is unavailable: head=%s err=%v", head, err)
 	}
 	for _, rel := range paths {
 		want := sources[rel]
-		if e.Inputs[rel] != workpacket.Digest(want) {
+		if e.Inputs[rel] != rel {
 			t.Fatalf("Execution omitted or changed canonical read input %s", rel)
 		}
 		worker, err := os.ReadFile(filepath.Join(e.Path, ".claude/inputs", filepath.FromSlash(rel)))
 		if err != nil || !bytes.Equal(worker, want) {
 			t.Fatalf("Worker input differs from canonical read source %s: %v", rel, err)
 		}
-		gitBlob, err := exec.Command("git", "-C", root, "show", e.BaseCommit+":"+rel).Output()
+		gitBlob, err := exec.Command("git", "-C", root, "show", head+":"+rel).Output()
 		if err != nil || !bytes.Equal(gitBlob, want) {
 			t.Fatalf("test source was not the prepared regular Git blob %s: %v", rel, err)
-		}
-		if workpacket.Digest(worker) != e.Inputs[rel] {
-			t.Fatalf("Worker input SHA differs from Execution for %s", rel)
 		}
 	}
 }
@@ -347,8 +346,9 @@ func TestWorkspaceBackendCoreInstallsFixedRoleWithoutChangingActivation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workpacket.Digest(actual) != c.GeneratedRole.SHA256 {
-		t.Fatal("Worker did not install actual fixed generated role")
+	generated, err := os.ReadFile(filepath.Join(f.root, c.GeneratedRole.Source))
+	if err != nil || !bytes.Equal(actual, generated) {
+		t.Fatalf("Worker did not install actual fixed generated role: %v", err)
 	}
 	frontmatter := strings.SplitN(string(actual), "---", 3)[1]
 	if strings.Count(frontmatter, "  - ") != 4 || strings.Contains(frontmatter, "  - gorm") {
@@ -356,8 +356,9 @@ func TestWorkspaceBackendCoreInstallsFixedRoleWithoutChangingActivation(t *testi
 	}
 	for _, skill := range c.Selection.Selected {
 		data, err := os.ReadFile(filepath.Join(e.Path, skill.Source))
-		if err != nil || workpacket.Digest(data) != skill.SHA256 {
-			t.Fatalf("selected extra Skill is unreadable: %s %v", skill.Source, err)
+		original, sourceErr := os.ReadFile(filepath.Join(f.root, skill.Source))
+		if err != nil || sourceErr != nil || !bytes.Equal(data, original) {
+			t.Fatalf("selected extra Skill differs from source: %s %v %v", skill.Source, err, sourceErr)
 		}
 	}
 	if err := registry.ValidateBootstrap(e); err != nil {
@@ -478,7 +479,7 @@ func runCoreBuilderIntegration(t *testing.T, f stageAnswerFixture, afterReport .
 	}
 	fakeDir := t.TempDir()
 	fake := `#!/usr/bin/python3
-import hashlib,json,pathlib,sys
+import json,pathlib,sys
 args=sys.argv[1:]
 role=args[args.index('--agent')+1]
 context=json.loads(pathlib.Path('.claude/inputs/assignment-context.json').read_text())
@@ -486,9 +487,8 @@ role_bytes=pathlib.Path('.claude/agents/'+role+'.md').read_bytes()
 reads=[]
 for skill in context['context_selection']['selected']:
     actual=pathlib.Path(skill['source']).read_bytes()
-    assert hashlib.sha256(actual).hexdigest()==skill['sha256']
     reads.append(skill['name'])
-print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashlib.sha256(role_bytes).hexdigest(),'read_skills':reads,'mode':context['context_selection']['mode'],'allowed_tools':args[args.index('--allowedTools')+1],'prompt':args[-1]}))
+print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_content':role_bytes.decode(),'read_skills':reads,'mode':context['context_selection']['mode'],'allowed_tools':args[args.index('--allowedTools')+1],'prompt':args[-1]}))
 `
 	if err := os.WriteFile(filepath.Join(fakeDir, "claude"), []byte(fake), 0700); err != nil {
 		t.Fatal(err)
@@ -546,7 +546,7 @@ print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashli
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child["cwd"] != e.Path || child["role"] != "backend-builder" || child["role_sha256"] != c.GeneratedRole.SHA256 || child["mode"] != "enabled" || child["allowed_tools"] != "Read,Glob,Grep,Write,Edit,Bash" {
+	if child["cwd"] != e.Path || child["role"] != "backend-builder" || child["role_content"] != string(mustReadCoreFile(t, f.root, c.GeneratedRole.Source)) || child["mode"] != "enabled" || child["allowed_tools"] != "Read,Glob,Grep,Write,Edit,Bash" {
 		t.Fatal("child role/CWD/tools differ from the original fixed execution")
 	}
 	if !strings.Contains(child["prompt"].(string), "fixed backend core profile is enabled") {
@@ -557,7 +557,7 @@ print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashli
 	}
 	os.WriteFile(filepath.Join(e.Path, "src/value.go"), []byte("package src\nfunc Value() int { return 2 }\n"), 0600)
 	os.WriteFile(filepath.Join(e.Path, "src/value_test.go"), []byte("package src\nimport \"testing\"\nfunc TestValue(t *testing.T) { if Value()!=2 { t.Fatal(\"value\") } }\n"), 0600)
-	stageJSON(t, e.Path, ".loop-submissions/commit.json", workspace.CommitRequest{ExpectedHead: e.BaseCommit, Message: "Implement the scoped value and owned test", Paths: []string{"src/value.go", "src/value_test.go"}})
+	stageJSON(t, e.Path, ".loop-submissions/commit.json", workspace.CommitRequest{Message: "Implement the scoped value and owned test", Paths: []string{"src/value.go", "src/value_test.go"}})
 	stageCLI(t, "runtime", "workspace", "commit", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID)
 	// This is an actual local test run for the author's report, not an invented
 	// check receipt; Main's original integration runs the required check again.
@@ -655,8 +655,70 @@ print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashli
 		}
 	}
 	integrated := stageCLI(t, "runtime", "task-integrate", "--root", f.root, "--assignment-id", e.AssignmentID, "--agent-id", e.AgentID)
-	if !strings.Contains(integrated, "complete") {
-		t.Fatalf("original integration did not complete: %s", integrated)
+	var result struct {
+		State        string   `json:"state"`
+		Blocked      bool     `json:"blocked"`
+		AssignmentID string   `json:"assignment_id"`
+		Integration  []string `json:"integration"`
+		Handoff      string   `json:"handoff"`
+	}
+	if err := json.Unmarshal([]byte(integrated), &result); err != nil || result.State != "integrated" || result.Blocked || result.AssignmentID != e.AssignmentID {
+		t.Fatalf("original integration was not accepted: %s; %v", integrated, err)
+	}
+	snap := stageSnapshot(t, f.root)
+	if snap.State["lifecycle"].(map[string]any)["state"] != "verification" || !strings.Contains(result.Handoff, "TR-006") {
+		t.Fatalf("accepted integration did not reach original S7 handoff: %s", integrated)
+	}
+	checkpointPath := integration.CheckpointPath(f.root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID)
+	cp, found, err := integration.DefaultCheckpointStore().Load(checkpointPath)
+	if err != nil || !found || cp.AssignmentID != e.AssignmentID || cp.TaskID != f.taskID || cp.VerifiedAt == "" {
+		t.Fatalf("original verified checkpoint missing: %+v; %v", cp, err)
+	}
+	if cp.CompletionReportPath != currentReceipt.DomainRefs[0] {
+		t.Fatalf("checkpoint lost original accepted Result: %+v", cp)
+	}
+	if len(cp.CheckReceipts) == 0 {
+		t.Fatal("original Main integration omitted actual required-check receipts")
+	}
+	for _, ref := range cp.CheckReceipts {
+		data, err := os.ReadFile(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var check struct {
+			Command string `json:"command"`
+			Status  string `json:"status"`
+		}
+		if err := json.Unmarshal(data, &check); err != nil || check.Command != "go test ./..." || check.Status != "pass" {
+			t.Fatalf("original Main check did not record its actual result: %s; %v", data, err)
+		}
+	}
+	acked := false
+	for _, raw := range snap.State["entities"].(map[string]any)["agents"].([]any) {
+		agent := raw.(map[string]any)
+		if agent["id"] == e.AgentID {
+			ref, _ := agent["completion_acknowledged_ref"].(string)
+			acked = agent["state"] == "done" && ref != ""
+		}
+	}
+	if !acked {
+		t.Fatal("actual verified integration did not acknowledge its Builder")
+	}
+	switch cp.State {
+	case integration.StateComplete:
+		if _, err := os.Stat(e.Path); !os.IsNotExist(err) {
+			t.Fatalf("complete cleanup retained Worker worktree: %v", err)
+		}
+	case integration.StateCleanupPending:
+		if !slices.Contains(result.Integration, "checkpoint_state=cleanup_pending") || !strings.Contains(strings.Join(result.Integration, "\n"), checkPath) {
+			t.Fatalf("pending cleanup did not name original preserved evidence: %s", integrated)
+		}
+		preserved, err := os.ReadFile(filepath.Join(e.Path, checkPath))
+		if err != nil || !bytes.Equal(preserved, checked) {
+			t.Fatalf("pending cleanup changed original check evidence: %v", err)
+		}
+	default:
+		t.Fatalf("accepted integration has unexpected resource state: %+v", cp)
 	}
 	assertCoreBuilderReceipt(t, f.root, e.AgentID, e.AssignmentID, true, true)
 	assertCoreReceptionAdvice(t, f, e.AssignmentID, false)
@@ -671,7 +733,9 @@ func assertCoreReceptionAdvice(t *testing.T, f stageAnswerFixture, assignmentID 
 	before := stageSnapshot(t, f.root)
 	output := stageCLI(t, "s6", "status", "--root", f.root, "--advice", "--capacity", "1", "--max-unreceived-results", "1", "--json")
 	var result struct {
-		Advice struct {
+		DispatchAvailable bool   `json:"dispatch_available"`
+		LifecycleState    string `json:"lifecycle_state"`
+		Advice            struct {
 			Action struct {
 				Kind    string   `json:"action_kind"`
 				Subject string   `json:"subject"`
@@ -686,6 +750,15 @@ func assertCoreReceptionAdvice(t *testing.T, f stageAnswerFixture, assignmentID 
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
 		t.Fatal("reception advice changed original Runtime")
+	}
+	if !pending && before.State["lifecycle"].(map[string]any)["state"] == "verification" {
+		if result.DispatchAvailable || result.LifecycleState != "verification" || result.Advice.Budget != nil {
+			t.Fatalf("terminal S7 advice retained S6 dispatch: %s", output)
+		}
+		return
+	}
+	if before.State["lifecycle"].(map[string]any)["state"] != "building" {
+		t.Fatalf("S6 reception advice has unexpected lifecycle: %s", output)
 	}
 	if pending {
 		if result.Advice.Unreceived != 1 || result.Advice.Action.Subject != assignmentID || result.Advice.Action.Kind != "receive_integration" || result.Advice.Budget == nil || *result.Advice.Budget != 0 || len(result.Advice.Action.Argv) == 0 {

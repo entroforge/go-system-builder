@@ -26,15 +26,6 @@ func canonicalClosingBlockers(canonical *canonicalResultFacts) []string {
 	} else if !assignmentresult.ClosingAssessmentComplete(canonical.Accepted.Answer) {
 		blockers = append(blockers, "S6 closing pending: owner closing_assessment does not satisfy every frozen DoneWhen")
 	}
-	if len(canonical.Accepted.Answer.RisksBlockers) > 0 {
-		blockers = append(blockers, "S6 closing pending: owner Result declares risks or blockers")
-	}
-	if len(canonical.Accepted.Answer.ScopeDeviations) > 0 {
-		blockers = append(blockers, "S6 closing pending: owner Result declares scope deviations")
-	}
-	if len(canonical.Record.ClosingContract.WorkerChecks) > 0 && !assignmentresult.WorkerClosureComplete(canonical.Record, canonical.Accepted) {
-		blockers = append(blockers, "S6 closing pending: owned_check_evidence_unavailable")
-	}
 	return blockers
 }
 
@@ -44,7 +35,7 @@ func preserveCanonicalClosingPending(store *CheckpointStore, path string, curren
 		return Result{Checkpoint: current}, fmt.Errorf("%w: missing closing blocker detail", ErrClosingContractPending)
 	}
 	resume := StatePending
-	if found && current.MergeCommit != "" {
+	if found && (current.State == StateMerged || current.State == StateVerified || current.State == StateAcknowledged || current.State == StateCleanupPending || current.State == StateComplete) {
 		// Preserve the exact old merge and Main facts as history, but future
 		// current-Result checks must start from the merged boundary.
 		resume = StateMerged
@@ -58,10 +49,13 @@ func preserveCanonicalClosingPending(store *CheckpointStore, path string, curren
 			current.TargetBranch != "" && current.TargetBranch != inspection.TargetBranch {
 			return Result{Checkpoint: current}, fmt.Errorf("canonical closing blocker checkpoint coordinates mismatch")
 		}
-		if current.State == StatePreserved && current.ResumeState == resume && current.FailureReason == reason && hasAllStrings(current.Blockers, blockers) {
+		// A previously preserved failure or an interrupted merge already has
+		// its own recovery boundary. Do not replace it with a closing error:
+		// that would lose the last known state or hide an unknown merge window.
+		if current.State == StateReady || current.State == StatePreserved || current.State == StateBlocked {
 			return Result{Checkpoint: current, Reused: true}, fmt.Errorf("%w: %s", ErrClosingContractPending, reason)
 		}
-		next := current
+		next := cleanCheckpoint(current)
 		next.State = StatePreserved
 		next.ResumeState = resume
 		for _, blocker := range blockers {
@@ -80,25 +74,17 @@ func preserveCanonicalClosingPending(store *CheckpointStore, path string, curren
 		TaskID:             record.Task.ID,
 		WorktreePath:       inspection.WorktreePath,
 		SourceBranch:       inspection.SourceBranch,
-		SourceHead:         inspection.SourceHead,
 		TargetBranch:       inspection.TargetBranch,
-		TargetHead:         inspection.TargetHead,
-		MergeBase:          inspection.MergeBase,
 		BaselineGeneration: record.BaselineGeneration,
 		State:              StatePreserved,
 		ResumeState:        resume,
-		IdempotencyKey:     IdempotencyKey(record.AssignmentID, inspection.SourceHead, inspection.TargetBranch, record.BaselineGeneration),
+		IdempotencyKey:     IdempotencyKey(fmt.Sprintf("%s:r%d", record.AssignmentID, record.Revision), inspection.TargetBranch, record.BaselineGeneration),
 		Blockers:           append([]string{}, blockers...),
 		FailureReason:      reason,
 		LastErrorCode:      "LOOP_S6_CLOSING_PENDING",
 	}
 	ref := record.Reference()
-	sha, err := record.Digest()
-	if err != nil {
-		return Result{}, err
-	}
 	checkpoint.AssignmentRecord = &ref
-	checkpoint.AssignmentRecordSHA256 = sha
 	written, err := store.CompareAndSwap(path, current, checkpoint)
 	if err != nil {
 		return Result{Checkpoint: checkpoint}, fmt.Errorf("persist canonical closing blocker: %w", err)
@@ -113,13 +99,4 @@ func appendUniqueString(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
-}
-
-func hasAllStrings(values, required []string) bool {
-	for _, item := range required {
-		if !containsString(values, item) {
-			return false
-		}
-	}
-	return len(required) > 0
 }

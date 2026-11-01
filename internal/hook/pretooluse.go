@@ -126,9 +126,6 @@ func formatPreToolUseRecoveryPacket(decision policy.Decision, qg controller.Qual
 	if qg.ObservedRevision > 0 {
 		fmt.Fprintf(&b, " Observed revision: %d.", qg.ObservedRevision)
 	}
-	if qg.Fingerprint != "" {
-		fmt.Fprintf(&b, " Fingerprint: %s.", qg.Fingerprint)
-	}
 	if qg.NextCursor != "" {
 		fmt.Fprintf(&b, " Next cursor: %s.", qg.NextCursor)
 	}

@@ -3,7 +3,7 @@
 The source repository contains the reusable framework, implementation, tests,
 build tooling and contributor reference material. The installable release
 contains the assets explicitly listed in `include.txt`, generated CLI binaries,
-the generated manual, installation guide and release inventory.
+the generated manual and installation guide.
 
 Keep public usage, upgrade and recovery instructions in `docs/`, blank report
 templates in `docs/reports/`, and worked examples in `docs/examples/`. A guide
@@ -28,9 +28,9 @@ Before publishing:
 1. Run complete source and release checks with `make ci-verify-full` (`make ci-verify` is the lighter PR/main gate).
 2. Inspect the archive and run the staged release checks (`make doctor-staged`):
    `release-graph validate`, `init`, `doctor` and `validate --all` in a disposable copy.
-3. Verify extracted bytes with `tools/release-manifest.py` before initialization
-   changes them. Check the license, installation guide, public documentation,
-   templates and supported-platform binaries are present.
+3. Check the license, installation guide, public documentation, templates and
+   supported-platform binaries are present. The release graph validates actual
+   dependencies; it does not authenticate historical bytes or release origin.
 4. Record actual Claude Code workflow acceptance separately. Packaging checks
    and cross-compilation do not attest that a real Claude session passed.
 

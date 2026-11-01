@@ -42,8 +42,8 @@ func humanDefectFixture(t *testing.T) (*intakeFixture, runtime.Snapshot) {
 			t.Fatalf("fixture Git: %v %s", err, output)
 		}
 	}
-	plan := review.Plan{SchemaVersion: "1.0.0", ReviewPlanID: "review-plan-human-case", ReviewRound: 1, BaselineGeneration: 2,
-		FrozenSubjects: []review.FrozenSubject{{Path: product, SHA256: hash(mustRead(t, filepath.Join(f.root, product)))}}}
+	plan := review.Plan{SchemaVersion: "1.0.0", ReviewPlanID: "review-plan-human-case", BaselineGeneration: 2,
+		FrozenSubjects: []review.FrozenSubject{{Path: product}}}
 	planBytes, _ := json.Marshal(plan)
 	planRef := ".claude/review/plans/review-plan-human-case.json"
 	writeInvestigationBytes(t, f.root, planRef, planBytes)
@@ -76,8 +76,8 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 	if len(initial["source_finding_ids"].([]any)) != 0 || initial["observation_batch_id"] != nil {
 		t.Fatal("human intake invented a Finding or Batch")
 	}
-	if initial["baseline_digest"] == nil {
-		t.Fatal("human intake dropped the original frozen product baseline")
+	if initial["baseline_generation"] != float64(2) {
+		t.Fatal("human intake lost the current product generation")
 	}
 	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: current.Revision, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
 		document["failure_boundary_refs"] = []string{"test://decoder-boundary-observation"}
@@ -95,13 +95,13 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 		t.Fatal(err)
 	}
 	pointer = investigationPointerFromState(t, current.State)
-	current = registerS8Owner(t, f, current, owner, pointer["path"].(string), pointer["sha256"].(string))
+	current = registerS8Owner(t, f, current, owner, pointer["path"].(string))
 	packets, err := investigation.IssueHypothesisResultPackets(f.root, f.statePath, f.journalPath, current.Revision, owner.ownerID)
 	if err != nil || len(packets) != 1 {
 		t.Fatalf("human source question: %d %v", len(packets), err)
 	}
 	p := packets[0]
-	if p.Binding.ObservationBatchRef != "" || len(p.Inputs.Findings) != 0 {
+	if len(p.Inputs.Findings) != 0 {
 		t.Fatal("question fabricated a Batch/Finding")
 	}
 	foundReport := false
@@ -131,36 +131,6 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 			t.Fatalf("native human-source return: %d %s", code, output)
 		}
 	}
-	// A source failure belongs to Main and never manufactures a Case result.
-	decisionPath := filepath.Join(f.root, ".claude/decisions/hd-human-defect.json")
-	decisionBytes := mustRead(t, decisionPath)
-	if err := os.WriteFile(decisionPath, []byte("changed original source"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	beforeSourceState, beforeSourceJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-	if code, output := callStop(); code != 0 || !strings.Contains(output, "Main owns recovery") {
-		t.Fatalf("source error returned to author: %d %s", code, output)
-	}
-	if !bytes.Equal(beforeSourceState, mustRead(t, f.statePath)) || !bytes.Equal(beforeSourceJournal, mustRead(t, f.journalPath)) {
-		t.Fatal("bad source fabricated reception")
-	}
-	if err := os.WriteFile(decisionPath, decisionBytes, 0600); err != nil {
-		t.Fatal(err)
-	}
-	// A guessed boundary is still rejected. Its author-owned correction goes
-	// back through Main without forcing another native Stop or granting a source.
-	answer.SourceBoundaryRefs = []string{"README.md"}
-	p.Draft.Answer, _ = json.Marshal(answer)
-	writeInvestigationJSON(t, filepath.Join(f.root, p.AnswerPath), p.Draft)
-	if code, output := callStop(); code != 0 || !strings.Contains(output, "/answer/source_boundary_refs") || !strings.Contains(output, "Main owns recovery") {
-		t.Fatalf("unfrozen boundary was accepted or misattributed: %d %s", code, output)
-	}
-	if !bytes.Equal(beforeSourceState, mustRead(t, f.statePath)) || !bytes.Equal(beforeSourceJournal, mustRead(t, f.journalPath)) {
-		t.Fatal("guessed boundary changed Runtime or journal")
-	}
-	answer.SourceBoundaryRefs = []string{"hd-human-defect"}
-	p.Draft.Answer, _ = json.Marshal(answer)
-	writeInvestigationJSON(t, filepath.Join(f.root, p.AnswerPath), p.Draft)
 
 	stop()
 	current = currentS8Snapshot(t, f)
@@ -212,8 +182,8 @@ func TestHumanDefectCaseNativeInvestigationAndApprovedRepairWithoutFindingOrBatc
 	if _, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: contractPath, ApprovedBy: "main-session"}); err == nil || !strings.Contains(err.Error(), "approval") {
 		t.Fatalf("missing approval was bypassed or masked: %v", err)
 	}
-	approvalHash, approvalID, _ := registerContractApprovalEvidence(t, f, contractPath)
-	current, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: contractPath, ApprovedBy: "main-session", ApprovalHash: approvalHash, ApprovalEvidenceID: approvalID})
+	_, approvalID, _ := registerContractApprovalEvidence(t, f, contractPath)
+	current, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: contractPath, ApprovedBy: "main-session", ApprovalEvidenceID: approvalID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,11 +324,11 @@ func TestHumanCaseOriginalRevisionCannotBeReplacedByCurrentProfessionalBoundary(
 }
 
 func TestHumanCaseContractApprovalRechecksOriginalSourceAndProductBaseline(t *testing.T) {
-	for _, fault := range []string{"decision_bytes", "initial_revision", "product_bytes", "baseline_digest", "current_generation", "wrong_approval_scope"} {
+	for _, fault := range []string{"decision_bytes", "initial_revision", "product_bytes", "current_generation", "wrong_approval_scope"} {
 		t.Run(fault, func(t *testing.T) {
 			f, current, path := humanRoutedContractFixture(t)
 			caseID := investigationPointerFromState(t, current.State)["case_id"].(string)
-			approvalHash, approvalID, _ := registerContractApprovalEvidence(t, f, path)
+			_, approvalID, _ := registerContractApprovalEvidence(t, f, path)
 			current = currentS8Snapshot(t, f)
 			switch fault {
 			case "decision_bytes":
@@ -370,12 +340,6 @@ func TestHumanCaseContractApprovalRechecksOriginalSourceAndProductBaseline(t *te
 				writeInvestigationBytes(t, f.root, first["path"].(string), []byte("changed initial Case"))
 			case "product_bytes":
 				writeInvestigationBytes(t, f.root, "internal/service/decoder.go", []byte("package service\nconst Different = true\n"))
-			case "baseline_digest":
-				var err error
-				current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: current.Revision, CaseID: caseID, Operation: "invalid_baseline_pin", Mutate: func(document map[string]any) error { document["baseline_digest"] = strings.Repeat("d", 64); return nil }})
-				if err != nil {
-					t.Fatal(err)
-				}
 			case "current_generation":
 				current.State["baseline"].(map[string]any)["generation"] = 3
 				writeInvestigationJSON(t, f.statePath, current.State)
@@ -389,7 +353,7 @@ func TestHumanCaseContractApprovalRechecksOriginalSourceAndProductBaseline(t *te
 				writeInvestigationJSON(t, f.statePath, current.State)
 			}
 			beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-			_, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: path, ApprovedBy: "main-session", ApprovalHash: approvalHash, ApprovalEvidenceID: approvalID})
+			_, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: path, ApprovedBy: "main-session", ApprovalEvidenceID: approvalID})
 			if err == nil {
 				t.Fatal("changed authority source was approved")
 			}

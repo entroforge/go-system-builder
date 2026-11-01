@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/controlproof"
@@ -14,9 +15,8 @@ import (
 // Only the original rollover pending carries this short-lived cleanup proof.
 // Names are local to the Store journal directory, never caller-supplied paths.
 type rolloverJournalSegment struct {
-	Name   string `json:"name"`
-	Size   int    `json:"size"`
-	SHA256 string `json:"sha256"`
+	Name string `json:"name"`
+	Size int    `json:"size"`
 }
 
 func (s *Store) lifecycleJournalDataLocked() ([]byte, error) {
@@ -50,7 +50,7 @@ func (s *Store) captureRolloverJournalSegments(complete []byte) ([]rolloverJourn
 		if combined.Len()+len(data)+1 > controlproof.JournalLimit {
 			return nil, errors.New("rollover complete journal exceeds the original read budget")
 		}
-		segments = append(segments, rolloverJournalSegment{Name: filepath.Base(path), Size: len(data), SHA256: sha256Hex(data)})
+		segments = append(segments, rolloverJournalSegment{Name: filepath.Base(path), Size: len(data)})
 		combined.Write(data)
 		if len(data) > 0 && data[len(data)-1] != '\n' {
 			combined.WriteByte('\n')
@@ -78,9 +78,6 @@ func (s *Store) validateRolloverSegmentBinding(segments []rolloverJournalSegment
 			return errors.New("rollover original journal segment coordinate is invalid")
 		}
 		data := complete[offset : offset+segment.Size]
-		if sha256Hex(data) != segment.SHA256 {
-			return fmt.Errorf("rollover original journal segment differs from archive: %s", segment.Name)
-		}
 		offset += segment.Size
 		if len(data) > 0 && data[len(data)-1] != '\n' {
 			if offset >= len(complete) || complete[offset] != '\n' {
@@ -131,23 +128,15 @@ func (s *Store) recoverSegmentedRolloverLocked(pending rolloverPending) error {
 	if err := s.validateRolloverSegmentBinding(pending.SourceJournalSegments, complete); err != nil {
 		return err
 	}
-	stateData, err := os.ReadFile(s.statePath)
-	if err != nil {
-		return err
-	}
 	state, err := s.read()
 	if err != nil {
 		return err
 	}
-	currentHash, err := hashState(state)
+	archivedState, err := readRolloverArchiveState(pending.Record)
 	if err != nil {
 		return err
 	}
-	targetHash, err := hashState(pending.FreshState)
-	if err != nil {
-		return err
-	}
-	source, target := sha256Hex(stateData) == pending.SourceStateSHA256, currentHash == targetHash
+	source, target := reflect.DeepEqual(state, archivedState), reflect.DeepEqual(state, pending.FreshState)
 	if !source && !target {
 		return errors.New("pending runtime rollover current state matches neither source nor target")
 	}
@@ -165,7 +154,13 @@ func (s *Store) recoverSegmentedRolloverLocked(pending rolloverPending) error {
 		}
 	}
 	active := filepath.Base(s.journalPath)
+	offset := 0
 	for _, segment := range pending.SourceJournalSegments {
+		expected := complete[offset : offset+segment.Size]
+		offset += segment.Size
+		if len(expected) > 0 && expected[len(expected)-1] != '\n' {
+			offset++
+		}
 		data, err := readRolloverSourceFile(filepath.Join(filepath.Dir(s.journalPath), segment.Name))
 		if target && segment.Name != active && errors.Is(err, os.ErrNotExist) {
 			continue // A completed deletion from this exact original pending.
@@ -176,7 +171,7 @@ func (s *Store) recoverSegmentedRolloverLocked(pending rolloverPending) error {
 		if target && segment.Name == active && len(data) == 0 {
 			continue
 		}
-		if len(data) != segment.Size || sha256Hex(data) != segment.SHA256 {
+		if !bytes.Equal(data, expected) {
 			return fmt.Errorf("pending runtime rollover source differs; preserve it: %s", segment.Name)
 		}
 	}

@@ -1,9 +1,7 @@
 package transition
 
 import (
-	"encoding/json"
 	"github.com/entroforge/go-system-builder/internal/fileview"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +34,7 @@ func dispatchTransitionFixture(t *testing.T) (string, map[string]any, *ActionCon
 	state := map[string]any{"baseline": map[string]any{"generation": 1}, "bound_req": map[string]any{"id": "REQ-042"}, "documents": []any{}}
 	return root, state, &ActionContext{Root: root, OccurredAt: time.Now(), Request: &Request{Actor: "planner", Files: fileview.Disk{Root: root}}}
 }
-func TestDispatchRegistrationAndFreezeDrift(t *testing.T) {
+func TestDispatchRegistrationUsesCurrentPlanWithoutDigestGate(t *testing.T) {
 	root, state, ctx := dispatchTransitionFixture(t)
 	if _, err := actionRegisterPlanningTasks(state, ctx); err != nil {
 		t.Fatal(err)
@@ -51,8 +49,8 @@ func TestDispatchRegistrationAndFreezeDrift(t *testing.T) {
 	p := filepath.Join(root, "docs/dev/tasks/index-REQ-042.md")
 	b, _ := os.ReadFile(p)
 	os.WriteFile(p, append(b, []byte("\nchanged after review\n")...), 0644)
-	if err := dispatchPlanDocuments(state, ctx, false); err == nil {
-		t.Fatal("freeze laundered changed plan")
+	if err := dispatchPlanDocuments(state, ctx, false); err != nil {
+		t.Fatalf("ordinary plan edit blocked execution: %v", err)
 	}
 	if _, err := actionRegisterPlanningTasks(state, ctx); err != nil {
 		t.Fatal(err)
@@ -65,10 +63,10 @@ func TestDispatchRegistrationAndFreezeDrift(t *testing.T) {
 	}
 	os.Remove(p)
 	if err := dispatchPlanDocuments(state, ctx, false); err == nil {
-		t.Fatal("removed plan accepted")
+		t.Fatal("missing current dispatch plan accepted")
 	}
 }
-func TestDispatchFreezeDoesNotRefreshTaskHash(t *testing.T) {
+func TestDispatchTaskChangeDoesNotRequireDigestRegistration(t *testing.T) {
 	root, state, ctx := dispatchTransitionFixture(t)
 	if _, e := actionRegisterPlanningTasks(state, ctx); e != nil {
 		t.Fatal(e)
@@ -76,8 +74,8 @@ func TestDispatchFreezeDoesNotRefreshTaskHash(t *testing.T) {
 	path := filepath.Join(root, "docs/dev/tasks/TASK-042-01.md")
 	b, _ := os.ReadFile(path)
 	os.WriteFile(path, []byte(strings.ReplaceAll(string(b), "共享库", "new goal")), 0644)
-	if e := dispatchPlanDocuments(state, ctx, false); e == nil {
-		t.Fatal("TASK change accepted")
+	if e := dispatchPlanDocuments(state, ctx, false); e != nil {
+		t.Fatalf("TASK edit introduced a digest gate: %v", e)
 	}
 }
 
@@ -120,88 +118,29 @@ func TestPacketTR002RegistrationRequiresCurrentS4Followup(t *testing.T) {
 	}
 }
 
-func TestPacketS3TransitionConsumesAcceptedFacts(t *testing.T) {
-	fixture := func(t *testing.T) (map[string]any, *ActionContext) {
-		root := t.TempDir()
-		index, conclusion := "docs/dev/contracts/CONTRACTS-001.md", "pass"
-		answer := workpacket.ContractAnswer{Conclusion: &conclusion, IndexPath: &index, ContractPaths: []string{"docs/dev/contracts/BE-001.md"}}
-		digest, _ := workpacket.ContractAnswerDigest(answer)
-		key := workpacket.Digest([]byte("submission:packet-s3"))
-		followup := workpacket.Digest([]byte(key + ":after-domain"))
-		envelope := map[string]any{"contract_answer": answer, "subject_refs": []workpacket.Subject{
-			{Path: index, Version: "v1", SHA256: strings.Repeat("a", 64)},
-			{Path: "docs/dev/contracts/BE-001.md", Version: "v2", SHA256: strings.Repeat("b", 64)},
-			{Path: "docs/architecture/upstream.json", SHA256: strings.Repeat("c", 64)},
-		}}
-		data, _ := json.Marshal(envelope)
-		path := filepath.Join(root, "accepted.json")
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			t.Fatal(err)
-		}
-		state := map[string]any{
-			"schema_version": "1.2.0", "configuration": map[string]any{"optimization": map[string]any{"packet": true}},
-			"runtime_id": "loop-REQ-001", "baseline": map[string]any{"generation": 1},
-			"bound_req": map[string]any{"id": "REQ-001", "version": "v1", "sha256": "req-sha"},
-			"lifecycle": map[string]any{"state": "planning", "phase": "contracts", "phase_revision": 2},
-			"entities": map[string]any{
-				"work_packets": []any{map[string]any{"packet_id": "packet-s3", "template_id": "s3-contract-v1", "binding": map[string]any{"runtime_id": "loop-REQ-001", "generation": 1, "stage": "S3", "stage_entry": 2, "owner": "Main", "requirement": map[string]any{"id": "REQ-001", "version": "v1", "sha256": "req-sha"}}}},
-				"submissions":  []any{map[string]any{"submission_key": key, "packet_id": "packet-s3", "owner": "Main", "content_sha256": digest, "evidence_id": "evidence-s3", "followup_event_id": followup, "control_status": "pending", "origin_state": "planning", "origin_phase": "contracts", "origin_entry": 2}},
-			},
-			"evidence": []any{map[string]any{"id": "evidence-s3", "path": path, "sha256": SHA256(data)}},
-		}
-		ctx := &ActionContext{Root: root, Spec: TransitionSpec{ID: "PTR-PLAN-02"}, Request: &Request{Actor: "hook_controller", SubmissionFollowupID: followup, Files: fileview.Disk{Root: root}}}
-		return state, ctx
+func TestPlanningRegistrationPreservesUnrelatedHistoricalTaskFields(t *testing.T) {
+	_, state, ctx := dispatchTransitionFixture(t)
+	state["entities"] = map[string]any{"tasks": []any{map[string]any{
+		"id": "TASK-042-01", "path": "old/path.md", "state": "in_progress", "sha256": map[string]any{"historical": true},
+	}}}
+	if _, err := actionRegisterPlanningTasks(state, ctx); err != nil {
+		t.Fatal(err)
 	}
-	t.Run("accepted facts need no professional rescan", func(t *testing.T) {
-		state, ctx := fixture(t)
-		// There are no contract/scenario professional files: those were checked by
-		// the original reception; these post guards must only read its facts.
-		for _, guard := range []GuardFn{guardContractsCheckedFn, guardScenarioBridgeCheckedFn} {
-			if err := guard(state, nil); err != nil {
-				t.Fatal(err)
-			}
-		}
-		batch, err := acceptedContractArtifacts(state, ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		refs := batch.contracts
-		if len(refs) != 2 || refs[0].ID != "CONTRACTS-001" || refs[1].ID != "BE-001" || refs[1].Version != "v2" {
-			t.Fatalf("wrong received set: %+v", refs)
-		}
-	})
-	for _, change := range []string{"missing receipt", "stale entry", "foreign requirement", "processed", "superseded", "raw transition"} {
-		t.Run(change, func(t *testing.T) {
-			state, ctx := fixture(t)
-			entities := state["entities"].(map[string]any)
-			switch change {
-			case "missing receipt":
-				entities["submissions"] = []any{}
-			case "stale entry":
-				state["lifecycle"].(map[string]any)["phase_revision"] = 3
-			case "foreign requirement":
-				state["bound_req"].(map[string]any)["id"] = "REQ-OTHER"
-			case "processed":
-				entities["submissions"].([]any)[0].(map[string]any)["control_status"] = "transition_committed"
-			case "superseded":
-				entities["submissions"].([]any)[0].(map[string]any)["superseded_by"] = "later-packet"
-			case "raw transition":
-				ctx.Request.SubmissionFollowupID = ""
-				if _, err := actionRegisterLockedContracts(state, ctx); err == nil {
-					t.Fatal("raw transition accepted")
-				}
-				return
-			}
-			if err := guardContractsCheckedFn(state, nil); err == nil {
-				t.Fatal("unreceived/current responsibility accepted")
-			}
-		})
+	row := state["entities"].(map[string]any)["tasks"].([]any)[0].(map[string]any)
+	if row["path"] != "docs/dev/tasks/TASK-042-01.md" || row["state"] != "in_progress" {
+		t.Fatalf("original planning registration lost task path or responsibility: %#v", row)
 	}
-	t.Run("changed answer receipt", func(t *testing.T) {
-		state, ctx := fixture(t)
-		state["entities"].(map[string]any)["submissions"].([]any)[0].(map[string]any)["content_sha256"] = "different"
-		if _, err := acceptedContractArtifacts(state, ctx); err == nil {
-			t.Fatal("changed answer accepted")
+	if historical, ok := row["sha256"].(map[string]any); !ok || historical["historical"] != true {
+		t.Fatalf("registration altered an unrelated historical value: %#v", row)
+	}
+	for _, raw := range state["documents"].([]any) {
+		doc := raw.(map[string]any)
+		if doc["id"] == "TASK-042-01" {
+			if _, exists := doc["sha256"]; exists {
+				t.Fatalf("new TASK registration copied a digest: %#v", doc)
+			}
+			return
 		}
-	})
+	}
+	t.Fatal("actual TASK document was not registered")
 }

@@ -85,7 +85,7 @@ func TestTaskBehaviorProjectsOnlyDeclaredCurrentCases(t *testing.T) {
 	}
 }
 
-func TestS5FrozenBehaviorSourcesInstallAndDriftReject(t *testing.T) {
+func TestS5FrozenBehaviorSourcesRemainUsableWithoutDigestGate(t *testing.T) {
 	f := newStageAnswerFixtureMode(t, true, func(root string, state map[string]any) {
 		installBehaviorModule(t, root)
 		for _, name := range []string{"scenario-model.json", "cross-matrix.json", "stories.md"} {
@@ -111,8 +111,6 @@ func TestS5FrozenBehaviorSourcesInstallAndDriftReject(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(root, path), body, 0600); err != nil {
 					t.Fatal(err)
 				}
-				doc["sha256"] = workpacket.Digest(body)
-				state["bound_req"].(map[string]any)["sha256"] = doc["sha256"]
 			}
 			if doc["kind"] != "task" {
 				continue
@@ -124,7 +122,6 @@ func TestS5FrozenBehaviorSourcesInstallAndDriftReject(t *testing.T) {
 			}
 			body = append(body, []byte("\n## 2. Document Manifest\n| Order | Kind | ID | Path | Clauses | Purpose | Mode |\n|---|---|---|---|---|---|---|\n| 1 | model | current-cases | [Current CASE](../../design/prototypes/investor-workbench/cases.json) | CASE-ALLOW CASE-REJECT | Owned example inputs and oracles | required |\n")...)
 			os.WriteFile(filepath.Join(root, path), body, 0600)
-			doc["sha256"] = workpacket.Digest(body)
 		}
 	})
 	p := f.packets[0]
@@ -145,12 +142,69 @@ func TestS5FrozenBehaviorSourcesInstallAndDriftReject(t *testing.T) {
 	e := f.prepare(t, p)
 	for _, source := range behavior[0].Example.Sources {
 		data, err := os.ReadFile(filepath.Join(e.Path, ".claude/inputs", source.Path))
-		if err != nil || workpacket.Digest(data) != source.SHA256 {
-			t.Fatal("Worker lacks original behavior source", err)
+		original, readErr := os.ReadFile(filepath.Join(f.root, source.Path))
+		if err != nil || readErr != nil || !bytes.Equal(data, original) {
+			t.Fatalf("Worker lacks actual behavior source %s: %v %v", source.Path, err, readErr)
 		}
+	}
+	// The review-check consumer reads the original frozen analysis. Older
+	// machine values must not block it or alter professional same-named data.
+	analysisPath := filepath.Join(f.root, filepath.FromSlash(p.TaskAnalysis.Path))
+	originalAnalysis, err := os.ReadFile(analysisPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		value   any
+		present bool
+	}{
+		{"missing", nil, false}, {"null", nil, true}, {"string", "legacy", true},
+		{"number", 7, true}, {"object", map[string]any{"old": true}, true},
+	} {
+		t.Run("original_analysis_"+tc.name, func(t *testing.T) {
+			var document map[string]any
+			if err := json.Unmarshal(originalAnalysis, &document); err != nil {
+				t.Fatal(err)
+			}
+			row := document["behavior_examples"].([]any)[0].(map[string]any)
+			example := row["example"].(map[string]any)
+			example["inputs"].(map[string]any)["sha256"] = map[string]any{"business": "preserved"}
+			source := example["sources"].([]any)[0].(map[string]any)
+			if tc.present {
+				source["sha256"] = tc.value
+			} else {
+				delete(source, "sha256")
+			}
+			authored, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(analysisPath, authored, 0600); err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			code := cli.Run([]string{"runtime", "workspace", "review-check", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID}, nil, &out, &errOut)
+			var result semantic.TaskCheckResult
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil || len(result.BehaviorExamples) == 0 {
+				t.Fatalf("original review-check failed: code=%d err=%v stderr=%s", code, err, errOut.String())
+			}
+			value, ok := result.BehaviorExamples[0].Example.Inputs["sha256"].(map[string]any)
+			if !ok || value["business"] != "preserved" {
+				t.Fatalf("professional same-named input changed: %#v", result.BehaviorExamples[0].Example.Inputs)
+			}
+			after, err := os.ReadFile(analysisPath)
+			if err != nil || !bytes.Equal(after, authored) {
+				t.Fatalf("original analysis changed: %v", err)
+			}
+		})
+	}
+	if err := os.WriteFile(analysisPath, originalAnalysis, 0600); err != nil {
+		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
 	code := cli.Run([]string{"runtime", "workspace", "review-check", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID}, nil, &out, &errOut)
+	initialCode := code
 	var result semantic.TaskCheckResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("review-check: %d %v %s", code, err, errOut.String())
@@ -165,32 +219,16 @@ func TestS5FrozenBehaviorSourcesInstallAndDriftReject(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(changed, append(data, '\n'), 0600)
-	before := stageSnapshot(t, f.root)
 	out.Reset()
 	errOut.Reset()
 	code = cli.Run([]string{"runtime", "workspace", "review-check", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "frozen execution input changed") || !strings.Contains(errOut.String(), "scenario-model.json") {
-		t.Fatalf("drifted frozen source remained consumable: %d %s", code, errOut.String())
-	}
-	stageJSON(t, e.Path, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
-	out.Reset()
-	errOut.Reset()
-	code = cli.Run([]string{"runtime", "workspace", "answer", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "frozen execution input changed") {
-		t.Fatalf("drifted answer was accepted: %d %s", code, errOut.String())
-	}
-	if code, msg := stageHookCode(t, f.root, e.Path, e.AgentID, "Stop", ""); code != 2 {
-		t.Fatalf("drifted frozen behavior sources allowed: %d %s", code, msg)
-	}
-	if stageSnapshot(t, f.root).Revision != before.Revision {
-		t.Fatal("drifted source validation wrote Runtime")
-	}
-	if err := os.WriteFile(changed, data, 0600); err != nil {
-		t.Fatal(err)
+	var afterEdit semantic.TaskCheckResult
+	if err := json.Unmarshal(out.Bytes(), &afterEdit); err != nil || code != initialCode || !reflect.DeepEqual(afterEdit.Problems, result.Problems) || !reflect.DeepEqual(afterEdit.BehaviorExamples, behavior) {
+		t.Fatalf("format-only source edit changed the original review: %d vs %d, err=%v stderr=%s stdout=%s", code, initialCode, err, errOut.String(), out.String())
 	}
 	r := saveStageHook(t, f.root, e.Path, e.AgentID, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
 	if !r.Accepted || !r.WorkComplete {
-		t.Fatal("source restoration did not preserve the original receiver", r)
+		t.Fatal("original reviewer did not naturally receive the answer after source edit", r)
 	}
 	output := stageCLI(t, "runtime", "stage-answer", "revise", "--root", f.root, "--previous", r.SubmissionKey, "--reason", "Recheck the original declared CASE responsibility")
 	var next workpacket.Packet

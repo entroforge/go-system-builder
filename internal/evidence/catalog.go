@@ -280,7 +280,6 @@ var defaultRegisteredKinds = []string{
 	"review_result",
 	"finding",
 	"finding_supplement",
-	"observation_batch",
 	"team_manifest",
 	"targeted_reverification",
 	"repair_plan",
@@ -324,7 +323,6 @@ var defaultImportableKinds = []string{
 	"release_audit",
 	"review_result",
 	"finding",
-	"observation_batch",
 	"targeted_reverification",
 }
 
@@ -420,12 +418,6 @@ var defaultSlots = map[string]SlotSpec{
 		// and kind bug (S8). The self-named alias was removed (2026-08-22
 		// audit: zero producers/consumers).
 		AcceptedKinds: []string{"finding", "bug"},
-	},
-	"observation_batch_record": {
-		// Authority: kind observation_batch, sealed by the S7 round
-		// consumer. The self-named alias was removed (2026-08-22 audit:
-		// zero producers/consumers).
-		AcceptedKinds: []string{"observation_batch"},
 	},
 	"bug_batch_record": {
 		AcceptedKinds: []string{"bug", "bug_batch_record"},

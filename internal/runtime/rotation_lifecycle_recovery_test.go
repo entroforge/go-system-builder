@@ -33,16 +33,14 @@ func pendingRotatedReset(t *testing.T, operation string) rotatedResetFixture {
 	var segments []any
 	for _, path := range []string{journalPath + ".archive.2.jsonl", journalPath + ".archive.5.jsonl", journalPath} {
 		data := mustRead(t, path)
-		segments = append(segments, map[string]any{"name": filepath.Base(path), "size": len(data), "sha256": sha256HexForTest(data)})
+		segments = append(segments, map[string]any{"name": filepath.Base(path), "size": len(data)})
 	}
 	marker := map[string]any{
 		"schema_version": "1.0.0", "fresh_state": fresh,
 		"record": map[string]any{
 			"archive_dir": archive, "runtime_id": "loop-test", "revision": 7,
-			"archive_state_sha256": sha256HexForTest(state), "archive_journal_sha256": sha256HexForTest(complete),
 		},
-		"approval":            map[string]any{"approved_by": "release-owner", "evidence_id": "ev-approval"},
-		"source_state_sha256": sha256HexForTest(state), "source_journal_sha256": sha256HexForTest(complete),
+		"approval":          map[string]any{"approved_by": "release-owner", "evidence_id": "ev-approval"},
 		"source_runtime_id": "loop-test", "source_revision": 7, "source_journal_segments": segments,
 	}
 	if operation == "unbind" {

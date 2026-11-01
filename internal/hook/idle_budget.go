@@ -2,7 +2,6 @@ package hook
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/filelock"
@@ -34,7 +33,8 @@ func IdleRecoveryExhausted(root string, input policy.Input, decision policy.Deci
 			break
 		}
 	}
-	facts := map[string]any{"runtime": snapshot.State["runtime_id"], "baseline": snapshot.State["baseline"], "reason": decision.Reason, "agent": agent}
+	baseline, _ := snapshot.State["baseline"].(map[string]any)
+	facts := map[string]any{"runtime": snapshot.State["runtime_id"], "generation": baseline["generation"], "reason": decision.Reason, "agent": agent}
 	// Observer churn alone is not progress.
 	if agent != nil {
 		copy := map[string]any{}
@@ -45,30 +45,12 @@ func IdleRecoveryExhausted(root string, input policy.Input, decision policy.Deci
 		}
 		facts["agent"] = copy
 	}
-	if agent != nil {
-		hashes := map[string]string{}
-		for _, key := range []string{"readback_ref", "plan_reported_ref", "activation_ref", "completion_reported_ref"} {
-			ref, _ := agent[key].(string)
-			if ref != "" {
-				p := ref
-				if !filepath.IsAbs(p) {
-					p = filepath.Join(root, p)
-				}
-				if b, e := os.ReadFile(p); e == nil {
-					hashes[key] = fmt.Sprintf("%x", sha256.Sum256(b))
-				}
-			}
-		}
-		facts["evidence_hashes"] = hashes
-	}
 	data, _ := json.Marshal(facts)
-	fingerprint := fmt.Sprintf("%x", sha256.Sum256(data))
-	key := fmt.Sprintf("%x", sha256.Sum256([]byte(input.SessionID+"\x00"+input.EffectiveAgentID())))
-	dir := filepath.Join(root, ".claude/hook-notices")
+	path := diagnosticCachePath(root, "hook-notices/idle", input.SessionID, input.EffectiveAgentID())
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return false, err
 	}
-	path := filepath.Join(dir, "idle-"+key)
 	// Concurrent callbacks must not overwrite each other's retry budget.
 	budget, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -78,8 +60,8 @@ func IdleRecoveryExhausted(root string, input policy.Input, decision policy.Deci
 	}
 	defer release()
 	var record struct {
-		Fingerprint string `json:"fingerprint"`
-		Count       int    `json:"count"`
+		Facts json.RawMessage `json:"facts"`
+		Count int             `json:"count"`
 	}
 	if data, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(data, &record); err != nil {
@@ -88,8 +70,8 @@ func IdleRecoveryExhausted(root string, input policy.Input, decision policy.Deci
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
-	if record.Fingerprint != fingerprint {
-		record.Fingerprint = fingerprint
+	if string(record.Facts) != string(data) {
+		record.Facts = append(record.Facts[:0], data...)
 		record.Count = 0
 	}
 	record.Count++

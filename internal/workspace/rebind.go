@@ -16,7 +16,6 @@ type RebindRequest struct {
 	NewMainRoot  string            `json:"new_main_root"`
 	NewCommonDir string            `json:"new_common_dir"`
 	Branch       string            `json:"branch"`
-	ExpectedHead string            `json:"expected_head"`
 	Paths        map[string]string `json:"paths"`
 }
 
@@ -27,7 +26,7 @@ func (b *ExecutionRegistry) PlanRebind(ctx context.Context, state map[string]any
 	if err := b.ValidateAuthority(state); err != nil {
 		return nil, err
 	}
-	if r.RuntimeID != RuntimeID(state) || r.OldMainRoot != b.MainRoot || r.OldCommonDir != b.CommonDir || r.Branch != b.Branch || r.ExpectedHead == "" {
+	if r.RuntimeID != RuntimeID(state) || r.OldMainRoot != b.MainRoot || r.OldCommonDir != b.CommonDir || r.Branch != b.Branch {
 		return nil, fmt.Errorf("rebind expected identity does not match recorded Main")
 	}
 	if r.OldMainRoot != r.NewMainRoot {
@@ -41,11 +40,8 @@ func (b *ExecutionRegistry) PlanRebind(ctx context.Context, state map[string]any
 	if err != nil {
 		return nil, fmt.Errorf("repair native Git worktree links before Harness rebind: %w", err)
 	}
-	if actual.MainRoot != r.NewMainRoot || actual.CommonDir != r.NewCommonDir || actual.Branch != r.Branch || actual.BoundHead != r.ExpectedHead {
-		return nil, fmt.Errorf("new Main repository/branch/HEAD differs from explicit relocation request")
-	}
-	if _, err := Git(ctx, r.NewMainRoot, "cat-file", "-e", b.BoundHead+"^{commit}"); err != nil {
-		return nil, fmt.Errorf("original binding commit absent from relocated repository")
+	if actual.MainRoot != r.NewMainRoot || actual.CommonDir != r.NewCommonDir || actual.Branch != r.Branch {
+		return nil, fmt.Errorf("new Main repository or branch differs from explicit relocation request")
 	}
 	next := *b
 	next.MainRoot = r.NewMainRoot

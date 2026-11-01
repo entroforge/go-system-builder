@@ -7,7 +7,7 @@
 > Agent: {agent-id}
 > Verdict: 由原答卷及原消费者接收记录投影
 
-本 Markdown 是原 ReviewResult 的可读投影，不是必须另交的第二份结果。正常 S7 在已发行原卷中填写本人专业 `answer`，保存并返回准确引用，由 `SubagentStop` 调原消费者接收。下表的身份、轮次、代际和摘要均从原记录投影，作者不计算、抄写或拼装机器封套。保留的显式 Canonical Result 入口只用于具名兼容／恢复，不是正常原卷的前置。
+本 Markdown 是原 ReviewResult 的可读投影，不是必须另交的第二份结果。正常 S7 在已发行原卷中填写本人专业 `answer` 并保存，由适用的自然工具事件和 Stop 兜底交原消费者接收。身份按原责任承接，不要求作者计算、登记或抄写摘要。显式 Canonical Result 入口只用于具名兼容／恢复。
 
 ## §1 Result identity
 
@@ -16,10 +16,8 @@
 | result_id | review-result-{...} |
 | review_plan_id / review_round | {plan} / {round} |
 | baseline_generation | {n} |
-| subject_digest | 系统绑定原计划的冻结对象摘要；作者保留原卷机器预填，不抄 Runtime |
-| verification_artifact_digest | 冷启动 E2E 的实际资产摘要，由原接收器绑定并校验；原卷预填或 null 均不要求作者计算 |
 
-本地证据在原卷中选择 `path:<实际相对路径>` 或 `command_output:<原实际捕获路径>`。原接收／捕获机制固定摘要、字节数和截断信息，消费时核对原来源，不能刷新旧摘要掩盖漂移。
+本地证据在原卷中选择实际材料路径、命令或观察。原消费者接收本人专业表达与已有责任，不重读证据或校验摘要；实际观察与未知由本人如实说明。
 
 ## §2 Claim results (exact set)
 

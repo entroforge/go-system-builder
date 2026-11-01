@@ -203,7 +203,7 @@ func TestHOOK_PreToolUseTaskUpdate_UnauthorizedSelfClaimIsObserved(t *testing.T)
 		"tool_input":{"taskId":"TASK-039-99","status":"in_progress"}
 	}`)
 	after := req039fixtures.ReadState(t, root)
-	assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
+	assertWorkerPreToolUseAllowedWithoutAdvance(t, code, stdout, stderr, before, after)
 }
 
 // The same guard fires when the teammate assigns the task to itself via the
@@ -221,7 +221,7 @@ func TestHOOK_PreToolUseTaskUpdate_OwnerSelfAssignmentIsObserved(t *testing.T) {
 		"tool_input":{"taskId":"TASK-039-99","owner":"builder-l4"}
 	}`)
 	after := req039fixtures.ReadState(t, root)
-	assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
+	assertWorkerPreToolUseAllowedWithoutAdvance(t, code, stdout, stderr, before, after)
 }
 
 // Owned TaskUpdate calls reach the graph listener without a per-tool
@@ -243,7 +243,7 @@ func TestHOOK_PreToolUseTaskUpdate_OwnedTaskUpdateIsObserved(t *testing.T) {
 			"tool_input":`+toolInput+`
 		}`)
 		after := req039fixtures.ReadState(t, root)
-		assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
+		assertWorkerPreToolUseAllowedWithoutAdvance(t, code, stdout, stderr, before, after)
 	}
 }
 

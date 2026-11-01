@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -29,37 +27,40 @@ type CaseRevisionRequest struct {
 	Context              context.Context `json:"-"`
 	ExpectedRevision     int
 	ExpectedCaseRevision int
-	ExpectedCaseSHA256   string
-	CaseID               string
-	Operation            string
-	OccurredAt           time.Time
-	Mutate               func(map[string]any) error
+
+	CaseID     string
+	Operation  string
+	OccurredAt time.Time
+	Mutate     func(map[string]any) error
 	// validateCurrent is an internal capability used by issued S8 answer
 	// consumers. It is run against the original, pinned Case bytes before
 	// staging and again inside the original Runtime CAS. It is intentionally
 	// unexported: callers cannot supply a self-authored authority callback.
 	validateCurrent func(root string, state, document map[string]any, caseBytes []byte) error
+	// A Main-authored question may select already accepted Findings for this
+	// Case. Other Case revisions never change their source set.
+	selectedFindingIDs []string
+	caseReceipt        *runtime.HypothesisResultReceipt
 }
 
 // HypothesisRequest registers one falsifiable S8 hypothesis inside a Case.
-// SourceFindingIDs may be a subset of the Case exact set, but can never add
-// or replace a source Finding. EvidenceRefs must carry at least one content
-// reference: an evidence-free hypothesis cannot be dispatched or falsified.
+// SourceFindingIDs selects the Findings the actual question investigates.
+// An already accepted late Finding may be added to the current Case.
 type HypothesisRequest struct {
 	Context              context.Context `json:"-"`
 	ExpectedRevision     int
 	ExpectedCaseRevision int
-	ExpectedCaseSHA256   string
-	CaseID               string
-	HypothesisID         string
-	AssignmentID         string
-	Statement            string
-	Invariant            string
-	Discriminator        string
-	ExpectedOutcomes     map[string]any
-	SourceFindingIDs     []string
-	EvidenceRefs         []string
-	OccurredAt           time.Time
+
+	CaseID           string
+	HypothesisID     string
+	AssignmentID     string
+	Statement        string
+	Invariant        string
+	Discriminator    string
+	ExpectedOutcomes map[string]any
+	SourceFindingIDs []string
+	EvidenceRefs     []string
+	OccurredAt       time.Time
 }
 
 // HypothesisResultRequest records read-only evidence for a registered
@@ -68,20 +69,20 @@ type HypothesisResultRequest struct {
 	Context              context.Context `json:"-"`
 	ExpectedRevision     int
 	ExpectedCaseRevision int
-	ExpectedCaseSHA256   string
-	CaseID               string
-	HypothesisID         string
-	AssignmentID         string
-	Method               string
-	EvidenceRefs         []string
-	SourceBoundaryRefs   []string
-	Observed             string
-	Counterfactual       string
-	Result               string
-	ExplainsFindingIDs   []string
-	DoesNotExplain       []string
-	NewHypotheses        []map[string]any
-	OccurredAt           time.Time
+
+	CaseID             string
+	HypothesisID       string
+	AssignmentID       string
+	Method             string
+	EvidenceRefs       []string
+	SourceBoundaryRefs []string
+	Observed           string
+	Counterfactual     string
+	Result             string
+	ExplainsFindingIDs []string
+	DoesNotExplain     []string
+	NewHypotheses      []map[string]any
+	OccurredAt         time.Time
 	// typedPacket/typedReceipt are an unexported capability carried only by
 	// SubmitIssuedHypothesisResult. Public legacy callers cannot manufacture a
 	// packet-backed acceptance row or bypass an issued packet.
@@ -90,23 +91,20 @@ type HypothesisResultRequest struct {
 	typedValidation func(root string, state, document map[string]any, caseBytes []byte) error
 }
 
-// EvidenceReference is a content-addressed artifact carried into S8 when a
-// downstream verifier proves that the approved causal model needs
-// reassessment. It deliberately contains only identity and integrity data;
-// the referenced artifact remains authoritative in its own domain.
+// EvidenceReference identifies an artifact used to reassess the causal model.
+// The referenced artifact remains authoritative in its own domain.
 type EvidenceReference struct {
-	Path   string
-	SHA256 string
+	Path string
 }
 
 // RouteRequest records the one Case-level disposition. s9_repair requires a
 // closed causal chain; investigate_more is the deterministic fallback while
 // any source Finding remains unexplained or a current question is unanswered.
 type RouteRequest struct {
-	Context                        context.Context `json:"-"`
-	ExpectedRevision               int
-	ExpectedCaseRevision           int
-	ExpectedCaseSHA256             string
+	Context              context.Context `json:"-"`
+	ExpectedRevision     int
+	ExpectedCaseRevision int
+
 	CaseID                         string
 	Route                          string
 	RouteReason                    string
@@ -159,67 +157,26 @@ func RegisterHypothesis(root, statePath, journalPath string, request HypothesisR
 			return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
 		}
 	}
-	evidenceRefs, err := nonEmptyStrings(request.EvidenceRefs, "Hypothesis.evidence_refs")
-	if err != nil {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
-	}
-	snapshot, serr := runtime.NewStore(statePath, journalPath).WithContext(request.Context).Snapshot()
-	if serr != nil {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "read Runtime for Hypothesis.evidence_refs: %v", serr)
-	}
+	evidenceRefs := append([]string{}, request.EvidenceRefs...)
 	return updateCaseRevision(root, statePath, journalPath, CaseRevisionRequest{
 		Context:              request.Context,
 		ExpectedRevision:     request.ExpectedRevision,
 		ExpectedCaseRevision: request.ExpectedCaseRevision,
-		ExpectedCaseSHA256:   request.ExpectedCaseSHA256,
 		CaseID:               request.CaseID,
 		Operation:            "hypothesis_registered",
 		OccurredAt:           request.OccurredAt,
-		validateCurrent: func(lockedRoot string, state, document map[string]any, _ []byte) error {
-			if stringField(document["observation_batch_id"]) == "" {
-				return nil
-			}
-			remaining, err := remainingFindingQuestionRefs(lockedRoot, state, document, sourceIDs, evidenceRefs)
-			if err != nil {
-				return err
-			}
-			if len(remaining) == 0 {
-				return nil
-			}
-			return ValidateEvidenceRefs(remaining, EvidenceAttestationOptions{AllowPaths: true, State: state, Root: lockedRoot, RequireSHA: true, RequireReviewRound: currentReviewRound(state)})
-		},
+		selectedFindingIDs:   sourceIDs,
 		Mutate: func(document map[string]any) error {
-			if len(sourceIDs) == 0 && stringField(document["observation_batch_id"]) != "" {
-				return errors.New("Hypothesis.source_finding_ids must contain at least one Finding ID for a Batch Case")
-			}
-			refsToValidate := evidenceRefs
-			if stringField(document["observation_batch_id"]) == "" {
-				source, err := humanCaseSource(root, snapshot.State, document)
-				if err != nil {
-					return err
-				}
-				refsToValidate = withoutHumanSource(evidenceRefs, source)
-			} else {
-				var err error
-				refsToValidate, err = remainingFindingQuestionRefs(root, snapshot.State, document, sourceIDs, evidenceRefs)
-				if err != nil {
-					return err
-				}
-			}
-			if len(refsToValidate) > 0 {
-				if err := ValidateEvidenceRefs(refsToValidate, EvidenceAttestationOptions{
-					AllowPaths: true, State: snapshot.State, Root: root, RequireSHA: true, RequireReviewRound: currentReviewRound(snapshot.State),
-				}); err != nil {
-					return fmt.Errorf("Hypothesis.evidence_refs: %w", err)
-				}
-			}
 			caseIDs, err := stringSlice(document["source_finding_ids"], "InvestigationCase.source_finding_ids")
 			if err != nil {
 				return err
 			}
-			if err := subsetOf(sourceIDs, caseIDs, "Hypothesis.source_finding_ids"); err != nil {
-				return err
+			for _, id := range sourceIDs {
+				if !containsString(caseIDs, id) {
+					caseIDs = append(caseIDs, id)
+				}
 			}
+			document["source_finding_ids"] = stringSliceAny(sortedStrings(caseIDs))
 			hypotheses, err := objectArray(document["hypotheses"], "InvestigationCase.hypotheses")
 			if err != nil {
 				return err
@@ -259,15 +216,7 @@ func SubmitHypothesisResult(root, statePath, journalPath string, request Hypothe
 	if !oneOf(request.Result, "supported", "refuted", "inconclusive") {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "result must be supported, refuted, or inconclusive")
 	}
-	for field, value := range map[string]string{"method": request.Method, "observed": request.Observed, "counterfactual_or_discriminator": request.Counterfactual} {
-		if strings.TrimSpace(value) == "" {
-			return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "HypothesisResult.%s is required", field)
-		}
-	}
-	evidenceRefs, err := nonEmptyStrings(request.EvidenceRefs, "HypothesisResult.evidence_refs")
-	if err != nil {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
-	}
+	evidenceRefs := append([]string{}, request.EvidenceRefs...)
 	snapshot, serr := runtime.NewStore(statePath, journalPath).WithContext(request.Context).Snapshot()
 	if serr != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "read Runtime for HypothesisResult.evidence_refs attestation: %v", serr)
@@ -275,39 +224,7 @@ func SubmitHypothesisResult(root, statePath, journalPath string, request Hypothe
 	if err := validateHypothesisSubmissionBinding(snapshot.State, request); err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
 	}
-	refsToValidate, err := remainingS8AnswerEvidenceRefs(root, request.typedPacket, evidenceRefs)
-	if err != nil {
-		return runtime.Snapshot{}, err
-	}
-	if stringField(s8Map(s8Map(snapshot.State["review"])["investigation"])["observation_batch_id"]) == "" {
-		current, err := readCurrentInvestigationCase(root, snapshot.State)
-		if err != nil {
-			return runtime.Snapshot{}, err
-		}
-		if stringField(current.document["observation_batch_id"]) == "" {
-			source, err := humanCaseSource(root, snapshot.State, current.document)
-			if err != nil {
-				return runtime.Snapshot{}, err
-			}
-			refsToValidate = withoutHumanSource(refsToValidate, source)
-		}
-	}
-
-	if len(refsToValidate) > 0 {
-		if err := ValidateEvidenceRefs(refsToValidate, EvidenceAttestationOptions{
-			AllowPaths:         true,
-			State:              snapshot.State,
-			Root:               root,
-			RequireSHA:         true,
-			RequireReviewRound: currentReviewRound(snapshot.State),
-		}); err != nil {
-			return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "HypothesisResult.evidence_refs: %v", err)
-		}
-	}
-	boundaryRefs, err := nonEmptyStrings(request.SourceBoundaryRefs, "HypothesisResult.source_boundary_refs")
-	if err != nil {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
-	}
+	boundaryRefs := append([]string{}, request.SourceBoundaryRefs...)
 	explains, err := normalizeOptionalSet(request.ExplainsFindingIDs, "HypothesisResult.explains_finding_ids")
 	if err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
@@ -320,11 +237,11 @@ func SubmitHypothesisResult(root, statePath, journalPath string, request Hypothe
 		Context:              request.Context,
 		ExpectedRevision:     request.ExpectedRevision,
 		ExpectedCaseRevision: request.ExpectedCaseRevision,
-		ExpectedCaseSHA256:   request.ExpectedCaseSHA256,
 		CaseID:               request.CaseID,
 		Operation:            "hypothesis_result_submitted",
 		OccurredAt:           request.OccurredAt,
 		validateCurrent:      request.typedValidation,
+		caseReceipt:          request.typedReceipt,
 		Mutate: func(document map[string]any) error {
 			caseIDs, err := stringSlice(document["source_finding_ids"], "InvestigationCase.source_finding_ids")
 			if err != nil {
@@ -360,8 +277,8 @@ func SubmitHypothesisResult(root, statePath, journalPath string, request Hypothe
 				return err
 			}
 			for _, result := range results {
-				if stringField(result["hypothesis_id"]) == request.HypothesisID && stringField(result["assignment_id"]) == request.AssignmentID {
-					return fmt.Errorf("HypothesisResult for %s/%s already exists; preserve that accepted result and receipt; Main adds a distinct question for further investigation", request.HypothesisID, request.AssignmentID)
+				if stringField(result["hypothesis_id"]) == request.HypothesisID && stringField(result["assignment_id"]) == request.AssignmentID && result["result"] != "inconclusive" {
+					return fmt.Errorf("HypothesisResult for %s/%s is already complete; preserve its accepted result", request.HypothesisID, request.AssignmentID)
 				}
 			}
 			resultRow := map[string]any{
@@ -407,40 +324,11 @@ func SubmitHypothesisResult(root, statePath, journalPath string, request Hypothe
 			}
 			document["hypotheses"] = hypothesesToAny(hypotheses)
 			document["hypothesis_results"] = hypothesesToAny(results)
-			if len(request.NewHypotheses) > 0 {
-				registeredIDs := make(map[string]struct{}, len(hypotheses))
-				registeredAssignments := make(map[string]struct{}, len(hypotheses))
-				for _, hypothesis := range hypotheses {
-					registeredIDs[stringField(hypothesis["hypothesis_id"])] = struct{}{}
-					registeredAssignments[stringField(hypothesis["assignment_id"])] = struct{}{}
-				}
-				for _, hypothesis := range request.NewHypotheses {
-					if err := validateNewHypothesis(hypothesis, caseIDs); err != nil {
-						return err
-					}
-					hypothesisID := strings.TrimSpace(stringField(hypothesis["hypothesis_id"]))
-					assignmentID := strings.TrimSpace(stringField(hypothesis["assignment_id"]))
-					if _, exists := registeredIDs[hypothesisID]; exists {
-						return fmt.Errorf("new hypothesis %q is already registered; use a new hypothesis_id", hypothesisID)
-					}
-					if _, exists := registeredAssignments[assignmentID]; exists {
-						return fmt.Errorf("new hypothesis assignment_id %q is already bound; allocate a unique Assignment", assignmentID)
-					}
-					normalized := cloneMap(hypothesis)
-					normalized["hypothesis_id"] = hypothesisID
-					normalized["assignment_id"] = assignmentID
-					normalized["status"] = nonEmpty(stringField(normalized["status"]), "open")
-					hypotheses = append(hypotheses, normalized)
-					registeredIDs[hypothesisID] = struct{}{}
-					registeredAssignments[assignmentID] = struct{}{}
-				}
-				document["hypotheses"] = hypothesesToAny(hypotheses)
-			}
 			if request.typedPacket != nil {
 				// The original Case schema keeps the typed receipt and its exact
 				// server-assigned follow-up hypotheses as one indivisible row.
 				// [] is intentional when the author proposed none.
-				for index := range results {
+				for index := len(results) - 1; index >= 0; index-- {
 					if stringField(results[index]["hypothesis_id"]) == request.HypothesisID && stringField(results[index]["assignment_id"]) == request.AssignmentID {
 						newRows := make([]map[string]any, 0, len(request.NewHypotheses))
 						if len(request.NewHypotheses) > 0 {
@@ -459,11 +347,9 @@ func SubmitHypothesisResult(root, statePath, journalPath string, request Hypothe
 	})
 }
 
-// UpdateCaseRoute records one deterministic Case route. A concrete disposition
-// is terminal for this Case revision; investigate_more is the one intentional
-// re-entry point. New evidence may therefore move a Case from
-// investigate_more to a concrete route, while an unchanged board is rejected
-// with a recovery instruction instead of silently overwriting the decision.
+// UpdateCaseRoute records Main's Case disposition. investigate_more remains
+// open to subsequent professional judgment using the same material. Concrete
+// dispositions retain their original terminal and approval protections.
 func UpdateCaseRoute(root, statePath, journalPath string, request RouteRequest) (runtime.Snapshot, error) {
 	if strings.TrimSpace(request.RouteReason) == "" {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "route_reason is required")
@@ -475,27 +361,9 @@ func UpdateCaseRoute(root, statePath, journalPath string, request RouteRequest) 
 		Context:              request.Context,
 		ExpectedRevision:     request.ExpectedRevision,
 		ExpectedCaseRevision: request.ExpectedCaseRevision,
-		ExpectedCaseSHA256:   request.ExpectedCaseSHA256,
 		CaseID:               request.CaseID,
 		Operation:            "case_routed",
 		OccurredAt:           request.OccurredAt,
-		validateCurrent: func(_ string, state, document map[string]any, _ []byte) error {
-			route := strings.TrimSpace(request.Route)
-			if route == "" {
-				route = deterministicCaseRoute(document)
-			}
-			if route != "investigate_more" {
-				return nil
-			}
-			budget, err := InvestigationReentryBudget(state, document)
-			if err != nil {
-				return err
-			}
-			if budget.Exhausted {
-				return fmt.Errorf("investigate_more route-registration budget exhausted: %d of %d (%s); this limits consecutive route registrations, not professional investigation. Keep the same Case, register a genuinely different discriminator where needed and accept actual results through the original consumer; once evidence supports a disposition, submit that route. New evidence remains progress and is not discarded. Do not invent a duplicate, specification change, requirement change or causal conclusion to bypass this limit", budget.Used, budget.Limit, budget.Source)
-			}
-			return nil
-		},
 		Mutate: func(document map[string]any) error {
 			existing := stringField(document["route"])
 			reassessment := existing == "s9_repair" && strings.TrimSpace(stringField(document["status"])) == "contract_approved" && strings.TrimSpace(request.Route) == "investigate_more" && len(request.CausalReassessmentEvidenceRefs) > 0
@@ -528,16 +396,12 @@ func UpdateCaseRoute(root, statePath, journalPath string, request RouteRequest) 
 			if len(request.DetectionGap) > 0 {
 				candidate["detection_gap"] = cloneMap(request.DetectionGap)
 			}
-			if existing == "investigate_more" && !routeHasNewEvidence(document) {
-				return fmt.Errorf("deterministic route update rejected: Case remains in investigate_more without new hypothesis or result evidence; register a new discriminator or submit its result before routing again")
-			}
 			if err := validateRoute(route, candidate, request, reassessment); err != nil {
 				return err
 			}
 			if reassessment {
 				document["status"] = "investigating"
 				document["repair_contract_ref"] = nil
-				document["repair_contract_sha256"] = nil
 				document["causal_reassessment_refs"] = evidenceReferencesToAny(request.CausalReassessmentEvidenceRefs)
 			}
 			if route == "duplicate" {
@@ -547,7 +411,6 @@ func UpdateCaseRoute(root, statePath, journalPath string, request RouteRequest) 
 				}
 				document["canonical_case_id"] = canonical.ID
 				document["canonical_case_ref"] = canonical.Path
-				document["canonical_case_sha256"] = canonical.SHA256
 			}
 			document["route"] = route
 			document["route_reason"] = strings.TrimSpace(request.RouteReason)
@@ -599,7 +462,6 @@ func UpdateCaseRoute(root, statePath, journalPath string, request RouteRequest) 
 				"case_revision":           integerValueOrZero(document["revision"]),
 				"hypothesis_count":        len(hypotheses),
 				"hypothesis_result_count": len(results),
-				"evidence_fingerprint":    evidenceFingerprint(document),
 				"occurred_at":             occurredAt.UTC().Format(time.RFC3339Nano),
 			})
 			document["route_history"] = hypothesesToAny(history)
@@ -609,78 +471,8 @@ func UpdateCaseRoute(root, statePath, journalPath string, request RouteRequest) 
 }
 
 type canonicalCaseReference struct {
-	ID     string
-	Path   string
-	SHA256 string
-}
-
-// routeHasNewEvidence compares the current immutable Case board with the
-// last investigate_more route. A new evidence ref or an actual newly accepted
-// result can advance that checkpoint. Adding questions or editing the route
-// reason alone cannot turn the same evidence into new observed work.
-func routeHasNewEvidence(document map[string]any) bool {
-	history, _ := objectArrayAllowEmpty(document["route_history"], "InvestigationCase.route_history")
-	lastFingerprint := ""
-	previousResultCount := 0
-	found := false
-	for index := len(history) - 1; index >= 0; index-- {
-		if stringField(history[index]["to"]) == "investigate_more" {
-			lastFingerprint = stringField(history[index]["evidence_fingerprint"])
-			previousResultCount = integerValueOrZero(history[index]["hypothesis_result_count"])
-			found = true
-			break
-		}
-	}
-	if !found {
-		return false
-	}
-	if evidenceFingerprint(document) != lastFingerprint {
-		return true
-	}
-	all, _ := objectArrayAllowEmpty(document["hypothesis_results"], "InvestigationCase.hypothesis_results")
-	if previousResultCount < 0 || previousResultCount >= len(all) {
-		return false
-	}
-	current, _ := currentHypothesisResults(document)
-	for _, appended := range all[previousResultCount:] {
-		for _, result := range current {
-			if hypothesisResultIdentity(appended) == hypothesisResultIdentity(result) {
-				return true // Original results append once per registered tuple.
-			}
-		}
-	}
-	return false
-}
-
-// evidenceFingerprint hashes the sorted set of evidence refs carried by the
-// Case's hypotheses and hypothesis results. Any new evidence_ref — even
-// inside a pre-existing count — changes the fingerprint, while re-routing
-// with recycled or phantom evidence does not.
-func evidenceFingerprint(document map[string]any) string {
-	values := make([]string, 0, 8)
-	hypotheses, _ := objectArrayAllowEmpty(document["hypotheses"], "InvestigationCase.hypotheses")
-	for _, hypothesis := range hypotheses {
-		values = append(values, stringSliceValues(hypothesis["evidence_refs"])...)
-	}
-	results, _ := objectArrayAllowEmpty(document["hypothesis_results"], "InvestigationCase.hypothesis_results")
-	for _, result := range results {
-		values = append(values, stringSliceValues(result["evidence_refs"])...)
-	}
-	sort.Strings(values)
-	seen := make(map[string]struct{}, len(values))
-	unique := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		unique = append(unique, value)
-	}
-	return sha256Hex([]byte(strings.Join(unique, "\x00")))
+	ID   string
+	Path string
 }
 
 func resolveCanonicalCase(root, currentCaseID, canonicalCaseID string) (canonicalCaseReference, error) {
@@ -725,15 +517,36 @@ func resolveCanonicalCase(root, currentCaseID, canonicalCaseID string) (canonica
 		}
 		bestRevision = revision
 		best = canonicalCaseReference{
-			ID:     canonicalCaseID,
-			Path:   filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "cases", entry.Name())),
-			SHA256: sha256Hex(data),
+			ID:   canonicalCaseID,
+			Path: filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "cases", entry.Name())),
 		}
 	}
 	if best.ID == "" {
 		return canonicalCaseReference{}, fmt.Errorf("canonical Case %q was not found; inspect runtime investigation status --all and provide an existing Case id", canonicalCaseID)
 	}
 	return best, nil
+}
+
+func validateSelectedFindings(state map[string]any, current, selected []string) error {
+	for _, id := range selected {
+		if containsString(current, id) {
+			continue
+		}
+		entities, _ := state["entities"].(map[string]any)
+		rows, _ := entities["findings"].([]any)
+		found := false
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if stringField(row["finding_id"]) == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("Finding %q has not been received; Main should inspect the original Finding or retain the question", id)
+		}
+	}
+	return nil
 }
 
 func updateCaseRevision(root, statePath, journalPath string, request CaseRevisionRequest) (runtime.Snapshot, error) {
@@ -759,15 +572,8 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	if expectedCaseRevision < 1 {
 		expectedCaseRevision = integerValueOrZero(pointer["revision"])
 	}
-	expectedCaseSHA256 := strings.TrimSpace(request.ExpectedCaseSHA256)
-	if expectedCaseSHA256 == "" {
-		expectedCaseSHA256 = stringField(pointer["sha256"])
-	}
 	if integerValueOrZero(pointer["revision"]) != expectedCaseRevision {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "stale Case revision: expected %d but Runtime points at %d; re-read the Case pointer", expectedCaseRevision, integerValueOrZero(pointer["revision"]))
-	}
-	if stringField(pointer["sha256"]) != expectedCaseSHA256 {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "stale Case sha256/hash: expected %s but Runtime pins %s; re-read runtime investigation status before retry", expectedCaseSHA256, stringField(pointer["sha256"]))
 	}
 	caseRel := stringField(pointer["path"])
 	casePath, err := repositoryPath(root, caseRel)
@@ -777,10 +583,6 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	caseBytes, err := os.ReadFile(casePath)
 	if err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "Case %q is missing or unreadable: %v", caseRel, err)
-	}
-	actualSHA := sha256Hex(caseBytes)
-	if actualSHA != expectedCaseSHA256 {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "Case %q sha256 drifted: expected %s but disk is %s; inspect runtime investigation status, then restore the pinned artifact or reconcile", caseRel, expectedCaseSHA256, actualSHA)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("review-investigation-case.schema.json", caseBytes); err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "Case %q schema is invalid: %v", caseRel, err)
@@ -801,43 +603,27 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	if err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
 	}
+	if err := validateSelectedFindings(current.State, caseIDs, request.selectedFindingIDs); err != nil {
+		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
+	}
 	nextDocument := cloneMap(currentDocument)
 	if err := request.Mutate(nextDocument); err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
-	}
-	if request.Operation == "case_routed" && stringField(nextDocument["route"]) == "s9_repair" {
-		if err := validateCausalClosureEvidence(root, current.State, nextDocument); err != nil {
-			return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "causal closure evidence: %v", err)
-		}
 	}
 	nextIDs, err := stringSlice(nextDocument["source_finding_ids"], "InvestigationCase.source_finding_ids")
 	if err != nil {
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
 	}
-	if len(caseIDs) == 0 {
-		if len(nextIDs) != 0 {
-			return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "source Finding set is immutable")
-		}
-	} else if err := exactFindingSetWithDetails(caseIDs, nextIDs); err != nil {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "source Finding exact set is immutable: %v", err)
+	if len(difference(caseIDs, nextIDs)) != 0 {
+		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "existing Case Finding sources cannot be removed by this revision")
+	}
+	if err := subsetOf(difference(nextIDs, caseIDs), request.selectedFindingIDs, "new Case Finding sources"); err != nil {
+		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "%v", err)
 	}
 	// This existing field is a projection of the current questions/results,
 	// never a second authority that can retain historical support after a
 	// legitimate Case revision changes the current responsibility.
-	nextDocument["unexplained_finding_ids"] = stringSliceAny(difference(caseIDs, supportedExplainedFindingIDs(nextDocument)))
-	// RC-18 S8-H3: the Case pins the digest of the S7 frozen baseline it was
-	// ingested from. Recompute that digest on every revision so a subject
-	// tampering between intake and investigation becomes observable instead of
-	// silently inheriting the old pin. The pinned value is never rewritten —
-	// changing it would bless the drift — so the mutation message carries the
-	// warning into the journal and the status board surfaces it to the caller.
-	driftWarning := ""
-	if plan, _, planErr := review.LoadPlan(root, current.State); planErr == nil && stringField(nextDocument["baseline_digest"]) != "" {
-		if digest := review.SubjectDigest(plan); digest != stringField(nextDocument["baseline_digest"]) {
-			driftWarning = fmt.Sprintf("baseline_digest drift: Case pins %s but the frozen ReviewPlan subjects now digest to %s; the investigation baseline is stale — re-verify findings against the current baseline before causal closure",
-				stringField(nextDocument["baseline_digest"]), digest)
-		}
-	}
+	nextDocument["unexplained_finding_ids"] = stringSliceAny(difference(nextIDs, supportedExplainedFindingIDs(nextDocument)))
 	nextDocument["case_id"] = request.CaseID
 	nextDocument["revision"] = expectedCaseRevision + 1
 	occurredAt := request.OccurredAt
@@ -851,37 +637,95 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	history = append(history, map[string]any{
 		"revision":    expectedCaseRevision,
 		"path":        caseRel,
-		"sha256":      expectedCaseSHA256,
 		"operation":   nonEmpty(request.Operation, "case_revision_updated"),
 		"occurred_at": occurredAt.UTC().Format(time.RFC3339Nano),
 	})
 	nextDocument["revision_history"] = hypothesesToAny(history)
+	nextRevision := expectedCaseRevision + 1
+	var nextRel, nextPath string
+	var output *os.File
+	for attempt := 0; ; attempt++ {
+		suffix := fmt.Sprintf("-r%d", nextRevision)
+		if attempt > 0 {
+			suffix += fmt.Sprintf("-%d", attempt)
+		}
+		nextRel = filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "cases", request.CaseID+suffix+".json"))
+		nextPath, err = repositoryPath(root, nextRel)
+		if err != nil {
+			return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "next Case path is invalid: %v", err)
+		}
+		if err = os.MkdirAll(filepath.Dir(nextPath), 0755); err != nil {
+			return runtime.Snapshot{}, err
+		}
+		output, err = os.OpenFile(nextPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return runtime.Snapshot{}, fmt.Errorf("reserve Case revision %s: %w", nextRel, err)
+		}
+		break
+	}
+	discardReservation := func() {
+		owned, statErr := output.Stat()
+		_ = output.Close()
+		current, currentErr := os.Lstat(nextPath)
+		if statErr == nil && currentErr == nil && os.SameFile(owned, current) {
+			_ = os.Remove(nextPath)
+		}
+	}
+	if request.caseReceipt != nil {
+		request.caseReceipt.SuccessorCaseRef = nextRel
+		request.caseReceipt.SuccessorCaseRevision = nextRevision
+		rows, _ := nextDocument["hypothesis_results"].([]any)
+		found := false
+		for i := len(rows) - 1; i >= 0; i-- {
+			result, _ := rows[i].(map[string]any)
+			receipt, _ := result["receipt"].(map[string]any)
+			if stringField(receipt["packet_id"]) == request.caseReceipt.PacketID {
+				receipt["successor_case_ref"] = nextRel
+				receipt["successor_case_revision"] = nextRevision
+				found = true
+				break
+			}
+		}
+		if !found {
+			discardReservation()
+			return runtime.Snapshot{}, errors.New("original S8 receipt is missing from its Case revision")
+		}
+	}
 	nextBytes, err := json.MarshalIndent(nextDocument, "", "  ")
 	if err != nil {
+		discardReservation()
 		return runtime.Snapshot{}, fmt.Errorf("encode Case revision: %w", err)
 	}
 	nextBytes = append(nextBytes, '\n')
 	if err := schema.NewEmbeddedValidator().ValidateBytes("review-investigation-case.schema.json", nextBytes); err != nil {
+		discardReservation()
 		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "next Case revision schema is invalid: %v", err)
 	}
-	nextRevision := expectedCaseRevision + 1
-	nextRel := filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "cases", request.CaseID+fmt.Sprintf("-r%d.json", nextRevision)))
-	nextPath, err := repositoryPath(root, nextRel)
-	if err != nil {
-		return runtime.Snapshot{}, caseWorkflowError(request.CaseID, "next Case path is invalid: %v", err)
+	if _, err = output.Write(nextBytes); err != nil {
+		discardReservation()
+		return runtime.Snapshot{}, fmt.Errorf("write Case revision %s: %w", nextRel, err)
 	}
-	if err := writeExclusive(nextPath, nextBytes); err != nil {
-		return runtime.Snapshot{}, fmt.Errorf("write immutable Case revision %s: %w", nextRel, err)
+	if err = output.Sync(); err != nil {
+		discardReservation()
+		return runtime.Snapshot{}, fmt.Errorf("sync Case revision %s: %w", nextRel, err)
 	}
-	nextSHA := sha256Hex(nextBytes)
+	if err = output.Close(); err != nil {
+		return runtime.Snapshot{}, fmt.Errorf("close Case revision %s: %w", nextRel, err)
+	}
+	if err = runtime.SyncDirectory(filepath.Dir(nextPath)); err != nil {
+		return runtime.Snapshot{}, err
+	}
 	cleanup := func() {
 		// The same lock/pending protocol as the original Runtime writer must
 		// guard cleanup. If an interrupted CAS may still publish this artifact,
 		// retain it for recovery instead of racing a raw unlink against state.
-		_, _ = runtime.NewStore(statePath, journalPath).WithContext(request.Context).RemoveUnreferencedArtifact(runtime.ArtifactCleanupRequest{
+		_, _ = runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context).RemoveUnreferencedArtifact(runtime.ArtifactCleanupRequest{
 			ExpectedRevision: current.Revision,
 			ArtifactPath:     nextRel,
-			ArtifactSHA256:   nextSHA,
+			ArtifactBytes:    nextBytes,
 			ReferencedPaths:  stateStringReferences(current.State, nextRel),
 		})
 	}
@@ -908,9 +752,8 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 		RequestID:              "investigation-case-revision",
 		BaselineGeneration:     baseline,
 		GateID:                 "S8-INVESTIGATION-CASE-REVISION",
-		GateFingerprint:        "sha256:investigation-case-revision-v1",
 		ProducerResponsibility: "S8 Investigation",
-		Message:                driftJournalMessage(nonEmpty(request.Operation, "case_revision_updated"), request.CaseID, nextRevision, driftWarning),
+		Message:                fmt.Sprintf("%s: %s revision %d", nonEmpty(request.Operation, "case_revision_updated"), request.CaseID, nextRevision),
 		OccurredAt:             occurredAt,
 		Apply: func(state map[string]any) error {
 			review, ok := state["review"].(map[string]any)
@@ -921,8 +764,11 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 			if !ok || existing == nil {
 				return fmt.Errorf("active InvestigationCase disappeared; run %s and reconcile", caseWorkflowNext)
 			}
-			if stringField(existing["case_id"]) != request.CaseID || integerValueOrZero(existing["revision"]) != expectedCaseRevision || stringField(existing["sha256"]) != expectedCaseSHA256 {
+			if stringField(existing["case_id"]) != request.CaseID || integerValueOrZero(existing["revision"]) != expectedCaseRevision {
 				return fmt.Errorf("active InvestigationCase changed during update; re-read %s and retry", caseWorkflowNext)
+			}
+			if err := validateSelectedFindings(state, caseIDs, request.selectedFindingIDs); err != nil {
+				return err
 			}
 			if request.validateCurrent != nil {
 				// Re-read the source under the Runtime writer lock. Checking only the
@@ -932,7 +778,7 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 				if readErr != nil {
 					return fmt.Errorf("re-read pinned InvestigationCase inside CAS: %w", readErr)
 				}
-				if sha256Hex(currentBytes) != expectedCaseSHA256 || !bytes.Equal(currentBytes, caseBytes) {
+				if !bytes.Equal(currentBytes, caseBytes) {
 					return errors.New("pinned InvestigationCase bytes changed before original CAS")
 				}
 				var lockedDocument map[string]any
@@ -952,23 +798,17 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 				}
 			}
 			existing["path"] = nextRel
-			existing["sha256"] = nextSHA
 			existing["revision"] = nextRevision
 			existing["status"] = status
-			existing["source_finding_ids"] = stringSliceAny(caseIDs)
+			existing["source_finding_ids"] = stringSliceAny(nextIDs)
 			existing["route"] = nextDocument["route"]
 			existing["route_reason"] = nextDocument["route_reason"]
 			existing["canonical_case_id"] = nextDocument["canonical_case_id"]
 			existing["canonical_case_ref"] = nextDocument["canonical_case_ref"]
-			existing["canonical_case_sha256"] = nextDocument["canonical_case_sha256"]
 			syncOptionalPointerField(existing, nextDocument, "repair_contract_ref")
-			syncOptionalPointerField(existing, nextDocument, "repair_contract_sha256")
 			existing["route_consumed_at"] = nextDocument["route_consumed_at"]
 			existing["route_consumer"] = nextDocument["route_consumer"]
 			existing["next_action"] = nextDocument["next_action"]
-			// RC-18 S8-H3 status-board outlet: keep the latest drift warning
-			// (or clear it) so `runtime investigation status` shows it.
-			review["investigation_baseline_drift"] = driftWarningPointer(driftWarning)
 			existing["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			return nil
@@ -981,35 +821,10 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	return snapshot, nil
 }
 
-// driftJournalMessage appends the RC-18 baseline-drift warning (S8-H3) to the
-// journal message when present. Empty warnings leave the message unchanged.
-func driftJournalMessage(operation, caseID string, revision int, driftWarning string) string {
-	message := fmt.Sprintf("%s: %s revision %d", operation, caseID, revision)
-	if driftWarning != "" {
-		message += "; WARNING " + driftWarning
-	}
-	return message
-}
-
-// driftWarningPointer maps the drift warning into the state value the status
-// board reads: the warning string when drifted, nil when the baseline matches.
-func driftWarningPointer(driftWarning string) any {
-	if driftWarning == "" {
-		return nil
-	}
-	return driftWarning
-}
-
+// Main owns causal sufficiency and the route choice. These fields are the
+// professional content needed to prepare a repair, not a proof of every question.
 func deterministicCaseRoute(document map[string]any) string {
-	if requireCurrentHypothesisResults(document) != nil {
-		return "investigate_more"
-	}
-	caseIDs, _ := stringSlice(document["source_finding_ids"], "source_finding_ids")
-	explained := supportedExplainedFindingIDs(document)
-	if len(difference(caseIDs, explained)) != 0 || !nonEmptyObject(document["causal_model"]) || strings.TrimSpace(stringField(document["primary_root_cause"])) == "" {
-		return "investigate_more"
-	}
-	if err := validateCausalClosure(document); err != nil {
+	if !nonEmptyObject(document["causal_model"]) || strings.TrimSpace(stringField(document["primary_root_cause"])) == "" {
 		return "investigate_more"
 	}
 	return "s9_repair"
@@ -1017,23 +832,12 @@ func deterministicCaseRoute(document map[string]any) string {
 
 func validateRoute(route string, document map[string]any, request RouteRequest, reassessment bool) error {
 	if route == "s9_repair" {
-		if deterministicCaseRoute(document) != "s9_repair" {
-			// Surface the exact structural reason instead of the generic
-			// determinism error so the Investigator can close the specific gap.
-			if err := causalClosureDefect(document); err != nil {
-				return err
-			}
-			return errors.New("route is not deterministic: every source Finding must be explained by supported results and causal closure must be complete")
-		}
-		if strings.TrimSpace(request.PrimaryRootCause) == "" && strings.TrimSpace(stringField(document["primary_root_cause"])) == "" {
+		if strings.TrimSpace(stringField(document["primary_root_cause"])) == "" {
 			return errors.New("s9_repair requires primary_root_cause")
 		}
-		if len(request.CausalModel) == 0 && !nonEmptyObject(document["causal_model"]) {
+		if !nonEmptyObject(document["causal_model"]) {
 			return errors.New("s9_repair requires causal_model")
 		}
-	}
-	if route == "investigate_more" && !reassessment && deterministicCaseRoute(document) != "investigate_more" {
-		return errors.New("route is not deterministic: the Case is already causally closed; choose a concrete disposition")
 	}
 	if route == "duplicate" && strings.TrimSpace(request.CanonicalCaseID) == "" {
 		return errors.New("duplicate route requires canonical_case_id")
@@ -1079,9 +883,8 @@ func validateEvidenceReferences(root string, refs []EvidenceReference) error {
 	seen := make(map[string]struct{}, len(refs))
 	for index, ref := range refs {
 		path := strings.TrimSpace(ref.Path)
-		sha := strings.TrimSpace(ref.SHA256)
-		if path == "" || sha == "" {
-			return fmt.Errorf("causal_reassessment_evidence_refs[%d] requires path and sha256", index)
+		if path == "" {
+			return fmt.Errorf("causal_reassessment_evidence_refs[%d] requires a path", index)
 		}
 		if _, ok := seen[path]; ok {
 			return fmt.Errorf("causal_reassessment_evidence_refs contains duplicate path %q", path)
@@ -1091,12 +894,8 @@ func validateEvidenceReferences(root string, refs []EvidenceReference) error {
 		if err != nil {
 			return fmt.Errorf("causal reassessment evidence %q is invalid: %v", path, err)
 		}
-		data, err := os.ReadFile(absolute)
-		if err != nil {
+		if _, err := os.Stat(absolute); err != nil {
 			return fmt.Errorf("causal reassessment evidence %q is missing or unreadable: %v", path, err)
-		}
-		if actual := sha256Hex(data); actual != sha {
-			return fmt.Errorf("causal reassessment evidence %q sha256 drifted: expected %s but disk is %s; re-read the targeted artifact", path, sha, actual)
 		}
 	}
 	return nil
@@ -1105,7 +904,7 @@ func validateEvidenceReferences(root string, refs []EvidenceReference) error {
 func evidenceReferencesToAny(refs []EvidenceReference) []any {
 	result := make([]any, 0, len(refs))
 	for _, ref := range refs {
-		result = append(result, map[string]any{"path": strings.TrimSpace(ref.Path), "sha256": strings.TrimSpace(ref.SHA256)})
+		result = append(result, map[string]any{"path": strings.TrimSpace(ref.Path)})
 	}
 	return result
 }
@@ -1380,41 +1179,6 @@ func validateCausalClosure(document map[string]any) error {
 	return validateDetectionGap(detectionGap)
 }
 
-// validateCausalClosureEvidence is the Runtime-backed half of the S8 causal
-// closure gate. Structural validation alone is not enough for detection-gap
-// evidence: every ref that can authorize the S8→S9 route must resolve through
-// the same current-generation/SHA evidence validator used by hypotheses and
-// hypothesis results.
-func validateCausalClosureEvidence(root string, state, document map[string]any) error {
-	if err := validateCausalClosure(document); err != nil {
-		return err
-	}
-	detectionGap, _ := document["detection_gap"].(map[string]any)
-	refs := stringSliceValues(detectionGap["evidence_refs"])
-	// Reuse exact original Finding sources through their original sealed Batch,
-	// rather than demanding that S8 recapture or register an alias for S7 facts.
-	if stringField(document["observation_batch_ref"]) != "" {
-		var err error
-		refs, err = remainingFindingQuestionRefs(root, state, document, stringSliceAnyToStrings(document["source_finding_ids"]), refs)
-		if err != nil {
-			return fmt.Errorf("detection_gap.evidence_refs: %w", err)
-		}
-	}
-	if len(refs) == 0 {
-		return nil
-	}
-	if err := ValidateEvidenceRefs(refs, EvidenceAttestationOptions{
-		AllowPaths:         true,
-		State:              state,
-		Root:               root,
-		RequireSHA:         true,
-		RequireReviewRound: currentReviewRound(state),
-	}); err != nil {
-		return fmt.Errorf("detection_gap.evidence_refs: %w", err)
-	}
-	return nil
-}
-
 func objectArray(value any, field string) ([]map[string]any, error) {
 	return objectArrayAllowEmpty(value, field)
 }
@@ -1494,26 +1258,6 @@ func nonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func currentReviewRound(state map[string]any) int {
-	review, _ := state["review"].(map[string]any)
-	if review == nil {
-		return 0
-	}
-	switch v := review["round"].(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case float64:
-		return int(v)
-	case json.Number:
-		n, _ := v.Int64()
-		return int(n)
-	default:
-		return 0
-	}
 }
 
 // stateStringReferences returns the canonical repository-relative path only

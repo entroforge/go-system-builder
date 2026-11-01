@@ -160,7 +160,7 @@ func TestDocumentReviewRevisionRejectsDriftAndFailedAuthorization(t *testing.T) 
 			req := revisionRequest(root, record.Key)
 			switch bad {
 			case "unreceived":
-				req.PreviousSubmissionKey = workpacket.Digest([]byte("not received"))
+				req.PreviousSubmissionKey = record.Key + "-not-received"
 			case "empty reason":
 				req.Reason = " \n "
 			case "too long":
@@ -177,6 +177,12 @@ func TestDocumentReviewRevisionRejectsDriftAndFailedAuthorization(t *testing.T) 
 			before, err := os.ReadFile(statePath)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if bad == "input drift" {
+				if _, _, err := runtime.RecordDocumentReviewRevision(root, statePath, journalPath, req); err != nil {
+					t.Fatalf("current source bytes became a revision proof: %v", err)
+				}
+				return
 			}
 			if _, _, err := runtime.RecordDocumentReviewRevision(root, statePath, journalPath, req); err == nil {
 				t.Fatal("invalid revision accepted")

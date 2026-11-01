@@ -58,16 +58,7 @@ type Snapshot struct {
 	SubmissionSaves                map[string]int64              `json:"loop_submission_save_total,omitempty"`
 	SubmissionSaveDuration         map[string]DurationStats      `json:"loop_submission_save_duration_ms,omitempty"`
 	HookTransportFailures          map[string]HookTransportStats `json:"loop_hook_transport_failures,omitempty"`
-	// S7 verification-round series (L3-S7 §14.2 machine-collectible subset;
-	// see s7.go).
-	S7Assignments        map[string]int64         `json:"loop_s7_assignments,omitempty"`
-	S7Claims             map[string]int64         `json:"loop_s7_claims,omitempty"`
-	S7PlanRevision       map[string]int64         `json:"loop_s7_plan_revision,omitempty"`
-	S7ResultSubmits      map[string]int64         `json:"loop_s7_result_submits_total,omitempty"`
-	S7ClaimLeadTime      map[string]DurationStats `json:"loop_s7_claim_lead_time_ms,omitempty"`
-	S7Findings           map[string]int64         `json:"loop_s7_findings_total,omitempty"`
-	S7FirstFindingToSeal map[string]DurationStats `json:"loop_s7_first_finding_to_seal_ms,omitempty"`
-	S7CleanRounds        map[string]int64         `json:"loop_s7_clean_rounds_total,omitempty"`
+	S7ResultSubmits                map[string]int64              `json:"loop_s7_result_submits_total,omitempty"`
 	// S7SubmitPhases records per-phase durations of the review-result submit
 	// CAS transaction (RC-10; see RecordS7SubmitPhase in s7.go).
 	S7SubmitPhases map[string]DurationStats `json:"loop_s7_submit_phase_ms,omitempty"`
@@ -101,14 +92,7 @@ func emptySnapshot() Snapshot {
 		SubmissionSaves:                map[string]int64{},
 		SubmissionSaveDuration:         map[string]DurationStats{},
 		HookTransportFailures:          map[string]HookTransportStats{},
-		S7Assignments:                  map[string]int64{},
-		S7Claims:                       map[string]int64{},
-		S7PlanRevision:                 map[string]int64{},
 		S7ResultSubmits:                map[string]int64{},
-		S7ClaimLeadTime:                map[string]DurationStats{},
-		S7Findings:                     map[string]int64{},
-		S7FirstFindingToSeal:           map[string]DurationStats{},
-		S7CleanRounds:                  map[string]int64{},
 		S7SubmitPhases:                 map[string]DurationStats{},
 	}
 }
@@ -161,29 +145,8 @@ func (s *Store) readBase() (Snapshot, error) {
 	if snap.HookTransportFailures == nil {
 		snap.HookTransportFailures = map[string]HookTransportStats{}
 	}
-	if snap.S7Assignments == nil {
-		snap.S7Assignments = map[string]int64{}
-	}
-	if snap.S7Claims == nil {
-		snap.S7Claims = map[string]int64{}
-	}
-	if snap.S7PlanRevision == nil {
-		snap.S7PlanRevision = map[string]int64{}
-	}
 	if snap.S7ResultSubmits == nil {
 		snap.S7ResultSubmits = map[string]int64{}
-	}
-	if snap.S7ClaimLeadTime == nil {
-		snap.S7ClaimLeadTime = map[string]DurationStats{}
-	}
-	if snap.S7Findings == nil {
-		snap.S7Findings = map[string]int64{}
-	}
-	if snap.S7FirstFindingToSeal == nil {
-		snap.S7FirstFindingToSeal = map[string]DurationStats{}
-	}
-	if snap.S7CleanRounds == nil {
-		snap.S7CleanRounds = map[string]int64{}
 	}
 	if snap.S7SubmitPhases == nil {
 		snap.S7SubmitPhases = map[string]DurationStats{}
@@ -227,8 +190,6 @@ func (s *Store) mutateWith(apply func(*Snapshot), write func(string, []byte) err
 		return err
 	}
 	apply(&snap)
-	retainS7Rounds(&snap, s7RoundRetention)
-	pruneDeadFamilies(&snap)
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode metrics: %w", err)
@@ -239,68 +200,8 @@ func (s *Store) mutateWith(apply func(*Snapshot), write func(string, []byte) err
 	return nil
 }
 
-// maxTrackedFamilies documents the RC-17 family budget: the durable snapshot
-// tracks nineteen loop_* families — seven core control-plane families plus
-// nine S7 round/outcome families, two S5 save families and one outer Hook
-// transport failure family. Every one is wired
-// at both ends:
-//   - core seven: recorded by controller/cycle.go, cli/controller.go,
-//     cli/run.go and integration/integrate.go; rendered by FormatDoctor /
-//     FormatHealth;
-//   - S7 nine: recorded from review submit/supplement (RecordS7RoundShape,
-//     RecordS7ResultSubmit, RecordS7SubmitPhase, ...); all rendered by
-//     FormatS7 (cli/s7_status.go).
-//   - S5 two: one bounded observation per recognized Save invocation from
-//     submission/service.go; counters and durations rendered by FormatDoctor
-//     and FormatHealth. These include replay and are not first-submit metrics.
-//   - outer Hook transport one: ObserveHookTransportFailure from
-//     cli/hook_budget.go records actual outer process failures through the
-//     existing observation spool; FormatDoctor / FormatHealth render it and
-//     HealthDegraded consumes it. Labels are bounded event/outcome pairs;
-//     actual process budget ranges are statistics, never series dimensions.
-//
-// The audit's "15→≤10, remove S7PlanRevision as zero-consumer" does not
-// survive contact with the wiring: S7PlanRevision has live producers
-// (RecordS7RoundShape via review/supplement.go and review/submit.go) and a
-// live renderer (FormatS7), so it is kept and documented instead of cut. The
-// cap is therefore a review guard, not a quota — adding a twentieth family
-// requires either retiring a dead one in the same change or extending this
-// comment with the new producer/consumer pair. Enforced by
-// TestTrackedFamilyBudget.
-const maxTrackedFamilies = 19
-
-// pruneDeadFamilies trims unparseable labels out of the round-keyed S7 maps
-// before the snapshot is persisted. Round-keyed families may only carry
-// labels that roundFromLabel understands (the "r<N>" / numeric round forms
-// written by the recorders); a label outside that vocabulary is a dead key
-// from a legacy or corrupt writer — it can never be rendered by FormatS7
-// (roundLabelVisible), never trimmed by retainS7Rounds (which skips it when
-// computing retention), and would otherwise survive every write forever.
-// Unlike retainS7Rounds this runs on every mutation, not only when the map
-// exceeds the retention cap. Callers hold the store lock (mutate).
-func pruneDeadFamilies(snap *Snapshot) {
-	pruneGauge := func(m map[string]int64) {
-		for label := range m {
-			if _, ok := roundFromLabel(label); !ok {
-				delete(m, label)
-			}
-		}
-	}
-	pruneDuration := func(m map[string]DurationStats) {
-		for label := range m {
-			if _, ok := roundFromLabel(label); !ok {
-				delete(m, label)
-			}
-		}
-	}
-	pruneGauge(snap.S7Assignments)
-	pruneGauge(snap.S7Claims)
-	pruneGauge(snap.S7PlanRevision)
-	pruneGauge(snap.S7Findings)
-	pruneGauge(snap.S7CleanRounds)
-	pruneDuration(snap.S7FirstFindingToSeal)
-	pruneDuration(snap.S7ClaimLeadTime)
-}
+// maxTrackedFamilies covers the current recorded metric families.
+const maxTrackedFamilies = 12
 
 func atomicWriteMetrics(path string, data []byte) error {
 	return atomicWriteMetricsWith(path, data, metricsWriteHooks{})

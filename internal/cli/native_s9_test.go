@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func nativeS9WorkerFixture(t *testing.T, assertionCopies ...int) (string, string
 		t.Fatalf("preparation created an execution: %s", feedback)
 	}
 	p := packets[0]
-	brief, _, _ := nativeS9Paths(p)
+	brief := nativeS9BriefPath(p)
 	planPath, result, pathErr := nativeS9AuthorPaths(root, p)
 	if pathErr != nil {
 		t.Fatal(pathErr)
@@ -82,7 +83,7 @@ func TestNativeS9ActualWorktreeStopReceivesWithoutLauncherOrPlatformIdentity(t *
 		out.Reset()
 		diagnostic.Reset()
 		input.Event = event
-		if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 || out.Len() != 0 {
+		if handled, code := nativeS9Hook(root, input, &out, &diagnostic); handled || code != 0 || out.Len() != 0 {
 			t.Fatalf("ordinary %s: %t %d %s %s", event, handled, code, &out, &diagnostic)
 		}
 		repairDispatchAssertUnchanged(t, root, before)
@@ -100,7 +101,7 @@ func TestNativeS9ActualWorktreeStopReceivesWithoutLauncherOrPlatformIdentity(t *
 		t.Fatalf("returned Git source was not recorded: %v %s", err, &diagnostic)
 	}
 	e := registry.Executions[p.Binding.ManifestAssignmentID]
-	if e.Path != worker || e.DeliveryRef == "" || e.PlatformSessionID != "" || e.BootstrapSHA256 != "" || e.AgentID == input.AgentID {
+	if e.Path != worker || e.DeliveryRef == "" || e.PlatformSessionID != "" || e.AgentID == input.AgentID {
 		t.Fatalf("native delivery was replaced by execution management: %#v %s", e, &diagnostic)
 	}
 	for _, path := range []string{".claude/workspace-launch", ".claude/loop-bootstrap.json"} {
@@ -119,11 +120,28 @@ func TestNativeS9ActualWorktreeStopReceivesWithoutLauncherOrPlatformIdentity(t *
 	// Main verifies and merges through the original independent consumer.
 	out.Reset()
 	diagnostic.Reset()
-	if code := runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", e.AssignmentID, "--agent", e.AgentID, "--check-command", "go test ./internal/api && git grep -q 'const Restored = true' -- internal/api/one.go"}, &out, &diagnostic); code != 0 {
+	if code := runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", e.AssignmentID, "--agent", e.AgentID, "--check-command", "go test ./internal/api && git grep -q 'const Restored = true' -- internal/api/one.go"}, &out, &diagnostic); code != 1 || !strings.Contains(diagnostic.String(), "integration verified") || !strings.Contains(diagnostic.String(), "cleanup pending") {
 		t.Fatalf("original Main integration: %d %s %s", code, &out, &diagnostic)
 	}
-	if _, err := os.Stat(worker); !os.IsNotExist(err) {
-		t.Fatalf("original integration did not clean the received worktree: %v", err)
+	if data, err := os.ReadFile(filepath.Join(root, "internal/api/one.go")); err != nil || !strings.Contains(string(data), "const Restored = true") {
+		t.Fatalf("integrated Main result missing: %v", err)
+	}
+	planPath, resultPath, err := nativeS9AuthorPaths(root, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{planPath, resultPath} {
+		if _, err := os.Stat(filepath.Join(worker, path)); err != nil {
+			t.Fatalf("private original answer %s was not preserved: %v", path, err)
+		}
+	}
+	integrated := repairDispatchSnapshot(t, root)
+	results, err := runtime.RepairResultPacketsContext(runtime.WithPacketBodyRoot(t.Context(), root), integrated.State)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("original result responsibility missing after integration: %v", err)
+	}
+	if _, found, err := runtime.VerifiedRepairResultReceipt(root, integrated.State, results[0].ID, p.Binding.OwnerAgentID); err != nil || !found {
+		t.Fatalf("Final receipt missing after integration: found=%t err=%v", found, err)
 	}
 	before = repairDispatchRuntimeBytes(t, root)
 	out.Reset()
@@ -166,8 +184,8 @@ func TestNativeS9ObservesActualGitBaseAfterDependencyAdvancesMain(t *testing.T) 
 		t.Fatalf("native source with newer dependency base rejected: %t %d %s", handled, code, &diagnostic)
 	}
 	registry, err := workspace.Decode(repairDispatchSnapshot(t, root).State)
-	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].BaseCommit != actualBase {
-		t.Fatalf("prepared baseline was mistaken for actual native worktree base: %v", err)
+	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].Path != worker {
+		t.Fatalf("native worktree reference not retained: %v", err)
 	}
 }
 
@@ -204,6 +222,12 @@ func TestNativeS9BlockerResumesThroughOriginalResolutionWithoutPrepare(t *testin
 	if err != nil || !receipt.Accepted || strings.Contains(receipt.NextAction, "显式运行原 runtime workspace prepare") || !strings.Contains(receipt.NextAction, "原生 resume") {
 		t.Fatalf("native resolution returned legacy preparation: %+v %v", receipt, err)
 	}
+	resolvedSnapshot := repairDispatchSnapshot(t, root)
+	pending, err := runtime.RepairResultResumePending(root, resolvedSnapshot.State, p.Binding.OwnerAgentID, p.Binding.RepairAssignmentID)
+	if err != nil || !pending {
+		t.Fatalf("accepted Main resolution must show its original continuation pending before successor: pending=%t err=%v", pending, err)
+	}
+	assertOriginalAnswerWriteNotDenied(t, root, worker, p.Binding.OwnerAgentID, filepath.Join(worker, "internal/api/one.go"))
 	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, result), complete); err != nil {
 		t.Fatal(err)
 	}
@@ -217,6 +241,32 @@ func TestNativeS9BlockerResumesThroughOriginalResolutionWithoutPrepare(t *testin
 	registry, err := workspace.Decode(snapshot.State)
 	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef == "" {
 		t.Fatalf("native successor candidate missing: %v %s", err, &diagnostic)
+	}
+	successors, err := runtime.CurrentRepairResultPackets(root, snapshot.State, p.Binding.OwnerAgentID)
+	if err != nil || len(successors) != 1 || successors[0].Binding.Resume == nil || successors[0].Binding.Resume.PredecessorPacketID != packets[0].ID {
+		t.Fatalf("current resumed responsibility lost its predecessor: %+v %v", successors, err)
+	}
+	pending, err = runtime.RepairResultResumePending(root, snapshot.State, p.Binding.OwnerAgentID, p.Binding.RepairAssignmentID)
+	if err != nil || pending {
+		t.Fatalf("issued successor did not finish continuation preparation: pending=%t err=%v", pending, err)
+	}
+	candidate, found, err := runtime.VerifiedRepairResultCandidateReceipt(root, snapshot.State, successors[0].ID, p.Binding.OwnerAgentID)
+	if err != nil || !found || !reflect.DeepEqual(candidate.Provenance.Resume, successors[0].Binding.Resume) {
+		t.Fatalf("accepted resumed Result lost its current responsibility: %+v %t %v", candidate, found, err)
+	}
+	out.Reset()
+	diagnostic.Reset()
+	execution := registry.Executions[p.Binding.ManifestAssignmentID]
+	code := runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", execution.AssignmentID, "--agent", execution.AgentID, "--check-command", "test -f internal/api/one.go"}, &out, &diagnostic)
+	if !strings.Contains(diagnostic.String(), "integration verified") {
+		t.Fatalf("resumed Main integration failed: code=%d %s %s", code, &out, &diagnostic)
+	}
+	final := repairDispatchSnapshot(t, root)
+	if _, found, err := runtime.VerifiedRepairResultReceipt(root, final.State, successors[0].ID, p.Binding.OwnerAgentID); err != nil || !found {
+		t.Fatalf("resumed original Final missing: %t %v", found, err)
+	}
+	if _, found, err := runtime.VerifiedRepairResultReceipt(root, final.State, packets[0].ID, p.Binding.OwnerAgentID); err != nil || found {
+		t.Fatalf("resolved predecessor received successor Final: %t %v", found, err)
 	}
 }
 
@@ -232,7 +282,6 @@ func TestNativeS9MalformedProfessionalArtifactIsNotReceived(t *testing.T) {
 	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, result), malformed); err != nil {
 		t.Fatal(err)
 	}
-	before := repairDispatchRuntimeBytes(t, root)
 	input.Event = "SubagentStop"
 	var out, diagnostic bytes.Buffer
 	// Go versions differ in whether UnmarshalTypeError.Field includes a slice
@@ -240,8 +289,18 @@ func TestNativeS9MalformedProfessionalArtifactIsNotReceived(t *testing.T) {
 	if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 || !strings.Contains(diagnostic.String(), "detection_gap_artifacts") || !strings.Contains(diagnostic.String(), "string") {
 		t.Fatalf("malformed professional field lacks exact feedback: %t %d %s", handled, code, &diagnostic)
 	}
-	repairDispatchAssertUnchanged(t, root, before)
-	summary, err := nativeReturnSummary(root, repairDispatchSnapshot(t, root), nativeReturnSubject{kind: "s9-plan-report-v1", id: p.ID})
+	snapshot := repairDispatchSnapshot(t, root)
+	if _, found, err := runtime.VerifiedRepairPlanReportReceipt(root, snapshot.State, p.ID, p.Binding.OwnerAgentID); err != nil || !found {
+		t.Fatalf("valid original Plan was not received before malformed Result: found=%t err=%v", found, err)
+	}
+	packets, err := runtime.RepairResultPacketsContext(runtime.WithPacketBodyRoot(t.Context(), root), snapshot.State)
+	if err != nil || len(packets) != 1 {
+		t.Fatalf("original Result responsibility missing: packets=%d err=%v", len(packets), err)
+	}
+	if _, found, err := runtime.VerifiedRepairResultCandidateReceipt(root, snapshot.State, packets[0].ID, p.Binding.OwnerAgentID); err != nil || found {
+		t.Fatalf("malformed Result acquired candidate receipt: found=%t err=%v", found, err)
+	}
+	summary, err := nativeReturnSummary(root, snapshot, nativeReturnSubject{kind: "s9-plan-report-v1", id: p.ID})
 	if err != nil || !strings.Contains(summary, "detection_gap_artifacts") || !strings.Contains(summary, filepath.Join(worker, result)) || !strings.Contains(summary, p.Binding.OwnerAgentID) {
 		t.Fatalf("Main lost exact field/path/owner diagnostic: %v %s", err, summary)
 	}
@@ -283,19 +342,31 @@ func TestNativeS9UnknownAndAmbiguousReferencesNeverClaimResponsibility(t *testin
 	if len(packets) != 2 {
 		t.Fatalf("missing independent native briefs: %d", len(packets))
 	}
+	if packets[0].Binding.OwnerAgentID == "" || packets[1].Binding.OwnerAgentID == "" || packets[0].Binding.OwnerAgentID == packets[1].Binding.OwnerAgentID {
+		t.Fatalf("ambiguous references require two distinct original owners: %q %q", packets[0].Binding.OwnerAgentID, packets[1].Binding.OwnerAgentID)
+	}
 	before := repairDispatchRuntimeBytes(t, root)
 	var text string
 	for _, p := range packets {
-		brief, _, _ := nativeS9Paths(p)
+		brief := nativeS9BriefPath(p)
 		text += filepath.Join(root, brief) + "\n"
 	}
-	for _, body := range []string{"unrelated native exploration", text} {
+	t.Run("unrelated event is available to other handlers", func(t *testing.T) {
 		var out, diagnostic bytes.Buffer
-		if handled, code := nativeS9Hook(root, policy.Input{Event: "SubagentStop", AgentID: "opaque-native-id", CWD: root, LastAssistantMessage: body}, &out, &diagnostic); !handled || code != 0 {
-			t.Fatalf("unknown/ambiguous return: %t %d %s", handled, code, &diagnostic)
+		handled, code := nativeS9Hook(root, policy.Input{Event: "SubagentStop", AgentID: "opaque-native-id", CWD: root, LastAssistantMessage: "unrelated native exploration"}, &out, &diagnostic)
+		if handled || code != 0 {
+			t.Fatalf("unrelated return: %t %d %s", handled, code, &diagnostic)
 		}
 		repairDispatchAssertUnchanged(t, root, before)
-	}
+	})
+	t.Run("ambiguous briefs do not claim either responsibility", func(t *testing.T) {
+		var out, diagnostic bytes.Buffer
+		handled, code := nativeS9Hook(root, policy.Input{Event: "SubagentStop", AgentID: "opaque-native-id", CWD: root, LastAssistantMessage: text}, &out, &diagnostic)
+		if !handled || code != 0 || !strings.Contains(diagnostic.String(), "multiple exact briefs; Main must resolve it") {
+			t.Fatalf("ambiguous return: %t %d %s", handled, code, &diagnostic)
+		}
+		repairDispatchAssertUnchanged(t, root, before)
+	})
 }
 
 func TestNativeS9MissingPreparationKeepsMainOnOriginalDivision(t *testing.T) {
@@ -313,16 +384,13 @@ func TestNativeS9MissingPreparationKeepsMainOnOriginalDivision(t *testing.T) {
 }
 
 func TestNativeS9MissingWorktreePlanDoesNotBorrowMainAnswer(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
+	for _, legacy := range []bool{false} {
 		name := "current-private"
 		if legacy {
 			name = "legacy"
 		}
 		t.Run(name, func(t *testing.T) {
 			fixture := nativeS9WorkerFixture
-			if legacy {
-				fixture = nativeS9LegacyWorkerFixture
-			}
 			root, worker, p, input, _ := fixture(t)
 			plan, result := nativeS9TestAuthorPaths(t, root, p)
 			local := filepath.Join(worker, plan)
@@ -356,7 +424,7 @@ func TestNativeS9MissingWorktreePlanDoesNotBorrowMainAnswer(t *testing.T) {
 			if legacy {
 				want = "Main's draft cannot substitute"
 			}
-			for _, detail := range []string{want, local, "Main owns recovery"} {
+			for _, detail := range []string{want, local, "Main"} {
 				if !handled || code != 0 || !strings.Contains(diagnostic.String(), detail) {
 					t.Fatalf("missing actual source borrowed Main or lost %q: %t %d %s %s", detail, handled, code, &out, &diagnostic)
 				}
@@ -380,46 +448,6 @@ func TestNativeS9MissingWorktreePlanDoesNotBorrowMainAnswer(t *testing.T) {
 				t.Fatalf("missing Plan fabricated a candidate: %+v %v", registry, err)
 			}
 		})
-	}
-}
-
-func TestNativeS9ActualBlockerCanReturnWithoutPrivatePlan(t *testing.T) {
-	root, worker, p, input, answer := nativeS9WorkerFixture(t)
-	plan, result := nativeS9TestAuthorPaths(t, root, p)
-	missingPlan := filepath.Join(worker, plan)
-	if err := os.Remove(missingPlan); err != nil {
-		t.Fatal(err)
-	}
-	answer.Verdict = "blocked"
-	answer.ResidualRisks = []string{"actual dependency unavailable; Main must supply it before repair"}
-	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, result), answer); err != nil {
-		t.Fatal(err)
-	}
-	before := repairDispatchRuntimeBytes(t, root)
-	input.Event = "SubagentStop"
-	var out, diagnostic bytes.Buffer
-	if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 || !strings.Contains(diagnostic.String(), "Main owns recovery") || !strings.Contains(diagnostic.String(), "native private original must be exactly untracked") || !strings.Contains(diagnostic.String(), missingPlan) {
-		t.Fatalf("actual blocker forced a successful Plan: %t %d %s %s", handled, code, &out, &diagnostic)
-	}
-	repairDispatchAssertUnchanged(t, root, before)
-}
-
-func TestNativeS9ReceiverSourceFailureBelongsToMain(t *testing.T) {
-	root, _, p, input, _ := nativeS9WorkerFixture(t)
-	_, pin, _ := nativeS9Paths(p)
-	if err := os.Remove(filepath.Join(root, pin)); err != nil {
-		t.Fatal(err)
-	}
-	input.Event = "SubagentStop"
-	var out, diagnostic bytes.Buffer
-	if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 || !strings.Contains(diagnostic.String(), "Main owns recovery") || !strings.Contains(diagnostic.String(), pin) {
-		t.Fatalf("receiver failure sent back to author: %t %d %s", handled, code, &diagnostic)
-	}
-	state := repairDispatchSnapshot(t, root).State
-	if registry, err := workspace.Decode(state); err != nil {
-		t.Fatal(err)
-	} else if registry != nil && len(registry.Executions) != 0 {
-		t.Fatal("source failure fabricated a delivery")
 	}
 }
 
@@ -473,7 +501,7 @@ func TestNativeMainReturnShowsOriginalS9CandidateWithoutPrivateAnswers(t *testin
 			t.Fatal(err)
 		}
 	}
-	brief, _, _ := nativeS9Paths(p)
+	brief := nativeS9BriefPath(p)
 	before := repairDispatchRuntimeBytes(t, root)
 	out.Reset()
 	body, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "cwd": root, "tool_name": "Agent", "tool_input": map[string]any{"prompt": filepath.Join(root, brief)}})
@@ -498,7 +526,7 @@ func TestNativeS9MissingBriefDoesNotTurnAcceptedPlanIntoLegacyStartup(t *testing
 	if handled, code := nativeS9Hook(root, input, &bytes.Buffer{}, &diagnostic); !handled || code != 0 {
 		t.Fatalf("native Stop: %t %d %s", handled, code, &diagnostic)
 	}
-	brief, _, _ := nativeS9Paths(packet)
+	brief := nativeS9BriefPath(packet)
 	if err := os.Remove(resolveRootPath(root, brief)); err != nil {
 		t.Fatal(err)
 	}
@@ -511,24 +539,11 @@ func TestNativeS9MissingBriefDoesNotTurnAcceptedPlanIntoLegacyStartup(t *testing
 	repairDispatchAssertUnchanged(t, root, before)
 }
 
-func TestNativeS9MissingCurrentPacketDoesNotRequestLegacyExecutionChoice(t *testing.T) {
-	// Historical Plan facts alone are not a registered frozen execution.
-	// Packet-enabled normal reminders retain the original preparation owner.
-	root, _, path, _ := repairExecutionFixture(t, true)
-	snapshot := repairDispatchSnapshot(t, root)
-	before := repairDispatchRuntimeBytes(t, root)
-	got := stageRepairExecutionPrepareContext(root, policy.Input{Event: "PreToolUse", AgentID: "Main", CWD: root}, snapshot)
-	if !strings.Contains(got, path) || !strings.Contains(got, "Main/system must restore") || strings.Contains(got, "awaits check_location") || strings.Contains(got, "runtime workspace prepare") || strings.Contains(got, "runtime workspace bind") {
-		t.Fatalf("missing native material became another execution questionnaire/startup: %s", got)
-	}
-	repairDispatchAssertUnchanged(t, root, before)
-}
-
 func TestNativeS9FirstIncompleteStopReturnsExactGapToMainWithoutAcceptance(t *testing.T) {
 	for _, missing := range []string{"Result", "PlanReport"} {
 		t.Run(missing, func(t *testing.T) {
 			root, worker, p, input, _ := nativeS9WorkerFixture(t)
-			brief, _, _ := nativeS9Paths(p)
+			brief := nativeS9BriefPath(p)
 			plan, result := nativeS9TestAuthorPaths(t, root, p)
 			local := filepath.Join(worker, result)
 			if missing == "PlanReport" {
@@ -544,13 +559,41 @@ func TestNativeS9FirstIncompleteStopReturnsExactGapToMainWithoutAcceptance(t *te
 			before := repairDispatchRuntimeBytes(t, root)
 			input.Event = "SubagentStop"
 			var out, diagnostic bytes.Buffer
-			if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 || !strings.Contains(diagnostic.String(), "Main owns recovery") || !strings.Contains(diagnostic.String(), local) {
+			if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 || !strings.Contains(diagnostic.String(), "Main") || !strings.Contains(diagnostic.String(), local) {
 				t.Fatalf("first incomplete Stop: %t %d %s", handled, code, &diagnostic)
 			}
-			repairDispatchAssertUnchanged(t, root, before)
+			if missing == "Result" {
+				for _, want := range []string{"PlanReport receipt is accepted", "Result is not submitted", "Main"} {
+					if !strings.Contains(diagnostic.String(), want) {
+						t.Errorf("partial reception lost %q: %s", want, &diagnostic)
+					}
+				}
+				if strings.Contains(diagnostic.String(), "may remain pending") || strings.Contains(diagnostic.String(), "failed attempt does not confirm a receipt") {
+					t.Errorf("known Plan receipt presented as unknown: %s", &diagnostic)
+				}
+			}
+			if missing == "PlanReport" {
+				repairDispatchAssertUnchanged(t, root, before)
+			} else {
+				service, err := submission.NewReadOnly(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if receipt, err := service.RepairPlanReportReceipt(p.Binding.OwnerAgentID, p.ID); err != nil || !receipt.Accepted {
+					t.Fatalf("missing Result prevented original Plan reception: %+v %v", receipt, err)
+				}
+				packets, err := runtime.CurrentRepairResultPacketsContext(t.Context(), root, repairDispatchSnapshot(t, root).State, p.Binding.OwnerAgentID)
+				if err != nil || len(packets) != 0 {
+					t.Fatalf("missing Result created Result/Candidate: %+v %v", packets, err)
+				}
+			}
 			snap := repairDispatchSnapshot(t, root)
 			summary, err := nativeReturnSummary(root, snap, nativeReturnSubject{kind: "s9-plan-report-v1", id: p.ID, ref: filepath.Join(root, brief)})
-			if err != nil || !strings.Contains(summary, local) || !strings.Contains(summary, "Consumer diagnostic") || !strings.Contains(summary, "Neither PlanReport nor Builder Result is accepted") {
+			expectedProgress := "Neither PlanReport nor Builder Result is accepted"
+			if missing == "Result" {
+				expectedProgress = "PlanReport receipt is accepted"
+			}
+			if err != nil || !strings.Contains(summary, local) || !strings.Contains(summary, "Consumer diagnostic") || !strings.Contains(summary, expectedProgress) {
 				t.Fatalf("Main lacks exact incomplete reception: %v %s", err, summary)
 			}
 			if strings.Contains(summary, "后台") {

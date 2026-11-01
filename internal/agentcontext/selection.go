@@ -2,10 +2,8 @@
 package agentcontext
 
 import (
-	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
-	"fmt"
 	"sort"
 
 	"github.com/entroforge/go-system-builder/internal/catalog"
@@ -40,12 +38,10 @@ var profiles = func() profileSet {
 type Skill struct {
 	Name    string   `json:"name"`
 	Source  string   `json:"source"`
-	SHA256  string   `json:"sha256"`
 	Reasons []string `json:"reasons"`
 }
 type Selection struct {
 	ProfileVersion         string   `json:"profile_version"`
-	ProfileSHA256          string   `json:"profile_sha256"`
 	Mode                   string   `json:"mode"`
 	Role                   string   `json:"role"`
 	Selected               []Skill  `json:"selected"`
@@ -93,19 +89,19 @@ func Select(root, role string, responsibilities, registered []string) (Selection
 	for _, name := range registered {
 		add(name, "assignment:skill_refs")
 	}
-	result := Selection{ProfileVersion: profiles.Version, ProfileSHA256: fmt.Sprintf("%x", sha256.Sum256(profilesJSON)), Mode: mode, Role: role, Selected: []Skill{}, LegacySkills: LegacySkills(role), AuthorizationSkillRefs: append([]string{}, registered...)}
+	result := Selection{ProfileVersion: profiles.Version, Mode: mode, Role: role, Selected: []Skill{}, LegacySkills: LegacySkills(role), AuthorizationSkillRefs: append([]string{}, registered...)}
 	names := make([]string, 0, len(reasons))
 	for name := range reasons {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		data, source, err := catalog.ReadSkillAsset(root, name)
+		_, source, err := catalog.ReadSkillAsset(root, name)
 		if err != nil {
 			return result, err
 		}
 		sort.Strings(reasons[name])
-		result.Selected = append(result.Selected, Skill{Name: name, Source: source, SHA256: fmt.Sprintf("%x", sha256.Sum256(data)), Reasons: reasons[name]})
+		result.Selected = append(result.Selected, Skill{Name: name, Source: source, Reasons: reasons[name]})
 	}
 	return result, nil
 }

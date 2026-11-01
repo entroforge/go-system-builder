@@ -28,28 +28,28 @@ func ContractEvidence(p ContractPacket, id string, artifacts []Reference, answer
 
 	subjects := make([]Subject, 0, 1+len(p.Inputs.Designs)+len(p.Inputs.Sources)+len(artifacts))
 	req := p.Binding.Requirement
-	if req.Path == "" || req.Version == "" || !digestPattern.MatchString(req.SHA256) {
+	if req.Path == "" || req.Version == "" {
 		return nil, fmt.Errorf("planning_contract evidence has an invalid frozen REQ subject")
 	}
-	subjects = append(subjects, Subject{Path: req.Path, Version: req.Version, SHA256: req.SHA256})
+	subjects = append(subjects, Subject{Path: req.Path, Version: req.Version})
 	designs := append([]Reference(nil), p.Inputs.Designs...)
 	sort.Slice(designs, func(i, j int) bool { return designs[i].Path < designs[j].Path })
 	for _, ref := range designs {
-		if ref.Path == "" || ref.Version == "" || !digestPattern.MatchString(ref.SHA256) {
+		if ref.Path == "" || ref.Version == "" {
 			return nil, fmt.Errorf("planning_contract evidence has an invalid frozen design subject")
 		}
-		subjects = append(subjects, Subject{Path: ref.Path, Version: ref.Version, SHA256: ref.SHA256})
+		subjects = append(subjects, Subject{Path: ref.Path, Version: ref.Version})
 	}
 	sources := append([]Subject(nil), p.Inputs.Sources...)
 	sort.Slice(sources, func(i, j int) bool { return sources[i].Path < sources[j].Path })
 	for _, source := range sources {
-		if !safeRelative(source.Path) || !digestPattern.MatchString(source.SHA256) {
+		if !safeRelative(source.Path) {
 			return nil, fmt.Errorf("planning_contract evidence has an invalid frozen conditional source")
 		}
 		subjects = append(subjects, source)
 	}
 	for _, artifact := range artifacts {
-		subjects = append(subjects, Subject{Path: artifact.Path, Version: artifact.Version, SHA256: artifact.SHA256})
+		subjects = append(subjects, Subject{Path: artifact.Path, Version: artifact.Version})
 	}
 	seenSubjectPaths := map[string]bool{}
 	for _, subject := range subjects {
@@ -99,7 +99,7 @@ func validateContractArtifactProjection(answer ContractAnswer, artifacts []Refer
 	seenPath := map[string]bool{}
 	seenName := map[string]bool{}
 	for _, artifact := range artifacts {
-		if !safeRelative(artifact.Path) || !digestPattern.MatchString(artifact.SHA256) || seenPath[artifact.Path] {
+		if !safeRelative(artifact.Path) || seenPath[artifact.Path] {
 			return fmt.Errorf("planning_contract evidence has an invalid or repeated artifact reference")
 		}
 		seenPath[artifact.Path] = true

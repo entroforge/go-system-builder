@@ -1,18 +1,21 @@
 package repair
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 )
 
-// ComputeChangeset fingerprints either an explicit list of changed paths or a
-// Git two-revision diff. It does not mutate Git, Runtime, or any artifact.
+// ComputeChangeset records the paths provided by the caller or observed in an
+// actual Git diff. Content digests and Git object IDs are not recorded.
 func ComputeChangeset(root string, request ChangesetRequest) (Changeset, error) {
 	var paths []string
 	statuses := map[string]string{}
@@ -61,74 +64,86 @@ func ComputeChangeset(root string, request ChangesetRequest) (Changeset, error) 
 	}
 	artifacts := make([]ArtifactRef, 0, len(paths))
 	for _, path := range paths {
-		var data []byte
-		if source == "git_diff" {
-			data, err = gitBlob(root, request.HeadRef, path)
-			if statuses[path] == "deleted" {
-				data, err = gitBlob(root, request.BaseRef, path)
-			}
-		} else {
+		if source == "explicit" {
 			absolute, pathErr := repositoryPath(root, path)
-			if pathErr == nil {
-				data, err = os.ReadFile(absolute)
-			} else {
-				err = pathErr
+			if pathErr != nil {
+				return Changeset{}, pathErr
 			}
-		}
-		if err != nil {
-			return Changeset{}, fmt.Errorf("fingerprint changed artifact %s: %w", path, err)
+			info, statErr := os.Stat(absolute)
+			if statErr != nil {
+				return Changeset{}, fmt.Errorf("inspect changed artifact %s: %w", path, statErr)
+			}
+			if !info.Mode().IsRegular() {
+				return Changeset{}, fmt.Errorf("changed artifact %s is not a regular file", path)
+			}
 		}
 		status := statuses[path]
 		if status == "" {
 			status = "modified"
 		}
-		artifacts = append(artifacts, ArtifactRef{ID: "changed-" + strings.NewReplacer("/", "-", "\\", "-", ".", "-").Replace(path), Path: path, SHA256: sha256Bytes(data), Status: status})
+		artifacts = append(artifacts, ArtifactRef{ID: "changed-" + strings.NewReplacer("/", "-", "\\", "-", ".", "-").Replace(path), Path: path, Status: status})
 	}
-	lines := make([]string, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		lines = append(lines, artifact.Path+":"+artifact.SHA256)
-	}
-	sort.Strings(lines)
-	digest := sha256Bytes([]byte(strings.Join(lines, "\n")))
 	changeset := Changeset{
 		SchemaVersion: "1.0.0", RecordType: "repair_changeset",
-		SessionID: request.SessionID, Source: source, BaseRef: request.BaseRef, HeadRef: request.HeadRef,
-		Artifacts: artifacts, Digest: digest, ComputedAt: nowOr(request.OccurredAt),
+		SessionID: request.SessionID, Source: source,
+		Artifacts: artifacts, ComputedAt: nowOr(request.OccurredAt),
 	}
 	changeset.ChangesetID = repairChangesetID(changeset)
 	return changeset, nil
 }
 
 func repairChangesetID(changeset Changeset) string {
-	id := "repair-changeset-" + changeset.Digest[:16]
-	if len(changeset.Artifacts) == 0 {
-		// Empty content has one digest across all Sessions. Keep the original
-		// immutable records separate using their existing source coordinates.
-		coordinates, _ := json.Marshal([]string{changeset.SessionID, changeset.Source, changeset.BaseRef, changeset.HeadRef})
-		id += "-" + sha256Bytes(coordinates)[:16]
-	}
-	return id
-}
-
-func gitBlob(root, revision, path string) ([]byte, error) {
-	if strings.TrimSpace(revision) == "" {
-		return nil, errors.New("git blob revision is empty")
-	}
-	output, err := exec.Command("git", "-C", root, "show", revision+":"+path).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("git show %s:%s: %w: %s", revision, path, err, strings.TrimSpace(string(output)))
-	}
-	return output, nil
+	// The event's existing session, source and creation time identify this
+	// observation; no source content or Git object ID is encoded or hashed.
+	coordinates, _ := json.Marshal([]string{changeset.SessionID, changeset.Source, changeset.ComputedAt})
+	return "repair-changeset-" + base64.RawURLEncoding.EncodeToString(coordinates)
 }
 
 func PersistChangeset(root string, changeset Changeset) (ArtifactRef, error) {
-	return writeImmutable(root, artifactRoot+"/changesets/"+changeset.ChangesetID+".json", "repair-changeset.schema.json", changeset)
+	// Do not copy old machine metadata or Git object coordinates into a new
+	// record. The caller's original value and any historical artifact remain
+	// unchanged.
+	changeset.Artifacts = append([]ArtifactRef{}, changeset.Artifacts...)
+	baseID := changeset.ChangesetID
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			changeset.ChangesetID = baseID + "-event-" + strconv.Itoa(attempt)
+		}
+		path := responsibilityArtifactPath("changesets", changeset.ChangesetID)
+		ref, err := writeImmutable(root, path, "repair-changeset.schema.json", changeset)
+		if err == nil {
+			if attempt > 0 {
+				ref.ID = changeset.ChangesetID
+			}
+			return ref, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return ref, err
+		}
+		// Re-observing the same original event must not create another record.
+		// Compare only its professional path/status projection; an unrelated or
+		// unreadable existing file is preserved and is not a reverse gate.
+		previous, readErr := ValidateChangeset(root, ArtifactRef{Path: path})
+		if readErr == nil && previous.ChangesetID == changeset.ChangesetID && previous.SessionID == changeset.SessionID &&
+			previous.Source == changeset.Source && previous.ComputedAt == changeset.ComputedAt &&
+			reflect.DeepEqual(previous.Artifacts, changeset.Artifacts) {
+			ref := ArtifactRef{Path: path}
+			if attempt > 0 {
+				ref.ID = changeset.ChangesetID
+			}
+			return ref, nil
+		}
+	}
 }
 
 func ValidateChangeset(root string, ref ArtifactRef) (Changeset, error) {
 	var changeset Changeset
-	if err := decodeArtifact(root, ref, "repair-changeset.schema.json", &changeset); err != nil {
+	data, err := readArtifact(root, ref, "repair-changeset.schema.json")
+	if err != nil {
 		return Changeset{}, err
+	}
+	if err := json.Unmarshal(data, &changeset); err != nil {
+		return Changeset{}, fmt.Errorf("decode artifact %s: %w", ref.Path, err)
 	}
 	if changeset.RecordType != "repair_changeset" {
 		return Changeset{}, fmt.Errorf("artifact %s is not a repair changeset", ref.Path)

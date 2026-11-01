@@ -37,7 +37,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/repair"
@@ -335,9 +334,7 @@ func AdvanceAgentWithContext(ctx context.Context, root, statePath, journalPath s
 				}
 			}
 			if canonical && request.Event == "activation_sent" {
-				if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-					return assignmentinputs.Read(root, ref)
-				}); err != nil {
+				if err := assignmentrecord.ValidateRecord(record); err != nil {
 					return err
 				}
 				var projection map[string]any
@@ -414,32 +411,11 @@ func AdvanceAgentWithContext(ctx context.Context, root, statePath, journalPath s
 					}
 				}
 				agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
-				config, configErr := loopruntime.DispatchConfig(state)
-				if configErr != nil {
-					return configErr
-				}
-				life, _ := state["lifecycle"].(map[string]any)
-				if config != nil && life["state"] == "building" && request.Event == "completion_acknowledged" {
-					bindings := map[string]any{}
-					tasks, _ := entities["tasks"].([]any)
-					for _, rawTask := range tasks {
-						task, _ := rawTask.(map[string]any)
-						owners, _ := task["owner_agent_ids"].([]any)
-						if !stringArrayContains(owners, request.AgentID) {
-							continue
-						}
-						ref, _ := task["completion_report_ref"].(string)
-						entries, _ := state["evidence"].([]any)
-						for _, rawEvidence := range entries {
-							ev, _ := rawEvidence.(map[string]any)
-							producers, _ := ev["produced_by"].([]any)
-							baseline, _ := state["baseline"].(map[string]any)
-							if ref != "" && ev["path"] == ref && ev["kind"] == "completion_report" && ev["status"] == "valid" && ev["invalidated_by"] == nil && stringArrayContains(producers, request.AgentID) && dispatch.Number(ev["baseline_generation"]) == dispatch.Number(baseline["generation"]) {
-								bindings[ref] = ev["sha256"]
-							}
-						}
-					}
-					agent["completion_acknowledged_reports"] = bindings
+				if request.Event == "completion_acknowledged" {
+					// The accepted Result reference and actual ACK event are the
+					// authority. New results clear the prior ACK in the original
+					// Result receiver, so no per-report digest index is needed.
+					delete(agent, "completion_acknowledged_reports")
 				}
 				state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 				return dispatch.ReconcilePressure(root, state)
@@ -546,12 +522,8 @@ func applyAgentEventParams(root string, agent map[string]any, schemaVersion stri
 	return nil
 }
 
-// verifyActivationReadbackChain fail-closes the activation envelope's
-// hash-chain fields against the registered readback file: the envelope's
-// approved_readback_sha256 must equal the byte hash of the file recorded at
-// readback_submitted, and approved_readback_message_id must equal that
-// file's message_id. The fields were schema-required before but never
-// checked — ceremony; this makes them a guarantee.
+// verifyActivationReadbackChain links the activation to the original registered
+// readback message. Historical digest fields are not recomputed or validated.
 func verifyActivationReadbackChain(root string, agent map[string]any, message agentMessage) error {
 	return agentauth.VerifyActivationReadbackChain(root, agent, message)
 }

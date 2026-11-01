@@ -9,15 +9,18 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-// currentMainPlanningAnswerPaths projects only the current, unsubmitted typed
-// planning answer for the actual Main Hook identity. A Worker identity, even
+// currentMainPlanningAnswerPaths projects the registered current planning
+// answer for the actual Main Hook identity. A Worker identity, even
 // one whose assignment is absent from this Runtime, never falls back to Main.
 func currentMainPlanningAnswerPaths(state map[string]any, agentID string, agent *policy.AgentContext) []string {
-	if agentID != "" || agent != nil || !runtime.PacketEnabled(state) {
+	if (agentID != "" && agentID != "Main") || agent != nil || !runtime.PacketEnabled(state) {
 		return nil
 	}
 	lifecycle, _ := state["lifecycle"].(map[string]any)
 	if lifecycle["state"] != "planning" {
+		return nil
+	}
+	if agentID == "Main" && lifecycle["phase"] != "design" {
 		return nil
 	}
 
@@ -39,46 +42,11 @@ func currentMainPlanningAnswerPaths(state map[string]any, agentID string, agent 
 }
 
 func currentMainDesignAnswerPath(state map[string]any) string {
-	expected, err := runtime.CurrentDesignPacket(state)
-	if err != nil || expected.Binding.Owner != "Main" {
+	packet, found, err := runtime.CurrentIssuedDesignPacket(state)
+	if err != nil || !found {
 		return ""
 	}
-	rows, ok := planningWorkPacketRows(state)
-	if !ok {
-		return ""
-	}
-	count := 0
-	for _, row := range rows {
-		if row["template_id"] != expected.TemplateID {
-			continue
-		}
-		binding, valid := planningRowBinding(row)
-		if !valid {
-			return ""
-		}
-		if !sameMainPlanningSlot(binding, expected.Binding) {
-			continue
-		}
-		if binding != expected.Binding {
-			return ""
-		}
-		packet, valid := decodeDesignPacket(row)
-		if !valid || !reflect.DeepEqual(packet, expected) {
-			return ""
-		}
-		count++
-	}
-	if count != 1 {
-		return ""
-	}
-	if !uniquePlanningPacketID(rows, expected.ID) {
-		return ""
-	}
-	stored, found, err := runtime.FindDesignPacket(state, expected.ID)
-	if err != nil || !found || !reflect.DeepEqual(stored, expected) || hasPlanningSubmission(state, expected.ID) {
-		return ""
-	}
-	return expected.AnswerPath
+	return packet.AnswerPath
 }
 
 func currentMainContractAnswerPath(state map[string]any) string {
@@ -159,10 +127,6 @@ func currentMainTaskAnswerPath(state map[string]any) string {
 		if !valid || packet.Binding != binding || packet.ID == "" {
 			return ""
 		}
-		expected, err := workpacket.BuildTaskPlanningWithTemplate(binding, packet.Inputs, packet.TemplateSHA)
-		if err != nil || !reflect.DeepEqual(expected, packet) {
-			return ""
-		}
 		candidate = packet
 		count++
 	}
@@ -173,10 +137,10 @@ func currentMainTaskAnswerPath(state map[string]any) string {
 		return ""
 	}
 	stored, found, err := runtime.FindTaskPlanningPacket(state, candidate.ID)
-	if err != nil || !found || !reflect.DeepEqual(stored, candidate) || hasPlanningSubmission(state, candidate.ID) {
+	if err != nil || !found || hasPlanningSubmission(state, candidate.ID) {
 		return ""
 	}
-	return candidate.AnswerPath
+	return stored.AnswerPath
 }
 
 func planningWorkPacketRows(state map[string]any) ([]map[string]any, bool) {
@@ -200,29 +164,15 @@ func planningWorkPacketRows(state map[string]any) ([]map[string]any, bool) {
 }
 
 func planningRowBinding(row map[string]any) (workpacket.PlanningBinding, bool) {
-	data, err := json.Marshal(row)
+	data, err := json.Marshal(row["binding"])
 	if err != nil {
 		return workpacket.PlanningBinding{}, false
 	}
-	var envelope struct {
-		Binding workpacket.PlanningBinding `json:"binding"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
+	var binding workpacket.PlanningBinding
+	if err := json.Unmarshal(data, &binding); err != nil {
 		return workpacket.PlanningBinding{}, false
 	}
-	return envelope.Binding, true
-}
-
-func decodeDesignPacket(row map[string]any) (workpacket.DesignPacket, bool) {
-	data, err := json.Marshal(row)
-	if err != nil {
-		return workpacket.DesignPacket{}, false
-	}
-	var packet workpacket.DesignPacket
-	if err := json.Unmarshal(data, &packet); err != nil {
-		return workpacket.DesignPacket{}, false
-	}
-	return packet, true
+	return binding, true
 }
 
 func decodeContractPacket(row map[string]any) (workpacket.ContractPacket, bool) {

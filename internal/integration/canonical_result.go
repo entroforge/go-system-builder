@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,7 +12,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/checkexec"
-	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -48,7 +45,7 @@ func cloneAssignmentProjection(source hookctx.AssignmentContext) (hookctx.Assign
 // and TASK Result pointers. A missing Record is legacy only when the original
 // manifest does not opt in; explicit S6 without a Record fails closed.
 func resolveCanonicalResult(root, runtimeID string, assignment hookctx.AssignmentContext) (*canonicalResultFacts, error) {
-	if assignment.ManifestRef == "" && assignment.AssignmentRecord == nil && assignment.AssignmentRecordSHA256 == "" && assignment.AssignmentRevision == 0 {
+	if assignment.ManifestRef == "" && assignment.AssignmentRecord == nil && assignment.AssignmentRevision == 0 {
 		return nil, nil
 	}
 	state, err := readCanonicalRuntimeState(root)
@@ -84,12 +81,8 @@ func resolveCanonicalResultByBinding(root, runtimeID string, expected CanonicalR
 		}
 		return nil, err
 	}
-	currentSHA, err := current.Digest()
-	if err != nil {
-		return nil, err
-	}
-	if current.Reference() != expected.AssignmentRecord || currentSHA != expected.AssignmentRecordSHA256 {
-		return nil, fmt.Errorf("checkpoint Assignment reference or digest is stale")
+	if current.Reference() != expected.AssignmentRecord {
+		return nil, fmt.Errorf("checkpoint Assignment reference is stale")
 	}
 	projection := assignmentProjection(current)
 	return resolveCanonicalResultState(root, runtimeID, state, projection, &expected)
@@ -105,31 +98,27 @@ func readCanonicalRuntimeState(root string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read original Runtime state+journal pair: %w", err)
 	}
-	if err := fileview.ValidateAuthority(root, snapshot.State); err != nil {
-		return nil, fmt.Errorf("validate Main Runtime authority: %w", err)
-	}
 	return snapshot.State, nil
 }
 
 func resolveCanonicalResultState(root, runtimeID string, state map[string]any, assignment hookctx.AssignmentContext, expected *CanonicalResultBinding) (*canonicalResultFacts, error) {
-	if assignment.ManifestRef == "" && assignment.AssignmentRecord == nil && assignment.AssignmentRecordSHA256 == "" && assignment.AssignmentRevision == 0 {
+	if assignment.ManifestRef == "" && assignment.AssignmentRecord == nil && assignment.AssignmentRevision == 0 {
 		return nil, nil
 	}
-	record, found, err := hookctx.ResolveAssignmentRecordProjection(root, state, assignment)
+	record, found, err := assignmentrecord.ForOwner(state, assignment.OwnerAgentID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve canonical Assignment projection: %w", err)
 	}
 	if !found {
 		return nil, nil
 	}
+	if record.AssignmentID != assignment.AssignmentID || record.Task.ID != assignment.TaskID || assignment.AssignmentRecord != nil && *assignment.AssignmentRecord != record.Reference() {
+		return nil, fmt.Errorf("original Assignment responsibility differs from the current Record")
+	}
 	if runtimeID != "" && record.RuntimeID != runtimeID {
 		return nil, fmt.Errorf("canonical Assignment Runtime %s differs from requested Runtime %s", record.RuntimeID, runtimeID)
 	}
-	recordSHA, err := record.Digest()
-	if err != nil {
-		return nil, err
-	}
-	if expected != nil && (record.Reference() != expected.AssignmentRecord || recordSHA != expected.AssignmentRecordSHA256) {
+	if expected != nil && record.Reference() != expected.AssignmentRecord {
 		return nil, fmt.Errorf("canonical Assignment differs from the recorded checkpoint revision")
 	}
 	resultRef, err := currentCanonicalResultRef(state, record.OwnerAgentID, record.Task.ID)
@@ -149,20 +138,12 @@ func resolveCanonicalResultState(root, runtimeID string, state map[string]any, a
 	if err != nil {
 		return nil, fmt.Errorf("load original accepted Result: %w", err)
 	}
-	resultBytes, err := read(resultRef)
-	if err != nil {
-		return nil, fmt.Errorf("read accepted Result bytes: %w", err)
-	}
-	resultSHA := checkexec.Hash(resultBytes)
 	binding := CanonicalResultBinding{
-		AssignmentRecord:       record.Reference(),
-		AssignmentRecordSHA256: recordSHA,
-		ResultPath:             resultRef,
-		ResultSHA256:           resultSHA,
-		ResultRevision:         accepted.ResultRevision,
-		AnswerDigest:           accepted.AnswerDigest,
+		AssignmentRecord: record.Reference(),
+		ResultPath:       resultRef,
+		ResultRevision:   accepted.ResultRevision,
 	}
-	if expected != nil && binding != *expected {
+	if expected != nil && !sameCanonicalResultBinding(binding, *expected) {
 		return nil, fmt.Errorf("current canonical Result differs from the inspected binding")
 	}
 	executionGeneration, err := canonicalExecutionGeneration(state, record)
@@ -175,6 +156,11 @@ func resolveCanonicalResultState(root, runtimeID string, state map[string]any, a
 		Binding:             binding,
 		ExecutionGeneration: executionGeneration,
 	}, nil
+}
+
+// sameCanonicalResultBinding compares the actual responsibility and result revision.
+func sameCanonicalResultBinding(a, b CanonicalResultBinding) bool {
+	return a.AssignmentRecord == b.AssignmentRecord && a.ResultPath == b.ResultPath && a.ResultRevision == b.ResultRevision
 }
 
 func canonicalExecutionGeneration(state map[string]any, record assignmentrecord.Record) (int, error) {
@@ -192,49 +178,33 @@ func canonicalExecutionGeneration(state map[string]any, record assignmentrecord.
 	if !found {
 		return 0, nil
 	}
-	sha, err := record.Digest()
-	if err != nil {
-		return 0, err
-	}
-	if execution.AgentID != record.OwnerAgentID || execution.AssignmentRecord == nil || *execution.AssignmentRecord != record.Reference() || execution.AssignmentRecordSHA256 != sha || execution.Generation <= 0 {
+	if execution.AgentID != record.OwnerAgentID || execution.AssignmentRecord == nil || *execution.AssignmentRecord != record.Reference() || execution.Generation <= 0 {
 		return 0, fmt.Errorf("registered workspace execution differs from the canonical Assignment owner or revision")
 	}
 	return execution.Generation, nil
 }
 
-// canonicalSourceHasPriorMainMerge detects a source branch that descends from
-// a side of an earlier non-squash merge already on the current target. A
-// higher Assignment revision cannot treat only the commits after that old
-// source head as its complete scope: predecessor Record/Main facts must first
-// be validated before any merge reuse is possible.
-func canonicalSourceHasPriorMainMerge(ctx context.Context, root, targetBranch, sourceHead string) (bool, error) {
-	candidates, err := canonicalPriorMainMerges(ctx, root, targetBranch, sourceHead)
-	return len(candidates) > 0, err
-}
-
 func assignmentProjection(record assignmentrecord.Record) hookctx.AssignmentContext {
 	ref := record.Reference()
-	sha, _ := record.Digest()
 	return hookctx.AssignmentContext{
-		AssignmentID:           record.AssignmentID,
-		AssignmentRecord:       &ref,
-		AssignmentRecordSHA256: sha,
-		AssignmentRevision:     record.Revision,
-		BaselineGeneration:     record.BaselineGeneration,
-		TaskID:                 record.Task.ID,
-		OwnerAgentID:           record.OwnerAgentID,
-		RoleFamily:             record.RoleFamily,
-		AgentDefinitionRef:     record.AgentDefinition.Ref,
-		ManifestRef:            record.Manifest.Ref,
-		ResponsibilityIDs:      []string{record.ResponsibilityID},
-		SkillRefs:              append([]string(nil), record.SkillRefs...),
-		ReadPaths:              append([]string(nil), record.ReadPaths...),
-		OutputPaths:            append([]string(nil), record.ScopeBasis.ManifestOutputPaths...),
-		DependsOn:              append([]string(nil), record.DependsOn...),
-		DoneWhen:               append([]string(nil), record.DoneWhen...),
-		WritePaths:             append([]string(nil), record.EffectiveWritePaths...),
-		RequiredChecks:         append([]string(nil), record.RequiredChecks...),
-		CheckProfiles:          append([]checkexec.Profile(nil), record.CheckProfiles...),
+		AssignmentID:       record.AssignmentID,
+		AssignmentRecord:   &ref,
+		AssignmentRevision: record.Revision,
+		BaselineGeneration: record.BaselineGeneration,
+		TaskID:             record.Task.ID,
+		OwnerAgentID:       record.OwnerAgentID,
+		RoleFamily:         record.RoleFamily,
+		AgentDefinitionRef: record.AgentDefinition.Ref,
+		ManifestRef:        record.Manifest.Ref,
+		ResponsibilityIDs:  []string{record.ResponsibilityID},
+		SkillRefs:          append([]string(nil), record.SkillRefs...),
+		ReadPaths:          append([]string(nil), record.ReadPaths...),
+		OutputPaths:        append([]string(nil), record.ScopeBasis.ManifestOutputPaths...),
+		DependsOn:          append([]string(nil), record.DependsOn...),
+		DoneWhen:           append([]string(nil), record.DoneWhen...),
+		WritePaths:         append([]string(nil), record.EffectiveWritePaths...),
+		RequiredChecks:     append([]string(nil), record.RequiredChecks...),
+		CheckProfiles:      append([]checkexec.Profile(nil), record.CheckProfiles...),
 	}
 }
 
@@ -244,18 +214,14 @@ func assignmentProjection(record assignmentrecord.Record) hookctx.AssignmentCont
 // only the early-checkpoint slot label used before those facts exist.
 func ValidateCheckpointRecordBinding(checkpoint Checkpoint, record assignmentrecord.Record) error {
 	wantRef := record.Reference()
-	wantSHA, err := record.Digest()
-	if err != nil {
-		return err
-	}
 	if checkpoint.CanonicalMainFacts != nil {
 		binding := checkpoint.CanonicalMainFacts.Binding
-		if binding.AssignmentRecord != wantRef || binding.AssignmentRecordSHA256 != wantSHA {
+		if binding.AssignmentRecord != wantRef {
 			return fmt.Errorf("checkpoint Main facts belong to another Assignment Record revision")
 		}
 	}
-	if checkpoint.AssignmentRecord != nil || checkpoint.AssignmentRecordSHA256 != "" {
-		if checkpoint.AssignmentRecord == nil || *checkpoint.AssignmentRecord != wantRef || checkpoint.AssignmentRecordSHA256 != wantSHA {
+	if checkpoint.AssignmentRecord != nil {
+		if *checkpoint.AssignmentRecord != wantRef {
 			return fmt.Errorf("checkpoint early Record binding differs from the current Assignment revision")
 		}
 	}
@@ -397,231 +363,22 @@ func mainCheckIndexes(record assignmentrecord.Record) []struct {
 	return out
 }
 
-func canonicalProfileDigest(record assignmentrecord.Record, checkIndex int, command string) (string, error) {
-	var digest string
-	for _, profile := range record.CheckProfiles {
-		if profile.CheckIndex != checkIndex {
-			continue
-		}
-		if digest != "" || profile.Command != command || profile.Location != "main" {
-			return "", fmt.Errorf("CheckProfile does not uniquely bind its canonical Main RequiredCheck")
-		}
-		digest = profile.Digest()
-	}
-	return digest, nil
-}
-
-func captureMainCheckFact(authorityRoot, checkpointPath, receiptPath, mainRoot, testedHead string, checkIndex int, command string, binding checkexec.Binding, profileDigest string) (assignmentresult.MainCheckFact, error) {
-	var fact assignmentresult.MainCheckFact
-	data, err := readMainCheckpointEvidence(authorityRoot, checkpointPath, receiptPath)
-	if err != nil {
-		return fact, err
-	}
-	var receipt mainCheckReceipt
-	if err := json.Unmarshal(data, &receipt); err != nil {
-		return fact, fmt.Errorf("decode Main check receipt: %w", err)
-	}
-	if receipt.Command != command || receipt.Status != "pass" || receipt.ExitCode == nil || *receipt.ExitCode != 0 || receipt.CWD != mainRoot || receipt.Head != testedHead || receipt.HeadBefore != testedHead || receipt.HeadAfter != testedHead || receipt.Binding != binding {
-		return fact, fmt.Errorf("Main runner receipt does not prove the exact required command and tested head")
-	}
-	logData, err := readMainCheckpointEvidence(authorityRoot, checkpointPath, receipt.Output)
-	if err != nil {
-		return fact, fmt.Errorf("read Main check output: %w", err)
-	}
-	var envelope struct {
-		ProfileObservation *checkexec.Observation `json:"profile_observation"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return fact, fmt.Errorf("decode Main check envelope: %w", err)
-	}
-	profileObserved := ""
-	if envelope.ProfileObservation != nil {
-		profileObserved = envelope.ProfileObservation.ProfileDigest
-	}
-	if profileObserved != profileDigest {
-		return fact, fmt.Errorf("Main check receipt profile differs from the original CheckProfile")
-	}
-	return assignmentresult.MainCheckFact{
-		CheckIndex:    checkIndex,
-		Command:       command,
-		Status:        receipt.Status,
-		ReceiptRef:    receiptPath,
-		ReceiptSHA256: checkexec.Hash(data),
-		LogRef:        receipt.Output,
-		LogSHA256:     checkexec.Hash(logData),
-		TestedHead:    testedHead,
-		ProfileDigest: profileDigest,
-	}, nil
-}
-
-func readMainCheckpointEvidence(authorityRoot, checkpointPath, ref string) ([]byte, error) {
-	if strings.TrimSpace(authorityRoot) == "" {
-		return nil, fmt.Errorf("Main evidence requires the original Runtime authority root")
-	}
-	refPath := ref
-	if !filepath.IsAbs(refPath) {
-		localRef := filepath.FromSlash(refPath)
-		if !filepath.IsLocal(localRef) {
-			return nil, fmt.Errorf("relative Main receipt ref must remain within its original sidecar")
-		}
-		refPath = localRef
-	}
-	root := filepath.Join(filepath.Dir(checkpointPath), "checks")
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	authorityAbs, err := filepath.Abs(authorityRoot)
-	if err != nil {
-		return nil, err
-	}
-	lexicalAuthorityRel, err := filepath.Rel(authorityAbs, rootAbs)
-	if err != nil || !filepath.IsLocal(lexicalAuthorityRel) {
-		return nil, fmt.Errorf("original Main checks directory escapes the Runtime authority root")
-	}
-	rootInfo, err := os.Lstat(rootAbs)
-	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("original Main checks directory must be a real directory")
-	}
-	pathAbs, err := filepath.Abs(refPath)
-	if err != nil {
-		return nil, err
-	}
-	rel, err := filepath.Rel(rootAbs, pathAbs)
-	if err != nil || !filepath.IsLocal(rel) {
-		return nil, fmt.Errorf("Main receipt path escapes its original checkpoint")
-	}
-	info, err := os.Lstat(pathAbs)
-	if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > 4<<20 {
-		return nil, fmt.Errorf("Main receipt must be a bounded regular file")
-	}
-	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		return nil, err
-	}
-	resolvedAuthority, err := filepath.EvalSymlinks(authorityAbs)
-	if err != nil {
-		return nil, err
-	}
-	resolvedAuthorityRel, err := filepath.Rel(resolvedAuthority, resolvedRoot)
-	if err != nil || !filepath.IsLocal(resolvedAuthorityRel) {
-		return nil, fmt.Errorf("resolved Main checks directory escapes the Runtime authority root")
-	}
-	resolvedFile, err := filepath.EvalSymlinks(pathAbs)
-	if err != nil {
-		return nil, err
-	}
-	resolvedRel, err := filepath.Rel(resolvedRoot, resolvedFile)
-	if err != nil || !filepath.IsLocal(resolvedRel) {
-		return nil, fmt.Errorf("Main receipt file escaped or is linked outside its checkpoint")
-	}
-	f, err := os.Open(pathAbs)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, (4<<20)+1))
-	if err != nil || len(data) > 4<<20 {
-		return nil, fmt.Errorf("Main receipt exceeds bounded read")
-	}
-	return data, nil
-}
-
-func validateCanonicalMainFacts(authorityRoot, checkpointPath, mainRoot string, checkpoint Checkpoint, canonical *canonicalResultFacts) error {
-	if canonical == nil || checkpoint.CanonicalMainFacts == nil {
-		return fmt.Errorf("checkpoint lacks canonical Main facts")
-	}
-	facts := *checkpoint.CanonicalMainFacts
-	if facts.Binding != canonical.Binding || filepath.Clean(facts.MainRoot) != filepath.Clean(mainRoot) || facts.ExecutionGeneration != canonical.ExecutionGeneration || facts.SourceHead != checkpoint.SourceHead || facts.TargetBranch != checkpoint.TargetBranch || facts.MergeBase != checkpoint.MergeBase || facts.MergeCommit != checkpoint.MergeCommit || facts.TestedHead != checkpoint.TestedHead || checkpoint.TestedHead == "" {
-		return fmt.Errorf("checkpoint Main facts differ from the verified integration coordinates")
-	}
-	if err := assignmentresult.ValidateMainFacts(canonical.Record, canonical.Accepted, canonical.Binding.ResultPath, canonical.Binding.ResultSHA256, facts, func(ref string) ([]byte, error) {
-		return readMainCheckpointEvidence(authorityRoot, checkpointPath, ref)
-	}); err != nil {
-		return err
-	}
-	expectedBinding := mainCheckBinding(canonical)
-	for _, fact := range facts.Checks {
-		data, err := readMainCheckpointEvidence(authorityRoot, checkpointPath, fact.ReceiptRef)
-		if err != nil {
-			return err
-		}
-		var receipt mainCheckReceipt
-		if err := json.Unmarshal(data, &receipt); err != nil || receipt.Binding != expectedBinding {
-			return fmt.Errorf("Main check receipt lacks the exact original Runtime/Assignment/execution binding")
-		}
-	}
-	return validateCanonicalToolReceipts(checkpointPath, checkpoint, canonical, facts)
-}
-
-func validateCanonicalToolReceipts(checkpointPath string, checkpoint Checkpoint, canonical *canonicalResultFacts, facts assignmentresult.MainFacts) error {
-	if err := VerifyCapturedChecks(checkpointPath, checkpoint); err != nil {
-		return err
-	}
-	mainCheckout, err := filepath.Abs(facts.MainRoot)
-	if err != nil {
-		return err
-	}
-	mainCheckout, err = filepath.EvalSymlinks(mainCheckout)
-	if err != nil {
-		return fmt.Errorf("resolve original Main checkout for tool receipt validation: %w", err)
-	}
-	expectedBinding := mainCheckBinding(canonical)
-	if len(checkpoint.ToolCheckReceipts) != len(canonical.Record.CheckProfiles) {
-		return fmt.Errorf("checkpoint lacks a Main tool receipt for each original CheckProfile")
-	}
-	for _, profile := range canonical.Record.CheckProfiles {
-		matchedFacts := 0
-		for _, fact := range facts.Checks {
-			if fact.CheckIndex == profile.CheckIndex && fact.Command == profile.Command && fact.ProfileDigest == profile.Digest() {
-				matchedFacts++
-			}
-		}
-		if matchedFacts != 1 {
-			return fmt.Errorf("Main facts omit or duplicate CheckProfile %s coverage", profile.ID)
-		}
-		matched := 0
-		for _, receipt := range checkpoint.ToolCheckReceipts {
-			if receipt.Command != profile.Command || receipt.ProfileDigest != profile.Digest() {
-				continue
-			}
-			if receipt.Binding != expectedBinding || receipt.Checkout != mainCheckout {
-				return fmt.Errorf("Main tool receipt has a different Runtime, Assignment or execution binding")
-			}
-			verified, verifyErr := checkexec.VerifyToolReceipt(filepath.Join(filepath.Dir(checkpointPath), "checks"), receipt)
-			if verifyErr != nil || !verified.Passed || verified.Observation.ProfileDigest != profile.Digest() {
-				return fmt.Errorf("Main tool receipt for CheckProfile %s is missing, damaged or failed", profile.ID)
-			}
-			matched++
-		}
-		if matched != 1 {
-			return fmt.Errorf("checkpoint lacks one original Main tool receipt for CheckProfile %s", profile.ID)
-		}
-	}
-	return nil
-}
-
 // canonicalGitChangedPaths captures the actual Git name-only diff without
 // treating whitespace as empty or trimming path bytes. Git's -z output is
-// NUL-delimited; NUL cannot occur in a repository path. The SHA binds the
-// sorted JSON representation of the complete path set.
-func canonicalGitChangedPaths(ctx context.Context, root, base, head string) ([]string, string, error) {
+// NUL-delimited; NUL cannot occur in a repository path.
+func canonicalGitChangedPaths(ctx context.Context, root, base, head string) ([]string, error) {
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(base) == "" || strings.TrimSpace(head) == "" {
-		return nil, "", fmt.Errorf("changed-path inspection requires root, merge base and source head")
+		return nil, fmt.Errorf("changed-path inspection requires root, merge base and source head")
 	}
 	out, err := defaultRunner.Run(ctx, root, "diff", "--no-renames", "--name-only", "-z", base+".."+head)
 	if err != nil {
-		return nil, "", fmt.Errorf("git diff --name-only %s..%s: %w", base, head, err)
+		return nil, fmt.Errorf("git diff --name-only %s..%s: %w", base, head, err)
 	}
 	paths, err := canonicalizeGitPathOutput(out)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	digest, err := changedPathsDigest(paths)
-	if err != nil {
-		return nil, "", err
-	}
-	return paths, digest, nil
+	return paths, nil
 }
 
 // canonicalizeGitPathOutput parses `git diff --name-only -z` output and
@@ -656,14 +413,6 @@ func canonicalizeGitPathOutput(output string) ([]string, error) {
 	}
 	sort.Strings(paths)
 	return paths, nil
-}
-
-func changedPathsDigest(paths []string) (string, error) {
-	canonical, err := canonicalizePathSet(paths)
-	if err != nil {
-		return "", err
-	}
-	return assignmentresult.ChangedPathsDigest(canonical)
 }
 
 func canonicalizePathSet(paths []string) ([]string, error) {

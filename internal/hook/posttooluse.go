@@ -1,8 +1,7 @@
 // posttooluse.go — the PostToolUse(SendMessage) observer (L3-S7 §8, L4 §7.4).
 //
 // This event NEVER blocks and never advances lifecycle state on its own:
-// the authoritative transitions stay in `runtime agent-event` /
-// `runtime review-result submit`. What the observer does is record the
+// authoritative transitions remain with the original runtime consumers. What the observer does is record the
 // dispatch envelope the Worker sent (PLAN_REPORT), so the first-write
 // barrier (policy rule assignment_write_before_plan) has a fact to read
 // and SessionStart recovery can see the plan checkpoint.

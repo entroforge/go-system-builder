@@ -43,11 +43,14 @@ func TestRuntimeRecoverInspectDoesNotRequireReadableActiveState(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &inventory); err != nil {
 		t.Fatalf("inspect output must be JSON: %v\n%s", err, stdout.String())
 	}
-	if inventory.REQ.ID != "REQ-900" || inventory.REQ.Path != "docs/requirements/REQ-900.md" || inventory.REQ.SHA256 == "" {
-		t.Fatalf("inspect did not fingerprint the explicit REQ: %#v", inventory.REQ)
+	if inventory.REQ.ID != "REQ-900" || inventory.REQ.Path != "docs/requirements/REQ-900.md" || inventory.REQ.SHA256 != "" {
+		t.Fatalf("inspect must retain the explicit REQ without a digest: %#v", inventory.REQ)
 	}
-	if inventory.ActiveRuntime.Readable || inventory.ActiveRuntime.SHA256 == "" {
-		t.Fatalf("inspect must preserve the malformed runtime as an unreadable fingerprinted input: %#v", inventory.ActiveRuntime)
+	if inventory.ActiveRuntime.Readable || inventory.ActiveRuntime.SHA256 != "" {
+		t.Fatalf("inspect must retain the unreadable Runtime without a digest: %#v", inventory.ActiveRuntime)
+	}
+	if strings.Contains(stdout.String(), `"sha256"`) {
+		t.Fatalf("inspect registered a digest: %s", stdout.String())
 	}
 }
 
@@ -102,4 +105,31 @@ func newRecoveryCommandRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func TestRuntimeRecoverApplyPreservesUnresolvedOriginalPending(t *testing.T) {
+	root := newRecoveryCommandRoot(t)
+	statePath := filepath.Join(root, ".claude", "loop-state.json")
+	pendingPath := statePath + ".commit-pending.json"
+	originalState, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := []byte(`{"schema_version":"1.0.0","state":{"revision":9},"old_sha256":"historical-only"}`)
+	if err := os.WriteFile(pendingPath, pending, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"runtime", "recover", "apply", "--root", root, "--plan", ".claude/recovery/unavailable/plan.json", "--approved-by", "actual-test-operator"}, strings.NewReader(""), &stdout, &stderr)
+	if code == 0 || !strings.Contains(stderr.String(), "original pending Runtime operation is unresolved") {
+		t.Fatalf("unknown original pending must be reported: code=%d stderr=%s", code, stderr.String())
+	}
+	got, err := os.ReadFile(pendingPath)
+	if err != nil || !bytes.Equal(got, pending) {
+		t.Fatal("unknown original pending was removed or rewritten")
+	}
+	got, err = os.ReadFile(statePath)
+	if err != nil || !bytes.Equal(got, originalState) {
+		t.Fatal("unknown original Runtime was overwritten")
+	}
 }

@@ -2,6 +2,7 @@ package workpacket
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -31,37 +32,37 @@ var (
 // S9 dispatcher. The package does not import repair/runtime and cannot grant
 // dispatch authority.
 type RepairPlanReportBinding struct {
-	RuntimeID                string `json:"runtime_id"`
-	BaselineGeneration       int    `json:"baseline_generation"`
-	ReviewRound              int    `json:"review_round"`
-	CaseID                   string `json:"case_id"`
-	CaseRef                  string `json:"case_ref"`
-	CaseSHA256               string `json:"case_sha256"`
-	ContractID               string `json:"contract_id"`
-	ContractRef              string `json:"contract_ref"`
-	ContractSHA256           string `json:"contract_sha256"`
-	SessionID                string `json:"session_id"`
-	SessionRef               string `json:"session_ref"`
-	SessionSHA256            string `json:"session_sha256"`
-	PlanID                   string `json:"plan_id"`
-	PlanRef                  string `json:"plan_ref"`
-	PlanSHA256               string `json:"plan_sha256"`
-	RepairAssignmentID       string `json:"repair_assignment_id"`
-	RepairAssignmentSHA256   string `json:"repair_assignment_sha256"`
-	ManifestAssignmentID     string `json:"manifest_assignment_id"`
-	ManifestAssignmentSHA256 string `json:"manifest_assignment_sha256"`
-	TeamID                   string `json:"team_id"`
-	TaskID                   string `json:"task_id"`
-	TaskRef                  string `json:"task_ref"`
-	TaskSHA256               string `json:"task_sha256"`
-	ManifestRef              string `json:"manifest_ref"`
-	ManifestSHA256           string `json:"manifest_sha256"`
-	OwnerAgentID             string `json:"owner_agent_id"`
+	RuntimeID          string `json:"runtime_id"`
+	BaselineGeneration int    `json:"baseline_generation"`
+
+	CaseID  string `json:"case_id"`
+	CaseRef string `json:"case_ref"`
+
+	ContractID  string `json:"contract_id"`
+	ContractRef string `json:"contract_ref"`
+
+	SessionID  string `json:"session_id"`
+	SessionRef string `json:"session_ref"`
+
+	PlanID  string `json:"plan_id"`
+	PlanRef string `json:"plan_ref"`
+
+	RepairAssignmentID string `json:"repair_assignment_id"`
+
+	ManifestAssignmentID string `json:"manifest_assignment_id"`
+
+	TeamID  string `json:"team_id"`
+	TaskID  string `json:"task_id"`
+	TaskRef string `json:"task_ref"`
+
+	ManifestRef string `json:"manifest_ref"`
+
+	OwnerAgentID string `json:"owner_agent_id"`
 }
 
-// RepairPlanReportInputs retains canonical source documents and the exact
-// selected RepairPlan and manifest Assignment rows. Source bytes/SHA and
-// current authorization must still be proved by the original S9 consumer.
+// RepairPlanReportInputs retains readable original source documents and the
+// selected RepairPlan and manifest Assignment rows. The original S9 consumer
+// handles actual responsibility and authorization without digest proof.
 type RepairPlanReportInputs struct {
 	Case               json.RawMessage `json:"case"`
 	Contract           json.RawMessage `json:"contract"`
@@ -80,7 +81,7 @@ func (inputs *RepairPlanReportInputs) UnmarshalJSON(data []byte) error {
 	}
 	type wire RepairPlanReportInputs
 	var decoded wire
-	if err := decodeOneStrictJSON(data, &decoded); err != nil {
+	if err := decodeOneJSON(data, &decoded); err != nil {
 		return err
 	}
 	for _, source := range []*json.RawMessage{
@@ -105,8 +106,8 @@ type RepairPlanReportCheck struct {
 }
 
 // RepairPlanReportProfessionalAnswer holds only author-owned planning
-// judgment. IDs, assertions, approval, status, timestamps, and artifact SHA
-// remain derived from the original dispatcher and receipt writer.
+// judgment. IDs, assertions, approval, status and timestamps remain derived
+// from the original dispatcher and receipt writer.
 type RepairPlanReportProfessionalAnswer struct {
 	Plan          string                  `json:"plan"`
 	RedChecks     []RepairPlanReportCheck `json:"red_checks"`
@@ -127,7 +128,7 @@ func (draft *RepairPlanReportDraft) UnmarshalJSON(data []byte) error {
 	}
 	type wire RepairPlanReportDraft
 	var decoded wire
-	if err := decodeOneStrictJSON(data, &decoded); err != nil {
+	if err := decodeOneJSON(data, &decoded); err != nil {
 		return err
 	}
 	answer, err := canonicalJSON(decoded.Answer)
@@ -140,13 +141,14 @@ func (draft *RepairPlanReportDraft) UnmarshalJSON(data []byte) error {
 }
 
 type RepairPlanReportPacket struct {
-	ID              string                  `json:"packet_id"`
-	TemplateID      string                  `json:"template_id"`
-	TemplateSHA     string                  `json:"template_sha256"`
+	ID         string `json:"packet_id"`
+	TemplateID string `json:"template_id"`
+
 	Binding         RepairPlanReportBinding `json:"binding"`
 	Inputs          RepairPlanReportInputs  `json:"inputs"`
 	ReportID        string                  `json:"report_id"`
 	IssuanceEventID string                  `json:"issuance_event_id"`
+	BriefPath       string                  `json:"brief_path,omitempty"`
 	ViewPath        string                  `json:"view_path"`
 	AnswerPath      string                  `json:"answer_path"`
 	Draft           RepairPlanReportDraft   `json:"draft"`
@@ -156,9 +158,10 @@ func (packet *RepairPlanReportPacket) UnmarshalJSON(data []byte) error {
 	if err := ValidateUniqueJSON(data); err != nil {
 		return err
 	}
+
 	type wire RepairPlanReportPacket
 	var decoded wire
-	if err := decodeOneStrictJSON(data, &decoded); err != nil {
+	if err := decodeOneJSON(data, &decoded); err != nil {
 		return err
 	}
 	*packet = RepairPlanReportPacket(decoded)
@@ -197,33 +200,20 @@ func buildRepairPlanReportWithTemplate(binding RepairPlanReportBinding, inputs R
 		!repairPlanReportTemplateQuestions(template.Questions) {
 		return RepairPlanReportPacket{}, fmt.Errorf("unregistered S9 PlanReport template")
 	}
-	templateSHA := Digest(templateBytes)
-	identityBytes, err := json.Marshal(struct {
-		Binding     RepairPlanReportBinding `json:"binding"`
-		Inputs      RepairPlanReportInputs  `json:"inputs"`
-		TemplateSHA string                  `json:"template_sha256"`
-	}{binding, canonicalInputs, templateSHA})
-	if err != nil {
-		return RepairPlanReportPacket{}, fmt.Errorf("encode S9 PlanReport packet identity: %w", err)
-	}
-	identityBytes, err = canonicalJSON(identityBytes)
-	if err != nil {
-		return RepairPlanReportPacket{}, err
-	}
-	packetHash := Digest(identityBytes)
-	packetID := "packet-" + packetHash
-	base := fmt.Sprintf("%s/g%d/S9-plan/r%d/%s/%s", binding.RuntimeID, binding.BaselineGeneration, binding.ReviewRound, binding.RepairAssignmentID, packetID)
+	key := repairResponsibilityKey("plan", binding, "")
+	packetID := "packet-" + key
+	base := fmt.Sprintf("%s/g%d/S9-plan/%s/%s/%s", reviewResultIdentityPath(binding.RuntimeID), binding.BaselineGeneration, reviewResultIdentityPath(binding.SessionID), reviewResultIdentityPath(binding.RepairAssignmentID), reviewResultPacketPath(packetID))
 	draftAnswer, err := canonicalJSON([]byte(`{"plan":null,"red_checks":null,"proposed_paths":null}`))
 	if err != nil {
 		return RepairPlanReportPacket{}, err
 	}
 	packet := RepairPlanReportPacket{
-		ID: packetID, TemplateID: repairPlanReportTemplateID, TemplateSHA: templateSHA,
+		ID: packetID, TemplateID: repairPlanReportTemplateID,
 		Binding: binding, Inputs: canonicalInputs,
-		ReportID:        "repair-plan-report-" + packetHash,
+		ReportID:        "repair-plan-report-" + key,
 		IssuanceEventID: "evt-repair-plan-report-packet-" + packetID,
 		ViewPath:        ".claude/work-packets/" + base + ".json",
-		AnswerPath:      ".claude/submissions/" + base + "/" + binding.OwnerAgentID + "/answer.json",
+		AnswerPath:      ".claude/submissions/" + base + "/" + reviewResultIdentityPath(binding.OwnerAgentID) + "/answer.json",
 		Draft: RepairPlanReportDraft{
 			Title: template.Title, Instruction: template.Instruction,
 			Read: makeRepairPlanReportRead(binding), Questions: template.Questions, Answer: draftAnswer,
@@ -239,45 +229,20 @@ func buildRepairPlanReportWithTemplate(binding RepairPlanReportBinding, inputs R
 	return packet, nil
 }
 
-func RebuildRepairPlanReport(packet RepairPlanReportPacket) (RepairPlanReportPacket, error) {
-	// An issued packet fixes the complete template bytes, not just the fields
-	// visible in its mutable draft. New work always uses the current template.
-	for _, name := range []string{"stage-form-s9-plan-template.json", "stage-form-s9-plan-template-before-natural-observation.json"} {
-		data, err := schema.ReadAsset(name)
-		if err != nil {
-			return RepairPlanReportPacket{}, err
-		}
-		if Digest(data) == packet.TemplateSHA {
-			return buildRepairPlanReportWithTemplate(packet.Binding, packet.Inputs, data)
-		}
+// Identity uses only the original issued responsibility and optional actual
+// continuation event; length prefixes make concatenation unambiguous.
+func repairResponsibilityKey(kind string, b RepairPlanReportBinding, attempt string) string {
+	parts := []string{kind, b.RuntimeID, b.SessionID, b.PlanID, b.RepairAssignmentID, b.ManifestAssignmentID, b.OwnerAgentID, attempt}
+	var out strings.Builder
+	for _, part := range parts {
+		fmt.Fprintf(&out, "%d:%s", len(part), part)
 	}
-	return RepairPlanReportPacket{}, fmt.Errorf("unsupported frozen S9 PlanReport template digest")
+	return base64.RawURLEncoding.EncodeToString([]byte(out.String()))
 }
 
-func RepairPlanReportPacketDigest(packet RepairPlanReportPacket) (string, error) {
-	rebuilt, err := RebuildRepairPlanReport(packet)
-	if err != nil {
-		return "", err
-	}
-	if !reflect.DeepEqual(packet, rebuilt) {
-		return "", fmt.Errorf("S9 PlanReport packet differs from its canonical rebuild")
-	}
-	data, err := json.Marshal(rebuilt)
-	if err != nil {
-		return "", err
-	}
-	canonical, err := canonicalJSON(data)
-	if err != nil {
-		return "", err
-	}
-	return Digest(canonical), nil
-}
-
-// ValidateRepairPlanReportAnswer returns the professional answer from the
-// authoring file. Display metadata does not affect answer acceptance.
 func ValidateRepairPlanReportAnswer(packet RepairPlanReportPacket, data []byte) (json.RawMessage, []FieldError) {
 	issue := func(pointer, expected, observed string) (json.RawMessage, []FieldError) {
-		return nil, []FieldError{{Pointer: pointer, Expected: expected, Observed: observed, Repair: "填写 answer 中的 plan、red_checks 和 proposed_paths，记录本人实际计划与前检。"}}
+		return nil, []FieldError{{Pointer: pointer, Expected: expected, Observed: observed, Repair: "填写可理解的本人实际计划；前检与拟改路径可按实际情况补充。"}}
 	}
 	if len(data) > repairPlanReportPacketLimit {
 		return issue("/", "JSON <= 20 MiB", "oversized")
@@ -290,6 +255,9 @@ func ValidateRepairPlanReportAnswer(packet RepairPlanReportPacket, data []byte) 
 		return issue("/", "one JSON object containing answer", "invalid JSON object")
 	}
 	answer := document["answer"]
+	if len(answer) == 0 {
+		answer = data // Original native professional form.
+	}
 	canonicalAnswer, err := canonicalJSON(answer)
 	if err != nil {
 		return issue("/answer", "one JSON answer object", err.Error())
@@ -302,60 +270,26 @@ func ValidateRepairPlanReportAnswer(packet RepairPlanReportPacket, data []byte) 
 
 func validateCompleteRepairPlanReportAnswer(inputs RepairPlanReportInputs, data []byte) (pointer, expected, observed string) {
 	var answer RepairPlanReportProfessionalAnswer
-	if err := decodeOneStrictJSON(data, &answer); err != nil {
+	if err := decodeOneJSON(data, &answer); err != nil {
 		return "/answer", "valid S9 professional fields", err.Error()
 	}
 	if strings.TrimSpace(answer.Plan) == "" {
 		return "/answer/plan", "concrete pre-execution plan", "empty"
 	}
-	if len(answer.RedChecks) == 0 || len(answer.RedChecks) > 128 {
-		return "/answer/red_checks", "one or more bounded red checks", "empty or oversized"
-	}
-	for i, check := range answer.RedChecks {
-		prefix := fmt.Sprintf("/answer/red_checks/%d", i)
-		if strings.TrimSpace(check.Name) == "" || strings.TrimSpace(check.Command) == "" {
-			return prefix, "check name and command", "empty"
-		}
-		if check.Result != "fail" && check.Result != "pass" && check.Result != "blocked" {
-			return prefix + "/result", "fail | pass | blocked", check.Result
-		}
-		if len(check.EvidenceRefs) == 0 {
-			return prefix + "/evidence_refs", "at least one evidence reference", "empty"
-		}
-		seenRefs := map[string]bool{}
-		for _, ref := range check.EvidenceRefs {
-			if strings.TrimSpace(ref) == "" || ref != strings.TrimSpace(ref) || seenRefs[ref] {
-				return prefix + "/evidence_refs", "unique non-empty evidence references", ref
-			}
-			seenRefs[ref] = true
-		}
-	}
-	if answer.ProposedPaths == nil || len(answer.ProposedPaths) > 4096 {
-		return "/answer/proposed_paths", "explicit path array; [] for no product changes", "missing, null or oversized"
-	}
-	seenPaths := map[string]bool{}
-	for i, value := range answer.ProposedPaths {
-		path := strings.TrimSpace(value)
-		pointer := fmt.Sprintf("/answer/proposed_paths/%d", i)
-		if path == "" || value != path || !safeRelative(path) || seenPaths[path] {
-			return pointer, "unique safe relative proposed path", value
-		}
-		seenPaths[path] = true
 
-	}
 	return "", "", ""
 }
 
 func validateRepairPlanReportBinding(binding RepairPlanReportBinding) error {
-	if !safeComponent(binding.RuntimeID) || binding.BaselineGeneration < 0 || binding.ReviewRound < 1 ||
-		!repairPlanReportCaseIDRE.MatchString(binding.CaseID) || !safeRepairPlanReportRef(binding.CaseRef) || !digestPattern.MatchString(binding.CaseSHA256) ||
-		!repairPlanReportContractIDRE.MatchString(binding.ContractID) || !safeRepairPlanReportRef(binding.ContractRef) || !digestPattern.MatchString(binding.ContractSHA256) ||
-		!repairPlanReportSessionIDRE.MatchString(binding.SessionID) || !safeRepairPlanReportRef(binding.SessionRef) || !digestPattern.MatchString(binding.SessionSHA256) ||
-		!repairPlanReportPlanIDRE.MatchString(binding.PlanID) || !safeRepairPlanReportRef(binding.PlanRef) || !digestPattern.MatchString(binding.PlanSHA256) ||
-		!repairPlanReportAssignmentRE.MatchString(binding.RepairAssignmentID) || !digestPattern.MatchString(binding.RepairAssignmentSHA256) ||
-		!repairPlanReportManifestIDRE.MatchString(binding.ManifestAssignmentID) || !digestPattern.MatchString(binding.ManifestAssignmentSHA256) ||
-		!safeComponent(binding.TeamID) || !repairPlanReportTaskIDRE.MatchString(binding.TaskID) || !safeRepairPlanReportRef(binding.TaskRef) || !digestPattern.MatchString(binding.TaskSHA256) ||
-		!safeRepairPlanReportRef(binding.ManifestRef) || !digestPattern.MatchString(binding.ManifestSHA256) || !safeComponent(binding.OwnerAgentID) {
+	if !safeComponent(binding.RuntimeID) || binding.BaselineGeneration < 0 ||
+		!repairPlanReportCaseIDRE.MatchString(binding.CaseID) || !safeRepairPlanReportRef(binding.CaseRef) ||
+		!repairPlanReportContractIDRE.MatchString(binding.ContractID) || !safeRepairPlanReportRef(binding.ContractRef) ||
+		!repairPlanReportSessionIDRE.MatchString(binding.SessionID) || !safeRepairPlanReportRef(binding.SessionRef) ||
+		!repairPlanReportPlanIDRE.MatchString(binding.PlanID) || !safeRepairPlanReportRef(binding.PlanRef) ||
+		!repairPlanReportAssignmentRE.MatchString(binding.RepairAssignmentID) ||
+		!repairPlanReportManifestIDRE.MatchString(binding.ManifestAssignmentID) ||
+		!safeComponent(binding.TeamID) || !repairPlanReportTaskIDRE.MatchString(binding.TaskID) || !safeRepairPlanReportRef(binding.TaskRef) ||
+		!safeRepairPlanReportRef(binding.ManifestRef) || !safeComponent(binding.OwnerAgentID) {
 		return fmt.Errorf("S9 PlanReport requires a complete pinned Case, Contract, Session, Plan, Assignment, TASK, manifest, and owner binding")
 	}
 	if err := identity.ValidateAgentID(binding.OwnerAgentID); err != nil {
@@ -409,7 +343,7 @@ func canonicalRepairPlanReportInputs(binding RepairPlanReportBinding, inputs Rep
 		return RepairPlanReportInputs{}, fmt.Errorf("S9 forbidden scope: %w", err)
 	}
 	caseDoc, err := repairPlanReportObject(canonical.Case, "Case")
-	if err != nil || caseDoc["case_id"] != binding.CaseID || caseDoc["status"] != "contract_approved" || caseDoc["repair_contract_ref"] != binding.ContractRef || caseDoc["repair_contract_sha256"] != binding.ContractSHA256 {
+	if err != nil || caseDoc["case_id"] != binding.CaseID || caseDoc["status"] != "contract_approved" || caseDoc["repair_contract_ref"] != binding.ContractRef {
 		return RepairPlanReportInputs{}, fmt.Errorf("S9 frozen Case is not the approved binding source")
 	}
 	contract, err := repairPlanReportObject(canonical.Contract, "Contract")
@@ -417,11 +351,11 @@ func canonicalRepairPlanReportInputs(binding RepairPlanReportBinding, inputs Rep
 		return RepairPlanReportInputs{}, fmt.Errorf("S9 frozen Contract identity/approval differs from binding")
 	}
 	session, err := repairPlanReportObject(canonical.Session, "Session")
-	if err != nil || session["session_id"] != binding.SessionID || session["contract_ref"] != binding.ContractRef || session["contract_sha256"] != binding.ContractSHA256 || session["runtime_id"] != binding.RuntimeID || !repairPlanReportJSONEqual(session["baseline_generation"], binding.BaselineGeneration) {
+	if err != nil || session["session_id"] != binding.SessionID || session["contract_ref"] != binding.ContractRef || session["runtime_id"] != binding.RuntimeID || !repairPlanReportJSONEqual(session["baseline_generation"], binding.BaselineGeneration) {
 		return RepairPlanReportInputs{}, fmt.Errorf("S9 frozen Session identity/source tuple differs from binding")
 	}
 	plan, err := repairPlanReportObject(canonical.Plan, "Plan")
-	if err != nil || plan["plan_id"] != binding.PlanID || plan["session_id"] != binding.SessionID || plan["contract_id"] != binding.ContractID || plan["contract_ref"] != binding.ContractRef || plan["contract_sha256"] != binding.ContractSHA256 {
+	if err != nil || plan["plan_id"] != binding.PlanID || plan["session_id"] != binding.SessionID || plan["contract_id"] != binding.ContractID || plan["contract_ref"] != binding.ContractRef {
 		return RepairPlanReportInputs{}, fmt.Errorf("S9 frozen RepairPlan identity/source tuple differs from binding")
 	}
 	planProspective, ok := repairPlanReportStringSlice(plan["prospective_scope"])
@@ -441,8 +375,8 @@ func canonicalRepairPlanReportInputs(binding RepairPlanReportBinding, inputs Rep
 		return RepairPlanReportInputs{}, fmt.Errorf("S9 forbidden scope differs from approved Contract")
 	}
 	repairAssignment, err := repairPlanReportObject(canonical.RepairAssignment, "RepairAssignment")
-	if err != nil || repairAssignment["assignment_id"] != binding.RepairAssignmentID || repairAssignment["contract_ref"] != binding.ContractRef || Digest(canonical.RepairAssignment) != binding.RepairAssignmentSHA256 {
-		return RepairPlanReportInputs{}, fmt.Errorf("S9 exact RepairAssignment identity/digest differs from binding")
+	if err != nil || repairAssignment["assignment_id"] != binding.RepairAssignmentID || repairAssignment["contract_ref"] != binding.ContractRef {
+		return RepairPlanReportInputs{}, fmt.Errorf("S9 exact RepairAssignment identity differs from binding")
 	}
 	task, err := repairPlanReportObject(canonical.Task, "TASK")
 	if err != nil || task["task_id"] != binding.TaskID || task["session_id"] != binding.SessionID || task["plan_id"] != binding.PlanID || task["assignment_id"] != binding.RepairAssignmentID {
@@ -452,8 +386,8 @@ func canonicalRepairPlanReportInputs(binding RepairPlanReportBinding, inputs Rep
 		return RepairPlanReportInputs{}, fmt.Errorf("S9 frozen TASK unit/scope/dependency/lock projection differs from its RepairAssignment")
 	}
 	manifestAssignment, err := repairPlanReportObject(canonical.ManifestAssignment, "manifest Assignment")
-	if err != nil || manifestAssignment["assignment_id"] != binding.ManifestAssignmentID || manifestAssignment["agent_id"] != binding.OwnerAgentID || Digest(canonical.ManifestAssignment) != binding.ManifestAssignmentSHA256 || !repairPlanReportJSONEqual(manifestAssignment["scope"], repairAssignment["scope"]) {
-		return RepairPlanReportInputs{}, fmt.Errorf("S9 exact manifest Assignment identity/digest differs from binding")
+	if err != nil || manifestAssignment["assignment_id"] != binding.ManifestAssignmentID || manifestAssignment["agent_id"] != binding.OwnerAgentID || !repairPlanReportJSONEqual(manifestAssignment["scope"], repairAssignment["scope"]) {
+		return RepairPlanReportInputs{}, fmt.Errorf("S9 exact manifest Assignment identity differs from binding")
 	}
 	assignments, ok := plan["assignments"].([]any)
 	if !ok {

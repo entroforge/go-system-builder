@@ -9,28 +9,37 @@ import (
 
 // CurrentDesignPacket projects an actual Main responsibility, not a workgroup.
 // The original Writer retains its current-entry and atomic recording boundary.
-func CurrentDesignPacket(state map[string]any) (workpacket.DesignPacket, error) {
+func CurrentDesignBinding(state map[string]any) (workpacket.PlanningBinding, error) {
 	if !PacketEnabled(state) {
-		return workpacket.DesignPacket{}, fmt.Errorf("explicit packet mode is required")
+		return workpacket.PlanningBinding{}, fmt.Errorf("explicit packet mode is required")
 	}
 	life, _ := state["lifecycle"].(map[string]any)
 	if life["state"] != "planning" || life["phase"] != "design" {
-		return workpacket.DesignPacket{}, fmt.Errorf("S2 requires the original planning.design cursor")
+		return workpacket.PlanningBinding{}, fmt.Errorf("S2 requires the original planning.design cursor")
 	}
 	bound, _ := state["bound_req"].(map[string]any)
 	if bound == nil || bound["status"] != "locked" {
-		return workpacket.DesignPacket{}, fmt.Errorf("S2 requires the authorized locked REQ")
+		return workpacket.PlanningBinding{}, fmt.Errorf("S2 requires the authorized locked REQ")
 	}
 	baseline, _ := state["baseline"].(map[string]any)
 	generation, err := integerField(baseline, "generation")
 	if err != nil {
-		return workpacket.DesignPacket{}, err
+		return workpacket.PlanningBinding{}, err
 	}
 	entry, err := integerField(life, "phase_revision")
 	if err != nil {
+		return workpacket.PlanningBinding{}, err
+	}
+	return workpacket.PlanningBinding{RuntimeID: stringValue(state["runtime_id"]), Generation: generation, StageEntry: entry, Stage: "S2", Owner: "Main", Requirement: workpacket.Reference{ID: stringValue(bound["id"]), Path: stringValue(bound["path"]), Version: stringValue(bound["version"])}}, nil
+}
+
+// CurrentDesignPacket constructs a new S2 questionnaire only for first issuance.
+func CurrentDesignPacket(state map[string]any) (workpacket.DesignPacket, error) {
+	binding, err := CurrentDesignBinding(state)
+	if err != nil {
 		return workpacket.DesignPacket{}, err
 	}
-	return workpacket.BuildDesign(workpacket.PlanningBinding{RuntimeID: stringValue(state["runtime_id"]), Generation: generation, StageEntry: entry, Stage: "S2", Owner: "Main", Requirement: workpacket.Reference{ID: stringValue(bound["id"]), Path: stringValue(bound["path"]), Version: stringValue(bound["version"]), SHA256: stringValue(bound["sha256"])}})
+	return workpacket.BuildDesign(binding)
 }
 
 // ValidateDesignPacket associates the existing questionnaire with this entry.
@@ -45,4 +54,10 @@ func ValidateDesignPacket(root string, state map[string]any, p workpacket.Design
 		return fmt.Errorf("design questionnaire does not belong to the current design responsibility")
 	}
 	return nil
+}
+
+// samePlanningResponsibility accepts original historical bindings without using
+// the historic digest as an authorization or current-content check.
+func samePlanningResponsibility(a, b workpacket.PlanningBinding) bool {
+	return a.RuntimeID == b.RuntimeID && a.Generation == b.Generation && a.StageEntry == b.StageEntry && a.Stage == b.Stage && a.Owner == b.Owner && a.Requirement.ID == b.Requirement.ID && a.Requirement.Path == b.Requirement.Path && a.Requirement.Version == b.Requirement.Version
 }

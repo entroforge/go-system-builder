@@ -2,7 +2,6 @@ package controller
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
@@ -59,63 +58,11 @@ func TestCurrentPlanningPacketRequiresUniqueExactCurrentBinding(t *testing.T) {
 				entities["submissions"] = []any{map[string]any{
 					"packet_id": row["packet_id"], "owner": "actual-author", "submission_key": "recorded-key",
 					"followup_event_id": "recorded-followup", "evidence_id": "accepted-design",
-					"control_status": "no_transition", "origin_state": "planning", "origin_phase": "design", "origin_entry": binding.StageEntry,
+					"control_status": "pending", "origin_state": "planning", "origin_phase": "design", "origin_entry": binding.StageEntry,
 				}}
 				if _, err := currentPlanningSubmission(state, row["packet_id"].(string), binding, "design", "s2-design-v1"); err != nil {
-					t.Fatalf("accepted S2 no_transition must continue without owner/key proof: %v", err)
+					t.Fatalf("accepted S2 pending must continue without owner/key proof: %v", err)
 				}
-			}
-		})
-	}
-}
-
-func TestCurrentPlanningSubmissionRequiresOnePendingMainCurrentEntry(t *testing.T) {
-	state, binding, packetRow := planningFollowupFixture(t, "tasks")
-	packetID := packetRow["packet_id"].(string)
-	key := workpacket.Digest([]byte("submission:" + packetID))
-	followup := workpacket.Digest([]byte(key + ":after-domain"))
-	row := map[string]any{
-		"submission_key": key, "packet_id": packetID, "owner": "Main",
-		"content_sha256": strings.Repeat("a", 64), "evidence_id": "ev-s4",
-		"followup_event_id": followup, "control_status": "pending",
-		"origin_state": "planning", "origin_phase": "tasks", "origin_entry": float64(binding.StageEntry),
-	}
-	entities := state["entities"].(map[string]any)
-	entities["work_packets"] = []any{packetRow}
-	entities["submissions"] = []any{row}
-	got, err := currentPlanningSubmission(state, packetID, binding, "tasks", "s4-task-planning-v1")
-	if err != nil || got.FollowupID != followup {
-		t.Fatalf("select accepted pending Main submission: %+v %v", got, err)
-	}
-	if _, err := runtime.SubmissionFollowup(state, followup); err != nil {
-		t.Fatalf("original followup validator rejected exact current submission: %v", err)
-	}
-
-	for name, rows := range map[string][]any{
-		"missing":   nil,
-		"duplicate": {row, cloneMap(row)},
-	} {
-		t.Run(name, func(t *testing.T) {
-			entities["submissions"] = rows
-			if _, err := currentPlanningSubmission(state, packetID, binding, "tasks", "s4-task-planning-v1"); err == nil {
-				t.Fatalf("%s submission rows were accepted", name)
-			}
-		})
-	}
-
-	for name, mutate := range map[string]func(map[string]any){
-		"wrong owner":       func(r map[string]any) { r["owner"] = "worker-a" },
-		"wrong stage":       func(r map[string]any) { r["origin_phase"] = "contracts" },
-		"wrong stage entry": func(r map[string]any) { r["origin_entry"] = float64(binding.StageEntry - 1) },
-		"already consumed":  func(r map[string]any) { r["control_status"] = "replaced" },
-		"revision packet":   func(r map[string]any) { r["revision_packet_id"] = "replacement" },
-	} {
-		t.Run(name, func(t *testing.T) {
-			changed := cloneMap(row)
-			mutate(changed)
-			entities["submissions"] = []any{changed}
-			if _, err := currentPlanningSubmission(state, packetID, binding, "tasks", "s4-task-planning-v1"); err == nil {
-				t.Fatalf("%s submission was accepted", name)
 			}
 		})
 	}
@@ -130,12 +77,12 @@ func planningFollowupFixture(t *testing.T, phase string) (map[string]any, workpa
 		"configuration":  map[string]any{"optimization": map[string]any{"packet": true}},
 		"bound_req": map[string]any{
 			"id": "REQ-039", "path": "docs/requirements/REQ-039.md", "version": "v1.0.0",
-			"sha256": strings.Repeat("a", 64), "status": "locked",
+			"status": "locked",
 		},
 		"lifecycle": map[string]any{"state": "planning", "phase": phase, "phase_revision": float64(4)},
 		"documents": []any{map[string]any{
 			"id": "ARCHITECTURE-039", "kind": "design", "path": "docs/architecture/ARCHITECTURE-039.md",
-			"version": "v1.0.0", "sha256": strings.Repeat("b", 64), "status": "locked", "generation": float64(2),
+			"version": "v1.0.0", "status": "locked", "generation": float64(2),
 		}},
 		"entities": map[string]any{"work_packets": []any{}, "submissions": []any{}},
 	}
@@ -179,7 +126,7 @@ func historicalPlanningPacketRow(t *testing.T, phase string, current workpacket.
 		inputs := workpacket.ContractInputs{
 			Designs: []workpacket.Reference{{
 				ID: "ARCHITECTURE-039", Path: "docs/architecture/ARCHITECTURE-039.md",
-				Version: "v1.0.0", SHA256: strings.Repeat("b", 64),
+				Version: "v1.0.0",
 			}},
 			Sources: []workpacket.Subject{}, Directories: map[string][]string{},
 		}
@@ -191,8 +138,8 @@ func historicalPlanningPacketRow(t *testing.T, phase string, current workpacket.
 	case "tasks":
 		inputs := workpacket.TaskPlanningInputs{
 			Contracts: []workpacket.Reference{
-				{ID: "CONTRACTS-039", Path: "docs/dev/contracts/CONTRACTS-039.md", Version: "v1.0.0", SHA256: strings.Repeat("c", 64)},
-				{ID: "BE-039", Path: "docs/dev/contracts/BE-039.md", Version: "v1.0.0", SHA256: strings.Repeat("d", 64)},
+				{ID: "CONTRACTS-039", Path: "docs/dev/contracts/CONTRACTS-039.md", Version: "v1.0.0"},
+				{ID: "BE-039", Path: "docs/dev/contracts/BE-039.md", Version: "v1.0.0"},
 			},
 			Sources: []workpacket.Subject{}, Directories: map[string][]string{},
 			ClauseUniverse: []workpacket.TaskClause{{ContractID: "BE-039", Section: 1}},

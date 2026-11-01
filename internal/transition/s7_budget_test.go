@@ -1,70 +1,59 @@
 package transition_test
 
 import (
+	"reflect"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
-func TestStartReviewRoundRejectsExhaustedS7Budget(t *testing.T) {
-	action, ok := transition.LookupAction("start_review_round")
-	if !ok {
-		t.Fatal("start_review_round action is not registered")
-	}
-	state := map[string]any{
-		"review": map[string]any{"round": float64(5), "clean_round": nil},
-		"configuration": map[string]any{
-			"repair": map[string]any{"max_full_review_rounds": float64(5)},
-		},
-	}
-
-	result, err := action(state, &transition.ActionContext{Spec: transition.TransitionSpec{ID: "TR-012"}})
-	if err == nil {
-		t.Fatal("expected an exhausted S7 budget to reject a new review round")
-	}
-	if result.Status != "failed" {
-		t.Fatalf("action status = %q, want failed", result.Status)
-	}
-	if state["review"].(map[string]any)["round"] != float64(5) {
-		t.Fatal("rejected review round must not mutate review.round")
+func TestStartReviewEntryUsesOriginalEventWithoutCountingOrBudget(t *testing.T) {
+	for _, id := range []string{"TR-006", "TR-012", "TR-016", "TR-022", "TR-031"} {
+		t.Run(id, func(t *testing.T) {
+			action, _ := transition.LookupAction("start_review_round")
+			state := map[string]any{"runtime_id": "loop-test", "baseline": map[string]any{"generation": 3}, "review": map[string]any{"round": 5, "clean_round": "old"}, "configuration": map[string]any{"repair": map[string]any{"max_full_review_rounds": 1}}}
+			ctx := &transition.ActionContext{Spec: transition.TransitionSpec{ID: id}, EventID: "evt-original", Evidence: map[string]string{"change_impact_record": "impact"}}
+			result, err := action(state, ctx)
+			if err != nil || result.Status != "committed" {
+				t.Fatalf("entry: %#v %v", result, err)
+			}
+			rev := state["review"].(map[string]any)
+			entry := rev["round_entry"].(map[string]any)
+			if entry["plan_id"] != reviewmeta.NewPlanID("loop-test", "evt-original") || entry["baseline_generation"] != 3 {
+				t.Fatalf("entry=%#v", entry)
+			}
+			if _, ok := entry["round"]; ok {
+				t.Fatal("new entry generated a round")
+			}
+			if rev["round"] != 5 || rev["clean_round"] != nil {
+				t.Fatalf("review=%#v", rev)
+			}
+			rev["clean_round"] = "later-result"
+			before := map[string]any{}
+			for k, v := range entry {
+				before[k] = v
+			}
+			result, err = action(state, ctx)
+			if err != nil || result.Status != "skipped" || !reflect.DeepEqual(entry, before) || rev["clean_round"] != "later-result" {
+				t.Fatalf("replay changed committed work: %#v %v", result, err)
+			}
+			ctx.EventID = "evt-another-entry"
+			if _, err := action(state, ctx); err != nil {
+				t.Fatal(err)
+			}
+			if rev["round_entry"].(map[string]any)["plan_id"] == entry["plan_id"] {
+				t.Fatal("new entry reused old identity")
+			}
+		})
 	}
 }
 
-func TestStartReviewRoundRecordsImpactReference(t *testing.T) {
-	for _, transitionID := range []string{"TR-012", "TR-016", "TR-031"} {
-		t.Run(transitionID, func(t *testing.T) {
-			action, ok := transition.LookupAction("start_review_round")
-			if !ok {
-				t.Fatal("start_review_round action is not registered")
-			}
-			state := map[string]any{
-				"review":   map[string]any{"round": float64(1), "clean_round": "old-clean"},
-				"baseline": map[string]any{"generation": float64(3)},
-				"configuration": map[string]any{
-					"repair": map[string]any{"max_full_review_rounds": float64(5)},
-				},
-			}
-
-			result, err := action(state, &transition.ActionContext{
-				Spec:     transition.TransitionSpec{ID: transitionID},
-				Evidence: map[string]string{"change_impact_record": "ev-impact-1"},
-			})
-			if err != nil {
-				t.Fatalf("start_review_round(TR-012): %v", err)
-			}
-			if result.Status != "committed" {
-				t.Fatalf("action status = %q, want committed", result.Status)
-			}
-			entry := state["review"].(map[string]any)["round_entry"].(map[string]any)
-			if entry["transition_id"] != transitionID || entry["change_impact_ref"] != "ev-impact-1" {
-				t.Fatalf("round_entry = %#v, want TR-012 and ev-impact-1", entry)
-			}
-			if entry["round"] != 2 || entry["baseline_generation"] != 3 {
-				t.Fatalf("round_entry coordinates = %#v, want round 2 generation 3", entry)
-			}
-			if state["review"].(map[string]any)["clean_round"] != nil {
-				t.Fatal("old clean round survived")
-			}
-		})
+func TestStartReviewEntryNeedsOriginalEventBeforeMutation(t *testing.T) {
+	action, _ := transition.LookupAction("start_review_round")
+	rev := map[string]any{"round": 2, "clean_round": "keep"}
+	_, err := action(map[string]any{"runtime_id": "runtime", "review": rev}, &transition.ActionContext{})
+	if err == nil || rev["clean_round"] != "keep" || rev["round"] != 2 {
+		t.Fatalf("missing original event: %v %#v", err, rev)
 	}
 }

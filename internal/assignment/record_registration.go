@@ -1,7 +1,6 @@
 package assignment
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -19,7 +18,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/team"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
@@ -60,7 +58,7 @@ type recordRegistrationAgent struct {
 // assignment in one already validated Builder manifest. Registration calls it
 // from its Writer Apply after the matching Team, Agent, and TASK owner rows
 // have been added to the candidate state.
-func buildRegisteredAssignmentRecords(root string, state map[string]any, manifestBytes []byte, manifestRef, taskRef, taskID string, taskBytes []byte) ([]Record, error) {
+func buildRegisteredAssignmentRecords(root string, state map[string]any, manifestBytes []byte, manifestRef, taskRef, taskID string, taskBytes []byte, selected ...*dispatch.Board) ([]Record, error) {
 	if !workstate.SupportsAssignments(state["schema_version"]) {
 		return nil, fmt.Errorf("Assignment Record registration requires Runtime schema 1.2.0 or 1.3.0")
 	}
@@ -116,21 +114,7 @@ func buildRegisteredAssignmentRecords(root string, state map[string]any, manifes
 	if err != nil {
 		return nil, fmt.Errorf("open original S6 file view: %w", err)
 	}
-	actualManifest, err := readRecordRegistrationSource(root, files, manifestRef)
-	if err != nil {
-		return nil, fmt.Errorf("read registered manifest source: %w", err)
-	}
-	if !bytes.Equal(actualManifest, manifestBytes) {
-		return nil, fmt.Errorf("S6 manifest bytes differ from the original file view and checkout")
-	}
-	actualTask, err := readRecordRegistrationSource(root, files, taskRef)
-	if err != nil {
-		return nil, fmt.Errorf("read registered TASK source: %w", err)
-	}
-	if !bytes.Equal(actualTask, taskBytes) {
-		return nil, fmt.Errorf("S6 TASK bytes differ from the original file view and checkout")
-	}
-	if version := semantic.MarkdownField(string(actualTask), "Version"); version == "" {
+	if version := semantic.MarkdownField(string(taskBytes), "Version"); version == "" {
 		return nil, fmt.Errorf("S6 TASK source has no explicit Version field")
 	} else {
 		registeredVersion := recordRegistrationLockedTaskVersion(state, taskID)
@@ -154,9 +138,14 @@ func buildRegisteredAssignmentRecords(root string, state map[string]any, manifes
 		return nil, fmt.Errorf("S6 request TASK differs from the manifest's formal TASK subject")
 	}
 
-	board, err := dispatch.LoadWithFiles(root, state, files, 1<<20)
-	if err != nil {
-		return nil, fmt.Errorf("load original reviewed dispatch plan: %w", err)
+	var board dispatch.Board
+	if len(selected) > 0 && selected[0] != nil {
+		board = *selected[0]
+	} else {
+		board, err = dispatch.LoadWithFiles(root, state, files, 1<<20)
+		if err != nil {
+			return nil, fmt.Errorf("load original reviewed dispatch plan: %w", err)
+		}
 	}
 	if board.Legacy || board.Plan == nil || board.Plan.Path == "" || board.Plan.REQ != reqBinding.REQID || len(board.Plan.Problems) != 0 {
 		return nil, fmt.Errorf("S6 v1.2 Assignment Records require the complete current reviewed dispatch plan")
@@ -212,17 +201,6 @@ func buildRegisteredAssignmentRecords(root string, state map[string]any, manifes
 	if err := rejectRecordRegistrationProtectedScope(state, manifestRef, source.Documents, records); err != nil {
 		return nil, err
 	}
-	finalManifest, err := readRecordRegistrationSource(root, files, manifestRef)
-	if err != nil || !bytes.Equal(finalManifest, manifestBytes) {
-		return nil, fmt.Errorf("S6 manifest changed while Assignment Records were being constructed")
-	}
-	finalTask, err := readRecordRegistrationSource(root, files, taskRef)
-	if err != nil || !bytes.Equal(finalTask, taskBytes) {
-		return nil, fmt.Errorf("S6 TASK changed while Assignment Records were being constructed")
-	}
-	if err := files.Verify(); err != nil {
-		return nil, fmt.Errorf("S6 file view changed during Assignment Record construction: %w", err)
-	}
 	return records, nil
 }
 
@@ -248,54 +226,20 @@ func readRecordRegistrationSource(root string, files fileview.Reader, path strin
 	if len(viewBytes) > recordRegistrationSourceLimit {
 		return nil, fmt.Errorf("source %s exceeds %d bytes", path, recordRegistrationSourceLimit)
 	}
-	diskBytes, err := workpacket.ReadFile(root, path, recordRegistrationSourceLimit)
-	if err != nil {
-		return nil, fmt.Errorf("read checkout source %s: %w", path, err)
-	}
-	if !bytes.Equal(viewBytes, diskBytes) {
-		return nil, fmt.Errorf("formal file view and checkout differ for %s", path)
-	}
 	return viewBytes, nil
 }
 
 func recordRegistrationSources(root string, files fileview.Reader, source recordRegistrationManifest) ([]ContextSource, error) {
-	refs := []struct {
-		path string
-		sha  string
-	}{}
 	for _, doc := range source.Documents {
-		if doc.Path == "" || doc.SHA256 == "" {
-			return nil, fmt.Errorf("S6 manifest document source is incomplete")
+		if doc.Path == "" {
+			return nil, fmt.Errorf("S6 manifest document path is missing")
 		}
-		refs = append(refs, struct {
-			path string
-			sha  string
-		}{doc.Path, doc.SHA256})
 	}
 	context := []ContextSource{}
-	for _, ref := range refs {
-		data, err := readRecordRegistrationSource(root, files, ref.path)
-		if err != nil {
-			return nil, fmt.Errorf("manifest document %s: %w", ref.path, err)
-		}
-		if sha256Of(data) != ref.sha {
-			return nil, fmt.Errorf("manifest document hash differs from file view/checkout: %s", ref.path)
-		}
-	}
-
 	for _, name := range []string{"team-manifest.schema.json", "check-profile.schema.json", "assignment-record.schema.json", "agent-message.schema.json"} {
-		ref := assignmentinputs.SchemaPrefix + name
-		data, err := assignmentinputs.Read(root, ref)
-		if err != nil {
-			return nil, err
-		}
-		context = append(context, ContextSource{Kind: "embedded_schema", Ref: ref, SHA256: sha256Of(data)})
+		context = append(context, ContextSource{Kind: "embedded_schema", Ref: assignmentinputs.SchemaPrefix + name})
 	}
-	profileBytes, err := assignmentinputs.Read(root, assignmentinputs.ContextProfileRef)
-	if err != nil {
-		return nil, fmt.Errorf("embedded Agent context profile source: %w", err)
-	}
-	context = append(context, ContextSource{Kind: "embedded_context_profile", Ref: assignmentinputs.ContextProfileRef, SHA256: sha256Of(profileBytes)})
+	context = append(context, ContextSource{Kind: "embedded_context_profile", Ref: assignmentinputs.ContextProfileRef})
 	return context, nil
 }
 
@@ -303,32 +247,18 @@ func recordRegistrationAssignmentSources(root string, files fileview.Reader, ass
 	if err := assignmentrecord.ValidateClosingContract(assignment.ClosingContract); err != nil {
 		return nil, fmt.Errorf("closing contract: %w", err)
 	}
-	roleBytes, rolePath, err := catalog.ReadAgentAsset(root, assignment.RoleFamily)
+	_, rolePath, err := catalog.ReadAgentAsset(root, assignment.RoleFamily)
 	if err != nil {
 		return nil, err
 	}
 	if rolePath != assignment.AgentDefinitionRef {
 		return nil, fmt.Errorf("manifest Agent definition ref %q differs from installed role source %q", assignment.AgentDefinitionRef, rolePath)
 	}
-	viewRole, err := readRecordRegistrationSource(root, files, rolePath)
-	if err != nil {
-		return nil, fmt.Errorf("Agent definition %s: %w", rolePath, err)
-	}
-	if !bytes.Equal(roleBytes, viewRole) {
-		return nil, fmt.Errorf("installed Agent definition differs from original file view: %s", rolePath)
-	}
-	sources := []ContextSource{{Kind: "agent_definition", Ref: rolePath, ID: assignment.RoleFamily, SHA256: sha256Of(roleBytes)}}
+	sources := []ContextSource{{Kind: "agent_definition", Ref: rolePath, ID: assignment.RoleFamily}}
 
 	selection, err := agentcontext.Select(root, assignment.RoleFamily, []string{assignment.ResponsibilityID}, assignment.SkillRefs)
 	if err != nil {
 		return nil, fmt.Errorf("resolve registered Agent Skills: %w", err)
-	}
-	profileData, err := assignmentinputs.Read(root, assignmentinputs.ContextProfileRef)
-	if err != nil {
-		return nil, fmt.Errorf("embedded Agent context profile source: %w", err)
-	}
-	if sha256Of(profileData) != selection.ProfileSHA256 {
-		return nil, fmt.Errorf("embedded and repository Agent context profiles differ")
 	}
 	skillNames := map[string]bool{}
 	for _, name := range agentcontext.LegacySkills(assignment.RoleFamily) {
@@ -351,7 +281,7 @@ func recordRegistrationAssignmentSources(root string, files fileview.Reader, ass
 		specs[spec.Name] = spec
 	}
 	for _, name := range names {
-		data, path, err := catalog.ReadSkillAsset(root, name)
+		_, path, err := catalog.ReadSkillAsset(root, name)
 		if err != nil {
 			return nil, err
 		}
@@ -361,27 +291,20 @@ func recordRegistrationAssignmentSources(root string, files fileview.Reader, ass
 		if err := catalog.ValidateSkill(root, specs[name]); err != nil {
 			return nil, fmt.Errorf("installed Skill %s: %w", name, err)
 		}
-		viewSkill, err := readRecordRegistrationSource(root, files, path)
-		if err != nil {
-			return nil, fmt.Errorf("Skill %s: %w", name, err)
-		}
-		if !bytes.Equal(data, viewSkill) {
-			return nil, fmt.Errorf("installed Skill differs from original file view: %s", name)
-		}
-		if selected, ok := selectedByName[name]; ok && (selected.Source != path || selected.SHA256 != sha256Of(data)) {
+		if selected, ok := selectedByName[name]; ok && (selected.Source != path) {
 			return nil, fmt.Errorf("Agent context Skill binding differs from installed source: %s", name)
 		}
-		sources = append(sources, ContextSource{Kind: "authorized_skill", Ref: path, ID: name, SHA256: sha256Of(data)})
+		sources = append(sources, ContextSource{Kind: "authorized_skill", Ref: path, ID: name})
 	}
 
 	for _, profile := range assignment.CheckProfiles {
 		for _, dependency := range profile.Dependencies {
-			if err := verifyRecordRegistrationProfileFile(root, files, dependency.Path, dependency.SHA256); err != nil {
+			if err := verifyRecordRegistrationProfileFile(root, files, dependency.Path); err != nil {
 				return nil, fmt.Errorf("CheckProfile %s dependency: %w", profile.ID, err)
 			}
 		}
 		for _, fixture := range profile.Fixtures {
-			if err := verifyRecordRegistrationProfileFile(root, files, fixture.Path, fixture.SHA256); err != nil {
+			if err := verifyRecordRegistrationProfileFile(root, files, fixture.Path); err != nil {
 				return nil, fmt.Errorf("CheckProfile %s fixture: %w", profile.ID, err)
 			}
 		}
@@ -389,12 +312,12 @@ func recordRegistrationAssignmentSources(root string, files fileview.Reader, ass
 	if assignment.ClosingContract != nil {
 		for _, check := range assignment.ClosingContract.WorkerChecks {
 			for _, dependency := range check.Profile.Dependencies {
-				if err := verifyRecordRegistrationProfileFile(root, files, dependency.Path, dependency.SHA256); err != nil {
+				if err := verifyRecordRegistrationProfileFile(root, files, dependency.Path); err != nil {
 					return nil, fmt.Errorf("Worker CheckProfile %s dependency: %w", check.Profile.ID, err)
 				}
 			}
 			for _, fixture := range check.Profile.Fixtures {
-				if err := verifyRecordRegistrationProfileFile(root, files, fixture.Path, fixture.SHA256); err != nil {
+				if err := verifyRecordRegistrationProfileFile(root, files, fixture.Path); err != nil {
 					return nil, fmt.Errorf("Worker CheckProfile %s fixture: %w", check.Profile.ID, err)
 				}
 			}
@@ -403,15 +326,9 @@ func recordRegistrationAssignmentSources(root string, files fileview.Reader, ass
 	return sources, nil
 }
 
-func verifyRecordRegistrationProfileFile(root string, files fileview.Reader, path, expectedSHA string) error {
-	data, err := readRecordRegistrationSource(root, files, path)
-	if err != nil {
-		return err
-	}
-	if sha256Of(data) != expectedSHA {
-		return fmt.Errorf("declared SHA differs from formal file view/checkout: %s", path)
-	}
-	return nil
+func verifyRecordRegistrationProfileFile(root string, files fileview.Reader, path string) error {
+	_, err := readRecordRegistrationSource(root, files, path)
+	return err
 }
 
 func rejectRecordRegistrationProtectedScope(state map[string]any, manifestRef string, manifestDocs []team.DocumentReference, records []Record) error {

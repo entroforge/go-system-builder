@@ -102,7 +102,7 @@ func assertS11TerminalStop(t *testing.T, runner *req039fixtures.CLIRunner, root 
 	t.Helper()
 	beforeLC, beforePh := req039fixtures.Lifecycle(before)
 
-	body := req039fixtures.PreToolUseBody("s11-terminal-check", "Bash", map[string]any{"command": "ls"})
+	body := req039fixtures.MainPreToolUseBody(root, "s11-terminal-check", "Bash", map[string]any{"command": "ls"})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {
 		t.Fatalf("S11 terminal hook failed: code=%d stderr=%s", code, stderr)

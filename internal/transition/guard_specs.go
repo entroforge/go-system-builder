@@ -26,7 +26,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	"planning_rework_scope": {ID: "planning_rework_scope", Check: "The current packet-mode S3/S4 entry keeps its authorized locked REQ; the named Main request supplies the professional reason and the original Writer invalidates dependent planning projections."},
 	"acc_complete": {
 		ID:    "acc_complete",
-		Check: "The latest valid acceptance report for the current responsibility, baseline generation and review round records pass with no reported unfinished rows or blockers; this reads professional completion, not historical source proofs.",
+		Check: "The current valid acceptance report records the original responsibility and professional completion, including any unfinished rows or blockers.",
 	},
 	"activation_scope_still_valid": {
 		ID:    "activation_scope_still_valid",
@@ -46,7 +46,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"baselines_unchanged": {
 		ID:    "baselines_unchanged",
-		Check: "Every document fingerprint captured at pause time matches the on-disk file, so the resume cannot quietly advance on drifted inputs. The re-hash runs in TR-019's restore_from_pause action (fail-closed, sentinel ErrBaselineDrift routes the CLI to amendment); the guard body itself only rejects an empty evidence map.",
+		Check: "The existing pause checkpoint identifies the original continuation; the transition resolves its existing evidence context. Main judges the professional effect of actual changes. Historical digests are not rechecked and cannot establish unchanged bytes.",
 	},
 	"blocker_recorded": {
 		ID:    "blocker_recorded",
@@ -58,23 +58,23 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"bug_closing_contracts_complete": {
 		ID:    "bug_closing_contracts_complete",
-		Check: "Every BUG raised in the current review round has its closing-contract evidence referenced from runtime.evidence[] before the verification phase can advance.",
+		Check: "The transition uses the actual BUG responsibilities and its resolved evidence context.",
 	},
 	"bug_phase_ready_for_full_review": {
 		ID:    "bug_phase_ready_for_full_review",
-		Check: "Every BUG from the round has reached `bug_phase_ready_for_full_review`, i.e. targeted re-verification is complete and the bug sub-machine is ready to fold back into the main verification review.",
+		Check: "The transition uses its resolved BUG responsibility and original evidence context.",
 	},
 	"builder_activation_recorded": {
 		ID:    "builder_activation_recorded",
-		Check: "An activation evidence item referencing the Builder assignment is recorded in runtime.evidence[] with a fingerprint matching the on-disk activation record under docs/dev/tasks/.",
+		Check: "The transition uses the existing Builder assignment and its resolved activation evidence context; the Builder's actual responsibility is retained without digest authentication.",
 	},
 	"builder_report_complete": {
 		ID:    "builder_report_complete",
-		Check: "The Builder's completion_report evidence item is referenced from runtime.evidence[] and its fingerprint matches the report file recorded under docs/dev/tasks/.",
+		Check: "The original Builder report and its existing responsibility provide the completion context; no fingerprint is required to receive the report.",
 	},
 	"builder_reports_complete": {
 		ID:    "builder_reports_complete",
-		Check: "Each Builder assignment's runtime record references a valid completion_report evidence item with a matching fingerprint.",
+		Check: "The applicable Builder assignments and their original reports provide the completion context; no report fingerprint is required.",
 	},
 	"cancellation_reason_recorded": {
 		ID:    "cancellation_reason_recorded",
@@ -82,7 +82,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"canonical_bug_mapping_complete": {
 		ID:    "canonical_bug_mapping_complete",
-		Check: "Each finding evidence item in the round maps to a canonical BUG id in runtime.entities.bugs[] so the verification phase cannot advance on unresolved duplicates.",
+		Check: "The transition uses the resolved finding and BUG responsibility context.",
 	},
 	"canonical_bug_reference_present": {
 		ID:    "canonical_bug_reference_present",
@@ -92,17 +92,13 @@ var guardSpecRegistry = map[string]GuardSpec{
 		ID:    "canonical_id_assigned",
 		Check: "The BUG being accepted has a canonical `id` matching `^BUG-[0-9]{3,}$` recorded in runtime.entities.bugs[] and referenced by the acceptance evidence.",
 	},
-	"clean_round_still_valid": {
-		ID:    "clean_round_still_valid",
-		Check: "verification.EvaluateCleanRound recomputes completion from current registered round facts, including its ReviewPlan, required Claims, invalidations and blockers; it does not reverify every product file's current bytes.",
-	},
 	"completion_report_complete": {
 		ID:    "completion_report_complete",
-		Check: "The agent's completion_report evidence item is referenced from runtime.evidence[] and its fingerprint matches the on-disk report captured under the agent's working directory.",
+		Check: "The agent's original completion report and responsibility provide the resolved evidence context; no digest authentication is required.",
 	},
 	"delivery_round_passed": {
 		ID:    "delivery_round_passed",
-		Check: "The Delivery Verifier team's most recent round result recorded in runtime.evidence[] is a `pass` for the active review round.",
+		Check: "The transition uses the Delivery Verifier’s original recorded responsibility and evidence context.",
 	},
 	"delivery_team_complete": {
 		ID:    "delivery_team_complete",
@@ -114,7 +110,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"document_versions_current": {
 		ID:    "document_versions_current",
-		Check: "The versions of every contract/task document the agent read during readback still match the fingerprints recorded in runtime.evidence[], so the agent is approving against current inputs.",
+		Check: "The agent reads the applicable actual contract and task material; professional changes are handled by the original responsibility, without matching stored fingerprints.",
 	},
 	"failure_evidence_recorded": {
 		ID:    "failure_evidence_recorded",
@@ -130,7 +126,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"no_accepted_bugs": {
 		ID:    "no_accepted_bugs",
-		Check: "No BUG in runtime.entities.bugs[] for the current review round is in state `accepted`, `assigned`, `fixing`, or `retesting`. Used by TR-022 to confirm a finding-level Loop exit to verification is safe (no accepted BUG requires the S9 repair flow).",
+		Check: "The transition uses its original BUG responsibility and resolved evidence context.",
 	},
 	"bug_report_review_complete": {
 		ID:    "bug_report_review_complete",
@@ -162,7 +158,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"qa_round_passed": {
 		ID:    "qa_round_passed",
-		Check: "The QA team's most recent round result recorded in runtime.evidence[] is a `pass` for the active review round.",
+		Check: "The transition uses the QA Reviewer’s original recorded responsibility and evidence context.",
 	},
 	"qa_team_complete": {
 		ID:    "qa_team_complete",
@@ -178,7 +174,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"release_audit_approved": {
 		ID:    "release_audit_approved",
-		Check: "The latest valid release audit for the current responsibility, baseline generation and review round records approved or approved_with_risk with no reported unfinished rows or blockers; this reads professional completion, not historical source proofs.",
+		Check: "The current valid release audit records the original responsibility and professional decision, including any unfinished rows or blockers.",
 	},
 	"repair_activation_recorded": {
 		ID:    "repair_activation_recorded",
@@ -190,7 +186,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"repair_reports_complete": {
 		ID:    "repair_reports_complete",
-		Check: "Every repair task spawned for BUGs in the round has a completion_report evidence item referenced from runtime.evidence[].",
+		Check: "The transition uses the original repair responsibilities and resolved evidence context.",
 	},
 	"repair_task_and_builder_present": {
 		ID:    "repair_task_and_builder_present",
@@ -202,7 +198,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"req_baseline_unchanged": {
 		ID:    "req_baseline_unchanged",
-		Check: "The locked REQ's sha256 recorded in runtime.bound_req still matches the file at runtime.bound_req.path, so the rework loop cannot silently advance on a changed REQ.",
+		Check: "The Runtime has a bound REQ with its original path. Main judges the effect of actual requirement changes; this guard does not compare a digest or establish unchanged bytes.",
 	},
 	"req_exists": {
 		ID:    "req_exists",
@@ -218,7 +214,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"required_evidence_present": {
 		ID:    "required_evidence_present",
-		Check: "Every evidence kind listed in the transition's `required_evidence` is referenced from runtime.evidence[] with a fingerprint matching the on-disk artifact.",
+		Check: "The transition resolves its required evidence references against the original responsibilities; it does not require fingerprints or reread evidence to authenticate digests.",
 	},
 	"required_verification_evidence_present": {
 		ID:    "required_verification_evidence_present",
@@ -246,7 +242,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"task_versions_current": {
 		ID:    "task_versions_current",
-		Check: "Every contract and task document the blocked TASK depends on still matches the fingerprints captured at lock time, so the resumed TASK is not working against drifted inputs.",
+		Check: "The blocked TASK resumes with its original responsibility and applicable contract and task material; stored fingerprints are not compared.",
 	},
 	"ui_impact_resolved": {
 		ID:    "ui_impact_resolved",
@@ -254,7 +250,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"updated_req_locked": {
 		ID:    "updated_req_locked",
-		Check: "The updated REQ file referenced by the re-bind request declares status=locked with a strictly higher version than the currently bound REQ, and its sha256 matches the on-disk file.",
+		Check: "The re-bind request uses the actual updated REQ and its original decision; this evidence-context guard does not authenticate a stored SHA.",
 	},
 	"verification_team_manifest_complete": {
 		ID:    "verification_team_manifest_complete",
@@ -262,7 +258,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"verified_versions_current": {
 		ID:    "verified_versions_current",
-		Check: "Every current-generation registered document still matches its on-disk sha, so the lock cannot advance on drifted inputs. The real check runs in GATE-DOCUMENT-PASS's registered-document drift screen (a `document_drift:<path>` conflict blocks the gate); the guard body itself only rejects an empty evidence map.",
+		Check: "The transition resolves the existing document-review evidence context; it does not compare historical document hashes or claim that stored paths prove unchanged bytes.",
 	},
 	"write_scope_enforced": {
 		ID:    "write_scope_enforced",
@@ -270,7 +266,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"planning_complete": {
 		ID:    "planning_complete",
-		Check: "At least one current-baseline contract document has status=locked with a matching on-disk markdown Status field (contracts are registered by PTR-PLAN-02), AND every docs/dev/tasks/TASK-*.md declares status complete or cancelled with at least one complete (the batch is registered by TR-002's own register_planning_tasks action). Fingerprints are owned by registration and reachability, not re-checked here.",
+		Check: "A current-generation locked contract and the actual applicable task batch satisfy the planning completion check. Document fingerprints are not a registration or transition prerequisite.",
 	},
 	"scenario_bridge_checked": {
 		ID:    "scenario_bridge_checked",
@@ -278,7 +274,7 @@ var guardSpecRegistry = map[string]GuardSpec{
 	},
 	"contracts_checked": {
 		ID:    "contracts_checked",
-		Check: "S3 typed reception checks the declared current-REQ delivery and source view with semantic.ContractsCheck: REQ/CASE references and contract clauses resolve, shared models and examples validate, and system-maintained source fingerprints match. PTR-PLAN-02 rechecks the accepted delivery for registration. Existing disk-based compatibility flows retain their original checks; fingerprint columns are not an author obligation.",
+		Check: "S3 typed reception uses the accepted current-REQ delivery; compatible disk-based flows check actual REQ/CASE references, contract clauses, shared models and examples. Historical fingerprint columns do not qualify reception or registration.",
 	},
 	"tasks_checked": {
 		ID:    "tasks_checked",

@@ -5,16 +5,13 @@ package transition_test
 // one scenario and is named TestSM<NNN>_<short_description>.
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/transition"
-	"github.com/entroforge/go-system-builder/internal/verification"
 )
 
 // --- Shared helpers ---
@@ -130,84 +127,6 @@ func TestSM002_SecondLoopRejected(t *testing.T) {
 	}
 }
 
-// --- SM-006: document PASS references mismatched versions -> lock rejected ---
-
-func TestSM006_MismatchedVersionRejected(t *testing.T) {
-	root := t.TempDir()
-	setupRepoWithDefinition(t, root)
-	// verification state with evidence claiming a different version than runtime baseline.
-	state := inactiveState(5)
-	state["lifecycle"] = map[string]any{"state": "verification", "phase": "delivery", "phase_revision": float64(1)}
-	state["bound_req"] = map[string]any{"id": "REQ-001", "path": "x", "version": "1.0.0", "sha256": "x", "status": "locked"}
-	state["evidence"] = []any{
-		map[string]any{
-			"id": "ev-old", "kind": "delivery_review", "path": "x", "sha256": "x",
-			"status": "valid", "baseline_generation": float64(0), "review_round": float64(1),
-			"produced_by": []any{"a"}, "responsibility_id": "VER-1", "scope_refs": []any{},
-			"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
-		},
-	}
-	writeFullState(t, root, state)
-	// Clean round should reject because the evidence baseline (0) differs from runtime baseline (implicit 1).
-	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("SM-006: clean round should fail with mismatched baseline evidence")
-	}
-}
-
-// --- SM-013: targeted recheck passes -> enter verification.delivery, not acceptance ---
-
-func TestSM013_TargetedRecheckDoesNotCreateCleanRound(t *testing.T) {
-	state := map[string]any{
-		"review":   map[string]any{"round": float64(1)},
-		"evidence": []any{},
-		"entities": map[string]any{
-			"bugs": []any{
-				map[string]any{"id": "BUG-1", "state": "retesting", "severity": "blocking"},
-			},
-			"teams": []any{},
-		},
-	}
-	// Even with a targeted_reverification evidence, the open blocking BUG prevents clean round.
-	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("SM-013: clean round must not pass while a BUG is in retesting")
-	}
-}
-
-// --- SM-014: Delivery and QA evidence use different rounds -> rejected ---
-
-func TestSM014_MixedRoundsRejected(t *testing.T) {
-	state := map[string]any{
-		"review": map[string]any{"round": float64(2)},
-		"evidence": []any{
-			map[string]any{"id": "ev-d", "status": "valid", "review_round": float64(2), "responsibility_id": "VER-1", "scope_refs": []any{}},
-			map[string]any{"id": "ev-q", "status": "valid", "review_round": float64(1), "responsibility_id": "QA-1", "scope_refs": []any{}},
-		},
-		"entities": map[string]any{"bugs": []any{}, "teams": []any{}},
-	}
-	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("SM-014: clean round must reject mixed-round evidence")
-	}
-}
-
-// --- SM-015: PASS evidence is invalidated -> clean round rejected ---
-
-func TestSM015_InvalidatedEvidenceRejected(t *testing.T) {
-	state := map[string]any{
-		"review": map[string]any{"round": float64(1)},
-		"evidence": []any{
-			map[string]any{"id": "ev-invalid", "status": "invalid", "review_round": float64(1), "responsibility_id": "VER-1", "scope_refs": []any{}},
-		},
-		"entities": map[string]any{"bugs": []any{}, "teams": []any{}},
-	}
-	result := verification.EvaluateCleanRound(state)
-	if result.Passed {
-		t.Fatal("SM-015: clean round must reject invalidated evidence")
-	}
-}
-
 // --- SM-020: automation requests squash merge -> recoverable deny ---
 
 func TestSM020_AutomatedSquashMergeBlocked(t *testing.T) {
@@ -270,7 +189,6 @@ func TestSM022_ReqChangeInvalidatesDownstream(t *testing.T) {
 	os.MkdirAll(reqDir, 0o755)
 	amended := "# REQ-099\n\n> 状态：locked\n> 版本：1.2.0\n> UI impact：none\n"
 	os.WriteFile(filepath.Join(reqDir, "REQ-099.md"), []byte(amended), 0o644)
-	amendSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(amended)))
 	registerFixtureEvidence(t, root, state, map[string]string{
 		"human_decision_record": "docs/reports/human/decision.md",
 	})
@@ -278,9 +196,9 @@ func TestSM022_ReqChangeInvalidatesDownstream(t *testing.T) {
 	writeFullState(t, root, state)
 	err := applyTWithREQ(t, root, "TR-020", 5, "user", map[string]string{
 		"human_decision_record": "docs/reports/human/decision.md",
-		"req_lock_record":       "docs/requirements/REQ-099.md@" + amendSHA,
+		"req_lock_record":       "docs/requirements/REQ-099.md",
 	}, &transition.LockedREQ{
-		ID: "REQ-099", Path: "docs/requirements/REQ-099.md", Version: "1.2.0", SHA256: amendSHA,
+		ID: "REQ-099", Path: "docs/requirements/REQ-099.md", Version: "1.2.0",
 		ApprovedBy: "tester", ApprovedAt: "2026-01-02T00:00:00Z",
 	})
 	if err != nil {

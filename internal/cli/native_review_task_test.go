@@ -10,12 +10,12 @@ import (
 	"github.com/entroforge/go-system-builder/internal/policy"
 )
 
-func TestNativeReviewResumeUsesLatestExactTaskAndIgnoresToolResults(t *testing.T) {
+func TestNativeReviewKeepsOriginalDispatchAndIgnoresLaterText(t *testing.T) {
 	oldRef, newRef := "/main/questions/old.md", "/main/questions/new.md"
 	path := filepath.Join(t.TempDir(), "native.jsonl")
 	var transcript strings.Builder
 	appendRow := func(content any) {
-		row, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
+		row, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": "test-actor", "message": map[string]any{"role": "user", "content": content}})
 		transcript.Write(row)
 		transcript.WriteByte('\n')
 	}
@@ -26,14 +26,28 @@ func TestNativeReviewResumeUsesLatestExactTaskAndIgnoresToolResults(t *testing.T
 	if err := os.WriteFile(path, []byte(transcript.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	text := nativeReviewTaskText(policy.Input{AgentTranscriptPath: path, LastAssistantMessage: "Finished " + newRef}, []string{oldRef, newRef})
-	if strings.Contains(text, oldRef) || !nativeS6ExactReference(text, newRef) {
-		t.Fatalf("resumed responsibility was confused with initial task/tool output: %s", text)
+	text := nativeReviewTaskText(policy.Input{AgentID: "test-actor", AgentTranscriptPath: path, LastAssistantMessage: "Finished " + newRef}, []string{oldRef, newRef})
+	if !nativeS6ExactReference(text, oldRef) || nativeS6ExactReference(text, newRef) {
+		t.Fatalf("later task or output changed the original responsibility: %s", text)
 	}
-	// A final handoff naming two real responsibilities is still ambiguous.
-	text = nativeReviewTaskText(policy.Input{AgentTranscriptPath: path, LastAssistantMessage: oldRef + "\n" + newRef}, []string{oldRef, newRef})
-	if !nativeS6ExactReference(text, oldRef) || !nativeS6ExactReference(text, newRef) {
+	// A final handoff naming another responsibility cannot rebind this actor.
+	text = nativeReviewTaskText(policy.Input{AgentID: "test-actor", AgentTranscriptPath: path, LastAssistantMessage: oldRef + "\n" + newRef}, []string{oldRef, newRef})
+	if !nativeS6ExactReference(text, oldRef) || nativeS6ExactReference(text, newRef) {
 		t.Fatal(text)
+	}
+}
+
+func TestNativeReviewCoordinatorMessageCannotRebindOriginalActor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.jsonl")
+	original, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": "test-actor", "parentUuid": nil, "message": map[string]any{"role": "user", "content": "Review /original/answer.json"}})
+	coordinator, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "isMeta": true, "origin": map[string]any{"kind": "coordinator"}, "message": map[string]any{"role": "user", "content": "The coordinator sent a message: inspect /another/answer.json"}})
+	data := append(append(append(original, '\n'), coordinator...), '\n')
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	text := nativeReviewTaskText(policy.Input{AgentID: "test-actor", AgentTranscriptPath: path, LastAssistantMessage: "I inspected /another/answer.json"}, []string{"/original/answer.json", "/another/answer.json"})
+	if !nativeS6ExactReference(text, "/original/answer.json") || nativeS6ExactReference(text, "/another/answer.json") {
+		t.Fatalf("coordinator message or final text rebound the original actor: %s", text)
 	}
 }
 
@@ -49,11 +63,11 @@ func TestNativeS9DoesNotCaptureS8WithRetainedRepairPointer(t *testing.T) {
 	}
 }
 
-func TestNativeReviewResumeReadsBoundedTranscriptTail(t *testing.T) {
+func TestNativeReviewReadsOriginalTaskWithBoundedTranscript(t *testing.T) {
 	oldRef, newRef := "/main/old/brief.md", "/main/current/brief.md"
 	var transcript strings.Builder
 	appendRow := func(content any) {
-		row, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
+		row, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": "test-actor", "message": map[string]any{"role": "user", "content": content}})
 		transcript.Write(row)
 		transcript.WriteByte('\n')
 	}
@@ -64,18 +78,18 @@ func TestNativeReviewResumeReadsBoundedTranscriptTail(t *testing.T) {
 	if err := os.WriteFile(path, []byte(transcript.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	text := nativeReviewTaskText(policy.Input{AgentTranscriptPath: path, LastAssistantMessage: "Finished."}, []string{oldRef, newRef})
-	if !nativeS6ExactReference(text, newRef) || nativeS6ExactReference(text, oldRef) {
-		t.Fatalf("bounded tail lost current responsibility: %s", text)
+	text := nativeReviewTaskText(policy.Input{AgentID: "test-actor", AgentTranscriptPath: path, LastAssistantMessage: "Finished."}, []string{oldRef, newRef})
+	if !nativeS6ExactReference(text, oldRef) || nativeS6ExactReference(text, newRef) {
+		t.Fatalf("later text changed the original responsibility: %s", text)
 	}
 }
 
-func TestNativeReviewLatestTaskKeepsHistoricalAliasAndExactReferenceBoundary(t *testing.T) {
+func TestNativeReviewKeepsOriginalAliasAndExactReferenceBoundary(t *testing.T) {
 	ref := "/worker/historical/questionnaire.md"
 	path := filepath.Join(t.TempDir(), "alias.jsonl")
 	var rows strings.Builder
 	appendRow := func(content any) {
-		data, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
+		data, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": "test-actor", "message": map[string]any{"role": "user", "content": content}})
 		rows.Write(data)
 		rows.WriteByte('\n')
 	}
@@ -86,22 +100,22 @@ func TestNativeReviewLatestTaskKeepsHistoricalAliasAndExactReferenceBoundary(t *
 	if err := os.WriteFile(path, []byte(rows.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	text := nativeReviewTaskText(policy.Input{AgentTranscriptPath: path}, []string{ref})
-	if !strings.Contains(text, "Resumed actual task") || strings.Contains(text, "backup") || strings.Contains(text, "Original task") {
+	text := nativeReviewTaskText(policy.Input{AgentID: "test-actor", AgentTranscriptPath: path}, []string{ref})
+	if strings.Contains(text, "Resumed actual task") || strings.Contains(text, "backup") || !strings.Contains(text, "Original task") {
 		t.Fatalf("historical alias/exact boundary changed: %s", text)
 	}
 }
 
-func BenchmarkNativeReviewLatestTaskInLargeTranscript(b *testing.B) {
+func BenchmarkNativeReviewOriginalTaskInLargeTranscript(b *testing.B) {
 	ref := "/main/current/questionnaire.md"
-	old, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": strings.Repeat("old task material ", 128)}})
-	latest, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "Actual resumed task " + ref}})
-	data := append([]byte(strings.Repeat(string(old)+"\n", 1800)), append(latest, '\n')...)
+	old, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": "test-actor", "message": map[string]any{"role": "user", "content": strings.Repeat("old task material ", 128)}})
+	latest, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": "test-actor", "message": map[string]any{"role": "user", "content": "Actual resumed task " + ref}})
+	data := append(append([]byte(nil), append(latest, '\n')...), []byte(strings.Repeat(string(old)+"\n", 1800))...)
 	path := filepath.Join(b.TempDir(), "large.jsonl")
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		b.Fatal(err)
 	}
-	in := policy.Input{AgentTranscriptPath: path}
+	in := policy.Input{AgentID: "test-actor", AgentTranscriptPath: path}
 	b.ReportAllocs()
 	b.SetBytes(int64(len(data)))
 	b.ResetTimer()

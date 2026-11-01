@@ -3,6 +3,7 @@ package transition
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,17 +79,9 @@ func humanReleaseReplay(root string, state map[string]any, request Request) (boo
 		if stringValue(entry["kind"]) != "human_decision" || filepath.Clean(stringValue(entry["path"])) != path {
 			return false, fmt.Errorf("human decision identity already records different content")
 		}
-		data, err := os.ReadFile(filepath.Join(root, path))
-		if err != nil {
-			return false, err
-		}
-		var answer map[string]any
-		if err := json.Unmarshal(data, &answer); err != nil {
-			return false, err
-		}
-		if stringValue(answer["runtime_id"]) != stringValue(state["runtime_id"]) || stringValue(answer["disposition"]) != stringValue(request.Params["disposition"]) || stringValue(answer["reason"]) != stringValue(request.Params["reason"]) {
-			return false, fmt.Errorf("human decision already records a different answer")
-		}
+		// The consumed transition is the durable original decision fact. A later
+		// edit or deletion of the private application cannot revoke it or create
+		// a new human decision. Do not reopen the authoring file as a replay gate.
 		if stringValue(entry["consumed_by"]) != request.TransitionID {
 			return false, fmt.Errorf("human decision has not completed this transition")
 		}
@@ -102,11 +95,10 @@ func humanReleaseReplay(root string, state map[string]any, request Request) (boo
 func latestReleaseAuditID(state map[string]any) string {
 	items, _ := state["evidence"].([]any)
 	baseline, _ := state["baseline"].(map[string]any)
-	review, _ := state["review"].(map[string]any)
 	for i := len(items) - 1; i >= 0; i-- {
 		item, _ := items[i].(map[string]any)
 		kind := stringValue(item["kind"])
-		if (kind == "release_audit" || kind == "release_audit_record") && item["status"] == "valid" && integer(item["baseline_generation"]) == integer(baseline["generation"]) && integer(item["review_round"]) == integer(review["round"]) {
+		if (kind == "release_audit" || kind == "release_audit_record") && item["status"] == "valid" && item["invalidated_by"] == nil && integer(item["baseline_generation"]) == integer(baseline["generation"]) && acceptance.CurrentReviewArtifact(state, stringValue(item["review_plan_id"])) {
 			return stringValue(item["id"])
 		}
 	}
@@ -132,8 +124,9 @@ func recordHumanReleaseDecision(root string, state map[string]any, request Reque
 		"decision_id": id, "decision": stringValue(request.Params["disposition"]),
 		"disposition": stringValue(request.Params["disposition"]), "reason": stringValue(request.Params["reason"]),
 		"approved_by": request.Actor, "runtime_id": state["runtime_id"],
-		"target_cursor": map[string]any{"state": "awaiting_human_release", "phase": nil},
-		"scope":         "runtime_release:" + stringValue(state["runtime_id"]),
+		"target_cursor":    map[string]any{"state": "awaiting_human_release", "phase": nil},
+		"scope":            "runtime_release:" + stringValue(state["runtime_id"]),
+		"release_audit_id": latestReleaseAuditID(state),
 	}
 	data, err := json.MarshalIndent(answer, "", "  ")
 	if err != nil {
@@ -147,13 +140,14 @@ func recordHumanReleaseDecision(root string, state map[string]any, request Reque
 		return err
 	}
 	baseline, _ := state["baseline"].(map[string]any)
-	review, _ := state["review"].(map[string]any)
 	state["evidence"] = append(items, map[string]any{
-		"id": id, "kind": "human_decision", "path": filepath.ToSlash(path), "sha256": SHA256(data), "status": "valid",
-		"baseline_generation": baseline["generation"], "review_round": review["round"],
-		"produced_by": []any{request.Actor}, "responsibility_id": "Human Release Decision",
+		"id": id, "kind": "human_decision", "path": filepath.ToSlash(path), "status": "valid",
+		"baseline_generation": baseline["generation"],
+		"produced_by":         []any{request.Actor}, "responsibility_id": "Human Release Decision",
 		"scope_refs":     []any{"runtime_release:" + stringValue(state["runtime_id"])},
 		"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
 	})
+	rows, _ := state["evidence"].([]any)
+	acceptance.StampReviewIdentity(state, rows[len(rows)-1].(map[string]any))
 	return nil
 }

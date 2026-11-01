@@ -2,7 +2,6 @@ package checkexec
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,8 +13,7 @@ import (
 )
 
 type FileRef struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path string `json:"path"`
 }
 type EnvFact struct {
 	Name  string  `json:"name"`
@@ -40,8 +38,6 @@ type Profile struct {
 
 var AllowedEnvironment = map[string]bool{"PATH": true, "LANG": true, "LC_ALL": true, "TZ": true, "CI": true, "HOME": true, "GOPROXY": true, "GOSUMDB": true, "GOTOOLCHAIN": true, "GOFLAGS": true, "GOOS": true, "GOARCH": true, "CGO_ENABLED": true, "GOCACHE": true, "GOMODCACHE": true, "GOPATH": true, "GOROOT": true, "NODE_ENV": true, "E2E_WORKERS": true, "E2E_RUNTIME_OWNER": true, "E2E_RUNTIME_SERVICES": true}
 
-func Hash(data []byte) string    { return fmt.Sprintf("%x", sha256.Sum256(data)) }
-func (p Profile) Digest() string { data, _ := json.Marshal(p); return Hash(data) }
 func ValidateProfiles(profiles []Profile, checks []string, location string) error {
 	seen := map[int]bool{}
 	ids := map[string]bool{}

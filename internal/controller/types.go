@@ -92,13 +92,13 @@ type QualityGateResult struct {
 	GateID              string        `json:"gate_id"`
 	CandidateTransition string        `json:"candidate_transition"`
 	ObservedRevision    int           `json:"observed_revision"`
-	Fingerprint         string        `json:"fingerprint"`
-	Missing             []string      `json:"missing"`
-	EvidenceRefs        []string      `json:"evidence_refs"`
-	Conflicts           []string      `json:"conflicts,omitempty"`
-	ErrorCode           string        `json:"error_code,omitempty"`
-	TransitionCommitted bool          `json:"transition_committed"`
-	NextCursor          string        `json:"next_cursor"`
+
+	Missing             []string `json:"missing"`
+	EvidenceRefs        []string `json:"evidence_refs"`
+	Conflicts           []string `json:"conflicts,omitempty"`
+	ErrorCode           string   `json:"error_code,omitempty"`
+	TransitionCommitted bool     `json:"transition_committed"`
+	NextCursor          string   `json:"next_cursor"`
 }
 
 // qualityGateFiles is the read-only file surface the Evaluator requires. It

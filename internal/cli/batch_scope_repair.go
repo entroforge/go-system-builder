@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,17 +18,14 @@ import (
 )
 
 type batchScopePlan struct {
-	Runtime       string            `json:"runtime_id"`
-	Revision      int               `json:"revision"`
-	StateHash     string            `json:"state_sha256"`
-	Removed       []string          `json:"removed_document_ids"`
-	RetainedTasks []string          `json:"retained_task_ids"`
-	Invalidated   []string          `json:"invalidated_evidence_ids"`
-	FileHashes    map[string]string `json:"file_hashes"`
-	Target        string            `json:"target"`
+	Runtime       string   `json:"runtime_id"`
+	Revision      int      `json:"revision"`
+	Removed       []string `json:"removed_document_ids"`
+	RetainedTasks []string `json:"retained_task_ids"`
+	Invalidated   []string `json:"invalidated_evidence_ids"`
+	Target        string   `json:"target"`
 }
 
-func scopeHash(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
 func scopeFile(root, rel string) ([]byte, error) {
 	if filepath.IsAbs(rel) || filepath.ToSlash(filepath.Clean(rel)) != rel || strings.HasPrefix(rel, "../") {
 		return nil, fmt.Errorf("unsafe document path %q", rel)
@@ -53,9 +48,7 @@ func scopeFile(root, rel string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 func inspectBatchScope(root string, state map[string]any) (batchScopePlan, error) {
-	p := batchScopePlan{Runtime: stringValue(state["runtime_id"]), Revision: batchInt(state["revision"]), FileHashes: map[string]string{}, Target: "document_verification"}
-	raw, _ := json.Marshal(state)
-	p.StateHash = scopeHash(raw)
+	p := batchScopePlan{Runtime: stringValue(state["runtime_id"]), Revision: batchInt(state["revision"]), Target: "document_verification"}
 	life, _ := state["lifecycle"].(map[string]any)
 	if life["state"] != "building" || state["pause"] != nil {
 		return p, fmt.Errorf("repair requires unpaused building before Builder execution")
@@ -65,23 +58,8 @@ func inspectBatchScope(root string, state map[string]any) (batchScopePlan, error
 	if id == "" || req["status"] != "locked" {
 		return p, fmt.Errorf("locked binding required")
 	}
-	read := func(rel string, want any) ([]byte, error) {
-		b, e := scopeFile(root, rel)
-		if e != nil {
-			return nil, e
-		}
-		h := scopeHash(b)
-		if h != want {
-			return nil, fmt.Errorf("fingerprint drift: %s", rel)
-		}
-		p.FileHashes[rel] = h
-		return b, nil
-	}
-	if _, err := read(stringValue(req["path"]), req["sha256"]); err != nil {
-		return p, err
-	}
 	review, _ := state["review"].(map[string]any)
-	if batchInt(review["round"]) != 0 || review["clean_round"] != nil {
+	if review["clean_round"] != nil {
 		return p, fmt.Errorf("review already started; manual recovery assessment required")
 	}
 	entities, _ := state["entities"].(map[string]any)
@@ -100,9 +78,6 @@ func inspectBatchScope(root string, state map[string]any) (batchScopePlan, error
 			return p, fmt.Errorf("Builder evidence exists; execution-aware recovery required")
 		}
 		if kind == "document_review" && e["status"] == "valid" {
-			if _, err := read(stringValue(e["path"]), e["sha256"]); err != nil {
-				return p, err
-			}
 			p.Invalidated = append(p.Invalidated, stringValue(e["id"]))
 		}
 	}
@@ -124,7 +99,7 @@ func inspectBatchScope(root string, state map[string]any) (batchScopePlan, error
 		if kind != "task" && kind != "contract" && kind != "design" {
 			continue
 		}
-		b, err := read(stringValue(d["path"]), d["sha256"])
+		b, err := scopeFile(root, stringValue(d["path"]))
 		if err != nil {
 			return p, err
 		}

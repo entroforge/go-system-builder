@@ -3,18 +3,17 @@ package repair
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestCreateChangeImpactReplaysIdenticalStableArtifactOnly(t *testing.T) {
+func TestCreateChangeImpactDoesNotClaimUnregisteredArtifact(t *testing.T) {
 	root := t.TempDir()
 	analyzedAt := time.Date(2026, 10, 16, 12, 30, 0, 0, time.UTC)
 	request := ChangeImpactRequest{
 		ImpactID: "impact-replay", RuntimeID: "loop-runtime-replay", ReqID: "REQ-001", BaselineGeneration: 1,
 		SourceBugIDs: []string{"BUG-001"}, ChangeTypes: []string{"implementation"},
-		ChangedArtifacts: []ArtifactRef{{ID: "changed-file", Path: "src/file.go", SHA256: strings.Repeat("a", 64)}},
+		ChangedArtifacts: []ArtifactRef{{ID: "changed-file", Path: "src/file.go"}},
 		Decisions:        []ImpactDecision{{SourceID: "BUG-001", TargetID: "root-1", Relation: "invalidates", RuleID: "IM-REPLAY", Decision: "reverify", Scope: []string{"src/file.go"}, Rationale: "same source decision", RecoveryEvidence: []string{"test://repair-result"}}},
 		AnalyzedBy:       "qa", AnalyzedAt: analyzedAt,
 	}
@@ -31,8 +30,8 @@ func TestCreateChangeImpactReplaysIdenticalStableArtifactOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identical stable ChangeImpact replay: %v", err)
 	}
-	if replayRef != originalRef {
-		t.Fatalf("identical replay ref = %#v, want original %#v", replayRef, originalRef)
+	if replayRef.Path == originalRef.Path {
+		t.Fatal("unregistered artifact was claimed as a replay")
 	}
 	if _, err := ValidateChangeImpact(root, replayRef); err != nil {
 		t.Fatalf("replayed ChangeImpact ref is not valid: %v", err)
@@ -42,15 +41,15 @@ func TestCreateChangeImpactReplaysIdenticalStableArtifactOnly(t *testing.T) {
 	}
 
 	request.Decisions[0].Rationale = "different decision content"
-	if _, _, err := CreateChangeImpact(root, request); err == nil {
-		t.Fatal("different ChangeImpact content must not replace the immutable canonical artifact")
+	if changed, ref, err := CreateChangeImpact(root, request); err != nil || ref.Path == originalRef.Path || changed.Decisions[0].Rationale != "different decision content" {
+		t.Fatalf("new expression was not independently published: %+v %+v %v", changed, ref, err)
 	}
 	if after, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(originalRef.Path))); readErr != nil || string(after) != string(originalBytes) {
 		t.Fatalf("rejected different replay changed original bytes: %v", readErr)
 	}
 }
 
-func TestCreateTargetedReverificationReplaysIdenticalStableArtifactOnly(t *testing.T) {
+func TestCreateTargetedReverificationDoesNotClaimUnregisteredArtifact(t *testing.T) {
 	root := t.TempDir()
 	request := TargetedReverificationRequest{
 		ReverificationID: "reverify-replay", RuntimeID: "loop-runtime-replay", BugID: "BUG-001", BaselineGeneration: 1,
@@ -72,8 +71,8 @@ func TestCreateTargetedReverificationReplaysIdenticalStableArtifactOnly(t *testi
 	if err != nil {
 		t.Fatalf("identical stable TargetedReverification replay: %v", err)
 	}
-	if replayRef != originalRef {
-		t.Fatalf("identical replay ref = %#v, want original %#v", replayRef, originalRef)
+	if replayRef.Path == originalRef.Path {
+		t.Fatal("unregistered artifact was claimed as a replay")
 	}
 	if _, err := ValidateTargetedReverification(root, replayRef); err != nil {
 		t.Fatalf("replayed TargetedReverification ref is not valid: %v", err)
@@ -83,8 +82,8 @@ func TestCreateTargetedReverificationReplaysIdenticalStableArtifactOnly(t *testi
 	}
 
 	request.ContinuityReason = "test://other-verifier-log: different verification record"
-	if _, _, err := CreateTargetedReverification(root, request); err == nil {
-		t.Fatal("different TargetedReverification content must not replace the immutable canonical artifact")
+	if changed, ref, err := CreateTargetedReverification(root, request); err != nil || ref.Path == originalRef.Path || changed.ContinuityReason != request.ContinuityReason {
+		t.Fatalf("new expression was not independently published: %+v %+v %v", changed, ref, err)
 	}
 	if after, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(originalRef.Path))); readErr != nil || string(after) != string(originalBytes) {
 		t.Fatalf("rejected different replay changed original bytes: %v", readErr)

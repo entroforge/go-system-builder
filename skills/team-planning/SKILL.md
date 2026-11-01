@@ -1,6 +1,6 @@
 ---
 name: team-planning
-description: Use when planning independent engineering responsibilities for native Agents while preserving professional coverage and frozen recovery
+description: Use when planning independent engineering responsibilities for native Agents while preserving professional coverage and accepted facts
 category: methodology
 version: 2.0.0
 ---
@@ -35,21 +35,21 @@ Current stage, frozen specifications/implementation, original responsibilities, 
 - S6 (`s6-native-v1`): `s6 prepare --root <Main> --task <TASK> --role <role>` supplies the exact brief. Builder uses native worktree, professional plan, actual implementation/self-checks and Result. Main uses original task-integrate. Source/report revisions use the original revision Writer.
 - S5: 原入口准备、登记两项已确定独立责任并发行准确 view／answer，Main 直接携带原引用派发两个独立原生上下文；不用组装元数据、额外确认或 workspace prepare。
 - S7: Main completes and saves the supplied ReviewPlan; original reception fixes Claims, lenses, waves and dependencies. The original manifest draft/registration then prepares each selected responsibility and exact view/answer before Main actually starts the native Reviewer. Reviewer saves the ready original answer and reports results to Main when finished. PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. Reception does not wait for a final message or returned reference. Queued work waits for its real dependencies; a sealed, paused or superseded round does not release new review work.
-- S8: After TR-008 enters investigation, Main reads the supplied Batch/Findings and saves the exact intake questionnaire's grouping_rationale. Original reception creates the Case and supplies hypotheses.json; Main saves its actual questions and then dispatches each Investigator with exact view/answer paths. Investigator performs its discriminator without product writes and returns its original answer for SubagentStop reception. Main owns routing and genuine Contract approval.
+- S8: After TR-008 enters investigation, Main reads the supplied Findings and observations (an existing Batch may be historical input) and saves the original intake questionnaire's grouping_rationale. Original reception creates the Case and supplies hypotheses.json; Main saves its actual questions and dispatches each Investigator with exact view/answer paths. Investigator performs its discriminator without product writes and saves its original answer. PreToolUse listens; successful PostToolUse and SubagentStop provide fallback through the original consumer, without a return-reference or submit step. Main owns routing and genuine Contract approval.
 
 - S9: professional division prepares each exact native brief. Builder saves PlanReport before implementation, continues in native worktree, self-checks and commits actual product changes when present, then returns Result. An allowed no-change result does not manufacture a commit. Main integrates/checks separately. Targeted is a separate independent native task; original handoff leads to fresh S7.
 
 A post-S9 S7 seed is unfinished Planner input, not a dispatchable decision. Resolve
-PLANNER-REFINE against current change impact, preserve the supplied seed identity,
-round, generation and baseline, then save the original Main ReviewPlan questionnaire.
+PLANNER-REFINE against the current change impact, preserve the supplied Plan identity
+and generation, then save the original Main ReviewPlan questionnaire. Changed paths
+are review sources even without SHA; existing frozen subjects are optional inputs.
 The original consumer handles seed adoption; manual runtime review-plan registration
-is an explicit integration/recovery route, not a second normal submission. Later
-discovery revisions retain their original budget and workspace constraints. If E2E
-is genuinely inapplicable, retain its explicit N/A Claim with source_refs,
-na_rationale and na_checklist_id, choose e2e_coverage_state=not_applicable and a null
-verification_artifact_workspace, and omit only the E2E Assignment. Keep applicable
-delivery/QA Claims. A conservative cold_start hint does not invent a browser surface;
-verification_artifact_digest remains a system result field, not a Plan author field.
+is an explicit integration/recovery route, not a second normal submission. Actual
+revisions retain their existing responsibility and any explicit user constraints. When
+E2E is genuinely inapplicable, express that judgment and its basis in the original
+Plan. Keep applicable delivery/QA Claims; do not create an empty Reviewer responsibility.
+Optional E2E classifications need not be filled to receive a useful Plan. A conservative cold_start hint does not invent a browser surface;
+the author references actual materials without providing a machine digest.
 
 Before registering the first S7 professional Plan, review the generated Assignment grouping. The default one-Claim-per-Assignment split is a starting point, not a required actor count. Compatible QA Claims may share one original Assignment's `claim_ids` when their reading/methods fit and no result dependency would become self-waiting; retain every Claim, its original identity, oracle, evidence and per-Claim result. Update the existing scope/focus/boundary fields to match. Keep delivery/QA/E2E lenses, waves, independence and real specialist needs separate. Do not add headcount fields, a second planning table or an empty actor for an N/A Claim.
 
@@ -62,7 +62,7 @@ S5 入口沿当前 `.claude/workgroups/<REQ>/review-e<entry>/manifest.json` 准�
 | `DV-SPEC-CONSISTENCY` | 本批完整规格链的一致性、完整性与需求忠实度；`document-verification`、`specification-planning`、`api-contracts` | 确认真实独立上下文能完成此视角；传入准确引用，补充本项目特有风险，不代填结论 |
 | `DV-TASK-EXECUTABILITY` | 本批全部任务和整体计划的可执行性、依赖、自检与收尾；`document-verification`、`specification-planning`、`testing-strategy` | 独立安排另一实际上下文，补充适用专项和真实覆盖要求 |
 
-Runtime、REQ、generation、阶段入口、完整已登记文档的版本和摘要、S4 首个 TASK 锚点、内部编号、默认工程 owner、输出位置、分离边和计数由系统从原来源投影。原 S5 问卷另行固定已接受 S4 的完整来源闭包，两位均读整批材料，TASK 锚点不缩小审查范围。真实校验产生校验结果及时间。Main 不读 Runtime 拼 DTO、不计算或抄写 SHA、不手填版本／时间、不寻找 Schema 文件，也不先声明 `validation=pass`。
+Runtime、REQ、阶段入口、原文档引用、S4 TASK 锚点、工程 owner 和输出位置由系统从已有责任提供。原 S5 问卷给两位各自的实际材料，TASK 锚点不缩小审查范围。真实校验如实表达结果。Main 不拼 DTO、不计算或登记摘要、不手填机器时间、不寻找 Schema 文件，也不先声明 `validation=pass`。
 
 系统交付准确引用后，Main 直接携带各自 view／answer 派发两个 Claude Code 原生 Agent。工程 owner 只是责任标签，`platform_team_id` 只是原结构的逻辑分组；不用创建实际 Team 或寻找平台 ID，不用 workspace prepare／launch。审查者本人读取资料，只填原答卷 `conclusion`／`findings`，保存并原生返回准确答案引用，由 `SubagentStop` 调原消费者接收。
 
@@ -78,7 +78,7 @@ Runtime、REQ、generation、阶段入口、完整已登记文档的版本和摘
 
 Follow [agent-dispatch](../agent-dispatch/SKILL.md) for exact references, professional artifacts and Start/Stop. No generic readback, begin, activation or ordinary-save receipt precedes new native execution. Keep real professional approval, independence and the stage's actual required coverage.
 
-Only an existing registered pre-migration execution uses [frozen-execution.md](frozen-execution.md). Preserve its sources/recovery and avoid duplicate launch; do not apply that procedure to new native responsibilities.
+Preserve accepted facts and avoid duplicate dispatch; continue unfinished work through the current responsibility.
 
 ## Outputs
 

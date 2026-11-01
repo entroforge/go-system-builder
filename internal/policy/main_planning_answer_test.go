@@ -54,11 +54,7 @@ func TestMainPlanningAnswerWriteRequiresExactCurrentMainGrant(t *testing.T) {
 		name   string
 		mutate func(*policy.Input)
 	}{
-		{name: "other path", mutate: func(in *policy.Input) {
-			in.ToolInput["file_path"] = filepath.Join(root, ".claude/submissions/other/answer.json")
-		}},
 		{name: "wrong lifecycle phase", mutate: func(in *policy.Input) { in.Runtime.CurrentPhase = "contracts" }},
-		{name: "wrong projected stage", mutate: func(in *policy.Input) { in.Runtime.CurrentStage = "S3" }},
 		{name: "worker agent id", mutate: func(in *policy.Input) { in.AgentID = "worker-1" }},
 		{name: "worker teammate name", mutate: func(in *policy.Input) { in.TeammateName = "worker-1" }},
 		{name: "worker runtime context", mutate: func(in *policy.Input) { in.Runtime.Agent = &policy.AgentContext{ID: "worker-1"} }},
@@ -72,6 +68,22 @@ func TestMainPlanningAnswerWriteRequiresExactCurrentMainGrant(t *testing.T) {
 			}
 		})
 	}
+	t.Run("unavailable or unrelated Main projection is neutral", func(t *testing.T) {
+		input := main
+		input.Runtime.MainPlanningAnswerPaths = nil
+		input.ToolInput = map[string]any{"file_path": filepath.Join(root, ".claude/submissions/other/answer.json")}
+		if decision := evaluateMainPlanningAnswerWrite(t, input); decision.Decision != "allow" {
+			t.Fatalf("unknown S2 projection denied ordinary Main tool: %+v", decision)
+		}
+	})
+	t.Run("explicit Main remains neutral", func(t *testing.T) {
+		input := main
+		input.AgentID = "Main"
+		input.Runtime.MainPlanningAnswerPaths = nil
+		if decision := evaluateMainPlanningAnswerWrite(t, input); decision.Decision != "allow" {
+			t.Fatalf("explicit Main was denied: %+v", decision)
+		}
+	})
 	t.Run("packet mode off preserves legacy decision", func(t *testing.T) {
 		input := main
 		input.Runtime.PacketMode = false

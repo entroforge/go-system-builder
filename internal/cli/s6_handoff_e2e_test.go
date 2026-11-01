@@ -45,12 +45,6 @@ func s6HandoffFixture(t *testing.T, remainingTask ...bool) (string, string, assi
 		if err := os.WriteFile(indexPath, index, 0644); err != nil {
 			t.Fatal(err)
 		}
-		for _, raw := range state["documents"].([]any) {
-			doc := raw.(map[string]any)
-			if doc["kind"] == "dispatch_plan" {
-				doc["sha256"] = fixtures.Sha256Hex(index)
-			}
-		}
 		fixtures.CommitCurrentFixture(t, root)
 		expectedTasks = 2
 	}
@@ -65,7 +59,7 @@ func s6HandoffFixture(t *testing.T, remainingTask ...bool) (string, string, assi
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := transition.Apply(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), transition.Request{Files: view, TransitionID: "TR-003", ExpectedRevision: -1, ExpectedRuntimeID: state["runtime_id"].(string), Actor: "orchestrator", Evidence: map[string]string{"document_review_record": "ev-dv-spec"}, GateEvidenceRefs: []string{"ev-dv-spec", "ev-dv-task"}, GateID: "GATE-DOCUMENT-PASS", GateFingerprint: "sha256:handoff-fixture", ProducerResponsibility: "document_verifier"})
+	next, err := transition.Apply(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), transition.Request{Files: view, TransitionID: "TR-003", ExpectedRevision: -1, ExpectedRuntimeID: state["runtime_id"].(string), Actor: "orchestrator", Evidence: map[string]string{"document_review_record": "ev-dv-spec"}, GateEvidenceRefs: []string{"ev-dv-spec", "ev-dv-task"}, GateID: "GATE-DOCUMENT-PASS", ProducerResponsibility: "document_verifier"})
 	if err != nil {
 		t.Fatalf("real TR-003: %v", err)
 	}

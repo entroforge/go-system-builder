@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,27 +14,50 @@ import (
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
-func stopFingerprintPending(t *testing.T, root string) string {
+func stopCommitPending(t *testing.T, root string) string {
 	t.Helper()
-	state, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
+	statePath := filepath.Join(root, ".claude/loop-state.json")
+	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
+	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	before, err := writer.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := json.MarshalIndent(state.State, "", "  ")
+	life := before.State["lifecycle"].(map[string]any)
+	cursor := map[string]any{"state": life["state"], "phase": life["phase"]}
+	id := fmt.Sprintf("pending-fixture-%d", time.Now().UnixNano())
+	generation := 0
+	if baseline, ok := before.State["baseline"].(map[string]any); ok {
+		switch n := baseline["generation"].(type) {
+		case int:
+			generation = n
+		case float64:
+			generation = int(n)
+		}
+	}
+	after, err := writer.Update(before.Revision, runtime.Mutation{EventID: id, RequestID: id, TransitionID: "PENDING-FIXTURE", Event: "pending_fixture", Actor: "orchestrator", IdempotencyKey: id, RuntimeID: before.State["runtime_id"].(string), BaselineGeneration: generation, From: cursor, To: cursor, RetainLastTransition: true, OccurredAt: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash := workpacket.Digest(append(encoded, '\n'))
-	marker := filepath.Join(root, ".claude/loop-state.json.fingerprint-pending.json")
-	data, err := json.Marshal(map[string]any{"schema_version": "1.0.0", "previous_state_sha256": hash, "previous_revision": state.Revision, "state_sha256": hash, "state": state.State})
+	journal, err := os.ReadFile(journalPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	lines := strings.Split(strings.TrimSpace(string(journal)), "\n")
+	var event map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{"schema_version": "1.0.0", "previous_revision": before.Revision, "request_id": event["request_id"], "idempotency_key": event["idempotency_key"], "retain_last_transition": true, "state": after.State, "journal_event": event})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := statePath + ".commit-pending.json"
 	if err := os.WriteFile(marker, data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -62,19 +86,19 @@ func TestNativeStopPendingS9AcceptedPlanContinuesSamePublicEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var preparation bytes.Buffer
-	if err := importNativeS9PlanReport(t.Context(), root, worker, p, service, &preparation); err != nil {
+	if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, p, service, &preparation, nil); err != nil {
 		t.Fatal(err)
 	}
 	if receipt, err := service.SaveRepairPlanReportFrom(t.Context(), p.Binding.OwnerAgentID, filepath.Join(root, p.AnswerPath), root, nil); err != nil || !receipt.Accepted {
 		t.Fatalf("original Plan: %+v %v", receipt, err)
 	}
-	if err := recordNativeS9Source(t.Context(), root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), p); err != nil {
+	if err := recordNativeS9OriginalLocation(t.Context(), root, p, worker); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.IssueRepairResults(t.Context(), p.Binding.OwnerAgentID); err != nil {
 		t.Fatal(err)
 	}
-	marker := stopFingerprintPending(t, root)
+	marker := stopCommitPending(t, root)
 	in.Event = "SubagentStop"
 	_, diag := stopPendingPublic(t, root, in)
 	if !strings.Contains(diag, "recovered the original pending Writer") {
@@ -96,8 +120,8 @@ func TestNativeStopPendingS9AcceptedPlanContinuesSamePublicEvent(t *testing.T) {
 func TestNativeStopPendingS8OnlyRecoversOriginalWriter(t *testing.T) {
 	root := investigationLeadTestRoot(t)
 	investigationLeadTestIngest(t, root)
+	marker := stopCommitPending(t, root)
 	before := repairDispatchRuntimeBytes(t, root)
-	marker := stopFingerprintPending(t, root)
 	ctx, timings := metrics.WithCallTimings(context.Background())
 	in := policy.Input{Context: ctx, Event: "SubagentStop", AgentID: "opaque-investigator", CWD: root, LastAssistantMessage: "original S8 task"}
 	var diag bytes.Buffer
@@ -115,7 +139,7 @@ func TestNativeStopPendingS8OnlyRecoversOriginalWriter(t *testing.T) {
 
 func TestNativeStopPendingOnlyExactEventAndActor(t *testing.T) {
 	root, _, _, _, _ := nativeS9WorkerFixture(t)
-	marker := stopFingerprintPending(t, root)
+	marker := stopCommitPending(t, root)
 	before, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +164,7 @@ func TestNativeStopPendingFailureAndCancellationRetainOriginalBoundary(t *testin
 	for _, mode := range []string{"invalid-marker", "canceled", "expired"} {
 		t.Run(mode, func(t *testing.T) {
 			root, _, _, in, _ := nativeS9WorkerFixture(t)
-			marker := stopFingerprintPending(t, root)
+			marker := stopCommitPending(t, root)
 			if mode == "invalid-marker" {
 				if err := os.WriteFile(marker, []byte("invalid durable marker"), 0600); err != nil {
 					t.Fatal(err)
@@ -188,13 +212,13 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var preparation bytes.Buffer
-	if err := importNativeS9PlanReport(t.Context(), root, worker, plan, service, &preparation); err != nil {
+	if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, plan, service, &preparation, nil); err != nil {
 		t.Fatal(err)
 	}
 	if receipt, err := service.SaveRepairPlanReportFrom(t.Context(), plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil); err != nil || !receipt.Accepted {
 		t.Fatalf("original Plan: %+v %v", receipt, err)
 	}
-	if err := recordNativeS9Source(t.Context(), root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+	if err := recordNativeS9OriginalLocation(t.Context(), root, plan, worker); err != nil {
 		t.Fatal(err)
 	}
 	snap := repairDispatchSnapshot(t, root)
@@ -211,10 +235,6 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := registry.Bootstrap(execution, binary); err != nil {
-		t.Fatal(err)
-	}
-	execution.BootstrapSHA256, err = workspace.BootstrapDigest(execution)
-	if err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.ValidateBootstrap(execution); err != nil {
@@ -243,7 +263,7 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 	if baselineCode != 2 {
 		t.Fatalf("fixture did not exercise original frozen unfinished Stop gate: %d %s", baselineCode, baseline)
 	}
-	marker := stopFingerprintPending(t, root)
+	marker := stopCommitPending(t, root)
 	code, feedback := call()
 	if code != baselineCode || !strings.Contains(feedback, "recovered the original pending Writer") {
 		t.Fatalf("pending swallowed frozen Stop: %d %s; baseline %d %s", code, feedback, baselineCode, baseline)

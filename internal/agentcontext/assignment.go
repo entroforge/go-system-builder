@@ -2,7 +2,6 @@ package agentcontext
 
 import (
 	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,12 +34,10 @@ type Assignment struct {
 	RequiredChecks         []string                          `json:"required_checks,omitempty"`
 	ClosingContract        *assignmentrecord.ClosingContract `json:"closing_contract,omitempty"`
 	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
-	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
 }
 
 type Reference struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path string `json:"path"`
 }
 
 // ApplyRecord projects the canonical Runtime Assignment Record into the
@@ -52,10 +49,6 @@ func ApplyRecord(current Assignment, record assignmentrecord.Record) (Assignment
 	}
 	if current.AssignmentID != "" && current.AssignmentID != record.AssignmentID {
 		return Assignment{}, fmt.Errorf("context Assignment %s cannot project Record for %s", current.AssignmentID, record.AssignmentID)
-	}
-	digest, err := record.Digest()
-	if err != nil {
-		return Assignment{}, fmt.Errorf("digest canonical Assignment Record: %w", err)
 	}
 	reference := record.Reference()
 	closingContract, err := cloneClosingContract(record.ClosingContract)
@@ -83,7 +76,6 @@ func ApplyRecord(current Assignment, record assignmentrecord.Record) (Assignment
 		RequiredChecks:         cloneStrings(record.RequiredChecks),
 		ClosingContract:        closingContract,
 		AssignmentRecord:       &reference,
-		AssignmentRecordSHA256: digest,
 	}, nil
 }
 
@@ -111,7 +103,6 @@ func PlanTemplate(d Assignment, runtimeID, occurredAt string, planned []string) 
 			"task_id": d.TaskID, "bug_id": nil, "team_id": d.TeamID, "occurred_at": occurredAt,
 			"assignment_id": d.AssignmentID, "assignment_revision": d.AssignmentRecord.Revision,
 			"assignment_record_contract": assignmentrecord.AssignmentRecordContract,
-			"assignment_record_sha256":   d.AssignmentRecordSHA256,
 			"objective":                  nil, "planned_paths": []string{}, "assertion_checks": []any{},
 			"dependencies": append([]string{}, d.DependsOn...), "risks_blockers": nil,
 		}
@@ -163,7 +154,6 @@ func ResultTemplate(d Assignment, runtimeID, occurredAt string) (map[string]any,
 		"assignment_id":              d.AssignmentID,
 		"assignment_revision":        d.AssignmentRecord.Revision,
 		"assignment_record_contract": assignmentrecord.AssignmentRecordContract,
-		"assignment_record_sha256":   d.AssignmentRecordSHA256,
 		"summary":                    nil,
 		"assertion_evidence":         nil,
 		"risks_blockers":             nil,
@@ -172,8 +162,8 @@ func ResultTemplate(d Assignment, runtimeID, occurredAt string) (map[string]any,
 	questions := map[string]string{
 		"/summary":            resultSummaryQuestion(d.RequiredChecks),
 		"/assertion_evidence": "The original begin flow copies each accepted PLAN assertion and oracle into these rows. Preserve those values and cite actual evidence file paths in evidence_refs. A cited file proves only its bytes, not that the assertion passed.",
-		"/risks_blockers":     "State actual remaining risks or blockers; any nonempty list prevents completion/integration. Put information-only limitations and resolved issues in summary/rationale, without hiding unfinished work. Use [] only after judging none remain.",
-		"/scope_deviations":   "State actual deviations from the planned scope; a nonempty list prevents completion/integration. Main independently checks Git scope. Explain information-only context in summary, without hiding a real deviation.",
+		"/risks_blockers":     "State actual risks, limitations, assumptions or blockers honestly. A nonempty list alone does not determine completion; express unfinished work or blocking conditions in your professional conclusion and, when supplied, the closing assessment.",
+		"/scope_deviations":   "State actual scope deviations or relevant context honestly for Main to consider against the TASK and actual changes. A nonempty list alone does not determine completion or approval.",
 	}
 	if d.ClosingContract != nil {
 		draft["closing_assessment"] = nil
@@ -299,7 +289,7 @@ func ValidateResultDraft(template map[string]any, data []byte) error {
 			return fmt.Errorf("editable canonical Result omitted frozen template field %s", key)
 		}
 	}
-	for _, key := range []string{"schema_version", "message_type", "runtime_id", "baseline_generation", "assignment_id", "assignment_revision", "assignment_record_contract", "assignment_record_sha256", "agent_id", "agent_definition_ref", "task_id", "bug_id", "team_id"} {
+	for _, key := range []string{"schema_version", "message_type", "runtime_id", "baseline_generation", "assignment_id", "assignment_revision", "assignment_record_contract", "agent_id", "agent_definition_ref", "task_id", "bug_id", "team_id"} {
 		want, wantOK := template[key]
 		got, gotOK := draft[key]
 		if !wantOK || !gotOK || !sameJSONValue(want, got) {
@@ -446,11 +436,11 @@ func sameJSONValue(left, right any) bool {
 }
 
 func hasRecordProjection(d Assignment) bool {
-	return d.AssignmentRecord != nil || d.AssignmentRecordSHA256 != "" || d.AssignmentRevision != 0
+	return d.AssignmentRecord != nil || d.AssignmentRevision != 0
 }
 
 func validRecordProjection(d Assignment, runtimeID string) bool {
-	if d.AssignmentRecord == nil || d.AssignmentRecordSHA256 == "" || d.AssignmentRevision < 1 {
+	if d.AssignmentRecord == nil || d.AssignmentRevision < 1 {
 		return false
 	}
 	reference := d.AssignmentRecord
@@ -464,11 +454,7 @@ func validRecordProjection(d Assignment, runtimeID string) bool {
 	} else if d.IntegrationCheckMode != "post_merge" || assignmentrecord.ValidateClosingContract(d.ClosingContract) != nil {
 		return false
 	}
-	if len(d.AssignmentRecordSHA256) != 64 || d.AssignmentRecordSHA256 != strings.ToLower(d.AssignmentRecordSHA256) {
-		return false
-	}
-	_, err := hex.DecodeString(d.AssignmentRecordSHA256)
-	return err == nil
+	return true
 }
 
 func cloneClosingContract(source *assignmentrecord.ClosingContract) (*assignmentrecord.ClosingContract, error) {

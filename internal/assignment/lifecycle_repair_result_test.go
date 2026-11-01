@@ -3,7 +3,6 @@ package assignment
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -30,12 +29,6 @@ func TestRepairResultLifecyclePacketTargetsRegisteredSlot(t *testing.T) {
 			},
 		},
 		{
-			name: "different round is legacy slot",
-			mutate: func(_ map[string]any, packet *workpacket.RepairResultPacket) {
-				packet.Binding.Sources.ReviewRound++
-			},
-		},
-		{
 			name: "complete different manifest assignment remains legacy",
 			mutate: func(state map[string]any, _ *workpacket.RepairResultPacket) {
 				agent := lifecycleTestAgent(state)
@@ -43,12 +36,6 @@ func TestRepairResultLifecyclePacketTargetsRegisteredSlot(t *testing.T) {
 				agent["task_ids"] = []any{"TASK-005"}
 				pointer := lifecycleTestRepairPointer(state)
 				pointer["assignment_owners"] = map[string]any{"repair-assignment-other": "agent-s9-owner"}
-			},
-		},
-		{
-			name: "new registered manifest digest is another slot",
-			mutate: func(state map[string]any, _ *workpacket.RepairResultPacket) {
-				lifecycleTestTeam(state)["manifest_sha256"] = strings.Repeat("b", 64)
 			},
 		},
 		{
@@ -67,9 +54,21 @@ func TestRepairResultLifecyclePacketTargetsRegisteredSlot(t *testing.T) {
 		{
 			name: "missing pointer tuple is malformed",
 			mutate: func(state map[string]any, _ *workpacket.RepairResultPacket) {
-				delete(lifecycleTestRepairPointer(state), "plan_sha256")
+				delete(lifecycleTestRepairPointer(state), "plan_ref")
 			},
 			wantErr: true,
+		},
+		{
+			name: "original responsibility without historical digests",
+			mutate: func(state map[string]any, packet *workpacket.RepairResultPacket) {
+				delete(lifecycleTestTeam(state), "manifest_sha256")
+				pointer := lifecycleTestRepairPointer(state)
+				delete(pointer, "sha256")
+				delete(pointer, "plan_sha256")
+				delete(pointer, "contract_sha256")
+
+			},
+			want: true,
 		},
 		{
 			name: "missing original assignment owner is malformed",
@@ -159,27 +158,26 @@ func TestIssuedRepairResultLifecycleTargetReadsCanonicalPacketHistory(t *testing
 }
 
 func lifecycleRepairResultFixture() (map[string]any, workpacket.RepairResultPacket) {
-	sha := strings.Repeat("a", 64)
 	binding := workpacket.RepairPlanReportBinding{
-		RuntimeID: "loop-s9-lifecycle", BaselineGeneration: 2, ReviewRound: 3,
-		CaseID: "investigation-case-s9", CaseRef: ".claude/review/case.json", CaseSHA256: sha,
-		ContractID: "repair-contract-s9", ContractRef: ".claude/review/contract.json", ContractSHA256: sha,
-		SessionID: "repair-session-s9", SessionRef: ".claude/review/session.json", SessionSHA256: sha,
-		PlanID: "repair-plan-s9", PlanRef: ".claude/review/plan.json", PlanSHA256: sha,
-		RepairAssignmentID: "repair-assignment-s9-unit", RepairAssignmentSHA256: sha,
-		ManifestAssignmentID: "assignment-s9-unit", ManifestAssignmentSHA256: sha,
-		TeamID: "team-s9", TaskID: "TASK-004", TaskRef: ".claude/workgroups/TASK-004.json", TaskSHA256: sha,
-		ManifestRef: "manifests/team.json", ManifestSHA256: sha, OwnerAgentID: "agent-s9-owner",
+		RuntimeID: "loop-s9-lifecycle", BaselineGeneration: 2,
+		CaseID: "investigation-case-s9", CaseRef: ".claude/review/case.json",
+		ContractID: "repair-contract-s9", ContractRef: ".claude/review/contract.json",
+		SessionID: "repair-session-s9", SessionRef: ".claude/review/session.json",
+		PlanID: "repair-plan-s9", PlanRef: ".claude/review/plan.json",
+		RepairAssignmentID:   "repair-assignment-s9-unit",
+		ManifestAssignmentID: "assignment-s9-unit",
+		TeamID:               "team-s9", TaskID: "TASK-004", TaskRef: ".claude/workgroups/TASK-004.json",
+		ManifestRef: "manifests/team.json", OwnerAgentID: "agent-s9-owner",
 	}
 	state := map[string]any{
 		"runtime_id": binding.RuntimeID,
 		"baseline":   map[string]any{"generation": binding.BaselineGeneration},
 		"review": map[string]any{
-			"round": binding.ReviewRound,
+
 			"repair": map[string]any{
-				"session_id": binding.SessionID, "path": binding.SessionRef, "sha256": binding.SessionSHA256,
-				"plan_ref": binding.PlanRef, "plan_sha256": binding.PlanSHA256,
-				"contract_id": binding.ContractID, "contract_ref": binding.ContractRef, "contract_sha256": binding.ContractSHA256,
+				"session_id": binding.SessionID, "path": binding.SessionRef,
+				"plan_ref":    binding.PlanRef,
+				"contract_id": binding.ContractID, "contract_ref": binding.ContractRef,
 				"assignment_owners": map[string]any{binding.RepairAssignmentID: binding.OwnerAgentID},
 			},
 		},
@@ -189,7 +187,7 @@ func lifecycleRepairResultFixture() (map[string]any, workpacket.RepairResultPack
 				"task_ids": []any{binding.TaskID}, "prompt_ref": binding.ManifestRef + "#" + binding.ManifestAssignmentID,
 			}},
 			"teams": []any{map[string]any{
-				"id": binding.TeamID, "manifest_ref": binding.ManifestRef, "manifest_sha256": binding.ManifestSHA256,
+				"id": binding.TeamID, "manifest_ref": binding.ManifestRef,
 			}},
 		},
 	}
@@ -213,4 +211,15 @@ func cloneLifecycleTestMap(value map[string]any) map[string]any {
 	var clone map[string]any
 	_ = json.Unmarshal(encoded, &clone)
 	return clone
+}
+
+func TestRepairResultLifecycleKeepsOriginalSessionWithoutReviewNumber(t *testing.T) {
+	state, packet := lifecycleRepairResultFixture()
+	review := state["review"].(map[string]any)
+	delete(review, "round")
+	review["round_entry"] = map[string]any{"plan_id": "review-plan-current"}
+	got, err := repairResultLifecyclePacketTargetsOwner(state, packet.Binding.Sources.OwnerAgentID, packet)
+	if err != nil || !got {
+		t.Fatalf("original Session lost: target=%t err=%v", got, err)
+	}
 }

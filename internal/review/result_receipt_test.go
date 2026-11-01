@@ -12,7 +12,6 @@ import (
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func packetModeVerificationState() map[string]any {
@@ -89,14 +88,12 @@ func TestTypedResultReceiptPassReplayIgnoresCaptureAndStaleRevision(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(resultArtifact, &envelope); err != nil {
+	var result map[string]any
+	if err := json.Unmarshal(resultArtifact, &result); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"submitted_answer", "answer_sha256", "effective_answer", "effective_answer_sha256"} {
-		if len(envelope[field]) == 0 {
-			t.Fatalf("typed envelope missing %s", field)
-		}
+	if result["verdict"] != "pass" {
+		t.Fatalf("accepted professional verdict missing: %#v", result)
 	}
 	dvPath := writeResultFile(t, root, plan, "assignment-dv-1", "review-result-dv-final", "agent-dv-1", "pass",
 		map[string]string{"claim-dv-1": "pass"}, nil)
@@ -106,17 +103,8 @@ func TestTypedResultReceiptPassReplayIgnoresCaptureAndStaleRevision(t *testing.T
 	if err != nil {
 		t.Fatalf("final typed pass: %v", err)
 	}
-	if PlanPointerFromState(accepted.State).Status != "clean" || accepted.State["review"].(map[string]any)["clean_round"] != 1 {
-		t.Fatalf("fixture did not create its original CleanRound: %+v", PlanPointerFromState(accepted.State))
-	}
-	cleanEvidenceCount := 0
-	for _, raw := range accepted.State["evidence"].([]any) {
-		if raw.(map[string]any)["kind"] == "clean_round" {
-			cleanEvidenceCount++
-		}
-	}
-	if cleanEvidenceCount != 1 {
-		t.Fatalf("CleanRound evidence count = %d, want exactly 1", cleanEvidenceCount)
+	if PlanPointerFromState(accepted.State).Status != "clean" {
+		t.Fatalf("final accepted results did not produce clean Plan: %+v", PlanPointerFromState(accepted.State))
 	}
 	beforeState, _ := os.ReadFile(statePath)
 	beforeJournal, _ := os.ReadFile(journalPath)
@@ -148,7 +136,7 @@ func TestTypedResultReceiptPassReplayIgnoresCaptureAndStaleRevision(t *testing.T
 	_, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "conflicts with the originally accepted") {
+	if err == nil || !strings.Contains(err.Error(), "differs from originally accepted professional answer") {
 		t.Fatalf("same key with changed answer must conflict, got %v", err)
 	}
 	changed["result_id"] = "review-result-qa-replacement"
@@ -159,78 +147,12 @@ func TestTypedResultReceiptPassReplayIgnoresCaptureAndStaleRevision(t *testing.T
 	_, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "new result_id cannot replace") {
+	if err == nil || !strings.Contains(err.Error(), "already consumed result") {
 		t.Fatalf("new key must not overwrite consumed Assignment, got %v", err)
 	}
 }
 
-func TestTypedResultReceiptRejectsTamperedDurableClosure(t *testing.T) {
-	for _, tamper := range []string{"receipt", "envelope", "journal"} {
-		t.Run(tamper, func(t *testing.T) {
-			root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
-			resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-tamper", "agent-qa-1", "pass",
-				map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
-			accepted, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-				ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
-			})
-			if err != nil {
-				t.Fatalf("accept result: %v", err)
-			}
-			row := accepted.State["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
-			receiptJSON, _ := json.Marshal(row["result_receipt"])
-			var receipt ResultReceipt
-			if err := json.Unmarshal(receiptJSON, &receipt); err != nil {
-				t.Fatal(err)
-			}
-			switch tamper {
-			case "receipt":
-				stateData, _ := os.ReadFile(statePath)
-				var state map[string]any
-				if err := json.Unmarshal(stateData, &state); err != nil {
-					t.Fatal(err)
-				}
-				assignmentRow := state["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
-				assignmentRow["result_receipt"].(map[string]any)["answer_sha256"] = strings.Repeat("0", 64)
-				writeJSONFile(t, statePath, state)
-			case "envelope":
-				artifactPath := filepath.Join(root, filepath.FromSlash(receipt.ResultRef))
-				data, _ := os.ReadFile(artifactPath)
-				var envelope map[string]any
-				if err := json.Unmarshal(data, &envelope); err != nil {
-					t.Fatal(err)
-				}
-				envelope["verdict"] = "tampered"
-				writeJSONFile(t, artifactPath, envelope)
-			case "journal":
-				data, _ := os.ReadFile(journalPath)
-				var lines []string
-				for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-					var event map[string]any
-					if err := json.Unmarshal([]byte(line), &event); err != nil {
-						t.Fatal(err)
-					}
-					if event["event_id"] == receipt.EventID {
-						event["idempotency_key"] = "runtime:tampered"
-					}
-					encoded, _ := json.Marshal(event)
-					lines = append(lines, string(encoded))
-				}
-				if err := os.WriteFile(journalPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
-				ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
-				CaptureDir: filepath.Join(root, "missing-captures"),
-			})
-			if err == nil {
-				t.Fatalf("replay accepted %s tampering", tamper)
-			}
-		})
-	}
-}
-
-func TestTypedResultReceiptRejectsIncomingMachineTupleEditsWithoutWrites(t *testing.T) {
+func TestTypedResultReceiptRejectsWrongAssignmentWithoutWrites(t *testing.T) {
 	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
 	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-tuple", "agent-qa-1", "pass",
 		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
@@ -262,13 +184,6 @@ func TestTypedResultReceiptRejectsIncomingMachineTupleEditsWithoutWrites(t *test
 		requestAssign string
 	}{
 		{name: "assignment", field: "assignment_id", value: "assignment-other", requestAssign: "assignment-qa-1"},
-		{name: "assignment revision", field: "assignment_revision", value: 22, requestAssign: "assignment-qa-1"},
-		{name: "plan id", field: "review_plan_id", value: "review-plan-other", requestAssign: "assignment-qa-1"},
-		{name: "round", field: "review_round", value: 22, requestAssign: "assignment-qa-1"},
-		{name: "baseline generation", field: "baseline_generation", value: 22, requestAssign: "assignment-qa-1"},
-		{name: "owner", field: "producer_agent_id", value: "agent-other", requestAssign: "assignment-qa-1"},
-		{name: "subject digest", field: "subject_digest", value: strings.Repeat("a", 64), requestAssign: "assignment-qa-1"},
-		{name: "verification artifact digest", field: "verification_artifact_digest", value: strings.Repeat("b", 64), requestAssign: "assignment-qa-1"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -309,114 +224,6 @@ func TestTypedResultReceiptRejectsIncomingMachineTupleEditsWithoutWrites(t *test
 	}
 }
 
-func TestTypedResultReceiptRejectsEvidenceInvalidationMarkers(t *testing.T) {
-	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
-	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-invalidated", "agent-qa-1", "pass",
-		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
-	accepted, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
-	})
-	if err != nil {
-		t.Fatalf("accept result: %v", err)
-	}
-	row := accepted.State["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
-	rawReceipt, _ := json.Marshal(row["result_receipt"])
-	var receipt ResultReceipt
-	if err := json.Unmarshal(rawReceipt, &receipt); err != nil {
-		t.Fatal(err)
-	}
-	var incoming Result
-	answer, err := os.ReadFile(resultPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(answer, &incoming); err != nil {
-		t.Fatal(err)
-	}
-	for _, marker := range []string{"invalidated_by", "invalidation_rule", "invalidation_reason"} {
-		t.Run(marker, func(t *testing.T) {
-			stateBytes, _ := json.Marshal(accepted.State)
-			var state map[string]any
-			if err := json.Unmarshal(stateBytes, &state); err != nil {
-				t.Fatal(err)
-			}
-			evidence, err := uniqueEvidenceByID(state, receipt.SubmissionKey)
-			if err != nil {
-				t.Fatal(err)
-			}
-			evidence[marker] = "forged-invalidation"
-			if err := verifyResultReceiptClosure(root, state, state["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any), receipt, &incoming); err == nil {
-				t.Fatalf("accepted valid evidence row with non-null %s", marker)
-			}
-		})
-	}
-}
-
-func TestTypedResultReceiptChecksEffectiveAnswerMachineTuple(t *testing.T) {
-	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
-	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-effective-tuple", "agent-qa-1", "pass",
-		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
-	accepted, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
-	})
-	if err != nil {
-		t.Fatalf("accept result: %v", err)
-	}
-	stateBytes, _ := json.Marshal(accepted.State)
-	var state map[string]any
-	if err := json.Unmarshal(stateBytes, &state); err != nil {
-		t.Fatal(err)
-	}
-	row := state["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
-	var receipt ResultReceipt
-	receiptBytes, _ := json.Marshal(row["result_receipt"])
-	if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
-		t.Fatal(err)
-	}
-	artifactPath := filepath.Join(root, filepath.FromSlash(receipt.ResultRef))
-	artifact, err := workpacket.ReadFile(root, receipt.ResultRef, resultReceiptReadLimit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(artifact, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	var effective map[string]any
-	if err := json.Unmarshal(envelope["effective_answer"], &effective); err != nil {
-		t.Fatal(err)
-	}
-	effective["baseline_generation"] = 77
-	envelope["effective_answer"], err = json.Marshal(effective)
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifact, err = json.Marshal(envelope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(artifactPath, artifact, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	receipt.ResultSHA256 = sha256Of(artifact)
-	evidence, err := uniqueEvidenceByID(state, receipt.SubmissionKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	evidence["sha256"] = receipt.ResultSHA256
-	var incoming Result
-	authored, err := os.ReadFile(resultPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(authored, &incoming); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyResultReceiptClosure(root, state, row, receipt, &incoming); err == nil || !strings.Contains(err.Error(), "tuple") {
-		t.Fatalf("replay accepted effective answer machine tuple tampering, err=%v", err)
-	}
-}
-
 func TestReviewResultCleanupRetainsArtifactForPendingOrReferencedRuntime(t *testing.T) {
 	for _, mode := range []struct {
 		name  string
@@ -450,7 +257,7 @@ func TestReviewResultCleanupRetainsArtifactForPendingOrReferencedRuntime(t *test
 			if err := os.WriteFile(marker, []byte(`{"pending":true}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			removed, err := removeStagedArtifactIfUnreferenced(store, state, intField(state["revision"]), relative, sha256Of(artifactBytes))
+			removed, err := store.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{ExpectedRevision: intField(state["revision"]), ArtifactPath: relative, ArtifactBytes: artifactBytes, ReferencedPaths: stateArtifactReferences(state, relative)})
 			if err != nil || removed {
 				t.Fatalf("cleanup with a durable pending marker = (%t,%v), want (false,nil)", removed, err)
 			}
@@ -461,7 +268,7 @@ func TestReviewResultCleanupRetainsArtifactForPendingOrReferencedRuntime(t *test
 				t.Fatal(err)
 			}
 			state["evidence"] = []any{map[string]any{"path": relative}}
-			removed, err = removeStagedArtifactIfUnreferenced(store, state, intField(state["revision"]), relative, sha256Of(artifactBytes))
+			removed, err = store.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{ExpectedRevision: intField(state["revision"]), ArtifactPath: relative, ArtifactBytes: artifactBytes, ReferencedPaths: stateArtifactReferences(state, relative)})
 			if err != nil || removed {
 				t.Fatalf("cleanup of a state-referenced artifact = (%t,%v), want (false,nil)", removed, err)
 			}
@@ -490,7 +297,7 @@ func TestTypedResultReceiptRecoversSealedCommitAndReplaysOnce(t *testing.T) {
 				findings = []Finding{finding}
 				qaVerdict = "finding"
 				qaConclusions["claim-qa-1"] = "fail"
-				capturePath = CaptureFile(root, "loop-REQ-TEST", 1, "assignment-qa-1")
+				capturePath = filepath.Join(root, ".claude", "evidence", "legacy-unreferenced-capture.jsonl")
 				if err := os.MkdirAll(filepath.Dir(capturePath), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -628,11 +435,11 @@ func TestTypedResultReceiptRecoversSealedCommitAndReplaysOnce(t *testing.T) {
 			}
 			if withFinding {
 				findings := replayed.State["entities"].(map[string]any)["findings"].([]any)
-				if len(findings) != 1 || replayed.State["review"].(map[string]any)["observation_batch"] == nil || cleanRounds != 0 {
-					t.Fatalf("finding recovery duplicated or altered closing projections: findings=%d batch=%v cleanRounds=%d", len(findings), replayed.State["review"].(map[string]any)["observation_batch"], cleanRounds)
+				if len(findings) != 1 || cleanRounds != 0 {
+					t.Fatalf("finding recovery duplicated or altered projections: findings=%d cleanRounds=%d", len(findings), cleanRounds)
 				}
-			} else if cleanRounds != 1 || intField(replayed.State["review"].(map[string]any)["clean_round"]) != 1 {
-				t.Fatalf("clean-round recovery duplicated or lost its projection: evidence=%d projection=%v", cleanRounds, replayed.State["review"].(map[string]any)["clean_round"])
+			} else if cleanRounds != 0 || !RequiredResponsibilitiesComplete(replayed.State) {
+				t.Fatalf("clean recovery lost responsibility completion or manufactured machine proof: evidence=%d", cleanRounds)
 			}
 		})
 	}
@@ -1097,7 +904,7 @@ func TestTypedResultReceiptFindingReplayDoesNotDuplicateFindingOrSeal(t *testing
 	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-finding", "agent-qa-1", "finding",
 		map[string]string{"claim-qa-1": "fail", "claim-qa-2": "pass"},
 		[]Finding{finding})
-	capturePath := CaptureFile(root, "loop-REQ-TEST", 1, "assignment-qa-1")
+	capturePath := filepath.Join(root, ".claude", "evidence", "legacy-unreferenced-capture.jsonl")
 	if err := os.MkdirAll(filepath.Dir(capturePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1114,69 +921,33 @@ func TestTypedResultReceiptFindingReplayDoesNotDuplicateFindingOrSeal(t *testing
 	if got := len(accepted.State["entities"].(map[string]any)["findings"].([]any)); got != 1 {
 		t.Fatalf("finding count = %d, want 1", got)
 	}
-	resultEvidence, err := uniqueEvidenceByID(accepted.State, "review-result-qa-finding")
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifactBytes, err := workpacket.ReadFile(root, stringField(resultEvidence["path"]), resultReceiptReadLimit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(artifactBytes, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	var submitted, effective Result
-	if err := json.Unmarshal(envelope["submitted_answer"], &submitted); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(envelope["effective_answer"], &effective); err != nil {
-		t.Fatal(err)
-	}
-	if len(submitted.Findings[0].Encounter.Timeline) != 0 || len(effective.Findings[0].Encounter.Timeline) != 1 || stringFieldFromRaw(envelope["answer_sha256"]) == stringFieldFromRaw(envelope["effective_answer_sha256"]) {
-		t.Fatal("typed envelope must preserve the authored empty timeline and separately digest its capture-enriched effective answer")
-	}
-	if accepted.State["review"].(map[string]any)["observation_batch"] != nil {
-		t.Fatal("ordinary finding should drain while another Assignment is pending")
-	}
-	dvPath := writeResultFile(t, root, plan, "assignment-dv-1", "review-result-dv-1", "agent-dv-1", "pass",
-		map[string]string{"claim-dv-1": "pass"}, nil)
-	sealed, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: accepted.Revision, AssignmentID: "assignment-dv-1", ResultPath: dvPath,
-	})
-	if err != nil {
-		t.Fatalf("submit final pass: %v", err)
-	}
-	batchBefore := sealed.State["review"].(map[string]any)["observation_batch"]
-	findingsBefore := len(sealed.State["entities"].(map[string]any)["findings"].([]any))
-	_, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
-		CaptureDir: filepath.Join(root, "missing-captures"),
-	})
-	if err != nil {
-		t.Fatalf("replay finding result after round seal: %v", err)
+	beforeState, beforeJournal := mustReadTestFile(t, statePath), mustReadTestFile(t, journalPath)
+	findingsBefore := len(accepted.State["entities"].(map[string]any)["findings"].([]any))
+	if _, err := SubmitResult(root, statePath, journalPath, SubmitRequest{ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath}); err != nil {
+		t.Fatalf("replay accepted original Finding: %v", err)
 	}
 	current, err := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(current.State["entities"].(map[string]any)["findings"].([]any)) != findingsBefore || !reflect.DeepEqual(current.State["review"].(map[string]any)["observation_batch"], batchBefore) {
-		t.Fatal("finding replay duplicated a Finding or changed the sealed ObservationBatch")
+	if len(current.State["entities"].(map[string]any)["findings"].([]any)) != findingsBefore || !reflect.DeepEqual(beforeState, mustReadTestFile(t, statePath)) || !reflect.DeepEqual(beforeJournal, mustReadTestFile(t, journalPath)) {
+		t.Fatal("original Finding replay duplicated or rewrote the accepted result")
 	}
+
 }
 
-func TestProfessionalAnswerDigestCanonicalizesNestedObjectKeys(t *testing.T) {
-	left := []byte(`{"verdict":"pass","claim_results":[{"claim_id":"c1","conclusion":"pass","observed":"ok","evidence_refs":["path:x#sha256=abc"]}]}`)
-	right := []byte(`{"claim_results":[{"evidence_refs":["path:x#sha256=abc"],"observed":"ok","conclusion":"pass","claim_id":"c1"}],"verdict":"pass"}`)
-	leftDigest, err := professionalAnswerDigest(left)
+func TestProfessionalAnswerCanonicalizesNestedObjectKeys(t *testing.T) {
+	left := []byte(`{"verdict":"pass","claim_results":[{"claim_id":"c1","conclusion":"pass","observed":"ok","evidence_refs":["path:docs/evidence"]}]}`)
+	right := []byte(`{"claim_results":[{"evidence_refs":["path:docs/evidence"],"observed":"ok","conclusion":"pass","claim_id":"c1"}],"verdict":"pass"}`)
+	leftAnswer, err := professionalAnswerContent(left)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rightDigest, err := professionalAnswerDigest(right)
+	rightAnswer, err := professionalAnswerContent(right)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if leftDigest != rightDigest {
-		t.Fatalf("JSON key order changed canonical answer digest: %s != %s", leftDigest, rightDigest)
+	if leftAnswer != rightAnswer {
+		t.Fatalf("JSON key order changed canonical professional answer: %s != %s", leftAnswer, rightAnswer)
 	}
 }

@@ -48,20 +48,8 @@ func s5ManifestProjection(ctx context.Context, root string, state map[string]any
 	}
 	paths := []string{}
 	for _, ref := range sources.References {
-		data, readErr := service.Files.ReadFile(filepath.Join(root, ref.Path))
-		if readErr != nil {
-			return nil, "", "", fmt.Errorf("restore accepted S5 source %s: %w", ref.Path, readErr)
-		}
-		if workpacket.Digest(data) != ref.SHA256 {
-			return nil, "", "", fmt.Errorf("accepted S5 source differs: %s; restore its accepted bytes, do not refresh SHA", ref.Path)
-		}
-		live, readErr := workpacket.ReadFile(root, ref.Path, 20<<20)
-		if readErr != nil {
-			return nil, "", "", fmt.Errorf("restore accepted S5 source %s: %w", ref.Path, readErr)
-		}
-		if workpacket.Digest(live) != ref.SHA256 {
-			return nil, "", "", fmt.Errorf("accepted S5 source differs: %s; restore its accepted bytes, do not refresh SHA", ref.Path)
-		}
+		// Main and the independent reviewer receive the original material path.
+		// Issuance does not reauthenticate historical bytes.
 		paths = append(paths, ref.Path)
 	}
 	sort.Strings(paths)
@@ -89,7 +77,7 @@ func s5ManifestProjection(ctx context.Context, root string, state map[string]any
 		if stageAnswerEntry(d["generation"]) != generation || (d["status"] != "registered" && d["status"] != "locked") {
 			continue
 		}
-		docs = append(docs, map[string]any{"id": d["id"], "path": d["path"], "version": d["version"], "sha256": d["sha256"]})
+		docs = append(docs, map[string]any{"id": d["id"], "path": d["path"], "version": d["version"]})
 		if taskID == "" && d["kind"] == "task" {
 			taskID, taskPath = stringValue(d["id"]), stringValue(d["path"])
 		}
@@ -112,7 +100,7 @@ func s5ManifestProjection(ctx context.Context, root string, state map[string]any
 		assignments = append(assignments, map[string]any{"assignment_id": id, "responsibility_id": responsibility, "role_family": "document-verifier", "scope": scope, "agent_id": "reviewer-" + suffix + "-" + dimension, "agent_definition_ref": ".claude/agents/document-verifier.md", "skill_refs": agentcontext.RequiredSkills(responsibility), "read_paths": paths, "write_paths": []string{}, "output_paths": []string{output}, "depends_on": []string{}, "reuse_decision": "create", "grouping_rationale": scope[0] + "；与另一审查维度由独立原生上下文分别判断。", "status": "planned", "required_checks": []string{}, "done_when": []string{"读取系统提供的完整准确材料，在本人原答卷填写真实 conclusion/findings 并原生返回"}})
 		dispositions = append(dispositions, map[string]any{"responsibility_id": responsibility, "disposition": "assigned", "trigger": "S5 必需独立审查维度", "assignment_ids": []string{id}, "na_rationale": nil, "evidence_ref": nil})
 	}
-	value := map[string]any{"schema_version": "1.0.0", "manifest_id": "team-manifest-" + suffix, "version": "v1.0.0", "runtime_id": state["runtime_id"], "req_id": req, "baseline_generation": generation, "review_round": nil, "platform_team_id": "logical-" + suffix, "workgroup_id": "workgroup-" + suffix, "workgroup_kind": "document_verifier", "status": "planned", "documents": docs, "risk_tags": []any{}, "responsibility_dispositions": dispositions, "assignments": assignments, "separation_edges": []any{map[string]any{"left_assignment_id": ids[0], "right_assignment_id": ids[1], "reason": "independence"}}, "planned_agent_count": 2, "max_parallel_agents": 2, "quantity_rationale": "两项必需专业维度分别由两个独立原生上下文判断；owner 仅为工程标签。", "validation": map[string]any{"result": "pass", "missing_responsibilities": []string{}, "unresolved_conflicts": []string{}, "warnings": []string{}, "validated_at": time.Now().UTC().Format(time.RFC3339Nano)}}
+	value := map[string]any{"schema_version": "1.0.0", "manifest_id": "team-manifest-" + suffix, "version": "v1.0.0", "runtime_id": state["runtime_id"], "req_id": req, "baseline_generation": generation, "platform_team_id": "logical-" + suffix, "workgroup_id": "workgroup-" + suffix, "workgroup_kind": "document_verifier", "status": "planned", "documents": docs, "risk_tags": []any{}, "responsibility_dispositions": dispositions, "assignments": assignments, "separation_edges": []any{map[string]any{"left_assignment_id": ids[0], "right_assignment_id": ids[1], "reason": "independence"}}, "planned_agent_count": 2, "max_parallel_agents": 2, "quantity_rationale": "两项必需专业维度分别由两个独立原生上下文判断；owner 仅为工程标签。", "validation": map[string]any{"result": "pass", "missing_responsibilities": []string{}, "unresolved_conflicts": []string{}, "warnings": []string{}, "validated_at": time.Now().UTC().Format(time.RFC3339Nano)}}
 	// Normalize JSON numbers/arrays for comparisons with the actual author file.
 	data, _ := json.Marshal(value)
 	json.Unmarshal(data, &value)

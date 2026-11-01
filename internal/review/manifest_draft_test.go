@@ -114,8 +114,8 @@ func TestDraftManifestPrefillsControlPlaneFacts(t *testing.T) {
 	if draft.ReqID != "REQ-002" {
 		t.Errorf("req_id = %q, want REQ-002 (bound REQ from the example state)", draft.ReqID)
 	}
-	if draft.BaselineGeneration != 1 || draft.ReviewRound != 1 {
-		t.Errorf("baseline/round = %d/%d, want 1/1", draft.BaselineGeneration, draft.ReviewRound)
+	if draft.BaselineGeneration != 1 {
+		t.Errorf("baseline = %d, want 1", draft.BaselineGeneration)
 	}
 	if draft.WorkgroupKind != "qa" {
 		t.Errorf("workgroup_kind = %q, want qa", draft.WorkgroupKind)
@@ -149,7 +149,7 @@ func TestDraftManifestPrefillsControlPlaneFacts(t *testing.T) {
 
 	// Engineering labels come from the original Assignment, not another
 	// identity question or an opaque platform actor lookup.
-	if row.AgentID != "s7-g1-r1-qa-static" || strings.Contains(draft.PlatformTeamID, "TODO") {
+	if row.AgentID != "s7-g1-review-plan-md-1-qa-static" || strings.Contains(draft.PlatformTeamID, "TODO") {
 		t.Errorf("prepared engineering labels = %q/%q", row.AgentID, draft.PlatformTeamID)
 	}
 	if len(notes) == 0 {
@@ -175,7 +175,7 @@ func TestDraftManifestPrefillsControlPlaneFacts(t *testing.T) {
 }
 
 func TestDraftManifestMissingOriginalDocumentMetadataIsSystemPreparationGap(t *testing.T) {
-	for _, scenario := range []string{"version", "sha256", "path", "no-documents"} {
+	for _, scenario := range []string{"version", "path", "no-documents"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			state := baseVerificationState()
@@ -191,6 +191,74 @@ func TestDraftManifestMissingOriginalDocumentMetadataIsSystemPreparationGap(t *t
 				t.Fatalf("missing source became a planner metadata exercise: draft=%+v err=%v", draft, err)
 			}
 		})
+	}
+}
+
+func TestDraftManifestNoRoundOrDigestAndNoHistoricalDigestCopy(t *testing.T) {
+	for _, historic := range []bool{false, true} {
+		t.Run(fmt.Sprintf("historical_digest_%t", historic), func(t *testing.T) {
+			root := t.TempDir()
+			state := baseVerificationState()
+			plan := manifestDraftFixturePlan()
+			plan["review_round"] = nil
+			pinPlan(t, root, state, plan)
+			reviewMap := state["review"].(map[string]any)
+			delete(reviewMap, "round")
+			reviewMap["round_entry"] = map[string]any{"plan_id": plan["review_plan_id"]}
+			delete(reviewMap["plan"].(map[string]any), "sha256")
+			bound := state["bound_req"].(map[string]any)
+			delete(bound, "sha256")
+			task := map[string]any{"id": "TASK-001", "kind": "task", "path": "docs/dev/tasks/TASK-001.md", "version": "v1", "generation": 1}
+			if historic {
+				bound["sha256"], task["sha256"] = "legacy-not-a-proof", "legacy-not-a-proof"
+			}
+			state["documents"] = []any{task}
+			draft, _, err := DraftManifest(root, state, "assignment-qa-static")
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(draft)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), `"sha256"`) || strings.Contains(string(data), `"review_round"`) {
+				t.Fatalf("new manifest must omit digests and not invent a round: %s", data)
+			}
+			if err := schema.NewValidator(root).ValidateBytes("team-manifest.schema.json", data); err != nil {
+				t.Fatalf("no-digest manifest schema: %v", err)
+			}
+			if err := team.ValidateBytes(data); err != nil {
+				t.Fatalf("no-digest manifest semantics: %v", err)
+			}
+		})
+	}
+}
+
+func TestDraftManifestRetainsDistinctPlanIdentityForRepeatedAssignment(t *testing.T) {
+	root := t.TempDir()
+	state := baseVerificationState()
+	plan := manifestDraftFixturePlan()
+	plan["review_round"] = nil
+	reviewState := state["review"].(map[string]any)
+	delete(reviewState, "round")
+	plan["review_plan_id"] = "review-plan-first"
+	reviewState["round_entry"] = map[string]any{"plan_id": plan["review_plan_id"]}
+	pinPlan(t, root, state, plan)
+	first, _, err := DraftManifest(root, state, "assignment-qa-static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entities := state["entities"].(map[string]any)
+	entities["teams"] = []any{map[string]any{"id": first.WorkgroupID, "platform_team_id": first.PlatformTeamID}}
+	plan["review_plan_id"] = "review-plan-second"
+	reviewState["round_entry"] = map[string]any{"plan_id": plan["review_plan_id"]}
+	pinPlan(t, root, state, plan)
+	second, _, err := DraftManifest(root, state, "assignment-qa-static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Assignments[0].AgentID == second.Assignments[0].AgentID || first.WorkgroupID == second.WorkgroupID || first.ManifestID == second.ManifestID || first.ManifestID != ManifestIDForPlan("review-plan-first", "assignment-qa-static") || second.ManifestID != ManifestIDForPlan("review-plan-second", "assignment-qa-static") {
+		t.Fatalf("different Plans reused the same issued owner/workgroup: %#v %#v", first, second)
 	}
 }
 
@@ -240,8 +308,8 @@ func TestDraftManifestE2EPrefillsForcedSkills(t *testing.T) {
 		t.Errorf("write_paths = %v, want the verification artifact workspace included", row.WritePaths)
 	}
 	joined := strings.Join(notes, "\n")
-	if !strings.Contains(joined, "behavior-wave") {
-		t.Errorf("notes should warn about the static-before-behavior gate, got: %s", joined)
+	if !strings.Contains(joined, "actual dependencies") || strings.Contains(joined, "static-before-behavior") {
+		t.Errorf("notes should describe actual dependencies without a wave gate, got: %s", joined)
 	}
 
 	data, err := json.MarshalIndent(draft, "", "  ")

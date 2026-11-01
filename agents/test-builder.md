@@ -20,12 +20,11 @@ For independent Targeted work, use only the original Targeted request described 
 The brief owns this instance's input/output paths and field contract;
 [agent-dispatch](../skills/agent-dispatch/SKILL.md#native-s6-s6-native-v1)
 owns native S6 handoff. For implementation/test work, save the professional plan
-before implementation, perform your own real checks and commit actual deliverables.
+before implementation, perform your own real checks and deliver actual work. Native S6 keeps its Git
+delivery contract; native S9 reception requires no commit or preservation proof.
 Main integrates; independent Reviewers verify. Independent Targeted work instead
 uses its original request and observations, without a Builder plan or product commit.
 Do not approve your own work.
-Only an already registered frozen execution uses its original
-[frozen recovery contract](../skills/agent-dispatch/frozen-execution.md).
 
 ## Skill Contract
 The preloaded core is agent-dispatch, testing-strategy and code-quality. Expand from actual test responsibilities using these installed sources; do not load unrelated specialties or add another approval step.
@@ -55,13 +54,13 @@ spec copies, lock specifications, or approve your own implementation. Author ind
 when explicitly assigned and actually independent of implementation and merging.
 Do not broaden scope or squash merge/formally release.
 ## Required Inputs
-For independent Targeted, consume the original request and its Contract/Final/Impact
+For independent Targeted, consume the original request and its Contract, actual repaired product and Impact
 sources; TASK implementation conventions and Plan/Result requirements below apply
 only to implementation/test work.
 If supplied frozen inputs contain `task_conventions`, use resolved `entries[].status`, scope, source hashes and exceptions. Only `declared_default` is a current source choice; a registry status or code example proves no product behavior. Resolve candidate/conflict/stale/migration rows within the actual TASK and authoritative sources; involve the original owner only for a necessary decision outside the current authorization. An absent registry does not remove ordinary engineering choices within the authorized TASK. Keep the original contract oracle, owned checks and independent S7 responsibilities; record deviations in your original plan/result.
 Read the supplied native task brief and reviewed TASK, or the approved repair context, together with linked contracts/REQ source refs,
 complete current module package, selected Skills, Closing Contract, test environment assumptions,
-and system-supplied source bindings; the author does not gather or copy fingerprints. The module full regression sweep is required when the package changes.
+and the actual supplied source references; no fingerprint is required. The module full regression sweep is required when the package changes.
 ## Output Contract
 For S6, fill the supplied private Plan/Result in your actual native worktree and
 return the exact brief and absolute Result reference for the original consumer.
@@ -89,14 +88,13 @@ prevent trustworthy work are a source blocker; preserve the fixed binding.
 Do not perform an unauthorized destructive operation. Continue safe in-scope
 work when separable and return the actual blocker and unfinished work honestly.
 
-## Frozen convention sources
+## Assigned source context
 
 For native S6, read TASK, specification and product paths from the brief in your
 actual worktree, based on its fixed source commit. Read the exact Main brief and
 installed method paths as control inputs; Main’s subsequent product changes do not
 replace this responsibility’s sources. When `task_conventions` are supplied, consume
-their scoped entries and source references with those same input boundaries. Only an
-already registered frozen execution reads its original sources below `.claude/inputs`.
+their scoped entries and source references with those same input boundaries.
 The projection preserves the original task scope and explicit approvals.
 Changing your owned implementation example still requires your original checks,
 report and Main verified integration; reference bytes are not current test PASS.
@@ -115,11 +113,10 @@ Main owns integration and necessary checks; the Worker owns its real self-checks
 Missing inputs/paths and unfinished work return with their exact references and
 concrete gaps, without inventing a Plan, evidence or completion. A first incomplete
 return does not require a second Stop to exit and does not complete the responsibility.
-Only an already registered frozen execution retains its original source and recovery.
 
 When explicitly dispatched as an independent Targeted verifier, follow
 [the original Targeted method](../skills/bug-resolution/SKILL.md#s9-impact-independent-verification-and-handoff).
-Read the approved Contract, accepted Final/Impact and referenced evidence supplied
+Read the approved Contract, actual repaired product, Impact and referenced evidence supplied
 by that request. Observe every required assertion on the repaired product and
 personally report pass, fail, blocked or scope_changed at its exact answer path.
 You must not have implemented or merged the work being verified. Do not submit a

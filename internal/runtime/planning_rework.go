@@ -10,7 +10,7 @@ import (
 
 // PlanningReworkReplay reads the original journal anchor, including rotated
 // segments, rather than inferring a request from published packet files.
-func PlanningReworkReplay(state map[string]any, journalPath, requestID, target string) (bool, error) {
+func PlanningReworkReplay(state map[string]any, journalPath, reason, target string) (bool, error) {
 	life, _ := state["lifecycle"].(map[string]any)
 	last, _ := state["last_transition"].(map[string]any)
 	if life["state"] != "planning" || life["phase"] != target || last["event"] != "planning_professional_rework" {
@@ -36,7 +36,17 @@ func PlanningReworkReplay(state map[string]any, journalPath, requestID, target s
 	if !ok {
 		return false, fmt.Errorf("planning rework journal anchor missing")
 	}
-	return j.Events[index]["request_id"] == requestID, nil
+	// The transition action already persisted the actual professional reason.
+	// Compare that fact; the original request ID remains opaque, including
+	// historically hash-shaped IDs.
+	actions, _ := j.Events[index]["action_results"].([]any)
+	for _, raw := range actions {
+		action, _ := raw.(map[string]any)
+		if action["id"] == "planning_professional_rework" && action["result"] == "committed" {
+			return strings.TrimSpace(stringValue(action["detail"])) == strings.TrimSpace(reason), nil
+		}
+	}
+	return false, nil
 }
 
 // ApplyPlanningRework invalidates dependent projections in the original
@@ -46,18 +56,8 @@ func ApplyPlanningRework(root string, state map[string]any, target, reason, id s
 	if bound["status"] != "locked" || files == nil {
 		return fmt.Errorf("planning rework requires the original locked REQ and authoritative source view")
 	}
-	data, err := files.ReadFile(stringValue(bound["path"]))
-	if err != nil || workpacket.Digest(data) != bound["sha256"] {
-		return fmt.Errorf("locked REQ changed; use the original requirement-change boundary, not planning rework")
-	}
-	disk, err := workpacket.ReadFile(root, stringValue(bound["path"]), 4<<20)
-	if err != nil || workpacket.Digest(disk) != bound["sha256"] {
-		return fmt.Errorf("locked REQ working bytes changed; use the original requirement-change boundary")
-	}
-	if verify, ok := files.(interface{ Verify() error }); ok {
-		if err := verify.Verify(); err != nil {
-			return err
-		}
+	if _, err := files.ReadFile(stringValue(bound["path"])); err != nil {
+		return fmt.Errorf("original REQ unavailable: %w", err)
 	}
 	if target == "contracts" {
 		if err := validateReworkFrozenDesign(root, state, files); err != nil {

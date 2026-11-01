@@ -29,14 +29,14 @@ func TestTaskPlanningSubmissionUsesCurrentRecordWithoutSourceReproof(t *testing.
 	var row map[string]any
 	json.Unmarshal(encoded, &row)
 	state["entities"].(map[string]any)["submissions"] = []any{row}
-	state["evidence"] = []any{map[string]any{"id": req.ID, "kind": req.Kind, "path": req.Path, "sha256": workpacket.Digest(data)}}
+	state["evidence"] = []any{map[string]any{"id": req.ID, "kind": req.Kind, "path": req.Path}}
 	if _, err := prepareTaskPlanningSubmission(t.TempDir(), state, req, data); !errors.Is(err, errSubmissionAccepted) {
 		t.Fatalf("same answer not idempotent: %v", err)
 	}
 	answer.Conclusion = text("pass")
 	answer.TaskPaths = []string{"docs/dev/tasks/TASK-REQ-001-02.md"}
 	req.Submission.AnswerJSON, _ = json.Marshal(map[string]any{"answer": answer})
-	if _, err := prepareTaskPlanningSubmission(t.TempDir(), state, req, data); !errors.Is(err, ErrSubmissionConflict) {
-		t.Fatalf("changed answer did not conflict: %v", err)
+	if _, err := prepareTaskPlanningSubmission(t.TempDir(), state, req, data); err == nil {
+		t.Fatal("changed answer was treated as the original evidence")
 	}
 }

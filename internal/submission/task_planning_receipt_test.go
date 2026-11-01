@@ -10,7 +10,7 @@ import (
 )
 
 func TestTaskPlanningReceiptProjectsRecordedFactsWithoutArtifactReads(t *testing.T) {
-	for _, status := range []string{"pending", "no_transition", "advanced"} {
+	for _, status := range []string{"pending", "advanced"} {
 		t.Run(status, func(t *testing.T) {
 			p := workpacket.TaskPlanningPacket{ID: "packet-s4", Binding: workpacket.PlanningBinding{RuntimeID: "runtime", Generation: 1, StageEntry: 3}}
 			state := map[string]any{"runtime_id": "runtime", "baseline": map[string]any{"generation": 1}, "lifecycle": map[string]any{"state": "planning", "phase": "tasks", "phase_revision": 3}, "entities": map[string]any{"submissions": []any{map[string]any{"packet_id": p.ID, "submission_key": "recorded-key", "evidence_id": "recorded-evidence", "followup_event_id": "recorded-followup", "control_status": status}}}}

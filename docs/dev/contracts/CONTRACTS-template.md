@@ -6,7 +6,7 @@
 > （机器登记只认 locked——reviewed 仅人审中间态，PTR-PLAN-02 前须翻 locked；时机见 protocol #s3）
 > 版本：v0.1.0
 > 规划责任：{Main / 实际专业责任人；本阶段不预建 Builder}
-> 作者维护本合同的真实状态与专业版本；登记时间、摘要和锁定关联由原消费者记录到 Runtime documents[] 与 journal，不另填机器元数据。
+> 作者维护本合同的真实状态、专业版本和实际引用；原消费者承接本人内容及责任，不计算、登记或要求摘要。
 
 ## 文档链接
 
@@ -53,7 +53,7 @@
 | REQ-{id}/FR-{id} | none | `docs/design/prototypes/{module}/`（七文件服务行为包） | {实际 BE/SYNC 等合同} | CASE / F → {实际服务单元/集成/契约测试入口} |
 | REQ-{id}/FR-{id} | changed | {适用 UI 行为包，含实际页面} | {实际 FE/BE/SYNC 合同} | CASE / PATH → {实际浏览器 Spec} |
 
-模块输入的机器指纹/登记关联由 Runtime 与原 consumer 使用，作者只填写实际模块、合同影响和验证来源，不拼接或抄写 fingerprint。
+作者填写实际模块、合同影响和验证来源；原 consumer 使用已有责任及实际引用，不计算或登记机器指纹。
 
 ## 需求覆盖矩阵
 

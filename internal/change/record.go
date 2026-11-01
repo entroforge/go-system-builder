@@ -48,15 +48,15 @@ type Finding struct {
 }
 
 type Workspace struct {
-	Branch            string `json:"branch"`
-	BaseSHA           string `json:"base_sha"`
+	Branch string `json:"branch"`
+
 	IntegrationTarget string `json:"integration_target"`
 }
 
 type Record struct {
-	ID             string       `json:"id"`
-	REQRef         string       `json:"req_ref"`
-	REQSHA         string       `json:"req_sha256"`
+	ID     string `json:"id"`
+	REQRef string `json:"req_ref"`
+
 	Summary        string       `json:"summary"`
 	Class          string       `json:"class"`
 	Risk           string       `json:"risk"`
@@ -70,9 +70,9 @@ type Record struct {
 }
 
 type Input struct {
-	ID         string       `json:"id"`
-	REQRef     string       `json:"req_ref"`
-	REQSHA     string       `json:"req_sha256"`
+	ID     string `json:"id"`
+	REQRef string `json:"req_ref"`
+
 	Summary    string       `json:"summary"`
 	Class      string       `json:"class"`
 	Risk       string       `json:"risk"`
@@ -127,7 +127,7 @@ var validRisks = map[string]bool{"low": true, "medium": true, "high": true}
 
 func BuildRecord(input Input) (Record, error) {
 	record := Record{
-		ID: input.ID, REQRef: input.REQRef, REQSHA: input.REQSHA,
+		ID: input.ID, REQRef: input.REQRef,
 		Summary: input.Summary, Class: input.Class, Risk: input.Risk,
 		Scope: input.Scope, Acceptance: input.Acceptance, Unknowns: input.Unknowns,
 		WorkItems: input.WorkItems, Findings: []Finding{}, Workspace: input.Workspace,
@@ -161,7 +161,7 @@ func BuildRecord(input Input) (Record, error) {
 }
 
 func Validate(record Record) error {
-	for name, value := range map[string]string{"id": record.ID, "req_ref": record.REQRef, "req_sha256": record.REQSHA, "summary": record.Summary, "class": record.Class, "risk": record.Risk} {
+	for name, value := range map[string]string{"id": record.ID, "req_ref": record.REQRef, "summary": record.Summary, "class": record.Class, "risk": record.Risk} {
 		if value == "" {
 			return fmt.Errorf("change %s is required", name)
 		}

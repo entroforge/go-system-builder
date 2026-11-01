@@ -10,7 +10,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-func TestRepairResultBlockerArtifactCanonicalizesFullAnswerAndRejectsUnknowns(t *testing.T) {
+func TestRepairResultBlockerArtifactPreservesAnswerAndIgnoresExtraFields(t *testing.T) {
 	artifact := repairResultBlockerArtifactFixture(t)
 	pretty, err := json.MarshalIndent(artifact, "", "  ")
 	if err != nil {
@@ -34,8 +34,8 @@ func TestRepairResultBlockerArtifactCanonicalizesFullAnswerAndRejectsUnknowns(t 
 	t.Run("unknown artifact field", func(t *testing.T) {
 		data := repairResultBlockerJSONWithField(t, artifact, "accepted_sequence", json.RawMessage(`1`))
 		var decoded RepairResultBlockerArtifact
-		if err := json.Unmarshal(data, &decoded); err == nil {
-			t.Fatal("blocker artifact accepted receipt-only acceptance coordinates")
+		if err := json.Unmarshal(data, &decoded); err != nil || decoded.PacketID != artifact.PacketID {
+			t.Fatalf("unrelated artifact field changed the original responsibility: %v", err)
 		}
 	})
 
@@ -62,8 +62,8 @@ func TestRepairResultBlockerArtifactCanonicalizesFullAnswerAndRejectsUnknowns(t 
 			t.Fatal(err)
 		}
 		var decoded RepairResultBlockerArtifact
-		if err := json.Unmarshal(data, &decoded); err == nil {
-			t.Fatal("blocker artifact accepted a partial answer")
+		if err := json.Unmarshal(data, &decoded); err != nil || !bytes.Contains(decoded.SubmittedAnswer, []byte(`"migration_ref":null`)) {
+			t.Fatalf("optional null field changed blocked answer: %v", err)
 		}
 	})
 
@@ -90,8 +90,8 @@ func TestRepairResultBlockerArtifactCanonicalizesFullAnswerAndRejectsUnknowns(t 
 			t.Fatal(err)
 		}
 		var decoded RepairResultBlockerArtifact
-		if err := json.Unmarshal(data, &decoded); err == nil {
-			t.Fatal("blocker artifact accepted unknown binding authority")
+		if err := json.Unmarshal(data, &decoded); err != nil || decoded.Binding.Sources.OwnerAgentID != artifact.Binding.Sources.OwnerAgentID {
+			t.Fatalf("unknown binding field changed original owner: %v", err)
 		}
 	})
 
@@ -113,7 +113,6 @@ func TestRepairResultBlockerArtifactCanonicalizesFullAnswerAndRejectsUnknowns(t 
 		if err != nil {
 			t.Fatal(err)
 		}
-		object["answer_sha256"], err = json.Marshal(workpacket.Digest(mustCanonicalBlockerAnswer(t, object["submitted_answer"])))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -122,8 +121,8 @@ func TestRepairResultBlockerArtifactCanonicalizesFullAnswerAndRejectsUnknowns(t 
 			t.Fatal(err)
 		}
 		var decoded RepairResultBlockerArtifact
-		if err := json.Unmarshal(data, &decoded); err == nil {
-			t.Fatal("blocker artifact accepted an unknown answer field")
+		if err := json.Unmarshal(data, &decoded); err != nil || !bytes.Contains(decoded.SubmittedAnswer, []byte(`"forged_result_ref":"result.json"`)) {
+			t.Fatalf("extra professional answer field was rejected or lost: %v", err)
 		}
 	})
 
@@ -157,7 +156,6 @@ func TestRepairResultBlockerReceiptIsReadOnlyProjection(t *testing.T) {
 	receipt := RepairResultBlockerReceipt{
 		Contract:                     "s9-repair-result-blocker-receipt-v1",
 		ArtifactRef:                  ".claude/evidence/loop-demo/g2/S9/blockers/packet-" + strings.Repeat("a", 64) + "/" + strings.Repeat("b", 64) + ".json",
-		ArtifactSHA256:               strings.Repeat("b", 64),
 		Artifact:                     repairResultBlockerArtifactFixture(t),
 		AcceptedEventID:              "evt-agent-agent-demo-work_blocked-r12",
 		AcceptedIdempotencyKey:       "runtime:agent:agent-demo:work_blocked:11",
@@ -188,8 +186,8 @@ func TestRepairResultBlockerReceiptIsReadOnlyProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(unknown, &RepairResultBlockerReceipt{}); err == nil {
-		t.Fatal("blocker receipt accepted an unknown capability field")
+	if err := json.Unmarshal(unknown, &decoded); err != nil || decoded.AcceptedEventID != receipt.AcceptedEventID {
+		t.Fatalf("unrelated receipt extension changed original acceptance: %v", err)
 	}
 	compact, err := json.Marshal(receipt)
 	if err != nil {
@@ -218,14 +216,6 @@ func TestRepairResultBlockerReceiptIsReadOnlyProjection(t *testing.T) {
 	})
 }
 
-func TestRepairResultBlockerArtifactBindsCanonicalAnswerSHA(t *testing.T) {
-	artifact := repairResultBlockerArtifactFixture(t)
-	data := repairResultBlockerJSONWithField(t, artifact, "answer_sha256", json.RawMessage(`"`+strings.Repeat("0", 64)+`"`))
-	if err := json.Unmarshal(data, &RepairResultBlockerArtifact{}); err == nil || !strings.Contains(err.Error(), "canonical answer SHA256") {
-		t.Fatalf("expected canonical answer digest mismatch, got %v", err)
-	}
-}
-
 func TestRepairResultBlockerSchemaAcceptsBothExecutionSlotSpellings(t *testing.T) {
 	artifact := repairResultBlockerArtifactFixture(t)
 	for _, slot := range []string{artifact.Binding.Sources.ManifestAssignmentID, artifact.Binding.Sources.RepairAssignmentID} {
@@ -249,7 +239,7 @@ func TestRepairResultBlockerSchemaRequiresCompleteNonpassAnswer(t *testing.T) {
 		t.Run(verdict, func(t *testing.T) {
 			copy := artifact
 			copy.SubmittedAnswer = json.RawMessage(strings.Replace(string(copy.SubmittedAnswer), `"verdict":"blocked"`, `"verdict":"`+verdict+`"`, 1))
-			copy.AnswerSHA256 = workpacket.Digest(mustCanonicalBlockerAnswer(t, copy.SubmittedAnswer))
+
 			data, err := json.Marshal(copy)
 			if err != nil {
 				t.Fatal(err)
@@ -277,8 +267,12 @@ func TestRepairResultBlockerSchemaRequiresCompleteNonpassAnswer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := schema.NewEmbeddedValidator().ValidateBytes("repair-result-blocker.schema.json", data); err == nil {
-				t.Fatalf("standalone blocker schema accepted null %s", name)
+			err = schema.NewEmbeddedValidator().ValidateBytes("repair-result-blocker.schema.json", data)
+			if name == "verdict" && err == nil {
+				t.Fatal("standalone blocker schema accepted null verdict")
+			}
+			if name != "verdict" && err != nil {
+				t.Fatalf("optional blocked answer field %s was rejected: %v", name, err)
 			}
 		})
 	}
@@ -287,39 +281,36 @@ func TestRepairResultBlockerSchemaRequiresCompleteNonpassAnswer(t *testing.T) {
 func repairResultBlockerArtifactFixture(t *testing.T) RepairResultBlockerArtifact {
 	t.Helper()
 	sha := strings.Repeat("a", 64)
-	commit := strings.Repeat("b", 40)
 	answer := json.RawMessage(`{"verdict":"blocked","before_fix_results":[{"assertion_id":"root-1","observed_red":"failure reproduced","evidence_refs":["evidence://red"]}],"unit_results":[{"unit_id":"unit-api","status":"blocked","evidence_refs":["evidence://unit"],"implementation_summary":"work is blocked","restored_invariant_refs":[]}],"detection_gap_artifacts":[],"evidence_refs":["evidence://red"],"scope_deviations":[],"residual_risks":[],"migration_ref":"","rollback_ref":""}`)
 	return RepairResultBlockerArtifact{
-		Contract:        "s9-repair-result-blocker-v1",
-		SchemaVersion:   "1.0.0",
-		PacketID:        "packet-" + sha,
-		PacketSHA256:    sha,
+		Contract:      "s9-repair-result-blocker-v1",
+		SchemaVersion: "1.0.0",
+		PacketID:      "packet-" + sha,
+
 		IssuanceEventID: "evt-repair-result-packet-packet-" + sha,
 		Binding: workpacket.RepairResultBinding{
 			Sources: workpacket.RepairPlanReportBinding{
-				RuntimeID: "loop-demo", BaselineGeneration: 2, ReviewRound: 1,
-				CaseID: "investigation-case-demo", CaseRef: "case.json", CaseSHA256: sha,
-				ContractID: "repair-contract-demo", ContractRef: "contract.json", ContractSHA256: sha,
-				SessionID: "repair-session-demo", SessionRef: "session.json", SessionSHA256: sha,
-				PlanID: "repair-plan-demo", PlanRef: "plan.json", PlanSHA256: sha,
-				RepairAssignmentID: "repair-assignment-demo", RepairAssignmentSHA256: sha,
-				ManifestAssignmentID: "assignment-demo", ManifestAssignmentSHA256: sha,
-				TeamID: "team-demo", TaskID: "TASK-demo", TaskRef: "TASK-demo.md", TaskSHA256: sha,
-				ManifestRef: "manifest.json", ManifestSHA256: sha, OwnerAgentID: "agent-demo",
+				RuntimeID: "loop-demo", BaselineGeneration: 2,
+				CaseID: "investigation-case-demo", CaseRef: "case.json",
+				ContractID: "repair-contract-demo", ContractRef: "contract.json",
+				SessionID: "repair-session-demo", SessionRef: "session.json",
+				PlanID: "repair-plan-demo", PlanRef: "plan.json",
+				RepairAssignmentID:   "repair-assignment-demo",
+				ManifestAssignmentID: "assignment-demo",
+				TeamID:               "team-demo", TaskID: "TASK-demo", TaskRef: "TASK-demo.md",
+				ManifestRef: "manifest.json", OwnerAgentID: "agent-demo",
 			},
-			PlanReportRef: "report.json", PlanReportSHA256: sha, ExecutionSHA256: sha,
+			PlanReportRef: "report.json",
 		},
 		ExecutionAssignmentID: "assignment-demo",
 		ExecutionGeneration:   3,
 		ExecutionRoot:         "/work/assignment-demo",
 		PlatformSessionID:     "platform-session-demo",
-		BaseCommit:            commit,
-		SourceHead:            commit,
-		AnswerPath:            ".claude/submissions/loop-demo/g2/agent-demo/answer.json",
-		SubmittedAnswer:       answer,
-		AnswerSHA256:          workpacket.Digest(mustCanonicalBlockerAnswer(t, answer)),
-		MessageRef:            ".claude/evidence/loop-demo/g2/S9/blocker-messages/packet-" + sha + "/" + sha + ".json",
-		MessageSHA256:         sha,
+
+		AnswerPath:      ".claude/submissions/loop-demo/g2/agent-demo/answer.json",
+		SubmittedAnswer: answer,
+
+		MessageRef: ".claude/evidence/loop-demo/g2/S9/blocker-messages/packet-" + sha + "/" + sha + ".json",
 	}
 }
 

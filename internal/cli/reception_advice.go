@@ -76,7 +76,7 @@ func receptionAdviceText(advice dispatch.ReceptionAdvice) []string {
 	if len(a.ReworkCommand) > 0 {
 		if prepareCommand := s6RevisionPrepareArgv(a.ReworkCommand); len(prepareCommand) > 0 {
 			result = append(result, "Prepare this revision draft first: "+formatReceptionArgv(prepareCommand))
-			result = append(result, "Replace the role, new Agent ID, new Team ID, and intent key placeholders with Main's actual choices. This writes the fixed manifest-s6-r<N>.json draft and returns the full register command to review and use; root, TASK ID/path and Assignment are carried from the original rework argv and current Record.")
+			result = append(result, "Use the actual Builder role and legacy platform identities for this recorded responsibility. This prepares its original revision draft and returns the register command; root, TASK ID/path and Assignment are carried from the original rework argv and current Record.")
 		}
 		result = append(result, "Original rework argv: "+formatReceptionArgv(a.ReworkCommand))
 	}
@@ -112,8 +112,7 @@ func s6RevisionPrepareArgv(rework []string) []string {
 	root, rootOK := argValue(rework, "--root")
 	taskID, taskOK := argValue(rework, "--task-id")
 	assignmentID, assignmentOK := argValue(rework, "--revise-assignment")
-	intentKey, intentOK := argValue(rework, "--revision-intent-key")
-	if !rootOK || !taskOK || !assignmentOK || !intentOK || root == "" || taskID == "" || assignmentID == "" || intentKey == "" {
+	if !rootOK || !taskOK || !assignmentOK || root == "" || taskID == "" || assignmentID == "" {
 		return nil
 	}
 	return []string{
@@ -124,7 +123,6 @@ func s6RevisionPrepareArgv(rework []string) []string {
 		"--agent-id", "<new-platform-Agent-ID>",
 		"--platform-team-id", "<new-platform-Team-ID>",
 		"--revise-assignment", assignmentID,
-		"--revision-intent-key", intentKey,
 	}
 }
 

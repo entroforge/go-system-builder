@@ -16,10 +16,32 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-func issuedConcurrentResultsFixture(t *testing.T) (string, string, string, loopruntime.Snapshot, []workpacket.ReviewResultPacket, []IssuedSubmitRequest) {
+func issuedConcurrentResultsFixture(t *testing.T, omitQASourceRefs ...bool) (string, string, string, loopruntime.Snapshot, []workpacket.ReviewResultPacket, []IssuedSubmitRequest) {
 	t.Helper()
 	root, sp, jp, _, plan := packetModeFixture(t)
 	state := snapshotState(t, sp, jp)
+	if len(omitQASourceRefs) != 0 && omitQASourceRefs[0] {
+		// Construct an already accepted old Plan whose QA source_refs was
+		// omitted, before issuing either responsibility.
+		ptr := PlanPointerFromState(state)
+		var original map[string]any
+		if err := json.Unmarshal(mustReadTestFile(t, filepath.Join(root, filepath.FromSlash(ptr.Path))), &original); err != nil {
+			t.Fatal(err)
+		}
+		for _, raw := range original["claims"].([]any) {
+			claim := raw.(map[string]any)
+			if claim["lens"] == "qa" {
+				delete(claim, "source_refs")
+			}
+		}
+		data, _ := json.Marshal(original)
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(ptr.Path)), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, raw := range state["entities"].(map[string]any)["agents"].([]any) {
 		a := raw.(map[string]any)
 		if a["id"] == "agent-qa-1" || a["id"] == "agent-dv-1" {
@@ -147,7 +169,7 @@ func TestReviewNonIssuedStaleCASRemainsExplicit(t *testing.T) {
 	}
 }
 
-func TestReviewIssuedConcurrentContinuationRejectsChangedSources(t *testing.T) {
+func TestReviewIssuedConcurrentContinuationPreservesOriginalResponsibility(t *testing.T) {
 	for _, change := range []string{"plan", "owner", "product-source"} {
 		t.Run(change, func(t *testing.T) {
 			root, sp, jp, before, packets, requests := issuedConcurrentResultsFixture(t)
@@ -179,16 +201,41 @@ func TestReviewIssuedConcurrentContinuationRejectsChangedSources(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			_, err := continueIssuedResultAfterPeer(root, sp, jp, request)
-			if err == nil {
-				t.Fatalf("concurrent revision refresh admitted changed %s", change)
+			current, err := loopruntime.NewStore(sp, jp).Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			currentPlan, _ := json.Marshal(current.State["review"].(map[string]any)["plan"])
+			_, err = continueIssuedResultAfterPeer(root, sp, jp, request)
+			if change == "owner" && err == nil {
+				t.Fatal("concurrent revision refresh admitted a changed owner")
+			}
+			if change != "owner" && err != nil {
+				t.Fatalf("original responsibility rejected after %s change: %v", change, err)
 			}
 			after, readErr := loopruntime.NewStore(sp, jp).Snapshot()
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			if row := resultPacketAssignmentRow(after.State, p.Binding.AssignmentID); row["result_receipt"] != nil || row["result_ref"] != nil {
-				t.Fatalf("changed %s created acceptance", change)
+			if change == "owner" {
+				if after.Revision != current.Revision {
+					t.Fatal("wrong owner changed Runtime")
+				}
+				return
+			}
+			if _, found, err := IssuedResultReceipt(root, after.State, p.ID, p.Binding.OwnerAgentID); err != nil || !found {
+				t.Fatalf("original receipt missing after %s change: %v", change, err)
+			}
+			if after.Revision != current.Revision+1 {
+				t.Fatal("original continuation did not commit exactly once")
+			}
+			if change == "plan" {
+				afterPlan, _ := json.Marshal(after.State["review"].(map[string]any)["plan"])
+				if string(currentPlan) != string(afterPlan) {
+					t.Fatal("original responsibility changed the revised Plan")
+				}
+			} else if PlanPointerFromState(after.State).Status == "stale" {
+				t.Fatal("answer reception reauthenticated current product bytes")
 			}
 		})
 	}

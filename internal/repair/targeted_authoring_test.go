@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/targetedauthoring"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func targetedAuthoringFixture(t *testing.T) (string, map[string]any, map[string]any, map[string]any, map[string]any) {
@@ -18,8 +17,10 @@ func targetedAuthoringFixture(t *testing.T) (string, map[string]any, map[string]
 	root := t.TempDir()
 	original := "repair-assignment-unit"
 	performing := VerificationAssignmentID(original)
-	taskID := targetedauthoring.TaskID("session-1", performing)
-	p := map[string]any{"case_id": "case-1", "contract_id": "contract-1", "session_id": "session-1", "plan_ref": ".claude/plan.json", "plan_sha256": strings.Repeat("a", 64), "contract_ref": ".claude/contract.json", "contract_sha256": strings.Repeat("b", 64), "assignment_owners": map[string]any{original: "builder", performing: "verifier"}}
+	// The original dispatcher assigns a TASK ID; it is not derived from the
+	// Session/Assignment content or from a historical fingerprint.
+	taskID := "TASK-900-001"
+	p := map[string]any{"case_id": "case-1", "contract_id": "contract-1", "session_id": "session-1", "questionnaire_root": ".claude/submissions/s9/original", "plan_ref": ".claude/plan.json", "plan_sha256": strings.Repeat("a", 64), "contract_ref": ".claude/contract.json", "contract_sha256": strings.Repeat("b", 64), "assignment_owners": map[string]any{original: "builder", performing: "verifier"}}
 	taskRow := map[string]any{"id": taskID, "path": ".claude/task.json", "owner_agent_ids": []any{"verifier"}}
 	team := map[string]any{"id": "team-verify", "manifest_ref": ".claude/manifest.json"}
 	agent := map[string]any{"id": "verifier", "team_id": "team-verify", "task_ids": []any{taskID}, "prompt_ref": ".claude/manifest.json#" + ManifestVerificationAssignmentID(original)}
@@ -44,11 +45,7 @@ func writeTargetedSource(t *testing.T, root string, row map[string]any, pathKey 
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	digestKey := "sha256"
-	if pathKey == "manifest_ref" {
-		digestKey = "manifest_sha256"
-	}
-	row[digestKey] = workpacket.Digest(data)
+
 }
 
 func TestTargetedAuthoringUsesOriginalRegisteredAuthorities(t *testing.T) {
@@ -56,6 +53,44 @@ func TestTargetedAuthoringUsesOriginalRegisteredAuthorities(t *testing.T) {
 	normal, err := UsesSharedTargetedAuthoring(root, state, "repair-assignment-unit", VerificationAssignmentID("repair-assignment-unit"), "verifier")
 	if err != nil || !normal {
 		t.Fatalf("normal=%v err=%v", normal, err)
+	}
+}
+
+func TestTargetedAuthoringPreservesUnknownOriginalFields(t *testing.T) {
+	root, state, taskRow, _, task := targetedAuthoringFixture(t)
+	raw, err := json.Marshal(task["targeted_authoring"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var declaration map[string]any
+	if err := json.Unmarshal(raw, &declaration); err != nil {
+		t.Fatal(err)
+	}
+	declaration["plan_sha256"] = map[string]any{"old": true}
+	declaration["contract_sha256"] = nil
+	declaration["professional_note"] = map[string]any{"hash": "author's original text"}
+	task["targeted_authoring"] = declaration
+	writeTargetedSource(t, root, taskRow, "path", task)
+	path := filepath.Join(root, taskRow["path"].(string))
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, err := UsesSharedTargetedAuthoring(root, state, "repair-assignment-unit", VerificationAssignmentID("repair-assignment-unit"), "verifier")
+	if err != nil || !normal {
+		t.Fatalf("original responsibility with extra fields: normal=%v err=%v", normal, err)
+	}
+	answer, err := NewTargetedAuthoring(state, "repair-assignment-unit", VerificationAssignmentID("repair-assignment-unit"), "verifier").AnswerRelativePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := targetedauthoring.ControlPaths(root, state, []string{answer})
+	if err != nil || len(paths) != 1 || paths[0] != answer {
+		t.Fatalf("original Targeted path with extra fields: %v %v", paths, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("original TASK was modified: %v", err)
 	}
 }
 
@@ -102,7 +137,13 @@ func TestTargetedAuthoringRejectsChangedOrMismatchedSources(t *testing.T) {
 				e := state["entities"].(map[string]any)
 				e["agents"] = append(e["agents"].([]any), e["agents"].([]any)[0])
 			}
-			normal, err := UsesSharedTargetedAuthoring(root, state, "repair-assignment-unit", VerificationAssignmentID("repair-assignment-unit"), "verifier")
+			normal, err := targetedauthoring.Verify(root, state, NewTargetedAuthoring(state, "repair-assignment-unit", VerificationAssignmentID("repair-assignment-unit"), "verifier"), ManifestVerificationAssignmentID("repair-assignment-unit"))
+			if name == "removed_declaration_without_digest" {
+				if err != nil || normal {
+					t.Fatalf("legacy declaration normal=%v err=%v", normal, err)
+				}
+				return
+			}
 			if err == nil || normal {
 				t.Fatalf("changed source accepted normal=%v err=%v", normal, err)
 			}

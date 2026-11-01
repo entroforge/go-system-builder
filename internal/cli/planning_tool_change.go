@@ -2,18 +2,16 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 
-	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 )
@@ -28,9 +26,10 @@ type planningToolChange struct {
 }
 
 type planningToolStamp struct {
-	Responsibility string            `json:"responsibility"`
-	Materials      map[string]string `json:"materials"`
-	Answers        map[string]string `json:"answers"`
+	Responsibility   string            `json:"responsibility"`
+	Materials        map[string]string `json:"materials"`
+	Answers          map[string]string `json:"answers"`
+	NeedsPreparation bool              `json:"needs_preparation,omitempty"`
 }
 
 func nativeFileSave(request policy.Input) bool {
@@ -62,8 +61,8 @@ func actualPlanningAnswerSave(request policy.Input, path string) bool {
 }
 
 // Observe only the current answer and planning material metadata. Directory
-// walks do not parse, validate or hash the full source closure. The answer hash
-// distinguishes an actual saved draft from a pre-existing unreceived PASS.
+// walks do not parse or validate the full source closure. File metadata
+// observes ordinary saves; it does not independently authenticate bytes.
 func observePlanningToolChange(root string, request policy.Input, stderr io.Writer) policy.Input {
 	if request.Event != "PreToolUse" && request.Event != "PostToolUse" && request.Event != "PostToolUseFailure" {
 		return request
@@ -90,12 +89,12 @@ func observePlanningToolChange(root string, request policy.Input, stderr io.Writ
 		return request
 	}
 	if request.Event == "PostToolUseFailure" || (request.Event == "PostToolUse" && !successfulPlanningTool(request)) {
-		_ = os.Remove(key)
+		removePlanningToolStamp(root, key)
 		return request
 	}
 	stamp, err := currentPlanningToolStamp(root, request, snapshot)
 	if err != nil {
-		_ = os.Remove(key)
+		removePlanningToolStamp(root, key)
 		fmt.Fprintf(stderr, "planning change observation unavailable: %v\n", err)
 		return request
 	}
@@ -106,13 +105,15 @@ func observePlanningToolChange(root string, request policy.Input, stderr io.Writ
 		return request
 	}
 	data, err := os.ReadFile(key)
-	_ = os.Remove(key) // A callback cannot replay an earlier tool's mutation.
+	removePlanningToolStamp(root, key) // A callback cannot replay an earlier tool's mutation.
 	var before planningToolStamp
 	if err != nil || json.Unmarshal(data, &before) != nil || before.Responsibility != stamp.Responsibility {
 		return request
 	}
 	change.Known = true
-	change.MaterialsChanged = !reflect.DeepEqual(before.Materials, stamp.Materials)
+	// An entered stage with no prepared original question needs its original
+	// preparation even when a normal tool did not change any source file.
+	change.MaterialsChanged = stamp.NeedsPreparation || !reflect.DeepEqual(before.Materials, stamp.Materials)
 	for path, digest := range stamp.Answers {
 		if old, exists := before.Answers[path]; exists && old != digest && digest != "missing" {
 			change.SavedAnswers[path] = true
@@ -126,9 +127,30 @@ func planningToolCacheKey(root string, request policy.Input) string {
 	if request.SessionID == "" && request.ToolUseID == "" {
 		return ""
 	}
-	identity, _ := json.Marshal([]any{request.SessionID, request.EffectiveAgentID(), request.CWD, request.ToolUseID, request.ToolName, request.ToolInput})
-	sum := sha256.Sum256(identity)
-	return filepath.Join(root, ".claude", "hook-context", "planning-tools", fmt.Sprintf("%x.json", sum))
+	identity, _ := json.Marshal([]string{request.SessionID, request.EffectiveAgentID(), request.CWD, request.ToolUseID, request.ToolName})
+	encoded := base64.RawURLEncoding.EncodeToString(identity)
+	parts := []string{root, ".claude", "hook-context", "planning-tools"}
+	for len(encoded) > 100 {
+		parts = append(parts, encoded[:100])
+		encoded = encoded[100:]
+	}
+	parts = append(parts, encoded+".json")
+	return filepath.Join(parts...)
+}
+
+// Remove only this ephemeral observation and its empty encoded directories.
+func removePlanningToolStamp(root, path string) {
+	_ = os.Remove(path)
+	base := filepath.Join(root, ".claude", "hook-context", "planning-tools")
+	for dir := filepath.Dir(path); dir != base && dir != "."; dir = filepath.Dir(dir) {
+		rel, err := filepath.Rel(base, dir)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			break
+		}
+		if err := os.Remove(dir); err != nil {
+			break
+		}
+	}
 }
 
 func currentPlanningToolStamp(root string, request policy.Input, snapshot runtime.Snapshot) (planningToolStamp, error) {
@@ -138,19 +160,19 @@ func currentPlanningToolStamp(root string, request policy.Input, snapshot runtim
 	if err != nil {
 		return stamp, err
 	}
-	identity, _ := json.Marshal([]any{snapshot.State["runtime_id"], snapshot.State["baseline"], life, row})
-	stamp.Responsibility = fmt.Sprintf("%x", sha256.Sum256(identity))
+	identity, _ := json.Marshal([]any{snapshot.State["runtime_id"], mapFieldCLI(snapshot.State, "baseline")["generation"], life["state"], life["phase"], life["phase_revision"], mapFieldCLI(row, "binding")["owner"], stringValue(row["packet_id"])})
+	stamp.Responsibility = string(identity)
 	if row != nil {
 		if path := stringValue(row["answer_path"]); path != "" {
 			path = filepath.Join(root, filepath.FromSlash(path))
-			data, err := os.ReadFile(path)
+			info, err := os.Stat(path)
 			switch {
 			case os.IsNotExist(err):
 				stamp.Answers[path] = "missing"
 			case err != nil:
 				return stamp, err
 			default:
-				stamp.Answers[path] = fmt.Sprintf("%x", sha256.Sum256(data))
+				stamp.Answers[path] = fmt.Sprintf("%d:%d:%d", info.Mode(), info.Size(), info.ModTime().UnixNano())
 			}
 		}
 	}
@@ -162,6 +184,7 @@ func currentPlanningToolStamp(root string, request policy.Input, snapshot runtim
 			}
 		}
 	}
+	stamp.NeedsPreparation = row == nil
 	if !needsPreparation {
 		return stamp, nil // Normal authoring observes only the exact answer.
 	}
@@ -186,14 +209,7 @@ func currentPlanningToolStamp(root string, request policy.Input, snapshot runtim
 			return stamp, err
 		}
 	}
-	// The bound commit can change after a Bash git commit without altering the
-	// already-written material files. No shell text is parsed or executed here.
-	if ref, err := fileview.DevelopmentRef(snapshot.State); err == nil {
-		cmd := exec.CommandContext(contextForHook(request), "git", "-C", root, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
-		if data, err := cmd.Output(); err == nil {
-			stamp.Materials["git:"+ref] = strings.TrimSpace(string(data))
-		}
-	}
+
 	return stamp, nil
 }
 
@@ -240,6 +256,32 @@ func planningMaterialSave(request policy.Input, root string) bool {
 	}
 	rel = filepath.ToSlash(rel)
 	return strings.HasPrefix(rel, "docs/architecture/") || strings.HasPrefix(rel, "docs/design/") || strings.HasPrefix(rel, "docs/dev/contracts/") || strings.HasPrefix(rel, ".claude/submissions/")
+}
+
+// Only an actual S2 material save or an already observed material change
+// may resume its recorded pending followup. This does not scan materials for
+// ordinary events or turn an unknown tool response into a claimed save.
+func s2PendingMaterialSave(request policy.Input, root string) bool {
+	if !successfulPlanningTool(request) || !mainQuestionnaireViewer(request) {
+		return false
+	}
+	change := planningChangeFrom(request)
+	if change.Known && change.MaterialsChanged {
+		return true
+	}
+	if !nativeFileSave(request) {
+		return false
+	}
+	path, ok := savedQuestionnairePath(request)
+	if !ok {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	return strings.HasPrefix(rel, "docs/architecture/") || strings.HasPrefix(rel, "docs/design/") || strings.HasPrefix(rel, "docs/requirements/")
 }
 
 // Preserve the original receiver's envelope and add preparation to its single

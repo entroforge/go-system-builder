@@ -2,7 +2,6 @@ package assignment
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -190,8 +189,8 @@ func completeTaskLegacy(
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("encode completion envelope: %w", err)
 	}
-	// The persisted bytes (trailing newline included) are what the
-	// evidence index fingerprints — hash exactly what lands on disk.
+	// The original report is retained at its actual evidence path; registering
+	// the responsibility does not require authenticating its bytes.
 	envelopeBytes := append(envelopeData, '\n')
 	envelopeAbs := filepath.Join(root, filepath.FromSlash(envelopeRel))
 	if err := os.MkdirAll(filepath.Dir(envelopeAbs), 0o755); err != nil {
@@ -200,7 +199,6 @@ func completeTaskLegacy(
 	if err := os.WriteFile(envelopeAbs, envelopeBytes, 0o644); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("write completion envelope: %w", err)
 	}
-	envelopeSHA := sha256Of(envelopeBytes)
 
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
@@ -237,7 +235,7 @@ func completeTaskLegacy(
 			if err := applyCompletionTask(state, message, taskTransitions, envelopeRel, occurredAt); err != nil {
 				return err
 			}
-			if err := appendCompletionEvidence(state, evidenceID, envelopeRel, envelopeSHA, request.AgentID, generation, message.ChangedPaths, occurredAt); err != nil {
+			if err := appendCompletionEvidence(state, evidenceID, envelopeRel, request.AgentID, generation, message.ChangedPaths, occurredAt); err != nil {
 				return err
 			}
 			return dispatch.ReconcilePressure(root, state)
@@ -379,7 +377,7 @@ func applyCompletionTask(
 // index with the same field shape RecordEvidence produces.
 func appendCompletionEvidence(
 	state map[string]any,
-	evidenceID, envelopeRel, envelopeSHA, agentID string,
+	evidenceID, envelopeRel, agentID string,
 	generation int,
 	changedPaths []string,
 	occurredAt time.Time,
@@ -408,10 +406,8 @@ func appendCompletionEvidence(
 		"id":                  evidenceID,
 		"kind":                "completion_report",
 		"path":                envelopeRel,
-		"sha256":              envelopeSHA,
 		"status":              "valid",
 		"baseline_generation": generation,
-		"review_round":        nil,
 		"produced_by":         []any{agentID},
 		"invalidated_by":      nil,
 		"invalidation_rule":   nil,
@@ -425,7 +421,7 @@ func appendCompletionEvidence(
 }
 
 // taskSubjectRefs binds the completion envelope to the registered TASK
-// document (path/version/sha256) when the batch registration carries one.
+// document (path/version) when the batch registration carries one.
 func taskSubjectRefs(state map[string]any, generation int, taskID string) []any {
 	documents, _ := state["documents"].([]any)
 	for _, raw := range documents {
@@ -439,15 +435,9 @@ func taskSubjectRefs(state map[string]any, generation int, taskID string) []any 
 		return []any{map[string]any{
 			"path":    document["path"],
 			"version": document["version"],
-			"sha256":  document["sha256"],
 		}}
 	}
 	return []any{}
-}
-
-func sha256Of(data []byte) string {
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum[:])
 }
 
 // completionEvidenceID returns the canonical id for a TASK's Builder

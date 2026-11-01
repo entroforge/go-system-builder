@@ -30,7 +30,7 @@ func WritePlanningContractPass(t *testing.T, root string, state map[string]any) 
 	// PTR-PLAN-02's commit-time registration must carry the chain.
 	envelope := EvidenceEnvelope(state, "ev-contracts", "planning_contract", "contract-planner-1", "Contract Planner", "pass", map[string]any{
 		"review_round": 1,
-		"subject_refs": []any{map[string]any{"path": contractPath, "version": "v1.0.2", "sha256": Sha256Hex(data)}},
+		"subject_refs": []any{map[string]any{"path": contractPath, "version": "v1.0.2"}},
 	})
 	AppendEvidence(state, WriteEvidenceEnvelope(t, root, state, "ev-contracts", "planning_contract", "contract-planner-1", "Contract Planner", envelope, []any{contractPath}))
 }
@@ -52,7 +52,7 @@ func WritePlanningTaskPass(t *testing.T, root string, state map[string]any) {
 	// Do not hand-seed documents[] — disk + TR-002 registration.
 	envelope := EvidenceEnvelope(state, "ev-tasks", "planning_task", "task-planner-1", "Task Planner", "pass", map[string]any{
 		"review_round": 1,
-		"subject_refs": []any{map[string]any{"path": taskPath, "version": "v1.0.2", "sha256": Sha256Hex(data)}},
+		"subject_refs": []any{map[string]any{"path": taskPath, "version": "v1.0.2"}},
 	})
 	AppendEvidence(state, WriteEvidenceEnvelope(t, root, state, "ev-tasks", "planning_task", "task-planner-1", "Task Planner", envelope, []any{taskPath}))
 }

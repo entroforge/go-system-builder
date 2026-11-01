@@ -1,8 +1,6 @@
 package recovery
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
@@ -17,7 +15,6 @@ var recoveryInputFiles = []string{
 	".claude/loop-state.json",
 	".claude/loop-events.jsonl",
 	".claude/loop-state.json.commit-pending.json",
-	".claude/loop-state.json.fingerprint-pending.json",
 	".claude/loop-state.json.rollover-pending.json",
 	".claude/loop-state.json.recovery-pending.json",
 	".claude/loop-state.json.journal-rotation-pending.json",
@@ -37,7 +34,7 @@ var recoveryInputDirectories = []string{
 
 // Inspect validates the explicit REQ and inventories durable recovery inputs
 // without parsing the active Runtime. A malformed or BOM-prefixed state file
-// is therefore still inspectable and content-addressed.
+// is therefore still inspectable without identifying its content by a digest.
 func Inspect(root, reqPath string) (Inventory, error) {
 	resolvedRoot, err := resolveRepositoryRoot(root)
 	if err != nil {
@@ -204,7 +201,6 @@ func validateREQ(root, requestedPath string) (REQBinding, string, error) {
 		Path:    relativePath,
 		Status:  strings.ToLower(status),
 		Version: version,
-		SHA256:  sha256Hex(data),
 	}, fullPath, nil
 }
 
@@ -317,10 +313,9 @@ func inventoryFile(root, fullPath, relativePath string) (InventoryInput, error) 
 		return InventoryInput{}, fmt.Errorf("read inventory input %q: %w", relativePath, err)
 	}
 	return InventoryInput{
-		Path:   relativePath,
-		Kind:   inputKind(relativePath),
-		SHA256: sha256Hex(data),
-		Size:   int64(len(data)),
+		Path: relativePath,
+		Kind: inputKind(relativePath),
+		Size: int64(len(data)),
 	}, nil
 }
 
@@ -330,7 +325,7 @@ func inputKind(relativePath string) string {
 		return InputKindRuntimeState
 	case ".claude/loop-events.jsonl":
 		return InputKindRuntimeJournal
-	case ".claude/loop-state.json.commit-pending.json", ".claude/loop-state.json.fingerprint-pending.json", ".claude/loop-state.json.rollover-pending.json", ".claude/loop-state.json.recovery-pending.json", ".claude/loop-state.json.journal-rotation-pending.json":
+	case ".claude/loop-state.json.commit-pending.json", ".claude/loop-state.json.rollover-pending.json", ".claude/loop-state.json.recovery-pending.json", ".claude/loop-state.json.journal-rotation-pending.json":
 		return InputKindRuntimePending
 	default:
 		if strings.HasPrefix(relativePath, ".claude/loop-events.jsonl.archive.") {
@@ -341,9 +336,4 @@ func inputKind(relativePath string) string {
 		}
 		return InputKindArtifact
 	}
-}
-
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

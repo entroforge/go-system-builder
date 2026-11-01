@@ -59,97 +59,11 @@ var builderBatchMissingTokenRules = []missingTokenRule{
 	},
 }
 
-// reviewRoundMissingTokenRules maps the S7 exit gates' missing tokens to
-// their meaning and next action (L3-S7 §10/§3.7). The tokens are produced by
-// the qualitygate evaluator's ReviewPlan exact-set checks.
+// S7 exit guidance follows the original reviewer conclusions.
 var reviewRoundMissingTokenRules = []missingTokenRule{
-	{
-		prefix:   "cleanround:review_round_started",
-		exact:    true,
-		meaning:  "no review round is open",
-		nextStep: "enter S7 via TR-006 (or TR-012 after repair) before anything else",
-	},
-	{
-		prefix:   "cleanround:review_plan_clean",
-		exact:    true,
-		meaning:  "the ReviewPlan is missing, stale, or not closed clean",
-		nextStep: "run `loop-harness s7 status`; register the plan via `runtime review-plan` or finish consuming results",
-	},
-	{
-		prefix:   "cleanround:all_required_claims_pass",
-		exact:    true,
-		meaning:  "some required Claims lack a consumed pass Result",
-		nextStep: "run `loop-harness s7 status` for the pending Claims, then `runtime review-result submit` for each assignment",
-	},
-	{
-		prefix:   "cleanround:no_findings_current_round",
-		exact:    true,
-		meaning:  "current-round Findings foreclose the clean path",
-		nextStep: "the round must go to S8 via TR-008 with the sealed ObservationBatch; clean is unreachable this round",
-	},
-	{
-		prefix:   "cleanround:no_invalidated_pass_evidence",
-		exact:    true,
-		meaning:  "a current-round review evidence entry is invalid",
-		nextStep: "inspect the invalidated evidence; a drifted baseline makes the round stale — start a new round",
-	},
-	{
-		prefix:   "cleanround:no_open_blocking_bugs",
-		exact:    true,
-		meaning:  "an open blocking BUG (or a closed one missing targeted re-verification) blocks the clean round",
-		nextStep: "route through S8/S9 and re-enter via TR-012",
-	},
-	{
-		prefix:   "cleanround:clean_round_snapshot_registered",
-		exact:    true,
-		meaning:  "the machine CleanRound snapshot is not registered",
-		nextStep: "the round consumer writes it inside the final `runtime review-result submit`; check `loop-harness s7 status`",
-	},
-	{
-		prefix:   "batch:review_plan_missing",
-		exact:    true,
-		meaning:  "no ReviewPlan is registered for this round",
-		nextStep: "register one via `runtime review-plan --file <plan.json>`",
-	},
-	{
-		prefix:   "batch:plan_status=",
-		meaning:  "the ReviewPlan has not reached observation_sealed",
-		nextStep: "consume the remaining ReviewResults; the batch seals automatically when the final required Claim lands (P0 seals immediately)",
-	},
-	{
-		prefix:   "batch:observation_batch_not_sealed",
-		exact:    true,
-		meaning:  "no sealed ObservationBatch exists for the current round",
-		nextStep: "complete the required Claims; the round consumer seals the batch in the final submit transaction",
-	},
-	{
-		prefix:   "batch:finding_set:",
-		meaning:  "the sealed batch's finding set diverges from the current-round Finding entities",
-		nextStep: "do not edit state by hand; run `runtime reconcile` and re-seal via a corrected result submit",
-	},
-	{
-		prefix:   "batch:unobserved_claim:",
-		meaning:  "an ordinary batch sealed while a required Claim was never observed",
-		nextStep: "only a P0 immediate-stop batch may carry safety gaps; submit the missing Claim results first",
-	},
-	{
-		prefix:   "evidence:observation_batch_record",
-		exact:    true,
-		meaning:  "no sealed ObservationBatch evidence is bound",
-		nextStep: "TR-008 binds `observation_batch_record`; the sealed batch registers it automatically",
-	},
-	{
-		prefix:   "evidence:clean_round_record",
-		exact:    true,
-		meaning:  "no machine CleanRound evidence is bound",
-		nextStep: "TR-009 binds `clean_round_record`; the round consumer registers it when the final Claim passes",
-	},
-	{
-		prefix:   "evidence:review_result_record",
-		exact:    true,
-		meaning:  "no ReviewResult with the pause verdict is registered for this round — normal while discovery is healthy; this gate only fires on a pause verdict",
-		nextStep: "nothing to do for ordinary work; only when a Reviewer concludes the REQ/release must change, submit with verdict req_change_required / release_blocked via `runtime review-result submit`",
-	},
+	{prefix: "review:necessary_responsibilities_unfinished_or_finding", exact: true, meaning: "necessary review responsibilities are unfinished or an accepted Finding exists", nextStep: "inspect the original conclusions and let the natural event receive pending answers"},
+	{prefix: "review:finding_missing", exact: true, meaning: "no accepted Finding is available for S8", nextStep: "inspect the original reviewer conclusions"},
+	{prefix: "evidence:review_result_record", exact: true, meaning: "the pause conclusion has not been received", nextStep: "save the original reviewer answer with the actual pause verdict"},
 }
 
 // RenderMissingTokenLegend returns a compact legend block for the missing

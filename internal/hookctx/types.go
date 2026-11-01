@@ -17,23 +17,21 @@ type AssignmentContext struct {
 	AcknowledgedReports map[string]string `json:"acknowledged_reports,omitempty"`
 	AssignmentID        string            `json:"assignment_id"`
 	// AssignmentRecord binds an explicitly opted-in S6 projection to the
-	// immutable Runtime Record. The digest is separate from its stable identity
-	// tuple so downstream projections can verify both identity and exact bytes.
-	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
-	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
-	AssignmentRevision     int                               `json:"assignment_revision,omitempty"`
-	TaskID                 string                            `json:"task_id"`
-	OwnerAgentID           string                            `json:"owner_agent_id"`
-	RoleFamily             string                            `json:"role_family,omitempty"`
-	AgentDefinitionRef     string                            `json:"agent_definition_ref,omitempty"`
-	WorktreePath           string                            `json:"worktree_path,omitempty"`
-	Branch                 string                            `json:"branch,omitempty"`
-	TargetBranch           string                            `json:"target_branch,omitempty"`
-	State                  string                            `json:"state"`
-	ManifestRef            string                            `json:"manifest_ref,omitempty"`
-	ReportStatus           string                            `json:"report_status,omitempty"`
-	CompletionRef          string                            `json:"completion_ref,omitempty"`
-	CompletionAckRef       string                            `json:"completion_ack_ref,omitempty"`
+	// registered Runtime Record using its stable identity and revision.
+	AssignmentRecord   *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
+	AssignmentRevision int                               `json:"assignment_revision,omitempty"`
+	TaskID             string                            `json:"task_id"`
+	OwnerAgentID       string                            `json:"owner_agent_id"`
+	RoleFamily         string                            `json:"role_family,omitempty"`
+	AgentDefinitionRef string                            `json:"agent_definition_ref,omitempty"`
+	WorktreePath       string                            `json:"worktree_path,omitempty"`
+	Branch             string                            `json:"branch,omitempty"`
+	TargetBranch       string                            `json:"target_branch,omitempty"`
+	State              string                            `json:"state"`
+	ManifestRef        string                            `json:"manifest_ref,omitempty"`
+	ReportStatus       string                            `json:"report_status,omitempty"`
+	CompletionRef      string                            `json:"completion_ref,omitempty"`
+	CompletionAckRef   string                            `json:"completion_ack_ref,omitempty"`
 	// WritePaths is the effective union of manifest write_paths and output_paths.
 	WritePaths  []string `json:"write_paths,omitempty"`
 	ReadPaths   []string `json:"read_paths,omitempty"`
@@ -66,21 +64,20 @@ type AssignmentContext struct {
 // fields. Earlier variants stored just `[]string`, but that drops the
 // status field and is incompatible with the contract.
 type IntegrationCheckpoint struct {
-	AssignmentID       string             `json:"assignment_id"`
-	AgentID            string             `json:"agent_id"`
-	WorktreePath       string             `json:"worktree_path"`
-	Branch             string             `json:"branch"`
-	TargetBranch       string             `json:"target_branch"`
-	ReportRef          string             `json:"report_ref,omitempty"`
-	MergeMode          string             `json:"merge_mode,omitempty"`
-	Status             string             `json:"status"`
-	Checks             []IntegrationCheck `json:"checks,omitempty"`
-	LockedPaths        []string           `json:"locked_paths_touched,omitempty"`
-	SourceHead         string             `json:"source_head,omitempty"`
-	MergeCommit        string             `json:"merge_commit,omitempty"`
-	LastErrorCode      string             `json:"last_error_code,omitempty"`
-	IdempotencyKey     string             `json:"idempotency_key,omitempty"`
-	BaselineGeneration int                `json:"baseline_generation,omitempty"`
+	AssignmentID string             `json:"assignment_id"`
+	AgentID      string             `json:"agent_id"`
+	WorktreePath string             `json:"worktree_path"`
+	Branch       string             `json:"branch"`
+	TargetBranch string             `json:"target_branch"`
+	ReportRef    string             `json:"report_ref,omitempty"`
+	MergeMode    string             `json:"merge_mode,omitempty"`
+	Status       string             `json:"status"`
+	Checks       []IntegrationCheck `json:"checks,omitempty"`
+	LockedPaths  []string           `json:"locked_paths_touched,omitempty"`
+
+	LastErrorCode      string `json:"last_error_code,omitempty"`
+	IdempotencyKey     string `json:"idempotency_key,omitempty"`
+	BaselineGeneration int    `json:"baseline_generation,omitempty"`
 }
 
 // IntegrationCheck is one record inside IntegrationCheckpoint.Checks,

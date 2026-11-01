@@ -19,20 +19,22 @@ func (b *ExecutionRegistry) AcceptToolReceipt(e *Execution, ref checkexec.ToolRe
 	if ref.Binding != CheckBinding(*e) || ref.Checkout != e.Path || e.CheckLocation == "main" {
 		return fmt.Errorf("tool receipt differs from original Worker responsibility")
 	}
+	verified, err := checkexec.VerifyToolReceipt(filepath.Join(b.MainRoot, ".claude/evidence/workspace-checks"), ref)
+	if err != nil {
+		return err
+	}
 	found := false
 	for _, p := range e.CheckProfiles {
-		if p.Command == ref.Command && p.Digest() == ref.ProfileDigest {
+		if p.Command == ref.Command && p.ID == verified.Observation.ProfileID && p.Version == verified.Observation.ProfileVersion {
 			found = true
+			break
 		}
 	}
 	if !found {
-		return fmt.Errorf("tool receipt has no original frozen profile")
-	}
-	if _, err := checkexec.VerifyToolReceipt(filepath.Join(b.MainRoot, ".claude/evidence/workspace-checks"), ref); err != nil {
-		return err
+		return fmt.Errorf("tool receipt has no original profile")
 	}
 	for _, previous := range e.ToolCheckReceipts {
-		if previous.SHA256 == ref.SHA256 {
+		if previous.Path == ref.Path && previous.Binding == ref.Binding {
 			return nil
 		}
 	}
@@ -112,7 +114,7 @@ func (b *ExecutionRegistry) observeCopiedCheck(ctx context.Context, e Execution,
 		return checkexec.Observation{}, err
 	}
 	defer os.RemoveAll(scratch)
-	if _, err := copyCheckTree(ctx, e.Path, scratch); err != nil {
+	if err := copyCheckTreeWithoutDigest(ctx, e.Path, scratch); err != nil {
 		return checkexec.Observation{}, err
 	}
 	ctx = checkexec.WithProfile(ctx, p)
@@ -122,6 +124,5 @@ func (b *ExecutionRegistry) observeCopiedCheck(ctx context.Context, e Execution,
 	}
 	permissions := b.observeCheckPermissions(ctx, e, scratch)
 	observation.Permissions = &permissions
-	observation.PermissionDigest = permissions.Digest()
 	return observation, nil
 }

@@ -357,7 +357,7 @@ func prepareS10QuestionnaireReleaseAudit(t *testing.T, root, acceptancePath stri
 	if state["lifecycle"].(map[string]any)["state"] != "release_audit" {
 		t.Fatalf("Controller did not advance the genuinely registered acceptance package: %#v; Hook=%s", state["lifecycle"], out)
 	}
-	releasePath := filepath.Join(root, "s10", "loop-test", "g1", "r1", "release_audit-manifest.json")
+	releasePath := filepath.Join(filepath.Dir(acceptancePath), "release_audit-manifest.json")
 	if !strings.Contains(out, releasePath) {
 		t.Fatalf("release-audit Hook omitted its exact answer path: %s", out)
 	}

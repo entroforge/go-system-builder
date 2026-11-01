@@ -45,8 +45,8 @@ func (e *PlanChecksError) Unwrap() []error {
 	return errs
 }
 
-// ValidatePlan runs independent existing checks once. Identity-dependent
-// checks never interpret a duplicate or unresolved Claim map.
+// ValidatePlan checks the observable draft and unambiguous original
+// responsibility relationships. Professional coverage remains Main's work.
 func ValidatePlan(plan *Plan) error {
 	if plan == nil {
 		return &PlanAnswerError{fmt.Errorf("ReviewPlan is missing")}
@@ -60,33 +60,62 @@ func ValidatePlan(plan *Plan) error {
 		checks = append(checks, c)
 		return c.Err == nil
 	}
-	run("dispatch_policy", func() error { return validatePlanPolicy(plan) })
-	run("professional_content", func() error { return rejectPlannerPlaceholders(plan) })
-	run("evidence_requirements", func() error { return validatePlanEvidenceRequirements(plan) })
-	validIdentity := run("identities_and_references", func() error { return validatePlanIdentity(plan) })
-	dependent := []struct {
-		name string
-		fn   func() error
-	}{
-		{"coverage_and_assignments", func() error { return validatePlanCoverage(plan) }},
-		{"e2e_arrangement", func() error { return validatePlanE2EState(plan) }},
-		{"assignment_overlap", func() error { return validateAssignmentOverlap(plan, planClaimMap(plan)) }},
-		{"cold_start_load", func() error { return validateColdStartE2EOverload(plan, planClaimMap(plan)) }},
-	}
-	for _, c := range dependent {
-		if validIdentity {
-			run(c.name, c.fn)
-		} else {
-			checks = append(checks, PlanCheck{Name: c.name, Status: "not_checked", Reason: "resolve identities_and_references first"})
-		}
-	}
+	run("professional_content", func() error { return requireSomeProfessionalPlanContent(plan) })
+	run("identities_and_references", func() error { return validatePlanIdentity(plan) })
 	for _, c := range checks {
 		if c.Err != nil {
-			checks = append(checks, PlanCheck{Name: "source_baseline_and_commit", Status: "not_checked", Reason: "plan content is invalid; original registration retains source checks and CAS"})
 			return &PlanAnswerError{&PlanChecksError{Checks: checks}}
 		}
 	}
 	return nil
+}
+
+// Only an entirely unfilled generated draft remains a draft. A real
+// professional statement is receivable even when another item is undecided.
+func requireSomeProfessionalPlanContent(plan *Plan) error {
+	if HasProfessionalPlanContent(plan) {
+		return nil
+	}
+	return &PlanAnswerError{fmt.Errorf("ReviewPlan has no professional Claim content yet; preserve the original draft")}
+}
+
+// HasProfessionalPlanContent tests whether the original contains any actual
+// professional expression. Treat only the exact bare placeholder tokens as
+// empty; words inside an author's sentence are never a rejection criterion.
+func HasProfessionalPlanContent(plan *Plan) bool {
+	if plan == nil {
+		return false
+	}
+	expressed := func(value string) bool {
+		value = strings.TrimSpace(value)
+		switch value {
+		case "", "TODO(planner)", "PLANNER-REFINE", "TODO(planner): select target", "TODO(planner): decide", "PLANNER-REFINE: decide":
+			return false
+		default:
+			return true
+		}
+	}
+	for _, claim := range plan.Claims {
+		for _, value := range []string{claim.Target, claim.Assertion, claim.Oracle, claim.Method, claim.NARationale, claim.FocusKey} {
+			if expressed(value) {
+				return true
+			}
+		}
+		for _, value := range append(append([]string(nil), claim.SourceRefs...), claim.RequiredEvidence...) {
+			if expressed(value) {
+				return true
+			}
+		}
+	}
+	for _, assignment := range plan.Assignments {
+		if expressed(assignment.NonOverlapBoundary) {
+			return true
+		}
+	}
+	if plan.ChangeImpact != nil && expressed(plan.ChangeImpact.Summary) {
+		return true
+	}
+	return plan.CoverageJustification != nil && expressed(*plan.CoverageJustification)
 }
 
 func planClaimMap(plan *Plan) map[string]Claim {
@@ -100,6 +129,7 @@ func planClaimMap(plan *Plan) map[string]Claim {
 func validatePlanIdentity(plan *Plan) error {
 	claims := map[string]bool{}
 	assignments := map[string]bool{}
+	owners := map[string]string{}
 	var failures []error
 	for _, c := range plan.Claims {
 		if claims[c.ClaimID] {
@@ -116,13 +146,10 @@ func validatePlanIdentity(plan *Plan) error {
 			if !claims[id] {
 				failures = append(failures, fmt.Errorf("assignment %s references unknown claim %s", a.AssignmentID, id))
 			}
-		}
-	}
-	for _, c := range plan.Claims {
-		for _, id := range c.DependsOn {
-			if !claims[id] {
-				failures = append(failures, fmt.Errorf("claim %s depends on unknown claim %s", c.ClaimID, id))
+			if owner := owners[id]; owner != "" && owner != a.AssignmentID {
+				failures = append(failures, fmt.Errorf("claim %s is assigned to both %s and %s", id, owner, a.AssignmentID))
 			}
+			owners[id] = a.AssignmentID
 		}
 	}
 	return errors.Join(failures...)

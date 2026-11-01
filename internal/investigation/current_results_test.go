@@ -10,7 +10,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/investigation"
 )
 
-const currentResultsCase = "investigation-case-observation-batch-r1"
+const currentResultsCase = "investigation-case-review-plan-r1"
 
 func registerCurrentQuestion(t *testing.T, f *intakeFixture, id string) {
 	t.Helper()
@@ -172,9 +172,9 @@ func TestContractCannotApproveWithAnUnansweredCurrentQuestion(t *testing.T) {
 	}
 	// Supply the original valid approval fixture as well, so rejection cannot
 	// be explained by a missing decision, bad draft version or unpinned bytes.
-	approvalHash, approvalID, _ := registerContractApprovalEvidence(t, f, path)
+	_, approvalID, _ := registerContractApprovalEvidence(t, f, path)
 	before, journal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-	_, err = investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: currentResultsCase, ContractPath: path, ApprovedBy: "main-session", ApprovalHash: approvalHash, ApprovalEvidenceID: approvalID})
+	_, err = investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: currentResultsCase, ContractPath: path, ApprovedBy: "main-session", ApprovalEvidenceID: approvalID})
 	if err == nil || !strings.Contains(err.Error(), "hypothesis-new-current") {
 		t.Fatalf("contract approval skipped the current unanswered question: %v", err)
 	}

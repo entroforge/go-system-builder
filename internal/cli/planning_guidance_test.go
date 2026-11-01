@@ -156,7 +156,7 @@ func TestS4DeliveryGuidanceNamesCommittedBranchOnlyForGitOutputs(t *testing.T) {
 			if strings.Contains(guidance, "bound development branch") {
 				t.Fatal("disk outputs incorrectly require a commit", guidance)
 			}
-		} else if !strings.Contains(guidance, "bound development branch guidance-development") || !strings.Contains(guidance, "can change in this entry") || !strings.Contains(guidance, "Before saving this answer") {
+		} else if !strings.Contains(guidance, "bound development branch guidance-development") || !strings.Contains(guidance, "can change in this entry") || !strings.Contains(guidance, "selected git_tree source") {
 			t.Fatal("Git output preparation is left implicit", guidance)
 		}
 	}
@@ -213,8 +213,8 @@ func makePlanningGuidancePacket(t *testing.T, state map[string]any, stage string
 		}
 		inputs := workpacket.TaskPlanningInputs{
 			Contracts: []workpacket.Reference{
-				{ID: "CONTRACTS-REQ-001", Path: "docs/dev/contracts/CONTRACTS-REQ-001.md", Version: "v1.0.0", SHA256: strings.Repeat("c", 64)},
-				{ID: "BE-REQ-001", Path: "docs/dev/contracts/BE-REQ-001.md", Version: "v1.0.0", SHA256: strings.Repeat("d", 64)},
+				{ID: "CONTRACTS-REQ-001", Path: "docs/dev/contracts/CONTRACTS-REQ-001.md", Version: "v1.0.0"},
+				{ID: "BE-REQ-001", Path: "docs/dev/contracts/BE-REQ-001.md", Version: "v1.0.0"},
 			},
 			Sources: []workpacket.Subject{}, Directories: map[string][]string{},
 			ClauseUniverse: []workpacket.TaskClause{{ContractID: "BE-REQ-001", Section: 1}},
@@ -323,6 +323,44 @@ func TestMainPlanningNextShowsOnlyCurrentIssuedPacketPaths(t *testing.T) {
 	}
 }
 
+func TestS4ObserverUsesIssuedQuestionnaireWithoutRebuildingTemplate(t *testing.T) {
+	root := t.TempDir()
+	state := planningGuidanceState("S4", true)
+	packet := makePlanningGuidancePacket(t, state, "S4", 7).(workpacket.TaskPlanningPacket)
+	packet.Draft.Instruction = "The previously issued professional instruction."
+	addPlanningGuidancePacket(t, state, packet)
+
+	path, issued, verified, err := currentIssuedPlanningAnswerPath(state, "tasks")
+	if err != nil || !issued || !verified || path != packet.AnswerPath {
+		t.Fatalf("current issued S4 answer: path=%q issued=%v verified=%v err=%v", path, issued, verified, err)
+	}
+	want := filepath.Join(root, filepath.FromSlash(packet.AnswerPath))
+	for _, observed := range observableQuestionnaires(root, runtime.Snapshot{State: state}) {
+		if observed.path == want {
+			return
+		}
+	}
+	t.Fatalf("ordinary questionnaire observer omitted issued S4 answer %q", want)
+}
+
+func TestS4ObserverDoesNotGuessDuplicatePacketIdentity(t *testing.T) {
+	root := t.TempDir()
+	state := planningGuidanceState("S4", true)
+	packet := makePlanningGuidancePacket(t, state, "S4", 7).(workpacket.TaskPlanningPacket)
+	older := packet
+	older.Binding.StageEntry--
+	addPlanningGuidancePacket(t, state, older)
+	addPlanningGuidancePacket(t, state, packet)
+
+	path, issued, verified, err := currentIssuedPlanningAnswerPath(state, "tasks")
+	if err != nil || issued || verified || path != "" {
+		t.Fatalf("duplicate packet identity must remain ambiguous: path=%q issued=%v verified=%v err=%v", path, issued, verified, err)
+	}
+	if got := observableQuestionnaires(root, runtime.Snapshot{State: state}); len(got) != 0 {
+		t.Fatalf("ordinary observer selected an ambiguous S4 responsibility: %+v", got)
+	}
+}
+
 func TestMainPlanningNextRejectsOldEntryAndWrongBindings(t *testing.T) {
 	for _, stage := range []string{"S2", "S3", "S4"} {
 		for _, mutation := range []string{"old_entry", "wrong_req", "wrong_owner"} {
@@ -409,7 +447,7 @@ func TestS3DeliveryGuidanceNamesCommittedBranchOnlyForGitOutputs(t *testing.T) {
 			if strings.Contains(guidance, "bound development branch") {
 				t.Fatal("disk outputs incorrectly require a commit", guidance)
 			}
-		} else if !strings.Contains(guidance, "bound development branch guidance-development") || !strings.Contains(guidance, "S3 outputs can change in this entry") || !strings.Contains(guidance, "Before saving this answer") {
+		} else if !strings.Contains(guidance, "bound development branch guidance-development") || !strings.Contains(guidance, "S3 outputs can change in this entry") || !strings.Contains(guidance, "selected git_tree source") {
 			t.Fatal("Git output preparation is left implicit", guidance)
 		}
 	}

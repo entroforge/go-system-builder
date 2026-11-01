@@ -47,7 +47,7 @@ func TestNativeS5IndependentAnswersReachOriginalGateWithoutPrepareOrActivation(t
 		}
 		snapshot := stageSnapshot(t, f.root)
 		record, accepted, err := runtime.FindSubmission(snapshot.State, p.ID)
-		if err != nil || !accepted || record.ContentHash == "" {
+		if err != nil || !accepted {
 			t.Fatalf("original S5 Writer did not receive answer: %+v %v", record, err)
 		}
 		if code, _, diagnostic := nativeReviewEvent(t, f.root, "SubagentStop", actor, filepath.Join(f.root, p.ViewPath)); code != 0 {

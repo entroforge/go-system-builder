@@ -15,6 +15,46 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
+type repairExecutionResolution struct {
+	owner     string
+	id        string
+	execution map[string]any
+	err       error
+}
+
+// The cache belongs to one Runtime snapshot and one request. Never reuse it
+// after a Writer updates Runtime.
+type repairExecutionResolver struct {
+	ctx   context.Context
+	root  string
+	state map[string]any
+	cache map[string]repairExecutionResolution
+}
+
+func newRepairExecutionResolver(ctx context.Context, root string, state map[string]any) *repairExecutionResolver {
+	return &repairExecutionResolver{ctx: ctx, root: root, state: state, cache: map[string]repairExecutionResolution{}}
+}
+
+func (r *repairExecutionResolver) resolve(row repairDispatchChoice) repairExecutionResolution {
+	if err := r.ctx.Err(); err != nil {
+		return repairExecutionResolution{err: err}
+	}
+	pointer := repairPointerCLI(r.state)
+	owner := row.AgentID
+	if owner == "" {
+		owner = stringMapCLI(pointer["assignment_owners"])[row.AssignmentID]
+	}
+	key := row.AssignmentID + "\x00" + owner
+	if result, ok := r.cache[key]; ok {
+		return result
+	}
+	id, execution := repairExecutionForChoice(r.state, row)
+	result := repairExecutionResolution{owner: owner, id: id, execution: execution}
+
+	r.cache[key] = result
+	return result
+}
+
 // Read the registered execution projection only; reminders never re-run the
 // scheduler, workspace decoder/authority checks, Git, or physical check proofs.
 func repairExecutionForChoice(state map[string]any, row repairDispatchChoice) (string, map[string]any) {
@@ -31,26 +71,17 @@ func repairExecutionForChoice(state map[string]any, row repairDispatchChoice) (s
 		}
 	}
 	executions := mapFieldCLI(mapFieldCLI(state, "workspace"), "executions")
-	if execution := mapFieldCLI(executions, id); len(execution) > 0 && (owner == "" || execution["agent_id"] == owner) {
+	if execution := mapFieldCLI(executions, id); len(execution) > 0 && execution["purpose"] == workspace.NativeDeliveryPurpose && (owner == "" || execution["agent_id"] == owner) {
 		return id, execution
 	}
-	if execution := mapFieldCLI(executions, row.AssignmentID); len(execution) > 0 {
+	if execution := mapFieldCLI(executions, row.AssignmentID); len(execution) > 0 && execution["purpose"] == workspace.NativeDeliveryPurpose && (owner == "" || execution["agent_id"] == owner) {
 		return row.AssignmentID, execution
 	}
 	return id, nil
 }
 
-func repairExecutionCheckLocationConflict(state map[string]any, row repairDispatchChoice) error {
-	_, execution := repairExecutionForChoice(state, row)
-	frozen := stringValue(execution["check_location"])
-	if row.CheckLocation != "" && frozen != "" && frozen != row.CheckLocation {
-		return fmt.Errorf("Assignment %s already froze check_location=%s in its original execution; the changed choice %s was not applied", row.AssignmentID, frozen, row.CheckLocation)
-	}
-	return nil
-}
-
-func repairExecutionProjectionContext(root string, state map[string]any, row repairDispatchChoice) string {
-	id, execution := repairExecutionForChoice(state, row)
+func repairExecutionProjectionContext(ctx context.Context, root string, state map[string]any, row repairDispatchChoice, resolved repairExecutionResolution) string {
+	id, execution := resolved.id, resolved.execution
 	if len(execution) == 0 {
 		return ""
 	}
@@ -58,21 +89,16 @@ func repairExecutionProjectionContext(root string, state map[string]any, row rep
 		return fmt.Sprintf("Assignment %s is complete; Main integration/checks and cleanup are recorded. ", row.AssignmentID)
 	}
 	if stringValue(execution["delivery_ref"]) != "" {
-		launcher := s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness"))
-		return fmt.Sprintf("Assignment %s: candidate received; Main runs %s runtime workspace integrate --root %s --assignment %s --agent %s and selects each actual necessary Main check with repeatable --check-command. ", row.AssignmentID, launcher, s7CaptureShellQuote(root), s7CaptureShellQuote(id), s7CaptureShellQuote(stringValue(execution["agent_id"])))
+		return fmt.Sprintf("Assignment %s: original Result received; Main performs actual integration and necessary checks. ", row.AssignmentID)
 	}
 	owner := stringValue(execution["agent_id"])
 	path := stringValue(execution["worktree_path"])
 	var b strings.Builder
-	fmt.Fprintf(&b, "Original execution %s owner=%s status=%s check_location=%s; actual Worker root: %s; target branch=%s. ", id, owner, stringValue(execution["status"]), stringValue(execution["check_location"]), path, stringValue(execution["target_branch"]))
+	fmt.Fprintf(&b, "Original execution %s owner=%s status=%s; actual Worker root: %s; target branch=%s. ", id, owner, stringValue(execution["status"]), path, stringValue(execution["target_branch"]))
 	if stringValue(execution["status"]) != "ready" {
 		b.WriteString("This execution is not ready; retain it and follow its original preparation/recovery responsibility. ")
 	}
-	contextPath := filepath.Join(path, filepath.FromSlash(workspace.DispatchContextPath))
-	if _, err := os.Stat(contextPath); err == nil {
-		fmt.Fprintf(&b, "Assignment context: %s. ", contextPath)
-	}
-	packets, err := s9ListenerQuestionnairesContext(context.Background(), root, state, owner, true)
+	packets, err := s9ListenerQuestionnairesContext(ctx, root, state, owner, true)
 	if err != nil {
 		fmt.Fprintf(&b, "Current Result path projection is unavailable: %v. ", err)
 	} else {
@@ -114,6 +140,7 @@ func stageRepairExecutionPrepareContext(root string, request policy.Input, snaps
 		b.WriteString("The same division answer is not prepared yet; Main/system must supply its rows from the original Plan and registered dispatch/execution facts during normal responsibility preparation. This event does not invent another report. ")
 	}
 	pointer := repairPointerCLI(snapshot.State)
+	resolver := newRepairExecutionResolver(contextForHook(request), root, snapshot.State)
 	choices := map[string]repairDispatchChoice{}
 	if data, err := os.ReadFile(paths[0]); err == nil {
 		var rows []repairDispatchChoice
@@ -124,7 +151,7 @@ func stageRepairExecutionPrepareContext(root string, request policy.Input, snaps
 		}
 	}
 	priority := func(id string) int {
-		_, execution := repairExecutionForChoice(snapshot.State, repairDispatchChoice{AssignmentID: id})
+		execution := resolver.resolve(repairDispatchChoice{AssignmentID: id}).execution
 		if stringValue(execution["status"]) == "complete" {
 			return 2
 		}
@@ -146,13 +173,14 @@ func stageRepairExecutionPrepareContext(root string, request policy.Input, snaps
 			fmt.Fprintf(&b, "Assignment %s resource_locks=%v; Main must arrange work around these shared resources. ", assignment.AssignmentID, assignment.ResourceLocks)
 		}
 		owner := stringMapCLI(pointer["assignment_owners"])[assignment.AssignmentID]
+
 		if owner == "" {
 			fmt.Fprintf(&b, "Assignment %s awaits Builder selection at %s. ", assignment.AssignmentID, paths[0])
 			continue
 		}
-		b.WriteString(prepareRepairExecutionFromChoiceContext(contextForHook(request), root, snapshot.State, row, owner))
+		b.WriteString(prepareRepairExecutionFromChoiceResolved(contextForHook(request), root, snapshot.State, row, owner, resolver))
 	}
-	b.WriteString("Main owns Claude Code native spawn/resume and later integration; workspace commands apply only to an existing frozen legacy responsibility; this reminder only reads current facts. ")
+	b.WriteString("Main owns Claude Code native spawn/resume and later integration; this reminder only reads current facts. ")
 	return b.String()
 }
 
@@ -161,22 +189,27 @@ func prepareRepairExecutionFromChoice(root string, state map[string]any, row rep
 	return prepareRepairExecutionFromChoiceContext(context.Background(), root, state, row, owner)
 }
 func prepareRepairExecutionFromChoiceContext(ctx context.Context, root string, state map[string]any, row repairDispatchChoice, owner string) string {
-	_, current := repairExecutionForChoice(state, row)
+	return prepareRepairExecutionFromChoiceResolved(ctx, root, state, row, owner, newRepairExecutionResolver(ctx, root, state))
+}
+
+func prepareRepairExecutionFromChoiceResolved(ctx context.Context, root string, state map[string]any, row repairDispatchChoice, owner string, resolver *repairExecutionResolver) string {
+	resolved := resolver.resolve(row)
+	if resolved.owner != "" {
+		owner = resolved.owner
+	}
+	current := resolved.execution
 	indexed, _ := s9ListenerQuestionnaires(state, owner, false)
 	for _, question := range indexed {
-		packet := workpacket.RepairPlanReportPacket{ID: question.id, Binding: question.binding, ViewPath: question.view, AnswerPath: question.answer}
+		packet := workpacket.RepairPlanReportPacket{ID: question.id, Binding: question.binding, ViewPath: question.view, AnswerPath: question.answer, BriefPath: question.brief}
 		if packet.Binding.OwnerAgentID != owner || packet.Binding.RepairAssignmentID != row.AssignmentID {
 			continue
 		}
-		if len(current) > 0 && current["purpose"] != workspace.NativeDeliveryPurpose {
-			continue
-		}
 		handoff := s9HandoffForBinding(ctx, root, runtime.Snapshot{State: state}, packet.Binding)
-		brief, pin, _ := nativeS9Paths(packet)
+		brief := nativeS9BriefPath(packet)
 		briefMissing := false
 		if ctx.Err() == nil {
 			briefMissing = !s8QuestionnaireFileExists(resolveRootPath(root, brief))
-			handoff.Native = handoff.Native || !briefMissing || s8QuestionnaireFileExists(resolveRootPath(root, pin))
+			handoff.Native = true
 		}
 		if !handoff.Native {
 			continue
@@ -194,56 +227,7 @@ func prepareRepairExecutionFromChoiceContext(ctx context.Context, root string, s
 		return displayGap + fmt.Sprintf("Main uses Claude Code native Agent for initial execution with this exact S9 brief; continue an existing actor through the supported same-actor continuation interface: %s. Builder continues its own plan, repair, self-checks and Result in its native worktree. No workspace prepare/launch is required. ", filepath.Join(root, brief))
 	}
 	if stringValue(current["status"]) == "complete" || stringValue(current["delivery_ref"]) != "" {
-		return repairExecutionProjectionContext(root, state, row)
+		return repairExecutionProjectionContext(ctx, root, state, row, resolved)
 	}
-	if runtime.PacketEnabled(state) && (len(current) == 0 || current["purpose"] == "native_delivery") {
-		return fmt.Sprintf("S9 Assignment %s owner=%s has no current prepared native PlanReport/brief. Main/system must restore the original division preparation at %s; no workspace startup or check_location selection was inferred from the missing native material. ", row.AssignmentID, owner, strings.Join(repairDispatchPaths(root, state), ", "))
-	}
-	if err := repairExecutionCheckLocationConflict(state, row); err != nil {
-		return "S9 execution choice conflict: " + err.Error() + ". "
-	}
-	id, execution := repairExecutionForChoice(state, row)
-	projection := repairExecutionProjectionContext(root, state, row)
-	status := stringValue(execution["status"])
-	if len(execution) > 0 && status != "preparing" && status != "ready" {
-		return projection + "Retain this execution and follow its original recovery responsibility. "
-	}
-	if status == "ready" {
-		packets, err := s9ListenerQuestionnairesContext(ctx, root, state, owner, true)
-		if err == nil {
-			for _, packet := range packets {
-				if packet.binding.RepairAssignmentID != row.AssignmentID {
-					continue
-				}
-				path := stringValue(execution["worktree_path"])
-				_, viewErr := os.Stat(filepath.Join(path, filepath.FromSlash(packet.view)))
-				_, answerErr := os.Stat(filepath.Join(path, filepath.FromSlash(packet.answer)))
-				if viewErr == nil && answerErr == nil {
-					return projection
-				}
-			}
-		}
-	}
-	location := row.CheckLocation
-	if location == "" {
-		location = stringValue(execution["check_location"])
-	}
-	if location != "main" && location != "worker" {
-		paths := repairDispatchPaths(root, state)
-		return projection + fmt.Sprintf("Assignment %s awaits check_location main or worker in the existing division answer %s; save the selection, then Main runs the supplied startup command. ", row.AssignmentID, strings.Join(paths, ", "))
-	}
-	if id == "" {
-		return projection + "Assignment " + row.AssignmentID + " has no registered manifest Assignment for " + owner + "; Main must finish its original dispatch. "
-	}
-	launcher := s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness"))
-	var b strings.Builder
-	b.WriteString(projection)
-	if state["workspace"] == nil {
-		fmt.Fprintf(&b, "Main first runs: %s runtime workspace bind --root %s. ", launcher, s7CaptureShellQuote(root))
-	}
-	if status == "ready" {
-		b.WriteString("The Worker is ready but its Result questionnaire is missing; finish normal startup before sending the author to work. ")
-	}
-	fmt.Fprintf(&b, "Main runs through a normal tool: %s runtime workspace prepare --root %s --assignment %s --agent %s --check-location %s. Use its actual Worker root and exact RepairResult paths. Saving the division answer did not run bind/prepare. ", launcher, s7CaptureShellQuote(root), s7CaptureShellQuote(id), s7CaptureShellQuote(owner), s7CaptureShellQuote(location))
-	return b.String()
+	return fmt.Sprintf("S9 Assignment %s owner=%s has no current prepared PlanReport/brief. Main/system continues original preparation at %s. ", row.AssignmentID, owner, strings.Join(repairDispatchPaths(root, state), ", "))
 }

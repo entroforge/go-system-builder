@@ -20,9 +20,12 @@ func TestEvidenceBindingRepairBoundaries(t *testing.T) {
 		{"wrong kind", func(s, e map[string]any, r string) { e["kind"] = "acceptance" }, false},
 		{"paused", func(s, e map[string]any, r string) { s["pause"] = map[string]any{} }, false},
 		{"building", func(s, e map[string]any, r string) { s["lifecycle"] = map[string]any{"state": "building"} }, false},
-		{"S7 began", func(s, e map[string]any, r string) { s["review"] = map[string]any{"round": 1} }, false},
+		{"unrelated historical round", func(s, e map[string]any, r string) { s["review"] = map[string]any{"round": 1} }, true},
 		{"artifact changed", func(s, e map[string]any, r string) { os.WriteFile(filepath.Join(r, "review.json"), []byte("{}"), 0644) }, false},
-		{"REQ changed", func(s, e map[string]any, r string) { os.WriteFile(filepath.Join(r, "req.md"), []byte("changed"), 0644) }, false},
+		{"REQ content changed", func(s, e map[string]any, r string) { os.WriteFile(filepath.Join(r, "req.md"), []byte("changed"), 0644) }, true},
+		{"unrelated document unavailable", func(s, e map[string]any, r string) {
+			s["documents"] = []any{map[string]any{"id": "unrelated", "path": "missing.md", "sha256": "old"}}
+		}, true},
 		{"missing", func(s, e map[string]any, r string) { os.Remove(filepath.Join(r, "review.json")) }, false},
 		{"duplicate", func(s, e map[string]any, r string) { s["evidence"] = []any{e, e} }, false},
 		{"escape", func(s, e map[string]any, r string) { e["path"] = "../review.json" }, false},
@@ -33,7 +36,7 @@ func TestEvidenceBindingRepairBoundaries(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(root, p), b, 0644); err != nil {
 					t.Fatal(err)
 				}
-				return scopeHash(b)
+				return "historical-not-a-current-qualification"
 			}
 			env, _ := json.Marshal(map[string]any{"evidence_id": "real", "kind": "document_review", "runtime_id": "loop-test", "baseline_generation": 1})
 			e := map[string]any{"id": "wrong", "path": "review.json", "sha256": write("review.json", env), "kind": "document_review", "status": "valid", "baseline_generation": 1}
@@ -45,7 +48,7 @@ func TestEvidenceBindingRepairBoundaries(t *testing.T) {
 			if (err == nil) != tc.want {
 				t.Fatalf("plan=%+v err=%v", p, err)
 			}
-			if err == nil && (p.ID != "wrong" || p.EnvelopeID != "real" || len(p.Files) != 2) {
+			if err == nil && (p.ID != "wrong" || p.EnvelopeID != "real") {
 				t.Fatalf("bad plan: %+v", p)
 			}
 		})

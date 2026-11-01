@@ -46,7 +46,7 @@ func TestBugBatchRecordValidatesAsCurrentEvidence(t *testing.T) {
 		"evidence": []any{
 			map[string]any{
 				"id": "ev-bug-batch", "kind": "bug", "path": evidencePath,
-				"sha256": SHA256(data), "status": "valid", "baseline_generation": 1,
+				"status": "valid", "baseline_generation": 1,
 				"review_round": 0,
 			},
 		},
@@ -103,11 +103,11 @@ func TestPlanningCompleteAcceptsRuntimeContractDocuments(t *testing.T) {
 		"documents": []any{
 			map[string]any{
 				"id": "BE-039", "kind": "contract", "path": contractPath, "version": "v1.0.2",
-				"sha256": SHA256(contractData), "status": "locked", "generation": 1,
+				"status": "locked", "generation": 1,
 			},
 			map[string]any{
 				"id": "TASK-039-01", "kind": "task", "path": taskPath, "version": "v1.0.2",
-				"sha256": SHA256(taskData), "status": "complete", "generation": 1,
+				"status": "complete", "generation": 1,
 			},
 		},
 	}

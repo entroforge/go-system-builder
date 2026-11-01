@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -44,8 +45,20 @@ func s9ObservableQuestionnaires(root string, state map[string]any, request polic
 	pointer := repairPointerCLI(state)
 	phase, status := stringValue(mapFieldCLI(state, "lifecycle")["phase"]), stringValue(pointer["status"])
 	if main {
+		if stringValue(pointer["session_id"]) != "" {
+			if path, err := repairLeadQuestionnairePath(root, state, "change-impact.json"); err == nil {
+				add(path, "impact")
+			}
+		}
 		switch status {
 		case "planning", "reproducing", "repairing":
+			if status == "repairing" {
+				if contributions, err := repair.ReceivedRepairContributions(root, state); err == nil && len(contributions) > 0 {
+					if path, err := repairLeadQuestionnairePath(root, state, "change-impact.json"); err == nil {
+						add(path, "impact")
+					}
+				}
+			}
 			for _, path := range repairDispatchPaths(root, state) {
 				add(path, "dispatch")
 			}
@@ -76,7 +89,7 @@ func s9ObservableQuestionnaires(root string, state map[string]any, request polic
 			}
 		}
 	}
-	result := phase == "fixing"
+	result := phase == "fixing" || stringValue(pointer["impact_ref"]) != ""
 	if !main && (phase == "planning" || phase == "reproducing" || result) || main && result && status == "blocked" {
 		filter := owner
 		if main {
@@ -138,53 +151,81 @@ func s9ObservedDocument(root, path string) (map[string]any, error) {
 }
 
 func s9ObservedQuestionnaireUnchanged(root string, state map[string]any, q observedQuestionnaire, data []byte) bool {
+	unchanged, _ := s9ObservedQuestionnaireUnchangedContext(context.Background(), root, state, q, data)
+	return unchanged
+}
+
+func s9ObservedQuestionnaireUnchangedContext(ctx context.Context, root string, state map[string]any, q observedQuestionnaire, data []byte) (bool, error) {
 	if workpacket.ValidateUniqueJSON(data) != nil {
-		return false // Malformed/changed author bytes retain original error feedback.
+		return false, nil // Malformed/changed author bytes retain original error feedback.
 	}
 	switch q.s9Kind {
 	case "dispatch":
-		return !repairDispatchHasProfessionalContent(q.path, data) || s9ObservedDispatchRegistered(root, state, data, false)
+		if !repairDispatchHasProfessionalContent(q.path, data) {
+			return true, nil
+		}
+		return s9ObservedDispatchRegisteredContext(ctx, root, state, data, false)
 	case "verifier":
-		return !repairVerifierDispatchHasProfessionalContent(q.path, data) || s9ObservedDispatchRegistered(root, state, data, true)
+		if !repairVerifierDispatchHasProfessionalContent(q.path, data) {
+			return true, nil
+		}
+		return s9ObservedDispatchRegisteredContext(ctx, root, state, data, true)
 	case "packet":
-		return s9ObservedPacketAccepted(root, state, q, data)
+		return s9ObservedPacketAccepted(root, state, q, data), nil
 	}
 	var answer map[string]any
 	if json.Unmarshal(data, &answer) != nil {
-		return false
+		return false, nil
 	}
 	if q.s9Kind == "resolution" {
 		resolution := mapFieldCLI(answer, "s9_resolution")
-		return strings.TrimSpace(stringValue(answer["body"])) == "" && strings.TrimSpace(stringValue(resolution["rationale"])) == "" && len(stringSliceAny(resolution["evidence_refs"])) == 0 && (resolution["decision"] == nil || resolution["decision"] == "retry")
+		return strings.TrimSpace(stringValue(answer["body"])) == "" && strings.TrimSpace(stringValue(resolution["rationale"])) == "" && len(stringSliceAny(resolution["evidence_refs"])) == 0 && (resolution["decision"] == nil || resolution["decision"] == "retry"), nil
 	}
 	pointer := repairPointerCLI(state)
 	if q.s9Kind == "impact" {
-		ref, err := repairPointerRef(pointer, "impact_ref", "impact_sha256", "registered ChangeImpact")
+		ref, err := repairPointerRef(pointer, "impact_ref", "registered ChangeImpact")
 		if err != nil {
-			return len(stringSliceAny(answer["change_types"])) == 0 && len(objectSliceAny(answer["decisions"])) == 0
+			return false, nil // Empty original templates are valid early handoffs.
 		}
 		registered, err := s9ObservedDocument(root, ref.Path)
-		return err == nil && s9ObservedLeadProfessionalSame(answer, registered, false)
+		if err != nil {
+			return false, nil
+		}
+		registeredBytes, err := json.Marshal(registered)
+		if err != nil {
+			return false, nil
+		}
+		var request repair.ChangeImpactRequest
+		var impact repair.ChangeImpact
+		if repair.DecodeOriginalChangeImpact(data, &request) != nil || json.Unmarshal(registeredBytes, &impact) != nil {
+			return false, nil
+		}
+		return sameImpactProfessionalAnswer(request, impact), nil
 	}
 	if q.s9Kind == "targeted" {
-		for _, ref := range repairArtifactRefs(pointer, "targeted_reverification_artifacts", "", "") {
+		for _, ref := range repairArtifactRefs(pointer, "targeted_reverification_artifacts", "") {
 			registered, err := s9ObservedDocument(root, ref.Path)
 			path, pathErr := repairTargetedQuestionnairePath(root, state, stringValue(registered["performing_assignment_id"]))
 			if err == nil && pathErr == nil && samePath(path, q.path) {
-				return s9ObservedLeadProfessionalSame(answer, registered, true)
+				return s9ObservedLeadProfessionalSame(answer, registered, true), nil
 			}
 		}
-		return stringValue(answer["result"]) == ""
+		return stringValue(answer["result"]) == "", nil
 	}
-	return false
+	return false, nil
 }
 
 func s9ObservedDispatchRegistered(root string, state map[string]any, data []byte, verifier bool) bool {
+	registered, _ := s9ObservedDispatchRegisteredContext(context.Background(), root, state, data, verifier)
+	return registered
+}
+
+func s9ObservedDispatchRegisteredContext(ctx context.Context, root string, state map[string]any, data []byte, verifier bool) (bool, error) {
 	var rows []repairDispatchChoice
 	if verifier {
 		var choices []repairVerifierDispatchChoice
 		if json.Unmarshal(data, &choices) != nil {
-			return false
+			return false, nil
 		}
 		for _, row := range choices {
 			if row.IndependentVerification {
@@ -194,43 +235,50 @@ func s9ObservedDispatchRegistered(root string, state map[string]any, data []byte
 			}
 		}
 	} else if json.Unmarshal(data, &rows) != nil {
-		return false
+		return false, nil
 	}
 	selected, seen := false, map[string]bool{}
+	resolver := newRepairExecutionResolver(ctx, root, state)
 	for _, row := range rows {
 		if seen[row.AssignmentID] {
-			return false
+			return false, nil
 		}
 		seen[row.AssignmentID] = true
-		if row.RoleFamily == "" && row.CheckLocation != "" {
-			row.RoleFamily = stringValue(contextAgent(state, repairDispatchOwner(state, row))["role"])
+		owner := repairDispatchOwner(state, row)
+		var resolved repairExecutionResolution
+		if !verifier {
+			resolved = resolver.resolve(row)
+			if resolved.owner != "" {
+				owner = resolved.owner
+			}
+		}
+		if row.RoleFamily == "" {
+			row.RoleFamily = stringValue(contextAgent(state, owner)["role"])
 		}
 		if row.RoleFamily == "" {
 			continue
 		}
 		selected = true
-		owner := repairDispatchOwner(state, row)
 		if repairDispatchSameRegistered(state, row, owner) != nil {
-			return false
+			return false, nil
 		}
-		if !verifier && (row.CheckLocation != "" && row.CheckLocation != "main" && row.CheckLocation != "worker" || repairExecutionCheckLocationConflict(state, row) != nil) {
-			return false
-		}
-
 	}
-	return selected
+	return selected, nil
 }
 
 func s9ObservedLeadProfessionalSame(answer, registered map[string]any, targeted bool) bool {
+	if !targeted {
+		answerBytes, aerr := json.Marshal(answer)
+		registeredBytes, rerr := json.Marshal(registered)
+		var request repair.ChangeImpactRequest
+		var impact repair.ChangeImpact
+		if aerr != nil || rerr != nil || repair.DecodeOriginalChangeImpact(answerBytes, &request) != nil || json.Unmarshal(registeredBytes, &impact) != nil {
+			return false
+		}
+		return sameImpactProfessionalAnswer(request, impact)
+	}
 	project := func(doc map[string]any) any {
-		if targeted {
-			return []any{stringValue(doc["continuity_reason"]), doc["assertion_results"], stringValue(doc["scope_compliance"]), stringValue(doc["result"]), stringValue(doc["failure_class"])}
-		}
-		escalation := stringValue(doc["escalation_level"])
-		if escalation == "" {
-			escalation = "assignment"
-		}
-		return []any{repairLeadStringSet(stringSliceAny(doc["change_types"])), doc["decisions"], escalation, repairLeadStringSet(stringSliceAny(doc["invalidated_evidence_ids"])), repairLeadStringSet(stringSliceAny(doc["superseded_evidence_ids"])), repairLeadStringSet(stringSliceAny(doc["retained_evidence_ids"]))}
+		return []any{stringValue(doc["continuity_reason"]), doc["assertion_results"], stringValue(doc["scope_compliance"]), stringValue(doc["result"]), stringValue(doc["failure_class"])}
 	}
 	return repairLeadCompareProfessional(project(answer), project(registered)) == nil
 }
@@ -245,9 +293,9 @@ func s9ObservedPacketAccepted(root string, state map[string]any, q observedQuest
 		return false
 	}
 	pointer := repairPointerCLI(state)
-	refs := repairArtifactRefs(pointer, "plan_report_refs", "plan_report_ref", "plan_report_sha256")
+	refs := repairArtifactRefs(pointer, "plan_report_refs", "plan_report_ref")
 	if packet.result != nil {
-		refs = repairArtifactRefs(pointer, "result_refs", "result_ref", "result_sha256")
+		refs = repairArtifactRefs(pointer, "result_refs", "result_ref")
 		execution := s9ObservedExecution(state, packet)
 		refs = append(refs, repair.ArtifactRef{Path: stringValue(execution["delivery_ref"])})
 		for _, row := range objectSliceAny(state["evidence"]) {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
-	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // Display only: neither this file nor its absence grants reception or recovery.
@@ -43,18 +43,36 @@ func (d nativeS9Diagnostic) historicalMessage() string {
 }
 
 func nativeS9DiagnosticPath(key string) string {
-	return ".claude/diagnostics/native-s9/" + workpacket.Digest([]byte(key)) + ".json"
+	// Encode the existing responsibility reversibly; split long IDs to keep
+	// filesystem components bounded without truncating identity.
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(key))
+	parts := []string{".claude", "diagnostics", "native-s9", "responsibility"}
+	for len(encoded) > 120 {
+		parts = append(parts, encoded[:120])
+		encoded = encoded[120:]
+	}
+	if encoded == "" {
+		encoded = "_"
+	}
+	parts = append(parts, encoded, "observation.json")
+	return filepath.ToSlash(filepath.Join(parts...))
 }
 
 func nativeS9FileObservation(path string) string {
-	data, err := workpacket.ReadFile(filepath.Dir(path), filepath.Base(path), 20<<20)
+	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return "missing"
 	}
 	if err != nil {
 		return "unreadable: " + err.Error()
 	}
-	return workpacket.Digest(data)
+	defer f.Close()
+	if info, err := f.Stat(); err != nil {
+		return "unreadable: " + err.Error()
+	} else if !info.Mode().IsRegular() {
+		return "not a regular file"
+	}
+	return "readable"
 }
 
 func recordNativeS9Diagnostic(root string, snap runtime.Snapshot, key, owner string, paths []string, failure error) {
@@ -114,7 +132,7 @@ func nativeS9ReturnDiagnosticRecordContext(ctx context.Context, root string, sna
 		return nativeS9Diagnostic{}, false
 	}
 	scope := nativeS9DiagnosticScopeContext(ctx, root, snap.State, key)
-	if value.Scope != scope && (value.Attempt != nil || value.Scope != nativeS9LegacyDiagnosticScopeContext(ctx, root, snap.State, key)) {
+	if value.Scope != scope {
 		return nativeS9Diagnostic{}, false
 	}
 	if ctx.Err() != nil {
@@ -128,52 +146,6 @@ func nativeS9ReturnDiagnosticRecordContext(ctx context.Context, root string, sna
 // are display coordinates only; source validation stays with the consumer.
 func nativeS9DiagnosticScope(root string, state map[string]any, key string) string {
 	return nativeS9DiagnosticScopeContext(context.Background(), root, state, key)
-}
-
-func nativeS9LegacyDiagnosticScopeContext(ctx context.Context, root string, state map[string]any, key string) string {
-	if ctx.Err() != nil {
-		return ""
-	}
-	pointer := repairPointerCLI(state)
-	source := map[string]any{}
-	for _, field := range []string{"case_id", "case_ref", "case_sha256", "contract_id", "contract_ref", "contract_sha256", "session_id", "session_ref", "session_sha256", "plan_id", "plan_ref", "plan_sha256"} {
-		source[field] = pointer[field]
-	}
-	var responsibility any
-	packet, found, err := runtime.FindRepairPlanReportPacketContext(runtime.WithPacketBodyRoot(ctx, root), state, key)
-	if err != nil {
-		return ""
-	}
-	if found {
-		b := packet.Binding
-		if b.RuntimeID != state["runtime_id"] || b.BaselineGeneration != workspace.Generation(state) || b.SessionID != pointer["session_id"] || b.PlanRef != pointer["plan_ref"] || stringMapCLI(pointer["assignment_owners"])[b.RepairAssignmentID] != b.OwnerAgentID {
-			return ""
-		}
-		responsibility = packet
-	} else {
-		// A Targeted answer path is determined by the original source coordinates
-		// and one recorded assignment. Resolve it without re-reading Plan/Impact or
-		// rerunning the independent-verification source closure.
-		var chosen []string
-		for assignment, owner := range stringMapCLI(pointer["assignment_owners"]) {
-			if path, err := repairTargetedQuestionnairePath(root, state, assignment); err == nil && path == key {
-				if chosen != nil {
-					return ""
-				}
-				chosen = []string{assignment, owner}
-			}
-		}
-		if chosen == nil {
-			return ""
-		}
-		responsibility = chosen
-		source["impact_ref"], source["impact_sha256"] = pointer["impact_ref"], pointer["impact_sha256"]
-	}
-	encoded, err := json.Marshal([]any{state["runtime_id"], workspace.Generation(state), lifecycleState(state), nestedStateValue(state, "review", "round"), source, responsibility})
-	if err != nil {
-		return ""
-	}
-	return workpacket.Digest(encoded)
 }
 
 // Resolve only existing index bindings. Do not load a packet body or infer an
@@ -212,7 +184,7 @@ func nativeS9PlanDiagnosticKey(state map[string]any, key string) (string, error)
 		if err := json.Unmarshal(data, &binding); err != nil {
 			return "", err
 		}
-		if binding != *sources {
+		if !sameNativeS9PlanResponsibility(binding, *sources) {
 			continue
 		}
 		if selected != "" {
@@ -224,4 +196,14 @@ func nativeS9PlanDiagnosticKey(state map[string]any, key string) (string, error)
 		return "", fmt.Errorf("Result original PlanReport diagnostic source is unavailable")
 	}
 	return selected, nil
+}
+
+// sameNativeS9PlanResponsibility uses original responsibility and source
+// coordinates; historical SHA fields are not proof or matching criteria.
+func sameNativeS9PlanResponsibility(a, b workpacket.RepairPlanReportBinding) bool {
+	return a.RuntimeID == b.RuntimeID && a.BaselineGeneration == b.BaselineGeneration &&
+		a.CaseID == b.CaseID && a.CaseRef == b.CaseRef && a.ContractID == b.ContractID && a.ContractRef == b.ContractRef &&
+		a.SessionID == b.SessionID && a.SessionRef == b.SessionRef && a.PlanID == b.PlanID && a.PlanRef == b.PlanRef &&
+		a.RepairAssignmentID == b.RepairAssignmentID && a.ManifestAssignmentID == b.ManifestAssignmentID &&
+		a.TeamID == b.TeamID && a.TaskID == b.TaskID && a.TaskRef == b.TaskRef && a.ManifestRef == b.ManifestRef && a.OwnerAgentID == b.OwnerAgentID
 }

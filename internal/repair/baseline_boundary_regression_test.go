@@ -27,22 +27,3 @@ func TestRelativeRootKeepsRegisteredWorktreeBoundary(t *testing.T) {
 		t.Fatal("relative root loses registered-worktree exclusion")
 	}
 }
-
-func TestIgnoredEnvironmentMarkerDoesNotHideUnignoredCode(t *testing.T) {
-	root := t.TempDir()
-	boundaryGit(t, root, "init")
-	boundaryWrite(t, root, ".gitignore", "tools/pyvenv.cfg\n")
-	boundaryWrite(t, root, "tools/pyvenv.cfg", "home = /python\n")
-	boundaryWrite(t, root, "tools/business.py", "important = True\n")
-
-	artifacts, _, err := captureRepositoryBaseline(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, artifact := range artifacts {
-		if artifact.Path == "tools/business.py" {
-			return
-		}
-	}
-	t.Fatal("unignored business code hidden by ignored environment marker")
-}

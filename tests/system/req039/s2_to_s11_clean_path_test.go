@@ -41,7 +41,6 @@ func TestS2_ToS11_CleanPath_Conformance(t *testing.T) {
 	input := `{
 		"session_id":"session-sys-s2-s11",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Edit",
 		"tool_input":{"file_path":"docs/architecture/ARCHITECTURE-039.md"}
 	}`

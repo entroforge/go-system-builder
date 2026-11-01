@@ -11,17 +11,16 @@ import (
 // artifacts. ContractRef remains a distinct name at the API boundary because
 // an approved Contract is the authority for the repair session.
 type ArtifactRef struct {
-	ID     string `json:"id,omitempty"`
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	ID   string `json:"id,omitempty"`
+	Path string `json:"path"`
+
 	Status string `json:"status,omitempty"`
 }
 
 type ArtifactReference = ArtifactRef
 
 type ContractRef struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path string `json:"path"`
 }
 
 type RepairUnit struct {
@@ -58,25 +57,19 @@ type SessionRequest struct {
 }
 
 type RepairSession struct {
-	SchemaVersion      string        `json:"schema_version"`
-	RecordType         string        `json:"record_type"`
-	SessionID          string        `json:"session_id"`
-	ContractRef        string        `json:"contract_ref"`
-	ContractSHA256     string        `json:"contract_sha256"`
+	SchemaVersion string `json:"schema_version"`
+	RecordType    string `json:"record_type"`
+	SessionID     string `json:"session_id"`
+	ContractRef   string `json:"contract_ref"`
+
 	RuntimeID          string        `json:"runtime_id"`
 	ReqID              string        `json:"req_id"`
 	BaselineGeneration int           `json:"baseline_generation"`
-	BaselineArtifacts  []ArtifactRef `json:"baseline_artifacts"`
-	// RC-15 (S9-H7/T2 shadow-field convergence): BaselineDigest and Status are
-	// shadow projections. The Runtime pointer under state.review.repair is the
-	// authority for the session's live status and the implementation baseline
-	// digest written by CommitRepairHandoff; these artifact fields are
-	// captured at session creation and are NOT consulted by any commit gate.
-	BaselineDigest string    `json:"baseline_digest"`
-	Status         string    `json:"status"`
-	CreatedBy      string    `json:"created_by"`
-	CreatedAt      time.Time `json:"-"`
-	CreatedAtText  string    `json:"created_at"`
+	BaselineArtifacts  []ArtifactRef `json:"baseline_artifacts,omitempty"`
+	Status             string        `json:"status"`
+	CreatedBy          string        `json:"created_by"`
+	CreatedAt          time.Time     `json:"-"`
+	CreatedAtText      string        `json:"created_at"`
 }
 
 type PlanRequest struct {
@@ -88,13 +81,13 @@ type PlanRequest struct {
 }
 
 type RepairPlan struct {
-	SchemaVersion    string             `json:"schema_version"`
-	RecordType       string             `json:"record_type"`
-	PlanID           string             `json:"plan_id"`
-	SessionID        string             `json:"session_id"`
-	ContractID       string             `json:"contract_id"`
-	ContractRef      string             `json:"contract_ref"`
-	ContractSHA256   string             `json:"contract_sha256"`
+	SchemaVersion string `json:"schema_version"`
+	RecordType    string `json:"record_type"`
+	PlanID        string `json:"plan_id"`
+	SessionID     string `json:"session_id"`
+	ContractID    string `json:"contract_id"`
+	ContractRef   string `json:"contract_ref"`
+
 	Units            []RepairUnit       `json:"units"`
 	Assignments      []RepairAssignment `json:"assignments"`
 	ExecutionPolicy  string             `json:"execution_policy"`
@@ -151,8 +144,8 @@ type RepairCheck struct {
 }
 
 type ChangedArtifact struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path string `json:"path"`
+
 	Status string `json:"status"`
 }
 
@@ -311,16 +304,15 @@ type ChangesetRequest struct {
 }
 
 type Changeset struct {
-	SchemaVersion string        `json:"schema_version"`
-	RecordType    string        `json:"record_type"`
-	ChangesetID   string        `json:"changeset_id"`
-	SessionID     string        `json:"session_id"`
-	Source        string        `json:"source"`
-	BaseRef       string        `json:"base_ref,omitempty"`
-	HeadRef       string        `json:"head_ref,omitempty"`
-	Artifacts     []ArtifactRef `json:"artifacts"`
-	Digest        string        `json:"digest"`
-	ComputedAt    string        `json:"computed_at"`
+	SchemaVersion string `json:"schema_version"`
+	RecordType    string `json:"record_type"`
+	ChangesetID   string `json:"changeset_id"`
+	SessionID     string `json:"session_id"`
+	Source        string `json:"source"`
+
+	Artifacts []ArtifactRef `json:"artifacts"`
+
+	ComputedAt string `json:"computed_at"`
 }
 
 type ImpactDecision struct {
@@ -347,6 +339,7 @@ type ChangeImpactRequest struct {
 	SourceCaseIDs             []string         `json:"source_case_ids"`
 	ChangeTypes               []string         `json:"change_types"`
 	ChangedArtifacts          []ArtifactRef    `json:"changed_artifacts"`
+	IntegrationNotes          string           `json:"integration_notes,omitempty"`
 	Decisions                 []ImpactDecision `json:"decisions"`
 	EscalationLevel           string           `json:"escalation_level"`
 	InvalidatedEvidenceIDs    []string         `json:"invalidated_evidence_ids"`
@@ -356,6 +349,35 @@ type ChangeImpactRequest struct {
 	AnalyzedBy                string           `json:"analyzed_by"`
 	AnalyzedAt                time.Time        `json:"analyzed_at"`
 	OccurredAt                time.Time        `json:"occurred_at"`
+}
+
+// DecodeOriginalChangeImpact accepts natural paths only at Main's original
+// ChangeImpact request entry. Persisted artifacts remain objects and the DTO
+// retains standard JSON behavior when embedded or decoded by other callers.
+func DecodeOriginalChangeImpact(data []byte, r *ChangeImpactRequest) error {
+	type requestAlias ChangeImpactRequest
+	var decoded struct {
+		*requestAlias
+		ChangedArtifacts []json.RawMessage `json:"changed_artifacts"`
+	}
+	decoded.requestAlias = (*requestAlias)(r)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	r.ChangedArtifacts = make([]ArtifactRef, 0, len(decoded.ChangedArtifacts))
+	for _, raw := range decoded.ChangedArtifacts {
+		var path string
+		if err := json.Unmarshal(raw, &path); err == nil {
+			r.ChangedArtifacts = append(r.ChangedArtifacts, ArtifactRef{Path: path})
+			continue
+		}
+		var ref ArtifactRef
+		if err := json.Unmarshal(raw, &ref); err != nil {
+			return err
+		}
+		r.ChangedArtifacts = append(r.ChangedArtifacts, ref)
+	}
+	return nil
 }
 
 type ChangeImpact struct {
@@ -369,6 +391,7 @@ type ChangeImpact struct {
 	SourceCaseIDs          []string         `json:"source_case_ids,omitempty"`
 	ChangeTypes            []string         `json:"change_types"`
 	ChangedArtifacts       []ArtifactRef    `json:"changed_artifacts"`
+	IntegrationNotes       string           `json:"integration_notes,omitempty"`
 	Decisions              []ImpactDecision `json:"decisions"`
 	EscalationLevel        string           `json:"escalation_level"`
 	InvalidatedEvidenceIDs []string         `json:"invalidated_evidence_ids"`
@@ -448,8 +471,8 @@ type RepairHandoff struct {
 	SessionRef                 ArtifactRef   `json:"session_ref"`
 	PlanRef                    ArtifactRef   `json:"plan_ref"`
 	ContractRef                ArtifactRef   `json:"contract_ref"`
-	ResultRef                  ArtifactRef   `json:"result_ref"`
-	ChangesetRef               ArtifactRef   `json:"changeset_ref"`
+	ResultRef                  ArtifactRef   `json:"result_ref,omitzero"`
+	ChangesetRef               ArtifactRef   `json:"changeset_ref,omitzero"`
 	ChangeImpactRef            ArtifactRef   `json:"change_impact_ref"`
 	TargetedReverificationRefs []ArtifactRef `json:"targeted_reverification_refs"`
 	NextAction                 string        `json:"next_action"`

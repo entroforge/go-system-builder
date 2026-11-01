@@ -1,10 +1,8 @@
 package semantic
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"os"
 	"path/filepath"
@@ -38,13 +36,11 @@ type runtimeState struct {
 	SchemaVersion string `json:"schema_version"`
 	RuntimeID     string `json:"runtime_id"`
 	Definition    struct {
-		Path   string `json:"path"`
-		SHA256 string `json:"sha256"`
+		Path string `json:"path"`
 	} `json:"definition"`
 	HookControl struct {
 		PolicyRef struct {
-			Path   string `json:"path"`
-			SHA256 string `json:"sha256"`
+			Path string `json:"path"`
 		} `json:"policy_ref"`
 	} `json:"hook_control"`
 	Lifecycle struct {
@@ -75,9 +71,8 @@ type runtimeState struct {
 type reviewManifest struct {
 	RuntimeID string `json:"runtime_id"`
 	Documents []struct {
-		ID     string `json:"id"`
-		Path   string `json:"path"`
-		SHA256 string `json:"sha256"`
+		ID   string `json:"id"`
+		Path string `json:"path"`
 	} `json:"documents"`
 }
 
@@ -115,7 +110,6 @@ func ValidateRepository(root string) error {
 		}
 	}
 	for _, name := range []string{
-		"readback-request.template.json",
 		"activation.template.json",
 	} {
 		if err := validator.ValidateEmbedded("agent-message.schema.json", name); err != nil {
@@ -162,9 +156,6 @@ func ValidateRepository(root string) error {
 		return fmt.Errorf("team manifest semantics: %w", err)
 	}
 	if err := ValidateReviewManifests(root); err != nil {
-		return err
-	}
-	if err := ValidateReadbackTemplates(root); err != nil {
 		return err
 	}
 	if err := ValidateAgentMessages(root); err != nil {
@@ -400,7 +391,7 @@ func validateReviewManifestReferences(root, relative, runtimeID string) error {
 	return validateReviewManifestReferencesWithHistory(root, relative, runtimeID, false)
 }
 
-func validateReviewManifestReferencesWithHistory(root, relative, runtimeID string, historicalS5 bool) error {
+func validateReviewManifestReferencesWithHistory(root, relative, runtimeID string, _ bool) error {
 	data, err := os.ReadFile(filepath.Join(root, relative))
 	if err != nil {
 		return fmt.Errorf("read %s: %w", filepath.ToSlash(relative), err)
@@ -414,20 +405,8 @@ func validateReviewManifestReferencesWithHistory(root, relative, runtimeID strin
 			filepath.ToSlash(relative), manifest.RuntimeID, runtimeID)
 	}
 	for _, doc := range manifest.Documents {
-		if historicalS5 {
-			if _, err := resolveReachablePath(root, filepath.ToSlash(relative)+" document "+doc.ID, doc.Path); err != nil {
-				return err
-			}
-			continue
-		}
-		actual, err := fileSHA256(filepath.Join(root, doc.Path))
-		if err != nil {
-			return fmt.Errorf("%s: document %s fingerprint: %w",
-				filepath.ToSlash(relative), doc.ID, err)
-		}
-		if actual != doc.SHA256 {
-			return fmt.Errorf("%s: document %s fingerprint mismatch: manifest=%s actual=%s — compare with the current registered source refs at manifest %s; keep any issued S5 manifest bytes unchanged and follow its original rework route",
-				filepath.ToSlash(relative), doc.ID, doc.SHA256, actual, filepath.ToSlash(relative))
+		if _, err := resolveReachablePath(root, filepath.ToSlash(relative)+" document "+doc.ID, doc.Path); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -448,17 +427,12 @@ func ValidateRuntimeFile(root, runtimePath string) error {
 	for _, ref := range []struct {
 		name string
 		path string
-		hash string
 	}{
-		{"Loop Definition", state.Definition.Path, state.Definition.SHA256},
-		{"Hook policy", state.HookControl.PolicyRef.Path, state.HookControl.PolicyRef.SHA256},
+		{"Loop Definition", state.Definition.Path},
+		{"Hook policy", state.HookControl.PolicyRef.Path},
 	} {
-		actual, err := fileSHA256(filepath.Join(root, ref.path))
-		if err != nil {
-			return fmt.Errorf("%s fingerprint: %w", ref.name, err)
-		}
-		if actual != ref.hash {
-			return fmt.Errorf("%s fingerprint mismatch: runtime=%s actual=%s", ref.name, ref.hash, actual)
+		if _, err := os.ReadFile(filepath.Join(root, ref.path)); err != nil {
+			return fmt.Errorf("read %s: %w", ref.name, err)
 		}
 	}
 	return nil
@@ -555,75 +529,6 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func fileSHA256(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
-}
-
-// ValidateReadbackTemplates validates every readback-request template
-// referenced by the runtime against readback-request.schema.json. This is the
-// BUG-002 B1 fix: today the schema fires only at team launch time, which
-// surprises planners who ran validate --all and saw it pass. Promoting the
-// check to validate --all surfaces ordering violations at the documented
-// validation step.
-func ValidateReadbackTemplates(root string) error {
-	refs, err := currentReadbackTemplateRefs(root)
-	if err != nil {
-		return err
-	}
-	validator := schema.NewValidator(root)
-	for _, relative := range refs {
-		if err := validator.ValidateFile("readback-request.schema.json", relative); err != nil {
-			return fmt.Errorf("%s: %w", filepath.ToSlash(relative), err)
-		}
-	}
-	return nil
-}
-
-// currentReadbackTemplateRefs walks docs/teams/ for readback-request template
-// files. Per BUG-002 §8.3 B1 this uses filesystem glob/walk rather than the
-// runtime ref because the templates are project artifacts, not runtime
-// entities. filepath.Glob does not support ** so we use filepath.Walk for
-// recursive discovery.
-func currentReadbackTemplateRefs(root string) ([]string, error) {
-	baseDir := filepath.Join(root, "docs", "teams")
-	info, err := os.Stat(baseDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("stat readback templates: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, nil
-	}
-	var refs []string
-	walkErr := pathscope.Walk(root, baseDir, func(path string, fi os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if fi.IsDir() {
-			return nil
-		}
-		if fi.Name() != "readback-request.template.json" {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		refs = append(refs, filepath.ToSlash(rel))
-		return nil
-	})
-	if walkErr != nil {
-		return nil, fmt.Errorf("walk readback templates: %w", walkErr)
-	}
-	return refs, nil
 }
 
 // ValidateCrossManifestDependencies rejects any depends_on target that

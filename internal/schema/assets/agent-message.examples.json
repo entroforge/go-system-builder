@@ -1,94 +1,6 @@
 [
   {
     "schema_version": "1.0.0",
-    "message_type": "readback_request",
-    "message_id": "msg-readback-request-001",
-    "correlation_id": "corr-agent-001",
-    "runtime_id": "loop-REQ-002-example",
-    "agent_id": "agent-frontend-builder-001",
-    "agent_definition_ref": ".claude/agents/frontend-builder.md",
-    "task_id": "TASK-001",
-    "bug_id": null,
-    "team_id": "team-builder-001",
-    "occurred_at": "2026-06-20T00:00:00Z",
-    "role_family": "frontend-builder",
-    "documents": [
-      {
-        "id": "TASK-001",
-        "kind": "task",
-        "path": "docs/dev/tasks/TASK-001.md",
-        "version": "v1.0.0",
-        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-        "read_order": 1
-      },
-      {
-        "id": "CONTRACTS-002",
-        "kind": "contract",
-        "path": "docs/dev/contracts/CONTRACTS-002.md",
-        "version": "v1.0.0",
-        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
-        "read_order": 2
-      },
-      {
-        "id": "REQ-002",
-        "kind": "req",
-        "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
-        "version": "v1.0.0",
-        "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
-        "read_order": 3
-      }
-    ],
-    "skills": [
-      {
-        "name": "agent-dispatch",
-        "category": "methodology",
-        "source": ".claude/skills/agent-dispatch/SKILL.md",
-        "version": "v1.0.0",
-        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
-      },
-      {
-        "name": "code-quality",
-        "category": "best-practice",
-        "source": ".claude/skills/code-quality/SKILL.md",
-        "version": "v1.0.0",
-        "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
-      }
-    ],
-    "scope": {
-      "responsibility": "Implement the runtime validator for TASK-001.",
-      "read_paths": [
-        "docs/",
-        ".claude/"
-      ],
-      "prospective_write_paths": [
-        ".claude/hooks/",
-        "tests/"
-      ],
-      "forbidden_paths": [
-        "docs/requirements/",
-        "docs/control/agent-protocol.md"
-      ],
-      "forbidden_actions": [
-        "modify locked REQ",
-        "squash merge",
-        "formal release"
-      ],
-      "output_paths": [
-        "docs/dev/tasks/TASK-001.md"
-      ]
-    },
-    "closing_contract_ref": "docs/dev/tasks/TASK-001.md#closing-contract",
-    "readback_fields": [
-      "objective",
-      "responsibility",
-      "covered_clauses",
-      "planned_surfaces",
-      "closing_criteria",
-      "risks"
-    ]
-  },
-  {
-    "schema_version": "1.0.0",
     "message_type": "plan_report",
     "message_id": "msg-plan-0001",
     "correlation_id": "corr-0001",
@@ -201,7 +113,6 @@
         "kind": "task",
         "path": "docs/dev/tasks/TASK-001.md",
         "version": "v1.0.0",
-        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
         "read_order": 1
       },
       {
@@ -209,7 +120,6 @@
         "kind": "contract",
         "path": "docs/dev/contracts/CONTRACTS-002.md",
         "version": "v1.0.0",
-        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "read_order": 2
       },
       {
@@ -217,7 +127,6 @@
         "kind": "req",
         "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
         "version": "v1.0.0",
-        "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
         "read_order": 3
       }
     ]
@@ -236,7 +145,6 @@
     "occurred_at": "2026-06-20T00:02:00Z",
     "activation_id": "act-agent-builder-001",
     "approved_readback_message_id": "msg-readback-response-001",
-    "approved_readback_sha256": "2de84bc98b52566ceddd94ef19dd133588cdcfb699c1d6a91d7f5bc757f3ea45",
     "approval_evidence_id": "evidence-understanding-001",
     "documents": [
       {
@@ -244,7 +152,6 @@
         "kind": "task",
         "path": "docs/dev/tasks/TASK-001.md",
         "version": "v1.0.0",
-        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
         "read_order": 1
       },
       {
@@ -252,7 +159,6 @@
         "kind": "contract",
         "path": "docs/dev/contracts/CONTRACTS-002.md",
         "version": "v1.0.0",
-        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "read_order": 2
       },
       {
@@ -260,7 +166,6 @@
         "kind": "req",
         "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
         "version": "v1.0.0",
-        "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
         "read_order": 3
       }
     ],
@@ -293,7 +198,6 @@
       "negative tests pass"
     ],
     "stop_conditions": [
-      "document fingerprint changes",
       "scope expansion is required",
       "Hook blocks a required operation repeatedly"
     ],

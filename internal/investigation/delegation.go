@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -22,7 +23,6 @@ type RepairDelegation struct {
 	Decision           string   `json:"decision"`
 	DecisionID         string   `json:"decision_id"`
 	RuntimeID          string   `json:"runtime_id"`
-	REQSHA256          string   `json:"req_sha256"`
 	BaselineGeneration int      `json:"baseline_generation"`
 	ApprovedBy         string   `json:"approved_by"`
 	Reviewer           string   `json:"reviewer"`
@@ -33,24 +33,23 @@ type RepairDelegation struct {
 }
 
 type RepairTechnicalReview struct {
-	Decision                   string   `json:"decision"`
-	RuntimeID                  string   `json:"runtime_id"`
-	CaseID                     string   `json:"case_id"`
-	ContractID                 string   `json:"contract_id"`
-	ApprovalHash               string   `json:"approval_hash"`
-	ReviewedBy                 string   `json:"reviewed_by"`
-	DelegationEvidenceID       string   `json:"delegation_evidence_id"`
-	RequirementsUnchanged      bool     `json:"requirements_unchanged"`
-	BusinessSemanticsUnchanged bool     `json:"business_semantics_unchanged"`
-	Reversible                 bool     `json:"reversible"`
-	ScopeComplete              bool     `json:"scope_complete"`
-	EvidenceRefs               []string `json:"evidence_refs"`
-	Rationale                  string   `json:"rationale"`
+	Decision                   string          `json:"decision"`
+	RuntimeID                  string          `json:"runtime_id"`
+	CaseID                     string          `json:"case_id"`
+	ContractID                 string          `json:"contract_id"`
+	ContractDraft              json.RawMessage `json:"contract_draft,omitempty"`
+	ReviewedBy                 string          `json:"reviewed_by"`
+	DelegationEvidenceID       string          `json:"delegation_evidence_id"`
+	RequirementsUnchanged      bool            `json:"requirements_unchanged"`
+	BusinessSemanticsUnchanged bool            `json:"business_semantics_unchanged"`
+	Reversible                 bool            `json:"reversible"`
+	ScopeComplete              bool            `json:"scope_complete"`
+	EvidenceRefs               []string        `json:"evidence_refs"`
+	Rationale                  string          `json:"rationale"`
 }
 
 func decodeStrict(data []byte, value any) error {
 	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
 	if err := d.Decode(value); err != nil {
 		return err
 	}
@@ -83,9 +82,6 @@ func registeredArtifact(root string, state map[string]any, id, kind string) (map
 		data, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			return nil, nil, err
-		}
-		if sha256Hex(data) != stringField(row["sha256"]) {
-			return nil, nil, fmt.Errorf("evidence %s sha256 drift", id)
 		}
 		return row, data, nil
 	}
@@ -125,7 +121,7 @@ func validateDelegatedApproval(root string, state, draft map[string]any, req Con
 	if err := repair.ValidateContractExecutionMap(draftBytes); err != nil {
 		return nil, err
 	}
-	grantRow, grant, err := repairReviewAuthority(root, state, req.DelegationEvidenceID)
+	_, grant, err := repairReviewAuthority(root, state, req.DelegationEvidenceID)
 	if err != nil {
 		return nil, err
 	}
@@ -164,35 +160,17 @@ func validateDelegatedApproval(root string, state, draft map[string]any, req Con
 	if err := decodeStrict(reviewBytes, &review); err != nil {
 		return nil, err
 	}
-	if review.Decision != "approve_bounded_repair" || review.RuntimeID != grant.RuntimeID || review.CaseID != req.CaseID || review.ContractID != stringField(draft["repair_contract_id"]) || review.ApprovalHash != req.ApprovalHash || review.ReviewedBy != grant.Reviewer || review.DelegationEvidenceID != req.DelegationEvidenceID || !containsStringAny(reviewRow["produced_by"], grant.Reviewer) || !containsStringAny(reviewRow["scope_refs"], "s8_contract_review:"+req.CaseID) {
-		return nil, fmt.Errorf("technical review identity/hash/scope mismatch")
+	if review.Decision != "approve_bounded_repair" || review.RuntimeID != grant.RuntimeID || review.CaseID != req.CaseID || review.ContractID != stringField(draft["repair_contract_id"]) || review.ReviewedBy != grant.Reviewer || review.DelegationEvidenceID != req.DelegationEvidenceID || !containsStringAny(reviewRow["produced_by"], grant.Reviewer) || !containsStringAny(reviewRow["scope_refs"], "s8_contract_review:"+req.CaseID) {
+		return nil, fmt.Errorf("technical review identity or scope mismatch")
+	}
+	var presented any
+	if len(review.ContractDraft) == 0 || json.Unmarshal(review.ContractDraft, &presented) != nil || !reflect.DeepEqual(presented, draft) {
+		return nil, fmt.Errorf("technical review does not record the actual presented Contract")
 	}
 	if !review.RequirementsUnchanged || !review.BusinessSemanticsUnchanged || !review.Reversible || !review.ScopeComplete || strings.TrimSpace(review.Rationale) == "" || len(review.EvidenceRefs) == 0 {
 		return nil, fmt.Errorf("technical review must establish unchanged semantics, reversibility, complete scope and evidence")
 	}
-	for _, id := range review.EvidenceRefs {
-		if id == req.ApprovalEvidenceID || id == req.DelegationEvidenceID {
-			return nil, fmt.Errorf("technical review evidence cannot be its own authority")
-		}
-		if strings.HasPrefix(id, "path:") {
-			if err := ValidateEvidenceRefs([]string{id}, EvidenceAttestationOptions{AllowPaths: true, State: state, Root: root, RequireSHA: true, RequireReviewRound: currentReviewRound(state)}); err != nil {
-				return nil, fmt.Errorf("technical review supporting file evidence: %w", err)
-			}
-			continue
-		}
-		rows, _ := state["evidence"].([]any)
-		kind := ""
-		for _, raw := range rows {
-			row, _ := raw.(map[string]any)
-			if stringField(row["id"]) == id {
-				kind = stringField(row["kind"])
-			}
-		}
-		if _, _, err := registeredArtifact(root, state, id, kind); err != nil {
-			return nil, fmt.Errorf("technical review supporting evidence: %w", err)
-		}
-	}
-	return map[string]any{"mode": "delegated", "delegation_evidence_id": req.DelegationEvidenceID, "delegation_sha256": stringField(grantRow["sha256"]), "human_authorizer": grant.ApprovedBy, "review_evidence_id": req.ApprovalEvidenceID, "review_sha256": stringField(reviewRow["sha256"])}, nil
+	return map[string]any{"mode": "delegated", "delegation_evidence_id": req.DelegationEvidenceID, "human_authorizer": grant.ApprovedBy, "review_evidence_id": req.ApprovalEvidenceID}, nil
 }
 func delegationUseCount(state map[string]any, id string) int {
 	config, _ := state["configuration"].(map[string]any)
@@ -238,16 +216,15 @@ func resolveRepairAuthority(root string, state map[string]any, id string) (map[s
 	if err != nil {
 		return nil, grant, true, err
 	}
-	sha := stringField(pin["sha256"])
-	if sha == "" || id != "binding-policy:"+sha || stringField(pin["runtime_id"]) != stringField(state["runtime_id"]) || integerValueOrZero(pin["baseline_generation"]) != generation || stringField(pin["req_sha256"]) != stringField(bound["sha256"]) || stringField(pin["approved_by"]) != stringField(bound["approved_by"]) {
+	if id != "binding-policy:"+stringField(state["runtime_id"]) || stringField(pin["runtime_id"]) != stringField(state["runtime_id"]) || integerValueOrZero(pin["baseline_generation"]) != generation || stringField(pin["approved_by"]) != stringField(bound["approved_by"]) {
 		return nil, grant, true, fmt.Errorf("repair policy was not authorized for this REQ binding")
 	}
-	p, err := repairpolicy.Read(root, stringField(pin["path"]), sha, stringField(bound["approved_by"]))
+	p, err := repairpolicy.Read(root, stringField(pin["path"]), stringField(bound["approved_by"]))
 	if err != nil {
 		return nil, grant, true, err
 	}
-	grant = RepairDelegation{Decision: "delegate_bounded_repair", DecisionID: id, RuntimeID: stringField(state["runtime_id"]), REQSHA256: stringField(bound["sha256"]), BaselineGeneration: generation, ApprovedBy: p.ApprovedBy, Reviewer: p.Reviewer, AllowedPaths: p.AllowedPaths, ForbiddenPaths: p.ForbiddenPaths, MaxContracts: p.MaxContracts, ExpiresAt: p.ExpiresAt}
-	return map[string]any{"sha256": sha, "produced_by": []any{p.ApprovedBy}, "scope_refs": []any{"s8_repair_delegation:" + grant.RuntimeID}}, grant, true, nil
+	grant = RepairDelegation{Decision: "delegate_bounded_repair", DecisionID: id, RuntimeID: stringField(state["runtime_id"]), BaselineGeneration: generation, ApprovedBy: p.ApprovedBy, Reviewer: p.Reviewer, AllowedPaths: p.AllowedPaths, ForbiddenPaths: p.ForbiddenPaths, MaxContracts: p.MaxContracts, ExpiresAt: p.ExpiresAt}
+	return map[string]any{"produced_by": []any{p.ApprovedBy}, "scope_refs": []any{"s8_repair_delegation:" + grant.RuntimeID}}, grant, true, nil
 }
 
 // ContractReviewAuthority selects existing, currently valid authority for the
@@ -257,8 +234,8 @@ func ContractReviewAuthority(root string, state map[string]any) (string, string,
 	config, _ := state["configuration"].(map[string]any)
 	repairConfig, _ := config["repair"].(map[string]any)
 	pin, _ := repairConfig["bound_policy"].(map[string]any)
-	if sha := stringField(pin["sha256"]); sha != "" {
-		id := "binding-policy:" + sha
+	if stringField(pin["path"]) != "" {
+		id := "binding-policy:" + stringField(state["runtime_id"])
 		_, grant, err := repairReviewAuthority(root, state, id)
 		if err == nil {
 			return id, grant.Reviewer, nil
@@ -316,7 +293,7 @@ func validateRepairDelegation(root string, state, grantRow map[string]any, grant
 		return err
 	}
 	bound, _ := state["bound_req"].(map[string]any)
-	if grant.Decision != "delegate_bounded_repair" || grant.DecisionID != id || grant.RuntimeID != stringField(state["runtime_id"]) || grant.BaselineGeneration != generation || grant.REQSHA256 == "" || grant.REQSHA256 != stringField(bound["sha256"]) || stringField(bound["status"]) != "locked" {
+	if grant.Decision != "delegate_bounded_repair" || grant.DecisionID != id || grant.RuntimeID != stringField(state["runtime_id"]) || grant.BaselineGeneration != generation || stringField(bound["status"]) != "locked" {
 		return fmt.Errorf("delegation does not bind this locked REQ/runtime/generation")
 	}
 	// The grant must come from the recorded requirement approver, not the Driver.
@@ -340,15 +317,6 @@ func validateRepairDelegation(root string, state, grantRow map[string]any, grant
 		if err := literalRepositoryPath(root, path); err != nil {
 			return err
 		}
-	}
-	// Re-read locked REQ bytes. No use across an unrecorded REQ change.
-	reqPath := stringField(bound["path"])
-	if err := literalRepositoryPath(root, reqPath); err != nil {
-		return err
-	}
-	reqBytes, err := os.ReadFile(filepath.Join(root, reqPath))
-	if err != nil || sha256Hex(reqBytes) != grant.REQSHA256 {
-		return fmt.Errorf("locked REQ bytes drifted")
 	}
 	return nil
 }

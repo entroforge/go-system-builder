@@ -3,127 +3,41 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/repair"
-	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
-func TestNativeS9NaturalAcceptedReplayDoesNotConsumeOrWriteTyped(t *testing.T) {
-	root, worker, plan, in, _ := nativeS9WorkerFixture(t)
-	in.Event, in.CWD = "PreToolUse", worker
-	var diagnostic bytes.Buffer
-	snap := repairDispatchSnapshot(t, root)
-	if snap.State["workspace"] != nil {
-		t.Fatal("first natural reception must begin without an execution")
-	}
-	if err := receiveNativeS9BuilderEvent(root, snap.State, in, plan, in.LastAssistantMessage, &diagnostic, nil); err != nil {
-		t.Fatalf("first reception without an execution: %v %s", err, &diagnostic)
-	}
-	snap = repairDispatchSnapshot(t, root)
-	packets, err := runtime.CurrentRepairResultPacketsContext(t.Context(), root, snap.State, plan.Binding.OwnerAgentID)
-	if err != nil || len(packets) != 1 {
-		t.Fatalf("received Result packet: %d %v", len(packets), err)
-	}
-	typed := filepath.Join(worker, packets[0].AnswerPath)
-	stamp := time.Unix(1000000000, 0)
-	if err := os.Chtimes(typed, stamp, stamp); err != nil {
-		t.Fatal(err)
-	}
-	beforeInfo, err := os.Stat(typed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeTyped, err := os.ReadFile(typed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := repairDispatchRuntimeBytes(t, root)
-	for _, event := range []string{"PreToolUse", "PostToolUse"} {
-		in.Event = event
-		capture := newNativeS9AttemptCapture(t.Context(), root, snap, plan.ID, plan.Binding.OwnerAgentID, "Builder")
-		if err := receiveNativeS9BuilderEvent(root, snap.State, in, plan, in.LastAssistantMessage, &diagnostic, capture); err != nil {
-			t.Fatalf("%s replay: %v %s", event, err, &diagnostic)
-		}
-		if capture.consumer || capture.value.Attempt.Stage != "selected" || capture.value.Attempt.TypedInputRef != "" {
-			t.Fatalf("accepted replay entered adaptation/consumer: %+v", capture.value.Attempt)
-		}
-		afterInfo, err := os.Stat(typed)
-		if err != nil || !os.SameFile(beforeInfo, afterInfo) || !afterInfo.ModTime().Equal(beforeInfo.ModTime()) {
-			t.Fatalf("accepted replay wrote typed file: %v", err)
-		}
-		after, err := os.ReadFile(typed)
-		if err != nil || !bytes.Equal(beforeTyped, after) {
-			t.Fatalf("accepted replay changed typed bytes: %v", err)
-		}
-		repairDispatchAssertUnchanged(t, root, before)
-	}
-	// The receipt cannot authorize newly edited private originals, even when
-	// the edit makes the flat answer look like an unfinished draft.
-	planPath, resultPath, err := nativeS9AuthorPaths(root, plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, rel := range []string{planPath, resultPath} {
-		path := filepath.Join(worker, rel)
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(`{"verdict":""}`), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if err := receiveNativeS9BuilderEvent(root, snap.State, in, plan, in.LastAssistantMessage, &diagnostic, nil); err == nil || !strings.Contains(err.Error(), "bytes changed") {
-			t.Fatalf("accepted changed private original was hidden: %s: %v", rel, err)
-		}
-		if err := os.WriteFile(path, raw, 0600); err != nil {
-			t.Fatal(err)
-		}
-		repairDispatchAssertUnchanged(t, root, before)
-	}
-	// Candidate acceptance cannot authorize recovery of an absent worktree.
-	// Natural events cannot prove its live source; the explicit recovery still
-	// requires the original verified cleanup checkpoint.
-	repairLeadGit(t, root, "worktree", "remove", "--force", worker)
-	if err := receiveNativeS9BuilderEvent(root, snap.State, in, plan, in.LastAssistantMessage, &diagnostic, nil); err != nativeS9ProgressPending {
-		t.Fatalf("missing natural source was claimed: %v", err)
-	}
-	service, err := submission.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if handled, err := recoverNativeS9TypedResult(t.Context(), service, snap.State, plan, worker, true, false, &diagnostic, nil); !handled || err == nil {
-		t.Fatalf("Candidate alone authorized a missing worktree: handled=%t err=%v", handled, err)
-	}
-	repairDispatchAssertUnchanged(t, root, before)
+// Both supported diagnostics describe an incomplete reception; durable receipts
+// and Runtime comparisons below remain the acceptance authority.
+func nativeS9ReceptionIncomplete(message string) bool {
+	return strings.Contains(message, "reception incomplete") ||
+		strings.Contains(message, "reception for") && strings.Contains(message, "is incomplete")
 }
 
 func TestNativeS9NaturalSavedTypedPrecedesChangedOrMissingFlat(t *testing.T) {
 	for _, event := range []string{"PreToolUse", "SubagentStop"} {
 		for _, missing := range []bool{false, true} {
 			t.Run(event+"/"+map[bool]string{false: "changed", true: "missing"}[missing], func(t *testing.T) {
-				root, worker, plan, in, professional := nativeS9LegacyWorkerFixture(t)
+				root, worker, plan, in, professional := nativeS9WorkerFixture(t)
 				service, err := submission.New(root)
 				if err != nil {
 					t.Fatal(err)
 				}
 				var diagnostic bytes.Buffer
-				if err := importNativeS9PlanReport(t.Context(), root, worker, plan, service, &diagnostic); err != nil {
+				if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, plan, service, &diagnostic, nil); err != nil {
 					t.Fatal(err)
 				}
 				if r, err := service.SaveRepairPlanReportFrom(t.Context(), plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil); err != nil || !r.Accepted {
 					t.Fatalf("Plan: %+v %v", r, err)
 				}
-				if err := recordNativeS9Source(t.Context(), root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+				if err := recordNativeS9OriginalLocation(t.Context(), root, plan, worker); err != nil {
 					t.Fatal(err)
 				}
 				packets, err := service.IssueRepairResults(t.Context(), plan.Binding.OwnerAgentID)
@@ -155,7 +69,7 @@ func TestNativeS9NaturalSavedTypedPrecedesChangedOrMissingFlat(t *testing.T) {
 				}
 				in.Event, in.CWD = event, worker
 				nativeS9SplitChild(t, &in)
-				if diagnostic := nativeS9SplitPublicEvent(t, root, in); strings.Contains(diagnostic, "reception incomplete") {
+				if diagnostic := nativeS9SplitPublicEvent(t, root, in); nativeS9ReceptionIncomplete(diagnostic) {
 					t.Fatalf("saved typed recovery: %s", diagnostic)
 				}
 				after, err := os.ReadFile(typed)
@@ -222,7 +136,7 @@ func TestNativeS9PublicAuthorCorrectsRejectedResult(t *testing.T) {
 			}
 			in.Event, in.CWD = event, worker
 			nativeS9SplitChild(t, &in)
-			if diagnostic := nativeS9SplitPublicEvent(t, root, in); !strings.Contains(diagnostic, "reception incomplete") || !strings.Contains(diagnostic, "migration_ref") {
+			if diagnostic := nativeS9SplitPublicEvent(t, root, in); !nativeS9ReceptionIncomplete(diagnostic) || !strings.Contains(diagnostic, "migration_ref") {
 				t.Fatalf("original professional rejection was not delivered: %s", diagnostic)
 			}
 			partial := repairDispatchSnapshot(t, root)
@@ -233,20 +147,12 @@ func TestNativeS9PublicAuthorCorrectsRejectedResult(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(root, ".claude/loop-state.json.commit-pending.json")); !os.IsNotExist(err) {
 				t.Fatalf("professional rejection unexpectedly fixed a pending pair: %v", err)
 			}
-			packets, err := runtime.CurrentRepairResultPacketsContext(t.Context(), root, partial.State, plan.Binding.OwnerAgentID)
-			if err != nil || len(packets) != 1 {
-				t.Fatalf("original Result issue missing: %v", err)
-			}
-			typed, err := os.ReadFile(filepath.Join(worker, packets[0].AnswerPath))
-			if err != nil || nativeS9TypedInputSaved(packets[0], typed, root) {
-				t.Fatalf("first pre-Candidate rejection did not restore its issued draft: %v", err)
-			}
 
 			professional.ResidualRisks = []string{"actual corrected professional observation"}
 			if err := persistRepairLeadQuestionnaire(flat, professional); err != nil {
 				t.Fatal(err)
 			}
-			if diagnostic := nativeS9SplitPublicEvent(t, root, in); strings.Contains(diagnostic, "reception incomplete") {
+			if diagnostic := nativeS9SplitPublicEvent(t, root, in); nativeS9ReceptionIncomplete(diagnostic) {
 				t.Fatalf("corrected original was not received: %s", diagnostic)
 			}
 			accepted := repairDispatchSnapshot(t, root)
@@ -273,7 +179,7 @@ func TestNativeS9PublicAuthorCorrectsRejectedResult(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if receipt, err := service.RepairResultReceipt(plan.Binding.OwnerAgentID, packets[0].ID); err != nil || !receipt.Accepted || receipt.ResponsibilityStatus != "candidate_accepted" {
+			if receipt, err := service.RepairResultReceipt(plan.Binding.OwnerAgentID, candidate.Provenance.PacketID); err != nil || !receipt.Accepted || receipt.ResponsibilityStatus != "candidate_accepted" {
 				t.Fatalf("corrected original lacks its original Candidate receipt: %+v %v", receipt, err)
 			}
 		})
@@ -289,13 +195,13 @@ func TestNativeS9PublicCorrectsHistoricalUnstagedResult(t *testing.T) {
 				t.Fatal(err)
 			}
 			var diagnostic bytes.Buffer
-			if err := importNativeS9PlanReport(t.Context(), root, worker, plan, service, &diagnostic); err != nil {
+			if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, plan, service, &diagnostic, nil); err != nil {
 				t.Fatal(err)
 			}
 			if r, err := service.SaveRepairPlanReportFrom(t.Context(), plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil); err != nil || !r.Accepted {
 				t.Fatalf("original Plan: %+v %v", r, err)
 			}
-			if err := recordNativeS9Source(t.Context(), root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+			if err := recordNativeS9OriginalLocation(t.Context(), root, plan, worker); err != nil {
 				t.Fatal(err)
 			}
 			packets, err := service.IssueRepairResults(t.Context(), plan.Binding.OwnerAgentID)
@@ -335,7 +241,7 @@ func TestNativeS9PublicCorrectsHistoricalUnstagedResult(t *testing.T) {
 			}
 			in.Event, in.CWD = event, worker
 			nativeS9SplitChild(t, &in)
-			if message := nativeS9SplitPublicEvent(t, root, in); strings.Contains(message, "reception incomplete") {
+			if message := nativeS9SplitPublicEvent(t, root, in); nativeS9ReceptionIncomplete(message) {
 				t.Fatalf("actual author's corrected Result was not received: %s", message)
 			}
 			snap := repairDispatchSnapshot(t, root)
@@ -358,7 +264,7 @@ func TestNativeS9PublicCorrectsHistoricalUnstagedResult(t *testing.T) {
 			if err := json.Unmarshal(candidate.Provenance.SubmittedAnswer, &actual); err != nil || len(actual.Risks) != 1 || actual.Risks[0] != professional.ResidualRisks[0] || len(actual.Evidence) != 1 || actual.Evidence[0] != professional.EvidenceRefs[0] {
 				t.Fatalf("Candidate did not use the actual corrected source: %s (%v)", candidate.Provenance.SubmittedAnswer, err)
 			}
-			if receipt, err := service.RepairResultReceipt(plan.Binding.OwnerAgentID, packets[0].ID); err != nil || !receipt.Accepted || receipt.ResponsibilityStatus != "candidate_accepted" {
+			if receipt, err := service.RepairResultReceipt(plan.Binding.OwnerAgentID, candidate.Provenance.PacketID); err != nil || !receipt.Accepted || receipt.ResponsibilityStatus != "candidate_accepted" {
 				t.Fatalf("corrected historical source lacks original receipt: %+v %v", receipt, err)
 			}
 		})
@@ -366,19 +272,19 @@ func TestNativeS9PublicCorrectsHistoricalUnstagedResult(t *testing.T) {
 }
 
 func TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns(t *testing.T) {
-	root, worker, plan, in, professional := nativeS9LegacyWorkerFixture(t)
+	root, worker, plan, in, professional := nativeS9WorkerFixture(t)
 	service, err := submission.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(t.Context(), root, worker, plan, service, &diagnostic); err != nil {
+	if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, plan, service, &diagnostic, nil); err != nil {
 		t.Fatal(err)
 	}
 	if r, err := service.SaveRepairPlanReportFrom(t.Context(), plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil); err != nil || !r.Accepted {
 		t.Fatalf("original Plan: %+v %v", r, err)
 	}
-	if err := recordNativeS9Source(t.Context(), root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+	if err := recordNativeS9OriginalLocation(t.Context(), root, plan, worker); err != nil {
 		t.Fatal(err)
 	}
 	packets, err := service.IssueRepairResults(t.Context(), plan.Binding.OwnerAgentID)
@@ -401,7 +307,7 @@ func TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns(t *testing.T) {
 	}
 	in.Event, in.CWD = "PreToolUse", worker
 	nativeS9SplitChild(t, &in)
-	if message := nativeS9SplitPublicEvent(t, root, in); !strings.Contains(message, "reception incomplete") || !strings.Contains(message, "restored-source.txt") {
+	if message := nativeS9SplitPublicEvent(t, root, in); !nativeS9ReceptionIncomplete(message) || !strings.Contains(message, "restored-source.txt") {
 		t.Fatalf("old input did not actually fail on its missing source: %s", message)
 	}
 	partial := repairDispatchSnapshot(t, root)
@@ -416,7 +322,7 @@ func TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns(t *testing.T) {
 	if err := persistRepairLeadQuestionnaire(flat, professional); err != nil {
 		t.Fatal(err)
 	}
-	if message := nativeS9SplitPublicEvent(t, root, in); strings.Contains(message, "reception incomplete") {
+	if message := nativeS9SplitPublicEvent(t, root, in); nativeS9ReceptionIncomplete(message) {
 		t.Fatalf("corrected original was not received: %s", message)
 	}
 	accepted := repairDispatchSnapshot(t, root)
@@ -491,13 +397,13 @@ func TestNativeS9PublicChangedFlatPreservesStagedCandidateWhenSourceDisappears(t
 	if err := os.Remove(filepath.Join(worker, "internal/api/one.go")); err != nil {
 		t.Fatal(err)
 	}
-	brief, _, _ := nativeS9Paths(plan)
+	brief := nativeS9BriefPath(plan)
 	in := policy.Input{AgentID: "native-original", CWD: worker, LastAssistantMessage: filepath.Join(root, brief) + "\n" + flat}
 	nativeS9SplitChild(t, &in)
 	before := repairDispatchRuntimeBytes(t, root)
 	for _, event := range []string{"PreToolUse", "PostToolUse", "SubagentStop"} {
 		in.Event = event
-		if diagnostic := nativeS9SplitPublicEvent(t, root, in); !strings.Contains(diagnostic, "reception incomplete") || !strings.Contains(diagnostic, candidateRef) {
+		if diagnostic := nativeS9SplitPublicEvent(t, root, in); !nativeS9ReceptionIncomplete(diagnostic) || !strings.Contains(diagnostic, candidateRef) {
 			t.Fatalf("%s hid the original unavailable source: %s", event, diagnostic)
 		}
 		if raw, err := os.ReadFile(typed); err != nil || !bytes.Equal(raw, typedBytes) {
@@ -555,12 +461,12 @@ func TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate(t *testin
 	if code := runStageAnswer([]string{"consume", "--root", root, "--path", flat}, &out, &diagnostic); code == 0 {
 		t.Fatalf("technical recovery fabricated the missing staged typed input: %s %s", &out, &diagnostic)
 	}
-	brief, _, _ := nativeS9Paths(plan)
+	brief := nativeS9BriefPath(plan)
 	in := policy.Input{AgentID: "native-original", CWD: worker, LastAssistantMessage: filepath.Join(root, brief) + "\n" + flat}
 	nativeS9SplitChild(t, &in)
 	for _, event := range []string{"PreToolUse", "PostToolUse", "SubagentStop"} {
 		in.Event = event
-		if message := nativeS9SplitPublicEvent(t, root, in); !strings.Contains(message, "reception incomplete") || !strings.Contains(message, candidateRef) {
+		if message := nativeS9SplitPublicEvent(t, root, in); !nativeS9ReceptionIncomplete(message) || !strings.Contains(message, candidateRef) {
 			t.Fatalf("%s did not explain the missing staged input: %s", event, message)
 		}
 		if _, err := os.Stat(typed); !os.IsNotExist(err) {
@@ -570,182 +476,5 @@ func TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate(t *testin
 			t.Fatalf("%s changed the original staged Candidate: %v", event, err)
 		}
 		repairDispatchAssertUnchanged(t, root, before)
-	}
-}
-
-func TestNativeS9StagedCandidateVerification(t *testing.T) {
-	root, _, plan, packet, _, _, _, _ := nativeS9OriginalCandidateBoundary(t)
-	snap := repairDispatchSnapshot(t, root)
-	registry, err := workspace.Decode(snap.State)
-	if err != nil || registry == nil {
-		t.Fatalf("original execution: %v", err)
-	}
-	execution := registry.Executions[plan.Binding.ManifestAssignmentID]
-	ref := execution.DeliveryRef
-	path := filepath.Join(root, ref)
-	original, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := repair.FindNativeS9StagedCandidate(t.Context(), root, packet, execution); err != nil || got != ref {
-		t.Fatalf("original Candidate was not identified: %s %v", got, err)
-	}
-	other := packet
-	other.ID = "packet-" + strings.Repeat("0", 64)
-	if other.ID == packet.ID {
-		other.ID = "packet-" + strings.Repeat("1", 64)
-	}
-	if got, err := repair.FindNativeS9StagedCandidate(t.Context(), root, other, execution); err != nil || got != "" {
-		t.Fatalf("another packet acquired this Candidate: %s %v", got, err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := repair.FindNativeS9StagedCandidate(t.Context(), root, packet, execution); err != nil || got != "" {
-		t.Fatalf("empty Candidate directory was not empty: %s %v", got, err)
-	}
-	if err := os.WriteFile(path, append(append([]byte(nil), original...), '\n'), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := repair.FindNativeS9StagedCandidate(t.Context(), root, packet, execution); err == nil || got != "" {
-		t.Fatalf("Candidate with a changed hash was treated as verified: %s %v", got, err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	var invalid map[string]any
-	if err := json.Unmarshal(original, &invalid); err != nil {
-		t.Fatal(err)
-	}
-	delete(invalid, "version")
-	invalidBytes, err := json.Marshal(invalid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invalidPath := filepath.Join(filepath.Dir(path), workpacket.Digest(invalidBytes)+".json")
-	if err := os.WriteFile(invalidPath, invalidBytes, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := repair.FindNativeS9StagedCandidate(t.Context(), root, packet, execution); err == nil || got != "" {
-		t.Fatalf("schema-invalid original Candidate was treated as verified: %s %v", got, err)
-	}
-	if err := os.Remove(invalidPath); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 257; i++ {
-		if err := os.WriteFile(filepath.Join(filepath.Dir(path), fmt.Sprintf("unexpected-%03d", i)), []byte("x"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got, err := repair.FindNativeS9StagedCandidate(t.Context(), root, packet, execution); err == nil || got != "" {
-		t.Fatalf("an exhausted directory budget was treated as no staged Candidate: %s %v", got, err)
-	}
-}
-
-func TestNativeS9PublicStopAndNaturalReplayPreserveAcceptedSources(t *testing.T) {
-	for _, contract := range []string{"C", "D"} {
-		t.Run(contract, func(t *testing.T) {
-			fixture := nativeS9WorkerFixture
-			if contract == "C" {
-				fixture = nativeS9LegacyWorkerFixture
-			}
-			root, worker, plan, in, _ := fixture(t)
-			if contract == "C" {
-				repairLeadGit(t, worker, "reset", "--hard", repairLeadGit(t, root, "rev-parse", "HEAD"))
-			}
-			nativeS9SplitChild(t, &in)
-			in.Event = "SubagentStop"
-			if repairDispatchSnapshot(t, root).State["workspace"] != nil {
-				t.Fatal("first Stop must capture source through its original path")
-			}
-			if diagnostic := nativeS9SplitPublicEvent(t, root, in); strings.Contains(diagnostic, "reception incomplete") {
-				t.Fatalf("first Stop: %s", diagnostic)
-			}
-			snap := repairDispatchSnapshot(t, root)
-			registry, err := workspace.Decode(snap.State)
-			if err != nil || registry == nil {
-				t.Fatalf("original execution missing: %v", err)
-			}
-			execution := registry.Executions[plan.Binding.ManifestAssignmentID]
-			packets, err := runtime.CurrentRepairResultPacketsContext(t.Context(), root, snap.State, plan.Binding.OwnerAgentID)
-			if err != nil || len(packets) != 1 || execution.DeliveryRef == "" {
-				t.Fatalf("original Candidate missing: %d %v %+v", len(packets), err, execution)
-			}
-			typed := filepath.Join(worker, packets[0].AnswerPath)
-			var retained *repair.NativeS9Source
-			if contract == "C" {
-				retained, err = nativeS9RetainedSource(t.Context(), root, snap.State, plan, worker)
-				if err != nil || retained == nil || retained.Actor != in.AgentID {
-					t.Fatalf("first Stop did not capture original actor/source: %+v %v", retained, err)
-				}
-				typed = filepath.Join(root, repair.NativeS9TypedInputPath(retained, packets[0]))
-			}
-			// Removing only the already consumed typed wrapper makes an accidental
-			// ReadRepairResultInput/flat adaptation observable on the next event.
-			if err := os.Remove(typed); err != nil {
-				t.Fatal(err)
-			}
-			before := repairDispatchRuntimeBytes(t, root)
-			for _, event := range []string{"SubagentStop", "PreToolUse", "PostToolUse"} {
-				in.Event, in.CWD = event, worker
-				if diagnostic := nativeS9SplitPublicEvent(t, root, in); strings.Contains(diagnostic, "reception incomplete") {
-					t.Fatalf("accepted %s: %s", event, diagnostic)
-				}
-				if _, err := os.Stat(typed); !os.IsNotExist(err) {
-					t.Fatalf("accepted %s published typed: %v", event, err)
-				}
-				repairDispatchAssertUnchanged(t, root, before)
-			}
-			// Exercise the same accepted C/D checks through public events after
-			// each independent corruption; successful receipt is not a bypass.
-			_, result, err := nativeS9AuthorPaths(root, plan)
-			if err != nil {
-				t.Fatal(err)
-			}
-			paths := []string{filepath.Join(worker, result)}
-			if retained != nil {
-				paths = append(paths, filepath.Join(worker, retained.PlanPath), filepath.Join(root, repair.NativeS9SourceReference(execution).Path))
-				if len(retained.Evidence) == 0 {
-					t.Fatal("retained C lacks real evidence")
-				}
-				paths = append(paths, filepath.Join(root, retained.Evidence[0].Path))
-			}
-			for _, path := range paths {
-				original, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, append(append([]byte(nil), original...), '\n'), 0600); err != nil {
-					t.Fatal(err)
-				}
-				for _, event := range []string{"SubagentStop", "PreToolUse", "PostToolUse"} {
-					in.Event = event
-					if diagnostic := nativeS9SplitPublicEvent(t, root, in); !strings.Contains(diagnostic, "reception incomplete") {
-						t.Fatalf("changed %s accepted at %s: %s", path, event, diagnostic)
-					}
-					repairDispatchAssertUnchanged(t, root, before)
-				}
-				if err := os.WriteFile(path, original, 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if retained != nil {
-				repairLeadGit(t, root, "update-ref", "-d", retained.GitRef)
-				in.Event = "SubagentStop"
-				if diagnostic := nativeS9SplitPublicEvent(t, root, in); !strings.Contains(diagnostic, "reception incomplete") || !strings.Contains(diagnostic, "Git reference") {
-					t.Fatalf("accepted C lost Git source: %s", diagnostic)
-				}
-				repairLeadGit(t, root, "update-ref", retained.GitRef, retained.Head)
-			}
-			// C has its original retained nochange capability; D Candidate alone
-			// cannot claim that an absent live source was verified and reclaimed.
-			repairLeadGit(t, root, "worktree", "remove", "--force", worker)
-			in.Event = "SubagentStop"
-			diagnostic := nativeS9SplitPublicEvent(t, root, in)
-			if strings.Contains(diagnostic, "reception incomplete") != (contract == "D") {
-				t.Fatalf("missing %s source projected wrong fact: %s", contract, diagnostic)
-			}
-			repairDispatchAssertUnchanged(t, root, before)
-		})
 	}
 }

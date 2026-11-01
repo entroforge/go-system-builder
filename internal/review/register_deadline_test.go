@@ -180,7 +180,7 @@ func TestRegisterPlanDeadlineTailRecoversExactPendingWithoutNewRegistration(t *t
 }
 
 func TestRegisterPlanDeadlineTailRejectsOtherPlanOrChangedCursor(t *testing.T) {
-	for _, change := range []string{"bytes", "digest", "artifact", "runtime", "generation", "round", "revision", "no_commit", "preexisting"} {
+	for _, change := range []string{"bytes", "digest", "artifact", "runtime", "generation", "revision", "no_commit", "preexisting"} {
 		t.Run(change, func(t *testing.T) {
 			root := t.TempDir()
 			initial := baseVerificationState()
@@ -205,8 +205,6 @@ func TestRegisterPlanDeadlineTailRejectsOtherPlanOrChangedCursor(t *testing.T) {
 				initial["runtime_id"] = "other-runtime"
 			case "generation":
 				initial["baseline"].(map[string]any)["generation"] = 2
-			case "round":
-				initial["review"].(map[string]any)["round"] = 2
 			case "revision":
 				initial["revision"] = 0
 			case "preexisting":

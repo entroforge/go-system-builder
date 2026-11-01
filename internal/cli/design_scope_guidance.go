@@ -13,7 +13,7 @@ import (
 
 func stageDesignSourceDelivery(state map[string]any) string {
 	if ref, err := fileview.DevelopmentRef(state); err == nil {
-		return " Commit formal upstream design materials and any repaired sources to the bound development source " + ref + " before submitting or continuing the pending original outlet; S3 reads committed sources and checks disk agreement. An already received report stays received; do not refill its professional answer."
+		return " S3 uses the selected fileview from the bound development source " + ref + "; repair only the concrete missing or unreadable material reported by that selected source. S3 does not require checkout agreement or an extra submission action. An already received report stays received; do not refill its professional answer."
 	} else {
 		return " Bound development source is unavailable: " + err.Error() + ". Restore the existing binding; do not guess a branch."
 	}
@@ -42,10 +42,10 @@ func stageDesignScopeContext(root string, state map[string]any) string {
 		}
 	}
 	b.WriteString("\nComplete intended formal designs. Keep unadopted alternatives as discussion in the actual architecture/ADR, not as falsely locked formal designs; do not change ownership merely to evade this batch. This inventory is system-derived, not another answer field.")
-	b.WriteString("\nS3 committed source scope: registered designs, every non-template module below docs/design/prototypes (recursively), current-REQ accepted ADRs, and their real conditional dependencies. Global source consumption does not ask you to redesign unrelated modules. Current disk module entry paths:")
+	b.WriteString("\nS3 selected source scope: registered designs, every non-template module below docs/design/prototypes (recursively), current-REQ accepted ADRs, and their real conditional dependencies. Global source consumption does not ask you to redesign unrelated modules. Current disk module entry paths:")
 	entries, err := os.ReadDir(filepath.Join(root, "docs/design/prototypes"))
 	if os.IsNotExist(err) {
-		b.WriteString("\n- No prototypes directory on disk; S3 proves its absence from the committed docs/design directory and checks the REQ's explicit no-scenario basis.")
+		b.WriteString("\n- No prototypes directory in this disk inventory; S3 uses its selected source to determine module presence and the REQ's explicit no-scenario basis.")
 	} else if err != nil {
 		fmt.Fprintf(&b, "\n- Module inventory unavailable at %s: %v.", filepath.Join(root, "docs/design/prototypes"), err)
 	} else if modules, err := runtime.ContractModulePaths(entries); err != nil {
@@ -58,6 +58,6 @@ func stageDesignScopeContext(root string, state map[string]any) string {
 			fmt.Fprintf(&b, "\n- %s", filepath.Join(root, module))
 		}
 	}
-	b.WriteString("\nThese are disk entry paths, not proof of committed or frozen content. The original S3 preparation checks the bound Git source and disk agreement; repair its named source error without deleting unrelated history or guessing questionnaire paths.")
+	b.WriteString("\nThese disk entry paths are guidance. The original S3 preparation reads the selected fileview and reports its concrete source gaps; repair the named gap without deleting unrelated history or guessing questionnaire paths.")
 	return b.String()
 }

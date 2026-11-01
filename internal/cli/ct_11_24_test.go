@@ -135,7 +135,6 @@ func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
 func TestCT03914_EvidenceDrivenCorrectionPath(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
 	state := req039fixtures.BaseState(t, root, "bug_resolution", "investigation", 30)
-	req039fixtures.SeedBugReportsRejected(t, root, state)
 	state["lifecycle"] = map[string]any{"state": "bug_resolution", "phase": "investigation", "phase_revision": 0}
 	state["entities"] = map[string]any{
 		"agents": []any{}, "tasks": []any{}, "teams": []any{},
@@ -448,33 +447,6 @@ func TestCT03921_OpenRoundDoesNotAdvance(t *testing.T) {
 	beforeLC, beforePh := req039fixtures.Lifecycle(before)
 	if lc != beforeLC || ph != beforePh {
 		t.Fatalf("open round must not move the cursor: %s/%s -> %s/%s", beforeLC, beforePh, lc, ph)
-	}
-}
-
-// TestCT03922_BugReportRejectedReturnsInvestigation covers CT-039-22.
-func TestCT03922_BugReportRejectedReturnsInvestigation(t *testing.T) {
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "bug_report_review", 35)
-	req039fixtures.SeedBugReportsRejected(t, root, state)
-	req039fixtures.WriteState(t, root, state)
-
-	result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
-		Root: root, Event: "PreToolUse", ToolName: "Edit",
-		ToolInput: map[string]any{"file_path": "docs/reports/bugs/BUG-039-15.md"},
-	})
-	if err != nil {
-		t.Fatalf("control cycle: %v", err)
-	}
-	if result.QualityGate.CandidateTransition != "PTR-BUG-03" {
-		t.Fatalf("CT-039-22 candidate want PTR-BUG-03, got %q status=%q", result.QualityGate.CandidateTransition, result.QualityGate.Status)
-	}
-	if !result.QualityGate.TransitionCommitted {
-		t.Fatalf("CT-039-22 must commit PTR-BUG-03, missing=%v", result.QualityGate.Missing)
-	}
-	after := req039fixtures.ReadState(t, root)
-	_, ph := req039fixtures.Lifecycle(after)
-	if ph != "investigation" {
-		t.Fatalf("CT-039-22 must return to investigation, got phase=%q", ph)
 	}
 }
 

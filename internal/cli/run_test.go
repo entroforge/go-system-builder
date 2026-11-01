@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -248,11 +247,6 @@ func TestRuntimeTransitionCommandStartsLockedREQ(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqPath := "internal/cli/testdata/locked-req.md"
-	reqData, err := os.ReadFile(filepath.Join(root, reqPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	reqHash := fmt.Sprintf("%x", sha256.Sum256(reqData))
 
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{
@@ -268,7 +262,6 @@ func TestRuntimeTransitionCommandStartsLockedREQ(t *testing.T) {
 		"--req-id", "REQ-002",
 		"--req-path", reqPath,
 		"--req-version", "v1.0.0",
-		"--req-sha256", reqHash,
 		"--req-approved-by", "user",
 		"--req-approved-at", "2026-06-22T00:00:00Z",
 	}, strings.NewReader(""), &stdout, &stderr)
@@ -1137,14 +1130,8 @@ func TestInitDerivesHookMetadataAndCreatesJournals(t *testing.T) {
 	if ref["version"] != "v2.0.0" {
 		t.Fatalf("init must mirror on-disk hook-policy.json version (v2.0.0): %#v", ref)
 	}
-	// SHA-256 must be the SHA-256 of the current on-disk policy.
-	policyBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "hook-policy.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantSHA := fmt.Sprintf("%x", sha256.Sum256(policyBytes))
-	if ref["sha256"] != wantSHA {
-		t.Fatalf("init wrote stale policy SHA-256: got %s want %s", ref["sha256"], wantSHA)
+	if _, exists := ref["sha256"]; exists {
+		t.Fatalf("init recorded an obsolete policy digest: %#v", ref)
 	}
 	for _, rel := range []string{".claude/loop-events.jsonl", ".claude/hook-decisions.jsonl"} {
 		info, err := os.Stat(filepath.Join(root, rel))

@@ -52,7 +52,7 @@ func PreToolUseS6Context(decision policy.Decision, result controller.ControlResu
 	return data, 0, err
 }
 
-// Revision/fingerprint churn alone is not a new responsibility. Preserve all
+// Revision churn alone is not a new responsibility. Preserve all
 // actual missing items, conflicts and evidence in the comparison. The delivered
 // projection itself stays intact for existing diagnostic readers.
 func responsibilityContextStamp(stage, context string) string {
@@ -68,7 +68,6 @@ func responsibilityContextStamp(stage, context string) string {
 		return context
 	}
 	delete(gate, "observed_revision")
-	delete(gate, "fingerprint")
 	stable, _ := json.Marshal(gate)
 	if stage == "S7" {
 		rest = noticeRevisionFields.ReplaceAllString(rest, "")

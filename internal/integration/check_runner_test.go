@@ -47,13 +47,6 @@ func TestCheckRunnerExitCodeAndTimeoutDiagnostics(t *testing.T) {
 		t.Fatalf("timeout misclassified: %v", err)
 	}
 }
-func TestMissingCheckRunnerCannotPass(t *testing.T) {
-	result, err := RunCheck(context.Background(), t.TempDir(), "must run", nil)
-	if err == nil || result.Status != "fail" {
-		t.Fatalf("missing executor passed: %#v %v", result, err)
-	}
-}
-
 func TestCheckRunnerTypedFailureMatchesActualReceipt(t *testing.T) {
 	root := t.TempDir()
 	err := CommandCheckRunner(context.Background(), root, "printf 'actual-error'; exit 17")

@@ -184,9 +184,8 @@ func seedReviewPlan(t *testing.T, repoRoot string, dir string, state map[string]
 			"status": "running", "e2e_coverage_state": "not_applicable",
 			"verification_artifact_workspace": nil, "submitted_at": "2026-01-01T00:00:00Z",
 		},
-		"claims":            map[string]any{},
-		"assignments":       map[string]any{},
-		"observation_batch": nil,
+		"claims":      map[string]any{},
+		"assignments": map[string]any{},
 	}
 	claimsProjection := reviewMap["claims"].(map[string]any)
 	assignmentsProjection := reviewMap["assignments"].(map[string]any)

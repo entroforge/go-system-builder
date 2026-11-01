@@ -11,7 +11,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func TestS5MainObservationIsReadOnlyAndRedeliversChangedResponsibility(t *testing.T) {
@@ -83,28 +82,6 @@ func TestS5MainObservationIsReadOnlyAndRedeliversChangedResponsibility(t *testin
 	}
 	if _, received, err := runtime.FindSubmission(stageSnapshot(t, f.root).State, f.packets[0].ID); err != nil || received {
 		t.Fatalf("preparation recovery received a private answer: %v %v", received, err)
-	}
-}
-
-func TestS5MainObservationPreservesFrozenExecutionRecovery(t *testing.T) {
-	f := newStageAnswerFixture(t)
-	p := f.packets[0]
-	e := f.prepare(t, p)
-	before := stageSnapshot(t, f.root).Revision
-	view := filepath.Join(e.Path, workpacket.WorkerViewPath)
-	current := designGuidanceEvent(t, f.root, "s5-frozen", "PreToolUse", "Read")
-	if !strings.Contains(current, view) || !strings.Contains(current, "continue the registered frozen execution") || strings.Contains(current, filepath.Join(f.root, p.ViewPath)) {
-		t.Fatalf("frozen responsibility was projected as a new Main/native source: %s", current)
-	}
-	if err := os.Remove(view); err != nil {
-		t.Fatal(err)
-	}
-	missing := designGuidanceEvent(t, f.root, "s5-frozen", "PreToolUse", "Read")
-	if !strings.Contains(missing, view) || !strings.Contains(missing, "frozen-execution.md") || !strings.Contains(missing, "does not restore a frozen execution copy") || strings.Contains(missing, "runtime stage-answer issue --root") {
-		t.Fatalf("frozen missing-file recovery fell back to Main issuance: %s", missing)
-	}
-	if stageSnapshot(t, f.root).Revision != before {
-		t.Fatal("frozen observation mutated Runtime")
 	}
 }
 

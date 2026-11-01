@@ -87,14 +87,10 @@ func bindFixtureWorkspace(t *testing.T, fix *runtimeFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head, err := runGit(t, fix.root, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
 	bound, _ := fix.state["bound_req"].(map[string]any)
 	if bound == nil {
 		t.Fatal("fixture has no bound REQ")
 	}
-	bound["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": strings.TrimSpace(string(branch)), "release_upstream": "main", "bound_commit": strings.TrimSpace(string(head))}
+	bound["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": strings.TrimSpace(string(branch)), "release_upstream": "main"}
 	fix.persist(t)
 }

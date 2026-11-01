@@ -20,10 +20,7 @@ func TestObservationPreservesTreesAndDisablesGitHelpers(t *testing.T) {
 	if err = b.Bootstrap(e, executable); err != nil {
 		t.Fatal(err)
 	}
-	e.BootstrapSHA256, err = BootstrapDigest(e)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	marker := filepath.Join(t.TempDir(), "executed")
 	helper := filepath.Join(t.TempDir(), "helper")
 	os.WriteFile(helper, []byte("#!/bin/sh\necho bad > '"+marker+"'\n"), 0700)

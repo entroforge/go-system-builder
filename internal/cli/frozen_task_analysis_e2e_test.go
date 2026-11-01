@@ -28,8 +28,22 @@ func TestS5FrozenTaskAnalysisSurvivesRevisionAndRejectsLostBytes(t *testing.T) {
 	}
 	e := f.prepare(t, p)
 	installed, err := os.ReadFile(filepath.Join(e.Path, ".claude/inputs", p.TaskAnalysis.Path))
-	if err != nil || workpacket.Digest(installed) != p.TaskAnalysis.SHA256 {
-		t.Fatal("analysis not installed as frozen Worker input", err)
+	if err != nil {
+		t.Fatalf("analysis not installed at its Worker input path: %v", err)
+	}
+	var installedAnalysis workpacket.TaskAnalysisArtifact
+	if err := json.Unmarshal(installed, &installedAnalysis); err != nil {
+		t.Fatalf("installed analysis cannot be read: %v", err)
+	}
+	var originalContexts, installedContexts []semantic.TaskContextSummary
+	if err := json.Unmarshal(artifact.TaskContexts, &originalContexts); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(installedAnalysis.TaskContexts, &installedContexts); err != nil {
+		t.Fatal(err)
+	}
+	if installedAnalysis.ParserVersion != artifact.ParserVersion || !reflect.DeepEqual(installedAnalysis.Inputs, p.Inputs) || len(originalContexts) == 0 || !reflect.DeepEqual(installedContexts, originalContexts) {
+		t.Fatal("installed analysis lost its sources or professional TASK context")
 	}
 	f.begin(t, p, &e)
 	r := saveStageHook(t, f.root, e.Path, e.AgentID, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))

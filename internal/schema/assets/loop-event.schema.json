@@ -3,7 +3,7 @@
   "$id": "https://vibe-coding.local/schemas/loop-event.schema.json",
   "title": "Loop Audit Event",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "schema_version",
     "runtime_id",
@@ -100,10 +100,6 @@
       "type": "string",
       "minLength": 1
     },
-    "gate_fingerprint": {
-      "type": "string",
-      "minLength": 1
-    },
     "producer_responsibility": {
       "type": "string",
       "minLength": 1
@@ -154,7 +150,6 @@
         "required": [
           "transition_id",
           "gate_id",
-          "gate_fingerprint",
           "producer_responsibility",
           "guard_results",
           "action_results"

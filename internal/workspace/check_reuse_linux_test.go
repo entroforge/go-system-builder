@@ -27,10 +27,7 @@ func TestEnabledWorkerActualRunThenExactReuseOnSupportedHost(t *testing.T) {
 	if err := b.Bootstrap(e, executable); err != nil {
 		t.Fatal(err)
 	}
-	e.BootstrapSHA256, err = BootstrapDigest(e)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	b.Executions[e.AssignmentID] = e
 	state["workspace"] = Encode(b)
 	saveControlState(t, b.MainRoot, state)

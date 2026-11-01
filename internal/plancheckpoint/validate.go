@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 )
@@ -210,12 +209,8 @@ func validateManifestPlanReportCheckpoint(root string, snapshot runtimemeta.Snap
 }
 
 func validateCanonicalPlan(root string, record assignmentrecord.Record, message map[string]any) error {
-	sha, err := record.Digest()
-	if err != nil {
-		return err
-	}
-	if message["assignment_record_contract"] != record.Contract || message["assignment_record_sha256"] != sha || message["assignment_id"] != record.AssignmentID || intValue(message["assignment_revision"]) != record.Revision {
-		return fmt.Errorf("S6 PLAN does not bind the current Assignment identity, revision and digest")
+	if message["assignment_record_contract"] != record.Contract || message["assignment_id"] != record.AssignmentID || intValue(message["assignment_revision"]) != record.Revision {
+		return fmt.Errorf("S6 PLAN does not bind the current Assignment identity and revision")
 	}
 	if message["team_id"] != record.TeamID || message["task_id"] != record.Task.ID || message["agent_definition_ref"] != record.AgentDefinition.Ref {
 		return fmt.Errorf("S6 PLAN identity differs from its registered Assignment")
@@ -223,9 +218,7 @@ func validateCanonicalPlan(root string, record assignmentrecord.Record, message 
 	if _, exists := message["steps"]; exists {
 		return fmt.Errorf("S6 PLAN uses the closed thin professional answer schema")
 	}
-	if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-		return assignmentinputs.Read(root, ref)
-	}); err != nil {
+	if err := assignmentrecord.ValidateRecord(record); err != nil {
 		return err
 	}
 	paths := stringsValue(message["planned_paths"])

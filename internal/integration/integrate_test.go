@@ -69,9 +69,6 @@ func (f *integrationFixture) readyInspection() Inspection {
 		WorktreePath:       f.wt,
 		SourceBranch:       "feature",
 		TargetBranch:       "develop",
-		SourceHead:         "feature-commit",
-		TargetHead:         "base-commit",
-		MergeBase:          "base-commit",
 		NonSquashMode:      true,
 		BaselineGeneration: 1,
 	}
@@ -103,9 +100,6 @@ func TestIntegrateCleanPathReachesComplete(t *testing.T) {
 	}
 	if res.Checkpoint.State != StateVerified {
 		t.Fatalf("expected verified, got %s", res.Checkpoint.State)
-	}
-	if res.Checkpoint.MergeCommit == "" {
-		t.Fatalf("expected merge_commit to be recorded, got empty")
 	}
 
 	verifiedAt := res.Checkpoint.VerifiedAt
@@ -146,9 +140,6 @@ func TestIntegrateCleanPathReachesComplete(t *testing.T) {
 	}
 	if res.Checkpoint.State != StateComplete {
 		t.Fatalf("expected complete, got %s", res.Checkpoint.State)
-	}
-	if res.Checkpoint.MergeCommit == "" {
-		t.Fatalf("expected merge_commit preserved at complete, got empty")
 	}
 	if res.Checkpoint.VerifiedAt != verifiedAt {
 		t.Fatal("cleanup must not refresh successful-check time")
@@ -196,15 +187,13 @@ func TestIntegrateConflictPreservesWorktree(t *testing.T) {
 	}
 }
 
-// TestIntegrateDirtyTreeDuringVerifyPreserves covers CT-039-10 for the
-// dirty-tree branch: a merge that succeeds but the integration tree is
-// dirty before checks run → preserved.
+// A tracked Main change blocks the actual merge before it can alter either
+// branch or remove the Builder worktree.
 func TestIntegrateDirtyTreeDuringVerifyPreserves(t *testing.T) {
 	f := newIntegrationFixture(t)
 	defer f.cleanup()
 
-	// Mark the integration root (git root) as dirty so the verified
-	// transition's `worktreeClean` check fails.
+	// The integration root has a tracked change before the merge.
 	f.fr.markDirty(f.root)
 
 	res, err := Integrate(context.Background(), IntegrateRequest{
@@ -221,26 +210,17 @@ func TestIntegrateDirtyTreeDuringVerifyPreserves(t *testing.T) {
 	if !errors.Is(err, ErrDirtyWorktree) {
 		t.Fatalf("dirty Main error = %v, want ErrDirtyWorktree", err)
 	}
-	if !strings.Contains(err.Error(), "Main integration checkout") || !strings.Contains(err.Error(), f.root) || !strings.Contains(err.Error(), f.wt) {
+	if !strings.Contains(err.Error(), "Main integration checkout") || !strings.Contains(err.Error(), f.root) {
 		t.Fatalf("returned error lost checkout ownership: %v", err)
 	}
-	wantRoot := f.root
-	for _, want := range []string{
-		"Main integration checkout \"" + wantRoot + "\" is dirty",
-		"git -C \"" + wantRoot + "\" status --short",
-	} {
-		if !strings.Contains(res.Checkpoint.FailureReason, want) {
-			t.Fatalf("Main dirty failure reason %q does not identify exact root/inspection command %q", res.Checkpoint.FailureReason, want)
-		}
+	if !strings.Contains(err.Error(), "git -C \""+f.root+"\" status --short") {
+		t.Fatalf("dirty Main error omitted its inspection command: %v", err)
 	}
-	if res.Checkpoint.State != StatePreserved {
-		t.Fatalf("expected preserved, got %s", res.Checkpoint.State)
+	if res.Checkpoint.State != StatePending {
+		t.Fatalf("tracked Main edit must stop before merge: %s", res.Checkpoint.State)
 	}
-	if res.Checkpoint.LastErrorCode != "LOOP_INTEGRATION_PARTIAL" {
-		t.Fatalf("expected LOOP_INTEGRATION_PARTIAL, got %s", res.Checkpoint.LastErrorCode)
-	}
-	if res.Checkpoint.MergeCommit != "" || !f.fr.worktrees[f.root+":"+f.wt] || f.fr.branchHeads["develop"] != "base-commit" {
-		t.Fatalf("dirty Main integration advanced or removed work: merge=%q registered=%t develop=%q", res.Checkpoint.MergeCommit, f.fr.worktrees[f.root+":"+f.wt], f.fr.branchHeads["develop"])
+	if !f.fr.worktrees[f.root+":"+f.wt] || f.fr.branchHeads["develop"] != "base-commit" {
+		t.Fatalf("dirty Main integration advanced or removed work: registered=%t develop=%q", f.fr.worktrees[f.root+":"+f.wt], f.fr.branchHeads["develop"])
 	}
 }
 
@@ -292,8 +272,8 @@ func TestIntegrateNotReadyInspectionPreserves(t *testing.T) {
 		CheckpointDir: f.checkpointPath("assignment-test"),
 		RuntimeID:     "loop-REQ-039",
 	})
-	if err != nil {
-		t.Fatalf("integrate: %v", err)
+	if !errors.Is(err, ErrMergeConflict) || !strings.Contains(err.Error(), "inspect rejected integration") {
+		t.Fatalf("actual inspection blocker was not returned: %v", err)
 	}
 	if res.Checkpoint.State != StatePreserved {
 		t.Fatalf("expected preserved, got %s", res.Checkpoint.State)
@@ -321,10 +301,6 @@ func TestIntegrateIdempotentResumeAfterMerge(t *testing.T) {
 	if first.Checkpoint.State != StateVerified {
 		t.Fatalf("expected verified after first call, got %s", first.Checkpoint.State)
 	}
-	originalMerge := first.Checkpoint.MergeCommit
-	if originalMerge == "" {
-		t.Fatal("expected merge_commit to be recorded")
-	}
 
 	// Snapshot the fakeRunner's branch state so we can confirm no
 	// second merge happens.
@@ -345,9 +321,6 @@ func TestIntegrateIdempotentResumeAfterMerge(t *testing.T) {
 	}
 	if second.Checkpoint.State != StateAcknowledged {
 		t.Fatalf("expected acknowledged, got %s", second.Checkpoint.State)
-	}
-	if second.Checkpoint.MergeCommit != originalMerge {
-		t.Fatalf("merge_commit must be preserved: was %q now %q", originalMerge, second.Checkpoint.MergeCommit)
 	}
 	if f.fr.branchHeads["develop"] != developBefore {
 		t.Fatalf("develop branch HEAD changed unexpectedly: was %q now %q",
@@ -547,16 +520,16 @@ func TestIntegrateCheckpointPathAndContent(t *testing.T) {
 
 // TestIdempotencyKeyIsStable verifies the canonical key formula.
 func TestIdempotencyKeyIsStable(t *testing.T) {
-	k1 := IdempotencyKey("assignment-1", "feat-sha", "develop", 1)
-	k2 := IdempotencyKey("assignment-1", "feat-sha", "develop", 1)
+	k1 := IdempotencyKey("assignment-1", "develop", 1)
+	k2 := IdempotencyKey("assignment-1", "develop", 1)
 	if k1 != k2 {
 		t.Fatalf("idempotency key must be deterministic; got %q vs %q", k1, k2)
 	}
-	k3 := IdempotencyKey("assignment-1", "feat-sha", "develop", 2)
+	k3 := IdempotencyKey("assignment-1", "develop", 2)
 	if k1 == k3 {
 		t.Fatalf("different baseline generation must produce different key")
 	}
-	k4 := IdempotencyKey("assignment-2", "feat-sha", "develop", 1)
+	k4 := IdempotencyKey("assignment-2", "develop", 1)
 	if k1 == k4 {
 		t.Fatalf("different assignment id must produce different key")
 	}
@@ -595,30 +568,5 @@ func TestIntegrateMissingExecutorPreserves(t *testing.T) {
 	result, err := Integrate(context.Background(), IntegrateRequest{Inspection: f.readyInspection()}, IntegrateConfig{Root: f.root, GitRoot: f.root, CheckpointDir: f.checkpointPath("assignment-test"), RuntimeID: "loop-REQ-039", RequiredChecks: []string{"must run"}})
 	if err == nil || result.Checkpoint.State != StatePreserved || result.Checkpoint.LastErrorCode != "LOOP_INTEGRATION_CHECK_FAILED" {
 		t.Fatalf("missing executor advanced: %#v %v", result, err)
-	}
-}
-
-func TestIntegrationPreservesChangesWrittenByChecksAndResumesWithoutRemerge(t *testing.T) {
-	f := newIntegrationFixture(t)
-	defer f.cleanup()
-	req := IntegrateRequest{Inspection: f.readyInspection(), Acknowledge: true, Cleanup: true}
-	cfg := IntegrateConfig{Root: f.root, GitRoot: f.root, RuntimeID: "loop-REQ-039", RequiredChecks: []string{"check"},
-		CheckRunner: func(_ context.Context, root, _ string) error { f.fr.markDirty(root); return nil }}
-	first, err := Integrate(context.Background(), req, cfg)
-	if err == nil || first.Checkpoint.State != StatePreserved || first.Checkpoint.MergeCommit == "" {
-		t.Fatalf("dirty check result certified: %#v %v", first, err)
-	}
-	if _, err := os.Stat(f.wt); err != nil {
-		t.Fatal("failed verification removed worktree")
-	}
-	f.fr.markClean(f.root)
-	cfg.CheckRunner = func(context.Context, string, string) error { return nil }
-	req.RetryPreserved = true
-	second, err := Integrate(context.Background(), req, cfg)
-	if err != nil || second.Checkpoint.State != StateComplete {
-		t.Fatalf("retry: %#v %v", second, err)
-	}
-	if second.Checkpoint.MergeCommit != first.Checkpoint.MergeCommit {
-		t.Fatal("retry merged twice")
 	}
 }

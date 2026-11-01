@@ -35,7 +35,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
@@ -170,14 +169,7 @@ func AutoAdvanceToWorking(in AutoChainInput) (AutoChainOutcome, error) {
 	if canonical {
 		ref := record.Reference()
 		envelopeSource.AssignmentRecord = &ref
-		sha, err := record.Digest()
-		if err != nil {
-			return AutoChainOutcome{}, err
-		}
-		envelopeSource.AssignmentRecordSHA256 = sha
-		if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-			return assignmentinputs.Read(in.Root, ref)
-		}); err != nil {
+		if err := assignmentrecord.ValidateRecord(record); err != nil {
 			return AutoChainOutcome{}, err
 		}
 		envelopeSource.WritePaths = append([]string(nil), record.EffectiveWritePaths...)
@@ -436,11 +428,7 @@ func legacyEnvelopeOverride(root, statePath, journalPath, agentID string) (*Acti
 	}
 	if canonical {
 		ref := record.Reference()
-		sha, err := record.Digest()
-		if err != nil {
-			return nil, err
-		}
-		return &ActivationSourceEntry{AgentID: agentID, AgentDefinitionRef: record.AgentDefinition.Ref, SkillRefs: record.SkillRefs, WritePaths: record.EffectiveWritePaths, AssignmentRecord: &ref, AssignmentRecordSHA256: sha}, nil
+		return &ActivationSourceEntry{AgentID: agentID, AgentDefinitionRef: record.AgentDefinition.Ref, SkillRefs: record.SkillRefs, WritePaths: record.EffectiveWritePaths, AssignmentRecord: &ref}, nil
 	}
 	var taskID string
 	if taskIDs, _ := agent["task_ids"].([]any); len(taskIDs) > 0 {

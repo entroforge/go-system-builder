@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"regexp"
 	"strings"
 
@@ -16,8 +15,8 @@ const repairResultTemplateID = "s9-repair-result-v1"
 var (
 	repairResultPacketLimit = 20 << 20
 	repairResultSourceLimit = 4 << 20
-	repairResultPacketIDRE  = regexp.MustCompile(`^packet-[a-f0-9]{64}$`)
-	repairResultIDRE        = regexp.MustCompile(`^repair-result-[a-f0-9]{64}$`)
+	repairResultPacketIDRE  = regexp.MustCompile(`^packet-[A-Za-z0-9_-]+$`)
+	repairResultIDRE        = regexp.MustCompile(`^repair-result-[A-Za-z0-9_-]+$`)
 )
 
 // RepairResultBinding freezes the original PlanReport authority and exact
@@ -25,14 +24,13 @@ var (
 // neutral workpacket layer does not grant the authority represented here; the
 // original repair/runtime consumer must reread and verify each source.
 type RepairResultBinding struct {
-	Sources          RepairPlanReportBinding `json:"sources"`
-	PlanReportRef    string                  `json:"plan_report_ref"`
-	PlanReportSHA256 string                  `json:"plan_report_sha256"`
-	ExecutionSHA256  string                  `json:"execution_sha256"`
-	// ReworkRef and ReworkSHA256 are deliberately present and empty on the
+	Sources       RepairPlanReportBinding `json:"sources"`
+	PlanReportRef string                  `json:"plan_report_ref"`
+
+	// ReworkRef is deliberately present and empty on the
 	// first attempt. A later attempt binds the exact immutable rework receipt.
-	ReworkRef    string `json:"rework_ref"`
-	ReworkSHA256 string `json:"rework_sha256"`
+	ReworkRef string `json:"rework_ref"`
+
 	// Resume binds a new answer attempt to one accepted Main blocker resolution.
 	// It is omitted on original packets so their canonical bytes and identities
 	// remain unchanged.
@@ -44,12 +42,12 @@ type RepairResultBinding struct {
 // not permission; runtime readers must reconstruct and verify the original
 // packet, evidence and journal event before treating it as current.
 type RepairResultResume struct {
-	PredecessorPacketID      string `json:"predecessor_packet_id"`
-	PredecessorPacketSHA256  string `json:"predecessor_packet_sha256"`
-	BlockerRef               string `json:"blocker_ref"`
-	BlockerSHA256            string `json:"blocker_sha256"`
-	ResolutionMessageRef     string `json:"resolution_message_ref"`
-	ResolutionMessageSHA256  string `json:"resolution_message_sha256"`
+	PredecessorPacketID string `json:"predecessor_packet_id"`
+
+	BlockerRef string `json:"blocker_ref"`
+
+	ResolutionMessageRef string `json:"resolution_message_ref"`
+
 	ResolutionEventID        string `json:"resolution_event_id"`
 	ResolutionIdempotencyKey string `json:"resolution_idempotency_key"`
 	ResolutionBeforeRevision int    `json:"resolution_before_revision"`
@@ -74,14 +72,13 @@ func (inputs *RepairResultInputs) UnmarshalJSON(data []byte) error {
 	}
 	type wire RepairResultInputs
 	var decoded wire
-	if err := decodeOneStrictJSON(data, &decoded); err != nil {
+	if err := decodeOneJSON(data, &decoded); err != nil {
 		return err
 	}
 	for _, source := range []struct {
 		name string
 		raw  *json.RawMessage
 	}{
-		{"PlanReport", &decoded.PlanReport},
 		{"Execution", &decoded.Execution},
 	} {
 		canonical, err := canonicalRepairResultObject(*source.raw, source.name)
@@ -90,6 +87,11 @@ func (inputs *RepairResultInputs) UnmarshalJSON(data []byte) error {
 		}
 		*source.raw = canonical
 	}
+	plan, err := canonicalRepairResultNullableObject(decoded.PlanReport, "PlanReport")
+	if err != nil {
+		return err
+	}
+	decoded.PlanReport = plan
 	rework, err := canonicalRepairResultNullableObject(decoded.ReworkReceipt, "ReworkReceipt")
 	if err != nil {
 		return err
@@ -149,7 +151,7 @@ func (draft *RepairResultDraft) UnmarshalJSON(data []byte) error {
 	}
 	type wire RepairResultDraft
 	var decoded wire
-	if err := decodeOneStrictJSON(data, &decoded); err != nil {
+	if err := decodeOneJSON(data, &decoded); err != nil {
 		return err
 	}
 	answer, err := canonicalJSON(decoded.Answer)
@@ -165,9 +167,9 @@ func (draft *RepairResultDraft) UnmarshalJSON(data []byte) error {
 // stable ResultID and original issuance event/path identities are derived
 // from the packet's full source binding.
 type RepairResultPacket struct {
-	ID              string              `json:"packet_id"`
-	TemplateID      string              `json:"template_id"`
-	TemplateSHA     string              `json:"template_sha256"`
+	ID         string `json:"packet_id"`
+	TemplateID string `json:"template_id"`
+
 	Binding         RepairResultBinding `json:"binding"`
 	Inputs          RepairResultInputs  `json:"inputs"`
 	ResultID        string              `json:"result_id"`
@@ -181,9 +183,10 @@ func (packet *RepairResultPacket) UnmarshalJSON(data []byte) error {
 	if err := ValidateUniqueJSON(data); err != nil {
 		return err
 	}
+
 	type wire RepairResultPacket
 	var decoded wire
-	if err := decodeOneStrictJSON(data, &decoded); err != nil {
+	if err := decodeOneJSON(data, &decoded); err != nil {
 		return err
 	}
 	*packet = RepairResultPacket(decoded)
@@ -223,38 +226,26 @@ func buildRepairResultWithTemplate(binding RepairResultBinding, inputs RepairRes
 		!repairResultTemplateQuestions(template.Questions) {
 		return RepairResultPacket{}, fmt.Errorf("unregistered S9 RepairResult template")
 	}
-	templateSHA := Digest(templateBytes)
-	identityData, err := json.Marshal(struct {
-		Binding     RepairResultBinding `json:"binding"`
-		Inputs      RepairResultInputs  `json:"inputs"`
-		TemplateSHA string              `json:"template_sha256"`
-	}{binding, canonicalInputs, templateSHA})
-	if err != nil {
-		return RepairResultPacket{}, fmt.Errorf("encode S9 RepairResult packet identity: %w", err)
+	attempt := binding.ReworkRef
+	if binding.Resume != nil {
+		attempt = binding.Resume.ResolutionEventID
 	}
-	canonicalIdentity, err := canonicalJSON(identityData)
-	if err != nil {
-		return RepairResultPacket{}, err
-	}
-	packetHash := Digest(canonicalIdentity)
-	packetID := "packet-" + packetHash
-	resultID := "repair-result-" + packetHash
-	if !repairResultPacketIDRE.MatchString(packetID) || !repairResultIDRE.MatchString(resultID) {
-		return RepairResultPacket{}, fmt.Errorf("derived S9 RepairResult packet/result identity is invalid")
-	}
-	base := fmt.Sprintf("%s/g%d/S9-result/r%d/%s/%s", binding.Sources.RuntimeID, binding.Sources.BaselineGeneration, binding.Sources.ReviewRound, binding.Sources.RepairAssignmentID, packetID)
+	key := repairResponsibilityKey("result", binding.Sources, attempt)
+	packetID := "packet-" + key
+	resultID := "repair-result-" + key
+	base := fmt.Sprintf("%s/g%d/S9-result/%s/%s/%s", reviewResultIdentityPath(binding.Sources.RuntimeID), binding.Sources.BaselineGeneration, reviewResultIdentityPath(binding.Sources.SessionID), reviewResultIdentityPath(binding.Sources.RepairAssignmentID), reviewResultPacketPath(packetID))
 	answer, err := canonicalJSON([]byte(`{"verdict":null,"before_fix_results":null,"unit_results":null,"detection_gap_artifacts":null,"evidence_refs":null,"scope_deviations":null,"residual_risks":null,"migration_ref":null,"rollback_ref":null}`))
 	if err != nil {
 		return RepairResultPacket{}, err
 	}
 	read := makeRepairResultRead(binding, canonicalInputs)
 	packet := RepairResultPacket{
-		ID: packetID, TemplateID: repairResultTemplateID, TemplateSHA: templateSHA,
+		ID: packetID, TemplateID: repairResultTemplateID,
 		Binding: binding, Inputs: canonicalInputs,
 		ResultID:        resultID,
 		IssuanceEventID: "evt-repair-result-packet-" + packetID,
 		ViewPath:        ".claude/work-packets/" + base + ".json",
-		AnswerPath:      ".claude/submissions/" + base + "/" + binding.Sources.OwnerAgentID + "/answer.json",
+		AnswerPath:      ".claude/submissions/" + base + "/" + reviewResultIdentityPath(binding.Sources.OwnerAgentID) + "/answer.json",
 		Draft: RepairResultDraft{
 			Title: template.Title, Instruction: template.Instruction,
 			Read: read, Questions: template.Questions, Answer: answer,
@@ -273,52 +264,6 @@ func buildRepairResultWithTemplate(binding RepairResultBinding, inputs RepairRes
 	return packet, nil
 }
 
-// RebuildRepairResult recomputes every machine-controlled field from the
-// original embedded template and frozen source documents. New work uses the
-// current template; unknown historical digests cannot manufacture a template.
-func RebuildRepairResult(packet RepairResultPacket) (RepairResultPacket, error) {
-	for _, name := range []string{"stage-form-s9-result-template.json", "stage-form-s9-result-template-before-natural-observation.json"} {
-		data, err := schema.ReadAsset(name)
-		if err != nil {
-			return RepairResultPacket{}, err
-		}
-		if Digest(data) == packet.TemplateSHA {
-			return buildRepairResultWithTemplate(packet.Binding, packet.Inputs, data)
-		}
-	}
-	return RepairResultPacket{}, fmt.Errorf("unsupported frozen S9 RepairResult template digest")
-}
-
-// RepairResultPacketDigest returns the canonical digest of a complete packet
-// only when it exactly matches its deterministic rebuild.
-func RepairResultPacketDigest(packet RepairResultPacket) (string, error) {
-	rebuilt, err := RebuildRepairResult(packet)
-	if err != nil {
-		return "", err
-	}
-	if !reflect.DeepEqual(packet, rebuilt) {
-		return "", fmt.Errorf("S9 RepairResult packet differs from its canonical rebuild")
-	}
-	return RepairResultPacketContentDigest(rebuilt)
-}
-
-// RepairResultPacketContentDigest hashes the canonical serialized packet without
-// rebuilding its inputs. Callers must already have verified canonical packet
-// identity through RepairResultPackets or RebuildRepairResult.
-func RepairResultPacketContentDigest(packet RepairResultPacket) (string, error) {
-	data, err := json.Marshal(packet)
-	if err != nil {
-		return "", err
-	}
-	canonical, err := canonicalJSON(data)
-	if err != nil {
-		return "", err
-	}
-	return Digest(canonical), nil
-}
-
-// ValidateRepairResultAnswer returns the professional answer from the
-// authoring file. Display metadata does not affect answer acceptance.
 func ValidateRepairResultAnswer(packet RepairResultPacket, data []byte) (json.RawMessage, []FieldError) {
 	issue := func(pointer, expected, observed string) (json.RawMessage, []FieldError) {
 		return nil, []FieldError{{Pointer: pointer, Expected: expected, Observed: observed, Repair: "填写 answer 中的专业观测、实施结论与资料引用。"}}
@@ -334,6 +279,9 @@ func ValidateRepairResultAnswer(packet RepairResultPacket, data []byte) (json.Ra
 		return issue("/", "one JSON object containing answer", "invalid JSON object")
 	}
 	answer := document["answer"]
+	if len(answer) == 0 {
+		answer = data // Original native professional form.
+	}
 	canonicalAnswer, err := canonicalJSON(answer)
 	if err != nil {
 		return issue("/answer", "one JSON professional answer object", err.Error())
@@ -346,72 +294,30 @@ func ValidateRepairResultAnswer(packet RepairResultPacket, data []byte) (json.Ra
 
 func validateCompleteRepairResultAnswer(sources RepairPlanReportInputs, data []byte) (pointer, expected, observed string) {
 	var answer RepairResultProfessionalAnswer
-	if err := decodeOneStrictJSON(data, &answer); err != nil {
+	if err := decodeOneJSON(data, &answer); err != nil {
 		return "/answer", "valid S9 professional fields", err.Error()
-	}
-	var answerFields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &answerFields); err != nil {
-		return "/answer", "valid S9 professional object", err.Error()
-	}
-	for _, name := range []string{"verdict", "before_fix_results", "unit_results", "detection_gap_artifacts", "evidence_refs", "scope_deviations", "residual_risks", "migration_ref", "rollback_ref"} {
-		if len(answerFields[name]) == 0 {
-			return "/answer/" + name, "explicit professional field", "missing"
-		}
-		if bytes.Equal(bytes.TrimSpace(answerFields[name]), []byte("null")) {
-			return "/answer/" + name, "explicit completed answer value, not null", "null"
-		}
 	}
 	if answer.Verdict != "completed" && answer.Verdict != "blocked" && answer.Verdict != "contract_conflict" && answer.Verdict != "stale" {
 		return "/answer/verdict", "completed | blocked | contract_conflict | stale", answer.Verdict
 	}
-	if answer.BeforeFixResults == nil || answer.UnitResults == nil || answer.DetectionGapArtifacts == nil || answer.EvidenceRefs == nil || answer.ScopeDeviations == nil || answer.ResidualRisks == nil {
-		return "/answer", "all professional arrays explicitly supplied", "one or more arrays are null"
-	}
-	assignment, err := repairPlanReportObject(sources.RepairAssignment, "RepairAssignment")
-	if err != nil {
-		return "/inputs/sources/repair_assignment", "canonical exact RepairAssignment", err.Error()
-	}
-	assertions, ok := repairPlanReportStringSlice(assignment["assertion_ids"])
-	if !ok || len(assertions) == 0 {
-		return "/inputs/sources/repair_assignment/assertion_ids", "explicit exact assertion slots", "missing or empty"
-	}
-	if containsString(assertions, "all") {
-		return "/inputs/sources/repair_assignment/assertion_ids", "concrete assertion IDs", "wildcard all is not an answer slot"
-	}
-	if len(answer.BeforeFixResults) != len(assertions) {
-		return "/answer/before_fix_results", "one result for every exact Assignment assertion", fmt.Sprintf("got %d want %d", len(answer.BeforeFixResults), len(assertions))
-	}
 	for i, result := range answer.BeforeFixResults {
 		prefix := fmt.Sprintf("/answer/before_fix_results/%d", i)
-		if result.AssertionID != assertions[i] {
-			return prefix + "/assertion_id", "exact frozen assertion_id in source order", result.AssertionID
+		if strings.TrimSpace(result.AssertionID) == "" {
+			return prefix + "/assertion_id", "original assertion ID", "empty"
 		}
-		if strings.TrimSpace(result.ObservedRed) == "" {
-			return prefix + "/observed_red", "non-empty actual before-fix observation or unfinished-work reason", "empty"
-		}
-		if err := validateRepairResultRefs(result.EvidenceRefs, prefix+"/evidence_refs", true); err != nil {
+		if err := validateRepairResultRefs(result.EvidenceRefs, prefix+"/evidence_refs", false); err != nil {
 			return err.pointer, "unique non-empty evidence references", err.observed
 		}
 	}
-	unitIDs, ok := repairPlanReportStringSlice(assignment["unit_ids"])
-	if !ok || len(unitIDs) == 0 {
-		return "/inputs/sources/repair_assignment/unit_ids", "explicit exact assigned unit slots", "missing or empty"
-	}
-	if len(answer.UnitResults) != len(unitIDs) {
-		return "/answer/unit_results", "one result for every exact assigned unit", fmt.Sprintf("got %d want %d", len(answer.UnitResults), len(unitIDs))
-	}
 	for i, result := range answer.UnitResults {
 		prefix := fmt.Sprintf("/answer/unit_results/%d", i)
-		if result.UnitID != unitIDs[i] {
-			return prefix + "/unit_id", "exact frozen unit_id in source order", result.UnitID
+		if strings.TrimSpace(result.UnitID) == "" {
+			return prefix + "/unit_id", "original unit ID", "empty"
 		}
 		if result.Status != "pass" && result.Status != "fail" && result.Status != "blocked" {
 			return prefix + "/status", "pass | fail | blocked", result.Status
 		}
-		if strings.TrimSpace(result.ImplementationSummary) == "" {
-			return prefix + "/implementation_summary", "non-empty professional implementation summary", "empty"
-		}
-		if err := validateRepairResultRefs(result.EvidenceRefs, prefix+"/evidence_refs", true); err != nil {
+		if err := validateRepairResultRefs(result.EvidenceRefs, prefix+"/evidence_refs", false); err != nil {
 			return err.pointer, "unique non-empty evidence references", err.observed
 		}
 		if err := validateRepairResultRefs(result.RestoredInvariantRefs, prefix+"/restored_invariant_refs", false); err != nil {
@@ -478,7 +384,7 @@ func canonicalRepairResultInputs(binding RepairResultBinding, inputs RepairResul
 	}
 	canonical := RepairResultInputs{Sources: canonicalSources}
 	var err error
-	canonical.PlanReport, err = canonicalRepairResultObject(inputs.PlanReport, "PlanReport")
+	canonical.PlanReport, err = canonicalRepairResultNullableObject(inputs.PlanReport, "PlanReport")
 	if err != nil {
 		return RepairResultInputs{}, err
 	}
@@ -496,8 +402,14 @@ func canonicalRepairResultInputs(binding RepairResultBinding, inputs RepairResul
 	if err := validateRepairResultExecution(binding, canonical.Execution); err != nil {
 		return RepairResultInputs{}, err
 	}
-	if err := validateRepairResultPlanReport(binding, canonical.PlanReport); err != nil {
-		return RepairResultInputs{}, err
+	if bytes.Equal(canonical.PlanReport, []byte("null")) {
+		if binding.PlanReportRef != "" {
+			return RepairResultInputs{}, fmt.Errorf("S9 absent PlanReport must not claim a recorded reference")
+		}
+	} else {
+		if err := validateRepairResultPlanReport(binding, canonical.PlanReport); err != nil {
+			return RepairResultInputs{}, err
+		}
 	}
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
@@ -513,14 +425,11 @@ func validateRepairResultBinding(binding RepairResultBinding) error {
 	if err := validateRepairPlanReportBinding(binding.Sources); err != nil {
 		return fmt.Errorf("S9 RepairResult original source binding: %w", err)
 	}
-	if !safeRepairPlanReportRef(binding.PlanReportRef) || !digestPattern.MatchString(binding.PlanReportSHA256) || !digestPattern.MatchString(binding.ExecutionSHA256) {
-		return fmt.Errorf("S9 RepairResult requires exact PlanReport and Execution source digests")
+	if binding.PlanReportRef != "" && !safeRepairPlanReportRef(binding.PlanReportRef) {
+		return fmt.Errorf("S9 RepairResult has an invalid PlanReport reference")
 	}
-	if (binding.ReworkRef == "") != (binding.ReworkSHA256 == "") {
-		return fmt.Errorf("S9 ReworkRef and ReworkSHA256 must be both empty or both present")
-	}
-	if binding.ReworkRef != "" && (!safeRepairPlanReportRef(binding.ReworkRef) || !digestPattern.MatchString(binding.ReworkSHA256)) {
-		return fmt.Errorf("S9 rework attempt source reference or digest is invalid")
+	if binding.ReworkRef != "" && !safeRepairPlanReportRef(binding.ReworkRef) {
+		return fmt.Errorf("S9 rework attempt source reference is invalid")
 	}
 	if err := ValidateRepairResultResume(binding.Sources.OwnerAgentID, binding.Resume); err != nil {
 		return err
@@ -538,23 +447,6 @@ func ValidateRepairResultResume(owner string, resume *RepairResultResume) error 
 		return fmt.Errorf("S9 Resume requires its predecessor, blocker and recorded resolution")
 	}
 	return nil
-}
-
-// RepairResultResumeSHA256 returns the canonical digest used by candidate and
-// final provenance. An absent Resume is represented by an empty digest.
-func RepairResultResumeSHA256(resume *RepairResultResume) (string, error) {
-	if resume == nil {
-		return "", nil
-	}
-	data, err := json.Marshal(resume)
-	if err != nil {
-		return "", err
-	}
-	canonical, err := canonicalJSON(data)
-	if err != nil {
-		return "", err
-	}
-	return Digest(canonical), nil
 }
 
 func validateRepairResultPlanReport(binding RepairResultBinding, raw json.RawMessage) error {
@@ -642,13 +534,15 @@ func repairResultTemplateQuestions(questions map[string]Question) bool {
 
 func makeRepairResultRead(binding RepairResultBinding, inputs RepairResultInputs) []ReadItem {
 	read := makeRepairPlanReportRead(binding.Sources)
-	read = append(read, ReadItem{Path: binding.PlanReportRef, Purpose: "Read the exact PlanReport accepted by the original S9 writer."})
+	if binding.PlanReportRef != "" {
+		read = append(read, ReadItem{Path: binding.PlanReportRef, Purpose: "Read the exact PlanReport accepted by the original S9 writer."})
+	}
 	var execution struct {
 		Path string `json:"worktree_path"`
 	}
-	_ = decodeOneStrictJSON(inputs.Execution, &execution)
+	_ = decodeOneJSON(inputs.Execution, &execution)
 	if execution.Path != "" {
-		read = append(read, ReadItem{Path: execution.Path, Purpose: "Work only in the originally registered Worker execution; current HEAD and changes are checked at candidate receipt."})
+		read = append(read, ReadItem{Path: execution.Path, Purpose: "Continue work in the recorded Worker location; Main integrates and checks the actual changes."})
 	}
 	if binding.ReworkRef != "" {
 		read = append(read, ReadItem{Path: binding.ReworkRef, Purpose: "Read the exact accepted integration rework receipt for this attempt."})

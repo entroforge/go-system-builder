@@ -56,8 +56,8 @@ func TestReviewResultReadersSelectOnlyS7InMixedPacketRegistry(t *testing.T) {
 		otherIDs = append(otherIDs, stringValue(index["packet_id"]))
 	}
 	s5, err := workpacket.BuildS5(workpacket.Binding{
-		RuntimeID: p.Binding.RuntimeID, Generation: 1, StageEntry: 7, Owner: "reviewer-spec", AssignmentID: "assignment-spec", AssignmentSHA: workpacket.Digest([]byte("manifest")), Responsibility: "DV-SPEC-CONSISTENCY", Attempt: 1,
-	}, []workpacket.Reference{{ID: "REQ-039", Path: "req.md", Version: "v1.0.0", SHA256: workpacket.Digest([]byte("requirement"))}})
+		RuntimeID: p.Binding.RuntimeID, Generation: 1, StageEntry: 7, Owner: "reviewer-spec", AssignmentID: "assignment-spec", Responsibility: "DV-SPEC-CONSISTENCY", Attempt: 1,
+	}, []workpacket.Reference{{ID: "REQ-039", Path: "req.md", Version: "v1.0.0"}})
 	if err != nil {
 		t.Fatal(err)
 	}

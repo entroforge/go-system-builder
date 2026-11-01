@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +12,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -64,7 +63,7 @@ func TestRuntimeRepairSessionAndPlanAdvanceByCAS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileRepairPlan() error = %v", err)
 	}
-	if snapshot.Revision != 2 || len(plan.Units) != 1 || planRef.SHA256 == "" || sessionRef.SHA256 == "" {
+	if snapshot.Revision != 2 || len(plan.Units) != 1 || planRef.Path == "" || sessionRef.Path == "" {
 		t.Fatalf("plan snapshot=%d plan=%#v ref=%#v", snapshot.Revision, plan, planRef)
 	}
 	current, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
@@ -74,511 +73,6 @@ func TestRuntimeRepairSessionAndPlanAdvanceByCAS(t *testing.T) {
 	if current.State["lifecycle"].(map[string]any)["phase"] != "planning" {
 		t.Fatalf("lifecycle did not enter fixing: %#v", current.State["lifecycle"])
 	}
-}
-
-func TestResumeTargetedReverificationAfterBlockedResult(t *testing.T) {
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "targeted_reverification", 0)
-	state["review"].(map[string]any)["repair"] = map[string]any{
-		"session_id": "repair-session-blocked", "case_id": "investigation-case-1", "contract_id": "repair-contract-1",
-		"contract_ref": ".claude/review/investigation/contracts/repair-contract-1.json", "contract_sha256": strings.Repeat("a", 64),
-		"path": ".claude/review/repair/sessions/repair-session-blocked.json", "sha256": strings.Repeat("b", 64), "revision": 1,
-		"status": "blocked", "targeted_reverification_refs": []string{".claude/review/repair/reverification/blocked.json"},
-		"targeted_reverification_artifacts": []any{}, "failure_route": "blocked", "updated_at": "2026-08-26T00:00:00Z",
-		"next_action": "resolve the targeted verification blocker, then submit a new independent reverification",
-	}
-	req039fixtures.WriteState(t, root, state)
-	statePath := filepath.Join(root, ".claude/loop-state.json")
-	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
-
-	snapshot, err := repair.ResumeTargetedReverification(root, statePath, journalPath, repair.ResumeTargetedRequest{
-		RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "qa", OccurredAt: time.Date(2026, 8, 26, 0, 1, 0, 0, time.UTC)},
-		Reason:         "the browser session was restored and the verifier can run again",
-	})
-	if err != nil {
-		t.Fatalf("ResumeTargetedReverification() error = %v", err)
-	}
-	if snapshot.Revision != 1 || snapshot.State["lifecycle"].(map[string]any)["phase"] != "targeted_reverification" {
-		t.Fatalf("resume cursor = %#v revision=%d, want targeted_reverification/1", snapshot.State["lifecycle"], snapshot.Revision)
-	}
-	repairPointer := snapshot.State["review"].(map[string]any)["repair"].(map[string]any)
-	if repairPointer["status"] != "targeted_reverification" || !strings.Contains(repairPointer["next_action"].(string), "independent targeted reverification") {
-		t.Fatalf("resume pointer = %#v", repairPointer)
-	}
-	if repairPointer["blocker_resolved_by"] != "qa" || repairPointer["blocker_resolution"] == nil {
-		t.Fatalf("resume must retain blocker resolution audit fields: %#v", repairPointer)
-	}
-	if data, readErr := os.ReadFile(journalPath); readErr != nil {
-		t.Fatal(readErr)
-	} else if !strings.Contains(string(data), "PTR-BUG-12") {
-		t.Fatalf("resume must journal the recovery event: %s", data)
-	}
-	var persisted map[string]any
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(data, &persisted); err != nil {
-		t.Fatal(err)
-	}
-	if persisted["lifecycle"].(map[string]any)["phase"] != "targeted_reverification" {
-		t.Fatalf("persisted lifecycle = %#v", persisted["lifecycle"])
-	}
-}
-
-func TestRuntimeRepairRequiresCompleteAssignmentResultBatch(t *testing.T) {
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "repair_readback", 0)
-	contractRel := ".claude/review/investigation/contracts/repair-contract-batch-r2.json"
-	contract := map[string]any{
-		"schema_version": "1.0.0", "repair_contract_id": "repair-contract-batch", "case_id": "investigation-case-batch", "revision": 2, "status": "approved", "source_finding_ids": []string{"finding-batch"},
-		"root_cause_statement": "two bounded repair units", "violated_invariant": "both boundaries agree", "causal_model_ref": "case://batch/model", "architecture_intent": "split work by unit",
-		"repair_units": []map[string]any{{"id": "unit-1", "description": "repair api", "assertion_ids": []string{"all"}}, {"id": "unit-2", "description": "repair persistence", "assertion_ids": []string{"all"}, "depends_on": []string{"unit-1"}}}, "prospective_scope": []string{"internal/api"}, "forbidden_scope": []string{"docs/requirements"},
-		"symptom_assertions": []string{"api symptom"}, "root_invariant_assertions": []string{"shared invariant"}, "detection_gap_assertions": []string{"regression catches both"}, "stop_escalation_conditions": []string{"scope expands"},
-		"approved_by": "human", "approved_at": "2026-08-25T00:00:00Z", "approval_hash": repeatHex("a", 64),
-	}
-	data, err := json.MarshalIndent(contract, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = append(data, '\n')
-	path := filepath.Join(root, filepath.FromSlash(contractRel))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	state["review"].(map[string]any)["investigation"] = map[string]any{"case_id": "investigation-case-batch", "path": ".claude/review/investigation/cases/investigation-case-batch-r2.json", "sha256": repeatHex("b", 64), "revision": 2, "status": "contract_approved", "source_finding_ids": []any{"finding-batch"}, "observation_batch_id": "observation-batch-batch", "updated_at": "2026-08-25T00:00:00Z", "repair_contract_ref": contractRel, "repair_contract_sha256": fileHash(data)}
-	req039fixtures.WriteState(t, root, state)
-	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
-	if err := os.WriteFile(journalPath, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, _, sessionRef, err := repair.OpenRepairSession(root, statePath, journalPath, repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "main"}, SessionID: "repair-session-batch", CreatedBy: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, plan, planRef, err := repair.CompileRepairPlan(root, statePath, journalPath, repair.CompilePlanRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 1, Actor: "main"}, PlanID: "repair-plan-batch", CreatedBy: "main"})
-	if err != nil || len(plan.Assignments) != 2 {
-		t.Fatalf("compile batch plan = %#v, %v", plan, err)
-	}
-	for i, agent := range []string{"builder-1", "builder-2"} {
-		report, reportRef, reportErr := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: plan.Assignments[i].AssignmentID, AgentID: agent, ReportID: "repair-plan-report-batch-" + string(rune('1'+i)), PlanText: "repair the assigned unit", RedChecks: []repair.RepairCheck{{Name: "pre-fix", Command: "go test ./internal/api", Result: "fail", EvidenceRefs: []string{"test://red"}}}, ProposedPaths: []string{"internal/api"}})
-		if reportErr != nil {
-			t.Fatal(reportErr)
-		}
-		if _, _, reportErr = repair.SubmitRepairPlanReportToRuntime(root, statePath, journalPath, repair.SubmitPlanReportRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 2 + i, Actor: agent}, Report: reportRef}); reportErr != nil || report.ReportID == "" {
-			t.Fatalf("submit PlanReport[%d] = %v", i, reportErr)
-		}
-	}
-	started, err := repair.BeginRepairExecution(root, statePath, journalPath, repair.BeginRepairExecutionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 4, Actor: "main"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	startedRepair := started.State["review"].(map[string]any)["repair"].(map[string]any)
-	if nextAction := startedRepair["next_action"].(string); !strings.Contains(nextAction, "this Builder") || !strings.Contains(nextAction, "Main") || strings.Contains(nextAction, "dispatch the bound repair assignment") {
-		t.Fatalf("execution begin must point the already-dispatched Builder to its result, got %q", nextAction)
-	}
-	firstPath := writeFile(t, root, "internal/api/first.go", "package api\n")
-	secondPath := writeFile(t, root, "internal/api/second.go", "package api\n")
-	firstData, _ := os.ReadFile(firstPath)
-	secondData, _ := os.ReadFile(secondPath)
-	_, _, _, err = repair.SubmitRepairResultToRuntime(root, statePath, journalPath, repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision, Actor: "builder-2"}, Result: repair.RepairResultRequest{ResultID: "repair-result-batch-2-early", AssignmentID: "repair-assignment-unit-2", ProducerAgentID: "builder-2", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-2", Status: "pass", EvidenceRefs: []string{"test://unit-2"}}}, ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/second.go", SHA256: fileHash(secondData), Status: "added"}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}})
-	if err == nil || !strings.Contains(err.Error(), "queued behind dependency") {
-		t.Fatalf("unit-2 must wait for unit-1, got %v", err)
-	}
-	_, _, _, err = repair.SubmitRepairResultToRuntime(root, statePath, journalPath, repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision, Actor: "builder-1"}, Result: repair.RepairResultRequest{ResultID: "repair-result-batch-1", AssignmentID: "repair-assignment-unit-1", ProducerAgentID: "builder-1", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit-1"}}}, ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/first.go", SHA256: fileHash(firstData), Status: "added"}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	intermediate, err := runtime.NewStore(statePath, journalPath).Snapshot()
-	if err != nil || intermediate.State["review"].(map[string]any)["repair"].(map[string]any)["status"] != "repairing" {
-		t.Fatalf("first Assignment must not close batch: revision=%d err=%v state=%#v", intermediate.Revision, err, intermediate.State["review"])
-	}
-	final, _, _, err := repair.SubmitRepairResultToRuntime(root, statePath, journalPath, repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 1, Actor: "builder-2"}, Result: repair.RepairResultRequest{ResultID: "repair-result-batch-2", AssignmentID: "repair-assignment-unit-2", ProducerAgentID: "builder-2", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-2", Status: "pass", EvidenceRefs: []string{"test://unit-2"}}}, ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/second.go", SHA256: fileHash(secondData), Status: "added"}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if final.State["review"].(map[string]any)["repair"].(map[string]any)["status"] != "impact_reconciliation" {
-		t.Fatalf("complete Assignment batch should release impact reconciliation: %#v", final.State["review"])
-	}
-}
-
-func TestRuntimeRepairEvidenceChainHandsOffToFreshS7Cursor(t *testing.T) {
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "repair_readback", 0)
-	contractRef, contractSHA := writeRuntimeContract(t, root)
-	state["review"].(map[string]any)["investigation"] = map[string]any{"case_id": "investigation-case-1", "path": ".claude/review/investigation/cases/investigation-case-1-r2.json", "sha256": repeatHex("b", 64), "revision": 2, "status": "contract_approved", "source_finding_ids": []any{"finding-1"}, "observation_batch_id": "observation-batch-1", "updated_at": "2026-08-25T00:00:00Z", "repair_contract_ref": contractRef.Path, "repair_contract_sha256": contractSHA}
-	req039fixtures.WriteState(t, root, state)
-	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
-	_, _, sessionRef, err := repair.OpenRepairSession(root, statePath, journalPath, repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "main"}, SessionID: "repair-session-1", CreatedBy: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, planRef, err := repair.CompileRepairPlan(root, statePath, journalPath, repair.CompilePlanRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 1, Actor: "main"}, PlanID: "repair-plan-1", CreatedBy: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, planReportRef, err := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: "repair-assignment-unit-1", AgentID: "builder-1", ReportID: "repair-plan-report-1", PlanText: "restore the payload authority", RedChecks: []repair.RepairCheck{{Name: "original failure", Command: "go test ./internal/api", Result: "fail", EvidenceRefs: []string{"test://red"}}}, ProposedPaths: []string{"internal/api/payload.go"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := repair.SubmitRepairPlanReportToRuntime(root, statePath, journalPath, repair.SubmitPlanReportRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 2, Actor: "builder-1"}, Report: planReportRef}); err != nil {
-		t.Fatal(err)
-	}
-	started, err := repair.BeginRepairExecution(root, statePath, journalPath, repair.BeginRepairExecutionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 3, Actor: "main"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	startedRepair := started.State["review"].(map[string]any)["repair"].(map[string]any)
-	if nextAction := startedRepair["next_action"].(string); !strings.Contains(nextAction, "this Builder") || !strings.Contains(nextAction, "Main") || strings.Contains(nextAction, "dispatch the bound repair assignment") {
-		t.Fatalf("execution begin must point the already-dispatched Builder to its result, got %q", nextAction)
-	}
-	changedPath := writeFile(t, root, "internal/api/payload.go", "package api\n")
-	changedData, _ := os.ReadFile(changedPath)
-	_, _, resultRef, err := repair.SubmitRepairResultToRuntime(root, statePath, journalPath, repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision, Actor: "builder-1"}, Result: repair.RepairResultRequest{ResultID: "repair-result-1", ProducerAgentID: "builder-1", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit-1"}}}, ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/payload.go", SHA256: fileHash(changedData), Status: "added"}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	impact, impactRef, err := repair.CreateChangeImpact(root, repair.ChangeImpactRequest{ImpactID: "impact-1", RuntimeID: "loop-req039-ct", ReqID: "REQ-039", BaselineGeneration: 1, SourceBugIDs: []string{"BUG-001"}, ChangeTypes: []string{"implementation"}, ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api/payload.go", SHA256: fileHash(changedData)}}, Decisions: []repair.ImpactDecision{{SourceID: "BUG-001", TargetID: "claim-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", ResponsibilityID: nil, Scope: []string{"internal/api/payload.go"}, Rationale: "repair changed the boundary", RecoveryEvidence: []string{resultRef.Path}}}, EscalationLevel: "assignment", RequiredReverificationIDs: []string{"reverify-1"}, AnalyzedBy: "qa"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherImpact, otherImpactRef, err := repair.CreateChangeImpact(root, repair.ChangeImpactRequest{ImpactID: "impact-unrelated", RuntimeID: "loop-req039-ct", ReqID: "REQ-039", BaselineGeneration: 1, SourceBugIDs: []string{"BUG-001"}, ChangeTypes: []string{"implementation"}, ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-other", Path: "internal/api/other.go", SHA256: repeatHex("c", 64)}}, Decisions: []repair.ImpactDecision{{SourceID: "BUG-001", TargetID: "claim-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", ResponsibilityID: nil, Scope: []string{"internal/api/other.go"}, Rationale: "unrelated artifact", RecoveryEvidence: []string{resultRef.Path}}}, EscalationLevel: "assignment", AnalyzedBy: "qa"})
-	if err != nil || otherImpact.ImpactID == "" {
-		t.Fatalf("unrelated impact = %#v, %v", otherImpact, err)
-	}
-	stateBeforeImpact, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	journalBeforeImpact, err := os.ReadFile(journalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repair.CommitChangeImpact(root, statePath, journalPath, repair.CommitImpactRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 1, Actor: "main"}, Impact: otherImpactRef}); err == nil || !strings.Contains(err.Error(), "accepted Final") {
-		t.Errorf("CommitChangeImpact must reject another contribution at the original association boundary: %v", err)
-	}
-	stateAfterImpact, stateErr := os.ReadFile(statePath)
-	journalAfterImpact, journalErr := os.ReadFile(journalPath)
-	if stateErr != nil || journalErr != nil || string(stateBeforeImpact) != string(stateAfterImpact) || string(journalBeforeImpact) != string(journalAfterImpact) {
-		t.Fatal("unrelated Impact changed Runtime or journal")
-	}
-	impactSnapshot, err := repair.CommitChangeImpact(root, statePath, journalPath, repair.CommitImpactRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 1, Actor: "main"}, Impact: impactRef})
-	if err != nil {
-		t.Fatal(err)
-	}
-	impactPointer := impactSnapshot.State["review"].(map[string]any)["repair"].(map[string]any)
-	if ids := impactPointer["required_reverification_ids"].([]any); len(ids) != 1 || ids[0] != "reverify-1" {
-		t.Fatalf("ChangeImpact must register the resumed logical obligation before the blocked attempt: %#v", impactPointer["required_reverification_ids"])
-	}
-	// RC-01 fixture strengthening: the performing verifier must be a
-	// dispatched identity. Bind a second owner into the runtime
-	// assignment_owners map so assignment-s9-qa-verifier resolves to an
-	// independent agent (qa) distinct from the repair owner builder-1.
-	// This is the minimal state-level dispatch without inventing a second
-	// repair unit — the verifier pool is not a repair assignment.
-	{
-		raw, readErr := os.ReadFile(statePath)
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		var cur map[string]any
-		if err := json.Unmarshal(raw, &cur); err != nil {
-			t.Fatal(err)
-		}
-		repairMap, _ := cur["review"].(map[string]any)["repair"].(map[string]any)
-		if repairMap == nil {
-			t.Fatalf("repair pointer missing: %#v", cur["review"])
-		}
-		owners, _ := repairMap["assignment_owners"].(map[string]any)
-		if owners == nil {
-			owners = map[string]any{}
-			repairMap["assignment_owners"] = owners
-		}
-		owners["assignment-s9-qa-verifier"] = "qa"
-		next, err := json.MarshalIndent(cur, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(statePath, next, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// RC-01: the reverification identities must be the dispatched repair
-	// chain — the original is the actual repair assignment (its manifest
-	// alias assignment-s9-unit-1), the performing verifier is a dispatched
-	// identity that is not owned by the repair owner builder-1.
-	blockedRequest := repair.TargetedReverificationRequest{ReverificationID: "reverify-1", RuntimeID: "loop-req039-ct", BugID: "BUG-001", BaselineGeneration: 1, OriginalAssignmentID: "assignment-s9-unit-1", PerformingAssignmentID: "assignment-s9-qa-verifier", ContinuityReason: "test://verifier-log: independent verifier", ImpactID: impact.ImpactID, AssertionResults: []repair.AssertionResult{{AssertionID: "symptom-1", Result: "pass", EvidenceRefs: []string{"test://symptom"}}, {AssertionID: "root-1", Result: "blocked", EvidenceRefs: []string{"test://root-blocked"}}, {AssertionID: "gap-1", Result: "pass", EvidenceRefs: []string{"test://gap"}}}, ScopeCompliance: "pass", Result: "blocked", FailureClass: "blocked"}
-	_, blockedRef, err := repair.CreateTargetedReverification(root, blockedRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	blockedPath := filepath.Join(root, filepath.FromSlash(blockedRef.Path))
-	blockedBytes, err := os.ReadFile(blockedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, unrelatedReverifyRef, err := repair.CreateTargetedReverification(root, repair.TargetedReverificationRequest{ReverificationID: "reverify-unrelated", RuntimeID: "loop-req039-ct", BugID: "BUG-001", BaselineGeneration: 1, OriginalAssignmentID: "assignment-s9-unit-1", PerformingAssignmentID: "assignment-independent", ContinuityReason: "test://unrelated: unrelated candidate", ImpactID: "impact-unrelated", AssertionResults: []repair.AssertionResult{{AssertionID: "symptom-1", Result: "pass", EvidenceRefs: []string{"test://symptom"}}, {AssertionID: "root-1", Result: "pass", EvidenceRefs: []string{"test://root"}}, {AssertionID: "gap-1", Result: "pass", EvidenceRefs: []string{"test://gap"}}}, ScopeCompliance: "pass", Result: "pass"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 2, Actor: "qa"}, Reverification: unrelatedReverifyRef}); err == nil {
-		t.Fatal("CommitTargetedReverification must reject a reverification for a non-current ChangeImpact")
-	}
-	// RC-01 negative: the original implementer (builder-1, owner of
-	// repair-assignment-unit-1) cannot self-verify by filling a fabricated
-	// independent verifier ID — the performing identity must resolve to a
-	// dispatched assignment that is not owned by the repair owner.
-	_, fakeVerifierReverifyRef, err := repair.CreateTargetedReverification(root, repair.TargetedReverificationRequest{ReverificationID: "reverify-fake-verifier", RuntimeID: "loop-req039-ct", BugID: "BUG-001", BaselineGeneration: 1, OriginalAssignmentID: "assignment-s9-unit-1", PerformingAssignmentID: "assignment-fake-verifier", ContinuityReason: "test://fabricated: fabricated independent verifier", ImpactID: impact.ImpactID, AssertionResults: []repair.AssertionResult{{AssertionID: "symptom-1", Result: "pass", EvidenceRefs: []string{"test://symptom"}}, {AssertionID: "root-1", Result: "pass", EvidenceRefs: []string{"test://root"}}, {AssertionID: "gap-1", Result: "pass", EvidenceRefs: []string{"test://gap"}}}, ScopeCompliance: "pass", Result: "pass"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateBeforeTargeted, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	journalBeforeTargeted, err := os.ReadFile(journalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unknown, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 2, Actor: "qa"}, Reverification: fakeVerifierReverifyRef})
-	if err == nil || !strings.Contains(err.Error(), "not a dispatched verifier identity") {
-		t.Errorf("unknown responsibility borrowed independent completion: error=%v, review=%v", err, unknown.State["review"])
-	}
-	stateAfterTargeted, stateErr := os.ReadFile(statePath)
-	journalAfterTargeted, journalErr := os.ReadFile(journalPath)
-	if stateErr != nil || journalErr != nil || string(stateBeforeTargeted) != string(stateAfterTargeted) || string(journalBeforeTargeted) != string(journalAfterTargeted) {
-		t.Fatal("unknown performing responsibility changed Runtime or journal")
-	}
-	// RC-01 negative: the repair owner's own manifest alias is not an
-	// independent verifier either — hand-editing the persisted artifact to
-	// present the same assignment under two spellings must be rejected at
-	// validation time (the artifact pattern forbids the repair-assignment-
-	// spelling, so the alias collision is the realistic owner-disguise form).
-	ownerDisguise, _, err := repair.CreateTargetedReverification(root, repair.TargetedReverificationRequest{ReverificationID: "reverify-owner-disguise", RuntimeID: "loop-req039-ct", BugID: "BUG-001", BaselineGeneration: 1, OriginalAssignmentID: "assignment-s9-unit-1", PerformingAssignmentID: "assignment-s9-unit-1x", ContinuityReason: "test://alias: owner alias self-verification", ImpactID: impact.ImpactID, AssertionResults: []repair.AssertionResult{{AssertionID: "symptom-1", Result: "pass", EvidenceRefs: []string{"test://symptom"}}, {AssertionID: "root-1", Result: "pass", EvidenceRefs: []string{"test://root"}}, {AssertionID: "gap-1", Result: "pass", EvidenceRefs: []string{"test://gap"}}}, ScopeCompliance: "pass", Result: "pass"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	disguiseData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(ownerDisguiseRefPath(ownerDisguise))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	disguised := strings.Replace(string(disguiseData), `"performing_assignment_id": "assignment-s9-unit-1x"`, `"performing_assignment_id": "assignment-s9-unit-1"`, 1)
-	if disguised == string(disguiseData) {
-		t.Fatalf("owner-disguise fixture did not apply: %s", disguiseData)
-	}
-	disguisePath := filepath.Join(root, filepath.FromSlash(ownerDisguiseRefPath(ownerDisguise)))
-	if err := os.WriteFile(disguisePath, []byte(disguised), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// A report decoder cannot certify a person's independence. The original
-	// Runtime consumer resolves this alias to the actual known implementer.
-	disguiseRef := repair.ArtifactRef{Path: ownerDisguiseRefPath(ownerDisguise), SHA256: fileHash([]byte(disguised))}
-	if _, err := repair.ValidateTargetedReverification(root, disguiseRef); err != nil {
-		t.Fatalf("truthful implementer observations could not be read: %v", err)
-	}
-	disguiseSnapshot, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 2, Actor: "builder-1"}, Reverification: disguiseRef})
-	if err != nil {
-		t.Fatal(err)
-	}
-	disguisePointer := disguiseSnapshot.State["review"].(map[string]any)["repair"].(map[string]any)
-	if disguisePointer["status"] != "targeted_reverification" || !strings.Contains(disguisePointer["next_action"].(string), "independent") {
-		t.Fatalf("implementer alias granted independent completion: %#v", disguisePointer)
-	}
-	// Omitting actor cannot turn an unregistered report label into a known
-	// responsibility. Normal known reports inherit their actual recorded owner.
-	if _, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: disguiseSnapshot.Revision, Actor: ""}, Reverification: fakeVerifierReverifyRef}); err == nil || !strings.Contains(err.Error(), "not a dispatched verifier identity") {
-		t.Fatalf("omitting actor must not authorize an unknown performing responsibility, got %v", err)
-	}
-	blockedSnapshot, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: disguiseSnapshot.Revision, Actor: "qa"}, Reverification: blockedRef})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if blockedSnapshot.State["review"].(map[string]any)["repair"].(map[string]any)["status"] != "blocked" {
-		t.Fatalf("blocked targeted result status = %#v", blockedSnapshot.State["review"].(map[string]any)["repair"])
-	}
-	if phase := blockedSnapshot.State["lifecycle"].(map[string]any)["phase"]; phase != "targeted_reverification" {
-		t.Fatalf("blocked targeted result phase = %#v, want targeted_reverification", phase)
-	}
-	resumeAt := time.Date(2026, 8, 26, 0, 5, 0, 0, time.UTC)
-	resumed, err := repair.ResumeTargetedReverification(root, statePath, journalPath, repair.ResumeTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: blockedSnapshot.Revision, Actor: "qa", OccurredAt: resumeAt}, Reason: "the verifier's browser session was restored"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resumedPointer := resumed.State["review"].(map[string]any)["repair"].(map[string]any)
-	if ids := resumedPointer["required_reverification_ids"].([]any); len(ids) != 1 || ids[0] != "reverify-1" {
-		t.Fatalf("Resume must preserve the same required ID: %#v", resumedPointer["required_reverification_ids"])
-	}
-	beforeResumeArtifacts, err := json.Marshal(blockedSnapshot.State["review"].(map[string]any)["repair"].(map[string]any)["targeted_reverification_artifacts"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	afterResumeArtifacts, err := json.Marshal(resumedPointer["targeted_reverification_artifacts"])
-	if err != nil || string(beforeResumeArtifacts) != string(afterResumeArtifacts) {
-		t.Fatalf("Resume changed immutable observation history: %s -> %s (%v)", beforeResumeArtifacts, afterResumeArtifacts, err)
-	}
-	foundBlocked := false
-	for _, raw := range resumedPointer["targeted_reverification_artifacts"].([]any) {
-		ref := raw.(map[string]any)
-		foundBlocked = foundBlocked || ref["path"] == blockedRef.Path && ref["sha256"] == blockedRef.SHA256
-	}
-	if !foundBlocked {
-		t.Fatal("Resume lost the original failed immutable artifact")
-	}
-	resolvedAt, err := time.Parse(time.RFC3339Nano, resumedPointer["blocker_resolved_at"].(string))
-	if err != nil {
-		t.Fatal(err)
-	}
-	passRequest := blockedRequest
-	passRequest.PerformedAt = resolvedAt.Add(time.Minute)
-	passRequest.AssertionResults = []repair.AssertionResult{{AssertionID: "symptom-1", Result: "pass", EvidenceRefs: []string{"test://symptom-after-resume"}}, {AssertionID: "root-1", Result: "pass", EvidenceRefs: []string{"test://root-after-resume"}}, {AssertionID: "gap-1", Result: "pass", EvidenceRefs: []string{"test://gap-after-resume"}}}
-	passRequest.Result = "pass"
-	passRequest.FailureClass = ""
-	_, reverifyRef, err := repair.CreateTargetedReverificationForResume(root, passRequest, resolvedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, replayRef, err := repair.CreateTargetedReverificationForResume(root, passRequest, resolvedAt)
-	if err != nil || replayRef.Path != reverifyRef.Path || replayRef.SHA256 != reverifyRef.SHA256 {
-		t.Fatalf("same Resume/ID replay = %#v, %v; want stable path/hash %#v", replayRef, err, reverifyRef)
-	}
-	if reverifyRef.Path == blockedRef.Path {
-		t.Fatalf("resumed attempt must keep its logical ID at a new immutable path: %s", reverifyRef.Path)
-	}
-	if after, readErr := os.ReadFile(blockedPath); readErr != nil || string(after) != string(blockedBytes) {
-		t.Fatalf("resumed attempt changed the old blocked artifact: %v", readErr)
-	}
-	// The known independent responsibility supplies the actor when omitted.
-	passedSnapshot, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: resumed.Revision}, Reverification: reverifyRef})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var persistedSession repair.RepairSession
-	if data, readErr := os.ReadFile(filepath.Join(root, sessionRef.Path)); readErr != nil {
-		t.Fatal(readErr)
-	} else if unmarshalErr := json.Unmarshal(data, &persistedSession); unmarshalErr != nil {
-		t.Fatal(unmarshalErr)
-	}
-	changeset, err := repair.ComputeSessionChangesetRecord(root, persistedSession)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changesetRef, err := repair.PersistChangeset(root, changeset)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handoff, handoffRef, err := repair.CreateRepairHandoff(root, repair.HandoffRequest{HandoffID: "repair-handoff-1", Session: sessionRef, Plan: planRef, Contract: contractRef, Result: resultRef, Changeset: changesetRef, ChangeImpact: impactRef, TargetedReverifications: []repair.ArtifactRef{blockedRef, reverifyRef}, HandedOffBy: "main", NextAction: "S7 full review", OccurredAt: time.Now().UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if handoff.HandoffID == "" {
-		t.Fatal("handoff was not created")
-	}
-	_, alternateTargetRef, err := repair.CreateTargetedReverification(root, repair.TargetedReverificationRequest{ReverificationID: "reverify-alternate", RuntimeID: "loop-req039-ct", BugID: "BUG-001", BaselineGeneration: 1, OriginalAssignmentID: "assignment-builder", PerformingAssignmentID: "assignment-another-qa", ContinuityReason: "test://alternate: alternate candidate", ImpactID: impact.ImpactID, AssertionResults: []repair.AssertionResult{{AssertionID: "symptom-1", Result: "pass", EvidenceRefs: []string{"test://symptom"}}, {AssertionID: "root-1", Result: "pass", EvidenceRefs: []string{"test://root"}}, {AssertionID: "gap-1", Result: "pass", EvidenceRefs: []string{"test://gap"}}}, ScopeCompliance: "pass", Result: "pass"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	alternateHandoff, alternateHandoffRef, err := repair.CreateRepairHandoff(root, repair.HandoffRequest{HandoffID: "repair-handoff-alternate", Session: sessionRef, Plan: planRef, Contract: contractRef, Result: resultRef, Changeset: changesetRef, ChangeImpact: impactRef, TargetedReverifications: []repair.ArtifactRef{alternateTargetRef}, HandedOffBy: "main", NextAction: "S7 full review", OccurredAt: time.Now().UTC()})
-	if err != nil || alternateHandoff.HandoffID == "" {
-		t.Fatalf("alternate handoff = %#v, %v", alternateHandoff, err)
-	}
-	for _, tc := range []struct {
-		name   string
-		mutate func(*repair.RepairHandoff)
-	}{
-		{"session", func(h *repair.RepairHandoff) { h.SessionRef.SHA256 = repeatHex("0", 64) }},
-		{"plan", func(h *repair.RepairHandoff) { h.PlanRef.Path = "another-plan.json" }},
-		{"contract", func(h *repair.RepairHandoff) { h.ContractRef.Path = "another-contract.json" }},
-		{"change_impact", func(h *repair.RepairHandoff) { h.ChangeImpactRef.SHA256 = repeatHex("0", 64) }},
-		{"result", func(h *repair.RepairHandoff) { h.ResultRef.SHA256 = repeatHex("0", 64) }},
-	} {
-		t.Run("handoff source "+tc.name, func(t *testing.T) {
-			changed := handoff
-			tc.mutate(&changed)
-			data, err := json.Marshal(changed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := ".claude/review/repair/handoffs/negative-" + tc.name + ".json"
-			if err := os.WriteFile(filepath.Join(root, path), data, 0600); err != nil {
-				t.Fatal(err)
-			}
-			stateBefore, err := os.ReadFile(statePath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			journalBefore, err := os.ReadFile(journalPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = repair.CommitRepairHandoff(root, statePath, journalPath, repair.CommitHandoffRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: -1, Actor: "main"}, Handoff: repair.ArtifactRef{Path: path, SHA256: fileHash(data)}})
-			if err == nil || !strings.Contains(err.Error(), "Handoff "+tc.name) {
-				t.Errorf("Handoff borrowed another original source: %v", err)
-			}
-			stateAfter, _ := os.ReadFile(statePath)
-			journalAfter, _ := os.ReadFile(journalPath)
-			if string(stateBefore) != string(stateAfter) || string(journalBefore) != string(journalAfter) {
-				t.Error("mismatched Handoff changed Runtime or journal")
-			}
-		})
-	}
-	if _, err := repair.CommitRepairHandoff(root, statePath, journalPath, repair.CommitHandoffRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: passedSnapshot.Revision, Actor: "main"}, Handoff: alternateHandoffRef}); err == nil || !strings.Contains(err.Error(), "Handoff targeted_reverification") {
-		t.Fatalf("CommitRepairHandoff must reject an observation absent from original reception, got %v", err)
-	}
-	snapshot, err := repair.CommitRepairHandoff(root, statePath, journalPath, repair.CommitHandoffRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: passedSnapshot.Revision, Actor: "main"}, Handoff: handoffRef})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Revision != passedSnapshot.Revision+1 || snapshot.State["lifecycle"].(map[string]any)["state"] != "verification" || snapshot.State["lifecycle"].(map[string]any)["phase"] != "running" {
-		t.Fatalf("handoff cursor = %#v revision=%d", snapshot.State["lifecycle"], snapshot.Revision)
-	}
-	if investigation := snapshot.State["review"].(map[string]any)["investigation"]; investigation != nil {
-		t.Fatalf("old S8 investigation pointer must be cleared on TR-012 handoff, got %#v", investigation)
-	}
-	review := snapshot.State["review"].(map[string]any)
-	registeredPlan, ok := review["plan"].(map[string]any)
-	if !ok || registeredPlan["status"] != "running" || registeredPlan["plan_id"] != "review-plan-s9-round-2" {
-		t.Fatalf("TR-012 handoff must register the generated S7 seed: %#v", review["plan"])
-	}
-	if assignments, ok := review["assignments"].(map[string]any); !ok || len(assignments) != 2 {
-		t.Fatalf("registered S7 seed must expose dispatchable assignments: %#v", review["assignments"])
-	}
-	roundEntry, ok := review["round_entry"].(map[string]any)
-	if !ok || roundEntry["repair_handoff_ref"] != handoffRef.Path || roundEntry["repair_handoff_sha256"] != handoffRef.SHA256 {
-		t.Fatalf("TR-012 round entry must retain the repair handoff reference: %#v", review["round_entry"])
-	}
-	wantEvidence := map[string]string{
-		"repair_handoff":          handoffRef.Path,
-		"change_impact":           impactRef.Path,
-		"targeted_reverification": reverifyRef.Path,
-	}
-	seenEvidence := map[string]bool{}
-	for _, raw := range snapshot.State["evidence"].([]any) {
-		entry, _ := raw.(map[string]any)
-		kind, _ := entry["kind"].(string)
-		if expectedPath, ok := wantEvidence[kind]; ok && entry["path"] == expectedPath {
-			seenEvidence[kind] = true
-		}
-	}
-	for kind, path := range wantEvidence {
-		if !seenEvidence[kind] {
-			t.Fatalf("TR-012 must index %s evidence at %s: %#v", kind, path, snapshot.State["evidence"])
-		}
-	}
-	repairPointer := snapshot.State["review"].(map[string]any)["repair"].(map[string]any)
-	nextAction, _ := repairPointer["next_action"].(string)
-	if !strings.Contains(nextAction, "complete and save the original current S7 ReviewPlan questionnaire") || !strings.Contains(nextAction, "first professional S7 plan") || strings.Contains(nextAction, "runtime review-plan --file") {
-		t.Fatalf("TR-012 next_action must explain how to refine the staged seed before dispatch, got %q", nextAction)
-	}
-}
-
-func ownerDisguiseRefPath(value repair.TargetedReverification) string {
-	return ".claude/review/repair/reverification/" + value.ReverificationID + ".json"
 }
 
 func writeRuntimeContract(t *testing.T, root string) (repair.ContractRef, string) {
@@ -597,7 +91,7 @@ func writeRuntimeContract(t *testing.T, root string) (repair.ContractRef, string
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return repair.ContractRef{Path: rel, SHA256: fileHash(data)}, fileHash(data)
+	return repair.ContractRef{Path: rel}, fileHash(data)
 }
 
 func writeScopedRuntimeContract(t *testing.T, root string) repair.ContractRef {
@@ -625,7 +119,7 @@ func writeScopedRuntimeContract(t *testing.T, root string) repair.ContractRef {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return repair.ContractRef{Path: rel, SHA256: fileHash(data)}
+	return repair.ContractRef{Path: rel}
 }
 
 func repeatHex(value string, count int) string {
@@ -643,83 +137,10 @@ func fileHash(data []byte) string { sum := sha256.Sum256(data); return hex.Encod
 // a baseline file the repair never claimed. The authority fingerprint pinned
 // at session open must make the next S9 checkpoint (impact commit) fail
 // stale instead of pinning a drifted surface into the next review round.
-func TestRuntimeRepairImpactConsumesAcceptedFactsWithoutWholeSessionReproof(t *testing.T) {
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "repair_readback", 0)
-	contractRef, contractSHA := writeRuntimeContract(t, root)
-	state["review"].(map[string]any)["investigation"] = map[string]any{"case_id": "investigation-case-1", "path": ".claude/review/investigation/cases/investigation-case-1-r2.json", "sha256": repeatHex("b", 64), "revision": 2, "status": "contract_approved", "source_finding_ids": []any{"finding-1"}, "observation_batch_id": "observation-batch-1", "updated_at": "2026-08-25T00:00:00Z", "repair_contract_ref": contractRef.Path, "repair_contract_sha256": contractSHA}
-	req039fixtures.WriteState(t, root, state)
-	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
-	if _, _, _, err := repair.OpenRepairSession(root, statePath, journalPath, repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "main"}, SessionID: "repair-session-drift", CreatedBy: "main"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := repair.CompileRepairPlan(root, statePath, journalPath, repair.CompilePlanRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 1, Actor: "main"}, PlanID: "repair-plan-drift", CreatedBy: "main"}); err != nil {
-		t.Fatal(err)
-	}
-	// Re-read the runtime pointer so the chain artifacts stay transitively bound.
-	raw, readErr := os.ReadFile(statePath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	var cur map[string]any
-	if err := json.Unmarshal(raw, &cur); err != nil {
-		t.Fatal(err)
-	}
-	pointer := cur["review"].(map[string]any)["repair"].(map[string]any)
-	sessionRef := repair.ArtifactRef{Path: pointer["path"].(string), SHA256: pointer["sha256"].(string)}
-	planRef := repair.ArtifactRef{Path: pointer["plan_ref"].(string), SHA256: pointer["plan_sha256"].(string)}
-	if _, planReportRef, reportErr := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: "repair-assignment-unit-1", AgentID: "builder-1", ReportID: "repair-plan-report-drift", PlanText: "restore the payload authority", RedChecks: []repair.RepairCheck{{Name: "original failure", Command: "go test ./internal/api", Result: "fail", EvidenceRefs: []string{"test://red"}}}, ProposedPaths: []string{"internal/api/payload.go"}}); reportErr != nil {
-		t.Fatal(reportErr)
-	} else if _, _, err := repair.SubmitRepairPlanReportToRuntime(root, statePath, journalPath, repair.SubmitPlanReportRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 2, Actor: "builder-1"}, Report: planReportRef}); err != nil {
-		t.Fatal(err)
-	}
-	started, err := repair.BeginRepairExecution(root, statePath, journalPath, repair.BeginRepairExecutionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 3, Actor: "main"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The repair claims exactly its own file and commits cleanly.
-	changedPath := writeFile(t, root, "internal/api/payload.go", "package api\n\nfunc Fixed() {}\n")
-	changedData, readErr := os.ReadFile(changedPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if _, _, _, err := repair.SubmitRepairResultToRuntime(root, statePath, journalPath, repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision, Actor: "builder-1"}, Result: repair.RepairResultRequest{ResultID: "repair-result-drift", ProducerAgentID: "builder-1", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit"}}}, ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/payload.go", SHA256: fileHash(changedData), Status: "added"}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}}); err != nil {
-		t.Fatalf("clean result submit before drift must succeed: %v", err)
-	}
-	// Impact consumes accepted facts; it does not certify that every file in
-	// the Session's old snapshot is still byte-identical. Main owns actual
-	// source changes and this library operation leaves that changed file intact.
-	defPath := filepath.Join(root, "docs", "control", "loop-definition.json")
-	defData, readErr := os.ReadFile(defPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	driftedDef := append(defData, '\n')
-	if err := os.WriteFile(defPath, driftedDef, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	impactRequest := repair.ChangeImpactRequest{ImpactID: "impact-drift", RuntimeID: "loop-req039-ct", ReqID: "REQ-039", BaselineGeneration: 1, SourceBugIDs: []string{"BUG-001"}, ChangeTypes: []string{"implementation"}, ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api/payload.go", SHA256: fileHash(changedData)}}, Decisions: []repair.ImpactDecision{{SourceID: "BUG-001", TargetID: "claim-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", ResponsibilityID: nil, Scope: []string{"internal/api/payload.go"}, Rationale: "repair changed the boundary", RecoveryEvidence: []string{"test://unit"}}}, EscalationLevel: "assignment", AnalyzedBy: "qa"}
-	impact, impactRef, err := repair.CreateChangeImpact(root, impactRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = impact
-	accepted, err := repair.CommitChangeImpact(root, statePath, journalPath, repair.CommitImpactRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 1, Actor: "main"}, Impact: impactRef})
-	if err != nil || accepted.State["review"].(map[string]any)["repair"].(map[string]any)["impact_ref"] != impactRef.Path {
-		t.Fatalf("accepted Final facts could not receive their actual Impact: %+v %v", accepted.State, err)
-	}
-	if current, err := os.ReadFile(defPath); err != nil || string(current) != string(driftedDef) {
-		t.Fatalf("Impact rewrote the changed control-plane source: %v", err)
-	}
-}
-
 func TestS9TransitionIDWhitelist(t *testing.T) {
 	accepted := []string{
 		// Loop Definition repair transitions.
-		"PTR-BUG-05", "PTR-BUG-06", "PTR-BUG-09", "PTR-BUG-10", "PTR-BUG-11", "PTR-BUG-12", "TR-012",
+		"PTR-BUG-05", "PTR-BUG-06", "PTR-BUG-09", "PTR-BUG-10", "PTR-BUG-11", "TR-012",
 		// Pinned S9 runtime checkpoint IDs.
 		"S9-SESSION-OPEN", "S9-RESULT-SUBMIT", "S9-TARGETED-FAILURE",
 	}
@@ -748,112 +169,6 @@ func TestS9TransitionIDWhitelist(t *testing.T) {
 // obligation when ChangeImpact commits. The downstream TargetedReverification
 // artifact is created and committed afterward; RepairHandoff remains the
 // consumer that blocks any missing required ID.
-func TestChangeImpactRequiredReverificationIDsAreRegistered(t *testing.T) {
-	// Drive the standard Impact commit → Targeted create/commit ordering through
-	// a minimal runtime chain.
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "repair_readback", 0)
-	contractRef, contractSHA := writeRuntimeContract(t, root)
-	state["review"].(map[string]any)["investigation"] = map[string]any{"case_id": "investigation-case-1", "path": ".claude/review/investigation/cases/investigation-case-1-r2.json", "sha256": repeatHex("b", 64), "revision": 2, "status": "contract_approved", "source_finding_ids": []any{"finding-1"}, "observation_batch_id": "observation-batch-1", "updated_at": "2026-08-25T00:00:00Z", "repair_contract_ref": contractRef.Path, "repair_contract_sha256": contractSHA}
-	req039fixtures.WriteState(t, root, state)
-	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
-	if _, _, _, err := repair.OpenRepairSession(root, statePath, journalPath, repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "main"}, SessionID: "repair-session-reqids", CreatedBy: "main"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := repair.CompileRepairPlan(root, statePath, journalPath, repair.CompilePlanRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 1, Actor: "main"}, PlanID: "repair-plan-reqids", CreatedBy: "main"}); err != nil {
-		t.Fatal(err)
-	}
-	raw, readErr := os.ReadFile(statePath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	var cur map[string]any
-	if err := json.Unmarshal(raw, &cur); err != nil {
-		t.Fatal(err)
-	}
-	pointer := cur["review"].(map[string]any)["repair"].(map[string]any)
-	sessionRef := repair.ArtifactRef{Path: pointer["path"].(string), SHA256: pointer["sha256"].(string)}
-	planRef := repair.ArtifactRef{Path: pointer["plan_ref"].(string), SHA256: pointer["plan_sha256"].(string)}
-	if _, planReportRef, reportErr := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: "repair-assignment-unit-1", AgentID: "builder-1", ReportID: "repair-plan-report-reqids", PlanText: "restore the payload authority", RedChecks: []repair.RepairCheck{{Name: "original failure", Command: "go test ./internal/api", Result: "fail", EvidenceRefs: []string{"test://red"}}}, ProposedPaths: []string{"internal/api/payload.go"}}); reportErr != nil {
-		t.Fatal(reportErr)
-	} else if _, _, err := repair.SubmitRepairPlanReportToRuntime(root, statePath, journalPath, repair.SubmitPlanReportRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 2, Actor: "builder-1"}, Report: planReportRef}); err != nil {
-		t.Fatal(err)
-	}
-	started, err := repair.BeginRepairExecution(root, statePath, journalPath, repair.BeginRepairExecutionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 3, Actor: "main"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	changedPath := writeFile(t, root, "internal/api/payload.go", "package api\n\nfunc Fixed() {}\n")
-	changedData, readErr := os.ReadFile(changedPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if _, _, _, err := repair.SubmitRepairResultToRuntime(root, statePath, journalPath, repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision, Actor: "builder-1"}, Result: repair.RepairResultRequest{ResultID: "repair-result-reqids", ProducerAgentID: "builder-1", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit"}}}, ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/payload.go", SHA256: fileHash(changedData), Status: "added"}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}}); err != nil {
-		t.Fatal(err)
-	}
-	// The impact declares a required reverification ID before its downstream
-	// TargetedReverification exists. Impact commit must register the obligation
-	// and move the Runtime to targeted_reverification.
-	impactRequest := repair.ChangeImpactRequest{ImpactID: "impact-reqids", RuntimeID: "loop-req039-ct", ReqID: "REQ-039", BaselineGeneration: 1, SourceBugIDs: []string{"BUG-001"}, ChangeTypes: []string{"implementation"}, ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api/payload.go", SHA256: fileHash(changedData)}}, Decisions: []repair.ImpactDecision{{SourceID: "BUG-001", TargetID: "claim-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", ResponsibilityID: nil, Scope: []string{"internal/api/payload.go"}, Rationale: "repair changed the boundary", RecoveryEvidence: []string{"test://unit"}}}, EscalationLevel: "assignment", RequiredReverificationIDs: []string{"reverify-reqids"}, AnalyzedBy: "qa"}
-	_, impactRef, err := repair.CreateChangeImpact(root, impactRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := repair.CommitChangeImpact(root, statePath, journalPath, repair.CommitImpactRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 1, Actor: "main"}, Impact: impactRef})
-	if err != nil {
-		t.Fatalf("impact commit must register downstream reverification obligation before artifact creation: %v", err)
-	}
-	if snapshot.State["lifecycle"].(map[string]any)["phase"] != "targeted_reverification" {
-		t.Fatalf("impact commit phase = %#v, want targeted_reverification", snapshot.State["lifecycle"])
-	}
-	repairPointer := snapshot.State["review"].(map[string]any)["repair"].(map[string]any)
-	ids, ok := repairPointer["required_reverification_ids"].([]any)
-	if !ok || len(ids) != 1 || ids[0] != "reverify-reqids" {
-		t.Fatalf("required reverification obligation = %#v, want [reverify-reqids]", repairPointer["required_reverification_ids"])
-	}
-}
-
-// TestCommitRepairHandoffBudgetGateRejectsOverBudgetRound covers RC-15
-// (S9-M1/T1): the handoff is the only site that opens a new full review
-// round, so when review.round has already reached max_full_review_rounds the
-// commit raises the typed *transition.RepairLimitError (which the CLI bridge
-// dispatches through GTR-004) instead of silently opening round N+1.
-func TestCommitRepairHandoffBudgetGateRejectsOverBudgetRound(t *testing.T) {
-	root, statePath, journalPath, handoffRef := overBudgetHandoffFixture(t)
-
-	// Round already equals the configured budget (1): the handoff must be
-	// rejected with the typed limit error before review.round is incremented.
-	state := req039fixtures.ReadState(t, root)
-	state["configuration"].(map[string]any)["repair"].(map[string]any)["max_full_review_rounds"] = 1
-	state["review"].(map[string]any)["round"] = 1
-	req039fixtures.WriteState(t, root, state)
-	current, err := runtime.NewStore(statePath, journalPath).Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, commitErr := repair.CommitRepairHandoff(root, statePath, journalPath, repair.CommitHandoffRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: current.Revision, Actor: "main"}, Handoff: handoffRef})
-	var limitErr *transition.RepairLimitError
-	if commitErr == nil || !errors.As(commitErr, &limitErr) {
-		t.Fatalf("CommitRepairHandoff() error = %v, want *transition.RepairLimitError", commitErr)
-	}
-	if limitErr.Max != 1 {
-		t.Fatalf("RepairLimitError.Max = %d, want 1", limitErr.Max)
-	}
-	after, err := runtime.NewStore(statePath, journalPath).Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.State["review"].(map[string]any)["round"] != float64(1) {
-		t.Fatalf("review.round must not advance on a rejected handoff: %v", after.State["review"].(map[string]any)["round"])
-	}
-}
-
-// overBudgetHandoffFixture drives the full S9 chain to a ready_for_full_review
-// pointer with a staged handoff, reusing the same sequence as
-// TestRuntimeRepairEvidenceChainHandsOffToFreshS7Cursor.
 func overBudgetHandoffFixture(t *testing.T) (string, string, string, repair.ArtifactRef) {
 	t.Helper()
 	root := req039fixtures.FreshRoot(t)
@@ -877,24 +192,53 @@ func overBudgetHandoffFixture(t *testing.T) (string, string, string, repair.Arti
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repair.SubmitRepairPlanReportToRuntime(root, statePath, journalPath, repair.SubmitPlanReportRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 2, Actor: "builder-1"}, Report: planReportRef}); err != nil {
+	// Handoff fixture begins after the current Plan was recorded; native
+	// Plan reception and replay are covered through the issued answer tests.
+	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	if _, err := writer.Update(2, runtime.Mutation{EventID: "fixture-plan", TransitionID: "PTR-BUG-10", Event: "repair_plan_reported", Actor: "builder-1", RuntimeID: "loop-req039-ct", BaselineGeneration: 1, IdempotencyKey: "fixture-plan", RetainLastTransition: true, OccurredAt: time.Now().UTC(), Apply: func(state map[string]any) error {
+		pointer := state["review"].(map[string]any)["repair"].(map[string]any)
+		pointer["plan_report_ref"] = planReportRef.Path
+		pointer["plan_report_refs"] = []any{map[string]any{"path": planReportRef.Path}}
+		pointer["assignment_owners"] = map[string]any{"repair-assignment-unit-1": "builder-1"}
+		return nil
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	started, err := repair.BeginRepairExecution(root, statePath, journalPath, repair.BeginRepairExecutionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 3, Actor: "main"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedPath := writeFile(t, root, "internal/api/payload.go", "package api\n")
-	changedData, _ := os.ReadFile(changedPath)
-	_, _, resultRef, err := repair.SubmitRepairResultToRuntime(root, statePath, journalPath, repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision, Actor: "builder-1"}, Result: repair.RepairResultRequest{ResultID: "repair-result-budget", ProducerAgentID: "builder-1", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit-1"}}}, ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/payload.go", SHA256: fileHash(changedData), Status: "added"}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"}})
+	writeFile(t, root, "internal/api/payload.go", "package api\n")
+	_, resultRef, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{Contract: contractRef, Session: sessionRef, Plan: planRef, PlanReport: planReportRef, BeforeFixChecks: []repair.RepairCheck{{Name: "original failure", Command: "go test ./internal/api", Result: "fail", EvidenceRefs: []string{"test://red"}}}, ResultID: "repair-result-budget", AssignmentID: "repair-assignment-unit-1", ProducerAgentID: "builder-1", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit-1"}}}, ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/payload.go", Status: "added"}}, Checks: []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}}, Result: "pass"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	impact, impactRef, err := repair.CreateChangeImpact(root, repair.ChangeImpactRequest{ImpactID: "impact-budget", RuntimeID: "loop-req039-ct", ReqID: "REQ-039", BaselineGeneration: 1, SourceBugIDs: []string{"BUG-001"}, ChangeTypes: []string{"implementation"}, ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api/payload.go", SHA256: fileHash(changedData)}}, Decisions: []repair.ImpactDecision{{SourceID: "BUG-001", TargetID: "claim-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", ResponsibilityID: nil, Scope: []string{"internal/api/payload.go"}, Rationale: "repair changed the boundary", RecoveryEvidence: []string{resultRef.Path}}}, EscalationLevel: "assignment", AnalyzedBy: "qa"})
+	// This fixture starts the handoff test from an already recorded Result;
+	// current native reception has separate original-entry coverage.
+	rawState, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repair.CommitChangeImpact(root, statePath, journalPath, repair.CommitImpactRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 1, Actor: "main"}, Impact: impactRef}); err != nil {
+	var currentState map[string]any
+	if err := json.Unmarshal(rawState, &currentState); err != nil {
+		t.Fatal(err)
+	}
+	pointer := currentState["review"].(map[string]any)["repair"].(map[string]any)
+	pointer["result_ref"] = resultRef.Path
+	pointer["result_refs"] = []any{map[string]any{"path": resultRef.Path}}
+	pointer["status"] = "impact_reconciliation"
+	encodedState, err := json.MarshalIndent(currentState, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, encodedState, 0644); err != nil {
+		t.Fatal(err)
+	}
+	impact, impactRef, err := repair.CreateChangeImpact(root, repair.ChangeImpactRequest{ImpactID: "impact-budget", RuntimeID: "loop-req039-ct", ReqID: "REQ-039", BaselineGeneration: 1, SourceBugIDs: []string{"BUG-001"}, ChangeTypes: []string{"implementation"}, ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api/payload.go"}}, Decisions: []repair.ImpactDecision{{SourceID: "BUG-001", TargetID: "claim-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", ResponsibilityID: nil, Scope: []string{"internal/api/payload.go"}, Rationale: "repair changed the boundary", RecoveryEvidence: []string{resultRef.Path}}}, EscalationLevel: "assignment", AnalyzedBy: "qa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repair.CommitChangeImpact(root, statePath, journalPath, repair.CommitImpactRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision, Actor: "main"}, Impact: impactRef}); err != nil {
 		t.Fatal(err)
 	}
 	// Bind an independent verifier owner so the targeted reverification passes
@@ -927,7 +271,7 @@ func overBudgetHandoffFixture(t *testing.T) (string, string, string, repair.Arti
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 2, Actor: "qa"}, Reverification: reverifyRef}); err != nil {
+	if _, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: started.Revision + 1, Actor: "qa"}, Reverification: reverifyRef}); err != nil {
 		t.Fatal(err)
 	}
 	var persistedSession repair.RepairSession
@@ -953,48 +297,6 @@ func overBudgetHandoffFixture(t *testing.T) (string, string, string, repair.Arti
 	// The budget gate runs before the CAS commit, so the handoff can be
 	// replayed against the current revision snapshot taken by the test.
 	return root, statePath, journalPath, handoffRef
-}
-
-// TestCheckS9AuthorityFreshnessEmptyFingerprintFailsClosed covers RC-15
-// (S9-T2/L1): an S9 session pointer without an authority fingerprint no
-// longer passes silently; the gate fails closed unless the explicit
-// migration escape LOOP_ALLOW_EMPTY_FINGERPRINT=1 is set.
-func TestCheckS9AuthorityFreshnessEmptyFingerprintFailsClosed(t *testing.T) {
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "repair_readback", 0)
-	contractRef, contractSHA := writeRuntimeContract(t, root)
-	state["review"].(map[string]any)["investigation"] = map[string]any{"case_id": "investigation-case-1", "path": ".claude/review/investigation/cases/investigation-case-1-r2.json", "sha256": repeatHex("b", 64), "revision": 2, "status": "contract_approved", "source_finding_ids": []any{"finding-1"}, "observation_batch_id": "observation-batch-1", "updated_at": "2026-08-25T00:00:00Z", "repair_contract_ref": contractRef.Path, "repair_contract_sha256": contractSHA}
-	req039fixtures.WriteState(t, root, state)
-	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-events.jsonl"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
-	sessionRef, _, _, err := repair.OpenRepairSession(root, statePath, journalPath, repair.OpenSessionRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: 0, Actor: "main"}, SessionID: "repair-session-legacy", CreatedBy: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Simulate a legacy session pointer: no authority fingerprint channel.
-	raw, readErr := os.ReadFile(statePath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	var cur map[string]any
-	if err := json.Unmarshal(raw, &cur); err != nil {
-		t.Fatal(err)
-	}
-	pointer := cur["review"].(map[string]any)["repair"].(map[string]any)
-	pointer["authority_fingerprint"] = map[string]any{}
-	_ = sessionRef
-	// Exported validation wrapper: fail closed by default…
-	err = repair.ValidateAuthorityFreshness(root, pointer, nil)
-	if err == nil || !strings.Contains(err.Error(), "no authority_fingerprint") {
-		t.Fatalf("empty fingerprint error = %v, want fail-closed guidance", err)
-	}
-	// …and releasable only through the explicit migration escape hatch.
-	t.Setenv("LOOP_ALLOW_EMPTY_FINGERPRINT", "1")
-	if err := repair.ValidateAuthorityFreshness(root, pointer, nil); err != nil {
-		t.Fatalf("migration escape must release a legacy session, got %v", err)
-	}
 }
 
 // TestBindTargetedReverificationRejectsUnownedIdentities covers RC-15

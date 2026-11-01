@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"reflect"
 	"sort"
 
 	"github.com/entroforge/go-system-builder/internal/packetbody"
@@ -117,10 +116,6 @@ func decodeReviewResultPackets(ctx context.Context, state map[string]any) ([]wor
 		if packet.ID != id {
 			return nil, fmt.Errorf("S7 ReviewResult packet key differs from its row ID")
 		}
-		rebuilt, err := workpacket.RebuildReviewResult(packet)
-		if err != nil || !reflect.DeepEqual(rebuilt, packet) {
-			return nil, fmt.Errorf("S7 ReviewResult packet %s differs from its canonical rebuild", id)
-		}
 		packets = append(packets, packet)
 	}
 	if len(packets) > 0 && !PacketEnabled(state) {
@@ -162,6 +157,8 @@ type ReviewResultPacketIndex struct {
 	Binding    workpacket.ReviewResultBinding
 	ViewPath   string
 	AnswerPath string
+	// Reception is a read-only snapshot projection, never packet authority.
+	Reception map[string]any
 }
 
 // ProjectCurrentReviewResultPacketIndex projects already known Runtime facts
@@ -198,11 +195,11 @@ func currentReviewResultIndexedRows(ctx context.Context, state map[string]any, o
 		return nil, fmt.Errorf("current ReviewPlan pointer is unavailable")
 	}
 	reviewState, _ := state["review"].(map[string]any)
-	round, roundErr := integerField(reviewState, "round")
+	active := reviewmeta.FromReview(reviewState)
 	baseline, _ := state["baseline"].(map[string]any)
 	generation, generationErr := integerField(baseline, "generation")
 	runtimeID := stringValue(state["runtime_id"])
-	if roundErr != nil || generationErr != nil || round < 1 || generation < 1 || runtimeID == "" || round != ptr.ReviewRound {
+	if generationErr != nil || generation < 1 || runtimeID == "" || (active.PlanID != "" && active.PlanID != ptr.PlanID) {
 		return nil, fmt.Errorf("current ReviewPlan Runtime tuple is incomplete")
 	}
 	assignments, _ := reviewState["assignments"].(map[string]any)
@@ -219,9 +216,8 @@ func currentReviewResultIndexedRows(ctx context.Context, state map[string]any, o
 		binding := packet.Binding
 		if binding.RuntimeID != runtimeID || binding.BaselineGeneration != generation ||
 			binding.ReviewPlanID != ptr.PlanID || binding.ReviewPlanRef != ptr.Path ||
-			binding.ReviewPlanSHA256 != ptr.SHA256 || binding.ReviewPlanRevision != ptr.Revision ||
-			binding.ReviewRound != ptr.ReviewRound || binding.ReviewRound != round ||
-			(binding.VerificationArtifactDigest != nil && *binding.VerificationArtifactDigest != ptr.VerificationArtifactDigest) {
+			binding.ReviewPlanRevision != ptr.Revision ||
+			(active.PlanID != "" && binding.ReviewPlanID != active.PlanID) {
 			continue
 		}
 		row, _ := assignments[binding.AssignmentID].(map[string]any)
@@ -261,13 +257,12 @@ func currentReviewResultIndexedRows(ctx context.Context, state map[string]any, o
 }
 
 func decodeReviewResultPacket(row map[string]any) (workpacket.ReviewResultPacket, error) {
-	data, err := json.Marshal(row)
+	data, err := json.Marshal(packetbody.Immutable(row))
 	if err != nil {
 		return workpacket.ReviewResultPacket{}, err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	var packet workpacket.ReviewResultPacket
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(&packet); err != nil {
 		return workpacket.ReviewResultPacket{}, err
 	}
@@ -397,7 +392,7 @@ func ReviewResultPacketSlotTakenContext(ctx context.Context, state map[string]an
 	}
 	for _, row := range rows {
 		b := row.header.Binding
-		if b.RuntimeID != binding.RuntimeID || b.BaselineGeneration != binding.BaselineGeneration || b.ReviewPlanID != binding.ReviewPlanID || b.ReviewPlanRevision != binding.ReviewPlanRevision || b.ReviewRound != binding.ReviewRound || b.AssignmentID != binding.AssignmentID {
+		if b.RuntimeID != binding.RuntimeID || b.BaselineGeneration != binding.BaselineGeneration || b.ReviewPlanID != binding.ReviewPlanID || b.ReviewPlanRevision != binding.ReviewPlanRevision || b.AssignmentID != binding.AssignmentID {
 			continue
 		}
 		if _, err := canonicalReviewResultRowContext(ctx, row.row); err != nil {

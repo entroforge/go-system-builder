@@ -59,7 +59,7 @@ func nativeExecutionMainOutput(t *testing.T, root, brief string, response map[st
 func TestHandoffReviewAsyncStartMustNotRequestReceptionRepair(t *testing.T) {
 	root, _, plan, _, _ := nativeS9WorkerFixture(t)
 	before := repairDispatchRuntimeBytes(t, root)
-	brief, _, _ := nativeS9Paths(plan)
+	brief := nativeS9BriefPath(plan)
 	for _, response := range []map[string]any{{"status": "async_launched", "isAsync": true}, {"status": "async_launched"}, nil} {
 		text := nativeExecutionMainOutput(t, root, filepath.Join(root, brief), response)
 		for _, bad := range []string{"last Stop diagnostic", "interrupted consumer transaction", "runtime stage-answer consume", "restores sources/prerequisites"} {
@@ -77,7 +77,7 @@ func TestHandoffReviewAsyncStartMustNotRequestReceptionRepair(t *testing.T) {
 func TestNativeExecutionLaunchPreservesOriginalPartialReceipt(t *testing.T) {
 	root, _, plan, _, _ := s9HandoffMissingCandidate(t)
 	before := repairDispatchRuntimeBytes(t, root)
-	brief, _, _ := nativeS9Paths(plan)
+	brief := nativeS9BriefPath(plan)
 	text := nativeExecutionMainOutput(t, root, filepath.Join(root, brief), map[string]any{"status": "async_launched", "isAsync": true})
 	for _, want := range []string{"PlanReport receipt is accepted", "Consumer diagnostic", "launch acknowledgement"} {
 		if !strings.Contains(text, want) {

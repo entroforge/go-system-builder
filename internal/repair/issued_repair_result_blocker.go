@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 // registered Worker source. AuthorizeSource is retained for request compatibility and is not called.
 // The current questionnaire and execution attempt locate the answer.
 type AcceptIssuedRepairResultBlockerRequest struct {
+	AnswerBytes      []byte `json:"-"`
 	ExpectedRevision int
 	PacketID         string
 	AnswerPath       string
@@ -89,9 +89,6 @@ func PrepareIssuedRepairResultBlocker(
 		return nil, nil, err
 	}
 	if accepted {
-		if err := verifyAcceptedBlockerBytes(ctx, root, snapshot.State, packet, existing, req.SourceRoot, "", existing.Artifact.SubmittedAnswer); err != nil {
-			return nil, nil, err
-		}
 		return nil, &existing, nil
 	}
 	if req.ExpectedRevision < 0 || req.ExpectedRevision != snapshot.Revision {
@@ -104,30 +101,34 @@ func PrepareIssuedRepairResultBlocker(
 		return nil, nil, errors.New("S9 blocker requires the exact registered Worker execution root")
 	}
 
-	execution, head, err := verifyIssuedRepairResultBlockerSource(ctx, root, snapshot.State, packet, req.SourceRoot, "")
+	execution, err := verifyIssuedRepairResultBlockerSource(ctx, root, snapshot.State, packet, req.SourceRoot)
 	if err != nil {
 		return nil, nil, err
 	}
-	head, _ = workspace.Git(ctx, execution.Path, "rev-parse", "HEAD")
-	answer, answerSHA, err := readIssuedRepairResultBlockerAnswer(req.SourceRoot, packet)
+	var answer json.RawMessage
+	if req.AnswerBytes != nil {
+		var problems []workpacket.FieldError
+		answer, problems = workpacket.ValidateRepairResultAnswer(packet, req.AnswerBytes)
+		if len(problems) > 0 {
+			return nil, nil, &workpacket.AnswerError{Label: "S9 Result", Fields: problems}
+		}
+	} else {
+		answer, err = readIssuedRepairResultBlockerAnswer(req.SourceRoot, packet)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
 	issueAt := time.Now().UTC()
-	packetSHA, err := workpacket.RepairResultPacketDigest(packet)
-	if err != nil {
-		return nil, nil, err
-	}
 	manifestAssignment, err := blockerManifestAssignment(packet)
 	if err != nil {
 		return nil, nil, err
 	}
 	b := packet.Binding.Sources
-	base := path.Join(".claude/evidence", b.RuntimeID, fmt.Sprintf("g%d", b.BaselineGeneration), "S9")
+	base := s9PacketEvidenceDirectory(packet.ID)
 	message := map[string]any{
 		"schema_version":       "1.0.0",
 		"message_type":         "blocker_report",
-		"message_id":           blockerMessageID(packet.ID, answerSHA),
+		"message_id":           blockerMessageID(packet.ID),
 		"correlation_id":       blockerCorrelationID(packet.ID),
 		"runtime_id":           b.RuntimeID,
 		"agent_id":             b.OwnerAgentID,
@@ -137,23 +138,22 @@ func PrepareIssuedRepairResultBlocker(
 		"team_id":              b.TeamID,
 		"occurred_at":          issueAt.UTC().Format(time.RFC3339Nano),
 		"body":                 "S9 issued RepairResult answer reports a blocker; the complete professional answer is preserved with this message.",
-		"s9_blocker":           map[string]any{"packet_id": packet.ID, "packet_sha256": packetSHA, "answer_path": packet.AnswerPath, "answer_sha256": answerSHA},
+		"s9_blocker":           map[string]any{"packet_id": packet.ID, "answer_path": packet.AnswerPath},
 	}
-	messageRef, messageBytes, err := writeBlockerImmutable(root, path.Join(base, "blocker-messages", packet.ID), "agent-message.schema.json", message)
+	messageRef, messageBytes, err := writeBlockerImmutable(root, path.Join(base, "blocker-messages"), "agent-message.schema.json", message)
 	if err != nil {
 		return nil, nil, err
 	}
 	artifact := runtimepkg.RepairResultBlockerArtifact{
 		Contract: "s9-repair-result-blocker-v1", SchemaVersion: "1.0.0",
-		PacketID: packet.ID, PacketSHA256: packetSHA, IssuanceEventID: packet.IssuanceEventID,
+		PacketID: packet.ID, IssuanceEventID: packet.IssuanceEventID,
 		Binding: packet.Binding, ExecutionAssignmentID: execution.AssignmentID,
 		ExecutionGeneration: execution.Generation, ExecutionRoot: execution.Path,
-		PlatformSessionID: execution.PlatformSessionID, BaseCommit: execution.BaseCommit,
-		SourceHead: head, AnswerPath: packet.AnswerPath,
-		SubmittedAnswer: append(json.RawMessage(nil), answer...), AnswerSHA256: answerSHA,
-		MessageRef: messageRef.Path, MessageSHA256: messageRef.SHA256,
+		PlatformSessionID: execution.PlatformSessionID, AnswerPath: packet.AnswerPath,
+		SubmittedAnswer: append(json.RawMessage(nil), answer...),
+		MessageRef:      messageRef.Path,
 	}
-	artifactRef, artifactBytes, err := writeBlockerImmutable(root, path.Join(base, "blockers", packet.ID), "repair-result-blocker.schema.json", artifact)
+	artifactRef, artifactBytes, err := writeBlockerImmutable(root, path.Join(base, "blockers"), "repair-result-blocker.schema.json", artifact)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -199,7 +199,7 @@ func (capability *IssuedRepairResultBlockerCapability) ValidateLifecycleRequest(
 		return err
 	}
 	if !sameAbsolutePath(root, capability.mainRoot) || owner != capability.owner || event != "work_blocked" ||
-		!blockerRequestPathMatches(root, capability.messageRef, messagePath) || beforeRevision != capability.beforeRevision || generation != capability.generation {
+		!blockerRequestPathMatches(root, capability.messageRef, messagePath) || beforeRevision != capability.beforeRevision || generation < 1 {
 		return runtimepkg.ErrSubmissionConflict
 	}
 	return nil
@@ -219,10 +219,9 @@ func (capability *IssuedRepairResultBlockerCapability) AcceptedReplay(ctx contex
 		return false, err
 	}
 	if !sameAbsolutePath(root, capability.mainRoot) || owner != capability.owner || event != "work_blocked" ||
-		!blockerRequestPathMatches(root, capability.messageRef, messagePath) || receipt.ArtifactRef != capability.artifactRef.Path ||
+		!blockerRequestPathMatches(root, capability.messageRef, messagePath) ||
 		receipt.Artifact.ExecutionGeneration != capability.artifact.ExecutionGeneration ||
-		!sameAbsolutePath(receipt.Artifact.ExecutionRoot, capability.sourceRoot) ||
-		!bytesEqualRepairPlanReportAnswer(receipt.Artifact.SubmittedAnswer, capability.answer) {
+		!sameAbsolutePath(receipt.Artifact.ExecutionRoot, capability.sourceRoot) {
 		return false, runtimepkg.ErrSubmissionConflict
 	}
 	return true, nil
@@ -247,7 +246,7 @@ func (capability *IssuedRepairResultBlockerCapability) ApplyLifecycleCAS(
 		return errors.New("S9 blocker lifecycle Apply requires the original writer context")
 	}
 	if !sameAbsolutePath(root, capability.mainRoot) || owner != capability.owner || taskID != capability.taskID ||
-		beforeRevision != capability.beforeRevision || generation != capability.generation {
+		beforeRevision != capability.beforeRevision || generation < 1 {
 		return runtimepkg.ErrStaleRevision
 	}
 	if got, ok := state["revision"]; !ok || integerRepairResult(got) != beforeRevision {
@@ -266,22 +265,12 @@ func (capability *IssuedRepairResultBlockerCapability) ApplyLifecycleCAS(
 		stringField(pointer["plan_ref"]) != packet.Binding.Sources.PlanRef {
 		return errors.New("S9 blocker responsibility changed before recording")
 	}
-	execution, _, err := verifyIssuedRepairResultBlockerSource(ctx, root, state, packet, capability.sourceRoot, "")
+	execution, err := verifyIssuedRepairResultBlockerSource(ctx, root, state, packet, capability.sourceRoot)
 	if err != nil {
 		return err
 	}
-	if execution.AssignmentID != capability.artifact.ExecutionAssignmentID || execution.Generation != capability.artifact.ExecutionGeneration || execution.BaseCommit != capability.artifact.BaseCommit {
+	if execution.AssignmentID != capability.artifact.ExecutionAssignmentID || execution.Generation != capability.artifact.ExecutionGeneration {
 		return errors.New("S9 blocker execution attempt changed before recording")
-	}
-	if !reflect.DeepEqual(messageBytes, capability.messageBytes) {
-		return runtimepkg.ErrSubmissionConflict
-	}
-	answer, digest, err := readIssuedRepairResultBlockerAnswer(capability.sourceRoot, packet)
-	if err != nil {
-		return err
-	}
-	if digest != capability.artifact.AnswerSHA256 || !bytesEqualRepairPlanReportAnswer(answer, capability.answer) {
-		return runtimepkg.ErrSubmissionConflict
 	}
 	return appendRepairResultBlockerEvidence(state, packet, capability.artifactRef)
 }
@@ -290,36 +279,21 @@ func (capability *IssuedRepairResultBlockerCapability) validate() error {
 	if capability == nil || capability.packet.ID == "" || capability.owner == "" || capability.taskID == "" ||
 		capability.mainRoot == "" || capability.sourceRoot == "" ||
 		capability.messageRef == "" || len(capability.messageBytes) == 0 || len(capability.answer) == 0 ||
-		capability.artifactRef.Path == "" || capability.artifactRef.SHA256 == "" ||
+		capability.artifactRef.Path == "" ||
 		len(capability.artifactBytes) == 0 || capability.beforeRevision < 0 || capability.generation < 1 {
 		return errors.New("invalid or zero S9 RepairResult blocker capability")
 	}
 	return nil
 }
 
-func verifyAcceptedBlockerBytes(ctx context.Context, root string, state map[string]any, packet workpacket.RepairResultPacket, receipt runtimepkg.RepairResultBlockerReceipt, sourceRoot, expectedHead string, expectedAnswer json.RawMessage) error {
-	if receipt.Artifact.PacketID != packet.ID || receipt.Artifact.AnswerPath != packet.AnswerPath || !sameAbsolutePath(sourceRoot, receipt.Artifact.ExecutionRoot) {
-		return runtimepkg.ErrSubmissionConflict
-	}
-	execution, _, err := verifyIssuedRepairResultBlockerSource(ctx, root, state, packet, sourceRoot, "")
-	if err != nil || execution.AssignmentID != receipt.Artifact.ExecutionAssignmentID || execution.Generation != receipt.Artifact.ExecutionGeneration {
-		return runtimepkg.ErrSubmissionConflict
-	}
-	answer, answerSHA, err := readIssuedRepairResultBlockerAnswer(sourceRoot, packet)
-	if err != nil || answerSHA != receipt.Artifact.AnswerSHA256 || !bytesEqualRepairPlanReportAnswer(answer, expectedAnswer) || !bytesEqualRepairPlanReportAnswer(answer, receipt.Artifact.SubmittedAnswer) {
-		return runtimepkg.ErrSubmissionConflict
-	}
-	return nil
-}
-
-func verifyIssuedRepairResultBlockerSource(ctx context.Context, root string, state map[string]any, packet workpacket.RepairResultPacket, requestedRoot, expectedHead string) (workspace.Execution, string, error) {
+func verifyIssuedRepairResultBlockerSource(ctx context.Context, root string, state map[string]any, packet workpacket.RepairResultPacket, requestedRoot string) (workspace.Execution, error) {
 	raw, err := json.Marshal(state["workspace"])
 	if err != nil {
-		return workspace.Execution{}, "", err
+		return workspace.Execution{}, err
 	}
-	var registry workspace.ExecutionRegistry
-	if err := json.Unmarshal(raw, &registry); err != nil {
-		return workspace.Execution{}, "", err
+	registry, err := workspace.DecodeRegistry(raw)
+	if err != nil {
+		return workspace.Execution{}, err
 	}
 	b := packet.Binding.Sources
 	var selected *workspace.Execution
@@ -328,59 +302,50 @@ func verifyIssuedRepairResultBlockerSource(ctx context.Context, root string, sta
 			continue
 		}
 		if selected != nil {
-			return workspace.Execution{}, "", errors.New("S9 blocker has ambiguous registered work locations")
+			return workspace.Execution{}, errors.New("S9 blocker has ambiguous registered work locations")
 		}
 		copy := execution
 		selected = &copy
 	}
 	if selected == nil || selected.DeliveryRef != "" || selected.ReworkRef != packet.Binding.ReworkRef {
-		return workspace.Execution{}, "", errors.New("S9 blocker has no current ready workspace attempt")
+		return workspace.Execution{}, errors.New("S9 blocker has no current ready workspace attempt")
 	}
 	execution := *selected
 	if requestedRoot == "" || !sameAbsolutePath(requestedRoot, execution.Path) {
-		return workspace.Execution{}, "", errors.New("S9 blocker answer root differs from the current Worker attempt")
+		return workspace.Execution{}, errors.New("S9 blocker answer root differs from the current Worker attempt")
 	}
 	var frozen map[string]any
 	if err := json.Unmarshal(packet.Inputs.Execution, &frozen); err != nil || frozen == nil {
-		return workspace.Execution{}, "", errors.New("S9 blocker packet has an invalid frozen execution definition")
+		return workspace.Execution{}, errors.New("S9 blocker packet has an invalid frozen execution definition")
 	}
 	if frozen["assignment_id"] != execution.AssignmentID || execution.RuntimeID != packet.Binding.Sources.RuntimeID ||
 		execution.BaselineGeneration != packet.Binding.Sources.BaselineGeneration || execution.AgentID != packet.Binding.Sources.OwnerAgentID ||
-		frozen["base_commit"] != execution.BaseCommit || frozen["worktree_path"] != execution.Path ||
+		frozen["worktree_path"] != execution.Path ||
 		integerRepairResult(frozen["execution_generation"]) != execution.Generation {
-		return workspace.Execution{}, "", errors.New("S9 blocker current execution owner/base tuple differs from the frozen assignment")
+		return workspace.Execution{}, errors.New("S9 blocker current execution owner/base tuple differs from the frozen assignment")
 	}
-	// Explicit Main resolution retains its legacy source diagnostic. Normal
-	// blocker reception/progress never requests or depends on this proof.
-	if expectedHead != "" {
-		head, err := workspace.Git(ctx, execution.Path, "rev-parse", "HEAD")
-		if err != nil || head != expectedHead {
-			return workspace.Execution{}, "", errors.New("S9 resolution Worker HEAD differs from its recorded blocker")
-		}
-		return execution, head, nil
-	}
-	return execution, "", nil
+	return execution, nil
 }
 
-func readIssuedRepairResultBlockerAnswer(sourceRoot string, packet workpacket.RepairResultPacket) (json.RawMessage, string, error) {
+func readIssuedRepairResultBlockerAnswer(sourceRoot string, packet workpacket.RepairResultPacket) (json.RawMessage, error) {
 	data, err := workpacket.ReadFile(sourceRoot, packet.AnswerPath, repairResultAnswerLimit)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	answer, problems := workpacket.ValidateRepairResultAnswer(packet, data)
 	if len(problems) != 0 {
-		return nil, "", &workpacket.AnswerError{Label: "S9 blocker answer", Fields: problems}
+		return nil, &workpacket.AnswerError{Label: "S9 blocker answer", Fields: problems}
 	}
 	var professional workpacket.RepairResultProfessionalAnswer
 	if err := json.Unmarshal(answer, &professional); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	switch professional.Verdict {
 	case "blocked", "contract_conflict", "stale":
 	default:
-		return nil, "", fmt.Errorf("S9 blocker receipt only preserves blocked, contract_conflict, or stale professional verdicts")
+		return nil, fmt.Errorf("S9 blocker receipt only preserves blocked, contract_conflict, or stale professional verdicts")
 	}
-	return answer, workpacket.Digest(answer), nil
+	return answer, nil
 }
 
 func rejectRepairResultBlockerOutcome(root string, state map[string]any, packet workpacket.RepairResultPacket, owner string) error {
@@ -412,8 +377,8 @@ func appendRepairResultBlockerEvidence(state map[string]any, packet workpacket.R
 	}
 	b := packet.Binding.Sources
 	row := map[string]any{
-		"id": ref.Path, "kind": "repair_result_blocker", "path": ref.Path, "sha256": ref.SHA256,
-		"status": "valid", "baseline_generation": b.BaselineGeneration, "review_round": b.ReviewRound,
+		"id": ref.Path, "kind": "repair_result_blocker", "path": ref.Path,
+		"status": "valid", "baseline_generation": b.BaselineGeneration,
 		"produced_by": []any{b.OwnerAgentID}, "invalidated_by": nil, "invalidation_rule": nil,
 		"invalidation_reason": nil, "responsibility_id": "BUILD-WORK-PACKAGE",
 		"scope_refs": []any{packet.ID, b.RepairAssignmentID},
@@ -433,8 +398,8 @@ func blockerManifestAssignment(packet workpacket.RepairResultPacket) (map[string
 	return assignment, nil
 }
 
-func blockerMessageID(packetID, answerSHA string) string {
-	return "msg-s9-blocker-" + strings.TrimPrefix(packetID, "packet-") + "-" + answerSHA
+func blockerMessageID(packetID string) string {
+	return "msg-s9-blocker-" + strings.TrimPrefix(packetID, "packet-")
 }
 
 func blockerCorrelationID(packetID string) string {
@@ -456,6 +421,16 @@ func blockerRequestPathMatches(root, ref, supplied string) bool {
 	return filepath.Clean(got) == filepath.Clean(want)
 }
 
+func s9PacketEvidenceDirectory(packetID string) string {
+	parts := []string{".claude", "evidence", "s9", "p"}
+	for len(packetID) > 120 {
+		parts = append(parts, packetID[:120])
+		packetID = packetID[120:]
+	}
+	parts = append(parts, packetID)
+	return path.Join(parts...)
+}
+
 func writeBlockerImmutable(root, directory, schemaName string, document any) (ArtifactRef, []byte, error) {
 	data, err := canonicalJSON(document)
 	if err != nil {
@@ -465,13 +440,35 @@ func writeBlockerImmutable(root, directory, schemaName string, document any) (Ar
 	if schemaName == "agent-message.schema.json" {
 		limit = 1 << 20
 	}
-	ref := fileRef(path.Join(directory, sha256Bytes(data)+".json"), data)
-	stored, err := workpacket.PublishBounded(root, ref.Path, data, limit)
+	refPath, err := publishUniqueS9Evidence(root, directory, "blocker.json", data, limit)
 	if err != nil {
 		return ArtifactRef{}, nil, err
 	}
-	if !reflect.DeepEqual(stored, data) {
-		return ArtifactRef{}, nil, runtimepkg.ErrSubmissionConflict
+	return fileRef(refPath, data), data, nil
+}
+
+// The original lifecycle Writer records the returned path. An unknown occupied
+// path is neither read nor claimed, even when its contents happen to match.
+func publishUniqueS9Evidence(root, directory, name string, data []byte, limit int64) (string, error) {
+	parent, _, err := workpacket.OpenParent(root, ".claude/s9-evidence-root-probe", true)
+	if err != nil {
+		return "", err
 	}
-	return ref, stored, nil
+	if err := parent.Close(); err != nil {
+		return "", err
+	}
+	for attempt := 0; ; attempt++ {
+		targetDir := directory
+		if attempt > 0 {
+			targetDir = path.Join(".claude", fmt.Sprintf("evidence-alt-%d", attempt), strings.TrimPrefix(directory, ".claude/evidence/"))
+		}
+		candidate := path.Join(targetDir, name)
+		created, err := workpacket.PublishNewBounded(root, candidate, data, limit)
+		if err != nil {
+			return "", err
+		}
+		if created {
+			return candidate, nil
+		}
+	}
 }

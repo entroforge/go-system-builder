@@ -17,7 +17,7 @@ func TestDraftPlanNoUIDoesNotDecideGeneralBehaviorApplicability(t *testing.T) {
 	req["metadata"] = map[string]any{"ui_impact": "none"}
 	state["bound_req"] = req
 	putCaseScopeFile(t, root, "docs/design/prototypes/command/cases.json", `{"module":"command","cases":[{"id":"CASE-API-001","title":"command persists state","required":true,"browser_required":false}]}`)
-	plan, notes := DraftPlanForRoot(root, state, 1)
+	plan, notes := DraftPlanForRoot(root, state)
 	if plan == nil {
 		t.Fatalf("no draft: %v", notes)
 	}

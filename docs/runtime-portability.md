@@ -17,10 +17,9 @@ Recovery inspection/planning is separate from product implementation authority.
 ## Storage contract
 
 Merge packaging/project.gitattributes into a new project's attributes before
-binding a REQ. CRLF conversion changes SHA-256 even when displayed text is
-identical. REQ fingerprints retain raw-byte SHA-256, including for CRLF
-files bound by older versions; CRLF parsing does not normalize their identity. Existing locked evidence must not be renormalized silently: preserve
-bytes and use an approved recovery/migration with a recorded new baseline.
+binding a REQ. Preserve the actual original documents and evidence during a
+migration; historical REQ fingerprints are not a binding or recovery qualification.
+Do not claim to reconstruct missing historical content from a path or version.
 
 The active state and journal are one recovery unit. Never synchronize just
 `loop-state.json` through Git while leaving the journal local. A Git checkout
@@ -38,11 +37,12 @@ For a machine handoff, stop all writers and package a complete project
 checkpoint (including uncommitted source), excluding only reproducible caches
 and unrelated worktrees. Include state, journal and rotated segments, pending
 markers, archives, evidence/review/workgroup material, selected locked REQ,
-definition, policy, source commit/diff, binary version and a SHA-256 file
-manifest. A bundle must remain private if it includes private source/config.
+definition, policy, source changes and binary version. A bundle must remain
+private if it includes private source/config; do not create a fingerprint
+registry as a workflow prerequisite.
 
-On the destination, unpack into a new directory, verify every manifest hash,
-select the native binary, validate the state/journal pair and referenced
+On the destination, unpack into a new directory, select the native binary,
+inspect the state/journal pair and actual referenced
 evidence, and only then switch the active workspace. Never unpack over a live
 Runtime. Do not concatenate journals or merge Runtime JSON using Git. A
 missing/mismatched pair goes through `runtime recover inspect/plan/apply`,
@@ -54,7 +54,7 @@ procedure; an automated bundle CLI is not provided yet.
 1. Preserve damaged state/journal and all pending markers byte-for-byte.
 2. `runtime recover inspect --root <root> --req <explicit-locked-REQ>`.
 3. `runtime recover plan` with the same arguments. Review imports, source
-   conflicts, target cursor, lineage and candidate hashes.
+   conflicts, target cursor, lineage and actual candidate references.
 4. Apply the generated plan only with explicit operator approval. Existing
    recovery quarantines old bytes and uses a pending marker to resume an
    interrupted pair replacement. It is not a single filesystem transaction.

@@ -4,9 +4,6 @@
 package assignmentresult
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -79,7 +76,6 @@ type Draft struct {
 	AssignmentID             string               `json:"assignment_id"`
 	AssignmentRevision       int                  `json:"assignment_revision"`
 	AssignmentRecordContract string               `json:"assignment_record_contract"`
-	AssignmentRecordSHA256   string               `json:"assignment_record_sha256"`
 	AgentID                  string               `json:"agent_id"`
 	AgentDefinitionRef       string               `json:"agent_definition_ref"`
 	TaskID                   string               `json:"task_id"`
@@ -98,10 +94,6 @@ func DraftFromRecord(record assignmentrecord.Record) (Draft, error) {
 	if err := assignmentrecord.ValidateRecord(record); err != nil {
 		return Draft{}, fmt.Errorf("validate canonical Assignment Record: %w", err)
 	}
-	digest, err := record.Digest()
-	if err != nil {
-		return Draft{}, fmt.Errorf("digest canonical Assignment Record: %w", err)
-	}
 	return Draft{
 		SchemaVersion:            AnswerSchemaVersion,
 		MessageType:              CompletionMessage,
@@ -110,7 +102,6 @@ func DraftFromRecord(record assignmentrecord.Record) (Draft, error) {
 		AssignmentID:             record.AssignmentID,
 		AssignmentRevision:       record.Revision,
 		AssignmentRecordContract: record.Contract,
-		AssignmentRecordSHA256:   digest,
 		AgentID:                  record.OwnerAgentID,
 		AgentDefinitionRef:       record.AgentDefinition.Ref,
 		TaskID:                   record.Task.ID,
@@ -302,22 +293,6 @@ func ValidateAnswer(answer Answer, acceptedPlan []PlanAssertion) error {
 		remaining[pair]--
 	}
 	return nil
-}
-
-// AnswerDigest returns the SHA-256 of the deterministic JSON encoding of the
-// four professional fields only. It excludes the machine tuple and transport
-// envelope. The original CompleteTask Writer must validate the accepted PLAN
-// binding before accepting the answer and persist Record/Result revisions.
-func AnswerDigest(answer Answer) (string, error) {
-	if err := validateAnswerShape(answer); err != nil {
-		return "", err
-	}
-	data, err := json.Marshal(answer)
-	if err != nil {
-		return "", fmt.Errorf("marshal professional Answer: %w", err)
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 func validateAnswerShape(answer Answer) error {

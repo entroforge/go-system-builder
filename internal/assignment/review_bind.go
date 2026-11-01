@@ -34,7 +34,7 @@ func bindReviewPlanAssignments(root string, state map[string]any, value manifest
 	}
 	reviewMap, _ := state["review"].(map[string]any)
 	if reviewMap == nil {
-		return fmt.Errorf("runtime review section missing; register the ReviewPlan via `runtime review-plan` first")
+		return fmt.Errorf("runtime review section missing; complete and save the original ReviewPlan questionnaire")
 	}
 	plan, ptr, err := review.LoadPlan(root, state)
 	if err != nil {
@@ -49,9 +49,6 @@ func bindReviewPlanAssignments(root string, state map[string]any, value manifest
 		return fmt.Errorf("runtime review projection missing; re-register the ReviewPlan")
 	}
 
-	// A single binding evaluates the wave against its incoming snapshot;
-	// earlier rows in this same manifest must not rewrite that decision.
-	staticSettled := review.StaticClaimsSettled(state, plan)
 	for _, item := range value.Assignments {
 		row, _ := assignmentsProjection[item.AssignmentID].(map[string]any)
 		if row == nil {
@@ -70,16 +67,13 @@ func bindReviewPlanAssignments(root string, state map[string]any, value manifest
 		if status != "planned" && status != "blocked" {
 			return fmt.Errorf("assignment %s is already %s; one plan Assignment dispatches once", item.AssignmentID, status)
 		}
-		if status == "blocked" && !agentHasBlockerResolution(state, mapString(row["agent_id"])) {
-			return fmt.Errorf("assignment %s is blocked and cannot be dispatched until its Agent records the canonical blocker_resolved event", item.AssignmentID)
-		}
 		if len(item.ClaimIDs) == 0 {
 			return fmt.Errorf("assignment %s carries no claim_ids; the manifest must bind the exact Claim set from the ReviewPlan", item.AssignmentID)
 		}
 		if err := exactClaimSet(row["claim_ids"], item.ClaimIDs); err != nil {
 			return fmt.Errorf("assignment %s claim set mismatch: %w", item.AssignmentID, err)
 		}
-		conflict, err := reviewDispatchPrerequisite(state, plan, item.AssignmentID, staticSettled)
+		conflict, err := reviewDispatchPrerequisite(state, plan, item.AssignmentID)
 		if err != nil {
 			return err
 		}
@@ -113,26 +107,6 @@ func bindReviewPlanAssignments(root string, state map[string]any, value manifest
 		}
 	}
 	return nil
-}
-
-func agentHasBlockerResolution(state map[string]any, agentID string) bool {
-	if agentID == "" {
-		return false
-	}
-	entities, _ := state["entities"].(map[string]any)
-	agents, _ := entities["agents"].([]any)
-	for _, raw := range agents {
-		agent, _ := raw.(map[string]any)
-		if mapString(agent["id"]) == agentID && mapString(agent["blocker_resolved_ref"]) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func mapString(value any) string {
-	valueString, _ := value.(string)
-	return valueString
 }
 
 // findResourceLockConflict returns the sorted, comma-joined set of locks

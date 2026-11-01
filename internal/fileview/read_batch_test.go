@@ -40,7 +40,7 @@ func pinnedReadFixture(t testing.TB, size int) *View {
 	return view
 }
 
-func TestConcurrentColdPinnedReadStartsOnlyOneGitCommandPerObject(t *testing.T) {
+func TestConcurrentImmutableReadJoinsSameInFlightGitCommand(t *testing.T) {
 	view := pinnedReadFixture(t, 1)
 	ctx, timings := metrics.WithCallTimings(WithReadCache(context.Background()))
 	view = view.WithContext(ctx)
@@ -51,7 +51,7 @@ func TestConcurrentColdPinnedReadStartsOnlyOneGitCommandPerObject(t *testing.T) 
 		go func() {
 			defer workers.Done()
 			<-start
-			data, err := view.ReadFile("source-00")
+			data, err := immutableGit(ctx, view.Root, "show", "refs/heads/dev:source-00")
 			if err != nil || string(data) != "bytes-00" {
 				t.Errorf("read: %q %v", data, err)
 			}
@@ -62,15 +62,15 @@ func TestConcurrentColdPinnedReadStartsOnlyOneGitCommandPerObject(t *testing.T) 
 	}
 	close(start)
 	workers.Wait()
-	if count := timings.Snapshot()["source/git"].Count; count != 2 {
-		t.Fatalf("cold concurrent source started %d Git processes, want 2", count)
+	if count := timings.Snapshot()["source/git"].Count; count != 1 {
+		t.Fatalf("cold concurrent source started %d Git processes, want 1", count)
 	}
 	for range 2 {
 		if _, err := immutableGit(ctx, view.Root, "cat-file", "blob", "missing-object"); err == nil {
 			t.Fatal("missing object accepted")
 		}
 	}
-	if count := timings.Snapshot()["source/git"].Count; count != 4 {
+	if count := timings.Snapshot()["source/git"].Count; count != 3 {
 		t.Fatalf("failed object permanently cached: %d", count)
 	}
 }

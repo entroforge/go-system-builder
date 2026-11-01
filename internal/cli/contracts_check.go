@@ -9,7 +9,7 @@ import (
 )
 
 // runContracts exposes S3's mechanical close: token reconciliation, clause
-// cells, and the fingerprint column against disk. The core lives in
+// cells and relevant professional references. The core lives in
 // internal/semantic so doctor / validate --all run the same check.
 func runContracts(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "check" {
@@ -48,8 +48,8 @@ func runContracts(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "contracts check: %d problem(s) across %d contract(s) — fix the flagged cells and rerun\n", len(result.Problems), result.Contracts)
 		return 1
 	}
-	fmt.Fprintf(stdout, "contracts check: %d contract(s), %d token ref(s), %d clause cell(s), %d fingerprint(s) — all reconciled\n",
-		result.Contracts, result.TokenRefs, result.Clauses, result.Fingerprints)
+	fmt.Fprintf(stdout, "contracts check: %d contract(s), %d token ref(s), %d clause cell(s) — all reconciled\n",
+		result.Contracts, result.TokenRefs, result.Clauses)
 	fmt.Fprintln(stdout, "Clause scope: numbered declarations in each target's 本合同条款 column; S3/S5 must review promise semantics and coverage.")
 	return 0
 }

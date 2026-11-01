@@ -1,7 +1,6 @@
 package repair
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,7 +35,6 @@ type IssuedRepairResultResolutionCapability struct {
 	packet         workpacket.RepairResultPacket
 	blocker        runtimepkg.RepairResultBlockerReceipt
 	messageRef     string
-	messageSHA256  string
 	messageBytes   []byte
 	authoringPath  string
 	owner          string
@@ -147,9 +145,6 @@ func PrepareIssuedRepairResultResolution(
 		return nil, nil, err
 	}
 	if accepted {
-		if err := verifyExactRepairResultResolutionReplay(root, req.AuthoringPath, packet, existing); err != nil {
-			return nil, nil, err
-		}
 		return nil, &existing, nil
 	}
 	if req.ExpectedRevision < 0 || req.ExpectedRevision != snapshot.Revision {
@@ -200,13 +195,9 @@ func PrepareIssuedRepairResultResolution(
 	if err != nil {
 		return nil, nil, err
 	}
-	messageSHA := workpacket.Digest(storedBytes)
-	if messageSHA == "" {
-		return nil, nil, errors.New("S9 resolution immutable message has no digest")
-	}
 	binding := packet.Binding.Sources
 	capability := &IssuedRepairResultResolutionCapability{
-		packet: packet, blocker: blocker, messageRef: messageRef, messageSHA256: messageSHA,
+		packet: packet, blocker: blocker, messageRef: messageRef,
 		messageBytes: append([]byte(nil), storedBytes...), authoringPath: req.AuthoringPath,
 		owner: req.OwnerAgentID, taskID: binding.TaskID, mainRoot: root,
 		beforeRevision: snapshot.Revision, generation: binding.BaselineGeneration,
@@ -262,7 +253,7 @@ func (capability *IssuedRepairResultResolutionCapability) AcceptedReplay(ctx con
 	if err != nil || !found {
 		return false, err
 	}
-	if receipt.BlockerRef != capability.blocker.ArtifactRef || receipt.MessageRef != capability.messageRef {
+	if receipt.BlockerRef != capability.blocker.ArtifactRef {
 		return false, runtimepkg.ErrSubmissionConflict
 	}
 	return true, nil
@@ -299,9 +290,6 @@ func (capability *IssuedRepairResultResolutionCapability) ApplyLifecycleCAS(
 	if integerRepairResult(baseline["generation"]) != generation {
 		return errors.New("S9 resolution baseline generation changed before the original lifecycle CAS")
 	}
-	if !bytes.Equal(messageBytes, capability.messageBytes) {
-		return runtimepkg.ErrSubmissionConflict
-	}
 	packet := capability.packet
 	pointer := repairPointer(state)
 	if pointer == nil || stringField(pointer["session_id"]) != packet.Binding.Sources.SessionID || stringField(pointer["plan_ref"]) != packet.Binding.Sources.PlanRef {
@@ -315,21 +303,20 @@ func (capability *IssuedRepairResultResolutionCapability) ApplyLifecycleCAS(
 	if workstate.AgentActivity(agent) != "blocked" || stringField(agent["work_blocked_ref"]) != blocker.Artifact.MessageRef || stringField(agent["blocker_resolved_ref"]) != "" {
 		return runtimepkg.ErrSubmissionConflict
 	}
-	execution, _, err := verifyIssuedRepairResultBlockerSource(ctx, root, state, packet, blocker.Artifact.ExecutionRoot, "")
+	execution, err := verifyIssuedRepairResultBlockerSource(ctx, root, state, packet, blocker.Artifact.ExecutionRoot)
 	if err != nil {
 		return err
 	}
 	if execution.AssignmentID != blocker.Artifact.ExecutionAssignmentID || execution.Generation != blocker.Artifact.ExecutionGeneration {
 		return errors.New("S9 blocked execution attempt changed before recording the recovery decision")
 	}
-	return appendRepairResultResolutionEvidence(state, packet, blocker, ArtifactRef{Path: capability.messageRef, SHA256: capability.messageSHA256})
+	return appendRepairResultResolutionEvidence(state, packet, blocker, ArtifactRef{Path: capability.messageRef})
 }
 
 func (capability *IssuedRepairResultResolutionCapability) validate() error {
 	if capability == nil || capability.packet.ID == "" || capability.owner == "" || capability.taskID == "" ||
-		capability.mainRoot == "" || capability.messageRef == "" || capability.messageSHA256 == "" ||
-		len(capability.messageBytes) == 0 || capability.authoringPath == "" || capability.blocker.ArtifactRef == "" ||
-		capability.blocker.ArtifactSHA256 == "" || capability.beforeRevision < 0 || capability.generation < 1 {
+		capability.mainRoot == "" || capability.messageRef == "" ||
+		len(capability.messageBytes) == 0 || capability.authoringPath == "" || capability.blocker.ArtifactRef == "" || capability.beforeRevision < 0 || capability.generation < 1 {
 		return errors.New("invalid or zero S9 RepairResult resolution capability")
 	}
 	return nil
@@ -384,7 +371,7 @@ func validateCurrentRepairResultResolutionBlocker(
 	if pointer == nil || stringField(pointer["session_id"]) != packet.Binding.Sources.SessionID || stringField(pointer["plan_ref"]) != packet.Binding.Sources.PlanRef {
 		return runtimepkg.RepairResultBlockerReceipt{}, errors.New("S9 blocker belongs to a previous repair responsibility")
 	}
-	execution, _, err := verifyIssuedRepairResultBlockerSource(ctx, root, state, packet, blocker.Artifact.ExecutionRoot, "")
+	execution, err := verifyIssuedRepairResultBlockerSource(ctx, root, state, packet, blocker.Artifact.ExecutionRoot)
 	if err != nil {
 		return runtimepkg.RepairResultBlockerReceipt{}, err
 	}
@@ -409,28 +396,23 @@ func buildRepairResultResolutionEnvelope(original map[string]any, packet workpac
 	if original == nil {
 		return nil, errors.New("S9 resolution requires the verified original blocker message envelope")
 	}
-	packetSHA, err := workpacket.RepairResultPacketDigest(packet)
-	if err != nil {
-		return nil, err
-	}
 	message := make(map[string]any, len(original)+1)
 	for key, value := range original {
 		message[key] = value
 	}
 	delete(message, "s9_blocker")
 	message["message_type"] = "blocker_resolution"
-	message["message_id"] = resolutionMessageID(packet.ID, blocker.ArtifactSHA256)
+	message["message_id"] = resolutionMessageID(packet.ID)
 	if strings.TrimSpace(body) == "" {
 		body = rationale
 	}
 	message["body"] = body
 	message["s9_resolution"] = map[string]any{
 		"decision": "retry", "rationale": rationale, "evidence_refs": evidenceRefs,
-		"packet_id": packet.ID, "packet_sha256": packetSHA,
-		"blocker_ref": blocker.ArtifactRef, "blocker_sha256": blocker.ArtifactSHA256,
+		"packet_id":               packet.ID,
+		"blocker_ref":             blocker.ArtifactRef,
 		"execution_assignment_id": blocker.Artifact.ExecutionAssignmentID,
 		"execution_generation":    blocker.Artifact.ExecutionGeneration,
-		"execution_sha256":        packet.Binding.ExecutionSHA256,
 	}
 	return message, nil
 }
@@ -476,56 +458,12 @@ func publishRepairResultResolutionMessage(root string, packet workpacket.RepairR
 	if len(data) == 0 || len(data) > repairResultResolutionMessageLimit {
 		return "", nil, errors.New("S9 immutable resolution message is empty or exceeds 1 MiB")
 	}
-	b := packet.Binding.Sources
-	digest := workpacket.Digest(data)
-	messageRef := path.Join(".claude/evidence", b.RuntimeID, fmt.Sprintf("g%d", b.BaselineGeneration), "S9", "blocker-messages", packet.ID, digest+".json")
-	stored, err := workpacket.PublishBounded(root, messageRef, data, repairResultResolutionMessageLimit)
+	directory := path.Join(s9PacketEvidenceDirectory(packet.ID), "blocker-messages")
+	messageRef, err := publishUniqueS9Evidence(root, directory, "resolution.json", data, repairResultResolutionMessageLimit)
 	if err != nil {
 		return "", nil, err
 	}
-	if !bytes.Equal(stored, data) || workpacket.Digest(stored) != digest {
-		return "", nil, runtimepkg.ErrSubmissionConflict
-	}
-	return messageRef, stored, nil
-}
-
-func verifyExactRepairResultResolutionReplay(root, authoringPath string, packet workpacket.RepairResultPacket, receipt runtimepkg.RepairResultResolutionReceipt) error {
-	if receipt.PacketID != packet.ID || receipt.OwnerAgentID != packet.Binding.Sources.OwnerAgentID {
-		return runtimepkg.ErrSubmissionConflict
-	}
-	authoring, err := workpacket.ReadFile(root, authoringPath, repairResultResolutionMessageLimit)
-	if err != nil {
-		return fmt.Errorf("read exact replayed S9 Main resolution authoring file: %w", err)
-	}
-	immutable, err := workpacket.ReadFile(root, receipt.MessageRef, repairResultResolutionMessageLimit)
-	if err != nil {
-		return fmt.Errorf("read accepted immutable S9 Main resolution message: %w", err)
-	}
-	project := func(data []byte) ([]byte, error) {
-		var doc map[string]json.RawMessage
-		if err := json.Unmarshal(data, &doc); err != nil {
-			return nil, err
-		}
-		var decision map[string]json.RawMessage
-		if err := json.Unmarshal(doc["s9_resolution"], &decision); err != nil {
-			return nil, err
-		}
-		var body, rationale string
-		_ = json.Unmarshal(doc["body"], &body)
-		_ = json.Unmarshal(decision["rationale"], &rationale)
-		if strings.TrimSpace(body) == "" {
-			body = rationale
-		}
-		bodyBytes, _ := json.Marshal(body)
-		doc["body"] = bodyBytes
-		return json.Marshal(map[string]json.RawMessage{"body": doc["body"], "decision": decision["decision"], "rationale": decision["rationale"], "evidence_refs": decision["evidence_refs"]})
-	}
-	actual, actualErr := project(authoring)
-	accepted, acceptedErr := project(immutable)
-	if actualErr != nil || acceptedErr != nil || !bytes.Equal(actual, accepted) {
-		return runtimepkg.ErrSubmissionConflict
-	}
-	return nil
+	return messageRef, data, nil
 }
 
 func appendRepairResultResolutionEvidence(state map[string]any, packet workpacket.RepairResultPacket, blocker runtimepkg.RepairResultBlockerReceipt, message ArtifactRef) error {
@@ -550,8 +488,8 @@ func appendRepairResultResolutionEvidence(state map[string]any, packet workpacke
 	}
 	b := packet.Binding.Sources
 	row := map[string]any{
-		"id": message.Path, "kind": "repair_result_resolution", "path": message.Path, "sha256": message.SHA256,
-		"status": "valid", "baseline_generation": b.BaselineGeneration, "review_round": b.ReviewRound,
+		"id": message.Path, "kind": "repair_result_resolution", "path": message.Path,
+		"status": "valid", "baseline_generation": b.BaselineGeneration,
 		"produced_by": []any{"main"}, "invalidated_by": nil, "invalidation_rule": nil,
 		"invalidation_reason": nil, "responsibility_id": nil,
 		"scope_refs": []any{packet.ID, b.RepairAssignmentID, blocker.ArtifactRef},
@@ -569,9 +507,6 @@ func anyString(values []any, wanted string) bool {
 	return false
 }
 
-func resolutionMessageID(packetID, blockerSHA string) string {
-	if len(blockerSHA) > 16 {
-		blockerSHA = blockerSHA[:16]
-	}
-	return "msg-s9-resolution-" + strings.TrimPrefix(packetID, "packet-") + "-" + blockerSHA
+func resolutionMessageID(packetID string) string {
+	return "msg-s9-resolution-" + strings.TrimPrefix(packetID, "packet-")
 }

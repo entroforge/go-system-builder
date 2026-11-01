@@ -48,7 +48,7 @@ func copyRepositoryForScenarioTest(t *testing.T) string {
 		if err != nil {
 			return err
 		}
-		if relative == ".git" || strings.HasPrefix(relative, ".git"+string(filepath.Separator)) {
+		if relative == ".git" || relative == ".local" {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -57,6 +57,13 @@ func copyRepositoryForScenarioTest(t *testing.T) string {
 		target := filepath.Join(destination, relative)
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o755)
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
 		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {

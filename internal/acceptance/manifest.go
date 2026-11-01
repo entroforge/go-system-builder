@@ -8,11 +8,10 @@
 package acceptance
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"math"
 	"os"
 	"path/filepath"
@@ -53,7 +52,7 @@ type Manifest struct {
 	Outcome            string                `json:"outcome,omitempty"`
 	RuntimeID          string                `json:"runtime_id"`
 	BaselineGeneration int                   `json:"baseline_generation"`
-	ReviewRound        int                   `json:"review_round"`
+	ReviewPlanID       string                `json:"review_plan_id,omitempty"`
 	CoverageInventory  []CoverageItem        `json:"coverage_inventory"`
 	Counterevidence    []CounterevidenceItem `json:"counterevidence"`
 	AuditAreas         []AuditArea           `json:"audit_areas,omitempty"`
@@ -128,20 +127,16 @@ type InventoryAuthority struct {
 var s10RequirementToken = regexp.MustCompile(`\b(?:FR|NFR)-[A-Z0-9]+(?:-[A-Z0-9]+)*\b`)
 
 // BuildS10ExternalBaseline reconstructs the changed-path denominator from
-// current, fingerprinted completion/change-impact evidence plus the paths of
+// current completion/change-impact evidence plus the paths of
 // the triggering request. It is intentionally implemented in this package so
 // Runtime registration, the CLI and the Quality Gate consume one rule.
 //
-// A registered completion artifact that cannot be read, hash-verified, or
+// A registered completion artifact that cannot be read or
 // decoded is an authority failure. Returning an empty baseline in that case
 // would silently hand the denominator back to the manifest author.
 func BuildS10ExternalBaseline(root string, state map[string]any, affectedPaths []string) (Baseline, error) {
-	canonical, selectionErr := buildsurface.SelectCanonical(root, state)
-	if selectionErr != nil {
-		return Baseline{}, selectionErr
-	}
-	if canonical {
-		snapshot, err := buildsurface.ReadRegistered(root, state)
+	if buildsurface.HasCanonical(state) {
+		snapshot, err := buildsurface.Read(root, state)
 		if err != nil {
 			return Baseline{}, err
 		}
@@ -192,19 +187,12 @@ func BuildS10ExternalBaseline(root string, state map[string]any, affectedPaths [
 			continue
 		}
 		id := stringValue(entry["id"])
-		data, err := readAuthoritativeS10File(root, stringValue(entry["path"]), stringValue(entry["sha256"]), "evidence "+id)
+		data, err := readAuthoritativeS10File(root, stringValue(entry["path"]), "evidence "+id)
 		if err != nil {
 			return Baseline{}, err
 		}
 		switch kind {
 		case "completion_report":
-			var envelope map[string]json.RawMessage
-			if err := json.Unmarshal(data, &envelope); err != nil {
-				return Baseline{}, fmt.Errorf("S10 inventory authority completion evidence %s is invalid JSON: %w", id, err)
-			}
-			if _, canonical := envelope["assignment_record"]; canonical {
-				return Baseline{}, fmt.Errorf("S10 inventory authority canonical S6 evidence %s requires the original Main facts changed-surface projection", id)
-			}
 			var completion struct {
 				ChangedPaths []string `json:"changed_paths"`
 			}
@@ -429,9 +417,8 @@ func hasS10References(state map[string]any) bool {
 }
 
 // BuildS10InventoryAuthority reconstructs the S10 finite denominator from
-// the current Runtime and repository. Every referenced document and the S7
-// plan is hash-verified before its ids are admitted. A missing or drifted
-// source is an authority-construction error, not an empty denominator.
+// the current Runtime and repository. Referenced documents and the S7 plan are
+// read by their existing paths; missing material is not an empty denominator.
 func BuildS10InventoryAuthority(root string, state map[string]any, baseline Baseline) (InventoryAuthority, error) {
 	if strings.TrimSpace(root) == "" {
 		return InventoryAuthority{}, fmt.Errorf("S10 inventory authority requires a repository root")
@@ -439,12 +426,8 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 	if !hasS10References(state) {
 		return InventoryAuthority{}, fmt.Errorf("S10 inventory authority is unavailable: current Runtime must contain a bound REQ and a pinned current-round ReviewPlan")
 	}
-	canonical, selectionErr := buildsurface.SelectCanonical(root, state)
-	if selectionErr != nil {
-		return InventoryAuthority{}, selectionErr
-	}
-	if canonical {
-		snapshot, err := buildsurface.ReadRegistered(root, state)
+	if buildsurface.HasCanonical(state) {
+		snapshot, err := buildsurface.Read(root, state)
 		if err != nil {
 			return InventoryAuthority{}, err
 		}
@@ -459,8 +442,7 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 	bound := state["bound_req"].(map[string]any)
 	reqID := strings.TrimSpace(stringValue(bound["id"]))
 	reqPath := strings.TrimSpace(stringValue(bound["path"]))
-	reqSHA := strings.TrimSpace(stringValue(bound["sha256"]))
-	reqData, err := readAuthoritativeS10File(root, reqPath, reqSHA, "bound REQ")
+	reqData, err := readAuthoritativeS10File(root, reqPath, "bound REQ")
 	if err != nil {
 		return InventoryAuthority{}, err
 	}
@@ -477,15 +459,14 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 
 	generation := nestedS10Int(state, "baseline", "generation")
 	rawDocuments, _ := state["documents"].([]any)
-	// Only a missing case-variant alias of the same document can use a live
-	// twin. Hash equality alone must never mask tampering or substitute a
-	// different document, kind, or unrelated path.
-	aliasKey := func(kind, id, path, sha string) string {
-		return kind + "\x00" + strings.ToLower(id) + "\x00" + strings.ToLower(filepath.ToSlash(filepath.Clean(path))) + "\x00" + sha
+	// A missing case-variant alias may use an already registered path for the
+	// same kind and id. This association is not a byte-integrity proof.
+	aliasKey := func(kind, id, path string) string {
+		return kind + "\x00" + strings.ToLower(id) + "\x00" + strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
 	}
 	verifiedPaths := map[string]string{}
 	type pendingRow struct {
-		kind, id, path, sha string
+		kind, id, path string
 	}
 	var pending []pendingRow
 	for _, raw := range rawDocuments {
@@ -496,17 +477,16 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 		kind := strings.TrimSpace(stringValue(document["kind"]))
 		id := strings.TrimSpace(stringValue(document["id"]))
 		path := strings.TrimSpace(stringValue(document["path"]))
-		sha := strings.TrimSpace(stringValue(document["sha256"]))
 		if kind != "contract" && kind != "task" {
 			continue
 		}
-		if id == "" || path == "" || sha == "" {
-			return InventoryAuthority{}, fmt.Errorf("S10 inventory authority cannot use current %s document with missing id/path/sha256", kind)
+		if id == "" || path == "" {
+			return InventoryAuthority{}, fmt.Errorf("S10 inventory authority cannot use current %s document with missing id/path", kind)
 		}
-		if _, err := readAuthoritativeS10File(root, path, sha, kind+" "+id); err == nil {
-			verifiedPaths[aliasKey(kind, id, path, sha)] = path
+		if _, err := readAuthoritativeS10File(root, path, kind+" "+id); err == nil {
+			verifiedPaths[aliasKey(kind, id, path)] = path
 		} else if errors.Is(err, os.ErrNotExist) {
-			pending = append(pending, pendingRow{kind: kind, id: id, path: path, sha: sha})
+			pending = append(pending, pendingRow{kind: kind, id: id, path: path})
 			continue
 		} else {
 			return InventoryAuthority{}, err
@@ -521,10 +501,10 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 		}
 	}
 	for _, row := range pending {
-		if _, live := verifiedPaths[aliasKey(row.kind, row.id, row.path, row.sha)]; !live {
+		if _, live := verifiedPaths[aliasKey(row.kind, row.id, row.path)]; !live {
 			// No same-generation live twin: re-read the dead path so the
 			// original missing/drifted diagnostics surface as the hard error.
-			if _, err := readAuthoritativeS10File(root, row.path, row.sha, row.kind+" "+row.id); err != nil {
+			if _, err := readAuthoritativeS10File(root, row.path, row.kind+" "+row.id); err != nil {
 				return InventoryAuthority{}, fmt.Errorf("S10 inventory authority %s %s: %w", row.kind, row.id, err)
 			}
 		}
@@ -538,13 +518,11 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 
 	planPointer := state["review"].(map[string]any)["plan"].(map[string]any)
 	planPath := strings.TrimSpace(stringValue(planPointer["path"]))
-	planSHA := strings.TrimSpace(stringValue(planPointer["sha256"]))
-	planData, err := readAuthoritativeS10File(root, planPath, planSHA, "pinned S7 ReviewPlan")
+	planData, err := readAuthoritativeS10File(root, planPath, "pinned S7 ReviewPlan")
 	if err != nil {
 		return InventoryAuthority{}, err
 	}
 	var plan struct {
-		ReviewRound        int `json:"review_round"`
 		BaselineGeneration int `json:"baseline_generation"`
 		Claims             []struct {
 			ClaimID string `json:"claim_id"`
@@ -553,8 +531,8 @@ func BuildS10InventoryAuthority(root string, state map[string]any, baseline Base
 	if err := json.Unmarshal(planData, &plan); err != nil {
 		return InventoryAuthority{}, fmt.Errorf("decode pinned S7 ReviewPlan for S10 inventory authority: %w", err)
 	}
-	if plan.ReviewRound != nestedS10Int(state, "review", "round") || plan.BaselineGeneration != generation {
-		return InventoryAuthority{}, fmt.Errorf("pinned S7 ReviewPlan is not bound to the current S10 round/baseline")
+	if plan.BaselineGeneration != generation {
+		return InventoryAuthority{}, fmt.Errorf("pinned S7 ReviewPlan is not bound to the current baseline")
 	}
 	for _, claim := range plan.Claims {
 		if id := strings.TrimSpace(claim.ClaimID); id != "" {
@@ -595,7 +573,7 @@ func validateInventoryAuthority(data []byte, summary Summary, authority Inventor
 	}
 	issues := inventoryAuthorityIssues(manifest.CoverageInventory, authority)
 	if len(issues) > 0 {
-		return summary, fmt.Errorf("S10 manifest invalid: %s; next: regenerate coverage_inventory from the current bound REQ, contracts, TASK Closing Contracts, pinned S7 Claims, and changed-path baseline, then validate and register a new fingerprinted envelope", strings.Join(issues, "; "))
+		return summary, fmt.Errorf("S10 manifest invalid: %s; next: regenerate coverage_inventory from the current bound REQ, contracts, TASK Closing Contracts, pinned S7 Claims, and changed-path baseline, then validate and record the current professional report", strings.Join(issues, "; "))
 	}
 	return summary, nil
 }
@@ -657,7 +635,7 @@ func inventoryAuthorityIssues(inventory []CoverageItem, authority InventoryAutho
 	return issues
 }
 
-func readAuthoritativeS10File(root, path, wantSHA, label string) ([]byte, error) {
+func readAuthoritativeS10File(root, path, label string) ([]byte, error) {
 	resolved, err := safeManifestPath(root, path)
 	if err != nil {
 		return nil, fmt.Errorf("S10 inventory authority %s: %w", label, err)
@@ -665,13 +643,6 @@ func readAuthoritativeS10File(root, path, wantSHA, label string) ([]byte, error)
 	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("S10 inventory authority %s is unreadable: %w", label, err)
-	}
-	if strings.TrimSpace(wantSHA) == "" {
-		return nil, fmt.Errorf("S10 inventory authority %s has no registered sha256", label)
-	}
-	sum := sha256.Sum256(data)
-	if hex.EncodeToString(sum[:]) != wantSHA {
-		return nil, fmt.Errorf("S10 inventory authority %s drifted: registered sha256 %s does not match disk", label, wantSHA)
 	}
 	return data, nil
 }
@@ -951,7 +922,6 @@ func readS10ManifestData(root, kind string, envelopeData []byte) ([]byte, string
 	}
 	var envelope struct {
 		ManifestPath string `json:"audit_manifest_path"`
-		ManifestSHA  string `json:"audit_manifest_sha256"`
 		Conclusion   string `json:"conclusion"`
 	}
 	if err := json.Unmarshal(envelopeData, &envelope); err != nil {
@@ -989,7 +959,7 @@ func ValidateCurrentS10Evidence(root string, state map[string]any, kind string) 
 	}
 	items, _ := state["evidence"].([]any)
 	generation := nestedS10Int(state, "baseline", "generation")
-	round := nestedS10Int(state, "review", "round")
+
 	// RC-15 (S10-H2): the ledger is append-only; the newest matching
 	// registration supersedes older ones, and first-match would wedge on
 	// stale drift. Two-pass: (1) collect every matching row's identity,
@@ -1012,7 +982,7 @@ func ValidateCurrentS10Evidence(root string, state map[string]any, kind string) 
 		if entryGeneration != generation {
 			continue
 		}
-		if nestedS10Int(entry, "review_round", "") != round || round < 1 {
+		if !CurrentReviewArtifact(state, stringValue(entry["review_plan_id"])) {
 			continue
 		}
 		path := stringValue(entry["path"])
@@ -1046,7 +1016,7 @@ func ValidateCurrentS10Evidence(root string, state map[string]any, kind string) 
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
 		return err
 	}
-	if manifest.RuntimeID != stringValue(state["runtime_id"]) || manifest.BaselineGeneration != generation || manifest.ReviewRound != round {
+	if manifest.RuntimeID != stringValue(state["runtime_id"]) || manifest.BaselineGeneration != generation || reviewmeta.CompareIdentity(CurrentReviewIdentity(state), reviewmeta.ArtifactIdentity(manifest.ReviewPlanID)) == reviewmeta.Different {
 		return fmt.Errorf("S10 report is not associated with the current responsibility/round")
 	}
 	complete := conclusion == "pass"

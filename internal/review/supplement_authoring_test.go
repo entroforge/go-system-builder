@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestSupplementProfessionalInputComputesMachineFieldsWithoutRewritingAuthor(t *testing.T) {
+func TestSupplementProfessionalInputUsesOriginalResponsibilityWithoutRewritingAuthor(t *testing.T) {
 	root := t.TempDir()
 	statePath, journalPath, _ := supplementFixture(t, root)
 	file := filepath.Join(root, "new-observation.json")
@@ -38,18 +38,15 @@ func TestSupplementProfessionalInputComputesMachineFieldsWithoutRewritingAuthor(
 	if !strings.HasPrefix(supplement.SupplementID, "supplement-") || supplement.SchemaVersion != "1.0.0" || supplement.SupplementsFindingID != "finding-qa-1" || supplement.Author != "agent-qa-1" || supplement.CreatedAt != now.Format(time.RFC3339Nano) {
 		t.Fatalf("original machine bindings missing: %+v", supplement)
 	}
-	if err := verifySupplementHash(artifact, supplement.Hash); err != nil {
-		t.Fatal(err)
-	}
-	if len(supplement.EvidenceRefs) != 1 || supplement.EvidenceRefs[0] != "path:observed.txt#sha256="+sha256Of(evidenceBytes) {
-		t.Fatalf("new evidence not fixed at original reception: %v", supplement.EvidenceRefs)
+	if len(supplement.EvidenceRefs) != 1 || supplement.EvidenceRefs[0] != "path:observed.txt" {
+		t.Fatalf("original references were replaced or a digest was registered: %+v", supplement)
 	}
 	if !bytes.Equal(professional, mustReadTestFile(t, file)) || !bytes.Equal(findingBefore, mustReadTestFile(t, findingArtifactPath(root, "finding-qa-1"))) {
 		t.Fatal("supplement rewrote authoring input or original Finding")
 	}
 	stateBefore, journalBefore := mustReadTestFile(t, statePath), mustReadTestFile(t, journalPath)
 	replayed, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: file, InRoundNote: true, OccurredAt: now.Add(time.Hour)})
-	if err != nil || replayed.SupplementID != receipt.SupplementID || replayed.SHA256 != receipt.SHA256 {
+	if err != nil || replayed.SupplementID != receipt.SupplementID || replayed.Path != receipt.Path {
 		t.Fatalf("same professional input did not reuse original accepted object: %+v %v", replayed, err)
 	}
 	if !bytes.Equal(stateBefore, mustReadTestFile(t, statePath)) || !bytes.Equal(journalBefore, mustReadTestFile(t, journalPath)) || !bytes.Equal(artifact, mustReadTestFile(t, filepath.Join(root, filepath.FromSlash(receipt.Path)))) {
@@ -58,11 +55,11 @@ func TestSupplementProfessionalInputComputesMachineFieldsWithoutRewritingAuthor(
 	if err := os.WriteFile(filepath.Join(root, "observed.txt"), []byte("later drift"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: file, InRoundNote: true}); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
-		t.Fatalf("same input signed changed bytes into a second observation: %v", err)
+	if same, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: file, InRoundNote: true}); err != nil || same.SupplementID != receipt.SupplementID {
+		t.Fatalf("existing original observation depended on later evidence bytes: %+v %v", same, err)
 	}
 	if !bytes.Equal(stateBefore, mustReadTestFile(t, statePath)) || !bytes.Equal(journalBefore, mustReadTestFile(t, journalPath)) {
-		t.Fatal("source drift appended or refreshed a supplement")
+		t.Fatal("unchanged observation appended or refreshed a supplement")
 	}
 	rows, err := SupplementsForFinding(root, statePath, "finding-qa-1")
 	if err != nil || len(rows) != 1 {

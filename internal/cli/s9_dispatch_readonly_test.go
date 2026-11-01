@@ -106,7 +106,7 @@ func assertS9SeedProjectionReadOnlyAndCompletionRepair(t *testing.T, root string
 		if _, err := os.Stat(question); !os.IsNotExist(err) {
 			t.Fatalf("missing plan projection manufactured a generic draft: %v", err)
 		}
-		if draft, notes := reviewPlanDraftForEntry(root, state, integerValue(mapFieldCLI(state, "review")["round"])); draft != nil || !strings.Contains(strings.Join(notes, " "), "original S9 seed/ReviewPlan projection") {
+		if draft, notes := reviewPlanDraftForEntry(root, state); draft != nil || !strings.Contains(strings.Join(notes, " "), "original S9 seed/ReviewPlan projection") {
 			t.Fatalf("lost original projection gap: draft=%+v notes=%v", draft, notes)
 		}
 		repairDispatchAssertUnchanged(t, root, before)

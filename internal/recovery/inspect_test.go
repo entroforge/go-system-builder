@@ -1,8 +1,6 @@
 package recovery
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -101,9 +99,8 @@ func TestInspectAcceptsLockedREQAndDamagedBOMRuntime(t *testing.T) {
 	if !ok {
 		t.Fatal("damaged runtime state was not inventoried")
 	}
-	wantSHA := sha256HexForRecoveryTest(append([]byte{0xef, 0xbb, 0xbf}, []byte(`{"broken":`)...))
-	if state.SHA256 != wantSHA {
-		t.Fatalf("state sha256 = %q, want %q", state.SHA256, wantSHA)
+	if state.Size != int64(len(append([]byte{0xef, 0xbb, 0xbf}, []byte(`{"broken":`)...))) {
+		t.Fatalf("damaged state must be inventoried without a digest: %#v", state)
 	}
 }
 
@@ -117,16 +114,16 @@ func TestInspectPreservesREQCRLFForBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect() error = %v", err)
 	}
-	wantBindingSHA := sha256HexForRecoveryTest(data)
-	if inventory.REQ.SHA256 != wantBindingSHA {
-		t.Fatalf("REQ binding SHA256 = %q, want raw-byte %q", inventory.REQ.SHA256, wantBindingSHA)
-	}
 	input, ok := inventoryInputByPath(inventory, path)
 	if !ok {
 		t.Fatalf("inventory missing %s", path)
 	}
-	if input.SHA256 != sha256HexForRecoveryTest(data) {
-		t.Fatalf("REQ inventory SHA256 = %q, want raw byte digest %q", input.SHA256, sha256HexForRecoveryTest(data))
+	if input.Size != int64(len(data)) {
+		t.Fatalf("REQ input must preserve its path and size without a digest: %#v", input)
+	}
+	actual, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+	if err != nil || string(actual) != string(data) {
+		t.Fatal("inspection modified the original CRLF file")
 	}
 }
 
@@ -144,7 +141,7 @@ func TestInspectUsesCanonicalREQIDFromDescriptiveFilename(t *testing.T) {
 	}
 }
 
-func TestInspectInventoryRecordsRepositoryRelativePathsAndSHA256(t *testing.T) {
+func TestInspectInventoryRecordsRepositoryRelativePathsWithoutDigest(t *testing.T) {
 	root := t.TempDir()
 	writeRecoveryREQ(t, root, "docs/requirements/REQ-010.md", "locked", "v1.0.0")
 	inputs := map[string][]byte{
@@ -169,8 +166,8 @@ func TestInspectInventoryRecordsRepositoryRelativePathsAndSHA256(t *testing.T) {
 		if filepath.IsAbs(item.Path) || strings.HasPrefix(item.Path, "../") || item.Path == ".." {
 			t.Fatalf("inventory path %q is not repository-relative", item.Path)
 		}
-		if item.SHA256 != sha256HexForRecoveryTest(data) {
-			t.Fatalf("input %q sha256 = %q, want %q", path, item.SHA256, sha256HexForRecoveryTest(data))
+		if item.Size != int64(len(data)) {
+			t.Fatalf("input %q should preserve size without a digest: %#v", path, item)
 		}
 	}
 }
@@ -222,9 +219,4 @@ func inventoryInputByPath(inventory Inventory, path string) (InventoryInput, boo
 		}
 	}
 	return InventoryInput{}, false
-}
-
-func sha256HexForRecoveryTest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

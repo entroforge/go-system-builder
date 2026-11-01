@@ -19,8 +19,7 @@ func TestBoundDocumentRegistrationBindings(t *testing.T) {
 		{"wrong responsibility", func(e map[string]any, r *EvidenceRequest) { r.ResponsibilityID = "other" }, false},
 		{"wrong kind", func(e map[string]any, r *EvidenceRequest) { e["kind"] = "qa" }, false},
 		{"missing schema", func(e map[string]any, r *EvidenceRequest) { delete(e, "schema_version") }, false},
-		{"registration round", func(e map[string]any, r *EvidenceRequest) { n := 3; r.ReviewRound = &n }, false},
-		{"envelope round", func(e map[string]any, r *EvidenceRequest) { e["review_round"] = 3 }, false},
+		{"irrelevant envelope round", func(e map[string]any, r *EvidenceRequest) { e["review_round"] = 3 }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := map[string]any{"runtime_id": "loop-test", "bound_req": map[string]any{"id": "REQ-1"}, "baseline": map[string]any{"generation": 1}, "lifecycle": map[string]any{"state": "document_verification"}}

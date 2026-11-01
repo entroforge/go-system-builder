@@ -19,15 +19,15 @@ func TestJournalEventContainsSYNC039AuditFields(t *testing.T) {
 
 	store := testWriter(statePath, journalPath)
 	_, err := store.Update(1, runtime.Mutation{
-		EventID:                "evt-audit-2",
-		TransitionID:           "PTR-PLAN-01",
-		Event:                  "planning_design_complete",
-		Actor:                  "hook_controller",
-		IdempotencyKey:         "runtime:PTR-PLAN-01:1",
-		RequestID:              "session-audit-1",
-		BaselineGeneration:     2,
-		GateID:                 "GATE-PLANNING-DESIGN-COMPLETE",
-		GateFingerprint:        "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		EventID:            "evt-audit-2",
+		TransitionID:       "PTR-PLAN-01",
+		Event:              "planning_design_complete",
+		Actor:              "hook_controller",
+		IdempotencyKey:     "runtime:PTR-PLAN-01:1",
+		RequestID:          "session-audit-1",
+		BaselineGeneration: 2,
+		GateID:             "GATE-PLANNING-DESIGN-COMPLETE",
+
 		ProducerResponsibility: "Architect",
 		From:                   map[string]any{"state": "planning", "phase": "design"},
 		To:                     map[string]any{"state": "planning", "phase": "contracts"},
@@ -45,7 +45,7 @@ func TestJournalEventContainsSYNC039AuditFields(t *testing.T) {
 	}
 	for _, key := range []string{
 		"event_id", "request_id", "runtime_id", "baseline_generation", "event",
-		"transition_id", "actor", "producer_responsibility", "gate_id", "gate_fingerprint",
+		"transition_id", "actor", "producer_responsibility", "gate_id",
 		"before_revision", "after_revision", "from", "to", "evidence_ids", "occurred_at",
 	} {
 		if _, ok := event[key]; !ok {

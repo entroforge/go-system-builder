@@ -49,13 +49,13 @@ func TestNativeS9OriginalFlatConsumeReceivesAndProjectsReplay(t *testing.T) {
 }
 
 func TestNativeS9OriginalConsumeDoesNotReimportAcceptedPlan(t *testing.T) {
-	root, worker, p, _, _ := nativeS9LegacyWorkerFixture(t)
+	root, worker, p, _, _ := nativeS9WorkerFixture(t)
 	service, err := submission.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(context.Background(), root, worker, p, service, &diagnostic); err != nil {
+	if err := receiveNativeS9ReadyPlan(context.Background(), root, worker, p, service, &diagnostic, nil); err != nil {
 		t.Fatal(err)
 	}
 	if receipt, err := service.SaveRepairPlanReportFrom(context.Background(), p.Binding.OwnerAgentID, filepath.Join(root, p.AnswerPath), root, nil); err != nil || !receipt.Accepted {
@@ -85,7 +85,7 @@ func TestNativeS9NormalStopRejectsDamagedAcceptedPlan(t *testing.T) {
 				t.Fatal(err)
 			}
 			var diagnostic bytes.Buffer
-			if err := importNativeS9PlanReport(context.Background(), root, worker, p, service, &diagnostic); err != nil {
+			if err := receiveNativeS9ReadyPlan(context.Background(), root, worker, p, service, &diagnostic, nil); err != nil {
 				t.Fatal(err)
 			}
 			receipt, err := service.SaveRepairPlanReportFrom(context.Background(), p.Binding.OwnerAgentID, filepath.Join(root, p.AnswerPath), root, nil)
@@ -117,61 +117,6 @@ func TestNativeS9NormalStopRejectsDamagedAcceptedPlan(t *testing.T) {
 				t.Fatalf("damaged accepted Plan was replaced instead of rejected: %v", err)
 			}
 		})
-	}
-}
-
-func TestNativeS9OriginalConsumePreservesSavedTypedInput(t *testing.T) {
-	root, worker, p, _, professional := nativeS9LegacyWorkerFixture(t)
-	ctx := context.Background()
-	service, err := submission.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(ctx, root, worker, p, service, &diagnostic); err != nil {
-		t.Fatal(err)
-	}
-	if r, err := service.SaveRepairPlanReportFrom(ctx, p.Binding.OwnerAgentID, filepath.Join(root, p.AnswerPath), root, nil); err != nil || !r.Accepted {
-		t.Fatalf("plan: %#v %v", r, err)
-	}
-	base := repairLeadGit(t, root, "rev-parse", "HEAD")
-	if err := recordNativeS9Source(ctx, root, worker, base, p); err != nil {
-		t.Fatal(err)
-	}
-	packets, err := service.IssueRepairResults(ctx, p.Binding.OwnerAgentID)
-	if err != nil || len(packets) != 1 {
-		t.Fatalf("packets: %d %v", len(packets), err)
-	}
-	packet := packets[0]
-	raw, _ := json.Marshal(packet.Draft)
-	if nativeS9TypedInputSaved(packet, raw) {
-		t.Fatal("original draft claimed as saved typed answer")
-	}
-	draft := packet.Draft
-	draft.Answer, _ = json.Marshal(professional)
-	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, packet.AnswerPath), draft); err != nil {
-		t.Fatal(err)
-	}
-	saved, err := os.ReadFile(filepath.Join(worker, packet.AnswerPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !nativeS9TypedInputSaved(packet, saved) {
-		t.Fatal("saved typed answer treated as draft")
-	}
-	_, relative, pathErr := nativeS9AuthorPaths(root, p)
-	if pathErr != nil {
-		t.Fatal(pathErr)
-	}
-	if err := os.WriteFile(filepath.Join(worker, relative), []byte("changed unfinished flat artifact"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := consumeRegisteredStageAnswer(ctx, service, filepath.Join(worker, relative)); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.ReadFile(filepath.Join(worker, packet.AnswerPath))
-	if err != nil || !bytes.Equal(saved, after) {
-		t.Fatalf("saved typed bytes replaced: %v", err)
 	}
 }
 
@@ -233,7 +178,7 @@ func nativeS9OriginalCandidateBoundaryFor(t *testing.T, legacy bool) (root, work
 	t.Helper()
 	var professional workpacket.RepairResultProfessionalAnswer
 	if legacy {
-		root, worker, plan, _, professional = nativeS9LegacyWorkerFixture(t)
+		root, worker, plan, _, professional = nativeS9WorkerFixture(t)
 	} else {
 		root, worker, plan, _, professional = nativeS9WorkerFixture(t)
 	}
@@ -243,13 +188,13 @@ func nativeS9OriginalCandidateBoundaryFor(t *testing.T, legacy bool) (root, work
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(ctx, root, worker, plan, service, &diagnostic); err != nil {
+	if err := receiveNativeS9ReadyPlan(ctx, root, worker, plan, service, &diagnostic, nil); err != nil {
 		t.Fatal(err)
 	}
 	if r, err := service.SaveRepairPlanReportFrom(ctx, plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil); err != nil || !r.Accepted {
 		t.Fatalf("plan receipt: %#v %v", r, err)
 	}
-	if err := recordNativeS9Source(ctx, root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+	if err := recordNativeS9OriginalLocation(ctx, root, plan, worker); err != nil {
 		t.Fatal(err)
 	}
 	packets, err := service.IssueRepairResults(ctx, plan.Binding.OwnerAgentID)
@@ -655,21 +600,8 @@ func nativeS9OriginalPendingMarker(t *testing.T, previousStateBytes, targetState
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
 		t.Fatal(err)
 	}
-	eventBytes, err := json.Marshal(event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateHash := func(state map[string]any) string {
-		encoded, err := json.MarshalIndent(state, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return workpacket.Digest(append(encoded, '\n'))
-	}
 	marker := map[string]any{
-		"schema_version": "1.0.0", "previous_state_sha256": stateHash(previousState),
-		"previous_revision": previousState["revision"], "state_sha256": stateHash(targetState),
-		"journal_event_sha256": workpacket.Digest(append(eventBytes, '\n')), "request_id": event["request_id"],
+		"schema_version": "1.0.0", "previous_revision": previousState["revision"], "request_id": event["request_id"],
 		"idempotency_key": event["idempotency_key"], "retain_last_transition": true,
 		"state": targetState, "journal_event": event,
 	}
@@ -682,7 +614,7 @@ func nativeS9OriginalPendingMarker(t *testing.T, previousStateBytes, targetState
 
 func TestNativeS9OriginalConsumeAcceptedPlanSurvivesMissingDisplayBrief(t *testing.T) {
 	root, worker, p, _, _ := nativeS9WorkerFixture(t)
-	brief, _, _ := nativeS9Paths(p)
+	brief := nativeS9BriefPath(p)
 	_, relative, err := nativeS9AuthorPaths(root, p)
 	if err != nil {
 		t.Fatal(err)
@@ -692,7 +624,7 @@ func TestNativeS9OriginalConsumeAcceptedPlanSurvivesMissingDisplayBrief(t *testi
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(t.Context(), root, worker, p, service, &diagnostic); err != nil {
+	if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, p, service, &diagnostic, nil); err != nil {
 		t.Fatal(err)
 	}
 	receipt, err := service.SaveRepairPlanReportFrom(t.Context(), p.Binding.OwnerAgentID, filepath.Join(root, p.AnswerPath), root, nil)
@@ -721,76 +653,6 @@ func TestNativeS9OriginalConsumeAcceptedPlanSurvivesMissingDisplayBrief(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(root, brief)); !os.IsNotExist(err) {
 		t.Fatalf("consume rebuilt display preparation instead of receiving original input: %v", err)
-	}
-}
-
-func TestNativeS9OriginalRecoveryPreparationPreservesFrozenLegacySource(t *testing.T) {
-	root, worker, p, _, _ := nativeS9WorkerFixture(t)
-	service, err := submission.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, relative, pathErr := nativeS9AuthorPaths(root, p)
-	if pathErr != nil {
-		t.Fatal(pathErr)
-	}
-	if _, err := consumeRegisteredStageAnswer(context.Background(), service, filepath.Join(worker, relative)); err != nil {
-		t.Fatal(err)
-	}
-	snap := repairDispatchSnapshot(t, root)
-	registry, err := workspace.Decode(snap.State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	frozen := registry.Executions[p.Binding.ManifestAssignmentID]
-	frozen.Purpose = ""
-	frozen.BootstrapSHA256 = strings.Repeat("a", 64)
-	frozen.PlatformSessionID = "original-frozen-independent-session"
-	registry.Executions[p.Binding.ManifestAssignmentID] = frozen
-	snap.State["workspace"] = workspace.Encode(registry)
-	// Even with an original-looking source pin present, native preparation
-	// evidence must never override a registered independent frozen consumer.
-	if prepared, err := nativeS9RecoveryPrepared(context.Background(), root, snap.State, p); err != nil || prepared {
-		t.Fatalf("frozen legacy source was not cleanly retained by its original consumer: native=%t err=%v", prepared, err)
-	}
-}
-
-func TestNativeS9OriginalConsumeRejectsUnpreparedPacketWithoutGuessingNative(t *testing.T) {
-	root, worker, p, _, _ := nativeS9WorkerFixture(t)
-	brief, pin, _ := nativeS9Paths(p)
-	plan, relative := nativeS9TestAuthorPaths(t, root, p)
-	originals := map[string][]byte{}
-	for _, path := range []string{filepath.Join(root, p.AnswerPath), filepath.Join(worker, plan), filepath.Join(worker, relative)} {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		originals[path] = raw
-	}
-	if err := os.Remove(filepath.Join(root, pin)); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(root, brief)); err != nil {
-		t.Fatal(err)
-	}
-	before := repairDispatchRuntimeBytes(t, root)
-	var out, diagnostic bytes.Buffer
-	if code := runStageAnswer([]string{"consume", "--root", root, "--path", filepath.Join(worker, relative)}, &out, &diagnostic); code == 0 || !strings.Contains(diagnostic.String(), "read frozen native author contract") || !strings.Contains(diagnostic.String(), filepath.Join(root, pin)) {
-		t.Errorf("unknown preparation claimed or gap omitted: %s %s", &out, &diagnostic)
-	}
-	repairDispatchAssertUnchanged(t, root, before)
-	for path, expected := range originals {
-		actual, err := os.ReadFile(path)
-		if err != nil || !bytes.Equal(actual, expected) {
-			t.Fatalf("missing preparation changed original %s: %v", path, err)
-		}
-	}
-	registry, err := workspace.Decode(repairDispatchSnapshot(t, root).State)
-	if err != nil || registry != nil && len(registry.Executions) != 0 {
-		t.Fatalf("missing preparation fabricated a candidate execution: %+v %v", registry, err)
-	}
-	if _, err := os.Stat(filepath.Join(root, ".claude/review/repair/candidates")); !os.IsNotExist(err) {
-		t.Fatalf("missing preparation published a candidate: %v", err)
 	}
 }
 

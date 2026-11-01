@@ -3,29 +3,80 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 // Simulate an interrupted original fingerprint write, with an unchanged target
 // and a real coherent Runtime/journal. The production Writer validates it.
-func nativeStopFingerprintPending(t *testing.T, root string) string {
+func nativeStopCommitPending(t *testing.T, root string) string {
 	t.Helper()
-	state := stageSnapshot(t, root).State
-	encoded, err := json.MarshalIndent(state, "", "  ")
+	statePath := filepath.Join(root, ".claude/loop-state.json")
+	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
+	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	before, err := writer.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash := workpacket.Digest(append(encoded, '\n'))
-	path := ".claude/loop-state.json.fingerprint-pending.json"
-	stageJSON(t, root, path, map[string]any{"schema_version": "1.0.0", "previous_state_sha256": hash, "previous_revision": state["revision"], "state_sha256": hash, "state": state})
-	return filepath.Join(root, path)
+	life := before.State["lifecycle"].(map[string]any)
+	cursor := map[string]any{"state": life["state"], "phase": life["phase"]}
+	id := fmt.Sprintf("pending-fixture-%d", time.Now().UnixNano())
+	generation := 0
+	if baseline, ok := before.State["baseline"].(map[string]any); ok {
+		switch n := baseline["generation"].(type) {
+		case int:
+			generation = n
+		case float64:
+			generation = int(n)
+		}
+	}
+	after, err := writer.Update(before.Revision, runtime.Mutation{EventID: id, RequestID: id, TransitionID: "PENDING-FIXTURE", Event: "pending_fixture", Actor: "orchestrator", IdempotencyKey: id, RuntimeID: before.State["runtime_id"].(string), BaselineGeneration: generation, From: cursor, To: cursor, RetainLastTransition: true, OccurredAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(journal)), "\n")
+	var event map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{"schema_version": "1.0.0", "previous_revision": before.Revision, "request_id": event["request_id"], "idempotency_key": event["idempotency_key"], "retain_last_transition": true, "state": after.State, "journal_event": event})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := statePath + ".commit-pending.json"
+	if err := os.WriteFile(marker, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return marker
+}
+
+func pendingRawRevision(t *testing.T, root string) int {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Revision int `json:"revision"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state.Revision
 }
 
 func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
@@ -66,8 +117,8 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := stageSnapshot(t, root).Revision
-	marker := nativeStopFingerprintPending(t, root)
+	marker := nativeStopCommitPending(t, root)
+	before := pendingRawRevision(t, root)
 	// No exact task reference: recover the pair, but never guess the only packet.
 	if code, _, diag := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", "unrelated actual task"); code != 0 || !strings.Contains(diag, "recovered the original pending Writer") {
 		t.Fatalf("unknown Stop: %d %s", code, diag)
@@ -93,20 +144,8 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	if err := json.Unmarshal(lines[len(lines)-1], &event); err != nil {
 		t.Fatal(err)
 	}
-	hashState := func(state map[string]any) string {
-		data, err := json.MarshalIndent(state, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return workpacket.Digest(append(data, '\n'))
-	}
-	eventBytes, err := json.Marshal(event)
-	if err != nil {
-		t.Fatal(err)
-	}
 	stageJSON(t, root, ".claude/loop-state.json.commit-pending.json", map[string]any{
-		"schema_version": "1.0.0", "previous_state_sha256": hashState(previous), "previous_revision": previous["revision"],
-		"state_sha256": hashState(target), "journal_event_sha256": workpacket.Digest(append(eventBytes, '\n')),
+		"schema_version": "1.0.0", "previous_revision": previous["revision"],
 		"request_id": event["request_id"], "idempotency_key": event["idempotency_key"], "retain_last_transition": true, "state": target, "journal_event": event,
 	})
 	marker = statePath + ".commit-pending.json"
@@ -139,8 +178,8 @@ func TestNativeStopPendingS5DoesNotReceiveProfessionalAnswer(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	p := f.packets[0]
 	stageJSON(t, f.root, p.AnswerPath, completedDraft(p, "pass"))
-	before := stageSnapshot(t, f.root).Revision
-	marker := nativeStopFingerprintPending(t, f.root)
+	marker := nativeStopCommitPending(t, f.root)
+	before := pendingRawRevision(t, f.root)
 	if code, _, diag := nativeReviewEvent(t, f.root, "SubagentStop", "opaque-document-reviewer", filepath.Join(f.root, p.ViewPath)); code != 0 || !strings.Contains(diag, "recovered the original pending Writer") || strings.Contains(diag, "answer received") {
 		t.Fatalf("S5: %d %s", code, diag)
 	}
@@ -156,8 +195,8 @@ func TestNativeStopPendingS6DoesNotReceiveProfessionalAnswer(t *testing.T) {
 	root, source, r := nativeDeliveryFixture(t)
 	nativeAnswer(t, source, r)
 	brief, _, result := assignmentrecord.NativePaths(r)
-	before := stageSnapshot(t, root).Revision
-	marker := nativeStopFingerprintPending(t, root)
+	marker := nativeStopCommitPending(t, root)
+	before := pendingRawRevision(t, root)
 	if code, diag := nativeEvent(t, root, source, "SubagentStop", filepath.Join(root, brief)+"\n"+filepath.Join(source, result), false); code != 0 || !strings.Contains(diag, "recovered the original pending Writer") || strings.Contains(diag, "delivery received") {
 		t.Fatalf("S6: %d %s", code, diag)
 	}

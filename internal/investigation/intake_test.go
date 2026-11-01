@@ -22,24 +22,14 @@ type intakeFixture struct {
 	root        string
 	statePath   string
 	journalPath string
-	batchRel    string
-	batchSHA    string
-	batchIDs    []string
+	findingIDs  []string
 }
 
-func TestIngestRejectsMissingObservationBatchWithRecoveryCommand(t *testing.T) {
+func TestIngestRequiresActualFindingOrHumanReport(t *testing.T) {
 	fixture := newIntakeFixture(t, nil)
-
-	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "one sealed batch enters one provisional case",
-	})
-	if err == nil {
-		t.Fatal("Ingest() must reject a missing observation batch")
-	}
-	assertErrorMentions(t, err, "observation_batch", "s7 status --explain")
-	if strings.Contains(err.Error(), "runtime investigation ingest") {
-		t.Errorf("no-batch error must not point back at this ingest command (RC-18 F-H1): %q", err.Error())
+	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{ExpectedRevision: 0, GroupingRationale: "investigate observed defect"})
+	if err == nil || !strings.Contains(err.Error(), "Finding or actual human defect") {
+		t.Fatalf("missing source error: %v", err)
 	}
 }
 
@@ -56,99 +46,6 @@ func TestIngestUsesWriterRevisionWhenExpectedRuntimeRevisionIsOmitted(t *testing
 	if snapshot.Revision != 1 {
 		t.Fatalf("Runtime revision = %d, want Writer-assigned revision 1", snapshot.Revision)
 	}
-}
-
-func TestIngestRejectsObservationBatchHashDrift(t *testing.T) {
-	fixture := newIntakeFixture(t, []string{"finding-1"})
-	setObservationBatchPointer(t, fixture, "0"+strings.Repeat("0", 63))
-
-	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "single finding remains a provisional case",
-	})
-	if err == nil {
-		t.Fatal("Ingest() must reject a drifted observation batch")
-	}
-	assertErrorMentions(t, err, "sha256", "runtime investigation ingest")
-}
-
-func TestIngestRejectsFindingArtifactHashDrift(t *testing.T) {
-	fixture := newIntakeFixture(t, []string{"finding-1"})
-	findingPath := filepath.Join(fixture.root, ".claude/evidence/findings/finding-1.json")
-	if err := os.WriteFile(findingPath, []byte("tampered"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "a Finding must remain bound to its immutable artifact",
-	})
-	if err == nil {
-		t.Fatal("Ingest() must reject a drifted Finding artifact")
-	}
-	assertErrorMentions(t, err, "Finding finding-1", "sha256", "runtime investigation ingest")
-}
-
-func TestIngestRejectsFindingArtifactSchemaDrift(t *testing.T) {
-	fixture := newIntakeFixture(t, []string{"finding-1"})
-	findingPath := filepath.Join(fixture.root, ".claude/evidence/findings/finding-1.json")
-	invalid := []byte(`{"finding_id":"finding-1"}` + "\n")
-	if err := os.WriteFile(findingPath, invalid, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	stateBytes, err := os.ReadFile(fixture.statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state map[string]any
-	if err := json.Unmarshal(stateBytes, &state); err != nil {
-		t.Fatal(err)
-	}
-	state["entities"].(map[string]any)["findings"].([]any)[0].(map[string]any)["sha256"] = hash(invalid)
-	stateBytes, err = json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fixture.statePath, append(stateBytes, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "a Finding must satisfy the canonical Finding schema before S8 consumes it",
-	})
-	if err == nil {
-		t.Fatal("Ingest() must reject an invalid Finding artifact")
-	}
-	assertErrorMentions(t, err, "finding.schema.json", "runtime investigation ingest")
-}
-
-func TestIngestRejectsObservationBatchFindingSetMismatch(t *testing.T) {
-	fixture := newIntakeFixture(t, []string{"finding-1", "finding-2"})
-	writeObservationBatch(t, fixture, []string{"finding-1", "finding-3"}, 3)
-
-	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "findings are provisionally investigated together",
-	})
-	if err == nil {
-		t.Fatal("Ingest() must reject a non-exact Finding set")
-	}
-	assertErrorMentions(t, err, "exact", "finding-2", "finding-3", "runtime investigation ingest")
-}
-
-func TestIngestRejectsObservationBatchBaselineMismatch(t *testing.T) {
-	fixture := newIntakeFixture(t, []string{"finding-1"})
-	writeObservationBatch(t, fixture, []string{"finding-1"}, 2)
-
-	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "baseline mismatch must not enter investigation",
-	})
-	if err == nil {
-		t.Fatal("Ingest() must reject a baseline generation mismatch")
-	}
-	assertErrorMentions(t, err, "baseline_generation", "runtime investigation ingest")
 }
 
 func TestIngestCreatesCaseAndCommitsInvestigationPointer(t *testing.T) {
@@ -169,9 +66,6 @@ func TestIngestCreatesCaseAndCommitsInvestigationPointer(t *testing.T) {
 	pointer := review["investigation"].(map[string]any)
 	if pointer["status"] != "investigating" {
 		t.Fatalf("investigation status = %v, want investigating", pointer["status"])
-	}
-	if pointer["observation_batch_id"] != "observation-batch-r1" {
-		t.Fatalf("observation_batch_id = %v", pointer["observation_batch_id"])
 	}
 	casePath, _ := pointer["path"].(string)
 	caseData, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(casePath)))
@@ -248,7 +142,7 @@ func TestIngestRejectsWrongLifecycleCursor(t *testing.T) {
 	if err == nil {
 		t.Fatal("Ingest() must reject a verification cursor")
 	}
-	assertErrorMentions(t, err, "bug_resolution.investigation", "verification.running", "runtime investigation status")
+	assertErrorMentions(t, err, "bug_resolution.investigation", "verification.running", "actual accepted Finding handoff")
 	if strings.Contains(err.Error(), "state.review") {
 		t.Errorf("phase-gate error must describe the lifecycle cursor, not the batch pointer: %q", err.Error())
 	}
@@ -286,80 +180,6 @@ func TestIngestAllowsBugResolutionInvestigationCursorAndProjectsBatchViews(t *te
 	if _, isArray := document["evidence_gaps"].([]any); !isArray {
 		t.Fatalf("evidence_gaps = %#v, want an array", document["evidence_gaps"])
 	}
-	if got := document["baseline_digest"]; got != strings.Repeat("a", 64) {
-		t.Fatalf("baseline_digest = %v, want the sealed subject digest", got)
-	}
-}
-
-// TestIngestProjectsBlockedClaimsIntoEvidenceGaps proves blocked Claims and
-// unobserved Claims land in evidence_gaps with their preconditions, and that
-// blocked evidence refs join failure_boundary_refs.
-func TestIngestProjectsBlockedClaimsIntoEvidenceGaps(t *testing.T) {
-	fixture := newIntakeFixture(t, []string{"finding-1"})
-	// Re-seal the batch with one blocked claim and one unobserved claim.
-	batchPath := filepath.Join(fixture.root, filepath.FromSlash(fixture.batchRel))
-	data := mustRead(t, batchPath)
-	var batch map[string]any
-	if err := json.Unmarshal(data, &batch); err != nil {
-		t.Fatal(err)
-	}
-	batch["claim_coverage_summary"].(map[string]any)["blocked"] = 1
-	batch["claim_coverage_summary"].(map[string]any)["blocked_claims"] = []any{
-		map[string]any{
-			"claim_id":              "claim-intake-1",
-			"blocking_finding_ids":  []any{"finding-1"},
-			"failed_precondition":   map[string]any{"kind": "build", "detail": "the module does not compile in the verification workspace"},
-			"evidence_refs":         []any{"evidence://intake-build-log"},
-			"after_repair_required": true,
-			"result_id":             "review-result-r1",
-		},
-	}
-	batch["unobserved_claim_ids"] = []any{"claim-intake-9"}
-	sealed, err := json.MarshalIndent(batch, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealed = append(sealed, '\n')
-	if err := os.WriteFile(batchPath, sealed, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	setObservationBatchPointer(t, fixture, hash(sealed))
-	setIntakeLifecycle(t, fixture, "bug_resolution", "investigation")
-
-	snapshot, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "blocked claims must surface as investigation evidence gaps",
-	})
-	if err != nil {
-		t.Fatalf("Ingest() error = %v", err)
-	}
-	caseRel := snapshot.State["review"].(map[string]any)["investigation"].(map[string]any)["path"].(string)
-	var document map[string]any
-	if err := json.Unmarshal(mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(caseRel))), &document); err != nil {
-		t.Fatal(err)
-	}
-	gaps := document["evidence_gaps"].([]any)
-	if len(gaps) != 2 {
-		t.Fatalf("evidence_gaps = %#v, want one blocked + one unobserved entry", gaps)
-	}
-	blocked, _ := gaps[0].(string)
-	if !strings.Contains(blocked, "claim-intake-1") || !strings.Contains(blocked, "finding-1") || !strings.Contains(blocked, "build") {
-		t.Fatalf("blocked gap = %q, want claim/finding/precondition projection", blocked)
-	}
-	unobserved, _ := gaps[1].(string)
-	if !strings.Contains(unobserved, "claim-intake-9") {
-		t.Fatalf("unobserved gap = %q, want the unobserved claim projection", unobserved)
-	}
-	boundaries := document["failure_boundary_refs"].([]any)
-	found := false
-	for _, raw := range boundaries {
-		if ref, _ := raw.(string); ref == "evidence://intake-build-log" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("failure_boundary_refs = %#v, want the blocked claim's evidence ref", boundaries)
-	}
 }
 
 func TestIngestRejectsStaleRevisionBeforeCreatingCase(t *testing.T) {
@@ -394,7 +214,7 @@ func TestIngestRejectsSecondIngestAsExplicitIdempotentConflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("second Ingest() must return an explicit idempotent conflict")
 	}
-	assertErrorMentions(t, err, "already", "idempotent", "runtime investigation status")
+	assertErrorMentions(t, err, "already", "Case")
 }
 
 func newIntakeFixture(t *testing.T, pointerIDs []string) *intakeFixture {
@@ -432,9 +252,7 @@ func newIntakeFixture(t *testing.T, pointerIDs []string) *intakeFixture {
 	state["lifecycle"] = map[string]any{"state": "bug_resolution", "phase": "investigation", "phase_revision": 0}
 	state["baseline"] = map[string]any{"generation": 3, "captured_at": "2026-08-25T00:00:00Z"}
 	state["review"] = map[string]any{
-		"round":             1,
-		"clean_round":       nil,
-		"observation_batch": nil,
+		"round_entry": map[string]any{"transition_id": "TR-006", "plan_id": "review-plan-r1", "baseline_generation": 3, "change_impact_ref": nil},
 	}
 	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
 	state["last_transition"] = nil
@@ -463,7 +281,7 @@ func newIntakeFixture(t *testing.T, pointerIDs []string) *intakeFixture {
 			if err := os.WriteFile(findingPath, findingBytes, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			rows = append(rows, map[string]any{"finding_id": findingID, "path": findingRel, "sha256": hash(findingBytes), "claim_id": findingBody["claim_id"], "assignment_id": "assignment-intake", "lens": "qa", "severity": "P1", "observation_mode": "code_inspection", "original_finder": "agent-intake", "review_round": 1, "created_at": "2026-08-25T00:00:00Z"})
+			rows = append(rows, map[string]any{"finding_id": findingID, "path": findingRel, "review_plan_id": "review-plan-r1", "claim_id": findingBody["claim_id"], "assignment_id": "assignment-intake", "lens": "qa", "severity": "P1", "observation_mode": "code_inspection", "original_finder": "agent-intake", "created_at": "2026-08-25T00:00:00Z"})
 		}
 		entities["findings"] = rows
 	}
@@ -483,75 +301,33 @@ func newIntakeFixture(t *testing.T, pointerIDs []string) *intakeFixture {
 	if err := os.WriteFile(journalPath, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fixture := &intakeFixture{root: root, statePath: statePath, journalPath: journalPath, batchIDs: pointerIDs}
-	if pointerIDs != nil {
-		writeObservationBatch(t, fixture, pointerIDs, 3)
-	}
-	return fixture
+	return &intakeFixture{root: root, statePath: statePath, journalPath: journalPath, findingIDs: pointerIDs}
 }
 
-func writeObservationBatch(t *testing.T, fixture *intakeFixture, findingIDs []string, baselineGeneration int) {
+// setFixtureAcceptedFindings associates the existing original Findings with the current Plan.
+func setFixtureAcceptedFindings(t *testing.T, fixture *intakeFixture, findingIDs []string, baselineGeneration int) {
 	t.Helper()
-	batch := map[string]any{
-		"schema_version": "1.0.0", "observation_batch_id": "observation-batch-r1", "conclusion": "sealed",
-		"evidence_id": "observation-batch-r1", "kind": "observation_batch", "runtime_id": "loop-REQ-INTAKE",
-		"producer_agent_id": "round-consumer", "producer_responsibility": "Orchestrator", "review_plan_id": "review-plan-r1",
-		"review_round": 1, "baseline_generation": baselineGeneration, "subject_digest": strings.Repeat("a", 64),
-		"finding_ids": findingIDs, "drain_policy": "complete_required_claims",
-		"claim_coverage_summary": map[string]any{"total_required": 1, "pass": 0, "finding": len(findingIDs), "not_applicable": 0, "blocked": 0, "blocked_claims": []any{}, "plan_revision": 1},
-		"unobserved_claim_ids":   []any{}, "original_finder_routes": []any{}, "investigation_readiness": readiness(findingIDs),
-		"sealed_at": "2026-08-25T00:00:00Z", "sealed_by": "round-consumer", "revision": 1,
-	}
-	data, err := json.MarshalIndent(batch, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixture.batchRel = ".claude/evidence/observation-batch-r1.json"
-	abs := filepath.Join(fixture.root, filepath.FromSlash(fixture.batchRel))
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(abs, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fixture.batchSHA = hash(data)
-	setObservationBatchPointer(t, fixture, fixture.batchSHA)
-}
-
-func setObservationBatchPointer(t *testing.T, fixture *intakeFixture, sha string) {
-	t.Helper()
-	stateData, err := os.ReadFile(fixture.statePath)
+	data, err := os.ReadFile(fixture.statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var state map[string]any
-	if err := json.Unmarshal(stateData, &state); err != nil {
+	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatal(err)
 	}
-	ids := make([]any, 0, len(fixture.batchIDs))
-	for _, id := range fixture.batchIDs {
-		ids = append(ids, id)
-	}
-	state["review"].(map[string]any)["observation_batch"] = map[string]any{
-		"batch_id": "observation-batch-r1", "path": fixture.batchRel, "sha256": sha, "finding_ids": ids,
-		"drain_policy": "complete_required_claims", "sealed_at": "2026-08-25T00:00:00Z",
+	review := state["review"].(map[string]any)
+	review["round_entry"] = map[string]any{"transition_id": "TR-006", "plan_id": "review-plan-r1", "baseline_generation": baselineGeneration, "change_impact_ref": nil}
+	for _, raw := range state["entities"].(map[string]any)["findings"].([]any) {
+		raw.(map[string]any)["review_plan_id"] = "review-plan-r1"
 	}
 	encoded, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(fixture.statePath, append(encoded, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(fixture.statePath, append(encoded, '\n'), 0644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func readiness(ids []string) []any {
-	items := make([]any, 0, len(ids))
-	for _, id := range ids {
-		items = append(items, map[string]any{"finding_id": id, "status": "ready"})
-	}
-	return items
+	fixture.findingIDs = findingIDs
 }
 
 func assertErrorMentions(t *testing.T, err error, terms ...string) {

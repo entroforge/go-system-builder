@@ -12,8 +12,8 @@ type Reference struct {
 	Path    string `json:"path"`
 	Anchor  string `json:"anchor,omitempty"`
 	Version string `json:"version,omitempty"`
-	SHA256  string `json:"sha256"`
 }
+
 type Entry struct {
 	ID          string      `json:"id"`
 	Topic       string      `json:"topic"`
@@ -30,10 +30,10 @@ type Registry struct {
 }
 type Source struct {
 	Path       string `json:"path"`
-	SHA256     string `json:"sha256,omitempty"`
 	SourceMode string `json:"source_mode"`
 	Status     string `json:"status"`
 }
+
 type Relevant struct {
 	Entry     Entry    `json:"entry"`
 	Status    string   `json:"status"`

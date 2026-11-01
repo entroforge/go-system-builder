@@ -19,14 +19,16 @@ import (
 
 type hookReaderKey struct{}
 type hookReader struct {
-	Kind        string
-	Actor       string
-	Owner       string
-	References  []string
-	Receipts    []string
-	Retired     bool
-	snapshot    runtime.Snapshot
-	snapshotErr error
+	Kind           string
+	Actor          string
+	Owner          string
+	References     []string
+	Receipts       []string
+	Retired        bool
+	S5Context      string
+	SelectionIssue string
+	snapshot       runtime.Snapshot
+	snapshotErr    error
 }
 
 // The fallback recognizes actual top-level platform events, never a directory
@@ -116,6 +118,9 @@ func resolveHookReader(root string, in policy.Input, supplied ...runtime.Snapsho
 		if err == nil {
 			reader.snapshot = snap
 			state := snap.State
+			if resolveS5HookResponsibility(root, in, reader, state) {
+				return reader
+			}
 			// The session resolver rejects retired execution authority. Its original
 			// session/path association remains useful for read-only responsibility
 			// feedback and must never turn a late Worker into a new Main.
@@ -151,7 +156,7 @@ func resolveHookReader(root string, in policy.Input, supplied ...runtime.Snapsho
 				if stringValue(row["superseded_by"]) != "" {
 					reader.Retired = true
 				}
-				if stringValue(row["content_sha256"]) != "" && stringValue(row["packet_id"]) != "" {
+				if stringValue(row["packet_id"]) != "" {
 					reader.Receipts = appendUnique(reader.Receipts, fmt.Sprintf("original answer %s is accepted; original control status=%s", row["packet_id"], stringValue(row["control_status"])))
 				}
 			}
@@ -203,6 +208,15 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 	if reader.Kind != "Worker" {
 		return true, 0
 	}
+	if reader.SelectionIssue != "" {
+		if in.Event == "Stop" && !in.StopHookActive {
+			fmt.Fprintln(diagnostic, reader.SelectionIssue)
+			return true, 2
+		}
+		if in.Event != "SessionStart" && in.Event != "SubagentStart" {
+			return true, 0
+		}
+	}
 	if in.Event == "PostToolUse" {
 		// A registered top-level Worker session may omit the logical owner in the
 		// platform payload. Adapt a local receiver copy, retaining the cached actor.
@@ -212,6 +226,11 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 		}
 		if handled, code := receiveSavedQuestionnaire(root, received, out, diagnostic); handled {
 			return true, code
+		}
+		if !reader.Retired && reader.Owner != "" && reader.Owner != "Main" {
+			if handled, code := runObservedQuestionnaireSavesForOwner(root, received, out, diagnostic, reader.Owner); handled {
+				return true, code
+			}
 		}
 		return true, 0
 	}
@@ -228,8 +247,15 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 		}
 		feedback := func(decision policy.Decision) (bool, int) {
 			if isDenyingHookDecision(decision.Decision) {
-				fmt.Fprintln(diagnostic, hook.RenderStopBlockFeedback(decision, ""))
+				questionnaire := ""
+				if mapFieldCLI(reader.snapshot.State, "lifecycle")["state"] == "building" {
+					questionnaire = stageBuilderQuestionLifecycleContext(root, checked, reader.snapshot)
+				}
+				fmt.Fprintln(diagnostic, hook.RenderStopBlockFeedback(decision, questionnaire))
 				return true, 2
+			}
+			if decision.Decision == "warn" && decision.Reason != "" {
+				fmt.Fprintln(diagnostic, decision.Reason)
 			}
 			return true, 0
 		}
@@ -253,8 +279,11 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 	if in.Event == "PreCompact" {
 		return true, 0
 	}
-	message, specialized := "", false
-	if !reader.Retired {
+	message, specialized := reader.S5Context, reader.S5Context != ""
+	if reader.SelectionIssue != "" {
+		message, specialized = reader.SelectionIssue, true
+	}
+	if !reader.Retired && !specialized {
 		observed := in
 		if observed.EffectiveAgentID() == "" {
 			observed.AgentID = reader.Owner
@@ -263,6 +292,17 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 		// including unavailable/unknown feedback. Never append stale generic
 		// Plan references or receipts to an applicable professional projection.
 		message, specialized = s9PacketQuestionnaireLifecycleContext(root, observed, reader.snapshot)
+	}
+	if !reader.Retired && !specialized && (in.Event == "SessionStart" || in.Event == "SubagentStart") && mapFieldCLI(reader.snapshot.State, "lifecycle")["state"] == "building" {
+		observed := in
+		if observed.EffectiveAgentID() == "" {
+			observed.AgentID = reader.Owner
+		}
+		if loaded, err := hookctx.FromSnapshot(root, reader.Owner, reader.snapshot); err == nil && loaded != nil {
+			if own := assignmentContextLifecycle(root, observed, loaded.Assignments); own != "" {
+				message, specialized = own, true
+			}
+		}
 	}
 	if !specialized {
 		if len(reader.References) == 0 {

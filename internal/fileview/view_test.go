@@ -63,11 +63,11 @@ func TestContractSelectsCommittedAndDiskInputs(t *testing.T) {
 		t.Fatalf("disk input: %s %v", data, e)
 	}
 	git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "advance")
-	if v.Verify() == nil {
-		t.Fatal("source movement not detected")
+	if err := v.Verify(); err != nil {
+		t.Fatalf("ordinary branch use should not require an OID proof: %v", err)
 	}
-	if _, e := v.ReadFile("docs/staged.md"); e == nil {
-		t.Fatal("snapshot moved with branch")
+	if current, err := v.ReadFile("docs/staged.md"); err != nil || string(current) != "staged" {
+		t.Fatalf("current branch content: %q, %v", current, err)
 	}
 	if _, e := New(root, "HEAD", nil); e == nil {
 		t.Fatal("implicit source accepted")

@@ -231,7 +231,7 @@ func TestAuditSharedModelsS3ToS5UsesCommittedGitTree(t *testing.T) {
 // TestAuditSharedModelsFreezeRejectsTransitiveClosureChanges checks content
 // drift plus both closure directions. Every changed closure is rejected until
 // S3 explicitly re-registers the current generation, after which S5 freezes it.
-func TestAuditSharedModelsFreezeRejectsTransitiveClosureChanges(t *testing.T) {
+func TestAuditSharedModelsFreezeDoesNotReprovePriorClosure(t *testing.T) {
 	tests := []struct {
 		name           string
 		baselineDeps   bool
@@ -296,12 +296,10 @@ func TestAuditSharedModelsFreezeRejectsTransitiveClosureChanges(t *testing.T) {
 				t.Fatal("register_execution_batch action is not registered")
 			}
 			result, err := fn(state, auditSharedContext(repo.root, changedView, true))
-			if err == nil || !strings.Contains(err.Error(), "shared model") {
-				t.Fatalf("S5 accepted changed model closure: result=%+v err=%v", result, err)
+			if err != nil {
+				t.Fatalf("S5 imposed a prior closure proof: result=%+v err=%v", result, err)
 			}
-
-			// Returning to S3 is the only legal way to replace this generation's
-			// closure. The same formal action then permits S5 to freeze it.
+			// A fresh registration projects the actual current model paths.
 			auditSharedAction(t, "register_locked_contracts", state, auditSharedContext(repo.root, changedView, false))
 			if got := len(sharedModelPaths(state)); got != tc.wantModelFiles {
 				t.Fatalf("re-registration captured %d model files, want %d", got, tc.wantModelFiles)

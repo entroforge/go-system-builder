@@ -20,7 +20,7 @@ func TestTR004_DocumentFixRequiredReturnsPlanningSystem(t *testing.T) {
 	req039fixtures.SeedDocumentFixRequiredS5(t, root, state)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-tr-004", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-tr-004", "Edit", map[string]any{
 		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
@@ -47,7 +47,7 @@ func TestTR023_FindingSpecChangeReturnsPlanningSystem(t *testing.T) {
 	req039fixtures.SeedFindingSpecChangeRequired(t, root, state)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-tr-023", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-tr-023", "Edit", map[string]any{
 		"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
@@ -74,7 +74,7 @@ func TestTR024_FindingReqChangePausesSystem(t *testing.T) {
 	req039fixtures.SeedFindingReqChangeRequired(t, root, state)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-tr-024", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-tr-024", "Edit", map[string]any{
 		"file_path": "docs/requirements/REQ-039-loop-control-plane.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
@@ -124,7 +124,7 @@ func TestCT03918_G2ReworkOldArtifactImmutableSystem(t *testing.T) {
 		t.Fatalf("CT-039-18 g2 must be locked, got %q", g2Status)
 	}
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-18-sys", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-18-sys", "Edit", map[string]any{
 		"file_path": "docs/design/versions/REQ-039/g2/ARCHITECTURE-039-loop-control-plane.md",
 	})
 	code, _, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)

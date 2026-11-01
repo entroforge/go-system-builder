@@ -25,12 +25,10 @@ import (
 // NativeCheckSource contains the frozen source coordinate for an owner-run
 // check. It is populated by resolving the current Record-frozen manifest.
 type NativeCheckSource struct {
-	Checkout       string
-	Branch         string
-	TargetBranch   string
-	Head           string
-	ManifestRef    string
-	ManifestSHA256 string
+	Checkout     string
+	Branch       string
+	TargetBranch string
+	ManifestRef  string
 }
 
 // NativeOwnedCheckRequest carries the original Runtime and Record tuple plus
@@ -42,69 +40,20 @@ type NativeOwnedCheckRequest struct {
 	AssignmentID       string
 	OwnerAgentID       string
 	Record             assignmentrecord.RecordReference
-	RecordSHA256       string
 	RecordData         assignmentrecord.Record
 	ContextGeneration  int
 	ContextRef         agentcontext.Reference
-	ContextSHA256      string
 	ActivationRef      string
-	ActivationSHA256   string
 	Check              assignmentrecord.WorkerCheck
 	Source             NativeCheckSource
 }
 
 type NativeOwnedCheckResult struct {
-	ReceiptPath    string
-	SnapshotSHA256 string
-	ToolReceipt    checkexec.ToolReceipt
-	Passed         bool
-	Reused         bool
-	Attempt        *OwnedCheckRunAttempt
-}
-
-// CheckSnapshotDigest applies the exact copyCheckTree exclusions, file-mode
-// normalization and symlink checks used by the runner, returning the hash of
-// the disposable snapshot without invoking a command.
-func CheckSnapshotDigest(ctx context.Context, source string) (string, error) {
-	root, err := Canonical(source)
-	if err != nil || root != source {
-		return "", fmt.Errorf("check source must be a canonical checkout root")
-	}
-	scratch, err := os.MkdirTemp("", "loop-owned-check-snapshot-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(scratch)
-	return copyCheckTree(ctx, source, scratch)
-}
-
-// ObserveOwnedCheckSource returns both the current runner-compatible copy
-// hash and the profile observation computed from that same normalized copy.
-// Permission facts are intentionally left to the current Runtime-bound runner
-// because they include its independent control/source coordinates.
-func ObserveOwnedCheckSource(ctx context.Context, source string, profile checkexec.Profile) (string, checkexec.Observation, error) {
-	var empty checkexec.Observation
-	root, err := Canonical(source)
-	if err != nil || root != source {
-		return "", empty, fmt.Errorf("check source must be a canonical checkout root")
-	}
-	if profile.Location != "worker" {
-		return "", empty, fmt.Errorf("owned check profile must use the frozen Worker runner")
-	}
-	scratch, err := os.MkdirTemp("", "loop-owned-check-observe-")
-	if err != nil {
-		return "", empty, err
-	}
-	defer os.RemoveAll(scratch)
-	snapshot, err := copyCheckTree(ctx, source, scratch)
-	if err != nil {
-		return "", empty, err
-	}
-	observation, err := checkexec.ObserveProfile(checkexec.WithProfile(ctx, profile), scratch, profile)
-	if err != nil {
-		return "", empty, err
-	}
-	return snapshot, observation, nil
+	ReceiptPath string
+	ToolReceipt checkexec.ToolReceipt
+	Passed      bool
+	Reused      bool
+	Attempt     *OwnedCheckRunAttempt
 }
 
 // OwnedCheckRunAttempt keeps the original same-key diagnostic locked until
@@ -146,7 +95,7 @@ func (b *ExecutionRegistry) RunOwnedCheck(ctx context.Context, e Execution, inde
 	if index < 0 || index >= len(e.WorkerChecks) {
 		return empty, fmt.Errorf("select a frozen WorkerCheck index")
 	}
-	if e.Status != "ready" || e.BootstrapSHA256 == "" || e.AssignmentRecord == nil {
+	if e.Status != "ready" || e.AssignmentRecord == nil {
 		return empty, fmt.Errorf("owned check requires the current bootstrapped canonical Assignment execution")
 	}
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
@@ -172,11 +121,10 @@ func (b *ExecutionRegistry) RunOwnedCheck(ctx context.Context, e Execution, inde
 		AssignmentID: e.AssignmentID, Index: index, Check: check,
 		Binding: CheckBinding(e), Profile: check.Profile, Output: output,
 		ReceiptFacts: map[string]any{
-			"assignment_record":        e.AssignmentRecord,
-			"assignment_record_sha256": e.AssignmentRecordSHA256,
-			"worker_check_index":       index,
-			"worker_check_contract":    "s6-closing-v1",
-			"worker_check_snapshot":    map[string]any{"runtime_id": e.RuntimeID, "baseline_generation": e.BaselineGeneration, "assignment_id": e.AssignmentID, "owner_agent_id": e.AgentID, "execution_generation": e.Generation, "bootstrap_sha256": e.BootstrapSHA256},
+			"assignment_record":     e.AssignmentRecord,
+			"worker_check_index":    index,
+			"worker_check_contract": "s6-closing-v1",
+			"worker_check_snapshot": map[string]any{"runtime_id": e.RuntimeID, "baseline_generation": e.BaselineGeneration, "assignment_id": e.AssignmentID, "owner_agent_id": e.AgentID, "execution_generation": e.Generation},
 		},
 		PermissionObservation: func(ctx context.Context, scratch string) checkexec.PermissionObservation {
 			return b.observeCheckPermissions(ctx, e, scratch)
@@ -217,15 +165,17 @@ func CoordinateNativeRun(ctx context.Context, controlRoot string, req NativeOwne
 		return empty, fmt.Errorf("native owned check requires the current accepted PLAN and activation chain: %w", err)
 	}
 	activationRef := currentAgentActivationRef(state, req.OwnerAgentID)
-	if activationRef == "" || activationRef != req.ActivationRef || req.ActivationSHA256 == "" {
+	if activationRef != req.ActivationRef {
 		return empty, fmt.Errorf("native owned check activation ref differs from the current Agent row")
 	}
-	activationBytes, err := workpacket.ReadFile(root, activationRef, 1<<20)
-	if err != nil || workpacket.Digest(activationBytes) != req.ActivationSHA256 {
-		return empty, fmt.Errorf("native owned check activation bytes changed")
-	}
-	if err := schema.NewValidator(root).ValidateBytes("agent-message.schema.json", activationBytes); err != nil {
-		return empty, fmt.Errorf("native owned check activation envelope is invalid: %w", err)
+	if activationRef != "" {
+		activationBytes, err := workpacket.ReadFile(root, activationRef, 1<<20)
+		if err != nil {
+			return empty, fmt.Errorf("read original native check activation: %w", err)
+		}
+		if err := schema.NewValidator(root).ValidateBytes("agent-message.schema.json", activationBytes); err != nil {
+			return empty, fmt.Errorf("native owned check activation envelope is invalid: %w", err)
+		}
 	}
 	bound, _ := state["bound_req"].(map[string]any)
 	workspaceAuthority, _ := bound["workspace"].(map[string]any)
@@ -247,30 +197,22 @@ func CoordinateNativeRun(ctx context.Context, controlRoot string, req NativeOwne
 	if err != nil || !found {
 		return empty, fmt.Errorf("native owned check has no current canonical Assignment Record: %w", err)
 	}
-	currentSHA, err := current.Digest()
-	if err != nil {
-		return empty, err
-	}
-	requestedSHA, err := req.RecordData.Digest()
-	if err != nil || current.Reference() != req.Record || requestedSHA != req.RecordSHA256 || currentSHA != req.RecordSHA256 || req.RecordData.Reference() != req.Record {
-		return empty, fmt.Errorf("native owned check Record tuple/digest is not current")
+	if current.Reference() != req.Record || req.RecordData.Reference() != req.Record {
+		return empty, fmt.Errorf("native owned check Record responsibility is not current")
 	}
 	if req.RuntimeID != req.Record.RuntimeID || req.BaselineGeneration != req.Record.BaselineGeneration || req.AssignmentID != req.Record.AssignmentID || req.OwnerAgentID != req.RecordData.OwnerAgentID {
 		return empty, fmt.Errorf("native owned check identity differs from its canonical Assignment Record")
 	}
-	if req.RecordData.ClosingContract == nil || req.ContextGeneration < 0 || req.ContextRef.Path == "" || req.ContextSHA256 == "" || req.ContextSHA256 != req.ContextRef.SHA256 {
-		return empty, fmt.Errorf("native owned check requires a frozen context and explicit closing contract")
+	if req.RecordData.ClosingContract == nil || req.ContextGeneration < 0 || req.ContextRef.Path == "" {
+		return empty, fmt.Errorf("native owned check requires its original context and closing contract")
 	}
-	if err := assignmentrecord.VerifySources(req.RecordData, func(ref string) ([]byte, error) {
-		return assignmentinputs.Read(root, ref)
-	}); err != nil {
-		return empty, fmt.Errorf("native Assignment source closure changed: %w", err)
+	if err := assignmentrecord.ValidateRecord(req.RecordData); err != nil {
+		return empty, fmt.Errorf("invalid native Assignment responsibility: %w", err)
 	}
-	contextBytes, err := workpacket.ReadFile(root, req.ContextRef.Path, 2<<20)
-	if err != nil || workpacket.Digest(contextBytes) != req.ContextSHA256 {
-		return empty, fmt.Errorf("native fixed context bytes changed")
+	if _, err := workpacket.ReadFile(root, req.ContextRef.Path, 2<<20); err != nil {
+		return empty, fmt.Errorf("read original native context: %w", err)
 	}
-	if req.RecordData.Manifest.Ref != req.Source.ManifestRef || req.RecordData.Manifest.SHA256 != req.Source.ManifestSHA256 {
+	if req.RecordData.Manifest.Ref != req.Source.ManifestRef {
 		return empty, fmt.Errorf("native check source is not bound to the Record-frozen manifest")
 	}
 	if !sameWorkerCheck(req.RecordData.ClosingContract.WorkerChecks, req.Check) {
@@ -292,12 +234,8 @@ func CoordinateNativeRun(ctx context.Context, controlRoot string, req NativeOwne
 		return empty, err
 	}
 
-	nativeContext := map[string]any{
-		"generation": req.ContextGeneration,
-		"ref":        req.ContextRef.Path,
-		"sha256":     req.ContextSHA256,
-	}
-	activation := map[string]any{"ref": req.ActivationRef, "sha256": req.ActivationSHA256}
+	nativeContext := map[string]any{"generation": req.ContextGeneration, "ref": req.ContextRef.Path}
+	activation := map[string]any{"ref": req.ActivationRef}
 	return runOwnedCheck(ctx, ownedCheckRun{
 		MainRoot: root, CommonDir: common, Checkout: req.Source.Checkout,
 		EvidenceRoot: filepath.Join(root, ".claude/evidence/workspace-checks"),
@@ -307,11 +245,9 @@ func CoordinateNativeRun(ctx context.Context, controlRoot string, req NativeOwne
 		Profile: check.Profile, Output: output, UseReuse: false,
 		ReceiptFacts: map[string]any{
 			"record":         req.Record,
-			"record_sha256":  req.RecordSHA256,
 			"activation":     activation,
 			"source_branch":  req.Source.Branch,
 			"target_branch":  req.Source.TargetBranch,
-			"source_head":    req.Source.Head,
 			"native_context": nativeContext,
 		},
 		PermissionObservation: func(ctx context.Context, scratch string) checkexec.PermissionObservation {
@@ -355,18 +291,16 @@ func runOwnedCheck(ctx context.Context, spec ownedCheckRun) (NativeOwnedCheckRes
 		return result, err
 	}
 	defer os.RemoveAll(scratch)
-	snapshot, err := copyCheckTree(ctx, spec.Checkout, scratch)
-	if err != nil {
+	if err := copyCheckTreeWithoutDigest(ctx, spec.Checkout, scratch); err != nil {
 		return result, err
 	}
-	result.SnapshotSHA256 = snapshot
 	observation, err := checkexec.ObserveProfile(ctx, scratch, spec.Profile)
 	if err != nil {
 		return result, err
 	}
 	permissions := spec.PermissionObservation(ctx, scratch)
 	observation.Permissions = &permissions
-	observation.PermissionDigest = permissions.Digest()
+
 	var reuse *checkexec.ReuseDecision
 	if spec.UseReuse && spec.Profile.ReusePolicy != "never" {
 		guard := checkexec.CurrentReuseGuard(ctx)
@@ -389,17 +323,7 @@ func runOwnedCheck(ctx context.Context, spec ownedCheckRun) (NativeOwnedCheckRes
 			return result, fmt.Errorf("reuse decision refers to an unindexed original receipt")
 		}
 	}
-	keyBytes, _ := json.Marshal(struct {
-		Kind     string
-		Binding  checkexec.Binding
-		Checkout string
-		Index    int
-		Command  string
-		Profile  string
-		Snapshot string
-		Facts    map[string]any
-	}{"worker_owned", spec.Binding, spec.Checkout, spec.Index, spec.Profile.Command, spec.Profile.Digest(), snapshot, spec.ReceiptFacts})
-	attempt, err := checkexec.BeginRun(ctx, spec.RunsRoot, checkexec.Hash(keyBytes), spec.Binding)
+	attempt, err := checkexec.BeginInvocation(ctx, spec.RunsRoot, spec.Binding, spec.Index, "worker_owned")
 	if err != nil {
 		return result, err
 	}
@@ -433,7 +357,7 @@ func runOwnedCheck(ctx context.Context, spec ownedCheckRun) (NativeOwnedCheckRes
 		after, afterErr := checkexec.ObserveProfile(ctx, scratch, spec.Profile)
 		afterPermissions := spec.PermissionObservation(ctx, scratch)
 		after.Permissions = &afterPermissions
-		after.PermissionDigest = afterPermissions.Digest()
+
 		if afterErr != nil || !sameOwnedObservationBeforeAfter(observation, after) {
 			runErr = checkexec.New("input_drift", "environment owner", spec.Profile.Command, fmt.Errorf("profile inputs/environment/runner changed during check"))
 		}
@@ -466,14 +390,14 @@ func runOwnedCheck(ctx context.Context, spec ownedCheckRun) (NativeOwnedCheckRes
 		"baseline_generation": binding.Generation, "assignment_id": binding.AssignmentID,
 		"execution_generation": binding.ExecutionGeneration,
 		"check_index":          spec.Index, "command": spec.Profile.Command,
-		"snapshot_sha256": snapshot, "started_at": started,
+		"started_at": started,
 		"elapsed_ms": time.Since(started).Milliseconds(), "status": status,
 		"error": message, "output": logPath, "disposable_copy": true,
 	}
 	for key, value := range spec.ReceiptFacts {
 		receipt[key] = value
 	}
-	sealed, sealErr := checkexec.SealReceipt(receipt, logPath)
+	sealed, sealErr := checkexec.SealReceipt(receipt)
 	if sealErr != nil {
 		finish(receiptPath, sealErr)
 		return result, checkexec.New("diagnostic_io", "environment owner", spec.Profile.Command, sealErr)
@@ -500,13 +424,12 @@ func runOwnedCheck(ctx context.Context, spec ownedCheckRun) (NativeOwnedCheckRes
 }
 
 func sameOwnedObservationBeforeAfter(a, b checkexec.Observation) bool {
+	if a.Permissions == nil || b.Permissions == nil {
+		return false
+	}
+	left, right := *a.Permissions, *b.Permissions
 	return a.ProfileID == b.ProfileID && a.ProfileVersion == b.ProfileVersion &&
-		a.ProfileDigest == b.ProfileDigest && a.SubjectDigest == b.SubjectDigest &&
-		a.RunnerDigest == b.RunnerDigest && a.EnvironmentDigest == b.EnvironmentDigest &&
-		a.DependencyDigest == b.DependencyDigest && a.FixtureDigest == b.FixtureDigest &&
-		a.PermissionDigest == b.PermissionDigest && a.VerificationScope == b.VerificationScope &&
-		a.ReuseEligible == b.ReuseEligible && reflect.DeepEqual(a.Environment, b.Environment) &&
-		a.Permissions != nil && b.Permissions != nil && a.Permissions.Digest() == b.Permissions.Digest()
+		reflect.DeepEqual(a.Environment, b.Environment) && reflect.DeepEqual(left, right)
 }
 
 func latestOwnedCheckReceipts(rows []OwnedCheckReceipt, index int) []checkexec.ToolReceipt {
@@ -523,7 +446,16 @@ func sameWorkerCheck(rows []assignmentrecord.WorkerCheck, check assignmentrecord
 		return false
 	}
 	row := rows[check.Index]
-	return row.Index == check.Index && row.Command == check.Command && row.Profile.Digest() == check.Profile.Digest()
+	return row.Index == check.Index && row.Command == check.Command && sameActualProfile(row.Profile, check.Profile)
+}
+
+func sameActualProfile(left, right checkexec.Profile) bool {
+	strip := func(p checkexec.Profile) checkexec.Profile {
+		p.Dependencies = append([]checkexec.FileRef{}, p.Dependencies...)
+		p.Fixtures = append([]checkexec.FileRef{}, p.Fixtures...)
+		return p
+	}
+	return reflect.DeepEqual(strip(left), strip(right))
 }
 
 func currentOwnerActive(state map[string]any, owner string) bool {
@@ -564,8 +496,8 @@ func currentAgentActivationRef(state map[string]any, owner string) string {
 
 func validateNativeCheckSource(root, devBranch string, req NativeOwnedCheckRequest) error {
 	source := req.Source
-	if source.Checkout == "" || source.Branch == "" || source.TargetBranch == "" || source.Head == "" || source.ManifestRef != req.RecordData.Manifest.Ref || source.ManifestSHA256 != req.RecordData.Manifest.SHA256 {
-		return fmt.Errorf("native check source omits a Record-frozen checkout coordinate")
+	if source.Checkout == "" || source.Branch == "" || source.TargetBranch == "" || source.ManifestRef != req.RecordData.Manifest.Ref {
+		return fmt.Errorf("native check source omits an original checkout coordinate")
 	}
 	checkout, err := Canonical(source.Checkout)
 	if err != nil || checkout != source.Checkout || checkout == root {
@@ -578,13 +510,9 @@ func validateNativeCheckSource(root, devBranch string, req NativeOwnedCheckReque
 	if err != nil || strings.TrimSpace(branch) != source.Branch {
 		return fmt.Errorf("native checkout branch differs from frozen manifest coordinates")
 	}
-	head, err := Git(context.Background(), checkout, "rev-parse", "HEAD")
-	if err != nil || strings.TrimSpace(head) != source.Head {
-		return fmt.Errorf("native checkout HEAD differs from the frozen source head")
-	}
 	manifestBytes, err := assignmentinputs.Read(root, source.ManifestRef)
-	if err != nil || workpacket.Digest(manifestBytes) != source.ManifestSHA256 {
-		return fmt.Errorf("native source manifest bytes changed")
+	if err != nil {
+		return fmt.Errorf("read original native source manifest: %w", err)
 	}
 	var manifest struct {
 		RuntimeID          string `json:"runtime_id"`
@@ -639,12 +567,15 @@ func VerifyOwnedCheckReceipt(evidenceRoot string, e Execution, index int, ref ch
 		return out, fmt.Errorf("owned receipt index is outside frozen WorkerChecks")
 	}
 	check := e.WorkerChecks[index]
-	if ref.Binding != CheckBinding(e) || ref.Checkout != e.Path || ref.Command != check.Command || ref.ProfileDigest != check.Profile.Digest() {
+	if ref.Binding != CheckBinding(e) || ref.Checkout != e.Path || ref.Command != check.Command {
 		return out, fmt.Errorf("owned tool receipt differs from the original WorkerCheck")
 	}
 	out, err := checkexec.VerifyToolReceipt(evidenceRoot, ref)
 	if err != nil {
 		return out, err
+	}
+	if out.Observation.ProfileID != check.Profile.ID || out.Observation.ProfileVersion != check.Profile.Version {
+		return out, fmt.Errorf("owned tool receipt differs from the original profile")
 	}
 	data, err := workpacket.ReadFile(filepath.Dir(ref.Path), filepath.Base(ref.Path), 4<<20)
 	if err != nil {
@@ -653,14 +584,13 @@ func VerifyOwnedCheckReceipt(evidenceRoot string, e Execution, index int, ref ch
 	var raw struct {
 		CheckIndex     int                               `json:"check_index"`
 		Assignment     *assignmentrecord.RecordReference `json:"assignment_record"`
-		AssignmentSHA  string                            `json:"assignment_record_sha256"`
 		WorkerIndex    int                               `json:"worker_check_index"`
 		WorkerSnapshot map[string]any                    `json:"worker_check_snapshot"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return out, err
 	}
-	if raw.CheckIndex != index || raw.WorkerIndex != index || e.AssignmentRecord == nil || raw.Assignment == nil || *raw.Assignment != *e.AssignmentRecord || raw.AssignmentSHA != e.AssignmentRecordSHA256 || raw.WorkerSnapshot["runtime_id"] != e.RuntimeID || raw.WorkerSnapshot["baseline_generation"] != float64(e.BaselineGeneration) || raw.WorkerSnapshot["assignment_id"] != e.AssignmentID || raw.WorkerSnapshot["owner_agent_id"] != e.AgentID || raw.WorkerSnapshot["execution_generation"] != float64(e.Generation) || raw.WorkerSnapshot["bootstrap_sha256"] != e.BootstrapSHA256 {
+	if raw.CheckIndex != index || raw.WorkerIndex != index || e.AssignmentRecord == nil || raw.Assignment == nil || *raw.Assignment != *e.AssignmentRecord || raw.WorkerSnapshot["runtime_id"] != e.RuntimeID || raw.WorkerSnapshot["baseline_generation"] != float64(e.BaselineGeneration) || raw.WorkerSnapshot["assignment_id"] != e.AssignmentID || raw.WorkerSnapshot["owner_agent_id"] != e.AgentID || raw.WorkerSnapshot["execution_generation"] != float64(e.Generation) {
 		return out, fmt.Errorf("owned receipt differs from the frozen workspace execution tuple")
 	}
 	return out, nil
@@ -676,9 +606,9 @@ func (b *ExecutionRegistry) AcceptOwnedCheckReceipt(e *Execution, index int, ref
 		return err
 	}
 	for _, previous := range e.OwnedCheckReceipts {
-		if previous.Receipt.SHA256 == ref.SHA256 {
-			if previous.WorkerCheckIndex != index || previous.Receipt != ref {
-				return fmt.Errorf("owned receipt digest is already registered under a different identity")
+		if previous.Receipt.Path == ref.Path && previous.Receipt.Binding == ref.Binding {
+			if previous.WorkerCheckIndex != index {
+				return fmt.Errorf("owned receipt belongs to another check")
 			}
 			return nil
 		}
@@ -702,7 +632,7 @@ func (b *ExecutionRegistry) observeCopiedOwnedCheck(ctx context.Context, e Execu
 		return checkexec.Observation{}, err
 	}
 	defer os.RemoveAll(scratch)
-	if _, err := copyCheckTree(ctx, e.Path, scratch); err != nil {
+	if err := copyCheckTreeWithoutDigest(ctx, e.Path, scratch); err != nil {
 		return checkexec.Observation{}, err
 	}
 	ctx = checkexec.WithProfile(ctx, check.Profile)
@@ -712,6 +642,5 @@ func (b *ExecutionRegistry) observeCopiedOwnedCheck(ctx context.Context, e Execu
 	}
 	permissions := b.observeCheckPermissions(ctx, e, scratch)
 	observation.Permissions = &permissions
-	observation.PermissionDigest = permissions.Digest()
 	return observation, nil
 }

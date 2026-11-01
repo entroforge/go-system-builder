@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
@@ -78,7 +77,7 @@ func TestRegisteredOwnedReceiptRelocationRetainsOriginalFacts(t *testing.T) {
 			}
 			stageJSON(t, root, ".claude/loop-state.json", source.State)
 			moved := filepath.Join(t.TempDir(), "moved")
-			request := workspace.RebindRequest{RuntimeID: record.RuntimeID, OldMainRoot: root, OldCommonDir: registry.CommonDir, NewMainRoot: moved, NewCommonDir: filepath.Join(moved, ".git"), Branch: registry.Branch, ExpectedHead: registry.BoundHead, Paths: map[string]string{e.Path: filepath.Join(moved, ".worktrees", filepath.Base(e.Path))}}
+			request := workspace.RebindRequest{RuntimeID: record.RuntimeID, OldMainRoot: root, OldCommonDir: registry.CommonDir, NewMainRoot: moved, NewCommonDir: filepath.Join(moved, ".git"), Branch: registry.Branch, Paths: map[string]string{e.Path: filepath.Join(moved, ".worktrees", filepath.Base(e.Path))}}
 			if err := os.Rename(root, moved); err != nil {
 				t.Fatal(err)
 			}
@@ -90,7 +89,7 @@ func TestRegisteredOwnedReceiptRelocationRetainsOriginalFacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			writer := runtime.NewWriter(filepath.Join(moved, ".claude/loop-state.json"), filepath.Join(moved, ".claude/loop-events.jsonl"), moved, semantic.RuntimeCandidateValidator{})
-			for _, change := range []string{"locator", "checkout", "worker-index", "source-sha"} {
+			for _, change := range []string{"locator", "checkout", "worker-index"} {
 				bad := workspace.Encode(next)
 				var execution map[string]any
 				if historical {
@@ -107,8 +106,6 @@ func TestRegisteredOwnedReceiptRelocationRetainsOriginalFacts(t *testing.T) {
 					tool["checkout"] = request.Paths[e.Path]
 				case "worker-index":
 					owned["worker_check_index"] = 1
-				case "source-sha":
-					tool["sha256"] = strings.Repeat("0", 64)
 				}
 				if _, err := writer.RelocateWorkspace(source, bad, "invalid-owned-"+change, "test"); err == nil {
 					t.Fatalf("relocation changed original owned %s", change)
@@ -174,9 +171,9 @@ func capturedRelocationOwnedReceipt(t *testing.T, root string, e workspace.Execu
 	body, err := checkexec.SealReceipt(map[string]any{
 		"version": 2, "command": profile.Command, "status": "pass", "output": log,
 		"check_binding": workspace.CheckBinding(e), "profile_observation": observation,
-		"check_index": 0, "worker_check_index": 0, "assignment_record": e.AssignmentRecord, "assignment_record_sha256": e.AssignmentRecordSHA256,
-		"worker_check_snapshot": map[string]any{"runtime_id": e.RuntimeID, "baseline_generation": e.BaselineGeneration, "assignment_id": e.AssignmentID, "owner_agent_id": e.AgentID, "execution_generation": e.Generation, "bootstrap_sha256": e.BootstrapSHA256},
-	}, log)
+		"check_index": 0, "worker_check_index": 0, "assignment_record": e.AssignmentRecord,
+		"worker_check_snapshot": map[string]any{"runtime_id": e.RuntimeID, "baseline_generation": e.BaselineGeneration, "assignment_id": e.AssignmentID, "owner_agent_id": e.AgentID, "execution_generation": e.Generation},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

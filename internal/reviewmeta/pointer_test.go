@@ -12,7 +12,7 @@ func TestFromStatePreservesOriginalPointerProjection(t *testing.T) {
 			"e2e_coverage_state": "cold_start", "submitted_at": "time",
 			"verification_artifact_workspace": "e2e-workspace/test", "verification_artifact_digest": "artifact"}
 		ptr := FromState(map[string]any{"review": map[string]any{"plan": row}})
-		if ptr == nil || ptr.Revision != 3 || ptr.ReviewRound != 2 || ptr.PlanID != "plan" || ptr.Path != "plan.json" || ptr.SHA256 != "digest" || ptr.Status != "running" || ptr.E2ECoverageState != "cold_start" || ptr.SubmittedAt != "time" || ptr.VerificationArtifactWorkspace != "e2e-workspace/test" || ptr.VerificationArtifactDigest != "artifact" {
+		if ptr == nil || ptr.Revision != 3 || ptr.PlanID != "plan" || ptr.Path != "plan.json" || ptr.Status != "running" || ptr.E2ECoverageState != "cold_start" || ptr.SubmittedAt != "time" || ptr.VerificationArtifactWorkspace != "e2e-workspace/test" {
 			t.Fatalf("pointer projection changed: %+v", ptr)
 		}
 	}

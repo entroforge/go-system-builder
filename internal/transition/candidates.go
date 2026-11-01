@@ -12,14 +12,13 @@ import (
 // EvidenceCandidate is a current Runtime evidence artifact that can satisfy
 // one required evidence slot. Eligibility is deliberately delegated to the
 // same validation path used by Apply, including catalog kind compatibility,
-// status, baseline/review-round, path safety, and fingerprint checks.
+// status, baseline and path safety.
 type EvidenceCandidate struct {
 	ID                 string
 	Path               string
 	Kind               string
 	Status             string
 	BaselineGeneration int
-	ReviewRound        int
 }
 
 // RenderTransitionWithCandidates renders the static transition explanation
@@ -60,9 +59,9 @@ func RenderTransitionWithCandidates(def *LoopDefinition, id, root string, state 
 			continue
 		}
 		for _, candidate := range candidates {
-			fmt.Fprintf(&out, "  - id: `%s`, path: `%s`, kind: `%s`, status: %s, baseline_generation: %d, review_round: %d\n",
+			fmt.Fprintf(&out, "  - id: `%s`, path: `%s`, kind: `%s`, status: %s, baseline_generation: %d\n",
 				candidate.ID, candidate.Path, candidate.Kind, candidate.Status,
-				candidate.BaselineGeneration, candidate.ReviewRound)
+				candidate.BaselineGeneration)
 		}
 	}
 	out.WriteString("\n")
@@ -87,7 +86,6 @@ func currentEvidenceCandidates(root string, state map[string]any, slot string) [
 			Kind:               candidateString(record["kind"]),
 			Status:             candidateString(record["status"]),
 			BaselineGeneration: integer(record["baseline_generation"]),
-			ReviewRound:        integer(record["review_round"]),
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })

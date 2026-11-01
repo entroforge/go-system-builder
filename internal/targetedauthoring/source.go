@@ -1,10 +1,10 @@
 package targetedauthoring
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -25,12 +25,11 @@ type TargetedAuthoring struct {
 	ContractID             string `json:"contract_id"`
 	SessionID              string `json:"session_id"`
 	PlanRef                string `json:"plan_ref"`
-	PlanSHA256             string `json:"plan_sha256"`
 	ContractRef            string `json:"contract_ref"`
-	ContractSHA256         string `json:"contract_sha256"`
 	OriginalAssignmentID   string `json:"original_assignment_id"`
 	PerformingAssignmentID string `json:"performing_assignment_id"`
 	Owner                  string `json:"owner"`
+	QuestionnaireRoot      string `json:"questionnaire_root,omitempty"`
 }
 
 // Verify proves the exact original TASK and manifest authorities. A missing
@@ -55,19 +54,11 @@ func verify(scope *readScope, root string, expected TargetedAuthoring, manifestA
 	if agent == nil {
 		return false, fmt.Errorf("Targeted original registered Agent %s is missing", owner)
 	}
-	taskID := TaskID(expected.SessionID, performing)
+	taskID, err := registeredTaskID(scope, root, agent, expected.SessionID, performing)
+	if err != nil {
+		return false, err
+	}
 	matches := 0
-	for _, id := range stringSliceFromAny(agent["task_ids"]) {
-		if err := scope.ctx.Err(); err != nil {
-			return false, err
-		}
-		if id == taskID {
-			matches++
-		}
-	}
-	if matches != 1 {
-		return false, fmt.Errorf("Targeted exact original TASK %s association missing or duplicated", taskID)
-	}
 	task, err := scope.lookup("tasks", taskID)
 	if err != nil {
 		return false, err
@@ -91,15 +82,15 @@ func verify(scope *readScope, root string, expected TargetedAuthoring, manifestA
 	declaration, hasDeclaration := fields["targeted_authoring"]
 	if hasDeclaration {
 		var contract TargetedAuthoring
-		decoder := json.NewDecoder(bytes.NewReader(declaration))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&contract); err != nil {
+		if err := json.Unmarshal(declaration, &contract); err != nil {
 			return false, fmt.Errorf("Targeted authoring declaration: %w", err)
 		}
+		contract.QuestionnaireRoot = ""
+		expected.QuestionnaireRoot = ""
 		if contract != expected || contract.Protocol != SharedTargetedAuthoringProtocol || original == "" || owner == "" {
 			return false, fmt.Errorf("Targeted authoring declaration differs from current original responsibility")
 		}
-		if contract.RuntimeID == "" || contract.BaselineGeneration < 1 || contract.SessionID == "" || contract.PlanRef == "" || contract.PlanSHA256 == "" || contract.ContractRef == "" || contract.ContractSHA256 == "" {
+		if contract.RuntimeID == "" || contract.BaselineGeneration < 1 || contract.SessionID == "" || contract.PlanRef == "" || contract.ContractRef == "" {
 			return false, fmt.Errorf("Targeted authoring source binding is incomplete")
 		}
 		var actualTask, actualSession, actualAssignment string
@@ -118,7 +109,7 @@ func verify(scope *readScope, root string, expected TargetedAuthoring, manifestA
 		return false, fmt.Errorf("Targeted registered Team is missing")
 	}
 	ref := stringField(team["manifest_ref"])
-	data, err := scope.read(root, ref, stringField(team["manifest_sha256"]))
+	data, err := scope.read(root, ref)
 	if err != nil {
 		return false, fmt.Errorf("Targeted original manifest: %w", err)
 	}
@@ -165,16 +156,100 @@ func verify(scope *readScope, root string, expected TargetedAuthoring, manifestA
 	return hasDeclaration, nil
 }
 
-// TaskID is the existing S9 dispatch's exact deterministic TASK identity.
+// TaskID encodes existing responsibility coordinates; new dispatch normally
+// assigns and records a TASK ID directly and consumers read that recorded ID.
 func TaskID(sessionID, performing string) string {
-	sum := sha256.Sum256([]byte(sessionID + "|" + performing))
-	number := uint64(sum[0])<<24 | uint64(sum[1])<<16 | uint64(sum[2])<<8 | uint64(sum[3])
-	return fmt.Sprintf("TASK-9%d", number)
+	data, _ := json.Marshal([]string{sessionID, performing})
+	return "TASK-9" + base64.RawURLEncoding.EncodeToString(data)
 }
 
-// TargetedSharedAnswerPath is deterministic after authority verification by the
-// caller. The source digest uses the same original Case/Contract/Session/Plan tuple
-// as the legacy questionnaire, so attempts do not depend on Runtime revision.
+// registeredTaskID selects the original TASK using the agent's already issued
+// responsibilities and the actual session/assignment recorded in each TASK.
+var errNoOriginalTask = errors.New("no issued TASK for this responsibility")
+
+func registeredTaskID(scope *readScope, root string, agent map[string]any, session, performing string) (string, error) {
+	found := ""
+	unreadable := false
+	ids := stringSliceFromAny(agent["task_ids"])
+	for _, id := range ids {
+		row, err := scope.lookup("tasks", id)
+		if err != nil {
+			return "", err
+		}
+		if row == nil {
+			continue
+		}
+		fields, err := scope.task(root, row)
+		if err != nil {
+			unreadable = true
+			continue
+		}
+		var s, a string
+		_ = json.Unmarshal(fields["session_id"], &s)
+		_ = json.Unmarshal(fields["assignment_id"], &a)
+		if s != session || a != performing {
+			continue
+		}
+		if found != "" {
+			return "", fmt.Errorf("Targeted original responsibility is ambiguous")
+		}
+		found = id
+	}
+	if found == "" {
+		if unreadable {
+			return "", fmt.Errorf("Targeted original TASK is unavailable")
+		}
+		return "", errNoOriginalTask
+	}
+	return found, nil
+}
+
+// RegisteredTask reads only TASKs actually issued to the given original owner.
+func RegisteredTask(root string, state map[string]any, session, performing, owner string, contexts ...context.Context) (map[string]json.RawMessage, error) {
+	scope, err := newReadScope(state, sourceContext(contexts))
+	if err != nil {
+		return nil, err
+	}
+	agent, err := scope.lookup("agents", owner)
+	if err != nil {
+		return nil, err
+	}
+	if agent == nil {
+		return nil, nil
+	}
+	if len(stringSliceFromAny(agent["task_ids"])) == 0 {
+		return nil, nil
+	}
+	id, err := registeredTaskID(scope, root, agent, session, performing)
+	if err != nil {
+		if errors.Is(err, errNoOriginalTask) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	row, err := scope.lookup("tasks", id)
+	if err != nil {
+		return nil, err
+	}
+	return scope.task(root, row)
+}
+
+// RegisteredTaskID finds the task by the original owner's recorded task IDs
+// and that task's actual session and assignment, including historical IDs.
+func RegisteredTaskID(root string, state map[string]any, session, performing, owner string, contexts ...context.Context) (string, error) {
+	scope, err := newReadScope(state, sourceContext(contexts))
+	if err != nil {
+		return "", err
+	}
+	agent, err := scope.lookup("agents", owner)
+	if err != nil || agent == nil {
+		return "", err
+	}
+	return registeredTaskID(scope, root, agent, session, performing)
+}
+
+// TargetedSharedAnswerPath maps the already supplied original Main question
+// path into the shared authoring surface without deriving a content identity.
 func TargetedSharedAnswerPath(root, relativeLegacy string) (string, error) {
 	prefix := ".claude/submissions/s9/"
 	rel, err := filepath.Rel(root, relativeLegacy)
@@ -186,9 +261,14 @@ func TargetedSharedAnswerPath(root, relativeLegacy string) (string, error) {
 		return "", fmt.Errorf("Targeted original relative path differs")
 	}
 	rel = strings.TrimPrefix(rel, prefix)
-	dir, name := filepath.Split(rel)
-	name = strings.Replace(name, "targeted-reverification-", "targeted-", 1)
-	return filepath.Join(root, ".loop-submissions/s9", dir, name), nil
+	parts := strings.Split(rel, "/")
+	for i, part := range parts {
+		if strings.HasPrefix(part, "targeted-reverification-") {
+			parts[i] = strings.Replace(part, "targeted-reverification-", "targeted-", 1)
+			break
+		}
+	}
+	return filepath.Join(root, ".loop-submissions/s9", filepath.FromSlash(strings.Join(parts, "/"))), nil
 }
 
 func stringField(v any) string { s, _ := v.(string); return s }
@@ -227,17 +307,12 @@ func ControlPaths(root string, state map[string]any, paths []string, contexts ..
 		return nil, err
 	}
 	wanted := map[string]bool{}
-	performers := map[string]bool{}
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		if strings.HasPrefix(path, ".loop-submissions/s9/") {
-			name := filepath.Base(path)
-			if strings.HasPrefix(name, "targeted-") && strings.HasSuffix(name, ".json") {
-				wanted[path] = true
-				performers[strings.TrimSuffix(strings.TrimPrefix(name, "targeted-"), ".json")] = true
-			}
+			wanted[path] = true
 		}
 	}
 	if len(wanted) == 0 {
@@ -257,7 +332,17 @@ func ControlPaths(root string, state map[string]any, paths []string, contexts ..
 			continue
 		}
 		performing := "repair-assignment-verification-" + strings.TrimPrefix(alias, "assignment-s9-verification-")
-		if !performers[slug(performing)] {
+		encoded, _ := json.Marshal([]string{performing})
+		candidateID := base64.RawURLEncoding.EncodeToString(encoded)
+		candidate := false
+		for path := range wanted {
+			joined := strings.ReplaceAll(path, "/", "")
+			if strings.Contains(joined, "targeted-"+candidateID) || strings.Contains(joined, "targeted-"+slug(performing)) {
+				candidate = true
+				break
+			}
+		}
+		if !candidate {
 			continue
 		}
 		if _, err := scope.lookup("agents", owner); err != nil {
@@ -276,28 +361,38 @@ func ControlPaths(root string, state map[string]any, paths []string, contexts ..
 			}
 			fields, err := scope.task(root, task)
 			if err != nil {
-				return nil, err
+				continue
 			}
 			raw, ok := fields["targeted_authoring"]
 			if !ok {
 				continue
 			}
 			var contract TargetedAuthoring
-			decoder := json.NewDecoder(bytes.NewReader(raw))
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&contract); err != nil {
+			if err := json.Unmarshal(raw, &contract); err != nil {
 				return nil, err
-			}
-			relative, err := contract.AnswerRelativePath()
-			if err != nil {
-				return nil, err
-			}
-			if !wanted[relative] {
-				continue
 			}
 			bare := strings.TrimPrefix(contract.OriginalAssignmentID, "repair-assignment-")
 			if contract.Owner != owner || contract.PerformingAssignmentID != performing || performing != "repair-assignment-verification-"+slug(bare) {
 				return nil, fmt.Errorf("Targeted original performing identity differs")
+			}
+			relative, pathErr := contract.AnswerRelativePath()
+			if pathErr != nil || !wanted[relative] {
+				// Older TASKs may contain the exact originally issued path in their
+				// instruction; never reconstruct it from a historical digest.
+				var instruction string
+				_ = json.Unmarshal(fields["instruction"], &instruction)
+				relative = ""
+				for path := range wanted {
+					if strings.Contains(filepath.ToSlash(instruction), path) {
+						if relative != "" {
+							return nil, fmt.Errorf("Targeted original paths are ambiguous")
+						}
+						relative = path
+					}
+				}
+				if relative == "" {
+					continue
+				}
 			}
 			normal, err := verify(scope, root, contract, alias)
 			if err != nil {
@@ -333,7 +428,7 @@ func FromState(state map[string]any, original, performing, owner string) Targete
 		v, _ := n.Int64()
 		generation = int(v)
 	}
-	return TargetedAuthoring{Protocol: SharedTargetedAuthoringProtocol, RuntimeID: stringField(state["runtime_id"]), BaselineGeneration: generation, CaseID: stringField(p["case_id"]), ContractID: stringField(p["contract_id"]), SessionID: stringField(p["session_id"]), PlanRef: stringField(p["plan_ref"]), PlanSHA256: stringField(p["plan_sha256"]), ContractRef: stringField(p["contract_ref"]), ContractSHA256: stringField(p["contract_sha256"]), OriginalAssignmentID: original, PerformingAssignmentID: performing, Owner: owner}
+	return TargetedAuthoring{Protocol: SharedTargetedAuthoringProtocol, RuntimeID: stringField(state["runtime_id"]), BaselineGeneration: generation, CaseID: stringField(p["case_id"]), ContractID: stringField(p["contract_id"]), SessionID: stringField(p["session_id"]), PlanRef: stringField(p["plan_ref"]), ContractRef: stringField(p["contract_ref"]), OriginalAssignmentID: original, PerformingAssignmentID: performing, Owner: owner, QuestionnaireRoot: stringField(p["questionnaire_root"])}
 }
 
 func AnswerRelativePath(state map[string]any, performing string) (string, error) {
@@ -341,12 +436,43 @@ func AnswerRelativePath(state map[string]any, performing string) (string, error)
 }
 
 func (b TargetedAuthoring) AnswerRelativePath() (string, error) {
-	source := []string{b.CaseID, b.ContractID, b.ContractSHA256, b.SessionID, b.PlanRef, b.PlanSHA256}
-	if b.RuntimeID == "" || b.BaselineGeneration < 1 || b.CaseID == "" || b.SessionID == "" || b.PlanRef == "" || b.PlanSHA256 == "" || b.PerformingAssignmentID == "" {
-		return "", fmt.Errorf("Targeted original path source is incomplete")
+	if b.QuestionnaireRoot == "" || b.PlanRef == "" || b.PerformingAssignmentID == "" {
+		return "", fmt.Errorf("Targeted original questionnaire location is unavailable")
 	}
-	digest := workpacket.Digest([]byte(strings.Join(source, "\x00")))
-	return filepath.ToSlash(filepath.Join(".loop-submissions/s9", slug(b.RuntimeID), fmt.Sprintf("g%d", b.BaselineGeneration), digest, "targeted-"+slug(b.PerformingAssignmentID)+".json")), nil
+	root := filepath.Clean(filepath.FromSlash(b.QuestionnaireRoot))
+	if filepath.IsAbs(root) || root == ".." || strings.HasPrefix(root, ".."+string(filepath.Separator)) || !strings.HasPrefix(filepath.ToSlash(root), ".claude/submissions/s9/") {
+		return "", fmt.Errorf("Targeted original questionnaire location is invalid")
+	}
+	encode := func(v string) string {
+		data, _ := json.Marshal([]string{v})
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+	appendParts := func(parts []string, value string) []string {
+		for len(value) > 120 {
+			parts = append(parts, value[:120])
+			value = value[120:]
+		}
+		return append(parts, value)
+	}
+	root = strings.TrimPrefix(filepath.ToSlash(root), ".claude/submissions/s9/")
+	parts := []string{".loop-submissions/s9", root, "plan"}
+	parts = appendParts(parts, encode(b.PlanRef))
+	name := "targeted-reverification-" + encode(b.PerformingAssignmentID) + ".json"
+	if len(name) > 200 {
+		parts = append(parts, "n")
+		for len(name) > 120 {
+			parts = append(parts, name[:120])
+			name = name[120:]
+		}
+	}
+	parts = append(parts, name)
+	for i, part := range parts {
+		if strings.HasPrefix(part, "targeted-reverification-") {
+			parts[i] = strings.Replace(part, "targeted-reverification-", "targeted-", 1)
+			break
+		}
+	}
+	return filepath.ToSlash(filepath.Join(parts...)), nil
 }
 
 func slug(value string) string {

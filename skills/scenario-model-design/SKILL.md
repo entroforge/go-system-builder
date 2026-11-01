@@ -31,8 +31,8 @@ S6, and S7. Do not use it to define a role or a parallel methodology.
 - `docs/rules/scenario-model.md`, the three authoring JSON templates and two generated-output shape examples, and the
   applicable UI, naming, security, API, state-machine, and error rules.
 - Current material paths and the assigned module boundary supplied by the
-  original responsibility entry. The system binds source versions and digests;
-  do not calculate, copy, or register a separate fingerprint list.
+  original responsibility entry. The system supplies the original source paths and responsibility;
+  do not calculate, copy, or register fingerprints.
 
 ## Current Module Package
 
@@ -72,8 +72,7 @@ may identify a review round because they record an execution fact.
    in `source_refs`; stop for clarification when an oracle cannot be derived.
 3. S2 authors author `scenario-model.json`, `cross-matrix.json`, `fixture-contract.json`,
    `stories.md`, and `flows.md`. The original `scenario generate` command writes
-   `cases.json` and `scenario-coverage.json`, including their derived counts and
-   digests. Do not copy output examples or hand-build generated files.
+   `cases.json` and `scenario-coverage.json`, including their derived counts. Do not copy output examples or hand-build generated files.
 4. S2 authors model facts as stable IDs and non-empty partitions using synthetic values.
    S7 checks those definitions against the assigned oracle and actual observations;
    a missing or contradictory source is reported, not rewritten to make the check pass.

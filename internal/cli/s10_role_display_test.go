@@ -110,7 +110,7 @@ func TestS10RoleGuidanceSatisfiesEmbeddedDecisionSchema(t *testing.T) {
 	}
 	validator := schema.NewEmbeddedValidator()
 	validate := func(guidance map[string]any) error {
-		envelope := policy.DecisionEnvelope{SchemaVersion: "1.1.0", DecisionID: "hook-decision-s10-role", PolicyID: "hook-policy-main", PolicyVersion: "1.0.0", PolicySHA256: strings.Repeat("a", 64), HookEvent: "PreToolUse", SessionID: "s10-role-schema", MatchedRuleIDs: []string{}, Decision: "allow", Reason: "recipient-specific stage projection", Missing: []string{}, Recovery: []string{}, Retry: "not_applicable", EvaluatedAt: "2026-10-25T00:00:00Z"}
+		envelope := policy.DecisionEnvelope{SchemaVersion: "1.1.0", DecisionID: "hook-decision-s10-role", PolicyID: "hook-policy-main", PolicyVersion: "1.0.0", HookEvent: "PreToolUse", SessionID: "s10-role-schema", MatchedRuleIDs: []string{}, Decision: "allow", Reason: "recipient-specific stage projection", Missing: []string{}, Recovery: []string{}, Retry: "not_applicable", EvaluatedAt: "2026-10-25T00:00:00Z"}
 		data, err := json.Marshal(envelope)
 		if err != nil {
 			return err

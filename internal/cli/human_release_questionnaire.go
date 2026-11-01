@@ -30,7 +30,7 @@ func stageHumanReleaseQuestionnaireContext(root string, request policy.Input, sn
 			entry, _ := rows[i].(map[string]any)
 			if stringValue(entry["kind"]) != kind || stringValue(entry["status"]) != "valid" ||
 				integerValue(entry["baseline_generation"]) != integerValue(nestedStateValue(snapshot.State, "baseline", "generation")) ||
-				integerValue(entry["review_round"]) != integerValue(nestedStateValue(snapshot.State, "review", "round")) {
+				!acceptance.CurrentReviewArtifact(snapshot.State, stringValue(entry["review_plan_id"])) {
 				continue
 			}
 			file, err := safeS10Path(root, stringValue(entry["path"]))
@@ -43,6 +43,7 @@ func stageHumanReleaseQuestionnaireContext(root string, request policy.Input, sn
 			}
 			var envelope struct {
 				ManifestPath string `json:"audit_manifest_path"`
+				AnswerPath   string `json:"audit_questionnaire_path"`
 			}
 			if err := json.Unmarshal(data, &envelope); err != nil {
 				return fmt.Sprintf("S11 recorded %s material %s cannot be decoded: %v", kind, file, err)
@@ -52,11 +53,17 @@ func stageHumanReleaseQuestionnaireContext(root string, request policy.Input, sn
 				return fmt.Sprintf("S11 recorded %s questionnaire path is missing: %v", kind, err)
 			}
 			found = true
-			reportPath := strings.TrimSuffix(manifestPath, ".json") + ".md"
+			authorPath := manifestPath
+			if envelope.AnswerPath != "" {
+				if original, pathErr := absoluteQuestionnairePath(root, envelope.AnswerPath); pathErr == nil {
+					authorPath = original
+				}
+			}
+			reportPath := strings.TrimSuffix(authorPath, ".json") + ".md"
 			if _, err := os.Stat(reportPath); err == nil {
-				packages = append(packages, fmt.Sprintf("%s readable report: %s; original questionnaire: %s", kind, reportPath, manifestPath))
+				packages = append(packages, fmt.Sprintf("%s readable report: %s; original questionnaire: %s; accepted report: %s", kind, reportPath, authorPath, manifestPath))
 			} else {
-				packages = append(packages, fmt.Sprintf("%s readable report is unavailable at %s (%v); original questionnaire: %s", kind, reportPath, err, manifestPath))
+				packages = append(packages, fmt.Sprintf("%s readable report is unavailable at %s (%v); original questionnaire: %s; accepted report: %s", kind, reportPath, err, authorPath, manifestPath))
 			}
 			var report acceptance.Manifest
 			if data, err := os.ReadFile(manifestPath); err == nil && json.Unmarshal(data, &report) == nil {
@@ -90,9 +97,9 @@ func humanReleaseQuestionnairePath(root string, state map[string]any) (string, s
 		return "", "", fmt.Errorf("current Runtime has no runtime_id")
 	}
 	generation := integerValue(nestedStateValue(state, "baseline", "generation"))
-	round := integerValue(nestedStateValue(state, "review", "round"))
-	if generation < 1 || round < 1 {
-		return "", "", fmt.Errorf("current Runtime has no positive baseline generation and review round")
+	identity := acceptance.CurrentReviewIdentity(state)
+	if generation < 1 || identity.PlanID == "" {
+		return "", "", fmt.Errorf("current Runtime has no positive baseline generation and review plan")
 	}
 	segment := auditPathSegment.ReplaceAllString(runtimeID, "-")
 	if segment == "" || segment == "." || segment == ".." {
@@ -103,7 +110,7 @@ func humanReleaseQuestionnairePath(root string, state map[string]any) (string, s
 	if stringValue(nestedStateValue(state, "lifecycle", "state")) != "awaiting_human_release" {
 		for i := len(rows) - 1; i >= 0; i-- {
 			entry, _ := rows[i].(map[string]any)
-			if stringValue(entry["kind"]) == "human_decision" && runtime.HumanDecisionEvidenceConsumed(entry) && integerValue(entry["baseline_generation"]) == generation && integerValue(entry["review_round"]) == round {
+			if stringValue(entry["kind"]) == "human_decision" && runtime.HumanDecisionEvidenceConsumed(entry) && integerValue(entry["baseline_generation"]) == generation && acceptance.CurrentReviewArtifact(state, stringValue(entry["review_plan_id"])) {
 				path, err := absoluteQuestionnairePath(root, stringValue(entry["path"]))
 				return path, stringValue(entry["id"]), err
 			}
@@ -111,7 +118,7 @@ func humanReleaseQuestionnairePath(root string, state map[string]any) (string, s
 	}
 	for i := len(rows) - 1; i >= 0; i-- {
 		entry, _ := rows[i].(map[string]any)
-		if stringValue(entry["kind"]) == acceptance.ManifestReleaseAudit && stringValue(entry["status"]) == "valid" && integerValue(entry["baseline_generation"]) == generation && integerValue(entry["review_round"]) == round {
+		if stringValue(entry["kind"]) == acceptance.ManifestReleaseAudit && stringValue(entry["status"]) == "valid" && integerValue(entry["baseline_generation"]) == generation && acceptance.CurrentReviewArtifact(state, stringValue(entry["review_plan_id"])) {
 			auditID = stringValue(entry["id"])
 			break
 		}
@@ -119,7 +126,7 @@ func humanReleaseQuestionnairePath(root string, state map[string]any) (string, s
 	if auditID == "" {
 		return "", "", fmt.Errorf("current release audit record is missing")
 	}
-	decisionID := fmt.Sprintf("hd-s11-%s-g%d-r%d-p%d-%s", segment, generation, round, integerValue(nestedStateValue(state, "lifecycle", "phase_revision")), auditPathSegment.ReplaceAllString(auditID, "-"))
+	decisionID := fmt.Sprintf("hd-s11-%s-g%d-p%d-%s", segment, generation, integerValue(nestedStateValue(state, "lifecycle", "phase_revision")), auditPathSegment.ReplaceAllString(auditID, "-"))
 	path, err := absoluteQuestionnairePath(root, filepath.ToSlash(filepath.Join(".claude", "decisions", decisionID+".json")))
 	return path, decisionID, err
 }

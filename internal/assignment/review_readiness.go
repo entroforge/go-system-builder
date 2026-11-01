@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 )
 
 // ReviewDispatchPrerequisite is the read-only dependency/resource decision
@@ -15,16 +16,13 @@ func ReviewDispatchPrerequisite(state map[string]any, plan *review.Plan, assignm
 	if plan == nil {
 		return "", fmt.Errorf("restore the current ReviewPlan before selecting review work")
 	}
-	return reviewDispatchPrerequisite(state, plan, assignmentID, review.StaticClaimsSettled(state, plan))
+	return reviewDispatchPrerequisite(state, plan, assignmentID)
 }
 
-func reviewDispatchPrerequisite(state map[string]any, plan *review.Plan, assignmentID string, staticSettled bool) (lockConflict string, err error) {
+func reviewDispatchPrerequisite(state map[string]any, plan *review.Plan, assignmentID string) (lockConflict string, err error) {
 	item := findPlanAssignmentByID(plan, assignmentID)
 	if item == nil {
 		return "", fmt.Errorf("assignment %s is not part of the current ReviewPlan", assignmentID)
-	}
-	if item.ExecutionWave == "behavior" && !staticSettled {
-		return "", fmt.Errorf("assignment %s is a behavior-wave (E2E/specialty) Assignment but required static Claims are not all dispositioned yet; behavior E2E unlocks only after the static set settles (L3-S7 §5.2-5.3)", assignmentID)
 	}
 	if err := review.DependenciesSettled(state, plan, item); err != nil {
 		return "", err
@@ -53,7 +51,7 @@ func ReviewRoundOpenForDispatch(state map[string]any) bool {
 		return false
 	}
 	reviewMap, _ := state["review"].(map[string]any)
-	return ptr.ReviewRound > 0 && ptr.ReviewRound == reviewRoundNumber(reviewMap["round"])
+	return reviewmeta.CompareIdentity(reviewmeta.ArtifactIdentity(ptr.PlanID), reviewmeta.FromReview(reviewMap)) == reviewmeta.Same
 }
 
 func reviewRoundNumber(value any) int {

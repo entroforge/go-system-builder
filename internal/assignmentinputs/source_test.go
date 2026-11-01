@@ -72,7 +72,7 @@ func TestReadAssignmentSourcesRejectsUnknownNamespaceAndPathEscape(t *testing.T)
 	}
 }
 
-func TestVerifySourcesReadsTypedEmbeddedRecordReferences(t *testing.T) {
+func TestAssignmentInputsReadActualContextReferences(t *testing.T) {
 	root := t.TempDir()
 	if _, err := os.Stat(filepath.Join(root, "internal")); !os.IsNotExist(err) {
 		t.Fatalf("fixture unexpectedly contains an internal source tree: %v", err)
@@ -95,33 +95,32 @@ func TestVerifySourcesReadsTypedEmbeddedRecordReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	profileBytes := agentcontext.ProfileBytes()
-	manifest := assignmentrecord.ContextSource{Kind: "manifest", Ref: "docs/workgroups/s6/manifest.json", ID: "team-manifest-assignmentinputs", Version: "1.0.0", SHA256: sourceTestSHA(manifestBytes)}
-	task := assignmentrecord.ContextSource{Kind: "task", Ref: "docs/dev/tasks/TASK-001.md", ID: "TASK-001", Version: "1.0.0", SHA256: sourceTestSHA(taskBytes)}
-	role := assignmentrecord.ContextSource{Kind: "agent_definition", Ref: "agents/backend-builder.md", ID: "backend-builder", SHA256: sourceTestSHA(roleBytes)}
-	embeddedProfile := assignmentrecord.ContextSource{Kind: "embedded_context_profile", Ref: assignmentinputs.ContextProfileRef, ID: "agent-context-profiles", Version: "1.0.0", SHA256: sourceTestSHA(profileBytes)}
-	embeddedSchema := assignmentrecord.ContextSource{Kind: "embedded_schema", Ref: assignmentinputs.SchemaPrefix + "agent-message.schema.json", ID: "agent-message.schema.json", Version: "1.0.0", SHA256: sourceTestSHA(schemaBytes)}
+	manifest := assignmentrecord.ContextSource{Kind: "manifest", Ref: "docs/workgroups/s6/manifest.json", ID: "team-manifest-assignmentinputs", Version: "1.0.0"}
+	task := assignmentrecord.ContextSource{Kind: "task", Ref: "docs/dev/tasks/TASK-001.md", ID: "TASK-001", Version: "1.0.0"}
+	role := assignmentrecord.ContextSource{Kind: "agent_definition", Ref: "agents/backend-builder.md", ID: "backend-builder"}
+	embeddedProfile := assignmentrecord.ContextSource{Kind: "embedded_context_profile", Ref: assignmentinputs.ContextProfileRef, ID: "agent-context-profiles", Version: "1.0.0"}
+	embeddedSchema := assignmentrecord.ContextSource{Kind: "embedded_schema", Ref: assignmentinputs.SchemaPrefix + "agent-message.schema.json", ID: "agent-message.schema.json", Version: "1.0.0"}
 	record := testAssignmentRecord(manifest, task, role, embeddedProfile, embeddedSchema, skillBytes)
 	if err := assignmentrecord.ValidateRecord(record); err != nil {
 		t.Fatalf("fixture Record is invalid: %v", err)
 	}
-	if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-		return assignmentinputs.Read(root, ref)
-	}); err != nil {
-		t.Fatalf("VerifySources rejected real filesystem and embedded sources: %v", err)
-	}
-
-	tampered := record
-	tampered.ContextSources = append([]assignmentrecord.ContextSource{}, record.ContextSources...)
-	for i := range tampered.ContextSources {
-		if tampered.ContextSources[i].Kind == "embedded_schema" {
-			tampered.ContextSources[i].SHA256 = sourceTestSHA([]byte("different embedded schema bytes"))
+	for ref, want := range map[string][]byte{
+		"docs/workgroups/s6/manifest.json":                          manifestBytes,
+		"docs/dev/tasks/TASK-001.md":                                taskBytes,
+		"agents/backend-builder.md":                                 roleBytes,
+		"skills/backend-engineering/SKILL.md":                       skillBytes,
+		assignmentinputs.ContextProfileRef:                          profileBytes,
+		assignmentinputs.SchemaPrefix + "agent-message.schema.json": schemaBytes,
+	} {
+		got, err := assignmentinputs.Read(root, ref)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("read original %s: %v", ref, err)
 		}
 	}
-	if err := assignmentrecord.VerifySources(tampered, func(ref string) ([]byte, error) {
-		return assignmentinputs.Read(root, ref)
-	}); err == nil {
-		t.Fatal("VerifySources accepted an embedded-schema digest that differs from binary bytes")
+	if _, err := assignmentinputs.Read(root, "docs/missing-context.md"); err == nil {
+		t.Fatal("missing actual source was silently manufactured")
 	}
+
 }
 
 func TestReadAssignmentInputsBoundsOrdinaryFilesystemSources(t *testing.T) {
@@ -140,7 +139,7 @@ func TestReadAssignmentInputsBoundsOrdinaryFilesystemSources(t *testing.T) {
 }
 
 func testAssignmentRecord(manifest, task, role, embeddedProfile, embeddedSchema assignmentrecord.ContextSource, skillBytes []byte) assignmentrecord.Record {
-	skill := assignmentrecord.ContextSource{Kind: "authorized_skill", Ref: "skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "1.0.0", SHA256: sourceTestSHA(skillBytes)}
+	skill := assignmentrecord.ContextSource{Kind: "authorized_skill", Ref: "skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "1.0.0"}
 	scope := assignmentrecord.ScopeBasis{
 		ManifestScope: []string{"internal"}, ManifestWritePaths: []string{"internal/pkg"},
 		ManifestOutputPaths: []string{}, TaskWritePaths: []string{"internal"},

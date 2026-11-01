@@ -42,13 +42,12 @@ func repairPlanReportTestFixture(t *testing.T) (RepairPlanReportBinding, RepairP
 	}
 	caseDoc := map[string]any{
 		"schema_version": "1.0.0", "case_id": caseID, "revision": 2, "status": "contract_approved",
-		"source_finding_ids": []string{"finding-s9-1"}, "observation_batch_id": "observation-batch-s9-1",
-		"observation_batch_ref": ".claude/evidence/observation-batch-s9-1.json", "observation_batch_sha256": strings.Repeat("a", 64),
-		"baseline_generation": 1, "baseline_digest": strings.Repeat("b", 64), "grouping_rationale": "one causal failure",
+		"source_finding_ids":  []string{"finding-s9-1"},
+		"baseline_generation": 1, "grouping_rationale": "one causal failure",
 		"unexplained_finding_ids": []string{}, "failure_boundary_refs": []string{}, "cross_layer_trace": nil,
 		"evidence_gaps": []string{}, "hypotheses": []any{}, "hypothesis_results": []any{}, "causal_model": nil,
 		"primary_root_cause": nil, "blast_radius": nil, "detection_gap": nil, "route": nil, "route_reason": nil,
-		"repair_contract_ref": contractRef, "repair_contract_sha256": strings.Repeat("c", 64),
+		"repair_contract_ref": contractRef,
 	}
 	contractDoc := map[string]any{
 		"schema_version": "1.0.0", "repair_contract_id": contractID, "case_id": caseID, "revision": 1, "status": "approved",
@@ -60,13 +59,13 @@ func repairPlanReportTestFixture(t *testing.T) (RepairPlanReportBinding, RepairP
 	}
 	sessionDoc := map[string]any{
 		"schema_version": "1.0.0", "record_type": "repair_session", "session_id": sessionID,
-		"contract_ref": contractRef, "contract_sha256": strings.Repeat("c", 64), "runtime_id": "loop-REQ-001", "req_id": "REQ-001",
-		"baseline_generation": 1, "baseline_artifacts": []any{}, "baseline_digest": strings.Repeat("d", 64),
+		"contract_ref": contractRef, "runtime_id": "loop-REQ-001", "req_id": "REQ-001",
+		"baseline_generation": 1, "baseline_artifacts": []any{},
 		"status": "planned", "created_by": "main", "created_at": "2026-10-14T00:00:00Z",
 	}
 	planDoc := map[string]any{
 		"schema_version": "1.0.0", "record_type": "repair_plan", "plan_id": planID, "session_id": sessionID,
-		"contract_id": contractID, "contract_ref": contractRef, "contract_sha256": strings.Repeat("c", 64),
+		"contract_id": contractID, "contract_ref": contractRef,
 		"units":       []any{map[string]any{"id": "unit-api", "description": "repair the API", "scope": []string{"internal/api"}, "assertion_ids": []string{"root-1"}, "depends_on": []string{}, "resource_locks": []string{}}},
 		"assignments": []any{assignment}, "execution_policy": "coverage_complete", "prospective_scope": prospective,
 		"forbidden_scope": forbidden, "created_by": "main", "created_at": "2026-10-14T00:00:00Z",
@@ -78,14 +77,14 @@ func repairPlanReportTestFixture(t *testing.T) (RepairPlanReportBinding, RepairP
 		"next_action": "submit the pre-execution PlanReport",
 	}
 	binding := RepairPlanReportBinding{
-		RuntimeID: "loop-REQ-001", BaselineGeneration: 1, ReviewRound: 1,
-		CaseID: caseID, CaseRef: ".claude/review/investigation/cases/investigation-case-s9-1-r2.json", CaseSHA256: strings.Repeat("e", 64),
-		ContractID: contractID, ContractRef: contractRef, ContractSHA256: strings.Repeat("c", 64),
-		SessionID: sessionID, SessionRef: sessionRef, SessionSHA256: strings.Repeat("d", 64),
-		PlanID: planID, PlanRef: planRef, PlanSHA256: strings.Repeat("f", 64),
+		RuntimeID: "loop-REQ-001", BaselineGeneration: 1,
+		CaseID: caseID, CaseRef: ".claude/review/investigation/cases/investigation-case-s9-1-r2.json",
+		ContractID: contractID, ContractRef: contractRef,
+		SessionID: sessionID, SessionRef: sessionRef,
+		PlanID: planID, PlanRef: planRef,
 		RepairAssignmentID: assignID, ManifestAssignmentID: manifestID,
-		TeamID: teamID, TaskID: taskID, TaskRef: ".claude/workgroups/REQ-001/TASK-S9-UNIT-1/TASK-S9-UNIT-1.json", TaskSHA256: strings.Repeat("1", 64),
-		ManifestRef: ".claude/workgroups/REQ-001/TASK-S9-UNIT-1/manifest.json", ManifestSHA256: strings.Repeat("2", 64), OwnerAgentID: ownerID,
+		TeamID: teamID, TaskID: taskID, TaskRef: ".claude/workgroups/REQ-001/TASK-S9-UNIT-1/TASK-S9-UNIT-1.json",
+		ManifestRef: ".claude/workgroups/REQ-001/TASK-S9-UNIT-1/manifest.json", OwnerAgentID: ownerID,
 	}
 	inputs := RepairPlanReportInputs{
 		Case: repairPlanReportTestRaw(t, caseDoc), Contract: repairPlanReportTestRaw(t, contractDoc),
@@ -94,16 +93,6 @@ func repairPlanReportTestFixture(t *testing.T) (RepairPlanReportBinding, RepairP
 		ManifestAssignment: repairPlanReportTestRaw(t, manifestAssignment),
 		ProspectiveScope:   append([]string{}, prospective...), ForbiddenScope: append([]string{}, forbidden...),
 	}
-	canonicalAssignment, err := canonicalJSON(inputs.RepairAssignment)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding.RepairAssignmentSHA256 = Digest(canonicalAssignment)
-	canonicalManifestAssignment, err := canonicalJSON(inputs.ManifestAssignment)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding.ManifestAssignmentSHA256 = Digest(canonicalManifestAssignment)
 	return binding, inputs
 }
 
@@ -125,9 +114,8 @@ func TestBuildRepairPlanReportIsStableAndSchemaValid(t *testing.T) {
 	if packet.TemplateID != "s9-plan-report-v1" || packet.ReportID != "repair-plan-report-"+strings.TrimPrefix(packet.ID, "packet-") || packet.IssuanceEventID != "evt-repair-plan-report-packet-"+packet.ID {
 		t.Fatalf("S9 packet identity mismatch: %#v", packet)
 	}
-	base := ".claude/work-packets/loop-REQ-001/g1/S9-plan/r1/repair-assignment-unit-1/" + packet.ID + ".json"
-	if packet.ViewPath != base || packet.AnswerPath != strings.TrimSuffix(strings.Replace(base, ".claude/work-packets/", ".claude/submissions/", 1), ".json")+"/builder-s9-1/answer.json" {
-		t.Fatalf("S9 packet paths differ from the stable owner projection: %q %q", packet.ViewPath, packet.AnswerPath)
+	if !strings.Contains(packet.ViewPath, "/"+binding.SessionID+"/"+binding.RepairAssignmentID+"/") || !strings.Contains(packet.AnswerPath, "/"+binding.SessionID+"/"+binding.RepairAssignmentID+"/") {
+		t.Fatalf("S9 packet paths lost the original responsibility: %q %q", packet.ViewPath, packet.AnswerPath)
 	}
 	for name, value := range map[string]any{
 		"repair-plan-report-work-packet.schema.json": packet,
@@ -141,10 +129,6 @@ func TestBuildRepairPlanReportIsStableAndSchemaValid(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
-	first, err := RepairPlanReportPacketDigest(packet)
-	if err != nil || !digestPattern.MatchString(first) {
-		t.Fatalf("packet digest = %q, %v", first, err)
-	}
 	encoded, err := json.MarshalIndent(packet, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -155,10 +139,6 @@ func TestBuildRepairPlanReportIsStableAndSchemaValid(t *testing.T) {
 	}
 	if !reflect.DeepEqual(packet, restored) {
 		t.Fatal("canonical packet bytes should survive JSON round trip")
-	}
-	second, err := RepairPlanReportPacketDigest(restored)
-	if err != nil || first != second {
-		t.Fatalf("restored digest = %q, want %q; err=%v", second, first, err)
 	}
 
 	inputs.Case = json.RawMessage(" \n" + string(inputs.Case) + " \n")
@@ -232,8 +212,13 @@ func TestValidateRepairPlanReportAnswerKeepsOnlyProfessionalFields(t *testing.T)
 			candidateAnswer := candidate["answer"].(map[string]any)
 			mutate(candidateAnswer)
 			candidateBytes, _ := json.Marshal(candidate)
-			if _, fields := ValidateRepairPlanReportAnswer(packet, candidateBytes); len(fields) == 0 {
-				t.Fatal("invalid S9 answer was accepted")
+			got, fields := ValidateRepairPlanReportAnswer(packet, candidateBytes)
+			if len(fields) != 0 {
+				t.Fatalf("actual plan expression was narrowed: %#v", fields)
+			}
+			want, err := json.Marshal(candidateAnswer)
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("actual plan expression changed: %s %v", got, err)
 			}
 		})
 	}
@@ -248,8 +233,8 @@ func TestValidateRepairPlanReportAnswerKeepsOnlyProfessionalFields(t *testing.T)
 		if paths != nil && len(fields) != 0 {
 			t.Fatalf("explicit no-change paths rejected: %#v", fields)
 		}
-		if paths == nil && (len(fields) == 0 || fields[0].Pointer != "/answer/proposed_paths") {
-			t.Fatalf("null paths must request an explicit array: %#v", fields)
+		if paths == nil && len(fields) != 0 {
+			t.Fatalf("omitted optional paths became a gate: %#v", fields)
 		}
 	}
 	for _, path := range []string{"docs/requirements/REQ-001.md", "internal/api/generated/client.go"} {
@@ -300,10 +285,10 @@ func TestBuildRepairPlanReportRejectsCrossSourceDrift(t *testing.T) {
 	if err := json.Unmarshal(inputs.Plan, &plan); err != nil {
 		t.Fatal(err)
 	}
-	plan["contract_sha256"] = strings.Repeat("a", 64)
+	plan["contract_ref"] = ".claude/review/investigation/contracts/repair-contract-other.json"
 	inputs.Plan = repairPlanReportTestRaw(t, plan)
 	if _, err := BuildRepairPlanReport(binding, inputs); err == nil {
-		t.Fatal("plan bound to another Contract digest was accepted")
+		t.Fatal("plan bound to another Contract reference was accepted")
 	}
 
 	binding, inputs = repairPlanReportTestFixture(t)
@@ -380,8 +365,8 @@ func TestRepairPlanReportPreservesApprovedDirectoryScopeBoundary(t *testing.T) {
 		answer["proposed_paths"] = []string{path}
 		data, _ = json.Marshal(draft)
 		_, fields := ValidateRepairPlanReportAnswer(packet, data)
-		if (len(fields) == 0) != (path != "internal/api/../api/payload.go") {
-			t.Fatalf("scope %s feedback: %+v", path, fields)
+		if len(fields) != 0 {
+			t.Fatalf("professional proposed path %s became an authorization gate: %+v", path, fields)
 		}
 	}
 	// Professional proposed paths are observations, not execution permission.

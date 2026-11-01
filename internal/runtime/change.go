@@ -94,24 +94,18 @@ func legacyChangeMap(value map[string]any) {
 }
 
 // assertBoundREQConsistency enforces REQ-001 FR-001 at the Change Record
-// boundary: the record's req_ref and req_sha256 must match the Runtime's
-// currently bound REQ. Without this, a Change Record could claim lineage to a
-// REQ the Runtime is not bound to, creating a second state authority.
+// boundary: the record's req_ref must match the Runtime's currently bound REQ.
 func assertBoundREQConsistency(state map[string]any, record change.Record) error {
 	bound, ok := state["bound_req"].(map[string]any)
 	if !ok || bound == nil {
 		return fmt.Errorf("runtime has no bound REQ; cannot create Change Record")
 	}
 	boundID, _ := bound["id"].(string)
-	boundSHA, _ := bound["sha256"].(string)
-	if boundID == "" || boundSHA == "" {
-		return fmt.Errorf("bound REQ is missing id or sha256; cannot create Change Record")
+	if boundID == "" {
+		return fmt.Errorf("bound REQ is missing id; cannot create Change Record")
 	}
 	if record.REQRef != boundID {
 		return fmt.Errorf("change req_ref %q does not match bound REQ %q", record.REQRef, boundID)
-	}
-	if record.REQSHA != boundSHA {
-		return fmt.Errorf("change req_sha256 does not match bound REQ fingerprint")
 	}
 	return nil
 }

@@ -187,18 +187,15 @@ func TestRuntimeRecoveryApplyResumesFromDurableMarkerBeforeReadingCorruptPlanOrD
 		t.Fatal(err)
 	}
 	_, err = runtime.ApplyRecovery(runtime.RecoveryRequest{
-		Root:                   root,
-		StatePath:              filepath.Join(root, ".claude", "loop-state.json"),
-		JournalPath:            filepath.Join(root, ".claude", "loop-events.jsonl"),
-		PlanID:                 plan["plan_id"].(string),
-		PlanSHA:                plan["document_sha256"].(string),
-		CandidateState:         candidateState,
-		CandidateJournal:       candidateJournal,
-		CandidateStateSHA256:   plan["candidate_state_sha256"].(string),
-		CandidateJournalSHA256: plan["candidate_journal_sha256"].(string),
-		Approver:               "recovery-owner",
-		OccurredAt:             time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC),
-		Validator:              semantic.RuntimeCandidateValidator{},
+		Root:             root,
+		StatePath:        filepath.Join(root, ".claude", "loop-state.json"),
+		JournalPath:      filepath.Join(root, ".claude", "loop-events.jsonl"),
+		PlanID:           plan["plan_id"].(string),
+		CandidateState:   candidateState,
+		CandidateJournal: candidateJournal,
+		Approver:         "recovery-owner",
+		OccurredAt:       time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC),
+		Validator:        semantic.RuntimeCandidateValidator{},
 		FailureInjector: recoveryFailureFunc(func(step runtime.RecoveryFailureStep) error {
 			if step == runtime.RecoveryBeforeStateReplace {
 				return errors.New("simulated process crash after durable marker")

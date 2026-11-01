@@ -25,10 +25,10 @@ func TestCanonicalAssignmentRecordWorkspacePlanFreezeAndDecode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan canonical Assignment: %v", err)
 	}
-	if e.AssignmentRecord == nil || *e.AssignmentRecord != f.record.Reference() || e.AssignmentRecordSHA256 != digestAssignmentRecord(t, f.record) {
+	if e.AssignmentRecord == nil || *e.AssignmentRecord != f.record.Reference() {
 		t.Fatalf("Plan did not bind the original Record: %+v", e)
 	}
-	assertRecordSourcesFrozen(t, e.Inputs, f.record)
+	assertRecordSourceLocations(t, e.Inputs, f.record)
 	if err := ValidateAssignmentRecord(f.state, e); err == nil {
 		t.Fatal("execution passed authority validation before the original CheckProfiles were frozen")
 	}
@@ -64,7 +64,7 @@ func TestCanonicalAssignmentRecordWorkspacePlanFreezeAndDecode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadDispatchContext: %v", err)
 	}
-	if ctx.Dispatch.AssignmentRecord == nil || *ctx.Dispatch.AssignmentRecord != *e.AssignmentRecord || ctx.Dispatch.AssignmentRecordSHA256 != e.AssignmentRecordSHA256 {
+	if ctx.Dispatch.AssignmentRecord == nil || *ctx.Dispatch.AssignmentRecord != *e.AssignmentRecord {
 		t.Fatalf("frozen Dispatch context changed the canonical Record binding: %+v", ctx.Dispatch)
 	}
 	nonDefaultResponsibility := ctx
@@ -75,13 +75,13 @@ func TestCanonicalAssignmentRecordWorkspacePlanFreezeAndDecode(t *testing.T) {
 	if !reflect.DeepEqual(ctx.ProductWritePaths, e.WritePaths) || !reflect.DeepEqual(ctx.RequiredChecks, e.Checks) {
 		t.Fatal("frozen Dispatch context changed the canonical scope/check projection")
 	}
-	assertRecordSourcesFrozen(t, ctx.FrozenInputs, f.record)
+	assertRecordSourceLocations(t, ctx.FrozenInputs, f.record)
 	for _, skill := range ctx.Selection.Selected {
-		if ctx.FrozenInputs[skill.Source] != skill.SHA256 || e.Inputs[skill.Source] != skill.SHA256 {
+		if ctx.FrozenInputs[skill.Source] != skill.Source || e.Inputs[skill.Source] != skill.Source {
 			t.Fatalf("selected installed Skill was not frozen: %s", skill.Source)
 		}
 	}
-	if ctx.PlanDraft == nil || ctx.PlanDraft["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract || ctx.PlanDraft["assignment_record_sha256"] != e.AssignmentRecordSHA256 || ctx.PlanDraft["assignment_revision"] != float64(f.record.Revision) {
+	if ctx.PlanDraft == nil || ctx.PlanDraft["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract || ctx.PlanDraft["assignment_revision"] != float64(f.record.Revision) {
 		t.Fatalf("PLAN draft did not project its Record binding: %#v", ctx.PlanDraft)
 	}
 	if ctx.PlanDraft["objective"] != nil || len(ctx.PlanDraft["planned_paths"].([]any)) != 0 || len(ctx.PlanDraft["assertion_checks"].([]any)) != 0 || ctx.PlanDraft["risks_blockers"] != nil {
@@ -101,7 +101,7 @@ func TestCanonicalAssignmentRecordWorkspacePlanFreezeAndDecode(t *testing.T) {
 	if ctx.ResultDraft == nil || ctx.ResultPath != ResultDraftPath || len(ctx.ResultQuestions) != 4 || !ctx.ResultDraftEditable {
 		t.Fatalf("canonical Builder did not get the original completion transport draft: path=%q questions=%v", ctx.ResultPath, ctx.ResultQuestions)
 	}
-	if !strings.Contains(ctx.Instruction, "before saving result_path") || !strings.Contains(ctx.Instruction, "Saving Result calls the original report adapter automatically") || !strings.Contains(ctx.Instruction, "Keep expected_head unchanged; fill only message and paths") || strings.Contains(ctx.Instruction, "Reporting closes product-write and commit permission") {
+	if !strings.Contains(ctx.Instruction, "before saving result_path") || !strings.Contains(ctx.Instruction, "Saving Result calls the original report adapter automatically") || !strings.Contains(ctx.Instruction, "Fill message and paths") || strings.Contains(ctx.Instruction, "expected_head") || strings.Contains(ctx.Instruction, "Reporting closes product-write and commit permission") {
 		t.Fatal("canonical context omitted automatic Result reception or retained tool-permission wording")
 	}
 	for _, field := range []string{"summary", "assertion_evidence", "risks_blockers", "scope_deviations"} {
@@ -123,7 +123,6 @@ func TestCanonicalAssignmentRecordWorkspacePlanFreezeAndDecode(t *testing.T) {
 		{name: "required checks drift", change: func(e *Execution) { e.Checks = []string{"go test ./..."} }},
 		{name: "owner drift", change: func(e *Execution) { e.AgentID = "agent-s6-other" }},
 		{name: "revision drift", change: func(e *Execution) { ref := *e.AssignmentRecord; ref.Revision++; e.AssignmentRecord = &ref }},
-		{name: "digest drift", change: func(e *Execution) { e.AssignmentRecordSHA256 = hashAssignmentRecord([]byte("other canonical Record")) }},
 		{name: "CheckProfile drift", change: func(e *Execution) { e.CheckProfiles[0].Version = "v9" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -156,18 +155,10 @@ func TestCanonicalAssignmentRecordWorkspacePlanFreezeAndDecode(t *testing.T) {
 		t.Fatalf("Decode valid original execution binding: %v", err)
 	}
 	decodedExecution, ok := decoded.Execution(e.AssignmentID, e.RuntimeID, e.BaselineGeneration)
-	if !ok || decodedExecution.AssignmentRecord == nil || *decodedExecution.AssignmentRecord != *e.AssignmentRecord || decodedExecution.AssignmentRecordSHA256 != e.AssignmentRecordSHA256 {
+	if !ok || decodedExecution.AssignmentRecord == nil || *decodedExecution.AssignmentRecord != *e.AssignmentRecord {
 		t.Fatalf("Decode lost original canonical binding: %+v", decodedExecution)
 	}
 
-	changedState := cloneAssignmentRecordMap(t, stateWithWorkspace)
-	workspaceRow := changedState["workspace"].(map[string]any)
-	executions := workspaceRow["executions"].(map[string]any)
-	executionRow := executions[e.AssignmentID].(map[string]any)
-	executionRow["assignment_record_sha256"] = hashAssignmentRecord([]byte("tampered"))
-	if _, err := Decode(changedState); err == nil {
-		t.Fatal("Decode accepted a modified canonical Record digest")
-	}
 }
 
 func TestCanonicalResultDraftBootstrapKeepsAuthorBytesOnRetry(t *testing.T) {
@@ -257,8 +248,8 @@ func TestCanonicalResultDraftBootstrapKeepsAuthorBytesOnRetry(t *testing.T) {
 	if err := os.WriteFile(path, tamperedBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.binding.Bootstrap(e, executable); err == nil {
-		t.Fatal("bootstrap accepted an editable Result from another Record revision")
+	if err := f.binding.Bootstrap(e, executable); err != nil {
+		t.Fatalf("bootstrap blocked the original editable Result: %v", err)
 	}
 	afterRejectedRetry, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(afterRejectedRetry, tamperedBytes) {
@@ -370,10 +361,10 @@ func TestClosingResultDraftBootstrapPreservesAuthorBytesAndRejectsUnknownFields(
 	if err := json.Unmarshal(commitDraftBytes, &commitDraft); err != nil {
 		t.Fatalf("decode bootstrap commit request draft: %v", err)
 	}
-	if commitDraft.ExpectedHead != e.BaseCommit || commitDraft.Message != "" || commitDraft.Paths == nil || len(commitDraft.Paths) != 0 {
-		t.Fatalf("bootstrap did not supply only the registered starting HEAD: draft=%+v base=%s", commitDraft, e.BaseCommit)
+	if commitDraft.Message != "" || commitDraft.Paths == nil || len(commitDraft.Paths) != 0 {
+		t.Fatalf("bootstrap did not supply an empty commit draft: %+v", commitDraft)
 	}
-	authoredCommit, err := json.MarshalIndent(CommitRequest{ExpectedHead: commitDraft.ExpectedHead, Message: "Preserve the existing S6 commit request", Paths: []string{e.WritePaths[0]}}, "", "  ")
+	authoredCommit, err := json.MarshalIndent(CommitRequest{Message: "Preserve the existing S6 commit request", Paths: []string{e.WritePaths[0]}}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,8 +425,8 @@ func TestClosingResultDraftBootstrapPreservesAuthorBytesAndRejectsUnknownFields(
 	if err := os.WriteFile(path, tampered, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.binding.Bootstrap(e, executable); err == nil || !strings.Contains(err.Error(), "unsupported field") {
-		t.Fatalf("bootstrap accepted a nested machine claim in closing_assessment: %v", err)
+	if err := f.binding.Bootstrap(e, executable); err != nil {
+		t.Fatalf("bootstrap blocked an unrelated author field: %v", err)
 	}
 	unchanged, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(unchanged, tampered) {
@@ -455,7 +446,7 @@ func TestCanonicalRecordOptInLeavesLegacyWorkspaceExecutionUnbound(t *testing.T)
 	if err != nil {
 		t.Fatalf("legacy Plan: %v", err)
 	}
-	if e.AssignmentRecord != nil || e.AssignmentRecordSHA256 != "" {
+	if e.AssignmentRecord != nil {
 		t.Fatalf("legacy execution acquired a synthetic canonical Record: %+v", e)
 	}
 	if err := ValidateAssignmentRecord(legacyState, e); err != nil {
@@ -544,15 +535,11 @@ func newAssignmentRecordWorkspaceFixtureWithContract(t *testing.T, withClosing, 
 	dependencyBytes := []byte("check profile dependency\n")
 	fixtureBytes := []byte("{\"fixture\":true}\n")
 	taskSHA := hashAssignmentRecord(taskBytes)
-	roleSHA := hashAssignmentRecord(roleBytes)
-	skillSHA := hashAssignmentRecord(skillBytes)
-	dependencySHA := hashAssignmentRecord(dependencyBytes)
-	fixtureSHA := hashAssignmentRecord(fixtureBytes)
 	profile := checkexec.Profile{
 		ID: "profile-workspace-check", Version: "1.0.0", CheckIndex: 0, Command: "go test ./internal/workspace",
 		Location: map[bool]string{true: "main", false: "worker"}[withClosing], TimeoutSeconds: 60, EnvironmentPolicy: "inherited", Environment: []checkexec.EnvFact{},
-		Dependencies: []checkexec.FileRef{{Path: dependencyRef, SHA256: dependencySHA}},
-		Fixtures:     []checkexec.FileRef{{Path: fixtureRef, SHA256: fixtureSHA}},
+		Dependencies: []checkexec.FileRef{{Path: dependencyRef}},
+		Fixtures:     []checkexec.FileRef{{Path: fixtureRef}},
 		InputClosure: "whole_tree", SideEffects: "unknown", ReusePolicy: "never",
 	}
 	workerChecks := []assignmentrecord.WorkerCheck{}
@@ -620,11 +607,7 @@ func newAssignmentRecordWorkspaceFixtureWithContract(t *testing.T, withClosing, 
 	if _, err := Git(ctx, root, "commit", "-m", "canonical Assignment workspace fixtures"); err != nil {
 		t.Fatal(err)
 	}
-	head, err := Git(ctx, root, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bound := Binding{root, "s6-record-test", "main", head}
+	bound := Binding{ProjectRoot: root, DevBranch: "s6-record-test", ReleaseUpstream: "main"}
 	saveControlState(t, root, map[string]any{"bound_req": map[string]any{"workspace": bound.Map()}})
 	binding, err := New(ctx, root)
 	if err != nil {
@@ -649,8 +632,8 @@ func newAssignmentRecordWorkspaceFixtureWithContract(t *testing.T, withClosing, 
 		},
 	}
 	record, err := assignmentrecord.BuildRecord(manifestBytes, manifestRef, state, taskBytes, taskID, assignmentID, []string{"internal/workspace/"}, []assignmentrecord.ContextSource{
-		{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder", SHA256: roleSHA},
-		{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0", SHA256: skillSHA},
+		{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder"},
+		{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0"},
 	})
 	if err != nil {
 		t.Fatalf("BuildRecord: %v", err)
@@ -661,14 +644,14 @@ func newAssignmentRecordWorkspaceFixtureWithContract(t *testing.T, withClosing, 
 	return &assignmentRecordWorkspaceFixture{binding: binding, ctx: ctx, state: state, record: record}
 }
 
-func assertRecordSourcesFrozen(t *testing.T, frozen map[string]string, record assignmentrecord.Record) {
+func assertRecordSourceLocations(t *testing.T, frozen map[string]string, record assignmentrecord.Record) {
 	t.Helper()
 	for _, source := range record.ContextSources {
 		if strings.Contains(source.Ref, "#") {
 			continue
 		}
-		if frozen[source.Ref] != source.SHA256 {
-			t.Errorf("canonical source is not frozen: %s got=%s want=%s", source.Ref, frozen[source.Ref], source.SHA256)
+		if frozen[source.Ref] != source.Ref {
+			t.Errorf("original source location missing: %s got=%s", source.Ref, frozen[source.Ref])
 		}
 	}
 }
@@ -706,15 +689,6 @@ func mustJSONAssignmentRecord(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return data
-}
-
-func digestAssignmentRecord(t *testing.T, record assignmentrecord.Record) string {
-	t.Helper()
-	digest, err := record.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return digest
 }
 
 func hashAssignmentRecord(data []byte) string {

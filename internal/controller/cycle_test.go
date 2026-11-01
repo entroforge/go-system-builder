@@ -494,7 +494,7 @@ func TestRunControlCycleControlRequestTypesArePublic(t *testing.T) {
 			GateID:              "GATE-X",
 			CandidateTransition: "TR-X",
 			ObservedRevision:    12,
-			Fingerprint:         "sha256:abc",
+
 			Missing:             []string{"m1"},
 			EvidenceRefs:        []string{"e1"},
 			TransitionCommitted: false,
@@ -507,7 +507,7 @@ func TestRunControlCycleControlRequestTypesArePublic(t *testing.T) {
 	}
 	for _, key := range []string{
 		`"status"`, `"gate_id"`, `"candidate_transition"`,
-		`"observed_revision"`, `"fingerprint"`, `"missing"`,
+		`"observed_revision"`, `"missing"`,
 		`"evidence_refs"`, `"transition_committed"`, `"next_cursor"`,
 	} {
 		if !strings.Contains(string(encoded), key) {

@@ -9,7 +9,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/repair"
 )
 
-func TestEmptyChangesetFingerprintsRealRangeWithoutInventingArtifacts(t *testing.T) {
+func TestEmptyChangesetObservesRealRangeWithoutInventingArtifacts(t *testing.T) {
 	root := t.TempDir()
 	runGit(t, root, "init")
 	runGit(t, root, "config", "user.email", "test@example.invalid")
@@ -25,7 +25,7 @@ func TestEmptyChangesetFingerprintsRealRangeWithoutInventingArtifacts(t *testing
 		if err != nil {
 			t.Fatalf("real empty range rejected: %v", err)
 		}
-		if changes.Artifacts == nil || len(changes.Artifacts) != 0 || changes.Digest != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
+		if changes.Artifacts == nil || len(changes.Artifacts) != 0 {
 			t.Fatalf("empty range is not an honest empty content set: %+v", changes)
 		}
 		ref, err := repair.PersistChangeset(root, changes)
@@ -49,8 +49,8 @@ func TestEmptyChangesetFingerprintsRealRangeWithoutInventingArtifacts(t *testing
 	}
 }
 
-func TestNoChangeImpactRequiresProfessionalJudgmentWithoutFakeChangeType(t *testing.T) {
-	for _, scenario := range []string{"empty-with-judgment", "missing-decisions", "missing-rationale", "changed-without-type"} {
+func TestNoChangeImpactReceivesEmptyDispositionWithoutFakeChangeType(t *testing.T) {
+	for _, scenario := range []string{"empty-with-judgment", "missing-decisions", "missing-rationale", "invalid-change-type"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			request := repair.ChangeImpactRequest{
@@ -64,11 +64,11 @@ func TestNoChangeImpactRequiresProfessionalJudgmentWithoutFakeChangeType(t *test
 				request.Decisions = nil
 			case "missing-rationale":
 				request.Decisions[0].Rationale = " "
-			case "changed-without-type":
-				request.ChangedArtifacts = []repair.ArtifactRef{{Path: "product.txt", SHA256: strings.Repeat("a", 64)}}
+			case "invalid-change-type":
+				request.ChangeTypes = []string{"unknown"}
 			}
 			impact, ref, err := repair.CreateChangeImpact(root, request)
-			if scenario != "empty-with-judgment" {
+			if scenario == "invalid-change-type" {
 				if err == nil {
 					t.Fatal("unfinished professional judgment was accepted")
 				}
@@ -77,7 +77,7 @@ func TestNoChangeImpactRequiresProfessionalJudgmentWithoutFakeChangeType(t *test
 				}
 				return
 			}
-			if err != nil || impact.ChangedArtifacts == nil || len(impact.ChangeTypes) != 0 || len(impact.Decisions) != 1 || len(impact.RequiredReverificationIDs) != 1 {
+			if err != nil || impact.ChangedArtifacts == nil || len(impact.ChangeTypes) != 0 || (scenario != "missing-decisions" && len(impact.Decisions) != 1) || len(impact.RequiredReverificationIDs) != 1 {
 				t.Fatalf("honest no-change Impact: %+v %v", impact, err)
 			}
 			if _, err := repair.ValidateChangeImpact(root, ref); err != nil {

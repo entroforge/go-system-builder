@@ -24,13 +24,13 @@ func TestNativeHookRoutesS9MixedAvailableKeepsExactFrozenRejection(t *testing.T)
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(ctx, root, worker, plan, service, &diagnostic); err != nil {
+	if err := receiveNativeS9ReadyPlan(ctx, root, worker, plan, service, &diagnostic, nil); err != nil {
 		t.Fatal(err)
 	}
 	if receipt, err := service.SaveRepairPlanReportFrom(ctx, plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil); err != nil || !receipt.Accepted {
 		t.Fatalf("original Plan reception: %+v %v", receipt, err)
 	}
-	if err := recordNativeS9Source(ctx, root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+	if err := recordNativeS9OriginalLocation(ctx, root, plan, worker); err != nil {
 		t.Fatal(err)
 	}
 	// Controlled mechanism input, not a claim of a real bootstrap session:
@@ -48,14 +48,10 @@ func TestNativeHookRoutesS9MixedAvailableKeepsExactFrozenRejection(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Install real bootstrap bytes and record their actual digest. The test
+	// Install the real bootstrap bytes. The test
 	// executable is only an installation input; no child session is started.
 	if err := registry.Bootstrap(execution, installed); err != nil {
 		t.Fatalf("controlled frozen bootstrap: %v", err)
-	}
-	execution.BootstrapSHA256, err = workspace.BootstrapDigest(execution)
-	if err != nil {
-		t.Fatal(err)
 	}
 	if err := registry.ValidateBootstrap(execution); err != nil {
 		t.Fatal(err)

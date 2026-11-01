@@ -276,7 +276,7 @@ func TestS3ColdListenerSaveRegistersCurrentBatchAndSharedModelClosure(t *testing
 	packet := prepareS3ThroughSourceCommit(t, root)
 	indexPath, contractPath, modelPaths := writeS3SharedModelBatch(t, root, true, false)
 	// Start from the actual published author file. Main supplies professional
-	// content only; source hashes, receipt identity and time come from consumers.
+	// content only; source identity, receipt identity and time come from consumers.
 	data, err := os.ReadFile(filepath.Join(root, packet.AnswerPath))
 	if err != nil {
 		t.Fatal(err)
@@ -351,9 +351,11 @@ func TestS3ColdListenerSaveRegistersCurrentBatchAndSharedModelClosure(t *testing
 			t.Errorf("original planning_contract evidence omitted delivered subject %s: %+v", path, evidence.SubjectRefs)
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
-		if err != nil || subject.SHA256 != workpacket.Digest(content) {
-			t.Errorf("subject %s is not pinned to its exact submitted bytes: subject=%+v err=%v", path, subject, err)
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
+			t.Errorf("delivered subject %s is not readable: %v", path, err)
+		}
+		if (path == indexPath || path == contractPath) && subject.Version != "v1.0.0" {
+			t.Errorf("delivered contract subject %s lost its version: %+v", path, subject)
 		}
 	}
 	if evidence.Answer.IndexPath == nil || *evidence.Answer.IndexPath != indexPath || len(evidence.Answer.ContractPaths) != 1 || evidence.Answer.ContractPaths[0] != contractPath {
@@ -368,7 +370,7 @@ func TestS3ColdListenerSaveRegistersCurrentBatchAndSharedModelClosure(t *testing
 	for _, path := range modelPaths {
 		found := false
 		for _, source := range inputs.Sources {
-			if source.Path == path && source.SHA256 == subjects[path].SHA256 {
+			if source.Path == path && source.Version == subjects[path].Version {
 				found = true
 			}
 		}

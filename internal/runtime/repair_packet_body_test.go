@@ -57,13 +57,18 @@ func TestS9ExternalPlanBodyKeepsOriginalQuestionReceiptAndSources(t *testing.T) 
 	if err := VerifyRepairPlanReportPacketIssueContext(ctx, f.root, f.state, packet); err != nil {
 		t.Fatal(err)
 	}
-	// External storage never replaces the original source/approval closure.
+	// An already issued question and accepted receipt remain available without
+	// requalifying their source by comparing the whole upstream document.
 	source := filepath.Join(f.root, filepath.FromSlash(packet.Binding.PlanRef))
 	if err := os.WriteFile(source, []byte(`{"changed":"original plan source"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyRepairPlanReportPacketIssueContext(ctx, f.root, f.state, packet); err == nil {
-		t.Fatal("external body granted source authority after drift")
+	if err := VerifyRepairPlanReportPacketIssueContext(ctx, f.root, f.state, packet); err != nil {
+		t.Fatalf("unrelated source edit invalidated the issued packet: %v", err)
+	}
+	again, found, err := VerifiedRepairPlanReportReceipt(f.root, f.state, f.packet.ID, f.packet.Binding.OwnerAgentID)
+	if err != nil || !found || !reflect.DeepEqual(again, accepted) {
+		t.Fatalf("source edit changed the accepted receipt: %v %v", found, err)
 	}
 }
 
@@ -169,8 +174,18 @@ func TestS9ExternalCheckpointUsesIndependentBodyResolver(t *testing.T) {
 	if err := ValidateCheckpointIndicesContext(ctx, f.plan.root, f.plan.state, f.plan.journal); err != nil {
 		t.Fatalf("independent original bodies did not restore checkpoint proof: %v", err)
 	}
+	if reads != 0 {
+		t.Fatalf("checkpoint index validation unnecessarily read %d bodies", reads)
+	}
+	ctx = WithPacketBodyRoot(ctx, f.plan.root)
+	if _, found, err := FindRepairPlanReportPacketContext(ctx, f.plan.state, f.plan.packet.ID); err != nil || !found {
+		t.Fatalf("checkpoint Plan body unavailable from original resolver: %v %v", found, err)
+	}
+	if _, found, err := FindRepairResultPacketContext(ctx, f.plan.state, f.packet.ID); err != nil || !found {
+		t.Fatalf("checkpoint Result body unavailable from original resolver: %v %v", found, err)
+	}
 	if reads != 2 {
-		t.Fatalf("checkpoint body reads=%d want both S9 bodies once", reads)
+		t.Fatalf("selected checkpoint body reads=%d, want both S9 bodies once", reads)
 	}
 	after, _ := json.Marshal(f.plan.state)
 	if string(before) != string(after) {
@@ -210,7 +225,13 @@ func TestS9ExternalBodyRejectsWrongRootDriftFormatsAndCancellation(t *testing.T)
 				ctx, cancel = context.WithCancel(ctx)
 				cancel()
 			}
-			_, _, err := FindRepairResultPacketContext(WithPacketBodyRoot(ctx, root), f.plan.state, f.packet.ID)
+			_, found, err := FindRepairResultPacketContext(WithPacketBodyRoot(ctx, root), f.plan.state, f.packet.ID)
+			if change == "unknown-index-field" {
+				if err != nil || !found {
+					t.Fatalf("unrelated index field rejected: found=%v err=%v", found, err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatalf("unsafe %s accepted", change)
 			}

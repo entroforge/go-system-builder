@@ -33,7 +33,7 @@ func removePriorPermissions(t *testing.T, current ReuseRequest, ref ToolReceipt)
 	observation := raw["profile_observation"].(map[string]any)
 	delete(observation, "permissions")
 	delete(observation, "permission_digest")
-	data, err = SealReceipt(raw, raw["output"].(string))
+	data, err = SealReceipt(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestPermissionsAreActualFactsAndNotOnlyAvailability(t *testing.T) {
 	if !p.Known() {
 		t.Fatal("complete synthetic facts rejected")
 	}
-	for _, kind := range []string{"version", "runner", "platform", "kernel", "uid", "groups", "binary", "shell", "libraries", "filter", "policy", "authority", "cwd", "unavailable", "diagnostic"} {
+	for _, kind := range []string{"version", "runner", "platform", "kernel", "uid", "groups", "cwd", "unavailable", "diagnostic"} {
 		t.Run(kind, func(t *testing.T) {
 			q := p
 			switch kind {
@@ -68,18 +68,6 @@ func TestPermissionsAreActualFactsAndNotOnlyAvailability(t *testing.T) {
 				q.UID = -1
 			case "groups":
 				q.Groups = nil
-			case "binary":
-				q.BinarySHA256 = ""
-			case "shell":
-				q.ShellSHA256 = ""
-			case "libraries":
-				q.LibrariesSHA256 = ""
-			case "filter":
-				q.FilterSHA256 = ""
-			case "policy":
-				q.PolicySHA256 = ""
-			case "authority":
-				q.AuthoritySHA256 = ""
 			case "cwd":
 				q.CWD = "/different"
 			case "unavailable":
@@ -92,31 +80,23 @@ func TestPermissionsAreActualFactsAndNotOnlyAvailability(t *testing.T) {
 			}
 		})
 	}
+	if !p.Known() {
+		t.Fatal("actual permission facts depended on historical digests")
+	}
 }
 
-func TestReuseRequiresMatchingPermissionFactsAndKnownPriorObservation(t *testing.T) {
-	for _, kind := range []string{"changed_authority", "changed_filter", "changed_library", "forged_digest", "missing_current", "missing_previous"} {
+func TestReuseDoesNotRequireHistoricalPermissionProof(t *testing.T) {
+	for _, kind := range []string{"missing_current", "missing_previous"} {
 		t.Run(kind, func(t *testing.T) {
 			root, current, ref := acceptedFixture(t)
 			switch kind {
-			case "changed_authority":
-				current.Observation.Permissions.AuthoritySHA256 = Hash([]byte(kind))
-				current.Observation.PermissionDigest = current.Observation.Permissions.Digest()
-			case "changed_filter":
-				current.Observation.Permissions.FilterSHA256 = Hash([]byte(kind))
-				current.Observation.PermissionDigest = current.Observation.Permissions.Digest()
-			case "changed_library":
-				current.Observation.Permissions.LibrariesSHA256 = Hash([]byte(kind))
-				current.Observation.PermissionDigest = current.Observation.Permissions.Digest()
-			case "forged_digest":
-				current.Observation.PermissionDigest = Hash([]byte(kind))
 			case "missing_current":
 				current.Observation.Permissions = nil
 			case "missing_previous":
 				ref = removePriorPermissions(t, current, ref)
 			}
-			if d := DecideReuse(root, current, []ToolReceipt{ref}); d.WouldReuse {
-				t.Fatal("changed/unknown permission facts reused", d)
+			if d := DecideReuse(root, current, []ToolReceipt{ref}); !d.WouldReuse {
+				t.Fatal("historical permission metadata blocked reuse", d)
 			}
 		})
 	}

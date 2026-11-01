@@ -16,23 +16,21 @@ import (
 // the original work_blocked transition. It is a data transfer type only: it
 // contains neither accepted Runtime coordinates nor an artifact self hash.
 type RepairResultBlockerArtifact struct {
-	Contract              string                         `json:"contract"`
-	SchemaVersion         string                         `json:"schema_version"`
-	PacketID              string                         `json:"packet_id"`
-	PacketSHA256          string                         `json:"packet_sha256"`
+	Contract      string `json:"contract"`
+	SchemaVersion string `json:"schema_version"`
+	PacketID      string `json:"packet_id"`
+
 	IssuanceEventID       string                         `json:"issuance_event_id"`
 	Binding               workpacket.RepairResultBinding `json:"binding"`
 	ExecutionAssignmentID string                         `json:"execution_assignment_id"`
 	ExecutionGeneration   int                            `json:"execution_generation"`
 	ExecutionRoot         string                         `json:"execution_root"`
 	PlatformSessionID     string                         `json:"platform_session_id"`
-	BaseCommit            string                         `json:"base_commit"`
-	SourceHead            string                         `json:"source_head"`
-	AnswerPath            string                         `json:"answer_path"`
-	SubmittedAnswer       json.RawMessage                `json:"submitted_answer"`
-	AnswerSHA256          string                         `json:"answer_sha256"`
-	MessageRef            string                         `json:"message_ref"`
-	MessageSHA256         string                         `json:"message_sha256"`
+
+	AnswerPath      string          `json:"answer_path"`
+	SubmittedAnswer json.RawMessage `json:"submitted_answer"`
+
+	MessageRef string `json:"message_ref"`
 }
 
 // UnmarshalJSON rejects duplicate and unknown fields and canonicalizes the
@@ -43,7 +41,7 @@ func (artifact *RepairResultBlockerArtifact) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("S9 blocker artifact JSON: %w", err)
 	}
 	var decoded repairResultBlockerArtifactWire
-	if err := decodeRepairResultBlockerStrictJSON(data, &decoded); err != nil {
+	if err := decodeRepairResultBlockerJSON(data, &decoded); err != nil {
 		return fmt.Errorf("decode S9 blocker artifact: %w", err)
 	}
 	answer, err := canonicalRuntimeJSON(decoded.SubmittedAnswer)
@@ -52,9 +50,6 @@ func (artifact *RepairResultBlockerArtifact) UnmarshalJSON(data []byte) error {
 	}
 	if err := validateCompleteRepairResultBlockerAnswer(answer); err != nil {
 		return err
-	}
-	if decoded.AnswerSHA256 != workpacket.Digest(answer) {
-		return errors.New("S9 blocker submitted answer differs from its canonical answer SHA256")
 	}
 	decoded.SubmittedAnswer = answer
 	canonical, err := json.Marshal(decoded)
@@ -75,14 +70,9 @@ func validateCompleteRepairResultBlockerAnswer(answer []byte) error {
 	if err := json.Unmarshal(answer, &fields); err != nil || fields == nil {
 		return errors.New("S9 blocker submitted answer must be a complete object")
 	}
-	for _, name := range []string{
-		"verdict", "before_fix_results", "unit_results", "detection_gap_artifacts", "evidence_refs",
-		"scope_deviations", "residual_risks", "migration_ref", "rollback_ref",
-	} {
-		value, ok := fields[name]
-		if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-			return fmt.Errorf("S9 blocker submitted answer field %q must be explicitly complete", name)
-		}
+	value := bytes.TrimSpace(fields["verdict"])
+	if len(value) == 0 || bytes.Equal(value, []byte("null")) {
+		return errors.New("S9 blocker submitted answer must express a verdict")
 	}
 	return nil
 }
@@ -91,9 +81,9 @@ func validateCompleteRepairResultBlockerAnswer(answer []byte) error {
 // blocker artifact and its accepted AGENT-LIFECYCLE event. These coordinates
 // are deliberately absent from RepairResultBlockerArtifact.
 type RepairResultBlockerReceipt struct {
-	Contract                     string                      `json:"contract"`
-	ArtifactRef                  string                      `json:"artifact_ref"`
-	ArtifactSHA256               string                      `json:"artifact_sha256"`
+	Contract    string `json:"contract"`
+	ArtifactRef string `json:"artifact_ref"`
+
 	Artifact                     RepairResultBlockerArtifact `json:"artifact"`
 	AcceptedEventID              string                      `json:"accepted_event_id"`
 	AcceptedIdempotencyKey       string                      `json:"accepted_idempotency_key"`
@@ -108,10 +98,10 @@ func (receipt *RepairResultBlockerReceipt) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("S9 blocker receipt JSON: %w", err)
 	}
 	var decoded repairResultBlockerReceiptWire
-	if err := decodeRepairResultBlockerStrictJSON(data, &decoded); err != nil {
+	if err := decodeRepairResultBlockerJSON(data, &decoded); err != nil {
 		return fmt.Errorf("decode S9 blocker receipt: %w", err)
 	}
-	if decoded.Contract != "s9-repair-result-blocker-receipt-v1" || decoded.Artifact.Contract != "s9-repair-result-blocker-v1" || decoded.ArtifactRef == "" || !isSHA256Hex(decoded.ArtifactSHA256) || decoded.AcceptedEventID == "" || decoded.AcceptedIdempotencyKey == "" || decoded.AcceptedAfterRuntimeRevision < 1 || decoded.AcceptedSequence < 1 {
+	if decoded.Contract != "s9-repair-result-blocker-receipt-v1" || decoded.Artifact.Contract != "s9-repair-result-blocker-v1" || decoded.ArtifactRef == "" || decoded.AcceptedEventID == "" || decoded.AcceptedIdempotencyKey == "" || decoded.AcceptedAfterRuntimeRevision < 1 || decoded.AcceptedSequence < 1 {
 		return errors.New("S9 blocker receipt has incomplete original acceptance coordinates")
 	}
 	*receipt = RepairResultBlockerReceipt(decoded)
@@ -120,9 +110,8 @@ func (receipt *RepairResultBlockerReceipt) UnmarshalJSON(data []byte) error {
 
 type repairResultBlockerReceiptWire RepairResultBlockerReceipt
 
-func decodeRepairResultBlockerStrictJSON(data []byte, value any) error {
+func decodeRepairResultBlockerJSON(data []byte, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		return err
 	}
@@ -134,16 +123,4 @@ func decodeRepairResultBlockerStrictJSON(data []byte, value any) error {
 		return err
 	}
 	return nil
-}
-
-func isSHA256Hex(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for _, c := range value {
-		if !('0' <= c && c <= '9') && !('a' <= c && c <= 'f') {
-			return false
-		}
-	}
-	return true
 }

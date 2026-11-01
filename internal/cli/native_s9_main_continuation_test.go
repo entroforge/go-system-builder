@@ -6,18 +6,19 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
-	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func TestNativeS9MainCompletedReturnContinuesOriginalSourceAfterCleanup(t *testing.T) {
-	root, worker, p, stop, _ := nativeS9LegacyWorkerFixture(t)
+	root, worker, p, stop, _ := nativeS9WorkerFixture(t)
 	repairLeadGit(t, worker, "reset", "--hard", repairLeadGit(t, root, "rev-parse", "HEAD"))
 	blocker := filepath.Join(root, ".claude/evidence/s9-source", p.ID, "typed")
 	writeRepairLeadFile(t, root, filepath.ToSlash(filepath.Join(".claude/evidence/s9-source", p.ID, "typed")), "injected typed publication failure")
@@ -34,7 +35,7 @@ func TestNativeS9MainCompletedReturnContinuesOriginalSourceAfterCleanup(t *testi
 	if err := os.Remove(blocker); err != nil {
 		t.Fatal(err)
 	}
-	brief, _, _ := nativeS9Paths(p)
+	brief := nativeS9BriefPath(p)
 	original := filepath.Join(root, brief)
 	invoke := func(prompt string, response map[string]any, failure string) string {
 		t.Helper()
@@ -71,13 +72,8 @@ func TestNativeS9MainCompletedReturnContinuesOriginalSourceAfterCleanup(t *testi
 	invoke(original+"\n"+filepath.Join(root, packets[0].ViewPath), map[string]any{"status": "completed", "agentId": stop.AgentID}, "")
 	repairDispatchAssertUnchanged(t, root, before)
 	// Cancellation remains the actual original request lifetime.
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	in := policy.Input{Context: ctx, Event: "PostToolUse", CWD: root, ToolName: "Agent", ToolUseID: "cancelled", ToolInput: map[string]any{"prompt": original}, ToolResponse: map[string]any{"status": "completed", "agentId": stop.AgentID}}
-	_, attempted, err := continueNativeS9MainReturn(ctx, root, in, snap, nativeReturnSubject{kind: "s9-plan-report-v1", id: p.ID, ref: original})
-	if attempted || err != nil {
-		t.Fatalf("cancelled request selected a consumer: %t %v", attempted, err)
-	}
+	in := policy.Input{Event: "PostToolUse", CWD: root, ToolName: "Agent", ToolUseID: "cancelled", ToolInput: map[string]any{"prompt": original}, ToolResponse: map[string]any{"status": "completed", "agentId": stop.AgentID}}
+	nativeS9AssertCancelledMainReturn(t, root, in, snap, nativeReturnSubject{kind: "s9-plan-report-v1", id: p.ID, ref: original})
 	repairDispatchAssertUnchanged(t, root, before)
 	text := invoke(original, map[string]any{"status": "completed", "agentId": stop.AgentID}, "")
 	after := repairDispatchSnapshot(t, root)
@@ -91,38 +87,6 @@ func TestNativeS9MainCompletedReturnContinuesOriginalSourceAfterCleanup(t *testi
 	if _, err := os.Stat(worker); !os.IsNotExist(err) {
 		t.Fatalf("source recreated: %v", err)
 	}
-}
-
-// Historical C preparations must remain explicit when new tasks default to D.
-func nativeS9LegacyWorkerFixture(t *testing.T, assertionCopies ...int) (string, string, workpacket.RepairPlanReportPacket, policy.Input, workpacket.RepairResultProfessionalAnswer) {
-	t.Helper()
-	root, worker, p, stop, answer := nativeS9WorkerFixture(t, assertionCopies...)
-	plan, result, err := nativeS9AuthorPaths(root, p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	brief, pin, oldResult := nativeS9Paths(p)
-	var saved map[string]any
-	readRepairLeadJSON(t, filepath.Join(root, pin), &saved)
-	delete(saved, "private_submission_version")
-	saved["source_retention_version"] = 1
-	if err := persistRepairLeadQuestionnaire(filepath.Join(root, pin), saved); err != nil {
-		t.Fatal(err)
-	}
-	for _, pair := range [][2]string{{plan, p.AnswerPath}, {result, oldResult}} {
-		raw, err := os.ReadFile(filepath.Join(worker, pair[0]))
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeRepairLeadFile(t, worker, pair[1], string(raw))
-		if pair[0] != pair[1] {
-			if err := os.Remove(filepath.Join(worker, pair[0])); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	stop.LastAssistantMessage = filepath.Join(root, brief) + "\n" + filepath.Join(worker, oldResult)
-	return root, worker, p, stop, answer
 }
 
 func nativeS9TestAuthorPaths(t *testing.T, root string, p workpacket.RepairPlanReportPacket) (string, string) {
@@ -159,13 +123,13 @@ func TestNativeS9MainCompletedReturnContinuesExactLiveDSource(t *testing.T) {
 		t.Fatalf("original source: %v %s", err, &diagnostic)
 	}
 	e := registry.Executions[p.Binding.ManifestAssignmentID]
-	if e.Path != worker || e.DeliveryRef != "" || repair.NativeS9SourceReference(e).Path != "" {
+	if e.Path != worker || e.DeliveryRef != "" {
 		t.Fatalf("did not preserve incomplete D source: %#v %s", e, &diagnostic)
 	}
 	if err := os.Remove(filepath.Join(worker, unknown)); err != nil {
 		t.Fatal(err)
 	}
-	brief, _, _ := nativeS9Paths(p)
+	brief := nativeS9BriefPath(p)
 	original := filepath.Join(root, brief)
 	invoke := func(prompt string, response map[string]any, failure string) string {
 		t.Helper()
@@ -217,13 +181,8 @@ func TestNativeS9MainCompletedReturnContinuesExactLiveDSource(t *testing.T) {
 		})
 	}
 	before := repairDispatchRuntimeBytes(t, root)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	in := policy.Input{Context: ctx, Event: "PostToolUse", CWD: root, ToolName: "Agent", ToolUseID: "cancelled", ToolInput: map[string]any{"prompt": original}, ToolResponse: response()}
-	_, attempted, err := continueNativeS9MainReturn(ctx, root, in, snap, nativeReturnSubject{kind: "s9-plan-report-v1", id: p.ID, ref: original})
-	if attempted || err != nil {
-		t.Fatalf("cancelled request selected a consumer: %t %v", attempted, err)
-	}
+	in := policy.Input{Event: "PostToolUse", CWD: root, ToolName: "Agent", ToolUseID: "cancelled", ToolInput: map[string]any{"prompt": original}, ToolResponse: response()}
+	nativeS9AssertCancelledMainReturn(t, root, in, snap, nativeReturnSubject{kind: "s9-plan-report-v1", id: p.ID, ref: original})
 	repairDispatchAssertUnchanged(t, root, before)
 	text := invoke(original, response(), "")
 	after := repairDispatchSnapshot(t, root)
@@ -234,4 +193,27 @@ func TestNativeS9MainCompletedReturnContinuesExactLiveDSource(t *testing.T) {
 	before = repairDispatchRuntimeBytes(t, root)
 	invoke(original, response(), "")
 	repairDispatchAssertUnchanged(t, root, before)
+}
+
+// A completed platform event with no remaining lifetime must leave both C and
+// D inputs untouched. This also verifies that the exact caller snapshot returns.
+func nativeS9AssertCancelledMainReturn(t *testing.T, root string, in policy.Input, snap runtime.Snapshot, subject nativeReturnSubject) {
+	t.Helper()
+	for _, deadline := range []bool{false, true} {
+		var ctx context.Context
+		var cancel context.CancelFunc
+		if deadline {
+			ctx, cancel = context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+		} else {
+			ctx, cancel = context.WithCancel(t.Context())
+		}
+		cancel()
+		in.Context = ctx
+		before := repairDispatchRuntimeBytes(t, root)
+		returned, attempted, err := continueNativeOriginalS9MainReturn(ctx, root, in, snap, subject)
+		if attempted || err != nil || !reflect.DeepEqual(returned, snap) {
+			t.Fatalf("expired completed request changed selection/snapshot (deadline=%t): %t %v", deadline, attempted, err)
+		}
+		repairDispatchAssertUnchanged(t, root, before)
+	}
 }

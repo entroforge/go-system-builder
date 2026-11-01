@@ -2,67 +2,50 @@ package cli
 
 import (
 	"encoding/json"
-	"os"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/entroforge/go-system-builder/internal/policy"
-	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-// The receipt rows are original accepted-state fixtures for this read-only
-// projection check, not author-built budget decisions or S10 reception tests.
-func TestS7BudgetWaitRequiresActualOriginalRequestForAnotherRound(t *testing.T) {
-	for _, scenario := range []string{"acceptance-unanswered", "acceptance-pass", "acceptance-review-required", "missing-receipt", "changed-receipt", "wrong-runtime", "draining-S7"} {
-		t.Run(scenario, func(t *testing.T) {
-			root := t.TempDir()
-			state := map[string]any{
-				"runtime_id": "budget-runtime", "baseline": map[string]any{"generation": 1},
-				"lifecycle": map[string]any{"state": "acceptance", "phase": nil}, "review": map[string]any{"round": 5},
-				"configuration": map[string]any{"repair": map[string]any{"max_full_review_rounds": 5}}, "evidence": []any{},
-			}
-			if scenario == "draining-S7" {
-				state["lifecycle"] = map[string]any{"state": "verification", "phase": "running"}
-			}
-			if scenario != "acceptance-unanswered" {
-				conclusion := "review_required"
-				if scenario == "acceptance-pass" {
-					conclusion = "pass"
-				}
-				source := map[string]any{"runtime_id": "budget-runtime", "baseline_generation": 1, "review_round": 5, "conclusion": conclusion}
-				if scenario == "wrong-runtime" {
-					source["runtime_id"] = "other-runtime"
-				}
-				data, _ := json.Marshal(source)
-				if err := os.WriteFile(filepath.Join(root, "accepted.json"), data, 0600); err != nil {
-					t.Fatal(err)
-				}
-				state["evidence"] = []any{map[string]any{"id": "accepted-report", "kind": "acceptance", "status": "valid", "path": "accepted.json", "sha256": workpacket.Digest(data), "baseline_generation": 1, "review_round": 5, "invalidated_by": nil}}
-				if scenario == "changed-receipt" {
-					if err := os.WriteFile(filepath.Join(root, "accepted.json"), []byte("changed"), 0600); err != nil {
-						t.Fatal(err)
-					}
-				} else if scenario == "missing-receipt" {
-					if err := os.Remove(filepath.Join(root, "accepted.json")); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			want := scenario == "acceptance-review-required"
-			if got := s7BudgetGateRequired(state, root); got != want {
-				t.Fatalf("budget wait=%v want=%v for %s", got, want, scenario)
-			}
-			context := stageS7BudgetDecisionQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, runtime.Snapshot{State: state})
-			if scenario == "missing-receipt" || scenario == "changed-receipt" || scenario == "wrong-runtime" {
-				if !strings.Contains(context, "Main/system") || !strings.Contains(context, "accepted.json") {
-					t.Fatalf("original source failure lost its exact system recovery: %s", context)
-				}
-			}
-			if paths, _ := filepath.Glob(filepath.Join(root, ".claude", "decisions", "*.application.json")); len(paths) != 0 {
-				t.Fatalf("read-only projection created human applications: %v", paths)
-			}
-		})
+func TestS7LegacyBudgetNumbersDoNotCreateProjectedGateway(t *testing.T) {
+	for _, cursor := range []string{"verification", "bug_resolution", "acceptance"} {
+		state := map[string]any{
+			"lifecycle":     map[string]any{"state": cursor, "phase": "ready_for_full_review"},
+			"review":        map[string]any{"round": 500},
+			"configuration": map[string]any{"repair": map[string]any{"max_full_review_rounds": 1}},
+		}
+		data, err := json.Marshal(projectedGateway(state, "S7", t.TempDir()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "s7_budget") {
+			t.Fatalf("legacy numbers created a human gate: %s", data)
+		}
+	}
+}
+
+func TestS7QuestionnaireObservationUsesOriginalPlanIdentity(t *testing.T) {
+	state := map[string]any{
+		"lifecycle": map[string]any{"state": "verification", "phase": "running"},
+		"review":    map[string]any{"round_entry": map[string]any{"plan_id": "current-plan"}},
+		"entities": map[string]any{"work_packets": []any{
+			map[string]any{"template_id": "s7-custom", "answer_path": "current.json", "binding": map[string]any{"review_plan_id": "current-plan"}},
+			map[string]any{"template_id": "s7-custom", "answer_path": "old.json", "binding": map[string]any{"review_plan_id": "old-plan"}},
+			map[string]any{"template_id": "s7-custom", "answer_path": "unknown.json", "binding": map[string]any{"review_round": nil}},
+		}},
+	}
+	rows := observableQuestionnaires(t.TempDir(), runtime.Snapshot{State: state})
+	var seenCurrent bool
+	for _, row := range rows {
+		switch filepath.Base(row.path) {
+		case "current.json":
+			seenCurrent = true
+		case "old.json", "unknown.json":
+			t.Fatalf("unrelated or unknown S7 responsibility selected: %s", row.path)
+		}
+	}
+	if !seenCurrent {
+		t.Fatal("current original Plan responsibility was not selected")
 	}
 }

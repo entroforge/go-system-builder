@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"reflect"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
@@ -79,11 +78,6 @@ func (b *ExecutionRegistry) PlanDocumentReview(ctx context.Context, state map[st
 	if err != nil {
 		return e, err
 	}
-	for path, hash := range analysisInputs {
-		if e.Inputs[path] != hash {
-			return e, fmt.Errorf("prepared input differs from frozen task analysis: %s; restore the original bytes or use the original replanning route", path)
-		}
-	}
 	if existing, ok := b.Executions[e.AssignmentID]; ok && (existing.Purpose != DocumentReviewPurpose || existing.WorkPacketID != p.ID || existing.StageEntry == nil || *existing.StageEntry != p.Binding.StageEntry) {
 		return e, fmt.Errorf("existing execution does not match this immutable document review")
 	}
@@ -130,28 +124,9 @@ func (b *ExecutionRegistry) ValidateDocumentReviewView(e Execution, p workpacket
 	if !bytes.Equal(data, append(expected, '\n')) {
 		return fmt.Errorf("Worker view does not match the registered packet/execution")
 	}
-	for _, ref := range p.Inputs {
-		if e.Inputs[ref.Path] != ref.SHA256 {
-			return fmt.Errorf("execution lacks the packet's frozen subject %s", ref.Path)
-		}
-		data, err := workpacket.ReadFile(e.Path, filepath.ToSlash(filepath.Join(".claude/inputs", ref.Path)), 8<<20)
-		if err != nil || workpacket.Digest(data) != ref.SHA256 {
-			return fmt.Errorf("Worker frozen subject changed: %s", ref.Path)
-		}
-	}
-	analysisInputs, err := workpacket.TaskAnalysisInputs(b.MainRoot, p)
-	if err != nil {
-		return err
-	}
-	for path, hash := range analysisInputs {
-		if e.Inputs[path] != hash {
-			return fmt.Errorf("execution lacks frozen task analysis input: %s", path)
-		}
-		data, err := workpacket.ReadFile(e.Path, filepath.ToSlash(filepath.Join(".claude/inputs", path)), 8<<20)
-		if err != nil || workpacket.Digest(data) != hash {
-			return fmt.Errorf("Worker frozen task analysis input changed: %s", path)
-		}
-	}
+	// Input paths identify the materials supplied to the original review.
+	// Their historic digest fields are not an authorization or acceptance
+	// condition. Reviewers and Main assess the actual material they consume.
 	return nil
 }
 

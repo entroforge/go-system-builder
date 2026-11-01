@@ -17,13 +17,9 @@ func TestDraftProjectsRecordBindingAndNullAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := record.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	if draft.RuntimeID != record.RuntimeID || draft.BaselineGeneration != record.BaselineGeneration ||
 		draft.AssignmentID != record.AssignmentID || draft.AssignmentRevision != record.Revision ||
-		draft.AssignmentRecordContract != record.Contract || draft.AssignmentRecordSHA256 != digest ||
+		draft.AssignmentRecordContract != record.Contract ||
 		draft.AgentID != record.OwnerAgentID || draft.AgentDefinitionRef != record.AgentDefinition.Ref ||
 		draft.TaskID != record.Task.ID || draft.TeamID != record.TeamID {
 		t.Fatalf("Draft machine binding does not project the canonical Record: %+v", draft)
@@ -43,6 +39,61 @@ func TestDraftProjectsRecordBindingAndNullAnswer(t *testing.T) {
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("stage-answer-s6-result.schema.json", data); err != nil {
 		t.Fatalf("schema rejects incomplete scaffold: %v", err)
+	}
+	if strings.Contains(string(data), `"assignment_record_sha256"`) {
+		t.Fatalf("new Result draft contains historical machine metadata: %s", data)
+	}
+}
+
+func TestDraftSchemaIgnoresHistoricalRecordDigestWithoutChangingResponsibility(t *testing.T) {
+	record := resultTestRecord(t)
+	draft, err := DraftFromRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original map[string]json.RawMessage
+	if err := json.Unmarshal(data, &original); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]json.RawMessage{
+		"missing": nil, "null": json.RawMessage(`null`), "text": json.RawMessage(`"old"`),
+		"number": json.RawMessage(`42`), "object": json.RawMessage(`{"legacy":true}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fields := make(map[string]json.RawMessage, len(original)+1)
+			for key, v := range original {
+				fields[key] = v
+			}
+			if value != nil {
+				fields["assignment_record_sha256"] = value
+			}
+			body, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.NewEmbeddedValidator().ValidateBytes("stage-answer-s6-result.schema.json", body); err != nil {
+				t.Fatalf("historical metadata blocked the original draft: %v", err)
+			}
+			var decoded Draft
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("historical metadata blocked draft decoding: %v", err)
+			}
+			if decoded.AssignmentID != record.AssignmentID || decoded.AssignmentRevision != record.Revision || decoded.AgentID != record.OwnerAgentID {
+				t.Fatalf("draft lost original responsibility: %+v", decoded)
+			}
+			fields["agent_id"] = json.RawMessage(`""`)
+			invalid, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.NewEmbeddedValidator().ValidateBytes("stage-answer-s6-result.schema.json", invalid); err == nil {
+				t.Fatal("schema accepted a missing actual owner")
+			}
+		})
 	}
 }
 
@@ -127,54 +178,6 @@ func TestValidateAnswerRequiresProfessionalFieldsButAllowsEmptyRiskLists(t *test
 				t.Fatal("ValidateAnswer() accepted an incomplete answer")
 			}
 		})
-	}
-}
-
-func TestAnswerDigestCoversOnlyProfessionalAnswer(t *testing.T) {
-	answer := validResultAnswer()
-	first, err := AnswerDigest(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := AnswerDigest(cloneAnswer(answer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first != second || len(first) != 64 {
-		t.Fatalf("AnswerDigest() must be stable lowercase SHA-256: %q, %q", first, second)
-	}
-	answer.Summary += " Further detail."
-	third, err := AnswerDigest(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first == third {
-		t.Fatal("professional answer change must change AnswerDigest")
-	}
-	answer = validResultAnswer()
-	answer.ClosingAssessment = validClosingAssessment()
-	withClosing, err := AnswerDigest(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if withClosing == first {
-		t.Fatal("new closing_assessment must be included in AnswerDigest")
-	}
-	legacyJSON, err := json.Marshal(struct {
-		Summary           string              `json:"summary"`
-		AssertionEvidence []AssertionEvidence `json:"assertion_evidence"`
-		RisksBlockers     []string            `json:"risks_blockers"`
-		ScopeDeviations   []string            `json:"scope_deviations"`
-	}{Summary: answer.Summary, AssertionEvidence: answer.AssertionEvidence, RisksBlockers: answer.RisksBlockers, ScopeDeviations: answer.ScopeDeviations})
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyDigest := sha256.Sum256(legacyJSON)
-	legacyHex := hex.EncodeToString(legacyDigest[:])
-	answer.ClosingAssessment = nil
-	withoutClosing, err := AnswerDigest(answer)
-	if err != nil || withoutClosing != legacyHex {
-		t.Fatalf("omitted closing_assessment changed the original four-field digest: got %s want %s err %v", withoutClosing, legacyHex, err)
 	}
 }
 
@@ -278,8 +281,8 @@ func TestDraftAnswerSchemaIsClosedAndWithAnswerDoesNotClaimPass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := schema.NewEmbeddedValidator().ValidateBytes("stage-answer-s6-result.schema.json", unknownData); err == nil {
-		t.Fatal("closed Result answer schema accepted changed_paths")
+	if err := schema.NewEmbeddedValidator().ValidateBytes("stage-answer-s6-result.schema.json", unknownData); err != nil {
+		t.Fatalf("unrelated answer field blocked the original Result: %v", err)
 	}
 }
 
@@ -374,9 +377,9 @@ func resultTestRecord(t *testing.T) assignmentrecord.Record {
 		"assignment-result-test",
 		[]string{"internal"},
 		[]assignmentrecord.ContextSource{{
-			Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder", SHA256: strings.Repeat("a", 64),
+			Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder",
 		}, {
-			Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "1.0.0", SHA256: strings.Repeat("b", 64),
+			Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "1.0.0",
 		}},
 	)
 	if err != nil {

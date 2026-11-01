@@ -43,7 +43,7 @@ func relocationCheckpoints(root string, b *workspace.ExecutionRegistry, req work
 }
 
 func relocatedCheckpoint(cp integration.Checkpoint, e workspace.Execution, req workspace.RebindRequest) (integration.Checkpoint, error) {
-	if cp.State != integration.StateComplete || cp.AssignmentID != e.AssignmentID || cp.WorktreePath != e.Path || cp.SourceBranch != e.Branch || cp.TargetBranch != e.TargetBranch || cp.BaselineGeneration != e.BaselineGeneration || cp.TestedHead == "" || cp.MergeCommit == "" || (e.Status != "ready" && e.Status != "complete") {
+	if cp.State != integration.StateComplete || cp.AssignmentID != e.AssignmentID || cp.WorktreePath != e.Path || cp.SourceBranch != e.Branch || cp.TargetBranch != e.TargetBranch || cp.BaselineGeneration != e.BaselineGeneration || (e.Status != "ready" && e.Status != "complete") {
 		return integration.Checkpoint{}, fmt.Errorf("finish integration/cleanup before relocation: %s", e.AssignmentID)
 	}
 	after := cp
@@ -71,16 +71,6 @@ func relocatedCheckpoint(cp integration.Checkpoint, e workspace.Execution, req w
 		}
 		after.CheckReceipts = append(after.CheckReceipts, next)
 	}
-	after.ToolCheckReceipts = nil
-	for _, ref := range cp.ToolCheckReceipts {
-		ref.Path, err = move(ref.Path)
-		if err != nil {
-			return integration.Checkpoint{}, err
-		}
-		// Keep original checkout, binding and both byte digests. Relocation is
-		// not permission to reuse checks in another checkout.
-		after.ToolCheckReceipts = append(after.ToolCheckReceipts, ref)
-	}
 	after.PreviousMainRoots = append(append([]string(nil), cp.PreviousMainRoots...), req.OldMainRoot)
 	return after, nil
 }
@@ -93,8 +83,7 @@ func planTerminalRelocation(ctx context.Context, b *workspace.ExecutionRegistry,
 	if err != nil {
 		return nil, err
 	}
-	var copy workspace.ExecutionRegistry
-	err = json.Unmarshal(data, &copy)
+	copy, err := workspace.DecodeRegistry(data)
 	if err != nil {
 		return nil, err
 	}

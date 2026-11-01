@@ -125,7 +125,7 @@ func TestPacketMaintenanceViewsPreserveEquivalentFormattingAndPrivateAnswers(t *
 	}
 }
 
-func TestPacketMaintenanceViewsRejectChangedQuestionsDefaultsReadRootsAndExtraFields(t *testing.T) {
+func TestPacketMaintenanceLeavesUnknownViewsAndPrivateAnswersUntouched(t *testing.T) {
 	for _, fixture := range maintenanceViewTestPackets(t) {
 		for _, change := range []string{"question", "default-answer", "read-root", "extra-field", "duplicate-key"} {
 			t.Run(fixture.name+"/"+change, func(t *testing.T) {
@@ -181,11 +181,11 @@ func TestPacketMaintenanceViewsRejectChangedQuestionsDefaultsReadRootsAndExtraFi
 				if err := os.WriteFile(answerPath, private, 0600); err != nil {
 					t.Fatal(err)
 				}
-				if err := maintainOriginalPacketView(context.Background(), root, row, fixture.packet); err == nil {
-					t.Fatal("changed or malformed issued view accepted")
+				if err := maintainOriginalPacketView(context.Background(), root, row, fixture.packet); err != nil {
+					t.Fatalf("unknown view prevented maintenance of the original responsibility: %v", err)
 				}
 				if got, err := os.ReadFile(viewPath); err != nil || !bytes.Equal(got, data) {
-					t.Fatalf("rejected view overwritten: %v", err)
+					t.Fatalf("unknown view overwritten: %v", err)
 				}
 				if got, err := os.ReadFile(answerPath); err != nil || !bytes.Equal(got, private) {
 					t.Fatalf("private answer overwritten: %v", err)

@@ -2,7 +2,7 @@ package cli
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +15,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // This is an authoring projection of the existing dispatch arguments. The
@@ -27,9 +28,8 @@ type repairDispatchChoice struct {
 }
 
 func repairDispatchCurrent(state map[string]any) bool {
-	life := mapFieldCLI(state, "lifecycle")
 	status := stringValue(repairPointerCLI(state)["status"])
-	return stringValue(life["state"]) == "bug_resolution" && (status == "planning" || status == "reproducing" || status == "repairing")
+	return stringValue(repairPointerCLI(state)["session_id"]) != "" && (status == "planning" || status == "reproducing" || status == "repairing" || status == "targeted_reverification" || status == "ready_for_full_review" || status == "closed")
 }
 
 func repairDispatchPaths(root string, state map[string]any) []string {
@@ -44,7 +44,7 @@ func repairDispatchPaths(root string, state map[string]any) []string {
 }
 
 func repairDispatchPlan(root string, state map[string]any) (repair.RepairPlan, error) {
-	ref, err := repairPointerRef(repairPointerCLI(state), "plan_ref", "plan_sha256", "current RepairPlan")
+	ref, err := repairPointerRef(repairPointerCLI(state), "plan_ref", "current RepairPlan")
 	if err != nil {
 		return repair.RepairPlan{}, err
 	}
@@ -53,7 +53,7 @@ func repairDispatchPlan(root string, state map[string]any) (repair.RepairPlan, e
 
 func repairDispatchObservedPlan(root string, state map[string]any) (repair.RepairPlan, error) {
 	pointer := repairPointerCLI(state)
-	document, err := s9ReadListenerDocument(root, stringValue(pointer["plan_ref"]), stringValue(pointer["plan_sha256"]))
+	document, err := s9ReadListenerDocument(root, stringValue(pointer["plan_ref"]))
 	if err != nil {
 		return repair.RepairPlan{}, err
 	}
@@ -97,7 +97,7 @@ func stageRepairDispatchContext(root string, request policy.Input, snapshot runt
 			b.WriteString("This responsibility is awaiting Main's professional Builder selection; no owner has been selected yet. ")
 		}
 	}
-	b.WriteString("Keep supplied assignment_id; choose role_family from backend-builder, frontend-builder or test-builder. agent_id is an optional engineering responsibility name, system-generated when omitted; it is not a Claude platform ID. Empty role rows stay pending. Save selected rows and pass the exact prepared brief to Claude Code native Agent with worktree isolation. The Builder saves its professional plan before implementation, continues work and self-checks, then saves its Result. PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. No workspace prepare/launch or check_location selection is required for new native work; Main owns integration and actual necessary checks. Existing frozen executions retain their original recovery path.")
+	b.WriteString("Keep supplied assignment_id; choose role_family from backend-builder, frontend-builder or test-builder. agent_id is an optional engineering responsibility name, system-generated when omitted; it is not a Claude platform ID. Empty role rows stay pending. Save selected rows and pass the exact prepared brief to Claude Code native Agent with worktree isolation. The Builder saves its professional plan before implementation, continues work and self-checks, then saves its Result. PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. No workspace prepare/launch or check_location selection is required for new native work; Main owns integration and actual necessary checks.")
 	return b.String()
 }
 
@@ -147,8 +147,7 @@ func repairDispatchOwner(state map[string]any, row repairDispatchChoice) string 
 	if owner := stringMapCLI(pointer["assignment_owners"])[row.AssignmentID]; owner != "" {
 		return owner
 	}
-	digest := sha256.Sum256([]byte(stringValue(pointer["session_id"]) + "\x00" + stringValue(pointer["plan_sha256"])))
-	return fmt.Sprintf("builder-s9-%s-%x", dispatchSlug(row.AssignmentID), digest[:6])
+	return "builder-s9-" + repairResponsibilityKey(stringValue(state["runtime_id"]), stringValue(pointer["session_id"]), stringValue(pointer["plan_ref"]), row.AssignmentID)
 }
 
 // Read only the existing Runtime projection here. Physical manifest/TASK and
@@ -195,21 +194,15 @@ func repairDispatchSameRegistered(state map[string]any, row repairDispatchChoice
 }
 
 func runSavedRepairDispatch(root string, request policy.Input, stdout, stderr io.Writer) (bool, int) {
-	return runRepairDispatchQuestionnaire(root, request, stdout, stderr, true)
+	return runRepairDispatchQuestionnaire(root, request, stdout, stderr)
 }
 
-// Legacy registration-only callers retain this entry. Normal questionnaire
-// saves, including observed scripts, use runSavedRepairDispatch.
-func runObservedRepairDispatch(root string, request policy.Input, stdout, stderr io.Writer) (bool, int) {
-	return runRepairDispatchQuestionnaire(root, request, stdout, stderr, false)
-}
-
-func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, stderr io.Writer, prepareExecution bool) (bool, int) {
+func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, stderr io.Writer) (bool, int) {
 	path, saved := savedQuestionnairePath(request)
 	if !saved {
 		return false, 0
 	}
-	store := runtime.NewStore(filepath.Join(root, ".claude", "loop-state.json"), filepath.Join(root, ".claude", "loop-events.jsonl"))
+	store := runtime.NewStore(filepath.Join(root, ".claude", "loop-state.json"), filepath.Join(root, ".claude", "loop-events.jsonl")).WithContext(contextForHook(request))
 	snapshot, err := store.Snapshot()
 	if err != nil {
 		return false, 0
@@ -243,12 +236,6 @@ func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, s
 		if row.RoleFamily != "" && row.RoleFamily != "backend-builder" && row.RoleFamily != "frontend-builder" && row.RoleFamily != "test-builder" {
 			return feedback("S9 role_family must be backend-builder, frontend-builder or test-builder; invalid selection for " + row.AssignmentID)
 		}
-		if row.CheckLocation != "" && row.CheckLocation != "main" && row.CheckLocation != "worker" {
-			return feedback("S9 check_location must be main or worker, or empty before execution; invalid selection for " + row.AssignmentID)
-		}
-		if err := repairExecutionCheckLocationConflict(snapshot.State, row); err != nil {
-			return feedback("S9 Builder division conflict: " + err.Error())
-		}
 		if row.RoleFamily != "" && stringMapCLI(repairPointerCLI(snapshot.State)["assignment_owners"])[row.AssignmentID] != "" {
 			if err := repairDispatchSameRegistered(snapshot.State, row, repairDispatchOwner(snapshot.State, row)); err != nil {
 				return feedback("S9 Builder division conflict: " + err.Error())
@@ -258,10 +245,14 @@ func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, s
 	var result strings.Builder
 	selected := false
 	for _, row := range rows {
-		if row.RoleFamily == "" && row.CheckLocation == "" {
+		if row.RoleFamily == "" {
 			continue
 		}
 		selected = true
+		if err := contextForHook(request).Err(); err != nil {
+			result.WriteString("S9 remaining selected responsibilities are pending after interruption: " + err.Error() + ". Main/system continues their original preparation. ")
+			break
+		}
 		latest, err := store.Snapshot()
 		if err != nil {
 			return feedback(result.String() + " Current Runtime could not be read: " + err.Error())
@@ -274,19 +265,21 @@ func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, s
 				}
 			}
 			if row.RoleFamily == "" {
-				result.WriteString("Assignment " + row.AssignmentID + " is still awaiting its Builder role selection; check_location alone did not dispatch it. ")
+				result.WriteString("Assignment " + row.AssignmentID + " is still awaiting its Builder role selection. ")
 				continue
 			}
 		}
 		if stringMapCLI(repairPointerCLI(latest.State)["assignment_owners"])[row.AssignmentID] != "" {
 			if err := repairDispatchSameRegistered(latest.State, row, owner); err != nil {
-				return feedback(result.String() + " S9 Builder division conflict: " + err.Error())
+				result.WriteString(" S9 Builder division conflict: " + err.Error() + ". ")
+				continue
 			}
 			result.WriteString("Existing original dispatch reused without a Runtime write. ")
 		} else {
 			var commandOut, commandErr bytes.Buffer
 			if code := runRuntimeRepairDispatch([]string{"--root", root, "--assignment-id", row.AssignmentID, "--agent-id", owner, "--role-family", row.RoleFamily}, &commandOut, &commandErr); code != 0 {
-				return feedback(result.String() + fmt.Sprintf(" Original dispatch for %s did not register: %s %s. Keep this answer and save again after resolving the named source; already registered rows will be reused.", row.AssignmentID, commandErr.String(), commandOut.String()))
+				result.WriteString(fmt.Sprintf(" Original dispatch for %s did not register: %s %s. Main/system handles the named source gap; preserve this answer and already registered rows. ", row.AssignmentID, commandErr.String(), commandOut.String()))
+				continue
 			}
 			latest, err = store.Snapshot()
 			if err != nil {
@@ -295,26 +288,25 @@ func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, s
 		}
 		result.WriteString(repairDispatchRegisteredContext(root, latest.State, row.AssignmentID, owner))
 		status := stringValue(repairPointerCLI(latest.State)["status"])
-		if prepareExecution && runtime.PacketEnabled(latest.State) && (status == "planning" || status == "reproducing" || status == "repairing" && len(nativeS9PlanPackets(root, latest.State)) > 0) {
+		if status == "planning" || status == "reproducing" || status == "targeted_reverification" || status == "ready_for_full_review" || status == "repairing" && len(nativeS9PlanPackets(root, latest.State)) > 0 {
 			brief, err := repairDispatchPlanReportBrief(root, request, latest.State, row.AssignmentID, owner)
 			result.WriteString(brief)
 			if err != nil {
-				return feedback(result.String() + fmt.Sprintf(" Original PlanReport preparation for Builder %s remains pending: %v. Its successful dispatch was retained; save this same division answer after resolving the named original source.", owner, err))
+				result.WriteString(fmt.Sprintf(" Original PlanReport preparation for Builder %s remains pending: %v. Its successful dispatch was retained; Main/system handles the named original source gap without repeating the division answer. ", owner, err))
+				continue
 			}
 		}
-		if prepareExecution && stringValue(repairPointerCLI(latest.State)["status"]) == "repairing" {
-			result.WriteString(prepareRepairExecutionFromChoice(root, latest.State, row, owner))
+		if stringValue(repairPointerCLI(latest.State)["status"]) == "repairing" {
+			result.WriteString(prepareRepairExecutionFromChoiceContext(contextForHook(request), root, latest.State, row, owner))
 		}
 	}
 	if !selected {
 		return feedback("S9 Builder division has no selected role_family yet; this normal pending draft registered no Builder and did not change Runtime.")
 	}
 	if stringValue(repairPointerCLI(snapshot.State)["status"]) == "repairing" {
-		result.WriteString("Main continues the original native Agent or handles the returned delivery with the supplied exact references; registration did not start an Agent. Preserve real dependencies and frozen legacy recoveries.")
-	} else if prepareExecution && runtime.PacketEnabled(snapshot.State) {
-		result.WriteString("Main now uses Claude Code native Agent with the exact prepared S9 brief and native worktree isolation. Each Builder saves its own professional plan and Result; Stop receives them. Main does not write professional answers on the Builder's behalf. No execution workspace or Claude session was prepared.")
+		result.WriteString("Main continues the original native Agent or handles the returned delivery with the supplied exact references; registration did not start an Agent. Preserve real dependencies.")
 	} else {
-		result.WriteString("Main must obtain each exact Main-root PlanReport path before the actual platform spawn/resume. Save the division answer through its normal questionnaire consumer to prepare missing original questions. Each Builder saves its own professional answer. Registration did not start a native agent or prepare an execution workspace.")
+		result.WriteString("Main now uses Claude Code native Agent with the exact prepared S9 brief and native worktree isolation. Each Builder saves its own professional plan and Result; PreToolUse observes ready originals, with successful PostToolUse and Stop/SubagentStop fallback. Main does not write professional answers on the Builder's behalf. No execution workspace or Claude session was prepared.")
 	}
 	return feedback(result.String())
 }
@@ -346,6 +338,7 @@ func repairDispatchPlanReportBrief(root string, request policy.Input, state map[
 		}
 		accepted = fact.kind == "plan"
 	}
+	_, execution := repairExecutionForChoice(state, repairDispatchChoice{AssignmentID: assignmentID, AgentID: owner})
 	if !accepted && (!found || !s8QuestionnaireFileExists(resolveRootPath(root, packet.view)) || !s8QuestionnaireFileExists(resolveRootPath(root, packet.answer))) {
 		service := &submission.Service{
 			Root:        root,
@@ -353,7 +346,10 @@ func repairDispatchPlanReportBrief(root string, request policy.Input, state map[
 			JournalPath: filepath.Join(root, ".claude", "loop-events.jsonl"),
 			Validator:   semantic.RuntimeCandidateValidator{},
 		}
-		if _, err := service.IssueRepairPlanReports(contextForHook(request), owner); err != nil {
+		_, err := service.IssueRepairPlanReportForAssignmentPrepared(contextForHook(request), owner, assignmentID, func(ctx context.Context, packet *workpacket.RepairPlanReportPacket) error {
+			return prepareNativeS9BriefForIssue(ctx, root, packet)
+		})
+		if err != nil {
 			return "", err
 		}
 		latest, err := runtime.NewStore(service.StatePath, service.JournalPath).WithContext(contextForHook(request)).Snapshot()
@@ -368,27 +364,16 @@ func repairDispatchPlanReportBrief(root string, request policy.Input, state map[
 	if !found {
 		return "", fmt.Errorf("the original issuer returned no current PlanReport for Assignment %s owner=%s", assignmentID, owner)
 	}
-	// New responsibilities carry professional material directly into native
-	// Agent execution. Existing installed Workers retain their frozen route.
-	_, execution := repairExecutionForChoice(state, repairDispatchChoice{AssignmentID: assignmentID, AgentID: owner})
-	if len(execution) == 0 || execution["purpose"] == "native_delivery" {
-		if stringValue(execution["delivery_ref"]) != "" || execution["status"] == "complete" {
-			return prepareRepairExecutionFromChoice(root, state, repairDispatchChoice{AssignmentID: assignmentID, AgentID: owner}, owner), nil
-		}
-		latest, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).WithContext(contextForHook(request)).Snapshot()
-		if err != nil {
-			return "", err
-		}
-		original, found, err := runtime.FindRepairPlanReportPacketContext(runtime.WithPacketBodyRoot(contextForHook(request), root), latest.State, packet.id)
-		if err != nil || !found {
-			return "", fmt.Errorf("original S9 Plan question is missing: %v", err)
-		}
-		return prepareNativeS9Brief(contextForHook(request), root, original)
+	if stringValue(execution["delivery_ref"]) != "" || execution["status"] == "complete" {
+		return prepareRepairExecutionFromChoice(root, state, repairDispatchChoice{AssignmentID: assignmentID, AgentID: owner}, owner), nil
 	}
-	view, answer := resolveRootPath(root, packet.view), resolveRootPath(root, packet.answer)
-	paths := fmt.Sprintf("Builder %s Main-root PlanReport view: %s; exact professional answer: %s. ", owner, view, answer)
-	if accepted {
-		return paths + "Your PlanReport is recorded; do not repeat it or save the division answer again. Main normally prepares your actual Worker location and supplies the exact RepairResult path; your work does not wait for all Builders’ plans. ", nil
+	latest, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).WithContext(contextForHook(request)).Snapshot()
+	if err != nil {
+		return "", err
 	}
-	return paths + fmt.Sprintf("Frozen execution task brief for %s: Read %s. Inspect the actual requirements and product files, perform real prechecks, and record pass/fail/blocked with evidence and unfinished reasons; personally save your PlanReport at %s. After your own Plan is recorded, Main normally prepares your actual Worker location and supplies its exact RepairResult path; do not wait for all Builders’ plans or save the division answer again. Implement or complete assigned tests in that Worker, self-check, and personally save the supplied RepairResult. Professional questionnaires and actual evidence are separate from product implementation scope; save them at their supplied paths. Main must not save your answer on your behalf. ", owner, view, answer), nil
+	original, found, err := runtime.FindRepairPlanReportPacketContext(runtime.WithPacketBodyRoot(contextForHook(request), root), latest.State, packet.id)
+	if err != nil || !found {
+		return "", fmt.Errorf("original S9 Plan question is missing: %v", err)
+	}
+	return restoreNativeS9Brief(contextForHook(request), root, original)
 }

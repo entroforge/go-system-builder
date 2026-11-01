@@ -106,7 +106,6 @@ func TestClaudeCodeNativeS7ConvergenceLive(t *testing.T) {
 	if err := json.Unmarshal(planData, &plan); err != nil {
 		t.Fatal(err)
 	}
-	plan["frozen_subjects"].([]any)[0].(map[string]any)["sha256"] = workpacket.Digest(product)
 	claims := plan["claims"].([]any)
 	delivery := claims[0].(map[string]any)
 	delivery["target"], delivery["assertion"], delivery["oracle"], delivery["method"] = "internal/example/service.go", "Marker returns the literal ready", "the implementation returns the value stated in REQ-039", "inspect the frozen function and requirement"

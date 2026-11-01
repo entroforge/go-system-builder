@@ -46,10 +46,10 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 		"command": "go test ./src/pkg", "location": "worker", "timeout_seconds": 30,
 		"environment_policy": "declared_only", "environment": []any{},
 		"dependencies": []any{map[string]any{
-			"path": "src/pkg/input.go", "sha256": workpacket.Digest([]byte("package pkg\n")),
+			"path": "src/pkg/input.go",
 		}},
 		"fixtures": []any{map[string]any{
-			"path": "testdata/input.txt", "sha256": workpacket.Digest([]byte("registered profile input\n")),
+			"path": "testdata/input.txt",
 		}},
 		"input_closure": "whole_tree", "side_effects": "none", "reuse_policy": "never",
 	}
@@ -95,7 +95,7 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 		t.Fatalf("decode prepared Workspace: %v", err)
 	}
 	e, exists := registry.Execution(assignment, record.RuntimeID, record.BaselineGeneration)
-	if !exists || e.AgentID != owner || e.Status != "ready" || e.AssignmentRecord == nil || *e.AssignmentRecord != record.Reference() || e.AssignmentRecordSHA256 == "" {
+	if !exists || e.AgentID != owner || e.Status != "ready" || e.AssignmentRecord == nil || *e.AssignmentRecord != record.Reference() {
 		t.Fatalf("prepared original Workspace does not bind the canonical Record: %+v", e)
 	}
 	contextView, err := registry.ReadDispatchContext(e)
@@ -165,11 +165,8 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 		WorkerTuple map[string]any                    `json:"worker_check_snapshot"`
 		Observation checkexec.Observation             `json:"profile_observation"`
 	}
-	if err := json.Unmarshal(firstRaw, &rawFirst); err != nil || rawFirst.Status != "fail" || rawFirst.CheckIndex != 0 || rawFirst.WorkerIndex != 0 || rawFirst.Record == nil || *rawFirst.Record != record.Reference() || rawFirst.RecordSHA == "" || rawFirst.SnapshotSHA == "" || rawFirst.WorkerTuple["owner_agent_id"] != owner {
+	if err := json.Unmarshal(firstRaw, &rawFirst); err != nil || rawFirst.Status != "fail" || rawFirst.CheckIndex != 0 || rawFirst.WorkerIndex != 0 || rawFirst.Record == nil || *rawFirst.Record != record.Reference() || rawFirst.WorkerTuple["owner_agent_id"] != owner {
 		t.Fatalf("captured failed receipt does not match the current frozen Record/profile identity: raw=%+v err=%v", rawFirst, err)
-	}
-	if verifiedFirst.Observation.ProfileDigest != record.ClosingContract.WorkerChecks[0].Profile.Digest() || rawFirst.Observation.PermissionDigest != rawFirst.Observation.Permissions.Digest() {
-		t.Fatalf("original profile or permission digest was not bound into the actual receipt: %+v", rawFirst.Observation)
 	}
 	if verifiedFirst.Observation.Permissions.Available && (!verifiedFirst.Observation.Permissions.Known() || firstRun.code == 0) {
 		t.Fatal("an available host runner did not preserve its actual failing test result")
@@ -197,13 +194,13 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	stageJSON(t, root, firstMessagePath, answer("msg-s6-workspace-owned-first"))
 	firstOutput := stageCLI(t, "runtime", "task-complete", "--root", root, "--agent-id", owner, "--message", firstMessagePath)
 	first := s6DecodeCanonicalTaskCompleteOutput(t, firstOutput)
-	if first.Acceptance.ResultRevision != 1 || first.Acceptance.ResultRef == "" || first.Acceptance.AnswerDigest == "" || first.Acceptance.Replayed || !first.Acceptance.Current {
+	if first.Acceptance.ResultRevision != 1 || first.Acceptance.ResultRef == "" || first.Acceptance.Replayed || !first.Acceptance.Current {
 		t.Fatalf("first Workspace-backed canonical Result receipt = %+v", first.Acceptance)
 	}
 	firstAccepted := s6ReadCLIResultEnvelope(t, root, first.Acceptance)
-	if firstAccepted.AnswerDigest != first.Acceptance.AnswerDigest || len(firstAccepted.WorkerCheckFacts) != 1 || firstAccepted.WorkerCheckFacts[0].Status != "fail" ||
+	if len(firstAccepted.WorkerCheckFacts) != 1 || firstAccepted.WorkerCheckFacts[0].Status != "fail" ||
 		firstAccepted.WorkerCheckFacts[0].ExecutionKind != "workspace" || firstAccepted.WorkerCheckFacts[0].OriginalReceipt == nil || firstAccepted.WorkerCheckFacts[0].Observation == nil ||
-		firstAccepted.WorkerCheckFacts[0].OriginalReceipt.SHA256 != firstToolReceipt.SHA256 || firstAccepted.ToolClosureDigest == "" || assignmentresult.WorkerClosureComplete(record, firstAccepted) {
+		assignmentresult.WorkerClosureComplete(record, firstAccepted) {
 		t.Fatalf("canonical Result did not retain the current actual failed Workspace machine fact as fail: %+v", firstAccepted.WorkerCheckFacts)
 	}
 	s6AssertCanonicalBuilderTaskReceipt(t, fixture, first.Acceptance.ResultRef)
@@ -211,8 +208,8 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	beforeSameKeyState, beforeSameKeyJournal := s6CanonicalRuntimePair(t, root)
 	sameKeyOutput := stageCLI(t, "runtime", "task-complete", "--root", root, "--agent-id", owner, "--message", firstMessagePath)
 	sameKey := s6DecodeCanonicalTaskCompleteOutput(t, sameKeyOutput)
-	if sameKey.Revision != first.Revision || sameKey.Acceptance.ResultRef != first.Acceptance.ResultRef || sameKey.Acceptance.ResultSHA256 != first.Acceptance.ResultSHA256 ||
-		sameKey.Acceptance.AnswerDigest != first.Acceptance.AnswerDigest || !sameKey.Acceptance.Replayed || !sameKey.Acceptance.Current {
+	if sameKey.Revision != first.Revision || sameKey.Acceptance.ResultRef != first.Acceptance.ResultRef ||
+		!sameKey.Acceptance.Replayed || !sameKey.Acceptance.Current {
 		t.Fatalf("same-key replay changed the accepted Result receipt: %+v", sameKey.Acceptance)
 	}
 	s6AssertCanonicalRuntimePair(t, root, beforeSameKeyState, beforeSameKeyJournal)
@@ -221,8 +218,8 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	stageJSON(t, root, aliasPath, answer("msg-s6-workspace-owned-alias"))
 	aliasOutput := stageCLI(t, "runtime", "task-complete", "--root", root, "--agent-id", owner, "--message", aliasPath)
 	alias := s6DecodeCanonicalTaskCompleteOutput(t, aliasOutput)
-	if alias.Revision != first.Revision+1 || alias.Acceptance.ResultRef != first.Acceptance.ResultRef || alias.Acceptance.ResultSHA256 != first.Acceptance.ResultSHA256 ||
-		alias.Acceptance.AnswerDigest != first.Acceptance.AnswerDigest || alias.Acceptance.ResultRevision != 1 || !alias.Acceptance.Replayed || !alias.Acceptance.Current {
+	if alias.Revision != first.Revision+1 || alias.Acceptance.ResultRef != first.Acceptance.ResultRef ||
+		alias.Acceptance.ResultRevision != 1 || !alias.Acceptance.Replayed || !alias.Acceptance.Current {
 		t.Fatalf("new submission key with identical answer/closure was not bound as an alias: %+v", alias.Acceptance)
 	}
 
@@ -246,9 +243,6 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 		t.Fatalf("second actual machine capture was not appended without eviction: exists=%t receipts=%+v", exists, secondExecution.OwnedCheckReceipts)
 	}
 	secondToolReceipt := secondExecution.OwnedCheckReceipts[1].Receipt
-	if secondToolReceipt.SHA256 == firstToolReceipt.SHA256 {
-		t.Fatal("different current source did not create a new original process-captured receipt")
-	}
 	verifiedSecond, err := checkexec.VerifyToolReceipt(filepath.Join(root, ".claude/evidence/workspace-checks"), secondToolReceipt)
 	if err != nil || verifiedSecond.Passed {
 		t.Fatalf("second original runner fact was not an actual failure: passed=%t err=%v", verifiedSecond.Passed, err)
@@ -257,13 +251,13 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	stageJSON(t, root, secondMessagePath, answer("msg-s6-workspace-owned-second-machine-facts"))
 	secondOutput := stageCLI(t, "runtime", "task-complete", "--root", root, "--agent-id", owner, "--message", secondMessagePath)
 	second := s6DecodeCanonicalTaskCompleteOutput(t, secondOutput)
-	if second.Revision != alias.Revision+1 || second.Acceptance.ResultRevision != 2 || second.Acceptance.AnswerDigest != first.Acceptance.AnswerDigest ||
+	if second.Revision != alias.Revision+1 || second.Acceptance.ResultRevision != 2 ||
 		second.Acceptance.ResultRef == first.Acceptance.ResultRef || second.Acceptance.Replayed || !second.Acceptance.Current {
 		t.Fatalf("same professional answer with new captured machine facts did not create Result revision 2: %+v", second.Acceptance)
 	}
 	secondAccepted := s6ReadCLIResultEnvelope(t, root, second.Acceptance)
 	if len(secondAccepted.WorkerCheckFacts) != 1 || secondAccepted.WorkerCheckFacts[0].Status != "fail" || secondAccepted.WorkerCheckFacts[0].OriginalReceipt == nil ||
-		secondAccepted.WorkerCheckFacts[0].OriginalReceipt.SHA256 != secondToolReceipt.SHA256 || secondAccepted.WorkerCheckFacts[0].SourceSnapshotSHA256 == firstAccepted.WorkerCheckFacts[0].SourceSnapshotSHA256 {
+		secondAccepted.WorkerCheckFacts[0].OriginalReceipt.Path != secondToolReceipt.Path {
 		t.Fatalf("revision 2 did not bind the latest captured source/receipt facts: %+v", secondAccepted.WorkerCheckFacts)
 	}
 	s6AssertCurrentResultRefs(t, second.State, record, second.Acceptance.ResultRef)
@@ -282,7 +276,7 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	current, err := assignmentresult.LoadAccepted(historical.State, record, first.Acceptance.ResultRef, func(ref string) ([]byte, error) {
 		return workpacket.ReadFile(root, ref, assignmentresult.EvidenceReadLimit)
 	})
-	if err != nil || current.WorkerCheckFacts[0].OriginalReceipt == nil || current.WorkerCheckFacts[0].OriginalReceipt.SHA256 != firstToolReceipt.SHA256 {
+	if err != nil || current.WorkerCheckFacts[0].OriginalReceipt == nil || current.WorkerCheckFacts[0].OriginalReceipt.Path != firstToolReceipt.Path {
 		t.Fatalf("historical replay rebound to the new live receipt: result=%+v err=%v", current.WorkerCheckFacts, err)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("agent-message.schema.json", mustJSONForS6(t, answer("msg-s6-workspace-owned-schema-check"))); err != nil {

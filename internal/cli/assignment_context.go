@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/workstate"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/agentcontext"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
@@ -19,7 +20,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/submission"
-	"github.com/entroforge/go-system-builder/internal/team"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
@@ -166,35 +166,27 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 	if err != nil {
 		return agentcontext.Reference{}, err
 	}
-	inputs := map[string]string{manifestPath: workpacket.Digest(manifestBytes)}
+	inputs := map[string]string{manifestPath: manifestPath}
 	if recordBound {
 		for _, source := range record.ContextSources {
 			if strings.HasPrefix(source.Ref, "gsb-embedded/") || strings.Contains(source.Ref, "#") {
 				continue
 			}
-			if err := bindContextInput(inputs, source.Ref, source.SHA256); err != nil {
-				return agentcontext.Reference{}, fmt.Errorf("canonical Assignment source has conflicting frozen hashes: %s", source.Ref)
-			}
+			inputs[source.Ref] = source.Ref
 		}
 	}
 	for _, subject := range manifest.Documents {
-		data, err := workpacket.ReadFile(root, subject.Path, 8<<20)
-		if err != nil || workpacket.Digest(data) != subject.SHA256 {
-			return agentcontext.Reference{}, fmt.Errorf("registered manifest document is unavailable or changed: %s", subject.Path)
+		if _, err := workpacket.ReadFile(root, subject.Path, 8<<20); err != nil {
+			return agentcontext.Reference{}, fmt.Errorf("registered manifest document is unavailable: %s", subject.Path)
 		}
-		if err := bindContextInput(inputs, subject.Path, subject.SHA256); err != nil {
-			return agentcontext.Reference{}, fmt.Errorf("registered manifest document conflicts with a frozen input: %s", subject.Path)
-		}
+		inputs[subject.Path] = subject.Path
 	}
 	paths = append(paths, d.AgentDefinitionRef)
 	for _, path := range paths {
-		data, err := workpacket.ReadFile(root, path, 8<<20)
-		if err != nil {
+		if _, err := workpacket.ReadFile(root, path, 8<<20); err != nil {
 			return agentcontext.Reference{}, err
 		}
-		if err := bindContextInput(inputs, path, workpacket.Digest(data)); err != nil {
-			return agentcontext.Reference{}, fmt.Errorf("registered assignment source conflicts with a frozen input: %s", path)
-		}
+		inputs[path] = path
 	}
 	if err := checkexec.ValidateProfiles(a.CheckProfiles, a.RequiredChecks, ""); err != nil {
 		return agentcontext.Reference{}, err
@@ -204,19 +196,14 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 			return agentcontext.Reference{}, err
 		}
 		for _, ref := range append(append([]checkexec.FileRef{}, p.Dependencies...), p.Fixtures...) {
-			data, err := checkexec.ReadProfileFile(root, ref.Path)
-			if err != nil || checkexec.Hash(data) != ref.SHA256 {
-				return agentcontext.Reference{}, fmt.Errorf("native profile source changed: %s", ref.Path)
+			if _, err := checkexec.ReadProfileFile(root, ref.Path); err != nil {
+				return agentcontext.Reference{}, fmt.Errorf("native profile source unavailable: %s", ref.Path)
 			}
-			if err := bindContextInput(inputs, ref.Path, ref.SHA256); err != nil {
-				return agentcontext.Reference{}, fmt.Errorf("native profile source conflicts with a frozen input: %s", ref.Path)
-			}
+			inputs[ref.Path] = ref.Path
 		}
 	}
 	for _, skill := range selection.Selected {
-		if err := bindContextInput(inputs, skill.Source, skill.SHA256); err != nil {
-			return agentcontext.Reference{}, fmt.Errorf("selected Skill source conflicts with a frozen input: %s", skill.Source)
-		}
+		inputs[skill.Source] = skill.Source
 	}
 	var issuedReview *workpacket.Packet
 	planned := append([]string{}, a.WritePaths...)
@@ -229,7 +216,7 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 		return agentcontext.Reference{}, err
 	}
 	agentState := string(agentProjection.Status)
-	c := nativeAssignmentContext{CheckProfiles: a.CheckProfiles, OwnedCheckCommands: nativeOwnedCheckCommands(sourceRoot, d), SourceRoot: sourceRoot, AgentState: agentState, Version: "1.1.0", RuntimeID: workspace.RuntimeID(state), Generation: generation, Dispatch: d, Selection: selection, Inputs: inputs, WritePaths: append([]string{}, a.WritePaths...), Checks: append([]string{}, a.RequiredChecks...), Instruction: "Read the registered assignment and actual source files in input_read_order, then installed context_selection.selected Skill paths with their SHA256. This is shadow advice, not activation or permissions. If the original Agent is not yet working, fill professional fields yourself and use the original PLAN_REPORT SendMessage(plan_ref) or agent-begin path. If already working, retain the original accepted plan/activation; this draft is not a request to submit a second plan. Existing approval and domain gates still apply."}
+	c := nativeAssignmentContext{CheckProfiles: copyContextProfiles(a.CheckProfiles), OwnedCheckCommands: nativeOwnedCheckCommands(sourceRoot, d), SourceRoot: sourceRoot, AgentState: agentState, Version: "1.1.0", RuntimeID: workspace.RuntimeID(state), Generation: generation, Dispatch: copyContextDispatch(d), Selection: selection, Inputs: inputs, WritePaths: append([]string{}, a.WritePaths...), Checks: append([]string{}, a.RequiredChecks...), Instruction: "Read the registered assignment, the actual source files in input_read_order and the selected Skill paths. Complete your assigned professional work and save the original answer at its provided path; the original consumer handles reception and follow-up. Existing approval and domain responsibilities still apply."}
 	if runtime.PacketEnabled(state) {
 		files, err := conventionFiles(root, state)
 		if err != nil {
@@ -250,17 +237,13 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 				return agentcontext.Reference{}, err
 			}
 			for _, subject := range p.Inputs {
-				if err := bindContextInput(inputs, subject.Path, subject.SHA256); err != nil {
-					return agentcontext.Reference{}, fmt.Errorf("S5 subject conflicts with a frozen assignment input: %s", subject.Path)
-				}
+				inputs[subject.Path] = subject.Path
 			}
 			issuedReview = &p
 			c.WorkPacketRef, c.AnswerPath = p.ViewPath, p.AnswerPath
 			planned = []string{p.AnswerPath}
 			c.WritePaths = []string{}
-			if err := bindContextInput(inputs, p.ViewPath, workpacket.Digest(mustPacketBytes(p))); err != nil {
-				return agentcontext.Reference{}, err
-			}
+			inputs[p.ViewPath] = p.ViewPath
 			c.Instruction += " Read work_packet_ref and fill only answer in answer_path after original activation. The original save receipt determines your completion; Main owns peer work and system followup."
 		}
 	}
@@ -280,57 +263,34 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 	}
 	c.PlanDraft, c.PlanQuestions = agentcontext.PlanTemplate(d, c.RuntimeID, occurredAt, planned)
 	if c.PlanDraft != nil {
-		c.PlanPath = fmt.Sprintf(".claude/evidence/assignment-plan/%s/g%d/%s.json", workpacket.Digest([]byte(c.RuntimeID)), generation, workpacket.Digest([]byte(d.AssignmentID+"\x00"+d.Owner)))
+		c.PlanPath = fmt.Sprintf(".claude/evidence/assignment-plan/%s/g%d/%s/%s/plan.json", contextPathID(c.RuntimeID), generation, contextPathID(d.AssignmentID), contextPathID(d.Owner))
 	}
 	c.ResultDraft, c.ResultQuestions = agentcontext.ResultTemplate(d, c.RuntimeID, occurredAt)
 	if c.ResultDraft != nil {
 		c.ResultPath = fmt.Sprintf(".claude/evidence/%s/g%d/assignments/%s/a%d/completion.json", c.RuntimeID, generation, d.Owner, d.AssignmentRevision)
 		c.ResultDraftEditable = true
 		if _, hasClosing := c.ResultDraft["closing_assessment"]; hasClosing {
-			c.Instruction += " After the current accepted PLAN_REPORT and actual TASK work, edit result_path as the canonical S6 Builder Result. Fill only the five null professional fields using result_questions and the full agent-message schema. Map every frozen DoneWhen condition through closing_assessment and accepted PLAN assertion indexes; the assessment is your professional judgment, not a runner receipt or PASS. Preserve message_id for an exact replay; choose a new unique message_id for a changed answer. A submitted Result is not an integration receipt."
+			c.Instruction += " After the current accepted PLAN_REPORT and actual TASK work, edit result_path as the canonical S6 Builder Result. Fill only the five null professional fields using result_questions and the full agent-message schema. Map every frozen DoneWhen condition through closing_assessment and accepted PLAN assertion indexes; the assessment is your professional judgment, not a runner receipt or PASS. A submitted Result is not an integration receipt."
 		} else {
-			c.Instruction += " After the current accepted PLAN_REPORT and actual TASK work, edit result_path as the canonical S6 Builder Result. Fill only the four null professional fields using result_questions and the full agent-message schema. Preserve message_id for an exact replay; choose a new unique message_id for a changed answer. A submitted Result is not a PASS or an integration receipt."
+			c.Instruction += " After the current accepted PLAN_REPORT and actual TASK work, edit result_path as the canonical S6 Builder Result. Fill only the four null professional fields using result_questions and the full agent-message schema. A submitted Result is not a PASS or an integration receipt."
 		}
 	}
 	schemaBytes, err := schema.ReadAsset("agent-message.schema.json")
 	if err != nil {
 		return agentcontext.Reference{}, err
 	}
-	c.Schema = agentcontext.Reference{Path: ".claude/assignment-context/schemas/agent-message-" + workpacket.Digest(schemaBytes) + ".json", SHA256: workpacket.Digest(schemaBytes)}
-	c.ReadingOrder = agentcontext.InputReadingOrder(inputs, "")
-	// Re-read every source before publishing; a projection cannot make a
-	// moving or missing source ready. Do not publish the editable plan yet.
-	if err := verifyContextInputs(root, inputs); err != nil {
-		return agentcontext.Reference{}, err
-	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	contextBase := fmt.Sprintf(".claude/assignment-context/native/%s/g%d/%s/%s/r%d", contextPathID(c.RuntimeID), generation, contextPathID(d.AssignmentID), contextPathID(d.Owner), snap.Revision)
+	c.Schema.Path, err = publishNativeContextAsset(root, contextBase+"/agent-message.schema.json", ".claude/assignment-context", "schema", schemaBytes)
 	if err != nil {
 		return agentcontext.Reference{}, err
-	}
-	data = append(data, '\n')
-	if err := schema.NewEmbeddedValidator().ValidateBytes("native-assignment-context.schema.json", data); err != nil {
-		return agentcontext.Reference{}, err
-	}
-	if err := publishExactContext(root, c.Schema.Path, schemaBytes); err != nil {
-		return agentcontext.Reference{}, err
-	}
-	path := fmt.Sprintf(".claude/assignment-context/native/%s/g%d/%s.json", workpacket.Digest([]byte(c.RuntimeID)), generation, workpacket.Digest(data))
-	if err := publishExactContext(root, path, data); err != nil {
-		return agentcontext.Reference{}, err
-	}
-	if err := verifyContextInputs(root, inputs); err != nil {
-		return agentcontext.Reference{}, err
-	}
-	latest, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
-	if err != nil || latest.Revision != snap.Revision || !reflect.DeepEqual(latest.State, state) {
-		return agentcontext.Reference{}, fmt.Errorf("Runtime changed during assignment projection; retry from original authority: %w", runtime.ErrStaleRevision)
 	}
 	if c.PlanDraft != nil {
 		draft, err := json.MarshalIndent(c.PlanDraft, "", "  ")
 		if err != nil {
 			return agentcontext.Reference{}, err
 		}
-		if _, err := workpacket.PublishBounded(root, c.PlanPath, append(draft, '\n'), 2<<20); err != nil {
+		c.PlanPath, err = publishNativeContextAsset(root, c.PlanPath, ".claude/evidence", "plan", append(draft, '\n'))
+		if err != nil {
 			return agentcontext.Reference{}, err
 		}
 	}
@@ -339,17 +299,50 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 		if err != nil {
 			return agentcontext.Reference{}, err
 		}
-		// Keep the owner-edited answer if this deterministic projection is
-		// prepared again; the context itself remains the immutable source.
-		published, err := workpacket.PublishBounded(root, c.ResultPath, append(draft, '\n'), 2<<20)
+		c.ResultPath, err = publishNativeContextAsset(root, c.ResultPath, ".claude/evidence", "result", append(draft, '\n'))
 		if err != nil {
 			return agentcontext.Reference{}, err
 		}
-		if err := agentcontext.ValidateResultDraft(c.ResultDraft, published); err != nil {
-			return agentcontext.Reference{}, fmt.Errorf("editable native Result does not match its frozen Record tuple: %w", err)
-		}
 	}
-	return agentcontext.Reference{Path: path, SHA256: workpacket.Digest(data)}, nil
+	c.ReadingOrder = agentcontext.InputReadingOrder(inputs, "")
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return agentcontext.Reference{}, err
+	}
+	data = append(data, '\n')
+	if err := schema.NewEmbeddedValidator().ValidateBytes("native-assignment-context.schema.json", data); err != nil {
+		return agentcontext.Reference{}, err
+	}
+	path, err := publishNativeContextAsset(root, contextBase+"/context.json", ".claude/assignment-context", "context", data)
+	if err != nil {
+		return agentcontext.Reference{}, err
+	}
+	latest, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
+	if err != nil || latest.Revision != snap.Revision || !reflect.DeepEqual(latest.State, state) {
+		return agentcontext.Reference{}, fmt.Errorf("Runtime changed during assignment projection; retry from original authority: %w", runtime.ErrStaleRevision)
+	}
+	return agentcontext.Reference{Path: path}, nil
+}
+
+// Copy nested profiles so the registered context does not share mutable slices.
+func copyContextProfiles(in []checkexec.Profile) []checkexec.Profile {
+	out := append([]checkexec.Profile(nil), in...)
+	for i := range out {
+		out[i].Dependencies = append([]checkexec.FileRef(nil), out[i].Dependencies...)
+		out[i].Fixtures = append([]checkexec.FileRef(nil), out[i].Fixtures...)
+	}
+	return out
+}
+func copyContextDispatch(in agentcontext.Assignment) agentcontext.Assignment {
+	if in.ClosingContract != nil {
+		copyOf := *in.ClosingContract
+		copyOf.WorkerChecks = append([]assignmentrecord.WorkerCheck(nil), in.ClosingContract.WorkerChecks...)
+		for i := range copyOf.WorkerChecks {
+			copyOf.WorkerChecks[i].Profile = copyContextProfiles([]checkexec.Profile{copyOf.WorkerChecks[i].Profile})[0]
+		}
+		in.ClosingContract = &copyOf
+	}
+	return in
 }
 
 func mustPacketBytes(p workpacket.Packet) []byte {
@@ -358,7 +351,7 @@ func mustPacketBytes(p workpacket.Packet) []byte {
 }
 
 func nativeOwnedCheckCommands(root string, dispatch agentcontext.Assignment) []string {
-	if dispatch.AssignmentRecord == nil || dispatch.AssignmentRecordSHA256 == "" || dispatch.ClosingContract == nil || len(dispatch.ClosingContract.WorkerChecks) == 0 {
+	if dispatch.AssignmentRecord == nil || dispatch.ClosingContract == nil || len(dispatch.ClosingContract.WorkerChecks) == 0 {
 		return nil
 	}
 	commands := make([]string, 0, len(dispatch.ClosingContract.WorkerChecks))
@@ -371,33 +364,41 @@ func nativeOwnedCheckCommands(root string, dispatch agentcontext.Assignment) []s
 	return commands
 }
 
-func verifyContextInputs(root string, inputs map[string]string) error {
-	for path, hash := range inputs {
-		data, err := workpacket.ReadFile(root, path, 8<<20)
-		if err != nil || workpacket.Digest(data) != hash {
-			return fmt.Errorf("assignment context source changed or is unavailable: %s", path)
+// contextPathID preserves the full original identity while bounding each
+// filesystem component; no professional content contributes to the path.
+func contextPathID(value string) string {
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(value))
+	if encoded == "" {
+		return "empty"
+	}
+	parts := []string{}
+	for len(encoded) > 100 {
+		parts = append(parts, encoded[:100])
+		encoded = encoded[100:]
+	}
+	parts = append(parts, encoded)
+	return strings.Join(parts, "/")
+}
+
+// An unregistered candidate never gains ownership from matching contents.
+// The original Agent context Writer records the returned actual paths.
+func publishNativeContextAsset(root, original, storageRoot, kind string, data []byte) (string, error) {
+	for attempt := 0; ; attempt++ {
+		path := original
+		if attempt > 0 {
+			path = filepath.ToSlash(filepath.Join(storageRoot, fmt.Sprintf("native-%s-candidate-%d", kind, attempt), kind+".json"))
+		}
+		created, err := workpacket.PublishNewBounded(root, path, data, 2<<20)
+		if err != nil {
+			return "", err
+		}
+		if created {
+			return path, nil
+		}
+		if err := workpacket.CheckPath(root, filepath.ToSlash(filepath.Join(storageRoot, "native-context-probe", "file.json"))); err != nil {
+			return "", fmt.Errorf("native context storage unavailable: %w", err)
 		}
 	}
-	return nil
-}
-
-func bindContextInput(inputs map[string]string, path, sha256 string) error {
-	if previous, exists := inputs[path]; exists && previous != sha256 {
-		return fmt.Errorf("input %s already has a different frozen SHA", path)
-	}
-	inputs[path] = sha256
-	return nil
-}
-
-func publishExactContext(root, path string, data []byte) error {
-	existing, err := workpacket.PublishBounded(root, path, data, 2<<20)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(existing, data) {
-		return fmt.Errorf("existing assignment context asset differs; preserve it for Main recovery: %s", path)
-	}
-	return nil
 }
 
 func assignmentContextLifecycle(root string, input policy.Input, assignments []hookctx.AssignmentContext) string {
@@ -447,83 +448,5 @@ func assignmentContextLifecycle(root string, input policy.Input, assignments []h
 	if err != nil {
 		return "Assignment progress unavailable; Main must restore the original registered context."
 	}
-	return "Assignment sources: first Read " + ref.Path + "; sha256=" + ref.SHA256 + ". Live Agent status=" + string(projection.Status) + "; follow the original plan/activation. Captured agent_state is historical; shadow grants no permissions."
-}
-
-// Unregistered examples remain projection candidates. Only an exact current
-// registered manifest can attach a view that describes a real dispatch.
-func attachAssignmentContexts(root, manifestPath string, data []byte, requests []team.ReadbackRequest) error {
-	snap, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
-	if err != nil {
-		return nil
-	}
-	if !workstate.SupportsAssignments(snap.State["schema_version"]) {
-		return nil
-	}
-	var manifest struct {
-		RuntimeID   string                 `json:"runtime_id"`
-		WorkgroupID string                 `json:"workgroup_id"`
-		Documents   []workpacket.Reference `json:"documents"`
-	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return err
-	}
-	if manifest.RuntimeID != snap.State["runtime_id"] {
-		return nil
-	}
-	entities, _ := snap.State["entities"].(map[string]any)
-	teams, _ := entities["teams"].([]any)
-	registered := false
-	for _, raw := range teams {
-		row, _ := raw.(map[string]any)
-		if row["id"] == manifest.WorkgroupID {
-			if row["manifest_ref"] != filepath.ToSlash(filepath.Clean(manifestPath)) {
-				return fmt.Errorf("launch manifest differs from registered Team source")
-			}
-			registered = true
-		}
-	}
-	if !registered {
-		return nil
-	}
-	actual, err := workpacket.ReadFile(root, manifestPath, 2<<20)
-	if err != nil || !bytes.Equal(actual, data) {
-		return fmt.Errorf("registered launch manifest changed")
-	}
-	for i := range requests {
-		for _, document := range requests[i].Documents {
-			matched := false
-			for _, subject := range manifest.Documents {
-				if subject.ID == document.ID && subject.Path == document.Path && subject.Version == document.Version && subject.SHA256 == document.SHA256 {
-					matched = true
-				}
-			}
-			if !matched {
-				return fmt.Errorf("registered readback document differs from manifest source: %s", document.Path)
-			}
-		}
-		loaded, err := hookctx.LoadFull(root, requests[i].AgentID)
-		if err != nil {
-			return err
-		}
-		var found *hookctx.AssignmentContext
-		for j := range loaded.Assignments {
-			row := &loaded.Assignments[j]
-			if row.OwnerAgentID == requests[i].AgentID && row.ManifestRef == manifestPath {
-				if found != nil {
-					return fmt.Errorf("registered launch owner is ambiguous")
-				}
-				found = row
-			}
-		}
-		if found == nil || found.TaskID != requests[i].TaskID {
-			return fmt.Errorf("registered launch owner/TASK does not match current Assignment")
-		}
-		ref, err := currentAssignmentContext(root, snap, *found)
-		if err != nil {
-			return err
-		}
-		requests[i].AssignmentContextRef = &ref
-	}
-	return nil
+	return "Assignment sources: first Read " + ref.Path + ". Live Agent status=" + string(projection.Status) + "; follow the original plan/activation. Captured agent_state is historical; shadow grants no permissions."
 }

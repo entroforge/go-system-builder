@@ -2,8 +2,6 @@ package req039_test
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,8 +30,7 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 
 	architecturePath := "docs/architecture/ARCHITECTURE-039-audit.md"
 	architecture := []byte("# ARCHITECTURE-039-audit\n\n> Status: locked\n> Version: v1.0.0\n")
-	architectureSHA := sha256HexAudit(architecture)
-	writeAuditEvidence(t, root, state, architecturePath, architectureSHA)
+	writeAuditEvidence(t, root, state, architecturePath)
 
 	// The child branch has a real committed formal document. It remains
 	// outside the bound development branch and therefore cannot satisfy the
@@ -45,10 +42,20 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 	runGitIn(t, executionRoot, "add", architecturePath)
 	runGitIn(t, executionRoot, "commit", "-qm", "child architecture")
 
-	// The Hook reads authoritative state from root while the payload reports
-	// the actual execution cwd. A child-branch commit is not an authority-tree
-	// commit.
-	_, qg := auditHook(t, root, executionRoot, "audit-child-commit")
+	// A child checkout with an unrelated actor cannot claim Main's design
+	// responsibility, even though it has a real committed architecture.
+	beforeChild := readSystemRuntimePair(t, root)
+	code, stdout, stderr := runHook(t, root, "PreToolUse", req039fixtures.ActorHookBody(
+		executionRoot, "PreToolUse", "audit-child-actor", "agent-audit", "Edit",
+		map[string]any{"file_path": filepath.Join(executionRoot, architecturePath)}))
+	if code != 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("unrelated child actor must remain silent without denying Edit: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	assertSystemRuntimePairUnchanged(t, beforeChild)
+
+	// Main consumes its authority checkout. A child-branch commit cannot
+	// satisfy the formal-document requirement in that checkout.
+	_, qg := auditMainHook(t, root, "audit-child-commit")
 	auditWantNotReady(t, qg, "child branch commit")
 	if got := fmt.Sprint(qg["missing"]); !strings.Contains(got, "document:design:locked") {
 		t.Fatalf("child branch must leave the formal document missing, got missing=%v", qg["missing"])
@@ -60,7 +67,7 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 	// Receiving S2 work does not require committing each professional save.
 	// Its exit registers the actual authority design for the next consumer.
 	writeAuditFile(t, root, architecturePath, string(architecture))
-	_, qg = auditHook(t, root, executionRoot, "audit-untracked")
+	_, qg = auditMainHook(t, root, "audit-untracked")
 	if status := stringValueAudit(qg["status"]); status != "satisfied" && status != "advanced" {
 		t.Fatalf("actual authority design must satisfy S2, got status=%q qg=%v", status, qg)
 	}
@@ -90,7 +97,7 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), wantError) || !strings.Contains(err.Error(), architecturePath) {
 				t.Fatalf("S3 source failure must identify %s and %q: %v", architecturePath, wantError, err)
 			}
-		} else if err != nil || len(inputs.Designs) != 1 || inputs.Designs[0].SHA256 != architectureSHA {
+		} else if err != nil || len(inputs.Designs) != 1 || inputs.Designs[0].Path != architecturePath || inputs.Designs[0].Version != "v1.0.0" {
 			t.Fatalf("S3 failed to freeze the actual committed design: %+v %v", inputs.Designs, err)
 		}
 		assertSystemRuntimePairUnchanged(t, before)
@@ -140,7 +147,7 @@ func auditSourceRoot(t *testing.T) string {
 	return root
 }
 
-func writeAuditEvidence(t *testing.T, root string, state map[string]any, subjectPath, subjectSHA string) {
+func writeAuditEvidence(t *testing.T, root string, state map[string]any, subjectPath string) {
 	t.Helper()
 	envelope := map[string]any{
 		"schema_version":          "1.0.0",
@@ -152,7 +159,7 @@ func writeAuditEvidence(t *testing.T, root string, state map[string]any, subject
 		"producer_agent_id":       "architect-audit",
 		"producer_responsibility": "Architect",
 		"subject_refs": []any{map[string]any{
-			"path": subjectPath, "version": "v1.0.0", "sha256": subjectSHA,
+			"path": subjectPath, "version": "v1.0.0",
 		}},
 		"conclusion": "pass",
 		"created_at": "2026-09-18T00:00:00Z",
@@ -167,7 +174,6 @@ func writeAuditEvidence(t *testing.T, root string, state map[string]any, subject
 		"id":                  "ev-audit-design",
 		"kind":                "planning_design",
 		"path":                filepath.ToSlash(rel),
-		"sha256":              sha256HexAudit(data),
 		"status":              "valid",
 		"baseline_generation": 1,
 		"review_round":        1,
@@ -203,16 +209,15 @@ func writeAuditFile(t *testing.T, root, rel, content string) {
 	}
 }
 
-func auditHook(t *testing.T, root, executionRoot, session string) (string, map[string]any) {
+func auditMainHook(t *testing.T, root, session string) (string, map[string]any) {
 	t.Helper()
 	payload := map[string]any{
 		"session_id":      session,
 		"hook_event_name": "PreToolUse",
-		"agent_id":        "agent-audit",
-		"cwd":             executionRoot,
+		"cwd":             root,
 		"tool_name":       "Edit",
 		"tool_input": map[string]any{
-			"file_path": filepath.Join(executionRoot, "docs/architecture/ARCHITECTURE-039-audit.md"),
+			"file_path": filepath.Join(root, "docs/architecture/ARCHITECTURE-039-audit.md"),
 		},
 	}
 	body, err := json.Marshal(payload)
@@ -248,9 +253,4 @@ func stringValueAudit(value any) string {
 
 func gotEvidenceRefsAudit(qg map[string]any) string {
 	return fmt.Sprint(qg["evidence_refs"])
-}
-
-func sha256HexAudit(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

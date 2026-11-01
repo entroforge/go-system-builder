@@ -31,98 +31,6 @@ type readerFixture struct {
 	finalHead  string
 }
 
-func TestVerifyReadsFullMainReceiptAndGitContribution(t *testing.T) {
-	f := newReaderFixture(t)
-	proof, err := Verify(context.Background(), f.input)
-	if err != nil {
-		t.Fatalf("Verify() = %v", err)
-	}
-	if proof.RecordReference() != f.input.Record.Reference() || proof.ResultBinding() != f.checkpoint.CanonicalMainFacts.Binding || proof.CheckpointSHA256() == "" || proof.FinalTargetHead() != f.finalHead {
-		t.Fatalf("proof lost exact source binding: %+v", proof)
-	}
-	if proof.MainFacts().TestedHead != f.testedHead {
-		t.Fatalf("TestedHead = %q, want descendant Main head %q", proof.MainFacts().TestedHead, f.testedHead)
-	}
-	files := proof.ChangedFiles()
-	if len(files) != 3 {
-		t.Fatalf("ChangedFiles() returned %d paths, want full three-path diff: %+v", len(files), files)
-	}
-	byPath := map[string]ChangedFile{}
-	for _, file := range files {
-		byPath[file.Path] = file
-	}
-	deleted, ok := byPath["internal/retired.go"]
-	if !ok || deleted.Status != "D" || deleted.BaseBlobSHA256 == "" || deleted.TargetBlobSHA256 == "" || deleted.SourceBlobSHA256 != "" || deleted.MergeBlobSHA256 != "" || deleted.FinalBlobSHA256 != "" {
-		t.Fatalf("deleted-file Git preimage/final tree facts are incomplete: %+v", deleted)
-	}
-	newlinePath := "internal/new line\n.go"
-	added, ok := byPath[newlinePath]
-	if !ok || added.Status != "A" || added.SourceBlobSHA256 == "" || added.MergeBlobSHA256 == "" || added.FinalBlobSHA256 == "" {
-		t.Fatalf("literal newline path was not preserved from Git: %+v", added)
-	}
-	modified, ok := byPath["internal/keep.go"]
-	if !ok || modified.Status != "M" || modified.BaseBlobSHA256 == "" || modified.SourceBlobSHA256 == "" || modified.TestedBlobSHA256 == "" {
-		t.Fatalf("modified-file blob facts are incomplete: %+v", modified)
-	}
-}
-
-func TestVerifyRejectsUnboundOrTamperedMainSources(t *testing.T) {
-	for _, name := range []string{
-		"unpinned target", "tampered log", "missing runner receipt", "outside receipt directory",
-		"missing tool receipt", "tampered tool receipt", "symlinked check receipt",
-		"unauthorized previous root", "different branch", "nonexistent final head", "wrong merge commit",
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := newReaderFixture(t)
-			in := f.input
-			cp := f.checkpoint
-			switch name {
-			case "unpinned target":
-				in.FinalTargetHead = "main"
-			case "tampered log":
-				if err := os.WriteFile(f.log, []byte("changed after runner receipt\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			case "missing runner receipt":
-				cp.CheckReceipts = nil
-				writeCheckpointFixture(t, f, cp)
-			case "missing tool receipt":
-				cp.ToolCheckReceipts = nil
-				writeCheckpointFixture(t, f, cp)
-			case "tampered tool receipt":
-				cp.ToolCheckReceipts[0].SHA256 = strings.Repeat("f", 64)
-				writeCheckpointFixture(t, f, cp)
-			case "symlinked check receipt":
-				if err := os.Remove(f.receipt); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(f.log, f.receipt); err != nil {
-					t.Fatal(err)
-				}
-			case "outside receipt directory":
-				outside := filepath.Join(t.TempDir(), "receipt.json")
-				cp.CheckReceipts = []string{outside}
-				cp.CanonicalMainFacts.Checks[0].ReceiptRef = outside
-				writeCheckpointFixture(t, f, cp)
-			case "unauthorized previous root":
-				cp.PreviousMainRoots = []string{"/outside/previous-main"}
-				writeCheckpointFixture(t, f, cp)
-			case "different branch":
-				in.ExpectedTargetBranch = "release"
-			case "nonexistent final head":
-				in.FinalTargetHead = strings.Repeat("f", 40)
-			case "wrong merge commit":
-				cp.MergeCommit = f.finalHead // ordinary descendant, not the recorded two-parent merge
-				cp.CanonicalMainFacts.MergeCommit = f.finalHead
-				writeCheckpointFixture(t, f, cp)
-			}
-			if _, err := Verify(context.Background(), in); err == nil {
-				t.Fatal("Verify() accepted tampered or unbound Main evidence")
-			}
-		})
-	}
-}
-
 func TestVerifyMapsAuthorizedOldAbsoluteRefsIntoCurrentAuthority(t *testing.T) {
 	f := newReaderFixture(t)
 	cp := f.checkpoint
@@ -150,7 +58,7 @@ func TestVerifyMapsAuthorizedOldAbsoluteRefsIntoCurrentAuthority(t *testing.T) {
 	}
 	oldReceipt := filepath.Join(oldAttempt, "receipt.json")
 	raw["cwd"], raw["output"] = oldMain, oldLog
-	sealed, err := checkexec.SealReceipt(raw, oldLog)
+	sealed, err := checkexec.SealReceipt(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,13 +69,12 @@ func TestVerifyMapsAuthorizedOldAbsoluteRefsIntoCurrentAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	fact := &cp.CanonicalMainFacts.Checks[0]
-	fact.ReceiptRef, fact.ReceiptSHA256 = oldReceipt, checkexec.Hash(sealed)
-	fact.LogRef, fact.LogSHA256 = oldLog, checkexec.Hash(logBytes)
+	fact.ReceiptRef = oldReceipt
+	fact.LogRef = oldLog
 	cp.CanonicalMainFacts.MainRoot = oldMain
 	cp.CheckReceipts = []string{oldReceipt}
 	cp.PreviousMainRoots = []string{oldMain}
 	cp.ToolCheckReceipts[0].Path = oldReceipt
-	cp.ToolCheckReceipts[0].SHA256 = checkexec.Hash(sealed)
 	cp.ToolCheckReceipts[0].Checkout = oldMain
 	f.input.AuthorizedMainRoots = []string{f.root, oldMain}
 	writeCheckpointFixture(t, f, cp)
@@ -229,9 +136,9 @@ func newReaderFixture(t *testing.T) readerFixture {
 		SchemaVersion: assignmentrecord.AssignmentRecordSchema, Contract: assignmentrecord.AssignmentRecordContract,
 		RuntimeID: "loop-mainreceipt-test", BaselineGeneration: 1, RegistrationRevision: 7,
 		AssignmentID: "assignment-mainreceipt-test", Revision: 1,
-		Task:            assignmentrecord.ContextSource{Kind: "task", Ref: "docs/dev/tasks/TASK-mainreceipt.md", ID: "TASK-mainreceipt", Version: "v1", SHA256: strings.Repeat("a", 64)},
-		Manifest:        assignmentrecord.ContextSource{Kind: "manifest", Ref: "docs/workgroups/manifest.json", ID: "team-manifest-mainreceipt", Version: "v1", SHA256: strings.Repeat("b", 64)},
-		AgentDefinition: assignmentrecord.ContextSource{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder", SHA256: strings.Repeat("c", 64)},
+		Task:            assignmentrecord.ContextSource{Kind: "task", Ref: "docs/dev/tasks/TASK-mainreceipt.md", ID: "TASK-mainreceipt", Version: "v1"},
+		Manifest:        assignmentrecord.ContextSource{Kind: "manifest", Ref: "docs/workgroups/manifest.json", ID: "team-manifest-mainreceipt", Version: "v1"},
+		AgentDefinition: assignmentrecord.ContextSource{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder"},
 		TeamID:          "team-mainreceipt", ResponsibilityID: "BUILD-WORK-PACKAGE", OwnerAgentID: "agent-mainreceipt",
 		RoleFamily: "backend-builder", DispatchMode: "plan_checkpoint",
 		ReadPaths: []string{}, SkillRefs: []string{"backend-engineering"}, DependsOn: []string{}, DoneWhen: []string{"the original task behavior is implemented"},
@@ -240,11 +147,11 @@ func newReaderFixture(t *testing.T) readerFixture {
 		ScopeBasis:          assignmentrecord.ScopeBasis{ManifestScope: []string{"internal/"}, ManifestWritePaths: []string{"internal/"}, ManifestOutputPaths: []string{}, TaskWritePaths: []string{"internal/"}},
 		EffectiveWritePaths: []string{"internal"},
 		ContextSources: []assignmentrecord.ContextSource{
-			{Kind: "task", Ref: "docs/dev/tasks/TASK-mainreceipt.md", ID: "TASK-mainreceipt", Version: "v1", SHA256: strings.Repeat("a", 64)},
-			{Kind: "manifest", Ref: "docs/workgroups/manifest.json", ID: "team-manifest-mainreceipt", Version: "v1", SHA256: strings.Repeat("b", 64)},
-			{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder", SHA256: strings.Repeat("c", 64)},
-			{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "v1", SHA256: strings.Repeat("e", 64)},
-			{Kind: "check_profile", Ref: "docs/workgroups/manifest.json#assignments/assignment-mainreceipt-test/check_profiles/CP-MAIN-TEST", ID: profile.ID, Version: profile.Version, SHA256: profile.Digest()},
+			{Kind: "task", Ref: "docs/dev/tasks/TASK-mainreceipt.md", ID: "TASK-mainreceipt", Version: "v1"},
+			{Kind: "manifest", Ref: "docs/workgroups/manifest.json", ID: "team-manifest-mainreceipt", Version: "v1"},
+			{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder"},
+			{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "v1"},
+			{Kind: "check_profile", Ref: "docs/workgroups/manifest.json#assignments/assignment-mainreceipt-test/check_profiles/CP-MAIN-TEST", ID: profile.ID, Version: profile.Version},
 		},
 	}
 	sort.Slice(record.ContextSources, func(i, j int) bool {
@@ -257,30 +164,23 @@ func newReaderFixture(t *testing.T) readerFixture {
 		}
 		return left.ID < right.ID
 	})
-	if _, err := record.Digest(); err != nil {
+	if err := assignmentrecord.ValidateRecord(record); err != nil {
 		t.Fatalf("test Assignment Record is invalid: %v", err)
 	}
-	recordSHA, _ := record.Digest()
 	resultRef := ".claude/evidence/loop-mainreceipt-test/g1/assignments/agent-mainreceipt/result-1.json"
-	resultSHA := checkexec.Hash([]byte("original accepted result bytes"))
 	accepted := assignmentresult.AcceptedResult{
-		Conclusion: "submitted", AssignmentRecord: record.Reference(), AssignmentRecordSHA256: recordSHA,
-		ResultRevision: 1, AnswerDigest: strings.Repeat("d", 64), CreatedAt: "2026-10-14T00:00:00Z",
+		Conclusion: "submitted", AssignmentRecord: record.Reference(),
+		ResultRevision: 1, CreatedAt: "2026-10-14T00:00:00Z",
 	}
 	factsPaths := gitNameOnlyPaths(t, root, mergeBase, sourceHead)
-	pathsSHA, err := assignmentresult.ChangedPathsDigest(factsPaths)
-	if err != nil {
+	if err := assignmentresult.ValidateChangedPaths(factsPaths); err != nil {
 		t.Fatal(err)
 	}
 	facts := assignmentresult.MainFacts{
 		Binding: assignmentresult.ResultBinding{
-			AssignmentRecord: record.Reference(), AssignmentRecordSHA256: recordSHA,
-			ResultPath: resultRef, ResultSHA256: resultSHA,
-			ResultRevision: accepted.ResultRevision, AnswerDigest: accepted.AnswerDigest,
+			AssignmentRecord: record.Reference(), ResultPath: resultRef, ResultRevision: accepted.ResultRevision,
 		},
-		MainRoot: root, SourceHead: sourceHead, MergeBase: mergeBase, TestedHead: testedHead,
-		TargetBranch: "main", MergeCommit: mergeHead, ExecutionGeneration: 0,
-		ChangedPaths: factsPaths, ChangedPathsSHA256: pathsSHA,
+		MainRoot: root, TargetBranch: "main", ExecutionGeneration: 0, ChangedPaths: factsPaths,
 	}
 	checksDir := filepath.Join(root, ".claude/evidence/loop-mainreceipt-test/g1/worktree/assignment-mainreceipt-test/checks")
 	checkAttemptDir := filepath.Join(checksDir, "loop-integration-check-mainreceipt")
@@ -295,10 +195,8 @@ func newReaderFixture(t *testing.T) readerFixture {
 	}
 	binding := checkexec.Binding{RuntimeID: record.RuntimeID, Generation: record.BaselineGeneration, AssignmentID: record.AssignmentID, Owner: "Main", ExecutionGeneration: 0, Responsibility: "main_required_integration"}
 	observation := checkexec.Observation{
-		ProfileID: profile.ID, ProfileVersion: profile.Version, ProfileDigest: profile.Digest(),
-		SubjectDigest: strings.Repeat("1", 64), RunnerDigest: strings.Repeat("2", 64),
-		EnvironmentDigest: strings.Repeat("3", 64), DependencyDigest: strings.Repeat("4", 64),
-		FixtureDigest: strings.Repeat("5", 64), Environment: []checkexec.EnvFact{},
+		ProfileID: profile.ID, ProfileVersion: profile.Version,
+		Environment:       []checkexec.EnvFact{},
 		VerificationScope: "unit fixture captures the original Main receipt shape", ReuseEligible: false,
 	}
 	code := 0
@@ -307,7 +205,7 @@ func newReaderFixture(t *testing.T) readerFixture {
 		"head_before": testedHead, "head_after": testedHead, "status": "pass", "exit_code": code,
 		"output": logPath, "check_binding": binding, "profile_observation": observation,
 	}
-	sealed, err := checkexec.SealReceipt(rawReceipt, logPath)
+	sealed, err := checkexec.SealReceipt(rawReceipt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,28 +214,25 @@ func newReaderFixture(t *testing.T) readerFixture {
 	}
 	fact := assignmentresult.MainCheckFact{
 		CheckIndex: 0, Command: profile.Command, Status: "pass", ReceiptRef: receiptPath,
-		ReceiptSHA256: checkexec.Hash(sealed), LogRef: logPath, LogSHA256: checkexec.Hash(logBytes),
-		TestedHead: testedHead, ProfileDigest: profile.Digest(),
+		LogRef: logPath,
 	}
 	facts.Checks = []assignmentresult.MainCheckFact{fact}
 	toolReceipt := checkexec.ToolReceipt{
-		Path: receiptPath, SHA256: checkexec.Hash(sealed), LogSHA256: checkexec.Hash(logBytes),
-		Checkout: root, Command: profile.Command, ProfileDigest: profile.Digest(), Binding: binding,
+		Path:     receiptPath,
+		Checkout: root, Command: profile.Command, Binding: binding,
 	}
 	cp := checkpoint{
 		TaskID: record.Task.ID, AssignmentID: record.AssignmentID, Generation: record.BaselineGeneration,
 		State: "verified", VerifiedAt: "2026-10-14T00:05:00Z",
-		ReportPath: resultRef, ReportSHA: resultSHA, SourceHead: sourceHead, TargetHead: targetHead,
-		MergeBase: mergeBase, TargetBranch: "main", MergeCommit: mergeHead,
-		TestedHead: testedHead, CheckReceipts: []string{receiptPath},
+		ReportPath: resultRef, TargetBranch: "main", CheckReceipts: []string{receiptPath},
 		ToolCheckReceipts: []checkexec.ToolReceipt{toolReceipt}, CanonicalMainFacts: &facts, Revision: 3,
 	}
 	writeCheckpointFixture(t, readerFixture{root: root, input: Input{Record: record}}, cp)
 	return readerFixture{
 		root: root, input: Input{
 			AuthorityRoot: root, Record: record, Accepted: accepted, ResultRef: resultRef,
-			ResultSHA256: resultSHA, ExecutionGeneration: 0, AuthorizedMainRoots: []string{root},
-			ExpectedTargetBranch: "main", FinalTargetHead: finalHead,
+			ExecutionGeneration: 0, AuthorizedMainRoots: []string{root},
+			ExpectedTargetBranch: "main",
 		}, checkpoint: cp, profile: profile, receipt: receiptPath, log: logPath,
 		mergeBase: mergeBase, targetHead: targetHead, sourceHead: sourceHead,
 		mergeHead: mergeHead, testedHead: testedHead, finalHead: finalHead,

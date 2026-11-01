@@ -17,11 +17,14 @@ func TestBatchScopeRepairInspectionBoundaries(t *testing.T) {
 		{"builder dispatched", func(s map[string]any, r string) {
 			s["entities"] = map[string]any{"agents": []any{map[string]any{"role": "backend-builder"}}}
 		}, false},
-		{"review started", func(s map[string]any, r string) { s["review"] = map[string]any{"round": 1} }, false},
-		{"paused", func(s map[string]any, r string) { s["pause"] = map[string]any{} }, false},
-		{"tampered", func(s map[string]any, r string) {
-			os.WriteFile(filepath.Join(r, "docs/dev/tasks/TASK-1.md"), []byte("changed"), 0644)
+		{"unrelated historical round", func(s map[string]any, r string) { s["review"] = map[string]any{"round": 1} }, true},
+		{"actual completed review", func(s map[string]any, r string) {
+			s["review"] = map[string]any{"clean_round": map[string]any{"status": "passed"}}
 		}, false},
+		{"paused", func(s map[string]any, r string) { s["pause"] = map[string]any{} }, false},
+		{"format change with same REQ scope", func(s map[string]any, r string) {
+			os.WriteFile(filepath.Join(r, "docs/dev/tasks/TASK-1.md"), []byte("> Source REQ refs: REQ-052\n\n"), 0644)
+		}, true},
 		{"missing", func(s map[string]any, r string) { os.Remove(filepath.Join(r, "docs/dev/tasks/TASK-1.md")) }, false},
 		{"escape", func(s map[string]any, r string) { s["documents"].([]any)[0].(map[string]any)["path"] = "../outside.md" }, false},
 	} {
@@ -34,7 +37,7 @@ func TestBatchScopeRepairInspectionBoundaries(t *testing.T) {
 				if err := os.WriteFile(p, []byte(text), 0644); err != nil {
 					t.Fatal(err)
 				}
-				return scopeHash([]byte(text))
+				return "historical-not-a-current-qualification"
 			}
 			reqHash := write("docs/requirements/REQ-053.md", "> 状态：locked")
 			docs := []any{}

@@ -7,8 +7,6 @@
 package bugprojection
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,24 +26,21 @@ var (
 	bugIDPattern         = regexp.MustCompile(`^BUG-[0-9]{3,}$`)
 	runtimeIDPattern     = regexp.MustCompile(`^loop-[A-Za-z0-9._-]+$`)
 	reqIDPattern         = regexp.MustCompile(`REQ-[0-9]{3,}`)
-	sha256Pattern        = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	canonicalTimePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$`)
 )
 
 // ArtifactRef identifies an immutable approved artifact. Path may be
 // repository-relative or an absolute path under root.
 type ArtifactRef struct {
-	Path   string
-	SHA256 string
+	Path string
 }
 
 // FindingRef supplies the immutable Finding sources needed by the legacy
 // canonicalBug schema. Case and Contract preserve only the exact Finding ID
 // set, not the source document paths.
 type FindingRef struct {
-	ID     string
-	Path   string
-	SHA256 string
+	ID   string
+	Path string
 }
 
 // Request contains the authority references plus the small amount of legacy
@@ -76,11 +71,9 @@ type Request struct {
 // Result identifies both immutable projection files. A retry returns the
 // same values without rewriting matching files.
 type Result struct {
-	BugID          string `json:"bug_id"`
-	JSONPath       string `json:"json_path"`
-	JSONSHA256     string `json:"json_sha256"`
-	MarkdownPath   string `json:"markdown_path"`
-	MarkdownSHA256 string `json:"markdown_sha256"`
+	BugID        string `json:"bug_id"`
+	JSONPath     string `json:"json_path"`
+	MarkdownPath string `json:"markdown_path"`
 }
 
 // ProjectApprovedContract is the named entry point used by S8's post-approval
@@ -106,11 +99,11 @@ func Project(root string, request Request) (Result, error) {
 		return Result{}, actionable("FindingRefs is empty; provide every immutable source Finding ref before projecting BUG %s", request.BugID)
 	}
 
-	caseRel, caseBytes, caseDocument, err := readApprovedArtifact(root, request.Case, "review-investigation-case.schema.json", "InvestigationCase")
+	caseRel, _, caseDocument, err := readApprovedArtifact(root, request.Case, "review-investigation-case.schema.json", "InvestigationCase")
 	if err != nil {
 		return Result{}, err
 	}
-	contractRel, contractBytes, contractDocument, err := readApprovedArtifact(root, request.Contract, "repair-contract.schema.json", "RepairContract")
+	contractRel, _, contractDocument, err := readApprovedArtifact(root, request.Contract, "repair-contract.schema.json", "RepairContract")
 	if err != nil {
 		return Result{}, err
 	}
@@ -127,9 +120,6 @@ func Project(root string, request Request) (Result, error) {
 	}
 	if normalizeRel(stringField(caseDocument["repair_contract_ref"])) != contractRel {
 		return Result{}, actionable("InvestigationCase %s does not point to approved RepairContract %s; regenerate from the matching approved pair", caseID, contractRel)
-	}
-	if stringField(caseDocument["repair_contract_sha256"]) != sha256Hex(contractBytes) {
-		return Result{}, actionable("InvestigationCase %s repair_contract_sha256 does not match %s; refresh the approved Case/Contract reference", caseID, contractRel)
 	}
 
 	caseIDs, err := stringSet(caseDocument["source_finding_ids"], "InvestigationCase.source_finding_ids")
@@ -218,14 +208,12 @@ func Project(root string, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	markdown := buildMarkdown(request.BugID, jsonRel, caseRel, sha256Hex(caseBytes), contractRel, sha256Hex(contractBytes), caseDocument, contractDocument, findingRefs, findingDocuments, canonical)
+	markdown := buildMarkdown(request.BugID, jsonRel, caseRel, contractRel, caseDocument, contractDocument, findingRefs, findingDocuments, canonical)
 	markdownPath, err := projectionPath(root, request.MarkdownPath, filepath.ToSlash(filepath.Join(projectlayout.Reports, "bugs", request.BugID+".md")))
 	if err != nil {
 		return Result{}, err
 	}
 
-	jsonSHA := sha256Hex(canonicalBytes)
-	markdownSHA := sha256Hex(markdown)
 	createdJSON, err := ensureImmutable(filepath.Join(root, filepath.FromSlash(jsonRel)), canonicalBytes, "canonical BUG JSON")
 	if err != nil {
 		return Result{}, err
@@ -238,7 +226,7 @@ func Project(root string, request Request) (Result, error) {
 		return Result{}, err
 	}
 	_ = createdMarkdown
-	return Result{BugID: request.BugID, JSONPath: jsonRel, JSONSHA256: jsonSHA, MarkdownPath: markdownPath, MarkdownSHA256: markdownSHA}, nil
+	return Result{BugID: request.BugID, JSONPath: jsonRel, MarkdownPath: markdownPath}, nil
 }
 
 func readApprovedArtifact(root string, ref ArtifactRef, schemaName, label string) (string, []byte, map[string]any, error) {
@@ -246,16 +234,9 @@ func readApprovedArtifact(root string, ref ArtifactRef, schemaName, label string
 	if err != nil {
 		return "", nil, nil, actionable("%s reference path is invalid: %v", label, err)
 	}
-	if !sha256Pattern.MatchString(ref.SHA256) {
-		return "", nil, nil, actionable("%s %s must carry a lowercase sha256 reference", label, rel)
-	}
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 	if err != nil {
 		return "", nil, nil, actionable("approved %s %s is missing or unreadable: %v", label, rel, err)
-	}
-	actual := sha256Hex(data)
-	if actual != ref.SHA256 {
-		return "", nil, nil, actionable("approved %s %s sha256 drift: reference=%s disk=%s; read the approved artifact again", label, rel, ref.SHA256, actual)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes(schemaName, data); err != nil {
 		return "", nil, nil, actionable("approved %s %s schema is invalid: %v", label, rel, err)
@@ -275,7 +256,7 @@ func readFindings(root string, refs []FindingRef) ([]map[string]any, []FindingRe
 		if strings.TrimSpace(ref.ID) == "" {
 			return nil, nil, actionable("FindingRefs[%d].ID is empty", index)
 		}
-		rel, data, document, err := readApprovedArtifact(root, ArtifactRef{Path: ref.Path, SHA256: ref.SHA256}, "finding.schema.json", "Finding")
+		rel, _, document, err := readApprovedArtifact(root, ArtifactRef{Path: ref.Path}, "finding.schema.json", "Finding")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -287,7 +268,7 @@ func readFindings(root string, refs []FindingRef) ([]map[string]any, []FindingRe
 		}
 		ids = append(ids, ref.ID)
 		documents = append(documents, document)
-		normalized = append(normalized, FindingRef{ID: ref.ID, Path: rel, SHA256: sha256Hex(data)})
+		normalized = append(normalized, FindingRef{ID: ref.ID, Path: rel})
 	}
 	return documents, normalized, nil
 }
@@ -307,7 +288,7 @@ func buildCanonicalBug(bugID, runtimeID, reqID string, generation int, findingID
 	}
 	sourceReports := make([]any, 0, len(refs))
 	for _, ref := range refs {
-		sourceReports = append(sourceReports, map[string]any{"id": ref.ID, "path": ref.Path, "sha256": ref.SHA256})
+		sourceReports = append(sourceReports, map[string]any{"id": ref.ID, "path": ref.Path})
 	}
 	return map[string]any{
 		"schema_version": "1.0.0", "record_type": "canonical_bug", "bug_id": bugID, "status": "accepted",
@@ -322,7 +303,7 @@ func buildCanonicalBug(bugID, runtimeID, reqID string, generation int, findingID
 	}
 }
 
-func buildMarkdown(bugID, jsonPath, casePath, caseSHA, contractPath, contractSHA string, investigation, contract map[string]any, refs []FindingRef, findings []map[string]any, canonical map[string]any) []byte {
+func buildMarkdown(bugID, jsonPath, casePath, contractPath string, investigation, contract map[string]any, refs []FindingRef, findings []map[string]any, canonical map[string]any) []byte {
 	ids := stringSliceAny(canonical["source_finding_ids"])
 	actual := strings.Join(fieldStrings(findings, "observed"), " | ")
 	expected := strings.Join(fieldStrings(findings, "expected"), " | ")
@@ -349,9 +330,7 @@ func buildMarkdown(bugID, jsonPath, casePath, caseSHA, contractPath, contractSHA
 | Projection status | accepted |
 | Route | s9_repair |
 | InvestigationCase | %s@%v |
-| Case hash | %s |
 | RepairContract | %s@%v |
-| Contract hash | %s |
 | Source Findings | %s |
 | Runtime ref | %s |
 | Severity | %s |
@@ -363,10 +342,10 @@ The authoritative read order is:
 
 InvestigationCase -> approved RepairContract -> this BUG projection -> S9 task
 
-| Kind | ID | Path | SHA-256 |
-|:---|:---|:---|:---|
-| InvestigationCase | %s | %s | %s |
-| RepairContract | %s | %s | %s |
+| Kind | ID | Path |
+|:---|:---|:---|
+| InvestigationCase | %s | %s |
+| RepairContract | %s | %s |
 %s
 
 ## 1. Observed Facts
@@ -404,7 +383,7 @@ InvestigationCase -> approved RepairContract -> this BUG projection -> S9 task
 
 ### 3.4 S9 handoff
 
-S9 executes the approved RepairContract revision and hash. This BUG projection
+S9 executes the approved RepairContract revision. This BUG projection
 cannot broaden scope, replace the root cause, or authorize repair.
 
 ## 4. Verification and Closure
@@ -420,13 +399,13 @@ verification, and a complete S7 round remain separate downstream evidence.
 | Duplicate of | none |
 | Route rationale | %s |
 
-`, bugID, bugID, casePath, integerField(investigation["revision"]), caseSHA, contractPath, integerField(contract["revision"]), contractSHA, strings.Join(ids, ", "), stringField(canonical["runtime_id"]), stringField(canonical["severity"]), jsonPath, caseID(investigation), casePath, caseSHA, contractID(contract), contractPath, contractSHA, formatFindingRefs(refs), expected, actual, strings.Join(journeys, " | "), strings.Join(walls, " | "), stringField(contract["violated_invariant"]), stringField(contract["root_cause_statement"]), objectSummary(investigation["causal_model"]), objectSummary(investigation["blast_radius"]), objectSummary(investigation["detection_gap"]), scope, forbidden, formatAssertions(contract), caseID(investigation), stringField(investigation["route_reason"])))
+`, bugID, bugID, casePath, integerField(investigation["revision"]), contractPath, integerField(contract["revision"]), strings.Join(ids, ", "), stringField(canonical["runtime_id"]), stringField(canonical["severity"]), jsonPath, caseID(investigation), casePath, contractID(contract), contractPath, formatFindingRefs(refs), expected, actual, strings.Join(journeys, " | "), strings.Join(walls, " | "), stringField(contract["violated_invariant"]), stringField(contract["root_cause_statement"]), objectSummary(investigation["causal_model"]), objectSummary(investigation["blast_radius"]), objectSummary(investigation["detection_gap"]), scope, forbidden, formatAssertions(contract), caseID(investigation), stringField(investigation["route_reason"])))
 }
 
 func formatFindingRefs(refs []FindingRef) string {
 	var lines []string
 	for _, ref := range refs {
-		lines = append(lines, fmt.Sprintf("| Finding | %s | %s | %s |", ref.ID, ref.Path, ref.SHA256))
+		lines = append(lines, fmt.Sprintf("| Finding | %s | %s |", ref.ID, ref.Path))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -691,7 +670,6 @@ func reviewTime(requested time.Time, candidate string) (string, error) {
 	return "", actionable("approved RepairContract has no valid approved_at; provide ReviewedAt from the approval record for a deterministic projection")
 }
 
-func sha256Hex(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 func actionable(format string, args ...any) error {
 	return fmt.Errorf(format+"; next: regenerate the projection from the approved Case/Contract pair and retry", args...)
 }

@@ -3,13 +3,10 @@
 package productbaseline
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -19,9 +16,6 @@ const (
 	MaxS6MainStarts     = 128
 )
 
-var shaPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
-var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
 // Task is the exact document identity registered and locked by the original
 // TR-003 transition. These values are historical facts and are not refreshed
 // when a later Assignment revision changes a TASK.
@@ -29,25 +23,20 @@ type Task struct {
 	TaskID  string `json:"task_id"`
 	Path    string `json:"path"`
 	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
 }
 
-// S6MainStart is the durable common Main baseline captured by the original
-// TR-003 Writer transaction. ReceiptSHA256 binds the complete record to the
-// successful register_execution_batch journal action result.
+// S6MainStart is the durable common Main responsibility captured by the
+// original TR-003 Writer transaction.
 type S6MainStart struct {
 	Contract                string `json:"contract"`
 	RuntimeID               string `json:"runtime_id"`
 	BaselineGeneration      int    `json:"baseline_generation"`
 	ProjectRoot             string `json:"project_root"`
 	DevelopmentBranch       string `json:"development_branch"`
-	StartCommit             string `json:"start_commit"`
 	TransitionEventID       string `json:"transition_event_id"`
 	TransitionAfterRevision int    `json:"transition_after_revision"`
 	TransitionSequence      int    `json:"transition_sequence"`
 	TaskSet                 []Task `json:"task_set"`
-	TaskSetSHA256           string `json:"task_set_sha256"`
-	ReceiptSHA256           string `json:"receipt_sha256"`
 }
 
 func SortTasks(tasks []Task) []Task {
@@ -61,44 +50,14 @@ func SortTasks(tasks []Task) []Task {
 	return out
 }
 
-func TaskSetDigest(tasks []Task) (string, error) {
-	sorted := SortTasks(tasks)
-	data, err := json.Marshal(sorted)
-	if err != nil {
-		return "", err
-	}
-	return digest(data), nil
-}
-
-// Seal computes both digests after normalizing task order, then validates the
-// resulting immutable record.
+// Seal prepares the original task responsibility and event coordinates.
 func Seal(record S6MainStart) (S6MainStart, error) {
 	record.Contract = S6MainStartContract
 	record.TaskSet = SortTasks(record.TaskSet)
-	taskDigest, err := TaskSetDigest(record.TaskSet)
-	if err != nil {
-		return S6MainStart{}, err
-	}
-	record.TaskSetSHA256 = taskDigest
-	record.ReceiptSHA256 = ""
-	receiptDigest, err := record.ReceiptDigest()
-	if err != nil {
-		return S6MainStart{}, err
-	}
-	record.ReceiptSHA256 = receiptDigest
 	if err := record.Validate(); err != nil {
 		return S6MainStart{}, err
 	}
 	return record, nil
-}
-
-func (record S6MainStart) ReceiptDigest() (string, error) {
-	record.ReceiptSHA256 = ""
-	data, err := json.Marshal(record)
-	if err != nil {
-		return "", err
-	}
-	return digest(data), nil
 }
 
 func (record S6MainStart) Validate() error {
@@ -118,9 +77,6 @@ func (record S6MainStart) Validate() error {
 		strings.HasPrefix(record.DevelopmentBranch, "refs/") ||
 		strings.TrimSpace(record.DevelopmentBranch) != record.DevelopmentBranch {
 		return fmt.Errorf("development_branch must be a normalized branch name")
-	}
-	if !shaPattern.MatchString(record.StartCommit) {
-		return fmt.Errorf("start_commit must be a full lowercase Git object ID")
 	}
 	if strings.TrimSpace(record.TransitionEventID) == "" {
 		return fmt.Errorf("transition_event_id is required")
@@ -143,9 +99,6 @@ func (record S6MainStart) Validate() error {
 		if strings.TrimSpace(task.Version) == "" || strings.TrimSpace(task.Version) != task.Version {
 			return fmt.Errorf("task_set[%d].version is required", i)
 		}
-		if !digestPattern.MatchString(task.SHA256) {
-			return fmt.Errorf("task_set[%d].sha256 is invalid", i)
-		}
 		if seenIDs[task.TaskID] || seenPaths[task.Path] {
 			return fmt.Errorf("task_set contains duplicate task id or path")
 		}
@@ -158,25 +111,11 @@ func (record S6MainStart) Validate() error {
 			}
 		}
 	}
-	if !digestPattern.MatchString(record.TaskSetSHA256) {
-		return fmt.Errorf("task_set_sha256 is invalid")
-	}
-	taskDigest, err := TaskSetDigest(record.TaskSet)
-	if err != nil || taskDigest != record.TaskSetSHA256 {
-		return fmt.Errorf("task_set_sha256 does not match task_set")
-	}
-	if !digestPattern.MatchString(record.ReceiptSHA256) {
-		return fmt.Errorf("receipt_sha256 is invalid")
-	}
-	receiptDigest, err := record.ReceiptDigest()
-	if err != nil || receiptDigest != record.ReceiptSHA256 {
-		return fmt.Errorf("receipt_sha256 does not match record")
-	}
 	return nil
 }
 
-// ReadS6MainStarts decodes the optional records from the existing baseline
-// object. Strict JSON decoding keeps this reusable by Runtime validators.
+// ReadS6MainStarts decodes original responsibilities from the existing baseline.
+// Unrelated fields do not change or authenticate the recorded responsibility.
 func ReadS6MainStarts(state map[string]any) ([]S6MainStart, error) {
 	baseline, _ := state["baseline"].(map[string]any)
 	if baseline == nil {
@@ -191,9 +130,7 @@ func ReadS6MainStarts(state map[string]any) ([]S6MainStart, error) {
 		return nil, err
 	}
 	var starts []S6MainStart
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&starts); err != nil {
+	if err := json.Unmarshal(data, &starts); err != nil {
 		return nil, fmt.Errorf("decode s6_main_starts: %w", err)
 	}
 	if len(starts) > MaxS6MainStarts {
@@ -251,9 +188,4 @@ func AppendS6MainStart(state map[string]any, start S6MainStart) error {
 	}
 	baseline["s6_main_starts"] = raw
 	return nil
-}
-
-func digest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

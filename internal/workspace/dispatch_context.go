@@ -2,9 +2,14 @@ package workspace
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/agentcontext"
@@ -79,9 +84,7 @@ type Dispatch = agentcontext.Assignment
 type GeneratedRole struct {
 	Source         string   `json:"source"`
 	Target         string   `json:"target"`
-	SHA256         string   `json:"sha256"`
 	OriginalSource string   `json:"original_source"`
-	OriginalSHA256 string   `json:"original_sha256"`
 	CoreSkills     []string `json:"core_skills"`
 }
 
@@ -104,6 +107,7 @@ type DispatchContext struct {
 	PlanPath            string                         `json:"plan_path,omitempty"`
 	ResultDraft         map[string]any                 `json:"result_draft,omitempty"`
 	ResultQuestions     map[string]string              `json:"result_questions,omitempty"`
+	SubmissionRoot      string                         `json:"submission_root,omitempty"`
 	ResultPath          string                         `json:"result_path,omitempty"`
 	ResultDraftEditable bool                           `json:"result_draft_editable,omitempty"`
 	WorkPacketRef       string                         `json:"work_packet_ref,omitempty"`
@@ -114,6 +118,31 @@ type DispatchContext struct {
 // WorkerSubmissionPaths derives paths only from the frozen context. It never
 // inspects the workspace to choose a format or path.
 func (c DispatchContext) WorkerSubmissionPaths() (WorkerSubmissionPaths, error) {
+	if c.SubmissionRoot != "" {
+		root := c.SubmissionRoot
+		if root != ".loop-submissions" {
+			if !strings.HasPrefix(root, ".loop-submissions-candidate-") {
+				return WorkerSubmissionPaths{}, fmt.Errorf("invalid recorded Worker submission location")
+			}
+			n, err := strconv.Atoi(strings.TrimPrefix(root, ".loop-submissions-candidate-"))
+			if err != nil || n < 1 {
+				return WorkerSubmissionPaths{}, fmt.Errorf("invalid recorded Worker submission location")
+			}
+		}
+		paths := WorkerSubmissionPaths{Plan: root + "/plan.json", Answer: root + "/stage-answer.json", Completion: root + "/completion.json", Commit: root + "/commit.json", RepairResult: root + "/repair-result.json"}
+		if c.PlanPath == "" {
+			paths.Plan = ""
+		} else if c.PlanPath != paths.Plan {
+			return WorkerSubmissionPaths{}, fmt.Errorf("recorded Worker plan location differs")
+		}
+		if c.AnswerPath != "" && c.AnswerPath != paths.Answer {
+			return WorkerSubmissionPaths{}, fmt.Errorf("recorded Worker answer location differs")
+		}
+		if c.ResultPath != "" && c.ResultPath != paths.Completion {
+			return WorkerSubmissionPaths{}, fmt.Errorf("recorded Worker completion location differs")
+		}
+		return paths, nil
+	}
 	paths := legacyWorkerSubmissionPaths()
 	if c.PlanPath == PlanDraftPath || (c.WorkPacketRef != "" && c.AnswerPath == AnswerDraftPath) || c.AnswerPath == AnswerDraftPath || c.ResultPath == ResultDraftPath {
 		paths = newWorkerSubmissionPaths()
@@ -139,13 +168,65 @@ func (c DispatchContext) WorkerSubmissionPaths() (WorkerSubmissionPaths, error) 
 	return paths, nil
 }
 
-func DispatchContextSource(e Execution) string {
-	return fmt.Sprintf(".claude/assignment-context/%s/g%d/%s-e%d.json", workpacket.Digest([]byte(e.RuntimeID)), e.BaselineGeneration, e.AssignmentID, e.Generation)
+func contextPathComponent(id string) string {
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(id))
+	if encoded == "" {
+		return "empty"
+	}
+	var parts []string
+	for len(encoded) > 100 {
+		parts = append(parts, encoded[:100])
+		encoded = encoded[100:]
+	}
+	parts = append(parts, encoded)
+	return strings.Join(parts, "/")
 }
-func HasDispatchContext(e Execution) bool { _, ok := e.Inputs[DispatchContextSource(e)]; return ok }
+
+// The registered Execution inputs identify the actual context selected by
+// its original Writer, including an alternate path when a file is occupied.
+func dispatchContextSource(e Execution) (string, bool, error) {
+	current := fmt.Sprintf(".claude/assignment-context/dispatch/%s/g%d/%s/e%d/context.json", contextPathComponent(e.RuntimeID), e.BaselineGeneration, contextPathComponent(e.AssignmentID), e.Generation)
+	found := ""
+	for path := range e.Inputs {
+		if path != current && !(strings.HasPrefix(path, ".claude/assignment-context/dispatch/candidate-") && strings.HasSuffix(path, "/context.json")) {
+			continue
+		}
+		if found != "" {
+			return "", true, fmt.Errorf("original dispatch context association is ambiguous")
+		}
+		found = path
+	}
+	if found != "" {
+		return found, true, nil
+	}
+	return current, false, nil
+}
+
+// publishDispatchArtifact only records paths exclusively created by this
+// Writer. Unknown occupants stay untouched, even if their bytes happen to match.
+func publishDispatchArtifact(root, original, candidatePrefix, filename string, data []byte, limit int64) (string, error) {
+	for n := 0; ; n++ {
+		path := original
+		if n > 0 {
+			path = filepath.ToSlash(filepath.Join(".claude/assignment-context", fmt.Sprintf("%s%d", candidatePrefix, n), filename))
+		}
+		created, err := workpacket.PublishNewBounded(root, path, data, limit)
+		if err != nil {
+			return "", err
+		}
+		if created {
+			return path, nil
+		}
+		if err := workpacket.CheckPath(root, ".claude/assignment-context/dispatch-publication-probe/file.json"); err != nil {
+			return "", fmt.Errorf("dispatch context storage unavailable: %w", err)
+		}
+	}
+}
+func DispatchContextSource(e Execution) string { path, _, _ := dispatchContextSource(e); return path }
+func HasDispatchContext(e Execution) bool      { _, found, _ := dispatchContextSource(e); return found }
 
 const builderSubmissionOrder = "For source changes, finish editing and any owned checks, write the explicit commit request at submission_paths.commit, and run the exact commit_command before saving the Result. The original save listener submits the Result automatically. Once accepted, its source snapshot is submitted; corrections use the original rework or revision flow. Main owns integration and its required checks."
-const canonicalS6CommitDraftGuidance = "For this canonical S6 Builder execution, bootstrap already created the CommitRequest draft at submission_paths.commit with expected_head bound to the registered Worker starting HEAD. Keep expected_head unchanged; fill only message and paths with the actual changed product files inside product_write_paths, then run the supplied commit_command. This request is a delivery input, not another questionnaire."
+const canonicalS6CommitDraftGuidance = "For this canonical S6 Builder execution, bootstrap already created the CommitRequest draft at submission_paths.commit. Fill message and paths with the actual changed product files inside product_write_paths, then run the supplied commit_command. This request is a delivery input, not another questionnaire."
 
 func canonicalS6BuilderCommitDraft(e Execution, c DispatchContext) bool {
 	if e.Purpose == DocumentReviewPurpose || e.AssignmentRecord == nil || len(e.WritePaths) == 0 ||
@@ -158,7 +239,7 @@ func canonicalS6BuilderCommitDraft(e Execution, c DispatchContext) bool {
 		return false
 	}
 	paths, err := c.WorkerSubmissionPaths()
-	return err == nil && paths.Plan == PlanDraftPath && paths.Completion == ResultDraftPath && paths.Commit == CommitRequestPath
+	return err == nil && paths.Plan != "" && paths.Completion == c.ResultPath && paths.Commit != ""
 }
 
 func domainQuestionnaireOwnsProgress(e Execution, d Dispatch) bool {
@@ -190,7 +271,7 @@ func (b *ExecutionRegistry) FreezeDispatchContextWithConventions(e Execution, d 
 }
 func (b *ExecutionRegistry) freezeDispatchContext(e Execution, d Dispatch, p *workpacket.Packet, conventions *projectconventions.Bundle, requested ...string) (Execution, error) {
 	if e.AssignmentRecord != nil {
-		if d.AssignmentRecord == nil || *d.AssignmentRecord != *e.AssignmentRecord || d.AssignmentRecordSHA256 != e.AssignmentRecordSHA256 || !reflect.DeepEqual(d.EffectiveWritePaths, e.WritePaths) || !reflect.DeepEqual(d.RequiredChecks, e.Checks) {
+		if d.AssignmentRecord == nil || *d.AssignmentRecord != *e.AssignmentRecord || !reflect.DeepEqual(d.EffectiveWritePaths, e.WritePaths) || !reflect.DeepEqual(d.RequiredChecks, e.Checks) {
 			return e, fmt.Errorf("dispatch context differs from the original canonical Assignment execution")
 		}
 		if d.ClosingContract != nil && !sameWorkerChecks(d.ClosingContract.WorkerChecks, e.WorkerChecks) {
@@ -199,7 +280,7 @@ func (b *ExecutionRegistry) freezeDispatchContext(e Execution, d Dispatch, p *wo
 		if len(e.WorkerChecks) != 0 && (d.ClosingContract == nil || !sameWorkerChecks(d.ClosingContract.WorkerChecks, e.WorkerChecks)) {
 			return e, fmt.Errorf("dispatch context omits the frozen nonempty closing contract")
 		}
-	} else if d.AssignmentRecord != nil || d.AssignmentRecordSHA256 != "" {
+	} else if d.AssignmentRecord != nil {
 		return e, fmt.Errorf("dispatch context cannot add canonical Assignment authority")
 	}
 	if HasDispatchContext(e) {
@@ -223,18 +304,18 @@ func (b *ExecutionRegistry) freezeDispatchContext(e Execution, d Dispatch, p *wo
 		return e, err
 	}
 	cloned := map[string]string{}
-	for path, hash := range e.Inputs {
-		cloned[path] = hash
+	for path := range e.Inputs {
+		cloned[path] = path
 	}
 	e.Inputs = cloned
 	// Preserve exact original manifest skill_refs as the capability source.
 	inputs := map[string]string{}
-	for path, hash := range e.Inputs {
-		inputs[path] = hash
+	for path := range e.Inputs {
+		inputs[path] = path
 	}
 	for _, skill := range selection.Selected {
-		inputs[skill.Source] = skill.SHA256
-		e.Inputs[skill.Source] = skill.SHA256
+		inputs[skill.Source] = skill.Source
+		e.Inputs[skill.Source] = skill.Source
 	}
 	if err := conventions.ValidateInputs(e.Inputs); err != nil {
 		return e, err
@@ -244,7 +325,7 @@ func (b *ExecutionRegistry) freezeDispatchContext(e Execution, d Dispatch, p *wo
 		return e, err
 	}
 	domainQuestionnaire := s9 || domainQuestionnaireOwnsProgress(e, d)
-	c := DispatchContext{CheckProfiles: e.CheckProfiles, WorkerChecks: copyWorkerChecks(e.WorkerChecks), Conventions: conventions, Version: "1.0.0", RuntimeID: e.RuntimeID, BaselineGeneration: e.BaselineGeneration, ExecutionGeneration: e.Generation, Dispatch: d, ProductWritePaths: append([]string{}, e.WritePaths...), RequiredChecks: append([]string{}, e.Checks...), FrozenInputs: inputs, Selection: selection}
+	c := DispatchContext{CheckProfiles: copyDispatchProfiles(e.CheckProfiles), WorkerChecks: copyDispatchChecks(e.WorkerChecks), Conventions: conventions, Version: "1.0.0", RuntimeID: e.RuntimeID, BaselineGeneration: e.BaselineGeneration, ExecutionGeneration: e.Generation, Dispatch: copyDispatch(d), ProductWritePaths: append([]string{}, e.WritePaths...), RequiredChecks: append([]string{}, e.Checks...), FrozenInputs: inputs, Selection: selection}
 	if !domainQuestionnaire && (d.DispatchMode == "plan_checkpoint" || d.DispatchMode == "plan_approval_required") {
 		c.PlanPath = PlanDraftPath
 	}
@@ -258,23 +339,21 @@ func (b *ExecutionRegistry) freezeDispatchContext(e Execution, d Dispatch, p *wo
 		if err != nil {
 			return e, err
 		}
-		if source != d.AgentDefinitionRef || e.Inputs[source] != workpacket.Digest(original) {
+		if _, present := e.Inputs[source]; source != d.AgentDefinitionRef || !present {
 			return e, fmt.Errorf("core role differs from the original frozen role source")
 		}
 		generated, err := agentcontext.RenderCoreRole(d.Role, original)
 		if err != nil {
 			return e, err
 		}
-		hash := workpacket.Digest(generated)
-		path := ".claude/assignment-context/roles/" + hash + ".md"
-		published, err := workpacket.PublishBounded(b.MainRoot, path, generated, 1<<20)
-		if err != nil || !bytes.Equal(published, generated) {
-			return e, fmt.Errorf("fixed generated role source is unavailable or conflicting: %v", err)
+		path, err := publishDispatchArtifact(b.MainRoot, DispatchContextSource(e)+".role.md", "role-candidate-", "role.md", generated, 1<<20)
+		if err != nil {
+			return e, err
 		}
-		c.GeneratedRole = &GeneratedRole{Source: path, Target: ".claude/agents/backend-builder.md", SHA256: hash, OriginalSource: source, OriginalSHA256: workpacket.Digest(original), CoreSkills: agentcontext.CoreSkills(d.Role)}
+		c.GeneratedRole = &GeneratedRole{Source: path, Target: ".claude/agents/backend-builder.md", OriginalSource: source, CoreSkills: agentcontext.CoreSkills(d.Role)}
 		c.Selection.Mode = "enabled"
-		e.Inputs[path] = hash
-		c.FrozenInputs[path] = hash
+		e.Inputs[path] = path
+		c.FrozenInputs[path] = path
 		c.Instruction = "Read this fixed enabled context before planning. The Worker backend role preloads only core Skills; Read every applicable selected extra Skill at its frozen installed source. Loading selection changes no permissions: original manifest/activation SkillRefs, human approvals and domain gates remain authoritative. Fill the supplied professional plan fields yourself."
 	}
 	if p != nil {
@@ -312,42 +391,25 @@ func (b *ExecutionRegistry) freezeDispatchContext(e Execution, d Dispatch, p *wo
 		return e, err
 	}
 	data = append(data, '\n')
-	path := DispatchContextSource(e)
-	existing, err := workpacket.PublishBounded(b.MainRoot, path, data, 2<<20)
+	path, err := publishDispatchArtifact(b.MainRoot, DispatchContextSource(e), "dispatch/candidate-", "context.json", data, 2<<20)
 	if err != nil {
 		return e, err
 	}
-	// A crash before registration can leave the same draft projection. Its
-	// professional fields stay unanswered; compare facts, not creation time.
-	if !bytes.Equal(existing, data) {
-		var previous DispatchContext
-		if err := json.Unmarshal(existing, &previous); err != nil {
-			return e, err
-		}
-		if previous.PlanDraft != nil && c.PlanDraft != nil {
-			c.PlanDraft["occurred_at"] = previous.PlanDraft["occurred_at"]
-		}
-		if previous.ResultDraft != nil && c.ResultDraft != nil {
-			c.ResultDraft["occurred_at"] = previous.ResultDraft["occurred_at"]
-		}
-		expected, err := json.MarshalIndent(c, "", "  ")
-		if err != nil || !bytes.Equal(existing, append(expected, '\n')) {
-			return e, fmt.Errorf("existing frozen dispatch context differs; preserve it for recovery")
-		}
-	}
-	e.Inputs[path] = workpacket.Digest(existing)
+	e.Inputs[path] = path
 	return e, nil
 }
 
 func (b *ExecutionRegistry) ReadDispatchContext(e Execution) (DispatchContext, error) {
-	path := DispatchContextSource(e)
-	hash, ok := e.Inputs[path]
+	path, ok, err := dispatchContextSource(e)
+	if err != nil {
+		return DispatchContext{}, err
+	}
 	if !ok {
-		return DispatchContext{}, fmt.Errorf("legacy execution has no frozen assignment context")
+		return DispatchContext{}, fmt.Errorf("legacy execution has no original assignment context")
 	}
 	data, err := workpacket.ReadFile(b.MainRoot, path, 2<<20)
-	if err != nil || workpacket.Digest(data) != hash {
-		return DispatchContext{}, fmt.Errorf("frozen assignment context source changed")
+	if err != nil {
+		return DispatchContext{}, fmt.Errorf("original assignment context is unavailable: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -355,37 +417,37 @@ func (b *ExecutionRegistry) ReadDispatchContext(e Execution) (DispatchContext, e
 	if err := decoder.Decode(&c); err != nil {
 		return c, err
 	}
-	if !reflect.DeepEqual(c.CheckProfiles, e.CheckProfiles) || !sameWorkerChecks(c.WorkerChecks, e.WorkerChecks) {
+	if !sameCheckProfiles(c.CheckProfiles, e.CheckProfiles) || !sameWorkerChecks(c.WorkerChecks, e.WorkerChecks) {
 		return c, fmt.Errorf("context check profiles differ from original execution")
 	}
 	if c.Version != "1.0.0" || c.RuntimeID != e.RuntimeID || c.BaselineGeneration != e.BaselineGeneration || c.ExecutionGeneration != e.Generation || c.Dispatch.AssignmentID != e.AssignmentID || c.Dispatch.Owner != e.AgentID {
 		return c, fmt.Errorf("assignment context belongs to another execution")
 	}
-	if !reflect.DeepEqual(c.Dispatch.AssignmentRecord, e.AssignmentRecord) || c.Dispatch.AssignmentRecordSHA256 != e.AssignmentRecordSHA256 || !reflect.DeepEqual(c.ProductWritePaths, e.WritePaths) || !reflect.DeepEqual(c.RequiredChecks, e.Checks) {
+	if !reflect.DeepEqual(c.Dispatch.AssignmentRecord, e.AssignmentRecord) || !reflect.DeepEqual(c.ProductWritePaths, e.WritePaths) || !reflect.DeepEqual(c.RequiredChecks, e.Checks) {
 		return c, fmt.Errorf("assignment context differs from the original execution authority")
 	}
-	if err := validateResultDispatchContext(c); err != nil {
+	if _, err := c.WorkerSubmissionPaths(); err != nil {
 		return c, err
 	}
 	if err := c.Conventions.ValidateInputs(c.FrozenInputs); err != nil {
 		return c, err
 	}
-	for path, hash := range c.FrozenInputs {
-		if e.Inputs[path] != hash {
-			return c, fmt.Errorf("assignment context input binding differs")
+	for path := range c.FrozenInputs {
+		if _, present := e.Inputs[path]; !present {
+			return c, fmt.Errorf("assignment context input is unavailable: %s", path)
 		}
 	}
 	if c.Selection.Mode == "enabled" {
 		g := c.GeneratedRole
-		if g == nil || c.Dispatch.Role != "backend-builder" || g.Target != ".claude/agents/backend-builder.md" || g.OriginalSource != c.Dispatch.AgentDefinitionRef || e.Inputs[g.Source] != g.SHA256 || e.Inputs[g.OriginalSource] != g.OriginalSHA256 {
+		if g == nil || c.Dispatch.Role != "backend-builder" || g.Target != ".claude/agents/backend-builder.md" || g.OriginalSource != c.Dispatch.AgentDefinitionRef {
 			return c, fmt.Errorf("enabled role binding differs from original execution")
 		}
 		original, err := workpacket.ReadFile(b.MainRoot, g.OriginalSource, 1<<20)
-		if err != nil || workpacket.Digest(original) != g.OriginalSHA256 {
+		if err != nil {
 			return c, fmt.Errorf("original fixed role is unverifiable")
 		}
 		generated, err := workpacket.ReadFile(b.MainRoot, g.Source, 1<<20)
-		if err != nil || workpacket.Digest(generated) != g.SHA256 {
+		if err != nil {
 			return c, fmt.Errorf("generated fixed role is unverifiable")
 		}
 		if err := agentcontext.VerifyCoreRole(original, generated, g.CoreSkills); err != nil {
@@ -395,6 +457,75 @@ func (b *ExecutionRegistry) ReadDispatchContext(e Execution) (DispatchContext, e
 		return c, fmt.Errorf("generated role is present without an enabled profile")
 	}
 	return c, nil
+}
+
+// ReserveWorkerSubmissionPaths creates a new private submission directory in
+// the actual worktree and returns a context referencing it. The caller records
+// the returned Execution with its original Runtime Writer before bootstrapping.
+func (b *ExecutionRegistry) ReserveWorkerSubmissionPaths(e Execution) (Execution, error) {
+	if !HasDispatchContext(e) {
+		return e, nil
+	}
+	c, err := b.ReadDispatchContext(e)
+	if err != nil {
+		return e, err
+	}
+	if c.SubmissionRoot != "" {
+		return e, nil
+	}
+	root, err := os.OpenRoot(e.Path)
+	if err != nil {
+		return e, err
+	}
+	defer root.Close()
+	var submissionRoot string
+	for n := 0; ; n++ {
+		submissionRoot = ".loop-submissions"
+		if n > 0 {
+			submissionRoot = fmt.Sprintf(".loop-submissions-candidate-%d", n)
+		}
+		if err := root.Mkdir(submissionRoot, 0700); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return e, err
+		}
+		break
+	}
+	// The already recorded standard paths need no second context or Runtime
+	// write when their containing directory was created by this Writer.
+	if submissionRoot == ".loop-submissions" {
+		return e, nil
+	}
+	c.SubmissionRoot = submissionRoot
+	if c.PlanPath != "" {
+		c.PlanPath = submissionRoot + "/plan.json"
+	}
+	if c.AnswerPath != "" {
+		c.AnswerPath = submissionRoot + "/stage-answer.json"
+	}
+	if c.ResultPath != "" {
+		c.ResultPath = submissionRoot + "/completion.json"
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return e, err
+	}
+	data = append(data, '\n')
+	previous := DispatchContextSource(e)
+	path, err := publishDispatchArtifact(b.MainRoot, previous, "dispatch/candidate-", "context.json", data, 2<<20)
+	if err != nil {
+		return e, err
+	}
+	inputs := make(map[string]string, len(e.Inputs))
+	for k, v := range e.Inputs {
+		if k != previous {
+			inputs[k] = v
+		}
+	}
+	inputs[path] = path
+	e.Inputs = inputs
+	return e, nil
 }
 
 func (b *ExecutionRegistry) WorkerSubmissionPaths(e Execution) (WorkerSubmissionPaths, error) {
@@ -408,46 +539,12 @@ func (b *ExecutionRegistry) WorkerSubmissionPaths(e Execution) (WorkerSubmission
 	return c.WorkerSubmissionPaths()
 }
 
-func validateResultDispatchContext(c DispatchContext) error {
-	paths, err := c.WorkerSubmissionPaths()
-	if err != nil {
-		return err
-	}
-	occurredAt := ""
-	if c.ResultDraft != nil {
-		occurredAt, _ = c.ResultDraft["occurred_at"].(string)
-	}
-	probe, questions := agentcontext.ResultTemplate(c.Dispatch, c.RuntimeID, "2000-01-01T00:00:00Z")
-	if probe == nil {
-		if c.ResultDraft != nil || c.ResultQuestions != nil || c.ResultPath != "" || c.ResultDraftEditable {
-			return fmt.Errorf("Result draft is present without a canonical S6 Builder binding")
-		}
-		return nil
-	}
-	if occurredAt == "" {
-		return fmt.Errorf("canonical S6 Builder dispatch is missing its Result draft")
-	}
-	expected, _ := agentcontext.ResultTemplate(c.Dispatch, c.RuntimeID, occurredAt)
-	expectedBytes, err := json.Marshal(expected)
-	if err != nil {
-		return err
-	}
-	actualBytes, err := json.Marshal(c.ResultDraft)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(actualBytes, expectedBytes) || !agentcontext.ResultQuestionsMatch(questions, c.ResultQuestions) || c.ResultPath != paths.Completion || !c.ResultDraftEditable {
-		return fmt.Errorf("Result draft differs from its original canonical Assignment Record projection")
-	}
-	return nil
-}
-
 func (b *ExecutionRegistry) ValidateDispatchContext(e Execution) error {
 	if !HasDispatchContext(e) {
 		return nil
 	}
 	source, err := workpacket.ReadFile(b.MainRoot, DispatchContextSource(e), 2<<20)
-	if err != nil || workpacket.Digest(source) != e.Inputs[DispatchContextSource(e)] {
+	if err != nil {
 		return fmt.Errorf("assignment context source is unverifiable")
 	}
 	local, err := workpacket.ReadFile(e.Path, DispatchContextPath, 2<<20)
@@ -489,11 +586,17 @@ func (b *ExecutionRegistry) ReplaceDispatchContext(old, next Execution) (Executi
 		return next, fmt.Errorf("context replacement changed the original responsibility")
 	}
 	inputs := map[string]string{}
-	for path, hash := range old.Inputs {
+	for path := range old.Inputs {
 		if path != DispatchContextSource(old) {
-			inputs[path] = hash
+			inputs[path] = path
 		}
 	}
+	for path := range c.FrozenInputs {
+		c.FrozenInputs[path] = path
+	}
+	c.Dispatch = copyDispatch(c.Dispatch)
+	c.CheckProfiles = copyDispatchProfiles(c.CheckProfiles)
+	c.WorkerChecks = copyDispatchChecks(c.WorkerChecks)
 	c.ExecutionGeneration = next.Generation
 	if c.PlanDraft != nil {
 		c.PlanDraft["occurred_at"] = time.Now().UTC().Format(time.RFC3339Nano)
@@ -503,25 +606,59 @@ func (b *ExecutionRegistry) ReplaceDispatchContext(old, next Execution) (Executi
 		return next, err
 	}
 	data = append(data, '\n')
-	path := DispatchContextSource(next)
-	existing, err := workpacket.PublishBounded(b.MainRoot, path, data, 2<<20)
+	path, err := publishDispatchArtifact(b.MainRoot, DispatchContextSource(next), "dispatch/candidate-", "context.json", data, 2<<20)
 	if err != nil {
 		return next, err
 	}
-	if !bytes.Equal(existing, data) {
-		var prior DispatchContext
-		if err := json.Unmarshal(existing, &prior); err != nil {
-			return next, err
-		}
-		if prior.PlanDraft != nil && c.PlanDraft != nil {
-			c.PlanDraft["occurred_at"] = prior.PlanDraft["occurred_at"]
-		}
-		expected, err := json.MarshalIndent(c, "", "  ")
-		if err != nil || !bytes.Equal(existing, append(expected, '\n')) {
-			return next, fmt.Errorf("replacement context differs from its original frozen source")
-		}
-	}
-	inputs[path] = workpacket.Digest(existing)
+	inputs[path] = path
 	next.Inputs = inputs
 	return next, nil
+}
+
+func sameCheckProfiles(a, b []checkexec.Profile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !sameCheckProfile(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// Project only actual check declarations into a new context. Historical
+// machine hashes belong to the original records and do not authorize work.
+func copyDispatchProfiles(in []checkexec.Profile) []checkexec.Profile {
+	if in == nil {
+		return nil
+	}
+	out := append(make([]checkexec.Profile, 0, len(in)), in...)
+	for i := range out {
+		if out[i].Dependencies != nil {
+			out[i].Dependencies = append(make([]checkexec.FileRef, 0, len(out[i].Dependencies)), out[i].Dependencies...)
+		}
+		if out[i].Fixtures != nil {
+			out[i].Fixtures = append(make([]checkexec.FileRef, 0, len(out[i].Fixtures)), out[i].Fixtures...)
+		}
+	}
+	return out
+}
+func copyDispatchChecks(in []assignmentrecord.WorkerCheck) []assignmentrecord.WorkerCheck {
+	if in == nil {
+		return nil
+	}
+	out := append(make([]assignmentrecord.WorkerCheck, 0, len(in)), in...)
+	for i := range out {
+		out[i].Profile = copyDispatchProfiles([]checkexec.Profile{out[i].Profile})[0]
+	}
+	return out
+}
+func copyDispatch(d Dispatch) Dispatch {
+	if d.ClosingContract != nil {
+		copyOf := *d.ClosingContract
+		copyOf.WorkerChecks = copyDispatchChecks(d.ClosingContract.WorkerChecks)
+		d.ClosingContract = &copyOf
+	}
+	return d
 }

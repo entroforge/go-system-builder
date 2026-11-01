@@ -89,11 +89,11 @@ func TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle(t *testing.T) {
 		want   string
 	}{
 		{name: "approved contract prepares session", phase: "repair_readback", want: "next writable Main Hook"},
-		{name: "planning uses private PlanReport", phase: "planning", status: "planning", want: "private professional PlanReport"},
+		{name: "planning uses prepared Builder responsibility", phase: "planning", status: "planning", want: "Main selects and saves each unselected Builder Assignment"},
 		{name: "reproduction follows saved reports", phase: "reproducing", status: "reproducing", want: "original consumer"},
 		{name: "repair result records completion", phase: "fixing", status: "repairing", want: "RepairResult questionnaire"},
 		{name: "impact uses supplied form", phase: "targeted_reverification", status: "impact_reconciliation", want: "ChangeImpact questionnaire"},
-		{name: "independent targeted result", phase: "targeted_reverification", status: "targeted_reverification", want: "TargetedReverification answer for SubagentStop"},
+		{name: "independent targeted result", phase: "targeted_reverification", status: "targeted_reverification", want: "registered independent verifier saves the exact TargetedReverification answer"},
 		{name: "handoff has no author form", phase: "ready_for_full_review", status: "ready_for_full_review", want: "No extra Handoff answer or repeated Targeted report is needed"},
 		{name: "fresh S7 follows original seed", phase: "ready_for_full_review", status: "closed", want: "fresh S7 round"},
 	}
@@ -116,6 +116,13 @@ func TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle(t *testing.T) {
 			combined := guidance.Action + "\n" + strings.Join(guidance.Automation, "\n")
 			if !strings.Contains(combined, tc.want) {
 				t.Fatalf("S9 guidance lacks %q: %s", tc.want, combined)
+			}
+			if tc.status == "planning" || tc.status == "targeted_reverification" {
+				for _, duty := range []string{"PreToolUse", "successful PostToolUse", "Stop/SubagentStop", "original consumer"} {
+					if !strings.Contains(combined, duty) {
+						t.Fatalf("S9 natural reception guidance lost %q: %s", duty, combined)
+					}
+				}
 			}
 			if tc.status == "ready_for_full_review" {
 				for _, duty := range []string{"Targeted SubagentStop", "original Handoff automatically", "runtime repair handoff complete", "preserve the accepted observations", "ordinary reminders do not retry"} {
@@ -492,9 +499,9 @@ func TestRefreshMilestonePreservesLastTransition(t *testing.T) {
 	gate := controller.QualityGateResult{
 		Status:              controller.StatusAdvanced,
 		GateID:              "GATE-BUG-INVESTIGATION",
-		CandidateTransition: "PTR-BUG-01",
+		CandidateTransition: "PTR-BUG-05",
 		ObservedRevision:    snapshot.Revision,
-		Fingerprint:         "sha256:ct14",
+
 		TransitionCommitted: true,
 		NextCursor:          "bug_resolution.investigation",
 	}
@@ -503,7 +510,7 @@ func TestRefreshMilestonePreservesLastTransition(t *testing.T) {
 		t.Fatalf("refresh milestone: %v", err)
 	}
 	if !changed {
-		t.Fatal("milestone refresh must persist when gate fingerprint differs")
+		t.Fatal("milestone refresh must persist the current gate result")
 	}
 	last, ok := updated.State["last_transition"].(map[string]any)
 	if !ok || last == nil {
@@ -570,7 +577,7 @@ func TestGuidanceMapWithGateProjectsQualityGateBlock(t *testing.T) {
 		GateID:              "GATE-PLANNING-CONTRACTS-COMPLETE",
 		CandidateTransition: "PTR-PLAN-02",
 		ObservedRevision:    12,
-		Fingerprint:         "sha256:abc",
+
 		Missing:             []string{"contract traceability"},
 		EvidenceRefs:        []string{"ev-039-contract-set"},
 		TransitionCommitted: false,
@@ -602,7 +609,7 @@ func TestGuidanceMapWithGateProjectsQualityGateBlock(t *testing.T) {
 	}
 	for _, key := range []string{
 		"status", "gate_id", "candidate_transition", "observed_revision",
-		"fingerprint", "missing", "evidence_refs", "transition_committed",
+		"missing", "evidence_refs", "transition_committed",
 		"next_cursor",
 	} {
 		if _, present := qg[key]; !present {
@@ -612,8 +619,8 @@ func TestGuidanceMapWithGateProjectsQualityGateBlock(t *testing.T) {
 	if qg["status"] != "not_ready" {
 		t.Fatalf("quality_gate.status=%v, want not_ready", qg["status"])
 	}
-	if qg["fingerprint"] != "sha256:abc" {
-		t.Fatalf("quality_gate.fingerprint=%v, want sha256:abc", qg["fingerprint"])
+	if _, found := qg["fingerprint"]; found {
+		t.Fatal("new quality gate must not register a fingerprint")
 	}
 	if qg["gate_id"] != "GATE-PLANNING-CONTRACTS-COMPLETE" {
 		t.Fatalf("quality_gate.gate_id=%v", qg["gate_id"])
@@ -639,19 +646,16 @@ func TestGuidanceMapWithoutGateOmitsQualityGate(t *testing.T) {
 	}
 }
 
-// TestMilestoneMatchesDetectsQualityGateFingerprintChange locks BUG-039-07
-// §4.1 step 2: a change in quality_gate.fingerprint must defeat the
-// milestoneMatches no-op check so a new gate result forces a fresh
-// milestone write (no silent stale gate).
-func TestMilestoneMatchesDetectsQualityGateFingerprintChange(t *testing.T) {
+// An actual change in missing work updates the displayed milestone.
+func TestMilestoneMatchesDetectsChangedMissingWork(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	base := controller.QualityGateResult{
 		Status:           controller.StatusNotReady,
 		GateID:           "GATE-PLANNING-CONTRACTS-COMPLETE",
 		ObservedRevision: 12,
-		Fingerprint:      "sha256:abc",
-		Missing:          []string{"contract traceability"},
-		NextCursor:       "planning.contracts",
+
+		Missing:    []string{"contract traceability"},
+		NextCursor: "planning.contracts",
 	}
 	guidance := policy.Guidance{
 		RuntimeID:      "loop-REQ-039",
@@ -667,41 +671,17 @@ func TestMilestoneMatchesDetectsQualityGateFingerprintChange(t *testing.T) {
 		Missing:        []string{"contract traceability"},
 	}
 
-	// Persisted milestone reflects gate.fingerprint=sha256:abc.
+	// Persisted milestone reflects the original actual gate result.
 	persisted := guidanceMapWithGate(persistedGuidanceForMatch(guidance), base, "SessionStart", 12, now, base)
 	if !milestoneMatchesWithGate(persisted, guidance, base) {
 		t.Fatal("persisted milestone with same gate must match (sanity)")
 	}
 
-	// New gate fingerprint — must NOT match.
+	// A real change to the gate result must be reflected.
 	updatedGate := base
-	updatedGate.Fingerprint = "sha256:def"
+	updatedGate.Missing = []string{"a different actual obligation"}
 	if milestoneMatchesWithGate(persisted, guidance, updatedGate) {
-		t.Fatal("milestoneMatches must return false when quality_gate.fingerprint changes")
-	}
-}
-
-// TestMilestoneIdempotencyChangesWithQualityGateFingerprint locks BUG-039-07
-// §4.1 step 3: a gate fingerprint change must produce a new idempotency
-// key so the Journal records the gate-driven refresh, not a duplicate or a
-// skip.
-func TestMilestoneIdempotencyChangesWithQualityGateFingerprint(t *testing.T) {
-	guidance := policy.Guidance{
-		RuntimeID: "loop-REQ-039",
-		Stage:     "S3",
-	}
-	gateA := controller.QualityGateResult{Fingerprint: "sha256:abc"}
-	gateB := controller.QualityGateResult{Fingerprint: "sha256:def"}
-	keyA := milestoneIdempotencyWithGate(guidance, gateA)
-	keyB := milestoneIdempotencyWithGate(guidance, gateB)
-	if keyA == keyB {
-		t.Fatalf("idempotency key must change when gate fingerprint changes: %q", keyA)
-	}
-	// Same fingerprint on a new gate object must yield the same key
-	// (idempotency is the point of the hash).
-	gateARepeat := controller.QualityGateResult{Fingerprint: "sha256:abc"}
-	if keyA != milestoneIdempotencyWithGate(guidance, gateARepeat) {
-		t.Fatalf("idempotency key must be stable for the same gate: %q vs %q", keyA, milestoneIdempotencyWithGate(guidance, gateARepeat))
+		t.Fatal("milestoneMatches must return false when the actual gate result changes")
 	}
 }
 
@@ -716,9 +696,9 @@ func TestMilestoneIdentityIgnoresObservedRevision(t *testing.T) {
 		Status:           controller.StatusNotReady,
 		GateID:           "GATE-RELEASE-AUDIT-APPROVED",
 		ObservedRevision: 12,
-		Fingerprint:      "sha256:stable",
-		Missing:          []string{"evidence:release_audit_record"},
-		NextCursor:       "release_audit",
+
+		Missing:    []string{"evidence:release_audit_record"},
+		NextCursor: "release_audit",
 	}
 	persisted := guidanceMapWithGate(persistedGuidanceForMatch(guidance), base, "PreToolUse", 12, time.Now().UTC(), base)
 
@@ -735,7 +715,7 @@ func TestMilestoneIdentityIgnoresObservedRevision(t *testing.T) {
 // TestRefreshMilestonePersistsQualityGateObject locks the integration
 // point: when refreshMilestone commits a milestone, the persisted
 // `milestone.quality_gate` must round-trip as a 9-field object and the
-// Controller fingerprint must defeat the no-op check on the next call.
+// actual gate changes must defeat the no-op check on the next call.
 func TestRefreshMilestonePersistsQualityGateObject(t *testing.T) {
 	root := factory.Clone(t, filepath.Join("..", ".."))
 	dir := t.TempDir()
@@ -775,10 +755,10 @@ func TestRefreshMilestonePersistsQualityGateObject(t *testing.T) {
 		GateID:              "GATE-PLANNING-CONTRACTS-COMPLETE",
 		CandidateTransition: "PTR-PLAN-02",
 		ObservedRevision:    snapshot.Revision,
-		Fingerprint:         "sha256:abc",
-		Missing:             []string{"contract traceability"},
-		EvidenceRefs:        []string{"ev-039-contract-set"},
-		NextCursor:          "planning.contracts",
+
+		Missing:      []string{"contract traceability"},
+		EvidenceRefs: []string{"ev-039-contract-set"},
+		NextCursor:   "planning.contracts",
 	}
 	updated, changed, err := refreshMilestoneWithGate(root, statePath, journalPath, snapshot, guidance, "SessionStart", gate)
 	if err != nil {
@@ -799,19 +779,19 @@ func TestRefreshMilestonePersistsQualityGateObject(t *testing.T) {
 	if !ok {
 		t.Fatalf("quality_gate must be an object, got %T", raw)
 	}
-	if qg["fingerprint"] != "sha256:abc" {
-		t.Fatalf("persisted quality_gate.fingerprint=%v, want sha256:abc", qg["fingerprint"])
+	if _, found := qg["fingerprint"]; found {
+		t.Fatal("persisted quality gate must not register a fingerprint")
 	}
 
-	// New fingerprint must force a second refresh.
+	// A real change in outstanding work forces a second refresh.
 	gate2 := gate
-	gate2.Fingerprint = "sha256:def"
+	gate2.Missing = []string{"a different actual obligation"}
 	again, changed, err := refreshMilestoneWithGate(root, statePath, journalPath, updated, guidance, "PreToolUse", gate2)
 	if err != nil {
 		t.Fatalf("second refresh: %v", err)
 	}
 	if !changed {
-		t.Fatal("gate fingerprint change must force a refresh (no no-op)")
+		t.Fatal("actual gate result change must force a refresh (no no-op)")
 	}
 	if again.Revision != updated.Revision+1 {
 		t.Fatalf("expected revision increment, before=%d after=%d", updated.Revision, again.Revision)
@@ -826,7 +806,7 @@ func TestQualityGateMapHelperShape(t *testing.T) {
 		GateID:              "GATE-PLANNING-CONTRACTS-COMPLETE",
 		CandidateTransition: "PTR-PLAN-02",
 		ObservedRevision:    12,
-		Fingerprint:         "sha256:xyz",
+
 		Missing:             nil,
 		EvidenceRefs:        nil,
 		TransitionCommitted: true,
@@ -835,7 +815,7 @@ func TestQualityGateMapHelperShape(t *testing.T) {
 	qg := qualityGateMap(gate)
 	for _, key := range []string{
 		"status", "gate_id", "candidate_transition", "observed_revision",
-		"fingerprint", "missing", "evidence_refs", "transition_committed",
+		"missing", "evidence_refs", "transition_committed",
 		"next_cursor",
 	} {
 		if _, present := qg[key]; !present {
@@ -1846,7 +1826,7 @@ func TestS9RepairNextActionKeepsNativeCandidateWithMain(t *testing.T) {
 func TestGraphRecoveryProjectsS8SourcesOnlyInCurrentInvestigation(t *testing.T) {
 	cases := []struct {
 		name, state, phase string
-		human, want        bool
+		want               bool
 	}{
 		{name: "S2", state: "planning", phase: "design"},
 		{name: "S3", state: "planning", phase: "contracts"},
@@ -1854,29 +1834,16 @@ func TestGraphRecoveryProjectsS8SourcesOnlyInCurrentInvestigation(t *testing.T) 
 		{name: "S10 acceptance", state: "acceptance"},
 		{name: "S10 audit", state: "release_audit"},
 		{name: "S11", state: "awaiting_human_release"},
-		{name: "S8 sealed observations", state: "bug_resolution", phase: "investigation", want: true},
-		{name: "S8 human problem", state: "bug_resolution", phase: "investigation", human: true, want: true},
+		{name: "S8 Finding", state: "bug_resolution", phase: "investigation", want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Preserve a real-shaped historical batch outside S8; history must not
-			// assign an investigation responsibility in another current stage.
 			state := s8EntryFixtureState()
 			state["lifecycle"] = map[string]any{"state": tc.state, "phase": tc.phase}
-			if tc.human {
-				state["review"].(map[string]any)["observation_batch"] = nil
-			}
 			guidance := graphGuidance(t.TempDir(), state, policy.Input{Event: "SessionStart"})
 			rendered := strings.Join(guidance.Automation, "\n") + "\n" + strings.Join(guidance.Recovery, "\n")
-			hasSource := strings.Contains(rendered, "S8 intake pending") || strings.Contains(rendered, "S8 current ObservationBatch")
-			if hasSource != tc.want {
+			if hasSource := strings.Contains(rendered, "S8 intake pending"); hasSource != tc.want {
 				t.Fatalf("current %s.%s received wrong S8 source responsibility: %s", tc.state, tc.phase, rendered)
-			}
-			if tc.want && !tc.human && !strings.Contains(rendered, "observation-batch-r2") {
-				t.Fatal("S8 lost its actual sealed source", rendered)
-			}
-			if tc.human && strings.Contains(rendered, "ObservationBatch") {
-				t.Fatal("human intake invented a batch", rendered)
 			}
 		})
 	}

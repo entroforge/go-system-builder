@@ -42,12 +42,12 @@ func packetFixture(t *testing.T) (string, string, string, workpacket.Packet) {
 	if err := os.WriteFile(filepath.Join(root, "req.md"), input, 0600); err != nil {
 		t.Fatal(err)
 	}
-	ref := workpacket.Reference{ID: "REQ-039", Path: "req.md", Version: "v1.0.0", SHA256: workpacket.Digest(input)}
-	state["bound_req"] = map[string]any{"id": ref.ID, "path": ref.Path, "version": ref.Version, "sha256": ref.SHA256, "status": "locked", "approved_by": "user", "approved_at": "2026-10-13T00:00:00Z", "metadata": map[string]any{"ui_impact": "none"}}
-	state["documents"] = []any{map[string]any{"id": ref.ID, "path": ref.Path, "kind": "req", "version": ref.Version, "sha256": ref.SHA256, "status": "registered", "generation": 1}}
+	ref := workpacket.Reference{ID: "REQ-039", Path: "req.md", Version: "v1.0.0"}
+	state["bound_req"] = map[string]any{"id": ref.ID, "path": ref.Path, "version": ref.Version, "status": "locked", "approved_by": "user", "approved_at": "2026-10-13T00:00:00Z", "metadata": map[string]any{"ui_impact": "none"}}
+	state["documents"] = []any{map[string]any{"id": ref.ID, "path": ref.Path, "kind": "req", "version": ref.Version, "status": "registered", "generation": 1}}
 	entities := state["entities"].(map[string]any)
 	entities["agents"] = []any{map[string]any{"id": "reviewer-spec", "role": "document-verifier", "state": "working", "task_ids": []any{}, "team_id": "team-dv", "definition_ref": "agents/document-verifier.md", "prompt_ref": "manifest.json#assignment-spec", "readback_ref": nil, "activation_ref": nil, "activation_revision": nil, "updated_at": "2026-10-13T00:00:00Z"}}
-	entities["teams"] = []any{map[string]any{"id": "team-dv", "platform_team_id": "platform-dv", "kind": "document_verifier", "status": "active", "manifest_ref": "manifest.json", "responsibility_ids": []any{"DV-SPEC-CONSISTENCY"}, "agent_ids": []any{"reviewer-spec"}, "review_round": nil, "packet_stage_entry": 7, "packet_generation": 1}}
+	entities["teams"] = []any{map[string]any{"id": "team-dv", "platform_team_id": "platform-dv", "kind": "document_verifier", "status": "active", "manifest_ref": "manifest.json", "responsibility_ids": []any{"DV-SPEC-CONSISTENCY"}, "agent_ids": []any{"reviewer-spec"}, "packet_stage_entry": 7, "packet_generation": 1}}
 	data, err = json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func packetFixture(t *testing.T) (string, string, string, workpacket.Packet) {
 	if err := os.WriteFile(statePath, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	p, err := workpacket.BuildS5(workpacket.Binding{RuntimeID: state["runtime_id"].(string), Generation: 1, StageEntry: 7, Owner: "reviewer-spec", AssignmentID: "assignment-spec", AssignmentSHA: workpacket.Digest(manifest), Responsibility: "DV-SPEC-CONSISTENCY", Attempt: 1}, []workpacket.Reference{ref})
+	p, err := workpacket.BuildS5(workpacket.Binding{RuntimeID: state["runtime_id"].(string), Generation: 1, StageEntry: 7, Owner: "reviewer-spec", AssignmentID: "assignment-spec", Responsibility: "DV-SPEC-CONSISTENCY", Attempt: 1}, []workpacket.Reference{ref})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,9 +148,41 @@ func TestWorkPacketIssuanceIsDurableAndIdempotent(t *testing.T) {
 	if len(second.State["entities"].(map[string]any)["work_packets"].([]any)) != 1 {
 		t.Fatal("duplicate issuance")
 	}
+	beforeState, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJournal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := p
+	retry.Draft.Instruction = "a later display version"
+	retry.ViewPath = ".claude/work-packets/other-candidate.json"
+	retry.AnswerPath = ".claude/submissions/other-candidate.json"
+	again, err := runtime.RecordWorkPacket(root, statePath, journalPath, retry, fileview.Disk{Root: root}, testCandidateValidator())
+	if err != nil || again.Revision != first.Revision {
+		t.Fatalf("original Writer retry: revision=%d err=%v", again.Revision, err)
+	}
+	issued, found, err := runtime.FindWorkPacket(again.State, p.ID)
+	if err != nil || !found || issued.Binding.Owner != p.Binding.Owner || issued.AnswerPath != p.AnswerPath || issued.ViewPath != p.ViewPath || issued.Draft.Instruction != p.Draft.Instruction {
+		t.Fatalf("retry replaced original responsibility or paths: %+v found=%v err=%v", issued, found, err)
+	}
+	retry.Binding.Owner = "other-owner"
+	if _, err := runtime.RecordWorkPacket(root, statePath, journalPath, retry, fileview.Disk{Root: root}, testCandidateValidator()); err == nil {
+		t.Fatal("a different owner borrowed the issued packet identity")
+	}
+	afterState, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterJournal, err := os.ReadFile(journalPath)
+	if err != nil || !bytes.Equal(beforeState, afterState) || !bytes.Equal(beforeJournal, afterJournal) {
+		t.Fatalf("retry or owner conflict changed original Writer state: %v", err)
+	}
 }
 
-func TestWorkPacketRejectsUnregisteredOwnerAndInputDrift(t *testing.T) {
+func TestWorkPacketUsesOriginalOwnerWithoutSourceContentGate(t *testing.T) {
 	for _, mutation := range []string{"owner", "stage", "input", "manifest"} {
 		t.Run(mutation, func(t *testing.T) {
 			root, statePath, journalPath, p := packetFixture(t)
@@ -179,8 +211,15 @@ func TestWorkPacketRejectsUnregisteredOwnerAndInputDrift(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := runtime.RecordWorkPacket(root, statePath, journalPath, p, fileview.Disk{Root: root}, testCandidateValidator()); err == nil {
-				t.Fatal("invalid packet accepted")
+			_, err = runtime.RecordWorkPacket(root, statePath, journalPath, p, fileview.Disk{Root: root}, testCandidateValidator())
+			if mutation == "input" {
+				if err != nil {
+					t.Fatalf("later input content invalidated original responsibility: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("wrong owner, stage or manifest accepted")
 			}
 			after, err := os.ReadFile(statePath)
 			if err != nil {
@@ -199,7 +238,7 @@ func TestWorkPacketCannotIssueAnotherAttemptWithoutRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Binding.Attempt++
-	p.Binding.PreviousSubmissionKey = workpacket.Digest([]byte("submission:" + p.ID))
+	p.Binding.PreviousSubmissionKey = "unreceived:" + p.ID
 	p.Binding.RevisionReason = "recheck a concrete observation"
 	p, err := workpacket.BuildS5(p.Binding, p.Inputs)
 	if err != nil {
@@ -235,9 +274,8 @@ func TestDocumentAnswerReceptionUsesStableIdentity(t *testing.T) {
 	if row["control_status"] != "pending" || row["followup_event_id"] == "" {
 		t.Fatal("recovery event was not persisted with domain reception")
 	}
-	canonicalHash, err := workpacket.AnswerDigest(passAnswer())
-	if err != nil || row["content_sha256"] != canonicalHash {
-		t.Fatalf("stored digest is not the validated answer: %v", row)
+	if _, present := row["content_sha256"]; present {
+		t.Fatalf("new reception recorded a content digest: %v", row)
 	}
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, request.Submission.AnswerJSON, "", "  "); err != nil {
@@ -326,7 +364,7 @@ func TestDocumentSubmissionUsesIssuedQuestionnaireWithoutGenericPlan(t *testing.
 }
 
 func TestDocumentSubmissionRejectsInvalidAnswerAndEnvelopeWithoutConsumingAttempt(t *testing.T) {
-	for _, change := range []string{"missing answer", "draft", "unknown answer", "duplicate answer", "missing findings", "incomplete finding", "modified question", "wrong caller hash", "wrong conclusion", "wrong findings", "missing subjects", "extra subjects", "duplicate subjects", "wrong subject hash", "wrong subject version", "wrong subject path", "wrong schema", "wrong evidence id", "wrong runtime", "wrong generation", "wrong producer", "wrong responsibility", "wrong event", "review round", "registration review round", "unknown envelope", "duplicate envelope"} {
+	for _, change := range []string{"missing answer", "draft", "unknown answer", "duplicate answer", "missing findings", "incomplete finding", "modified question", "wrong conclusion", "wrong findings", "wrong evidence id", "wrong runtime", "wrong generation", "wrong producer", "wrong responsibility"} {
 		t.Run(change, func(t *testing.T) {
 			root, statePath, journalPath, p := packetFixture(t)
 			before, err := runtime.RecordWorkPacket(root, statePath, journalPath, p, fileview.Disk{Root: root}, testCandidateValidator())
@@ -347,7 +385,6 @@ func TestDocumentSubmissionRejectsInvalidAnswerAndEnvelopeWithoutConsumingAttemp
 			if err := json.Unmarshal(data, &envelope); err != nil {
 				t.Fatal(err)
 			}
-			subjects := envelope["subject_refs"].([]any)
 			switch change {
 			case "missing answer":
 				submission.AnswerJSON = nil
@@ -364,26 +401,10 @@ func TestDocumentSubmissionRejectsInvalidAnswerAndEnvelopeWithoutConsumingAttemp
 				draft.Answer.Findings[0].Observed = ""
 			case "modified question":
 				draft.Title = "other responsibility"
-			case "wrong caller hash":
-				submission.ContentHash = workpacket.Digest([]byte("caller supplied"))
 			case "wrong conclusion":
 				envelope["conclusion"] = "fix_required"
 			case "wrong findings":
 				envelope["findings"] = fixAnswer(p).Findings
-			case "missing subjects":
-				envelope["subject_refs"] = []any{}
-			case "extra subjects":
-				envelope["subject_refs"] = append(subjects, map[string]any{"path": "other.md", "version": "v1", "sha256": p.Inputs[0].SHA256})
-			case "duplicate subjects":
-				envelope["subject_refs"] = append(subjects, subjects[0])
-			case "wrong subject hash":
-				subjects[0].(map[string]any)["sha256"] = workpacket.Digest([]byte("wrong"))
-			case "wrong subject version":
-				subjects[0].(map[string]any)["version"] = "v2"
-			case "wrong subject path":
-				subjects[0].(map[string]any)["path"] = "other.md"
-			case "wrong schema":
-				envelope["schema_version"] = "9.0.0"
 			case "wrong evidence id":
 				envelope["evidence_id"] = "different-evidence"
 			case "wrong runtime":
@@ -394,16 +415,6 @@ func TestDocumentSubmissionRejectsInvalidAnswerAndEnvelopeWithoutConsumingAttemp
 				envelope["producer_agent_id"] = "other"
 			case "wrong responsibility":
 				envelope["producer_responsibility"] = "DV-TASK-EXECUTABILITY"
-			case "wrong event":
-				envelope["requested_event"] = "document_fix_required"
-			case "review round":
-				envelope["review_round"] = 0
-			case "registration review round":
-				round := 1
-				request.ReviewRound = &round
-			case "unknown envelope":
-				envelope["unregistered"] = true
-			case "duplicate envelope": // preserve duplicate keys in the serialized envelope below
 			}
 			if change == "draft" || change == "modified question" || change == "incomplete finding" {
 				submission.AnswerJSON, err = json.Marshal(draft)
@@ -414,9 +425,6 @@ func TestDocumentSubmissionRejectsInvalidAnswerAndEnvelopeWithoutConsumingAttemp
 			data, err = json.Marshal(envelope)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if change == "duplicate envelope" {
-				data = bytes.Replace(data, []byte(`"conclusion":"pass"`), []byte(`"conclusion":"fix_required","conclusion":"pass"`), 1)
 			}
 			if err := os.WriteFile(filepath.Join(root, "review.json"), data, 0600); err != nil {
 				t.Fatal(err)
@@ -486,7 +494,7 @@ func (r *driftOnCommitReads) ReadFile(path string) ([]byte, error) {
 	return r.Disk.ReadFile(path)
 }
 
-func TestDocumentSubmissionRechecksFrozenInputInsideWriter(t *testing.T) {
+func TestDocumentSubmissionDoesNotRecheckFrozenInputInsideWriter(t *testing.T) {
 	root, statePath, journalPath, p := packetFixture(t)
 	before, err := runtime.RecordWorkPacket(root, statePath, journalPath, p, fileview.Disk{Root: root}, testCandidateValidator())
 	if err != nil {
@@ -495,19 +503,16 @@ func TestDocumentSubmissionRechecksFrozenInputInsideWriter(t *testing.T) {
 	request := submissionFixture(t, root, p, "review.json", passAnswer())
 	reader := &driftOnCommitReads{Disk: fileview.Disk{Root: root}}
 	request.Submission.Files = reader
-	if _, err := runtime.RecordEvidence(root, statePath, journalPath, request); err == nil {
-		t.Fatal("accepted a source that drifted after preflight")
-	}
-	if reader.reads < 2 {
-		t.Fatalf("missing locked validation after preflight, got %d reads", reader.reads)
+	if _, err := runtime.RecordEvidence(root, statePath, journalPath, request); err != nil {
+		t.Fatalf("current answer was blocked by historical source reread: %v", err)
 	}
 	after, err := runtime.NewStore(statePath, journalPath).Snapshot()
-	if err != nil || after.Revision != before.Revision || len(after.State["evidence"].([]any)) != 0 {
-		t.Fatalf("failed locked validation recorded reception: %v", err)
+	if err != nil || after.Revision != before.Revision+1 || len(after.State["evidence"].([]any)) != 1 {
+		t.Fatalf("original answer was not recorded once: %v", err)
 	}
 }
 
-func TestDocumentSubmissionReplayCannotReplaceDomainArtifact(t *testing.T) {
+func TestDocumentSubmissionReplayKeepsOriginalReceiptAndProfessionalJudgment(t *testing.T) {
 	for _, change := range []string{"path", "timestamp", "judgment"} {
 		t.Run(change, func(t *testing.T) {
 			root, statePath, journalPath, p := packetFixture(t)
@@ -534,12 +539,20 @@ func TestDocumentSubmissionReplayCannotReplaceDomainArtifact(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, request.Path), data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := runtime.RecordEvidence(root, statePath, journalPath, request); err == nil {
-				t.Fatal("replay replaced its accepted domain artifact")
+			_, err = runtime.RecordEvidence(root, statePath, journalPath, request)
+			if change == "judgment" && err == nil {
+				t.Fatal("changed professional judgment was accepted as the original answer")
+			}
+			if change != "judgment" && err != nil {
+				t.Fatalf("replay depended on later path or time metadata: %v", err)
 			}
 			after, err := runtime.NewStore(statePath, journalPath).Snapshot()
 			if err != nil || after.Revision != first.Revision {
 				t.Fatalf("invalid replay changed state: %v", err)
+			}
+			row := after.State["evidence"].([]any)[0].(map[string]any)
+			if row["path"] != "review.json" || row["id"] != "ev-answer" {
+				t.Fatalf("replay replaced original receipt path: %+v", row)
 			}
 		})
 	}

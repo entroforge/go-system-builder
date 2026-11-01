@@ -36,6 +36,7 @@ func TestS2ScopeGuidanceExposesBatchBeforeSubmission(t *testing.T) {
 		t.Fatalf("invalid Hook response: %v %s", err, out)
 	}
 	context := envelope.Specific.Context
+	assertSelectedDesignSourceGuidance(t, context)
 	for _, required := range []string{
 		"ARCHITECTURE-039-alternative.md — status=draft; outlet gap",
 		"ARCHITECTURE-039.md — status=locked",
@@ -84,6 +85,7 @@ func TestS2PendingBatchRecoveryKeepsBoundSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := designGuidanceEvent(t, root, "resumed-batch", "SessionStart", "Read")
+	assertSelectedDesignSourceGuidance(t, out)
 	for _, required := range []string{"already recorded", "ARCHITECTURE-039-alternative.md", "bound development source " + ref, "do not refill its professional answer"} {
 		if !strings.Contains(out, required) {
 			t.Fatalf("resumed pending outlet lost %q: %s", required, out)
@@ -128,5 +130,19 @@ func TestS2LargeGlobalModuleSetPreparesS3(t *testing.T) {
 	}
 	if !prepared {
 		t.Fatal("S3 responsibility not issued despite committed global sources")
+	}
+}
+
+func assertSelectedDesignSourceGuidance(t *testing.T, guidance string) {
+	t.Helper()
+	for _, required := range []string{"selected fileview", "concrete", "selected source"} {
+		if !strings.Contains(guidance, required) {
+			t.Fatalf("selected-source feedback missing %q: %s", required, guidance)
+		}
+	}
+	for _, obsolete := range []string{"S3 reads committed sources", "checks disk agreement", "checks the bound Git source and disk agreement", "proves its absence from the committed", "Commit formal upstream"} {
+		if strings.Contains(guidance, obsolete) {
+			t.Fatalf("obsolete source qualification %q: %s", obsolete, guidance)
+		}
 	}
 }

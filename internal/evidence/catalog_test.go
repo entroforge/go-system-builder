@@ -110,7 +110,7 @@ func TestS9LifecycleEvidenceKindsAreRegisteredButPipelineOwned(t *testing.T) {
 			"activation_record", "builder_report_record", "team_manifest_record", "completion_report",
 			"document_review_record", "contract_set_record", "task_batch_record", "planning_design_record",
 			"planning_contract_record", "planning_task_record", "delivery_review_record", "review_result_record",
-			"finding_record", "observation_batch_record", "bug_batch_record", "root_cause_record", "repair_record",
+			"finding_record", "bug_batch_record", "root_cause_record", "repair_record",
 			"repair_plan", "repair_plan_report", "targeted_reverification_record", "clean_round_record",
 			"acceptance_record", "release_audit_record", "change_impact_record",
 		} {

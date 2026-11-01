@@ -48,9 +48,7 @@ func RepairResultResumeBinding(root string, state map[string]any, base workpacke
 	var message struct {
 		Resolution struct {
 			PacketID   string `json:"packet_id"`
-			PacketSHA  string `json:"packet_sha256"`
 			BlockerRef string `json:"blocker_ref"`
-			BlockerSHA string `json:"blocker_sha256"`
 		} `json:"s9_resolution"`
 	}
 	if err := json.Unmarshal(data, &message); err != nil {
@@ -88,7 +86,7 @@ func RepairResultResumeBinding(root string, state map[string]any, base workpacke
 	if err != nil {
 		return nil, err
 	}
-	return repairResultResumeFromReceipt(prior, receipt, journal, message.Resolution.PacketSHA)
+	return repairResultResumeFromReceipt(prior, receipt, journal)
 }
 
 // VerifyRepairResultResume verifies a packet's full predecessor chain against
@@ -121,11 +119,10 @@ type repairResultResumeVerifier struct {
 	packets []workpacket.RepairResultPacket
 	byID    map[string]workpacket.RepairResultPacket
 
-	issues        map[string]repairResultResumeIssueResult
-	blockers      map[string]repairResultResumeBlockerResult
-	resolutions   map[string]repairResultResumeResolutionResult
-	packetDigests map[string]string
-	lineages      map[string]error
+	issues      map[string]repairResultResumeIssueResult
+	blockers    map[string]repairResultResumeBlockerResult
+	resolutions map[string]repairResultResumeResolutionResult
+	lineages    map[string]error
 }
 
 type repairResultResumeIssueResult struct {
@@ -153,12 +150,11 @@ func newRepairResultResumeVerifier(root string, state map[string]any, journal co
 	}
 	verifier := &repairResultResumeVerifier{
 		root: root, state: state, journal: journal, packets: packets,
-		byID:          make(map[string]workpacket.RepairResultPacket, len(packets)),
-		issues:        make(map[string]repairResultResumeIssueResult),
-		blockers:      make(map[string]repairResultResumeBlockerResult),
-		resolutions:   make(map[string]repairResultResumeResolutionResult),
-		packetDigests: make(map[string]string),
-		lineages:      make(map[string]error),
+		byID:        make(map[string]workpacket.RepairResultPacket, len(packets)),
+		issues:      make(map[string]repairResultResumeIssueResult),
+		blockers:    make(map[string]repairResultResumeBlockerResult),
+		resolutions: make(map[string]repairResultResumeResolutionResult),
+		lineages:    make(map[string]error),
 	}
 	for _, packet := range packets {
 		if prior, exists := verifier.byID[packet.ID]; exists {
@@ -180,23 +176,6 @@ func (v *repairResultResumeVerifier) registered(packet workpacket.RepairResultPa
 	return found, nil
 }
 
-func (v *repairResultResumeVerifier) packetDigest(packet workpacket.RepairResultPacket) (string, error) {
-	if found, err := v.registered(packet); err != nil {
-		return "", err
-	} else if !found {
-		return workpacket.RepairResultPacketContentDigest(packet)
-	}
-	if digest, exists := v.packetDigests[packet.ID]; exists {
-		return digest, nil
-	}
-	digest, err := workpacket.RepairResultPacketContentDigest(packet)
-	if err != nil {
-		return "", err
-	}
-	v.packetDigests[packet.ID] = digest
-	return digest, nil
-}
-
 func (v *repairResultResumeVerifier) issue(packet workpacket.RepairResultPacket) (int, int, error) {
 	if found, err := v.registered(packet); err != nil || !found {
 		if err == nil {
@@ -207,11 +186,7 @@ func (v *repairResultResumeVerifier) issue(packet workpacket.RepairResultPacket)
 	if result, exists := v.issues[packet.ID]; exists {
 		return result.sequence, result.after, result.err
 	}
-	packetSHA, err := v.packetDigest(packet)
-	if err != nil {
-		return 0, 0, err
-	}
-	sequence, after, err := verifyHistoricalRepairResultIssueWithPackets(v.state, packet, v.journal, v.byID, packetSHA)
+	sequence, after, err := verifyHistoricalRepairResultIssueWithPackets(v.state, packet, v.journal, v.byID)
 	v.issues[packet.ID] = repairResultResumeIssueResult{sequence: sequence, after: after, err: err}
 	return sequence, after, err
 }
@@ -293,11 +268,7 @@ func (v *repairResultResumeVerifier) resumeBinding(base workpacket.RepairResultB
 	if selected == nil {
 		return nil, nil
 	}
-	packetSHA, err := v.packetDigest(selected.packet)
-	if err != nil {
-		return nil, err
-	}
-	resume, err := repairResultResumeFromReceipt(selected.packet, selected.receipt, v.journal, packetSHA)
+	resume, err := repairResultResumeFromReceipt(selected.packet, selected.receipt, v.journal)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +279,7 @@ func (v *repairResultResumeVerifier) resumeBinding(base workpacket.RepairResultB
 	for _, packet := range v.packets {
 		if packet.Binding.Resume != nil && packet.Binding.Resume.PredecessorPacketID == selected.packet.ID {
 			children++
-			if !sameRepairResultResumeBase(packet.Binding, base) || !reflect.DeepEqual(packet.Binding.Resume, resume) {
+			if !sameRepairResultResumeBase(packet.Binding, base) || !sameRepairResume(packet.Binding.Resume, resume) {
 				return nil, fmt.Errorf("S9 Resume predecessor already has a changed or forked successor")
 			}
 		}
@@ -320,16 +291,11 @@ func (v *repairResultResumeVerifier) resumeBinding(base workpacket.RepairResultB
 }
 
 func (v *repairResultResumeVerifier) verifyResume(packet workpacket.RepairResultPacket) error {
-	digest, err := v.packetDigest(packet)
-	if err != nil {
-		return err
-	}
-	key := packet.ID + ":" + digest
-	if result, exists := v.lineages[key]; exists {
+	if result, exists := v.lineages[packet.ID]; exists {
 		return result
 	}
-	err = v.verifyResumeUncached(packet)
-	v.lineages[key] = err
+	err := v.verifyResumeUncached(packet)
+	v.lineages[packet.ID] = err
 	return err
 }
 
@@ -339,17 +305,13 @@ func (v *repairResultResumeVerifier) verifyResumeUncached(packet workpacket.Repa
 		return err
 	}
 	if !registered {
-		rebuilt, rebuildErr := workpacket.RebuildRepairResult(packet)
-		if rebuildErr != nil || !reflect.DeepEqual(packet, rebuilt) {
-			return fmt.Errorf("S9 Resume packet differs from its canonical rebuild")
-		}
 		base := packet.Binding
 		base.Resume = nil
 		expected, err := v.resumeBinding(base)
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(expected, packet.Binding.Resume) {
+		if !sameRepairResume(expected, packet.Binding.Resume) {
 			return fmt.Errorf("unissued S9 packet Resume differs from the unique accepted predecessor")
 		}
 		return nil
@@ -396,15 +358,11 @@ func (v *repairResultResumeVerifier) verifyResumeUncached(packet workpacket.Repa
 		if !resolved {
 			return fmt.Errorf("S9 Resume predecessor lacks an accepted blocker resolution")
 		}
-		parentSHA, err := v.packetDigest(parent)
+		expected, err := repairResultResumeFromReceipt(parent, receipt, v.journal)
 		if err != nil {
 			return err
 		}
-		expected, err := repairResultResumeFromReceipt(parent, receipt, v.journal, parentSHA)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(resume, expected) {
+		if !sameRepairResume(resume, expected) {
 			return fmt.Errorf("S9 Resume tuple differs from the exact predecessor resolution")
 		}
 		if receipt.AcceptedSequence >= issueSequence || receipt.AcceptedAfterRuntimeRevision >= issueAfter {
@@ -427,12 +385,9 @@ func (v *repairResultResumeVerifier) verifyResumeUncached(packet workpacket.Repa
 	return fmt.Errorf("S9 Resume lineage exceeds its packet registry bound")
 }
 
-func repairResultResumeFromReceipt(packet workpacket.RepairResultPacket, receipt RepairResultResolutionReceipt, journal controlproof.JournalInspection, packetSHA string) (*workpacket.RepairResultResume, error) {
+func repairResultResumeFromReceipt(packet workpacket.RepairResultPacket, receipt RepairResultResolutionReceipt, journal controlproof.JournalInspection, _ ...string) (*workpacket.RepairResultResume, error) {
 	if receipt.PacketID != packet.ID || receipt.OwnerAgentID != packet.Binding.Sources.OwnerAgentID {
 		return nil, fmt.Errorf("S9 resolution receipt owner/packet differs from Resume predecessor")
-	}
-	if !isSHA256Hex(packetSHA) {
-		return nil, fmt.Errorf("S9 Resume predecessor packet digest is invalid")
 	}
 	index, exists := journal.EventIndex[receipt.AcceptedEventID]
 	if !exists || index < 0 || index >= len(journal.Events) {
@@ -446,22 +401,30 @@ func repairResultResumeFromReceipt(packet workpacket.RepairResultPacket, receipt
 		return nil, fmt.Errorf("S9 Resume resolution acceptance coordinates differ from the verified event")
 	}
 	return &workpacket.RepairResultResume{
-		PredecessorPacketID: packet.ID, PredecessorPacketSHA256: packetSHA,
-		BlockerRef: receipt.BlockerRef, BlockerSHA256: receipt.BlockerSHA256,
-		ResolutionMessageRef: receipt.MessageRef, ResolutionMessageSHA256: receipt.MessageSHA256,
-		ResolutionEventID: receipt.AcceptedEventID, ResolutionIdempotencyKey: receipt.AcceptedIdempotencyKey,
+		PredecessorPacketID:  packet.ID,
+		BlockerRef:           receipt.BlockerRef,
+		ResolutionMessageRef: receipt.MessageRef,
+		ResolutionEventID:    receipt.AcceptedEventID, ResolutionIdempotencyKey: receipt.AcceptedIdempotencyKey,
 		ResolutionBeforeRevision: before, ResolutionAfterRevision: after, ResolutionSequence: sequence,
 	}, nil
 }
 
 func sameRepairResultResumeSlot(left, right workpacket.RepairResultBinding) bool {
 	a, b := left.Sources, right.Sources
-	return a.RuntimeID == b.RuntimeID && a.BaselineGeneration == b.BaselineGeneration && a.ReviewRound == b.ReviewRound &&
+	return a.RuntimeID == b.RuntimeID && a.BaselineGeneration == b.BaselineGeneration &&
 		a.RepairAssignmentID == b.RepairAssignmentID && a.OwnerAgentID == b.OwnerAgentID
 }
 
 func sameRepairResultResumeBase(left, right workpacket.RepairResultBinding) bool {
-	return reflect.DeepEqual(left.Sources, right.Sources) && left.PlanReportRef == right.PlanReportRef &&
-		left.PlanReportSHA256 == right.PlanReportSHA256 && left.ExecutionSHA256 == right.ExecutionSHA256 &&
-		left.ReworkRef == right.ReworkRef && left.ReworkSHA256 == right.ReworkSHA256
+	a, b := left.Sources, right.Sources
+	return a.RuntimeID == b.RuntimeID && a.SessionID == b.SessionID && a.PlanID == b.PlanID && a.RepairAssignmentID == b.RepairAssignmentID && a.ManifestAssignmentID == b.ManifestAssignmentID && a.OwnerAgentID == b.OwnerAgentID && left.PlanReportRef == right.PlanReportRef && left.ReworkRef == right.ReworkRef
+}
+
+// Historical digest strings are not part of a responsibility or decision.
+func sameRepairResume(a, b *workpacket.RepairResultResume) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	left, right := *a, *b
+	return reflect.DeepEqual(left, right)
 }

@@ -10,7 +10,7 @@ import (
 )
 
 func ValidateApprovedContractRef(root string, ref ContractRef) (ApprovedContract, error) {
-	data, err := readArtifact(root, ArtifactRef{Path: ref.Path, SHA256: ref.SHA256}, "repair-contract.schema.json")
+	data, err := readArtifact(root, ArtifactRef{Path: ref.Path}, "repair-contract.schema.json")
 	if err != nil {
 		return ApprovedContract{}, fmt.Errorf("validate approved RepairContract reference: %w", err)
 	}
@@ -27,7 +27,6 @@ func ValidateApprovedContractRef(root string, ref ContractRef) (ApprovedContract
 		StopEscalationConditions []string     `json:"stop_escalation_conditions"`
 		ApprovedBy               string       `json:"approved_by"`
 		ApprovedAt               string       `json:"approved_at"`
-		ApprovalHash             string       `json:"approval_hash"`
 	}
 	if err := json.Unmarshal(data, &document); err != nil {
 		return ApprovedContract{}, fmt.Errorf("decode approved RepairContract: %w", err)
@@ -35,8 +34,8 @@ func ValidateApprovedContractRef(root string, ref ContractRef) (ApprovedContract
 	if document.Status != "approved" {
 		return ApprovedContract{}, fmt.Errorf("RepairContract %q is %q; S9 requires status=approved", ref.Path, document.Status)
 	}
-	if strings.TrimSpace(document.ApprovedBy) == "" || strings.TrimSpace(document.ApprovedAt) == "" || strings.TrimSpace(document.ApprovalHash) == "" {
-		return ApprovedContract{}, fmt.Errorf("approved RepairContract %q lacks approval provenance; require approved_by, approved_at, and approval_hash", ref.Path)
+	if strings.TrimSpace(document.ApprovedBy) == "" || strings.TrimSpace(document.ApprovedAt) == "" {
+		return ApprovedContract{}, fmt.Errorf("approved RepairContract %q lacks approval provenance; require approved_by and approved_at", ref.Path)
 	}
 	if len(document.Units) == 0 {
 		return ApprovedContract{}, fmt.Errorf("approved RepairContract %q has no repair units", ref.Path)
@@ -57,12 +56,12 @@ func ValidateApprovedContractRef(root string, ref ContractRef) (ApprovedContract
 		SourceFindingIDs: append([]string(nil), document.SourceFindingIDs...), Units: append([]RepairUnit(nil), document.Units...),
 		ProspectiveScope: append([]string(nil), document.ProspectiveScope...), ForbiddenScope: append([]string(nil), document.ForbiddenScope...), CompatibilityMigration: document.CompatibilityMigration,
 		StopEscalationConditions: append([]string(nil), document.StopEscalationConditions...),
-		Ref:                      ContractRef{Path: relative, SHA256: ref.SHA256},
+		Ref:                      ContractRef{Path: relative},
 	}, nil
 }
 
 func ValidateApprovedContract(root string, ref ArtifactReference) (ApprovedContract, error) {
-	return ValidateApprovedContractRef(root, ContractRef{Path: ref.Path, SHA256: ref.SHA256})
+	return ValidateApprovedContractRef(root, ContractRef{Path: ref.Path})
 }
 
 // contractAssertionIDs turns the three Contract assertion arrays into the
@@ -70,7 +69,7 @@ func ValidateApprovedContract(root string, ref ArtifactReference) (ApprovedContr
 // remains the only source of truth; the plan stores the derived map so a
 // Worker can see the required coverage without rereading free-form prose.
 func contractAssertionIDs(root string, ref ContractRef) ([]string, error) {
-	data, err := readArtifact(root, ArtifactRef{Path: ref.Path, SHA256: ref.SHA256}, "repair-contract.schema.json")
+	data, err := readArtifact(root, ArtifactRef{Path: ref.Path}, "repair-contract.schema.json")
 	if err != nil {
 		return nil, err
 	}

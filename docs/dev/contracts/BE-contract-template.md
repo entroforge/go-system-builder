@@ -8,7 +8,7 @@
 > 实现责任：{实际后端提供方职责；S4 拆任务后再安排执行者}
 > 关联需求：`docs/requirements/REQ-{id}.md`
 > 关联设计：{当前 view 提供的实际 `docs/architecture/ARCHITECTURE-*.md` 及适用 ADR 路径/条款}
-> 作者维护本合同的真实状态与专业版本；登记时间、摘要和锁定关联由原消费者记录到 Runtime documents[] 与 journal，不另填机器元数据。
+> 作者维护本合同的真实状态、专业版本和实际引用；原消费者承接本人内容及责任，不计算、登记或要求摘要。
 
 ## Shared model inputs
 

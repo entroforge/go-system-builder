@@ -2,8 +2,7 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/targetedauthoring"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
@@ -46,9 +44,9 @@ func stageRepairLeadQuestionnaireContext(root string, request policy.Input, snap
 		}
 		state := snapshot.State
 		pointer := repairPointerCLI(state)
-		contract := repair.ContractRef{Path: stringValue(pointer["contract_ref"]), SHA256: stringValue(pointer["contract_sha256"])}
-		session := repair.ArtifactRef{Path: stringValue(pointer["path"]), SHA256: stringValue(pointer["sha256"])}
-		plan := repair.ArtifactRef{Path: stringValue(pointer["plan_ref"]), SHA256: stringValue(pointer["plan_sha256"])}
+		contract := repair.ContractRef{Path: stringValue(pointer["contract_ref"])}
+		session := repair.ArtifactRef{Path: stringValue(pointer["path"])}
+		plan := repair.ArtifactRef{Path: stringValue(pointer["plan_ref"])}
 		if contract.Path == "" || session.Path == "" || plan.Path == "" {
 			return "S9 repair_readback is missing a current approved Contract, RepairSession, or RepairPlan reference. Main/system must restore the original approved-Contract entry preparation; do not invent Session/Plan IDs or fall back to legacy startup commands."
 		}
@@ -66,9 +64,9 @@ func stageRepairLeadQuestionnaireContext(root string, request policy.Input, snap
 			return "S9 ChangeImpact questionnaire path is unavailable from current Runtime: " + err.Error()
 		}
 		if questionnaireMissing(path) {
-			return "S9 ChangeImpact questionnaire is not prepared at " + path + "; Main/system resumes its original preparation with " + repairImpactPreparationRecovery(root) + ". Accepted Final Results remain recorded; do not resubmit Builder work or hand-author required_reverification_ids."
+			return "S9 ChangeImpact questionnaire is not prepared at " + path + "; Main/system resumes its original preparation with " + repairImpactPreparationRecovery(root) + ". Accepted contributions remain recorded; do not resubmit Builder work or hand-author required_reverification_ids."
 		}
-		return "S9 ChangeImpact answer: " + path + ". Runtime/REQ/generation, source Case, the accepted Final batch changes, and required_reverification_ids (system-derived obligation IDs stable per RepairSession, not assertion IDs) are supplied from the original sources. Keep these supplied IDs; assertion_results in the separate Targeted answer carry the Contract assertion IDs. Complete the actual change types and professional impact/evidence dispositions with their rationales, then save this exact request. If the supplied accepted Final batch has no product changes, keep change_types=[] and explain the original Case/Contract retention or reverification decision; do not invent changed files or a change type. The original CreateChangeImpact and CommitChangeImpact consumers run on save." + repairLeadPreviousQuestionnaires(path) + repairLeadAnswerHelp(root, snapshot.State, false)
+		return "S9 ChangeImpact answer: " + path + ". Runtime/REQ/generation, source Case, the accepted contributions, and required_reverification_ids (system-derived obligation IDs stable per RepairSession, not assertion IDs) are supplied from the original sources. Keep these supplied IDs; assertion_results in the separate Targeted answer carry the Contract assertion IDs. Complete the actual change types and professional impact/evidence dispositions with their rationales, then save this exact request. If the supplied contribution has no product changes, change_types=[] and decisions=[] are valid; do not invent changed files or a change type. The original CreateChangeImpact and CommitChangeImpact consumers run on save." + repairLeadPreviousQuestionnaires(path) + repairLeadAnswerHelp(root, snapshot.State, false)
 
 	case "targeted_reverification":
 		pointer := repairPointerCLI(snapshot.State)
@@ -149,7 +147,7 @@ func repairLeadAnswerHelp(root string, state map[string]any, targeted bool) stri
 		b.WriteString(`Targeted fields: assertion_results=[{"assertion_id":"<supplied slot>","result":"blocked","evidence_refs":["logs/actual-blocker.txt"]}]; result=pass|fail|blocked|scope_changed. Record actual observations and evidence for every necessary supplied Contract assertion; identify each unfinished observation or blocker honestly. failure_class for a non-pass result is fail_same_cause|fail_new_cause|blocked|scope_changed|stale; keep it empty for pass. Assertion result choices are pass|fail|blocked. continuity_reason and scope_compliance are optional legacy metadata, not additional required reports. Select only actual results and real evidence locations; no unsupported PASS or fabricated observation.`)
 		b.WriteString(repairStopConditionsContext(root, state))
 	} else {
-		b.WriteString(`This is the original flat ChangeImpact request: professional fields stay at the top level, without an answer wrapper or invented questions. Correct an unreceived draft at its exact supplied path; never overwrite a registered immutable artifact. Impact fields: change_types=[requirement|design|contract|task|implementation|test|configuration|database|dependency|documentation_only]; escalation_level=assignment|workgroup|review_round|baseline; invalidated_evidence_ids, superseded_evidence_ids and retained_evidence_ids are references to actual evidence (or []). decisions is an array of complete objects. source_id identifies the actual change/source being analyzed (such as the supplied Case or changed artifact); target_id identifies its affected consumer, assertion or evidence; relation describes that dependency, not the disposition. decision is invalidate|supersede|retain|reverify. rule_id must match IM-[A-Z0-9-]+; responsibility_id is supplied by the system or null. Example shape: {"source_id":"<actual source>","target_id":"<actual affected target>","relation":"invalidates","rule_id":"IM-DEPENDENCY","decision":"reverify","responsibility_id":null,"scope":["<actual changed path>"],"rationale":"<actual dependency and disposition basis>","recovery_evidence":["test://actual-run"]}. Do not copy placeholders or invent evidence. Use an IM- rule label for the actual dependency judgment; it needs no extra registration. Cite real evidence from the supplied sources. An accepted whole batch can have changed_artifacts=[] and change_types=[]; decisions must still explain the actual Case/Contract impact and retained or required observations. Independent Contract reverification and fresh S7 remain necessary.`)
+		b.WriteString(`This is the original flat ChangeImpact request: professional fields stay at the top level, without an answer wrapper or invented questions. Correct an unreceived draft at its exact supplied path; never overwrite a registered immutable artifact. changed_artifacts accepts actual path strings or objects with path; no SHA is required. Optional integration_notes can record actual integration and checks, without a required format. Impact fields: change_types=[requirement|design|contract|task|implementation|test|configuration|database|dependency|documentation_only]; escalation_level=assignment|workgroup|review_round|baseline; invalidated_evidence_ids, superseded_evidence_ids and retained_evidence_ids are references to actual evidence (or []). decisions is an array of complete objects. source_id identifies the actual change/source being analyzed (such as the supplied Case or changed artifact); target_id identifies its affected consumer, assertion or evidence; relation describes that dependency, not the disposition. decision is invalidate|supersede|retain|reverify. rule_id may identify an actual existing rule; do not invent a rule for reception; responsibility_id is supplied by the system or null. Example shape: {"source_id":"<actual source>","target_id":"<actual affected target>","relation":"invalidates","rule_id":"IM-DEPENDENCY","decision":"reverify","responsibility_id":null,"scope":["<actual changed path>"],"rationale":"<actual dependency and disposition basis>","recovery_evidence":["test://actual-run"]}. Do not copy placeholders or invent evidence. Reference an existing rule only when applicable. Cite real evidence from the supplied sources. An accepted whole batch can have changed_artifacts=[] and change_types=[]; decisions=[] is valid when there is no actual disposition; do not invent a decision or reason for reception. Independent Contract reverification and fresh S7 remain necessary.`)
 	}
 	b.WriteString("\nActual source/evidence candidates (read their contents; a path alone is not proof):\n")
 	seen := map[string]bool{}
@@ -174,7 +172,7 @@ func repairLeadAnswerHelp(root string, state map[string]any, targeted bool) stri
 	if !targeted {
 		fmt.Fprintf(&b, "Original evidence ID/status/source index: %s#/evidence. Consult the entries affected by the actual changes when choosing dispositions; unrelated entries need no repeated analysis.\n", filepath.Join(root, ".claude", "loop-state.json"))
 	}
-	for _, ref := range repairArtifactRefs(pointer, "result_refs", "result_ref", "result_sha256") {
+	for _, ref := range repairArtifactRefs(pointer, "result_refs", "result_ref") {
 		// The candidate paths are already displayed above; these are the actual
 		// evidence anchors retained by the original Result, not new registrations.
 		path, err := absoluteQuestionnairePath(root, ref.Path)
@@ -194,7 +192,7 @@ func repairLeadAnswerHelp(root string, state map[string]any, targeted bool) stri
 		return b.String()
 	}
 	var contract map[string]json.RawMessage
-	if err := repairLeadIndexedSource(root, repair.ArtifactRef{Path: stringValue(pointer["contract_ref"]), SHA256: stringValue(pointer["contract_sha256"])}, &contract); err != nil {
+	if err := repairLeadIndexedSource(root, repair.ArtifactRef{Path: stringValue(pointer["contract_ref"])}, &contract); err != nil {
 		fmt.Fprintf(&b, "Contract assertion preparation gap at %s: %v\n", contractPath, err)
 		return b.String()
 	}
@@ -215,14 +213,11 @@ func repairLeadAnswerHelp(root string, state map[string]any, targeted bool) stri
 // array or machine assertion slot. Read the original pinned source once.
 func repairStopConditionsContext(root string, state map[string]any) string {
 	pointer := repairPointerCLI(state)
-	ref := repair.ArtifactRef{Path: stringValue(pointer["contract_ref"]), SHA256: stringValue(pointer["contract_sha256"])}
+	ref := repair.ArtifactRef{Path: stringValue(pointer["contract_ref"])}
 	var contract struct {
 		Conditions []string `json:"stop_escalation_conditions"`
 	}
 	body, err := workpacket.ReadFile(root, ref.Path, 2<<20)
-	if err == nil && ref.SHA256 != "" && workpacket.Digest(body) != ref.SHA256 {
-		err = fmt.Errorf("approved Contract source changed at %s", ref.Path)
-	}
 	if err == nil {
 		err = json.Unmarshal(body, &contract)
 	}
@@ -279,8 +274,8 @@ func repairLeadEvidenceHelp(root string, b *strings.Builder, value any) {
 					}
 					if !mainCheck {
 						if captured := captures[text]; captured != nil {
-							path, digest := stringValue(captured["path"]), stringValue(captured["sha256"])
-							fmt.Fprintf(b, "Recorded Builder evidence candidate: %s (original ref %q; Builder root %s; source %s; sha256=%s)\n", filepath.Join(root, path), text, sourceRoot, stringValue(captured["source_path"]), digest)
+							path := stringValue(captured["path"])
+							fmt.Fprintf(b, "Recorded Builder evidence candidate: %s (original ref %q; Builder root %s; source %s)\n", filepath.Join(root, path), text, sourceRoot, stringValue(captured["source_path"]))
 						} else if sourceRoot != "" {
 							fmt.Fprintf(b, "Recorded Builder evidence candidate: %s (Builder root %s; historical/unarchived reference; resolve at its original source, not Main)\n", text, sourceRoot)
 						} else {
@@ -292,15 +287,7 @@ func repairLeadEvidenceHelp(root string, b *strings.Builder, value any) {
 						fmt.Fprintf(b, "Recorded check evidence candidate: %s (historical source root unspecified; preserve the original reference, do not assume Main)\n", text)
 						continue
 					}
-					original := text
-					text = strings.TrimPrefix(text, "path:")
-					text = strings.SplitN(text, "#sha256=", 2)[0]
-					if !filepath.IsAbs(text) {
-						if path, err := absoluteQuestionnairePath(root, text); err == nil {
-							text = path
-						}
-					}
-					fmt.Fprintf(b, "Recorded Main check evidence candidate: %s (original ref %q)\n", text, original)
+					fmt.Fprintf(b, "Recorded Main check evidence candidate: %s (Main root %s; original reference)\n", text, root)
 				}
 			}
 		case []any:
@@ -361,6 +348,14 @@ func repairLeadPhase(root string, state map[string]any, missingIDs func(string, 
 	switch stringValue(pointer["status"]) {
 	case "impact_reconciliation", "targeted_reverification", "ready_for_full_review":
 		return stringValue(pointer["status"]), nil
+	case "repairing":
+		contributions, err := repair.ReceivedRepairContributions(root, state)
+		if err != nil {
+			return "", err
+		}
+		if len(contributions) > 0 {
+			return "impact_reconciliation", nil
+		}
 	case "blocked":
 		if pointer["failure_route"] == "blocked" {
 			return "targeted_reverification", nil
@@ -400,17 +395,9 @@ func repairLeadIndexedSource(root string, ref repair.ArtifactRef, value any) err
 }
 
 func repairLeadPreviousQuestionnaires(path string) string {
-	paths, _ := filepath.Glob(filepath.Join(filepath.Dir(filepath.Dir(path)), "*", filepath.Base(path)))
-	var previous []string
-	for _, candidate := range paths {
-		if candidate != path {
-			previous = append(previous, candidate)
-		}
-	}
-	if len(previous) == 0 {
-		return ""
-	}
-	return " Source binding changed; previous questionnaires remain at " + strings.Join(previous, ", ") + ". Do not continue under those old bindings; use the exact current path."
+	// The current original path is sufficient; ordinary observation must not
+	// scan unrelated questionnaire histories to construct extra guidance.
+	return ""
 }
 
 func repairLeadExistingQuestionnaires(root string, state map[string]any) string {
@@ -475,8 +462,8 @@ func prepareRepairReadback(root, statePath, journalPath string, state map[string
 		return nil, err
 	}
 	sameContract := stringValue(pointer["case_id"]) == contract.CaseID && stringValue(pointer["contract_id"]) == contract.ContractID &&
-		stringValue(pointer["contract_ref"]) == contract.Ref.Path && stringValue(pointer["contract_sha256"]) == contract.Ref.SHA256
-	if stringValue(pointer["contract_id"]) == "" && stringValue(pointer["contract_ref"]) == contract.Ref.Path && stringValue(pointer["contract_sha256"]) == contract.Ref.SHA256 {
+		stringValue(pointer["contract_ref"]) == contract.Ref.Path
+	if stringValue(pointer["contract_id"]) == "" && stringValue(pointer["contract_ref"]) == contract.Ref.Path {
 		sameContract = stringValue(pointer["case_id"]) == contract.CaseID
 	}
 	if stringValue(pointer["path"]) == "" || !sameContract {
@@ -497,7 +484,7 @@ func prepareRepairReadback(root, statePath, journalPath string, state map[string
 		runtimeID := strings.TrimSpace(stringValue(snapshot.State["runtime_id"]))
 		generation := integerValue(mapFieldCLI(snapshot.State, "baseline")["generation"])
 		suffix, err := repairReadbackIDSuffix(runtimeID, generation, stringValue(pointer["case_id"]), stringValue(pointer["contract_id"]), repair.ContractRef{
-			Path: stringValue(pointer["contract_ref"]), SHA256: stringValue(pointer["contract_sha256"]),
+			Path: stringValue(pointer["contract_ref"]),
 		})
 		if err != nil {
 			return nil, err
@@ -529,7 +516,7 @@ func repairReadbackContractSource(root string, state map[string]any) (string, in
 		return "", 0, repair.ApprovedContract{}, fmt.Errorf("current approved InvestigationCase and RepairContract are required before S9 can read back")
 	}
 	contract, err := repair.ValidateApprovedContractRef(root, repair.ContractRef{
-		Path: stringValue(current["repair_contract_ref"]), SHA256: stringValue(current["repair_contract_sha256"]),
+		Path: stringValue(current["repair_contract_ref"]),
 	})
 	if err != nil {
 		return "", 0, repair.ApprovedContract{}, err
@@ -541,31 +528,55 @@ func repairReadbackContractSource(root string, state map[string]any) (string, in
 }
 
 func repairReadbackIDSuffix(runtimeID string, generation int, caseID, contractID string, contractRef repair.ContractRef) (string, error) {
-	if strings.TrimSpace(runtimeID) == "" || generation < 1 || strings.TrimSpace(caseID) == "" || strings.TrimSpace(contractID) == "" || strings.TrimSpace(contractRef.Path) == "" || strings.TrimSpace(contractRef.SHA256) == "" {
+	if strings.TrimSpace(runtimeID) == "" || generation < 1 || strings.TrimSpace(caseID) == "" || strings.TrimSpace(contractID) == "" || strings.TrimSpace(contractRef.Path) == "" {
 		return "", fmt.Errorf("Runtime, baseline generation, Case, and approved Contract reference are required for S9 Session/Plan IDs")
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s\x00%s", runtimeID, generation, caseID, contractID, contractRef.Path, contractRef.SHA256)))
-	return hex.EncodeToString(digest[:]), nil
+	return repairResponsibilityKey(runtimeID, fmt.Sprint(generation), caseID, contractID, contractRef.Path), nil
+}
+
+// repairResponsibilityKey is a reversible encoding of existing responsibility
+// coordinates, not a fingerprint of author content.
+func repairResponsibilityKey(values ...string) string {
+	data, _ := json.Marshal(values)
+	return base64.RawURLEncoding.EncodeToString(data)
 }
 
 func repairLeadQuestionnairePath(root string, state map[string]any, name string) (string, error) {
-	runtimeID := strings.TrimSpace(stringValue(state["runtime_id"]))
-	generation := integerValue(mapFieldCLI(state, "baseline")["generation"])
-	segment := dispatchSlug(runtimeID)
-	if segment == "" || generation < 1 || name == "" {
-		return "", fmt.Errorf("current Runtime id, baseline generation or questionnaire name is missing")
-	}
 	pointer := repairPointerCLI(state)
-	source := []string{
-		stringValue(pointer["case_id"]), stringValue(pointer["contract_id"]), stringValue(pointer["contract_sha256"]),
-		stringValue(pointer["session_id"]), stringValue(pointer["plan_ref"]), stringValue(pointer["plan_sha256"]),
+	rel := strings.TrimSpace(stringValue(pointer["questionnaire_root"]))
+	if rel == "" {
+		return "", fmt.Errorf("the original S9 questionnaire path was not retained; Main/system must locate the actual existing responsibility")
 	}
-	if source[0] == "" || source[3] == "" || source[4] == "" || source[5] == "" {
-		return "", fmt.Errorf("current approved Case, RepairSession, and RepairPlan source are required to identify the S9 questionnaire")
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.Base(name) != name || name == "" {
+		return "", fmt.Errorf("the original S9 questionnaire location is invalid")
 	}
-	sourceDigest := sha256.Sum256([]byte(strings.Join(source, "\x00")))
-	path := filepath.Join(root, ".claude", "submissions", "s9", segment, fmt.Sprintf("g%d", generation), hex.EncodeToString(sourceDigest[:]), name)
-	return filepath.Abs(path)
+	planPath := strings.TrimSpace(stringValue(pointer["plan_ref"]))
+	if planPath == "" {
+		return "", fmt.Errorf("the current RepairPlan path is not available for the original questionnaire")
+	}
+	// A genuine Plan revision is a different original responsibility. Use its
+	// saved path as a reversible location, without reopening/rehashing content.
+	planKey := repairResponsibilityKey(planPath)
+	parts := []string{root, clean, "plan"}
+	for len(planKey) > 120 {
+		parts = append(parts, planKey[:120])
+		planKey = planKey[120:]
+	}
+	parts = append(parts, planKey)
+	if len(name) > 200 {
+		parts = append(parts, "n")
+		for len(name) > 120 {
+			parts = append(parts, name[:120])
+			name = name[120:]
+		}
+	}
+	parts = append(parts, name)
+	return filepath.Abs(filepath.Join(parts...))
+}
+
+func repairTargetedQuestionnaireName(assignmentID string) string {
+	return "targeted-reverification-" + repairResponsibilityKey(assignmentID) + ".json"
 }
 
 func repairTargetedQuestionnairePath(root string, state map[string]any, assignmentID string, contexts ...context.Context) (string, error) {
@@ -574,11 +585,10 @@ func repairTargetedQuestionnairePath(root string, state map[string]any, assignme
 			return "", err
 		}
 	}
-	segment := dispatchSlug(assignmentID)
-	if segment == "" {
+	if strings.TrimSpace(assignmentID) == "" {
 		return "", fmt.Errorf("current verifier assignment id is empty")
 	}
-	legacy, err := repairLeadQuestionnairePath(root, state, "targeted-reverification-"+segment+".json")
+	legacy, err := repairLeadQuestionnairePath(root, state, repairTargetedQuestionnaireName(assignmentID))
 	if err != nil {
 		return "", err
 	}
@@ -610,9 +620,12 @@ func prepareRepairImpactQuestionnaire(root string, state map[string]any) (string
 	if err != nil {
 		return "", err
 	}
-	if info, statErr := os.Stat(path); statErr == nil && !info.Mode().IsRegular() {
-		return "", fmt.Errorf("original ChangeImpact questionnaire path %s is not a regular file", path)
-	} else if statErr != nil && !os.IsNotExist(statErr) {
+	if info, statErr := os.Stat(path); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("original ChangeImpact questionnaire path %s is not a regular file", path)
+		}
+		return path, nil // Preserve the existing authoring view without replaying contributors.
+	} else if !os.IsNotExist(statErr) {
 		return "", statErr
 	}
 	pointer := repairPointerCLI(state)
@@ -620,9 +633,19 @@ func prepareRepairImpactQuestionnaire(root string, state map[string]any) (string
 	if sessionID == "" {
 		return "", fmt.Errorf("current repair responsibility has no Session")
 	}
-	changeset, err := repair.CurrentRepairResultChangeset(root, state)
-	if err != nil {
-		return "", fmt.Errorf("read accepted Final Result changeset: %w", err)
+	// Available contributions can inform Main's newly prepared view. Their
+	// absence or unavailability cannot prevent an original impact handoff.
+	contributions, _ := repair.ReceivedRepairContributions(root, state)
+	changedPaths := []repair.ArtifactRef{}
+	seenPaths := map[string]bool{}
+	for _, contribution := range contributions {
+		for _, changed := range contribution.ChangedArtifacts {
+			if changed.Path == "" || seenPaths[changed.Path] {
+				continue
+			}
+			seenPaths[changed.Path] = true
+			changedPaths = append(changedPaths, repair.ArtifactRef{Path: changed.Path, Status: changed.Status})
+		}
 	}
 	boundReq := mapFieldCLI(state, "bound_req")
 	caseID := stringValue(pointer["case_id"])
@@ -634,10 +657,10 @@ func prepareRepairImpactQuestionnaire(root string, state map[string]any) (string
 		return "", err
 	}
 	request := repair.ChangeImpactRequest{
-		ImpactID:  "impact-" + dispatchSlug(sessionID),
+		ImpactID:  "impact-" + repairResponsibilityKey(sessionID),
 		RuntimeID: stringValue(state["runtime_id"]), ReqID: stringValue(boundReq["id"]),
 		BaselineGeneration: integerValue(mapFieldCLI(state, "baseline")["generation"]),
-		SourceCaseIDs:      []string{caseID}, ChangeTypes: []string{}, ChangedArtifacts: changeset.Artifacts,
+		SourceCaseIDs:      []string{caseID}, ChangeTypes: []string{}, ChangedArtifacts: changedPaths,
 		Decisions: []repair.ImpactDecision{}, EscalationLevel: "assignment",
 		InvalidatedEvidenceIDs: []string{}, SupersededEvidenceIDs: []string{}, RetainedEvidenceIDs: []string{},
 		RequiredReverificationIDs: reverificationIDs, AnalyzedBy: "Main",
@@ -658,9 +681,11 @@ func repairImpactReverificationIDs(state map[string]any) ([]string, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("current RepairSession is required to identify the Contract reverification obligation")
 	}
-	impactID := "impact-" + dispatchSlug(sessionID)
-	digest := sha256.Sum256([]byte(impactID))
-	return []string{"reverify-" + hex.EncodeToString(digest[:])}, nil
+	impactID := "impact-" + repairResponsibilityKey(sessionID)
+	if existing := stringSliceAny(repairPointerCLI(state)["required_reverification_ids"]); len(existing) > 0 {
+		return existing, nil
+	}
+	return []string{"reverify-" + repairResponsibilityKey(impactID)}, nil
 }
 
 func repairTargetedSelections(root string, state map[string]any) ([]repairTargetedSelection, error) {
@@ -708,8 +733,7 @@ func repairTargetedOutstandingSelections(selections []repairTargetedSelection, m
 
 func repairTargetedIDForSelection(selection repairTargetedSelection, selections []repairTargetedSelection, missing []string) (string, error) {
 	// Each existing verification responsibility owns its own report artifact.
-	digest := sha256.Sum256([]byte(selection.impact.ImpactID + "\x00" + selection.performingAssignmentID))
-	return "reverify-" + hex.EncodeToString(digest[:]), nil
+	return "reverify-" + repairResponsibilityKey(selection.impact.ImpactID, selection.performingAssignmentID), nil
 }
 
 func prepareRepairTargetedQuestionnaire(root string, state map[string]any, selection repairTargetedSelection, contexts ...context.Context) (string, repair.TargetedReverificationRequest, error) {
@@ -722,11 +746,6 @@ func prepareRepairTargetedQuestionnaire(root string, state map[string]any, selec
 	path, err := repairTargetedQuestionnairePath(root, state, selection.performingAssignmentID, prepareContext)
 	if err != nil {
 		return "", repair.TargetedReverificationRequest{}, err
-	}
-	if rel, relErr := filepath.Rel(root, path); relErr == nil && strings.HasPrefix(filepath.ToSlash(rel), ".loop-submissions/s9/") {
-		if err := targetedauthoring.CheckNormalOriginal(prepareContext, root, filepath.ToSlash(rel)); err != nil {
-			return "", repair.TargetedReverificationRequest{}, err
-		}
 	}
 	assertions, err := repairContractAssertionResults(root, repairPointerCLI(state))
 	if err != nil {
@@ -790,75 +809,53 @@ func repairContractAssertionResults(root string, pointer map[string]any) ([]repa
 
 func repairHandoffRequestFromRuntime(root string, state map[string]any) (repair.HandoffRequest, error) {
 	pointer := repairPointerCLI(state)
-	ref := func(pathKey, shaKey, label string) (repair.ArtifactRef, error) {
-		ref := repair.ArtifactRef{Path: stringValue(pointer[pathKey]), SHA256: stringValue(pointer[shaKey])}
+	ref := func(pathKey, label string) (repair.ArtifactRef, error) {
+		ref := repair.ArtifactRef{Path: stringValue(pointer[pathKey])}
 		if ref.Path == "" {
 			return ref, fmt.Errorf("%s has no recorded path", label)
 		}
 		return ref, nil
 	}
-	session, err := ref("path", "sha256", "current RepairSession")
+	session, err := ref("path", "current RepairSession")
 	if err != nil {
 		return repair.HandoffRequest{}, err
 	}
-	plan, err := ref("plan_ref", "plan_sha256", "current RepairPlan")
+	plan, err := ref("plan_ref", "current RepairPlan")
 	if err != nil {
 		return repair.HandoffRequest{}, err
 	}
-	contract, err := ref("contract_ref", "contract_sha256", "current RepairContract")
+	contract, err := ref("contract_ref", "current RepairContract")
 	if err != nil {
 		return repair.HandoffRequest{}, err
 	}
-	result, err := ref("result_ref", "result_sha256", "current RepairResult")
+	impact, err := ref("impact_ref", "current ChangeImpact")
 	if err != nil {
 		return repair.HandoffRequest{}, err
 	}
-	impact, err := ref("impact_ref", "impact_sha256", "current ChangeImpact")
-	if err != nil {
-		return repair.HandoffRequest{}, err
-	}
-	results := repairArtifactRefs(pointer, "targeted_reverification_artifacts", "", "")
+	results := repairArtifactRefs(pointer, "targeted_reverification_artifacts", "")
 	if len(results) == 0 {
 		return repair.HandoffRequest{}, fmt.Errorf("current Runtime has no committed TargetedReverification artifact")
 	}
-	changeset, err := repair.CurrentRepairResultChangeset(root, state)
-	if err != nil {
-		return repair.HandoffRequest{}, fmt.Errorf("read accepted Final Result Changeset: %w", err)
+	// Recorded Final and Changeset references remain useful when they exist. Their absence is not a new handoff prerequisite, and building a
+	// replacement here would re-read unrelated authors' accepted work.
+	optionalRef := func(pathKey string) repair.ArtifactRef {
+		path := stringValue(pointer[pathKey])
+		if path == "" {
+			return repair.ArtifactRef{}
+		}
+		return repair.ArtifactRef{Path: path}
 	}
-	changesetRef, err := persistRepairChangeset(root, changeset)
-	if err != nil {
-		return repair.HandoffRequest{}, fmt.Errorf("persist original Session Changeset: %w", err)
-	}
+	result := optionalRef("result_ref")
+	changesetRef := optionalRef("changeset_ref")
 	sessionID := stringValue(pointer["session_id"])
 	request := repair.HandoffRequest{
-		HandoffID: "repair-handoff-" + dispatchSlug(sessionID),
-		Session:   session, Plan: plan, Contract: repair.ContractRef{Path: contract.Path, SHA256: contract.SHA256},
+		HandoffID: "repair-handoff-" + repairResponsibilityKey(sessionID),
+		Session:   session, Plan: plan, Contract: repair.ContractRef{Path: contract.Path},
 		Result: result, Changeset: changesetRef, ChangeImpact: impact,
 		TargetedReverifications: results, HandedOffBy: "Main",
-		NextAction: "start the next complete S7 review round from the current repair baseline",
+		NextAction: "start a new independent S7 review from the current repair baseline",
 	}
 	return request, nil
-}
-
-func persistRepairChangeset(root string, changeset repair.Changeset) (repair.ArtifactRef, error) {
-	ref, err := repair.PersistChangeset(root, changeset)
-	if err == nil {
-		return ref, nil
-	}
-	rel := filepath.ToSlash(filepath.Join(".claude", "review", "repair", "changesets", changeset.ChangesetID+".json"))
-	existingRef, readErr := artifactRef(root, rel, changeset.ChangesetID)
-	if readErr != nil {
-		return repair.ArtifactRef{}, err
-	}
-	data, readErr := os.ReadFile(resolveRootPath(root, existingRef.Path))
-	var existing repair.Changeset
-	if readErr != nil || json.Unmarshal(data, &existing) != nil || existing.Digest != changeset.Digest || existing.SessionID != changeset.SessionID {
-		return repair.ArtifactRef{}, err
-	}
-	// Match PersistChangeset's original wire reference. The local lookup ID is
-	// not part of the Handoff ref schema and must not appear only on retries.
-	existingRef.ID = ""
-	return existingRef, nil
 }
 
 func completeRepairHandoff(root string) (repair.ArtifactRef, runtime.Snapshot, error) {
@@ -870,7 +867,7 @@ func completeRepairHandoff(root string) (repair.ArtifactRef, runtime.Snapshot, e
 	}
 	pointer := repairPointerCLI(snapshot.State)
 	if registered := stringValue(pointer["handoff_ref"]); registered != "" {
-		ref := repair.ArtifactRef{Path: registered, SHA256: stringValue(pointer["handoff_sha256"])}
+		ref := repair.ArtifactRef{Path: registered}
 		data, readErr := os.ReadFile(resolveRootPath(root, registered))
 		var handoff repair.RepairHandoff
 		if readErr != nil || json.Unmarshal(data, &handoff) != nil {
@@ -890,11 +887,8 @@ func completeRepairHandoff(root string) (repair.ArtifactRef, runtime.Snapshot, e
 		if !errors.Is(err, os.ErrExist) {
 			return repair.ArtifactRef{}, snapshot, err
 		}
-		rel := filepath.ToSlash(filepath.Join(".claude", "review", "repair", "handoffs", request.HandoffID+".json"))
-		ref, err = artifactRef(root, rel, request.HandoffID)
-		if err != nil {
-			return repair.ArtifactRef{}, snapshot, err
-		}
+		rel := repair.ArtifactStoragePath("handoffs", request.HandoffID)
+		ref = repair.ArtifactRef{ID: request.HandoffID, Path: rel}
 		data, readErr := os.ReadFile(resolveRootPath(root, ref.Path))
 		if readErr != nil {
 			return repair.ArtifactRef{}, snapshot, readErr
@@ -919,9 +913,9 @@ func repairPointerCLI(state map[string]any) map[string]any {
 	return mapFieldCLI(mapFieldCLI(state, "review"), "repair")
 }
 
-func repairPointerRef(pointer map[string]any, pathKey, hashKey, label string) (repair.ArtifactRef, error) {
-	ref := repair.ArtifactRef{Path: stringValue(pointer[pathKey]), SHA256: stringValue(pointer[hashKey])}
-	if ref.Path == "" || ref.SHA256 == "" {
+func repairPointerRef(pointer map[string]any, pathKey, label string) (repair.ArtifactRef, error) {
+	ref := repair.ArtifactRef{Path: stringValue(pointer[pathKey])}
+	if ref.Path == "" {
 		return repair.ArtifactRef{}, fmt.Errorf("%s is missing from current Runtime", label)
 	}
 	return ref, nil
@@ -961,17 +955,18 @@ func runSavedRepairLeadQuestionnaire(root string, request policy.Input, stdout, 
 	}
 	pointer := repairPointerCLI(snapshot.State)
 	if expected, pathErr := repairLeadQuestionnairePath(root, snapshot.State, "change-impact.json"); pathErr == nil && samePath(path, expected) {
-		if stringValue(pointer["impact_ref"]) != "" {
-			ref := repair.ArtifactRef{Path: stringValue(pointer["impact_ref"]), SHA256: stringValue(pointer["impact_sha256"])}
-			err := repairLeadImpactReplay(root, path, ref)
-			if err != nil {
-				return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact replay conflict: "+err.Error()+"; preserve the registered artifact and use the original Main recovery. Runtime was not changed.")
-			}
-			return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact at "+stringValue(pointer["impact_ref"])+" is already registered. Replay did not write Runtime or register it again; wait for the independent verifier.")
+		if !mainQuestionnaireViewer(request) {
+			return false, 0 // Worker events do not receive Main's original answer.
 		}
-		if stringValue(pointer["status"]) == "impact_reconciliation" {
-			return saveRepairImpactQuestionnaire(root, snapshot, path, stdout)
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 ChangeImpact answer at %s could not be read: %v", path, readErr))
 		}
+		unchanged, observationErr := s9ObservedQuestionnaireUnchangedContext(contextForHook(request), root, snapshot.State, observedQuestionnaire{path: path, s9Kind: "impact"}, data)
+		if observationErr == nil && unchanged {
+			return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact is already received. Main continues its actual work and any registered successor; the same original answer remains available for later judgments.")
+		}
+		return saveRepairImpactQuestionnaireBytes(root, snapshot, path, data, stdout, contextForHook(request))
 	}
 	if mainQuestionnaireViewer(request) {
 		return false, 0 // Independent Targeted reception happens at its native Stop.
@@ -982,17 +977,30 @@ func runSavedRepairLeadQuestionnaire(root string, request policy.Input, stdout, 
 			if pathErr != nil || !samePath(path, expected) {
 				continue
 			}
-			if registered, ok := registeredTargetedForSelection(root, pointer, selection); ok {
-				if err := repairLeadTargetedReplay(root, path, registered); err != nil {
-					return true, repairLeadFeedback(stdout, path, "S9 TargetedReverification replay conflict: "+err.Error()+"; preserve the registered artifact and use the original recovery. Runtime was not changed.")
-				}
-				return true, repairLeadFeedback(stdout, path, "S9 TargetedReverification artifact "+registered.Path+" is already registered. Replay did not write Runtime again.")
+			receipt := lookupTargetedForSelection(root, pointer, selection, "pass")
+			if receipt.found {
+				return true, repairLeadFeedback(stdout, path, "S9 TargetedReverification artifact "+receipt.ref.Path+" is already registered. Replay did not write Runtime again.")
 			}
 			phase, phaseErr := currentRepairLeadPhase(root, snapshot.State)
-			if phaseErr != nil || phase != "targeted_reverification" {
+			if phaseErr != nil || (phase != "targeted_reverification" && phase != "ready_for_full_review") {
 				return false, 0
 			}
-			return saveRepairTargetedQuestionnaire(root, snapshot, path, selection, stdout)
+			answer, answerErr := readRepairTargetedAnswerContext(contextForHook(request), path, nil)
+			if answerErr != nil {
+				if receipt.unknown || receipt.previous.Path != "" {
+					return true, repairLeadFeedback(stdout, path, targetedHistoricalUnknownMessage(receipt))
+				}
+				return true, repairLeadFeedback(stdout, path, answerErr.Error())
+			}
+			if receipt.previousReport != nil && sameTargetedProfessionalAnswer(answer, receipt.previousReport) {
+				return true, repairLeadFeedback(stdout, path, targetedHistoricalUnknownMessage(receipt))
+			}
+			ctx := contextForHook(request)
+			if receipt.unknown {
+				ctx = context.WithValue(ctx, targetedAssociationUnknownKey{}, true)
+			}
+			handled, code, _ := saveRepairTargetedAnswerContext(ctx, root, snapshot, path, selection, answer, stdout)
+			return handled, code
 		}
 	}
 	return false, 0
@@ -1006,7 +1014,7 @@ func repairLeadImpactReplay(root, path string, ref repair.ArtifactRef) error {
 		return err
 	}
 	var answer repair.ChangeImpactRequest
-	if err := json.Unmarshal(data, &answer); err != nil {
+	if err := repair.DecodeOriginalChangeImpact(data, &answer); err != nil {
 		return err
 	}
 	registeredBytes, err := os.ReadFile(resolveRootPath(root, ref.Path))
@@ -1017,15 +1025,34 @@ func repairLeadImpactReplay(root, path string, ref repair.ArtifactRef) error {
 	if err := json.Unmarshal(registeredBytes, &registered); err != nil {
 		return err
 	}
-	professional := func(types []string, decisions []repair.ImpactDecision, escalation string, invalid, superseded, retained []string) any {
+	if !sameImpactProfessionalAnswer(answer, registered) {
+		return errors.New("saved professional content differs from the accepted content")
+	}
+	return nil
+}
+
+// Both the observer and receiver compare the same author-owned content after
+// the original consumer's defaults. Machine IDs and timestamps are excluded.
+func sameImpactProfessionalAnswer(answer repair.ChangeImpactRequest, registered repair.ChangeImpact) bool {
+	normalize := func(types []string, artifacts []repair.ArtifactRef, decisions []repair.ImpactDecision, escalation string, invalid, superseded, retained []string, notes string) any {
 		if escalation == "" {
-			escalation = "assignment" // Original CreateChangeImpact default.
+			escalation = "assignment"
 		}
-		return []any{repairLeadStringSet(types), decisions, escalation, repairLeadStringSet(invalid), repairLeadStringSet(superseded), repairLeadStringSet(retained)}
+		changed := append([]repair.ArtifactRef{}, artifacts...)
+		for i := range changed {
+			if changed[i].ID == "" {
+				changed[i].ID = "changed-" + strings.NewReplacer("/", "-", "\\", "-").Replace(changed[i].Path)
+			}
+		}
+		if len(decisions) == 0 {
+			decisions = []repair.ImpactDecision{}
+		}
+		return []any{repairLeadStringSet(types), changed, decisions, escalation, repairLeadStringSet(invalid), repairLeadStringSet(superseded), repairLeadStringSet(retained), notes}
 	}
 	return repairLeadCompareProfessional(
-		professional(answer.ChangeTypes, answer.Decisions, answer.EscalationLevel, answer.InvalidatedEvidenceIDs, answer.SupersededEvidenceIDs, answer.RetainedEvidenceIDs),
-		professional(registered.ChangeTypes, registered.Decisions, registered.EscalationLevel, registered.InvalidatedEvidenceIDs, registered.SupersededEvidenceIDs, registered.RetainedEvidenceIDs))
+		normalize(answer.ChangeTypes, answer.ChangedArtifacts, answer.Decisions, answer.EscalationLevel, answer.InvalidatedEvidenceIDs, answer.SupersededEvidenceIDs, answer.RetainedEvidenceIDs, answer.IntegrationNotes),
+		normalize(registered.ChangeTypes, registered.ChangedArtifacts, registered.Decisions, registered.EscalationLevel, registered.InvalidatedEvidenceIDs, registered.SupersededEvidenceIDs, registered.RetainedEvidenceIDs, registered.IntegrationNotes)) == nil
+
 }
 
 func repairLeadTargetedReplay(root, path string, ref repair.ArtifactRef) error {
@@ -1042,9 +1069,34 @@ func repairLeadTargetedReplay(root, path string, ref repair.ArtifactRef) error {
 	if err != nil {
 		return err
 	}
+	if !sameTargetedProfessionalAnswer(answer, &registered) {
+		return errors.New("saved professional content differs from the accepted content")
+	}
+	return nil
+}
+
+// Only compare the author's existing professional fields. Nil and empty
+// observation lists have the same meaning here; this comparison is used to
+// avoid replaying an unchanged old answer, never as an acceptance gate.
+func sameTargetedProfessionalAnswer(answer repair.TargetedReverificationRequest, registered *repair.TargetedReverification) bool {
+	if registered == nil {
+		return false
+	}
+	normalized := func(values []repair.AssertionResult) []repair.AssertionResult {
+		if len(values) == 0 {
+			return nil
+		}
+		out := append([]repair.AssertionResult(nil), values...)
+		for i := range out {
+			if len(out[i].EvidenceRefs) == 0 {
+				out[i].EvidenceRefs = nil
+			}
+		}
+		return out
+	}
 	return repairLeadCompareProfessional(
-		[]any{answer.ContinuityReason, answer.AssertionResults, answer.ScopeCompliance, answer.Result, answer.FailureClass},
-		[]any{registered.ContinuityReason, registered.AssertionResults, registered.ScopeCompliance, registered.Result, registered.FailureClass})
+		[]any{answer.ContinuityReason, normalized(answer.AssertionResults), answer.ScopeCompliance, answer.Result, answer.FailureClass},
+		[]any{registered.ContinuityReason, normalized(registered.AssertionResults), registered.ScopeCompliance, registered.Result, registered.FailureClass}) == nil
 }
 
 func repairLeadCompareProfessional(answer, registered any) error {
@@ -1065,7 +1117,7 @@ func repairLeadCompareProfessional(answer, registered any) error {
 func repairLeadStringSet(values []string) []string {
 	set := map[string]bool{}
 	for _, value := range values {
-		if value != "" {
+		if strings.TrimSpace(value) != "" {
 			set[value] = true
 		}
 	}
@@ -1077,94 +1129,212 @@ func repairLeadStringSet(values []string) []string {
 	return result
 }
 
-func registeredTargetedForSelection(root string, pointer map[string]any, selection repairTargetedSelection) (repair.ArtifactRef, bool) {
-	for _, ref := range repairArtifactRefs(pointer, "targeted_reverification_artifacts", "", "") {
-		var value repair.TargetedReverification
-		err := repairLeadIndexedSource(root, ref, &value)
-		if err == nil && value.Result == "pass" && value.ImpactID == selection.impact.ImpactID && value.OriginalAssignmentID == selection.originalAssignmentID && value.PerformingAssignmentID == selection.performingAssignmentID {
-			return ref, true
+// targetedReceiptLookup keeps an unresolved old receipt distinct from both a
+// known current conclusion and a genuinely absent receipt. In particular,
+// an unavailable historical report is not a reason to ask its author to
+// resubmit, or to claim its conclusion applies to a later Impact.
+type targetedReceiptLookup struct {
+	ref            repair.ArtifactRef
+	previous       repair.ArtifactRef
+	previousReport *repair.TargetedReverification
+	found          bool
+	unknown        bool
+}
+
+type targetedAssociationUnknownKey struct{}
+
+func targetedHistoricalUnknownMessage(receipt targetedReceiptLookup) string {
+	if receipt.previous.Path != "" {
+		return "An earlier Targeted conclusion remains accepted at " + receipt.previous.Path + "; it does not by itself establish coverage of later changes. Main handles the current responsibility using the actual facts; no repeated author save or Stop is required."
+	}
+	return "Earlier Targeted references remain accepted, but their original responsibility or conclusion cannot be determined from the available records. Main handles the actual uncertainty; the current author is not required to resubmit or repeat Stop."
+}
+
+func lookupTargetedForSelection(root string, pointer map[string]any, selection repairTargetedSelection, result string) targetedReceiptLookup {
+	// The initial, system-issued Impact identity is unique within a Session.
+	// Only after it changes do we need the old report's Impact association;
+	// this is not an author field or a qualification for accepting new work.
+	sessionID := stringValue(pointer["session_id"])
+	initialImpact := "impact-" + repairResponsibilityKey(sessionID)
+	legacyImpact := "impact-" + dispatchSlug(sessionID)
+	withImpact := selection.impact.ImpactID != "" && sessionID != "" && selection.impact.ImpactID != initialImpact && selection.impact.ImpactID != legacyImpact
+	rows := objectSliceAny(pointer["targeted_reverification_artifacts"])
+	if !withImpact {
+		for i := len(rows) - 1; i >= 0; i-- {
+			row := rows[i]
+			if stringValue(row["performing_assignment_id"]) != selection.performingAssignmentID {
+				continue
+			}
+			if stringValue(row["result"]) == "" {
+				break // An old row requires the original domain fact below.
+			}
+			return targetedReceiptLookup{ref: repair.ArtifactRef{Path: stringValue(row["path"])}, found: stringValue(row["result"]) == result}
 		}
 	}
-	return repair.ArtifactRef{}, false
+	facts, err := repair.LoadTargetedReceiptFacts(context.Background(), root, pointer, selection.performingAssignmentID, withImpact)
+	if err != nil {
+		return targetedReceiptLookup{unknown: true}
+	}
+	unknown := len(facts.Unknown) > 0
+	var previous repair.ArtifactRef
+	var previousReport *repair.TargetedReverification
+	for i := len(facts.Rows) - 1; i >= 0; i-- {
+		fact := facts.Rows[i]
+		if withImpact {
+			if fact.ImpactID == "" {
+				unknown = true
+				continue
+			}
+			if fact.ImpactID != selection.impact.ImpactID {
+				if previous.Path == "" && fact.Result == result {
+					previous = fact.Ref
+					previousReport = fact.Original
+				}
+				continue // Preserve old result without claiming it covers this Impact.
+			}
+		}
+		return targetedReceiptLookup{ref: fact.Ref, previous: previous, previousReport: previousReport, found: fact.Result == result, unknown: unknown}
+	}
+	return targetedReceiptLookup{previous: previous, previousReport: previousReport, unknown: unknown}
+}
+
+func registeredTargetedForSelection(root string, pointer map[string]any, selection repairTargetedSelection) (repair.ArtifactRef, bool) {
+	receipt := lookupTargetedForSelection(root, pointer, selection, "pass")
+	return receipt.ref, receipt.found
 }
 
 // Recover only the original system timestamp after artifact creation was
 // interrupted before Commit. The original Create consumer still compares the
 // complete immutable bytes; reading this value never accepts changed content.
-func repairLeadArtifactTime(root, relative, field string, fallback time.Time) (time.Time, error) {
-	data, err := workpacket.ReadFile(root, filepath.ToSlash(relative), 20<<20)
-	if os.IsNotExist(err) {
-		return fallback, nil
-	}
-	if err != nil {
-		return time.Time{}, err
-	}
-	if err := workpacket.ValidateUniqueJSON(data); err != nil {
-		return time.Time{}, err
-	}
-	var original map[string]json.RawMessage
-	if err := json.Unmarshal(data, &original); err != nil {
-		return time.Time{}, err
-	}
-	var recorded time.Time
-	if err := json.Unmarshal(original[field], &recorded); err != nil || recorded.IsZero() {
-		return time.Time{}, fmt.Errorf("%s has no valid original %s", relative, field)
-	}
-	return recorded, nil
-}
-
 func saveRepairImpactQuestionnaire(root string, snapshot runtime.Snapshot, path string, stdout io.Writer) (bool, int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 ChangeImpact answer at %s could not be read: %v", path, err))
 	}
-	var answer repair.ChangeImpactRequest
-	if err := json.Unmarshal(data, &answer); err != nil {
-		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 ChangeImpact answer at %s is not a valid original request DTO: %v", path, err))
+	return saveRepairImpactQuestionnaireBytes(root, snapshot, path, data, stdout)
+}
+
+// saveRepairImpactQuestionnaireBytes shares the current event's single read
+// with the original Create/Commit consumers. It does not reconstruct other
+// authors' contributions or independently qualify Main's professional work.
+func saveRepairImpactQuestionnaireBytes(root string, snapshot runtime.Snapshot, path string, data []byte, stdout io.Writer, contexts ...context.Context) (bool, int) {
+	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
 	}
-	if len(answer.Decisions) == 0 {
-		return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact answer at "+path+" is incomplete: use the original flat request DTO with change_types and decisions at the top level, not an answer wrapper or a replacement questionnaire. Record professional dispositions and their actual rationales; record change types when the supplied Final artifacts actually changed. This unreceived authoring draft is corrected at the same exact path; fresh IDs/files apply to immutable registered artifacts, not this draft.")
+	// Preserve the original responsibility across retries. A later repair may
+	// occupy the same Runtime while this event is awaiting its Writer CAS.
+	originalRuntime := stringValue(snapshot.State["runtime_id"])
+	originalPointer := repairPointerCLI(snapshot.State)
+	originalSession := stringValue(originalPointer["session_id"])
+	originalCase := stringValue(originalPointer["case_id"])
+	originalPath := path
+	var committed runtime.Snapshot
+	var ref repair.ArtifactRef
+	var commitErr error
+	statePath := filepath.Join(root, ".claude", "loop-state.json")
+	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
+	for attempt := 0; attempt < 4; attempt++ {
+		if ctx.Err() != nil {
+			commitErr = ctx.Err()
+			break
+		}
+		if attempt > 0 {
+			var err error
+			snapshot, err = runtime.NewStore(statePath, journalPath).WithContext(ctx).Snapshot()
+			if err != nil {
+				commitErr = err
+				break
+			}
+			currentPointer := repairPointerCLI(snapshot.State)
+			currentPath, pathErr := repairLeadQuestionnairePath(root, snapshot.State, "change-impact.json")
+			if originalSession == "" || originalCase == "" ||
+				stringValue(snapshot.State["runtime_id"]) != originalRuntime ||
+				stringValue(currentPointer["session_id"]) != originalSession ||
+				stringValue(currentPointer["case_id"]) != originalCase ||
+				pathErr != nil || !samePath(originalPath, currentPath) {
+				commitErr = fmt.Errorf("the original S9 Impact responsibility changed while coordinating this event; Main/system must continue its original Session %s, Case %s and answer %s", originalSession, originalCase, originalPath)
+				break
+			}
+			data, err = os.ReadFile(path)
+			if err != nil {
+				commitErr = err
+				break
+			}
+			unchanged, err := s9ObservedQuestionnaireUnchangedContext(ctx, root, snapshot.State, observedQuestionnaire{path: path, s9Kind: "impact"}, data)
+			if err != nil {
+				commitErr = err
+				break
+			}
+			if unchanged {
+				message := "S9 ChangeImpact is already received."
+				if lifecycleState(snapshot.State) == "bug_resolution" && stringValue(currentPointer["status"]) == "targeted_reverification" {
+					if err := ctx.Err(); err != nil {
+						message += " The original independent-verification successor remains pending: " + err.Error()
+					} else {
+						// The earlier native route may have observed the snapshot before
+						// the concurrent Impact was accepted. Continue this original
+						// successor now; completed verifier receipts are skipped.
+						var diagnostic strings.Builder
+						continueRegisteredS9Verification(root, snapshot.State, &diagnostic)
+						if detail := strings.TrimSpace(diagnostic.String()); detail != "" {
+							message += " The original independent-verification successor needs Main/system attention: " + detail
+						}
+					}
+				}
+				return true, repairLeadFeedback(stdout, path, message)
+			}
+		}
+		var answer repair.ChangeImpactRequest
+		if err := repair.DecodeOriginalChangeImpact(data, &answer); err != nil {
+			return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 ChangeImpact answer at %s is not a valid original request DTO: %v", path, err))
+		}
+		pointer := repairPointerCLI(snapshot.State)
+		sessionID := stringValue(pointer["session_id"])
+		if sessionID == "" {
+			return true, repairLeadFeedback(stdout, path, "current repair responsibility has no Session")
+		}
+		reverificationIDs, err := repairImpactReverificationIDs(snapshot.State)
+		if err != nil {
+			return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact answer could not derive the Contract reverification obligation from the current RepairSession: "+err.Error())
+		}
+		boundReq := mapFieldCLI(snapshot.State, "bound_req")
+		answer.ImpactID = "impact-" + repairResponsibilityKey(sessionID)
+		if stringValue(pointer["impact_ref"]) != "" {
+			answer.ImpactID += fmt.Sprintf("-r%d", snapshot.Revision+1)
+		}
+		answer.RuntimeID = stringValue(snapshot.State["runtime_id"])
+		answer.ReqID = stringValue(boundReq["id"])
+		answer.BaselineGeneration = integerValue(mapFieldCLI(snapshot.State, "baseline")["generation"])
+		answer.SourceBugIDs = []string{}
+		answer.SourceCaseIDs = []string{stringValue(pointer["case_id"])}
+		answer.RequiredReverificationIDs = reverificationIDs
+		answer.AnalyzedBy = "Main"
+		answer.AnalyzedAt = time.Now().UTC()
+		var record repair.ChangeImpact
+		record, ref, err = repair.CreateChangeImpact(root, answer)
+		if err != nil {
+			commitErr = err
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			break
+		}
+		committed, err = repair.CommitChangeImpact(root, statePath, journalPath, repair.CommitImpactRequest{RuntimeRequest: repair.RuntimeRequest{Context: ctx, ExpectedRevision: snapshot.Revision, Actor: "Main"}, Impact: ref, Record: &record})
+		if err == nil {
+			commitErr = nil
+			break
+		}
+		commitErr = err
+		if !errors.Is(err, runtime.ErrStaleRevision) {
+			break
+		}
 	}
-	pointer := repairPointerCLI(snapshot.State)
-	sessionID := stringValue(pointer["session_id"])
-	if sessionID == "" {
-		return true, repairLeadFeedback(stdout, path, "current repair responsibility has no Session")
+	if commitErr != nil {
+		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 ChangeImpact reception remains pending after a system write/coordination failure: %v. Preserve the original answer and any already received facts; Main/system continues the original reception.", commitErr))
 	}
-	changeset, err := repair.CurrentRepairResultChangeset(root, snapshot.State)
-	if err != nil {
-		return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact answer could not read the accepted Final Result changeset: "+err.Error())
-	}
-	if len(changeset.Artifacts) > 0 && len(answer.ChangeTypes) == 0 {
-		return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact is incomplete: record the actual change_types for the supplied accepted Final artifacts at "+path)
-	}
-	reverificationIDs, err := repairImpactReverificationIDs(snapshot.State)
-	if err != nil {
-		return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact answer could not derive the Contract reverification obligation from the current RepairSession: "+err.Error())
-	}
-	boundReq := mapFieldCLI(snapshot.State, "bound_req")
-	answer.ImpactID = "impact-" + dispatchSlug(sessionID)
-	answer.RuntimeID = stringValue(snapshot.State["runtime_id"])
-	answer.ReqID = stringValue(boundReq["id"])
-	answer.BaselineGeneration = integerValue(mapFieldCLI(snapshot.State, "baseline")["generation"])
-	answer.SourceBugIDs = []string{}
-	answer.SourceCaseIDs = []string{stringValue(pointer["case_id"])}
-	answer.ChangedArtifacts = changeset.Artifacts
-	answer.RequiredReverificationIDs = reverificationIDs
-	answer.AnalyzedBy = "Main"
-	answer.AnalyzedAt, err = repairLeadArtifactTime(root, filepath.Join(".claude/review/repair/change-impact", answer.ImpactID+".json"), "analyzed_at", time.Now().UTC())
-	if err != nil {
-		return true, repairLeadFeedback(stdout, path, "S9 ChangeImpact original artifact time is unavailable; preserve its immutable source: "+err.Error())
-	}
-	if err := persistRepairLeadQuestionnaire(path, answer); err != nil {
-		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 ChangeImpact answer at %s could not persist its original DTO: %v", path, err))
-	}
-	_, ref, err := repair.CreateChangeImpact(root, answer)
-	if err != nil {
-		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 ChangeImpact request at %s did not create the original artifact: %v", path, err))
-	}
-	committed, err := repair.CommitChangeImpact(root, filepath.Join(root, ".claude", "loop-state.json"), filepath.Join(root, ".claude", "loop-events.jsonl"), repair.CommitImpactRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: -1, Actor: "Main"}, Impact: ref})
-	if err != nil {
-		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 ChangeImpact artifact %s was created but the original Runtime consumer did not commit it: %v. Preserve this immutable artifact and follow the named repair source.", ref.Path, err))
+	if stringValue(repairPointerCLI(committed.State)["status"]) != "targeted_reverification" {
+		return true, repairLeadFeedback(stdout, path, "S9 original ChangeImpact is recorded. Main handles any actual later contribution or outstanding responsibility using the existing accepted facts.")
 	}
 	selections, err := repairTargetedSelections(root, committed.State)
 	if err != nil {
@@ -1208,6 +1378,9 @@ func readRepairTargetedAnswerContext(ctx context.Context, path string, capture *
 		if capture != nil {
 			capture.ObserveInputError(path, err)
 		}
+		if os.IsNotExist(err) {
+			return answer, nativeS9ProgressPending
+		}
 		return answer, nativeArtifactReadError("read S9 TargetedReverification answer "+path, err)
 	}
 	if capture != nil {
@@ -1215,12 +1388,16 @@ func readRepairTargetedAnswerContext(ctx context.Context, path string, capture *
 		capture.ObserveInput(path, data)
 		capture.SetStage("targeted_request_read")
 	}
+	if !json.Valid(data) {
+		return answer, nativeS9ProgressPending
+	}
 	if err := json.Unmarshal(data, &answer); err != nil {
 		return answer, &nativeAuthorError{fmt.Errorf("S9 TargetedReverification answer at %s is not a valid original request DTO: %w", path, err)}
 	}
 	if strings.TrimSpace(answer.Result) == "" {
-		return answer, &nativeAuthorError{fmt.Errorf("S9 TargetedReverification answer at %s must record the actual independent verdict and assertion observations before automatic reception; ordinary saves can retain unfinished work", path)}
+		return answer, nativeS9ProgressPending
 	}
+
 	return answer, nil
 }
 
@@ -1230,21 +1407,6 @@ func saveRepairTargetedAnswer(root string, snapshot runtime.Snapshot, path strin
 }
 
 func saveRepairTargetedAnswerContext(ctx context.Context, root string, snapshot runtime.Snapshot, path string, selection repairTargetedSelection, answer repair.TargetedReverificationRequest, stdout io.Writer, captures ...*nativeS9AttemptCapture) (bool, int, error) {
-	if strings.Contains(filepath.ToSlash(path), "/.loop-submissions/s9/") {
-		normal, sourceErr := repair.UsesSharedTargetedAuthoring(root, snapshot.State, selection.originalAssignmentID, selection.performingAssignmentID, selection.verifierOwner, ctx)
-		if sourceErr != nil {
-			return true, repairLeadFeedback(stdout, path, sourceErr.Error()), sourceErr
-		}
-		if !normal {
-			sourceErr = fmt.Errorf("Targeted ordinary original has no verified normal source contract")
-			return true, repairLeadFeedback(stdout, path, sourceErr.Error()), sourceErr
-		}
-	}
-	if rel, relErr := filepath.Rel(root, path); relErr == nil && strings.HasPrefix(filepath.ToSlash(rel), ".loop-submissions/s9/") {
-		if err := targetedauthoring.CheckNormalOriginal(ctx, root, filepath.ToSlash(rel)); err != nil {
-			return true, repairLeadFeedback(stdout, path, err.Error()), err
-		}
-	}
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
 	var err error
@@ -1252,15 +1414,26 @@ func saveRepairTargetedAnswerContext(ctx context.Context, root string, snapshot 
 	pointer := repairPointerCLI(snapshot.State)
 	blockedResume := stringValue(pointer["status"]) == "blocked" && stringValue(pointer["failure_route"]) == "blocked"
 	if blockedResume && answer.Result == "blocked" {
-		if registered, ok := registeredBlockedTargetedForSelection(root, pointer, selection); ok {
-			if err := repairLeadTargetedReplay(root, path, registered); err != nil {
-				return true, repairLeadFeedback(stdout, path, "Targeted same-attempt replay conflict: "+err.Error()), nil
+		facts, lookupErr := repair.LoadTargetedReceiptFacts(ctx, root, pointer, selection.performingAssignmentID, true)
+		if lookupErr != nil {
+			return true, repairLeadFeedback(stdout, path, "S9 Targeted historical observation could not be inspected: "+lookupErr.Error()), lookupErr
+		}
+		for i := len(facts.Rows) - 1; i >= 0; i-- {
+			fact := facts.Rows[i]
+			if fact.Result != "blocked" {
+				break
 			}
-			if capture := nativeS9Capture(captures); capture != nil {
-				capture.ConsumerSucceeded()
-				capture.SetStage("targeted_received")
+			if fact.Original != nil && sameTargetedProfessionalAnswer(answer, fact.Original) {
+				if capture := nativeS9Capture(captures); capture != nil {
+					capture.ConsumerSucceeded()
+					capture.SetStage("targeted_received")
+				}
+				return true, repairLeadFeedback(stdout, path, "S9 environmental blocker remains recorded by "+fact.Ref.Path+"; its unchanged original answer is already received. Main continues the actual unfinished work without another save or Stop."), nil
 			}
-			return true, repairLeadFeedback(stdout, path, "S9 environmental blocker is already recorded by "+registered.Path+". Resolve it, then update the same TargetedReverification questionnaire with the actual assertion observations, results, evidence and any unfinished-work reason; Runtime was not changed."), nil
+			break // A changed original blocked answer is a new truthful handoff.
+		}
+		if len(facts.Unknown) != 0 {
+			ctx = context.WithValue(ctx, targetedAssociationUnknownKey{}, true)
 		}
 	}
 	answer.RuntimeID = stringValue(snapshot.State["runtime_id"])
@@ -1269,55 +1442,35 @@ func saveRepairTargetedAnswerContext(ctx context.Context, root string, snapshot 
 	answer.BaselineGeneration = integerValue(mapFieldCLI(snapshot.State, "baseline")["generation"])
 	answer.OriginalAssignmentID = selection.originalAssignmentID
 	answer.PerformingAssignmentID = selection.performingAssignmentID
-	answer.ImpactID = selection.impact.ImpactID
-	answer.ReverificationID, err = repairTargetedIDForSelection(selection, nil, nil)
+	// Keep the association originally supplied on this answer. An empty
+	// association remains unknown; the current Impact is not proof that the
+	// author observed later changes.
+	idSelection := selection
+	idSelection.impact.ImpactID = answer.ImpactID
+	answer.ReverificationID, err = repairTargetedIDForSelection(idSelection, nil, nil)
 	if err != nil {
 		return true, repairLeadFeedback(stdout, path, err.Error()), nil
+	}
+	candidatePath := repair.ArtifactStoragePath("reverification", answer.ReverificationID)
+	for _, accepted := range repairArtifactRefs(pointer, "targeted_reverification_artifacts", "") {
+		if accepted.Path == candidatePath {
+			// Only a genuinely new handoff reaches here; its immutable source
+			// must not replace an earlier accepted source with the same ID.
+			answer.ReverificationID += fmt.Sprintf("-r%d", snapshot.Revision+1)
+			break
+		}
 	}
 	// The author reports observations, not a timestamp. Record reception
 	// here; an uncommitted artifact retains its original system time.
 	answer.PerformedAt = time.Now().UTC()
+	// A new honest answer after a blocker is received directly. It does not
+	// assert that the prior blocker was resolved or require a reason/resume.
 	currentSnapshot := snapshot
-	currentPointer := repairPointerCLI(currentSnapshot.State)
-	if blockedResume {
-		resumed, resumeErr := repair.ResumeTargetedReverification(root, statePath, journalPath, repair.ResumeTargetedRequest{
-			RuntimeRequest: repair.RuntimeRequest{Context: ctx, ExpectedRevision: currentSnapshot.Revision, Actor: selection.verifierOwner, OccurredAt: answer.PerformedAt},
-			Reason:         answer.ContinuityReason,
-		})
-		if resumeErr != nil {
-			return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 recorded environmental blocker at %s could not be resumed through the original Runtime consumer: %v", path, resumeErr)), nil
-		}
-		currentSnapshot = resumed
-		currentPointer = repairPointerCLI(currentSnapshot.State)
-	}
-	var resolvedAt time.Time
-	artifactPath := filepath.Join(".claude/review/repair/reverification", answer.ReverificationID+".json")
-	if resolvedAtText := stringValue(currentPointer["blocker_resolved_at"]); resolvedAtText != "" {
-		resolvedAt, err = time.Parse(time.RFC3339Nano, resolvedAtText)
-		if err != nil {
-			return true, repairLeadFeedback(stdout, path, "S9 Runtime blocker_resolved_at is invalid; preserve the original Runtime source for reconciliation: "+err.Error()), nil
-		}
-		artifactPath = filepath.Join(".claude/review/repair/reverification", answer.ReverificationID+"-resume-"+resolvedAt.UTC().Format("20060102T150405.000000000Z")+".json")
-	}
-	answer.PerformedAt, err = repairLeadArtifactTime(root, artifactPath, "performed_at", answer.PerformedAt)
-	if err != nil {
-		return true, repairLeadFeedback(stdout, path, "S9 TargetedReverification original artifact time is unavailable; preserve its immutable source: "+err.Error()), nil
-	}
-	if err := persistRepairLeadQuestionnaire(path, answer); err != nil {
-		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 TargetedReverification answer at %s could not persist its original DTO: %v", path, err)), nil
-	}
-	var value repair.TargetedReverification
-	var ref repair.ArtifactRef
-	var createErr error
-	if !resolvedAt.IsZero() {
-		value, ref, createErr = repair.CreateTargetedReverificationForResume(root, answer, resolvedAt)
-	} else {
-		value, ref, createErr = repair.CreateTargetedReverification(root, answer)
-	}
+	value, ref, createErr := repair.CreateTargetedReverification(root, answer)
 	if createErr != nil {
 		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 TargetedReverification request at %s did not create the original artifact: %v", path, createErr)), nil
 	}
-	committed, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{Context: ctx, ExpectedRevision: currentSnapshot.Revision, Actor: selection.verifierOwner}, Reverification: ref})
+	committed, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{Context: ctx, ExpectedRevision: currentSnapshot.Revision, Actor: selection.verifierOwner}, Reverification: ref, Record: &value})
 	if err != nil {
 		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 independent TargetedReverification %s at %s was created but original Runtime consumer did not commit it: %v. Preserve its immutable source and follow the specific consumer feedback.", value.ReverificationID, ref.Path, err)), nil
 	}
@@ -1327,6 +1480,12 @@ func saveRepairTargetedAnswerContext(ctx context.Context, root string, snapshot 
 	}
 	var exitFailure error
 	message := fmt.Sprintf("S9 independent TargetedReverification %s at %s was committed through the original Runtime Writer.", value.ReverificationID, ref.Path)
+	if stringValue(repairPointerCLI(committed.State)["status"]) == "closed" {
+		message += " This late original conclusion remains associated with its original repair; Main assesses its actual effect on current work."
+	}
+	if unknown, _ := ctx.Value(targetedAssociationUnknownKey{}).(bool); unknown || value.ImpactID == "" {
+		message += " Earlier accepted facts are preserved; the original Impact association is unknown and Main should assess it. No additional author save or Stop is required."
+	}
 	if stringValue(repairPointerCLI(committed.State)["status"]) == "ready_for_full_review" {
 		exitMessage, completionErr := completeRepairExit(root)
 		if completionErr != nil {
@@ -1338,15 +1497,8 @@ func saveRepairTargetedAnswerContext(ctx context.Context, root string, snapshot 
 }
 
 func registeredBlockedTargetedForSelection(root string, pointer map[string]any, selection repairTargetedSelection) (repair.ArtifactRef, bool) {
-	var latest repair.ArtifactRef
-	for _, ref := range repairArtifactRefs(pointer, "targeted_reverification_artifacts", "", "") {
-		var value repair.TargetedReverification
-		err := repairLeadIndexedSource(root, ref, &value)
-		if err == nil && value.Result == "blocked" && value.FailureClass == "blocked" && value.ImpactID == selection.impact.ImpactID && value.OriginalAssignmentID == selection.originalAssignmentID && value.PerformingAssignmentID == selection.performingAssignmentID {
-			latest = ref
-		}
-	}
-	return latest, latest.Path != ""
+	receipt := lookupTargetedForSelection(root, pointer, selection, "blocked")
+	return receipt.ref, receipt.found
 }
 
 func repairLeadFeedback(stdout io.Writer, path, message string) int {

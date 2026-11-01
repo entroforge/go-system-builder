@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,7 +31,7 @@ type ProgressFacts struct {
 	Running       bool
 	Complete      bool
 	Known         bool
-	Sources       map[string]string // canonical absolute source -> actual digest
+	Sources       map[string]string // known current responsibility source paths
 }
 
 type ProgressEvent struct {
@@ -42,7 +41,7 @@ type ProgressEvent struct {
 }
 
 type ProgressRead struct {
-	Path, Digest, Range string
+	Path, Range string
 }
 
 type ProgressNotice struct {
@@ -74,8 +73,6 @@ type progressRecord struct {
 	Actions          []string        `json:"actions"`
 }
 
-func progressHash(data string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(data))) }
-
 func progressAction(action string) bool {
 	switch action {
 	case "Read", "status", "Glob", "Grep", "Write", "Edit", "MultiEdit", "submission":
@@ -95,8 +92,12 @@ func observeWorkProgress(root string, facts ProgressFacts, event ProgressEvent, 
 	if facts.Binding == "" || facts.Owner == "" || facts.Session == "" || !facts.Known {
 		return nil, false, false, nil
 	}
-	key := progressHash(facts.Owner + "\x00" + facts.Session)
-	ref := ".claude/hook-notices/work-progress/" + key + ".json"
+	absolute := diagnosticCachePath(root, "hook-notices/work-progress", facts.Owner, facts.Session) + ".json"
+	ref, err := filepath.Rel(root, absolute)
+	if err != nil {
+		return nil, false, false, err
+	}
+	ref = filepath.ToSlash(ref)
 	parent, name, err := workpacket.OpenParent(root, ref, true)
 	if err != nil {
 		return nil, false, false, err
@@ -135,7 +136,10 @@ func observeWorkProgress(root string, facts ProgressFacts, event ProgressEvent, 
 		return nil, false, false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	binding, semantic, gap := progressHash(facts.Binding), progressHash(facts.Semantic), progressHash(facts.Gap)
+	binding, semantic, gap := facts.Binding, facts.Semantic, facts.Gap
+	if len(binding)+len(semantic)+len(gap) > 32<<10 {
+		return nil, false, false, nil
+	}
 	changed := r.Version == 0 || r.Binding != binding || r.Semantic != semantic || r.Gap != gap
 	factsChanged := changed
 	if changed {
@@ -144,10 +148,11 @@ func observeWorkProgress(root string, facts ProgressFacts, event ProgressEvent, 
 	known := event.Known && progressAction(event.Action)
 	if event.Read != nil {
 		read := event.Read
-		if facts.Sources[read.Path] != read.Digest || read.Digest == "" || read.Range == "" {
+		if facts.Sources[read.Path] == "" || read.Range == "" {
 			known = false
 		} else {
-			key := progressHash(read.Path + "\x00" + read.Digest + "\x00" + read.Range)
+			keyData, _ := json.Marshal([]string{read.Path, read.Range})
+			key := string(keyData)
 			if !r.Reads[key] {
 				if len(r.Reads) == 64 {
 					r.Saturated = true

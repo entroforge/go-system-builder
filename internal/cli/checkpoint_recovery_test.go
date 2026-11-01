@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	"github.com/entroforge/go-system-builder/internal/policy"
@@ -32,7 +30,6 @@ func TestActivatedCheckpointRecoveryRejectsTamperingAndWrongAssignment(t *testin
 	for _, k := range []string{"runtime_id", "agent_id", "task_id", "team_id"} {
 		activation[k] = plan[k]
 	}
-	activation["approved_readback_sha256"] = fmt.Sprintf("%x", sha256.Sum256(planBytes))
 	activation["approved_readback_message_id"] = plan["message_id"]
 	activationPath := writePlanCheckpointJSON(t, root, "activation.json", activation)
 	rows := snapshot.State["entities"].(map[string]any)["agents"].([]any)

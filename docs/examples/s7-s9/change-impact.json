@@ -9,8 +9,7 @@
   "changed_artifacts": [
     {
       "id": "changed-internal-example-handler-go",
-      "path": "internal/example/handler.go",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "path": "internal/example/handler.go"
     }
   ],
   "decisions": [

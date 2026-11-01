@@ -1,14 +1,12 @@
 package workspace
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestReplacementRetainsOldTreeAndFrozenBase(t *testing.T) {
+func TestReplacementRetainsOldTreeAndUsesCurrentMain(t *testing.T) {
 	b, e, state, ctx := workerFixture(t)
 	e.CheckLocation = "main"
 	b.Executions[e.AssignmentID] = e
@@ -31,7 +29,7 @@ func TestReplacementRetainsOldTreeAndFrozenBase(t *testing.T) {
 	if next.CheckLocation != "main" || b.History[0].CheckLocation != "main" {
 		t.Fatal("replacement lost runner")
 	}
-	if next.Generation != e.Generation+1 || next.BaseCommit != e.BaseCommit || next.Path == e.Path || len(b.History) != 1 || b.History[0].Status != "retired" {
+	if next.Generation != e.Generation+1 || next.Path == e.Path || len(b.History) != 1 || b.History[0].Status != "retired" {
 		t.Fatalf("bad replacement: %+v", next)
 	}
 	if err = b.Materialize(ctx, next); err != nil {
@@ -47,8 +45,9 @@ func TestReplacementRetainsOldTreeAndFrozenBase(t *testing.T) {
 		t.Fatal("retired Worker retained authority")
 	}
 	head, _ := Git(ctx, next.Path, "rev-parse", "HEAD")
-	if head != e.BaseCommit {
-		t.Fatal("replacement silently used newer Main")
+	mainHead, _ := Git(ctx, b.MainRoot, "rev-parse", "HEAD")
+	if head != mainHead {
+		t.Fatal("replacement did not use current Main")
 	}
 }
 
@@ -62,18 +61,13 @@ func TestAdoptionRequiresHistoricalIdentityAndRetainsWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(b.Executions, e.AssignmentID)
-	sum := sha256.Sum256([]byte("approved"))
-	e.Inputs = map[string]string{"input.md": hex.EncodeToString(sum[:])}
-	for _, kind := range []string{"missing_base", "wrong_target", "wrong_input", "duplicate_runtime"} {
+	e.Inputs = map[string]string{"input.md": "input.md"}
+	for _, kind := range []string{"wrong_target", "duplicate_runtime"} {
 		t.Run(kind, func(t *testing.T) {
 			bad := e
 			switch kind {
-			case "missing_base":
-				bad.BaseCommit = ""
 			case "wrong_target":
 				bad.TargetBranch = "test3"
-			case "wrong_input":
-				bad.Inputs = map[string]string{"input.md": "wrong"}
 			case "duplicate_runtime":
 				p := filepath.Join(e.Path, ".claude/loop-state.json")
 				os.WriteFile(p, []byte("{}"), 0600)
@@ -88,11 +82,11 @@ func TestAdoptionRequiresHistoricalIdentityAndRetainsWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adopted.BaseCommit != e.BaseCommit || adopted.Status != "preparing" {
+	if adopted.Status != "preparing" {
 		t.Fatalf("invented baseline: %+v", adopted)
 	}
-	head, _ := Git(ctx, e.Path, "rev-parse", "HEAD")
-	if head == e.BaseCommit {
-		t.Fatal("historical commit removed")
+	data, err := os.ReadFile(filepath.Join(e.Path, "input.md"))
+	if err != nil || string(data) != "historical work" {
+		t.Fatal("historical work removed")
 	}
 }

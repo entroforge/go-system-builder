@@ -2,27 +2,25 @@
 
 > Status: draft / pass / finding / req_change_required / release_blocked / invalidated (原 ReviewResult 专业结论的可读投影)
 > Runtime ref: `{runtime-id}`
-> Review round: {n}
 > Workgroup manifest: `{team-manifest-path}`
 > Assignment: `{assignment-id}`
 > Responsibility: E2E-USER-FLOW / E2E-CONSOLE-NETWORK
 > Agent: `{agent-id}`
-> Workspace (cold_start only): `e2e-workspace/{plan-id}/` — `verification_artifact_digest` 由原接收器从真实执行来源绑定与校验，作者不计算或抄写
+> Workspace (when applicable): `e2e-workspace/{plan-id}/`
 
-本 Markdown 是已完成专业工作的可读投影，不要求再交一份报告。正常原生 S7 读取原题，只填写本人 `answer`，保存并返回准确引用，由 `SubagentStop` 调原消费者接收；不增加通用 PLAN／激活。Runtime、轮次、责任与摘要等已知信息由系统投影。
+本 Markdown 是已完成专业工作的可读投影，不要求再交一份报告。正常原生 S7 读取原题，填写并保存本人 `answer`；自然工具事件和 Stop 兜底交原消费者接收，不增加通用 PLAN／激活或摘要证明。
 
 ## 1. Header
 
-Module current-truth package + source REQ refs + review round + Runtime identity + module spec path.
+Module current-truth package, source REQ references, Runtime identity and module spec path.
 
 | Field | Value |
 |:---|:---|
 | module | {module} |
 | source REQ refs | REQ-{id} / none |
-| review round | {n} |
 | runtime ref | `{runtime-id}` |
 | current scenario package | `docs/design/prototypes/{module}/` · 原卷固定来源 |
-| spec chain | current module spec `web/e2e/{module}/` / 原契约与 TASK 引用；指纹由系统绑定 |
+| spec chain | current module spec `web/e2e/{module}/` / 原契约与 TASK 引用 |
 
 ## 2. Stack-State Table
 
@@ -112,9 +110,8 @@ can consume it without re-running the flow.
 
 | Field | Value |
 |:---|:---|
-| module package fingerprint | `{sha256}` |
-| review round | {n} |
-| app fingerprint | `{sha256/commit}` |
+| module package | `{actual module path}` |
+| app and environment | `{actual version or evidence reference, if available}` |
 | supersedes | `{evidence-id}` / none |
 | invalidated by | `{impact-id}` / none |
 
@@ -169,7 +166,7 @@ ls docs/reports/e2e/screenshots/*.png
 pass / finding / req_change_required / release_blocked
 ```
 
-本人将实际逐命题判断、检查、Finding 和 verdict 写入原卷，返回准确引用。`subject_digest` 与 `verification_artifact_digest` 由原题目／接收器承接，作者保留预填或 null，不运行摘要命令补字段。本地证据只选择实际路径；原捕获／接收机制固定机器元数据，执行后真正修改脚本或夹具仍须重做受影响流程。
+本人将实际逐命题判断、检查、Finding 和 verdict 写入原卷并保存。本地证据使用实际路径、命令或观察，不需要计算、登记或校验摘要。执行后真正修改脚本或夹具时，按实际影响判断必要的后续验证。
 
 Findings are symptoms. They enter S8 finding investigation before any repair
 Builder is activated.

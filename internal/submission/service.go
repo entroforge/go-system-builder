@@ -3,11 +3,11 @@
 package submission
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -133,12 +133,40 @@ func (s *Service) IssueContext(ctx context.Context, owner string) ([]workpacket.
 			if err != nil {
 				return nil, err
 			}
-
-			packets[i] = p
+			// Choose both authoring paths before the original Writer records
+			// them. Unknown occupants are preserved, never identified from
+			// their filename or contents.
+			if _, declared, err := workspace.ReviewExecution(snapshot.State, p); err != nil || !declared {
+				p, err = s.reserveS5Answer(p)
+				if err != nil {
+					return nil, err
+				}
+			}
+			p, err = s.reserveS5View(p)
+			if err != nil {
+				return nil, err
+			}
 		}
-		if _, err := runtime.RecordWorkPacketContext(ctx, s.Root, s.StatePath, s.JournalPath, p, s.Files, s.Validator); err != nil {
-			return nil, err
+		recorded, recordErr := runtime.RecordWorkPacketContext(ctx, s.Root, s.StatePath, s.JournalPath, p, s.Files, s.Validator)
+		if recordErr != nil {
+			// Two issuers can prepare independent candidates. Only the
+			// actual Runtime winner identifies the issued responsibility.
+			latest, err := s.snapshot()
+			if err != nil {
+				return nil, recordErr
+			}
+			prior, found, err := runtime.FindWorkPacket(latest.State, p.ID)
+			if err != nil || !found || !sameS5Responsibility(prior, p) {
+				return nil, recordErr
+			}
+			recorded = latest
 		}
+		issued, found, err := runtime.FindWorkPacket(recorded.State, p.ID)
+		if err != nil || !found || !sameS5Responsibility(issued, p) {
+			return nil, fmt.Errorf("issued S5 responsibility is unavailable after registration")
+		}
+		p = issued
+		packets[i] = p
 		view, err := json.MarshalIndent(p, "", "  ")
 		if err != nil {
 			return nil, err
@@ -147,12 +175,11 @@ func (s *Service) IssueContext(ctx context.Context, owner string) ([]workpacket.
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		current, err := workpacket.Publish(s.Root, p.ViewPath, view)
-		if err != nil {
+		// Once Runtime has issued this exact path, its existing view is the
+		// original display material. Restore only if missing; do not compare
+		// it with newly rendered bytes or replace a present file.
+		if _, err := workpacket.Publish(s.Root, p.ViewPath, view); err != nil {
 			return nil, err
-		}
-		if !bytes.Equal(current, view) {
-			return nil, fmt.Errorf("issued packet view differs from Runtime: %s", p.ViewPath)
 		}
 		latest, err := s.snapshot()
 		if err != nil {
@@ -212,10 +239,6 @@ func (s *Service) Save(ctx context.Context, owner, path string) (Receipt, error)
 		return r, err
 	}
 	outcome = "complete_rejected"
-	digest, err := workpacket.AnswerDigest(answer)
-	if err != nil {
-		return rejected(snapshot, p.ID, err), err
-	}
 	prior, accepted, err := runtime.FindSubmission(snapshot.State, p.ID)
 	if err != nil {
 		return rejected(snapshot, p.ID, err), err
@@ -223,11 +246,8 @@ func (s *Service) Save(ctx context.Context, owner, path string) (Receipt, error)
 	if accepted && prior.RevisionPacketID != "" {
 		return rejected(snapshot, p.ID, runtime.ErrSubmissionSuperseded), runtime.ErrSubmissionSuperseded
 	}
-	if accepted && prior.ContentHash != digest {
-		return rejected(snapshot, p.ID, runtime.ErrSubmissionConflict), runtime.ErrSubmissionConflict
-	}
-	id := "ev-submission-" + workpacket.Digest([]byte("submission:"+p.ID))
-	envelopePath := ".claude/evidence/submissions/" + p.ID + "/" + digest + ".json"
+	id := "ev-submission-" + p.ID
+	envelopePath := ".claude/evidence/submissions/" + p.ID + "/document-review.json"
 	if accepted {
 		id = prior.EvidenceID
 		var ok bool
@@ -241,6 +261,16 @@ func (s *Service) Save(ctx context.Context, owner, path string) (Receipt, error)
 		if !ok {
 			err := fmt.Errorf("accepted submission has no domain evidence")
 			return rejected(snapshot, p.ID, err), err
+		}
+		original, readErr := workpacket.ReadFile(s.Root, envelopePath, 1<<20)
+		var received workpacket.DocumentReviewEnvelope
+		if readErr != nil || json.Unmarshal(original, &received) != nil {
+			err := fmt.Errorf("accepted submission's original professional content is unavailable")
+			return rejected(snapshot, p.ID, err), err
+		}
+		previous := workpacket.Answer{Conclusion: &received.Conclusion, Findings: received.Findings}
+		if previous.Conclusion == nil || answer.Conclusion == nil || *previous.Conclusion != *answer.Conclusion || !slices.Equal(previous.Findings, answer.Findings) {
+			return rejected(snapshot, p.ID, runtime.ErrSubmissionConflict), runtime.ErrSubmissionConflict
 		}
 	} else {
 		// Preflight protects the artifact spool. Both checks repeat under the
@@ -259,7 +289,9 @@ func (s *Service) Save(ctx context.Context, owner, path string) (Receipt, error)
 		if err != nil {
 			return rejected(snapshot, p.ID, err), err
 		}
-		if err := workpacket.ValidateDocumentReview(p, id, answer, stored); err != nil {
+		var published workpacket.DocumentReviewEnvelope
+		if err := json.Unmarshal(stored, &published); err != nil || published.EvidenceID != id || published.Conclusion != *answer.Conclusion || !slices.Equal(published.Findings, answer.Findings) {
+			err := fmt.Errorf("published professional review differs from the current answer")
 			return rejected(snapshot, p.ID, err), err
 		}
 	}
@@ -291,10 +323,8 @@ func (s *Service) Save(ctx context.Context, owner, path string) (Receipt, error)
 		next = result.Snapshot
 		life, _ := next.State["lifecycle"].(map[string]any)
 		if result.Error == "" && result.QualityGate.TransitionCommitted && result.QualityGate.CandidateTransition == "TR-004" && life["state"] == "planning" && life["phase"] == "design" && runtime.PacketEnabled(next.State) {
-			if design, err := runtime.CurrentDesignPacket(next.State); err == nil {
-				if _, found, err := runtime.FindDesignPacket(next.State, design.ID); err == nil && found {
-					designAnswerPath = design.AnswerPath
-				}
+			if design, found, err := runtime.CurrentIssuedDesignPacket(next.State); err == nil && found {
+				designAnswerPath = design.AnswerPath
 			}
 		}
 	}

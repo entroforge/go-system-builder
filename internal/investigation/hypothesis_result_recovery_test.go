@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -128,7 +127,7 @@ func TestS8OriginalCaseReceiptRecoversSealedPendingCommit(t *testing.T) {
 
 	writer := runtime.NewWriter(fixture.statePath, fixture.journalPath, fixture.root, semantic.RuntimeCandidateValidator{})
 	removed, err := writer.RemoveUnreferencedArtifact(runtime.ArtifactCleanupRequest{
-		ExpectedRevision: before.Revision, ArtifactPath: acceptedReceipt.SuccessorCaseRef, ArtifactSHA256: workpacket.Digest(caseBytes),
+		ExpectedRevision: before.Revision, ArtifactPath: acceptedReceipt.SuccessorCaseRef, ArtifactBytes: caseBytes,
 	})
 	if err != nil || removed {
 		t.Fatalf("pending Runtime commit cleanup removed a possibly reachable S8 Case artifact: removed=%v err=%v", removed, err)
@@ -160,7 +159,7 @@ func TestS8OriginalCaseReceiptRecoversSealedPendingCommit(t *testing.T) {
 		t.Fatal("S8 pending recovery altered the original immutable Case receipt")
 	}
 	recoveredReceipt, found, err := runtime.VerifiedHypothesisResultReceipt(fixture.root, recovered.State, packet.ID, owner.ownerID)
-	if err != nil || !found || recoveredReceipt.AnswerSHA256 != acceptedReceipt.AnswerSHA256 || recoveredReceipt.AcceptedEventID != acceptedReceipt.AcceptedEventID {
+	if err != nil || !found || recoveredReceipt.AcceptedEventID != acceptedReceipt.AcceptedEventID {
 		t.Fatalf("original S8 receipt was not queryable after pending recovery: found=%v receipt=%+v err=%v", found, recoveredReceipt, err)
 	}
 	assertS8SingleAcceptedResult(t, fixture, recoveredReceipt, packet)
@@ -174,8 +173,8 @@ func TestS8OriginalCaseReceiptRecoversSealedPendingCommit(t *testing.T) {
 		t.Fatalf("read-only original S8 receipt depended on the author's answer file: found=%v err=%v", found, err)
 	}
 	stateBeforeMissingAnswer, journalBeforeMissingAnswer := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
-	if _, err := submitS8Original(fixture, recovered.Revision, packet, answerPath, owner.ownerID); err == nil || !strings.Contains(err.Error(), "read exact S8 answer") {
-		t.Fatalf("S8 save replay accepted a missing author file or returned the wrong failure: %v", err)
+	if replay, err := submitS8Original(fixture, recovered.Revision, packet, answerPath, owner.ownerID); err != nil || replay.Revision != recovered.Revision {
+		t.Fatalf("accepted S8 receipt could not replay without the private answer: revision=%d error=%v", replay.Revision, err)
 	}
 	if !bytes.Equal(stateBeforeMissingAnswer, mustRead(t, fixture.statePath)) || !bytes.Equal(journalBeforeMissingAnswer, mustRead(t, fixture.journalPath)) {
 		t.Fatal("missing-author-file save changed the recovered Runtime pair")
@@ -260,10 +259,7 @@ func buildS8SealedCommitMarker(t *testing.T, beforeState, beforeJournal, afterSt
 	}
 	return map[string]any{
 		"schema_version":         "1.0.0",
-		"previous_state_sha256":  workpacket.Digest(beforeCanonical),
 		"previous_revision":      s8TestInt(before["revision"]),
-		"state_sha256":           workpacket.Digest(afterCanonical),
-		"journal_event_sha256":   workpacket.Digest(eventLine),
 		"request_id":             requestID,
 		"idempotency_key":        idempotencyKey,
 		"retain_last_transition": false,

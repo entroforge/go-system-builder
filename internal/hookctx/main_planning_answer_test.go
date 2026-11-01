@@ -60,8 +60,8 @@ func planningAnswerTestPacket(t *testing.T, state map[string]any, stage string) 
 		}
 		inputs := workpacket.TaskPlanningInputs{
 			Contracts: []workpacket.Reference{
-				{ID: "CONTRACTS-REQ-001", Path: "docs/dev/contracts/CONTRACTS-REQ-001.md", Version: "v1.0.0", SHA256: strings.Repeat("c", 64)},
-				{ID: "BE-REQ-001", Path: "docs/dev/contracts/BE-REQ-001.md", Version: "v1.0.0", SHA256: strings.Repeat("d", 64)},
+				{ID: "CONTRACTS-REQ-001", Path: "docs/dev/contracts/CONTRACTS-REQ-001.md", Version: "v1.0.0"},
+				{ID: "BE-REQ-001", Path: "docs/dev/contracts/BE-REQ-001.md", Version: "v1.0.0"},
 			},
 			Sources: []workpacket.Subject{}, Directories: map[string][]string{},
 			ClauseUniverse: []workpacket.TaskClause{{ContractID: "BE-REQ-001", Section: 1}},
@@ -113,10 +113,45 @@ func TestCurrentMainPlanningAnswerPathsProjectsOnlyCurrentUnsubmittedTypedPacket
 
 			entities := state["entities"].(map[string]any)
 			entities["submissions"] = []any{map[string]any{"packet_id": packetID(packet), "owner": "Main"}}
+			if stage == "S2" {
+				if got := currentMainPlanningAnswerPaths(state, "", nil); len(got) != 1 || got[0] != want {
+					t.Fatalf("received S2 keeps its registered path without becoming a permission gate: %#v", got)
+				}
+				return
+			}
 			if got := currentMainPlanningAnswerPaths(state, "", nil); len(got) != 0 {
 				t.Fatalf("submitted %s packet must not retain an authoring path: %#v", stage, got)
 			}
 		})
+	}
+}
+
+func TestCurrentMainDesignAnswerUsesActualIssuedPathsAndOriginalTemplate(t *testing.T) {
+	state := planningAnswerTestState("S2", true)
+	packet := planningAnswerTestPacket(t, state, "S2").(workpacket.DesignPacket)
+	packet.ViewPath = ".claude/work-packets-alt-2/original/view.json"
+	packet.AnswerPath = ".claude/submissions-alt-2/original/answer.json"
+	packet.Draft.Instruction = "An earlier professional instruction remains the issued one."
+	addPlanningAnswerTestPacket(t, state, packet)
+	got := currentMainPlanningAnswerPaths(state, "", nil)
+	if len(got) != 1 || got[0] != packet.AnswerPath {
+		t.Fatalf("registered original answer = %#v, want %s", got, packet.AnswerPath)
+	}
+	if got := currentMainPlanningAnswerPaths(state, "Main", nil); len(got) != 1 || got[0] != packet.AnswerPath {
+		t.Fatalf("explicit Main did not retain original answer: %#v", got)
+	}
+}
+
+func TestCurrentMainTaskAnswerPathUsesIssuedPacketWithoutRebuildingTemplate(t *testing.T) {
+	state := planningAnswerTestState("S4", true)
+	packet := planningAnswerTestPacket(t, state, "S4").(workpacket.TaskPlanningPacket)
+	// The issued original remains authoritative if the current template later
+	// changes. This does not alter the responsibility or create another packet.
+	packet.Draft.Instruction = "The previously issued professional instruction."
+	addPlanningAnswerTestPacket(t, state, packet)
+	got := currentMainPlanningAnswerPaths(state, "", nil)
+	if len(got) != 1 || got[0] != packet.AnswerPath {
+		t.Fatalf("issued S4 answer path = %#v, want %q", got, packet.AnswerPath)
 	}
 }
 

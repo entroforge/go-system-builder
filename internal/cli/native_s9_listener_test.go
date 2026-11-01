@@ -30,7 +30,7 @@ func TestNativeS9ListenerReceivesPlanBeforeResultAndPreservesDirtyWork(t *testin
 	in.Event, in.CWD, in.ToolName = "PreToolUse", worker, "Bash"
 	// Actual ordinary payloads identify the child but transcript_path points
 	// at the parent's session file. Only the sibling child file is authority.
-	brief, _, _ := nativeS9Paths(p)
+	brief := nativeS9BriefPath(p)
 	parent := filepath.Join(t.TempDir(), "parent-session.jsonl")
 	child := filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "agent-"+in.AgentID+".jsonl")
 	row, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": in.AgentID, "message": map[string]any{"role": "user", "content": "Repair using this exact brief " + filepath.Join(root, brief)}})

@@ -1,8 +1,6 @@
 package qualitygate
 
 import (
-	"fmt"
-
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	runtimepkg "github.com/entroforge/go-system-builder/internal/runtime"
 )
@@ -16,14 +14,10 @@ func verifiedS5FormalFacts(input Input) ([]documentFact, error) {
 	generation := nestedInt(input.Snapshot.State, "baseline", "generation")
 	facts := make([]documentFact, 0, len(formal.Facts))
 	for _, fact := range formal.Facts {
-		data, err := input.Files.ReadFile(fact.Reference.Path)
-		if err != nil || sha256Hex(data) != fact.Reference.SHA256 {
-			return nil, fmt.Errorf("S5 formal subject drifted: %s", fact.Reference.Path)
-		}
 		facts = append(facts, documentFact{
 			ID: fact.Reference.ID, Kind: fact.Kind, Path: fact.Reference.Path,
-			Version: fact.Reference.Version, SHA256: fact.Reference.SHA256,
-			Status: fact.Status, Generation: generation,
+			Version: fact.Reference.Version,
+			Status:  fact.Status, Generation: generation,
 		})
 	}
 	return facts, nil

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"encoding/base64"
+
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"os"
 	"path/filepath"
@@ -8,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestWorktreeReminderDeliveryTracksFactsAndDoesNotConsumeBeforeEmission(t *testing.T) {
+func TestWorktreeReminderOnlyAtSessionStartPreservesUnknownFile(t *testing.T) {
 	f := newRuntimeFixture(t)
 	for _, args := range [][]string{{"init", "-qb", "delivery"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"config", "commit.gpgsign", "false"}, {"commit", "--allow-empty", "-qm", "baseline"}} {
 		if out, err := runGit(t, f.root, args...); err != nil {
@@ -21,29 +23,46 @@ func TestWorktreeReminderDeliveryTracksFactsAndDoesNotConsumeBeforeEmission(t *t
 	if out, err := runGit(t, f.root, "worktree", "add", "-b", "worker", wt, "delivery"); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
-	input := policy.Input{SessionID: "main"}
+	input := policy.Input{Event: "SessionStart", SessionID: "main"}
+	unknown := filepath.Join(f.root, ".claude/worktree-reminders", base64.RawURLEncoding.EncodeToString([]byte(input.SessionID))+".txt")
+	if err := os.MkdirAll(filepath.Dir(unknown), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unknown, []byte("user note"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	first, delivered := reminderDelivery(f.root, input)
 	if !strings.Contains(first, "unassociated checkout") {
 		t.Fatalf("missing inventory warning: %s", first)
 	}
-	if second, _ := reminderDelivery(f.root, input); second != first {
-		t.Fatal("computed but undelivered reminder was consumed")
-	}
 	delivered()
-	if second, _ := reminderDelivery(f.root, input); second != "" {
-		t.Fatal("unchanged facts repeated")
+	for _, event := range []string{"PreToolUse", "PostToolUse"} {
+		ordinary := input
+		ordinary.Event = event
+		if repeated, _ := reminderDelivery(f.root, ordinary); repeated != "" {
+			t.Fatalf("%s repeated advisory: %s", event, repeated)
+		}
 	}
-	if out, err := runGit(t, wt, "commit", "--allow-empty", "-qm", "completed work"); err != nil {
-		t.Fatalf("%v %s", err, out)
+	if got, err := os.ReadFile(unknown); err != nil || string(got) != "user note" {
+		t.Fatalf("unknown same-name file changed: %q %v", got, err)
 	}
-	if second, _ := reminderDelivery(f.root, input); second == "" || second == first {
-		t.Fatal("new work did not renew the warning")
+	if out, err := runGit(t, f.root, "worktree", "remove", wt); err != nil {
+		t.Fatalf("remove fixture: %v %s", err, out)
+	}
+	if next, commit := reminderDelivery(f.root, input); next != "" {
+		t.Fatalf("unneeded reminder: %s", next)
+	} else {
+		commit()
+	}
+	if got, err := os.ReadFile(unknown); err != nil || string(got) != "user note" {
+		t.Fatalf("unknown same-name file removed when facts cleared: %q %v", got, err)
 	}
 	input.AgentID = "worker"
-	if second, _ := reminderDelivery(f.root, input); second != "" {
+	if child, _ := reminderDelivery(f.root, input); child != "" {
 		t.Fatal("Main warning delivered to child")
 	}
-	if _, err := os.Stat(wt); err != nil {
-		t.Fatal("reminder removed the worktree")
+
+	if _, err := os.Stat(unknown); err != nil {
+		t.Fatal("reminder removed unknown user data")
 	}
 }

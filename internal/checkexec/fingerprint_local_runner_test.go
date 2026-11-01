@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestObserveProfileLocalExecutableIgnoresCopyCoordinateButBindsBytes(t *testing.T) {
+func TestObserveProfileLocalExecutableDoesNotAuthenticateBytes(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("executable script fixture uses POSIX modes")
 	}
@@ -29,8 +29,8 @@ func TestObserveProfileLocalExecutableIgnoresCopyCoordinateButBindsBytes(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.RunnerDigest != second.RunnerDigest || first.SubjectDigest != second.SubjectDigest {
-		t.Fatal("identical checked executables must survive a changed scratch coordinate")
+	if first.ProfileID != profile.ID || second.ProfileID != profile.ID || first.ReuseEligible || second.ReuseEligible {
+		t.Fatalf("observation unexpectedly authenticates or reuses local source: %+v %+v", first, second)
 	}
 	if err := os.WriteFile(filepath.Join(roots[1], "tools/check.sh"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestObserveProfileLocalExecutableIgnoresCopyCoordinateButBindsBytes(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed.RunnerDigest == first.RunnerDigest || changed.SubjectDigest == first.SubjectDigest {
-		t.Fatal("changed executable bytes must invalidate both runner and tree facts")
+	if changed.ProfileID != profile.ID || changed.ReuseEligible {
+		t.Fatalf("observation unexpectedly authenticated changed executable: %+v", changed)
 	}
 }

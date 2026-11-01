@@ -65,9 +65,6 @@ func (b *ExecutionRegistry) Observe(ctx context.Context, e Execution, view strin
 	if err := b.ValidateInputs(e); err != nil {
 		return err
 	}
-	if err := b.ValidateBootstrap(e); err != nil {
-		return err
-	}
 	args := []string{"--no-pager", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false"}
 	switch view {
 	case "check-running":

@@ -59,7 +59,7 @@ func TestCanonicalAllKeepsLiteralProductDenominator(t *testing.T) {
 	}
 }
 
-func TestCanonicalS10MissingPlanCannotFallBackToLegacy(t *testing.T) {
+func TestS10MissingActualWorkspaceIsReported(t *testing.T) {
 	state := map[string]any{"runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}, "entities": map[string]any{"assignments": []any{map[string]any{"runtime_id": "loop-test", "baseline_generation": 1}}}}
 	if !S10AuthorityAvailable(state) {
 		t.Fatal("canonical missing sources were hidden by legacy availability check")
@@ -67,7 +67,7 @@ func TestCanonicalS10MissingPlanCannotFallBackToLegacy(t *testing.T) {
 	if _, err := BuildS10InventoryAuthority(t.TempDir(), state, Baseline{}); err == nil {
 		t.Fatal("canonical authority inferred without pinned Plan")
 	}
-	if _, err := BuildS10ExternalBaseline(t.TempDir(), state, []string{"all"}); err == nil || !strings.Contains(err.Error(), "pinned ReviewPlan") {
-		t.Fatalf("canonical all bypassed source proof: %v", err)
+	if _, err := BuildS10ExternalBaseline(t.TempDir(), state, []string{"all"}); err == nil || !strings.Contains(err.Error(), "development branch is not bound") {
+		t.Fatalf("actual workspace absence was not reported: %v", err)
 	}
 }

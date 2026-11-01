@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -20,46 +20,33 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-// PlanRequest drives `runtime review-plan` registration.
+// PlanRequest drives original ReviewPlan registration.
 type PlanRequest struct {
 	Context          context.Context `json:"-"`
 	ExpectedRevision int
 	PlanPath         string
+	AnswerBytes      []byte `json:"-"`
 	OccurredAt       time.Time
 }
 
-// ValidatePlanArtifactForRegistration contains the artifact-level checks that
-// every S7 registration path must consume. The normal ReviewPlan command and
-// the S9 TR-012 handoff seed both enter the same control plane, so neither is
-// allowed to use a lighter frozen-subject or regression-asset validation path.
-// Runtime-coordinate checks remain in RegisterPlan because the handoff builds
-// its next-round projection inside its own CAS transaction.
+// ValidatePlanArtifactForRegistration shares the original Plan's observable
+// content and responsibility checks across S7 entry routes. Main owns the
+// professional coverage and asset decisions.
 func ValidatePlanArtifactForRegistration(root string, plan *Plan, state map[string]any, contexts ...context.Context) error {
 	ctx := baselineContext(contexts)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := ValidatePlan(plan); err != nil {
-		return fmt.Errorf("ReviewPlan coverage: %w", err)
+		return fmt.Errorf("ReviewPlan content and responsibility: %w", err)
 	}
-	if err := verifyFrozenSubjects(root, plan, state, ctx); err != nil {
-		return fmt.Errorf("ReviewPlan frozen subject baseline: %w", err)
-	}
-	if err := validateKnownE2ECaseCoverage(ctx, root, state, plan); err != nil {
-		return err
-	}
-	if err := verifyRegressionAssetFingerprints(root, plan); err != nil {
-		return err
-	}
+
 	return nil
 }
 
-// RegisterPlan is the S7 entry verb: it schema-validates the Planner's
-// ReviewPlan, proves exact-set Claim coverage (ValidatePlan), pins the plan
-// into the shared control plane under one CAS, initializes the claim /
-// assignment disposition projections, and moves the verification phase to
-// running (L3-S7 §4.1, §11.1). One round has one plan; the controlled
-// revision path is P2 (L3-S7 §13.4).
+// RegisterPlan receives the first actual S7 professional Plan, saves its
+// original content and responsibility projection under the existing Writer,
+// and permits Main to complete or change that plan naturally.
 func RegisterPlan(
 	root, statePath, journalPath string,
 	request PlanRequest,
@@ -67,7 +54,11 @@ func RegisterPlan(
 	if request.PlanPath == "" {
 		return loopruntime.Snapshot{}, fmt.Errorf("--file is required")
 	}
-	data, err := os.ReadFile(request.PlanPath)
+	data := request.AnswerBytes
+	var err error
+	if data == nil {
+		data, err = os.ReadFile(request.PlanPath)
+	}
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read ReviewPlan: %w", err)
 	}
@@ -127,31 +118,24 @@ func registerPlanBytes(root, statePath, journalPath string, request PlanRequest,
 	if input.retry && (!samePlanRegistrationCoordinate(input.initial, current) || intField(current["revision"]) != intField(input.initial["revision"])) {
 		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
 	}
-	if !input.prepared {
-		data, err = preparePlanAssets(root, data, current, request.Context)
-		if err != nil {
-			return loopruntime.Snapshot{}, fmt.Errorf("prepare ReviewPlan assets: %w", err)
-		}
-		input.data, input.prepared = data, true
+	input.data, input.prepared = data, true
+
+	if err := workpacket.ValidateUniqueJSON(data); err != nil {
+		return loopruntime.Snapshot{}, &PlanAnswerError{fmt.Errorf("ReviewPlan JSON: %w", err)}
 	}
 	if err := schema.NewValidator(root).ValidateBytes("review-plan.schema.json", data); err != nil {
 		return loopruntime.Snapshot{}, &PlanAnswerError{fmt.Errorf("ReviewPlan schema: %w", err)}
 	}
+	input.data = data
 	var plan Plan
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode ReviewPlan: %w", err)
 	}
-	if err := validateAuthoredBehaviorSurfaces(&plan, nil); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	// The original CAS below checks the complete frozen baseline. Preflight
-	// retains professional coverage and regression assets without repeating it.
+	// Receive the author's expression, without certifying professional coverage.
 	if err := ValidatePlan(&plan); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan coverage: %w", err)
+		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan content and responsibility: %w", err)
 	}
-	if err := verifyRegressionAssetFingerprints(root, &plan); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
+
 	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
 		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
 	}
@@ -160,80 +144,56 @@ func registerPlanBytes(root, statePath, journalPath string, request PlanRequest,
 	if state, _ := lifecycle["state"].(string); state != "verification" {
 		return loopruntime.Snapshot{}, fmt.Errorf("a ReviewPlan can only be registered in the verification stage (current state: %s); enter S7 via TR-006/TR-012 first", lifecycle["state"])
 	}
-	round := currentReviewRound(current)
-	if round < 1 {
-		return loopruntime.Snapshot{}, fmt.Errorf("no active review round; TR-006/TR-012 start the round")
-	}
-	if plan.ReviewRound != round {
-		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan declares review_round %d but the runtime is at round %d", plan.ReviewRound, round)
+	if reviewmeta.CompareIdentity(plan.Identity(), activeReviewIdentity(current)) == reviewmeta.Different {
+		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan %s does not belong to the active review entry", plan.ReviewPlanID)
 	}
 	if generation := baselineGeneration(current); plan.BaselineGeneration != generation {
 		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan declares baseline_generation %d but the runtime is at generation %d", plan.BaselineGeneration, generation)
 	}
-	if existing := PlanPointerFromState(current); existing != nil && existing.ReviewRound == round {
+	if existing := PlanPointerFromState(current); existing != nil && reviewmeta.CompareIdentity(reviewmeta.ArtifactIdentity(existing.PlanID), activeReviewIdentity(current)) == reviewmeta.Same {
 		seed, err := canRegisterS9Seed(root, current, &plan)
 		if err != nil {
 			return loopruntime.Snapshot{}, err
 		}
 		if !seed {
-			return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan %s is already registered for round %d (status %s); revise it via `runtime review-plan revise` (one controlled revision per round, L3-S7 §5.3) or start a new round", existing.PlanID, round, existing.Status)
+			return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan %s is already registered (status %s); update and save the original ReviewPlan questionnaire or enter a new independent verification", existing.PlanID, existing.Status)
 		}
 	}
-	// Coverage diff at registration (L3-S7 §4.4): every current-generation
-	// TASK must be claimed by at least one Claim's source_refs.
-	if err := ValidatePlanTaskCoverage(current, &plan); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	if !buildsurface.HasCanonical(current) {
-		if err := validateCoverageInventory(root, current, &plan, request.Context); err != nil {
-			return loopruntime.Snapshot{}, err
-		}
-	}
-	if err := validateKnownE2ECaseCoverage(request.Context, root, current, &plan); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	if err := validateRepairRoundBaseline(root, current, &plan); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	// E2E cold start: create and fingerprint the isolated write surface so
-	// result submit / round close can bind it exactly. A prepared directory is
-	// not an execution authority; only the committed Plan grants that binding.
+
 	workspace := ""
 	if plan.VerificationArtifactWorkspace != nil {
 		workspace = *plan.VerificationArtifactWorkspace
 	}
-
-	canonical := buildsurface.HasCanonical(current)
-	artifactDigest := ""
-	if !canonical {
-		artifactDigest, err = prepareVerificationWorkspace(root, &plan, request.Context)
-		if err != nil {
-			return loopruntime.Snapshot{}, err
-		}
-	}
-
-	// Pin the plan into the shared control plane directory; the runtime
-	// stores path+sha256 and every consumer hash-verifies on load.
-	planRel := filepath.ToSlash(filepath.Join(".claude", "review", "plans", plan.ReviewPlanID+".json"))
+	// Reserve the actual Plan path only within the original Writer. An
+	// unregistered occupant is never read or claimed as this responsibility.
+	planRel := ""
 	planBytes := append(canonicalJSON(data), '\n')
 	publishedPlan := false
 	publishPlan := func() error {
-		stored, err := workpacket.PublishBounded(root, planRel, planBytes, 20<<20)
+		parent, _, err := workpacket.OpenParent(root, ".claude/review/s7-plan-probe.json", true)
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(stored, planBytes) {
-			return fmt.Errorf("staged ReviewPlan at %s differs from this answer; Main preserves the original artifact and inspects its receipt/source before revision or recovery", planRel)
+		parent.Close()
+		for attempt := 0; ; attempt++ {
+			if err := request.Context.Err(); err != nil {
+				return err
+			}
+			base := []string{".claude", "review", "plans"}
+			if attempt > 0 {
+				base[2] = fmt.Sprintf("plans-candidate-%d", attempt)
+			}
+			planRel = boundedReviewArtifactPath(base, plan.ReviewPlanID)
+			created, err := workpacket.PublishNewBounded(root, planRel, planBytes, 20<<20)
+			if err != nil {
+				return err
+			}
+			if created {
+				publishedPlan = true
+				return nil
+			}
 		}
-		publishedPlan = true
-		return nil
 	}
-	if !canonical {
-		if err := publishPlan(); err != nil {
-			return loopruntime.Snapshot{}, err
-		}
-	}
-	planSHA := sha256Of(planBytes)
 
 	runtimeID, _ := current["runtime_id"].(string)
 	occurredAt := request.OccurredAt
@@ -254,11 +214,11 @@ func registerPlanBytes(root, statePath, journalPath string, request PlanRequest,
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             map[string]any{"state": "verification", "phase": "running"},
-		Message: fmt.Sprintf("Registered ReviewPlan %s for round %d (%d claims, %d assignments, e2e=%s)",
-			plan.ReviewPlanID, round, len(plan.Claims), len(plan.Assignments), plan.E2ECoverageState),
+		Message: fmt.Sprintf("Registered ReviewPlan %s (%d claims, %d assignments, e2e=%s)",
+			plan.ReviewPlanID, len(plan.Claims), len(plan.Assignments), plan.E2ECoverageState),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
-			if existing := PlanPointerFromState(state); existing != nil && existing.ReviewRound == round {
+			if existing := PlanPointerFromState(state); existing != nil && reviewmeta.CompareIdentity(reviewmeta.ArtifactIdentity(existing.PlanID), activeReviewIdentity(state)) == reviewmeta.Same {
 				seed, err := canRegisterS9Seed(root, state, &plan)
 				if err != nil {
 					return err
@@ -267,53 +227,23 @@ func registerPlanBytes(root, statePath, journalPath string, request PlanRequest,
 					return fmt.Errorf("original S9 seed changed before first professional registration")
 				}
 			}
-			if buildsurface.HasCanonical(state) {
-				// This original gate retains its source diagnostics and proves the
-				// complete denominator against fresh sources inside the Writer.
-				if err := validateCoverageInventory(root, state, &plan, request.Context); err != nil {
-					return err
-				}
-				if err := verifyCanonicalFrozenWorktree(root, &plan, state, request.Context); err != nil {
-					return fmt.Errorf("canonical product baseline changed before ReviewPlan commit: %w", err)
-				}
-			} else if err := verifyFrozenSubjects(root, &plan, state, request.Context); err != nil {
-				return fmt.Errorf("canonical product baseline changed before ReviewPlan commit: %w", err)
-			}
-			if err := validateKnownE2ECaseCoverage(store.Context(), root, state, &plan); err != nil {
-				return err
-			}
-			if err := verifyRegressionAssetFingerprints(root, &plan); err != nil {
-				return err
-			}
-			if err := store.Context().Err(); err != nil {
-				return err
-			}
-			if canonical {
-				// Reject invalid canonical sources/coverage before creating a
-				// workspace or publishing the unaccepted Plan.
-				artifactDigest, err = prepareVerificationWorkspace(root, &plan, request.Context)
-				if err != nil {
-					return err
-				}
-			}
+
 			// Another failed caller may have safely cleaned an unreferenced
 			// preflight artifact. Restore only these exact bytes under the
 			// original Writer before publishing their pointer.
 			if err := publishPlan(); err != nil {
 				return err
 			}
-			return ApplyRegisteredPlanProjection(state, plan, planRel, planSHA, round, workspace, artifactDigest, occurredAt)
+			return ApplyRegisteredPlanProjection(state, plan, planRel, workspace, occurredAt)
 		},
 	})
 	if err != nil {
-		if canonical && !publishedPlan {
-			// A validation refusal has not staged this attempt. Preserve any
-			// retained artifact from an earlier attempt instead of cleaning it.
+		if !publishedPlan {
 			return snapshot, err
 		}
 		// Error does not prove the original CAS is absent. The existing Writer
 		// fence preserves both durable pending and any concurrent accepted record.
-		removed, cleanupErr := removeStagedArtifactIfUnreferenced(store, current, commitRevision, planRel, planSHA)
+		removed, cleanupErr := store.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{ExpectedRevision: commitRevision, ArtifactPath: planRel, ArtifactBytes: planBytes, ReferencedPaths: stateArtifactReferences(current, planRel)})
 		if cleanupErr != nil {
 			return snapshot, fmt.Errorf("%w; original Writer retained Plan/pending recovery before cleanup: %v", err, cleanupErr)
 		}
@@ -331,7 +261,7 @@ func registerPlanBytes(root, statePath, journalPath string, request PlanRequest,
 func samePlanRegistrationCoordinate(original, current map[string]any) bool {
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	return stringField(original["runtime_id"]) != "" && original["runtime_id"] == current["runtime_id"] &&
-		baselineGeneration(original) == baselineGeneration(current) && currentReviewRound(original) == currentReviewRound(current) &&
+		baselineGeneration(original) == baselineGeneration(current) && reviewmeta.CompareIdentity(activeReviewIdentity(original), activeReviewIdentity(current)) != reviewmeta.Different &&
 		lifecycle["state"] == "verification"
 }
 
@@ -355,19 +285,15 @@ func resumePlanRegistration(root, statePath, journalPath string, request PlanReq
 			return current, err
 		}
 		planBytes := append(canonicalJSON(input.data), '\n')
-		planRel := filepath.ToSlash(filepath.Join(".claude", "review", "plans", plan.ReviewPlanID+".json"))
 		ptr := PlanPointerFromState(current.State)
-		original := PlanPointerFromState(input.initial)
-		newReception := current.Revision > intField(input.initial["revision"])
-		if original != nil && original.Path == planRel && original.SHA256 == sha256Of(planBytes) {
-			// An untouched TR-012 seed can already pin these bytes. Its
-			// pointer alone cannot prove professional registration happened.
-			transition, _ := current.State["last_transition"].(map[string]any)
-			newReception = newReception && transition["transition_id"] == "REVIEW-PLAN" &&
-				transition["event_id"] == fmt.Sprintf("evt-review-plan-%s-r%d", plan.ReviewPlanID, intField(input.initial["revision"])+1)
-		}
-		if newReception && ptr != nil && ptr.PlanID == plan.ReviewPlanID && ptr.Path == planRel && ptr.SHA256 == sha256Of(planBytes) && ptr.Revision == 1 && ptr.ReviewRound == plan.ReviewRound && plan.ReviewRound == currentReviewRound(input.initial) && plan.BaselineGeneration == baselineGeneration(input.initial) {
-			stored, err := workpacket.ReadFile(root, planRel, 20<<20)
+		transition, _ := current.State["last_transition"].(map[string]any)
+		newReception := current.Revision > intField(input.initial["revision"]) &&
+			transition["transition_id"] == "REVIEW-PLAN" &&
+			transition["event_id"] == fmt.Sprintf("evt-review-plan-%s-r%d", plan.ReviewPlanID, intField(input.initial["revision"])+1)
+		if newReception && ptr != nil && ptr.PlanID == plan.ReviewPlanID && ptr.Path != "" && ptr.Revision == 1 &&
+			reviewmeta.CompareIdentity(plan.Identity(), activeReviewIdentity(input.initial)) != reviewmeta.Different &&
+			plan.BaselineGeneration == baselineGeneration(input.initial) {
+			stored, err := workpacket.ReadFile(root, ptr.Path, 20<<20)
 			if err != nil {
 				return current, err
 			}
@@ -375,7 +301,7 @@ func resumePlanRegistration(root, statePath, journalPath string, request PlanReq
 				return current, err
 			}
 			if !bytes.Equal(stored, planBytes) {
-				return current, fmt.Errorf("original registered ReviewPlan bytes changed at %s", planRel)
+				return current, fmt.Errorf("original registered ReviewPlan bytes changed at %s", ptr.Path)
 			}
 			return current, nil
 		}
@@ -439,27 +365,4 @@ func mergedResourceLocks(assignmentLocks []string, plan *Plan, claimIDs []string
 		result[i] = value
 	}
 	return result
-}
-
-// New authoring must resolve applicability before the immutable Plan is pinned.
-// Frozen historical assignments without this optional field retain their
-// original browser responsibility contract during recovery and revision.
-func validateAuthoredBehaviorSurfaces(plan, previous *Plan) error {
-	for _, a := range plan.Assignments {
-		if a.Lens != "e2e" || a.BehaviorSurface != "" {
-			continue
-		}
-		legacy := false
-		if previous != nil {
-			for _, old := range previous.Assignments {
-				if old.AssignmentID == a.AssignmentID && old.Lens == "e2e" && old.BehaviorSurface == "" {
-					legacy = true
-				}
-			}
-		}
-		if !legacy {
-			return &PlanAnswerError{fmt.Errorf("assignment %s is missing behavior_surface; Main must set browser or non_browser from explicit behavior sources in this original ReviewPlan answer before registration; ui_impact and method prose do not decide this field", a.AssignmentID)}
-		}
-	}
-	return nil
 }

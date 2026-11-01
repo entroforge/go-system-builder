@@ -50,7 +50,6 @@ func TestQualityGateWireWithConflictFieldsSatisfiesHookDecisionSchema(t *testing
 		DecisionID:     "hook-decision-s10-wire",
 		PolicyID:       "hook-policy-main",
 		PolicyVersion:  "1.0.0",
-		PolicySHA256:   strings.Repeat("a", 64),
 		HookEvent:      "PreToolUse",
 		SessionID:      "session-s10-wire",
 		MatchedRuleIDs: []string{},

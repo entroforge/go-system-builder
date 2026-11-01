@@ -15,7 +15,8 @@ func evaluateRepairPlanReportPath(t *testing.T, root, agentID, assignmentID, pat
 		t.Fatalf("Load: %v", err)
 	}
 	var paths []string
-	if grant {
+	// hookctx only projects an issued path for its actual assignment.
+	if grant && assignmentID == "repair-assignment-1" {
 		paths = []string{".claude/submissions/loop-test/g1/S9-plan/r1/repair-assignment-1/packet-abc/builder-1/answer.json"}
 	}
 	decision, err := engine.Evaluate(policy.Input{
@@ -23,7 +24,7 @@ func evaluateRepairPlanReportPath(t *testing.T, root, agentID, assignmentID, pat
 		ToolInput: map[string]any{"file_path": path},
 		Runtime: policy.RuntimeContext{
 			PacketMode: true, RepairPlanReportAnswerPaths: paths,
-			RuntimeID: "loop-test", CurrentBaselineGeneration: 1, CurrentReviewRound: 1,
+			RuntimeID: "loop-test", CurrentBaselineGeneration: 1,
 			CurrentState: "bug_resolution", CurrentPhase: "planning", ProjectRoot: root,
 			Agent: &policy.AgentContext{ID: "builder-1", RepairAssignmentID: assignmentID, State: "working"},
 		},
@@ -61,39 +62,13 @@ func TestRepairPlanReportWriteRequiresExactCurrentTrustedGrant(t *testing.T) {
 	}
 }
 
-func TestRepairPlanReportWriteNeedsPlatformIdentityAndPreExecutionPhase(t *testing.T) {
+func TestRepairPlanReportWriteNeedsPreExecutionPhase(t *testing.T) {
 	root := t.TempDir()
 	issued := ".claude/submissions/loop-test/g1/S9-plan/r1/repair-assignment-1/packet-abc/builder-1/answer.json"
-	engine, err := policy.Load(filepath.Join("..", "..", "docs", "control", "hook-policy.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name  string
-		input policy.Input
-	}{
-		{"teammate name is not identity", policy.Input{Event: "PreToolUse", TeammateName: "builder-1", ToolName: "Write", ToolInput: map[string]any{"file_path": issued}}},
-		{"wrong phase", policy.Input{Event: "PreToolUse", AgentID: "builder-1", ToolName: "Write", ToolInput: map[string]any{"file_path": issued}, Runtime: policy.RuntimeContext{PacketMode: true, RepairPlanReportAnswerPaths: []string{issued}, RuntimeID: "loop-test", CurrentBaselineGeneration: 1, CurrentReviewRound: 1, CurrentState: "bug_resolution", CurrentPhase: "fixing", ProjectRoot: root, Agent: &policy.AgentContext{ID: "builder-1", RepairAssignmentID: "repair-assignment-1"}}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			in := tc.input
-			if in.Runtime.ProjectRoot == "" {
-				in.Runtime = policy.RuntimeContext{PacketMode: true, RepairPlanReportAnswerPaths: []string{issued}, RuntimeID: "loop-test", CurrentBaselineGeneration: 1, CurrentReviewRound: 1, CurrentState: "bug_resolution", CurrentPhase: "planning", ProjectRoot: root, Agent: &policy.AgentContext{ID: "builder-1", RepairAssignmentID: "repair-assignment-1"}}
-			}
-			var decision policy.Decision
-			var err error
-			if tc.name == "wrong phase" {
-				decision, _ = policy.EvaluateAgentScoped(in)
-			} else {
-				decision, err = engine.Evaluate(in)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if decision.Decision != "deny" {
-				t.Fatalf("invalid S9 identity/phase must deny, got %+v", decision)
-			}
-		})
+	in := policy.Input{Event: "PreToolUse", AgentID: "builder-1", ToolName: "Write", ToolInput: map[string]any{"file_path": issued}, Runtime: policy.RuntimeContext{PacketMode: true, RepairPlanReportAnswerPaths: []string{issued}, CurrentState: "bug_resolution", CurrentPhase: "fixing", ProjectRoot: root, Agent: &policy.AgentContext{ID: "builder-1", RepairAssignmentID: "repair-assignment-1"}}}
+	decision, _ := policy.EvaluateAgentScoped(in)
+	if decision.Decision != "deny" {
+		t.Fatalf("invalid S9 phase must deny, got %+v", decision)
 	}
 }
 

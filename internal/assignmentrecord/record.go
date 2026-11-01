@@ -1,8 +1,6 @@
 package assignmentrecord
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -29,7 +27,6 @@ var (
 	recordAssignmentIDRE = regexp.MustCompile(`^assignment-[A-Za-z0-9._-]+$`)
 	recordTaskIDRE       = regexp.MustCompile(`^TASK-[A-Za-z0-9._-]+$`)
 	recordRuntimeIDRE    = regexp.MustCompile(`^loop-[A-Za-z0-9._-]+$`)
-	recordSHA256RE       = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
 // ContextSource identifies bytes that were an original source for this
@@ -41,7 +38,6 @@ type ContextSource struct {
 	Ref     string `json:"ref"`
 	ID      string `json:"id,omitempty"`
 	Version string `json:"version,omitempty"`
-	SHA256  string `json:"sha256"`
 }
 
 // SourceSnapshot identifies immutable evidence bytes captured from one
@@ -49,21 +45,17 @@ type ContextSource struct {
 // snapshot file path: this row does not grant authority or replace the source
 // reference used by consumers.
 type SourceSnapshot struct {
-	SourceRef    string `json:"source_ref"`
-	SourceKind   string `json:"source_kind"`
-	SourceSHA256 string `json:"source_sha256"`
-	Path         string `json:"path"`
-	SHA256       string `json:"sha256"`
+	SourceRef  string `json:"source_ref"`
+	SourceKind string `json:"source_kind"`
+	Path       string `json:"path"`
 }
 
 // RevisionIssuance binds a revised Record to the intent and exact prior
 // Record it replaces. The Runtime Writer, never a caller-authored Record,
 // supplies this receipt when issuing r2+.
 type RevisionIssuance struct {
-	IntentKey            string          `json:"intent_key"`
-	RequestDigest        string          `json:"request_digest"`
-	PreviousRecord       RecordReference `json:"previous_record"`
-	PreviousRecordSHA256 string          `json:"previous_record_sha256"`
+	IntentKey      string          `json:"intent_key"`
+	PreviousRecord RecordReference `json:"previous_record"`
 }
 
 // Record is the immutable S6 dispatch charter for one Assignment revision.
@@ -133,8 +125,7 @@ type ScopeBasis struct {
 }
 
 // RecordReference is the stable identity used by native and workspace
-// projections to point back to the one Runtime entity. The content digest is
-// separate so projections can bind both identity and exact bytes.
+// projections to point back to the one Runtime entity.
 type RecordReference struct {
 	RuntimeID          string `json:"runtime_id"`
 	BaselineGeneration int    `json:"baseline_generation"`
@@ -149,20 +140,6 @@ func (r Record) Reference() RecordReference {
 		AssignmentID:       r.AssignmentID,
 		Revision:           r.Revision,
 	}
-}
-
-// Digest returns the SHA-256 of the stable JSON representation of a validated
-// Record. BuildRecord sorts every set-valued field before returning.
-func (r Record) Digest() (string, error) {
-	if err := ValidateRecord(r); err != nil {
-		return "", err
-	}
-	data, err := json.Marshal(r)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 // ManifestAssignmentRecordEnabled reads only the explicit contract marker.
@@ -209,7 +186,6 @@ type recordManifestDocument struct {
 	ID      string `json:"id"`
 	Path    string `json:"path"`
 	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
 }
 
 type recordManifestAssignment struct {
@@ -320,10 +296,6 @@ func BuildRecord(
 	if !recordTaskIDRE.MatchString(taskDoc.ID) {
 		return Record{}, fmt.Errorf("invalid registered TASK id %q", taskDoc.ID)
 	}
-	actualTaskSHA := digest(taskBytes)
-	if actualTaskSHA != taskDoc.SHA256 {
-		return Record{}, fmt.Errorf("TASK bytes differ from current registered TASK %s", taskDoc.ID)
-	}
 	if err := validateRepositoryRef(taskDoc.Path); err != nil {
 		return Record{}, fmt.Errorf("registered TASK ref: %w", err)
 	}
@@ -369,15 +341,11 @@ func BuildRecord(
 		return Record{}, fmt.Errorf("assignment %s effective scope: %w", assignmentID, err)
 	}
 
-	manifestSHA := digest(manifestBytes)
-	manifestSource := ContextSource{Kind: "manifest", Ref: manifestRef, ID: source.ManifestID, Version: source.Version, SHA256: manifestSHA}
-	taskSource := ContextSource{Kind: "task", Ref: taskDoc.Path, ID: taskDoc.ID, Version: taskDoc.Version, SHA256: taskDoc.SHA256}
+	manifestSource := ContextSource{Kind: "manifest", Ref: manifestRef, ID: source.ManifestID, Version: source.Version}
+	taskSource := ContextSource{Kind: "task", Ref: taskDoc.Path, ID: taskDoc.ID, Version: taskDoc.Version}
 	roleSource, err := findContextSource(contextSources, "agent_definition", item.AgentDefinitionRef, item.RoleFamily)
 	if err != nil {
 		return Record{}, err
-	}
-	if err := validateSHA(roleSource.SHA256); err != nil {
-		return Record{}, fmt.Errorf("agent definition source: %w", err)
 	}
 
 	context := []ContextSource{manifestSource, taskSource, roleSource}
@@ -385,10 +353,7 @@ func BuildRecord(
 		if doc.ID == "" || doc.Version == "" || doc.Path == "" {
 			return Record{}, fmt.Errorf("manifest document reference is incomplete")
 		}
-		if err := validateSHA(doc.SHA256); err != nil {
-			return Record{}, fmt.Errorf("manifest document %s: %w", doc.ID, err)
-		}
-		context = append(context, ContextSource{Kind: "manifest_document", Ref: doc.Path, ID: doc.ID, Version: doc.Version, SHA256: doc.SHA256})
+		context = append(context, ContextSource{Kind: "manifest_document", Ref: doc.Path, ID: doc.ID, Version: doc.Version})
 	}
 	for _, profile := range item.CheckProfiles {
 		context = append(context, ContextSource{
@@ -396,22 +361,21 @@ func BuildRecord(
 			Ref:     manifestRef + "#assignments/" + item.AssignmentID + "/check_profiles/" + profile.ID,
 			ID:      profile.ID,
 			Version: profile.Version,
-			SHA256:  profile.Digest(),
 		})
 		for _, dependency := range profile.Dependencies {
-			context = append(context, ContextSource{Kind: "check_profile_dependency", Ref: dependency.Path, SHA256: dependency.SHA256})
+			context = append(context, ContextSource{Kind: "check_profile_dependency", Ref: dependency.Path})
 		}
 		for _, fixture := range profile.Fixtures {
-			context = append(context, ContextSource{Kind: "check_profile_fixture", Ref: fixture.Path, SHA256: fixture.SHA256})
+			context = append(context, ContextSource{Kind: "check_profile_fixture", Ref: fixture.Path})
 		}
 	}
 	if item.ClosingContract != nil {
 		for _, check := range item.ClosingContract.WorkerChecks {
 			for _, dependency := range check.Profile.Dependencies {
-				context = append(context, ContextSource{Kind: "worker_check_profile_dependency", Ref: dependency.Path, ID: check.Profile.ID, SHA256: dependency.SHA256})
+				context = append(context, ContextSource{Kind: "worker_check_profile_dependency", Ref: dependency.Path, ID: check.Profile.ID})
 			}
 			for _, fixture := range check.Profile.Fixtures {
-				context = append(context, ContextSource{Kind: "worker_check_profile_fixture", Ref: fixture.Path, ID: check.Profile.ID, SHA256: fixture.SHA256})
+				context = append(context, ContextSource{Kind: "worker_check_profile_fixture", Ref: fixture.Path, ID: check.Profile.ID})
 			}
 		}
 	}
@@ -686,12 +650,12 @@ func ValidateRecord(record Record) error {
 	if record.ClosingContract != nil {
 		for _, check := range record.ClosingContract.WorkerChecks {
 			for _, dependency := range check.Profile.Dependencies {
-				if !hasContextSourceIdentity(record.ContextSources, "worker_check_profile_dependency", dependency.Path, check.Profile.ID, dependency.SHA256) {
+				if !hasContextSourceIdentity(record.ContextSources, "worker_check_profile_dependency", dependency.Path, check.Profile.ID) {
 					return fmt.Errorf("Assignment Record omits Worker CheckProfile dependency %s", dependency.Path)
 				}
 			}
 			for _, fixture := range check.Profile.Fixtures {
-				if !hasContextSourceIdentity(record.ContextSources, "worker_check_profile_fixture", fixture.Path, check.Profile.ID, fixture.SHA256) {
+				if !hasContextSourceIdentity(record.ContextSources, "worker_check_profile_fixture", fixture.Path, check.Profile.ID) {
 					return fmt.Errorf("Assignment Record omits Worker CheckProfile fixture %s", fixture.Path)
 				}
 			}
@@ -700,14 +664,8 @@ func ValidateRecord(record Record) error {
 	if !containsContextSource(record.ContextSources, record.Manifest) || !containsContextSource(record.ContextSources, record.Task) || !containsContextSource(record.ContextSources, record.AgentDefinition) {
 		return fmt.Errorf("Assignment Record context source set omits manifest, TASK, or Agent definition")
 	}
-	if record.SourceSnapshots != nil {
-		if err := validateSnapshotContextCoverage(record); err != nil {
-			return err
-		}
-		if err := validateSourceSnapshots(record); err != nil {
-			return err
-		}
-	}
+	// Existing source snapshots remain historical data; their SHA fields do not
+	// establish current responsibility or qualify acceptance.
 	return nil
 }
 
@@ -835,9 +793,8 @@ func currentTaskDocument(state map[string]any, generation int, manifestDocs []re
 			ID:      stringField(row["id"]),
 			Path:    stringField(row["path"]),
 			Version: stringField(row["version"]),
-			SHA256:  stringField(row["sha256"]),
 		}}
-		if candidate.ID == "" || candidate.Path == "" || candidate.Version == "" || candidate.SHA256 == "" || row["status"] != "locked" {
+		if candidate.ID == "" || candidate.Path == "" || candidate.Version == "" || row["status"] != "locked" {
 			return registeredTaskReference{}, fmt.Errorf("current TASK document is not fully registered and locked")
 		}
 		if registered != nil {
@@ -848,11 +805,8 @@ func currentTaskDocument(state map[string]any, generation int, manifestDocs []re
 	if registered == nil {
 		return registeredTaskReference{}, fmt.Errorf("current generation has no registered TASK document")
 	}
-	if manifestTask.ID != registered.ID || manifestTask.Path != registered.Path || manifestTask.Version != registered.Version || manifestTask.SHA256 != registered.SHA256 {
+	if manifestTask.ID != registered.ID || manifestTask.Path != registered.Path || manifestTask.Version != registered.Version {
 		return registeredTaskReference{}, fmt.Errorf("manifest TASK ref differs from the current Runtime TASK id/path/version/SHA")
-	}
-	if err := validateSHA(registered.SHA256); err != nil {
-		return registeredTaskReference{}, fmt.Errorf("registered TASK SHA: %w", err)
 	}
 	return *registered, nil
 }
@@ -876,7 +830,7 @@ func verifyRuntimeTaskEntity(state map[string]any, task registeredTaskReference,
 			found = row
 		}
 	}
-	if found == nil || found["path"] != task.Path || found["sha256"] != task.SHA256 {
+	if found == nil || found["path"] != task.Path {
 		return fmt.Errorf("Runtime TASK entity differs from its current registered document")
 	}
 	owners, ok := stringValues(found["owner_agent_ids"])
@@ -1088,9 +1042,6 @@ func validateContextSource(source ContextSource) error {
 	if !allowed[source.Kind] || strings.TrimSpace(source.Ref) == "" {
 		return fmt.Errorf("Assignment Record has an invalid context source kind/ref")
 	}
-	if err := validateSHA(source.SHA256); err != nil {
-		return fmt.Errorf("context source %s: %w", source.Ref, err)
-	}
 	if strings.ContainsAny(source.Ref, "\x00\r\n") {
 		return fmt.Errorf("context source ref contains control characters")
 	}
@@ -1129,14 +1080,14 @@ func requireManifestSkills(skillRefs []string, sources []ContextSource) error {
 		for _, source := range sources {
 			if source.Kind == "authorized_skill" && source.ID == ref {
 				if found != nil {
-					return fmt.Errorf("manifest Skill %s has multiple frozen source/hash bindings", ref)
+					return fmt.Errorf("manifest Skill %s has multiple original source bindings", ref)
 				}
 				candidate := source
 				found = &candidate
 			}
 		}
 		if found == nil {
-			return fmt.Errorf("manifest Skill %s has no frozen source/hash binding", ref)
+			return fmt.Errorf("manifest Skill %s has no original source binding", ref)
 		}
 	}
 	return nil
@@ -1151,9 +1102,9 @@ func containsContextSource(sources []ContextSource, target ContextSource) bool {
 	return false
 }
 
-func hasContextSourceIdentity(sources []ContextSource, kind, ref, id, sha string) bool {
+func hasContextSourceIdentity(sources []ContextSource, kind, ref, id string) bool {
 	for _, source := range sources {
-		if source.Kind == kind && source.Ref == ref && source.ID == id && source.SHA256 == sha {
+		if source.Kind == kind && source.Ref == ref && source.ID == id {
 			return true
 		}
 	}
@@ -1165,7 +1116,8 @@ func sameContextSources(left, right []ContextSource) bool {
 		return false
 	}
 	for i := range left {
-		if left[i] != right[i] {
+		a, b := left[i], right[i]
+		if a != b {
 			return false
 		}
 	}
@@ -1190,6 +1142,17 @@ func copyStrings(values []string) []string {
 func copyCheckProfiles(values []checkexec.Profile) []checkexec.Profile {
 	result := make([]checkexec.Profile, len(values))
 	copy(result, values)
+	for i := range result {
+		// Source digests are historical framework metadata. Keep the actual
+		// declared paths, checks and settings without copying them into a new
+		// responsibility, and do not mutate the original manifest.
+		if values[i].Dependencies != nil {
+			result[i].Dependencies = append([]checkexec.FileRef{}, values[i].Dependencies...)
+		}
+		if values[i].Fixtures != nil {
+			result[i].Fixtures = append([]checkexec.FileRef{}, values[i].Fixtures...)
+		}
+	}
 	return result
 }
 
@@ -1205,18 +1168,6 @@ func validateStrings(values []string, required bool) error {
 		seen[value] = true
 	}
 	return nil
-}
-
-func validateSHA(value string) error {
-	if !recordSHA256RE.MatchString(value) {
-		return fmt.Errorf("sha256 must be 64 lowercase hexadecimal characters")
-	}
-	return nil
-}
-
-func digest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 func positiveInteger(value any, name string) (int, error) {

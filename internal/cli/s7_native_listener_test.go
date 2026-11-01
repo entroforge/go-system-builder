@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
@@ -19,10 +20,22 @@ func s7ListenerFixture(t *testing.T) (string, workpacket.ReviewResultPacket) {
 	state := fixtures.BaseState(t, root, "verification", "planned", 1)
 	state["schema_version"] = "1.2.0"
 	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-listener", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
 	plan := minimalReviewPlan(t, root, "review-plan-listener")
 	fixtures.WriteState(t, root, state)
 	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-	stageCLI(t, "runtime", "review-plan", "--root", root, "--file", plan)
+	path := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
+	entryQuestionnaireHook(t, root, "PreToolUse", path)
+	data, err := os.ReadFile(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out := entryQuestionnaireHook(t, root, "PostToolUse", path); !strings.Contains(out, "review-plan: registered") {
+		t.Fatalf("original Main plan not received: %s", out)
+	}
 	markAssignmentDispatched(t, root, "assignment-dv-1", "reviewer-listener")
 	current := stageSnapshot(t, root)
 	for _, raw := range current.State["entities"].(map[string]any)["agents"].([]any) {
@@ -89,7 +102,10 @@ func TestS7NativeListenerReceivesAssignedOriginalOnNaturalToolEvent(t *testing.T
 			payload := s7ListenerPayload(t, p.Binding.OwnerAgentID, "Review "+filepath.Join(root, p.ViewPath))
 			// A bound original owner can observe an unrelated ordinary tool, but the
 			// untouched issued template cannot manufacture professional acceptance.
-			s7ListenerEvent(t, root, event, payload)
+			untouched, _ := s7ListenerEvent(t, root, event, payload)
+			if strings.Contains(untouched, "remains unreceived") {
+				t.Fatalf("untouched draft produced correction feedback: %s", untouched)
+			}
 			if stageSnapshot(t, root).Revision != before {
 				t.Fatal("pristine draft received")
 			}
@@ -157,19 +173,23 @@ func TestS7NativeListenerReportsOriginalFieldErrorWithoutDenyingTool(t *testing.
 	if err := json.Unmarshal(p.Draft.Answer, &answer); err != nil {
 		t.Fatal(err)
 	}
-	answer["verdict"] = "pass"
+	// A stated pass is a professional conclusion even when optional detail is
+	// absent. Use an actual invalid conclusion to exercise field feedback.
+	answer["verdict"] = "not-a-supported-verdict"
 	p.Draft.Answer, _ = json.Marshal(answer)
 	stageJSON(t, root, p.AnswerPath, p.Draft)
 	before := stageSnapshot(t, root).Revision
-	out, diagnostic := s7ListenerEvent(t, root, "PreToolUse", s7ListenerPayload(t, p.Binding.OwnerAgentID, "Review "+filepath.Join(root, p.ViewPath)))
-	if !strings.Contains(out, "additionalContext") || !strings.Contains(diagnostic, "/answer/") || !strings.Contains(out, p.Binding.OwnerAgentID) {
-		t.Fatalf("missing actionable fields: %s %s", out, diagnostic)
-	}
-	if stageSnapshot(t, root).Revision != before {
-		t.Fatal("invalid original accepted")
+	for _, event := range []string{"PreToolUse", "PostToolUse"} {
+		out, diagnostic := s7ListenerEvent(t, root, event, s7ListenerPayload(t, p.Binding.OwnerAgentID, "Review "+filepath.Join(root, p.ViewPath)))
+		if !strings.Contains(out, "additionalContext") || !strings.Contains(diagnostic, "/answer/") || !strings.Contains(out, p.Binding.OwnerAgentID) || !strings.Contains(out, "Correct the specified professional fields") {
+			t.Fatalf("%s missing actionable fields: %s %s", event, out, diagnostic)
+		}
+		if strings.Contains(out, "Main must restore the original packet/source/receiver") || stageSnapshot(t, root).Revision != before {
+			t.Fatalf("%s field error became a source fault or was accepted: %s", event, out)
+		}
 	}
 	// Stop remains the original final fallback and diagnostics outlet.
-	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.ViewPath)); code != 0 || !strings.Contains(diagnostic, "Main owns recovery") {
+	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.ViewPath)); code != 0 || !strings.Contains(diagnostic, "Main owns recovery") || !strings.Contains(diagnostic, "professional field issue") || !strings.Contains(diagnostic, "/answer/") || strings.Contains(diagnostic, "restore missing or stale sources") {
 		t.Fatalf("stop fallback: %d %s", code, diagnostic)
 	}
 }

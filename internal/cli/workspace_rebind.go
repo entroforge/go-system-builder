@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/filelock"
@@ -48,8 +48,8 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	var req workspace.RebindRequest
-	if err = json.Unmarshal(data, &req); err != nil {
+	req, err := decodeRelocationRequest(data)
+	if err != nil {
 		return fail(err)
 	}
 	actual, err := workspace.Canonical(*root)
@@ -64,12 +64,13 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 	}
 	defer release()
 	writer := runtime.NewWriter(filepath.Join(actual, ".claude/loop-state.json"), filepath.Join(actual, ".claude/loop-events.jsonl"), actual, semantic.RuntimeCandidateValidator{})
-	canonical, _ := json.Marshal(req)
-	sum := sha256.Sum256(canonical)
-	receiptPath := filepath.Join(actual, ".claude/evidence/workspace-relocations", hex.EncodeToString(sum[:])+".json")
+	receiptPath, err := relocationTransactionPath(filepath.Join(actual, ".claude/evidence/workspace-relocations"), req)
+	if err != nil {
+		return fail(err)
+	}
 	var intent relocationIntent
 	if old, err := os.ReadFile(receiptPath); err == nil {
-		if err = json.Unmarshal(old, &intent); err != nil {
+		if intent, err = decodeRelocationIntent(old); err != nil {
 			return fail(err)
 		}
 		if !reflect.DeepEqual(intent.Request, req) || intent.Before == nil || intent.After == nil {
@@ -155,7 +156,7 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 
 	snap, recovered := completedRelocationSnapshot(writer, intent)
 	if !recovered {
-		snap, err = writer.RelocateWorkspace(intent.Source, workspace.Encode(intent.After), "workspace-relocation-"+hex.EncodeToString(sum[:]), *reason)
+		snap, err = writer.RelocateWorkspace(intent.Source, workspace.Encode(intent.After), "workspace-relocation-"+strings.TrimSuffix(filepath.Base(receiptPath), ".json"), *reason)
 	}
 	if err != nil {
 		return fail(err)
@@ -187,4 +188,116 @@ func runWorkspaceRebind(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return encodeJSON(stdout, map[string]any{"binding": b, "relocation_receipt": receiptPath, "revision": snap.Revision})
+}
+
+func decodeRelocationRequest(data []byte) (workspace.RebindRequest, error) {
+	var req workspace.RebindRequest
+	err := json.Unmarshal(data, &req)
+	return req, err
+}
+
+func decodeRelocationIntent(data []byte) (relocationIntent, error) {
+	type plain relocationIntent
+	var value plain
+	projection := struct {
+		*plain
+		Request     json.RawMessage `json:"request"`
+		Before      json.RawMessage `json:"before"`
+		After       json.RawMessage `json:"after"`
+		Checkpoints json.RawMessage `json:"checkpoints"`
+	}{plain: &value}
+	if err := json.Unmarshal(data, &projection); err != nil {
+		return relocationIntent{}, err
+	}
+	req, err := decodeRelocationRequest(projection.Request)
+	if err != nil {
+		return relocationIntent{}, err
+	}
+	value.Request = req
+	if len(projection.Checkpoints) != 0 && string(projection.Checkpoints) != "null" {
+		var rows []struct {
+			Path   string          `json:"path"`
+			Before json.RawMessage `json:"before"`
+			After  json.RawMessage `json:"after"`
+		}
+		if err := json.Unmarshal(projection.Checkpoints, &rows); err != nil {
+			return relocationIntent{}, err
+		}
+		value.Checkpoints = make([]relocationCheckpoint, 0, len(rows))
+		for _, row := range rows {
+			var before, after integration.Checkpoint
+			if len(row.Before) != 0 {
+				before, err = integration.DecodeCheckpoint(row.Before)
+				if err != nil {
+					return relocationIntent{}, err
+				}
+			}
+			if len(row.After) != 0 {
+				after, err = integration.DecodeCheckpoint(row.After)
+				if err != nil {
+					return relocationIntent{}, err
+				}
+			}
+			value.Checkpoints = append(value.Checkpoints, relocationCheckpoint{Path: row.Path, Before: before, After: after})
+		}
+	}
+	if len(projection.Before) != 0 && string(projection.Before) != "null" {
+		before, err := workspace.DecodeRegistry(projection.Before)
+		if err != nil {
+			return relocationIntent{}, err
+		}
+		value.Before = &before
+	}
+	if len(projection.After) != 0 && string(projection.After) != "null" {
+		after, err := workspace.DecodeRegistry(projection.After)
+		if err != nil {
+			return relocationIntent{}, err
+		}
+		value.After = &after
+	}
+	return relocationIntent(value), nil
+}
+
+// Resolve an existing transaction before allocating a new, non-hash identity.
+// The workspace lock serializes publishers and their retries.
+func relocationTransactionPath(dir string, req workspace.RebindRequest) (string, error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	max := 0
+	match := ""
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if strings.HasPrefix(name, "operation-") {
+			if n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(name, "operation-"), ".json")); err == nil && n > max {
+				max = n
+			}
+		}
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		intent, err := decodeRelocationIntent(data)
+		if err != nil {
+			return "", fmt.Errorf("cannot inspect existing relocation transaction %s: %w", path, err)
+		}
+		if reflect.DeepEqual(intent.Request, req) {
+			if match != "" {
+				return "", fmt.Errorf("multiple original relocation transactions match the request")
+			}
+			match = path
+		}
+	}
+	if match != "" {
+		return match, nil
+	}
+	return filepath.Join(dir, fmt.Sprintf("operation-%d.json", max+1)), nil
 }

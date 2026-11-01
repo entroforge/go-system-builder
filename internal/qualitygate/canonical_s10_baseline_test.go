@@ -3,13 +3,12 @@ package qualitygate_test
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 )
 
-func TestS10DiagnosticBaselineRefusesCanonicalResultWithoutMainProjection(t *testing.T) {
+func TestS10DiagnosticBaselineDoesNotRequireInventedMainProjection(t *testing.T) {
 	root := t.TempDir()
 	manifest := validS10Manifest(t, "acceptance")
 	input := s10GateInput(t, "GATE-ACCEPTANCE-COMPLETE", "TR-015", "acceptance", map[string]any{
@@ -28,11 +27,11 @@ func TestS10DiagnosticBaselineRefusesCanonicalResultWithoutMainProjection(t *tes
 	files["evidence/canonical-result.json"] = envelope
 	input.Snapshot.State["evidence"] = append(input.Snapshot.State["evidence"].([]any), map[string]any{
 		"id": "ev-canonical-result", "kind": "completion_report", "path": "evidence/canonical-result.json",
-		"sha256": sha256Hex(envelope), "status": "valid", "baseline_generation": 1,
+		"status": "valid", "baseline_generation": 1,
 		"produced_by": []any{"builder-1"}, "invalidated_by": nil,
 		"responsibility_id": "BUILD-WORK-PACKAGE", "scope_refs": []any{},
 	})
-	if _, err := qualitygate.S10ExternalBaseline(root, input.Snapshot.State, nil); err == nil || !strings.Contains(err.Error(), "original Main facts") {
-		t.Fatalf("diagnostic baseline accepted a canonical Result without its Main projection: %v", err)
+	if baseline, err := qualitygate.S10ExternalBaseline(root, input.Snapshot.State, nil); err != nil || len(baseline.ChangedPaths) != 0 {
+		t.Fatalf("unknown Main facts invented changed paths or blocked observation: %+v %v", baseline, err)
 	}
 }

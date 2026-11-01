@@ -28,9 +28,9 @@ func (b *ExecutionRegistry) PreflightChecks(ctx context.Context, e Execution, so
 			return checkexec.New("capability_missing", "environment owner", p.Command, err)
 		}
 		for _, ref := range append(append([]checkexec.FileRef{}, p.Dependencies...), p.Fixtures...) {
-			data, err := checkexec.ReadProfileFile(source, ref.Path)
-			if err != nil || checkexec.Hash(data) != ref.SHA256 {
-				return checkexec.New("capability_missing", "environment owner", p.Command, fmt.Errorf("profile dependency/fixture is unavailable or changed: %s", ref.Path))
+			_, err := checkexec.ReadProfileFile(source, ref.Path)
+			if err != nil {
+				return checkexec.New("capability_missing", "environment owner", p.Command, fmt.Errorf("profile dependency/fixture is unavailable: %s", ref.Path))
 			}
 		}
 	}
@@ -120,9 +120,9 @@ func (b *ExecutionRegistry) PreflightOwnedChecks(ctx context.Context, e Executio
 			return checkexec.New("capability_missing", "environment owner", profile.Command, err)
 		}
 		for _, ref := range append(append([]checkexec.FileRef{}, profile.Dependencies...), profile.Fixtures...) {
-			data, err := checkexec.ReadProfileFile(source, ref.Path)
-			if err != nil || checkexec.Hash(data) != ref.SHA256 {
-				return checkexec.New("capability_missing", "environment owner", profile.Command, fmt.Errorf("WorkerCheck profile dependency/fixture is unavailable or changed: %s", ref.Path))
+			_, err := checkexec.ReadProfileFile(source, ref.Path)
+			if err != nil {
+				return checkexec.New("capability_missing", "environment owner", profile.Command, fmt.Errorf("WorkerCheck profile dependency/fixture is unavailable: %s", ref.Path))
 			}
 		}
 	}

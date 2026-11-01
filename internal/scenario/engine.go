@@ -2,8 +2,6 @@ package scenario
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +44,7 @@ type sourcePackage struct {
 	stories         []byte
 	flows           []byte
 	root            string
+	recoveryNotes   []string
 }
 
 // GenerateModule validates the module's source package and atomically writes
@@ -65,8 +64,7 @@ func GenerateModule(root, module string) (Report, error) {
 	return buildReport(source, outputs, root)
 }
 
-// ValidateModule validates source and confirms generated outputs are exactly
-// the bytes that the current source package would produce.
+// ValidateModule validates the source and the actual, readable output data.
 func ValidateModule(root, module string, options ValidateOptions) (Report, error) {
 	source, err := loadSourcePackage(root, module)
 	if err != nil {
@@ -76,12 +74,17 @@ func ValidateModule(root, module string, options ValidateOptions) (Report, error
 	if err != nil {
 		return Report{}, err
 	}
-	if err := validateCurrentOutputs(source.directory, outputs); err != nil {
+	actual, err := validateCurrentOutputs(source.directory, outputs)
+	if err != nil {
 		return Report{}, err
 	}
-	if err := validateSpecs(root, module, outputs.cases, options); err != nil {
+	if err := validateSpecs(root, module, actual.Cases, options); err != nil {
 		return Report{}, err
 	}
+	outputs.cases = actual.Cases
+	outputs.counts = countCases(source.model, actual.Cases)
+	outputs.coverage = branchCoverage(actual.Cases)
+	outputs.ratio = ratioFor(outputs.counts, source.model.CoverageProfile)
 	return buildReport(source, outputs, root)
 }
 
@@ -141,10 +144,16 @@ func loadSourcePackage(root, module string) (sourcePackage, error) {
 	if err != nil {
 		return sourcePackage{}, err
 	}
-	if err := recoverTransaction(directory); err != nil {
+	notes, err := recoverTransaction(directory)
+	if err != nil {
 		return sourcePackage{}, fmt.Errorf("recover scenario outputs: %w", err)
 	}
-	return loadSourcePackageWithFiles(root, module, scenarioDisk{fileview.Disk{Root: root}})
+	source, err := loadSourcePackageWithFiles(root, module, scenarioDisk{fileview.Disk{Root: root}})
+	if err != nil {
+		return sourcePackage{}, err
+	}
+	source.recoveryNotes = notes
+	return source, nil
 }
 
 type scenarioDisk struct{ fileview.Disk }
@@ -423,10 +432,11 @@ func buildOutputs(source sourcePackage) (builtOutputs, error) {
 	if err != nil {
 		return builtOutputs{}, fmt.Errorf("marshal coverage output: %w", err)
 	}
-	return builtOutputs{cases: cases, casesBytes: casesBytes, coverageBytes: coverageBytes, counts: counts, coverage: coverage, ratio: coverageOutput.Ratio}, nil
+	return builtOutputs{module: source.model.Module, cases: cases, casesBytes: casesBytes, coverageBytes: coverageBytes, counts: counts, coverage: coverage, ratio: coverageOutput.Ratio}, nil
 }
 
 type builtOutputs struct {
+	module        string
 	cases         []Case
 	casesBytes    []byte
 	coverageBytes []byte
@@ -435,33 +445,49 @@ type builtOutputs struct {
 	ratio         Ratio
 }
 
-func validateCurrentOutputs(directory string, expected builtOutputs) error {
+func validateCurrentOutputs(directory string, expected builtOutputs) (CasesOutput, error) {
 	casesBytes, err := readRequiredFile(directory, casesFile)
 	if err != nil {
-		return err
+		return CasesOutput{}, err
 	}
 	coverageBytes, err := readRequiredFile(directory, coverageFile)
 	if err != nil {
-		return err
+		return CasesOutput{}, err
 	}
+	return validateOutputData(casesBytes, coverageBytes, expected)
+}
+
+// validateOutputData checks understandable actual documents and a concrete
+// contradiction in a declared case. It does not authenticate serialized bytes
+// or require authors to reproduce the generator's formatting or every field.
+func validateOutputData(casesBytes, coverageBytes []byte, expected builtOutputs) (CasesOutput, error) {
 	if err := validateSchema("scenario-cases.schema.json", casesBytes); err != nil {
-		return fmt.Errorf("cases.json schema: %w", err)
+		return CasesOutput{}, fmt.Errorf("cases.json schema: %w", err)
 	}
 	if err := validateSchema("scenario-coverage.schema.json", coverageBytes); err != nil {
-		return fmt.Errorf("scenario-coverage.json schema: %w", err)
+		return CasesOutput{}, fmt.Errorf("scenario-coverage.json schema: %w", err)
 	}
 	var currentCases CasesOutput
 	if err := decodeStrict(casesBytes, &currentCases); err != nil {
-		return fmt.Errorf("decode cases.json: %w", err)
+		return CasesOutput{}, fmt.Errorf("decode cases.json: %w", err)
 	}
 	var currentCoverage CoverageOutput
 	if err := decodeStrict(coverageBytes, &currentCoverage); err != nil {
-		return fmt.Errorf("decode scenario-coverage.json: %w", err)
+		return CasesOutput{}, fmt.Errorf("decode scenario-coverage.json: %w", err)
 	}
-	if !bytes.Equal(casesBytes, expected.casesBytes) || !bytes.Equal(coverageBytes, expected.coverageBytes) {
-		return fmt.Errorf("generated outputs are stale or tampered")
+	if currentCases.Module != expected.module || currentCoverage.Module != expected.module {
+		return CasesOutput{}, fmt.Errorf("scenario output module differs from source module %s", expected.module)
 	}
-	return nil
+	byID := make(map[string]Case, len(expected.cases))
+	for _, item := range expected.cases {
+		byID[item.ID] = item
+	}
+	for _, item := range currentCases.Cases {
+		if source, ok := byID[item.ID]; ok && item.Polarity != source.Polarity {
+			return CasesOutput{}, fmt.Errorf("case %s polarity differs from its source branch", item.ID)
+		}
+	}
+	return currentCases, nil
 }
 
 func buildReport(source sourcePackage, outputs builtOutputs, root string) (Report, error) {
@@ -475,10 +501,7 @@ func buildReport(source sourcePackage, outputs builtOutputs, root string) (Repor
 		Coverage:            outputs.coverage,
 		Ratio:               outputs.ratio,
 		BrowserSpecCoverage: coverage,
-		InputFingerprint:    fingerprint(source.modelBytes, source.fixtureBytes, source.stories, source.flows),
-		OutputFingerprints: OutputFingerprints{
-			Cases: fingerprint(outputs.casesBytes), Coverage: fingerprint(outputs.coverageBytes),
-		},
+		RecoveryNotes:       source.recoveryNotes,
 	}, nil
 }
 
@@ -1429,16 +1452,6 @@ func marshalStable(value any) ([]byte, error) {
 		return nil, err
 	}
 	return append(data, '\n'), nil
-}
-
-func fingerprint(parts ...[]byte) string {
-	input := make([]byte, 0)
-	for _, part := range parts {
-		input = append(input, 0)
-		input = append(input, part...)
-	}
-	sum := sha256.Sum256(input)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func cloneStrings(values []string) []string {

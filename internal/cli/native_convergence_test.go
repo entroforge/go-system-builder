@@ -121,7 +121,7 @@ func TestNativeS9MainReadOrderUsesDispatchBrief(t *testing.T) {
 	if len(packets) != 1 {
 		t.Fatalf("expected one original native responsibility, got %d", len(packets))
 	}
-	brief, _, _ := nativeS9Paths(packets[0])
+	brief := nativeS9BriefPath(packets[0])
 	before := repairDispatchRuntimeBytes(t, root)
 	got := strings.Join(s9QuestionnaireReadOrder(root, state, policy.Input{Event: "PreToolUse", AgentID: "Main"}), "\n")
 	if !strings.Contains(got, filepath.Join(root, brief)) || strings.Contains(got, packets[0].AnswerPath) || strings.Contains(got, packets[0].ViewPath) {

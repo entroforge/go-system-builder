@@ -51,13 +51,13 @@ func TestS7ExactNativeStartAndChangedMainContext(t *testing.T) {
 			t.Fatalf("unknown Start got formal questionnaire: %s", got)
 		}
 	}
-	for _, tc := range []struct{ agent, text string }{{"opaque-native", ref}, {packets[0].Binding.OwnerAgentID, "continue assigned work"}, {packets[0].Binding.OwnerAgentID, ref}} {
+	for _, tc := range []struct{ agent, text string }{{"opaque-native", ref}, {packets[0].Binding.OwnerAgentID, ref}, {packets[1].Binding.OwnerAgentID, ref}} {
 		if got := call("SubagentStart", tc.agent, tc.text); !strings.Contains(got, packets[0].ViewPath) || !strings.Contains(got, packets[0].AnswerPath) {
-			t.Fatalf("exact Start lost references: %s", got)
+			t.Fatalf("exact task reference lost to a platform actor string: %s", got)
 		}
 	}
-	if got := call("SubagentStart", packets[1].Binding.OwnerAgentID, ref); !strings.Contains(got, "responsibility mismatch") || !strings.Contains(got, packets[0].ID) || !strings.Contains(got, packets[1].ID) || strings.Contains(got, "Read that exact original questionnaire") {
-		t.Fatalf("exact reference overrode another current owner binding: %s", got)
+	if got := call("SubagentStart", packets[0].Binding.OwnerAgentID, "continue assigned work"); strings.Contains(got, packets[0].AnswerPath) {
+		t.Fatalf("platform actor string alone claimed an engineering responsibility: %s", got)
 	}
 	if got := call("PreToolUse", packets[1].Binding.OwnerAgentID, ref); got != "" {
 		t.Fatalf("ordinary worker tool was affected by a handoff mismatch: %s", got)

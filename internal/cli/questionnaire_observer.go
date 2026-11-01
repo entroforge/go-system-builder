@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
@@ -35,35 +38,13 @@ func receiveSavedQuestionnaire(root string, request policy.Input, stdout, stderr
 		}
 	}
 	for _, receive := range []func(string, policy.Input, io.Writer, io.Writer) (bool, int){
-		runSavedEntryQuestionnaire, runSavedS5ManifestQuestionnaire, runSavedS7BudgetDecisionQuestionnaire, runSavedRepairDispatch, runSavedRepairVerifierDispatch,
+		runSavedEntryQuestionnaire, runSavedS5ManifestQuestionnaire, runSavedRepairDispatch, runSavedRepairVerifierDispatch,
 		runSavedInvestigationLeadQuestionnaire, runSavedRepairLeadQuestionnaire,
 		runSavedReviewPlanQuestionnaire, runSavedAuditQuestionnaire, runSavedHumanReleaseQuestionnaire,
 		runSavedBuilderQuestionnaire, runSavedStageAnswerHook,
 	} {
 		var output bytes.Buffer
 		if handled, code := receive(root, request, &output, stderr); handled {
-			// A real Main save may reach the existing budget wait through S9
-			// final reception or S10 review_required. Prepare its original
-			// application here, never on an ordinary Pre/Stop/status read.
-			if code == 0 && request.Event == "PostToolUse" && request.Error == "" && mainQuestionnaireViewer(request) {
-				failed, _ := request.ToolResponse["is_error"].(bool)
-				if snapshot, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot(); !failed && err == nil && s7BudgetGateRequired(snapshot.State, root) {
-					var message string
-					if _, err := prepareS7BudgetDecisionQuestionnaire(root, snapshot.State); err != nil {
-						message = "S7 budget preparation failed; Main/system restores the original application: " + err.Error()
-					} else {
-						message = stageS7BudgetDecisionQuestionnaireContext(root, request, snapshot)
-					}
-					var envelope map[string]any
-					if json.Unmarshal(output.Bytes(), &envelope) == nil {
-						if hookOutput, ok := envelope["hookSpecificOutput"].(map[string]any); ok {
-							hookOutput["additionalContext"] = strings.TrimSpace(stringValue(hookOutput["additionalContext"]) + "\n" + message)
-							output.Reset()
-							_ = json.NewEncoder(&output).Encode(envelope)
-						}
-					}
-				}
-			}
 			_, _ = io.Copy(stdout, &output)
 			return true, code
 		}
@@ -72,22 +53,39 @@ func receiveSavedQuestionnaire(root string, request policy.Input, stdout, stderr
 }
 
 type observedQuestionnaire struct {
-	professionalWorker  bool
-	path                string
-	draft               any
-	s6Result            bool
-	s7Plan              bool
-	s8Packet            *workpacket.HypothesisResultPacket
-	s8AcceptedAnswerSHA string
-	s8Case              map[string]any
-	s9Kind              string
-	s9Packet            *s9ListenerQuestionnaire
+	professionalWorker bool
+	path               string
+	draft              any
+	s6Result           bool
+	s7Plan             bool
+	s8Packet           *workpacket.HypothesisResultPacket
+	s8AcceptedAnswer   json.RawMessage
+	s8Case             map[string]any
+	s9Kind             string
+	s9Packet           *s9ListenerQuestionnaire
 }
 
 // A successful script or MCP tool can save a questionnaire without exposing a
 // file_path. Read the graph's existing exact files, never parse command text or
 // invent a tool policy. Unchanged issued drafts do not invoke a domain consumer.
 func runObservedQuestionnaireSaves(root string, request policy.Input, stdout, stderr io.Writer, progress ...bool) (bool, int) {
+	return runObservedQuestionnaireSavesForOwner(root, request, stdout, stderr, "", progress...)
+}
+
+// owner is an already resolved frozen S6 responsibility, never a candidate
+// inferred from the stage or from a questionnaire path.
+func runObservedQuestionnaireSavesForOwner(root string, request policy.Input, stdout, stderr io.Writer, owner string, progress ...bool) (bool, int) {
+	if owner == "" && s2PendingMaterialSave(request, root) {
+		if receipt, path, attempted, err := continueOriginalS2Pending(root, request); attempted {
+			if err != nil {
+				fmt.Fprintf(stderr, "S2 original followup pending: %v\n", err)
+				if receipt.Error == "" {
+					receipt.Error = err.Error()
+				}
+			}
+			return true, renderStageAnswerHook(stdout, path, receipt, "S2")
+		}
+	}
 	// A successful Post can finish an already recorded S4 responsibility even
 	// when it did not save a file. Keep its real tool identity; this is the
 	// original pending followup, never a Read promoted into a new submission.
@@ -133,7 +131,11 @@ func runObservedQuestionnaireSaves(root string, request policy.Input, stdout, st
 			}
 		}
 	}
-	if len(progress) == 2 && progress[0] && !progress[1] && !planningChangeFrom(request).Active {
+	mainS9Impact := false
+	if reader, ok := contextForHook(request).Value(hookReaderKey{}).(*hookReader); ok && reader.Kind == "Main" && reader.snapshotErr == nil {
+		mainS9Impact = stringValue(repairPointerCLI(reader.snapshot.State)["session_id"]) != ""
+	}
+	if len(progress) == 2 && progress[0] && !progress[1] && !planningChangeFrom(request).Active && !mainS9Impact {
 		return false, 0
 	}
 	switch request.ToolName {
@@ -162,13 +164,26 @@ func runObservedQuestionnaireSaves(root string, request policy.Input, stdout, st
 	var contexts []string
 	seen := map[string]bool{}
 	var leadPaths []string
-	if currentAuditKind(snapshot.State) == "" {
+	if owner == "" && currentAuditKind(snapshot.State) == "" {
 		leadPaths = investigationLeadQuestionnairePaths(root, snapshot.State)
 		leadPaths = append(leadPaths, repairDelegationApplicationPaths(root, snapshot.State)...)
 	}
-	questionnaires := observableQuestionnaires(root, snapshot)
-	if lifecycle := mapFieldCLI(snapshot.State, "lifecycle"); lifecycle["state"] == "bug_resolution" && lifecycle["phase"] != "investigation" && !s7BudgetGateRequired(snapshot.State, root) {
+	var questionnaires []observedQuestionnaire
+	if owner != "" {
+		questionnaires = observableFrozenS6Questionnaires(root, snapshot, owner)
+	} else {
+		questionnaires = observableQuestionnaires(root, snapshot)
+	}
+	if owner == "" && mapFieldCLI(snapshot.State, "lifecycle")["state"] == "bug_resolution" && mapFieldCLI(snapshot.State, "lifecycle")["phase"] != "investigation" {
 		questionnaires = s9ObservableQuestionnaires(root, snapshot.State, request)
+	} else if owner == "" && mainS9Impact {
+		// A late Main Impact update remains observable alongside the current
+		// phase's questions; changing cursor alone does not close that work.
+		for _, q := range s9ObservableQuestionnaires(root, snapshot.State, request) {
+			if q.s9Kind == "impact" {
+				questionnaires = append(questionnaires, q)
+			}
+		}
 	}
 questionnaires:
 	for _, q := range questionnaires {
@@ -185,6 +200,15 @@ questionnaires:
 			continue
 		}
 		seen[q.path] = true
+		if q.s9Packet != nil && q.s9Packet.result == nil {
+			// This is the original issued Plan questionnaire, not native Result
+			// delivery or Main's later integration. The native route runs first
+			// and returns before this observer when it owns the event.
+			if message := observeOriginalS9Plan(root, request, snapshot.State, q, stderr); message != "" {
+				contexts = append(contexts, message)
+			}
+			continue
+		}
 		info, err := os.Stat(q.path)
 		if err != nil || !info.Mode().IsRegular() || info.Size() > 20<<20 {
 			continue
@@ -193,8 +217,15 @@ questionnaires:
 		if err != nil {
 			continue
 		}
-		if q.s9Kind != "" && s9ObservedQuestionnaireUnchanged(root, snapshot.State, q, data) {
-			continue
+		if q.s9Kind != "" {
+			unchanged, observationErr := s9ObservedQuestionnaireUnchangedContext(contextForHook(request), root, snapshot.State, q, data)
+			if observationErr != nil {
+				contexts = append(contexts, "S9 observation is incomplete for "+q.path+": its original registered execution projection is unavailable: "+observationErr.Error()+". Preserve the original responsibility and accepted work; no new submission or guessed command was inferred.")
+				continue
+			}
+			if unchanged {
+				continue
+			}
 		}
 		if q.s9Packet != nil && q.draft == nil {
 			draft, draftErr := s9ListenerQuestionnaireDraft(contextForHook(request), root, snapshot.State, *q.s9Packet)
@@ -203,13 +234,12 @@ questionnaires:
 				continue
 			}
 			q.draft = draft
-			if s9ObservedQuestionnaireUnchanged(root, snapshot.State, q, data) {
+			unchanged, observationErr := s9ObservedQuestionnaireUnchangedContext(contextForHook(request), root, snapshot.State, q, data)
+			if observationErr != nil {
+				contexts = append(contexts, "S9 observation is incomplete for "+q.path+": "+observationErr.Error()+". Preserve the original responsibility and accepted work.")
 				continue
 			}
-		}
-		if strings.HasPrefix(filepath.Base(q.path), "hd-s7-budget-") {
-			var app s7BudgetDecisionApplication
-			if json.Unmarshal(data, &app) == nil && app.Decision == "" {
+			if unchanged {
 				continue
 			}
 		}
@@ -225,18 +255,16 @@ questionnaires:
 				continue questionnaires
 			}
 		}
-		if q.s8Packet != nil && q.s8AcceptedAnswerSHA != "" {
+		if q.s8Packet != nil && len(q.s8AcceptedAnswer) > 0 {
 			answer, issues := workpacket.ValidateHypothesisResultAnswer(*q.s8Packet, data)
-			if len(issues) == 0 && workpacket.Digest(answer) == q.s8AcceptedAnswerSHA {
-				continue // Existing exact accepted content; an actual changed save still reaches the original conflict check.
+			var current, accepted workpacket.HypothesisResultAnswer
+			if len(issues) == 0 && json.Unmarshal(answer, &current) == nil && json.Unmarshal(q.s8AcceptedAnswer, &accepted) == nil && sameS8ObservedAnswer(current, accepted) {
+				continue // The original accepted content is unchanged; new content reaches the original consumer.
 			}
 		}
 		var answer any
 		if json.Unmarshal(data, &answer) == nil {
 			if q.s6Result && !s6ObservedResultHasProfessionalContent(data) {
-				continue
-			}
-			if q.s7Plan && !s7ObservedPlanHasProfessionalContent(data) {
 				continue
 			}
 			if q.s9Kind == "" && q.draft != nil && reflect.DeepEqual(answer, q.draft) {
@@ -260,7 +288,22 @@ questionnaires:
 		observed.ToolName = "Write"
 		observed.ToolInput = map[string]any{"file_path": q.path}
 		var out bytes.Buffer
-		if handled, _ := receiveSavedQuestionnaire(root, observed, &out, stderr); !handled {
+		if q.s7Plan {
+			// The script/MCP observation already read the original answer.
+			// Reuse those bytes and the same consumer as the ordinary Pre and
+			// explicit Post routes; do not invent a second save or read.
+			result := receiveReviewPlanQuestionnaire(root, request, snapshot, q.path, data)
+			if result.Context != "" {
+				contexts = append(contexts, result.Context)
+			}
+			continue
+		} else if q.s9Kind == "impact" {
+			// This event already read the original Main answer; pass those same
+			// bytes to its consumer instead of reopening it via a synthetic save.
+			if handled, _ := saveRepairImpactQuestionnaireBytes(root, snapshot, q.path, data, &out, contextForHook(request)); !handled {
+				continue
+			}
+		} else if handled, _ := receiveSavedQuestionnaire(root, observed, &out, stderr); !handled {
 			continue
 		}
 		var envelope struct {
@@ -279,35 +322,83 @@ questionnaires:
 	return true, 0
 }
 
-// DraftPlanForRoot always leaves the QA/delivery oracles for Main to answer.
-// Inspect those existing professional fields instead of rebuilding the product
-// baseline just to distinguish a machine draft from an observed script save.
-// The original consumer still validates incomplete or invalid authored plans.
+// Continue only the already received current Main S2 responsibility. In
+// particular this never rereads the author's private answer to resume it.
+func continueOriginalS2Pending(root string, request policy.Input) (submission.Receipt, string, bool, error) {
+	if !mainQuestionnaireViewer(request) {
+		return submission.Receipt{}, "", false, nil
+	}
+	snapshot, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
+	if err != nil {
+		return submission.Receipt{}, "", false, nil
+	}
+	life := mapFieldCLI(snapshot.State, "lifecycle")
+	if life["state"] != "planning" || life["phase"] != "design" {
+		return submission.Receipt{}, "", false, nil
+	}
+	packet, found, err := runtime.CurrentIssuedDesignPacket(snapshot.State)
+	if err != nil || !found || packet.AnswerPath == "" {
+		return submission.Receipt{}, "", false, nil
+	}
+	record, found, err := runtime.FindSubmission(snapshot.State, packet.ID)
+	if err != nil || !found || record.Owner != "Main" || record.ControlStatus != "pending" {
+		return submission.Receipt{}, "", false, nil
+	}
+	service := &submission.Service{Root: root, StatePath: filepath.Join(root, ".claude/loop-state.json"), JournalPath: filepath.Join(root, ".claude/loop-events.jsonl"), Validator: semantic.RuntimeCandidateValidator{}}
+	ctx, cancel := context.WithTimeout(contextForHook(request), 12*time.Second)
+	defer cancel()
+	receipt, err := service.ContinueDesign(ctx, packet.ID)
+	return receipt, filepath.Join(root, packet.AnswerPath), true, err
+}
+
+// s8ObservedAcceptedAnswer reuses the actual professional content already in
+// the original Case/late-result fact. A historical digest alone proves nothing.
+func s8ObservedAcceptedAnswer(document map[string]any, packet workpacket.HypothesisResultPacket, receipt runtime.HypothesisResultReceipt) json.RawMessage {
+	if len(receipt.Answer) > 0 {
+		return receipt.Answer
+	}
+	if len(receipt.SubmittedAnswer) > 0 {
+		return receipt.SubmittedAnswer
+	}
+	rows := objectSliceAny(document["hypothesis_results"])
+	for i := len(rows) - 1; i >= 0; i-- {
+		raw, _ := rows[i]["receipt"].(map[string]any)
+		if raw["packet_id"] != packet.ID {
+			continue
+		}
+		data, err := json.Marshal(rows[i])
+		var answer workpacket.HypothesisResultAnswer
+		if err == nil && json.Unmarshal(data, &answer) == nil && answer.Result != nil {
+			data, _ = json.Marshal(answer)
+			return data
+		}
+	}
+	return nil
+}
+
+func sameS8ObservedAnswer(a, b workpacket.HypothesisResultAnswer) bool {
+	// Old Case rows can omit empty arrays; the authoring parser normalizes them.
+	a.EvidenceRefs, b.EvidenceRefs = append([]string{}, a.EvidenceRefs...), append([]string{}, b.EvidenceRefs...)
+	a.SourceBoundaryRefs, b.SourceBoundaryRefs = append([]string{}, a.SourceBoundaryRefs...), append([]string{}, b.SourceBoundaryRefs...)
+	a.ExplainsFindingIDs, b.ExplainsFindingIDs = append([]string{}, a.ExplainsFindingIDs...), append([]string{}, b.ExplainsFindingIDs...)
+	a.DoesNotExplain, b.DoesNotExplain = append([]string{}, a.DoesNotExplain...), append([]string{}, b.DoesNotExplain...)
+	a.NewHypotheses, b.NewHypotheses = append([]workpacket.HypothesisNewQuestion{}, a.NewHypotheses...), append([]workpacket.HypothesisNewQuestion{}, b.NewHypotheses...)
+	return reflect.DeepEqual(a, b)
+}
+
+// Distinguish an untouched machine draft from an expressed Claim without
+// rebuilding sources. A complete Claim or professional oracle from any lens
+// is observable even while other Claims remain placeholders.
 func s7ObservedPlanHasProfessionalContent(data []byte) bool {
 	var plan review.Plan
 	if json.Unmarshal(data, &plan) != nil {
 		return true
 	}
-	placeholder := false
-	for _, claim := range plan.Claims {
-		oracle := strings.TrimSpace(claim.Oracle)
-		if claim.Applicability == "required" && (claim.Lens == "qa" || claim.Lens == "delivery") && oracle != "" && !strings.Contains(oracle, "TODO(planner)") {
-			return true
-		}
-		for _, field := range []string{claim.Target, claim.Assertion, claim.Oracle, claim.Method} {
-			placeholder = placeholder || strings.Contains(field, "TODO(planner)")
-		}
-	}
-	// A custom complete plan can use other lenses; leave its validity to the
-	// original consumer rather than imposing another planning contract here.
-	return !placeholder
+	return review.HasProfessionalPlanContent(&plan)
 }
 
 func observableQuestionnaires(root string, snapshot runtime.Snapshot) []observedQuestionnaire {
 	state := snapshot.State
-	if paths := s7BudgetDecisionQuestionnairePaths(root, state); len(paths) > 0 {
-		return []observedQuestionnaire{{path: paths[0]}}
-	}
 	lifecycle, _ := state["lifecycle"].(map[string]any)
 	stage, _, _ := projectNext(stringValue(lifecycle["state"]), stringValue(lifecycle["phase"]), root)
 	if lifecycle["state"] == "inactive" {
@@ -343,8 +434,7 @@ func observableQuestionnaires(root string, snapshot runtime.Snapshot) []observed
 		}
 	}
 	if stage == "S7" {
-		facts, _ := state["review"].(map[string]any)
-		if ptr := review.PlanPointerFromState(state); ptr == nil || ptr.ReviewRound != tolerantInt(facts["round"]) || repairSeedAwaitingPlan(state) {
+		if !currentReviewPlanRegistered(state) {
 			out = append(out, observedQuestionnaire{path: reviewPlanQuestionnairePath(root, state), s7Plan: true})
 		}
 	}
@@ -371,7 +461,7 @@ func observableQuestionnaires(root string, snapshot runtime.Snapshot) []observed
 		if template == "s8-hypothesis-result-v1" {
 			pointer := investigationPointer(state)
 			baseline, _ := state["baseline"].(map[string]any)
-			if pointer == nil || binding["case_id"] != pointer["case_id"] || binding["runtime_id"] != state["runtime_id"] || tolerantInt(binding["baseline_generation"]) != tolerantInt(baseline["generation"]) {
+			if pointer == nil || binding["runtime_id"] != state["runtime_id"] || tolerantInt(binding["baseline_generation"]) != tolerantInt(baseline["generation"]) {
 				continue
 			}
 		}
@@ -381,15 +471,16 @@ func observableQuestionnaires(root string, snapshot runtime.Snapshot) []observed
 				continue
 			}
 		}
-		if round := tolerantInt(binding["review_round"]); round > 0 {
+		if stage == "S7" {
 			facts, _ := state["review"].(map[string]any)
-			if round != tolerantInt(facts["round"]) {
+			issued := reviewmeta.Identity{PlanID: stringValue(binding["review_plan_id"])}
+			if reviewmeta.CompareIdentity(issued, reviewmeta.FromReview(facts)) != reviewmeta.Same {
 				continue
 			}
 		}
 		owner, assignment := stringValue(binding["owner_agent_id"]), stringValue(binding["assignment_id"])
 		var acceptedPacket *workpacket.HypothesisResultPacket
-		var acceptedAnswerSHA string
+		var acceptedAnswer json.RawMessage
 		switch stringValue(row["template_id"]) {
 		case "s7-review-result-v1", "s8-hypothesis-result-v1":
 			if template == "s7-review-result-v1" {
@@ -410,7 +501,7 @@ func observableQuestionnaires(root string, snapshot runtime.Snapshot) []observed
 				var packet workpacket.HypothesisResultPacket
 				if json.Unmarshal(data, &packet) == nil {
 					if receipt, accepted := s8ListenerReceipt(s8Case, packet); accepted && filepath.Clean(receipt.ExecutionRoot) == filepath.Clean(source) {
-						acceptedPacket, acceptedAnswerSHA = &packet, receipt.AnswerSHA256
+						acceptedPacket, acceptedAnswer = &packet, s8ObservedAcceptedAnswer(s8Case, packet, receipt)
 					}
 				}
 			}
@@ -434,29 +525,39 @@ func observableQuestionnaires(root string, snapshot runtime.Snapshot) []observed
 			}
 		}
 		if path != "" {
-			out = append(out, observedQuestionnaire{path: filepath.Join(source, filepath.FromSlash(path)), draft: row["draft"], s8Packet: acceptedPacket, s8AcceptedAnswerSHA: acceptedAnswerSHA, professionalWorker: template == "s5-document-review-v1" || template == "s7-review-result-v1" || template == "s8-hypothesis-result-v1"})
+			out = append(out, observedQuestionnaire{path: filepath.Join(source, filepath.FromSlash(path)), draft: row["draft"], s8Packet: acceptedPacket, s8AcceptedAnswer: acceptedAnswer, professionalWorker: template == "s5-document-review-v1" || template == "s7-review-result-v1" || template == "s8-hypothesis-result-v1"})
 		}
 	}
 	if stage == "S6" {
-		questions, _ := projectS6BuilderQuestionnaires(root, "", snapshot)
-		for _, q := range questions {
-			activity := workstate.AgentActivity(contextAgent(state, q.AgentID))
-			if activity == "reported" || activity == "stopped" {
-				continue
-			}
-			data, err := os.ReadFile(q.ContextPath)
-			if err != nil {
-				continue
-			}
-			var context map[string]any
-			if json.Unmarshal(data, &context) != nil {
-				continue
-			}
-			if activity != "working" {
-				out = append(out, observedQuestionnaire{path: q.PlanPath, draft: context["plan_draft"], professionalWorker: true})
-			}
-			out = append(out, observedQuestionnaire{path: q.ResultPath, draft: context["result_draft"], s6Result: q.CanonicalRecord, professionalWorker: true})
+		out = append(out, observableFrozenS6Questionnaires(root, snapshot, "")...)
+	}
+	return out
+}
+
+func observableFrozenS6Questionnaires(root string, snapshot runtime.Snapshot, owner string) []observedQuestionnaire {
+	if mapFieldCLI(snapshot.State, "lifecycle")["state"] != "building" {
+		return nil
+	}
+	state := snapshot.State
+	var out []observedQuestionnaire
+	questions, _ := projectS6BuilderQuestionnaires(root, owner, snapshot)
+	for _, q := range questions {
+		activity := workstate.AgentActivity(contextAgent(state, q.AgentID))
+		if activity == "reported" || activity == "stopped" {
+			continue
 		}
+		data, err := os.ReadFile(q.ContextPath)
+		if err != nil {
+			continue
+		}
+		var context map[string]any
+		if json.Unmarshal(data, &context) != nil {
+			continue
+		}
+		if activity != "working" {
+			out = append(out, observedQuestionnaire{path: q.PlanPath, draft: context["plan_draft"], professionalWorker: true})
+		}
+		out = append(out, observedQuestionnaire{path: q.ResultPath, draft: context["result_draft"], s6Result: true, professionalWorker: true})
 	}
 	return out
 }
@@ -472,6 +573,13 @@ func s6ObservedResultHasProfessionalContent(data []byte) bool {
 	}
 	if s6NonNull(fields["summary"]) || s6NonNull(fields["risks_blockers"]) || s6NonNull(fields["scope_deviations"]) {
 		return true
+	}
+	// Frozen pre-Record completion reports express work through these original
+	// fields. Empty default arrays alone do not make an untouched draft a report.
+	for _, key := range []string{"changed_paths", "checks", "evidence_refs"} {
+		if raw := bytes.TrimSpace(fields[key]); len(raw) > 0 && string(raw) != "null" && string(raw) != "[]" {
+			return true
+		}
 	}
 	if raw := fields["assertion_evidence"]; len(raw) > 0 && string(bytes.TrimSpace(raw)) != "null" {
 		var rows []struct {
@@ -572,7 +680,7 @@ func s8ObservedDispatchRecorded(state map[string]any, assignment, owner string) 
 	}
 	teamFound := false
 	for _, team := range objectSliceAny(entities["teams"]) {
-		if team["id"] == agent["team_id"] && team["kind"] == "investigator" && team["manifest_ref"] == manifest && len(stringValue(team["manifest_sha256"])) == 64 {
+		if team["id"] == agent["team_id"] && team["kind"] == "investigator" && team["manifest_ref"] == manifest {
 			if teamFound {
 				return false
 			}
@@ -583,7 +691,7 @@ func s8ObservedDispatchRecorded(state map[string]any, assignment, owner string) 
 		return false
 	}
 	for _, task := range objectSliceAny(entities["tasks"]) {
-		if slices.Contains(stringSliceAny(agent["task_ids"]), stringValue(task["id"])) && slices.Contains(stringSliceAny(task["owner_agent_ids"]), owner) && stringValue(task["path"]) != "" && len(stringValue(task["sha256"])) == 64 {
+		if slices.Contains(stringSliceAny(agent["task_ids"]), stringValue(task["id"])) && slices.Contains(stringSliceAny(task["owner_agent_ids"]), owner) && stringValue(task["path"]) != "" {
 			return true
 		}
 	}
@@ -627,11 +735,11 @@ func s8ObservedContractAlreadyProjected(root, path string, data []byte, state, d
 		return false
 	}
 	pointer := investigationPointer(state)
-	if pointer == nil || pointer["case_id"] != document["case_id"] || tolerantInt(pointer["revision"]) != tolerantInt(document["revision"]) || stringValue(pointer["sha256"]) == "" {
+	if pointer == nil || pointer["case_id"] != document["case_id"] || tolerantInt(pointer["revision"]) != tolerantInt(document["revision"]) {
 		return false
 	}
-	routePath, err := investigationLeadRoutePath(root, state, document)
-	if err != nil || !samePath(path, filepath.Join(filepath.Dir(routePath), "contract-"+stringValue(pointer["sha256"])+".json")) {
+	paths := investigationLeadContractPaths(root, state)
+	if len(paths) != 1 || !samePath(path, paths[0]) {
 		return false
 	}
 	finalPath, finalBytes, err := investigationLeadContractProjectionBytes(root, data, document)
@@ -644,4 +752,69 @@ func s8ObservedContractAlreadyProjected(root, path string, data []byte, state, d
 	}
 	actual, err := workpacket.ReadFile(root, filepath.ToSlash(relative), 20<<20)
 	return err == nil && bytes.Equal(actual, finalBytes)
+}
+
+// observeOriginalS9Plan consumes the already located Plan through its original
+// consumer. Accepted facts are checked before opening the author's file; an
+// unreceived original is read once and passed directly without a typed copy.
+func observeOriginalS9Plan(root string, request policy.Input, state map[string]any, q observedQuestionnaire, diagnostic io.Writer) string {
+	packet := q.s9Packet
+	if packet == nil || packet.result != nil {
+		return ""
+	}
+	owner := request.EffectiveAgentID()
+	locatedOwner := owner == packet.binding.OwnerAgentID
+	if !locatedOwner {
+		execution := s9ObservedExecution(state, *packet)
+		locatedOwner = request.CWD != "" && samePath(request.CWD, stringValue(execution["worktree_path"])) && execution["agent_id"] == packet.binding.OwnerAgentID
+	}
+	if !locatedOwner {
+		return ""
+	} // No role, opaque actor or unique-candidate guess.
+	ctx := contextForHook(request)
+	service, err := submission.NewContext(ctx, root, true)
+	if err != nil {
+		return "S9 Plan observation is incomplete for " + q.path + ": " + err.Error()
+	}
+	receipt, err := service.RepairPlanReportReceipt(packet.binding.OwnerAgentID, packet.id)
+	if err != nil {
+		return "S9 original Plan receipt is unavailable for " + q.path + ": " + err.Error()
+	}
+	if receipt.Accepted {
+		return ""
+	}
+	// The existing Plan questionnaire projection uses the control root; native
+	// private worktree Plans retain their separate native_s9 reception path.
+	raw, err := workpacket.ReadFile(root, packet.answer, 20<<20)
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		return "S9 original Plan could not be read at " + q.path + ": " + err.Error()
+	}
+	receipt, err = service.SaveRepairPlanReportBytes(ctx, packet.binding.OwnerAgentID, packet.id, root, raw)
+	if err != nil {
+		var fields *workpacket.AnswerError
+		if errors.As(err, &fields) && len(fields.Fields) > 0 {
+			first := fields.Fields[0]
+			if first.Pointer == "/" || first.Pointer == "/answer/plan" && first.Observed == "empty" {
+				return ""
+			}
+		}
+		fmt.Fprintf(diagnostic, "S9 PlanReport not accepted: %v\n", err)
+		if receipt.Error == "" {
+			receipt.Error = err.Error()
+		}
+	}
+	var out bytes.Buffer
+	renderStageAnswerHook(&out, q.path, receipt, "S9")
+	var envelope struct {
+		Output struct {
+			Context string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if json.Unmarshal(out.Bytes(), &envelope) != nil {
+		return ""
+	}
+	return envelope.Output.Context
 }

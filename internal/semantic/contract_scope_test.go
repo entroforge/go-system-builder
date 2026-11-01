@@ -67,6 +67,20 @@ func TestScopedContractsDoNotDemandHistoryOrReadForeignBodies(t *testing.T) {
 	}
 }
 
+func TestContractsCheckDoesNotAuthenticateHistoricalFingerprintColumns(t *testing.T) {
+	root := contractScopeFixture(t)
+	content := "# Current\n| 本合同条款 | 行为 |\n|---|---|\n| §1 | CASE-CURRENT FR-001 |\n\n" +
+		"| source | value | path |\n|---|---|---|\n| fingerprint | " + strings.Repeat("0", 64) + " | docs/design/prototypes/service/scenario-model.json |\n"
+	scopePut(t, root, "docs/dev/contracts/BE-001.md", content)
+	if problems := scopedCheck(t, root); problems != "" {
+		t.Fatalf("historical fingerprint text created a new contract gate: %s", problems)
+	}
+	scopePut(t, root, "docs/dev/contracts/BE-001.md", content+"\nCASE-UNKNOWN\n")
+	if problems := scopedCheck(t, root); !strings.Contains(problems, "CASE-UNKNOWN") {
+		t.Fatalf("actual unknown source reference was not reported: %s", problems)
+	}
+}
+
 func TestScopedBareFRCannotBorrowAnotherREQTable(t *testing.T) {
 	root := contractScopeFixture(t)
 	scopePut(t, root, "docs/dev/contracts/BE-001.md", "# Current\nCASE-CURRENT FR-999\n")

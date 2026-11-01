@@ -2,8 +2,6 @@ package agentauth
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -38,7 +36,7 @@ func TestValidateBlockedPlanAuthorizationRequiresOriginalPlanActivation(t *testi
 		}
 	})
 
-	t.Run("changed PLAN bytes rejected", func(t *testing.T) {
+	t.Run("PLAN formatting is not a digest qualification", func(t *testing.T) {
 		fixture := newBlockedPlanFixture(t)
 		path := filepath.Join(fixture.root, filepath.FromSlash(fixture.planRef))
 		data, err := os.ReadFile(path)
@@ -48,8 +46,8 @@ func TestValidateBlockedPlanAuthorizationRequiresOriginalPlanActivation(t *testi
 		if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := validateBlockedReadOnly(t, fixture, "agent-s9"); err == nil {
-			t.Fatal("PLAN whose bytes differ from the approved activation was accepted")
+		if err := validateBlockedReadOnly(t, fixture, "agent-s9"); err != nil {
+			t.Fatalf("original PLAN was rejected by byte formatting: %v", err)
 		}
 	})
 
@@ -63,7 +61,7 @@ func TestValidateBlockedPlanAuthorizationRequiresOriginalPlanActivation(t *testi
 		}
 	})
 
-	t.Run("changed activation rejected", func(t *testing.T) {
+	t.Run("historical activation digest does not reject original decision", func(t *testing.T) {
 		fixture := newBlockedPlanFixture(t)
 		path := filepath.Join(fixture.root, filepath.FromSlash(fixture.activationRef))
 		var activation map[string]any
@@ -74,12 +72,12 @@ func TestValidateBlockedPlanAuthorizationRequiresOriginalPlanActivation(t *testi
 		if err := json.Unmarshal(data, &activation); err != nil {
 			t.Fatal(err)
 		}
-		activation["approved_readback_sha256"] = "0000000000000000000000000000000000000000000000000000000000000000"
+		activation["approved_readback_sha256"] = map[string]any{"legacy": true}
 		if err := os.WriteFile(path, mustBlockedJSON(t, activation), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := validateBlockedReadOnly(t, fixture, "agent-s9"); err == nil {
-			t.Fatal("activation with a changed PLAN digest was accepted")
+		if err := validateBlockedReadOnly(t, fixture, "agent-s9"); err != nil {
+			t.Fatalf("historical PLAN digest blocked original responsibility: %v", err)
 		}
 	})
 
@@ -153,7 +151,6 @@ func newBlockedPlanFixture(t *testing.T) *blockedPlanFixture {
 	activation["task_id"] = taskID
 	activation["team_id"] = teamID
 	activation["approved_readback_message_id"] = plan["message_id"]
-	activation["approved_readback_sha256"] = blockedSHA256(planBytes)
 	writeBlockedJSON(t, root, activationRef, activation)
 
 	agent := map[string]any{
@@ -244,9 +241,4 @@ func mustBlockedJSON(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return append(data, '\n')
-}
-
-func blockedSHA256(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

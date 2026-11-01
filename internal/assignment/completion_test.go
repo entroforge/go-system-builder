@@ -133,6 +133,9 @@ func TestCompleteTaskRegistersBuilderResultAtomically(t *testing.T) {
 		t.Fatalf("evidence entries = %d, want the single derived envelope", len(items))
 	}
 	entry := items[0].(map[string]any)
+	if _, exists := entry["review_round"]; exists {
+		t.Fatal("S6 completion registered a review-round counter")
+	}
 	if entry["kind"] != "completion_report" || entry["id"] != "ev-completion-TASK-001-g1" {
 		t.Fatalf("evidence entry = %v, want derived completion envelope", entry)
 	}
@@ -143,8 +146,8 @@ func TestCompleteTaskRegistersBuilderResultAtomically(t *testing.T) {
 		t.Fatalf("responsibility = %v, want BUILD-WORK-PACKAGE", entry["responsibility_id"])
 	}
 
-	// The envelope on disk is fingerprint-consistent and carries the
-	// Builder's rich result content.
+	// The envelope preserves the Builder's rich result content and original
+	// TASK reference, without registering either file's historical digest.
 	envelopeData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(envelopeRel)))
 	if err != nil {
 		t.Fatalf("derived envelope missing on disk: %v", err)
@@ -160,8 +163,13 @@ func TestCompleteTaskRegistersBuilderResultAtomically(t *testing.T) {
 	if len(checks) != 1 || checks[0].(map[string]any)["result"] != "pass" {
 		t.Fatalf("envelope checks = %v, want the Builder's recorded check", checks)
 	}
-	if entry["sha256"] != semanticSha(t, envelopeData) {
-		t.Fatalf("evidence sha must match the envelope bytes on disk")
+	if _, exists := entry["sha256"]; exists {
+		t.Fatalf("new evidence must not register a digest: %v", entry)
+	}
+	for _, value := range envelope["subject_refs"].([]any) {
+		if _, exists := value.(map[string]any)["sha256"]; exists {
+			t.Fatalf("new TASK subject must not copy its historical digest: %v", value)
+		}
 	}
 
 	// The produced runtime stays schema-valid.

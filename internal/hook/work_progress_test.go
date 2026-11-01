@@ -57,7 +57,7 @@ func TestWorkProgressRepeatOnceAndMeaningfulReset(t *testing.T) {
 func TestWorkProgressNewNecessaryRangeUnknownRunningWaiting(t *testing.T) {
 	root := t.TempDir()
 	f := progressFixture()
-	read := ProgressEvent{Action: "Read", Known: true, Read: &ProgressRead{Path: "/necessary", Digest: "digest", Range: "1:10"}}
+	read := ProgressEvent{Action: "Read", Known: true, Read: &ProgressRead{Path: "/necessary", Range: "1:10"}}
 	observeProgress(t, root, f, read)
 	for i := 0; i < 4; i++ {
 		observeProgress(t, root, f, read)
@@ -88,14 +88,14 @@ func TestWorkProgressBoundedRangeSaturationAndDamagedCache(t *testing.T) {
 	root := t.TempDir()
 	f := progressFixture()
 	for i := 0; i < 65; i++ {
-		observeProgress(t, root, f, ProgressEvent{Action: "Read", Known: true, Read: &ProgressRead{Path: "/necessary", Digest: "digest", Range: fmt.Sprint(i)}})
+		observeProgress(t, root, f, ProgressEvent{Action: "Read", Known: true, Read: &ProgressRead{Path: "/necessary", Range: fmt.Sprint(i)}})
 	}
 	for i := 0; i < 10; i++ {
 		if n := observeProgress(t, root, f, ProgressEvent{Action: "status", Known: true}); n != nil {
 			t.Fatal("saturated coverage diagnosed")
 		}
 	}
-	path := filepath.Join(root, ".claude/hook-notices/work-progress", progressHash(f.Owner+"\x00"+f.Session)+".json")
+	path := diagnosticCachePath(root, "hook-notices/work-progress", f.Owner, f.Session) + ".json"
 	bytes, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestWorkProgressConcurrentOnceAndLockBound(t *testing.T) {
 	if notices > 1 {
 		t.Fatalf("concurrent notice count=%d", notices)
 	}
-	lock := filepath.Join(root, ".claude/hook-notices/work-progress", progressHash(f.Owner+"\x00"+f.Session)+".json.lck")
+	lock := diagnosticCachePath(root, "hook-notices/work-progress", f.Owner, f.Session) + ".json.lck"
 	release, err := filelock.Acquire(context.Background(), lock)
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestWorkProgressReportsOnlyResponsibilityFactChanges(t *testing.T) {
 			t.Fatalf("observation %d: known=%v changed=%v err=%v", i, known, changed, err)
 		}
 	}
-	read := ProgressEvent{Action: "Read", Known: true, Read: &ProgressRead{Path: "/necessary", Digest: "digest", Range: "1:2"}}
+	read := ProgressEvent{Action: "Read", Known: true, Read: &ProgressRead{Path: "/necessary", Range: "1:2"}}
 	if _, known, changed, err := observeWorkProgress(root, facts, read, time.Second); err != nil || !known || changed {
 		t.Fatalf("new read range became a changed answer/source: %v %v %v", known, changed, err)
 	}

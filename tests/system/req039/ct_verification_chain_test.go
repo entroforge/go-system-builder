@@ -1,10 +1,13 @@
 // ct_verification_chain_test.go — CT-039-13 L4 intent in the L3-S7 shape:
 // the round advances through the ReviewPlan lifecycle, and the exit
-// transitions (TR-008 sealed batch / TR-009 clean round) fire from the hook.
+// transitions (TR-008 Finding / TR-009 clean result) fire from the hook.
 
 package req039_test
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,7 +31,7 @@ func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
 	toolInput := map[string]any{"command": "go test ./..."}
 	const bugID = "CT-039-13/TR-009"
 
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "ct13-tr009", "Bash", toolInput,
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "ct13-tr009", "Bash", toolInput,
 		"TR-009", "acceptance", "", bugID)
 
 	if runner.ManualTransitionCalls != 0 {
@@ -36,30 +39,27 @@ func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
 	}
 }
 
-// TestCT03913ObservationBatchHandoff drives the finding path: a sealed
-// ObservationBatch commits TR-008, then the explicit S8 intake verb creates
-// one InvestigationCase for the exact Finding set. TR-008 itself only moves
-// the cursor; it must not create a per-Finding BUG draft.
-func TestCT03913ObservationBatchHandoff(t *testing.T) {
+// TestCT03913FindingHandoff follows the current original Finding to S8 and
+// confirms that the InvestigationCase names the actual reported Finding.
+func TestCT03913FindingHandoff(t *testing.T) {
 	root := freshRoot(t)
 	runner := &req039fixtures.CLIRunner{}
 
 	state := systemPlanningState(t, root, "design", 26)
-	req039fixtures.SeedSealedObservationBatch(t, root, state)
+	req039fixtures.SeedAcceptedReviewFinding(t, root, state)
 	req039fixtures.EnsureStateRoot(state, root)
 	writeSystemState(t, root, state)
 
-	// The verification stage freezes the product baseline, so the hook is
-	// driven with a Bash read (product writes are denied during S7).
+	// An ordinary PreToolUse observes the reported Finding.
 	toolInput := map[string]any{"command": "go test ./..."}
-	req039fixtures.RequireLifecycleTransition(t, runner, root, "ct13-tr008", "Bash", toolInput,
+	req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "ct13-tr008", "Bash", toolInput,
 		"TR-008", "bug_resolution", "investigation", "CT-039-13/TR-008")
 
 	state = req039fixtures.ReadState(t, root)
 	var intakeStdout, intakeStderr strings.Builder
 	if code := runner.Run(t, []string{
 		"runtime", "investigation", "ingest", "--root", root,
-		"--grouping-rationale", "the sealed S7 batch is the provisional investigation boundary",
+		"--grouping-rationale", "the accepted Finding is the provisional investigation boundary",
 	}, strings.NewReader(""), &intakeStdout, &intakeStderr); code != 0 {
 		t.Fatalf("S8 InvestigationCase intake failed: code=%d stdout=%s stderr=%s", code, intakeStdout.String(), intakeStderr.String())
 	}
@@ -72,6 +72,17 @@ func TestCT03913ObservationBatchHandoff(t *testing.T) {
 	}
 	if casePointer["status"] != "investigating" {
 		t.Fatalf("InvestigationCase must start investigating, got %v", casePointer["status"])
+	}
+	caseRef, _ := casePointer["path"].(string)
+	caseBytes, err := os.ReadFile(filepath.Join(root, caseRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		SourceFindingIDs []string `json:"source_finding_ids"`
+	}
+	if err := json.Unmarshal(caseBytes, &doc); err != nil || len(doc.SourceFindingIDs) != 1 || doc.SourceFindingIDs[0] != "finding-qa-1" {
+		t.Fatalf("Case lost the original Finding: %+v %v", doc.SourceFindingIDs, err)
 	}
 	entities := state["entities"].(map[string]any)
 	bugs := entities["bugs"].([]any)
@@ -93,7 +104,7 @@ func TestCT03921_OpenRoundDoesNotAdvanceSystem(t *testing.T) {
 	req039fixtures.SeedReviewPlanRound(t, root, state)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-21-sys", "Bash", map[string]any{"command": "go test ./..."})
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-21-sys", "Bash", map[string]any{"command": "go test ./..."})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {
 		t.Fatalf("PreToolUse failed: code=%d stderr=%s", code, stderr)

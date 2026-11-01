@@ -33,9 +33,9 @@ func TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop(t *testing.T) {
 		units = append(units, repair.RepairUnitResult{UnitID: id, Status: "pass", EvidenceRefs: []string{"test://synthetic-source-guard-repair"}})
 	}
 	_, finalRef, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{
-		Contract: repair.ContractRef{Path: stringValue(pointer["contract_ref"]), SHA256: stringValue(pointer["contract_sha256"])},
-		Session:  repair.ArtifactRef{Path: stringValue(pointer["path"]), SHA256: stringValue(pointer["sha256"])},
-		Plan:     repair.ArtifactRef{Path: stringValue(pointer["plan_ref"]), SHA256: stringValue(pointer["plan_sha256"])},
+		Contract: repair.ContractRef{Path: stringValue(pointer["contract_ref"])},
+		Session:  repair.ArtifactRef{Path: stringValue(pointer["path"])},
+		Plan:     repair.ArtifactRef{Path: stringValue(pointer["plan_ref"])},
 		ResultID: "repair-result-targeted-source-guard", ProducerAgentID: "source-guard-builder", AssignmentID: original,
 		UnitResults: units, Result: "pass", ChangedArtifacts: []repair.ChangedArtifact{},
 		BeforeFixChecks: []repair.RepairCheck{{Name: "synthetic pre-fix observation", Command: "test -f internal/api/one.go", Result: "fail", EvidenceRefs: []string{"test://synthetic-source-guard-red"}}},
@@ -44,19 +44,19 @@ func TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pointer["result_refs"] = []any{map[string]any{"path": finalRef.Path, "sha256": finalRef.SHA256}}
+	pointer["result_refs"] = []any{map[string]any{"path": finalRef.Path}}
 	// Synthetic Impact establishes the current independent observation slots;
 	// TASK/manifest source authority above comes from the actual dispatch path.
 	impact := repair.ChangeImpactRequest{ImpactID: "impact-targeted-source-guard", RuntimeID: stringValue(snapshot.State["runtime_id"]), ReqID: "REQ-039", BaselineGeneration: 1,
 		SourceCaseIDs: []string{stringValue(pointer["case_id"])}, ChangeTypes: []string{"implementation"},
-		ChangedArtifacts:          []repair.ArtifactRef{{ID: "changed-one", Path: "internal/api/one.go", SHA256: strings.Repeat("a", 64)}},
+		ChangedArtifacts:          []repair.ArtifactRef{{ID: "changed-one", Path: "internal/api/one.go"}},
 		Decisions:                 []repair.ImpactDecision{{SourceID: "changed-one", TargetID: "root-1", Relation: "invalidates", RuleID: "IM-ROOT", Decision: "reverify", Scope: []string{"internal/api/one.go"}, Rationale: "synthetic source observation", RecoveryEvidence: []string{"test://source-guard"}}},
 		RequiredReverificationIDs: []string{"reverify-source-guard"}, AnalyzedBy: "Main"}
 	_, impactRef, err := repair.CreateChangeImpact(root, impact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pointer["impact_ref"], pointer["impact_sha256"], pointer["status"] = impactRef.Path, impactRef.SHA256, "targeted_reverification"
+	pointer["impact_ref"], pointer["status"] = impactRef.Path, "targeted_reverification"
 	pointer["required_reverification_ids"] = []any{"reverify-source-guard"}
 	mapFieldCLI(snapshot.State, "lifecycle")["phase"] = "targeted_reverification"
 	putInitMap(t, filepath.Join(root, ".claude/loop-state.json"), snapshot.State)
@@ -107,7 +107,7 @@ func TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop(t *testing.T) {
 		t.Fatalf("shared Main Stop did not reach original Targeted consumer: %s", diagnostic)
 	}
 	accepted := repairDispatchSnapshot(t, root)
-	if len(repairArtifactRefs(repairPointerCLI(accepted.State), "targeted_reverification_artifacts", "", "")) != 1 {
+	if len(repairArtifactRefs(repairPointerCLI(accepted.State), "targeted_reverification_artifacts", "")) != 1 {
 		t.Fatal("shared Stop did not retain its original independent observation")
 	}
 }

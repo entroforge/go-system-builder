@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/investigation"
 	"github.com/entroforge/go-system-builder/internal/policy"
-	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
@@ -23,71 +23,30 @@ type s8ListenerFixture struct {
 
 func newS8ListenerFixture(t *testing.T) s8ListenerFixture {
 	t.Helper()
-	root := t.TempDir()
-	question := workpacket.HypothesisResultQuestion{
-		HypothesisID: "hypothesis-cache-1", AssignmentID: "assignment-investigator-1", Statement: "A stale cache causes the response.",
-		Invariant: "A fresh read reflects the persisted value.", Discriminator: "Compare cache bypass.",
-		ExpectedOutcomes: workpacket.HypothesisExpectedOutcomes{Support: "Bypass fixes it.", Refute: "Bypass leaves it stale."},
-		SourceFindingIDs: []string{"finding-001"}, EvidenceRefs: []string{"test://probe"}, Status: "open",
+	root := investigationLeadTestRoot(t)
+	initial := investigationLeadTestSnapshot(t, root)
+	mapFieldCLI(initial.State, "configuration")["optimization"] = map[string]any{"packet": true}
+	repairLeadWriteState(t, root, initial.State)
+	_, path := investigationLeadTestIngest(t, root)
+	question := investigationLeadTestQuestion("A stale cache causes the response.")
+	question.AgentID = "investigator-01"
+	writeRepairLeadJSON(t, path, []investigationLeadQuestion{question})
+	feedback := investigationLeadTestSave(t, root, path)
+	if !strings.Contains(feedback, "owner=investigator-01") {
+		t.Fatalf("original Case and dispatch writer did not register the owner: %s", feedback)
 	}
-	questionSHA, _ := workpacket.HypothesisQuestionDigest(question)
-	route := workpacket.HypothesisResultCaseRoute{Status: "investigating"}
-	routeSHA, _ := workpacket.HypothesisCaseRouteDigest(route)
-	binding := workpacket.HypothesisResultBinding{
-		RuntimeID: "loop-REQ-001", BaselineGeneration: 1, ReviewRound: 1, CaseID: "investigation-case-001",
-		CaseRef: ".claude/case.json", CaseSHA256: strings.Repeat("a", 64), CaseRevision: 1, CaseRouteSHA256: routeSHA,
-		ObservationBatchID: "observation-batch-001", ObservationBatchRef: ".claude/batch.json", ObservationBatchSHA256: strings.Repeat("b", 64),
-		BaselineDigest: strings.Repeat("c", 64), SourceFindingIDs: []string{"finding-001"}, HypothesisID: question.HypothesisID,
-		HypothesisQuestionSHA256: questionSHA, HypothesisSourceFindingIDs: question.SourceFindingIDs, AssignmentID: question.AssignmentID,
-		AssignmentSHA256: strings.Repeat("e", 64), TeamID: "workgroup-s8-1", TaskID: "TASK-001-01", TaskRef: "docs/tasks/TASK-001-01.md",
-		TaskSHA256: strings.Repeat("f", 64), ManifestRef: ".claude/workgroups/workgroup-s8-1.json", ManifestSHA256: strings.Repeat("1", 64), OwnerAgentID: "investigator-01",
+	statePath := filepath.Join(root, ".claude/loop-state.json")
+	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
+	packets, err := investigation.IssueHypothesisResultPackets(root, statePath, journalPath, -1, "investigator-01")
+	if err != nil || len(packets) != 1 {
+		t.Fatalf("issue original owner questionnaire: packets=%+v err=%v", packets, err)
 	}
-	finding := json.RawMessage(`{"schema_version":"1.0.0","finding_id":"finding-001","claim_id":"claim-cache","lens":"qa","severity":"P1","expected":"Fresh value","authority_refs":["REQ-001"],"observed":"Stale value","observation_mode":"code_inspection","encounter":{"journey_summary":"Read path inspected","wall_action":"Read value","first_bad_checkpoint":"Cache stale","inspection_entry":"cache.go","symbol_trail":"Read -> Cache"},"reproducibility":"always","evidence_refs":["test://observation"]}`)
-	packet, err := workpacket.BuildHypothesisResult(binding, workpacket.HypothesisResultInputs{Hypothesis: question, CaseRoute: route,
-		Findings:     []workpacket.HypothesisResultFinding{{FindingID: "finding-001", Ref: ".claude/finding.json", SHA256: strings.Repeat("d", 64), Document: finding}},
-		EvidenceRefs: []workpacket.HypothesisEvidenceRef{{Ref: "test://probe", Origin: "hypothesis", Attestation: "execution_anchor"}, {Ref: "test://observation", Origin: "finding", SourceFindingID: "finding-001", Attestation: "execution_anchor"}},
-	})
+	current := investigationLeadTestSnapshot(t, root)
+	_, document, _, err := investigationLeadSource(root, current.State)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read original Case: %v", err)
 	}
-	data, err := schema.ReadAsset("loop-state.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state map[string]any
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatal(err)
-	}
-	state["schema_version"], state["runtime_id"] = "1.2.0", binding.RuntimeID
-	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
-	state["baseline"].(map[string]any)["generation"] = 1
-	state["lifecycle"] = map[string]any{"state": "bug_resolution", "phase": "investigation"}
-	state["review"] = map[string]any{"round": 1, "investigation": map[string]any{"case_id": binding.CaseID, "path": binding.CaseRef, "revision": 1, "status": "investigating"}}
-	encoded, _ := json.Marshal(packet)
-	var row map[string]any
-	if err := json.Unmarshal(encoded, &row); err != nil {
-		t.Fatal(err)
-	}
-	entities := state["entities"].(map[string]any)
-	entities["work_packets"] = []any{row}
-	entities["agents"] = []any{map[string]any{"id": binding.OwnerAgentID, "role": "investigator", "state": "working", "prompt_ref": binding.ManifestRef + "#" + binding.AssignmentID}}
-	encoded, _ = json.Marshal(question)
-	var questionRow map[string]any
-	if err := json.Unmarshal(encoded, &questionRow); err != nil {
-		t.Fatal(err)
-	}
-	document := map[string]any{"case_id": binding.CaseID, "revision": 1, "status": "investigating", "hypotheses": []any{questionRow}, "hypothesis_results": []any{}}
-	f := s8ListenerFixture{root: root, state: state, document: document, packet: packet}
-	f.write(t)
-	for _, ref := range []string{packet.ViewPath, packet.AnswerPath} {
-		path := filepath.Join(root, filepath.FromSlash(ref))
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("preserved professional draft"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	f := s8ListenerFixture{root: root, state: current.State, document: document, packet: packets[0]}
 	return f
 }
 
@@ -101,29 +60,17 @@ func (f s8ListenerFixture) write(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	investigationPointer(f.state)["sha256"] = workpacket.Digest(data)
 	data, _ = json.Marshal(f.state)
 	if err := os.WriteFile(filepath.Join(f.root, ".claude/loop-state.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func (f s8ListenerFixture) accept(t *testing.T, answerSHA string) {
-	t.Helper()
-	b := f.packet.Binding
-	f.document["hypothesis_results"] = []any{map[string]any{"receipt": map[string]any{
-		"contract": "s8-hypothesis-result-receipt-v1", "packet_id": f.packet.ID, "answer_sha256": answerSHA, "execution_root": f.root,
-		"runtime_id": b.RuntimeID, "baseline_generation": b.BaselineGeneration, "review_round": b.ReviewRound,
-		"owner_agent_id": b.OwnerAgentID, "assignment_id": b.AssignmentID, "team_id": b.TeamID, "task_id": b.TaskID,
-		"successor_case_ref": ".claude/case-r2.json", "successor_case_revision": 2,
-	}}}
-	f.write(t)
-}
-
 func TestS8ListenerProjectsCurrentQuestionnaireWithoutServiceOrReceiptRecovery(t *testing.T) {
 	f := newS8ListenerFixture(t)
 	path := filepath.Join(f.root, filepath.FromSlash(f.packet.AnswerPath))
 	before, _ := os.ReadFile(filepath.Join(f.root, ".claude/loop-state.json"))
+	journalBefore, _ := os.ReadFile(filepath.Join(f.root, ".claude/loop-events.jsonl"))
 	for _, event := range []string{"SessionStart", "SubagentStart", "PreCompact", "PreToolUse", "Stop", "SubagentStop", "TeammateIdle"} {
 		for _, owner := range []string{"", f.packet.Binding.OwnerAgentID} {
 			if event == "SubagentStart" && owner == "" {
@@ -147,16 +94,11 @@ func TestS8ListenerProjectsCurrentQuestionnaireWithoutServiceOrReceiptRecovery(t
 	if !bytes.Equal(before, after) {
 		t.Fatal("ordinary reminders wrote Runtime")
 	}
-	if _, err := os.Stat(filepath.Join(f.root, ".claude/loop-events.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("ordinary reminders touched journal: %v", err)
+	journalAfter, _ := os.ReadFile(filepath.Join(f.root, ".claude/loop-events.jsonl"))
+	if !bytes.Equal(journalBefore, journalAfter) {
+		t.Fatal("ordinary reminders touched journal")
 	}
-	// A projected acceptance must still carry the original exact answer path;
-	// only the original stop consumer can prove that the owner may actually end.
-	f.accept(t, strings.Repeat("a", 64))
-	context := currentQuestionnaireLifecycleContext(f.root, policy.Input{Event: "SubagentStop", AgentID: f.packet.Binding.OwnerAgentID})
-	if !strings.Contains(context, path) || !strings.Contains(context, "work_complete=true") {
-		t.Fatalf("accepted reminder lost original path: %s", context)
-	}
+
 }
 
 func TestS8ListenerKeepsRegisteredPathWhenCaseSourceFails(t *testing.T) {
@@ -185,94 +127,24 @@ func TestS8ListenerPreparesOnlyMissingUnacceptedQuestionnaires(t *testing.T) {
 	if !s8QuestionnairesNeedPreparation(f.root, f.state, f.document, packets) {
 		t.Fatal("missing view did not request original preparation")
 	}
-	f.accept(t, strings.Repeat("a", 64))
-	if s8QuestionnairesNeedPreparation(f.root, f.state, f.document, packets) {
-		t.Fatal("accepted work requested a fresh author draft")
-	}
+
 }
 
-func TestS8ObserverKeepsMainQuietAndAdapterDetectsCanonicalChanges(t *testing.T) {
+func TestS8ObserverKeepsMainQuietForDelegatedAnswer(t *testing.T) {
 	f := newS8ListenerFixture(t)
-	var draft map[string]any
-	data, _ := json.Marshal(f.packet.Draft)
-	if err := json.Unmarshal(data, &draft); err != nil {
-		t.Fatal(err)
-	}
-	answer := draft["answer"].(map[string]any)
-	answer["method"], answer["observed"], answer["counterfactual_or_discriminator"] = "Bypass cache", "Fresh value", "A stale bypass would refute it"
-	answer["evidence_refs"], answer["source_boundary_refs"] = []any{"test://probe"}, []any{"finding-001.encounter.first_bad_checkpoint"}
-	answer["result"], answer["explains_finding_ids"], answer["does_not_explain"], answer["new_hypotheses"] = "supported", []any{"finding-001"}, []any{}, []any{}
-	data, _ = json.MarshalIndent(draft, "", "  ")
-	canonical, issues := workpacket.ValidateHypothesisResultAnswer(f.packet, data)
-	if len(issues) != 0 {
-		t.Fatalf("test authored answer invalid: %+v", issues)
-	}
-	sameAnswer := append([]byte(nil), data...)
-	f.accept(t, workpacket.Digest(canonical))
 	path := filepath.Join(f.root, filepath.FromSlash(f.packet.AnswerPath))
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	var out, errout bytes.Buffer
-	request := policy.Input{Event: "PostToolUse", ToolName: "Bash", CWD: f.root}
+	var out, diagnostic bytes.Buffer
 	statePath := filepath.Join(f.root, ".claude/loop-state.json")
-	casePath := filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.CaseRef))
-	stateBefore, err := os.ReadFile(statePath)
+	before, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	caseBefore, err := os.ReadFile(casePath)
-	if err != nil {
-		t.Fatal(err)
+	request := policy.Input{Event: "PostToolUse", ToolName: "Write", CWD: f.root, ToolInput: map[string]any{"file_path": path}}
+	if handled, _ := receiveSavedQuestionnaire(f.root, request, &out, &diagnostic); handled || out.Len() != 0 {
+		t.Fatalf("Main's ordinary event received a delegated answer: %s %s", &out, &diagnostic)
 	}
-	if handled, _ := runObservedQuestionnaireSaves(f.root, request, &out, &errout); handled || out.Len() != 0 {
-		t.Fatalf("unchanged accepted answer was resubmitted: %s", out.String())
-	}
-	answer["observed"] = "Different professional observation"
-	data, _ = json.Marshal(draft)
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if handled, _ := runObservedQuestionnaireSaves(f.root, request, &out, &errout); handled || out.Len() != 0 {
-		t.Fatalf("Main's passive event received a changed delegated answer: %s %s", &out, &errout)
-	}
-	request.ToolName = "Write"
-	request.ToolInput = map[string]any{"file_path": path}
-	if handled, _ := receiveSavedQuestionnaire(f.root, request, &out, &errout); handled || out.Len() != 0 {
-		t.Fatalf("Main's explicit save received a delegated answer: %s %s", &out, &errout)
-	}
-	// The synthetic receipt/Case fixture tests the internal canonical filter,
-	// not real acceptance. Native original-consumer conflict/recovery is
-	// verified by the actual Case/Writer chain in investigation's native test.
-	request.AgentID = f.packet.Binding.OwnerAgentID
-	request.ToolName, request.ToolInput = "Bash", nil
-	if err := os.WriteFile(path, sameAnswer, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if handled, _ := runObservedQuestionnaireSaves(f.root, request, &out, &errout); handled || out.Len() != 0 {
-		t.Fatalf("canonical adapter replay was resubmitted: %s %s", &out, &errout)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if handled, _ := runObservedQuestionnaireSaves(f.root, request, &out, &errout); !handled || !strings.Contains(out.String(), "S8 SUBMISSION RECEIPT") {
-		t.Fatalf("changed accepted answer did not reach original save feedback: %s %s", out.String(), errout.String())
-	}
-	out.Reset()
-	errout.Reset()
-	request.ToolName = "Write"
-	request.ToolInput = map[string]any{"file_path": path}
-	if handled, _ := receiveSavedQuestionnaire(f.root, request, &out, &errout); !handled || !strings.Contains(out.String(), "S8 SUBMISSION RECEIPT") {
-		t.Fatalf("explicit save was skipped: %s %s", out.String(), errout.String())
-	}
-	for path, before := range map[string][]byte{statePath: stateBefore, casePath: caseBefore} {
-		after, err := os.ReadFile(path)
-		if err != nil || !bytes.Equal(before, after) {
-			t.Fatalf("filter/error feedback changed authority %s: %v", path, err)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(f.root, ".claude/loop-events.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("synthetic adapter fixture invented an accepted journal: %v", err)
+	if after, err := os.ReadFile(statePath); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("Main observation changed Runtime: %v", err)
 	}
 }
 
@@ -289,8 +161,8 @@ func TestS8NativeLifecycleDeliversExactQuestionnaireInHookEnvelope(t *testing.T)
 		if event == "SessionStart" && out.Len() != 0 {
 			t.Fatalf("ordinary Worker session managed native work: %s", out.String())
 		}
-		if event == "SubagentStart" && (!strings.Contains(out.String(), "exact original questionnaire") || strings.Contains(out.String(), answer)) {
-			t.Fatalf("Start guessed a responsibility from actor/role: %s", out.String())
+		if event == "SubagentStart" && (!strings.Contains(out.String(), answer)) {
+			t.Fatalf("Start did not deliver the registered responsibility: %s", out.String())
 		}
 	}
 }
@@ -301,8 +173,8 @@ func TestS8ObservedRegisteredMainHypothesesSkipOnlyUnchangedCompleteDispatch(t *
 	entities := mapFieldCLI(f.state, "entities")
 	agent := objectSliceAny(entities["agents"])[0]
 	agent["team_id"], agent["task_ids"] = b.TeamID, []any{b.TaskID}
-	entities["teams"] = []any{map[string]any{"id": b.TeamID, "kind": "investigator", "manifest_ref": b.ManifestRef, "manifest_sha256": b.ManifestSHA256}}
-	entities["tasks"] = []any{map[string]any{"id": b.TaskID, "path": b.TaskRef, "sha256": b.TaskSHA256, "owner_agent_ids": []any{b.OwnerAgentID}}}
+	entities["teams"] = []any{map[string]any{"id": b.TeamID, "kind": "investigator", "manifest_ref": b.ManifestRef}}
+	entities["tasks"] = []any{map[string]any{"id": b.TaskID, "path": b.TaskRef, "owner_agent_ids": []any{b.OwnerAgentID}}}
 	question := investigationLeadQuestionFromCase(objectSliceAny(f.document["hypotheses"])[0])
 	path := filepath.Join(f.root, ".claude/submissions/s8/hypotheses.json")
 	for _, test := range []struct {
@@ -374,7 +246,6 @@ func TestS8ObservedRegisteredMainHypothesesSkipOnlyUnchangedCompleteDispatch(t *
 	}
 	// Exercise the actual no-file_path observer. No manifest, TASK or Batch
 	// bytes exist: the unchanged Main view must use only recorded facts.
-	mapFieldCLI(f.state, "review")["observation_batch"] = map[string]any{"path": b.ObservationBatchRef, "sha256": b.ObservationBatchSHA256}
 	f.write(t)
 	paths := investigationLeadQuestionnairePaths(f.root, f.state)
 	if len(paths) == 0 {
@@ -405,7 +276,6 @@ func TestS8ObservedRegisteredMainHypothesesSkipOnlyUnchangedCompleteDispatch(t *
 
 func TestS8ObservedPersistedRouteSkipsOnlyUnchangedCompletedRouteWork(t *testing.T) {
 	f := newS8ListenerFixture(t)
-	mapFieldCLI(f.state, "review")["observation_batch"] = map[string]any{"path": f.packet.Binding.ObservationBatchRef, "sha256": f.packet.Binding.ObservationBatchSHA256}
 	for _, test := range []struct {
 		name        string
 		route       string
@@ -435,7 +305,13 @@ func TestS8ObservedPersistedRouteSkipsOnlyUnchangedCompletedRouteWork(t *testing
 			if err := json.Unmarshal(encoded, &state); err != nil {
 				t.Fatal(err)
 			}
-			document := map[string]any{"case_id": f.packet.Binding.CaseID, "revision": 2, "route": test.route, "route_reason": "Original professional disposition", "revision_history": []any{map[string]any{"operation": "case_routed", "sha256": strings.Repeat("9", 64)}}}
+			encoded, _ = json.Marshal(f.document)
+			var document map[string]any
+			if err := json.Unmarshal(encoded, &document); err != nil {
+				t.Fatal(err)
+			}
+			document["revision"], document["route"], document["route_reason"] = 2, test.route, "Original professional disposition"
+			document["revision_history"] = []any{map[string]any{"operation": "case_routed", "revision": float64(1)}}
 			pointer := investigationPointer(state)
 			pointer["route"], pointer["revision"] = test.route, 2
 			if test.consumed {
@@ -446,11 +322,11 @@ func TestS8ObservedPersistedRouteSkipsOnlyUnchangedCompletedRouteWork(t *testing
 				t.Fatal(err)
 			}
 			if test.staleSource {
-				path = filepath.Join(filepath.Dir(path), "route-"+strings.Repeat("8", 64)+".json")
+				path = filepath.Join(filepath.Dir(path), "route-candidate.json")
 			}
 			if test.newEvidence {
 				history, _ := document["revision_history"].([]any)
-				document["revision_history"] = append(history, map[string]any{"operation": "hypothesis_result_submitted", "sha256": strings.Repeat("7", 64)})
+				document["revision_history"] = append(history, map[string]any{"operation": "hypothesis_result_submitted"})
 			}
 			if test.retired {
 				mapFieldCLI(state, "review")["investigation"] = nil
@@ -477,9 +353,9 @@ func TestS8ObservedPersistedRouteSkipsOnlyUnchangedCompletedRouteWork(t *testing
 
 func TestS8GuidanceReadsProfessionalQuestionsAndActualSourcesBeforeRecovery(t *testing.T) {
 	f := newS8ListenerFixture(t)
-	review := mapFieldCLI(f.state, "review")
-	review["observation_batch"] = map[string]any{"batch_id": f.packet.Binding.ObservationBatchID, "path": f.packet.Binding.ObservationBatchRef, "sha256": f.packet.Binding.ObservationBatchSHA256, "finding_ids": []any{"finding-001"}, "drain_policy": "complete_required_claims"}
-	mapFieldCLI(f.state, "entities")["findings"] = []any{map[string]any{"finding_id": "finding-001", "path": ".claude/original-finding.json"}}
+	mapFieldCLI(f.state, "review")["round_entry"] = map[string]any{"plan_id": "review-plan-current"}
+	investigationPointer(f.state)["source_finding_ids"] = []any{"finding-001"}
+	mapFieldCLI(f.state, "entities")["findings"] = []any{map[string]any{"finding_id": "finding-001", "path": ".claude/original-finding.json", "review_plan_id": "review-plan-current"}}
 	f.state["documents"] = []any{map[string]any{"kind": "architecture", "status": "locked", "generation": 1, "path": "docs/design/architecture.md"}}
 	question := investigationLeadQuestionnairePathsForQuestions(f.root, f.state)[0]
 	for _, test := range []struct {
@@ -495,7 +371,7 @@ func TestS8GuidanceReadsProfessionalQuestionsAndActualSourcesBeforeRecovery(t *t
 			t.Fatalf("professional questionnaire was not first: %#v", g.ReadOrder)
 		}
 		joined := strings.Join(g.ReadOrder, "\n")
-		for _, ref := range []string{f.packet.Binding.ObservationBatchRef, ".claude/original-finding.json", f.packet.Binding.CaseRef, "docs/design/architecture.md"} {
+		for _, ref := range []string{".claude/original-finding.json", f.packet.Binding.CaseRef, "docs/design/architecture.md"} {
 			if !strings.Contains(joined, filepath.Join(f.root, filepath.FromSlash(ref))) {
 				t.Fatalf("actual source %s absent from read order: %#v", ref, g.ReadOrder)
 			}

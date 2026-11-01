@@ -27,8 +27,9 @@ func TestCompleteTaskCanonicalResultPendingRecoveryRetainsOriginalArtifacts(t *t
 				t.Fatal(err)
 			}
 			afterState, afterJournal := registrationPairBytes(t, statePath, journalPath)
-			var previous map[string]any
-			if err := json.Unmarshal(beforeState, &previous); err != nil {
+
+			var durableState map[string]any
+			if err := json.Unmarshal(afterState, &durableState); err != nil {
 				t.Fatal(err)
 			}
 			lastLine := bytes.TrimSpace(bytes.TrimPrefix(afterJournal, beforeJournal))
@@ -36,15 +37,10 @@ func TestCompleteTaskCanonicalResultPendingRecoveryRetainsOriginalArtifacts(t *t
 			if err := json.Unmarshal(lastLine, &event); err != nil {
 				t.Fatal(err)
 			}
-			previousJSON, _ := json.MarshalIndent(previous, "", "  ")
-			desiredJSON, _ := json.MarshalIndent(accepted.State, "", "  ")
-			eventJSON, _ := json.Marshal(event)
 			pending := map[string]any{
 				"schema_version": "1.0.0", "previous_revision": accepted.Revision - 1,
-				"previous_state_sha256": registrationSHA(append(previousJSON, '\n')), "state_sha256": registrationSHA(append(desiredJSON, '\n')),
-				"journal_event_sha256": registrationSHA(append(eventJSON, '\n')),
-				"request_id":           event["request_id"], "idempotency_key": event["idempotency_key"],
-				"retain_last_transition": false, "state": accepted.State, "journal_event": event,
+				"request_id": event["request_id"], "idempotency_key": event["idempotency_key"],
+				"retain_last_transition": false, "state": durableState, "journal_event": event,
 			}
 			pendingBytes, _ := json.Marshal(pending)
 			marker := statePath + ".commit-pending.json"
@@ -60,7 +56,7 @@ func TestCompleteTaskCanonicalResultPendingRecoveryRetainsOriginalArtifacts(t *t
 				t.Fatalf("readonly Snapshot pending error = %v", err)
 			}
 			writer := loopruntime.NewWriter(statePath, journalPath, fixture.root, semantic.RuntimeCandidateValidator{})
-			removed, err := writer.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{ExpectedRevision: accepted.Revision - 1, ArtifactPath: receipt.ResultRef, ArtifactSHA256: receipt.ResultSHA256})
+			removed, err := writer.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{ExpectedRevision: accepted.Revision - 1, ArtifactPath: receipt.ResultRef})
 			if err != nil || removed {
 				t.Fatalf("pending artifact cleanup removed=%t err=%v", removed, err)
 			}

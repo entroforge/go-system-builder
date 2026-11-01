@@ -43,7 +43,8 @@ func CurrentFormalInputDocuments(root string, state map[string]any, files filevi
 			byReference[document.Reference] = document
 		}
 		for _, fact := range formal.Facts {
-			byReference[fact.Reference] = FormalInputDocument{Reference: fact.Reference, Kind: fact.Kind}
+			ref := fact.Reference
+			byReference[ref] = FormalInputDocument{Reference: ref, Kind: fact.Kind}
 		}
 		result := make([]FormalInputDocument, 0, len(formal.References))
 		for _, ref := range formal.References {
@@ -86,7 +87,6 @@ func currentRegisteredFormalInputDocuments(state map[string]any, generation int)
 			ID:      stringValue(document["id"]),
 			Path:    stringValue(document["path"]),
 			Version: stringValue(document["version"]),
-			SHA256:  stringValue(document["sha256"]),
 		}
 		result = append(result, FormalInputDocument{Reference: ref, Kind: stringValue(document["kind"])})
 	}

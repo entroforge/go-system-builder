@@ -61,7 +61,6 @@ var embeddedAssetPatterns = []string{
 	"team-manifest.schema.json",
 	"team-manifest.example.json",
 	"s10-audit-manifest.schema.json",
-	"readback-request.template.json",
 	"activation.template.json",
 }
 

@@ -37,13 +37,10 @@ func (b *Bundle) Sources(tasks map[string]bool) (map[string]string, error) {
 			if source.Status != "readable" {
 				continue
 			}
-			if !safePath(source.Path, false) || !digestPattern.MatchString(source.SHA256) {
+			if !safePath(source.Path, false) {
 				return nil, fmt.Errorf("frozen convention source is unsafe")
 			}
-			if old, ok := result[source.Path]; ok && old != source.SHA256 {
-				return nil, fmt.Errorf("convention source hashes conflict")
-			}
-			result[source.Path] = source.SHA256
+			result[source.Path] = source.Path
 		}
 	}
 	return result, nil
@@ -54,7 +51,7 @@ func (b *Bundle) ValidateInputs(inputs map[string]string) error {
 	}
 	tasks := map[string]bool{}
 	for _, row := range b.TaskConventions {
-		if inputs[row.TaskRef] != "" {
+		if _, present := inputs[row.TaskRef]; present {
 			tasks[row.TaskRef] = true
 		}
 	}
@@ -62,8 +59,8 @@ func (b *Bundle) ValidateInputs(inputs map[string]string) error {
 	if err != nil {
 		return err
 	}
-	for path, hash := range sources {
-		if inputs[path] != hash {
+	for path := range sources {
+		if _, present := inputs[path]; !present {
 			return fmt.Errorf("frozen context lacks convention source %s", path)
 		}
 	}

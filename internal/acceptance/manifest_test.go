@@ -540,8 +540,8 @@ func currentS10FixtureCompletion(t *testing.T, data []byte, kind, conclusion str
 	state := map[string]any{
 		"runtime_id": manifest.RuntimeID,
 		"baseline":   map[string]any{"generation": manifest.BaselineGeneration},
-		"review":     map[string]any{"round": manifest.ReviewRound},
-		"evidence":   []any{map[string]any{"id": "current-report", "path": "evidence.json", "kind": kind, "status": "valid", "baseline_generation": manifest.BaselineGeneration, "review_round": manifest.ReviewRound}},
+		"review":     map[string]any{"round_entry": map[string]any{"plan_id": "review-plan-test"}},
+		"evidence":   []any{map[string]any{"id": "current-report", "path": "evidence.json", "kind": kind, "status": "valid", "baseline_generation": manifest.BaselineGeneration, "review_plan_id": "review-plan-test"}},
 	}
 	return ValidateCurrentS10Evidence(root, state, kind)
 }

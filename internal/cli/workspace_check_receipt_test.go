@@ -31,7 +31,7 @@ func TestWorkspaceToolReceiptOriginalWriterAndCheckpointProvenance(t *testing.T)
 		t.Fatal(err)
 	}
 	p := checkexec.Profile{ID: "CP-OWN", Version: "v1", CheckIndex: 0, Command: "true", Location: "worker", TimeoutSeconds: 1, EnvironmentPolicy: "declared_only", Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{}, Fixtures: []checkexec.FileRef{}, InputClosure: "whole_tree", SideEffects: "none", ReusePolicy: "never"}
-	e := workspace.Execution{AssignmentID: "assignment", RuntimeID: workspace.RuntimeID(f.state), BaselineGeneration: workspace.Generation(f.state), Generation: 1, AgentID: "builder", Path: filepath.Join(f.root, ".worktrees/worker"), Branch: "codex/worker", TargetBranch: b.Branch, BaseCommit: b.BoundHead, Status: "preparing", CheckLocation: "worker", WritePaths: []string{}, Checks: []string{p.Command}, Inputs: map[string]string{}, CheckProfiles: []checkexec.Profile{p}}
+	e := workspace.Execution{AssignmentID: "assignment", RuntimeID: workspace.RuntimeID(f.state), BaselineGeneration: workspace.Generation(f.state), Generation: 1, AgentID: "builder", Path: filepath.Join(f.root, ".worktrees/worker"), Branch: "codex/worker", TargetBranch: b.Branch, Status: "preparing", CheckLocation: "worker", WritePaths: []string{}, Checks: []string{p.Command}, Inputs: map[string]string{}, CheckProfiles: []checkexec.Profile{p}}
 	if err := b.Materialize(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +47,6 @@ func TestWorkspaceToolReceiptOriginalWriterAndCheckpointProvenance(t *testing.T)
 	if err := b.Bootstrap(e, executable); err != nil {
 		t.Fatal(err)
 	}
-	e.BootstrapSHA256, err = workspace.BootstrapDigest(e)
-	if err != nil {
-		t.Fatal(err)
-	}
 	e.Status = "ready"
 	b.Executions[e.AssignmentID] = e
 	f.state["workspace"] = workspace.Encode(b)
@@ -63,7 +59,7 @@ func TestWorkspaceToolReceiptOriginalWriterAndCheckpointProvenance(t *testing.T)
 	os.MkdirAll(dir, 0700)
 	log := filepath.Join(dir, "output.log")
 	os.WriteFile(log, []byte("unit fixture output"), 0600)
-	data, err := checkexec.SealReceipt(map[string]any{"version": 2, "command": p.Command, "status": "pass", "output": log, "profile_observation": observation, "check_binding": workspace.CheckBinding(e)}, log)
+	data, err := checkexec.SealReceipt(map[string]any{"version": 2, "command": p.Command, "status": "pass", "output": log, "profile_observation": observation, "check_binding": workspace.CheckBinding(e)})
 	if err != nil {
 		t.Fatal(err)
 	}

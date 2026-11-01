@@ -52,21 +52,21 @@ claim a dispatch batch. A predecessor releases its consumers only after the
 original Result has been consumed and its required integration checkpoint
 verified, without waiting for unrelated tasks in the prior wave. Queued work is retained.
 
-A reported result is not integration. The current result, checks and matching
-assignment checkpoint must be verified after merging back into the root's bound
-development branch. The TASK and assignment consume the same canonical Result, including
-resubmissions. The checkpoint binds the result path and content SHA256;
-changing content requires fresh integration checks even if created_at is unchanged.
-A checkpoint without this binding cannot release planned consumers.
+A reported result is not integration. Main integrates the actual contribution
+into the bound development branch and performs the necessary checks. The TASK
+and assignment continue from the original accepted Result and the recorded
+integration facts. Main assesses any actual later change and arranges the
+necessary review or checks; historical content hashes are not qualifications
+for dispatch, integration, or releasing planned consumers.
 Never update frozen plan checkboxes or TASK lifecycle fields;
 execution progress is runtime-owned. Clean temporary worktrees promptly; cleanup
 remains advisory. Plan/member/dependency/scope changes return to planning/review;
 capacity changes and runtime progress do not change the plan.
 Never rewrite locked TASKs, issued Assignments or accepted facts to repair a
-parser-derived scope. With unchanged original TASK bytes, an applicable existing
-Assignment execution revision can produce an accurate successor subject to its
-original new-owner, contribution-disposition and approval constraints; modes
-without approval rebinding support remain unsupported. A real TASK or
+parser-derived scope. An applicable existing Assignment execution revision can
+produce an accurate successor using its original responsibility and recorded
+revision, subject to its original new-owner, contribution-disposition and
+approval constraints; modes without approval rebinding support remain unsupported. A real TASK or
 professional scope change still requires original planning and review.
 Before acceptance, correct the original TASK/index and save its original answer.
 For accepted planning while S4 is still current, use

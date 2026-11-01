@@ -20,17 +20,16 @@ func TestS8OriginalHypothesisConsumesS7RuntimeReferenceWithoutAlias(t *testing.T
 	if err := os.WriteFile(filepath.Join(f.root, "observation.json"), []byte(`{"observation":"fixture boundary"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	round := 1
 	before, err := runtime.RecordEvidence(f.root, f.statePath, f.journalPath, runtime.EvidenceRequest{
 		ExpectedRevision: -1, ID: "ev-qa-observation", Kind: "qa_review", Path: "observation.json",
-		ProducedBy: []string{"qa-reviewer"}, ReviewRound: &round, Validator: semantic.RuntimeCandidateValidator{},
+		ProducedBy: []string{"qa-reviewer"}, Validator: semantic.RuntimeCandidateValidator{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ref := "runtime:ev-qa-observation"
 	registered, err := investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{
-		ExpectedRevision: -1, CaseID: "investigation-case-observation-batch-r1", HypothesisID: "hypothesis-runtime-reference",
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", HypothesisID: "hypothesis-runtime-reference",
 		Statement: "the recorded boundary drops the value", Invariant: "the value survives the boundary",
 		Discriminator: "compare the recorded observations", ExpectedOutcomes: map[string]any{"support": "value is dropped", "refute": "value survives"},
 		SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{ref}, AssignmentID: "assignment-runtime-reference",
@@ -51,23 +50,11 @@ func TestS8OriginalHypothesisConsumesS7RuntimeReferenceWithoutAlias(t *testing.T
 	}
 }
 
-func TestExecutionAttestationRejectsRuntimeReferenceWithSchemeInID(t *testing.T) {
-	for _, ref := range []string{"runtime:ev-observation", "runtime:test://unregistered"} {
-		if err := investigation.ValidateEvidenceRefs([]string{ref}, investigation.EvidenceAttestationOptions{RequireExecution: true}); err == nil {
-			t.Fatalf("runtime reference became execution evidence: %s", ref)
-		}
-	}
-	if err := investigation.ValidateEvidenceRefs([]string{"test://actual-run"}, investigation.EvidenceAttestationOptions{RequireExecution: true}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestNativeS8StopConsumesRuntimeReferenceAndReplaysOriginalReceipt(t *testing.T) {
 	f, owners := prepareS8GenerationTwoFixture(t, false)
 	owner := owners[0]
 	writeInvestigationBytes(t, f.root, "observation.json", []byte(`{"observation":"fixture boundary"}`))
-	round := 1
-	current, err := runtime.RecordEvidence(f.root, f.statePath, f.journalPath, runtime.EvidenceRequest{ExpectedRevision: -1, ID: "ev-native-observation", Kind: "qa_review", Path: "observation.json", ProducedBy: []string{owner.ownerID}, ReviewRound: &round, Validator: semantic.RuntimeCandidateValidator{}})
+	current, err := runtime.RecordEvidence(f.root, f.statePath, f.journalPath, runtime.EvidenceRequest{ExpectedRevision: -1, ID: "ev-native-observation", Kind: "qa_review", Path: "observation.json", ProducedBy: []string{owner.ownerID}, Validator: semantic.RuntimeCandidateValidator{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,19 +100,18 @@ func TestNativeS8StopConsumesRuntimeReferenceAndReplaysOriginalReceipt(t *testin
 func TestS8QuestionPreparationAndNativeStopUseOriginalRuntimeReference(t *testing.T) {
 	f, _ := prepareS8GenerationTwoFixture(t, false)
 	writeInvestigationBytes(t, f.root, "question-observation.json", []byte(`{"observation":"source-boundary fixture"}`))
-	round := 1
-	current, err := runtime.RecordEvidence(f.root, f.statePath, f.journalPath, runtime.EvidenceRequest{ExpectedRevision: -1, ID: "ev-question-source", Kind: "qa_review", Path: "question-observation.json", ProducedBy: []string{"qa-reviewer"}, ReviewRound: &round, Validator: semantic.RuntimeCandidateValidator{}})
+	current, err := runtime.RecordEvidence(f.root, f.statePath, f.journalPath, runtime.EvidenceRequest{ExpectedRevision: -1, ID: "ev-question-source", Kind: "qa_review", Path: "question-observation.json", ProducedBy: []string{"qa-reviewer"}, Validator: semantic.RuntimeCandidateValidator{}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pointer := investigationPointerFromState(t, current.State)
 	owner := s8OwnerFixture{hypothesisID: "hypothesis-runtime-question", assignmentID: "assignment-runtime-question", ownerID: "investigator-runtime-question", teamID: "workgroup-runtime-question", taskID: "TASK-842-99", dispatchMode: "plan_checkpoint"}
-	current, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: current.Revision, ExpectedCaseRevision: s8TestInt(pointer["revision"]), ExpectedCaseSHA256: pointer["sha256"].(string), CaseID: pointer["case_id"].(string), HypothesisID: owner.hypothesisID, AssignmentID: owner.assignmentID, Statement: "the observed value is lost at the decoder boundary", Invariant: "the required value survives the boundary", Discriminator: "compare the registered observation with the boundary output", ExpectedOutcomes: map[string]any{"support": "the value is lost", "refute": "the value survives"}, SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"runtime:ev-question-source"}})
+	current, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: current.Revision, ExpectedCaseRevision: s8TestInt(pointer["revision"]), CaseID: pointer["case_id"].(string), HypothesisID: owner.hypothesisID, AssignmentID: owner.assignmentID, Statement: "the observed value is lost at the decoder boundary", Invariant: "the required value survives the boundary", Discriminator: "compare the registered observation with the boundary output", ExpectedOutcomes: map[string]any{"support": "the value is lost", "refute": "the value survives"}, SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"runtime:ev-question-source"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pointer = investigationPointerFromState(t, current.State)
-	current = registerS8Owner(t, f, current, owner, pointer["path"].(string), pointer["sha256"].(string))
+	current = registerS8Owner(t, f, current, owner, pointer["path"].(string))
 	packets, err := investigation.IssueHypothesisResultPackets(f.root, f.statePath, f.journalPath, current.Revision, owner.ownerID)
 	if err != nil || len(packets) != 1 {
 		t.Fatalf("original question preparation rejected the valid reference: packets=%d err=%v", len(packets), err)
@@ -134,7 +120,7 @@ func TestS8QuestionPreparationAndNativeStopUseOriginalRuntimeReference(t *testin
 	found := false
 	for _, ref := range p.Inputs.EvidenceRefs {
 		if ref.Ref == "runtime:ev-question-source" {
-			found = ref.Attestation == "runtime_index" && ref.Path == "question-observation.json" && ref.SHA256 != ""
+			found = ref.Attestation == "reference"
 		}
 	}
 	if !found {

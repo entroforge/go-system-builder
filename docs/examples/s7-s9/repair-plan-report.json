@@ -1,13 +1,11 @@
 {
   "session_ref": {
     "id": "repair-session-example",
-    "path": ".claude/evidence/repair/sessions/repair-session-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/sessions/repair-session-example.json"
   },
   "plan_ref": {
     "id": "repair-plan-example",
-    "path": ".claude/evidence/repair/plans/repair-plan-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/plans/repair-plan-example.json"
   },
   "assignment_id": "repair-assignment-unit-1",
   "assertion_ids": ["root-1", "gap-1"],

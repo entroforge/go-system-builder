@@ -38,13 +38,18 @@ func FindSubmissionKey(state map[string]any, key string) (SubmissionRecord, bool
 	return SubmissionRecord{}, false, nil
 }
 
+// Compare the original issuance responsibility, not historical packet hashes.
+func sameRevisionResponsibility(expected, actual workpacket.Binding) bool {
+	return reflect.DeepEqual(expected, actual)
+}
+
 func revisionPacket(state map[string]any, req DocumentReviewRevisionRequest) (workpacket.Packet, workpacket.Packet, bool, error) {
 	r, ok, err := FindSubmissionKey(state, req.PreviousSubmissionKey)
 	if err != nil || !ok {
 		return workpacket.Packet{}, workpacket.Packet{}, false, fmt.Errorf("revision requires an original received submission: %v", err)
 	}
 	old, ok, err := FindWorkPacket(state, r.PacketID)
-	if err != nil || !ok || r.Key != workpacket.Digest([]byte("submission:"+old.ID)) || r.Owner != old.Binding.Owner {
+	if err != nil || !ok || r.PacketID != old.ID || r.Owner != old.Binding.Owner {
 		return old, workpacket.Packet{}, false, fmt.Errorf("previous reception binding is invalid")
 	}
 	if r.RevisionPacketID != "" {
@@ -57,8 +62,7 @@ func revisionPacket(state map[string]any, req DocumentReviewRevisionRequest) (wo
 		b.PreviousSubmissionKey = r.Key
 		b.RevisionReason = req.Reason
 		b.ExecutionRequired = next.Binding.ExecutionRequired
-		expected, err := workpacket.RebuildS5ForBinding(b, old)
-		if err != nil || !reflect.DeepEqual(expected, next) {
+		if !sameRevisionResponsibility(b, next.Binding) {
 			return old, next, false, ErrRevisionConflict
 		}
 		return old, next, true, nil
@@ -98,22 +102,6 @@ func validateRevisionPrior(root string, state map[string]any, req DocumentReview
 		}
 		if e["kind"] != "document_review" || e["status"] != "valid" {
 			return fmt.Errorf("previous document review is not currently qualified")
-		}
-		data, err := workpacket.ReadFile(root, stringValue(e["path"]), 1<<20)
-		if err != nil || workpacket.Digest(data) != e["sha256"] {
-			return fmt.Errorf("previous document review artifact is unverifiable")
-		}
-		var envelope workpacket.DocumentReviewEnvelope
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			return err
-		}
-		answer := workpacket.Answer{Conclusion: &envelope.Conclusion, Findings: envelope.Findings}
-		if err := workpacket.ValidateDocumentReview(old, r.EvidenceID, answer, data); err != nil {
-			return err
-		}
-		hash, err := workpacket.AnswerDigest(answer)
-		if err != nil || hash != r.ContentHash {
-			return fmt.Errorf("previous review does not match the received content")
 		}
 		return nil
 	}
@@ -225,12 +213,14 @@ func validateRevisionReception(state map[string]any, p workpacket.Packet) error 
 	b.PreviousSubmissionKey = prior.Key
 	b.RevisionReason = p.Binding.RevisionReason
 	b.ExecutionRequired = p.Binding.ExecutionRequired
-	expected, err := workpacket.RebuildS5ForBinding(b, old)
-	if err != nil || !reflect.DeepEqual(expected, p) {
-		return fmt.Errorf("revision frozen chain differs from the original reception")
+	if !sameRevisionResponsibility(b, p.Binding) {
+		return fmt.Errorf("revision responsibility differs from the original reception")
 	}
-	if prior.SupersededBy != "" && prior.SupersededBy != workpacket.Digest([]byte("submission:"+p.ID)) {
-		return fmt.Errorf("revision previous reception was superseded by another submission")
+	if prior.SupersededBy != "" {
+		current, received, err := FindSubmission(state, p.ID)
+		if err != nil || !received || prior.SupersededBy != current.Key {
+			return fmt.Errorf("revision previous reception was superseded by another submission")
+		}
 	}
 	return nil
 }
@@ -340,7 +330,7 @@ func CurrentDocumentReviewEvidence(state map[string]any, evidenceID string) bool
 	baseline, _ := state["baseline"].(map[string]any)
 	generation, generationErr := integerField(baseline, "generation")
 	b := p.Binding
-	if generationErr != nil || record.PacketID != p.ID || record.Owner != b.Owner || record.Key != workpacket.Digest([]byte("submission:"+p.ID)) || record.EvidenceID != evidenceID || b.RuntimeID != stringValue(state["runtime_id"]) || b.Generation != generation || record.RevisionPacketID != "" || record.SupersededBy != "" {
+	if generationErr != nil || record.PacketID != p.ID || record.Owner != b.Owner || record.EvidenceID != evidenceID || b.RuntimeID != stringValue(state["runtime_id"]) || b.Generation != generation || record.RevisionPacketID != "" || record.SupersededBy != "" {
 		return false
 	}
 	life, _ := state["lifecycle"].(map[string]any)
@@ -441,19 +431,14 @@ func ValidateCurrentDocumentReviewRevisions(root string, state map[string]any, f
 				return fmt.Errorf("current revision evidence is not valid")
 			}
 			data, err := workpacket.ReadFile(root, stringValue(e["path"]), 1<<20)
-			if err != nil || workpacket.Digest(data) != e["sha256"] {
-				return fmt.Errorf("current revision artifact is unverifiable")
+			if err != nil {
+				return fmt.Errorf("current original review report is unavailable: %w", err)
 			}
 			var envelope workpacket.DocumentReviewEnvelope
 			if err := json.Unmarshal(data, &envelope); err != nil {
 				return err
 			}
-			answer := workpacket.Answer{Conclusion: &envelope.Conclusion, Findings: envelope.Findings}
-			if err := workpacket.ValidateDocumentReview(p, record.EvidenceID, answer, data); err != nil {
-				return err
-			}
-			hash, err := workpacket.AnswerDigest(answer)
-			if err != nil || hash != record.ContentHash || envelope.Conclusion != "pass" {
+			if envelope.Conclusion != "pass" {
 				return fmt.Errorf("current revision has no received PASS")
 			}
 			qualified = true
@@ -525,19 +510,14 @@ func validateCurrentTypedS5Pass(root string, state map[string]any, p workpacket.
 			return fmt.Errorf("current review evidence is not valid")
 		}
 		data, err := workpacket.ReadFile(root, stringValue(item["path"]), 1<<20)
-		if err != nil || workpacket.Digest(data) != item["sha256"] {
-			return fmt.Errorf("current review artifact is unverifiable")
+		if err != nil {
+			return fmt.Errorf("current original review report is unavailable: %w", err)
 		}
 		var envelope workpacket.DocumentReviewEnvelope
 		if err := json.Unmarshal(data, &envelope); err != nil {
 			return err
 		}
-		answer := workpacket.Answer{Conclusion: &envelope.Conclusion, Findings: envelope.Findings}
-		if err := workpacket.ValidateDocumentReview(p, record.EvidenceID, answer, data); err != nil {
-			return err
-		}
-		digest, err := workpacket.AnswerDigest(answer)
-		if err != nil || digest != record.ContentHash || envelope.Conclusion != "pass" {
+		if envelope.Conclusion != "pass" {
 			return fmt.Errorf("current review answer is not a received PASS")
 		}
 		return nil

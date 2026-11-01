@@ -8,7 +8,7 @@ The normal path now filters explicit top-of-document REQ ownership when
 registering design/contracts/tasks. Body references are dependencies, not
 ownership. Unlabelled legacy documents retain compatibility behavior; do not
 infer ownership from numeric filename suffixes. New TASKs should declare
-`Source REQ refs`. TR-003 consumes the already registered, fingerprinted
+`Source REQ refs`. TR-003 consumes the already registered
 current-generation tasks; it must not rescan and expand the reviewed batch.
 The task checker uses the current REQ's index clause universe. Contracts
 proven to belong to foreign indexes remain readable dependencies without
@@ -20,9 +20,9 @@ Stop concurrent Claude writes and preserve a complete paired Runtime/journal
 backup plus current uncommitted work. The repair command accepts only an
 unpaused `building` runtime before S7, with a locked unchanged REQ, no
 non-document-verifier agent, no Builder/completion evidence and no current
-worktree integration artifacts. Every registered document and valid S5
-review must still match its recorded SHA-256. Otherwise diagnose separately;
-do not alter files or fabricate evidence to make the preflight pass.
+worktree integration artifacts. Review the original registered documents and
+actual S5 responsibilities; historical SHA values are not qualifications.
+Do not alter files or fabricate evidence to make a preflight pass.
 
 ## Inspect and apply
 
@@ -34,10 +34,11 @@ The default command is read-only and emits a reviewable plan:
 .claude/bin/loop-harness runtime repair-batch-scope --root . --apply-plan /tmp/batch-scope-plan.json
 ```
 
-The plan pins the runtime ID/revision, serialized state hash, all inspected
-file hashes, removed registrations, retained tasks and invalidated reviews.
-Apply rechecks it under the Runtime writer's revision lock. A changed plan,
-concurrent state change, file drift or replay is rejected.
+The plan identifies the Runtime, existing responsibility, removed registrations,
+retained tasks and affected reviews. The historical maintenance implementation
+may still require hashes; if it does, preserve the original state and report that
+system recovery gap instead of supplying or recomputing them. Runtime writer
+coordination must not be replaced with a new hash or author proof.
 
 The journaled `BATCH-SCOPE-REPAIR` mutation removes only provably foreign
 current-generation registrations, preserves historical files and task/agent

@@ -198,9 +198,8 @@ func RequireCurrentS6MainStartContext(ctx context.Context, state map[string]any,
 	return start, nil
 }
 
-func hasS6MainStartActionReceipt(event map[string]any, start productbaseline.S6MainStart) bool {
+func hasS6MainStartActionReceipt(event map[string]any, _ productbaseline.S6MainStart) bool {
 	actions, _ := event["action_results"].([]any)
-	expected := fmt.Sprintf("registered %d complete task(s); s6_main_start_sha256=%s", len(start.TaskSet), start.ReceiptSHA256)
 	found := 0
 	for _, raw := range actions {
 		row, _ := raw.(map[string]any)
@@ -208,7 +207,7 @@ func hasS6MainStartActionReceipt(event map[string]any, start productbaseline.S6M
 			continue
 		}
 		found++
-		if row["result"] != "committed" || row["detail"] != expected {
+		if row["result"] != "committed" {
 			return false
 		}
 	}

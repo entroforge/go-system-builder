@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/projectconventions"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
@@ -89,7 +90,7 @@ func runWorkspaceAnswer(args []string, stdout, stderr io.Writer) int {
 			result.ConventionsResolverVersion = frozen.ConventionsResolverVersion
 			result.TaskConventions = nil
 			if len(frozen.TaskConventions) > 0 {
-				if err := json.Unmarshal(frozen.TaskConventions, &result.TaskConventions); err != nil {
+				if err := projectconventions.DecodeProjections(frozen.TaskConventions, &result.TaskConventions); err != nil {
 					return fail(err)
 				}
 			}
@@ -176,8 +177,16 @@ func documentReviewStopPreflight(root string, input policy.Input) (bool, policy.
 		if err != nil {
 			return blocked(err.Error())
 		}
+		service, err := submission.New(root)
+		if err != nil {
+			return blocked(err.Error())
+		}
+		receipt, err := service.ReceiptPacket(e.AgentID, p.ID)
+		if err != nil {
+			return blocked(err.Error())
+		}
 		life, _ := state["lifecycle"].(map[string]any)
-		if life["state"] != "document_verification" || stageAnswerEntry(life["phase_revision"]) != p.Binding.StageEntry || submission.CompletedOwner(root, e.AgentID) {
+		if life["state"] != "document_verification" || stageAnswerEntry(life["phase_revision"]) != p.Binding.StageEntry || receipt.WorkComplete {
 			return true, policy.Decision{Decision: "allow"}
 		}
 		if input.StopHookActive {

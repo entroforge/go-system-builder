@@ -336,13 +336,11 @@ func replayFixture(t *testing.T) (string, map[string]any) {
 	req039fixtures.SeedPlanningDesignComplete(t, root, state)
 	req039fixtures.WritePlanningContractPass(t, root, state)
 	req039fixtures.WritePlanningTaskPass(t, root, state)
-	reqData, err := os.ReadFile(filepath.Join(root, "docs/requirements/REQ-039-loop-control-plane.md"))
-	if err != nil {
+	if _, err := os.ReadFile(filepath.Join(root, "docs/requirements/REQ-039-loop-control-plane.md")); err != nil {
 		t.Fatal(err)
 	}
-	state["bound_req"].(map[string]any)["sha256"] = req039fixtures.Sha256Hex(reqData)
 	req039fixtures.CommitFixture(t, root)
-	state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release", "bound_commit": "fixture"}
+	state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release"}
 	writeReplayPair(t, filepath.Join(root, ".claude", "loop-state.json"), filepath.Join(root, ".claude", "loop-events.jsonl"), state)
 	return root, state
 }

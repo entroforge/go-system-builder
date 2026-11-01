@@ -21,7 +21,7 @@ func TestS7DispatchGuidanceUsesActualPrerequisitesAndSource(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(root, ".claude/workgroups"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			plan := review.Plan{ReviewPlanID: "current", ReviewRound: 1, BaselineGeneration: 1,
+			plan := review.Plan{ReviewPlanID: "current", BaselineGeneration: 1,
 				Claims:      []review.Claim{{ClaimID: "upstream", Applicability: "required"}, {ClaimID: "next", Applicability: "required"}},
 				Assignments: []review.PlanAssignment{{AssignmentID: "upstream", ClaimIDs: []string{"upstream"}, ExecutionWave: "static"}, {AssignmentID: "next", ClaimIDs: []string{"next"}, ExecutionWave: "static"}},
 			}
@@ -36,7 +36,7 @@ func TestS7DispatchGuidanceUsesActualPrerequisitesAndSource(t *testing.T) {
 			if err := os.WriteFile(path, data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			pointer := map[string]any{"plan_id": "current", "path": "plan.json", "sha256": workpacket.Digest(data), "review_round": 1, "status": "running"}
+			pointer := map[string]any{"plan_id": "current", "path": "plan.json", "status": "running"}
 			candidate := map[string]any{"status": "planned"}
 			holder := map[string]any{"status": "dispatched", "agent_id": "qa", "result_ref": nil}
 			state := map[string]any{"schema_version": "1.2.0", "baseline": map[string]any{"generation": 1}, "lifecycle": map[string]any{"state": "verification", "phase": "running"}, "review": map[string]any{
@@ -61,7 +61,7 @@ func TestS7DispatchGuidanceUsesActualPrerequisitesAndSource(t *testing.T) {
 			if strings.Contains(out, "manifest-draft") != (scenario == "ready") {
 				t.Fatalf("incorrect preparation direction: %s", out)
 			}
-			if scenario == "source-drift" && !strings.Contains(out, "drifted") {
+			if scenario == "source-drift" && !strings.Contains(out, "decode ReviewPlan") {
 				t.Fatalf("lost actual source failure: %s", out)
 			}
 			if strings.HasSuffix(scenario, "-wait") && !strings.Contains(out, "waits") {
@@ -88,26 +88,25 @@ func TestS7ClosedRoundGuidanceDoesNotRedispatchOldQueue(t *testing.T) {
 	}
 }
 
-func TestS7NativeTaskCarriesActualSourceCaptureAndReturn(t *testing.T) {
+func TestS7NativeTaskCarriesOriginalAnswerWithoutCaptureProtocol(t *testing.T) {
 	root, source := "/main review", "/reviewer's original"
 	p := workpacket.ReviewResultPacket{Binding: workpacket.ReviewResultBinding{RuntimeID: "loop-req", BaselineGeneration: 3, AssignmentID: "qa-current", OwnerAgentID: "reviewer-current"}}
 	out := s7ReviewerTaskGuidance(root, source, source+"/view.json", source+"/answer.json", p, true)
-	for _, want := range []string{source + "/view.json", source + "/answer.json", "frozen subjects/Claims", "PreToolUse", "Stop/SubagentStop", "reception does not wait for a final message or returned reference", "source/environment blockers to Main", "Optional capture", "--cwd " + s7CaptureShellQuote(source), "--assignment 'qa-current'", "capture step", review.CaptureFile(root, "loop-req", 3, "qa-current"), "path: evidence"} {
+	for _, want := range []string{source + "/view.json", source + "/answer.json", "PreToolUse", "Stop/SubagentStop", "No extra submit, returned reference", "actual blockers"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q: %s", want, out)
 		}
 	}
 	short := s7ReviewerTaskGuidance(root, source, source+"/view.json", source+"/answer.json", p, false)
-	if strings.Contains(short, "capture exec") || len(short) >= len(out) || !strings.Contains(short, source+"/view.json") || !strings.Contains(short, source+"/answer.json") || !strings.Contains(short, "SubagentStop") {
+	if strings.Contains(out, "capture exec") || strings.Contains(out, "capture step") || len(short) >= len(out) || !strings.Contains(short, source+"/view.json") || !strings.Contains(short, source+"/answer.json") || !strings.Contains(short, "SubagentStop") {
 		t.Fatalf("ordinary reminder lost the exact handoff or repeated long capture instructions: %s", short)
 	}
 }
 
-// Both ordinary observation and session recovery must select the static wave
-// even when a behavior Assignment sorts before it in the visible queue.
-func TestS7RecoveryAndOrdinaryGuidanceShareWaveEligibility(t *testing.T) {
+// Ordinary observation and session recovery must not recreate a wave gate.
+func TestS7RecoveryAndOrdinaryGuidanceShareEligibility(t *testing.T) {
 	root := t.TempDir()
-	plan := review.Plan{ReviewPlanID: "wave-plan", ReviewRound: 1, BaselineGeneration: 1,
+	plan := review.Plan{ReviewPlanID: "wave-plan", BaselineGeneration: 1,
 		Claims:      []review.Claim{{ClaimID: "static", Applicability: "required"}, {ClaimID: "behavior", Applicability: "required"}},
 		Assignments: []review.PlanAssignment{{AssignmentID: "z-static", ClaimIDs: []string{"static"}, ExecutionWave: "static"}, {AssignmentID: "a-behavior", ClaimIDs: []string{"behavior"}, ExecutionWave: "behavior"}},
 	}
@@ -116,14 +115,14 @@ func TestS7RecoveryAndOrdinaryGuidanceShareWaveEligibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := map[string]any{"runtime_id": "loop-wave", "baseline": map[string]any{"generation": 1}, "lifecycle": map[string]any{"state": "verification", "phase": "running"}, "review": map[string]any{
-		"round": 1, "plan": map[string]any{"plan_id": "wave-plan", "path": "plan.json", "sha256": workpacket.Digest(data), "review_round": 1, "status": "running"},
+		"round": 1, "plan": map[string]any{"plan_id": "wave-plan", "path": "plan.json", "status": "running"},
 		"assignments": map[string]any{"z-static": map[string]any{"status": "planned"}, "a-behavior": map[string]any{"status": "planned"}},
 		"claims":      map[string]any{"static": map[string]any{"disposition": "planned"}, "behavior": map[string]any{"disposition": "planned"}},
 	}}
 	ordinary := s7PendingReviewGuidance(root, state)
 	for _, event := range []string{"SessionStart", "PreCompact"} {
 		guidance := buildGuidance(root, state, event, policy.Input{})
-		if strings.TrimSpace(ordinary) != guidance.Action || !strings.Contains(guidance.Action, "assignment=a-behavior waits:") || !strings.Contains(guidance.Action, "--assignment 'z-static'") || strings.Contains(guidance.Action, "--assignment 'a-behavior'") {
+		if strings.TrimSpace(ordinary) != guidance.Action || !strings.Contains(guidance.Action, "--assignment 'z-static'") || !strings.Contains(guidance.Action, "--assignment 'a-behavior'") {
 			t.Fatalf("%s disagrees with actual registration eligibility: %s", event, guidance.Action)
 		}
 	}

@@ -18,7 +18,7 @@ func TestS9TypedSelectorCannotInferLegacyFromMalformedIndex(t *testing.T) {
 }
 
 func TestS9TypedSelectorRetainsHistoricalAssignmentFence(t *testing.T) {
-	binding := workpacket.RepairResultBinding{Sources: workpacket.RepairPlanReportBinding{RuntimeID: "runtime", BaselineGeneration: 1, ReviewRound: 1, ManifestAssignmentID: "assignment", RepairAssignmentID: "repair", OwnerAgentID: "owner", PlanRef: "old-plan"}}
+	binding := workpacket.RepairResultBinding{Sources: workpacket.RepairPlanReportBinding{RuntimeID: "runtime", BaselineGeneration: 1, ManifestAssignmentID: "assignment", RepairAssignmentID: "repair", OwnerAgentID: "owner", PlanRef: "old-plan"}}
 	data, err := json.Marshal(binding)
 	if err != nil {
 		t.Fatal(err)

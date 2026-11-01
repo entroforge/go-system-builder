@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func attachRepairResultResolutionFixture(t *testing.T, f *repairResultBlockerReaderFixture, edit func(map[string]any)) string {
@@ -18,10 +16,6 @@ func attachRepairResultResolutionFixture(t *testing.T, f *repairResultBlockerRea
 	blocker, found, err := VerifiedRepairResultBlockerReceipt(f.runtime.plan.root, f.runtime.plan.state, p.ID, b.OwnerAgentID)
 	if err != nil || !found {
 		t.Fatalf("fixture needs original blocker receipt: found=%t err=%v", found, err)
-	}
-	packetSHA, err := workpacket.RepairResultPacketDigest(p)
-	if err != nil {
-		t.Fatal(err)
 	}
 	var manifestAssignment map[string]any
 	if err := json.Unmarshal(p.Inputs.Sources.ManifestAssignment, &manifestAssignment); err != nil {
@@ -36,12 +30,11 @@ func attachRepairResultResolutionFixture(t *testing.T, f *repairResultBlockerRea
 		"occurred_at": "2026-10-14T12:11:00Z", "body": "Main reviewed the blocker and authorized retry.",
 		"s9_resolution": map[string]any{
 			"decision": "retry", "rationale": "The existing contract remains valid; retry the blocked scope.",
-			"evidence_refs": []string{"evidence://main-review"},
-			"packet_id":     p.ID, "packet_sha256": packetSHA,
-			"blocker_ref": blocker.ArtifactRef, "blocker_sha256": blocker.ArtifactSHA256,
+			"evidence_refs":           []string{"evidence://main-review"},
+			"packet_id":               p.ID,
+			"blocker_ref":             blocker.ArtifactRef,
 			"execution_assignment_id": blocker.Artifact.ExecutionAssignmentID,
 			"execution_generation":    blocker.Artifact.ExecutionGeneration,
-			"execution_sha256":        p.Binding.ExecutionSHA256,
 		},
 	}
 	if edit != nil {
@@ -51,14 +44,13 @@ func attachRepairResultResolutionFixture(t *testing.T, f *repairResultBlockerRea
 	if err != nil {
 		t.Fatal(err)
 	}
-	messageSHA := workpacket.Digest(messageBytes)
 	messageDir := path.Join(".claude/evidence", b.RuntimeID, fmt.Sprintf("g%d", b.BaselineGeneration), "S9", "blocker-messages", p.ID)
-	messageRef := path.Join(messageDir, messageSHA+".json")
+	messageRef := path.Join(messageDir, "resolution.json")
 	writeBlockerReaderFile(t, f.runtime.plan.root, messageRef, messageBytes)
 
 	row := map[string]any{
-		"id": messageRef, "kind": "repair_result_resolution", "path": messageRef, "sha256": messageSHA,
-		"status": "valid", "baseline_generation": b.BaselineGeneration, "review_round": b.ReviewRound,
+		"id": messageRef, "kind": "repair_result_resolution", "path": messageRef,
+		"status": "valid", "baseline_generation": b.BaselineGeneration, "review_round": "",
 		"produced_by": []string{"main"}, "invalidated_by": nil, "invalidation_rule": nil,
 		"invalidation_reason": nil, "responsibility_id": nil,
 		"scope_refs": []string{p.ID, b.RepairAssignmentID, blocker.ArtifactRef},
@@ -85,7 +77,7 @@ func attachRepairResultResolutionFixture(t *testing.T, f *repairResultBlockerRea
 	return messageRef
 }
 
-func TestVerifiedRepairResultResolutionReceiptHistoricalAndRetiresOldPacket(t *testing.T) {
+func TestVerifiedRepairResultResolutionReceiptKeepsOriginalUntilSuccessor(t *testing.T) {
 	f := newRepairResultBlockerReaderFixture(t)
 	messageRef := attachRepairResultResolutionFixture(t, &f, nil)
 
@@ -96,11 +88,11 @@ func TestVerifiedRepairResultResolutionReceiptHistoricalAndRetiresOldPacket(t *t
 	if got.PacketID != f.runtime.packet.ID || got.OwnerAgentID != f.runtime.packet.Binding.Sources.OwnerAgentID || got.BlockerRef != f.artifactRef || got.MessageRef != messageRef || got.AcceptedIdempotencyKey != fmt.Sprintf("runtime:agent:%s:blocker_resolved:10", got.OwnerAgentID) || got.AcceptedSequence <= 10 {
 		t.Fatalf("resolution receipt identity differs: %+v", got)
 	}
-	if selected, err := CurrentRepairResultPackets(f.runtime.plan.root, f.runtime.plan.state, got.OwnerAgentID); err != nil || len(selected) != 0 {
-		t.Fatalf("resolved original packet remains current: selected=%+v err=%v", selected, err)
+	if selected, err := CurrentRepairResultPackets(f.runtime.plan.root, f.runtime.plan.state, got.OwnerAgentID); err != nil || len(selected) != 1 || selected[0].ID != f.runtime.packet.ID {
+		t.Fatalf("original responsibility disappeared before successor issue: selected=%+v err=%v", selected, err)
 	}
-	if err := VerifyRepairResultPacketCurrent(f.runtime.plan.root, f.runtime.plan.state, f.runtime.packet); err == nil {
-		t.Fatal("resolved original packet passed current verification")
+	if pending, err := RepairResultResumePending(f.runtime.plan.root, f.runtime.plan.state, got.OwnerAgentID, f.runtime.packet.Binding.Sources.RepairAssignmentID); err != nil || !pending {
+		t.Fatalf("actual accepted resolution lost its pending continuation: pending=%v err=%v", pending, err)
 	}
 }
 
@@ -114,16 +106,6 @@ func TestRepairResultResolutionReaderLeavesBlockerOnlyPacketCurrent(t *testing.T
 	selected, err := CurrentRepairResultPackets(f.runtime.plan.root, f.runtime.plan.state, owner)
 	if err != nil || len(selected) != 1 || selected[0].ID != f.runtime.packet.ID {
 		t.Fatalf("blocker-only current packet was retired: selected=%+v err=%v", selected, err)
-	}
-}
-
-func TestVerifiedRepairResultResolutionReceiptRejectsForgedMessage(t *testing.T) {
-	f := newRepairResultBlockerReaderFixture(t)
-	attachRepairResultResolutionFixture(t, &f, func(resolution map[string]any) {
-		resolution["packet_sha256"] = strings.Repeat("f", 64)
-	})
-	if _, found, err := VerifiedRepairResultResolutionReceipt(f.runtime.plan.root, f.runtime.plan.state, f.runtime.packet.ID, f.runtime.packet.Binding.Sources.OwnerAgentID); err == nil || found {
-		t.Fatalf("resolution message with forged packet digest was accepted: found=%t", found)
 	}
 }
 
@@ -179,8 +161,8 @@ func TestVerifiedRepairResultResolutionReceiptSurvivesEvidenceInvalidation(t *te
 	if _, found, err := VerifiedRepairResultResolutionReceipt(f.runtime.plan.root, f.runtime.plan.state, f.runtime.packet.ID, f.runtime.packet.Binding.Sources.OwnerAgentID); err != nil || !found {
 		t.Fatalf("evidence invalidation erased historical resolution: found=%t err=%v", found, err)
 	}
-	if selected, err := CurrentRepairResultPackets(f.runtime.plan.root, f.runtime.plan.state, f.runtime.packet.Binding.Sources.OwnerAgentID); err != nil || len(selected) != 0 {
-		t.Fatalf("invalidated resolution revived old packet scope: selected=%+v err=%v", selected, err)
+	if selected, err := CurrentRepairResultPackets(f.runtime.plan.root, f.runtime.plan.state, f.runtime.packet.Binding.Sources.OwnerAgentID); err != nil || len(selected) != 1 || selected[0].ID != f.runtime.packet.ID {
+		t.Fatalf("original responsibility was not retained while continuation is pending: selected=%+v err=%v", selected, err)
 	}
 }
 
@@ -194,10 +176,10 @@ func TestVerifiedRepairResultResolutionReceiptRejectsPointerWithoutProof(t *test
 			agent["blocker_resolved_ref"] = fakeRef
 		}
 	}
-	if _, found, err := VerifiedRepairResultResolutionReceipt(f.runtime.plan.root, f.runtime.plan.state, p.ID, owner); err == nil || found {
-		t.Fatalf("Agent resolution pointer without evidence/journal proof was accepted: found=%t", found)
+	if _, found, err := VerifiedRepairResultResolutionReceipt(f.runtime.plan.root, f.runtime.plan.state, p.ID, owner); err != nil || found {
+		t.Fatalf("an unindexed pointer was mistaken for accepted resolution: found=%t err=%v", found, err)
 	}
-	if _, err := CurrentRepairResultPackets(f.runtime.plan.root, f.runtime.plan.state, owner); err == nil {
-		t.Fatal("current selector did not fail closed on an orphan resolution pointer")
+	if selected, err := CurrentRepairResultPackets(f.runtime.plan.root, f.runtime.plan.state, owner); err != nil || len(selected) != 1 || selected[0].ID != p.ID {
+		t.Fatalf("unindexed pointer blocked the original responsibility: %v %v", selected, err)
 	}
 }

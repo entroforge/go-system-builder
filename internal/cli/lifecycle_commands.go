@@ -445,7 +445,6 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	now := time.Now().UTC()
-	shaHex := transition.REQSHA256(data)
 	next, err := transition.Apply(*root,
 		filepath.Join(*root, ".claude", "loop-state.json"),
 		filepath.Join(*root, ".claude", "loop-events.jsonl"),
@@ -453,10 +452,10 @@ func runREQAmend(args []string, stdout, stderr io.Writer) int {
 			Files: files, TransitionID: "TR-020", ExpectedRevision: -1, Actor: "user",
 			Evidence: map[string]string{
 				"human_decision_record": evID,
-				"req_lock_record":       *reqPath + "@" + shaHex,
+				"req_lock_record":       *reqPath,
 			},
 			REQ: &transition.LockedREQ{
-				ID: id, Path: *reqPath, Version: version, SHA256: shaHex,
+				ID: id, Path: *reqPath, Version: version,
 				ApprovedBy: *approvedBy, ApprovedAt: now.Format(time.RFC3339Nano),
 			},
 			OccurredAt: now,

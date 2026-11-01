@@ -16,7 +16,7 @@ import (
 // A blocker uses the existing lifecycle Writer and its opaque proof. Holding
 // the original workspace lock through prepare and CAS keeps the source tuple
 // stable; this adapter owns no additional Runtime transaction.
-func (s *Service) saveRepairResultBlocker(ctx context.Context, packet workpacket.RepairResultPacket, owner, sourceRoot, verdict string, authorize func(string, map[string]any) error) (Receipt, error) {
+func (s *Service) saveRepairResultBlocker(ctx context.Context, packet workpacket.RepairResultPacket, owner, sourceRoot, verdict string, authorize func(string, map[string]any) error, originals ...[]byte) (Receipt, error) {
 	s = s.WithContext(ctx)
 	ctx, unlock, err := integration.LockWorkspace(ctx, s.Root)
 	if err != nil {
@@ -27,8 +27,12 @@ func (s *Service) saveRepairResultBlocker(ctx context.Context, packet workpacket
 	if err != nil {
 		return Receipt{}, err
 	}
+	var raw []byte
+	if len(originals) > 0 {
+		raw = originals[0]
+	}
 	capability, prior, err := repair.PrepareIssuedRepairResultBlocker(ctx, s.Root, s.StatePath, s.JournalPath, repair.AcceptIssuedRepairResultBlockerRequest{
-		ExpectedRevision: snapshot.Revision, PacketID: packet.ID, AnswerPath: packet.AnswerPath,
+		AnswerBytes: raw, ExpectedRevision: snapshot.Revision, PacketID: packet.ID, AnswerPath: packet.AnswerPath,
 		OwnerAgentID: owner, SourceRoot: sourceRoot, AuthorizeSource: authorize,
 	})
 	if err != nil {

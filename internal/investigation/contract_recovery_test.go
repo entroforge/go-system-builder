@@ -21,8 +21,8 @@ func approvedContractRecoveryFixture(t *testing.T) (*intakeFixture, investigatio
 	}
 	prepareCaseForContractApproval(t, f)
 	draft := writeContractDraft(t, f.root, []string{"finding-1"})
-	sha, evidence, _ := registerContractApprovalEvidence(t, f, draft)
-	req := investigation.ContractRequest{ExpectedRevision: -1, CaseID: "investigation-case-observation-batch-r1", ContractPath: draft, ApprovedBy: "main-session", ApprovalHash: sha, ApprovalEvidenceID: evidence}
+	_, evidence, _ := registerContractApprovalEvidence(t, f, draft)
+	req := investigation.ContractRequest{ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", ContractPath: draft, ApprovedBy: "main-session", ApprovalEvidenceID: evidence}
 	beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
 	accepted, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, req)
 	if err != nil {

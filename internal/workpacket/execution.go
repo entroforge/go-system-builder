@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
@@ -13,7 +15,18 @@ const WorkerAnswerPath = ".loop-submissions/stage-answer.json"
 const WorkerViewPath = ".claude/inputs/work-packet.json"
 
 func ValidWorkerAnswerPath(path string) bool {
-	return path == LegacyWorkerAnswerPath || path == WorkerAnswerPath
+	if path == LegacyWorkerAnswerPath || path == WorkerAnswerPath {
+		return true
+	}
+	if filepath.Base(path) != "stage-answer.json" {
+		return false
+	}
+	dir := filepath.ToSlash(filepath.Dir(path))
+	if !strings.HasPrefix(dir, ".loop-submissions-candidate-") {
+		return false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(dir, ".loop-submissions-candidate-"))
+	return err == nil && n > 0
 }
 
 // ExecutionView is an immutable projection installed with the original

@@ -14,7 +14,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/filelock"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
-	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // This bounded display record is an observation, never a receipt or authority
@@ -80,7 +79,7 @@ func (a *nativeS9AttemptCapture) ObserveInput(path string, data []byte) {
 		a.SetInput(path)
 	}
 	if len(a.value.Files) < 16 {
-		a.value.Files[path] = workpacket.Digest(data)
+		a.value.Files[path] = "readable"
 	}
 }
 
@@ -233,11 +232,7 @@ func nativeS9DiagnosticScopeContext(ctx context.Context, root string, state map[
 		return ""
 	}
 	pointer := repairPointerCLI(state)
-	source := map[string]any{}
-	for _, field := range []string{"case_id", "case_ref", "case_sha256", "contract_id", "contract_ref", "contract_sha256", "session_id", "session_ref", "session_sha256", "plan_id", "plan_ref", "plan_sha256"} {
-		source[field] = pointer[field]
-	}
-	var responsibility any
+	var responsibility []string
 	for _, row := range objectSliceAny(mapFieldCLI(state, "entities")["work_packets"]) {
 		if row["template_id"] != "s9-plan-report-v1" || row["packet_id"] != key {
 			continue
@@ -250,10 +245,10 @@ func nativeS9DiagnosticScopeContext(ctx context.Context, root string, state map[
 		if err != nil || json.Unmarshal(data, &binding) != nil {
 			return ""
 		}
-		if binding.RuntimeID != state["runtime_id"] || binding.BaselineGeneration != workspace.Generation(state) || binding.SessionID != pointer["session_id"] || binding.PlanRef != pointer["plan_ref"] || stringMapCLI(pointer["assignment_owners"])[binding.RepairAssignmentID] != binding.OwnerAgentID {
+		if binding.RuntimeID != state["runtime_id"] || binding.SessionID != pointer["session_id"] || binding.PlanRef != pointer["plan_ref"] || stringMapCLI(pointer["assignment_owners"])[binding.RepairAssignmentID] != binding.OwnerAgentID {
 			return ""
 		}
-		responsibility = []any{key, binding}
+		responsibility = []string{key, binding.RepairAssignmentID, binding.OwnerAgentID, stringValue(row["issuance_event_id"])}
 	}
 	if responsibility == nil {
 		for assignment, owner := range stringMapCLI(pointer["assignment_owners"]) {
@@ -261,17 +256,19 @@ func nativeS9DiagnosticScopeContext(ctx context.Context, root string, state map[
 				if responsibility != nil {
 					return ""
 				}
-				responsibility = []string{assignment, owner}
+				responsibility = []string{key, assignment, owner}
 			}
 		}
 		if responsibility == nil {
 			return ""
 		}
-		source["impact_ref"], source["impact_sha256"] = pointer["impact_ref"], pointer["impact_sha256"]
 	}
-	data, err := json.Marshal([]any{state["runtime_id"], workspace.Generation(state), nestedStateValue(state, "review", "round"), source, responsibility})
+	// The scope records existing identity coordinates as actual values.  It is
+	// only a display association, not a proof of file bytes or an eligibility gate.
+	coordinates := []any{state["runtime_id"], nestedStateValue(state, "baseline", "generation"), pointer["case_id"], pointer["case_ref"], pointer["contract_id"], pointer["contract_ref"], pointer["session_id"], pointer["session_ref"], pointer["plan_id"], pointer["plan_ref"], responsibility}
+	data, err := json.Marshal(coordinates)
 	if err != nil {
 		return ""
 	}
-	return workpacket.Digest(data)
+	return string(data)
 }

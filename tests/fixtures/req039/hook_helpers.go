@@ -81,6 +81,34 @@ func HookBody(event, session, tool string, toolInput map[string]any) string {
 	return string(raw)
 }
 
+// MainHookBody models a top-level Main event in the authority checkout.
+// Main has no nested-agent identity; ordinary tool inputs cannot claim one.
+func MainHookBody(root, event, session, tool string, toolInput map[string]any) string {
+	return ActorHookBody(root, event, session, "", tool, toolInput)
+}
+
+// MainPreToolUseBody makes the Main audience explicit at each call site.
+func MainPreToolUseBody(root, session, tool string, toolInput map[string]any) string {
+	return MainHookBody(root, "PreToolUse", session, tool, toolInput)
+}
+
+// ActorHookBody preserves a named actor and execution checkout. A named actor
+// must still have a real registered responsibility to receive Worker context.
+func ActorHookBody(root, event, session, actor, tool string, toolInput map[string]any) string {
+	payload := map[string]any{
+		"cwd":             root,
+		"session_id":      session,
+		"hook_event_name": event,
+		"tool_name":       tool,
+		"tool_input":      toolInput,
+	}
+	if actor != "" {
+		payload["agent_id"] = actor
+	}
+	raw, _ := json.Marshal(payload)
+	return string(raw)
+}
+
 // SubagentStopBody builds a SubagentStop hook JSON body.
 // Facts are nested under "facts" so policy.Input.Facts is populated
 // (top-level agent_report_complete alone is ignored by the decoder).
@@ -132,7 +160,7 @@ func SkipIfProductBlocker(t *testing.T, combined, bugID string) {
 // HookStep runs one PreToolUse and returns the decoded quality_gate map.
 func HookStep(t *testing.T, runner *CLIRunner, root, session, tool string, input map[string]any) (stdout string, qg map[string]any) {
 	t.Helper()
-	body := PreToolUseBody(session, tool, input)
+	body := MainPreToolUseBody(root, session, tool, input)
 	code, stdout, stderr := RunHook(t, runner, root, "PreToolUse", body)
 	if code != 0 && code != 2 {
 		t.Fatalf("PreToolUse %s failed: code=%d stderr=%s", session, code, stderr)

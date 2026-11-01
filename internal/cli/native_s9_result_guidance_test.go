@@ -35,7 +35,7 @@ func TestNativeS9PreparedBriefAndConsumerPreserveSatisfiedAssertion(t *testing.T
 			if err := json.Unmarshal(p.Inputs.RepairAssignment, &assignment); err != nil {
 				t.Fatal(err)
 			}
-			brief, _, _ := nativeS9Paths(p)
+			brief := nativeS9BriefPath(p)
 			planPath, result := nativeS9TestAuthorPaths(t, root, p)
 			data, err := os.ReadFile(filepath.Join(root, brief))
 			if err != nil {

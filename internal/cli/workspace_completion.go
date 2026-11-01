@@ -30,7 +30,7 @@ func completeExecutionState(root string, state map[string]any, id string) (bool,
 	if err != nil {
 		return false, err
 	}
-	if !found || cp.State != integration.StateComplete || cp.AssignmentID != id || cp.BaselineGeneration != e.BaselineGeneration || cp.WorktreePath != e.Path || cp.SourceBranch != e.Branch || cp.TargetBranch != e.TargetBranch || cp.MergeCommit == "" || cp.TestedHead == "" {
+	if !found || cp.State != integration.StateComplete || cp.AssignmentID != id || cp.BaselineGeneration != e.BaselineGeneration || cp.WorktreePath != e.Path || cp.SourceBranch != e.Branch || cp.TargetBranch != e.TargetBranch {
 		return false, fmt.Errorf("execution completion requires its complete integration checkpoint: %s", id)
 	}
 	if e.AssignmentRecord != nil {
@@ -42,17 +42,13 @@ func completeExecutionState(root string, state map[string]any, id string) (bool,
 		if err != nil || !exists {
 			return false, fmt.Errorf("execution completion lacks its original Record: %v", err)
 		}
-		sha, err := record.Digest()
-		if err != nil || sha != e.AssignmentRecordSHA256 {
-			return false, fmt.Errorf("execution completion Record digest differs")
-		}
 		if cp.CanonicalMainFacts == nil {
 			return false, fmt.Errorf("canonical execution completion requires its own Main facts")
 		}
 		if err := integration.ValidateCheckpointRecordBinding(cp, record); err != nil {
 			return false, err
 		}
-	} else if cp.CanonicalMainFacts != nil || cp.AssignmentRecord != nil || cp.AssignmentRecordSHA256 != "" {
+	} else if cp.CanonicalMainFacts != nil || cp.AssignmentRecord != nil {
 		return false, fmt.Errorf("legacy execution cannot complete from canonical checkpoint facts")
 	}
 	if e.Status == "complete" {

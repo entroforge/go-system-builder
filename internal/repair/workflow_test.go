@@ -16,11 +16,11 @@ func TestS9EvidenceChainRequiresImpactAndIndependentReverification(t *testing.T)
 	impact, impactRef, err := repair.CreateChangeImpact(root, repair.ChangeImpactRequest{
 		ImpactID: "impact-1", RuntimeID: "loop-REQ-001", ReqID: "REQ-001", BaselineGeneration: 1,
 		SourceBugIDs: []string{"BUG-001"}, ChangeTypes: []string{"implementation"},
-		ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api.go", SHA256: strings.Repeat("a", 64)}},
+		ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api.go"}},
 		Decisions:        []repair.ImpactDecision{{SourceID: "BUG-001", TargetID: "claim-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", ResponsibilityID: nil, Scope: []string{"internal/api.go"}, Rationale: "boundary changed", RecoveryEvidence: []string{"repair-result-1"}}},
 		EscalationLevel:  "assignment", AnalyzedBy: "qa",
 	})
-	if err != nil || impact.RecordType != "change_impact" || impactRef.SHA256 == "" {
+	if err != nil || impact.RecordType != "change_impact" || impactRef.Path == "" {
 		t.Fatalf("CreateChangeImpact() = %#v, %v", impact, err)
 	}
 	plan := repair.RepairPlan{Assignments: []repair.RepairAssignment{{AssignmentID: "assignment-builder"}}}
@@ -36,7 +36,7 @@ func TestS9EvidenceChainRequiresImpactAndIndependentReverification(t *testing.T)
 		OriginalAssignmentID: "assignment-builder", PerformingAssignmentID: "assignment-qa", ContinuityReason: "test://verifier-log: independent verification", ImpactID: impact.ImpactID,
 		AssertionResults: []repair.AssertionResult{{AssertionID: "assert-1", Result: "pass", EvidenceRefs: []string{"test://reverify-log"}}}, ScopeCompliance: "pass", Result: "pass",
 	})
-	if err != nil || reverify.Result != "pass" || reverifyRef.SHA256 == "" {
+	if err != nil || reverify.Result != "pass" || reverifyRef.Path == "" {
 		t.Fatalf("CreateTargetedReverification() = %#v, %v", reverify, err)
 	}
 	if _, err := repair.ValidateTargetedReverification(root, reverifyRef); err != nil {
@@ -49,11 +49,11 @@ func TestS9EvidenceChainAcceptsCanonicalCaseIdentityWithoutBugID(t *testing.T) {
 	impact, impactRef, err := repair.CreateChangeImpact(root, repair.ChangeImpactRequest{
 		ImpactID: "impact-case-only", RuntimeID: "loop-REQ-001", ReqID: "REQ-001", BaselineGeneration: 1,
 		SourceCaseIDs: []string{"investigation-case-001"}, ChangeTypes: []string{"implementation"},
-		ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api.go", SHA256: strings.Repeat("a", 64)}},
+		ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-api", Path: "internal/api.go"}},
 		Decisions:        []repair.ImpactDecision{{SourceID: "investigation-case-001", TargetID: "root-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", Scope: []string{"internal/api.go"}, Rationale: "case contract changed the boundary", RecoveryEvidence: []string{"repair-result-case-only"}}},
 		AnalyzedBy:       "investigator",
 	})
-	if err != nil || impact.ImpactID == "" || impactRef.SHA256 == "" || len(impact.SourceCaseIDs) != 1 {
+	if err != nil || impact.ImpactID == "" || impactRef.Path == "" || len(impact.SourceCaseIDs) != 1 {
 		t.Fatalf("case-only ChangeImpact = %#v, %v", impact, err)
 	}
 	reverification, ref, err := repair.CreateTargetedReverification(root, repair.TargetedReverificationRequest{
@@ -61,7 +61,7 @@ func TestS9EvidenceChainAcceptsCanonicalCaseIdentityWithoutBugID(t *testing.T) {
 		OriginalAssignmentID: "assignment-builder", PerformingAssignmentID: "assignment-qa", ContinuityReason: "test://verifier-log: independent verification", ImpactID: impact.ImpactID,
 		AssertionResults: []repair.AssertionResult{{AssertionID: "root-1", Result: "pass", EvidenceRefs: []string{"test://root"}}}, ScopeCompliance: "pass", Result: "pass",
 	})
-	if err != nil || reverification.CaseID == "" || ref.SHA256 == "" {
+	if err != nil || reverification.CaseID == "" || ref.Path == "" {
 		t.Fatalf("case-only targeted reverification = %#v, %v", reverification, err)
 	}
 	if _, err := repair.ValidateTargetedReverification(root, ref); err != nil {
@@ -98,13 +98,13 @@ func TestS9HandoffCompletenessChecksReferencedArtifactIntegrity(t *testing.T) {
 		HandoffID:                  "repair-handoff-1",
 		HandedOffBy:                "main",
 		NextAction:                 "S7 review",
-		SessionRef:                 repair.ArtifactRef{Path: "session.json", SHA256: strings.Repeat("a", 64)},
-		PlanRef:                    repair.ArtifactRef{Path: "plan.json", SHA256: strings.Repeat("a", 64)},
-		ContractRef:                repair.ArtifactRef{Path: "contract.json", SHA256: strings.Repeat("a", 64)},
-		ResultRef:                  repair.ArtifactRef{Path: "result.json", SHA256: strings.Repeat("a", 64)},
-		ChangesetRef:               repair.ArtifactRef{Path: "changeset.json", SHA256: strings.Repeat("a", 64)},
-		ChangeImpactRef:            repair.ArtifactRef{Path: "impact.json", SHA256: strings.Repeat("a", 64)},
-		TargetedReverificationRefs: []repair.ArtifactRef{{Path: "reverify.json", SHA256: strings.Repeat("a", 64)}},
+		SessionRef:                 repair.ArtifactRef{Path: "session.json"},
+		PlanRef:                    repair.ArtifactRef{Path: "plan.json"},
+		ContractRef:                repair.ArtifactRef{Path: "contract.json"},
+		ResultRef:                  repair.ArtifactRef{Path: "result.json"},
+		ChangesetRef:               repair.ArtifactRef{Path: "changeset.json"},
+		ChangeImpactRef:            repair.ArtifactRef{Path: "impact.json"},
+		TargetedReverificationRefs: []repair.ArtifactRef{{Path: "reverify.json"}},
 	})
 	if err != nil {
 		t.Fatalf("CheckRepairHandoff() error = %v", err)
@@ -127,7 +127,7 @@ func TestS9ChangesetExplicitPathHasStableReferenceIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changeset.Artifacts) != 1 || changeset.Artifacts[0].ID == "" || changeset.Digest == "" {
+	if len(changeset.Artifacts) != 1 || changeset.Artifacts[0].ID == "" {
 		t.Fatalf("changeset = %#v", changeset)
 	}
 
@@ -192,10 +192,10 @@ func TestS9ChangesetIncludesDeletedArtifactsFromGitRange(t *testing.T) {
 	}
 }
 
-func TestRepairResultRejectsUnreportedSessionChanges(t *testing.T) {
+func TestRepairResultDoesNotRequireAuthorToEnumerateRepositoryChanges(t *testing.T) {
 	root := t.TempDir()
 	contractRef, _ := writeRuntimeContract(t, root)
-	session, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
+	_, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
 		Contract: contractRef, SessionID: "repair-session-diff", RuntimeID: "loop-REQ-039",
 		ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main",
 	})
@@ -208,24 +208,21 @@ func TestRepairResultRejectsUnreportedSessionChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := writeFile(t, root, "internal/api/first.go", "package api\n")
+	writeFile(t, root, "internal/api/first.go", "package api\n")
 	second := writeFile(t, root, "internal/api/second.go", "package api\n")
-	firstData, err := os.ReadFile(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = repair.SubmitRepairResult(root, repair.RepairResultRequest{
+	result, ref, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{
 		Contract: contractRef, Session: sessionRef, Plan: planRef, ResultID: "repair-result-diff",
 		ProducerAgentID: "builder", UnitResults: []repair.RepairUnitResult{{UnitID: "unit-1", Status: "pass", EvidenceRefs: []string{"test://unit"}}},
-		ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/first.go", SHA256: fileHash(firstData), Status: "added"}}, Result: "pass",
+		ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/first.go", Status: "added"}}, Result: "pass",
 		BeforeFixChecks: []repair.RepairCheck{{Name: "pre-fix", Command: "go test ./...", Result: "fail", EvidenceRefs: []string{"test://red"}}},
 		Checks:          []repair.RepairCheck{{Name: "post-fix", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{"test://green"}}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "actual Session diff") {
-		t.Fatalf("unreported session change should be rejected: %v", err)
+	if err != nil || ref.Path == "" || len(result.ChangedArtifacts) != 1 || result.ChangedArtifacts[0].Path != "internal/api/first.go" {
+		t.Fatalf("professional result did not retain its actual contribution: %+v %+v %v", result, ref, err)
 	}
-	_ = session
-	_ = second
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("unrelated repository material was changed: %v", err)
+	}
 }
 
 func TestRepairResultAllowsBlockedOutcomeWithoutRepositoryDiff(t *testing.T) {
@@ -254,7 +251,7 @@ func TestRepairResultAllowsBlockedOutcomeWithoutRepositoryDiff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("blocked no-diff result should be persisted: %v", err)
 	}
-	if result.Result != "blocked" || len(result.ChangedArtifacts) != 0 || ref.SHA256 == "" {
+	if result.Result != "blocked" || len(result.ChangedArtifacts) != 0 || ref.Path == "" {
 		t.Fatalf("blocked no-diff result = %#v ref=%#v", result, ref)
 	}
 	passing, passingRef, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{
@@ -267,7 +264,7 @@ func TestRepairResultAllowsBlockedOutcomeWithoutRepositoryDiff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("passing no-diff result without migration/rollback references should be persisted: %v", err)
 	}
-	if passing.Result != "pass" || len(passing.ChangedArtifacts) != 0 || passing.MigrationRef != "" || passing.RollbackRef != "" || passingRef.SHA256 == "" {
+	if passing.Result != "pass" || len(passing.ChangedArtifacts) != 0 || passing.MigrationRef != "" || passing.RollbackRef != "" || passingRef.Path == "" {
 		t.Fatalf("passing no-diff result = %#v ref=%#v", passing, passingRef)
 	}
 }
@@ -275,7 +272,7 @@ func TestRepairResultAllowsBlockedOutcomeWithoutRepositoryDiff(t *testing.T) {
 func TestRepairResultAllowsEmptyAssignmentContributionAfterSiblingChanges(t *testing.T) {
 	root := t.TempDir()
 	contractRef := writeScopedRuntimeContract(t, root)
-	session, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
+	_, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
 		Contract: contractRef, SessionID: "repair-session-sibling-diff", RuntimeID: "loop-REQ-039", ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main",
 	})
 	if err != nil {
@@ -285,30 +282,22 @@ func TestRepairResultAllowsEmptyAssignmentContributionAfterSiblingChanges(t *tes
 	if err != nil || len(plan.Assignments) != 2 {
 		t.Fatalf("original two-assignment Plan: %+v %v", plan, err)
 	}
-	path := writeFile(t, root, "internal/api/payload.go", "package api\n")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, root, "internal/api/payload.go", "package api\n")
 	before := []repair.RepairCheck{{Name: "original failure", Command: "go test ./...", Result: "fail", EvidenceRefs: []string{".claude/evidence/red.log"}}}
 	after := []repair.RepairCheck{{Name: "actual current checks", Command: "go test ./...", Result: "pass", EvidenceRefs: []string{".claude/evidence/current.log"}}}
-	_, _, err = repair.SubmitRepairResult(root, repair.RepairResultRequest{
+	first, firstRef, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{
 		Contract: contractRef, Session: sessionRef, Plan: planRef, ResultID: "repair-result-sibling-api", ProducerAgentID: "api-builder", AssignmentID: plan.Assignments[0].AssignmentID,
 		UnitResults:      []repair.RepairUnitResult{{UnitID: "unit-api", Status: "pass", EvidenceRefs: []string{".claude/evidence/api.log"}}},
-		ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/payload.go", SHA256: fileHash(data), Status: "added"}}, BeforeFixChecks: before, Checks: after, Result: "pass",
+		ChangedArtifacts: []repair.ChangedArtifact{{Path: "internal/api/payload.go", Status: "added"}}, BeforeFixChecks: before, Checks: after, Result: "pass",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	actual, err := repair.ComputeSessionChangeset(root, session)
-	if err != nil || len(actual) != 1 {
-		t.Fatalf("Session must retain the sibling's actual source diff: %+v %v", actual, err)
+	if err != nil || firstRef.Path == "" || len(first.ChangedArtifacts) != 1 || first.ChangedArtifacts[0].Path != "internal/api/payload.go" {
+		t.Fatalf("first original contribution missing: %+v %+v %v", first, firstRef, err)
 	}
 	result, ref, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{
 		Contract: contractRef, Session: sessionRef, Plan: planRef, ResultID: "repair-result-sibling-store", ProducerAgentID: "store-builder", AssignmentID: plan.Assignments[1].AssignmentID,
 		UnitResults: []repair.RepairUnitResult{{UnitID: "unit-store", Status: "pass", EvidenceRefs: []string{".claude/evidence/store.log"}}}, BeforeFixChecks: before, Checks: after, Result: "pass",
 	})
-	if err != nil || result.Result != "pass" || len(result.ChangedArtifacts) != 0 || ref.SHA256 == "" {
+	if err != nil || result.Result != "pass" || len(result.ChangedArtifacts) != 0 || ref.Path == "" {
 		t.Fatalf("another Assignment's diff required this passing Assignment to invent a contribution: %+v %+v %v", result, ref, err)
 	}
 }
@@ -333,8 +322,7 @@ func writeRuntimeMigrationContract(t *testing.T, root string) (repair.ContractRe
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ref.SHA256 = fileHash(data)
-	return ref, ref.SHA256
+	return ref, fileHash(data)
 }
 
 func TestRepairPlanCreatesExplicitAssignmentAndRecordsActualPrecheck(t *testing.T) {
@@ -356,7 +344,7 @@ func TestRepairPlanCreatesExplicitAssignmentAndRecordsActualPrecheck(t *testing.
 		t.Fatalf("green-only plan report should be recorded: %v", err)
 	}
 	report, ref, err := repair.CreatePlanReport(root, repair.PlanReportRequest{Session: sessionRef, Plan: planRef, AssignmentID: plan.Assignments[0].AssignmentID, AgentID: "builder", ReportID: "repair-plan-report-red", PlanText: "write the fix", RedChecks: []repair.RepairCheck{{Name: "pre-fix", Command: "go test ./...", Result: "fail", EvidenceRefs: []string{".claude/evidence/red.log"}}}, ProposedPaths: []string{"internal/api/payload.go"}})
-	if err != nil || report.Status != "reported" || ref.SHA256 == "" {
+	if err != nil || report.Status != "reported" || ref.Path == "" {
 		t.Fatalf("red plan report = %#v %v", report, err)
 	}
 }
@@ -440,7 +428,7 @@ func TestRepairPlanRejectsAssignmentResourceLockDrift(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = repair.ValidateRepairPlan(root, repair.ArtifactRef{Path: ".claude/review/repair/plans/repair-plan-lock-drift-copy.json", SHA256: fileHash(data)})
+	_, err = repair.ValidateRepairPlan(root, repair.ArtifactRef{Path: ".claude/review/repair/plans/repair-plan-lock-drift-copy.json"})
 	if err == nil || !strings.Contains(err.Error(), "resource-lock coverage") {
 		t.Fatalf("expected assignment resource lock drift to be rejected, got %v", err)
 	}
@@ -460,7 +448,7 @@ func TestRepairPlanRejectsAssignmentDependencyWhenUnitHasNone(t *testing.T) {
 	plan := map[string]any{
 		"schema_version": "1.0.0", "record_type": "repair_plan", "plan_id": "repair-plan-extra-dependency",
 		"session_id": "repair-session-extra-dependency", "contract_id": contract.ContractID,
-		"contract_ref": contract.Ref.Path, "contract_sha256": contract.Ref.SHA256,
+		"contract_ref": contract.Ref.Path,
 		"units": []any{
 			map[string]any{"id": "unit-1", "description": "one unit"},
 		},
@@ -482,7 +470,7 @@ func TestRepairPlanRejectsAssignmentDependencyWhenUnitHasNone(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = repair.ValidateRepairPlan(root, repair.ArtifactRef{Path: ".claude/review/repair/plans/repair-plan-extra-dependency.json", SHA256: fileHash(data)})
+	_, err = repair.ValidateRepairPlan(root, repair.ArtifactRef{Path: ".claude/review/repair/plans/repair-plan-extra-dependency.json"})
 	if err == nil || !strings.Contains(err.Error(), "dependency coverage") {
 		t.Fatalf("expected invented assignment dependency to be rejected, got %v", err)
 	}
@@ -523,7 +511,7 @@ func writeDependencyContract(t *testing.T, root string, cycle bool) repair.Contr
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return repair.ContractRef{Path: rel, SHA256: fileHash(data)}
+	return repair.ContractRef{Path: rel}
 }
 
 func TestTargetedFailurePersistsTypedRecoveryRoute(t *testing.T) {
@@ -531,7 +519,7 @@ func TestTargetedFailurePersistsTypedRecoveryRoute(t *testing.T) {
 	impact, _, err := repair.CreateChangeImpact(root, repair.ChangeImpactRequest{
 		ImpactID: "impact-failure-route", RuntimeID: "loop-REQ-039", ReqID: "REQ-039", BaselineGeneration: 1,
 		SourceBugIDs: []string{"BUG-039"}, ChangeTypes: []string{"implementation"},
-		ChangedArtifacts: []repair.ArtifactRef{{Path: "internal/api.go", SHA256: strings.Repeat("a", 64)}},
+		ChangedArtifacts: []repair.ArtifactRef{{Path: "internal/api.go"}},
 		Decisions:        []repair.ImpactDecision{{SourceID: "BUG-039", TargetID: "root-1", Relation: "invalidates", RuleID: "IM-API", Decision: "reverify", Scope: []string{"internal/api.go"}, Rationale: "boundary changed", RecoveryEvidence: []string{"repair-result-1"}}},
 		AnalyzedBy:       "qa",
 	})
@@ -543,7 +531,7 @@ func TestTargetedFailurePersistsTypedRecoveryRoute(t *testing.T) {
 		OriginalAssignmentID: "assignment-builder", PerformingAssignmentID: "assignment-qa", ContinuityReason: "test://new-symptom: independent verifier found a new causal symptom", ImpactID: impact.ImpactID,
 		AssertionResults: []repair.AssertionResult{{AssertionID: "root-1", Result: "fail", EvidenceRefs: []string{"test://root-fail"}}}, ScopeCompliance: "pass", Result: "fail", FailureClass: "fail_new_cause",
 	})
-	if err != nil || value.FailureClass != "fail_new_cause" || ref.SHA256 == "" {
+	if err != nil || value.FailureClass != "fail_new_cause" || ref.Path == "" {
 		t.Fatalf("typed targeted failure = %#v %v", value, err)
 	}
 	validated, err := repair.ValidateTargetedReverification(root, ref)
@@ -601,7 +589,7 @@ func TestRepairPlanRejectsUnitWithoutExplicitAssertionDeclaration(t *testing.T) 
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	contractRef := repair.ContractRef{Path: rel, SHA256: fileHash(data)}
+	contractRef := repair.ContractRef{Path: rel}
 	_, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
 		Contract: contractRef, SessionID: "repair-session-implicit", RuntimeID: "loop-REQ-039", ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main",
 	})
@@ -622,7 +610,6 @@ func TestRepairPlanRejectsUnitWithoutExplicitAssertionDeclaration(t *testing.T) 
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	contractRef.SHA256 = fileHash(data)
 	_, sessionRef, err = repair.CreateRepairSession(root, repair.SessionRequest{
 		Contract: contractRef, SessionID: "repair-session-implicit-all", RuntimeID: "loop-REQ-039", ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main",
 	})

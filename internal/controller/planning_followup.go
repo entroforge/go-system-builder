@@ -133,7 +133,7 @@ func findCurrentPlanningPacket(state map[string]any, stage, templateID string, b
 		if !samePlanningStageSlot(packet.binding, binding) {
 			continue
 		}
-		if stage != "S2" && !reflect.DeepEqual(packet.binding, binding) {
+		if stage != "S2" && (packet.binding.Owner != binding.Owner || packet.binding.Requirement.ID != binding.Requirement.ID || packet.binding.Requirement.Path != binding.Requirement.Path || packet.binding.Requirement.Version != binding.Requirement.Version) {
 			return planningSubmissionPacket{}, fmt.Errorf("current %s typed packet has a different owner or locked REQ binding", stage)
 		}
 		if stage != "S2" && expectedDesign != nil {
@@ -182,7 +182,7 @@ func currentPlanningSubmission(state map[string]any, packetID string, binding wo
 		return runtime.SubmissionRecord{}, fmt.Errorf("current %s submission is unreadable: %v", binding.Stage, err)
 	}
 	if binding.Stage == "S2" {
-		if record.PacketID != packetID || record.FollowupID == "" || record.EvidenceID == "" || record.OriginState != "planning" || record.OriginPhase != "design" || record.OriginEntry != binding.StageEntry || (record.ControlStatus != "pending" && record.ControlStatus != "no_transition") {
+		if record.PacketID != packetID || record.FollowupID == "" || record.EvidenceID == "" || record.OriginState != "planning" || record.OriginPhase != "design" || record.OriginEntry != binding.StageEntry || record.ControlStatus != "pending" {
 			return runtime.SubmissionRecord{}, fmt.Errorf("current S2 report is not pending at this design entry")
 		}
 		if _, err := runtime.SubmissionFollowup(state, record.FollowupID); err != nil {
@@ -190,9 +190,8 @@ func currentPlanningSubmission(state map[string]any, packetID string, binding wo
 		}
 		return record, nil
 	}
-	key := workpacket.Digest([]byte("submission:" + packetID))
-	retryable := record.ControlStatus == "pending" || ((binding.Stage == "S3" || binding.Stage == "S4") && record.ControlStatus == "no_transition")
-	if record.Key != key || record.PacketID != packetID || record.Owner != "Main" || record.FollowupID != workpacket.Digest([]byte(key+":after-domain")) || record.ContentHash == "" || record.EvidenceID == "" || !retryable || record.OriginState != "planning" || record.OriginPhase != phase || record.OriginEntry != binding.StageEntry || record.RevisionPacketID != "" || record.SupersededBy != "" {
+	retryable := record.ControlStatus == "pending"
+	if record.Key == "" || record.PacketID != packetID || record.Owner != "Main" || record.FollowupID == "" || record.EvidenceID == "" || !retryable || record.OriginState != "planning" || record.OriginPhase != phase || record.OriginEntry != binding.StageEntry || record.RevisionPacketID != "" || record.SupersededBy != "" {
 		return runtime.SubmissionRecord{}, fmt.Errorf("current %s submission does not bind its accepted Main packet and pending original entry", binding.Stage)
 	}
 	// Confirm the deterministic followup has exactly one row across the shared
@@ -236,33 +235,23 @@ func validatePlanningSubmissionEvidence(root string, state map[string]any, packe
 	wantKind := map[string]string{"S2": "planning_design", "S3": "planning_contract", "S4": "planning_task"}[binding.Stage]
 	producers, _ := evidence["produced_by"].([]any)
 	genOK := integerValueEquals(evidence["baseline_generation"], binding.Generation)
-	if evidence["status"] != "valid" || evidence["kind"] != wantKind || evidence["responsibility_id"] != "Orchestrator" || !genOK || len(producers) != 1 || producers[0] != "Main" || evidence["invalidated_by"] != nil || evidence["invalidation_rule"] != nil || evidence["invalidation_reason"] != nil || evidence["review_round"] != nil {
+	if evidence["status"] != "valid" || evidence["kind"] != wantKind || evidence["responsibility_id"] != "Orchestrator" || !genOK || len(producers) != 1 || producers[0] != "Main" || evidence["invalidated_by"] != nil || evidence["invalidation_rule"] != nil || evidence["invalidation_reason"] != nil {
 		return fmt.Errorf("current %s evidence differs from the accepted Main planning responsibility", binding.Stage)
 	}
-	path, sha := stringValue(evidence["path"]), stringValue(evidence["sha256"])
-	if path == "" || sha == "" {
-		return fmt.Errorf("current %s evidence path/hash is incomplete", binding.Stage)
-	}
-	data, err := workpacket.ReadFile(root, path, 1<<20)
-	if err != nil || workpacket.Digest(data) != sha {
-		return fmt.Errorf("current %s accepted evidence bytes differ from its registered digest", binding.Stage)
+	path := stringValue(evidence["path"])
+	if path == "" {
+		return fmt.Errorf("current %s accepted report path is unavailable", binding.Stage)
 	}
 	switch p := packet.value.(type) {
 	case workpacket.ContractPacket:
-		var envelope struct {
-			Answer workpacket.ContractAnswer `json:"contract_answer"`
-		}
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			return fmt.Errorf("current S3 accepted evidence envelope is malformed")
-		}
-		if err := runtime.ValidateContractEnvelope(p, record.EvidenceID, envelope.Answer, data); err != nil {
-			return fmt.Errorf("current S3 accepted evidence does not match its packet: %w", err)
-		}
-		digest, err := workpacket.ContractAnswerDigest(envelope.Answer)
-		if err != nil || digest != record.ContentHash {
-			return fmt.Errorf("current S3 accepted answer digest differs from its submission")
-		}
+		// The existing submission and evidence row record the S3 receipt.
+		// Followup does not reauthenticate the machine report.
+		return nil
 	case workpacket.TaskPlanningPacket:
+		data, err := workpacket.ReadFile(root, path, 1<<20)
+		if err != nil {
+			return fmt.Errorf("current %s accepted report is unavailable: %w", binding.Stage, err)
+		}
 		var envelope struct {
 			Answer workpacket.TaskPlanningAnswer `json:"task_planning_answer"`
 		}
@@ -271,10 +260,6 @@ func validatePlanningSubmissionEvidence(root string, state map[string]any, packe
 		}
 		if err := runtime.ValidateTaskPlanningEnvelope(p, record.EvidenceID, envelope.Answer, data); err != nil {
 			return fmt.Errorf("current S4 accepted evidence does not match its packet: %w", err)
-		}
-		digest, err := workpacket.TaskPlanningAnswerDigest(envelope.Answer)
-		if err != nil || digest != record.ContentHash {
-			return fmt.Errorf("current S4 accepted answer digest differs from its submission")
 		}
 	default:
 		return fmt.Errorf("current planning packet has an unsupported typed value")

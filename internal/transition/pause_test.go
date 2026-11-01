@@ -1,9 +1,7 @@
 package transition_test
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,7 +176,6 @@ func seedPauseCheckpoint(t *testing.T, root string) {
 		"from_phase":            lifecycle["phase"],
 		"phase_revision":        lifecycle["phase_revision"],
 		"baseline_generation":   1,
-		"review_round":          1,
 		"reason":                "S7 review verdict: release_blocked",
 		"required_human_action": "review the blocking finding or REQ change, then resume or re-lock the REQ",
 		"document_fingerprints": []any{},
@@ -215,7 +212,7 @@ func TestTR010CapturePauseCheckpoint(t *testing.T) {
 	}
 	requiredFields := []string{
 		"from_state", "from_phase", "phase_revision", "baseline_generation",
-		"review_round", "reason",
+		"reason",
 		"required_human_action", "document_fingerprints",
 		"paused_at",
 	}
@@ -257,7 +254,6 @@ func TestTR020IncrementsBaselineAndInvalidatesEvidence(t *testing.T) {
 	if err := os.WriteFile(reqPath, []byte(amended), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	shaHex := fmt.Sprintf("%x", sha256.Sum256([]byte(amended)))
 	state := readState(t, root)
 	registerFixtureEvidence(t, root, state, map[string]string{
 		"human_decision_record": "docs/reports/human/decision.md",
@@ -273,11 +269,11 @@ func TestTR020IncrementsBaselineAndInvalidatesEvidence(t *testing.T) {
 			Actor:            "orchestrator",
 			Evidence: map[string]string{
 				"human_decision_record": "docs/reports/human/decision.md",
-				"req_lock_record":       "docs/requirements/REQ-099.md@" + shaHex,
+				"req_lock_record":       "docs/requirements/REQ-099.md",
 			},
 			REQ: &transition.LockedREQ{
 				ID: "REQ-099", Path: "docs/requirements/REQ-099.md",
-				Version: "1.1.0", SHA256: shaHex,
+				Version:    "1.1.0",
 				ApprovedBy: "tester", ApprovedAt: "2026-01-02T00:00:00Z",
 			},
 		})
@@ -311,7 +307,7 @@ func TestTR020IncrementsBaselineAndInvalidatesEvidence(t *testing.T) {
 	}
 	// The amended REQ really enters the runtime (v4 P3 completion).
 	bound, _ := after["bound_req"].(map[string]any)
-	if bound["version"] != "1.1.0" || bound["sha256"] != shaHex {
+	if bound["id"] != "REQ-099" || bound["path"] != "docs/requirements/REQ-099.md" || bound["version"] != "1.1.0" || bound["approved_by"] != "tester" {
 		t.Errorf("bound_req not swapped to the amended REQ: %+v", bound)
 	}
 	generations := map[int]bool{}
@@ -389,7 +385,7 @@ func registerFixtureEvidence(t *testing.T, root string, state map[string]any, re
 		}
 		items = append(items, map[string]any{
 			"id": "fixture-" + requirement, "kind": kind, "path": ref,
-			"sha256": transition.SHA256(content), "status": "valid", "baseline_generation": generation,
+			"status": "valid", "baseline_generation": generation,
 			"review_round": reviewRound, "produced_by": []any{"fixture"}, "invalidated_by": nil,
 			"invalidation_rule": nil, "invalidation_reason": nil, "responsibility_id": nil, "scope_refs": []any{},
 		})
@@ -446,7 +442,7 @@ func TestTR004InvalidatesConsumedFixRecord(t *testing.T) {
 	}
 	state["bound_req"] = map[string]any{
 		"id": "REQ-001", "path": "docs/requirements/REQ-001.md", "version": "v1",
-		"sha256": transition.SHA256(reqData), "status": "locked",
+		"status":      "locked",
 		"approved_by": "pm-1", "approved_at": "2026-08-18T00:00:00Z",
 	}
 	writeFullState(t, root, state)
@@ -470,7 +466,7 @@ func TestTR004InvalidatesConsumedFixRecord(t *testing.T) {
 	items, _ := st["evidence"].([]any)
 	items = append(items, map[string]any{
 		"id": "ev-dv-fix", "kind": "document_review", "path": fixPath,
-		"sha256": transition.SHA256(fixData), "status": "valid", "baseline_generation": float64(1),
+		"status": "valid", "baseline_generation": float64(1),
 		"review_round": nil, "produced_by": []any{"dv-spec-1"}, "invalidated_by": nil,
 		"responsibility_id": "DV-SPEC-CONSISTENCY", "scope_refs": []any{},
 	})

@@ -80,11 +80,11 @@ func newStageAnswerFixtureIssuance(t *testing.T, packet, issue bool, configure .
 	state := fixtures.BaseState(t, root, "document_verification", "", 0)
 	state["review"].(map[string]any)["round"] = 0
 	fixtures.SeedDocumentPassS5(t, root, state, "unused-spec", "unused-task")
+	bound := state["bound_req"].(map[string]any)
 	for _, raw := range state["documents"].([]any) {
 		d := raw.(map[string]any)
 		if d["kind"] == "req" {
-			bound := state["bound_req"].(map[string]any)
-			bound["sha256"], bound["version"] = d["sha256"], d["version"]
+			bound["version"] = d["version"]
 		}
 	}
 	state["evidence"] = []any{}
@@ -136,15 +136,6 @@ func newStageAnswerFixtureIssuance(t *testing.T, packet, issue bool, configure .
 	}
 	fixtures.WriteState(t, root, state)
 	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-	// The generic fixture binding has a deliberate marker SHA. Replace it
-	// before real preparation with this repository's actual committed HEAD.
-	snap := stageSnapshot(t, root)
-	head, err := workspace.Git(context.Background(), root, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	snap.State["bound_req"].(map[string]any)["workspace"].(map[string]any)["bound_commit"] = head
-	stageJSON(t, root, ".claude/loop-state.json", snap.State)
 	asset, err := schema.ReadAsset("team-manifest.example.json")
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +159,7 @@ func newStageAnswerFixtureIssuance(t *testing.T, packet, issue bool, configure .
 	f := stageAnswerFixture{root: root}
 	for _, raw := range state["documents"].([]any) {
 		d := raw.(map[string]any)
-		docs = append(docs, map[string]any{"id": d["id"], "path": d["path"], "version": d["version"], "sha256": d["sha256"]})
+		docs = append(docs, map[string]any{"id": d["id"], "path": d["path"], "version": d["version"]})
 		if d["kind"] == "task" {
 			f.taskID = d["id"].(string)
 			f.taskPath = d["path"].(string)
@@ -560,7 +551,7 @@ func testIndependentStageAnswerFrozenReceipt(t *testing.T, deferControl bool) {
 		stageCLI(t, "runtime", "stage-answer", "recover", "--root", f.root)
 		recovered := stageSnapshot(t, f.root)
 		record, ok, err := runtime.FindSubmission(recovered.State, p.ID)
-		if err != nil || !ok || record.Key != firstRecord.Key || record.EvidenceID != firstRecord.EvidenceID || record.ContentHash != firstRecord.ContentHash || record.ControlStatus != "no_transition" || len(first.State["evidence"].([]any)) != len(recovered.State["evidence"].([]any)) {
+		if err != nil || !ok || record.Key != firstRecord.Key || record.EvidenceID != firstRecord.EvidenceID || record.ControlStatus != "no_transition" || len(first.State["evidence"].([]any)) != len(recovered.State["evidence"].([]any)) {
 			t.Fatalf("Main recovery changed Worker delivery or failed its original gate: %+v %v", record, err)
 		}
 		first = recovered

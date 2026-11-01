@@ -2,6 +2,7 @@ package controlproof
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -15,11 +16,8 @@ import (
 // and original journal event.
 type AssignmentRevisionReceipt struct {
 	IntentKey               string                            `json:"intent_key"`
-	RequestDigest           string                            `json:"request_digest"`
 	AssignmentRecord        assignmentrecord.RecordReference  `json:"assignment_record"`
-	AssignmentRecordSHA256  string                            `json:"assignment_record_sha256"`
 	PreviousRecord          assignmentrecord.RecordReference  `json:"previous_record"`
-	PreviousRecordSHA256    string                            `json:"previous_record_sha256"`
 	RuntimeEventID          string                            `json:"runtime_event_id"`
 	RuntimeCommitRevision   int                               `json:"runtime_commit_revision"`
 	PreviousSourceSnapshots []assignmentrecord.SourceSnapshot `json:"previous_source_snapshots,omitempty"`
@@ -28,14 +26,13 @@ type AssignmentRevisionReceipt struct {
 // AssignmentRevisionEventID is stable across retries and independent of the
 // Runtime's unrelated commit count.
 func AssignmentRevisionEventID(ref assignmentrecord.RecordReference, intentKey string) string {
-	return "evt-s6-assignment-revision-" + sha256Hex([]byte(assignmentRevisionPartition(ref, intentKey)))[:32]
+	return "evt-s6-assignment-revision-" + base64.RawURLEncoding.EncodeToString([]byte(assignmentRevisionPartition(ref, intentKey)))
 }
 
 // AssignmentRevisionIdempotencyKey names the stable revision intent. The
-// request digest is checked separately so a repeated key cannot change the
-// authorized source bundle.
+// original previous Record and intent identify the original issued responsibility.
 func AssignmentRevisionIdempotencyKey(ref assignmentrecord.RecordReference, intentKey string) string {
-	return "runtime:s6-assignment-revision:" + sha256Hex([]byte(assignmentRevisionPartition(ref, intentKey)))
+	return "runtime:s6-assignment-revision:" + base64.RawURLEncoding.EncodeToString([]byte(assignmentRevisionPartition(ref, intentKey)))
 }
 
 func assignmentRevisionPartition(ref assignmentrecord.RecordReference, intentKey string) string {
@@ -88,8 +85,8 @@ func ValidateAssignmentRevisionReceiptsContext(ctx context.Context, state map[st
 	seenRecords := map[assignmentrecord.RecordReference]bool{}
 	coveredRevisions := map[assignmentrecord.RecordReference]bool{}
 	for i, receipt := range receipts {
-		if strings.TrimSpace(receipt.IntentKey) == "" || len(receipt.IntentKey) > 1024 || !validSHA256(receipt.RequestDigest) || !validSHA256(receipt.AssignmentRecordSHA256) || !validSHA256(receipt.PreviousRecordSHA256) || receipt.RuntimeEventID == "" || receipt.RuntimeCommitRevision < 1 {
-			return fmt.Errorf("Assignment revision receipt %d has incomplete identity or digest fields", i)
+		if strings.TrimSpace(receipt.IntentKey) == "" || len(receipt.IntentKey) > 1024 || receipt.RuntimeEventID == "" || receipt.RuntimeCommitRevision < 1 {
+			return fmt.Errorf("Assignment revision receipt %d has incomplete identity fields", i)
 		}
 		newRef, oldRef := receipt.AssignmentRecord, receipt.PreviousRecord
 		if newRef.RuntimeID == "" || newRef.BaselineGeneration < 1 || newRef.AssignmentID == "" || newRef.Revision < 2 || oldRef.RuntimeID != newRef.RuntimeID || oldRef.BaselineGeneration != newRef.BaselineGeneration || oldRef.AssignmentID != newRef.AssignmentID || oldRef.Revision != newRef.Revision-1 {
@@ -104,42 +101,19 @@ func ValidateAssignmentRevisionReceiptsContext(ctx context.Context, state map[st
 		if err != nil || !found {
 			return fmt.Errorf("Assignment revision receipt %d has no exact issued Record: %v", i, err)
 		}
-		oldRecord, found, err := assignmentrecord.FindRecordRevision(records, oldRef)
+		_, found, err = assignmentrecord.FindRecordRevision(records, oldRef)
 		if err != nil || !found {
 			return fmt.Errorf("Assignment revision receipt %d has no exact previous Record: %v", i, err)
 		}
-		newSHA, err := newRecord.Digest()
-		if err != nil || newSHA != receipt.AssignmentRecordSHA256 {
-			return fmt.Errorf("Assignment revision receipt %d current Record digest differs", i)
-		}
-		oldSHA, err := oldRecord.Digest()
-		if err != nil || oldSHA != receipt.PreviousRecordSHA256 {
-			return fmt.Errorf("Assignment revision receipt %d previous Record digest differs", i)
-		}
 		issuance := newRecord.RevisionIssuance
-		if issuance == nil || issuance.IntentKey != receipt.IntentKey || issuance.RequestDigest != receipt.RequestDigest || issuance.PreviousRecord != oldRef || issuance.PreviousRecordSHA256 != receipt.PreviousRecordSHA256 {
-			return fmt.Errorf("Assignment revision receipt %d differs from the immutable Record issuance binding", i)
-		}
-		if len(receipt.PreviousSourceSnapshots) == 0 {
-			return fmt.Errorf("Assignment revision receipt %d omits the previous Record source audit", i)
-		}
-		oldWithSnapshots := oldRecord
-		oldWithSnapshots.SourceSnapshots = append([]assignmentrecord.SourceSnapshot(nil), receipt.PreviousSourceSnapshots...)
-		if err := assignmentrecord.ValidateRecord(oldWithSnapshots); err != nil {
-			return fmt.Errorf("Assignment revision receipt %d previous source audit is incomplete: %w", i, err)
-		}
-		if len(oldRecord.SourceSnapshots) > 0 && !equalAssignmentSourceSnapshots(oldRecord.SourceSnapshots, receipt.PreviousSourceSnapshots) {
-			return fmt.Errorf("Assignment revision receipt %d changed the previous Record source audit", i)
+		if issuance == nil || issuance.IntentKey != receipt.IntentKey || issuance.PreviousRecord != oldRef {
+			return fmt.Errorf("Assignment revision receipt %d differs from the original Record issuance", i)
 		}
 		if newRecord.RegistrationRevision != receipt.RuntimeCommitRevision {
 			return fmt.Errorf("Assignment revision receipt %d commit revision differs from the issued Record", i)
 		}
 		coveredRevisions[newRef] = true
-		eventID := AssignmentRevisionEventID(oldRef, receipt.IntentKey)
-		idempotencyKey := AssignmentRevisionIdempotencyKey(oldRef, receipt.IntentKey)
-		if receipt.RuntimeEventID != eventID {
-			return fmt.Errorf("Assignment revision receipt %d event ID is not derived from its original intent", i)
-		}
+		eventID := receipt.RuntimeEventID // Old event IDs remain opaque recorded identities.
 		index, ok := journal.EventIndex[eventID]
 		if !ok {
 			return fmt.Errorf("Assignment revision receipt %d has no original journal event", i)
@@ -148,7 +122,7 @@ func ValidateAssignmentRevisionReceiptsContext(ctx context.Context, state map[st
 		actor, _ := event["actor"].(map[string]any)
 		generation, generationErr := integerField(event, "baseline_generation")
 		afterRevision, afterErr := integerField(event, "after_revision")
-		if event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "ASSIGNMENT-REVISION" || event["idempotency_key"] != idempotencyKey || event["runtime_id"] != oldRef.RuntimeID || generationErr != nil || generation != oldRef.BaselineGeneration || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || afterErr != nil || afterRevision != receipt.RuntimeCommitRevision {
+		if event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "ASSIGNMENT-REVISION" || event["runtime_id"] != oldRef.RuntimeID || generationErr != nil || generation != oldRef.BaselineGeneration || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || afterErr != nil || afterRevision != receipt.RuntimeCommitRevision {
 			return fmt.Errorf("Assignment revision receipt %d does not match its original committed Writer event", i)
 		}
 	}
@@ -169,18 +143,6 @@ func equalAssignmentSourceSnapshots(a, b []assignmentrecord.SourceSnapshot) bool
 	}
 	for i := range a {
 		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func validSHA256(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for _, character := range value {
-		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
 			return false
 		}
 	}

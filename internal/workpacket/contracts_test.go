@@ -9,8 +9,8 @@ import (
 )
 
 func TestContractProjectionFreezesInputsAndRequiresExplicitApplicability(t *testing.T) {
-	binding := PlanningBinding{RuntimeID: "loop-contract", Generation: 1, StageEntry: 3, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1.0.0", SHA256: Digest([]byte("REQ"))}}
-	inputs := ContractInputs{Designs: []Reference{{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1.0.0", SHA256: Digest([]byte("design"))}}, Sources: []Subject{{Path: "docs/design/prototypes/orders/cases.json", SHA256: Digest([]byte("cases"))}}, Directories: map[string][]string{"docs/design/prototypes/orders": {"stories.md", "cases.json"}}}
+	binding := PlanningBinding{RuntimeID: "loop-contract", Generation: 1, StageEntry: 3, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1.0.0"}}
+	inputs := ContractInputs{Designs: []Reference{{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1.0.0"}}, Sources: []Subject{{Path: "docs/design/prototypes/orders/cases.json"}}, Directories: map[string][]string{"docs/design/prototypes/orders": {"stories.md", "cases.json"}}}
 	p, err := BuildContracts(binding, inputs)
 	if err != nil {
 		t.Fatal(err)
@@ -20,8 +20,8 @@ func TestContractProjectionFreezesInputsAndRequiresExplicitApplicability(t *test
 		t.Fatal("unstable projection", err)
 	}
 	inputs.Directories["docs/design/prototypes/orders"][0] = "changed.md"
-	inputs.Designs[0].SHA256 = Digest([]byte("changed"))
-	if p.Inputs.Designs[0].SHA256 != Digest([]byte("design")) || p.Inputs.Directories["docs/design/prototypes/orders"][1] != "stories.md" {
+	inputs.Designs[0].Path = "changed.md"
+	if p.Inputs.Designs[0].Path != "docs/architecture/ARCHITECTURE-001.md" || p.Inputs.Directories["docs/design/prototypes/orders"][1] != "stories.md" {
 		t.Fatal("caller mutated frozen inputs")
 	}
 	data, _ := json.Marshal(p.Draft)
@@ -79,14 +79,14 @@ func TestContractProjectionFreezesInputsAndRequiresExplicitApplicability(t *test
 		})
 	}
 	changed, err := BuildContracts(binding, inputs)
-	if err != nil || changed.ID == p.ID {
-		t.Fatal("changed inputs reused old packet", err)
+	if err != nil || changed.ID != p.ID || changed.Inputs.Designs[0].Path != "changed.md" {
+		t.Fatalf("changed materials must preserve the original responsibility and reflect the new source: %+v %v", changed.Inputs, err)
 	}
 }
 
 func TestContractProjectionCanonicalOrderAndInvalidSourceManifest(t *testing.T) {
-	b := PlanningBinding{RuntimeID: "loop-contract", Generation: 1, StageEntry: 0, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1", SHA256: Digest([]byte("req"))}}
-	a := Reference{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1", SHA256: Digest([]byte("a"))}
+	b := PlanningBinding{RuntimeID: "loop-contract", Generation: 1, StageEntry: 0, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1"}}
+	a := Reference{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1"}
 	z := a
 	z.ID = "ARCHITECTURE-002"
 	z.Path = "docs/architecture/ARCHITECTURE-002.md"
@@ -110,8 +110,8 @@ func TestContractProjectionCanonicalOrderAndInvalidSourceManifest(t *testing.T) 
 }
 
 func TestContractQuestionDeclaresApplicabilityObjectShape(t *testing.T) {
-	b := PlanningBinding{RuntimeID: "loop-contract", Generation: 1, StageEntry: 0, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1", SHA256: Digest([]byte("req"))}}
-	p, err := BuildContracts(b, ContractInputs{Designs: []Reference{{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1", SHA256: Digest([]byte("design"))}}})
+	b := PlanningBinding{RuntimeID: "loop-contract", Generation: 1, StageEntry: 0, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1"}}
+	p, err := BuildContracts(b, ContractInputs{Designs: []Reference{{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,4 @@
-// req_baseline_p0_test.go pins the L3-S6 P0-4 real body of the
-// req_baseline_unchanged guard: TR-004/TR-007 must compare the bound REQ's
-// registered sha256 against the on-disk file, not accept any non-empty
-// evidence map.
+// REQ continuation keeps the actual binding without digest authentication.
 package transition_test
 
 import (
@@ -31,8 +28,7 @@ func TestReqBaselineUnchangedAcceptsMatchingFile(t *testing.T) {
 	state := map[string]any{
 		"root": root,
 		"bound_req": map[string]any{
-			"path":   "docs/requirements/REQ-001.md",
-			"sha256": transition.SHA256(content),
+			"path": "docs/requirements/REQ-001.md",
 		},
 	}
 	guard, _ := transition.LookupGuard("req_baseline_unchanged")
@@ -41,15 +37,14 @@ func TestReqBaselineUnchangedAcceptsMatchingFile(t *testing.T) {
 	}
 }
 
-func TestReqBaselineUnchangedAcceptsRawCRLFFingerprint(t *testing.T) {
+func TestReqBaselineUnchangedAcceptsCRLF(t *testing.T) {
 	root := t.TempDir()
 	content := []byte("# REQ\r\n> Status: locked\r\n")
 	writeBoundREQFixture(t, root, content)
 	state := map[string]any{
 		"root": root,
 		"bound_req": map[string]any{
-			"path":   "docs/requirements/REQ-001.md",
-			"sha256": transition.REQSHA256(content),
+			"path": "docs/requirements/REQ-001.md",
 		},
 	}
 	guard, _ := transition.LookupGuard("req_baseline_unchanged")
@@ -58,25 +53,24 @@ func TestReqBaselineUnchangedAcceptsRawCRLFFingerprint(t *testing.T) {
 	}
 }
 
-func TestReqBaselineUnchangedRejectsTamperedFile(t *testing.T) {
+func TestReqBaselineUnchangedDoesNotAuthenticateEditedFile(t *testing.T) {
 	root := t.TempDir()
 	writeBoundREQFixture(t, root, []byte("# REQ\n> Status: locked\n"))
 	state := map[string]any{
 		"root": root,
 		"bound_req": map[string]any{
-			"path":   "docs/requirements/REQ-001.md",
-			"sha256": transition.SHA256([]byte("# REQ\n> Status: locked\n")),
+			"path": "docs/requirements/REQ-001.md",
 		},
 	}
-	// The REQ is reworked after bind — the fingerprint no longer matches.
+	// A later edit is not authenticated by an obsolete source hash.
 	if err := os.WriteFile(filepath.Join(root, "docs", "requirements", "REQ-001.md"),
 		[]byte("# REQ\n> Status: locked\n\nNEW GOAL sneaked in\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	guard, _ := transition.LookupGuard("req_baseline_unchanged")
 	err := guard(state, map[string]string{"any": "evidence"})
-	if err == nil {
-		t.Fatal("tampered REQ must be rejected even with evidence present")
+	if err != nil {
+		t.Fatalf("the binding should not authenticate old source bytes: %v", err)
 	}
 }
 

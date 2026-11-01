@@ -41,7 +41,7 @@ func TestAuditManifestDraftUsesAuthoritativeInventoryAndDerivedMetrics(t *testin
 	state := map[string]any{
 		"runtime_id": "loop-REQ-7",
 		"baseline":   map[string]any{"generation": 3},
-		"review":     map[string]any{"round": 5},
+		"review":     map[string]any{"round_entry": map[string]any{"plan_id": "review-plan-7"}},
 	}
 	authority := acceptance.InventoryAuthority{
 		RequirementIDs: []string{"REQ-7/FR-1"},
@@ -52,7 +52,7 @@ func TestAuditManifestDraftUsesAuthoritativeInventoryAndDerivedMetrics(t *testin
 	}
 	for _, kind := range []string{acceptance.ManifestAcceptance, acceptance.ManifestReleaseAudit} {
 		draft := auditManifestDraft(state, kind, authority)
-		if draft.SchemaVersion != acceptance.SchemaVersionAcceptance || draft.ManifestType != kind || draft.RuntimeID != "loop-REQ-7" || draft.BaselineGeneration != 3 || draft.ReviewRound != 5 {
+		if draft.SchemaVersion != acceptance.SchemaVersionAcceptance || draft.ManifestType != kind || draft.RuntimeID != "loop-REQ-7" || draft.BaselineGeneration != 3 || draft.ReviewPlanID != "review-plan-7" {
 			t.Fatalf("%s draft lost current Runtime binding: %#v", kind, draft)
 		}
 		if len(draft.CoverageInventory) != 0 || len(draft.Counterevidence) != 0 || len(draft.AuditAreas) != 0 {
@@ -94,16 +94,24 @@ func TestAuditQuestionnaireStopIsReadOnlyAndKeepsDraft(t *testing.T) {
 	if err := os.WriteFile(absPath, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	context = stageAuditQuestionnaireContext(root, policy.Input{Event: "Idle"}, snapshot)
+	context = stageAuditQuestionnaireContext(root, policy.Input{Event: "Stop"}, snapshot)
 	if !strings.Contains(context, absPath) {
-		t.Fatalf("Idle context omitted existing answer path: %s", context)
+		t.Fatalf("Stop context omitted existing answer path: %s", context)
 	}
+	for _, event := range []string{"Idle"} {
+		if got := stageAuditQuestionnaireContext(root, policy.Input{Event: event}, snapshot); got != "" {
+			t.Fatalf("%s emitted an unsupported questionnaire reminder: %s", event, got)
+		}
+	}
+	// The public PreCompact wire suppresses model context. Its reusable
+	// projection still must leave the author's existing bytes untouched.
+	stageAuditQuestionnaireContext(root, policy.Input{Event: "PreCompact"}, snapshot)
 	actual, err := os.ReadFile(absPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(actual, original) {
-		t.Fatalf("Stop/Idle changed the existing draft: %q", actual)
+		t.Fatalf("read-only observation changed the existing draft: %q", actual)
 	}
 }
 

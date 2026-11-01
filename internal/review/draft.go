@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"sort"
 	"strings"
 	"time"
@@ -10,9 +11,8 @@ import (
 
 // taskDoc is one current-generation TASK document fact.
 type taskDoc struct {
-	id     string
-	path   string
-	sha256 string
+	id   string
+	path string
 }
 
 // DraftPlan scaffolds a ReviewPlan from the current runtime facts
@@ -21,24 +21,24 @@ type taskDoc struct {
 // Builder-changed paths yields one independently dispatchable QA Assignment
 // per baseline focus; CASE/script discovery offers candidates while Main
 // chooses actual reuse. UI impact and browser discovery do not decide general E2E applicability. The
-// draft is still a scaffold when no stable CASE input exists —
-// its remaining TODO markers are intentionally rejected by registration.
-func DraftPlan(state map[string]any, round int) (*Plan, []string) {
-	return draftPlanForRoot("", state, round)
+// draft is a scaffold when inputs are unresolved; Main can save the
+// understandable parts and continue the same original responsibility.
+func DraftPlan(state map[string]any) (*Plan, []string) {
+	return draftPlanForRoot("", state)
 }
 
 // DraftPlanForRoot is the production S7 draft path. Canonical S6 generations
 // are projected from the original machine snapshot and Main Git range;
 // historical runtimes use the immutable completion envelope path.
-func DraftPlanForRoot(root string, state map[string]any, round int) (*Plan, []string) {
-	return draftPlanForRoot(root, state, round)
+func DraftPlanForRoot(root string, state map[string]any) (*Plan, []string) {
+	return draftPlanForRoot(root, state)
 }
 
-func DraftPlanForRootContext(ctx context.Context, root string, state map[string]any, round int) (*Plan, []string) {
-	return draftPlanForRoot(root, state, round, ctx)
+func DraftPlanForRootContext(ctx context.Context, root string, state map[string]any) (*Plan, []string) {
+	return draftPlanForRoot(root, state, ctx)
 }
 
-func draftPlanForRoot(root string, state map[string]any, round int, contexts ...context.Context) (*Plan, []string) {
+func draftPlanForRoot(root string, state map[string]any, contexts ...context.Context) (*Plan, []string) {
 	ctx := baselineContext(contexts)
 	generation := baselineGeneration(state)
 	var notes []string
@@ -50,7 +50,7 @@ func draftPlanForRoot(root string, state map[string]any, round int, contexts ...
 	var tasks []taskDoc
 	if productBaseline != nil {
 		for _, task := range productBaseline.Tasks {
-			tasks = append(tasks, taskDoc{id: task.ID, path: task.Path, sha256: task.SHA256})
+			tasks = append(tasks, taskDoc{id: task.ID, path: task.Path})
 		}
 	} else {
 		for _, raw := range stateDocuments(state) {
@@ -63,11 +63,10 @@ func draftPlanForRoot(root string, state map[string]any, round int, contexts ...
 			}
 			id, _ := doc["id"].(string)
 			path, _ := doc["path"].(string)
-			sha, _ := doc["sha256"].(string)
 			if id == "" || path == "" {
 				continue
 			}
-			tasks = append(tasks, taskDoc{id: id, path: path, sha256: sha})
+			tasks = append(tasks, taskDoc{id: id, path: path})
 		}
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].id < tasks[j].id })
@@ -79,7 +78,7 @@ func draftPlanForRoot(root string, state map[string]any, round int, contexts ...
 			continue
 		}
 		seenFrozen[task.path] = true
-		frozen = append(frozen, FrozenSubject{Path: task.path, SHA256: task.sha256, Kind: "task"})
+		frozen = append(frozen, FrozenSubject{Path: task.path, Kind: "task"})
 	}
 
 	projection := s7BaselineProjection{}
@@ -98,11 +97,11 @@ func draftPlanForRoot(root string, state map[string]any, round int, contexts ...
 	} else {
 		projection = buildS7BaselineProjection(root, state, ctx)
 		for _, diagnostic := range projection.Diagnostics {
-			notes = append(notes, "S7 baseline projection: "+diagnostic+"; registration will reject an unverifiable completion artifact")
+			notes = append(notes, "Available S6 material is incomplete: "+diagnostic+"; its contribution is unknown and does not prevent planning or reception")
 		}
 		changedSubjects, subjectDiagnostics := changedSurfaceSubjects(root, projection.ChangedPaths)
 		for _, diagnostic := range subjectDiagnostics {
-			notes = append(notes, "S7 baseline projection: "+diagnostic+"; add a valid frozen subject before registration")
+			notes = append(notes, "Available change material is incomplete: "+diagnostic+"; Main can continue planning with the actual available sources")
 		}
 		for _, subject := range changedSubjects {
 			if seenFrozen[subject.Path] {
@@ -157,7 +156,7 @@ func draftPlanForRoot(root string, state map[string]any, round int, contexts ...
 	changedList := append([]string(nil), projection.ChangedPaths...)
 	qaSurface, qaSurfaceIsPlaceholder := qaChangeSurface(changedList, frozen)
 	if qaSurfaceIsPlaceholder {
-		notes = append(notes, "QA claim `target` is a TODO marker (no current-generation completion envelopes and no frozen subjects); replace it with the real change surface before registration — the registration-time check rejects a fabricated target that names nothing")
+		notes = append(notes, "QA change surface is not yet known from available sources. Main can refine the candidate target using actual work materials as planning continues.")
 	}
 	// Each baseline focus is its own Assignment. This keeps the plan's
 	// independent questions independently dispatchable: platform capacity may
@@ -211,25 +210,21 @@ func draftPlanForRoot(root string, state map[string]any, round int, contexts ...
 	// execution state; explicit known CASEs still need individual dispositions.
 	uiImpact := boundREQUIImpact(state)
 	if strings.TrimSpace(uiImpact) == "" {
-		// S7-9 (RC-07): a missing/mistyped ui_impact previously followed the
-		// same not_applicable branch as an explicit "none", silently dropping
-		// the whole E2E dimension. The draft refuses to choose for the
-		// Planner: UI impact alone never establishes general E2E N/A.
-		return nil, append(notes, "bound REQ metadata.ui_impact is empty or missing; the E2E coverage state cannot be derived — bind the REQ with an explicit ui_impact value (none | changed | unknown) via the requirement bind path, or add the metadata.ui_impact field, then re-draft (S7-9/RC-07: an empty ui_impact is an error, not an implicit not_applicable)")
+		notes = append(notes, "UI impact was not supplied; its applicability remains open for Main's professional judgment.")
 	}
 	inventory, discoveryDiagnostics := discoverE2EInventory(root, state, &Plan{ProductBaseline: productBaseline})
 	for _, diagnostic := range discoveryDiagnostics {
-		notes = append(notes, "E2E inventory: "+diagnostic+"; Main must resolve the original source gap, not assume an empty test library")
+		notes = append(notes, "Optional E2E source observation: "+diagnostic+"; available material remains usable and the missing scope is unknown.")
 	}
 	var e2eAssets []E2EAsset
 	var verificationWorkspace *string
 	e2eState := ""
-	notes = append(notes, "Main must decide e2e_coverage_state from actual behavior, assets and environment: regression_available reuses confirmed assets; cold_start prepares only missing assets in the original workspace; not_applicable requires the original justified N/A Claim. UI impact and browser discovery do not decide general behavior applicability.")
+	notes = append(notes, "Main can use actual behavior, assets and environment to decide applicable E2E work; optional fields may remain open while the plan is developed.")
 	if uiImpact == "none" && len(inventory.Cases) == 0 {
 		notes = append(notes, "ui_impact=none and no discovered browser CASE establish only the browser candidate facts; assess API, command, state and other observable behavior before choosing E2E applicability. No N/A Claim has been inferred.")
 	}
 	for _, candidate := range inventory.Candidates {
-		notes = append(notes, fmt.Sprintf("Candidate script %s (observed sha256=%s), possible scenarios: %s. Text matches do not prove selectors, routes, environment or execution; resolve the actual binding in this ReviewPlan.", candidate.Path, candidate.SHA256, strings.Join(candidate.PossibleCases, ", ")))
+		notes = append(notes, fmt.Sprintf("Candidate script %s, possible scenarios: %s. Text matches do not prove selectors, routes, environment or execution; resolve the actual binding in this ReviewPlan.", candidate.Path, strings.Join(candidate.PossibleCases, ", ")))
 	}
 	if len(inventory.Cases) > 0 {
 		for index, scenario := range inventory.Cases {
@@ -250,29 +245,22 @@ func draftPlanForRoot(root string, state map[string]any, round int, contexts ...
 			})
 		}
 	} else {
-		notes = append(notes, "No required browser CASE inventory was discoverable; Main must restore the actual scenario sources or supply a justified applicability decision, not assume a blank test library; set each required E2E Assignment behavior_surface to browser or non_browser from explicit source facts before drafting its manifest")
-		id := nextClaim("e2e", "flows")
-		claims = append(claims, Claim{
-			ClaimID: id, Lens: "e2e", Target: "TODO(planner): which existing scenario and source define this behavior? Name the actual browser, API, command or state entry; report missing scenario inputs to Main",
-			Assertion: "declared entry points produce the expected user-observable behavior",
-			Oracle:    "TODO(planner): after the declared fixture and actions, what visible/terminal state, persisted or forbidden effects and recovery distinguish pass from fail? Cite actual scenario evidence",
-			Method:    "TODO(planner): choose the actual browser, API, command or state method from the behavior sources", Applicability: "required", SourceRefs: taskIDs(tasks), FocusKey: "user-flow",
-		})
-		assignments = append(assignments, PlanAssignment{
-			AssignmentID: "assignment-e2e-flows", Lens: "e2e", ClaimIDs: []string{id},
-			NonOverlapBoundary: "owns the declared flows; cold-start spec authoring stays inside the verification workspace",
-			ExecutionWave:      "behavior",
-		})
+		notes = append(notes, "No browser CASEs were found in the available materials; this does not decide whether any behavior needs verification.")
 	}
 
 	if len(tasks) == 0 {
-		notes = append(notes, "no current-generation TASK documents found; the draft carries a placeholder DV/QA minimum — registration will reject an unjustified zero-coverage lens")
+		notes = append(notes, "No current-generation TASK references are available in this projection; their review scope remains unknown. Main can continue with available professional materials.")
 	}
 
+	rev, _ := state["review"].(map[string]any)
+	identity := reviewmeta.FromRoundEntry(rev)
+	schemaVersion, planID := reviewmeta.IdentitySchemaVersion, "review-plan-draft"
+	if identity.PlanID != "" {
+		planID = identity.PlanID
+	}
 	plan := &Plan{
-		SchemaVersion:                 "1.0.0",
-		ReviewPlanID:                  fmt.Sprintf("review-plan-draft-r%d", round),
-		ReviewRound:                   round,
+		SchemaVersion:                 schemaVersion,
+		ReviewPlanID:                  planID,
 		BaselineGeneration:            generation,
 		ProductBaseline:               productBaseline,
 		FrozenSubjects:                frozen,
@@ -471,7 +459,7 @@ func ValidatePlanTaskCoverage(state map[string]any, plan *Plan) error {
 			"ReviewPlan drops current-generation TASKs from Claim coverage",
 			missingItems,
 			[]string{"add each missing TASK id to at least one Claim.source_refs; keep the Claim target and oracle specific to that TASK"},
-			"runtime review-plan --file plan.json",
+			"fill and save the original ReviewPlan questionnaire",
 		)
 	}
 	return nil

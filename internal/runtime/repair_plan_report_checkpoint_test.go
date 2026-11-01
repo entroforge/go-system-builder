@@ -29,10 +29,6 @@ func acceptRepairPlanReportFixture(t *testing.T, f *repairPlanReportRuntimeFixtu
 	if len(fields) != 0 {
 		t.Fatalf("synthetic complete PlanReport answer rejected: %#v", fields)
 	}
-	packetSHA, err := workpacket.RepairPlanReportPacketDigest(f.packet)
-	if err != nil {
-		t.Fatal(err)
-	}
 	issuedAt := "2026-10-14T12:05:00Z"
 	acceptedEventID := "evt-s9-issued-plan-report-" + f.packet.ID
 	acceptedKey := "runtime:s9:issued-plan-report:" + f.packet.ID
@@ -41,18 +37,18 @@ func acceptRepairPlanReportFixture(t *testing.T, f *repairPlanReportRuntimeFixtu
 	)
 	fullReportRef := reportRef + f.packet.ReportID + ".json"
 	receipt := RepairPlanReportReceipt{
-		Contract: "s9-plan-report-receipt-v1", PacketID: f.packet.ID, PacketSHA256: packetSHA,
-		AnswerSHA256: workpacket.Digest(accepted), SubmittedAnswer: accepted,
-		OwnerAgentID: f.packet.Binding.OwnerAgentID, RuntimeID: f.packet.Binding.RuntimeID,
-		BaselineGeneration: f.packet.Binding.BaselineGeneration, ReviewRound: f.packet.Binding.ReviewRound,
-		CaseID: f.packet.Binding.CaseID, CaseRef: f.packet.Binding.CaseRef, CaseSHA256: f.packet.Binding.CaseSHA256,
-		ContractID: f.packet.Binding.ContractID, ContractRef: f.packet.Binding.ContractRef, ContractSHA256: f.packet.Binding.ContractSHA256,
-		SessionID: f.packet.Binding.SessionID, SessionRef: f.packet.Binding.SessionRef, SessionSHA256: f.packet.Binding.SessionSHA256,
-		PlanID: f.packet.Binding.PlanID, PlanRef: f.packet.Binding.PlanRef, PlanSHA256: f.packet.Binding.PlanSHA256,
-		RepairAssignmentID: f.packet.Binding.RepairAssignmentID, RepairAssignmentSHA256: f.packet.Binding.RepairAssignmentSHA256,
-		ManifestAssignmentID: f.packet.Binding.ManifestAssignmentID, ManifestAssignmentSHA256: f.packet.Binding.ManifestAssignmentSHA256,
-		TeamID: f.packet.Binding.TeamID, TaskID: f.packet.Binding.TaskID, TaskRef: f.packet.Binding.TaskRef, TaskSHA256: f.packet.Binding.TaskSHA256,
-		ManifestRef: f.packet.Binding.ManifestRef, ManifestSHA256: f.packet.Binding.ManifestSHA256,
+		Contract: "s9-plan-report-receipt-v1", PacketID: f.packet.ID,
+		SubmittedAnswer: accepted,
+		OwnerAgentID:    f.packet.Binding.OwnerAgentID, RuntimeID: f.packet.Binding.RuntimeID,
+		BaselineGeneration: f.packet.Binding.BaselineGeneration,
+		CaseID:             f.packet.Binding.CaseID, CaseRef: f.packet.Binding.CaseRef,
+		ContractID: f.packet.Binding.ContractID, ContractRef: f.packet.Binding.ContractRef,
+		SessionID: f.packet.Binding.SessionID, SessionRef: f.packet.Binding.SessionRef,
+		PlanID: f.packet.Binding.PlanID, PlanRef: f.packet.Binding.PlanRef,
+		RepairAssignmentID:   f.packet.Binding.RepairAssignmentID,
+		ManifestAssignmentID: f.packet.Binding.ManifestAssignmentID,
+		TeamID:               f.packet.Binding.TeamID, TaskID: f.packet.Binding.TaskID, TaskRef: f.packet.Binding.TaskRef,
+		ManifestRef:   f.packet.Binding.ManifestRef,
 		ExecutionRoot: f.root, ReportID: f.packet.ReportID, ReportRef: fullReportRef, WorkComplete: false,
 		IssuanceEventID: f.packet.IssuanceEventID, AcceptedEventID: acceptedEventID, AcceptedIdempotencyKey: acceptedKey,
 		AcceptedAfterRuntimeRevision: 6, AcceptedSequence: 6,
@@ -69,12 +65,11 @@ func acceptRepairPlanReportFixture(t *testing.T, f *repairPlanReportRuntimeFixtu
 		"plan":     answerFields["plan"], "red_checks": answerFields["red_checks"], "proposed_paths": answerFields["proposed_paths"],
 		"status": "reported", "reported_at": issuedAt, "receipt": receipt,
 	}
-	reportBytes := writeRepairPlanReportJSON(t, f.root, fullReportRef, report)
+	writeRepairPlanReportJSON(t, f.root, fullReportRef, report)
 	repair := f.state["review"].(map[string]any)["repair"].(map[string]any)
-	indexedRef := map[string]any{"path": fullReportRef, "sha256": workpacket.Digest(reportBytes)}
+	indexedRef := map[string]any{"path": fullReportRef}
 	repair["plan_report_refs"] = []any{indexedRef}
 	repair["plan_report_ref"] = fullReportRef
-	repair["plan_report_sha256"] = workpacket.Digest(reportBytes)
 	repair["status"] = "reproducing"
 	f.state["lifecycle"].(map[string]any)["phase"] = "reproducing"
 	acceptedEvent := buildJournalEvent(Mutation{
@@ -128,10 +123,7 @@ func updateRepairPlanReportArtifact(t *testing.T, f *repairPlanReportRuntimeFixt
 	ref := repair["plan_report_ref"].(string)
 	doc := readRepairPlanReportJSON(t, f.root, ref)
 	mutate(doc)
-	data := writeRepairPlanReportJSON(t, f.root, ref, doc)
-	sha := workpacket.Digest(data)
-	repair["plan_report_sha256"] = sha
-	repair["plan_report_refs"].([]any)[0].(map[string]any)["sha256"] = sha
+	writeRepairPlanReportJSON(t, f.root, ref, doc)
 }
 
 func TestRepairPlanReportReceiptAndCheckpointValidateOriginalAcceptedReport(t *testing.T) {
@@ -169,14 +161,10 @@ func TestRepairPlanReportReceiptIndentRoundTripCanonicalizesFullAnswerAndRejects
 	f := newRepairPlanReportRuntimeFixture(t)
 	receipt := acceptRepairPlanReportFixture(t, &f)
 	originalAnswer := append([]byte(nil), receipt.SubmittedAnswer...)
-	originalAnswerSHA := workpacket.Digest(originalAnswer)
-	if originalAnswerSHA != receipt.AnswerSHA256 {
-		t.Fatalf("fixture full-answer SHA = %s, receipt SHA = %s", originalAnswerSHA, receipt.AnswerSHA256)
-	}
 
 	// The original PlanReport writer indents its immutable artifact. The typed
 	// receipt must normalize the embedded RawMessage back to the same canonical
-	// full answer before receipt deep-equality and digest verification.
+	// full answer while retaining its original professional content.
 	indented, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -185,8 +173,8 @@ func TestRepairPlanReportReceiptIndentRoundTripCanonicalizesFullAnswerAndRejects
 	if err := json.Unmarshal(indented, &decoded); err != nil {
 		t.Fatalf("unmarshal indented original S9 receipt: %v", err)
 	}
-	if !reflect.DeepEqual(decoded, receipt) || !bytes.Equal(decoded.SubmittedAnswer, originalAnswer) || workpacket.Digest(decoded.SubmittedAnswer) != receipt.AnswerSHA256 {
-		t.Fatalf("S9 full-answer receipt changed across JSON indentation round-trip: equal=%v answerSHA=%s receiptSHA=%s", reflect.DeepEqual(decoded, receipt), workpacket.Digest(decoded.SubmittedAnswer), receipt.AnswerSHA256)
+	if !reflect.DeepEqual(decoded, receipt) || !bytes.Equal(decoded.SubmittedAnswer, originalAnswer) {
+		t.Fatal("S9 full-answer receipt changed across JSON indentation round-trip")
 	}
 
 	// Duplicate fields inside the answer remain rejected even though the outer
@@ -202,7 +190,7 @@ func TestRepairPlanReportReceiptIndentRoundTripCanonicalizesFullAnswerAndRejects
 	}
 }
 
-func TestRepairPlanReportReceiptRejectsAnswerSourceIndexAndEventDrift(t *testing.T) {
+func TestRepairPlanReportReceiptKeepsOriginalResponsibilityWithoutHistoricalDigestGates(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*testing.T, *repairPlanReportRuntimeFixture)
@@ -246,19 +234,34 @@ func TestRepairPlanReportReceiptRejectsAnswerSourceIndexAndEventDrift(t *testing
 			original := repair["plan_report_refs"].([]any)[0].(map[string]any)
 			doc := readRepairPlanReportJSON(t, f.root, original["path"].(string))
 			duplicateRef := ".claude/review/repair/plan-reports/duplicate.json"
-			data := writeRepairPlanReportJSON(t, f.root, duplicateRef, doc)
-			repair["plan_report_refs"] = append(repair["plan_report_refs"].([]any), map[string]any{"path": duplicateRef, "sha256": workpacket.Digest(data)})
+			writeRepairPlanReportJSON(t, f.root, duplicateRef, doc)
+			repair["plan_report_refs"] = append(repair["plan_report_refs"].([]any), map[string]any{"path": duplicateRef})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newRepairPlanReportRuntimeFixture(t)
 			acceptRepairPlanReportFixture(t, &f)
 			tc.mutate(t, &f)
-			if _, _, err := VerifiedRepairPlanReportReceipt(f.root, f.state, f.packet.ID, f.packet.Binding.OwnerAgentID); err == nil {
-				t.Fatal("tampered or incomplete original S9 receipt was accepted")
-			}
-			if _, err := validateRepairPlanReportCheckpointIndices(f.root, f.state, f.journal); err == nil {
-				t.Fatal("checkpoint index validator accepted tampered or incomplete original receipt")
+			receipt, found, err := VerifiedRepairPlanReportReceipt(f.root, f.state, f.packet.ID, f.packet.Binding.OwnerAgentID)
+			switch tc.name {
+			case "receipt answer digest differs", "source drift", "accepted event identity", "accepted event generation", "accepted event runtime revision":
+				if err != nil || !found || receipt.PacketID != f.packet.ID || receipt.OwnerAgentID != f.packet.Binding.OwnerAgentID {
+					t.Fatalf("unrelated old metadata or historical event invalidated accepted receipt: found=%v err=%v", found, err)
+				}
+			case "missing indexed report ref":
+				if err != nil || found {
+					t.Fatalf("missing report was fabricated: found=%v err=%v", found, err)
+				}
+				if _, err := validateRepairPlanReportCheckpointIndices(f.root, f.state, f.journal); err == nil {
+					t.Fatal("checkpoint lost an accepted report without reporting it")
+				}
+			default:
+				if err == nil {
+					t.Fatal("conflicting original receipt was accepted")
+				}
+				if _, err := validateRepairPlanReportCheckpointIndices(f.root, f.state, f.journal); err == nil {
+					t.Fatal("checkpoint accepted conflicting original receipt")
+				}
 			}
 		})
 	}

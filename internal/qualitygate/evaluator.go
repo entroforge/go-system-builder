@@ -2,11 +2,10 @@ package qualitygate
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
 	"path"
@@ -15,12 +14,9 @@ import (
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/acceptance"
-	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
-	"github.com/entroforge/go-system-builder/internal/builderbatch"
 	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/verification"
 )
 
 // Status is an evaluator-owned Quality Gate state. Controller-only states
@@ -63,11 +59,11 @@ type Input struct {
 
 // Evaluation is the pure evaluator result consumed by the Controller.
 type Evaluation struct {
-	Status              Status   `json:"status"`
-	GateID              string   `json:"gate_id"`
-	CandidateTransition string   `json:"candidate_transition"`
-	ObservedRevision    int      `json:"observed_revision"`
-	Fingerprint         string   `json:"fingerprint"`
+	Status              Status `json:"status"`
+	GateID              string `json:"gate_id"`
+	CandidateTransition string `json:"candidate_transition"`
+	ObservedRevision    int    `json:"observed_revision"`
+
 	Missing             []string `json:"missing"`
 	EvidenceRefs        []string `json:"evidence_refs"`
 	Conflicts           []string `json:"conflicts"`
@@ -108,6 +104,15 @@ func (e *Engine) RequestedEvents(input Input) []string {
 		}
 		return nil
 	}
+	if state == "verification" {
+		if phase == "observation_sealed" {
+			return []string{"blocking_findings_reported"}
+		}
+		if phase == "clean" {
+			return []string{"clean_round_passed"}
+		}
+	}
+
 	documents, err := verifiedCurrentDocumentsWithS5Facts(input)
 	if err != nil {
 		return nil
@@ -119,38 +124,10 @@ func evidenceKindsEqual(requirementKind, actualKind string) bool {
 	return evidence.DefaultCatalog().Accepts(requirementKind, actualKind)
 }
 
-// s5DocumentReviewWithoutRound reports whether a S5 document-review
-// candidate carries no review round on either the state row or the envelope.
-// S5 evidence carries no review_round by design (work_packet.go rejects it,
-// the envelope has no such field); its freshness is the S5 entry tip
-// (currentS5Evidence), not the S7 review round. Comparing its absent round
-// against review.round would deadlock every generation that has ever run S7
-// before returning to S5. Evidence that does carry a round keeps the exact
-// round comparison, so stale rounds are still rejected.
-func s5DocumentReviewWithoutRound(requirement EvidenceRequirement, index map[string]any, envelopeRound int, envelopeHasRound bool) bool {
-	if !evidenceKindsEqual(requirement.Kind, "document_review") {
-		return false
-	}
-	// A null round is the absence of a round: S5 reception writes the key
-	// with a null value. Only a non-null round counts as a stamped round
-	// that must match the current round.
-	if rowRound, rowHas := index["review_round"]; rowHas && rowRound != nil {
-		return false
-	}
-	return !envelopeHasRound && envelopeRound == 0
-}
-
-// envelopeCarriesRound reports whether raw envelope JSON declares review_round.
-// The typed envelope always has the field (zero when absent), so presence
-// must be read from the raw document; unknown fields are rejected at
-// registration, so presence implies a schema that allows the field.
-func envelopeCarriesRound(data []byte) bool {
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return false
-	}
-	_, ok := raw["review_round"]
-	return ok
+// S5 qualification uses the current issued document responsibility rather
+// than a review Plan; any unrelated round metadata is ignored.
+func isS5DocumentReviewRequirement(requirement EvidenceRequirement) bool {
+	return evidenceKindsEqual(requirement.Kind, "document_review")
 }
 
 func currentS5Evidence(state map[string]any, evidenceID, kind string) bool {
@@ -182,10 +159,11 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) (Evaluation, error) 
 		}
 	}
 	spec, ok := e.registry.Lookup(input.GateID)
-	if !ok {
+	if !ok || spec.SemanticVersion == "" {
 		result.ErrorCode = ErrorGateUnknown
 		return result, nil
 	}
+
 	if input.TransitionID != "" && input.TransitionID != spec.TransitionID {
 		result.ErrorCode = ErrorGateUnknown
 		result.Conflicts = []string{"transition:" + input.TransitionID + ":gate_mismatch"}
@@ -199,10 +177,19 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) (Evaluation, error) 
 	}
 	result.CandidateTransition = spec.TransitionID
 	result.NextCursor = currentCursor(input.Snapshot.State)
+	if isReviewRoundGate(input.GateID) {
+		result.Status = StatusSatisfied
+		if input.GateID == "GATE-VERIFY-CLEAN-ROUND-PASSED" {
+			applyCleanRoundGate(input, &result, ctx)
+		} else {
+			applyObservationBatchGate(input, &result)
+		}
+		return result, nil
+	}
+
 	if strings.HasPrefix(input.GateID, "GATE-ACCEPTANCE-") || strings.HasPrefix(input.GateID, "GATE-RELEASE-AUDIT-") {
 		result.Status = StatusSatisfied
 		applyS10ManifestGate(input, &result)
-		result.Fingerprint = fingerprint(result.GateID, spec.SemanticVersion, input.Snapshot.State, nestedInt(input.Snapshot.State, "baseline", "generation"), nil, result.EvidenceRefs)
 		return result, nil
 	}
 	if input.GateID == "GATE-PLANNING-DESIGN-COMPLETE" {
@@ -225,19 +212,6 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) (Evaluation, error) 
 	if input.GateID == "GATE-PLANNING-DESIGN-COMPLETE" {
 		return evaluatePlanningDesign(input, result, spec), nil
 	}
-	if input.GateID == "GATE-DOCUMENT-PASS" {
-		// Registered-document drift check: every current-
-		// generation registered document must still match its disk sha.
-		// Without this, exactSubjects compares against the verified subset
-		// only and a document the reviewers never saw can be re-registered
-		// from disk and locked into building by TR-003's commit.
-		if conflicts := registeredDocumentDrift(input); len(conflicts) > 0 {
-			result.Status = StatusUnknown
-			result.ErrorCode = ErrorGateUnknown
-			result.Conflicts = conflicts
-			return result, nil
-		}
-	}
 	if input.GateID == "GATE-PLANNING-CONTRACTS-COMPLETE" {
 		facts, accepted, factErr := verifiedContractPacketFacts(input)
 		if factErr != nil {
@@ -255,14 +229,6 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) (Evaluation, error) 
 			// fallback only.
 			result.Status = StatusNotReady
 			result.Missing = []string{"evidence:planning_contract_record"}
-			result.Fingerprint = fingerprint(
-				result.GateID,
-				spec.SemanticVersion,
-				input.Snapshot.State,
-				nestedInt(input.Snapshot.State, "baseline", "generation"),
-				documents,
-				nil,
-			)
 			return result, nil
 		}
 		return evaluatePlanningArtifact(input, result, spec, documents, "contract", "locked", "document:contract:locked"), nil
@@ -279,14 +245,6 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) (Evaluation, error) 
 			if !accepted {
 				result.Status = StatusNotReady
 				result.Missing = []string{"evidence:planning_task_record"}
-				result.Fingerprint = fingerprint(
-					result.GateID,
-					spec.SemanticVersion,
-					input.Snapshot.State,
-					nestedInt(input.Snapshot.State, "baseline", "generation"),
-					documents,
-					nil,
-				)
 				return result, nil
 			}
 			documents = append(documents, sources...)
@@ -301,7 +259,6 @@ type documentFact struct {
 	Kind          string
 	Path          string
 	Version       string
-	SHA256        string
 	Status        string
 	Generation    int
 	AuthorAgentID string
@@ -310,7 +267,6 @@ type documentFact struct {
 type subjectRef struct {
 	Path    string `json:"path"`
 	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
 }
 
 type evidenceEnvelope struct {
@@ -321,7 +277,7 @@ type evidenceEnvelope struct {
 	BaselineGeneration     int          `json:"baseline_generation"`
 	ProducerAgentID        string       `json:"producer_agent_id"`
 	ProducerResponsibility string       `json:"producer_responsibility"`
-	ReviewRound            int          `json:"review_round"`
+	ReviewPlanID           string       `json:"review_plan_id"`
 	SubjectRefs            []subjectRef `json:"subject_refs"`
 	Conclusion             string       `json:"conclusion"`
 	RequestedEvent         string       `json:"requested_event"`
@@ -336,8 +292,7 @@ type evidenceEnvelope struct {
 	// ledger. The human-readable ACC/audit Markdown remains a report; this
 	// reference makes the finite coverage and counterevidence contract
 	// consumable by the gate without parsing prose.
-	AuditManifestPath   string `json:"audit_manifest_path,omitempty"`
-	AuditManifestSHA256 string `json:"audit_manifest_sha256,omitempty"`
+	AuditManifestPath string `json:"audit_manifest_path,omitempty"`
 }
 
 // envelopeCheck mirrors the completion-report checkResult shape
@@ -383,7 +338,9 @@ func evaluatePlanningDesign(input Input, result Evaluation, spec GateSpec) Evalu
 		var envelope evidenceEnvelope
 		var data []byte
 		var err error
-		if input.Files != nil {
+		// Packet-mode S2 reports are registered Runtime artifacts under the
+		// control root, not product files from the development Git view.
+		if input.Files != nil && !runtime.PacketEnabled(state) {
 			data, err = input.Files.ReadFile(stringValue(selected["path"]))
 		} else {
 			data, err = os.ReadFile(filepath.Join(input.Root, stringValue(selected["path"])))
@@ -425,7 +382,6 @@ func evaluatePlanningDesign(input Input, result Evaluation, spec GateSpec) Evalu
 		result.Status = StatusNotReady
 		sort.Strings(result.Missing)
 	}
-	result.Fingerprint = fingerprint(result.GateID, spec.SemanticVersion, state, generation, nil, result.EvidenceRefs)
 	return result
 }
 
@@ -464,14 +420,6 @@ func evaluatePlanningArtifact(
 	if !found {
 		result.Status = StatusNotReady
 		result.Missing = []string{missing}
-		result.Fingerprint = fingerprint(
-			result.GateID,
-			spec.SemanticVersion,
-			input.Snapshot.State,
-			nestedInt(input.Snapshot.State, "baseline", "generation"),
-			documents,
-			nil,
-		)
 		return result
 	}
 	return evaluateRegisteredGate(input, result, spec, documents)
@@ -481,15 +429,35 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 	state := input.Snapshot.State
 	generation := nestedInt(state, "baseline", "generation")
 	runtimeID, _ := state["runtime_id"].(string)
-	currentRound := nestedInt(state, "review", "round")
-	if conflicts := unauthorizedProducerConflicts(input, spec, documents, generation, currentRound); len(conflicts) > 0 {
-		result.Status = StatusUnknown
-		result.ErrorCode = ErrorGateUnknown
-		result.Conflicts = conflicts
-		return result
+	originalS3 := result.GateID == "GATE-PLANNING-CONTRACTS-COMPLETE" && runtime.PacketEnabled(state)
+	if !originalS3 {
+		if conflicts := unauthorizedProducerConflicts(input, spec, documents, generation); len(conflicts) > 0 {
+			result.Status = StatusUnknown
+			result.ErrorCode = ErrorGateUnknown
+			result.Conflicts = conflicts
+			return result
+		}
 	}
 	var evidenceIDs []string
 	for _, requirement := range spec.EvidenceRequirements {
+		if originalS3 && evidenceKindsEqual(requirement.Kind, "planning_contract") {
+			// verifiedContractPacketFacts already selected the original S3
+			// receipt, owner and evidence row above. Reuse its existing ID;
+			// do not re-read the Runtime report through the product Git view.
+			received := false
+			for _, row := range currentContractIssuanceRows(state) {
+				record, found, err := runtime.FindSubmission(state, stringValue(row["packet_id"]))
+				if err == nil && found {
+					evidenceIDs = append(evidenceIDs, record.EvidenceID)
+					received = true
+					break
+				}
+			}
+			if !received {
+				result.Missing = append(result.Missing, evidenceMissingKey(spec, requirement))
+			}
+			continue
+		}
 		if result.GateID == "GATE-BUILDER-BATCH-READY" && evidenceKindsEqual("completion_report", requirement.Kind) {
 			// S6 completion evidence has two wire contracts. The exact batch
 			// consumer below qualifies legacy `completed` envelopes and the
@@ -509,7 +477,6 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 			input.Files,
 			runtimeID,
 			generation,
-			currentRound,
 			requirement,
 			documents,
 		)
@@ -557,7 +524,6 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 		// Read current professional conclusions and explicitly unfinished rows.
 		applyS10ManifestGate(input, &result)
 	}
-	result.Fingerprint = fingerprint(result.GateID, spec.SemanticVersion, state, generation, documents, result.EvidenceRefs)
 	return result
 }
 
@@ -569,7 +535,7 @@ func latestS10EvidenceID(input Input, _ []string, kind string) string {
 		entry, _ := raw[i].(map[string]any)
 		if evidenceKindsEqual(kind, stringValue(entry["kind"])) && stringValue(entry["status"]) == "valid" &&
 			intValue(entry["baseline_generation"]) == nestedInt(state, "baseline", "generation") &&
-			intValue(entry["review_round"]) == nestedInt(state, "review", "round") && entry["invalidated_by"] == nil {
+			acceptance.CurrentReviewArtifact(state, stringValue(entry["review_plan_id"])) && entry["invalidated_by"] == nil {
 			return stringValue(entry["id"])
 		}
 	}
@@ -658,18 +624,6 @@ func applyS10ManifestGate(input Input, result *Evaluation) {
 			result.Missing = append(result.Missing, fmt.Sprintf("%s: reported blocker %+v", envelope.AuditManifestPath, item))
 		}
 	}
-	if result.GateID == "GATE-ACCEPTANCE-COMPLETE" || result.GateID == "GATE-RELEASE-AUDIT-APPROVED" {
-		if clean := verification.EvaluateCleanRound(input.Snapshot.State); !clean.Passed {
-			result.Missing = append(result.Missing, clean.Reasons...)
-		}
-		rows, _ := input.Snapshot.State["evidence"].([]any)
-		for _, raw := range rows {
-			entry, _ := raw.(map[string]any)
-			if evidenceKindsEqual("clean_round_record", stringValue(entry["kind"])) && stringValue(entry["status"]) == "valid" && entry["invalidated_by"] == nil && intValue(entry["review_round"]) == nestedInt(input.Snapshot.State, "review", "round") && intValue(entry["baseline_generation"]) == nestedInt(input.Snapshot.State, "baseline", "generation") {
-				result.EvidenceRefs = append(result.EvidenceRefs, stringValue(entry["id"]))
-			}
-		}
-	}
 	result.EvidenceRefs = sortedUnique(result.EvidenceRefs)
 	result.Missing = sortedUnique(result.Missing)
 	result.Conflicts = sortedUnique(result.Conflicts)
@@ -725,17 +679,17 @@ func s10ManifestBindingMatches(input Input, envelope evidenceEnvelope, data []by
 	var manifest struct {
 		RuntimeID          string `json:"runtime_id"`
 		BaselineGeneration int    `json:"baseline_generation"`
-		ReviewRound        int    `json:"review_round"`
+		ReviewPlanID       string `json:"review_plan_id"`
 	}
 	if json.Unmarshal(data, &manifest) != nil {
 		return false
 	}
 	return manifest.RuntimeID == envelope.RuntimeID &&
 		manifest.BaselineGeneration == envelope.BaselineGeneration &&
-		manifest.ReviewRound == envelope.ReviewRound &&
+		reviewmeta.CompareIdentity(reviewmeta.ArtifactIdentity(manifest.ReviewPlanID), reviewmeta.ArtifactIdentity(envelope.ReviewPlanID)) != reviewmeta.Different &&
 		manifest.RuntimeID == stringValue(input.Snapshot.State["runtime_id"]) &&
 		manifest.BaselineGeneration == nestedInt(input.Snapshot.State, "baseline", "generation") &&
-		manifest.ReviewRound == nestedInt(input.Snapshot.State, "review", "round")
+		reviewmeta.CompareIdentity(acceptance.CurrentReviewIdentity(input.Snapshot.State), reviewmeta.ArtifactIdentity(manifest.ReviewPlanID)) != reviewmeta.Different
 }
 
 func evidenceMissingKey(spec GateSpec, requirement EvidenceRequirement) string {
@@ -757,10 +711,9 @@ func unauthorizedProducerConflicts(
 	spec GateSpec,
 	documents []documentFact,
 	generation int,
-	currentRound int,
 ) []string {
 	allowed := make(map[string]map[string]struct{})
-	currentRoundKinds := make(map[string]bool)
+	currentPlanKinds := make(map[string]bool)
 	for _, requirement := range spec.EvidenceRequirements {
 		if allowed[requirement.Kind] == nil {
 			allowed[requirement.Kind] = make(map[string]struct{})
@@ -768,12 +721,12 @@ func unauthorizedProducerConflicts(
 		for _, responsibility := range requirement.Responsibilities {
 			allowed[requirement.Kind][responsibility] = struct{}{}
 		}
-		if requirement.CurrentReviewRound {
-			currentRoundKinds[requirement.Kind] = true
+		if requirement.CurrentReviewPlan {
+			currentPlanKinds[requirement.Kind] = true
 		}
 	}
-	kindCurrentRound := func(kind string) bool {
-		for requirementKind := range currentRoundKinds {
+	kindCurrentPlan := func(kind string) bool {
+		for requirementKind := range currentPlanKinds {
 			if evidenceKindsEqual(requirementKind, kind) {
 				return true
 			}
@@ -810,12 +763,12 @@ func unauthorizedProducerConflicts(
 			stringValue(index["status"]) != "valid" ||
 			intValue(index["baseline_generation"]) != generation ||
 			index["invalidated_by"] != nil ||
-			(kindCurrentRound(kind) && intValue(index["review_round"]) != currentRound) ||
+			(kindCurrentPlan(kind) && reviewmeta.CompareIdentity(acceptance.CurrentReviewIdentity(input.Snapshot.State), reviewmeta.ArtifactIdentity(stringValue(index["review_plan_id"]))) == reviewmeta.Different) ||
 			input.Files == nil {
 			continue
 		}
 		data, err := input.Files.ReadFile(stringValue(index["path"]))
-		if err != nil || sha256Hex(data) != stringValue(index["sha256"]) {
+		if err != nil {
 			continue
 		}
 		var envelope evidenceEnvelope
@@ -856,11 +809,11 @@ func verifiedCurrentDocuments(input Input) []documentFact {
 	documents := currentDocuments(input.Snapshot.State, generation)
 	verified := make([]documentFact, 0, len(documents))
 	for _, document := range documents {
-		if input.Files == nil || document.Path == "" || document.SHA256 == "" {
+		if input.Files == nil || document.Path == "" {
 			continue
 		}
-		data, err := input.Files.ReadFile(document.Path)
-		if err == nil && sha256Hex(data) == document.SHA256 {
+		_, err := input.Files.ReadFile(document.Path)
+		if err == nil {
 			verified = append(verified, document)
 		}
 	}
@@ -871,7 +824,6 @@ func (e *Engine) qualifiedRequestedEvents(input Input, documents []documentFact)
 	state := input.Snapshot.State
 	runtimeID, _ := state["runtime_id"].(string)
 	generation := nestedInt(state, "baseline", "generation")
-	currentRound := nestedInt(state, "review", "round")
 	cursorState, cursorPhase := currentStatePhase(state)
 	candidates := e.registry.specsForCursor(cursorState, cursorPhase)
 	if len(candidates) < 2 {
@@ -894,7 +846,7 @@ func (e *Engine) qualifiedRequestedEvents(input Input, documents []documentFact)
 			continue
 		}
 		data, err := input.Files.ReadFile(path)
-		if err != nil || sha256Hex(data) != stringValue(index["sha256"]) {
+		if err != nil {
 			continue
 		}
 		var envelope evidenceEnvelope
@@ -914,7 +866,7 @@ func (e *Engine) qualifiedRequestedEvents(input Input, documents []documentFact)
 			if candidate.TransitionEvent != envelope.RequestedEvent {
 				continue
 			}
-			if envelopeMatchesAnyRequirement(envelope, index, candidate.EvidenceRequirements, currentRound) {
+			if envelopeMatchesAnyRequirement(envelope, index, candidate.EvidenceRequirements, state) {
 				events = append(events, envelope.RequestedEvent)
 			}
 		}
@@ -922,15 +874,15 @@ func (e *Engine) qualifiedRequestedEvents(input Input, documents []documentFact)
 	return sortedUnique(events)
 }
 
-func envelopeMatchesAnyRequirement(envelope evidenceEnvelope, index map[string]any, requirements []EvidenceRequirement, currentRound int) bool {
+func envelopeMatchesAnyRequirement(envelope evidenceEnvelope, index map[string]any, requirements []EvidenceRequirement, state map[string]any) bool {
 	for _, requirement := range requirements {
 		if !evidenceKindsEqual(requirement.Kind, envelope.Kind) ||
 			!containsString(requirement.Responsibilities, envelope.ProducerResponsibility) ||
 			!containsString(requirement.Conclusions, envelope.Conclusion) {
 			continue
 		}
-		if requirement.CurrentReviewRound && !s5DocumentReviewWithoutRound(requirement, index, envelope.ReviewRound, envelope.ReviewRound != 0) &&
-			(envelope.ReviewRound != currentRound || intValue(index["review_round"]) != currentRound) {
+		if requirement.CurrentReviewPlan && !isS5DocumentReviewRequirement(requirement) &&
+			(reviewIdentityDifferent(state, envelope.ReviewPlanID) || reviewIdentityDifferent(state, stringValue(index["review_plan_id"]))) {
 			continue
 		}
 		return true
@@ -943,7 +895,6 @@ func qualifiedEvidence(
 	files FileView,
 	runtimeID string,
 	generation int,
-	currentRound int,
 	requirement EvidenceRequirement,
 	documents []documentFact,
 ) ([]string, []string) {
@@ -951,12 +902,6 @@ func qualifiedEvidence(
 	var valid []string
 	var conflicts []string
 	var mismatched []string
-	type aliasCandidate struct {
-		key, realID string
-		conflictAt  int
-	}
-	var aliases []aliasCandidate
-	qualified := map[string]map[string]bool{}
 	for _, item := range raw {
 		index, _ := item.(map[string]any)
 		if index == nil || !evidenceKindsEqual(requirement.Kind, stringValue(index["kind"])) {
@@ -970,7 +915,7 @@ func qualifiedEvidence(
 			index["invalidated_by"] != nil {
 			continue
 		}
-		if requirement.CurrentReviewRound && !s5DocumentReviewWithoutRound(requirement, index, 0, false) && intValue(index["review_round"]) != currentRound {
+		if requirement.CurrentReviewPlan && !isS5DocumentReviewRequirement(requirement) && reviewIdentityDifferent(state, stringValue(index["review_plan_id"])) {
 			continue
 		}
 		path := stringValue(index["path"])
@@ -983,12 +928,14 @@ func qualifiedEvidence(
 			conflicts = append(conflicts, "evidence:"+stringValue(index["id"])+":unreadable")
 			continue
 		}
-		if sha256Hex(data) != stringValue(index["sha256"]) {
-			continue
-		}
 		var envelope evidenceEnvelope
 		if err := json.Unmarshal(data, &envelope); err != nil {
 			conflicts = append(conflicts, "evidence:"+stringValue(index["id"])+":schema")
+			continue
+		}
+		// Only the actual registered evidence can qualify. An unrelated index
+		// row does not create a new qualification or block another receipt.
+		if envelope.EvidenceID != stringValue(index["id"]) {
 			continue
 		}
 		if envelope.SchemaVersion == "" ||
@@ -1001,14 +948,8 @@ func qualifiedEvidence(
 			conflicts = append(conflicts, "evidence:"+stringValue(index["id"])+":schema")
 			continue
 		}
-		wrongID := envelope.EvidenceID != stringValue(index["id"])
-		aliasConflict := -1
-		if wrongID {
-			aliasConflict = len(conflicts)
-			conflicts = append(conflicts, "evidence:"+stringValue(index["id"])+":schema")
-		}
-		if requirement.CurrentReviewRound && !s5DocumentReviewWithoutRound(requirement, index, envelope.ReviewRound, envelopeCarriesRound(data)) &&
-			(envelope.ReviewRound != currentRound || envelope.ReviewRound != intValue(index["review_round"])) {
+		if requirement.CurrentReviewPlan && !isS5DocumentReviewRequirement(requirement) &&
+			(reviewIdentityDifferent(state, envelope.ReviewPlanID) || reviewmeta.CompareIdentity(reviewmeta.ArtifactIdentity(envelope.ReviewPlanID), reviewmeta.ArtifactIdentity(stringValue(index["review_plan_id"]))) == reviewmeta.Different) {
 			continue
 		}
 		if envelope.InvalidatedBy != "" {
@@ -1039,49 +980,14 @@ func qualifiedEvidence(
 		if !containsString(requirement.Responsibilities, envelope.ProducerResponsibility) {
 			continue
 		}
-		// A wrong ID is recoverable only when all remaining qualification
-		// checks passed and another exact registration qualified independently.
-		key := evidenceAliasKey(index, envelope)
-		if wrongID {
-			aliases = append(aliases, aliasCandidate{key, envelope.EvidenceID, aliasConflict})
-		} else {
-			valid = append(valid, envelope.EvidenceID)
-			if qualified[key] == nil {
-				qualified[key] = map[string]bool{}
-			}
-			qualified[key][envelope.EvidenceID] = true
-		}
+		valid = append(valid, envelope.EvidenceID)
 	}
-	ignore := map[int]bool{}
-	for _, alias := range aliases {
-		if alias.realID != "" && qualified[alias.key][alias.realID] {
-			ignore[alias.conflictAt] = true
-		}
-	}
-	kept := conflicts[:0]
-	for i, conflict := range conflicts {
-		if !ignore[i] {
-			kept = append(kept, conflict)
-		}
-	}
-	conflicts = kept
+
 	if len(valid) == 0 && len(mismatched) > 0 {
 		// Nothing qualified and naming errors exist — they are the reason.
 		conflicts = append(conflicts, mismatched...)
 	}
 	return sortedUnique(valid), sortedUnique(conflicts)
-}
-
-func evidenceAliasKey(index map[string]any, envelope evidenceEnvelope) string {
-	// JSON avoids delimiter ambiguity. Only the evidence ID is omitted; path,
-	// bytes, kind, generation/round and professional producer remain exact.
-	key, _ := json.Marshal([]any{
-		filepath.ToSlash(filepath.Clean(stringValue(index["path"]))), index["sha256"],
-		envelope.Kind, envelope.RuntimeID, envelope.BaselineGeneration,
-		intValue(index["review_round"]), envelope.ReviewRound,
-		envelope.ProducerAgentID, envelope.ProducerResponsibility,
-	})
-	return string(key)
 }
 
 func applyDocumentPassIndependence(input Input, result *Evaluation, documents []documentFact) {
@@ -1121,24 +1027,6 @@ func applyDocumentPassIndependence(input Input, result *Evaluation, documents []
 	}
 }
 
-func exactSubjects(subjects []subjectRef, documents []documentFact) bool {
-	if len(subjects) != len(documents) {
-		return false
-	}
-	wanted := make(map[string]struct{}, len(documents))
-	for _, document := range documents {
-		wanted[document.Path+"|"+document.Version+"|"+document.SHA256] = struct{}{}
-	}
-	for _, subject := range subjects {
-		key := subject.Path + "|" + subject.Version + "|" + subject.SHA256
-		if _, ok := wanted[key]; !ok {
-			return false
-		}
-		delete(wanted, key)
-	}
-	return len(wanted) == 0
-}
-
 func evidenceEnvelopesByID(input Input, ids []string) []evidenceEnvelope {
 	wanted := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
@@ -1155,7 +1043,7 @@ func evidenceEnvelopesByID(input Input, ids []string) []evidenceEnvelope {
 			continue
 		}
 		data, err := input.Files.ReadFile(stringValue(index["path"]))
-		if err != nil || sha256Hex(data) != stringValue(index["sha256"]) {
+		if err != nil {
 			continue
 		}
 		var envelope evidenceEnvelope
@@ -1166,226 +1054,56 @@ func evidenceEnvelopesByID(input Input, ids []string) []evidenceEnvelope {
 	return envelopes
 }
 
-// applyBuilderBatchCompleteness evaluates GATE-BUILDER-BATCH-READY over the
-// TR-003 exact execution batch — the current-generation task documents
-// registered by register_execution_batch — instead of scanning runtime task
-// states (L3-S6 §8.2). A task registered straight into `reviewed` (or left
-// in `candidate`) is inside the registered batch and therefore cannot slip
-// the completeness check. Per TASK the gate proves:
-//
-//  1. a qualified completion_report envelope bound to that task exists;
-//  2. every check recorded in the envelope passed (non-pass results block);
-//  3. the envelope declares no scope deviations;
-//  4. a durable worktree integration checkpoint with task_id bound to that
-//     task reached `verified` or beyond.
-//
-// An empty registered batch is itself not_ready: TR-003 refuses to lock an
-// empty batch, so reaching building without one means the batch registry
-// was lost, not that zero work suffices.
+// applyBuilderBatchCompleteness consumes each current TASK's original Builder
+// result and Main integration facts. It does not select a legacy batch model.
 func applyBuilderBatchCompleteness(input Input, result *Evaluation) {
 	batch := executionBatchTasks(input.Snapshot.State)
 	if len(batch) == 0 {
-		// Preserve the generic legacy completion projection even when TR-003
-		// has lost its exact batch. The aggregate evidence remains informative,
-		// but cannot make an empty batch ready.
-		requirement := EvidenceRequirement{Kind: "completion_report", Responsibilities: []string{"BUILD-WORK-PACKAGE", "Builder"}, Conclusions: []string{"completed"}}
-		ids, conflicts := qualifiedEvidence(input.Snapshot.State, input.Files, stringValue(input.Snapshot.State["runtime_id"]), nestedInt(input.Snapshot.State, "baseline", "generation"), nestedInt(input.Snapshot.State, "review", "round"), requirement, verifiedCurrentDocuments(input))
-		result.EvidenceRefs = append(result.EvidenceRefs, ids...)
-		if len(conflicts) > 0 {
-			result.Status = StatusUnknown
-			result.ErrorCode = ErrorGateUnknown
-			result.Conflicts = sortedUnique(append(result.Conflicts, conflicts...))
-			return
-		}
-		if len(ids) == 0 {
-			result.Missing = append(result.Missing, "evidence:completion_report")
-		}
-		result.Missing = append(result.Missing, "batch:execution_batch_empty")
-		result.EvidenceRefs = sortedUnique(result.EvidenceRefs)
-		result.Missing = sortedUnique(result.Missing)
+		result.Missing = sortedUnique(append(result.Missing, "batch:execution_batch_empty"))
 		result.Status = StatusNotReady
 		return
-	}
-	canonicalOwners := map[string]bool{}
-	canonicalTasks := map[string]canonicalAssignmentMode{}
-	canonicalTaskErrors := map[string]error{}
-	for _, taskID := range batch {
-		task, found, err := uniqueEntityByID(input.Snapshot.State, "tasks", taskID)
-		if err != nil {
-			canonicalTaskErrors[taskID] = err
-			continue
-		}
-		if !found {
-			continue
-		}
-		mode, canonical, modeErr := canonicalModeForTask(input, task)
-		if canonical {
-			canonicalTasks[taskID] = mode
-			canonicalTaskErrors[taskID] = modeErr
-			for _, owner := range canonicalStringValues(task["owner_agent_ids"]) {
-				if agent, exists, _ := uniqueEntityByID(input.Snapshot.State, "agents", owner); exists && containsAny(agent["task_ids"], taskID) {
-					if _, opted, _ := canonicalModeForOwner(input, owner); opted {
-						canonicalOwners[owner] = true
-					}
-				}
-			}
-		}
-	}
-	// Historical canonical submitted Results retain their original bytes and
-	// cannot become legacy completed evidence after their owner is superseded.
-	records, registryErr := assignmentrecord.RecordsFromState(input.Snapshot.State)
-	if registryErr != nil {
-		result.Status, result.ErrorCode = StatusUnknown, ErrorGateUnknown
-		result.Conflicts = sortedUnique(append(result.Conflicts, "assignment_registry:"+registryErr.Error()))
-		return
-	}
-	runtimeID := stringValue(input.Snapshot.State["runtime_id"])
-	generation := nestedInt(input.Snapshot.State, "baseline", "generation")
-	for _, record := range records {
-		if record.RuntimeID == runtimeID && record.BaselineGeneration == generation {
-			canonicalOwners[record.OwnerAgentID] = true
-		}
-	}
-	legacyOnly := len(canonicalTasks) == 0
-	for _, record := range records {
-		if record.RuntimeID == runtimeID && record.BaselineGeneration == generation {
-			legacyOnly = false
-			break
-		}
-	}
-	if legacyOnly {
-		shared := builderbatch.EvaluateLegacy(input.Root, input.Snapshot.State, input.Files)
-		result.EvidenceRefs = append(result.EvidenceRefs, shared.EvidenceIDs...)
-		result.Missing = append(result.Missing, shared.Missing...)
-		result.Conflicts = append(result.Conflicts, shared.Conflicts...)
-		result.EvidenceRefs = sortedUnique(result.EvidenceRefs)
-		result.Missing = sortedUnique(result.Missing)
-		result.Conflicts = sortedUnique(result.Conflicts)
-		if len(result.Conflicts) > 0 {
-			result.Status = StatusUnknown
-			result.ErrorCode = ErrorGateUnknown
-		} else if len(result.Missing) > 0 {
-			result.Status = StatusNotReady
-		}
-		return
-	}
-	legacyState := stateWithoutCanonicalBuilderEvidence(input.Snapshot.State, canonicalOwners)
-	legacyRequirement := EvidenceRequirement{Kind: "completion_report", Responsibilities: []string{"BUILD-WORK-PACKAGE", "Builder"}, Conclusions: []string{"completed"}}
-	legacyIDs, conflicts := qualifiedEvidence(legacyState, input.Files, stringValue(input.Snapshot.State["runtime_id"]), nestedInt(input.Snapshot.State, "baseline", "generation"), nestedInt(input.Snapshot.State, "review", "round"), legacyRequirement, verifiedCurrentDocuments(input))
-	result.EvidenceRefs = append(result.EvidenceRefs, legacyIDs...)
-	if len(conflicts) > 0 {
-		result.Status = StatusUnknown
-		result.ErrorCode = ErrorGateUnknown
-		result.Conflicts = append(result.Conflicts, conflicts...)
-		result.Conflicts = sortedUnique(result.Conflicts)
-		return
-	}
-	completions := make(map[string]evidenceEnvelope)
-	for _, envelope := range evidenceEnvelopesByID(input, legacyIDs) {
-		if evidenceKindsEqual("completion_report", envelope.Kind) && envelope.TaskID != "" {
-			completions[envelope.TaskID] = envelope
-		}
 	}
 	progress := PlannedBuilderProgress(input)
 	for _, taskID := range batch {
-		if mode, canonical := canonicalTasks[taskID]; canonical {
-			progressForTask, projected := progress[taskID]
-			if !projected || !progressForTask.Canonical {
-				// The exact batch also includes TASK states omitted by the
-				// dispatch projection; those still need their original check.
-				progressForTask = canonicalProgressForTask(input, mustTaskRow(input.Snapshot.State, taskID), mode, canonicalTaskErrors[taskID])
-			}
-			if progressForTask.EvidenceID != "" {
-				result.EvidenceRefs = append(result.EvidenceRefs, progressForTask.EvidenceID)
-			} else {
-				result.Missing = append(result.Missing, "evidence:completion_report:"+taskID)
-			}
-			if !progressForTask.Integrated || progressForTask.State != workstate.Done {
-				missingKind := "integration_checkpoint"
-				if progressForTask.Canonical && strings.HasPrefix(progressForTask.Reason, "professional_closure_incomplete:") {
-					missingKind = "professional_closure"
-				}
-				result.Missing = append(result.Missing, missingKind+":"+taskID+":"+progressForTask.Reason)
-			}
+		task, found, err := uniqueEntityByID(input.Snapshot.State, "tasks", taskID)
+		if err != nil {
+			result.Conflicts = append(result.Conflicts, "task:"+taskID+":"+err.Error())
 			continue
 		}
-		if HasDispatchPlan(input.Snapshot.State) {
-			p := progress[taskID]
-			if _, ok := completions[taskID]; !ok {
-				result.Missing = append(result.Missing, "evidence:completion_report:"+taskID)
-			}
-			if !p.Integrated || p.State != workstate.Done {
-				result.Missing = append(result.Missing, "integration_checkpoint:"+taskID+":"+p.Reason)
-			}
-		}
-	}
-	if HasDispatchPlan(input.Snapshot.State) {
-		result.EvidenceRefs = sortedUnique(result.EvidenceRefs)
-		result.Missing = sortedUnique(result.Missing)
-		if len(result.Missing) > 0 {
-			result.Status = StatusNotReady
-		}
-		return
-	}
-	integrated := verifiedIntegrationTaskIDs(input)
-	for _, taskID := range batch {
-		if _, canonical := canonicalTasks[taskID]; canonical {
+		if !found {
+			result.Missing = append(result.Missing, "task:"+taskID)
 			continue
 		}
-		envelope, ok := completions[taskID]
-		if !ok {
+		mode, current, modeErr := canonicalModeForTask(input, task)
+		if !current {
+			result.Missing = append(result.Missing, "builder_responsibility:"+taskID)
+			continue
+		}
+		p, projected := progress[taskID]
+		if !projected || !p.Canonical {
+			p = canonicalProgressForTask(input, task, mode, modeErr)
+		}
+		if p.EvidenceID != "" {
+			result.EvidenceRefs = append(result.EvidenceRefs, p.EvidenceID)
+		} else {
 			result.Missing = append(result.Missing, "evidence:completion_report:"+taskID)
 		}
-		if ok {
-			if failing := failingEnvelopeChecks(envelope); len(failing) > 0 {
-				result.Missing = append(result.Missing, "checks:"+taskID+":"+strings.Join(failing, ","))
+		if !p.Integrated || p.State != workstate.Done {
+			kind := "integration_checkpoint"
+			if strings.HasPrefix(p.Reason, "professional_closure_incomplete:") {
+				kind = "professional_closure"
 			}
-			if len(envelope.ScopeDeviations) > 0 {
-				result.Missing = append(result.Missing, "scope_deviations:"+taskID+":"+strings.Join(envelope.ScopeDeviations, ","))
-			}
-		}
-		if !integrated[taskID] {
-			result.Missing = append(result.Missing, "integration_checkpoint:"+taskID)
+			result.Missing = append(result.Missing, kind+":"+taskID+":"+p.Reason)
 		}
 	}
-	result.Missing = sortedUnique(result.Missing)
 	result.EvidenceRefs = sortedUnique(result.EvidenceRefs)
-	if len(result.Missing) > 0 {
+	result.Missing = sortedUnique(result.Missing)
+	result.Conflicts = sortedUnique(result.Conflicts)
+	if len(result.Conflicts) > 0 {
+		result.Status, result.ErrorCode = StatusUnknown, ErrorGateUnknown
+	} else if len(result.Missing) > 0 {
 		result.Status = StatusNotReady
 	}
-}
-
-func stateWithoutCanonicalBuilderEvidence(state map[string]any, owners map[string]bool) map[string]any {
-	if len(owners) == 0 {
-		return state
-	}
-	copyState := make(map[string]any, len(state))
-	for key, value := range state {
-		copyState[key] = value
-	}
-	rows, _ := state["evidence"].([]any)
-	filtered := make([]any, 0, len(rows))
-	for _, raw := range rows {
-		row, _ := raw.(map[string]any)
-		if row != nil && evidenceKindsEqual("completion_report", stringValue(row["kind"])) {
-			for owner := range owners {
-				if containsAny(row["produced_by"], owner) {
-					row = nil
-					break
-				}
-			}
-		}
-		if row != nil {
-			filtered = append(filtered, raw)
-		}
-	}
-	copyState["evidence"] = filtered
-	return copyState
-}
-
-func mustTaskRow(state map[string]any, taskID string) map[string]any {
-	row, _, _ := uniqueEntityByID(state, "tasks", taskID)
-	return row
 }
 
 // executionBatchTasks returns the TR-003 exact execution batch: the task
@@ -1408,62 +1126,6 @@ func executionBatchTasks(state map[string]any) []string {
 		}
 	}
 	return batch
-}
-
-// verifiedIntegrationTaskIDs loads every durable worktree checkpoint for
-// the current runtime + generation and returns the task IDs whose state
-// reached `verified` or beyond. The checkpoint files are the Integrator's
-// authoritative record; a FileView without directory listing makes them
-// unobservable, which is surfaced as missing per task by the caller (fail
-// closed, not silently skipped). Report-bound checkpoints also pass through
-// the merge-receipt guard so this legacy projection cannot release a
-// successor from an unreachable target.
-func verifiedIntegrationTaskIDs(input Input) map[string]bool {
-	integrated := make(map[string]bool)
-	lister, ok := input.Files.(fileDirLister)
-	if !ok || input.Files == nil {
-		return integrated
-	}
-	runtimeID, _ := input.Snapshot.State["runtime_id"].(string)
-	generation := nestedInt(input.Snapshot.State, "baseline", "generation")
-	dir := path.Join(".claude", "evidence", runtimeID, fmt.Sprintf("g%d", generation), "worktree")
-	entries, err := lister.ReadDir(dir)
-	if err != nil {
-		return integrated
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		data, err := input.Files.ReadFile(path.Join(dir, entry.Name(), "checkpoint.json"))
-		if err != nil {
-			continue
-		}
-		var checkpoint dispatchCheckpoint
-		if json.Unmarshal(data, &checkpoint) != nil || checkpoint.TaskID == "" {
-			continue
-		}
-		if builderbatch.VerifiedCheckpointState(checkpoint.State) && checkpointMergeValid(input, checkpoint) {
-			integrated[checkpoint.TaskID] = true
-		}
-	}
-	return integrated
-}
-
-// failingEnvelopeChecks names the envelope checks whose result is not pass
-// (fail / blocked / not_run all leave the closing contract unproven).
-func failingEnvelopeChecks(envelope evidenceEnvelope) []string {
-	var failing []string
-	for _, check := range envelope.Checks {
-		if check.Result != "pass" {
-			label := check.Name
-			if label == "" {
-				label = check.Command
-			}
-			failing = append(failing, label+"="+check.Result)
-		}
-	}
-	return failing
 }
 
 func sortedUnique(values []string) []string {
@@ -1502,7 +1164,6 @@ func currentDocuments(state map[string]any, generation int) []documentFact {
 			Kind:          stringValue(value["kind"]),
 			Path:          stringValue(value["path"]),
 			Version:       stringValue(value["version"]),
-			SHA256:        stringValue(value["sha256"]),
 			Status:        stringValue(value["status"]),
 			Generation:    intValue(value["generation"]),
 			AuthorAgentID: stringValue(value["author_agent_id"]),
@@ -1521,11 +1182,11 @@ func findCurrentDocument(documents []documentFact, kind string, files FileView) 
 		if kind == "design" && strings.HasPrefix(document.ID, "shared-model:") {
 			continue
 		}
-		if document.Kind != kind || document.Status != "locked" || document.Path == "" || document.SHA256 == "" || files == nil {
+		if document.Kind != kind || document.Status != "locked" || document.Path == "" || files == nil {
 			continue
 		}
-		data, err := files.ReadFile(document.Path)
-		if err == nil && sha256Hex(data) == document.SHA256 {
+		_, err := files.ReadFile(document.Path)
+		if err == nil {
 			return document, true
 		}
 	}
@@ -1535,14 +1196,14 @@ func findCurrentDocument(documents []documentFact, kind string, files FileView) 
 func subjectsMatch(subjects []subjectRef, documents []documentFact) bool {
 	// Empty subject_refs means the evidence carries no document constraint
 	// (clean_round / bug_batch / release_audit style records). Non-empty
-	// refs must still fingerprint-match current documents.
+	// refs describe the original documents for this responsibility.
 	if len(subjects) == 0 {
 		return true
 	}
 	for _, subject := range subjects {
 		matched := false
 		for _, document := range documents {
-			if subject.Path == document.Path && subject.Version == document.Version && subject.SHA256 == document.SHA256 {
+			if subject.Path == document.Path && subject.Version == document.Version {
 				matched = true
 				break
 			}
@@ -1552,23 +1213,6 @@ func subjectsMatch(subjects []subjectRef, documents []documentFact) bool {
 		}
 	}
 	return true
-}
-
-func fingerprint(gateID, semanticVersion string, state map[string]any, generation int, documents []documentFact, evidenceIDs []string) string {
-	facts := []string{
-		"gate=" + gateID,
-		"semantic_version=" + semanticVersion,
-		"cursor=" + currentCursor(state),
-		fmt.Sprintf("generation=%d", generation),
-	}
-	for _, document := range documents {
-		facts = append(facts, "artifact="+document.Path+"|"+document.Version+"|"+document.SHA256)
-	}
-	for _, evidenceID := range evidenceIDs {
-		facts = append(facts, "evidence="+evidenceID)
-	}
-	sort.Strings(facts)
-	return "sha256:" + sha256Hex([]byte(strings.Join(facts, "\n")))
 }
 
 func currentCursor(state map[string]any) string {
@@ -1615,11 +1259,6 @@ func intValue(value any) int {
 	}
 }
 
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
 // diskDeclaredArtifacts scans the artifact directory for the given kind and
 // returns the on-disk documents whose top-of-file status field matches.
 // The bool reports whether listing was possible at all (a FileView without
@@ -1656,7 +1295,6 @@ func diskDeclaredArtifacts(input Input, kind, status string) ([]documentFact, bo
 		facts = append(facts, documentFact{
 			Kind: kind, Path: rel,
 			Version: parseMarkdownVersionField(string(data)),
-			SHA256:  sha256Hex(data),
 			Status:  declared,
 		})
 	}
@@ -1711,31 +1349,6 @@ func diskArtifactHome(kind string) (dir string, prefix string) {
 	}
 }
 
-// registeredDocumentDrift names every current-generation registered
-// document whose on-disk bytes no longer match the registered sha (or
-// whose file is unreadable) — one `document_drift:<path>` conflict each.
-func registeredDocumentDrift(input Input) []string {
-	if input.Files == nil {
-		return nil
-	}
-	documents := currentDocuments(input.Snapshot.State, nestedInt(input.Snapshot.State, "baseline", "generation"))
-	var conflicts []string
-	for _, document := range documents {
-		if document.Path == "" || document.SHA256 == "" {
-			// An empty path/sha escapes both this screen and exactSubjects —
-			// name it instead of silently shrinking the manifest.
-			conflicts = append(conflicts, "document_drift:"+document.Path+"(missing path/sha)")
-			continue
-		}
-		data, err := input.Files.ReadFile(document.Path)
-		if err != nil || sha256Hex(data) != document.SHA256 {
-			conflicts = append(conflicts, "document_drift:"+document.Path)
-		}
-	}
-	sort.Strings(conflicts)
-	return conflicts
-}
-
 // missingSubjects lists the manifest entries the envelope did not cover.
 func missingSubjects(subjects []subjectRef, documents []documentFact) []string {
 	have := make(map[string]bool, len(subjects))
@@ -1750,4 +1363,8 @@ func missingSubjects(subjects []subjectRef, documents []documentFact) []string {
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+func reviewIdentityDifferent(state map[string]any, planID string) bool {
+	return reviewmeta.CompareIdentity(acceptance.CurrentReviewIdentity(state), reviewmeta.ArtifactIdentity(planID)) == reviewmeta.Different
 }

@@ -149,7 +149,7 @@ func TestS6PrepareRefusesDraftOverwriteWithoutRuntimeWrite(t *testing.T) {
 	}
 }
 
-func TestS6PrepareRejectsLockedSourceDriftWithoutRuntimeWrite(t *testing.T) {
+func TestS6PrepareUsesCurrentTaskWithoutHistoricalDigestGate(t *testing.T) {
 	root, taskID, taskPath := newS6RecordContextFixture(t)
 	if _, err := workspace.Git(context.Background(), root, "checkout", "test-development"); err != nil {
 		t.Fatal(err)
@@ -169,30 +169,15 @@ func TestS6PrepareRejectsLockedSourceDriftWithoutRuntimeWrite(t *testing.T) {
 	if _, err := workspace.Git(context.Background(), root, "commit", "-m", "change locked TASK source after registration"); err != nil {
 		t.Fatal(err)
 	}
-	beforeState, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeJournal, err := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var stdout, stderr strings.Builder
 	code := cli.Run([]string{"s6", "prepare", "--root", root, "--task", taskID,
-		"--role", "backend-builder", "--agent-id", "agent-s6-prepared", "--platform-team-id", "platform-s6-prepared"}, nil, &stdout, &stderr)
-	if code == 0 || !strings.Contains(stderr.String(), "registered dispatch input drift") {
-		t.Fatalf("source drift did not remain behind original registration checks: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+		"--role", "backend-builder"}, nil, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), "native Agent") {
+		t.Fatalf("current TASK was rejected by a historical digest: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	afterState, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	afterJournal, err := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(beforeState) != string(afterState) || string(beforeJournal) != string(afterJournal) {
-		t.Fatal("rejected source drift changed the original Runtime state/journal")
+	record, found, err := assignmentrecord.ForOwner(stageSnapshot(t, root).State, "native-"+taskID)
+	if err != nil || !found || record.Task.ID != taskID || record.Task.Ref != taskPath {
+		t.Fatalf("native original TASK responsibility was not registered: %+v %v", record, err)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
 // TestS7S9RequestExamplesTrackRequestContracts pins each domain request
@@ -23,7 +25,7 @@ func TestS7S9RequestExamplesTrackRequestContracts(t *testing.T) {
 	type field struct {
 		path  string // top-level key
 		want  string // non-empty expectation for scalar strings; "" = presence only
-		isRef bool   // must be an object with path+sha256
+		isRef bool   // must be an object with its original path
 	}
 	cases := map[string][]field{
 		// repair.PlanReportRequest json tags
@@ -82,11 +84,10 @@ func TestS7S9RequestExamplesTrackRequestContracts(t *testing.T) {
 			}
 			if f.isRef {
 				var ref struct {
-					Path   string `json:"path"`
-					SHA256 string `json:"sha256"`
+					Path string `json:"path"`
 				}
-				if err := json.Unmarshal(raw, &ref); err != nil || ref.Path == "" || ref.SHA256 == "" {
-					t.Errorf("%s: %q must be an object with path+sha256, got %s", file, f.path, string(raw))
+				if err := json.Unmarshal(raw, &ref); err != nil || ref.Path == "" {
+					t.Errorf("%s: %q must be an object with its original path, got %s", file, f.path, string(raw))
 				}
 				continue
 			}
@@ -97,6 +98,34 @@ func TestS7S9RequestExamplesTrackRequestContracts(t *testing.T) {
 			if err := json.Unmarshal(raw, &value); err != nil || !strings.HasPrefix(value, f.want) {
 				t.Errorf("%s: %q should carry the %q prefix, got %s", file, f.path, f.want, string(raw))
 			}
+		}
+	}
+}
+
+func TestS6BuilderManifestExampleWithoutDigests(t *testing.T) {
+	path := filepath.Join("..", "..", "docs", "examples", "s6-builder", "workgroup-manifest.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.NewEmbeddedValidator().ValidateBytes("team-manifest.schema.json", data); err != nil {
+		t.Fatalf("example does not satisfy team manifest schema: %v", err)
+	}
+	var example struct {
+		Documents []map[string]any `json:"documents"`
+	}
+	if err := json.Unmarshal(data, &example); err != nil {
+		t.Fatal(err)
+	}
+	if len(example.Documents) == 0 {
+		t.Fatal("example must keep the original document references")
+	}
+	for _, document := range example.Documents {
+		if document["path"] == "" {
+			t.Fatal("example document must identify its original path")
+		}
+		if _, exists := document["sha256"]; exists {
+			t.Fatal("example should not instruct authors to register a document digest")
 		}
 	}
 }

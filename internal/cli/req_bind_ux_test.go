@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
-	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
 // newUXTestRoot prepares a repository root with definition/policy assets and
@@ -120,6 +119,9 @@ func TestREQBindAutoInitsAndDiscoversSoleLockedREQ(t *testing.T) {
 		t.Fatalf("req bind failed: code=%d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
+	if strings.Contains(out, "sha256") {
+		t.Fatalf("bind output advertised a digest: %s", out)
+	}
 	for _, want := range []string{
 		"initialized fresh runtime at .claude/loop-state.json",
 		"discovered sole bindable REQ: docs/requirements/REQ-098.md",
@@ -138,7 +140,7 @@ func TestREQBindAutoInitsAndDiscoversSoleLockedREQ(t *testing.T) {
 	}
 }
 
-func TestREQBindUsesRawCRLFFingerprint(t *testing.T) {
+func TestREQBindAcceptsCRLFAndRecordsResponsibility(t *testing.T) {
 	body := "# REQ-098\r\n\r\n> 状态：locked\r\n> 版本：v1.0.0\r\n> UI impact：none\r\n"
 	root := newUXTestRoot(t, map[string]string{"REQ-098.md": body})
 	var stdout, stderr bytes.Buffer
@@ -150,8 +152,11 @@ func TestREQBindUsesRawCRLFFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	bound, _ := state["bound_req"].(map[string]any)
-	if got, _ := bound["sha256"].(string); got != transition.REQSHA256([]byte(body)) {
-		t.Fatalf("bound SHA256 = %q, want raw-byte %q", got, transition.REQSHA256([]byte(body)))
+	if bound["id"] != "REQ-098" || bound["path"] != "docs/requirements/REQ-098.md" || bound["version"] != "v1.0.0" || bound["approved_by"] != "ux-owner" {
+		t.Fatalf("bound REQ responsibility changed: %v", bound)
+	}
+	if _, exists := bound["sha256"]; exists {
+		t.Fatal("bound REQ registered a digest")
 	}
 }
 
@@ -291,7 +296,7 @@ func TestREQBindingUsesCommittedBytesAndExplicitDestinations(t *testing.T) {
 		t.Fatal(e)
 	}
 	binding := state["bound_req"].(map[string]any)["workspace"].(map[string]any)
-	if binding["dev_branch"] != "feature/req" || binding["release_upstream"] != "origin/release" || binding["bound_commit"] == "" {
+	if binding["dev_branch"] != "feature/req" || binding["release_upstream"] != "origin/release" {
 		t.Fatalf("lost binding: %v", binding)
 	}
 }

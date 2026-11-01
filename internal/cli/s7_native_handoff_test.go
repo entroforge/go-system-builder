@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
@@ -118,5 +119,79 @@ func TestS7LastNativeResultHandsMainS10WithoutAnotherTool(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The last professional decision may arrive in Main's existing Plan after all
+// Reviewers have already answered. That same natural observation owns exit.
+func TestS7MainFinalPlanDecisionContinuesOriginalS10Outlet(t *testing.T) {
+	root := fixtures.FreshRoot(t)
+	state := fixtures.BaseState(t, root, "verification", "planned", 1)
+	state["schema_version"] = "1.2.0"
+	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	fixtures.WriteState(t, root, state)
+	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
+	path := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
+	entryQuestionnaireHook(t, root, "PreToolUse", path)
+	planPath := minimalReviewPlan(t, t.TempDir(), "review-plan-final-main-decision")
+	data, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan map[string]any
+	if err := json.Unmarshal(data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan["assignments"] = plan["assignments"].([]any)[:1]
+	data, _ = json.Marshal(plan)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out := entryQuestionnaireHook(t, root, "PostToolUse", path); !strings.Contains(out, "review-plan: registered") {
+		t.Fatalf("partial plan was not received: %s", out)
+	}
+	for _, id := range []string{"assignment-dv-1"} {
+		markAssignmentDispatched(t, root, id, "reviewer-"+id)
+	}
+	current := stageSnapshot(t, root)
+	for _, raw := range current.State["entities"].(map[string]any)["agents"].([]any) {
+		raw.(map[string]any)["dispatch_mode"] = "plan_checkpoint"
+	}
+	stageJSON(t, root, ".claude/loop-state.json", current.State)
+	var packets []workpacket.ReviewResultPacket
+	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "issue", "--root", root, "--agent", "Main")), &packets); err != nil || len(packets) != 1 {
+		t.Fatalf("packets: %v %d", err, len(packets))
+	}
+	for _, packet := range packets {
+		var claims []any
+		for _, id := range packet.Binding.ClaimIDs {
+			claims = append(claims, map[string]any{"claim_id": id, "conclusion": "pass", "method": "review", "observed": "observed result", "evidence_refs": []string{}})
+		}
+		packet.Draft.Answer, _ = json.Marshal(map[string]any{"claim_results": claims, "blocked_claims": []any{}, "checks": []any{}, "findings": []any{}, "deviations": []string{}, "site_lost": []any{}, "verdict": "pass"})
+		stageJSON(t, root, packet.AnswerPath, packet.Draft)
+		if code, _, diag := nativeReviewEvent(t, root, "SubagentStop", "opaque-"+packet.Binding.OwnerAgentID, filepath.Join(root, packet.ViewPath)); code != 0 || !strings.Contains(diag, "original consumer") {
+			t.Fatalf("review reception: %d %s", code, diag)
+		}
+	}
+	if got := stageSnapshot(t, root).State["lifecycle"].(map[string]any)["state"]; got != "verification" {
+		t.Fatalf("unassigned required Claim advanced prematurely: %v", got)
+	}
+	qa := plan["claims"].([]any)[1].(map[string]any)
+	qa["applicability"] = "not_applicable"
+	data, _ = json.Marshal(plan)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := s7MainNaturalPre(t, root)
+	if !strings.Contains(out, "review-plan: revised") || !strings.Contains(out, "TR-009") {
+		t.Fatalf("Main decision did not continue original exit: %s", out)
+	}
+	after := stageSnapshot(t, root)
+	if got := after.State["lifecycle"].(map[string]any)["state"]; got != "acceptance" {
+		t.Fatalf("original S10 outlet did not run: %v %s", got, out)
+	}
+	s7MainNaturalPre(t, root)
+	if got := stageSnapshot(t, root).Revision; got != after.Revision {
+		t.Fatalf("subsequent natural event repeated reception: %d -> %d", after.Revision, got)
 	}
 }

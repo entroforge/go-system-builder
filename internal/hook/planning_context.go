@@ -1,9 +1,7 @@
 package hook
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -23,8 +21,7 @@ func PrepareResponsibilityContext(root, session, agent, event, stage, responsibi
 	if root == "" || session == "" {
 		return output, noop
 	}
-	identity := sha256.Sum256([]byte(session + "\x00" + agent))
-	path := filepath.Join(root, ".claude", "hook-context", fmt.Sprintf("%x", identity))
+	path := diagnosticCachePath(root, "hook-context", session, agent)
 	if event == "SessionStart" || event == "SubagentStart" || event == "PreCompact" {
 		return output, func() { _ = os.Remove(path) }
 	}
@@ -40,8 +37,8 @@ func PrepareResponsibilityContext(root, session, agent, event, stage, responsibi
 	if !ok || context == "" || specific["permissionDecision"] != nil {
 		return output, noop
 	}
-	sum := sha256.Sum256([]byte(stage + "\x00" + responsibility + "\x00" + responsibilityContextStamp(stage, context)))
-	stamp := fmt.Sprintf("%x", sum)
+	stampData, _ := json.Marshal([]string{stage, responsibility, responsibilityContextStamp(stage, context)})
+	stamp := string(stampData)
 	if old, err := os.ReadFile(path); err == nil && string(old) == stamp {
 		specific["additionalContext"] = stage + " guidance is unchanged; continue the current responsibility using the previously delivered paths and instructions."
 		if encoded, err := json.Marshal(envelope); err == nil {

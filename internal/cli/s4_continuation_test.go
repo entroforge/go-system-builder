@@ -154,13 +154,12 @@ func TestS4TR002RegistersOnlyAcceptedREQBatch(t *testing.T) {
 	}
 	state := stageSnapshot(t, root).State
 	registered := map[string]string{}
-	registeredSHA := map[string]string{}
 	for _, raw := range state["documents"].([]any) {
 		row := raw.(map[string]any)
 		if row["kind"] == "task" || row["kind"] == "dispatch_plan" || row["kind"] == "contract" {
 			registered[row["path"].(string)] = row["kind"].(string)
-			if sha, ok := row["sha256"].(string); ok {
-				registeredSHA[row["path"].(string)] = sha
+			if _, exists := row["sha256"]; exists {
+				t.Errorf("new registration unexpectedly contains a digest: %#v", row)
 			}
 		}
 	}
@@ -193,8 +192,8 @@ func TestS4TR002RegistersOnlyAcceptedREQBatch(t *testing.T) {
 	if taskEntity == nil {
 		t.Fatal("TR-002 removed the existing Runtime TASK entity")
 	}
-	if taskEntity["path"] != "docs/dev/tasks/TASK-039-01.md" || taskEntity["sha256"] != registeredSHA["docs/dev/tasks/TASK-039-01.md"] {
-		t.Errorf("TR-002 did not refresh TASK source projection from accepted document: path=%v sha=%v registered=%v", taskEntity["path"], taskEntity["sha256"], registeredSHA)
+	if taskEntity["path"] != "docs/dev/tasks/TASK-039-01.md" || taskEntity["sha256"] != strings.Repeat("c", 64) {
+		t.Errorf("TR-002 changed the historical TASK extension or failed to refresh the path: %#v", taskEntity)
 	}
 	if taskEntity["state"] != "in_progress" {
 		t.Errorf("TR-002 changed existing TASK state: %v", taskEntity["state"])

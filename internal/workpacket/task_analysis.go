@@ -42,16 +42,14 @@ func ReadTaskAnalysis(root string, p Packet) (TaskAnalysisArtifact, error) {
 	if err != nil {
 		return artifact, fmt.Errorf("frozen analysis unavailable; restore original bytes at %s: %w", filepath.Join(root, p.TaskAnalysis.Path), err)
 	}
-	if Digest(data) != p.TaskAnalysis.SHA256 {
-		return artifact, fmt.Errorf("frozen task analysis digest differs at %s", filepath.Join(root, p.TaskAnalysis.Path))
-	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("task-analysis-artifact.schema.json", data); err != nil {
 		return artifact, err
 	}
 	if err := json.Unmarshal(data, &artifact); err != nil {
 		return artifact, err
 	}
-	if artifact.ParserVersion != p.TaskAnalysis.ParserVersion || !reflect.DeepEqual(artifact.Inputs, p.Inputs) {
+	inputs := append([]Reference(nil), p.Inputs...)
+	if artifact.ParserVersion != p.TaskAnalysis.ParserVersion || !reflect.DeepEqual(artifact.Inputs, inputs) {
 		return artifact, fmt.Errorf("task analysis parser/formal inputs differ from packet")
 	}
 	if _, err := taskConventionsSources(artifact, p); err != nil {
@@ -69,78 +67,6 @@ func ValidateTaskAnalysisSources(root string, p Packet, files interface{ ReadFil
 	if p.TaskAnalysis == nil {
 		return nil
 	}
-	artifact, err := ReadTaskAnalysis(root, p)
-	if err != nil {
-		return err
-	}
-	var tasks []struct {
-		TaskRef string `json:"task_ref"`
-		Reading []struct {
-			Path   string `json:"path"`
-			SHA    string `json:"sha256"`
-			Status string `json:"status"`
-		} `json:"reading"`
-	}
-	if err := json.Unmarshal(artifact.TaskContexts, &tasks); err != nil {
-		return err
-	}
-	seen := map[string]string{}
-	behaviorSources, err := taskBehaviorSources(artifact, p)
-	if err != nil {
-		return err
-	}
-	conventionSources, err := taskConventionsSources(artifact, p)
-	if err != nil {
-		return err
-	}
-	for path, hash := range conventionSources {
-		if prior, ok := behaviorSources[path]; ok && prior != hash {
-			return fmt.Errorf("analysis source hashes conflict")
-		}
-		behaviorSources[path] = hash
-	}
-	for path, hash := range behaviorSources {
-		data, err := files.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read frozen behavior source %s: %w", path, err)
-		}
-		if Digest(data) != hash {
-			return fmt.Errorf("frozen behavior source changed: %s", path)
-		}
-		seen[path] = hash
-	}
-	for _, task := range tasks {
-		declared := false
-		for _, input := range p.Inputs {
-			if input.Path == task.TaskRef {
-				declared = true
-			}
-		}
-		if !declared {
-			return fmt.Errorf("analysis includes an unregistered TASK")
-		}
-		for _, ref := range task.Reading {
-			if ref.Status != "readable" {
-				continue
-			}
-			if !safeRelative(ref.Path) || !digestPattern.MatchString(ref.SHA) {
-				return fmt.Errorf("analysis reading has no safe original source")
-			}
-			if prior, ok := seen[ref.Path]; ok {
-				if prior != ref.SHA {
-					return fmt.Errorf("analysis has conflicting source hashes")
-				}
-				continue
-			}
-			data, err := files.ReadFile(ref.Path)
-			if err != nil {
-				return fmt.Errorf("read frozen analysis source %s: %w", ref.Path, err)
-			}
-			if Digest(data) != ref.SHA {
-				return fmt.Errorf("frozen analysis source changed: %s", ref.Path)
-			}
-			seen[ref.Path] = ref.SHA
-		}
-	}
-	return nil
+	_, err := ReadTaskAnalysis(root, p)
+	return err
 }

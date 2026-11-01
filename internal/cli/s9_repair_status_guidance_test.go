@@ -58,7 +58,7 @@ func TestS9PlanningGuidanceUsesOriginalDivisionAndIssuedOwner(t *testing.T) {
 	if err != nil || len(packets) != 1 {
 		t.Fatalf("one actual original PlanReport must be issued: %v %v", packets, err)
 	}
-	brief, _, _ := nativeS9Paths(packets[0])
+	brief := nativeS9BriefPath(packets[0])
 	for _, want := range []string{firstID, packets[0].Binding.OwnerAgentID, filepath.Join(root, brief), "initial native Agent/worktree dispatch", "same actor", "unselected"} {
 		if !strings.Contains(next, want) {
 			t.Fatalf("selected/issued guidance lacks %q: %s", want, next)
@@ -75,7 +75,7 @@ func TestS9PlanningGuidanceUsesOriginalDivisionAndIssuedOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if handled, code := runObservedRepairDispatch(root, repairLeadSaveInput(root, division, "Main"), &stdout, &stderr); !handled || code != 0 {
+	if handled, code := runSavedRepairDispatch(root, repairLeadSaveInput(root, division, "Main"), &stdout, &stderr); !handled || code != 0 {
 		t.Fatalf("passive original dispatch: handled=%t code=%d stdout=%s stderr=%s", handled, code, stdout.String(), stderr.String())
 	}
 	snapshot, next, _ = status()

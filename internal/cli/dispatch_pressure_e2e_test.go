@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/dispatch"
+	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 	"os"
@@ -52,39 +53,91 @@ func TestConfiguredPressureOriginalReportWriterRegistrationAndActualMainIntegrat
 	})
 	snap := stageSnapshot(t, f.root)
 	pressure, err := dispatch.ProjectPressure(f.root, snap.State)
-	if err != nil || pressure == nil || pressure.Paused || pressure.Unreceived != 0 {
-		t.Fatalf("actual Main reception did not resume: %+v %v", pressure, err)
+	if err != nil || pressure != nil || snap.State["lifecycle"].(map[string]any)["state"] != "verification" {
+		t.Fatalf("terminal S7 retained S6 dispatch: %+v %v", pressure, err)
 	}
 	cached, _ := snap.State["dispatch_pressure"].(map[string]any)
 	if cached["paused"] != false {
 		t.Fatal("original ACK transaction did not release hysteresis")
 	}
-	// Preserve the actual accepted report/ACK, then vary only the checkpoint
-	// fixture to cover cleanup and corruption. This is not a live cleanup fault.
-	path := integration.CheckpointPath(f.root, snap.State["runtime_id"].(string), 1, "assignment-core-builder")
+	loaded, err := hookctx.FromSnapshot(f.root, "", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a hookctx.AssignmentContext
+	for _, item := range loaded.Assignments {
+		if item.AssignmentID == "assignment-core-builder" {
+			a = item
+		}
+	}
+	if a.AssignmentID == "" || a.OwnerAgentID != "core-builder" || a.TaskID != f.taskID {
+		t.Fatalf("original Builder assignment missing: %+v", a)
+	}
+	path := integration.CheckpointPath(f.root, loaded.PolicyContext.RuntimeID, loaded.BaselineGeneration, a.AssignmentID)
 	store := integration.DefaultCheckpointStore()
 	cp, found, err := store.Load(path)
 	if err != nil || !found {
-		t.Fatal(err)
+		t.Fatalf("original integration checkpoint missing: found=%t %v", found, err)
 	}
+	if cp.State != integration.StateCleanupPending || cp.VerifiedAt == "" || a.CompletionAckRef == "" || cp.CompletionReportPath == "" || cp.CompletionReportPath != a.CompletionRef {
+		t.Fatalf("original ACK/check/report binding missing: cp=%+v assignment=%+v", cp, a)
+	}
+	assertPending := func(wantCurrent, wantAck bool) {
+		t.Helper()
+		rows, err := integration.Pending(f.root, loaded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].AssignmentID != a.AssignmentID || rows[0].AgentID != a.OwnerAgentID || rows[0].State != integration.StateCleanupPending || rows[0].CurrentReport != wantCurrent || rows[0].Acknowledged != wantAck {
+			t.Fatalf("current original Pending binding: rows=%+v", rows)
+		}
+	}
+	assertPending(true, true)
 	original := cp
-	cp.State = integration.StateCleanupPending
+	// This is the real retained evidence, not an injected cleanup failure.
+	evidence := filepath.Join(cp.WorktreePath, ".claude/evidence/owned-core-check.txt")
+	before, err := os.ReadFile(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := workspace.Git(t.Context(), f.root, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := stageCLI(t, "runtime", "task-integrate", "--root", f.root, "--assignment-id", a.AssignmentID, "--agent-id", a.OwnerAgentID)
+	var result struct {
+		State       string   `json:"state"`
+		Blocked     bool     `json:"blocked"`
+		Integration []string `json:"integration"`
+	}
+	if err := json.Unmarshal([]byte(replay), &result); err != nil || result.State != "integrated" || result.Blocked || !strings.Contains(strings.Join(result.Integration, "\n"), ".claude/evidence/owned-core-check.txt") {
+		t.Fatalf("pending replay lost original integration or retained path: %s; %v", replay, err)
+	}
+	after, err := os.ReadFile(evidence)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("replay removed or changed original evidence", err)
+	}
+	nextHead, err := workspace.Git(t.Context(), f.root, "rev-parse", "HEAD")
+	if err != nil || nextHead != head || stageSnapshot(t, f.root).Revision != snap.Revision {
+		t.Fatal("pending replay changed completed integration", err)
+	}
+	replayed, found, err := store.Load(path)
+	if err != nil || !found || replayed.State != integration.StateCleanupPending || replayed.VerifiedAt != cp.VerifiedAt || replayed.CompletionReportPath != cp.CompletionReportPath {
+		t.Fatalf("pending replay changed original verified facts: %+v; %v", replayed, err)
+	}
+	// A checkpoint for a different original Result is not this report's ACK.
+	cp.CompletionReportPath = ".claude/evidence/a-different-result.json"
 	if _, err := store.ForceWrite(path, cp); err != nil {
 		t.Fatal(err)
 	}
-	pressure, err = dispatch.ProjectPressure(f.root, snap.State)
-	if err != nil || pressure.Paused || pressure.Unreceived != 0 {
-		t.Fatal("actual report ACK was held by cleanup fixture", pressure, err)
-	}
-	cp.CompletionReportSHA256 = strings.Repeat("0", 64)
-	if _, err := store.ForceWrite(path, cp); err != nil {
-		t.Fatal(err)
-	}
-	pressure, err = dispatch.ProjectPressure(f.root, snap.State)
-	if err != nil || !pressure.Paused || pressure.Unreceived != 1 {
-		t.Fatal("stale checkpoint hash released original pending result", pressure, err)
-	}
+	t.Cleanup(func() {
+		if _, err := store.ForceWrite(path, original); err != nil {
+			t.Error(err)
+		}
+	})
+	assertPending(false, false)
 	if _, err := store.ForceWrite(path, original); err != nil {
 		t.Fatal(err)
 	}
+	assertPending(true, true)
 }

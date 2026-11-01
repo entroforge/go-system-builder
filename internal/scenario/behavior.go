@@ -1,8 +1,6 @@
 package scenario
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -11,9 +9,9 @@ import (
 )
 
 type BehaviorSource struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path string `json:"path"`
 }
+
 type BehaviorExample struct {
 	Case    Case             `json:"case"`
 	Inputs  map[string]any   `json:"inputs"`
@@ -21,14 +19,14 @@ type BehaviorExample struct {
 	Sources []BehaviorSource `json:"sources"`
 }
 
-// ProjectBehaviorWithFiles uses the original generator's source validation and
-// output equality. It executes no scenario, test or browser and writes no file.
+// ProjectBehaviorWithFiles uses the actual readable scenario cases and source
+// materials. It executes no scenario, test or browser and writes no file.
 func ProjectBehaviorWithFiles(root, module string, files fileview.Reader) (map[string]BehaviorExample, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
-	recorded := &behaviorReader{Reader: files, root: root, hashes: map[string]string{}}
+	recorded := &behaviorReader{Reader: files, root: root, paths: map[string]struct{}{}}
 	files = recorded
 	source, err := loadSourcePackageWithFiles(root, module, files)
 	if err != nil {
@@ -38,23 +36,23 @@ func ProjectBehaviorWithFiles(root, module string, files fileview.Reader) (map[s
 	if err != nil {
 		return nil, err
 	}
-	sources := []BehaviorSource{}
-	loaded := map[string][]byte{modelFile: source.modelBytes, fixtureFile: source.fixtureBytes, "cross-matrix.json": source.crossMatrixByte, "stories.md": source.stories, "flows.md": source.flows}
-	for _, name := range []string{modelFile, fixtureFile, "cross-matrix.json", "stories.md", "flows.md", casesFile, coverageFile} {
-		path := filepath.ToSlash(filepath.Join(prototypeRoot, module, name))
-		data, err := files.ReadFile(filepath.Join(root, path))
-		if err != nil {
-			return nil, err
-		}
-		if original, ok := loaded[name]; ok && !bytes.Equal(data, original) {
-			return nil, fmt.Errorf("scenario source %s changed during behavior projection", name)
-		}
-		if name == casesFile && !bytes.Equal(data, outputs.casesBytes) || name == coverageFile && !bytes.Equal(data, outputs.coverageBytes) {
-			return nil, fmt.Errorf("current generated %s differs from approved scenario sources", name)
-		}
+	casesPath := filepath.Join(root, prototypeRoot, module, casesFile)
+	coveragePath := filepath.Join(root, prototypeRoot, module, coverageFile)
+	casesBytes, err := files.ReadFile(casesPath)
+	if err != nil {
+		return nil, err
 	}
-	for path, hash := range recorded.hashes {
-		sources = append(sources, BehaviorSource{Path: path, SHA256: hash})
+	coverageBytes, err := files.ReadFile(coveragePath)
+	if err != nil {
+		return nil, err
+	}
+	actual, err := validateOutputData(casesBytes, coverageBytes, outputs)
+	if err != nil {
+		return nil, err
+	}
+	sources := []BehaviorSource{}
+	for path := range recorded.paths {
+		sources = append(sources, BehaviorSource{Path: path})
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i].Path < sources[j].Path })
 	values := map[string]map[string]any{}
@@ -69,7 +67,7 @@ func ProjectBehaviorWithFiles(root, module string, files fileview.Reader) (map[s
 		fixtures[fixture.ID] = fixture
 	}
 	result := map[string]BehaviorExample{}
-	for _, c := range outputs.cases {
+	for _, c := range actual.Cases {
 		inputs := map[string]any{}
 		for fact, partition := range c.Witness {
 			value, ok := values[fact][partition]
@@ -85,8 +83,8 @@ func ProjectBehaviorWithFiles(root, module string, files fileview.Reader) (map[s
 
 type behaviorReader struct {
 	fileview.Reader
-	root   string
-	hashes map[string]string
+	root  string
+	paths map[string]struct{}
 }
 
 func (r *behaviorReader) ReadFile(path string) ([]byte, error) {
@@ -102,10 +100,6 @@ func (r *behaviorReader) ReadFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	rel = filepath.ToSlash(rel)
-	hash := fmt.Sprintf("%x", sha256.Sum256(data))
-	if prior, ok := r.hashes[rel]; ok && prior != hash {
-		return nil, fmt.Errorf("scenario source %s changed during behavior projection", rel)
-	}
-	r.hashes[rel] = hash
+	r.paths[rel] = struct{}{}
 	return data, nil
 }

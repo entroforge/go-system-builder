@@ -1,8 +1,6 @@
 package assignment_test
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,9 +8,8 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignment"
 )
 
-// The first S7 packet must bind the selection that Main actually registered,
-// not a later edit of the manifest at the same path.
-func TestS7RegistrationFreezesMethodSelectionSource(t *testing.T) {
+// Registration retains the actual manifest path and original responsibility.
+func TestS7RegistrationKeepsMethodSelectionSource(t *testing.T) {
 	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath, journalPath := filepath.Join(dir, "loop-state.json"), filepath.Join(dir, "loop-events.jsonl")
@@ -23,10 +20,6 @@ func TestS7RegistrationFreezesMethodSelectionSource(t *testing.T) {
 	writeJSON(t, statePath, state)
 	manifestPath := filepath.Join(dir, "manifest.json")
 	copyManifest(t, root, manifestPath)
-	original, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	taskPath := filepath.Join(dir, "TASK-012.md")
 	if err := os.WriteFile(taskPath, []byte("# TASK-012\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -38,8 +31,7 @@ func TestS7RegistrationFreezesMethodSelectionSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	team := next.State["entities"].(map[string]any)["teams"].([]any)[0].(map[string]any)
-	want := fmt.Sprintf("%x", sha256.Sum256(original))
-	if team["manifest_sha256"] != want {
-		t.Fatalf("registered selection has no original source proof: got %v, want %s", team["manifest_sha256"], want)
+	if team["manifest_ref"] == "" || team["manifest_ref"] == nil {
+		t.Fatalf("registered selection lost its manifest path: %v", team)
 	}
 }

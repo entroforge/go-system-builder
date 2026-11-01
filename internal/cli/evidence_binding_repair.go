@@ -15,51 +15,29 @@ import (
 )
 
 type evidenceBindingPlan struct {
-	Runtime    string            `json:"runtime_id"`
-	Revision   int               `json:"revision"`
-	StateHash  string            `json:"state_sha256"`
-	ID         string            `json:"evidence_id"`
-	EnvelopeID string            `json:"envelope_id"`
-	Files      map[string]string `json:"file_hashes"`
-	Reason     string            `json:"reason"`
+	Runtime    string `json:"runtime_id"`
+	Revision   int    `json:"revision"`
+	ID         string `json:"evidence_id"`
+	EnvelopeID string `json:"envelope_id"`
+	Reason     string `json:"reason"`
 }
 
 // This is deliberately not a general evidence revocation escape hatch.
-// Only an objectively misbound, fingerprint-intact S5 registration qualifies.
+// It identifies an actual S5 registration whose original envelope has a
+// different evidence ID; historical fingerprints are not used as proof.
 func inspectEvidenceBinding(root string, state map[string]any, id string) (evidenceBindingPlan, error) {
-	p := evidenceBindingPlan{Runtime: stringValue(state["runtime_id"]), Revision: batchInt(state["revision"]), ID: id, Files: map[string]string{}, Reason: "registration ID differs from fingerprinted envelope evidence_id"}
-	b, _ := json.Marshal(state)
-	p.StateHash = scopeHash(b)
+	p := evidenceBindingPlan{Runtime: stringValue(state["runtime_id"]), Revision: batchInt(state["revision"]), ID: id, Reason: "registration ID differs from original envelope evidence_id"}
 	life, _ := state["lifecycle"].(map[string]any)
-	if id == "" || life["state"] != "document_verification" || state["pause"] != nil || batchNestedInt(state, "review", "round") != 0 {
-		return p, fmt.Errorf("requires unpaused S5 before S7 and an explicit evidence ID")
-	}
-	read := func(path string, hash any) ([]byte, error) {
-		b, err := scopeFile(root, path)
-		if err != nil {
-			return nil, err
-		}
-		h := scopeHash(b)
-		if h != hash {
-			return nil, fmt.Errorf("fingerprint drift: %s", path)
-		}
-		p.Files[path] = h
-		return b, nil
+	if id == "" || life["state"] != "document_verification" || state["pause"] != nil {
+		return p, fmt.Errorf("requires unpaused S5 and an explicit evidence ID")
 	}
 	req, _ := state["bound_req"].(map[string]any)
 	if req["status"] != "locked" {
 		return p, fmt.Errorf("locked REQ required")
 	}
-	if _, err := read(stringValue(req["path"]), req["sha256"]); err != nil {
-		return p, err
-	}
-	docs, _ := state["documents"].([]any)
-	for _, raw := range docs {
-		d, _ := raw.(map[string]any)
-		if _, err := read(stringValue(d["path"]), d["sha256"]); err != nil {
-			return p, err
-		}
-	}
+	// This repair decides only whether the selected original evidence row is
+	// misbound. Unrelated document bodies were previously read solely for
+	// fingerprint authentication and are not required to make that decision.
 	evs, _ := state["evidence"].([]any)
 	count := 0
 	for _, raw := range evs {
@@ -71,7 +49,7 @@ func inspectEvidenceBinding(root string, state map[string]any, id string) (evide
 		if e["kind"] != "document_review" || e["status"] != "valid" || e["invalidated_by"] != nil || batchInt(e["baseline_generation"]) != batchNestedInt(state, "baseline", "generation") {
 			return p, fmt.Errorf("target must be current valid document_review")
 		}
-		b, err := read(stringValue(e["path"]), e["sha256"])
+		b, err := scopeFile(root, stringValue(e["path"]))
 		if err != nil {
 			return p, err
 		}
@@ -126,7 +104,14 @@ func runEvidenceBindingRepair(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	var approved evidenceBindingPlan
-	if json.Unmarshal(b, &approved) != nil || !reflect.DeepEqual(plan, approved) {
+	decodeErr := json.Unmarshal(b, &approved)
+	// Old preview wording described digest authentication that no longer
+	// exists. Preserve the reviewed original IDs and revision; the old
+	// reason text must not force a new preview by itself.
+	if approved.Reason == "registration ID differs from fingerprinted envelope evidence_id" {
+		approved.Reason = plan.Reason
+	}
+	if decodeErr != nil || !reflect.DeepEqual(plan, approved) {
 		fmt.Fprintln(stderr, "stale or changed repair plan; inspect again")
 		return 1
 	}

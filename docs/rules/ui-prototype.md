@@ -44,7 +44,7 @@ When `UI impact = changed`:
 6. Confirm scenario JSON, `stories.md`, and `flows.md` satisfy §6 and §7, including
    positive/negative and 100% required branch gates.
 7. Link the module current-truth package into FE/BE/SYNC contracts before contract lock
-   (by directory path + fingerprint of the current contents).
+   using the actual directory path and applicable clauses; no fingerprint is required.
 
 When `UI impact = unknown`, contract lock is blocked until the REQ is clarified.
 

@@ -70,8 +70,8 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	e, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State))
-	if !ok || e.AgentID != *agent || e.Status != "ready" || e.BootstrapSHA256 == "" {
-		return fail(fmt.Errorf("launch requires current bootstrapped Worker owner"))
+	if !ok || e.AgentID != *agent || e.Status != "ready" {
+		return fail(fmt.Errorf("launch requires the current ready Worker owner"))
 	}
 	if e.Purpose == workspace.DocumentReviewPurpose {
 		p, err := workspace.DocumentReviewPacket(snap.State, e)

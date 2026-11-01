@@ -2,20 +2,28 @@ package cli_test
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/review"
 )
 
 func TestMainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	path := filepath.Join(root, ".claude/submissions/loop-REQ-WORKTREE/g1/S7/r1/review-plan.json")
+	state := stageSnapshot(t, root).State
+	head, err := os.ReadFile(filepath.Join(root, ".git/HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimPrefix(strings.TrimSpace(string(head)), "ref: refs/heads/")
+	state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": branch, "release_upstream": "release"}
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-questionnaire-save", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
+	stageJSON(t, root, ".claude/loop-state.json", state)
+	path := review.PlanQuestionnairePath(root, state)
 	context := entryQuestionnaireHook(t, root, "PreToolUse", path)
 	if !strings.Contains(context, path) || strings.Contains(context, "s7 draft --out plan.json") {
 		t.Fatalf("Main did not receive exact automatic plan questionnaire: %s", context)
@@ -68,11 +76,7 @@ func TestMainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay(t *tes
 	answer["e2e_coverage_state"] = "regression_available"
 	answer["e2e_assets"] = []any{map[string]any{"case_ref": casePath + "#CASE-001", "path": "example.spec.ts", "selector_ref": "button[name=Save]", "route_ref": "/example", "environment": "local test browser"}}
 	for _, source := range []string{casePath, "example.spec.ts"} {
-		body, err := os.ReadFile(filepath.Join(root, source))
-		if err != nil {
-			t.Fatal(err)
-		}
-		answer["frozen_subjects"] = append(answer["frozen_subjects"].([]any), map[string]any{"path": source, "sha256": fmt.Sprintf("%x", sha256.Sum256(body)), "kind": "product_code"})
+		answer["frozen_subjects"] = append(answer["frozen_subjects"].([]any), map[string]any{"path": source, "kind": "product_code"})
 	}
 	data, err = json.Marshal(answer)
 	if err != nil {
@@ -85,7 +89,7 @@ func TestMainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay(t *tes
 	if !strings.Contains(result, "review-plan-questionnaire-save") || !strings.Contains(result, path) {
 		t.Fatalf("save did not return original registration/path: %s", result)
 	}
-	for _, expected := range []string{"prepares and registers", "manifest-draft", "assignment-e2e-1 waits", "static Claims"} {
+	for _, expected := range []string{"prepares and registers", "manifest-draft", "assignment=assignment-e2e-1"} {
 		if !strings.Contains(result, expected) {
 			t.Fatalf("registered plan did not provide its actual preparation/dependency step %q: %s", expected, result)
 		}
@@ -95,7 +99,7 @@ func TestMainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	var state map[string]any
+	state = nil
 	if err := json.Unmarshal(before, &state); err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +111,8 @@ func TestMainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay(t *tes
 		t.Fatal(err)
 	}
 	replay := entryQuestionnaireHook(t, root, "PostToolUse", path)
-	if !strings.Contains(replay, "already received") {
-		t.Fatalf("duplicate was not original receipt replay: %s", replay)
+	if strings.Contains(replay, "review-plan: registered") || strings.Contains(replay, "review-plan: revised") {
+		t.Fatalf("duplicate was received again: %s", replay)
 	}
 	after, err = os.ReadFile(statePath)
 	if err != nil || !bytes.Equal(before, after) {
@@ -118,13 +122,13 @@ func TestMainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay(t *tes
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	conflict := entryQuestionnaireHook(t, root, "PostToolUse", path)
-	if !strings.Contains(conflict, "named revision/rework") {
-		t.Fatalf("changed registered plan was silently accepted: %s", conflict)
+	result = entryQuestionnaireHook(t, root, "PostToolUse", path)
+	if !strings.Contains(result, "review-plan: revised") {
+		t.Fatalf("changed original plan was not naturally revised: %s", result)
 	}
-	after, _ = os.ReadFile(statePath)
-	if !bytes.Equal(before, after) {
-		t.Fatal("changed plan rewrote accepted Runtime")
+	accepted, _, err := review.LoadPlan(root, stageSnapshot(t, root).State)
+	if err != nil || accepted.Claims[0].Assertion != "changed professional answer" {
+		t.Fatalf("revised professional content was not accepted: %+v %v", accepted, err)
 	}
 }
 
@@ -153,7 +157,7 @@ func TestMainReviewPlanQuestionnaireStopDoesNotPrepareAndInvalidSaveReturnsFeedb
 	if !bytes.Equal(before, after) {
 		t.Fatal("invalid draft changed Runtime")
 	}
-	// A valid answer cannot repair a missing frozen product source.
+	// A historical frozen product source is not a reception proof.
 	validPath := minimalReviewPlan(t, t.TempDir(), "review-plan-source-failure")
 	valid, err := os.ReadFile(validPath)
 	if err != nil {
@@ -166,11 +170,10 @@ func TestMainReviewPlanQuestionnaireStopDoesNotPrepareAndInvalidSaveReturnsFeedb
 		t.Fatal(err)
 	}
 	result = entryQuestionnaireHook(t, root, "PostToolUse", path)
-	if !strings.Contains(result, "Main owns source/environment/Writer recovery") || strings.Contains(result, "Correct the specific") {
-		t.Fatalf("source failure was misattributed to the professional answer: %s", result)
+	if !strings.Contains(result, "review-plan: registered") || strings.Contains(result, "Correct the specific") {
+		t.Fatalf("historical missing source blocked the original answer: %s", result)
 	}
-	after, _ = os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
-	if !bytes.Equal(before, after) {
-		t.Fatal("source failure changed Runtime")
+	if review.PlanPointerFromState(stageSnapshot(t, root).State) == nil {
+		t.Fatal("original answer was not received")
 	}
 }

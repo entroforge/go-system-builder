@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
 // TestHumanDecisionScopeBinding pins the transition-layer human gate: a
@@ -105,7 +103,7 @@ func TestModernHumanDecisionBindsTargetCursorAndCannotReplay(t *testing.T) {
 		}
 		state["evidence"] = []any{map[string]any{
 			"id": "decision-modern", "kind": "human_decision", "path": path,
-			"sha256": transition.SHA256(artifact), "status": "valid", "baseline_generation": 1,
+			"status": "valid", "baseline_generation": 1,
 			"review_round": 1, "produced_by": []any{"user"}, "scope_refs": []any{"runtime_release:loop-test"},
 			"invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil,
 			"responsibility_id": nil,

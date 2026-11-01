@@ -28,7 +28,7 @@ func TestStoreCheckpointBudgetRejectsBeforeStateJournalAndPending(t *testing.T) 
 	state["schema_version"] = "1.2.0"
 	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
 	req := state["bound_req"].(map[string]any)
-	p, err := workpacket.BuildDesign(workpacket.PlanningBinding{RuntimeID: "loop-test", Generation: 1, StageEntry: 1, Stage: "S2", Owner: "Main", Requirement: workpacket.Reference{ID: req["id"].(string), Path: req["path"].(string), Version: req["version"].(string), SHA256: req["sha256"].(string)}})
+	p, err := workpacket.BuildDesign(workpacket.PlanningBinding{RuntimeID: "loop-test", Generation: 1, StageEntry: 1, Stage: "S2", Owner: "Main", Requirement: workpacket.Reference{ID: req["id"].(string), Path: req["path"].(string), Version: req["version"].(string)}})
 	if err != nil {
 		t.Fatal(err)
 	}

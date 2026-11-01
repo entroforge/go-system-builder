@@ -22,7 +22,7 @@ func TestBundleBindingsAndCommonScope(t *testing.T) {
 	inputs := map[string]string{req.TaskRef: "formal-task-hash"}
 	for _, s := range p.Sources {
 		if s.Status == "readable" {
-			inputs[s.Path] = s.SHA256
+			inputs[s.Path] = s.Path
 		}
 	}
 	if err := b.ValidateInputs(inputs); err != nil {

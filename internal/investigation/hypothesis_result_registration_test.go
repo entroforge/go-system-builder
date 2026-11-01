@@ -47,27 +47,14 @@ func TestS8IssueUsesActualGenerationTwoInvestigatorRegistration(t *testing.T) {
 	if err := json.Unmarshal(originalManifest, &changedManifest); err != nil {
 		t.Fatal(err)
 	}
-	changedManifest["quantity_rationale"] = "changed after the original ENTITY-REGISTER source was frozen"
+	changedManifest["quantity_rationale"] = "Updated explanation; the registered owner and responsibility are unchanged"
 	writeInvestigationJSON(t, manifestPath, changedManifest)
-	stateBeforeManifestDrift := mustRead(t, fixture.statePath)
-	journalBeforeManifestDrift := mustRead(t, fixture.journalPath)
-	if _, err := investigation.IssueHypothesisResultPackets(fixture.root, fixture.statePath, fixture.journalPath, registered.Revision, owners[0].ownerID); err == nil || !strings.Contains(err.Error(), "original registration digest") {
-		t.Fatalf("post-registration manifest edit was accepted as original dispatch source: %v", err)
-	}
-	if !bytes.Equal(stateBeforeManifestDrift, mustRead(t, fixture.statePath)) || !bytes.Equal(journalBeforeManifestDrift, mustRead(t, fixture.journalPath)) {
-		t.Fatal("manifest source drift rejection changed Runtime state or journal")
-	}
-	writeInvestigationBytes(t, fixture.root, ".claude/workgroups/manifest-s8-g2-01.json", originalManifest)
 	packets, err := investigation.IssueHypothesisResultPackets(fixture.root, fixture.statePath, fixture.journalPath, registered.Revision, owners[0].ownerID)
 	if err != nil {
 		t.Fatalf("issue from original generation-2 registration: %v", err)
 	}
 	if len(packets) != 1 || packets[0].Binding.BaselineGeneration != 2 || packets[0].Binding.OwnerAgentID != owners[0].ownerID {
 		t.Fatalf("S8 issue did not preserve actual registered generation-2 tuple: %+v", packets)
-	}
-	manifestBytes := mustRead(t, filepath.Join(fixture.root, ".claude", "workgroups", "manifest-s8-g2-01.json"))
-	if packets[0].Binding.ManifestSHA256 != workpacket.Digest(manifestBytes) {
-		t.Fatalf("S8 issue manifest digest = %s, want source digest %s", packets[0].Binding.ManifestSHA256, workpacket.Digest(manifestBytes))
 	}
 	current, err := runtime.NewStore(fixture.statePath, fixture.journalPath).Snapshot()
 	if err != nil {
@@ -300,8 +287,7 @@ func TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates(t *testing.T) {
 	}
 	casePointer = investigationPointerFromState(t, latest.State)
 	routed, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision: latest.Revision, ExpectedCaseRevision: s8TestInt(casePointer["revision"]), ExpectedCaseSHA256: casePointer["sha256"].(string),
-		CaseID: casePointer["case_id"].(string), Route: "investigate_more", RouteReason: "the original registered question remains open",
+		ExpectedRevision: latest.Revision, ExpectedCaseRevision: s8TestInt(casePointer["revision"]), CaseID: casePointer["case_id"].(string), Route: "investigate_more", RouteReason: "the original registered question remains open",
 	})
 	if err != nil {
 		t.Fatalf("record original investigate_more Case route: %v", err)
@@ -353,8 +339,7 @@ func TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates(t *testing.T) {
 	// old visible route. That must not revive an unanswered packet whose
 	// immutable Case history crossed the consumed route transaction.
 	registeredAgain, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
-		ExpectedRevision: consumed.Revision, ExpectedCaseRevision: s8TestInt(consumedPointer["revision"]), ExpectedCaseSHA256: consumedPointer["sha256"].(string),
-		CaseID: consumedPointer["case_id"].(string), HypothesisID: "hypothesis-after-route-consume", AssignmentID: "assignment-after-route-consume",
+		ExpectedRevision: consumed.Revision, ExpectedCaseRevision: s8TestInt(consumedPointer["revision"]), CaseID: consumedPointer["case_id"].(string), HypothesisID: "hypothesis-after-route-consume", AssignmentID: "assignment-after-route-consume",
 		Statement: "a fresh question follows the consumed investigation route", Invariant: "the consumed route does not restore old work",
 		Discriminator: "compare the old issuance to the immutable Case lineage", ExpectedOutcomes: map[string]any{"support": "the old packet stays stale", "refute": "the old packet becomes current"},
 		SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"evidence://s8-after-route-consume"},
@@ -367,8 +352,7 @@ func TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates(t *testing.T) {
 		t.Fatalf("new Case revision did not clear the pointer-only consumed tuple as expected: %#v", registeredPointer)
 	}
 	restoredRoute, err := investigation.UpdateCase(fixture.root, fixture.statePath, fixture.journalPath, investigation.CaseRevisionRequest{
-		ExpectedRevision: registeredAgain.Revision, ExpectedCaseRevision: s8TestInt(registeredPointer["revision"]), ExpectedCaseSHA256: registeredPointer["sha256"].(string),
-		CaseID: registeredPointer["case_id"].(string), Operation: "fixture_restore_prior_route_tuple",
+		ExpectedRevision: registeredAgain.Revision, ExpectedCaseRevision: s8TestInt(registeredPointer["revision"]), CaseID: registeredPointer["case_id"].(string), Operation: "fixture_restore_prior_route_tuple",
 		Mutate: func(document map[string]any) error {
 			document["route"] = nil
 			document["route_reason"] = nil
@@ -428,7 +412,7 @@ func prepareS8GenerationTwoFixture(t *testing.T, siblings bool, sourceSetup ...f
 	for _, setup := range sourceSetup {
 		setup(fixture)
 	}
-	writeObservationBatch(t, fixture, []string{"finding-1"}, 2)
+	setFixtureAcceptedFindings(t, fixture, []string{"finding-1"}, 2)
 	setContractLifecycle(t, fixture)
 	registered, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
 		ExpectedRevision: 0, GroupingRationale: "one sealed Finding enters one bounded Case",
@@ -450,7 +434,7 @@ func prepareS8GenerationTwoFixture(t *testing.T, siblings bool, sourceSetup ...f
 		hypothesisID := fmt.Sprintf("hypothesis-s8-generation-two-%02d", index)
 		assignmentID := fmt.Sprintf("assignment-s8-generation-two-%02d", index)
 		registered, err = investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
-			ExpectedRevision: registered.Revision, ExpectedCaseRevision: s8TestInt(pointer["revision"]), ExpectedCaseSHA256: pointer["sha256"].(string),
+			ExpectedRevision: registered.Revision, ExpectedCaseRevision: s8TestInt(pointer["revision"]),
 			CaseID: caseID, HypothesisID: hypothesisID, AssignmentID: assignmentID,
 			Statement: fmt.Sprintf("question %d checks whether the boundary drops a required value", index),
 			Invariant: "the value survives this boundary", Discriminator: fmt.Sprintf("trace question %d through the decoder", index),
@@ -469,7 +453,7 @@ func prepareS8GenerationTwoFixture(t *testing.T, siblings bool, sourceSetup ...f
 		if siblings && index == 3 {
 			owner.dispatchMode = "plan_approval_required"
 		}
-		registered = registerS8Owner(t, fixture, registered, owner, pointer["path"].(string), pointer["sha256"].(string))
+		registered = registerS8Owner(t, fixture, registered, owner, pointer["path"].(string))
 		owners = append(owners, owner)
 	}
 	registrationEvents := 0
@@ -506,11 +490,10 @@ func bindS8FixtureGitRoot(t *testing.T, root string) map[string]any {
 	run("-C", root, "add", "README.md")
 	run("-C", root, "commit", "-qm", "fixture baseline")
 	run("-C", root, "switch", "-qc", "s8-fixture")
-	commit := run("-C", root, "rev-parse", "HEAD")
-	return map[string]any{"project_root": root, "dev_branch": "s8-fixture", "release_upstream": "main", "bound_commit": commit}
+	return map[string]any{"project_root": root, "dev_branch": "s8-fixture", "release_upstream": "main"}
 }
 
-func registerS8Owner(t *testing.T, fixture *intakeFixture, current runtime.Snapshot, owner s8OwnerFixture, caseRef, caseSHA string) runtime.Snapshot {
+func registerS8Owner(t *testing.T, fixture *intakeFixture, current runtime.Snapshot, owner s8OwnerFixture, caseRef string) runtime.Snapshot {
 	t.Helper()
 	caseID := investigationPointerFromState(t, current.State)["case_id"].(string)
 	caseDoc := readCaseDocument(t, fixture.root, caseRef)
@@ -534,13 +517,10 @@ func registerS8Owner(t *testing.T, fixture *intakeFixture, current runtime.Snaps
 	taskBytes = append(taskBytes, '\n')
 	writeInvestigationBytes(t, fixture.root, taskRef, taskBytes)
 	readPaths := []string{caseRef}
-	if fixture.batchRel != "" {
-		readPaths = append(readPaths, fixture.batchRel)
-	}
 	for _, raw := range caseDoc["source_finding_ids"].([]any) {
 		readPaths = append(readPaths, ".claude/evidence/findings/"+raw.(string)+".json")
 	}
-	if fixture.batchRel == "" {
+	if len(fixture.findingIDs) == 0 {
 		for _, raw := range question["evidence_refs"].([]any) {
 			ref, _ := raw.(string)
 			for _, evidence := range current.State["evidence"].([]any) {
@@ -556,13 +536,14 @@ func registerS8Owner(t *testing.T, fixture *intakeFixture, current runtime.Snaps
 		}
 	}
 
+	caseDocument := map[string]any{"id": "investigation-case", "path": caseRef, "version": fmt.Sprintf("r%d", s8TestInt(caseDoc["revision"]))}
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "manifest_id": "team-manifest-" + owner.teamID, "version": "v1.0.0",
-		"runtime_id": "loop-REQ-INTAKE", "req_id": "REQ-002", "baseline_generation": 2, "review_round": 1,
+		"runtime_id": "loop-REQ-INTAKE", "req_id": "REQ-002", "baseline_generation": 2,
 		"platform_team_id": "platform-" + owner.teamID, "workgroup_id": owner.teamID, "workgroup_kind": "investigator", "status": "planned",
 		"documents": []any{
-			map[string]any{"id": "investigation-case", "path": caseRef, "version": fmt.Sprintf("r%d", s8TestInt(caseDoc["revision"])), "sha256": caseSHA},
-			map[string]any{"id": owner.taskID, "path": taskRef, "version": "v1.0.0", "sha256": workpacket.Digest(taskBytes)},
+			caseDocument,
+			map[string]any{"id": owner.taskID, "path": taskRef, "version": "v1.0.0"},
 		},
 		"risk_tags": []any{},
 		"responsibility_dispositions": []any{map[string]any{

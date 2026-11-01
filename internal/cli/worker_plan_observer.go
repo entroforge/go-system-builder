@@ -61,7 +61,7 @@ func workerPlanDraftPostToolUse(root string, request policy.Input, snapshot runt
 	count := 0
 	for _, candidate := range binding.Executions {
 		if candidate.RuntimeID != runtimeID || candidate.BaselineGeneration != generation ||
-			candidate.AgentID != request.AgentID || candidate.Status != "ready" || candidate.Path != requestedCWD || candidate.BootstrapSHA256 == "" {
+			candidate.AgentID != request.AgentID || candidate.Status != "ready" || candidate.Path != requestedCWD {
 			continue
 		}
 		execution = candidate

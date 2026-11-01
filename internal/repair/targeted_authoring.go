@@ -1,6 +1,7 @@
 package repair
 
 import "fmt"
+import "encoding/json"
 import "context"
 import "github.com/entroforge/go-system-builder/internal/targetedauthoring"
 
@@ -25,7 +26,29 @@ func UsesSharedTargetedAuthoring(root string, state map[string]any, original, pe
 	if owners[original] == "" || owners[performing] != owner {
 		return false, fmt.Errorf("Targeted original owner differs")
 	}
-	return targetedauthoring.Verify(root, state, NewTargetedAuthoring(state, original, performing, owner), ManifestVerificationAssignmentID(original), contexts...)
+	// The original owner and issued TASK establish the authoring protocol.
+	fields, err := targetedauthoring.RegisteredTask(root, state, stringField(repairPointer(state)["session_id"]), performing, owner, contexts...)
+	if err != nil {
+		return false, err
+	}
+	if fields == nil {
+		return false, nil
+	}
+	var session, assignment string
+	_ = json.Unmarshal(fields["session_id"], &session)
+	_ = json.Unmarshal(fields["assignment_id"], &assignment)
+	if session != stringField(repairPointer(state)["session_id"]) || assignment != performing {
+		return false, nil
+	}
+	var declaration TargetedAuthoring
+	if raw, ok := fields["targeted_authoring"]; ok {
+		if err := json.Unmarshal(raw, &declaration); err != nil {
+			return false, err
+		}
+		return declaration.Protocol == SharedTargetedAuthoringProtocol, nil
+	}
+
+	return false, nil
 }
 
 func TargetedSharedAnswerPath(root, legacy string) (string, error) {

@@ -158,7 +158,7 @@ func TestGuardUIIImpactResolvedBlocksUnknown(t *testing.T) {
 // value (LOOP-STATE-MACHINE.md §15 + ui-prototype.md §3), and bindREQ must
 // accept it. The guard `ui_impact_resolved` (registered separately) is what
 // blocks planning from advancing until the value is clarified.
-func TestBindREQAcceptsCRLFRawFingerprint(t *testing.T) {
+func TestBindREQAcceptsCRLFOriginalRequirement(t *testing.T) {
 	root := filepath.Join("..", "..")
 	statePath, journalPath := copyInactiveRuntime(t, root)
 	reqPath := filepath.Join(root, "internal", "transition", "testdata", "req-crlf-raw-byte.md")
@@ -173,15 +173,15 @@ func TestBindREQAcceptsCRLFRawFingerprint(t *testing.T) {
 		Evidence: map[string]string{"req_lock_record": "REQ-098#lock", "loop_authorization_record": "user:/loop REQ-098"},
 		REQ: &transition.LockedREQ{
 			ID: "REQ-098", Path: "internal/transition/testdata/req-crlf-raw-byte.md", Version: "v1.0.0",
-			SHA256: transition.REQSHA256(content), ApprovedBy: "user", ApprovedAt: "2026-09-11T00:00:00Z",
+			ApprovedBy: "user", ApprovedAt: "2026-09-11T00:00:00Z",
 		},
 	})
 	if err != nil {
-		t.Fatalf("TR-001 must accept the raw-byte CRLF REQ fingerprint: %v", err)
+		t.Fatalf("TR-001 must accept the original CRLF REQ: %v", err)
 	}
 	bound, _ := next.State["bound_req"].(map[string]any)
-	if got, _ := bound["sha256"].(string); got != transition.REQSHA256(content) {
-		t.Fatalf("bound REQ SHA256 = %q, want raw-byte %q", got, transition.REQSHA256(content))
+	if bound["id"] != "REQ-098" || bound["path"] != "internal/transition/testdata/req-crlf-raw-byte.md" || bound["version"] != "v1.0.0" || bound["approved_by"] != "user" {
+		t.Fatalf("bound REQ lost original identity, version or approval: %+v", bound)
 	}
 }
 
@@ -198,7 +198,6 @@ func TestBindREQAcceptsUnknownUIIImpact(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(reqPath) })
 	relPath := "internal/transition/testdata/ui-unknown-req.md"
-	hash := fileHash(t, reqPath)
 	next, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-001",
 		ExpectedRevision: 0,
@@ -211,7 +210,6 @@ func TestBindREQAcceptsUnknownUIIImpact(t *testing.T) {
 			ID:         "REQ-099",
 			Path:       relPath,
 			Version:    "v1.0.0",
-			SHA256:     hash,
 			ApprovedBy: "user",
 			ApprovedAt: "2026-07-05T00:00:00Z",
 		},

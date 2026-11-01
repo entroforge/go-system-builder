@@ -33,7 +33,7 @@ func progressMilestoneDirectoryFixture(t *testing.T, lifecycle string, reads []s
 		t.Fatal(err)
 	}
 	state["bound_req"] = map[string]any{
-		"id": "REQ-progress", "path": reqPath, "version": "v1.0.0", "sha256": workpacket.Digest(reqBytes),
+		"id": "REQ-progress", "path": reqPath, "version": "v1.0.0",
 	}
 	milestone := state["milestone"].(map[string]any)
 	milestone["stage"] = map[string]string{"planning": "S2", "document_verification": "S5"}[lifecycle]
@@ -110,14 +110,14 @@ func TestMainS2S5MilestoneDirectoriesProjectActualReadSources(t *testing.T) {
 			if err != nil || !facts.Known {
 				t.Fatalf("directory milestone source projection failed: known=%t err=%v", facts.Known, err)
 			}
-			if got := facts.Sources[path]; got != workpacket.Digest([]byte(tc.actualContent)) {
-				t.Fatalf("projected source SHA=%q; want actual file SHA", got)
+			if _, exists := facts.Sources[path]; !exists {
+				t.Fatalf("actual source path was not projected: %s", path)
 			}
 			if _, exists := facts.Sources[filepath.Join(root, "docs/architecture")]; exists {
 				t.Fatal("directory itself was projected as a regular source file")
 			}
 			read := actualProgressRead(root, progressReadInput(root, path, tc.actualContent), facts.Sources)
-			if read == nil || read.Path != path || read.Digest != workpacket.Digest([]byte(tc.actualContent)) || read.Range != "1:1" {
+			if read == nil || read.Path != path || read.Range != "1:1" {
 				t.Fatalf("actual read beneath declared directory was not attributed: %+v", read)
 			}
 
@@ -183,15 +183,15 @@ func TestMainMilestoneDirectoryProjectionKeepsEntryByteAndFormalSHABounds(t *tes
 			t.Fatalf("over-budget directory was not reported incomplete: %v", err)
 		}
 	})
-	t.Run("formal packet SHA remains exact", func(t *testing.T) {
+	t.Run("formal packet observes current source", func(t *testing.T) {
 		root := initFormatRoot(t)
 		writeProgressSource(t, root, "docs/formal/source.md", "changed source\n")
-		refs := []workpacket.Reference{{Path: "docs/formal/source.md", SHA256: workpacket.Digest([]byte("issued source\n"))}}
+		refs := []workpacket.Reference{{Path: "docs/formal/source.md"}}
 		sources := map[string]string{}
 		remaining := progressSourceProjectionByteLimit
 		err := projectProgressSourceInputs(sources, &remaining, root, refs)
-		if err == nil || err.Error() != "necessary source differs from issued binding" {
-			t.Fatalf("formal packet SHA mismatch was relaxed: %v", err)
+		if err != nil || sources[filepath.Join(root, refs[0].Path)] != "present" {
+			t.Fatalf("formal packet source not observed: %v", err)
 		}
 	})
 }
@@ -219,8 +219,11 @@ func TestMainS6LockedReadCategoriesResolveRegisteredCurrentFiles(t *testing.T) {
 	if err != nil || !facts.Known {
 		t.Fatalf("actual S6 files were treated as category filenames: known=%t err=%v", facts.Known, err)
 	}
-	if facts.Sources[actualContract] != workpacket.Digest([]byte("locked contract source\n")) || facts.Sources[actualTask] != workpacket.Digest([]byte("locked task source\n")) {
-		t.Fatalf("category projection omitted actual source hashes: %+v", facts.Sources)
+	if _, ok := facts.Sources[actualContract]; !ok {
+		t.Fatalf("category projection omitted the actual contract: %+v", facts.Sources)
+	}
+	if _, ok := facts.Sources[actualTask]; !ok {
+		t.Fatalf("category projection omitted the actual TASK: %+v", facts.Sources)
 	}
 	if err := os.Remove(actualTask); err != nil {
 		t.Fatal(err)

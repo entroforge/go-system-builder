@@ -6,7 +6,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // ReplaceExecution reserves a fresh execution without reusing or deleting the
@@ -55,11 +54,14 @@ func (b *ExecutionRegistry) ReplaceExecution(ctx context.Context, state map[stri
 	if err != nil {
 		return Execution{}, err
 	}
-	// Retain the originally frozen source, not Main's newer HEAD.
+	// Retain the original professional check and input paths. Historical
+	// digest and Git-object values do not become new execution facts.
 	e.CheckLocation = old.CheckLocation
-	e.CheckProfiles = old.CheckProfiles
-	e.BaseCommit = old.BaseCommit
-	e.Inputs = old.Inputs
+	e.CheckProfiles = copyDispatchProfiles(old.CheckProfiles)
+	e.Inputs = make(map[string]string, len(old.Inputs))
+	for path := range old.Inputs {
+		e.Inputs[path] = path
+	}
 	e.Purpose = old.Purpose
 	e.WorkPacketID = old.WorkPacketID
 	e.StageEntry = old.StageEntry
@@ -77,24 +79,17 @@ func (b *ExecutionRegistry) ReplaceExecution(ctx context.Context, state map[stri
 	return e, nil
 }
 
-// AdoptExecution requires an explicitly supplied historical base and hashes.
-// Neither the old base nor input provenance is inferred from current HEAD.
+// AdoptExecution binds an existing Worker to its original responsibility.
+// Historical digest or object identity is not required or reconstructed.
 func (b *ExecutionRegistry) AdoptExecution(ctx context.Context, state map[string]any, e Execution) (Execution, error) {
 	if err := b.Validate(ctx, b.MainRoot); err != nil {
 		return e, err
 	}
-	if !safeID.MatchString(e.AssignmentID) || !safeID.MatchString(e.AgentID) || e.RuntimeID != RuntimeID(state) || e.BaselineGeneration != Generation(state) || e.Generation < 1 || e.TargetBranch != b.Branch || len(e.Inputs) == 0 {
-		return e, fmt.Errorf("adoption requires explicit historical identity and input hashes")
+	if !safeID.MatchString(e.AssignmentID) || !safeID.MatchString(e.AgentID) || e.RuntimeID != RuntimeID(state) || e.BaselineGeneration != Generation(state) || e.Generation < 1 || e.TargetBranch != b.Branch {
+		return e, fmt.Errorf("adoption requires the original execution responsibility")
 	}
 	if _, exists := b.Executions[e.AssignmentID]; exists {
 		return e, fmt.Errorf("assignment already has an execution; resume or replace it explicitly")
-	}
-	if e.BaseCommit == "" {
-		return e, fmt.Errorf("historical base_commit is required; current HEAD is not a substitute")
-	}
-	base, err := Git(ctx, b.MainRoot, "rev-parse", "--verify", e.BaseCommit+"^{commit}")
-	if err != nil || base != e.BaseCommit {
-		return e, fmt.Errorf("adoption requires the full historical commit SHA")
 	}
 	path, err := Canonical(e.Path)
 	if err != nil || path != e.Path || path == b.MainRoot {
@@ -118,29 +113,14 @@ func (b *ExecutionRegistry) AdoptExecution(ctx context.Context, state map[string
 	if err = b.ValidateInputs(e); err != nil {
 		return e, err
 	}
-	paths, err := GitBytes(ctx, e.Path, "diff", "--name-only", "--no-renames", "-z", e.BaseCommit, "HEAD")
-	if err != nil {
-		return e, err
-	}
-	for _, p := range strings.Split(string(paths), "\x00") {
-		if p == "" {
-			continue
-		}
-		allowed := false
-		for _, scope := range e.WritePaths {
-			if PathMatchesScope(p, scope) {
-				allowed = true
-			}
-		}
-		if !allowed {
-			return e, fmt.Errorf("historical change outside assignment scope: %s", p)
-		}
+	// Actual changed paths are assessed by the existing Main integration.
+	// This binding does not claim the unavailable historical starting bytes.
+	for path := range e.Inputs {
+		e.Inputs[path] = path
 	}
 	e.Status = "preparing"
 	e.PlatformSessionID = ""
 	e.DeliveryRef = ""
-	e.DeliverySHA256 = ""
-	e.BootstrapSHA256 = ""
 	return e, nil
 }
 

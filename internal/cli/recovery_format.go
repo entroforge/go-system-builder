@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -19,7 +18,7 @@ import (
 // Document reconstruction has no authority to invent issued work, reception
 // keys or professional activation. Original validated pending commits are
 // restored by the Writer before this lower-trust path is considered.
-func recoverySeedRuntime(root string, inventory recovery.Inventory, at time.Time) (map[string]any, error) {
+func recoverySeedRuntime(root string, inventory recovery.Inventory, at time.Time, saved ...[]recoverySourceCopy) (map[string]any, error) {
 	fresh, err := inactiveRuntimeState(root, at)
 	if err != nil {
 		return nil, err
@@ -29,12 +28,25 @@ func recoverySeedRuntime(root string, inventory recovery.Inventory, at time.Time
 		if input.Kind != recovery.InputKindRuntimeState && input.Kind != recovery.InputKindRuntimePending {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(input.Path)))
-		if err != nil {
-			return nil, err
-		}
-		if fmt.Sprintf("%x", sha256.Sum256(data)) != input.SHA256 {
-			return nil, fmt.Errorf("recovery format input changed: %s", input.Path)
+		var data []byte
+		if len(saved) > 0 {
+			found := false
+			for _, source := range saved[0] {
+				if source.path == input.Path {
+					data = source.data
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("original recovery source is unavailable: %s", input.Path)
+			}
+		} else {
+			var err error
+			data, err = os.ReadFile(filepath.Join(root, filepath.FromSlash(input.Path)))
+			if err != nil {
+				return nil, err
+			}
 		}
 		var value map[string]any
 		if err := json.Unmarshal(bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf}), &value); err != nil {

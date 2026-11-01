@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -37,7 +36,7 @@ func (s *Store) externalizeNewPacketBodies(previous, candidate map[string]any) (
 	}
 	entities, _ := candidate["entities"].(map[string]any)
 	rows, _ := entities["work_packets"].([]any)
-	changed := false
+	changed := preserveReviewResultReceptions(previous, candidate)
 	for i, raw := range rows {
 		row, ok := raw.(map[string]any)
 		if !ok || !packetBodySupportedTemplate(row["template_id"]) || oldIDs[stringValue(row["packet_id"])] {
@@ -262,75 +261,124 @@ func packetBodyMaintenanceRows(ctx context.Context, state map[string]any) ([]rev
 	return selected, nil
 }
 
-// ClassifyPacketBodyStoragePathsContext recognizes exact immutable framework
-// storage objects, including publication interrupted before a Runtime ref.
-// Completed objects prove storage format and bytes only, never issuance/reception.
-// Exact publisher temporary names identify incomplete framework staging only.
-// Unknown neighboring files remain ordinary drift candidates.
+// ClassifyPacketBodyStoragePathsContext recognizes only paths named by the
+// existing Runtime, a coherent pending commit, or an indexed checkpoint. A
+// path, filename or parseable body alone cannot establish issuance or confer
+// authority to delete an unregistered file. Unknown paths are left untouched.
 func ClassifyPacketBodyStoragePathsContext(ctx context.Context, root string, paths []string) ([]string, error) {
-	ctx = WithPacketBodyRoot(ctx, root)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	wanted := map[string]bool{}
+	needCurrent, needCheckpoint := false, false
+	for _, path := range paths {
+		if packetbody.IsBodyPath(path) {
+			wanted[path], needCurrent = true, true
+		} else if strings.HasPrefix(path, ".claude/runtime-checkpoints/") && strings.Contains(path, "/packet-bodies/") {
+			wanted[path], needCheckpoint = true, true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+	referenced := map[string]bool{}
+	if needCurrent {
+		if state := readPacketClassificationState(root, ".claude/loop-state.json", ""); state != nil {
+			collectPacketClassificationPaths(state, "", wanted, referenced)
+		}
+		// A pending commit becomes a durable original Writer fact only after
+		// the marker is complete and its state/event coordinates agree.
+		if state := readCoherentPacketPendingState(root); state != nil {
+			collectPacketClassificationPaths(state, "", wanted, referenced)
+		}
+	}
+	if needCheckpoint {
+		if index, err := readCheckpointIndex(root); err == nil {
+			for _, manifest := range index.Manifests {
+				dir := strings.TrimSuffix(manifest, "/manifest.json")
+				interested := false
+				for path := range wanted {
+					if strings.HasPrefix(path, dir+"/packet-bodies/") {
+						interested = true
+						break
+					}
+				}
+				if !interested {
+					continue
+				}
+				data, err := workpacket.ReadFile(root, manifest, 4096)
+				var record map[string]any
+				if err != nil || json.Unmarshal(data, &record) != nil || record["schema_version"] != "1.0.0" || stringValue(record["state_path"]) != dir+"/state.json" {
+					continue
+				}
+				if state := readPacketClassificationState(root, stringValue(record["state_path"]), ""); state != nil {
+					collectPacketClassificationPaths(state, dir, wanted, referenced)
+				}
+			}
+		}
+	}
 	var controls []string
 	for _, path := range paths {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if packetBodyPublicationTemporary(path) {
-			if err := checkPacketBodyPublicationTemporary(root, path); err != nil {
-				return nil, fmt.Errorf("framework packet publication staging %s: %w", path, err)
-			}
+		if referenced[path] {
 			controls = append(controls, path)
-			continue
 		}
-		digest, valid := packetBodyStorageDigest(path)
-		if !valid {
-			continue
-		}
-		data, err := workpacket.ReadFile(root, path, packetbody.Limit)
-		if err != nil {
-			return nil, fmt.Errorf("framework packet storage %s: %w", path, err)
-		}
-		if packetbody.Digest(data) != digest {
-			return nil, fmt.Errorf("framework packet storage %s differs from its content identity", path)
-		}
-		if err := workpacket.ValidateUniqueJSON(data); err != nil {
-			return nil, err
-		}
-		var row map[string]any
-		if err := json.Unmarshal(data, &row); err != nil {
-			return nil, err
-		}
-		if _, present := row["storage_format"]; present {
-			return nil, fmt.Errorf("framework packet storage %s is not a complete original packet", path)
-		}
-		if _, err := canonicalPacketBodyRowContext(ctx, row); err != nil {
-			return nil, fmt.Errorf("framework packet storage %s: %w", path, err)
-		}
-		controls = append(controls, path)
 	}
 	return controls, ctx.Err()
 }
 
-func packetBodyStorageDigest(path string) (string, bool) {
-	name := ""
-	if strings.HasPrefix(path, packetbody.Directory) {
-		name = strings.TrimPrefix(path, packetbody.Directory)
-	} else {
-		parts := strings.Split(path, "/")
-		if len(parts) != 5 || parts[0] != ".claude" || parts[1] != "runtime-checkpoints" || !isCheckpointID(parts[2]) || parts[3] != "packet-bodies" {
-			return "", false
+func readPacketClassificationState(root, path, field string) map[string]any {
+	data, err := workpacket.ReadFile(root, path, checkpointStateLimit)
+	if err != nil {
+		return nil
+	}
+	var state map[string]any
+	if json.Unmarshal(data, &state) != nil {
+		return nil
+	}
+	if field != "" {
+		state, _ = state[field].(map[string]any)
+	}
+	return state
+}
+
+func readCoherentPacketPendingState(root string) map[string]any {
+	data, err := workpacket.ReadFile(root, ".claude/loop-state.json.commit-pending.json", checkpointStateLimit)
+	if err != nil {
+		return nil
+	}
+	var raw map[string]any
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	state, _ := raw["state"].(map[string]any)
+	event, _ := raw["journal_event"].(map[string]any)
+	marker := commitPending{State: state, JournalEvent: event, RequestID: stringValue(raw["request_id"]), IdempotencyKey: stringValue(raw["idempotency_key"]), RetainLastTransition: raw["retain_last_transition"] == true}
+	if raw["schema_version"] != "1.0.0" || validatePendingCommitCoherence(marker) != nil {
+		return nil
+	}
+	return state
+}
+
+func collectPacketClassificationPaths(state map[string]any, checkpointDir string, wanted, result map[string]bool) {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["work_packets"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		ref, external, err := packetbody.ReferenceFromIndex(row)
+		if err != nil || !external || stringValue(row["packet_id"]) == "" || !packetBodySupportedTemplate(row["template_id"]) {
+			continue
 		}
-		name = parts[4]
-	}
-	if len(name) != 69 || !strings.HasSuffix(name, ".json") {
-		return "", false
-	}
-	digest := strings.TrimSuffix(name, ".json")
-	for _, c := range digest {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return "", false
+		path := ref.Path
+		if checkpointDir != "" {
+			path = checkpointBodyPath(checkpointDir, ref)
+		}
+		if wanted[path] {
+			result[path] = true
 		}
 	}
-	return digest, true
 }
 
 func validatePacketBodyIndexRow(row map[string]any) error {
@@ -355,49 +403,6 @@ func validatePacketBodyIndexRow(row map[string]any) error {
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes(asset, data); err != nil {
 		return fmt.Errorf("packet body index %s: %w", stringValue(row["packet_id"]), err)
-	}
-	return nil
-}
-
-// This is exactly PublishBounded's private, random temporary filename. It is
-// recognized only directly inside the dedicated packet-body directory; a
-// neighboring suffix, unknown temporary name, or nested file has no exemption.
-func packetBodyPublicationTemporary(path string) bool {
-	if !strings.HasPrefix(path, packetbody.Directory) {
-		return false
-	}
-	name := strings.TrimPrefix(path, packetbody.Directory)
-	if len(name) != len(".packet-")+32+len(".tmp") || !strings.HasPrefix(name, ".packet-") || !strings.HasSuffix(name, ".tmp") {
-		return false
-	}
-	for _, c := range name[len(".packet-") : len(name)-len(".tmp")] {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-func checkPacketBodyPublicationTemporary(root, path string) error {
-	parent, name, err := workpacket.OpenParent(root, path, false)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer parent.Close()
-	info, err := parent.Lstat(name)
-	// The publisher may have linked the complete body and removed its temp
-	// after Git listed it. A vanished staging path cannot be product drift.
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return errors.New("packet publication staging is not a regular file")
 	}
 	return nil
 }

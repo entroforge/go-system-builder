@@ -143,13 +143,9 @@ func AdvanceTask(
 func applyTaskEventGuards(task map[string]any, request TaskEventRequest, resolvedTo string) error {
 	switch request.Event {
 	case "internal_review_passed":
-		// task_manifest_complete: the task must have a non-empty path and
-		// sha256 (manifest = the locked task spec).
+		// task_manifest_complete needs the actual TASK source path.
 		if path, _ := task["path"].(string); path == "" {
 			return fmt.Errorf("guard task_manifest_complete failed: task path is empty")
-		}
-		if sha, _ := task["sha256"].(string); sha == "" {
-			return fmt.Errorf("guard task_manifest_complete failed: task sha256 is empty")
 		}
 	case "document_pass_lock":
 		// joint_document_pass: caller supplies evidence that document_pass

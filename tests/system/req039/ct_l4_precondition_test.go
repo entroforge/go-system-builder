@@ -20,7 +20,7 @@ func TestCT03901_DesignGateCommitsPTRPLAN01System(t *testing.T) {
 	req039fixtures.SeedPlanningDesignComplete(t, root, state)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-01-sys", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-01-sys", "Edit", map[string]any{
 		"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
@@ -56,7 +56,7 @@ func TestCT03911_DualPassDocumentVerificationSystem(t *testing.T) {
 	req039fixtures.SeedDocumentPassS5(t, root, state, "dv-spec-1", "dv-task-2")
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-11-sys", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-11-sys", "Edit", map[string]any{
 		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
@@ -89,7 +89,7 @@ func TestCT03912_BuilderCompleteCommitsTR006System(t *testing.T) {
 	req039fixtures.SeedBuilderBatchReady(t, root, state)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-12-sys", "Bash", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-12-sys", "Bash", map[string]any{
 		"command": "go test ./...",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
@@ -116,7 +116,7 @@ func TestCT03924_SameAgentDualDVBlocksTR003System(t *testing.T) {
 	req039fixtures.SeedDualDVSameAgent(t, root, state)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-24-sys", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-24-sys", "Edit", map[string]any{
 		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)

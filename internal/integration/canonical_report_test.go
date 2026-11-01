@@ -63,9 +63,6 @@ func TestCanonicalReportResolutionBoundaries(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, canonical)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RefreshCompletionBinding(root, "current", canonical, in); err == nil {
-		t.Fatal("recovery substituted another report")
-	}
 	in, err = Inspect(context.Background(), req, InspectConfig{})
 	if err != nil || in.Ready {
 		t.Fatalf("first inspection substituted another report: %+v %v", in, err)

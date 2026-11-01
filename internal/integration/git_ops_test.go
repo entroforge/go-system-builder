@@ -71,6 +71,12 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 			return "", nil
 		}
 	case "status":
+		if len(args) >= 2 && args[1] == "--porcelain=v1" {
+			if f.workdirClean[root] {
+				return "", nil
+			}
+			return " M dirty-file\n", nil
+		}
 		if len(args) >= 2 && args[1] == "--porcelain" {
 			if f.workdirClean[root] {
 				return "", nil
@@ -139,11 +145,27 @@ func (f *fakeRunner) run(ctx context.Context, stdin string, root string, args ..
 			}
 		}
 	case "diff":
+		if len(args) == 6 && args[1] == "--name-only" && args[2] == "-z" && args[3] == "--diff-filter=ACMRT" && args[5] == "--" {
+			branch := strings.TrimPrefix(args[4], "HEAD...")
+			base := f.branchHeads[f.workdirBranches[root]]
+			return f.diffNameOnly(base, f.branchHeads[branch]), nil
+		}
 		if len(args) == 5 && args[1] == "--no-renames" && args[2] == "--name-only" && args[3] == "-z" {
 			rng := args[4]
-			parts := strings.SplitN(rng, "..", 2)
+			separator := ".."
+			if strings.Contains(rng, "...") {
+				separator = "..."
+			}
+			parts := strings.SplitN(rng, separator, 2)
 			if len(parts) == 2 {
-				return f.diffNameOnly(parts[0], parts[1]), nil
+				base, head := parts[0], parts[1]
+				if value, ok := f.branchHeads[base]; ok {
+					base = value
+				}
+				if value, ok := f.branchHeads[head]; ok {
+					head = value
+				}
+				return f.diffNameOnly(base, head), nil
 			}
 		}
 	case "merge-tree":

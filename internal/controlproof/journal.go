@@ -7,8 +7,6 @@ package controlproof
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -250,9 +248,4 @@ func stringValue(value any) string {
 		return value
 	}
 	return ""
-}
-
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

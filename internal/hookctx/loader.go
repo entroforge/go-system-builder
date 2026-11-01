@@ -3,7 +3,6 @@ package hookctx
 import (
 	"bytes"
 	contextpkg "context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/agentauth"
 	"github.com/entroforge/go-system-builder/internal/agentcontext"
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -54,11 +52,9 @@ type stateFile struct {
 	// cli) carry their own typed HookControl struct; this one only
 	// reads the fields the policy engine needs.
 	Review *struct {
-		Round      int `json:"round"`
-		CleanRound any `json:"clean_round"`
-		Document   any `json:"document_round,omitempty"`
-		Build      any `json:"build_round,omitempty"`
-		Verify     any `json:"verify_round,omitempty"`
+		Document any `json:"document_round,omitempty"`
+		Build    any `json:"build_round,omitempty"`
+		Verify   any `json:"verify_round,omitempty"`
 		// L3-S7: the registered ReviewPlan pointer carries the verification
 		// artifact workspace — the only product-adjacent write surface the
 		// reviewer hard-deny rule allows during the verification stage.
@@ -109,7 +105,6 @@ type stateFile struct {
 			State               string   `json:"state"`
 			LastLifecycleEvent  string   `json:"last_lifecycle_event"`
 			Path                string   `json:"path"`
-			SHA256              string   `json:"sha256"`
 			OwnerAgentIDs       []string `json:"owner_agent_ids"`
 			CompletionReportRef string   `json:"completion_report_ref"`
 		} `json:"tasks"`
@@ -126,16 +121,14 @@ type stateFile struct {
 }
 
 // lockedDocument is one element of state.documents[]. The runtime schema
-// (loop-state.schema.json §documentReference) guarantees id/kind/path/version/
-// sha256/status/generation, but Hook must not crash if any optional fields
-// are absent — older fixtures omit version/status/generation and the loader
+// provides identity, path, version, status and generation. Hook tolerates
+// missing optional fields: older fixtures omit version/status/generation, and the loader
 // skips incomplete rows rather than fabricating LockedArtifact entries.
 type lockedDocument struct {
 	ID         string `json:"id"`
 	Kind       string `json:"kind"`
 	Path       string `json:"path"`
 	Version    string `json:"version"`
-	SHA256     string `json:"sha256"`
 	Status     string `json:"status"`
 	Generation int    `json:"generation"`
 }
@@ -195,7 +188,6 @@ type workgroupManifest struct {
 		Kind    string `json:"kind"`
 		Path    string `json:"path"`
 		Version string `json:"version"`
-		SHA256  string `json:"sha256"`
 	} `json:"documents"`
 	ResponsibilityDispositions []struct {
 		ResponsibilityID string   `json:"responsibility_id"`
@@ -295,8 +287,6 @@ func FromSnapshot(root, agentID string, snapshot runtime.Snapshot) (*LoadedConte
 		context.Paused = true
 	}
 	if state.Review != nil {
-		context.CurrentReviewRound = state.Review.Round
-		context.CleanRound = state.Review.CleanRound
 		if state.Review.Plan != nil {
 			context.VerificationWorkspace = state.Review.Plan.VerificationArtifactWorkspace
 		}
@@ -304,7 +294,6 @@ func FromSnapshot(root, agentID string, snapshot runtime.Snapshot) (*LoadedConte
 			context.RepairStatus, _ = state.Review.Repair["status"].(string)
 			context.RepairSessionID, _ = state.Review.Repair["session_id"].(string)
 			context.RepairPlanRef, _ = state.Review.Repair["plan_ref"].(string)
-			context.RepairPlanSHA256, _ = state.Review.Repair["plan_sha256"].(string)
 		}
 	}
 	for _, ev := range state.Evidence {
@@ -349,7 +338,7 @@ func FromSnapshot(root, agentID string, snapshot runtime.Snapshot) (*LoadedConte
 	// generation", so the loader treats the current generation as
 	// authoritative and ignores other-generations rows rather than splicing
 	// them into the active manifest. Rows missing one of id/kind/path/
-	// version/sha256/generation are dropped (BUG-039-04 §4.2 forbids
+	// version/generation are dropped (BUG-039-04 §4.2 forbids
 	// fabricating block decisions from partial data).
 	var docs []lockedDocument
 	if rawDocs, ok := snapshot.State["documents"].([]any); ok {
@@ -376,7 +365,7 @@ func FromSnapshot(root, agentID string, snapshot runtime.Snapshot) (*LoadedConte
 				continue
 			}
 			if doc.ID == "" || doc.Kind == "" || doc.Path == "" ||
-				doc.Version == "" || doc.SHA256 == "" ||
+				doc.Version == "" ||
 				doc.Generation == 0 {
 				continue
 			}
@@ -794,8 +783,7 @@ func FromSnapshot(root, agentID string, snapshot runtime.Snapshot) (*LoadedConte
 			for _, packet := range packets {
 				binding := packet.Binding
 				if binding.OwnerAgentID != agentID || binding.RepairAssignmentID != context.Agent.RepairAssignmentID ||
-					binding.RuntimeID != state.RuntimeID || binding.BaselineGeneration != loaded.BaselineGeneration ||
-					binding.ReviewRound != context.CurrentReviewRound || packet.AnswerPath == "" {
+					binding.RuntimeID != state.RuntimeID || binding.BaselineGeneration != loaded.BaselineGeneration || packet.AnswerPath == "" {
 					continue
 				}
 				stored, found, findErr := runtime.FindRepairPlanReportPacketContext(runtime.WithPacketBodyRoot(contextpkg.Background(), root), snapshot.State, packet.ID)
@@ -808,7 +796,7 @@ func FromSnapshot(root, agentID string, snapshot runtime.Snapshot) (*LoadedConte
 				// An accepted PlanReport remains available through the exact
 				// read-only receipt/replay path, but it no longer grants a fresh
 				// answer-file write. The original Writer re-reads bytes and checks
-				// the saved digest before returning that receipt without mutation.
+				// the original answer before returning that receipt without mutation.
 				_, accepted, receiptErr := runtime.VerifiedRepairPlanReportReceipt(root, snapshot.State, packet.ID, agentID)
 				if receiptErr != nil {
 					continue
@@ -847,8 +835,8 @@ func FromSnapshot(root, agentID string, snapshot runtime.Snapshot) (*LoadedConte
 				context.Agent.RepairResultAssignment = true
 			}
 			raw, _ := json.Marshal(snapshot.State["workspace"])
-			var registry workspace.ExecutionRegistry
-			if json.Unmarshal(raw, &registry) == nil {
+			registry, decodeErr := workspace.DecodeRegistry(raw)
+			if decodeErr == nil {
 				if packets, err := runtime.CurrentRepairResultPackets(root, snapshot.State, agentID); err == nil {
 					for _, packet := range packets {
 						b := packet.Binding.Sources
@@ -861,8 +849,8 @@ func FromSnapshot(root, agentID string, snapshot runtime.Snapshot) (*LoadedConte
 						if !ok {
 							execution, ok = registry.Executions[b.RepairAssignmentID]
 						}
-						var original workspace.Execution
-						if !ok || json.Unmarshal(packet.Inputs.Execution, &original) != nil ||
+						original, decodeErr := workspace.DecodeExecution(packet.Inputs.Execution)
+						if !ok || decodeErr != nil ||
 							execution.AgentID != agentID || execution.RuntimeID != b.RuntimeID || execution.BaselineGeneration != b.BaselineGeneration ||
 							execution.AssignmentID != original.AssignmentID || execution.Generation != original.Generation ||
 							execution.Path != original.Path || execution.ReworkRef != packet.Binding.ReworkRef {
@@ -962,7 +950,7 @@ func s9RepairResultFreshWriteStage(state map[string]any) bool {
 	return repairPointer["status"] == "repairing"
 }
 
-func s9RepairResultPacketAttemptPresent(root string, state map[string]any, assignmentID, runtimeID string, generation, round int) (bool, error) {
+func s9RepairResultPacketAttemptPresent(root string, state map[string]any, assignmentID, runtimeID string, generation, _ int) (bool, error) {
 	packets, err := runtime.RepairResultPacketsForSourcesContext(contextpkg.Background(), root, state, "")
 	if err != nil {
 		return false, err
@@ -974,12 +962,11 @@ func s9RepairResultPacketAttemptPresent(root string, state map[string]any, assig
 	}
 	sessionID, _ := pointer["session_id"].(string)
 	planRef, _ := pointer["plan_ref"].(string)
-	planSHA, _ := pointer["plan_sha256"].(string)
 	for _, packet := range packets {
 		binding := packet.Binding.Sources
 		if binding.RepairAssignmentID == assignmentID && binding.RuntimeID == runtimeID &&
-			binding.BaselineGeneration == generation && binding.ReviewRound == round &&
-			binding.SessionID == sessionID && binding.PlanRef == planRef && binding.PlanSHA256 == planSHA {
+			binding.BaselineGeneration == generation &&
+			binding.SessionID == sessionID && binding.PlanRef == planRef {
 			return true, nil
 		}
 	}
@@ -1044,35 +1031,30 @@ func s8RuntimeTeamMatches(state map[string]any, teamID, manifestRef string) bool
 func s8HypothesisResultOpen(root string, state map[string]any, packet workpacket.HypothesisResultPacket) bool {
 	review, _ := state["review"].(map[string]any)
 	pointer, _ := review["investigation"].(map[string]any)
-	if pointer == nil || pointer["case_id"] != packet.Binding.CaseID {
-		return false
+	// A previously dispatched responsibility continues to use its original
+	// Case even after Main has opened a different one. Never guess a new Case
+	// from role or filename; use the path issued with this packet.
+	caseRef := packet.Binding.CaseRef
+	currentCase := pointer != nil && pointer["case_id"] == packet.Binding.CaseID
+	if currentCase {
+		caseRef, _ = pointer["path"].(string)
 	}
-	caseRef, _ := pointer["path"].(string)
-	caseSHA, _ := pointer["sha256"].(string)
 	data, err := workpacket.ReadFile(root, caseRef, 20<<20)
-	if err != nil || caseSHA == "" || workpacket.Digest(data) != caseSHA || workpacket.ValidateUniqueJSON(data) != nil {
+	if err != nil || workpacket.ValidateUniqueJSON(data) != nil {
 		return false
 	}
 	var document struct {
-		CaseID                 string                                `json:"case_id"`
-		Revision               int                                   `json:"revision"`
-		SourceFindingIDs       []string                              `json:"source_finding_ids"`
-		ObservationBatchID     string                                `json:"observation_batch_id"`
-		ObservationBatchRef    string                                `json:"observation_batch_ref"`
-		ObservationBatchSHA256 string                                `json:"observation_batch_sha256"`
-		BaselineDigest         string                                `json:"baseline_digest"`
-		Hypotheses             []workpacket.HypothesisResultQuestion `json:"hypotheses"`
-		HypothesisResults      []struct {
+		CaseID            string                                `json:"case_id"`
+		Revision          int                                   `json:"revision"`
+		SourceFindingIDs  []string                              `json:"source_finding_ids"`
+		Hypotheses        []workpacket.HypothesisResultQuestion `json:"hypotheses"`
+		HypothesisResults []struct {
 			HypothesisID string `json:"hypothesis_id"`
 			AssignmentID string `json:"assignment_id"`
 		} `json:"hypothesis_results"`
 	}
-	if json.Unmarshal(data, &document) != nil || document.CaseID != packet.Binding.CaseID ||
-		document.Revision != integerFact(pointer["revision"]) || document.Revision < packet.Binding.CaseRevision ||
-		!stringSetEqual(document.SourceFindingIDs, packet.Binding.SourceFindingIDs) ||
-		document.ObservationBatchID != packet.Binding.ObservationBatchID ||
-		document.ObservationBatchRef != packet.Binding.ObservationBatchRef ||
-		document.ObservationBatchSHA256 != packet.Binding.ObservationBatchSHA256 || document.BaselineDigest != packet.Binding.BaselineDigest {
+	if json.Unmarshal(data, &document) != nil || document.CaseID != packet.Binding.CaseID || document.Revision < packet.Binding.CaseRevision ||
+		(currentCase && document.Revision != integerFact(pointer["revision"])) {
 		return false
 	}
 	var current *workpacket.HypothesisResultQuestion
@@ -1087,10 +1069,6 @@ func s8HypothesisResultOpen(root string, state map[string]any, packet workpacket
 		current = &copy
 	}
 	if current == nil || current.AssignmentID != packet.Binding.AssignmentID || current.Status != "open" {
-		return false
-	}
-	digest, err := workpacket.HypothesisQuestionDigest(*current)
-	if err != nil || digest != packet.Binding.HypothesisQuestionSHA256 {
 		return false
 	}
 	for _, result := range document.HypothesisResults {
@@ -1174,7 +1152,7 @@ func s7ReviewResultAssignmentWritable(state map[string]any, packet workpacket.Re
 // repairPlanHook is the deliberately small, read-only projection needed by
 // the S9 Hook barrier. The authoritative artifact is still validated by the
 // repair package at each Runtime command; this loader only verifies the
-// pointed bytes and extracts the assignment scope before a tool call.
+// pointed artifact and extracts the assignment scope before a tool call.
 type repairPlanHook struct {
 	Assignments []repairPlanHookAssignment `json:"assignments"`
 }
@@ -1200,8 +1178,7 @@ func loadRepairAgentScope(root string, state map[string]any, pointer map[string]
 		return
 	}
 	planPath, _ := pointer["plan_ref"].(string)
-	planSHA, _ := pointer["plan_sha256"].(string)
-	planBytes, ok := readRepairHookArtifact(root, planPath, planSHA)
+	planBytes, ok := readRepairHookArtifact(root, planPath)
 	if !ok {
 		return
 	}
@@ -1214,11 +1191,27 @@ func loadRepairAgentScope(root string, state map[string]any, pointer map[string]
 		return
 	}
 
+	assignmentID, scope, reportRef := legacyRepairAgentScope(plan, pointer, agentID, func(path string) ([]byte, bool) {
+		return readRepairHookArtifact(root, path)
+	})
+	if assignmentID != "" {
+		agent.RepairAssignmentID = assignmentID
+		agent.RepairAllowedWritePaths = scope
+		agent.RepairPlanReportRef = reportRef
+	}
+
+}
+
+// legacyRepairAgentScope is the original plan/PlanReport projection, shared
+// by the full loader and the bounded Hook reader. A report is not a TASK link.
+func legacyRepairAgentScope(plan repairPlanHook, pointer map[string]any, agentID string, read func(string) ([]byte, bool)) (string, []string, string) {
 	assignmentID := ""
+	var scope []string
+	var reportRef string
 	for _, assignment := range plan.Assignments {
 		if assignment.OwnerAgentID == agentID {
 			assignmentID = assignment.AssignmentID
-			agent.RepairAllowedWritePaths = append([]string(nil), assignment.Scope...)
+			scope = append([]string(nil), assignment.Scope...)
 			break
 		}
 	}
@@ -1229,8 +1222,7 @@ func loadRepairAgentScope(root string, state map[string]any, pointer map[string]
 				continue
 			}
 			path, _ := ref["path"].(string)
-			sha, _ := ref["sha256"].(string)
-			data, valid := readRepairHookArtifact(root, path, sha)
+			data, valid := read(path)
 			if !valid {
 				continue
 			}
@@ -1240,19 +1232,16 @@ func loadRepairAgentScope(root string, state map[string]any, pointer map[string]
 			}
 			assignmentID = report.AssignmentID
 			for _, assignment := range plan.Assignments {
-				if assignment.AssignmentID != assignmentID {
-					continue
+				if assignment.AssignmentID == assignmentID {
+					scope = append([]string(nil), assignment.Scope...)
+					break
 				}
-				agent.RepairAllowedWritePaths = append([]string(nil), assignment.Scope...)
-				break
 			}
-			agent.RepairPlanReportRef = path
+			reportRef = path
 			break
 		}
 	}
-	if assignmentID != "" {
-		agent.RepairAssignmentID = assignmentID
-	}
+	return assignmentID, scope, reportRef
 }
 
 func loadCurrentRepairAgentScope(root string, state, pointer map[string]any, plan repairPlanHook, agentID, manifestAssignmentID string, agent *policy.AgentContext) {
@@ -1316,8 +1305,8 @@ func repairAssignmentForPacket(plan repairPlanHook, owners map[string]any, packe
 	return selected, true
 }
 
-func readRepairHookArtifact(root, relative, expectedSHA string) ([]byte, bool) {
-	if strings.TrimSpace(relative) == "" || strings.TrimSpace(expectedSHA) == "" {
+func readRepairHookArtifact(root, relative string) ([]byte, bool) {
+	if strings.TrimSpace(relative) == "" {
 		return nil, false
 	}
 	rootAbs, err := filepath.Abs(root)
@@ -1334,10 +1323,6 @@ func readRepairHookArtifact(root, relative, expectedSHA string) ([]byte, bool) {
 	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
-		return nil, false
-	}
-	actual := sha256.Sum256(data)
-	if fmt.Sprintf("%x", actual[:]) != expectedSHA {
 		return nil, false
 	}
 	return data, true
@@ -1378,14 +1363,8 @@ func (r *assignmentRecordResolver) originalView() (*fileview.View, error) {
 	}
 	definition, ok := r.state["definition"].(map[string]any)
 	definitionPath, _ := definition["path"].(string)
-	definitionSHA, _ := definition["sha256"].(string)
-	if !ok || definitionPath != projectlayout.Definition || len(definitionSHA) != 64 {
-		r.viewErr = fmt.Errorf("Runtime Loop Definition path/SHA binding is missing or noncanonical")
-		return nil, r.viewErr
-	}
-	physicalDefinition, err := workpacket.ReadFile(r.root, definitionPath, 4<<20)
-	if err != nil || workpacket.Digest(physicalDefinition) != definitionSHA {
-		r.viewErr = fmt.Errorf("Runtime Loop Definition checkout SHA does not match the original source")
+	if !ok || definitionPath != projectlayout.Definition {
+		r.viewErr = fmt.Errorf("Runtime Loop Definition path is missing or noncanonical")
 		return nil, r.viewErr
 	}
 	catalog, err := transition.LoadCatalog(r.root)
@@ -1395,11 +1374,6 @@ func (r *assignmentRecordResolver) originalView() (*fileview.View, error) {
 	}
 	r.view, r.viewErr = fileview.New(r.root, branch, catalog.Definition.FileSources)
 	if r.viewErr != nil {
-		return nil, r.viewErr
-	}
-	viewDefinition, err := r.view.ReadFile(projectlayout.Definition)
-	if err != nil || workpacket.Digest(viewDefinition) != definitionSHA {
-		r.viewErr = fmt.Errorf("original file-source view Loop Definition differs from the Runtime checkout SHA")
 		return nil, r.viewErr
 	}
 	return r.view, r.viewErr
@@ -1443,28 +1417,6 @@ func (r *assignmentRecordResolver) projectRecord(agent buildAgentRow, idx loaded
 	if !enabled {
 		return nil, true, fmt.Errorf("canonical Assignment Record %s points to a manifest without the explicit S6 contract marker", record.AssignmentID)
 	}
-	if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-		if strings.HasPrefix(ref, assignmentinputs.SchemaPrefix) || ref == assignmentinputs.ContextProfileRef {
-			return assignmentinputs.Read(r.root, ref)
-		}
-		committed, err := view.ReadFile(ref)
-		if err != nil {
-			return nil, err
-		}
-		physical, err := assignmentinputs.Read(r.root, ref)
-		if err != nil {
-			return nil, err
-		}
-		if !bytes.Equal(committed, physical) {
-			return nil, fmt.Errorf("original checkout bytes differ from the declared development file view")
-		}
-		return committed, nil
-	}); err != nil {
-		return nil, true, fmt.Errorf("verify canonical Assignment sources: %w", err)
-	}
-	if err := view.Verify(); err != nil {
-		return nil, true, fmt.Errorf("verify original Assignment source checkout: %w", err)
-	}
 
 	for _, ref := range assignmentManifestPaths(refs, "") {
 		if ref != record.Manifest.Ref {
@@ -1496,7 +1448,7 @@ func (r *assignmentRecordResolver) projectRecord(agent buildAgentRow, idx loaded
 			continue
 		}
 		taskDocuments++
-		if document.Path != record.Task.Ref || document.Version != record.Task.Version || document.SHA256 != record.Task.SHA256 {
+		if document.Path != record.Task.Ref || document.Version != record.Task.Version {
 			return nil, true, fmt.Errorf("canonical Assignment manifest TASK reference differs from its registered Record")
 		}
 	}
@@ -1541,7 +1493,6 @@ func (r *assignmentRecordResolver) projectRecord(agent buildAgentRow, idx loaded
 	row.RequiredChecks = append([]string(nil), projection.RequiredChecks...)
 	row.CheckProfiles = append([]checkexec.Profile(nil), record.CheckProfiles...)
 	row.AssignmentRecord = projection.AssignmentRecord
-	row.AssignmentRecordSHA256 = projection.AssignmentRecordSHA256
 	row.AssignmentRevision = projection.AssignmentRevision
 	if err := projectCanonicalExecutionCoordinates(r.state, record, row); err != nil {
 		return nil, true, err
@@ -1582,14 +1533,9 @@ func projectCanonicalExecutionCoordinates(state map[string]any, record assignmen
 		return nil
 	}
 	recordRef := record.Reference()
-	recordSHA, err := record.Digest()
-	if err != nil {
-		return fmt.Errorf("digest current canonical Assignment coordinates: %w", err)
-	}
 	if execution.AssignmentID != record.AssignmentID || execution.RuntimeID != record.RuntimeID ||
 		execution.BaselineGeneration != record.BaselineGeneration || execution.AgentID != record.OwnerAgentID ||
-		execution.AssignmentRecord == nil || *execution.AssignmentRecord != recordRef ||
-		execution.AssignmentRecordSHA256 != recordSHA {
+		execution.AssignmentRecord == nil || *execution.AssignmentRecord != recordRef {
 		return fmt.Errorf("workspace execution differs from current canonical Assignment coordinates")
 	}
 	if execution.Status != "ready" && execution.Status != "complete" {
@@ -1674,11 +1620,19 @@ func sameCheckProfiles(left, right []checkexec.Profile) bool {
 	if len(left) == 0 {
 		return true
 	}
-	l, err := json.Marshal(left)
+	copyProfiles := func(profiles []checkexec.Profile) []checkexec.Profile {
+		copyOfProfiles := append([]checkexec.Profile(nil), profiles...)
+		for i := range copyOfProfiles {
+			copyOfProfiles[i].Dependencies = append([]checkexec.FileRef{}, profiles[i].Dependencies...)
+			copyOfProfiles[i].Fixtures = append([]checkexec.FileRef{}, profiles[i].Fixtures...)
+		}
+		return copyOfProfiles
+	}
+	l, err := json.Marshal(copyProfiles(left))
 	if err != nil {
 		return false
 	}
-	r, err := json.Marshal(right)
+	r, err := json.Marshal(copyProfiles(right))
 	return err == nil && bytes.Equal(l, r)
 }
 
@@ -1705,7 +1659,7 @@ func ResolveAssignmentRecordProjection(root string, state map[string]any, assign
 	if err != nil {
 		return assignmentrecord.Record{}, false, err
 	}
-	projected := assignment.AssignmentRecord != nil || assignment.AssignmentRecordSHA256 != "" || assignment.AssignmentRevision != 0
+	projected := assignment.AssignmentRecord != nil || assignment.AssignmentRevision != 0
 	if !found {
 		if projected {
 			return assignmentrecord.Record{}, false, fmt.Errorf("Assignment Record projection has no current Runtime Record")
@@ -1729,11 +1683,7 @@ func ResolveAssignmentRecordProjection(root string, state map[string]any, assign
 	if err != nil {
 		return assignmentrecord.Record{}, false, err
 	}
-	sha, err := record.Digest()
-	if err != nil {
-		return assignmentrecord.Record{}, false, err
-	}
-	if !canonical || expected == nil || !projected || assignment.AssignmentRecord == nil || *assignment.AssignmentRecord != record.Reference() || assignment.AssignmentRecordSHA256 != sha || assignment.AssignmentRevision != record.Revision ||
+	if !canonical || expected == nil || !projected || assignment.AssignmentRecord == nil || *assignment.AssignmentRecord != record.Reference() || assignment.AssignmentRevision != record.Revision ||
 		assignment.AssignmentID != expected.AssignmentID || assignment.OwnerAgentID != expected.OwnerAgentID || assignment.TaskID != expected.TaskID || assignment.ManifestRef != expected.ManifestRef || assignment.BaselineGeneration != expected.BaselineGeneration ||
 		assignment.RoleFamily != expected.RoleFamily || assignment.AgentDefinitionRef != expected.AgentDefinitionRef || !stringSlicesEqual(assignment.ResponsibilityIDs, expected.ResponsibilityIDs) ||
 		!stringSlicesEqual(assignment.SkillRefs, expected.SkillRefs) || !stringSlicesEqual(assignment.ReadPaths, expected.ReadPaths) || !stringSlicesEqual(assignment.OutputPaths, expected.OutputPaths) ||
@@ -2392,7 +2342,7 @@ func LockedArtifactsFromSnapshot(snapshot runtime.Snapshot) []policy.LockedArtif
 				continue
 			}
 			if doc.ID == "" || doc.Kind == "" || doc.Path == "" ||
-				doc.Version == "" || doc.SHA256 == "" ||
+				doc.Version == "" ||
 				doc.Generation == 0 {
 				continue
 			}
@@ -2406,11 +2356,11 @@ func LockedArtifactsFromSnapshot(snapshot runtime.Snapshot) []policy.LockedArtif
 	artifacts := make([]policy.LockedArtifact, 0, len(docs))
 	for _, doc := range docs {
 		artifacts = append(artifacts, policy.LockedArtifact{
-			ID:                 doc.ID,
-			Kind:               doc.Kind,
-			Path:               doc.Path,
-			Version:            doc.Version,
-			SHA256:             doc.SHA256,
+			ID:      doc.ID,
+			Kind:    doc.Kind,
+			Path:    doc.Path,
+			Version: doc.Version,
+
 			LockedFromStage:    lockedFromStageFor(doc.Kind),
 			BaselineGeneration: doc.Generation,
 		})

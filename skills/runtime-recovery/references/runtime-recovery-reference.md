@@ -20,8 +20,8 @@ pair.
 Use exactly one source mode; never silently merge a failed high-fidelity source
 with a lower-fidelity source:
 
-1. Pending operation completion: a validated commit, fingerprint, rollover,
-   or recovery marker.
+1. Pending operation completion using its actual commit, rollover or recovery
+   marker; historical fingerprint markers retain their original paths.
 2. Exact snapshot replay: only when a trusted full snapshot and gap-free,
    replayable journal tail are available.
 3. Artifact reconstruction: explicit REQ plus verified documents, evidence,
@@ -36,9 +36,9 @@ extension; do not claim it exists merely because a journal is present.
 
 | Concern | Code | Contract |
 |:---|:---|:---|
-| Inventory / REQ validation / imports | `internal/recovery` | Explicit REQ, path containment, SHA-256, import allowlist, source conflicts |
+| Inventory / REQ validation / imports | `internal/recovery` | Explicit REQ, path containment, import allowlist, source conflicts |
 | Replay | `internal/controller/replay.go` | Formal candidates/gates only; stop on repeat, no progress, path escape, conflict, or unknown gate |
-| Durable replacement | `internal/runtime/recovery.go` | Quarantine, pending marker, candidate hashes, atomic pair replacement, manifest, idempotency |
+| Durable replacement | `internal/runtime/recovery.go` | Quarantine, pending marker, atomic pair replacement, manifest, idempotency |
 | Ordinary Runtime writes | `internal/runtime/store.go` | `NewWriter` plus `semantic.RuntimeCandidateValidator`; read-only `NewStore` must not repair |
 | CLI error contract | `internal/cli/recover_command.go` | Stable `LOOP_*` recovery error classes using `errors.Is/As` |
 
@@ -57,14 +57,13 @@ extension; do not claim it exists merely because a journal is present.
 
 ## Evidence and state rules
 
-- Evidence import must pass schema, digest, runtime/REQ/generation/round,
-  producer, conclusion, and subject-reference checks.
+- Evidence import uses its actual original responsibility, producer, conclusion
+  and available subject references; a historical digest is not a qualification.
 - Artifact existence proves existence only; it does not prove that a gate
   passed.
 - Document reconstruction does not revive a platform Agent or launch lease.
   Original-pair restoration preserves its recorded professional facts; Main
   checks the actual native context before choosing resume or a new dispatch.
-  Only existing frozen executions use their original recovery contract.
 - Recovery creates a new Runtime epoch and explicit lineage; it does not claim
   byte-identical continuity with the damaged projection.
 - A later artifact cannot skip an earlier failed gate.
@@ -77,7 +76,7 @@ At minimum cover:
 
 - missing, malformed, BOM, schema-invalid, and semantically-invalid state;
 - stale or malformed journal and state/journal mismatch;
-- pending commit/fingerprint/rollover/recovery marker completion;
+- pending commit/rollover/recovery marker completion and historical markers;
 - REQ invalid, path escape, input drift, source conflict, unknown gate, and
   repeated/no-progress replay;
 - failure injection before quarantine, marker, state replacement, journal

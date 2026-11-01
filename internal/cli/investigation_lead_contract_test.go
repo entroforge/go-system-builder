@@ -10,9 +10,6 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/investigation"
 	"github.com/entroforge/go-system-builder/internal/policy"
-	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/semantic"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // All authored repair/approval content below is mechanism fixture input,
@@ -77,38 +74,24 @@ func TestS8LeadContractMatchesRegisteredDecisionThenOriginalCASAndReplay(t *test
 	s8LeadContractTestSave(t, root, path)
 	current := investigationLeadTestSnapshot(t, root)
 	_, document, _, _ := investigationLeadSource(root, current.State)
-	finalPath, finalBytes, _ := investigationLeadContractProjection(root, path, document)
-	var final map[string]any
-	_ = json.Unmarshal(finalBytes, &final)
-	register := func(id, hash string) {
-		current = investigationLeadTestSnapshot(t, root)
-		rel := ".claude/decisions/" + id + ".json"
-		if err := os.MkdirAll(filepath.Join(root, ".claude/decisions"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		writeRepairLeadJSON(t, filepath.Join(root, rel), map[string]any{"decision": "approve_contract", "decision_id": id, "runtime_id": current.State["runtime_id"], "case_id": document["case_id"], "contract_id": final["repair_contract_id"], "approval_hash": hash})
-		_, err := runtime.RecordEvidence(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), runtime.EvidenceRequest{ExpectedRevision: current.Revision, ID: id, Kind: "human_decision", Path: rel, ProducedBy: []string{"fixture-human"}, ScopeRefs: []string{"s8_contract_approval:" + stringValue(current.State["runtime_id"])}, Validator: semantic.RuntimeCandidateValidator{}})
-		if err != nil {
-			t.Fatal(err)
-		}
+	finalPath, finalBytes, err := investigationLeadContractProjection(root, path, document)
+	if err != nil {
+		t.Fatal(err)
 	}
-	register("ev-wrong-draft", strings.Repeat("0", 64))
-	current = investigationLeadTestSnapshot(t, root)
-	stageInvestigationLeadContractContext(root, policy.Input{Event: "PreToolUse"}, current)
-	if investigationLeadTestSnapshot(t, root).Revision != current.Revision {
-		t.Fatal("unmatched artifact approved a different draft")
+	decisions := investigationLeadContractDecisionPaths(root, current.State)
+	if len(decisions) != 1 {
+		t.Fatalf("original human decision application: %v", decisions)
 	}
-	register("ev-exact-draft", workpacket.Digest(finalBytes))
-	current = investigationLeadTestSnapshot(t, root)
-	context := stageInvestigationLeadContractContext(root, policy.Input{Event: "PreToolUse"}, current)
+	before := current.Revision
+	s8DecisionNormalHook(t, root, decisions[0])
+	if investigationLeadTestSnapshot(t, root).Revision != before {
+		t.Fatal("empty application invented an approval")
+	}
+	writeRepairLeadJSON(t, decisions[0], map[string]any{"decision": "approve_contract", "reason": "Synthetic fixture human approves the presented Contract."})
+	feedback := s8DecisionNormalHook(t, root, decisions[0])
 	approved := investigationLeadTestSnapshot(t, root)
-	if stringValue(mapFieldCLI(approved.State, "lifecycle")["phase"]) != "planning" || !strings.Contains(context, "Original approval recorded") {
-		t.Fatalf("matching genuine-fixture artifact did not reach original S9 entry: %s", context)
-	}
-	for _, staleInstruction := range []string{"Current approval responsibility", "Current designated Driver reviewer", "Assertion IDs are positional", "Fill violated_invariant"} {
-		if strings.Contains(context, staleInstruction) {
-			t.Fatalf("approved S9 handoff repeated finished S8 work: %s", context)
-		}
+	if stringValue(mapFieldCLI(approved.State, "lifecycle")["phase"]) != "planning" || !strings.Contains(feedback, "approval recorded") {
+		t.Fatalf("original human decision did not reach S9: %s", feedback)
 	}
 	for _, name := range []string{"builder-dispatch.json", "independent-verifier-dispatch.json"} {
 		path, err := repairLeadQuestionnairePath(root, approved.State, name)
@@ -117,17 +100,11 @@ func TestS8LeadContractMatchesRegisteredDecisionThenOriginalCASAndReplay(t *test
 		}
 	}
 	if data, _ := os.ReadFile(finalPath); !bytes.Equal(data, finalBytes) {
-		t.Fatal("approval changed reviewed draft bytes")
+		t.Fatal("approval changed the presented professional draft")
 	}
-	feedback := s8LeadContractTestSave(t, root, path)
-	if !strings.Contains(feedback, "already recorded") || investigationLeadTestSnapshot(t, root).Revision != approved.Revision {
-		t.Fatalf("approved replay was not read-only: %s", feedback)
-	}
-	changed := s8LeadContractTestAnswer()
-	changed.ArchitectureIntent = "changed after approval"
-	writeRepairLeadJSON(t, path, changed)
-	if feedback := s8LeadContractTestSave(t, root, path); !strings.Contains(feedback, "conflicts") {
-		t.Fatalf("approved answer edit escaped conflict: %s", feedback)
+	replay := s8DecisionNormalHook(t, root, decisions[0])
+	if !strings.Contains(replay, "already recorded") || investigationLeadTestSnapshot(t, root).Revision != approved.Revision {
+		t.Fatalf("original decision replay was not read-only: %s", replay)
 	}
 }
 

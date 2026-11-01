@@ -14,13 +14,14 @@ func TestBatchScopeRepairCASAndJournal(t *testing.T) {
 	root := fixtures.FreshRoot(t)
 	state := fixtures.BaseState(t, root, "building", "", 7)
 	state["review"] = map[string]any{"round": 0, "clean_round": nil}
+	state["bound_req"].(map[string]any)["sha256"] = "obsolete-and-irrelevant"
 	docs := []any{}
 	for _, pair := range [][2]string{{"TASK-1", "REQ-038"}, {"TASK-2", "REQ-039"}} {
 		rel := "docs/dev/tasks/" + pair[0] + ".md"
 		body := []byte("> Status: complete\n> Source REQ refs: " + pair[1] + "\n")
 		os.MkdirAll(filepath.Dir(filepath.Join(root, rel)), 0755)
 		os.WriteFile(filepath.Join(root, rel), body, 0644)
-		docs = append(docs, map[string]any{"id": pair[0], "kind": "task", "path": rel, "sha256": fixtures.Sha256Hex(body), "status": "complete", "version": "v1", "generation": 1})
+		docs = append(docs, map[string]any{"id": pair[0], "kind": "task", "path": rel, "sha256": "old-and-irrelevant", "status": "complete", "version": "v1", "generation": 1})
 	}
 	state["documents"] = docs
 	fixtures.WriteState(t, root, state)
@@ -35,6 +36,9 @@ func TestBatchScopeRepairCASAndJournal(t *testing.T) {
 		t.Fatal(errout.String())
 	}
 	plan := append([]byte(nil), out.Bytes()...)
+	if bytes.Contains(plan, []byte("sha256")) || bytes.Contains(plan, []byte("file_hashes")) {
+		t.Fatalf("new repair preview registered machine digests: %s", plan)
+	}
 	after, _ := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
 	if !bytes.Equal(before, after) {
 		t.Fatal("preview mutated Runtime")

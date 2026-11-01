@@ -20,10 +20,6 @@ import (
 
 func TestRegisterS6RevisionUsesOriginalWriterAndCurrentOwnerProjection(t *testing.T) {
 	fixture, statePath, journalPath, previous, _ := registerAgentBeginFixture(t, true)
-	previousSHA, err := previous.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	setRevisionManifest(t, fixture, "team-manifest-s6-registration-r2", "workgroup-s6-registration-r2", "platform-s6-r2", "agent-s6-registration-r2")
 
 	request := Request{
@@ -32,10 +28,9 @@ func TestRegisterS6RevisionUsesOriginalWriterAndCurrentOwnerProjection(t *testin
 		TaskID:           fixture.taskID,
 		TaskPath:         filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
 		Revision: &RevisionRequest{
-			AssignmentID:         previous.AssignmentID,
-			ExpectedRecord:       previous.Reference(),
-			ExpectedRecordSHA256: previousSHA,
-			IntentKey:            "s6-test-revision-2",
+			AssignmentID:   previous.AssignmentID,
+			ExpectedRecord: previous.Reference(),
+			IntentKey:      "s6-test-revision-2",
 		},
 		OccurredAt: time.Date(2026, 10, 14, 13, 0, 0, 0, time.UTC),
 	}
@@ -57,7 +52,7 @@ func TestRegisterS6RevisionUsesOriginalWriterAndCurrentOwnerProjection(t *testin
 	if current.Revision != 2 || current.OwnerAgentID != "agent-s6-registration-r2" || current.RevisionIssuance == nil {
 		t.Fatalf("current Record = revision %d owner %s issuance %+v", current.Revision, current.OwnerAgentID, current.RevisionIssuance)
 	}
-	if current.RevisionIssuance.PreviousRecord != previous.Reference() || current.RevisionIssuance.PreviousRecordSHA256 != previousSHA {
+	if current.RevisionIssuance.PreviousRecord != previous.Reference() {
 		t.Fatalf("revision issuance does not bind prior Record: %+v", current.RevisionIssuance)
 	}
 	entities := issued.State["entities"].(map[string]any)
@@ -131,10 +126,9 @@ func TestRegisterS6RevisionUsesOriginalWriterAndCurrentOwnerProjection(t *testin
 
 	staleRequest := request
 	staleRequest.Revision = &RevisionRequest{
-		AssignmentID:         previous.AssignmentID,
-		ExpectedRecord:       previous.Reference(),
-		ExpectedRecordSHA256: previousSHA,
-		IntentKey:            "s6-test-stale-revision",
+		AssignmentID:   previous.AssignmentID,
+		ExpectedRecord: previous.Reference(),
+		IntentKey:      "s6-test-stale-revision",
 	}
 	if _, err := Register(fixture.root, statePath, journalPath, staleRequest); err == nil || !strings.Contains(err.Error(), "stale Assignment revision") {
 		t.Fatalf("stale expected Record error = %v", err)
@@ -150,17 +144,13 @@ func TestRegisterS6RevisionUsesOriginalWriterAndCurrentOwnerProjection(t *testin
 	}
 	gitRegistration(t, fixture.root, "add", ".claude/agents/backend-builder.md")
 	gitRegistration(t, fixture.root, "commit", "-m", "change current S6 role source")
-	if _, err := Register(fixture.root, statePath, journalPath, request); err == nil || !strings.Contains(err.Error(), "already issued for different input bytes") {
-		t.Fatalf("same intent after current role-source drift error = %v", err)
+	if replay, err := Register(fixture.root, statePath, journalPath, request); err != nil || replay.Revision != issued.Revision {
+		t.Fatalf("same responsibility after role source change: revision=%d error=%v", replay.Revision, err)
 	}
 }
 
 func TestRegisterS6UnifiedRevisionWritesFiveStateWithOriginalEvents(t *testing.T) {
 	fixture, statePath, journalPath, previous, _ := registerAgentBeginConfiguredFixtureVersion(t, true, nil, "1.3.0")
-	previousSHA, err := previous.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	setRevisionManifest(t, fixture, "team-manifest-s6-unified-r2", "workgroup-s6-unified-r2", "platform-s6-unified-r2", "agent-s6-unified-r2")
 	issued, err := Register(fixture.root, statePath, journalPath, Request{
 		ExpectedRevision: 9,
@@ -169,7 +159,7 @@ func TestRegisterS6UnifiedRevisionWritesFiveStateWithOriginalEvents(t *testing.T
 		TaskPath:         filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
 		Revision: &RevisionRequest{
 			AssignmentID: previous.AssignmentID, ExpectedRecord: previous.Reference(),
-			ExpectedRecordSHA256: previousSHA, IntentKey: "s6-unified-revision-2",
+			IntentKey: "s6-unified-revision-2",
 		},
 		OccurredAt: time.Date(2026, 10, 14, 13, 0, 0, 0, time.UTC),
 	})
@@ -203,6 +193,10 @@ func TestRegisterS6UnifiedRevisionWritesFiveStateWithOriginalEvents(t *testing.T
 
 func TestRegisterS6RevisionMovesPriorWorkspaceExecutionIntoHistory(t *testing.T) {
 	fixture, statePath, journalPath, previous, _ := registerAgentBeginFixture(t, true)
+	// This fixture tracks Runtime; commit its setup mutation before testing the
+	// actual clean Main workspace required by Plan.
+	gitRegistration(t, fixture.root, "add", ".claude/loop-state.json")
+	gitRegistration(t, fixture.root, "commit", "-m", "record fixture runtime setup")
 	stateBytes, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -243,10 +237,6 @@ func TestRegisterS6RevisionMovesPriorWorkspaceExecutionIntoHistory(t *testing.T)
 		t.Fatal(err)
 	}
 
-	previousSHA, err := previous.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	setRevisionManifest(t, fixture, "team-manifest-s6-workspace-r2", "workgroup-s6-workspace-r2", "platform-s6-workspace-r2", "agent-s6-workspace-r2")
 	issued, err := Register(fixture.root, statePath, journalPath, Request{
 		ExpectedRevision: -1,
@@ -255,7 +245,7 @@ func TestRegisterS6RevisionMovesPriorWorkspaceExecutionIntoHistory(t *testing.T)
 		TaskPath:         filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
 		Revision: &RevisionRequest{
 			AssignmentID: previous.AssignmentID, ExpectedRecord: previous.Reference(),
-			ExpectedRecordSHA256: previousSHA, IntentKey: "s6-workspace-revision-r2",
+			IntentKey: "s6-workspace-revision-r2",
 		},
 		OccurredAt: time.Date(2026, 10, 14, 13, 30, 0, 0, time.UTC),
 	})
@@ -274,17 +264,13 @@ func TestRegisterS6RevisionMovesPriorWorkspaceExecutionIntoHistory(t *testing.T)
 	}
 	historical := retired.History[0]
 	if historical.Status != "retired" || historical.AgentID != previous.OwnerAgentID || historical.AssignmentRecord == nil ||
-		*historical.AssignmentRecord != previous.Reference() || historical.AssignmentRecordSHA256 != previousSHA || historical.Generation != execution.Generation {
+		*historical.AssignmentRecord != previous.Reference() || historical.Generation != execution.Generation {
 		t.Fatalf("prior workspace execution history lost its original authorization: %+v", historical)
 	}
 }
 
 func TestRegisterS6RevisionSharesMainWorkspaceLock(t *testing.T) {
 	fixture, statePath, journalPath, previous, _ := registerAgentBeginFixture(t, true)
-	previousSHA, err := previous.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	setRevisionManifest(t, fixture, "team-manifest-s6-lock-r2", "workgroup-s6-lock-r2", "platform-s6-lock-r2", "agent-s6-lock-r2")
 	beforeState, err := os.ReadFile(statePath)
 	if err != nil {
@@ -305,7 +291,7 @@ func TestRegisterS6RevisionSharesMainWorkspaceLock(t *testing.T) {
 		TaskPath:         filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
 		Revision: &RevisionRequest{
 			AssignmentID: previous.AssignmentID, ExpectedRecord: previous.Reference(),
-			ExpectedRecordSHA256: previousSHA, IntentKey: "s6-lock-busy-revision",
+			IntentKey: "s6-lock-busy-revision",
 		},
 		OccurredAt: time.Date(2026, 10, 14, 13, 40, 0, 0, time.UTC),
 	}

@@ -17,7 +17,6 @@ func TestNativeOwnedCheckDecisionRequiresExactFrozenCommandAndCallerBinding(t *t
 	const (
 		owner       = "agent-owned-check"
 		assignment  = "assignment-owned-check"
-		recordSHA   = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		checkIndex  = 2
 		checkScript = "go test ./src/pkg"
 	)
@@ -26,7 +25,7 @@ func TestNativeOwnedCheckDecisionRequiresExactFrozenCommandAndCallerBinding(t *t
 		CurrentStage: "S6", CurrentBaselineGeneration: 4,
 		NativeOwnedAssignments: []policy.NativeOwnedAssignment{{
 			AssignmentID: assignment, OwnerAgentID: owner, WorktreePath: worktree,
-			AssignmentRecordSHA256: recordSHA, OwnerState: "working", ContextBound: true,
+			OwnerState: "working", ContextBound: true,
 			PlanActivated: true, Checks: []policy.NativeOwnedCheck{{Index: checkIndex, Command: checkScript}},
 		}},
 	}

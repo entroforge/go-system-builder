@@ -187,19 +187,15 @@ func printBindConfirmation(w io.Writer, state map[string]any) {
 	last, _ := state["last_transition"].(map[string]any)
 	id, _ := bound["id"].(string)
 	version, _ := bound["version"].(string)
-	sha, _ := bound["sha256"].(string)
 	approvedBy, _ := bound["approved_by"].(string)
 	meta, _ := bound["metadata"].(map[string]any)
 	ui, _ := meta["ui_impact"].(string)
-	if len(sha) > 12 {
-		sha = sha[:12]
-	}
 	event, _ := last["event"].(string)
 	if receipt, ok := state["binding_receipt"].(map[string]any); ok {
 		event, _ = receipt["event"].(string)
 	}
 	fmt.Fprintf(w, "bound %s %s (ui_impact=%s)\n", id, version, ui)
-	fmt.Fprintf(w, "  sha256 %s…  approved-by %s\n", sha, approvedBy)
+	fmt.Fprintf(w, "  approved-by %s\n", approvedBy)
 	fmt.Fprintf(w, "  cursor %s.%s  revision %d  generation %d  event %s\n",
 		lifecycle["state"], lifecycle["phase"], tolerantInt(state["revision"]), tolerantInt(baseline["generation"]), event)
 	fmt.Fprintln(w, "next: S2 design — hooks project status automatically; no further CLI needed.")

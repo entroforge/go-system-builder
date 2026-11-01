@@ -11,8 +11,14 @@ import (
 // Explicit prompt references are authority, not suggestions. If they are
 // invalid, never fall back to a different manifest for the same task.
 func assignmentManifest(root, taskID, ref string) (string, *workgroupManifest, string) {
+	return assignmentManifestWithReader(root, taskID, ref, os.ReadFile, func() (string, *workgroupManifest) {
+		return loadWorkgroupManifest(root, taskID)
+	})
+}
+
+func assignmentManifestWithReader(root, taskID, ref string, read func(string) ([]byte, error), fallback func() (string, *workgroupManifest)) (string, *workgroupManifest, string) {
 	if strings.TrimSpace(ref) == "" {
-		path, manifest := loadWorkgroupManifest(root, taskID)
+		path, manifest := fallback()
 		return path, manifest, ""
 	}
 	path, fragment, hasFragment := strings.Cut(ref, "#")
@@ -43,7 +49,7 @@ func assignmentManifest(root, taskID, ref string) (string, *workgroupManifest, s
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", nil, ""
 	}
-	data, err := os.ReadFile(abs)
+	data, err := read(abs)
 	if err != nil {
 		return "", nil, ""
 	}
@@ -109,13 +115,19 @@ func fillAssignmentRow(row *AssignmentContext, a workgroupAssignment) {
 
 // Registered manifest pointers take precedence over historical task-shaped paths.
 func assignmentManifestForRefs(root, taskID string, refs registeredManifestRef) (string, *workgroupManifest, string) {
+	return assignmentManifestForRefsWithReader(root, taskID, refs, os.ReadFile, func() (string, *workgroupManifest) {
+		return loadWorkgroupManifest(root, taskID)
+	})
+}
+
+func assignmentManifestForRefsWithReader(root, taskID string, refs registeredManifestRef, read func(string) ([]byte, error), fallback func() (string, *workgroupManifest)) (string, *workgroupManifest, string) {
 	for _, ref := range []string{refs.PromptRef, refs.TeamRef} {
 		if _, formal := registeredManifestPath(root, ref); formal {
-			return assignmentManifest(root, taskID, ref)
+			return assignmentManifestWithReader(root, taskID, ref, read, fallback)
 		}
 	}
 	if refs.PromptRef != "" {
-		return assignmentManifest(root, taskID, refs.PromptRef)
+		return assignmentManifestWithReader(root, taskID, refs.PromptRef, read, fallback)
 	}
-	return assignmentManifest(root, taskID, "")
+	return assignmentManifestWithReader(root, taskID, "", read, fallback)
 }

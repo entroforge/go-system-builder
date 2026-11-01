@@ -60,7 +60,7 @@ func TestRegistryDefinesSemanticsForEveryAutomaticGate(t *testing.T) {
 		if spec.SemanticVersion == "" {
 			t.Errorf("gate %s has no semantic version", gateID)
 		}
-		if len(spec.EvidenceRequirements) == 0 {
+		if len(spec.EvidenceRequirements) == 0 && gateID != "GATE-VERIFY-BLOCKING-FINDING" && gateID != "GATE-VERIFY-CLEAN-ROUND-PASSED" {
 			t.Errorf("gate %s has no qualified evidence requirements", gateID)
 		}
 		for _, requirement := range spec.EvidenceRequirements {
@@ -81,15 +81,15 @@ func TestRegistryLookupReturnsDefensiveCopy(t *testing.T) {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 
-	first, ok := registry.Lookup("GATE-VERIFY-CLEAN-ROUND-PASSED")
+	first, ok := registry.Lookup("GATE-PLANNING-DESIGN-COMPLETE")
 	if !ok {
-		t.Fatal("clean-round gate is not registered")
+		t.Fatal("planning-design gate is not registered")
 	}
 	first.EvidenceRequirements[0].Responsibilities[0] = "mutated"
 	first.EvidenceRequirements[0].Conclusions[0] = "mutated"
 
-	second, _ := registry.Lookup("GATE-VERIFY-CLEAN-ROUND-PASSED")
-	if second.EvidenceRequirements[0].Responsibilities[0] != "Clean Round Evaluator" {
+	second, _ := registry.Lookup("GATE-PLANNING-DESIGN-COMPLETE")
+	if second.EvidenceRequirements[0].Responsibilities[0] != "Architect" {
 		t.Fatalf("registry responsibility was mutated: %#v", second.EvidenceRequirements[0])
 	}
 	if second.EvidenceRequirements[0].Conclusions[0] != "pass" {

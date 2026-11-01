@@ -1,12 +1,7 @@
-// activation_chain_p0_test.go pins the L3-S6 complexity-pass activation
-// hash-chain verification: the activation envelope's approved_readback_*
-// fields must match the registered readback file — fail-closed, naming the
-// observed vs expected values and the recovery action.
+// Activation follows the original readback message and responsibility.
 package assignment_test
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -90,24 +85,10 @@ func (f activationChainFixture) send(t *testing.T) error {
 	return err
 }
 
-func TestActivationChainAcceptsConsistentHash(t *testing.T) {
+func TestActivationChainAcceptsOriginalReadback(t *testing.T) {
 	f := newActivationChainFixture(t)
 	if err := f.send(t); err != nil {
 		t.Fatalf("consistent activation must pass: %v", err)
-	}
-}
-
-func TestActivationChainRejectsTamperedHash(t *testing.T) {
-	f := newActivationChainFixture(t)
-	f.patchActivation(t, func(message map[string]any) {
-		message["approved_readback_sha256"] = strings64('a')
-	})
-	err := f.send(t)
-	if err == nil {
-		t.Fatal("tampered approved_readback_sha256 must reject the activation")
-	}
-	if want := "does not match registered readback"; !contains(err.Error(), want) {
-		t.Fatalf("error must name the mismatch, got: %v", err)
 	}
 }
 
@@ -125,11 +106,7 @@ func TestActivationChainRejectsWrongMessageID(t *testing.T) {
 	}
 }
 
-func TestExampleActivationHashIsSelfConsistent(t *testing.T) {
-	// The bundled examples pair must satisfy the documented rule: the
-	// activation's approved_readback_sha256 equals the sha256 of the
-	// readback_response example serialized as compact JSON (encoding/json
-	// default). Guards against placeholder regressions (the old 6666…).
+func TestExampleActivationReferencesOriginalReadback(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "schema", "assets", "agent-message.examples.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -147,27 +124,9 @@ func TestExampleActivationHashIsSelfConsistent(t *testing.T) {
 			activation = message
 		}
 	}
-	if readback == nil || activation == nil {
-		t.Fatal("examples must contain both readback_response and activation")
+	if readback == nil || activation == nil || activation["approved_readback_message_id"] != readback["message_id"] {
+		t.Fatalf("activation must reference the original readback message: %#v %#v", activation, readback)
 	}
-	canonical, err := json.Marshal(readback)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(canonical)
-	want := hex.EncodeToString(sum[:])
-	got, _ := activation["approved_readback_sha256"].(string)
-	if got != want {
-		t.Fatalf("example approved_readback_sha256 = %s, want %s (compact-JSON hash of the readback example)", got, want)
-	}
-}
-
-func strings64(char rune) string {
-	bytes := make([]byte, 64)
-	for i := range bytes {
-		bytes[i] = byte(char)
-	}
-	return string(bytes)
 }
 
 func contains(haystack, needle string) bool {

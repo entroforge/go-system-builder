@@ -85,8 +85,43 @@ func TestValidateRuntimeRequiresMatchingUnifiedS7AssignmentEvent(t *testing.T) {
 
 func TestValidateRuntimeFileAcceptsFreshInactiveState(t *testing.T) {
 	root := isolatedSemanticProject(t)
+	data, err := os.ReadFile(filepath.Join(root, ".claude", "loop-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	definition := state["definition"].(map[string]any)
+	policyRef := state["hook_control"].(map[string]any)["policy_ref"].(map[string]any)
+	if _, exists := definition["sha256"]; exists {
+		t.Fatal("fresh Runtime unexpectedly registered a Definition digest")
+	}
+	if _, exists := policyRef["sha256"]; exists {
+		t.Fatal("fresh Runtime unexpectedly registered a Hook policy digest")
+	}
 	if err := semantic.ValidateRuntimeFile(root, ".claude/loop-state.json"); err != nil {
 		t.Fatalf("fresh runtime validation failed: %v", err)
+	}
+	// Legacy fields remain readable but are not compared to the current files.
+	definition["sha256"] = strings.Repeat("0", 64)
+	policyRef["sha256"] = strings.Repeat("0", 64)
+	legacy, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := semantic.ValidateRuntimeFile(root, ".claude/loop-state.json"); err != nil {
+		t.Fatalf("historical Runtime digests must not be compared: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "docs", "control", "hook-policy.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := semantic.ValidateRuntimeFile(root, ".claude/loop-state.json"); err == nil {
+		t.Fatal("missing referenced Hook policy must be reported")
 	}
 }
 
@@ -108,98 +143,6 @@ func TestValidateRuntimeReachabilityAcceptsFreshRuntime(t *testing.T) {
 	root := isolatedSemanticProject(t)
 	if err := semantic.ValidateRuntimeReachability(root); err != nil {
 		t.Fatalf("runtime reachability validation failed: %v", err)
-	}
-}
-
-// TestValidateReadbackTemplatesAcceptsWellFormedTemplate writes a well-formed
-// template (documents in the canonical task, contract, req order) under a temp
-// tree and asserts ValidateReadbackTemplates passes — BUG-002 B1.
-func TestValidateReadbackTemplatesAcceptsWellFormedTemplate(t *testing.T) {
-	root := t.TempDir()
-	teamDir := filepath.Join(root, "docs", "teams", "team-a")
-	if err := os.MkdirAll(teamDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	template := map[string]any{
-		"schema_version": "1.0.0",
-		"message_type":   "readback_request",
-		"message_id":     "msg-1",
-		"agent_id":       "agent-1",
-		"task_id":        "TASK-1",
-		"team_id":        "team-a",
-		"documents": []any{
-			map[string]any{"id": "T", "kind": "task", "path": "docs/x.md", "version": "v1", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "read_order": 1},
-			map[string]any{"id": "C", "kind": "contract", "path": "docs/x.md", "version": "v1", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "read_order": 2},
-			map[string]any{"id": "R", "kind": "req", "path": "docs/x.md", "version": "v1", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "read_order": 3},
-		},
-		"skills":               []any{map[string]any{"name": "x"}},
-		"scope":                map[string]any{"responsibility": "x"},
-		"closing_contract_ref": "TASK-1#closing",
-		"readback_fields":      []string{"objective"},
-	}
-	data, err := json.Marshal(template)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(teamDir, "readback-request.template.json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := semantic.ValidateReadbackTemplates(root); err != nil {
-		t.Fatalf("expected well-formed readback template to pass, got: %v", err)
-	}
-}
-
-// TestValidateReadbackTemplatesRejectsReqFirstOrder writes a template with
-// documents in [req, task, contract] order and asserts ValidateReadbackTemplates
-// rejects it — the prefixItems rule requires task, contract, req at read_order
-// 1, 2, 3 when bug_id is unset. BUG-002 B1.
-func TestValidateReadbackTemplatesRejectsReqFirstOrder(t *testing.T) {
-	root := t.TempDir()
-	teamDir := filepath.Join(root, "docs", "teams", "team-b")
-	if err := os.MkdirAll(teamDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	template := map[string]any{
-		"schema_version": "1.0.0",
-		"message_type":   "readback_request",
-		"message_id":     "msg-2",
-		"agent_id":       "agent-2",
-		"task_id":        "TASK-2",
-		"team_id":        "team-b",
-		"documents": []any{
-			map[string]any{"id": "R", "kind": "req", "path": "docs/x.md", "version": "v1", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "read_order": 1},
-			map[string]any{"id": "T", "kind": "task", "path": "docs/x.md", "version": "v1", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "read_order": 2},
-			map[string]any{"id": "C", "kind": "contract", "path": "docs/x.md", "version": "v1", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "read_order": 3},
-		},
-		"skills":               []any{map[string]any{"name": "x"}},
-		"scope":                map[string]any{"responsibility": "x"},
-		"closing_contract_ref": "TASK-2#closing",
-		"readback_fields":      []string{"objective"},
-	}
-	data, err := json.Marshal(template)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(teamDir, "readback-request.template.json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	err = semantic.ValidateReadbackTemplates(root)
-	if err == nil {
-		t.Fatal("expected req-first-order template to fail validation")
-	}
-	if !strings.Contains(err.Error(), "readback-request.template.json") {
-		t.Fatalf("error should mention the offending template file, got: %v", err)
-	}
-}
-
-// TestValidateReadbackTemplatesNoTemplatesReturnsNil verifies that on a tree
-// with no docs/teams directory the function returns nil. BUG-002 B1.
-func TestValidateReadbackTemplatesNoTemplatesReturnsNil(t *testing.T) {
-	root := t.TempDir()
-	if err := semantic.ValidateReadbackTemplates(root); err != nil {
-		t.Fatalf("expected nil error on empty tree, got: %v", err)
 	}
 }
 
@@ -350,11 +293,8 @@ func TestValidateCrossManifestDependenciesEmptyRefsReturnsNil(t *testing.T) {
 	}
 }
 
-// TestValidateReviewManifestReferencesMismatchErrorIncludesHint constructs a
-// minimal tree where the manifest's document fingerprint does not match the
-// on-disk hash, and asserts the error message contains the BUG-004 D5 recovery
-// hint. BUG-004 §8 D5.
-func TestValidateReviewManifestReferencesMismatchErrorIncludesHint(t *testing.T) {
+// Historical digest text does not block a reachable original document.
+func TestValidateReviewManifestReferencesIgnoresHistoricalDigest(t *testing.T) {
 	root := t.TempDir()
 	// Minimal doc on disk.
 	docPath := filepath.Join(root, "docs", "dev", "tasks", "TASK-1.md")
@@ -388,14 +328,14 @@ func TestValidateReviewManifestReferencesMismatchErrorIncludesHint(t *testing.T)
 	}
 
 	err = semantic.ValidateReviewManifestReferences(root, "docs/teams/team-a/manifest.json", "loop-test")
-	if err == nil {
-		t.Fatal("expected fingerprint mismatch to fail")
+	if err != nil {
+		t.Fatalf("historical digest must not block the source: %v", err)
 	}
-	if !strings.Contains(err.Error(), "current registered source refs") {
-		t.Fatalf("error should identify the current source recovery route, got: %v", err)
+	if err := os.Remove(docPath); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "docs/teams/team-a/manifest.json") {
-		t.Fatalf("error should include the exact manifest path, got: %v", err)
+	if err := semantic.ValidateReviewManifestReferences(root, "docs/teams/team-a/manifest.json", "loop-test"); err == nil {
+		t.Fatal("missing actual source must still be reported")
 	}
 }
 

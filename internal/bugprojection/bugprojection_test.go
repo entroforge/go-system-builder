@@ -1,8 +1,7 @@
 package bugprojection_test
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/bugprojection"
+	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -41,6 +41,15 @@ func TestProjectApprovedContractIsIdempotentAndSchemaValid(t *testing.T) {
 	if got := document["source_finding_ids"].([]any); len(got) != 2 {
 		t.Fatalf("source finding set = %#v, want two findings", got)
 	}
+	for _, raw := range document["source_reports"].([]any) {
+		if _, exists := raw.(map[string]any)["sha256"]; exists {
+			t.Fatal("new BUG projection must not register a source digest")
+		}
+	}
+	mdBefore, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(first.MarkdownPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	second, err := bugprojection.ProjectApprovedContract(fixture.root, request)
 	if err != nil {
@@ -51,7 +60,7 @@ func TestProjectApprovedContractIsIdempotentAndSchemaValid(t *testing.T) {
 	}
 	jsonAfter, _ := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(first.JSONPath)))
 	mdAfter, _ := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(first.MarkdownPath)))
-	if sha256Hex(jsonAfter) != first.JSONSHA256 || sha256Hex(mdAfter) != first.MarkdownSHA256 {
+	if !bytes.Equal(jsonBytes, jsonAfter) || !bytes.Equal(mdBefore, mdAfter) {
 		t.Fatal("idempotent retry changed a projection")
 	}
 	md, _ := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(first.MarkdownPath)))
@@ -62,13 +71,39 @@ func TestProjectApprovedContractIsIdempotentAndSchemaValid(t *testing.T) {
 	}
 }
 
-func TestProjectApprovedContractRejectsHashDriftAndExactSetMismatch(t *testing.T) {
+func TestInvestigationProjectCLIUsesOriginalPathsWithoutDigests(t *testing.T) {
+	fixture := newProjectionFixture(t, []string{"finding-one"})
+	state := map[string]any{
+		"revision": 0, "runtime_id": "loop-REQ-042", "bound_req": map[string]any{"id": "REQ-042"},
+		"review": map[string]any{"investigation": map[string]any{
+			"status": "contract_approved", "case_id": "investigation-case-batch-1", "path": fixture.caseRef.Path,
+			"repair_contract_ref": fixture.contractRef.Path, "source_finding_ids": []string{"finding-one"},
+			"sha256": map[string]any{"legacy": true}, "repair_contract_sha256": 42,
+		}},
+		"entities": map[string]any{"findings": []any{map[string]any{
+			"finding_id": "finding-one", "path": fixture.findingRefs[0].Path, "sha256": nil,
+		}}},
+	}
+	writeFile(t, fixture.root, ".claude/loop-state.json", mustJSON(t, state))
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"runtime", "investigation", "project", "--root", fixture.root, "--bug-id", "BUG-042"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("original project command failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "sha256") || strings.Contains(stderr.String(), "sha256") {
+		t.Fatalf("project command exposed a digest: stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(fixture.root, "docs/reports/bugs/BUG-042.md")); err != nil {
+		t.Fatalf("original BUG projection was not written: %v", err)
+	}
+}
+
+func TestProjectApprovedContractUsesOriginalRefsAndRejectsExactSetMismatch(t *testing.T) {
 	fixture := newProjectionFixture(t, []string{"finding-one", "finding-two"})
 	request := fixture.request()
 
-	request.Case.SHA256 = strings.Repeat("0", 64)
-	if _, err := bugprojection.Project(fixture.root, request); err == nil || !strings.Contains(err.Error(), "sha256") {
-		t.Fatalf("Case hash drift error = %v, want actionable sha256 error", err)
+	if _, err := bugprojection.Project(fixture.root, request); err != nil {
+		t.Fatalf("original references must be accepted: %v", err)
 	}
 
 	request = fixture.request()
@@ -124,25 +159,25 @@ func newProjectionFixture(t *testing.T, findingIDs []string) *projectionFixture 
 		data := mustJSON(t, finding)
 		rel := filepath.ToSlash(filepath.Join(".claude", "evidence", id+".json"))
 		writeFile(t, root, rel, data)
-		fixture.findingRefs = append(fixture.findingRefs, bugprojection.FindingRef{ID: id, Path: rel, SHA256: sha256Hex(data)})
+		fixture.findingRefs = append(fixture.findingRefs, bugprojection.FindingRef{ID: id, Path: rel})
 	}
 	caseDocument := map[string]any{
 		"schema_version": "1.0.0", "case_id": "investigation-case-batch-1", "revision": 2,
 		"status": "contract_approved", "source_finding_ids": findingIDs,
 		"observation_batch_id": "observation-batch-1", "observation_batch_ref": ".claude/evidence/observation-batch-1.json",
-		"observation_batch_sha256": strings.Repeat("a", 64), "baseline_generation": 1, "baseline_digest": strings.Repeat("b", 64),
+		"observation_batch_sha256": map[string]any{"old": true}, "baseline_generation": 1, "baseline_digest": 123,
 		"grouping_rationale": "same boundary", "unexplained_finding_ids": []string{}, "failure_boundary_refs": []string{"internal/api"},
 		"cross_layer_trace": map[string]any{"boundary": "api"}, "evidence_gaps": []string{}, "hypotheses": []any{}, "hypothesis_results": []any{},
 		"causal_model":       map[string]any{"trigger": "payload crosses boundary", "propagation": "decoder drops value"},
 		"primary_root_cause": "two incompatible payload contracts", "blast_radius": map[string]any{"surfaces": []string{"api", "storage"}},
 		"detection_gap": map[string]any{"missing": "contract test"}, "route": "s9_repair", "route_reason": "implementation fault",
 		"repair_contract_ref":    ".claude/evidence/repair-contract-1.json",
-		"repair_contract_sha256": strings.Repeat("c", 64),
+		"repair_contract_sha256": []any{"old-digest"},
 	}
 	caseBytes := mustJSON(t, caseDocument)
 	caseRel := ".claude/evidence/investigation-case-1.json"
 	writeFile(t, root, caseRel, caseBytes)
-	fixture.caseRef = bugprojection.ArtifactRef{Path: caseRel, SHA256: sha256Hex(caseBytes)}
+	fixture.caseRef = bugprojection.ArtifactRef{Path: caseRel}
 
 	contractDocument := map[string]any{
 		"schema_version": "1.0.0", "repair_contract_id": "repair-contract-1", "case_id": "investigation-case-batch-1",
@@ -153,17 +188,12 @@ func newProjectionFixture(t *testing.T, findingIDs []string) *projectionFixture 
 		"prospective_scope": []string{"internal/api", "internal/storage"}, "forbidden_scope": []string{"docs/requirements"},
 		"symptom_assertions": []string{"finding symptoms disappear"}, "root_invariant_assertions": []string{"one payload authority"},
 		"detection_gap_assertions": []string{"contract test catches drift"}, "stop_escalation_conditions": []string{"REQ changes require human"},
-		"approved_by": "main-session", "approved_at": "2026-08-25T00:00:00Z", "approval_hash": strings.Repeat("d", 64),
+		"approved_by": "main-session", "approved_at": "2026-08-25T00:00:00Z", "approval_hash": map[string]any{"legacy": true},
 	}
 	contractBytes := mustJSON(t, contractDocument)
 	contractRel := ".claude/evidence/repair-contract-1.json"
 	writeFile(t, root, contractRel, contractBytes)
-	fixture.contractRef = bugprojection.ArtifactRef{Path: contractRel, SHA256: sha256Hex(contractBytes)}
-	// The Case pins the actual Contract hash; replace the fixture Case with its final bytes.
-	caseDocument["repair_contract_sha256"] = fixture.contractRef.SHA256
-	caseBytes = mustJSON(t, caseDocument)
-	writeFile(t, root, caseRel, caseBytes)
-	fixture.caseRef.SHA256 = sha256Hex(caseBytes)
+	fixture.contractRef = bugprojection.ArtifactRef{Path: contractRel}
 	return fixture
 }
 
@@ -193,9 +223,4 @@ func mustJSON(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return append(data, '\n')
-}
-
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

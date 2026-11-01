@@ -1,8 +1,6 @@
 package assignment_test
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -190,16 +188,6 @@ func writeAgentExample(t *testing.T, root, dir, messageType, agentID, taskID str
 		message["task_id"] = taskID
 		message["runtime_id"] = "loop-REQ-002"
 		message["expected_runtime_revision"] = float64(revision)
-		// The runtime verifies the activation chain against the readback
-		// file bytes (L3-S6 complexity pass): patch the hash to the file
-		// this helper actually wrote.
-		if messageType == "activation" {
-			readbackData, err := os.ReadFile(filepath.Join(dir, "readback_response.json"))
-			if err == nil {
-				sum := sha256.Sum256(readbackData)
-				message["approved_readback_sha256"] = hex.EncodeToString(sum[:])
-			}
-		}
 		path := filepath.Join(dir, messageType+".json")
 		writeJSON(t, path, message)
 		return path

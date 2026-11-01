@@ -24,7 +24,7 @@ type stageContract struct {
 
 // PrimarySkill is the single source of truth for the S7 verification round's
 // `primary_skill` projection value (RC-12 FL-4). `projectNext` (run.go), the
-// S7 budget gateway, and docs/control/agent-protocol.md §S7 must all name the same
+// original S7 guidance and docs/control/agent-protocol.md §S7 must name the same
 // Methodology Skill; controller.go projects this value verbatim into
 // guidance and the recovery read order (.claude/skills/<skill>/SKILL.md).
 // Focus-specific DV/QA/E2E Skills are per-Assignment dispatch facts, not the
@@ -37,9 +37,9 @@ var projectionContracts = map[string]stageContract{
 	"S2":                 {"complete architecture and any required UI design package", []string{"bound REQ", projectlayout.Architecture + "/", "docs/design/", "docs/rules/"}, []string{"architecture_record"}, []string{"architecture decisions cover the contract boundary", "any UI-impacting module has a complete target design package"}},
 	"S3":                 {"complete the development contract set", []string{"bound REQ", projectlayout.Architecture + "/", "docs/design/", "docs/dev/contracts/"}, []string{"locked_contract_set"}, []string{"the current bound REQ applicable locked contract batch and shared sources are accepted"}},
 	"S4":                 {"complete an executable TASK batch", []string{"bound REQ", "docs/dev/contracts/", "docs/dev/tasks/"}, []string{"complete_task_batch"}, []string{"the complete current TASK batch is accepted, with clause coverage and executable dependencies"}},
-	"S5":                 {"independently verify and atomically lock the specification chain", []string{"bound REQ", projectlayout.Architecture + "/", "docs/design/", "docs/dev/contracts/", "docs/dev/tasks/"}, []string{"joint_document_pass"}, []string{"document-verification responsibilities pass with current fingerprints"}},
+	"S5":                 {"independently verify and atomically lock the specification chain", []string{"bound REQ", projectlayout.Architecture + "/", "docs/design/", "docs/dev/contracts/", "docs/dev/tasks/"}, []string{"joint_document_pass"}, []string{"applicable document-verification responsibilities pass"}},
 	"S6":                 {"implement the locked TASK batch", []string{"bound REQ", "locked contracts", "locked TASKs", "docs/control/agent-protocol.md#s6"}, []string{"builder_completion_reports", "verified_integration_checkpoints"}, []string{"every TASK in the TR-003 batch has a Builder Result with passing checks and no unapproved scope deviations, saved at the exact Result path supplied by the listener for the original Result consumer; Main verifies the required integration checkpoints"}},
-	"S7":                 {"complete one current full verification round", []string{"bound REQ", "locked specification chain", "Builder evidence", "docs/control/agent-protocol.md#s7"}, []string{"review_plan"}, []string{"every required Claim of the registered ReviewPlan has a consumed pass Result; findings seal into the ObservationBatch (TR-008), otherwise the machine CleanRound closes the round (TR-009)"}},
+	"S7":                 {"complete current independent verification", []string{"bound REQ", "locked specification chain", "Builder evidence", "docs/control/agent-protocol.md#s7"}, []string{"review_plan"}, []string{"an actual Finding goes to S8 via TR-008; applicable necessary responsibilities completed without Findings go to S10 via TR-009"}},
 	"S8":                 {"investigate the current reported problem and actual observations to form an evidence-backed InvestigationCase disposition", []string{"actual current source: sealed S7 observations or the human-reported problem", "locked specification chain", "implementation"}, []string{"investigation_case", "causal_model_or_route"}, []string{"the current reported problem has a Case disposition; actual Findings, when present, are covered by the Case route; every s9_repair Case has an approved RepairContract"}},
 	"S9":                 {"execute approved RepairContracts and target-reverify them", []string{"approved RepairContract", "locked specification chain", "implementation"}, []string{"targeted_reverification"}, []string{"repair evidence is current and the Contract assertions pass"}},
 	"S10":                {"complete acceptance and release audit", []string{"bound REQ", "current clean round", "docs/reports/acceptance/ACC-template.md", projectlayout.ReleaseAudits + "/TEMPLATE.md", "docs/rules/release-architecture-audit.md", ".claude/skills/acceptance-and-handoff/SKILL.md"}, []string{"acceptance_record", "release_audit"}, []string{"the current Manifest explains actual requirement dispositions, applicable observations and counterevidence", "unknowns and blocking findings are resolved; remaining risks have actual owners and dispositions", "S9 changes have returned through a fresh S7 clean round; no S9→S10 shortcut"}},
@@ -129,7 +129,6 @@ func buildNextProjection(state map[string]any, stage, skill, action, root string
 		projection.Missing = changeOpenItems(record)
 		projection.DoneWhen = []string{"all Change Record work items are done", "all required checks are passed or evidence-backed N/A"}
 	}
-	applyS7BudgetGateway(&projection, state, root)
 	return projection
 }
 
@@ -475,15 +474,6 @@ func stringValue(value any) string {
 }
 
 func projectedGateway(state map[string]any, stage string, roots ...string) any {
-	if s7BudgetGateRequired(state, roots...) {
-		return map[string]any{
-			"type":            "s7_budget_gateway",
-			"human_required":  true,
-			"decision_fields": []string{"decision", "new_max_full_review_rounds (only an actual increase)", "reason"},
-			"decisions":       []string{"increase_budget", "return_to_governance"},
-			"guidance":        "Use the exact prepared original budget application. Main records only the human's actual decision and reason, plus a genuinely higher maximum for increase_budget; save to invoke the original Writer and fixed successor. Do not copy Runtime metadata, author evidence or supply an actor command. An empty choice does not authorize another round.",
-		}
-	}
 	switch lifecycleState(state) {
 	case "awaiting_human_release":
 		return map[string]any{

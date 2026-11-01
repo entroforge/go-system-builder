@@ -52,7 +52,7 @@ func TestProgressProjectionIgnoresRevisionClockAndControlBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	state["lifecycle"].(map[string]any)["state"] = "planning"
-	state["bound_req"] = map[string]any{"id": "REQ-progress", "path": "docs/requirements/REQ-progress.md", "version": "v1.0.0", "sha256": workpacket.Digest([]byte("requirement"))}
+	state["bound_req"] = map[string]any{"id": "REQ-progress", "path": "docs/requirements/REQ-progress.md", "version": "v1.0.0"}
 	milestone := state["milestone"].(map[string]any)
 	milestone["lifecycle_state"] = "planning"
 	milestone["read"] = []any{".claude/loop-state.json"}
@@ -96,7 +96,11 @@ func TestProgressClosedStatusAndActualReadResponse(t *testing.T) {
 	path := filepath.Join(root, "required.md")
 	body := []byte("one\ntwo\n")
 	os.WriteFile(path, body, 0600)
-	sources := map[string]string{path: workpacket.Digest(body)}
+	sources := map[string]string{}
+	remaining := progressSourceProjectionByteLimit
+	if _, err := addProgressSource(sources, &remaining, root, "required.md"); err != nil {
+		t.Fatal(err)
+	}
 	input.ToolInput = map[string]any{"file_path": path, "offset": 2, "limit": 1}
 	input.ToolResponse = map[string]any{"file": map[string]any{"filePath": path, "startLine": float64(2), "numLines": float64(1), "content": "two\n"}}
 	if read := actualProgressRead(root, input, sources); read == nil || read.Range != "2:1" {
@@ -159,12 +163,12 @@ func TestProgressProjectionAcceptsEighteenFrozenS5SourcesAndDeduplicates(t *test
 		if err := os.WriteFile(filepath.Join(root, path), body, 0600); err != nil {
 			t.Fatal(err)
 		}
-		refs[i] = workpacket.Reference{ID: fmt.Sprintf("source-%02d", i+1), Path: path, Version: "v1.0.0", SHA256: workpacket.Digest(body)}
+		refs[i] = workpacket.Reference{ID: fmt.Sprintf("source-%02d", i+1), Path: path, Version: "v1.0.0"}
 		total += int64(len(body))
 	}
 	packet, err := workpacket.BuildS5(workpacket.Binding{
 		RuntimeID: "runtime-progress", Generation: 1, StageEntry: 1, Owner: "reviewer-spec",
-		AssignmentID: "assignment-spec", AssignmentSHA: workpacket.Digest([]byte("assignment")),
+		AssignmentID:   "assignment-spec",
 		Responsibility: "DV-SPEC-CONSISTENCY", Attempt: 1,
 	}, refs)
 	if err != nil {
@@ -181,19 +185,19 @@ func TestProgressProjectionAcceptsEighteenFrozenS5SourcesAndDeduplicates(t *test
 		t.Fatalf("projected %d exact sources with %d bytes remaining", len(sources), remaining)
 	}
 	for _, ref := range packet.Inputs {
-		if got := sources[filepath.Join(root, ref.Path)]; got != ref.SHA256 {
-			t.Fatalf("source %s lost its frozen SHA: %s", ref.Path, got)
+		if got := sources[filepath.Join(root, ref.Path)]; got != "present" {
+			t.Fatalf("source %s was not observed: %s", ref.Path, got)
 		}
 	}
 
-	// A legitimate-looking but changed source remains an incomplete projection.
+	// Changed source content remains observable without a hash qualification.
 	if err := os.WriteFile(filepath.Join(root, packet.Inputs[0].Path), []byte("changed after issue\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	freshSources := map[string]string{}
 	freshBudget := progressSourceProjectionByteLimit
-	if err := projectProgressSourceInputs(freshSources, &freshBudget, root, packet.Inputs[:1]); err == nil || err.Error() != "necessary source differs from issued binding" {
-		t.Fatal("changed source did not fail its frozen SHA check", err)
+	if err := projectProgressSourceInputs(freshSources, &freshBudget, root, packet.Inputs[:1]); err != nil || freshSources[filepath.Join(root, packet.Inputs[0].Path)] != "present" {
+		t.Fatal("changed source was not observed", err)
 	}
 }
 

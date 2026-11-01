@@ -4,9 +4,8 @@ package reviewmeta
 // tags match review.FrozenSubject so source projection uses the same
 // json.Marshal behavior as the original Review writer, including omitempty.
 type FrozenSubject struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Kind   string `json:"kind,omitempty"`
+	Path string `json:"path"`
+	Kind string `json:"kind,omitempty"`
 }
 
 // Claim is the exact JSON DTO stored in a ReviewPlan. Field order and tags

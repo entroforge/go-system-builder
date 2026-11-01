@@ -23,7 +23,7 @@ func nativeS7RemainingOutletContext(root string, state map[string]any) string {
 	status := stringValue(ptr["status"])
 	if !assignment.ReviewRoundOpenForDispatch(state) {
 		phase := stringValue(mapFieldCLI(state, "lifecycle")["phase"])
-		if facts["observation_batch"] != nil || phase == "observation_sealed" {
+		if phase == "observation_sealed" {
 			status = "observation_sealed"
 		}
 		if state["pause"] != nil || lifecycleState(state) == "paused" || lifecycleState(state) == "awaiting_human_release" {
@@ -34,10 +34,10 @@ func nativeS7RemainingOutletContext(root string, state map[string]any) string {
 		default:
 			return " S7 dispatch is closed at the current cursor; Main follows the original stage handoff or recorded pause and restores current round metadata before dispatch."
 		}
-		return " S7 remaining responsibilities follow the original current handoff: " + s7RecoveryNextAction(root, state, status, tolerantInt(facts["round"]), nil, nil, nil, nil, nil) + "."
+		return " S7 remaining responsibilities follow the original current handoff: " + s7RecoveryNextAction(root, state, status, nil, nil, nil, nil, nil) + "."
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, " S7 current round=%d status=%s remaining responsibilities (Runtime registration does not prove a native Reviewer is running; Main checks actual native dispatch/return):\n", tolerantInt(facts["round"]), status)
+	fmt.Fprintf(&b, " S7 current ReviewPlan status=%s remaining responsibilities (Runtime registration does not prove a native Reviewer is running; Main checks actual native dispatch/return):\n", status)
 	footer := "Main observes the original current queue/receipts with `" + s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " s7 status --root " + s7CaptureShellQuote(root) + " --explain`. The accepted Reviewer's personal receipt remains done with no round-wide WaitingOn."
 	appendBounded := func(s string) bool {
 		if b.Len()+len(s)+len(footer)+200 > s7RemainingOutletLimit {

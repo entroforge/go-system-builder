@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestCompleteTaskCanonicalResultAcceptsAndReplaysOriginalReceipts(t *testing
 	if err != nil {
 		t.Fatalf("CompleteTaskWithReceipt: %v", err)
 	}
-	if firstReceipt.ResultRef == "" || firstReceipt.ResultSHA256 == "" || firstReceipt.ResultRevision != 1 || firstReceipt.AnswerDigest == "" || firstReceipt.Replayed || !firstReceipt.Current {
+	if firstReceipt.ResultRef == "" || firstReceipt.ResultRevision != 1 || firstReceipt.Replayed || !firstReceipt.Current {
 		t.Fatalf("first Result receipt = %+v", firstReceipt)
 	}
 	if first.Revision != 13 {
@@ -39,7 +40,7 @@ func TestCompleteTaskCanonicalResultAcceptsAndReplaysOriginalReceipts(t *testing
 	if err != nil {
 		t.Fatalf("replay same message and answer: %v", err)
 	}
-	if replayed.Revision != first.Revision || !replayReceipt.Replayed || !replayReceipt.Current || replayReceipt.ResultRef != firstReceipt.ResultRef || replayReceipt.ResultSHA256 != firstReceipt.ResultSHA256 {
+	if replayed.Revision != first.Revision || !replayReceipt.Replayed || !replayReceipt.Current || replayReceipt.ResultRef != firstReceipt.ResultRef {
 		t.Fatalf("same-message replay changed or lost original receipt: revision=%d receipt=%+v", replayed.Revision, replayReceipt)
 	}
 	assertRegistrationPairUnchanged(t, statePath, journalPath, beforeState, beforeJournal)
@@ -48,7 +49,7 @@ func TestCompleteTaskCanonicalResultAcceptsAndReplaysOriginalReceipts(t *testing
 	changedPath := writeRegistrationMessage(t, fixture.root, "canonical-result-changed-key.json", changedAnswer)
 	if _, _, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{
 		ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: changedPath,
-	}); err == nil || !strings.Contains(err.Error(), "different AnswerDigest") {
+	}); err == nil || !strings.Contains(err.Error(), "different answer") {
 		t.Fatalf("same message_id with changed answer error = %v", err)
 	}
 	assertRegistrationPairUnchanged(t, statePath, journalPath, beforeState, beforeJournal)
@@ -120,7 +121,7 @@ func TestCompleteTaskCanonicalResultAcceptsAndReplaysOriginalReceipts(t *testing
 	}
 }
 
-func TestCompleteTaskCanonicalResultRejectsDraftAndUnauthorizedEvidenceAtomically(t *testing.T) {
+func TestCompleteTaskCanonicalResultKeepsActualAnswerAndRejectsEmptyDraft(t *testing.T) {
 	t.Run("blank professional draft", func(t *testing.T) {
 		fixture, statePath, journalPath, record, sourceRef, _ := readyCanonicalResultFixture(t)
 		message := canonicalResultMessage(t, fixture, record, "msg-s6-result-blank", "", []string{sourceRef})
@@ -135,38 +136,43 @@ func TestCompleteTaskCanonicalResultRejectsDraftAndUnauthorizedEvidenceAtomicall
 		assertNoCanonicalResultArtifacts(t, fixture.root, record)
 	})
 
-	t.Run("control state is not professional evidence", func(t *testing.T) {
-		fixture, statePath, journalPath, record, _, _ := readyCanonicalResultFixture(t)
-		message := canonicalResultMessage(t, fixture, record, "msg-s6-result-control-ref", "The professional answer names a source", []string{".claude/loop-state.json"})
-		path := writeRegistrationMessage(t, fixture.root, "canonical-result-control-ref.json", message)
-		beforeState, beforeJournal := registrationPairBytes(t, statePath, journalPath)
-		if _, _, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{
-			ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: path,
-		}); err == nil || !strings.Contains(err.Error(), "control data") {
-			t.Fatalf("control-state evidence ref error = %v", err)
-		}
-		assertRegistrationPairUnchanged(t, statePath, journalPath, beforeState, beforeJournal)
-		assertNoCanonicalResultArtifacts(t, fixture.root, record)
-	})
-
-	t.Run("legacy machine claims are unknown fields", func(t *testing.T) {
-		fixture, statePath, journalPath, record, sourceRef, _ := readyCanonicalResultFixture(t)
-		message := canonicalResultMessage(t, fixture, record, "msg-s6-result-legacy-fields", "The professional answer is complete", []string{sourceRef})
-		message["checks"] = []any{map[string]any{"name": "unit", "result": "pass"}}
-		path := writeRegistrationMessage(t, fixture.root, "canonical-result-legacy-fields.json", message)
-		beforeState, beforeJournal := registrationPairBytes(t, statePath, journalPath)
-		if _, _, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{
-			ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: path,
-		}); err == nil || !strings.Contains(err.Error(), "completion message schema") {
-			t.Fatalf("legacy machine claim error = %v", err)
-		}
-		assertRegistrationPairUnchanged(t, statePath, journalPath, beforeState, beforeJournal)
-		assertNoCanonicalResultArtifacts(t, fixture.root, record)
-	})
+	for _, tc := range []struct {
+		name, ref string
+		extra     bool
+	}{
+		{"ordinary source reference", ".claude/loop-state.json", false},
+		{"unrelated additional fields", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture, statePath, journalPath, record, sourceRef, _ := readyCanonicalResultFixture(t)
+			if tc.ref != "" {
+				sourceRef = tc.ref
+			}
+			message := canonicalResultMessage(t, fixture, record, "msg-s6-result-professional", "The professional answer names a source", []string{sourceRef})
+			if tc.extra {
+				message["checks"] = []any{map[string]any{"name": "unit", "result": "pass"}}
+			}
+			path := writeRegistrationMessage(t, fixture.root, "canonical-result-professional.json", message)
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, receipt, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{
+				ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: path,
+			})
+			if err != nil || receipt.ResultRef == "" {
+				t.Fatalf("actual professional answer not received: %+v %v", receipt, err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(original, after) {
+				t.Fatalf("author answer changed: %v", err)
+			}
+		})
+	}
 }
 
-func TestCompleteTaskCanonicalResultReplayUsesDurableEvidenceSnapshots(t *testing.T) {
-	fixture, statePath, journalPath, record, sourceRef, originalBytes := readyCanonicalResultFixture(t)
+func TestCompleteTaskCanonicalResultReplayKeepsOriginalProfessionalAnswer(t *testing.T) {
+	fixture, statePath, journalPath, record, sourceRef, _ := readyCanonicalResultFixture(t)
 	message := canonicalResultMessage(t, fixture, record, "msg-s6-result-source-drift", "Implemented the reviewed behavior", []string{sourceRef})
 	messagePath := writeRegistrationMessage(t, fixture.root, "canonical-result-source-drift.json", message)
 	accepted, firstReceipt, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{
@@ -186,7 +192,7 @@ func TestCompleteTaskCanonicalResultReplayUsesDurableEvidenceSnapshots(t *testin
 	if err != nil {
 		t.Fatalf("replay after live source cleanup: %v", err)
 	}
-	if replayed.Revision != accepted.Revision || !replayReceipt.Replayed || replayReceipt.ResultRef != firstReceipt.ResultRef || replayReceipt.ResultSHA256 != firstReceipt.ResultSHA256 {
+	if replayed.Revision != accepted.Revision || !replayReceipt.Replayed || replayReceipt.ResultRef != firstReceipt.ResultRef {
 		t.Fatalf("live source change rebound the original Result: revision=%d receipt=%+v", replayed.Revision, replayReceipt)
 	}
 	assertRegistrationPairUnchanged(t, statePath, journalPath, beforeState, beforeJournal)
@@ -215,19 +221,12 @@ func TestCompleteTaskCanonicalResultReplayUsesDurableEvidenceSnapshots(t *testin
 	if err := json.Unmarshal(firstEnvelope, &firstResult); err != nil {
 		t.Fatal(err)
 	}
-	if firstResult.ResolvedEvidenceRefs[0].SHA256 != registrationSHA(originalBytes) {
-		t.Fatalf("original Result snapshot was rebound: %+v", firstResult.ResolvedEvidenceRefs[0])
+	if firstResult.Answer.Summary != "Implemented the reviewed behavior" ||
+		len(firstResult.Answer.AssertionEvidence) != 1 ||
+		!reflect.DeepEqual(firstResult.Answer.AssertionEvidence[0].EvidenceRefs, []string{sourceRef}) {
+		t.Fatalf("the original professional answer was changed by the later Result: %+v", firstResult.Answer)
 	}
-	if err := os.WriteFile(filepath.Join(fixture.root, filepath.FromSlash(firstResult.ResolvedEvidenceRefs[0].Path)), []byte("tampered durable evidence snapshot\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	beforeTamperedState, beforeTamperedJournal := registrationPairBytes(t, statePath, journalPath)
-	if _, _, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{
-		ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: messagePath,
-	}); err == nil || !strings.Contains(err.Error(), "snapshot") {
-		t.Fatalf("tampered durable snapshot replay error = %v", err)
-	}
-	assertRegistrationPairUnchanged(t, statePath, journalPath, beforeTamperedState, beforeTamperedJournal)
+
 }
 
 func readyCanonicalResultFixture(t *testing.T) (recordRegistrationFixture, string, string, Record, string, []byte) {
@@ -270,8 +269,8 @@ func canonicalResultMessage(t *testing.T, fixture recordRegistrationFixture, rec
 		"task_id": record.Task.ID, "bug_id": nil, "team_id": record.TeamID,
 		"occurred_at":   "2026-10-14T14:00:00Z",
 		"assignment_id": record.AssignmentID, "assignment_revision": record.Revision,
-		"assignment_record_contract": record.Contract, "assignment_record_sha256": mustRecordDigest(t, record),
-		"summary": summary, "assertion_evidence": evidence,
+		"assignment_record_contract": record.Contract,
+		"summary":                    summary, "assertion_evidence": evidence,
 		"risks_blockers": []string{}, "scope_deviations": []string{},
 	}
 }
@@ -279,29 +278,23 @@ func canonicalResultMessage(t *testing.T, fixture recordRegistrationFixture, rec
 func assertCanonicalResultProjection(t *testing.T, root string, snapshot struct {
 	Revision int
 	State    map[string]any
-}, record Record, receipt ResultAcceptanceReceipt, sourceRef string, sourceBytes []byte, conclusion string) {
+}, record Record, receipt ResultAcceptanceReceipt, sourceRef string, _ []byte, conclusion string) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(receipt.ResultRef)))
 	if err != nil {
 		t.Fatalf("read accepted Result %s: %v", receipt.ResultRef, err)
 	}
-	if registrationSHA(data) != receipt.ResultSHA256 {
-		t.Fatal("receipt SHA does not match the immutable Result bytes")
-	}
 	var result assignmentresult.AcceptedResult
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Conclusion != conclusion || result.ResultRevision != receipt.ResultRevision || result.AnswerDigest != receipt.AnswerDigest || result.AssignmentRecord != record.Reference() {
+	if result.Conclusion != conclusion || result.ResultRevision != receipt.ResultRevision || result.AssignmentRecord != record.Reference() {
 		t.Fatalf("canonical Result envelope = %+v", result)
 	}
-	if len(result.ResolvedEvidenceRefs) != 1 || result.ResolvedEvidenceRefs[0].Ref != sourceRef || result.ResolvedEvidenceRefs[0].SHA256 != registrationSHA(sourceBytes) {
-		t.Fatalf("resolved evidence refs = %+v", result.ResolvedEvidenceRefs)
+	if len(result.Answer.AssertionEvidence) != 1 || !reflect.DeepEqual(result.Answer.AssertionEvidence[0].EvidenceRefs, []string{sourceRef}) {
+		t.Fatalf("original professional evidence references = %+v", result.Answer.AssertionEvidence)
 	}
-	durable, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(result.ResolvedEvidenceRefs[0].Path)))
-	if err != nil || !bytes.Equal(durable, sourceBytes) {
-		t.Fatalf("durable evidence snapshot differs from actual source bytes: %v", err)
-	}
+
 	if strings.Contains(string(data), `"status"`) || strings.Contains(string(data), `"checks"`) || strings.Contains(string(data), `"changed_paths"`) || strings.Contains(string(data), `"reviewed_paths"`) {
 		t.Fatalf("canonical Result contains machine or legacy completion fields: %s", data)
 	}
@@ -317,7 +310,7 @@ func assertCanonicalResultProjection(t *testing.T, root string, snapshot struct 
 		row, _ := raw.(map[string]any)
 		if row["path"] == receipt.ResultRef {
 			found = true
-			if row["status"] != "valid" || row["sha256"] != receipt.ResultSHA256 || len(row["scope_refs"].([]any)) != 0 {
+			if row["status"] != "valid" || len(row["scope_refs"].([]any)) != 0 {
 				t.Fatalf("canonical Result evidence index row = %#v", row)
 			}
 		}
@@ -334,5 +327,165 @@ func assertNoCanonicalResultArtifacts(t *testing.T, root string, record Record) 
 		t.Fatalf("rejected canonical Result left staged artifacts: %v", entries)
 	} else if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("inspect canonical Result artifact directory: %v", err)
+	}
+}
+
+func TestCanonicalResultWriterLeavesUnknownOccupiedCandidateAndRegistersOwnPath(t *testing.T) {
+	const messageID = "msg-result-occupied-candidate"
+	occurredAt := time.Date(2026, 10, 14, 14, 0, 0, 0, time.UTC)
+	// Build the exact envelope through the original Writer so the identical
+	// occupancy case exercises real content rather than a made-up checksum.
+	source, sourceState, sourceJournal, sourceRecord, sourceRef, _ := readyCanonicalResultFixture(t)
+	sourceMessage := canonicalResultMessage(t, source, sourceRecord, messageID, "Implemented the behavior", []string{sourceRef})
+	sourcePath := writeRegistrationMessage(t, source.root, "result-source.json", sourceMessage)
+	_, issued, err := CompleteTaskWithReceipt(source.root, sourceState, sourceJournal, CompletionRequest{
+		ExpectedRevision: -1, AgentID: sourceRecord.OwnerAgentID, MessagePath: sourcePath, OccurredAt: occurredAt,
+	})
+	if err != nil {
+		t.Fatalf("create original result fixture: %v", err)
+	}
+	identical, err := os.ReadFile(filepath.Join(source.root, filepath.FromSlash(issued.ResultRef)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		occupant []byte
+	}{
+		{"different bytes", []byte("unknown content")},
+		{"identical bytes", identical},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture, statePath, journalPath, record, ref, sourceBytes := readyCanonicalResultFixture(t)
+			message := canonicalResultMessage(t, fixture, record, messageID, "Implemented the behavior", []string{ref})
+			messagePath := writeRegistrationMessage(t, fixture.root, "result-answer.json", message)
+			candidate := canonicalResultArtifactPath(record, canonicalResultEvidenceID(record, 1, messageID))
+			occupied := filepath.Join(fixture.root, filepath.FromSlash(candidate))
+			if err := os.MkdirAll(filepath.Dir(occupied), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(occupied, tc.occupant, 0600); err != nil {
+				t.Fatal(err)
+			}
+			request := CompletionRequest{ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: messagePath, OccurredAt: occurredAt}
+			snapshot, receipt, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, request)
+			if err != nil {
+				t.Fatalf("accept with occupied candidate: %v", err)
+			}
+			if receipt.ResultRef == candidate || receipt.ResultRef == "" {
+				t.Fatalf("Writer claimed unknown candidate: %+v", receipt)
+			}
+			if retained, err := os.ReadFile(occupied); err != nil || !bytes.Equal(retained, tc.occupant) {
+				t.Fatalf("unknown candidate changed: %q %v", retained, err)
+			}
+			if tc.name == "identical bytes" {
+				published, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(receipt.ResultRef)))
+				if err != nil || !bytes.Equal(published, identical) {
+					t.Fatalf("the occupied file did not actually match this Writer's envelope: %v", err)
+				}
+			}
+			assertCanonicalResultProjection(t, fixture.root, snapshot, record, receipt, ref, sourceBytes, "submitted")
+			replayed, again, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, request)
+			if err != nil || !again.Replayed || again.ResultRef != receipt.ResultRef || replayed.Revision != snapshot.Revision {
+				t.Fatalf("registered responsibility did not replay: %+v %v", again, err)
+			}
+		})
+	}
+}
+
+func TestCanonicalResultWriterConcurrentSameAnswerUsesOneRegisteredPath(t *testing.T) {
+	fixture, statePath, journalPath, record, sourceRef, _ := readyCanonicalResultFixture(t)
+	message := canonicalResultMessage(t, fixture, record, "msg-result-concurrent-issuance", "Implemented the behavior", []string{sourceRef})
+	messagePath := writeRegistrationMessage(t, fixture.root, "result-concurrent-answer.json", message)
+	request := CompletionRequest{ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: messagePath}
+	type outcome struct {
+		snapshot int
+		receipt  ResultAcceptanceReceipt
+		err      error
+	}
+	const concurrent = 8
+	start, outcomes := make(chan struct{}), make(chan outcome, concurrent)
+	for i := 0; i < concurrent; i++ {
+		go func() {
+			<-start
+			snapshot, receipt, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, request)
+			outcomes <- outcome{snapshot.Revision, receipt, err}
+		}()
+	}
+	close(start)
+	first := <-outcomes
+	if first.err != nil || first.receipt.ResultRef == "" {
+		t.Fatalf("concurrent original Writer: %+v", first)
+	}
+	for i := 1; i < concurrent; i++ {
+		next := <-outcomes
+		if next.err != nil || first.receipt.ResultRef != next.receipt.ResultRef || first.snapshot != next.snapshot {
+			t.Fatalf("same responsibility had multiple results: %+v %+v", first, next)
+		}
+	}
+}
+
+func TestCanonicalResultWriterConcurrentChangedAnswerAndWrongOwner(t *testing.T) {
+	fixture, statePath, journalPath, record, sourceRef, _ := readyCanonicalResultFixture(t)
+	first := canonicalResultMessage(t, fixture, record, "msg-concurrent-conflict", "First professional answer", []string{sourceRef})
+	second := canonicalResultMessage(t, fixture, record, "msg-concurrent-conflict", "Different professional answer", []string{sourceRef})
+	firstPath := writeRegistrationMessage(t, fixture.root, "result-conflict-first.json", first)
+	secondPath := writeRegistrationMessage(t, fixture.root, "result-conflict-second.json", second)
+	type outcome struct {
+		receipt ResultAcceptanceReceipt
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 3)
+	for _, req := range []CompletionRequest{
+		{ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: firstPath},
+		{ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: secondPath},
+		{ExpectedRevision: -1, AgentID: "another-owner", MessagePath: firstPath},
+	} {
+		go func(req CompletionRequest) {
+			<-start
+			_, receipt, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, req)
+			results <- outcome{receipt: receipt, err: err}
+		}(req)
+	}
+	close(start)
+	accepted, different, wrongOwner := 0, 0, 0
+	for i := 0; i < 3; i++ {
+		result := <-results
+		switch {
+		case result.err == nil && result.receipt.ResultRef != "":
+			accepted++
+		case result.err != nil && strings.Contains(result.err.Error(), "different answer"):
+			different++
+		case result.err != nil && strings.Contains(result.err.Error(), "does not match Agent"):
+			wrongOwner++
+		default:
+			t.Fatalf("unexpected concurrent outcome: %+v", result)
+		}
+	}
+	if accepted != 1 || different != 1 || wrongOwner != 1 {
+		t.Fatalf("conflicting answers or owners crossed responsibilities: accepted=%d different=%d wrongOwner=%d", accepted, different, wrongOwner)
+	}
+}
+
+func TestCanonicalResultWriterSkipsOccupiedCandidateParent(t *testing.T) {
+	fixture, statePath, journalPath, record, ref, _ := readyCanonicalResultFixture(t)
+	const messageID = "msg-s6-occupied-parent"
+	message := canonicalResultMessage(t, fixture, record, messageID, "Implemented the behavior", []string{ref})
+	messagePath := writeRegistrationMessage(t, fixture.root, "result-parent-answer.json", message)
+	candidate := canonicalResultArtifactPath(record, canonicalResultEvidenceID(record, 1, messageID))
+	parent := filepath.Dir(filepath.Join(fixture.root, filepath.FromSlash(candidate)))
+	if err := os.MkdirAll(filepath.Dir(parent), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parent, []byte("unknown parent file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, receipt, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: messagePath})
+	if err != nil || receipt.ResultRef == "" || receipt.ResultRef == candidate {
+		t.Fatalf("reserve alternate Result: %+v %v", receipt, err)
+	}
+	if got, err := os.ReadFile(parent); err != nil || string(got) != "unknown parent file" {
+		t.Fatalf("unknown parent changed: %q %v", got, err)
 	}
 }

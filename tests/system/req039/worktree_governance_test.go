@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestWorktreeCreateUsesBoundCommitAndReusesAssignment(t *testing.T) {
+func TestWorktreeCreateUsesBoundBranchWithoutRecordingObjectIdentity(t *testing.T) {
 	root := freshRoot(t)
 	existing := seedIntegrableAssignment(t, root)
 	runGitIn(t, root, "worktree", "remove", existing)
@@ -31,6 +31,11 @@ func TestWorktreeCreateUsesBoundCommitAndReusesAssignment(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &data); err != nil {
 			t.Fatal(err)
 		}
+		for _, key := range []string{"base_commit", "expected_head", "sha256"} {
+			if _, exists := data[key]; exists {
+				t.Fatalf("worktree coordinates exposed machine identity %s", key)
+			}
+		}
 		return data
 	}
 	first := create()
@@ -41,10 +46,33 @@ func TestWorktreeCreateUsesBoundCommitAndReusesAssignment(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(path, "uncommitted.md")); !os.IsNotExist(err) {
 		t.Fatalf("parent staged file was copied: %v", err)
 	}
+	recordPath := filepath.Join(root, ".claude/assignments/assignment-ti.json")
+	recordBytes, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(recordBytes, &record); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := record["base_commit"]; exists {
+		t.Fatal("new worktree coordinates registered an object identity")
+	}
+	// Existing historical and business data stays in the user's file. The
+	// current coordinate response does not promote it to a new machine fact.
+	record["base_commit"] = map[string]any{"historical": true}
+	record["business_note"] = map[string]any{"sha256": "ordinary product text"}
+	recordBytes, _ = json.Marshal(record)
+	if err := os.WriteFile(recordPath, recordBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
 	before := runGitIn(t, root, "worktree", "list", "--porcelain")
 	second := create()
 	if second["worktree_path"] != path || runGitIn(t, root, "worktree", "list", "--porcelain") != before {
 		t.Fatal("retry expanded worktrees")
+	}
+	if current, err := os.ReadFile(recordPath); err != nil || !bytes.Equal(current, recordBytes) {
+		t.Fatalf("retry rewrote historical coordinate data: %v", err)
 	}
 	if branch := strings.TrimSpace(runGitIn(t, root, "branch", "--show-current")); branch != "unrelated" {
 		t.Fatal("creation switched authority branch")

@@ -2,8 +2,6 @@ package review
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -31,7 +29,6 @@ type e2eScenario struct {
 
 type e2eSourceCandidate struct {
 	Path          string
-	SHA256        string
 	PossibleCases []string
 }
 
@@ -68,7 +65,7 @@ func discoverE2EInventory(root string, state map[string]any, plans ...*Plan) (e2
 	}
 	cases, err := knownE2ECases(context.Background(), root, state, plan)
 	if err != nil {
-		return inventory, []string{err.Error()}
+		diagnostics = append(diagnostics, err.Error())
 	}
 	inventory.Cases = cases
 	if len(inventory.Cases) == 0 {
@@ -111,8 +108,7 @@ func discoverE2EInventory(root string, state map[string]any, plans ...*Plan) (e2
 			diagnostics = append(diagnostics, fmt.Sprintf("read E2E candidate %s: %v", rel, readErr))
 			return nil
 		}
-		digest := sha256.Sum256(data)
-		candidate := e2eSourceCandidate{Path: rel, SHA256: hex.EncodeToString(digest[:])}
+		candidate := e2eSourceCandidate{Path: rel}
 		for caseID, refs := range caseIDs {
 			if mentionsCaseID(string(data), caseID) {
 				candidate.PossibleCases = append(candidate.PossibleCases, refs...)

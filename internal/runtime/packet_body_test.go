@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
-	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/packetbody"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -84,13 +84,17 @@ func TestPacketBodyCurrentSelectionDoesNotReadHistoricalBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	entities["work_packets"] = []any{historyIndex, index}
-	ctx, timings := metrics.WithCallTimings(WithReviewResultReadCache(WithPacketBodyRoot(context.Background(), root)))
+	reads := 0
+	ctx := packetbody.WithResolver(WithReviewResultReadCache(WithPacketBodyRoot(context.Background(), root)), func(_ context.Context, ref packetbody.Reference) ([]byte, error) {
+		reads++
+		return os.ReadFile(filepath.Join(root, filepath.FromSlash(ref.Path)))
+	})
 	current, err := CurrentReviewResultPacketsContext(ctx, state, p.Binding.OwnerAgentID)
 	if err != nil || len(current) != 1 || !reflect.DeepEqual(current[0], p) {
 		t.Fatalf("selected current: %v %v", current, err)
 	}
-	if timings.Snapshot()["runtime/review_packet_selected_build"].Count != 1 {
-		t.Fatal(timings.Snapshot())
+	if reads != 1 {
+		t.Fatalf("current selection read %d packet bodies, want the one selected original", reads)
 	}
 	if _, err := ReviewResultPacketsContext(ctx, state); err == nil {
 		t.Fatal("full diagnostic ignored missing historical body")
@@ -127,21 +131,25 @@ func TestCheckpointRetainsIndependentPacketBodyAndRestoresExactBytes(t *testing.
 	if err != nil || !found || !reflect.DeepEqual(got, p) {
 		t.Fatalf("checkpoint original: %v %v", found, err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ref.Path), []byte("unknown private file"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := RestoreCheckpointPacketBodies(context.Background(), root, CheckpointPair{State: state, PacketBodies: bodies}); err != nil {
 		t.Fatal(err)
+	}
+	actual, _, err := packetbody.ReferenceFromIndex(row)
+	if err != nil || actual.Path == ref.Path {
+		t.Fatalf("restore did not select an independent body: %v %v", actual, err)
 	}
 	if err := verifyReferencedPacketBodies(context.Background(), root, state); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ref.Path), []byte("conflict"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := RestoreCheckpointPacketBodies(context.Background(), root, CheckpointPair{State: state, PacketBodies: bodies}); err == nil {
-		t.Fatal("restore overwrote conflicting original body")
+	if got, err := os.ReadFile(filepath.Join(root, ref.Path)); err != nil || string(got) != "unknown private file" {
+		t.Fatalf("unknown body was changed: %q %v", got, err)
 	}
 }
 
-func TestPacketStorageClassifiesCanceledOrphanWithoutGrantingNeighbors(t *testing.T) {
+func TestPacketStorageDoesNotClaimCanceledOrphanOrNeighbors(t *testing.T) {
 	root := t.TempDir()
 	p := checkpointTestReviewPacket(t, root)
 	state, _ := checkpointTestReviewState(t, p, nil)
@@ -158,7 +166,7 @@ func TestPacketStorageClassifiesCanceledOrphanWithoutGrantingNeighbors(t *testin
 		t.Fatal(err)
 	}
 	controls, err := ClassifyPacketBodyStoragePathsContext(context.Background(), root, []string{ref.Path, neighbor})
-	if err != nil || !reflect.DeepEqual(controls, []string{ref.Path}) {
+	if err != nil || len(controls) != 0 {
 		t.Fatalf("orphan storage classification: %v %v", controls, err)
 	}
 	if _, err := ClassifyPacketBodyStoragePathsContext(ctx, root, []string{ref.Path}); err != context.Canceled {
@@ -167,7 +175,46 @@ func TestPacketStorageClassifiesCanceledOrphanWithoutGrantingNeighbors(t *testin
 	if err := os.WriteFile(filepath.Join(root, ref.Path), []byte("corrupted"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ClassifyPacketBodyStoragePathsContext(context.Background(), root, []string{ref.Path}); err == nil {
-		t.Fatal("corrupt storage was exempted")
+	if paths, err := ClassifyPacketBodyStoragePathsContext(context.Background(), root, []string{ref.Path}); err != nil || len(paths) != 0 {
+		t.Fatalf("unregistered storage acquired authority: %v %v", paths, err)
+	}
+}
+
+func TestCheckpointRestoresWriterSelectedAlternativeBodyRoot(t *testing.T) {
+	root := t.TempDir()
+	p := checkpointTestReviewPacket(t, root)
+	state, _ := checkpointTestReviewState(t, p, nil)
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	occupied := filepath.Join(root, ".claude", "packet-bodies")
+	if err := os.WriteFile(occupied, []byte("private occupant"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{root: root}
+	if _, err := store.externalizeNewPacketBodies(map[string]any{}, state); err != nil {
+		t.Fatal(err)
+	}
+	row := state["entities"].(map[string]any)["work_packets"].([]any)[0].(map[string]any)
+	ref, external, err := packetbody.ReferenceFromIndex(row)
+	if err != nil || !external || !strings.HasPrefix(ref.Path, ".claude/packet-bodies-alt-") {
+		t.Fatalf("actual body reference: %+v %v", ref, err)
+	}
+	dir := ".claude/runtime-checkpoints/alternate-fixture"
+	if err := store.publishCheckpointPacketBodies(state, dir); err != nil {
+		t.Fatal(err)
+	}
+	bodies, err := readCheckpointPacketBodies(root, dir, state)
+	if err != nil || len(bodies[ref.Path]) == 0 {
+		t.Fatalf("checkpoint original body: %v", err)
+	}
+	if err := RestoreCheckpointPacketBodies(context.Background(), root, CheckpointPair{State: state, PacketBodies: bodies}); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyReferencedPacketBodies(context.Background(), root, state); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(occupied); err != nil || string(got) != "private occupant" {
+		t.Fatal("unknown storage root was changed")
 	}
 }

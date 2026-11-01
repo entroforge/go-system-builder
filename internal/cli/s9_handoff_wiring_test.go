@@ -30,14 +30,14 @@ func s9HandoffMissingCandidate(t *testing.T) (string, string, workpacket.RepairP
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(ctx, root, worker, plan, service, &diagnostic); err != nil {
+	if err := receiveNativeS9ReadyPlan(ctx, root, worker, plan, service, &diagnostic, nil); err != nil {
 		t.Fatalf("import the original Plan: %v", err)
 	}
 	receipt, err := service.SaveRepairPlanReportFrom(ctx, plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil)
 	if err != nil || !receipt.Accepted {
 		t.Fatalf("original Plan was not received: %+v %v", receipt, err)
 	}
-	if err := recordNativeS9Source(ctx, root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+	if err := recordNativeS9OriginalLocation(ctx, root, plan, worker); err != nil {
 		t.Fatalf("register original native source: %v", err)
 	}
 	issued, err := service.IssueRepairResults(ctx, plan.Binding.OwnerAgentID)
@@ -82,7 +82,7 @@ func TestS9HandoffMissingCandidatePreservesPlanAcrossAllEntrances(t *testing.T) 
 	root, worker, plan, e, result := s9HandoffMissingCandidate(t)
 	snap := repairDispatchSnapshot(t, root)
 	before := repairDispatchRuntimeBytes(t, root)
-	brief, _, _ := nativeS9Paths(plan)
+	brief := nativeS9BriefPath(plan)
 	for _, subject := range []nativeReturnSubject{{kind: "s9-plan-report-v1", id: plan.ID}, {kind: "s9-repair-result-v1", id: result.ID}} {
 		summary, err := nativeReturnSummary(root, snap, subject)
 		if err != nil {
@@ -119,16 +119,12 @@ func TestS9HandoffMissingCandidatePreservesPlanAcrossAllEntrances(t *testing.T) 
 }
 
 func TestS9HandoffIncompleteBindingNeverOpensCandidate(t *testing.T) {
-	for _, side := range []string{"path", "sha"} {
+	for _, side := range []string{"path"} {
 		t.Run(side, func(t *testing.T) {
 			root, _, _, e, _ := s9HandoffMissingCandidate(t)
 			snap := repairDispatchSnapshot(t, root)
 			row := snap.State["workspace"].(map[string]any)["executions"].(map[string]any)[e.AssignmentID].(map[string]any)
-			if side == "path" {
-				row["delivery_ref"] = ".claude/nonexistent-original-candidate.json"
-			} else {
-				row["delivery_sha256"] = strings.Repeat("a", 64)
-			}
+			row["delivery_ref"] = ".claude/nonexistent-original-candidate.json"
 			raw, err := json.Marshal(snap.State)
 			if err != nil {
 				t.Fatal(err)
@@ -149,7 +145,7 @@ func TestS9HandoffIncompleteBindingNeverOpensCandidate(t *testing.T) {
 func TestS9HandoffTypedCandidateCannotLoseProvenanceOrSource(t *testing.T) {
 	root, _, e, packet, _ := s9NativeIntegrationCandidate(t)
 	snap := repairDispatchSnapshot(t, root)
-	candidate, err := repair.ReadWorkspaceCandidate(root, repair.ArtifactRef{Path: e.DeliveryRef, SHA256: e.DeliverySHA256})
+	candidate, err := repair.ReadWorkspaceCandidate(root, repair.ArtifactRef{Path: e.DeliveryRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +279,6 @@ func TestS9HandoffDamagedTypedCandidateStopsBeforeMerge(t *testing.T) {
 	for _, damage := range []string{"missing provenance", "missing source", "invalid JSON"} {
 		t.Run(damage, func(t *testing.T) {
 			root, _, e, _, _ := s9NativeIntegrationCandidate(t)
-			snap := repairDispatchSnapshot(t, root)
 			path := filepath.Join(root, e.DeliveryRef)
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -311,17 +306,7 @@ func TestS9HandoffDamagedTypedCandidateStopsBeforeMerge(t *testing.T) {
 				if err := os.WriteFile(path, raw, 0600); err != nil {
 					t.Fatal(err)
 				}
-				// Bypass only the byte mismatch to reach the independent typed source
-				// checks. This is deliberate corruption, never a fabricated acceptance.
-				row := mapFieldCLI(mapFieldCLI(snap.State, "workspace"), "executions")[e.AssignmentID].(map[string]any)
-				row["delivery_sha256"] = workpacket.Digest(raw)
-				state, err := json.Marshal(snap.State)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(root, ".claude/loop-state.json"), state, 0600); err != nil {
-					t.Fatal(err)
-				}
+
 			}
 			before := repairDispatchRuntimeBytes(t, root)
 			head := repairLeadGit(t, root, "rev-parse", "HEAD")

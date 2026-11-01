@@ -1,8 +1,6 @@
 package semantic
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,12 +28,6 @@ func TestLegacyAgentDefinitionReferenceRemainsContained(t *testing.T) {
 	}
 	if err := checkReachablePath(root, "evidence[qa]", "agents/qa.md"); err == nil {
 		t.Fatal("alias broadened to arbitrary evidence")
-	}
-	if err := checkReachableFingerprint(root, "evidence[qa]", `.claude\agents\qa.md#role`, fmt.Sprintf("%x", sha256.Sum256(body))); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkReachableFingerprint(root, "evidence[qa]", ".claude/agents/qa.md", "wrong"); err == nil {
-		t.Fatal("lost fingerprint enforcement")
 	}
 	outside := filepath.Join(t.TempDir(), "external.md")
 	if err := os.WriteFile(outside, body, 0600); err != nil {

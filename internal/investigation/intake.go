@@ -1,12 +1,10 @@
-// Package investigation implements the minimum S8 ObservationBatch intake
+// Package investigation implements the S8 Finding and human-report intake
 // boundary. It creates one immutable-at-revision InvestigationCase artifact
 // and pins it into Runtime through the shared CAS writer. Investigation does
 // not create BUGs or re-run the S7 symptom.
 package investigation
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	loopreview "github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -23,21 +23,10 @@ import (
 
 const intakeNextCommand = "runtime investigation ingest --root ."
 
-// intakeSealNext is the no-batch recovery hint (RC-18 F-H1): it must never
-// point back at this ingest command. Retrying ingest can never create the
-// batch — the pointer only appears once S7 seals an ObservationBatch — so a
-// self-referencing hint turns the first rejection into a dead loop.
-const intakeSealNext = "next: `loop-harness s7 status --explain` to read the current round, then dispatch or submit the remaining Assignments (`runtime review-result submit --assignment-id <id> --result <result.json>`) so the round consumer seals the ObservationBatch; only then re-run this ingest"
-
-// intakePhaseNext is the RC-18 lifecycle-guard hint for the phase gate below:
-// the Runtime cursor is not bug_resolution.investigation, so the batch pointer
-// (if any) is not consumable yet. TR-008 (verification.observation_sealed ->
-// bug_resolution.investigation) or a human defect decision must move the
-// cursor first — re-running ingest can never do that.
-const intakePhaseNext = "next: run `runtime investigation status` to inspect the current cursor; TR-008 (a sealed ObservationBatch handed off from verification.observation_sealed) or a human defect decision must open bug_resolution.investigation before this ingest is legal"
+const intakePhaseNext = "next: follow the actual accepted Finding handoff or human defect decision to S8; inspect the current Runtime if preparation failed"
 
 // ErrAlreadyIngested means the current Runtime already points at the same
-// ObservationBatch/Case. It is intentionally an error so a caller cannot
+// Case. It is intentionally an error so a caller cannot
 // mistake an idempotent retry for a new investigation revision.
 var ErrAlreadyIngested = errors.New("investigation case already ingested")
 
@@ -46,9 +35,8 @@ var ErrAlreadyIngested = errors.New("investigation case already ingested")
 var ErrIngestConflict = errors.New("investigation intake identity conflict")
 
 // IngestRequest carries the caller's Runtime CAS revision and the only
-// authoring decision allowed at intake: why this sealed Finding set is a
-// provisional grouping. CaseID is optional; when omitted it is derived from
-// the sealed ObservationBatch ID.
+// authoring decision allowed at intake: why the actual Finding set is a
+// provisional grouping. CaseID is optional.
 type IngestRequest struct {
 	ExpectedRevision  int
 	CaseID            string
@@ -56,49 +44,7 @@ type IngestRequest struct {
 	OccurredAt        time.Time
 }
 
-type observationBatch struct {
-	ObservationBatchID string   `json:"observation_batch_id"`
-	RuntimeID          string   `json:"runtime_id"`
-	BaselineGeneration int      `json:"baseline_generation"`
-	SubjectDigest      string   `json:"subject_digest"`
-	FindingIDs         []string `json:"finding_ids"`
-	// RC-18 S8-M1: claim_coverage_summary / blocked_claims / unobserved_claim_ids
-	// were previously never decoded, so the S8 boundary views derived from them
-	// stayed empty at intake. The schema already makes them required.
-	ClaimCoverageSummary claimCoverageSummary `json:"claim_coverage_summary"`
-	UnobservedClaimIDs   []string             `json:"unobserved_claim_ids"`
-}
-
-// claimCoverageSummary mirrors the sealed ObservationBatch projection
-// (observation-batch.schema.json): the round's Claim dispositions and the
-// blocked Claims with their blocking Finding bindings.
-type claimCoverageSummary struct {
-	TotalRequired int            `json:"total_required"`
-	Pass          int            `json:"pass"`
-	Finding       int            `json:"finding"`
-	NotApplicable int            `json:"not_applicable"`
-	Blocked       int            `json:"blocked"`
-	BlockedClaims []blockedClaim `json:"blocked_claims"`
-	PlanRevision  int            `json:"plan_revision"`
-}
-
-type blockedClaim struct {
-	ClaimID             string             `json:"claim_id"`
-	BlockingFindingIDs  []string           `json:"blocking_finding_ids"`
-	FailedPrecondition  failedPrecondition `json:"failed_precondition"`
-	EvidenceRefs        []string           `json:"evidence_refs"`
-	AfterRepairRequired bool               `json:"after_repair_required"`
-	ResultID            string             `json:"result_id"`
-}
-
-type failedPrecondition struct {
-	Kind   string `json:"kind"`
-	Detail string `json:"detail"`
-}
-
-// Ingest consumes the current sealed ObservationBatch, or the actual human
-// defect decision consumed by TR-027 when no current Batch exists. Both write
-// the original Case and investigation pointer through the same Runtime CAS.
+// Ingest consumes accepted Findings or an actual human defect decision.
 func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime.Snapshot, error) {
 	if strings.TrimSpace(root) == "" {
 		return runtime.Snapshot{}, actionableError("repository root is required")
@@ -131,15 +77,14 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	if err != nil {
 		return runtime.Snapshot{}, actionableError("Runtime baseline.generation is missing: %v", err)
 	}
-	var pointer batchPointer
-	var batch observationBatch
+	findingIDs := []string{}
 	humanID, humanPath := "", ""
 	review, _ := current.State["review"].(map[string]any)
-	if currentBatch, _ := review["observation_batch"].(map[string]any); currentBatch == nil {
+	if stringField(s8Map(current.State["last_transition"])["transition_id"]) == "TR-027" {
 		rows, _ := current.State["evidence"].([]any)
 		for index := len(rows) - 1; index >= 0; index-- {
 			row, _ := rows[index].(map[string]any)
-			if stringField(row["kind"]) != "human_decision" || integerValueOrZero(row["baseline_generation"]) != baselineGeneration || integerValueOrZero(row["review_round"]) != integerValueOrZero(review["round"]) {
+			if stringField(row["kind"]) != "human_decision" || integerValueOrZero(row["baseline_generation"]) != baselineGeneration {
 				continue
 			}
 			if stringField(row["consumed_by"]) != "TR-027" {
@@ -154,51 +99,28 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		}
 	}
 	if humanID == "" && stringField(s8Map(current.State["last_transition"])["transition_id"]) == "TR-027" {
-		return runtime.Snapshot{}, actionableError("Main must restore the original human_decision consumed by TR-027; no Finding or ObservationBatch is required for that human report")
+		return runtime.Snapshot{}, actionableError("Main must restore the original human_decision consumed by TR-027; no Finding is required for that human report")
 	}
 
-	if humanID == "" {
-		pointer, err = observationBatchPointer(root, current.State)
-		if err != nil {
-			return runtime.Snapshot{}, err
-		}
-		batchPath, err := repositoryPath(root, pointer.Path)
-		if err != nil {
-			return runtime.Snapshot{}, actionableError("observation_batch.path is invalid: %v", err)
-		}
-		batchBytes, err := os.ReadFile(batchPath)
-		if err != nil {
-			return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q is missing or unreadable: %v", pointer.Path, err)
-		}
-		actualBatchSHA := sha256Hex(batchBytes)
-		if actualBatchSHA != pointer.SHA256 {
-			return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q sha256 drifted: state pins %s but disk is %s", pointer.Path, pointer.SHA256, actualBatchSHA)
-		}
-		if err := schema.NewValidator(root).ValidateBytes("observation-batch.schema.json", batchBytes); err != nil {
-			return runtime.Snapshot{}, actionableError("sealed ObservationBatch %q schema is invalid: %v", pointer.Path, err)
-		}
-		if err := json.Unmarshal(batchBytes, &batch); err != nil {
-			return runtime.Snapshot{}, actionableError("decode sealed ObservationBatch %q: %v", pointer.Path, err)
-		}
-		if batch.ObservationBatchID != pointer.BatchID {
-			return runtime.Snapshot{}, actionableError("observation_batch batch_id mismatch: state pins %q but the file declares %q", pointer.BatchID, batch.ObservationBatchID)
-		}
-		if batch.RuntimeID != stringField(current.State["runtime_id"]) {
-			return runtime.Snapshot{}, actionableError("observation_batch runtime_id %q does not match Runtime %q", batch.RuntimeID, stringField(current.State["runtime_id"]))
-		}
-		if batch.BaselineGeneration != baselineGeneration {
-			return runtime.Snapshot{}, actionableError("observation_batch baseline_generation %d does not match Runtime baseline_generation %d", batch.BaselineGeneration, baselineGeneration)
-		}
-		if err := exactFindingSet(pointer.FindingIDs, batch.FindingIDs); err != nil {
-			return runtime.Snapshot{}, actionableError("observation_batch Finding IDs are not an exact set: %v", err)
-		}
-		if err := validateFindingArtifacts(root, current.State, pointer.FindingIDs); err != nil {
-			return runtime.Snapshot{}, actionableError("sealed ObservationBatch Finding artifacts are not investigation-ready: %v", err)
+	acceptedFindings := loopreview.RoundFindings(current.State)
+	directFindings := humanID == "" && len(acceptedFindings) > 0
+	if humanID == "" && !directFindings {
+		return runtime.Snapshot{}, actionableError("no accepted Finding or actual human defect decision is available for S8; Main should inspect the original handoff")
+	}
+	if directFindings {
+		for _, finding := range acceptedFindings {
+			if id := stringField(finding["finding_id"]); id != "" {
+				findingIDs = append(findingIDs, id)
+			}
 		}
 	}
-	sourceID := batch.ObservationBatchID
-	if humanID != "" {
-		sourceID = humanID
+
+	sourceID := humanID
+	if directFindings {
+		sourceID = reviewmeta.FromReview(review).PlanID
+		if sourceID == "" && len(findingIDs) > 0 {
+			sourceID = findingIDs[0]
+		}
 	}
 
 	caseID := request.CaseID
@@ -208,7 +130,7 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	if !validCaseID(caseID) {
 		return runtime.Snapshot{}, actionableError("case_id %q is invalid; use investigation-case-<token>", caseID)
 	}
-	if err := rejectExistingInvestigation(current.State, caseID, batch.ObservationBatchID); err != nil {
+	if err := rejectExistingInvestigation(current.State, caseID); err != nil {
 		return runtime.Snapshot{}, err
 	}
 
@@ -223,7 +145,7 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		return runtime.Snapshot{}, fmt.Errorf("inspect InvestigationCase artifact %s: %w", caseRel, err)
 	}
 
-	caseBytes, err := buildInitialCase(caseID, batch, pointer.Path, pointer.SHA256, request.GroupingRationale, baselineGeneration)
+	caseBytes, err := buildInitialCase(caseID, findingIDs, request.GroupingRationale, baselineGeneration)
 	if err != nil {
 		return runtime.Snapshot{}, err
 	}
@@ -232,17 +154,9 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		if err := json.Unmarshal(caseBytes, &document); err != nil {
 			return runtime.Snapshot{}, err
 		}
-		for _, key := range []string{"observation_batch_id", "observation_batch_ref", "observation_batch_sha256"} {
-			delete(document, key)
-		}
 		document["source_finding_ids"] = []string{}
 		document["unexplained_finding_ids"] = []string{}
 		document["failure_boundary_refs"] = []string{humanID, humanPath}
-		digest, baselineErr := humanBaselineDigest(root, current.State)
-		if baselineErr != nil {
-			return runtime.Snapshot{}, actionableError("%v", baselineErr)
-		}
-		document["baseline_digest"] = digest
 		caseBytes, err = json.MarshalIndent(document, "", "  ")
 		if err != nil {
 			return runtime.Snapshot{}, err
@@ -255,11 +169,11 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	if err := writeExclusive(casePath, caseBytes); err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("write InvestigationCase %s: %w", caseRel, err)
 	}
-	caseSHA := sha256Hex(caseBytes)
 	cleanup := func() {
-		if !runtimeReferencesCase(statePath, caseRel, caseSHA) {
-			_ = os.Remove(casePath)
-		}
+		_, _ = runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).RemoveUnreferencedArtifact(runtime.ArtifactCleanupRequest{
+			ExpectedRevision: current.Revision, ArtifactPath: caseRel, ArtifactBytes: caseBytes,
+			ReferencedPaths: stateStringReferences(current.State, caseRel),
+		})
 	}
 
 	occurredAt := request.OccurredAt
@@ -270,17 +184,12 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	cursor := map[string]any{"state": stringField(lifecycle["state"]), "phase": lifecycle["phase"]}
 	pointerMap := map[string]any{
-		"case_id":              caseID,
-		"path":                 caseRel,
-		"sha256":               caseSHA,
-		"revision":             1,
-		"status":               "investigating",
-		"source_finding_ids":   stringSliceAny(sortedStrings(pointer.FindingIDs)),
-		"observation_batch_id": batch.ObservationBatchID,
-		"updated_at":           occurredAt.UTC().Format(time.RFC3339Nano),
-	}
-	if humanID != "" {
-		delete(pointerMap, "observation_batch_id")
+		"case_id":            caseID,
+		"path":               caseRel,
+		"revision":           1,
+		"status":             "investigating",
+		"source_finding_ids": stringSliceAny(sortedStrings(findingIDs)),
+		"updated_at":         occurredAt.UTC().Format(time.RFC3339Nano),
 	}
 	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	snapshot, err := updateRuntime(store, request.ExpectedRevision, runtime.Mutation{
@@ -296,7 +205,6 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		RequestID:              "investigation-ingest",
 		BaselineGeneration:     baselineGeneration,
 		GateID:                 "S8-INVESTIGATION-INTAKE",
-		GateFingerprint:        "sha256:investigation-intake-v1",
 		ProducerResponsibility: "Investigation Intake",
 		Message:                fmt.Sprintf("investigation_case_ingested: %s consumes %s", caseID, sourceID),
 		OccurredAt:             occurredAt,
@@ -309,13 +217,7 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 				if _, err := humanCaseSource(root, state, original); err != nil {
 					return err
 				}
-				digest, err := humanBaselineDigest(root, state)
-				if err != nil {
-					return err
-				}
-				if digest != stringField(original["baseline_digest"]) {
-					return errors.New("human report frozen baseline changed during intake; Main restores the original source")
-				}
+
 			}
 			review, ok := state["review"].(map[string]any)
 			if !ok {
@@ -323,11 +225,10 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 			}
 			if existing, ok := review["investigation"].(map[string]any); ok && existing != nil {
 				existingCase := stringField(existing["case_id"])
-				existingBatch := stringField(existing["observation_batch_id"])
-				if existingCase == caseID && existingBatch == batch.ObservationBatchID {
-					return fmt.Errorf("%w (idempotent retry): Case %s already consumes batch %s; next: runtime investigation status --case-id %s", ErrAlreadyIngested, caseID, batch.ObservationBatchID, caseID)
+				if existingCase == caseID {
+					return fmt.Errorf("%w: Case %s is already active", ErrAlreadyIngested, caseID)
 				}
-				return fmt.Errorf("%w: Runtime already points to Case %s/batch %s; requested Case %s/batch %s; next: runtime investigation status --case-id %s", ErrIngestConflict, existingCase, existingBatch, caseID, batch.ObservationBatchID, existingCase)
+				return fmt.Errorf("%w: Runtime already points to Case %s, requested %s", ErrIngestConflict, existingCase, caseID)
 			}
 			review["investigation"] = pointerMap
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
@@ -341,118 +242,20 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	return snapshot, nil
 }
 
-type batchPointer struct {
-	BatchID    string
-	Path       string
-	SHA256     string
-	FindingIDs []string
-}
-
-func observationBatchPointer(root string, state map[string]any) (batchPointer, error) {
-	review, _ := state["review"].(map[string]any)
-	var raw map[string]any
-	if review != nil {
-		raw, _ = review["observation_batch"].(map[string]any)
-	}
-	if raw == nil {
-		// Defect #25 recovery: a reject_defect (TR-027) executed before the
-		// placeholder-pointer fix — or any legacy path that cleared the review
-		// pointer — can leave S8 open while a sealed ObservationBatch evidence
-		// row is still registered and its artifact is intact. Recover from the
-		// newest valid sealed batch instead of dead-looping on ingest.
-		return batchPointerFromSealedEvidence(root, state)
-	}
-	pointer := batchPointer{BatchID: stringField(raw["batch_id"]), Path: stringField(raw["path"]), SHA256: stringField(raw["sha256"])}
-	if pointer.BatchID == "" {
-		return batchPointer{}, actionableError("state.review.observation_batch.batch_id is missing")
-	}
-	if pointer.Path == "" {
-		return batchPointer{}, actionableError("state.review.observation_batch.path is missing")
-	}
-	if pointer.SHA256 == "" {
-		return batchPointer{}, actionableError("state.review.observation_batch.sha256 is missing")
-	}
-	ids, err := stringSlice(raw["finding_ids"], "state.review.observation_batch.finding_ids")
-	if err != nil {
-		return batchPointer{}, err
-	}
-	pointer.FindingIDs = ids
-	return pointer, nil
-}
-
-// batchPointerFromSealedEvidence recovers the S8 intake pointer from the
-// newest valid observation_batch evidence row (defect #25 recovery). It never
-// fabricates a batch: batch_id/sha256 come from the evidence registry row and
-// finding_ids come from the sealed artifact itself, so every downstream
-// verification (sha, schema, exact finding set) still applies unchanged.
-func batchPointerFromSealedEvidence(root string, state map[string]any) (batchPointer, error) {
-	rows, _ := state["evidence"].([]any)
-	for index := len(rows) - 1; index >= 0; index-- {
-		row, _ := rows[index].(map[string]any)
-		if stringField(row["kind"]) != "observation_batch" || stringField(row["status"]) != "valid" {
-			continue
+func buildInitialCase(caseID string, findingIDs []string, rationale string, baseline int) ([]byte, error) {
+	boundaries := make([]string, 0, len(findingIDs))
+	for _, id := range findingIDs {
+		if id != "" {
+			boundaries = append(boundaries, "finding:"+id)
 		}
-		path := stringField(row["path"])
-		sha := stringField(row["sha256"])
-		batchID := stringField(row["id"])
-		if path == "" || sha == "" || batchID == "" {
-			continue
-		}
-		batchPath, err := repositoryPath(root, path)
-		if err != nil {
-			continue
-		}
-		batchBytes, err := os.ReadFile(batchPath)
-		if err != nil {
-			continue
-		}
-		var sealed struct {
-			ObservationBatchID string   `json:"observation_batch_id"`
-			FindingIDs         []string `json:"finding_ids"`
-		}
-		if err := json.Unmarshal(batchBytes, &sealed); err != nil {
-			continue
-		}
-		if sealed.ObservationBatchID == "" {
-			sealed.ObservationBatchID = batchID
-		}
-		return batchPointer{BatchID: sealed.ObservationBatchID, Path: path, SHA256: sha, FindingIDs: sealed.FindingIDs}, nil
 	}
-	return batchPointer{}, fmt.Errorf("state.review.observation_batch is missing and no valid sealed observation_batch evidence exists to recover from; %s", intakeSealNext)
-}
-
-func buildInitialCase(caseID string, batch observationBatch, batchRef, batchSHA, rationale string, baseline int) ([]byte, error) {
-	// RC-18 S8-M1: project the sealed Claim-coverage facts into the boundary
-	// views instead of leaving them permanently empty. failure_boundary_refs
-	// and evidence_gaps are content-addressed observations of what the sealed
-	// batch already proves; cross_layer_trace stays null because the batch
-	// carries no cross-layer topology and S8 never fabricates one.
-	boundaryRefs, evidenceGaps := projectBatchViews(batch)
 	document := map[string]any{
-		"schema_version":           "1.0.0",
-		"case_id":                  caseID,
-		"revision":                 1,
-		"status":                   "investigating",
-		"source_finding_ids":       sortedStrings(batch.FindingIDs),
-		"observation_batch_id":     batch.ObservationBatchID,
-		"observation_batch_ref":    batchRef,
-		"observation_batch_sha256": batchSHA,
-		"baseline_generation":      baseline,
-		"baseline_digest":          batch.SubjectDigest,
-		"grouping_rationale":       strings.TrimSpace(rationale),
-		"unexplained_finding_ids":  sortedStrings(batch.FindingIDs),
-		"failure_boundary_refs":    boundaryRefs,
-		"cross_layer_trace":        nil,
-		"evidence_gaps":            evidenceGaps,
-		"hypotheses":               []any{},
-		"hypothesis_results":       []any{},
-		"causal_model":             nil,
-		"primary_root_cause":       nil,
-		"blast_radius":             nil,
-		"detection_gap":            nil,
-		"route":                    nil,
-		"route_reason":             nil,
-		"repair_contract_ref":      nil,
+		"schema_version": "1.0.0", "case_id": caseID, "revision": 1, "status": "investigating",
+		"source_finding_ids": sortedStrings(findingIDs), "baseline_generation": baseline,
+		"grouping_rationale": strings.TrimSpace(rationale), "unexplained_finding_ids": sortedStrings(findingIDs),
+		"failure_boundary_refs": sortedStrings(boundaries), "cross_layer_trace": nil, "evidence_gaps": []string{},
+		"hypotheses": []any{}, "hypothesis_results": []any{}, "causal_model": nil, "primary_root_cause": nil,
+		"blast_radius": nil, "detection_gap": nil, "route": nil, "route_reason": nil, "repair_contract_ref": nil,
 	}
 	data, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
@@ -461,140 +264,17 @@ func buildInitialCase(caseID string, batch observationBatch, batchRef, batchSHA,
 	return append(data, '\n'), nil
 }
 
-// projectBatchViews derives the initial failure_boundary_refs and
-// evidence_gaps views from the sealed ObservationBatch. failure_boundary_refs
-// names every source Finding artifact (its existence and hash were verified by
-// validateFindingArtifacts) plus every blocked Claim's evidence refs — the
-// boundaries the investigation must explain or resolve. evidence_gaps records
-// one entry per blocked Claim (the failed precondition and the after-repair
-// obligation) and per unobserved Claim (an immediate-stop capture gap).
-func projectBatchViews(batch observationBatch) ([]string, []string) {
-	boundarySet := map[string]struct{}{}
-	for _, findingID := range batch.FindingIDs {
-		if id := strings.TrimSpace(findingID); id != "" {
-			boundarySet["finding:"+id] = struct{}{}
-		}
-	}
-	// Never nil: the Case schema requires evidence_gaps to be an array, and a
-	// nil slice JSON-encodes as null (breaking every downstream schema check
-	// when no Claim is blocked or unobserved).
-	gaps := []string{}
-	for _, blocked := range batch.ClaimCoverageSummary.BlockedClaims {
-		if strings.TrimSpace(blocked.ClaimID) == "" {
-			continue
-		}
-		for _, ref := range blocked.EvidenceRefs {
-			if ref = strings.TrimSpace(ref); ref != "" {
-				boundarySet[ref] = struct{}{}
-			}
-		}
-		gaps = append(gaps, fmt.Sprintf(
-			"claim %s blocked by findings [%s]: precondition %s — %s (after-repair re-verification required)",
-			blocked.ClaimID, strings.Join(sortedStrings(blocked.BlockingFindingIDs), ", "),
-			strings.TrimSpace(blocked.FailedPrecondition.Kind), strings.TrimSpace(blocked.FailedPrecondition.Detail)))
-	}
-	for _, claimID := range batch.UnobservedClaimIDs {
-		if id := strings.TrimSpace(claimID); id != "" {
-			gaps = append(gaps, "claim "+id+" unobserved: immediate-stop capture gap; the repaired round owes this Claim a disposition")
-		}
-	}
-	boundaries := make([]string, 0, len(boundarySet))
-	for ref := range boundarySet {
-		boundaries = append(boundaries, ref)
-	}
-	return sortedStrings(boundaries), gaps
-}
-
-func rejectExistingInvestigation(state map[string]any, caseID, batchID string) error {
+func rejectExistingInvestigation(state map[string]any, caseID string) error {
 	review, _ := state["review"].(map[string]any)
 	existing, _ := review["investigation"].(map[string]any)
 	if existing == nil {
 		return nil
 	}
 	existingCase := stringField(existing["case_id"])
-	existingBatch := stringField(existing["observation_batch_id"])
-	if existingCase == caseID && existingBatch == batchID {
-		return fmt.Errorf("%w (idempotent retry): Case %s already consumes batch %s; next: runtime investigation status --case-id %s", ErrAlreadyIngested, caseID, batchID, caseID)
+	if existingCase == caseID {
+		return fmt.Errorf("%w: Case %s is already active", ErrAlreadyIngested, caseID)
 	}
-	return fmt.Errorf("%w: Runtime already points to Case %s/batch %s; requested Case %s/batch %s; next: runtime investigation status --case-id %s", ErrIngestConflict, existingCase, existingBatch, caseID, batchID, existingCase)
-}
-
-func exactFindingSet(pointer, batch []string) error {
-	left, err := normalizeSet(pointer, "state.review.observation_batch.finding_ids")
-	if err != nil {
-		return err
-	}
-	right, err := normalizeSet(batch, "ObservationBatch.finding_ids")
-	if err != nil {
-		return err
-	}
-	if len(left) != len(right) {
-		return fmt.Errorf("state has %v but sealed file has %v", left, right)
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return fmt.Errorf("state has %v but sealed file has %v", left, right)
-		}
-	}
-	return nil
-}
-
-func validateFindingArtifacts(root string, state map[string]any, findingIDs []string) error {
-	entities, _ := state["entities"].(map[string]any)
-	rawFindings, _ := entities["findings"].([]any)
-	rows := map[string]map[string]any{}
-	for _, raw := range rawFindings {
-		row, _ := raw.(map[string]any)
-		if row == nil {
-			continue
-		}
-		id := stringField(row["finding_id"])
-		if id != "" {
-			if _, exists := rows[id]; exists {
-				return fmt.Errorf("entities.findings contains duplicate row for Finding %s", id)
-			}
-			rows[id] = row
-		}
-	}
-	for _, findingID := range findingIDs {
-		row := rows[findingID]
-		if row == nil {
-			return fmt.Errorf("Finding %s has no entities.findings row", findingID)
-		}
-		path := stringField(row["path"])
-		declaredSHA := stringField(row["sha256"])
-		if path == "" || declaredSHA == "" {
-			return fmt.Errorf("Finding %s row is missing path or sha256", findingID)
-		}
-		absolute, err := repositoryPath(root, path)
-		if err != nil {
-			return fmt.Errorf("Finding %s path %q is invalid: %w", findingID, path, err)
-		}
-		data, err := os.ReadFile(absolute)
-		if err != nil {
-			return fmt.Errorf("Finding %s artifact %q is missing or unreadable: %w", findingID, path, err)
-		}
-		actualSHA := sha256Hex(data)
-		if actualSHA != declaredSHA {
-			return fmt.Errorf("Finding %s artifact %q sha256 drifted: state pins %s but disk is %s", findingID, path, declaredSHA, actualSHA)
-		}
-		if err := schema.NewEmbeddedValidator().ValidateBytes("finding.schema.json", data); err != nil {
-			return fmt.Errorf("Finding %s artifact %q does not satisfy finding.schema.json: %v", findingID, path, err)
-		}
-		var document map[string]any
-		if err := json.Unmarshal(data, &document); err != nil {
-			return fmt.Errorf("Finding %s artifact %q cannot be decoded: %v", findingID, path, err)
-		}
-		if stringField(document["finding_id"]) != findingID {
-			return fmt.Errorf("Finding row %s points to artifact declaring finding_id %q", findingID, stringField(document["finding_id"]))
-		}
-		for _, field := range []string{"claim_id", "lens", "severity", "observation_mode"} {
-			if rowValue, documentValue := stringField(row[field]), stringField(document[field]); rowValue != "" && rowValue != documentValue {
-				return fmt.Errorf("Finding %s row field %s=%q disagrees with artifact value %q", findingID, field, rowValue, documentValue)
-			}
-		}
-	}
-	return nil
+	return fmt.Errorf("%w: Runtime already points to Case %s, requested %s", ErrIngestConflict, existingCase, caseID)
 }
 
 func normalizeSet(values []string, field string) ([]string, error) {
@@ -684,7 +364,7 @@ func runtimeReferencesCase(statePath, caseRel, caseSHA string) bool {
 	}
 	review, _ := state["review"].(map[string]any)
 	pointer, _ := review["investigation"].(map[string]any)
-	return pointer != nil && stringField(pointer["path"]) == caseRel && stringField(pointer["sha256"]) == caseSHA
+	return pointer != nil && stringField(pointer["path"]) == caseRel
 }
 
 func validCaseID(value string) bool {
@@ -731,11 +411,6 @@ func baselineGeneration(state map[string]any) (int, error) {
 		return 0, errors.New("baseline.generation must be an integer")
 	}
 	return int(value), nil
-}
-
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 func actionableError(format string, args ...any) error {

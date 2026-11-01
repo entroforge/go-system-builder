@@ -227,8 +227,6 @@ func warnMissingExtensions(message map[string]any) []string {
 func messageBranchFor(message map[string]any) string {
 	messageType, _ := message["message_type"].(string)
 	switch messageType {
-	case "readback_request":
-		return "readbackRequest"
 	case "readback_response":
 		return "readbackResponse"
 	case "plan_report":

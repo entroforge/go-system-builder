@@ -239,9 +239,8 @@ func TestPersistGateForPreToolUseAcceptsUnknownGate(t *testing.T) {
 		{
 			name: "resolved gate persists",
 			gate: controller.QualityGateResult{
-				Status:      controller.StatusNotReady,
-				GateID:      "GATE-BUILD-COMPLETE",
-				Fingerprint: "sha256:abc",
+				Status: controller.StatusNotReady,
+				GateID: "GATE-BUILD-COMPLETE",
 			},
 			wantAttempt: true,
 		},

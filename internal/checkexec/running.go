@@ -2,6 +2,7 @@ package checkexec
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,13 +42,58 @@ type RunAttempt struct {
 	release func()
 }
 
+// RunKey names the existing check responsibility and index without scanning or
+// authenticating the checkout. The encoding is reversible and deterministic.
+func RunKey(binding Binding, index int, kind string) string {
+	raw, _ := json.Marshal([]any{binding.RuntimeID, binding.Generation, binding.AssignmentID,
+		binding.Owner, binding.ExecutionGeneration, binding.Responsibility, index, kind})
+	return "r-" + base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// BeginInvocation gives each actual check invocation its own diagnostic
+// attempt. A concurrent check must not be blocked merely because it shares an
+// owner and index: its inputs may have changed while another check is running.
+// The original responsibility remains in the record; no input digest or
+// author-supplied key is needed.
+func BeginInvocation(ctx context.Context, base string, binding Binding, index int, kind string) (*RunAttempt, error) {
+	if err := os.MkdirAll(base, 0700); err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp(base, "check-")
+	if err != nil {
+		return nil, err
+	}
+	attempt, err := BeginRun(ctx, base, filepath.Base(dir), binding)
+	if err != nil {
+		return nil, err
+	}
+	attempt.Record.Key = RunKey(binding, index, kind)
+	if err := writeRunRecord(attempt.Path, attempt.Record); err != nil {
+		attempt.Close()
+		return nil, err
+	}
+	return attempt, nil
+}
+
 // BeginRun serializes identical requests until the original writer has accepted
 // the actual receipt. An abandoned diagnostic cannot certify an interrupted run.
 func BeginRun(ctx context.Context, base, key string, binding Binding) (*RunAttempt, error) {
-	if len(key) != 64 || strings.Trim(key, "0123456789abcdef") != "" {
+	if key == "" || key == "." || key == ".." || strings.ContainsAny(key, "/\\\x00") {
 		return nil, fmt.Errorf("invalid check running key")
 	}
 	dir := filepath.Join(base, key)
+	if len(key) > 220 {
+		// A filesystem component limit must not turn a valid responsibility
+		// into a gate. Long identities get a separate diagnostic attempt.
+		if err := os.MkdirAll(base, 0700); err != nil {
+			return nil, err
+		}
+		var err error
+		dir, err = os.MkdirTemp(base, "check-")
+		if err != nil {
+			return nil, err
+		}
+	}
 	path := filepath.Join(dir, "run.json")
 	budget, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
@@ -122,7 +168,7 @@ func ReadRunRecord(path string) (RunRecord, bool, error) {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return r, false, err
 	}
-	if r.Version != "1.0.0" || len(r.Key) != 64 || (r.State != "waiting" && r.State != "running" && r.State != "finished" && r.State != "interrupted") {
+	if r.Version != "1.0.0" || r.Key == "" || (r.State != "waiting" && r.State != "running" && r.State != "finished" && r.State != "interrupted") {
 		return r, false, fmt.Errorf("invalid running diagnostic")
 	}
 	return r, true, nil

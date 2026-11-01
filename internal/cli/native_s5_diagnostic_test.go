@@ -87,59 +87,30 @@ func TestNativeS5ReturnPreservesDistinctStopDiagnosticsWithoutReadingAnswers(t *
 	}
 }
 
-func TestNativeS5ReturnRetainsSourceFailureAndClearsItOnReception(t *testing.T) {
+func TestNativeS5ReturnDoesNotRecheckAnalysisAfterOriginalIssuance(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	p := f.packets[0]
 	stageJSON(t, f.root, p.AnswerPath, completedDraft(p, "pass"))
-	analysis := filepath.Join(f.root, p.TaskAnalysis.Path)
-	data, err := os.ReadFile(analysis)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(analysis); err != nil {
+	if err := os.Remove(filepath.Join(f.root, p.TaskAnalysis.Path)); err != nil {
 		t.Fatal(err)
 	}
 	ref := filepath.Join(f.root, p.ViewPath)
 	code, _, diagnostic := nativeReviewEvent(t, f.root, "SubagentStop", "s5-source-reviewer", ref)
-	if code != 0 || !strings.Contains(diagnostic, "S5 reception incomplete") {
-		t.Fatalf("source blocker was not handed off: %d %s", code, diagnostic)
-	}
-	text := mainNativeReturn(t, f.root, ref)
-	if !strings.Contains(text, p.TaskAnalysis.Path) || !strings.Contains(text, `"accepted":false`) {
-		t.Fatalf("source reason did not reach Main: %s", text)
-	}
-	var sourceOut, sourceErr bytes.Buffer
-	sourceBefore := dryRunTree(t, f.root)
-	code = cli.Run([]string{"runtime", "stage-answer", "receipt", "--root", f.root, "--agent", p.Binding.Owner, "--path", filepath.Join(f.root, p.AnswerPath)}, nil, &sourceOut, &sourceErr)
-	if code == 0 || !strings.Contains(sourceOut.String(), p.TaskAnalysis.Path) || !strings.Contains(sourceOut.String(), `"accepted":false`) {
-		t.Fatalf("explicit original diagnosis missed source failure: %d %s %s", code, &sourceOut, &sourceErr)
-	}
-	if !reflect.DeepEqual(sourceBefore, dryRunTree(t, f.root)) {
-		t.Fatal("explicit source diagnosis changed project files")
-	}
-	if err := os.WriteFile(analysis, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if code, _, diagnostic := nativeReviewEvent(t, f.root, "SubagentStop", "s5-source-reviewer", ref); code != 0 {
-		t.Fatal(diagnostic)
+	if code != 0 || !strings.Contains(diagnostic, "本人交付已接收") {
+		t.Fatalf("original issued responsibility was not received: %d %s", code, diagnostic)
 	}
 	if err := os.Remove(filepath.Join(f.root, p.AnswerPath)); err != nil {
 		t.Fatal(err)
 	}
-	text = mainNativeReturn(t, f.root, ref)
+	text := mainNativeReturn(t, f.root, ref)
 	if !strings.Contains(text, `"accepted":true`) || strings.Contains(text, "Last S5 native Stop") {
-		t.Fatalf("accepted history inherited old failure or required private answer: %s", text)
+		t.Fatalf("accepted history required private answer or analysis: %s", text)
 	}
-	if got := submission.PlanningDiagnostic(f.root, stageSnapshot(t, f.root).State, "S5 native Stop "+p.ID); got != "" {
-		t.Fatalf("successful reception did not clear last failure: %s", got)
-	}
-	// The explicit diagnosis entry also preserves accepted history after the
-	// private answer is removed; it does not demand a second review.
 	var out, errout bytes.Buffer
 	before := dryRunTree(t, f.root)
 	code = cli.Run([]string{"runtime", "stage-answer", "receipt", "--root", f.root, "--agent", p.Binding.Owner, "--path", filepath.Join(f.root, p.AnswerPath)}, nil, &out, &errout)
 	if code != 0 || !strings.Contains(out.String(), `"accepted":true`) {
-		t.Fatalf("explicit receipt rechecked accepted private answer: %d %s %s", code, &out, &errout)
+		t.Fatalf("accepted receipt required private sources: %d %s %s", code, &out, &errout)
 	}
 	if !reflect.DeepEqual(before, dryRunTree(t, f.root)) {
 		t.Fatal("explicit accepted receipt changed project files")

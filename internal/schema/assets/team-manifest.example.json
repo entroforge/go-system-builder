@@ -14,14 +14,12 @@
     {
       "id": "REQ-002",
       "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
-      "version": "v1.0.0",
-      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      "version": "v1.0.0"
     },
     {
       "id": "TASK-001",
       "path": "docs/dev/tasks/TASK-001.md",
-      "version": "v1.0.0",
-      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      "version": "v1.0.0"
     }
   ],
   "risk_tags": [

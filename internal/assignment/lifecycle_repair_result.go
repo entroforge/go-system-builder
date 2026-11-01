@@ -2,6 +2,7 @@ package assignment
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -66,13 +67,9 @@ func repairResultLifecyclePacketTargetsOwner(state map[string]any, owner string,
 		return false, fmt.Errorf("S9 lifecycle target baseline generation is missing or invalid")
 	}
 	review, _ := state["review"].(map[string]any)
-	round, ok := lifecycleRepairPositiveInt(review["round"])
-	if !ok {
-		return false, fmt.Errorf("S9 lifecycle target review round is missing or invalid")
-	}
-	if b.BaselineGeneration != generation || b.ReviewRound != round {
-		return false, nil
-	}
+	// A later S7 cursor retains this original Session's responsibilities.
+	life, _ := state["lifecycle"].(map[string]any)
+	late := b.BaselineGeneration != generation || (life["state"] != nil && life["state"] != "bug_resolution")
 
 	entities, ok := state["entities"].(map[string]any)
 	if !ok || entities == nil {
@@ -103,10 +100,6 @@ func repairResultLifecyclePacketTargetsOwner(state map[string]any, owner string,
 	if !ok || strings.TrimSpace(manifestRef) == "" {
 		return false, fmt.Errorf("S9 lifecycle target Team %s has no registered manifest_ref", agentTeamID)
 	}
-	manifestSHA, ok := team["manifest_sha256"].(string)
-	if !ok || !lifecycleRepairSHA256(manifestSHA) {
-		return false, fmt.Errorf("S9 lifecycle target Team %s has no valid registered manifest_sha256", agentTeamID)
-	}
 	promptManifest, promptAssignment, ok := lifecycleRepairPromptRef(promptRef)
 	if !ok || promptManifest != manifestRef {
 		return false, fmt.Errorf("S9 lifecycle target Agent %s prompt_ref does not bind its registered Team manifest", owner)
@@ -116,7 +109,7 @@ func repairResultLifecyclePacketTargetsOwner(state map[string]any, owner string,
 	// packet belongs to a different slot. This check precedes lookup of the old
 	// RepairAssignment in assignment_owners so an ordinary new Assignment does
 	// not become malformed merely because that old key is no longer present.
-	if agentTeamID != b.TeamID || manifestRef != b.ManifestRef || manifestSHA != b.ManifestSHA256 || promptAssignment != b.ManifestAssignmentID {
+	if agentTeamID != b.TeamID || manifestRef != b.ManifestRef || promptAssignment != b.ManifestAssignmentID {
 		return false, nil
 	}
 	if !lifecycleRepairContainsTask(taskIDs, b.TaskID) {
@@ -129,8 +122,7 @@ func repairResultLifecyclePacketTargetsOwner(state map[string]any, owner string,
 	}
 	current := make(map[string]string, 8)
 	for _, key := range []string{
-		"session_id", "path", "sha256", "plan_ref", "plan_sha256",
-		"contract_id", "contract_ref", "contract_sha256",
+		"session_id", "path", "plan_ref", "contract_id", "contract_ref",
 	} {
 		value, exists := pointer[key].(string)
 		if !exists || strings.TrimSpace(value) == "" {
@@ -138,14 +130,8 @@ func repairResultLifecyclePacketTargetsOwner(state map[string]any, owner string,
 		}
 		current[key] = value
 	}
-	for _, key := range []string{"sha256", "plan_sha256", "contract_sha256"} {
-		if !lifecycleRepairSHA256(current[key]) {
-			return false, fmt.Errorf("S9 lifecycle target repair pointer has invalid %s", key)
-		}
-	}
-	if current["session_id"] != b.SessionID || current["path"] != b.SessionRef || current["sha256"] != b.SessionSHA256 ||
-		current["plan_ref"] != b.PlanRef || current["plan_sha256"] != b.PlanSHA256 ||
-		current["contract_id"] != b.ContractID || current["contract_ref"] != b.ContractRef || current["contract_sha256"] != b.ContractSHA256 {
+	if current["session_id"] != b.SessionID || current["path"] != b.SessionRef ||
+		current["plan_ref"] != b.PlanRef || current["contract_id"] != b.ContractID || current["contract_ref"] != b.ContractRef {
 		return false, nil
 	}
 
@@ -160,7 +146,35 @@ func repairResultLifecyclePacketTargetsOwner(state map[string]any, owner string,
 	if registeredOwner != owner {
 		return false, fmt.Errorf("S9 lifecycle target repair Assignment %s owner conflicts with Agent %s registration", b.RepairAssignmentID, owner)
 	}
+	// A later review cursor does not replace an in-flight original S9
+	// responsibility. Retain the original execution tuple rather than selecting
+	// an unrelated assignment solely by owner or current generation.
+	if late {
+		var issued map[string]any
+		if json.Unmarshal(packet.Inputs.Execution, &issued) != nil || issued == nil {
+			return false, nil
+		}
+		id, _ := issued["assignment_id"].(string)
+		if id != b.RepairAssignmentID && id != b.ManifestAssignmentID {
+			return false, nil
+		}
+		workspace, _ := state["workspace"].(map[string]any)
+		executions, _ := workspace["executions"].(map[string]any)
+		execution, _ := executions[id].(map[string]any)
+		if execution == nil || execution["assignment_id"] != id || execution["runtime_id"] != b.RuntimeID ||
+			execution["agent_id"] != b.OwnerAgentID || execution["worktree_path"] != issued["worktree_path"] ||
+			!lifecycleRepairNumbersEqual(execution["baseline_generation"], b.BaselineGeneration) ||
+			!lifecycleRepairNumbersEqual(execution["execution_generation"], issued["execution_generation"]) {
+			return false, nil
+		}
+	}
 	return true, nil
+}
+
+func lifecycleRepairNumbersEqual(left, right any) bool {
+	a, aok := lifecycleRepairPositiveInt(left)
+	b, bok := lifecycleRepairPositiveInt(right)
+	return aok && bok && a == b
 }
 
 func validateRepairResultLifecycleBinding(b workpacket.RepairPlanReportBinding) error {
@@ -175,16 +189,8 @@ func validateRepairResultLifecycleBinding(b workpacket.RepairPlanReportBinding) 
 			return fmt.Errorf("S9 lifecycle packet binding omits %s", name)
 		}
 	}
-	if b.BaselineGeneration < 1 || b.ReviewRound < 1 {
-		return fmt.Errorf("S9 lifecycle packet binding has an invalid generation or round")
-	}
-	for name, value := range map[string]string{
-		"session_sha256": b.SessionSHA256, "plan_sha256": b.PlanSHA256,
-		"contract_sha256": b.ContractSHA256, "manifest_sha256": b.ManifestSHA256,
-	} {
-		if !lifecycleRepairSHA256(value) {
-			return fmt.Errorf("S9 lifecycle packet binding has invalid %s", name)
-		}
+	if b.BaselineGeneration < 1 {
+		return fmt.Errorf("S9 lifecycle packet binding has an invalid generation")
 	}
 	return nil
 }
@@ -294,18 +300,6 @@ func lifecycleRepairContainsTask(ids []string, taskID string) bool {
 		}
 	}
 	return false
-}
-
-func lifecycleRepairSHA256(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for _, char := range value {
-		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 func lifecycleRepairPositiveInt(value any) (int, bool) {

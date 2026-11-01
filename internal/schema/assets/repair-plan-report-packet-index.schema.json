@@ -3,11 +3,10 @@
   "$id": "repair-plan-report-packet-index.schema.json",
   "title": "S9 PlanReport WorkPacket immutable body index",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "packet_id",
     "template_id",
-    "template_sha256",
     "binding",
     "report_id",
     "issuance_event_id",
@@ -19,44 +18,43 @@
   "properties": {
     "packet_id": {
       "type": "string",
-      "pattern": "^packet-[a-f0-9]{64}$"
+      "pattern": "^\\S+$"
     },
     "template_id": {
       "const": "s9-plan-report-v1"
-    },
-    "template_sha256": {
-      "$ref": "repair-plan-report-work-packet.schema.json#/$defs/sha256"
     },
     "binding": {
       "$ref": "repair-plan-report-work-packet.schema.json#/$defs/binding"
     },
     "report_id": {
       "type": "string",
-      "pattern": "^repair-plan-report-[a-f0-9]{64}$"
+      "pattern": "^\\S+$"
     },
     "issuance_event_id": {
       "type": "string",
-      "pattern": "^evt-repair-plan-report-packet-packet-[a-f0-9]{64}$"
+      "pattern": "^\\S+$"
+    },
+    "brief_path": {
+      "type": "string",
+      "minLength": 1
     },
     "view_path": {
       "type": "string",
-      "pattern": "^\\.claude/work-packets/[^\\\\:#]+\\.json$"
+      "pattern": "^$|^\\.claude/work-packets(-alt-[1-9][0-9]*)?/[^\\\\:#]+\\.json$"
     },
     "answer_path": {
       "type": "string",
-      "pattern": "^\\.claude/submissions/[^\\\\:#]+/answer\\.json$"
+      "pattern": "^\\.claude/submissions(-alt-[1-9][0-9]*)?/[^\\\\:#]+/answer\\.json$"
     },
     "storage_format": {
       "const": "packet-body-ref-v1"
     },
     "body_ref": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "format",
-        "path",
-        "sha256",
-        "size_bytes"
+        "path"
       ],
       "properties": {
         "format": {
@@ -64,16 +62,7 @@
         },
         "path": {
           "type": "string",
-          "pattern": "^\\.claude/packet-bodies/[0-9a-f]{64}\\.json$"
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "size_bytes": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 20971520
+          "pattern": "^\\.claude/packet-bodies(-alt-[1-9][0-9]*)?/([0-9a-f]{64}\\.json|(p|alternate-[0-9]+)/([A-Za-z0-9_-]{1,120}/)*[A-Za-z0-9_-]{1,120}\\.json)$"
         }
       }
     }

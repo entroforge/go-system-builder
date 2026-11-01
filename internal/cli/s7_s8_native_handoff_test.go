@@ -2,14 +2,18 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -43,6 +47,7 @@ func TestS7PartialP0NativeReturnReachesS8Intake(t *testing.T) {
 	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
 	stageCLI(t, "runtime", "review-plan", "--root", root, "--file", planPath)
 	markAssignmentDispatched(t, root, "assignment-dv-1", "reviewer-native-p0")
+	markAssignmentDispatched(t, root, "assignment-qa-1", "reviewer-pending-qa")
 	current := stageSnapshot(t, root)
 	for _, raw := range current.State["entities"].(map[string]any)["agents"].([]any) {
 		if agent := raw.(map[string]any); agent["id"] == "reviewer-native-p0" {
@@ -52,10 +57,20 @@ func TestS7PartialP0NativeReturnReachesS8Intake(t *testing.T) {
 	stageJSON(t, root, ".claude/loop-state.json", current.State)
 	issued := stageCLI(t, "runtime", "stage-answer", "issue", "--root", root, "--agent", "Main")
 	var packets []workpacket.ReviewResultPacket
-	if err := json.Unmarshal([]byte(issued), &packets); err != nil || len(packets) != 1 {
+	if err := json.Unmarshal([]byte(issued), &packets); err != nil || len(packets) != 2 {
 		t.Fatalf("issue original Reviewer packet: %s (%v)", issued, err)
 	}
-	packet := packets[0]
+	var packet, pending workpacket.ReviewResultPacket
+	for _, issued := range packets {
+		if issued.Binding.AssignmentID == "assignment-dv-1" {
+			packet = issued
+		} else if issued.Binding.AssignmentID == "assignment-qa-1" {
+			pending = issued
+		}
+	}
+	if packet.ID == "" || pending.ID == "" {
+		t.Fatal("original Reviewer responsibilities were not both issued")
+	}
 	evidence := "docs/reports/review/native-p0.txt"
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, evidence)), 0700); err != nil {
 		t.Fatal(err)
@@ -84,29 +99,40 @@ func TestS7PartialP0NativeReturnReachesS8Intake(t *testing.T) {
 	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "opaque-p0-reviewer", answerPath); code != 0 || !strings.Contains(diagnostic, "original consumer") {
 		t.Fatalf("partial P0 native reception: %d %s", code, diagnostic)
 	}
-	sealed := stageSnapshot(t, root)
-	lifecycle := sealed.State["lifecycle"].(map[string]any)
-	if lifecycle["state"] != "verification" || lifecycle["phase"] != "observation_sealed" {
-		t.Fatalf("Stop should seal without pretending TR-008 has run: %v", lifecycle)
+	advanced := stageSnapshot(t, root)
+	lifecycle := advanced.State["lifecycle"].(map[string]any)
+	if lifecycle["state"] != "bug_resolution" || lifecycle["phase"] != "investigation" {
+		t.Fatalf("natural Finding reception did not continue through TR-008 to S8: %v", lifecycle)
 	}
-	batch := sealed.State["review"].(map[string]any)["observation_batch"].(map[string]any)
-	data, err = os.ReadFile(filepath.Join(root, batch["path"].(string)))
-	if err != nil {
-		t.Fatal(err)
+	reviewState := advanced.State["review"].(map[string]any)
+	rows := reviewState["assignments"].(map[string]any)
+	pendingRow := rows[pending.Binding.AssignmentID].(map[string]any)
+	if pendingRow["agent_id"] != pending.Binding.OwnerAgentID || workstate.ReviewAssignmentActivity(pendingRow) != "dispatched" || pendingRow["result_ref"] != nil || pendingRow["result_receipt"] != nil {
+		t.Fatalf("Finding return lost or completed the still-issued QA responsibility: %#v", pendingRow)
 	}
-	var observation struct {
-		Unobserved []string `json:"unobserved_claim_ids"`
-	}
-	if err := json.Unmarshal(data, &observation); err != nil {
-		t.Fatal(err)
+	stored, found, err := runtime.FindReviewResultPacketContext(runtime.WithPacketBodyRoot(context.Background(), root), advanced.State, pending.ID)
+	if err != nil || !found || !reflect.DeepEqual(stored, pending) {
+		t.Fatalf("Finding return replaced the pending original packet: %v", err)
 	}
 	for _, id := range []string{"claim-dv-unobserved", "claim-qa-1"} {
-		if !strings.Contains(strings.Join(observation.Unobserved, "\n"), id) {
-			t.Fatalf("batch lost unobserved Claim %s: %s", id, data)
+		claim := reviewState["claims"].(map[string]any)[id].(map[string]any)
+		if claim["disposition"] == "pass" || claim["result_id"] != nil {
+			t.Fatalf("unexecuted Claim %s was reported as observed: %#v", id, claim)
 		}
 	}
-	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "resumed-p0-reviewer", answerPath); code != 0 || stageSnapshot(t, root).Revision != sealed.Revision {
+	statePath := filepath.Join(root, ".claude/loop-state.json")
+	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
+	beforeState, _ := os.ReadFile(statePath)
+	beforeJournal, _ := os.ReadFile(journalPath)
+	originalAnswer, _ := os.ReadFile(answerPath)
+	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "resumed-p0-reviewer", answerPath); code != 0 || stageSnapshot(t, root).Revision != advanced.Revision {
 		t.Fatalf("original return replay was not idempotent: %d %s", code, diagnostic)
+	}
+	afterState, _ := os.ReadFile(statePath)
+	afterJournal, _ := os.ReadFile(journalPath)
+	afterAnswer, _ := os.ReadFile(answerPath)
+	if !bytes.Equal(beforeState, afterState) || !bytes.Equal(beforeJournal, afterJournal) || !bytes.Equal(originalAnswer, afterAnswer) {
+		t.Fatal("original return replay rewrote accepted facts or the author's answer")
 	}
 	mainHook := func(event, tool, path string) string {
 		t.Helper()
@@ -117,18 +143,20 @@ func TestS7PartialP0NativeReturnReachesS8Intake(t *testing.T) {
 		}
 		return out.String()
 	}
-	mainHook("Stop", "", "")
-	mainHook("PreToolUse", "Read", filepath.Join(root, "docs/control/agent-protocol.md"))
-	advanced := stageSnapshot(t, root)
-	lifecycle = advanced.State["lifecycle"].(map[string]any)
-	if lifecycle["state"] != "bug_resolution" || lifecycle["phase"] != "investigation" {
-		t.Fatalf("original TR-008 did not reach S8: %v", lifecycle)
-	}
-	paths, err := filepath.Glob(filepath.Join(root, ".claude/submissions/s8/*/g*/r*/*/intake.json"))
+	var paths []string
+	err = filepath.WalkDir(filepath.Join(root, ".claude/submissions/s8"), func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && entry.Name() == "intake.json" {
+			paths = append(paths, path)
+		}
+		return nil
+	})
 	if err != nil || len(paths) != 1 {
-		t.Fatalf("S8 exact intake was not prepared: %v %v", paths, err)
+		t.Fatalf("S8 exact intake was not prepared by the original return: %v %v", paths, err)
 	}
-	stageJSON(t, root, strings.TrimPrefix(paths[0], root+string(filepath.Separator)), map[string]any{"grouping_rationale": "Investigate this exact sealed destructive rejection observation as a provisional causal group; no common root cause is asserted."})
+	stageJSON(t, root, strings.TrimPrefix(paths[0], root+string(filepath.Separator)), map[string]any{"grouping_rationale": "Investigate this exact received destructive rejection observation as a provisional causal group; no common root cause is asserted."})
 	// The installed matcher must deliver the same custom-tool event tested below.
 	var settings struct {
 		Hooks map[string][]struct {

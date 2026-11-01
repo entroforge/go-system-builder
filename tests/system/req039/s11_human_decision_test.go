@@ -18,7 +18,7 @@ func TestBUG104S11ExplicitApproveE2E(t *testing.T) {
 	req039fixtures.EnsureStateRoot(state, root)
 	writeSystemState(t, root, state)
 
-	code, _, stderr := runHook(t, root, "PreToolUse", req039fixtures.PreToolUseBody(
+	code, _, stderr := runHook(t, root, "PreToolUse", req039fixtures.MainPreToolUseBody(root,
 		"bug-104-red", "Bash", map[string]any{"command": "go test ./..."},
 	))
 	if code != 0 {

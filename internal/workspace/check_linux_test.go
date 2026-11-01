@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,17 @@ func TestIsolatedCheckCannotWriteMainOrSourceWorker(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "isolated-pass") || path == "" {
 		t.Fatalf("missing receipt/output: %s %s", path, &out)
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(payload, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := receipt["snapshot_sha256"]; exists {
+		t.Fatal("ordinary check recorded a snapshot digest")
 	}
 	data, _ := os.ReadFile(protected)
 	if string(data) != "original" {

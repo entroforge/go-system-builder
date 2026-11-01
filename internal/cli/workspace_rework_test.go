@@ -58,7 +58,7 @@ func TestWorkspaceReworkArchivesFailureAndResumesInterruptedFinalization(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := workspace.Execution{AssignmentID: "assignment-rework", RuntimeID: workspace.RuntimeID(fix.state), BaselineGeneration: workspace.Generation(fix.state), Generation: 1, AgentID: "builder-rework", Path: filepath.Join(fix.root, ".worktrees/rework"), Branch: "codex/rework", TargetBranch: b.Branch, BaseCommit: b.BoundHead, Status: "preparing", Inputs: map[string]string{}, WritePaths: []string{"src"}, Checks: []string{}}
+	e := workspace.Execution{AssignmentID: "assignment-rework", RuntimeID: workspace.RuntimeID(fix.state), BaselineGeneration: workspace.Generation(fix.state), Generation: 1, AgentID: "builder-rework", Path: filepath.Join(fix.root, ".worktrees/rework"), Branch: "codex/rework", TargetBranch: b.Branch, Status: "preparing", Inputs: map[string]string{}, WritePaths: []string{"src"}, Checks: []string{}}
 	b.Executions[e.AssignmentID] = e
 	if err = b.Materialize(context.Background(), e); err != nil {
 		t.Fatal(err)
@@ -69,12 +69,34 @@ func TestWorkspaceReworkArchivesFailureAndResumesInterruptedFinalization(t *test
 	fix.persist(t)
 	cpPath := integration.CheckpointPath(fix.root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID)
 	os.MkdirAll(filepath.Dir(cpPath), 0700)
-	cp, err := integration.DefaultCheckpointStore().CompareAndSwap(cpPath, integration.Checkpoint{}, integration.Checkpoint{AssignmentID: e.AssignmentID, TaskID: "TASK-001", State: integration.StatePreserved, WorktreePath: e.Path, SourceBranch: e.Branch, SourceHead: e.BaseCommit, TargetBranch: e.TargetBranch, BaselineGeneration: e.BaselineGeneration, FailureReason: "project check failed"})
+	cp, err := integration.DefaultCheckpointStore().CompareAndSwap(cpPath, integration.Checkpoint{}, integration.Checkpoint{AssignmentID: e.AssignmentID, TaskID: "TASK-001", State: integration.StatePreserved, ResumeState: integration.StateMerged, WorktreePath: e.Path, SourceBranch: e.Branch, TargetBranch: e.TargetBranch, BaselineGeneration: e.BaselineGeneration, FailureReason: "project check failed"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"--root", fix.root, "--assignment", e.AssignmentID, "--agent", e.AgentID, "--reason", "correct failing assertion"}
 	var out, stderr bytes.Buffer
+	for _, uncertain := range []string{"", integration.StateReady} {
+		unknown := cp
+		unknown.ResumeState = uncertain
+		if _, err := integration.DefaultCheckpointStore().ForceWrite(cpPath, unknown); err != nil {
+			t.Fatal(err)
+		}
+		out.Reset()
+		stderr.Reset()
+		if code := runWorkspaceRework(args, &out, &stderr); code == 0 || !bytes.Contains(stderr.Bytes(), []byte("unknown")) {
+			t.Fatalf("uncertain merge boundary %q was treated as known: code=%d %s", uncertain, code, &stderr)
+		}
+		if _, err := os.Stat(cpPath); err != nil {
+			t.Fatalf("unknown checkpoint lost: %v", err)
+		}
+	}
+	cp.ResumeState = integration.StateMerged
+	cp, err = integration.DefaultCheckpointStore().ForceWrite(cpPath, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
 	if code := runWorkspaceRework(args, &out, &stderr); code != 0 {
 		t.Fatalf("rework=%d %s", code, &stderr)
 	}
@@ -147,5 +169,76 @@ func TestWorkspaceReworkArchivesFailureAndResumesInterruptedFinalization(t *test
 	json.Unmarshal(preservedData, &preserved)
 	if preserved.Revision != cp.Revision || preserved.State != integration.StatePreserved {
 		t.Fatal("history changed during resume")
+	}
+	// Also resume the window after publishing the archive link but before
+	// removing the active checkpoint.
+	bound, state, err = workspace.Load(fix.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.Status = "preparing"
+	bound.Executions[e.AssignmentID] = next
+	state["workspace"] = workspace.Encode(bound)
+	data, _ = json.Marshal(state)
+	if err := os.WriteFile(fix.statePath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(fix.root, next.ReworkRef)+".checkpoint.json", cpPath); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if code := runWorkspaceRework(args, &out, &stderr); code != 0 {
+		t.Fatalf("link-window resume=%d %s", code, &stderr)
+	}
+	if _, err := os.Stat(cpPath); !os.IsNotExist(err) {
+		t.Fatalf("active checkpoint still exists after archive recovery: %v", err)
+	}
+	// A second failed attempt starts a new checkpoint sequence, but must get a
+	// distinct durable rework transaction even when its checkpoint revision is 1.
+	bound, state, err = workspace.Load(fix.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range state["entities"].(map[string]any)["agents"].([]any) {
+		row := raw.(map[string]any)
+		if row["id"] == e.AgentID {
+			row["state"] = "reported"
+			row["completion_reported_ref"] = ".claude/report.json"
+		}
+	}
+	for _, raw := range state["entities"].(map[string]any)["tasks"].([]any) {
+		row := raw.(map[string]any)
+		if row["id"] == "TASK-001" {
+			row["state"] = "review"
+		}
+	}
+	data, _ = json.Marshal(state)
+	if err := os.WriteFile(fix.statePath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	second := cp
+	second.Revision, second.UpdatedAt = 0, ""
+	second.FailureReason = "second check failed"
+	if _, err := integration.DefaultCheckpointStore().CompareAndSwap(cpPath, integration.Checkpoint{}, second); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	stderr.Reset()
+	if code := runWorkspaceRework(args, &out, &stderr); code != 0 {
+		t.Fatalf("second rework=%d %s", code, &stderr)
+	}
+	bound, _, err = workspace.Load(fix.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRef := bound.Executions[e.AssignmentID].ReworkRef
+	if secondRef == "" || secondRef == next.ReworkRef {
+		t.Fatalf("distinct attempt reused receipt: %q", secondRef)
+	}
+	for _, ref := range []string{next.ReworkRef, secondRef} {
+		if _, err := os.Stat(filepath.Join(fix.root, ref) + ".checkpoint.json"); err != nil {
+			t.Fatalf("original checkpoint was not retained: %s: %v", ref, err)
+		}
 	}
 }

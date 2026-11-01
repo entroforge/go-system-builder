@@ -1,7 +1,6 @@
 package semantic
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,14 +11,12 @@ import (
 
 // runtimeReachability mirrors the subset of .claude/loop-state.json that
 // declares reachable documents. It is consumed by ValidateRuntimeReachability
-// to enforce that every referenced document path resolves on disk and that
-// the recorded SHA-256 matches the file the path points to.
+// to check that the currently referenced document paths resolve on disk.
 type runtimeReachability struct {
 	SchemaVersion string `json:"schema_version"`
 	RuntimeID     string `json:"runtime_id"`
 	BoundREQ      *struct {
-		Path   string `json:"path"`
-		SHA256 string `json:"sha256"`
+		Path string `json:"path"`
 	} `json:"bound_req"`
 	Baseline struct {
 		Generation int `json:"generation"`
@@ -31,7 +28,6 @@ type runtimeReachability struct {
 	Documents []struct {
 		ID         string `json:"id"`
 		Path       string `json:"path"`
-		SHA256     string `json:"sha256"`
 		Kind       string `json:"kind"`
 		Generation int    `json:"generation"`
 	} `json:"documents"`
@@ -72,15 +68,13 @@ type runtimeReachability struct {
 				StageEntry     int    `json:"stage_entry"`
 				Owner          string `json:"owner"`
 				AssignmentID   string `json:"assignment_id"`
-				AssignmentSHA  string `json:"assignment_sha256"`
 				Responsibility string `json:"responsibility"`
 			} `json:"binding"`
 		} `json:"work_packets"`
 	} `json:"entities"`
 	Evidence []struct {
-		ID     string `json:"id"`
-		Path   string `json:"path"`
-		SHA256 string `json:"sha256"`
+		ID   string `json:"id"`
+		Path string `json:"path"`
 	} `json:"evidence"`
 }
 
@@ -101,10 +95,8 @@ type s5ManifestStatus struct {
 	Historical bool
 }
 
-// s5ManifestStatuses uses the original packet's AssignmentSHA to prove the
-// manifest bytes still match their issuance. A bound manifest is historical
-// only after a generation change, S5 re-entry/rework, or retirement of its
-// registered team; the latest S5 input remains strict through S6/S7 execution.
+// s5ManifestStatuses uses the existing team, owner and assignment relationships
+// to distinguish current from historical S5 entries without digest checks.
 func (state runtimeReachability) s5ManifestStatuses(root string) (map[string]s5ManifestStatus, error) {
 	statuses := make(map[string]s5ManifestStatus)
 	latestS5Entry := -1
@@ -167,10 +159,6 @@ func (state runtimeReachability) s5ManifestStatuses(root string) (map[string]s5M
 				}
 				identity = &decoded
 			}
-			digest := fmt.Sprintf("%x", sha256.Sum256(manifestData))
-			if binding.AssignmentSHA == "" || binding.AssignmentSHA != digest {
-				return nil, fmt.Errorf("S5 manifest %s bytes differ from the original packet binding", manifestRef)
-			}
 			if binding.RuntimeID != identity.RuntimeID || binding.RuntimeID != state.RuntimeID ||
 				binding.Generation != identity.Generation || team.ID != identity.WorkgroupID ||
 				identity.Kind != "document_verifier" {
@@ -227,15 +215,8 @@ func crossManifestDependencyRefs(refs []string, statuses map[string]s5ManifestSt
 	return filtered
 }
 
-// ValidateRuntimeReachability checks that the current runtime's referenced
-// documents are all reachable on disk and that their recorded SHA-256
-// fingerprints match. Per BUG-004 §4b.2(b): bound REQ path+sha256, agent
-// definition_ref/prompt_ref/readback_ref+sha256/activation_ref+sha256, task
-// path+sha256, team manifest_ref, bug report_path, evidence scope_refs.
-//
-// checkReachablePath ensures every referenced path resolves to an existing
-// file (no dangling references). checkReachableFingerprint ensures the
-// recorded SHA-256 matches the on-disk hash (no silent content drift).
+// ValidateRuntimeReachability checks the currently referenced paths on disk.
+// Historical digest metadata is not a prerequisite for current work.
 func ValidateRuntimeReachability(root string) error {
 	runtimePath := filepath.Join(root, ".claude/loop-state.json")
 	data, err := os.ReadFile(runtimePath)
@@ -254,29 +235,15 @@ func ValidateRuntimeReachability(root string) error {
 		if err := checkReachablePath(root, "bound_req", state.BoundREQ.Path); err != nil {
 			return err
 		}
-		if err := checkReachableFingerprint(root, "bound_req",
-			state.BoundREQ.Path, state.BoundREQ.SHA256); err != nil {
-			return err
-		}
 	}
 
 	for _, doc := range state.Documents {
-		// Superseded generations of every kind are immutable history: after
-		// an in-place amend the old entry keeps its original fingerprint
-		// (and the file may have been moved to versions/), so reachability
-		// and fingerprint equality only apply to the current baseline's
-		// documents (L3-S3 v4.0.1: promotion from the req-only exemption).
+		// Superseded generations can have moved to historical locations.
 		if doc.Generation > 0 && doc.Generation < state.Baseline.Generation {
 			continue
 		}
 		if err := checkReachablePath(root, fmt.Sprintf("documents[%s]", doc.ID), doc.Path); err != nil {
 			return err
-		}
-		if doc.SHA256 != "" {
-			if err := checkReachableFingerprint(root,
-				fmt.Sprintf("documents[%s]", doc.ID), doc.Path, doc.SHA256); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -332,9 +299,6 @@ func ValidateRuntimeReachability(root string) error {
 		if err := checkReachablePath(root, fmt.Sprintf("evidence[%s]", evidence.ID), evidence.Path); err != nil {
 			return err
 		}
-		if err := checkReachableFingerprint(root, fmt.Sprintf("evidence[%s]", evidence.ID), evidence.Path, evidence.SHA256); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -346,27 +310,6 @@ func checkReachablePath(root, label, relative string) error {
 	}
 	if _, err := resolveReachablePath(root, label, relative); err != nil {
 		return err
-	}
-	return nil
-}
-
-func checkReachableFingerprint(root, label, relative, expected string) error {
-	if relative == "" || expected == "" {
-		return nil
-	}
-	absolute, err := resolveReachablePath(root, label, relative)
-	if err != nil {
-		return err
-	}
-	data, err := os.ReadFile(absolute)
-	if err != nil {
-		return fmt.Errorf("runtime reachability: %s fingerprint read %q: %w",
-			label, relative, err)
-	}
-	actual := fmt.Sprintf("%x", sha256.Sum256(data))
-	if actual != expected {
-		return fmt.Errorf("runtime reachability: %s fingerprint mismatch at %q: runtime=%s actual=%s",
-			label, relative, expected, actual)
 	}
 	return nil
 }

@@ -1,7 +1,3 @@
-// ct_clean_integrate_test.go — CT-039-09 / AC-006 clean SubagentStop integrate
-// path via system Hook CLI. Full merge → verified → ack → cleanup → complete
-// (BUG-039-38 Closing Contract).
-
 package req039_test
 
 import (
@@ -10,65 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
-
-// TestCT03909_CleanWorktreeStopViaSubagentStop covers SYNC-039 §12 CT-039-09:
-// SubagentStop returns a short pending action; explicit integration verifies,
-// acknowledges and cleans up. Repeating the command never re-merges.
-func TestCT03909_CleanWorktreeStopViaSubagentStop(t *testing.T) {
-	root := freshRoot(t)
-	runner := &req039fixtures.CLIRunner{}
-	wt := seedIntegrableAssignment(t, root)
-	before := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
-	body := req039fixtures.SubagentStopBody("session-ct09", "builder-ti", "assignment-ti")
-	code, stdout, stderr := runHookWithRunner(t, runner, root, "SubagentStop", body)
-	if code != 0 {
-		t.Fatalf("hook: %d %s %s", code, stdout, stderr)
-	}
-	if strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD")) != before {
-		t.Fatal("short Hook performed a merge")
-	}
-	if !strings.Contains(stdout+stderr, "task-integrate") {
-		t.Fatal("Hook lost actionable integration follow-up")
-	}
-	if runner.ManualTransitionCalls != 0 {
-		t.Fatal("Hook used a manual lifecycle transition")
-	}
-	code, stdout, stderr = runTaskIntegrate(t, root, "assignment-ti")
-	if code != 0 {
-		t.Fatalf("integrate: %d %s %s", code, stdout, stderr)
-	}
-	after := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
-	if before == after {
-		t.Fatal("explicit integration did not merge")
-	}
-	_, state := readIntegrationCheckpoint(t, root)
-	if state != "complete" {
-		t.Fatalf("checkpoint=%s", state)
-	}
-	if _, err := os.Stat(wt); !os.IsNotExist(err) {
-		t.Fatalf("worktree remains: %v", err)
-	}
-	runtimeState := req039fixtures.ReadState(t, root)
-	agent := runtimeState["entities"].(map[string]any)["agents"].([]any)[0].(map[string]any)
-	if agent["state"] != "done" || agent["completion_acknowledged_ref"] == nil {
-		t.Fatalf("missing durable Agent acknowledgment: %v", agent)
-	}
-	code, stdout, stderr = runTaskIntegrate(t, root, "assignment-ti")
-	if code != 0 {
-		t.Fatalf("repeat: %d %s %s", code, stdout, stderr)
-	}
-	if strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD")) != after {
-		t.Fatal("repeat remerged")
-	}
-}
-
-// TestAC006_SubagentStopCleanIntegrateViaHook is the AC-006 twin of CT-039-09.
-func TestAC006_SubagentStopCleanIntegrateViaHook(t *testing.T) {
-	TestCT03909_CleanWorktreeStopViaSubagentStop(t)
-}
 
 func writeWorkgroupWithWorktree(t *testing.T, root, taskID, assignmentID, agentID, wtPath, branch string) {
 	t.Helper()

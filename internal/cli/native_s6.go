@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,16 +24,6 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-func pinNativeS6Source(root, id string, revision int, base string) error {
-	body, _ := json.Marshal(map[string]any{"base_commit": base})
-	ref := fmt.Sprintf(".claude/assignments/native/%s/r%d/source.json", id, revision)
-	published, err := workpacket.PublishBounded(root, ref, body, 4096)
-	if err == nil && !bytes.Equal(published, body) {
-		return fmt.Errorf("original native preparation source commit differs; preserve it for Main recovery")
-	}
-	return err
-}
-
 // Resume the original prepared input after a registration failure. Never
 // overwrite its draft or recapture a different source commit.
 func resumeNativeS6Preparation(root, req, task, role, owner, output string, out, diagnostic io.Writer) (bool, int) {
@@ -55,37 +44,28 @@ func resumeNativeS6Preparation(root, req, task, role, owner, output string, out,
 		fmt.Fprintln(diagnostic, "existing preparation has a different frozen contract; preserve it for Main recovery")
 		return true, 1
 	}
-	source, err := workpacket.ReadFile(root, fmt.Sprintf(".claude/assignments/native/%s/r1/source.json", draft.Assignments[0].AssignmentID), 4096)
-	var pin struct {
-		Base string `json:"base_commit"`
-	}
-	if err != nil || json.Unmarshal(source, &pin) != nil || pin.Base == "" {
-		fmt.Fprintln(diagnostic, "original preparation source commit is unavailable; Main must recover it, never recapture HEAD")
-		return true, 1
-	}
 	for _, doc := range draft.Documents {
 		if doc.ID == task {
-			return true, registerNativeS6Delivery(root, ref, task, doc.Path, pin.Base, out, diagnostic)
+			return true, registerNativeS6Delivery(root, ref, task, doc.Path, "", out, diagnostic)
 		}
 	}
 	fmt.Fprintln(diagnostic, "original preparation has no exact TASK source")
 	return true, 1
 }
 
-func registerNativeS6Delivery(root, manifest, taskID, taskPath, base string, stdout, stderr io.Writer) int {
+func registerNativeS6Delivery(root, manifest, taskID, taskPath, base string, stdout, stderr io.Writer, selected ...s6SelectedSources) int {
 	data, err := workpacket.ReadFile(root, manifest, 1<<20)
 	var draft s6ManifestDraft
 	if err != nil || json.Unmarshal(data, &draft) != nil || len(draft.Assignments) != 1 {
 		fmt.Fprintln(stderr, "native preparation has no exact manifest Assignment")
 		return 1
 	}
-	if err := pinNativeS6Source(root, draft.Assignments[0].AssignmentID, 1, base); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-
 	statePath, journal := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
-	snap, err := assignment.Register(root, statePath, journal, assignment.Request{ExpectedRevision: -1, ManifestPath: filepath.Join(root, manifest), TaskID: taskID, TaskPath: filepath.Join(root, taskPath)})
+	request := assignment.Request{ExpectedRevision: -1, ManifestPath: filepath.Join(root, manifest), TaskID: taskID, TaskPath: filepath.Join(root, taskPath)}
+	if len(selected) > 0 {
+		request.SelectedTaskBytes, request.SelectedBoard = selected[0].Task, selected[0].Board
+	}
+	snap, err := assignment.Register(root, statePath, journal, request)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -126,11 +106,10 @@ func prepareNativeS6Brief(root string, state map[string]any, r assignmentrecord.
 		return err
 	}
 	fmt.Fprintf(&b, "\nRegistered workgroup-local Assignment dependencies (read-only): %s. The receiver supplies this exact set to the canonical Plan; do not copy dependencies into either private JSON file. TASK prerequisites have already been satisfied by dispatch. Explain actual input or environment assumptions in objective/oracles and unresolved risks_blockers instead.\n", dependencies)
-	previousCurrent := nativeS6BriefInputs(root, r, false) + b.String() + nativeS6ProfessionalInstructions(base, filepath.Join(root, brief), plan, result)
-	previousAligned := previousCurrent + nativeS6LegacySourceAlignment(r, base, plan, result)
-	previousSourceAligned := nativeS6SourceAlignment(r, base, plan, result) + previousCurrent
-	// Historical bytes remain recognized; new briefs separate owner-run checks
-	// from Main's integration checks and explain the private Plan write scope.
+	plainFormat := strings.Replace(nativeS6ProfessionalFormat, "Use Claude Code native worktree isolation from Main HEAD %s.", "Use the assigned native worktree and actual TASK materials.", 1)
+	professional := fmt.Sprintf(plainFormat, filepath.Join(root, brief), plan, result) + nativeS6BlockerInstructions(result)
+	previousCurrent := nativeS6BriefInputs(root, r) + b.String() + professional
+	// Separate owner-run checks from Main integration checks.
 	oldChecks := "\nRun the actual TASK self-checks (Main repeats its checks at integration):\n"
 	for _, check := range r.RequiredChecks {
 		oldChecks += "- " + check + "\n"
@@ -145,18 +124,20 @@ func prepareNativeS6Brief(root string, state map[string]any, r assignmentrecord.
 			workerChecks += "- No Worker runner checks were assigned. Main-only checks are not Worker execution duties; still assess every Done when condition honestly.\n"
 		}
 	}
-	current := strings.Replace(previousSourceAligned, oldChecks, workerChecks, 1) + nativeS6CurrentAuthoringGuidance
-	previousInputs := nativeS6BriefInputs(root, r, true) + b.String()
-	compact := previousInputs + fmt.Sprintf(nativeS6CompactProfessionalFormat, base, filepath.Join(root, brief), plan, result)
-	legacy := previousInputs + nativeS6LegacyProfessionalInstructions(base, filepath.Join(root, brief), plan, result)
-	if published, err := workpacket.PublishBounded(root, brief, []byte(current), 1<<20); err != nil {
+	current := strings.Replace(previousCurrent, oldChecks, workerChecks, 1) + nativeS6CurrentAuthoringGuidance
+	current = strings.Replace(current, "Implement, self-test, commit only actual TASK products and save Result.", "Implement and self-test the actual TASK, then save Result. Normal Git commits may support integration but are not a Result reception prerequisite.", 1)
+	// Preserve an already issued brief. New wording applies only to new
+	// responsibilities; old issued materials are not rewritten or compared.
+	if _, err := workpacket.ReadFile(root, brief, 1<<20); os.IsNotExist(err) {
+		if _, err := workpacket.PublishBounded(root, brief, []byte(current), 1<<20); err != nil {
+			return err
+		}
+	} else if err != nil {
 		return err
-	} else if !nativeS6BriefMatches(published, methods, current, previousSourceAligned, previousAligned, previousCurrent, compact, legacy) {
-		return fmt.Errorf("original native task brief differs; preserve it for Main recovery")
 	}
 	bound, _ := state["bound_req"].(map[string]any)
 	binding, _ := bound["workspace"].(map[string]any)
-	coordinates := map[string]any{"assignment_id": r.AssignmentID, "assignment_revision": r.Revision, "base_commit": base, "target_branch": binding["dev_branch"], "worktree_path": "", "branch": ""}
+	coordinates := map[string]any{"assignment_id": r.AssignmentID, "assignment_revision": r.Revision, "target_branch": binding["dev_branch"], "worktree_path": "", "branch": ""}
 	data, _ := json.MarshalIndent(coordinates, "", "  ")
 	coordinatePath := filepath.Join(root, ".claude/assignments", r.AssignmentID+".json")
 	previousBytes, readErr := os.ReadFile(coordinatePath)
@@ -175,17 +156,9 @@ func prepareNativeS6Brief(root string, state map[string]any, r assignmentrecord.
 
 // Product and specification reads share the implementation's fixed worktree
 // source. The control brief and installed methods retain their exact Main paths.
-// The old input rendering is only for preserving already-issued brief bytes.
-func nativeS6BriefInputs(root string, r assignmentrecord.Record, legacy bool) string {
+func nativeS6BriefInputs(root string, r assignmentrecord.Record) string {
 	var b strings.Builder
-	if legacy {
-		fmt.Fprintf(&b, "# %s — %s\n\nContract: %s\n\nRead the actual TASK at %s and its linked inputs. Implement only its reviewed scope: %s.\n\n", r.Task.ID, r.RoleFamily, r.Contract, filepath.Join(root, r.Task.Ref), strings.Join(r.EffectiveWritePaths, ", "))
-		for _, ref := range r.ReadPaths {
-			fmt.Fprintf(&b, "- Read %s\n", filepath.Join(root, ref))
-		}
-		return b.String()
-	}
-	fmt.Fprintf(&b, "# %s — %s\n\nContract: %s\n\nRead the actual TASK at worktree-relative path %s and its linked inputs. Implement only its reviewed scope: %s.\n\nSource reads below are relative to your actual native worktree at the fixed source commit stated below; read TASK, specifications and product sources there. Main's control root %s supplies this brief and the exact installed method paths, not a replacement product/specification read root. Preserve the original source when Main advances; missing worktree inputs belong to Main recovery.\n\n", r.Task.ID, r.RoleFamily, r.Contract, filepath.ToSlash(r.Task.Ref), strings.Join(r.EffectiveWritePaths, ", "), root)
+	fmt.Fprintf(&b, "# %s — %s\n\nContract: %s\n\nRead the actual TASK at worktree-relative path %s and its linked inputs. Implement only its reviewed scope: %s.\n\nRead TASK, specifications and product sources in your actual worktree. Main's control root %s supplies this brief and installed method paths. Preserve existing work; report missing inputs to Main.\n\n", r.Task.ID, r.RoleFamily, r.Contract, filepath.ToSlash(r.Task.Ref), strings.Join(r.EffectiveWritePaths, ", "), root)
 	for _, ref := range r.ReadPaths {
 		fmt.Fprintf(&b, "- Read worktree-relative: %s\n", filepath.ToSlash(ref))
 	}
@@ -286,7 +259,7 @@ func nativeS6ControlRoot(root string, in policy.Input) string {
 			continue
 		}
 		snap, err := runtime.NewStore(filepath.Join(candidate, ".claude/loop-state.json"), filepath.Join(candidate, ".claude/loop-events.jsonl")).WithContext(contextForHook(in)).Snapshot()
-		if err != nil || fileview.ValidateAuthority(candidate, snap.State) != nil || len(nativeS6Records(snap.State)) == 0 && !nativeS9Available(candidate, snap.State) && nativeReviewStage(snap.State) == "" {
+		if err != nil || fileview.ValidateAuthority(candidate, snap.State) != nil || len(nativeS6Records(snap.State)) == 0 && !nativeS9RoutingAvailable(contextForHook(in), candidate, snap.State, true) && nativeReviewStage(snap.State) == "" {
 			continue
 		}
 		if chosen != "" && chosen != candidate {
@@ -330,7 +303,9 @@ func nativeS6Hook(root string, in policy.Input, out, diagnostic io.Writer) (bool
 		brief, _, _ := assignmentrecord.NativePaths(r)
 		refs = append(refs, filepath.Join(root, brief))
 	}
-	taskText := nativeReviewTaskText(in, refs)
+	// S6 retains its own native task selection; S7/S8 dispatch provenance
+	// must not silently change the Builder lifecycle.
+	taskText, _ := nativeTaskTextDiagnostic(in, refs, true)
 	exact := false
 	for _, ref := range refs {
 		if nativeS6ExactReference(taskText, ref) {
@@ -403,7 +378,7 @@ func nativeS6Hook(root string, in policy.Input, out, diagnostic io.Writer) (bool
 			return true, 0
 		}
 		brief, _, _ := assignmentrecord.NativePaths(*start)
-		context := fmt.Sprintf("Native S6 %s (Assignment %s revision %d): follow the original exact brief %s and its original source instructions. Save the professional Plan before implementation, continue actual work and self-checks without activation, commit and save Result in your own worktree. Return this brief and the absolute Result reference. For a real blocker, preserve existing work and use the brief's blocked handoff; Main owns recovery and integration.", start.Task.ID, start.AssignmentID, start.Revision, filepath.Join(root, brief))
+		context := fmt.Sprintf("Native S6 %s (Assignment %s revision %d): follow the original exact brief %s and its original source instructions. Save the professional Plan before implementation, continue actual work and self-checks without activation, and save Result in your own worktree. Ordinary Git commits may support integration but are not a Result reception prerequisite. Return this brief and the absolute Result reference. For a real blocker, preserve existing work and use the brief's blocked handoff; Main owns recovery and integration.", start.Task.ID, start.AssignmentID, start.Revision, filepath.Join(root, brief))
 		body := map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "SubagentStart", "additionalContext": context}}
 		_ = json.NewEncoder(out).Encode(body)
 		return true, 0
@@ -503,11 +478,6 @@ func receiveNativeS6(root string, in policy.Input, r assignmentrecord.Record, te
 	if previous, _ := coordinate["worktree_path"].(string); previous != "" && previous != source {
 		return fmt.Errorf("delivery belongs to a different recorded worktree; Main must resolve it")
 	}
-	if base, _ := coordinate["base_commit"].(string); base == "" {
-		return fmt.Errorf("missing original source commit")
-	} else if _, err := workspace.Git(contextForHook(in), source, "merge-base", "--is-ancestor", base, "HEAD"); err != nil {
-		return fmt.Errorf("native worktree does not contain the declared source commit")
-	}
 	branch, err := workspace.Git(contextForHook(in), source, "branch", "--show-current")
 	if err != nil || branch == "" {
 		return fmt.Errorf("native worktree requires a real source branch")
@@ -532,6 +502,9 @@ func receiveNativeS6(root string, in policy.Input, r assignmentrecord.Record, te
 	if err := mergeNativeProfessional(plan, planData, []string{"objective", "planned_paths", "assertion_checks", "dependencies", "risks_blockers"}); err != nil {
 		return fmt.Errorf("professional Plan %s: %w", filepath.Join(source, planRel), err)
 	}
+	// Historical private Plans may contain this system-owned field. Preserve
+	// the private answer and always project the existing Record's dependencies.
+	plan["dependencies"] = append([]string{}, r.DependsOn...)
 	if err := mergeNativeProfessional(result, resultData, []string{"summary", "assertion_evidence", "risks_blockers", "scope_deviations", "closing_assessment"}); err != nil {
 		return fmt.Errorf("professional Result %s (Plan is %s): %w", filepath.Join(source, resultRel), filepath.Join(source, planRel), err)
 	}
@@ -560,24 +533,26 @@ func receiveNativeS6(root string, in policy.Input, r assignmentrecord.Record, te
 			return err
 		}
 	}
-	// The original immutable plan artifact supplies its first receiver timestamp.
-	// Repeated/concurrent notifications do not invent a new plan or activation.
-	planRef := fmt.Sprintf(".claude/assignments/native/%s/r%d/plan-%s.json", r.AssignmentID, r.Revision, workpacket.Digest(planData))
-	if err := publishNativeS6Plan(root, planRef, plan); err != nil {
-		return err
-	}
-	result["occurred_at"] = plan["occurred_at"]
-	head, err := workspace.Git(contextForHook(in), source, "rev-parse", "HEAD")
+	// The receiver creates its own plan/result artifacts, then passes their
+	// actual paths to the original completion Writer. Unknown files are never
+	// treated as an earlier reception based on their contents.
+	planBytes, err := json.Marshal(plan)
 	if err != nil {
 		return err
 	}
-	result["message_id"] = "msg-native-result-" + workpacket.Digest(append(append(planData, resultData...), []byte(head)...))
-	resultBytes, _ := json.Marshal(result)
-	resultRef := fmt.Sprintf(".claude/assignments/native/%s/r%d/result-%s.json", r.AssignmentID, r.Revision, workpacket.Digest(resultBytes))
-	if published, err := workpacket.PublishBounded(root, resultRef, resultBytes, 1<<20); err != nil {
+	planRef, err := publishNativeS6Received(root, fmt.Sprintf(".claude/assignments/native/%s/r%d/received-plan.json", r.AssignmentID, r.Revision), "plan", planBytes)
+	if err != nil {
 		return err
-	} else if !bytes.Equal(published, resultBytes) {
-		return fmt.Errorf("immutable native Result source differs")
+	}
+	result["occurred_at"] = plan["occurred_at"]
+	result["message_id"] = fmt.Sprintf("msg-native-result-%s-r%d", r.AssignmentID, r.Revision)
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	resultRef, err := publishNativeS6Received(root, fmt.Sprintf(".claude/assignments/native/%s/r%d/received-result.json", r.AssignmentID, r.Revision), "result", resultBytes)
+	if err != nil {
+		return err
 	}
 	coordinate["worktree_path"] = source
 	coordinate["branch"] = branch
@@ -623,40 +598,23 @@ func nativeS6Blocker(data []byte) (string, bool) {
 	return blocked.Summary + " / " + strings.Join(blocked.Risks, "; "), true
 }
 
-func publishNativeS6Plan(root, ref string, plan map[string]any) error {
-	for attempt := 0; attempt < 2; attempt++ {
-		existing, err := workpacket.ReadFile(root, ref, 1<<20)
-		if err == nil {
-			var received map[string]any
-			if err := json.Unmarshal(existing, &received); err != nil {
-				return err
-			}
-			plan["occurred_at"] = received["occurred_at"]
-			expected, err := json.Marshal(plan)
-			if err != nil {
-				return err
-			}
-			if !bytes.Equal(expected, existing) {
-				return fmt.Errorf("immutable native professional plan differs from its original reception")
-			}
-			return nil
+func publishNativeS6Received(root, original, kind string, data []byte) (string, error) {
+	for attempt := 0; ; attempt++ {
+		path := original
+		if attempt > 0 {
+			path = filepath.ToSlash(filepath.Join(".claude/assignments/native", fmt.Sprintf("received-%s-candidate-%d", kind, attempt), kind+".json"))
 		}
-		if !os.IsNotExist(err) {
-			return err
-		}
-		data, err := json.Marshal(plan)
+		created, err := workpacket.PublishNewBounded(root, path, data, 1<<20)
 		if err != nil {
-			return err
+			return "", err
 		}
-		if published, err := workpacket.PublishBounded(root, ref, data, 1<<20); err == nil {
-			if bytes.Equal(published, data) {
-				return nil
-			}
-		} else if attempt == 1 {
-			return err
+		if created {
+			return path, nil
+		}
+		if err := workpacket.CheckPath(root, ".claude/assignments/native/received-publication-probe/file.json"); err != nil {
+			return "", fmt.Errorf("native S6 reception storage unavailable: %w", err)
 		}
 	}
-	return fmt.Errorf("native professional plan reception unavailable")
 }
 
 func mergeNativeProfessional(target map[string]any, data []byte, allowed []string) error {

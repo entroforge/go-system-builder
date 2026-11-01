@@ -38,7 +38,7 @@ func TestGenerateModuleCreatesDeterministicCurrentOutputs(t *testing.T) {
 	assertReportHasFields(t, first)
 }
 
-func TestValidateModuleRejectsStaleGeneratedOutput(t *testing.T) {
+func TestValidateModuleAcceptsOutputFormattingChanges(t *testing.T) {
 	root := newScenarioRoot(t, "investor-workbench", "ordinary")
 	if _, err := scenario.GenerateModule(root, "investor-workbench"); err != nil {
 		t.Fatal(err)
@@ -47,8 +47,8 @@ func TestValidateModuleRejectsStaleGeneratedOutput(t *testing.T) {
 	if err := os.WriteFile(path, append(readScenarioFile(t, root, "cases.json"), '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scenario.ValidateModule(root, "investor-workbench", scenario.ValidateOptions{}); err == nil {
-		t.Fatal("ValidateModule() accepted stale generated output")
+	if _, err := scenario.ValidateModule(root, "investor-workbench", scenario.ValidateOptions{}); err != nil {
+		t.Fatalf("formatting-only change caused validation failure: %v", err)
 	}
 }
 
@@ -898,10 +898,13 @@ func assertReportHasFields(t *testing.T, report scenario.Report) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, field := range []string{"module", "counts", "coverage", "ratio", "browser", "fingerprint"} {
+	for _, field := range []string{"module", "counts", "coverage", "ratio", "browser"} {
 		if !strings.Contains(text, field) {
 			t.Fatalf("report JSON lacks %q: %s", field, text)
 		}
+	}
+	if strings.Contains(text, "fingerprint") || strings.Contains(text, "sha256") {
+		t.Fatalf("report unexpectedly registers a digest: %s", text)
 	}
 }
 

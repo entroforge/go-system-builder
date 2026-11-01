@@ -2,31 +2,11 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/entroforge/go-system-builder/internal/packetbody"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
-
-func projectionPacketBytes(t *testing.T) []byte {
-	t.Helper()
-	p, err := workpacket.BuildReviewResult(workpacket.ReviewResultBinding{
-		RuntimeID: "loop-projection", BaselineGeneration: 1, ReviewPlanID: "review-plan-projection", ReviewPlanRef: ".claude/review/plan.json", ReviewPlanSHA256: strings.Repeat("a", 64), ReviewPlanRevision: 1, ReviewRound: 1,
-		AssignmentID: "assignment-qa-projection", AssignmentSHA256: strings.Repeat("b", 64), OwnerAgentID: "reviewer-projection", ClaimIDs: []string{"claim-projection"}, SubjectDigest: strings.Repeat("c", 64),
-	}, workpacket.ReviewResultInputs{Claims: json.RawMessage(`[{"claim_id":"claim-projection","lens":"qa","target":"product behavior","assertion":"product is correct","oracle":"matches requirements","method":"inspect original product","applicability":"required","source_refs":["REQ-projection"]}]`), FrozenSubjects: json.RawMessage(`[{"path":"product.go","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]`)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := json.Marshal(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
-}
 
 func writeProjectionObject(t *testing.T, root, path string, data []byte) {
 	t.Helper()
@@ -39,51 +19,44 @@ func writeProjectionObject(t *testing.T, root, path string, data []byte) {
 	}
 }
 
-func TestWorktreeProjectionVerifiesRealPacketBodiesAndKeepsNeighborsDirty(t *testing.T) {
+// The old content-addressed cleanup proof is no longer a deletion authority.
+// Unknown ignored files are preserved even in an otherwise clean worktree.
+func TestCleanupPreservesUnknownIgnoredAndUntrackedFiles(t *testing.T) {
 	root := t.TempDir()
-	gitRevisionTest(t, root, "init")
-	data := projectionPacketBytes(t)
-	digest := packetbody.Digest(data)
-	body := packetbody.Directory + digest + ".json"
-	copy := ".claude/runtime-checkpoints/" + strings.Repeat("e", 64) + "/packet-bodies/" + digest + ".json"
-	for _, path := range []string{body, copy} {
-		writeProjectionObject(t, root, path, data)
+	gitRevisionTest(t, root, "init", "-b", "main")
+	gitRevisionTest(t, root, "config", "user.email", "test@example.com")
+	gitRevisionTest(t, root, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".claude/\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	writeProjectionObject(t, root, ".claude/hook-decisions.jsonl.index", []byte("rebuildable cache\n"))
-	if clean, err := worktreeCleanWithProjection(context.Background(), root, nil); err != nil || !clean {
-		t.Fatalf("actual framework storage made checkout dirty: %t %v", clean, err)
+	gitRevisionTest(t, root, "add", ".gitignore")
+	gitRevisionTest(t, root, "commit", "-m", "initial")
+	worktree := filepath.Join(t.TempDir(), "worker")
+	gitRevisionTest(t, root, "worktree", "add", "-b", "worker", worktree, "main")
+	if err := os.MkdirAll(filepath.Join(worktree, ".claude"), 0700); err != nil {
+		t.Fatal(err)
 	}
-	for _, neighbor := range []string{
-		".claude/hook-decisions.jsonl.index.go",
-		".claude/packet-bodies/product.go",
-		".claude/packet-bodies/" + digest + ".json.go",
-		".claude/runtime-checkpoints/" + strings.Repeat("e", 64) + "/packet-bodies/product.go",
-	} {
-		t.Run(neighbor, func(t *testing.T) {
-			writeProjectionObject(t, root, neighbor, []byte("package product\n"))
-			defer os.Remove(filepath.Join(root, filepath.FromSlash(neighbor)))
-			if clean, err := worktreeCleanWithProjection(context.Background(), root, nil); err != nil || clean {
-				t.Fatalf("neighbor acquired storage exemption: %t %v", clean, err)
-			}
-		})
+	unknown := filepath.Join(worktree, ".claude", "unknown.json")
+	if err := os.WriteFile(unknown, []byte("original private material"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	writeProjectionObject(t, root, body, []byte(`{"product":"forged under original hash"}`))
-	if clean, err := worktreeCleanWithProjection(context.Background(), root, nil); err == nil || clean {
-		t.Fatalf("content-addressed filename waived changed bytes: %t %v", clean, err)
+	if err := cleanupUnmodifiedWorktree(context.Background(), root, worktree); err == nil || !strings.Contains(err.Error(), "preserve") {
+		t.Fatalf("unknown ignored file should preserve worktree: %v", err)
 	}
-}
-
-func TestPacketProjectionRequiresCompleteCanonicalPacketNotOnlyHash(t *testing.T) {
-	root := t.TempDir()
-	data := []byte(`{"product":"ordinary JSON"}`)
-	path := packetbody.Directory + packetbody.Digest(data) + ".json"
-	writeProjectionObject(t, root, path, data)
-	if control, err := runtimeBodyProjection(context.Background(), root, path); err == nil || control {
-		t.Fatalf("arbitrary hash-named JSON became framework storage: %t %v", control, err)
+	data, err := os.ReadFile(unknown)
+	if err != nil || string(data) != "original private material" {
+		t.Fatalf("unknown file changed or removed: %q, %v", data, err)
 	}
-	for _, path := range []string{".claude/hook-decisions.jsonl.index.go", ".claude/packet-bodies/../product.go", ".claude/packet-bodies/not-a-hash.json"} {
-		if runtimeProjection(path) {
-			t.Fatalf("neighbor classified as Runtime projection: %s", path)
-		}
+	if err := os.Remove(unknown); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(worktree, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupUnmodifiedWorktree(context.Background(), root, worktree); err != nil {
+		t.Fatalf("clean worktree should be removed: %v", err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("clean worktree remains: %v", err)
 	}
 }

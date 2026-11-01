@@ -11,6 +11,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/targetedauthoring"
 )
 
 func TestS9RepairLeadExistingImpactReminderSkipsPreparation(t *testing.T) {
@@ -56,6 +57,7 @@ func TestS9RepairLeadTargetedReminderUsesIndexedProjection(t *testing.T) {
 	assignment := "repair-assignment-reminder"
 	verifier := repair.VerificationAssignmentID(assignment)
 	pointer["assignment_owners"] = map[string]any{assignment: "builder", verifier: "verifier"}
+	registerLegacyTargetedTestSources(t, root, state, assignment, verifier, "verifier")
 	pointer["required_reverification_ids"] = []any{"reverify-reminder"}
 	// These indexed JSON projections deliberately lack domain-complete source
 	// artifacts: a reminder can display facts, but cannot accept this fixture.
@@ -85,6 +87,41 @@ func TestS9RepairLeadTargetedReminderUsesIndexedProjection(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
 		t.Fatal("changed indexed source rewrote the original answer")
+	}
+}
+
+// Build the original legacy verifier's registered TASK and manifest sources.
+// No targeted_authoring declaration is present in this historical format.
+func registerLegacyTargetedTestSources(t *testing.T, root string, state map[string]any, original, performing, owner string) {
+	t.Helper()
+	session := stringValue(repairPointerCLI(state)["session_id"])
+	taskID := targetedauthoring.TaskID(session, performing)
+	manifestAssignment := repair.ManifestVerificationAssignmentID(original)
+	const taskPath = ".claude/test-targeted/task.json"
+	const manifestPath = ".claude/test-targeted/manifest.json"
+	const teamID = "team-test-verifier"
+	taskBytes, err := json.Marshal(map[string]any{"task_id": taskID, "session_id": session, "assignment_id": performing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := json.Marshal(map[string]any{"runtime_id": state["runtime_id"], "baseline_generation": mapFieldCLI(state, "baseline")["generation"], "workgroup_id": teamID, "assignments": []any{map[string]any{"assignment_id": manifestAssignment, "agent_id": owner, "write_paths": []any{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRepairLeadFile(t, root, taskPath, string(taskBytes))
+	writeRepairLeadFile(t, root, manifestPath, string(manifestBytes))
+	entities, _ := state["entities"].(map[string]any)
+	if entities == nil {
+		entities = map[string]any{}
+		state["entities"] = entities
+	}
+	for kind, row := range map[string]map[string]any{
+		"agents": {"id": owner, "role": "test-builder", "team_id": teamID, "task_ids": []any{taskID}, "prompt_ref": manifestPath + "#" + manifestAssignment},
+		"tasks":  {"id": taskID, "path": taskPath, "sha256": repairLeadDigest(taskBytes), "owner_agent_ids": []any{owner}},
+		"teams":  {"id": teamID, "manifest_ref": manifestPath, "manifest_sha256": repairLeadDigest(manifestBytes)},
+	} {
+		rows, _ := entities[kind].([]any)
+		entities[kind] = append(rows, row)
 	}
 }
 
@@ -218,7 +255,7 @@ func assertRepairLeadAnswerReplay(t *testing.T, root, path string, input policy.
 
 func TestS9EvidenceProjectionPreservesBuilderRootAndCapturedHandoff(t *testing.T) {
 	mainRoot, workerRoot := t.TempDir(), t.TempDir()
-	raw := `{"receipt":{"provenance":{"execution_root":"WORKER","local_evidence":[{"authored_ref":"logs/check.txt","source_path":"logs/check.txt","path":".claude/evidence/s9/captured","sha256":"digest"}]}},"unit_results":[{"evidence_refs":["logs/check.txt","path:legacy.log#sha256=abc","old-id","test://actual-run"]}],"checks":[{"evidence_refs":["logs/check.txt"]}]}`
+	raw := `{"receipt":{"provenance":{"execution_root":"WORKER","local_evidence":[{"authored_ref":"logs/check.txt","source_path":"logs/check.txt","path":".claude/evidence/s9/captured","sha256":"digest"}]}},"unit_results":[{"evidence_refs":["logs/check.txt","path:legacy.log#sha256=abc","old-id","test://actual-run"]}],"checks":[{"evidence_refs":["logs/check.txt","path:legacy.log#sha256=abc","path:report.log#ordinary-section"]}]}`
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		t.Fatal(err)
@@ -227,7 +264,7 @@ func TestS9EvidenceProjectionPreservesBuilderRootAndCapturedHandoff(t *testing.T
 	var b strings.Builder
 	repairLeadEvidenceHelp(mainRoot, &b, doc)
 	help := b.String()
-	for _, want := range []string{filepath.Join(mainRoot, ".claude/evidence/s9/captured"), "Builder root " + workerRoot, "original ref \"logs/check.txt\"", "Recorded Main check evidence candidate: " + filepath.Join(mainRoot, "logs/check.txt"), "historical/unarchived reference", "test://actual-run"} {
+	for _, want := range []string{filepath.Join(mainRoot, ".claude/evidence/s9/captured"), "Builder root " + workerRoot, "original ref \"logs/check.txt\"", "Recorded Main check evidence candidate: logs/check.txt (Main root " + mainRoot, "historical/unarchived reference", "test://actual-run", "Recorded Main check evidence candidate: path:legacy.log#sha256=abc", "Recorded Main check evidence candidate: path:report.log#ordinary-section"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("projection omitted %q: %s", want, help)
 		}

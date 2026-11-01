@@ -40,7 +40,7 @@ func TestRuntimeRepairDispatchBindsBuilderToAssignment(t *testing.T) {
 	if err := os.WriteFile(contractPath, contractBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	contractRef := repair.ContractRef{Path: contractRel, SHA256: sha256HexDispatch(contractBytes)}
+	contractRef := repair.ContractRef{Path: contractRel}
 	session, sessionRef, err := repair.CreateRepairSession(root, repair.SessionRequest{
 		Contract: contractRef, SessionID: "repair-session-dispatch", RuntimeID: "loop-req039-ct", ReqID: "REQ-039", BaselineGeneration: 1, CreatedBy: "main",
 	})
@@ -58,8 +58,8 @@ func TestRuntimeRepairDispatchBindsBuilderToAssignment(t *testing.T) {
 	review := state["review"].(map[string]any)
 	review["repair"] = map[string]any{
 		"session_id": session.SessionID, "case_id": "investigation-case-dispatch", "contract_id": "repair-contract-dispatch",
-		"contract_ref": contractRel, "contract_sha256": contractRef.SHA256, "path": sessionRef.Path, "sha256": sessionRef.SHA256,
-		"revision": 1, "status": "planning", "plan_ref": planRef.Path, "plan_sha256": planRef.SHA256,
+		"contract_ref": contractRel, "path": sessionRef.Path,
+		"revision": 1, "status": "planning", "plan_ref": planRef.Path,
 		"plan_report_refs": []any{}, "result_refs": []any{}, "next_action": "dispatch a Builder", "updated_at": "2026-08-26T00:00:00Z",
 	}
 	// Keep the fixture's runtime identity aligned with the generated session.

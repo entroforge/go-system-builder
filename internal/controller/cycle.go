@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -146,22 +145,7 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	}
 	if cursorState != "acceptance" && cursorState != "release_audit" && !(cursorState == "planning" && cursorPhase == "design") && req.Files == nil && len(catalog.Definition.MutableEvidenceKinds) > 0 {
 		if view, viewErr := productionFiles(ctx, req.Root, snapshot.State, catalog); viewErr == nil {
-			req.Files = view // refresh and evaluation share the same pinned input snapshot
-			kinds := map[string]bool{}
-			for _, k := range catalog.Definition.MutableEvidenceKinds {
-				kinds[k] = true
-			}
-			refreshWriter := runtime.NewWriter(statePath, journalPath, req.Root, semantic.RuntimeCandidateValidator{})
-			if req.recoveryWriter.Enabled() {
-				refreshWriter = runtime.NewOfflineRecoveryWriter(statePath, journalPath, req.Root, semantic.RuntimeCandidateValidator{}, req.recoveryWriter)
-			}
-			_, refreshErr := refreshWriter.WithContext(ctx).RefreshEvidenceFingerprints(req.Root, kinds, view.ReadFile, func(path string) bool { source, err := view.Source(path); return err == nil && source == "disk" })
-			if refreshErr != nil {
-				result.Warnings = append(result.Warnings, "evidence fingerprint refresh: "+refreshErr.Error())
-			} else if refreshed, readErr := store.Snapshot(); readErr == nil {
-				snapshot = refreshed
-				result.Snapshot = snapshot
-			}
+			req.Files = view
 		}
 	}
 	registry, err := qualitygate.NewRegistry(catalog)
@@ -270,7 +254,6 @@ func RunControlCycle(ctx context.Context, req ControlRequest) (ControlResult, er
 	gateStatus, gateError, conflicts := projectGateResult(evaluation)
 	result.QualityGate.Status = gateStatus
 	result.QualityGate.GateID = gateID
-	result.QualityGate.Fingerprint = evaluation.Fingerprint
 	result.QualityGate.Missing = nonNilStrings(evaluation.Missing)
 	result.QualityGate.EvidenceRefs = nonNilStrings(evaluation.EvidenceRefs)
 	result.QualityGate.Conflicts = nonNilStrings(conflicts)
@@ -529,7 +512,6 @@ func recomputeAfterStale(
 				GateID:              gateID,
 				CandidateTransition: candidateID(candidate),
 				ObservedRevision:    refreshed.Revision,
-				Fingerprint:         evaluation.Fingerprint,
 				Missing:             nonNilStrings(evaluation.Missing),
 				EvidenceRefs:        nonNilStrings(evaluation.EvidenceRefs),
 				NextCursor:          cursorString(cursorState, cursorPhase),
@@ -560,7 +542,6 @@ func recomputeAfterStale(
 				GateID:              gateID,
 				CandidateTransition: candidate.ID,
 				ObservedRevision:    refreshed.Revision,
-				Fingerprint:         evaluation.Fingerprint,
 				Missing:             nonNilStrings(evaluation.Missing),
 				EvidenceRefs:        nonNilStrings(evaluation.EvidenceRefs),
 				NextCursor:          cursorString(cursorState, cursorPhase),
@@ -589,7 +570,6 @@ func recomputeAfterStale(
 				GateID:              gateID,
 				CandidateTransition: candidate.ID,
 				ObservedRevision:    refreshed.Revision,
-				Fingerprint:         evaluation.Fingerprint,
 				NextCursor:          cursorString(cursorState, cursorPhase),
 				ErrorCode:           CodeCASStale,
 			},
@@ -613,7 +593,6 @@ func recomputeAfterStale(
 			GateID:              gateID,
 			CandidateTransition: candidate.ID,
 			ObservedRevision:    final.Revision,
-			Fingerprint:         evaluation.Fingerprint,
 			EvidenceRefs:        nonNilStrings(evaluation.EvidenceRefs),
 			NextCursor:          cursorString(cursorState, cursorPhase),
 			TransitionCommitted: true,
@@ -665,9 +644,7 @@ func evaluateAutomaticGates(
 				GateID: gateID,
 			}
 		}
-		if view, ok := files.(*fileview.View); ok {
-			evaluation.Fingerprint = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(evaluation.Fingerprint+"\x00"+view.Commit)))
-		}
+
 		results = append(results, automaticGateEval{
 			candidate:  spec,
 			gateID:     gateID,
@@ -1071,7 +1048,6 @@ func autoTransitionRequest(
 		BaselineGeneration:     snapshotBaselineGeneration(snapshot.State),
 		GateID:                 gateID,
 		GateEvidenceRefs:       s5GateEvidenceRefs(candidate.ID, evaluation.EvidenceRefs),
-		GateFingerprint:        evaluation.Fingerprint,
 		ProducerResponsibility: gateProducerResponsibility(registry, gateID),
 		RecoveryWriter:         req.recoveryWriter,
 		SubmissionFollowupID:   req.SubmissionFollowupID,
@@ -1114,7 +1090,6 @@ func buildTransitionEvidence(
 			priority = append(priority, id)
 		}
 	}
-	currentRound := snapshotReviewRound(snapshot.State)
 	catalog := evidence.DefaultCatalog()
 	for _, kind := range candidate.RequiredEvidence {
 		// Generated evidence is supplied by catalog metadata rather than the
@@ -1126,10 +1101,10 @@ func buildTransitionEvidence(
 			}
 			continue
 		}
-		if assignTransitionEvidenceRef(kind, priority, index, out, used, currentRound) {
+		if assignTransitionEvidenceRef(kind, priority, index, out, used) {
 			continue
 		}
-		assignTransitionEvidencePathAlias(kind, evaluation.EvidenceRefs, index, out, used, currentRound)
+		assignTransitionEvidencePathAlias(kind, evaluation.EvidenceRefs, index, out, used)
 	}
 	return out
 }
@@ -1140,7 +1115,6 @@ func assignTransitionEvidenceRef(
 	index map[string]map[string]any,
 	out map[string]string,
 	used map[string]struct{},
-	currentRound int,
 ) bool {
 	bestID := ""
 	bestScore := -1
@@ -1152,7 +1126,7 @@ func assignTransitionEvidenceRef(
 		if _, taken := used[id]; taken {
 			continue
 		}
-		score := evidenceAssignScore(kind, item, currentRound)
+		score := evidenceAssignScore(kind, item)
 		if score < 0 {
 			continue
 		}
@@ -1175,7 +1149,6 @@ func assignTransitionEvidencePathAlias(
 	index map[string]map[string]any,
 	out map[string]string,
 	used map[string]struct{},
-	currentRound int,
 ) {
 	if out[kind] != "" {
 		return
@@ -1194,7 +1167,7 @@ func assignTransitionEvidencePathAlias(
 		if _, taken := used[path]; taken {
 			continue
 		}
-		score := evidenceAssignScore(kind, item, currentRound)
+		score := evidenceAssignScore(kind, item)
 		if score < 0 {
 			continue
 		}
@@ -1212,9 +1185,9 @@ func assignTransitionEvidencePathAlias(
 
 // evidenceAssignScore ranks compatible evidence for a required kind.
 // Higher is better. Negative means incompatible.
-// BUG-039-35: prefer primary short kinds (team_manifest) and current review
-// round over alias/stale builder_report when both coexist after TR-006.
-func evidenceAssignScore(requiredKind string, item map[string]any, currentRound int) int {
+// Prefer the catalog's primary kind while retaining the supplied order for
+// equally compatible evidence.
+func evidenceAssignScore(requiredKind string, item map[string]any) int {
 	actualKind := stringValue(item["kind"])
 	if !evidenceKindCompatible(requiredKind, actualKind) {
 		return -1
@@ -1223,42 +1196,11 @@ func evidenceAssignScore(requiredKind string, item map[string]any, currentRound 
 	if evidenceKindPreferred(requiredKind, actualKind) {
 		score += 10
 	}
-	if currentRound > 0 {
-		switch rr := item["review_round"].(type) {
-		case int:
-			if rr == currentRound {
-				score += 5
-			} else if rr > 0 {
-				score -= 5
-			}
-		case float64:
-			if int(rr) == currentRound {
-				score += 5
-			} else if rr > 0 {
-				score -= 5
-			}
-		}
-	}
 	return score
 }
 
 func evidenceKindPreferred(requiredKind, actualKind string) bool {
 	return evidence.DefaultCatalog().IsPreferred(requiredKind, actualKind)
-}
-
-func snapshotReviewRound(state map[string]any) int {
-	review, ok := state["review"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	switch v := review["round"].(type) {
-	case int:
-		return v
-	case float64:
-		return int(v)
-	default:
-		return 0
-	}
 }
 
 func runtimeEvidenceIndex(state map[string]any) map[string]map[string]any {

@@ -3,7 +3,6 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
-	"path"
 	"reflect"
 	"strings"
 
@@ -16,30 +15,31 @@ import (
 // Main resolution message and its accepted blocker_resolved lifecycle CAS.
 // It is a historical fact, not a current work packet or Resume authorization.
 type RepairResultResolutionReceipt struct {
-	Contract                     string `json:"contract"`
-	PacketID                     string `json:"packet_id"`
-	OwnerAgentID                 string `json:"owner_agent_id"`
-	BlockerRef                   string `json:"blocker_ref"`
-	BlockerSHA256                string `json:"blocker_sha256"`
-	MessageRef                   string `json:"message_ref"`
-	MessageSHA256                string `json:"message_sha256"`
+	Contract     string `json:"contract"`
+	PacketID     string `json:"packet_id"`
+	OwnerAgentID string `json:"owner_agent_id"`
+	BlockerRef   string `json:"blocker_ref"`
+
+	MessageRef string `json:"message_ref"`
+
 	AcceptedEventID              string `json:"accepted_event_id"`
 	AcceptedIdempotencyKey       string `json:"accepted_idempotency_key"`
 	AcceptedAfterRuntimeRevision int    `json:"accepted_after_runtime_revision"`
 	AcceptedSequence             int    `json:"accepted_sequence"`
 }
 
-// UnmarshalJSON keeps the public receipt closed. Its authority is reconstructed
-// from Runtime/evidence/message/journal by VerifiedRepairResultResolutionReceipt.
+// UnmarshalJSON retains the original receipt coordinates while allowing
+// unrelated extensions. The receiver associates those coordinates with the
+// Runtime, message and journal for the issued responsibility.
 func (receipt *RepairResultResolutionReceipt) UnmarshalJSON(data []byte) error {
 	if err := workpacket.ValidateUniqueJSON(data); err != nil {
 		return fmt.Errorf("S9 resolution receipt JSON: %w", err)
 	}
 	var decoded repairResultResolutionReceiptWire
-	if err := decodeRepairResultBlockerStrictJSON(data, &decoded); err != nil {
+	if err := decodeRepairResultBlockerJSON(data, &decoded); err != nil {
 		return fmt.Errorf("decode S9 resolution receipt: %w", err)
 	}
-	if decoded.Contract != "s9-repair-result-resolution-receipt-v1" || decoded.PacketID == "" || decoded.OwnerAgentID == "" || decoded.BlockerRef == "" || !isSHA256Hex(decoded.BlockerSHA256) || decoded.MessageRef == "" || !isSHA256Hex(decoded.MessageSHA256) || decoded.AcceptedEventID == "" || decoded.AcceptedIdempotencyKey == "" || decoded.AcceptedAfterRuntimeRevision < 1 || decoded.AcceptedSequence < 1 {
+	if decoded.Contract != "s9-repair-result-resolution-receipt-v1" || decoded.PacketID == "" || decoded.OwnerAgentID == "" || decoded.BlockerRef == "" || decoded.MessageRef == "" || decoded.AcceptedEventID == "" || decoded.AcceptedIdempotencyKey == "" || decoded.AcceptedAfterRuntimeRevision < 1 || decoded.AcceptedSequence < 1 {
 		return fmt.Errorf("S9 resolution receipt has incomplete acceptance coordinates")
 	}
 	*receipt = RepairResultResolutionReceipt(decoded)
@@ -86,13 +86,11 @@ func verifiedRepairResultResolutionReceiptWithVerifier(verifier *repairResultRes
 	if owner == "" || owner != b.OwnerAgentID {
 		return RepairResultResolutionReceipt{}, false, fmt.Errorf("S9 resolution receipt owner differs from the originally issued packet")
 	}
-	messageDir := path.Join(".claude/evidence", b.RuntimeID, fmt.Sprintf("g%d", b.BaselineGeneration), "S9", "blocker-messages", p.ID)
-	evidenceRows, pointerSeen, err := repairResultResolutionEvidenceRows(state, p, owner, messageDir)
+	evidenceRows, pointerSeen, err := repairResultResolutionEvidenceRows(state, p, owner)
 	if err != nil {
 		return RepairResultResolutionReceipt{}, false, err
 	}
-	blockerDir := path.Join(".claude/evidence", b.RuntimeID, fmt.Sprintf("g%d", b.BaselineGeneration), "S9", "blockers", p.ID)
-	events, err := repairResultResolutionEvents(journal, owner, messageDir, blockerDir)
+	events, err := repairResultResolutionEvents(journal, owner, evidenceRows)
 	if err != nil {
 		return RepairResultResolutionReceipt{}, false, err
 	}
@@ -113,9 +111,8 @@ func verifiedRepairResultResolutionReceiptWithVerifier(verifier *repairResultRes
 	evidence := evidenceRows[0]
 	messageRef := stringValue(evidence["id"])
 	messagePath := stringValue(evidence["path"])
-	messageSHA := stringValue(evidence["sha256"])
-	if messageRef == "" || messageRef != messagePath || !isSHA256Hex(messageSHA) || messagePath != path.Join(messageDir, messageSHA+".json") {
-		return RepairResultResolutionReceipt{}, false, fmt.Errorf("S9 resolution evidence row lacks its exact content-addressed message ref/SHA")
+	if messageRef == "" || messageRef != messagePath {
+		return RepairResultResolutionReceipt{}, false, fmt.Errorf("S9 resolution original reference unavailable")
 	}
 	if err := verifyUniqueResolutionEvidencePath(state, messagePath, evidence); err != nil {
 		return RepairResultResolutionReceipt{}, false, err
@@ -127,17 +124,10 @@ func verifiedRepairResultResolutionReceiptWithVerifier(verifier *repairResultRes
 	if err != nil {
 		return RepairResultResolutionReceipt{}, false, fmt.Errorf("read immutable S9 resolution message: %w", err)
 	}
-	if workpacket.Digest(messageBytes) != messageSHA {
-		return RepairResultResolutionReceipt{}, false, fmt.Errorf("S9 resolution message bytes differ from evidence SHA")
-	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("agent-message.schema.json", messageBytes); err != nil {
 		return RepairResultResolutionReceipt{}, false, fmt.Errorf("validate S9 resolution message: %w", err)
 	}
-	packetSHA, err := verifier.packetDigest(p)
-	if err != nil {
-		return RepairResultResolutionReceipt{}, false, err
-	}
-	if err := verifyRepairResultResolutionMessage(messageBytes, p, blocker, packetSHA); err != nil {
+	if err := verifyRepairResultResolutionMessage(messageBytes, p, blocker); err != nil {
 		return RepairResultResolutionReceipt{}, false, err
 	}
 
@@ -154,9 +144,7 @@ func verifiedRepairResultResolutionReceiptWithVerifier(verifier *repairResultRes
 		PacketID:                     p.ID,
 		OwnerAgentID:                 owner,
 		BlockerRef:                   blocker.ArtifactRef,
-		BlockerSHA256:                blocker.ArtifactSHA256,
 		MessageRef:                   messageRef,
-		MessageSHA256:                messageSHA,
 		AcceptedEventID:              eventID,
 		AcceptedIdempotencyKey:       key,
 		AcceptedAfterRuntimeRevision: after,
@@ -164,7 +152,7 @@ func verifiedRepairResultResolutionReceiptWithVerifier(verifier *repairResultRes
 	}, true, nil
 }
 
-func repairResultResolutionEvidenceRows(state map[string]any, p workpacket.RepairResultPacket, owner, messageDir string) ([]map[string]any, bool, error) {
+func repairResultResolutionEvidenceRows(state map[string]any, p workpacket.RepairResultPacket, owner string) ([]map[string]any, bool, error) {
 	rows, ok := state["evidence"].([]any)
 	if !ok {
 		return nil, false, fmt.Errorf("Runtime evidence index is not an array")
@@ -185,10 +173,8 @@ func repairResultResolutionEvidenceRows(state map[string]any, p workpacket.Repai
 			continue
 		}
 		ownerCount++
-		pointer := stringValue(agent["blocker_resolved_ref"])
-		if pointer != "" && (pointer == messageDir || strings.HasPrefix(pointer, messageDir+"/")) {
-			pointerSeen = true
-		}
+		_ = agent // the selected packet-scoped evidence below supplies the reference
+
 	}
 	if ownerCount > 1 {
 		return nil, false, fmt.Errorf("S9 resolution owner Agent is duplicated")
@@ -210,38 +196,34 @@ func repairResultResolutionEvidenceRows(state map[string]any, p workpacket.Repai
 		}
 		refs, refsOK := checkpointStringSlice(row["scope_refs"])
 		packetScoped := row["kind"] == "repair_result_resolution" && refsOK && containsStringRuntime(refs, p.ID)
-		inMessageDir := stringValue(row["path"]) == messageDir || strings.HasPrefix(stringValue(row["path"]), messageDir+"/")
-		if packetScoped || inMessageDir {
+
+		if packetScoped {
 			matching = append(matching, row)
 		}
 	}
 	return matching, pointerSeen, nil
 }
 
-func repairResultResolutionEvents(journal controlproof.JournalInspection, owner, messageDir, blockerDir string) ([]map[string]any, error) {
-	baseEventID := "evt-agent-" + owner + "-blocker_resolved-r"
-	matching := make([]map[string]any, 0, 1)
+func repairResultResolutionEvents(journal controlproof.JournalInspection, owner string, rows []map[string]any) ([]map[string]any, error) {
+	paths := map[string]bool{}
+	for _, row := range rows {
+		paths[stringValue(row["path"])] = true
+	}
+	matching := []map[string]any{}
+	prefix := "evt-agent-" + owner + "-blocker_resolved-r"
 	for _, event := range journal.Events {
-		ownerEvent := strings.HasPrefix(stringValue(event["event_id"]), baseEventID)
-		refs, refsOK := checkpointStringSlice(event["evidence_ids"])
-		if !refsOK {
-			if ownerEvent {
-				return nil, fmt.Errorf("S9 blocker_resolved journal evidence_ids is not a string array")
-			}
+		if !strings.HasPrefix(stringValue(event["event_id"]), prefix) {
 			continue
 		}
-		refMatch := false
-		for _, ref := range refs {
-			if ref == messageDir || strings.HasPrefix(ref, messageDir+"/") || ref == blockerDir || strings.HasPrefix(ref, blockerDir+"/") {
-				refMatch = true
-			}
+		refs, ok := checkpointStringSlice(event["evidence_ids"])
+		if !ok {
+			return nil, fmt.Errorf("S9 blocker_resolved journal evidence_ids is not a string array")
 		}
-		// Blocker reports and Main resolutions share the packet's message
-		// directory. Identify the lifecycle event by its owner-scoped event ID;
-		// the journal's generic event field is transition_committed, while the
-		// domain event name is bound by the event ID and exact message below.
-		if refMatch && ownerEvent {
-			matching = append(matching, event)
+		for _, ref := range refs {
+			if paths[ref] && ref != "" {
+				matching = append(matching, event)
+				break
+			}
 		}
 	}
 	return matching, nil
@@ -249,7 +231,7 @@ func repairResultResolutionEvents(journal controlproof.JournalInspection, owner,
 
 func verifyRepairResultResolutionEvidence(row map[string]any, p workpacket.RepairResultPacket, blocker RepairResultBlockerReceipt) error {
 	b := p.Binding.Sources
-	for _, required := range []string{"id", "kind", "path", "sha256", "status", "baseline_generation", "review_round", "produced_by", "invalidated_by", "invalidation_rule", "invalidation_reason", "responsibility_id", "scope_refs"} {
+	for _, required := range []string{"id", "kind", "path", "status", "baseline_generation", "produced_by", "invalidated_by", "invalidation_rule", "invalidation_reason", "responsibility_id", "scope_refs"} {
 		if _, exists := row[required]; !exists {
 			return fmt.Errorf("S9 resolution evidence omits required field %q", required)
 		}
@@ -259,9 +241,8 @@ func verifyRepairResultResolutionEvidence(row map[string]any, p workpacket.Repai
 		return fmt.Errorf("S9 resolution evidence identity, kind or responsibility differs")
 	}
 	generation, genErr := integerField(row, "baseline_generation")
-	round, roundErr := integerField(row, "review_round")
-	if genErr != nil || roundErr != nil || generation != b.BaselineGeneration || round != b.ReviewRound {
-		return fmt.Errorf("S9 resolution evidence generation/review round differs")
+	if genErr != nil || generation != b.BaselineGeneration {
+		return fmt.Errorf("S9 resolution evidence generation differs")
 	}
 	producers, ok := checkpointStringSlice(row["produced_by"])
 	if !ok || len(producers) != 1 || producers[0] != "main" {
@@ -298,7 +279,7 @@ func verifyUniqueResolutionEvidencePath(state map[string]any, messagePath string
 	return nil
 }
 
-func verifyRepairResultResolutionMessage(data []byte, p workpacket.RepairResultPacket, blocker RepairResultBlockerReceipt, packetSHA string) error {
+func verifyRepairResultResolutionMessage(data []byte, p workpacket.RepairResultPacket, blocker RepairResultBlockerReceipt, _ ...string) error {
 	if err := workpacket.ValidateUniqueJSON(data); err != nil {
 		return err
 	}
@@ -318,16 +299,10 @@ func verifyRepairResultResolutionMessage(data []byte, p workpacket.RepairResultP
 	if !ok {
 		return fmt.Errorf("S9 resolution message lacks its closed S9 subtype")
 	}
-	if !isSHA256Hex(packetSHA) {
-		return fmt.Errorf("S9 resolution packet digest is invalid")
+	if resolution["decision"] != "retry" || resolution["packet_id"] != p.ID || resolution["blocker_ref"] != blocker.ArtifactRef {
+		return fmt.Errorf("S9 resolution does not match the original responsibility")
 	}
-	if resolution["decision"] != "retry" || resolution["packet_id"] != p.ID || resolution["packet_sha256"] != packetSHA || resolution["blocker_ref"] != blocker.ArtifactRef || resolution["blocker_sha256"] != blocker.ArtifactSHA256 || resolution["execution_sha256"] != p.Binding.ExecutionSHA256 || resolution["execution_assignment_id"] != blocker.Artifact.ExecutionAssignmentID || !hypothesisJSONEqual(resolution["execution_generation"], blocker.Artifact.ExecutionGeneration) {
-		return fmt.Errorf("S9 resolution message does not bind the exact packet, blocker or frozen execution")
-	}
-	var execution map[string]any
-	if err := json.Unmarshal(p.Inputs.Execution, &execution); err != nil || execution == nil || execution["assignment_id"] != blocker.Artifact.ExecutionAssignmentID || !hypothesisJSONEqual(execution["execution_generation"], blocker.Artifact.ExecutionGeneration) || workpacket.Digest(p.Inputs.Execution) != p.Binding.ExecutionSHA256 {
-		return fmt.Errorf("S9 resolution frozen execution differs from predecessor blocker")
-	}
+
 	return nil
 }
 

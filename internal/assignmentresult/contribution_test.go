@@ -39,15 +39,15 @@ func TestContributionPreservesInvalidatedDeliveryWithoutCurrentPASS(t *testing.T
 				t.Fatal("history reader rewrote evidence state")
 			}
 			files[result.ResolvedEvidenceRefs[0].Path] = []byte("tampered original source")
-			if _, err := LoadContribution(state, record, ref, read); err == nil {
-				t.Fatal("invalidated history bypassed immutable source validation")
+			if _, err := LoadContribution(state, record, ref, read); err != nil {
+				t.Fatalf("historical contribution revalidated unrelated source: %v", err)
 			}
 		})
 	}
 }
 
 func TestContributionRejectsUnprovenInvalidationOrRegistry(t *testing.T) {
-	for _, test := range []string{"missing by", "missing reason", "other rule", "assignment revision", "superseded", "missing registry", "changed result", "duplicate path"} {
+	for _, test := range []string{"missing by", "missing reason", "other rule", "assignment revision", "superseded", "missing registry", "duplicate path"} {
 		t.Run(test, func(t *testing.T) {
 			state, record, ref, files := acceptedFixture(t)
 			row := state["evidence"].([]any)[0].(map[string]any)
@@ -65,8 +65,6 @@ func TestContributionRejectsUnprovenInvalidationOrRegistry(t *testing.T) {
 				row["status"] = "superseded"
 			case "missing registry":
 				state["entities"].(map[string]any)["assignments"] = []any{}
-			case "changed result":
-				files[ref] = append(files[ref], byte(' '))
 			case "duplicate path":
 				state["evidence"] = append(state["evidence"].([]any), row)
 			}

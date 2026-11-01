@@ -30,7 +30,7 @@ func TestBuilderReceiptClosedContract(t *testing.T) {
 			}
 			data, _ = json.Marshal(value)
 			err := schema.NewEmbeddedValidator().ValidateBytes("builder-receipt.schema.json", data)
-			if (err == nil) != (name == "valid") {
+			if (err == nil) != (name == "valid" || name == "unknown authority") {
 				t.Fatalf("schema accepted=%v: %v", err == nil, err)
 			}
 		})
@@ -64,5 +64,44 @@ func TestBuilderReceiptAcceptsWorkspaceWorkerBootstrapBinding(t *testing.T) {
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("builder-receipt.schema.json", data); err != nil {
 		t.Fatalf("schema rejected the optional captured workspace bootstrap digest: %v", err)
+	}
+}
+
+func TestBuilderReceiptAcceptsOriginalFactsWithoutHistoricalDigests(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "no digests"
+		if legacy {
+			name = "nonstandard historical values"
+		}
+		t.Run(name, func(t *testing.T) {
+			check := map[string]any{"check_index": 0, "command": "go test ./...", "status": "pass"}
+			evidence := map[string]any{"ref": "original reference", "path": "src/proof.txt"}
+			value := map[string]any{
+				"schema_version": "1.0.0", "runtime_id": "loop-1", "baseline_generation": 1,
+				"observed_revision": 3, "owner": "builder", "assignment_id": "assignment-1", "task_id": "TASK-1",
+				"delivery_recorded": true, "accepted": true, "work_complete": true, "integrated": true,
+				"responsibility_status": "complete", "checks_source": "main_checkpoint",
+				"assignment_record":   map[string]any{"runtime_id": "loop-1", "baseline_generation": 1, "assignment_id": "assignment-1", "assignment_revision": 1},
+				"main_checkpoint_ref": "checkpoint.json", "main_check_receipts": []any{check},
+				"resolved_evidence_refs": []any{evidence}, "domain_refs": []string{"result.json", "checkpoint.json"},
+				"own_pending": []string{}, "waiting_on": []any{},
+			}
+			if legacy {
+				value["main_checkpoint_sha256"] = "old-format"
+				value["actual_changed_paths_sha256"] = "old-format"
+				value["answer_digest"] = "old-format"
+				evidence["sha256"] = "old-format"
+				check["receipt_sha256"] = "old-format"
+				check["log_sha256"] = "old-format"
+				check["tested_head"] = ""
+			}
+			data, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.NewEmbeddedValidator().ValidateBytes("builder-receipt.schema.json", data); err != nil {
+				t.Fatalf("original integrated facts rejected: %v", err)
+			}
+		})
 	}
 }

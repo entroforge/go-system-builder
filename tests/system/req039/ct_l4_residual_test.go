@@ -6,8 +6,6 @@
 package req039_test
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,7 +18,7 @@ func TestCT03902_ContractsMissingCoverageExposesNotReadySystem(t *testing.T) {
 	state := systemPlanningState(t, root, "contracts", 1)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-02-sys", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-02-sys", "Edit", map[string]any{
 		"file_path": "internal/cli/controller.go",
 	})
 	code, stdout, stderr := runHook(t, root, "PreToolUse", body)
@@ -35,11 +33,13 @@ func TestCT03902_ContractsMissingCoverageExposesNotReadySystem(t *testing.T) {
 		t.Fatalf("CT-039-02 must not render a per-tool decision, got %v", pd)
 	}
 	status, _ := qg["status"].(string)
-	switch status {
-	case "not_ready", "unknown", "satisfied":
-	default:
-		t.Fatalf("CT-039-02 status must be not_ready/unknown/satisfied, got %q", status)
+	if status != "not_ready" {
+		t.Fatalf("missing contract coverage must be not_ready, got %q qg=%v", status, qg)
 	}
+	if req039fixtures.TransitionCommitted(qg) {
+		t.Fatalf("missing contract coverage must not advance Runtime: %v", qg)
+	}
+	req039fixtures.AssertLifecycle(t, req039fixtures.ReadState(t, root), "planning", "contracts")
 }
 
 // TestCT03905_UnlockedSiblingWriteIsObservedSystem covers CT-039-05 at L4.
@@ -48,7 +48,7 @@ func TestCT03905_UnlockedSiblingWriteIsObservedSystem(t *testing.T) {
 	state := systemPlanningState(t, root, "design", 1)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-05-sys", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-05-sys", "Edit", map[string]any{
 		"file_path": "docs/dev/contracts/BE-039-loop-controller-notes.md",
 	})
 	code, stdout, stderr := runHook(t, root, "PreToolUse", body)
@@ -73,7 +73,7 @@ func TestCT03906_GitSquashMergeIsObservedSystem(t *testing.T) {
 	writeSystemState(t, root, state)
 	before := req039fixtures.ReadState(t, root)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-06-sys", "Bash", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-06-sys", "Bash", map[string]any{
 		"command": "git merge --squash feature/req-039",
 	})
 	code, stdout, stderr := runHook(t, root, "PreToolUse", body)
@@ -96,7 +96,7 @@ func TestCT03907_OrdinaryGitOpsIsObservedSystem(t *testing.T) {
 		"npm publish",
 	} {
 		before := req039fixtures.ReadState(t, root)
-		body := req039fixtures.PreToolUseBody("session-ct-039-07-sys", "Bash", map[string]any{
+		body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-07-sys", "Bash", map[string]any{
 			"command": command,
 		})
 		code, stdout, stderr := runHook(t, root, "PreToolUse", body)
@@ -113,7 +113,7 @@ func TestCT03916_ConflictingEventsUnknownConflictSystem(t *testing.T) {
 	req039fixtures.SeedConflictingPauseVerdicts(t, root, state)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-16-sys", "Bash", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-16-sys", "Bash", map[string]any{
 		"command": "go test ./...",
 	})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
@@ -139,44 +139,9 @@ func TestCT03916_ConflictingEventsUnknownConflictSystem(t *testing.T) {
 	}
 }
 
-// TestCT03920_BuilderCompletionDurableRefSystem covers CT-039-20 at L4.
-func TestCT03920_BuilderCompletionDurableRefSystem(t *testing.T) {
-	root := freshRoot(t)
-	state := req039fixtures.BaseState(t, root, "building", "", 19)
-	req039fixtures.SeedBuilderBatchReady(t, root, state)
-	writeSystemState(t, root, state)
-
-	reportDir := filepath.Join(root, ".claude", "evidence", req039fixtures.RuntimeIDFromState(state), "g1", "assignments", "assignment-ct-20")
-	if err := os.MkdirAll(reportDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	reportPath := filepath.Join(reportDir, "completion.json")
-	if err := os.WriteFile(reportPath, []byte(
-		`{"schema_version":"1.0.0","message_type":"completion_report","assignment_id":"assignment-ct-20","task_id":"TASK-039-01"}`,
-	), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	runtimeID := req039fixtures.RuntimeIDFromState(state)
-	input := `{
-		"session_id":"session-ct-039-20-sys",
-		"hook_event_name":"SubagentStop",
-		"agent_id":"builder-1",
-		"agent_report_complete":true,
-		"assignment_id":"assignment-ct-20",
-		"completion_ref":".claude/evidence/` + runtimeID + `/g1/assignments/assignment-ct-20/completion.json"
-	}`
-	code, stdout, stderr := runHook(t, root, "SubagentStop", input)
-	if code != 0 {
-		t.Fatalf("SubagentStop failed: code=%d stderr=%s", code, stderr)
-	}
-	if !strings.Contains(stdout, "completion") && !strings.Contains(stdout, "integration") {
-		t.Fatalf("CT-039-20 must surface completion/integration guidance, got %s", stdout)
-	}
-	if _, err := os.Stat(reportPath); err != nil {
-		t.Fatalf("CT-039-20 completion ref must remain durable on disk: %v", err)
-	}
-}
+// CT-039-20 durable Result coverage is carried by
+// TestSubagent_Integration_Guidance, including original receipt preservation
+// across Main integration and Task/Assignment/Agent reference agreement.
 
 // TestAC002_NotReadyQualityGateIsObservedSystem is the AC-002 twin of CT-039-02.
 func TestAC002_NotReadyQualityGateIsObservedSystem(t *testing.T) {
@@ -196,7 +161,7 @@ func TestAC005_MilestonePersistsQualityGateSystem(t *testing.T) {
 	state := systemPlanningState(t, root, "design", 1)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.PreToolUseBody("session-ac-005-sys", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ac-005-sys", "Edit", map[string]any{
 		"file_path": "internal/cli/run.go",
 	})
 	code, _, stderr := runHook(t, root, "PreToolUse", body)

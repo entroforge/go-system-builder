@@ -1,6 +1,6 @@
 # QA Evidence: QA-{id}
 
-> Status: draft / pass / finding / req_change_required / release_blocked / invalidated (ReviewResult verdict vocabulary; submit via `runtime review-result submit`)
+> Status: draft / pass / finding / req_change_required / release_blocked / invalidated (ReviewResult verdict vocabulary; save the supplied original answer)
 > Runtime ref: `{runtime-id}`
 > Review round: {n}
 > Workgroup manifest: `{team-manifest-path}`
@@ -14,15 +14,15 @@ This Markdown is the human-readable projection; the machine authority is the
 Canonical ReviewResult JSON you submit (`internal/schema/assets/review-result.example.json`
 is the scaffold; `docs/reports/review/RESULT-template.md` documents the same fields lens-neutrally).
 
-## 1. Fingerprinted Inputs
+## 1. Inputs
 
-| Kind | ID / Scope | Path | Version | SHA-256 |
-|:---|:---|:---|:---|:---|
-| REQ | REQ-{id} | `docs/requirements/REQ-{id}.md` | {version} | `{sha256}` |
-| TASK | TASK-{id} | `docs/dev/tasks/TASK-{id}.md` | {version} | `{sha256}` |
-| source/tests | {scope} | `{path}` | {commit/version} | `{sha256}` |
-| module current truth | {module} | `docs/design/prototypes/{module}/` (scenario four-pack + stories/flows/index/*.html) | current | `{sha256}` |
-| Skill | {skill} | `.claude/skills/{skill}/SKILL.md` | {version} | `{sha256}` |
+| Kind | ID / Scope | Path | Version |
+|:---|:---|:---|:---|
+| REQ | REQ-{id} | `docs/requirements/REQ-{id}.md` | {version} |
+| TASK | TASK-{id} | `docs/dev/tasks/TASK-{id}.md` | {version} |
+| source/tests | {scope} | `{path}` | {version if relevant} |
+| module current truth | {module} | `docs/design/prototypes/{module}/` | current |
+| Skill | {skill} | `.claude/skills/{skill}/SKILL.md` | {version} |
 
 ## 2. Assigned Quality Conclusion
 
@@ -63,9 +63,9 @@ carries the full assigned-quality conclusion AND a Targeted Re-verification row 
 closed BUG. Targeted re-verification alone never satisfies the machine CleanRound — only
 a fresh complete round does (`docs/control/agent-protocol.md` #s7 / #s9).
 
-| BUG | Original assignment | Repair fingerprint | Result | Evidence |
+| BUG | Original assignment | Repair reference | Result | Evidence |
 |:---|:---|:---|:---|:---|
-| BUG-{id} | `{assignment-id}` | `{sha256/commit}` | pass / fail | `{ref}` |
+| BUG-{id} | `{assignment-id}` | `{actual repair reference}` | pass / fail | `{ref}` |
 
 Targeted re-verification does not satisfy a complete clean round.
 
@@ -77,9 +77,9 @@ imitate the row below. The following is the minimum shape, not a replacement
 for the rest of this report — the same repair-round QA report still fills
 §2–§4 for the complete Assignment:
 
-| BUG | Original assignment | Repair fingerprint | Result | Evidence |
+| BUG | Original assignment | Repair reference | Result | Evidence |
 |:---|:---|:---|:---|:---|
-| BUG-042 | `assignment-qa-logic-state-error` | `commit:abc123` | pass | `runtime:reverify-042` |
+| BUG-042 | `assignment-qa-logic-state-error` | `repair-result-042` | pass | `runtime:reverify-042` |
 
 The row answers only whether the repaired causal assertion was independently
 re-verified. It does not waive the QA conclusion, checks, or Claim coverage in

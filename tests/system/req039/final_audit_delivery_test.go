@@ -26,68 +26,49 @@ func TestFinalAuditVerifiedTargetRewritePreservesWorker(t *testing.T) {
 	insp := finalAuditInspection(t, r, "final-target-rewrite")
 	verified, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, r.cfg())
 	if err != nil || verified.Checkpoint.State != integration.StateVerified {
-		t.Fatalf("initial verification: state=%s err=%v checkpoint=%+v", verified.Checkpoint.State, err, verified.Checkpoint)
+		t.Fatalf("initial verification: %+v %v", verified.Checkpoint, err)
 	}
-
-	// The target ref is rewritten after verification, before acknowledgement /
-	// cleanup. No new worker commit or Result is involved.
+	// This is a real later change. The old result is retained as a historical
+	// fact; the framework does not certify the new target or re-merge by OID.
 	runAuditGit(t, r.root, "reset", "--hard", targetBefore)
-	resumed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{
-		Inspection:  insp,
-		Acknowledge: true,
-		Cleanup:     true,
-	}, r.cfg())
-	if err == nil && resumed.Checkpoint.State == integration.StateComplete {
-		t.Logf("target rewrite evidence: authority=%s worker=%s checkpoint=%+v", strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)), r.worktree, resumed.Checkpoint)
-		t.Fatalf("cleanup must reject a verified checkpoint whose recorded merge is no longer reachable from target")
+	resumed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, r.cfg())
+	if err != nil || resumed.Checkpoint.State != integration.StateComplete || resumed.Checkpoint.VerifiedAt != verified.Checkpoint.VerifiedAt {
+		t.Fatalf("existing integration fact not retained: %+v %v", resumed.Checkpoint, err)
 	}
-	if _, statErr := os.Stat(r.worktree); os.IsNotExist(statErr) {
-		t.Fatalf("target rewrite must preserve the worker for explicit reconciliation: err=%v", statErr)
+	if got := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)); got != targetBefore {
+		t.Fatalf("resumption changed the modified target: %s != %s", got, targetBefore)
+	}
+	if _, err := os.Stat(filepath.Join(r.root, "internal", "feature.go")); !os.IsNotExist(err) {
+		t.Fatalf("old result was misrepresented as a new target merge: %v", err)
 	}
 }
 
 func TestFinalAuditVerifiedTargetRewriteViaTaskIntegratePreservesWorker(t *testing.T) {
 	root := freshRoot(t)
-	workerPath := seedIntegrableAssignment(t, root)
+	seedIntegrableAssignment(t, root)
 	targetBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
 	loaded, err := hookctx.LoadFull(root, "")
 	if err != nil || len(loaded.Assignments) != 1 {
-		t.Fatalf("load registered assignment: count=%d err=%v", len(loaded.Assignments), err)
+		t.Fatalf("load registered assignment: %v", err)
 	}
 	assignment := loaded.Assignments[0]
-	insp, err := integration.Inspect(context.Background(), integration.InspectRequest{
-		Root:               root,
-		Assignment:         assignment,
-		TargetBranch:       "develop",
-		BaselineGeneration: 1,
-		RuntimeID:          "loop-system-test",
-	}, integration.InspectConfig{})
+	insp, err := integration.Inspect(context.Background(), integration.InspectRequest{Root: root, Assignment: assignment, TargetBranch: "develop", BaselineGeneration: 1, RuntimeID: "loop-system-test"}, integration.InspectConfig{})
 	if err != nil || !insp.Ready {
-		t.Fatalf("CLI fixture inspection: ready=%v blockers=%v err=%v", insp.Ready, insp.Blockers, err)
+		t.Fatalf("inspection: %+v %v", insp, err)
 	}
-	verified, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, integration.IntegrateConfig{
-		Root: root, GitRoot: root, RuntimeID: "loop-system-test",
-	})
+	verified, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, integration.IntegrateConfig{Root: root, GitRoot: root, RuntimeID: "loop-system-test"})
 	if err != nil || verified.Checkpoint.State != integration.StateVerified {
-		t.Fatalf("initial verification: state=%s err=%v checkpoint=%+v", verified.Checkpoint.State, err, verified.Checkpoint)
+		t.Fatalf("initial verification: %+v %v", verified.Checkpoint, err)
 	}
-
-	// Route recovery through the shipped task-integrate CLI after the target
-	// ref was rewritten. The CLI must preserve the worker and report a blocked
-	// reconciliation instead of accepting the stale verified receipt.
 	runGitIn(t, root, "reset", "--hard", targetBefore)
 	code, stdout, stderr := runTaskIntegrate(t, root, "assignment-ti")
 	cpPath := integration.CheckpointPath(root, "loop-system-test", 1, "assignment-ti")
 	cp, found, loadErr := integration.DefaultCheckpointStore().Load(cpPath)
-	if loadErr != nil || !found {
-		t.Fatalf("load CLI recovery checkpoint: found=%v err=%v stdout=%s stderr=%s", found, loadErr, stdout, stderr)
+	if code != 0 || loadErr != nil || !found || cp.State != integration.StateComplete || cp.VerifiedAt != verified.Checkpoint.VerifiedAt {
+		t.Fatalf("existing facts lost: code=%d checkpoint=%+v load=%v stdout=%s stderr=%s", code, cp, loadErr, stdout, stderr)
 	}
-	if code == 0 && cp.State == integration.StateComplete {
-		t.Logf("CLI target rewrite evidence: code=%d authority=%s worker=%s checkpoint=%+v stdout=%s stderr=%s", code, strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop")), workerPath, cp, stdout, stderr)
-		t.Fatalf("runtime task-integrate must reject a verified checkpoint whose recorded merge is no longer reachable from target")
-	}
-	if _, statErr := os.Stat(workerPath); os.IsNotExist(statErr) {
-		t.Fatalf("CLI target rewrite must preserve worker for explicit reconciliation: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	if got := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop")); got != targetBefore {
+		t.Fatalf("task-integrate unexpectedly changed target: %s", got)
 	}
 }
 
@@ -97,7 +78,7 @@ func TestFinalAuditVerifiedMissingMergeReceiptPreservesWorker(t *testing.T) {
 	insp := finalAuditInspection(t, r, "final-missing-merge-receipt")
 	verified, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, r.cfg())
 	if err != nil || verified.Checkpoint.State != integration.StateVerified {
-		t.Fatalf("initial verification: state=%s err=%v checkpoint=%+v", verified.Checkpoint.State, err, verified.Checkpoint)
+		t.Fatalf("initial verification: %+v %v", verified.Checkpoint, err)
 	}
 	checkpointPath := integration.CheckpointPath(r.root, "loop-l4-audit", 1, "final-missing-merge-receipt")
 	raw, err := os.ReadFile(checkpointPath)
@@ -108,24 +89,16 @@ func TestFinalAuditVerifiedMissingMergeReceiptPreservesWorker(t *testing.T) {
 	if err := json.Unmarshal(raw, &checkpoint); err != nil {
 		t.Fatal(err)
 	}
-	delete(checkpoint, "merge_commit")
-	raw, err = json.Marshal(checkpoint)
-	if err != nil {
-		t.Fatal(err)
+	if _, found := checkpoint["merge_commit"]; found {
+		t.Fatal("checkpoint registered a Git object ID")
 	}
-	if err := os.WriteFile(checkpointPath, raw, 0o644); err != nil {
-		t.Fatal(err)
+	before := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target))
+	resumed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, r.cfg())
+	if err != nil || resumed.Checkpoint.State != integration.StateComplete {
+		t.Fatalf("no-OID result failed to continue: %+v %v", resumed.Checkpoint, err)
 	}
-	resumed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{
-		Inspection:  insp,
-		Acknowledge: true,
-		Cleanup:     true,
-	}, r.cfg())
-	if err == nil || resumed.Checkpoint.State != integration.StatePreserved {
-		t.Fatalf("verified checkpoint without merge receipt was reused: state=%s err=%v checkpoint=%+v", resumed.Checkpoint.State, err, resumed.Checkpoint)
-	}
-	if _, statErr := os.Stat(r.worktree); statErr != nil {
-		t.Fatalf("missing merge receipt must preserve worker: %v", statErr)
+	if after := strings.TrimSpace(runAuditGit(t, r.root, "rev-parse", r.target)); after != before {
+		t.Fatal("continuation repeated merge")
 	}
 }
 
@@ -135,35 +108,33 @@ func TestFinalAuditVerifiedSourceRefMovePreservesWorker(t *testing.T) {
 	insp := finalAuditInspection(t, r, "final-source-ref")
 	verified, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp}, r.cfg())
 	if err != nil || verified.Checkpoint.State != integration.StateVerified {
-		t.Fatalf("initial verification: state=%s err=%v checkpoint=%+v", verified.Checkpoint.State, err, verified.Checkpoint)
+		t.Fatalf("initial verification: %+v %v", verified.Checkpoint, err)
 	}
-
-	// Move the source ref to a new commit while the linked worker checkout is
-	// still at the source head that was actually verified. This models a force
-	// update or an external producer advancing the source ref after verification.
 	movedWorktree := filepath.Join(t.TempDir(), "moved-source")
-	runAuditGit(t, r.root, "worktree", "add", "-b", "final-source-moved", movedWorktree, verified.Checkpoint.SourceHead)
+	runAuditGit(t, r.root, "worktree", "add", "-b", "final-source-moved", movedWorktree, r.branch)
 	if err := os.WriteFile(filepath.Join(movedWorktree, "source-ref-moved.txt"), []byte("source ref moved\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runAuditGit(t, movedWorktree, "add", "source-ref-moved.txt")
-	runAuditGit(t, movedWorktree, "commit", "-m", "advance source ref after verification")
+	runAuditGit(t, movedWorktree, "commit", "-m", "advance source ref")
 	movedHead := strings.TrimSpace(runAuditGit(t, movedWorktree, "rev-parse", "HEAD"))
 	runAuditGit(t, r.root, "worktree", "remove", movedWorktree)
 	runAuditGit(t, r.root, "update-ref", "refs/heads/"+r.branch, movedHead)
-
-	resumed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{
-		Inspection:  insp,
-		Acknowledge: true,
-		Cleanup:     true,
-	}, r.cfg())
-	if err == nil && resumed.Checkpoint.State == integration.StateComplete {
-		t.Logf("source ref move evidence: source=%s recorded=%s checkpoint=%+v", movedHead, verified.Checkpoint.SourceHead, resumed.Checkpoint)
-		t.Fatalf("cleanup must reject a verified checkpoint after the source ref moves independently of the verified worker checkout")
+	// An independently created private file keeps cleanup pending; changing a
+	// ref does not silently amend or invalidate the previously accepted work.
+	privatePath := filepath.Join(r.worktree, "private-after-result.txt")
+	if err := os.WriteFile(privatePath, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("source ref move preserved delivery: state=%s err=%v", resumed.Checkpoint.State, err)
-	if _, statErr := os.Stat(r.worktree); os.IsNotExist(statErr) {
-		t.Fatalf("source ref move must preserve the worker for explicit reconciliation: err=%v", statErr)
+	resumed, err := integration.Integrate(context.Background(), integration.IntegrateRequest{Inspection: insp, Acknowledge: true, Cleanup: true}, r.cfg())
+	if !errors.Is(err, integration.ErrCleanupPending) || resumed.Checkpoint.State != integration.StateCleanupPending || resumed.Checkpoint.VerifiedAt != verified.Checkpoint.VerifiedAt {
+		t.Fatalf("private work or accepted fact lost: %+v %v", resumed.Checkpoint, err)
+	}
+	if got, err := os.ReadFile(privatePath); err != nil || string(got) != "keep me\n" {
+		t.Fatalf("private file changed: %q %v", got, err)
+	}
+	if got := runAuditGit(t, r.root, "show", r.branch+":source-ref-moved.txt"); got != "source ref moved\n" {
+		t.Fatalf("new source work lost: %q", got)
 	}
 }
 

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/submission"
 )
@@ -62,37 +60,43 @@ func TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery(t *test
 	if err := json.Unmarshal(out.Bytes(), &response); err != nil || response.Output.Event != request.Event {
 		t.Fatalf("missing model-side Hook context: %v %s", err, &out)
 	}
-	command := regexp.MustCompile(`'([^']+)' runtime stage-answer recover --root '([^']+)'`).FindStringSubmatch(response.Output.Context)
-	if len(command) != 3 || command[1] != filepath.Join(root, ".claude/bin/loop-harness") || command[2] != root {
-		t.Fatalf("pending feedback did not name the exact executable/root operation: %s", response.Output.Context)
+	command := regexp.MustCompile(`'([^']+)' runtime workspace integrate --root '([^']+)' --assignment '([^']+)' --agent '([^']+)'`).FindStringSubmatch(response.Output.Context)
+	if len(command) != 5 || command[1] != filepath.Join(root, ".claude/bin/loop-harness") || command[2] != root || command[3] != p.Binding.ManifestAssignmentID || command[4] != p.Binding.OwnerAgentID {
+		t.Fatalf("same-event recovery did not name the exact original integration successor: %s", response.Output.Context)
+	}
+	if !strings.Contains(diagnostic.String(), "recovered the original pending Writer") || !strings.Contains(response.Output.Context, "PlanReport receipt is accepted") || !strings.Contains(response.Output.Context, "Worker candidate is recorded") {
+		t.Fatalf("same-event continuation lost original recovery/reception facts: %s %s", &diagnostic, response.Output.Context)
 	}
 	for _, check := range []struct {
 		path     string
 		expected []byte
-	}{{statePath, previousState}, {journalPath, previousJournal}, {markerPath, marker}, {flatPath, later}} {
+	}{{statePath, targetState}, {journalPath, targetJournal}, {flatPath, later}} {
 		actual, err := os.ReadFile(check.path)
 		if err != nil || !bytes.Equal(actual, check.expected) {
-			t.Fatalf("ordinary Pre changed %s: %v", check.path, err)
+			t.Fatalf("same-event recovery did not preserve the accepted pair/private input %s: %v", check.path, err)
 		}
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("same-event Writer recovery did not retire pending: %v", err)
 	}
 	for _, path := range []string{filepath.Join(worker, packet.AnswerPath), filepath.Join(worker, plan)} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("ordinary Pre recreated professional input %s: %v", path, err)
 		}
 	}
-	// The same routing path stops at its one read-only pending snapshot. No
-	// domain reception, professional source reader or task-text reader is called.
-	ctx, timings := metrics.WithCallTimings(context.Background())
-	request.Context = ctx
-	if handled, code := nativeHookRoutes(root, request, &bytes.Buffer{}, &bytes.Buffer{}); !handled || code != 0 {
-		t.Fatalf("pending route did not retain its read-only outlet: %t %d", handled, code)
+	// Repeating the public observation keeps the accepted pair and the same
+	// integration successor; missing or changed private input cannot be re-read
+	// as a new answer or replace the already captured candidate.
+	out.Reset()
+	diagnostic.Reset()
+	if code := Run([]string{"hook", "--root", root, "--event", request.Event}, bytes.NewReader(body), &out, &diagnostic); code != 0 {
+		t.Fatalf("replayed public Pre: %d %s %s", code, &out, &diagnostic)
 	}
-	observed := timings.Snapshot()
-	if observed["hook/native_routes/initial_snapshot"].Count != 1 || observed["reception/s9"].Count != 0 || observed["source/read"].Count != 0 || observed["source/git"].Count != 0 || observed["hook/native_routes/task_text"].Count != 0 {
-		t.Fatalf("pending read entered business input/receiver work: %+v", observed)
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil || !strings.Contains(response.Output.Context, command[0]) {
+		t.Fatalf("replayed Pre lost the exact integration successor: %v %s", err, &out)
 	}
-	// Execute the arguments recovered from actual model additionalContext through
-	// the public CLI, keeping its original receipt-array JSON output contract.
+	// The explicit original recovery entry remains an idempotent fallback with
+	// its receipt-array JSON contract after automatic recovery has completed.
 	out.Reset()
 	diagnostic.Reset()
 	args := []string{"runtime", "stage-answer", "recover", "--root", command[2]}

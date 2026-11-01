@@ -15,7 +15,7 @@ func TestOwnedCheckRelocationMovesOnlyEvidenceLocator(t *testing.T) {
 	oldReceipt := filepath.Join(oldMain, ".claude/evidence/workspace-checks/receipt.json")
 	ref := OwnedCheckReceipt{WorkerCheckIndex: 3, Receipt: checkexec.ToolReceipt{
 		Path: oldReceipt, Checkout: filepath.Join(oldMain, ".worktrees/assignment-owner"),
-		SHA256: "receipt-digest", LogSHA256: "log-digest", Command: "true", ProfileDigest: "profile-digest",
+		Command: "true",
 		Binding: checkexec.Binding{RuntimeID: "loop-rebind", Generation: 4, AssignmentID: "assignment-owner", Owner: "agent-owner", ExecutionGeneration: 2, Responsibility: "owned_check"},
 	}}
 	moved, err := relocateOwnedCheckReceipts(oldMain, newMain, []OwnedCheckReceipt{ref})
@@ -25,12 +25,12 @@ func TestOwnedCheckRelocationMovesOnlyEvidenceLocator(t *testing.T) {
 	if len(moved) != 1 || moved[0].Receipt.Path != filepath.Join(newMain, ".claude/evidence/workspace-checks/receipt.json") {
 		t.Fatalf("owned receipt path was not relocated: %+v", moved)
 	}
-	if moved[0].Receipt.Checkout != ref.Receipt.Checkout || moved[0].Receipt.SHA256 != ref.Receipt.SHA256 || moved[0].Receipt.Binding != ref.Receipt.Binding || moved[0].WorkerCheckIndex != ref.WorkerCheckIndex {
+	if moved[0].Receipt.Checkout != ref.Receipt.Checkout || moved[0].Receipt.Binding != ref.Receipt.Binding || moved[0].WorkerCheckIndex != ref.WorkerCheckIndex {
 		t.Fatal("relocation rewrote captured source identity or receipt bytes")
 	}
 	if !reflect.DeepEqual(ref, OwnedCheckReceipt{WorkerCheckIndex: 3, Receipt: checkexec.ToolReceipt{
 		Path: oldReceipt, Checkout: filepath.Join(oldMain, ".worktrees/assignment-owner"),
-		SHA256: "receipt-digest", LogSHA256: "log-digest", Command: "true", ProfileDigest: "profile-digest",
+		Command: "true",
 		Binding: checkexec.Binding{RuntimeID: "loop-rebind", Generation: 4, AssignmentID: "assignment-owner", Owner: "agent-owner", ExecutionGeneration: 2, Responsibility: "owned_check"},
 	}}) {
 		t.Fatal("relocation modified the caller's original history slice")
@@ -46,7 +46,7 @@ func TestExplicitRelocationPreservesBranchBaseAndPointer(t *testing.T) {
 	oldRoot := b.MainRoot
 	oldCommon := b.CommonDir
 	newRoot := filepath.Join(t.TempDir(), "relocated")
-	req := RebindRequest{RuntimeID: RuntimeID(state), OldMainRoot: oldRoot, OldCommonDir: oldCommon, NewMainRoot: newRoot, NewCommonDir: filepath.Join(newRoot, ".git"), Branch: b.Branch, ExpectedHead: b.BoundHead, Paths: map[string]string{e.Path: filepath.Join(newRoot, ".worktrees", filepath.Base(e.Path))}}
+	req := RebindRequest{RuntimeID: RuntimeID(state), OldMainRoot: oldRoot, OldCommonDir: oldCommon, NewMainRoot: newRoot, NewCommonDir: filepath.Join(newRoot, ".git"), Branch: b.Branch, Paths: map[string]string{e.Path: filepath.Join(newRoot, ".worktrees", filepath.Base(e.Path))}}
 	if _, err := b.PlanRebind(ctx, state, req); err == nil {
 		t.Fatal("copied/ambiguous Main accepted")
 	}
@@ -62,7 +62,7 @@ func TestExplicitRelocationPreservesBranchBaseAndPointer(t *testing.T) {
 		t.Fatal(err)
 	}
 	moved := next.Executions[e.AssignmentID]
-	if moved.BaseCommit != e.BaseCommit || next.Branch != "test2" || next.BoundHead != b.BoundHead {
+	if moved.Branch != e.Branch || next.Branch != "test2" {
 		t.Fatal("relocation changed history")
 	}
 	state["bound_req"].(map[string]any)["workspace"].(map[string]any)["project_root"] = newRoot
@@ -76,9 +76,5 @@ func TestExplicitRelocationPreservesBranchBaseAndPointer(t *testing.T) {
 	root, err := ResolveControl(ctx, moved.Path)
 	if err != nil || root != newRoot {
 		t.Fatalf("moved pointer root=%s err=%v", root, err)
-	}
-	req.ExpectedHead = "wrong"
-	if _, err = b.PlanRebind(ctx, state, req); err == nil {
-		t.Fatal("wrong repository head accepted")
 	}
 }

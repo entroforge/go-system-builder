@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func TestApprovalArtifactCleanupRetainsPendingReferencedOrChangedBytes(t *testing.T) {
@@ -50,12 +48,12 @@ func TestApprovalArtifactCleanupRetainsPendingReferencedOrChangedBytes(t *testin
 					t.Fatal(err)
 				}
 			}
-			sha := workpacket.Digest(artifact)
+			original := artifact
 			if mode == "different-digest" {
-				sha = strings.Repeat("0", 64)
+				original = []byte("different original bytes")
 			}
 			writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-			removed, err := cleanupApprovalArtifact(writer, runtime.Snapshot{State: state, Revision: 1}, path, sha)
+			removed, err := cleanupApprovalArtifact(writer, runtime.Snapshot{State: state, Revision: 1}, path, original)
 			if err != nil {
 				t.Fatal(err)
 			}

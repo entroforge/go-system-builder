@@ -61,7 +61,6 @@ func s7RecoveryFixtureState(phase, planStatus string) map[string]any {
 				"assignment-qa-3":  assignment("qa", "dispatched", []any{"CLAIM-QA-3"}, "agent-qa-3", nil),
 				"assignment-e2e-1": assignment("e2e", "planned", []any{"CLAIM-E2E-1"}, nil, nil),
 			},
-			"observation_batch": nil,
 		},
 		"entities": map[string]any{
 			"agents": []any{
@@ -83,7 +82,7 @@ func TestBuildGuidanceS7RecoveryProjectionCannotClean(t *testing.T) {
 				t.Fatalf("expected S7 guidance, got stage %q", guidance.Stage)
 			}
 			automation := strings.Join(guidance.Automation, "\n")
-			if !strings.Contains(automation, "S7 review round 2") || !strings.Contains(automation, "status=cannot_clean") {
+			if !strings.Contains(automation, "S7 review: plan") || !strings.Contains(automation, "status=cannot_clean") {
 				t.Fatalf("recovery must carry the current round and plan status, got:\n%s", automation)
 			}
 			if !strings.Contains(automation, "S7 assignments running: assignment-qa-2(agent-qa-2)") {
@@ -109,13 +108,13 @@ func TestBuildGuidanceS7RecoveryProjectionCannotClean(t *testing.T) {
 					t.Fatalf("settled/N/A claim %s must not be reported as a coverage gap, got %#v", settled, guidance.Missing)
 				}
 			}
-			if !strings.Contains(guidance.Action, "assignment-qa-2") || !strings.Contains(guidance.Action, "Save and return") {
+			if !strings.Contains(guidance.Action, "assignment-qa-2") || !strings.Contains(guidance.Action, "Natural events observe") {
 				t.Fatalf("the single next action must consume the running assignment's Result, got %q", guidance.Action)
 			}
-			if len(guidance.Recovery) == 0 || !strings.Contains(guidance.Recovery[0], "S7 recovery: round 2") {
+			if len(guidance.Recovery) == 0 || !strings.Contains(guidance.Recovery[0], "S7 recovery: plan") {
 				t.Fatalf("recovery block must lead with the S7 summary, got %#v", guidance.Recovery)
 			}
-			if !strings.Contains(guidance.Instruction, "S7 review round 2") {
+			if !strings.Contains(guidance.Instruction, "S7 review: plan") {
 				t.Fatalf("the rendered instruction must carry the S7 recovery projection, got %q", guidance.Instruction)
 			}
 		})
@@ -131,7 +130,7 @@ func TestBuildGuidanceS7RecoveryProjectionDraining(t *testing.T) {
 	if !strings.Contains(automation, "status=discovery_draining") {
 		t.Fatalf("draining round must surface its plan status, got:\n%s", automation)
 	}
-	if !strings.Contains(guidance.Action, "Save and return") || !strings.Contains(guidance.Action, "SubagentStop") {
+	if !strings.Contains(guidance.Action, "Natural events observe") || !strings.Contains(guidance.Action, "Stop provides fallback") {
 		t.Fatalf("draining round must keep consuming pending Results, got %q", guidance.Action)
 	}
 }
@@ -156,7 +155,7 @@ func TestBuildGuidanceS7RecoveryQueuedDispatchAction(t *testing.T) {
 
 func TestS7RecoveryBlockedActionNamesRecoveryVerb(t *testing.T) {
 	got := s7RecoveryNextAction(
-		t.TempDir(), s7RecoveryFixtureState("cannot_clean", "cannot_clean"), "cannot_clean", 2,
+		t.TempDir(), s7RecoveryFixtureState("cannot_clean", "cannot_clean"), "cannot_clean",
 		nil,
 		nil,
 		[]string{"assignment-qa-3(agent-qa-3)"},
@@ -164,7 +163,7 @@ func TestS7RecoveryBlockedActionNamesRecoveryVerb(t *testing.T) {
 		nil,
 	)
 	for _, want := range []string{
-		"assignment-qa-3", "agent-qa-3", "restore", "blocker_resolved",
+		"assignment-qa-3", "agent-qa-3", "Main coordinates the actual obstacle", "same answer",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("blocked S7 recovery action must contain %q, got %q", want, got)
@@ -269,7 +268,7 @@ func TestRefreshMilestonePersistsS7RecoveryProjection(t *testing.T) {
 		t.Fatal("milestone must be persisted in runtime state")
 	}
 	automationJSON, _ := json.Marshal(milestone["automation"])
-	if !strings.Contains(string(automationJSON), "S7 review round 2") ||
+	if !strings.Contains(string(automationJSON), "S7 review: plan") ||
 		!strings.Contains(string(automationJSON), "assignment-qa-3(agent-qa-3)") {
 		t.Fatalf("persisted milestone must carry the S7 recovery projection, got %s", automationJSON)
 	}
@@ -278,54 +277,38 @@ func TestRefreshMilestonePersistsS7RecoveryProjection(t *testing.T) {
 		t.Fatalf("persisted milestone must carry the claim coverage gaps, got %s", missingJSON)
 	}
 	recoveryJSON, _ := json.Marshal(milestone["recovery"])
-	if !strings.Contains(string(recoveryJSON), "S7 recovery: round 2") {
+	if !strings.Contains(string(recoveryJSON), "S7 recovery: plan") {
 		t.Fatalf("persisted milestone must lead recovery with the S7 summary, got %s", recoveryJSON)
 	}
 }
 
-// TestBuildGuidanceS7RecoveryClaimsCannotCleanDrainPolicy asserts the
-// recovery packet surfaces the drain_policy=complete_required_claims
-// invariant and lists the exact ObservationBatch state for cannot_clean /
-// discovery_draining rounds, so a compacted Agent does not mistake the
-// draining phase for the round ending.
+// Historical batch data remains navigable without becoming a prerequisite
+// to handing received Findings and unfinished work to S8.
 func TestBuildGuidanceS7RecoveryClaimsCannotCleanDrainPolicy(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, phase := range []string{"cannot_clean", "discovery_draining"} {
 		t.Run(phase, func(t *testing.T) {
 			state := s7RecoveryFixtureState(phase, phase)
-			// Open an ObservationBatch with two findings so the batch line is
-			// rendered with a non-trivial finding count.
-			state["review"].(map[string]any)["observation_batch"] = map[string]any{
-				"batch_id":     "observation-batch-r2",
-				"path":         ".claude/evidence/loop-REQ-TEST/g1/review/observation-batch-r2.json",
-				"sha256":       strings.Repeat("c", 64),
-				"finding_ids":  []any{"F-1", "F-2"},
-				"drain_policy": "complete_required_claims",
-				"sealed_at":    "2026-08-23T00:00:00Z",
-			}
 			guidance := buildGuidance(root, state, "SessionStart", policy.Input{})
 
 			automation := strings.Join(guidance.Automation, "\n")
-			wantDrain := "S7 round status=" + phase + ": confirmed Findings retain safe remaining required Claims; cannot_clean/discovery_draining ≠ end — finish the remaining required Claims listed in Missing"
+			wantDrain := "S7 status=" + phase + ": hand accepted Findings and unfinished responsibilities to S8 through the original outlet; Main may arrange remaining safe work"
 			if !strings.Contains(automation, wantDrain) {
 				t.Fatalf("draining recovery must carry the drain_policy invariant line, got:\n%s", automation)
 			}
-			wantBatch := "S7 ObservationBatch observation-batch-r2: drain_policy=complete_required_claims; 2 finding(s) sealed"
-			if !strings.Contains(automation, wantBatch) {
-				t.Fatalf("draining recovery must name the open ObservationBatch and finding count, got:\n%s", automation)
-			}
+
 		})
 	}
 }
 
-// No Batch pointer is required before the original consumer seals the round.
+// An absent legacy batch never creates an additional handoff requirement.
 func TestBuildGuidanceS7RecoveryClaimsNoBatchOpen(t *testing.T) {
 	for _, phase := range []string{"cannot_clean", "discovery_draining"} {
 		for _, event := range []string{"SessionStart", "PreCompact"} {
 			state := s7RecoveryFixtureState(phase, phase)
 			guidance := buildGuidance(filepath.Join("..", ".."), state, event, policy.Input{})
 			automation := strings.Join(guidance.Automation, "\n")
-			if !strings.Contains(automation, "no Batch pointer is required") || strings.Contains(automation, "pointer missing") || strings.Contains(automation, "ObservationBatch is open") {
+			if !strings.Contains(automation, "hand accepted Findings and unfinished responsibilities to S8") || strings.Contains(automation, "pointer missing") || strings.Contains(automation, "ObservationBatch is open") {
 				t.Fatalf("draining without a sealed Batch is normal: %s", automation)
 			}
 		}
@@ -369,13 +352,10 @@ func TestBuildGuidanceS8EntryProjectionFromTR008(t *testing.T) {
 			guidance := buildGuidance(root, state, event, policy.Input{})
 
 			automation := strings.Join(guidance.Automation, "\n")
-			// Test the renderer's original source facts. Actual PreCompact is
-			// silent; SessionStart recovers these from the durable Runtime.
-			for _, want := range []string{"ObservationBatch observation-batch-r2", "2 findings", "drain_policy=complete_required_claims"} {
-				if !strings.Contains(automation, want) || len(guidance.Recovery) == 0 || !strings.Contains(guidance.Recovery[0], want) || !strings.Contains(guidance.Instruction, want) {
-					t.Fatalf("recovery lost original batch fact %q: %+v", want, guidance)
-				}
+			if !strings.Contains(automation, "S8 intake pending") || strings.Contains(automation, "S8 current ObservationBatch") {
+				t.Fatalf("S8 must follow the original Finding intake: %s", automation)
 			}
+
 		})
 	}
 }
@@ -387,7 +367,6 @@ func TestBuildGuidanceS8EntryProjectionFromTR008(t *testing.T) {
 func TestBuildGuidanceS8EntryProjectionWithoutBatch(t *testing.T) {
 	root := filepath.Join("..", "..")
 	state := s8EntryFixtureState()
-	state["review"].(map[string]any)["observation_batch"] = nil
 	guidance := buildGuidance(root, state, "SessionStart", policy.Input{})
 
 	for _, line := range guidance.Automation {
@@ -432,13 +411,6 @@ func s8EntryFixtureState() map[string]any {
 	fixture := s7RecoveryFixtureState("observation_sealed", "observation_sealed")
 	fixture["lifecycle"].(map[string]any)["state"] = "bug_resolution"
 	fixture["lifecycle"].(map[string]any)["phase"] = "investigation"
-	fixture["review"].(map[string]any)["observation_batch"] = map[string]any{
-		"batch_id":     "observation-batch-r2",
-		"path":         ".claude/evidence/loop-REQ-TEST/g1/review/observation-batch-r2.json",
-		"sha256":       strings.Repeat("c", 64),
-		"finding_ids":  []any{"F-1", "F-2"},
-		"drain_policy": "complete_required_claims",
-		"sealed_at":    "2026-08-23T00:00:00Z",
-	}
+	fixture["entities"].(map[string]any)["findings"] = []any{map[string]any{"finding_id": "F-1", "review_plan_id": "plan-r2", "path": "docs/review/finding.json"}}
 	return fixture
 }

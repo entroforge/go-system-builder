@@ -13,13 +13,9 @@ import (
 
 func TestWorkspaceDispatchUsesCanonicalAssignmentRecordForPlanTemplate(t *testing.T) {
 	state, record := cliRecordProjectionFixture(t)
-	digest, err := record.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	reference := record.Reference()
 	a := hookctx.AssignmentContext{
-		AssignmentID: record.AssignmentID, AssignmentRecord: &reference, AssignmentRecordSHA256: digest, AssignmentRevision: record.Revision,
+		AssignmentID: record.AssignmentID, AssignmentRecord: &reference, AssignmentRevision: record.Revision,
 		BaselineGeneration: record.BaselineGeneration, TaskID: record.Task.ID, OwnerAgentID: record.OwnerAgentID,
 		RoleFamily: record.RoleFamily, AgentDefinitionRef: record.AgentDefinition.Ref, ManifestRef: record.Manifest.Ref,
 		ResponsibilityIDs: []string{record.ResponsibilityID}, SkillRefs: record.SkillRefs, ReadPaths: record.ReadPaths,
@@ -30,12 +26,12 @@ func TestWorkspaceDispatchUsesCanonicalAssignmentRecordForPlanTemplate(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dispatch.AssignmentRecord == nil || *dispatch.AssignmentRecord != reference || dispatch.AssignmentRecordSHA256 != digest || dispatch.AssignmentRevision != record.Revision ||
+	if dispatch.AssignmentRecord == nil || *dispatch.AssignmentRecord != reference || dispatch.AssignmentRevision != record.Revision ||
 		dispatch.Owner != record.OwnerAgentID || dispatch.TaskID != record.Task.ID || dispatch.TeamID != record.TeamID || len(dispatch.EffectiveWritePaths) != 1 || dispatch.EffectiveWritePaths[0] != "internal/pkg" {
 		t.Fatalf("workspace Dispatch did not apply the original Record: %+v", dispatch)
 	}
 	plan, questions := agentcontext.PlanTemplate(dispatch, record.RuntimeID, "2026-10-14T00:00:00Z", dispatch.EffectiveWritePaths)
-	if plan == nil || len(questions) != 5 || plan["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract || plan["assignment_record_sha256"] != digest || plan["assignment_revision"] != record.Revision {
+	if plan == nil || len(questions) != 5 || plan["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract || plan["assignment_revision"] != record.Revision {
 		t.Fatalf("S6 professional PLAN template was not reached: plan=%v questions=%v", plan, questions)
 	}
 	if plan["objective"] != nil || len(plan["planned_paths"].([]string)) != 0 || plan["steps"] != nil || plan["assertion_checks"] == nil {
@@ -59,7 +55,7 @@ func TestWorkspaceDispatchKeepsLegacyProjectionShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dispatch.AssignmentRecord != nil || dispatch.AssignmentRecordSHA256 != "" || dispatch.AssignmentRevision != 0 || len(dispatch.EffectiveWritePaths) != 0 || len(dispatch.RequiredChecks) != 0 {
+	if dispatch.AssignmentRecord != nil || dispatch.AssignmentRevision != 0 || len(dispatch.EffectiveWritePaths) != 0 || len(dispatch.RequiredChecks) != 0 {
 		t.Fatalf("legacy Dispatch received canonical S6 fields: %+v", dispatch)
 	}
 	data, err := json.Marshal(dispatch)
@@ -92,8 +88,6 @@ func cliRecordProjectionFixture(t *testing.T) (map[string]any, assignmentrecord.
 		skillRef     = ".claude/skills/backend-engineering/SKILL.md"
 	)
 	task := []byte("official TASK\n")
-	role := []byte("installed role\n")
-	skill := []byte("installed skill\n")
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "assignment_record_contract": assignmentrecord.AssignmentRecordContract,
 		"manifest_id": "manifest-cli-assignment-record", "version": "v1.0.0", "runtime_id": runtimeID,
@@ -121,8 +115,8 @@ func cliRecordProjectionFixture(t *testing.T) (map[string]any, assignmentrecord.
 		},
 	}
 	record, err := assignmentrecord.BuildRecord(manifestBytes, manifestRef, state, task, taskID, assignmentID, []string{"internal"}, []assignmentrecord.ContextSource{
-		{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder", SHA256: cliRecordSHA(role)},
-		{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0", SHA256: cliRecordSHA(skill)},
+		{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder"},
+		{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0"},
 	})
 	if err != nil {
 		t.Fatal(err)

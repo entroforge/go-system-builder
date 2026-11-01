@@ -2,8 +2,9 @@ package repair
 
 import "fmt"
 
-// Missing receipts are not proof that no work was done. Preserve the original
-// baseline whenever results, dispatched owners or implementation changes exist.
+// A prior session without issued responsibilities can be superseded without
+// authenticating an unavailable repository baseline. Existing files and the
+// original session remain untouched; this does not assert that no work exists.
 func validateEmptySessionReplacement(root string, pointer map[string]any) error {
 	for _, key := range []string{"result_refs", "plan_report_refs"} {
 		if len(existingArtifactRefs(pointer[key])) > 0 {
@@ -13,20 +14,10 @@ func validateEmptySessionReplacement(root string, pointer map[string]any) error 
 	if len(stringMapField(pointer["assignment_owners"])) > 0 {
 		return fmt.Errorf("cannot replace RepairSession with dispatched assignments; resume the existing session")
 	}
-	ref, err := pointerArtifact(pointer, "path", "sha256", "current RepairSession")
+	ref, err := pointerArtifact(pointer, "path", "current RepairSession")
 	if err != nil {
 		return err
 	}
-	session, err := ValidateRepairSession(root, ref)
-	if err != nil {
-		return err
-	}
-	changes, err := ComputeSessionChangeset(root, session)
-	if err != nil {
-		return err
-	}
-	if len(changes) > 0 {
-		return fmt.Errorf("cannot replace RepairSession: %d implementation changes already exist (first: %s); preserve its original baseline and resume", len(changes), changes[0].Path)
-	}
-	return nil
+	_, err = ValidateRepairSession(root, ref)
+	return err
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +68,7 @@ func TestTaskPlanningArtifactsDoesNotRepeatProfessionalBatchCheck(t *testing.T) 
 	}
 }
 
-func TestTaskPlanningPacketRejectsUnregisteredContractAdditionAndSourceDrift(t *testing.T) {
+func TestTaskPlanningPacketKeepsOriginalResponsibilityAcrossUnrelatedChanges(t *testing.T) {
 	t.Run("extra contract", func(t *testing.T) {
 		root, state, files := taskPlanningRuntimeFixture(t)
 		inputs, err := runtime.ResolveTaskPlanningInputs(root, state, files)
@@ -82,8 +81,8 @@ func TestTaskPlanningPacketRejectsUnregisteredContractAdditionAndSourceDrift(t *
 			t.Fatal(err)
 		}
 		writeTaskPlanningFile(t, root, "docs/dev/contracts/FE-002.md", "> Status: locked\n> Version: v1.0.0\n")
-		if err := runtime.ValidateTaskPlanningPacket(root, state, p, files); err == nil {
-			t.Fatal("an unregistered extra contract was omitted from the frozen contract closure")
+		if err := runtime.ValidateTaskPlanningPacket(root, state, p, files); err != nil {
+			t.Fatalf("unregistered extra contract invalidated issued responsibility: %v", err)
 		}
 	})
 	t.Run("design drift", func(t *testing.T) {
@@ -98,13 +97,13 @@ func TestTaskPlanningPacketRejectsUnregisteredContractAdditionAndSourceDrift(t *
 			t.Fatal(err)
 		}
 		writeTaskPlanningFile(t, root, "docs/architecture/ARCHITECTURE-001.md", "> Status: locked\n> Version: v1.0.0\nchanged\n")
-		if err := runtime.ValidateTaskPlanningPacket(root, state, p, files); err == nil {
-			t.Fatal("S3 registered design source drift was accepted")
+		if err := runtime.ValidateTaskPlanningPacket(root, state, p, files); err != nil {
+			t.Fatalf("later design content invalidated issued responsibility: %v", err)
 		}
 	})
 }
 
-func TestTaskPlanningRejectsS3EnvelopeRuntimeMismatch(t *testing.T) {
+func TestTaskPlanningUsesRecordedS3ResponsibilityWithoutMachineEnvelopeIdentity(t *testing.T) {
 	root, state, files := taskPlanningRuntimeFixture(t)
 	evidencePath := ".claude/evidence/E-S3-001.json"
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(evidencePath)))
@@ -121,10 +120,9 @@ func TestTaskPlanningRejectsS3EnvelopeRuntimeMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeBytes(t, root, evidencePath, mutated)
-	evidenceRow := state["evidence"].([]any)[0].(map[string]any)
-	evidenceRow["sha256"] = workpacket.Digest(mutated)
-	if _, err := runtime.ResolveTaskPlanningInputs(root, state, files); err == nil {
-		t.Fatal("S3 evidence envelope with a different runtime identity was accepted")
+	inputs, err := runtime.ResolveTaskPlanningInputs(root, state, files)
+	if err != nil || len(inputs.Contracts) == 0 {
+		t.Fatalf("recorded original S3 sources were blocked by machine envelope metadata: %+v %v", inputs.Contracts, err)
 	}
 }
 
@@ -133,10 +131,10 @@ func TestTaskPlanningInputsProjectAcceptedS3SourcesIncludingSharedModels(t *test
 	modelPath := "docs/models/REQ-001.json"
 	modelBytes := []byte(`{"type":"object","title":"REQ-001 model"}`)
 	writeBytes(t, root, modelPath, modelBytes)
-	addTaskPlanningS3Subject(t, root, state, workpacket.Subject{Path: modelPath, SHA256: workpacket.Digest(modelBytes)})
+	addTaskPlanningS3Subject(t, root, state, workpacket.Subject{Path: modelPath})
 	state["documents"] = append(state["documents"].([]any), map[string]any{
 		"id": "shared-model:" + modelPath, "kind": "design", "path": modelPath,
-		"version": "", "sha256": workpacket.Digest(modelBytes), "status": "locked", "generation": 1,
+		"version": "", "status": "locked", "generation": 1,
 	})
 
 	inputs, err := runtime.ResolveTaskPlanningInputs(root, state, files)
@@ -156,13 +154,13 @@ func TestTaskPlanningInputsProjectAcceptedS3SourcesIncludingSharedModels(t *test
 			t.Fatalf("accepted S3 source %s was not projected into S4: %#v", path, inputs.Sources)
 		}
 	}
-	if sources[modelPath].Version != "" || sources[modelPath].SHA256 != workpacket.Digest(modelBytes) {
+	if sources[modelPath].Version != "" {
 		t.Fatalf("S3 shared-model subject was not preserved exactly: %+v", sources[modelPath])
 	}
 
 	writeBytes(t, root, modelPath, []byte(`{"type":"object","title":"changed"}`))
-	if _, err := runtime.ResolveTaskPlanningInputs(root, state, files); err == nil {
-		t.Fatal("changed S3 shared-model subject was not rejected by the original frozen-input validator")
+	if _, err := runtime.ResolveTaskPlanningInputs(root, state, files); err != nil {
+		t.Fatalf("changed source content must not become a hash gate: %v", err)
 	}
 }
 
@@ -175,8 +173,14 @@ func TestTaskPlanningInputsAllowDeclaredForeignREQContractBatch(t *testing.T) {
 	}
 
 	writeTaskPlanningFile(t, root, "docs/dev/contracts/SYNC-999.md", "> Status: draft\n")
-	if _, err := runtime.ResolveTaskPlanningInputs(root, state, files); err == nil {
-		t.Fatal("unowned extra contract document was accepted alongside a foreign REQ batch")
+	inputs, err := runtime.ResolveTaskPlanningInputs(root, state, files)
+	if err != nil {
+		t.Fatalf("unowned draft blocked registered batch: %v", err)
+	}
+	for _, ref := range inputs.Contracts {
+		if ref.Path == "docs/dev/contracts/SYNC-999.md" {
+			t.Fatal("unowned draft was attributed to accepted S3 contracts")
+		}
 	}
 }
 
@@ -197,7 +201,7 @@ func taskPlanningRuntimeFixture(t *testing.T) (string, map[string]any, fileview.
 	design := []byte("# Architecture\n> Status: locked\n> Version: v1.0.0\n")
 	conditional := []byte("# ADR-001\n> Status: accepted\n> Version: v1.0.0\n")
 	index := []byte("# CONTRACTS-001\n> Requirement: REQ-001\n> Status: locked\n> Version: v1.0.0\n\n## 合同清单\n| Contract ID | Type | Name | Status | Version | Notes |\n|:---|:---|:---|:---|:---|:---|\n| FE-001 | frontend | ui | locked | v1.0.0 | entry |\n\n## 需求覆盖矩阵\n| Contract | Clause | Purpose |\n|:---|:---|:---|\n| FE-001 §1 | user view | visible |\n")
-	contract := []byte("# FE-001\n> Status: locked\n> Version: v1.0.0\n")
+	contract := []byte("# FE-001\n> Status: locked\n> Version: v1.0.0\n\n| 本合同条款 | 承诺 |\n|---|---|\n| §1 | The user view is visible. |\n")
 	taskTemplate := []byte("# Task template\n")
 	dispatchRules := []byte("# Dispatch plan rules\n")
 	writeBytes(t, root, reqPath, req)
@@ -208,12 +212,12 @@ func taskPlanningRuntimeFixture(t *testing.T) (string, map[string]any, fileview.
 	writeBytes(t, root, "docs/dev/tasks/TASK-template.md", taskTemplate)
 	writeBytes(t, root, "docs/rules/dispatch-plan.md", dispatchRules)
 
-	reqRef := workpacket.Reference{ID: "REQ-001", Path: reqPath, Version: "v1.0.0", SHA256: workpacket.Digest(req)}
-	designRef := workpacket.Reference{ID: "ARCHITECTURE-001", Path: designPath, Version: "v1.0.0", SHA256: workpacket.Digest(design)}
-	s3Binding := workpacket.PlanningBinding{RuntimeID: "runtime-001", Generation: 1, StageEntry: 2, Stage: "S3", Owner: "Main", Requirement: reqRef}
+	reqRef := workpacket.Reference{ID: "REQ-001", Path: reqPath, Version: "v1.0.0"}
+	designRef := workpacket.Reference{ID: "ARCHITECTURE-001", Path: designPath, Version: "v1.0.0"}
+	s3Binding := workpacket.PlanningBinding{RuntimeID: "loop-REQ-001", Generation: 1, StageEntry: 2, Stage: "S3", Owner: "Main", Requirement: reqRef}
 	s3Packet, err := workpacket.BuildContracts(s3Binding, workpacket.ContractInputs{
 		Designs:     []workpacket.Reference{designRef},
-		Sources:     []workpacket.Subject{{Path: conditionalPath, Version: "v1.0.0", SHA256: workpacket.Digest(conditional)}},
+		Sources:     []workpacket.Subject{{Path: conditionalPath, Version: "v1.0.0"}},
 		Directories: map[string][]string{"docs/design/decisions": {"ADR-001.md"}},
 	})
 	if err != nil {
@@ -228,8 +232,8 @@ func taskPlanningRuntimeFixture(t *testing.T) (string, map[string]any, fileview.
 		},
 	}
 	artifacts := []workpacket.Reference{
-		{ID: "CONTRACTS-001", Path: indexPath, Version: "v1.0.0", SHA256: workpacket.Digest(index)},
-		{ID: "FE-001", Path: contractPath, Version: "v1.0.0", SHA256: workpacket.Digest(contract)},
+		{ID: "CONTRACTS-001", Path: indexPath, Version: "v1.0.0"},
+		{ID: "FE-001", Path: contractPath, Version: "v1.0.0"},
 	}
 	s3Evidence, err := workpacket.ContractEvidence(s3Packet, "E-S3-001", artifacts, answer, time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
 	if err != nil {
@@ -241,34 +245,14 @@ func taskPlanningRuntimeFixture(t *testing.T) (string, map[string]any, fileview.
 	}
 	evidencePath := ".claude/evidence/E-S3-001.json"
 	writeBytes(t, root, evidencePath, evidenceData)
-	packetData, _ := json.Marshal(s3Packet)
-	var packetRow map[string]any
-	_ = json.Unmarshal(packetData, &packetRow)
 	state := map[string]any{
-		"schema_version": "1.2.0", "runtime_id": "runtime-001",
-		"configuration": map[string]any{"optimization": map[string]any{"packet": true}},
-		"lifecycle":     map[string]any{"state": "planning", "phase": "tasks", "phase_revision": 3},
-		"baseline":      map[string]any{"generation": 1},
-		"bound_req":     map[string]any{"id": "REQ-001", "path": reqPath, "version": "v1.0.0", "sha256": workpacket.Digest(req), "status": "locked", "workspace": map[string]any{"project_root": root}},
 		"documents": []any{
-			map[string]any{"id": designRef.ID, "kind": "design", "path": designRef.Path, "version": designRef.Version, "sha256": designRef.SHA256, "status": "locked", "generation": 1},
-			map[string]any{"id": "CONTRACTS-001", "kind": "contract", "path": indexPath, "version": "v1.0.0", "sha256": workpacket.Digest(index), "status": "locked", "generation": 1},
-			map[string]any{"id": "FE-001", "kind": "contract", "path": contractPath, "version": "v1.0.0", "sha256": workpacket.Digest(contract), "status": "locked", "generation": 1},
+			map[string]any{"id": designRef.ID, "kind": "design", "path": designRef.Path, "version": designRef.Version, "status": "locked", "generation": 1},
+			map[string]any{"id": "CONTRACTS-001", "kind": "contract", "path": indexPath, "version": "v1.0.0", "status": "locked", "generation": 1},
+			map[string]any{"id": "FE-001", "kind": "contract", "path": contractPath, "version": "v1.0.0", "status": "locked", "generation": 1},
 		},
-		"entities": map[string]any{
-			"work_packets": []any{packetRow},
-			"submissions": []any{map[string]any{
-				"submission_key": workpacket.Digest([]byte("submission:" + s3Packet.ID)), "packet_id": s3Packet.ID, "owner": "Main",
-				"content_sha256": mustContractAnswerDigest(t, answer), "evidence_id": "E-S3-001", "followup_event_id": workpacket.Digest([]byte(workpacket.Digest([]byte("submission:"+s3Packet.ID)) + ":after-domain")),
-				"control_status": "advanced", "origin_state": "planning", "origin_phase": "contracts", "origin_entry": 2, "transition_event_id": "evt-PTR-PLAN-02",
-			}},
-		},
-		"evidence": []any{map[string]any{
-			"id": "E-S3-001", "kind": "planning_contract", "baseline_generation": 1,
-			"responsibility_id": "Orchestrator", "produced_by": []any{"Main"}, "status": "valid", "path": evidencePath, "sha256": workpacket.Digest(evidenceData),
-			"review_round": nil, "invalidated_by": nil, "invalidation_rule": nil, "invalidation_reason": nil, "scope_refs": []any{},
-		}},
 	}
+	state = taskPlanningOriginalS3(t, root, state, s3Packet, answer, evidencePath)
 	return root, state, fileview.Disk{Root: root}
 }
 
@@ -302,7 +286,6 @@ func addTaskPlanningS3Subject(t *testing.T, root string, state map[string]any, s
 		t.Fatal(err)
 	}
 	writeBytes(t, root, evidencePath, updated)
-	state["evidence"].([]any)[0].(map[string]any)["sha256"] = workpacket.Digest(updated)
 }
 
 func writeBytes(t *testing.T, root, path string, data []byte) {
@@ -317,15 +300,6 @@ func writeBytes(t *testing.T, root, path string, data []byte) {
 }
 
 func stringPtr(value string) *string { return &value }
-
-func mustContractAnswerDigest(t *testing.T, answer workpacket.ContractAnswer) string {
-	t.Helper()
-	digest, err := workpacket.ContractAnswerDigest(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return digest
-}
 
 // Only output-directory enumeration, no frozen input access or Verify, projects
 // the actual output bytes already professionally checked by the Service.
@@ -426,15 +400,15 @@ func TestTaskPlanningIgnoresUnrelatedContractDirectoryMembersAndPreservesIssuedP
 	}
 	descriptivePath := "docs/dev/contracts/service-contract.md"
 	writeTaskPlanningFile(t, root, descriptivePath, "```markdown\n# Example only\n```\n\n# BE-999 Service contract\n> Status: draft\n")
-	if err := runtime.ValidateTaskPlanningPacket(root, state, p, files); err == nil || !strings.Contains(err.Error(), descriptivePath) {
-		t.Fatalf("real descriptive contract identity after a code example escaped S4: %v", err)
+	if err := runtime.ValidateTaskPlanningPacket(root, state, p, files); err != nil {
+		t.Fatalf("later draft invalidated original issued packet: %v", err)
 	}
 	if err := os.Remove(filepath.Join(root, descriptivePath)); err != nil {
 		t.Fatal(err)
 	}
 	writeTaskPlanningFile(t, root, "docs/dev/contracts/FE-999.md", "# FE-999\n> Status: draft\n")
-	if err := runtime.ValidateTaskPlanningPacket(root, state, p, files); err == nil || !strings.Contains(err.Error(), "docs/dev/contracts/FE-999.md") {
-		t.Fatalf("new contract candidate lacks its exact S4 source diagnostic: %v", err)
+	if err := runtime.ValidateTaskPlanningPacket(root, state, p, files); err != nil {
+		t.Fatalf("unregistered contract candidate invalidated issued packet: %v", err)
 	}
 }
 
@@ -456,10 +430,62 @@ func (r *changedTaskIndexReader) ReadFile(path string) ([]byte, error) {
 	}
 	return data, err
 }
-func TestTaskPlanningRejectsIndexBytesChangedBeforeClauseProjection(t *testing.T) {
+func TestTaskPlanningUsesOriginalIndexReadForClauseProjection(t *testing.T) {
 	root, state, files := taskPlanningRuntimeFixture(t)
 	reader := &changedTaskIndexReader{Reader: files, path: "docs/dev/contracts/CONTRACTS-001.md"}
-	if _, err := runtime.ResolveTaskPlanningInputs(root, state, reader); err == nil {
-		t.Fatal("new index bytes were used to build the accepted clause universe")
+	inputs, err := runtime.ResolveTaskPlanningInputs(root, state, reader)
+	if err != nil || reader.reads != 1 {
+		t.Fatalf("original index read: reads=%d err=%v", reader.reads, err)
+	}
+	for _, clause := range inputs.ClauseUniverse {
+		if clause.Section == 999 {
+			t.Fatal("later unrequested index content entered the clause universe")
+		}
+	}
+}
+
+func TestS4OriginalS3SourcesIgnoreUnrelatedHistoricalMachineFields(t *testing.T) {
+	values := []any{nil, "old-value", float64(7), []any{"old"}, map[string]any{"old": true}}
+	for index, value := range values {
+		t.Run(fmt.Sprintf("variant-%d", index), func(t *testing.T) {
+			root, state, files := taskPlanningRuntimeFixture(t)
+			path := filepath.Join(root, ".claude/evidence/E-S3-001.json")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope map[string]any
+			if err := json.Unmarshal(data, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			envelope["old_machine_field"] = value
+			envelope["runtime_id"] = value
+			if subjects, ok := envelope["subject_refs"].([]any); ok && len(subjects) > 0 {
+				subjects[0].(map[string]any)["sha256"] = value
+			}
+			data, err = json.Marshal(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, raw := range state["evidence"].([]any) {
+				row := raw.(map[string]any)
+				if row["id"] == "E-S3-001" {
+					row["review_round"] = value
+					delete(row, "invalidated_by")
+					delete(row, "invalidation_rule")
+					delete(row, "invalidation_reason")
+				}
+			}
+			inputs, err := runtime.ResolveTaskPlanningInputs(root, state, files)
+			if err != nil || len(inputs.Contracts) == 0 {
+				t.Fatalf("original S3 source blocked by unrelated machine field: %+v %v", inputs.Contracts, err)
+			}
+			if after, err := os.ReadFile(path); err != nil || string(after) != string(data) {
+				t.Fatalf("original evidence changed: %v", err)
+			}
+		})
 	}
 }

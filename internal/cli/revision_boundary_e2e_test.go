@@ -76,11 +76,7 @@ func testNativeRevisionBoundary(t *testing.T, change string) {
 			manifest["assignments"].([]any)[0].(map[string]any)["agent_id"] = "native-competing-revision"
 			const competingPath = ".claude/workgroups/manifest-native-competing-revision.json"
 			stageJSON(t, root, competingPath, manifest)
-			digest, err := record.Digest()
-			if err != nil {
-				return err
-			}
-			code, _, diagnostic := runS6RevisionCLI(root, competingPath, record.Task.ID, record.Task.Ref, record.AssignmentID, "competing-revision", record.Reference(), digest)
+			code, _, diagnostic := runS6RevisionCLI(root, competingPath, record.Task.ID, record.Task.Ref, record.AssignmentID, "competing-revision", record.Reference())
 			if code != 0 {
 				return fmt.Errorf("original competing Record registration: %s", diagnostic)
 			}

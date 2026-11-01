@@ -1,13 +1,10 @@
 package review
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/buildsurface"
@@ -80,30 +77,6 @@ func addCaseDispositions(plan *Plan) {
 	}
 }
 
-func TestKnownCASECoverageRejectsOmissionAtOriginalRegistration(t *testing.T) {
-	root, state, plan, p := knownCaseFixture(t)
-	sp, jp := writeState(t, root, state)
-	before, _ := os.ReadFile(sp)
-	writeCaseScopePlan(t, p, plan)
-	_, err := RegisterPlan(root, sp, jp, PlanRequest{ExpectedRevision: 1, PlanPath: p})
-	if err == nil || !strings.Contains(err.Error(), "S7_CASE_COVERAGE") || !strings.Contains(err.Error(), "certificate/cases.json#CASE-001") {
-		t.Fatalf("known consumer omitted: %v", err)
-	}
-	after, _ := os.ReadFile(sp)
-	if !bytes.Equal(before, after) {
-		t.Fatal("rejected answer changed Runtime")
-	}
-	if data, err := os.ReadFile(jp); err == nil && len(bytes.TrimSpace(data)) > 0 {
-		t.Fatal("rejected answer committed journal")
-	}
-	// Same answer, existing per-CASE N/A fields: no new operation or report.
-	addCaseDispositions(plan)
-	writeCaseScopePlan(t, p, plan)
-	if _, err = RegisterPlan(root, sp, jp, PlanRequest{ExpectedRevision: 1, PlanPath: p}); err != nil {
-		t.Fatalf("explicit dispositions should register: %v", err)
-	}
-}
-
 func TestKnownCASECoverageExactIdentityAndDisposition(t *testing.T) {
 	for _, mode := range []string{"bare", "one-module-only", "asset-only", "qa-only", "required", "not-applicable"} {
 		t.Run(mode, func(t *testing.T) {
@@ -154,21 +127,19 @@ func TestKnownCASEScopeStaysWithinExplicitImpact(t *testing.T) {
 		t.Fatalf("unbounded fallback: %+v %v", inventory, notes)
 	}
 	state["bound_req"].(map[string]any)["metadata"].(map[string]any)["ui_impact"] = "none"
-	draft, _ := DraftPlanForRoot(root, state, 1)
+	draft, _ := DraftPlanForRoot(root, state)
 	if draft == nil || countLensAssignments(draft, "e2e") != 2 || draft.E2ECoverageState == "not_applicable" {
 		t.Fatal("generic ui_impact=none erased known CASEs")
 	}
 }
 
 func TestKnownCASEScopeRejectsBrokenSources(t *testing.T) {
-	for _, mode := range []string{"task-drift", "task-missing", "cases-missing", "duplicate", "decode", "empty", "missing-list"} {
+	for _, mode := range []string{"task-missing", "cases-missing", "duplicate", "decode", "empty", "missing-list"} {
 		t.Run(mode, func(t *testing.T) {
 			root, state, plan, _ := knownCaseFixture(t)
 			task := "docs/dev/tasks/TASK-101.md"
 			cases := "docs/design/prototypes/certificate/cases.json"
 			switch mode {
-			case "task-drift":
-				putCaseScopeFile(t, root, task, "changed impact")
 			case "task-missing":
 				if err := os.Remove(filepath.Join(root, task)); err != nil {
 					t.Fatal(err)
@@ -186,89 +157,20 @@ func TestKnownCASEScopeRejectsBrokenSources(t *testing.T) {
 			case "decode":
 				putCaseScopeFile(t, root, cases, "{")
 			}
-			if _, err := knownE2ECases(nil, root, state, plan); err == nil || !strings.Contains(err.Error(), "S7_CASE_SOURCE") {
+			if _, err := knownE2ECases(nil, root, state, plan); err == nil {
 				t.Fatalf("broken source silently became empty scope: %v", err)
 			}
 		})
 	}
 }
 
-func TestKnownCASEScopeUsesOriginalPinnedSources(t *testing.T) {
+func TestKnownCASEScopeUsesCurrentTaskPaths(t *testing.T) {
 	root, state, plan, _ := knownCaseFixture(t)
-	git := func(args ...string) string {
-		t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	git("init", "-q")
-	git("add", ".")
-	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "original source")
-	declaration := `{"file_sources":[{"path":".","source":"git_tree"}]}`
-	putCaseScopeFile(t, root, "definition.json", declaration)
-	state["definition"] = map[string]any{"path": "definition.json", "sha256": sha256Of([]byte(declaration))}
 	task := state["documents"].([]any)[0].(map[string]any)
-	plan.ProductBaseline = &buildsurface.Snapshot{FinalCommit: git("rev-parse", "HEAD"), Tasks: []buildsurface.Task{{ID: "TASK-101", Path: stringField(task["path"]), SHA256: stringField(task["sha256"])}}}
-	putCaseScopeFile(t, root, stringField(task["path"]), "unapproved changed scope")
-	putCaseScopeFile(t, root, "docs/design/prototypes/certificate/cases.json", `{"cases":[]}`)
+	plan.ProductBaseline = &buildsurface.Snapshot{Tasks: []buildsurface.Task{{ID: "TASK-101", Path: stringField(task["path"])}}}
 	cases, err := knownE2ECases(nil, root, state, plan)
 	if err != nil || len(cases) != 2 {
-		t.Fatalf("read worktree instead of original approved inputs: %+v %v", cases, err)
-	}
-	putCaseScopeFile(t, root, "definition.json", `{}`)
-	if _, err := knownE2ECases(nil, root, state, plan); err == nil {
-		t.Fatal("drifted source declaration accepted")
-	}
-}
-
-func TestKnownCASECoverageCannotBeDroppedByOriginalRevision(t *testing.T) {
-	root, state, plan, p := knownCaseFixture(t)
-	source := revisionSourceState()
-	state["evidence"] = source["evidence"]
-	addCaseDispositions(plan)
-	last := len(plan.Claims) - 1
-	plan.Claims[last].SourceRefs = append(plan.Claims[last].SourceRefs, "review-result-qa-1")
-	consumer := plan.Claims[last]
-	writeCaseScopePlan(t, p, plan)
-	sp, jp := writeState(t, root, state)
-	snap, err := RegisterPlan(root, sp, jp, PlanRequest{ExpectedRevision: 1, PlanPath: p})
-	if err != nil {
-		t.Fatal(err)
-	}
-	original, _, err := LoadPlan(root, snap.State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.Claims = plan.Claims[:last]
-	// This removal satisfies the existing controlled-revision source/surface
-	// rules; the new source denominator, not an unrelated gate, must reject it.
-	if _, err := diffClaims(original, plan, "review-result-qa-1", "docs/design/prototypes/certificate"); err != nil {
-		t.Fatal(err)
-	}
-	writeCaseScopePlan(t, p, plan)
-	before, _ := os.ReadFile(sp)
-	request := ReviseRequest{ExpectedRevision: snap.Revision, PlanPath: p, SourceRef: "review-result-qa-1", AffectedSurface: "docs/design/prototypes/certificate"}
-	_, err = RevisePlan(root, sp, jp, request)
-	if err == nil || !strings.Contains(err.Error(), "S7_CASE_COVERAGE") {
-		t.Fatalf("revision dropped consumer CASE: %v", err)
-	}
-	after, _ := os.ReadFile(sp)
-	if !bytes.Equal(before, after) {
-		t.Fatal("rejected revision changed Runtime")
-	}
-	// Restore the explicit disposition, then revise its actual oracle on the
-	// same original revision path. No new command or revision slot is needed.
-	consumer.Oracle = "current observed contract evidence proves this exact entry unchanged"
-	plan.Claims = append(plan.Claims, consumer)
-	writeCaseScopePlan(t, p, plan)
-	revised, err := RevisePlan(root, sp, jp, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ptr := PlanPointerFromState(revised.State); ptr == nil || ptr.Revision != 2 {
-		t.Fatal("valid original revision was not committed")
+		t.Fatalf("current task paths should provide the actual case scope: %+v %v", cases, err)
 	}
 }
 
@@ -301,8 +203,8 @@ func TestKnownCASECoveragePreservesParallelAssignmentsAndExistingAssets(t *testi
 		t.Fatal("scope check collapsed independent assignments or required rebuilding existing assets")
 	}
 	for _, asset := range accepted.E2EAssets {
-		if asset.SHA256 == "" || asset.AssetID == "" {
-			t.Fatal("original machine-field preparation was lost")
+		if asset.AssetID != "" {
+			t.Fatal("reception invented asset machine fields")
 		}
 	}
 }

@@ -44,13 +44,13 @@ func TestResolveContractInputsPreservesLargeProjectSourceClosure(t *testing.T) {
 	}
 	path := "docs/design/prototypes/unrelated/note-256.md"
 	writeContractSourceFile(t, root, path, "# Changed historical source\n")
-	if err := runtime.ValidateIssuedContractPacket(root, state, p, files); err == nil || !strings.Contains(err.Error(), path) {
-		t.Fatalf("large closure lost source drift protection: %v", err)
+	if err := runtime.ValidateIssuedContractPacket(root, state, p, files); err != nil {
+		t.Fatalf("later source content invalidated issued responsibility: %v", err)
 	}
 	writeContractSourceFile(t, root, path, "# Existing module note\n")
 	writeContractSourceFile(t, root, "docs/design/prototypes/unrelated/new-note.md", "# Added source\n")
-	if err := runtime.ValidateIssuedContractPacket(root, state, p, files); err == nil || !strings.Contains(err.Error(), "source directory changed") {
-		t.Fatalf("large closure lost directory membership protection: %v", err)
+	if err := runtime.ValidateIssuedContractPacket(root, state, p, files); err != nil {
+		t.Fatalf("later unrelated source invalidated issued responsibility: %v", err)
 	}
 }
 
@@ -111,7 +111,7 @@ func TestResolveContractInputsClosesScenarioAndLocalDesignDependencies(t *testin
 	}
 }
 
-func TestResolveContractInputsFreezesMissingScenarioRoot(t *testing.T) {
+func TestResolveContractInputsPreservesIssuedPacketWhenScenarioRootAppears(t *testing.T) {
 	root, state := contractSourceFixture(t, false)
 	inputs, err := runtime.ResolveContractInputs(root, state, fileview.Disk{Root: root})
 	if err != nil {
@@ -131,8 +131,8 @@ func TestResolveContractInputsFreezesMissingScenarioRoot(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "docs/design/prototypes"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.ValidateContractPacket(root, state, packet, fileview.Disk{Root: root}); err == nil || !strings.Contains(err.Error(), "source directory changed") {
-		t.Fatalf("new prototypes root did not invalidate the frozen absence: %v", err)
+	if err := runtime.ValidateContractPacket(root, state, packet, fileview.Disk{Root: root}); err != nil {
+		t.Fatalf("new prototypes root invalidated issued responsibility: %v", err)
 	}
 }
 
@@ -140,7 +140,6 @@ func TestResolveContractInputsDoesNotInferEmptyScenarioApplicability(t *testing.
 	root, state := contractSourceFixture(t, false)
 	req := []byte("# REQ-001\n> Status: locked\n> Version: v1.0.0\n\n| ID | AC | Target |\n|:--|:--|:--|\n| AC-001 | Complete order | FR-001 |\n")
 	writeContractSourceFile(t, root, "docs/requirements/REQ-001.md", string(req))
-	state["bound_req"].(map[string]any)["sha256"] = workpacket.Digest(req)
 	if _, err := runtime.ResolveContractInputs(root, state, fileview.Disk{Root: root}); err == nil || !strings.Contains(err.Error(), "no module package exists") {
 		t.Fatalf("empty scenario set was accepted for an FR-targeted criterion: %v", err)
 	}
@@ -234,11 +233,11 @@ func TestValidateIssuedContractPacketAcceptsLegacyFrozenSharedModelInputs(t *tes
 	if len(checked.Problems) != 0 || len(checked.Warnings) != 0 {
 		t.Fatalf("legacy source fixture invalid: problems=%v warnings=%v", checked.Problems, checked.Warnings)
 	}
-	for path, data := range checked.Files {
+	for path := range checked.Files {
 		if strings.HasPrefix(path, "docs/dev/contracts/") {
 			continue
 		}
-		inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path, SHA256: workpacket.Digest(data)})
+		inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path})
 	}
 	binding, _, err := runtime.CurrentContractBinding(state)
 	if err != nil {
@@ -252,12 +251,12 @@ func TestValidateIssuedContractPacketAcceptsLegacyFrozenSharedModelInputs(t *tes
 		t.Fatalf("valid historical S3 output closure was rejected: %v", err)
 	}
 	writeContractSourceFile(t, root, "docs/architecture/data-model/indexed-order.schema.json", `{"type":"object","properties":{"changed":{"type":"string"}}}`)
-	if err := runtime.ValidateIssuedContractPacket(root, state, packet, files); err == nil || !strings.Contains(err.Error(), "frozen input drifted") {
-		t.Fatalf("historically frozen model source drift was accepted: %v", err)
+	if err := runtime.ValidateIssuedContractPacket(root, state, packet, files); err != nil {
+		t.Fatalf("later model content invalidated issued responsibility: %v", err)
 	}
 }
 
-func TestValidateIssuedContractPacketRejectsUpstreamAndTemplateDrift(t *testing.T) {
+func TestValidateIssuedContractPacketKeepsOriginalResponsibilityWithoutSourceReproof(t *testing.T) {
 	issued := func(t *testing.T) (string, map[string]any, workpacket.ContractInputs, workpacket.PlanningBinding, workpacket.ContractPacket, fileview.Reader) {
 		t.Helper()
 		root, state := contractSourceFixture(t, true)
@@ -284,8 +283,8 @@ func TestValidateIssuedContractPacketRejectsUpstreamAndTemplateDrift(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := runtime.ValidateIssuedContractPacket(root, state, changed, files); err == nil || !strings.Contains(err.Error(), "source closure differs") {
-			t.Fatalf("issuance missing a frozen source was accepted: %v", err)
+		if err := runtime.ValidateIssuedContractPacket(root, state, changed, files); err != nil {
+			t.Fatalf("optional source list became an issuance proof: %v", err)
 		}
 	})
 	t.Run("new upstream source", func(t *testing.T) {
@@ -294,17 +293,16 @@ func TestValidateIssuedContractPacketRejectsUpstreamAndTemplateDrift(t *testing.
 		changedDesign := "# Architecture\n> Status: locked\n> Version: v1.0.0\n\n[New source](data-model/new-source.md).\n"
 		writeContractSourceFile(t, root, designPath, changedDesign)
 		writeContractSourceFile(t, root, "docs/architecture/data-model/new-source.md", "# New source\n")
-		state["documents"].([]any)[0].(map[string]any)["sha256"] = workpacket.Digest([]byte(changedDesign))
-		if err := runtime.ValidateIssuedContractPacket(root, state, packet, files); err == nil {
-			t.Fatal("newly discovered upstream source reused an old issuance")
+		if err := runtime.ValidateIssuedContractPacket(root, state, packet, files); err != nil {
+			t.Fatalf("newly discovered source invalidated the original responsibility: %v", err)
 		}
 	})
-	t.Run("template changed", func(t *testing.T) {
+	t.Run("issued presentation remains advisory", func(t *testing.T) {
 		root, state, _, _, packet, files := issued(t)
 		changed := packet
-		changed.TemplateSHA = "changed-template"
-		if err := runtime.ValidateIssuedContractPacket(root, state, changed, files); err == nil {
-			t.Fatal("changed S3 template reused an old issuance")
+		changed.Draft.Instruction = "Previously issued instructions"
+		if err := runtime.ValidateIssuedContractPacket(root, state, changed, files); err != nil {
+			t.Fatalf("issued presentation became an S3 qualification: %v", err)
 		}
 	})
 }
@@ -317,7 +315,7 @@ func TestCurrentContractBindingExcludesRegisteredS3SharedModelDocuments(t *testi
 	docs := state["documents"].([]any)
 	state["documents"] = append(docs, map[string]any{
 		"id": "shared-model:" + modelPath, "kind": "design", "path": modelPath,
-		"version": "unversioned", "sha256": workpacket.Digest(modelData), "status": "locked", "generation": 1,
+		"version": "unversioned", "status": "locked", "generation": 1,
 	})
 	_, designs, err := runtime.CurrentContractBinding(state)
 	if err != nil {
@@ -350,7 +348,7 @@ func TestResolveContractInputsRejectsUnacceptedADRForBoundREQ(t *testing.T) {
 	}
 }
 
-func TestResolveContractInputsFreezesModuleAdditionAndDeletion(t *testing.T) {
+func TestResolveContractInputsPreservesIssuedPacketAcrossModuleChanges(t *testing.T) {
 	t.Run("addition", func(t *testing.T) {
 		root, state := contractSourceFixture(t, true)
 		inputs, err := runtime.ResolveContractInputs(root, state, fileview.Disk{Root: root})
@@ -363,8 +361,8 @@ func TestResolveContractInputsFreezesModuleAdditionAndDeletion(t *testing.T) {
 			t.Fatal(err)
 		}
 		writeContractSourceFile(t, root, "docs/design/prototypes/refunds/scenario-model.json", `{"module":"refunds"}`)
-		if err := runtime.ValidateContractPacket(root, state, packet, fileview.Disk{Root: root}); err == nil || !strings.Contains(err.Error(), "source directory changed") {
-			t.Fatalf("added module directory did not invalidate prior source set: %v", err)
+		if err := runtime.ValidateContractPacket(root, state, packet, fileview.Disk{Root: root}); err != nil {
+			t.Fatalf("added module invalidated original responsibility: %v", err)
 		}
 	})
 	t.Run("deletion", func(t *testing.T) {
@@ -381,19 +379,59 @@ func TestResolveContractInputsFreezesModuleAdditionAndDeletion(t *testing.T) {
 		if err := os.RemoveAll(filepath.Join(root, "docs/design/prototypes/orders")); err != nil {
 			t.Fatal(err)
 		}
-		if err := runtime.ValidateContractPacket(root, state, packet, fileview.Disk{Root: root}); err == nil {
-			t.Fatal("deleted module package did not invalidate prior source set")
+		if err := runtime.ValidateContractPacket(root, state, packet, fileview.Disk{Root: root}); err != nil {
+			t.Fatalf("later module deletion invalidated original responsibility: %v", err)
 		}
 	})
 }
 
-func TestResolveContractInputsRejectsFileViewCheckoutMismatch(t *testing.T) {
+func TestResolveContractInputsUsesSuppliedSourceViewWithoutCheckoutEqualityGate(t *testing.T) {
 	root, state := contractSourceFixture(t, false)
 	files := pinnedContractFiles{root: root, overrides: map[string][]byte{
 		"docs/requirements/REQ-001.md": []byte("upstream REQ bytes"),
 	}}
-	if _, err := runtime.ResolveContractInputs(root, state, files); err == nil || !strings.Contains(err.Error(), "original checkout SHA") {
-		t.Fatalf("a different upstream REQ was accepted: %v", err)
+	inputs, err := runtime.ResolveContractInputs(root, state, files)
+	if err != nil || len(inputs.Designs) == 0 {
+		t.Fatalf("actual supplied source view did not produce original inputs: %v %v", inputs, err)
+	}
+}
+
+func TestResolveContractInputsUsesSelectedGitSourcesDespiteCheckoutDifferences(t *testing.T) {
+	root, state := contractSourceFixture(t, true)
+	view := commitContractBatchFixture(t, contractBatchFixture{root: root})
+	writeContractSourceFile(t, root, "docs/design/decisions/ADR-003.md", "# uncommitted unrelated content\n")
+	if err := os.Remove(filepath.Join(root, "docs/architecture/data-model/model.md")); err != nil {
+		t.Fatal(err)
+	}
+	writeContractSourceFile(t, root, "docs/design/prototypes/other/checkout-only.md", "checkout only\n")
+	inputs, err := runtime.ResolveContractInputs(root, state, view)
+	if err != nil {
+		t.Fatalf("selected original sources rejected due to checkout differences: %v", err)
+	}
+	got := map[string]bool{}
+	for _, source := range inputs.Sources {
+		got[source.Path] = true
+	}
+	for _, want := range []string{"docs/design/decisions/ADR-003.md", "docs/architecture/data-model/model.md", "docs/design/prototypes/orders/scenario-model.json"} {
+		if !got[want] {
+			t.Errorf("selected original source omitted %s", want)
+		}
+	}
+	if got["docs/design/prototypes/other/checkout-only.md"] {
+		t.Fatal("checkout-only file was treated as selected source")
+	}
+}
+
+func TestResolveContractInputsDoesNotSubstituteCheckoutForMissingSelectedSource(t *testing.T) {
+	root, state := contractSourceFixture(t, false)
+	path := "docs/architecture/data-model/model.md"
+	if err := os.Remove(filepath.Join(root, path)); err != nil {
+		t.Fatal(err)
+	}
+	view := commitContractBatchFixture(t, contractBatchFixture{root: root})
+	writeContractSourceFile(t, root, path, "# checkout-only model\n")
+	if _, err := runtime.ResolveContractInputs(root, state, view); err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("missing selected source was replaced by checkout: %v", err)
 	}
 }
 
@@ -434,11 +472,11 @@ func contractSourceFixture(t *testing.T, withModule bool) (string, map[string]an
 		"baseline":       map[string]any{"generation": 1},
 		"lifecycle":      map[string]any{"state": "planning", "phase": "contracts", "phase_revision": 3},
 		"bound_req": map[string]any{
-			"id": "REQ-001", "path": reqPath, "version": "v1.0.0", "sha256": workpacket.Digest(req), "status": "locked",
+			"id": "REQ-001", "path": reqPath, "version": "v1.0.0", "status": "locked",
 			"workspace": map[string]any{"project_root": root},
 		},
 		"documents": []any{map[string]any{
-			"id": "ARCHITECTURE-001", "kind": "design", "path": designPath, "version": "v1.0.0", "sha256": workpacket.Digest(design), "status": "locked", "generation": 1,
+			"id": "ARCHITECTURE-001", "kind": "design", "path": designPath, "version": "v1.0.0", "status": "locked", "generation": 1,
 		}},
 	}
 	return root, state
@@ -506,8 +544,8 @@ func TestResolveContractInputsUsesCurrentDesignBeforeIssuanceWithoutRewritingS2(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inputs.Designs[0].SHA256 != workpacket.Digest(current) || inputs.Designs[0].SHA256 == original.SHA256 {
-		t.Fatal("issuer did not project current professional design bytes")
+	if inputs.Designs[0] != original {
+		t.Fatal("issuer did not preserve the actual design identity")
 	}
 	binding, after, err := runtime.CurrentContractBinding(state)
 	if err != nil || after[0] != original {

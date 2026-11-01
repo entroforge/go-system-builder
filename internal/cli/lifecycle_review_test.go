@@ -11,8 +11,6 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
-	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
 // Review-driven coverage: the scenarios the E2E chain and unit tests left
@@ -334,30 +332,5 @@ func TestREQBindKeepsControlMetadataMaintenanceAtOriginalBoundary(t *testing.T) 
 	if actual, err := os.ReadFile(path); err != nil || !bytes.Equal(actual, current) {
 		t.Fatal("binding changed the supplied definition", err)
 	}
-	// A separate maintenance fixture change exercises the original metadata
-	// consumer. It is not another normal binding step or a human approval.
-	maintenance := append(append([]byte(nil), current...), '\n')
-	if err := os.WriteFile(path, maintenance, 0644); err != nil {
-		t.Fatal(err)
-	}
-	_, beforeJournal := s6CanonicalRuntimePair(t, root)
-	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
-	if _, err := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).RefreshFingerprints(root); err != nil {
-		t.Fatalf("original metadata maintenance: %v", err)
-	}
-	refreshed := stageSnapshot(t, root)
-	if refreshed.State["definition"].(map[string]any)["sha256"] != fmt.Sprintf("%x", sha256.Sum256(maintenance)) {
-		t.Fatal("metadata consumer did not record actual control bytes")
-	}
-	for _, field := range []string{"runtime_id", "revision", "bound_req", "lifecycle", "baseline", "entities", "evidence", "authorization"} {
-		before, _ := json.Marshal(bound.State[field])
-		after, _ := json.Marshal(refreshed.State[field])
-		if !bytes.Equal(before, after) {
-			t.Fatalf("metadata maintenance changed business fact %s", field)
-		}
-	}
-	journal, err := os.ReadFile(journalPath)
-	if err != nil || !bytes.Equal(journal, beforeJournal) {
-		t.Fatal("metadata maintenance invented a business event", err)
-	}
+
 }

@@ -30,12 +30,8 @@ func ValidateProjection(record Record, projection map[string]any) error {
 	if err := json.Unmarshal(data, &ref); err != nil {
 		return err
 	}
-	sha, err := record.Digest()
-	if err != nil {
-		return err
-	}
-	if ref != record.Reference() || projection["assignment_record_sha256"] != sha {
-		return fmt.Errorf("projection differs from the current Assignment identity, revision or digest")
+	if ref != record.Reference() {
+		return fmt.Errorf("projection differs from the current Assignment identity or revision")
 	}
 	data, err = json.Marshal(projection["allowed_write_paths"])
 	if err != nil {
@@ -114,7 +110,7 @@ func ForOwner(state map[string]any, owner string) (Record, bool, error) {
 		if err := verifyRuntimeRegistration(state, record.TeamID, owner, record.RoleFamily, record.AgentDefinition.Ref, record.DispatchMode, record.Task.ID, record.Manifest.Ref); err != nil {
 			return Record{}, false, err
 		}
-		task := registeredTaskReference{recordManifestDocument: recordManifestDocument{ID: record.Task.ID, Path: record.Task.Ref, Version: record.Task.Version, SHA256: record.Task.SHA256}}
+		task := registeredTaskReference{recordManifestDocument: recordManifestDocument{ID: record.Task.ID, Path: record.Task.Ref, Version: record.Task.Version}}
 		if err := verifyRuntimeTaskEntity(state, task, owner); err != nil {
 			return Record{}, false, err
 		}

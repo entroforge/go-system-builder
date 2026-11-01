@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -108,7 +109,7 @@ func prepareAuditQuestionnaire(root string, state map[string]any, kind string) (
 			rows := stateEvidence(state)
 			for i := len(rows) - 1; i >= 0; i-- {
 				entry, _ := rows[i].(map[string]any)
-				if stringValue(entry["kind"]) == acceptance.ManifestAcceptance && stringValue(entry["status"]) == "valid" && integerValue(entry["baseline_generation"]) == integerValue(nestedStateValue(state, "baseline", "generation")) && integerValue(entry["review_round"]) == integerValue(nestedStateValue(state, "review", "round")) {
+				if stringValue(entry["kind"]) == acceptance.ManifestAcceptance && stringValue(entry["status"]) == "valid" && integerValue(entry["baseline_generation"]) == integerValue(nestedStateValue(state, "baseline", "generation")) && acceptance.CurrentReviewArtifact(state, stringValue(entry["review_plan_id"])) {
 					latest = stringValue(entry["path"])
 					break
 				}
@@ -306,13 +307,14 @@ func auditManifestDraft(state map[string]any, kind string, _ acceptance.Inventor
 		ManifestType:       kind,
 		RuntimeID:          stringValue(state["runtime_id"]),
 		BaselineGeneration: integerValue(nestedStateValue(state, "baseline", "generation")),
-		ReviewRound:        integerValue(nestedStateValue(state, "review", "round")),
 		CoverageInventory:  make([]acceptance.CoverageItem, 0),
 		Counterevidence:    make([]acceptance.CounterevidenceItem, 0),
 		Risks:              []acceptance.RiskItem{},
 		TechnicalDebt:      []acceptance.DebtItem{},
 		BlockingFindings:   []acceptance.BlockingFinding{},
 	}
+	identity := acceptance.CurrentReviewIdentity(state)
+	manifest.ReviewPlanID = identity.PlanID
 	manifest.Metrics = acceptance.DeriveMetrics(manifest)
 	return manifest
 }
@@ -323,15 +325,16 @@ func auditQuestionnairePath(root string, state map[string]any, kind string) (str
 		return "", fmt.Errorf("current Runtime has no runtime_id")
 	}
 	generation := integerValue(nestedStateValue(state, "baseline", "generation"))
-	round := integerValue(nestedStateValue(state, "review", "round"))
-	if generation < 1 || round < 1 {
-		return "", fmt.Errorf("current Runtime has no positive baseline generation and review round")
+	identity := acceptance.CurrentReviewIdentity(state)
+	if generation < 1 || identity.PlanID == "" {
+		return "", fmt.Errorf("current Runtime has no positive baseline generation and review plan")
 	}
 	segment := auditPathSegment.ReplaceAllString(runtimeID, "-")
 	if segment == "" || segment == "." || segment == ".." {
 		return "", fmt.Errorf("current runtime_id cannot form an in-repository answer path")
 	}
-	dir := filepath.ToSlash(filepath.Join("s10", segment, fmt.Sprintf("g%d", generation), fmt.Sprintf("r%d", round)))
+	source := auditPathSegment.ReplaceAllString(identity.PlanID, "-")
+	dir := filepath.ToSlash(filepath.Join("s10", segment, fmt.Sprintf("g%d", generation), source))
 	return filepath.ToSlash(filepath.Join(dir, kind+"-manifest.json")), nil
 }
 
@@ -378,7 +381,14 @@ func runSavedAuditQuestionnaire(root string, request policy.Input, stdout, stder
 	reject := func(err error) (bool, int) {
 		return true, auditQuestionnaireFeedback(stdout, fmt.Sprintf("S10 %s questionnaire at exact path %s was saved but not registered: %v. Correct this same draft and save again.", kind, expected, err))
 	}
-	data, err := os.ReadFile(artifactPath)
+	var data []byte
+	if !saved {
+		// The original answer was already received; continue from its saved
+		// professional report even if the private draft is now absent or edited.
+		_, _, data, err = recordedAuditAnswer(root, snapshot.State, kind, path, nil)
+	} else {
+		data, err = os.ReadFile(artifactPath)
+	}
 	if err != nil {
 		return reject(fmt.Errorf("read saved manifest: %w", err))
 	}
@@ -392,7 +402,8 @@ func runSavedAuditQuestionnaire(root string, request policy.Input, stdout, stder
 	manifest.ManifestType = kind
 	manifest.RuntimeID = stringValue(snapshot.State["runtime_id"])
 	manifest.BaselineGeneration = integerValue(nestedStateValue(snapshot.State, "baseline", "generation"))
-	manifest.ReviewRound = integerValue(nestedStateValue(snapshot.State, "review", "round"))
+	identity := acceptance.CurrentReviewIdentity(snapshot.State)
+	manifest.ReviewPlanID = identity.PlanID
 	if strings.TrimSpace(manifest.Outcome) == "" {
 		var missing []string
 		for _, item := range manifest.CoverageInventory {
@@ -421,55 +432,85 @@ func runSavedAuditQuestionnaire(root string, request policy.Input, stdout, stder
 		return reject(err)
 	}
 
-	manifestSHA := sha256HexForArtifact(data)
-	shortSHA := manifestSHA[:12]
-	evidenceID := fmt.Sprintf("s10-%s-g%d-r%d-%s-%s", auditPathSegment.ReplaceAllString(manifest.RuntimeID, "-"), manifest.BaselineGeneration, manifest.ReviewRound, kind, shortSHA)
-	responsibility := "Acceptance"
-	if kind == acceptance.ManifestReleaseAudit {
-		responsibility = "Release Auditor"
+	// A responsibility may receive a real later revision. Preserve the report
+	// once at its accepted path, and use the existing responsibility and Writer
+	// revision for identity; do not derive identity or eligibility from bytes.
+	evidenceID, envelopePath, _, lookupErr := recordedAuditAnswer(root, snapshot.State, kind, path, data)
+	if lookupErr != nil {
+		return reject(lookupErr)
 	}
-	envelopePath := strings.TrimSuffix(path, "-manifest.json") + "-evidence-" + shortSHA + ".json"
-	envelope := map[string]any{
-		"schema_version": "1.0.0", "evidence_id": evidenceID, "kind": kind,
-		"runtime_id": manifest.RuntimeID, "baseline_generation": manifest.BaselineGeneration,
-		"review_round": manifest.ReviewRound, "producer_agent_id": actor,
-		"producer_responsibility": responsibility, "subject_refs": []string{},
-		"conclusion": manifest.Outcome, "audit_manifest_path": path,
-		"audit_manifest_sha256": manifestSHA,
-	}
-	envelopeData, err := json.MarshalIndent(envelope, "", "  ")
-	if err != nil {
-		return reject(fmt.Errorf("encode machine evidence envelope: %w", err))
-	}
-	envelopeData = append(envelopeData, '\n')
-	envelopeSHA := sha256HexForArtifact(envelopeData)
-	_, recorded := registeredAuditEvidence(snapshot.State, evidenceID, envelopePath, envelopeSHA)
-	if !recorded {
-		if evidenceHasID(snapshot.State, evidenceID) {
-			return reject(fmt.Errorf("evidence id %s already exists with different content; no duplicate was registered", evidenceID))
+	if evidenceID == "" {
+		phaseRevision := integerValue(nestedStateValue(snapshot.State, "lifecycle", "phase_revision"))
+		// Reserve a distinct writer-owned report path. If an earlier uncommitted
+		// attempt left an orphan, a new professional answer is not rejected or
+		// required to overwrite it. No content-derived identity is calculated.
+		acceptedPath, reserveErr := reserveAuditReport(root, path, snapshot.Revision, data)
+		if reserveErr != nil {
+			return reject(reserveErr)
 		}
-		if err := os.WriteFile(artifactPath, data, 0o644); err != nil {
-			return reject(fmt.Errorf("write machine-derived metrics to the same manifest: %w", err))
+		name := strings.TrimSuffix(filepath.Base(acceptedPath), ".json")
+		evidenceID = fmt.Sprintf("s10-%s-g%d-p%d-%s", kind, manifest.BaselineGeneration, phaseRevision, name)
+		envelopePath = filepath.ToSlash(filepath.Join(filepath.Dir(path), name+"-evidence.json"))
+		responsibility := "Acceptance"
+		if kind == acceptance.ManifestReleaseAudit {
+			responsibility = "Release Auditor"
+		}
+		envelope := map[string]any{
+			"schema_version": "1.0.0", "evidence_id": evidenceID, "kind": kind,
+			"runtime_id": manifest.RuntimeID, "baseline_generation": manifest.BaselineGeneration,
+			"producer_agent_id": actor, "producer_responsibility": responsibility,
+			"subject_refs": []string{}, "conclusion": manifest.Outcome,
+			"audit_manifest_path": acceptedPath, "audit_questionnaire_path": path,
+		}
+		acceptance.StampReviewIdentity(snapshot.State, envelope)
+		envelopeData, encodeErr := json.MarshalIndent(envelope, "", "  ")
+		if encodeErr != nil {
+			return reject(fmt.Errorf("encode original report association: %w", encodeErr))
+		}
+		envelopeData = append(envelopeData, '\n')
+		if saved {
+			// Preserve the existing same-file presentation of derived metrics.
+			if err := os.WriteFile(artifactPath, data, 0o644); err != nil {
+				return reject(fmt.Errorf("write machine-derived metrics to the same manifest: %w", err))
+			}
 		}
 		if err := writeAuditArtifactExclusive(root, envelopePath, envelopeData); err != nil {
 			return reject(err)
 		}
-		round := manifest.ReviewRound
-		_, err = runtime.RecordEvidence(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), runtime.EvidenceRequest{
-			ExpectedRevision: -1, ID: evidenceID, Kind: kind, Path: envelopePath, ProducedBy: []string{actor}, ResponsibilityID: responsibility, ReviewRound: &round, Validator: semantic.RuntimeCandidateValidator{},
-		})
-		if err != nil {
-			latest, snapshotErr := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
-			if snapshotErr == nil {
-				_, recorded = registeredAuditEvidence(latest.State, evidenceID, envelopePath, envelopeSHA)
-				if recorded && currentAuditKind(latest.State) != kind {
-					return true, auditQuestionnaireFeedback(stdout, fmt.Sprintf("S10 %s at %s is already received as %s; current cursor is %s. No evidence or completed exit was repeated.", kind, expected, evidenceID, lifecycleState(latest.State)))
-				}
+		ctx := contextForHook(request)
+		evidenceRequest := runtime.EvidenceRequest{
+			Context: ctx, ExpectedRevision: snapshot.Revision, ID: evidenceID, Kind: kind,
+			Path: envelopePath, ProducedBy: []string{actor}, ResponsibilityID: responsibility,
+			Validator: semantic.RuntimeCandidateValidator{},
+		}
+		for {
+			_, err = runtime.RecordEvidence(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), evidenceRequest)
+			if err == nil {
+				break
 			}
-			if !recorded {
+			latest, snapshotErr := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
+			if snapshotErr != nil {
 				return reject(fmt.Errorf("register original S10 evidence: %w", err))
 			}
+			foundID, foundPath, _, lookupErr := recordedAuditAnswer(root, latest.State, kind, path, data)
+			if lookupErr != nil {
+				return reject(lookupErr)
+			}
+			if foundID != "" {
+				evidenceID, envelopePath = foundID, foundPath
+				if currentAuditKind(latest.State) != kind {
+					return true, auditQuestionnaireFeedback(stdout, fmt.Sprintf("S10 %s at %s is already received as %s; current cursor is %s. No evidence or completed exit was repeated.", kind, expected, evidenceID, lifecycleState(latest.State)))
+				}
+				break
+			}
+			if !errors.Is(err, runtime.ErrStaleRevision) || currentAuditKind(latest.State) != kind || ctx.Err() != nil {
+				return reject(fmt.Errorf("register original S10 evidence: %w", err))
+			}
+			// A concurrent unrelated update does not require the author to save
+			// again; the existing Writer rechecks the original responsibility.
+			evidenceRequest.ExpectedRevision = latest.Revision
 		}
+
 	}
 	var unfinished []string
 	for _, item := range manifest.CoverageInventory {
@@ -498,7 +539,7 @@ func runSavedAuditQuestionnaire(root string, request policy.Input, stdout, stder
 	positive := manifest.Outcome == "pass" || manifest.Outcome == "approved" || manifest.Outcome == "approved_with_risk"
 	if negative || (positive && summary.UnknownCount == 0 && summary.BlockingFindingCount == 0) {
 		if manifest.Outcome == "review_required" {
-			err = recordAuditReviewImpact(root, path, evidenceID, envelopePath, envelopeSHA)
+			err = recordAuditReviewImpact(root, path, evidenceID, envelopePath)
 			if err != nil {
 				return true, auditQuestionnaireFeedback(stdout, fmt.Sprintf("S10 review_required at %s is received as %s. Main owns the original return recovery: %v. Preserve the received answer; no refill, repeated save or new professional report is required.", expected, evidenceID, err))
 			}
@@ -543,28 +584,93 @@ func validAuditOutcome(kind, outcome string) bool {
 	return kind == acceptance.ManifestReleaseAudit && (outcome == "approved" || outcome == "approved_with_risk" || outcome == "blocked")
 }
 
-func registeredAuditEvidence(state map[string]any, id, path, sha string) (string, bool) {
-	for _, raw := range stateEvidence(state) {
-		entry, _ := raw.(map[string]any)
-		if entry == nil || stringValue(entry["id"]) != id {
+// recordedAuditAnswer resolves an existing receipt for this responsibility. A
+// nil current answer selects the latest original report for pending recovery;
+// otherwise compare only that report with the current professional expression.
+func recordedAuditAnswer(root string, state map[string]any, kind, authorPath string, current []byte) (string, string, []byte, error) {
+	rows := stateEvidence(state)
+	for i := len(rows) - 1; i >= 0; i-- {
+		entry, _ := rows[i].(map[string]any)
+		if stringValue(entry["kind"]) != kind || stringValue(entry["status"]) != "valid" || entry["invalidated_by"] != nil ||
+			integerValue(entry["baseline_generation"]) != integerValue(nestedStateValue(state, "baseline", "generation")) ||
+			!acceptance.CurrentReviewArtifact(state, stringValue(entry["review_plan_id"])) {
 			continue
 		}
-		if stringValue(entry["status"]) == "valid" && stringValue(entry["path"]) == path && stringValue(entry["sha256"]) == sha {
-			return id, true
+		envelopePath := stringValue(entry["path"])
+		resolved, err := safeS10Path(root, envelopePath)
+		if err != nil {
+			return "", "", nil, err
 		}
-		return id, false
+		envelopeData, err := os.ReadFile(resolved)
+		if err != nil {
+			return "", "", nil, err
+		}
+		var envelope struct {
+			ReportPath string `json:"audit_manifest_path"`
+			AnswerPath string `json:"audit_questionnaire_path"`
+		}
+		if err := json.Unmarshal(envelopeData, &envelope); err != nil {
+			return "", "", nil, err
+		}
+		if envelope.AnswerPath == "" {
+			envelope.AnswerPath = envelope.ReportPath
+		}
+		if filepath.Clean(envelope.AnswerPath) != filepath.Clean(authorPath) {
+			continue
+		}
+		reportPath, err := safeS10Path(root, envelope.ReportPath)
+		if err != nil {
+			return "", "", nil, err
+		}
+		report, err := os.ReadFile(reportPath)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if current == nil || bytes.Equal(report, current) {
+			return stringValue(entry["id"]), envelopePath, report, nil
+		}
+		// A later actual expression belongs to this same live responsibility;
+		// do not mistake an older equal report for the latest result.
+		return "", "", nil, nil
+	}
+	return "", "", nil, nil
+}
+
+func registeredAuditEvidence(state map[string]any, id, path string) (string, bool) {
+	for _, raw := range stateEvidence(state) {
+		entry, _ := raw.(map[string]any)
+		if entry != nil && stringValue(entry["id"]) == id {
+			return id, stringValue(entry["status"]) == "valid" && stringValue(entry["path"]) == path
+		}
 	}
 	return "", false
 }
 
-func evidenceHasID(state map[string]any, id string) bool {
-	for _, raw := range stateEvidence(state) {
-		entry, _ := raw.(map[string]any)
-		if entry != nil && stringValue(entry["id"]) == id {
-			return true
-		}
+// reserveAuditReport creates one independently named accepted professional
+// report; an abandoned prior attempt cannot turn the next answer into a gate.
+func reserveAuditReport(root, authorPath string, revision int, data []byte) (string, error) {
+	dirRel := filepath.Dir(filepath.FromSlash(authorPath))
+	dir, err := safeS10Path(root, filepath.ToSlash(dirRel))
+	if err != nil {
+		return "", err
 	}
-	return false
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	prefix := strings.TrimSuffix(filepath.Base(authorPath), ".json") + fmt.Sprintf("-accepted-r%d-", revision)
+	file, err := os.CreateTemp(dir, prefix+"*.json")
+	if err != nil {
+		return "", fmt.Errorf("reserve accepted S10 report: %w", err)
+	}
+	if _, err = file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return "", fmt.Errorf("write accepted S10 report: %w", err)
+	}
+	if err = file.Close(); err != nil {
+		return "", fmt.Errorf("close accepted S10 report: %w", err)
+	}
+	return filepath.ToSlash(filepath.Join(dirRel, filepath.Base(file.Name()))), nil
 }
 
 func writeAuditArtifactExclusive(root, rel string, data []byte) error {

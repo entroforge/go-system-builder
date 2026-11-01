@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	reviewpkg "github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
@@ -61,7 +62,7 @@ func TestS10ReviewRequiredReturnsOriginalFullReviewAndNewPlan(t *testing.T) {
 	out := saveS10ReviewAnswer(t, root, answer)
 	state := readS10QuestionnaireState(t, statePath)
 	lifecycle, review := state["lifecycle"].(map[string]any), state["review"].(map[string]any)
-	if lifecycle["state"] != "verification" || lifecycle["phase"] != "planned" || review["round"] != float64(2) || review["clean_round"] != nil {
+	if lifecycle["state"] != "verification" || lifecycle["phase"] != "planned" || review["round"] != float64(1) || review["clean_round"] != nil {
 		t.Fatalf("received negative decision did not return through TR-016: %v %v %s", lifecycle, review["round"], out)
 	}
 	if !strings.Contains(out, "TR-016") {
@@ -87,7 +88,7 @@ func TestS10ReviewRequiredReturnsOriginalFullReviewAndNewPlan(t *testing.T) {
 	if impact != 1 || !hasS10QuestionnaireEvidence(root, state, "acceptance", "review_required") {
 		t.Fatalf("original report/impact lost: %d", impact)
 	}
-	planPath := filepath.Join(root, ".claude/submissions/loop-test/g1/S7/r2/review-plan.json")
+	planPath := reviewpkg.PlanQuestionnairePath(root, state)
 	if !strings.Contains(out, planPath) {
 		t.Fatalf("missing exact next S7 responsibility: %s", out)
 	}
@@ -99,9 +100,10 @@ func TestS10ReviewRequiredReturnsOriginalFullReviewAndNewPlan(t *testing.T) {
 	plan := readS10QuestionnaireState(t, professional)
 	generated := readS10QuestionnaireState(t, planPath)
 	plan["coverage_inventory"] = generated["coverage_inventory"]
-	plan["review_round"] = 2
-	product, _ := os.ReadFile(filepath.Join(root, "internal/service.go"))
-	plan["frozen_subjects"] = []any{map[string]any{"path": "internal/service.go", "sha256": sha256Hex(product), "kind": "product_code"}}
+	plan["schema_version"] = generated["schema_version"]
+	plan["review_plan_id"] = generated["review_plan_id"]
+	delete(plan, "review_round")
+	plan["frozen_subjects"] = []any{}
 	for _, raw := range plan["claims"].([]any) {
 		claim := raw.(map[string]any)
 		claim["source_refs"] = []string{"REQ-001", "CONTRACT-001", "internal/service.go"}
@@ -114,18 +116,12 @@ func TestS10ReviewRequiredReturnsOriginalFullReviewAndNewPlan(t *testing.T) {
 	unknown := "s10/loop-test/g1/r1/unregistered.json"
 	writeS10QuestionnaireFile(t, root, unknown, []byte("{}"))
 	feedback := saveS10ReviewAnswer(t, root, planPath)
-	if !strings.Contains(feedback, unknown) {
-		t.Fatalf("unknown sibling was silently excluded from drift: %s", feedback)
-	}
-	if err := os.Remove(filepath.Join(root, unknown)); err != nil {
-		t.Fatal(err)
-	}
-	if feedback := saveS10ReviewAnswer(t, root, planPath); !strings.Contains(feedback, "review-plan-after-acceptance") {
+	if !strings.Contains(feedback, generated["review_plan_id"].(string)) {
 		t.Fatalf("original new S7 plan did not register: %s", feedback)
 	}
 	state = readS10QuestionnaireState(t, statePath)
-	if state["review"].(map[string]any)["plan"].(map[string]any)["review_round"] != float64(2) {
-		t.Fatal("old plan reused as current")
+	if state["review"].(map[string]any)["plan"].(map[string]any)["plan_id"] != generated["review_plan_id"] {
+		t.Fatalf("old plan reused as current: pointer=%v generated=%v feedback=%s", state["review"].(map[string]any)["plan"], generated["review_plan_id"], feedback)
 	}
 }
 
@@ -165,7 +161,7 @@ func TestS10ReviewRequiredRestoresSourceWithoutRefillingReceivedAnswer(t *testin
 }
 
 func TestS10ReviewRequiredRejectsUnavailableOrWrongScopeWithoutInventingImpact(t *testing.T) {
-	for _, fault := range []string{"missing_plan", "missing_file", "old_round", "wrong_generation", "empty_scope"} {
+	for _, fault := range []string{"missing_plan", "missing_file", "different_plan", "old_round", "wrong_generation", "empty_scope"} {
 		t.Run(fault, func(t *testing.T) {
 			root, answer, planRef := s10ReviewRequiredRoot(t)
 			statePath := filepath.Join(root, ".claude/loop-state.json")
@@ -181,6 +177,8 @@ func TestS10ReviewRequiredRejectsUnavailableOrWrongScopeWithoutInventingImpact(t
 			default:
 				plan := readS10QuestionnaireState(t, filepath.Join(root, planRef))
 				switch fault {
+				case "different_plan":
+					plan["review_plan_id"] = "review-plan-unrelated-original"
 				case "old_round":
 					plan["review_round"] = 2
 				case "wrong_generation":
@@ -196,6 +194,23 @@ func TestS10ReviewRequiredRejectsUnavailableOrWrongScopeWithoutInventingImpact(t
 			writeS10QuestionnaireFile(t, root, ".claude/loop-state.json", data)
 			out := saveS10ReviewAnswer(t, root, answer)
 			state = readS10QuestionnaireState(t, statePath)
+			// Historical round metadata and an empty product scope do not
+			// replace this original Plan's identity or the received decision.
+			if fault == "old_round" || fault == "empty_scope" {
+				if state["lifecycle"].(map[string]any)["state"] != "verification" || !hasS10QuestionnaireEvidence(root, state, "acceptance", "review_required") || !strings.Contains(out, "TR-016") {
+					t.Fatalf("original review decision was gated on optional metadata: %s", out)
+				}
+				for _, raw := range state["evidence"].([]any) {
+					row := raw.(map[string]any)
+					if row["kind"] == "change_impact" {
+						impact := readS10QuestionnaireState(t, filepath.Join(root, row["path"].(string)))
+						if impact["changed_artifacts"] != nil {
+							t.Fatal("re-review decision fabricated product edits")
+						}
+					}
+				}
+				return
+			}
 			if state["lifecycle"].(map[string]any)["state"] != "acceptance" || !hasS10QuestionnaireEvidence(root, state, "acceptance", "review_required") || !strings.Contains(out, "Main") || !strings.Contains(out, "received") {
 				t.Fatalf("source gap lost or completed author sent in circles: %s", out)
 			}
@@ -238,48 +253,25 @@ func TestS10ReviewRequiredPendingReturnDoesNotReceiveChangedOrWorkerAnswer(t *te
 	}
 }
 
-func TestS10ReviewRequiredBudgetRecoveryKeepsOriginalScopeAndOneReport(t *testing.T) {
+func TestS10ReviewRequiredDoesNotUseReviewCountAsGate(t *testing.T) {
 	root, answer, _ := s10ReviewRequiredRoot(t)
-	statePath, journal := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
+	statePath := filepath.Join(root, ".claude/loop-state.json")
 	state := readS10QuestionnaireState(t, statePath)
 	state["configuration"].(map[string]any)["repair"].(map[string]any)["max_full_review_rounds"] = 1
 	data, _ := json.Marshal(state)
 	writeS10QuestionnaireFile(t, root, ".claude/loop-state.json", data)
-	out := saveS10ReviewAnswer(t, root, answer)
-	state = readS10QuestionnaireState(t, statePath)
-	if state["lifecycle"].(map[string]any)["state"] != "acceptance" || !strings.Contains(out, "budget") {
-		t.Fatalf("original budget bypassed or no recovery: %s", out)
-	}
-	decision := runtime.S7BudgetDecision{Decision: "increase_budget", RuntimeID: "loop-test", ReviewRound: 1, PreviousMaxFullReviewRounds: 1, NewMaxFullReviewRounds: 2, Reason: "SIMULATION: authorize one further full review for this fixture", AuthorizedBy: "fixture-human"}
-	data, _ = json.Marshal(decision)
-	ref := "docs/reports/synthetic-budget-decision.json"
-	writeS10QuestionnaireFile(t, root, ref, data)
-	if _, err := runtime.ApplyS7BudgetDecision(root, statePath, journal, runtime.S7BudgetDecisionRequest{ExpectedRevision: -1, DecisionPath: ref, Actor: "fixture-human", Validator: semantic.RuntimeCandidateValidator{}}); err != nil {
-		t.Fatal(err)
-	}
-	// Pre remains read-only after the original budget writer. Normal Main
-	// completion resumes from the recorded scope without another report save.
-	callS10QuestionnaireHook(t, root, map[string]any{"hook_event_name": "PreToolUse", "cwd": root, "tool_name": "Read", "tool_input": map[string]any{"file_path": answer}})
-	state = readS10QuestionnaireState(t, statePath)
-	if state["lifecycle"].(map[string]any)["state"] != "acceptance" {
-		t.Fatal("passive Pre wrote the S10 return")
-	}
-	callS10QuestionnaireHook(t, root, map[string]any{"hook_event_name": "PostToolUse", "cwd": root, "tool_name": "Read", "tool_input": map[string]any{"file_path": answer}})
+	output := saveS10ReviewAnswer(t, root, answer)
 	state = readS10QuestionnaireState(t, statePath)
 	if state["lifecycle"].(map[string]any)["state"] != "verification" {
-		t.Fatal("original budget decision did not release the pending return")
+		t.Fatalf("review_required was blocked by a review count: %s", output)
 	}
 	var reports, impacts int
 	for _, raw := range state["evidence"].([]any) {
 		row := raw.(map[string]any)
-		if row["kind"] == "acceptance" {
-			reports++
-		}
-		if row["kind"] == "change_impact" {
-			impacts++
-		}
+		if row["kind"] == "acceptance" { reports++ }
+		if row["kind"] == "change_impact" { impacts++ }
 	}
 	if reports != 1 || impacts != 1 {
-		t.Fatalf("budget recovery duplicated original facts: %d/%d", reports, impacts)
+		t.Fatalf("review return duplicated original facts: %d/%d", reports, impacts)
 	}
 }

@@ -108,10 +108,7 @@ func S5PacketsWithFiles(root string, state map[string]any, owner string, files f
 			if matches > 1 {
 				return nil, fmt.Errorf("ambiguous document reviewer assignment for %s", id)
 			}
-			p, err := workpacket.BuildS5(workpacket.Binding{RuntimeID: stringValue(state["runtime_id"]), Generation: generation, StageEntry: entry, Owner: id, AssignmentID: assignment.ID, AssignmentSHA: workpacket.Digest(data), Responsibility: assignment.Responsibility, Attempt: 1}, refs)
-			if err != nil {
-				return nil, err
-			}
+			var p workpacket.Packet
 			// Never guess a new first attempt over an existing immutable slot.
 			issued, _ := entities["work_packets"].([]any)
 			tips, found := 0, false
@@ -131,7 +128,7 @@ func S5PacketsWithFiles(root string, state map[string]any, owner string, files f
 					if err != nil {
 						return nil, err
 					}
-					if old.Binding.AssignmentID != assignment.ID || old.Binding.AssignmentSHA != workpacket.Digest(data) {
+					if old.Binding.AssignmentID != assignment.ID {
 						return nil, fmt.Errorf("issued assignment changed; follow the original rework route")
 					}
 					if prior, accepted, err := FindSubmission(state, old.ID); err != nil {
@@ -148,6 +145,12 @@ func S5PacketsWithFiles(root string, state map[string]any, owner string, files f
 			}
 			if found && tips != 1 {
 				return nil, fmt.Errorf("issued responsibility has no unique current revision tip")
+			}
+			if !found {
+				p, err = workpacket.BuildS5(workpacket.Binding{RuntimeID: stringValue(state["runtime_id"]), Generation: generation, StageEntry: entry, Owner: id, AssignmentID: assignment.ID, Responsibility: assignment.Responsibility, Attempt: 1}, refs)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if !found && len(assignment.SkillRefs) > 0 {
 				methods, err := s5MethodReferences(root, assignment.SkillRefs)

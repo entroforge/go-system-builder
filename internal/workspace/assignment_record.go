@@ -21,7 +21,7 @@ func ValidateAssignmentRecord(state map[string]any, e Execution) error {
 		return err
 	}
 	if !canonical {
-		if e.AssignmentRecord != nil || e.AssignmentRecordSHA256 != "" {
+		if e.AssignmentRecord != nil {
 			return fmt.Errorf("execution has no original canonical Assignment registration")
 		}
 		return nil
@@ -53,29 +53,25 @@ func ValidateAssignmentRecord(state map[string]any, e Execution) error {
 		if row.WorkerCheckIndex < 0 || row.WorkerCheckIndex >= len(expectedWorkerChecks) {
 			return fmt.Errorf("execution owned-check receipt index is outside the frozen WorkerChecks")
 		}
-		if row.Receipt.Binding != CheckBinding(e) || row.Receipt.Command != expectedWorkerChecks[row.WorkerCheckIndex].Command || row.Receipt.ProfileDigest != expectedWorkerChecks[row.WorkerCheckIndex].Profile.Digest() || row.Receipt.Path == "" || row.Receipt.SHA256 == "" {
+		if row.Receipt.Binding != CheckBinding(e) || row.Receipt.Command != expectedWorkerChecks[row.WorkerCheckIndex].Command || row.Receipt.Path == "" {
 			return fmt.Errorf("execution owned-check receipt differs from its frozen WorkerCheck")
 		}
 	}
-	sha, err := record.Digest()
-	if err != nil {
-		return err
-	}
-	if e.AssignmentRecord == nil || *e.AssignmentRecord != record.Reference() || e.AssignmentRecordSHA256 != sha || e.AssignmentID != record.AssignmentID || !reflect.DeepEqual(e.WritePaths, record.EffectiveWritePaths) || !reflect.DeepEqual(e.Checks, record.RequiredChecks) {
+	if e.AssignmentRecord == nil || *e.AssignmentRecord != record.Reference() || e.AssignmentID != record.AssignmentID || !reflect.DeepEqual(e.WritePaths, record.EffectiveWritePaths) || !reflect.DeepEqual(e.Checks, record.RequiredChecks) {
 		return fmt.Errorf("execution differs from the current canonical Assignment")
 	}
 	if len(e.CheckProfiles) != len(record.CheckProfiles) {
 		return fmt.Errorf("execution CheckProfiles differ from the canonical Assignment")
 	}
 	for i, profile := range record.CheckProfiles {
-		if e.CheckProfiles[i].Digest() != profile.Digest() {
+		if !sameCheckProfile(e.CheckProfiles[i], profile) {
 			return fmt.Errorf("execution CheckProfiles differ from the canonical Assignment")
 		}
 	}
 	for _, source := range record.ContextSources {
 		if strings.HasPrefix(source.Kind, "embedded_") {
-			data, err := assignmentinputs.Read("", source.Ref)
-			if err != nil || checkexec.Hash(data) != source.SHA256 {
+			_, err := assignmentinputs.Read("", source.Ref)
+			if err != nil {
 				return fmt.Errorf("execution embedded Assignment source changed: %s", source.Ref)
 			}
 			continue
@@ -83,7 +79,7 @@ func ValidateAssignmentRecord(state map[string]any, e Execution) error {
 		if source.Kind == "check_profile" {
 			continue
 		}
-		if e.Inputs[source.Ref] != source.SHA256 {
+		if _, present := e.Inputs[source.Ref]; !present {
 			return fmt.Errorf("execution lacks canonical Assignment source %s", source.Ref)
 		}
 	}
@@ -98,9 +94,7 @@ func (b *ExecutionRegistry) bindAssignmentRecord(state map[string]any, e Executi
 	if e.AssignmentID != record.AssignmentID || !reflect.DeepEqual(e.WritePaths, record.EffectiveWritePaths) || !reflect.DeepEqual(e.Checks, record.RequiredChecks) {
 		return e, fmt.Errorf("execution scope/checks do not match the canonical Assignment")
 	}
-	if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-		return assignmentinputs.Read(b.MainRoot, ref)
-	}); err != nil {
+	if err := assignmentrecord.ValidateRecord(record); err != nil {
 		return e, err
 	}
 	ref := record.Reference()
@@ -117,15 +111,11 @@ func (b *ExecutionRegistry) bindAssignmentRecord(state map[string]any, e Executi
 		// never changes a legacy Record with no explicit mode.
 		e.CheckLocation = "main"
 	}
-	e.AssignmentRecordSHA256, err = record.Digest()
-	if err != nil {
-		return e, err
-	}
 	for _, source := range record.ContextSources {
 		if strings.Contains(source.Ref, "#") || strings.HasPrefix(source.Kind, "embedded_") {
 			continue
 		}
-		e.Inputs[source.Ref] = source.SHA256
+		e.Inputs[source.Ref] = source.Ref
 	}
 	// The original CLI freezes the declared CheckProfiles immediately after
 	// Plan and before its Writer commit. ValidateAuthority checks that final
@@ -138,7 +128,7 @@ func sameWorkerChecks(a, b []assignmentrecord.WorkerCheck) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].Index != b[i].Index || a[i].Command != b[i].Command || a[i].Profile.Digest() != b[i].Profile.Digest() {
+		if a[i].Index != b[i].Index || a[i].Command != b[i].Command || !sameCheckProfile(a[i].Profile, b[i].Profile) {
 			return false
 		}
 	}
@@ -156,4 +146,14 @@ func copyWorkerChecks(source []assignmentrecord.WorkerCheck) []assignmentrecord.
 		out[i].Profile = profile
 	}
 	return out
+}
+
+// sameCheckProfile compares the actual declared check, not historical source
+// digests. The original profile remains untouched and no hash is computed.
+func sameCheckProfile(a, b checkexec.Profile) bool {
+	a.Dependencies = append([]checkexec.FileRef(nil), a.Dependencies...)
+	b.Dependencies = append([]checkexec.FileRef(nil), b.Dependencies...)
+	a.Fixtures = append([]checkexec.FileRef(nil), a.Fixtures...)
+	b.Fixtures = append([]checkexec.FileRef(nil), b.Fixtures...)
+	return reflect.DeepEqual(a, b)
 }

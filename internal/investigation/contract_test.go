@@ -27,7 +27,7 @@ func TestApproveContractRequiresExactCaseFindingCoverage(t *testing.T) {
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
 	_, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
 		ExpectedRevision: 1,
-		CaseID:           "investigation-case-observation-batch-r1",
+		CaseID:           "investigation-case-review-plan-r1",
 		ContractPath:     contractPath,
 		ApprovedBy:       "main-session",
 	})
@@ -47,11 +47,11 @@ func TestApproveContractRequiresCausalClosureBeforeS9(t *testing.T) {
 	}
 	_, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
 		ExpectedRevision: 1,
-		CaseID:           "investigation-case-observation-batch-r1",
+		CaseID:           "investigation-case-review-plan-r1",
 		ContractPath:     writeContractDraft(t, fixture.root, []string{"finding-1"}),
 		ApprovedBy:       "main-session",
 	})
-	if err == nil || !strings.Contains(err.Error(), "unexplained Finding IDs") {
+	if err == nil || !strings.Contains(err.Error(), "causal_model") || !strings.Contains(err.Error(), "current original S8") {
 		t.Fatalf("ApproveContract() error = %v, want causal-closure guidance", err)
 	}
 }
@@ -67,13 +67,13 @@ func TestApproveContractCommitsApprovedContractAndCaseRevision(t *testing.T) {
 	}
 	prepareCaseForContractApproval(t, fixture)
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1", "finding-2"})
-	approvalHash, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
+	_, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
 	snapshot, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision:   -1,
-		CaseID:             "investigation-case-observation-batch-r1",
-		ContractPath:       contractPath,
-		ApprovedBy:         "main-session",
-		ApprovalHash:       approvalHash,
+		ExpectedRevision: -1,
+		CaseID:           "investigation-case-review-plan-r1",
+		ContractPath:     contractPath,
+		ApprovedBy:       "main-session",
+
 		ApprovalEvidenceID: approvalEvidenceID,
 	})
 	if err != nil {
@@ -91,8 +91,8 @@ func TestApproveContractCommitsApprovedContractAndCaseRevision(t *testing.T) {
 	if pointer["status"] != "contract_approved" {
 		t.Fatalf("investigation status = %v, want contract_approved", pointer["status"])
 	}
-	if pointer["repair_contract_ref"] == nil || pointer["repair_contract_sha256"] == nil {
-		t.Fatalf("approved pointer missing Contract ref/hash: %#v", pointer)
+	if pointer["repair_contract_ref"] == nil {
+		t.Fatalf("approved pointer missing Contract ref: %#v", pointer)
 	}
 	approvedContractPath := filepath.Join(fixture.root, filepath.FromSlash(pointer["repair_contract_ref"].(string)))
 	contractBytes, err := os.ReadFile(approvedContractPath)
@@ -149,56 +149,25 @@ func TestApproveContractRequiresApprovalReceipt(t *testing.T) {
 	}
 	prepareCaseForContractApproval(t, fixture)
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
-	draftBytes, err := os.ReadFile(contractPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
+	_, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
 		ExpectedRevision: 1,
-		CaseID:           "investigation-case-observation-batch-r1",
+		CaseID:           "investigation-case-review-plan-r1",
 		ContractPath:     contractPath,
 		ApprovedBy:       "main-session",
-		ApprovalHash:     hash(draftBytes),
 	})
 	if err == nil || !strings.Contains(err.Error(), "approval_evidence_id binding is missing") || !strings.Contains(err.Error(), "Main/system must recover") {
 		t.Fatalf("ApproveContract() error = %v, want approval evidence requirement", err)
 	}
 }
 
-func TestApproveContractRejectsBaselineDrift(t *testing.T) {
-	fixture := newIntakeFixture(t, []string{"finding-1"})
-	setContractLifecycle(t, fixture)
-	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "the sealed batch is the provisional grouping boundary",
-	}); err != nil {
-		t.Fatalf("Ingest() error = %v", err)
-	}
-	prepareCaseForContractApproval(t, fixture)
-	setContractReviewPlan(t, fixture)
-	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
-	approvalHash, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
-	_, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision:   expectedRevision,
-		CaseID:             "investigation-case-observation-batch-r1",
-		ContractPath:       contractPath,
-		ApprovedBy:         "main-session",
-		ApprovalHash:       approvalHash,
-		ApprovalEvidenceID: approvalEvidenceID,
-	})
-	if err == nil || !strings.Contains(err.Error(), "baseline_digest drift") {
-		t.Fatalf("ApproveContract() error = %v, want baseline drift rejection", err)
-	}
-}
-
 func writeContractDraft(t *testing.T, root string, findingIDs []string) string {
 	t.Helper()
 	draft := map[string]any{
-		"schema_version": "1.0.0", "repair_contract_id": "repair-contract-r1", "case_id": "investigation-case-observation-batch-r1", "revision": 1,
+		"schema_version": "1.0.0", "repair_contract_id": "repair-contract-r1", "case_id": "investigation-case-review-plan-r1", "revision": 1,
 		"status": "draft", "source_finding_ids": findingIDs,
 		"root_cause_statement": "the authoritative payload contract is duplicated and drifts across the boundary",
 		"violated_invariant":   "one source of truth owns the payload shape",
-		"causal_model_ref":     "case://investigation-case-observation-batch-r1/causal-model",
+		"causal_model_ref":     "case://investigation-case-review-plan-r1/causal-model",
 		"architecture_intent":  "restore one authoritative contract boundary",
 		"repair_units":         []any{map[string]any{"id": "repair-unit-1", "description": "centralize the payload contract"}},
 		"prospective_scope":    []any{"internal/api", "frontend/client"}, "forbidden_scope": []any{"docs/requirements"},
@@ -224,7 +193,6 @@ func registerContractApprovalEvidence(t *testing.T, fixture *intakeFixture, cont
 	if err != nil {
 		t.Fatal(err)
 	}
-	approvalHash := hash(draftBytes)
 	evidenceID := "ev-contract-approval"
 	var draft map[string]any
 	if err := json.Unmarshal(draftBytes, &draft); err != nil {
@@ -236,13 +204,13 @@ func registerContractApprovalEvidence(t *testing.T, fixture *intakeFixture, cont
 	}
 	runtimeID, _ := current.State["runtime_id"].(string)
 	decisionBytes, err := json.MarshalIndent(map[string]any{
-		"decision":      "approve_contract",
-		"decision_id":   evidenceID,
-		"runtime_id":    runtimeID,
-		"case_id":       draft["case_id"],
-		"contract_id":   draft["repair_contract_id"],
-		"approved_by":   "main-session",
-		"approval_hash": approvalHash,
+		"decision":       "approve_contract",
+		"decision_id":    evidenceID,
+		"runtime_id":     runtimeID,
+		"case_id":        draft["case_id"],
+		"contract_id":    draft["repair_contract_id"],
+		"approved_by":    "main-session",
+		"contract_draft": draft,
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +236,7 @@ func registerContractApprovalEvidence(t *testing.T, fixture *intakeFixture, cont
 	if err != nil {
 		t.Fatalf("RecordEvidence(contract approval) error = %v", err)
 	}
-	return approvalHash, evidenceID, next.Revision
+	return "", evidenceID, next.Revision
 }
 
 func setContractReviewPlan(t *testing.T, fixture *intakeFixture) {
@@ -370,37 +338,10 @@ func prepareCaseForContractApproval(t *testing.T, fixture *intakeFixture) {
 	}
 }
 
-// TestApproveContractRejectsApprovalHashMismatch covers RC-15 (S9-H5): the
-// approval hash is recomputed over the draft bytes the server reads and a
-// pinned mismatch (the human reviewed different bytes than what is on disk at
-// commit time) is rejected before any artifact is written.
-func TestApproveContractRejectsApprovalHashMismatch(t *testing.T) {
-	fixture := newIntakeFixture(t, []string{"finding-1"})
-	setContractLifecycle(t, fixture)
-	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
-		GroupingRationale: "the sealed batch is the provisional grouping boundary",
-	}); err != nil {
-		t.Fatalf("Ingest() error = %v", err)
-	}
-	prepareCaseForContractApproval(t, fixture)
-	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
-	_, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision: 1,
-		CaseID:           "investigation-case-observation-batch-r1",
-		ContractPath:     contractPath,
-		ApprovedBy:       "main-session",
-		ApprovalHash:     strings.Repeat("0", 64),
-	})
-	if err == nil || !strings.Contains(err.Error(), "approval_hash does not match") {
-		t.Fatalf("ApproveContract() error = %v, want approval_hash mismatch guidance", err)
-	}
-}
-
-// TestApproveContractAcceptsCurrentApprovalHash covers RC-15 (S9-H5): a
+// TestApproveContractAcceptsActualPresentedContract covers RC-15 (S9-H5): a
 // pinned hash that matches the on-disk draft bytes is accepted and the
 // approved artifact records the approver identity for audit.
-func TestApproveContractAcceptsCurrentApprovalHash(t *testing.T) {
+func TestApproveContractAcceptsActualPresentedContract(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 	setContractLifecycle(t, fixture)
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
@@ -411,13 +352,13 @@ func TestApproveContractAcceptsCurrentApprovalHash(t *testing.T) {
 	}
 	prepareCaseForContractApproval(t, fixture)
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
-	approvalHash, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
+	_, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
 	snapshot, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision:   expectedRevision,
-		CaseID:             "investigation-case-observation-batch-r1",
-		ContractPath:       contractPath,
-		ApprovedBy:         "main-session",
-		ApprovalHash:       approvalHash,
+		ExpectedRevision: expectedRevision,
+		CaseID:           "investigation-case-review-plan-r1",
+		ContractPath:     contractPath,
+		ApprovedBy:       "main-session",
+
 		ApprovalEvidenceID: approvalEvidenceID,
 	})
 	if err != nil {
@@ -474,16 +415,12 @@ func TestApproveContractRejectsForeignHumanDecisionScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
-	draftBytes, err := os.ReadFile(contractPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	_, err = investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision:   1,
-		CaseID:             "investigation-case-observation-batch-r1",
-		ContractPath:       contractPath,
-		ApprovedBy:         "main-session",
-		ApprovalHash:       hash(draftBytes),
+		ExpectedRevision: 1,
+		CaseID:           "investigation-case-review-plan-r1",
+		ContractPath:     contractPath,
+		ApprovedBy:       "main-session",
+
 		ApprovalEvidenceID: "ev-foreign-decision",
 	})
 	if err == nil || !strings.Contains(err.Error(), "s8_contract_approval") {

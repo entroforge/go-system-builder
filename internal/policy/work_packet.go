@@ -21,6 +21,21 @@ func workPacketAnswerAllowed(input Input, path string) bool {
 	return false
 }
 
+// An unavailable platform identity is not evidence of another owner. Leave
+// ordinary bug-resolution control files to their existing receivers instead
+// of treating them as product writes or guessing a role from a teammate name.
+func unidentifiedBugResolutionControlPath(input Input, path string) bool {
+	if input.Runtime.CurrentState != "bug_resolution" || (input.AgentID != "" && input.Runtime.Agent != nil) {
+		return false
+	}
+	rel := reviewerRelativePath(input, path)
+	if rel != ".claude" && !strings.HasPrefix(rel, ".claude/") && rel != ".loop-submissions" && !strings.HasPrefix(rel, ".loop-submissions/") {
+		return false
+	}
+	root := mutationRoot(input)
+	return root == "" || reviewerPathContained(root, rel)
+}
+
 func workerSubmissionPathAllowed(input Input, path string) bool {
 	if input.EffectiveAgentID() == "" || input.Runtime.Workspace == nil || input.Runtime.Agent == nil ||
 		input.Runtime.Agent.ID != input.EffectiveAgentID() || input.Runtime.Agent.AssignmentID == "" {
@@ -66,8 +81,11 @@ func workerPlanDraftAllowed(input Input, path string) bool {
 // packet path projected by hookctx from Runtime. It deliberately rejects all
 // platform agent identities so a Worker can never inherit cursor ownership.
 func mainPlanningAnswerAllowed(input Input, path string) bool {
-	if !input.Runtime.PacketMode || input.EffectiveAgentID() != "" || input.Runtime.Agent != nil ||
+	if !input.Runtime.PacketMode || (input.EffectiveAgentID() != "" && input.EffectiveAgentID() != "Main") || input.Runtime.Agent != nil ||
 		input.Runtime.CurrentState != "planning" || input.Runtime.RuntimeID == "" || input.Runtime.CurrentBaselineGeneration < 1 {
+		return false
+	}
+	if input.EffectiveAgentID() == "Main" && input.Runtime.CurrentPhase != "design" {
 		return false
 	}
 	expectedStage := ""
@@ -138,26 +156,12 @@ func hypothesisResultAnswerAllowed(input Input, path string) bool {
 		return false
 	}
 	rel := reviewerRelativePath(input, path)
-	if !hypothesisResultPathMatchesContext(rel, input.Runtime) {
-		return false
-	}
 	for _, allowed := range input.Runtime.HypothesisResultAnswerPaths {
 		if rel == allowed && workpacket.CheckPath(root, rel) == nil {
 			return true
 		}
 	}
 	return false
-}
-
-func hypothesisResultPathMatchesContext(rel string, runtimeContext RuntimeContext) bool {
-	parts := strings.Split(rel, "/")
-	if len(parts) != 10 || parts[0] != ".claude" || parts[1] != "submissions" ||
-		parts[2] != runtimeContext.RuntimeID || parts[3] != fmt.Sprintf("g%d", runtimeContext.CurrentBaselineGeneration) ||
-		parts[4] != "S8" || parts[5] != fmt.Sprintf("r%d", runtimeContext.CurrentReviewRound) ||
-		parts[7] == "" || !strings.HasPrefix(parts[7], "packet-") || parts[8] != runtimeContext.Agent.ID || parts[9] != "answer.json" {
-		return false
-	}
-	return parts[6] == runtimeContext.Agent.AssignmentID
 }
 
 // repairPlanReportAnswerAllowed accepts only the exact current S9 PlanReport
@@ -176,9 +180,6 @@ func repairPlanReportAnswerAllowed(input Input, path string) bool {
 		return false
 	}
 	rel := reviewerRelativePath(input, path)
-	if !repairPlanReportPathMatchesContext(rel, input.Runtime) {
-		return false
-	}
 	for _, allowed := range input.Runtime.RepairPlanReportAnswerPaths {
 		if rel == allowed && workpacket.CheckPath(root, rel) == nil {
 			return true
@@ -202,32 +203,12 @@ func repairResultAnswerAllowed(input Input, path string) bool {
 		return false
 	}
 	rel := reviewerRelativePath(input, path)
-	parts := strings.Split(rel, "/")
-	if len(parts) != 10 || parts[0] != ".claude" || parts[1] != "submissions" ||
-		parts[2] != input.Runtime.RuntimeID || parts[3] != fmt.Sprintf("g%d", input.Runtime.CurrentBaselineGeneration) ||
-		parts[4] != "S9-result" || parts[5] != fmt.Sprintf("r%d", input.Runtime.CurrentReviewRound) ||
-		parts[6] != input.Runtime.Agent.RepairAssignmentID || !strings.HasPrefix(parts[7], "packet-") ||
-		parts[8] != input.Runtime.Agent.ID || parts[9] != "answer.json" {
-		return false
-	}
 	for _, allowed := range input.Runtime.RepairResultAnswerPaths {
 		if rel == allowed && workpacket.CheckPath(root, rel) == nil {
 			return true
 		}
 	}
 	return false
-}
-
-func repairPlanReportPathMatchesContext(rel string, runtimeContext RuntimeContext) bool {
-	parts := strings.Split(rel, "/")
-	if len(parts) != 10 || parts[0] != ".claude" || parts[1] != "submissions" ||
-		parts[2] != runtimeContext.RuntimeID || parts[3] != fmt.Sprintf("g%d", runtimeContext.CurrentBaselineGeneration) ||
-		parts[4] != "S9-plan" || parts[5] != fmt.Sprintf("r%d", runtimeContext.CurrentReviewRound) ||
-		parts[6] != runtimeContext.Agent.RepairAssignmentID || !strings.HasPrefix(parts[7], "packet-") ||
-		parts[8] != runtimeContext.Agent.ID || parts[9] != "answer.json" {
-		return false
-	}
-	return true
 }
 
 // The exception is one exact issued authoring file, not a directory grant.
@@ -244,6 +225,9 @@ func workPacketWriteDecision(input Input) (Decision, bool) {
 		rel := reviewerRelativePath(input, path)
 		if rel == ".loop-submissions" || strings.HasPrefix(rel, ".loop-submissions/") {
 			if workPacketAnswerAllowed(input, path) || workerSubmissionPathAllowed(input, path) {
+				continue
+			}
+			if unidentifiedBugResolutionControlPath(input, path) {
 				continue
 			}
 			return Decision{Decision: "deny", RuleID: "worker_submission_scope", Reason: fmt.Sprintf("%s is not an exact submission path in the frozen Worker context", rel), AffectedPath: rel}, true
@@ -272,6 +256,19 @@ func workPacketWriteDecision(input Input) (Decision, bool) {
 				continue
 			}
 			if mainPlanningAnswerAllowed(input, path) {
+				continue
+			}
+			// A missing projection or an already received S2 answer is not a
+			// reason to deny Main's ordinary tools. The original receiver still
+			// decides whether an event belongs to an issued responsibility.
+			if input.Runtime.CurrentState == "planning" && input.Runtime.CurrentPhase == "design" && (input.EffectiveAgentID() == "" || input.EffectiveAgentID() == "Main") && input.Runtime.Agent == nil {
+				continue
+			}
+			// S8/S9 can be observed without a platform agent identity. Do not
+			// infer an owner from a teammate name or turn that missing observation
+			// into a denial; the original receiver associates the answer with its
+			// issued responsibility when one is available.
+			if unidentifiedBugResolutionControlPath(input, path) {
 				continue
 			}
 			if !workPacketAnswerAllowed(input, path) {

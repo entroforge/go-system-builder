@@ -32,12 +32,8 @@ func TestAssignmentRecordResolverProjectsCanonicalScopeAndBinding(t *testing.T) 
 	if !canonical || projected == nil {
 		t.Fatal("S6 record was not projected")
 	}
-	digest, err := f.record.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if projected.AssignmentRecord == nil || *projected.AssignmentRecord != f.record.Reference() || projected.AssignmentRecordSHA256 != digest || projected.AssignmentRevision != f.record.Revision {
-		t.Fatalf("record identity/digest/revision was not projected: %+v", projected)
+	if projected.AssignmentRecord == nil || *projected.AssignmentRecord != f.record.Reference() || projected.AssignmentRevision != f.record.Revision {
+		t.Fatalf("record identity/revision was not projected: %+v", projected)
 	}
 	if len(projected.WritePaths) != 1 || projected.WritePaths[0] != "internal/pkg" {
 		t.Fatalf("write paths are not the canonical intersection: %v", projected.WritePaths)
@@ -109,15 +105,6 @@ func TestAssignmentRecordResolverDoesNotFallbackToPlannedCoordinatesForBoundWork
 			t.Fatal("workspace execution with a different Assignment revision was projected")
 		}
 	})
-	t.Run("wrong record digest", func(t *testing.T) {
-		f := newHookAssignmentRecordFixture(t)
-		execution := hookRecordExecution(&f, "ready")
-		execution.AssignmentRecordSHA256 = strings.Repeat("0", 64)
-		setHookAssignmentExecution(t, &f, &execution)
-		if _, err := projectHookAssignmentResult(f); err == nil {
-			t.Fatal("workspace execution with a different Assignment digest was projected")
-		}
-	})
 	t.Run("stale runtime tuple", func(t *testing.T) {
 		f := newHookAssignmentRecordFixture(t)
 		execution := hookRecordExecution(&f, "ready")
@@ -156,31 +143,28 @@ func projectHookAssignmentResult(f hookAssignmentRecordFixture) (*AssignmentCont
 
 func hookRecordExecution(f *hookAssignmentRecordFixture, status string) workspace.Execution {
 	ref := f.record.Reference()
-	digest, _ := f.record.Digest()
 	inputs := map[string]string{}
 	for _, source := range f.record.ContextSources {
 		if strings.HasPrefix(source.Kind, "embedded_") || source.Kind == "check_profile" {
 			continue
 		}
-		inputs[source.Ref] = source.SHA256
+		inputs[source.Ref] = source.Ref
 	}
 	return workspace.Execution{
-		AssignmentRecord:       &ref,
-		AssignmentRecordSHA256: digest,
-		AssignmentID:           f.record.AssignmentID,
-		RuntimeID:              f.runtimeID,
-		BaselineGeneration:     f.record.BaselineGeneration,
-		Generation:             3,
-		AgentID:                f.owner,
-		Path:                   filepath.Join(f.root, ".worktrees/current-e3"),
-		Branch:                 "codex/current-e3",
-		TargetBranch:           "development",
-		BaseCommit:             "fixture-base",
-		Status:                 status,
-		WritePaths:             append([]string{}, f.record.EffectiveWritePaths...),
-		Checks:                 append([]string{}, f.record.RequiredChecks...),
-		Inputs:                 inputs,
-		CheckProfiles:          append([]checkexec.Profile{}, f.record.CheckProfiles...),
+		AssignmentRecord:   &ref,
+		AssignmentID:       f.record.AssignmentID,
+		RuntimeID:          f.runtimeID,
+		BaselineGeneration: f.record.BaselineGeneration,
+		Generation:         3,
+		AgentID:            f.owner,
+		Path:               filepath.Join(f.root, ".worktrees/current-e3"),
+		Branch:             "codex/current-e3",
+		TargetBranch:       "development",
+		Status:             status,
+		WritePaths:         append([]string{}, f.record.EffectiveWritePaths...),
+		Checks:             append([]string{}, f.record.RequiredChecks...),
+		Inputs:             inputs,
+		CheckProfiles:      append([]checkexec.Profile{}, f.record.CheckProfiles...),
 	}
 }
 
@@ -191,7 +175,6 @@ func setHookAssignmentExecution(t *testing.T, f *hookAssignmentRecordFixture, ex
 		MainRoot:   f.root,
 		CommonDir:  filepath.Join(f.root, ".git"),
 		Branch:     "development",
-		BoundHead:  "fixture-head",
 		Executions: map[string]workspace.Execution{},
 	}
 	if execution != nil {
@@ -202,7 +185,7 @@ func setHookAssignmentExecution(t *testing.T, f *hookAssignmentRecordFixture, ex
 	f.state["workspace"] = workspace.Encode(registry)
 }
 
-func TestAssignmentRecordResolverFailsClosedOnMissingRecordAndSourceDrift(t *testing.T) {
+func TestAssignmentRecordResolverUsesRegisteredIdentityWithoutByteGate(t *testing.T) {
 	f := newHookAssignmentRecordFixture(t)
 	entities := f.state["entities"].(map[string]any)
 	registered := entities["assignments"]
@@ -225,8 +208,8 @@ func TestAssignmentRecordResolverFailsClosedOnMissingRecordAndSourceDrift(t *tes
 		loadedTask{RuntimeID: f.runtimeID, State: "assigned", OwnerIDs: []string{f.owner}},
 		registeredManifestRef{PromptRef: f.manifestRef + "#" + f.record.AssignmentID, TeamRef: f.manifestRef}, "", nil,
 	)
-	if err == nil || !strings.Contains(err.Error(), "checkout bytes differ") {
-		t.Fatalf("uncommitted physical checkout drift was not rejected: %v", err)
+	if err != nil {
+		t.Fatalf("current TASK content must not be rejected by an old byte gate: %v", err)
 	}
 	writeHookRecordFile(t, f.root, f.record.Task.Ref, f.taskBytes)
 
@@ -237,8 +220,8 @@ func TestAssignmentRecordResolverFailsClosedOnMissingRecordAndSourceDrift(t *tes
 		loadedTask{RuntimeID: f.runtimeID, State: "assigned", OwnerIDs: []string{f.owner}},
 		registeredManifestRef{PromptRef: f.manifestRef + "#" + f.record.AssignmentID, TeamRef: f.manifestRef}, "", nil,
 	)
-	if err == nil || !strings.Contains(err.Error(), "changed after registration") {
-		t.Fatalf("drifted installed Assignment source was not rejected: %v", err)
+	if err != nil {
+		t.Fatalf("current role content must not be rejected by an old byte gate: %v", err)
 	}
 }
 
@@ -325,22 +308,20 @@ func newHookAssignmentRecordFixture(t *testing.T) hookAssignmentRecordFixture {
 		},
 	}
 	contextSources := []assignmentrecord.ContextSource{
-		{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder", SHA256: hookRecordSHA(roleBytes)},
-		{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0", SHA256: hookRecordSHA(skillBytes)},
+		{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder"},
+		{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0"},
 	}
 	for _, name := range []string{"team-manifest.schema.json", "check-profile.schema.json", "assignment-record.schema.json", "agent-message.schema.json"} {
 		ref := assignmentinputs.SchemaPrefix + name
-		data, err := assignmentinputs.Read(root, ref)
-		if err != nil {
+		if _, err := assignmentinputs.Read(root, ref); err != nil {
 			t.Fatal(err)
 		}
-		contextSources = append(contextSources, assignmentrecord.ContextSource{Kind: "embedded_schema", Ref: ref, SHA256: hookRecordSHA(data)})
+		contextSources = append(contextSources, assignmentrecord.ContextSource{Kind: "embedded_schema", Ref: ref})
 	}
-	profileBytes, err := assignmentinputs.Read(root, assignmentinputs.ContextProfileRef)
-	if err != nil {
+	if _, err := assignmentinputs.Read(root, assignmentinputs.ContextProfileRef); err != nil {
 		t.Fatal(err)
 	}
-	contextSources = append(contextSources, assignmentrecord.ContextSource{Kind: "embedded_context_profile", Ref: assignmentinputs.ContextProfileRef, SHA256: hookRecordSHA(profileBytes)})
+	contextSources = append(contextSources, assignmentrecord.ContextSource{Kind: "embedded_context_profile", Ref: assignmentinputs.ContextProfileRef})
 	record, err := assignmentrecord.BuildRecord(manifestBytes, manifestRef, state, taskBytes, taskID, assignmentID, []string{"internal"}, contextSources)
 	if err != nil {
 		t.Fatal(err)

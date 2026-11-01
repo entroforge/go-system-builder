@@ -36,7 +36,7 @@ func TestCanonicalBuilderReceiptAcceptedResultRemainsUnassessed(t *testing.T) {
 	if len(receipt.OwnPending) != 1 || receipt.OwnPending[0] != "professional_closing_contract_unproven" || len(receipt.WaitingOn) != 1 || receipt.WaitingOn[0].Reason != "integration_pending" {
 		t.Fatalf("missing Main integration must remain a Main wait: %+v", receipt)
 	}
-	if receipt.ResultRef != fixture.request.CompletionRef || receipt.AssignmentRecord == nil || receipt.AssignmentRecordSHA256 == "" || receipt.AnswerDigest == "" {
+	if receipt.ResultRef != fixture.request.CompletionRef || receipt.AssignmentRecord == nil {
 		t.Fatalf("receipt lost exact accepted Result/Record binding: %+v", receipt)
 	}
 	assertCanonicalReceiptSchema(t, receipt)
@@ -96,7 +96,7 @@ func TestCanonicalBuilderReceiptCompletesOnlyExplicitEmptyOwnedCheckClosure(t *t
 	assertCanonicalReceiptSchema(t, receipt)
 }
 
-func TestCanonicalBuilderReceiptKeepsIncompleteRiskAndOwnedCheckPending(t *testing.T) {
+func TestCanonicalBuilderReceiptKeepsIncompleteAndOwnedCheckPending(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		mutate  func(*assignmentresult.Answer)
@@ -121,16 +121,6 @@ func TestCanonicalBuilderReceiptKeepsIncompleteRiskAndOwnedCheckPending(t *testi
 			},
 		},
 		{
-			name: "declared risk", pending: "declared_risks_or_blockers", status: "incomplete",
-			fixture: newCanonicalReceiptFixtureWithClosing,
-			mutate:  func(answer *assignmentresult.Answer) { answer.RisksBlockers = []string{"migration remains unverified"} },
-		},
-		{
-			name: "scope deviation", pending: "unapproved_scope_deviation", status: "incomplete",
-			fixture: newCanonicalReceiptFixtureWithClosing,
-			mutate:  func(answer *assignmentresult.Answer) { answer.ScopeDeviations = []string{"changed an undeclared path"} },
-		},
-		{
 			name: "owned runner unavailable", pending: "owned_check_evidence_unavailable:0", status: "accepted_unassessed",
 			fixture: newCanonicalReceiptFixtureWithOwnedCheck,
 			mutate:  func(*assignmentresult.Answer) {},
@@ -140,11 +130,57 @@ func TestCanonicalBuilderReceiptKeepsIncompleteRiskAndOwnedCheckPending(t *testi
 			fixture := test.fixture(t)
 			mutateCanonicalAnswer(t, fixture, test.mutate)
 			receipt := qualitygate.CurrentBuilderReceipt(fixture.input, fixture.request)
+			if test.name == "owned runner unavailable" {
+				if !receipt.Accepted || !receipt.WorkComplete || receipt.Integrated || len(receipt.WaitingOn) != 1 || receipt.WaitingOn[0].Owner != "main" {
+					t.Fatalf("missing machine check proof changed accepted professional result or Main responsibility: %+v", receipt)
+				}
+				return
+			}
 			if !receipt.Accepted || receipt.WorkComplete || receipt.ProfessionalStatus != test.status || !containsString(receipt.OwnPending, test.pending) {
 				t.Fatalf("incomplete canonical closure was projected as complete: %+v", receipt)
 			}
 			assertCanonicalReceiptSchema(t, receipt)
 		})
+	}
+}
+
+func TestCanonicalBuilderBatchKeepsRiskAndScopeNotesWithoutBlocking(t *testing.T) {
+	fixture := newCanonicalReceiptFixtureWithClosing(t)
+	mutateCanonicalAnswer(t, fixture, func(answer *assignmentresult.Answer) {
+		answer.RisksBlockers = []string{"Nonblocking environment assumption remains for Main to consider"}
+		answer.ScopeDeviations = []string{"The output includes a documented scope clarification"}
+	})
+	installCanonicalMainFacts(t, fixture)
+	receipt := qualitygate.CurrentBuilderReceipt(fixture.input, fixture.request)
+	if !receipt.Accepted || !receipt.WorkComplete || !receipt.Integrated || receipt.ProfessionalStatus != "complete" || len(receipt.OwnPending) != 0 {
+		t.Fatalf("notes must not change completed work or actual Main integration: %+v", receipt)
+	}
+	body, err := fixture.input.Files.ReadFile(fixture.request.CompletionRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accepted assignmentresult.AcceptedResult
+	if err := json.Unmarshal(body, &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if len(accepted.Answer.RisksBlockers) != 1 || len(accepted.Answer.ScopeDeviations) != 1 {
+		t.Fatalf("original Result notes were lost: %+v", accepted.Answer)
+	}
+	catalog, err := transition.LoadCatalog("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := qualitygate.NewRegistry(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.input.GateID, fixture.input.TransitionID = "GATE-BUILDER-BATCH-READY", "TR-006"
+	evaluation, err := qualitygate.NewEvaluator(registry).Evaluate(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluation.Status != qualitygate.StatusSatisfied {
+		t.Fatalf("TR-006 must accept completed work with retained notes: %+v", evaluation)
 	}
 }
 
@@ -177,17 +213,14 @@ func TestCanonicalBuilderReceiptCompletesPassingWorkerChecksAndWaitsForMain(t *t
 	}
 	permission := &checkexec.PermissionObservation{
 		Version: "1.0.0", Runner: "worker_bubblewrap_seccomp_v1", Platform: "linux/amd64", Kernel: "test-kernel",
-		UID: 1000, GID: 1000, Groups: []int{}, BinarySHA256: strings.Repeat("1", 64), ShellSHA256: strings.Repeat("2", 64),
-		LibrariesSHA256: strings.Repeat("3", 64), FilterSHA256: strings.Repeat("4", 64), PolicySHA256: strings.Repeat("5", 64),
-		AuthoritySHA256: strings.Repeat("6", 64), MainRoot: fixture.input.Root, CommonDir: fixture.input.Root,
+		UID: 1000, GID: 1000, Groups: []int{}, MainRoot: fixture.input.Root, CommonDir: fixture.input.Root,
 		WorkerRoot: checkout, CWD: checkout, Available: true,
 	}
 	observation := &checkexec.Observation{
-		ProfileID: profile.ID, ProfileVersion: profile.Version, ProfileDigest: profile.Digest(),
-		SubjectDigest: strings.Repeat("a", 64), RunnerDigest: strings.Repeat("b", 64), EnvironmentDigest: strings.Repeat("c", 64),
-		DependencyDigest: strings.Repeat("d", 64), FixtureDigest: strings.Repeat("e", 64), Environment: []checkexec.EnvFact{},
+		ProfileID: profile.ID, ProfileVersion: profile.Version,
+		Environment:       []checkexec.EnvFact{},
 		VerificationScope: "whole disposable checked tree", ReuseEligible: false,
-		Permissions: permission, PermissionDigest: permission.Digest(),
+		Permissions: permission,
 	}
 	snapshotSHA := strings.Repeat("7", 64)
 	bootstrapSHA := strings.Repeat("f", 64)
@@ -201,14 +234,14 @@ func TestCanonicalBuilderReceiptCompletesPassingWorkerChecksAndWaitsForMain(t *t
 		"assignment_id": fixture.record.AssignmentID, "execution_generation": 1,
 		"check_index": 0, "command": profile.Command, "status": "pass", "snapshot_sha256": snapshotSHA,
 		"check_binding": binding, "profile_observation": observation, "output": logPath, "disposable_copy": true,
-		"assignment_record": fixture.record.Reference(), "assignment_record_sha256": canonicalReceiptRecordSHA(t, fixture.record),
+		"assignment_record":  fixture.record.Reference(),
 		"worker_check_index": 0, "worker_check_contract": assignmentrecord.ClosingContractVersion,
 		"worker_check_snapshot": map[string]any{
 			"runtime_id": fixture.record.RuntimeID, "baseline_generation": fixture.record.BaselineGeneration,
 			"assignment_id": fixture.record.AssignmentID, "owner_agent_id": fixture.record.OwnerAgentID,
 			"execution_generation": 1, "bootstrap_sha256": bootstrapSHA,
 		},
-	}, logPath)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,31 +249,27 @@ func TestCanonicalBuilderReceiptCompletesPassingWorkerChecksAndWaitsForMain(t *t
 		t.Fatal(err)
 	}
 	toolReceipt := &checkexec.ToolReceipt{
-		Path: originalReceiptPath, SHA256: checkexec.Hash(sealed), LogSHA256: checkexec.Hash(logBytes),
-		Checkout: checkout, Command: profile.Command, ProfileDigest: profile.Digest(), Binding: binding,
+		Path:     originalReceiptPath,
+		Checkout: checkout, Command: profile.Command, Binding: binding,
 	}
 	fact := assignmentresult.WorkerCheckFact{
-		Index: 0, Command: profile.Command, ProfileDigest: profile.Digest(), Status: "pass", ExecutionKind: "workspace",
-		Record: fixture.record.Reference(), RecordSHA256: canonicalReceiptRecordSHA(t, fixture.record),
+		Index: 0, Command: profile.Command, Status: "pass", ExecutionKind: "workspace",
+		Record:    fixture.record.Reference(),
 		RuntimeID: fixture.record.RuntimeID, BaselineGeneration: fixture.record.BaselineGeneration,
 		OwnerAgentID: fixture.record.OwnerAgentID, ExecutionGeneration: 1, Checkout: checkout,
-		BootstrapSHA256: bootstrapSHA, SourceSnapshotSHA256: snapshotSHA, Observation: observation, OriginalReceipt: toolReceipt,
+		Observation: observation, OriginalReceipt: toolReceipt,
 	}
 	fact.ReceiptArtifact = &assignmentresult.ResolvedEvidence{
 		Ref:  assignmentresult.WorkerCheckEvidenceRef(0, "receipt"),
-		Path: assignmentresult.WorkerCheckEvidenceArtifactPath(fixture.record, result.EvidenceID, 0, "receipt", toolReceipt.SHA256), SHA256: toolReceipt.SHA256,
+		Path: assignmentresult.WorkerCheckEvidenceArtifactPath(fixture.record, result.EvidenceID, 0, "receipt"),
 	}
 	fact.LogArtifact = &assignmentresult.ResolvedEvidence{
 		Ref:  assignmentresult.WorkerCheckEvidenceRef(0, "log"),
-		Path: assignmentresult.WorkerCheckEvidenceArtifactPath(fixture.record, result.EvidenceID, 0, "log", toolReceipt.LogSHA256), SHA256: toolReceipt.LogSHA256,
+		Path: assignmentresult.WorkerCheckEvidenceArtifactPath(fixture.record, result.EvidenceID, 0, "log"),
 	}
 	writeCanonicalReceiptFile(t, fixture.input.Root, fact.ReceiptArtifact.Path, sealed)
 	writeCanonicalReceiptFile(t, fixture.input.Root, fact.LogArtifact.Path, logBytes)
 	result.WorkerCheckFacts = []assignmentresult.WorkerCheckFact{fact}
-	result.ToolClosureDigest, err = assignmentresult.WorkerClosureDigest(fixture.record, result.WorkerCheckFacts)
-	if err != nil {
-		t.Fatal(err)
-	}
 	resultBytes = canonicalReceiptJSON(t, result)
 	writeCanonicalReceiptFile(t, fixture.input.Root, fixture.request.CompletionRef, resultBytes)
 	for _, raw := range fixture.input.Snapshot.State["evidence"].([]any) {
@@ -260,7 +289,7 @@ func TestCanonicalBuilderReceiptCompletesPassingWorkerChecksAndWaitsForMain(t *t
 	assertCanonicalReceiptSchema(t, receipt)
 }
 
-func TestCanonicalBuilderReceiptFailsClosedOnCurrentSourceDrift(t *testing.T) {
+func TestCanonicalBuilderReceiptKeepsOriginalFactsAfterSourceChanges(t *testing.T) {
 	for _, test := range []string{"frozen Assignment source", "accepted Result artifact"} {
 		t.Run(test, func(t *testing.T) {
 			fixture := newCanonicalReceiptFixture(t)
@@ -270,8 +299,12 @@ func TestCanonicalBuilderReceiptFailsClosedOnCurrentSourceDrift(t *testing.T) {
 			}
 			writeCanonicalReceiptFile(t, fixture.input.Root, ref, []byte("changed bytes after issuance\n"))
 			receipt := qualitygate.CurrentBuilderReceipt(fixture.input, fixture.request)
-			if receipt.Accepted || receipt.WorkComplete || receipt.Integrated || receipt.ProfessionalStatus != "not_submitted" {
-				t.Fatalf("drifted canonical source must not be accepted or fall through to legacy completion: %+v", receipt)
+			if test == "frozen Assignment source" {
+				if !receipt.Accepted || receipt.WorkComplete || receipt.Integrated {
+					t.Fatalf("source edit erased the original accepted result: %+v", receipt)
+				}
+			} else if receipt.Accepted || receipt.WorkComplete || receipt.Integrated || receipt.ProfessionalStatus != "not_submitted" {
+				t.Fatalf("unreadable required accepted result was invented: %+v", receipt)
 			}
 			if len(receipt.OwnPending)+len(receipt.WaitingOn) == 0 {
 				t.Fatalf("missing canonical-source failure reason: %+v", receipt)
@@ -320,7 +353,7 @@ func TestCanonicalBuilderReceiptAcceptsExactMainFactsWithoutCompletingProfession
 	if err := json.Unmarshal(resultBytes, &result); err != nil {
 		t.Fatal(err)
 	}
-	changedPaths, changedPathsSHA, err := assignmentresult.CanonicalChangedPaths([]string{changedPath})
+	changedPaths, err := assignmentresult.CanonicalChangedPaths([]string{changedPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,13 +361,10 @@ func TestCanonicalBuilderReceiptAcceptsExactMainFactsWithoutCompletingProfession
 	state["bound_req"].(map[string]any)["workspace"].(map[string]any)["dev_branch"] = "main"
 	facts := assignmentresult.MainFacts{
 		Binding: assignmentresult.ResultBinding{
-			AssignmentRecord: fixture.record.Reference(), AssignmentRecordSHA256: canonicalReceiptRecordSHA(t, fixture.record),
-			ResultPath: fixture.request.CompletionRef, ResultSHA256: canonicalReceiptSHA256(resultBytes),
-			ResultRevision: result.ResultRevision, AnswerDigest: result.AnswerDigest,
+			AssignmentRecord: fixture.record.Reference(), ResultPath: fixture.request.CompletionRef, ResultRevision: result.ResultRevision,
 		},
-		MainRoot: root, SourceHead: sourceHead, MergeBase: targetHead, TestedHead: mergeCommit,
-		TargetBranch: "main", MergeCommit: mergeCommit, ExecutionGeneration: 0,
-		ChangedPaths: changedPaths, ChangedPathsSHA256: changedPathsSHA, Checks: []assignmentresult.MainCheckFact{},
+		MainRoot: root, TargetBranch: "main", ExecutionGeneration: 0,
+		ChangedPaths: changedPaths, Checks: []assignmentresult.MainCheckFact{},
 	}
 	checkpointRef := path.Join(".claude/evidence", fixture.record.RuntimeID, "g3", "worktree", fixture.record.AssignmentID, "checkpoint.json")
 	checkpoint := map[string]any{
@@ -354,23 +384,19 @@ func TestCanonicalBuilderReceiptAcceptsExactMainFactsWithoutCompletingProfession
 	if receipt.ProfessionalStatus != "accepted_unassessed" || receipt.ResponsibilityStatus != "accepted_incomplete" || len(receipt.WaitingOn) != 0 {
 		t.Fatalf("canonical professional/Main statuses = %q / %q waiting %+v", receipt.ProfessionalStatus, receipt.ResponsibilityStatus, receipt.WaitingOn)
 	}
-	if receipt.MainCheckpointRef != checkpointRef || receipt.MainCheckpointSHA256 != canonicalReceiptSHA256(canonicalReceiptJSON(t, checkpoint)) || len(receipt.ActualChangedPaths) != 1 || receipt.ActualChangedPaths[0] != changedPath {
+	if receipt.MainCheckpointRef != checkpointRef || len(receipt.ActualChangedPaths) != 1 || receipt.ActualChangedPaths[0] != changedPath {
 		t.Fatalf("receipt lost checkpoint or exact Main changed-path evidence: %+v", receipt)
 	}
 	assertCanonicalReceiptSchema(t, receipt)
 
-	// A valid Main receipt remains bound to the original pre-merge TargetHead.
-	// Substituting post-merge HEAD as the original diff denominator invalidates it.
+	// Old Git coordinates are ignored; real Result identity and actual check
+	// conclusions remain the facts used by this receipt.
 	checkpoint["target_head"] = mergeCommit
 	writeCanonicalReceiptFile(t, root, checkpointRef, canonicalReceiptJSON(t, checkpoint))
 	changed := qualitygate.CurrentBuilderReceipt(fixture.input, fixture.request)
-	if !changed.Accepted || changed.Integrated || changed.WorkComplete || changed.ProfessionalStatus != "accepted_unassessed" {
-		t.Fatalf("checkpoint with a changed original target/diff denominator must lose integration only: %+v", changed)
+	if !changed.Accepted || !changed.Integrated || changed.WorkComplete {
+		t.Fatalf("historical coordinate affected recorded integration: %+v", changed)
 	}
-	if len(changed.WaitingOn) != 1 || changed.WaitingOn[0].Reason != "integration_receipt_invalid" {
-		t.Fatalf("invalidated Main denominator must produce a Main wait: %+v", changed)
-	}
-	checkpoint["target_head"] = targetHead
 	for _, test := range []string{"Result binding", "Main receipt coverage"} {
 		t.Run("reject changed "+test, func(t *testing.T) {
 			var candidate map[string]any
@@ -380,9 +406,9 @@ func TestCanonicalBuilderReceiptAcceptsExactMainFactsWithoutCompletingProfession
 			switch test {
 			case "Result binding":
 				facts := candidate["canonical_main_facts"].(map[string]any)
-				facts["binding"].(map[string]any)["result_sha256"] = strings.Repeat("0", 64)
+				facts["binding"].(map[string]any)["result_path"] = ".claude/evidence/different-result.json"
 			case "Main receipt coverage":
-				candidate["check_receipts"] = []string{filepath.Join(root, "unregistered-main-receipt.json")}
+				candidate["canonical_main_facts"].(map[string]any)["checks"] = []any{map[string]any{"check_index": 0, "command": "unowned check", "status": "pass"}}
 			}
 			writeCanonicalReceiptFile(t, root, checkpointRef, canonicalReceiptJSON(t, candidate))
 			invalid := qualitygate.CurrentBuilderReceipt(fixture.input, fixture.request)
@@ -510,20 +536,17 @@ func installCanonicalMainFacts(t *testing.T, fixture canonicalReceiptFixture) {
 	if err := json.Unmarshal(resultBytes, &result); err != nil {
 		t.Fatal(err)
 	}
-	changedPaths, changedPathsSHA, err := assignmentresult.CanonicalChangedPaths([]string{changedPath})
+	changedPaths, err := assignmentresult.CanonicalChangedPaths([]string{changedPath})
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.input.Snapshot.State["bound_req"].(map[string]any)["workspace"].(map[string]any)["dev_branch"] = "main"
 	facts := assignmentresult.MainFacts{
 		Binding: assignmentresult.ResultBinding{
-			AssignmentRecord: fixture.record.Reference(), AssignmentRecordSHA256: canonicalReceiptRecordSHA(t, fixture.record),
-			ResultPath: fixture.request.CompletionRef, ResultSHA256: canonicalReceiptSHA256(resultBytes),
-			ResultRevision: result.ResultRevision, AnswerDigest: result.AnswerDigest,
+			AssignmentRecord: fixture.record.Reference(), ResultPath: fixture.request.CompletionRef, ResultRevision: result.ResultRevision,
 		},
-		MainRoot: root, SourceHead: sourceHead, MergeBase: targetHead, TestedHead: mergeCommit,
-		TargetBranch: "main", MergeCommit: mergeCommit, ExecutionGeneration: 0,
-		ChangedPaths: changedPaths, ChangedPathsSHA256: changedPathsSHA, Checks: []assignmentresult.MainCheckFact{},
+		MainRoot: root, TargetBranch: "main", ExecutionGeneration: 0,
+		ChangedPaths: changedPaths, Checks: []assignmentresult.MainCheckFact{},
 	}
 	checkpointRef := path.Join(".claude/evidence", fixture.record.RuntimeID, "g3", "worktree", fixture.record.AssignmentID, "checkpoint.json")
 	checkpoint := map[string]any{
@@ -584,7 +607,7 @@ func newCanonicalReceiptFixtureConfigured(t *testing.T, withClosing, withWorkerC
 	taskBytes := []byte("# TASK-042-01\n\n> Version: v1.0.0\n\nImplement the scoped behavior.\n")
 	roleBytes := []byte("original backend-builder role\n")
 	skillBytes := []byte("original backend engineering skill\n")
-	taskSHA, roleSHA, skillSHA := canonicalReceiptSHA256(taskBytes), canonicalReceiptSHA256(roleBytes), canonicalReceiptSHA256(skillBytes)
+	taskSHA := canonicalReceiptSHA256(taskBytes)
 	manifestAssignment := map[string]any{
 		"assignment_id": assignmentID, "responsibility_id": "BUILD-WORK-PACKAGE", "role_family": "backend-builder",
 		"agent_id": agentID, "agent_definition_ref": roleRef, "skill_refs": []string{"backend-engineering"},
@@ -637,8 +660,8 @@ func newCanonicalReceiptFixtureConfigured(t *testing.T, withClosing, withWorkerC
 	record, err := assignmentrecord.BuildRecord(
 		manifestBytes, manifestRef, initialState, taskBytes, taskID, assignmentID, []string{"internal/"},
 		[]assignmentrecord.ContextSource{
-			{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder", SHA256: roleSHA},
-			{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0", SHA256: skillSHA},
+			{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder"},
+			{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0"},
 		},
 	)
 	if err != nil {
@@ -672,7 +695,6 @@ func newCanonicalReceiptFixtureConfigured(t *testing.T, withClosing, withWorkerC
 		"agent_definition_ref": roleRef, "task_id": taskID, "bug_id": nil, "team_id": teamID,
 		"occurred_at": "2026-10-14T00:00:00Z", "assignment_id": assignmentID, "assignment_revision": record.Revision,
 		"assignment_record_contract": assignmentrecord.AssignmentRecordContract,
-		"assignment_record_sha256":   canonicalReceiptRecordSHA(t, record),
 		"objective":                  "Implement the reviewed bounded builder responsibility.",
 		"planned_paths":              []string{"internal/pkg/handler.go"},
 		"assertion_checks":           []any{assertionCheck},
@@ -683,8 +705,8 @@ func newCanonicalReceiptFixtureConfigured(t *testing.T, withClosing, withWorkerC
 	activation, err := assignment.BuildPlanCheckpointActivationMessage(
 		root, runtimeID, agentID, roleRef, taskID, teamID, -1, planRef,
 		assignment.ActivationSourceEntry{
-			AssignmentRecord:       func() *assignmentrecord.RecordReference { ref := record.Reference(); return &ref }(),
-			AssignmentRecordSHA256: canonicalReceiptRecordSHA(t, record), AgentID: agentID,
+			AssignmentRecord:   func() *assignmentrecord.RecordReference { ref := record.Reference(); return &ref }(),
+			AgentID:            agentID,
 			AgentDefinitionRef: roleRef, SkillRefs: record.SkillRefs, WritePaths: record.EffectiveWritePaths,
 		}, "2026-10-14T00:01:00Z",
 	)
@@ -711,33 +733,25 @@ func newCanonicalReceiptFixtureConfigured(t *testing.T, withClosing, withWorkerC
 			Rationale: "The accepted assertion evidence covers the frozen delivery condition.",
 		}}}
 	}
-	answerDigest, err := assignmentresult.AnswerDigest(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
 	result := assignmentresult.AcceptedResult{
 		SchemaVersion: "1.0.0", EvidenceID: "ev-result-qualitygate-s6", Kind: "completion_report",
 		RuntimeID: runtimeID, BaselineGeneration: 3, ProducerAgentID: agentID,
 		ProducerResponsibility: "BUILD-WORK-PACKAGE",
-		SubjectRefs:            []assignmentresult.SubjectReference{{ID: taskID, Kind: "task", Path: taskRef, Version: "v1.0.0", SHA256: taskSHA}},
+		SubjectRefs:            []assignmentresult.SubjectReference{{ID: taskID, Kind: "task", Path: taskRef, Version: "v1.0.0"}},
 		Conclusion:             "submitted", TaskID: taskID, AssignmentRecord: record.Reference(),
-		AssignmentRecordSHA256: canonicalReceiptRecordSHA(t, record), ResultRevision: 1,
-		SubmissionKey: "msg-result-qualitygate-s6", AnswerDigest: answerDigest, Answer: answer,
-		PlanRef: planRef, PlanSHA256: canonicalReceiptSHA256(planBytes),
-		ResolvedEvidenceRefs: []assignmentresult.ResolvedEvidence{{Ref: "worker://assertion/evidence", Path: sourceRef, SHA256: canonicalReceiptSHA256(sourceBytes)}},
+		ResultRevision: 1,
+		SubmissionKey:  "msg-result-qualitygate-s6", Answer: answer,
+		PlanRef:              planRef,
+		ResolvedEvidenceRefs: []assignmentresult.ResolvedEvidence{{Ref: "worker://assertion/evidence", Path: sourceRef}},
 		CreatedAt:            "2026-10-14T00:02:00Z",
 	}
 	if withWorkerCheck {
 		profile := record.ClosingContract.WorkerChecks[0].Profile
 		result.WorkerCheckFacts = []assignmentresult.WorkerCheckFact{{
-			Index: 0, Command: profile.Command, ProfileDigest: profile.Digest(), Status: "unavailable",
-			ExecutionKind: "workspace", Record: record.Reference(), RecordSHA256: canonicalReceiptRecordSHA(t, record),
+			Index: 0, Command: profile.Command, Status: "unavailable",
+			ExecutionKind: "workspace", Record: record.Reference(),
 			RuntimeID: runtimeID, BaselineGeneration: 3, OwnerAgentID: agentID, ExecutionGeneration: 1,
 		}}
-		result.ToolClosureDigest, err = assignmentresult.WorkerClosureDigest(record, result.WorkerCheckFacts)
-		if err != nil {
-			t.Fatalf("build explicit unavailable Worker closure: %v", err)
-		}
 	}
 	resultBytes := canonicalReceiptJSON(t, result)
 	writeCanonicalReceiptFile(t, root, resultRef, resultBytes)
@@ -771,10 +785,6 @@ func mutateCanonicalAnswer(t *testing.T, fixture canonicalReceiptFixture, mutate
 		t.Fatal(err)
 	}
 	mutate(&result.Answer)
-	result.AnswerDigest, err = assignmentresult.AnswerDigest(result.Answer)
-	if err != nil {
-		t.Fatal(err)
-	}
 	body = canonicalReceiptJSON(t, result)
 	writeCanonicalReceiptFile(t, fixture.input.Root, fixture.request.CompletionRef, body)
 	for _, row := range fixture.input.Snapshot.State["evidence"].([]any) {
@@ -805,15 +815,6 @@ func removeCanonicalResultSubmission(t *testing.T, fixture *canonicalReceiptFixt
 	delete(agent, "readback_ref")
 	delete(agent, "plan_reported_ref")
 	delete(agent, "activation_ref")
-}
-
-func canonicalReceiptRecordSHA(t *testing.T, record assignmentrecord.Record) string {
-	t.Helper()
-	sha, err := record.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sha
 }
 
 func canonicalReceiptOwnerPrefix(record assignmentrecord.Record) string {

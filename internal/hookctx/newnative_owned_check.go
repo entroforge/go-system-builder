@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"reflect"
 
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	"github.com/entroforge/go-system-builder/internal/policy"
@@ -22,15 +21,11 @@ import (
 func projectNativeOwnedAssignments(root string, snapshot runtime.Snapshot, assignments []AssignmentContext, registry *workspace.ExecutionRegistry) []policy.NativeOwnedAssignment {
 	var projected []policy.NativeOwnedAssignment
 	for _, assignment := range assignments {
-		if assignment.AssignmentRecord == nil || assignment.AssignmentRecordSHA256 == "" || assignment.AssignmentID == "" || assignment.OwnerAgentID == "" {
+		if assignment.AssignmentRecord == nil || assignment.AssignmentID == "" || assignment.OwnerAgentID == "" {
 			continue
 		}
 		record, found, err := assignmentrecord.ForOwner(snapshot.State, assignment.OwnerAgentID)
 		if err != nil || !found || record.Reference() != *assignment.AssignmentRecord || record.AssignmentID != assignment.AssignmentID || record.DispatchMode != "plan_checkpoint" || record.ClosingContract == nil || len(record.ClosingContract.WorkerChecks) == 0 {
-			continue
-		}
-		sha, err := record.Digest()
-		if err != nil || sha != assignment.AssignmentRecordSHA256 {
 			continue
 		}
 		if err := assignmentrecord.ValidateRecord(record); err != nil {
@@ -48,7 +43,7 @@ func projectNativeOwnedAssignments(root string, snapshot runtime.Snapshot, assig
 				continue
 			}
 		}
-		contextBound := nativeContextBound(root, snapshot.State, record, sha)
+		contextBound := nativeContextBound(root, snapshot.State, record)
 		activated := false
 		if ref, err := plancheckpoint.ActivatedRef(root, snapshot, record.OwnerAgentID); err == nil && ref != "" {
 			activated = true
@@ -57,7 +52,7 @@ func projectNativeOwnedAssignments(root string, snapshot runtime.Snapshot, assig
 		for _, check := range record.ClosingContract.WorkerChecks {
 			checks = append(checks, policy.NativeOwnedCheck{Index: check.Index, Command: check.Command})
 		}
-		value, err := policy.NativeOwnedCheckProjection(sha, record.AssignmentID, record.OwnerAgentID, assignment.WorktreePath, nativeOwnerState(snapshot.State, record.OwnerAgentID), contextBound, activated, checks)
+		value, err := policy.NativeOwnedCheckProjection(record.AssignmentID, record.OwnerAgentID, assignment.WorktreePath, nativeOwnerState(snapshot.State, record.OwnerAgentID), contextBound, activated, checks)
 		if err == nil {
 			projected = append(projected, value)
 		}
@@ -88,7 +83,7 @@ func nativeOwnerState(state map[string]any, owner string) string {
 	return result
 }
 
-func nativeContextBound(root string, state map[string]any, record assignmentrecord.Record, recordSHA string) bool {
+func nativeContextBound(root string, state map[string]any, record assignmentrecord.Record) bool {
 	entities, _ := state["entities"].(map[string]any)
 	rows, _ := entities["agents"].([]any)
 	var binding map[string]any
@@ -109,12 +104,11 @@ func nativeContextBound(root string, state map[string]any, record assignmentreco
 	}
 	ref, _ := binding["context_ref"].(map[string]any)
 	path, _ := ref["path"].(string)
-	sha, _ := ref["sha256"].(string)
-	if path == "" || len(sha) != 64 {
+	if path == "" {
 		return false
 	}
 	data, err := workpacket.ReadFile(root, path, 2<<20)
-	if err != nil || workpacket.Digest(data) != sha || schema.NewEmbeddedValidator().ValidateBytes("native-assignment-context.schema.json", data) != nil {
+	if err != nil || schema.NewEmbeddedValidator().ValidateBytes("native-assignment-context.schema.json", data) != nil {
 		return false
 	}
 	var context struct {
@@ -124,16 +118,14 @@ func nativeContextBound(root string, state map[string]any, record assignmentreco
 		Inputs     map[string]string `json:"frozen_inputs"`
 		Selection  struct {
 			ProfileVersion string `json:"profile_version"`
-			ProfileSHA256  string `json:"profile_sha256"`
 			Mode           string `json:"mode"`
 		} `json:"context_selection"`
 		Dispatch struct {
-			AssignmentID           string                            `json:"assignment_id"`
-			Owner                  string                            `json:"owner"`
-			AssignmentRevision     int                               `json:"assignment_revision"`
-			AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record"`
-			AssignmentRecordSHA256 string                            `json:"assignment_record_sha256"`
-			ClosingContract        *assignmentrecord.ClosingContract `json:"closing_contract"`
+			AssignmentID       string                            `json:"assignment_id"`
+			Owner              string                            `json:"owner"`
+			AssignmentRevision int                               `json:"assignment_revision"`
+			AssignmentRecord   *assignmentrecord.RecordReference `json:"assignment_record"`
+			ClosingContract    *assignmentrecord.ClosingContract `json:"closing_contract"`
 		} `json:"dispatch"`
 	}
 	if json.Unmarshal(data, &context) != nil {
@@ -143,23 +135,13 @@ func nativeContextBound(root string, state map[string]any, record assignmentreco
 	if err != nil || context.SourceRoot != canonicalRoot || context.RuntimeID != record.RuntimeID || context.Generation != record.BaselineGeneration {
 		return false
 	}
-	selection := binding["profile_version"] == context.Selection.ProfileVersion &&
-		binding["profile_sha256"] == context.Selection.ProfileSHA256 && binding["mode"] == context.Selection.Mode
-	if !selection || len(context.Inputs) == 0 {
+	selection := binding["profile_version"] == context.Selection.ProfileVersion && binding["mode"] == context.Selection.Mode
+	if !selection {
 		return false
-	}
-	for ref, expected := range context.Inputs {
-		if expected == "" || len(expected) != 64 {
-			return false
-		}
-		bytes, err := assignmentinputs.Read(root, ref)
-		if err != nil || workpacket.Digest(bytes) != expected {
-			return false
-		}
 	}
 	return context.Dispatch.AssignmentID == record.AssignmentID && context.Dispatch.Owner == record.OwnerAgentID &&
 		context.Dispatch.AssignmentRevision == record.Revision && context.Dispatch.AssignmentRecord != nil &&
-		*context.Dispatch.AssignmentRecord == record.Reference() && context.Dispatch.AssignmentRecordSHA256 == recordSHA &&
+		*context.Dispatch.AssignmentRecord == record.Reference() &&
 		reflect.DeepEqual(context.Dispatch.ClosingContract, record.ClosingContract)
 }
 

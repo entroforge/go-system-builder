@@ -127,4 +127,4 @@ REQ 绑定必须显式提供 `--dev-branch <开发主分支>` 和 `--release-ups
 
 子会话在子分支提交成果并报告，主会话在项目根目录执行 `runtime task-integrate --assignment-id <id>`，生成合并提交、校验、接收并及时清理。集成不是 release；临时 worktree 不是交付终点。未回收、分支偏离、积压只提醒，不新增 Stop 或普通工具硬门禁。
 
-Gate 的输入来源由 loop-definition 的 file_sources 契约声明；正式交付读固定 Git tree，明确运行输入读磁盘，Runtime 读权威快照。未提交产出不能帮助阶段通过。允许汇总的 evidence 按 mutable_evidence_kinds 自动同步对应 SHA256；同步不改变结论或代际，也不抹除产品基线漂移。
+按原责任读取实际需要的文档、交付和检查结果；正常产品工作可使用 Git 提交和合并。本人答卷自然保存并由原消费者接收，不为答卷另加 Git 提交或摘要登记。Main 根据实际变化处理影响并完成原必需检查；证据不靠同步 SHA256 获得资格，也不能仅凭摘要判定结论。

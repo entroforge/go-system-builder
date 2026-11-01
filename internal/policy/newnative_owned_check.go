@@ -54,7 +54,7 @@ func NativeOwnedCheckDecision(input Input) (Decision, bool) {
 		return deny("current trusted Runtime context contains no frozen native WorkerCheck Assignment")
 	}
 	for _, assignment := range input.Runtime.NativeOwnedAssignments {
-		if !assignment.ContextBound || !assignment.PlanActivated || assignment.OwnerState != "working" && assignment.OwnerState != "reported" || assignment.AssignmentID == "" || assignment.OwnerAgentID == "" || assignment.AssignmentRecordSHA256 == "" || len(assignment.Checks) == 0 {
+		if !assignment.ContextBound || !assignment.PlanActivated || assignment.OwnerState != "working" && assignment.OwnerState != "reported" || assignment.AssignmentID == "" || assignment.OwnerAgentID == "" || len(assignment.Checks) == 0 {
 			continue
 		}
 		expectedCWD := root
@@ -109,13 +109,13 @@ func nativeOwnedCheckIntent(command string) bool {
 
 // NativeOwnedCheckProjection constructs the trusted projection from one
 // current canonical Assignment. Hook context loading owns source verification.
-func NativeOwnedCheckProjection(recordSHA, assignmentID, owner, worktree, ownerState string, contextBound, planActivated bool, checks []NativeOwnedCheck) (NativeOwnedAssignment, error) {
-	if recordSHA == "" || assignmentID == "" || owner == "" {
+func NativeOwnedCheckProjection(assignmentID, owner, worktree, ownerState string, contextBound, planActivated bool, checks []NativeOwnedCheck) (NativeOwnedAssignment, error) {
+	if assignmentID == "" || owner == "" {
 		return NativeOwnedAssignment{}, fmt.Errorf("native WorkerCheck projection has incomplete Record identity")
 	}
 	return NativeOwnedAssignment{
 		AssignmentID: assignmentID, OwnerAgentID: owner, WorktreePath: worktree,
-		AssignmentRecordSHA256: recordSHA, OwnerState: ownerState,
+		OwnerState:   ownerState,
 		ContextBound: contextBound, PlanActivated: planActivated,
 		Checks: append([]NativeOwnedCheck(nil), checks...),
 	}, nil

@@ -1,17 +1,14 @@
 {
   "contract": {
-    "path": ".claude/evidence/repair/contracts/repair-contract-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/contracts/repair-contract-example.json"
   },
   "session": {
     "id": "repair-session-example",
-    "path": ".claude/evidence/repair/sessions/repair-session-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/sessions/repair-session-example.json"
   },
   "plan": {
     "id": "repair-plan-example",
-    "path": ".claude/evidence/repair/plans/repair-plan-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/plans/repair-plan-example.json"
   },
   "result_id": "repair-result-example",
   "producer_agent_id": "agent-repair-builder-1",
@@ -25,12 +22,10 @@
   "changed_artifacts": [
     {
       "path": "internal/example/handler.go",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "status": "modified"
     },
     {
       "path": "internal/example/handler_test.go",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "status": "modified"
     }
   ],
@@ -38,8 +33,7 @@
   "assignment_id": "repair-assignment-unit-1",
   "plan_report": {
     "id": "repair-plan-report-example",
-    "path": ".claude/evidence/repair/plan-reports/repair-plan-report-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/plan-reports/repair-plan-report-example.json"
   },
   "before_fix_checks": [
     {

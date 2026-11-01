@@ -146,7 +146,7 @@ func assertRepairExitClosedPublicRecovery(t *testing.T, root string, snapshot ru
 
 func TestRepairExitRootRejectsUnprovenCoordinates(t *testing.T) {
 	root, other := t.TempDir(), t.TempDir()
-	bound := map[string]any{"project_root": root, "dev_branch": "dev", "release_upstream": "main", "bound_commit": "accepted"}
+	bound := map[string]any{"project_root": root, "dev_branch": "dev", "release_upstream": "main"}
 	state := map[string]any{"bound_req": map[string]any{"workspace": bound}}
 	if actual, err := repairExitMainRoot(root, state); err != nil || actual != root {
 		t.Fatalf("bound root: %s %v", actual, err)
@@ -285,7 +285,7 @@ func TestRepairExitLauncherPreservesNewlineRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, native), []byte("#!/bin/sh\nprintf '%s\\0' \"$@\"\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	state := map[string]any{"bound_req": map[string]any{"workspace": map[string]any{"project_root": root, "dev_branch": "dev", "release_upstream": "main", "bound_commit": "original"}}}
+	state := map[string]any{"bound_req": map[string]any{"workspace": map[string]any{"project_root": root, "dev_branch": "dev", "release_upstream": "main"}}}
 	main, err := repairExitMainRoot(root, state)
 	if err != nil {
 		t.Fatal(err)

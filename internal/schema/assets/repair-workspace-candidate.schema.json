@@ -6,11 +6,8 @@
     "record_type",
     "runtime_id",
     "assignment_id",
-    "source_head",
-    "base_commit",
     "session_id",
     "plan_id",
-    "contract_sha256",
     "version",
     "execution_generation",
     "baseline_generation",
@@ -28,23 +25,11 @@
       "type": "string",
       "minLength": 1
     },
-    "source_head": {
-      "type": "string",
-      "minLength": 1
-    },
-    "base_commit": {
-      "type": "string",
-      "minLength": 1
-    },
     "session_id": {
       "type": "string",
       "minLength": 1
     },
     "plan_id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "contract_sha256": {
       "type": "string",
       "minLength": 1
     },
@@ -62,6 +47,8 @@
     "proposal": {
       "type": "object"
     },
-    "provenance": {"$ref": "repair-result-candidate-provenance.schema.json"}
+    "provenance": {
+      "$ref": "repair-result-candidate-provenance.schema.json"
+    }
   }
 }

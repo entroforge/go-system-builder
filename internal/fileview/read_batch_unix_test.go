@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func TestReadFilesCancellationJoinsAllStartedGitProcesses(t *testing.T) {
+func TestReadFilesBranchCancellationJoinsStartedGitProcess(t *testing.T) {
 	view := pinnedReadFixture(t, 16)
 	bin := t.TempDir()
 	pids := filepath.Join(bin, "started")
@@ -41,15 +41,15 @@ func TestReadFilesCancellationJoinsAllStartedGitProcesses(t *testing.T) {
 	for time.Now().Before(deadline) {
 		data, _ := os.ReadFile(pids)
 		started = strings.Fields(string(data))
-		if len(started) >= 4 {
+		if len(started) >= 1 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if len(started) != 4 {
+	if len(started) != 1 {
 		cancel()
 		<-done
-		t.Fatalf("expected exactly four bounded workers, started %d", len(started))
+		t.Fatalf("expected one live branch read, started %d", len(started))
 	}
 	cancel()
 	select {

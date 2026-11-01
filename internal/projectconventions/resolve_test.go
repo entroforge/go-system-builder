@@ -18,7 +18,7 @@ func fixture(t *testing.T) (string, Entry, Request) {
 	write(t, root, IndexPath, "# Rules\n\n---\nstatus: locked\n---\n\n| Rule | File | Trigger |\n|---|---|---|\n| API | `api-design.md` | API |\n| Errors | `error-handling.md` | errors |\n")
 	body := "# API\n\n---\nrule_id: R-API-01\nstatus: locked\n---\n\n## Defaults\nUse stable error codes.\nUse cursor pagination.\n\n## Other\nUse a separate example.\n"
 	write(t, root, "docs/rules/api-design.md", body)
-	entry := Entry{ID: "CNV-API-01", Topic: "api", Scope: []string{"src/api"}, Default: "Use stable error codes.", SourceRefs: []Reference{{Kind: "rule", ID: "R-API-01", Path: "docs/rules/api-design.md", Anchor: "defaults", SHA256: digest([]byte(body))}}, ExampleRefs: []Reference{}, Exceptions: []string{}, Status: "approved"}
+	entry := Entry{ID: "CNV-API-01", Topic: "api", Scope: []string{"src/api"}, Default: "Use stable error codes.", SourceRefs: []Reference{{Kind: "rule", ID: "R-API-01", Path: "docs/rules/api-design.md", Anchor: "defaults"}}, ExampleRefs: []Reference{}, Exceptions: []string{}, Status: "approved"}
 	req := Request{TaskID: "TASK-001", TaskRef: "docs/dev/tasks/TASK-001.md", Scope: []string{"src/api/handler.go"}}
 	return root, entry, req
 }
@@ -65,7 +65,7 @@ func TestExplicitConventionsSourcesAndAbsentCandidates(t *testing.T) {
 		t.Fatal("original indexed source was not proven", p)
 	}
 	for _, s := range p.Sources {
-		if s.Status != "readable" || s.SourceMode != "disk" || len(s.SHA256) != 64 {
+		if s.Status != "readable" || s.SourceMode != "disk" || s.Path == "" {
 			t.Fatal("wrong authoring source", s)
 		}
 	}
@@ -128,7 +128,7 @@ func TestConventionsConflictsScopesMigrationAndStaleExamples(t *testing.T) {
 		}
 	}
 	first.Status = "approved"
-	first.ExampleRefs = []Reference{{Path: "src/api/handler.go", SHA256: digest([]byte("original implementation"))}}
+	first.ExampleRefs = []Reference{{Path: "src/api/handler.go"}}
 	registry(t, root, first)
 	p = projection(t, root, req)
 	if p.Entries[0].Status != "stale" {
@@ -141,8 +141,8 @@ func TestConventionsConflictsScopesMigrationAndStaleExamples(t *testing.T) {
 	}
 	write(t, root, "src/api/handler.go", "changed implementation")
 	p = projection(t, root, req)
-	if p.Entries[0].Status != "stale" {
-		t.Fatal("changed example remained current")
+	if p.Entries[0].Status != "declared_default" {
+		t.Fatal("existing example was rejected by content authentication")
 	}
 }
 func TestConventionsRequireOriginalRegisteredDocumentProof(t *testing.T) {
@@ -150,7 +150,7 @@ func TestConventionsRequireOriginalRegisteredDocumentProof(t *testing.T) {
 	body := "# ARCH-001\n\n> 状态：locked\n> 版本：v1.0.0\n\n## Choice\nUse stable error codes.\n"
 	path := "docs/architecture/ARCH-001.md"
 	write(t, root, path, body)
-	ref := Reference{Kind: "architecture", ID: "ARCH-001", Path: path, Version: "v1.0.0", Anchor: "choice", SHA256: digest([]byte(body))}
+	ref := Reference{Kind: "architecture", ID: "ARCH-001", Path: path, Version: "v1.0.0", Anchor: "choice"}
 	entry.SourceRefs = []Reference{ref}
 	registry(t, root, entry)
 	if p := projection(t, root, req); p.Entries[0].Status != "candidate" {
@@ -189,7 +189,7 @@ func TestConventionsCacheAndForbiddenSourcePaths(t *testing.T) {
 		}
 	}
 	entry.SourceRefs[0].Path = ".claude/credentials"
-	entry.ExampleRefs = []Reference{{Path: ".claude/credentials", SHA256: strings.Repeat("a", 64)}}
+	entry.ExampleRefs = []Reference{{Path: ".claude/credentials"}}
 	registry(t, root, entry)
 	reader.reads = map[string]int{}
 	p := Resolve(root, reader, req)
@@ -266,9 +266,9 @@ func TestFormalConventionExamplesRequireCommittedSource(t *testing.T) {
 	root, entry, req := fixture(t)
 	body := "owned implementation"
 	write(t, root, "src/api/handler.go", body)
-	entry.ExampleRefs = []Reference{{Path: "src/api/handler.go", SHA256: digest([]byte(body))}}
+	entry.ExampleRefs = []Reference{{Path: "src/api/handler.go"}}
 	registry(t, root, entry)
-	req.ApprovedRefs = []Reference{{ID: "TASK-001", Path: req.TaskRef, Version: "v1", SHA256: strings.Repeat("a", 64)}}
+	req.ApprovedRefs = []Reference{{ID: "TASK-001", Path: req.TaskRef, Version: "v1"}}
 	p := projection(t, root, req)
 	if p.Entries[0].Status != "stale" {
 		t.Fatal("formal source accepted an uncommitted disk example", p)

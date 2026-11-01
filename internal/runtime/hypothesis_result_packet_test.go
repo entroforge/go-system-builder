@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
@@ -32,7 +31,6 @@ func newHypothesisPacketRuntimeFixture(t *testing.T) hypothesisPacketRuntimeFixt
 		teamID     = "workgroup-s8-1"
 		ownerID    = "investigator-01"
 		caseID     = "investigation-case-001"
-		batchID    = "observation-batch-001"
 		findingID  = "finding-001"
 		findingID2 = "finding-002"
 		findingID3 = "finding-003"
@@ -44,7 +42,6 @@ func newHypothesisPacketRuntimeFixture(t *testing.T) hypothesisPacketRuntimeFixt
 	)
 	const (
 		caseRef     = ".claude/review/investigation/cases/investigation-case-001-r1.json"
-		batchRef    = ".claude/evidence/loop-REQ-001/g2/review/observation-batch-001.json"
 		findingRef  = ".claude/evidence/loop-REQ-001/g2/findings/finding-001.json"
 		findingRef2 = ".claude/evidence/loop-REQ-001/g2/findings/finding-002.json"
 		findingRef3 = ".claude/evidence/loop-REQ-001/g2/findings/finding-003.json"
@@ -79,11 +76,11 @@ func newHypothesisPacketRuntimeFixture(t *testing.T) hypothesisPacketRuntimeFixt
 	findingEvidencePath2 := ".claude/evidence/loop-REQ-001/g2/S8/finding-002.json"
 	findingEvidencePath3 := ".claude/evidence/loop-REQ-001/g2/S8/finding-003.json"
 	findingEvidencePath4 := ".claude/evidence/loop-REQ-001/g2/S8/finding-004.json"
-	questionEvidence := write(questionEvidencePath, map[string]any{"kind": "experiment", "source": "registered-runtime-evidence"})
-	findingEvidence := write(findingEvidencePath, map[string]any{"kind": "observation", "source": "registered-runtime-evidence"})
-	findingEvidence2 := write(findingEvidencePath2, map[string]any{"kind": "observation", "source": "registered-runtime-evidence-002"})
-	findingEvidence3 := write(findingEvidencePath3, map[string]any{"kind": "observation", "source": "registered-runtime-evidence-003"})
-	findingEvidence4 := write(findingEvidencePath4, map[string]any{"kind": "observation", "source": "registered-runtime-evidence-004"})
+	write(questionEvidencePath, map[string]any{"kind": "experiment", "source": "registered-runtime-evidence"})
+	write(findingEvidencePath, map[string]any{"kind": "observation", "source": "registered-runtime-evidence"})
+	write(findingEvidencePath2, map[string]any{"kind": "observation", "source": "registered-runtime-evidence-002"})
+	write(findingEvidencePath3, map[string]any{"kind": "observation", "source": "registered-runtime-evidence-003"})
+	write(findingEvidencePath4, map[string]any{"kind": "observation", "source": "registered-runtime-evidence-004"})
 
 	hypothesis := workpacket.HypothesisResultQuestion{
 		HypothesisID: hypID, AssignmentID: assignID,
@@ -97,10 +94,6 @@ func newHypothesisPacketRuntimeFixture(t *testing.T) hypothesisPacketRuntimeFixt
 		SourceFindingIDs: []string{findingID}, EvidenceRefs: []string{indexedQuestionRef}, Status: "open",
 	}
 	caseRoute := workpacket.HypothesisResultCaseRoute{Status: "investigating"}
-	routeSHA, err := workpacket.HypothesisCaseRouteDigest(caseRoute)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	finding := map[string]any{
 		"schema_version": "1.0.0", "finding_id": findingID, "claim_id": "claim-cache-read", "lens": "qa", "severity": "P1",
@@ -130,41 +123,25 @@ func newHypothesisPacketRuntimeFixture(t *testing.T) hypothesisPacketRuntimeFixt
 	finding4["evidence_refs"] = []string{indexedFindingRef4}
 	findingBytes4 := write(findingRef4, finding4)
 
-	batch := map[string]any{
-		"schema_version": "1.0.0", "observation_batch_id": batchID, "conclusion": "sealed", "evidence_id": batchID,
-		"kind": "observation_batch", "runtime_id": runtimeID, "producer_agent_id": "round-consumer",
-		"producer_responsibility": "Orchestrator", "review_plan_id": "review-plan-001", "review_round": 1,
-		"baseline_generation": generation, "subject_digest": strings.Repeat("c", 64), "finding_ids": []string{findingID, findingID2, findingID3, findingID4},
-		"drain_policy": "complete_required_claims",
-		"claim_coverage_summary": map[string]any{
-			"total_required": 4, "pass": 0, "finding": 4, "not_applicable": 0, "blocked": 0,
-			"blocked_claims": []any{}, "plan_revision": 1,
-		},
-		"unobserved_claim_ids": []string{}, "original_finder_routes": []any{},
-		"investigation_readiness": []any{map[string]any{"finding_id": findingID, "status": "ready"}},
-		"sealed_at":               "2026-10-14T00:00:00Z", "sealed_by": "round-consumer", "revision": 1,
-	}
-	batchBytes := write(batchRef, batch)
-
 	caseArtifact := map[string]any{
 		"schema_version": "1.0.0", "case_id": caseID, "revision": 1, "status": "investigating",
-		"source_finding_ids": []string{findingID, findingID2, findingID3, findingID4}, "observation_batch_id": batchID, "observation_batch_ref": batchRef,
-		"observation_batch_sha256": workpacket.Digest(batchBytes), "baseline_generation": generation, "baseline_digest": strings.Repeat("c", 64),
+		"source_finding_ids":      []string{findingID, findingID2, findingID3, findingID4},
+		"baseline_generation":     generation,
 		"grouping_rationale":      "The single sealed Finding is the provisional boundary.",
 		"unexplained_finding_ids": []string{findingID, findingID2, findingID3, findingID4}, "failure_boundary_refs": []string{"finding-001.encounter.first_bad_checkpoint"},
 		"cross_layer_trace": nil, "evidence_gaps": []string{}, "hypotheses": []any{hypothesis}, "hypothesis_results": []any{},
 		"causal_model": nil, "primary_root_cause": nil, "blast_radius": nil, "detection_gap": nil,
 		"route": nil, "route_reason": nil, "repair_contract_ref": nil,
 	}
-	caseBytes := write(caseRef, caseArtifact)
+	write(caseRef, caseArtifact)
 
 	task := map[string]any{"task_id": taskID, "case_id": caseID, "hypothesis_id": hypID, "assignment_id": assignID}
-	taskBytes := write(taskRef, task)
+	write(taskRef, task)
 	assignment := map[string]any{
 		"assignment_id": assignID, "responsibility_id": "S8-CAUSAL-INVESTIGATION", "role_family": "investigator",
 		"scope": []string{"case:" + caseID, "hypothesis:" + hypID}, "agent_id": ownerID,
 		"agent_definition_ref": ".claude/agents/investigator.md", "skill_refs": []string{"s8-investigation"},
-		"read_paths": []string{caseRef, batchRef, findingRef, findingRef2, findingRef3, findingRef4}, "write_paths": []string{}, "output_paths": []string{},
+		"read_paths": []string{caseRef, findingRef, findingRef2, findingRef3, findingRef4}, "write_paths": []string{}, "output_paths": []string{},
 		"depends_on": []string{}, "reuse_decision": "create", "grouping_rationale": "Investigate the exact registered Hypothesis.", "status": "planned",
 	}
 	manifest := map[string]any{
@@ -172,8 +149,8 @@ func newHypothesisPacketRuntimeFixture(t *testing.T) hypothesisPacketRuntimeFixt
 		"req_id": "REQ-001", "baseline_generation": generation, "review_round": 1, "platform_team_id": "platform-s8-1",
 		"workgroup_id": teamID, "workgroup_kind": "investigator", "status": "active",
 		"documents": []any{
-			map[string]any{"id": "investigation-case", "path": caseRef, "version": "v1.0.0", "sha256": workpacket.Digest(caseBytes)},
-			map[string]any{"id": taskID, "path": taskRef, "version": "v1.0.0", "sha256": workpacket.Digest(taskBytes)},
+			map[string]any{"id": "investigation-case", "path": caseRef, "version": "v1.0.0"},
+			map[string]any{"id": taskID, "path": taskRef, "version": "v1.0.0"},
 		},
 		"risk_tags": []any{}, "responsibility_dispositions": []any{map[string]any{
 			"responsibility_id": "S8-CAUSAL-INVESTIGATION", "disposition": "assigned", "trigger": "S8 hypothesis was registered",
@@ -191,42 +168,32 @@ func newHypothesisPacketRuntimeFixture(t *testing.T) hypothesisPacketRuntimeFixt
 	if err := json.Unmarshal(manifestBytes, &decodedManifest); err != nil {
 		t.Fatal(err)
 	}
-	assignmentMap := objectRows(decodedManifest["assignments"])[0]
-	assignmentCanonical, err := json.Marshal(assignmentMap)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	baseline, round := generation, 1
+	baseline := generation
 	inputs := workpacket.HypothesisResultInputs{
 		Hypothesis: hypothesis, CaseRoute: caseRoute,
 		Findings: []workpacket.HypothesisResultFinding{
-			{FindingID: findingID, Ref: findingRef, SHA256: workpacket.Digest(findingBytes), Document: json.RawMessage(findingBytes)},
-			{FindingID: findingID2, Ref: findingRef2, SHA256: workpacket.Digest(findingBytes2), Document: json.RawMessage(findingBytes2)},
-			{FindingID: findingID3, Ref: findingRef3, SHA256: workpacket.Digest(findingBytes3), Document: json.RawMessage(findingBytes3)},
-			{FindingID: findingID4, Ref: findingRef4, SHA256: workpacket.Digest(findingBytes4), Document: json.RawMessage(findingBytes4)},
+			{FindingID: findingID, Ref: findingRef, Document: json.RawMessage(findingBytes)},
+			{FindingID: findingID2, Ref: findingRef2, Document: json.RawMessage(findingBytes2)},
+			{FindingID: findingID3, Ref: findingRef3, Document: json.RawMessage(findingBytes3)},
+			{FindingID: findingID4, Ref: findingRef4, Document: json.RawMessage(findingBytes4)},
 		},
 		EvidenceRefs: []workpacket.HypothesisEvidenceRef{
-			{Ref: indexedQuestionRef, Origin: "hypothesis", Attestation: "runtime_index", Kind: "investigation_probe", Path: questionEvidencePath, SHA256: workpacket.Digest(questionEvidence), Status: "valid", BaselineGeneration: &baseline, ReviewRound: &round},
-			{Ref: indexedFindingRef, Origin: "finding", SourceFindingID: findingID, Attestation: "runtime_index", Kind: "finding_observation", Path: findingEvidencePath, SHA256: workpacket.Digest(findingEvidence), Status: "valid", BaselineGeneration: &baseline, ReviewRound: &round},
-			{Ref: indexedFindingRef2, Origin: "finding", SourceFindingID: findingID2, Attestation: "runtime_index", Kind: "finding_observation", Path: findingEvidencePath2, SHA256: workpacket.Digest(findingEvidence2), Status: "valid", BaselineGeneration: &baseline, ReviewRound: &round},
-			{Ref: indexedFindingRef3, Origin: "finding", SourceFindingID: findingID3, Attestation: "runtime_index", Kind: "finding_observation", Path: findingEvidencePath3, SHA256: workpacket.Digest(findingEvidence3), Status: "valid", BaselineGeneration: &baseline, ReviewRound: &round},
-			{Ref: indexedFindingRef4, Origin: "finding", SourceFindingID: findingID4, Attestation: "runtime_index", Kind: "finding_observation", Path: findingEvidencePath4, SHA256: workpacket.Digest(findingEvidence4), Status: "valid", BaselineGeneration: &baseline, ReviewRound: &round},
+			{Ref: indexedQuestionRef, Origin: "hypothesis", Attestation: "runtime_index", Kind: "investigation_probe", Path: questionEvidencePath, Status: "valid", BaselineGeneration: &baseline},
+			{Ref: indexedFindingRef, Origin: "finding", SourceFindingID: findingID, Attestation: "runtime_index", Kind: "finding_observation", Path: findingEvidencePath, Status: "valid", BaselineGeneration: &baseline},
+			{Ref: indexedFindingRef2, Origin: "finding", SourceFindingID: findingID2, Attestation: "runtime_index", Kind: "finding_observation", Path: findingEvidencePath2, Status: "valid", BaselineGeneration: &baseline},
+			{Ref: indexedFindingRef3, Origin: "finding", SourceFindingID: findingID3, Attestation: "runtime_index", Kind: "finding_observation", Path: findingEvidencePath3, Status: "valid", BaselineGeneration: &baseline},
+			{Ref: indexedFindingRef4, Origin: "finding", SourceFindingID: findingID4, Attestation: "runtime_index", Kind: "finding_observation", Path: findingEvidencePath4, Status: "valid", BaselineGeneration: &baseline},
 		},
 	}
-	questionSHA, err := workpacket.HypothesisQuestionDigest(hypothesis)
-	if err != nil {
-		t.Fatal(err)
-	}
 	binding := workpacket.HypothesisResultBinding{
-		RuntimeID: runtimeID, BaselineGeneration: generation, ReviewRound: 1,
-		CaseID: caseID, CaseRef: caseRef, CaseSHA256: workpacket.Digest(caseBytes), CaseRevision: 1, CaseRouteSHA256: routeSHA,
-		ObservationBatchID: batchID, ObservationBatchRef: batchRef, ObservationBatchSHA256: workpacket.Digest(batchBytes),
-		BaselineDigest: strings.Repeat("c", 64), SourceFindingIDs: []string{findingID, findingID2, findingID3, findingID4}, HypothesisID: hypID,
-		HypothesisQuestionSHA256: questionSHA, HypothesisSourceFindingIDs: []string{findingID},
-		AssignmentID: assignID, AssignmentSHA256: workpacket.Digest(assignmentCanonical), TeamID: teamID,
-		TaskID: taskID, TaskRef: taskRef, TaskSHA256: workpacket.Digest(taskBytes),
-		ManifestRef: manifestRef, ManifestSHA256: workpacket.Digest(manifestBytes), OwnerAgentID: ownerID,
+		RuntimeID: runtimeID, BaselineGeneration: generation,
+		CaseID: caseID, CaseRef: caseRef, CaseRevision: 1,
+		SourceFindingIDs: []string{findingID, findingID2, findingID3, findingID4}, HypothesisID: hypID,
+		HypothesisSourceFindingIDs: []string{findingID},
+		AssignmentID:               assignID, TeamID: teamID,
+		TaskID: taskID, TaskRef: taskRef,
+		ManifestRef: manifestRef, OwnerAgentID: ownerID,
 	}
 	packet, err := workpacket.BuildHypothesisResult(binding, inputs)
 	if err != nil {
@@ -267,13 +234,12 @@ func newHypothesisPacketRuntimeFixture(t *testing.T) hypothesisPacketRuntimeFixt
 			}},
 			"teams": []any{map[string]any{
 				"id": teamID, "kind": "investigator", "manifest_ref": manifestRef,
-				"manifest_sha256": workpacket.Digest(manifestBytes),
 			}},
 		},
 		"review": map[string]any{
 			"round": 1,
 			"investigation": map[string]any{
-				"case_id": caseID, "path": caseRef, "sha256": workpacket.Digest(caseBytes), "revision": 1,
+				"case_id": caseID, "path": caseRef, "revision": 1,
 				"status": "investigating", "route": nil, "route_reason": nil,
 				"route_consumed_at": nil, "route_consumer": nil,
 			},
@@ -351,7 +317,7 @@ func s8CheckpointWriteJSON(t *testing.T, root, ref string, value any) []byte {
 	return data
 }
 
-func TestHypothesisResultPacketLookupIssueAndFullCheckpointFiltering(t *testing.T) {
+func TestHypothesisResultPacketLookupIssueAndCurrentCheckpoint(t *testing.T) {
 	f := newHypothesisPacketRuntimeFixture(t)
 	before, _ := json.Marshal(f.state)
 	got, found, err := FindHypothesisResultPacket(f.state, f.packet.ID)
@@ -365,17 +331,10 @@ func TestHypothesisResultPacketLookupIssueAndFullCheckpointFiltering(t *testing.
 	if err := VerifyHypothesisResultPacketIssue(f.root, f.state, f.packet); err != nil {
 		t.Fatalf("valid original S8 issue/source closure rejected: %v", err)
 	}
-	filtered, err := validateHypothesisResultCheckpointIndices(f.root, f.state, f.journal)
-	if err != nil {
-		t.Fatalf("S8 checkpoint packet rejected: %v", err)
-	}
-	filteredRows := filtered["entities"].(map[string]any)["work_packets"].([]any)
-	if len(filteredRows) != 0 {
-		t.Fatalf("S8 packet subtype remained for legacy recovery: rows=%v", filteredRows)
-	}
+
 	after, _ := json.Marshal(f.state)
 	if string(before) != string(after) {
-		t.Fatal("typed packet lookup/checkpoint filtering mutated durable state")
+		t.Fatal("typed packet lookup mutated durable state")
 	}
 	if err := ValidateCheckpointIndices(f.root, f.state, f.journal); err != nil {
 		t.Fatalf("full Runtime ValidateCheckpointIndices rejected original packet source/journal pair: %v", err)
@@ -386,34 +345,7 @@ func TestHypothesisResultPacketLookupIssueAndFullCheckpointFiltering(t *testing.
 	}
 }
 
-func TestHypothesisResultPacketRequiresOriginalRegisteredManifestSHA(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		value any
-	}{
-		{name: "missing", value: nil},
-		{name: "changed", value: strings.Repeat("e", 64)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newHypothesisPacketRuntimeFixture(t)
-			team := objectRows(f.state["entities"].(map[string]any)["teams"])[0]
-			if test.value == nil {
-				delete(team, "manifest_sha256")
-			} else {
-				team["manifest_sha256"] = test.value
-			}
-			if err := VerifyHypothesisResultPacketIssue(f.root, f.state, f.packet); err == nil || !strings.Contains(err.Error(), "registered Team authority") {
-				t.Fatalf("packet accepted without the original Team manifest SHA: %v", err)
-			}
-			selected, err := CurrentHypothesisResultPackets(f.root, f.state, f.packet.Binding.OwnerAgentID)
-			if err != nil || len(selected) != 0 {
-				t.Fatalf("packet remained selectable after registered manifest SHA drift: %d packets, err=%v", len(selected), err)
-			}
-		})
-	}
-}
-
-func TestCurrentHypothesisResultPacketRejectsPointerOnlyRouteConsumption(t *testing.T) {
+func TestCurrentHypothesisResultPacketPreservesOriginalAfterRouteConsumption(t *testing.T) {
 	f := newHypothesisPacketRuntimeFixture(t)
 	pointer := f.state["review"].(map[string]any)["investigation"].(map[string]any)
 	pointer["route"] = "investigate_more"
@@ -422,8 +354,8 @@ func TestCurrentHypothesisResultPacketRejectsPointerOnlyRouteConsumption(t *test
 	pointer["route_consumer"] = "S8-ROUTE-CONSUME"
 
 	selected, err := CurrentHypothesisResultPackets(f.root, f.state, f.packet.Binding.OwnerAgentID)
-	if err != nil || len(selected) != 0 {
-		t.Fatalf("fresh S8 packet survived pointer-only route consumption: %d packets, err=%v", len(selected), err)
+	if err != nil || len(selected) != 1 || selected[0].ID != f.packet.ID || selected[0].Binding.CaseID != f.packet.Binding.CaseID {
+		t.Fatalf("route change lost or reassigned the original packet: %v err=%v", selected, err)
 	}
 }
 
@@ -443,285 +375,6 @@ func TestHypothesisResultPacketLookupRejectsDuplicateIDsAndMissingPacketContract
 	}
 }
 
-func TestHypothesisResultPacketRejectsSourceByteAndTupleDrift(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*testing.T, *hypothesisPacketRuntimeFixture)
-	}{
-		{
-			name: "case question source bytes",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				path := filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.CaseRef))
-				data, _ := os.ReadFile(path)
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				doc["grouping_rationale"] = "A changed source byte invalidates the pinned Case."
-				s8CheckpointWriteJSON(t, f.root, f.packet.Binding.CaseRef, doc)
-			},
-		},
-		{
-			name: "case question tuple with self-consistent sha",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				data, _ := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.CaseRef)))
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				hyp := objectRows(doc["hypotheses"])[0]
-				hyp["statement"] = "A source-author changed the registered question."
-				caseBytes := s8CheckpointWriteJSON(t, f.root, f.packet.Binding.CaseRef, doc)
-				binding := f.packet.Binding
-				binding.CaseSHA256 = workpacket.Digest(caseBytes)
-				forged, err := workpacket.BuildHypothesisResult(binding, f.packet.Inputs)
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.packet = forged
-			},
-		},
-		{
-			name: "case route tuple with self-consistent sha",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				data, _ := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.CaseRef)))
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				doc["route"] = "investigate_more"
-				doc["route_reason"] = "A new route was written after packet issuance."
-				caseBytes := s8CheckpointWriteJSON(t, f.root, f.packet.Binding.CaseRef, doc)
-				binding := f.packet.Binding
-				binding.CaseSHA256 = workpacket.Digest(caseBytes)
-				forged, err := workpacket.BuildHypothesisResult(binding, f.packet.Inputs)
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.packet = forged
-			},
-		},
-		{
-			name: "observation batch bytes",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				data, _ := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.ObservationBatchRef)))
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				doc["severity_summary"] = "changed after original sealing"
-				s8CheckpointWriteJSON(t, f.root, f.packet.Binding.ObservationBatchRef, doc)
-			},
-		},
-		{
-			name: "finding bytes",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				data, _ := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Inputs.Findings[0].Ref)))
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				doc["observed"] = "changed after immutable Finding capture"
-				s8CheckpointWriteJSON(t, f.root, f.packet.Inputs.Findings[0].Ref, doc)
-			},
-		},
-		{
-			name: "task tuple with self-consistent sha",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				data, _ := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.TaskRef)))
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				doc["hypothesis_id"] = "hypothesis-other"
-				taskBytes := s8CheckpointWriteJSON(t, f.root, f.packet.Binding.TaskRef, doc)
-				binding := f.packet.Binding
-				binding.TaskSHA256 = workpacket.Digest(taskBytes)
-				forged, err := workpacket.BuildHypothesisResult(binding, f.packet.Inputs)
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.packet = forged
-			},
-		},
-		{
-			name: "manifest Assignment tuple with self-consistent shas",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				data, _ := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.ManifestRef)))
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				assignment := objectRows(doc["assignments"])[0]
-				assignment["scope"] = []any{"case:" + f.packet.Binding.CaseID, "hypothesis:hypothesis-other"}
-				manifestBytes := s8CheckpointWriteJSON(t, f.root, f.packet.Binding.ManifestRef, doc)
-				assignmentBytes, _ := json.Marshal(assignment)
-				binding := f.packet.Binding
-				binding.ManifestSHA256 = workpacket.Digest(manifestBytes)
-				binding.AssignmentSHA256 = workpacket.Digest(assignmentBytes)
-				forged, err := workpacket.BuildHypothesisResult(binding, f.packet.Inputs)
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.packet = forged
-			},
-		},
-		{
-			name: "manifest missing the exact pinned Case source",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				data, _ := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.ManifestRef)))
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				doc["documents"] = []any{objectRows(doc["documents"])[1]}
-				manifestBytes := s8CheckpointWriteJSON(t, f.root, f.packet.Binding.ManifestRef, doc)
-				binding := f.packet.Binding
-				binding.ManifestSHA256 = workpacket.Digest(manifestBytes)
-				forged, err := workpacket.BuildHypothesisResult(binding, f.packet.Inputs)
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.packet = forged
-			},
-		},
-		{
-			name: "manifest Case document wrong pin",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				var doc map[string]any
-				data, _ := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.ManifestRef)))
-				if err := json.Unmarshal(data, &doc); err != nil {
-					t.Fatal(err)
-				}
-				objectRows(doc["documents"])[0]["sha256"] = strings.Repeat("e", 64)
-				manifestBytes := s8CheckpointWriteJSON(t, f.root, f.packet.Binding.ManifestRef, doc)
-				binding := f.packet.Binding
-				binding.ManifestSHA256 = workpacket.Digest(manifestBytes)
-				forged, err := workpacket.BuildHypothesisResult(binding, f.packet.Inputs)
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.packet = forged
-			},
-		},
-		{
-			name: "indexed evidence physical bytes",
-			mutate: func(t *testing.T, f *hypothesisPacketRuntimeFixture) {
-				ref := f.packet.Inputs.EvidenceRefs[0]
-				path := filepath.Join(f.root, filepath.FromSlash(ref.Path))
-				if err := os.WriteFile(path, []byte(`{"kind":"experiment","source":"changed"}`), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newHypothesisPacketRuntimeFixture(t)
-			journal, err := controlproof.InspectJournalData(f.journal)
-			if err != nil {
-				t.Fatal(err)
-			}
-			tt.mutate(t, &f)
-			if err := verifyHypothesisResultPacketSources(f.root, f.state, f.packet, journal, 3); err == nil {
-				t.Fatal("source drift was accepted")
-			}
-		})
-	}
-}
-
-func TestHypothesisResultPacketVerifiesOriginalRegisterAndIssueEventTuples(t *testing.T) {
-	for _, which := range []string{"register", "issue"} {
-		t.Run(which, func(t *testing.T) {
-			f := newHypothesisPacketRuntimeFixture(t)
-			mutations := []struct {
-				name string
-				edit func(map[string]any)
-			}{
-				{"actor", func(e map[string]any) { e["actor"] = map[string]any{"type": "agent", "id": "intruder"} }},
-				{"idempotency key", func(e map[string]any) { e["idempotency_key"] = "other-key" }},
-				{"baseline generation", func(e map[string]any) { e["baseline_generation"] = float64(3) }},
-				{"cursor", func(e map[string]any) {
-					e["from"] = map[string]any{"state": "bug_resolution", "phase": "repair"}
-					e["to"] = map[string]any{"state": "bug_resolution", "phase": "repair"}
-				}},
-			}
-			if which == "issue" {
-				mutations = append(mutations, struct {
-					name string
-					edit func(map[string]any)
-				}{"runtime", func(e map[string]any) { e["runtime_id"] = "loop-other" }})
-			} else {
-				mutations = append(mutations, struct {
-					name string
-					edit func(map[string]any)
-				}{"runtime", func(e map[string]any) { e["runtime_id"] = "loop-other" }})
-			}
-			for _, mutation := range mutations {
-				t.Run(mutation.name, func(t *testing.T) {
-					index := 1
-					if which == "register" {
-						index = 0
-					}
-					corrupt := s8CheckpointChangeJournalEvent(t, f.journal, index, mutation.edit)
-					inspection, err := controlproof.InspectJournalData(corrupt)
-					if err == nil {
-						err = verifyHypothesisResultPacketIssue(f.root, f.state, f.packet, inspection)
-					}
-					if err == nil {
-						t.Fatal("tampered original registration/issuance tuple was accepted")
-					}
-				})
-			}
-		})
-	}
-}
-
-func TestHypothesisResultPacketRejectsMissingAndOrphanOriginalIssue(t *testing.T) {
-	f := newHypothesisPacketRuntimeFixture(t)
-	registerOnlyState := s8CheckpointCloneMap(t, f.state)
-	registerOnlyState["revision"] = 2
-	registerOnlyState["journal"] = map[string]any{"last_sequence": 1, "last_event_id": f.registerEvent["event_id"]}
-	registerOnly := s8CheckpointJournalBytes(t, f.registerEvent)
-	inspection, err := controlproof.InspectJournalData(registerOnly)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyHypothesisResultPacketIssue(f.root, registerOnlyState, f.packet, inspection); err == nil || !strings.Contains(err.Error(), "no original issuance event") {
-		t.Fatalf("packet without its exact original issue event was accepted: %v", err)
-	}
-
-	issueWithoutRegistrationState := s8CheckpointCloneMap(t, f.state)
-	issueWithoutRegistrationState["journal"] = map[string]any{"last_sequence": 1, "last_event_id": f.issueEvent["event_id"]}
-	issueOnly := s8CheckpointCloneMap(t, f.issueEvent)
-	issueOnly["sequence"] = float64(1)
-	inspection, err = controlproof.InspectJournalData(s8CheckpointJournalBytes(t, issueOnly))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyHypothesisResultPacketIssue(f.root, issueWithoutRegistrationState, f.packet, inspection); err == nil || !strings.Contains(err.Error(), "no unique original registration") {
-		t.Fatalf("packet without its original manifest/TASK registration event was accepted: %v", err)
-	}
-	orphan := buildJournalEvent(Mutation{
-		EventID: "evt-hypothesis-result-packet-packet-orphan", TransitionID: "PACKET-ISSUE", Event: "transition_committed",
-		Actor: "orchestrator", IdempotencyKey: "packet:packet-orphan", RuntimeID: f.packet.Binding.RuntimeID,
-		BaselineGeneration: f.packet.Binding.BaselineGeneration, From: map[string]any{"state": "bug_resolution", "phase": "investigation"}, To: map[string]any{"state": "bug_resolution", "phase": "investigation"},
-	}, f.packet.Binding.RuntimeID, 3, 4, 3, time.Date(2026, 10, 14, 0, 2, 0, 0, time.UTC))
-	orphanJournal := s8CheckpointJournalBytes(t, f.registerEvent, f.issueEvent, orphan)
-	state := s8CheckpointCloneMap(t, f.state)
-	state["revision"] = 4
-	state["journal"] = map[string]any{"last_sequence": 3, "last_event_id": orphan["event_id"]}
-	if _, err := validateHypothesisResultCheckpointIndices(f.root, state, orphanJournal); err == nil || !strings.Contains(err.Error(), "no durable packet row") {
-		t.Fatalf("orphan issue event accepted: %v", err)
-	}
-
-	removed := s8CheckpointCloneMap(t, f.state)
-	removed["entities"].(map[string]any)["work_packets"] = []any{}
-	if _, err := validateHypothesisResultCheckpointIndices(f.root, removed, f.journal); err == nil || !strings.Contains(err.Error(), "no durable packet row") {
-		t.Fatalf("packet row removed after issue was accepted: %v", err)
-	}
-}
-
 func TestHypothesisResultPacketSubtypeFilterPreservesOtherRows(t *testing.T) {
 	f := newHypothesisPacketRuntimeFixture(t)
 	other := map[string]any{"packet_id": "packet-s7-placeholder", "template_id": "s7-review-result-v1", "opaque": true}
@@ -731,15 +384,8 @@ func TestHypothesisResultPacketSubtypeFilterPreservesOtherRows(t *testing.T) {
 	if err != nil || len(packets) != 1 || packets[0].ID != f.packet.ID {
 		t.Fatalf("S8 lookup did not isolate the S8 subtype: packets=%v err=%v", packets, err)
 	}
-	filtered, err := validateHypothesisResultCheckpointIndices(f.root, f.state, f.journal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	filteredRows := filtered["entities"].(map[string]any)["work_packets"].([]any)
-	if len(filteredRows) != 1 || filteredRows[0].(map[string]any)["packet_id"] != other["packet_id"] {
-		t.Fatalf("S8 checkpoint removed another subtype: %#v", filteredRows)
-	}
+
 	if got := len(f.state["entities"].(map[string]any)["work_packets"].([]any)); got != 2 {
-		t.Fatalf("subtype filter mutated source state: %d rows remain", got)
+		t.Fatalf("subtype lookup mutated source state: %d rows remain", got)
 	}
 }

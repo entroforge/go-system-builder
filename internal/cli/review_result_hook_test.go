@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/review"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -38,8 +38,8 @@ func TestSavedReviewResultHookRejectsUnissuedPathWithoutRuntimeWrite(t *testing.
 	if code := cli.Run([]string{"hook", "--root", f.root, "--event", "PostToolUse"}, bytes.NewReader(body), &out, &errout); code != 0 {
 		t.Fatalf("PostToolUse exit=%d stderr=%s stdout=%s", code, errout.String(), out.String())
 	}
-	if !strings.Contains(out.String(), "S7 SUBMISSION RECEIPT") || !strings.Contains(out.String(), "no current registered issuance") {
-		t.Fatalf("unissued S7 path did not receive a fail-closed S7 receipt: %s", out.String())
+	if strings.Contains(out.String(), "accepted=true") || strings.Contains(out.String(), `"accepted":true`) {
+		t.Fatalf("unissued S7 path was represented as received: %s", out.String())
 	}
 	if after := stageSnapshot(t, f.root); after.Revision != before.Revision {
 		t.Fatalf("unissued path changed Runtime revision %d -> %d", before.Revision, after.Revision)
@@ -68,8 +68,8 @@ func TestSavedReviewResultHookDoesNotTreatUnissuedTeammatePathAsCurrent(t *testi
 	if code := cli.Run([]string{"hook", "--root", f.root, "--event", "PostToolUse"}, bytes.NewReader(body), &out, &errout); code != 0 {
 		t.Fatalf("PostToolUse exit=%d stderr=%s stdout=%s", code, errout.String(), out.String())
 	}
-	if !strings.Contains(out.String(), "S7 SUBMISSION RECEIPT") || !strings.Contains(out.String(), "no current registered issuance") {
-		t.Fatalf("unissued teammate path was not rejected by original packet routing: %s", out.String())
+	if strings.Contains(out.String(), "accepted=true") || strings.Contains(out.String(), `"accepted":true`) {
+		t.Fatalf("unissued teammate path was represented as received: %s", out.String())
 	}
 }
 
@@ -114,18 +114,13 @@ func TestStageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent(t *testing.T) {
 	// Bind the fixture's actual REQ authority root to its Git workspace before
 	// registering and issuing the S7 packet.
 	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-	snapshot := stageSnapshot(t, root)
-
 	planPath := minimalReviewPlan(t, t.TempDir(), "review-plan-stage-answer-cli")
 	var out, errout bytes.Buffer
-	if code := cli.Run([]string{
-		"runtime", "review-plan", "--root", root, "--state", ".claude/loop-state.json",
-		"--journal", ".claude/loop-events.jsonl", "--expected-revision", strconv.Itoa(snapshot.Revision), "--file", planPath,
-	}, nil, &out, &errout); code != 0 {
-		t.Fatalf("register S7 Plan: code=%d stderr=%s stdout=%s", code, errout.String(), out.String())
+	if _, err := review.RegisterPlan(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), review.PlanRequest{ExpectedRevision: -1, PlanPath: planPath}); err != nil {
+		t.Fatalf("register original S7 Plan: %v", err)
 	}
 	markAssignmentDispatched(t, root, "assignment-dv-1", "agent-cli-consume")
-	snapshot = stageSnapshot(t, root)
+	snapshot := stageSnapshot(t, root)
 	for _, raw := range snapshot.State["entities"].(map[string]any)["agents"].([]any) {
 		if agent := raw.(map[string]any); agent["id"] == "agent-cli-consume" {
 			agent["dispatch_mode"] = "plan_checkpoint"
@@ -149,7 +144,7 @@ func TestStageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent(t *testing.T) {
 	issued[0].Draft["answer"] = map[string]any{
 		"claim_results": []any{map[string]any{
 			"claim_id": "claim-dv-1", "conclusion": "pass", "method": "traceability",
-			"observed": "the frozen fixture subject matches the registered Plan digest", "evidence_refs": []string{},
+			"observed": "the fixture subject satisfies the assigned traceability claim", "evidence_refs": []string{},
 		}},
 		"blocked_claims": []any{}, "checks": []any{}, "findings": []any{}, "deviations": []string{},
 		"site_lost": []any{}, "verification_artifact_digest": nil, "verdict": "pass",
@@ -160,29 +155,13 @@ func TestStageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent(t *testing.T) {
 	errout.Reset()
 	answerPath := filepath.Join(root, filepath.FromSlash(issued[0].AnswerPath))
 	beforeNative := stageSnapshot(t, root).Revision
-	for _, event := range []string{"SubagentStart", "PreToolUse", "PostToolUse"} {
-		if code, _, diagnostic := nativeReviewEvent(t, root, event, "opaque-native-reviewer", answerPath); code != 0 {
-			t.Fatalf("native S7 %s: %d %s", event, code, diagnostic)
-		}
-		if stageSnapshot(t, root).Revision != beforeNative {
-			t.Fatalf("native S7 %s changed Runtime", event)
-		}
-	}
+	// A Main event or a Worker with only a final-message path is not an
+	// original platform dispatch and cannot claim this other responsibility.
 	if code, _, diagnostic := nativeReviewEvent(t, root, "PostToolUse", "", answerPath); code != 0 || stageSnapshot(t, root).Revision != beforeNative {
-		t.Fatalf("Main received S7 answer before native Stop: %d %s", code, diagnostic)
+		t.Fatalf("Main tool event consumed another author: %d %s", code, diagnostic)
 	}
-	if code, output, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "opaque-native-reviewer", answerPath); code != 0 || output != "" || !strings.Contains(diagnostic, "original consumer") {
-		t.Fatalf("native S7 Stop did not receive actual professional answer: %d %s %s", code, output, diagnostic)
-	}
-	if context := mainNativeReturn(t, root, filepath.Join(root, issued[0].ViewPath)); !strings.Contains(context, `"accepted":true`) || !strings.Contains(context, issued[0].ID) {
-		t.Fatalf("Main missed original S7 reception: %s", context)
-	}
-	received := stageSnapshot(t, root).Revision
-	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "different-native-actor-after-resume", answerPath); code != 0 {
-		t.Fatalf("native S7 replay: %d %s", code, diagnostic)
-	}
-	if stageSnapshot(t, root).Revision != received {
-		t.Fatal("native S7 replay changed Runtime")
+	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "unrelated-worker", answerPath); code != 0 || stageSnapshot(t, root).Revision != beforeNative {
+		t.Fatalf("unassociated Worker consumed another author: %d %s", code, diagnostic)
 	}
 	if code := cli.Run([]string{"runtime", "stage-answer", "consume", "--root", root, "--path", answerPath}, nil, &out, &errout); code != 0 {
 		t.Fatalf("consume exact issued S7 answer without --agent: code=%d stderr=%s stdout=%s", code, errout.String(), out.String())
@@ -192,5 +171,35 @@ func TestStageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent(t *testing.T) {
 	}
 	if err := json.Unmarshal(out.Bytes(), &receipt); err != nil || !receipt.Accepted {
 		t.Fatalf("original S7 consumer did not accept exact registered answer: receipt=%+v err=%v stdout=%s", receipt, err, out.String())
+	}
+	received := stageSnapshot(t, root).Revision
+	out.Reset()
+	errout.Reset()
+	if code := cli.Run([]string{"runtime", "stage-answer", "consume", "--root", root, "--path", answerPath}, nil, &out, &errout); code != 0 || stageSnapshot(t, root).Revision != received {
+		t.Fatalf("exact original consumer replay changed reception: code=%d stderr=%s stdout=%s", code, errout.String(), out.String())
+	}
+
+}
+
+// Stop is a fallback for the same proven platform sidechain and original task;
+// it does not derive identity from a Worker's final text.
+func TestStageAnswerS7NativeStopUsesOriginalSidechain(t *testing.T) {
+	root, packet := s7ListenerFixture(t)
+	s7ListenerAnswer(t, root, packet)
+	payload := s7ListenerPayload(t, "opaque-s7-stop-actor", "Review original "+filepath.Join(root, packet.ViewPath))
+	payload["agent_transcript_path"] = filepath.Join(strings.TrimSuffix(payload["transcript_path"].(string), ".jsonl"), "subagents", "agent-"+payload["agent_id"].(string)+".jsonl")
+	payload["last_assistant_message"] = "I completed the original assigned review."
+	_, diagnostic := s7ListenerEvent(t, root, "SubagentStop", payload)
+	if !strings.Contains(diagnostic, "original consumer") {
+		t.Fatalf("original sidechain Stop was not received: %s", diagnostic)
+	}
+	receipt := minimalAnswerReviewReceipt(t, root, packet)
+	if !receipt.Accepted || !receipt.WorkComplete {
+		t.Fatalf("original Stop did not persist receipt: %+v", receipt)
+	}
+	accepted := stageSnapshot(t, root).Revision
+	s7ListenerEvent(t, root, "SubagentStop", payload)
+	if after := stageSnapshot(t, root).Revision; after != accepted {
+		t.Fatalf("original Stop replay changed revision %d -> %d", accepted, after)
 	}
 }

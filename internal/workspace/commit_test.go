@@ -14,7 +14,7 @@ func TestControlledCommitRetryPreservesMain(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(e.Path, "input.md"), []byte("worker implementation"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	req := CommitRequest{ExpectedHead: e.BaseCommit, Message: "implement assignment", Paths: []string{"input.md"}}
+	req := CommitRequest{Message: "implement assignment", Paths: []string{"input.md"}}
 	first, err := b.Commit(ctx, e, req)
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +23,7 @@ func TestControlledCommitRetryPreservesMain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Commit == e.BaseCommit || second.Commit != first.Commit || second.State != "committed" {
+	if first.State != "committed" || second.State != "committed" {
 		t.Fatalf("invalid retry: %+v %+v", first, second)
 	}
 	after, _ := Git(ctx, b.MainRoot, "rev-parse", "HEAD")
@@ -39,11 +39,11 @@ func TestControlledCommitRetryPreservesMain(t *testing.T) {
 }
 
 func TestControlledCommitRejectsUnsafeInputWithoutConsumingIndex(t *testing.T) {
-	for _, kind := range []string{"scope", "directory", "traversal", "control", "staged", "head"} {
+	for _, kind := range []string{"scope", "directory", "traversal", "control", "staged"} {
 		t.Run(kind, func(t *testing.T) {
 			b, e, _, ctx := workerFixture(t)
 			os.WriteFile(filepath.Join(e.Path, "input.md"), []byte("change"), 0600)
-			req := CommitRequest{ExpectedHead: e.BaseCommit, Message: "change", Paths: []string{"input.md"}}
+			req := CommitRequest{Message: "change", Paths: []string{"input.md"}}
 			switch kind {
 			case "scope":
 				req.Paths = []string{"other.md"}
@@ -53,13 +53,15 @@ func TestControlledCommitRejectsUnsafeInputWithoutConsumingIndex(t *testing.T) {
 				req.Paths = []string{"../input.md"}
 			case "control":
 				req.Paths = []string{".git"}
-			case "head":
-				req.ExpectedHead = "wrong"
 			case "staged":
 				os.WriteFile(filepath.Join(e.Path, "other.md"), []byte("user staging"), 0600)
 				if _, err := Git(ctx, e.Path, "add", "other.md"); err != nil {
 					t.Fatal(err)
 				}
+			}
+			beforeHead, err := Git(ctx, e.Path, "rev-parse", "HEAD")
+			if err != nil {
+				t.Fatal(err)
 			}
 			before, err := GitBytes(ctx, e.Path, "diff", "--cached", "--binary")
 			if err != nil {
@@ -70,7 +72,7 @@ func TestControlledCommitRejectsUnsafeInputWithoutConsumingIndex(t *testing.T) {
 			}
 			after, _ := GitBytes(ctx, e.Path, "diff", "--cached", "--binary")
 			head, _ := Git(ctx, e.Path, "rev-parse", "HEAD")
-			if string(before) != string(after) || head != e.BaseCommit {
+			if string(before) != string(after) || head != beforeHead {
 				t.Fatal("rejected request changed staging or HEAD")
 			}
 		})
@@ -88,7 +90,7 @@ func TestControlledCommitHookFailureCanRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(e.Path, "input.md"), []byte("change"), 0600)
-	req := CommitRequest{ExpectedHead: e.BaseCommit, Message: "change", Paths: []string{"input.md"}}
+	req := CommitRequest{Message: "change", Paths: []string{"input.md"}}
 	if _, err := b.Commit(ctx, e, req); err == nil || !strings.Contains(err.Error(), "commit failed") {
 		t.Fatalf("hook bypassed: %v", err)
 	}
@@ -106,6 +108,10 @@ func TestControlledCommitHookFailureCanRetry(t *testing.T) {
 
 func TestControlledCommitDetectsHookAddingUndeclaredFile(t *testing.T) {
 	b, e, _, ctx := workerFixture(t)
+	initial, err := Git(ctx, e.Path, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
 	hooks := t.TempDir()
 	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\nprintf unexpected > other.md\ngit add -- other.md\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -114,14 +120,14 @@ func TestControlledCommitDetectsHookAddingUndeclaredFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(e.Path, "input.md"), []byte("change"), 0600)
-	req := CommitRequest{ExpectedHead: e.BaseCommit, Message: "change", Paths: []string{"input.md"}}
+	req := CommitRequest{Message: "change", Paths: []string{"input.md"}}
 	for i := 0; i < 2; i++ {
 		if _, err := b.Commit(ctx, e, req); err == nil || !strings.Contains(err.Error(), "undeclared file") {
 			t.Fatalf("unexpected commit blessed: %v", err)
 		}
 	}
 	head, _ := Git(ctx, e.Path, "rev-parse", "HEAD")
-	if head == e.BaseCommit {
+	if head == initial {
 		t.Fatal("failure evidence removed")
 	}
 }

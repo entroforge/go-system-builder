@@ -109,7 +109,7 @@ func actualProgressRead(root string, request policy.Input, sources map[string]st
 		return nil
 	}
 	data, err := workpacket.ReadFile(readRoot, filepath.ToSlash(rel), 4<<20)
-	if err != nil || workpacket.Digest(data) != sources[path] {
+	if err != nil {
 		return nil
 	}
 	lines := strings.SplitAfter(string(data), "\n")
@@ -119,7 +119,7 @@ func actualProgressRead(root string, request policy.Input, sources map[string]st
 	if start-1+count > len(lines) || strings.Join(lines[start-1:start-1+count], "") != progressText(file["content"]) {
 		return nil
 	}
-	return &hook.ProgressRead{Path: path, Digest: sources[path], Range: fmt.Sprintf("%d:%d", start, count)}
+	return &hook.ProgressRead{Path: path, Range: fmt.Sprintf("%d:%d", start, count)}
 }
 
 // Only original professional artifact envelopes lose their known top-level
@@ -134,12 +134,12 @@ func progressProfessionalArtifact(root, ref string) (string, error) {
 	}
 	var value map[string]any
 	if json.Unmarshal(data, &value) != nil {
-		return workpacket.Digest(data), nil
+		return string(data), nil
 	}
 	for _, key := range []string{"updated_at", "occurred_at", "timestamp", "message_id", "session_id"} {
 		delete(value, key)
 	}
-	return workpacket.Digest([]byte(progressJSON(value))), nil
+	return progressJSON(value), nil
 }
 
 func progressOwnedCode(root string, patterns []string, budget *int64) (map[string]string, error) {
@@ -195,7 +195,7 @@ func progressOwnedCode(root string, patterns []string, budget *int64) (map[strin
 				return err
 			}
 			*budget -= int64(len(data))
-			hashes[ref] = workpacket.Digest(data)
+			hashes[ref] = string(data)
 			return nil
 		})
 		if err != nil {

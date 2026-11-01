@@ -48,7 +48,7 @@ func workspaceDispatch(state map[string]any, a hookctx.AssignmentContext) (works
 		if err != nil {
 			return workspace.Dispatch{}, fmt.Errorf("resolve current canonical Assignment: %w", err)
 		}
-		projected := a.AssignmentRecord != nil || a.AssignmentRecordSHA256 != "" || a.AssignmentRevision != 0
+		projected := a.AssignmentRecord != nil || a.AssignmentRevision != 0
 		if !found {
 			if projected {
 				return workspace.Dispatch{}, fmt.Errorf("AssignmentContext has no current canonical Runtime Record")
@@ -62,17 +62,13 @@ func workspaceDispatch(state map[string]any, a hookctx.AssignmentContext) (works
 		if err != nil {
 			return workspace.Dispatch{}, err
 		}
-		sha, err := record.Digest()
-		if err != nil {
-			return workspace.Dispatch{}, err
-		}
-		if !projected || a.AssignmentRecord == nil || *a.AssignmentRecord != record.Reference() || a.AssignmentRecordSHA256 != sha || a.AssignmentRevision != record.Revision ||
+		if !projected || a.AssignmentRecord == nil || *a.AssignmentRecord != record.Reference() || a.AssignmentRevision != record.Revision ||
 			dispatch.AssignmentID != canonical.AssignmentID || dispatch.Owner != canonical.Owner || dispatch.TaskID != canonical.TaskID || dispatch.TeamID != canonical.TeamID ||
 			dispatch.Role != canonical.Role || dispatch.AgentDefinitionRef != canonical.AgentDefinitionRef || dispatch.ManifestRef != canonical.ManifestRef || dispatch.DispatchMode != canonical.DispatchMode ||
 			!slices.Equal(dispatch.ResponsibilityIDs, canonical.ResponsibilityIDs) || !slices.Equal(dispatch.AuthorizationSkillRefs, canonical.AuthorizationSkillRefs) ||
 			!slices.Equal(dispatch.ReadPaths, canonical.ReadPaths) || !slices.Equal(dispatch.DeclaredOutputs, canonical.DeclaredOutputs) || !slices.Equal(dispatch.DependsOn, canonical.DependsOn) ||
 			!slices.Equal(dispatch.DoneWhen, canonical.DoneWhen) || !slices.Equal(a.WritePaths, canonical.EffectiveWritePaths) || !slices.Equal(a.RequiredChecks, canonical.RequiredChecks) ||
-			a.AssignmentRevision != canonical.AssignmentRevision || a.AssignmentRecord == nil || *a.AssignmentRecord != *canonical.AssignmentRecord || a.AssignmentRecordSHA256 != canonical.AssignmentRecordSHA256 {
+			a.AssignmentRevision != canonical.AssignmentRevision || a.AssignmentRecord == nil || *a.AssignmentRecord != *canonical.AssignmentRecord {
 			return workspace.Dispatch{}, fmt.Errorf("AssignmentContext differs from the current canonical Assignment Record")
 		}
 		return canonical, nil
@@ -137,13 +133,8 @@ func workspaceContextInputs(root string, state map[string]any, taskID string) ([
 				continue
 			}
 		}
-		data, err := workpacket.ReadFile(root, ref.Path, 8<<20)
-		if err != nil || workpacket.Digest(data) != ref.SHA256 {
-			return nil, fmt.Errorf("context formal input is unverifiable: %s", ref.Path)
-		}
-		committed, err := files.ReadFile(ref.Path)
-		if err != nil || workpacket.Digest(committed) != ref.SHA256 {
-			return nil, fmt.Errorf("context formal input differs from committed development authority: %s", ref.Path)
+		if _, err := workpacket.ReadFile(root, ref.Path, 8<<20); err != nil {
+			return nil, fmt.Errorf("context formal input is unavailable: %s", ref.Path)
 		}
 		result = append(result, ref.Path)
 	}

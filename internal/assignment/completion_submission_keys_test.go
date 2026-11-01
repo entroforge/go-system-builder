@@ -3,6 +3,7 @@ package assignment
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,24 +36,19 @@ func TestCompleteTaskCanonicalResultAliasIsDurableAndRejectsChangedAnswer(t *tes
 	stateBytes, journalBytes := registrationPairBytes(t, statePath, journalPath)
 	// Reconstruct the original Writer's pending boundary before state publish.
 	// An alias has no new Result assets and retains the original transition.
-	var previous map[string]any
-	if err := json.Unmarshal(beforeState, &previous); err != nil {
+
+	var durableState map[string]any
+	if err := json.Unmarshal(stateBytes, &durableState); err != nil {
 		t.Fatal(err)
 	}
 	var event map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(bytes.TrimPrefix(journalBytes, beforeJournal)), &event); err != nil {
 		t.Fatal(err)
 	}
-	previousJSON, _ := json.MarshalIndent(previous, "", "  ")
-	desiredJSON, _ := json.MarshalIndent(aliased.State, "", "  ")
-	eventJSON, _ := json.Marshal(event)
 	pending, _ := json.Marshal(map[string]any{
 		"schema_version": "1.0.0", "previous_revision": first.Revision,
-		"previous_state_sha256": registrationSHA(append(previousJSON, '\n')),
-		"state_sha256":          registrationSHA(append(desiredJSON, '\n')),
-		"journal_event_sha256":  registrationSHA(append(eventJSON, '\n')),
-		"request_id":            event["request_id"], "idempotency_key": event["idempotency_key"],
-		"retain_last_transition": true, "state": aliased.State, "journal_event": event,
+		"request_id": event["request_id"], "idempotency_key": event["idempotency_key"],
+		"retain_last_transition": true, "state": durableState, "journal_event": event,
 	})
 	mustWriteCanonicalRecovery(t, statePath, beforeState)
 	mustWriteCanonicalRecovery(t, journalPath, beforeJournal)
@@ -61,7 +57,21 @@ func TestCompleteTaskCanonicalResultAliasIsDurableAndRejectsChangedAnswer(t *tes
 	if recovered, err := writer.RecoverPendingOperations(); err != nil || !recovered {
 		t.Fatalf("alias pending recovery: %t %v", recovered, err)
 	}
-	assertRegistrationPairUnchanged(t, statePath, journalPath, stateBytes, journalBytes)
+	recoveredState, recoveredJournal := registrationPairBytes(t, statePath, journalPath)
+	var beforeValue, afterValue any
+	if err := json.Unmarshal(stateBytes, &beforeValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(recoveredState, &afterValue); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeValue, afterValue) {
+		t.Fatalf("recovery changed the original accepted Runtime facts: before=%v after=%v", beforeValue, afterValue)
+	}
+	if !bytes.Equal(journalBytes, recoveredJournal) {
+		t.Fatalf("recovery changed or duplicated the original journal event: before=%s after=%s", journalBytes, recoveredJournal)
+	}
+	stateBytes, journalBytes = recoveredState, recoveredJournal
 	// A fresh call creates a new Store; no in-memory replay cache participates.
 	replayed, again, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: aliasPath})
 	if err != nil || replayed.Revision != aliased.Revision || again.ResultRef != primary.ResultRef || !again.Replayed {
@@ -70,7 +80,7 @@ func TestCompleteTaskCanonicalResultAliasIsDurableAndRejectsChangedAnswer(t *tes
 	assertRegistrationPairUnchanged(t, statePath, journalPath, stateBytes, journalBytes)
 	aliasBody["summary"] = "A changed answer under the already received alias"
 	aliasPath = writeRegistrationMessage(t, fixture.root, "alias-conflict-result.json", aliasBody)
-	if _, _, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: aliasPath}); err == nil || !strings.Contains(err.Error(), "different AnswerDigest") {
+	if _, _, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{ExpectedRevision: -1, AgentID: record.OwnerAgentID, MessagePath: aliasPath}); err == nil || !strings.Contains(err.Error(), "different answer") {
 		t.Fatalf("reused alias with changed Answer must be rejected: %v", err)
 	}
 	assertRegistrationPairUnchanged(t, statePath, journalPath, stateBytes, journalBytes)

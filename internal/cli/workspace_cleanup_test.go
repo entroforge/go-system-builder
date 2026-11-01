@@ -9,13 +9,14 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/integration"
+	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
-	for _, variant := range []string{"impact-before-cleanup", "failed-main-check", "view-change-during-check", "view-symlink-during-check"} {
+	for _, variant := range []string{"impact-before-cleanup", "impact-prepare-failure", "failed-main-check", "view-change-during-check", "view-symlink-during-check"} {
 		t.Run(variant, func(t *testing.T) {
 			root, worker, p, _, _ := nativeS9WorkerFixture(t)
 
@@ -123,12 +124,33 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 					check += " && rm " + s7CaptureShellQuote(viewPath) + " && ln -s " + s7CaptureShellQuote(outside) + " " + s7CaptureShellQuote(viewPath)
 				}
 			}
+			impactTarget, err := repairLeadQuestionnairePath(root, current.State, "change-impact.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalPlanPath, originalResultPath := nativeS9TestAuthorPaths(t, root, secondPacket)
+			originals := map[string][]byte{}
+			for _, relative := range []string{originalPlanPath, originalResultPath} {
+				raw, err := os.ReadFile(filepath.Join(secondWorker, relative))
+				if err != nil {
+					t.Fatal(err)
+				}
+				originals[relative] = raw
+			}
+			if variant == "impact-prepare-failure" {
+				if !questionnaireMissing(impactTarget) {
+					t.Fatal("Impact already prepared before last Final")
+				}
+				// The actual Main check creates a filesystem failure at the original
+				// issuer's exact target, after verification and before first prepare.
+				check += " && mkdir -p " + s7CaptureShellQuote(impactTarget)
+			}
 			diag.Reset()
 			out.Reset()
 			secondArgs := []string{"integrate", "--root", root, "--assignment", second.AssignmentID, "--agent", second.AgentID, "--check-command", check}
 			code := runWorkspaceDelivery(secondArgs, &out, &diag)
 			after := repairDispatchSnapshot(t, root)
-			finals := repairArtifactRefs(repairPointerCLI(after.State), "result_refs", "result_ref", "result_sha256")
+			finals := repairArtifactRefs(repairPointerCLI(after.State), "result_refs", "result_ref")
 			impactPath, err := repairLeadQuestionnairePath(root, after.State, "change-impact.json")
 			if err != nil {
 				t.Fatal(err)
@@ -139,6 +161,77 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				}
 				t.Logf("EXPECTED Main failure leaves first Final only, no last Final/Impact and source preserved: %s", &diag)
 				return
+			}
+			var recoveredImpact []byte
+			if variant == "impact-prepare-failure" {
+				cp, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(root, second))
+				if code == 0 || len(finals) != 2 || err != nil || !found || cp.State != integration.StateAcknowledged || stringValue(repairPointerCLI(after.State)["status"]) != "impact_reconciliation" {
+					t.Fatalf("first Impact failure lost Final/ACK: %d %+v %v %s", code, cp, err, &diag)
+				}
+				if !strings.Contains(diag.String(), repairImpactPreparationRecovery(root)) || !strings.Contains(diag.String(), "not a regular file") || strings.Contains(diag.String(), "cleanup_pending") {
+					t.Fatalf("wrong original Impact failure/recovery boundary: %s", &diag)
+				}
+				for relative, original := range originals {
+					if raw, err := os.ReadFile(filepath.Join(secondWorker, relative)); err != nil || !bytes.Equal(raw, original) {
+						t.Fatalf("cleanup touched original before Impact preparation: %s %v", relative, err)
+					}
+				}
+				if raw, err := os.ReadFile(checkCount); err != nil || string(raw) != "check" {
+					t.Fatalf("Main check missing/repeated: %q %v", raw, err)
+				}
+				beforePrepare := repairDispatchRuntimeBytes(t, root)
+				if err := os.Remove(impactTarget); err != nil {
+					t.Fatal(err)
+				}
+				diag.Reset()
+				out.Reset()
+				if code := runRuntimeRepair([]string{"impact", "prepare", "--root", root}, &out, &diag); code != 0 {
+					t.Fatalf("first Impact preparation recovery: %s", &diag)
+				}
+				repairDispatchAssertUnchanged(t, root, beforePrepare)
+				var impact repair.ChangeImpactRequest
+				readRepairLeadJSON(t, impactTarget, &impact)
+				required, err := repairImpactReverificationIDs(after.State)
+				if err != nil || impact.ImpactID != "impact-"+dispatchSlug(stringValue(repairPointerCLI(after.State)["session_id"])) || impact.RuntimeID != stringValue(after.State["runtime_id"]) || len(impact.RequiredReverificationIDs) != len(required) || len(required) == 0 {
+					t.Fatalf("recovered Impact lost original responsibility: %+v %v", impact, err)
+				}
+				for i, id := range required {
+					if impact.RequiredReverificationIDs[i] != id {
+						t.Fatal("Impact changed required independent reverification")
+					}
+				}
+				// Preserve real professional draft content through both prepare and
+				// integration reentry; neither is another answer producer.
+				impact.ChangeTypes = []string{"test"}
+				if err := persistRepairLeadQuestionnaire(impactTarget, impact); err != nil {
+					t.Fatal(err)
+				}
+				recoveredImpact, err = os.ReadFile(impactTarget)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if code := runRuntimeRepair([]string{"impact", "prepare", "--root", root}, &out, &diag); code != 0 {
+					t.Fatalf("existing professional Impact prepare: %s", &diag)
+				}
+				repairDispatchAssertUnchanged(t, root, beforePrepare)
+				recoveredCP, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(root, second))
+				if err != nil || !found || recoveredCP.State != integration.StateAcknowledged || recoveredCP.VerifiedAt != cp.VerifiedAt {
+					t.Fatalf("prepare changed ACK: %+v %v", recoveredCP, err)
+				}
+				diag.Reset()
+				out.Reset()
+				code = runWorkspaceDelivery(secondArgs, &out, &diag)
+				repairDispatchAssertUnchanged(t, root, beforePrepare)
+				if raw, err := os.ReadFile(checkCount); err != nil || string(raw) != "check" {
+					t.Fatalf("Impact recovery repeated Main checks: %q %v", raw, err)
+				}
+				if raw, err := os.ReadFile(impactTarget); err != nil || !bytes.Equal(raw, recoveredImpact) {
+					t.Fatal("Impact recovery overwrote professional draft")
+				}
+				nowFinals := repairArtifactRefs(repairPointerCLI(repairDispatchSnapshot(t, root).State), "result_refs", "result_ref")
+				if len(nowFinals) != len(finals) || nowFinals[0] != finals[0] || nowFinals[1] != finals[1] {
+					t.Fatal("Impact recovery replaced Final")
+				}
 			}
 			if code == 0 || len(finals) != 2 || stringValue(repairPointerCLI(after.State)["status"]) != "impact_reconciliation" {
 				t.Fatalf("expected actual last Final with independent cleanup_pending: %d %v %s", code, finals, &diag)
@@ -210,7 +303,7 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				if body, err := os.ReadFile(impactPath); err != nil || !bytes.Equal(body, originalImpact) {
 					t.Fatal("cleanup retry rewrote Impact questionnaire")
 				}
-				nowFinals := repairArtifactRefs(repairPointerCLI(repairDispatchSnapshot(t, root).State), "result_refs", "result_ref", "result_sha256")
+				nowFinals := repairArtifactRefs(repairPointerCLI(repairDispatchSnapshot(t, root).State), "result_refs", "result_ref")
 				if len(nowFinals) != len(finals) || nowFinals[0] != finals[0] || nowFinals[1] != finals[1] {
 					t.Fatal("cleanup retry reaccepted/replaced Final")
 				}

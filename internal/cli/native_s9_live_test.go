@@ -228,7 +228,7 @@ func TestClaudeCodeNativeS9Live(t *testing.T) {
 		t.Fatal("no exact native S9 brief")
 	}
 	p := packets[0]
-	brief, _, _ := nativeS9Paths(p)
+	brief := nativeS9BriefPath(p)
 	prompt := fmt.Sprintf(`This is a real native S9 Builder slice test in disposable repository %s. Approved S8 Case/Contract and current RepairPlan are synthetic test preconditions; no professional Builder answer or result was filled by the harness.
 Your first tool call must use Claude Code native Agent, subagent_type=backend-builder, isolation=worktree. Delegate only the first repair Assignment with EXACT brief %s in the child's prompt. Tell it to read that brief and the professional question, then personally fix Add(a,b int) in internal/api/one.go to return a+b, preserving committed tests. It must personally save PlanReport with actual precheck result before editing, implement, run go test ./internal/api, commit only its product change, and save the professional Result in its actual native worktree. Return exact brief and absolute Result. The original question contains synthetic unit/assertion labels: use those exact labels and attach actual observations/evidence. Do not fabricate PASS or readback/activation. Do not launch another Claude process or use Team/workspace prepare/launch.
 After the first actual child return, use SendMessage with to=its ACTUAL returned agent ID and message carrying the exact original brief/Result references. Ask it to verify its existing committed product and Result without editing either and return the exact brief/Result again. Do not create a replacement. Wait for the actual completed task notification and original SubagentStop; immediate SendMessage success only confirms sending. Then Main's first tool must be Read of %s to inspect the original receipt/current delivery. Read the actual Main PreToolUse additionalContext returned for that call. On the next model turn, follow its exact original consumer command through Bash, adding --check-command 'go test ./internal/api' for the actual necessary Main check. Preserve the exact owner/assignment. Do not choose an integration command before receiving this context, use a second actor, or claim notification alone proves acceptance.
@@ -276,13 +276,13 @@ Stop after Main integration. Leave the second repair Assignment pending; do not 
 		t.Fatalf("no observed native source: %v", err)
 	}
 	source := registry.Executions[p.Binding.ManifestAssignmentID]
-	if source.Purpose != workspace.NativeDeliveryPurpose || source.Status != "complete" || source.BootstrapSHA256 != "" || source.PlatformSessionID != "" || source.DeliveryRef == "" {
+	if source.Purpose != workspace.NativeDeliveryPurpose || source.Status != "complete" || source.PlatformSessionID != "" || source.DeliveryRef == "" {
 		t.Fatalf("actual native delivery/integration incomplete: %+v; inspect %s", source, artifacts)
 	}
 	if _, err := os.Stat(source.Path); !os.IsNotExist(err) {
 		t.Fatal("original Main integration did not clean up")
 	}
-	if len(repairArtifactRefs(repairPointerCLI(snapshot.State), "result_refs", "", "")) != 1 {
+	if len(repairArtifactRefs(repairPointerCLI(snapshot.State), "result_refs", "")) != 1 {
 		t.Fatal("not exactly one original repair Result")
 	}
 	t.Logf("LIVE S9 native execution + resume + original Main integration PASS; artifacts %s", artifacts)

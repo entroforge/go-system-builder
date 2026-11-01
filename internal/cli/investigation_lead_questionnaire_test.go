@@ -41,7 +41,7 @@ func TestS8InvestigationLeadPreparationReadOnlyAndDraftPreserved(t *testing.T) {
 	if len(paths) != 1 || !strings.HasSuffix(paths[0], "intake.json") {
 		t.Fatalf("intake path unavailable: %#v", paths)
 	}
-	for _, event := range []string{"Stop", "Idle", "PreCompact"} {
+	for _, event := range []string{"Stop"} {
 		context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: event}, current)
 		if !strings.Contains(context, paths[0]) || !strings.Contains(context, "Not prepared yet") || !strings.Contains(context, "read-only") {
 			t.Fatalf("%s did not disclose normal preparation and exact path: %s", event, context)
@@ -49,6 +49,18 @@ func TestS8InvestigationLeadPreparationReadOnlyAndDraftPreserved(t *testing.T) {
 		if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
 			t.Fatalf("%s prepared a questionnaire: %v", event, err)
 		}
+	}
+	for _, event := range []string{"Idle"} {
+		if got := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: event}, current); got != "" {
+			t.Fatalf("%s emitted an unsupported questionnaire reminder: %s", event, got)
+		}
+		if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+			t.Fatalf("%s prepared a questionnaire: %v", event, err)
+		}
+	}
+	stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreCompact"}, current)
+	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+		t.Fatalf("read-only PreCompact projection prepared a questionnaire: %v", err)
 	}
 	context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
 	if !strings.Contains(context, paths[0]) || !strings.Contains(context, ".claude/evidence/findings/finding-1.json") || !strings.Contains(context, "grouping_rationale") {
@@ -231,12 +243,8 @@ func investigationLeadTestRoot(t *testing.T) string {
 	findingData, _ := json.MarshalIndent(finding, "", "  ")
 	findingPath := ".claude/evidence/findings/finding-1.json"
 	writeRepairLeadFile(t, root, findingPath, string(findingData))
-	mapFieldCLI(state, "entities")["findings"] = []any{map[string]any{"finding_id": "finding-1", "path": findingPath, "sha256": repairLeadDigest(findingData), "claim_id": "claim-intake-1", "assignment_id": "assignment-intake", "lens": "qa", "severity": "P1", "observation_mode": "code_inspection", "original_finder": "agent-intake", "review_round": 1, "created_at": "2026-10-01T00:00:00Z"}}
-	batch := map[string]any{"schema_version": "1.0.0", "observation_batch_id": "observation-batch-c1", "conclusion": "sealed", "evidence_id": "observation-batch-c1", "kind": "observation_batch", "runtime_id": state["runtime_id"], "producer_agent_id": "round-consumer", "producer_responsibility": "Orchestrator", "review_plan_id": "review-plan-r1", "review_round": 1, "baseline_generation": 1, "subject_digest": strings.Repeat("a", 64), "finding_ids": []string{"finding-1"}, "drain_policy": "complete_required_claims", "claim_coverage_summary": map[string]any{"total_required": 1, "pass": 0, "finding": 1, "not_applicable": 0, "blocked": 0, "blocked_claims": []any{}, "plan_revision": 1}, "unobserved_claim_ids": []any{}, "original_finder_routes": []any{}, "investigation_readiness": []any{map[string]any{"finding_id": "finding-1", "status": "ready"}}, "sealed_at": "2026-10-01T00:00:00Z", "sealed_by": "round-consumer", "revision": 1}
-	batchData, _ := json.MarshalIndent(batch, "", "  ")
-	batchPath := ".claude/evidence/observation-batch-c1.json"
-	writeRepairLeadFile(t, root, batchPath, string(batchData))
-	mapFieldCLI(state, "review")["observation_batch"] = map[string]any{"batch_id": "observation-batch-c1", "path": batchPath, "sha256": repairLeadDigest(batchData), "finding_ids": []any{"finding-1"}, "drain_policy": "complete_required_claims", "sealed_at": "2026-10-01T00:00:00Z"}
+	mapFieldCLI(state, "entities")["findings"] = []any{map[string]any{"finding_id": "finding-1", "path": findingPath, "claim_id": "claim-intake-1", "assignment_id": "assignment-intake", "lens": "qa", "severity": "P1", "observation_mode": "code_inspection", "original_finder": "agent-intake", "review_plan_id": "review-plan-r1", "created_at": "2026-10-01T00:00:00Z"}}
+	mapFieldCLI(state, "review")["round_entry"] = map[string]any{"transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil, "plan_id": "review-plan-r1"}
 	writeRepairLeadFile(t, root, ".claude/agents/investigator.md", "# Investigator\n")
 	writeRepairLeadFile(t, root, "docs/control/agent-protocol.md", "# Original Agent protocol\n")
 	repairLeadWriteState(t, root, state)
@@ -259,12 +267,12 @@ func TestS8InvestigationLeadEvidenceReferencesExposeOriginalIDsAndPaths(t *testi
 	before, _ := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
 	answerBefore, _ := os.ReadFile(questionsPath)
 	context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "Stop"}, current)
-	for _, expected := range []string{questionsPath, "EVID-S8-CURRENT -> " + filepath.Join(root, ".claude/evidence/findings/finding-1.json"), `evidence_refs=["EVID-S8-CURRENT"]`, "a bare path is not a registered or captured Hypothesis evidence reference", "test://<actual-run-or-check>", "Both reference fields are string arrays"} {
+	for _, expected := range []string{questionsPath, "EVID-S8-CURRENT -> " + filepath.Join(root, ".claude/evidence/findings/finding-1.json"), `evidence_refs=["EVID-S8-CURRENT"]`, "Both reference fields are string arrays"} {
 		if !strings.Contains(context, expected) {
 			t.Fatalf("Main authoring context omitted %q: %s", expected, context)
 		}
 	}
-	for _, excluded := range []string{"EVID-S8-OLD-GENERATION", "EVID-S8-OLD-ROUND", "EVID-S8-INVALID", "EVID-S8-INVALIDATED"} {
+	for _, excluded := range []string{"EVID-S8-OLD-GENERATION", "EVID-S8-INVALID", "EVID-S8-INVALIDATED"} {
 		if strings.Contains(context, excluded) {
 			t.Fatalf("inapplicable original evidence advertised as a usable reference: %s", excluded)
 		}
@@ -276,7 +284,7 @@ func TestS8InvestigationLeadEvidenceReferencesExposeOriginalIDsAndPaths(t *testi
 	}
 	current.State["evidence"] = []any{}
 	context = investigationLeadEvidenceReferenceContext(root, current.State)
-	if !strings.Contains(context, "No valid current-generation/current-round evidence IDs") || !strings.Contains(context, "does not invalidate the supplied frozen sources") {
+	if !strings.Contains(context, "No valid current-generation evidence IDs") || !strings.Contains(context, "does not invalidate the supplied frozen sources") {
 		t.Fatalf("absence of an index entry incorrectly invalidated supplied original evidence: %s", context)
 	}
 }

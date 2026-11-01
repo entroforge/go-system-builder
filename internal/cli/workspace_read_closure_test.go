@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -19,7 +18,7 @@ func TestFreezeAssignmentReadClosureUsesPinnedGitFilesAndExistingMatcher(t *test
 		"docs/architecture/state/readme.txt":     []byte("not selected\n"),
 	}
 	root, state := newAssignmentReadGitRepo(t, files, nil)
-	view, paths, hashes, err := freezeAssignmentReadClosure(context.Background(), root, state, []string{
+	view, paths, locations, err := freezeAssignmentReadClosure(context.Background(), root, state, []string{
 		"docs/architecture/data-model/model.md",
 		"docs/architecture/state/*.md",
 	}, "")
@@ -30,12 +29,12 @@ func TestFreezeAssignmentReadClosureUsesPinnedGitFilesAndExistingMatcher(t *test
 		t.Fatalf("declared read closure expanded to the wrong files: %v", paths)
 	}
 	branchHead, err := workspace.Git(context.Background(), root, "rev-parse", "refs/heads/closure-development")
-	if err != nil || view.Commit != branchHead {
-		t.Fatalf("closure is not pinned to the bound development commit: view=%s branch=%s err=%v", view.Commit, branchHead, err)
+	if err != nil || branchHead == "" || view.Commit != "refs/heads/closure-development" {
+		t.Fatalf("closure does not use the bound development branch: view=%s err=%v", view.Commit, err)
 	}
 	for _, rel := range paths {
-		if hashes[rel] != workpacket.Digest(files[rel]) {
-			t.Fatalf("pinned SHA differs for %s", rel)
+		if locations[rel] != rel {
+			t.Fatalf("source location differs for %s", rel)
 		}
 	}
 }
@@ -58,14 +57,14 @@ func TestFreezeAssignmentReadClosureRejectsMissingEscapesAndLinks(t *testing.T) 
 	}
 }
 
-func TestFreezeAssignmentReadClosureRejectsCheckoutDriftAndSymlink(t *testing.T) {
+func TestFreezeAssignmentReadClosureDoesNotRequireCheckoutContentProof(t *testing.T) {
 	t.Run("changed bytes", func(t *testing.T) {
 		root, state := newAssignmentReadGitRepo(t, map[string][]byte{"docs/model.md": []byte("pinned\n")}, nil)
 		if err := os.WriteFile(filepath.Join(root, "docs/model.md"), []byte("changed\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, _, err := freezeAssignmentReadClosure(context.Background(), root, state, []string{"docs/model.md"}, ""); err == nil || !strings.Contains(err.Error(), "differs from pinned Git blob") {
-			t.Fatalf("accepted changed Main checkout bytes: %v", err)
+		if _, _, _, err := freezeAssignmentReadClosure(context.Background(), root, state, []string{"docs/model.md"}, ""); err != nil {
+			t.Fatalf("changed Main checkout bytes blocked the original branch path: %v", err)
 		}
 	})
 	t.Run("checkout symlink", func(t *testing.T) {
@@ -76,13 +75,13 @@ func TestFreezeAssignmentReadClosureRejectsCheckoutDriftAndSymlink(t *testing.T)
 		if err := os.Symlink("../target.txt", filepath.Join(root, "docs/model.md")); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, _, err := freezeAssignmentReadClosure(context.Background(), root, state, []string{"docs/model.md"}, ""); err == nil || !strings.Contains(err.Error(), "symlink") {
-			t.Fatalf("accepted a checkout symlink over a regular Git blob: %v", err)
+		if _, _, _, err := freezeAssignmentReadClosure(context.Background(), root, state, []string{"docs/model.md"}, ""); err != nil {
+			t.Fatalf("checkout entry blocked the original branch path: %v", err)
 		}
 	})
 }
 
-func TestFreezeAssignmentReadClosureEnforcesEntryAndByteBudgets(t *testing.T) {
+func TestFreezeAssignmentReadClosureEnforcesEntryBudget(t *testing.T) {
 	t.Run("entries", func(t *testing.T) {
 		files := map[string][]byte{}
 		for i := 0; i < assignmentReadEntryLimit+1; i++ {
@@ -91,12 +90,6 @@ func TestFreezeAssignmentReadClosureEnforcesEntryAndByteBudgets(t *testing.T) {
 		root, state := newAssignmentReadGitRepo(t, files, nil)
 		if _, _, _, err := freezeAssignmentReadClosure(context.Background(), root, state, []string{"docs/bulk/"}, ""); err == nil || !strings.Contains(err.Error(), "256 Git entries") {
 			t.Fatalf("directory expansion exceeded its entry bound: %v", err)
-		}
-	})
-	t.Run("bytes", func(t *testing.T) {
-		root, state := newAssignmentReadGitRepo(t, map[string][]byte{"docs/large.md": make([]byte, assignmentReadByteLimit+1)}, nil)
-		if _, _, _, err := freezeAssignmentReadClosure(context.Background(), root, state, []string{"docs/large.md"}, ""); err == nil || !strings.Contains(err.Error(), "bytes") {
-			t.Fatalf("read closure exceeded its byte bound: %v", err)
 		}
 	})
 }

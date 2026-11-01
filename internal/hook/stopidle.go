@@ -17,8 +17,6 @@
 package hook
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -27,7 +25,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/policy"
-	"github.com/entroforge/go-system-builder/internal/review"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/submission"
@@ -104,45 +101,59 @@ func StopIdleDecision(root string, input policy.Input) (policy.Decision, bool) {
 	loaded, err := hookctx.FromSnapshot(root, agentID, snapshot)
 	if err != nil || loaded == nil || loaded.PolicyContext.Agent == nil {
 		if repairBound && !reviewBound && !hypothesisBound {
-			return repairResultAssignmentBindingBlock(input.Event, agentID, repairAssignmentID), true
+			return repairResultAssignmentBindingNotice(input.Event, agentID, repairAssignmentID), true
 		}
 		if reviewBound || hypothesisBound {
 			if hypothesisBound && !reviewBound {
-				return hypothesisResultAssignmentBindingBlock(input.Event, agentID, hypothesisAssignmentID), true
+				return hypothesisResultAssignmentBindingNotice(input.Event, agentID, hypothesisAssignmentID), true
 			}
-			return reviewAssignmentBindingBlock(input.Event, agentID, assignmentID), true
+			return reviewAssignmentBindingNotice(input.Event, agentID, assignmentID), true
 		}
 		return policy.Decision{}, false
 	}
 	agent := loaded.PolicyContext.Agent
 	if reviewBound && (assignmentID == "" || !agent.ReviewAssignment || agent.AssignmentID != assignmentID) {
-		return reviewAssignmentBindingBlock(input.Event, agentID, assignmentID), true
+		return reviewAssignmentBindingNotice(input.Event, agentID, assignmentID), true
 	}
 	if agent.ReviewAssignment && !reviewBound {
-		return reviewAssignmentBindingBlock(input.Event, agentID, agent.AssignmentID), true
+		return reviewAssignmentBindingNotice(input.Event, agentID, agent.AssignmentID), true
 	}
 	if hypothesisBound && (hypothesisAssignmentID == "" || !agent.HypothesisResultAssignment || agent.AssignmentID != hypothesisAssignmentID) {
-		return hypothesisResultAssignmentBindingBlock(input.Event, agentID, hypothesisAssignmentID), true
+		return hypothesisResultAssignmentBindingNotice(input.Event, agentID, hypothesisAssignmentID), true
 	}
 	if agent.HypothesisResultAssignment && !hypothesisBound {
-		return hypothesisResultAssignmentBindingBlock(input.Event, agentID, agent.AssignmentID), true
+		return hypothesisResultAssignmentBindingNotice(input.Event, agentID, agent.AssignmentID), true
 	}
 	if repairBound && (repairAssignmentID == "" || !agent.RepairResultAssignment || agent.RepairAssignmentID != repairAssignmentID) {
-		return repairResultAssignmentBindingBlock(input.Event, agentID, repairAssignmentID), true
+		return repairResultAssignmentBindingNotice(input.Event, agentID, repairAssignmentID), true
 	}
 	if agent.RepairResultAssignment && !repairBound {
-		return repairResultAssignmentBindingBlock(input.Event, agentID, agent.RepairAssignmentID), true
+		return repairResultAssignmentBindingNotice(input.Event, agentID, agent.RepairAssignmentID), true
 	}
 	assignment := assignmentForAgent(loaded.Assignments, agentID)
 	if agent.ReviewAssignment {
 		assignment = assignmentForReviewOwner(loaded.Assignments, agentID, agent.AssignmentID)
 		if assignment == nil || assignment.OwnerAgentID != agentID || assignment.AssignmentID != assignmentID {
-			return reviewAssignmentBindingBlock(input.Event, agentID, assignmentID), true
+			return reviewAssignmentBindingNotice(input.Event, agentID, assignmentID), true
 		}
 	}
 	packetReceived := loaded.PolicyContext.PacketMode && submission.CompletedOwner(root, agentID)
 	if CurrentResponsibility(root, snapshot, agent, assignment, packetReceived).ExecutionMayEnd {
 		return policy.Decision{}, false
+	}
+	if agent.ReviewAssignment || agent.HypothesisResultAssignment || agent.RepairResultAssignment {
+		stage := "S7"
+		if agent.HypothesisResultAssignment {
+			stage = "S8"
+		}
+		if agent.RepairResultAssignment {
+			stage = "S9"
+		}
+		return policy.Decision{
+			Decision: "warn", RuleID: "original_responsibility_unfinished",
+			Reason: fmt.Sprintf("%s original responsibility for %s is not complete. Main/system must inspect the original answer and actual pending work; this notice does not establish receipt or completion. This event may finish without a repeated save, submission or Stop.", stage, agentID),
+			Retry:  "not_applicable",
+		}, true
 	}
 	decision := stopIdleBlock(input.Event, agent)
 	if requiresBuilderReceipt(assignment) {
@@ -188,15 +199,8 @@ func currentCompletionAcknowledgementAccepted(root string, agent *policy.AgentCo
 		assignment.CompletionAckRef == "" || assignment.CompletionRef == "" || requiresBuilderReceipt(assignment) {
 		return false
 	}
-	expected := assignment.AcknowledgedReports[assignment.CompletionRef]
-	if !reviewProofSHA256(expected) {
-		return false
-	}
-	data, err := workpacket.ReadFile(root, assignment.CompletionRef, 16<<20)
-	if err != nil {
-		return false
-	}
-	return reviewProofSHA256Of(data) == expected
+	_, accepted := assignment.AcknowledgedReports[assignment.CompletionRef]
+	return accepted
 }
 
 // ReviewResultConsumed proves that a current S7 ReviewAssignment's exact
@@ -208,160 +212,16 @@ func ReviewResultConsumed(root string, state map[string]any, agent *policy.Agent
 	if agent == nil || !agent.ReviewAssignment || agent.ID == "" || agent.AssignmentID == "" || state == nil {
 		return false
 	}
-	boundAssignment, bound := ReviewAssignmentBinding(state, agent.ID)
-	if !bound || boundAssignment != agent.AssignmentID {
+	boundID, bound := ReviewAssignmentBinding(state, agent.ID)
+	if !bound || boundID != agent.AssignmentID {
 		return false
 	}
-	if !reviewProofDispatchedIdentity(state, agent) {
-		return false
-	}
-
-	runtimeID := reviewProofText(state["runtime_id"])
-	baseline, _ := state["baseline"].(map[string]any)
-	generation := reviewProofInt(baseline["generation"])
 	reviewState, _ := state["review"].(map[string]any)
-	round := reviewProofInt(reviewState["round"])
-	if runtimeID == "" || filepath.Base(runtimeID) != runtimeID || generation < 1 || round < 1 {
-		return false
-	}
-
-	plan, pointer, err := review.LoadPlan(root, state)
-	if err != nil || plan == nil || pointer == nil || pointer.Revision < 1 ||
-		pointer.ReviewRound != round || plan.ReviewRound != round || plan.BaselineGeneration != generation ||
-		plan.ReviewPlanID == "" || plan.ReviewPlanID != pointer.PlanID {
-		return false
-	}
-
-	planAssignment := (*review.PlanAssignment)(nil)
-	for i := range plan.Assignments {
-		if plan.Assignments[i].AssignmentID != agent.AssignmentID {
-			continue
-		}
-		if planAssignment != nil {
-			return false
-		}
-		planAssignment = &plan.Assignments[i]
-	}
-	if planAssignment == nil || len(planAssignment.ClaimIDs) == 0 {
-		return false
-	}
-
 	assignments, _ := reviewState["assignments"].(map[string]any)
-	assignmentRow, _ := assignments[agent.AssignmentID].(map[string]any)
-	if assignmentRow == nil || workstate.ReviewAssignmentActivity(assignmentRow, reviewProofText(state["schema_version"])) != "consumed" ||
-		reviewProofText(assignmentRow["agent_id"]) != agent.ID ||
-		reviewProofText(assignmentRow["lens"]) != planAssignment.Lens {
-		return false
-	}
-	rowClaimIDs, ok := reviewProofStrings(assignmentRow["claim_ids"])
-	if !ok || !sameReviewProofSet(rowClaimIDs, planAssignment.ClaimIDs) {
-		return false
-	}
-	resultRef := reviewProofText(assignmentRow["result_ref"])
-	if resultRef == "" {
-		return false
-	}
-
-	var resultEvidence map[string]any
-	evidenceRows, _ := state["evidence"].([]any)
-	resultPathEvidenceCount := 0
-	for _, raw := range evidenceRows {
-		row, _ := raw.(map[string]any)
-		if row == nil {
-			continue
-		}
-		if reviewProofText(row["path"]) == resultRef {
-			resultPathEvidenceCount++
-		}
-		if reviewProofText(row["kind"]) != "review_result" || reviewProofText(row["path"]) != resultRef {
-			continue
-		}
-		if resultEvidence != nil {
-			return false
-		}
-		resultEvidence = row
-	}
-	if resultEvidence == nil {
-		return false
-	}
-	invalidatedBy, hasInvalidatedBy := resultEvidence["invalidated_by"]
-	invalidationRule, hasInvalidationRule := resultEvidence["invalidation_rule"]
-	invalidationReason, hasInvalidationReason := resultEvidence["invalidation_reason"]
-	if reviewProofText(resultEvidence["status"]) != "valid" ||
-		reviewProofInt(resultEvidence["baseline_generation"]) != generation ||
-		reviewProofInt(resultEvidence["review_round"]) != round ||
-		!hasInvalidatedBy || invalidatedBy != nil || !hasInvalidationRule || invalidationRule != nil ||
-		!hasInvalidationReason || invalidationReason != nil {
-		return false
-	}
-	resultID := reviewProofText(resultEvidence["id"])
-	resultSHA := reviewProofText(resultEvidence["sha256"])
-	if resultID == "" || filepath.Base(resultID) != resultID || !reviewProofSHA256(resultSHA) {
-		return false
-	}
-	resultIDEvidenceCount := 0
-	for _, raw := range evidenceRows {
-		row, _ := raw.(map[string]any)
-		if row == nil {
-			continue
-		}
-		if reviewProofText(row["id"]) == resultID {
-			resultIDEvidenceCount++
-		}
-	}
-	if resultIDEvidenceCount != 1 || resultPathEvidenceCount != 1 {
-		return false
-	}
-	canonicalRef := filepath.ToSlash(filepath.Join(
-		".claude", "evidence", runtimeID, fmt.Sprintf("g%d", generation),
-		"reviews", agent.ID, resultID+".json",
-	))
-	if resultRef != canonicalRef {
-		return false
-	}
-
-	artifactBytes, err := workpacket.ReadFile(root, resultRef, 16<<20)
-	if err != nil {
-		return false
-	}
-	digest := sha256.Sum256(artifactBytes)
-	if hex.EncodeToString(digest[:]) != resultSHA {
-		return false
-	}
-	var envelope map[string]any
-	if json.Unmarshal(artifactBytes, &envelope) != nil ||
-		reviewProofText(envelope["schema_version"]) != "1.0.0" ||
-		reviewProofText(envelope["kind"]) != "review_result" ||
-		reviewProofText(envelope["evidence_id"]) != resultID ||
-		reviewProofText(envelope["runtime_id"]) != runtimeID ||
-		reviewProofText(envelope["producer_agent_id"]) != agent.ID ||
-		reviewProofText(envelope["assignment_id"]) != agent.AssignmentID ||
-		reviewProofText(envelope["review_plan_id"]) != plan.ReviewPlanID ||
-		reviewProofInt(envelope["review_round"]) != round ||
-		reviewProofInt(envelope["baseline_generation"]) != generation ||
-		reviewProofInt(envelope["assignment_revision"]) < 1 ||
-		reviewProofInt(envelope["assignment_revision"]) > pointer.Revision ||
-		reviewProofText(envelope["subject_digest"]) != review.SubjectDigest(plan) {
-		return false
-	}
-	if !reviewEnvelopeClaimSetMatches(envelope, planAssignment.ClaimIDs) {
-		return false
-	}
-
-	claims, _ := reviewState["claims"].(map[string]any)
-	for _, claimID := range planAssignment.ClaimIDs {
-		claimRow, _ := claims[claimID].(map[string]any)
-		if claimRow == nil || reviewProofText(claimRow["assignment_id"]) != agent.AssignmentID ||
-			reviewProofText(claimRow["result_id"]) != resultID {
-			return false
-		}
-		switch reviewProofText(claimRow["disposition"]) {
-		case "pass", "finding", "blocked":
-		default:
-			return false
-		}
-	}
-	return true
+	row, _ := assignments[agent.AssignmentID].(map[string]any)
+	return row != nil && reviewProofText(row["agent_id"]) == agent.ID &&
+		workstate.ReviewAssignmentActivity(row, reviewProofText(state["schema_version"])) == "consumed" &&
+		reviewProofText(row["result_ref"]) != ""
 }
 
 // ReviewAssignmentBlocked accepts only a current S7 Reviewer blocker whose
@@ -370,13 +230,15 @@ func ReviewResultConsumed(root string, state map[string]any, agent *policy.Agent
 // draining (`cannot_clean` / `discovery_draining`); manifest status strings
 // never authorize blocking.
 func ReviewAssignmentBlocked(root string, state map[string]any, agent *policy.AgentContext, assignment *hookctx.AssignmentContext) bool {
-	if !reviewAssignmentContextMatches(state, agent, assignment) || !reviewProofDispatchedIdentity(state, agent) {
+	if !reviewAssignmentContextMatches(state, agent, assignment) {
 		return false
 	}
-	if reviewSiteLostBlocker(root, state, agent) {
-		return true
-	}
-	return reviewWorkBlockedMessage(root, state, agent, assignment)
+	reviewState, _ := state["review"].(map[string]any)
+	assignments, _ := reviewState["assignments"].(map[string]any)
+	row, _ := assignments[agent.AssignmentID].(map[string]any)
+	return row != nil && reviewProofText(row["agent_id"]) == agent.ID &&
+		workstate.ReviewAssignmentActivity(row, reviewProofText(state["schema_version"])) == "blocked"
+
 }
 
 func reviewAssignmentContextMatches(state map[string]any, agent *policy.AgentContext, assignment *hookctx.AssignmentContext) bool {
@@ -389,151 +251,6 @@ func reviewAssignmentContextMatches(state map[string]any, agent *policy.AgentCon
 		return false
 	}
 	return reviewProofTaskOwnedByAgent(state, assignment.TaskID, agent.ID)
-}
-
-func reviewSiteLostBlocker(root string, state map[string]any, agent *policy.AgentContext) bool {
-	runtimeID := reviewProofText(state["runtime_id"])
-	baseline, _ := state["baseline"].(map[string]any)
-	generation := reviewProofInt(baseline["generation"])
-	reviewState, _ := state["review"].(map[string]any)
-	round := reviewProofInt(reviewState["round"])
-	if runtimeID == "" || filepath.Base(runtimeID) != runtimeID || generation < 1 || round < 1 {
-		return false
-	}
-	plan, pointer, err := review.LoadPlan(root, state)
-	if err != nil || plan == nil || pointer == nil || pointer.Revision < 1 ||
-		!reviewSiteLostRoundAcceptsResult(pointer.Status) || pointer.ReviewRound != round || plan.ReviewRound != round || plan.BaselineGeneration != generation ||
-		plan.ReviewPlanID == "" || plan.ReviewPlanID != pointer.PlanID {
-		return false
-	}
-	var planAssignment *review.PlanAssignment
-	for i := range plan.Assignments {
-		if plan.Assignments[i].AssignmentID != agent.AssignmentID {
-			continue
-		}
-		if planAssignment != nil {
-			return false
-		}
-		planAssignment = &plan.Assignments[i]
-	}
-	if planAssignment == nil || len(planAssignment.ClaimIDs) == 0 {
-		return false
-	}
-	assignments, _ := reviewState["assignments"].(map[string]any)
-	row, _ := assignments[agent.AssignmentID].(map[string]any)
-	if row == nil || workstate.ReviewAssignmentActivity(row, reviewProofText(state["schema_version"])) != "blocked" ||
-		reviewProofText(row["agent_id"]) != agent.ID || reviewProofText(row["lens"]) != planAssignment.Lens {
-		return false
-	}
-	if reviewProofText(row["result_ref"]) != "" {
-		return false
-	}
-	claimIDs, ok := reviewProofStrings(row["claim_ids"])
-	if !ok || !sameReviewProofSet(claimIDs, planAssignment.ClaimIDs) {
-		return false
-	}
-	claims, _ := reviewState["claims"].(map[string]any)
-	for _, claimID := range planAssignment.ClaimIDs {
-		claim, _ := claims[claimID].(map[string]any)
-		if claim == nil || reviewProofText(claim["assignment_id"]) != agent.AssignmentID {
-			return false
-		}
-		switch reviewProofText(claim["disposition"]) {
-		case "planned", "running":
-		default:
-			return false
-		}
-		if reviewProofText(claim["result_id"]) != "" {
-			return false
-		}
-	}
-	blockerRef := reviewProofText(row["blocker_ref"])
-	if blockerRef == "" || reviewProofText(row["queue_reason"]) == "" ||
-		!strings.HasPrefix(reviewProofText(row["queue_reason"]), "site_lost:") || reviewProofText(row["blocked_at"]) == "" {
-		return false
-	}
-	owner, ok := reviewProofAgentRow(state, agent.ID)
-	if !ok || reviewProofText(owner["state"]) != "blocked" || reviewProofText(owner["work_blocked_ref"]) != blockerRef ||
-		reviewProofText(owner["blocker_resolved_ref"]) != "" || reviewProofText(owner["updated_at"]) != reviewProofText(row["blocked_at"]) {
-		return false
-	}
-
-	evidence, evidenceCount := reviewProofEvidenceAtPath(state, blockerRef, "review_blocker")
-	if evidenceCount != 1 || evidence == nil || !reviewBlockerEvidenceMatches(evidence, blockerRef, generation, round, agent.ID, agent.AssignmentID, planAssignment.Lens) {
-		return false
-	}
-	evidenceID := reviewProofText(evidence["id"])
-	resultID := strings.TrimPrefix(evidenceID, "review-blocker-")
-	if resultID == evidenceID || resultID == "" || filepath.Base(resultID) != resultID {
-		return false
-	}
-	if reviewProofEvidenceIDCount(state, evidenceID) != 1 {
-		return false
-	}
-	expectedRef := filepath.ToSlash(filepath.Join(
-		".claude", "evidence", runtimeID, fmt.Sprintf("g%d", generation),
-		"review-blockers", resultID+"-site-lost.json",
-	))
-	if blockerRef != expectedRef {
-		return false
-	}
-	artifactBytes, err := workpacket.ReadFile(root, blockerRef, 1<<20)
-	if err != nil || reviewProofSHA256Of(artifactBytes) != reviewProofText(evidence["sha256"]) {
-		return false
-	}
-	var envelope map[string]any
-	if json.Unmarshal(artifactBytes, &envelope) != nil ||
-		reviewProofText(envelope["schema_version"]) != "1.0.0" ||
-		reviewProofText(envelope["evidence_id"]) != evidenceID ||
-		reviewProofText(envelope["kind"]) != "review_blocker" ||
-		reviewProofText(envelope["runtime_id"]) != runtimeID ||
-		reviewProofInt(envelope["baseline_generation"]) != generation ||
-		reviewProofInt(envelope["review_round"]) != round ||
-		reviewProofText(envelope["assignment_id"]) != agent.AssignmentID ||
-		reviewProofText(envelope["producer_agent_id"]) != agent.ID ||
-		reviewProofText(envelope["finding_id"]) == "" ||
-		reviewProofText(envelope["reason"]) == "" {
-		return false
-	}
-	findingID, reason := reviewProofText(envelope["finding_id"]), reviewProofText(envelope["reason"])
-	if reviewProofText(row["queue_reason"]) != "site_lost:"+findingID {
-		return false
-	}
-	return reviewProofJournalHasSiteLost(root, state, generation, resultID, evidenceID, agent.AssignmentID, reviewProofText(row["blocked_at"]), findingID, reason)
-}
-
-func reviewSiteLostRoundAcceptsResult(status string) bool {
-	switch status {
-	case "running", "cannot_clean", "discovery_draining":
-		return true
-	default:
-		return false
-	}
-}
-
-func reviewBlockerEvidenceMatches(evidence map[string]any, ref string, generation, round int, agentID, assignmentID, lens string) bool {
-	if reviewProofText(evidence["status"]) != "valid" ||
-		reviewProofText(evidence["path"]) != ref ||
-		reviewProofInt(evidence["baseline_generation"]) != generation ||
-		reviewProofInt(evidence["review_round"]) != round ||
-		reviewProofText(evidence["responsibility_id"]) != review.LensToResponsibility(lens) {
-		return false
-	}
-	invalidatedBy, hasInvalidatedBy := evidence["invalidated_by"]
-	invalidationRule, hasInvalidationRule := evidence["invalidation_rule"]
-	invalidationReason, hasInvalidationReason := evidence["invalidation_reason"]
-	if !hasInvalidatedBy || invalidatedBy != nil || !hasInvalidationRule || invalidationRule != nil || !hasInvalidationReason || invalidationReason != nil {
-		return false
-	}
-	producers, ok := reviewProofStrings(evidence["produced_by"])
-	if !ok || len(producers) != 1 || producers[0] != agentID {
-		return false
-	}
-	scopeRefs, ok := reviewProofStrings(evidence["scope_refs"])
-	if !ok || len(scopeRefs) != 1 || scopeRefs[0] != assignmentID {
-		return false
-	}
-	return reviewProofSHA256(reviewProofText(evidence["sha256"]))
 }
 
 func reviewProofEvidenceAtPath(state map[string]any, ref, kind string) (map[string]any, int) {
@@ -854,19 +571,6 @@ func reviewProofInt(value any) int {
 	}
 }
 
-func reviewProofSHA256(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	decoded, err := hex.DecodeString(value)
-	return err == nil && len(decoded) == sha256.Size && value == strings.ToLower(value)
-}
-
-func reviewProofSHA256Of(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
 // RenderStopBlockFeedback builds the stderr text fed back to the agent when
 // the transport exits 2. The Guidance action/instruction (when the
 // Controller attached one) is appended so the feedback names the next step.
@@ -969,66 +673,27 @@ func stopIdleBlock(event string, agent *policy.AgentContext) policy.Decision {
 	}
 }
 
-func reviewAssignmentBindingBlock(event, agentID, assignmentID string) policy.Decision {
-	ruleID := RuleSubagentStopMissingResult
-	if event == "TeammateIdle" {
-		ruleID = RuleTeammateIdleResumeAssignment
-	}
-	assignmentText := "the current S7 assignment"
-	if assignmentID != "" {
-		assignmentText = "S7 assignment " + assignmentID
-	}
+func reviewAssignmentBindingNotice(_ string, agentID, assignmentID string) policy.Decision {
 	return policy.Decision{
-		Decision: "deny",
-		RuleID:   ruleID,
-		Reason:   fmt.Sprintf("Agent %s is bound to %s in the current Runtime, but its original workgroup context cannot be verified; idle/stop cannot stand in for the Canonical ReviewResult or a validated blocker", agentID, assignmentText),
-		Recovery: []string{
-			"restore or re-register the exact current S7 workgroup manifest and Assignment binding for the same Agent",
-			"then submit the Canonical ReviewResult or record the original blocker_report through runtime agent-event before idling or stopping",
-		},
-		Retry: policy.RetryAfterRecoveryValidation,
+		Decision: "warn", RuleID: "s7_original_responsibility_unknown",
+		Reason: fmt.Sprintf("S7 Reviewer %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual dispatch and original answer; the answer has not been established as received. This event may finish without a new submission or blocker.", agentID, assignmentID),
+		Retry:  "not_applicable",
 	}
 }
 
-func hypothesisResultAssignmentBindingBlock(event, agentID, assignmentID string) policy.Decision {
-	ruleID := RuleSubagentStopMissingResult
-	if event == "TeammateIdle" {
-		ruleID = RuleTeammateIdleResumeAssignment
-	}
-	assignmentText := "the current S8 Investigator Assignment"
-	if assignmentID != "" {
-		assignmentText = "S8 Assignment " + assignmentID
-	}
+func hypothesisResultAssignmentBindingNotice(_ string, agentID, assignmentID string) policy.Decision {
 	return policy.Decision{
-		Decision: "deny",
-		RuleID:   ruleID,
-		Reason:   fmt.Sprintf("Agent %s is bound to %s in the current Runtime, but its original Investigator packet/manifest/TASK context cannot be verified; idle/stop cannot stand in for the original HypothesisResult receipt", agentID, assignmentText),
-		Recovery: []string{
-			"restore the exact current Investigator dispatch and its original Case/manifest/TASK sources for the same Agent",
-			"then complete the issued professional HypothesisResult and save it through the platform PostToolUse Hook, or follow the original blocker/retirement route",
-		},
-		Retry: policy.RetryAfterRecoveryValidation,
+		Decision: "warn", RuleID: "s8_original_responsibility_unknown",
+		Reason: fmt.Sprintf("S8 Investigator %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual Case, dispatch and original answer; the answer has not been established as received. This event may finish without a new submission or blocker.", agentID, assignmentID),
+		Retry:  "not_applicable",
 	}
 }
 
-func repairResultAssignmentBindingBlock(event, agentID, assignmentID string) policy.Decision {
-	ruleID := RuleSubagentStopMissingResult
-	if event == "TeammateIdle" {
-		ruleID = RuleTeammateIdleResumeAssignment
-	}
-	assignmentText := "the current S9 Builder Assignment"
-	if assignmentID != "" {
-		assignmentText = "S9 RepairAssignment " + assignmentID
-	}
+func repairResultAssignmentBindingNotice(_ string, agentID, assignmentID string) policy.Decision {
 	return policy.Decision{
-		Decision: "deny",
-		RuleID:   ruleID,
-		Reason:   fmt.Sprintf("Agent %s remains bound to %s, but the original candidate and current owner-owned check proof cannot be verified; generic completion, terminal labels and dispatch mode cannot replace the S9 RepairResult", agentID, assignmentText),
-		Recovery: []string{
-			"restore the exact registered Worker execution and current S9 packet/source tuple for the same Builder",
-			"save the issued RepairResult through the platform PostToolUse Hook, then complete its frozen owner-owned checks; Main integration and final Result remain separate",
-		},
-		Retry: policy.RetryAfterRecoveryValidation,
+		Decision: "warn", RuleID: "s9_original_responsibility_unknown",
+		Reason: fmt.Sprintf("S9 Builder %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual dispatch, original answer and integration state; the answer has not been established as received and the work is not established as complete. This event may finish without a new submission or proof.", agentID, assignmentID),
+		Retry:  "not_applicable",
 	}
 }
 

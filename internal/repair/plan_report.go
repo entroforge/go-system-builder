@@ -3,7 +3,6 @@ package repair
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,24 +64,6 @@ func CreatePlanReport(root string, request PlanReportRequest) (PlanReport, Artif
 		if !ok {
 			return PlanReport{}, ArtifactRef{}, fmt.Errorf("assignment %q is not part of RepairPlan", request.AssignmentID)
 		}
-		if len(request.RedChecks) == 0 {
-			return PlanReport{}, ArtifactRef{}, errors.New("PlanReport requires at least one red check")
-		}
-		for _, check := range request.RedChecks {
-			if strings.TrimSpace(check.Name) == "" || strings.TrimSpace(check.Command) == "" || len(check.EvidenceRefs) == 0 {
-				return PlanReport{}, ArtifactRef{}, errors.New("every red check requires name, command, and evidence_refs")
-			}
-			referenced := false
-			for _, ref := range check.EvidenceRefs {
-				if strings.TrimSpace(ref) != "" {
-					referenced = true
-					break
-				}
-			}
-			if !referenced {
-				return PlanReport{}, ArtifactRef{}, fmt.Errorf("red check %q requires a non-empty evidence reference", check.Name)
-			}
-		}
 		assertionIDs = append([]string(nil), request.AssertionIDs...)
 		if len(assertionIDs) == 0 {
 			assertionIDs = append(assertionIDs, assignment.AssertionIDs...)
@@ -99,8 +80,20 @@ func CreatePlanReport(root string, request PlanReportRequest) (PlanReport, Artif
 		paths[i] = normalizePath(paths[i])
 
 	}
-	report := PlanReport{SchemaVersion: "1.0.0", RecordType: "repair_plan_report", ReportID: request.ReportID, SessionID: session.SessionID, PlanID: plan.PlanID, AssignmentID: assignment.AssignmentID, AssertionIDs: assertionIDs, AgentID: request.AgentID, Plan: request.PlanText, RedChecks: append([]RepairCheck(nil), request.RedChecks...), ProposedPaths: paths, Status: "reported", ReportedAt: nowOr(request.OccurredAt), Receipt: request.issuedReceipt}
-	ref, err := writeImmutable(root, filepath.Join(artifactRoot, "plan-reports", request.ReportID+".json"), "repair-plan-report.schema.json", report)
+	report := PlanReport{SchemaVersion: "1.0.0", RecordType: "repair_plan_report", ReportID: request.ReportID, SessionID: session.SessionID, PlanID: plan.PlanID, AssignmentID: assignment.AssignmentID, AssertionIDs: assertionIDs, AgentID: request.AgentID, Plan: request.PlanText, RedChecks: append([]RepairCheck{}, request.RedChecks...), ProposedPaths: paths, Status: "reported", ReportedAt: nowOr(request.OccurredAt), Receipt: request.issuedReceipt}
+	if request.issuedReceipt != nil {
+		receipt := *request.issuedReceipt
+		report.Receipt = &receipt
+		ref, err := writeUniqueArtifactPrepared(root, responsibilityArtifactPath("plan-reports", request.ReportID), "repair-plan-report.schema.json", func(path string) any {
+			report.Receipt.ReportRef = path
+			return report
+		})
+		if err == nil {
+			request.issuedReceipt.ReportRef = ref.Path
+		}
+		return report, ref, err
+	}
+	ref, err := writeImmutable(root, responsibilityArtifactPath("plan-reports", request.ReportID), "repair-plan-report.schema.json", report)
 	return report, ref, err
 }
 
