@@ -64,8 +64,8 @@ func TestRuntimeRecoveryInspectAndPlanSurviveMalformedOrBOMState(t *testing.T) {
 			if !containsAny(stdout+stderr, "recovery", "plan") {
 				t.Fatalf("plan must report a recovery plan, got stdout=%s stderr=%s", stdout, stderr)
 			}
-			if !planReferencesBytes(t, root, plan, tc.raw) {
-				t.Fatalf("plan must content-address or retain damaged runtime bytes; plan=%s", planPath)
+			if !planReferencesDamagedRuntime(t, root, plan, tc.raw) {
+				t.Fatalf("plan must identify the damaged runtime by path and size; plan=%s", planPath)
 			}
 		})
 	}
@@ -115,12 +115,18 @@ func TestRuntimeRecoveryApplyRebindsREQAndQuarantinesCorruptRuntime(t *testing.T
 	if got := bound["status"]; got != "locked" {
 		t.Fatalf("recovered Runtime bound_req.status = %v, want locked", got)
 	}
+	// The rebound REQ is identified by its actual identity and path. The
+	// recovery path neither registers nor compares a REQ digest: the
+	// blueprint forbids comparing branch REQ bytes against the old
+	// `bound_req.sha256`, and forbids the transaction recovery path from
+	// computing, registering or validating any hash at all
+	// (blueprint/l4-mechanisms/L4-workflow-convergence.md:138 and :292).
 	reqBytes, err := os.ReadFile(filepath.Join(root, recoveryReqPath))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("rebound REQ file must exist after recovery: %v", err)
 	}
-	if got, want := bound["sha256"], sha256Hex(reqBytes); got != want {
-		t.Fatalf("recovered Runtime bound_req.sha256 = %v, want current REQ digest %s", got, want)
+	if !strings.Contains(string(reqBytes), "REQ-039") {
+		t.Fatalf("rebound REQ file is not the selected REQ: %s", reqBytes)
 	}
 	if runtimeID, _ := state["runtime_id"].(string); runtimeID == "" {
 		t.Fatal("recovered Runtime must have a runtime_id")
@@ -135,6 +141,25 @@ func TestRuntimeRecoveryApplyRebindsREQAndQuarantinesCorruptRuntime(t *testing.T
 	}
 }
 
+// TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker covers a
+// legacy `.commit-pending.json` that carries no target state/event.
+//
+// NOTE (SYS worker, independent review): the decisive error for this test is
+// NOT the H-11 recovery-input-drift guard. The Runtime now reports
+// "original pending Runtime operation is unresolved; preserve the existing
+// files: unsupported pending runtime commit schema \"\"".
+//
+// That behaviour matches
+// blueprint/l4-mechanisms/L4-state-transition-core.md:217 — when the current
+// material cannot establish the transaction's target or a safely processable
+// source, the unknown must be preserved and escalated to the system/Main —
+// while this test still expects the retired legacy auto-clear handling
+// (quarantine and clear the marker).
+//
+// The owner explicitly listed this test as "do not modify", so the expectation
+// is left untouched here and the remaining failure is reported as an open item
+// for owner adjudication (see SYS-REPORT.md section E). The recommended
+// resolution is to assert the preservation/escalation contract instead.
 func TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker(t *testing.T) {
 	root := newRecoveryRoot(t)
 	writeActiveRuntimeBytes(t, root, []byte(`{"runtime":"corrupt-with-pending"}`))
@@ -643,19 +668,40 @@ func decodeStateFile(t *testing.T, path string) map[string]any {
 	return decodeState(t, data)
 }
 
-func planReferencesBytes(t *testing.T, root string, plan map[string]any, want []byte) bool {
+// planReferencesDamagedRuntime asserts that the recovery plan identifies the
+// damaged Runtime artifact by its actual repository-relative path, kind and
+// size.
+//
+// The plan used to content-address the damaged bytes. That mechanism was
+// removed with the hash-proof machinery: the Hook-side writer, transaction
+// recovery and successors compute, register and validate no hash, and the
+// content-addressed recovery wiring is explicitly deleted
+// (blueprint/l4-mechanisms/L4-workflow-convergence.md:138,
+// blueprint/l4-mechanisms/L4-runtime-control-plane.md:84). The plan therefore
+// records the damaged artifact by path and size, and the exact bytes are
+// preserved and checked at apply time.
+func planReferencesDamagedRuntime(t *testing.T, root string, plan map[string]any, want []byte) bool {
 	t.Helper()
-	wantHash := sha256Hex(want)
-	if recursiveContainsString(plan, wantHash) || recursiveContainsString(plan, "loop-state.json") {
-		// The plan must contain both the damaged artifact identity and the
-		// recovery source path; the exact bytes are checked at apply time.
-		return recursiveContainsString(plan, wantHash)
+	if recursiveContainsString(plan, sha256Hex(want)) {
+		t.Fatalf("recovery plan must not content-address the damaged Runtime bytes")
 	}
-	contained, err := recoveryTreeContains(root, want)
-	if err != nil {
-		t.Fatalf("scan recovery tree for damaged bytes: %v", err)
+	inputs, _ := plan["inputs"].([]any)
+	for _, raw := range inputs {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		if row["path"] != ".claude/loop-state.json" {
+			continue
+		}
+		if row["kind"] != "runtime_state" {
+			continue
+		}
+		if size, ok := row["size"].(float64); ok && int(size) == len(want) {
+			return true
+		}
 	}
-	return contained
+	return false
 }
 
 func targetStage(plan map[string]any) (int, bool) {

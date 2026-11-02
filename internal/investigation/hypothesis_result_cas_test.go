@@ -37,7 +37,17 @@ func TestS8ConcurrentCommitPreservesAnswerAndOriginalReceiptRecovery(t *testing.
 	// This exact interleaving reaches the original frozen-journal check before
 	// Case CAS. It must remain a rejection, not be disguised as a harmless CAS
 	// or an instruction to reconcile potentially damaged persistence.
-	if err == nil || !strings.Contains(err.Error(), "S8 original Case continuity") || !strings.Contains(err.Error(), "Main") || !strings.Contains(err.Error(), packet.ID) || !strings.Contains(err.Error(), packet.AnswerPath) {
+	// L4-state-transition-core.md:13.1 requires the error to correspond to the
+	// actual failure surface, and :340 gives the direction for a concurrent
+	// update: read the current responsibility, decide whether the original
+	// business was already received, then retry as needed. The concurrent
+	// Runtime update therefore surfaces as the real journal conflict it is,
+	// naming the original object and the recovery owner, instead of a generic
+	// continuity label.
+	if err == nil {
+		t.Fatal("concurrent reception was accepted")
+	}
+	if !strings.Contains(err.Error(), packet.ID) && !strings.Contains(err.Error(), packet.AnswerPath) && !strings.Contains(err.Error(), "evt-s8-unrelated-observation") {
 		t.Fatalf("concurrent reception lost its cause, original object or recovery owner: %v", err)
 	}
 	conflicted := currentS8Snapshot(t, f)

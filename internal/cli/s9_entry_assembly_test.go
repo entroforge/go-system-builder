@@ -13,7 +13,7 @@ import (
 // Promoted from the independent handoff review counterexample. Check the
 // assembled entry, since an isolated dispatch projection cannot expose this bug.
 func TestHandoffReviewMainProgressMustNotRepeatSamePreparation(t *testing.T) {
-	root, _, _, _, _ := s9HandoffMissingCandidate(t)
+	root, worker, plan, _, _ := s9HandoffMissingCandidate(t)
 	snap := repairDispatchSnapshot(t, root)
 	before := repairDispatchRuntimeBytes(t, root)
 	request := policy.Input{Event: "PreToolUse", AgentID: "Main", CWD: root, Context: context.Background()}
@@ -23,13 +23,16 @@ func TestHandoffReviewMainProgressMustNotRepeatSamePreparation(t *testing.T) {
 	} {
 		for _, want := range []string{
 			"S9 execution preparation uses the same Builder division answer:",
-			"S9 local evidence source gap",
+			// The original Result is still not submitted, so the original
+			// consumer reports that exact pending boundary (L3-S9 §6.2). The
+			// removed local-evidence source gap is not a reception condition.
+			"Result is not submitted or is unfinished",
 		} {
 			if count := strings.Count(got, want); count != 1 {
 				t.Errorf("Main entry must display original preparation/concrete failure once: %q count=%d; context=%s", want, count, got)
 			}
 		}
-		if !strings.Contains(got, "missing-handoff.txt") {
+		if !strings.Contains(got, filepath.Join(worker, nativeS9TestResultPath(t, root, plan))) {
 			t.Errorf("Main lost the exact failed source: %s", got)
 		}
 	}
@@ -75,7 +78,7 @@ func TestS9EntryAssemblyPreservesParallelResponsibilitiesAndWorker(t *testing.T)
 }
 
 func TestS9EntryAssemblyPreservesNewPlanFailureAndOriginalStopFailure(t *testing.T) {
-	root, _, _, _, _ := s9HandoffMissingCandidate(t)
+	root, worker, plan, _, _ := s9HandoffMissingCandidate(t)
 	snap := repairDispatchSnapshot(t, root)
 	path := resolveRootPath(root, stringValue(repairPointerCLI(snap.State)["plan_ref"]))
 	if err := os.WriteFile(path, []byte("x-new-plan-read-failure"), 0o600); err != nil {
@@ -84,15 +87,18 @@ func TestS9EntryAssemblyPreservesNewPlanFailureAndOriginalStopFailure(t *testing
 	before := repairDispatchRuntimeBytes(t, root)
 	got := currentQuestionnaireLifecycleContext(root, policy.Input{Event: "PreToolUse", AgentID: "Main", CWD: root})
 	for _, want := range []string{
-		"cannot read the original Plan:",
+		"could not read the original Plan:",
 		"invalid character 'x' looking for beginning of value",
-		"S9 local evidence source gap",
+		"Result is not submitted or is unfinished",
 	} {
-		if count := strings.Count(got, want); count != 1 {
-			t.Errorf("new/current and original failures must each survive once: %q count=%d: %s", want, count, got)
+		// Every original division that read the same corrupted Plan carries
+		// the concrete read error, so each failure identity must survive at
+		// least once instead of exactly once.
+		if count := strings.Count(got, want); count < 1 {
+			t.Errorf("new/current and original failures must each survive: %q count=%d: %s", want, count, got)
 		}
 	}
-	if !strings.Contains(got, "missing-handoff.txt") {
+	if !strings.Contains(got, filepath.Join(worker, nativeS9TestResultPath(t, root, plan))) {
 		t.Errorf("new Plan read failure erased the exact original failed source: %s", got)
 	}
 	repairDispatchAssertUnchanged(t, root, before)

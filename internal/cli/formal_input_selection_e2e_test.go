@@ -204,8 +204,18 @@ func TestAcceptedS4FormalTaskFeedsS5WorkspacePrepare(t *testing.T) {
 			t.Fatal(err)
 		}
 		writeContractSource(t, root, path, "drifted accepted S4 product\n")
-		if _, err := runtime.CurrentFormalInputDocuments(root, stageSnapshot(t, root).State, fileview.Disk{Root: root}); err == nil {
-			t.Fatalf("drifted accepted S4 output remained eligible in S5: %s", path)
+		// The accepted S4 material must not be refused by a machine byte
+		// comparison. L3-S1-bind.md:297 — "系统不以散列检测内容漂移；坐标和版本
+		// 相同不证明文件字节未变，不能将未知冒充未变或已批准"; L3-S6-build.md:137 —
+		// "实际变化由 Main 按专业影响处置，系统不以替代性的全文件对比认证历史".
+		// The actual change is a professional/Main judgement, so the material
+		// stays eligible instead of being rejected by the retired gate.
+		documents, err := runtime.CurrentFormalInputDocuments(root, stageSnapshot(t, root).State, fileview.Disk{Root: root})
+		if err != nil {
+			t.Fatalf("retired machine drift gate refused the accepted S4 material %s: %v", path, err)
+		}
+		if len(documents) == 0 {
+			t.Fatalf("accepted S4 material %s disappeared after the retired gate", path)
 		}
 		writeContractSource(t, root, path, string(original))
 	}

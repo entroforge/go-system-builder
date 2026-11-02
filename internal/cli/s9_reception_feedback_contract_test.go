@@ -21,7 +21,11 @@ func TestS9ReceptionFeedbackNewExecutionKeepsOldFailureHistorical(t *testing.T) 
 			var concreteFailure string
 			if kind == "system" {
 				root, _, plan, _, _ = s9HandoffMissingCandidate(t)
-				concreteFailure = "S9 local evidence source gap"
+				// The original Result is not submitted, so the original
+				// consumer records that exact pending boundary. The removed
+				// local-evidence source gap is not a reception condition
+				// (L3-S9 §6.2: the reception does not read evidence files).
+				concreteFailure = "Result is not submitted or is unfinished"
 			} else {
 				var worker string
 				var input policy.Input

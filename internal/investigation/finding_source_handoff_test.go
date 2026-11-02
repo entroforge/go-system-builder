@@ -161,36 +161,67 @@ func TestFirstS8QuestionReusesOnlySelectedFrozenFindingSource(t *testing.T) {
 			}
 			pointer := investigationPointerFromState(t, current.State)
 			request := investigation.HypothesisRequest{ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(pointer["revision"]), CaseID: pointer["case_id"].(string), HypothesisID: "hypothesis-first-source", AssignmentID: "assignment-first-source", Statement: "the boundary loses the value", Invariant: "the value survives", Discriminator: "compare the original boundary observation", ExpectedOutcomes: map[string]any{"support": "lost", "refute": "survives"}, SourceFindingIDs: []string{"finding-2"}, EvidenceRefs: []string{ref}}
+			// A Finding that was never received stays outside the Case's source
+			// set, so a question may not name it. This source relation is saved
+			// with the original registration (L3-S8:227) and is still enforced.
 			beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-			if _, err := investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, request); err == nil {
-				t.Fatal("borrowed source from unselected Finding")
-			}
-			request.SourceFindingIDs = []string{"finding-1"}
-			if refKind != "env" {
-				writeInvestigationBytes(t, f.root, "observation.txt", []byte("drift"))
-				if _, err := investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, request); err == nil {
-					t.Fatal("first question accepted drift")
-				}
-				writeInvestigationBytes(t, f.root, "observation.txt", content)
+			unreceived := request
+			unreceived.HypothesisID = "hypothesis-unreceived-source"
+			unreceived.AssignmentID = "assignment-unreceived-source"
+			unreceived.SourceFindingIDs = []string{"finding-unreceived"}
+			if _, err := investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, unreceived); err == nil {
+				t.Fatal("question named a Finding that was never received")
 			}
 			if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
 				t.Fatal("rejected first question changed runtime/journal")
 			}
+			// L3-S8:227 keeps the source relation as the registration saved with
+			// the original record and does not extend it into platform identity
+			// authentication. The machine therefore does not restrict the
+			// question's evidence to the Findings the question declares, and
+			// L3-S8:243/L3-S8:245 keep the original Finding's frozen reference
+			// and its original semantics.
 			current, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, request)
 			if err != nil {
-				t.Fatalf("first question without prior S8 evidence or index alias: %v", err)
+				t.Fatalf("first question reusing an original frozen Finding source: %v", err)
+			}
+			// L3-S8:43 removes hash/SHA computation, registration and
+			// verification from the Hook and its consumers, and L3-S8:249 states
+			// that Main need not prove every material matches the current
+			// template before creating the first question. A changed byte count
+			// of the cited observation is therefore no longer a gate.
+			if refKind != "env" {
+				writeInvestigationBytes(t, f.root, "observation.txt", []byte("drift"))
+				pointer = investigationPointerFromState(t, current.State)
+				drifted := request
+				drifted.HypothesisID = "hypothesis-first-source-drift"
+				drifted.AssignmentID = "assignment-first-source-drift"
+				drifted.ExpectedCaseRevision = s8TestInt(pointer["revision"])
+				if _, err := investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, drifted); err != nil {
+					t.Fatalf("first question refused over a byte-level change: %v", err)
+				}
+				writeInvestigationBytes(t, f.root, "observation.txt", content)
 			}
 			owner := s8OwnerFixture{hypothesisID: request.HypothesisID, assignmentID: request.AssignmentID, ownerID: "agent-first-source", teamID: "workgroup-first-source", taskID: "TASK-842-01", dispatchMode: "plan_checkpoint"}
 			writeInvestigationBytes(t, f.root, ".claude/agents/investigator.md", mustRead(t, filepath.Join("..", "..", "agents", "investigator.md")))
 			pointer = investigationPointerFromState(t, current.State)
-			current = registerS8Owner(t, f, current, owner, pointer["path"].(string))
+			current = registerS8Owner(t, f, currentS8Snapshot(t, f), owner, pointer["path"].(string))
 			packets, err := investigation.IssueHypothesisResultPackets(f.root, f.statePath, f.journalPath, -1, owner.ownerID)
 			if err != nil || len(packets) != 1 {
 				t.Fatalf("first question issue: %v %d", err, len(packets))
 			}
 			p := packets[0]
-			if p.Inputs.EvidenceRefs[0].Attestation != "finding_source" || p.Inputs.EvidenceRefs[0].Origin != "hypothesis" {
-				t.Fatalf("lost original provenance: %+v", p.Inputs.EvidenceRefs[0])
+			// The original frozen Finding source keeps its original provenance
+			// on the issued question (L3-S8:245: the original Finding frozen
+			// reference keeps its original semantics).
+			foundProvenance := false
+			for _, item := range p.Inputs.EvidenceRefs {
+				if item.Origin == "finding" && item.SourceFindingID == "finding-1" && item.Ref == ref {
+					foundProvenance = true
+				}
+			}
+			if !foundProvenance {
+				t.Fatalf("lost original provenance: %+v", p.Inputs.EvidenceRefs)
 			}
 			answerPath := writeS8ProfessionalAnswer(t, f.root, p, "original boundary evidence explains the discrepancy")
 			var answer map[string]any
@@ -201,20 +232,31 @@ func TestFirstS8QuestionReusesOnlySelectedFrozenFindingSource(t *testing.T) {
 			a["evidence_refs"] = []string{ref}
 			a["new_hypotheses"] = []any{map[string]any{"statement": "a second boundary may cause propagation", "invariant": "the value survives propagation", "discriminator": "compare both boundary values", "expected_outcomes": map[string]any{"support": "values differ", "refute": "values agree"}, "source_finding_ids": []string{"finding-1"}, "evidence_refs": []string{ref}}}
 			newQuestion := a["new_hypotheses"].([]any)[0].(map[string]any)
+			// L3-S8:162: an Investigator's `new_hypotheses` entry is only a
+			// suggestion that the system preserves as authored. The suggestion's
+			// own source list is the author's professional content, so the
+			// machine does not reject it for naming a different Finding, and it
+			// does not turn it into a new responsibility either.
 			newQuestion["source_finding_ids"] = []string{"finding-2"}
-			writeInvestigationJSON(t, filepath.Join(f.root, answerPath), answer)
-			beforeState, beforeJournal = mustRead(t, f.statePath), mustRead(t, f.journalPath)
-			if _, err := investigation.SubmitIssuedHypothesisResult(f.root, f.statePath, f.journalPath, investigation.IssuedHypothesisResultRequest{ExpectedRevision: -1, PacketID: p.ID, OwnerAgentID: owner.ownerID, AnswerPath: answerPath}); err == nil {
-				t.Fatal("follow-up borrowed source from unselected Finding")
-			}
-			if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
-				t.Fatal("rejected follow-up changed runtime/journal")
-			}
-			newQuestion["source_finding_ids"] = []string{"finding-1"}
 			writeInvestigationJSON(t, filepath.Join(f.root, answerPath), answer)
 			current, err = investigation.SubmitIssuedHypothesisResult(f.root, f.statePath, f.journalPath, investigation.IssuedHypothesisResultRequest{ExpectedRevision: -1, PacketID: p.ID, OwnerAgentID: owner.ownerID, AnswerPath: answerPath})
 			if err != nil {
-				t.Fatalf("first source answer and follow-up consumption: %v", err)
+				t.Fatalf("authored follow-up suggestion was refused: %v", err)
+			}
+			document := readCaseDocument(t, f.root, investigationPointer(t, f)["path"].(string))
+			rows := document["hypothesis_results"].([]any)
+			suggestions, _ := rows[len(rows)-1].(map[string]any)["new_hypotheses"].([]any)
+			if len(suggestions) != 1 {
+				t.Fatalf("authored follow-up suggestion was not preserved: %v", rows[len(rows)-1])
+			}
+			suggested, _ := suggestions[0].(map[string]any)["source_finding_ids"].([]any)
+			if len(suggested) != 1 || suggested[0] != "finding-2" {
+				t.Fatalf("authored follow-up source list was rewritten: %v", suggested)
+			}
+			for _, raw := range document["hypotheses"].([]any) {
+				if raw.(map[string]any)["statement"] == "a second boundary may cause propagation" {
+					t.Fatal("suggested follow-up was registered as a new Hypothesis responsibility")
+				}
 			}
 			for _, raw := range current.State["evidence"].([]any) {
 				if raw.(map[string]any)["id"] == ref {

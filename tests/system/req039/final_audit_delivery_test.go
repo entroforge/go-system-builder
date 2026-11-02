@@ -44,15 +44,15 @@ func TestFinalAuditVerifiedTargetRewritePreservesWorker(t *testing.T) {
 }
 
 func TestFinalAuditVerifiedTargetRewriteViaTaskIntegratePreservesWorker(t *testing.T) {
-	root := freshRoot(t)
-	seedIntegrableAssignment(t, root)
-	targetBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
+	root, builder := seedCanonicalIntegrableAssignment(t)
+	target := canonicalTargetBranch(t, root)
+	targetBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", target))
 	loaded, err := hookctx.LoadFull(root, "")
 	if err != nil || len(loaded.Assignments) != 1 {
 		t.Fatalf("load registered assignment: %v", err)
 	}
 	assignment := loaded.Assignments[0]
-	insp, err := integration.Inspect(context.Background(), integration.InspectRequest{Root: root, Assignment: assignment, TargetBranch: "develop", BaselineGeneration: 1, RuntimeID: "loop-system-test"}, integration.InspectConfig{})
+	insp, err := integration.Inspect(context.Background(), integration.InspectRequest{Root: root, Assignment: assignment, TargetBranch: target, BaselineGeneration: 1, RuntimeID: "loop-system-test"}, integration.InspectConfig{})
 	if err != nil || !insp.Ready {
 		t.Fatalf("inspection: %+v %v", insp, err)
 	}
@@ -61,13 +61,13 @@ func TestFinalAuditVerifiedTargetRewriteViaTaskIntegratePreservesWorker(t *testi
 		t.Fatalf("initial verification: %+v %v", verified.Checkpoint, err)
 	}
 	runGitIn(t, root, "reset", "--hard", targetBefore)
-	code, stdout, stderr := runTaskIntegrate(t, root, "assignment-ti")
-	cpPath := integration.CheckpointPath(root, "loop-system-test", 1, "assignment-ti")
+	code, stdout, stderr := runTaskIntegrate(t, root, builder.record.AssignmentID)
+	cpPath := integration.CheckpointPathForRecord(root, builder.record.Reference())
 	cp, found, loadErr := integration.DefaultCheckpointStore().Load(cpPath)
 	if code != 0 || loadErr != nil || !found || cp.State != integration.StateComplete || cp.VerifiedAt != verified.Checkpoint.VerifiedAt {
 		t.Fatalf("existing facts lost: code=%d checkpoint=%+v load=%v stdout=%s stderr=%s", code, cp, loadErr, stdout, stderr)
 	}
-	if got := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop")); got != targetBefore {
+	if got := strings.TrimSpace(runGitIn(t, root, "rev-parse", target)); got != targetBefore {
 		t.Fatalf("task-integrate unexpectedly changed target: %s", got)
 	}
 }

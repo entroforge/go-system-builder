@@ -265,7 +265,6 @@ func TestAC001_PreToolUseAutoAdvancesOnSatisfiedGate(t *testing.T) {
 	input := `{
 		"session_id":"session-ac-001",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Write",
 		"tool_input":{"file_path":"docs/architecture/ARCHITECTURE-039.md"}
 	}`
@@ -300,7 +299,6 @@ func TestAC002_NotReadyQualityGateDoesNotBlockTool(t *testing.T) {
 	input := `{
 		"session_id":"session-ac-002",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Edit",
 		"tool_input":{"file_path":"internal/cli/controller.go"}
 	}`
@@ -412,7 +410,6 @@ func TestAC005_MilestonePersistsQualityGate(t *testing.T) {
 	input := `{
 		"session_id":"session-ac-005",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Edit",
 		"tool_input":{"file_path":"internal/cli/run.go"}
 	}`

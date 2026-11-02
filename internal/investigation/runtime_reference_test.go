@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
@@ -71,13 +70,18 @@ func TestNativeS8StopConsumesRuntimeReferenceAndReplaysOriginalReceipt(t *testin
 	draft["answer"].(map[string]any)["evidence_refs"] = []string{"runtime:ev-native-observation"}
 	writeInvestigationJSON(t, filepath.Join(f.root, path), draft)
 	stop := func(actor string) (int, string) {
-		body, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStop", "agent_id": actor, "agent_type": "investigator", "session_id": "native-reference-parent", "cwd": f.root, "last_assistant_message": filepath.Join(f.root, path)})
+		body, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "agent_id": actor, "agent_type": "investigator", "session_id": "native-reference-parent", "cwd": f.root, "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(f.root, path)}, "transcript_path": writeS8ActorTranscript(t, f.root, owner.ownerID, p.ViewPath)})
 		var out, diagnostic bytes.Buffer
-		code := cli.Run([]string{"hook", "--root", f.root, "--event", "SubagentStop"}, bytes.NewReader(body), &out, &diagnostic)
+		code := cli.Run([]string{"hook", "--root", f.root, "--event", "PostToolUse"}, bytes.NewReader(body), &out, &diagnostic)
 		return code, out.String() + diagnostic.String()
 	}
-	if code, message := stop("opaque-native-reference-actor"); code != 0 || !strings.Contains(message, "original consumer") {
-		t.Fatalf("original native Stop rejected typed reference: %d %s", code, message)
+	// L3-S8:227 and L4-hook-platform-wiring.md:122 require the natural
+	// PreToolUse / successful PostToolUse event to read the current original
+	// answer and call the same original HypothesisResult consumer. The
+	// diagnostic wording is not the contract, so the typed reference delivery
+	// is proved by the original receipt and by the absence of an alias.
+	if code, message := stop(owner.ownerID); code != 0 {
+		t.Fatalf("original native delivery rejected typed reference: %d %s", code, message)
 	}
 	accepted := currentS8Snapshot(t, f)
 	if _, found, err := investigation.IssuedHypothesisResultReceipt(f.root, accepted.State, p.ID, owner.ownerID); err != nil || !found {
@@ -89,7 +93,7 @@ func TestNativeS8StopConsumesRuntimeReferenceAndReplaysOriginalReceipt(t *testin
 		}
 	}
 	beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-	if code, message := stop("opaque-actor-after-native-resume"); code != 0 {
+	if code, message := stop(owner.ownerID); code != 0 {
 		t.Fatalf("original receipt replay failed: %d %s", code, message)
 	}
 	if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
@@ -128,13 +132,17 @@ func TestS8QuestionPreparationAndNativeStopUseOriginalRuntimeReference(t *testin
 	}
 	path := writeS8ProfessionalAnswer(t, f.root, p, "SIMULATION: the registered observation supports the actual boundary discriminator.")
 	stop := func(actor string) (int, string) {
-		body, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStop", "agent_id": actor, "cwd": f.root, "last_assistant_message": filepath.Join(f.root, path)})
+		body, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "agent_id": actor, "agent_type": "investigator", "session_id": "native-parent", "cwd": f.root, "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(f.root, path)}, "transcript_path": writeS8ActorTranscript(t, f.root, owner.ownerID, p.ViewPath)})
 		var out, diagnostic bytes.Buffer
-		code := cli.Run([]string{"hook", "--root", f.root, "--event", "SubagentStop"}, bytes.NewReader(body), &out, &diagnostic)
+		code := cli.Run([]string{"hook", "--root", f.root, "--event", "PostToolUse"}, bytes.NewReader(body), &out, &diagnostic)
 		return code, out.String() + diagnostic.String()
 	}
-	if code, output := stop("opaque-question-source-actor"); code != 0 || !strings.Contains(output, "original consumer") {
-		t.Fatalf("native Stop: %d %s", code, output)
+	// The natural PreToolUse / successful PostToolUse event is the §5.2
+	// reception chain (L4-hook-platform-wiring.md:122); the diagnostic wording
+	// is not the contract, so delivery is proved by the original receipt and
+	// by the absence of a prefixed alias.
+	if code, output := stop(owner.ownerID); code != 0 {
+		t.Fatalf("native delivery: %d %s", code, output)
 	}
 	accepted := currentS8Snapshot(t, f)
 	if _, ok, err := investigation.IssuedHypothesisResultReceipt(f.root, accepted.State, p.ID, owner.ownerID); err != nil || !ok {
@@ -146,7 +154,7 @@ func TestS8QuestionPreparationAndNativeStopUseOriginalRuntimeReference(t *testin
 		}
 	}
 	beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-	if code, output := stop("opaque-question-source-resumed"); code != 0 {
+	if code, output := stop(owner.ownerID); code != 0 {
 		t.Fatalf("native replay: %d %s", code, output)
 	}
 	if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {

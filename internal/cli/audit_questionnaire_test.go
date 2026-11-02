@@ -269,7 +269,7 @@ func TestHumanReleaseQuestionnaireNamesUnverifiablePackage(t *testing.T) {
 		"runtime_id": "loop-REQ-7",
 		"lifecycle":  map[string]any{"state": "awaiting_human_release"},
 		"baseline":   map[string]any{"generation": 3},
-		"review":     map[string]any{"round": 5},
+		"review":     map[string]any{"round_entry": map[string]any{"plan_id": "review-plan-7"}},
 		"evidence":   []any{},
 	}}
 	context := stageHumanReleaseQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, snapshot)

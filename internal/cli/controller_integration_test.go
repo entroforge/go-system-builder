@@ -189,15 +189,24 @@ func TestPreToolUseObservesUnknownMCPForWorker(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("unknown MCP must remain available to the Worker: code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
-		t.Fatalf("Hook output is not JSON: %v; output=%s", err, stdout.String())
+	out := strings.TrimSpace(stdout.String())
+	if out != "" {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(out), &payload); err != nil {
+			t.Fatalf("Hook output is not JSON: %v; output=%s", err, out)
+		}
+		specific, _ := payload["hookSpecificOutput"].(map[string]any)
+		if specific["permissionDecision"] == "deny" {
+			t.Fatalf("Worker graph listener must not deny tools, got %v", specific["permissionDecision"])
+		}
+		// An ordinary Worker observation stays quiet: the Main control-cycle
+		// projection is not injected into a native Agent
+		// (L4-agent-guidance.md:451, L4-runtime-control-plane.md:239).
+		if strings.Contains(out, "QUALITY_GATE") {
+			t.Fatalf("Worker payload received the Main control-cycle projection: %s", out)
+		}
 	}
-	specific, _ := payload["hookSpecificOutput"].(map[string]any)
-	if specific["permissionDecision"] == "deny" {
-		t.Fatalf("Worker graph listener must not deny tools, got %v", specific["permissionDecision"])
-	}
-	if !strings.Contains(stdout.String(), "QUALITY_GATE") || strings.Contains(stdout.String(), "unknown_mcp_tool") {
-		t.Fatalf("Worker listener must preserve graph feedback without tool policy: %s", stdout.String())
+	if strings.Contains(stdout.String(), "unknown_mcp_tool") {
+		t.Fatalf("unknown MCP must not become a tool policy: %s", stdout.String())
 	}
 }

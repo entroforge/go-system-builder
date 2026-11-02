@@ -15,14 +15,13 @@ import (
 // TestCT03917_SubagentStopIdempotentResumeAfterMerge covers CT-039-17:
 // repeated explicit integration completes cleanup without re-merging.
 func TestCT03917_SubagentStopIdempotentResumeAfterMerge(t *testing.T) {
-	root := freshRoot(t)
-	wt := seedIntegrableAssignment(t, root)
-	code, out, errText := runTaskIntegrate(t, root, "assignment-ti")
+	root, builder := seedCanonicalIntegrableAssignment(t)
+	code, out, errText := runTaskIntegrate(t, root, builder.record.AssignmentID)
 	if code != 0 {
 		t.Fatalf("initial integration: %d %s %s", code, out, errText)
 	}
 	head := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
-	cpPath, _ := readIntegrationCheckpoint(t, root)
+	cpPath := canonicalBuilderCheckpoint(t, builder)
 	data, err := os.ReadFile(cpPath)
 	if err != nil {
 		t.Fatal(err)
@@ -37,17 +36,25 @@ func TestCT03917_SubagentStopIdempotentResumeAfterMerge(t *testing.T) {
 	if err = os.WriteFile(cpPath, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	code, out, errText = runTaskIntegrate(t, root, "assignment-ti")
+	code, out, errText = runTaskIntegrate(t, root, builder.record.AssignmentID)
 	if code != 0 {
 		t.Fatalf("cleanup recovery: %d %s %s", code, out, errText)
 	}
-	if readIntegrationCheckpointState(t, root) != "complete" {
+	resumed, err := os.ReadFile(cpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered map[string]any
+	if err := json.Unmarshal(resumed, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered["state"] != "complete" {
 		t.Fatalf("cleanup response loss did not recover: %s %s", out, errText)
 	}
 	if strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD")) != head {
 		t.Fatal("recovery remerged")
 	}
-	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+	if _, err := os.Stat(builder.worker); !os.IsNotExist(err) {
 		t.Fatal("removed checkout was recreated")
 	}
 }

@@ -250,8 +250,15 @@ func TestLifecycleVerbChainE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqRecord, _ := receiptMap["req"].(map[string]any)
-	if reqRecord["sha256_before"] == reqRecord["sha256_after"] {
-		t.Fatal("receipt must carry distinct before/after fingerprints")
+	// The archive receipt records the real status transition; it no longer
+	// registers before/after digests (L4-workflow-convergence.md:250).
+	if reqRecord["status_before"] != "locked" || reqRecord["status_after"] != "archived" {
+		t.Fatalf("archive receipt did not record the real status transition: %v", reqRecord)
+	}
+	for _, key := range []string{"sha256_before", "sha256_after"} {
+		if _, present := reqRecord[key]; present {
+			t.Fatalf("archive receipt must not register a REQ digest %q: %v", key, reqRecord)
+		}
 	}
 	if state, _ := lifecycle(); state != "inactive" {
 		t.Fatalf("post-rollover lifecycle = %s, want inactive", state)

@@ -20,21 +20,20 @@ import (
 func TestNativeS9MainCompletedReturnContinuesOriginalSourceAfterCleanup(t *testing.T) {
 	root, worker, p, stop, _ := nativeS9WorkerFixture(t)
 	repairLeadGit(t, worker, "reset", "--hard", repairLeadGit(t, root, "rev-parse", "HEAD"))
-	blocker := filepath.Join(root, ".claude/evidence/s9-source", p.ID, "typed")
-	writeRepairLeadFile(t, root, filepath.ToSlash(filepath.Join(".claude/evidence/s9-source", p.ID, "typed")), "injected typed publication failure")
 	stop.Event = "SubagentStop"
 	var diagnostic bytes.Buffer
 	nativeS9Hook(root, stop, &bytes.Buffer{}, &diagnostic)
 	snap := repairDispatchSnapshot(t, root)
 	registry, err := workspace.Decode(snap.State)
-	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef != "" {
-		t.Fatalf("fault not reached: %v %s", err, &diagnostic)
+	// The Stop is one natural event of the single S7-S9 reception chain and
+	// already receives the person's original Result. The separate archived
+	// typed publication and its content digest were removed, so there is no
+	// publication step left to interrupt here.
+	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef == "" {
+		t.Fatalf("original Result was not received: %v %s", err, &diagnostic)
 	}
 	repairLeadGit(t, root, "worktree", "remove", "--force", worker)
 	repairLeadGit(t, root, "branch", "-D", "native-s9-test")
-	if err := os.Remove(blocker); err != nil {
-		t.Fatal(err)
-	}
 	brief := nativeS9BriefPath(p)
 	original := filepath.Join(root, brief)
 	invoke := func(prompt string, response map[string]any, failure string) string {
@@ -123,8 +122,12 @@ func TestNativeS9MainCompletedReturnContinuesExactLiveDSource(t *testing.T) {
 		t.Fatalf("original source: %v %s", err, &diagnostic)
 	}
 	e := registry.Executions[p.Binding.ManifestAssignmentID]
-	if e.Path != worker || e.DeliveryRef != "" {
-		t.Fatalf("did not preserve incomplete D source: %#v %s", e, &diagnostic)
+	// The Stop is one natural event of the single S7-S9 reception chain, so
+	// it already receives the person's original Result from the live D source.
+	// The archived retention/publication step and its content digest no
+	// longer exist, so the D source is no longer left unreceived here.
+	if e.Path != worker || e.DeliveryRef == "" {
+		t.Fatalf("live D source was not received from the original worktree: %#v %s", e, &diagnostic)
 	}
 	if err := os.Remove(filepath.Join(worker, unknown)); err != nil {
 		t.Fatal(err)

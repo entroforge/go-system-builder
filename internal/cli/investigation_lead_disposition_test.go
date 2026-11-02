@@ -42,7 +42,10 @@ func TestS8InvestigationLeadDispositionAvailableBeforeAnyHypothesisResult(t *tes
 	}
 	writeRepairLeadJSON(t, paths[0], investigationLeadRouteAnswer{Route: "s9_repair", RouteReason: "fixture requests repair before causal closure"})
 	feedback := investigationLeadTestSave(t, root, paths[0])
-	if !strings.Contains(feedback, "original route validation") || !strings.Contains(feedback, "unexplained") || investigationLeadTestSnapshot(t, root).Revision != current.Revision {
+	// The original consumer owns the qualification. The current feedback
+	// names the missing professional field of the route answer instead of
+	// the removed machine wording, and it must not write Runtime.
+	if !strings.Contains(feedback, "original route validation") || !strings.Contains(feedback, "primary_root_cause") || investigationLeadTestSnapshot(t, root).Revision != current.Revision {
 		t.Fatalf("s9 qualification did not stay with the original consumer: %s", feedback)
 	}
 	writeRepairLeadJSON(t, paths[0], investigationLeadRouteAnswer{Route: "s2_spec_rework", RouteReason: "the specification contradicts the established source authority"})
@@ -148,7 +151,10 @@ func TestS8InvestigationLeadDispositionInconclusiveInvestigateMoreAndSpecExit(t 
 			current := investigationLeadTestSnapshot(t, root)
 			context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
 			paths := investigationLeadDispositionPaths(root, current.State)
-			if len(paths) != 1 || !strings.Contains(context, "inconclusive remain") {
+			// An unresolved explanation is continued by appending the next
+			// discriminating question to the original hypotheses answer; no
+			// route registration is a prerequisite for that.
+			if len(paths) != 1 || !strings.Contains(context, "directly append") || !strings.Contains(context, "No investigate_more route registration is a prerequisite") {
 				t.Fatalf("received inconclusive was treated as unfinished work: %s", context)
 			}
 			writeRepairLeadJSON(t, paths[0], investigationLeadRouteAnswer{Route: route, RouteReason: "the original evidence requires this professional disposition"})
@@ -201,9 +207,20 @@ func TestS8InvestigationLeadDispositionExplainsOriginalCausalAnswerShape(t *test
 	root, _ := investigationLeadDispositionResults(t, "supported")
 	current := investigationLeadTestSnapshot(t, root)
 	context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
-	for _, field := range []string{`"trigger"`, `"violated_invariant"`, `"faulty_mechanism"`, `"propagation"`, `"symptoms":[`, `"paths":[`, "test | contract | type | monitoring | process", "evidence_refs is a non-empty string array", "Original sealed S7 Finding references from the accepted Case/Batch source closure may be reused as-is", "new paths must be captured by the original S8 consumer", "do not calculate or assemble them", `path:<actual-source-path>#sha256=<actual-sha256>`, "not an exclusive route requirement", "no_competing_hypothesis", "Use no_competing_hypothesis only when no alternative mechanism was credible", "competing_hypothesis_assessment", "A second supported hypothesis is not a refutation", "Do not invent a refuted result"} {
+	// The route authoring guidance must still name the professional objects
+	// the original consumer reads. The removed machine forms (the sealed
+	// S7 Finding/Batch source closure, the sha256 evidence form and the
+	// per-hypothesis registration restriction) are no longer required, and
+	// the recommended free-object field names (L3-S8 §9.2) are not a
+	// mechanical required-field list.
+	for _, field := range []string{"primary_root_cause", "causal_model", "blast_radius", "detection_gap", "Explain important unknowns and credible alternatives honestly", "Suggested new_hypotheses remain suggestions", "No count of results", "proves causal closure", "Use actual source and file references without evidence recapture"} {
 		if !strings.Contains(context, field) {
 			t.Fatalf("route authoring guidance omitted original professional shape %q: %s", field, context)
+		}
+	}
+	for _, removed := range []string{"#sha256=", "ObservationBatch", "sealed S7 Finding"} {
+		if strings.Contains(context, removed) {
+			t.Fatalf("route authoring guidance still uses the removed machine form %q: %s", removed, context)
 		}
 	}
 	for _, hypothesisOnly := range []string{"For Hypothesis.evidence_refs only", "not evidence_refs values", "values are registered evidence IDs or real existing execution anchors"} {
@@ -231,7 +248,11 @@ func TestS8UnresolvedResultsAppendDirectlyWithoutRoutePrerequisite(t *testing.T)
 	root, questions := investigationLeadDispositionResults(t, "inconclusive")
 	current := investigationLeadTestSnapshot(t, root)
 	context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
-	for _, value := range []string{questions, "directly append", "No investigate_more route registration is a prerequisite", "inclusion_reason", "excluded_surfaces", "missing_assertion", "detection_gap.explanation"} {
+	// The unresolved handoff must name the original hypotheses answer and
+	// state that no route registration is a prerequisite. The recommended
+	// free-object field names are not a mechanical required-field list
+	// (L3-S8 §9.2).
+	for _, value := range []string{questions, "directly append", "No investigate_more route registration is a prerequisite"} {
 		if !strings.Contains(context, value) {
 			t.Fatalf("unresolved handoff omitted %q: %s", value, context)
 		}

@@ -20,8 +20,28 @@ func TestCT03912ControllerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.QualityGate.TransitionCommitted {
-		t.Fatalf("status=%s err=%q missing=%v", result.QualityGate.Status, result.Error, result.QualityGate.Missing)
+	// L3-S6 §12.1/§13.1 and L4-workflow-convergence §"S6／S9 当前工作区":
+	// the TR-006 denominator is the canonical Assignment Record path. The
+	// legacy completion-report envelope plus a durable worktree checkpoint
+	// is not a current legal delivery, so the frozen/legacy projection is
+	// gone and the gate stays not ready, naming the canonical
+	// responsibility each batch TASK still lacks.
+	if result.QualityGate.TransitionCommitted {
+		t.Fatalf("legacy completion facts must not open the TR-006 exit: status=%s err=%q missing=%v",
+			result.QualityGate.Status, result.Error, result.QualityGate.Missing)
+	}
+	for _, taskID := range []string{"TASK-039-01", "TASK-039-02"} {
+		want := "builder_responsibility:" + taskID
+		found := false
+		for _, missing := range result.QualityGate.Missing {
+			if missing == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("gate must name the missing canonical responsibility %q: status=%s missing=%v",
+				want, result.QualityGate.Status, result.QualityGate.Missing)
+		}
 	}
 }
 

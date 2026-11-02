@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,9 +100,19 @@ func TestDefaultProgressShadowRecordsWithoutContext(t *testing.T) {
 			t.Fatal("default shadow promoted by payload", code, out.String(), errout.String())
 		}
 	}
-	files, err := filepath.Glob(filepath.Join(root, ".claude/hook-notices/work-progress/*.json"))
-	if err != nil || len(files) != 1 {
-		t.Fatal(files, err)
+	// The shadow record lives under the current diagnostic cache identity.
+	var files []string
+	walkErr := filepath.WalkDir(filepath.Join(root, ".claude/hook-notices/work-progress"), func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(path, ".json") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if walkErr != nil || len(files) != 1 {
+		t.Fatal(files, walkErr)
 	}
 	data, err := os.ReadFile(files[0])
 	if err != nil {

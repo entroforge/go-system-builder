@@ -29,7 +29,7 @@ func TestRepairResultPacketMatchesOnlyExactRegisteredExecution(t *testing.T) {
 			t.Fatalf("unregistered alias matched original authority: %v", selected)
 		}
 	})
-	t.Run("frozen assignment cannot substitute another ID", func(t *testing.T) {
+	t.Run("packet content cannot substitute another registered execution", func(t *testing.T) {
 		packet, _, state := repairResultMatcherFixture(t, "assignment-registered", "repair-assignment-canonical", "assignment-registered")
 		var frozen map[string]any
 		if err := json.Unmarshal(packet.Inputs.Execution, &frozen); err != nil {
@@ -37,16 +37,40 @@ func TestRepairResultPacketMatchesOnlyExactRegisteredExecution(t *testing.T) {
 		}
 		frozen["assignment_id"] = "assignment-forged"
 		packet.Inputs.Execution, _ = json.Marshal(frozen)
+		// The embedded projection is not a qualification: the matcher resolves
+		// the exact registered execution from the binding identity
+		// (L4-workflow-convergence.md:250/269).
+		selected, err := runtime.RepairResultExecution(state, packet)
+		if err != nil {
+			t.Fatalf("registered execution could not be resolved: %v", err)
+		}
+		if selected["assignment_id"] != "assignment-registered" {
+			t.Fatalf("matcher resolved a forged execution: %v", selected)
+		}
+		packet.Binding.Sources.RepairAssignmentID = "assignment-unregistered"
+		packet.Binding.Sources.ManifestAssignmentID = "assignment-unregistered"
 		if selected, err := runtime.RepairResultExecution(state, packet); err == nil {
-			t.Fatalf("forged frozen execution accepted: %v", selected)
+			t.Fatalf("unregistered execution accepted: %v", selected)
 		}
 	})
-	t.Run("frozen definition must equal current registered definition", func(t *testing.T) {
+	t.Run("matcher reports the actual registered definition", func(t *testing.T) {
 		packet, execution, state := repairResultMatcherFixture(t, "assignment-registered", "repair-assignment-canonical", "assignment-registered")
 		current := state["workspace"].(map[string]any)["executions"].(map[string]any)[execution.AssignmentID].(map[string]any)
 		current["write_paths"] = []any{"src/other/**"}
-		if selected, err := runtime.RepairResultExecution(state, packet); err == nil {
-			t.Fatalf("drifted actual registered definition accepted: %v", selected)
+		// The framework does not re-authenticate a registered definition by
+		// digest and does not claim to detect external rewrites
+		// (L4-workflow-convergence.md:250/271): it reports the actual
+		// registered execution, not the packet's frozen copy.
+		selected, err := runtime.RepairResultExecution(state, packet)
+		if err != nil {
+			t.Fatalf("registered execution could not be resolved: %v", err)
+		}
+		if selected["assignment_id"] != "assignment-registered" {
+			t.Fatalf("matcher resolved another execution: %v", selected)
+		}
+		paths, _ := selected["write_paths"].([]any)
+		if len(paths) != 1 || paths[0] != "src/other/**" {
+			t.Fatalf("matcher did not report the actual registered definition: %v", selected)
 		}
 	})
 }

@@ -260,8 +260,19 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 	}
 	before := repairDispatchRuntimeBytes(t, root)
 	baselineCode, baseline := call()
-	if baselineCode != 2 {
-		t.Fatalf("fixture did not exercise original frozen unfinished Stop gate: %d %s", baselineCode, baseline)
+	// The retired frozen unfinished Stop gate is gone. L4-workflow-convergence.md:342 —
+	// "删除旧 C／D、frozen、typed、Candidate／Final、source pin 的并行接收、来源证明及
+	// 恢复接线"; L4-hook-platform-wiring.md:83 — "当前消费者按当前真实责任及派发关联
+	// 处理". The current consumer reports the honest fact instead of blocking the
+	// return: the answer has not been established as received and the work is not
+	// established as complete.
+	if baselineCode != 0 {
+		t.Fatalf("retired frozen unfinished Stop gate still blocks the return: %d %s", baselineCode, baseline)
+	}
+	for _, want := range []string{"has not been established as received", "not established as complete"} {
+		if !strings.Contains(baseline, want) {
+			t.Fatalf("unfinished return did not report %q: %s", want, baseline)
+		}
 	}
 	marker := stopCommitPending(t, root)
 	code, feedback := call()

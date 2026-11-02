@@ -540,7 +540,14 @@ func TestNativeS6UnifiedReworkAndRecoveryUseOriginalRecordWriter(t *testing.T) {
 	if stageSnapshot(t, root).Revision != revised.Revision {
 		t.Fatal("revision replay issued another responsibility")
 	}
-	stageCLI(t, append(append([]string(nil), args...), "--revision-intent-key", "ignored-old-key")...)
+	// The revision identity is derived from real facts; the removed
+	// author-supplied content key must not be offered again and must not
+	// change the current original revision (L4-workflow-convergence.md:250/269).
+	var legacyOut, legacyErr bytes.Buffer
+	legacyArgs := append(append([]string(nil), args...), "--revision-intent-key", "ignored-old-key")
+	if code := cli.Run(legacyArgs, nil, &legacyOut, &legacyErr); code == 0 {
+		t.Fatalf("removed revision intent key was accepted: %s", legacyOut.String())
+	}
 	if stageSnapshot(t, root).Revision != revised.Revision {
 		t.Fatal("legacy key changed the current original revision")
 	}
@@ -637,13 +644,24 @@ func TestNativeS6HandbackUsesInitialTaskAndActualArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked := stageCLI(t, "runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID)
-	if !strings.Contains(blocked, "changed after accepted Result") {
-		t.Fatalf("unreported source borrowed receipt: %s", blocked)
+	// A post-report commit is no longer qualified by a recorded source head
+	// (L4-worktree-governance.md:43, L4-workflow-convergence.md:300): the
+	// framework does not re-verify Git OIDs as proof, and Main integrates the
+	// actual current worktree content and judges it.
+	merged := stageCLI(t, "runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID)
+	if strings.Contains(merged, "changed after accepted Result") {
+		t.Fatalf("integration still qualified the delivery by a recorded source head: %s", merged)
 	}
 	mainAfter, err := workspace.Git(t.Context(), root, "rev-parse", "HEAD")
-	if err != nil || mainBefore != mainAfter {
-		t.Fatal("unreported source was merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainBefore == mainAfter {
+		t.Fatal("integration did not merge the actual current worktree content")
+	}
+	content, err := os.ReadFile(filepath.Join(root, "src/pkg/proof.txt"))
+	if err != nil || !strings.Contains(string(content), "unreported new source") {
+		t.Fatalf("merged tree does not carry the actual current worktree content: %v", err)
 	}
 
 }

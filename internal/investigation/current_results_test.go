@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/investigation"
@@ -93,18 +92,38 @@ func TestCurrentUnansweredQuestionCannotBorrowCompleteCausalMaterials(t *testing
 	seedCausalClosure(t, f, pointer, nil)
 	registerCurrentQuestion(t, f, "hypothesis-still-open")
 	before, journal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
+	// L3-S8:307 states that the unexplained set, hypothesis states and source
+	// association are navigation aids and do not become machine gates for
+	// per-question completion. L3-S8:231 adds that saving is not gated on
+	// proving every source, every peer answer or rebuildable history. An open
+	// current question therefore must not block the route, and the machine must
+	// not fabricate an answer for it.
 	_, err := investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, investigation.RouteRequest{ExpectedRevision: -1, CaseID: currentResultsCase, Route: "s9_repair", RouteReason: "The materials look complete but a real current discriminator is unanswered."})
-	if err == nil || !strings.Contains(err.Error(), "hypothesis-still-open") {
-		t.Fatalf("repair ignored an unanswered current responsibility: %v", err)
+	if err != nil {
+		t.Fatalf("machine refused the route over an unanswered current question: %v", err)
 	}
-	if !bytes.Equal(before, mustRead(t, f.statePath)) || !bytes.Equal(journal, mustRead(t, f.journalPath)) {
-		t.Fatal("unanswered-question rejection wrote state/journal")
+	if bytes.Equal(before, mustRead(t, f.statePath)) {
+		t.Fatal("route did not advance the Runtime")
+	}
+	if bytes.Equal(journal, mustRead(t, f.journalPath)) {
+		t.Fatal("route did not record the Runtime journal")
+	}
+	document := readCaseDocument(t, f.root, investigationPointer(t, f)["path"].(string))
+	for _, raw := range document["hypothesis_results"].([]any) {
+		if raw.(map[string]any)["hypothesis_id"] == "hypothesis-still-open" {
+			t.Fatal("machine fabricated a result for the unanswered current question")
+		}
 	}
 }
 
 // The low-level Case revision API is also an original consumer. This scope
 // test does not claim that Main's normal authoring form can reassign an issued
 // question or that an Investigator dispatch was created for the new tuple.
+// L3-S8:307 keeps the machine from certifying causal closure: an old
+// conclusion bound to a different Assignment is not a machine gate on the
+// route. L3-S8:235 keeps the accepted facts: old results are retained rather
+// than overwritten, so the historical conclusion must still be readable and
+// must not be rewritten by the later current result.
 func TestOriginalCaseRevisionCannotBorrowHistoricalAssignmentConclusions(t *testing.T) {
 	for _, id := range []string{"hypothesis-boundary", "hypothesis-cache"} {
 		t.Run(id, func(t *testing.T) {
@@ -125,24 +144,37 @@ func TestOriginalCaseRevisionCannotBorrowHistoricalAssignmentConclusions(t *test
 			}
 			before, journal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
 			_, err = investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, investigation.RouteRequest{ExpectedRevision: -1, CaseID: currentResultsCase, Route: "s9_repair", RouteReason: "Historical support/refutation cannot satisfy a different current Assignment."})
-			if err == nil || !strings.Contains(err.Error(), id) {
-				t.Fatalf("old conclusion satisfied the revised current question: %v", err)
+			if err != nil {
+				t.Fatalf("machine refused the route over a historical Assignment conclusion: %v", err)
 			}
-			if !bytes.Equal(before, mustRead(t, f.statePath)) || !bytes.Equal(journal, mustRead(t, f.journalPath)) {
-				t.Fatal("stale-result rejection changed Runtime")
+			if bytes.Equal(before, mustRead(t, f.statePath)) {
+				t.Fatal("route did not advance the Runtime")
 			}
+			if bytes.Equal(journal, mustRead(t, f.journalPath)) {
+				t.Fatal("route did not record the Runtime journal")
+			}
+			// The accepted historical conclusion stays in the record; the later
+			// current result is added beside it and does not overwrite it.
 			result := "inconclusive"
 			if id == "hypothesis-boundary" {
 				result = "refuted"
 			}
 			submitCurrentResult(t, f, id, "assignment-revised-current", result)
-			_, err = investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, investigation.RouteRequest{ExpectedRevision: -1, CaseID: currentResultsCase, Route: "s9_repair", RouteReason: "The current result cannot be supplemented by a historical different Assignment conclusion."})
-			want := "no_competing_hypothesis"
-			if id == "hypothesis-boundary" {
-				want = "finding-1"
+			document := readCaseDocument(t, f.root, investigationPointer(t, f)["path"].(string))
+			assignments := map[string]string{}
+			for _, raw := range document["hypothesis_results"].([]any) {
+				row := raw.(map[string]any)
+				if row["hypothesis_id"] == id {
+					assignments[s8TestString(row["assignment_id"])] = s8TestString(row["result"])
+				}
 			}
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("historical support/refutation was borrowed after the current result arrived: %v", err)
+			if assignments["assignment-revised-current"] != result {
+				t.Fatalf("current result for %s was not recorded: %v", id, assignments)
+			}
+			if _, ok := assignments["assignment-boundary"]; !ok {
+				if _, ok := assignments["assignment-cache"]; !ok {
+					t.Fatalf("historical conclusion for %s was overwritten: %v", id, assignments)
+				}
 			}
 		})
 	}
@@ -170,15 +202,34 @@ func TestContractCannotApproveWithAnUnansweredCurrentQuestion(t *testing.T) {
 	if err := os.WriteFile(path, append(body, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Supply the original valid approval fixture as well, so rejection cannot
+	// Supply the original valid approval fixture as well, so acceptance cannot
 	// be explained by a missing decision, bad draft version or unpinned bytes.
 	_, approvalID, _ := registerContractApprovalEvidence(t, f, path)
 	before, journal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-	_, err = investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: currentResultsCase, ContractPath: path, ApprovedBy: "main-session", ApprovalEvidenceID: approvalID})
-	if err == nil || !strings.Contains(err.Error(), "hypothesis-new-current") {
-		t.Fatalf("contract approval skipped the current unanswered question: %v", err)
+	// L3-S8:307 keeps the machine from certifying per-question completion, and
+	// L3-S8:231 states that saving is not gated on proving every source or
+	// every peer answer. A still-unanswered current question therefore must not
+	// block the approval, while the real approval itself must still happen.
+	approved, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: currentResultsCase, ContractPath: path, ApprovedBy: "main-session", ApprovalEvidenceID: approvalID})
+	if err != nil {
+		t.Fatalf("real contract approval was refused over an unanswered current question: %v", err)
 	}
-	if !bytes.Equal(before, mustRead(t, f.statePath)) || !bytes.Equal(journal, mustRead(t, f.journalPath)) {
-		t.Fatal("rejected contract changed Runtime")
+	if approved.Revision <= 0 {
+		t.Fatalf("approved contract produced no Runtime revision: %+v", approved)
+	}
+	if bytes.Equal(before, mustRead(t, f.statePath)) {
+		t.Fatal("approved contract did not advance the Runtime")
+	}
+	if bytes.Equal(journal, mustRead(t, f.journalPath)) {
+		t.Fatal("approved contract did not record the Runtime journal")
+	}
+	document := readCaseDocument(t, f.root, investigationPointer(t, f)["path"].(string))
+	if s8TestString(document["status"]) != "contract_approved" {
+		t.Fatalf("approved contract did not reach the approved Case status: %v", document["status"])
+	}
+	for _, raw := range document["hypothesis_results"].([]any) {
+		if raw.(map[string]any)["hypothesis_id"] == "hypothesis-new-current" {
+			t.Fatal("machine fabricated a result for the unanswered current question")
+		}
 	}
 }

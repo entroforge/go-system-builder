@@ -80,34 +80,49 @@ func policyRefFixtureDigest() string {
 	return fmt.Sprintf("%x", sum)
 }
 
-func TestReportPolicyRefDriftDetectsVersionDrift(t *testing.T) {
+// TestReportPolicyRefDriftDoesNotQualifyDoctorOnVersionDrift pins that the
+// retired fingerprint maintenance no longer turns a recorded policy reference
+// into a doctor qualification. L4-state-transition-core.md:359 rewrites the
+// legacy `runtime fingerprint`/`reconcile-policy-ref` entry as "旧 fingerprint
+// 维护入口 … 历史入口不再供 Hook 登记或重算散列；原状态修订或真实来源问题沿
+// 对应实际责任处理", and L4-state-transition-core.md:163 removes hash
+// registration and validation from the S0-S11 hooks and their original
+// consumers. A stale recorded version therefore stays a recorded fact that
+// the original responsibility handles; doctor must not fail on it.
+func TestReportPolicyRefDriftDoesNotQualifyDoctorOnVersionDrift(t *testing.T) {
 	root, statePath := writePolicyRefFixture(t, "1.2.0", policyRefFixtureDigest())
 	var stdout, stderr bytes.Buffer
 
 	code := reportPolicyRefDrift(root, statePath, filepath.Join(root, ".claude", "loop-events.jsonl"), &stdout, &stderr)
 
-	if code != 1 {
-		t.Fatalf("expected doctor to fail on version drift, got exit %d (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("expected doctor to stay green on a recorded version drift, got exit %d (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
 	}
-	message := stderr.String()
-	for _, want := range []string{"policy_ref drifted", "recorded=1.2.0", "on-disk=v2.0.0", "runtime reconcile-policy-ref"} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("doctor finding missing %q: %s", want, message)
+	for _, unwanted := range []string{"policy_ref drifted", "recorded=1.2.0", "on-disk=v2.0.0"} {
+		if strings.Contains(stdout.String(), unwanted) || strings.Contains(stderr.String(), unwanted) {
+			t.Fatalf("retired policy reference qualification reappeared (%q): stdout=%q stderr=%q", unwanted, stdout.String(), stderr.String())
 		}
 	}
 }
 
-func TestReportPolicyRefDriftPassesWhenConsistent(t *testing.T) {
+// TestReportPolicyRefDriftLeavesNoPolicyFinding pins that the retired check
+// leaves no trace at all: doctor neither fails nor claims that it verified the
+// historical policy contents. L4-workflow-convergence.md:291 keeps doctor
+// consuming the current configuration and the original references while
+// "删除摘要字段及旧字段兼容接线", so there is no "policy_ref consistent"
+// proof line either — the original path and version no longer prove that the
+// bytes on disk were not changed (L4-workflow-convergence.md:281).
+func TestReportPolicyRefDriftLeavesNoPolicyFinding(t *testing.T) {
 	root, statePath := writePolicyRefFixture(t, "v2.0.0", policyRefFixtureDigest())
 	var stdout, stderr bytes.Buffer
 
 	code := reportPolicyRefDrift(root, statePath, filepath.Join(root, ".claude", "loop-events.jsonl"), &stdout, &stderr)
 
 	if code != 0 {
-		t.Fatalf("expected consistent policy_ref to pass, got exit %d stderr=%q", code, stderr.String())
+		t.Fatalf("expected the retired check to stay green, got exit %d stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "policy_ref consistent") {
-		t.Fatalf("expected consistency line, got %q", stdout.String())
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no policy reference finding, got stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
@@ -127,7 +142,15 @@ func TestReportPolicyRefDriftSkipsUnboundRepository(t *testing.T) {
 	}
 }
 
-func TestRuntimeReconcilePolicyRefRealignsVersion(t *testing.T) {
+// TestRuntimeReconcilePolicyRefReportsAvailablePolicyWithoutRewritingState
+// pins the surviving behaviour of the legacy maintenance entry: it reports the
+// policy that is currently available and writes nothing. L4-state-transition-core.md:359
+// retires the entry as a fingerprint maintenance path, and
+// L4-state-transition-core.md:217 keeps the historical file and its original
+// path while holding that "旧散列字段不迁入新责任或变成新的接收/恢复条件" — the
+// recorded digest and version must not be silently refreshed into a new
+// responsibility.
+func TestRuntimeReconcilePolicyRefReportsAvailablePolicyWithoutRewritingState(t *testing.T) {
 	root, statePath := writePolicyRefFixture(t, "1.2.0", "stale-digest")
 	var stdout, stderr bytes.Buffer
 
@@ -140,8 +163,11 @@ func TestRuntimeReconcilePolicyRefRealignsVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("reconcile-policy-ref failed: exit %d stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "version 1.2.0 -> v2.0.0") {
-		t.Fatalf("expected version transition in output, got %q", stdout.String())
+	out := stdout.String()
+	for _, want := range []string{"policy available", "docs/control/hook-policy.json", "version=v2.0.0", "historical contents are not verified"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("available policy report missing %q: %s", want, out)
+		}
 	}
 
 	data, err := os.ReadFile(statePath)
@@ -153,20 +179,23 @@ func TestRuntimeReconcilePolicyRefRealignsVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	policyRef := after["hook_control"].(map[string]any)["policy_ref"].(map[string]any)
-	if policyRef["version"] != "v2.0.0" {
-		t.Fatalf("policy_ref version after reconcile: got %v want v2.0.0", policyRef["version"])
+	if policyRef["version"] != "1.2.0" {
+		t.Fatalf("retired entry must not rewrite the recorded policy version: got %v want 1.2.0", policyRef["version"])
 	}
-	if policyRef["sha256"] != policyRefFixtureDigest() {
-		t.Fatalf("policy_ref sha256 after reconcile: got %v want %s", policyRef["sha256"], policyRefFixtureDigest())
+	if policyRef["sha256"] != "stale-digest" {
+		t.Fatalf("retired entry must not recompute the recorded digest: got %v want stale-digest", policyRef["sha256"])
 	}
-	// Fingerprint refresh is non-semantic housekeeping and must not bump the
-	// runtime revision or look like a transition.
+	// Reporting the available policy is non-semantic housekeeping and must not
+	// bump the runtime revision or look like a transition.
 	if after["revision"].(float64) != 32 {
 		t.Fatalf("reconcile must not bump revision: got %v", after["revision"])
 	}
 }
 
-func TestRuntimeReconcilePolicyRefCheckOnlyDoesNotWrite(t *testing.T) {
+// TestRuntimeReconcilePolicyRefCheckOnlyReportsTheCurrentPolicy pins that the
+// inspection mode reports the currently available policy without claiming that
+// the historical contents were verified and without touching runtime state.
+func TestRuntimeReconcilePolicyRefCheckOnlyReportsTheCurrentPolicy(t *testing.T) {
 	root, statePath := writePolicyRefFixture(t, "1.2.0", "stale-digest")
 	before, err := os.ReadFile(statePath)
 	if err != nil {
@@ -181,11 +210,15 @@ func TestRuntimeReconcilePolicyRefCheckOnlyDoesNotWrite(t *testing.T) {
 		"--check",
 	}, &stdout, &stderr)
 
-	if code != 1 {
-		t.Fatalf("--check must report drift with a non-zero exit, got %d", code)
+	if code != 0 {
+		t.Fatalf("--check must report the available policy with exit 0, got %d stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "policy_ref drifted") {
-		t.Fatalf("expected drift report, got %q", stderr.String())
+	out := stdout.String()
+	if !strings.Contains(out, "policy available") || !strings.Contains(out, "historical contents are not verified") {
+		t.Fatalf("expected the available policy report, got %q", out)
+	}
+	if strings.Contains(out, "policy_ref drifted") || strings.Contains(stderr.String(), "policy_ref drifted") {
+		t.Fatalf("retired drift report reappeared: stdout=%q stderr=%q", out, stderr.String())
 	}
 	after, err := os.ReadFile(statePath)
 	if err != nil {
@@ -196,7 +229,12 @@ func TestRuntimeReconcilePolicyRefCheckOnlyDoesNotWrite(t *testing.T) {
 	}
 }
 
-func TestRuntimeReconcilePolicyRefNoopWhenConsistent(t *testing.T) {
+// TestRuntimeReconcilePolicyRefDoesNotClaimHistoricalConsistency pins that the
+// retired entry no longer prints a consistency proof. L4-workflow-convergence.md:281
+// records that without a hash the original path and version no longer
+// independently prove that the bytes were not changed externally, so a
+// "consistent" claim would overstate what was actually verified.
+func TestRuntimeReconcilePolicyRefDoesNotClaimHistoricalConsistency(t *testing.T) {
 	root, statePath := writePolicyRefFixture(t, "v2.0.0", policyRefFixtureDigest())
 	var stdout, stderr bytes.Buffer
 
@@ -207,10 +245,14 @@ func TestRuntimeReconcilePolicyRefNoopWhenConsistent(t *testing.T) {
 	}, &stdout, &stderr)
 
 	if code != 0 {
-		t.Fatalf("consistent policy_ref should succeed, got exit %d stderr=%q", code, stderr.String())
+		t.Fatalf("policy availability report should succeed, got exit %d stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "already consistent") {
-		t.Fatalf("expected no-op message, got %q", stdout.String())
+	out := stdout.String()
+	if strings.Contains(out, "already consistent") {
+		t.Fatalf("retired consistency proof reappeared: %q", out)
+	}
+	if !strings.Contains(out, "historical contents are not verified") {
+		t.Fatalf("expected the explicit no-verification statement, got %q", out)
 	}
 }
 

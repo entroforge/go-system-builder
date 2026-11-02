@@ -46,8 +46,19 @@ func TestAuditCopiedRuntimeCannotRecordEvidence(t *testing.T) {
 	}
 }
 
+// TestRuntimeAuthorityProtectsRecoveryAndStorageCoordinates exercises the
+// persisted authority binding of the current Runtime writer.
+//
+// The `runtime fingerprint` verb and the `.fingerprint-pending.json` marker
+// were removed with the hash-proof machinery: the blueprint forbids renaming
+// the same hash purpose as "fingerprint" and requires the Hook-side writer,
+// transaction recovery and successors to compute, register or validate no
+// hash at all (L4-workflow-convergence.md:138, L4-runtime-control-plane.md:84).
+// The guard itself is unchanged and is still enforced by the current writer
+// verb, so the scenarios below drive `runtime reconcile` and the current
+// `.commit-pending.json` marker.
 func TestRuntimeAuthorityProtectsRecoveryAndStorageCoordinates(t *testing.T) {
-	for _, scenario := range []string{"fingerprint", "reconcile", "pending-recovery", "alternate-state", "alternate-journal", "state-symlink"} {
+	for _, scenario := range []string{"writer-root", "reconcile", "pending-recovery", "alternate-state", "alternate-journal", "state-symlink"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := freshRoot(t)
 			writeSystemState(t, root, systemPlanningState(t, root, "design", 0))
@@ -65,26 +76,26 @@ func TestRuntimeAuthorityProtectsRecoveryAndStorageCoordinates(t *testing.T) {
 			if err := os.WriteFile(workerState, before, 0644); err != nil {
 				t.Fatal(err)
 			}
-			args := []string{"runtime", "fingerprint", "--root", worker}
+			args := []string{"runtime", "reconcile", "--root", worker}
 			switch scenario {
 			case "reconcile":
 				args[1] = "reconcile"
 			case "pending-recovery":
 				// Identity must be checked before replay/cleanup, even before
 				// decoding this deliberately invalid marker.
-				if err := os.WriteFile(workerState+".fingerprint-pending.json", []byte("{}"), 0644); err != nil {
+				if err := os.WriteFile(workerState+".commit-pending.json", []byte("{}"), 0644); err != nil {
 					t.Fatal(err)
 				}
 			case "alternate-state":
-				args = []string{"runtime", "fingerprint", "--root", root, "--state", workerState}
+				args = []string{"runtime", "reconcile", "--root", root, "--state", workerState}
 			case "alternate-journal":
-				args = []string{"runtime", "fingerprint", "--root", root, "--journal", filepath.Join(worker, ".claude/loop-events.jsonl")}
+				args = []string{"runtime", "reconcile", "--root", root, "--journal", filepath.Join(worker, ".claude/loop-events.jsonl")}
 			case "state-symlink":
 				alias := filepath.Join(root, ".claude/state-alias.json")
 				if err := os.Symlink(statePath, alias); err != nil {
 					t.Fatal(err)
 				}
-				args = []string{"runtime", "fingerprint", "--root", root, "--state", alias}
+				args = []string{"runtime", "reconcile", "--root", root, "--state", alias}
 			}
 			var out, stderr bytes.Buffer
 			code := runCLI(t, args, strings.NewReader(""), &out, &stderr)
@@ -98,7 +109,7 @@ func TestRuntimeAuthorityProtectsRecoveryAndStorageCoordinates(t *testing.T) {
 				}
 			}
 			if scenario == "pending-recovery" {
-				marker, err := os.ReadFile(workerState + ".fingerprint-pending.json")
+				marker, err := os.ReadFile(workerState + ".commit-pending.json")
 				if err != nil || string(marker) != "{}" {
 					t.Fatalf("copied marker was changed: %v", err)
 				}

@@ -58,7 +58,17 @@ func lateS7NextPlan(t *testing.T, root string, differentOwner ...bool) []workpac
 	life := old.State["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": life["state"], "phase": life["phase"]}
 	_, err = writer.Update(old.Revision, runtime.Mutation{EventID: "evt-late-fixture-new-plan", TransitionID: "LATE-FIXTURE", Event: "late_fixture_new_plan", Actor: "orchestrator", IdempotencyKey: "late-fixture:new-plan", RuntimeID: old.State["runtime_id"].(string), BaselineGeneration: plan.BaselineGeneration, From: cursor, To: map[string]any{"state": "verification", "phase": "running"}, OccurredAt: time.Now().UTC(), Apply: func(state map[string]any) error {
-		return review.ApplyRegisteredPlanProjection(state, plan, planRef, "", time.Now().UTC())
+		if err := review.ApplyRegisteredPlanProjection(state, plan, planRef, "", time.Now().UTC()); err != nil {
+			return err
+		}
+		rev, _ := state["review"].(map[string]any)
+		entry, _ := rev["round_entry"].(map[string]any)
+		if entry == nil {
+			entry = map[string]any{}
+		}
+		entry["plan_id"] = plan.ReviewPlanID
+		rev["round_entry"] = entry
+		return nil
 	}})
 	if err != nil {
 		t.Fatal(err)

@@ -31,7 +31,9 @@ func TestNativeS6StartRequiresExactResponsibility(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStart", "agent_id": scenario.actor, "agent_type": scenario.role, "cwd": source, "last_assistant_message": scenario.task})
 		var out, diagnostic bytes.Buffer
 		code := cli.Run([]string{"hook", "--root", root, "--event", "SubagentStart"}, bytes.NewReader(body), &out, &diagnostic)
-		if code != 0 || strings.Contains(out.String(), "commit and save Result") != scenario.want {
+		// The responsible actor receives the original S6 responsibility context;
+		// an unrelated or unbound actor does not.
+		if code != 0 || strings.Contains(out.String(), "save Result in your own worktree") != scenario.want {
 			t.Fatalf("%s Start: %d %s %s", scenario.actor, code, &out, &diagnostic)
 		}
 	}

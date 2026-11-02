@@ -99,7 +99,7 @@ func TestS7DraftRefusesNonVerificationStage(t *testing.T) {
 	root := t.TempDir()
 	writeDraftGateFixture(t, root,
 		map[string]any{"state": "bug_resolution", "phase": "investigation", "phase_revision": 0},
-		map[string]any{"round": 1, "clean_round": nil},
+		map[string]any{"round_entry": map[string]any{"plan_id": "review-plan-draft-gate"}, "clean_round": nil},
 	)
 
 	var stdout, stderr bytes.Buffer

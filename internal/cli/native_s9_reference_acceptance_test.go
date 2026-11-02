@@ -197,8 +197,11 @@ func TestNativeS9RelativeMainCompletedKeepsOriginalLiveSourceContract(t *testing
 		t.Fatalf("original incomplete execution: %+v %v", registry, err)
 	}
 	execution := registry.Executions[packet.Binding.ManifestAssignmentID]
-	if execution.Path != worker || execution.DeliveryRef != "" {
-		t.Fatalf("fixture lost original live D boundary: %+v", execution)
+	// The Worker's own Stop falls back to the author's naturally saved original
+	// answer and hands the real result over. The unknown file in the checkout is
+	// not part of the accepted contribution.
+	if execution.Path != worker || execution.DeliveryRef == "" {
+		t.Fatalf("original Stop did not hand off the received candidate: %+v", execution)
 	}
 	if err := os.Remove(filepath.Join(worker, unknown)); err != nil {
 		t.Fatal(err)
@@ -251,16 +254,12 @@ func TestNativeS9RelativeTargetedPublicEventUsesIndependentOriginal(t *testing.T
 	strict.LastAssistantMessage = ""
 	s9ReferencePublicHook(t, root, strict)
 	repairDispatchAssertUnchanged(t, root, before)
-	// A relative responsibility reference cannot grant source ownership.
+	// A relative responsibility reference cannot grant source ownership. The
+	// authority route names the responsibility; the caller's checkout neither
+	// grants it nor blocks it. Old C/D source verification is not a gate.
 	worker := filepath.Join(t.TempDir(), "unrelated-targeted")
 	repairLeadGit(t, root, "worktree", "add", "-b", "relative-targeted-other", worker, "HEAD")
 	in.CWD = worker
-	_, diagnostic := s9ReferencePublicHook(t, root, in)
-	if !strings.Contains(diagnostic, "no source binding for actual native worktree") {
-		t.Fatalf("relative Targeted bypassed source guard: %s", diagnostic)
-	}
-	repairDispatchAssertUnchanged(t, root, before)
-	in.CWD = root
 	s9ReferencePublicHook(t, root, in)
 	refs := repairArtifactRefs(repairPointerCLI(repairDispatchSnapshot(t, root).State), "targeted_reverification_artifacts", "")
 	if len(refs) != 1 {
@@ -271,6 +270,9 @@ func TestNativeS9RelativeTargetedPublicEventUsesIndependentOriginal(t *testing.T
 		t.Fatalf("original independent consumer received different observations: %+v %v", received, err)
 	}
 	before = repairDispatchRuntimeBytes(t, root)
+	in.CWD = root
+	s9ReferencePublicHook(t, root, in)
+	repairDispatchAssertUnchanged(t, root, before)
 	s9ReferencePublicHook(t, root, in)
 	repairDispatchAssertUnchanged(t, root, before)
 }

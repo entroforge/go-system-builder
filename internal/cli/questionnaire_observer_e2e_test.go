@@ -174,7 +174,11 @@ func TestS6MainObservationKeepsBuilderAnswersPrivateAndOwnerSaveUsesOriginalCons
 
 func TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	path := filepath.Join(root, ".claude/submissions/loop-REQ-WORKTREE/g1/S7/r1/review-plan.json")
+	path := s7PlanQuestionnairePath(t, root, "review-plan-observed-save")
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	entryQuestionnaireHook(t, root, "PreToolUse", path)
 	before := stageSnapshot(t, root).Revision
 	out := observedQuestionnaireHook(t, root, "Bash", map[string]any{"command": "true"}, map[string]any{})
@@ -194,7 +198,7 @@ func TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave(t *testing
 		t.Fatal("fixture has no professional claims")
 	}
 	claims[0].(map[string]any)["oracle"] = "The locked acceptance obligations map to observed implementation evidence."
-	stageJSON(t, root, ".claude/submissions/loop-REQ-WORKTREE/g1/S7/r1/review-plan.json", plan)
+	stageJSON(t, root, relative, plan)
 	out = observedQuestionnaireHook(t, root, "mcp__sandbox__execute", map[string]any{}, map[string]any{})
 	if !strings.Contains(out, path) || !strings.Contains(out, "original validation feedback") {
 		t.Fatalf("natural observation did not report actual validation feedback: %s", out)

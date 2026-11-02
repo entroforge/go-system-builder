@@ -80,14 +80,13 @@ func TestWorktreeCreateUsesBoundBranchWithoutRecordingObjectIdentity(t *testing.
 }
 
 func TestIntegrationRecoversLostMergeReceiptWithoutMergingAgain(t *testing.T) {
-	root := freshRoot(t)
-	seedIntegrableAssignment(t, root)
-	code, out, errout := runTaskIntegrate(t, root, "assignment-ti")
+	root, builder := seedCanonicalIntegrableAssignment(t)
+	code, out, errout := runTaskIntegrate(t, root, builder.record.AssignmentID)
 	if code != 0 {
 		t.Fatalf("initial reception: %s %s", out, errout)
 	}
-	head := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
-	path := filepath.Join(root, ".claude", "evidence", "loop-system-test", "g1", "worktree", "assignment-ti", "checkpoint.json")
+	head := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
+	path := canonicalBuilderCheckpoint(t, builder)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -96,18 +95,31 @@ func TestIntegrationRecoversLostMergeReceiptWithoutMergingAgain(t *testing.T) {
 	if err := json.Unmarshal(raw, &cp); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a ready receipt surviving while the merge response was lost.
-	cp["state"] = "ready"
+	// Simulate the merge receipt response being lost after the merge itself
+	// was already committed. The current checkpoint records no Git object
+	// identity, so the durable step is the state that was reached.
+	cp["state"] = "verified"
 	delete(cp, "merge_commit")
 	raw, _ = json.Marshal(cp)
 	if err := os.WriteFile(path, raw, 0644); err != nil {
 		t.Fatal(err)
 	}
-	code, out, errout = runTaskIntegrate(t, root, "assignment-ti")
-	if code != 0 || !strings.Contains(out, "complete") {
+	code, out, errout = runTaskIntegrate(t, root, builder.record.AssignmentID)
+	if code != 0 {
 		t.Fatalf("resume: %s %s", out, errout)
 	}
-	if got := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop")); got != head {
+	resumed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered map[string]any
+	if err := json.Unmarshal(resumed, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered["state"] != "complete" {
+		t.Fatalf("resume did not complete the lost merge receipt: %s %s", out, errout)
+	}
+	if got := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD")); got != head {
 		t.Fatal("response-loss recovery merged again")
 	}
 }

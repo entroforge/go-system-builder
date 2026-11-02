@@ -157,7 +157,12 @@ func TestNativeS6RecordedResultProjectsActualUnfinishedWork(t *testing.T) {
 				if err != nil || head != afterHead {
 					t.Fatal("unclosed accepted Result was merged")
 				}
-				prepared := stageCLI(t, "s6", "prepare", "--root", root, "--task", r.Task.ID, "--role", r.RoleFamily, "--revise-assignment", r.AssignmentID, "--revision-intent-key", "actual-unfinished-result-correction")
+				// The current revision Writer derives the predecessor and the
+				// internal intent from the preserved rework checkpoint; no
+				// machine intent token is supplied by the caller
+				// (L4-workflow-convergence §"S6 实际返工…不要求
+				// `--revision-intent-key`,删除旧参数接线").
+				prepared := stageCLI(t, "s6", "prepare", "--root", root, "--task", r.Task.ID, "--role", r.RoleFamily, "--revise-assignment", r.AssignmentID)
 				records, err := assignmentrecord.RecordsFromState(stageSnapshot(t, root).State)
 				if err != nil {
 					t.Fatal(err)

@@ -17,25 +17,46 @@ import (
 func TestS6PrepareRegistersAndPreparesOriginalBoundWorkspace(t *testing.T) {
 	root, taskID, taskPath := newS6RecordContextFixture(t)
 	const (
-		owner        = "agent-s6-prepared"
-		platformTeam = "platform-s6-prepared"
+		// L3-S6 §4.1: Main 不需要先指定官方 Agent/Team ID. The native
+		// delivery owner and team are derived from the reviewed TASK.
+		owner        = "native-TASK-039-01"
+		platformTeam = "engineering-TASK-039-01"
 		manifestRef  = ".claude/workgroups/REQ-039/TASK-039-01/manifest.draft.json"
+		briefRef     = ".claude/assignments/native/assignment-build-TASK-039-01-g1/r1/task.md"
 	)
 	before := stageSnapshot(t, root)
+	// L3-S6 §4.1 documents exactly this invocation: the reviewed TASK and the
+	// Builder role, with no platform identity and no launcher.
 	prepareOutput := stageCLI(t, "s6", "prepare", "--root", root, "--task", taskID,
-		"--role", "backend-builder", "--agent-id", owner, "--platform-team-id", platformTeam)
-	if !strings.Contains(prepareOutput, "S6 manifest draft written (not registered): "+manifestRef) {
-		t.Fatalf("S6 prepare did not return the exact manifest path: %s", prepareOutput)
+		"--role", "backend-builder")
+	if !strings.Contains(prepareOutput, "Native S6 TASK registered: "+taskID) {
+		t.Fatalf("S6 prepare did not register the native TASK responsibility: %s", prepareOutput)
 	}
-	if !strings.Contains(prepareOutput, "runtime workspace bind --root \""+root+"\"") {
-		t.Fatalf("S6 prepare did not provide the exact Main workspace bind command: %s", prepareOutput)
+	if !strings.Contains(prepareOutput, "use Claude Code's native Agent (backend-builder) with worktree isolation") {
+		t.Fatalf("S6 prepare did not hand the exact native dispatch to Main: %s", prepareOutput)
+	}
+	if !strings.Contains(prepareOutput, filepath.ToSlash(briefRef)) {
+		t.Fatalf("S6 prepare did not name the exact native task brief: %s", prepareOutput)
+	}
+	if !strings.Contains(prepareOutput, "No Team, platform Agent ID or launcher is required.") {
+		t.Fatalf("S6 prepare must not require a platform Team or Agent ID: %s", prepareOutput)
+	}
+	// The legacy frozen-workspace route is gone: Main must not be told to bind
+	// a platform workspace before the native dispatch can happen.
+	if strings.Contains(prepareOutput, "runtime workspace bind") {
+		t.Fatalf("S6 prepare still routes Main through the removed frozen workspace bind: %s", prepareOutput)
 	}
 	var help, helpErr strings.Builder
-	if code := cli.Run([]string{"s6", "prepare", "--help"}, nil, &help, &helpErr); code != 0 || !strings.Contains(help.String(), "runtime workspace bind --root <authority-root>") {
-		t.Fatalf("S6 prepare help did not document the existing workspace bind prerequisite: code=%d help=%s stderr=%s", code, help.String(), helpErr.String())
+	if code := cli.Run([]string{"s6", "prepare", "--help"}, nil, &help, &helpErr); code != 0 {
+		t.Fatalf("s6 prepare --help failed: code=%d stderr=%s", code, helpErr.String())
 	}
-	if after := stageSnapshot(t, root); after.Revision != before.Revision {
-		t.Fatalf("preparation mutated Runtime revision: before=%d after=%d", before.Revision, after.Revision)
+	for _, unwanted := range []string{"runtime workspace bind", "-agent-id", "-platform-team-id"} {
+		if strings.Contains(help.String(), unwanted) {
+			t.Fatalf("s6 prepare help still documents the removed legacy option %q: %s", unwanted, help.String())
+		}
+	}
+	if !strings.Contains(help.String(), "No platform IDs or framework launcher are required.") {
+		t.Fatalf("s6 prepare help must state that no platform identity is required: %s", help.String())
 	}
 
 	manifestBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(manifestRef)))
@@ -51,7 +72,7 @@ func TestS6PrepareRegistersAndPreparesOriginalBoundWorkspace(t *testing.T) {
 	}
 	if manifest["runtime_id"] != before.State["runtime_id"] || manifest["req_id"] != "REQ-039" ||
 		manifest["baseline_generation"] != float64(1) || manifest["platform_team_id"] != platformTeam ||
-		manifest["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract {
+		manifest["assignment_record_contract"] != assignmentrecord.NativeDeliveryContract {
 		t.Fatalf("manifest did not project the original Runtime and Main decisions: %v", manifest)
 	}
 	docIDs := map[string]bool{}
@@ -90,12 +111,17 @@ func TestS6PrepareRegistersAndPreparesOriginalBoundWorkspace(t *testing.T) {
 		t.Fatalf("prepared manifest did not declare the existing empty WorkerCheck set: %v", closing)
 	}
 
-	stageCLI(t, "runtime", "register-workgroup", "--root", root,
-		"--manifest", manifestRef, "--task-id", taskID, "--task", taskPath)
+	// L3-S6 §4.1: the preparation itself establishes this engineering
+	// responsibility through the original Assignment Writer; Main does not
+	// re-register the manifest by hand.
 	registered := stageSnapshot(t, root)
 	record, found, err := assignmentrecord.ForOwner(registered.State, owner)
 	if err != nil || !found {
-		t.Fatalf("original register-workgroup rejected the prepared manifest: found=%t err=%v", found, err)
+		t.Fatalf("original Assignment Writer did not register the prepared native responsibility: found=%t err=%v", found, err)
+	}
+	if record.Contract != assignmentrecord.NativeDeliveryContract ||
+		record.Task.ID != taskID || record.Task.Ref != taskPath {
+		t.Fatalf("registered native Assignment Record lost its original TASK identity: %+v", record)
 	}
 	if record.ClosingContract == nil || record.IntegrationCheckMode != "post_merge" ||
 		len(record.RequiredChecks) != 1 || record.RequiredChecks[0] != "go test ./src/pkg" ||
@@ -103,26 +129,32 @@ func TestS6PrepareRegistersAndPreparesOriginalBoundWorkspace(t *testing.T) {
 		t.Fatalf("original Assignment Record did not preserve projected checks: %+v", record)
 	}
 
-	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-	workspaceOutput := stageCLI(t, "runtime", "workspace", "prepare", "--root", root,
-		"--assignment", record.AssignmentID, "--agent", record.OwnerAgentID)
-	var prepared struct {
-		Status        string   `json:"status"`
-		CheckLocation string   `json:"check_location"`
-		CheckCommands []string `json:"check_commands"`
+	// L3-S6 §4.2: the brief must let the Builder work continuously — the exact
+	// TASK source, the Done when conditions, the Worker checks and the fixed
+	// plan/result paths are all in the issued brief.
+	briefBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(briefRef)))
+	if err != nil {
+		t.Fatalf("s6 prepare did not publish the native task brief: %v", err)
 	}
-	if err := json.Unmarshal([]byte(workspaceOutput), &prepared); err != nil {
-		t.Fatalf("decode original bound workspace preparation: %v\n%s", err, workspaceOutput)
-	}
-	if prepared.Status != "ready" || prepared.CheckLocation != "main" || len(prepared.CheckCommands) != 0 {
-		t.Fatalf("original bound workspace did not prepare the canonical assignment: %+v", prepared)
+	brief := string(briefBytes)
+	for _, want := range []string{taskPath, "go test ./src/pkg == pass", "Done when:"} {
+		if !strings.Contains(brief, want) {
+			t.Fatalf("native brief omitted %q: %s", want, brief)
+		}
 	}
 }
 
+// TestS6PrepareRefusesDraftOverwriteWithoutRuntimeWrite pins the replay
+// contract of the current native preparation. The removed legacy draft route
+// wrote an unregistered manifest draft and refused a second write; the current
+// route registers the responsibility through the original Assignment Writer
+// and, on a same-responsibility retry, replays the already issued brief
+// without touching the original Runtime state or journal
+// (L3-S6 §4.1/§4.2, L4-workflow-convergence §"S6 实际返工…同次重试复用已成立事实").
 func TestS6PrepareRefusesDraftOverwriteWithoutRuntimeWrite(t *testing.T) {
 	root, taskID, _ := newS6RecordContextFixture(t)
 	args := []string{"s6", "prepare", "--root", root, "--task", taskID,
-		"--role", "backend-builder", "--agent-id", "agent-s6-prepared", "--platform-team-id", "platform-s6-prepared"}
+		"--role", "backend-builder"}
 	stageCLI(t, args...)
 	beforeState, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
 	if err != nil {
@@ -132,9 +164,16 @@ func TestS6PrepareRefusesDraftOverwriteWithoutRuntimeWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeBrief, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(".claude/assignments/native/assignment-build-"+taskID+"-g1/r1/task.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr strings.Builder
-	if code := cli.Run(args, nil, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "refusing to overwrite existing draft") {
-		t.Fatalf("second preparation did not refuse the existing draft: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	if code := cli.Run(args, nil, &stdout, &stderr); code != 0 {
+		t.Fatalf("same-responsibility retry did not replay the original preparation: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Native S6 TASK registered: "+taskID) {
+		t.Fatalf("replayed preparation did not name the original responsibility: %s", stdout.String())
 	}
 	afterState, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
 	if err != nil {
@@ -145,7 +184,14 @@ func TestS6PrepareRefusesDraftOverwriteWithoutRuntimeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(beforeState) != string(afterState) || string(beforeJournal) != string(afterJournal) {
-		t.Fatal("rejected draft overwrite changed the original Runtime state/journal")
+		t.Fatal("replayed preparation changed the original Runtime state/journal")
+	}
+	afterBrief, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(".claude/assignments/native/assignment-build-"+taskID+"-g1/r1/task.md")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforeBrief) != string(afterBrief) {
+		t.Fatal("replayed preparation rewrote the already issued original brief")
 	}
 }
 
@@ -235,7 +281,7 @@ func TestS6PrepareReportsUnmetDependencyWithoutRuntimeWrite(t *testing.T) {
 	}
 	var stdout, stderr strings.Builder
 	code := cli.Run([]string{"s6", "prepare", "--root", root, "--task", secondTaskID,
-		"--role", "backend-builder", "--agent-id", "agent-s6-dependent", "--platform-team-id", "platform-s6-dependent"}, nil, &stdout, &stderr)
+		"--role", "backend-builder"}, nil, &stdout, &stderr)
 	if code == 0 || !strings.Contains(stderr.String(), "not ready") || !strings.Contains(stderr.String(), firstTaskID) {
 		t.Fatalf("S6 prepare did not surface the original dependency wait: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}

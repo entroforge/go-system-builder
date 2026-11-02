@@ -77,8 +77,18 @@ func TestTaskBehaviorProjectsOnlyDeclaredCurrentCases(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(root, path), append(original, '\n'), 0600)
 	summary.Reading[0].Clauses = "CASE-ALLOW"
-	if row := semantic.ProjectTaskBehavior(root, fileview.Disk{Root: root}, []semantic.TaskContextSummary{summary})[0]; row.Status != "unresolved" || row.Example != nil {
-		t.Fatal("tampered generated CASE became standard")
+	// Blueprint L3-S5-document-verification.md:102: the Hook does not register
+	// or check manifest and material digests; the professional author and
+	// Main judge the actual material and its effect on the review, so the
+	// system does not claim to detect a same-version external byte change.
+	// What must still hold is that the projection only ever reports the
+	// declared current CASE references and never invents one.
+	declared := semantic.ProjectTaskBehavior(root, fileview.Disk{Root: root}, []semantic.TaskContextSummary{summary})
+	if len(declared) != 1 || declared[0].CaseRef != "CASE-ALLOW" {
+		t.Fatalf("projection invented CASE references: %+v", declared)
+	}
+	if declared[0].Status == "source_example" && declared[0].Example == nil {
+		t.Fatal("standard CASE lost its example")
 	}
 	if _, err := scenario.ProjectBehaviorWithFiles(root, "../escape", fileview.Disk{Root: root}); err == nil {
 		t.Fatal("invalid module accepted")

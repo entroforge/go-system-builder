@@ -2,8 +2,6 @@ package req039_test
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -15,10 +13,9 @@ import (
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
-func seedS3AuditFrozenModel(t *testing.T) (string, string, string, []byte) {
+func seedS3AuditFrozenModel(t *testing.T) (string, canonicalBuilder, string, []byte) {
 	t.Helper()
-	root := freshRoot(t)
-	worker := seedIntegrableAssignment(t, root)
+	root, builder := seedCanonicalIntegrableAssignment(t)
 	model := "internal/orders.schema.json"
 	original := []byte(`{"type":"object","properties":{"order_id":{"type":"string"}}}`)
 	if err := os.MkdirAll(filepath.Join(root, "internal"), 0755); err != nil {
@@ -29,7 +26,7 @@ func seedS3AuditFrozenModel(t *testing.T) (string, string, string, []byte) {
 	}
 	runGitIn(t, root, "add", model)
 	runGitIn(t, root, "commit", "-m", "frozen shared model baseline")
-	runGitIn(t, worker, "merge", "develop", "--no-edit")
+	runGitIn(t, builder.worker, "merge", canonicalTargetBranch(t, root), "--no-edit")
 
 	statePath := filepath.Join(root, ".claude/loop-state.json")
 	data, err := os.ReadFile(statePath)
@@ -47,12 +44,10 @@ func seedS3AuditFrozenModel(t *testing.T) (string, string, string, []byte) {
 		milestone["lifecycle_state"] = "building"
 		milestone["lifecycle_phase"] = nil
 	}
-	digest := sha256.Sum256(original)
 	docs, _ := state["documents"].([]any)
 	state["documents"] = append(docs, map[string]any{
 		"id": "shared-model:" + model, "kind": "design", "path": model,
-		"version": "unversioned", "sha256": hex.EncodeToString(digest[:]),
-		"status": "locked", "generation": 1,
+		"version": "unversioned", "status": "locked", "generation": 1,
 	})
 	data, err = json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -75,7 +70,7 @@ func seedS3AuditFrozenModel(t *testing.T) (string, string, string, []byte) {
 		t.Fatal("fixture model is not projected into locked artifacts")
 	}
 
-	return root, worker, model, original
+	return root, builder, model, original
 }
 
 // TestS3AuditFrozenModelCannotMergeFromWorker exercises the real
@@ -119,19 +114,20 @@ func TestS3AuditFrozenModelCannotMergeFromWorker(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			root, worker, model, original := seedS3AuditFrozenModel(t)
+			root, builder, model, original := seedS3AuditFrozenModel(t)
 			rootBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
-			targetBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
-			tc.mutate(t, worker, model)
-			workerAfterMutation := strings.TrimSpace(runGitIn(t, worker, "rev-parse", "HEAD"))
+			target := canonicalTargetBranch(t, root)
+			targetBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", target))
+			tc.mutate(t, builder.worker, model)
+			workerAfterMutation := strings.TrimSpace(runGitIn(t, builder.worker, "rev-parse", "HEAD"))
 
-			code, stdout, stderr := runTaskIntegrate(t, root, "assignment-ti")
+			code, stdout, stderr := runTaskIntegrate(t, root, builder.record.AssignmentID)
 			out := strings.ToLower(stdout + stderr)
 			if !strings.Contains(out, strings.ToLower(integration.ErrLockedArtifact.Error())) {
 				t.Fatalf("frozen %s rejection did not surface stable locked-artifact blocker: code=%d stdout=%s stderr=%s", tc.name, code, stdout, stderr)
 			}
 			rootAfter := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
-			targetAfter := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
+			targetAfter := strings.TrimSpace(runGitIn(t, root, "rev-parse", target))
 			got, err := os.ReadFile(filepath.Join(root, model))
 			if err != nil {
 				t.Fatal(err)
@@ -139,11 +135,11 @@ func TestS3AuditFrozenModelCannotMergeFromWorker(t *testing.T) {
 			if rootBefore != rootAfter || targetBefore != targetAfter || string(got) != string(original) {
 				t.Fatalf("frozen shared model was merged for %s: code=%d root_advanced=%t target_advanced=%t model=%s stdout=%s stderr=%s", tc.name, code, rootBefore != rootAfter, targetBefore != targetAfter, got, stdout, stderr)
 			}
-			workerHead := strings.TrimSpace(runGitIn(t, worker, "rev-parse", "HEAD"))
+			workerHead := strings.TrimSpace(runGitIn(t, builder.worker, "rev-parse", "HEAD"))
 			if workerHead != workerAfterMutation {
 				t.Fatalf("rejected %s changed worker HEAD: before=%s after=%s", tc.name, workerAfterMutation, workerHead)
 			}
-			if _, err := os.Stat(worker); err != nil {
+			if _, err := os.Stat(builder.worker); err != nil {
 				t.Fatalf("rejected %s worker must remain: %v", tc.name, err)
 			}
 		})
@@ -153,23 +149,24 @@ func TestS3AuditFrozenModelCannotMergeFromWorker(t *testing.T) {
 // An implementation-only worker change is outside the frozen shared-model
 // surface and must still complete the ordinary merge/verify/ack/cleanup path.
 func TestS3AuditUnrelatedImplementationChangeMerges(t *testing.T) {
-	root, worker, model, original := seedS3AuditFrozenModel(t)
-	implementation := filepath.Join(worker, "internal", "order_handler.go")
-	if err := os.WriteFile(implementation, []byte("package internal\n\nconst orderHandlerVersion = 2\n"), 0644); err != nil {
+	root, builder, model, original := seedS3AuditFrozenModel(t)
+	implementation := filepath.Join(builder.worker, canonicalBuilderDir, "order_handler.go")
+	if err := os.WriteFile(implementation, []byte("package delivery\n\nconst orderHandlerVersion = 2\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	runGitIn(t, worker, "add", "internal/order_handler.go")
-	runGitIn(t, worker, "commit", "-m", "unrelated implementation delivery")
+	runGitIn(t, builder.worker, "add", canonicalBuilderDir+"/order_handler.go")
+	runGitIn(t, builder.worker, "commit", "-m", "unrelated implementation delivery")
 
 	rootBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
-	targetBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
-	workerBefore := strings.TrimSpace(runGitIn(t, worker, "rev-parse", "HEAD"))
-	code, stdout, stderr := runTaskIntegrate(t, root, "assignment-ti")
+	target := canonicalTargetBranch(t, root)
+	targetBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", target))
+	workerBefore := strings.TrimSpace(runGitIn(t, builder.worker, "rev-parse", "HEAD"))
+	code, stdout, stderr := runTaskIntegrate(t, root, builder.record.AssignmentID)
 	if code != 0 {
 		t.Fatalf("unrelated implementation integration failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
 	rootAfter := strings.TrimSpace(runGitIn(t, root, "rev-parse", "HEAD"))
-	targetAfter := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
+	targetAfter := strings.TrimSpace(runGitIn(t, root, "rev-parse", target))
 	if rootAfter != targetAfter || rootAfter == rootBefore || targetAfter == targetBefore {
 		t.Fatalf("successful integration did not advance authority target exactly once: root=%s→%s target=%s→%s", rootBefore, rootAfter, targetBefore, targetAfter)
 	}
@@ -184,14 +181,14 @@ func TestS3AuditUnrelatedImplementationChangeMerges(t *testing.T) {
 	if string(modelBytes) != string(original) {
 		t.Fatalf("unrelated implementation merge changed frozen model: %s", modelBytes)
 	}
-	implementationBytes, err := os.ReadFile(filepath.Join(root, "internal", "order_handler.go"))
+	implementationBytes, err := os.ReadFile(filepath.Join(root, canonicalBuilderDir, "order_handler.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(implementationBytes) != "package internal\n\nconst orderHandlerVersion = 2\n" {
+	if string(implementationBytes) != "package delivery\n\nconst orderHandlerVersion = 2\n" {
 		t.Fatalf("unrelated implementation was not merged: %s", implementationBytes)
 	}
-	if _, err := os.Stat(worker); !os.IsNotExist(err) {
+	if _, err := os.Stat(builder.worker); !os.IsNotExist(err) {
 		t.Fatalf("successful integration must clean the worker checkout: %v", err)
 	}
 }

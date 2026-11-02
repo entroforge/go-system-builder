@@ -24,7 +24,8 @@ func TestNativeMainPendingContinuesActualReviewPlanSave(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			root := worktreeProjectRoot(t)
-			path := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
+			state := s7OpenedReviewPlan(t, root, "review-plan-main-pending")
+			path := review.PlanQuestionnairePath(root, state)
 			entryQuestionnaireHook(t, root, "PreToolUse", path)
 			authored := minimalReviewPlan(t, t.TempDir(), "review-plan-main-pending")
 			data, err := os.ReadFile(authored)

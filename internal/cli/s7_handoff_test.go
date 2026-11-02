@@ -106,17 +106,24 @@ func TestS10MaterialRecoveryNamesFailureAndPreservesStage(t *testing.T) {
 	}
 }
 
+// TestS7OriginalExitRefusesMissingCleanRoundEvidence pins the current S7
+// exit contract. The machine CleanRound proof is gone: the chain no longer
+// generates or validates an independent CleanRound snapshot and the old
+// CleanRound consumers and compatibility wiring are deleted
+// (L3-S7 §11.2, L4-runtime-control-plane §8). The exit therefore reads the
+// accepted original answers and the required responsibilities, and it must not
+// refuse because a clean-round evidence record is missing.
 func TestS7OriginalExitRefusesMissingCleanRoundEvidence(t *testing.T) {
 	root, path := s10QuestionnaireHookRoot(t)
 	statePath := filepath.Join(root, ".claude/loop-state.json")
 	state := readS10QuestionnaireState(t, statePath)
 	state["lifecycle"].(map[string]any)["state"] = "verification"
 	state["lifecycle"].(map[string]any)["phase"] = "clean"
-	for _, raw := range state["evidence"].([]any) {
-		row := raw.(map[string]any)
-		if row["kind"] == "clean_round" {
-			if err := os.Remove(filepath.Join(root, filepath.FromSlash(row["path"].(string)))); err != nil {
-				t.Fatal(err)
+	// The removed machine proof is not part of the current Runtime vocabulary.
+	if evidence, ok := state["evidence"].([]any); ok {
+		for _, raw := range evidence {
+			if raw.(map[string]any)["kind"] == "clean_round" {
+				t.Fatal("fixture still carries the removed clean_round machine proof")
 			}
 		}
 	}
@@ -126,15 +133,18 @@ func TestS7OriginalExitRefusesMissingCleanRoundEvidence(t *testing.T) {
 	}
 	var out, errOut bytes.Buffer
 	code := cli.Run([]string{"runtime", "review-continue", "--root", root}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(out.String(), "review-continue") || !strings.Contains(out.String(), "pending") {
-		t.Fatalf("missing original gate was not refused: %d %s %s", code, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("S7 exit refused without the removed clean-round proof: %d %s %s", code, &out, &errOut)
+	}
+	if !strings.Contains(out.String(), "TR-009") {
+		t.Fatalf("S7 exit did not continue through the original TR-009: %s", &out)
 	}
 	current := readS10QuestionnaireState(t, statePath)
-	if current["lifecycle"].(map[string]any)["state"] != "verification" {
-		t.Fatal("failed original gate promoted stage")
+	if current["lifecycle"].(map[string]any)["state"] == "verification" {
+		t.Fatal("successful original exit did not leave the verification stage")
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("failed gate prepared questionnaire: %v", err)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("successful exit did not prepare the S10 acceptance questionnaire: %v", err)
 	}
 }
 
@@ -188,8 +198,23 @@ func TestS7S10RecoveryCommandsAppearInUsageAndHelp(t *testing.T) {
 					t.Fatalf("%v omitted %s: %s", args, command, text)
 				}
 			}
-		} else if code != 0 || !strings.Contains(text, "--root") || !strings.Contains(text, "original") {
-			t.Fatalf("%v help did not describe original recovery: %d %s", args, code, text)
+		} else if code != 0 || !strings.Contains(text, "--root") {
+			// The recovery surface must name the command and its root
+			// coordinate, and describe the actual recovery action it
+			// performs. The blueprint no longer ties these commands to a
+			// machine CleanRound proof, so the wording requirement is the
+			// real recovery content, not one fixed adjective.
+			t.Fatalf("%v help did not describe the recovery command and its root: %d %s", args, code, text)
+		} else {
+			recovery := []string{"S7", "TR-009", "S10 acceptance"}
+			if args[1] == "audit-prepare" {
+				recovery = []string{"S10", "original preparer"}
+			}
+			for _, want := range recovery {
+				if !strings.Contains(text, want) {
+					t.Fatalf("%v help did not describe %q: %s", args, want, text)
+				}
+			}
 		}
 	}
 }

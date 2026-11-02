@@ -74,15 +74,27 @@ func TestCT03912_BuilderCompleteCommitsTR006NoManualCLI(t *testing.T) {
 	if runner.ManualTransitionCalls != 0 {
 		t.Fatalf("CT-039-12 forbids manual transition CLI, got %d", runner.ManualTransitionCalls)
 	}
-	if !strings.Contains(stdout, "TR-006") {
-		t.Fatalf("CT-039-12 hook must commit/candidate TR-006, stdout=%s", stdout)
+	// L3-S6 §12.1/§13.1 and L4-workflow-convergence §"S6／S9 当前工作区":
+	// the TR-006 denominator is the canonical Assignment Record path. The
+	// legacy completion-report envelope plus a durable worktree checkpoint is
+	// not a current legal delivery, so the gate must stay not ready and the
+	// Hook must surface the canonical responsibility each batch TASK lacks.
+	_, gate := req039fixtures.ParseQualityGate(t, stdout)
+	if gate == nil {
+		t.Fatalf("CT-039-12 hook must surface the gate projection, stdout=%s stderr=%s", stdout, stderr)
+	}
+	if committed, _ := gate["transition_committed"].(bool); committed {
+		t.Fatalf("CT-039-12 must not commit the TR-006 exit from legacy completion facts, stdout=%s", stdout)
+	}
+	for _, taskID := range []string{"TASK-039-01", "TASK-039-02"} {
+		if !strings.Contains(stdout, "builder_responsibility:"+taskID) {
+			t.Fatalf("CT-039-12 hook must surface the missing canonical responsibility for %s, stdout=%s stderr=%s", taskID, stdout, stderr)
+		}
 	}
 	after := req039fixtures.ReadState(t, root)
 	lc, ph := req039fixtures.Lifecycle(after)
-	// L3-S7: TR-006 opens the round at verification.planned; the ReviewPlan
-	// registration (runtime review-plan) moves it to running.
-	if lc != "verification" || ph != "planned" {
-		t.Fatalf("CT-039-12 TR-006 must land verification.planned, got %q/%q", lc, ph)
+	if lc != "building" || ph != "" {
+		t.Fatalf("CT-039-12 must not leave the building stage without canonical deliveries, got %q/%q", lc, ph)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -79,15 +80,60 @@ func pendingRawRevision(t *testing.T, root string) int {
 	return state.Revision
 }
 
+// assignmentResultReceipt reads the durable acceptance receipt written beside
+// a consumed S7 Assignment.
+func assignmentResultReceipt(t *testing.T, state map[string]any, assignmentID string) map[string]any {
+	t.Helper()
+	review, _ := state["review"].(map[string]any)
+	assignments, _ := review["assignments"].(map[string]any)
+	assignment, _ := assignments[assignmentID].(map[string]any)
+	receipt, _ := assignment["result_receipt"].(map[string]any)
+	return receipt
+}
+
+// nativeStopReviewEvent delivers a native SubagentStop the way the platform
+// does: transcript_path names Main's session while the actor's own task lives
+// in its sibling subagents transcript.
+//
+// The current contract resolves an issued S7 responsibility from that actor's
+// own original task (blueprint/l4-mechanisms/L4-hook-platform-wiring.md:56
+// "父会话转录、子会话转录与最后收尾文字不同"; :122 "成功 PostToolUse 和 Stop／
+// SubagentStop 复用同一消费者兜底"), so the exact original answer reference
+// must be present in the actor's own task prompt.
+func nativeStopReviewEvent(t *testing.T, root, event, actor, ref string) (int, string, string) {
+	t.Helper()
+	rel := ref
+	if strings.HasPrefix(ref, root+string(filepath.Separator)) {
+		rel = strings.TrimPrefix(ref, root+string(filepath.Separator))
+	}
+	parent := filepath.Join(t.TempDir(), "parent-session.jsonl")
+	child := filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "agent-"+actor+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(child), 0700); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": actor, "message": map[string]any{"role": "user", "content": "Source root: `" + root + "`. Original questionnaire: `" + rel + "`."}})
+	if err := os.WriteFile(child, append(row, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parent, []byte(`{"type":"user","message":{"role":"user","content":"Main's own unrelated conversation"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": actor, "session_id": "native-review-parent", "agent_type": "professional-reviewer", "cwd": root, "transcript_path": parent, "agent_transcript_path": child, "last_assistant_message": ref, "tool_name": "Write", "tool_input": map[string]any{"file_path": ref}, "tool_response": map[string]any{"filePath": ref}})
+	var out, diagnostic bytes.Buffer
+	code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(body), &out, &diagnostic)
+	return code, out.String(), diagnostic.String()
+}
+
 func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	root := fixtures.FreshRoot(t)
 	state := fixtures.BaseState(t, root, "verification", "planned", 1)
 	state["schema_version"] = "1.2.0"
 	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-pending-stop", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
 	plan := minimalReviewPlan(t, root, "review-plan-pending-stop")
 	fixtures.WriteState(t, root, state)
 	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-	stageCLI(t, "runtime", "review-plan", "--root", root, "--file", plan)
+	registerReviewPlanNaturally(t, root, state, "review-plan-pending-stop", plan)
 	markAssignmentDispatched(t, root, "assignment-dv-1", "reviewer-pending")
 	current := stageSnapshot(t, root)
 	for _, raw := range current.State["entities"].(map[string]any)["agents"].([]any) {
@@ -155,12 +201,19 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	if err := os.WriteFile(journalPath, previousJournal, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, diag := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.AnswerPath)); code != 0 || !strings.Contains(diag, "recovered the original pending Writer") || !strings.Contains(diag, "original consumer") {
+	code, _, diag := nativeStopReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.AnswerPath))
+	if code != 0 || !strings.Contains(diag, "recovered the original pending Writer") || !strings.Contains(diag, "original consumer") {
 		t.Fatalf("same-event reception: %d %s", code, diag)
 	}
+	// The answer reached the original Writer when the durable acceptance
+	// receipt was written beside the consumed Assignment in the same Runtime
+	// CAS (internal/review/result_receipt.go:20-23). The recovered checkpoint
+	// carries its own real revision, so the Runtime revision number alone no
+	// longer separates "recovered only" from "recovered and accepted".
 	after := stageSnapshot(t, root)
-	if after.Revision <= before {
-		t.Fatal("answer did not reach original Writer")
+	receipt := assignmentResultReceipt(t, after.State, "assignment-dv-1")
+	if receipt == nil || receipt["contract"] != "s7-review-result-receipt-v1" || receipt["assignment_id"] != "assignment-dv-1" {
+		t.Fatalf("answer did not reach original Writer: %v", receipt)
 	}
 	answerAfter, err := os.ReadFile(filepath.Join(root, p.AnswerPath))
 	if err != nil || !bytes.Equal(answerBefore, answerAfter) {
@@ -169,7 +222,7 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("pending not retired: %v", err)
 	}
-	if code, _, diag := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.AnswerPath)); code != 0 || stageSnapshot(t, root).Revision != after.Revision {
+	if code, _, diag := nativeStopReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.AnswerPath)); code != 0 || stageSnapshot(t, root).Revision != after.Revision {
 		t.Fatalf("replay duplicated acceptance: %d %s", code, diag)
 	}
 }

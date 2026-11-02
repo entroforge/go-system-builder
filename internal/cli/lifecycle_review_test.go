@@ -190,17 +190,31 @@ func TestResumeRefusedOnBaselineDriftRoutesToAmend(t *testing.T) {
 			t.Fatalf("human decision artifact must not carry Runtime %s: %#v", field, decision)
 		}
 	}
-	// Drift: modify the locked REQ while paused (no hook in this test harness).
+	// The locked REQ bytes change while paused (no hook in this test
+	// harness).
 	os.WriteFile(filepath.Join(root, "docs", "requirements", "REQ-203.md"),
 		[]byte("# REQ-203\n\n> 状态：locked\n> 版本：v1.0.0\n> UI impact：none\n\ndrifted\n"), 0o644)
+	resumeStatePath := filepath.Join(root, ".claude", "loop-state.json")
+	beforeResume := readJSONMap(t, resumeStatePath)
 	stdout.Reset()
 	stderr.Reset()
 	code := cli.Run([]string{"runtime", "resume", "--root", root, "--approved-by", "alice"}, strings.NewReader(""), &stdout, &stderr)
-	if code == 0 {
-		t.Fatal("resume must refuse on baseline drift")
+	// L3-S1 §9: the original `runtime resume` determines the return position
+	// and the existing responsibilities from the checkpoint and clears that
+	// checkpoint after success; it does not compute, register or verify a
+	// digest. The system does not detect content drift by hash — Main judges
+	// the actual change and its impact.
+	if code != 0 {
+		t.Fatalf("resume must not refuse on a hash-detected content change: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "req amend") {
-		t.Fatalf("drift refusal must route to amendment, got: %s", stderr.String())
+	if strings.Contains(stderr.String(), "req amend") {
+		t.Fatalf("resume must not route a hash-detected content change to amendment: %s", stderr.String())
+	}
+	afterResume := readJSONMap(t, resumeStatePath)
+	beforeBaseline, _ := beforeResume["baseline"].(map[string]any)
+	afterBaseline, _ := afterResume["baseline"].(map[string]any)
+	if beforeBaseline["generation"] != afterBaseline["generation"] {
+		t.Fatalf("resume raised the requirement generation: before=%v after=%v", beforeBaseline["generation"], afterBaseline["generation"])
 	}
 }
 

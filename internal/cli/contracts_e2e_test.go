@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,7 +41,6 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	sha := func(s string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(s))) }
 	run := func(args ...string) (string, string, int) {
 		var stdout, stderr bytes.Buffer
 		code := cli.Run(args, strings.NewReader(""), &stdout, &stderr)
@@ -140,9 +138,21 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	if contractEntry["author_agent_id"] != "orchestrator" {
 		t.Fatalf("contract author_agent_id = %v, want orchestrator (registering actor)", contractEntry["author_agent_id"])
 	}
-	diskData, _ := os.ReadFile(filepath.Join(root, "docs", "dev", "contracts", "BE-501.md"))
-	if contractEntry["sha256"] != fmt.Sprintf("%x", sha256.Sum256(diskData)) {
-		t.Fatal("registered sha must match disk")
+	// The registration keeps the actual document association. Blueprint
+	// L4-state-transition-core.md:163 and L3-S3-contracts.md:110/589 removed
+	// the computed digest: the original consumer maintains the registration
+	// time and the actual responsibility association, without computing,
+	// registering or verifying a digest.
+	if contractEntry["id"] == nil || contractEntry["version"] == nil || contractEntry["status"] != "locked" {
+		t.Fatalf("registered contract lost its document association: %v", contractEntry)
+	}
+	for _, removed := range []string{"sha256", "digest", "fingerprint", "git_oid"} {
+		if _, present := contractEntry[removed]; present {
+			t.Fatalf("registered contract kept the removed digest field %q: %v", removed, contractEntry)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "docs", "dev", "contracts", "BE-501.md")); err != nil {
+		t.Fatalf("registered contract path is not the actual delivered file: %v", err)
 	}
 
 	// --- same-generation rework: revise + re-lock → replace, not stack ---
@@ -170,7 +180,6 @@ func TestS3ContractPipelineE2E(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("same-generation re-lock must retain one index and one member without stacking, got %d contract entries", count)
 	}
-	_ = sha
 }
 
 func readFile(t *testing.T, root, rel string) string {

@@ -9,11 +9,33 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"github.com/entroforge/go-system-builder/internal/investigation"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
+
+// stampCurrentS10ReviewIdentity applies the current S10 evidence contract to
+// the seeded ledger: an S10 report is associated with the active ReviewPlan by
+// its plan identity, not by a numeric review round. The production review
+// consumer drops the legacy review_round field for the same reason
+// (internal/review/submit.go), so a fixture that keeps it describes a wiring
+// the current Runtime no longer accepts.
+func stampCurrentS10ReviewIdentity(t *testing.T, state map[string]any) {
+	t.Helper()
+	entries, _ := state["evidence"].([]any)
+	for _, raw := range entries {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		switch row["kind"] {
+		case "acceptance", "release_audit", "acceptance_record", "release_audit_record":
+			acceptance.StampReviewIdentity(state, row)
+		}
+	}
+}
 
 func TestBUG104ApproveThenRolloverE2E(t *testing.T) {
 	root := newS11SystemRoot(t)
@@ -381,6 +403,7 @@ func newS11SystemRoot(t *testing.T, modernPacket ...bool) string {
 	// Synthetic upstream preparation only: use the existing S10 fixture and
 	// original TR017 stage-entry outlet to prepare the real empty application.
 	req039fixtures.SeedReleaseAuditReady(t, root, state)
+	stampCurrentS10ReviewIdentity(t, state)
 	if len(modernPacket) > 0 && modernPacket[0] {
 		state["schema_version"] = "1.3.0"
 		state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}

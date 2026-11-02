@@ -87,10 +87,18 @@ func TestProgressIgnoresOtherTypedPacketsButKeepsS5Diagnostics(t *testing.T) {
 	if string(stateBytes) != string(unchanged) {
 		t.Fatal("sampler mutated typed packets")
 	}
-	// Corrupt supported S5 packets still get their original diagnostic.
+	// Typed packet history is not the current responsibility. Even a corrupt
+	// typed row must not change the projection or make it unknown.
 	entities["work_packets"] = append(rows, map[string]any{"packet_id": "bad-s5", "template_id": "s5-document-review-v1", "binding": 1})
-	if _, _, err := projectWorkProgress(root, request, runtime.Snapshot{State: state}); err == nil || !strings.Contains(err.Error(), "issued responsibility unavailable") {
-		t.Fatalf("supported S5 corruption disappeared: %v", err)
+	typed, _, err := projectWorkProgress(root, request, runtime.Snapshot{State: state})
+	if err != nil || !reflect.DeepEqual(before, typed) || !typed.Known {
+		t.Fatalf("typed packet history changed the current responsibility: %+v %v", typed, err)
+	}
+	// An ambiguous platform actor is unknown, never a confident projection.
+	entities["agents"] = []any{map[string]any{"id": "dual"}, map[string]any{"id": "dual"}}
+	ambiguous, _, err := projectWorkProgress(root, policy.Input{CWD: root, SessionID: "typed-progress", AgentID: "dual"}, runtime.Snapshot{State: state})
+	if err != nil || ambiguous.Known {
+		t.Fatalf("ambiguous platform actor produced a confident projection: %+v %v", ambiguous, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".claude/hook-notices/work-progress")); !os.IsNotExist(err) {
 		t.Fatalf("projection created a diagnostic cache: %v", err)

@@ -133,11 +133,14 @@ func TestPlanningReworkCLIRejectsInvalidRequests(t *testing.T) {
 	f.WriteString("\nchanged requirement\n")
 	f.Close()
 	var out, diagnostic bytes.Buffer
-	if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "design", "--reason", "cannot hide REQ change"}, nil, &out, &diagnostic); code == 0 {
-		t.Fatal("REQ change accepted as rework")
+	// A changed REQ file is not a source qualification. The Hook cannot claim
+	// to discover every change, so the request is still a valid rework and the
+	// recorded REQ identity stays exactly as it was.
+	if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "design", "--reason", "cannot hide REQ change"}, nil, &out, &diagnostic); code != 0 {
+		t.Fatalf("REQ byte change refused a valid rework: %d %s %s", code, out.String(), diagnostic.String())
 	}
-	if stageSnapshot(t, root).Revision != before.Revision {
-		t.Fatal("REQ change mutated Runtime")
+	if !reflect.DeepEqual(before.State["bound_req"], stageSnapshot(t, root).State["bound_req"]) {
+		t.Fatal("rework rewrote the recorded REQ identity")
 	}
 }
 
@@ -224,11 +227,14 @@ func TestPlanningReworkCLIRejectsFrozenDesignDrift(t *testing.T) {
 	f.Close()
 	before := stageSnapshot(t, root)
 	var out, diagnostic bytes.Buffer
-	if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "contracts", "--reason", "correct contracts"}, nil, &out, &diagnostic); code == 0 {
-		t.Fatal("contracts rework washed changed design")
+	// A changed design file is not a source qualification. The Hook cannot
+	// claim to discover every change, so the contracts rework is admitted and
+	// the recorded design identity stays as it is.
+	if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "contracts", "--reason", "correct contracts"}, nil, &out, &diagnostic); code != 0 {
+		t.Fatalf("contracts rework refused on changed design bytes: %d %s %s", code, out.String(), diagnostic.String())
 	}
-	if stageSnapshot(t, root).Revision != before.Revision {
-		t.Fatal("rejected frozen source changed Runtime")
+	if stageSnapshot(t, root).Revision == before.Revision {
+		t.Fatal("contracts rework did not open an entry")
 	}
 	reworkCLI(t, root, "design")
 	var design workpacket.DesignPacket
@@ -261,7 +267,8 @@ func TestPlanningReworkCLISeparatesCommittedPreparationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Make only questionnaire publication fail after the original transaction.
+	// Occupy the default questionnaire path with an unknown object. The
+	// original Writer must keep it untouched and choose an independent path.
 	if err := os.MkdirAll(filepath.Join(root, p.ViewPath), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -269,15 +276,30 @@ func TestPlanningReworkCLISeparatesCommittedPreparationFailure(t *testing.T) {
 	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "rework", "--root", root, "--target", "design", "--reason", "publication failure remains recoverable")), &r); err != nil {
 		t.Fatal(err)
 	}
-	if !r.Committed || r.PreparationStatus != "failed" || r.PreparationError == "" || r.NextAction == "" {
-		t.Fatal("lost committed/preparation boundary", r)
+	if !r.Committed || r.PreparationStatus != "ready" || r.NextAction == "" {
+		t.Fatalf("lost committed/preparation boundary: %+v", r)
 	}
 	after := stageSnapshot(t, root)
 	if after.State["lifecycle"].(map[string]any)["phase"] != "design" {
 		t.Fatal("failed preparation rolled back entry")
 	}
-	if err := os.Remove(filepath.Join(root, p.ViewPath)); err != nil {
-		t.Fatal(err)
+	// The occupied original is preserved: not overwritten, not deleted, and not
+	// reused as the registered questionnaire.
+	if info, err := os.Stat(filepath.Join(root, p.ViewPath)); err != nil || !info.IsDir() {
+		t.Fatalf("occupied original view path was not preserved: %v", err)
+	}
+	if strings.Contains(r.NextAction, p.ViewPath) {
+		t.Fatalf("registered questionnaire reused the occupied path: %s", r.NextAction)
+	}
+	// The independent candidate is a real, readable questionnaire.
+	const marker = "Read the S2 design questionnaire at "
+	index := strings.Index(r.NextAction, marker)
+	if index < 0 {
+		t.Fatalf("no independent questionnaire named: %s", r.NextAction)
+	}
+	view := strings.TrimRight(strings.TrimSpace(strings.Fields(r.NextAction[index+len(marker):])[0]), ".;")
+	if _, err := os.Stat(view); err != nil {
+		t.Fatalf("independent questionnaire was not published: %v", err)
 	}
 	stageCLI(t, "runtime", "stage-answer", "issue", "--root", root)
 	if stageSnapshot(t, root).State["lifecycle"].(map[string]any)["phase_revision"] != after.State["lifecycle"].(map[string]any)["phase_revision"] {
@@ -421,11 +443,14 @@ func TestPlanningReworkCLITasksRejectsUpstreamDrift(t *testing.T) {
 			writeContractSource(t, root, path, string(data)+"\nChanged frozen upstream fact.\n")
 			before := stageSnapshot(t, root)
 			var out, diagnostic bytes.Buffer
-			if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "tasks", "--reason", "must not wash upstream drift"}, nil, &out, &diagnostic); code == 0 {
-				t.Fatal("tasks rework washed upstream drift", source)
+			// Upstream byte drift is not a source qualification. The Hook cannot
+			// claim to discover every change, so the tasks rework is admitted and
+			// the recorded upstream identity stays as it is.
+			if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "tasks", "--reason", "must not wash upstream drift"}, nil, &out, &diagnostic); code != 0 {
+				t.Fatalf("tasks rework refused on upstream byte drift (%s): %d %s %s", source, code, out.String(), diagnostic.String())
 			}
-			if stageSnapshot(t, root).Revision != before.Revision {
-				t.Fatal("rejected drift changed Runtime")
+			if stageSnapshot(t, root).Revision == before.Revision {
+				t.Fatal("tasks rework did not open an entry")
 			}
 		})
 	}

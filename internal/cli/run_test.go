@@ -393,7 +393,7 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 		phase     string
 		wantStage string
 		wantSkill string
-		wantText  string
+		wantText  []string
 		forbidden []string
 	}{
 		{
@@ -401,21 +401,21 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 			phase:     "investigation",
 			wantStage: "S8",
 			wantSkill: "bug-resolution",
-			wantText:  "InvestigationCase",
+			wantText:  []string{"InvestigationCase"},
 		},
 		{
 			name:      "bug report review is S8",
 			phase:     "bug_report_review",
 			wantStage: "S8",
 			wantSkill: "bug-resolution",
-			wantText:  "legacy BUG projection",
+			wantText:  []string{"legacy BUG projection"},
 		},
 		{
 			name:      "repair readback is S9",
 			phase:     "repair_readback",
 			wantStage: "S9",
 			wantSkill: "bug-resolution",
-			wantText:  "prepares the original RepairSession",
+			wantText:  []string{"prepares the original RepairSession"},
 			forbidden: []string{"runtime repair status", "runtime repair session open"},
 		},
 		{
@@ -423,7 +423,7 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 			phase:     "planning",
 			wantStage: "S9",
 			wantSkill: "bug-resolution",
-			wantText:  "private professional PlanReport",
+			wantText:  []string{"use its exact prepared brief for native Agent/worktree dispatch", "Builders save their Plan and Result"},
 			forbidden: []string{"runtime repair dispatch", "runtime repair execution begin"},
 		},
 		{
@@ -431,7 +431,7 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 			phase:     "reproducing",
 			wantStage: "S9",
 			wantSkill: "bug-resolution",
-			wantText:  "original consumer",
+			wantText:  []string{"uses each selected responsibility's exact prepared brief", "natural PreToolUse and successful PostToolUse observe ready answers"},
 			forbidden: []string{"runtime repair execution begin"},
 		},
 		{
@@ -439,7 +439,7 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 			phase:     "fixing",
 			wantStage: "S9",
 			wantSkill: "bug-resolution",
-			wantText:  "SubagentStop receives them",
+			wantText:  []string{"save their private professional Plan/Result in the actual worktree", "natural PreToolUse and successful PostToolUse observe ready answers"},
 			forbidden: []string{"--check-location", "completion_report"},
 		},
 		{
@@ -447,7 +447,7 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 			phase:     "targeted_reverification",
 			wantStage: "S9",
 			wantSkill: "bug-resolution",
-			wantText:  "exact TargetedReverification answer for SubagentStop",
+			wantText:  []string{"the registered independent verifier saves the exact TargetedReverification answer", "with Stop/SubagentStop as fallback"},
 			forbidden: []string{"runtime repair status", "commit ChangeImpact"},
 		},
 		{
@@ -455,7 +455,7 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 			phase:     "ready_for_full_review",
 			wantStage: "S9",
 			wantSkill: "bug-resolution",
-			wantText:  "runtime repair handoff complete",
+			wantText:  []string{"runtime repair handoff complete"},
 			forbidden: []string{"runtime repair handoff create", "runtime repair handoff commit", "create and commit"},
 		},
 	}
@@ -486,8 +486,10 @@ func TestNextProjectsInvestigationAsS8AndRepairAsS9(t *testing.T) {
 			if projection.PrimarySkill != tc.wantSkill {
 				t.Fatalf("unexpected skill projection: %s", out)
 			}
-			if !strings.Contains(projection.Action, tc.wantText) {
-				t.Fatalf("projection action should mention %q: %s", tc.wantText, out)
+			for _, want := range tc.wantText {
+				if !strings.Contains(projection.Action, want) {
+					t.Fatalf("projection action should mention %q: %s", want, out)
+				}
 			}
 			for _, stale := range tc.forbidden {
 				if strings.Contains(projection.Action, stale) {
@@ -848,19 +850,23 @@ func TestHookCommandPreToolUseDoesNotRequireToolIdentityContext(t *testing.T) {
 		t.Fatalf("hook failed: code=%d stderr=%s", code, stderr.String())
 	}
 	out := strings.TrimSpace(stdout.String())
-	var envelope map[string]any
-	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
-		t.Fatalf("expected a graph-observation envelope, got %q: %v", out, err)
-	}
-	if hsp, ok := envelope["hookSpecificOutput"].(map[string]any); ok {
-		if pd, _ := hsp["permissionDecision"].(string); pd == "deny" {
-			t.Fatalf("PreToolUse observer must not deny without tool identity context, got envelope=%v", envelope)
+	if out != "" {
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+			t.Fatalf("expected a graph-observation envelope, got %q: %v", out, err)
 		}
-	} else {
-		t.Fatalf("PreToolUse output omitted its graph-observation payload: %v", envelope)
-	}
-	if !strings.Contains(out, "QUALITY_GATE") {
-		t.Fatalf("PreToolUse output omitted graph progress feedback: %s", out)
+		if hsp, ok := envelope["hookSpecificOutput"].(map[string]any); ok {
+			if pd, _ := hsp["permissionDecision"].(string); pd == "deny" {
+				t.Fatalf("PreToolUse observer must not deny without tool identity context, got envelope=%v", envelope)
+			}
+		}
+		// An ordinary Worker observation stays quiet; the Main control-cycle
+		// projection belongs to the Main path and is not injected into a
+		// native Agent (L4-agent-guidance.md:451,
+		// L4-runtime-control-plane.md:235/239).
+		if strings.Contains(out, "QUALITY_GATE") {
+			t.Fatalf("Worker payload received the Main control-cycle projection: %s", out)
+		}
 	}
 }
 
@@ -986,8 +992,11 @@ func TestHookCommandObservesProductWriteWithoutToolDenial(t *testing.T) {
 	if strings.Contains(out, `"permissionDecision":"deny"`) {
 		t.Fatalf("PreToolUse observer must not deny a product write: %s", out)
 	}
-	if !strings.Contains(out, "QUALITY_GATE") {
-		t.Fatalf("PreToolUse observer must retain graph progress feedback: %s", out)
+	// An ordinary Worker observation stays quiet: the Main control-cycle
+	// projection is not injected into a native Agent
+	// (L4-agent-guidance.md:451, L4-runtime-control-plane.md:239).
+	if strings.Contains(out, "QUALITY_GATE") {
+		t.Fatalf("Worker payload received the Main control-cycle projection: %s", out)
 	}
 	if strings.Contains(out, "HOOK_AGENT_NOT_ACTIVATED") {
 		t.Fatalf("legacy HOOK_AGENT_NOT_ACTIVATED predicate must not surface: %s", out)
@@ -1174,10 +1183,13 @@ func parseHookQualityGate(t *testing.T, raw string) map[string]any {
 // unreadable-runtime diagnostic visible while the tool listener fails open.
 func TestHookCommandMissingRuntimeFailsOpenWithGateDiagnostic(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
+	// The unreadable Runtime is the Main control cycle's own unknown state, so
+	// the Main path owns this diagnostic; the platform payload's
+	// runtime_context is only a compatibility carrier, not proof of state
+	// (L4-hook-platform-wiring.md:61).
 	input := `{
 		"session_id":"session-1",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Edit",
 		"tool_input":{"file_path":"src/app.go"}
 	}`
@@ -1190,12 +1202,14 @@ func TestHookCommandMissingRuntimeFailsOpenWithGateDiagnostic(t *testing.T) {
 	if strings.Contains(out, `"permissionDecision":"deny"`) {
 		t.Fatalf("missing runtime must not surface a tool denial: %s", out)
 	}
-	if !strings.Contains(out, "LOOP_RUNTIME_INVALID") {
-		t.Fatalf("missing runtime must surface its graph diagnostic: %s", out)
+	visible := out + stderr.String()
+	if !strings.Contains(visible, "could not be verified") {
+		t.Fatalf("missing runtime must surface its graph diagnostic: stdout=%s stderr=%s", out, stderr.String())
 	}
-	qualityGate := parseHookQualityGate(t, out)
-	if qualityGate["status"] != "unknown" || qualityGate["error_code"] != "LOOP_RUNTIME_INVALID" {
-		t.Fatalf("missing runtime must project its unknown quality-gate diagnostic, got %#v", qualityGate)
+	// The current stage and professional reception stay unknown; nothing is
+	// fabricated (L4-state-transition-core.md:257).
+	if !strings.Contains(visible, "cannot be verified") {
+		t.Fatalf("missing runtime must not fabricate a current stage: stdout=%s stderr=%s", out, stderr.String())
 	}
 }
 
@@ -1234,6 +1248,30 @@ func TestHookCommandPolicyMetadataFailureDoesNotDenyTool(t *testing.T) {
 // failure is diagnosed without converting the graph observer into a tool ACL.
 func TestHookCommandPreservesAuditOnOutboxFailure(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
+	// A real Runtime lets the ordinary observer reach its audit; the platform
+	// payload's runtime_context is a compatibility carrier, not proof of state
+	// (L4-hook-platform-wiring.md:61).
+	if err := os.MkdirAll(filepath.Join(root, ".claude", "evidence"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{
+		"runtime_id":"loop-REQ-002",
+		"revision":4,
+		"bound_req":{"path":"docs/requirements/REQ-002.md"},
+		"entities":{"agents":[{"id":"agent-1","state":"activated","activation_ref":".claude/evidence/activation-1.json"}]}
+	}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	activation := `{
+		"agent_id":"agent-1",
+		"allowed_tools":["Edit"],
+		"allowed_write_paths":["src/"],
+		"allowed_command_classes":[]
+	}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "evidence", "activation-1.json"), []byte(activation), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// Force the audit outbox to be a directory so Append fails.
 	if err := os.MkdirAll(filepath.Join(root, ".claude", "hook-decisions.jsonl"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1242,14 +1280,8 @@ func TestHookCommandPreservesAuditOnOutboxFailure(t *testing.T) {
 	input := `{
 		"session_id":"session-1",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Edit",
-		"tool_input":{"file_path":"src/app.go"},
-		"runtime_context":{
-			"runtime_id":"loop-REQ-002",
-			"revision":4,
-			"agent":{"id":"agent-1","state":"activated","allowed_tools":["Edit"],"allowed_write_paths":["src/"]}
-		}
+		"tool_input":{"file_path":"src/app.go"}
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
@@ -1268,6 +1300,30 @@ func TestHookCommandPreservesAuditOnOutboxFailure(t *testing.T) {
 // failures diagnostic while preserving the observer's non-vetoing behavior.
 func TestHookCommandReportsOutboxFailureWithoutToolDeny(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
+	// A real Runtime lets the ordinary observer reach its audit; the platform
+	// payload's runtime_context is a compatibility carrier, not proof of state
+	// (L4-hook-platform-wiring.md:61).
+	if err := os.MkdirAll(filepath.Join(root, ".claude", "evidence"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{
+		"runtime_id":"loop-REQ-002",
+		"revision":4,
+		"bound_req":{"path":"docs/requirements/REQ-002.md"},
+		"entities":{"agents":[{"id":"agent-1","state":"activated","activation_ref":".claude/evidence/activation-1.json"}]}
+	}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	activation := `{
+		"agent_id":"agent-1",
+		"allowed_tools":["Edit"],
+		"allowed_write_paths":["src/"],
+		"allowed_command_classes":[]
+	}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "evidence", "activation-1.json"), []byte(activation), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// Make the audit outbox a directory so Append fails.
 	if err := os.MkdirAll(filepath.Join(root, ".claude", "hook-decisions.jsonl"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1275,14 +1331,8 @@ func TestHookCommandReportsOutboxFailureWithoutToolDeny(t *testing.T) {
 	input := `{
 		"session_id":"session-1",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Edit",
-		"tool_input":{"file_path":"src/app.go"},
-		"runtime_context":{
-			"runtime_id":"loop-REQ-002",
-			"revision":4,
-			"agent":{"id":"agent-1","state":"activated","allowed_tools":["Edit"],"allowed_write_paths":["src/"]}
-		}
+		"tool_input":{"file_path":"src/app.go"}
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "PreToolUse", "--root", root}, strings.NewReader(input), &stdout, &stderr)
@@ -1447,22 +1497,45 @@ func TestHookCommandIgnoresUIPrototypeFact(t *testing.T) {
 // the envelope exhibits a recovery-packet systemMessage (not a rule_id).
 func TestSessionStartEmitsRecoveryPacket(t *testing.T) {
 	root := copyPolicyToTempRoot(t)
+	// SessionStart recovers from the real Runtime; the platform payload's
+	// runtime_context is a compatibility carrier, not proof of state
+	// (L4-hook-platform-wiring.md:61).
+	if err := os.MkdirAll(filepath.Join(root, ".claude", "evidence"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{
+		"runtime_id":"loop-REQ-002",
+		"revision":4,
+		"bound_req":{"path":"docs/requirements/REQ-002.md"},
+		"entities":{"agents":[{"id":"agent-1","state":"activated","activation_ref":".claude/evidence/activation-1.json"}]}
+	}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	activation := `{
+		"agent_id":"agent-1",
+		"allowed_tools":["Edit"],
+		"allowed_write_paths":["src/"],
+		"allowed_command_classes":[]
+	}`
+	if err := os.WriteFile(filepath.Join(root, ".claude", "evidence", "activation-1.json"), []byte(activation), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	input := `{
 		"session_id":"session-lifecycle-no-dup",
 		"hook_event_name":"SessionStart",
-		"tool_name":"*",
-		"runtime_context":{
-			"runtime_id":"loop-REQ-002",
-			"revision":1
-		}
+		"tool_name":"*"
 	}`
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"hook", "--event", "SessionStart", "--root", root}, strings.NewReader(input), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("SessionStart hook must exit 0, got %d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Stage ") {
-		t.Fatalf("SessionStart must emit a Stage banner, got %q", stdout.String())
+	// The recovery packet names the current stage and the next operation
+	// instead of restating the whole lifecycle
+	// (L4-hook-anchor-catalog.md:64).
+	if !strings.Contains(stdout.String(), "LOOP RECOVERY") || !strings.Contains(stdout.String(), "stage=") || !strings.Contains(stdout.String(), "next=") {
+		t.Fatalf("SessionStart must emit the recovery packet, got %q", stdout.String())
 	}
 	// Legacy HOOK_SESSION_STARTED rule_id is retired.
 	if strings.Contains(stdout.String(), "HOOK_SESSION_STARTED") {

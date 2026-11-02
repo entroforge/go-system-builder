@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,11 +23,28 @@ func s7BaselinePost(t *testing.T, root, tool, path string) string {
 	return out.String()
 }
 
+// s7OpenedReviewPlan opens the S7 review round the way the S6→S7 transition
+// does. The current ReviewPlan identity is recorded, so the questionnaire path
+// follows that identity instead of the removed review-round number.
+func s7OpenedReviewPlan(t *testing.T, root, planID string) map[string]any {
+	t.Helper()
+	state := stageSnapshot(t, root).State
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": planID, "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude/loop-state.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
 func TestS7InitialDraftNaturalObservationAndExplicitSave(t *testing.T) {
 	for _, mode := range []string{"write", "edit", "changed"} {
 		t.Run(mode, func(t *testing.T) {
 			root := worktreeProjectRoot(t)
-			state := stageSnapshot(t, root).State
+			state := s7OpenedReviewPlan(t, root, "review-plan-s7-initial-draft")
 			path := review.PlanQuestionnairePath(root, state)
 			s7MainNaturalPre(t, root)
 			original, err := os.ReadFile(path)
@@ -86,7 +104,7 @@ func TestS7InitialDraftNaturalObservationAndExplicitSave(t *testing.T) {
 
 func TestS7OldWithoutBaselineAndWrongPlanIDContinueNaturally(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	state := stageSnapshot(t, root).State
+	state := s7OpenedReviewPlan(t, root, "review-plan-s7-old-draft")
 	path := review.PlanQuestionnairePath(root, state)
 	s7MainNaturalPre(t, root)
 	guide := strings.TrimSuffix(path, ".json") + ".md"

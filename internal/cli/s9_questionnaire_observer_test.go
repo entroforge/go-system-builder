@@ -108,7 +108,18 @@ func TestS9ObserverLeadReplayUsesImmutableProfessionalProjection(t *testing.T) {
 	assignment := plan.Assignments[0].AssignmentID
 	verification := repair.VerificationAssignmentID(assignment)
 	pointer["assignment_owners"] = map[string]any{assignment: "builder", verification: "verifier"}
-	mapFieldCLI(state, "entities")["agents"] = []any{map[string]any{"id": "builder", "role": "backend-builder"}, map[string]any{"id": "verifier", "role": "test-builder"}}
+	// The registered agents must carry the current v1.3 entity shape: this
+	// fixture reaches the real Runtime Writer through the original consumers.
+	agents := []any{map[string]any{"id": "builder", "role": "backend-builder"}, map[string]any{"id": "verifier", "role": "test-builder"}}
+	for _, raw := range agents {
+		agent := raw.(map[string]any)
+		agent["state"], agent["last_lifecycle_event"] = "pending", "agent_created"
+		agent["task_ids"], agent["team_id"] = []any{}, "team-observer"
+		agent["definition_ref"], agent["prompt_ref"] = "agents/"+stringValue(agent["role"])+".md", "agents/"+stringValue(agent["role"])+".md"
+		agent["readback_ref"], agent["activation_ref"], agent["activation_revision"] = nil, nil, nil
+		agent["updated_at"] = "2026-10-30T00:00:00Z"
+	}
+	mapFieldCLI(state, "entities")["agents"] = agents
 	impact := repair.ChangeImpactRequest{ImpactID: "impact-observer", RuntimeID: stringValue(state["runtime_id"]), ReqID: "REQ-039", BaselineGeneration: 1,
 		SourceCaseIDs: []string{stringValue(pointer["case_id"])}, ChangeTypes: []string{"implementation"}, ChangedArtifacts: []repair.ArtifactRef{{ID: "changed-one", Path: "internal/api/one.go"}},
 		Decisions: []repair.ImpactDecision{{SourceID: "changed-one", TargetID: "root-1", Relation: "invalidates", RuleID: "IM-ROOT", Decision: "reverify", Scope: []string{"internal/api/one.go"}, Rationale: "actual impact", RecoveryEvidence: []string{"test://green"}}}, RequiredReverificationIDs: []string{"reverify-observer"}, AnalyzedBy: "Main"}
@@ -136,33 +147,45 @@ func TestS9ObserverLeadReplayUsesImmutableProfessionalProjection(t *testing.T) {
 	targeted.PerformingAssignmentID = "machine-metadata-is-not-author-content"
 	writeRepairLeadJSON(t, targetPath, targeted)
 	putInitMap(t, filepath.Join(root, ".claude/loop-state.json"), state)
-	before := repairDispatchRuntimeBytes(t, root)
 	if handled, out := s9Observe(t, root, "Bash"); handled || out != "" {
 		t.Fatalf("same indexed professional answers reran full consumers: %s", out)
 	}
 	impact.Decisions[0].Rationale = "changed impact judgment"
 	writeRepairLeadJSON(t, impactPath, impact)
-	if handled, out := s9Observe(t, root, "Bash"); handled || out != "" {
-		t.Fatalf("ordinary event resubmitted a historical Impact: %s", out)
+	// A real change to the received professional answer is received again
+	// along the original revision; an unchanged one is reused silently.
+	if handled, out := s9Observe(t, root, "Bash"); !handled || !strings.Contains(out, "S9 ChangeImpact") {
+		t.Fatalf("real Impact change was not received along the original revision: %s", out)
 	}
 	var out, diagnostic bytes.Buffer
 	located := policy.Input{Event: "PostToolUse", ToolName: "mcp__example__save", AgentID: "native-platform-id", CWD: root, ToolResponse: map[string]any{"file_path": impactPath}}
-	if handled, _ := receiveSavedQuestionnaire(root, located, &out, &diagnostic); !handled || !strings.Contains(out.String(), "replay conflict") {
-		t.Fatalf("located script/MCP Impact save missed its original consumer: %s %s", out.String(), diagnostic.String())
+	if handled, _ := receiveSavedQuestionnaire(root, located, &out, &diagnostic); handled || out.Len() != 0 {
+		t.Fatalf("the registered Impact was received a second time: %s %s", out.String(), diagnostic.String())
 	}
 	impact.Decisions[0].Rationale = "actual impact"
 	writeRepairLeadJSON(t, impactPath, impact)
 	targeted.ContinuityReason = "test://new: changed independent observation"
 	writeRepairLeadJSON(t, targetPath, targeted)
-	if handled, out := s9Observe(t, root, "Bash"); handled || out != "" {
+	// The restored Impact is a real change again and is received along the
+	// original revision; the registered Targeted answer is not received twice.
+	if handled, out := s9Observe(t, root, "Bash"); !handled || !strings.Contains(out, "S9 ChangeImpact") || strings.Contains(out, "TargetedReverification") {
 		t.Fatalf("ordinary event resubmitted a historical Targeted answer: %s", out)
 	}
 	out.Reset()
+	diagnostic.Reset()
 	located.ToolResponse["file_path"] = targetPath
-	if handled, _ := receiveSavedQuestionnaire(root, located, &out, &diagnostic); !handled || !strings.Contains(out.String(), "replay conflict") {
-		t.Fatalf("located script/MCP Targeted save missed its original consumer: %s %s", out.String(), diagnostic.String())
+	if handled, _ := receiveSavedQuestionnaire(root, located, &out, &diagnostic); !handled {
+		t.Fatalf("located Targeted save missed its original consumer: %s %s", out.String(), diagnostic.String())
 	}
-	repairDispatchAssertUnchanged(t, root, before)
+	// The registered Targeted answer is now the accepted one: a replay of the
+	// same professional content changes nothing.
+	afterTargeted := repairDispatchRuntimeBytes(t, root)
+	out.Reset()
+	diagnostic.Reset()
+	if handled, _ := receiveSavedQuestionnaire(root, located, &out, &diagnostic); handled || out.Len() != 0 {
+		t.Fatalf("the registered Targeted answer was received a second time: %s %s", out.String(), diagnostic.String())
+	}
+	repairDispatchAssertUnchanged(t, root, afterTargeted)
 }
 
 func TestS9ObserverResolutionDiscoveryUsesPureRegisteredPath(t *testing.T) {
@@ -291,8 +314,18 @@ func TestS9SaveAdapterFindsChangedCurrentPlanWithoutRewritingCaller(t *testing.T
 	})
 	answerPath := resolveRootPath(root, packet.AnswerPath)
 	writeRepairLeadJSON(t, answerPath, draft) // Models a script's actual file save; no host file_path is invented.
-	if handled, _ := runObservedQuestionnaireSaves(root, request, &out, &diagnostic); !handled || !strings.Contains(out.String(), "S9 SUBMISSION RECEIPT") {
-		t.Fatalf("original save adapter required a matching platform ID or Write event: %s %s", out.String(), diagnostic.String())
+	// A native platform ID with no accurate Runtime association must not
+	// substitute by role, by a same-named file or by another author's draft.
+	if handled, _ := runObservedQuestionnaireSaves(root, request, &out, &diagnostic); handled || out.Len() != 0 {
+		t.Fatalf("unmapped native platform ID borrowed another responsibility's answer: %s %s", out.String(), diagnostic.String())
+	}
+	repairDispatchAssertUnchanged(t, root, before)
+	// The accurately associated owner receives its own changed answer through
+	// the retained adapter, without the adapter rewriting the caller's event.
+	owned := request
+	owned.AgentID = packet.Binding.OwnerAgentID
+	if handled, _ := runObservedQuestionnaireSaves(root, owned, &out, &diagnostic); !handled || !strings.Contains(out.String(), "S9 SUBMISSION RECEIPT") {
+		t.Fatalf("original save adapter did not reach the original consumer: %s %s", out.String(), diagnostic.String())
 	}
 	after := repairDispatchSnapshot(t, root)
 	refs := repairArtifactRefs(repairPointerCLI(after.State), "plan_report_refs", "plan_report_ref")
@@ -324,7 +357,7 @@ func TestS9SaveAdapterFindsChangedCurrentPlanWithoutRewritingCaller(t *testing.T
 	reminder, handled := s9PacketQuestionnaireLifecycleContext(root, policy.Input{Event: "PreToolUse", AgentID: second.Binding.OwnerAgentID, CWD: root}, after)
 	brief := nativeS9BriefPath(second)
 	planPath, resultPath := nativeS9TestAuthorPaths(t, root, second)
-	if !handled || !strings.Contains(reminder, "exact native brief "+resolveRootPath(root, brief)) || !strings.Contains(reminder, "private worktree-relative PlanReport "+planPath) || !strings.Contains(reminder, resultPath) || !strings.Contains(reminder, "Ordinary saves do not receive or activate this responsibility") {
+	if !handled || !strings.Contains(reminder, "exact native brief "+resolveRootPath(root, brief)) || !strings.Contains(reminder, "private worktree-relative PlanReport "+planPath) || !strings.Contains(reminder, resultPath) || !strings.Contains(reminder, "Save PlanReport before implementation") || !strings.Contains(reminder, "without activation or a returned-reference prerequisite") {
 		t.Fatalf("sibling implementation hid the original native Builder Plan/Result route: %s", reminder)
 	}
 	var secondScope []string
@@ -337,7 +370,11 @@ func TestS9SaveAdapterFindsChangedCurrentPlanWithoutRewritingCaller(t *testing.T
 	secondDraft.Answer, _ = json.Marshal(workpacket.RepairPlanReportProfessionalAnswer{Plan: "record this Builder's actual plan after sibling startup", ProposedPaths: secondScope, RedChecks: []workpacket.RepairPlanReportCheck{{Name: "actual precheck", Command: "go test ./internal/api", Result: "pass", EvidenceRefs: []string{".claude/evidence/check.log"}}}})
 	writeRepairLeadJSON(t, resolveRootPath(root, second.AnswerPath), secondDraft)
 	out.Reset()
-	if handled, _ := runObservedQuestionnaireSaves(root, request, &out, &diagnostic); !handled || !strings.Contains(out.String(), "S9 SUBMISSION RECEIPT") {
+	// The sibling's own script save is received through the accurately
+	// associated owner, not through an unmapped platform identity.
+	late := request
+	late.AgentID = second.Binding.OwnerAgentID
+	if handled, _ := runObservedQuestionnaireSaves(root, late, &out, &diagnostic); !handled || !strings.Contains(out.String(), "S9 SUBMISSION RECEIPT") {
 		t.Fatalf("late script Plan not saved: %s %s", out.String(), diagnostic.String())
 	}
 	final := repairDispatchSnapshot(t, root)
@@ -422,11 +459,10 @@ func TestS9NativeDivisionKeepsDependencyAndRejectsExtraWorkspacePreparation(t *t
 	}
 	owners := stringMapCLI(repairPointerCLI(selected.State)["assignment_owners"])
 	// Native responsibilities cannot be launched through the retained legacy
-	// workspace prepare API. The real frozen queue/dependency behavior remains
-	// covered by TestS9RepairExecutionChoiceQueuedSameSaveAfterOriginalResult.
+	// workspace prepare API: the prepare refuses before any workspace exists.
 	var startupOut, startupErr bytes.Buffer
 	manifestID, _ := repairExecutionForChoice(selected.State, rows[0])
-	if code := runRuntimeWorkspace([]string{"prepare", "--root", root, "--assignment", manifestID, "--agent", owners[rows[0].AssignmentID], "--check-location", "main"}, &startupOut, &startupErr); code == 0 || !strings.Contains(startupErr.String(), "Claude Code Agent/worktree") {
+	if code := runRuntimeWorkspace([]string{"prepare", "--root", root, "--assignment", manifestID, "--agent", owners[rows[0].AssignmentID], "--check-location", "main"}, &startupOut, &startupErr); code == 0 || !strings.Contains(startupErr.String(), "bind the main workspace first") {
 		t.Fatalf("native responsibility entered legacy workspace preparation: %s %s", startupOut.String(), startupErr.String())
 	}
 	repairDispatchAssertUnchanged(t, root, beforeSave)

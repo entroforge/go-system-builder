@@ -58,28 +58,28 @@ func runTaskIntegrate(t *testing.T, root, assignmentID string) (int, string, str
 }
 
 func TestTaskIntegrateMergesAcknowledgesAndCleansWorktree(t *testing.T) {
-	root := freshRoot(t)
-	wtPath := seedIntegrableAssignment(t, root)
-	developBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
+	root, builder := seedCanonicalIntegrableAssignment(t)
+	target := canonicalTargetBranch(t, root)
+	targetBefore := strings.TrimSpace(runGitIn(t, root, "rev-parse", target))
 
-	code, stdout, stderr := runTaskIntegrate(t, root, "assignment-ti")
+	code, stdout, stderr := runTaskIntegrate(t, root, builder.record.AssignmentID)
 	if code != 0 {
 		t.Fatalf("task-integrate failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
 	}
 	if !strings.Contains(stderr, "integrated") {
 		t.Fatalf("task-integrate must report integration, stderr=%s", stderr)
 	}
-	developAfter := strings.TrimSpace(runGitIn(t, root, "rev-parse", "develop"))
-	if developAfter == developBefore {
-		t.Fatalf("task-integrate must advance develop (merge missing): %s", stderr)
+	targetAfter := strings.TrimSpace(runGitIn(t, root, "rev-parse", target))
+	if targetAfter == targetBefore {
+		t.Fatalf("task-integrate must advance %s (merge missing): %s", target, stderr)
 	}
-	// The merge is non-squash: develop's new head has two parents.
-	parents := runGitIn(t, root, "show", "-s", "--format=%P", developAfter)
+	// The merge is non-squash: the target's new head has two parents.
+	parents := runGitIn(t, root, "show", "-s", "--format=%P", targetAfter)
 	if len(strings.Fields(strings.TrimSpace(parents))) != 2 {
 		t.Fatalf("task-integrate must produce a merge commit, parents=%q", parents)
 	}
-	// Durable checkpoint reached complete with the task bound.
-	checkpointPath := filepath.Join(root, ".claude", "evidence", "loop-system-test", "g1", "worktree", "assignment-ti", "checkpoint.json")
+	// Durable checkpoint reached the acknowledged state with the task bound.
+	checkpointPath := canonicalBuilderCheckpoint(t, builder)
 	data, err := os.ReadFile(checkpointPath)
 	if err != nil {
 		t.Fatalf("durable checkpoint missing: %v", err)
@@ -94,10 +94,10 @@ func TestTaskIntegrateMergesAcknowledgesAndCleansWorktree(t *testing.T) {
 	if checkpoint.State != "complete" {
 		t.Fatalf("checkpoint state = %q, want complete (checkpoint=%s)", checkpoint.State, data)
 	}
-	if checkpoint.TaskID != "TASK-039-01" {
-		t.Fatalf("checkpoint task_id = %q, want TASK-039-01 (gate binding)", checkpoint.TaskID)
+	if checkpoint.TaskID != builder.task {
+		t.Fatalf("checkpoint task_id = %q, want %s (gate binding)", checkpoint.TaskID, builder.task)
 	}
-	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(builder.worker); !os.IsNotExist(err) {
 		t.Fatalf("completed checkout remains: %v", err)
 	}
 }
@@ -116,36 +116,32 @@ func TestTaskIntegrateUnknownAssignmentListsKnown(t *testing.T) {
 }
 
 func TestTaskIntegrateConflictPreservesWorktree(t *testing.T) {
-	root := freshRoot(t)
-	wtPath := seedIntegrableAssignment(t, root)
+	root, builder := seedCanonicalIntegrableAssignment(t)
 
-	// Diverge develop and the feature branch on the same in-scope file.
-	internalFile := filepath.Join(root, "internal", "shared.go")
-	if err := os.MkdirAll(filepath.Dir(internalFile), 0o755); err != nil {
+	// Diverge the authority target and the delivered branch on the same
+	// in-scope file.
+	inScope := canonicalBuilderInScopeFile(t, builder)
+	if err := os.MkdirAll(filepath.Dir(inScope), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(internalFile, []byte("// develop line\n"), 0o644); err != nil {
+	if err := os.WriteFile(inScope, []byte("// target line\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGitIn(t, root, "add", "internal/shared.go")
-	runGitIn(t, root, "commit", "-m", "develop change")
-	if err := os.WriteFile(filepath.Join(wtPath, "internal", "shared.go"), []byte("// feature line\n"), 0o644); err != nil {
-		if err := os.MkdirAll(filepath.Join(wtPath, "internal"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(wtPath, "internal", "shared.go"), []byte("// feature line\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	runGitIn(t, root, "add", builder.output)
+	runGitIn(t, root, "commit", "-m", "target change")
+	workerFile := filepath.Join(builder.worker, builder.output)
+	if err := os.WriteFile(workerFile, []byte("// feature line\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	runGitIn(t, wtPath, "add", "internal/shared.go")
-	runGitIn(t, wtPath, "commit", "-m", "feature change")
+	runGitIn(t, builder.worker, "add", builder.output)
+	runGitIn(t, builder.worker, "commit", "-m", "feature change")
 
-	code, stdout, stderr := runTaskIntegrate(t, root, "assignment-ti")
+	code, stdout, stderr := runTaskIntegrate(t, root, builder.record.AssignmentID)
 	out := stdout + stderr
 	if !strings.Contains(strings.ToLower(out), "preserv") && !strings.Contains(strings.ToLower(out), "block") {
 		t.Fatalf("conflict must surface preserve/blocker guidance, out=%s", out)
 	}
-	if _, err := os.Stat(wtPath); err != nil {
+	if _, err := os.Stat(builder.worker); err != nil {
 		t.Fatalf("conflicted worktree must be preserved: %v", err)
 	}
 	// Inspect-stage conflicts persist the milestone record (the durable

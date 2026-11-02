@@ -87,12 +87,26 @@ func TestNativeS9ListenerReceivesPlanBeforeResultAndPreservesDirtyWork(t *testin
 	in.Event = "PostToolUse"
 	diagnostic.Reset()
 	request, _ = json.Marshal(in)
-	if code := Run([]string{"hook", "--root", root, "--event", in.Event}, bytes.NewReader(request), &out, &diagnostic); code != 0 || !strings.Contains(diagnostic.String(), "professional Result received") {
+	if code := Run([]string{"hook", "--root", root, "--event", in.Event}, bytes.NewReader(request), &out, &diagnostic); code != 0 || !strings.Contains(diagnostic.String(), "Original S9 Result received") {
 		t.Fatalf("natural Result: %d %s", code, &diagnostic)
 	}
 	resultFeedback := nativeS9ListenerFeedback(t, &out)
-	if !strings.Contains(resultFeedback, "S9 Result") || !strings.Contains(resultFeedback, "was accepted") || !strings.Contains(resultFeedback, resultPath) || !strings.Contains(resultFeedback, "Main owns") || strings.Contains(resultFeedback, "runtime workspace integrate") {
-		t.Fatalf("Result feedback misstates acceptance or assigns Main work to Worker: %s", resultFeedback)
+	// The original consumer records the Worker's professional Result and hands
+	// the actual work to Main. L4-workflow-convergence.md:228 — "不以 Final／Changeset
+	// 或其他证明设门；Main 实际工作和独立复验保留"; L4-workflow-convergence.md:312
+	// removes the retired `runtime workspace integrate` handoff.
+	for _, want := range []string{"Your original S9 Result is received", "Main owns the actual integration"} {
+		if !strings.Contains(resultFeedback, want) {
+			t.Fatalf("Result feedback missing %q: %s", want, resultFeedback)
+		}
+	}
+	if strings.Contains(resultFeedback, "runtime workspace integrate") {
+		t.Fatalf("retired workspace integrate handoff reappeared: %s", resultFeedback)
+	}
+	// The original consumer prepares Main's original ChangeImpact question
+	// instead of handing the Worker a proof or an integration command.
+	if !strings.Contains(diagnostic.String(), "Main original ChangeImpact answer:") {
+		t.Fatalf("Main's original impact question was not prepared: %s", &diagnostic)
 	}
 	out.Reset()
 	before = repairDispatchRuntimeBytes(t, root)
@@ -125,12 +139,16 @@ func TestNativeS9ListenerIgnoresFailedPostAndOtherCheckout(t *testing.T) {
 	in.Event, in.CWD = "PreToolUse", other
 	nativeS9Hook(root, in, &out, &diagnostic)
 	repairDispatchAssertUnchanged(t, root, before)
-	if feedback := nativeS9ListenerFeedback(t, &out); !strings.Contains(feedback, "different sources") || !strings.Contains(feedback, "Original consumer diagnostic") {
-		t.Fatalf("source rejection did not reach actual Worker: %s", feedback)
+	// The retired CWD-versus-reference source comparison is gone. L4-hook-platform-wiring.md:81 —
+	// "不另遍历 Git worktree、比对 HEAD／branch／pin 或认证 actor 与来源根来授予答卷
+	// 资格"; L3-S6-build.md:320 — "Hook 不扫描 Git、登记或比对 HEAD／base／commit
+	// OID、检查祖先关系或逐文件散列作为接收资格". An event from another checkout
+	// therefore neither fabricates a receipt nor invents a source verdict.
+	feedback := nativeS9ListenerFeedback(t, &out)
+	if strings.Contains(feedback, "different sources") || strings.Contains(diagnostic.String(), "different sources") {
+		t.Fatalf("retired source comparison reappeared: feedback=%q diagnostic=%q", feedback, &diagnostic)
 	}
-	if !strings.Contains(diagnostic.String(), "different sources") {
-		t.Fatalf("contradictory source was not rejected: %s", &diagnostic)
-	}
+	repairDispatchAssertUnchanged(t, root, before)
 }
 
 // The model sees additionalContext, not successful Hook stderr. Feedback must

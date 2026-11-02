@@ -38,7 +38,15 @@ func TestS4DirectTransitionCannotSkipAnswer(t *testing.T) {
 	}
 }
 
-func TestS4DirectApplyRejectsAcceptedTaskDriftAtomically(t *testing.T) {
+// TestS4DirectApplyAcceptsChangedTaskWithoutMachineDriftGate pins that the
+// retired byte-diff gate no longer refuses the accepted S4 registration. The
+// machine comparison was removed with the digest machinery — L3-S1-bind.md:297 —
+// "系统不以散列检测内容漂移；坐标和版本相同不证明文件字节未变，不能将未知冒充
+// 未变或已批准"; L3-S6-build.md:137 — "实际变化由 Main 按专业影响处置，系统不以
+// 替代性的全文件对比认证历史". TR-002 registers the accepted batch by business
+// identity, writes the Runtime pair exactly once and never rewrites the
+// committed TASK bytes.
+func TestS4DirectApplyAcceptsChangedTaskWithoutMachineDriftGate(t *testing.T) {
 	root, p := newTaskPlanningAnswerFixture(t)
 	stageJSON(t, root, p.AnswerPath, completedTaskPlanningDraft(p))
 	s, err := submission.New(root)
@@ -86,10 +94,13 @@ func TestS4DirectApplyRejectsAcceptedTaskDriftAtomically(t *testing.T) {
 		TransitionID: "TR-002", Actor: "orchestrator", ExpectedRevision: before.Revision,
 		SubmissionFollowupID: record.FollowupID, Files: s.Files,
 	})
-	if err == nil || !strings.Contains(err.Error(), path) {
-		t.Fatalf("TR-002 accepted the committed post-reception TASK change: %v", err)
+	if err != nil {
+		t.Fatalf("retired machine drift gate refused the accepted S4 registration: %v", err)
 	}
 	after := stageSnapshot(t, root)
+	if after.Revision != before.Revision+1 {
+		t.Fatalf("accepted S4 registration did not advance the Runtime exactly once: %d -> %d", before.Revision, after.Revision)
+	}
 	stateAfter, readErr := os.ReadFile(statePath)
 	if readErr != nil {
 		t.Fatal(readErr)
@@ -102,8 +113,22 @@ func TestS4DirectApplyRejectsAcceptedTaskDriftAtomically(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if after.Revision != before.Revision || string(stateAfter) != string(stateBefore) || string(journalAfter) != string(journalBefore) || string(taskAfter) != string(taskBefore) {
-		t.Fatal("rejected TR-002 changed the Runtime pair or committed TASK bytes")
+	if string(stateAfter) == string(stateBefore) || string(journalAfter) == string(journalBefore) {
+		t.Fatal("accepted S4 registration did not record the batch")
+	}
+	if string(taskAfter) != string(taskBefore) {
+		t.Fatal("accepted S4 registration rewrote the committed TASK bytes")
+	}
+	// The registered TASK carries its business identity only; the retired digest
+	// field is not migrated into the new registration.
+	for _, raw := range after.State["documents"].([]any) {
+		doc, _ := raw.(map[string]any)
+		if doc == nil || doc["kind"] != "task" {
+			continue
+		}
+		if digest, ok := doc["sha256"]; ok {
+			t.Fatalf("registered TASK carries a machine digest again: %v", digest)
+		}
 	}
 }
 

@@ -73,7 +73,7 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 	before := stageSnapshot(t, f.root)
 	var out, errOut bytes.Buffer
 	code := cli.Run([]string{"runtime", "workspace", "prepare", "--root", f.root, "--assignment", p.Binding.AssignmentID, "--agent", p.Binding.Owner}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "uncommitted inputs must be resolved") || !strings.Contains(errOut.String(), projectconventions.RegistryPath) {
+	if code == 0 || !strings.Contains(errOut.String(), "uncommitted tracked inputs must be resolved") || !strings.Contains(errOut.String(), projectconventions.RegistryPath) {
 		t.Fatalf("dirty registry prepared as frozen: %d %s", code, errOut.String())
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
@@ -112,11 +112,16 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	code = cli.Run([]string{"runtime", "workspace", "answer", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "frozen execution input changed") {
-		t.Fatalf("changed convention source received: %d %s", code, errOut.String())
+	// The framework does not re-authenticate the frozen inputs by digest and
+	// does not claim to detect external rewrites of an issued source
+	// (L4-workflow-convergence.md:250/271; the old frozen-execution commit and
+	// adapter wiring were removed by L4-workflow-convergence.md:300): the
+	// answer is received and the issued conventions stay the frozen ones.
+	if code != 0 {
+		t.Fatalf("changed convention source was rejected by a digest check: %d %s", code, errOut.String())
 	}
-	if stageSnapshot(t, f.root).Revision != before.Revision {
-		t.Fatal("drifted convention reception wrote Runtime")
+	if stageSnapshot(t, f.root).Revision == before.Revision {
+		t.Fatal("received answer did not advance the Runtime")
 	}
 	if err := os.WriteFile(registry, original, 0600); err != nil {
 		t.Fatal(err)

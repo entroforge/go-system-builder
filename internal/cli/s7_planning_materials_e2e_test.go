@@ -1,7 +1,6 @@
 package cli_test
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -28,8 +27,9 @@ func TestS7GuideCarriesRealIntegratedAssignmentRevisions(t *testing.T) {
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	const intent = "guide-r2"
-	owner := "native-" + first.Task.ID + "-" + hex.EncodeToString([]byte(intent))
+	// The current native revision owner is derived from the TASK and the
+	// revision number; it is not a content digest of a machine intent token.
+	owner := "native-" + first.Task.ID + "-r2"
 	manifest["manifest_id"] = "team-manifest-guide-r2"
 	manifest["version"] = "v1.0.1"
 	manifest["platform_team_id"] = "platform-guide-r2"
@@ -40,13 +40,13 @@ func TestS7GuideCarriesRealIntegratedAssignmentRevisions(t *testing.T) {
 	previous, _ := json.Marshal(first.Reference())
 	stageCLI(t, "runtime", "register-workgroup", "--root", root, "--manifest", manifestRef,
 		"--task-id", first.Task.ID, "--task", first.Task.Ref, "--revise-assignment", first.AssignmentID,
-		"--revision-intent-key", intent, "--expected-record-ref", string(previous))
+		"--expected-record-ref", string(previous))
 	second, found, err := assignmentrecord.ForOwner(stageSnapshot(t, root).State, owner)
 	if err != nil || !found || second.Revision != 2 {
 		t.Fatalf("original revision Writer: %+v %v", second, err)
 	}
 	stageCLI(t, "s6", "prepare", "--root", root, "--task", second.Task.ID, "--role", second.RoleFamily,
-		"--revise-assignment", second.AssignmentID, "--revision-intent-key", intent)
+		"--revise-assignment", second.AssignmentID)
 	secondSource := filepath.Join(t.TempDir(), "second-worker")
 	if _, err := workspace.Git(t.Context(), root, "worktree", "add", "-b", "native/guide-r2", secondSource, "HEAD"); err != nil {
 		t.Fatal(err)

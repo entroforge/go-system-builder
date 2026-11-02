@@ -30,17 +30,36 @@ func TestMainReviewPlanPreReceivesReadyOriginal(t *testing.T) {
 	}
 }
 
-func testMainReviewPlanAssetsOriginal(t *testing.T, event, identity string, assets int) {
-	root := worktreeProjectRoot(t)
+// s7PlanQuestionnairePath stamps the current round's real ReviewPlan identity
+// and returns the listener's actual Main questionnaire path. The path is
+// generated along this ReviewPlan identity (L3-S7 §7.1); the removed numeric
+// `S7/r<round>` wiring is no longer a path source, so a fixture without the
+// S7 entry identity has no questionnaire path at all.
+func s7PlanQuestionnairePath(t *testing.T, root, planID string) string {
+	t.Helper()
 	state := stageSnapshot(t, root).State
-	if identity == "plan" {
-		state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-questionnaire-save", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
-		raw, _ := json.Marshal(state)
-		if err := os.WriteFile(filepath.Join(root, ".claude/loop-state.json"), raw, 0600); err != nil {
-			t.Fatal(err)
-		}
+	facts, _ := state["review"].(map[string]any)
+	if facts == nil {
+		t.Fatal("review projection missing")
+	}
+	facts["round_entry"] = map[string]any{"plan_id": planID, "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude/loop-state.json"), raw, 0600); err != nil {
+		t.Fatal(err)
 	}
 	path := review.PlanQuestionnairePath(root, state)
+	if path == "" {
+		t.Fatal("current ReviewPlan questionnaire path is unavailable for the stamped Plan identity")
+	}
+	return path
+}
+
+func testMainReviewPlanAssetsOriginal(t *testing.T, event, identity string, assets int) {
+	root := worktreeProjectRoot(t)
+	path := s7PlanQuestionnairePath(t, root, "review-plan-questionnaire-save")
 	context := entryQuestionnaireHook(t, root, "PreToolUse", path)
 	if !strings.Contains(context, path) || strings.Contains(context, "s7 draft --out plan.json") {
 		t.Fatalf("Main did not receive exact automatic plan questionnaire: %s", context)
@@ -179,7 +198,7 @@ func s7MainNaturalPre(t *testing.T, root string) string {
 
 func TestMainReviewPlanPreWhitespaceExpansionMatchesOriginalConsumer(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	path := filepath.Join(root, ".claude/submissions/loop-REQ-WORKTREE/g1/S7/r1/review-plan.json")
+	path := s7PlanQuestionnairePath(t, root, "review-plan-pre-oversize")
 	entryQuestionnaireHook(t, root, "PreToolUse", path)
 	authored := minimalReviewPlan(t, t.TempDir(), "review-plan-pre-oversize")
 	data, err := os.ReadFile(authored)
@@ -201,7 +220,7 @@ func TestMainReviewPlanPreWhitespaceExpansionMatchesOriginalConsumer(t *testing.
 
 func TestMainReviewPlanPreLargeReplayPreservesAcceptedPlan(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	path := filepath.Join(root, ".claude/submissions/loop-REQ-WORKTREE/g1/S7/r1/review-plan.json")
+	path := s7PlanQuestionnairePath(t, root, "review-plan-pre-large-replay")
 	entryQuestionnaireHook(t, root, "PreToolUse", path)
 	authored := minimalReviewPlan(t, t.TempDir(), "review-plan-pre-large-replay")
 	data, err := os.ReadFile(authored)
@@ -256,7 +275,7 @@ func TestMainReviewPlanPreLargeReplayPreservesAcceptedPlan(t *testing.T) {
 // ordinary tools, including saves that did not report a path in their Post.
 func TestMainReviewPlanPreReceivesChangedOriginal(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	path := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
+	path := s7PlanQuestionnairePath(t, root, "review-plan-pre-revision")
 	entryQuestionnaireHook(t, root, "PreToolUse", path)
 	authored := minimalReviewPlan(t, t.TempDir(), "review-plan-pre-revision")
 	data, err := os.ReadFile(authored)
@@ -293,7 +312,7 @@ func TestMainReviewPlanPreReceivesChangedOriginal(t *testing.T) {
 
 func TestMainReviewPlanPrePreservesReceiptWhenAcceptedContentMissing(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	path := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
+	path := s7PlanQuestionnairePath(t, root, "review-plan-pre-missing-accepted")
 	entryQuestionnaireHook(t, root, "PreToolUse", path)
 	authored := minimalReviewPlan(t, t.TempDir(), "review-plan-pre-missing-accepted")
 	data, err := os.ReadFile(authored)

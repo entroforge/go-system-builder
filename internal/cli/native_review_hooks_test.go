@@ -102,8 +102,21 @@ func TestNativeS5AmbiguousReferencesDoNotReceiveEitherAnswer(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	before := stageSnapshot(t, f.root).Revision
 	text := filepath.Join(f.root, f.packets[0].ViewPath) + "\n" + filepath.Join(f.root, f.packets[1].ViewPath)
-	if code, _, diagnostic := nativeReviewEvent(t, f.root, "SubagentStop", "native-actor", text); code != 0 || !strings.Contains(diagnostic, "multiple exact") {
+	// Two equally exact references are not a guessable single responsibility.
+	// L4-hook-platform-wiring.md:83 — "真实关联缺失交系统，不借角色、同名文件或
+	// 另一个作者的稿件代替"; L3-S7-verification-round.md:221 — "当前责任通过原派发
+	// 中的准确引用或既有绑定解析，不能按角色、最近文件或唯一候选猜选". The
+	// consumer must therefore report the unresolved original responsibility
+	// instead of claiming either answer.
+	code, _, diagnostic := nativeReviewEvent(t, f.root, "SubagentStop", "native-actor", text)
+	if code != 0 {
 		t.Fatalf("ambiguous task was claimed: %d %s", code, diagnostic)
+	}
+	if !strings.Contains(diagnostic, "unresolved original responsibility") {
+		t.Fatalf("ambiguous task was claimed: %d %s", code, diagnostic)
+	}
+	if strings.Contains(diagnostic, "accepted") || strings.Contains(diagnostic, "received") {
+		t.Fatalf("ambiguous return claimed an answer: %s", diagnostic)
 	}
 	if stageSnapshot(t, f.root).Revision != before {
 		t.Fatal("ambiguous return changed Runtime")

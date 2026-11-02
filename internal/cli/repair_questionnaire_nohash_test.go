@@ -93,9 +93,15 @@ func TestS9NativeLongPacketPathsRemainConsistent(t *testing.T) {
 	id := "packet-" + strings.Repeat("LongIdentity-", 40)
 	p := workpacket.RepairPlanReportPacket{ID: id, ViewPath: ".claude/work-packets/p/current.json"}
 	brief := nativeS9BriefPath(p)
-	route := runtime.RepairPlanReportRoute{ID: id, ViewPath: p.ViewPath}
+	// The route carries the registered brief coordinate; it is no longer
+	// re-derived from the packet ID and view path
+	// (L4-workflow-convergence §"S9 Main 集成与影响").
+	route := runtime.RepairPlanReportRoute{ID: id, ViewPath: p.ViewPath, BriefPath: brief}
 	if got := nativeS9RouteBrief(route); got != brief {
 		t.Fatalf("route=%q brief=%q", got, brief)
+	}
+	if route.BriefPath != nativeS9BriefPath(p) {
+		t.Fatalf("registered route brief %q differs from the packet brief %q", route.BriefPath, nativeS9BriefPath(p))
 	}
 	plan, privateResult, err := repair.NativeS9PrivatePaths(id)
 	if err != nil {

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,53 +90,17 @@ func nativeMultiBuilderRoot(t *testing.T) string {
 
 func deliverNativeMultiBuilder(t *testing.T, root, task, dir string, beforeIntegration func()) {
 	t.Helper()
-	runRecheckCLI(t, root, "s6", "prepare", "--task", task, "--role", "backend-builder")
-	record, found, err := assignmentrecord.ForOwner(req039fixtures.ReadState(t, root), "native-"+task)
-	if err != nil || !found {
-		t.Fatalf("prepare %s: found=%t err=%v", task, found, err)
-	}
-	worker := filepath.Join(t.TempDir(), "worker")
-	runGitIn(t, root, "worktree", "add", "-b", "native/"+task, worker, "HEAD")
-	brief, plan, result := assignmentrecord.NativePaths(record)
-	code, out, errout := systemNativeEvent(t, root, worker, "SubagentStart", filepath.Join(root, brief))
-	if code != 0 {
-		t.Fatalf("Start %s: %d %s %s", task, code, out, errout)
-	}
-	assertion, oracle := "Deliver the reviewed output.", "Run the TASK check."
-	writeJSON := func(path string, value any) {
-		t.Helper()
-		raw, err := json.Marshal(value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeAuditFile(t, worker, path, string(raw))
-	}
-	output := dir + "/result.txt"
-	writeJSON(plan, map[string]any{"objective": "Deliver the reviewed task.", "planned_paths": []string{output}, "assertion_checks": []any{map[string]any{"assertion": assertion, "oracle": oracle, "done_when_indexes": []int{0}}}, "risks_blockers": []string{}})
-	writeAuditFile(t, worker, output, "delivered\n")
-	runGitIn(t, worker, "add", output)
-	runGitIn(t, worker, "commit", "-m", "deliver "+task)
-	cmd := exec.Command("go", "test", "./"+dir)
-	cmd.Dir = worker
-	cmd.Env = append(os.Environ(), "GOWORK=off")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("Worker check %s: %v %s", task, err, output)
-	}
-	writeJSON(result, map[string]any{"summary": "Implemented and checked the output.", "assertion_evidence": []any{map[string]any{"assertion": assertion, "oracle": oracle, "evidence_refs": []string{output}}}, "risks_blockers": []string{}, "scope_deviations": []string{}, "closing_assessment": map[string]any{"disposition": "complete", "conditions": []any{map[string]any{"done_when_index": 0, "judgment": "satisfied", "plan_assertion_indexes": []int{0}, "rationale": "TASK check passes."}}}})
-	code, out, errout = systemNativeEvent(t, root, worker, "SubagentStop", filepath.Join(root, brief)+"\n"+filepath.Join(worker, result))
-	if code != 0 {
-		t.Fatalf("Stop %s: %d %s %s", task, code, out, errout)
-	}
+	builder := deliverCanonicalBuilder(t, root, task, dir)
 	ref := completionTaskRef(t, req039fixtures.ReadState(t, root), task)
 	if ref == "" {
 		t.Fatalf("%s result not received", task)
 	}
 	beforeIntegration()
-	code, out, errout = runTaskIntegrate(t, root, record.AssignmentID)
+	code, out, errout := runTaskIntegrate(t, root, builder.record.AssignmentID)
 	if code != 0 || !strings.Contains(errout, "integrated") {
 		t.Fatalf("Main integrate %s: %d %s %s", task, code, out, errout)
 	}
-	data, err := os.ReadFile(assignmentrecord.IntegrationCheckpointPath(root, record.Reference()))
+	data, err := os.ReadFile(assignmentrecord.IntegrationCheckpointPath(root, builder.record.Reference()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +114,7 @@ func deliverNativeMultiBuilder(t *testing.T, root, task, dir string, beforeInteg
 	if cp.State != integration.StateComplete && cp.State != integration.StateCleanupPending {
 		t.Fatalf("Main ACK %s: %+v", task, cp)
 	}
-	got, err := os.ReadFile(filepath.Join(root, output))
+	got, err := os.ReadFile(filepath.Join(root, builder.output))
 	if err != nil || string(got) != "delivered\n" {
 		t.Fatal(fmt.Errorf("Main output %s: %q %w", task, got, err))
 	}

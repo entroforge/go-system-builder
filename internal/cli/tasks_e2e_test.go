@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -194,9 +193,19 @@ func TestS4TaskSplitPipelineE2E(t *testing.T) {
 		if entry["author_agent_id"] != "orchestrator" {
 			t.Fatalf("%s author_agent_id = %v, want orchestrator", id, entry["author_agent_id"])
 		}
-		diskData, _ := os.ReadFile(filepath.Join(root, "docs", "dev", "tasks", id+".md"))
-		if fmt.Sprintf("%x", sha256.Sum256(diskData)) != entry["sha256"] {
-			t.Fatalf("%s registered sha must match disk", id)
+		// The registered TASK is carried by its business identity only.
+		// L3-S4-task-split.md §10.2 no longer computes, registers or validates a
+		// source digest, content hash or Git object id, and
+		// L4-workflow-convergence.md:291 deletes the digest field together with
+		// its old compatibility wiring.
+		if digest, ok := entry["sha256"]; ok {
+			t.Fatalf("%s must not register a machine digest: %v", id, digest)
+		}
+		if entry["path"] != "docs/dev/tasks/"+id+".md" {
+			t.Fatalf("%s registered path = %v, want docs/dev/tasks/%s.md", id, entry["path"], id)
+		}
+		if entry["version"] == nil || entry["version"] == "" {
+			t.Fatalf("%s must keep its business version: %v", id, entry["version"])
 		}
 	}
 
@@ -225,20 +234,22 @@ func TestS4TaskSplitPipelineE2E(t *testing.T) {
 	}
 	state = readJSONMap(t, statePath)
 	docs, _ = state["documents"].([]any)
-	count, newSHA := 0, ""
+	count, revisedPath := 0, ""
 	for _, raw := range docs {
 		doc, _ := raw.(map[string]any)
 		if doc != nil && doc["kind"] == "task" && doc["id"] == "TASK-600-01" {
 			count++
-			newSHA, _ = doc["sha256"].(string)
+			revisedPath, _ = doc["path"].(string)
+			if digest, ok := doc["sha256"]; ok {
+				t.Fatalf("re-registered TASK must not carry a machine digest: %v", digest)
+			}
 		}
 	}
 	if count != 1 {
 		t.Fatalf("same-generation re-registration must replace not stack, got %d TASK-600-01 entries", count)
 	}
-	diskData, _ := os.ReadFile(filepath.Join(root, "docs", "dev", "tasks", "TASK-600-01.md"))
-	if newSHA != fmt.Sprintf("%x", sha256.Sum256(diskData)) {
-		t.Fatal("re-registered sha must match the revised disk file")
+	if revisedPath != "docs/dev/tasks/TASK-600-01.md" {
+		t.Fatalf("re-registered TASK path = %q, want docs/dev/tasks/TASK-600-01.md", revisedPath)
 	}
 }
 

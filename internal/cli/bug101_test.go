@@ -162,11 +162,19 @@ func TestExplainListsEligibleCurrentEvidenceCandidates(t *testing.T) {
 		"builder_report",
 		"status: valid",
 		"baseline_generation: 2",
-		"review_round: 3",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("explain output must contain %q, got:\n%s", want, output)
 		}
+	}
+	// L4-runtime-control-plane §3.1 and L3-S7 §"审查者完成专业工作" state that
+	// Runtime expresses the current original record through id/kind/path/status/
+	// baseline_generation/produced_by/responsibility_id/scope_refs only, and that
+	// review_round is neither produced, accumulated nor compatibly read. The
+	// fixture still carries the historical review_round value, so the candidate
+	// listing must ignore it instead of projecting it.
+	if strings.Contains(output, "review_round") {
+		t.Fatalf("explain output must not surface the removed review_round field, got:\n%s", output)
 	}
 	// L3-S6 §8.3: TR-006 no longer requires team_manifest_record — the S7
 	// workgroup cannot be registered during building, so demanding its

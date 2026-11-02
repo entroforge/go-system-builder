@@ -38,8 +38,28 @@ func TestFindingSupplementOriginalCLIDoesNotRequireDigest(t *testing.T) {
 	if err := json.Unmarshal(stored, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := doc["hash"]; ok {
-		t.Fatal("original CLI registered a new machine hash")
+	// The CLI must not compute, register or verify a machine digest. The
+	// author's own file keeps its own text: hash text in professional content
+	// is not a qualification and is not deleted either.
+	authored, err := json.Marshal(map[string]any{"legacy": "ignored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedHash, ok := doc["hash"]
+	if !ok {
+		t.Fatal("original CLI deleted the author's own file content")
+	}
+	actual, err := json.Marshal(storedHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(authored) {
+		t.Fatalf("original CLI registered a new machine hash: %s", actual)
+	}
+	for _, key := range []string{"hash", "sha256", "digest", "fingerprint"} {
+		if _, ok := receipt[key]; ok {
+			t.Fatalf("original CLI registered a machine %s in the receipt: %v", key, receipt)
+		}
 	}
 	second, stderr, code := runCLI(t, root, args...)
 	if code != 0 {

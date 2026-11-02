@@ -366,7 +366,10 @@ func TestReadOnlyCommandsValidateExplicitRuntimeLayout(t *testing.T) {
 		if legacy {
 			reqPath = "docs/product/requirements/REQ-001.md"
 		}
-		data := []byte(`{"bound_req":{"path":"` + reqPath + `"},"evidence":[]}`)
+		// `revision` is a real top-level Runtime field; the Runtime Store
+		// refuses to load a candidate without it, so the explicit state used
+		// by the read-only inspectors below must carry one.
+		data := []byte(`{"bound_req":{"path":"` + reqPath + `"},"evidence":[],"revision":1}`)
 		for _, absolute := range []bool{false, true} {
 			statePath := "external-state.json"
 			actual := filepath.Join(root, statePath)
@@ -377,7 +380,16 @@ func TestReadOnlyCommandsValidateExplicitRuntimeLayout(t *testing.T) {
 			if err := os.WriteFile(actual, data, 0644); err != nil {
 				t.Fatal(err)
 			}
-			for _, command := range [][]string{{"impact", "analyze", "--changed", "docs/requirements/REQ-001.md"}, {"verification", "clean-round"}, {"explain", "TR-001"}} {
+			// The manual `verification clean-round` entry was removed together
+			// with the machine CleanRound proof it reported
+			// (blueprint/l4-mechanisms/L4-workflow-convergence.md:226
+			// "删除证据／产品基线复核和 CleanRound／ObservationBatch 证明及其旧接线";
+			// :312 "旧入口、旧 schema、旧 Hook／CLI、旧消费者及兼容适配连同仅为它们存在的测试一并删除";
+			// blueprint/l3-stages/L3-S7-verification-round.md:388
+			// "删除旧 CleanRound 消费者和兼容接线"). The current read-only
+			// Runtime inspectors replace it: each one resolves an explicitly
+			// located `--state` file and must reject a legacy/mixed layout.
+			for _, command := range [][]string{{"impact", "analyze", "--changed", "docs/requirements/REQ-001.md"}, {"runtime", "investigation", "status"}, {"explain", "TR-001"}} {
 				var out, errOut bytes.Buffer
 				args := append(append([]string{}, command...), "--root", root, "--state", statePath)
 				code := cli.Run(args, strings.NewReader(""), &out, &errOut)
@@ -389,7 +401,7 @@ func TestReadOnlyCommandsValidateExplicitRuntimeLayout(t *testing.T) {
 					if errOut.Len() != 0 || out.Len() == 0 {
 						t.Fatalf("current state unreadable by %v: %d %s %s", args, code, out.String(), errOut.String())
 					}
-					if command[0] != "verification" && code != 0 {
+					if code != 0 {
 						t.Fatalf("current diagnostic failed: %v %d", args, code)
 					}
 				}

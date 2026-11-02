@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
@@ -79,23 +80,35 @@ func TestNativeS9FlatValidationFeedbackUsesPrivateFileFields(t *testing.T) {
 
 func TestNativeS9LegacyPlanValidationKeepsOriginalEnvelopeFeedback(t *testing.T) {
 	root, worker, packet, _, _ := nativeS9WorkerFixture(t)
-	draft := packet.Draft
-	draft.Answer = json.RawMessage(`{"plan":"","red_checks":[],"proposed_paths":[]}`)
-	data, err := json.Marshal(draft)
+	// The current PlanReport is the flat private file; the removed envelope
+	// form (/answer/...) is no longer produced or read
+	// (L4-workflow-convergence §"S6／S9 当前工作区"). The original consumer
+	// must still return the exact field error of the current flat shape
+	// (L3-S9 §"字段缺失时保留原稿,反馈实际文件与字段").
+	plan, _ := nativeS9TestAuthorPaths(t, root, packet)
+	raw, err := os.ReadFile(filepath.Join(worker, plan))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, original := workpacket.ValidateRepairPlanReportAnswer(packet, data)
-	if len(original) == 0 || original[0].Pointer != "/answer/plan" {
-		t.Fatalf("original validator lost envelope contract: %+v", original)
-	}
-	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, packet.AnswerPath), draft); err != nil {
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatal(err)
 	}
-	err = receiveNativeS9ReadyPlan(context.Background(), root, worker, packet, nil, &bytes.Buffer{}, nil)
+	document["plan"] = ""
+	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, plan), document); err != nil {
+		t.Fatal(err)
+	}
+	service, serviceErr := submission.New(root)
+	if serviceErr != nil {
+		t.Fatal(serviceErr)
+	}
+	err = receiveNativeS9ReadyPlan(context.Background(), root, worker, packet, service, &bytes.Buffer{}, nil)
 	var fields *workpacket.AnswerError
-	if !errors.As(err, &fields) || fields.Fields[0] != original[0] {
-		t.Fatalf("legacy wrapped feedback changed: %+v %v", fields, err)
+	if !errors.As(err, &fields) || len(fields.Fields) == 0 {
+		t.Fatalf("original consumer did not return the field error: %+v %v", fields, err)
+	}
+	if fields.Fields[0].Pointer != "/answer/plan" {
+		t.Fatalf("field error pointer = %q", fields.Fields[0].Pointer)
 	}
 }
 

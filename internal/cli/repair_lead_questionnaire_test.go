@@ -47,7 +47,7 @@ func TestS9RepairLeadStopAndIdleDoNotGuessPathWithoutAuthority(t *testing.T) {
 	snapshot := runtime.Snapshot{State: state}
 	for _, event := range []string{"Stop", "Idle"} {
 		context := stageRepairLeadQuestionnaireContext(root, policy.Input{Event: event, AgentID: "Main"}, snapshot)
-		if !strings.Contains(context, "current approved Case, RepairSession, and RepairPlan source are required") {
+		if !strings.Contains(context, "the original S9 questionnaire path was not retained") || !strings.Contains(context, "Main/system") {
 			t.Fatalf("%s guessed a ChangeImpact path without current source authority: %s", event, context)
 		}
 		if paths := repairLeadQuestionnairePaths(root, state); len(paths) != 0 {
@@ -137,6 +137,9 @@ func TestS9RepairLeadTargetedPathUsesRegisteredIndependentAssignment(t *testing.
 		"impact_ref":                  impactRef.Path,
 		"required_reverification_ids": []any{"reverify-lead-path"},
 		"assignment_owners":           map[string]any{assignmentID: "builder-lead-path", verifierID: "verifier-lead-path"},
+		// The Repair session writer retains the original questionnaire
+		// location; the answer path is not re-derived from any content digest.
+		"questionnaire_root": repair.QuestionnaireRoot("loop-req039-ct", session.SessionID),
 	}
 	registerLegacyTargetedTestSources(t, root, state, assignmentID, verifierID, "verifier-lead-path")
 	want, err := repairTargetedQuestionnairePath(root, state, verifierID)

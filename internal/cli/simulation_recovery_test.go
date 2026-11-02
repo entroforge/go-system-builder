@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -37,25 +35,63 @@ func TestNativeInterruptedReceptionPreservesAnswerAndNamesOriginalRetry(t *testi
 	}
 }
 
+// TestReviewPlanRecoveryHelpAndJSONFilePath pins the current ReviewPlan
+// reception boundary. The manual `runtime review-plan` registration /
+// revision / revive route is gone: Main saves the Hook-provided ReviewPlan
+// questionnaire and the original RegisterPlan consumer receives it, so there
+// is no plan registration or submission command, no source-ref / affected-
+// surface parameter and no frozen-diff recovery route
+// (L3-S7 §7.1, L4-workflow-convergence §"可选素材与恢复观察").
 func TestReviewPlanRecoveryHelpAndJSONFilePath(t *testing.T) {
-	for _, verb := range []string{"revive", "revise"} {
+	for _, verb := range []string{"revive", "revise", "register"} {
 		var out, diagnostic bytes.Buffer
-		if code := Run([]string{"runtime", "review-plan", verb, "--help"}, nil, &out, &diagnostic); code != 0 {
-			t.Fatalf("help: %d %s", code, &diagnostic)
-		}
-		for _, want := range []string{"JSON file", "--source-ref", "--affected-surface", "does not restore files", "never use blanket reset/clean/restore"} {
-			if !strings.Contains(out.String(), want) {
-				t.Fatalf("help missing %s: %s", want, &out)
-			}
+		if code := Run([]string{"runtime", "review-plan", verb, "--root", ".", "--file", "plan.json"}, nil, &out, &diagnostic); code == 0 {
+			t.Fatalf("removed review-plan verb %q is still accepted: %s", verb, &out)
+		} else if !strings.Contains(diagnostic.String(), "unknown runtime command") {
+			t.Fatalf("removed review-plan verb %q was not reported as an unknown runtime command: %d %s", verb, code, &diagnostic)
 		}
 	}
-	root := t.TempDir()
-	file := filepath.Join(root, "notes.md")
-	if err := os.WriteFile(file, []byte("# not a ReviewPlan\n"), 0600); err != nil {
-		t.Fatal(err)
+	// The generic runtime help must not document the removed plan verbs any
+	// more: no manual plan registration, no source-ref / affected-surface
+	// parameters and no blanket file-restore recovery.
+	var planHelp, planDiagnostic bytes.Buffer
+	if code := Run([]string{"runtime", "review-plan", "revive", "--help"}, nil, &planHelp, &planDiagnostic); code != 0 {
+		t.Fatalf("runtime help failed: %d %s", code, &planDiagnostic)
 	}
-	var out, diagnostic bytes.Buffer
-	if code := Run([]string{"runtime", "review-plan", "revise", "--root", root, "--file", file, "--source-ref", "finding-example", "--affected-surface", "internal/example"}, nil, &out, &diagnostic); code == 0 || !strings.Contains(diagnostic.String(), "must contain JSON") || !strings.Contains(diagnostic.String(), file) {
-		t.Fatalf("Markdown file misdiagnosed as inline JSON: %d %s", code, &diagnostic)
+	for _, unwanted := range []string{"JSON file", "--source-ref", "--affected-surface", "does not restore files", "never use blanket reset/clean/restore"} {
+		if strings.Contains(planHelp.String(), unwanted) {
+			t.Fatalf("runtime help still documents the removed plan option %q: %s", unwanted, &planHelp)
+		}
+	}
+	// The runtime command surface must not advertise the removed plan
+	// registration / recovery verbs any more.
+	var runtimeHelp, runtimeDiagnostic bytes.Buffer
+	if code := Run([]string{"runtime"}, nil, &runtimeHelp, &runtimeDiagnostic); code == 0 {
+		t.Fatalf("runtime without a verb must fail: %s", &runtimeHelp)
+	}
+	if strings.Contains(runtimeDiagnostic.String(), "review-plan") || strings.Contains(runtimeDiagnostic.String(), "review-result") {
+		t.Fatalf("runtime usage still advertises the removed plan verbs: %s", &runtimeDiagnostic)
+	}
+	if !strings.Contains(runtimeDiagnostic.String(), "review-continue") || !strings.Contains(runtimeDiagnostic.String(), "audit-prepare") {
+		t.Fatalf("runtime usage lost the named S7 recovery entries: %s", &runtimeDiagnostic)
+	}
+	// The current contract: Main completes the Hook-provided ReviewPlan
+	// questionnaire and saves it for the original RegisterPlan consumer; the
+	// named recovery entries stay review-continue / audit-prepare.
+	var catalog, catalogDiagnostic bytes.Buffer
+	if code := Run([]string{"actions"}, nil, &catalog, &catalogDiagnostic); code != 0 {
+		t.Fatalf("actions catalog failed: %d %s", code, &catalogDiagnostic)
+	}
+	for _, want := range []string{
+		"Main completes the Hook-provided ReviewPlan questionnaire and saves it for the original RegisterPlan consumer.",
+		"runtime review-continue",
+		"runtime audit-prepare",
+	} {
+		if !strings.Contains(catalog.String(), want) {
+			t.Fatalf("action catalog missing %q: %s", want, &catalog)
+		}
+	}
+	if strings.Contains(catalog.String(), "runtime review-plan") {
+		t.Fatalf("action catalog still advertises the removed plan registration command: %s", &catalog)
 	}
 }

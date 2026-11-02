@@ -112,8 +112,14 @@ func TestRegisterHypothesisRequiresEvidenceRefs(t *testing.T) {
 		SourceFindingIDs:     []string{"finding-1"},
 		AssignmentID:         "assignment-evidence-free",
 	})
-	if err == nil || !strings.Contains(err.Error(), "evidence_refs") || !strings.Contains(err.Error(), "at least one") {
+	// L3-S8:119 keeps `evidence_refs` a required field ("提出该问题依赖的实际证据").
+	// The rejection now surfaces through the Case schema (`minItems`) instead of a
+	// bespoke Go message, so the assertion follows the field, not the wording.
+	if err == nil || !strings.Contains(err.Error(), "evidence_refs") {
 		t.Fatalf("evidence-free hypothesis error = %v, want evidence_refs guidance", err)
+	}
+	if !strings.Contains(err.Error(), "minItems") && !strings.Contains(err.Error(), "at least one") {
+		t.Fatalf("evidence-free hypothesis error = %v, want a minimum-evidence requirement", err)
 	}
 }
 
@@ -137,11 +143,15 @@ func TestCaseWorkflowRejectsStaleRevisionAndHashDrift(t *testing.T) {
 		t.Fatalf("stale error = %v, want stale guidance", err)
 	}
 
+	// L3-S8:43 and L3-S9:15 remove hash/SHA computation, registration and
+	// verification from the Hook and its consumers. Identity, version and
+	// idempotency stay internal persistence duties (L3-S8:231), so the stale
+	// revision above is still refused; but a subject digest must no longer be a
+	// qualification gate for the first question.
 	request.ExpectedRevision = 1
 
-	_, err = investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, request)
-	if err == nil || !strings.Contains(err.Error(), "hash") || !strings.Contains(err.Error(), "runtime investigation") {
-		t.Fatalf("hash drift error = %v, want hash and recovery guidance", err)
+	if _, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, request); err != nil {
+		t.Fatalf("current revision rejected without a hash gate: %v", err)
 	}
 }
 
@@ -201,6 +211,10 @@ func TestSubmitHypothesisResultRejectsUnboundFollowUpHypothesis(t *testing.T) {
 	if _, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, register); err != nil {
 		t.Fatalf("RegisterHypothesis() error = %v", err)
 	}
+	// L3-S8:162: an Investigator's `new_hypotheses` entry is only a suggestion.
+	// The system preserves it as authored and Main decides whether to register a
+	// new responsibility, so the suggestion must not be rejected for lacking an
+	// `assignment-` prefix — and it must not become a registered Hypothesis.
 	_, err := investigation.SubmitHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisResultRequest{
 		ExpectedRevision:     2,
 		ExpectedCaseRevision: 2,
@@ -223,8 +237,14 @@ func TestSubmitHypothesisResultRejectsUnboundFollowUpHypothesis(t *testing.T) {
 			"source_finding_ids": []any{"finding-1"},
 		}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "assignment_id") || !strings.Contains(err.Error(), "assignment- prefix") {
-		t.Fatalf("unbound follow-up hypothesis error = %v, want Assignment binding guidance", err)
+	if err != nil {
+		t.Fatalf("authored follow-up suggestion was rejected: %v", err)
+	}
+	document := readCaseDocument(t, fixture.root, investigationPointer(t, fixture)["path"].(string))
+	for _, raw := range document["hypotheses"].([]any) {
+		if raw.(map[string]any)["hypothesis_id"] == "hypothesis-follow-up" {
+			t.Fatal("suggested follow-up was registered as a new Hypothesis responsibility")
+		}
 	}
 }
 
@@ -468,9 +488,13 @@ func routeClosedCase(t *testing.T, fixture *intakeFixture, pointer map[string]an
 	return err
 }
 
-// TestUpdateCaseRouteRejectsHollowBlastRadius proves the S8-3 negative case:
-// a blast_radius without a non-empty path set must never open an s9_repair
-// route, no matter how polished the rest of the dossier looks.
+// TestUpdateCaseRouteRejectsHollowBlastRadius proves the S8-3 shape rule:
+// blast_radius is a free professional object (L3-S8:297). The blueprint states
+// these are recommended expression positions and add no mechanical mandatory
+// gate (L3-S8:299), and §9.3 has Main close professionally while the machine
+// does not certify causality (L3-S8:303). A hollow impact surface therefore
+// must no longer be refused by the machine; the authored content is kept
+// verbatim for the reviewer.
 func TestUpdateCaseRouteRejectsHollowBlastRadius(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 	pointer, _, _ := discriminatedCaseFixture(t, fixture)
@@ -493,13 +517,23 @@ func TestUpdateCaseRouteRejectsHollowBlastRadius(t *testing.T) {
 		return investigationPointerFromState(t, snapshot.State)
 	}()
 	err := routeClosedCase(t, fixture, pointer, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "blast_radius") || !strings.Contains(err.Error(), "paths") {
-		t.Fatalf("hollow blast_radius error = %v, want non-empty path set guidance", err)
+	if err != nil {
+		t.Fatalf("machine refused a free professional blast_radius object: %v", err)
+	}
+	document := readCaseDocument(t, fixture.root, investigationPointer(t, fixture)["path"].(string))
+	blastRadius, _ := document["blast_radius"].(map[string]any)
+	if len(blastRadius) != 0 {
+		t.Fatalf("machine rewrote the authored blast_radius object: %v", blastRadius)
 	}
 }
 
 // TestUpdateCaseRouteRejectsDetectionGapWithoutTypeAndEvidence proves the
-// S8-3 detection_gap shape: a gap must name gap_type and bind evidence_refs.
+// S8-3 detection_gap shape: detection_gap is a free professional object
+// (L3-S8:299). The blueprint states these are recommended expression positions
+// and add no mechanical mandatory gate (L3-S8:299), and §9.3 has Main close
+// professionally while the machine does not certify causality (L3-S8:303).
+// A missing gap_type or empty evidence_refs must no longer be refused by the
+// machine; the authored content is kept verbatim for the reviewer.
 func TestUpdateCaseRouteRejectsDetectionGapWithoutTypeAndEvidence(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 	pointer, _, _ := discriminatedCaseFixture(t, fixture)
@@ -508,8 +542,13 @@ func TestUpdateCaseRouteRejectsDetectionGapWithoutTypeAndEvidence(t *testing.T) 
 		return nil
 	})
 	err := routeClosedCase(t, fixture, pointer, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "gap_type") {
-		t.Fatalf("detection_gap without gap_type error = %v, want gap_type guidance", err)
+	if err != nil {
+		t.Fatalf("machine refused a free professional detection_gap object: %v", err)
+	}
+	document := readCaseDocument(t, fixture.root, investigationPointer(t, fixture)["path"].(string))
+	detectionGap, _ := document["detection_gap"].(map[string]any)
+	if _, ok := detectionGap["gap_type"]; ok {
+		t.Fatalf("machine invented a gap_type for the author: %v", detectionGap)
 	}
 
 	fixture2 := readyCaseFixture(t, []string{"finding-1"})
@@ -519,15 +558,19 @@ func TestUpdateCaseRouteRejectsDetectionGapWithoutTypeAndEvidence(t *testing.T) 
 		return nil
 	})
 	err = routeClosedCase(t, fixture2, pointer2, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "evidence_refs") {
-		t.Fatalf("detection_gap without evidence_refs error = %v, want evidence_refs guidance", err)
+	if err != nil {
+		t.Fatalf("machine refused an empty detection_gap evidence set: %v", err)
 	}
 }
 
 // TestUpdateCaseRouteRejectsSingleSupportedWithoutRefutation proves the S8-4
-// negative case: one supported hypothesis with zero refuted results and no
-// no_competing_hypothesis declaration must be rejected as an untested
-// conclusion.
+// shape rule: L3-S8:160 states that `competing_hypothesis_assessment` and
+// `no_competing_hypothesis` express Main's judgment and reasoning rather than
+// two machine proof routes, and that no refuted result is required before an
+// exit may be selected. L3-S8:307 repeats that "at least one refutation" is not
+// a machine gate. One supported hypothesis with no refutation therefore must
+// not be refused by the machine, and the machine must not invent a competing
+// declaration or a refuted result on the author's behalf.
 func TestUpdateCaseRouteRejectsSingleSupportedWithoutRefutation(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 	pointer := investigationPointer(t, fixture)
@@ -566,8 +609,17 @@ func TestUpdateCaseRouteRejectsSingleSupportedWithoutRefutation(t *testing.T) {
 	}
 	pointer = seedCausalClosure(t, fixture, investigationPointer(t, fixture), nil)
 	err := routeClosedCase(t, fixture, pointer, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "refuted") || !strings.Contains(err.Error(), "no_competing_hypothesis") {
-		t.Fatalf("single-supported route error = %v, want competing-hypothesis guidance", err)
+	if err != nil {
+		t.Fatalf("machine refused a route without a refuted result: %v", err)
+	}
+	document := readCaseDocument(t, fixture.root, investigationPointer(t, fixture)["path"].(string))
+	if document["no_competing_hypothesis"] != nil || document["competing_hypothesis_assessment"] != nil {
+		t.Fatalf("machine invented a competing-hypothesis declaration: %v", document)
+	}
+	for _, raw := range document["hypothesis_results"].([]any) {
+		if raw.(map[string]any)["result"] == "refuted" {
+			t.Fatal("machine invented a refuted result")
+		}
 	}
 }
 

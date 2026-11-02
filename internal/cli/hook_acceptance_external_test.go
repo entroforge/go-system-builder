@@ -29,10 +29,11 @@ func TestAcceptanceExternalS7LastResultAndGuidance(t *testing.T) {
 			state := fixtures.BaseState(t, root, "verification", "planned", 1)
 			state["schema_version"] = version
 			state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+			state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-native-clean-outlet", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
 			plan := minimalReviewPlan(t, root, "review-plan-native-clean-outlet")
 			fixtures.WriteState(t, root, state)
 			stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-			stageCLI(t, "runtime", "review-plan", "--root", root, "--file", plan)
+			registerReviewPlanNaturally(t, root, state, "review-plan-native-clean-outlet", plan)
 			for _, id := range []string{"assignment-dv-1", "assignment-qa-1"} {
 				markAssignmentDispatched(t, root, id, "reviewer-"+id)
 			}
@@ -66,7 +67,7 @@ func TestAcceptanceExternalS7LastResultAndGuidance(t *testing.T) {
 				packet.Draft.Answer, _ = json.Marshal(map[string]any{"claim_results": claims, "blocked_claims": []any{}, "checks": []any{}, "findings": []any{}, "deviations": []string{}, "site_lost": []any{}, "verification_artifact_digest": nil, "verdict": "pass"})
 				stageJSON(t, root, packet.AnswerPath, packet.Draft)
 				ref := filepath.Join(root, packet.ViewPath)
-				code, _, diagnostic := acceptanceNativeReviewEvent(t, binary, root, "SubagentStop", "opaque-"+packet.Binding.OwnerAgentID, ref)
+				code, _, diagnostic := acceptanceNativeSidechainEvent(t, binary, root, "SubagentStop", "opaque-"+packet.Binding.OwnerAgentID, ref)
 				if code != 0 || !strings.Contains(diagnostic, "original consumer") {
 					t.Fatalf("native reception: %d %s", code, diagnostic)
 				}
@@ -103,7 +104,12 @@ func TestAcceptanceExternalS7LastResultAndGuidance(t *testing.T) {
 				if after.State["lifecycle"].(map[string]any)["state"] != "acceptance" {
 					t.Fatalf("last Result did not enter S10: %s", diagnostic)
 				}
-				path := filepath.Join(root, "s10", after.State["runtime_id"].(string), "g1", "r1", "acceptance-manifest.json")
+				// The current S10 outlet addresses the active review by its
+				// original Plan identity instead of a numeric round
+				// (internal/acceptance/review_identity.go:7-22
+				// "New responsibilities carry no numeric review_round";
+				// internal/cli/audit_questionnaire.go:328-338).
+				path := filepath.Join(root, "s10", after.State["runtime_id"].(string), "g1", "review-plan-native-clean-outlet", "acceptance-manifest.json")
 				if _, err := os.Stat(path); err != nil {
 					t.Fatalf("same outlet did not prepare S10: %v; %s", err, diagnostic)
 				}
@@ -148,6 +154,40 @@ func acceptanceNativeReviewEvent(t *testing.T, binary, root, event, actor, ref s
 	t.Helper()
 	started := time.Now()
 	code, out, diagnostic := nativeReviewEvent(t, root, event, actor, ref, binary)
+	t.Logf("external event=%s elapsed_ms=%d code=%d stdout=%s stderr=%s", event, time.Since(started).Milliseconds(), code, out, diagnostic)
+	return code, out, diagnostic
+}
+
+// acceptanceNativeSidechainEvent delivers a native event the way the platform
+// does: transcript_path names Main's session while the actor's own task lives
+// in its sibling subagents transcript.
+//
+// The current contract resolves an issued S7 responsibility from that actor's
+// own original task (blueprint/l4-mechanisms/L4-hook-platform-wiring.md:56
+// "父会话转录、子会话转录与最后收尾文字不同"; :122 "成功 PostToolUse 和 Stop／
+// SubagentStop 复用同一消费者兜底"), so the exact original reference must be
+// present in the actor's own task prompt.
+func acceptanceNativeSidechainEvent(t *testing.T, binary, root, event, actor, ref string) (int, string, string) {
+	t.Helper()
+	rel := ref
+	if strings.HasPrefix(ref, root+string(filepath.Separator)) {
+		rel = strings.TrimPrefix(ref, root+string(filepath.Separator))
+	}
+	parent := filepath.Join(t.TempDir(), "parent-session.jsonl")
+	child := filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "agent-"+actor+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(child), 0700); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": actor, "message": map[string]any{"role": "user", "content": "Source root: `" + root + "`. Original questionnaire: `" + rel + "`."}})
+	if err := os.WriteFile(child, append(row, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parent, []byte(`{"type":"user","message":{"role":"user","content":"Main's own unrelated conversation"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": actor, "session_id": "native-review-parent", "agent_type": "professional-reviewer", "cwd": root, "transcript_path": parent, "agent_transcript_path": child, "last_assistant_message": ref, "tool_name": "Write", "tool_input": map[string]any{"file_path": ref}, "tool_response": map[string]any{"filePath": ref}})
+	started := time.Now()
+	code, out, diagnostic := factory.RunHook(t, binary, root, event, body)
 	t.Logf("external event=%s elapsed_ms=%d code=%d stdout=%s stderr=%s", event, time.Since(started).Milliseconds(), code, out, diagnostic)
 	return code, out, diagnostic
 }

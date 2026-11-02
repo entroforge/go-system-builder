@@ -48,6 +48,7 @@ func TestNativeS9LateTargetedPublicHookPreservesCurrentS7(t *testing.T) {
 		"revision": 1, "updated_at": "2026-10-30T00:00:00Z", "next_action": "continue new S7",
 		"plan_ref":                     planRef.Path,
 		"impact_ref":                   impactRef.Path,
+		"questionnaire_root":           repair.QuestionnaireRoot(stringValue(state["runtime_id"]), session.SessionID),
 		"assignment_owners":            map[string]any{assignment: "builder-late-hook", verifier: "verifier-late-hook"},
 		"targeted_reverification_refs": []any{}, "targeted_reverification_artifacts": []any{},
 	}

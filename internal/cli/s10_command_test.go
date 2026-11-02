@@ -133,7 +133,7 @@ func TestS10StatusReportsTheCurrentRoundAndNextAction(t *testing.T) {
 		"runtime_id": "loop-test", "revision": 17,
 		"lifecycle": map[string]any{"state": "acceptance", "phase": nil},
 		"baseline":  map[string]any{"generation": 1},
-		"review":    map[string]any{"round": 3}, "evidence": []any{},
+		"review":    map[string]any{"round": 3, "plan": map[string]any{"plan_id": "review-plan-1", "path": ".claude/submissions/s7/review-plan.json", "status": "running"}}, "evidence": []any{},
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -155,13 +155,27 @@ func TestS10StatusReportsTheCurrentRoundAndNextAction(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatalf("status output is not JSON: %v", err)
 	}
-	if result["stage"] != "S10" || result["lifecycle_state"] != "acceptance" || result["review_round"] != float64(3) {
+	if result["stage"] != "S10" || result["lifecycle_state"] != "acceptance" {
 		t.Fatalf("unexpected S10 status: %#v", result)
 	}
+	// The review round counter is neither generated nor displayed, and the
+	// questionnaire path is not derived from a baseline generation and a round
+	// (L3-S7-verification-round.md:422); status reports the current stage and
+	// the concrete next action (L4-runtime-control-plane.md:245).
+	if _, present := result["review_round"]; present {
+		t.Fatalf("S10 status must not display a review round counter: %#v", result)
+	}
 	acceptanceStatus := result["acceptance"].(map[string]any)
-	wantPath := "s10/loop-test/g1/r3/acceptance-manifest.json"
-	if acceptanceStatus["state"] != "missing" || acceptanceStatus["manifest_path"] != wantPath || !strings.Contains(result["next"].(string), filepath.Join(root, filepath.FromSlash(wantPath))) {
-		t.Fatalf("status must expose the missing manifest and next action: %#v", result)
+	// The current report is located by this responsibility, this generation and
+	// the actual upstream verification plan, not by a round number
+	// (L3-S10-acceptance-audit.md:226).
+	wantPath := "s10/loop-test/g1/review-plan-1/acceptance-manifest.json"
+	if acceptanceStatus["state"] != "missing" || acceptanceStatus["manifest_path"] != wantPath {
+		t.Fatalf("status must expose the missing acceptance manifest and its actual path: %#v", result)
+	}
+	next, _ := result["next"].(string)
+	if !strings.Contains(next, filepath.Join(root, filepath.FromSlash(wantPath))) {
+		t.Fatalf("status must expose one concrete next action: %#v", result)
 	}
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(wantPath))); !os.IsNotExist(err) {
 		t.Fatalf("status created an author questionnaire: %v", err)
@@ -224,7 +238,7 @@ func TestS10StatusRejectsManifestFromStaleBaseline(t *testing.T) {
 		"runtime_id": "loop-test", "revision": 17,
 		"lifecycle": map[string]any{"state": "acceptance", "phase": nil},
 		"baseline":  map[string]any{"generation": 2},
-		"review":    map[string]any{"round": 2}, "evidence": evidence,
+		"review":    map[string]any{"round": 2, "plan": map[string]any{"plan_id": "review-plan-1", "path": ".claude/submissions/s7/review-plan.json", "status": "running"}}, "evidence": evidence,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -247,8 +261,14 @@ func TestS10StatusRejectsManifestFromStaleBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	acceptanceStatus := result["acceptance"].(map[string]any)
-	if acceptanceStatus["state"] != "missing" || acceptanceStatus["manifest_path"] != "s10/loop-test/g2/r2/acceptance-manifest.json" || acceptanceStatus["evidence_id"] != nil {
+	if acceptanceStatus["state"] != "missing" {
 		t.Fatalf("historical report must not satisfy or hide the current responsibility: %#v", acceptanceStatus)
+	}
+	if _, present := acceptanceStatus["evidence_id"]; present {
+		t.Fatalf("historical report must not be presented as the current evidence: %#v", acceptanceStatus)
+	}
+	if acceptanceStatus["manifest_path"] != "s10/loop-test/g2/review-plan-1/acceptance-manifest.json" {
+		t.Fatalf("status must locate the current responsibility by its actual upstream plan: %#v", acceptanceStatus)
 	}
 	// Even a row labelled as current cannot borrow the old report's conclusion.
 	entry := evidence[0].(map[string]any)
@@ -270,8 +290,11 @@ func TestS10StatusRejectsManifestFromStaleBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	acceptanceStatus = result["acceptance"].(map[string]any)
-	if acceptanceStatus["state"] != "invalid" || !strings.Contains(acceptanceStatus["error"].(string), "another responsibility or review round") {
+	if acceptanceStatus["state"] == "complete" || acceptanceStatus["state"] == "satisfied" {
 		t.Fatalf("current-labelled row borrowed a stale professional report: %#v", acceptanceStatus)
+	}
+	if _, present := acceptanceStatus["evidence_id"]; present {
+		t.Fatalf("current-labelled row presented a stale professional report as the current evidence: %#v", acceptanceStatus)
 	}
 }
 

@@ -472,14 +472,19 @@ func TestS6CanonicalResultCLIAcceptanceReplayAndCurrentReceipt(t *testing.T) {
 		}
 	}
 
-	badSchema := s6CanonicalCompletionMessage(fixture, "msg-s6-cli-fake-checks", "Worker supplied fake machine checks")
-	badSchema["checks"] = []any{map[string]any{"command": "go test ./src/pkg", "result": "pass"}}
-	badSchemaPath := ".claude/messages/s6-result-fake-checks.json"
+	// Necessary checks are limited to parseable JSON, the applicable required
+	// fields, direct structure, readiness and routing
+	// (L4-hook-acceptance-checklist.md:53 C04). The message schema no longer
+	// demands a removed digest field, and it does not build a machine gate out
+	// of the Worker's own machine-claim content.
+	badSchema := s6CanonicalCompletionMessage(fixture, "msg-s6-cli-missing-field", "Worker omitted an applicable required field")
+	delete(badSchema, "assignment_revision")
+	badSchemaPath := ".claude/messages/s6-result-missing-field.json"
 	stageJSON(t, fixture.root, badSchemaPath, badSchema)
 	beforeState, beforeJournal := s6CanonicalRuntimePair(t, fixture.root)
 	code, _, errout := s6RunCanonicalTaskComplete(fixture, badSchemaPath)
 	if code == 0 || !strings.Contains(errout, "completion message schema") {
-		t.Fatalf("schema accepted Worker machine claims: code=%d stderr=%s", code, errout)
+		t.Fatalf("schema accepted a message without an applicable required field: code=%d stderr=%s", code, errout)
 	}
 	s6AssertCanonicalRuntimePair(t, fixture.root, beforeState, beforeJournal)
 	checkNoNewArtifacts()

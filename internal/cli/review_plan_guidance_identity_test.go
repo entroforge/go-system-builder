@@ -80,8 +80,19 @@ func TestReviewPlanGuidancePreservesOriginalResponsibility(t *testing.T) {
 			if err := os.WriteFile(path, []byte(`{"claims":[{"target":"TODO(planner)"}]}`), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if result := observeMainS7ReviewPlan(root, request); result.Attempted || strings.Contains(result.Context, "registered") {
-				t.Fatalf("draft was mistaken for professional answer: %+v", result)
+			// A machine draft that expresses no professional Claim content must not
+			// be received as a plan. L3-S7-verification-round.md:223 — "未表达可
+			// 交接内容或 JSON 未写完整的草稿不误收，已有可理解结论即接收". The gate
+			// now lives in the original plan consumer's own checks
+			// (internal/review/plan_checks.go, "Only an entirely unfilled generated
+			// draft remains a draft"), so the observation may reach the consumer;
+			// what must not happen is that the draft becomes a received plan.
+			result := observeMainS7ReviewPlan(root, request)
+			if result.Changed {
+				t.Fatalf("machine draft was received as a professional plan: %+v", result)
+			}
+			if strings.Contains(result.Context, "review-plan: registered") {
+				t.Fatalf("machine draft was reported as a registered plan: %+v", result)
 			}
 		})
 	}

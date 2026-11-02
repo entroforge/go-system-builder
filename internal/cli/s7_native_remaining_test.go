@@ -68,13 +68,23 @@ func TestS7AcceptedOutletKeepsUnknownWhenOriginalPlanUnreadable(t *testing.T) {
 
 func TestS7AcceptedRemainingProjectionPreservesClosedRouting(t *testing.T) {
 	for _, tc := range []struct{ status, want string }{
-		{"observation_sealed", "TR-008"}, {"paused", "TR-010/TR-011"}, {"stale", "baseline drift"},
+		{"observation_sealed", "TR-008"}, {"paused", "TR-010/TR-011"},
+		// The retired baseline-drift proof and the `runtime review-plan
+		// revive/revise` recovery path are gone. L4-workflow-convergence.md:312 —
+		// "旧入口、旧 schema、旧 Hook／CLI、旧消费者及兼容适配连同仅为它们存在的
+		// 测试一并删除"; L4-workflow-convergence.md:281 — "无 hash 不再单凭原路径
+		// 和版本独立证明字节未被外部改动". The current outlet points Main at the
+		// actual change in the current ReviewPlan questionnaire.
+		{"stale", "Main addresses the actual change in the current ReviewPlan questionnaire"},
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			state := s7RecoveryFixtureState(tc.status, tc.status)
 			text := nativeS7RemainingOutletContext(t.TempDir(), state)
 			if !strings.Contains(text, tc.want) || strings.Contains(text, "manifest-draft") || strings.Contains(text, "registered Reviewer's queued dispatch") {
 				t.Fatalf("closed routing dispatched old queue or lost next action: %s", text)
+			}
+			if tc.status == "stale" && (strings.Contains(text, "baseline drift") || strings.Contains(text, "revive/revise path")) {
+				t.Fatalf("retired baseline-drift proof or revive/revise path reappeared: %s", text)
 			}
 		})
 	}

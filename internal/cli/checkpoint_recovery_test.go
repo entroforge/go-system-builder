@@ -50,14 +50,15 @@ func TestActivatedCheckpointRecoveryRejectsTamperingAndWrongAssignment(t *testin
 	if loadErr != nil || loaded.Agent == nil || loaded.Agent.PlanReportedRef != planPath || loaded.PlanReportedRef != planPath {
 		t.Fatalf("Idle and write gates did not receive the same restored checkpoint: %#v %v", loaded, loadErr)
 	}
-	// Same valid JSON and same identity, different bytes: activation no longer binds it.
+	// Same valid JSON and same identity, different bytes: the activation binds
+	// the identity, not the bytes. No digest attestation is part of the contract.
 	os.WriteFile(planPath, append(planBytes, '\n'), 0600)
-	if ref, err := plancheckpoint.ActivatedRef(root, snapshot, "agent-s9"); err == nil || ref != "" {
-		t.Fatal("tampered plan recovered")
+	if ref, err := plancheckpoint.ActivatedRef(root, snapshot, "agent-s9"); err != nil || ref != planPath {
+		t.Fatalf("same identity must stay recoverable without byte attestation: %q %v", ref, err)
 	}
 	loaded, loadErr = hookctx.Load(root, "agent-s9")
-	if loadErr != nil || loaded.Agent == nil || loaded.Agent.PlanReportedRef != "" || loaded.PlanReportedRef != "" {
-		t.Fatalf("tampered plan cleared a gate: %#v %v", loaded, loadErr)
+	if loadErr != nil || loaded.Agent == nil || loaded.Agent.PlanReportedRef != planPath || loaded.PlanReportedRef != planPath {
+		t.Fatalf("identity-bound gate did not survive the byte change: %#v %v", loaded, loadErr)
 	}
 	os.WriteFile(planPath, planBytes, 0600)
 	row["task_ids"] = []any{"TASK-OTHER"}

@@ -69,22 +69,37 @@ func TestS8IssueUsesActualGenerationTwoInvestigatorRegistration(t *testing.T) {
 		t.Fatalf("S8 Hook context omitted exact original answer path %s: %+v", packets[0].AnswerPath, loaded.PolicyContext.HypothesisResultAnswerPaths)
 	}
 	answerPath := writeS8ProfessionalAnswer(t, fixture.root, packets[0], "The registered Case question is answerable from its frozen Finding evidence.")
-	// Main ordinary saves do not receive readonly Worker answers; native Stop
-	// hands the exact questionnaire to the original Case consumer.
+	// Main ordinary saves do not receive readonly Worker answers; the natural
+	// event hands the exact questionnaire to the original Case consumer.
 	before := currentS8Snapshot(t, fixture)
 	body, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "cwd": fixture.root, "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(fixture.root, answerPath)}})
 	var out, diagnostic bytes.Buffer
 	if code := cli.Run([]string{"hook", "--root", fixture.root, "--event", "PostToolUse"}, bytes.NewReader(body), &out, &diagnostic); code != 0 || currentS8Snapshot(t, fixture).Revision != before.Revision {
 		t.Fatalf("Main save received readonly answer: %d %s", code, diagnostic.String())
 	}
-	body, _ = json.Marshal(map[string]any{"hook_event_name": "SubagentStop", "agent_id": "native-investigator-g2", "agent_type": "investigator", "session_id": "native-parent", "cwd": fixture.root, "last_assistant_message": filepath.Join(fixture.root, packets[0].ViewPath)})
+	// L3-S8:227 and L4-hook-platform-wiring.md:122 require the natural
+	// PreToolUse / successful PostToolUse event to read the current original
+	// answer and call the same original HypothesisResult consumer. The
+	// diagnostic wording is not the contract, so delivery is proved by the
+	// original receipt and by the absence of an alias, not by matching a
+	// message string.
+	body, _ = json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "agent_id": owners[0].ownerID, "agent_type": "investigator", "session_id": "native-parent", "cwd": fixture.root, "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(fixture.root, answerPath)}, "transcript_path": writeS8ActorTranscript(t, fixture.root, owners[0].ownerID, packets[0].ViewPath)})
 	out.Reset()
 	diagnostic.Reset()
-	if code := cli.Run([]string{"hook", "--root", fixture.root, "--event", "SubagentStop"}, bytes.NewReader(body), &out, &diagnostic); code != 0 {
-		t.Fatalf("native Stop failed: %d %s", code, diagnostic.String())
+	if code := cli.Run([]string{"hook", "--root", fixture.root, "--event", "PostToolUse"}, bytes.NewReader(body), &out, &diagnostic); code != 0 {
+		t.Fatalf("native delivery failed: %d %s", code, diagnostic.String())
 	}
-	if _, accepted, err := investigation.IssuedHypothesisResultReceipt(fixture.root, currentS8Snapshot(t, fixture).State, packets[0].ID, owners[0].ownerID); err != nil || !accepted {
-		t.Fatalf("native Stop did not reach original Case consumer: %t %v", accepted, err)
+	receipt, accepted, err := investigation.IssuedHypothesisResultReceipt(fixture.root, currentS8Snapshot(t, fixture).State, packets[0].ID, owners[0].ownerID)
+	if err != nil || !accepted {
+		t.Fatalf("native delivery did not reach original Case consumer: %t %v", accepted, err)
+	}
+	if receipt.PacketID != packets[0].ID || receipt.OwnerAgentID != owners[0].ownerID || receipt.AssignmentID != packets[0].Binding.AssignmentID {
+		t.Fatalf("original receipt does not identify the original responsibility: %+v", receipt)
+	}
+	for _, raw := range currentS8Snapshot(t, fixture).State["evidence"].([]any) {
+		if raw.(map[string]any)["id"] == "runtime:"+receipt.PacketID {
+			t.Fatal("native delivery registered an alias for the original source")
+		}
 	}
 }
 

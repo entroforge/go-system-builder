@@ -109,8 +109,18 @@ func testREQBindArchivesInactiveRuntime(t *testing.T, rotated bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(archivedJournal, completeJournal) || receipt["source_journal_sha256"] != sha256Hex(completeJournal) {
-		t.Fatalf("bind archive/receipt did not preserve the complete pre-bind journal: receipt=%v journal=%s", receipt, archivedJournal)
+	if !bytes.Equal(archivedJournal, completeJournal) {
+		t.Fatalf("bind archive did not preserve the complete pre-bind journal: journal=%s", archivedJournal)
+	}
+	// The binding receipt carries runtime identity, not a journal digest
+	// (L4-workflow-convergence.md:250, L4-state-transition-core.md:327).
+	if _, present := receipt["source_journal_sha256"]; present {
+		t.Fatalf("binding receipt must not register a journal digest: %v", receipt)
+	}
+	for _, key := range []string{"source_runtime_id", "source_revision", "target_runtime_id", "target_revision"} {
+		if _, present := receipt[key]; !present {
+			t.Fatalf("binding receipt lost the original runtime identity %q: %v", key, receipt)
+		}
 	}
 	segments, err := runtime.JournalSegmentPaths(journalPath)
 	if err != nil || len(segments) != 0 {

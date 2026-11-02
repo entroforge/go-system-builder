@@ -8,12 +8,21 @@ import (
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/submission"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func TestS9OriginalContractPublicMinimalPlan(t *testing.T) {
 	root, worker, packet, in := nativeS9PlanOnlyFixture(t)
 	plan, _ := nativeS9TestAuthorPaths(t, root, packet)
-	writeRepairLeadJSON(t, filepath.Join(worker, plan), map[string]any{"plan": "Inspect the original API behavior and apply the approved correction."})
+	// The author saves the flat professional answer in the current shape:
+	// the plan, the red checks and the proposed paths. A partial body is no
+	// longer accepted as a minimal plan (L3-S9 §"文件不存在、草稿未就绪或
+	// 字段缺失时保留原稿,反馈实际文件与字段").
+	writeRepairLeadJSON(t, filepath.Join(worker, plan), workpacket.RepairPlanReportProfessionalAnswer{
+		Plan:          "Inspect the original API behavior and apply the approved correction.",
+		RedChecks:     []workpacket.RepairPlanReportCheck{{Name: "regression", Command: "go test ./...", Result: "pass"}},
+		ProposedPaths: []string{},
+	})
 	out, diagnostic := s9ReferencePublicHook(t, root, in)
 	service, err := submission.NewReadOnly(root)
 	if err != nil {

@@ -190,10 +190,29 @@ func coreBuilderFixtureProfilesReadSources(t *testing.T, checks []string, profil
 					t.Fatal("registration lost earlier TASK owner")
 				}
 			}
-			delete(prior, "owner_agent_ids")
-			delete(next, "owner_agent_ids")
-			if !reflect.DeepEqual(prior, next) {
-				t.Fatal("binding a dispatched owner changed other TASK facts")
+			// Registering the dispatched Builder workgroup hands the TASK to that
+			// Builder, so the TASK work state advances to the Builder's working
+			// state. docs/control/loop-definition.json entity_lifecycles.task
+			// keeps `in_progress` as the state of a dispatched Builder's work, and
+			// the original consumer reaches it through the same registration
+			// event. Every other TASK fact must stay untouched.
+			if next["state"] != "in_progress" {
+				t.Fatalf("dispatched TASK work state = %v, want in_progress (was %v)", next["state"], prior["state"])
+			}
+			priorFacts := map[string]any{}
+			for key, value := range prior {
+				priorFacts[key] = value
+			}
+			nextFacts := map[string]any{}
+			for key, value := range next {
+				nextFacts[key] = value
+			}
+			delete(priorFacts, "owner_agent_ids")
+			delete(nextFacts, "owner_agent_ids")
+			delete(priorFacts, "state")
+			delete(nextFacts, "state")
+			if !reflect.DeepEqual(priorFacts, nextFacts) {
+				t.Fatalf("binding a dispatched owner changed other TASK facts: prior=%#v next=%#v", priorFacts, nextFacts)
 			}
 		}
 	}

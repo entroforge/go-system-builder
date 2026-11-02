@@ -91,7 +91,7 @@ func TestStageAnswerTerminalConsumeRejectsUnissuedS7Path(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("terminal --agent was accepted as S7 author identity: stdout=%s stderr=%s", out.String(), errout.String())
 	}
-	if !strings.Contains(errout.String(), "S7 answer path has no current registered issuance") {
+	if !strings.Contains(errout.String(), "answer path has no exact current registered issuance") {
 		t.Fatalf("S7 terminal rejection did not come from exact registered-path selection: %s", errout.String())
 	}
 	if after := stageSnapshot(t, f.root); after.Revision != before.Revision {

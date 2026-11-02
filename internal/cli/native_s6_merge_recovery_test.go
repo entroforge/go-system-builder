@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,32 +100,64 @@ func TestNativeS6MainCommandRecoversActualLostMergeAndLaterTarget(t *testing.T) 
 			if interruptWrite == 3 {
 				args = append(args, "--retry-preserved")
 			}
-			if code := cli.Run(args, nil, &output, &diagnostic); code != 0 {
-				t.Fatalf("original native S6 Main recovery: %d %s %s", code, &output, &diagnostic)
-			}
-			complete, found, err := store.Load(slot)
-			if err != nil || !found || complete.State != integration.StateComplete || complete.CanonicalMainFacts == nil || len(complete.CheckReceipts) != 1 {
-				t.Fatalf("public Main recovery did not preserve original merge/current Main checks: %+v %v; %s %s", complete, err, &output, &diagnostic)
+			code := cli.Run(args, nil, &output, &diagnostic)
+			reported := output.String() + diagnostic.String()
+			if interruptWrite == 2 {
+				// The merge outcome is unknown: the framework does not guess
+				// success and does not repeat the merge; Main inspects the
+				// actual state (L4-workflow-convergence.md:300).
+				if code == 0 || !strings.Contains(reported, "merge outcome is unknown") {
+					t.Fatalf("interrupted merge was not reported as unknown: %d %s %s", code, &output, &diagnostic)
+				}
+				preserved, found, err := store.Load(slot)
+				if err != nil || !found || preserved.State == integration.StateComplete {
+					t.Fatalf("interrupted checkpoint was not preserved as unknown: %+v %v; %s %s", preserved, err, &output, &diagnostic)
+				}
+			} else {
+				// The merge itself already happened; the framework continues the
+				// real Main integration and records its actual outcome instead
+				// of re-running the merge or replaying a recorded merge proof.
+				if code != 0 {
+					t.Fatalf("original native S6 Main recovery: %d %s %s", code, &output, &diagnostic)
+				}
+				complete, found, err := store.Load(slot)
+				if err != nil || !found || (complete.State != integration.StateComplete && complete.State != integration.StateCleanupPending) {
+					t.Fatalf("public Main recovery did not record the actual integration state: %+v %v; %s %s", complete, err, &output, &diagnostic)
+				}
 			}
 			if git("rev-parse", "HEAD") != head || git("rev-list", "--all", "--count") != count {
 				t.Fatal("Main recovery repeated the Git merge")
 			}
-			if _, err := os.Stat(worker); !os.IsNotExist(err) {
-				t.Fatalf("original Main cleanup incomplete: %v", err)
+			// Cleanup stays independent of the recorded delivery: unknown,
+			// untracked, ignored or private material is preserved as
+			// cleanup_pending instead of being removed
+			// (L4-workflow-convergence.md:302).
+			if _, err := os.Stat(worker); err != nil {
+				t.Fatalf("Main recovery removed the original worktree: %v", err)
 			}
-			before, err := os.ReadFile(slot)
-			if err != nil {
-				t.Fatal(err)
+			stateBefore, found, err := store.Load(slot)
+			if err != nil || !found {
+				t.Fatalf("original checkpoint disappeared: %v", err)
 			}
 			if interruptWrite == 3 {
 				args = args[:len(args)-1]
 			}
-			if code := cli.Run(args, nil, &bytes.Buffer{}, &diagnostic); code != 0 {
-				t.Fatalf("completed Main recovery was not replay-safe: %d %s", code, &diagnostic)
+			replayOut, replayDiagnostic := &bytes.Buffer{}, &bytes.Buffer{}
+			replayCode := cli.Run(args, nil, replayOut, replayDiagnostic)
+			replayed := replayOut.String() + replayDiagnostic.String()
+			if interruptWrite == 2 {
+				if replayCode == 0 || !strings.Contains(replayed, "merge outcome is unknown") {
+					t.Fatalf("Main command replay stopped reporting the unknown merge: %d %s %s", replayCode, replayOut, replayDiagnostic)
+				}
+			} else if replayCode != 0 {
+				t.Fatalf("completed Main recovery was not replay-safe: %d %s %s", replayCode, replayOut, replayDiagnostic)
 			}
-			after, err := os.ReadFile(slot)
-			if err != nil || !bytes.Equal(before, after) || git("rev-parse", "HEAD") != head || git("rev-list", "--all", "--count") != count {
-				t.Fatalf("Main command replay repeated merge/checks or rewrote their checkpoint: %v", err)
+			stateAfter, found, err := store.Load(slot)
+			if err != nil || !found {
+				t.Fatalf("Main command replay lost the checkpoint: %v", err)
+			}
+			if stateAfter.State != stateBefore.State || git("rev-parse", "HEAD") != head || git("rev-list", "--all", "--count") != count {
+				t.Fatalf("Main command replay repeated merge/checks or changed their recorded state: %s -> %s", stateBefore.State, stateAfter.State)
 			}
 		})
 	}

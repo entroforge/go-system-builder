@@ -50,8 +50,22 @@ func TestS6HelpNamesSupportedStatusAndFlags(t *testing.T) {
 	if code := cli.Run([]string{"s6", "prepare", "--help"}, nil, &out, &errout); code != 0 || errout.Len() != 0 {
 		t.Fatalf("s6 prepare help: code=%d stdout=%s stderr=%s", code, out.String(), errout.String())
 	}
-	if !strings.Contains(out.String(), "runtime workspace bind --root <authority-root>") {
-		t.Fatalf("s6 prepare help omits the existing Main workspace bind command: %s", out.String())
+	// The frozen workspace binding/preparation path was removed with the old
+	// protocol: L4-workflow-convergence.md:312 deletes "旧入口、旧 schema、旧
+	// Hook／CLI、旧消费者及兼容适配连同仅为它们存在的测试一并删除", and
+	// L3-S6-build.md:316 keeps only the current native dispatch path —
+	// "删除 frozen execution 的观察、接收与恢复分支，不以旧协议建立第二条作者路径".
+	// `s6 prepare` must therefore not send Main back to the retired commands,
+	// and must keep documenting the current native dispatch entry.
+	for _, unwanted := range []string{"runtime workspace bind", "runtime workspace prepare"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("s6 prepare help still advertises the retired %q: %s", unwanted, out.String())
+		}
+	}
+	for _, want := range []string{"native Agent with worktree isolation", "-task", "-role", "-out"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("s6 prepare help missing %q: %s", want, out.String())
+		}
 	}
 }
 
