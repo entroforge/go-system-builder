@@ -19,35 +19,38 @@
 ### 红线核查
 
 ```
-本轮改动文件: 121 个
-  ├─ 测试文件 (*_test.go): 118 个
-  ├─ 报告文档 (*.md): 3 个
+本轮改动文件: 124 个
+  ├─ 测试文件 (*_test.go): 122 个
+  ├─ 报告文档 (*.md): 2 个
   └─ 其它: 0 个
 生产代码违规: 0 个  ← 必须为 0
-统计: 120 files changed, 5902 insertions(+), 1539 deletions(-)
-未提交改动: 1 个
+统计: 124 files changed, 6300 insertions(+), 1608 deletions(-)
+未提交改动: 0 个
 ```
 
 > ✅ **本轮未修改任何生产代码。** 所有代码改动都在 `*_test.go` 里;
 > 报告文档(`*.md`)是本阶段的交付物,不属于生产代码。
 
-报告文档改动:`EST-ADAPTATION-REPORT.md`, `TEST-ADAPTATION-REPORT.md`, `TEST-GAP-AUDIT.md`
+报告文档改动:`TEST-ADAPTATION-REPORT.md`, `TEST-GAP-AUDIT.md`
 
 ## 1. 最终测试结果
 
 | 包 | 通过 | 仍失败 | 失败子测试 |
 |---|---|---|---|
-| `cli` | 1035 | 158 | 103 |
+| `cli` | 995 | 118 | 78 |
 | `integration` | 80 | 2 | 0 |
 | `investigation` | 83 | 2 | 0 |
-| `recovery` | 9 | 3 | 0 |
+| `recovery` | 10 | 2 | 0 |
 | `req039` | 93 | 5 | 0 |
 
-**合计仍失败 170 个顶层测试。**
+**合计仍失败 129 个顶层测试。**
 
+> **校正**:这次全量跑在 14:05 启动,其后还合并了 4 个提交(`2e02dfc`、`088bc77`、`e566950` 及 `51b94ae`),这些提交已单独定向复跑通过(8 个测试全绿)。把它们计入后,**当前实际仍失败约 121 个**,即 **170 → 121**。剩余 STALE 仍红只剩 `internal/cli/controller_test.go` 桶的 5 个测试(`TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle`、`TestHandleSubagentStopAdvancesIntegrationOnReadyInspection`、`TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection`、`TestPostMergeModeChecksCandidateThroughController`、`TestS9RepairNextActionKeepsNativeCandidateWithMain`)——本轮多轮改写 agent 被运行时批量中断,未能落地。
+
+> **所有仍失败的测试都有判定**:本次跑出来的失败里,总账外为 **0** 条。
 ### 仍失败的测试清单
 
-<details><summary><code>cli</code> — 158 个</summary>
+<details><summary><code>cli</code> — 118 个</summary>
 
 - `TestAC005_MilestonePersistsQualityGate`
 - `TestAC006_SubagentStopEmitsIntegrationGuidance`
@@ -56,37 +59,21 @@
 - `TestActualMainIntegrationBarrierCleanupAfterEarlyReturn`
 - `TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle`
 - `TestBuilderConventionsOwnedExampleSurvivesActualVerifiedIntegration`
-- `TestBuilderReceiptOriginalFailureReworkAndCurrentResubmission`
-- `TestCT03901_DesignGateSatisfiedCommitsPTR_PLAN_01`
-- `TestCT03902_ContractsMissingCoverageExposesNotReady`
-- `TestCT03904_LockedExactContractWriteIsObserved`
-- `TestCT03905_UnlockedSiblingWriteIsObserved`
-- `TestCT03906_GitSquashMergeIsObserved`
-- `TestCT03908_SessionStartAfterCompactSurfacesSameMilestone`
-- `TestCT03909_CleanWorktreeStopEmitsIntegrationGuidance`
 - `TestCT03911_DualPassDocumentVerificationCommitsTR003`
 - `TestCT03915_S11StopsAutoAdvance`
 - `TestCT03920_BuilderCompletionDurableRef`
 - `TestCT03924_SameAgentDualDVLabelsBlocksTR003`
 - `TestCanonicalS6WorkspaceReworkRequiresNamedAssignmentRevision`
 - `TestCheckProfileActualMainIntegrationCapturesOriginalResponsibility`
-- `TestCheckpointPublishFailureRetainsPendingAndRetriesOnce`
 - `TestCheckpointRejectsOlderPairAndForgedReceptionFacts`
 - `TestConfiguredPressureOriginalReportWriterRegistrationAndActualMainIntegration`
 - `TestContractAuthorityUsesOriginalS2RegisteredDesign`
-- `TestDefaultProgressShadowRecordsWithoutContext`
-- `TestDesignAnswerOriginalPairRecovery`
 - `TestExplicitAssignmentContextRejectsMissingSourcesWithoutAuthorOverwrite`
-- `TestExplicitLegacyStateCannotBeReconciled`
 - `TestHandleSubagentStopAdvancesIntegrationOnReadyInspection`
 - `TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection`
-- `TestIndependentReviewRejectsCorruptSourceWithoutReception`
 - `TestLastFinalPreparesImpactBeforeIndependentCleanup`
 - `TestMainCheckReuseObservationIsReadonlyAndCannotSkipRequiredChecks`
-- `TestMainOrdinaryReadAndNonCheckpointStatusProgressWire`
 - `TestMainPlanningReadCycleConsumesAcceptedS2Followup`
-- `TestMainReviewPlanIdentityNaturalReceptionAndReplay`
-- `TestMainReviewPlanPreReceivesReadyOriginal`
 - `TestMainReviewPlanQuestionnaireStopDoesNotPrepareAndInvalidSaveReturnsFeedback`
 - `TestMainS2S5MilestoneDirectoriesProjectActualReadSources`
 - `TestMainS6LockedReadCategoriesResolveRegisteredCurrentFiles`
@@ -94,21 +81,15 @@
 - `TestNativeMainReturnReadsS5ReceiptAcrossStageWithoutReceivingAnswers`
 - `TestNativeMainS7ReturnKeepsSubmissionDiagnosticWhenOwnBodyFails`
 - `TestNativeProfileContextExposesFrozenOriginalProfile`
-- `TestNativeS6BriefMinimalBlockerWorksBeforeAndAfterPlan`
 - `TestNativeS6FixedSourceAlignmentAfterMainAdvances`
-- `TestNativeS6PrepareReplayCannotBorrowChangedTASK`
 - `TestNativeS6RevisionKeepsObjectGuardsAcrossUnrelatedRuntimeCommit`
-- `TestNativeS6SameTASKReworkClosesWithoutChangingSpecification`
 - `TestNativeS9AcceptedDRecoveryPreservesMissingButRejectsChangedOriginals`
 - `TestNativeS9ConsumerCauseSurvivesPrerequisiteAndConcurrentPublication`
 - `TestNativeS9ExplicitStopChangeStillConflictsAfterRecovery`
 - `TestNativeS9FlatValidationFeedbackUsesPrivateFileFields`
-- `TestNativeS9LateTargetedPublicHookPreservesCurrentS7`
 - `TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate`
 - `TestNativeS9MissingWorkerCleanupResumesOriginalCheckpoint`
-- `TestNativeS9MissingWorktreePlanDoesNotBorrowMainAnswer`
 - `TestNativeS9NaturalSavedTypedPrecedesChangedOrMissingFlat`
-- `TestNativeS9NullProfessionalReferenceIsNotConvertedToNotApplicable`
 - `TestNativeS9OriginalCandidateReadsHistoricalMachineValues`
 - `TestNativeS9OriginalConsumeAcceptedPlanSurvivesMissingDisplayBrief`
 - `TestNativeS9OriginalConsumeDoesNotReimportAcceptedPlan`
@@ -124,12 +105,9 @@
 - `TestNativeS9PublicAuthorCorrectsRejectedResult`
 - `TestNativeS9PublicChangedFlatPreservesStagedCandidateWhenSourceDisappears`
 - `TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns`
-- `TestNativeS9RejectsChangedDeliverySourcesBeforeAnyMainIntegration`
-- `TestNativeS9ResumeReceivesLatestActualTaskWithoutToolResultGuess`
 - `TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop`
 - `TestNativeS9UnrecordedMergePreservesUnknownAndWorktree`
 - `TestNativeSnapshotFailureReachesMainAndRestoresOriginalRoute`
-- `TestNativeStopPendingFrozenS9RetainsSamePublicStopGate`
 - `TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource`
 - `TestPendingInitializationAcceptsAbsentReviewNumberAndLegacyZero`
 - `TestPlanningObserverUsesAnswerAndBoundCommitWithoutRepeatingUnchangedSave`
@@ -139,19 +117,11 @@
 - `TestRuntimeInvestigationContractApproveCLIHandsOffToS9`
 - `TestS10ReviewRequiredPendingReturnDoesNotReceiveChangedOrWorkerAnswer`
 - `TestS10ReviewRequiredReturnsOriginalFullReviewAndNewPlan`
-- `TestS10StatusReportsBlockedManifestRoute`
 - `TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit`
 - `TestS4AcceptedDescriptionChangeKeepsCompletionButCannotRegisterChangedMaterials`
-- `TestS4ReceptionFieldFailurePersistsAcrossSessionAndClears`
-- `TestS5PreparationRecoveryRejectsAcceptedSourceDriftWithoutRefreshingSHA`
-- `TestS5RegisteredManifestCannotChangeBeforeFirstQuestionnaire`
-- `TestS5RegisteredManifestSaveRejectsChangedAssociationsAndReplaysUnchanged`
 - `TestS5ReturnToS6ProvidesPreparationInsteadOfWaitingForUnstartedBuilder`
-- `TestS5WorkerReadProgressAndReceivedPeerWaitWire`
 - `TestS6ClosingContractCLISeparatesOwnedCompletionFromMain`
 - `TestS6IntegrationWithoutMainStartKeepsOriginalBatchGate`
-- `TestS6MainInspectFailureWithoutCheckpointRestoresOriginalSource`
-- `TestS6MainPreservedCheckpointNamesActualRetryAndRetainsSource`
 - `TestS6NativeClosingContextKeepsAssessmentEditableAcrossRetry`
 - `TestS6UnchangedPreToolUseReusesObservation`
 - `TestS7AcceptedRemainingProjectionUsesOriginalPrerequisites`
@@ -163,11 +133,8 @@
 - `TestS7NativeListenerReportsOriginalFieldErrorWithoutDenyingTool`
 - `TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave`
 - `TestS7OptionalProgressUnknownNativeActorIsSilent`
-- `TestS7OriginalAnswerReachesConsumerWithOldS9Route`
-- `TestS7PartialP0NativeReturnReachesS8Intake`
 - `TestS7PublicHookReceivesOriginalWithoutLegacyActivationRoute`
 - `TestS7SharedOriginalCannotBeBorrowedByUnboundNativeWorktree`
-- `TestS8InvestigationLeadWorkerQuestionsMergeWithoutReplacingAuthorRows`
 - `TestS8NativeLifecycleDeliversExactQuestionnaireInHookEnvelope`
 - `TestS8ObservedContractPassiveSkipKeepsExplicitSaveAndChangedValidation`
 - `TestS9CapturedInputCoordinateAloneIsNotSavedTypedInput`
@@ -202,11 +169,7 @@
 - `TestS9VerifierRegistrationWaitsForTargetedReadiness`
 - `TestSavedHypothesisResultHookDoesNotTreatUnissuedTeammatePathAsCurrent`
 - `TestSavedHypothesisResultHookRejectsUnissuedPathWithoutRuntimeWrite`
-- `TestTargetedMainReturnPreservesUnknownHistoricalAssociation`
-- `TestTaskScopeOriginalS4SaveThroughNativeAssignmentAndBrief`
-- `TestTransitionAffectedPathsCLI`
 - `TestUnavailablePolicyDoesNotDenyAndKeepsGraphRecoveryVisible`
-- `TestWorkspaceBackendCoreLaunchCommitAndOriginalVerifiedIntegration`
 
 </details>
 
@@ -224,10 +187,9 @@
 
 </details>
 
-<details><summary><code>recovery</code> — 3 个</summary>
+<details><summary><code>recovery</code> — 2 个</summary>
 
 - `TestRuntimeRecoveryApplyNeverRevivesActiveAgents`
-- `TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker`
 - `TestRuntimeRecoveryApplySamePlanIsIdempotent`
 
 </details>
