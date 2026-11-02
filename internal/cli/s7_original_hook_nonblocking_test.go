@@ -181,22 +181,33 @@ func TestS7PublicHookReceivesOriginalWithoutLegacyActivationRoute(t *testing.T) 
 		t.Fatalf("single original handoff issued %d/2 responsibilities: %v\n%s", len(packets), err, output)
 	}
 	packet := packets[0]
-	for _, raw := range after.State["entities"].(map[string]any)["agents"].([]any) {
-		agent := raw.(map[string]any)
-		if agent["id"] == packet.Binding.OwnerAgentID {
-			agent["activation_ref"] = "legacy-context-only"
-		}
-	}
-	stateBytes, err := json.Marshal(after.State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(f.statePath, stateBytes, 0600); err != nil {
-		t.Fatal(err)
-	}
+	// The native S7 Reviewer has no activation route: the original
+	// responsibility is located from the issued responsibility itself, and no
+	// launcher, activation or platform identity registration is part of the
+	// current contract (blueprint L3-S7-verification-round.md:213 "不增加
+	// launcher、激活、通用 PLAN_REPORT 或平台身份登记手续"). An
+	// "activation_ref" coordinate is therefore not a precondition of the
+	// original reception and must not be introduced into the fixture.
+	// The original platform task selects the responsibility. SubagentStop
+	// observes the natural save of the original answer through the agent
+	// transcript that carries that task; the coordinator's final text is not a
+	// dispatch and must not be used as the responsibility reference
+	// (internal/cli/native_review_hooks.go:551 "The original platform task
+	// selects the responsibility. Later coordinator messages and the Worker's
+	// final text are not a new dispatch."; blueprint
+	// L4-hook-platform-wiring.md:67 "last_assistant_message 可能仅为收尾文字,
+	// 不能当作完整报告或新增必交引用").
 	invoke := func(actor, text string) (int, string) {
 		t.Helper()
-		payload, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStop", "agent_id": actor, "session_id": "native-test", "cwd": f.root, "last_assistant_message": text})
+		transcript := filepath.Join(t.TempDir(), "agent.jsonl")
+		row, err := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": actor, "message": map[string]any{"role": "user", "content": text}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(transcript, append(row, '\n'), 0600); err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStop", "agent_id": actor, "session_id": "native-test", "cwd": f.root, "agent_transcript_path": transcript})
 		var out, diagnostic bytes.Buffer
 		code := Run([]string{"hook", "--root", f.root, "--event", "SubagentStop"}, bytes.NewReader(payload), &out, &diagnostic)
 		return code, out.String() + diagnostic.String()
