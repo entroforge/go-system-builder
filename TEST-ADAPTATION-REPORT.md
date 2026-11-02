@@ -19,19 +19,19 @@
 ### 红线核查
 
 ```
-本轮改动文件: 124 个
-  ├─ 测试文件 (*_test.go): 122 个
-  ├─ 报告文档 (*.md): 2 个
+本轮改动文件: 126 个
+  ├─ 测试文件 (*_test.go): 123 个
+  ├─ 报告文档 (*.md): 3 个
   └─ 其它: 0 个
 生产代码违规: 0 个  ← 必须为 0
-统计: 124 files changed, 6300 insertions(+), 1608 deletions(-)
-未提交改动: 0 个
+统计: 124 files changed, 6262 insertions(+), 1608 deletions(-)
+未提交改动: 2 个
 ```
 
 > ✅ **本轮未修改任何生产代码。** 所有代码改动都在 `*_test.go` 里;
 > 报告文档(`*.md`)是本阶段的交付物,不属于生产代码。
 
-报告文档改动:`TEST-ADAPTATION-REPORT.md`, `TEST-GAP-AUDIT.md`
+报告文档改动:`EST-ADAPTATION-REPORT.md`, `TEST-ADAPTATION-REPORT.md`, `TEST-GAP-AUDIT.md`
 
 ## 1. 最终测试结果
 
@@ -45,7 +45,7 @@
 
 **合计仍失败 129 个顶层测试。**
 
-> **校正**:这次全量跑在 14:05 启动,其后还合并了 4 个提交(`2e02dfc`、`088bc77`、`e566950` 及 `51b94ae`),这些提交已单独定向复跑通过(8 个测试全绿)。把它们计入后,**当前实际仍失败约 121 个**,即 **170 → 121**。剩余 STALE 仍红只剩 `internal/cli/controller_test.go` 桶的 5 个测试(`TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle`、`TestHandleSubagentStopAdvancesIntegrationOnReadyInspection`、`TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection`、`TestPostMergeModeChecksCandidateThroughController`、`TestS9RepairNextActionKeepsNativeCandidateWithMain`)——本轮多轮改写 agent 被运行时批量中断,未能落地。
+> **校正**:这次全量跑在 14:05 启动,其后还合并了 4 个提交(`2e02dfc`、`088bc77`、`e566950` 及 `51b94ae`),这些提交已单独定向复跑通过(8 个测试全绿)。把它们计入后,**当前实际仍失败约 121 个**,即 **170 → 121**。剩余 STALE 仍红只剩 `internal/cli/controller_test.go` 桶的 5 个测试(`TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle`、`TestHandleSubagentStopAdvancesIntegrationOnReadyInspection`、`TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection`、`TestPostMergeModeChecksCandidateThroughController`)——`TestS9RepairNextActionKeepsNativeCandidateWithMain` 已改写通过;上述两个「ready SubagentStop 必须 CAS 推进 revision」的夹具仍差一步(检查未进入 ready 态),改写未完成,保持红。
 
 > **所有仍失败的测试都有判定**:本次跑出来的失败里,总账外为 **0** 条。
 ### 仍失败的测试清单

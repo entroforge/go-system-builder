@@ -11,8 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/agentcontext"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/assignmentresult"
+	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/controller"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
+	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
@@ -125,7 +130,13 @@ func TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle(t *testing.T) {
 				}
 			}
 			if tc.status == "ready_for_full_review" {
-				for _, duty := range []string{"Targeted SubagentStop", "original Handoff automatically", "runtime repair handoff complete", "preserve the accepted observations", "ordinary reminders do not retry"} {
+				// The current Handoff instruction names the accepted Targeted
+				// answer and its original consumer; it does not ask for a
+				// separate Targeted report form any more. S7/S8/S9 share one
+				// reception chain (PreToolUse / successful PostToolUse /
+				// Stop / SubagentStop through the original consumers), so the
+				// unified chain wording must stay in the same guidance.
+				for _, duty := range []string{"Targeted answer", "original Handoff automatically", "runtime repair handoff complete", "preserve the accepted observations", "ordinary reminders do not retry", "Stop/SubagentStop fallback through the original consumer"} {
 					if !strings.Contains(combined, duty) {
 						t.Fatalf("Handoff guidance lost %q: %s", duty, combined)
 					}
@@ -1138,6 +1149,424 @@ func asAnySlice(value any) []any {
 	return out
 }
 
+// ---------- canonical S6 Assignment Record fixture ----------
+//
+// The Controller resolves the current Assignment Record projection before it
+// inspects a worktree (internal/cli/controller.go:1739). A fixture Runtime
+// without a registered Record therefore fails closed with "no current Record
+// projection". The helpers below register one real Record, built from the
+// same original manifest bytes the original source view reads, so the
+// fixture stays consistent with the production projection contract instead
+// of hand-writing an AssignmentContext.
+const (
+	canonicalFixtureRole           = "backend-builder"
+	canonicalFixtureDispatch       = "plan_checkpoint"
+	canonicalFixtureScope          = "internal/"
+	canonicalFixtureResponsibility = "BUILD-WORK-PACKAGE"
+	canonicalFixtureTaskVersion    = "v1.0.0"
+	canonicalFixtureManifestVer    = "v1.0.0"
+	canonicalFixtureRuntimeID      = "loop-REQ-039"
+	canonicalFixtureStateVersion   = "1.2.0"
+)
+
+// canonicalAssignmentOptions configures the one canonical Assignment the
+// Controller fixture registers for its owner.
+type canonicalAssignmentOptions struct {
+	worktreePath         string
+	branch               string
+	targetBranch         string
+	requiredChecks       []string
+	integrationCheckMode string
+	closingContract      bool
+	acceptedResult       bool
+}
+
+// canonicalAssignmentFixture registers one canonical S6 Assignment Record in
+// the fixture Runtime and returns the matching AssignmentContext projection.
+func canonicalAssignmentFixture(t *testing.T, fix *runtimeFixture, owner, teamID, taskID, assignmentID string, opts canonicalAssignmentOptions) hookctx.AssignmentContext {
+	t.Helper()
+
+	manifestRef := ".claude/workgroups/REQ-039/" + teamID + "/manifest.json"
+	taskPath := "docs/dev/tasks/" + taskID + ".md"
+	agentDefinitionRef := "agents/" + canonicalFixtureRole + ".md"
+	skillRefs := agentcontext.CoreSkills(canonicalFixtureRole)
+	if len(skillRefs) == 0 {
+		t.Fatalf("role %s exposes no core skills", canonicalFixtureRole)
+	}
+
+	// The original source view reads the registered manifest through the
+	// declared file source contract.
+	enableFixtureFileSources(t, fix)
+
+	taskBytes := []byte("# " + taskID + ": Controller canonical Assignment fixture\n\n> Status: locked\n> Version: " + canonicalFixtureTaskVersion + "\n")
+	writeFixtureFile(t, fix.root, taskPath, taskBytes)
+
+	requiredChecks := opts.requiredChecks
+	if requiredChecks == nil {
+		requiredChecks = []string{}
+	}
+	assignmentRow := map[string]any{
+		"assignment_id":        assignmentID,
+		"responsibility_id":    canonicalFixtureResponsibility,
+		"role_family":          canonicalFixtureRole,
+		"agent_id":             owner,
+		"agent_definition_ref": agentDefinitionRef,
+		"dispatch_mode":        canonicalFixtureDispatch,
+		"skill_refs":           skillRefs,
+		"read_paths":           []string{taskPath},
+		"scope":                []string{canonicalFixtureScope},
+		"write_paths":          []string{canonicalFixtureScope},
+		"output_paths":         []string{},
+		"depends_on":           []string{},
+		"required_checks":      requiredChecks,
+		"done_when":            []string{"the registered assignment output is present"},
+		"status":               "active",
+		"worktree_path":        opts.worktreePath,
+		"branch":               opts.branch,
+		"target_branch":        opts.targetBranch,
+	}
+	if opts.integrationCheckMode != "" {
+		assignmentRow["integration_check_mode"] = opts.integrationCheckMode
+	}
+	if opts.closingContract {
+		assignmentRow["closing_contract"] = map[string]any{
+			"contract":      assignmentrecord.ClosingContractVersion,
+			"worker_checks": []any{},
+		}
+	}
+	manifest := map[string]any{
+		"schema_version":             "1.0.0",
+		"assignment_record_contract": assignmentrecord.AssignmentRecordContract,
+		"manifest_id":                "manifest-" + teamID,
+		"version":                    canonicalFixtureManifestVer,
+		"runtime_id":                 canonicalFixtureRuntimeID,
+		"req_id":                     "REQ-039",
+		"baseline_generation":        1,
+		"workgroup_id":               teamID,
+		"workgroup_kind":             "builder",
+		"status":                     "active",
+		"documents": []any{map[string]any{
+			"id": taskID, "path": taskPath, "version": canonicalFixtureTaskVersion,
+		}},
+		"assignments": []any{assignmentRow},
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, fix.root, manifestRef, manifestBytes)
+
+	registerFixtureCanonicalEntities(t, fix, owner, teamID, taskID, taskPath, manifestRef, agentDefinitionRef)
+
+	contextSources := []assignmentrecord.ContextSource{{
+		Kind: "agent_definition", Ref: agentDefinitionRef, ID: canonicalFixtureRole, Version: canonicalFixtureTaskVersion,
+	}}
+	for _, skill := range skillRefs {
+		contextSources = append(contextSources, assignmentrecord.ContextSource{
+			Kind: "authorized_skill", Ref: "skills/" + skill + "/SKILL.md", ID: skill, Version: canonicalFixtureTaskVersion,
+		})
+	}
+	record, err := assignmentrecord.BuildRecord(manifestBytes, manifestRef, fix.state, taskBytes, taskID, assignmentID, []string{canonicalFixtureScope}, contextSources)
+	if err != nil {
+		t.Fatalf("build canonical Assignment Record: %v", err)
+	}
+	entities := fix.state["entities"].(map[string]any)
+	entities["assignments"] = []any{record}
+	// The canonical Assignment registry is part of the unified Runtime state
+	// schema; the legacy 1.1.0 fixture schema has no such slot.
+	fix.state["schema_version"] = canonicalFixtureStateVersion
+
+	assignment := assignmentContextForRecord(record, opts.worktreePath, opts.branch, opts.targetBranch)
+	if opts.acceptedResult {
+		assignment.CompletionRef = registerFixtureAcceptedResult(t, fix, record)
+	}
+	return assignment
+}
+
+// canonicalControllerFixture prepares a real git repository plus one
+// canonical S6 Assignment Record so the Controller's integration path can
+// resolve the current Record projection and inspect a real worktree.
+func canonicalControllerFixture(t *testing.T, fix *runtimeFixture, owner, teamID, taskID, assignmentID string, opts canonicalAssignmentOptions) hookctx.AssignmentContext {
+	t.Helper()
+	repo := fix.root
+	if err := os.MkdirAll(filepath.Join(repo, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "--initial-branch=develop"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+		// Disable gpg signing so the commit hook doesn't fail in
+		// environments with a global commit.gpgsign=true (the harness
+		// CI/dev shells have a 1Password-backed signing agent that is
+		// not reachable inside the test).
+		{"config", "commit.gpgsign", "false"},
+		{"config", "tag.gpgsign", "false"},
+		{"checkout", "-b", "develop"},
+		{"commit", "--allow-empty", "-m", "initial"},
+	} {
+		if _, err := runGit(t, repo, args...); err != nil {
+			t.Fatalf("git %v: %v", strings.Join(args, " "), err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git/info/exclude"), []byte(".claude/\nwt/\ndocs/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bindFixtureWorkspace(t, fix)
+	// The original source view needs the declared file source contract, so
+	// the formal inputs are committed with it already in place.
+	enableFixtureFileSources(t, fix)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".claude/\nwt/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runGit(t, repo, "add", "-f", "docs", ".gitignore"); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	if out, err := runGit(t, repo, "commit", "-m", "formal input baseline"); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	fix.addAgent(owner, canonicalFixtureRole, "reported", teamID, []string{taskID})
+	fix.addTask(taskID, "review", []string{owner})
+	return canonicalAssignmentFixture(t, fix, owner, teamID, taskID, assignmentID, opts)
+}
+
+// preserveFixtureCheckpoint records the preserved integration checkpoint of an
+// earlier not-ready attempt for the canonical Assignment, so the Controller
+// re-preserves the same original worktree instead of starting a new merge.
+func preserveFixtureCheckpoint(t *testing.T, fix *runtimeFixture, assignment hookctx.AssignmentContext) {
+	t.Helper()
+	if assignment.AssignmentRecord == nil {
+		t.Fatal("canonical Assignment has no current Record reference")
+	}
+	path := integration.CheckpointPathForRecord(fix.root, *assignment.AssignmentRecord)
+	if path == "" {
+		t.Fatal("canonical Assignment has no integration checkpoint path")
+	}
+	ref := *assignment.AssignmentRecord
+	if _, err := integration.DefaultCheckpointStore().CompareAndSwap(path, integration.Checkpoint{}, integration.Checkpoint{
+		AssignmentID:       assignment.AssignmentID,
+		TaskID:             assignment.TaskID,
+		WorktreePath:       assignment.WorktreePath,
+		SourceBranch:       assignment.Branch,
+		TargetBranch:       assignment.TargetBranch,
+		BaselineGeneration: assignment.BaselineGeneration,
+		State:              integration.StatePreserved,
+		ResumeState:        integration.StatePending,
+		FailureReason:      "the earlier inspection was not ready",
+		AssignmentRecord:   &ref,
+	}); err != nil {
+		t.Fatalf("preserve canonical Assignment checkpoint: %v", err)
+	}
+}
+
+// assignmentContextForRecord projects the canonical Record into the same
+// AssignmentContext the original loader produces for it.
+func assignmentContextForRecord(record assignmentrecord.Record, worktreePath, branch, targetBranch string) hookctx.AssignmentContext {
+	ref := record.Reference()
+	return hookctx.AssignmentContext{
+		AssignmentID:         record.AssignmentID,
+		OwnerAgentID:         record.OwnerAgentID,
+		TaskID:               record.Task.ID,
+		ManifestRef:          record.Manifest.Ref,
+		BaselineGeneration:   record.BaselineGeneration,
+		RoleFamily:           record.RoleFamily,
+		AgentDefinitionRef:   record.AgentDefinition.Ref,
+		ResponsibilityIDs:    []string{record.ResponsibilityID},
+		SkillRefs:            append([]string(nil), record.SkillRefs...),
+		ReadPaths:            append([]string(nil), record.ReadPaths...),
+		OutputPaths:          append([]string(nil), record.ScopeBasis.ManifestOutputPaths...),
+		WritePaths:           append([]string(nil), record.EffectiveWritePaths...),
+		DependsOn:            append([]string(nil), record.DependsOn...),
+		DoneWhen:             append([]string(nil), record.DoneWhen...),
+		RequiredChecks:       append([]string(nil), record.RequiredChecks...),
+		CheckProfiles:        append([]checkexec.Profile(nil), record.CheckProfiles...),
+		AssignmentRecord:     &ref,
+		AssignmentRevision:   record.Revision,
+		IntegrationCheckMode: record.IntegrationCheckMode,
+		WorktreePath:         worktreePath,
+		Branch:               branch,
+		TargetBranch:         targetBranch,
+	}
+}
+
+// registerFixtureCanonicalEntities registers the Runtime Team/Agent/TASK rows
+// and the locked TASK document the canonical Record must match.
+func registerFixtureCanonicalEntities(t *testing.T, fix *runtimeFixture, owner, teamID, taskID, taskPath, manifestRef, agentDefinitionRef string) {
+	t.Helper()
+	entities := fix.state["entities"].(map[string]any)
+
+	agentFound := false
+	for _, raw := range asAnySlice(entities["agents"]) {
+		row, _ := raw.(map[string]any)
+		if row["id"] != owner {
+			continue
+		}
+		row["role"] = canonicalFixtureRole
+		row["definition_ref"] = agentDefinitionRef
+		row["dispatch_mode"] = canonicalFixtureDispatch
+		row["team_id"] = teamID
+		row["task_ids"] = []any{taskID}
+		agentFound = true
+	}
+	if !agentFound {
+		t.Fatalf("fixture Runtime has no Agent %s", owner)
+	}
+
+	taskFound := false
+	for _, raw := range asAnySlice(entities["tasks"]) {
+		row, _ := raw.(map[string]any)
+		if row["id"] != taskID {
+			continue
+		}
+		row["path"] = taskPath
+		row["owner_agent_ids"] = []any{owner}
+		taskFound = true
+	}
+	if !taskFound {
+		t.Fatalf("fixture Runtime has no TASK %s", taskID)
+	}
+
+	entities["teams"] = []any{map[string]any{
+		"id":                 teamID,
+		"status":             "active",
+		"agent_ids":          []any{owner},
+		"kind":               "builder",
+		"manifest_ref":       manifestRef,
+		"platform_team_id":   canonicalFixtureRuntimeID,
+		"responsibility_ids": []string{canonicalFixtureResponsibility},
+		"review_round":       nil,
+	}}
+
+	documents := asAnySlice(fix.state["documents"])
+	fix.state["documents"] = append(documents, map[string]any{
+		"id": taskID, "kind": "task", "path": taskPath, "version": canonicalFixtureTaskVersion,
+		"status": "locked", "generation": 1,
+	})
+}
+
+// registerFixtureAcceptedResult registers one accepted canonical Result for
+// the owner so the original Integrator can resolve the current Result.
+func registerFixtureAcceptedResult(t *testing.T, fix *runtimeFixture, record assignmentrecord.Record) string {
+	t.Helper()
+	resultRef := ".claude/evidence/" + canonicalFixtureRuntimeID + "/g1/assignments/" + record.AssignmentID + "/result.json"
+	evidenceID := "evidence-" + record.AssignmentID
+	answer := assignmentresult.Answer{
+		Summary: "the registered assignment output is present",
+		AssertionEvidence: []assignmentresult.AssertionEvidence{{
+			Assertion:    "the assignment output is present",
+			Oracle:       "the registered Main check passes",
+			EvidenceRefs: []string{"src/pkg/behavior.txt"},
+		}},
+		RisksBlockers:   []string{},
+		ScopeDeviations: []string{},
+	}
+	if record.ClosingContract != nil {
+		answer.ClosingAssessment = &assignmentresult.ClosingAssessment{
+			Disposition: "complete",
+			Conditions: []assignmentresult.ClosingCondition{{
+				DoneWhenIndex:        0,
+				Judgment:             "satisfied",
+				PlanAssertionIndexes: []int{0},
+				Rationale:            "The owner assessed the frozen DoneWhen against its accepted evidence.",
+			}},
+		}
+	}
+	accepted := assignmentresult.AcceptedResult{
+		SchemaVersion:          "1.0.0",
+		EvidenceID:             evidenceID,
+		Kind:                   "completion_report",
+		RuntimeID:              record.RuntimeID,
+		BaselineGeneration:     record.BaselineGeneration,
+		ProducerAgentID:        record.OwnerAgentID,
+		ProducerResponsibility: canonicalFixtureResponsibility,
+		SubjectRefs: []assignmentresult.SubjectReference{{
+			ID: record.Task.ID, Kind: "task", Path: record.Task.Ref, Version: record.Task.Version,
+		}},
+		Conclusion:           "submitted",
+		TaskID:               record.Task.ID,
+		AssignmentRecord:     record.Reference(),
+		ResultRevision:       1,
+		SubmissionKey:        "msg-" + record.AssignmentID + "-1",
+		Answer:               answer,
+		ResolvedEvidenceRefs: []assignmentresult.ResolvedEvidence{},
+		CreatedAt:            "2026-10-14T00:00:00Z",
+	}
+	data, err := json.MarshalIndent(accepted, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, fix.root, resultRef, data)
+
+	evidence := asAnySlice(fix.state["evidence"])
+	fix.state["evidence"] = append(evidence, map[string]any{
+		"id":                  evidenceID,
+		"path":                resultRef,
+		"kind":                "completion_report",
+		"status":              "valid",
+		"baseline_generation": record.BaselineGeneration,
+		"responsibility_id":   canonicalFixtureResponsibility,
+		"produced_by":         []string{record.OwnerAgentID},
+		// The runtime schema requires the invalidation triple and the scope
+		// references on every evidence row; a row that is still valid carries
+		// them empty (internal/runtime schema loop-state-v1.2).
+		"invalidated_by":      nil,
+		"invalidation_rule":   nil,
+		"invalidation_reason": nil,
+		"scope_refs":          []any{},
+	})
+
+	entities := fix.state["entities"].(map[string]any)
+	for _, raw := range asAnySlice(entities["agents"]) {
+		row, _ := raw.(map[string]any)
+		if row["id"] == record.OwnerAgentID {
+			row["completion_reported_ref"] = resultRef
+		}
+	}
+	for _, raw := range asAnySlice(entities["tasks"]) {
+		row, _ := raw.(map[string]any)
+		if row["id"] == record.Task.ID {
+			row["completion_report_ref"] = resultRef
+		}
+	}
+	return resultRef
+}
+
+// enableFixtureFileSources declares the original file source contract the
+// canonical Assignment source view reads the registered manifest through.
+func enableFixtureFileSources(t *testing.T, fix *runtimeFixture) {
+	t.Helper()
+	path := filepath.Join(fix.root, "docs", "control", "loop-definition.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var definition map[string]any
+	if err := json.Unmarshal(data, &definition); err != nil {
+		t.Fatal(err)
+	}
+	definition["file_sources"] = []any{
+		map[string]any{"path": ".claude/workgroups", "source": "disk"},
+	}
+	out, err := json.MarshalIndent(definition, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFixtureFile(t *testing.T, root, path string, data []byte) {
+	t.Helper()
+	full := filepath.Join(root, filepath.FromSlash(path))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // ---------- TeammateIdle branch tests ----------
 
 // Branch 1: assignment not complete, no blocker → re-wake same teammate
@@ -1420,22 +1849,26 @@ func TestHandleSubagentStopFallsBackWhenAssignmentMissing(t *testing.T) {
 // SubagentStop with !Ready inspection preserves the worktree.
 func TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection(t *testing.T) {
 	fix := newRuntimeFixture(t)
+	owner := "agent-missing-but-with-bogus-worktree"
 	fix.state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": "develop", "release_upstream": "origin/release", "bound_commit": "fixture"}
+	assignment := canonicalControllerFixture(t, fix, owner, "team-test", "TASK-039-06", "assignment-039-06", canonicalAssignmentOptions{
+		worktreePath:   "/path/that/does/not/exist",
+		branch:         "codex/req-039-bogus",
+		targetBranch:   "develop",
+		acceptedResult: true,
+	})
+	// The earlier attempt already preserved this Assignment. The new
+	// inspection is still not ready, so the Controller must preserve the same
+	// original worktree again and still advance the Runtime revision.
+	preserveFixtureCheckpoint(t, fix, assignment)
 	fix.persist(t)
 	snapshot := fix.snapshot(t)
 	loaded := &hookctx.LoadedContext{
+		PolicyContext:      policy.RuntimeContext{RuntimeID: canonicalFixtureRuntimeID},
 		BaselineGeneration: 1,
-		Assignments: []hookctx.AssignmentContext{{
-			AssignmentID: "assignment-039-06",
-			TaskID:       "TASK-039-06",
-			OwnerAgentID: "agent-missing-but-with-bogus-worktree",
-			State:        "done",
-			WorktreePath: "/path/that/does/not/exist",
-			Branch:       "codex/req-039-bogus",
-			TargetBranch: "develop",
-		}},
+		Assignments:        []hookctx.AssignmentContext{assignment},
 	}
-	guidance, updated, err := HandleSubagentStopForController(t.Context(), fix.root, snapshot, loaded, "SubagentStop", policy.Input{AgentID: "agent-missing-but-with-bogus-worktree"})
+	guidance, updated, err := HandleSubagentStopForController(t.Context(), fix.root, snapshot, loaded, "SubagentStop", policy.Input{AgentID: owner})
 	if err != nil {
 		t.Fatalf("HandleSubagentStop: %v", err)
 	}
@@ -1444,6 +1877,9 @@ func TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(guidance.Blocker), "not ready") {
 		t.Fatalf("blocker must reference inspection failure, got %q", guidance.Blocker)
+	}
+	if !strings.Contains(strings.ToLower(guidance.Blocker), "preserving worktree") {
+		t.Fatalf("not-ready blocker must preserve the original worktree and branch, got %q", guidance.Blocker)
 	}
 	if updated.Revision <= snapshot.Revision {
 		t.Fatalf("preserved checkpoint must still CAS-advance revision, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
@@ -1456,83 +1892,29 @@ func TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection(t *testing.T) {
 // SubagentStop with ready inspection must advance integration state.
 func TestHandleSubagentStopAdvancesIntegrationOnReadyInspection(t *testing.T) {
 	fix := newRuntimeFixture(t)
-	// Build a real git repository so Inspect can complete its checks.
-	if err := os.MkdirAll(filepath.Join(fix.root, ".claude"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	repo := fix.root
-	for _, args := range [][]string{
-		{"init", "--initial-branch=develop"},
-		{"config", "user.email", "test@example.com"},
-		{"config", "user.name", "Test"},
-		// Disable gpg signing so the commit hook doesn't fail in
-		// environments with a global commit.gpgsign=true (the harness
-		// CI/dev shells have a 1Password-backed signing agent that is
-		// not reachable inside the test).
-		{"config", "commit.gpgsign", "false"},
-		{"config", "tag.gpgsign", "false"},
-		{"checkout", "-b", "develop"},
-		{"commit", "--allow-empty", "-m", "initial"},
-	} {
-		if _, err := runGit(t, repo, args...); err != nil {
-			t.Fatalf("git %v: %v", strings.Join(args, " "), err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(repo, ".git/info/exclude"), []byte(".claude/\nwt/\ndocs/\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	bindFixtureWorkspace(t, fix)
-	// Commit all formal inputs, keeping only runtime output untracked/ignored.
-	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".claude/\nwt/\n"), 0600)
-	if out, err := runGit(t, repo, "add", "-f", "docs", ".gitignore"); err != nil {
-		t.Fatalf("%s %v", out, err)
-	}
-	if out, err := runGit(t, repo, "commit", "-m", "formal input baseline"); err != nil {
-		t.Fatalf("%s %v", out, err)
-	}
-	fix.addAgent("agent-039-06", "builder", "reported", "team-test", []string{"TASK-039-06"})
-	activation := filepath.Join(repo, ".claude/workgroups/REQ-039/team-test/activation.json")
-	if err := os.MkdirAll(filepath.Dir(activation), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(activation, []byte(`{"agent_id":"agent-039-06"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	fix.addTask("TASK-039-06", "review", []string{"agent-039-06"})
-	// Create a worktree with a branch that has commits.
 	wtPath := filepath.Join(repo, "wt")
+	assignment := canonicalControllerFixture(t, fix, "agent-039-06", "team-test", "TASK-039-06", "assignment-039-06", canonicalAssignmentOptions{
+		worktreePath:   wtPath,
+		branch:         "codex/req-039-bogus",
+		targetBranch:   "develop",
+		acceptedResult: true,
+	})
+	// Create a worktree with a branch that has commits.
 	if _, err := runGit(t, repo, "worktree", "add", "-b", "codex/req-039-bogus", wtPath, "develop"); err != nil {
 		t.Fatalf("worktree add: %v", err)
 	}
 	if _, err := runGit(t, wtPath, "commit", "--allow-empty", "-m", "feature commit"); err != nil {
 		t.Fatalf("commit in worktree: %v", err)
 	}
-	// Create a fake completion report so Inspect passes the report check.
-	reportDir := filepath.Join(repo, ".claude", "evidence", "loop-REQ-039", "g1", "assignments", "assignment-039-06")
-	if err := os.MkdirAll(reportDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	report := `{"message_type":"completion_report","assignment_id":"assignment-039-06"}`
-	if err := os.WriteFile(filepath.Join(reportDir, "completion.json"), []byte(report), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	fix.state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": "develop", "release_upstream": "origin/release", "bound_commit": "fixture"}
 	fix.persist(t)
 	snapshot := fix.snapshot(t)
 	loaded := &hookctx.LoadedContext{
-		PolicyContext:      policy.RuntimeContext{RuntimeID: "loop-REQ-039"},
+		PolicyContext:      policy.RuntimeContext{RuntimeID: canonicalFixtureRuntimeID},
 		BaselineGeneration: 1,
-		Assignments: []hookctx.AssignmentContext{{
-			AssignmentID: "assignment-039-06",
-			TaskID:       "TASK-039-06",
-			OwnerAgentID: "agent-039-06",
-			State:        "done",
-			WorktreePath: wtPath,
-			Branch:       "codex/req-039-bogus",
-			TargetBranch: "develop",
-		}},
+		Assignments:        []hookctx.AssignmentContext{assignment},
 	}
 	guidance, updated, err := HandleSubagentStopForController(t.Context(), fix.root, snapshot, loaded, "SubagentStop", policy.Input{AgentID: "agent-039-06"})
 	if err != nil {
@@ -1542,7 +1924,7 @@ func TestHandleSubagentStopAdvancesIntegrationOnReadyInspection(t *testing.T) {
 		t.Fatalf("ready SubagentStop must CAS-advance revision, before=%d after=%d guidance=%+v", snapshot.Revision, updated.Revision, guidance)
 	}
 	joined := strings.ToLower(strings.Join(guidance.Integration, " "))
-	if !strings.Contains(joined, "worktree integrated") {
+	if !strings.Contains(joined, "source branch integrated") {
 		t.Fatalf("ready integration guidance must surface checkpoint, got %#v", guidance.Integration)
 	}
 	if strings.Contains(joined, "cleanup") && !strings.Contains(joined, "acknowledge") {
@@ -1706,49 +2088,19 @@ func TestFreshCheckoutSessionStartIsNotBlocked(t *testing.T) {
 
 func TestPostMergeModeChecksCandidateThroughController(t *testing.T) {
 	fix := newRuntimeFixture(t)
-	// Build a real git repository so Inspect can complete its checks.
-	if err := os.MkdirAll(filepath.Join(fix.root, ".claude"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	repo := fix.root
-	for _, args := range [][]string{
-		{"init", "--initial-branch=develop"},
-		{"config", "user.email", "test@example.com"},
-		{"config", "user.name", "Test"},
-		// Disable gpg signing so the commit hook doesn't fail in
-		// environments with a global commit.gpgsign=true (the harness
-		// CI/dev shells have a 1Password-backed signing agent that is
-		// not reachable inside the test).
-		{"config", "commit.gpgsign", "false"},
-		{"config", "tag.gpgsign", "false"},
-		{"checkout", "-b", "develop"},
-		{"commit", "--allow-empty", "-m", "initial"},
-	} {
-		if _, err := runGit(t, repo, args...); err != nil {
-			t.Fatalf("git %v: %v", strings.Join(args, " "), err)
-		}
-	}
-	bindFixtureWorkspace(t, fix)
-	// Commit all formal inputs, keeping only runtime output untracked/ignored.
-	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".claude/\nwt/\n"), 0600)
-	if out, err := runGit(t, repo, "add", "-f", "docs", ".gitignore"); err != nil {
-		t.Fatalf("%s %v", out, err)
-	}
-	if out, err := runGit(t, repo, "commit", "-m", "formal input baseline"); err != nil {
-		t.Fatalf("%s %v", out, err)
-	}
-	fix.addAgent("agent-039-06", "builder", "reported", "team-test", []string{"TASK-039-06"})
-	activation := filepath.Join(repo, ".claude/workgroups/REQ-039/team-test/activation.json")
-	if err := os.MkdirAll(filepath.Dir(activation), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(activation, []byte(`{"agent_id":"agent-039-06"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	fix.addTask("TASK-039-06", "review", []string{"agent-039-06"})
-	// Create a worktree with a branch that has commits.
 	wtPath := filepath.Join(repo, "wt")
+	counter := filepath.Join(t.TempDir(), "check-count")
+	assignment := canonicalControllerFixture(t, fix, "agent-039-06", "team-test", "TASK-039-06", "assignment-039-06", canonicalAssignmentOptions{
+		worktreePath:         wtPath,
+		branch:               "codex/req-039-bogus",
+		targetBranch:         "develop",
+		integrationCheckMode: "post_merge",
+		closingContract:      true,
+		requiredChecks:       []string{fmt.Sprintf("test -f internal/candidate.txt && printf 'checked\\n' >> %q", counter)},
+		acceptedResult:       true,
+	})
+	// Create a worktree with a branch that has commits.
 	if _, err := runGit(t, repo, "worktree", "add", "-b", "codex/req-039-bogus", wtPath, "develop"); err != nil {
 		t.Fatalf("worktree add: %v", err)
 	}
@@ -1756,42 +2108,25 @@ func TestPostMergeModeChecksCandidateThroughController(t *testing.T) {
 		t.Fatalf("commit in worktree: %v", err)
 	}
 	// Only the candidate has this file. Pre-merge execution would fail.
-	if err := os.WriteFile(filepath.Join(wtPath, "candidate.txt"), []byte("candidate"), 0644); err != nil {
+	if err := os.MkdirAll(filepath.Join(wtPath, "internal"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runGit(t, wtPath, "add", "candidate.txt"); err != nil {
+	if err := os.WriteFile(filepath.Join(wtPath, "internal", "candidate.txt"), []byte("candidate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(t, wtPath, "add", "internal/candidate.txt"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runGit(t, wtPath, "commit", "-m", "candidate-only test"); err != nil {
-		t.Fatal(err)
-	}
-	counter := filepath.Join(t.TempDir(), "check-count")
-	// Create a fake completion report so Inspect passes the report check.
-	reportDir := filepath.Join(repo, ".claude", "evidence", "loop-REQ-039", "g1", "assignments", "assignment-039-06")
-	if err := os.MkdirAll(reportDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	report := `{"message_type":"completion_report","assignment_id":"assignment-039-06"}`
-	if err := os.WriteFile(filepath.Join(reportDir, "completion.json"), []byte(report), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	fix.persist(t)
 	snapshot := fix.snapshot(t)
 	loaded := &hookctx.LoadedContext{
-		PolicyContext:      policy.RuntimeContext{RuntimeID: "loop-REQ-039"},
+		PolicyContext:      policy.RuntimeContext{RuntimeID: canonicalFixtureRuntimeID},
 		BaselineGeneration: 1,
-		Assignments: []hookctx.AssignmentContext{{
-			AssignmentID:         "assignment-039-06",
-			TaskID:               "TASK-039-06",
-			OwnerAgentID:         "agent-039-06",
-			State:                "done",
-			WorktreePath:         wtPath,
-			Branch:               "codex/req-039-bogus",
-			TargetBranch:         "develop",
-			IntegrationCheckMode: "post_merge",
-			RequiredChecks:       []string{fmt.Sprintf("test -f candidate.txt && printf 'checked\\n' >> %q", counter)},
-		}},
+		Assignments:        []hookctx.AssignmentContext{assignment},
 	}
 	guidance, updated, err := HandleSubagentStopForController(t.Context(), fix.root, snapshot, loaded, "SubagentStop", policy.Input{AgentID: "agent-039-06"})
 	if err != nil {
@@ -1805,7 +2140,7 @@ func TestPostMergeModeChecksCandidateThroughController(t *testing.T) {
 		t.Fatalf("delivery check did not execute once: %q %v", counterBytes, readErr)
 	}
 	joined := strings.ToLower(strings.Join(guidance.Integration, " "))
-	if !strings.Contains(joined, "worktree integrated") {
+	if !strings.Contains(joined, "source branch integrated") {
 		t.Fatalf("ready integration guidance must surface checkpoint, got %#v", guidance.Integration)
 	}
 	if strings.Contains(joined, "cleanup") && !strings.Contains(joined, "acknowledge") {
@@ -1816,10 +2151,13 @@ func TestPostMergeModeChecksCandidateThroughController(t *testing.T) {
 func TestS9RepairNextActionKeepsNativeCandidateWithMain(t *testing.T) {
 	state := map[string]any{"review": map[string]any{"investigation": map[string]any{"status": "contract_approved"}, "repair": map[string]any{"status": "repairing"}}}
 	next := repairNextAction(state, "fixing")
-	for _, want := range []string{"private professional Plan/Result", "SubagentStop", "Main immediately", "Do not redispatch", "Existing frozen executions"} {
+	for _, want := range []string{"private professional Plan/Result", "SubagentStop", "Main immediately", "Do not redispatch", "native Builders use the supplied brief", "runtime workspace integrate"} {
 		if !strings.Contains(next, want) {
 			t.Fatalf("missing native recovery instruction %q: %s", want, next)
 		}
+	}
+	if strings.Contains(next, "Existing frozen executions") {
+		t.Fatalf("native recovery must not require the retired frozen-execution startup protocol: %s", next)
 	}
 }
 
