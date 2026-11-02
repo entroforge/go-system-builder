@@ -6,6 +6,9 @@
 > **H3**(S8 因果闭合链)、**H17**(审计行重复)、**H18**(review-plan 空路径)、**R05/H1**(S9 source gap)、
 > **H7 #22/#23** 归因、**H16** 定位、**M1** 状态。
 >
+> 收尾的全量复跑又更正了 **3 条测试级判定**(H5 / C-1 / D-5):它们一度被误判为「过时测试」,
+> 实际是**本轮重构引入的回归缺陷**。这 3 条**测试一条未改、保持红**,只记录。
+>
 > **每个被影响的条目下方都加了「🔄 本轮复核修订」块**,写明推翻理由与处置。
 > 阶段总账见 **[`TEST-ADAPTATION-REPORT.md`](./TEST-ADAPTATION-REPORT.md)**;
 > 本报告的 CI 车道结论(§7)与接缝矩阵(§6.4)未被推翻,仍然有效。
@@ -55,6 +58,7 @@
 | **契约漂移** | `INV-013`、`INV-017` 陈旧;`forbidden_events` 的运行时消费者被**本次重构删除** |
 | **HIGH 级产品缺陷** | **17 条**。H1–H9(逐 stage)+ **H10 S7 出口被吞**、**H11 恢复命令对损坏 Runtime 不可用**、**H12 S6 范围校验被删**(接缝)+ **H14 派发改写 TASK 事实**、**H15 S9 schema 拒历史记录**、**H16 Inspect 缺 Worktree/Branch**、**H17 审计行重复**、**H18 review-plan 路径为空**(根因归组)+ MED: H13、M1–M3 |
 | **🔄 复核更正(下一阶段)** | 上述 17 条里,**H3、H17、H18 被推翻**,**R05/H1 归因被推翻**,**H7 #22/#23 归因被推翻**,**H16 定位修正(结论维持)**,**M1 改为未决/需 owner 裁定**。⇒ **维持的高层缺陷为 12 条**(H2、H4、H5、H6、H8、H9、H10、H11、H12、H14、H15、H16),其余按 §3 各条的「🔄 本轮复核修订」块与 §10.1 表执行 |
+| **🔄 复核更正(收尾全量复跑)** | 适配阶段一度把 **H5** 对应的 `TestContractAuthorityUsesOriginalS2RegisteredDesign` 判成 STALE(理由是「代码删了校验」)—— 那是**拿代码现状当判据**。已更正为 **DEFECT**,H5 结论**维持**(见 §3 H5 条目下的修订块)。同类更正共 3 条,另两条是 **C-1**(`TestDefaultProgressShadowRecordsWithoutContext`)与 **D-5**(`TestS9ReceptionFeedbackNewExecutionKeepsOldFailureHistorical` 的 `/author` 子测试),三条**父提交均 PASS**,均为本轮重构回归 |
 
 ### 0.2 最重要的结论:失败几乎全是「重构引入」,不是「测试过时」
 
@@ -301,6 +305,24 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 | 影响 | 多控制面风险。同一次 diff 还删掉了两个**非 hash** 的结构校验:`reflect.DeepEqual(binding, p.Binding)` 与 `BuildContracts` 冻结包比对 |
 | 证据 | `internal/cli/design_answer_e2e_test.go:312` 失败:`other root granted S3 authority` |
 | 备注 | 该函数的文档注释仍自称"checks supplied frozen inputs against original facts",**已失真** |
+
+> **🔄 本轮复核修订(见 `TEST-ADAPTATION-REPORT.md`)—— 本条结论维持,测试级判定更正**
+>
+> H5 的结论**维持**:蓝图 `L4-state-transition-core.md:31`/`:339` 仍要求权威根绑定,校验被删就是缺陷。
+> 但「按 blueprint 适配测试」阶段一度把 `TestContractAuthorityUsesOriginalS2RegisteredDesign`
+> 判成 **STALE**,理由是「`ValidateContractPacket` 已删 `fileview.ValidateAuthority` 与逐文件 SHA 比对」
+> —— 这是**拿代码现状当判据**:代码删了校验,恰恰说明**缺陷存在**,而不是测试过时。
+>
+> **更正后的证据**:`fileview.ValidateAuthority` **函数本身仍在**(`internal/fileview/contracts.go:42`),
+> 在另外 12 处入口仍被调用(`internal/submission/service.go:74`、`internal/hookctx/loader.go:1355`、
+> `internal/runtime/contract_sources.go:41`、`internal/cli/worktree.go:56` 等),
+> **唯独 S3 契约包这一处丢失** ⇒ 单点丢失,不是全局移除。
+> 蓝图 `:31`/`:339` 仍是**要求类**措辞 ⇒ 判 **DEFECT**。
+> 父提交 `9bf73ca` 实测该测试 **PASS** ⇒ 本轮重构回归。
+>
+> **处置**:测试**一条未改、保持红**,只记录。
+> (该测试第 3 条断言「改写设计文件必须拒收」依赖逐字节散列比对,按 `L4-state-transition-core.md` §7
+> 「不计算、登记或校验散列」本身已过时;但第 2 条断言是蓝图明文要求,不改变整体判定。)
 
 ### H6 — S7 的 static/behavior 波次门被整体删除 `[M]`
 

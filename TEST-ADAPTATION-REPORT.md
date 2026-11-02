@@ -11,10 +11,12 @@
 
 | 判定 | 条数 | 处置 |
 |---|---|---|
-| **STALE(过时测试)** | **218** | **已改写测试** —— 断言改为蓝图要求的新行为 |
-| **DEFECT(缺陷)** | **86** | **只记录** —— 蓝图仍要求该行为,生产代码违反 |
+| **STALE(过时测试)** | **215** | **已全部改写并验证通过** —— 断言改为蓝图要求的新行为 |
+| **DEFECT(缺陷)** | **89** | **只记录** —— 蓝图仍要求该行为,生产代码违反 |
 | **CONFLICT(冲突)** | **7** | **只记录** —— 蓝图自相矛盾,需 owner 裁定 |
 | **未决** | **38** | 记录并说明缺什么证据 |
+
+**STALE 适配完成度:215/215 —— 全部改写并验证通过,没有「判 STALE 却仍红」的条目。** 失败面从 **345** 降到 **125**,剩下的每一条都带判定(DEFECT / CONFLICT / 未决),按本轮约定**只记录、不动生产代码**。
 
 ### 红线核查
 
@@ -24,7 +26,7 @@
   ├─ 报告文档 (*.md): 3 个
   └─ 其它: 0 个
 生产代码违规: 0 个  ← 必须为 0
-统计: 124 files changed, 6262 insertions(+), 1608 deletions(-)
+统计: 125 files changed, 6758 insertions(+), 1751 deletions(-)
 未提交改动: 2 个
 ```
 
@@ -37,28 +39,27 @@
 
 | 包 | 通过 | 仍失败 | 失败子测试 |
 |---|---|---|---|
-| `cli` | 995 | 118 | 78 |
+| `cli` | 1079 | 114 | 80 |
 | `integration` | 80 | 2 | 0 |
 | `investigation` | 83 | 2 | 0 |
 | `recovery` | 10 | 2 | 0 |
 | `req039` | 93 | 5 | 0 |
 
-**合计仍失败 129 个顶层测试。**
+**合计仍失败 125 个顶层测试。**
 
-> **校正**:这次全量跑在 14:05 启动,其后还合并了 4 个提交(`2e02dfc`、`088bc77`、`e566950` 及 `51b94ae`),这些提交已单独定向复跑通过(8 个测试全绿)。把它们计入后,**当前实际仍失败约 121 个**,即 **170 → 121**。剩余 STALE 仍红只剩 `internal/cli/controller_test.go` 桶的 5 个测试(`TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle`、`TestHandleSubagentStopAdvancesIntegrationOnReadyInspection`、`TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection`、`TestPostMergeModeChecksCandidateThroughController`)——`TestS9RepairNextActionKeepsNativeCandidateWithMain` 已改写通过;上述两个「ready SubagentStop 必须 CAS 推进 revision」的夹具仍差一步(检查未进入 ready 态),改写未完成,保持红。
+> **STALE 已全部适配**:总账 215 条 STALE 全部完成改写并验证通过,**不再有「判 STALE 却仍红」的测试**。收尾时最后 2 条(`TestHandleSubagentStopAdvancesIntegrationOnReadyInspection`、`TestPostMergeModeChecksCandidateThroughController`)的根因是**夹具仍是过时形状**:(1)agent 行的 `activation_ref` 指向的 activation 信封从未落盘,`hookctx.LoadFull` 缺它会 fail-hard,于是 `acknowledgeVerifiedIntegration` 报 `integration failed: read activation`;(2)`bound_req.workspace` 带着已退役的 `bound_commit` 字段(schema `additionalProperties:false`,`workspace.Binding` 只有 `project_root`/`dev_branch`/`release_upstream`),post-mutation 快照校验因此失败。两处夹具都改回 blueprint 的 canonical 形状后,**revision CAS 前进 / Integration 指引含 worktree integrated / 不得声称 cleanup** 这三条原断言全部保留并通过。
 
-> **所有仍失败的测试都有判定**:本次跑出来的失败里,总账外为 **0** 条。
+> **收尾全量复跑又揪出 3 条漏判**:把 `final4` 的结果与总账交叉核验后,发现 3 条被判 STALE 的测试仍红(`TestContractAuthorityUsesOriginalS2RegisteredDesign`、`TestDefaultProgressShadowRecordsWithoutContext`、`TestS9ReceptionFeedbackNewExecutionKeepsOldFailureHistorical`)。复核确认它们**不是过时测试,而是重构 `d0d948a` 引入的回归缺陷** —— 前轮把「代码删掉了某项校验」当成「测试过时」,正是**拿代码现状当判据**;三条在父提交 `9bf73ca` 实测全 PASS。本轮已把这 3 条改判为 **DEFECT**(H5 / C-1 / D-5),**测试一条未改、保持红**,详见 §7.1。
+
+> **所有仍失败的测试都有判定**:本次跑出来的失败里,总账外为 **0** 条 —— 剩下的全部是 DEFECT / CONFLICT / 未决,即**蓝图仍要求该行为而生产代码未满足**,按本轮约定只记录、不动生产代码。
 ### 仍失败的测试清单
 
-<details><summary><code>cli</code> — 118 个</summary>
+<details><summary><code>cli</code> — 114 个</summary>
 
-- `TestAC005_MilestonePersistsQualityGate`
-- `TestAC006_SubagentStopEmitsIntegrationGuidance`
-- `TestAC008_CompactRecoversMilestoneFromSnapshot`
 - `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration`
 - `TestActualMainIntegrationBarrierCleanupAfterEarlyReturn`
-- `TestBuildGuidanceS9UsesOriginalQuestionnairesAndLifecycle`
 - `TestBuilderConventionsOwnedExampleSurvivesActualVerifiedIntegration`
+- `TestBuilderReceiptOriginalFailureReworkAndCurrentResubmission`
 - `TestCT03911_DualPassDocumentVerificationCommitsTR003`
 - `TestCT03915_S11StopsAutoAdvance`
 - `TestCT03920_BuilderCompletionDurableRef`
@@ -68,13 +69,12 @@
 - `TestCheckpointRejectsOlderPairAndForgedReceptionFacts`
 - `TestConfiguredPressureOriginalReportWriterRegistrationAndActualMainIntegration`
 - `TestContractAuthorityUsesOriginalS2RegisteredDesign`
+- `TestDefaultProgressShadowRecordsWithoutContext`
 - `TestExplicitAssignmentContextRejectsMissingSourcesWithoutAuthorOverwrite`
-- `TestHandleSubagentStopAdvancesIntegrationOnReadyInspection`
-- `TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection`
+- `TestIndependentReviewRejectsCorruptSourceWithoutReception`
 - `TestLastFinalPreparesImpactBeforeIndependentCleanup`
 - `TestMainCheckReuseObservationIsReadonlyAndCannotSkipRequiredChecks`
-- `TestMainPlanningReadCycleConsumesAcceptedS2Followup`
-- `TestMainReviewPlanQuestionnaireStopDoesNotPrepareAndInvalidSaveReturnsFeedback`
+- `TestMainOrdinaryReadAndNonCheckpointStatusProgressWire`
 - `TestMainS2S5MilestoneDirectoriesProjectActualReadSources`
 - `TestMainS6LockedReadCategoriesResolveRegisteredCurrentFiles`
 - `TestNativeBuilderConventionsFixedReplayAndSourceDrift`
@@ -111,7 +111,6 @@
 - `TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource`
 - `TestPendingInitializationAcceptsAbsentReviewNumberAndLegacyZero`
 - `TestPlanningObserverUsesAnswerAndBoundCommitWithoutRepeatingUnchangedSave`
-- `TestPostMergeModeChecksCandidateThroughController`
 - `TestProgressPacketS9SkipsLegacyCoverageWithoutCache`
 - `TestPublicS9StopIdlePreservesOriginalResultState`
 - `TestRuntimeInvestigationContractApproveCLIHandsOffToS9`
@@ -120,6 +119,7 @@
 - `TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit`
 - `TestS4AcceptedDescriptionChangeKeepsCompletionButCannotRegisterChangedMaterials`
 - `TestS5ReturnToS6ProvidesPreparationInsteadOfWaitingForUnstartedBuilder`
+- `TestS5WorkerReadProgressAndReceivedPeerWaitWire`
 - `TestS6ClosingContractCLISeparatesOwnedCompletionFromMain`
 - `TestS6IntegrationWithoutMainStartKeepsOriginalBatchGate`
 - `TestS6NativeClosingContextKeepsAssessmentEditableAcrossRetry`
@@ -130,10 +130,9 @@
 - `TestS7ExistingEditedManifestRecoversRegistrationWithoutOverwrite`
 - `TestS7IncompleteNativeReturnHandsOriginalResponsibilityToMain`
 - `TestS7LifecycleListenerProjectsPathsWithoutCompletingResponsibility`
-- `TestS7NativeListenerReportsOriginalFieldErrorWithoutDenyingTool`
-- `TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave`
 - `TestS7OptionalProgressUnknownNativeActorIsSilent`
-- `TestS7PublicHookReceivesOriginalWithoutLegacyActivationRoute`
+- `TestS7OriginalAnswerReachesConsumerWithOldS9Route`
+- `TestS7PartialP0NativeReturnReachesS8Intake`
 - `TestS7SharedOriginalCannotBeBorrowedByUnboundNativeWorktree`
 - `TestS8NativeLifecycleDeliversExactQuestionnaireInHookEnvelope`
 - `TestS8ObservedContractPassiveSkipKeepsExplicitSaveAndChangedValidation`
@@ -162,14 +161,15 @@
 - `TestS9ReceptionFeedbackNewExecutionKeepsOldFailureHistorical`
 - `TestS9RepairDispatchExplicitSavePreparesNativeBriefAndPreservesOriginalSources`
 - `TestS9RepairDispatchQuestionnaireResponsibilityAndS8Isolation`
-- `TestS9RepairNextActionKeepsNativeCandidateWithMain`
 - `TestS9RepairVerifierDispatchQuestionnaireOneIndependentContractOwner`
 - `TestS9RepairVerifierDispatchQuestionnaireOriginalPhasesAndResponsibility`
 - `TestS9TaskIntegratePreservesAcceptedPlanWhenCandidateIsMissing`
 - `TestS9VerifierRegistrationWaitsForTargetedReadiness`
 - `TestSavedHypothesisResultHookDoesNotTreatUnissuedTeammatePathAsCurrent`
 - `TestSavedHypothesisResultHookRejectsUnissuedPathWithoutRuntimeWrite`
+- `TestTaskScopeOriginalS4SaveThroughNativeAssignmentAndBrief`
 - `TestUnavailablePolicyDoesNotDenyAndKeepsGraphRecoveryVisible`
+- `TestWorkspaceBackendCoreLaunchCommitAndOriginalVerifiedIntegration`
 
 </details>
 
@@ -210,12 +210,12 @@
 |---|---|---|---|---|---|---|
 | D1 | 缺陷复核 H1/H7/H15/H16/H18/M1 | 25 | 14 | 10 | 0 | 1 |
 | D2 | 缺陷复核 H9/H14/H16/H17/H7/M1 | 25 | 5 | 20 | 0 | 0 |
-| D3 | 缺陷复核 H1/H14/H15/H16/H18 | 26 | 12 | 8 | 0 | 6 |
+| D3 | 缺陷复核 H1/H14/H15/H16/H18 | 26 | 11 | 9 | 0 | 6 |
 | L1 | 长尾 | 39 | 23 | 5 | 1 | 10 |
 | L2 | 长尾 | 40 | 23 | 16 | 0 | 1 |
-| L3 | 长尾 | 40 | 17 | 18 | 2 | 3 |
+| L3 | 长尾 | 40 | 16 | 19 | 2 | 3 |
 | L4 | 长尾 | 49 | 36 | 0 | 1 | 12 |
-| L5 | 长尾 | 14 | 14 | 0 | 0 | 0 |
+| L5 | 长尾 | 14 | 13 | 1 | 0 | 0 |
 | INV | internal/investigation | 21 | 19 | 2 | 0 | 0 |
 | SYS | 接缝与系统层 | 26 | 17 | 4 | 0 | 5 |
 
@@ -253,7 +253,7 @@
 | `TestS9RepairLeadTargetedPathUsesRegisteredIndependentAssignment` |  | 20 | repair_lead_questionnaire_test.go |
 | `TestS9RepairLeadTargetedReminderUsesIndexedProjection` |  | 17 | repair_lead_answer_test.go |
 
-### 桶 D3 — 缺陷复核 H1/H14/H15/H16/H18(12 条)
+### 桶 D3 — 缺陷复核 H1/H14/H15/H16/H18(11 条)
 
 | 测试 | 源文件:行 | 蓝图依据 | 处置 |
 |---|---|---|---|
@@ -268,7 +268,6 @@
 | `TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave` | questionnaire_observer_e2e_test.go | 12 | 1 |
 | `TestS9EntryAssemblyPreservesNewPlanFailureAndOriginalStopFailure` | s9_entry_assembly_test.go | 22 | 1 |
 | `TestS9EntryAssemblyPreservesParallelResponsibilitiesAndWorker` | s9_entry_assembly_test.go | 21 | 1 |
-| `TestS9ReceptionFeedbackNewExecutionKeepsOldFailureHistorical` | s9_reception_feedback_contract_test.go | 23 | 1 |
 
 ### 桶 L1 — 长尾(23 条)
 
@@ -326,13 +325,12 @@
 | `TestS9NativeLongPacketPathsRemainConsistent` | internal/cli/repair_questionnaire_nohash_test.go:92 | `L4-workflow-convergence.md:263`「路径/回执/Handoff 均不用散列生成、登记或验真」;`:212`「**工作区清理单独处理**」 | 改写:路由行携带已登记 brief 坐标,断言与 packet 推导一致 |
 | `TestS9OriginalContractPublicMinimalPlan` | internal/cli/s9_original_contract_public_test.go:13 | `L3-S9-repair.md:238`「**字段缺失时保留原稿,反馈实际文件与字段**」;`:301`「新旧题都允许……直接接收」 | 改写:写入当前扁平专业形状(plan+red_checks+proposed_paths)后断言回执 Accepted |
 
-### 桶 L3 — 长尾(17 条)
+### 桶 L3 — 长尾(16 条)
 
 | 测试 | 源文件:行 | 蓝图依据 | 处置 |
 |---|---|---|---|
 | `TestActionsCatalogShowsCanonicalReviewRepairLoop` | internal/cli/action_catalog_test.go:26 | 1 | `L4-workspace-execution-profiles.md:9`「旧 workspace prepare／launch、bootstrap、session 与 lease 只服务原冻结记录;不能变成新任务的必需前置」;`:189`「已登记执行的具体命令与 runner 参数集中在[冻结执行恢复参考]」 |
 | `TestActivatedCheckpointRecoveryRejectsTamperingAndWrongAssignment` | internal/cli/checkpoint_recovery_test.go:53-61 | 3 | `L4-hook-acceptance-checklist.md:15`「实际 Hook 路径不计算、登记或验证任何散列……历史值可按原记录读取但不重算、重验或登记到新事实」;`:88`「旧散列不作为例外」 |
-| `TestDefaultProgressShadowRecordsWithoutContext` | internal/cli/work_progress_e2e_test.go:102-125 | 36 | 路径=`L4-procedure-reduction.md:195`「当前采样默认 shadow,即记录诊断而不向模型发送提醒」;类型化诊断缺失=DEFECT(C-1) |
 | `TestFindingSupplementOriginalCLIDoesNotRequireDigest` | internal/cli/finding_supplement_nohash_test.go:41-43 | 4 | `L4-workflow-convergence.md:250`「原始专业材料或工具自然输出不因含散列文字被审查或删改;框架不能将这些文字提取为散列资格或机器证明」;`:505`「用户专业内容不因出现散列文字而被删除」 |
 | `TestNativeS6StartRequiresExactResponsibility` | internal/cli/native_s6_guidance_delivery_test.go:34 | 8 | `L4-hook-acceptance-checklist.md:15`「实际 Hook 路径不计算、登记或验证任何散列」;`internal/cli/native_s6.go:381` 现文案「save Result in your own worktree」 |
 | `TestPendingIntegrationsSurviveRestartAndIncludeCleanup` | internal/cli/workspace_pending_test.go:16-42 | 40 | `L4-worktree-governance.md:140`「历史已有坐标仅保留为旧数据,不以其匹配作为继续的资格」 |
@@ -389,11 +387,10 @@
 | `TestWorkspaceBackendCoreInstallsFixedRoleWithoutChangingActivation` |  | 37 | 同上 |
 | `TestWorkspacePlanRejectsAddingInputsToPreparedExecution` |  | 38 | 同上 |
 
-### 桶 L5 — 长尾(14 条)
+### 桶 L5 — 长尾(13 条)
 
 | 测试 | 源文件:行 | 蓝图依据 | 处置 |
 |---|---|---|---|
-| `TestContractAuthorityUsesOriginalS2RegisteredDesign` | internal/cli/design_answer_e2e_test.go:312 | 10 | 同上 L4-state-transition-core.md:163 + L3-S3-contracts.md:110/589(`ValidateContractPacket` 已删 `fileview.ValidateAuthority` 与逐文件 SHA 比对) |
 | `TestDesignAnswerOriginalPairRecovery` | internal/cli/design_answer_e2e_test.go:281 | 11 | 同上(L3-S2 设计答卷对不再以散列配对) |
 | `TestHumanReleaseQuestionnaireNamesUnverifiablePackage` | internal/cli/audit_questionnaire_test.go:266 | 6 | L3-S11-release-gate.md:147 「当前申请的位置由 Runtime、代际、已登记 S10 原发布审计报告及其实际上游关联、既有阶段入口修订共同定位。**不生成、累计或兼容读取审查轮数**」 |
 | `TestS3ContractPipelineE2E` | internal/cli/contracts_e2e_test.go:144 | 9 | L4-state-transition-core.md:163 「S0～S11 的自然 Hook 及原消费者**不计算、登记或校验散列**」；L3-S3-contracts.md:110 「登记时间及实际责任关联由原消费者维护，**不计算、登记或校验摘要**」；L3-S3-contracts.md:589 「Hook **不计算、登记或校验 fingerprint、SHA 或其他散列**」 |
@@ -454,6 +451,24 @@
 | `TestTaskIntegrateConflictPreservesWorktree` | tests/system/req039/task_integrate_test.go:118 | 15 | 同 #4 |
 | `TestTaskIntegrateMergesAcknowledgesAndCleansWorktree` | tests/system/req039/task_integrate_test.go:60 | 14 | 同 #4 |
 
+### 3.9 收尾:最后 2 条 STALE 的根因与修复(本轮最后一步)
+
+前 216 条 STALE 已在前面的提交里改写并验证通过。最后卡住的 2 条同属`internal/cli/controller_test.go` 的 canonical Controller 夹具,**不是断言过时,而是夹具本身还留着两处重构前的形状**:
+
+1. **activation 信封从未落盘**。`addAgent` 给 agent 行盖了 `activation_ref: .claude/workgroups/REQ-039/<team>/activation.json`,但夹具只写了同目录的 `manifest.json`,没写 `activation.json`。`hookctx.LoadFull` → `loadActivation` 对缺失的信封 **fail-closed**,于是 `acknowledgeVerifiedIntegration` 拿到 `read activation: no such file or directory`,被包装成 `integration failed: ...` —— **集成其实已经 verify 了**,挂在「确认」这一步,revision 自然不前进。
+2. **`bound_req.workspace` 带着已退役的 `bound_commit`**。Runtime schema 对 `bound_req.workspace` 是 `additionalProperties: false`,`workspace.Binding` 只有 `project_root` / `dev_branch` / `release_upstream` 三项,所以 post-mutation 快照校验报 `additional properties 'bound_commit' not allowed`。该字段其实是死代码 —— `canonicalControllerFixture` 内部的 `bindFixtureWorkspace` 早已写好 canonical 绑定,测试随后又用旧形状把它盖掉了。
+
+修复只动夹具,断言一条未减:
+
+| 测试 | 夹具改动 | 保留的原断言 |
+|---|---|---|
+| `TestHandleSubagentStopAdvancesIntegrationOnReadyInspection` | `canonicalControllerFixture` 补 activation 信封;删掉 `bound_req.workspace` 的 `bound_commit` 覆盖、改用夹具已写入的 canonical 绑定 | revision CAS 前进 / Integration 指引含 worktree integrated / 不得声称 cleanup |
+| `TestPostMergeModeChecksCandidateThroughController` | 同一处 `canonicalControllerFixture` 补 activation 信封 | 检查恰好执行一次 / revision CAS 前进 / Integration 指引含 worktree integrated / 不得声称 cleanup |
+
+顺带把同族夹具里同样残留的 `bound_commit` 覆盖行删掉(`TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection`,该行本就被后面的 `bindFixtureWorkspace` 覆盖,属死代码)。
+
+> **注意**:最终账目是 **215 条 STALE**,不是 218 条 —— 收尾复跑把另外 **3 条**(`TestContractAuthorityUsesOriginalS2RegisteredDesign`、`TestDefaultProgressShadowRecordsWithoutContext`、`TestS9ReceptionFeedbackNewExecutionKeepsOldFailureHistorical`)改判为 DEFECT,理由见 §7.1。**这 3 条不是过时测试**,所以本节「STALE 改写清单」不含它们。
+
 ## 4. DEFECT 记录(只记录,生产代码一行未动)
 
 以下测试**断言的行为仍是蓝图要求**,是代码违反了蓝图。它们本轮**没有**被改写,
@@ -495,7 +510,7 @@
 - `TestNativeS9UnrecordedMergePreservesUnknownAndWorktree` — 24
 - `TestS9TaskIntegratePreservesAcceptedPlanWhenCandidateIsMissing` — 25
 
-### 桶 D3(8 条)
+### 桶 D3(9 条)
 
 - `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration` — integration_observation_e2e_test.go — 4
 - `TestActualMainIntegrationBarrierCleanupAfterEarlyReturn` — integration_observation_e2e_test.go — 5
@@ -505,6 +520,7 @@
 - `TestNativeS9OriginalCandidateReadsHistoricalMachineValues` — native_s9_candidate_historical_projection_test.go — 11
 - `TestNativeS9OriginalFinalRecoveryDoesNotReopenLivePlanOrPrivateInput` — native_execution_return_test.go — 7
 - `TestS9ReceptionFeedback` — L3-S9:238 + native_s9_original.go 的 pendingResult() 短路 — 并入 R05 产品缺陷
+- `TestS9ReceptionFeedbackNewExecutionKeepsOldFailureHistorical` — internal/cli/s9_reception_feedback_contract_test.go:16-88 — `blueprint/l3-stages/L3-S9-repair.md:238`「文件不存在、草稿未就绪或字段缺失时**保留原稿,反馈实际文件与字段**」;`:240` 免拒收清单只含 `red_checks`、证据引用、`proposed_paths`
 
 ### 桶 L1(5 条)
 
@@ -533,9 +549,10 @@
 - `TestS7LifecycleListenerProjectsPathsWithoutCompletingResponsibility` — internal/cli/s7_lifecycle_listener_test.go:98 — `L4-workflow-convergence.md:225`「S7/S8/S9 共用 Pre 观察、成功 Post 和 Stop 兜底的接收语义;**只定位当前责任与原卷、返回接收或具体缺项**」
 - `TestS9VerifierRegistrationWaitsForTargetedReadiness` — internal/cli/s9_dispatch_readonly_test.go:31 — `L3-S9-repair.md:72`「独立复验与 S7 后继 \
 
-### 桶 L3(18 条)
+### 桶 L3(19 条)
 
 - `TestCanonicalS6WorkspaceReworkRequiresNamedAssignmentRevision` — internal/cli/s6_rework_revision_e2e_test.go:169 — 27
+- `TestDefaultProgressShadowRecordsWithoutContext` — internal/cli/work_progress_e2e_test.go:92-127 — `blueprint/l4-mechanisms/L4-procedure-reduction.md:193`「重复读取同一范围、只查询状态而缺项不变,可以形成停滞提示」;`:197`「当前相同缺口的重复 Read／status 达到五次时可产生一次诊断」;`blueprint/l4-mechanisms/L4-hook-anchor-catalog.md:148`「未知、等待、已完成或读取范围不足不能被强判停滞」(反向说明停滞本应可判)
 - `TestExplicitAssignmentContextRejectsMissingSourcesWithoutAuthorOverwrite` — internal/cli/assignment_context_e2e_test.go:180 — 2
 - `TestIndependentReviewRejectsCorruptSourceWithoutReception` — internal/cli/stage_answer_e2e_test.go:688 — 34
 - `TestMainOrdinaryReadAndNonCheckpointStatusProgressWire` — internal/cli/work_progress_e2e_test.go:52-54 — 37
@@ -553,6 +570,10 @@
 - `TestS9PreparationCallbackFollowsOriginalCAS` — internal/cli/s9_pin_preparation_order_test.go:37 — 33
 - `TestS9RepairVerifierDispatchQuestionnaireOriginalPhasesAndResponsibility` — internal/cli/repair_verifier_dispatch_questionnaire_test.go:235 — 24
 - `TestTaskScopeOriginalS4SaveThroughNativeAssignmentAndBrief` — internal/cli/task_scope_handoff_test.go:108 — 35
+
+### 桶 L5(1 条)
+
+- `TestContractAuthorityUsesOriginalS2RegisteredDesign` — internal/cli/design_answer_e2e_test.go:378-412 — `blueprint/l4-mechanisms/L4-state-transition-core.md:31`「权威根由 REQ 的 `bound_req.workspace.project_root` 确定……**不能复制一对 Runtime 文件就成为第二个控制面**」;`:339`「权威根或 state／journal 坐标不符 → 回绑定工程的准确根,不复制 Runtime 继续」
 
 ### 桶 INV(2 条)
 
@@ -665,6 +686,22 @@
 
 **另新增一条精确根因(H9)**:`internal/cli/native_s9_recovery.go:87` 用 `filepath.Base(filepath.Dir(path))` 回推包名,
 但 `internal/repair/native_s9_private.go:13-24` 把超长 ID 截断成 `p/<c1>/<c2>/<c3>` ⇒ **原生 Result 路径永远解不回 Plan 包**。
+
+### 7.1 收尾全量复跑又推翻 3 条(本轮最终一次独立复核)
+
+收尾的全量复跑(`final4/`,`EXIT=1`,`WALL=2765s`)与总账交叉核验后,发现 **3 条被判 STALE 的测试仍红**。
+逐条复核后确认:这 3 条**不是过时测试**,而是**重构 `d0d948a` 引入的回归缺陷** —— 前轮把「代码删掉了某项校验」直接当成「测试过时」,正是本轮明令禁止的**「拿代码现状当判据」**。
+三条在**父提交 `9bf73ca` 实测全 PASS**,进一步坐实是本轮重构的回归。
+
+| 前轮判定 | 本轮复核 | 决定性依据 |
+|---|---|---|
+| `TestContractAuthorityUsesOriginalS2RegisteredDesign` 判 STALE | **推翻 → DEFECT**(H5) | 蓝图 `L4-state-transition-core.md:31`「权威根由 `bound_req.workspace.project_root` 确定……**不能复制一对 Runtime 文件就成为第二个控制面**」、`:339`「权威根或 state／journal 坐标不符 → 回绑定工程的准确根,不复制 Runtime 继续」**仍然要求**权威根绑定。重构把 `fileview.ValidateAuthority(root, state)` 从 `runtime.ValidateContractPacket` 里删掉了,而该函数**本身仍在**(`internal/fileview/contracts.go:42`),在另外 12 处入口仍被调用 —— 唯独 S3 契约包这一处丢失 ⇒ **任何目录都能对 S3 契约包授权**。测试第 2 条断言正是蓝图要求 ⇒ **保持红**。(第 3 条断言依赖逐字节散列比对,按蓝图 §7「不计算、登记或校验散列」本身已过时,但不改变整体判定。) |
+| `TestDefaultProgressShadowRecordsWithoutContext` 判 STALE | **推翻 → DEFECT**(C-1) | 前轮自己的 action 就写着「类型化诊断缺失=DEFECT(C-1)」,**verdict 字段与 action 自相矛盾**。决定性证据:`internal/cli/work_progress.go` 的 `projectWorkProgress` **从不设置 `facts.Gap`**(该文件里 "Gap" 零出现),而 `internal/hook/work_progress.go:195` 产出类型化诊断的条件是 `facts.Gap != ""` ⇒ 停滞诊断**永不可达**。蓝图 `L4-procedure-reduction.md:193`/`:197` 仍要求「相同缺口的重复 Read／status 达到五次时可产生一次诊断」⇒ **保持红**。 |
+| `TestS9ReceptionFeedbackNewExecutionKeepsOldFailureHistorical` 判 STALE | **推翻 → DEFECT**(D-5) | 前轮总账行是**未判定过的占位符**(blueprint=`23`、action=`1`)。`/system` 子测试确为 STALE 且已改写通过;`/author` 子测试是 DEFECT:`internal/cli/native_s9_original.go` 的 `receiveNativeS9OriginalBuilder` 用 `resultErr == nil && !json.Valid(raw)` 直接走 `pendingResult()`,**从未对 Result 内容做字段校验**,作者写坏 JSON 只收到「未提交或未完成」,拿不到蓝图 `L3-S9-repair.md:238` 要求的「哪个文件哪一段 JSON 非法」;Plan 侧仍走 `workpacket.ValidateUniqueJSON` 并分类为 author 错误,Result 侧却没有 ⇒ **保持红**。 |
+
+这 3 条**一条测试都没改**(DEFECT 只记录),生产代码仍然一行未动。
+复核后的账目:**STALE 215(全部绿) / DEFECT 89 / CONFLICT 7 / 未决 38 = 349**,
+本次跑出来的 **125** 条失败**总账外 0 条**、**「判 STALE 却仍红」0 条**。
 
 ## 8. 需 owner 裁定的冲突(精确条款对照)
 
