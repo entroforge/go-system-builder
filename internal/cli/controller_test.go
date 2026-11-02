@@ -1326,8 +1326,21 @@ func canonicalControllerFixture(t *testing.T, fix *runtimeFixture, owner, teamID
 		t.Fatalf("%s %v", out, err)
 	}
 	fix.addAgent(owner, canonicalFixtureRole, "reported", teamID, []string{taskID})
+	// addAgent stamps an activation_ref on the agent row; hookctx.LoadFull
+	// fails hard when that envelope is missing, which would surface a ready
+	// integration as an opaque "integration failed" blocker. Materialise it.
+	materializeFixtureActivation(t, fix, owner, teamID)
 	fix.addTask(taskID, "review", []string{owner})
 	return canonicalAssignmentFixture(t, fix, owner, teamID, taskID, assignmentID, opts)
+}
+
+// materializeFixtureActivation writes the activation envelope that the agent
+// row's activation_ref points at, so the original loader can resolve the
+// owner's activation scope instead of failing closed.
+func materializeFixtureActivation(t *testing.T, fix *runtimeFixture, owner, teamID string) {
+	t.Helper()
+	ref := ".claude/workgroups/REQ-039/" + teamID + "/activation.json"
+	writeFixtureFile(t, fix.root, ref, []byte(`{"agent_id":"`+owner+`"}`))
 }
 
 // preserveFixtureCheckpoint records the preserved integration checkpoint of an
@@ -1850,7 +1863,6 @@ func TestHandleSubagentStopFallsBackWhenAssignmentMissing(t *testing.T) {
 func TestHandleSubagentStopPreservesWorktreeOnNotReadyInspection(t *testing.T) {
 	fix := newRuntimeFixture(t)
 	owner := "agent-missing-but-with-bogus-worktree"
-	fix.state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": "develop", "release_upstream": "origin/release", "bound_commit": "fixture"}
 	assignment := canonicalControllerFixture(t, fix, owner, "team-test", "TASK-039-06", "assignment-039-06", canonicalAssignmentOptions{
 		worktreePath:   "/path/that/does/not/exist",
 		branch:         "codex/req-039-bogus",
@@ -1908,7 +1920,10 @@ func TestHandleSubagentStopAdvancesIntegrationOnReadyInspection(t *testing.T) {
 		t.Fatalf("commit in worktree: %v", err)
 	}
 
-	fix.state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": "develop", "release_upstream": "origin/release", "bound_commit": "fixture"}
+	// The canonical Controller fixture already binds this repository's
+	// workspace (project_root + dev_branch + release_upstream). Re-stamping a
+	// retired workspace shape here would fail the Runtime schema on the
+	// post-mutation snapshot, so the binding is left as the fixture wrote it.
 	fix.persist(t)
 	snapshot := fix.snapshot(t)
 	loaded := &hookctx.LoadedContext{
