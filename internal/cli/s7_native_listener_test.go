@@ -167,15 +167,58 @@ func TestS7NativeListenerUsesNestedTaskAndNeverMainToolPath(t *testing.T) {
 	}
 }
 
+// The official SubagentStop payload carries the actor's own transcript. The
+// original responsibility is identified from that actor's own original task
+// only; a Stop without it has no unique responsibility to bind.
+func s7ListenerStop(t *testing.T, root, actor, task string, ownTask bool) (int, string, string) {
+	t.Helper()
+	payload := s7ListenerPayload(t, actor, task)
+	parent := payload["transcript_path"].(string)
+	body := map[string]any{
+		"hook_event_name":        "SubagentStop",
+		"agent_id":               actor,
+		"agent_type":             "reviewer",
+		"session_id":             "parent",
+		"cwd":                    root,
+		"transcript_path":        parent,
+		"last_assistant_message": task,
+		"tool_name":              "Write",
+		"tool_input":             map[string]any{"file_path": task},
+	}
+	if ownTask {
+		body["agent_transcript_path"] = filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "agent-"+actor+".jsonl")
+	}
+	data, _ := json.Marshal(body)
+	var out, diagnostic bytes.Buffer
+	code := cli.Run([]string{"hook", "--root", root, "--event", "SubagentStop"}, bytes.NewReader(data), &out, &diagnostic)
+	return code, out.String(), diagnostic.String()
+}
+
 func TestS7NativeListenerReportsOriginalFieldErrorWithoutDenyingTool(t *testing.T) {
 	root, p := s7ListenerFixture(t)
 	var answer map[string]any
 	if err := json.Unmarshal(p.Draft.Answer, &answer); err != nil {
 		t.Fatal(err)
 	}
-	// A stated pass is a professional conclusion even when optional detail is
-	// absent. Use an actual invalid conclusion to exercise field feedback.
-	answer["verdict"] = "not-a-supported-verdict"
+	// The current S7 contract asks for one explicit professional Result
+	// verdict. A stated claim conclusion without that verdict is an expressed
+	// professional answer with one precise missing field: the original consumer
+	// rejects it and names the exact field, instead of silently ignoring an
+	// unfinished draft.
+	claims, ok := answer["claim_results"].([]any)
+	if !ok || len(claims) == 0 {
+		t.Fatal("issued S7 answer states no claim result")
+	}
+	for _, raw := range claims {
+		claim, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatal("issued S7 claim result is not an object")
+		}
+		claim["conclusion"] = "pass"
+		claim["method"] = "read original frozen source"
+		claim["observed"] = "the actual frozen subject satisfies the assigned claim"
+	}
+	answer["verdict"] = nil
 	p.Draft.Answer, _ = json.Marshal(answer)
 	stageJSON(t, root, p.AnswerPath, p.Draft)
 	before := stageSnapshot(t, root).Revision
@@ -184,13 +227,27 @@ func TestS7NativeListenerReportsOriginalFieldErrorWithoutDenyingTool(t *testing.
 		if !strings.Contains(out, "additionalContext") || !strings.Contains(diagnostic, "/answer/") || !strings.Contains(out, p.Binding.OwnerAgentID) || !strings.Contains(out, "Correct the specified professional fields") {
 			t.Fatalf("%s missing actionable fields: %s %s", event, out, diagnostic)
 		}
+		// The original consumer names the exact missing professional field
+		// instead of an opaque whole-answer or source failure.
+		if !strings.Contains(diagnostic, "/answer/verdict") {
+			t.Fatalf("%s did not name the missing professional field: %s", event, diagnostic)
+		}
 		if strings.Contains(out, "Main must restore the original packet/source/receiver") || stageSnapshot(t, root).Revision != before {
 			t.Fatalf("%s field error became a source fault or was accepted: %s", event, out)
 		}
 	}
-	// Stop remains the original final fallback and diagnostics outlet.
-	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.ViewPath)); code != 0 || !strings.Contains(diagnostic, "Main owns recovery") || !strings.Contains(diagnostic, "professional field issue") || !strings.Contains(diagnostic, "/answer/") || strings.Contains(diagnostic, "restore missing or stale sources") {
+	// Stop is the same original consumer's final fallback: the same expressed
+	// answer is rejected there with the same precise professional field issue.
+	code, _, diagnostic := s7ListenerStop(t, root, p.Binding.OwnerAgentID, "Review "+filepath.Join(root, p.ViewPath), true)
+	if code != 0 || !strings.Contains(diagnostic, "Main owns recovery") || !strings.Contains(diagnostic, "professional field issue") || !strings.Contains(diagnostic, "/answer/verdict") || strings.Contains(diagnostic, "restore missing or stale sources") {
 		t.Fatalf("stop fallback: %d %s", code, diagnostic)
+	}
+	afterStop := stageSnapshot(t, root).Revision
+	// A native Stop without a unique responsibility must not guess the binding
+	// or borrow the colleague's answer; Main checks the actual task and return.
+	code, out, diagnostic := s7ListenerStop(t, root, "opaque-reviewer", "Unrelated native work", false)
+	if code != 0 || strings.Contains(out+diagnostic, p.AnswerPath) || strings.Contains(out+diagnostic, p.Binding.OwnerAgentID) || stageSnapshot(t, root).Revision != afterStop {
+		t.Fatalf("stop without an original responsibility guessed a binding: %d %s %s", code, out, diagnostic)
 	}
 }
 
