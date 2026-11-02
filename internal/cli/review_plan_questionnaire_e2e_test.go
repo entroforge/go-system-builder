@@ -134,7 +134,26 @@ func TestMainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay(t *tes
 
 func TestMainReviewPlanQuestionnaireStopDoesNotPrepareAndInvalidSaveReturnsFeedback(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	path := filepath.Join(root, ".claude/submissions/loop-REQ-WORKTREE/g1/S7/r1/review-plan.json")
+	state := stageSnapshot(t, root).State
+	head, err := os.ReadFile(filepath.Join(root, ".git/HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimPrefix(strings.TrimSpace(string(head)), "ref: refs/heads/")
+	state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": branch, "release_upstream": "release"}
+	// The Main questionnaire path follows this ReviewPlan identity. The
+	// removed `S7/r<round>/review-plan.json` wiring is not a parallel path.
+	const planID = "review-plan-questionnaire-stop"
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": planID, "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
+	stageJSON(t, root, ".claude/loop-state.json", state)
+	path := review.PlanQuestionnairePath(root, state)
+	if path == "" || !strings.Contains(path, filepath.Join("S7", planID, "review-plan.json")) {
+		t.Fatalf("current ReviewPlan identity path is unavailable: %q", path)
+	}
+	if strings.Contains(path, filepath.Join("S7", "r1")) {
+		t.Fatalf("questionnaire path still embeds the removed review round segment: %q", path)
+	}
+	legacyPath := filepath.Join(root, ".claude/submissions/loop-REQ-WORKTREE/g1/S7/r1/review-plan.json")
 	body, _ := json.Marshal(map[string]any{"hook_event_name": "Stop", "cwd": root})
 	var out, errout bytes.Buffer
 	code := cli.Run([]string{"hook", "--root", root, "--event", "Stop"}, bytes.NewReader(body), &out, &errout)
@@ -144,7 +163,29 @@ func TestMainReviewPlanQuestionnaireStopDoesNotPrepareAndInvalidSaveReturnsFeedb
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("Stop created a plan questionnaire: %v", err)
 	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("Stop kept the removed S7/r<round> wiring path: %v", err)
+	}
+	// S7 Main outside Stop prepares the missing plan draft at the current
+	// identity path.
 	entryQuestionnaireHook(t, root, "PreToolUse", path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("PreToolUse did not prepare the current identity questionnaire: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("preparation kept the removed parallel S7/r<round> path: %v", err)
+	}
+	// An untouched machine prefill is not a plan: ordinary observation must
+	// not turn the placeholder into an accepted ReviewPlan.
+	if observed := s7MainNaturalPre(t, root); strings.Contains(observed, "review-plan: registered") {
+		t.Fatalf("the machine prefill was registered as a plan: %s", observed)
+	}
+	// An entirely empty placeholder draft is not a plan either: the original
+	// consumer answers with accurate feedback and keeps the Runtime untouched.
+	placeholder := []byte(`{"schema_version":"1.1.0","review_plan_id":"` + planID + `","baseline_generation":1,"claims":[],"assignments":[],"created_by":"Main","created_at":"2026-08-23T00:00:00Z"}`)
+	if err := os.WriteFile(path, placeholder, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	before, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -157,8 +198,11 @@ func TestMainReviewPlanQuestionnaireStopDoesNotPrepareAndInvalidSaveReturnsFeedb
 	if !bytes.Equal(before, after) {
 		t.Fatal("invalid draft changed Runtime")
 	}
+	if review.PlanPointerFromState(stageSnapshot(t, root).State) != nil {
+		t.Fatal("placeholder draft was registered as a ReviewPlan")
+	}
 	// A historical frozen product source is not a reception proof.
-	validPath := minimalReviewPlan(t, t.TempDir(), "review-plan-source-failure")
+	validPath := minimalReviewPlan(t, t.TempDir(), planID)
 	valid, err := os.ReadFile(validPath)
 	if err != nil {
 		t.Fatal(err)
