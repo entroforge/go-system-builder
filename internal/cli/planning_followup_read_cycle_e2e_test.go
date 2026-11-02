@@ -29,6 +29,9 @@ func TestMainPlanningReadCycleConsumesAcceptedS2Followup(t *testing.T) {
 	if err != nil || !receipt.Accepted || receipt.WorkComplete {
 		t.Fatalf("accept S2 before ordinary cycle: %+v %v", receipt, err)
 	}
+	// A received S2 answer leaves one pending followup. An ordinary Pre belongs
+	// to no lifecycle boundary and must not resume it; Main Stop is a boundary
+	// and continues the original followup without another author save.
 	assertReadCycleConsumesPlanningFollowup(t, s, packet.ID, "PTR-PLAN-01", "design", "contracts")
 }
 
@@ -88,7 +91,14 @@ func assertReadCycleConsumesPlanningFollowup(t *testing.T, s *submission.Service
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, event := range []string{"PreToolUse", "Stop"} {
+		// An ordinary Pre belongs to no lifecycle boundary, so it never resumes
+		// the received pending followup. Main Stop is a lifecycle boundary and
+		// continues the original S2 followup, so it is not a no-op there.
+		events := []string{"PreToolUse"}
+		if fromPhase != "design" {
+			events = append(events, "Stop")
+		}
+		for _, event := range events {
 			body, _ := json.Marshal(map[string]any{"hook_event_name": event, "tool_name": "Read", "cwd": s.Root})
 			var out, stderr bytes.Buffer
 			if code := cli.Run([]string{"hook", "--event", event, "--root", s.Root}, bytes.NewReader(body), &out, &stderr); code != 0 {
@@ -99,18 +109,46 @@ func assertReadCycleConsumesPlanningFollowup(t *testing.T, s *submission.Service
 			if err != nil || after.Revision != before.Revision || !bytes.Equal(journalBefore, journalAfter) {
 				t.Fatalf("ordinary %s changed pending work: before=%d after=%d err=%v", event, before.Revision, after.Revision, err)
 			}
+			record, found, err := runtime.FindSubmission(after.State, packetID)
+			if err != nil || !found || record.ControlStatus != "pending" || record.TransitionEventID != "" {
+				t.Fatalf("ordinary %s resumed the pending followup: %+v found=%t err=%v", event, record, found, err)
+			}
 		}
 	}
 	var receipt submission.Receipt
 	switch fromPhase {
 	case "design":
-		packet, found, err := runtime.FindDesignPacket(before.State, packetID)
-		if err != nil || !found {
-			t.Fatalf("design packet: %v", err)
+		// The author's answer is already received. Main Stop is a lifecycle
+		// boundary, so it continues the original S2 followup and completes
+		// PTR-PLAN-01 without another author save.
+		body, _ := json.Marshal(map[string]any{"hook_event_name": "Stop", "tool_name": "Read", "cwd": s.Root})
+		var out, stderr bytes.Buffer
+		if code := cli.Run([]string{"hook", "--event", "Stop", "--root", s.Root}, bytes.NewReader(body), &out, &stderr); code != 0 {
+			t.Fatalf("Main Stop continuation: %s %s", out.String(), stderr.String())
 		}
-		receipt, err = s.SaveDesign(context.Background(), packet.AnswerPath)
+		continued := stageSnapshot(t, s.Root)
+		if continued.Revision <= before.Revision {
+			t.Fatalf("Main Stop did not advance the received pending followup: before=%d after=%d", before.Revision, continued.Revision)
+		}
+		record, found, err := runtime.FindSubmission(continued.State, packetID)
+		if err != nil || !found || record.ControlStatus != "advanced" || record.TransitionEventID == "" {
+			t.Fatalf("Main Stop did not stamp the original followup advanced: %+v found=%t err=%v", record, found, err)
+		}
+		if record.Key != prior.Key || record.EvidenceID != prior.EvidenceID {
+			t.Fatalf("Main Stop replaced the original reception: %+v", record)
+		}
+		if planningEvidenceCount(continued.State) != planningEvidenceCount(before.State) {
+			t.Fatal("Main Stop continuation received the answer a second time")
+		}
+		if count := planningTransitionEventCount(t, s.Root, transitionID); count != 1 {
+			t.Fatalf("Main Stop recorded %d %s transitions, want exactly one", count, transitionID)
+		}
+		receipt, err = s.DesignReceipt("", packetID)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !receipt.WorkComplete {
+			t.Fatalf("Main Stop left the original S2 outlet pending: %+v", receipt)
 		}
 	case "contracts":
 		packet, found, err := runtime.FindContractPacket(before.State, packetID)
@@ -182,6 +220,36 @@ func assertReadCycleConsumesPlanningFollowup(t *testing.T, s *submission.Service
 		}
 	}
 	return snapshot
+}
+
+func planningEvidenceCount(state map[string]any) int {
+	rows, _ := state["evidence"].([]any)
+	return len(rows)
+}
+
+func planningTransitionEventCount(t *testing.T, root, transitionID string) int {
+	t.Helper()
+	file, err := os.Open(filepath.Join(root, ".claude/loop-events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	count := 0
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 2<<20)
+	for scanner.Scan() {
+		var event map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["transition_id"] == transitionID && event["event"] == "transition_committed" && event["outcome"] == "committed" {
+			count++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func assertPlanningTransitionJournalEvent(t *testing.T, root, eventID, transitionID, fromPhase string) {

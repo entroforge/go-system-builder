@@ -175,17 +175,25 @@ func TestS6MainObservationKeepsBuilderAnswersPrivateAndOwnerSaveUsesOriginalCons
 func TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave(t *testing.T) {
 	root := worktreeProjectRoot(t)
 	path := s7PlanQuestionnairePath(t, root, "review-plan-observed-save")
-	relative, err := filepath.Rel(root, path)
-	if err != nil {
-		t.Fatal(err)
-	}
 	entryQuestionnaireHook(t, root, "PreToolUse", path)
 	before := stageSnapshot(t, root).Revision
 	out := observedQuestionnaireHook(t, root, "Bash", map[string]any{"command": "true"}, map[string]any{})
 	if strings.Contains(out, "S7 Main ReviewPlan questionnaire saved") || stageSnapshot(t, root).Revision != before {
 		t.Fatalf("untouched Main plan invoked its consumer: %s", out)
 	}
-	data, err := os.ReadFile(path)
+	// A legible partial expression is receivable as the author's actual
+	// expressed part (L3-S7 §193): an undecided required Claim stays pending
+	// instead of rejecting the answer. Only a real content error is reported
+	// back to the author, with the precise feedback of the original consumer.
+	partialRoot := worktreeProjectRoot(t)
+	partialPath := s7PlanQuestionnairePath(t, partialRoot, "review-plan-partial-expression")
+	partialRelative, err := filepath.Rel(partialRoot, partialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryQuestionnaireHook(t, partialRoot, "PreToolUse", partialPath)
+	partialBefore := stageSnapshot(t, partialRoot).Revision
+	data, err := os.ReadFile(partialPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,14 +205,45 @@ func TestS7ObserverSkipsMachineDraftAndReceivesProfessionalScriptSave(t *testing
 	if len(claims) == 0 {
 		t.Fatal("fixture has no professional claims")
 	}
-	claims[0].(map[string]any)["oracle"] = "The locked acceptance obligations map to observed implementation evidence."
-	stageJSON(t, root, relative, plan)
-	out = observedQuestionnaireHook(t, root, "mcp__sandbox__execute", map[string]any{}, map[string]any{})
-	if !strings.Contains(out, path) || !strings.Contains(out, "original validation feedback") {
-		t.Fatalf("natural observation did not report actual validation feedback: %s", out)
+	// A real type error is still an error: the author gets the concrete
+	// validation feedback, no Plan is registered and the Runtime stays put.
+	broken := map[string]any{}
+	for key, value := range plan {
+		broken[key] = value
 	}
-	if stageSnapshot(t, root).Revision != before {
-		t.Fatal("incomplete professional plan changed Runtime")
+	broken["claims"] = "the Claims are not a list"
+	stageJSON(t, partialRoot, partialRelative, broken)
+	out = observedQuestionnaireHook(t, partialRoot, "mcp__sandbox__execute", map[string]any{}, map[string]any{})
+	if !strings.Contains(out, "original validation feedback") || !strings.Contains(out, "ReviewPlan schema") || !strings.Contains(out, "claims") {
+		t.Fatalf("a real content error did not report actual validation feedback: %s", out)
+	}
+	if strings.Contains(out, "review-plan: registered") {
+		t.Fatalf("an invalid plan was registered: %s", out)
+	}
+	if stageSnapshot(t, partialRoot).Revision != partialBefore {
+		t.Fatal("an invalid plan changed Runtime")
+	}
+	// The partially expressed plan is received once.
+	claims[0].(map[string]any)["oracle"] = "The locked acceptance obligations map to observed implementation evidence."
+	stageJSON(t, partialRoot, partialRelative, plan)
+	out = observedQuestionnaireHook(t, partialRoot, "mcp__sandbox__execute", map[string]any{}, map[string]any{})
+	if !strings.Contains(out, "review-plan: registered") || !strings.Contains(out, "review-plan-partial-expression") || !strings.Contains(out, partialPath) {
+		t.Fatalf("the partially expressed plan was not received: %s", out)
+	}
+	if strings.Contains(out, "original validation feedback") {
+		t.Fatalf("a legible pending expression was rejected as an error: %s", out)
+	}
+	received := stageSnapshot(t, partialRoot).Revision
+	if received <= partialBefore {
+		t.Fatalf("the received plan did not advance the Runtime: %d -> %d", partialBefore, received)
+	}
+	// The same expression is received once; a later observation repeats nothing.
+	out = observedQuestionnaireHook(t, partialRoot, "Bash", map[string]any{"command": "true"}, map[string]any{})
+	if strings.Contains(out, "review-plan: registered") || strings.Contains(out, "review-plan: revised") {
+		t.Fatalf("the received plan was received again: %s", out)
+	}
+	if stageSnapshot(t, partialRoot).Revision != received {
+		t.Fatal("a repeated observation changed Runtime")
 	}
 	authored := minimalReviewPlan(t, t.TempDir(), "review-plan-observed-save")
 	data, err = os.ReadFile(authored)
