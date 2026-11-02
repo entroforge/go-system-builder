@@ -42,16 +42,38 @@ func TestHandoffRequestUsesAlreadyAvailableFactsWithoutChangeset(t *testing.T) {
 
 func TestTargetedMainReturnPreservesUnknownHistoricalAssociation(t *testing.T) {
 	root := t.TempDir()
+	// The current Targeted reference line keeps the internally optional
+	// performing responsibility and conclusion; the retired path/sha-only
+	// reference line is no longer parsed into a record. The surviving
+	// reference belongs to another performing responsibility, so the result
+	// this responsibility needs cannot be determined from history.
 	state := map[string]any{"review": map[string]any{"repair": map[string]any{
-		"targeted_reverification_artifacts": []any{map[string]any{"path": "missing-old-targeted.json", "sha256": "old"}},
+		"targeted_reverification_artifacts": []any{map[string]any{
+			"path": "missing-old-targeted.json", "performing_assignment_id": "repair-assignment-verification-two", "result": "pass",
+		}},
 	}}}
 	subject := nativeReturnSubject{kind: "Targeted", id: "repair-assignment-verification-one", ref: "original-answer.json", targeted: &repairTargetedSelection{}}
 	message, err := nativeReturnSummaryContext(context.Background(), root, runtime.Snapshot{State: state}, subject)
 	if err != nil {
-		t.Fatalf("missing old report should remain unknown: %v", err)
+		t.Fatalf("unknown history should remain unknown: %v", err)
 	}
-	if !strings.Contains(message, "not established as either received or unreceived") || !strings.Contains(message, "no additional author save or Stop") {
-		t.Fatalf("unknown history was described as an obligation or a result: %s", message)
+	for _, want := range []string{
+		"No original Targeted reception is recorded",
+		"Main owns the missing original input/source",
+		"no supported saved input is established for replay",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("unknown historical association was not handed to Main as unknown (missing %q): %s", want, message)
+		}
+	}
+	for _, unwanted := range []string{
+		"Original Targeted records:",
+		"result=pass",
+		"missing-old-targeted.json result=",
+	} {
+		if strings.Contains(message, unwanted) {
+			t.Fatalf("historical reference was projected as this responsibility's conclusion (%q): %s", unwanted, message)
+		}
 	}
 }
 

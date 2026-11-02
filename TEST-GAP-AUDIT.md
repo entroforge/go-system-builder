@@ -1,5 +1,15 @@
 # 重构后测试缺口全面审计 — `go-system-builder` @ `d0d948a`
 
+> **⚠️ 本报告已被下一阶段部分修订(2026-11-02)。**
+>
+> 本报告的审计结论随后被**「按 blueprint 适配测试」**阶段逐条复核。**7 条 HIGH/MED 结论被推翻或修正**:
+> **H3**(S8 因果闭合链)、**H17**(审计行重复)、**H18**(review-plan 空路径)、**R05/H1**(S9 source gap)、
+> **H7 #22/#23** 归因、**H16** 定位、**M1** 状态。
+>
+> **每个被影响的条目下方都加了「🔄 本轮复核修订」块**,写明推翻理由与处置。
+> 阶段总账见 **[`TEST-ADAPTATION-REPORT.md`](./TEST-ADAPTATION-REPORT.md)**;
+> 本报告的 CI 车道结论(§7)与接缝矩阵(§6.4)未被推翻,仍然有效。
+
 > 上一版:[CI-AUDIT.md](./CI-AUDIT.md)(重构前的 CI 速度审计)。
 > 本版是**新的一轮重构之后**的测试缺口审计,由 11 个 sub-agent 分两阶段完成。
 >
@@ -44,6 +54,7 @@
 | **FLAKY-ORDER** | **0**。所有失败在 `-p 1 -count=1` 单独重跑下依然失败 —— 全部是确定性缺陷,不是并发假象 |
 | **契约漂移** | `INV-013`、`INV-017` 陈旧;`forbidden_events` 的运行时消费者被**本次重构删除** |
 | **HIGH 级产品缺陷** | **17 条**。H1–H9(逐 stage)+ **H10 S7 出口被吞**、**H11 恢复命令对损坏 Runtime 不可用**、**H12 S6 范围校验被删**(接缝)+ **H14 派发改写 TASK 事实**、**H15 S9 schema 拒历史记录**、**H16 Inspect 缺 Worktree/Branch**、**H17 审计行重复**、**H18 review-plan 路径为空**(根因归组)+ MED: H13、M1–M3 |
+| **🔄 复核更正(下一阶段)** | 上述 17 条里,**H3、H17、H18 被推翻**,**R05/H1 归因被推翻**,**H7 #22/#23 归因被推翻**,**H16 定位修正(结论维持)**,**M1 改为未决/需 owner 裁定**。⇒ **维持的高层缺陷为 12 条**(H2、H4、H5、H6、H8、H9、H10、H11、H12、H14、H15、H16),其余按 §3 各条的「🔄 本轮复核修订」块与 §10.1 表执行 |
 
 ### 0.2 最重要的结论:失败几乎全是「重构引入」,不是「测试过时」
 
@@ -227,6 +238,15 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 | 影响 | S7 的 3 个测试全红(其中 1 个是本提交新增的)。Worker 在最后一次 PostToolUse 之后才保存答案的场景,**该答案永远收不到** |
 | 修法 | 恢复 `LastAssistantMessage` 回退分支 |
 
+> **🔄 本轮复核修订(见 `TEST-ADAPTATION-REPORT.md`)**
+>
+> **本条的前轮归因被推翻,但 H1 本身未被证实为缺陷。**
+>
+> - 前轮把一批「S9 local evidence source gap」失败映射到 H1(S7 Stop/SubagentStop 兜底失效)。**本轮逐条核对:这些失败点全在 S9 交接链,不在 S7 的兜底接收**;失败诊断是 `Original S9 Result received.`,即 Result **已被接收**,与「兜底收不到答案」相反。
+> - 该断言依赖的 `S9 local evidence source gap` 来自 `internal/repair/s9_local_evidence.go`(把证据字节归档进 Main 根并记 SHA256),该文件在 `d0d948a` 被**整体删除** —— 正是蓝图 `L3-S9-repair.md:236`「系统不重新证明代码、证据内容或实际检查是否发生,**不回读证据文件、不归档后散列取证**」点名删除的机制。
+> - 蓝图 `L4-hook-platform-wiring.md:67`「`last_assistant_message` 可能仅为收尾文字,不能当作完整报告或新增必交引用」**不支持**把 `last_assistant_message` 恢复为主引用源。
+> - **处置**:相关测试判 **STALE**(过时测试)并改写,改用蓝图保留的真实未决边界(`L3-S9:246`「Result 尚未保存」)。**H1 作为产品缺陷未被证实,暂记「未证实 / 归因被推翻」。**
+
 ### H2 — S8 人工审批权威门被静默删除 `[M]`
 
 | | |
@@ -249,6 +269,17 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 | 蓝图依据 | `L3-S8:160`「assessment 必须引用由**当前结论性结果**区分的可信备选」 |
 | 影响 | Main 可以把**未解决的**备选声称为已关闭,并据此路由到 S9 修复 —— S9 合同建立在一个虚假的因果声明上 |
 | 同批死代码 | `requireCurrentHypothesisResults`(`:1027`)、`validateBlastRadius`(`:1075`)、`validateDetectionGap`(`:1099`)。**注意**:这三者的"移除"是蓝图 `:297`/`:299` 明确要求的,只是函数没删干净 —— **不要重新接上** |
+
+> **🔄 本轮复核修订(见 `TEST-ADAPTATION-REPORT.md`)—— 本条被推翻**
+>
+> 前轮认定蓝图 `L3-S8:160`「assessment 必须引用由**当前结论性结果**区分的可信备选」仍是**要求类**条款,故把整条因果闭合链判为缺陷。**本轮逐字核对后,这个前提不成立:**
+>
+> - `blueprint/l3-stages/L3-S8-finding-investigation.md:160` 原文:「既有 `competing_hypothesis_assessment` 或 `no_competing_hypothesis` 用于表达 Main 的判断和理由,**不是两条机器证明路线**。Main 可以引用已取得结果说明竞争解释怎样处置,**不要求至少一项 `refuted`、所有假设必须完成**……」
+> - `blueprint/l3-stages/L3-S8-finding-investigation.md:307`(§9.3 标题即「**机器不认证因果**」)原文:「未解释集合、假设状态和来源关联用于导航,**不成为逐题完成、逐 Finding 解释 ID 闭合、至少一项反驳、全部建议落地或所有历史证据有效的机器门**。」
+>
+> 两条都是明确的**移除类措辞**。按本轮规则(移除类 → 行为有意移除 → 测试过时 → 改写),`requireCompetingHypothesisClosure` / `validateCausalClosure` / `causalClosureDefect` **不是缺陷**,而是**蓝图有意移除的机器门**。
+>
+> **处置**:断言「至少一项反驳」的测试判 **STALE** 并改写为断言蓝图要求的新行为(Main 的专业判断不被机器认证)。`requireCurrentHypothesisResults` / `validateBlastRadius` / `validateDetectionGap` 的前轮结论**维持**(同为移除类措辞,**不要重新接上**)。
 
 ### H4 — S6 的 TR-003 共同基线校验被删除 `[M]`
 
@@ -292,6 +323,13 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 | 证据 | `internal/cli/s6_closing_context_e2e_test.go:39`、`s6_record_context_e2e_test.go:319` 失败:`validate data: jsonschema … worker_checks: got null, want array` |
 | 备注 | `copyContextDispatch` 是本轮重构**新增**的函数 —— 经典 nil/空切片 bug |
 | 修法 | 改用 `append([]assignmentrecord.WorkerCheck{}, ...)` 或 `slices.Clone` |
+
+> **🔄 本轮复核修订(见 `TEST-ADAPTATION-REPORT.md`)—— 归因被推翻**
+>
+> - 前轮把 `TestNativeS9RelativeMainCompletedKeepsOriginalLiveSourceContract` 的失败归因于 `WorkerChecks:[]` 序列化成 `null`。**本轮核对:触发 `t.Fatalf` 的是 `execution.DeliveryRef != ""`(Stop 已建立候选),打印出来的 `WorkerChecks:[]` 只是 Go 结构体的打印形态,不是 JSON `null`。** 前轮归因不成立。
+> - 前轮列为 DEFECT 的 **#22、#23(Stop 是否消费本人原 Result)**,本轮判 **STALE**(过时测试)并改写:蓝图 `L4-workflow-convergence.md` §3.3.1「三阶段使用同一接收链……自然事件观察 → 原消费者一次检查和保存」与 `L4-hook-platform-wiring.md:138`「S7／S8／S9 Stop 与 Pre、成功 Post 共用 §5.2」要求 Stop **共享**接收链;同包未改动的 `internal/cli/native_s9_test.go:104` 断言 Stop 后 `DeliveryRef != ""` 且当前通过,与旧断言直接冲突。父提交「Stop 不接收」源于归档式 typed 发布(`repair.RetainedNativeS9Source` + `refs/loop-harness/s9-source/<Digest>`),该机制已被 `L3-S9-repair.md:236`「不归档后散列取证」整体删除(`internal/repair/native_s9_source.go` 374 行 → 3 行)。
+> - `assignment_context.go:339` 的 nil/空切片本身**仍未被证实为当前失败的原因**;同包 `s6_closing_context_e2e_test.go:39`、`s6_record_context_e2e_test.go:319` 这两条引用 `native-assignment-context.schema.json:569` 的失败在父提交上**同样失败**(既有失败,非本轮回归)。
+> - **处置**:#22/#23 判 STALE 并改写(前置断言改为「Stop 已收到原 Result」,行为性断言全部保留);本条作为**产品缺陷未被证实**,记「归因被推翻」。
 
 ### H8 — S8 的来源集合从「相等」放宽成「子集」 `[M]`
 
@@ -395,6 +433,15 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 | 判定 | **回归**(父提交 PASS)—— 16 个失败实体(根因组 R04) |
 | 修法 | 在责任装载时回填 Worktree/Branch |
 
+> **🔄 本轮复核修订(见 `TEST-ADAPTATION-REPORT.md`)—— 定位已修正,结论维持**
+>
+> 前轮把断点记在 `internal/integration/inspect_responsibility.go:20-22`(Inspect 侧责任装载)。**本轮父提交对照后修正定位**:
+>
+> - 该守卫在父提交 `9bf73ca:internal/integration/inspect.go` 里**一模一样地存在**,不是新增门禁 —— 不是「重构删掉了 Inspect 侧回填」。
+> - 真正的断点在**生产方写入**:父提交执行 `git branch --show-current` 取得分支并写入,而 HEAD 的 `internal/cli/native_s9_original.go:169` 把 `Branch` **写死成 `""`** ⇒ 责任记录里没有分支,Inspect 侧无从回填。
+> - **结论维持 DEFECT(仍需改生产代码)**,但**修法位置要改**:应在**生产方**取得并写入分支,而不是在 Inspect 侧回填。蓝图 `L4-worktree-governance.md:57/194`「不在接收前后重复核 branch」倾向于在**集成准备阶段**取得。
+> - 本条是本轮 **9 条 H9 组之外的独立根因**(`internal/cli/native_s9_recovery.go:87` 用 `filepath.Base(filepath.Dir(path))` 回推,而 `internal/repair/native_s9_private.go:13-24` 把超长 ID 截断成 `p/<c1>/<c2>/<c3>` ⇒ 原生 Result 路径永远解不回 Plan 包)—— **两者不同,勿混**。
+
 ### H17 — 同一事件的重复重试会重复写审计行 `[M]`
 
 | | |
@@ -403,6 +450,15 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 | 现象 | 同一事件重试时**重复追加**审计记录 |
 | 判定 | **回归**(父提交 PASS)—— 6 个失败实体(根因组 R08) |
 | 修法 | 审计行按事件标识去重 |
+
+> **🔄 本轮复核修订(见 `TEST-ADAPTATION-REPORT.md`)—— 本条被推翻**
+>
+> 前轮主张「同一事件重试只追加一行审计」是仍需恢复的机器保证。**本轮核对:这条保证在父提交上建立在事件正文的 sha256(`eventFingerprint`,`git show 9bf73ca:internal/policy/engine.go:1738-1755`)之上**,而这正是蓝图点名的禁止项:
+>
+> - `L4-hook-acceptance-checklist.md:184`(P14)与 §3.3.1:「**不得将同一用途改名为 fingerprint、checksum 或换用其他散列算法**」。
+> - `L4-hook-acceptance-checklist.md:188`:「删除旧资格时应同步删除或改写相应测试,**不能用"保回归"把已放弃的机器保证补回**」。
+> - 现生产 `internal/policy/engine.go:1683-1690` 的 nonce 有明确设计注释,审计索引去重仍在(`internal/audit/outbox.go:66`)。
+> - **处置**:`TestNativeObserverFiltersExternalTextBeforeAuditBoundWithoutChangingIdentity` 判 **STALE** 并改写合成载荷(补平台 `tool_use_id`);测试的**全部原断言**(重试只一行、不同事件不折叠、凭据不落盘、Runtime 不变)**保留**。
 
 ### H18 — `s7_status.go` 的 review-plan 路径计算为空 `[M]`
 
@@ -413,6 +469,16 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 | 判定 | **回归** —— 14 个失败实体(根因组 R10) |
 | 关联 | 与 R02(4 个 CLI 子命令被删)是两回事:R10 是**路径算错**,R02 是**入口被删** |
 
+> **🔄 本轮复核修订(见 `TEST-ADAPTATION-REPORT.md`)—— 本条被推翻**
+>
+> 前轮把「review-plan 路径算出来是空字符串」判为产品缺陷。**本轮核对:生产侧「无身份 → 无路径」是有意行为,不是缺陷。**
+>
+> - `internal/review/plan.go:23-42` 的 `PlanQuestionnairePath` 在 HEAD 要求「必须有本次 ReviewPlan 身份」,这是 `L3-S7-verification-round.md:191`「路径沿本次 ReviewPlan 身份生成,不嵌入审查序号。移除旧 `S7/r<round>/review-plan.json` 运行接线,不保留平行路径」的直接实现。
+> - 生产路径上 `round_entry.plan_id` **总是**被写入:`internal/transition/actions.go:263`(S7 入口动作 `rev["round_entry"] = entry`,`entry.plan_id = reviewmeta.NewPlanID(runtimeID, …)`)、`internal/repair/runtime.go:1141`(TR-012 重入)⇒ **空路径只在「缺 S7 入口身份」的合成 fixture 上出现,生产不可达**。
+> - HEAD 对空路径**有准确反馈**:`internal/cli/s7_status.go:114-121` 输出「ReviewPlan questionnaire preparation gap: Main/system must restore the current Runtime generation and original Plan identity.」—— 符合蓝图「按准确事实反馈」的要求。
+> - 同仓既有测试已按新契约写:`internal/review/consumer_identity_test.go:17-20`(删 `round` 后 stamp `round_entry.plan_id`)、`internal/review/result_nohash_reception_test.go:113-118`(有 `round_entry.plan_id` 时路径必须非空)。
+> - **处置**:相关测试判 **STALE-FIXTURE**(改 fixture:先 stamp `review.round_entry.plan_id` 再取生产路径),**不改生产代码**。
+
 ### 附:三个 MED 级 + 一条既有行为澄清
 
 | # | 位置 | 问题 |
@@ -420,6 +486,13 @@ agent 自己补跑了漏选的 118 个,否则该 stage 报告会严重不完整�
 | M1 | `internal/cli/s9_impact_observer.go:20` + `internal/cli/run.go:2696` | `observeMainS9Impact` **0 测试引用**,却插在 `observeMainS9Brief`(`:2699`)与 Stop preflight 链(`:2783`+)之前并 `handled=true` 短路 —— 一个完全无防护的观察器可能吞掉 Main 的 Stop 事件。**父 agent 已复核:`internal/cli/s9_impact_observer.go` 是 `d0d948a` 新增的文件,父提交 `git grep` 命中 0 次** → 确实是本轮引入 |
 | M2 | `internal/cli/hook_reader.go:211-219` + 新文件 `internal/cli/hook_reader_s5.go:39-46` | 新增的 `reader.SelectionIssue` 字段(父提交 0 命中)让 `hookReaderObservation` 在 `SelectionIssue != ""` 且事件不是 `SessionStart`/`SubagentStart` 时返回 `true, 0` → **事件在 `runControlCycleForHook`(`internal/cli/run.go:3425`)渲染图诊断(`:3446`,`LOOP_RUNTIME_INVALID`)之前就被吞掉**。新文件 `hook_reader_s5.go` 会设 `reader.Kind="Worker"` + `reader.SelectionIssue`,把 S5 不可选中的情形接进这条短路 |
 | M3 | `internal/cli/native_s6.go` | 「中断后合并结果未知」路径返回 1 并要求人工看 worktree,而 `L3-S6-build.md:352` 要求按原责任接续 |
+
+> **🔄 本轮复核修订(见 `TEST-ADAPTATION-REPORT.md`)—— M1 归因收窄,状态改为「未决」**
+>
+> - 前轮把一批「S9 问卷路径 + `rule_id` 帮助文本」失败映射到 M1,主张「恢复产品侧旧能力」。**本轮核对:该组失败实为 STALE** —— 蓝图 `L3-S9-repair.md:236` 明令删除散列派生路径(「不计算、登记或校验任何散列」「不能用合同、答案或事件内容的散列生成新的 ID／路径」),`internal/repair/runtime.go:171` 已写入保留的 `questionnaire_root`;`:330`(§8.2)要求「没有实际规则时不为接收另造标签或登记规则」⇒ 强制 `IM-[A-Z0-9-]+` 标签格式属于**被删除的旧资格**。
+> - `observeMainS9Impact` 本身的事实**维持**:它确实**零直接测试引用**,且在 `internal/cli/run.go:2696` 短路 `observeMainS9Brief`(`:2699`)。
+> - **但它是否构成缺陷取决于另一条未决裁定**:`TestS9HandoffPublicMainProgressUsesOriginalReceptionFacts/accepted_candidate`(`internal/cli/s9_handoff_wiring_test.go:521`)的失败是「Runtime file 0 changed on a read-only replay」—— 公开的 Main PreToolUse 经 `observeMainS9Impact` **写入** Runtime。蓝图 `L3-S9:236` 与 `L3-S9:238` 对「观察事件是否允许产生写入」**没有直接裁决**,属**需 owner 裁定**。
+> - **处置**:M1 状态由「MED 产品缺陷」改为 **未决 / 需 owner 裁定**;相关测试**保持红**,未动生产代码。
 
 > **【更正】我此前把 M2 写成「`internal/cli/run.go:2691`(`reader.Kind != "Worker"` → `return 0`)→ PreToolUse 在审计前提前返回」—— 这条描述是错的,父 agent 复核后撤回:**
 > - `run.go:2691` 的那个 `reader.Kind != "Worker" → return 0` 位于 **`if renderHook && request.Event == "PreCompact"`** 分支内(`:2673`),**是 PreCompact,不是 PreToolUse**;父提交同一分支(`:3124-3126`)**逐字相同** → **既有行为,不是本轮回归**。
@@ -1106,6 +1179,24 @@ FAIL github.com/entroforge/go-system-builder/internal/cli TestNativeS5AmbiguousR
 | 「hook 输出丢失 `QUALITY_GATE` 投影是本轮重构砸的(32 个失败,最大组)」 | **推翻** | 归因 agent 在 R01 组内 5 个代表上逐一对照父提交,**全部同样失败** → **既有失败**。`run.go:2961` 的 `!graphObserved` 跳过结构在父提交 `run.go:3197` 同样存在 |
 | 「H9 占 22 个失败」 | **更正为 10 个** | 归因实测:R03 组 = 5 顶层 + 5 子测试。S9 一族 87 个失败里大部分来自其它根因 |
 | 「`observeMainS9Impact` 是零引用新面」 | **确认** | `internal/cli/s9_impact_observer.go` 由 `d0d948a` **新增**(`git log --diff-filter=A` 确认),父提交 `git grep` 命中 0 次 → 确实是本轮引入 |
+
+### 10.1 「按 blueprint 适配测试」阶段推翻的本报告结论(2026-11-02)
+
+本报告的缺陷清单是**从代码现状反推**的;下一阶段改为**从 blueprint 正推**,逐字核对后推翻了其中 7 条。
+**以本表为准**,各条目的「🔄 本轮复核修订」块给出了逐条依据。
+
+| 本报告结论 | 复核裁定 | 依据 | 处置 |
+|---|---|---|---|
+| **H3** S8 因果闭合链整体成为死代码 = 缺陷 | **推翻** | `L3-S8:160`「**不是两条机器证明路线**……**不要求至少一项 `refuted`**」;`L3-S8:307`(§9.3「机器不认证因果」)「不成为……**至少一项反驳**……的机器门」—— **两条都是移除类措辞** | 判 **STALE**,改写测试为「Main 的专业判断不被机器认证」 |
+| **H17** 同一事件重复重试会重复写审计行 = 缺陷 | **推翻** | 父提交的去重身份建立在事件正文 sha256 上(`9bf73ca:internal/policy/engine.go:1738-1755`),违反 `L4-hook-acceptance-checklist.md:184`「不得将同一用途改名为 fingerprint、checksum 或换用其他散列算法」;`:188`「不能用"保回归"把已放弃的机器保证补回」 | 判 **STALE**,改写合成载荷;测试**全部原断言保留** |
+| **H18** `s7_status.go` 的 review-plan 路径计算为空 = 缺陷 | **推翻** | `L3-S7:191`「路径沿本次 ReviewPlan 身份生成」;生产路径上 `round_entry.plan_id` **总是**被写入(`internal/transition/actions.go:263`、`internal/repair/runtime.go:1141`)⇒ 空路径**只在合成 fixture 上出现,生产不可达**;HEAD 对空路径**有准确反馈**(`s7_status.go:114-121`) | 判 **STALE-FIXTURE**,改 fixture |
+| **R05 / H1** S9「local evidence source gap」= S7 兜底失效 | **推翻(归因)** | 失败点全在 **S9 链**,不在 S7 兜底;诊断是 `Original S9 Result received.`(Result **已被接收**)。断言依赖的 `S9 local evidence source gap` 来自 `internal/repair/s9_local_evidence.go`(**归档证据字节 + 记 SHA256**),该文件已被 `L3-S9:236`「**不回读证据文件、不归档后散列取证**」整体删除 | 判 **STALE**,改用 `L3-S9:246` 保留的真实未决边界 |
+| **H7 #22/#23** Stop 是否消费本人原 Result = 缺陷 | **推翻(归因)** | 真触发是 `execution.DeliveryRef != ""`(**Stop 已建立候选**),`WorkerChecks:[]` 只是 **Go 结构体打印**,不是 JSON `null`;`L4-hook-platform-wiring.md:138`「S7／S8／S9 Stop 与 Pre、成功 Post 共用 §5.2」要求 **Stop 共享接收链**;同包未改动的 `internal/cli/native_s9_test.go:104` 断言 Stop 后 `DeliveryRef != ""` 且当前通过 | 判 **STALE**,改写前置断言 |
+| **H16** Inspect 责任装载丢了 Worktree/Branch | **定位修正(结论维持)** | 该守卫在父提交 `9bf73ca:internal/integration/inspect.go` **一模一样存在** ⇒ 不是「重构删了 Inspect 侧回填」。真断点在**生产方**:`internal/cli/native_s9_original.go:169` 把 `Branch` **写死成 `""`**(父提交跑 `git branch --show-current`) | 仍是 **DEFECT**,但**修法位置**从 Inspect 侧改到生产方 |
+| **M1** `observeMainS9Impact` 零引用短路观察链 = MED 缺陷 | **状态改为未决** | 零引用事实**维持**;但它是否构成缺陷取决于另一条未决裁定(公开 Main PreToolUse 经它**写入** Runtime 是否合规,`L3-S9:236` vs `:238` 无直接裁决) | 判 **需 owner 裁定**,相关测试**保持红** |
+
+**另新增一条精确根因(H9)**:`internal/cli/native_s9_recovery.go:87` 用 `filepath.Base(filepath.Dir(path))` 回推包名,
+但 `internal/repair/native_s9_private.go:13-24` 把超长 ID 截断成 `p/<c1>/<c2>/<c3>` ⇒ **原生 Result 路径永远解不回 Plan 包**。
 
 ---
 

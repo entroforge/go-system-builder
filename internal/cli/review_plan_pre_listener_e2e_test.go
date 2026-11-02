@@ -69,7 +69,7 @@ func testMainReviewPlanAssetsOriginal(t *testing.T, event, identity string, asse
 		t.Fatalf("Main lost planning guidance: %s", context)
 	}
 	guideBytes, guideErr := os.ReadFile(guide)
-	if guideErr != nil || !strings.Contains(string(guideBytes), "candidate is not") || !strings.Contains(string(guideBytes), "verification_artifact_workspace") || !strings.Contains(string(guideBytes), "e2e-workspace/") || !strings.Contains(string(guideBytes), "optional historical source information") {
+	if guideErr != nil || !strings.Contains(string(guideBytes), "candidate is not") || !strings.Contains(string(guideBytes), "verification_artifact_workspace") || !strings.Contains(string(guideBytes), "e2e-workspace/") || !strings.Contains(string(guideBytes), "optional historical source information") || !strings.Contains(string(guideBytes), "workgroup registration command") {
 		t.Fatalf("missing planning guidance: %v %s", guideErr, guideBytes)
 	}
 	draft, err := os.ReadFile(path)
@@ -150,9 +150,49 @@ func testMainReviewPlanAssetsOriginal(t *testing.T, event, identity string, asse
 	if !strings.Contains(result, "review-plan-questionnaire-save") || !strings.Contains(result, path) {
 		t.Fatalf("save did not return original registration/path: %s", result)
 	}
-	for _, expected := range []string{"prepares and registers", "manifest-draft", "assignment-e2e-1 waits", "static Claims"} {
-		if !strings.Contains(result, expected) {
-			t.Fatalf("registered plan did not provide its actual preparation/dependency step %q: %s", expected, result)
+	// Main receives an accurate preparation path for every declared
+	// Assignment, including the behavior-wave one. The machine wave gate that
+	// held a behavior Assignment behind the whole batch's static Claims was
+	// removed together with the S7 wave gate, so the received plan is no
+	// longer reported as waiting: every Assignment is prepared and registered
+	// on its own facts.
+	if !strings.Contains(result, "prepares and registers") {
+		t.Fatalf("registered plan did not provide its actual preparation/registration duty: %s", result)
+	}
+	prepared := map[string]string{}
+	for _, id := range []string{"assignment-dv-1", "assignment-qa-1", "assignment-e2e-1"} {
+		if !strings.Contains(result, "S7 assignment="+id+": prepare the manifest with ") {
+			t.Fatalf("declared assignment %s received no preparation step: %s", id, result)
+		}
+		command := "s7 manifest-draft --root '" + root + "' --assignment '" + id + "' --out '"
+		start := strings.Index(result, command)
+		if start < 0 {
+			t.Fatalf("declared assignment %s received no accurate manifest preparation path: %s", id, result)
+		}
+		rest := result[start+len(command):]
+		end := strings.Index(rest, "'")
+		if end < 0 {
+			t.Fatalf("declared assignment %s received an incomplete manifest preparation path: %s", id, result)
+		}
+		manifest := rest[:end]
+		workspace := filepath.Join(root, ".claude", "workgroups", "plans") + string(filepath.Separator)
+		if !strings.HasPrefix(manifest, workspace) || !strings.HasSuffix(manifest, string(filepath.Separator)+"manifest.json") {
+			t.Fatalf("declared assignment %s received a manifest path outside its plan workspace: %s", id, manifest)
+		}
+		if other, seen := prepared[manifest]; seen {
+			t.Fatalf("assignments %s and %s share one manifest preparation path: %s", other, id, manifest)
+		}
+		prepared[manifest] = id
+	}
+	if got := strings.Count(result, "s7 manifest-draft"); got != len(prepared) {
+		t.Fatalf("expected one manifest preparation path per declared Assignment, got %d for %d: %s", got, len(prepared), result)
+	}
+	if !strings.Contains(result, "then uses the returned registration command") {
+		t.Fatalf("prepared Assignments lost the original workgroup registration entry: %s", result)
+	}
+	for _, removed := range []string{"assignment-e2e-1 waits", "static Claims", "behavior-wave", "not all dispositioned yet"} {
+		if strings.Contains(result, removed) {
+			t.Fatalf("removed machine wave gate reappeared as %q: %s", removed, result)
 		}
 	}
 	statePath := filepath.Join(root, ".claude/loop-state.json")

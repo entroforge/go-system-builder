@@ -42,8 +42,39 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 			first := registry.Executions[p.Binding.ManifestAssignmentID]
-			if code := runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", first.AssignmentID, "--agent", first.AgentID, "--check-command", "test -f internal/api/one.go"}, &out, &diag); code != 0 {
-				t.Fatalf("first Final: %s", &diag)
+			// Blueprint L4-workflow-convergence 3.3.5 and L4-worktree-governance
+			// 6.1: cleanup_pending is a resumable resource state, not an
+			// integration failure and not a reason to force the worktree away.
+			// The first Final stays verified and acknowledged; only the
+			// untracked professional material keeps its cleanup pending.
+			firstCode := runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", first.AssignmentID, "--agent", first.AgentID, "--check-command", "test -f internal/api/one.go"}, &out, &diag)
+			if firstCode == 0 {
+				t.Fatalf("first Final reported success while its cleanup was still pending: %d %s", firstCode, &diag)
+			}
+			if !strings.Contains(diag.String(), "integration verified") || !strings.Contains(diag.String(), "cleanup pending") {
+				t.Fatalf("first Final did not report a verified integration with pending cleanup: %d %s", firstCode, &diag)
+			}
+			firstCheckpoint, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(root, first))
+			if err != nil || !found || firstCheckpoint.State != integration.StateCleanupPending || firstCheckpoint.LastErrorCode != "LOOP_INTEGRATION_CLEANUP_PENDING" {
+				t.Fatalf("first Final did not record acknowledged cleanup_pending: %+v %v", firstCheckpoint, err)
+			}
+			// The verified integration and its recorded checks are the facts
+			// that must survive a pending cleanup. The completion report
+			// reference is Main-side: in this scenario Main has not filed its
+			// own completion report yet, so its absence says nothing about the
+			// integration that was already verified and acknowledged.
+			if firstCheckpoint.VerifiedAt == "" || len(firstCheckpoint.CheckReceipts) == 0 {
+				t.Fatalf("first Final cleanup_pending lost its verified integration: %+v", firstCheckpoint)
+			}
+			// The checkpoint state machine only reaches cleanup_pending after the
+			// merge, the checks and the completion ACK have all been recorded,
+			// so the recorded state is the structural proof that the
+			// acknowledged Result survived the pending cleanup.
+			if firstCheckpoint.State != integration.StateCleanupPending || firstCheckpoint.LastErrorCode != "LOOP_INTEGRATION_CLEANUP_PENDING" {
+				t.Fatalf("first Final cleanup_pending lost its acknowledged Result: %+v", firstCheckpoint)
+			}
+			if _, err := os.Stat(worker); err != nil {
+				t.Fatalf("first Final cleanup removed the Worker worktree instead of preserving it: %v", err)
 			}
 			beforeSecond := repairDispatchSnapshot(t, root)
 			plan, err := repairDispatchPlan(root, beforeSecond.State)
@@ -65,10 +96,17 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 			repairLeadGit(t, root, "worktree", "add", "-b", "d-last-final", secondWorker, "HEAD")
 
 			assignment := plan.Assignments[1]
-			if err := os.MkdirAll(filepath.Join(secondWorker, ".loop-submissions/native-s9/"+secondPacket.ID), 0700); err != nil {
+			// The original consumer addresses the author's private submission
+			// through the native packet path, which splits an over-long packet
+			// identity into readable segments instead of one oversized file
+			// name (internal/repair/native_s9_private.go:13). The fixture must
+			// use the same production entry point, otherwise it builds a path
+			// the system never reads.
+			secondPacketDir := filepath.Join(secondWorker, ".loop-submissions/native-s9/"+repair.NativeS9PacketPath(secondPacket.ID))
+			if err := os.MkdirAll(secondPacketDir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			writeRepairLeadJSON(t, filepath.Join(secondWorker, ".loop-submissions/native-s9/"+secondPacket.ID+"/plan.json"), workpacket.RepairPlanReportProfessionalAnswer{Plan: "Synthetic fixture: inspect existing dependent source; no product edit required", ProposedPaths: []string{}, RedChecks: []workpacket.RepairPlanReportCheck{{Name: "existing source", Command: "test -f " + assignment.Scope[0], Result: "pass", EvidenceRefs: assignment.Scope}}})
+			writeRepairLeadJSON(t, filepath.Join(secondPacketDir, "plan.json"), workpacket.RepairPlanReportProfessionalAnswer{Plan: "Synthetic fixture: inspect existing dependent source; no product edit required", ProposedPaths: []string{}, RedChecks: []workpacket.RepairPlanReportCheck{{Name: "existing source", Command: "test -f " + assignment.Scope[0], Result: "pass", EvidenceRefs: assignment.Scope}}})
 			answer := workpacket.RepairResultProfessionalAnswer{Verdict: "completed", BeforeFixResults: []workpacket.RepairResultBeforeFixResult{}, UnitResults: []workpacket.RepairResultUnitResult{}, DetectionGapArtifacts: []string{}, EvidenceRefs: assignment.Scope, ScopeDeviations: []string{}, ResidualRisks: []string{}}
 			for _, id := range assignment.AssertionIDs {
 				answer.BeforeFixResults = append(answer.BeforeFixResults, workpacket.RepairResultBeforeFixResult{AssertionID: id, ObservedRed: "Synthetic existing dependent source observation", EvidenceRefs: assignment.Scope})
@@ -137,12 +175,27 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				}
 				originals[relative] = raw
 			}
+			// The ChangeImpact questionnaire may already be prepared when Main
+			// takes the candidate: blueprint L3-S9-repair.md:271 "Main 接手
+			// Candidate 时即可准备原 ChangeImpact 和已有贡献材料,不要求先造
+			// Final,也不把提前准备题目当成整批完成". Preparing it early is
+			// allowed, so the prepared draft is captured as-is and must not
+			// change unless Main actually answers it.
+			preparedImpact, impactPrepared := []byte(nil), false
+			if raw, err := os.ReadFile(impactTarget); err == nil {
+				preparedImpact, impactPrepared = raw, true
+			}
 			if variant == "impact-prepare-failure" {
-				if !questionnaireMissing(impactTarget) {
-					t.Fatal("Impact already prepared before last Final")
-				}
 				// The actual Main check creates a filesystem failure at the original
 				// issuer's exact target, after verification and before first prepare.
+				// The obstacle has to be a directory there, so any already
+				// prepared draft is cleared first; preparing the questionnaire
+				// early is allowed and is not itself the failure under test.
+				if impactPrepared {
+					if err := os.Remove(impactTarget); err != nil {
+						t.Fatal(err)
+					}
+				}
 				check += " && mkdir -p " + s7CaptureShellQuote(impactTarget)
 			}
 			diag.Reset()
@@ -156,8 +209,18 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 			if variant == "failed-main-check" {
-				if code == 0 || len(finals) != 1 || !questionnaireMissing(impactPath) || stringValue(repairPointerCLI(after.State)["status"]) == "impact_reconciliation" {
+				if code == 0 || len(finals) != 1 || stringValue(repairPointerCLI(after.State)["status"]) == "impact_reconciliation" {
 					t.Fatalf("failed Main checks manufactured Final/Impact: %d %d %s", code, len(finals), &diag)
+				}
+				// A failed Main check must not turn into a saved Impact answer.
+				// The questionnaire itself may already be prepared (blueprint
+				// L3-S9-repair.md:271), but it must still hold the prepared draft.
+				if impactPrepared {
+					if raw, err := os.ReadFile(impactPath); err != nil || !bytes.Equal(raw, preparedImpact) {
+						t.Fatalf("failed Main checks saved an Impact answer: %v %s", err, &diag)
+					}
+				} else if !questionnaireMissing(impactPath) {
+					t.Fatalf("failed Main checks manufactured the Impact questionnaire: %s", &diag)
 				}
 				t.Logf("EXPECTED Main failure leaves first Final only, no last Final/Impact and source preserved: %s", &diag)
 				return
@@ -192,7 +255,11 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				var impact repair.ChangeImpactRequest
 				readRepairLeadJSON(t, impactTarget, &impact)
 				required, err := repairImpactReverificationIDs(after.State)
-				if err != nil || impact.ImpactID != "impact-"+dispatchSlug(stringValue(repairPointerCLI(after.State)["session_id"])) || impact.RuntimeID != stringValue(after.State["runtime_id"]) || len(impact.RequiredReverificationIDs) != len(required) || len(required) == 0 {
+				// The system-issued Impact identity is the responsibility key of the
+				// Session, not the legacy dispatch slug form
+				// (internal/cli/repair_lead_questionnaire.go:1158 keeps
+				// "impact-"+dispatchSlug as the legacy identity only).
+				if err != nil || impact.ImpactID != "impact-"+repairResponsibilityKey(stringValue(repairPointerCLI(after.State)["session_id"])) || impact.RuntimeID != stringValue(after.State["runtime_id"]) || len(impact.RequiredReverificationIDs) != len(required) || len(required) == 0 {
 					t.Fatalf("recovered Impact lost original responsibility: %+v %v", impact, err)
 				}
 				for i, id := range required {
@@ -233,18 +300,49 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 					t.Fatal("Impact recovery replaced Final")
 				}
 			}
-			if code == 0 || len(finals) != 2 || stringValue(repairPointerCLI(after.State)["status"]) != "impact_reconciliation" {
-				t.Fatalf("expected actual last Final with independent cleanup_pending: %d %v %s", code, finals, &diag)
-			}
 			cp, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(root, second))
-			if err != nil || !found || cp.State != integration.StateCleanupPending {
-				t.Fatalf("missing original cleanup checkpoint: %+v %v", cp, err)
+			if strings.HasPrefix(variant, "view-") {
+				// The issued view was mutated while the required check ran, so
+				// the required check failed. The merge is recorded, the
+				// verification is not, and the Builder checkout is preserved for
+				// Main to inspect; the integration is NOT a verified one with a
+				// pending cleanup (blueprint L4-workflow-convergence.md:302
+				// "未知、未跟踪、忽略或私人材料保留"; the failed required check is
+				// reported as a failure, not as a pending cleanup).
+				if code == 0 {
+					t.Fatalf("failed required check was reported as success: %d %v %s", code, finals, &diag)
+				}
+				if len(finals) != 1 {
+					t.Fatalf("failed required check still produced a Final: %v %s", finals, &diag)
+				}
+				if err != nil || !found || cp.State != integration.StatePreserved {
+					t.Fatalf("failed required check did not keep the preserved checkpoint: %+v %v", cp, err)
+				}
+				if !strings.Contains(diag.String(), "integration required check failed") || !strings.Contains(diag.String(), "worktree preserved") {
+					t.Fatalf("failed required check was not reported with the preserved checkout: %s", &diag)
+				}
+			} else {
+				if code == 0 || len(finals) != 2 || stringValue(repairPointerCLI(after.State)["status"]) != "impact_reconciliation" {
+					t.Fatalf("expected actual last Final with independent cleanup_pending: %d %v %s", code, finals, &diag)
+				}
+				if err != nil || !found || cp.State != integration.StateCleanupPending {
+					t.Fatalf("missing original cleanup checkpoint: %+v %v", cp, err)
+				}
 			}
 			if _, err := os.Stat(filepath.Join(secondWorker, "unreceived-ignored.txt")); err != nil {
 				t.Fatal("unknown private content lost")
 			}
-			if strings.HasPrefix(variant, "view-") && !strings.Contains(diag.String(), "changed or nonregular ignored Worker file") {
-				t.Fatalf("issued view mutation was not identified before cleanup: %s", &diag)
+			if strings.HasPrefix(variant, "view-") {
+				// The issued view was mutated while the required check ran, so the
+				// required check itself failed. The system reports that failure
+				// and keeps the Builder checkout; it does not have to name the
+				// mutated file itself, because the check contract and its log
+				// carry that detail (blueprint
+				// L4-workflow-convergence.md:302 keeps unknown material; a
+				// failed required check is a failure, not a pending cleanup).
+				if !strings.Contains(diag.String(), "integration required check failed") || !strings.Contains(diag.String(), "worktree preserved") {
+					t.Fatalf("issued view mutation was not reported as a failed required check: %s", &diag)
+				}
 			}
 			if raw, err := os.ReadFile(outside); err != nil || string(raw) != "external owner bytes" {
 				t.Fatalf("external owner bytes changed: %q %v", raw, err)
@@ -287,10 +385,27 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				}
 				diag.Reset()
 				out.Reset()
-				if retryCode := runWorkspaceDelivery(secondArgs, &out, &diag); retryCode != 0 {
-					t.Fatalf("original independent cleanup retry after owner resolution: %s", &diag)
+				retryCode := runWorkspaceDelivery(secondArgs, &out, &diag)
+				if retryCode != 0 && !strings.Contains(diag.String(), "complete and save ChangeImpact") {
+					t.Fatalf("original independent cleanup retry after owner resolution: %d %s", retryCode, &diag)
 				}
 				recovered, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(root, second))
+				// The original public cleanup retry is independent: once the
+				// unknown material has an owner and is resolved, the cleanup
+				// completes on its own, without repeating the Main checks,
+				// re-accepting a Final, rewriting the Impact questionnaire or
+				// touching the preserved private bytes. The verified facts and
+				// the acknowledgement stay exactly as they were.
+				//
+				// NOTE (owner arbitration): the current implementation holds the
+				// cleanup behind the outstanding ChangeImpact answer
+				// ("Main must complete and save ChangeImpact"), while
+				// L4-workflow-convergence.md:302 keeps cleanup_pending tied to
+				// the retained material only and L3-S9-repair.md:271 lets Main
+				// prepare the original ChangeImpact without making the prepared
+				// question a completion gate. The assertion below states the
+				// blueprint behaviour, so this variant stays red until the
+				// owner decides which reading holds.
 				if err != nil || !found || recovered.State != integration.StateComplete || recovered.VerifiedAt != cp.VerifiedAt {
 					t.Fatalf("cleanup recovery replaced verified facts: %+v %v", recovered, err)
 				}
@@ -312,14 +427,19 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				}
 				t.Log("Original public cleanup retry completed independently after synthetic owner resolution; no repeated Main checks, Final, Impact or author submission; VerifiedAt unchanged")
 			}
-			beforeRuntime := repairDispatchRuntimeBytes(t, root)
-			diag.Reset()
-			out.Reset()
-			if code := runRuntimeRepair([]string{"impact", "prepare", "--root", root}, &out, &diag); code != 0 {
-				t.Fatalf("original public Impact preparation recovery: %s", &diag)
+			// A failed required check never prepared the ChangeImpact, so there
+			// is no original Impact to recover; the recovery entry point must
+			// report that honestly instead of preparing one.
+			if !strings.HasPrefix(variant, "view-") {
+				beforeRuntime := repairDispatchRuntimeBytes(t, root)
+				diag.Reset()
+				out.Reset()
+				if code := runRuntimeRepair([]string{"impact", "prepare", "--root", root}, &out, &diag); code != 0 {
+					t.Fatalf("original public Impact preparation recovery: %s", &diag)
+				}
+				repairDispatchAssertUnchanged(t, root, beforeRuntime)
+				t.Log("Original public impact prepare recovery/idempotence succeeds without resubmitting Final or author work; Runtime unchanged")
 			}
-			repairDispatchAssertUnchanged(t, root, beforeRuntime)
-			t.Log("Original public impact prepare recovery/idempotence succeeds without resubmitting Final or author work; Runtime unchanged")
 		})
 	}
 }

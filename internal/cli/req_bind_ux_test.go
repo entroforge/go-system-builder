@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 )
 
 // newUXTestRoot prepares a repository root with definition/policy assets and
@@ -301,6 +302,21 @@ func TestREQBindingUsesCommittedBytesAndExplicitDestinations(t *testing.T) {
 	}
 }
 
+// TestExplicitLegacyStateCannotBeReconciled pins that the retired
+// `runtime reconcile-policy-ref` entry no longer reconciles a Runtime at all:
+// it is a pure diagnostic that reports the policy which is currently
+// available, and it neither gates on the legacy layout nor rewrites the
+// historical Runtime bytes.
+//
+// L4-state-transition-core.md:359 retires the fingerprint maintenance entry
+// ("旧 fingerprint 维护入口 … 历史入口不再供 Hook 登记或重算散列；原状态修订或
+// 真实来源问题沿对应实际责任处理"), and :217 keeps the historical digest out of
+// any new reception or recovery condition ("旧散列字段不迁入新责任或变成新的
+// 接收/恢复条件"). The entry therefore must not become a layout gate again.
+// The legacy-layout rejection itself belongs to the still-effective
+// `projectlayout.Check` consumers — the read-only inspectors covered by
+// TestReadOnlyCommandsValidateExplicitRuntimeLayout plus install/doctor — so
+// this test keeps that obligation on the side that still owns it.
 func TestExplicitLegacyStateCannotBeReconciled(t *testing.T) {
 	for _, legacy := range []string{"definition", "bound_req"} {
 		t.Run(legacy, func(t *testing.T) {
@@ -344,8 +360,35 @@ func TestExplicitLegacyStateCannotBeReconciled(t *testing.T) {
 			out.Reset()
 			errOut.Reset()
 			code := cli.Run([]string{"runtime", "reconcile-policy-ref", "--root", root, "--state", statePath, "--journal", journalPath}, strings.NewReader(""), &out, &errOut)
-			if code == 0 || !strings.Contains(errOut.String(), "layout migration required") {
-				t.Fatalf("old explicit Runtime accepted: %d %s %s", code, out.String(), errOut.String())
+			if code != 0 {
+				t.Fatalf("retired entry must still report the available policy: %d %s %s", code, out.String(), errOut.String())
+			}
+			report := out.String()
+			for _, want := range []string{
+				"policy available",
+				"docs/control/hook-policy.json",
+				"version=v2.0.0",
+				"historical contents are not verified",
+			} {
+				if !strings.Contains(report, want) {
+					t.Fatalf("available policy report missing %q: %s", want, report)
+				}
+			}
+			// The retired entry is a diagnostic only: it must not act as a
+			// layout gate any more, and it must not claim to have verified or
+			// re-signed the historical contents.
+			for _, unwanted := range []string{
+				"layout migration required",
+				"legacy or mixed authority",
+				"sha256",
+				"already consistent",
+			} {
+				if strings.Contains(report, unwanted) || strings.Contains(errOut.String(), unwanted) {
+					t.Fatalf("retired reconcile behaviour reappeared (%q): stdout=%q stderr=%q", unwanted, report, errOut.String())
+				}
+			}
+			if errOut.Len() != 0 {
+				t.Fatalf("available policy report must stay silent on stderr: %q", errOut.String())
 			}
 			after, err := os.ReadFile(statePath)
 			if err != nil || !bytes.Equal(after, data) {
@@ -354,6 +397,30 @@ func TestExplicitLegacyStateCannotBeReconciled(t *testing.T) {
 			afterJournal, err := os.ReadFile(journalPath)
 			if err != nil || !bytes.Equal(afterJournal, beforeJournal) {
 				t.Fatal("legacy journal changed", err)
+			}
+			// The recorded digest and the historical references survive
+			// untouched: the retired entry neither re-hashes nor migrates them.
+			var afterState map[string]any
+			if err := json.Unmarshal(after, &afterState); err != nil {
+				t.Fatal(err)
+			}
+			policyRef := afterState["hook_control"].(map[string]any)["policy_ref"].(map[string]any)
+			if policyRef["sha256"] != strings.Repeat("0", 64) {
+				t.Fatalf("retired entry recomputed the recorded digest: %v", policyRef["sha256"])
+			}
+			if legacy == "definition" {
+				if afterState["definition"].(map[string]any)["path"] != "docs/loop-definition.json" {
+					t.Fatalf("retired entry migrated the legacy definition reference: %v", afterState["definition"])
+				}
+			} else if afterState["bound_req"].(map[string]any)["path"] != "docs/product/requirements/REQ-001.md" {
+				t.Fatalf("retired entry migrated the legacy bound_req reference: %v", afterState["bound_req"])
+			}
+			// The legacy-layout rejection now belongs to the still-effective
+			// `projectlayout.Check` consumers (install/doctor and the read-only
+			// inspectors): the very same legacy bytes must still be refused
+			// there.
+			if err := projectlayout.CheckRuntime(data); err == nil || !strings.Contains(err.Error(), "layout migration required") {
+				t.Fatalf("legacy layout accepted by the layout check: %v", err)
 			}
 		})
 	}

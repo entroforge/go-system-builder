@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -53,6 +55,12 @@ func TestNativeS9LateTargetedPublicHookPreservesCurrentS7(t *testing.T) {
 		"targeted_reverification_refs": []any{}, "targeted_reverification_artifacts": []any{},
 	}
 	registerLegacyTargetedTestSources(t, root, state, assignment, verifier, "verifier-late-hook")
+	// The shared legacy helper still mints the historical `TASK-9<base64>`
+	// identifier. L3-S4 requires the canonical
+	// `^TASK-[0-9]{3,}(?:-[0-9]{2,})?$` TASK shape and the v1.2 Runtime
+	// schema rejects the historical form, so this fixture re-issues its own
+	// TASK with the canonical identifier before the Runtime Writer sees it.
+	reissueCanonicalTaskID(t, root, state, nativeS9LateCanonicalTaskID)
 	// The legacy selector helper supplies only its lookup fields. This test
 	// reaches the real Runtime Writer, so complete the existing v1.2 entity
 	// shapes without changing the original task/owner/manifest associations.
@@ -108,5 +116,95 @@ func TestNativeS9LateTargetedPublicHookPreservesCurrentS7(t *testing.T) {
 	}
 	if !strings.Contains(diagnostic, "committed through the original Runtime Writer") {
 		t.Fatalf("original consumer outcome unavailable: %s", diagnostic)
+	}
+	// The historical `TASK-9<base64>` identifier is a removed compatibility
+	// form: the committed Runtime state must keep the original responsibility
+	// only under the canonical TASK id.
+	committedTasks, _ := mapFieldCLI(after.State, "entities")["tasks"].([]any)
+	kept := false
+	for _, raw := range committedTasks {
+		row, _ := raw.(map[string]any)
+		id := stringValue(row["id"])
+		if !nativeS9LateCanonicalTaskPattern.MatchString(id) {
+			t.Fatalf("committed Runtime state kept the removed historical TASK identifier %q", id)
+		}
+		if id == nativeS9LateCanonicalTaskID {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatalf("committed Runtime state lost the canonical original TASK %q", nativeS9LateCanonicalTaskID)
+	}
+}
+
+// The canonical TASK identifier shape shared by the S4 planning check and the
+// Runtime schema (internal/schema/assets/loop-state-v1.2.schema.json).
+var nativeS9LateCanonicalTaskPattern = regexp.MustCompile(`^TASK-[0-9]{3,}(?:-[0-9]{2,})?$`)
+
+// The canonical TASK id this fixture re-issues for its original verifier.
+const nativeS9LateCanonicalTaskID = "TASK-901"
+
+// The path under which the shared legacy helper registers its TASK source.
+const nativeS9LateLegacyTaskPath = ".claude/test-targeted/task.json"
+
+// reissueCanonicalTaskID replaces the legacy fixture's historical
+// `TASK-9<base64>` identifier with the canonical TASK id and keeps every
+// recorded reference consistent: the TASK source file and its digest, the
+// TASK entity and the original owner's issued TASK list.
+func reissueCanonicalTaskID(t *testing.T, root string, state map[string]any, canonicalID string) {
+	t.Helper()
+	if !nativeS9LateCanonicalTaskPattern.MatchString(canonicalID) {
+		t.Fatalf("canonical TASK id %q does not match the Runtime schema shape", canonicalID)
+	}
+	entities := mapFieldCLI(state, "entities")
+	tasks, _ := entities["tasks"].([]any)
+	var taskRow map[string]any
+	legacyID := ""
+	for _, raw := range tasks {
+		row, _ := raw.(map[string]any)
+		if row == nil || stringValue(row["path"]) != nativeS9LateLegacyTaskPath {
+			continue
+		}
+		taskRow, legacyID = row, stringValue(row["id"])
+	}
+	if taskRow == nil || legacyID == "" {
+		t.Fatal("legacy Targeted fixture did not register its TASK source")
+	}
+	if legacyID == canonicalID {
+		t.Fatalf("legacy Targeted fixture already uses the canonical TASK id %q", canonicalID)
+	}
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(nativeS9LateLegacyTaskPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["task_id"] = canonicalID
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRepairLeadFile(t, root, nativeS9LateLegacyTaskPath, string(updated))
+	taskRow["id"] = canonicalID
+	taskRow["sha256"] = repairLeadDigest(updated)
+	agents, _ := entities["agents"].([]any)
+	reissued := 0
+	for _, raw := range agents {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		ids, _ := row["task_ids"].([]any)
+		for index, id := range ids {
+			if stringValue(id) == legacyID {
+				ids[index] = canonicalID
+				reissued++
+			}
+		}
+	}
+	if reissued != 1 {
+		t.Fatalf("canonical TASK id was not re-issued to exactly one original owner: %d", reissued)
 	}
 }

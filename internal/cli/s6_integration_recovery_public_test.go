@@ -53,27 +53,46 @@ func TestS6MainInspectFailureWithoutCheckpointRestoresOriginalSource(t *testing.
 		t.Fatal(err)
 	}
 	payload, diagnostic := s6RecoveryCommand(t, root, r, false)
-	for _, want := range []string{"blocker: worktree inspection failed:", "is missing", worker, "No integration checkpoint exists", "checkpoint_state=absent", "--root", r.AssignmentID, r.OwnerAgentID} {
+	// A missing workspace is an observation failure, not a new reception or
+	// stage gate: the diagnostic must name the unobservable path and the
+	// unknown ownership instead of blocking the integration
+	// (L3-S6-build.md:361, L4-workflow-convergence.md:430).
+	for _, want := range []string{"could not be observed", "unknown", worker} {
 		if !strings.Contains(diagnostic, want) {
 			t.Fatalf("missing %q: %s", want, diagnostic)
 		}
 	}
-	if payload["state"] != "blocked" || payload["blocked"] != true || strings.Contains(diagnostic, "--retry-preserved") || strings.Contains(diagnostic, "preserved/blocked") {
-		t.Fatalf("missing checkpoint advertised as retryable: %+v %s", payload, diagnostic)
+	for _, unwanted := range []string{"blocker: worktree inspection failed:", "No integration checkpoint exists", "checkpoint_state=absent", "--retry-preserved"} {
+		if strings.Contains(diagnostic, unwanted) {
+			t.Fatalf("observation failure became a stage gate (%q): %s", unwanted, diagnostic)
+		}
+	}
+	if payload["state"] != "integrated" || payload["blocked"] != false {
+		t.Fatalf("missing workspace blocked the integration: %+v %s", payload, diagnostic)
 	}
 	slot := assignmentrecord.IntegrationCheckpointPath(root, r.Reference())
-	if _, found, err := integration.DefaultCheckpointStore().Load(slot); err != nil || found {
-		t.Fatalf("Inspect error wrote checkpoint: %v %v", found, err)
+	cp, found, err := integration.DefaultCheckpointStore().Load(slot)
+	if err != nil || !found || cp.State != integration.StateComplete || cp.CompletionReportPath == "" {
+		t.Fatalf("branch integration did not complete without the workspace: %+v %v %s", cp, err, diagnostic)
 	}
+	// --retry-preserved belongs to a real check failure that left a
+	// preserved/blocked checkpoint (L4-agent-guidance.md:318). This
+	// integration already completed, so the feedback must name the real
+	// original entry command and say to continue without the parameter.
 	var invalidRetryOut, invalidRetryDiagnostic bytes.Buffer
-	if code := cli.Run([]string{"runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID, "--retry-preserved"}, nil, &invalidRetryOut, &invalidRetryDiagnostic); code != 1 || !strings.Contains(invalidRetryDiagnostic.String(), "no integration checkpoint exists") || !strings.Contains(invalidRetryDiagnostic.String(), "then run `loop-harness runtime task-integrate --root") {
+	if code := cli.Run([]string{"runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID, "--retry-preserved"}, nil, &invalidRetryOut, &invalidRetryDiagnostic); code != 1 ||
+		!strings.Contains(invalidRetryDiagnostic.String(), "retry requires an existing preserved/blocked/merged checkpoint") ||
+		!strings.Contains(invalidRetryDiagnostic.String(), "current checkpoint_state=complete") ||
+		!strings.Contains(invalidRetryDiagnostic.String(), "loop-harness runtime task-integrate --root") ||
+		!strings.Contains(invalidRetryDiagnostic.String(), "without --retry-preserved") ||
+		strings.Contains(invalidRetryDiagnostic.String(), "no integration checkpoint exists") {
 		t.Fatalf("unsupported retry omitted the real original entry: %d %s %s", code, &invalidRetryOut, &invalidRetryDiagnostic)
 	}
 	if _, err := workspace.Git(t.Context(), root, "worktree", "add", worker, "native/delivery"); err != nil {
 		t.Fatal(err)
 	}
 	payload, diagnostic = s6RecoveryCommand(t, root, r, false)
-	cp, found, err := integration.DefaultCheckpointStore().Load(slot)
+	cp, found, err = integration.DefaultCheckpointStore().Load(slot)
 	if err != nil || !found || cp.State != integration.StateComplete || cp.CompletionReportPath == "" || payload["blocked"] != false {
 		t.Fatalf("original entry did not recover accepted source: %+v %v %s", cp, err, diagnostic)
 	}
@@ -81,20 +100,33 @@ func TestS6MainInspectFailureWithoutCheckpointRestoresOriginalSource(t *testing.
 
 func TestS6MainPreservedCheckpointNamesActualRetryAndRetainsSource(t *testing.T) {
 	for _, historicalBlocked := range []bool{false, true} {
-		t.Run(map[bool]string{false: "preserved", true: "legacy-blocked"}[historicalBlocked], func(t *testing.T) {
+		t.Run(map[bool]string{false: "cleanup-pending", true: "legacy-blocked"}[historicalBlocked], func(t *testing.T) {
 			root, worker, r, _ := s6RecoveryAccepted(t)
 			proof := filepath.Join(worker, "src/pkg/proof.txt")
 			if err := os.WriteFile(proof, []byte("Uncommitted work must survive the failed integration.\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			payload, diagnostic := s6RecoveryCommand(t, root, r, false)
-			for _, want := range []string{"checkpoint_state=preserved", "--retry-preserved", "blocker:", "--root", r.AssignmentID} {
+			// Retained material is a resource to keep, not an integration
+			// failure: the integration still completes and the leftover
+			// material is reported as cleanup_pending
+			// (L4-workflow-convergence.md:435, L4-workflow-convergence.md:302).
+			for _, want := range []string{"integration verified", "completion_ack recorded", "checkpoint_state=cleanup_pending", "preserve worktree", worker, "src/pkg/proof.txt"} {
 				if !strings.Contains(diagnostic, want) {
 					t.Fatalf("missing %q: %s", want, diagnostic)
 				}
 			}
-			if payload["state"] != integration.StatePreserved || payload["blocked"] != true {
-				t.Fatalf("incorrect preserved result: %+v", payload)
+			for _, unwanted := range []string{"checkpoint_state=preserved", "checkpoint_state=blocked", "--retry-preserved", "blocker:"} {
+				if strings.Contains(diagnostic, unwanted) {
+					t.Fatalf("retained material became a stage gate (%q): %s", unwanted, diagnostic)
+				}
+			}
+			if payload["state"] != "integrated" || payload["blocked"] != false {
+				t.Fatalf("retained material blocked the integration: %+v %s", payload, diagnostic)
+			}
+			cp, found, err := integration.DefaultCheckpointStore().Load(assignmentrecord.IntegrationCheckpointPath(root, r.Reference()))
+			if err != nil || !found || cp.State != integration.StateCleanupPending {
+				t.Fatalf("retained material was not left as cleanup_pending: %+v %v %s", cp, err, diagnostic)
 			}
 			if _, err := os.Stat(proof); err != nil {
 				t.Fatal("failed integration removed dirty source", err)
@@ -103,8 +135,9 @@ func TestS6MainPreservedCheckpointNamesActualRetryAndRetainsSource(t *testing.T)
 				t.Fatal(err)
 			}
 			if historicalBlocked {
-				// blocked is an already-issued checkpoint state accepted by the
-				// original recovery path; current inspection failures write preserved.
+				// A legacy blocked checkpoint is the recorded shape of a real
+				// check failure: it keeps the failure and the completed
+				// boundary it resumes from (L4-worktree-governance.md:129).
 				store := integration.DefaultCheckpointStore()
 				slot := assignmentrecord.IntegrationCheckpointPath(root, r.Reference())
 				prior, found, err := store.Load(slot)
@@ -113,18 +146,60 @@ func TestS6MainPreservedCheckpointNamesActualRetryAndRetainsSource(t *testing.T)
 				}
 				next := prior
 				next.State = integration.StateBlocked
+				next.ResumeState = integration.StateMerged
+				next.FailureReason = "recorded check failure"
 				if _, err := store.CompareAndSwap(slot, prior, next); err != nil {
 					t.Fatal(err)
 				}
 				blocked, text := s6RecoveryCommand(t, root, r, false)
-				if blocked["state"] != integration.StateBlocked || !strings.Contains(text, "checkpoint_state=blocked") || !strings.Contains(text, "--retry-preserved") || strings.Contains(text, "task-integrate: preserved") {
+				// The bare command keeps the recorded failure and names the
+				// retry condition together with its parameter
+				// (L4-agent-guidance.md:318).
+				if blocked["state"] != integration.StateBlocked || blocked["blocked"] != true ||
+					!strings.Contains(text, "checkpoint_state=blocked") || !strings.Contains(text, "--retry-preserved") ||
+					strings.Contains(text, "task-integrate: preserved") {
 					t.Fatalf("legacy blocked checkpoint misrepresented: %+v %s", blocked, text)
 				}
 			}
-			payload, diagnostic = s6RecoveryCommand(t, root, r, true)
-			cp, found, err := integration.DefaultCheckpointStore().Load(assignmentrecord.IntegrationCheckpointPath(root, r.Reference()))
-			if err != nil || !found || cp.State != integration.StateComplete || cp.CompletionReportPath == "" || payload["blocked"] != false {
-				t.Fatalf("retry did not retain original accepted source: %+v %v %s", cp, err, diagnostic)
+			// The cleanup follow-up needs no author action and no
+			// --retry-preserved (L4-workflow-convergence.md:435); only a real
+			// check failure that left a preserved/blocked checkpoint does.
+			payload, diagnostic = s6RecoveryCommand(t, root, r, historicalBlocked)
+			// Reception, checks and ACK stay established and the stage
+			// successor is not gated on the retained resource
+			// (L4-workflow-convergence.md:302).
+			//
+			// A cleanup follow-up is NOT a stage gate, so it names no stage
+			// transition of its own: the earlier S7 handoff (TR-006) is
+			// already established, and re-naming it here would present the
+			// retained worktree as a pending stage obligation.
+			for _, want := range []string{"integration verified", "completion_ack recorded", "checkpoint_state=cleanup_pending"} {
+				if !strings.Contains(diagnostic, want) {
+					t.Fatalf("missing %q: %s", want, diagnostic)
+				}
+			}
+			// The worktree is preserved because it holds unknown/untracked
+			// material; cleanup is retried separately and never force-deleted
+			// to make the check pass (L4-workflow-convergence.md:435).
+			if strings.Contains(diagnostic, "TR-006") {
+				t.Fatalf("cleanup follow-up re-named a stage transition: %s", diagnostic)
+			}
+			for _, unwanted := range []string{"blocker:", "--retry-preserved"} {
+				if strings.Contains(diagnostic, unwanted) {
+					t.Fatalf("cleanup follow-up became a stage gate (%q): %s", unwanted, diagnostic)
+				}
+			}
+			if payload["state"] != "integrated" || payload["blocked"] != false {
+				t.Fatalf("cleanup follow-up blocked the integration: %+v %s", payload, diagnostic)
+			}
+			cp, found, err = integration.DefaultCheckpointStore().Load(assignmentrecord.IntegrationCheckpointPath(root, r.Reference()))
+			if err != nil || !found || cp.State != integration.StateCleanupPending {
+				t.Fatalf("retained material was not left as cleanup_pending: %+v %v %s", cp, err, diagnostic)
+			}
+			// The retained private material survives: the stage passes without
+			// deleting the author's files.
+			if _, err := os.Stat(filepath.Join(worker, ".claude")); err != nil {
+				t.Fatalf("cleanup follow-up deleted retained private material: %v", err)
 			}
 		})
 	}

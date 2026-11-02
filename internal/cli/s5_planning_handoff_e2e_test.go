@@ -216,13 +216,27 @@ func TestS4ReceptionFieldFailurePersistsAcrossSessionAndClears(t *testing.T) {
 	if err == nil || r.Accepted {
 		t.Fatal("invalid path received")
 	}
+	// The rejected attempt keeps its concrete field reason in the current S4
+	// scope, so a later session can still name it.
+	pending := stageSnapshot(t, root)
+	cause := submission.PlanningDiagnostic(root, pending.State, "reception")
+	if !strings.Contains(cause, "index_path") || !strings.Contains(cause, invalid) {
+		t.Fatalf("pending reception reason is not the field reason: %s", cause)
+	}
 	for _, event := range []string{"PreToolUse", "SessionStart"} {
 		text := s3DeliveredContext(t, designGuidanceEvent(t, root, "s4-field-"+event, event, "Read"))
 		if !strings.Contains(text, "index_path") || !strings.Contains(text, "outside") {
 			t.Fatalf("%s lost cause %s", event, text)
 		}
+		if !strings.Contains(text, "/answer/index_path") || !strings.Contains(text, invalid) {
+			t.Fatalf("%s lost the exact field cause %s", event, text)
+		}
 	}
-	// The original source failure remains actionable after a fresh session.
+	// Blueprint L3-S4-task-split.md:494 and L4-state-transition-core.md:163:
+	// the natural Hook and the original consumer no longer compute, register
+	// or verify a digest. An edited accepted upstream contract therefore stays
+	// the same original source by its association, so editing it must not
+	// change the pending reason or the S4 reception result.
 	stageJSON(t, root, p.AnswerPath, completedTaskPlanningDraft(p))
 	sourcePath := p.Inputs.Contracts[0].Path
 	originalSource, readErr := os.ReadFile(filepath.Join(root, sourcePath))
@@ -235,38 +249,34 @@ func TestS4ReceptionFieldFailurePersistsAcrossSessionAndClears(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A fresh session must still name the precise original source while the
-	// S4 reception is pending.
-	sourceSession := s3DeliveredContext(t, designGuidanceEvent(t, root, "s4-source-new-session", "SessionStart", "Read"))
-	if !strings.Contains(sourceSession, sourcePath) {
-		t.Fatal("session lost precise source", sourceSession)
+	editedSession := s3DeliveredContext(t, designGuidanceEvent(t, root, "s4-source-edited-session", "SessionStart", "Read"))
+	if !strings.Contains(editedSession, invalid) {
+		t.Fatalf("edited original source lost the pending field reason %s", editedSession)
+	}
+	for _, invented := range []string{"source changed", "changed source", "source has changed", "source is changed", "source drift"} {
+		if strings.Contains(strings.ToLower(editedSession), invented) {
+			t.Fatalf("session invented a %q reason: %s", invented, editedSession)
+		}
+	}
+	if strings.Contains(editedSession, "changed accepted contract description") {
+		t.Fatalf("session reported the edited original source as changed: %s", editedSession)
+	}
+	cause = submission.PlanningDiagnostic(root, pending.State, "reception")
+	if !strings.Contains(cause, "index_path") || !strings.Contains(cause, invalid) {
+		t.Fatalf("edited original source changed the pending reason: %s", cause)
+	}
+	if strings.Contains(cause, sourcePath) {
+		t.Fatalf("pending reception invented a source change reason: %s", cause)
 	}
 	r, err = service.SaveTaskPlanning(context.Background(), p.AnswerPath)
-	// Blueprint L3-S4-task-split.md:368: the system does not infer drift
-	// through a digest, and L4-state-transition-core.md:163: the natural Hook
-	// and the original consumer no longer compute, register or verify a
-	// digest. The edited contract therefore stays the same original source by
-	// its association, so the reception outcome must not hinge on the edited
-	// bytes.
 	if err != nil {
 		t.Fatalf("original source association was lost: %v", err)
 	}
 	if !r.Accepted {
 		t.Fatalf("original source association was rejected: %+v", r)
 	}
-	writeContractSource(t, root, sourcePath, string(originalSource))
-	fixtures.CommitCurrentFixture(t, root)
-	service, err = submission.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	origin := stageSnapshot(t, root)
-	stageJSON(t, root, p.AnswerPath, completedTaskPlanningDraft(p))
-	r, err = service.SaveTaskPlanning(context.Background(), p.AnswerPath)
-	if err != nil || !r.Accepted {
-		t.Fatalf("repair %+v %v", r, err)
-	}
-	if diagnostic := submission.PlanningDiagnostic(root, origin.State, "reception"); diagnostic != "" {
+	// The correct answer clears the pending reception reason.
+	if diagnostic := submission.PlanningDiagnostic(root, pending.State, "reception"); diagnostic != "" {
 		t.Fatal("stale field cause", diagnostic)
 	}
 }

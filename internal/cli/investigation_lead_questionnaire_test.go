@@ -75,6 +75,10 @@ func TestS8InvestigationLeadPreparationReadOnlyAndDraftPreserved(t *testing.T) {
 	}
 }
 
+// An Investigator's `new_hypotheses` entry is only a suggestion (L3-S8:162,
+// :269, :479): Main decides whether to adopt it. The Main questionnaire keeps
+// the author's own rows, and only a row Main saves in its own array becomes a
+// registered, dispatched responsibility.
 func TestS8InvestigationLeadWorkerQuestionsMergeWithoutReplacingAuthorRows(t *testing.T) {
 	root := investigationLeadTestRoot(t)
 	_, path := investigationLeadTestIngest(t, root)
@@ -89,19 +93,82 @@ func TestS8InvestigationLeadWorkerQuestionsMergeWithoutReplacingAuthorRows(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	current = investigationLeadTestSnapshot(t, root)
+	_, document, _, err := investigationLeadSource(root, current.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The Worker's suggestion is preserved as a suggestion: it does not become
+	// a registered responsibility of the Case.
+	if len(objectSliceAny(document["hypotheses"])) != 1 {
+		t.Fatalf("worker suggestion became a registered responsibility: %#v", document["hypotheses"])
+	}
+	for _, row := range objectSliceAny(document["hypotheses"]) {
+		if stringValue(row["hypothesis_id"]) == "hypothesis-worker-question" {
+			t.Fatalf("worker suggestion was registered as a Hypothesis: %#v", row)
+		}
+	}
+	if rows := objectSliceAny(document["hypothesis_results"]); len(rows) != 1 || stringValue(rows[0]["hypothesis_id"]) != authored[0].HypothesisID {
+		t.Fatalf("worker result was not attached to the original question: %#v", rows)
+	}
+	// The author's edited original row survives preparation, and the suggestion
+	// is not merged into Main's array.
 	authored[0].Statement = "an author edit that preparation must preserve"
 	writeRepairLeadJSON(t, path, authored)
 	current = investigationLeadTestSnapshot(t, root)
 	stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
 	readRepairLeadJSON(t, path, &authored)
-	if len(authored) != 2 || authored[0].Statement != "an author edit that preparation must preserve" || authored[1].HypothesisID != "hypothesis-worker-question" {
-		t.Fatalf("worker question was not merged while preserving the author row: %#v", authored)
+	if len(authored) != 1 || authored[0].Statement != "an author edit that preparation must preserve" {
+		t.Fatalf("author row was replaced or the worker suggestion was merged into the author array: %#v", authored)
 	}
+	for _, row := range authored {
+		if row.HypothesisID == "hypothesis-worker-question" || row.Statement == "an independent alias may cause the symptom" {
+			t.Fatalf("worker suggestion entered the author array: %#v", row)
+		}
+	}
+	// Main's own array without the suggestion registers and dispatches nothing
+	// new; the author's own question keeps its original dispatch.
 	authored[0].Statement = q.Statement
 	writeRepairLeadJSON(t, path, authored)
 	feedback := investigationLeadTestSave(t, root, path)
-	if investigationLeadTestSnapshot(t, root).Revision != current.Revision+1 || !strings.Contains(feedback, "owner=investigator-worker-question") {
-		t.Fatalf("original worker question was re-registered or left undispatched: %s", feedback)
+	if got := investigationLeadTestSnapshot(t, root).Revision; got != current.Revision {
+		t.Fatalf("worker suggestion was registered or dispatched without Main's own row: revision %d -> %d, feedback=%s", current.Revision, got, feedback)
+	}
+	if strings.Contains(feedback, "owner=investigator-worker-question") {
+		t.Fatalf("worker suggestion was dispatched without Main's own row: %s", feedback)
+	}
+	if owner := "owner=investigator-" + strings.TrimPrefix(authored[0].HypothesisID, "hypothesis-"); !strings.Contains(feedback, owner) {
+		t.Fatalf("the author's own question lost its original dispatch: %s", feedback)
+	}
+	_, document, _, _ = investigationLeadSource(root, investigationLeadTestSnapshot(t, root).State)
+	if len(objectSliceAny(document["hypotheses"])) != 1 {
+		t.Fatalf("worker suggestion became a registered responsibility: %#v", document["hypotheses"])
+	}
+	// Main adopts the suggestion as its own row: only then is it registered and
+	// dispatched to its own Investigator.
+	authored = append(authored, investigationLeadQuestion{HypothesisID: "hypothesis-worker-question", Statement: "an independent alias may cause the symptom", Invariant: "one authority", Discriminator: "inspect the alias boundary", ExpectedOutcomes: map[string]string{"support": "alias changes interpretation", "refute": "alias preserves interpretation"}, SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"evidence://worker-question"}})
+	writeRepairLeadJSON(t, path, authored)
+	feedback = investigationLeadTestSave(t, root, path)
+	if !strings.Contains(feedback, "owner=investigator-worker-question") || !strings.Contains(feedback, "TASK=") {
+		t.Fatalf("Main's own adopted row was not registered and dispatched: %s", feedback)
+	}
+	adopted := investigationLeadTestSnapshot(t, root)
+	_, document, _, _ = investigationLeadSource(root, adopted.State)
+	registered := objectSliceAny(document["hypotheses"])
+	if len(registered) != 2 {
+		t.Fatalf("Main's own adopted row was not registered: %#v", registered)
+	}
+	adoptedRow := false
+	for _, row := range registered {
+		if stringValue(row["hypothesis_id"]) == "hypothesis-worker-question" {
+			adoptedRow = true
+		}
+	}
+	if !adoptedRow {
+		t.Fatalf("Main's own adopted row was not registered: %#v", registered)
+	}
+	if adopted.Revision != current.Revision+2 {
+		t.Fatalf("the adopted row did not produce one registration and one dispatch revision: %d -> %d, feedback=%s", current.Revision, adopted.Revision, feedback)
 	}
 }
 

@@ -265,6 +265,45 @@ func TestDesignAnswerPendingRecoveryPreservesReception(t *testing.T) {
 	}
 }
 
+// The live journal of the authoritative state/journal pair.
+func designJournalEvents(t *testing.T, root string) []map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []map[string]any{}
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func designNumeric(t *testing.T, value any) float64 {
+	t.Helper()
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	}
+	t.Fatalf("unexpected numeric value %T", value)
+	return 0
+}
+
+// INV-016: a recovery restores the original state, phase and entity
+// checkpoints. The original Writer still records exactly one completion event
+// of its own (next revision, next journal sequence); it never fabricates a
+// second S2 reception nor repeats the original transition.
 func TestDesignAnswerOriginalPairRecovery(t *testing.T) {
 	root, p := newDesignFixture(t, "none")
 	stageJSON(t, root, p.AnswerPath, designDraft(p))
@@ -274,15 +313,64 @@ func TestDesignAnswerOriginalPairRecovery(t *testing.T) {
 	if !reflect.DeepEqual(pair.State, before.State) {
 		t.Fatal("checkpoint dropped S2 facts")
 	}
+	originalEvents := designJournalEvents(t, root)
 	damageStagePair(t, root)
 	plan := checkpointPlan(t, root, path, pair.State)
 	stageCLI(t, "runtime", "recover", "apply", "--root", root, "--plan", plan, "--approved-by", "operator")
-	if !reflect.DeepEqual(stageSnapshot(t, root).State, before.State) {
-		t.Fatal("original pair restoration changed S2 reception or cursor")
+	restored := stageSnapshot(t, root)
+	// The restored pair keeps every original fact, phase and entity; only the
+	// recovery Writer's own completion bookkeeping differs.
+	assertRecoveryCheckpointFacts(t, root, pair, restored.State)
+	originalRevision := designNumeric(t, before.State["revision"])
+	originalSequence := designNumeric(t, before.State["journal"].(map[string]any)["last_sequence"])
+	if designNumeric(t, restored.State["revision"]) != originalRevision+1 {
+		t.Fatalf("recovery Writer did not record its own next revision: %v", restored.State["revision"])
 	}
+	if designNumeric(t, restored.State["journal"].(map[string]any)["last_sequence"]) != originalSequence+1 {
+		t.Fatalf("recovery Writer did not record its own next journal sequence: %v", restored.State["journal"])
+	}
+	// The original events survive verbatim and in order; the recovery adds
+	// exactly one completion event on top of them.
+	restoredEvents := designJournalEvents(t, root)
+	if len(restoredEvents) != len(originalEvents)+1 {
+		t.Fatalf("recovery did not append exactly one journal event: %d -> %d", len(originalEvents), len(restoredEvents))
+	}
+	for i, event := range originalEvents {
+		if !reflect.DeepEqual(restoredEvents[i], event) {
+			t.Fatalf("restored journal changed original event %d: %v -> %v", i, event, restoredEvents[i])
+		}
+	}
+	completion := restoredEvents[len(restoredEvents)-1]
+	if completion["transition_id"] != "RECOVERY-APPLIED" || completion["event"] != "transition_committed" || completion["outcome"] != "committed" {
+		t.Fatalf("recovery Writer completion event is missing or not committed: %v", completion)
+	}
+	// The original S2 reception survives unchanged: one advanced submission,
+	// the same evidence, the same registered design and the same phase.
+	originalSubmissions := before.State["entities"].(map[string]any)["submissions"].([]any)
+	restoredSubmissions := restored.State["entities"].(map[string]any)["submissions"].([]any)
+	if len(originalSubmissions) != 1 || len(restoredSubmissions) != 1 {
+		t.Fatalf("recovery changed the number of S2 receptions: %v -> %v", originalSubmissions, restoredSubmissions)
+	}
+	originalRecord := originalSubmissions[0].(map[string]any)
+	restoredRecord := restoredSubmissions[0].(map[string]any)
+	if !reflect.DeepEqual(restoredRecord, originalRecord) || restoredRecord["control_status"] != "advanced" {
+		t.Fatalf("recovery did not preserve the original S2 reception: %v", restoredRecord)
+	}
+	if !reflect.DeepEqual(restored.State["documents"], before.State["documents"]) {
+		t.Fatalf("recovery did not preserve the registered design documents: %v", restored.State["documents"])
+	}
+	if !reflect.DeepEqual(restored.State["lifecycle"], before.State["lifecycle"]) {
+		t.Fatalf("recovery did not restore the original phase: %v", restored.State["lifecycle"])
+	}
+	// Replaying the already received answer on the restored pair stays
+	// read-only: it repeats neither the original transition nor the recovery.
 	stageCLI(t, "runtime", "stage-answer", "consume", "--root", root, "--agent", "Main", "--path", p.AnswerPath)
-	if stageSnapshot(t, root).State["revision"] != before.State["revision"] {
-		t.Fatal("restored replay repeated original transition")
+	replayed := stageSnapshot(t, root)
+	if replayed.State["revision"] != restored.State["revision"] {
+		t.Fatalf("restored replay repeated original transition: %v -> %v", restored.State["revision"], replayed.State["revision"])
+	}
+	if len(designJournalEvents(t, root)) != len(restoredEvents) {
+		t.Fatal("restored replay appended another journal event")
 	}
 	assertDesignCheckpoint(t, root)
 }

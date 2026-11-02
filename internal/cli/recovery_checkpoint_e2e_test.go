@@ -201,19 +201,82 @@ func TestCheckpointPublishFailureRetainsPendingAndRetriesOnce(t *testing.T) {
 	if found != 1 {
 		t.Fatalf("checkpoint recovery duplicated original event: %d", found)
 	}
-	dirs, err := os.ReadDir(filepath.Dir(index))
+	// The checkpoint store keeps a bounded latest-two window. After the
+	// refactor the index is that bound: it names the newest complete pair and
+	// the pair before it. Checkpoint directories are addressed by Runtime
+	// identity and revision, not by a content digest.
+	indexed, err := readCheckpointIndexManifests(t, index)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := 0
-	for _, entry := range dirs {
-		if entry.IsDir() {
-			n++
+	if indexed.SchemaVersion != "1.0.0" {
+		t.Fatalf("unexpected checkpoint index schema %q", indexed.SchemaVersion)
+	}
+	if len(indexed.Manifests) != 2 {
+		t.Fatalf("checkpoint index retained %d manifests; want bounded latest two", len(indexed.Manifests))
+	}
+	if indexed.Manifests[1] != path {
+		t.Fatalf("checkpoint index dropped the previous pair: %v", indexed.Manifests)
+	}
+	for _, manifest := range indexed.Manifests {
+		if !strings.HasPrefix(manifest, ".claude/runtime-checkpoints/cp/") || !strings.HasSuffix(manifest, "/manifest.json") {
+			t.Fatalf("checkpoint manifest %q is not addressed by Runtime identity", manifest)
+		}
+		dir := filepath.Dir(manifest)
+		for _, asset := range []string{"manifest.json", "state.json", "events.jsonl"} {
+			if _, err := os.Stat(filepath.Join(f.root, filepath.FromSlash(dir), asset)); err != nil {
+				t.Fatalf("indexed checkpoint %s is missing %s: %v", manifest, asset, err)
+			}
 		}
 	}
-	if n != 2 {
-		t.Fatalf("checkpoint retained %d directories; want bounded latest two", n)
+	// The removed content-addressed checkpoint layout must not come back.
+	entries, err := os.ReadDir(filepath.Dir(index))
+	if err != nil {
+		t.Fatal(err)
 	}
+	for _, entry := range entries {
+		if entry.IsDir() && isCheckpointContentDigest(entry.Name()) {
+			t.Fatalf("content-addressed checkpoint directory %q returned", entry.Name())
+		}
+	}
+}
+
+// readCheckpointIndexManifests reads the raw checkpoint index so the test
+// observes the bounded window the Writer published.
+func readCheckpointIndexManifests(t *testing.T, path string) (struct {
+	SchemaVersion string   `json:"schema_version"`
+	Manifests     []string `json:"manifests"`
+}, error) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return struct {
+			SchemaVersion string   `json:"schema_version"`
+			Manifests     []string `json:"manifests"`
+		}{}, err
+	}
+	var index struct {
+		SchemaVersion string   `json:"schema_version"`
+		Manifests     []string `json:"manifests"`
+	}
+	if err := json.Unmarshal(data, &index); err != nil {
+		return index, err
+	}
+	return index, nil
+}
+
+// isCheckpointContentDigest reports the removed content-addressed checkpoint
+// directory naming: a 64 character SHA-256 hex digest.
+func isCheckpointContentDigest(name string) bool {
+	if len(name) != 64 {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func TestCheckpointRecoverRejectsLiveIndependentWorker(t *testing.T) {

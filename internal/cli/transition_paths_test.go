@@ -79,9 +79,25 @@ func TestTransitionAffectedPathsCLI(t *testing.T) {
 					t.Fatalf("%s %v", out, err)
 				}
 			}
-			head, _ := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
-			state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": "dev", "release_upstream": "main", "bound_commit": strings.TrimSpace(string(head))}
+			// The binding declares only the three current targets. Blueprint
+			// L4-worktree-governance.md:29 keeps an old `bound_commit` as
+			// historical data only: no Hook registers or validates a Git OID,
+			// and the state schema rejects the extra property.
+			state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": "dev", "release_upstream": "main"}
 			before, _ := json.Marshal(state)
+			if err := schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", before); err != nil {
+				t.Fatalf("fixture state violates the current state schema: %v", err)
+			}
+			// Reverse guard: the removed Git-OID binding must not come back.
+			legacy := map[string]any{}
+			if err := json.Unmarshal(before, &legacy); err != nil {
+				t.Fatal(err)
+			}
+			legacy["bound_req"].(map[string]any)["workspace"].(map[string]any)["bound_commit"] = "0000000000000000000000000000000000000000"
+			legacyRaw, _ := json.Marshal(legacy)
+			if err := schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", legacyRaw); err == nil {
+				t.Fatal("state schema still accepts a bound_commit workspace binding")
+			}
 			sp := filepath.Join(root, ".claude/loop-state.json")
 			jp := filepath.Join(root, ".claude/loop-events.jsonl")
 			write(sp, before)
@@ -109,6 +125,21 @@ func TestTransitionAffectedPathsCLI(t *testing.T) {
 			}
 			var got map[string]any
 			json.Unmarshal(after, &got)
+			workspace, _ := got["bound_req"].(map[string]any)["workspace"].(map[string]any)
+			if workspace == nil {
+				t.Fatal("transition dropped the workspace binding")
+			}
+			if _, exists := workspace["bound_commit"]; exists {
+				t.Fatalf("transition re-registered a Git OID in the workspace binding: %v", workspace)
+			}
+			for _, key := range []string{"project_root", "dev_branch", "release_upstream"} {
+				if _, exists := workspace[key]; !exists {
+					t.Fatalf("workspace binding lost %q: %v", key, workspace)
+				}
+			}
+			if workspace["project_root"] != root {
+				t.Fatalf("workspace binding changed the control root: %v", workspace)
+			}
 			rows := got["evidence"].([]any)
 			wantUnrelated := "valid"
 			if tc.name == "all" {

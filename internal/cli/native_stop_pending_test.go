@@ -258,7 +258,7 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 		code := Run([]string{"hook", "--root", root, "--event", in.Event}, bytes.NewReader(body), &out, &diag)
 		return code, out.String() + diag.String()
 	}
-	before := repairDispatchRuntimeBytes(t, root)
+	baselineBefore := repairDispatchRuntimeBytes(t, root)
 	baselineCode, baseline := call()
 	// The retired frozen unfinished Stop gate is gone. L4-workflow-convergence.md:342 —
 	// "删除旧 C／D、frozen、typed、Candidate／Final、source pin 的并行接收、来源证明及
@@ -274,13 +274,41 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 			t.Fatalf("unfinished return did not report %q: %s", want, baseline)
 		}
 	}
+	// The honest notice only projects the current fact; it is not a second
+	// consuming reader, so the retired gate must not write a reception fact.
+	// L4-hook-platform-wiring.md:83 — "显示 reader 只投影事实，不成为第二个认证
+	// 消费者".
+	repairDispatchAssertUnchanged(t, root, baselineBefore)
+
 	marker := stopCommitPending(t, root)
+	// The current pending helper commits the original transaction itself
+	// (internal/runtime/store.go:944) before it writes the durable marker, so the
+	// Runtime pair legitimately changes here. Snapshot after that commit: the
+	// invariant is that the recovery completes the original transaction exactly
+	// once and invents no new fact. L4-hook-platform-wiring.md:290 — "原 Writer 在
+	// 有限预算内识别并恢复原事务，保留原输入与已成立事实";
+	// L4-runtime-control-plane.md:299 — "若原 pending 事务能够确定性恢复，就完成原
+	// 事务".
+	before := repairDispatchRuntimeBytes(t, root)
 	code, feedback := call()
 	if code != baselineCode || !strings.Contains(feedback, "recovered the original pending Writer") {
 		t.Fatalf("pending swallowed frozen Stop: %d %s; baseline %d %s", code, feedback, baselineCode, baseline)
 	}
+	// The same public Stop gate is retained after the recovery: recovering the
+	// original pending Writer is not a professional reception, so the unfinished
+	// facts must still be reported as unfinished.
+	for _, want := range []string{"does not establish professional reception", "has not been established as received", "not established as complete"} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("recovered Stop did not retain the public gate report %q: %s", want, feedback)
+		}
+	}
 	repairDispatchAssertUnchanged(t, root, before)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("pending not retired: %v", err)
+	}
+	// The retired hash-proof pending path must not be resurrected: the current
+	// mechanism is the durable commit marker alone.
+	if _, err := os.Stat(filepath.Join(root, ".claude/loop-state.json.fingerprint-pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("retired fingerprint pending marker reappeared: %v", err)
 	}
 }

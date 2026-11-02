@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -311,22 +312,73 @@ func TestNativeS9NullProfessionalReferenceIsNotConvertedToNotApplicable(t *testi
 	root, worker, p, input, answer := nativeS9WorkerFixture(t)
 	result := nativeS9TestResultPath(t, root, p)
 	data, _ := json.Marshal(answer)
-	var malformed map[string]any
-	if err := json.Unmarshal(data, &malformed); err != nil {
+	var authored map[string]any
+	if err := json.Unmarshal(data, &authored); err != nil {
 		t.Fatal(err)
 	}
-	malformed["migration_ref"] = nil
-	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, result), malformed); err != nil {
+	// The author left both optional references empty without expressing any
+	// judgment. L4-workflow-convergence.md:154 — "可选字段、字段拼法和枚举
+	// 不得把已有真实观察变成拒收理由"; L3-S9-repair.md:198 — "migration_ref、
+	// rollback_ref｜实际需要的已有依据；不适用时可为空字符串". A null value is
+	// the author's own empty statement, never a malformed field and never a
+	// reason to refuse an otherwise complete professional conclusion.
+	authored["migration_ref"] = nil
+	authored["rollback_ref"] = nil
+	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, result), authored); err != nil {
 		t.Fatal(err)
 	}
 	input.Event = "SubagentStop"
 	var out, diagnostic bytes.Buffer
-	if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 || !strings.Contains(diagnostic.String(), "migration_ref") {
-		t.Fatalf("unknown reference became an empty declaration: %t %d %s", handled, code, &diagnostic)
+	handled, code := nativeS9Hook(root, input, &out, &diagnostic)
+	if !handled || code != 0 {
+		t.Fatalf("optional empty reference blocked the original reception: %t %d %s %s", handled, code, &out, &diagnostic)
+	}
+	// The real professional conclusion is still received, and it produces its
+	// Candidate and its original receipt.
+	if !strings.Contains(diagnostic.String(), "Original S9 Result received") {
+		t.Fatalf("original Result was not received: %s", &diagnostic)
 	}
 	registry, err := workspace.Decode(repairDispatchSnapshot(t, root).State)
-	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef != "" {
-		t.Fatalf("null reference created a candidate: %v", err)
+	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef == "" {
+		t.Fatalf("received Result did not record its Candidate: %v %s", err, &diagnostic)
+	}
+	// The optional field produces no rejection diagnostic at all.
+	for _, retired := range []string{"migration_ref", "rollback_ref"} {
+		if strings.Contains(diagnostic.String(), retired) {
+			t.Fatalf("optional empty reference produced a rejection diagnostic: %s", &diagnostic)
+		}
+	}
+	// The author's own null survives in the Candidate provenance. It is not
+	// rewritten into an explicit "none" / "not applicable" statement
+	// (L4-workflow-convergence.md:106 — "没有表达判断的空值通常保留草稿").
+	candidateBytes, err := os.ReadFile(filepath.Join(root, registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var candidate repair.WorkspaceCandidate
+	if err := json.Unmarshal(candidateBytes, &candidate); err != nil || candidate.Provenance == nil {
+		t.Fatalf("original Candidate provenance unavailable: %v", err)
+	}
+	var submitted map[string]json.RawMessage
+	if err := json.Unmarshal(candidate.Provenance.SubmittedAnswer, &submitted); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"migration_ref", "rollback_ref"} {
+		if !bytes.Equal(bytes.TrimSpace(submitted[key]), []byte("null")) {
+			t.Fatalf("author's original %s was rewritten: %s", key, candidate.Provenance.SubmittedAnswer)
+		}
+	}
+	service, err := submission.NewReadOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packets, err := runtime.CurrentRepairResultPackets(root, repairDispatchSnapshot(t, root).State, p.Binding.OwnerAgentID)
+	if err != nil || len(packets) != 1 {
+		t.Fatalf("original Result responsibility missing: %d %v", len(packets), err)
+	}
+	receipt, err := service.RepairResultReceipt(p.Binding.OwnerAgentID, packets[0].ID)
+	if err != nil || !receipt.Accepted {
+		t.Fatalf("received Result has no original receipt: %+v %v", receipt, err)
 	}
 }
 
@@ -384,70 +436,78 @@ func TestNativeS9MissingPreparationKeepsMainOnOriginalDivision(t *testing.T) {
 }
 
 func TestNativeS9MissingWorktreePlanDoesNotBorrowMainAnswer(t *testing.T) {
-	for _, legacy := range []bool{false} {
-		name := "current-private"
-		if legacy {
-			name = "legacy"
+	root, worker, p, input, _ := nativeS9WorkerFixture(t)
+	plan, result := nativeS9TestAuthorPaths(t, root, p)
+	local := filepath.Join(worker, plan)
+	raw, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainDraft := p.Draft
+	mainDraft.Answer = raw
+	mainPath := filepath.Join(root, p.AnswerPath)
+	if err := persistRepairLeadQuestionnaire(mainPath, mainDraft); err != nil {
+		t.Fatal(err)
+	}
+	mainBefore, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(worker, result)
+	resultBefore, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(local); err != nil {
+		t.Fatal(err)
+	}
+	before := repairDispatchRuntimeBytes(t, root)
+	input.Event = "SubagentStop"
+	var out, diagnostic bytes.Buffer
+	handled, code := nativeS9Hook(root, input, &out, &diagnostic)
+	// Main's control-root draft cannot stand in for the Worker's own private
+	// original. L3-S9-repair.md:132 — "Worker 在本人工作区的准确位置保存
+	// PlanReport 和 Result；Main 不代填，隔离 Worker 不写共享 Main 答卷".
+	if !handled || code != 0 {
+		t.Fatalf("missing private original was not reported to Main: %t %d %s %s", handled, code, &out, &diagnostic)
+	}
+	// The feedback names the exact private original that is missing and keeps
+	// the reception unconfirmed (internal/cli/native_feedback.go:134).
+	for _, want := range []string{"S9 reception", "is incomplete at control root", "Exact original references", local, "does not confirm a receipt", "Main"} {
+		if !strings.Contains(diagnostic.String(), want) {
+			t.Fatalf("missing private original feedback lost %q: %s", want, &diagnostic)
 		}
-		t.Run(name, func(t *testing.T) {
-			fixture := nativeS9WorkerFixture
-			root, worker, p, input, _ := fixture(t)
-			plan, result := nativeS9TestAuthorPaths(t, root, p)
-			local := filepath.Join(worker, plan)
-			raw, err := os.ReadFile(local)
-			if err != nil {
-				t.Fatal(err)
-			}
-			mainDraft := p.Draft
-			mainDraft.Answer = raw
-			mainPath := filepath.Join(root, p.AnswerPath)
-			if err := persistRepairLeadQuestionnaire(mainPath, mainDraft); err != nil {
-				t.Fatal(err)
-			}
-			mainBefore, err := os.ReadFile(mainPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			resultPath := filepath.Join(worker, result)
-			resultBefore, err := os.ReadFile(resultPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Remove(local); err != nil {
-				t.Fatal(err)
-			}
-			before := repairDispatchRuntimeBytes(t, root)
-			input.Event = "SubagentStop"
-			var out, diagnostic bytes.Buffer
-			handled, code := nativeS9Hook(root, input, &out, &diagnostic)
-			want := "native private original must be exactly untracked"
-			if legacy {
-				want = "Main's draft cannot substitute"
-			}
-			for _, detail := range []string{want, local, "Main"} {
-				if !handled || code != 0 || !strings.Contains(diagnostic.String(), detail) {
-					t.Fatalf("missing actual source borrowed Main or lost %q: %t %d %s %s", detail, handled, code, &out, &diagnostic)
-				}
-			}
-			repairDispatchAssertUnchanged(t, root, before)
-			for path, expected := range map[string][]byte{mainPath: mainBefore, resultPath: resultBefore} {
-				got, err := os.ReadFile(path)
-				if err != nil || !bytes.Equal(got, expected) {
-					t.Fatalf("missing Plan changed original %s: %v", path, err)
-				}
-			}
-			service, err := submission.NewReadOnly(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if receipt, err := service.RepairPlanReportReceipt(p.Binding.OwnerAgentID, p.ID); err != nil || receipt.Accepted {
-				t.Fatalf("missing Plan received a receipt: %+v %v", receipt, err)
-			}
-			registry, err := workspace.Decode(repairDispatchSnapshot(t, root).State)
-			if err != nil || registry != nil && len(registry.Executions) != 0 {
-				t.Fatalf("missing Plan fabricated a candidate: %+v %v", registry, err)
-			}
-		})
+	}
+	// Git state is not an eligibility fact. L3-S9-repair.md:136 — "原稿是否
+	// tracked、staged、ignored 或 Git ?? 均不属于答卷接收资格";
+	// L4-worktree-governance.md:55 — "不要求 Git 原始 ??，不因 tracked、
+	// staged、ignored、项目／info／global ignore 或 index 状态拒收答卷".
+	for _, retired := range []string{"must be exactly untracked", "Main's draft cannot substitute", "untracked"} {
+		if strings.Contains(diagnostic.String(), retired) {
+			t.Fatalf("retired Git-state wording reappeared: %q in %s", retired, &diagnostic)
+		}
+	}
+	// Main's control-root draft is not presented as the received original.
+	if strings.Contains(diagnostic.String(), mainPath) {
+		t.Fatalf("Main's control-root draft was presented as the original: %s", &diagnostic)
+	}
+	repairDispatchAssertUnchanged(t, root, before)
+	for path, expected := range map[string][]byte{mainPath: mainBefore, resultPath: resultBefore} {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, expected) {
+			t.Fatalf("missing Plan changed original %s: %v", path, err)
+		}
+	}
+	service, err := submission.NewReadOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt, err := service.RepairPlanReportReceipt(p.Binding.OwnerAgentID, p.ID); err != nil || receipt.Accepted {
+		t.Fatalf("Main's draft was received as the Worker's original PlanReport: %+v %v", receipt, err)
+	}
+	registry, err := workspace.Decode(repairDispatchSnapshot(t, root).State)
+	if err != nil || registry != nil && len(registry.Executions) != 0 {
+		t.Fatalf("missing Plan fabricated a candidate: %+v %v", registry, err)
 	}
 }
 
@@ -474,12 +534,32 @@ func TestNativeS9ResumeReceivesLatestActualTaskWithoutToolResultGuess(t *testing
 		return handled, code, diagnostic.String()
 	}
 	before := repairDispatchRuntimeBytes(t, root)
-	if handled, code, output := call(); !handled || code != 0 {
-		t.Fatalf("unrelated return: %t %d %s", handled, code, output)
+	// A tool_result block cannot nominate a task
+	// (internal/cli/native_task_transcript.go:92). The quoted reference is not
+	// an actual user task, so this event is not this responsibility's return:
+	// L4-hook-platform-wiring.md:67 — "确需转录时有界读取真实 user 任务，忽略
+	// tool_result 中的伪引用"; L4-workflow-convergence.md:104 — "处理器确认与本
+	// 事件无关时继续交其他适用入口".
+	if handled, code, output := call(); handled || code != 0 {
+		t.Fatalf("tool_result reference nominated a task: %t %d %s", handled, code, output)
 	}
 	repairDispatchAssertUnchanged(t, root, before)
+	// The guessed reference produced no receipt and no Candidate.
+	service, err := submission.NewReadOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt, err := service.RepairPlanReportReceipt(p.Binding.OwnerAgentID, p.ID); err != nil || receipt.Accepted {
+		t.Fatalf("tool_result reference produced a Plan receipt: %+v %v", receipt, err)
+	}
+	if packets, err := runtime.CurrentRepairResultPackets(root, repairDispatchSnapshot(t, root).State, p.Binding.OwnerAgentID); err != nil || len(packets) != 0 {
+		t.Fatalf("tool_result reference produced a Result responsibility: %d %v", len(packets), err)
+	}
+	// The latest actual user task that carries the exact responsibility
+	// reference is received. L4-agent-dispatch-governance.md:145 — "选择包含本
+	// 责任准确引用的最新实际 user 任务，忽略 tool_result 中的旧引用".
 	appendRow("Resumed actual repair: " + refs)
-	if handled, code, output := call(); !handled || code != 0 || !strings.Contains(output, "professional Result received") {
+	if handled, code, output := call(); !handled || code != 0 || !strings.Contains(output, "Original S9 Result received") {
 		t.Fatalf("latest actual repair was not received: %t %d %s", handled, code, output)
 	}
 	registry, err := workspace.Decode(repairDispatchSnapshot(t, root).State)

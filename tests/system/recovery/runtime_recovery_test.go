@@ -144,25 +144,27 @@ func TestRuntimeRecoveryApplyRebindsREQAndQuarantinesCorruptRuntime(t *testing.T
 // TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker covers a
 // legacy `.commit-pending.json` that carries no target state/event.
 //
-// NOTE (SYS worker, independent review): the decisive error for this test is
-// NOT the H-11 recovery-input-drift guard. The Runtime now reports
-// "original pending Runtime operation is unresolved; preserve the existing
-// files: unsupported pending runtime commit schema \"\"".
+// The test name is kept because the audit harness pins this selector, but the
+// expectation follows the blueprint instead of the retired legacy handling.
 //
-// That behaviour matches
-// blueprint/l4-mechanisms/L4-state-transition-core.md:217 — when the current
-// material cannot establish the transaction's target or a safely processable
-// source, the unknown must be preserved and escalated to the system/Main —
-// while this test still expects the retired legacy auto-clear handling
-// (quarantine and clear the marker).
+// blueprint/l4-mechanisms/L4-state-transition-core.md:215 requires that an
+// unknown pending source keeps the scene intact ("保留现场") and never forces
+// a deletion of resources, and :217 requires that a legacy
+// `.commit-pending.json` whose target cannot be established from the actual
+// material must preserve the unknown and escalate it to the system/Main
+// ("必须保留未知并交系统／Main") instead of guessing a target, rehashing an old
+// SHA or retiring the marker. The retired behaviour — quarantine the marker
+// bytes and clear the marker — is gone, so it must not reappear.
 //
-// The owner explicitly listed this test as "do not modify", so the expectation
-// is left untouched here and the remaining failure is reported as an open item
-// for owner adjudication (see SYS-REPORT.md section E). The recommended
-// resolution is to assert the preservation/escalation contract instead.
+// RED contract: `runtime recover apply` must refuse the unresolved original
+// pending operation, report it as unresolved and preserved, and leave both the
+// legacy marker and the active Runtime bytes exactly as they were. Repeating
+// the apply must refuse the same way: the refusal has to be stable instead of
+// a one-shot that quietly succeeds on the second attempt.
 func TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker(t *testing.T) {
 	root := newRecoveryRoot(t)
-	writeActiveRuntimeBytes(t, root, []byte(`{"runtime":"corrupt-with-pending"}`))
+	activeBytes := []byte(`{"runtime":"corrupt-with-pending"}`)
+	writeActiveRuntimeBytes(t, root, activeBytes)
 	pendingPath := filepath.Join(root, ".claude", "loop-state.json.commit-pending.json")
 	pendingBytes := []byte(`{"legacy":"pending-commit"}`)
 	if err := os.WriteFile(pendingPath, pendingBytes, 0o600); err != nil {
@@ -170,29 +172,46 @@ func TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker(t *testing.
 	}
 	planPath := createRecoveryPlan(t, root)
 
-	code, stdout, stderr := runRecovery(t, root,
-		"runtime", "recover", "apply",
-		"--root", root, "--plan", planPath, "--approved-by", "recovery-owner",
-	)
-	if code != 0 {
-		t.Fatalf("apply with legacy pending marker failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
-	}
-	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
-		t.Fatalf("legacy pending marker remains after recovery: %v", err)
-	}
-	contained, err := recoveryTreeContains(root, pendingBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !contained {
-		t.Fatal("legacy pending marker bytes were not quarantined")
-	}
-	code, stdout, stderr = runRecovery(t, root,
-		"runtime", "recover", "apply",
-		"--root", root, "--plan", planPath, "--approved-by", "recovery-owner",
-	)
-	if code != 0 || !strings.Contains(stdout+stderr, "LOOP_RECOVERY_ALREADY_APPLIED") {
-		t.Fatalf("same pending-source plan must remain idempotent: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	for attempt := 1; attempt <= 2; attempt++ {
+		code, stdout, stderr := runRecovery(t, root,
+			"runtime", "recover", "apply",
+			"--root", root, "--plan", planPath, "--approved-by", "recovery-owner",
+		)
+		if code == 0 {
+			t.Fatalf("apply %d must refuse an unresolved legacy pending marker: code=%d stdout=%s stderr=%s", attempt, code, stdout, stderr)
+		}
+		diagnostics := stdout + stderr
+		if !strings.Contains(diagnostics, "unresolved") {
+			t.Fatalf("apply %d must report the pending operation as unresolved, got stdout=%s stderr=%s", attempt, stdout, stderr)
+		}
+		if !strings.Contains(diagnostics, "preserve") {
+			t.Fatalf("apply %d must report that the existing files are preserved, got stdout=%s stderr=%s", attempt, stdout, stderr)
+		}
+		if strings.Contains(diagnostics, "LOOP_RECOVERY_ALREADY_APPLIED") {
+			t.Fatalf("apply %d must not report a completed recovery for an unresolved pending marker, got stdout=%s stderr=%s", attempt, stdout, stderr)
+		}
+
+		marker, err := os.ReadFile(pendingPath)
+		if err != nil {
+			t.Fatalf("apply %d must keep the legacy pending marker in place: %v", attempt, err)
+		}
+		if !bytes.Equal(marker, pendingBytes) {
+			t.Fatalf("apply %d changed the legacy pending marker bytes: %s", attempt, marker)
+		}
+		active, err := os.ReadFile(filepath.Join(root, ".claude", "loop-state.json"))
+		if err != nil {
+			t.Fatalf("apply %d must keep the active Runtime in place: %v", attempt, err)
+		}
+		if !bytes.Equal(active, activeBytes) {
+			t.Fatalf("apply %d changed the active Runtime bytes: %s", attempt, active)
+		}
+		quarantined, err := recoveryTreeContains(root, pendingBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if quarantined {
+			t.Fatalf("apply %d quarantined the legacy pending marker; the blueprint requires the unknown to be preserved and escalated instead of retired", attempt)
+		}
 	}
 }
 
