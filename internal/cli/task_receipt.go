@@ -59,7 +59,7 @@ func runTaskReceipt(args []string, stdout, stderr io.Writer) int {
 		default:
 			return fail(fmt.Errorf("task-receipt requires the original Builder responsibility; use its domain receipt for other roles"))
 		}
-		request = qualitygate.BuilderReceiptRequest{Owner: *owner, AssignmentID: *id, TaskID: a.TaskID, CompletionRef: a.CompletionRef}
+		request = qualitygate.BuilderReceiptRequest{Owner: *owner, AssignmentID: *id, TaskID: a.TaskID, CompletionRef: a.CompletionRef, RequiredChecks: a.RequiredChecks, DoneWhen: a.DoneWhen}
 	}
 	if request.AssignmentID == "" {
 		return fail(fmt.Errorf("no matching registered owner/assignment"))

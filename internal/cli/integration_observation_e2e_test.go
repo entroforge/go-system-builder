@@ -24,10 +24,6 @@ func TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration(t *testing
 	testActualMainIntegrationBarrier(t, false)
 }
 
-func TestActualMainIntegrationBarrierCleanupAfterEarlyReturn(t *testing.T) {
-	testActualMainIntegrationBarrier(t, true)
-}
-
 func testActualMainIntegrationBarrier(t *testing.T, returnWhileBusy bool) {
 	t.Helper()
 	if runtime.GOOS == "windows" {

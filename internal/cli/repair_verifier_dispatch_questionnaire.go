@@ -23,11 +23,14 @@ type repairVerifierDispatchChoice struct {
 }
 
 func repairVerifierDispatchCurrent(state map[string]any) bool {
+	if stringValue(mapFieldCLI(state, "lifecycle")["state"]) != "bug_resolution" {
+		return false
+	}
 	if stringValue(repairPointerCLI(state)["session_id"]) == "" {
 		return false
 	}
 	status := stringValue(repairPointerCLI(state)["status"])
-	return status == "planning" || status == "reproducing" || status == "repairing" || status == "targeted_reverification" || status == "ready_for_full_review"
+	return status == "planning" || status == "reproducing" || status == "targeted_reverification"
 }
 
 func repairVerifierDispatchPaths(root string, state map[string]any) []string {
@@ -54,7 +57,7 @@ func repairVerifierDispatchContext(root string, state map[string]any, assignment
 	context := strings.Replace(repairDispatchRegisteredContext(root, state, assignmentID, owner), "Registered Builder", "Registered independent verifier", 1)
 	context = strings.Replace(context, "platform spawn/resume remains Main's responsibility. ", "registration retained. ", 1)
 	if stringValue(repairPointerCLI(state)["status"]) != "targeted_reverification" {
-		return context + "Registration is complete; Main arranges actual integration and independent verification through the original Impact responsibility. "
+		return context + "Registration is complete; wait for the original Final integration and ChangeImpact before dispatching this verifier. The original Targeted responsibility prepares its answer when ready. "
 	}
 	path, err := repairTargetedQuestionnairePath(root, state, assignmentID)
 	if err == nil {
@@ -66,7 +69,9 @@ func repairVerifierDispatchContext(root string, state map[string]any, assignment
 	} else {
 		context += "Original Targeted answer path is unavailable: " + err.Error() + ". "
 	}
-	context += "The system retries preparation from this registered responsibility on Main's natural events; Main restores the named source/filesystem failure without resaving the division. "
+	if division, pathErr := repairLeadQuestionnairePath(root, state, "independent-verifier-dispatch.json"); pathErr == nil {
+		context += "Restore the named source/filesystem failure, then save the registered division again at " + division + "; the original registration is reused and its Targeted answer is prepared. "
+	}
 
 	return context
 }

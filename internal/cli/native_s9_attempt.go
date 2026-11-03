@@ -27,7 +27,16 @@ type nativeS9Attempt struct {
 	TypedInputRef     string `json:"typed_input_ref"`
 	FailureKind       string `json:"failure_kind"`
 	ObservedAt        string `json:"observed_at"`
+	// ConsumerBoundary records the structural fact that this attempt stopped
+	// at a consumer boundary. It is encoded as "1"/"" so the diagnostic record
+	// keeps one uniform string-valued shape. The stage name stays a
+	// diagnostic label and never decides the consumer boundary.
+	ConsumerBoundary string `json:"consumer_boundary"`
 }
+
+// The consumer boundary marker is a recorded fact, not a digest: "1" means the
+// attempt stopped at the consumer of the original volume, "" means it did not.
+const nativeS9ConsumerBoundaryMark = "1"
 
 type nativeS9AttemptCapture struct {
 	root, key string
@@ -53,16 +62,27 @@ func (a *nativeS9AttemptCapture) SetResponsibilityRef(ref string) {
 
 // Mark the actual adapter/domain consumer boundary at the call site. Successful
 // consumption clears this marker before later preparation can fail.
-func (a *nativeS9AttemptCapture) EnterConsumer(stage string) { a.consumer = true; a.SetStage(stage) }
+func (a *nativeS9AttemptCapture) EnterConsumer(stage string) {
+	a.consumer = true
+	a.value.Attempt.ConsumerBoundary = nativeS9ConsumerBoundaryMark
+	a.SetStage(stage)
+}
+
 func (a *nativeS9AttemptCapture) ConsumerSucceeded() {
 	a.consumer = false
+	a.value.Attempt.ConsumerBoundary = ""
 	// Later prerequisite failures cannot inherit a successful consumer marker.
 	a.SetStage("consumer_completed")
 }
 
+// The consumer boundary is a recorded structural fact. Historical records
+// predate that field, so their recorded consumer stage names stay readable.
 func nativeS9ConsumerAttempt(a *nativeS9Attempt) bool {
 	if a == nil {
 		return false
+	}
+	if a.ConsumerBoundary == nativeS9ConsumerBoundaryMark {
+		return true
 	}
 	switch a.Stage {
 	case "flat_result_consumer", "plan_report_consumer", "typed_result_consumer", "targeted_consumer", "typed_result_saved":

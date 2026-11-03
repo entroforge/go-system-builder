@@ -125,7 +125,7 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 			return fail(fmt.Errorf("original candidate acceptance is preserved; current professional completion is unavailable: %w", completeErr))
 		}
 		if !complete {
-			return fail(fmt.Errorf("original candidate is accepted; actual professional work remains unfinished. Main follows the recorded professional omissions and original rework path; do not repeat accepted content or integrate it as completed"))
+			return fail(fmt.Errorf("original candidate is accepted for owner=%s assignment=%s packet=%s; actual professional work remains unfinished. Main follows the recorded professional omissions and original rework path; do not repeat accepted content or integrate it as completed", e.AgentID, e.AssignmentID, typedPacket.ID))
 		}
 	}
 	acceptedFinal = registered
@@ -135,24 +135,6 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 	a := &hookctx.AssignmentContext{AssignmentID: e.AssignmentID, OwnerAgentID: e.AgentID,
 		TaskID: typedPacket.Binding.Sources.TaskID, WorktreePath: e.Path, Branch: e.Branch, TargetBranch: e.TargetBranch}
 	deferredNative := e.Purpose == workspace.NativeDeliveryPurpose && e.PlatformSessionID == ""
-	if deferredNative && !registered {
-		// Main resolves its actual checkout only when integration begins.
-		actual, bindErr := workspace.New(ctx, *root)
-		if bindErr != nil {
-			return fail(bindErr)
-		}
-		if actual.MainRoot != b.MainRoot || actual.Branch != b.Branch {
-			return fail(fmt.Errorf("Main checkout differs from its bound development workspace"))
-		}
-		b.CommonDir = actual.CommonDir
-		// Actual source inspection begins with Main's integration responsibility,
-		// after the professional Result has already been accepted.
-		e.Branch, err = workspace.Git(ctx, e.Path, "branch", "--show-current")
-		if err != nil {
-			return fail(err)
-		}
-		a.Branch = e.Branch
-	}
 	cpPath := workspaceExecutionCheckpointPath(*root, e)
 	if err := ctx.Err(); err != nil {
 		return fail(err)
@@ -167,7 +149,33 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 	if registered && !found {
 		return fail(fmt.Errorf("registered candidate result has no integration checkpoint"))
 	}
-	mainCommands, err := workspaceMainCheckCommandsContext(ctx, e.Checks, checkCommands, cp)
+	// A resumable checkpoint is the fact source for this responsibility. It is
+	// a lifecycle fact about the recorded work, not a revision, round or digest
+	// comparison, and it stays valid after the Worker checkout is reclaimed.
+	resumable := found && (cp.State == integration.StateReady || cp.State == integration.StateMerged || cp.State == integration.StateVerified || cp.State == integration.StateAcknowledged || cp.State == integration.StateCleanupPending || cp.State == integration.StateComplete)
+	if deferredNative && !registered {
+		// Main resolves its actual checkout only when integration begins.
+		actual, bindErr := workspace.New(ctx, *root)
+		if bindErr != nil {
+			return fail(bindErr)
+		}
+		if actual.MainRoot != b.MainRoot || actual.Branch != b.Branch {
+			return fail(fmt.Errorf("Main checkout differs from its bound development workspace"))
+		}
+		b.CommonDir = actual.CommonDir
+		if !resumable {
+			// Actual source inspection begins with Main's integration responsibility,
+			// after the professional Result has already been accepted. A reclaimed
+			// Worker checkout has no branch to report, so a resumable checkpoint
+			// never asks it for one.
+			e.Branch, err = workspace.Git(ctx, e.Path, "branch", "--show-current")
+			if err != nil {
+				return fail(err)
+			}
+			a.Branch = e.Branch
+		}
+	}
+	mainCommands, err := workspaceMainCheckCommandsForResponsibility(ctx, e.Checks, checkCommands, cp, fmt.Sprintf("owner=%s assignment=%s packet=%s", e.AgentID, e.AssignmentID, typedPacket.ID))
 	if err != nil {
 		return fail(err)
 	}
@@ -192,7 +200,9 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 	// or private material; it does not build a digest-based deletion proof.
 
 	var inspected integration.Inspection
-	if found && (cp.State == integration.StateReady || cp.State == integration.StateMerged || cp.State == integration.StateVerified || cp.State == integration.StateAcknowledged || cp.State == integration.StateCleanupPending || cp.State == integration.StateComplete) {
+	if resumable {
+		// The recorded checkpoint is the fact source for this responsibility.
+		// A live inspection and its checks are not repeated here.
 		inspected = integration.InspectionFromCheckpoint(cp)
 
 	} else {
@@ -316,7 +326,10 @@ func acknowledgeAcceptedRepairResult(ctx context.Context, root string, snapshot 
 }
 
 // currentRepairResultPacketForDelivery identifies the packet for the original
-// accepted S9 result using its existing responsibility association.
+// accepted S9 result using its existing responsibility association. A
+// candidate without original provenance is resolved by the typed selector: a
+// registered typed S9 packet for this assignment stays typed and is refused
+// explicitly instead of being answered by an older fallback.
 func currentRepairResultPacketForDelivery(root string, state map[string]any, execution workspace.Execution, candidate repair.WorkspaceCandidate) (workpacket.RepairResultPacket, bool, error) {
 	return currentRepairResultPacketForDeliveryContext(context.Background(), root, state, execution, candidate)
 }
@@ -326,7 +339,22 @@ func currentRepairResultPacketForDeliveryContext(ctx context.Context, root strin
 		return workpacket.RepairResultPacket{}, false, err
 	}
 	if candidate.Provenance == nil {
-		return workpacket.RepairResultPacket{}, false, fmt.Errorf("original S9 result association is unavailable for %s", execution.DeliveryRef)
+		// The original candidate carries no provenance. Ask the typed selector
+		// whether this assignment and owner still own a registered typed S9
+		// packet before answering for the current responsibility.
+		packet, typed, err := typedRepairResultPacketForAssignmentContext(ctx, root, state, execution.AssignmentID, execution.AgentID)
+		if err != nil {
+			return packet, true, fmt.Errorf("typed S9 candidate original provenance is unavailable; preserve registered source %s and restore original packet binding; no legacy fallback: %w", execution.DeliveryRef, err)
+		}
+		if typed {
+			// This responsibility owns a typed S9 packet, so its original
+			// provenance is a named gap, not an absent responsibility.
+			return packet, true, fmt.Errorf("typed S9 candidate original provenance is unavailable; preserve registered source %s and restore original packet binding; no legacy fallback", execution.DeliveryRef)
+		}
+		// No typed S9 responsibility is registered for this assignment. The
+		// caller reports the unavailable original packet for the current
+		// responsibility.
+		return workpacket.RepairResultPacket{}, false, nil
 	}
 	packet, found, err := runtime.FindRepairResultPacketContext(runtime.WithPacketBodyRoot(ctx, root), state, candidate.Provenance.PacketID)
 	if err != nil || !found {
@@ -400,7 +428,15 @@ func repairResultMainProofContext(ctx context.Context, root string, execution wo
 func workspaceMainCheckCommands(configured, selected []string, cp integration.Checkpoint) ([]string, error) {
 	return workspaceMainCheckCommandsContext(context.Background(), configured, selected, cp)
 }
+
 func workspaceMainCheckCommandsContext(ctx context.Context, configured, selected []string, cp integration.Checkpoint) ([]string, error) {
+	return workspaceMainCheckCommandsForResponsibility(ctx, configured, selected, cp, "")
+}
+
+// workspaceMainCheckCommandsForResponsibility names the exact original
+// responsibility in its own diagnostic, so an unavailable Main check selection
+// still identifies the assignment, agent and packet it belongs to.
+func workspaceMainCheckCommandsForResponsibility(ctx context.Context, configured, selected []string, cp integration.Checkpoint, responsibility string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -442,7 +478,11 @@ func workspaceMainCheckCommandsContext(ctx context.Context, configured, selected
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("S9 Main check selection is unavailable: select necessary checks with --check-command for unfinished work; for an accepted Final, Main must recover its original checkpoint check receipts before cleanup, without resubmitting Worker work")
+		message := "S9 Main check selection is unavailable"
+		if responsibility != "" {
+			message += " for original responsibility " + responsibility
+		}
+		return nil, fmt.Errorf("%s: select necessary checks with --check-command for unfinished work; for an accepted Final, Main must recover its original checkpoint check receipts before cleanup, without resubmitting Worker work", message)
 	}
 	return out, nil
 }

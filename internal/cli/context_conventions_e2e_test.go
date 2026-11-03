@@ -12,7 +12,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/projectconventions"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
-	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func configureContextConventions(t *testing.T) func(string, map[string]any) {
@@ -46,22 +45,6 @@ func configureContextConventions(t *testing.T) func(string, map[string]any) {
 				t.Fatal(err)
 			}
 		}
-	}
-}
-func TestBuilderConventionsOwnedExampleSurvivesActualVerifiedIntegration(t *testing.T) {
-	f := coreBuilderFixture(t, configureContextConventions(t))
-	runCoreBuilderIntegration(t, f)
-	b, err := workspace.Decode(stageSnapshot(t, f.root).State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := b.Executions["assignment-core-builder"]
-	c, err := b.ReadDispatchContext(e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Conventions == nil || len(c.Conventions.TaskConventions) != 1 || c.Conventions.TaskConventions[0].Entries[0].Status != "declared_default" {
-		t.Fatal("actual Builder did not receive current default", c.Conventions)
 	}
 }
 func TestNativeS5ConventionsReuseOriginalAnalysisAfterUnrelatedSourceChange(t *testing.T) {

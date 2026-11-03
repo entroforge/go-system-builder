@@ -103,7 +103,10 @@ func TestS7NativeTaskCarriesOriginalAnswerWithoutCaptureProtocol(t *testing.T) {
 	}
 }
 
-// Ordinary observation and session recovery must not recreate a wave gate.
+// Ordinary observation and session recovery share the same dispatch
+// eligibility, including the static/behavior wave order (L3-S7 §5.2): while
+// the static wave is unsettled, a behavior-wave Assignment only reports the
+// wait and never enters the manifest preparation flow.
 func TestS7RecoveryAndOrdinaryGuidanceShareEligibility(t *testing.T) {
 	root := t.TempDir()
 	plan := review.Plan{ReviewPlanID: "wave-plan", BaselineGeneration: 1,
@@ -120,10 +123,24 @@ func TestS7RecoveryAndOrdinaryGuidanceShareEligibility(t *testing.T) {
 		"claims":      map[string]any{"static": map[string]any{"disposition": "planned"}, "behavior": map[string]any{"disposition": "planned"}},
 	}}
 	ordinary := s7PendingReviewGuidance(root, state)
+	// The static wave is unsettled in this fixture, so the behavior-wave
+	// Assignment may only report the wait; it must not enter preparation.
+	if !strings.Contains(ordinary, "--assignment 'z-static'") {
+		t.Fatalf("settled static Assignment lost its preparation step: %s", ordinary)
+	}
+	if strings.Contains(ordinary, "--assignment 'a-behavior'") {
+		t.Fatalf("unsettled static wave let the behavior Assignment into preparation: %s", ordinary)
+	}
+	if !strings.Contains(ordinary, "S7 assignment=a-behavior waits") || !strings.Contains(ordinary, "required static Claims are not all dispositioned yet") {
+		t.Fatalf("behavior Assignment lost the actual wave wait: %s", ordinary)
+	}
 	for _, event := range []string{"SessionStart", "PreCompact"} {
 		guidance := buildGuidance(root, state, event, policy.Input{})
-		if strings.TrimSpace(ordinary) != guidance.Action || !strings.Contains(guidance.Action, "--assignment 'z-static'") || !strings.Contains(guidance.Action, "--assignment 'a-behavior'") {
+		if strings.TrimSpace(ordinary) != guidance.Action {
 			t.Fatalf("%s disagrees with actual registration eligibility: %s", event, guidance.Action)
+		}
+		if !strings.Contains(guidance.Action, "--assignment 'z-static'") || strings.Contains(guidance.Action, "--assignment 'a-behavior'") {
+			t.Fatalf("%s crossed the static wave gate: %s", event, guidance.Action)
 		}
 	}
 }

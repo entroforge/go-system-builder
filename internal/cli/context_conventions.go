@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -139,6 +140,27 @@ func verifyConventionView(root string, state map[string]any, b *projectconventio
 		}
 	}
 	return files.Verify()
+}
+
+// verifyDeclaredSources proves that every source path a fixed context declared
+// still exists and is readable under the authoritative source root. It judges
+// existence and readability only: the content of a source is never
+// re-authenticated here, so an edited installed source stays accepted. The
+// check is independent of the conventions bundle, so a context that carries no
+// conventions still verifies its declared sources instead of skipping the
+// verification altogether.
+func verifyDeclaredSources(root string, inputs map[string]string) error {
+	paths := make([]string, 0, len(inputs))
+	for path := range inputs {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		if _, err := workpacket.ReadFile(root, path, 8<<20); err != nil {
+			return fmt.Errorf("convention source is unavailable: %s", path)
+		}
+	}
+	return nil
 }
 func mergeConventionInputs(root string, b *projectconventions.Bundle, inputs map[string]string) error {
 	if b == nil {

@@ -512,7 +512,7 @@ func repairPlanningNextAction(state map[string]any, root string) string {
 	pointer := repairPointerCLI(state)
 	owners := stringMapCLI(pointer["assignment_owners"])
 	if len(owners) == 0 {
-		return selection + "The original save prepares each selected responsibility; Main then dispatches its exact prepared brief through native Agent/worktree. Builders save their own Plan with real prechecks and their Result; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback."
+		return selection + "The original save prepares each selected responsibility; Main then dispatches its exact prepared brief through native Agent/worktree. Builders save their own PlanReport with real prechecks and their Result; natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback."
 	}
 	packets, err := s9ListenerQuestionnaires(state, "", false)
 	if err != nil {
@@ -551,7 +551,7 @@ func repairPlanningNextAction(state map[string]any, root string) string {
 	if len(missing) > 0 {
 		next.WriteString("No current original PlanReport is indexed for " + strings.Join(missing, "; ") + "; Main/system restores the original division preparation at " + division + ", preserving the selected owner. ")
 	}
-	next.WriteString("Each Builder saves its own Plan with real prechecks before implementation and its Result after work. Natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback; accepted work is not submitted again.")
+	next.WriteString("Each Builder saves its own PlanReport with real prechecks before implementation and its Result after work. Natural PreToolUse and successful PostToolUse observe ready answers, with Stop/SubagentStop as fallback; accepted work is not submitted again.")
 	return next.String()
 }
 

@@ -275,6 +275,13 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", replayErr))
 		return 1
 	}
+	// The reviewed plan is only valid for the material that actually exists.
+	// A plan whose inputs were removed, changed or extended after the review
+	// supersedes the plan instead of restoring a stale decision.
+	if err := verifyRecoveryPlanInputs(root, document); err != nil {
+		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", err))
+		return 1
+	}
 	checkpointSource = document.CheckpointPath
 	if err := verifyCheckpointPlanSource(root, document); err != nil {
 		fmt.Fprintln(stderr, formatRecoveryFailure("runtime recover apply", err))
@@ -320,6 +327,50 @@ func runRuntimeRecoverApply(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return encodeRecoveryApplyResult(stdout, result)
+}
+
+// verifyRecoveryPlanInputs compares the plan's recorded inputs with the
+// repository's actual saved material. A plan is stale when a planned input is
+// no longer saved, when a new input appeared after the plan, or when a planned
+// input changed; the REQ binding is re-checked as well. No revision, digest or
+// fingerprint is compared: the plan records what was actually saved, not a
+// hash of it.
+func verifyRecoveryPlanInputs(root string, document recoveryPlanDocument) error {
+	inventory, err := recovery.Inspect(root, document.REQ.Path)
+	if err != nil {
+		return fmt.Errorf("%w: recovery plan inputs cannot be inspected: %v", runtime.ErrRecoveryInputDrift, err)
+	}
+	if document.REQ.ID != inventory.REQ.ID || document.REQ.Path != inventory.REQ.Path || document.REQ.Status != inventory.REQ.Status || document.REQ.Version != inventory.REQ.Version {
+		return fmt.Errorf("%w: recovery plan REQ binding differs from the selected locked source", runtime.ErrRecoveryInputDrift)
+	}
+	current := make(map[string]recovery.InventoryInput, len(inventory.Inputs))
+	for _, input := range inventory.Inputs {
+		current[input.Path] = input
+	}
+	planned := make(map[string]recovery.InventoryInput, len(document.Inputs))
+	for _, input := range document.Inputs {
+		if input.Kind == recovery.InputKindCheckpoint {
+			// Checkpoint directories are pruned by the Runtime; they are not
+			// part of the repository's saved material.
+			continue
+		}
+		planned[input.Path] = input
+	}
+	for path, input := range planned {
+		actual, ok := current[path]
+		if !ok {
+			return fmt.Errorf("%w: planned recovery input %q is no longer saved", runtime.ErrRecoveryInputDrift, path)
+		}
+		if actual.Kind != input.Kind || actual.Size != input.Size {
+			return fmt.Errorf("%w: planned recovery input %q changed", runtime.ErrRecoveryInputDrift, path)
+		}
+	}
+	for path := range current {
+		if _, ok := planned[path]; !ok {
+			return fmt.Errorf("%w: new recovery input %q appeared after the plan", runtime.ErrRecoveryInputDrift, path)
+		}
+	}
+	return nil
 }
 
 func resumePendingRecovery(root, approvedBy string, guard func(map[string]any, []byte) error, stdout, stderr io.Writer) int {
@@ -578,8 +629,15 @@ func persistRecoveryPlan(root string, inventory recovery.Inventory) (recoveryPla
 	}
 
 	_, err = transition.Apply(root, statePath, journalPath, transition.Request{
-		Files:            files,
-		TransitionID:     "TR-001",
+		Files:        files,
+		TransitionID: "TR-001",
+		// This is an explicit concrete assertion, not an omission: the
+		// recovery seed runtime was just built by this planner and is still at
+		// revision 0, and TR-001 is its first commit. A non-negative value is a
+		// specific assertion (L4-revision-usage.md:78), so it is compared as
+		// such. The number is produced by the system that owns the fresh seed
+		// — no author supplies or guesses it, and an unrelated commit is not
+		// possible inside this private staging directory.
 		ExpectedRevision: 0,
 		Actor:            "orchestrator",
 		Evidence: map[string]string{

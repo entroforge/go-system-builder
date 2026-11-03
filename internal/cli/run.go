@@ -1762,10 +1762,16 @@ func runRuntime(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		receipt, err := review.SubmitSupplement(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), review.SupplementRequest{
-			FindingID:    *findingID,
-			FilePath:     resolveRootPath(*root, *filePath),
-			AuthorizedBy: *authorizedBy,
-			InRoundNote:  *inRoundNote,
+			// -1 is the omission marker: this normal entry declares no
+			// expected Runtime revision, so the original consumer takes the
+			// current-value path. Go's zero value would instead assert
+			// "the Runtime is at revision 0" (L4-revision-usage.md:78), so
+			// the adapter must choose the omission explicitly.
+			ExpectedRevision: -1,
+			FindingID:        *findingID,
+			FilePath:         resolveRootPath(*root, *filePath),
+			AuthorizedBy:     *authorizedBy,
+			InRoundNote:      *inRoundNote,
 		})
 		if err != nil {
 			fmt.Fprintln(stderr, formatFailure("runtime finding-supplement", err))
@@ -1922,9 +1928,12 @@ func runRuntimeHumanDecision(args []string, stdout, stderr io.Writer) int {
 		}
 		params = map[string]any{"decision_id": id, "decision_path": path, "disposition": strings.TrimSpace(*disposition), "reason": *reason}
 		runtimeID = stringValue(snapshot.State["runtime_id"])
-		if *expectedRevision < 0 {
-			*expectedRevision = snapshot.Revision
-		}
+		// The flag keeps its -1 default, which is the omission marker: this
+		// command did not assert a Runtime revision, so the transition takes
+		// the current-value path. The adapter must not substitute the
+		// revision it just read — the author does not maintain that number
+		// (L4-revision-usage.md:79 and :191). The Runtime identity above and
+		// the transition's own lifecycle/evidence rules remain the criteria.
 	}
 	next, err := transition.Apply(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), transition.Request{
 		TransitionID: transitionID, Params: params, ExpectedRuntimeID: runtimeID,

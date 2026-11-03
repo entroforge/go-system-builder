@@ -148,24 +148,41 @@ func s9HandoffForBinding(ctx context.Context, root string, snap runtime.Snapshot
 	return p
 }
 
+// executionCoordinates names the exact original responsibility this handoff is
+// about. The registered execution is the source of its assignment and owner;
+// the PlanReport binding is the fallback while no Result index exists yet.
+func (p s9HandoffProjection) executionCoordinates() (string, string) {
+	assignment, owner := p.Plan.binding.ManifestAssignmentID, p.Plan.binding.OwnerAgentID
+	if p.Result != nil {
+		if p.Result.executionAssignment != "" {
+			assignment = p.Result.executionAssignment
+		}
+		if p.Result.result != nil && p.Result.result.Sources.OwnerAgentID != "" {
+			owner = p.Result.result.Sources.OwnerAgentID
+		}
+	}
+	return assignment, owner
+}
+
 func (p s9HandoffProjection) summary(root string) string {
 	var parts []string
+	assignment, owner := p.executionCoordinates()
 	if p.Plan.id != "" {
 		packet := workpacket.RepairPlanReportPacket{ID: p.Plan.id, BriefPath: p.Plan.brief, ViewPath: p.Plan.view, AnswerPath: p.Plan.answer}
 		brief := nativeS9BriefPath(packet)
 		if p.Native {
 			plan, result, err := nativeS9AuthorPaths(root, packet)
 			if err != nil {
-				parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s; exact brief %s; %s.", p.Plan.binding.OwnerAgentID, p.Plan.binding.ManifestAssignmentID, filepath.Join(root, brief), s9NativeAuthorCoordinatesFailure(root, packet, err, true)))
+				parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s packet=%s; exact brief %s; %s.", owner, assignment, p.Plan.id, filepath.Join(root, brief), s9NativeAuthorCoordinatesFailure(root, packet, err, true)))
 			} else {
-				parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s; exact brief %s; private worktree-relative PlanReport %s and Result %s.", p.Plan.binding.OwnerAgentID, p.Plan.binding.ManifestAssignmentID, filepath.Join(root, brief), plan, result))
+				parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s packet=%s; exact brief %s; private worktree-relative PlanReport %s and Result %s.", owner, assignment, p.Plan.id, filepath.Join(root, brief), plan, result))
 			}
 		} else {
-			parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s; PlanReport question %s; PlanReport answer %s.", p.Plan.binding.OwnerAgentID, p.Plan.binding.ManifestAssignmentID, filepath.Join(root, p.Plan.view), filepath.Join(root, p.Plan.answer)))
+			parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s packet=%s; PlanReport question %s; PlanReport answer %s.", owner, assignment, p.Plan.id, filepath.Join(root, p.Plan.view), filepath.Join(root, p.Plan.answer)))
 		}
 	}
 	if p.Result != nil {
-		parts = append(parts, "Original issued Result answer "+filepath.Join(p.Result.originalRoot, p.Result.answer)+".")
+		parts = append(parts, "Original issued Result packet "+p.Result.id+" answer "+filepath.Join(p.Result.originalRoot, p.Result.answer)+".")
 	}
 	if p.RegisteredRef != "" {
 		parts = append(parts, "Registered candidate reference: "+resolveRootPath(root, p.RegisteredRef)+"; this index alone does not establish acceptance or completion.")
@@ -339,6 +356,9 @@ const (
 	s9CandidateUnknown    s9CandidateProgressState = "unknown"
 )
 
+// s9ObservedCandidateProgress reads the author's own recorded unit results. The
+// completion bit is never inferred from the verdict alone: only recorded units
+// that all passed are a finished professional result.
 func s9ObservedCandidateProgress(document map[string]any) (s9CandidateProgressState, string) {
 	answer := mapFieldCLI(mapFieldCLI(document, "provenance"), "submitted_answer")
 	if len(answer) == 0 {
@@ -346,6 +366,16 @@ func s9ObservedCandidateProgress(document map[string]any) (s9CandidateProgressSt
 	}
 	if answer["verdict"] != "completed" {
 		return s9CandidateUnfinished, fmt.Sprintf("recorded professional verdict is %v", answer["verdict"])
+	}
+	units := objectSliceAny(answer["unit_results"])
+	if len(units) == 0 {
+		return s9CandidateUnfinished, "recorded professional result has no unit result"
+	}
+	for _, unit := range units {
+		status := stringValue(unit["status"])
+		if status != "pass" {
+			return s9CandidateUnfinished, fmt.Sprintf("recorded repair unit %s is %s", stringValue(unit["unit_id"]), status)
+		}
 	}
 	return s9CandidateComplete, ""
 }

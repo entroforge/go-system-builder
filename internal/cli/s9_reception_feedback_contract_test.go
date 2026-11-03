@@ -92,8 +92,18 @@ func TestS9ReceptionFeedbackMissingSavedTypedInputNamesOriginalWindowBeforeRetry
 	typed := filepath.Join(worker, packet.AnswerPath)
 	beforeDelete := repairDispatchSnapshot(t, root)
 	previous, found := nativeS9ReturnDiagnosticRecordContext(t.Context(), root, beforeDelete, plan.ID)
-	if !found || previous.Attempt == nil || previous.Attempt.Stage != "typed_result_consumer" || previous.Attempt.TypedInputRef != typed || len(previous.Files[typed]) != 64 {
-		t.Fatalf("fixture did not reach actual saved typed boundary: %+v found=%v", previous, found)
+	if !found || previous.Attempt == nil {
+		t.Fatalf("fixture did not preserve the pending Result boundary: %+v found=%v", previous, found)
+	}
+	// The preserved attempt names the exact original input files, so Main can
+	// locate the actual responsibility. No stage name of the removed typed
+	// adapter is hardcoded and no digest of the saved input is asserted
+	// (L4-workflow-convergence §"S6／S9 当前工作区": the typed adapter no
+	// longer owns the receipt, and the removed hash gate must not return).
+	for _, want := range []string{filepath.Join(worker, nativeS9TestPlanPath(t, root, plan)), filepath.Join(worker, nativeS9TestResultPath(t, root, plan))} {
+		if !strings.Contains(previous.Message, want) {
+			t.Fatalf("the preserved attempt did not name the original input file %s: %s", want, previous.Message)
+		}
 	}
 	if err := os.Remove(typed); err != nil {
 		t.Fatal(err)

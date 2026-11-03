@@ -313,7 +313,12 @@ func TestNativeS9OriginalConsumePendingPrecedesMissingTypedAndChangedFlat(t *tes
 	}
 }
 
-func TestNativeS9PendingRecoveryReportsChangedPrivateOriginal(t *testing.T) {
+// The private original changed after the Result was already received. The
+// system does not detect that drift by comparing bytes against a registered
+// digest (L3-S9 §12.1: the system does not rely on re-reading the old draft
+// to discover rewrites; L4-workflow-convergence §281). The already accepted
+// fact stays accepted and is not overwritten.
+func TestNativeS9PendingRecoveryPreservesAcceptedFactAfterPrivateOriginalChange(t *testing.T) {
 	for _, stateWritten := range []bool{false, true} {
 		name := "before_state_publication"
 		if stateWritten {
@@ -378,8 +383,11 @@ func TestNativeS9PendingRecoveryReportsChangedPrivateOriginal(t *testing.T) {
 				t.Fatalf("missing original pending boundary: %v", err)
 			}
 			var out, diagnostic bytes.Buffer
-			if code := runStageAnswer([]string{"consume", "--root", root, "--path", flat}, &out, &diagnostic); code == 0 || !strings.Contains(diagnostic.String(), "accepted private original bytes changed") {
-				t.Fatalf("private source drift was not reported: %d %s %s", code, &out, &diagnostic)
+			// The changed private copy is not a new receipt. The accepted
+			// responsibility continues; the accepted Candidate and its receipt
+			// are preserved below and are never replaced by the later bytes.
+			if code := runStageAnswer([]string{"consume", "--root", root, "--path", flat}, &out, &diagnostic); code != 0 {
+				t.Fatalf("changed private original broke the accepted responsibility: %d %s %s", code, &out, &diagnostic)
 			}
 			afterState, stateErr := os.ReadFile(statePath)
 			afterJournal, journalErr := os.ReadFile(journalPath)
@@ -411,12 +419,17 @@ func TestNativeS9PendingRecoveryReportsChangedPrivateOriginal(t *testing.T) {
 			before := repairDispatchRuntimeBytes(t, root)
 			out.Reset()
 			diagnostic.Reset()
-			if code := runStageAnswer([]string{"consume", "--root", root, "--path", flat}, &out, &diagnostic); code != 0 || !strings.Contains(out.String(), "runtime workspace integrate") {
-				t.Fatalf("restored original did not project its receipt: %d %s %s", code, &out, &diagnostic)
+			// The replay after the pending recovery receives nothing again: the
+			// accepted Candidate and its receipt stay the accepted facts.
+			if code := runStageAnswer([]string{"consume", "--root", root, "--path", flat}, &out, &diagnostic); code != 0 {
+				t.Fatalf("replay after recovery failed: %d %s %s", code, &out, &diagnostic)
 			}
 			repairDispatchAssertUnchanged(t, root, before)
 			if _, err := os.Stat(typed); !os.IsNotExist(err) {
 				t.Fatalf("receipt projection recreated typed input: %v", err)
+			}
+			if receipt, err := service.RepairResultReceipt(plan.Binding.OwnerAgentID, packet.ID); err != nil || !receipt.Accepted || len(receipt.DomainRefs) != 1 || receipt.DomainRefs[0] != candidateRef {
+				t.Fatalf("replay replaced the original Candidate receipt: %+v %v", receipt, err)
 			}
 		})
 	}
@@ -668,7 +681,12 @@ func TestNativeS9OriginalConsumeAcceptedPlanSurvivesMissingDisplayBrief(t *testi
 	}
 }
 
-func TestNativeS9AcceptedDRecoveryPreservesMissingButRejectsChangedOriginals(t *testing.T) {
+// A later private edit is a new attempt by the author, not a new receipt of
+// the accepted responsibility. The system does not detect that drift by
+// comparing bytes against a registered digest (L3-S9 §12.1; L4-workflow-
+// convergence §281); the accepted fact stays accepted and is not overwritten,
+// and missing accepted originals never require a resubmission.
+func TestNativeS9AcceptedDRecoveryKeepsAcceptedFactWhenPrivateOriginalsChangeOrVanish(t *testing.T) {
 	root, worker, p, _, _ := nativeS9WorkerFixture(t)
 	plan, result, err := nativeS9AuthorPaths(root, p)
 	if err != nil {
@@ -691,10 +709,15 @@ func TestNativeS9AcceptedDRecoveryPreservesMissingButRejectsChangedOriginals(t *
 		if err := os.WriteFile(filepath.Join(worker, rel), append(raw, ' '), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := consumeRegisteredStageAnswer(t.Context(), service, path); err == nil {
-			t.Fatalf("changed accepted original was swallowed: %s", rel)
+		if _, err := consumeRegisteredStageAnswer(t.Context(), service, path); err != nil {
+			t.Fatalf("changed accepted original broke the accepted responsibility: %v", err)
 		}
 		repairDispatchAssertUnchanged(t, root, before)
+		accepted := repairDispatchSnapshot(t, root)
+		registry, err := workspace.Decode(accepted.State)
+		if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef == "" {
+			t.Fatalf("the changed private original dropped the accepted delivery: %v", err)
+		}
 		if err := os.WriteFile(filepath.Join(worker, rel), raw, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -709,10 +732,14 @@ func TestNativeS9AcceptedDRecoveryPreservesMissingButRejectsChangedOriginals(t *
 	}
 	repairDispatchAssertUnchanged(t, root, before)
 	// Missing accepted author copies differ from losing an unverified source.
-	// Candidate acceptance alone grants no proof that the source was reclaimed.
+	// The accepted fact survives the vanished source: the original exit that
+	// does not depend on cleanup is not blocked, and no cleanup, ACK or
+	// re-receipt state is fabricated (L4-workflow-convergence §"S6／S9 工作区
+	// 清理与恢复": preserving resources does not revoke the accepted facts
+	// nor block the original stage exit that does not depend on cleanup).
 	repairLeadGit(t, root, "worktree", "remove", "--force", worker)
-	if _, err := consumeRegisteredStageAnswer(t.Context(), service, path); err == nil {
-		t.Fatal("candidate-only missing source acquired verified cleanup recovery")
+	if _, err := consumeRegisteredStageAnswer(t.Context(), service, path); err != nil {
+		t.Fatalf("the vanished source blocked the accepted responsibility: %v", err)
 	}
 	repairDispatchAssertUnchanged(t, root, before)
 }

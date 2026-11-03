@@ -125,6 +125,22 @@ func persistCheckpointRecoveryPlan(root string, inventory recovery.Inventory, pa
 	return document, filepath.ToSlash(planPath), nil
 }
 
+// recoveryActiveRuntimeCoherent reports whether the active Runtime projection
+// is a self-consistent Runtime. A damaged projection is the material a
+// recovery replaces; it is not an authority that can refuse the recovery, so
+// only a self-consistent Runtime is compared with a recovery candidate.
+func recoveryActiveRuntimeCoherent(root string) bool {
+	data, err := os.ReadFile(filepath.Join(root, ".claude", "loop-state.json"))
+	if err != nil {
+		return false
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil || len(state) == 0 {
+		return false
+	}
+	return semantic.RuntimeCandidateValidator{}.ValidateCandidate(root, state) == nil
+}
+
 // The original Git scheduling lock is already held. This guard runs inside
 // the original Runtime recovery lock and takes launch leases before applying
 // the pair. Marker retries use the same guard with the sealed candidate.
@@ -153,7 +169,11 @@ func checkpointRecoveryGuard(ctx context.Context, root string, checkpointSource 
 			sourceJournal, _ := pair.State["journal"].(map[string]any)
 			candidateBaseline, _ := state["baseline"].(map[string]any)
 			sourceBaseline, _ := pair.State["baseline"].(map[string]any)
-			if state["runtime_id"] != pair.State["runtime_id"] || state["revision"] != pair.State["revision"] || candidateBaseline["generation"] != sourceBaseline["generation"] || candidateJournal["last_sequence"] != sourceJournal["last_sequence"] || candidateJournal["last_event_id"] != sourceJournal["last_event_id"] {
+			// The reviewed candidate must still be the latest checkpoint's
+			// responsibility: same Runtime epoch, same baseline generation and
+			// the same committed journal tail. A revision counter is only an
+			// audit coordinate, so it never decides whether the plan is stale.
+			if state["runtime_id"] != pair.State["runtime_id"] || candidateBaseline["generation"] != sourceBaseline["generation"] || candidateJournal["last_sequence"] != sourceJournal["last_sequence"] || candidateJournal["last_event_id"] != sourceJournal["last_event_id"] {
 				return fmt.Errorf("%w: latest checkpoint responsibility changed", runtime.ErrRecoveryInputDrift)
 			}
 			original = &pair
@@ -177,8 +197,13 @@ func checkpointRecoveryGuard(ctx context.Context, root string, checkpointSource 
 			if original != nil {
 				pair = *original
 			}
-			if err := runtime.ValidateCheckpointRestore(root, pair); err != nil {
-				return fmt.Errorf("%w: %w", runtime.ErrRecoveryInputDrift, err)
+			// The candidate is compared with the active Runtime only when the
+			// active projection is a self-consistent Runtime. A damaged
+			// projection cannot reject the recovery candidate.
+			if recoveryActiveRuntimeCoherent(root) {
+				if err := runtime.ValidateCheckpointRestore(root, pair); err != nil {
+					return fmt.Errorf("%w: %w", runtime.ErrRecoveryInputDrift, err)
+				}
 			}
 		} else if err != nil {
 			return err

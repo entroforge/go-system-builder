@@ -171,10 +171,14 @@ func nativeMainReturnHook(root string, in policy.Input, out io.Writer) (bool, in
 	if len(selected) == 0 && !unknown {
 		return false, 0
 	}
+	// Multiple exact original responsibilities are an ambiguity of the return
+	// itself, not an unknown original. Keep the two facts apart: nothing is
+	// selected by path order, and no responsibility is guessed.
+	ambiguous := false
 	if len(selected) > 1 {
 		for _, subject := range selected {
 			if subject.kind != "s7-review-result-v1" && subject.kind != "s8-hypothesis-result-v1" {
-				selected, unknown = nil, true
+				selected, ambiguous = nil, true
 				break
 			}
 		}
@@ -211,6 +215,9 @@ func nativeMainReturnHook(root string, in policy.Input, out io.Writer) (bool, in
 			summary = nativeExecutionPendingAction(execution) + " Original reception facts: " + summary
 		}
 		messages = append(messages, observation+subject.ref+". "+continuation+summary+" This reception summary does not establish product acceptance. Do not re-dispatch received work merely because Main or the next stage still has work.")
+	}
+	if ambiguous {
+		messages = append(messages, "The original return names multiple exact original responsibilities; the system does not select one by path order. Main inspects the original dispatch and names the exact responsibility to continue.")
 	}
 	if unknown {
 		messages = append(messages, "Some original responsibilities remain unknown; Main inspects the original dispatch and preserves any accepted results.")

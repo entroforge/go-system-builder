@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -84,7 +85,15 @@ func consumeNativeS9Original(ctx context.Context, service *submission.Service, p
 		return nil, true, err
 	}
 	for _, route := range routes {
-		if filepath.Base(filepath.Dir(path)) != route.ID {
+		// The original responsibility is selected by its own private Result
+		// coordinate, derived by the same producer function that wrote the
+		// file. A directory base name is only the tail of a split packet
+		// identity and never equals the whole identity.
+		_, privateResult, pathErr := repair.NativeS9PrivatePaths(route.ID)
+		if pathErr != nil {
+			return nil, true, fmt.Errorf("read native author paths: %w", pathErr)
+		}
+		if !strings.HasSuffix(path, string(filepath.Separator)+filepath.FromSlash(privateResult)) {
 			continue
 		}
 		packet, err := nativeS9RoutePacket(ctx, service.Root, snap.State, route)

@@ -79,14 +79,15 @@ func TestNativeS9FlatValidationFeedbackUsesPrivateFileFields(t *testing.T) {
 }
 
 func TestNativeS9LegacyPlanValidationKeepsOriginalEnvelopeFeedback(t *testing.T) {
-	root, worker, packet, _, _ := nativeS9WorkerFixture(t)
+	root, worker, packet, input, _ := nativeS9WorkerFixture(t)
 	// The current PlanReport is the flat private file; the removed envelope
 	// form (/answer/...) is no longer produced or read
 	// (L4-workflow-convergence §"S6／S9 当前工作区"). The original consumer
 	// must still return the exact field error of the current flat shape
 	// (L3-S9 §"字段缺失时保留原稿,反馈实际文件与字段").
 	plan, _ := nativeS9TestAuthorPaths(t, root, packet)
-	raw, err := os.ReadFile(filepath.Join(worker, plan))
+	planPath := filepath.Join(worker, plan)
+	raw, err := os.ReadFile(planPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestNativeS9LegacyPlanValidationKeepsOriginalEnvelopeFeedback(t *testing.T)
 		t.Fatal(err)
 	}
 	document["plan"] = ""
-	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, plan), document); err != nil {
+	if err := persistRepairLeadQuestionnaire(planPath, document); err != nil {
 		t.Fatal(err)
 	}
 	service, serviceErr := submission.New(root)
@@ -107,8 +108,41 @@ func TestNativeS9LegacyPlanValidationKeepsOriginalEnvelopeFeedback(t *testing.T)
 	if !errors.As(err, &fields) || len(fields.Fields) == 0 {
 		t.Fatalf("original consumer did not return the field error: %+v %v", fields, err)
 	}
-	if fields.Fields[0].Pointer != "/answer/plan" {
+	// The flat private file is the current shape: the pointer names the
+	// professional field as it exists in the author's own file, never the
+	// removed internal envelope.
+	if fields.Fields[0].Pointer != "/plan" {
 		t.Fatalf("field error pointer = %q", fields.Fields[0].Pointer)
+	}
+	for _, field := range fields.Fields {
+		if strings.HasPrefix(field.Pointer, "/answer") {
+			t.Fatalf("flat boundary leaked the removed envelope pointer %q", field.Pointer)
+		}
+	}
+	// The feedback keeps the substantive facts: the actual private file path
+	// and the flat-field correction instruction.
+	for _, want := range []string{planPath, "keep professional fields at the top level"} {
+		if !strings.Contains(err.Error()+"\n"+fields.Fields[0].Repair, want) {
+			t.Fatalf("flat feedback lost %q: %v %q", want, err, fields.Fields[0].Repair)
+		}
+	}
+	// The original consumer's own rejection stays in the chain unchanged; only
+	// the flat boundary translates it.
+	var original *workpacket.AnswerError
+	if !errors.As(errors.Unwrap(err), &original) || len(original.Fields) == 0 || original.Fields[0].Pointer != "/answer/plan" {
+		t.Fatalf("original consumer rejection was rewritten: %v %+v", err, original)
+	}
+	// The same broken Plan reaches Main as a visible recovery duty naming the
+	// actual file, not as a silent drop.
+	input.Event = "SubagentStop"
+	var out, diagnostic bytes.Buffer
+	if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 {
+		t.Fatalf("native return: %t %d %s", handled, code, &diagnostic)
+	}
+	for _, want := range []string{planPath, "keep professional fields at the top level", "Main owns recovery"} {
+		if !strings.Contains(diagnostic.String(), want) {
+			t.Fatalf("Main feedback lost %q: %s", want, diagnostic.String())
+		}
 	}
 }
 

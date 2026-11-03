@@ -37,6 +37,12 @@ func receiveSavedQuestionnaire(root string, request policy.Input, stdout, stderr
 			}
 		}
 	}
+	// The original consumer signs for the registered owner of the exact saved
+	// answer it selects. It may only complete that responsibility when the
+	// platform event identity is that owner.
+	if !savedQuestionnaireEventOwnsAnswer(root, request) {
+		return false, 0
+	}
 	for _, receive := range []func(string, policy.Input, io.Writer, io.Writer) (bool, int){
 		runSavedEntryQuestionnaire, runSavedS5ManifestQuestionnaire, runSavedRepairDispatch, runSavedRepairVerifierDispatch,
 		runSavedInvestigationLeadQuestionnaire, runSavedRepairLeadQuestionnaire,
@@ -50,6 +56,139 @@ func receiveSavedQuestionnaire(root string, request policy.Input, stdout, stderr
 		}
 	}
 	return false, 0
+}
+
+// savedQuestionnaireEventOwnsAnswer reports whether the platform event
+// identity can be attributed to the registered original owner of the exact
+// saved answer that the event carries.
+//
+// The original consumer acts for the registered owner of that answer path.
+// The platform event identity and the recorded original responsibility are the
+// only facts that distinguish a known event: a payload that carries another
+// agent's identity is that agent's own event and never completes the original
+// owner's responsibility, and an event without an identity is never completed
+// from the answer path alone. No revision, hash, digest, checksum, fingerprint
+// or round is compared, and no owner is inferred from a path, a filename, a
+// recency order or a unique candidate.
+func savedQuestionnaireEventOwnsAnswer(root string, request policy.Input) bool {
+	path, saved := savedQuestionnairePath(request)
+	if !saved || !savedQuestionnaireWorkerAnswerPath(path) {
+		return true
+	}
+	owner, registered := savedQuestionnaireOwner(root, path)
+	if !registered {
+		// No current registered issuance owns this exact path. The original
+		// consumer reports that exact fact and never signs for another
+		// responsibility.
+		return true
+	}
+	if owner == "" {
+		// The path is registered, but its recorded owner is ambiguous. The
+		// event cannot be attributed to one original responsibility.
+		return false
+	}
+	if owner == "Main" {
+		return true
+	}
+	actor := request.EffectiveAgentID()
+	if actor == "" {
+		// An event without a platform identity cannot be attributed to the
+		// original owner. A recorded session association has already supplied
+		// that identity before this consumer is reached.
+		return false
+	}
+	return actor == owner
+}
+
+// savedQuestionnaireWorkerAnswerPath reports whether the exact saved answer
+// path belongs to a Worker-owned original questionnaire family. Main's own
+// answers keep their existing Main-viewer guard.
+func savedQuestionnaireWorkerAnswerPath(path string) bool {
+	return isS8HypothesisResultPath(path) || isS9RepairPlanReportPath(path) || isS9RepairResultPath(path)
+}
+
+// savedQuestionnaireOwner resolves the registered original owner of an exact
+// saved answer path.
+//
+// Only the current registered issuances decide this answer: the Runtime's own
+// work-packet index carries the exact answer path and its registered original
+// owner. An empty owner with a registered answer means that the recorded
+// issuances disagree, so no single original responsibility can be attributed.
+// The owner is never inferred from a path convention, a filename, a recency
+// order or a unique candidate.
+func savedQuestionnaireOwner(root string, path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	snapshot, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
+	if err != nil {
+		return "", false
+	}
+	roots := savedQuestionnaireAnswerRoots(root, snapshot.State)
+	owner := ""
+	registered := false
+	for _, row := range objectSliceAny(mapFieldCLI(snapshot.State, "entities")["work_packets"]) {
+		ref := stringValue(row["answer_path"])
+		if ref == "" {
+			continue
+		}
+		matched := false
+		for _, candidateRoot := range roots {
+			if samePath(filepath.Join(candidateRoot, filepath.FromSlash(ref)), path) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		registered = true
+		candidate := savedQuestionnaireBindingOwner(row)
+		if candidate == "" {
+			continue
+		}
+		if owner != "" && owner != candidate {
+			// Two recorded original responsibilities claim the same exact
+			// answer path. Neither one can be attributed to this event.
+			return "", true
+		}
+		owner = candidate
+	}
+	return owner, registered
+}
+
+// savedQuestionnaireAnswerRoots lists the recorded roots an original answer
+// file may live in: the Main root and the registered Worker checkout of every
+// recorded execution. They are recorded locations, never candidates inferred
+// from the answer path.
+func savedQuestionnaireAnswerRoots(root string, state map[string]any) []string {
+	roots := []string{root}
+	registry, err := workspace.Decode(state)
+	if err != nil || registry == nil {
+		return roots
+	}
+	for _, execution := range registry.AllExecutions() {
+		if execution.Path != "" {
+			roots = appendUnique(roots, execution.Path)
+		}
+	}
+	return roots
+}
+
+// savedQuestionnaireBindingOwner reports the registered original owner of a
+// work-packet index row.
+func savedQuestionnaireBindingOwner(row map[string]any) string {
+	binding := mapFieldCLI(row, "binding")
+	if owner := stringValue(binding["owner_agent_id"]); owner != "" {
+		return owner
+	}
+	if owner := stringValue(binding["owner"]); owner != "" {
+		return owner
+	}
+	if owner := stringValue(mapFieldCLI(binding, "sources")["owner_agent_id"]); owner != "" {
+		return owner
+	}
+	return ""
 }
 
 type observedQuestionnaire struct {

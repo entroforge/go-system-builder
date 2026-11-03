@@ -25,6 +25,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/review"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/submission"
@@ -101,7 +102,15 @@ func StopIdleDecision(root string, input policy.Input) (policy.Decision, bool) {
 	loaded, err := hookctx.FromSnapshot(root, agentID, snapshot)
 	if err != nil || loaded == nil || loaded.PolicyContext.Agent == nil {
 		if repairBound && !reviewBound && !hypothesisBound {
-			return repairResultAssignmentBindingNotice(input.Event, agentID, repairAssignmentID), true
+			if repairAssignmentID == "" {
+				// The S9 Assignment↔Builder binding itself cannot be determined.
+				return repairResultAssignmentBindingNotice(input.Event, agentID, repairAssignmentID), true
+			}
+			// The binding is known; only the retired frozen execution / source-pin
+			// proof is missing. That retired gate must not close the return, but
+			// the honest fact is still projected and nothing is written
+			// (L4-workflow-convergence.md:342, :300; L4-hook-platform-wiring.md:83).
+			return repairResultAssignmentUnfinishedNotice(input.Event, agentID, repairAssignmentID), true
 		}
 		if reviewBound || hypothesisBound {
 			if hypothesisBound && !reviewBound {
@@ -124,7 +133,12 @@ func StopIdleDecision(root string, input policy.Input) (policy.Decision, bool) {
 	if agent.HypothesisResultAssignment && !hypothesisBound {
 		return hypothesisResultAssignmentBindingNotice(input.Event, agentID, agent.AssignmentID), true
 	}
-	if repairBound && (repairAssignmentID == "" || !agent.RepairResultAssignment || agent.RepairAssignmentID != repairAssignmentID) {
+	// The S9 binding is only "unknown" when the Assignment↔Builder binding
+	// itself cannot be determined. A bound Assignment whose old execution /
+	// source-pin proof is missing is a known, unfinished responsibility and must
+	// not be refused here (L4-workflow-convergence.md:342 drops the old source
+	// pin proof and its recovery wiring).
+	if repairBound && (repairAssignmentID == "" || agent.RepairAssignmentID != repairAssignmentID) {
 		return repairResultAssignmentBindingNotice(input.Event, agentID, repairAssignmentID), true
 	}
 	if agent.RepairResultAssignment && !repairBound {
@@ -150,10 +164,23 @@ func StopIdleDecision(root string, input policy.Input) (policy.Decision, bool) {
 			stage = "S9"
 		}
 		return policy.Decision{
-			Decision: "warn", RuleID: "original_responsibility_unfinished",
-			Reason: fmt.Sprintf("%s original responsibility for %s is not complete. Main/system must inspect the original answer and actual pending work; this notice does not establish receipt or completion. This event may finish without a repeated save, submission or Stop.", stage, agentID),
-			Retry:  "not_applicable",
+			Decision: "deny", RuleID: stopIdleRuleID(input.Event),
+			Reason: fmt.Sprintf("%s original responsibility for %s is not complete. Main/system must inspect the original answer and actual pending work; this stop does not establish receipt or completion.", stage, agentID),
+			Recovery: []string{
+				"continue this original responsibility using its current exact PLAN and Result questionnaire paths",
+				"save the professional answer on the issued original questionnaire path; the original consumer records the receipt",
+				"if the exact questionnaire context is unavailable, Main must restore this Assignment context; do not invent a path or send duplicate messages",
+			},
+			Retry: policy.RetryAfterRecoveryValidation,
 		}, true
+	}
+	if agent.RepairAssignmentID != "" {
+		// The actor still holds an original native Assignment record (the
+		// issued RepairPlanReport binding), so the legacy PLAN_REPORT closing
+		// matrix must not close it: the native branch judges the original
+		// responsibility, and TeammateIdle is not the native flow's closing
+		// wiring (L4-hook-platform-wiring.md:162, L4-hook-anchor-catalog.md:54).
+		return policy.Decision{}, false
 	}
 	decision := stopIdleBlock(input.Event, agent)
 	if requiresBuilderReceipt(assignment) {
@@ -230,15 +257,162 @@ func ReviewResultConsumed(root string, state map[string]any, agent *policy.Agent
 // draining (`cannot_clean` / `discovery_draining`); manifest status strings
 // never authorize blocking.
 func ReviewAssignmentBlocked(root string, state map[string]any, agent *policy.AgentContext, assignment *hookctx.AssignmentContext) bool {
-	if !reviewAssignmentContextMatches(state, agent, assignment) {
+	if !reviewAssignmentContextMatches(state, agent, assignment) || !reviewProofDispatchedIdentity(state, agent) {
+		return false
+	}
+	if reviewSiteLostBlocker(root, state, agent) {
+		return true
+	}
+	return reviewWorkBlockedMessage(root, state, agent, assignment)
+}
+
+// reviewSiteLostBlocker proves S7's site-lost blocker from its original
+// source: the original Assignment row, the original Agent row, the original
+// blocker evidence and artifact, and the original Runtime journal event.
+// Derived manifest status strings are not the source, and historical digest,
+// revision and round fields are read at their original path only — they never
+// gate this fact.
+func reviewSiteLostBlocker(root string, state map[string]any, agent *policy.AgentContext) bool {
+	runtimeID := reviewProofText(state["runtime_id"])
+	baseline, _ := state["baseline"].(map[string]any)
+	generation := reviewProofInt(baseline["generation"])
+	if runtimeID == "" || filepath.Base(runtimeID) != runtimeID || generation < 1 {
+		return false
+	}
+	plan, pointer, err := review.LoadPlan(root, state)
+	if err != nil || plan == nil || pointer == nil ||
+		!reviewSiteLostRoundAcceptsResult(pointer.Status) ||
+		plan.ReviewPlanID == "" || plan.ReviewPlanID != pointer.PlanID {
+		return false
+	}
+	var planAssignment *review.PlanAssignment
+	for i := range plan.Assignments {
+		if plan.Assignments[i].AssignmentID != agent.AssignmentID {
+			continue
+		}
+		if planAssignment != nil {
+			return false
+		}
+		planAssignment = &plan.Assignments[i]
+	}
+	if planAssignment == nil || len(planAssignment.ClaimIDs) == 0 {
 		return false
 	}
 	reviewState, _ := state["review"].(map[string]any)
 	assignments, _ := reviewState["assignments"].(map[string]any)
 	row, _ := assignments[agent.AssignmentID].(map[string]any)
-	return row != nil && reviewProofText(row["agent_id"]) == agent.ID &&
-		workstate.ReviewAssignmentActivity(row, reviewProofText(state["schema_version"])) == "blocked"
+	if row == nil || workstate.ReviewAssignmentActivity(row, reviewProofText(state["schema_version"])) != "blocked" ||
+		reviewProofText(row["agent_id"]) != agent.ID || reviewProofText(row["lens"]) != planAssignment.Lens {
+		return false
+	}
+	if reviewProofText(row["result_ref"]) != "" {
+		return false
+	}
+	claimIDs, ok := reviewProofStrings(row["claim_ids"])
+	if !ok || !sameReviewProofSet(claimIDs, planAssignment.ClaimIDs) {
+		return false
+	}
+	claims, _ := reviewState["claims"].(map[string]any)
+	for _, claimID := range planAssignment.ClaimIDs {
+		claim, _ := claims[claimID].(map[string]any)
+		if claim == nil || reviewProofText(claim["assignment_id"]) != agent.AssignmentID {
+			return false
+		}
+		switch reviewProofText(claim["disposition"]) {
+		case "planned", "running":
+		default:
+			return false
+		}
+		if reviewProofText(claim["result_id"]) != "" {
+			return false
+		}
+	}
+	blockerRef := reviewProofText(row["blocker_ref"])
+	queueReason := reviewProofText(row["queue_reason"])
+	blockedAt := reviewProofText(row["blocked_at"])
+	if blockerRef == "" || !strings.HasPrefix(queueReason, "site_lost:") || blockedAt == "" {
+		return false
+	}
+	owner, ok := reviewProofAgentRow(state, agent.ID)
+	if !ok || reviewProofText(owner["state"]) != "blocked" || reviewProofText(owner["work_blocked_ref"]) != blockerRef ||
+		reviewProofText(owner["blocker_resolved_ref"]) != "" || reviewProofText(owner["updated_at"]) != blockedAt {
+		return false
+	}
+	evidence, evidenceCount := reviewProofEvidenceAtPath(state, blockerRef, "review_blocker")
+	if evidenceCount != 1 || evidence == nil ||
+		!reviewBlockerEvidenceMatchesOriginalSource(evidence, blockerRef, agent.ID, agent.AssignmentID, planAssignment.Lens) {
+		return false
+	}
+	evidenceID := reviewProofText(evidence["id"])
+	resultID := strings.TrimPrefix(evidenceID, "review-blocker-")
+	if resultID == evidenceID || resultID == "" || filepath.Base(resultID) != resultID {
+		return false
+	}
+	if reviewProofEvidenceIDCount(state, evidenceID) != 1 {
+		return false
+	}
+	if !strings.HasSuffix(filepath.ToSlash(blockerRef), "/review-blockers/"+resultID+"-site-lost.json") {
+		return false
+	}
+	artifactBytes, err := workpacket.ReadFile(root, blockerRef, 1<<20)
+	if err != nil {
+		return false
+	}
+	var envelope map[string]any
+	if json.Unmarshal(artifactBytes, &envelope) != nil ||
+		reviewProofText(envelope["schema_version"]) != "1.0.0" ||
+		reviewProofText(envelope["evidence_id"]) != evidenceID ||
+		reviewProofText(envelope["kind"]) != "review_blocker" ||
+		reviewProofText(envelope["runtime_id"]) != runtimeID ||
+		reviewProofText(envelope["assignment_id"]) != agent.AssignmentID ||
+		reviewProofText(envelope["producer_agent_id"]) != agent.ID ||
+		reviewProofText(envelope["finding_id"]) == "" ||
+		reviewProofText(envelope["reason"]) == "" {
+		return false
+	}
+	findingID, reason := reviewProofText(envelope["finding_id"]), reviewProofText(envelope["reason"])
+	if queueReason != "site_lost:"+findingID {
+		return false
+	}
+	return reviewProofJournalHasSiteLost(root, state, generation, resultID, evidenceID, agent.AssignmentID, blockedAt, findingID, reason)
+}
 
+// reviewSiteLostRoundAcceptsResult reports whether the registered plan still
+// accepts a result, so a site-lost blocker stays valid while the plan is
+// running or draining.
+func reviewSiteLostRoundAcceptsResult(status string) bool {
+	switch status {
+	case "running", "cannot_clean", "discovery_draining":
+		return true
+	default:
+		return false
+	}
+}
+
+// reviewBlockerEvidenceMatchesOriginalSource checks the original blocker
+// evidence row. Historical digest, revision and round fields are read at their
+// original path only and never decide this fact.
+func reviewBlockerEvidenceMatchesOriginalSource(evidence map[string]any, ref, agentID, assignmentID, lens string) bool {
+	if reviewProofText(evidence["status"]) != "valid" ||
+		reviewProofText(evidence["path"]) != ref ||
+		reviewProofText(evidence["responsibility_id"]) != review.LensToResponsibility(lens) {
+		return false
+	}
+	invalidatedBy, hasInvalidatedBy := evidence["invalidated_by"]
+	invalidationRule, hasInvalidationRule := evidence["invalidation_rule"]
+	invalidationReason, hasInvalidationReason := evidence["invalidation_reason"]
+	if !hasInvalidatedBy || invalidatedBy != nil || !hasInvalidationRule || invalidationRule != nil || !hasInvalidationReason || invalidationReason != nil {
+		return false
+	}
+	producers, ok := reviewProofStrings(evidence["produced_by"])
+	if !ok || len(producers) != 1 || producers[0] != agentID {
+		return false
+	}
+	scopeRefs, ok := reviewProofStrings(evidence["scope_refs"])
+	if !ok || len(scopeRefs) != 1 || scopeRefs[0] != assignmentID {
+		return false
+	}
+	return true
 }
 
 func reviewAssignmentContextMatches(state map[string]any, agent *policy.AgentContext, assignment *hookctx.AssignmentContext) bool {
@@ -587,8 +761,18 @@ func RenderStopBlockFeedback(decision policy.Decision, questionnaire ...string) 
 	return body
 }
 
+// stopIdleRuleID selects the stable rule id of a stop/idle refusal. The
+// TeammateIdle rule id is the one the idle recovery budget counts
+// (internal/hook/idle_budget.go), so a refusal must not invent a new id.
+func stopIdleRuleID(event string) string {
+	if event == "TeammateIdle" {
+		return RuleTeammateIdleResumeAssignment
+	}
+	return RuleSubagentStopMissingResult
+}
+
 func stopIdleBlock(event string, agent *policy.AgentContext) policy.Decision {
-	questionnaireAssignment := agent.DocumentReviewAssignment || agent.ReviewAssignment || agent.HypothesisResultAssignment
+	questionnaireAssignment := agent.DocumentReviewAssignment || agent.ReviewAssignment || agent.HypothesisResultAssignment || agent.RepairResultAssignment
 	planRecorded := agent.PlanReportedRef != "" || questionnaireAssignment
 	var ruleID, reason string
 	var recovery []string
@@ -673,27 +857,55 @@ func stopIdleBlock(event string, agent *policy.AgentContext) policy.Decision {
 	}
 }
 
-func reviewAssignmentBindingNotice(_ string, agentID, assignmentID string) policy.Decision {
+// repairResultAssignmentUnfinishedNotice projects the honest S9 fact without
+// blocking the return. The retired frozen execution / source-pin proof must not
+// close it, and the projection must not become a second certifying consumer
+// (L4-workflow-convergence.md:342; L4-hook-platform-wiring.md:83).
+func repairResultAssignmentUnfinishedNotice(event, agentID, assignmentID string) policy.Decision {
 	return policy.Decision{
-		Decision: "warn", RuleID: "s7_original_responsibility_unknown",
-		Reason: fmt.Sprintf("S7 Reviewer %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual dispatch and original answer; the answer has not been established as received. This event may finish without a new submission or blocker.", agentID, assignmentID),
-		Retry:  "not_applicable",
+		Decision: "warn", RuleID: stopIdleRuleID(event),
+		Reason: fmt.Sprintf("S9 Builder %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual dispatch, original answer and integration state; the answer has not been established as received and the work is not established as complete.", agentID, assignmentID),
+		Recovery: []string{
+			"continue this S9 responsibility using its current exact PLAN and Result questionnaire paths",
+			"save the issued RepairResult through the platform PostToolUse Hook, then complete its frozen owner-owned checks; Main integration and final Result remain separate",
+		},
+		Retry: policy.RetryNotApplicable,
 	}
 }
 
-func hypothesisResultAssignmentBindingNotice(_ string, agentID, assignmentID string) policy.Decision {
+func reviewAssignmentBindingNotice(event, agentID, assignmentID string) policy.Decision {
 	return policy.Decision{
-		Decision: "warn", RuleID: "s8_original_responsibility_unknown",
-		Reason: fmt.Sprintf("S8 Investigator %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual Case, dispatch and original answer; the answer has not been established as received. This event may finish without a new submission or blocker.", agentID, assignmentID),
-		Retry:  "not_applicable",
+		Decision: "deny", RuleID: stopIdleRuleID(event),
+		Reason: fmt.Sprintf("S7 Reviewer %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual dispatch and original answer; the answer has not been established as received. This stop does not establish receipt or completion.", agentID, assignmentID),
+		Recovery: []string{
+			"restore or re-register the exact current S7 workgroup manifest and Assignment binding for the same Agent",
+			"then submit the issued S7 ReviewResult or record the original blocker_report before idling or stopping",
+		},
+		Retry: policy.RetryAfterRecoveryValidation,
 	}
 }
 
-func repairResultAssignmentBindingNotice(_ string, agentID, assignmentID string) policy.Decision {
+func hypothesisResultAssignmentBindingNotice(event, agentID, assignmentID string) policy.Decision {
 	return policy.Decision{
-		Decision: "warn", RuleID: "s9_original_responsibility_unknown",
-		Reason: fmt.Sprintf("S9 Builder %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual dispatch, original answer and integration state; the answer has not been established as received and the work is not established as complete. This event may finish without a new submission or proof.", agentID, assignmentID),
-		Retry:  "not_applicable",
+		Decision: "deny", RuleID: stopIdleRuleID(event),
+		Reason: fmt.Sprintf("S8 Investigator %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual Case, dispatch and original answer; the answer has not been established as received. This stop does not establish receipt or completion.", agentID, assignmentID),
+		Recovery: []string{
+			"restore the exact current Investigator dispatch and its original Case/manifest/TASK sources for the same Agent",
+			"then complete the issued professional HypothesisResult and save it through the platform PostToolUse Hook, or follow the original blocker/retirement route",
+		},
+		Retry: policy.RetryAfterRecoveryValidation,
+	}
+}
+
+func repairResultAssignmentBindingNotice(event, agentID, assignmentID string) policy.Decision {
+	return policy.Decision{
+		Decision: "deny", RuleID: stopIdleRuleID(event),
+		Reason: fmt.Sprintf("S9 Builder %s, Assignment %s: the original responsibility context is unavailable or inconsistent. Main/system must inspect the actual dispatch, original answer and integration state; the answer has not been established as received and the work is not established as complete. This stop does not establish receipt or completion.", agentID, assignmentID),
+		Recovery: []string{
+			"restore the exact registered Worker execution and current S9 packet/source tuple for the same Builder",
+			"save the issued RepairResult through the platform PostToolUse Hook, then complete its frozen owner-owned checks; Main integration and final Result remain separate",
+		},
+		Retry: policy.RetryAfterRecoveryValidation,
 	}
 }
 

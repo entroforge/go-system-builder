@@ -14,6 +14,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
@@ -544,6 +545,17 @@ func receiveNativeS6(root string, in policy.Input, r assignmentrecord.Record, te
 	if err != nil {
 		return err
 	}
+	// The published Plan is the original professional Plan of this native
+	// responsibility, and it is the very Plan the completion Writer will
+	// validate. Check it against the registered Assignment before the Result
+	// is handed over: the Plan must bind the current Assignment identity and
+	// its planned paths must stay inside that Assignment's registered write
+	// domain. These are structural facts about identity and write domain; no
+	// revision, hash, digest, fingerprint, checksum, round or CAS comparison
+	// decides them.
+	if err := validateNativeS6PlanScope(root, in, r, planRef); err != nil {
+		return &nativeAuthorError{fmt.Errorf("professional Plan %s: %w", filepath.Join(root, planRef), err)}
+	}
 	result["occurred_at"] = plan["occurred_at"]
 	result["message_id"] = fmt.Sprintf("msg-native-result-%s-r%d", r.AssignmentID, r.Revision)
 	resultBytes, err := json.Marshal(result)
@@ -562,6 +574,19 @@ func receiveNativeS6(root string, in policy.Input, r assignmentrecord.Record, te
 	}
 	_, _, err = assignment.CompleteTaskWithReceipt(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), assignment.CompletionRequest{Context: contextForHook(in), ExpectedRevision: -1, AgentID: r.OwnerAgentID, MessagePath: filepath.Join(root, resultRef), NativePlanPath: planRef, NativeAgentID: in.AgentID, NativeSessionID: in.SessionID})
 	return err
+}
+
+// validateNativeS6PlanScope validates the published professional Plan against
+// the current canonical Assignment of the native responsibility. The
+// registered Assignment identity and its registered write domain decide the
+// outcome; no revision, hash, digest, fingerprint, checksum, round or CAS
+// comparison is used as a gate.
+func validateNativeS6PlanScope(root string, in policy.Input, r assignmentrecord.Record, planRef string) error {
+	snap, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).WithContext(contextForHook(in)).Snapshot()
+	if err != nil {
+		return fmt.Errorf("read the current Runtime: %w", err)
+	}
+	return plancheckpoint.Validate(root, snap, r.OwnerAgentID, planRef)
 }
 
 // A blocker is an honest handoff from the original worktree, not an accepted

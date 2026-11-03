@@ -77,6 +77,8 @@ func readFixedContext(root string, ref agentcontext.Reference) (nativeAssignment
 
 // verifyFixedContext consumes the original frozen profile, never today's
 // selector. Agent state/plan/activation continue to come from live Runtime.
+// It verifies the already registered facts and the existence of the declared
+// sources; the content of a source is never re-authenticated here.
 func verifyFixedContext(root string, state map[string]any, a hookctx.AssignmentContext, b assignmentContextBinding) (nativeAssignmentContext, error) {
 	registry, err := workspace.Decode(state)
 	if err != nil {
@@ -122,6 +124,11 @@ func verifyFixedContext(root string, state map[string]any, a hookctx.AssignmentC
 		return c, fmt.Errorf("fixed context profile binding differs")
 	}
 	if err := verifyConventionView(root, state, c.Conventions, c.Inputs); err != nil {
+		return c, err
+	}
+	// The declared sources are verified on their own: the conventions bundle is
+	// optional, so its absence must not skip the existence check.
+	if err := verifyDeclaredSources(root, c.Inputs); err != nil {
 		return c, err
 	}
 	if c.ResultDraft != nil {

@@ -150,17 +150,15 @@ func testMainReviewPlanAssetsOriginal(t *testing.T, event, identity string, asse
 	if !strings.Contains(result, "review-plan-questionnaire-save") || !strings.Contains(result, path) {
 		t.Fatalf("save did not return original registration/path: %s", result)
 	}
-	// Main receives an accurate preparation path for every declared
-	// Assignment, including the behavior-wave one. The machine wave gate that
-	// held a behavior Assignment behind the whole batch's static Claims was
-	// removed together with the S7 wave gate, so the received plan is no
-	// longer reported as waiting: every Assignment is prepared and registered
-	// on its own facts.
+	// Main receives an accurate preparation path for every declared static
+	// Assignment, and the behavior-wave Assignment reports the actual wave
+	// wait instead of a preparation step: the static Claims of this batch are
+	// not all dispositioned yet (L3-S7 §5.2).
 	if !strings.Contains(result, "prepares and registers") {
 		t.Fatalf("registered plan did not provide its actual preparation/registration duty: %s", result)
 	}
 	prepared := map[string]string{}
-	for _, id := range []string{"assignment-dv-1", "assignment-qa-1", "assignment-e2e-1"} {
+	for _, id := range []string{"assignment-dv-1", "assignment-qa-1"} {
 		if !strings.Contains(result, "S7 assignment="+id+": prepare the manifest with ") {
 			t.Fatalf("declared assignment %s received no preparation step: %s", id, result)
 		}
@@ -190,9 +188,16 @@ func testMainReviewPlanAssetsOriginal(t *testing.T, event, identity string, asse
 	if !strings.Contains(result, "then uses the returned registration command") {
 		t.Fatalf("prepared Assignments lost the original workgroup registration entry: %s", result)
 	}
-	for _, removed := range []string{"assignment-e2e-1 waits", "static Claims", "behavior-wave", "not all dispositioned yet"} {
-		if strings.Contains(result, removed) {
-			t.Fatalf("removed machine wave gate reappeared as %q: %s", removed, result)
+	// The static/behavior wave order is the original stage order of the
+	// responsibility (L3-S7 §5.2): while the required static Claims are not
+	// all dispositioned, the behavior-wave Assignment reports the wait and is
+	// neither prepared nor registered.
+	if strings.Contains(result, "S7 assignment=assignment-e2e-1: prepare the manifest with ") {
+		t.Fatalf("unsettled static wave let the behavior Assignment into preparation: %s", result)
+	}
+	for _, wanted := range []string{"assignment-e2e-1 waits", "static Claims", "behavior-wave", "not all dispositioned yet"} {
+		if !strings.Contains(result, wanted) {
+			t.Fatalf("the static/behavior wave gate is missing %q: %s", wanted, result)
 		}
 	}
 	statePath := filepath.Join(root, ".claude/loop-state.json")

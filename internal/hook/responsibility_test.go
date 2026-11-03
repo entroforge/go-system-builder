@@ -435,12 +435,12 @@ func TestCompletedReviewerWaitingForIdleUsesConsumedReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, controlled = hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-	if !controlled || decision.Decision != "warn" {
-		t.Fatalf("reported Reviewer without a consumed ReviewResult must remain responsible, got %#v controlled=%v", decision, controlled)
+	if !controlled || decision.Decision != "deny" {
+		t.Fatalf("a Reviewer without a consumed ReviewResult stays incomplete and must block the stop, got %#v controlled=%v", decision, controlled)
 	}
 }
 
-func TestStopIdleS7UnreceivedRemainsIncompleteWithoutBlocking(t *testing.T) {
+func TestStopIdleS7UnreceivedRemainsIncompleteAndBlocks(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		mode           string
@@ -459,14 +459,15 @@ func TestStopIdleS7UnreceivedRemainsIncompleteWithoutBlocking(t *testing.T) {
 				manifest["assignments"].([]any)[0].(map[string]any)["status"] = tc.manifestStatus
 			})
 			decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-			if !controlled || decision.Decision != "warn" || !strings.Contains(decision.Reason, "not complete") {
-				t.Fatalf("unconsumed S7 assignment must be reported without blocking: %#v controlled=%v", decision, controlled)
+			if !controlled || decision.Decision != "deny" || !strings.Contains(decision.Reason, "not complete") {
+				t.Fatalf("an unconsumed S7 assignment stays incomplete and must block the stop: %#v controlled=%v", decision, controlled)
 			}
+			assertHookRecoveryPath(t, decision)
 		})
 	}
 }
 
-func TestStopIdleBoundS7OwnerReportsMissingOrMismatchedContextWithoutBlocking(t *testing.T) {
+func TestStopIdleBoundS7OwnerBlocksOnMissingOrMismatchedContext(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, root string)
@@ -487,12 +488,13 @@ func TestStopIdleBoundS7OwnerReportsMissingOrMismatchedContextWithoutBlocking(t 
 			editCanonicalReviewerRuntime(t, root, func(state, _ map[string]any) { unconsumeCanonicalReviewer(state) })
 			tc.mutate(t, root)
 			decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-			if !controlled || decision.Decision != "warn" {
-				t.Fatalf("unknown S7 responsibility did not produce a nonblocking notice: %#v controlled=%v", decision, controlled)
+			if !controlled || decision.Decision != "deny" {
+				t.Fatalf("an S7 owner whose original responsibility context is missing or mismatched stays incomplete and must block the stop: %#v controlled=%v", decision, controlled)
 			}
 			if !containsHookTestText(decision.Reason, "Main/system") || !containsHookTestText(decision.Reason, "not been established as received") {
 				t.Fatalf("binding notice lost ownership or uncertainty: %#v", decision)
 			}
+			assertHookRecoveryPath(t, decision)
 			if _, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "not-registered"}); controlled {
 				t.Fatal("unknown Agent must preserve the original fail-open behavior")
 			}
@@ -500,9 +502,10 @@ func TestStopIdleBoundS7OwnerReportsMissingOrMismatchedContextWithoutBlocking(t 
 	}
 }
 
-// Exercise the public Hook transport: an unresolved binding stays unknown and
-// must not block or manufacture receipt for an answered or unanswered worker.
-func TestPublicHookS7MissingBindingDoesNotBlockOrInventReceipt(t *testing.T) {
+// Exercise the public Hook transport: an unresolved binding stays unknown — it
+// blocks the stop with an explicit uncertainty notice and never manufactures a
+// receipt for an answered or unanswered worker.
+func TestPublicHookS7MissingBindingBlocksAndDoesNotInventReceipt(t *testing.T) {
 	for _, received := range []bool{false, true} {
 		for _, event := range []string{"SubagentStop", "TeammateIdle"} {
 			t.Run(fmt.Sprintf("received=%t/%s", received, event), func(t *testing.T) {
@@ -529,12 +532,15 @@ func TestPublicHookS7MissingBindingDoesNotBlockOrInventReceipt(t *testing.T) {
 				payload, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": "reviewer-1", "session_id": "native-review-parent", "cwd": root})
 				var out, diag bytes.Buffer
 				code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(payload), &out, &diag)
-				if code != 0 {
-					t.Fatalf("unknown binding blocked Hook: %d %s %s", code, out.String(), diag.String())
+				if code != 2 {
+					t.Fatalf("an unresolved S7 binding must block the stop: %d %s %s", code, out.String(), diag.String())
 				}
 				message := out.String() + diag.String()
 				if !strings.Contains(message, "Main/system") || !strings.Contains(message, "not been established as received") {
-					t.Fatalf("missing nonblocking Main notice: %s", message)
+					t.Fatalf("missing Main uncertainty notice: %s", message)
+				}
+				if !strings.Contains(message, "Recovery:") || !strings.Contains(message, "Retry=") {
+					t.Fatalf("a blocked S7 binding must carry a recovery path and a retry condition: %s", message)
 				}
 				after, err := os.ReadFile(statePath)
 				if err != nil {
@@ -572,12 +578,19 @@ func TestPublicHookS7BoundUnreceivedAndReceivedStayTruthful(t *testing.T) {
 				payload, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": "reviewer-1", "session_id": "s7-bound-parent", "cwd": root})
 				var out, diag bytes.Buffer
 				code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(payload), &out, &diag)
-				if code != 0 {
-					t.Fatalf("original S7 responsibility blocked end: %d %s %s", code, out.String(), diag.String())
-				}
 				message := out.String() + diag.String()
-				if !received && (!strings.Contains(message, "Main/system") || !strings.Contains(message, "not complete")) {
-					t.Fatalf("unreceived work was not reported honestly: %s", message)
+				if !received {
+					if code != 2 {
+						t.Fatalf("an unreceived S7 responsibility must block the end: %d %s %s", code, out.String(), diag.String())
+					}
+					if !strings.Contains(message, "Main/system") || !strings.Contains(message, "not complete") {
+						t.Fatalf("unreceived work was not reported honestly: %s", message)
+					}
+					if !strings.Contains(message, "Recovery:") || !strings.Contains(message, "Retry=") {
+						t.Fatalf("a blocked S7 responsibility must carry a recovery path and a retry condition: %s", message)
+					}
+				} else if code != 0 {
+					t.Fatalf("a consumed S7 responsibility must be allowed to end: %d %s %s", code, out.String(), diag.String())
 				}
 				after, err := os.ReadFile(path)
 				if err != nil {
@@ -624,7 +637,7 @@ func TestPublicHookS7ActualBlockedRemainsUnfinished(t *testing.T) {
 	}
 }
 
-func TestPublicHookS9UnknownBindingReportsWithoutBlocking(t *testing.T) {
+func TestPublicHookS9UnknownBindingBlocksAndReportsUncertainty(t *testing.T) {
 	for _, event := range []string{"SubagentStop", "TeammateIdle"} {
 		t.Run(event, func(t *testing.T) {
 			root := writeCanonicalReviewerRuntime(t)
@@ -651,14 +664,30 @@ func TestPublicHookS9UnknownBindingReportsWithoutBlocking(t *testing.T) {
 				t.Fatal(err)
 			}
 			payload, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": "reviewer-1", "session_id": "s9-unknown-parent", "cwd": root})
+
+			// G08-B: the S9 responsibility gate itself denies an S9 Builder whose
+			// original responsibility cannot be located, and hands back the
+			// recovery path the platform needs to continue the same agent.
+			decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: event, AgentID: "reviewer-1"})
+			if !controlled || decision.Decision != "deny" {
+				t.Fatalf("an unresolved S9 responsibility must stay incomplete and block the stop: %#v controlled=%v", decision, controlled)
+			}
+			assertHookRecoveryPath(t, decision)
+
 			var out, diag bytes.Buffer
 			code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(payload), &out, &diag)
-			if code != 0 {
-				t.Fatalf("unknown S9 binding blocked Hook: %d %s %s", code, out.String(), diag.String())
+			if code != 2 && event == "TeammateIdle" {
+				t.Fatalf("an unresolved S9 responsibility must block the idle: %d %s %s", code, out.String(), diag.String())
 			}
 			message := out.String() + diag.String()
-			if !strings.Contains(message, "Main/system") || !strings.Contains(message, "not been established as received") {
+			if !strings.Contains(message, "not been established as received") && !strings.Contains(message, "unresolved original responsibility") {
 				t.Fatalf("missing original S9 uncertainty: %s", message)
+			}
+			if !strings.Contains(message, "Main/system") && !strings.Contains(message, "Main must inspect") {
+				t.Fatalf("the S9 uncertainty notice lost Main's inspection duty: %s", message)
+			}
+			if code != 0 && (!strings.Contains(message, "Recovery:") || !strings.Contains(message, "Retry=")) {
+				t.Fatalf("a blocked S9 binding must carry a recovery path and a retry condition: %s", message)
 			}
 			after, err := os.ReadFile(path)
 			if err != nil {
@@ -694,9 +723,10 @@ func TestStopIdleAcceptsOnlyOriginalOrCanonicalS7Blocker(t *testing.T) {
 			manifest["assignments"].([]any)[0].(map[string]any)["status"] = "blocked"
 		})
 		decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-		if !controlled || decision.Decision != "warn" {
-			t.Fatalf("bare Agent/manifest blocked status lost unfinished guidance: %#v controlled=%v", decision, controlled)
+		if !controlled || decision.Decision != "deny" {
+			t.Fatalf("a missing original blocker must still report the unfinished guidance and block the stop: %#v controlled=%v", decision, controlled)
 		}
+		assertHookRecoveryPath(t, decision)
 	})
 	t.Run("site lost index without source file", func(t *testing.T) {
 		root := writeSiteLostS7BlockerRuntime(t)
@@ -705,9 +735,10 @@ func TestStopIdleAcceptsOnlyOriginalOrCanonicalS7Blocker(t *testing.T) {
 			t.Fatal(err)
 		}
 		decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
-		if controlled && decision.Decision == "deny" {
-			t.Fatalf("missing site_lost source file blocked the original return: %#v controlled=%v", decision, controlled)
+		if !controlled || decision.Decision != "deny" {
+			t.Fatalf("a missing site_lost source file leaves the original responsibility unfinished and must block the return: %#v controlled=%v", decision, controlled)
 		}
+		assertHookRecoveryPath(t, decision)
 	})
 }
 
@@ -733,8 +764,11 @@ func TestStopIdleSiteLostBlockerPreservesActiveRoundStatuses(t *testing.T) {
 			if tc.allowed && controlled {
 				t.Fatalf("site_lost blocker stopped being valid while the round accepts results: %#v", decision)
 			}
-			if !tc.allowed && controlled && decision.Decision == "deny" {
-				t.Fatalf("inactive blocker must not block return for status %q: %#v controlled=%v", tc.status, decision, controlled)
+			if !tc.allowed && (!controlled || decision.Decision != "deny") {
+				t.Fatalf("an inactive site_lost blocker leaves the original responsibility unfinished and must block the return for status %q: %#v controlled=%v", tc.status, decision, controlled)
+			}
+			if !tc.allowed {
+				assertHookRecoveryPath(t, decision)
 			}
 		})
 	}
@@ -1088,6 +1122,26 @@ func writeSiteLostS7BlockerRuntime(t *testing.T) string {
 
 func containsHookTestText(value, needle string) bool {
 	return strings.Contains(value, needle)
+}
+
+// assertHookRecoveryPath checks that a blocking responsibility decision also
+// carries the executable recovery path the platform needs to continue the same
+// agent: a non-empty instruction list plus a retry condition. A bare refusal
+// without a recovery action is not a usable block
+// (L4-workflow-convergence.md:225, L4-hook-platform-wiring.md:162).
+func assertHookRecoveryPath(t *testing.T, decision policy.Decision) {
+	t.Helper()
+	if len(decision.Recovery) == 0 {
+		t.Fatalf("a blocking decision must carry a recovery path: %#v", decision)
+	}
+	for _, step := range decision.Recovery {
+		if strings.TrimSpace(step) == "" {
+			t.Fatalf("a blocking decision must carry an actionable recovery step: %#v", decision)
+		}
+	}
+	if strings.TrimSpace(decision.Retry) == "" {
+		t.Fatalf("a blocking decision must carry a retry condition: %#v", decision)
+	}
 }
 
 func writeHookTestLoopDefinition(t *testing.T, root string) {

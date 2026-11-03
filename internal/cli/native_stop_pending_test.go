@@ -188,15 +188,31 @@ func TestNativeStopPendingFailureAndCancellationRetainOriginalBoundary(t *testin
 			}
 			in.Event = "SubagentStop"
 			in.Context = ctx
-			var diag bytes.Buffer
-			nativeHookRoutes(root, in, &bytes.Buffer{}, &diag)
+			var out, diag bytes.Buffer
+			handled, code := nativeHookRoutes(root, in, &out, &diag)
 			repairDispatchAssertUnchanged(t, root, before)
 			after, err := os.ReadFile(marker)
 			if err != nil || !bytes.Equal(markerBefore, after) {
 				t.Fatalf("failed attempt changed pending: %v", err)
 			}
-			if mode == "invalid-marker" && !strings.Contains(diag.String(), "could not recover the original pending Writer") {
-				t.Fatal(diag.String())
+			if mode == "invalid-marker" {
+				// The degraded surface does not block, but it is not a silent
+				// pass either: the failure stays visible and names the recovery
+				// action Main still has to take
+				// (L4-hook-platform-wiring.md:162 — the stop hook grants no
+				// completion, so the original responsibility stays unfinished
+				// and the actor must be told how to continue it).
+				if !handled || code != 0 {
+					t.Fatalf("degraded pending recovery blocked the return: %t %d %s", handled, code, &diag)
+				}
+				for _, want := range []string{"could not recover the original pending Writer", "professional reception remains unconfirmed", "Main must restore the original Runtime source", "inspect its original receipts"} {
+					if !strings.Contains(diag.String(), want) {
+						t.Fatalf("degraded pending recovery lost the visible notice %q: %s", want, diag.String())
+					}
+				}
+				if !strings.Contains(out.String(), "Main must restore the original Runtime source") {
+					t.Fatalf("degraded pending recovery stayed silent to the actor: %s", out.String())
+				}
 			}
 			if strings.Contains(diag.String(), "answer received") || strings.Contains(diag.String(), "recovered the original pending Writer;") {
 				t.Fatal("failure claimed recovery or reception")

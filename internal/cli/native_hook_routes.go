@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/entroforge/go-system-builder/internal/controller"
+	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
@@ -254,11 +256,56 @@ func nativeSnapshotFailure(root string, in policy.Input, cause error, out, diagn
 	message := fmt.Sprintf("Runtime snapshot at %s could not be verified: %v. The current stage and professional reception cannot be verified. Preserve original answers and accepted receipts. Main must restore the original Runtime source and inspect its original receipts before continuing. Ordinary tools remain available.", filepath.Join(root, ".claude/loop-state.json"), cause)
 	fmt.Fprintln(diagnostic, message)
 	if modelContext {
+		// The renderer always names PreToolUse, so only that event may use it.
+		// Every other event keeps the platform's own event name and its plain
+		// diagnostic context.
+		if in.Event == "PreToolUse" {
+			if rendered, ok := nativePreToolUseQualityGate(root, message); ok {
+				_, _ = out.Write(rendered)
+				return true, 0
+			}
+		}
 		_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
 	} else {
 		_ = json.NewEncoder(out).Encode(map[string]any{"systemMessage": message})
 	}
 	return true, 0
+}
+
+// An unreadable Runtime leaves the cursor unknowable, not absent. PreToolUse
+// still renders through the single QUALITY_GATE producer, so the Agent sees
+// the same quality projection, LOOP RECOVERY packet and recovery action as
+// any other unknown cursor: status=unknown, no observed revision, no committed
+// transition, no tool denial and no Runtime write.
+func nativePreToolUseQualityGate(root, message string) ([]byte, bool) {
+	// The unknowable cursor reuses the existing projection's default branch
+	// instead of a second recovery wording.
+	stage, skill, action := projectNext("", "", root)
+	decision := policy.Decision{
+		Decision:          "allow",
+		AdditionalContext: message,
+		Guidance: &policy.Guidance{
+			Stage:        stage,
+			PrimarySkill: skill,
+			Action:       action,
+			ProtocolRef:  protocolReference(stage),
+			ManualRef:    loopManualRef,
+		},
+	}
+	result := controller.ControlResult{
+		Decision: decision,
+		QualityGate: controller.QualityGateResult{
+			Status:              controller.StatusUnknown,
+			ErrorCode:           controller.CodeRuntimeInval,
+			ObservedRevision:    0,
+			TransitionCommitted: false,
+		},
+	}
+	rendered, code, err := hook.PreToolUseWithQualityGate(decision, result)
+	if err != nil || code != 0 {
+		return nil, false
+	}
+	return rendered, true
 }
 
 func nativeRoutingSnapshot(root string, in policy.Input) (runtime.Snapshot, error) {

@@ -118,14 +118,54 @@ func s7ManifestPreparationHint(root string, state map[string]any, id string) str
 			return fmt.Sprintf("S7 assignment=%s: Main/system must restore manifest access at %s: %v.\n", id, manifest, err)
 		}
 		if draft, err := readS7ExistingManifest(root, manifest, state, id); err == nil {
-			return fmt.Sprintf("S7 assignment=%s: preserve and read existing manifest %s. Main retains its actual Reviewer and professional division of work.\n", id, manifest) + s7ManifestRegistrationGuidance(root, manifest, draft)
+			return s7ExistingManifestGuidance(root, id, manifest, draft)
 		}
 		// Preserve files without a known same-responsibility association and
 		// offer another free path; they are not a gate on this Assignment.
 		manifest = filepath.Join(directory, fmt.Sprintf("manifest-%d.json", suffix))
 	}
+	// This Assignment's historical registered layout is located by the
+	// registered generation and review round. The file name only locates the
+	// material: it never qualifies or rejects it, and an unknown round is
+	// never written as a fixed placeholder.
+	if registered := s7RegisteredManifestPath(root, generation, reviewState, id); registered != "" {
+		if draft, err := readS7ExistingManifest(root, registered, state, id); err == nil {
+			return s7ExistingManifestGuidance(root, id, registered, draft)
+		}
+	}
 	command := s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " s7 manifest-draft --root " + s7CaptureShellQuote(root) + " --assignment " + s7CaptureShellQuote(id) + " --out " + s7CaptureShellQuote(manifest)
-	return fmt.Sprintf("S7 assignment=%s: prepare the manifest with %s; this preparation creates a missing output directory and preserves existing files. Read the saved JSON file; stdout also contains guidance and is not a JSON document. Main chooses the real Reviewer and professional division of work, then uses the returned registration command. After registration, carry the issued exact view/answer paths into native Agent.\n", id, command)
+	return fmt.Sprintf("S7 assignment=%s: prepare the manifest with %s; this preparation creates a missing output directory and preserves existing files. Read the saved JSON file; stdout also contains guidance and is not a JSON document. Main chooses the real Reviewer and professional division of work, then uses the returned registration command. After registration, carry the issued exact view/answer paths into native Agent.\n", id, command) + s7ManifestRegistrationShape(root, manifest)
+}
+
+// s7RegisteredManifestPath locates the historical registered manifest layout
+// of this Assignment. The generation and round in the file name are a
+// locating convention only; they never qualify or reject the material.
+func s7RegisteredManifestPath(root string, generation int, reviewState map[string]any, id string) string {
+	round := tolerantInt(reviewState["round"])
+	if round < 1 {
+		if plan, _ := reviewState["plan"].(map[string]any); plan != nil {
+			round = tolerantInt(plan["review_round"])
+		}
+	}
+	if round < 1 {
+		return ""
+	}
+	return filepath.Join(root, ".claude", "workgroups", fmt.Sprintf("manifest-g%d-r%d-%s.json", generation, round, id))
+}
+
+// s7ExistingManifestGuidance preserves the professional edits of a matched
+// manifest and hands Main the original registration entry for it.
+func s7ExistingManifestGuidance(root, id, manifest string, draft *review.ManifestDraft) string {
+	return fmt.Sprintf("S7 assignment=%s: preserve and read existing manifest %s. Main retains its actual Reviewer and professional division of work.\n", id, manifest) + s7ManifestRegistrationGuidance(root, manifest, draft)
+}
+
+// s7ManifestRegistrationShape states the original registration entry for a
+// manifest that does not exist yet. The TASK ID, the actual REQ/TASK path and
+// its business version come from this Assignment's registered TASK document;
+// no round, digest or extra author field is required.
+func s7ManifestRegistrationShape(root, manifest string) string {
+	return fmt.Sprintf("Main registers the original workgroup with %s runtime register-workgroup --root %s --manifest %s --task-id TASK-ID --task TASK-PATH; Main takes the TASK ID, the actual REQ/TASK path and its business version from this Assignment's registered TASK document in the prepared manifest, and the original registration entry rejects remaining professional placeholders.\n",
+		s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")), s7CaptureShellQuote(root), s7CaptureShellQuote(manifest))
 }
 
 // Split the reversible identity into bounded filesystem components. Segment

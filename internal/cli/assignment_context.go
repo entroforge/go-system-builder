@@ -203,6 +203,8 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 		}
 	}
 	for _, skill := range selection.Selected {
+		// The registered value is the source path itself, so the replay check
+		// stays a path-level existence judgment on the declared source.
 		inputs[skill.Source] = skill.Source
 	}
 	var issuedReview *workpacket.Packet
@@ -325,18 +327,31 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 }
 
 // Copy nested profiles so the registered context does not share mutable slices.
+// A declared collection stays declared: a non-nil empty source is copied into a
+// non-nil empty slice so the published context shows an empty array, while an
+// undeclared (nil) collection stays undeclared instead of being invented.
 func copyContextProfiles(in []checkexec.Profile) []checkexec.Profile {
-	out := append([]checkexec.Profile(nil), in...)
+	out := make([]checkexec.Profile, len(in))
+	copy(out, in)
 	for i := range out {
-		out[i].Dependencies = append([]checkexec.FileRef(nil), out[i].Dependencies...)
-		out[i].Fixtures = append([]checkexec.FileRef(nil), out[i].Fixtures...)
+		if out[i].Environment != nil {
+			out[i].Environment = append([]checkexec.EnvFact{}, out[i].Environment...)
+		}
+		if out[i].Dependencies != nil {
+			out[i].Dependencies = append([]checkexec.FileRef{}, out[i].Dependencies...)
+		}
+		if out[i].Fixtures != nil {
+			out[i].Fixtures = append([]checkexec.FileRef{}, out[i].Fixtures...)
+		}
 	}
 	return out
 }
 func copyContextDispatch(in agentcontext.Assignment) agentcontext.Assignment {
 	if in.ClosingContract != nil {
 		copyOf := *in.ClosingContract
-		copyOf.WorkerChecks = append([]assignmentrecord.WorkerCheck(nil), in.ClosingContract.WorkerChecks...)
+		if in.ClosingContract.WorkerChecks != nil {
+			copyOf.WorkerChecks = append([]assignmentrecord.WorkerCheck{}, in.ClosingContract.WorkerChecks...)
+		}
 		for i := range copyOf.WorkerChecks {
 			copyOf.WorkerChecks[i].Profile = copyContextProfiles([]checkexec.Profile{copyOf.WorkerChecks[i].Profile})[0]
 		}

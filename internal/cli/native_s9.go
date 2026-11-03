@@ -479,6 +479,25 @@ func receiveNativeS9BuilderEvent(root string, state map[string]any, in policy.In
 	return receiveNativeS9OriginalBuilder(contextForHook(in), root, state, p, in.CWD, diagnostic, capture)
 }
 
+// A flat private author file carries only the author's own professional fields.
+// The canonical consumer stays lenient about unrelated extensions, so this
+// entry point keeps the strictness the original flat entry owned: an unknown
+// key is the author's own file error, while a type mismatch belongs to the
+// original consumer's precise field pointer and is handed back unchanged.
+func nativeS9FlatUnknownAuthorField(raw []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	err := decoder.Decode(value)
+	if err == nil {
+		return nil
+	}
+	var typeError *json.UnmarshalTypeError
+	if errors.As(err, &typeError) {
+		return nil
+	}
+	return err
+}
+
 func receiveNativeS9ReadyPlan(ctx context.Context, root, source string, p workpacket.RepairPlanReportPacket, service *submission.Service, diagnostic io.Writer, capture *nativeS9AttemptCapture) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -509,9 +528,13 @@ func receiveNativeS9ReadyPlan(ctx context.Context, root, source string, p workpa
 		if capture != nil {
 			capture.EnterConsumer("plan_report_consumer")
 		}
+		var planAnswer workpacket.RepairPlanReportProfessionalAnswer
+		if err := nativeS9FlatUnknownAuthorField(raw, &planAnswer); err != nil {
+			return nativeS9ArtifactAuthorError("PlanReport", filepath.Join(source, plan), err)
+		}
 		receipt, err = service.SaveRepairPlanReportBytes(ctx, p.Binding.OwnerAgentID, p.ID, source, raw)
 		if err != nil {
-			return err
+			return nativeS9FlatArtifactError("PlanReport", filepath.Join(source, plan), err)
 		}
 		if !receipt.Accepted {
 			return fmt.Errorf("original PlanReport was not accepted: %s", receipt.Error)
@@ -524,11 +547,6 @@ func receiveNativeS9ReadyPlan(ctx context.Context, root, source string, p workpa
 		nativeS9WorkerMessage(ctx, fmt.Sprintf("S9 PlanReport for %s was accepted by the original consumer from %s. Continue your assigned repair and self-checks; save Result at %s when ready.", p.Binding.OwnerAgentID, filepath.Join(source, plan), filepath.Join(source, result)))
 	}
 	return nil
-}
-
-// Targeted reception follows its current original responsibility.
-func guardNativeS9TargetedSource(root string, state map[string]any, in policy.Input, text string) error {
-	return contextForHook(in).Err()
 }
 
 func nativeS9TargetedStartContext(root string, state map[string]any, in policy.Input) string {

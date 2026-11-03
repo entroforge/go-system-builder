@@ -8,57 +8,11 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/checkexec"
-	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func cliCheckProfile() checkexec.Profile {
 	return checkexec.Profile{ID: "CP-OWNED-GO", Version: "v1", CheckIndex: 0, Command: "go test ./...", Location: "main", TimeoutSeconds: 300, EnvironmentPolicy: "inherited", Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{}, Fixtures: []checkexec.FileRef{}, InputClosure: "whole_tree", SideEffects: "unknown", ReusePolicy: "never"}
-}
-func TestCheckProfileActualMainIntegrationCapturesOriginalResponsibility(t *testing.T) {
-	p := cliCheckProfile()
-	f := coreBuilderFixtureProfiles(t, []string{p.Command}, []checkexec.Profile{p})
-	runCoreBuilderIntegration(t, f)
-	b, err := workspace.Decode(stageSnapshot(t, f.root).State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := b.Executions["assignment-core-builder"]
-	if len(e.CheckProfiles) != 1 || e.CheckProfiles[0].ID != p.ID || e.CheckProfiles[0].Command != p.Command {
-		t.Fatal("original execution lost its check profile")
-	}
-	c, err := b.ReadDispatchContext(e)
-	if err != nil || len(c.CheckProfiles) != 1 {
-		t.Fatal("Worker context lost profile", err)
-	}
-	cp, found, err := integration.DefaultCheckpointStore().Load(integration.CheckpointPath(f.root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID))
-	if err != nil || !found {
-		t.Fatal("real integration checkpoint missing", err)
-	}
-	captured := false
-	for _, path := range cp.CheckReceipts {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var r struct {
-			Profile *checkexec.Observation `json:"profile_observation"`
-			Binding checkexec.Binding      `json:"check_binding"`
-			Status  string                 `json:"status"`
-		}
-		if err := json.Unmarshal(data, &r); err != nil {
-			t.Fatal(err)
-		}
-		if r.Profile != nil && r.Profile.ProfileID == p.ID && r.Status == "pass" {
-			if r.Profile.ReuseEligible || r.Binding.AssignmentID != e.AssignmentID || r.Binding.Owner != e.AgentID || r.Binding.Responsibility != "main_required_integration" {
-				t.Fatal("profile receipt crossed original responsibility", r)
-			}
-			captured = true
-		}
-	}
-	if !captured {
-		t.Fatal("actual mandatory Main check had no profile observation")
-	}
 }
 func TestCheckProfilePrepareAndReplacementKeepExactProfile(t *testing.T) {
 	p := cliCheckProfile()

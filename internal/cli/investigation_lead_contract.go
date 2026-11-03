@@ -242,7 +242,12 @@ func investigationLeadContractApproval(root string, state, document map[string]a
 		if actor == "" || !s8ContractContains(row["produced_by"], actor) {
 			continue
 		}
-		return investigation.ContractRequest{ExpectedRevision: tolerantInt(state["revision"]), CaseID: stringValue(document["case_id"]), ContractPath: path, ApprovedBy: actor, ApprovalEvidenceID: stringValue(row["id"]), DelegationEvidenceID: delegation}, true
+		// -1 is the omission marker: this adapter did not assert a Runtime
+		// revision, so ApproveContract takes the current-value path. The
+		// original approval criteria stay the presented Contract, the active
+		// Case identity and the one-time decision evidence — not the revision
+		// the adapter happened to read (L4-revision-usage.md:79 and :191).
+		return investigation.ContractRequest{ExpectedRevision: -1, CaseID: stringValue(document["case_id"]), ContractPath: path, ApprovedBy: actor, ApprovalEvidenceID: stringValue(row["id"]), DelegationEvidenceID: delegation}, true
 	}
 	return investigation.ContractRequest{}, false
 }

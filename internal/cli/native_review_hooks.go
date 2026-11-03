@@ -306,8 +306,18 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 		unknown = true
 	}
 	if len(selected) == 0 {
-		if !unknown && (stage == "S7" || stage == "S8") {
+		switch {
+		case len(candidates) == 0 && sourceErr == nil:
+			// This event carries no projectable candidate content. That is not an
+			// attribution gap: nothing is projected and no responsibility claim is
+			// made here. The event continues on the ordinary observation path,
+			// where the hook reader reports the event-level attribution.
 			return false, 0
+		case !unknown && (stage == "S7" || stage == "S8"):
+			// Candidates exist, but none of them is this event's original
+			// responsibility. That is the concrete gap: the responsibility cannot
+			// be located, so Main must inspect the original dispatch.
+			unknown = true
 		}
 		if unknown {
 			message := stage + " lifecycle handoff contains an unresolved original responsibility; Main must inspect the original dispatch"
@@ -356,9 +366,10 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 					receipt, sourceErr = service.ObserveHypothesisResultFrom(contextForHook(in), owner, answer, source, nil, ordinaryReview)
 				}
 				if stage != "S8" && sourceErr == nil && receipt.Accepted && receipt.WorkComplete {
-					if stage != "S7" || !s7SuccessorPending(root, snap.State) {
-						return true, 0
-					}
+					// The answer is already received. That forbids a second
+					// reception only; it does not silence the original consumer.
+					// The original consumer diagnostic and the original S7 exit
+					// preparation still belong to this event.
 					applies, compareErr := reviewPacketAppliesToCurrent(root, snap.State, packet, contextForHook(in))
 					if compareErr != nil {
 						message := "S7 original answer is already received; its relationship to the current responsibility is unknown: " + compareErr.Error() + ". Preserve the accepted answer; Main restores the original plan materials before continuing the outlet."
@@ -370,6 +381,7 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 						return true, 0
 					}
 					received = receipt
+					fmt.Fprintln(diagnostic, stage+" native professional answer received by the original consumer. "+receipt.NextAction)
 				} else {
 					switch stage {
 					case "S5":
@@ -458,6 +470,10 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 					fmt.Fprintln(diagnostic, handoff)
 				} else if !applies {
 					handoff = "原 S7 晚到答卷已收；Main 查阅原 Result 与发现后决定补充调查或后续处理。"
+				} else if !s7SuccessorPending(root, current.State) {
+					// The original exit is already prepared. A replay after the
+					// promotion must not run another transition.
+					handoff = "S7 original exit is already prepared; this accepted answer does not run another transition."
 				} else {
 					var continuationErr error
 					current, handoff, continuationErr = continueS7AcceptanceResult(completionContext, root, statePath, journalPath, current)
@@ -554,12 +570,16 @@ func nativeReviewTaskText(in policy.Input, refs []string) string {
 	defer metrics.Span(contextForHook(in), "hook/native_routes/task_text")()
 	file, err := os.Open(in.AgentTranscriptPath)
 	if err != nil {
-		return ""
+		// The platform transcript is unavailable. Keep the platform's own
+		// fallback text source instead of returning an empty task, so the exact
+		// registered reference carried by the payload can still select the
+		// original responsibility.
+		return in.LastAssistantMessage
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return ""
+		return in.LastAssistantMessage
 	}
 	reader := &nativeTaskTranscript{ctx: contextForHook(in), reader: file, size: info.Size()}
 	text, _, _ := reader.earliestUsing("", func(line []byte, final string) (string, bool, bool) {
