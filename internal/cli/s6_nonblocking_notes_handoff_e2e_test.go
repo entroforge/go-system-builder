@@ -11,13 +11,36 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/integration"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
+
+// nativeDeliveryFixtureWithMainBaseline differs from nativeDeliveryFixture in
+// one structural fact: the current generation owns the original TR-003 common
+// Main baseline, established by the real TR-003 Writer. The S6 batch recheck
+// needs that baseline before it may read the current batch.
+func nativeDeliveryFixtureWithMainBaseline(t *testing.T) (string, string, assignmentrecord.Record) {
+	t.Helper()
+	root, task := newS6MainBaselineFixture(t, map[string][]byte{"go.mod": []byte("module native.fixture\n\ngo 1.26\n"), "src/pkg/input_test.go": []byte("package pkg\nimport \"testing\"\nfunc TestPackage(t *testing.T) {}\n")})
+	output := stageCLI(t, "s6", "prepare", "--root", root, "--task", task, "--role", "backend-builder")
+	if strings.Contains(output, "workspace launch") || !strings.Contains(output, "native Agent") {
+		t.Fatal(output)
+	}
+	r, found, err := assignmentrecord.ForOwner(stageSnapshot(t, root).State, "native-"+task)
+	if err != nil || !found || r.Contract != assignmentrecord.NativeDeliveryContract {
+		t.Fatalf("native registration: %+v %v", r, err)
+	}
+	source := filepath.Join(t.TempDir(), "native-worktree")
+	if _, err := workspace.Git(t.Context(), root, "worktree", "add", "-b", "native/delivery", source, "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	return root, source, r
+}
 
 // The original native Worker answer is received once, with its professional
 // risk and scope notes intact, then travels through Main's real Git merge,
 // check and acknowledgement to the original TR-006/S7 handoff.
 func TestNativeS6NonblockingNotesReachS7WithoutReanswer(t *testing.T) {
-	root, source, record := nativeDeliveryFixture(t)
+	root, source, record := nativeDeliveryFixtureWithMainBaseline(t)
 	nativeCommit(t, source)
 	nativeAnswer(t, source, record)
 	brief, _, result := assignmentrecord.NativePaths(record)
