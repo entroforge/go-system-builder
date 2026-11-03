@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/investigation"
@@ -23,14 +24,30 @@ func TestLateS8SameApprovedCaseKeepsOriginalResponsibility(t *testing.T) {
 		t.Fatalf("issue: %d %v", len(packets), err)
 	}
 	service := &submission.Service{Root: f.root, StatePath: f.statePath, JournalPath: f.journalPath}
+	// One sibling is dispatched with plan_approval_required. Its answer may
+	// only be recorded once the original approving party really decided, so
+	// the setup below must refuse it and must still accept every continuous
+	// plan_checkpoint answer.
+	approvalOwners := 0
+	for _, owner := range owners {
+		if owner.dispatchMode == "plan_approval_required" {
+			approvalOwners++
+		}
+	}
+	if approvalOwners != 1 {
+		t.Fatalf("approval-mode owners = %d, want exactly one approval-gated sibling", approvalOwners)
+	}
 	var targetPath, targetOwner, targetID string
 	for i, owner := range owners {
-		var index int
+		index := -1
 		for j, p := range packets {
 			if p.Binding.OwnerAgentID == owner.ownerID {
 				index = j
 				break
 			}
+		}
+		if index < 0 {
+			t.Fatalf("no original issued packet for owner %s", owner.ownerID)
 		}
 		packet := packets[index]
 		path := writeS8ProfessionalAnswer(t, f.root, packet, "Original professional observation")
@@ -51,7 +68,27 @@ func TestLateS8SameApprovedCaseKeepsOriginalResponsibility(t *testing.T) {
 			}
 			targetPath, targetOwner, targetID = path, owner.ownerID, packet.ID
 		}
+		stateBeforeAnswer := mustRead(t, f.statePath)
+		journalBeforeAnswer := mustRead(t, f.journalPath)
 		receipt, err := service.SaveHypothesisResultFrom(context.Background(), owner.ownerID, filepath.Join(f.root, path), "", nil)
+		if owner.dispatchMode == "plan_approval_required" {
+			// L3-S8-finding-investigation.md:215 — with an existing matching
+			// authorization the original approving consumer records and applies
+			// that real decision; the answer itself never approves anything.
+			// :81 — when approval is genuinely required, the original approving
+			// party's real decision is what gets recorded. Before that decision
+			// exists the original consumer must refuse this answer.
+			if err == nil || receipt.Accepted {
+				t.Fatalf("approval-mode answer %s was accepted before its original approval existed: %+v %v", owner.ownerID, receipt, err)
+			}
+			if !strings.Contains(err.Error(), "activation") && !strings.Contains(err.Error(), "readback") {
+				t.Fatalf("approval-mode answer %s was refused for an unrelated reason: %v", owner.ownerID, err)
+			}
+			if !bytes.Equal(stateBeforeAnswer, mustRead(t, f.statePath)) || !bytes.Equal(journalBeforeAnswer, mustRead(t, f.journalPath)) {
+				t.Fatalf("refused approval-mode answer %s changed Runtime state or journal", owner.ownerID)
+			}
+			continue
+		}
 		if err != nil || !receipt.Accepted {
 			t.Fatalf("original answer %s: %+v %v", owner.ownerID, receipt, err)
 		}

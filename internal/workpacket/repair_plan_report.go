@@ -268,13 +268,29 @@ func ValidateRepairPlanReportAnswer(packet RepairPlanReportPacket, data []byte) 
 	return json.RawMessage(canonicalAnswer), nil
 }
 
+// repairPlanReportAnswerStringFields are the professional fields that
+// RepairPlanReportProfessionalAnswer declares as strings. A declared field must
+// not be null; a missing field is an allowed partial answer rather than a
+// rejection ground. An empty string remains a valid "not applicable" value.
+// Array fields carry no existence requirement.
+var repairPlanReportAnswerStringFields = []string{"plan"}
+
 func validateCompleteRepairPlanReportAnswer(inputs RepairPlanReportInputs, data []byte) (pointer, expected, observed string) {
 	var answer RepairPlanReportProfessionalAnswer
-	if err := decodeOneJSON(data, &answer); err != nil {
-		return "/answer", "valid S9 professional fields", err.Error()
+	if err := repairAnswerDecode(data, &answer); err != nil {
+		field, detail := repairAnswerFieldPointer(err)
+		return field, "valid S9 professional fields", detail
+	}
+	if field, want, detail := repairAnswerDeclaredStrings(data, repairPlanReportAnswerStringFields); field != "" {
+		return field, want, detail
 	}
 	if strings.TrimSpace(answer.Plan) == "" {
 		return "/answer/plan", "concrete pre-execution plan", "empty"
+	}
+	for i, check := range answer.RedChecks {
+		if check.Result != "pass" && check.Result != "fail" && check.Result != "blocked" {
+			return fmt.Sprintf("/answer/red_checks/%d/result", i), "pass | fail | blocked", check.Result
+		}
 	}
 
 	return "", "", ""

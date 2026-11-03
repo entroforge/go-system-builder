@@ -165,6 +165,18 @@ func (s *Service) saveRepairResultFrom(ctx context.Context, owner, path, sourceR
 		receipt, err := s.saveRepairResultBlocker(ctx, packet, owner, actualRoot, professional.Verdict, nil, raw)
 		return receipt, true, err
 	}
+	// A completed verdict without any recorded unit result is a self-
+	// contradiction inside the author's own answer. The original draft stays
+	// exactly as written, no Candidate and no domain fact is recorded, and
+	// the receipt names the exact field so the author completes it once.
+	if err := repair.RepairResultAnswerReady(professional); err != nil {
+		answerPath := filepath.Join(actualRoot, filepath.FromSlash(packet.AnswerPath))
+		notReady := fmt.Errorf("%s: %w", answerPath, err)
+		receipt := rejected(snapshot, packet.ID, notReady)
+		receipt.WaitingOn = append(receipt.WaitingOn, Waiting{Reason: "S9 professional answer is not ready for Candidate registration: " + err.Error(), Owner: owner, Ref: answerPath})
+		receipt.NextAction = "本人答卷尚未表达可登记的专业结论；原稿保持不变，未登记候选，也未写入领域事实。请在原答卷路径补齐缺失字段后由本人重新提交：" + answerPath
+		return receipt, true, notReady
+	}
 	next, candidate, candidateRef, acceptErr := repair.AcceptIssuedRepairResultCandidate(ctx, s.Root, s.StatePath, s.JournalPath, repair.AcceptIssuedRepairResultCandidateRequest{
 		ExpectedRevision: snapshot.Revision,
 		AnswerBytes:      raw,

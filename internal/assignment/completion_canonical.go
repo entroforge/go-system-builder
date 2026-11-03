@@ -17,6 +17,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/dispatch"
+	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -615,9 +616,7 @@ func clearCanonicalCompletionAcknowledgement(state map[string]any, agentID strin
 
 type canonicalResultBinding struct {
 	Record    assignmentrecord.Record
-	RecordSHA string
 	PlanRef   string
-	PlanSHA   string
 	Plan      canonicalResultPlan
 	View      resultExecutionView
 	Execution *workspace.Execution
@@ -679,12 +678,30 @@ func resolveCanonicalResultBinding(ctx context.Context, root string, snapshot lo
 	if record.Contract != assignmentrecord.NativeDeliveryContract && status != "working" && status != "reported" && status != "done" {
 		return binding, fmt.Errorf("canonical Result requires a working or previously reported Agent; got %s", status)
 	}
+	// The original responsibility owns two structural facts about its Plan:
+	// the Plan under reception must be the registered Plan of this owner, and
+	// it must bind the current Assignment identity while staying inside that
+	// Assignment's registered write domain. The registered reference is
+	// resolved by coordinate first, so a Plan owned by another responsibility
+	// can never pass as this one. These are structural facts about identity
+	// and write domain; no revision, hash, digest, fingerprint, checksum,
+	// round or CAS comparison decides any of them.
 	planRef, _ := agent["plan_reported_ref"].(string)
 	if planRef == "" {
 		planRef = nativePlanPath
 	}
 	if planRef == "" {
 		return binding, fmt.Errorf("Result requires the actual professional plan")
+	}
+	registeredPlanRef, err := plancheckpoint.ActivatedRef(root, snapshot, agentID)
+	if err != nil {
+		return binding, fmt.Errorf("resolve the registered professional Plan: %w", err)
+	}
+	if registeredPlanRef != "" && registeredPlanRef != planRef {
+		return binding, fmt.Errorf("the professional Plan is not the registered Plan of the original responsibility")
+	}
+	if err := plancheckpoint.Validate(root, snapshot, agentID, planRef); err != nil {
+		return binding, fmt.Errorf("validate professional PLAN: %w", err)
 	}
 	planBytes, err := workpacket.ReadFile(root, planRef, canonicalResultMessageLimit)
 	if err != nil {

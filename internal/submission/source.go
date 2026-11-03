@@ -152,7 +152,24 @@ func (s *Service) validateSource(ctx context.Context, state map[string]any, p wo
 		if life["state"] != "document_verification" || number(life["phase_revision"]) != p.Binding.StageEntry {
 			return fmt.Errorf("Worker's S5 origin was replaced")
 		}
-
+		// Restore the structural source checks of the original reception chain.
+		// The registered execution must still match the REQ-bound authority,
+		// the frozen inputs must keep their original locations, and the Worker
+		// view must remain a valid questionnaire for this execution and packet.
+		// No revision, digest, fingerprint or checksum is compared or recorded.
+		b, err := workspace.Decode(state)
+		if err != nil || b == nil {
+			return fmt.Errorf("Worker registry unavailable: %v", err)
+		}
+		if err := b.ValidateAuthority(state); err != nil {
+			return err
+		}
+		if err := b.ValidateInputs(e); err != nil {
+			return err
+		}
+		if err := b.ValidateDocumentReviewView(e, p); err != nil {
+			return err
+		}
 	}
 	return nil
 }

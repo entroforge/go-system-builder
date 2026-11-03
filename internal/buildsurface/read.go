@@ -9,6 +9,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
+	loopruntime "github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/mainreceipt"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -42,6 +43,17 @@ func ReadContext(ctx context.Context, root string, state map[string]any) (Snapsh
 	branch = strings.TrimPrefix(branch, "refs/heads/")
 	baseline, _ := state["baseline"].(map[string]any)
 	out = Snapshot{Contract: Contract, RuntimeID: textField(state["runtime_id"]), BaselineGeneration: number(baseline["generation"]), ProjectRoot: rootAbs, DevelopmentBranch: branch, Tasks: []Task{}, Contributions: []Contribution{}, Paths: []Path{}}
+	// The current batch recheck is premised on the original TR-003 common
+	// Main baseline of this generation. That premise is a structural fact of
+	// the original stage, so a missing baseline is reported as fact. No
+	// current branch, review round or runtime revision may stand in for it.
+	journal, err := loopruntime.ReadJournalForStateContext(ctx, rootAbs, state)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("current S6 Main baseline journal: %w", err)
+	}
+	if _, err := loopruntime.RequireCurrentS6MainStartContext(ctx, state, journal); err != nil {
+		return Snapshot{}, err
+	}
 	records, err := assignmentrecord.RecordsFromState(state)
 	if err != nil {
 		return Snapshot{}, err

@@ -147,7 +147,11 @@ func PrepareIssuedRepairResultResolution(
 	if accepted {
 		return nil, &existing, nil
 	}
-	if req.ExpectedRevision < 0 || req.ExpectedRevision != snapshot.Revision {
+	// A negative expected revision is the omission marker: this entry did not
+	// assert a Runtime revision, so the current-value path decides. Only an
+	// explicit non-negative value is a concrete CAS assertion
+	// (L4-revision-usage.md:71 and :78).
+	if req.ExpectedRevision >= 0 && req.ExpectedRevision != snapshot.Revision {
 		return nil, nil, runtimepkg.ErrStaleRevision
 	}
 	blocker, err := validateCurrentRepairResultResolutionBlocker(ctx, root, snapshot.State, packet, req.OwnerAgentID, nil)

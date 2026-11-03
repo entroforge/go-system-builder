@@ -94,15 +94,22 @@ type CheckResult struct {
 // this struct to Integrate so the decision is reproducible from a recorded
 // snapshot (idempotency).
 type Inspection struct {
-	// WorktreeObservation is transient Main guidance; it is never a gate or checkpoint field.
+	// WorktreeObservation is transient Main guidance about the Builder
+	// worktree state. It never decides readiness and never reaches the
+	// checkpoint.
 	WorktreeObservation []string `json:"-"`
-	Ready               bool     `json:"ready"`
-	Blockers            []string `json:"blockers,omitempty"`
-	AssignmentID        string   `json:"assignment_id,omitempty"`
-	TaskID              string   `json:"task_id,omitempty"`
-	WorktreePath        string   `json:"worktree_path,omitempty"`
-	SourceBranch        string   `json:"source_branch,omitempty"`
-	TargetBranch        string   `json:"target_branch,omitempty"`
+	// WorktreeDirty lists the uncommitted or untracked material actually
+	// present in the Builder worktree. It is a recorded worktree fact, not a
+	// gate: the integration still runs, and the preserved checkpoint keeps
+	// the material as a blocker so the site is retained for Main's judgement.
+	WorktreeDirty []string `json:"worktree_dirty,omitempty"`
+	Ready         bool     `json:"ready"`
+	Blockers      []string `json:"blockers,omitempty"`
+	AssignmentID  string   `json:"assignment_id,omitempty"`
+	TaskID        string   `json:"task_id,omitempty"`
+	WorktreePath  string   `json:"worktree_path,omitempty"`
+	SourceBranch  string   `json:"source_branch,omitempty"`
+	TargetBranch  string   `json:"target_branch,omitempty"`
 	// ChangedPaths are the actual branch changes observed by Inspect.
 	ChangedPaths        []string `json:"changed_paths,omitempty"`
 	EffectiveWritePaths []string `json:"effective_write_paths,omitempty"`

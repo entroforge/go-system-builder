@@ -157,7 +157,18 @@ func integrateByResponsibility(ctx context.Context, req IntegrateRequest, cfg In
 			if reason == "" {
 				reason = "inspection reported an integration blocker"
 			}
-			return preserveAfterCAS(ctx, store, checkpointPath, current, cleanCheckpoint(current), errors.New(reason), ErrMergeConflict)
+			// The preserved checkpoint keeps the concrete unsatisfied
+			// conditions, not only their summary in FailureReason.
+			next := cleanCheckpoint(current)
+			next.Blockers = append(append([]string(nil), next.Blockers...), in.Blockers...)
+			sentinel := ErrMergeConflict
+			if len(in.WorktreeDirty) != 0 {
+				// Observed uncommitted material is its own recorded reason to
+				// keep the site; it is observed, never inferred from a digest.
+				next.Blockers = append(next.Blockers, dirtyWorktreeBlocker(in.WorktreeDirty))
+				sentinel = ErrDirtyWorktree
+			}
+			return preserveAfterCAS(ctx, store, checkpointPath, current, next, errors.New(reason), sentinel)
 		}
 		status, err := defaultRunner.Run(ctx, gitRoot, "status", "--porcelain=v1", "--untracked-files=no")
 		if err != nil {
@@ -196,6 +207,12 @@ func integrateByResponsibility(ctx context.Context, req IntegrateRequest, cfg In
 	}
 	if lessThan(current.State, StateVerified) {
 		next := cleanCheckpoint(current)
+		if len(in.WorktreeDirty) != 0 {
+			// The worktree material that is really present becomes a recorded
+			// checkpoint fact. It never blocks the merge itself; a preserved
+			// checkpoint carries it so Main keeps the site and can act on it.
+			next.Blockers = append(append([]string(nil), next.Blockers...), dirtyWorktreeBlocker(in.WorktreeDirty))
+		}
 		commands, _ := splitRequiredChecks(cfg.RequiredChecks)
 		var indexed []struct {
 			Index   int
@@ -309,6 +326,15 @@ func protectIgnoredMergeCollisions(ctx context.Context, root, branch string) err
 	return nil
 }
 
+// dirtyWorktreeBlocker renders the material actually present in the Builder
+// worktree as a checkpoint blocker. The wording keeps ErrDirtyWorktree's
+// existing meaning, so the checkpoint states that the site is dirty and
+// preserved. The judgement comes from the observed worktree state only; no
+// digest, revision or round is compared.
+func dirtyWorktreeBlocker(material []string) string {
+	return fmt.Sprintf("%s: %s", ErrDirtyWorktree, strings.Join(material, "; "))
+}
+
 // Copy mutable Main facts before updating the checkpoint.
 func cleanCheckpoint(in Checkpoint) Checkpoint {
 	out := in
@@ -320,9 +346,40 @@ func cleanCheckpoint(in Checkpoint) Checkpoint {
 	return out
 }
 
+// AuthorOriginalsRoot is the author's own professional area inside a Worker
+// checkout. The material there is delivery material, not unknown garbage: the
+// delivered copy is already recorded in the Main root, so its presence does
+// not refuse the reclamation of the Worker site.
+const authorOriginalsRoot = ".loop-submissions"
+
+// worktreeStatusEntry is one observed Git status entry of a Worker checkout.
+type worktreeStatusEntry struct {
+	code string // porcelain v1 status code
+	path string // path relative to the checkout root
+	line string // the entry as Git reported it
+}
+
+// worktreeMaterial is the observed material of a Worker checkout, split by
+// what it means for the reclamation of the site.
+type worktreeMaterial struct {
+	tracked  []worktreeStatusEntry // recorded changes of tracked files
+	original []worktreeStatusEntry // the author's own professional originals
+	unknown  []worktreeStatusEntry // untracked or ignored material of unknown origin
+}
+
+// keepsSite reports whether the observed material still keeps the checkout.
+// Real engineering artifacts and unknown material do; the author's own
+// originals are delivery material and never keep the site.
+func (m worktreeMaterial) keepsSite() bool {
+	return len(m.tracked) > 0 || len(m.unknown) > 0
+}
+
 // Git's own worktree removal also deletes ignored files. Preserve any checkout
-// with untracked, ignored, modified or unknown material rather than assuming
-// ownership from a historical digest.
+// whose tracked files carry recorded changes and any checkout with unknown
+// material rather than assuming ownership from a historical digest. The
+// author's own professional originals are delivery material: they do not
+// refuse the reclamation, so the cleanup authorization follows the recorded
+// responsibility and not the presence of a file in the directory.
 func cleanupUnmodifiedWorktree(ctx context.Context, root, worktree string) error {
 	if worktree == "" || filepath.Clean(worktree) == filepath.Clean(root) {
 		return fmt.Errorf("preserve unknown worktree location")
@@ -357,30 +414,123 @@ func cleanupUnmodifiedWorktree(ctx context.Context, root, worktree string) error
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("preserve non-directory worktree")
 	}
-	status, err := defaultRunner.Run(ctx, worktree, "status", "--porcelain=v1", "--ignored=matching", "--untracked-files=all")
+	material, err := observeWorktreeStatus(ctx, worktree)
 	if err != nil {
-		return fmt.Errorf("inspect worktree %q for cleanup: %w", worktree, err)
+		return err
 	}
-	if strings.TrimSpace(status) != "" {
-		// Show the actual retained locations without treating their names or
-		// Git classification as authority to remove any of them. Git can
-		// summarize ignored directories; those entries identify the directory,
-		// not an exhaustive list of its contents.
-		entries := strings.Split(strings.TrimRight(status, "\r\n"), "\n")
-		const maxEntries = 8
-		omitted := 0
-		if len(entries) > maxEntries {
-			omitted = len(entries) - maxEntries
-			entries = entries[:maxEntries]
-		}
-		detail := strings.Join(entries, "; ")
-		if omitted > 0 {
-			detail += fmt.Sprintf("; and %d more Git status entries", omitted)
-		}
-		return fmt.Errorf("preserve worktree %q: untracked, ignored or modified material has no confirmed cleanup authorization (Git status: %s)", worktree, detail)
+	if material.keepsSite() {
+		return preserveWorktreeError(worktree, material)
 	}
-	if _, err := defaultRunner.Run(ctx, root, "worktree", "remove", worktree); err != nil {
-		return fmt.Errorf("remove clean worktree: %w", err)
+	force := len(material.original) > 0
+	if force {
+		// The author's own originals are still in the checkout, and Git
+		// refuses to remove a checkout that holds untracked files. The
+		// observed status is read once more right before the removal, so a
+		// recorded change of a tracked file keeps the site there as well.
+		material, err = observeWorktreeStatus(ctx, worktree)
+		if err != nil {
+			return err
+		}
+		if material.keepsSite() {
+			return preserveWorktreeError(worktree, material)
+		}
+		force = len(material.original) > 0
+	}
+	remove := []string{"worktree", "remove"}
+	if force {
+		// The Worker site goes with the author's own originals: their
+		// delivered copy is already recorded in the Main root.
+		remove = append(remove, "--force")
+	}
+	remove = append(remove, worktree)
+	if _, err := defaultRunner.Run(ctx, root, remove...); err != nil {
+		return fmt.Errorf("remove worktree: %w", err)
 	}
 	return nil
+}
+
+// observeWorktreeStatus reads the actual Git status of a Worker checkout and
+// classifies the material that is really present there.
+func observeWorktreeStatus(ctx context.Context, worktree string) (worktreeMaterial, error) {
+	status, err := defaultRunner.Run(ctx, worktree, "status", "--porcelain=v1", "--ignored=matching", "--untracked-files=all")
+	if err != nil {
+		return worktreeMaterial{}, fmt.Errorf("inspect worktree %q for cleanup: %w", worktree, err)
+	}
+	return classifyWorktreeStatus(status), nil
+}
+
+// classifyWorktreeStatus splits Git's observed porcelain status into the
+// material that keeps the Worker checkout and the material that does not. The
+// judgement comes from the observed status only; no digest, revision or round
+// is compared.
+func classifyWorktreeStatus(status string) worktreeMaterial {
+	material := worktreeMaterial{}
+	for _, line := range strings.Split(strings.TrimRight(status, "\r\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if len(line) < 4 || line[2] != ' ' {
+			// An entry without the documented shape is unknown material.
+			material.unknown = append(material.unknown, worktreeStatusEntry{code: "??", path: line, line: line})
+			continue
+		}
+		entry := worktreeStatusEntry{code: line[:2], path: line[3:], line: line}
+		if entry.code == "??" || entry.code == "!!" {
+			// Untracked or ignored material.
+			if isAuthorOriginal(entry.path) {
+				material.original = append(material.original, entry)
+				continue
+			}
+			material.unknown = append(material.unknown, entry)
+			continue
+		}
+		// A recorded change of a tracked file is a real engineering artifact;
+		// it keeps the site.
+		material.tracked = append(material.tracked, entry)
+	}
+	return material
+}
+
+// isAuthorOriginal reports whether the observed path is the author's own
+// professional material inside the Worker checkout. A quoted path is never
+// read as a delivery: the framework does not own a name it cannot read.
+func isAuthorOriginal(path string) bool {
+	if strings.HasPrefix(path, "\"") {
+		return false
+	}
+	return path == authorOriginalsRoot || strings.HasPrefix(path, authorOriginalsRoot+"/")
+}
+
+// preserveWorktreeError reports the material that keeps the Worker checkout.
+func preserveWorktreeError(worktree string, material worktreeMaterial) error {
+	entries := make([]string, 0, len(material.tracked)+len(material.unknown))
+	for _, entry := range material.tracked {
+		entries = append(entries, entry.line)
+	}
+	for _, entry := range material.unknown {
+		entries = append(entries, entry.line)
+	}
+	// Show the actual retained locations without treating their names or
+	// Git classification as authority to remove any of them. Git can
+	// summarize ignored directories; those entries identify the directory,
+	// not an exhaustive list of its contents.
+	const maxEntries = 8
+	detail := strings.Join(entries, "; ")
+	if len(entries) > maxEntries {
+		omitted := len(entries) - maxEntries
+		detail = strings.Join(entries[:maxEntries], "; ") + fmt.Sprintf("; and %d more Git status entries", omitted)
+	}
+	return fmt.Errorf("preserve worktree %q: %s has no confirmed cleanup authorization (Git status: %s)", worktree, preservedMaterialKind(material), detail)
+}
+
+// preservedMaterialKind names the material that keeps the Worker checkout.
+func preservedMaterialKind(material worktreeMaterial) string {
+	switch {
+	case len(material.tracked) > 0 && len(material.unknown) > 0:
+		return "modified tracked material and unknown untracked or ignored material"
+	case len(material.tracked) > 0:
+		return "modified tracked material"
+	default:
+		return "unknown untracked or ignored material"
+	}
 }

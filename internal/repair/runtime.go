@@ -357,7 +357,12 @@ func submitIssuedRepairResultToRuntime(root, statePath, journalPath string, req 
 	if err != nil {
 		return runtimepkg.Snapshot{}, RepairResult{}, ArtifactRef{}, err
 	}
-	if req.issued == nil || req.ExpectedRevision < 0 || req.Result.issuedFinal != req.issued {
+	// A negative expected revision is the omission marker: the Writer takes the
+	// current-value path and assigns the next Runtime revision under its lock.
+	// Only an explicit non-negative value is a concrete CAS assertion
+	// (L4-revision-usage.md:71 and :78). The issued capability remains the
+	// required identity for this commit either way.
+	if req.issued == nil || req.Result.issuedFinal != req.issued {
 		return current, RepairResult{}, ArtifactRef{}, errors.New("S9 Result requires its issued responsibility and Runtime Writer")
 	}
 	if err := checkRevision(req.ExpectedRevision, current.Revision, "runtime repair status"); err != nil {

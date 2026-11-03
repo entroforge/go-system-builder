@@ -199,16 +199,41 @@ func registerFixtureWorkgroup(t *testing.T, root, dir string, state map[string]a
 	return err
 }
 
-// Independent behavior work is not delayed by an unrelated static wave.
-func TestReviewBindAllowsIndependentBehaviorBeforeStaticSettles(t *testing.T) {
+// §14.1 / L3-S7 §5.2-5.3: 静态波次先取得完整处置,再进入行为执行 —— 静态集
+// 未结算时,behavior 波次不得解锁,派发必须被拒绝且理由说明波次门。
+func TestReviewBindRejectsBehaviorWaveBeforeStaticSettles(t *testing.T) {
 	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	state := activeState(t, root, "verification", "running", 6)
 	seedReviewBindPlan(t, root, state, reviewBindSpec{behaviorWave: []string{"assignment-ver-regression"}})
 
 	err := registerFixtureWorkgroup(t, root, dir, state, nil)
-	if err != nil {
-		t.Fatalf("independent behavior dispatch was blocked: %v", err)
+	if err == nil {
+		t.Fatal("behavior-wave dispatch must stay locked until the static wave settles")
+	}
+	if !strings.Contains(err.Error(), "behavior-wave") ||
+		!strings.Contains(err.Error(), "static Claims are not all dispositioned yet") {
+		t.Fatalf("the rejection must explain that the static wave has not settled yet, got %v", err)
+	}
+
+	// The rejected bind runs inside the register-workgroup CAS: it must leave
+	// no dispatch behind.
+	data, readErr := os.ReadFile(filepath.Join(dir, "loop-state.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var committed map[string]any
+	if unmarshalErr := json.Unmarshal(data, &committed); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	reviewMap, _ := committed["review"].(map[string]any)
+	assignments, _ := reviewMap["assignments"].(map[string]any)
+	row, _ := assignments["assignment-ver-regression"].(map[string]any)
+	if row == nil {
+		t.Fatalf("the rejected behavior Assignment is missing from the Runtime projection: %s", data)
+	}
+	if row["status"] != "planned" || row["agent_id"] != nil {
+		t.Fatalf("a wave-gated rejection must leave the behavior Assignment undispatched: %#v", row)
 	}
 }
 

@@ -3,8 +3,10 @@ package workpacket
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/schema"
@@ -292,10 +294,21 @@ func ValidateRepairResultAnswer(packet RepairResultPacket, data []byte) (json.Ra
 	return json.RawMessage(canonicalAnswer), nil
 }
 
+// repairResultAnswerStringFields are the professional fields that
+// RepairResultProfessionalAnswer declares as strings. A declared field must not
+// be null; a missing field is an allowed partial answer, because a real blocked
+// or conflict expression is receivable on its own. An empty string remains a
+// valid "not applicable" value. Array fields carry no existence requirement.
+var repairResultAnswerStringFields = []string{"verdict", "migration_ref", "rollback_ref"}
+
 func validateCompleteRepairResultAnswer(sources RepairPlanReportInputs, data []byte) (pointer, expected, observed string) {
 	var answer RepairResultProfessionalAnswer
-	if err := decodeOneJSON(data, &answer); err != nil {
-		return "/answer", "valid S9 professional fields", err.Error()
+	if err := repairAnswerDecode(data, &answer); err != nil {
+		field, detail := repairAnswerFieldPointer(err)
+		return field, "valid S9 professional fields", detail
+	}
+	if field, want, detail := repairAnswerDeclaredStrings(data, repairResultAnswerStringFields); field != "" {
+		return field, want, detail
 	}
 	if answer.Verdict != "completed" && answer.Verdict != "blocked" && answer.Verdict != "contract_conflict" && answer.Verdict != "stale" {
 		return "/answer/verdict", "completed | blocked | contract_conflict | stale", answer.Verdict
@@ -338,6 +351,72 @@ func validateCompleteRepairResultAnswer(sources RepairPlanReportInputs, data []b
 		}
 	}
 	return "", "", ""
+}
+
+// repairAnswerFieldPointer names the professional field that a decode failure
+// belongs to. A type mismatch keeps its own field pointer, so the original
+// consumer reports the field to correct instead of degrading into a
+// whole-answer failure.
+func repairAnswerFieldPointer(err error) (pointer, observed string) {
+	var typeError *json.UnmarshalTypeError
+	if errors.As(err, &typeError) && typeError.Field != "" {
+		return "/answer/" + strings.ReplaceAll(typeError.Field, ".", "/"), typeError.Error()
+	}
+	if field := repairAnswerUnknownField(err); field != "" {
+		// An unknown key is an allowed extension; this only names it for a
+		// caller that still rejects it.
+		return "/answer/" + field, "unknown field " + field
+	}
+	return "/answer/fields", err.Error()
+}
+
+// repairAnswerUnknownField reads the key of an unknown professional field from
+// the strict decoder's own rejection.
+func repairAnswerUnknownField(err error) string {
+	const prefix = "json: unknown field "
+	message := err.Error()
+	if !strings.HasPrefix(message, prefix) {
+		return ""
+	}
+	field, unquoteErr := strconv.Unquote(strings.TrimPrefix(message, prefix))
+	if unquoteErr != nil {
+		return ""
+	}
+	return field
+}
+
+// repairAnswerDeclaredStrings checks the professional fields that the answer
+// structure declares as strings. A declared field must not be null; a missing
+// field is an allowed partial answer rather than a rejection ground, so a real
+// blocked or conflict expression stays receivable on its own. An empty string
+// stays a valid "not applicable" value and is never rejected here.
+func repairAnswerDeclaredStrings(data []byte, fields []string) (pointer, expected, observed string) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return "", "", ""
+	}
+	for _, field := range fields {
+		value, exists := object[field]
+		if !exists {
+			continue
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return "/answer/" + field, "declared S9 professional field", "null"
+		}
+	}
+	return "", "", ""
+}
+
+// repairAnswerDecode reads one professional answer. An unknown professional key
+// is an allowed extension instead of a rejection ground, so a strict decode
+// that found only unknown keys is read again without that restriction. A real
+// type mismatch keeps its own field pointer either way.
+func repairAnswerDecode(data []byte, value any) error {
+	err := decodeOneStrictJSON(data, value)
+	if err == nil || repairAnswerUnknownField(err) == "" {
+		return err
+	}
+	return decodeOneJSON(data, value)
 }
 
 type repairResultValidationError struct {

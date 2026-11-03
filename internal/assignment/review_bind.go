@@ -49,6 +49,9 @@ func bindReviewPlanAssignments(root string, state map[string]any, value manifest
 		return fmt.Errorf("runtime review projection missing; re-register the ReviewPlan")
 	}
 
+	// A single binding evaluates the wave against its incoming snapshot;
+	// earlier rows in this same manifest must not rewrite that decision.
+	staticSettled := review.StaticClaimsSettled(state, plan)
 	for _, item := range value.Assignments {
 		row, _ := assignmentsProjection[item.AssignmentID].(map[string]any)
 		if row == nil {
@@ -73,7 +76,7 @@ func bindReviewPlanAssignments(root string, state map[string]any, value manifest
 		if err := exactClaimSet(row["claim_ids"], item.ClaimIDs); err != nil {
 			return fmt.Errorf("assignment %s claim set mismatch: %w", item.AssignmentID, err)
 		}
-		conflict, err := reviewDispatchPrerequisite(state, plan, item.AssignmentID)
+		conflict, err := reviewDispatchPrerequisite(state, plan, item.AssignmentID, staticSettled)
 		if err != nil {
 			return err
 		}

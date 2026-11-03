@@ -516,6 +516,18 @@ func AcceptIssuedRepairResultCandidate(ctx context.Context, root, statePath, jou
 	// The same original consumer accepts either a live original or an already
 	// retained original. Source inspection and Git integration are Main work,
 	// not a prerequisite for recording the author's professional result.
+	//
+	// A Candidate is registered only when the author's own answer states a
+	// professional conclusion. Readiness is read from that answer alone: the
+	// original Plan's unit set is not replayed against it, and no digest,
+	// revision or round is compared.
+	var professional workpacket.RepairResultProfessionalAnswer
+	if err := json.Unmarshal(provenance.SubmittedAnswer, &professional); err != nil {
+		return current, WorkspaceCandidate{}, ArtifactRef{}, &RepairResultBeforeCandidateError{Cause: err}
+	}
+	if err := RepairResultAnswerReady(professional); err != nil {
+		return current, WorkspaceCandidate{}, ArtifactRef{}, &RepairResultBeforeCandidateError{Cause: fmt.Errorf("%s: %w", filepath.Join(execution.Path, packet.AnswerPath), err)}
+	}
 	candidate, ref, err := createReceivedRepairCandidate(root, packet, execution, proposal, provenance)
 	if err != nil {
 		return current, WorkspaceCandidate{}, ArtifactRef{}, err
@@ -563,13 +575,34 @@ func AcceptIssuedRepairResultCandidate(ctx context.Context, root, statePath, jou
 	return next, candidate, ref, nil
 }
 
+// RepairResultAnswerReady reports whether the author's own professional answer
+// states a conclusion that may be registered as a Candidate. Readiness is a
+// property of that answer alone: a completed verdict plus at least one
+// recorded unit result. A non-passing unit is still a professional conclusion
+// and stays receivable; only the completion bit changes. The original Plan's
+// unit set is never replayed against the answer, and no digest, revision or
+// round is compared.
+func RepairResultAnswerReady(answer workpacket.RepairResultProfessionalAnswer) error {
+	if answer.Verdict != "completed" {
+		return fmt.Errorf("S9 typed result verdict %q is preserved for named recovery; this slice only accepts completed candidate delivery", answer.Verdict)
+	}
+	if len(answer.UnitResults) == 0 {
+		return errors.New("S9 completed result records no unit result; the author's professional conclusion is missing at /answer/unit_results")
+	}
+	return nil
+}
+
+// ensureRepairResultCompleted reports whether the author's own answer states a
+// finished professional result. It reads that submitted answer only: no digest,
+// revision or round is compared, and the original Plan's unit set is not
+// replayed against it.
 func ensureRepairResultCompleted(raw json.RawMessage) error {
 	var answer workpacket.RepairResultProfessionalAnswer
 	if err := json.Unmarshal(raw, &answer); err != nil {
 		return err
 	}
-	if answer.Verdict != "completed" {
-		return fmt.Errorf("S9 typed result verdict %q is preserved for named recovery; this slice only accepts completed candidate delivery", answer.Verdict)
+	if err := RepairResultAnswerReady(answer); err != nil {
+		return err
 	}
 	for _, unit := range answer.UnitResults {
 		if unit.Status != "pass" {
@@ -693,11 +726,34 @@ func repairResultProposal(packet workpacket.RepairResultPacket, raw json.RawMess
 		Plan:     ArtifactRef{ID: packet.Binding.Sources.PlanID, Path: packet.Binding.Sources.PlanRef},
 		ResultID: packet.ResultID, ProducerAgentID: packet.Binding.Sources.OwnerAgentID, UnitResults: units,
 		Verdict: answer.Verdict, BeforeFixResults: before, DetectionGapArtifacts: append([]string{}, answer.DetectionGapArtifacts...), EvidenceRefs: append([]string{}, answer.EvidenceRefs...),
-		ChangedArtifacts: []ChangedArtifact{}, Result: "pass", AssignmentID: packet.Binding.Sources.RepairAssignmentID,
+		ChangedArtifacts: []ChangedArtifact{}, Result: repairResultUnitOutcome(units), AssignmentID: packet.Binding.Sources.RepairAssignmentID,
 		PlanReport:      ArtifactRef{Path: packet.Binding.PlanReportRef},
 		BeforeFixChecks: append([]RepairCheck{}, report.RedChecks...), Checks: checks, ScopeDeviations: append([]string{}, answer.ScopeDeviations...),
 		MigrationRef: answer.MigrationRef, RollbackRef: answer.RollbackRef, ResidualRisks: append([]string{}, answer.ResidualRisks...),
 	}, nil
+}
+
+// repairResultUnitOutcome derives the completion bit from the author's own
+// recorded unit results. The bit is never inferred from the checks, from the
+// mere presence of a verdict, or from an unanswered unit set: a unit that is
+// not recorded as passed is never a pass.
+func repairResultUnitOutcome(units []RepairUnitResult) string {
+	if len(units) == 0 {
+		return "blocked"
+	}
+	outcome := "pass"
+	for _, unit := range units {
+		switch unit.Status {
+		case "fail":
+			return "fail"
+		case "blocked":
+			outcome = "blocked"
+		case "pass":
+		default:
+			outcome = "blocked"
+		}
+	}
+	return outcome
 }
 
 func validateRepairResultMainThreadlessCandidate(root string, state map[string]any, packet workpacket.RepairResultPacket, execution workspace.Execution, provenance runtimepkg.RepairResultCandidateProvenance, candidate ArtifactRef) error {
@@ -944,6 +1000,12 @@ func SubmitIssuedRepairResult(ctx context.Context, root, statePath, journalPath 
 		return current, RepairResult{}, ArtifactRef{}, errors.New("S9 candidate belongs to a different Result questionnaire")
 	}
 	provenance := *candidate.Provenance
+	// The final Result must not cover a unit the author did not complete. This
+	// guard reads the author's own submitted answer only: no digest, revision
+	// or round is compared, and the original Plan's unit set is not replayed.
+	if err := ensureRepairResultCompleted(provenance.SubmittedAnswer); err != nil {
+		return current, RepairResult{}, ArtifactRef{}, err
+	}
 	var checks []RepairCheck
 	var checkpoint integration.Checkpoint
 	var proof runtimepkg.RepairResultMainProof

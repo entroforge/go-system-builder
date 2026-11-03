@@ -13,6 +13,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/agentauth"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
@@ -65,11 +66,22 @@ func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request 
 	if receiptErr != nil {
 		return snapshot, HypothesisResultReceipt{}, receiptErr
 	}
-	// A resolved original question has no continuing attempt. An unresolved
-	// question may receive a later delivery on its original responsibility;
-	// its accepted fact never depends on a surviving private authoring file.
-	if accepted && (!continueUnresolved || existingReceipt.Result != "inconclusive") {
+	// A caller with no activity on the original responsibility reuses the
+	// accepted fact directly and never reopens the author's private file.
+	// A caller that does act on the original responsibility must compare the
+	// current professional answer with the accepted object before it decides
+	// to reuse it, to continue the responsibility, or to refuse the delivery.
+	if accepted && !continueUnresolved {
 		return snapshot, existingReceipt, nil
+	}
+	// The original responsible Investigator must still hold its real working
+	// authorization before its answer may be read or written back. Continuous
+	// plan_checkpoint/one_shot dispatches keep their original execution
+	// contract; an approval-mode dispatch must pass the original activation and
+	// readback chain. This is a structural fact about the original owner, not a
+	// revision, digest or round comparison, and it produces no Runtime change.
+	if err := validateS8ApprovalMode(root, snapshot.State, request.OwnerAgentID); err != nil {
+		return snapshot, HypothesisResultReceipt{}, err
 	}
 	sourceRoot, _, err := hypothesisResultSourceRoot(root, snapshot.State, packet, false, request.Context)
 	if err != nil {
@@ -107,8 +119,28 @@ func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request 
 	if len(issues) != 0 {
 		return snapshot, HypothesisResultReceipt{}, &workpacket.AnswerError{Label: "S8 answer", Fields: issues}
 	}
-	if accepted && bytes.Equal(existingReceipt.Answer, answerJSON) {
-		return snapshot, existingReceipt, nil
+	if accepted {
+		// L4-workflow-convergence.md:112 — the original consumer compares the
+		// current original answer with its current accepted object through its
+		// own professional semantics. The comparison covers only the
+		// author-changeable professional content that is actually saved.
+		// Machine facts — identifiers, timestamps, Runtime revisions and
+		// digests — never decide whether a delivery repeats an accepted one.
+		if sameS8ProfessionalAnswer(answer, existingReceipt.Answer) {
+			// An equivalent expression only skips the repeated reception and
+			// its write; the accepted fact stays exactly as it is.
+			return snapshot, existingReceipt, nil
+		}
+		if existingReceipt.Result != "inconclusive" {
+			// L3-S8-finding-investigation.md:235 and :445 — a genuine new
+			// expression under an already accepted packet identity must not
+			// overwrite the accepted content and must not masquerade as a
+			// replay of it. The accepted Case, result and receipt stay
+			// untouched; this delivery is reported as a new expression for the
+			// original revision process.
+			return snapshot, s8NewExpressionReceipt(packet, request), nil
+		}
+		// An unresolved original responsibility continues along its own entry.
 	}
 	if request.ExpectedRevision >= 0 && snapshot.Revision != request.ExpectedRevision {
 		return snapshot, HypothesisResultReceipt{}, loopruntime.ErrStaleRevision
@@ -266,12 +298,126 @@ func validateS8ApprovalMode(root string, state map[string]any, owner string) err
 		if mode == "plan_checkpoint" || mode == "one_shot" {
 			return nil
 		}
+		if mode != "" && mode != "plan_approval_required" {
+			return fmt.Errorf("document submission requires a registered plan/activation chain")
+		}
 		// Explicit approval-mode and legacy dispatches retain their original
 		// approved activation/readback chain. Continuous plan_checkpoint
 		// work uses the issued professional Case questionnaire directly.
-		return agentauth.ValidateWorkingAuthorization(root, state, owner)
+		//
+		// The gate asks whether that authorization fact exists, not whether the
+		// Agent still sits in the working state: an Investigator that was
+		// really activated and really worked keeps its original late delivery
+		// after it leaves that state.
+		return s8ApprovalAuthorizationFact(root, state, agent, owner)
 	}
 	return fmt.Errorf("S8 Investigator %s is not registered", owner)
+}
+
+// s8ApprovalAuthorizationFact verifies that the original approval-mode
+// Investigator holds a real activation and readback chain. It reads the
+// existing agentauth ledger — the registered activation_ref, readback_ref and
+// the approved readback message id — and adds no second authorization record.
+// The Agent's current activity state is deliberately not part of this
+// judgement, so a genuinely activated Investigator is not refused for having
+// finished or left its working state.
+func s8ApprovalAuthorizationFact(root string, state map[string]any, agent map[string]any, owner string) error {
+	ref, _ := agent["activation_ref"].(string)
+	if ref == "" {
+		return fmt.Errorf("S8 Investigator %s has no original activation", owner)
+	}
+	data, err := workpacket.ReadFile(root, ref, 1<<20)
+	if err != nil {
+		return err
+	}
+	if err := schema.NewValidator(root).ValidateBytes("agent-message.schema.json", data); err != nil {
+		return err
+	}
+	var activation agentauth.Message
+	if err := json.Unmarshal(data, &activation); err != nil {
+		return err
+	}
+	if activation.MessageType != "activation" || activation.AgentID != owner || activation.RuntimeID != state["runtime_id"] {
+		return fmt.Errorf("activation does not belong to this Agent")
+	}
+	readbackRef, _ := agent["readback_ref"].(string)
+	if readbackRef == "" {
+		return fmt.Errorf("S8 Investigator %s has no original readback", owner)
+	}
+	readbackData, err := workpacket.ReadFile(root, readbackRef, 1<<20)
+	if err != nil {
+		return err
+	}
+	if err := schema.NewValidator(root).ValidateBytes("agent-message.schema.json", readbackData); err != nil {
+		return err
+	}
+	var prior agentauth.Message
+	if err := json.Unmarshal(readbackData, &prior); err != nil {
+		return err
+	}
+	if prior.MessageType != "readback_response" || prior.AgentID != owner || prior.RuntimeID != state["runtime_id"] || prior.TaskID != activation.TaskID {
+		return fmt.Errorf("readback does not belong to this activation")
+	}
+	return agentauth.VerifyActivationReadbackChain(root, agent, activation)
+}
+
+// sameS8ProfessionalAnswer compares the current authored answer with the
+// accepted object through the original consumer's own professional fields. It
+// covers only the author-changeable professional content that is actually
+// saved. Machine facts — identifiers, timestamps, Runtime revisions and
+// digests — never decide whether a delivery repeats an accepted one.
+func sameS8ProfessionalAnswer(current workpacket.HypothesisResultAnswer, accepted json.RawMessage) bool {
+	if len(accepted) == 0 {
+		return false
+	}
+	var prior workpacket.HypothesisResultAnswer
+	if err := json.Unmarshal(accepted, &prior); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(normalizeS8ProfessionalAnswer(current), normalizeS8ProfessionalAnswer(prior))
+}
+
+// normalizeS8ProfessionalAnswer treats an omitted and an empty professional
+// collection as the same expressed responsibility.
+func normalizeS8ProfessionalAnswer(answer workpacket.HypothesisResultAnswer) workpacket.HypothesisResultAnswer {
+	if len(answer.EvidenceRefs) == 0 {
+		answer.EvidenceRefs = nil
+	}
+	if len(answer.SourceBoundaryRefs) == 0 {
+		answer.SourceBoundaryRefs = nil
+	}
+	if len(answer.ExplainsFindingIDs) == 0 {
+		answer.ExplainsFindingIDs = nil
+	}
+	if len(answer.DoesNotExplain) == 0 {
+		answer.DoesNotExplain = nil
+	}
+	if len(answer.NewHypotheses) == 0 {
+		answer.NewHypotheses = nil
+	}
+	return answer
+}
+
+// s8NewExpressionReceipt describes a delivery that the original consumer did
+// not accept under the original packet identity. It keeps the original
+// responsibility identity and carries no accepted fact: the successor Case
+// stays empty, so the reception layer reports the delivery as not accepted
+// instead of lending the earlier receipt to a new expression.
+func s8NewExpressionReceipt(packet workpacket.HypothesisResultPacket, request IssuedHypothesisResultRequest) HypothesisResultReceipt {
+	return HypothesisResultReceipt{
+		Contract:           hypothesisResultReceiptContract,
+		PacketID:           packet.ID,
+		OwnerAgentID:       request.OwnerAgentID,
+		RuntimeID:          packet.Binding.RuntimeID,
+		BaselineGeneration: packet.Binding.BaselineGeneration,
+		AssignmentID:       packet.Binding.AssignmentID,
+		TeamID:             packet.Binding.TeamID,
+		TaskID:             packet.Binding.TaskID,
+		TaskRef:            packet.Binding.TaskRef,
+		ManifestRef:        packet.Binding.ManifestRef,
+		ExecutionRoot:      request.SourceRoot,
+		IssuanceEventID:    packet.IssuanceEventID,
+	}
 }
 
 // IssuedHypothesisResultReceipt is a read-only reconstruction from the

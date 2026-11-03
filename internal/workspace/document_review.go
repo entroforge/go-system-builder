@@ -1,13 +1,13 @@
 package workspace
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
@@ -113,20 +113,39 @@ func (b *ExecutionRegistry) ValidateDocumentReviewView(e Execution, p workpacket
 	if err != nil {
 		return err
 	}
+	// The re-derived view supplies the identity coordinates only. Its bytes are
+	// never compared with the Worker's own view file.
 	expected, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
+		return err
+	}
+	var coordinates workpacket.ExecutionView
+	if err := json.Unmarshal(expected, &coordinates); err != nil {
 		return err
 	}
 	data, err := workpacket.ReadFile(e.Path, workpacket.WorkerViewPath, 1<<20)
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(data, append(expected, '\n')) {
+	// The Worker view must still be a valid, schema-conforming questionnaire.
+	if err := schema.NewEmbeddedValidator().ValidateBytes("work-packet-execution.schema.json", data); err != nil {
+		return fmt.Errorf("Worker view is not a valid execution questionnaire: %w", err)
+	}
+	var observed workpacket.ExecutionView
+	if err := json.Unmarshal(data, &observed); err != nil {
+		return fmt.Errorf("Worker view is not a readable execution questionnaire: %w", err)
+	}
+	if observed.Root != coordinates.Root || observed.Generation != coordinates.Generation || observed.Owner != coordinates.Owner || observed.AuthoringPath != coordinates.AuthoringPath {
+		return fmt.Errorf("Worker view does not match the registered packet/execution")
+	}
+	if observed.Packet.ID != p.ID || observed.Packet.TemplateID != p.TemplateID || !reflect.DeepEqual(observed.Packet.Binding, p.Binding) {
 		return fmt.Errorf("Worker view does not match the registered packet/execution")
 	}
 	// Input paths identify the materials supplied to the original review.
 	// Their historic digest fields are not an authorization or acceptance
-	// condition. Reviewers and Main assess the actual material they consume.
+	// condition. The view itself is judged the same way: only its schema
+	// validity and its original identity coordinates qualify it. Reviewers and
+	// Main assess the actual material they consume.
 	return nil
 }
 

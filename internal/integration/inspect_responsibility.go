@@ -93,9 +93,16 @@ func inspectByResponsibility(ctx context.Context, req InspectRequest, cfg Inspec
 	if err != nil {
 		return out, err
 	}
+	// The Builder worktree state is a structural fact of the inspected
+	// responsibility, so one read serves both consumers: the transient
+	// guidance Main reads during an explicit native integration, and the
+	// durable list of material that is really present. The dirty list never
+	// decides readiness; the checkpoint records it so the site is preserved.
+	observation, dirty := observeWorktreeCandidates(ctx, out)
 	if cfg.ObserveWorktree {
-		out.WorktreeObservation = observeWorktreeCandidates(ctx, out)
+		out.WorktreeObservation = observation
 	}
+	out.WorktreeDirty = dirty
 	if hits := intersectLocked(out.ChangedPaths, out.LockedPaths); len(hits) != 0 {
 		out.LockedDiff = hits
 		block(fmt.Sprintf("%s: %s", ErrLockedArtifact, strings.Join(hits, ", ")))
@@ -133,9 +140,12 @@ func inspectByResponsibility(ctx context.Context, req InspectRequest, cfg Inspec
 }
 
 // observeWorktreeCandidates supplies Main with context, not an assertion that
-// any particular file belongs to the original Result. It runs only as part of
-// explicit native S6 integration and does not change readiness or persist facts.
-func observeWorktreeCandidates(ctx context.Context, in Inspection) []string {
+// any particular file belongs to the original Result. It reads the Builder
+// worktree once and never changes readiness. It returns the transient
+// guidance (used only by an explicit native S6 integration) and the material
+// that is really present in the worktree; an unobservable worktree is
+// unknown, never dirty.
+func observeWorktreeCandidates(ctx context.Context, in Inspection) ([]string, []string) {
 	budget, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	status, err := defaultRunner.Run(budget, in.WorktreePath, "status", "--porcelain=v1", "--untracked-files=normal", "--ignored=matching")
@@ -155,10 +165,12 @@ func observeWorktreeCandidates(ctx context.Context, in Inspection) []string {
 		}
 	}
 	if err != nil {
-		return []string{branch, fmt.Sprintf("Worktree candidates at %q could not be observed (%v); their relationship to the delivered Result is unknown", in.WorktreePath, err)}
+		// The worktree could not be observed: the material is unknown, so no
+		// dirty entry is recorded and nothing is gated.
+		return []string{branch, fmt.Sprintf("Worktree candidates at %q could not be observed (%v); their relationship to the delivered Result is unknown", in.WorktreePath, err)}, nil
 	}
 	if strings.TrimSpace(status) == "" {
-		return nil
+		return nil, nil
 	}
 	lines := strings.Split(strings.TrimRight(status, "\r\n"), "\n")
 	// Status can summarize directories, so the result is explicitly not a
@@ -178,11 +190,12 @@ func observeWorktreeCandidates(ctx context.Context, in Inspection) []string {
 		shown = append(shown, line)
 	}
 	if len(shown) == 0 {
-		return nil
+		return nil, nil
 	}
 	detail := strings.Join(shown, "; ")
 	if len(lines) > len(shown) {
 		detail += fmt.Sprintf("; and %d more status entries", len(lines)-len(shown))
 	}
-	return []string{branch, fmt.Sprintf("Worktree status at %q (staged, unstaged, untracked or ignored; directories may be summarized): %s. These entries are not part of the branch merge; whether they belong to the delivery is unknown. Main uses the original Result and worktree to decide; private material is retained", in.WorktreePath, detail)}
+	observation := []string{branch, fmt.Sprintf("Worktree status at %q (staged, unstaged, untracked or ignored; directories may be summarized): %s. These entries are not part of the branch merge; whether they belong to the delivery is unknown. Main uses the original Result and worktree to decide; private material is retained", in.WorktreePath, detail)}
+	return observation, shown
 }
