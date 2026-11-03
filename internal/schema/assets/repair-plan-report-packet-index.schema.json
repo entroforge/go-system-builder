@@ -3,7 +3,7 @@
   "$id": "repair-plan-report-packet-index.schema.json",
   "title": "S9 PlanReport WorkPacket immutable body index",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "packet_id",
     "template_id",
@@ -23,6 +23,7 @@
     "template_id": {
       "const": "s9-plan-report-v1"
     },
+    "template_sha256": {},
     "binding": {
       "$ref": "repair-plan-report-work-packet.schema.json#/$defs/binding"
     },
@@ -51,7 +52,7 @@
     },
     "body_ref": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "format",
         "path"
@@ -63,7 +64,9 @@
         "path": {
           "type": "string",
           "pattern": "^\\.claude/packet-bodies(-alt-[1-9][0-9]*)?/([0-9a-f]{64}\\.json|(p|alternate-[0-9]+)/([A-Za-z0-9_-]{1,120}/)*[A-Za-z0-9_-]{1,120}\\.json)$"
-        }
+        },
+        "sha256": {},
+        "size_bytes": {}
       }
     }
   }

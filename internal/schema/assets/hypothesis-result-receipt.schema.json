@@ -114,6 +114,12 @@
     "successor_case_revision": {
       "type": "integer",
       "minimum": 1
-    }
+    },
+    "packet_sha256": {},
+    "answer_sha256": {},
+    "assignment_sha256": {},
+    "task_sha256": {},
+    "manifest_sha256": {},
+    "review_round": {}
   }
 }

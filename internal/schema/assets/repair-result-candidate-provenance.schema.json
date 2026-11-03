@@ -42,7 +42,7 @@
           },
           "path": {
             "type": "string",
-            "pattern": "^\\.loop-submissions/native-s9/packet-[A-Za-z0-9_-]+/(plan|result)\\.json$"
+            "pattern": "^\\.loop-submissions/native-s9/packet-[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/(plan|result)\\.json$"
           }
         }
       }
@@ -78,11 +78,11 @@
     },
     "packet_id": {
       "type": "string",
-      "pattern": "^packet-[A-Za-z0-9_-]+$"
+      "pattern": "^packet-[A-Za-z0-9._-]+$"
     },
     "issuance_event_id": {
       "type": "string",
-      "pattern": "^evt-repair-result-packet-packet-[A-Za-z0-9_-]+$"
+      "pattern": "^evt-repair-result-packet-packet-[A-Za-z0-9._-]+$"
     },
     "submitted_answer": {
       "$ref": "stage-answer-s9-result.schema.json#/$defs/answer"
