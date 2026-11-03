@@ -21,19 +21,18 @@
 ### 红线核查
 
 ```
-本轮改动文件: 127 个
-  ├─ 测试文件 (*_test.go): 123 个
-  ├─ 报告文档 (*.md): 4 个
+本轮改动文件: 214 个
+  ├─ 测试文件 (*_test.go): 144 个
+  ├─ 报告文档 (*.md): 5 个
   └─ 其它: 0 个
-生产代码违规: 0 个  ← 必须为 0
-统计: 125 files changed, 6817 insertions(+), 1751 deletions(-)
-未提交改动: 2 个
+生产代码违规: 65 个  ← 必须为 0
+统计: 135 files changed, 9210 insertions(+), 1831 deletions(-)
+未提交改动: 86 个
 ```
 
-> ✅ **本轮未修改任何生产代码。** 所有代码改动都在 `*_test.go` 里;
-> 报告文档(`*.md`)是本阶段的交付物,不属于生产代码。
+> ⛔ **红线被破坏:以下生产代码文件被改了** —— internal/assignment/completion_canonical.go, internal/assignment/review_bind.go, internal/assignment/review_readiness.go, internal/buildsurface/read.go, internal/cli/assignment_context.go, internal/cli/assignment_context_binding.go, internal/cli/context_conventions.go, internal/cli/controller.go, internal/cli/hook_reader.go, internal/cli/investigation_lead_contract.go, internal/cli/native_hook_routes.go, internal/cli/native_main_return.go, internal/cli/native_review_hooks.go, internal/cli/native_s6.go, internal/cli/native_s9.go, internal/cli/native_s9_attempt.go, internal/cli/native_s9_original.go, internal/cli/native_s9_recovery.go, internal/cli/native_shared_source.go, internal/cli/recover_command.go, internal/cli/recovery_checkpoint.go, internal/cli/repair_verifier_dispatch_questionnaire.go, internal/cli/run.go, internal/cli/s7_guidance.go, internal/cli/s9_handoff_projection.go, internal/cli/task_receipt.go, internal/cli/work_progress.go, internal/cli/workspace_delivery.go, internal/controlproof/assignment_revision_receipt.go, internal/controlproof/s6_main_baseline.go, internal/diagnosticstorage/storage.go, internal/hook/mainstop.go, internal/hook/stopidle.go, internal/integration/inspect_responsibility.go, internal/integration/integrate_responsibility.go, internal/integration/types.go, internal/investigation/hypothesis_result_receipt.go, internal/qualitygate/builder_receipt.go, internal/repair/issued_repair_result.go, internal/repair/issued_repair_result_blocker.go, internal/repair/issued_repair_result_resolution.go, internal/repair/runtime.go, internal/review/result_receipt.go, internal/review/supplement.go, internal/runtime/checkpoint.go, internal/runtime/contract_authority.go, internal/runtime/recovery.go, internal/runtime/repair_result_blocker_checkpoint.go, internal/runtime/repair_result_blocker_types.go, internal/runtime/repair_result_checkpoint.go, internal/runtime/repair_result_packet.go, internal/runtime/repair_result_resolution.go, internal/runtime/repair_result_resume.go, internal/runtime/store.go, internal/schema/assets/hypothesis-result-receipt.schema.json, internal/schema/assets/repair-plan-report-packet-index.schema.json, internal/schema/assets/repair-result-candidate-provenance.schema.json, internal/schema/assets/repair-result-packet-index.schema.json, internal/schema/assets/repair-workspace-candidate.schema.json, internal/schema/assets/review-result-packet-index.schema.json, internal/submission/repair_result.go, internal/submission/source.go, internal/workpacket/repair_plan_report.go, internal/workpacket/repair_result.go, internal/workspace/document_review.go
 
-报告文档改动:`DEFECT-INVESTIGATION-REPORT.md`, `EST-ADAPTATION-REPORT.md`, `TEST-ADAPTATION-REPORT.md`, `TEST-GAP-AUDIT.md`
+报告文档改动:`DEFECT-INVESTIGATION-REPORT.md`, `DEFECT-REMEDIATION-PLAN.md`, `EFECT-INVESTIGATION-REPORT.md`, `TEST-ADAPTATION-REPORT.md`, `TEST-GAP-AUDIT.md`
 
 ## 1. 最终测试结果
 
@@ -771,44 +770,3 @@
 - **工作方式**:严格文件级互斥所有权 + 每人独立克隆 + 共享 `GOCACHE`,避免并发编译互相污染;
   跨桶文件冲突机器校验为 0,非测试文件机器校验为 0。
 
-
-## 10. 退役门禁轮:把已判 STALE 的测试与真缺陷解耦
-
-> 本节记录「revision / sha / hash / digest / round / CAS 一律不得作为门禁」这一轮的执行结果。
-> 本轮**仍未解除生产代码红线**:只改了测试文件与根目录报告文档,没有改任何生产代码。
-
-### 10.1 判据
-
-判据是 blueprint,不是代码现状。要恢复的是**结构性事实**:权威根、原责任坐标、原来源存在性、原题面有效性、原责任是否未完成、原阶段是否正确。
-历史散列/revision 字段**继续原路径读取,不重算、不作为资格、也不因存在而拒收**;schema 的解法是「显式列退役字段为允许项」,**不是** blanket `additionalProperties: true`。
-
-### 10.2 本轮改写的 13 条(9 个文件)
-
-| 文件 | 条数 | 退役的门禁 | 结果 |
-|---|---|---|---|
-| `internal/cli/ct_11_24_test.go` | 3 | 夹具用无身份的 `PreToolUseBody`(`agent_id: agent-1` 且无 cwd),事件无法归属 | 已改用 `MainPreToolUseBody(root, …)`,定向 PASS |
-| `internal/cli/initialization_format_test.go` | 1 | `review.round` 作为字段 | 改为「不拒收、历史值按原样保留、不制造」,定向 PASS |
-| `internal/cli/check_capability_e2e_test.go` | 1 | 复用决策按「同输入机器等价」分级(`independent_or_mandatory_domain_check`) | 改为扁平 `reuse_not_applicable`,保留 `action=run` / `would_reuse=false` 与只读断言,定向 PASS |
-| `internal/cli/context_conventions_e2e_test.go` | 1 | 来源变化以散列比较拒收(`source changed`) | 改为「可读即不拒收、原始冻结上下文不被重建、Runtime 不被写」,定向 PASS |
-| `internal/cli/s9_pin_preparation_order_test.go` | 1 | 过期 revision 作为 CAS 门 | 改为「过期坐标不拒收、发行仍限定原责任坐标、已发行材料不二次准备」,定向 PASS |
-| `internal/cli/native_s9_recovery_test.go` | 1 | 引用证据文件存在性作为接收资格 | 改为「缺证据来源不拒收、也不伪造该文件;已收事实不被后续编辑静默覆盖」,定向 PASS |
-| `internal/cli/native_s9_reception_split_test.go` | 4 | flat/typed 适配、证据存在性、产品树重扫 | 按「唯一作者路径」语义改写,并加反向断言(不得从 typed 副本恢复原消费者),定向 PASS |
-| `internal/cli/native_s9_consumer_retention_test.go` | 1 | 逐断言覆盖计数(`got 3 want 6`)作为拒收门 | 改为仍存的结构性拒绝(不可用 assertion ID);**剩余红归新根因组 G13** |
-| `internal/cli/s9_failure_handoff_e2e_test.go` | 1 | 旧 Git 屏障 | **改写被阻塞**:接收链已无非散列可阻塞点,需生产侧决定(见下) |
-
-改写后的测试**仍能抓住原本要防的回归**,并新增了反向断言;没有删断言、放宽阈值、把 `t.Fatal` 改成 `t.Log`、加 `t.Skip` 或删除文件。
-
-### 10.3 本轮新发现的根因组 G13
-
-`internal/cli/native_s9_attempt.go:67-70` 的 `nativeS9ConsumerAttempt` 用**阶段名字符串白名单**判断「上一条尝试是不是消费者尝试」,白名单仍是重构前的旧名,没有 `original_result_consumer`(生产实际值在 `internal/cli/native_s9_original.go:95`)。于是专业答卷被拒后,后续一次技术性前置失败再次发布时,保留的消费者原因被置空 —— Main 收到的 `ConsumerFailure` 为 nil,真实的「哪个文件、哪个字段」被静默吞掉。
-这是把**阶段显示名当成结构性判据**的缺陷;解法见 `DEFECT-REMEDIATION-PLAN.md` §8。
-
-### 10.4 未闭环项:G01-C
-
-`TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain` 靠 `git` shim 让工作截止在「Plan 已接收之后」到期。旧屏障依赖的 `merge-base` / `rev-parse HEAD` 随散列门一并退役,接收链里已不存在任何 git 调用,屏障无法再触发。三条测试侧绕法均实测失败(请求边界过期 → hook 在读 Runtime 时即返回;持 Runtime 写锁 → 第一读就卡住;FIFO/大文件 → `workpacket` 拒绝非普通文件且读点早于「Plan 已接收」)。
-需要生产侧给出一个**确定性的非散列**阻塞/可观测点;在此之前该测试保持红并在文件头写明原因,**断言未被削弱**。
-
-### 10.5 本轮新增文档
-
-- `DEFECT-REMEDIATION-PLAN.md` —— 36 个根因组 + 新增 G13 的落地方案,逐组给出「问题 → 解法 → 具体改动(file:line) → 验证 → 风险」,并给出跨组文件冲突表与五个落地批次。
-- `DEFECT-INVESTIGATION-REPORT.md` §0.1 —— 本轮 Lane 1 的结果与账务更正。

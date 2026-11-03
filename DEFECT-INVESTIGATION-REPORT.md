@@ -10,7 +10,7 @@
 
 | 调查结论 | 条数 | 说明 |
 |---|---|---|
-| **真缺陷(生产违反蓝图)** | **69** | 蓝图是要求类措辞,生产代码没做到;聚合为 **37 个根因组** |
+| **真缺陷(生产违反蓝图)** | **69** | 蓝图是要求类措辞,生产代码没做到;聚合为 **41 个根因组** |
 | **应改判 STALE** | **12** | 蓝图已用**移除类**措辞删掉了测试依赖的前提 ⇒ 测试过时,不是缺陷 |
 | **改写被阻塞(仍红)** | **1** | 判定是 STALE,但改写依赖一个生产侧决定或另一条真缺陷先落地 |
 | **需 owner 裁定** | **0** | 蓝图内部有反向条款,判定方向取决于 owner |
@@ -134,6 +134,10 @@
 | **G08-D** | 独立验证者在 Targeted 未就绪时就被派发 | `internal/cli/repair_verifier_dispatch_questionnaire.go:30(准入集合含 repairing/ready_for_full_review)+ :26(删掉 lifecycle.state == "bug_resolution" 守卫)` | 1 | |
 | **G08-E** | 旧团队 PLAN_REPORT 收尾门未按蓝图删除,仍拦住原生 S9 Builder 的 TeammateIdle | `internal/hook/stopidle.go:598` | 1 | |
 | **G13** | nativeS9ConsumerAttempt 的消费者阶段白名单未随重构改名更新,专业拒绝原因在后续前置失败时被丢弃 | `internal/cli/native_s9_attempt.go:67-70(阶段名白名单)+ internal/cli/native_s9_original.go:95(实际消费阶段名)` | 1 | |
+| **G14** | S8「同身份异文不覆盖已接受内容」的冲突判据缺失:已接受回执早退在读私有答卷之前,精确重放与异文重放不可区分 | `internal/investigation/hypothesis_result_receipt.go:71-73(已接受早退块)+ :119-120(可达的 bytes.Equal 判据)+ :136(原题面关闭时拒收晚期答卷)` | 1 | |
+| **G16** | S8 消费侧缺少「不可变 Case 世系连续性」判据:路由事务被消费后,若 Case 世系已变,旧 packet 仍可沿旧路由接收 | `internal/investigation/hypothesis_result_registration_test.go:386-397(断言要求错误含 'continuity')+ :402(要求签发侧同样拒收)+ internal/investigation/hypothesis_result_packet.go:514-531(签发侧 verifyHypothesisResultPacketCurrent 只比当前投影)` | 1 | |
+| **G17** | 写路径 CAS 族:业务完成路径把「整份 Runtime 保持原提交」当资格,62% 的调用点仍在传真实 revision | `全域 ExpectedRevision 比较点与回灌点(非测试 224 处命中 / 68 文件)` | 0 | |
+| **G18** | 写计数外泄成领域身份(事件 id / 幂等键 / 消息 id 内嵌 -r%d),反向绑架写路径必须用 CAS | `跨 assignment / cli / investigation / repair / runtime / submission / transition 约 35 处事件 id 与幂等键构造点` | 0 | |
 
 ### 2.2 组间共享的生产位置(可再合并)
 
@@ -813,6 +817,77 @@
 | 测试 | 所属调查组 |
 |---|---|
 | `TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup` | G13 |
+
+### G14 — S8「同身份异文不覆盖已接受内容」的冲突判据缺失:已接受回执早退在读私有答卷之前,精确重放与异文重放不可区分
+
+- **根因**:S8 接收链在 :71-73 的「已接受 ⇒ 直接返回原回执」早退块,位于读取本人私有答卷**之前**。于是「同一份答卷的精确重放」与「同身份但内容已改写的重放」在生产代码里不可区分 —— 下游本可拒收的判据(:119-120 的 bytes.Equal(existingReceipt.Answer, answerJSON)、:136 原题面已关闭时拒收晚期答卷)对**结论性**已接受结果不可达。原实现靠 existingReceipt.AnswerSHA256 != answerSHA 这一散列比较区分二者,该散列门禁已随重构下线,退役后结构化判据没有补位,冲突判据随之静默丢失。
+- **最小共同生产位置**:`internal/investigation/hypothesis_result_receipt.go:71-73(已接受早退块)+ :119-120(可达的 bytes.Equal 判据)+ :136(原题面关闭时拒收晚期答卷)`
+- **相关位置**:`internal/investigation/hypothesis_result_receipt.go:71-73`、`internal/investigation/hypothesis_result_receipt.go:119-120`、`internal/investigation/hypothesis_result_receipt.go:136`、`internal/investigation/hypothesis_result_registration_test.go:283-290`、`internal/investigation/native_hypothesis_hook_test.go:303-306`、`internal/investigation/hypothesis_result_recovery_test.go:176-177`
+- **蓝图依据**:
+    - blueprint/l3-stages/L3-S8-finding-investigation.md:235(重复事件复用原接受事实;同身份异文不覆盖已接受内容,真正新的判断由原修订工序处理)
+    - blueprint/l3-stages/L3-S8-finding-investigation.md:445(Case 已因本人题意或来源变化而失效 → 新内容不能冒充旧答卷重放)
+- **波及面**:1 条测试暴露:internal/investigation/hypothesis_result_registration_test.go:283-290(changed answer reused the original S8 packet identity)。同包另两条用例(native_hypothesis_hook_test.go:303-306、hypothesis_result_recovery_test.go:176-177)对**完全相同**场景要求相反结果,三者走同一条 ReceiveIssuedHypothesisResult(..., continueUnresolved=true) 与同一个结论性结果 result="supported"。
+- **修复方向**:在无散列前提下补一个结构化冲突判据:区分「私有答卷文件缺失(重放必须成功)」与「私有答卷文件存在但内容与已接受答卷不同(同身份异文,必须拒收)」。可行方向是按入口分流 —— 直接 API SubmitIssuedHypothesisResult 保持重放静默,Hook 入口 ObserveHypothesisResultFrom 拒收异文;或把 :71-73 早退块后移,先读私有答卷再判别。两条路径都需要 owner 先裁定「文件缺失」与「文件异文」是否必须区分、以及 :445 是否限定入口。详见 DEFECT-REMEDIATION-PLAN.md §9。
+- **判定**:DEFECT
+
+| 测试 | 所属调查组 |
+|---|---|
+| `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates` | G14 |
+
+### G16 — S8 消费侧缺少「不可变 Case 世系连续性」判据:路由事务被消费后,若 Case 世系已变,旧 packet 仍可沿旧路由接收
+
+- **根因**:签发侧 verifyHypothesisResultPacketCurrent 自身注释明说「必须证明完整不可变 Case 世系,不能只比当前投影」,但生产中不存在该机制 —— 现实现只比当前投影。消费侧同样没有「路由事务被消费后 Case 世系已变则拒收」的判据。全仓生产代码没有任何一条 S8 错误信息含 'continuity',该断言当前无对应机制可满足。
+- **最小共同生产位置**:`internal/investigation/hypothesis_result_registration_test.go:386-397(断言要求错误含 'continuity')+ :402(要求签发侧同样拒收)+ internal/investigation/hypothesis_result_packet.go:514-531(签发侧 verifyHypothesisResultPacketCurrent 只比当前投影)`
+- **相关位置**:`internal/investigation/hypothesis_result_registration_test.go:386-397`、`internal/investigation/hypothesis_result_registration_test.go:402`、`internal/investigation/hypothesis_result_packet.go:514-531`、`internal/investigation/hypothesis_result_packet.go:515-519`
+- **蓝图依据**:
+    - L3-S8-finding-investigation.md:408(旧轮晚到结果沿原责任接收)
+    - L3-S8-finding-investigation.md:445(Case 已因本人题意或来源变化而失效 → 新内容不能冒充旧答卷重放)
+- **波及面**:1 条断言(internal/investigation/hypothesis_result_registration_test.go:396),要求消费侧错误信息含 'continuity';另 :402 要求签发侧同样拒收 —— 两者都不在任何既有工作包的独占文件内,方案全文检索 'continuity' / 'route_consumed' / 'consumed route' 零命中,该缺口无归属组。
+- **修复方向**:新增「不可变 Case 世系连续性」判据:消费侧须证明该 packet 的 Case 世系未跨越被消费的路由事务,签发侧同样拒收。本轮不实现 —— 它需要签发侧与消费侧两处联动的新机制,且与 L3-S8:408「旧轮晚到结果沿原责任接收」存在直接张力;实现口径(能否用非散列的 Case 坐标表达世系)需 owner 裁定。立为 G16 记账,该断言按 DEFECT 处置(只记录、保持红)。
+- **判定**:DEFECT
+
+| 测试 | 所属调查组 |
+|---|---|
+| `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates` | G16 |
+
+### G17 — 写路径 CAS 族:业务完成路径把「整份 Runtime 保持原提交」当资格,62% 的调用点仍在传真实 revision
+
+- **根因**:全 stage 审计(10 片)按蓝图 L4-revision-usage.md:85/:89 把 224 处 ExpectedRevision 命中分成四类:①业务完成路径(≈45 比较点 + ≈49 纯回灌点,判 B 档退役候选)、②外部集成有意绑定旧快照(≈18,A 档保留)、③恢复/中断接续(≈16,A 档保留)、④语义不明(6,C 档)。负值(=省略=当前值路径)只占 ≈31 处,真实快照值 ≈49 处 ⇒ 当前值路径仅约 38%。其中三处极性反转把「负值=省略」判成 stale 拒收(repair/issued_repair_result_blocker.go:94、issued_repair_result_resolution.go:150、repair/runtime.go:360),等于强制作者交出真实 revision 才能提交,直接违反 :71/:79 与 L3-S1-bind.md:235「普通作者不读取 X 再手算 X+1」;另有两处适配器越权(cli/run.go:1926 把 flag 的 -1 覆盖成 snapshot.Revision、cli/investigation_lead_contract.go:245 用 tolerantInt(state["revision"])),把「作者省略」改写成「显式断言」。
+- **最小共同生产位置**:`全域 ExpectedRevision 比较点与回灌点(非测试 224 处命中 / 68 文件)`
+- **相关位置**:`internal/review/submit.go:337`、`internal/review/register.go:139`、`internal/review/revise.go:82`、`internal/review/plan_reception.go:41`、`internal/review/register.go:309`、`internal/investigation/hypothesis_result_receipt.go:145`、`internal/investigation/intake.go:60`、`internal/investigation/contract.go:75`、`internal/investigation/route_consume.go:36`、`internal/investigation/case_workflow.go:564`、`internal/assignment/auto_chain.go:181`、`internal/assignment/completion_canonical.go:189`、`internal/assignment/lifecycle.go:478`、`internal/repair/runtime.go:360`、`internal/repair/issued_repair_result_blocker.go:94`、`internal/repair/issued_repair_result_resolution.go:150`、`internal/submission/review_result.go:190`、`internal/submission/repair_result.go:181`、`internal/submission/planning_rework.go:58`、`internal/cli/audit_questionnaire.go:482`、`internal/cli/investigation_lead_questionnaire.go:442`、`internal/cli/repair_lead_questionnaire.go:1323`、`internal/cli/workspace_delivery.go:245`、`internal/cli/s5_manifest_questionnaire.go:347`
+- **蓝图依据**:
+    - blueprint/l4-mechanisms/L4-revision-usage.md:85「CAS 是比较并交换…它适合有意关联旧快照的外部集成、恢复或必要的内部边界,不是业务完成本身」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:89「普通专业保存,没有要求整个 Runtime 保持原提交 → 用支持该语义的当前值入口,检查原业务对象与责任」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:79「高级命令可以保留 --expected-revision,正常入口应把它作为可选断言…调用适配器需要准确选择原 API」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:71「支持省略修订断言的入口使用这个语义;底层 Update 的负值请求也进入当前值路径」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:191「只有无关 Runtime 提交增加 → 支持当前值的原入口继续;内部快照断言冲突由系统明确处理,不让作者猜数字」
+    - blueprint/l4-mechanisms/L4-state-transition-core.md:193「并发提交或重复事件 | 原 Writer 锁内核 Runtime、原责任和修订;旧快照重读当前事实 | 不覆盖已收事实」
+    - blueprint/l3-stages/L3-S1-bind.md:235「普通作者不读取 X 再手算 X+1」
+- **波及面**:①类全部比较点与回灌点;②③类一律保留不动;④类 6 处逐条裁定
+- **修复方向**:本轮修 C 档 6 处(极性反转 3 + 适配器越权 2 + 零值语义 1);①类整体退役排入 G18 专项,按「先纯回灌层 → 再领域比较点换『已收行 + 事件去重 + 对象版本』三件套 → 最后 CAS 语义」三步走,退役后不削弱『不覆盖已收事实』。
+- **判定**:PROGRAM
+
+| 测试 | 所属调查组 |
+|---|---|
+
+### G18 — 写计数外泄成领域身份(事件 id / 幂等键 / 消息 id 内嵌 -r%d),反向绑架写路径必须用 CAS
+
+- **根因**:事件 id 与幂等键由 Runtime 写计数拼出(如 evt-agent-<owner>-work_blocked-r<N>、runtime:agent:<owner>:work_blocked:<N>、evt-s9-execution-begin-r<N>),使「事件身份」依赖「预分配的序号」;调用方为了构造 id 必须先知道 revision,于是被迫传 CAS ⇒ **写计数外泄成领域身份是逼着写路径用 CAS 的根因**,与 G17 是同一改造的两面。副作用:同一语义在不同写计数下生成不同 id(去重靠序号分叉而非语义),且全局 revision 混进了领域身份。审计另发现 internal/transition/engine.go:213 的幂等键只有 transition+revision、无责任维度,存在撞键风险。
+- **最小共同生产位置**:`跨 assignment / cli / investigation / repair / runtime / submission / transition 约 35 处事件 id 与幂等键构造点`
+- **相关位置**:`internal/assignment/revision.go:13`、`internal/assignment/task_lifecycle.go:88`、`internal/assignment/lifecycle.go:302`、`internal/assignment/completion.go:218`、`internal/assignment/register.go:933`、`internal/assignment/bug_lifecycle.go:112`、`internal/transition/engine.go:207`、`internal/transition/engine.go:213`、`internal/runtime/evidence.go:174`、`internal/runtime/change.go:58`、`internal/investigation/hypothesis_result_receipt.go:176`、`internal/investigation/hypothesis_result_receipt.go:246`、`internal/investigation/contract.go:256`、`internal/investigation/intake.go:200`、`internal/investigation/route_consume.go:66`、`internal/repair/runtime.go:335`、`internal/repair/runtime.go:865`、`internal/cli/controller.go:971`、`internal/cli/controller.go:2477`、`internal/cli/run.go:3353`、`internal/cli/workspace_launch.go:139`、`internal/cli/assignment_context_binding.go:320`、`internal/cli/integration_ack.go:97`、`internal/cli/builder_questionnaire.go:194`
+- **蓝图依据**:
+    - blueprint/l4-mechanisms/L4-revision-usage.md:141「Runtime revision 只是审计坐标,不证明专业正确」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:29「历史字段沿原路径读取但不重算或作为资格」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:50「文件名中的 rN、内部事件名中的数字…仅按原已保存身份定位」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:216「若约束只是在内部记录提交顺序,应留在 Writer 和诊断中」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:241「事件和幂等身份由原责任与意图确定」
+    - blueprint/l4-mechanisms/L4-revision-usage.md:192「原对象新增真实修订 → 沿原版本/修订路径重新交付或重判,不能只替换全局序号」
+- **波及面**:全部把写计数写进领域身份(事件 id / 幂等键 / 消息 id / 领域 ID)的构造点;计数器本身仍留在 Writer 与诊断层(:17/:71),不删字段
+- **修复方向**:必须与 G17 同批整体做:事件 id/幂等键改用「责任坐标 + 原接收事实」语义键,新增事件用新坐标、历史 id 按原路径只读不改写;执行风险是改一半会造成幂等键碰撞(同一语义不同数字=重复提交),runtime/store.go:1223 的 event_id already exists 唯一性检查会出现断层 ⇒ 必须一次性替换并给出历史兼容读取方案。
+- **判定**:PROGRAM
+
+| 测试 | 所属调查组 |
+|---|---|
 
 ### 已归 STALE 的根因组(前轮判 DEFECT,本轮改判)
 

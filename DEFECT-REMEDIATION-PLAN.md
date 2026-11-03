@@ -1,6 +1,7 @@
-# DEFECT 落地方案(66 条真缺陷 / 36 个根因组)
+# DEFECT 落地方案(69 条真缺陷 / 38 个根因组)
 
-> 本轮**只出方案,不动生产代码**。红线:生产代码改动尚未获授权;用户要求先「设计落地方案,搞清楚什么问题要做什么对应的解法」。
+> 本轮方案已获授权进入**生产修复**阶段:21 个工作包按文件级互斥切分并行落地,每包一份「已固定改动」简报作为权威工单。
+> 改动范围仍受 §0.1 判据与红线约束 —— 只恢复结构性事实,不引入任何散列门禁。
 >
 > 本轮硬约束:**revision / sha / hash / digest / fingerprint / checksum / round / CAS 一律不得作为门禁**;目标是统一减负、退役这些门禁。
 > 判据是 blueprint,不是代码现状。要恢复的是**结构性事实**:权威根、原责任坐标、原来源存在性、原题面有效性、原责任是否未完成、原阶段是否正确。
@@ -30,6 +31,7 @@
 | A 档 | 恢复结构性判据(权威根/题面/就绪/坐标),不引入任何散列 | G01-A、G01-B、G03-A、G04-A、G04-B、G06-A、G06-B、G06-C、G12-A、G12-B、G12-F、G12-G |
 | B 档 | 退役/放宽已退役的机器门(逐断言覆盖、证据存在性、复用分级、阶段/输入适配) | G02-C、G03-B、G05-A、G05-B、G06-D、G06-E、G07-B、G07-C、G08-A、G08-B、G08-C、G09-A、G09-B、G09-C、G10-A、G11-B、G11-C、G11-D、G11-E、G12-D |
 | C 档 | 幂等/静默吞事件/发布尾一致性等行为修正 | G07-A、G10-B、G10-C、G10-D、G12-E |
+| D 档 | 本轮现场新发现(原 36 组之外) | G13、G14 |
 
 ### 0.3 批次与文件冲突
 
@@ -643,6 +645,7 @@
 - 这三个 schema 被 `internal/schema/assets/loop-state-v1.3.schema.json:4645`/`:4648`/`:4651` 与 `loop-state-v1.2.schema.json:4606`-`4612` 的 `workPacket` `oneOf` 引用:恢复 `false` 后,旧 Runtime 状态里的 `template_sha256`/`body_ref.sha256` 必须靠上面的退役字段清单才能继续匹配,漏列一项 = 整个 Runtime 状态不可读写。
 - `review_result_reception` 必须保持可选(`:19-21` 不在 `required` 内):`internal/runtime/review_result_reception_test.go:71`-`:75` 明确覆盖「旧 Runtime 没有该字段」。
 - `internal/runtime/packet_body.go:404` 的报错文本是 `packet body index <id>: … additional properties 'title' not allowed`,含 `title`,满足 `internal/cli/native_snapshot_failure_external_test.go:57` 的断言;不要改这条错误包装。
+- **本轮生产修复中实测发现的一处配套改判(已执行)**:恢复顶层 `additionalProperties: false` 后,`internal/runtime/repair_packet_body_test.go` 的 `TestS9ExternalBodyRejectsWrongRootDriftFormatsAndCancellation/unknown-index-field` 子用例转红。追溯该用例来历:它**在父提交 9bf73ca 就存在**,当时 `index["future_field"] = true` 走通用断言 `if err == nil { t.Fatalf("unsafe %s accepted") }` —— 即**父提交要求 foreign field 必须被拒**。是重构提交 `d0d948a` 在放宽索引 schema 顶层 `additionalProperties`(false→true)之后,反向新增了一个「必须容忍 foreign field」的特例分支以便测试转绿。该特例断言与 G12-D 同源、方向相反,属**改判 STALE**,已按父提交口径改写回「必须被拒」,用例转绿。教训:凡「生产放宽 + 测试反向改写」成对出现处,两者应一并按 blueprint 复判,不能只改生产。
 
 ### G04-A — 「已声明但为空」的集合被拷成 nil slice,context.json 里写成 null
 
@@ -946,7 +949,7 @@
 
 ---
 
-## 8. 本轮新发现的缺陷(G13)——不在既有 36 组内,现场发现
+## 8. 本轮新发现的缺陷(G13 / G14)——不在既有 36 组内,现场发现
 
 ### G13 — `nativeS9ConsumerAttempt` 的消费者阶段白名单未随重构改名更新,专业拒绝原因在后续前置失败时被丢弃
 
@@ -977,6 +980,39 @@
 - 诊断记录形状变化会牵动 `internal/diagnosticstorage` 的识别器与 `internal/repair/artifact.go:238-241` 的控制面清单判定;若采用字符串编码方案,历史记录仍按旧形状识别,不需要迁移。
 - 若只补白名单不改结构,同类缺陷在别的阶段改名时仍会复发 —— 这正是本组存在的意义,推荐结构性改法 + 字符串编码。
 - 本组与 G06-C 共享 `internal/diagnosticstorage/storage.go`,两者必须串行落地(G06-C 先)。
+
+---
+
+### G14 — S8「同身份异文不覆盖已接受内容」的冲突判据缺失:已接受回执早退在读私有答卷之前,精确重放与异文重放不可区分
+
+**问题**:S8 接收链在 `internal/investigation/hypothesis_result_receipt.go:71-73` 的「已接受 ⇒ 直接返回原回执」早退块,位于**读取本人私有答卷之前**。于是「同一份答卷的精确重放」与「同身份但内容已改写的重放」在生产代码里不可区分 —— 下游本可拒收的判据(`:119-120` 的 `bytes.Equal(existingReceipt.Answer, answerJSON)`、`:136` 原题面已关闭时拒收晚期答卷)对**结论性**已接受结果不可达。
+
+原实现靠 `existingReceipt.AnswerSHA256 != answerSHA` 这一散列比较区分二者。该散列门禁已随重构下线,退役后**结构化判据没有补位**,冲突判据随之静默丢失 —— 这正是本轮「散列退役」必须配套「结构性事实补位」的典型反例。
+
+**发现路径**:W18-s8-approval 工作包落地 G07-C(S8 人工批准模式门)后,定向测试 `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates` 的失败点从 `:189` 前移到 `:289`。G07-C 自身的断言(`:188-190` 未批准答卷不再被接受、`:191-193` 不产生 Runtime/journal 变更、`:261-262` 不写进 Case)**已全部通过**,撞上的是另一条蓝图条款。
+
+**蓝图依据**:`L3-S8-finding-investigation.md:235`「重复事件复用原接受事实;同身份异文不覆盖已接受内容,真正新的判断由原修订工序处理」;`:445`「Case 已因本人题意或来源变化而失效 → 新内容不能冒充旧答卷重放」。
+
+**解法**:补一个**无散列**的结构化冲突判据 —— 区分「私有答卷文件**缺失**」与「私有答卷文件**存在但内容与已接受答卷不同**」:前者必须重放成功(答卷文件被删除后仍能重放是既有契约),后者必须拒收。
+
+**具体改动(待 owner 裁定后落地)**:
+- `internal/investigation/hypothesis_result_receipt.go:71-73` — 早退块是「精确重放 / 异文重放」不可区分的根源,但**移动它**会破坏重放静默语义(见风险)。
+- `internal/investigation/hypothesis_result_receipt.go:119-120` — `bytes.Equal(existingReceipt.Answer, answerJSON)` 是现成的无散列内容判据,只需让它对**结论性**已接受结果可达。
+- `internal/investigation/hypothesis_result_receipt.go:136` — 原题面已关闭时拒收晚期答卷,是「同身份异文」的第二道结构性判据,同样因早退而不可达。
+
+**三条候选路径(需 owner 拍板)**:
+1. **裁定「重放不得依赖私有答卷」(维持现状)** → `:283-290` 属散列时代遗留的 STALE 断言,由 owner 改写测试。`:235` 的「不覆盖已接受内容」**仍然满足**(现码不写、复用已接受事实),争议点只在「把这次投递**报告**为 accepted」。**建议采纳**。
+2. **裁定「同身份异文必须拒收」(`:283-290` 胜出)** → 另两个测试需由 owner 改写,且需新增无散列判据。硬阻塞:「答卷文件被删除」的重放**必须**成功,判据不能是「与已接受答卷内容不同」,必须额外区分「文件缺失」与「文件内容不同」—— 现码有意把两者合并。属**新组**,须新开工作包。
+3. **按入口分流** —— 直接 API `SubmitIssuedHypothesisResult` 保持重放静默,Hook 入口 `ObserveHypothesisResultFrom` 拒收异文。可同时满足现有三个测试,但改变了对外 API 语义,且 `:445` 未限定入口,需要蓝图背书。
+
+**验证**:
+- 定向:`export GOCACHE=/tmp/adapt-cache && go test ./internal/investigation/ -run 'TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates'`。
+- 回归:`TestNativeS8StopReceivesOriginalCaseAnswerWithoutGenericPlanOrActorAlias`、`TestS8OriginalCaseReceiptRecoversSealedPendingCommit`、`TestS8IssueUsesActualGenerationTwoInvestigatorRegistration`。
+
+**风险**:
+- 同包三个测试对**完全相同**的场景(`result := "supported"` 同一结论性结果、同一条 `ReceiveIssuedHypothesisResult(..., continueUnresolved=true)`)要求**相反**结果 —— 任何单边取舍都会打破另外两个。这不是实现难度,是**契约冲突**,只能由 owner 裁定。
+- 本组与 G07-C 同在 `internal/investigation/hypothesis_result_receipt.go`,两者必须串行落地(G07-C 先);G07-C 已落地并生效。
+- 本组是**新开的归属缺口**:`internal/submission/hypothesis_result.go` 在本方案中无任何组,若最终走路径 1 或 3,该文件可能需要新开工作包。
 
 ---
 
@@ -1062,3 +1098,230 @@
 (c) owner 裁定该用例改述为「绝对截止点已过」的请求边界场景(蓝图 G26 已列此案),并相应放弃「精确输入坐标」与「flat consume 命令」两条断言。
 
 在 owner 选定之前,本组保持红并如实标注,不以任何形式削弱断言。
+
+---
+
+## 12. 附:X-01 跨文件退役字段清单(W09 落地时实测核对)
+
+G12-D / G07-A 恢复严格性时,另外三个 schema 的顶层 `additionalProperties` 仍被 `d0d948a` 放宽为 `true`。X-01 若要恢复它们的严格性,**必须同时给出下面的退役字段允许清单**,否则历史记录会被整体拒收(直接违反「不以旧散列作匹配/拒收」)。
+
+| 文件 | 位置 | 需显式列出的退役字段(可选、无限定) |
+|---|---|---|
+| `internal/schema/assets/repair-plan-report-work-packet.schema.json` | 顶层 | `template_sha256` |
+| 同上 | `$defs/binding`(现 `:59` 为 `true`) | `review_round`、`case_sha256`、`contract_sha256`、`session_sha256`、`plan_sha256`、`repair_assignment_sha256`、`manifest_assignment_sha256`、`task_sha256`、`manifest_sha256` |
+| `internal/schema/assets/repair-result-work-packet.schema.json` | 顶层 | `template_sha256` |
+| 同上 | `$defs/binding`(现 `:60` 为 `true`) | `plan_report_sha256`、`execution_sha256`、`rework_sha256` |
+| `internal/schema/assets/review-investigation-case.schema.json` | 顶层(现 `:7` 为 `true`) | `baseline_digest`、`canonical_case_sha256`、`observation_batch_id`、`observation_batch_ref`、`observation_batch_sha256`、`repair_contract_sha256` |
+
+> 清单由 W09 在落地时用 `git show d0d948a^`(放宽前版本)逐项核对得出,与本方案 §5 的 G12-D 交叉清单一致。
+> **注意**:索引 schema 顶层的 `template_sha256` 指的是**索引行自身**的字段,与 work-packet / Case 顶层的 `template_sha256` 是不同对象,不重复计数。
+
+---
+
+## 13. 本轮裁定台账(总纲:L4-workflow-convergence.md:61)
+
+> **总纲**(`L4-workflow-convergence.md:61`):「『保持质量要求』不等于永久保留实现它的每一道内部手续……重复校验、兼容封套和派生状态应删除或合并;**削减机器核验会改变系统可证明的保证,应明确交给谁判断,不能宣称保证完全不变**。」
+>
+> **本轮目标**:统一减负、退役 revision/sha/hash/digest/fingerprint/checksum/round/CAS 门禁。凡属**机器核验**的门禁一律退役,保证变化按该条交给「实际责任人 + 原专业复验」承担(`:281`);凡属**结构性事实**(权威根、原责任坐标、原来源存在性、原题面有效性、原责任是否未完成、原阶段是否正确)必须恢复。
+>
+> **裁定取向**:优先选「**生产侧一处收窄 ⇒ 既有断言自动转绿**」的方案(成本最低、减负最大);只有当断言本身编码了已退役门禁、且不存在等价的结构化判据时,才改写断言;legacy/frozen 接线按 `:71`「删除已被现行责任链取代的旧入口、适配、消费者、格式和**测试**」直接退役。
+
+### 13.1 退役类:机器核验门禁一律退役
+
+| 组 | 争议点 | 依据 | 裁定 | 落地动作 |
+|---|---|---|---|---|
+| G12-A / G12-B | 正文漂移的字节级比对 | `:281`「无 hash 不再单凭原路径和版本独立证明字节未被外部改动;实际责任人和原专业复验承担判断」;`:279`「不计算、登记或比较散列、Git OID、整树内容或逐文件字节来补证」 | **退役**正文漂移比对;只恢复权威根/原责任坐标/原来源存在性 | W08 已落地;相关漂移断言改判 STALE |
+| G10-B | `checkpoint.go:553-556` revision CAS、`recovery.go:761` `haveRev > wantRev` | `:138`「不以散列作为写入配对或恢复条件」 | **退役**;改判「原阶段是否正确 / 原责任是否未完成 / 恢复来源是否存在」 | W15 落地;`internal/runtime/checkpoint_checks_test.go:37-59` 改判 STALE |
+| G11-B | Targeted 的 checkout/来源绑定守卫(`nativeSharedCheckoutSourceError` 用 `git rev-parse` 判 checkout) | `:225`「**去掉按 Git 状态**、hash、旧 C/D、typed 或额外事件认定能否接收」;`L4-agent-dispatch-governance.md:57`「S7～S9 接收也**不核 Git／ignore 状态**」 | **完全退役**守卫(不是按事件类型切分)。C05 方向即正解 | W01:移除 `native_s9.go:411-413` 调用点与 `native_shared_source.go` 死代码;guard 用例改判 STALE;listener 用例保留为正解 |
+| G02-C | 已收私人原卷的**字节漂移**检测(`accepted private original bytes changed`)**与 symlink 根替换检测**(`completed replay trusted a replacement symlink root`) | `L3-S9-repair.md:437`「系统**不靠每次回读旧原稿发现改写**或保证实时漂移完整性」;`:281` | **两者一并退役** —— 字节漂移与「回读旧原稿发现坐标已换」同族(`:437` 的「回读旧原稿发现改写」同时覆盖二者)。「已收后修改属于原专业修订或新尝试」由原修订工序承担 | **无需新增生产代码**。`internal/cli/workspace_missing_private_test.go:85-88,93-98` 与 `internal/cli/native_s9_recovery_test.go:381,695` 共 4 处断言改判 STALE,改为断言「已收事实不被覆盖、不产生新投递」(同文件 `repairDispatchAssertUnchanged` 已在断言该事实)。保留「文件缺失仍能重放」一半(`:100`「读取已收事实时不依赖私人文件仍存在」) |
+| G12-G / G01-B | 零单元记录 | `:100`「阶段分流仅使用当前已接收答卷中直接表达的结论」 | 零单元**不构成完成证据**,也**不构成拒收理由**;完成度记为未知并交 Main | 完成度投影侧改为「未知」而非硬编码 pass |
+| G02-A | `repair-result-candidate-provenance.schema.json:45` 的 path `pattern` | `:250`「历史记录内已存在的散列值只作为旧记录的原始数据保留」;`:154`「不得把已有真实观察变成拒收理由」 | `pattern` **不得作拒收资格**;显式列出允许的两种布局(flat `packet-<id>` 与分段 `packet-<p>/<seg>/…`) | 父任务直接改该 schema |
+
+### 13.2 保留类:结构性判据必须恢复
+
+| 组 | 裁定 | 依据 |
+|---|---|---|
+| G12-D / G07-A | 索引行是「原责任 + 定位符」封闭结构,顶层 `additionalProperties:false` **保留**;退役字段以空 schema 显式列为允许项 | `L4-hook-acceptance-checklist.md:15`「schema」纳入无散列验收 |
+| G08-B | S7/S8/S9 原生责任未完成 ⇒ **deny + Recovery + Retry**,不降级为 warn | `:225`「S7/S8/S9 共用 … Stop 兜底的接收语义;只定位当前责任与原卷、返回接收或具体缺项」;`L4-hook-platform-wiring.md:162`「stop_hook_active 防循环不授予完成资格」 |
+| G08-C | 静态波次未取得完整处置前,behavior 波次**不得**解锁 | `L3-S7-verification-round.md:149`「静态工作先取得完整处置,再进入行为执行」 |
+| G05-A / G05-B | 进度投影与 actor 早退**必须**恢复 | `:136`「成本与可执行验收」;`L4-agent-guidance.md:288`「不能吞错误、阻止接收或改变阶段」 |
+| G01-A / G06-B / G07-B / G11-A / G12-A / G12-B / G12-C / G12-E / G08-D / G08-E / G09-A / G09-B / G09-C / G09-D / G10-A / G04-A / G04-B / G03-A / G13 / G02-A / G07-C | 各组「问题→解法→改动」按 §1–§8 原文落地,本次不改判 | 各自条款已在 §1–§8 列明 |
+
+### 13.3 测试侧处置:哪些改写、哪些退役、哪些不动
+
+| 断言组 | 编码了什么 | 处置 | 依据 |
+|---|---|---|---|
+| `internal/runtime` `unknown-index-field` | d0d948a **反向新增**的「必须容忍 foreign field」特例(父提交要求必须被拒) | **已改判 STALE 并改写**为父提交口径(必须被拒) | 与 G12-D 同源、方向相反;`:71` |
+| `internal/hook/responsibility_test.go` 7 处 `!= "warn"` | d0d948a 的 deny→warn 降级 | **改写**为父提交口径 `!= "deny"` | `:225` |
+| `internal/hook/responsibility_test.go` 4 条 d0d948a 新增「不得阻断」用例 | 与降级同向 | **改写**为断言 deny + Recovery 路径 | `:225`;`L4-hook-platform-wiring.md:162` |
+| `internal/cli/s7_guidance_test.go` 等 4 条 | 断言「波次门不存在」 | **改写**为断言波次门存在(静态未结算时 behavior 不解锁) | `L3-S7:149` |
+| `internal/cli/native_s9_recovery_test.go` 2 条漂移断言 | 依赖已退役的 SHA256 字节比较 | **改写**为「已收事实不被覆盖」 | `L3-S9:437`;`:281` |
+| W11 的 6 条 legacy 用例 | 依赖 legacy task-integrate / legacy 接收板 | **退役**(不是改写) | `:71`「删除 … 和**测试**」;`:293`「删除 frozen／legacy 的启动、观察、接收及恢复接线,而非增加兼容层」 |
+| `internal/investigation/s8_late_same_case_stage_test.go:54-57` setup 段 | 要求「所有 owner 的答卷都被接受」,含 `plan_approval_required` 派发的 `g2-03` | **改写**(仅 setup 段):审批模式 owner 在真实合同批准前的答卷**必须被拒**(即 G07-C 断言),非审批模式 owner 仍必须被接受;测试真正要断言的后半段(`:98-122`:真实批准后迟到答卷被接受、Case/批准/生命周期未变、迟到结果已记录、重放幂等)**一条不动** | `L3-S8:215`「已有匹配授权时原批准消费者记录并应用既存真实决定」;`L3-S8:81`「确需批准时记录原批准主体的真实决定」;§13.2 保留 G07-C |
+| `internal/workpacket` 3 条「未知键 / 缺声明字段不产生字段错误」 | 编码了「未知键拒收」「缺键拒收」 | **不动测试** —— 改生产使其满足(见 13.4) | `:154`「允许无关扩展」;`:240`「Result 的真实 blocked／contract_conflict 可以独立先接收」 |
+
+### 13.4 最高性价比裁定:G06-A 收窄(生产一处改,3 条既有断言自动转绿)
+
+W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两条蓝图条款冲突:
+
+- `L4-workflow-convergence.md:154`「**允许无关扩展**……可选字段、字段拼法和枚举不得把已有真实观察变成拒收理由」
+- `L3-S9-repair.md:240`「Result 的真实 `blocked`／`contract_conflict` 可以**独立先接收**,不能因为 Plan 缺失、未就绪或存在非关键缺项而跳过 Result」
+
+**裁定**(`internal/workpacket/repair_result.go` + `repair_plan_report.go`):
+
+| 情形 | 处置 | 依据 |
+|---|---|---|
+| 字段值为 `null` | **拒收**,给 `/answer/<字段>` 字段级指针 | `:238`「反馈实际文件与字段」;`:232`「结构错误仍需修正」;W21 的空字符串约定 |
+| 枚举越界(`red_checks[].result`) | **拒收**,给 `/answer/red_checks/<i>/result` 指针 | `:232` |
+| **未知键** | **不拒收** | `:154`「允许无关扩展」 |
+| **缺声明键** | **不拒收**(字段级指针机制保留,供 null/枚举两条路径用) | `:240` blocked 独立接收;`:238`「不要求补 … 其他必填项」 |
+
+> **⚠ 本条只适用于 canonical schema 解码层(`internal/workpacket`),不适用于 flat 私人作者文件入口。**
+>
+> 父提交 `9bf73ca` 的口径是**两套严格性并存**,不可混为一谈:
+> - `internal/workpacket` 的 canonical Result/PlanReport 解码:**宽松**(无 `DisallowUnknownFields`)—— 未知键属于「无关扩展」,不得成为拒收理由(`:154`)。
+> - `internal/cli/native_s9.go` 的 **flat 作者文件入口**:**自带严格解码**(`git show 9bf73ca:internal/cli/native_s9.go:891-896` 有 `decoder.DisallowUnknownFields()`),父提交注释写明理由是「Only author-owned professional fields are transferred into the original questionnaire. **No platform identity or result metadata is model-authored.**」—— 顶层只允许**作者自己的专业字段**,平台身份/结果元数据不是模型写的。
+>
+> 因此:canonical 解码放宽后,**flat 入口必须自己补回严格解码**,否则 `internal/cli/native_s9_artifact_feedback_test.go` 的 `unknown Result field` 子用例(来自 `82a7146`,**早于**重构,编码的是父提交契约)会失去被拒路径。
+> 落点:`internal/cli/native_s9.go:514`(PlanReport)、`internal/cli/native_s9_original.go:121`(Result)—— 两处都在 W01 的独占文件内。
+> 判据:**未知键 ⇒ 拒收并给「keep professional fields at the top level」反馈;类型错配 ⇒ 交 canonical 校验器给精确 `/answer/<字段>` 指针。**
+
+**成本收益**:生产侧收窄一处 ⇒ `internal/workpacket` 3 条既有断言(未知键 `checks`、缺 `migration_ref`、`{"verdict":"blocked"}`)**自动转绿,一条测试都不用改**;同时保留 G06-A 的真正价值(null/枚举的字段级指针),而那正是 G06-B 映射器所需的形态。
+
+### 13.5 新增组(本轮现场发现)
+
+- **G14**(`internal/investigation/hypothesis_result_receipt.go:71-73` 早退块):实现 `L4-workflow-convergence.md:112` 的**专业语义比较** —— 以同一原消费者的专业语义比较当前原卷与其当前已收对象,不用字节、散列、时间、ID 或 Runtime revision 判作新判断;文件缺失 ⇒ 复用已收事实(`:100`「读取已收事实时不依赖私人文件仍存在」);专业语义不等价 ⇒ **不覆盖已接受内容**(`L3-S8:235`),按 `:342`「真实新表达仍沿原业务处理」交原修订工序。目标是让 3 条互相矛盾的测试同时成立。
+- **G17**(写路径 CAS 族 —— **按蓝图 §4 分类,不整体退役**):全仓 `ExpectedRevision` 分布 **68 个非测试文件、224 处**,实参多为真实快照值(`snapshot.Revision` / `resolvedRevision` / `commitRevision` 等),**不是常年 `-1` 的哑管道**,是活门禁。但**不得整体退役**,`L4-revision-usage.md` 已把 CAS 的适用边界写死:「CAS 是比较并交换…**它适合有意关联旧快照的外部集成、恢复或必要的内部边界,不是业务完成本身**」(`:85`)、「普通专业保存,没有要求整个 Runtime 保持原提交 → 用支持该语义的**当前值入口**,检查原业务对象与责任」(`:89`)、「高级命令可以保留 `--expected-revision`,正常入口应把它作为**可选断言**」(`:79`)、「底层 `Update` 的**负值请求也进入当前值路径**」(`:71`)、「显式调用者主动要求的**全局 CAS 保持原语义**」(`:241`)。⇒ 裁定为**四分类**:①**业务完成路径**上的 CAS(普通专业保存/接收/完成,调用方并不真需要「整份 Runtime 保持原提交」)⇒ **B 档,退役为当前值入口**;②外部集成有意绑定旧快照 ⇒ A 档保留;③恢复/中断接续 ⇒ A 档保留;④角色不明者 ⇒ C 档上报。**退役方向不是删检查**,而是按 `L4-state-transition-core.md:193`「原 Writer 锁内核 Runtime、原责任和修订;**旧快照重读当前事实**」把保证落到锁内重读 + 按当前事实重新判定。
+  - **关键前置(本轮新发现)**:许多调用点的**事件 id 与幂等键里嵌了 revision**(如 `internal/repair/runtime.go:335/865-867`、`internal/investigation/hypothesis_result_receipt.go:176/246-250`、`internal/assignment/lifecycle.go:302/306`、`internal/assignment/completion.go:218/222`、`internal/assignment/task_lifecycle.go:88/92`、`internal/assignment/register.go:933/937`、`internal/runtime/evidence.go:174/178`、`internal/runtime/change.go:58/62`、`internal/review/supplement.go:206/210`、`internal/investigation/contract.go:256/260`、`internal/investigation/intake.go:200`、`internal/transition/engine.go:213`)。id 依赖**预分配的序号** ⇒ 调用方必须先知道 revision ⇒ **这正是逼着写路径用 CAS 的根因**。所以「业务完成路径退役 CAS」与「事件 id / 幂等键不再嵌入写计数」是**同一个改造的两面**,必须一起做,否则改不动。
+  - **本轮处置**:立案记账 + 给出口径与四分类 + 记下这个前置依赖;**不改实现**(68 文件 224 处 + 事件 id 形状变更会波及全部幂等查找与历史兼容,搭进已改 60+ 文件的批次会失控;按 `L4-workflow-convergence.md:61`「削减机器核验会改变系统可证明的保证,应明确交给谁判断」,写路径并发保证的变更单独交给实际责任人裁定)。**下一轮专项**,且必须先出「id 形状迁移 + 历史事件兼容读取」的方案再动。
+- **G16**(S8 消费侧缺少「不可变 Case 世系连续性」判据):`internal/investigation/hypothesis_result_registration_test.go:396` 要求消费侧错误信息含 `continuity`,`:402` 要求签发侧同样拒收;而签发侧 `internal/investigation/hypothesis_result_packet.go:514-531` 的 `verifyHypothesisResultPacketCurrent` **自身注释**即写明「必须证明完整不可变 Case 世系,不能只比当前投影」—— 该机制在生产中**不存在**(现实现只比当前投影)。全仓无任何 S8 错误信息含 `continuity`。裁定:**本轮立案记账、不实现** —— 它需要签发侧与消费侧两处联动的新机制,签发侧不在任何工作包的独占文件内;且与 `L3-S8:408`「旧轮晚到结果沿原责任接收」直接张力,实现口径(能否用非散列的 Case 坐标表达世系)需 owner 裁定。该断言按 DEFECT 处置(只记录、保持红)。
+
+- **G15**(`internal/hook/stopidle.go` `ReviewAssignmentBlocked`):d0d948a 把「原来源证明」改写成「manifest 行 `activity == blocked` 状态串」,并删除 `reviewSiteLostBlocker` ⇒ 已验证的**原始** blocker 不再使 S7 Reviewer 责任成立。裁定:恢复原来源判定(原始 `work_blocked` 事件 / S7 `site_lost` blocker 事务),不在 manifest 状态串上判定。
+- **W05 的 frozen 场景**(`internal/cli/native_stop_pending_test.go`):S9 绑定通知的 deny 触发条件**收窄**为「绑定本身不可确定」(`repairAssignmentID == "" || agent.RepairAssignmentID != repairAssignmentID`),使「绑定已知、仅旧 execution/source-pin 证明缺失」的场景不落进绑定未知分支。依据 `:342`「删除旧 C／D、frozen …… source pin 的并行接收、来源证明及恢复接线」;`:300`「删除仅为旧 frozen execution 准备的 commit／适配及其兼容恢复接线」。此收窄**不是**弱化生产行为,而是把 deny 限定在真正无法确定绑定时。
+- **W18 的授权门**(`internal/investigation/hypothesis_result_receipt.go`):授权门应按「**授权事实存在**」判定,而非「当前仍处于 working 态」,避免误拒「曾合法激活、工作过、之后离开 working 态」的 Investigator 的晚期答卷;同时不得把晚期路径重新开放成未授权可写。
+
+### 13.6 本轮对 worker 提问的裁定(已定,无需再问)
+
+| 提出方 | 问题 | 裁定 |
+|---|---|---|
+| W05 | `:105` 分支(agent context 不可用)用 `repairAssignmentID == ""` 作为「绑定本身不可确定」的等价形式,是否认可 | **认可**。该分支没有 `agent` 可比较,`repairAssignmentID == ""` 是同一判据的等价形式;「绑定已知、仅旧 source-pin 证明缺失」不落进绑定未知分支,与 `:342`「删除旧 source pin 的来源证明接线」一致 |
+| W05 | frozen 场景新增的 `repairResultAssignmentUnfinishedNotice` 是本包唯一一处 `warn` | **认可**。这不是 G08-B 的缺陷(绑定真正不可确定的场景仍 deny),而是 `:342`/`:83` 要求的「退役旧门 + 仍报诚实事实」:绑定已知但旧 source-pin 证明已退役时,系统仍须如实报出「尚未被确立为已接收/已完成」,但不阻断。**非阻断事实投影不构成降级** |
+| W05 | `reviewProofJournalHasSiteLost` 保留 `baseline_generation` 坐标是否要一并去掉 | **保留**。`baseline_generation` 是**结构性基线坐标**(绑住「该 journal 事务属于哪个基线」),不属 revision / sha / hash / digest / fingerprint / checksum / round / CAS 任一退役门禁家族,也不参与资格判定。去掉它会失去「原阶段是否正确」这一判据 |
+| W05 | artifact 认证由父提交的 `sha256(artifactBytes) == evidence["sha256"]` 改为 artifact 自身 envelope 字段对账 | **认可**。散列门禁退役后,原件认证改由**原件自身携带的结构性字段**与证据行对账(evidence_id / kind / runtime_id / assignment_id / producer_agent_id / finding_id / reason / queue_reason / scope_refs),这正是「恢复结构事实」而非「恢复旧门禁」 |
+| W03 | G12-G 的登记门用「completed + 至少一条单元」而非「全部单元 pass」 | **认可**。全部单元 pass 是**完成**判据,不是**接收**判据;若用作登记门会拒收「单元 fail」的候选,与 G01-B 自身要求(「候选照常登记,完成位推导为 fail」)及既有断言「不得登记候选」的语义直接冲突。严格守卫保留在最终 Result 写入点 |
+| W03 | `internal/cli/workspace_delivery.go:338-340` `currentRepairResultPacketForDeliveryContext` 返回 `typed=false` + 「original S9 result association is unavailable」,断言要求 `typed=true` + 含「no legacy fallback」 | **已复核为误判,按 W24 改判。** 追父提交 `9bf73ca:512-521` 发现:父提交在 `candidate.Provenance == nil` 时**委派 typed 选择器**,并返回 `(packet, true, error("…no legacy fallback"))` —— 即「**已确定**该责任有 typed 包,但其原始 provenance 不可用」⇒ 明确拒绝 + 明说不退回 legacy。断言方向**与蓝图一致**,错的是 d0d948a 删掉委派后的笼统硬失败。W24 已按父提交口径恢复委派,两条验收 PASS。**该处不是 STALE 测试,是生产缺口。** |
+| W21 | canonical 层与 flat 入口的严格性边界 | **已定**(见 §13.4 的加注):canonical `internal/workpacket` 解码**宽松**(恢复父提交),flat 私人作者文件入口**自带严格解码**(恢复父提交 `:891-896`)。两套严格性并存,不可混为一谈 |
+
+### 13.7 本轮未采纳的「为了变绿而恢复门禁」提案(留档)
+
+| 提案 | 不采纳理由 |
+|---|---|
+| 为让 `internal/runtime` `unknown-index-field` 通过而把索引 schema 顶层改回 `additionalProperties: true` | 与 G12-D 相反。父提交 `9bf73ca` 即为 `false`,且该用例在父提交就要求 foreign field 被拒 —— 是 d0d948a 放宽 schema 后反向改写了断言。已按父提交口径改写断言 |
+| 为让 `unknown Result field` 通过而把 canonical Result 解码改回严格 | 与父提交相反。父提交 canonical 层本就宽松、严格性在 flat 入口。已改为**在 flat 入口补回严格解码**(W01 落地) |
+| 为让 `TestNativeStopPendingFrozenS9RetainsSamePublicStopGate` 通过而恢复旧 source-pin 证明门 | 与 `:342`「删除旧 source pin 的来源证明接线」相反。已改为收窄 deny 触发条件为「绑定本身不可确定」 |
+| 为让 G02-C 的漂移断言通过而恢复 SHA256 比对 | 与退役规则正面冲突。已按 `:437` 退役 |
+| 为让 W11 的 legacy 用例通过而恢复 legacy task-integrate 接线 | 与 `:71`/`:293` 相反。已改为退役该批用例 |
+
+---
+
+## 14. 全 stage 计数器 / revision 残留门禁审计台账
+
+### 14.1 审计方法
+
+- **目标**:排查「除本轮已退役家族外,各 stage 还残留哪些计数器 / revision 门禁」。
+- **分片**:按 stage 切成 10 片(S0/S1、S2/S3、S4/S5、S6、S7、S8、S9、S10/S11、`internal/cli` 全域、写路径 CAS 总账),每片一名只读审计员,共用协议 `audit-work/fix-waves/briefs/AUDIT-revision-counter-protocol.md`。
+- **分类权威**:`L4-revision-usage.md:15-26` 的「几种关联轴分别回答什么」轴表。判档 **A 保留(结构性事实)/ B 残留门禁(退役候选)/ C 上报(需父任务裁定)**。
+- **口径修正**:协议 §3 明确 —— **schema 字段存在性要求不是比较门禁**;**历史散列字段只按原路径读取、原样记录**是允许的;**`sequence`/`generation`/`phase_revision`/对象 revision 之间的身份绑定**是 A 档。
+- **本轮已退役家族(W29a/W29b/W15/W23/W27/W05/W12/W13/W14/W17/W18/W21/W24-W28)不在审计范围内,但各片仍需复核「是否已退役」并找漏网**。
+
+### 14.2 写路径 CAS 总账(四类分布,父任务裁定)
+
+| 类 | 规模 | 代表位置 | 裁定 |
+|---|---|---|---|
+| **① 业务完成路径** | ≈45 比较点 + ≈49 纯回灌点 | `review/submit.go:337`、`review/revise.go:82`、`review/register.go:139/309`、`investigation/{intake.go:60,contract.go:75,route_consume.go:36,case_workflow.go:564,hypothesis_result_receipt.go:145}`、`assignment/{auto_chain.go(8),completion_canonical.go:189,452,571,lifecycle.go:478}`、`submission/*`(9)、`cli/*`(≈24)、`repair/{issued_*(4),runtime.go(4)}` | **B 档 → G18 专项(下一轮)** |
+| **② 外部集成有意绑定旧快照** | ≈18 | `cli/controller.go:1846/1894`、`integration/types.go:141-147/260`、`cli/human_release_questionnaire.go:220`、`runtime/store.go:944-962/1192-1211` | **A 档保留**(`:90`/`:241`) |
+| **③ 恢复 / 中断续接** | ≈16 | `runtime/store.go:958/975`、`runtime/relocation.go:186`、`cli/recover_command.go:740`、`review/submit.go:109-124`、`investigation/hypothesis_result_receipt.go:229-230`、`controller/cycle.go:307/560` | **A 档保留**(`:85`/`:198`) |
+| **④ 语义不明 / 可疑** | 6 | `cli/run.go:1926`、`cli/investigation_lead_contract.go:245`、`review/supplement.go:81`、`repair/issued_repair_result_blocker.go:94`、`issued_repair_result_resolution.go:150`、`repair/runtime.go:360` | **C 档 → 本轮修(§14.6)** |
+
+**负值(当前值路径)实际使用比例**:负值 ≈31 处 / 真实快照值 ≈49 处 ⇒ **当前值路径仅约 38%,约 62% 仍传真实 revision**。全部 15 个 CLI flag 站点默认 `-1` ✓ 已合规。
+
+**替代判据(不是删检查)**:退役 CAS 后「不覆盖已收事实」由三件套承担 ——(a) 领域级「已收 / 已消费」行检查(`runtime/evidence.go:267-285`、`review/submit.go:154-159,307-311`);(b) `EventID`+`IdempotencyKey` 去重(`runtime/store.go:1220-1224`);(c) 对象版本断言(`ExpectedCaseRevision`、Plan 指针 revision、`ExpectedRecord`、`ExpectedRuntimeID`)。蓝图 `L4-revision-usage.md:73`「不能用宽松 Update 接受过期内容」⇒ **替代判据必须是「当前值入口 + 原对象/来源条件」,不是裸 `UpdateCurrent`**。
+
+**正确范式(库内已有)**:`internal/review/submit.go:109-124` `continueIssuedResultAfterPeer` —— stale 后由系统重读当前事实续未完成部分,**不改号、不让作者猜**。
+
+### 14.3 逐 stage 结论
+
+| stage | 域 | B 档 | C 档 | 结论 |
+|---|---|---|---|---|
+| S0/S1 | `transition` / `workspace` / `fileview` / runtime 绑定解绑 | 0 | 2 | A 档为主。`engine.go:213` 幂等键只有 `transition+revision`、无责任维度 → 上报(撞键风险) |
+| S2/S3 | `submission` / `workpacket` / `semantic` / `sharedmodel` | 6(`repair_result_blocker.go:35/47`、`repair_result_resolution.go:92/104`、`repair_plan_report.go:115`、`repair_result.go:181` —— 全是**适配层回灌** `snapshot.Revision`,传 `-1` 即可) | 1 | `phase_revision` / `StageEntry` / `RevisionPacketID` 全部 A 档保留;`phase_revision` 是阶段入口(单调轴),`RevisionPacketID` 未被当通用许可 |
+| S4/S5 | `review` / `hookctx` / `assignmentrecord` | 6(`submit.go:337`、`revise.go:82`、`register.go:139/309`、`plan_reception.go:41`、`result_packet.go:101`) | 0 | 退役需与 `runtime` 锁内重校配套 |
+| S6 | `assignment` / `integration` / `plancheckpoint` 等 | 12(事件 id 族 6 + CAS 3 + 计数连续性 1 + `lifecycle.go:484`) | 3 | 事件 id 族统一入 G18 |
+| S7 | `reviewmeta` / `hook` / `submission/review_result` | **0** | 0 | **本域无残留门禁**;仅轮数语汇命名遗留(`review_readiness.go:75/93`、`stopidle.go:383`) |
+| S8 | `investigation` | 6(全部是「CAS + 事件 id 嵌写计数」成对出现) | 0 | 两件事同一改造的两面,必须同批 |
+| S9 | `repair` + `runtime/repair_result_*` | 1(W30 已修) | 3 | 极性反转三处本轮修 |
+| S10/S11 | `acceptance` / `qualitygate` / `controller` / `controlproof` | **0** | 2 | **本域无残留门禁**;S11 发布门本就不靠 revision 判申请有效性(按证据记录 + 代际 + 计划身份) |
+| 全域 | `internal/cli` | 18 | 3 | 事件 id/幂等键族 ≈20 处 + CAS 回灌 ≈24 处 |
+
+### 14.4 父任务复核:推翻 / 采纳审计员判定
+
+1. **推翻** —— `internal/hook/hypothesis_result.go:122` 与 `internal/cli/s8_questionnaire_listener.go:122` 的 `receipt.SuccessorCaseRevision > binding.CaseRevision`。审计员判「方向反了,应验证指向当前 Case 版本」。**父任务复核后不采纳**:生产侧 `internal/investigation/case_workflow.go:679` 把后继 Case 递增为 `nextRevision`,而 `internal/runtime/hypothesis_result_checkpoint.go:68` 在结果落地**前**记 `SuccessorCaseRevision = p.Binding.CaseRevision` ⇒ `>` 表达的是「后继 Case 必须**严格晚于**绑定版本」这一既定关系,属 Case 对象版本轴上的**关系约束(A 档)**,不是新鲜度门;且同一条表达式已用 `PacketID`/`AssignmentID`/`TaskID`/`ManifestRef` 把收据钉死在本 packet,旧收据混不进来。改方向会直接破坏「S8 结果已推进 Case」这一事实的判定。**判 A 档保留。**
+2. **纠正审计员** —— CAS 总账报「`:193` 行号与所引原文不符」。该审计员核的是 `L4-revision-usage.md:193`(实为「实际验证计划或代际改变」条);而 `:193` 引自**另一个文件** `L4-state-transition-core.md:193`「并发提交或重复事件 | 原 Writer 锁内核 Runtime、原责任和修订;**旧快照重读当前事实**;领域消费者复用已收内容 | 不覆盖已收事实,不以散列键判同答」—— **引用无误**。为免后续 wave 引错行,本轮统一口径为 **`L4-state-transition-core.md:193`(并发保证怎么落地)+ `L4-revision-usage.md:191`(无关提交增加 → 支持当前值的原入口继续,不让作者猜数字)+ `:198`(状态与事件不成对或有 pending → 沿原 Writer/恢复流程处理,不把它当普通 CAS 冲突)**。
+3. **采纳** —— S9 审计员报的漏网:`internal/runtime/repair_result_blocker_checkpoint.go:437` 仍判 `before < 0 || after != before+1` ⇒ **W30 已修**(父任务亲手)。
+4. **采纳** —— S0/S1 审计员报的 `internal/runtime/checkpoint.go:204/237/500-509` 的 manifest `revision` 一致性比较残留 ⇒ 入 §14.6 复核。
+5. **采纳** —— W29c 上报的 `internal/runtime/relocation.go:128` `pending.PreviousRevision != before.Revision` ⇒ B 档,同一条 `if` 内已有幂等键 + 目标内容一致性兜底 ⇒ 可退役。
+
+### 14.5 G18 立项:业务完成路径 CAS → 当前值入口 + 事件 id/幂等键去写计数
+
+- **范围**:①类 45 比较点 + 49 回灌点 + 事件 id/幂等键族 ≈35 处(跨 `assignment` / `cli` / `investigation` / `repair` / `runtime` / `submission` / `transition`)。
+- **核心发现**:**写计数外泄成领域身份,是逼着写路径必须用 CAS 的根因**。事件 id 依赖「预分配的序号」⇒ 调用方必须先知道 revision ⇒ 必须传 CAS。⇒ 这两件事是**同一个改造的两面**,必须一起做,否则改不动。
+- **执行风险(必须整体做,不可逐点退役)**:事件 id 去掉 `r%d` 若只改一半,会造成**幂等键碰撞**(同一语义不同数字 = 重复提交);`internal/runtime/store.go:1223` 的 `event_id already exists` 唯一性检查会出现断层。
+- **迁移顺序**:① 先纯回灌层(`submission/*` 9 处 + `cli/*` ≈24 处,改传 `-1`,不动语义)→ ② 再把领域比较点换成「已收行 + 事件去重 + 对象版本」三件套 → ③ 最后改事件 id/幂等键形状(**新增事件用语义坐标,历史 id 按原路径只读、不重算、不改写**)。
+- **约束**:`L4-revision-usage.md:192`「原对象新增真实修订 → 沿原版本／修订路径重新交付或重判,**不能只替换全局序号**」—— 不得用「换一个序号」冒充接续。
+
+### 14.6 本轮立即修的清单
+
+| 编号 | 位置 | 判档 | 处置 |
+|---|---|---|---|
+| W30 | `internal/runtime/repair_result_blocker_checkpoint.go:437` | B | **已修**(父任务亲手):退役 `before < 0`、`after != before+1`;保留字段存在性(schema 形状)、`sequence`、`generation`、证据引用 |
+| W31a | `internal/repair/issued_repair_result_blocker.go:94`、`issued_repair_result_resolution.go:150`、`internal/repair/runtime.go:360` | C | 极性反转:负值(=省略)不再被判 stale;显式非负仍是具体断言 |
+| W31b | `internal/cli/run.go:1926`、`internal/cli/investigation_lead_contract.go:245` | C | 适配器越权:省略保持省略,不擅自回灌真实 revision |
+| W31c | `internal/review/supplement.go:81` | C | 零值语义统一为 `>=0`(对照 `:78`) |
+| W31d | `internal/cli/recover_command.go:634` | C | `ExpectedRevision: 0` 的语义裁定并写明注释 |
+| W32 | `internal/runtime/relocation.go:128` | B | 退役 `pending.PreviousRevision != before.Revision` |
+| W33 | `internal/runtime/checkpoint.go:204/237/500-509` | 待判 | manifest `revision` 一致性比较复核 |
+| W34 | `internal/cli/task_receipt.go:106` 的 `bytes.Equal(before, after)` | B | 字节比较属 `L4-workflow-convergence.md:281` 退役家族 |
+
+### 14.7 C 档上报(本轮不做,附理由)
+
+| 位置 | 疑点 | 不做的理由 |
+|---|---|---|
+| `internal/assignmentresult/accepted.go:325-332/266` | Result 版本要求**连续无缺口** + `ResultRevision < 1` 下界 | 退役会削弱 `main_facts.go:53` 的 `Binding.ResultRevision` 唯一定位锚点;须先补 submission_key 锚点 |
+| `internal/plancheckpoint/validate.go:111-113` | `assignment_revision != 1` 即拒收 | 与 ReviewPlan 指针 revision 轴是**两轴**,改则混用(`L4-revision-usage.md:50`) |
+| `internal/transition/engine.go:213` | 幂等键只有 `transition+revision`,无责任维度 | 撞键风险;须与 `store.go` 唯一性检查一并裁定,不在 transition 层单方面改键格式 |
+| `internal/hookctx/loader.go:1056` | `document.Revision < CaseRevision` 方向 | Case 是否允许在原路径上前进尚未裁定,判 C 上报 |
+| `internal/controller/replay.go:210/219` | 用 revision 递增判「无进展」 | 应改 `sequence`/cursor;但属恢复语义,需专项 |
+| `internal/cli/s6_observation.go:26` vs `controller.go:1251` | 里程碑绑定写计数 vs「observed revision 不是状态变更」自相矛盾 | 一并裁定 |
+| `internal/qualitygate/review_round_gates.go` 门名含 `ROUND`;`internal/assignment/review_readiness.go:75/93`;`internal/hook/stopidle.go:383` | 轮数语汇命名遗留 | 语义已无轮次,非功能门禁;命名清理归入 G18 之后的整洁批次 |
+| `internal/cli/recover_command.go:634` 的 `0` | 零值是具体断言还是省略 | 归 W31d 裁定 |
+| **`internal/review/result_packet.go:735`** | `result.ResultID = fmt.Sprintf("%s-attempt-%d", p.ResultID, snapshot.Revision+1)` —— 用**全局 Runtime revision** 派生结果身份后缀 | 与 `L4-workflow-convergence.md:242`「每次 Hook 重算的可变 Runtime revision…不能代替稳定 Plan 身份」正面冲突:同一逻辑结果在无关提交后会拿到不同 ResultID,幂等去重随之分叉。这是 G18 的一个具体实例。退役需要设计一个**稳定坐标**(原接收事实 / 已记录的重新交付次数字段),不能只删这一行 —— 改法未设计前不动 |
+| **`internal/runtime/planning_rework.go:115-121`** | 返工冻结源按「`StageEntry` 数值最大且 < 当前 entry」选 S3 原件 | `L4-revision-usage.md:169` 要求「最近一次**真实完成该接续**的 S3 阶段入口」——「数值最大」不保证该 entry 真有已接收的 S3 记录。**用序号大小代替了真实接续关系**,与本轮判据同构。改法应为「按已记录的接收 + 转换事件关系选」,属 `internal/runtime` 写路径,需专项 |
+| `internal/runtime/planning_rework.go:58` | 返工 transition CAS | 若退役具体断言,需 `internal/transition` 支持「以当前 entry 派生幂等键」,否则损 `:117`「同一意图重试保持原关联」;归属待定,上报 |
+| `internal/workpacket/packet.go:28 Attempt` | `Attempt` 参与 packet 身份,`Attempt==1` 表「首次不得声明修订」 | 不是累计轮次,但读法接近「第几次」;退役会丢首次/修订身份区分 ⇒ 登记为 C 档观察,保留 |
+| `internal/semantic/runtime_reachability.go:193` | 用数值 max 判 S5 manifest「当前/历史」 | 阶段入口是单调轴(A 档),但 `:169` 的原意是「已成立的接续关系」;若要收敛,改用 `origin_entry`/`transition_event` 关系,不减断言 |
+
+### 14.8 已确认无残留的域
+
+`internal/acceptance/`(revision 比较 0 处)、`internal/qualitygate/`(无 CAS、无轮次计数、无散列)、`internal/controlproof/`(只剩 Assignment 对象版本前后继绑定 + `sequence`)、`internal/fileview/`(零命中)、`internal/reviewmeta/` 与 `internal/hook/`(无数值轮次、无 sha/digest)、`internal/investigation/`(无 sha/hash/digest 残留)、`internal/review/`(无 `review.round` 生产/消费)、`internal/runtime/recovery.go` 与 `internal/runtime/checkpoint.go` 与 `internal/controlproof/**`(ExpectedRevision / ErrStaleRevision 零命中)。
+
+### 14.9 本轮已知保持红(逐条归属,不得靠「恢复门禁」变绿)
+
+| 用例 | 归属 | 性质与处置 |
+|---|---|---|
+| `internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言 | **G16** | 断言要求「不可变 Case 世系连续性」判据。签发侧 `internal/investigation/hypothesis_result_packet.go:514-531` 自身注释就写明「必须证明完整不可变 Case 世系」,而该机制不存在 —— 需签发侧与消费侧联动,**签发侧不在任何独占文件内**,本轮不实现,**断言维持红** |
+| `internal/cli/native_s9_recovery_test.go:163` `TestNativeS9ExplicitStopChangeStillConflictsAfterRecovery` | 总账 **D2 桶**已知 DEFECT | 生产侧 `internal/cli/native_s9_original.go:37-44` 在 `DeliveryRef != ""` 时直接短路并返回「已接收」,**不做专业语义比较**;蓝图 `:112` 要求「以同一原消费者的专业语义比较当前原卷与其当前已收对象」。**不迁就、不改断言** |
+| `internal/cli/integration_observation_e2e_test.go:23` `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration` | legacy 接线族 | 该 helper 走 legacy `runtime task-integrate` / legacy 接收板路径,与 B4 退役族同源,但**不在** §0.6 退役名单内 ⇒ 按「不得顺手删别的用例」保留并上报 |
+| `internal/cli/s9_handoff_wiring_test.go:265` `TestS9HandoffTypedSelectorPreservesChangedAttemptFence` | W25 | 生产侧 `internal/runtime/repair_result_packet.go:214-244` 执行围栏已落地;该用例断言的 attempt fence 形态仍与围栏口径不一致,待下一轮统一 |
+| `internal/cli/s6_observation_test.go:115` `TestS6UnchangedPreToolUseReusesObservation`、`TestNativeS6NonblockingNotesReachS7WithoutReanswer` | **G09-A 夹具缺口** | 生产侧行为**正确**(W12 验收 `TestS6IntegrationWithoutMainStartKeepsOriginalBatchGate` PASS):当前批次复检必须以「当前代际存在原 TR-003 共同 Main 基线」为前提,缺失即按事实报错。两条红是**夹具没有建立这个结构前提**。修法:**夹具补一次真实 TR-003 迁移**(参考 `internal/cli/s6_handoff_e2e_test.go:64-74` 的 `transition.Apply(TR-003)` + `RequireCurrentS6MainStart` 写法),**不得**放宽生产侧前提、不得改断言 |
+
+
