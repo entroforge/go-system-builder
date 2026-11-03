@@ -23,7 +23,11 @@ func TestCT03911_DualPassDocumentVerificationCommitsTR003(t *testing.T) {
 	req039fixtures.WriteState(t, root, state)
 
 	runner := &req039fixtures.CLIRunner{}
-	body := req039fixtures.PreToolUseBody("session-ct-039-11", "Edit", map[string]any{
+	// The Main audience is explicit at the call site. The unlabeled
+	// PreToolUseBody shape carries agent_id "agent-1" and no cwd, so the hook
+	// cannot place it as Main or as a registered Worker and reports the event
+	// as unknown instead of running the control cycle.
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-11", "Edit", map[string]any{
 		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)
@@ -208,7 +212,7 @@ func TestCT03915_S11StopsAutoAdvance(t *testing.T) {
 	before := req039fixtures.ReadState(t, root)
 	beforeLC, beforePh := req039fixtures.Lifecycle(before)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-15", "Bash", map[string]any{"command": "ls"})
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-15", "Bash", map[string]any{"command": "ls"})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)
 	if code != 0 {
 		t.Fatalf("PreToolUse at S11 failed: code=%d stderr=%s", code, stderr)
@@ -498,7 +502,7 @@ func TestCT03924_SameAgentDualDVLabelsBlocksTR003(t *testing.T) {
 	req039fixtures.WriteState(t, root, state)
 
 	runner := &req039fixtures.CLIRunner{}
-	body := req039fixtures.PreToolUseBody("session-ct-039-24", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-24", "Edit", map[string]any{
 		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)

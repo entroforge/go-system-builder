@@ -499,16 +499,25 @@ func TestNativeS9OriginalStopUsesNewProfessionalInputAfterSourceGap(t *testing.T
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := receiveNativeS9Builder(root, repairDispatchSnapshot(t, root).State, input, p, input.LastAssistantMessage, &diagnostic); err == nil {
-		t.Fatal("missing actual evidence unexpectedly accepted")
+	// L3-S9-repair.md:236 keeps the reception from re-reading evidence files and
+	// L4-hook-acceptance-checklist.md:53/:59 removed the evidence-existence
+	// gate, so a referenced source that is not present is not a reception
+	// qualification. The author's own conclusion is received on its own path.
+	if err := receiveNativeS9Builder(root, repairDispatchSnapshot(t, root).State, input, p, input.LastAssistantMessage, &diagnostic); err != nil {
+		t.Fatalf("readable author conclusion refused over a missing evidence source: %v %s", err, &diagnostic)
+	}
+	if _, err := os.Stat(filepath.Join(worker, "logs/original-missing-check.txt")); !os.IsNotExist(err) {
+		t.Fatalf("reception fabricated the missing evidence source: %v", err)
 	}
 	partial := repairDispatchSnapshot(t, root)
 	registry, err := workspace.Decode(partial.State)
-	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef != "" {
-		t.Fatalf("source gap has an accepted candidate: %v", err)
+	if err != nil || registry == nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef == "" {
+		t.Fatalf("received author conclusion has no Candidate: %v", err)
 	}
-	// This new actual Stop is a new explicit professional save. The old adapted
-	// but unaccepted typed answer must not mask its corrected observations.
+	// This new actual Stop is a new explicit professional save. Under C02 and
+	// L3-S9-repair.md:437 it is a revision or a new attempt on the same
+	// original responsibility, and it does not silently overwrite the fact that
+	// was actually received.
 	professional.EvidenceRefs = []string{"internal/api/one.go"}
 	professional.ResidualRisks = []string{"new professional observation after restoring the source gap"}
 	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, relative), professional); err != nil {
@@ -540,8 +549,11 @@ func TestNativeS9OriginalStopUsesNewProfessionalInputAfterSourceGap(t *testing.T
 	if err := json.Unmarshal(candidate.Provenance.SubmittedAnswer, &actual); err != nil {
 		t.Fatal(err)
 	}
-	if len(actual.ResidualRisks) != 1 || actual.ResidualRisks[0] != professional.ResidualRisks[0] {
-		t.Fatalf("new Stop did not record its actual new professional input: %s", candidate.Provenance.SubmittedAnswer)
+	if len(actual.ResidualRisks) != 0 {
+		t.Fatalf("a later edit silently overwrote the received fact: %s", candidate.Provenance.SubmittedAnswer)
+	}
+	if len(actual.EvidenceRefs) != 1 || actual.EvidenceRefs[0] != "path:logs/original-missing-check.txt" {
+		t.Fatalf("received fact lost its original content: %s", candidate.Provenance.SubmittedAnswer)
 	}
 }
 

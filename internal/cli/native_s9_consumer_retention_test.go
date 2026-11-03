@@ -87,7 +87,13 @@ func TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup(t *testing.T) {
 	if len(answer.BeforeFixResults) != 6 {
 		t.Fatalf("original contract has %d assertions, want 6", len(answer.BeforeFixResults))
 	}
+	// L4-hook-acceptance-checklist.md:53/:59 and L3-S9-repair.md:489 removed the
+	// per-assertion coverage machine gate, so three of six assertions are no
+	// longer a rejection reason. The surviving necessary check is the direct
+	// structure of the author's own fields, so the professional rejection this
+	// test follows now comes from an unusable assertion ID.
 	answer.BeforeFixResults = answer.BeforeFixResults[:3]
+	answer.BeforeFixResults[0].AssertionID = ""
 	flat := nativeS9TestResultPath(t, root, plan)
 	path := filepath.Join(worker, flat)
 	if err := persistRepairLeadQuestionnaire(path, answer); err != nil {
@@ -98,8 +104,8 @@ func TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup(t *testing.T) {
 	if handled, code := nativeS9Hook(root, input, &bytes.Buffer{}, &diagnostic); !handled || code != 0 {
 		t.Fatalf("original Stop: %v %d %s", handled, code, &diagnostic)
 	}
-	if !strings.Contains(diagnostic.String(), "before_fix_results") || !strings.Contains(diagnostic.String(), "got 3 want 6") {
-		t.Fatalf("original consumer did not reject incomplete assertions: %s", &diagnostic)
+	if !strings.Contains(diagnostic.String(), "before_fix_results") || !strings.Contains(diagnostic.String(), "assertion_id") {
+		t.Fatalf("original consumer did not reject the unusable assertion: %s", &diagnostic)
 	}
 	// Keep the actual rejected responsibility and live source, but publish a
 	// later prerequisite failure through the original diagnostic producer.
@@ -162,7 +168,7 @@ func TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup(t *testing.T) {
 	}
 	texts = append(texts, integrate.String())
 	for _, text := range texts {
-		for _, want := range []string{"before_fix_results", "got 3 want 6", plan.Binding.OwnerAgentID, "PlanReport receipt is accepted", "observed then", "unavailable"} {
+		for _, want := range []string{"before_fix_results", "assertion_id", plan.Binding.OwnerAgentID, "PlanReport receipt is accepted", "observed then", "unavailable"} {
 			if !strings.Contains(text, want) {
 				t.Errorf("Main outlet missing %q: %s", want, text)
 			}

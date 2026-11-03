@@ -18,6 +18,16 @@ import (
 // Exercise the real Stop adapter/Service/Writer chain and a fresh public Main
 // request. The Git barrier is enabled by the original committed Plan journal
 // event, rather than by a guessed delay or a production test-only callback.
+//
+// BLOCKED (G01-C): the original reception no longer performs any Git call.
+// The merge-base/baseline coordinates that this barrier used to freeze were
+// retired with the other hash-based gates (L4-workflow-convergence.md:250,
+// L3-S9-repair.md:477), so no Git invocation remains between the received Plan
+// and the Result consumer. The cross-request deadline chain this test owns can
+// therefore no longer be staged from the test side. Restoring it needs a
+// deterministic non-hash barrier point in the reception, which is a production
+// decision recorded in the landing plan; until then the assertions below stay
+// as they are and the test stays red on the barrier itself.
 func TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("requires POSIX shell")
@@ -65,7 +75,7 @@ func TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain(t *testing.T) {
 		t.Fatalf("real Stop: handled=%v code=%d stdout=%s stderr=%s", handled, code, &stopOut, &stopDiagnostic)
 	}
 	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("original committed Plan never triggered the Git barrier: %v; %s", err, &stopDiagnostic)
+		t.Fatalf("original committed Plan never triggered the Git barrier: %v; %s (the reception performs no Git call any more; see the G01-C note above)", err, &stopDiagnostic)
 	}
 	if !errors.Is(work.Err(), context.DeadlineExceeded) {
 		t.Fatalf("real work deadline did not expire: %v; %s", work.Err(), &stopDiagnostic)

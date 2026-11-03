@@ -337,25 +337,24 @@ func TestPendingInitializationAcceptsAbsentReviewNumberAndLegacyZero(t *testing.
 					t.Fatalf("new inactive Runtime manufactures %s", key)
 				}
 			}
+			expected := 0.0
 			if scenario == "legacy-zero" {
 				review["round"] = 0
 			}
 			if scenario == "started-review" {
 				review["round"] = 1
+				expected = 1
 			}
 			marker := filepath.Join(root, ".claude/loop-init-pending.json")
 			putInitMap(t, marker, initPending{SchemaVersion: "1.0.0", FreshState: fresh})
 			var out, stderr bytes.Buffer
 			code := Run([]string{"init", "--root", root}, nil, &out, &stderr)
-			if scenario == "started-review" {
-				if code == 0 {
-					t.Fatal("pending initialization accepted a started review")
-				}
-				if _, err := os.Stat(filepath.Join(root, ".claude/loop-state.json")); !os.IsNotExist(err) {
-					t.Fatal("non-fresh pending state was published")
-				}
-				return
-			}
+			// The retired review number is not a gate. L4-state-transition-core.md:44
+			// removes old review.round production, consumption and compatible
+			// reading, and L4-revision-usage.md:123 keeps an old value readable
+			// along its original path without using its size to judge a new
+			// responsibility. A leftover number therefore neither blocks
+			// initialization nor gets rewritten; it stays raw historical data.
 			if code != 0 {
 				t.Fatalf("original init recovery: %d %s", code, stderr.String())
 			}
@@ -364,8 +363,8 @@ func TestPendingInitializationAcceptsAbsentReviewNumberAndLegacyZero(t *testing.
 				if _, exists := published["round"]; exists {
 					t.Fatal("init recovery added a review number")
 				}
-			} else if published["round"] != float64(0) {
-				t.Fatal("init recovery rewrote original zero sentinel")
+			} else if got, ok := published["round"].(float64); !ok || got != expected {
+				t.Fatalf("init recovery rewrote the original review number: %#v", published["round"])
 			}
 			if _, err := os.Stat(marker); !os.IsNotExist(err) {
 				t.Fatal("completed pending initialization marker was retained")

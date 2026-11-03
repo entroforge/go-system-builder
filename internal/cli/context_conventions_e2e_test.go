@@ -173,12 +173,36 @@ func TestNativeBuilderConventionsFixedReplayAndSourceDrift(t *testing.T) {
 	if err := os.WriteFile(rule, append(body, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
+	contextBefore, err := os.ReadFile(filepath.Join(f.root, binding.Context.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var out, errOut bytes.Buffer
 	code := cli.Run([]string{"runtime", "assignment-context", "prepare", "--root", f.root, "--agent-id", "core-builder"}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "source changed") {
-		t.Fatalf("drifted native default replayed: %d %s", code, errOut.String())
+	// A changed source is no longer a digest gate. L4-workflow-convergence.md:250
+	// keeps historical digests as raw record data and L4-workflow-convergence.md:281
+	// forbids a hash as an acceptance precondition, so preparation only checks
+	// that the source is still readable; whether the change matters is left to
+	// Main's judgment.
+	if code != 0 {
+		t.Fatalf("readable source change refused the original replay: %d %s", code, errOut.String())
+	}
+	for _, retired := range []string{"source changed", "digest", "sha256", "checksum", "fingerprint"} {
+		if strings.Contains(strings.ToLower(errOut.String()+out.String()), retired) {
+			t.Fatalf("original replay still gated on a retired %q reason: %s", retired, out.String()+errOut.String())
+		}
+	}
+	// The original frozen context and its original scoped default survive the
+	// edit; the replay must not rebuild the responsibility from the changed
+	// source.
+	contextAfter, err := os.ReadFile(filepath.Join(f.root, binding.Context.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(contextBefore, contextAfter) {
+		t.Fatal("drifted source rebuilt the original frozen context")
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
-		t.Fatal("failed native Builder replay wrote Runtime")
+		t.Fatal("original Builder replay wrote Runtime")
 	}
 }

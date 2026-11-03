@@ -76,8 +76,13 @@ func TestNativeS9NaturalSavedTypedPrecedesChangedOrMissingFlat(t *testing.T) {
 				if err != nil || !bytes.Equal(saved, after) {
 					t.Fatalf("original typed input replaced: %v", err)
 				}
-				if r, err := service.RepairResultReceipt(plan.Binding.OwnerAgentID, packets[0].ID); err != nil || !r.Accepted || r.ResponsibilityStatus != "candidate_accepted" {
-					t.Fatalf("original typed consumer not resumed: %+v %v", r, err)
+				// L3-S9-repair.md:134 keeps exactly one author path and
+				// L4-hook-acceptance-checklist.md:159 removed the flat/typed
+				// adaptation. The saved typed copy is not a second author path, so
+				// a changed or missing flat answer leaves the original consumer
+				// unaccepted instead of being resumed from that copy.
+				if r, err := service.RepairResultReceipt(plan.Binding.OwnerAgentID, packets[0].ID); err != nil || r.Accepted {
+					t.Fatalf("typed copy resumed the original consumer: %+v %v", r, err)
 				}
 			})
 		}
@@ -307,16 +312,24 @@ func TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns(t *testing.T) {
 	}
 	in.Event, in.CWD = "PreToolUse", worker
 	nativeS9SplitChild(t, &in)
-	if message := nativeS9SplitPublicEvent(t, root, in); !nativeS9ReceptionIncomplete(message) || !strings.Contains(message, "restored-source.txt") {
-		t.Fatalf("old input did not actually fail on its missing source: %s", message)
+	// L3-S9-repair.md:236 keeps the reception from re-reading evidence files and
+	// L4-hook-acceptance-checklist.md:59/:53 removed the evidence-existence
+	// gate, so a missing referenced source no longer makes the reception
+	// incomplete and no Candidate is withheld for it.
+	if message := nativeS9SplitPublicEvent(t, root, in); nativeS9ReceptionIncomplete(message) {
+		t.Fatalf("missing evidence source still refused the original responsibility: %s", message)
+	}
+	if _, err := os.Stat(filepath.Join(worker, "logs/restored-source.txt")); !os.IsNotExist(err) {
+		t.Fatalf("reception fabricated the missing evidence source: %v", err)
 	}
 	partial := repairDispatchSnapshot(t, root)
 	registry, err := workspace.Decode(partial.State)
-	if err != nil || registry == nil || registry.Executions[plan.Binding.ManifestAssignmentID].DeliveryRef != "" {
-		t.Fatalf("source rejection acquired a Candidate: %v", err)
+	if err != nil || registry == nil || registry.Executions[plan.Binding.ManifestAssignmentID].DeliveryRef == "" {
+		t.Fatalf("received original responsibility has no Candidate: %v", err)
 	}
-	// Both the old and new answers are now individually acceptable. The actual
-	// author's changed original must win when no Candidate was ever staged.
+	// Both the old and new answers are individually acceptable. The later
+	// actual edit is a revision or a new attempt on the same original
+	// responsibility.
 	writeRepairLeadFile(t, worker, "logs/restored-source.txt", "original evidence source restored\n")
 	professional.ResidualRisks = []string{"new observation after source restoration"}
 	if err := persistRepairLeadQuestionnaire(flat, professional); err != nil {
@@ -339,10 +352,21 @@ func TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns(t *testing.T) {
 		t.Fatalf("original Candidate provenance: %v", err)
 	}
 	var actual struct {
-		Risks []string `json:"residual_risks"`
+		EvidenceRefs []string `json:"evidence_refs"`
+		Risks        []string `json:"residual_risks"`
 	}
-	if err := json.Unmarshal(candidate.Provenance.SubmittedAnswer, &actual); err != nil || len(actual.Risks) != 1 || actual.Risks[0] != professional.ResidualRisks[0] {
-		t.Fatalf("old typed input displaced the author's actual correction: %s (%v)", candidate.Provenance.SubmittedAnswer, err)
+	if err := json.Unmarshal(candidate.Provenance.SubmittedAnswer, &actual); err != nil {
+		t.Fatal(err)
+	}
+	// C02 and L3-S9-repair.md:437 keep a received fact from being silently
+	// overwritten. The later actual edit is a revision or a new attempt on the
+	// same original responsibility, so the received fact keeps the content that
+	// was actually received.
+	if len(actual.Risks) != 0 {
+		t.Fatalf("a later edit silently overwrote the received fact: %s", candidate.Provenance.SubmittedAnswer)
+	}
+	if len(actual.EvidenceRefs) != 1 || actual.EvidenceRefs[0] != "path:logs/restored-source.txt" {
+		t.Fatalf("received fact lost its original content: %s", candidate.Provenance.SubmittedAnswer)
 	}
 	if receipt, err := service.RepairResultReceipt(plan.Binding.OwnerAgentID, packets[0].ID); err != nil || !receipt.Accepted || receipt.ResponsibilityStatus != "candidate_accepted" {
 		t.Fatalf("corrected original lacks original receipt: %+v %v", receipt, err)
@@ -351,17 +375,6 @@ func TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns(t *testing.T) {
 
 func TestNativeS9PublicChangedFlatPreservesStagedCandidateWhenSourceDisappears(t *testing.T) {
 	root, worker, plan, packet, previousState, previousJournal, _, _ := nativeS9OriginalCandidateBoundary(t)
-	accepted := repairDispatchSnapshot(t, root)
-	registry, err := workspace.Decode(accepted.State)
-	if err != nil || registry == nil {
-		t.Fatalf("original Candidate execution: %v", err)
-	}
-	candidateRef := registry.Executions[plan.Binding.ManifestAssignmentID].DeliveryRef
-	candidate := filepath.Join(root, candidateRef)
-	candidateBytes, err := os.ReadFile(candidate)
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Retain the actual immutable Candidate while returning Runtime to its
 	// original pre-CAS state; no pending marker has been published yet.
 	if err := os.WriteFile(filepath.Join(root, ".claude/loop-state.json"), previousState, 0600); err != nil {
@@ -400,35 +413,49 @@ func TestNativeS9PublicChangedFlatPreservesStagedCandidateWhenSourceDisappears(t
 	brief := nativeS9BriefPath(plan)
 	in := policy.Input{AgentID: "native-original", CWD: worker, LastAssistantMessage: filepath.Join(root, brief) + "\n" + flat}
 	nativeS9SplitChild(t, &in)
-	before := repairDispatchRuntimeBytes(t, root)
 	for _, event := range []string{"PreToolUse", "PostToolUse", "SubagentStop"} {
 		in.Event = event
-		if diagnostic := nativeS9SplitPublicEvent(t, root, in); !nativeS9ReceptionIncomplete(diagnostic) || !strings.Contains(diagnostic, candidateRef) {
-			t.Fatalf("%s hid the original unavailable source: %s", event, diagnostic)
+		// L3-S9-repair.md:236 keeps the reception from re-reading evidence files
+		// and L4-hook-acceptance-checklist.md:59/:53 removed the source
+		// existence gate. A disappeared evidence source is no longer a reception
+		// qualification, so the original responsibility keeps being received.
+		if diagnostic := nativeS9SplitPublicEvent(t, root, in); nativeS9ReceptionIncomplete(diagnostic) {
+			t.Fatalf("%s still refused the original responsibility over a disappeared evidence source: %s", event, diagnostic)
 		}
 		if raw, err := os.ReadFile(typed); err != nil || !bytes.Equal(raw, typedBytes) {
 			t.Fatalf("%s overwrote original staged typed input: %v", event, err)
 		}
-		if raw, err := os.ReadFile(candidate); err != nil || !bytes.Equal(raw, candidateBytes) {
-			t.Fatalf("%s replaced the original staged Candidate: %v", event, err)
-		}
-		repairDispatchAssertUnchanged(t, root, before)
+	}
+	// The later actual author input stays on the same original responsibility.
+	// The staged Candidate now carries that later input instead of the input
+	// that existed when it was staged.
+	accepted := repairDispatchSnapshot(t, root)
+	registry, err := workspace.Decode(accepted.State)
+	if err != nil || registry == nil || registry.Executions[plan.Binding.ManifestAssignmentID].DeliveryRef == "" {
+		t.Fatalf("received original responsibility has no Candidate: %v", err)
+	}
+	updated, err := os.ReadFile(filepath.Join(root, registry.Executions[plan.Binding.ManifestAssignmentID].DeliveryRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded struct {
+		Provenance struct {
+			SubmittedAnswer json.RawMessage `json:"submitted_answer"`
+		} `json:"provenance"`
+	}
+	if err := json.Unmarshal(updated, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	var actual struct {
+		ResidualRisks []string `json:"residual_risks"`
+	}
+	if err := json.Unmarshal(recorded.Provenance.SubmittedAnswer, &actual); err != nil || len(actual.ResidualRisks) != 1 || actual.ResidualRisks[0] != "a later professional edit" {
+		t.Fatalf("received Candidate does not carry the later actual author input: %s (%v)", recorded.Provenance.SubmittedAnswer, err)
 	}
 }
 
 func TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate(t *testing.T) {
 	root, worker, plan, packet, previousState, previousJournal, _, _ := nativeS9OriginalCandidateBoundary(t)
-	accepted := repairDispatchSnapshot(t, root)
-	registry, err := workspace.Decode(accepted.State)
-	if err != nil || registry == nil {
-		t.Fatalf("original Candidate execution: %v", err)
-	}
-	candidateRef := registry.Executions[plan.Binding.ManifestAssignmentID].DeliveryRef
-	candidate := filepath.Join(root, candidateRef)
-	candidateBytes, err := os.ReadFile(candidate)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(root, ".claude/loop-state.json"), previousState, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +483,6 @@ func TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate(t *testin
 	if err := persistRepairLeadQuestionnaire(flat, later); err != nil {
 		t.Fatal(err)
 	}
-	before := repairDispatchRuntimeBytes(t, root)
 	var out, diagnostic bytes.Buffer
 	if code := runStageAnswer([]string{"consume", "--root", root, "--path", flat}, &out, &diagnostic); code == 0 {
 		t.Fatalf("technical recovery fabricated the missing staged typed input: %s %s", &out, &diagnostic)
@@ -466,15 +492,40 @@ func TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate(t *testin
 	nativeS9SplitChild(t, &in)
 	for _, event := range []string{"PreToolUse", "PostToolUse", "SubagentStop"} {
 		in.Event = event
-		if message := nativeS9SplitPublicEvent(t, root, in); !nativeS9ReceptionIncomplete(message) || !strings.Contains(message, candidateRef) {
-			t.Fatalf("%s did not explain the missing staged input: %s", event, message)
+		// L3-S9-repair.md:134 keeps exactly one author path and
+		// L4-hook-acceptance-checklist.md:159 removed the flat/typed
+		// adaptation. The removed typed copy is not an author path, so its
+		// absence no longer withholds the original responsibility.
+		if message := nativeS9SplitPublicEvent(t, root, in); nativeS9ReceptionIncomplete(message) {
+			t.Fatalf("%s still refused the original responsibility over a removed typed copy: %s", event, message)
 		}
 		if _, err := os.Stat(typed); !os.IsNotExist(err) {
 			t.Fatalf("%s fabricated the missing staged typed input: %v", event, err)
 		}
-		if raw, err := os.ReadFile(candidate); err != nil || !bytes.Equal(raw, candidateBytes) {
-			t.Fatalf("%s changed the original staged Candidate: %v", event, err)
-		}
-		repairDispatchAssertUnchanged(t, root, before)
+	}
+	// The later actual author input is received on the same original
+	// responsibility, so the recorded Candidate now carries that later input.
+	accepted := repairDispatchSnapshot(t, root)
+	registry, err := workspace.Decode(accepted.State)
+	if err != nil || registry == nil || registry.Executions[plan.Binding.ManifestAssignmentID].DeliveryRef == "" {
+		t.Fatalf("received original responsibility has no Candidate: %v", err)
+	}
+	updated, err := os.ReadFile(filepath.Join(root, registry.Executions[plan.Binding.ManifestAssignmentID].DeliveryRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded struct {
+		Provenance struct {
+			SubmittedAnswer json.RawMessage `json:"submitted_answer"`
+		} `json:"provenance"`
+	}
+	if err := json.Unmarshal(updated, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	var actual struct {
+		ResidualRisks []string `json:"residual_risks"`
+	}
+	if err := json.Unmarshal(recorded.Provenance.SubmittedAnswer, &actual); err != nil || len(actual.ResidualRisks) != 1 || actual.ResidualRisks[0] != "later input cannot replace a lost original typed attempt" {
+		t.Fatalf("received Candidate does not carry the later actual author input: %s (%v)", recorded.Provenance.SubmittedAnswer, err)
 	}
 }
