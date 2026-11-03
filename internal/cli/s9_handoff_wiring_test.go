@@ -539,8 +539,28 @@ func TestS9HandoffAcceptedFinalCleanupUsesFrozenSessionProtection(t *testing.T) 
 	var out, diagnostic bytes.Buffer
 	_ = runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", e.AssignmentID, "--agent", e.AgentID}, &out, &diagnostic)
 	checkpoint, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(root, e))
-	if err != nil || !found || checkpoint.State != integration.StateComplete {
+	if err != nil || !found {
 		t.Fatalf("old Plan blocked already accepted Final cleanup: %+v %v %s", checkpoint, err, &diagnostic)
+	}
+	// The missing old Plan is a later Main-material issue and must not hold
+	// the cleanup of an already accepted Final. The author's private answer
+	// material may still sit in the worktree, and a retained material keeps
+	// the cleanup pending without revoking the acceptance or the
+	// acknowledgement (L4-workflow-convergence.md:302).
+	if checkpoint.State != integration.StateComplete && checkpoint.State != integration.StateCleanupPending {
+		t.Fatalf("old Plan blocked already accepted Final cleanup: %+v %v %s", checkpoint, err, &diagnostic)
+	}
+	if checkpoint.State == integration.StateCleanupPending {
+		reason := checkpoint.FailureReason + " " + strings.Join(checkpoint.Blockers, " ")
+		if strings.Contains(reason, planPath) {
+			t.Fatalf("cleanup was held by the missing old Plan: %+v", checkpoint)
+		}
+		if checkpoint.WorktreePath == "" {
+			t.Fatalf("cleanup_pending did not report the retained worktree: %+v", checkpoint)
+		}
+		if _, statErr := os.Stat(checkpoint.WorktreePath); statErr != nil {
+			t.Fatalf("cleanup_pending did not retain the author's worktree: %v", statErr)
+		}
 	}
 	current, err := os.ReadFile(filepath.Join(root, ref.Path))
 	if err != nil || !bytes.Equal(original, current) {
