@@ -54,7 +54,7 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	if err := controlproof.ValidateStateJournalPair(state, journal); err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
-	issueSequence, issueAfter, err := verifier.issue(p)
+	issueSequence, _, err := verifier.issue(p)
 	if err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
@@ -124,7 +124,7 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	}
 
 	event := lifecycleEvents[0]
-	acceptedEventID, acceptedKey, acceptedAfter, acceptedSequence, err := verifyRepairResultBlockerEvent(event, p, owner, artifactRef, artifact.MessageRef, issueSequence, issueAfter, state)
+	acceptedEventID, acceptedKey, acceptedAfter, acceptedSequence, err := verifyRepairResultBlockerEvent(event, p, owner, artifactRef, artifact.MessageRef, issueSequence)
 	if err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
@@ -157,13 +157,11 @@ func verifyHistoricalRepairResultIssueWithPackets(state map[string]any, p workpa
 	actor, _ := event["actor"].(map[string]any)
 	from, _ := event["from"].(map[string]any)
 	to, _ := event["to"].(map[string]any)
-	before, be := integerField(event, "before_revision")
 	after, ae := integerField(event, "after_revision")
 	sequence, se := integerField(event, "sequence")
 	generation, ge := integerField(event, "baseline_generation")
-	stateRevision, re := integerField(state, "revision")
 	b := p.Binding.Sources
-	if event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "PACKET-ISSUE" || event["event_id"] != p.IssuanceEventID || event["idempotency_key"] != "packet:"+p.ID || event["runtime_id"] != b.RuntimeID || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || be != nil || ae != nil || se != nil || ge != nil || re != nil || before < 0 || after != before+1 || after > stateRevision || sequence < 1 || generation < 1 || !reflect.DeepEqual(from, to) {
+	if event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "PACKET-ISSUE" || event["event_id"] != p.IssuanceEventID || event["idempotency_key"] != "packet:"+p.ID || event["runtime_id"] != b.RuntimeID || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || ae != nil || se != nil || ge != nil || sequence < 1 || generation < 1 || !reflect.DeepEqual(from, to) {
 		return 0, 0, fmt.Errorf("S9 blocker original packet issue tuple differs")
 	}
 	if err := verifyUniqueRepairResultBlockerCommittedKey(journal, "packet:"+p.ID, p.IssuanceEventID); err != nil {
@@ -357,22 +355,27 @@ func verifyRepairResultBlockerMessage(data []byte, p workpacket.RepairResultPack
 	return nil
 }
 
-func verifyRepairResultBlockerEvent(event map[string]any, p workpacket.RepairResultPacket, owner, artifactRef, messageRef string, issueSequence, issueAfter int, state map[string]any) (eventID, key string, after, sequence int, err error) {
+func verifyRepairResultBlockerEvent(event map[string]any, p workpacket.RepairResultPacket, owner, artifactRef, messageRef string, issueSequence int) (eventID, key string, after, sequence int, err error) {
 	before, be := integerField(event, "before_revision")
 	after, ae := integerField(event, "after_revision")
 	sequence, se := integerField(event, "sequence")
 	generation, ge := integerField(event, "baseline_generation")
-	stateRevision, re := integerField(state, "revision")
 	actor, _ := event["actor"].(map[string]any)
 	from, _ := event["from"].(map[string]any)
 	to, _ := event["to"].(map[string]any)
 	refs, refsOK := checkpointStringSlice(event["evidence_ids"])
 	wantID := fmt.Sprintf("evt-agent-%s-work_blocked-r%d", owner, after)
 	wantKey := fmt.Sprintf("runtime:agent:%s:work_blocked:%d", owner, before)
-	if be != nil || ae != nil || se != nil || ge != nil || re != nil || !refsOK || before < 0 || after != before+1 || after > stateRevision || sequence < 1 || generation < 1 || event["event_id"] != wantID || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || event["idempotency_key"] != wantKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (work_blocked)" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, artifactRef) {
+	// The Runtime's write counter is a recorded field, never a qualifier. It is
+	// read on its original path and carried into the receipt for audit and
+	// history restoration; the required-field checks below only mirror the
+	// journal event schema, and no continuity, freshness or ordering is
+	// derived from the counter. The committed event coordinate (sequence) and
+	// the evidence references are what bind this event to the original blocker.
+	if be != nil || ae != nil || se != nil || ge != nil || !refsOK || sequence < 1 || generation != p.Binding.Sources.BaselineGeneration || event["event_id"] != wantID || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || event["idempotency_key"] != wantKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (work_blocked)" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, artifactRef) {
 		return "", "", 0, 0, fmt.Errorf("S9 original work_blocked lifecycle event tuple or evidence IDs differ")
 	}
-	if sequence <= issueSequence || after <= issueAfter {
+	if sequence <= issueSequence {
 		return "", "", 0, 0, fmt.Errorf("S9 original blocker event does not follow packet issuance")
 	}
 	return wantID, wantKey, after, sequence, nil
@@ -427,11 +430,16 @@ func recordedRepairResultLifecycleEvent(journal controlproof.JournalInspection, 
 		if !containsStringRuntime(refs, messageRef) || !strings.HasPrefix(stringValue(event["event_id"]), prefix) || event["outcome"] != "committed" {
 			continue
 		}
-		before, be := integerField(event, "before_revision")
-		after, ae := integerField(event, "after_revision")
+		// The Runtime's write counter is a recorded field, never a qualifier.
+		// The required-field checks below only mirror the journal event schema;
+		// no continuity or freshness is derived from the counter. The committed
+		// event coordinate (sequence) and the evidence references are what
+		// identify the original acceptance event.
+		_, be := integerField(event, "before_revision")
+		_, ae := integerField(event, "after_revision")
 		sequence, se := integerField(event, "sequence")
 		generation, ge := integerField(event, "baseline_generation")
-		if selected != nil || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != packet.Binding.Sources.RuntimeID || ge != nil || generation < 1 || (action != "work_blocked" && generation != packet.Binding.Sources.BaselineGeneration) || be != nil || ae != nil || se != nil || before < 0 || after != before+1 || sequence < 1 || stringValue(event["idempotency_key"]) == "" {
+		if selected != nil || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != packet.Binding.Sources.RuntimeID || ge != nil || generation < 1 || (action != "work_blocked" && generation != packet.Binding.Sources.BaselineGeneration) || be != nil || ae != nil || se != nil || sequence < 1 || stringValue(event["idempotency_key"]) == "" {
 			return nil, fmt.Errorf("S9 recorded %s has ambiguous or invalid original acceptance coordinates", action)
 		}
 		selected = event

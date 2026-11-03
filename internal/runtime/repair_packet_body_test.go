@@ -225,13 +225,12 @@ func TestS9ExternalBodyRejectsWrongRootDriftFormatsAndCancellation(t *testing.T)
 				ctx, cancel = context.WithCancel(ctx)
 				cancel()
 			}
-			_, found, err := FindRepairResultPacketContext(WithPacketBodyRoot(ctx, root), f.plan.state, f.packet.ID)
-			if change == "unknown-index-field" {
-				if err != nil || !found {
-					t.Fatalf("unrelated index field rejected: found=%v err=%v", found, err)
-				}
-				return
-			}
+			_, _, err := FindRepairResultPacketContext(WithPacketBodyRoot(ctx, root), f.plan.state, f.packet.ID)
+			// An index row is a closed "original responsibility + locator" structure:
+			// a foreign field (for example "future_field") makes the row externally
+			// modified and must be rejected, not tolerated. This restores the
+			// pre-refactor contract; the refactor had relaxed the index schema to
+			// additionalProperties:true and inverted this assertion to match.
 			if err == nil {
 				t.Fatalf("unsafe %s accepted", change)
 			}

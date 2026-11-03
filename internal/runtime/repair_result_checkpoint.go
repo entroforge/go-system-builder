@@ -86,10 +86,10 @@ func findRepairResultCandidateReceipt(root string, state map[string]any, p workp
 	if err := verifyRepairResultCandidateDocument(root, p, doc, provenance, ctx); err != nil {
 		return RepairResultCandidateReceipt{}, false, err
 	}
-	before, be := integerField(event, "before_revision")
+	_, be := integerField(event, "before_revision")
 	after, ae := integerField(event, "after_revision")
 	seq, se := integerField(event, "sequence")
-	if be != nil || ae != nil || se != nil || after != before+1 {
+	if be != nil || ae != nil || se != nil {
 		return RepairResultCandidateReceipt{}, false, fmt.Errorf("S9 original candidate event revision/sequence invalid")
 	}
 	receipt := RepairResultCandidateReceipt{Provenance: provenance, CandidateRef: path, AcceptedEventID: eventID, AcceptedIdempotencyKey: "runtime:s9:issued-repair-candidate:" + p.ID, AcceptedAfterRuntimeRevision: after, AcceptedSequence: seq}
@@ -233,17 +233,18 @@ func verifyRepairResultAcceptanceEvent(state map[string]any, p workpacket.Repair
 		return fmt.Errorf("S9 original result reception missing or precedes issuance")
 	}
 	event := j.Events[index]
-	before, be := integerField(event, "before_revision")
-	actualAfter, ae := integerField(event, "after_revision")
 	actualSeq, se := integerField(event, "sequence")
 	gen, ge := integerField(event, "baseline_generation")
-	revision, re := integerField(state, "revision")
 	actor, _ := event["actor"].(map[string]any)
 	from, _ := event["from"].(map[string]any)
 	to, _ := event["to"].(map[string]any)
 	refs, _ := checkpointStringSlice(event["evidence_ids"])
 	expectedEvent := "transition_committed"
-	if be != nil || ae != nil || se != nil || ge != nil || re != nil || actualAfter != before+1 || actualAfter != after || actualSeq != seq || actualAfter > revision || gen < 1 || event["event"] != expectedEvent || event["outcome"] != "committed" || event["transition_id"] != transition || event["idempotency_key"] != key || event["runtime_id"] != p.Binding.Sources.RuntimeID || actor["id"] != p.Binding.Sources.OwnerAgentID || actor["type"] != "agent" || !hypothesisStringContains(refs, ref) || !hypothesisJSONEqual(from, to) {
+	// The Runtime's revision counter is a write counter, not an identity: it is
+	// recorded on the receipt but never compared and never qualifies it. The
+	// receipt is bound to its original committed event by the event identity
+	// and the committed event coordinate (sequence) below.
+	if se != nil || ge != nil || actualSeq != seq || gen < 1 || event["event"] != expectedEvent || event["outcome"] != "committed" || event["transition_id"] != transition || event["idempotency_key"] != key || event["runtime_id"] != p.Binding.Sources.RuntimeID || actor["id"] != p.Binding.Sources.OwnerAgentID || actor["type"] != "agent" || !hypothesisStringContains(refs, ref) || !hypothesisJSONEqual(from, to) {
 		return fmt.Errorf("S9 original result reception event tuple differs")
 	}
 	return nil

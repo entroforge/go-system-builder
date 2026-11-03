@@ -373,7 +373,11 @@ func verifyReceiptJournal(root string, state map[string]any, receipt ResultRecei
 		return errors.New("original committed ReviewResult event is absent from the journal")
 	}
 	actor, _ := found["actor"].(map[string]any)
-	if found["runtime_id"] != receipt.RuntimeID || found["event"] != "transition_committed" || found["outcome"] != "committed" || found["transition_id"] != "REVIEW-RESULT" || found["idempotency_key"] != receipt.IdempotencyKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || intField(found["baseline_generation"]) != receipt.BaselineGeneration || intField(found["after_revision"]) != receipt.AcceptedAfterRevision || intField(found["before_revision"])+1 != receipt.AcceptedAfterRevision || intField(found["sequence"]) != receipt.AcceptedSequence {
+	// The receipt is bound to its original committed event by the structural
+	// identity facts below plus the committed event coordinate (sequence).
+	// The Runtime's revision counter is a write counter, not an identity: it is
+	// recorded on the receipt but never compared and never qualifies it.
+	if found["runtime_id"] != receipt.RuntimeID || found["event"] != "transition_committed" || found["outcome"] != "committed" || found["transition_id"] != "REVIEW-RESULT" || found["idempotency_key"] != receipt.IdempotencyKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || intField(found["baseline_generation"]) != receipt.BaselineGeneration || intField(found["sequence"]) != receipt.AcceptedSequence {
 		return errors.New("original journal event identity or commit coordinates differ from the receipt")
 	}
 	wantEvidence := append([]string{receipt.SubmissionKey}, findingIDs(result.Findings)...)

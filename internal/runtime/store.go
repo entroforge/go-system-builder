@@ -1501,6 +1501,11 @@ func (s *Store) commitJournalOnlyLocked(state map[string]any, event map[string]a
 	if err := s.validateCheckpointPublicationBudget(state, event, existingJournal); err != nil {
 		return err
 	}
+	// The Runtime's write counter is a recorded field, never a qualifier. It is
+	// read on its original path and carried into the commit marker for audit
+	// and history restoration; no continuity, freshness or ordering is derived
+	// from the counter here. The committed event coordinate of the journal
+	// (sequence and event id) decides which crash window the recovery is in.
 	eventAfter, err := integerField(event, "after_revision")
 	if err != nil {
 		return fmt.Errorf("journal-only commit after_revision: %w", err)
@@ -1818,10 +1823,6 @@ func (s *Store) recoverPendingCommitLocked() error {
 	if err != nil {
 		return fmt.Errorf("read runtime for commit recovery: %w", err)
 	}
-	currentRevision, err := integerField(state, "revision")
-	if err != nil {
-		return fmt.Errorf("read current runtime revision for commit recovery: %w", err)
-	}
 	eventID, _ := pending.JournalEvent["event_id"].(string)
 	if eventID == "" {
 		return errors.New("pending runtime commit has no event_id")
@@ -1859,17 +1860,38 @@ func (s *Store) recoverPendingCommitLocked() error {
 		}
 	}
 
-	// Cooperating writers hold the same lock and advance revision together
-	// with the journal. A revision alone does not detect external edits.
+	// Cooperating writers hold the same lock and advance the committed event
+	// coordinate together with the journal. The Runtime's write counter is a
+	// recorded field, never a qualifier: it is read on its original path and
+	// carried into the marker for audit and history restoration, and no
+	// continuity or freshness of the counter is derived here. The committed
+	// event coordinate decides which crash window this pending commit is in.
 	if stringValue(state["runtime_id"]) != pendingRuntimeID {
 		return errors.New("pending runtime commit belongs to a different runtime")
 	}
+	stateJournal, err := objectField(state, "journal")
+	if err != nil {
+		return fmt.Errorf("state journal: %w", err)
+	}
+	stateSequence, err := integerField(stateJournal, "last_sequence")
+	if err != nil {
+		return fmt.Errorf("state journal last_sequence: %w", err)
+	}
+	stateLastEventID, _ := stateJournal["last_event_id"].(string)
+	pendingEventSequence, err := integerField(pending.JournalEvent, "sequence")
+	if err != nil {
+		return fmt.Errorf("pending runtime commit sequence: %w", err)
+	}
 	switch {
-	case currentRevision == pending.PreviousRevision+1:
+	case stateSequence == pendingEventSequence && stateLastEventID == eventID:
+		// The active projection already holds the committed event the marker
+		// carries, so the pending state write landed.
 		if !reflect.DeepEqual(state, pending.State) {
 			return errors.New("pending runtime commit target conflicts with current state")
 		}
-	case currentRevision == pending.PreviousRevision:
+	case stateSequence == pendingEventSequence-1:
+		// The active projection is still the one before the committed event,
+		// so the pending state write has not landed yet.
 		if found {
 			return errors.New("pending runtime commit journal event exists while state is still previous")
 		}
@@ -1877,7 +1899,7 @@ func (s *Store) recoverPendingCommitLocked() error {
 			return fmt.Errorf("restore pending runtime state: %w", err)
 		}
 	default:
-		return errors.New("pending runtime commit has an unknown state revision")
+		return errors.New("pending runtime commit has an unknown committed event coordinate")
 	}
 	if !found {
 		if err := appendJSONLine(s.journalPath, pending.JournalEvent); err != nil {
@@ -1891,16 +1913,21 @@ func (s *Store) recoverPendingCommitLocked() error {
 }
 
 func validatePendingCommitCoherence(pending commitPending) error {
-	stateRevision, err := integerField(pending.State, "revision")
-	if err != nil {
+	// The Runtime's write counter is a recorded field, never a qualifier. It is
+	// read on its original path and carried into the marker for audit and
+	// history restoration; the required-field checks below only mirror the
+	// journal event and state schemas, and no continuity, freshness or
+	// ordering is derived from the counter. The committed event coordinate
+	// (journal sequence and event id) binds the pending state to the pending
+	// event.
+	if _, err := integerField(pending.State, "revision"); err != nil {
 		return fmt.Errorf("state revision: %w", err)
 	}
 	eventAfter, err := integerField(pending.JournalEvent, "after_revision")
 	if err != nil {
 		return fmt.Errorf("journal after_revision: %w", err)
 	}
-	eventBefore, err := integerField(pending.JournalEvent, "before_revision")
-	if err != nil {
+	if _, err := integerField(pending.JournalEvent, "before_revision"); err != nil {
 		return fmt.Errorf("journal before_revision: %w", err)
 	}
 	sequence, err := integerField(pending.JournalEvent, "sequence")
@@ -1910,9 +1937,6 @@ func validatePendingCommitCoherence(pending commitPending) error {
 	eventID, _ := pending.JournalEvent["event_id"].(string)
 	if eventID == "" {
 		return errors.New("journal event_id is required")
-	}
-	if stateRevision != eventAfter || eventBefore+1 != eventAfter {
-		return fmt.Errorf("state revision %d and journal revisions %d->%d are incoherent", stateRevision, eventBefore, eventAfter)
 	}
 	stateJournal, err := objectField(pending.State, "journal")
 	if err != nil {
@@ -1954,6 +1978,11 @@ func validatePendingCommitCoherence(pending commitPending) error {
 		transitionSequence, _ := integerField(transition, "sequence")
 		transitionRevision, _ := integerField(transition, "committed_revision")
 		transitionIdempotency, _ := transition["idempotency_key"].(string)
+		// The retained transition record and the journal event describe the
+		// same commit, so their recorded counters must agree with each other.
+		// This is a record agreement inside one transition, not a continuity,
+		// freshness or ordering rule derived from the counter: the committed
+		// event coordinate (event id and sequence) is what links the two.
 		if transitionEventID != eventID || transitionSequence != sequence || transitionRevision != eventAfter || transitionIdempotency != pending.IdempotencyKey {
 			return errors.New("state last_transition is not linked to pending journal event")
 		}

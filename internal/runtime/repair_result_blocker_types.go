@@ -101,7 +101,7 @@ func (receipt *RepairResultBlockerReceipt) UnmarshalJSON(data []byte) error {
 	if err := decodeRepairResultBlockerJSON(data, &decoded); err != nil {
 		return fmt.Errorf("decode S9 blocker receipt: %w", err)
 	}
-	if decoded.Contract != "s9-repair-result-blocker-receipt-v1" || decoded.Artifact.Contract != "s9-repair-result-blocker-v1" || decoded.ArtifactRef == "" || decoded.AcceptedEventID == "" || decoded.AcceptedIdempotencyKey == "" || decoded.AcceptedAfterRuntimeRevision < 1 || decoded.AcceptedSequence < 1 {
+	if decoded.Contract != "s9-repair-result-blocker-receipt-v1" || decoded.Artifact.Contract != "s9-repair-result-blocker-v1" || decoded.ArtifactRef == "" || decoded.AcceptedEventID == "" || decoded.AcceptedIdempotencyKey == "" || decoded.AcceptedSequence < 1 {
 		return errors.New("S9 blocker receipt has incomplete original acceptance coordinates")
 	}
 	*receipt = RepairResultBlockerReceipt(decoded)

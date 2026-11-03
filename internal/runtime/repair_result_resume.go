@@ -326,7 +326,7 @@ func (v *repairResultResumeVerifier) verifyResumeUncached(packet workpacket.Repa
 			return fmt.Errorf("S9 Resume lineage contains a packet cycle")
 		}
 		visited[current.ID] = true
-		issueSequence, issueAfter, err := v.issue(current)
+		issueSequence, _, err := v.issue(current)
 		if err != nil {
 			return fmt.Errorf("verify S9 Resume packet issuance %s: %w", current.ID, err)
 		}
@@ -365,7 +365,7 @@ func (v *repairResultResumeVerifier) verifyResumeUncached(packet workpacket.Repa
 		if !sameRepairResume(resume, expected) {
 			return fmt.Errorf("S9 Resume tuple differs from the exact predecessor resolution")
 		}
-		if receipt.AcceptedSequence >= issueSequence || receipt.AcceptedAfterRuntimeRevision >= issueAfter {
+		if receipt.AcceptedSequence >= issueSequence {
 			return fmt.Errorf("S9 successor packet issuance does not follow its Main resolution")
 		}
 		children := 0
@@ -397,7 +397,7 @@ func repairResultResumeFromReceipt(packet workpacket.RepairResultPacket, receipt
 	before, be := integerField(event, "before_revision")
 	after, ae := integerField(event, "after_revision")
 	sequence, se := integerField(event, "sequence")
-	if be != nil || ae != nil || se != nil || before < 0 || after != before+1 || after != receipt.AcceptedAfterRuntimeRevision || sequence != receipt.AcceptedSequence || event["event_id"] != receipt.AcceptedEventID || event["idempotency_key"] != receipt.AcceptedIdempotencyKey {
+	if be != nil || ae != nil || se != nil || sequence != receipt.AcceptedSequence || event["event_id"] != receipt.AcceptedEventID || event["idempotency_key"] != receipt.AcceptedIdempotencyKey {
 		return nil, fmt.Errorf("S9 Resume resolution acceptance coordinates differ from the verified event")
 	}
 	return &workpacket.RepairResultResume{

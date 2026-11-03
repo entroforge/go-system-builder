@@ -39,7 +39,7 @@ func (receipt *RepairResultResolutionReceipt) UnmarshalJSON(data []byte) error {
 	if err := decodeRepairResultBlockerJSON(data, &decoded); err != nil {
 		return fmt.Errorf("decode S9 resolution receipt: %w", err)
 	}
-	if decoded.Contract != "s9-repair-result-resolution-receipt-v1" || decoded.PacketID == "" || decoded.OwnerAgentID == "" || decoded.BlockerRef == "" || decoded.MessageRef == "" || decoded.AcceptedEventID == "" || decoded.AcceptedIdempotencyKey == "" || decoded.AcceptedAfterRuntimeRevision < 1 || decoded.AcceptedSequence < 1 {
+	if decoded.Contract != "s9-repair-result-resolution-receipt-v1" || decoded.PacketID == "" || decoded.OwnerAgentID == "" || decoded.BlockerRef == "" || decoded.MessageRef == "" || decoded.AcceptedEventID == "" || decoded.AcceptedIdempotencyKey == "" || decoded.AcceptedSequence < 1 {
 		return fmt.Errorf("S9 resolution receipt has incomplete acceptance coordinates")
 	}
 	*receipt = RepairResultResolutionReceipt(decoded)
@@ -311,17 +311,22 @@ func verifyRepairResultResolutionEvent(event map[string]any, p workpacket.Repair
 	after, ae := integerField(event, "after_revision")
 	sequence, se := integerField(event, "sequence")
 	generation, ge := integerField(event, "baseline_generation")
-	stateRevision, re := integerField(state, "revision")
 	actor, _ := event["actor"].(map[string]any)
 	from, _ := event["from"].(map[string]any)
 	to, _ := event["to"].(map[string]any)
 	refs, refsOK := checkpointStringSlice(event["evidence_ids"])
 	wantID := fmt.Sprintf("evt-agent-%s-blocker_resolved-r%d", owner, after)
 	wantKey := fmt.Sprintf("runtime:agent:%s:blocker_resolved:%d", owner, before)
-	if be != nil || ae != nil || se != nil || ge != nil || re != nil || !refsOK || before < blocker.AcceptedAfterRuntimeRevision || after != before+1 || after > stateRevision || sequence <= blocker.AcceptedSequence || generation != p.Binding.Sources.BaselineGeneration || event["event_id"] != wantID || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || event["idempotency_key"] != wantKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (blocker_resolved)" || from["state"] != "bug_resolution" || from["phase"] != "fixing" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, blocker.ArtifactRef) {
+	// The Runtime's write counter is a recorded field, never a qualifier. It is
+	// read on its original path and carried into the receipt for audit and
+	// history restoration; the required-field checks below only mirror the
+	// journal event schema, and no continuity, freshness or ordering is
+	// derived from the counter. The committed event coordinate (sequence) is
+	// what orders this event after the original blocker.
+	if be != nil || ae != nil || se != nil || ge != nil || !refsOK || sequence <= blocker.AcceptedSequence || generation != p.Binding.Sources.BaselineGeneration || event["event_id"] != wantID || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || event["idempotency_key"] != wantKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (blocker_resolved)" || from["state"] != "bug_resolution" || from["phase"] != "fixing" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, blocker.ArtifactRef) {
 		return "", "", 0, 0, fmt.Errorf("S9 blocker_resolved lifecycle event tuple or evidence IDs differ")
 	}
-	if sequence <= blocker.AcceptedSequence || after <= blocker.AcceptedAfterRuntimeRevision {
+	if sequence <= blocker.AcceptedSequence {
 		return "", "", 0, 0, fmt.Errorf("S9 blocker_resolved event does not follow its original blocker")
 	}
 	return wantID, wantKey, after, sequence, nil

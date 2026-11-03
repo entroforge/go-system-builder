@@ -211,6 +211,61 @@ func ProjectRepairResultExecution(execution map[string]any) (json.RawMessage, er
 	return canonicalRuntimeJSON(data)
 }
 
+// repairResultExecutionCoordinates are the structural coordinates of one
+// attempt: which attempt this is, which stage it belongs to and where its
+// work sits. They are reconciled field by field between the issued execution
+// definition and the registered execution projection.
+//
+// A digest, hash, checksum, fingerprint, revision or round is deliberately
+// absent. Those machine gates were retired (DEFECT-REMEDIATION-PLAN.md §13.1)
+// while these structural facts are kept (§13.2 "原责任坐标"; §13.6
+// "baseline_generation 保留"). The execution identity itself stays pinned by
+// the binding-identity filter below, so it is not repeated here.
+var repairResultExecutionCoordinates = []string{
+	"execution_generation", // attempt coordinate: a replaced attempt is not the issued one
+	"baseline_generation",  // stage coordinate: the baseline the attempt belongs to
+	"runtime_id",           // runtime coordinate
+	"agent_id",             // owner coordinate
+	"worktree_path",        // work position coordinate
+	"branch",               // work position coordinate
+	"target_branch",        // integration target coordinate
+}
+
+// sameRepairResultExecutionCoordinates reconciles the structural coordinates of
+// the issued execution definition with the registered execution. It returns the
+// first coordinate that no longer agrees.
+//
+// A coordinate the issued attempt did not record is unknown rather than a
+// fact, so it is not compared: an execution that gained its worktree path or
+// branch after issuance has not drifted from the issued attempt.
+func sameRepairResultExecutionCoordinates(issued, registered map[string]any) (string, bool) {
+	for _, key := range repairResultExecutionCoordinates {
+		issuedValue, issuedKnown := repairResultExecutionCoordinate(issued[key])
+		registeredValue, registeredKnown := repairResultExecutionCoordinate(registered[key])
+		if !issuedKnown {
+			continue
+		}
+		if !registeredKnown || !hypothesisJSONEqual(issuedValue, registeredValue) {
+			return key, false
+		}
+	}
+	return "", true
+}
+
+// repairResultExecutionCoordinate reads one coordinate. An absent or empty
+// value is unknown: the attempt did not freeze that fact.
+func repairResultExecutionCoordinate(value any) (any, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case string:
+		return typed, typed != ""
+	case float64:
+		return typed, typed != 0
+	}
+	return value, true
+}
+
 func repairResultExecution(state map[string]any, p workpacket.RepairResultPacket) (map[string]any, error) {
 	b := p.Binding.Sources
 	workspace, _ := state["workspace"].(map[string]any)

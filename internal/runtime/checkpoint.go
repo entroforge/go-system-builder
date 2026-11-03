@@ -550,10 +550,6 @@ func ValidateCheckpointRestore(root string, pair CheckpointPair) error {
 		if stringValue(current["runtime_id"]) != stringValue(pair.State["runtime_id"]) || stringValue(currentREQ["id"]) != stringValue(checkpointREQ["id"]) || stringValue(currentREQ["path"]) != stringValue(checkpointREQ["path"]) || stringValue(currentREQ["version"]) != stringValue(checkpointREQ["version"]) || fmt.Sprint(currentBaseline["generation"]) != fmt.Sprint(checkpointBaseline["generation"]) {
 			return errors.New("checkpoint disagrees with current Runtime identity/baseline/REQ")
 		}
-		revision, err := integerField(current, "revision")
-		if err == nil && revision > pair.Manifest.Revision {
-			return errors.New("checkpoint would roll back a newer Runtime")
-		}
 	}
 	journal, err := inspectJournalData(pair.JournalBytes)
 	if err != nil {
@@ -565,6 +561,14 @@ func ValidateCheckpointRestore(root string, pair CheckpointPair) error {
 		return err
 	}
 	paths = append(paths, journalPath)
+	// The committed event coordinate of the active Runtime is read from the
+	// same journal files that already carry its known events. A revision
+	// counter is only an audit coordinate, so it never decides whether a
+	// restore rolls back committed progress.
+	liveTailSequence := 0
+	liveTailEventID := ""
+	liveTailKnown := false
+	unknownEvent := false
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
@@ -585,9 +589,36 @@ func ValidateCheckpointRestore(root string, pair CheckpointPair) error {
 			id := stringValue(event["event_id"])
 			_, ok := journal.EventIndex[id]
 			if id != "" && !ok {
-				return errors.New("checkpoint would discard a known journal event")
+				unknownEvent = true
+			}
+			sequence, err := integerField(event, "sequence")
+			if err != nil || sequence < 1 || id == "" {
+				continue
+			}
+			if !liveTailKnown || sequence > liveTailSequence {
+				liveTailKnown = true
+				liveTailSequence = sequence
+				liveTailEventID = id
 			}
 		}
+	}
+	// A restore must not roll back committed progress. The committed event
+	// coordinate decides, exactly as the recovery path decides it: an active
+	// Runtime that holds later committed events than the checkpoint keeps its
+	// progress. A journal that cannot be read leaves the coordinate unknown and
+	// never becomes a new reason to refuse the restore.
+	if liveTailKnown {
+		checkpointTailSequence := journal.TailSequence
+		checkpointTailEventID := ""
+		if len(journal.Events) > 0 {
+			checkpointTailEventID = stringValue(journal.Events[len(journal.Events)-1]["event_id"])
+		}
+		if liveTailSequence > checkpointTailSequence || (liveTailSequence == checkpointTailSequence && liveTailEventID != checkpointTailEventID) {
+			return errors.New("checkpoint would roll back committed Runtime progress")
+		}
+	}
+	if unknownEvent {
+		return errors.New("checkpoint would discard a known journal event")
 	}
 	return nil
 }

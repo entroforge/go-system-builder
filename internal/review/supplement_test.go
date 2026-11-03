@@ -140,7 +140,7 @@ func TestSubmitSupplementHappyPath(t *testing.T) {
 	}
 
 	supplementPath := writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-1", "agent-qa-1"))
-	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	})
 	if err != nil {
@@ -216,7 +216,7 @@ func TestSubmitSupplementRejectsUnknownFinding(t *testing.T) {
 	statePath, journalPath, _ := supplementFixture(t, root)
 
 	supplementPath := writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-1", "agent-qa-1"))
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-missing", FilePath: supplementPath,
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not match") {
@@ -225,7 +225,7 @@ func TestSubmitSupplementRejectsUnknownFinding(t *testing.T) {
 
 	body := supplementBody("finding-missing", "supplement-qa-2", "agent-qa-1")
 	supplementPath = writeSupplementFile(t, root, body)
-	_, err = SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err = SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-missing", FilePath: supplementPath,
 	})
 	if err == nil || !strings.Contains(err.Error(), "not registered") {
@@ -258,7 +258,7 @@ func TestSubmitSupplementIgnoresLegacyFindingRound(t *testing.T) {
 	}
 
 	supplementPath := writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-1", "agent-qa-1"))
-	_, err = SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err = SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	})
 	if err != nil {
@@ -272,12 +272,12 @@ func TestSubmitSupplementReplaysOriginalAndRejectsConflictingID(t *testing.T) {
 	statePath, journalPath, _ := supplementFixture(t, root)
 
 	supplementPath := writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-1", "agent-qa-1"))
-	if _, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	if _, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	}); err != nil {
 		t.Fatalf("first SubmitSupplement: %v", err)
 	}
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	})
 	if err != nil {
@@ -286,7 +286,7 @@ func TestSubmitSupplementReplaysOriginalAndRejectsConflictingID(t *testing.T) {
 	changed := supplementBody("finding-qa-1", "supplement-qa-1", "agent-qa-1")
 	changed["new_observation"] = "a different professional expression"
 	supplementPath = writeSupplementFile(t, root, changed)
-	_, err = SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: supplementPath})
+	_, err = SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: supplementPath})
 	if err == nil || !strings.Contains(err.Error(), "different original expression") {
 		t.Fatalf("same ID with different content must not overwrite the original: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestSubmitSupplementAuthorBinding(t *testing.T) {
 
 	// A different author without scheduler authorization is rejected.
 	supplementPath := writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-1", "agent-dv-1"))
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	})
 	if err == nil || !strings.Contains(err.Error(), "not the original finder") {
@@ -317,7 +317,7 @@ func TestSubmitSupplementAuthorBinding(t *testing.T) {
 	// A scheduler-authorized replacement finder (L3-S8 §2.2) is accepted and
 	// the authorization is recorded on the row.
 	supplementPath = writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-1", "agent-dv-1"))
-	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath, AuthorizedBy: "scheduler-1",
 	})
 	if err != nil {
@@ -347,7 +347,7 @@ func TestSubmitSupplementIgnoresHistoricalHashMismatch(t *testing.T) {
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err = SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: path,
 	})
 	if err != nil {
@@ -364,7 +364,7 @@ func TestSubmitSupplementAcceptsAdditionalProfessionalContext(t *testing.T) {
 	body["root_cause"] = "the store interface is wrong"
 	body["suggested_fix"] = "nil-check the caller"
 	supplementPath := writeSupplementFile(t, root, body)
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	})
 	if err != nil {
@@ -384,7 +384,7 @@ func TestSubmitSupplementGateMissingHypothesis(t *testing.T) {
 		func(b map[string]any) { delete(b, "hypothesis_id") },
 	)
 	supplementPath := writeSupplementFile(t, root, body)
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	})
 	if err == nil {
@@ -407,7 +407,7 @@ func TestSubmitSupplementGateMissingDiscriminator(t *testing.T) {
 		func(b map[string]any) { delete(b, "discriminator") },
 	)
 	supplementPath := writeSupplementFile(t, root, body)
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	})
 	if err == nil || !strings.Contains(err.Error(), "discriminator") {
@@ -426,7 +426,7 @@ func TestSubmitSupplementGateMissingOutcomes(t *testing.T) {
 		func(b map[string]any) { delete(b, "expected_outcomes") },
 	)
 	supplementPath := writeSupplementFile(t, root, body)
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID: "finding-qa-1", FilePath: supplementPath,
 	})
 	if err == nil || !strings.Contains(err.Error(), "expected_outcomes") {
@@ -450,7 +450,7 @@ func TestSubmitSupplementInRoundNoteExempt(t *testing.T) {
 		},
 	)
 	supplementPath := writeSupplementFile(t, root, body)
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID:   "finding-qa-1",
 		FilePath:    supplementPath,
 		InRoundNote: true,
@@ -480,7 +480,7 @@ func TestSubmitSupplementInRoundNoteRejectsHypothesis(t *testing.T) {
 	// hypothesis_id + --in-round-note is contradictory: submit says "I am not
 	// answering a discriminator" while carrying a hypothesis_id.
 	supplementPath := writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-1", "agent-qa-1"))
-	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+	_, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
 		FindingID:   "finding-qa-1",
 		FilePath:    supplementPath,
 		InRoundNote: true,
@@ -508,7 +508,7 @@ func TestSupplementUsesRuntimeAndLeavesUnrelatedOldFileAlone(t *testing.T) {
 		b["new_observation"] = "the original observed symptom continues"
 	})
 	path := writeSupplementFile(t, root, body)
-	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: path, InRoundNote: true})
+	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: path, InRoundNote: true})
 	if err != nil {
 		t.Fatalf("unrelated old file blocked current observation: %v", err)
 	}

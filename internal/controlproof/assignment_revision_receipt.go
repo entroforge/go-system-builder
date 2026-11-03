@@ -85,7 +85,7 @@ func ValidateAssignmentRevisionReceiptsContext(ctx context.Context, state map[st
 	seenRecords := map[assignmentrecord.RecordReference]bool{}
 	coveredRevisions := map[assignmentrecord.RecordReference]bool{}
 	for i, receipt := range receipts {
-		if strings.TrimSpace(receipt.IntentKey) == "" || len(receipt.IntentKey) > 1024 || receipt.RuntimeEventID == "" || receipt.RuntimeCommitRevision < 1 {
+		if strings.TrimSpace(receipt.IntentKey) == "" || len(receipt.IntentKey) > 1024 || receipt.RuntimeEventID == "" {
 			return fmt.Errorf("Assignment revision receipt %d has incomplete identity fields", i)
 		}
 		newRef, oldRef := receipt.AssignmentRecord, receipt.PreviousRecord
@@ -109,9 +109,10 @@ func ValidateAssignmentRevisionReceiptsContext(ctx context.Context, state map[st
 		if issuance == nil || issuance.IntentKey != receipt.IntentKey || issuance.PreviousRecord != oldRef {
 			return fmt.Errorf("Assignment revision receipt %d differs from the original Record issuance", i)
 		}
-		if newRecord.RegistrationRevision != receipt.RuntimeCommitRevision {
-			return fmt.Errorf("Assignment revision receipt %d commit revision differs from the issued Record", i)
-		}
+		// The issued Record is bound to this receipt by its intent key, its
+		// previous Record and the exact committed Writer event below. The
+		// Runtime's commit counter is a write counter, not an identity: it is
+		// recorded on the receipt but never compared and never qualifies it.
 		coveredRevisions[newRef] = true
 		eventID := receipt.RuntimeEventID // Old event IDs remain opaque recorded identities.
 		index, ok := journal.EventIndex[eventID]
@@ -121,8 +122,7 @@ func ValidateAssignmentRevisionReceiptsContext(ctx context.Context, state map[st
 		event := journal.Events[index]
 		actor, _ := event["actor"].(map[string]any)
 		generation, generationErr := integerField(event, "baseline_generation")
-		afterRevision, afterErr := integerField(event, "after_revision")
-		if event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "ASSIGNMENT-REVISION" || event["runtime_id"] != oldRef.RuntimeID || generationErr != nil || generation != oldRef.BaselineGeneration || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || afterErr != nil || afterRevision != receipt.RuntimeCommitRevision {
+		if event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "ASSIGNMENT-REVISION" || event["runtime_id"] != oldRef.RuntimeID || generationErr != nil || generation != oldRef.BaselineGeneration || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" {
 			return fmt.Errorf("Assignment revision receipt %d does not match its original committed Writer event", i)
 		}
 	}

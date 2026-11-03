@@ -642,6 +642,12 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 			if _, err := controlproof.ReadJournalForStateAt(request.JournalPath, current); err != nil {
 				stateNewer = false // unverified state is preserved as unknown below
 			}
+		} else if !recoveryProjectionCoherent(request, current) {
+			// A different Runtime epoch may only claim later committed progress
+			// when it is a self-consistent Runtime. A damaged projection is the
+			// material this recovery replaces; it is not an authority that can
+			// refuse the recovery.
+			stateNewer = false
 		}
 	}
 	if stateNewer {
@@ -741,35 +747,52 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 	return result, nil
 }
 
-// Progress is decided by the original Writer's Runtime revision and journal
-// event, never by comparing a complete user document.
+// Progress is decided by structural Runtime facts: the epoch identity of the
+// active projection and its committed responsibility coordinate (the journal
+// tail). A revision counter is only an audit coordinate, so it never decides
+// whether a recovery is stale, and a complete user document is never compared.
 func recoveryStateProgress(current, target []byte) (done, later bool) {
 	var have, want map[string]any
 	if json.Unmarshal(current, &have) != nil || json.Unmarshal(target, &want) != nil {
 		return false, false
 	}
-	haveRev, e1 := integerField(have, "revision")
-	wantRev, e2 := integerField(want, "revision")
 	haveJournal, ok1 := have["journal"].(map[string]any)
 	wantJournal, ok2 := want["journal"].(map[string]any)
-	if e1 != nil || e2 != nil || !ok1 || !ok2 {
+	if !ok1 || !ok2 {
 		return false, false
 	}
 	if stringValue(have["runtime_id"]) != stringValue(want["runtime_id"]) {
+		// A different Runtime epoch may only claim later progress when it is
+		// a self-consistent Runtime; the caller proves that coherence.
 		return false, true
 	}
-	if haveRev > wantRev {
-		return false, true
+	haveSequence, haveErr := integerField(haveJournal, "last_sequence")
+	wantSequence, wantErr := integerField(wantJournal, "last_sequence")
+	if haveErr != nil || wantErr != nil {
+		return false, false
 	}
-	if haveRev == wantRev {
-		haveSequence, haveErr := integerField(haveJournal, "last_sequence")
-		wantSequence, wantErr := integerField(wantJournal, "last_sequence")
-		if haveErr == nil && wantErr == nil && stringValue(haveJournal["last_event_id"]) == stringValue(wantJournal["last_event_id"]) && haveSequence == wantSequence {
+	if haveSequence == wantSequence {
+		if stringValue(haveJournal["last_event_id"]) == stringValue(wantJournal["last_event_id"]) {
+			// The active projection already holds the recovered committed event.
 			return true, false
 		}
 		return false, true
 	}
+	if haveSequence > wantSequence {
+		// The active projection holds later committed progress of the same epoch.
+		return false, true
+	}
 	return false, false
+}
+
+// recoveryProjectionCoherent reports whether the active projection is a
+// self-consistent Runtime. Only such a projection may claim later committed
+// progress against a recovery candidate; a damaged one is unknown material.
+func recoveryProjectionCoherent(request RecoveryRequest, state map[string]any) bool {
+	if len(state) == 0 || request.Validator == nil {
+		return false
+	}
+	return request.Validator.ValidateCandidate(request.Root, state) == nil
 }
 
 func recoveryJournalProgress(current, target []byte) (done, later bool) {

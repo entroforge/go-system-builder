@@ -78,7 +78,7 @@ type SupplementRow struct {
 func SubmitSupplement(root, statePath, journalPath string, request SupplementRequest) (SupplementReceipt, error) {
 	for {
 		receipt, err := submitSupplementOnce(root, statePath, journalPath, request)
-		if request.ExpectedRevision > 0 || !errors.Is(err, loopruntime.ErrStaleRevision) {
+		if request.ExpectedRevision >= 0 || !errors.Is(err, loopruntime.ErrStaleRevision) {
 			return receipt, err
 		}
 		// Another Writer committed after our observation. Re-read its actual
@@ -193,10 +193,12 @@ func submitSupplementOnce(root, statePath, journalPath string, request Supplemen
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	expectedRevision := request.ExpectedRevision
-	// Zero was the implicit value before SupplementRequest exposed the
-	// optional assertion. Active review rounds are already beyond bootstrap,
-	// so retain source compatibility for callers that omit the field.
-	if expectedRevision <= 0 {
+	// A negative expected revision is the omission marker: the caller did not
+	// assert a Runtime revision. A non-negative value is a concrete assertion
+	// and is compared as such (L4-revision-usage.md:78), so Go's zero value
+	// means "the Runtime is at revision 0" rather than "no assertion".
+	// Callers that mean "omitted" pass a negative value.
+	if expectedRevision < 0 {
 		// The internal CAS ties the generated identity and staged path to the
 		// state used to prepare them; it is not an author-supplied condition.
 		expectedRevision = intField(current["revision"])

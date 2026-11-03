@@ -26,7 +26,7 @@ func TestSupplementProfessionalInputUsesOriginalResponsibilityWithoutRewritingAu
 	}
 	findingBefore := mustReadTestFile(t, findingArtifactPath(root, "finding-qa-1"))
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
-	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: file, InRoundNote: true, OccurredAt: now})
+	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: file, InRoundNote: true, OccurredAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestSupplementProfessionalInputUsesOriginalResponsibilityWithoutRewritingAu
 		t.Fatal("supplement rewrote authoring input or original Finding")
 	}
 	stateBefore, journalBefore := mustReadTestFile(t, statePath), mustReadTestFile(t, journalPath)
-	replayed, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: file, InRoundNote: true, OccurredAt: now.Add(time.Hour)})
+	replayed, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: file, InRoundNote: true, OccurredAt: now.Add(time.Hour)})
 	if err != nil || replayed.SupplementID != receipt.SupplementID || replayed.Path != receipt.Path {
 		t.Fatalf("same professional input did not reuse original accepted object: %+v %v", replayed, err)
 	}
@@ -55,7 +55,7 @@ func TestSupplementProfessionalInputUsesOriginalResponsibilityWithoutRewritingAu
 	if err := os.WriteFile(filepath.Join(root, "observed.txt"), []byte("later drift"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if same, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: file, InRoundNote: true}); err != nil || same.SupplementID != receipt.SupplementID {
+	if same, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: file, InRoundNote: true}); err != nil || same.SupplementID != receipt.SupplementID {
 		t.Fatalf("existing original observation depended on later evidence bytes: %+v %v", same, err)
 	}
 	if !bytes.Equal(stateBefore, mustReadTestFile(t, statePath)) || !bytes.Equal(journalBefore, mustReadTestFile(t, journalPath)) {
@@ -69,7 +69,7 @@ func TestSupplementProfessionalInputUsesOriginalResponsibilityWithoutRewritingAu
 	if err := os.WriteFile(file, newObservation, 0600); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: file, InRoundNote: true})
+	fresh, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: file, InRoundNote: true})
 	if err != nil || fresh.SupplementID == receipt.SupplementID {
 		t.Fatalf("genuinely new professional observation was not appendable: %+v %v", fresh, err)
 	}
@@ -84,7 +84,7 @@ func TestSupplementDoesNotInferNewAuthorFromOldFinderOrSkipAuthorization(t *test
 			root := t.TempDir()
 			statePath, journalPath, _ := supplementFixture(t, root)
 			input := map[string]any{"new_observation": "Actual new observation", "author": "agent-qa-1"}
-			request := SupplementRequest{FindingID: "finding-qa-1", FilePath: filepath.Join(root, "observation.json"), InRoundNote: true}
+			request := SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: filepath.Join(root, "observation.json"), InRoundNote: true}
 			want := ""
 			switch scenario {
 			case "missing-author":

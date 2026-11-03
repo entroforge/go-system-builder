@@ -29,7 +29,7 @@ func TestSupplementOriginalObservationWithoutDigest(t *testing.T) {
 			if err := os.WriteFile(occupied, []byte("unrelated"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			req := SupplementRequest{FindingID: "finding-qa-1", FilePath: file, InRoundNote: true, OccurredAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)}
+			req := SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: file, InRoundNote: true, OccurredAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)}
 			first, err := SubmitSupplement(root, statePath, journalPath, req)
 			if err != nil {
 				t.Fatal(err)
@@ -132,7 +132,7 @@ func TestSupplementConcurrentOriginalObservations(t *testing.T) {
 			for _, path := range paths {
 				go func(path string) {
 					<-start
-					r, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{FindingID: "finding-qa-1", FilePath: path, InRoundNote: true})
+					r, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1, FindingID: "finding-qa-1", FilePath: path, InRoundNote: true})
 					results <- result{r, err}
 				}(path)
 			}

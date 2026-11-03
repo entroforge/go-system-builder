@@ -116,16 +116,32 @@ func TestVerifiedRepairResultResolutionReceiptRejectsWrongChronologyAndDuplicate
 			messageRef := attachRepairResultResolutionFixture(t, &f, nil)
 			switch variant {
 			case "before_blocker":
+				// The resolution must be a committed event that follows its own
+				// blocker. The Runtime write counter is a recorded field, not an
+				// ordering authority, so the wrong chronology is expressed on
+				// the committed event coordinate: the resolution is committed at
+				// the blocker's own sequence and the blocker after it.
+				owner := f.runtime.packet.Binding.Sources.OwnerAgentID
+				binding := f.runtime.packet.Binding.Sources
 				last := len(f.runtime.events) - 1
+				f.runtime.events[last-1] = buildJournalEvent(Mutation{
+					EventID:      fmt.Sprintf("evt-agent-%s-work_blocked-r11", owner),
+					TransitionID: "AGENT-LIFECYCLE", Event: "work_blocked", Actor: "orchestrator",
+					IdempotencyKey: fmt.Sprintf("runtime:agent:%s:work_blocked:10", owner),
+					RuntimeID:      binding.RuntimeID, BaselineGeneration: binding.BaselineGeneration,
+					From: map[string]any{"state": "bug_resolution", "phase": "fixing"}, To: map[string]any{"state": "bug_resolution", "phase": "fixing"},
+					EvidenceIDs: []string{messageRef, f.artifactRef},
+					Message:     "Recorded a schema-valid Agent lifecycle event (work_blocked)",
+				}, binding.RuntimeID, 10, 11, 11, time.Date(2026, 10, 14, 12, 11, 0, 0, time.UTC))
 				f.runtime.events[last] = buildJournalEvent(Mutation{
-					EventID:      fmt.Sprintf("evt-agent-%s-blocker_resolved-r10", f.runtime.packet.Binding.Sources.OwnerAgentID),
+					EventID:      fmt.Sprintf("evt-agent-%s-blocker_resolved-r10", owner),
 					TransitionID: "AGENT-LIFECYCLE", Event: "blocker_resolved", Actor: "orchestrator",
-					IdempotencyKey: fmt.Sprintf("runtime:agent:%s:blocker_resolved:9", f.runtime.packet.Binding.Sources.OwnerAgentID),
-					RuntimeID:      f.runtime.packet.Binding.Sources.RuntimeID, BaselineGeneration: f.runtime.packet.Binding.Sources.BaselineGeneration,
+					IdempotencyKey: fmt.Sprintf("runtime:agent:%s:blocker_resolved:9", owner),
+					RuntimeID:      binding.RuntimeID, BaselineGeneration: binding.BaselineGeneration,
 					From: map[string]any{"state": "bug_resolution", "phase": "fixing"}, To: map[string]any{"state": "bug_resolution", "phase": "fixing"},
 					EvidenceIDs: []string{messageRef, f.artifactRef},
 					Message:     "Recorded a schema-valid Agent lifecycle event (blocker_resolved)",
-				}, f.runtime.packet.Binding.Sources.RuntimeID, 9, 10, 11, time.Date(2026, 10, 14, 12, 11, 0, 0, time.UTC))
+				}, binding.RuntimeID, 9, 10, 10, time.Date(2026, 10, 14, 12, 10, 0, 0, time.UTC))
 			case "duplicate_event":
 				original := f.runtime.events[len(f.runtime.events)-1]
 				duplicate := map[string]any{}
