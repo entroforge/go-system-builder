@@ -1320,8 +1320,25 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 |---|---|---|
 | `internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言 | **G16** | 断言要求「不可变 Case 世系连续性」判据。签发侧 `internal/investigation/hypothesis_result_packet.go:514-531` 自身注释就写明「必须证明完整不可变 Case 世系」,而该机制不存在 —— 需签发侧与消费侧联动,**签发侧不在任何独占文件内**,本轮不实现,**断言维持红** |
 | `internal/cli/native_s9_recovery_test.go:163` `TestNativeS9ExplicitStopChangeStillConflictsAfterRecovery` | 总账 **D2 桶**已知 DEFECT | 生产侧 `internal/cli/native_s9_original.go:37-44` 在 `DeliveryRef != ""` 时直接短路并返回「已接收」,**不做专业语义比较**;蓝图 `:112` 要求「以同一原消费者的专业语义比较当前原卷与其当前已收对象」。**不迁就、不改断言** |
-| `internal/cli/integration_observation_e2e_test.go:23` `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration` | legacy 接线族 | 该 helper 走 legacy `runtime task-integrate` / legacy 接收板路径,与 B4 退役族同源,但**不在** §0.6 退役名单内 ⇒ 按「不得顺手删别的用例」保留并上报 |
-| `internal/cli/s9_handoff_wiring_test.go:265` `TestS9HandoffTypedSelectorPreservesChangedAttemptFence` | W25 | 生产侧 `internal/runtime/repair_result_packet.go:214-244` 执行围栏已落地;该用例断言的 attempt fence 形态仍与围栏口径不一致,待下一轮统一 |
-| `internal/cli/s6_observation_test.go:115` `TestS6UnchangedPreToolUseReusesObservation`、`TestNativeS6NonblockingNotesReachS7WithoutReanswer` | **G09-A 夹具缺口** | 生产侧行为**正确**(W12 验收 `TestS6IntegrationWithoutMainStartKeepsOriginalBatchGate` PASS):当前批次复检必须以「当前代际存在原 TR-003 共同 Main 基线」为前提,缺失即按事实报错。两条红是**夹具没有建立这个结构前提**。修法:**夹具补一次真实 TR-003 迁移**(参考 `internal/cli/s6_handoff_e2e_test.go:64-74` 的 `transition.Apply(TR-003)` + `RequireCurrentS6MainStart` 写法),**不得**放宽生产侧前提、不得改断言 |
+| `internal/cli/workspace_cleanup_test.go:410` `TestLastFinalPreparesImpactBeforeIndependentCleanup/impact-before-cleanup` | **owner 仲裁已裁(本轮)** | 该变体自带仲裁注记「states the blueprint behaviour, so this variant stays red until the owner decides which reading holds」。**父任务裁定(蓝图优先)**:①`L4-worktree-governance.md:210`「**不以 force remove、git clean 或递归删除未知内容制造完成**」⇒ `--force` 移除路径必须删除;②`L4-worktree-governance.md:208`「**私人目录…都不是删除授权**」+ `L4-workflow-convergence.md:302`「未知、未跟踪、忽略或**私人材料保留为 cleanup_pending**」⇒ 私人答卷材料一律保留、保留即 `cleanup_pending`;③`:302`「cleanup_pending **只与保留材料绑定**」+ `L3-S9-repair.md:271`「Main 可准备原 ChangeImpact 而不使其成为完成门」⇒ 清理**不得**被未决的 ChangeImpact 问卷卡住。**实现侧三条已全部落地**(本轮:删除 `--force` 路径、私人材料改判为保留并命名为 `private answer material`、接收侧脏列表跳过私人答卷区)。该变体断言 `State == complete` 且要求工作区被移除 —— 在**保留材料位于同一工作区**时与第 ② 条**互斥**(不可能既移除该目录又保留其中私人答卷)。⇒ **维持红,但红的原因变了**:断言须按保留语义改写(断言 `cleanup_pending` + 已核实事实不变 + 私人字节保留 + 无强制移除 + **不依赖清理的阶段后继不被阻挡**),**下一轮测试侧执行**;不得为了让该变体变绿而恢复 `--force` |
+| `internal/cli/integration_observation_e2e_test.go:23` `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration` | legacy 接线族 | 该 helper 走 legacy `runtime task-integrate` / legacy 接收板路径,与 B4 退役族同源,但**不在** §0.6 退役名单内 ⇒ 按「不得顺手删别的用例」保留并上报 || `internal/cli/s9_handoff_wiring_test.go:265` `TestS9HandoffTypedSelectorPreservesChangedAttemptFence` | W25 | 生产侧 `internal/runtime/repair_result_packet.go:214-244` 执行围栏已落地;该用例断言的 attempt fence 形态仍与围栏口径不一致,待下一轮统一 |
+| `internal/cli/s6_observation_test.go:115` `TestS6UnchangedPreToolUseReusesObservation`、`TestNativeS6NonblockingNotesReachS7WithoutReanswer` | **G09-A 夹具缺口 → 已修** | 生产侧行为**正确**(W12 验收 `TestS6IntegrationWithoutMainStartKeepsOriginalBatchGate` PASS):当前批次复检必须以「当前代际存在原 TR-003 共同 Main 基线」为前提,缺失即按事实报错。根因**不在**基线守卫上——压缩夹具缺 canonical Assignment Record,闸门一直 not-ready,所以基线错压根未浮现;且 canonical 架构下唯一提交 TR-006 的是 Main 的集成出口(`internal/cli/s6_handoff.go:16`),PreToolUse 钩子只能**评估**批次闸门。**已修**:夹具用真实 TR-003 Writer 建立基线(`internal/cli/s6_observation_test.go:27` `newS6MainBaselineFixture`),新建批次改由原责任原生交付 + Main 真实集成建模,闸门评估在最终钩子前**重新采样**以证明钩子确在变化事实上执行。**断言逐字未动**,未碰生产代码,未改 `tests/fixtures/**` |
 
 
+
+### 14.10 本轮抽样新浮出的红(总账未登记,归属重构期遗留,待补录)
+
+`internal/cli` 定向抽样(`-run 'TestS7|TestS8|TestS9|TestCT039|TestNative|TestPublic|TestS6'`)命中 18 条顶层红,其中 **12 条总账已登记**(1 DEFECT / 3 STALE / 8 未决,红是设计内的);**另 6 条总账无记录**,经查全部由**重构提交或更早的修复**引入,**早于本轮**,不是本轮回归:
+
+| 用例 | 文件 | 引入提交 |
+|---|---|---|
+| `TestNativeS9ActualWorktreeStopReceivesWithoutLauncherOrPlatformIdentity` | `internal/cli/native_s9_test.go` | `7f38047` |
+| `TestNativeS9CandidatePreparesImpactWithoutRecordingMainCompletion` | `internal/cli/native_s9_impact_delivery_test.go` | `d0d948a` |
+| `TestNativeS9IntegratesChangedDeliverySourcesWithoutHashMachineProof` | `internal/cli/native_s9_preintegration_test.go` | `7f38047` |
+| `TestNativeS9PlanOnlyStopPreservesReceiptAfterPrivatePlanRemoval` | `internal/cli/native_s9_plan_only_stop_test.go` | `d0d948a` |
+| `TestNativeS9PublicCorrectsHistoricalUnstagedResult` | `internal/cli/native_s9_reception_split_test.go` | `2b70155` |
+| `TestNativeS9BlockerResumesThroughOriginalResolutionWithoutPrepare` | `internal/cli/native_s9_test.go` | `7f38047` |
+
+**本轮进展**:其中 `TestNativeS9BlockerResumesThroughOriginalResolutionWithoutPrepare` 与 `TestNativeS9IntegratesChangedDeliverySourcesWithoutHashMachineProof` **已转绿**(根因:集成侧把代理**自己的私有答卷目录**归为可删除的「原物质」并用 `git worktree remove --force` **强制删掉**,从而制造「集成完成」;违反 `L4-worktree-governance.md:208`/`:210`)。**本轮已修**:`internal/integration/integrate_responsibility.go` 删除 `--force` 移除路径、私人材料改判为保留(`private answer material`)、`internal/integration/inspect_responsibility.go` 的接收侧脏列表跳过私人答卷区;顺带让 `TestNativeS9IntegratesChangedDeliverySourcesWithoutHashMachineProof` 由红转绿。
+
+⇒ **待办**:其余 4 条逐条补录进复核总账(给出判档与归属),再按蓝图逐条改写或退役;`TestNativeS9PublicCorrectsHistoricalUnstagedResult` 的失败与本条无关(报文逐字相同),归下一轮。**其中 `TestNativeS9BlockerResumesThroughOriginalResolutionWithoutPrepare` 的根因已查明**:集成检查把代理**自己的私有答卷目录**(`?? .loop-submissions/`)判成 worktree dirty 并列为阻塞项 —— 违反 `L4-agent-dispatch-governance.md:57`「S7～S9 接收也不核 Git／ignore 状态」与 `L3-S9-repair.md:136`「原稿是否 tracked、staged、ignored 或 Git `??` 均不属于答卷接收资格」;**本轮已在修**。
