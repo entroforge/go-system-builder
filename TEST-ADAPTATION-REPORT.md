@@ -21,19 +21,19 @@
 ### 红线核查
 
 ```
-本轮改动文件: 126 个
+本轮改动文件: 127 个
   ├─ 测试文件 (*_test.go): 123 个
-  ├─ 报告文档 (*.md): 3 个
+  ├─ 报告文档 (*.md): 4 个
   └─ 其它: 0 个
 生产代码违规: 0 个  ← 必须为 0
-统计: 125 files changed, 6758 insertions(+), 1751 deletions(-)
+统计: 125 files changed, 6817 insertions(+), 1751 deletions(-)
 未提交改动: 2 个
 ```
 
 > ✅ **本轮未修改任何生产代码。** 所有代码改动都在 `*_test.go` 里;
 > 报告文档(`*.md`)是本阶段的交付物,不属于生产代码。
 
-报告文档改动:`EST-ADAPTATION-REPORT.md`, `TEST-ADAPTATION-REPORT.md`, `TEST-GAP-AUDIT.md`
+报告文档改动:`DEFECT-INVESTIGATION-REPORT.md`, `EST-ADAPTATION-REPORT.md`, `TEST-ADAPTATION-REPORT.md`, `TEST-GAP-AUDIT.md`
 
 ## 1. 最终测试结果
 
@@ -702,6 +702,13 @@
 这 3 条**一条测试都没改**(DEFECT 只记录),生产代码仍然一行未动。
 复核后的账目:**STALE 215(全部绿) / DEFECT 89 / CONFLICT 7 / 未决 38 = 349**,
 本次跑出来的 **125** 条失败**总账外 0 条**、**「判 STALE 却仍红」0 条**。
+
+> **后续阶段提示(见 `DEFECT-INVESTIGATION-REPORT.md`)**:
+> 紧接着的「DEFECT 逐条调查与聚合」阶段把 89 条 DEFECT 全部查清后,发现其中
+> **12 条实际应判 STALE**(蓝图用**移除类**措辞已取消测试依赖的前提)、**6 条早已被适配改写并通过**、**1 条是仓库中根本不存在的占位条目**,
+> 真缺陷为 **68 条、聚合为 36 个根因组**。
+> ⇒ 本表的 DEFECT 89 条应按那份报告 §1 的 4 类账务更正修订;
+> 那 12 条改判后的 STALE **需要再走一轮 STALE 适配**才能恢复「STALE 全绿」。
 
 ## 8. 需 owner 裁定的冲突(精确条款对照)
 
