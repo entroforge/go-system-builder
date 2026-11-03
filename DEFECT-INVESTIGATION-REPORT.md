@@ -10,16 +10,37 @@
 
 | 调查结论 | 条数 | 说明 |
 |---|---|---|
-| **真缺陷(生产违反蓝图)** | **68** | 蓝图是要求类措辞,生产代码没做到;聚合为 **36 个根因组** |
+| **真缺陷(生产违反蓝图)** | **69** | 蓝图是要求类措辞,生产代码没做到;聚合为 **35 个根因组** |
 | **应改判 STALE** | **12** | 蓝图已用**移除类**措辞删掉了测试依赖的前提 ⇒ 测试过时,不是缺陷 |
-| **需 owner 裁定** | **2** | 蓝图内部有反向条款,判定方向取决于 owner |
+| **改写被阻塞(仍红)** | **1** | 判定是 STALE,但改写依赖一个生产侧决定或另一条真缺陷先落地 |
+| **需 owner 裁定** | **0** | 蓝图内部有反向条款,判定方向取决于 owner |
 | **实际已绿(总账误记)** | **6** | 早前已被 STALE 适配改写通过,总账没同步 |
 | **幽灵条目(仓库中不存在)** | **1** | 占位/聚合行,应删 |
 | **合计** | **89** | |
 
-**最关键的一条**:前轮把 14 条测试判成 DEFECT,理由是「生产代码删掉了某个校验 / 不再做某项检查」。但**代码现状不是判据** —— 生产删掉校验,恰恰可能说明**缺陷存在**,也可能说明**蓝图已经移除了该要求**。逐条回到 blueprint 原文核对后,这批条目里有相当一部分是**蓝图用移除类措辞明确取消了旧门**,测试的断言才是过时的。
+**最关键的一条**:前轮把 12 条测试判成 DEFECT,理由是「生产代码删掉了某个校验 / 不再做某项检查」。但**代码现状不是判据** —— 生产删掉校验,恰恰可能说明**缺陷存在**,也可能说明**蓝图已经移除了该要求**。逐条回到 blueprint 原文核对后,这批条目里有相当一部分是**蓝图用移除类措辞明确取消了旧门**,测试的断言才是过时的。
 
 **红线**:本阶段**没有改任何生产代码**,也**没有改任何测试**;所有产出是调查报告与总账更正建议。
+
+### 0.1 本轮 Lane 1:把已判 STALE 的测试从真缺陷里解耦
+
+范围:把 14 条已判 STALE 但仍红的测试与生产缺陷解耦,使退役门禁真正从测试里退场。
+
+| 结果 | 条数 | 条目 |
+|---|---|---|
+| **已适配并转绿** | **12** | `TestNativeS9OriginalStopUsesNewProfessionalInputAfterSourceGap`、`TestNativeS9NaturalSavedTypedPrecedesChangedOrMissingFlat`、`TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate`、`TestNativeS9PublicChangedFlatPreservesStagedCandidateWhenSourceDisappears`、`TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns`、`TestMainCheckReuseObservationIsReadonlyAndCannotSkipRequiredChecks`、`TestPendingInitializationAcceptsAbsentReviewNumberAndLegacyZero`、`TestCT03911_DualPassDocumentVerificationCommitsTR003`、`TestCT03915_S11StopsAutoAdvance`、`TestCT03924_SameAgentDualDVLabelsBlocksTR003`、`TestS9PreparationCallbackFollowsOriginalCAS`、`TestNativeBuilderConventionsFixedReplayAndSourceDrift` |
+| **已适配但仍红(归新根因组)** | **3** | `TestNativeS9PendingRecoveryReportsChangedPrivateOriginal`、`TestNativeS9AcceptedDRecoveryPreservesMissingButRejectsChangedOriginals`、`TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup` |
+| **改写被阻塞** | **1** | `TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain` |
+
+改写文件(共 9 个):`internal/cli/ct_11_24_test.go`、`internal/cli/initialization_format_test.go`、`internal/cli/check_capability_e2e_test.go`、`internal/cli/context_conventions_e2e_test.go`、`internal/cli/s9_pin_preparation_order_test.go`、`internal/cli/native_s9_recovery_test.go`、`internal/cli/native_s9_reception_split_test.go`、`internal/cli/native_s9_consumer_retention_test.go`、`internal/cli/s9_failure_handoff_e2e_test.go`。
+
+**本轮新发现的根因组**:**G13**(见 §2 与 §8 的落地方案)。
+
+**退役门禁在本轮真正从测试里退场**:revision / sha / hash / digest / round / CAS / 逐断言覆盖 / 证据来源存在性 / 来源变化散列门 / 复用输入等价分级 / 消费者阶段名白名单 —— 逐条按 blueprint 原文改写,**没有用放宽阈值、删断言、加 skip 或引回散列比对的方式转绿**。
+
+**落地方案**:见仓库根目录 `DEFECT-REMEDIATION-PLAN.md`(36 个根因组 + 新增 G13,逐组给出「问题 → 解法 → 具体改动(file:line) → 验证 → 风险」)。
+
+**红线**:本轮**仍然没有改任何生产代码**;改动只在测试文件与根目录报告文档内。
 
 ## 1. 总账体检(4 类账务更正)
 
@@ -44,27 +65,31 @@
 
 ### 1.3 应改判 STALE(蓝图用移除类措辞取消了测试前提)
 
-| 条目 | 现判定 | 应改为 | 根因组 | 备注 |
-|---|---|---|---|---|
-| `TestNativeS9AcceptedDRecoveryPreservesMissingButRejectsChangedOriginals` | DEFECT | **STALE** | G02-A + G02-C | 混合:先修 G02-A(真缺陷),再改写过时断言 |
-| `TestNativeS9OriginalStopUsesNewProfessionalInputAfterSourceGap` | DEFECT | **STALE** | G02-B | 纯 STALE(改写后可绿) |
-| `TestNativeS9PendingRecoveryReportsChangedPrivateOriginal` | DEFECT | **STALE** | G02-A + G02-C | 混合:先修 G02-A(真缺陷),再改写过时断言 |
-| `TestCT03911_DualPassDocumentVerificationCommitsTR003` | DEFECT | **STALE** | G10-A | 纯 STALE(夹具过时;改用 MainPreToolUseBody 已实测通过);生产静默吞事件的缺陷独立存在 |
-| `TestCT03915_S11StopsAutoAdvance` | DEFECT | **STALE** | G10-A | 纯 STALE(夹具过时;改用 MainPreToolUseBody 已实测通过);生产静默吞事件的缺陷独立存在 |
-| `TestCT03924_SameAgentDualDVLabelsBlocksTR003` | DEFECT | **STALE** | G10-A | 纯 STALE(夹具过时;改用 MainPreToolUseBody 已实测通过);生产静默吞事件的缺陷独立存在 |
-| `TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate` | DEFECT | **STALE** | G06-D | 纯 STALE(改写后可绿) |
-| `TestNativeS9NaturalSavedTypedPrecedesChangedOrMissingFlat` | DEFECT | **STALE** | G06-D | 纯 STALE(改写后可绿) |
-| `TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup` | DEFECT | **STALE** | G06-E | 纯 STALE(改写后可绿) |
-| `TestNativeS9PublicChangedFlatPreservesStagedCandidateWhenSourceDisappears` | DEFECT | **STALE** | G06-E | 纯 STALE(改写后可绿) |
-| `TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns` | DEFECT | **STALE** | G06-E | 纯 STALE(改写后可绿) |
-| `TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain` | DEFECT | **STALE** | G01-C | 纯 STALE(改写后可绿) |
+| 条目 | 现判定 | 应改为 | 根因组 | 备注 | 本轮适配结果 |
+|---|---|---|---|---|---|
+| `TestMainCheckReuseObservationIsReadonlyAndCannotSkipRequiredChecks` | DEFECT | **STALE** | G11-D | 退役门禁 ⇒ 改写断言 | 已适配并转绿:复用决策不再按输入等价分级(L4-workflow-convergence.md:279),保留 action=run / would_reuse=false 与只读断言,定向 PASS |
+| `TestNativeBuilderConventionsFixedReplayAndSourceDrift` | DEFECT | **STALE** | G03-B | 退役门禁 ⇒ 改写断言 | 已适配并转绿:来源变化不再是散列门(L4-workflow-convergence.md:250/:281),改为「可读即不拒收、原始冻结上下文不被重建」,定向 PASS |
+| `TestNativeS9OriginalStopUsesNewProfessionalInputAfterSourceGap` | DEFECT | **STALE** | G02-B | 纯 STALE(改写后可绿) | 已适配并转绿:证据存在性门按 L3-S9-repair.md:236 退役,改为「缺证据来源不再拒收、但也不伪造该文件;已收事实不被后续编辑静默覆盖」,定向 PASS |
+| `TestPendingInitializationAcceptsAbsentReviewNumberAndLegacyZero` | DEFECT | **STALE** | G11-E | 退役门禁 ⇒ 改写断言 | 已适配并转绿:review.round 已退役(L4-state-transition-core.md:44/:48),改为「不拒收、历史值按原样保留、不制造」,定向 PASS |
+| `TestCT03911_DualPassDocumentVerificationCommitsTR003` | DEFECT | **STALE** | G10-A | 纯 STALE(夹具过时;改用 MainPreToolUseBody 已实测通过);生产静默吞事件的缺陷独立存在 | 已适配并转绿:夹具改用 MainPreToolUseBody(root,…)(无 agent_id、有 cwd),定向 PASS |
+| `TestCT03915_S11StopsAutoAdvance` | DEFECT | **STALE** | G10-A | 纯 STALE(夹具过时;改用 MainPreToolUseBody 已实测通过);生产静默吞事件的缺陷独立存在 | 已适配并转绿:同上,定向 PASS |
+| `TestCT03924_SameAgentDualDVLabelsBlocksTR003` | DEFECT | **STALE** | G10-A | 纯 STALE(夹具过时;改用 MainPreToolUseBody 已实测通过);生产静默吞事件的缺陷独立存在 | 已适配并转绿:同上,定向 PASS |
+| `TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate` | DEFECT | **STALE** | G06-D | 纯 STALE(改写后可绿) | 已适配并转绿:唯一作者路径语义,定向 PASS |
+| `TestNativeS9NaturalSavedTypedPrecedesChangedOrMissingFlat` | DEFECT | **STALE** | G06-D | 纯 STALE(改写后可绿) | 已适配并转绿:typed 副本不再是第二作者路径,改判后留反向断言(不得从 typed 副本恢复原消费者),定向 PASS |
+| `TestNativeS9PublicChangedFlatPreservesStagedCandidateWhenSourceDisappears` | DEFECT | **STALE** | G06-E | 纯 STALE(改写后可绿) | 已适配并转绿:证据来源消失不再构成接收资格,定向 PASS |
+| `TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns` | DEFECT | **STALE** | G06-E | 纯 STALE(改写后可绿) | 已适配并转绿:已收事实不被后续编辑静默覆盖(C02/L3-S9-repair.md:437),定向 PASS |
+| `TestS9PreparationCallbackFollowsOriginalCAS` | DEFECT | **STALE** | G09-E | 退役门禁 ⇒ 改写断言 | 已适配并转绿:过期 revision 不再是拒收门(L4-revision-usage.md:141),改为「过期坐标不拒收、发行仍限定原责任坐标、已发行材料不二次准备」,定向 PASS |
+
+### 1.3b 改判 STALE 但改写被阻塞(仍红)
+
+| 条目 | 根因组 | 阻塞原因 |
+|---|---|---|
+| `TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain` | G01-C | 改写被阻塞:接收链已无非散列的可阻塞点(旧屏障依赖的 git 调用随散列门一并退役),需生产侧提供一个确定性的非散列屏障点;已在测试文件头如实标注,断言未削弱 |
 
 ### 1.4 需 owner 裁定(蓝图内部有反向条款)
 
 | 条目 | 争议点 |
 |---|---|
-| `TestMainCheckReuseObservationIsReadonlyAndCannotSkipRequiredChecks` | G11-D:d0d948a 把 independent_or_mandatory_domain_check / profile_reuse_never / unknown_input_or_environment_closure 等分级 reason 合并成单一 reuse_not_applicable。 |
-| `TestPendingInitializationAcceptsAbsentReviewNumberAndLegacyZero` | G11-E:ValidateFreshInactiveState 的「review must be empty」只检查 review["clean_round"],从不检查 review["round"] ⇒ 带 review.round=1 的 pending 状态被当作全新 inactive Runtime 发布。 |
 
 ## 2. 根因聚合
 
@@ -90,7 +115,6 @@
 | **G05-B** | actor 可解析前就写 f.Owner/f.Binding,且 S9 专业阶段早退被删 ⇒ 未匹配 platform actor 被半已知覆盖 | `internal/cli/work_progress.go:230-235(原 d0d948a^:240-245 的 S9 早退被删)` | 1 | |
 | **G07-B** | S9 接收路径 Result 侧在 CLI 层用 json.Valid 短路,绕过原消费者字段校验 | `internal/cli/native_s9_original.go:80` | 1 | |
 | **G07-C** | S8 人工批准模式门被摘除,validateS8ApprovalMode 0 调用者 | `internal/investigation/hypothesis_result_receipt.go:257(定义)/ :363(实际执行的责任校验)` | 1 | |
-| **G03-B** | 来源变化判定被整体删除(解析器侧 + 消费者侧),只余「文件可读」检查 | `internal/projectconventions/resolve.go:154-167(解析器侧,父提交 :161 有 "source digest changed")+ internal/cli/context_conventions.go:136-140(仅查可读)` | 1 | |
 | **G06-B** | 扁平私人文件字段反馈映射未接线,nativeS9FlatArtifactError 成为死代码 | `internal/cli/native_s9_artifact_feedback.go:18(无调用点)` | 1 | |
 | **G06-C** | 诊断存储识别规则未随无散列诊断布局更新 | `internal/diagnosticstorage/storage.go:18(路径正则)+ :78(scope 长度 64)` | 1 | |
 | **G12-A** | 权威根绑定校验在接收链丢失 | `internal/runtime/contract_authority.go:70(不再调用 internal/fileview/contracts.go:42 的 fileview.ValidateAuthority)` | 1 | |
@@ -103,11 +127,11 @@
 | **G09-A** | TR-006 当前批次复检失去 S6 Main 起点校验,缺原 TR-003 共同 Main 基线时门被放行 | `internal/buildsurface/read.go:23(不再调用 loopruntime.RequireCurrentS6MainStartContext)` | 1 | |
 | **G09-B** | 原生 S6 接收链缺少 planned_paths 的 Assignment 写域校验 | `internal/cli/native_s6.go:439(receiveNativeS6)→ internal/assignment/completion_canonical.go:626(只核身份绑定)` | 1 | |
 | **G09-C** | 集成 Inspect 只把脏工作树当瞬时观察,不进 gate/checkpoint | `internal/integration/inspect_responsibility.go:16 + internal/integration/types.go:97-98` | 1 | |
-| **G09-E** | 已发行 packet 的重放分支绕过 Writer 并发(revision CAS)检查 | `internal/repair/issued_plan_report.go:125(提前 continue)` | 1 | |
 | **G09-F** | 责任歧义未与「未知」分别报告,多重精确匹配被折叠 | `internal/cli/native_main_return.go:177(selected, unknown = nil, true)` | 1 | |
 | **G08-B** | 原责任未完成/未知的 Stop 检查从 deny 降级为 warn | `internal/hook/stopidle.go:153(warn/original_responsibility_unfinished)、:678/:686/:694(warn/*_original_responsibility_unknown)` | 1 | |
 | **G08-D** | 独立验证者在 Targeted 未就绪时就被派发 | `internal/cli/repair_verifier_dispatch_questionnaire.go:30(准入集合含 repairing/ready_for_full_review)+ :26(删掉 lifecycle.state == "bug_resolution" 守卫)` | 1 | |
 | **G08-E** | 旧团队 PLAN_REPORT 收尾门未按蓝图删除,仍拦住原生 S9 Builder 的 TeammateIdle | `internal/hook/stopidle.go:598` | 1 | |
+| **G13** | nativeS9ConsumerAttempt 的消费者阶段白名单未随重构改名更新,专业拒绝原因在后续前置失败时被丢弃 | `internal/cli/native_s9_attempt.go:67-70(阶段名白名单)+ internal/cli/native_s9_original.go:95(实际消费阶段名)` | 1 | |
 
 ### 2.2 组间共享的生产位置(可再合并)
 
@@ -482,22 +506,6 @@
 |---|---|
 | `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates` | G07-C |
 
-### G03-B — 来源变化判定被整体删除(解析器侧 + 消费者侧),只余「文件可读」检查
-
-- **根因**:d0d948a 同时删掉解析器侧的来源摘要核对与消费者侧的 verifyContextInputs,改写 docs/rules/error-handling.md 后 replay 仍返回 exit 0 ⇒ 来源漂移无人判定。
-- **最小共同生产位置**:`internal/projectconventions/resolve.go:154-167(解析器侧,父提交 :161 有 "source digest changed")+ internal/cli/context_conventions.go:136-140(仅查可读)`
-- **相关位置**:`internal/projectconventions/resolve.go:154-167`、`internal/cli/context_conventions.go:136-140`、`internal/cli/assignment_context.go:169`、`internal/cli/assignment_context.go:374`、`internal/cli/assignment_context_binding.go:128`
-- **蓝图依据**:
-    - blueprint/l4-mechanisms/L4-project-design-foundation.md:298「当前解析器仍核对索引和来源摘要」
-    - blueprint/l3-stages/L3-S4-task-split.md:368「系统不通过散列推断漂移」
-- **波及面**:1 条测试。蓝图内部有张力(:298 要求核对摘要 vs :368 禁止用散列推断漂移),最小修法需 owner 裁定。
-- **修复方向**:按 blueprint 拆分:索引/来源结构核对保留,散列推断漂移不做;但仍需一个能发现「来源变了」的判据。
-- **判定**:DEFECT
-
-| 测试 | 所属调查组 |
-|---|---|
-| `TestNativeBuilderConventionsFixedReplayAndSourceDrift` | G03-B |
-
 ### G06-B — 扁平私人文件字段反馈映射未接线,nativeS9FlatArtifactError 成为死代码
 
 - **根因**:d0d948a 删掉了 Result/PlanReport 两处调用点,字段错误原样返回 ⇒ 旧信封指针「/answer」与「填写 answer」文案照旧泄漏,缺少私人文件路径与字段指针。
@@ -690,22 +698,6 @@
 |---|---|
 | `TestCanonicalS6WorkspaceReworkRequiresNamedAssignmentRevision` | G09-C |
 
-### G09-E — 已发行 packet 的重放分支绕过 Writer 并发(revision CAS)检查
-
-- **根因**:FindRepairPlanReportPacketContext 找到既有 packet 时直接 append + continue,跳过 :157 的 checkRevision(expectedRevision, current.Revision) ⇒ 传过期 revision 时 err==nil、prepare 回调不被调用(实测「stale original CAS succeeded」)。
-- **最小共同生产位置**:`internal/repair/issued_plan_report.go:125(提前 continue)`
-- **相关位置**:`internal/repair/issued_plan_report.go:118-127`、`internal/repair/issued_plan_report.go:125`、`internal/repair/issued_plan_report.go:149-151`、`internal/repair/issued_plan_report.go:152-156`、`internal/repair/issued_plan_report.go:157`
-- **蓝图依据**:
-    - blueprint/l4-mechanisms/L4-workflow-convergence.md:447「修订或恢复使用当前记录、实际责任与 Writer 并发关系」
-    - blueprint/l4-mechanisms/L4-runtime-control-plane.md:221「CAS 冲突表示当前事实已经变化……不能把旧结论直接套到新 revision」
-- **波及面**:1 条测试。反向条款 L3-S9-repair.md:142「已发行材料和已接收事实继续有效」支持「重放不重发」,但未授权在过期 revision 下返回成功。
-- **修复方向**:重放也要做 revision CAS;或在过期时明确报错而不是静默成功。
-- **判定**:DEFECT
-
-| 测试 | 所属调查组 |
-|---|---|
-| `TestS9PreparationCallbackFollowsOriginalCAS` | G09-E |
-
 ### G09-F — 责任歧义未与「未知」分别报告,多重精确匹配被折叠
 
 - **根因**:len(selected)>1 且含非 S7/S8 类责任时,把所有精确匹配清空并归入 unknown ⇒ 歧义类别被抹掉(实测输出只有通用提示,无「multiple exact」)。
@@ -771,6 +763,23 @@
 |---|---|
 | `TestPublicS9StopIdlePreservesOriginalResultState` | G08-E |
 
+### G13 — nativeS9ConsumerAttempt 的消费者阶段白名单未随重构改名更新,专业拒绝原因在后续前置失败时被丢弃
+
+- **根因**:S9 原生 Result 消费点用 EnterConsumer("original_result_consumer") 标记消费者边界,而 nativeS9ConsumerAttempt 仍用重构前的旧阶段名白名单判定「上一条尝试是不是消费者尝试」。白名单里没有 original_result_consumer,于是专业答卷被拒后,后续一次技术性前置失败再次发布时,发布合并逻辑判定上一条「不是消费者尝试」,把保留的消费者原因置空 —— Main 收到的 ConsumerFailure 为 nil,真实的「哪个文件、哪个字段」被静默吞掉。阶段显示名被当成了结构性判据,改名即静默丢因。
+- **最小共同生产位置**:`internal/cli/native_s9_attempt.go:67-70(阶段名白名单)+ internal/cli/native_s9_original.go:95(实际消费阶段名)`
+- **相关位置**:`internal/cli/native_s9_attempt.go:67-70`、`internal/cli/native_s9_attempt.go:56-61`、`internal/cli/native_s9_original.go:95`、`internal/diagnosticstorage/storage.go:98-147`
+- **蓝图依据**:
+    - blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:52(缺字段指向本人实际路径与字段)
+    - blueprint/l3-stages/L3-S9-repair.md:238(保留原稿,反馈实际文件与字段)
+    - blueprint/l4-mechanisms/L4-agent-guidance.md:288(不能吞错误)
+- **波及面**:1 条测试(本轮 Lane 1 适配退役门后暴露):TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup。
+- **修复方向**:把「消费者边界」从阶段显示名里拆出来,作为显式持久化的结构字段(EnterConsumer 置位、ConsumerSucceeded 清位),nativeS9ConsumerAttempt 改判该字段;阶段名退回诊断标签职责。最小替代方案是白名单补一行 original_result_consumer,并补一条枚举本包全部 EnterConsumer 实参的防回归测试。落地方案见 DEFECT-REMEDIATION-PLAN.md §8。
+- **判定**:DEFECT
+
+| 测试 | 所属调查组 |
+|---|---|
+| `TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup` | G13 |
+
 ### 已归 STALE 的根因组(前轮判 DEFECT,本轮改判)
 
 #### G01-C — 原生 S9 自然事件接收链不再执行 Git → 测试的 git 屏障永不触发
@@ -803,6 +812,17 @@
 - **应改成**:漂移断言改判 STALE;但这 2 条仍被 G02-A 卡住,需先修 G02-A。
 
 成员:`TestNativeS9PendingRecoveryReportsChangedPrivateOriginal`、`TestNativeS9AcceptedDRecoveryPreservesMissingButRejectsChangedOriginals`
+
+#### G03-B — 来源变化判定被整体删除(解析器侧 + 消费者侧),只余「文件可读」检查
+
+- **蓝图依据**:
+    - blueprint/l4-mechanisms/L4-project-design-foundation.md:298「当前解析器仍核对索引和来源摘要」
+    - blueprint/l3-stages/L3-S4-task-split.md:368「系统不通过散列推断漂移」
+- **前轮为什么判错**:【本轮按退役规则改判】测试 `TestNativeBuilderConventionsFixedReplayAndSourceDrift` 断言「改写来源文件后 replay 必须失败并报 'source changed'」——这道门只能由**内容摘要比较**得出。蓝图 `L4-workflow-convergence.md:281`「测试可记录既有历史数据但**不得以散列作为验收前置**」、`:250`「Hook 所触达…均不计算、登记或校验 hash／SHA／digest／fingerprint 等散列…历史记录内已存在的散列值只作为旧记录的原始数据保留…不重算或以其作资格」;本轮规则进一步明确 **sha/hash 不得作为门禁**。⇒ 生产「只查可读、来源变化交 Main 判断」是正确行为,本条应判 STALE。
+- **波及面**:1 条测试。蓝图内部有张力(:298 要求核对摘要 vs :368 禁止用散列推断漂移),最小修法需 owner 裁定。
+- **应改成**:改判 STALE:改写为「来源字节变化不再拒收(散列门禁已退役),真实来源影响由 Main 与专业责任判断」,并可加反向断言「不因来源变化而伪造资格」。
+
+成员:`TestNativeBuilderConventionsFixedReplayAndSourceDrift`
 
 #### G03-C — 派发登记改写已存在 TASK 的工作状态事实(已被 STALE 适配吸收,当前 PASS)
 
@@ -842,6 +862,17 @@
 
 成员:`TestNativeS9PublicChangedFlatPreservesStagedCandidateWhenSourceDisappears`、`TestNativeS9PublicLegacyCorrectsAfterOriginalSourceReturns`、`TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup`
 
+#### G11-D — 复用判定 reason 被压成单一 reuse_not_applicable,丢失「因责任独立而不可复用」的分级
+
+- **蓝图依据**:
+    - blueprint/l3-stages/L3-S6-build.md:149「采用整树输入、禁止复用」
+    - blueprint/l4-mechanisms/L4-workspace-execution-profiles.md:39「不自动授予复用资格」
+- **前轮为什么判错**:【本轮按退役规则改判】旧的分级 reason(internal_or_mandatory_domain_check / profile_reuse_never / unknown_input_or_environment_closure)是为「同输入的机器等价证明」服务的诊断标签。蓝图 `L4-workflow-convergence.md:279`「旧策略 `same_input_same_responsibility` 中『同输入』的机器等价证明**不再作为复用前置**…不计算、登记或比较散列、Git OID、整树内容或逐文件字节来补证」;`L4-workspace-execution-profiles.md:142` 同义。⇒ 单一 `reuse_not_applicable` 才是退役后的正确形状;测试钉死旧标签 ⇒ 应判 STALE。(owner 此前选「暂不裁定」,本轮退役规则把它解掉了,若仍要保留 DEFECT 请指出。)
+- **波及面**:1 条测试。**判据提醒**:蓝图要求的是「禁止复用」语义,生产 action=run + would_reuse=false 已满足;分歧只在 reason 字面量,而 blueprint 无任何条款要求该字面量 ⇒ 很可能应重判 STALE。
+- **应改成**:改判 STALE:改写为「复用判定只表达『不满足复用资格』,不再细分输入等价原因」。
+
+成员:`TestMainCheckReuseObservationIsReadonlyAndCannotSkipRequiredChecks`
+
 #### G11-PASS — 3 条实测已 PASS,总账误记 DEFECT
 
 - **蓝图依据**:
@@ -853,6 +884,17 @@
 - **应改成**:从 DEFECT 桶移出。
 
 成员:`TestMainCheckCapabilitiesObservationIsReadonlyAndPartial`、`TestMainCheckMissingToolRejectsPrepareBeforeReady`、`TestNativeObserverFiltersExternalTextBeforeAuditBoundWithoutChangingIdentity`
+
+#### G09-E — 已发行 packet 的重放分支绕过 Writer 并发(revision CAS)检查
+
+- **蓝图依据**:
+    - blueprint/l4-mechanisms/L4-workflow-convergence.md:447「修订或恢复使用当前记录、实际责任与 Writer 并发关系」
+    - blueprint/l4-mechanisms/L4-runtime-control-plane.md:221「CAS 冲突表示当前事实已经变化……不能把旧结论直接套到新 revision」
+- **前轮为什么判错**:【本轮按退役规则改判】测试 `TestS9PreparationCallbackFollowsOriginalCAS` 断言「传过期 revision 必须被拒」(t.Fatal("stale original CAS succeeded"))。但 `internal/repair/runtime.go:1224-1227` 的 `checkRevision` 在 expected<0 时**直接返回 nil**(不检查),而正常调用点 `internal/submission/repair_plan_report.go:33` 传的正是 `-1` ⇒ **生产里的 revision 门禁本来就默认关闭**。蓝图 `L4-workflow-convergence.md:138`「原事务采用已有责任、实际内容和内部版本协调,不以散列作为写入配对或恢复条件」、`L4-revision-usage.md:141`「Runtime revision 只是审计坐标,不证明专业正确」;本轮规则进一步明确 **revision 全线退役,不得作为门禁**。⇒ 测试要求的是一道已退役的门禁,生产行为正确,本条应判 STALE。
+- **波及面**:1 条测试。反向条款 L3-S9-repair.md:142「已发行材料和已接收事实继续有效」支持「重放不重发」,但未授权在过期 revision 下返回成功。
+- **应改成**:改判 STALE:改写为「过期 revision 不再拒收(门禁已退役)」,断言改为按现行合同表达。
+
+成员:`TestS9PreparationCallbackFollowsOriginalCAS`
 
 ### 需 owner 裁定的根因组
 
@@ -887,17 +929,6 @@
 - **修复方向**:恢复守卫调用点;但先解决与 native_s9_targeted_listener_test.go 的冲突。
 
 成员:`TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop`
-
-#### G11-D — 复用判定 reason 被压成单一 reuse_not_applicable,丢失「因责任独立而不可复用」的分级
-
-- **蓝图依据**:
-    - blueprint/l3-stages/L3-S6-build.md:149「采用整树输入、禁止复用」
-    - blueprint/l4-mechanisms/L4-workspace-execution-profiles.md:39「不自动授予复用资格」
-- **根因**:d0d948a 把 independent_or_mandatory_domain_check / profile_reuse_never / unknown_input_or_environment_closure 等分级 reason 合并成单一 reuse_not_applicable。
-- **争议/风险**:1 条测试。**判据提醒**:蓝图要求的是「禁止复用」语义,生产 action=run + would_reuse=false 已满足;分歧只在 reason 字面量,而 blueprint 无任何条款要求该字面量 ⇒ 很可能应重判 STALE。
-- **修复方向**:若 owner 认定蓝图不约束 reason 字面量,则改判 STALE。
-
-成员:`TestMainCheckReuseObservationIsReadonlyAndCannotSkipRequiredChecks`
 
 #### G11-E — fresh inactive 校验只查 review.clean_round,漏查 review.round
 
@@ -1005,4 +1036,4 @@
 - 删除幽灵条目 1 条;
 - 把 6 条已绿条目从 DEFECT 桶移出(改记 STALE·已通过);
 - 把 12 条改判 STALE,交回「STALE 适配」流程;
-- 2 条等 owner 裁定方向。
+- 0 条等 owner 裁定方向。
