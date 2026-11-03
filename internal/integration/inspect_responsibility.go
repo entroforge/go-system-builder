@@ -197,5 +197,29 @@ func observeWorktreeCandidates(ctx context.Context, in Inspection) ([]string, []
 		detail += fmt.Sprintf("; and %d more status entries", len(lines)-len(shown))
 	}
 	observation := []string{branch, fmt.Sprintf("Worktree status at %q (staged, unstaged, untracked or ignored; directories may be summarized): %s. These entries are not part of the branch merge; whether they belong to the delivery is unknown. Main uses the original Result and worktree to decide; private material is retained", in.WorktreePath, detail)}
-	return observation, shown
+	// The agent's own private answer area is the author's delivery material,
+	// not a source change. S7-S9 reception never checks Git or ignore state
+	// (L4-agent-dispatch-governance.md:57, L3-S9-repair.md:136), so those
+	// entries are not recorded as dirty material; every other observed entry
+	// stays in the durable list exactly as observed.
+	dirty := make([]string, 0, maxEntries)
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		if len(dirty) == maxEntries {
+			break
+		}
+		if isAuthorOriginal(statusLinePath(line)) {
+			continue
+		}
+		if len(line) > 240 {
+			line = line[:240] + "..."
+		}
+		dirty = append(dirty, line)
+	}
+	if len(dirty) == 0 {
+		return observation, nil
+	}
+	return observation, dirty
 }

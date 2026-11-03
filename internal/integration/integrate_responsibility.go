@@ -346,11 +346,14 @@ func cleanCheckpoint(in Checkpoint) Checkpoint {
 	return out
 }
 
-// AuthorOriginalsRoot is the author's own professional area inside a Worker
-// checkout. The material there is delivery material, not unknown garbage: the
-// delivered copy is already recorded in the Main root, so its presence does
-// not refuse the reclamation of the Worker site.
-const authorOriginalsRoot = ".loop-submissions"
+// privateSubmissionRoots are the agent's own private answer areas inside a
+// Worker checkout. The material there is the author's own delivery, not a
+// source change: S7-S9 reception never checks Git or ignore state
+// (L4-agent-dispatch-governance.md:57, L3-S9-repair.md:136), so it is never a
+// reception condition, and a private directory is never a deletion
+// authorization (L4-worktree-governance.md:208). The framework retains that
+// material and reports it; it never removes it.
+var privateSubmissionRoots = []string{".loop-submissions", ".claude/submissions"}
 
 // worktreeStatusEntry is one observed Git status entry of a Worker checkout.
 type worktreeStatusEntry struct {
@@ -363,23 +366,26 @@ type worktreeStatusEntry struct {
 // what it means for the reclamation of the site.
 type worktreeMaterial struct {
 	tracked  []worktreeStatusEntry // recorded changes of tracked files
-	original []worktreeStatusEntry // the author's own professional originals
+	original []worktreeStatusEntry // the author's own private answer area
 	unknown  []worktreeStatusEntry // untracked or ignored material of unknown origin
 }
 
 // keepsSite reports whether the observed material still keeps the checkout.
-// Real engineering artifacts and unknown material do; the author's own
-// originals are delivery material and never keep the site.
+// Real engineering artifacts, unknown material and the author's own private
+// answer area do. A private directory is delivery material and never a
+// deletion authorization (L4-worktree-governance.md:208), so the site and
+// that material are retained and reported instead of being removed.
 func (m worktreeMaterial) keepsSite() bool {
-	return len(m.tracked) > 0 || len(m.unknown) > 0
+	return len(m.tracked) > 0 || len(m.original) > 0 || len(m.unknown) > 0
 }
 
 // Git's own worktree removal also deletes ignored files. Preserve any checkout
-// whose tracked files carry recorded changes and any checkout with unknown
-// material rather than assuming ownership from a historical digest. The
-// author's own professional originals are delivery material: they do not
-// refuse the reclamation, so the cleanup authorization follows the recorded
-// responsibility and not the presence of a file in the directory.
+// whose tracked files carry recorded changes, whose material origin is unknown
+// and whose author's own private answer area is still present rather than
+// assuming ownership from a historical digest. Classification never authorizes
+// removal: a private directory is delivery material rather than a deletion
+// permission (L4-worktree-governance.md:208), and no force remove manufactures
+// completion (L4-worktree-governance.md:210).
 func cleanupUnmodifiedWorktree(ctx context.Context, root, worktree string) error {
 	if worktree == "" || filepath.Clean(worktree) == filepath.Clean(root) {
 		return fmt.Errorf("preserve unknown worktree location")
@@ -421,29 +427,7 @@ func cleanupUnmodifiedWorktree(ctx context.Context, root, worktree string) error
 	if material.keepsSite() {
 		return preserveWorktreeError(worktree, material)
 	}
-	force := len(material.original) > 0
-	if force {
-		// The author's own originals are still in the checkout, and Git
-		// refuses to remove a checkout that holds untracked files. The
-		// observed status is read once more right before the removal, so a
-		// recorded change of a tracked file keeps the site there as well.
-		material, err = observeWorktreeStatus(ctx, worktree)
-		if err != nil {
-			return err
-		}
-		if material.keepsSite() {
-			return preserveWorktreeError(worktree, material)
-		}
-		force = len(material.original) > 0
-	}
-	remove := []string{"worktree", "remove"}
-	if force {
-		// The Worker site goes with the author's own originals: their
-		// delivered copy is already recorded in the Main root.
-		remove = append(remove, "--force")
-	}
-	remove = append(remove, worktree)
-	if _, err := defaultRunner.Run(ctx, root, remove...); err != nil {
+	if _, err := defaultRunner.Run(ctx, root, "worktree", "remove", worktree); err != nil {
 		return fmt.Errorf("remove worktree: %w", err)
 	}
 	return nil
@@ -474,7 +458,7 @@ func classifyWorktreeStatus(status string) worktreeMaterial {
 			material.unknown = append(material.unknown, worktreeStatusEntry{code: "??", path: line, line: line})
 			continue
 		}
-		entry := worktreeStatusEntry{code: line[:2], path: line[3:], line: line}
+		entry := worktreeStatusEntry{code: line[:2], path: statusLinePath(line), line: line}
 		if entry.code == "??" || entry.code == "!!" {
 			// Untracked or ignored material.
 			if isAuthorOriginal(entry.path) {
@@ -492,19 +476,37 @@ func classifyWorktreeStatus(status string) worktreeMaterial {
 }
 
 // isAuthorOriginal reports whether the observed path is the author's own
-// professional material inside the Worker checkout. A quoted path is never
-// read as a delivery: the framework does not own a name it cannot read.
+// private answer material inside the Worker checkout. The judgement is the
+// directory shape alone: no file name, path tail or unique candidate is
+// guessed. A quoted path is never read as a known area: the framework does
+// not own a name it cannot read.
 func isAuthorOriginal(path string) bool {
 	if strings.HasPrefix(path, "\"") {
 		return false
 	}
-	return path == authorOriginalsRoot || strings.HasPrefix(path, authorOriginalsRoot+"/")
+	for _, root := range privateSubmissionRoots {
+		if path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// statusLinePath returns the path of one observed porcelain v1 status line.
+func statusLinePath(line string) string {
+	if len(line) < 4 || line[2] != ' ' {
+		return ""
+	}
+	return line[3:]
 }
 
 // preserveWorktreeError reports the material that keeps the Worker checkout.
 func preserveWorktreeError(worktree string, material worktreeMaterial) error {
-	entries := make([]string, 0, len(material.tracked)+len(material.unknown))
+	entries := make([]string, 0, len(material.tracked)+len(material.original)+len(material.unknown))
 	for _, entry := range material.tracked {
+		entries = append(entries, entry.line)
+	}
+	for _, entry := range material.original {
 		entries = append(entries, entry.line)
 	}
 	for _, entry := range material.unknown {
@@ -526,10 +528,18 @@ func preserveWorktreeError(worktree string, material worktreeMaterial) error {
 // preservedMaterialKind names the material that keeps the Worker checkout.
 func preservedMaterialKind(material worktreeMaterial) string {
 	switch {
+	case len(material.tracked) > 0 && len(material.original) > 0 && len(material.unknown) > 0:
+		return "modified tracked material, private answer material and unknown untracked or ignored material"
+	case len(material.tracked) > 0 && len(material.original) > 0:
+		return "modified tracked material and private answer material"
 	case len(material.tracked) > 0 && len(material.unknown) > 0:
 		return "modified tracked material and unknown untracked or ignored material"
 	case len(material.tracked) > 0:
 		return "modified tracked material"
+	case len(material.original) > 0 && len(material.unknown) > 0:
+		return "private answer material and unknown untracked or ignored material"
+	case len(material.original) > 0:
+		return "private answer material"
 	default:
 		return "unknown untracked or ignored material"
 	}
