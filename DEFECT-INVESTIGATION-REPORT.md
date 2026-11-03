@@ -10,7 +10,7 @@
 
 | 调查结论 | 条数 | 说明 |
 |---|---|---|
-| **真缺陷(生产违反蓝图)** | **69** | 蓝图是要求类措辞,生产代码没做到;聚合为 **35 个根因组** |
+| **真缺陷(生产违反蓝图)** | **69** | 蓝图是要求类措辞,生产代码没做到;聚合为 **37 个根因组** |
 | **应改判 STALE** | **12** | 蓝图已用**移除类**措辞删掉了测试依赖的前提 ⇒ 测试过时,不是缺陷 |
 | **改写被阻塞(仍红)** | **1** | 判定是 STALE,但改写依赖一个生产侧决定或另一条真缺陷先落地 |
 | **需 owner 裁定** | **0** | 蓝图内部有反向条款,判定方向取决于 owner |
@@ -122,7 +122,9 @@
 | **G12-D** | 状态索引 schema 严格性被放宽,顶层 additionalProperties 由 false 改成 true | `internal/schema/assets/review-result-packet-index.schema.json:6(同族 repair-result-packet-index.schema.json:6、repair-plan-report-packet-index.schema.json:6)` | 1 | |
 | **G12-E** | 独立验证者派发准入集合被放宽,S9 lifecycle 守卫被删 | `internal/cli/repair_verifier_dispatch_questionnaire.go:30(新增 repairing/ready_for_full_review)+ :26(删掉 lifecycle.state == "bug_resolution" 守卫)` | 1 | |
 | **G12-F** | 已回收的 worker worktree 上无条件执行 git,git 128 直接终止清理重试 | `internal/cli/workspace_delivery.go:150(workspace.Git(ctx, e.Path, "branch", "--show-current"))+ :152(return fail(err))` | 1 | |
+| **G12-G** | S9 候选登记无条件化 + 兼容入口诊断丢责任引用 | `internal/repair/issued_repair_result.go:519/:550(无条件生成候选并写 DeliveryRef)+ internal/cli/workspace_delivery.go:445(诊断不含 assignment/agent/packet)` | 1 | |
 | **G11-A** | PreToolUse 在 Runtime 不可读时被原生路由提前返回,跳过质量投影渲染 | `internal/cli/native_hook_routes.go:254(经 internal/cli/run.go:2658 → native_hook_routes.go:117)` | 1 | |
+| **G11-B** | S9 Targeted 的 checkout/来源绑定守卫调用点被删,守卫成死代码 ⇒ 隔离 checkout 可借走 Main 原卷 | `internal/cli/native_s9.go:530-532(guardNativeS9TargetedSource 掏空)+ internal/cli/native_shared_source.go:13(死代码)` | 1 | |
 | **G11-C** | S9 阶段交接文案使用泛称 "Plan" 而非蓝图规范名 "PlanReport" | `internal/cli/controller.go:515(与 :554 的正常路径)` | 1 | |
 | **G09-A** | TR-006 当前批次复检失去 S6 Main 起点校验,缺原 TR-003 共同 Main 基线时门被放行 | `internal/buildsurface/read.go:23(不再调用 loopruntime.RequireCurrentS6MainStartContext)` | 1 | |
 | **G09-B** | 原生 S6 接收链缺少 planned_paths 的 Assignment 写域校验 | `internal/cli/native_s6.go:439(receiveNativeS6)→ internal/assignment/completion_canonical.go:626(只核身份绑定)` | 1 | |
@@ -616,6 +618,22 @@
 |---|---|
 | `TestNativeS9MissingWorkerCleanupResumesOriginalCheckpoint` | G12-F |
 
+### G12-G — S9 候选登记无条件化 + 兼容入口诊断丢责任引用
+
+- **根因**:Result 缺 unit_results 也照样产生候选,测试前置「候选缺失」在现行合同下不可构造;随后兼容入口诊断不再点名该责任。
+- **最小共同生产位置**:`internal/repair/issued_repair_result.go:519/:550(无条件生成候选并写 DeliveryRef)+ internal/cli/workspace_delivery.go:445(诊断不含 assignment/agent/packet)`
+- **相关位置**:`internal/repair/issued_repair_result.go:519`、`internal/repair/issued_repair_result.go:550`、`internal/repair/workspace_delivery.go:34`、`internal/cli/workspace_delivery.go:445`、`internal/cli/run.go:1572`、`internal/cli/run.go:1633`
+- **蓝图依据**:
+    - blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:52(C03「缺字段指向本人实际路径与字段,未知就报告未知」)
+    - blueprint/l4-mechanisms/L4-hook-platform-wiring.md:126(反向:非关键缺项不阻止接收)
+- **波及面**:1 条测试;前半段属「测试前置与现行合同冲突」,后半段才是可修的生产缺口,需 owner 裁定。
+- **修复方向**:兼容入口诊断补回 assignment/agent/packet 引用。
+- **判定**:DEFECT(含需 owner 裁定部分)
+
+| 测试 | 所属调查组 |
+|---|---|
+| `TestS9TaskIntegratePreservesAcceptedPlanWhenCandidateIsMissing` | G12-G |
+
 ### G11-A — PreToolUse 在 Runtime 不可读时被原生路由提前返回,跳过质量投影渲染
 
 - **根因**:Runtime 读不到时 nativeHookRoutes 提前返回,只写一条纯文本 additionalContext/systemMessage,不经过唯一产出 QUALITY_GATE 行的渲染器 internal/hook/pretooluse.go:43 ⇒ 质量投影与恢复包从未输出。
@@ -631,6 +649,22 @@
 | 测试 | 所属调查组 |
 |---|---|
 | `TestUnavailablePolicyDoesNotDenyAndKeepsGraphRecoveryVisible` | G11-A |
+
+### G11-B — S9 Targeted 的 checkout/来源绑定守卫调用点被删,守卫成死代码 ⇒ 隔离 checkout 可借走 Main 原卷
+
+- **根因**:d0d948a 删掉两处调用点(- sourceErr = nativeSharedCheckoutSourceError(... "S7")、- if err := nativeSharedCheckoutSourceError(... "S9 Targeted"); err != nil {),实测隔离 worktree 的 SubagentStop 直接消费了 Main 的原 Targeted 问卷。
+- **最小共同生产位置**:`internal/cli/native_s9.go:530-532(guardNativeS9TargetedSource 掏空)+ internal/cli/native_shared_source.go:13(死代码)`
+- **相关位置**:`internal/cli/native_s9.go:530-532`、`internal/cli/native_shared_source.go:13-51`、`internal/cli/native_s9_targeted_listener_test.go:167-176`
+- **蓝图依据**:
+    - blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:52(C03「不跨根、owner、责任或轮次借卷」)
+    - blueprint/l4-mechanisms/L4-agent-dispatch-governance.md:57「不借同名卷或虚构来源」
+- **波及面**:1 条测试。**冲突**:internal/cli/native_s9_targeted_listener_test.go:167-176 是同一提交 d0d948a 新增的用例,注释「A tool event's cwd alone does not prove which product it verified.」并断言「另一个 git worktree 仍应被接收」—— 两个用例按 cwd 对立,需 owner 裁定哪条代表蓝图。
+- **修复方向**:恢复守卫调用点;但先解决与 native_s9_targeted_listener_test.go 的冲突。
+- **判定**:DEFECT(含蓝图/测试冲突,需 owner 裁定)
+
+| 测试 | 所属调查组 |
+|---|---|
+| `TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop` | G11-B |
 
 ### G11-C — S9 阶段交接文案使用泛称 "Plan" 而非蓝图规范名 "PlanReport"
 
@@ -907,28 +941,6 @@
 - **修复方向**:改判 STALE 并同时改写夹具(去掉 len(previous.Files[typed]) != 64 依赖),否则任何合规实现下都不可能通过。
 
 成员:`TestS9ReceptionFeedbackMissingSavedTypedInputNamesOriginalWindowBeforeRetry`
-
-#### G12-G — S9 候选登记无条件化 + 兼容入口诊断丢责任引用
-
-- **蓝图依据**:
-    - blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:52(C03「缺字段指向本人实际路径与字段,未知就报告未知」)
-    - blueprint/l4-mechanisms/L4-hook-platform-wiring.md:126(反向:非关键缺项不阻止接收)
-- **根因**:Result 缺 unit_results 也照样产生候选,测试前置「候选缺失」在现行合同下不可构造;随后兼容入口诊断不再点名该责任。
-- **争议/风险**:1 条测试;前半段属「测试前置与现行合同冲突」,后半段才是可修的生产缺口,需 owner 裁定。
-- **修复方向**:兼容入口诊断补回 assignment/agent/packet 引用。
-
-成员:`TestS9TaskIntegratePreservesAcceptedPlanWhenCandidateIsMissing`
-
-#### G11-B — S9 Targeted 的 checkout/来源绑定守卫调用点被删,守卫成死代码 ⇒ 隔离 checkout 可借走 Main 原卷
-
-- **蓝图依据**:
-    - blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:52(C03「不跨根、owner、责任或轮次借卷」)
-    - blueprint/l4-mechanisms/L4-agent-dispatch-governance.md:57「不借同名卷或虚构来源」
-- **根因**:d0d948a 删掉两处调用点(- sourceErr = nativeSharedCheckoutSourceError(... "S7")、- if err := nativeSharedCheckoutSourceError(... "S9 Targeted"); err != nil {),实测隔离 worktree 的 SubagentStop 直接消费了 Main 的原 Targeted 问卷。
-- **争议/风险**:1 条测试。**冲突**:internal/cli/native_s9_targeted_listener_test.go:167-176 是同一提交 d0d948a 新增的用例,注释「A tool event's cwd alone does not prove which product it verified.」并断言「另一个 git worktree 仍应被接收」—— 两个用例按 cwd 对立,需 owner 裁定哪条代表蓝图。
-- **修复方向**:恢复守卫调用点;但先解决与 native_s9_targeted_listener_test.go 的冲突。
-
-成员:`TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop`
 
 #### G11-E — fresh inactive 校验只查 review.clean_round,漏查 review.round
 
