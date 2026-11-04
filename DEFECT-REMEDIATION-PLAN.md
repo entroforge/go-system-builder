@@ -1292,7 +1292,7 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 | W33 | `internal/runtime/checkpoint.go:204/237/500-509` | 待判 | manifest `revision` 一致性比较复核 |
 | W34 | `internal/cli/task_receipt.go:106` 的 `bytes.Equal(before, after)` | B | 字节比较属 `L4-workflow-convergence.md:281` 退役家族 |
 
-### 14.7 C 档上报(本轮不做,附理由)
+### 14.7 C 档上报与逐条裁定(裁定见 §14.11)
 
 | 位置 | 疑点 | 不做的理由 |
 |---|---|---|
@@ -1306,8 +1306,8 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 | `internal/cli/recover_command.go:634` 的 `0` | 零值是具体断言还是省略 | 归 W31d 裁定 |
 | **`internal/review/result_packet.go:735`** | `result.ResultID = fmt.Sprintf("%s-attempt-%d", p.ResultID, snapshot.Revision+1)` —— 用**全局 Runtime revision** 派生结果身份后缀 | 与 `L4-workflow-convergence.md:242`「每次 Hook 重算的可变 Runtime revision…不能代替稳定 Plan 身份」正面冲突:同一逻辑结果在无关提交后会拿到不同 ResultID,幂等去重随之分叉。这是 G18 的一个具体实例。退役需要设计一个**稳定坐标**(原接收事实 / 已记录的重新交付次数字段),不能只删这一行 —— 改法未设计前不动 |
 | **`internal/review/result_packet.go:735`** | `result.ResultID = fmt.Sprintf("%s-attempt-%d", p.ResultID, snapshot.Revision+1)` —— 用**全局 Runtime revision** 派生领域身份后缀 | 违反 `L4-workflow-convergence.md:242`「固定转换标签、每次 Hook 重算的**可变 Runtime revision** 或改名后的数字**都不能代替稳定 Plan 身份**」;且改成当前值路径后,这个序号可能**从未被分配过**,记录会声称一个不存在的 revision。**本轮不改生产代码** —— 新身份方案必须同时满足三条约束:①不嵌入任何 Runtime revision(`:242`);②不累计轮次序号(`L4-revision-usage.md:20`「删除旧 `review.round` 生产、消费及兼容读取,不生成或累计轮数」、`:123`);③**不得与上一次交付的身份或其答卷保存路径相撞** —— `ResultID` 决定答卷落在哪个文件,同 id 会**覆盖已收原卷**(违「不能覆盖已收事实」)。**关键证据(供 G18 第 3 步裁定)**:`internal/review/submit.go:525` 的 **journal 事件 id 已经带了 Runtime 在锁内分配的序号**(`evt-review-result-<resultID>-r<commitRevision+1>`),所以领域后缀**对唯一性是多余的**,唯一性已由事件坐标承担;缺的只是「这次重交」的一个**稳定领域判别式**。候选:收据里记录一次**领域交付序号**(不是轮次、不是 revision);或领域 `ResultID` 保持 plan 派生的稳定身份、由事件坐标区分两次交付。`L4-workflow-convergence.md:242` 明说「具体事务接线和中断恢复仍须核实,**不在此宣称已实现或锁定某种事件身份方案**」⇒ 本项归 **G18 第 3 步**(事件 id/幂等键形状)一并裁定,不得就地造一个 ad-hoc 方案 |
-| **`internal/runtime/planning_rework.go:115-121`** | 返工冻结源按「`StageEntry` 数值最大且 < 当前 entry」选 S3 原件 | `L4-revision-usage.md:169` 要求「最近一次**真实完成该接续**的 S3 阶段入口」——「数值最大」不保证该 entry 真有已接收的 S3 记录。**用序号大小代替了真实接续关系**,与本轮判据同构。改法应为「按已记录的接收 + 转换事件关系选」,属 `internal/runtime` 写路径,需专项 |
-| `internal/runtime/planning_rework.go:58` | 返工 transition CAS | 若退役具体断言,需 `internal/transition` 支持「以当前 entry 派生幂等键」,否则损 `:117`「同一意图重试保持原关联」;归属待定,上报 |
+| **`internal/runtime/planning_rework.go`**(`validateReworkFrozenDesign` / 新增 `originalS3Responsibility`) | 返工冻结源按「`StageEntry` 数值最大且 < 当前 entry」选 S3 原件 | **已裁定并已改(本轮 W34)** —— 改为「按已记录的接收 + 转换事件关系选」:接收须 `advanced`、带 `TransitionEventID`、未被修订/取代、owner 为 Main,且与 packet 的 runtime/代/REQ/stage/阶段入口逐项对上;缺口**点名报错**而非回退到更早责任。详见 §14.12 |
+| `internal/runtime/planning_rework.go` 的返工 transition CAS | 返工 transition CAS | **仍未动,归 G18 第 3 步** —— 若退役具体断言,需 `internal/transition` 支持「以当前 entry 派生幂等键」,否则损 `L4-revision-usage.md:117`「同一意图重试保持原关联」;且幂等键形状与 `transition/engine.go:207/:213` 是同一批,必须一起改 |
 | `internal/workpacket/packet.go:28 Attempt` | `Attempt` 参与 packet 身份,`Attempt==1` 表「首次不得声明修订」 | 不是累计轮次,但读法接近「第几次」;退役会丢首次/修订身份区分 ⇒ 登记为 C 档观察,保留 |
 | `internal/semantic/runtime_reachability.go:193` | 用数值 max 判 S5 manifest「当前/历史」 | 阶段入口是单调轴(A 档),但 `:169` 的原意是「已成立的接续关系」;若要收敛,改用 `origin_entry`/`transition_event` 关系,不减断言 |
 
@@ -1393,3 +1393,39 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 - 本轮已把两处注释改回真话(不改行为):写计数在 journal 键里的承重性、它与内容语义身份的区别、以及替换方向。
 - **结构性替换(归 G18 第 3 步)**:把里程碑观察锚定到 **journal 末事件 id**(记录身份,按「revision 按角色三分」属**保留**类),从而让写计数彻底退出观察身份。届时 `source_revision` 也应随之替换或退役。
 - **裁定:行为不改,注释已改;替换归 G18 第 3 步。**
+
+### 14.12 W34:返工冻结源改按真实接续关系选(已落地)
+
+`internal/runtime/planning_rework.go` 的 `validateReworkFrozenDesign` 原先在 `entities["work_packets"]` 里挑 `StageEntry` **数值最大**且小于当前 entry 的 S3 packet 作冻结源。数值大小**替代了真实接续关系**:它可能挑到一个**只签发、从未接收**的 packet —— 那是一份材料,不是一份责任。本轮(W34)改为按**已记录的接收 + 转换事件关系**选。
+
+#### 判据(逐条照抄 `internal/runtime/task_planning_artifacts.go:298-322` 的同包正确范式)
+
+选中源必须同时满足:接收记录 `control_status == "advanced"`、`transition_event_id != ""`、`revision_packet_id == ""`、`superseded_by == ""`、`owner == "Main"`;`packet_id` 一致;`origin_state/origin_phase/origin_entry` 与接收一致;packet 侧 `runtime_id`/代/锁定 REQ/stage=S3/owner/阶段入口与接收侧逐项对上;该 packet 的契约提交唯一。
+
+#### 失败时的行为(蓝图 `:169`「说明具体未知……不退回较早责任冒充当前来源」)
+
+- 没有任何成立接续 ⇒ 报错点名:`no original S3 reception advanced the S3 continuation before entry N`;
+- 比选中源更新的接收找不到对应 packet ⇒ 报错点名 entry 与 packet id(**不回退**到更早责任);
+- 选中 entry 上 packet 缺失 / 重复 / 接收重复 ⇒ 各自点名。
+
+#### 蓝图依据(逐条)
+
+- `L4-revision-usage.md:169`「先在原 packet/submission 索引上核对 owner、阶段、`origin_entry`、`advanced` 与准确转换关联;取最近一次**真实完成该接续**的 S3 阶段入口;这里比较的是原单调阶段入口及**已成立的接续关系**,不是 packet ID、文件时间、全局 Runtime revision,或『哪份证据碰巧还 valid』」;
+- `L4-state-transition-core.md:89`「**接续尚未建立时,应明确当前覆盖受阻和恢复责任**」;
+- `L4-agent-guidance.md:190`「contracts 目标继续校验原 S3 的冻结 S2 输入与目录成员,**不能把上游漂移重新冻结为新事实**」。
+
+#### 行为面变化(须知情,不是回归)
+
+1. **从未建立过 S3→S4 接续的链上,contracts 返工被拒**(此前允许拿一个只签发的 packet 开新条目)。按 `L4-state-transition-core.md:89` 这是应有行为:接续未建立时必须明确「当前覆盖受阻」而不是冒充更早责任。
+2. **上游 S2 设计漂移后,contracts 返工被拒** —— 冻结源解析到的仍是原 S3,而原 S3 冻结的 S2 身份已不等于当前登记的设计(`L4-agent-guidance.md:190`)。要修正上游须走 `--target design`。
+3. **漂移的可见性只到「身份」为止**:冻结 S2 输入按 `ID/Path/Version` 核对,**不核字节**(`L4-revision-usage.md:171` 不逐文件算摘要)⇒ 纯字节改动不会被发现,contracts 返工仍被放行,且登记的设计身份不变。这是「Hook 不能声称发现所有变更」(`L4-agent-guidance.md:183`)的正确结果,已单独用例钉住。
+
+#### 配套夹具改写(3 条红 → 绿,断言改得更强)
+
+- `TestPlanningReworkCLIOriginalRoutes/S3_contracts`:由「返工成功并路由到 contracts」改为**显式拒绝**并点名缺失事实与恢复责任,并追加:拒绝不开入口、不改 Runtime 修订与 lifecycle/documents/evidence/bound_req/baseline、历史答卷字节未变、**拒绝本身没有补出那条缺失的接收**、重复拒绝仍拒绝。
+- `TestPlanningReworkCLIPreservesAcceptedHistory`:夹具改为经真实 consume + 落地 Main followup 让接收真正 `advanced`;followup 断言由「任何 err != nil」收紧为 `errors.Is(err, runtime.ErrSubmissionFollowupProcessed)`;bounded Recover 断言改述为「已收历史不占用恢复预算」。
+- `TestPlanningReworkCLIRejectsFrozenDesignDrift`:先建立真实接收,再让上游 S2 **声明版本**漂移并由原 S2 出口重新登记;断言 contracts 返工被**拒绝**且诊断点名漂移、Runtime 修订不变、新 S3 责任带**实际**设计身份而原冻结身份保留为历史。
+
+#### 验收
+
+`go build ./...` / `go vet` / `gofmt` 全过;`go test ./internal/runtime/` 整包绿(86.6s);`internal/cli` 返工族 + 回归集定向抽样绿(143.3s)。
