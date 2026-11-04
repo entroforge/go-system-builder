@@ -1301,7 +1301,7 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 | **`internal/transition/engine.go:207`、`:213`** | 事件 id `evt-<transition>-r<commitRevision+1>` 与幂等键 `runtime:<transition>:<commitRevision>` —— 写计数写进领域身份 | ①**本轮新证据(W32)**:业务保存路径的 CAS 退役后,`commitRevision` 取**接收端自己锁前快照**的值,并发窗口内它可能**低于真正提交的 `after_revision`**,编号与 `after_revision` 错开;已核实全仓**没有任何**按 `-r<N>` 与 `after_revision` 做等值校验的代码(`grep '"-r%d"'` 无命中),journal 的权威坐标是 `sequence` + `after_revision`(`internal/runtime/store.go:1250-1262`、`:1568-1569`),故**当前不构成功能破坏**,但记录本身在声称一个可能不准确的序号。②**周期重置风险**:`L4-revision-usage.md:29`「周期身份重置有自己的协议,不都表现为『同一个数字加一』」⇒ 计数器重置后 `runtime:<transition>:<commitRevision>` 可能与重置前的事件撞键。③处置:与 §14.7 的 `result_packet.go:735` 一并归 **G18 第 3 步**(事件 id/幂等键形状)——**语义幂等键必须同时带上责任坐标与周期坐标**,否则既会撞键、也会让编号错开 |
 | `internal/hookctx/loader.go:1056` | `document.Revision < CaseRevision` 方向 | **已裁定:保留,方向 `<` 正确** —— Case 在飞行中可正当修订,必须是下界而非等值;第二段等值是「活文件 ↔ 活索引」自洽性核对。两处守的是「原题面有效性」。详见 §14.11 C-C |
 | **`internal/controller/replay.go:210`、`:219-224`** | 恢复重放用 **revision 递增**判「无进展」(`after.Revision <= snapshot.Revision`),并用 `seenRevisions` 判「状态重复」 | **已裁定并本轮已改** —— `:210` 的 revision 判据**冗余**(同处 `TransitionCommitted` 已证明写过、游标判据已证明生命周期动了)⇒ 退役;`:219-224` 的 `seenRevisions` **可证明不可达**(同一 revision 只对应一个状态、状态决定游标,而游标检查先执行)⇒ 整支退役、行为不变。游标去重本来就已在生效(`:217-221`),故「重放不产生第二次恢复状态机」(`:105`)的保证**未被动摇**。配套新增守卫用例 `TestRecoveryReplayAdvancesTheCursorAndNeverRepeatsIt`。详见 §14.11 C-D |
-| `internal/cli/s6_observation.go:26` vs `controller.go:1251` | 里程碑绑定写计数 vs「observed revision 不是状态变更」自相矛盾 | 一并裁定 |
+| `internal/cli/s6_observation.go:26` vs `controller.go:1251` | 里程碑绑定写计数 vs「observed revision 不是状态变更」自相矛盾 | **已裁定** —— 矛盾在**注释与实现的说法不一致**,不在行为:内容语义身份(`stableMilestoneProjection`)本就排除写计数;journal 幂等键必须带写计数是**承重**的(S6 观察失效时内容不变、必须重写,只有写计数能把两次写入分开)。本轮把两处与实现不符的注释改回真话;把写计数换成结构身份(journal 末事件 id)归 **G18 第 3 步**。详见 §14.11 C-E |
 | `internal/qualitygate/review_round_gates.go` 门名含 `ROUND`;`internal/assignment/review_readiness.go:75/93`;`internal/hook/stopidle.go:383` | 轮数语汇命名遗留 | 语义已无轮次,非功能门禁;命名清理归入 G18 之后的整洁批次 |
 | `internal/cli/recover_command.go:634` 的 `0` | 零值是具体断言还是省略 | 归 W31d 裁定 |
 | **`internal/review/result_packet.go:735`** | `result.ResultID = fmt.Sprintf("%s-attempt-%d", p.ResultID, snapshot.Revision+1)` —— 用**全局 Runtime revision** 派生结果身份后缀 | 与 `L4-workflow-convergence.md:242`「每次 Hook 重算的可变 Runtime revision…不能代替稳定 Plan 身份」正面冲突:同一逻辑结果在无关提交后会拿到不同 ResultID,幂等去重随之分叉。这是 G18 的一个具体实例。退役需要设计一个**稳定坐标**(原接收事实 / 已记录的重新交付次数字段),不能只删这一行 —— 改法未设计前不动 |
@@ -1382,3 +1382,14 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 - **遗留事实(不在本轮范围)**:游标在语义上**并不**全局唯一 —— 返工重开 contracts 会让 `(planning, contracts)` 合法重现。今天的游标检查会把这种合法重现报成循环,这是**既有行为**,不是本轮引入;要彻底修需要换成真正的结构身份(如 journal 末事件 id),归后续批次。
 - **配套守卫用例(本轮新增)**:`internal/controller/replay_test.go` 的 `TestRecoveryReplayAdvancesTheCursorAndNeverRepeatsIt` —— 断言每个 advanced 步**必须推进游标**,且同一条恢复链里**没有任何游标出现两次**。这两条断言直接钉住「游标是进度与身份信号」,也是退役 revision 判据后仍然成立的根据。
 - **裁定:两处 revision 用法均已退役。**
+
+#### C-E `internal/cli/s6_observation.go:26` vs `internal/cli/controller.go:1251` —— 里程碑观察身份:**本轮改注释,结构性替换归 G18 第 3 步**
+
+- 三处相关代码,各自的职责必须分清:
+  1. `internal/cli/controller.go:1209` `stableMilestoneProjection` —— 里程碑的**内容语义身份**:比较「已记的里程碑是否还在说同一句话」。它**故意排除** `source_revision`、`updated_at`、`event`、`instruction` 和 gate 的 `observed_revision`,理由写在注释里:「观测到的 Runtime 修订是诊断遥测,不是状态变更;把它算进来会让每个 hook 都刷新自己的里程碑」。
+  2. `internal/cli/controller.go:971` —— **journal 幂等键** `milestone:<runtime_id>:r<revision+1>`。**这里的写计数是承重的**:S6 观察相对已移动的 Runtime 失效时,里程碑的**投影内容不变但仍必须重写**(否则 `:959` 的早退分支永远命中、观察永远陈旧),只有写计数能把这次写入与上一次分开。
+  3. `internal/cli/s6_observation.go:26` —— S6 PreToolUse **复用**已缓存的 gate 观察。失效方向永远是「缓存不适用 ⇒ 退回真 Controller 重算」,**不可能**拒绝任何专业完成 ⇒ 它是缓存新鲜度判断,不是门禁。
+- **「自相矛盾」的准确位置在注释,不在行为**:原注释称 `stableMilestoneProjection` 是「noop 比较与 journal 幂等键的**唯一**语义身份」,而真正的 journal 键(`:971`)并不由它构成、且带写计数;`milestoneIdempotencyWithGate` 的注释则称它「hashes the stable milestone projection」并称「仅观测的修订变化保持幂等」—— 它既不 hash,键里也**带着**修订 ⇒ 两处都是**假陈述**。
+- 本轮已把两处注释改回真话(不改行为):写计数在 journal 键里的承重性、它与内容语义身份的区别、以及替换方向。
+- **结构性替换(归 G18 第 3 步)**:把里程碑观察锚定到 **journal 末事件 id**(记录身份,按「revision 按角色三分」属**保留**类),从而让写计数彻底退出观察身份。届时 `source_revision` 也应随之替换或退役。
+- **裁定:行为不改,注释已改;替换归 G18 第 3 步。**

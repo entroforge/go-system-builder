@@ -1201,11 +1201,21 @@ func milestoneMatchesWithGate(current map[string]any, guidance policy.Guidance, 
 	))
 }
 
-// stableMilestoneProjection is the single semantic identity used by both
-// the no-op comparison and the journal idempotency key. The observed runtime
-// revision is diagnostic telemetry, not a state change: including it here
-// makes every hook refresh its own milestone and burns an unbounded revision
-// for no semantic progress.
+// stableMilestoneProjection is the semantic identity of a milestone: the
+// content a hook compares to decide whether the recorded milestone still
+// says the same thing. The observed runtime revision is diagnostic
+// telemetry, not a state change: including it here makes every hook refresh
+// its own milestone and burns an unbounded revision for no semantic
+// progress.
+//
+// The journal idempotency key is a separate concern and is not built from
+// this projection. A milestone refresh still has to write when an S6
+// observation went stale against a moved Runtime, even though its projected
+// content did not change, and only the write count tells that write apart
+// from the one before it. That is the remaining place where the Runtime
+// write count stands in for an identity; the replacement is to anchor the
+// observation on the journal's last event id, which is a record identity
+// rather than a counter. Tracked in DEFECT-REMEDIATION-PLAN.md §14.11 C-E.
 func stableMilestoneProjection(milestone map[string]any) map[string]any {
 	if milestone == nil {
 		return nil
@@ -1247,18 +1257,25 @@ func equalJSON(left, right any) bool {
 	return errA == nil && errB == nil && string(a) == string(b)
 }
 
-// milestoneIdempotency is the legacy zero-gate idempotency key kept for
+// milestoneIdempotency is the legacy zero-gate milestone key kept for
 // callers that have not yet been threaded with the Controller's
-// quality_gate projection. It now delegates to milestoneIdempotencyWithGate
+// quality_gate projection. It delegates to milestoneIdempotencyWithGate
 // with a zero-value gate so the existing key shape is preserved
 // (BUG-039-07 §4.1 step 3).
 func milestoneIdempotency(g policy.Guidance) string {
 	return milestoneIdempotencyWithGate(g, controller.QualityGateResult{})
 }
 
-// milestoneIdempotencyWithGate hashes the stable milestone projection so a
-// gate change produces a new Journal key while observation-only revision
-// changes remain idempotent (BUG-039-07 §4.1 step 3, REQ-039 §17).
+// milestoneIdempotencyWithGate builds a milestone key that tells a changed
+// gate apart from an unchanged one. The gate's observed revision is left out
+// on purpose, so an observation-only revision change keeps the same key; the
+// guidance revision is in the key because the key also has to separate two
+// writes whose projected content is identical.
+//
+// It is not the key the Writer uses: refreshMilestoneWithGate builds the
+// journal idempotency key itself. The write count inside that key is the
+// remaining write-count identity recorded in DEFECT-REMEDIATION-PLAN.md
+// §14.11 C-E.
 func milestoneIdempotencyWithGate(g policy.Guidance, gate controller.QualityGateResult) string {
 	// Legacy helper kept for existing callers; actual Writer idempotency uses
 	// the original Runtime and next revision in refreshMilestoneWithGate.
