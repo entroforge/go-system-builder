@@ -103,21 +103,37 @@ func TestAgentLifecycleEventIdentityIsSemantic(t *testing.T) {
 	if event["idempotency_key"] != "runtime:agent:agent-ver-1:readback_submitted:msg-shared-intent" {
 		t.Fatalf("idempotency_key=%v, want the semantic owner/operation/intent shape", event["idempotency_key"])
 	}
-	// The Runtime write counter stays a recorded audit coordinate only.
-	if strings.Contains(event["event_id"].(string), "-r8") || strings.Contains(event["idempotency_key"].(string), ":8") {
-		t.Fatalf("identity leaked the Runtime write counter: event=%v", event)
+	// The Runtime write counter stays a recorded audit coordinate only. The
+	// commit moved the revision to next.Revision, so neither identity may
+	// carry that counter in any shape: neither the historical "-r8" suffix
+	// nor the ":8" tail.
+	counter := strconv.Itoa(next.Revision)
+	for name, identity := range map[string]string{
+		"event_id":        event["event_id"].(string),
+		"idempotency_key": event["idempotency_key"].(string),
+	} {
+		if strings.Contains(identity, "-r"+counter) || strings.Contains(identity, ":"+counter) {
+			t.Fatalf("%s leaked the Runtime write counter %s: %q", name, counter, identity)
+		}
 	}
 
 	// G18 §1.3: retrying the same intent yields the same identity, so the
 	// journal refuses the second commit instead of recording a second event.
+	// The refusal is the domain's own: the catalog gives no Agent event a
+	// self-loop, so the committed event advanced the Agent and the same
+	// event is no longer legal from the state that commit produced.
 	_, err = assignment.AdvanceAgent(root, statePath, journalPath, assignment.AgentEventRequest{
 		ExpectedRevision: next.Revision, AgentID: "agent-ver-1", Event: "readback_submitted", MessagePath: messagePath,
 	})
 	if err == nil {
 		t.Fatal("retrying the same authored message must not commit a second event")
 	}
-	if !strings.Contains(err.Error(), "already exists in runtime journal") {
-		t.Fatalf("retry error=%v, want the stable-identity journal refusal", err)
+	wantRefusal := "Agent event readback_submitted is not legal from state understanding_submitted (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped)"
+	if err.Error() != wantRefusal {
+		t.Fatalf("retry error=%v, want the domain's own refusal %q", err, wantRefusal)
+	}
+	if strings.Contains(err.Error(), "already exists in runtime journal") {
+		t.Fatalf("the journal event-id collision shadowed the domain outcome: %v", err)
 	}
 }
 
