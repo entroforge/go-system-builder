@@ -1296,11 +1296,11 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 
 | 位置 | 疑点 | 不做的理由 |
 |---|---|---|
-| `internal/assignmentresult/accepted.go:325-332/266` | Result 版本要求**连续无缺口** + `ResultRevision < 1` 下界 | 退役会削弱 `main_facts.go:53` 的 `Binding.ResultRevision` 唯一定位锚点;须先补 submission_key 锚点 |
-| `internal/plancheckpoint/validate.go:111-113` | `assignment_revision != 1` 即拒收 | 与 ReviewPlan 指针 revision 轴是**两轴**,改则混用(`L4-revision-usage.md:50`) |
-| `internal/transition/engine.go:213` | 幂等键只有 `transition+revision`,无责任维度 | 撞键风险;须与 `store.go` 唯一性检查一并裁定,不在 transition 层单方面改键格式 |
-| `internal/hookctx/loader.go:1056` | `document.Revision < CaseRevision` 方向 | Case 是否允许在原路径上前进尚未裁定,判 C 上报 |
-| **`internal/controller/replay.go:210`、`:219-224`** | 恢复重放用 **revision 递增**判「无进展」(`after.Revision <= snapshot.Revision`),并用 `seenRevisions` 判「状态重复」 | 写计数器被当成进度/身份信号。按判据应退:`:210` **同时**已有游标判据(`snapshotCursorString(after) == beforeCursor`),游标是结构性坐标 ⇒ 保留游标判据、退役 revision 判据;`:219-224` 的 `seenRevisions` 应改为按**游标**去重(错误名 `ErrRecoveryReplayRepeatedCursor` 本就写着「cursor or revision」)。**本轮不改** —— 「状态重复」改用游标去重前必须先确认游标在同一恢复链上确实唯一(否则会把合法重复当成循环),这是恢复语义,需专项并配恢复用例;不得为了减负而放弃「重放不产生第二次恢复状态机」(`:105`) |
+| `internal/assignmentresult/accepted.go:325-332/266` | Result 版本要求**连续无缺口** + `ResultRevision < 1` 下界 | **已裁定:保留** —— `ResultRevision` 由接收端派生(`len(history)+1`),不是作者传入的期望值,不构成写路径 CAS;守的是「已收历史无静默丢失 + 提交不重复」。原顾虑「须先补 submission_key 锚点」已满足。详见 §14.11 C-A |
+| `internal/plancheckpoint/validate.go:111-113` | `assignment_revision != 1` 即拒收 | **已裁定:保留检查、修正注释** —— 与 ReviewPlan 指针 revision **是同一轴**(全仓四处一律是 Assignment Record 的域版本);字面量 1 的依据是 manifest Assignment 登记即 `Revision: 1`。真正的两轴混用在注释措辞。详见 §14.11 C-B |
+| **`internal/transition/engine.go:207`、`:213`** | 事件 id `evt-<transition>-r<commitRevision+1>` 与幂等键 `runtime:<transition>:<commitRevision>` —— 写计数写进领域身份 | ①**本轮新证据(W32)**:业务保存路径的 CAS 退役后,`commitRevision` 取**接收端自己锁前快照**的值,并发窗口内它可能**低于真正提交的 `after_revision`**,编号与 `after_revision` 错开;已核实全仓**没有任何**按 `-r<N>` 与 `after_revision` 做等值校验的代码(`grep '"-r%d"'` 无命中),journal 的权威坐标是 `sequence` + `after_revision`(`internal/runtime/store.go:1250-1262`、`:1568-1569`),故**当前不构成功能破坏**,但记录本身在声称一个可能不准确的序号。②**周期重置风险**:`L4-revision-usage.md:29`「周期身份重置有自己的协议,不都表现为『同一个数字加一』」⇒ 计数器重置后 `runtime:<transition>:<commitRevision>` 可能与重置前的事件撞键。③处置:与 §14.7 的 `result_packet.go:735` 一并归 **G18 第 3 步**(事件 id/幂等键形状)——**语义幂等键必须同时带上责任坐标与周期坐标**,否则既会撞键、也会让编号错开 |
+| `internal/hookctx/loader.go:1056` | `document.Revision < CaseRevision` 方向 | **已裁定:保留,方向 `<` 正确** —— Case 在飞行中可正当修订,必须是下界而非等值;第二段等值是「活文件 ↔ 活索引」自洽性核对。两处守的是「原题面有效性」。详见 §14.11 C-C |
+| **`internal/controller/replay.go:210`、`:219-224`** | 恢复重放用 **revision 递增**判「无进展」(`after.Revision <= snapshot.Revision`),并用 `seenRevisions` 判「状态重复」 | **已裁定并本轮已改** —— `:210` 的 revision 判据**冗余**(同处 `TransitionCommitted` 已证明写过、游标判据已证明生命周期动了)⇒ 退役;`:219-224` 的 `seenRevisions` **可证明不可达**(同一 revision 只对应一个状态、状态决定游标,而游标检查先执行)⇒ 整支退役、行为不变。游标去重本来就已在生效(`:217-221`),故「重放不产生第二次恢复状态机」(`:105`)的保证**未被动摇**。配套新增守卫用例 `TestRecoveryReplayAdvancesTheCursorAndNeverRepeatsIt`。详见 §14.11 C-D |
 | `internal/cli/s6_observation.go:26` vs `controller.go:1251` | 里程碑绑定写计数 vs「observed revision 不是状态变更」自相矛盾 | 一并裁定 |
 | `internal/qualitygate/review_round_gates.go` 门名含 `ROUND`;`internal/assignment/review_readiness.go:75/93`;`internal/hook/stopidle.go:383` | 轮数语汇命名遗留 | 语义已无轮次,非功能门禁;命名清理归入 G18 之后的整洁批次 |
 | `internal/cli/recover_command.go:634` 的 `0` | 零值是具体断言还是省略 | 归 W31d 裁定 |
@@ -1344,3 +1344,41 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 **本轮进展**:其中 `TestNativeS9BlockerResumesThroughOriginalResolutionWithoutPrepare` 与 `TestNativeS9IntegratesChangedDeliverySourcesWithoutHashMachineProof` **已转绿**(根因:集成侧把代理**自己的私有答卷目录**归为可删除的「原物质」并用 `git worktree remove --force` **强制删掉**,从而制造「集成完成」;违反 `L4-worktree-governance.md:208`/`:210`)。**本轮已修**:`internal/integration/integrate_responsibility.go` 删除 `--force` 移除路径、私人材料改判为保留(`private answer material`)、`internal/integration/inspect_responsibility.go` 的接收侧脏列表跳过私人答卷区;顺带让 `TestNativeS9IntegratesChangedDeliverySourcesWithoutHashMachineProof` 由红转绿。
 
 ⇒ **待办**:其余 4 条逐条补录进复核总账(给出判档与归属),再按蓝图逐条改写或退役;`TestNativeS9PublicCorrectsHistoricalUnstagedResult` 的失败与本条无关(报文逐字相同),归下一轮。**其中 `TestNativeS9BlockerResumesThroughOriginalResolutionWithoutPrepare` 的根因已查明**:集成检查把代理**自己的私有答卷目录**(`?? .loop-submissions/`)判成 worktree dirty 并列为阻塞项 —— 违反 `L4-agent-dispatch-governance.md:57`「S7～S9 接收也不核 Git／ignore 状态」与 `L3-S9-repair.md:136`「原稿是否 tracked、staged、ignored 或 Git `??` 均不属于答卷接收资格」;**本轮已在修**。
+
+### 14.11 C 档逐条裁定(本轮补完,附蓝图依据)
+
+§14.7 上报的 C 档点在本轮逐条核实完毕。结论:**两点保留**(判据是结构性事实,不是写计数比较)、**两点本轮已改**。保留不等于放过 —— 每条都写明它守的是哪一个结构性事实。
+
+#### C-A `internal/assignmentresult/accepted.go:266`、`:325-332` —— Result 版本连续性:**保留**
+
+- `ResultRevision` 的来源是 `internal/assignment/completion_canonical.go:286` 的 `resultRevision := len(history) + 1` —— **接收端自派、派生自已收历史**,不是作者传入的期望值。因此它**不构成写路径上的 CAS**,不会触发「写计数外泄成领域身份 ⇒ 逼着写路径必须用 CAS」这条根因链。
+- 角色 = **记录身份 + 阶段坐标**(该 Assignment 结果历史里的第几版结果)。按「revision 按角色三分」:作记录身份者保留 ⇒ **保留**。
+- `:325-332` 的「版本连续 + `SubmissionKey` 唯一」是**已收历史完整性**:已收结果没有静默丢失、同一次提交没有重复接收。按最高判据,这类「已收行完整性」正是要**恢复**的结构性事实,不是要退役的门禁。
+- §14.7 原先的顾虑「退役会削弱 `main_facts.go:53` 的 `Binding.ResultRevision` 唯一定位锚点;须先补 submission_key 锚点」—— 该前提**已满足**:submission_key 锚点本就存在(`internal/assignment/completion_submission_keys.go:36`/`:45`/`:53`,以及 `:329` 的 `keys[result.SubmissionKey]`)。两个锚点都在位,退役既无必要也无收益。
+- **裁定:两处都保留,不改。**
+
+#### C-B `internal/plancheckpoint/validate.go:111-113` —— `assignment_revision != 1`:**保留检查,修正轴标注**(本轮已改)
+
+- 疑点是「与 ReviewPlan 指针 revision 轴是两轴」。**核实结论:不是两轴,是同一轴。** 全仓四个站点的 `assignment_revision` 一律是 **Assignment Record 自身的域版本**:
+  - `:69` / `:87` —— 与 ReviewPlan 指针 `ptr.Revision` 比对(「声明 vs 已登记」);
+  - `:212` —— 与 `record.Revision` 比对;
+  - `:111` —— 与字面量 1 比对。
+- 字面量 1 有结构性依据:manifest Assignment **登记**时就是 `Revision: 1`(`internal/assignmentrecord/record.go:405`),而 revision > 1 需要一次显式 `RevisionIssuance`;manifest 派发不做修订,故其登记版本恒为 1。
+- **真正的「两轴混用」在注释里**:原文写「its generic **checkpoint revision** is deliberately 1」,把 Assignment 的域版本说成了 checkpoint 的写入次数 —— 用 checkpoint 轴的措辞解释 assignment 轴的事实。本轮已把注释改回真轴(Assignment 阶段坐标),并写明它既不是 checkpoint 计数也不是 Runtime 写计数:声明它 = 把 checkpoint 绑定到派发时的原责任坐标。
+- **裁定:检查保留,注释修正。**
+
+#### C-C `internal/hookctx/loader.go:1056` —— Case 版本方向:**保留,方向 `<` 正确**
+
+- `document.Revision < packet.Binding.CaseRevision`:答卷所依据的 Case 文档版本**不得低于**该 packet 绑定的 Case 版本。Case 在飞行中可以被正当修订(存在 `case_revised` 操作),所以这里必须是**下界**而非等值 —— 用等值会让每一次正当的 Case 修订都误杀在飞的责任。假设题自身的绑定(hypothesis id + assignment id + status open)在下面单独核对。
+- `currentCase && document.Revision != integerFact(pointer["revision"])`:当该 packet 的 Case 就是当前 Case 时,读的是**活文件**,这个等值是**活文件 ↔ 活索引的自洽性**(完整性)核对,不是写门禁。
+- 两处都落在「原题面有效性」这一列 —— 而原题面有效性正是最高判据要求**恢复**的结构性事实之一。
+- **裁定:两处都保留,不改。**
+
+#### C-D `internal/controller/replay.go:210`、`:219-224` —— 恢复重放进度判据:**本轮已改**
+
+- `:210` 的 `after.Revision <= snapshot.Revision` 把 Runtime 写计数当进度信号。**它是冗余的**:同一处的 `TransitionCommitted` 已证明暂存对被写过,而 `snapshotCursorString(after) == beforeCursor` 已证明生命周期动了。写计数器在这里不承担任何独立职责 ⇒ **退役**。
+- `:219-224` 的 `seenRevisions` 把写计数当状态身份。**它可证明不可达**:暂存 Runtime 里一个 revision 只对应一个状态,状态决定游标;而游标检查(`:217-221`)对**同一个 `after`** 先执行。所以「revision 重复」必然先被「cursor 重复」拦下,`seenRevisions` 分支永不触发 ⇒ **整支退役,行为不变**。
+- §14.7 原先的顾虑「改用游标去重前必须先确认游标在同一恢复链上确实唯一」:核实结果是**游标去重本来就已在生效**(`:217-221`)。本次不是新增游标判据,而是删掉一条与它重复的写计数判据。因此「不得为了减负而放弃『重放不产生第二次恢复状态机』」(`:105`)这条约束**没有被放弃** —— 该保证由游标检查独占承担。
+- **遗留事实(不在本轮范围)**:游标在语义上**并不**全局唯一 —— 返工重开 contracts 会让 `(planning, contracts)` 合法重现。今天的游标检查会把这种合法重现报成循环,这是**既有行为**,不是本轮引入;要彻底修需要换成真正的结构身份(如 journal 末事件 id),归后续批次。
+- **配套守卫用例(本轮新增)**:`internal/controller/replay_test.go` 的 `TestRecoveryReplayAdvancesTheCursorAndNeverRepeatsIt` —— 断言每个 advanced 步**必须推进游标**,且同一条恢复链里**没有任何游标出现两次**。这两条断言直接钉住「游标是进度与身份信号」,也是退役 revision 判据后仍然成立的根据。
+- **裁定:两处 revision 用法均已退役。**
