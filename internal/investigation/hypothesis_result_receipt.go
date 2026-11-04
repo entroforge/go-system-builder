@@ -171,9 +171,14 @@ func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request 
 		}
 	}
 
-	commitRevision := snapshot.Revision
 	journal, _ := snapshot.State["journal"].(map[string]any)
-	acceptedEvent := fmt.Sprintf("evt-investigation-case-%s-r%d", packet.Binding.CaseID, commitRevision+1)
+	// G18 §1: accepting a result IS the Case revision write that records it,
+	// so the receipt names the same identity the Case Writer commits — one
+	// journal event, one identity. The Case's own revision separates this
+	// write from the ingest and from every other write of the same Case; the
+	// Runtime write count never enters the identity.
+	nextCaseRevision := current.revision + 1
+	acceptedEvent := caseRevisionEventID(packet.Binding.CaseID, nextCaseRevision)
 	receipt := loopruntime.HypothesisResultReceipt{
 		Contract: hypothesisResultReceiptContract, PacketID: packet.ID,
 		OwnerAgentID: packet.Binding.OwnerAgentID, RuntimeID: packet.Binding.RuntimeID,
@@ -182,9 +187,11 @@ func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request 
 		TeamID:             packet.Binding.TeamID, TaskID: packet.Binding.TaskID, TaskRef: packet.Binding.TaskRef,
 		ManifestRef:   packet.Binding.ManifestRef,
 		ExecutionRoot: sourceRoot, IssuanceEventID: packet.IssuanceEventID,
-		AcceptedEventID:              acceptedEvent,
-		AcceptedIdempotencyKey:       fmt.Sprintf("runtime:investigation-case:%s:%d", packet.Binding.CaseID, commitRevision),
-		AcceptedAfterRuntimeRevision: commitRevision + 1,
+		AcceptedEventID:        acceptedEvent,
+		AcceptedIdempotencyKey: caseRevisionIdempotencyKey(packet.Binding.CaseID, nextCaseRevision),
+		// The Runtime revision and journal sequence stay diagnostics of where
+		// the acceptance landed; they are not part of the accepted identity.
+		AcceptedAfterRuntimeRevision: snapshot.Revision + 1,
 		AcceptedSequence:             intFieldS8(journal["last_sequence"]) + 1,
 	}
 	newQuestions := make([]map[string]any, 0, len(answer.NewHypotheses))
@@ -243,8 +250,12 @@ func receiveLateHypothesisResult(writer *loopruntime.Store, current loopruntime.
 	life, _ := current.State["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": life["state"], "phase": life["phase"]}
 	journal, _ := current.State["journal"].(map[string]any)
-	eventID := fmt.Sprintf("evt-s8-late-result-r%d", current.Revision+1)
-	key := fmt.Sprintf("s8-late:%s:r%d", packet.ID, current.Revision)
+	// G18 §1: the late retention is named by its own responsibility (the
+	// issued packet) and carries no Runtime write count. One issued packet
+	// keeps one accepted late answer, so this identity stays unique and stays
+	// stable across a retried late delivery.
+	eventID := "evt-s8-late-result-" + packet.ID
+	key := "runtime:s8:late-result:" + packet.ID
 	late := workpacket.HypothesisLateResult{Answer: json.RawMessage(append([]byte(nil), answerJSON...)), ExecutionRoot: sourceRoot,
 		AcceptedEventID: eventID, AcceptedIdempotencyKey: key, AcceptedAfterRuntimeRevision: current.Revision + 1, AcceptedSequence: intFieldS8(journal["last_sequence"]) + 1}
 	next, err := writer.Update(current.Revision, loopruntime.Mutation{EventID: eventID, TransitionID: "S8-LATE-RESULT", Event: "hypothesis_result_received",

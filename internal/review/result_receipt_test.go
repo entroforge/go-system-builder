@@ -12,6 +12,7 @@ import (
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func packetModeVerificationState() map[string]any {
@@ -536,6 +537,142 @@ func countJournalEvent(t *testing.T, data []byte, eventID string) int {
 		}
 	}
 	return count
+}
+
+// G18: the ReviewResult journal identity is the original responsibility and
+// the delivery intent, never the Runtime write count. The same delivery keeps
+// one identity, a different delivery gets a different one, and the direct
+// submit path publishes the same shape as the typed receipt.
+func TestReviewResultEventIdentityIsSemanticAndUnique(t *testing.T) {
+	ptr := &PlanPointer{PlanID: "plan-review", Revision: 2}
+	first := &Result{AssignmentID: "assignment-qa-1", ProducerAgentID: "agent-qa-1", ResultID: "review-result-legacy"}
+	second := &Result{AssignmentID: "assignment-qa-1", ProducerAgentID: "agent-qa-1", ResultID: "review-result-other"}
+	eventA, keyA := receiptEventIdentity("loop-1", 1, ptr, first)
+	eventB, keyB := receiptEventIdentity("loop-1", 1, ptr, first)
+	eventC, keyC := receiptEventIdentity("loop-1", 1, ptr, second)
+	if eventA != eventB || keyA != keyB {
+		t.Fatalf("the same delivery received two identities: %q/%q and %q/%q", eventA, keyA, eventB, keyB)
+	}
+	if eventA == eventC || keyA == keyC {
+		t.Fatalf("two different deliveries share one identity: %q/%q and %q/%q", eventA, keyA, eventC, keyC)
+	}
+	if !strings.HasPrefix(eventA, "evt-review-result-") || !strings.HasPrefix(keyA, "runtime:review-result:") {
+		t.Fatalf("review result identity shape = %q / %q", eventA, keyA)
+	}
+	if strings.HasSuffix(eventA, "-r1") || strings.HasSuffix(eventA, "-r2") || strings.HasSuffix(keyA, ":1") || strings.HasSuffix(keyA, ":2") {
+		t.Fatalf("review result identity carries a revision suffix: %q / %q", eventA, keyA)
+	}
+}
+
+// G18: the identity a direct submit publishes is the identity the typed
+// receipt records for the same delivery.
+func TestReviewResultSubmittedEventCarriesNoWriteCount(t *testing.T) {
+	root := t.TempDir()
+	statePath, journalPath := writeState(t, root, baseVerificationState())
+	fixtureEvidenceRoot = root
+	t.Cleanup(func() { fixtureEvidenceRoot = "" })
+	snapshot := registerFixturePlan(t, root, statePath, journalPath)
+	snapshot = markDispatched(t, root, statePath, journalPath, snapshot, "assignment-qa-1", "agent-qa-1")
+	plan, _, err := LoadPlan(root, snapshot.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-identity", "agent-qa-1", "pass",
+		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
+	if _, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
+	}); err != nil {
+		t.Fatalf("submit original result: %v", err)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(journal)), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["transition_id"] != "REVIEW-RESULT" {
+			continue
+		}
+		found = stringField(event["event_id"])
+		key := stringField(event["idempotency_key"])
+		if !strings.HasPrefix(found, "evt-review-result-") {
+			t.Fatalf("review result event id = %q, want the semantic evt-review-result shape", found)
+		}
+		if !strings.HasPrefix(key, "runtime:review-result:") {
+			t.Fatalf("review result idempotency key = %q, want the runtime:review-result shape", key)
+		}
+	}
+	if found == "" {
+		t.Fatal("review_result_submitted journal event missing")
+	}
+	if strings.Contains(found, fmt.Sprintf("-r%d", snapshot.Revision+1)) {
+		t.Fatalf("review result event id carries the Runtime write count: %q", found)
+	}
+}
+
+// G18: a re-delivery of the same unfinished responsibility takes its identity
+// from the domain facts of the delivery it replaces, never from the Runtime
+// write count and never from an accumulated round counter.
+func TestRedeliveryResultIDUsesDomainFactsOnly(t *testing.T) {
+	base := "review-result-abc123"
+	previous := map[string]any{
+		"submission_key": base,
+		"result_ref":     ".claude/evidence/loop-1/g1/reviews/agent-qa-1/" + base + ".json",
+	}
+	first, err := redeliveryResultID(base, previous)
+	if err != nil {
+		t.Fatalf("re-delivery identity: %v", err)
+	}
+	if first == base {
+		t.Fatalf("the re-delivery reused the previous delivery identity %q", base)
+	}
+	if !strings.HasPrefix(first, base+"-redelivery-") {
+		t.Fatalf("re-delivery identity = %q, want the %q shape", first, base+"-redelivery-")
+	}
+	if strings.Contains(first, "-attempt-") {
+		t.Fatalf("re-delivery identity carries an accumulated round counter: %q", first)
+	}
+	again, err := redeliveryResultID(base, previous)
+	if err != nil || again != first {
+		t.Fatalf("the same delivery received two identities: %q and %q (%v)", first, again, err)
+	}
+	// A different previous delivery yields a different identity, so the new
+	// delivery can never reuse the previous identity or its save path.
+	other := map[string]any{
+		"submission_key": base + "-redelivery-0123456789abcdef",
+		"result_ref":     ".claude/evidence/loop-1/g1/reviews/agent-qa-1/other.json",
+	}
+	second, err := redeliveryResultID(base, other)
+	if err != nil {
+		t.Fatalf("second re-delivery identity: %v", err)
+	}
+	if second == first || second == base {
+		t.Fatalf("two deliveries share one identity: %q and %q", first, second)
+	}
+	if _, err := redeliveryResultID(base, map[string]any{}); err == nil {
+		t.Fatal("a previous delivery without any recorded identity produced an identity")
+	}
+}
+
+// G18: historical re-delivery identities stay readable by their saved form.
+func TestResultIDForPacketReadsHistoricalAndCurrentReDelivery(t *testing.T) {
+	packet := workpacket.ReviewResultPacket{ResultID: "review-result-abc123"}
+	if !resultIDForPacket(packet, "review-result-abc123") {
+		t.Fatal("the packet's own identity is not accepted")
+	}
+	if !resultIDForPacket(packet, "review-result-abc123-attempt-3") {
+		t.Fatal("the historical re-delivery identity is no longer readable")
+	}
+	if !resultIDForPacket(packet, "review-result-abc123-redelivery-0123456789abcdef") {
+		t.Fatal("the current re-delivery identity is not accepted")
+	}
+	if resultIDForPacket(packet, "review-result-abc123-redelivery-nothexadecimal") {
+		t.Fatal("a malformed re-delivery identity was accepted")
+	}
 }
 
 func TestLegacyResultSubmissionDoesNotAddTypedReceipt(t *testing.T) {

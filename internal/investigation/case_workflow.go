@@ -19,6 +19,27 @@ import (
 
 const caseWorkflowNext = "runtime investigation status --case-id <case>"
 
+// caseRevisionEventID names one immutable InvestigationCase revision write.
+//
+// G18 §1.2: the distinguishing quantity of a repeated event inside one
+// responsibility must be a domain fact, never the Runtime write count. The
+// Case's own revision is such a fact — it is the revision carried by the
+// immutable Case artifact and by the Runtime pointer, and the Case CAS
+// advances it by exactly one per accepted write. One retried intent therefore
+// keeps one identity, and two different writes of one Case never collide.
+// G18 §1: the event id is evt-<event domain>-<semantic coordinates>.
+func caseRevisionEventID(caseID string, caseRevision int) string {
+	return fmt.Sprintf("evt-investigation-case-revision-%s-r%d", caseID, caseRevision)
+}
+
+// caseRevisionIdempotencyKey is the idempotency key of the same write. It
+// carries the responsibility coordinate (the Case) and the domain intent
+// coordinate (the Case revision), so one intent retried keeps one key and two
+// responsibilities never share one.
+func caseRevisionIdempotencyKey(caseID string, caseRevision int) string {
+	return fmt.Sprintf("runtime:investigation-case-revision:%s:%d", caseID, caseRevision)
+}
+
 // CaseRevisionRequest is the common optimistic-concurrency envelope for an
 // InvestigationCase mutation. Mutate receives a private copy of the active
 // Case; the source Finding set and identity fields are checked again before
@@ -732,7 +753,6 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	lifecycle, _ := current.State["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": stringField(lifecycle["state"]), "phase": lifecycle["phase"]}
 	runtimeID := stringField(current.State["runtime_id"])
-	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	baseline, _ := baselineGeneration(current.State)
 	status := stringField(nextDocument["status"])
 	if status == "" {
@@ -740,11 +760,11 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	}
 	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	snapshot, err := updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-investigation-case-%s-r%d", request.CaseID, commitRevision+1),
+		EventID:                caseRevisionEventID(request.CaseID, nextRevision),
 		TransitionID:           "INVESTIGATION-CASE-REVISION-UPDATED",
 		Event:                  "investigation_case_revision_updated",
 		Actor:                  "orchestrator",
-		IdempotencyKey:         fmt.Sprintf("runtime:investigation-case:%s:%d", request.CaseID, commitRevision),
+		IdempotencyKey:         caseRevisionIdempotencyKey(request.CaseID, nextRevision),
 		RuntimeID:              runtimeID,
 		From:                   cursor,
 		To:                     cursor,

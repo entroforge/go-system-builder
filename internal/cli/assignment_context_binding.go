@@ -317,7 +317,7 @@ func runAssignmentContext(args []string, stdout, stderr io.Writer) int {
 		}
 		binding.Generation = old.Generation + 1
 	}
-	next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: fmt.Sprintf("context-%s-g%d-r%d", contextPathID(*owner), binding.Generation, snap.Revision+1), TransitionID: "CONTEXT-PREPARE", Event: "assignment_context_prepared", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), IdempotencyKey: fmt.Sprintf("context:%d:%s:%d", len(*owner), *owner, binding.Generation), RetainLastTransition: true, OccurredAt: time.Now().UTC(), Apply: func(state map[string]any) error {
+	next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: fmt.Sprintf("evt-context-%s-g%d", contextPathID(*owner), binding.Generation), TransitionID: "CONTEXT-PREPARE", Event: "assignment_context_prepared", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), IdempotencyKey: fmt.Sprintf("runtime:context:%d:%s:%d", len(*owner), *owner, binding.Generation), RetainLastTransition: true, OccurredAt: time.Now().UTC(), Apply: func(state map[string]any) error {
 		agent := contextAgent(state, *owner)
 		if agent == nil {
 			return fmt.Errorf("registered context owner disappeared")

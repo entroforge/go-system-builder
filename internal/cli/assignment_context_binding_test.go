@@ -308,3 +308,40 @@ func TestNativeContextBindingWithoutPacketIndicesPublishesOriginalCheckpoint(t *
 		t.Fatalf("native-only original checkpoint restore rejected: %v", err)
 	}
 }
+
+// G18: the context binding event identity is the owner and the context
+// generation, never the Runtime write count.
+func TestNativeContextBindingEventIdentityCarriesNoWriteCount(t *testing.T) {
+	f := newStageAnswerFixture(t)
+	p := f.packets[0]
+	prepareNativeBinding(t, f, p.Binding.Owner)
+	journal, err := os.ReadFile(filepath.Join(f.root, ".claude", "loop-events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(journal)), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["transition_id"] != "CONTEXT-PREPARE" {
+			continue
+		}
+		found, _ = event["event_id"].(string)
+		key, _ := event["idempotency_key"].(string)
+		if !strings.HasPrefix(key, "runtime:context:") {
+			t.Fatalf("context idempotency key = %q, want the runtime:context shape", key)
+		}
+	}
+	if found == "" {
+		t.Fatal("CONTEXT-PREPARE journal event missing")
+	}
+	if !strings.HasPrefix(found, "evt-context-") {
+		t.Fatalf("context event id = %q, want the evt-context shape", found)
+	}
+	// The identity ends with the context generation, never with a write count.
+	if !strings.HasSuffix(found, "-g1") {
+		t.Fatalf("context event id = %q, want the generation coordinate at its end", found)
+	}
+}

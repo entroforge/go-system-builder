@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,8 +53,20 @@ func repairDelegationFromApplication(root string, state map[string]any, answer r
 		}
 	}
 	runtimeID := base64.RawURLEncoding.EncodeToString([]byte(grant.RuntimeID))
-	grant.DecisionID = fmt.Sprintf("grant-s8-%s-g%d-r%d", runtimeID, grant.BaselineGeneration, integerValue(state["revision"]))
+	grant.DecisionID = fmt.Sprintf("grant-s8-%s-g%d-%s", runtimeID, grant.BaselineGeneration, repairDelegationDecisionToken(grant))
 	return grant
+}
+
+// repairDelegationDecisionToken distinguishes two different human repair
+// grants of the same Runtime and baseline generation. It is taken from the
+// recorded decision itself, so the same decision keeps one identity and the
+// Runtime write count never takes part in it.
+func repairDelegationDecisionToken(grant investigation.RepairDelegation) string {
+	parts := []string{grant.Decision, grant.ApprovedBy, grant.Reviewer, grant.ExpiresAt, fmt.Sprint(grant.MaxContracts)}
+	parts = append(parts, grant.AllowedPaths...)
+	parts = append(parts, grant.ForbiddenPaths...)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:8])
 }
 
 // Ordinary tools do not resubmit a decision whose exact content already has

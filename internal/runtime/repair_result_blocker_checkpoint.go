@@ -249,6 +249,18 @@ func eventIndexHas(index map[string]int, eventID string) bool {
 	return found
 }
 
+// agentLifecycleIdentity reports whether a saved Agent lifecycle event id and
+// idempotency key belong to one owner and one event kind. The historical shape
+// ended in "-r<revision>" and the semantic shape ends in "-<intent key>"; both
+// start with the same prefix, so an already saved identity is accepted in
+// either form and never recomputed from the Runtime write counter (G18 §1.4).
+func agentLifecycleIdentity(eventID, key, owner, kind string) bool {
+	eventPrefix := "evt-agent-" + owner + "-" + kind + "-"
+	keyPrefix := "runtime:agent:" + owner + ":" + kind + ":"
+	return len(eventID) > len(eventPrefix) && strings.HasPrefix(eventID, eventPrefix) &&
+		len(key) > len(keyPrefix) && strings.HasPrefix(key, keyPrefix)
+}
+
 func repairResultBlockerEvents(journal controlproof.JournalInspection, p workpacket.RepairResultPacket, owner string, rows []map[string]any) ([]map[string]any, error) {
 	paths := map[string]bool{}
 	for _, row := range rows {
@@ -256,7 +268,7 @@ func repairResultBlockerEvents(journal controlproof.JournalInspection, p workpac
 	}
 	matching := []map[string]any{}
 	for _, event := range journal.Events {
-		if event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || !strings.HasPrefix(stringValue(event["event_id"]), "evt-agent-"+owner+"-work_blocked-r") {
+		if event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || !strings.HasPrefix(stringValue(event["event_id"]), "evt-agent-"+owner+"-work_blocked-") {
 			continue
 		}
 		refs, ok := checkpointStringSlice(event["evidence_ids"])
@@ -356,7 +368,7 @@ func verifyRepairResultBlockerMessage(data []byte, p workpacket.RepairResultPack
 }
 
 func verifyRepairResultBlockerEvent(event map[string]any, p workpacket.RepairResultPacket, owner, artifactRef, messageRef string, issueSequence int) (eventID, key string, after, sequence int, err error) {
-	before, be := integerField(event, "before_revision")
+	_, be := integerField(event, "before_revision")
 	after, ae := integerField(event, "after_revision")
 	sequence, se := integerField(event, "sequence")
 	generation, ge := integerField(event, "baseline_generation")
@@ -364,21 +376,24 @@ func verifyRepairResultBlockerEvent(event map[string]any, p workpacket.RepairRes
 	from, _ := event["from"].(map[string]any)
 	to, _ := event["to"].(map[string]any)
 	refs, refsOK := checkpointStringSlice(event["evidence_ids"])
-	wantID := fmt.Sprintf("evt-agent-%s-work_blocked-r%d", owner, after)
-	wantKey := fmt.Sprintf("runtime:agent:%s:work_blocked:%d", owner, before)
+	// The saved identity is compared, never recomputed from the Runtime write
+	// counter (G18 §1.4). Both the historical "-r<revision>" shape and the
+	// semantic "-<intent key>" shape are accepted.
+	eventID = stringValue(event["event_id"])
+	key = stringValue(event["idempotency_key"])
 	// The Runtime's write counter is a recorded field, never a qualifier. It is
 	// read on its original path and carried into the receipt for audit and
 	// history restoration; the required-field checks below only mirror the
 	// journal event schema, and no continuity, freshness or ordering is
 	// derived from the counter. The committed event coordinate (sequence) and
 	// the evidence references are what bind this event to the original blocker.
-	if be != nil || ae != nil || se != nil || ge != nil || !refsOK || sequence < 1 || generation != p.Binding.Sources.BaselineGeneration || event["event_id"] != wantID || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || event["idempotency_key"] != wantKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (work_blocked)" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, artifactRef) {
+	if be != nil || ae != nil || se != nil || ge != nil || !refsOK || sequence < 1 || generation != p.Binding.Sources.BaselineGeneration || !agentLifecycleIdentity(eventID, key, owner, "work_blocked") || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (work_blocked)" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, artifactRef) {
 		return "", "", 0, 0, fmt.Errorf("S9 original work_blocked lifecycle event tuple or evidence IDs differ")
 	}
 	if sequence <= issueSequence {
 		return "", "", 0, 0, fmt.Errorf("S9 original blocker event does not follow packet issuance")
 	}
-	return wantID, wantKey, after, sequence, nil
+	return eventID, key, after, sequence, nil
 }
 
 func containsStringRuntime(values []string, target string) bool {
@@ -424,7 +439,7 @@ func validBlockerCommitID(value string) bool {
 // reauthorize the Worker or reconstruct historical execution permissions.
 func recordedRepairResultLifecycleEvent(journal controlproof.JournalInspection, packet workpacket.RepairResultPacket, messageRef, action string) (map[string]any, error) {
 	var selected map[string]any
-	prefix := "evt-agent-" + packet.Binding.Sources.OwnerAgentID + "-" + action + "-r"
+	prefix := "evt-agent-" + packet.Binding.Sources.OwnerAgentID + "-" + action + "-"
 	for _, event := range journal.Events {
 		refs, _ := checkpointStringSlice(event["evidence_ids"])
 		if !containsStringRuntime(refs, messageRef) || !strings.HasPrefix(stringValue(event["event_id"]), prefix) || event["outcome"] != "committed" {

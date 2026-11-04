@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -539,6 +541,26 @@ func repairReadbackIDSuffix(runtimeID string, generation int, caseID, contractID
 func repairResponsibilityKey(values ...string) string {
 	data, _ := json.Marshal(values)
 	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+// repairArtifactIdentityToken distinguishes a new artifact identity from the
+// already saved ones it replaces. It is taken from the saved artifact paths,
+// which are domain facts, so the Runtime write count never takes part in it.
+func repairArtifactIdentityToken(paths []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(paths, "\x00")))
+	return hex.EncodeToString(sum[:8])
+}
+
+// repairArtifactCarriesID reports whether a saved artifact path carries the
+// given identity, so a later delivery of the same responsibility is told apart
+// from the earlier ones.
+func repairArtifactCarriesID(path, id string) bool {
+	name := filepath.Base(path)
+	if !strings.HasSuffix(name, ".json") {
+		return false
+	}
+	saved := strings.TrimSuffix(name, ".json")
+	return saved == id || strings.HasPrefix(saved, id+"-")
 }
 
 func repairLeadQuestionnairePath(root string, state map[string]any, name string) (string, error) {
@@ -1300,8 +1322,11 @@ func saveRepairImpactQuestionnaireBytes(root string, snapshot runtime.Snapshot, 
 		}
 		boundReq := mapFieldCLI(snapshot.State, "bound_req")
 		answer.ImpactID = "impact-" + repairResponsibilityKey(sessionID)
-		if stringValue(pointer["impact_ref"]) != "" {
-			answer.ImpactID += fmt.Sprintf("-r%d", snapshot.Revision+1)
+		if impactRef := stringValue(pointer["impact_ref"]); impactRef != "" {
+			// A second Impact of the same Session needs its own identity. The
+			// discriminator is the already saved first Impact artifact path, a
+			// domain fact, so the Runtime write count never takes part in it.
+			answer.ImpactID += "-" + repairArtifactIdentityToken([]string{impactRef})
 		}
 		answer.RuntimeID = stringValue(snapshot.State["runtime_id"])
 		answer.ReqID = stringValue(boundReq["id"])
@@ -1452,13 +1477,18 @@ func saveRepairTargetedAnswerContext(ctx context.Context, root string, snapshot 
 		return true, repairLeadFeedback(stdout, path, err.Error()), nil
 	}
 	candidatePath := repair.ArtifactStoragePath("reverification", answer.ReverificationID)
+	acceptedPaths := []string{}
 	for _, accepted := range repairArtifactRefs(pointer, "targeted_reverification_artifacts", "") {
-		if accepted.Path == candidatePath {
-			// Only a genuinely new handoff reaches here; its immutable source
-			// must not replace an earlier accepted source with the same ID.
-			answer.ReverificationID += fmt.Sprintf("-r%d", snapshot.Revision+1)
-			break
+		if accepted.Path == candidatePath || repairArtifactCarriesID(accepted.Path, answer.ReverificationID) {
+			acceptedPaths = append(acceptedPaths, accepted.Path)
 		}
+	}
+	if len(acceptedPaths) > 0 {
+		// A new delivery of the same reverification needs its own identity. The
+		// discriminator is the already accepted artifact path of this same
+		// responsibility, a domain fact, so the Runtime write count never takes
+		// part in it.
+		answer.ReverificationID += "-" + repairArtifactIdentityToken(acceptedPaths)
 	}
 	// The author reports observations, not a timestamp. Record reception
 	// here; an uncommitted artifact retains its original system time.

@@ -136,8 +136,12 @@ func runWorkspaceLaunch(args []string, stdout, stderr io.Writer) int {
 			return fail(fmt.Errorf("create original Worker session ID for %s: %w", e.AssignmentID, err))
 		}
 		b.Executions[e.AssignmentID] = e
-		key := fmt.Sprintf("workspace-launch-r%d", snap.Revision+1)
-		_, err = writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: e.RuntimeID, IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: "reserve Worker platform session before child launch", Apply: func(state map[string]any) error { state["workspace"] = workspace.Encode(b); return nil }})
+		// The responsibility is the Worker slot, the intent is the exact
+		// platform session this launch reserves. A reserved session is written
+		// once, so the intent key is stable and carries no Runtime write count
+		// (G18 §1.3).
+		eventID, idempotencyKey := workspaceEventIdentity(e.RuntimeID, "launch", e.AssignmentID, e.AgentID, e.Generation, e.PlatformSessionID, "")
+		_, err = writer.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: e.RuntimeID, IdempotencyKey: idempotencyKey, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: "reserve Worker platform session before child launch", Apply: func(state map[string]any) error { state["workspace"] = workspace.Encode(b); return nil }})
 		if err != nil {
 			return fail(fmt.Errorf("reserve original Worker session for %s: %w", e.AssignmentID, err))
 		}

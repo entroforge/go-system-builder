@@ -162,20 +162,31 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		occurredAt = time.Now().UTC()
 	}
 	producedBy := append([]string(nil), request.ProducedBy...)
-	commitRevision := request.ExpectedRevision
-	if commitRevision < 0 {
-		commitRevision = snapshot.Revision
-	}
-	scopeRefs, err := expandRolloverScopeRefs(request.ScopeRefs, runtimeID, commitRevision+1)
+	scopeRefs, err := expandRolloverScopeRefs(request.ScopeRefs, runtimeID)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	// G18: the evidence id is the evidence identity, so the event id is named
+	// by it. The journal's global event-id uniqueness check therefore runs
+	// before the Apply closure below, which used to carry the duplicate
+	// rejection. A repeated record of the same evidence id must keep its
+	// original observable outcome, so the same order the Apply closure uses is
+	// mirrored here: the submission reception check first, then the duplicate
+	// id rejection. Neither path writes Runtime state or a journal fact.
+	if evidenceRegistered(current, request.ID) {
+		if request.Submission != nil {
+			if _, submissionErr := prepareSubmission(root, current, request, data); submissionErr != nil {
+				return Snapshot{}, submissionErr
+			}
+		}
+		return Snapshot{}, fmt.Errorf("evidence %s is already registered", request.ID)
+	}
 	mutation := Mutation{
-		EventID:        fmt.Sprintf("evt-evidence-%s-r%d", request.ID, commitRevision+1),
+		EventID:        fmt.Sprintf("evt-evidence-%s", request.ID),
 		TransitionID:   "EVIDENCE-RECORD",
 		Event:          "evidence_recorded",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:evidence:%s:%d", request.ID, commitRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:evidence:%s", request.ID),
 		RuntimeID:      runtimeID,
 		From:           from,
 		To:             from,
@@ -219,11 +230,8 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			if !ok {
 				return fmt.Errorf("runtime evidence must be an array")
 			}
-			for _, raw := range items {
-				item, _ := raw.(map[string]any)
-				if item != nil && item["id"] == request.ID {
-					return fmt.Errorf("evidence %s is already registered", request.ID)
-				}
+			if evidenceRegistered(state, request.ID) {
+				return fmt.Errorf("evidence %s is already registered", request.ID)
 			}
 			baseline, ok := state["baseline"].(map[string]any)
 			if !ok {
@@ -289,11 +297,25 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	return store.Update(request.ExpectedRevision, mutation)
 }
 
+// evidenceRegistered reports whether the Runtime already holds an evidence row
+// with this identity. The evidence id is the evidence identity, so it is the
+// semantic coordinate of the recording event.
+func evidenceRegistered(state map[string]any, id string) bool {
+	items, _ := state["evidence"].([]any)
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item != nil && item["id"] == id {
+			return true
+		}
+	}
+	return false
+}
+
 // expandRolloverScopeRefs resolves the explicit `runtime_rollover:current`
-// token to the revision that this evidence commit will produce. This lets a
-// human approval evidence item bind to its terminal runtime without manually
-// predicting Store.Update's revision increment.
-func expandRolloverScopeRefs(scopeRefs []string, runtimeID string, committedRevision int) ([]string, error) {
+// token to the current runtime identity. This lets a human approval evidence
+// item bind to its terminal runtime without manually predicting the Runtime
+// revision.
+func expandRolloverScopeRefs(scopeRefs []string, runtimeID string) ([]string, error) {
 	if runtimeID == "" {
 		return nil, fmt.Errorf("runtime id is required for rollover scope")
 	}

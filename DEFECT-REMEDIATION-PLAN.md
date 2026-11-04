@@ -1429,3 +1429,88 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 #### 验收
 
 `go build ./...` / `go vet` / `gofmt` 全过;`go test ./internal/runtime/` 整包绿(86.6s);`internal/cli` 返工族 + 回归集定向抽样绿(143.3s)。
+
+### 14.13 G18 第 2/3 步:一次性执行的拆包与波次裁定
+
+#### 根因(一句话)
+
+事件 id 与幂等键由 Runtime 写计数拼出 ⇒ 调用方必须先知道 revision 才能构造 id ⇒
+写路径被迫传 CAS ⇒ 「写计数外泄成领域身份」⇒ 领域层被迫做门禁式比较。
+
+#### 统一键形状契约(唯一权威)
+
+`/home/sebs/audit-work/fix-waves/briefs/G18-EVENT-IDENTITY.md`。六个 worker 全部照这一份实现,
+禁止各造各的形状。要点:
+
+- **事件 id** = `evt-<事件域>-<语义坐标…>`;**幂等键** = `runtime:<事件域>:<语义坐标…>`;
+  形状里不得出现来自 `snapshot.Revision` / `state["revision"]` / `commitRevision` 的数字。
+- 语义坐标取用优先级:`runtime_id`+`baseline_generation` → 原责任标识 → 责任承担者 →
+  阶段坐标 → 意图键。仓内**已有合规先例**照抄:`internal/cli/worktree.go:356`、
+  `internal/review/result_receipt.go:90`、`internal/runtime/contract_submission.go:188`、
+  `internal/controlproof/assignment_revision_receipt.go:29`。
+- 一次责任内**会合法发生多次**的事件(执行开始、目标复验、影响协调)必须换用**域内**区分量
+  (产物路径 / 提交键 / 域内尝试号 / 更细的事件名),**不得**直接删数字 —— 否则 journal 的全局
+  `event_id` 唯一性会把第二次写入当重复拒掉。
+- 幂等键必须**至少含「责任坐标 + 意图键」**:同一意图重试 ⇒ 同键(幂等);不同责任 ⇒ 不同键(不撞)。
+  现状 `runtime:<域>:<T>:<revision>` **没有责任维度**,这正是 `transition/engine.go:213` 的撞键根因。
+- **历史兼容硬约束**:旧 journal 的事件 id 按原路径只读;任何扫描/比对旧 id 的代码必须**同时**
+  接受旧形状与新形状(`internal/hook/stopidle.go:468`/`:530`、
+  `internal/runtime/repair_plan_report_checkpoint.go:209`)。**不得重算已保存身份再比较**。
+
+#### 拆包(按**耦合关系**切,不按目录切;文件级互斥)
+
+| 片 | 包/文件 | 耦合要点 |
+|---|---|---|
+| W-A | `internal/transition/{engine.go,actions.go}` + `internal/reviewmeta/identity.go` + `internal/review/{register,revise,supplement,manifest_revision}.go` | 根因所在:`mutationEventID` + `runtime:<T>:<rev>` 幂等键 + `NewPlanID` 的种子;`engine.go:447` 的「已应用」判定必须改成比对**已保存身份**,不得重算 |
+| W-B | `internal/investigation/{intake,case_workflow,contract,route_consume,hypothesis_result_receipt,hypothesis_result_packet}.go` | `intake`/`case_workflow`/`hypothesis_result_receipt` **共用** `evt-investigation-case-<caseID>-r<N>`,今天只靠数字区分 —— 必须区分操作或补坐标 |
+| W-C | `internal/assignment/*` + `internal/runtime/{repair_result_blocker_checkpoint,repair_result_resolution}.go` + `internal/hook/stopidle.go` | 生产者/消费者**必须同步**:`assignment/lifecycle.go:302` 产出 `evt-agent-<id>-<event>-r<N>`,`runtime` 侧两处**重算比对**,`hook/stopidle.go:530` **前缀扫描** |
+| W-D | `internal/repair/*` + `internal/runtime/{change,evidence,work_packet,packet_body,store}.go` | `evidence.go` 的**重复接收可观测结果不得变**(journal 唯一性检查在 Apply 之前);`store.go` 只改迁移键 |
+| W-E | `internal/review/{submit,result_packet,result_receipt}.go` + `internal/cli/{audit_review_required,repair_lead_questionnaire,native_s6,builder_questionnaire,s6_prepare_revision,assignment_context,assignment_context_binding,investigation_command,repair_delegation_application,integration_ack}.go` | **结果身份三条硬约束**:不嵌 Runtime revision、不累计轮次、不得与上次交付的身份或答卷保存路径相撞 |
+| W-F | `internal/cli/{controller,run,batch_scope_repair,evidence_binding_repair,workspace_launch,workspace_rework,workspace_check,workspace_recovery,workspace_command}.go` | 里程碑刷新必须能「内容不变仍重写」(S6 观察失效)⇒ 锚到 **journal 末事件 id**(记录身份) |
+
+#### 两波执行的裁定(第 2 步与第 3 步不并行)
+
+第 2 步(领域比较点换「已收行 + 事件去重 + 对象版本」三件套)与第 3 步**文件重叠**,
+且第 2 步三件套里的「**事件去重**」正是第 3 步产出的新幂等键 ⇒ **第 3 步必须先落地**。
+
+- **第一波(本节执行)**:第 3 步 —— 事件 id / 幂等键去写计数。
+- **第二波(第一波落盘后执行)**:第 2 步 —— 退役领域侧 `ExpectedRevision >= 0 && … != …` 门禁
+  (实测 ≈30 处,分布见 `internal/transition/engine.go:142`、`internal/review/{submit,revise,register,plan_reception,supplement}.go`、
+  `internal/investigation/{hypothesis_result_receipt,case_workflow,contract,intake,route_consume}.go`、
+  `internal/runtime/store.go:713`、`internal/assignment/{lifecycle,completion_canonical}.go`、
+  `internal/repair/{issued_plan_report,issued_repair_result,runtime}.go`),
+  逐处换成「已收行 + 事件去重 + 对象版本」。
+
+#### 退役判定式(各 worker 自查用)
+
+自己的文件里不得再出现形如 `Sprintf("...-r%d", <revision 来源>)` / `Sprintf("...:%d", <revision 来源>)`,
+其中 `<revision 来源>` 指 `snapshot.Revision` / `state["revision"]` / `commitRevision` /
+`commitSequence` / `expectedRevision` / `before.Revision` / `after` / `current.Revision`。
+**注意**:`%d` 用于**域内**计数(阶段号、修订号、代际、尝试号)是允许的 —— 判断标准是**来源**,不是格式。
+
+#### 第一波执行结果(G18 第 3 步)
+
+**六片全部交付,60 个文件落地。**关键落点:
+
+| 簇 | 落点 |
+|---|---|
+| 转换引擎(根因) | `internal/transition/engine.go` 的 `mutationEventIdentity`:键 = 责任坐标(`runtime_id`+代)+ 意图键(转换 + 来源游标 + 阶段入口 `phase_revision`)。`runtime:<tr>:<rev>` **补上了责任维度**,同阶段不同轮次靠阶段入口区分(阶段入口是域坐标,不是写计数) |
+| 「已应用」判定 | 不再**重算** plan id 比对。改为从 journal 读**已保存的**事件(转换 id + `before_revision` == 调用方的 CAS 修订)→ 取其**已保存的** event id → 与**已保存的** plan id 比对。历史 `evt-tr-012-r10` 形状仍匹配 |
+| 三站点共用事件名 | ingest 改**事件名**(`…-case-ingested-`);case 更新与假设接收**共用 Case 的域修订**坐标(`case-revision-<caseID>-r<caseRev>`,其中 `caseRev` 来自 Case 自身指针,不是 Runtime 修订) |
+| 生产者/消费者同步 | `assignment/lifecycle.go` 产出 `evt-agent-<owner>-<kind>-<message_id>`;`runtime` 侧两处**重算比对**改为比对**已保存身份**;`hook/stopidle.go` 的前缀扫描同时接受 `-r<N>`(旧)与 `-<意图>`(新) |
+| 重复接收 | `internal/runtime/evidence.go` 镜像 Apply 的顺序做**预检**:已登记 ⇒ 先跑 `prepareSubmission`(保留 `ErrSubmissionConflict` 语义),再返回**同一句** `evidence %s is already registered`,两边都不写状态或 journal 事实 |
+| 结果身份(三条硬约束) | `<base>-attempt-<revision+1>` → `<base>-redelivery-<16 hex>`,区分量来自**上一次交付已记录的** `submission_key`+`result_ref`。不嵌 Runtime 修订、不累计轮次、且与上次交付的身份及其答卷保存路径**天然不同**(⇒ 旧原卷永不被覆盖);历史 `-attempt-N` 仍可只读 |
+| 里程碑 | 锚到 **journal 末事件 id**(记录身份)⇒ S6 观察失效时可「内容不变仍重写」,重试仍同键 |
+| 会合法发生多次的事件 | 执行开始 / 目标复验 / 影响协调 / 交接:改用**域内**区分量(会话 id + 已登记的产物路径 / 计划报告引用),不再靠写计数编号 |
+
+**验收(实测)**:
+- `go build ./...` / `go vet ./internal/...` / `gofmt`(60 文件)全过。
+- 包级回归:`transition` `reviewmeta` `review` `assignment` `assignmentrecord` `repair` `runtime` `hook` `controlproof` `qualitygate` `submission` `integration` **全绿**;`investigation` 仅 `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates` 一条红(总账已登记的未闭环 DEFECT)。
+- **写计数残留普查:真命中 0**(审计时 ≈35 处)。唯一 grep 命中是 `internal/repair/runtime.go:1158` 的 `writer.Update(current.Revision, …)` —— 那是 store 的 CAS **机制参数**(A 档保留),不在事件 id / 幂等键里。
+- 新增 **22 条反向断言**(同一意图重试同 id、不同责任不同 id、历史形状仍可读、事件 id 不含写计数)。
+- `internal/cli` 定向回归:22 条新增断言全 PASS;9 条红经 `go test -overlay` 把 60 个改动文件整体回退到 HEAD 后**逐字同样红** ⇒ **G18 第 3 步零新增红**。
+
+**残留(留给第二波)**:
+- `internal/cli/s6_observation.go:26` 仍以 `milestone["source_revision"]` 与当前修订比对来决定是否复用已缓存的 S6 观察 —— 这是 §14.11 C-E 记下的那一处写计数判据;里程碑事件 id 已锚到 journal 末事件 id,该字段可以随之退役。
+- `internal/assignment/lifecycle.go:500` 的 `agent["activation_revision"]` 仍把 Runtime 修订存进域行字段(是投影字段,不是身份),归第二波一并裁定。
+- 领域侧 `ExpectedRevision >= 0 && … != …` 门禁(①类 10 个站点)按 §14.13 波次裁定留给第二波。

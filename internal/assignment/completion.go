@@ -144,8 +144,7 @@ func completeTaskLegacy(
 	if message.RuntimeID != "" && message.RuntimeID != runtimeID {
 		return loopruntime.Snapshot{}, fmt.Errorf("completion message runtime does not match current runtime")
 	}
-	commitRevision, err := commitRevision(request.ExpectedRevision, current)
-	if err != nil {
+	if _, err := commitRevision(request.ExpectedRevision, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	baseline, _ := current["baseline"].(map[string]any)
@@ -215,11 +214,15 @@ func completeTaskLegacy(
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	mutation := loopruntime.Mutation{
-		EventID:            fmt.Sprintf("evt-complete-%s-%s-r%d", request.AgentID, message.TaskID, commitRevision+1),
+		// The identity of a Builder Result is the reporting Agent and the
+		// domain delivery it registers. The delivery id is the domain's own
+		// "which submission" number derived from the accepted delivery history
+		// (G18 §2); the Runtime write counter is an audit coordinate only.
+		EventID:            fmt.Sprintf("evt-complete-%s-%s", request.AgentID, evidenceID),
 		TransitionID:       "BUILDER-RESULT",
 		Event:              "completion_reported",
 		Actor:              "orchestrator",
-		IdempotencyKey:     fmt.Sprintf("runtime:complete:%s:%s:%d", request.AgentID, message.TaskID, commitRevision),
+		IdempotencyKey:     fmt.Sprintf("runtime:complete:%s:%s", request.AgentID, evidenceID),
 		RuntimeID:          runtimeID,
 		BaselineGeneration: generation,
 		From:               cursor,

@@ -1,6 +1,8 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -203,13 +205,12 @@ func submitSupplementOnce(root, statePath, journalPath string, request Supplemen
 		// state used to prepare them; it is not an author-supplied condition.
 		expectedRevision = intField(current["revision"])
 	}
-	commitRevision := currentCommitRevision(expectedRevision, current)
 	snapshot, err := updateRuntime(store, expectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-finding-supplement-%s-r%d", supplement.SupplementID, commitRevision+1),
+		EventID:        findingSupplementEventID(supplement.SupplementID),
 		TransitionID:   "FINDING-SUPPLEMENT",
 		Event:          "finding_supplement_appended",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:finding-supplement:%s:%d", supplement.SupplementID, commitRevision),
+		IdempotencyKey: findingSupplementIdempotencyKey(supplement.SupplementID),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
@@ -305,7 +306,7 @@ func prepareSupplementInput(root string, state map[string]any, request Supplemen
 		return json.Marshal(accepted)
 	}
 	if explicitID == "" {
-		input["supplement_id"] = fmt.Sprintf("supplement-g%d-r%d", baselineGeneration(state), intField(state["revision"])+1)
+		input["supplement_id"] = generatedSupplementID(state, request.FindingID, input)
 	}
 	if _, ok := input["created_at"]; !ok {
 		now := request.OccurredAt
@@ -315,6 +316,49 @@ func prepareSupplementInput(root string, state map[string]any, request Supplemen
 		input["created_at"] = now.UTC().Format(time.RFC3339Nano)
 	}
 	return json.Marshal(input)
+}
+
+// findingSupplementEventID names the append of one FindingSupplement by the
+// supplement identity itself. A supplement is immutable and appended once, so
+// its identity is the event identity; the Runtime write count is never part of
+// it (G18 §1.1).
+func findingSupplementEventID(supplementID string) string {
+	if strings.TrimSpace(supplementID) == "" {
+		return ""
+	}
+	return "evt-finding-supplement-" + supplementID
+}
+
+// findingSupplementIdempotencyKey names the append intent: the supplement
+// identity is the responsibility coordinate and the intent key of this
+// observation (G18 §1.3).
+func findingSupplementIdempotencyKey(supplementID string) string {
+	if strings.TrimSpace(supplementID) == "" {
+		return ""
+	}
+	return "runtime:finding-supplement:" + supplementID
+}
+
+// generatedSupplementID names a supplement the author did not name. The
+// baseline generation, the Finding it extends and the accepted observation are
+// domain facts; the Runtime write count is not part of the identity
+// (G18 §1.1, §1.2). The same observation therefore keeps one identity, and
+// two different observations of the same Finding never collide.
+func generatedSupplementID(state map[string]any, findingID string, input map[string]any) string {
+	identity := map[string]any{"finding_id": findingID}
+	for key, value := range input {
+		switch key {
+		case "supplement_id", "schema_version", "created_at":
+			continue
+		}
+		identity[key] = value
+	}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		encoded = []byte(findingID)
+	}
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("supplement-g%d-%s", baselineGeneration(state), hex.EncodeToString(digest[:8]))
 }
 
 // publishSupplementArtifact only claims an empty path. Unknown existing files

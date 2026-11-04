@@ -109,6 +109,76 @@ func TestRecordEvidenceAcceptsChangeImpactEvidence(t *testing.T) {
 	}
 }
 
+func TestRecordEvidenceRejectsRepeatedIdentityWithoutWritingRuntime(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "loop-state.json")
+	journalPath := filepath.Join(root, "loop-events.jsonl")
+	writeExampleRuntime(t, statePath)
+	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte(`{"schema_version":"1.0.0","evidence_id":"EV-DOCUMENT-001","kind":"document_review","runtime_id":"loop-REQ-002-example","baseline_generation":1,"producer_agent_id":"document-verifier","producer_responsibility":"DV-TRUTH-AUDIT","review_round":3}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := runtime.EvidenceRequest{
+		ExpectedRevision: -1,
+		ID:               "EV-DOCUMENT-001",
+		Kind:             "document_review",
+		Path:             "REV-001.md",
+		ProducedBy:       []string{"document-verifier"},
+		ResponsibilityID: "DV-TRUTH-AUDIT",
+		Validator:        testCandidateValidator(),
+	}
+	if _, err := runtime.RecordEvidence(root, statePath, journalPath, request); err != nil {
+		t.Fatalf("RecordEvidence failed: %v", err)
+	}
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalBefore, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// G18 reverse assertion: the evidence identity is the event identity, so a
+	// repeated record of the same evidence id is still rejected by the
+	// duplicate evidence guard and writes no Runtime fact and no journal fact.
+	if _, err := runtime.RecordEvidence(root, statePath, journalPath, request); err == nil || !strings.Contains(err.Error(), "is already registered") {
+		t.Fatalf("repeated evidence id was not rejected as a duplicate: %v", err)
+	}
+	stateAfter, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalAfter, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stateBefore) != string(stateAfter) || string(journalBefore) != string(journalAfter) {
+		t.Fatal("repeated evidence id wrote a new Runtime fact")
+	}
+	// G18 reverse assertion: the event id names the evidence identity and
+	// carries no Runtime write count.
+	ids := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(journalAfter)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if id, ok := event["event_id"].(string); ok {
+			ids[id]++
+		}
+	}
+	if ids["evt-evidence-EV-DOCUMENT-001"] != 1 {
+		t.Fatalf("evidence event identity was not written exactly once: %v", ids)
+	}
+	for id := range ids {
+		if strings.HasPrefix(id, "evt-evidence-") && strings.Contains(id, "-r") {
+			t.Fatalf("evidence event id still carries a Runtime write count: %q", id)
+		}
+	}
+}
+
 func TestRecordEvidenceRejectsIncompleteS10ArtifactBeforeMutation(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "loop-state.json")

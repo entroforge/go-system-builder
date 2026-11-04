@@ -2,6 +2,7 @@ package investigation_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -76,6 +77,38 @@ func TestConsumeCaseRouteReturnsNoRepairCaseToOriginalS7Entry(t *testing.T) {
 	}
 	if !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(journalBefore, journalAfter) {
 		t.Fatal("repeated route event rewrote the original S7 entry")
+	}
+}
+
+// G18 §1 reverse assertion: the route consumption owns its own event identity
+// and its idempotency key names the Case responsibility and the consumed
+// route — never the Runtime write count.
+func TestConsumeCaseRouteEventIdentityNamesTheCaseNotTheRuntimeWriteCount(t *testing.T) {
+	fixture := readyCaseFixture(t, []string{"finding-1"})
+	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
+		ExpectedRevision: 1, ExpectedCaseRevision: 1, CaseID: "investigation-case-review-plan-r1",
+		Route: "s7_no_change", RouteReason: "the finding is not a product defect and requires no repair",
+	})
+	if err != nil {
+		t.Fatalf("UpdateCaseRoute() error = %v", err)
+	}
+	snapshot, err = investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
+		ExpectedRevision: snapshot.Revision, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("ConsumeCaseRoute() error = %v", err)
+	}
+	last, _ := snapshot.State["last_transition"].(map[string]any)
+	eventID, _ := last["event_id"].(string)
+	key, _ := last["idempotency_key"].(string)
+	if eventID != "evt-s8-route-consume-investigation-case-review-plan-r1" {
+		t.Fatalf("route consumption event id = %q, want the route consumption identity of the Case", eventID)
+	}
+	if key != "runtime:s8:route-consume:investigation-case-review-plan-r1:s7_no_change" {
+		t.Fatalf("route consumption idempotency key = %q, want the Case responsibility and the consumed route", key)
+	}
+	if strings.HasSuffix(key, fmt.Sprintf(":%d", snapshot.Revision)) {
+		t.Fatalf("route consumption idempotency key = %q, want no Runtime write count", key)
 	}
 }
 

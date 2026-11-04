@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
@@ -51,6 +52,22 @@ func TestIntegrationSelectionRequiresExactAssignmentAndOwner(t *testing.T) {
 		t.Fatal("lost ack through row copy")
 	}
 }
+
+// G18: the completion acknowledgement identity is the Assignment it closes,
+// never the Runtime write count.
+func TestIntegrationAckMessageIDCarriesNoWriteCount(t *testing.T) {
+	first := integrationAckMessageID("assignment-ack-1")
+	if first != "msg-integration-assignment-ack-1" {
+		t.Fatalf("ack message id = %q", first)
+	}
+	if strings.Contains(first, "-r2") || strings.Contains(first, "-r3") {
+		t.Fatalf("ack message id carries a write count: %q", first)
+	}
+	if integrationAckMessageID("assignment-ack-2") == first {
+		t.Fatal("two Assignments share one acknowledgement identity")
+	}
+}
+
 func TestVerifiedAcknowledgmentRequiresOriginalResponsibility(t *testing.T) {
 	fix := newRuntimeFixture(t)
 	definitionPath := filepath.Join(fix.root, "docs/control/loop-definition.json")

@@ -101,15 +101,19 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 	} else if found {
 		return fail(fmt.Errorf("preserve existing integration checkpoint; recover it before changing execution identity"))
 	}
+	var e workspace.Execution
 	persist := func(message string) error {
-		key := fmt.Sprintf("workspace-recovery-r%d", snap.Revision+1)
-		next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: message + ": " + *reason, Apply: func(state map[string]any) error { state["workspace"] = workspace.Encode(b); return nil }})
+		// The responsibility is the Worker slot; the intent is the execution
+		// status this recovery step reaches ("preparing" then "ready"). The
+		// execution generation separates two recovery rounds of the same
+		// assignment, and no Runtime write count is encoded (G18 §1.3).
+		eventID, idempotencyKey := workspaceEventIdentity(workspace.RuntimeID(snap.State), "recovery", e.AssignmentID, e.AgentID, e.Generation, e.Status, "")
+		next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), IdempotencyKey: idempotencyKey, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: message + ": " + *reason, Apply: func(state map[string]any) error { state["workspace"] = workspace.Encode(b); return nil }})
 		if err == nil {
 			snap = next
 		}
 		return err
 	}
-	var e workspace.Execution
 	if verb == "replace" {
 		old, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State))
 		if !ok {

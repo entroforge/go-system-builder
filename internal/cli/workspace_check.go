@@ -302,13 +302,20 @@ func acceptWorkspaceCheckReceipt(root string, execution workspace.Execution, own
 		if registered {
 			return nil
 		}
-		key, transition, event, message := fmt.Sprintf("tool-check-r%d", snap.Revision+1), "WORKSPACE-CHECK", "workspace_check_received", "record actual tool receipt; no professional acceptance or gate PASS"
+		transition, event, message := "WORKSPACE-CHECK", "workspace_check_received", "record actual tool receipt; no professional acceptance or gate PASS"
+		operation, intent := "tool-check", domainEventToken(ref.Path)
 		if ownedIndex >= 0 {
-			key = fmt.Sprintf("owned-check:%d-r%d", ownedIndex, snap.Revision+1)
+			operation, intent = "owned-check", fmt.Sprintf("check%d", ownedIndex)
 			transition, event = "WORKSPACE-OWNED-CHECK", "workspace_owned_check_received"
 			message = "record actual frozen WorkerCheck receipt; no professional acceptance or gate PASS"
 		}
-		_, err = writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: transition, Event: event, Actor: execution.AgentID, RuntimeID: execution.RuntimeID, IdempotencyKey: key, RetainLastTransition: true, ProducerResponsibility: "owned_check", OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
+		// The responsibility is the Worker slot that produced the receipt; the
+		// intent is the exact captured receipt, or the frozen owner-run check
+		// index it belongs to. The replay guard above already refuses a second
+		// registration of the same receipt, so this intent key is stable and
+		// carries no Runtime write count (G18 §1.3).
+		eventID, idempotencyKey := workspaceEventIdentity(execution.RuntimeID, operation, execution.AssignmentID, execution.AgentID, execution.Generation, intent, "")
+		_, err = writer.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: transition, Event: event, Actor: execution.AgentID, RuntimeID: execution.RuntimeID, IdempotencyKey: idempotencyKey, RetainLastTransition: true, ProducerResponsibility: "owned_check", OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
 			return receive(state)
 		}})
 		if err == runtime.ErrStaleRevision {

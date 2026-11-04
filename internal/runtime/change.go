@@ -49,17 +49,19 @@ func CreateChange(root, statePath, journalPath string, request ChangeRequest) (S
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
-	commitRevision := snapshot.Revision
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
 	return store.Update(request.ExpectedRevision, Mutation{
-		EventID:        fmt.Sprintf("evt-change-%s-r%d", request.Record.ID, commitRevision+1),
+		// G18: the Change Record id is the record's own identity. The Runtime
+		// already holds at most one active Change Record, so the id keeps one
+		// identity per record without a Runtime write count.
+		EventID:        fmt.Sprintf("evt-change-%s", request.Record.ID),
 		TransitionID:   "CHANGE-RECORD-CREATE",
 		Event:          "change_record_created",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:change:%s:%d", request.Record.ID, commitRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:change:%s", request.Record.ID),
 		RuntimeID:      runtimeID,
 		From:           map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},
 		To:             map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},

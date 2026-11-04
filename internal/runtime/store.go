@@ -1151,14 +1151,18 @@ func (s *Store) MigrateLegacyPlanning(root string) (bool, error) {
 	runtimeID, _ := state["runtime_id"].(string)
 	from := planningCursor(currentPhase)
 	to := planningCursor(targetPhase)
-	eventID := fmt.Sprintf("evt-migrate-planning-r%d", expectedRevision+1)
+	// G18: the migration is a one-time structural operation of this runtime.
+	// Its identity is the runtime and the operation, not the Runtime write
+	// count. The journal's global event-id uniqueness check is the guard that
+	// refuses a second migration of the same runtime.
+	eventID := fmt.Sprintf("evt-migrate-planning-%s", runtimeID)
 
 	mutation := Mutation{
 		EventID:            eventID,
 		TransitionID:       "PLANNING-MIGRATION",
 		Actor:              "runtime-migrator",
 		Event:              "planning_phase_migrated",
-		IdempotencyKey:     fmt.Sprintf("runtime:migrate-planning:%d", expectedRevision),
+		IdempotencyKey:     fmt.Sprintf("runtime:migrate-planning:%s", runtimeID),
 		RuntimeID:          runtimeID,
 		From:               from,
 		To:                 to,

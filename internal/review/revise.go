@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
+	"strings"
 	"time"
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
@@ -222,11 +223,11 @@ func RevisePlan(
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-revise-%s-r%d", next.ReviewPlanID, commitRevision+1),
+		EventID:        reviewReviseEventID(next.ReviewPlanID, nextRevision),
 		TransitionID:   "REVIEW-PLAN-REVISE",
 		Event:          "review_plan_revised",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-revise:%s:%d", next.ReviewPlanID, commitRevision),
+		IdempotencyKey: reviewReviseIdempotencyKey(next.ReviewPlanID, nextRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
@@ -420,6 +421,27 @@ func RevisePlan(
 		return snapshot, err
 	}
 	return snapshot, nil
+}
+
+// reviewReviseEventID names one controlled Plan revision by the Plan
+// responsibility and by the Plan revision it produces. The Plan revision is
+// the domain's own artifact revision (the same number the revised Plan file
+// carries), never the Runtime write count (G18 §1.1, §1.2).
+func reviewReviseEventID(planID string, planRevision int) string {
+	if strings.TrimSpace(planID) == "" || planRevision < 1 {
+		return ""
+	}
+	return fmt.Sprintf("evt-review-revise-%s-v%d", planID, planRevision)
+}
+
+// reviewReviseIdempotencyKey names the revision intent: the Plan identity is
+// the responsibility coordinate and the Plan revision is the intent key
+// (G18 §1.3).
+func reviewReviseIdempotencyKey(planID string, planRevision int) string {
+	if strings.TrimSpace(planID) == "" || planRevision < 1 {
+		return ""
+	}
+	return fmt.Sprintf("runtime:review-revise:%s:v%d", planID, planRevision)
 }
 
 func workspaceValue(value *string) string {

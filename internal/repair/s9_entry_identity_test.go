@@ -1,10 +1,13 @@
 package repair_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,13 +16,45 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 )
 
+// revisionEventID matches the former Runtime-write-count handoff identity.
+var revisionEventID = regexp.MustCompile(`^evt-s9-handoff-r[0-9]+$`)
+
+// journalEventIDs counts the journal events per event id.
+func journalEventIDs(t *testing.T, journalPath string) map[string]int {
+	t.Helper()
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if id, ok := event["event_id"].(string); ok {
+			ids[id]++
+		}
+	}
+	return ids
+}
+
 func TestS9HandoffEntryIdentityReplayAndConcurrentRecovery(t *testing.T) {
 	root, statePath, journalPath, ref := overBudgetHandoffFixture(t)
 	before, err := runtime.NewStore(statePath, journalPath).Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := reviewmeta.NewPlanID(before.State["runtime_id"].(string), fmt.Sprintf("evt-s9-handoff-r%d", before.Revision+1))
+	pointer, _ := before.State["review"].(map[string]any)["repair"].(map[string]any)
+	sessionID, _ := pointer["session_id"].(string)
+	// G18: the handoff event identity is the repair session that owns the
+	// handoff, not the Runtime write count. The derived S7 plan identity
+	// therefore stays a stable function of the session.
+	wantEventID := fmt.Sprintf("evt-s9-handoff-%s", sessionID)
+	want := reviewmeta.NewPlanID(before.State["runtime_id"].(string), wantEventID)
 	request := repair.CommitHandoffRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: -1, Actor: "Main"}, Handoff: ref}
 	const n = 4
 	var wg sync.WaitGroup
@@ -45,6 +80,18 @@ func TestS9HandoffEntryIdentityReplayAndConcurrentRecovery(t *testing.T) {
 	}
 	if after.Revision != before.Revision+1 {
 		t.Fatalf("duplicate handoff commits: before=%d after=%d", before.Revision, after.Revision)
+	}
+	// G18 reverse assertion: the repeated handoff of the same session wrote
+	// exactly one journal event, and its id carries the session identity
+	// instead of a Runtime write count.
+	handoffEvents := journalEventIDs(t, journalPath)
+	if handoffEvents[wantEventID] != 1 {
+		t.Fatalf("handoff event identity %q was not written exactly once: %v", wantEventID, handoffEvents)
+	}
+	for id := range handoffEvents {
+		if revisionEventID.MatchString(id) {
+			t.Fatalf("handoff event id still carries a Runtime write count: %q", id)
+		}
 	}
 	review := after.State["review"].(map[string]any)
 	if fmt.Sprint(review["round"]) != fmt.Sprint(before.State["review"].(map[string]any)["round"]) {

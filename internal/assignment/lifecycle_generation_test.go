@@ -60,7 +60,8 @@ func TestAdvanceAgentRecordsCurrentBaselineGeneration(t *testing.T) {
 				matched++
 				if event["event"] != "transition_committed" || event["runtime_id"] != "loop-REQ-002" ||
 					event["baseline_generation"] != float64(generation) || event["before_revision"] != float64(7) || event["after_revision"] != float64(8) ||
-					event["event_id"] != "evt-agent-agent-ver-1-readback_submitted-r8" || event["idempotency_key"] != "runtime:agent:agent-ver-1:readback_submitted:7" {
+					event["event_id"] != "evt-agent-agent-ver-1-readback_submitted-msg-readback-response-001" ||
+					event["idempotency_key"] != "runtime:agent:agent-ver-1:readback_submitted:msg-readback-response-001" {
 					t.Errorf("original lifecycle event lost its current generation/identity: generation=%d event=%v", generation, event)
 				}
 			}

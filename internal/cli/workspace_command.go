@@ -22,6 +22,59 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
+// workspaceEventIdentity returns the journal event id and the idempotency key
+// of one workspace operation. The key carries the responsibility (the Runtime
+// that owns the slot) and the intent (the operation, the assignment slot, its
+// owner, the execution generation and the operation's own domain
+// discriminator). No Runtime write count is encoded, so the same intent
+// retried keeps its identity while a different responsibility never collides
+// with it (G18 §1.3).
+//
+// The anchor is the Runtime journal's last registered event id: a record
+// identity, not a write counter. It is passed only by an operation that
+// legitimately writes the same intent more than once, so that those writes
+// stay separable (G18 §1.2).
+func workspaceEventIdentity(runtimeID, operation, assignmentID, agentID string, generation int, intent, anchor string) (string, string) {
+	parts := []string{operation}
+	if assignmentID != "" {
+		parts = append(parts, assignmentID)
+	}
+	if agentID != "" {
+		parts = append(parts, agentID)
+	}
+	if generation > 0 {
+		parts = append(parts, fmt.Sprintf("g%d", generation))
+	}
+	if intent != "" {
+		parts = append(parts, intent)
+	}
+	if anchor != "" {
+		parts = append(parts, anchor)
+	}
+	coordinate := strings.Join(parts, "-")
+	return "evt-workspace-" + coordinate, fmt.Sprintf("runtime:workspace:%s:%s", runtimeID, coordinate)
+}
+
+// workspaceCommandIdentity names a workspace command's step. The dispatched
+// context it bound is part of the intent: preparing the same slot twice can
+// bind a second, relocated context, and that registered artifact is what
+// tells the two writes apart.
+func workspaceCommandIdentity(runtimeID, event string, binding *workspace.ExecutionRegistry, assignmentID string) (string, string) {
+	agentID, generation, source := "", 0, ""
+	if binding != nil {
+		if execution, ok := binding.Executions[assignmentID]; ok {
+			agentID = execution.AgentID
+			generation = execution.Generation
+			source = workspace.DispatchContextSource(execution)
+		}
+	}
+	intent := ""
+	if source != "" {
+		intent = domainEventToken(source)
+	}
+	return workspaceEventIdentity(runtimeID, event, assignmentID, agentID, generation, intent, "")
+}
+
 // Workspace creation is an explicit, journaled operation. The intent is saved
 // before Git side effects, so interrupted preparation can resume by identity.
 func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
@@ -125,8 +178,8 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	}
 	persist := func(event string) error {
 		now := time.Now().UTC()
-		key := fmt.Sprintf("workspace-%s-r%d", event, snap.Revision+1)
-		next, e := store.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), BaselineGeneration: workspace.Generation(snap.State), IdempotencyKey: key, RetainLastTransition: true, OccurredAt: now, Message: event, Apply: func(state map[string]any) error {
+		eventID, idempotencyKey := workspaceCommandIdentity(workspace.RuntimeID(snap.State), event, binding, *id)
+		next, e := store.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), BaselineGeneration: workspace.Generation(snap.State), IdempotencyKey: idempotencyKey, RetainLastTransition: true, OccurredAt: now, Message: event, Apply: func(state map[string]any) error {
 			if event == "preparing" || event == "ready" {
 				for _, execution := range binding.Executions {
 					if execution.AssignmentID != *id {

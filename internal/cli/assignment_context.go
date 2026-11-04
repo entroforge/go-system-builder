@@ -281,7 +281,9 @@ func projectAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 	if err != nil {
 		return agentcontext.Reference{}, err
 	}
-	contextBase := fmt.Sprintf(".claude/assignment-context/native/%s/g%d/%s/%s/r%d", contextPathID(c.RuntimeID), generation, contextPathID(d.AssignmentID), contextPathID(d.Owner), snap.Revision)
+	// The context location is a domain coordinate of the Assignment version.
+	// The Runtime write count never takes part in it.
+	contextBase := fmt.Sprintf(".claude/assignment-context/native/%s/g%d/%s/%s/a%d", contextPathID(c.RuntimeID), generation, contextPathID(d.AssignmentID), contextPathID(d.Owner), d.AssignmentRevision)
 	c.Schema.Path, err = publishNativeContextAsset(root, contextBase+"/agent-message.schema.json", ".claude/assignment-context", "schema", schemaBytes)
 	if err != nil {
 		return agentcontext.Reference{}, err

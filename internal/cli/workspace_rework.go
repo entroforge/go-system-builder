@@ -102,7 +102,14 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 		return encodeJSON(stdout, map[string]any{"execution": e, "rework_receipt": e.ReworkRef, "reused": true, "next": "resume Worker correction and submit a new report"})
 	}
 	persist := func(message string, apply func(map[string]any) error) error {
-		key := fmt.Sprintf("workspace-rework-r%d", snap.Revision+1)
+		// The responsibility is the Worker slot; the intent is this rework
+		// round, named by the immutable rework receipt it bound and the
+		// execution status the round reaches. A round that is interrupted
+		// after its checkpoint was archived and then resumed reaches "ready"
+		// more than once, so the journal anchor — a record identity, not the
+		// Runtime write count — separates those writes (G18 §1.2/§1.3).
+		intent := e.Status + "-" + domainEventToken(e.ReworkRef)
+		eventID, idempotencyKey := workspaceEventIdentity(e.RuntimeID, "rework", e.AssignmentID, e.AgentID, e.Generation, intent, domainEventToken(journalEventAnchor(snap.State)))
 		// Bind both the assignment slot and the exact immutable rework receipt.
 		// The event actor is Main, so the slot ID is required to distinguish
 		// sibling assignments when an original typed packet is revalidated.
@@ -110,7 +117,7 @@ func runWorkspaceRework(args []string, stdout, stderr io.Writer) int {
 		if e.ReworkRef != "" {
 			evidenceIDs = append(evidenceIDs, e.ReworkRef)
 		}
-		next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE-REWORK", Event: "integration_rework_requested", Actor: "main", RuntimeID: e.RuntimeID, BaselineGeneration: workspace.Generation(snap.State), IdempotencyKey: key, EvidenceIDs: evidenceIDs, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
+		next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: "WORKSPACE-REWORK", Event: "integration_rework_requested", Actor: "main", RuntimeID: e.RuntimeID, BaselineGeneration: workspace.Generation(snap.State), IdempotencyKey: idempotencyKey, EvidenceIDs: evidenceIDs, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
 			if apply != nil {
 				if err := apply(state); err != nil {
 					return err

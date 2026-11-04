@@ -2,6 +2,8 @@ package review
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -732,7 +734,11 @@ func SubmitIssuedResult(root, statePath, journalPath string, request IssuedSubmi
 		if oldErr == nil && newErr == nil && contentErr == nil && oldContent == newContent {
 			return snapshot, nil
 		}
-		result.ResultID = fmt.Sprintf("%s-attempt-%d", p.ResultID, snapshot.Revision+1)
+		redeliveryID, err := redeliveryResultID(p.ResultID, previous)
+		if err != nil {
+			return snapshot, err
+		}
+		result.ResultID = redeliveryID
 	}
 
 	resultData, err := issuedResultDocument(professional, result)
@@ -955,12 +961,44 @@ func IssuedResultReceiptContext(ctx context.Context, root string, state map[stri
 	return receipt, true, nil
 }
 
+// redeliveryResultID derives the identity of a new delivery of the same
+// unfinished responsibility from the domain facts of the delivery it replaces:
+// the previous delivery's recorded submission key and its saved answer-sheet
+// artifact path. Both are already-received facts, so the same delivery always
+// keeps one identity, and a new delivery can never reuse the previous
+// identity or the save path derived from it. Neither the Runtime write count
+// nor an accumulated round counter takes part in this identity.
+func redeliveryResultID(base string, previous map[string]any) (string, error) {
+	previousKey := stringField(previous["submission_key"])
+	previousRef := stringField(previous["result_ref"])
+	if previousKey == "" && previousRef == "" {
+		return "", fmt.Errorf("the previous S7 delivery has no recorded identity to derive a re-delivery identity")
+	}
+	sum := sha256.Sum256([]byte(previousKey + "\x00" + previousRef))
+	return fmt.Sprintf("%s-redelivery-%s", base, hex.EncodeToString(sum[:8])), nil
+}
+
 // Result IDs are internal persistence coordinates for successive handoffs in
 // the same unfinished responsibility; authors keep the original packet/path.
 func resultIDForPacket(packet workpacket.ReviewResultPacket, id string) bool {
 	if id == packet.ResultID {
 		return true
 	}
+	// A re-delivery identity carries the domain discriminator taken from the
+	// previous delivery's recorded submission key and saved answer sheet.
+	if suffix, ok := strings.CutPrefix(id, packet.ResultID+"-redelivery-"); ok {
+		if len(suffix) != 16 {
+			return false
+		}
+		for _, c := range suffix {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+		return true
+	}
+	// Historical re-delivery identities were written as "<base>-attempt-<n>".
+	// They stay readable by their saved identity and are never recomputed.
 	suffix, ok := strings.CutPrefix(id, packet.ResultID+"-attempt-")
 	if !ok || suffix == "" {
 		return false

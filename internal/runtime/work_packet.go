@@ -79,7 +79,10 @@ func RecordWorkPacketContext(ctx context.Context, root, statePath, journalPath s
 	}
 	current := snapshot.State["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": current["state"], "phase": current["phase"]}
-	result, err := store.UpdateCurrent(Mutation{EventID: fmt.Sprintf("evt-packet-%s-r%d", packet.ID, snapshot.Revision+1), TransitionID: "PACKET-ISSUE", Event: "work_packet_issued", Actor: "orchestrator", IdempotencyKey: "packet:" + packet.ID, RuntimeID: packet.Binding.RuntimeID, BaselineGeneration: packet.Binding.Generation, From: cursor, To: cursor, OccurredAt: time.Now().UTC(), RetainLastTransition: true, Apply: func(state map[string]any) error {
+	// G18: the packet id is the packet's own identity, and the idempotency key
+	// already names it. The event id follows the same shape as the other
+	// packet issuances (`evt-contract-packet-<id>`): no Runtime write count.
+	result, err := store.UpdateCurrent(Mutation{EventID: fmt.Sprintf("evt-packet-%s", packet.ID), TransitionID: "PACKET-ISSUE", Event: "work_packet_issued", Actor: "orchestrator", IdempotencyKey: "packet:" + packet.ID, RuntimeID: packet.Binding.RuntimeID, BaselineGeneration: packet.Binding.Generation, From: cursor, To: cursor, OccurredAt: time.Now().UTC(), RetainLastTransition: true, Apply: func(state map[string]any) error {
 		if err := ValidateWorkPacket(root, state, packet, files); err != nil {
 			return err
 		}

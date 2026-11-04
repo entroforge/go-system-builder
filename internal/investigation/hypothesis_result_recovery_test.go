@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -178,6 +179,84 @@ func TestS8OriginalCaseReceiptRecoversSealedPendingCommit(t *testing.T) {
 	}
 	if !bytes.Equal(stateBeforeMissingAnswer, mustRead(t, fixture.statePath)) || !bytes.Equal(journalBeforeMissingAnswer, mustRead(t, fixture.journalPath)) {
 		t.Fatal("missing-author-file save changed the recovered Runtime pair")
+	}
+}
+
+// G18 §1/§1.2/§1.3 reverse assertion: the three InvestigationCase writes of
+// one Case — the ingest, a Case revision and the accepted hypothesis result —
+// must own three different event identities, and the identity must be built
+// from the Case's own domain revision instead of the Runtime write count.
+// The Runtime revision is far ahead of the Case revision in this fixture, so
+// an identity derived from the Runtime write count could not satisfy these
+// assertions.
+func TestS8CaseEventIdentitiesSeparateIngestRevisionAndAcceptance(t *testing.T) {
+	fixture, owners := prepareS8GenerationTwoFixture(t, false)
+	owner := owners[0]
+	runS8AgentBegin(t, fixture, owner)
+	initial := currentS8Snapshot(t, fixture)
+	packets, err := investigation.IssueHypothesisResultPackets(fixture.root, fixture.statePath, fixture.journalPath, initial.Revision, owner.ownerID)
+	if err != nil || len(packets) != 1 {
+		t.Fatalf("issue exact S8 packet for the identity check: packets=%d err=%v", len(packets), err)
+	}
+	packet := packets[0]
+	answerPath := writeS8ProfessionalAnswer(t, fixture.root, packet, "The accepted answer names one original responsibility.")
+	before := currentS8Snapshot(t, fixture)
+	accepted, err := submitS8Original(fixture, before.Revision, packet, answerPath, owner.ownerID)
+	if err != nil {
+		t.Fatalf("accept the original S8 answer: %v", err)
+	}
+	receipt, found, err := runtime.VerifiedHypothesisResultReceipt(fixture.root, accepted.State, packet.ID, owner.ownerID)
+	if err != nil || !found {
+		t.Fatalf("verify the accepted S8 Case receipt: found=%v err=%v", found, err)
+	}
+
+	caseID := packet.Binding.CaseID
+	pointer, _ := accepted.State["review"].(map[string]any)["investigation"].(map[string]any)
+	caseRevision := s8TestInt(pointer["revision"])
+	if caseRevision < 2 {
+		t.Fatalf("Case domain revision = %d, want the revision above the ingest revision", caseRevision)
+	}
+	if accepted.Revision == caseRevision {
+		t.Fatalf("fixture does not separate the Runtime write count %d from the Case domain revision %d", accepted.Revision, caseRevision)
+	}
+
+	ingestID, acceptanceID, acceptanceKey := "", "", ""
+	revisionIDs := map[string]bool{}
+	for _, event := range s8CommittedEvents(t, fixture) {
+		eventID, _ := event["event_id"].(string)
+		switch {
+		case strings.HasPrefix(eventID, "evt-investigation-case-ingested-"):
+			if ingestID != "" {
+				t.Fatalf("one Case produced two ingest identities: %q and %q", ingestID, eventID)
+			}
+			ingestID = eventID
+		case strings.HasPrefix(eventID, "evt-investigation-case-revision-"):
+			revisionIDs[eventID] = true
+			if eventID == receipt.AcceptedEventID {
+				acceptanceID = eventID
+				acceptanceKey, _ = event["idempotency_key"].(string)
+			}
+		}
+	}
+	if ingestID != "evt-investigation-case-ingested-"+caseID {
+		t.Fatalf("ingest identity = %q, want the ingest identity of Case %s", ingestID, caseID)
+	}
+	// The receipt identity is the identity of the one committed journal event
+	// that accepted this result.
+	if acceptanceID == "" || acceptanceID != receipt.AcceptedEventID {
+		t.Fatalf("accepted receipt identity %q is not the identity of a committed Case revision event", receipt.AcceptedEventID)
+	}
+	if want := fmt.Sprintf("evt-investigation-case-revision-%s-r%d", caseID, caseRevision); acceptanceID != want {
+		t.Fatalf("acceptance identity = %q, want the Case domain revision identity %q", acceptanceID, want)
+	}
+	if want := fmt.Sprintf("runtime:investigation-case-revision:%s:%d", caseID, caseRevision); acceptanceKey != want {
+		t.Fatalf("acceptance idempotency key = %q, want %q", acceptanceKey, want)
+	}
+	if revisionIDs[ingestID] {
+		t.Fatalf("the ingest and the accepted result share one event identity: %q", ingestID)
+	}
+	if len(revisionIDs) < 2 {
+		t.Fatalf("Case revision identities = %v, want the hypothesis registration and the accepted result", revisionIDs)
 	}
 }
 

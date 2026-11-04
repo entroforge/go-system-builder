@@ -459,6 +459,167 @@ func TestRefreshMilestoneUsesCASAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// G18 §1.2/§1.3: the milestone observation is anchored on the Runtime
+// journal's last registered event id. A refresh whose projected content did
+// not change must still write when its S6 observation went stale against a
+// moved Runtime, and the two writes must not collapse onto one journal event
+// id. The identity that separates them is a record identity, never the
+// Runtime write count.
+func TestMilestoneRefreshWritesAgainAfterRuntimeMoved(t *testing.T) {
+	root := factory.Clone(t, filepath.Join("..", ".."))
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "loop-state.json")
+	journalPath := filepath.Join(dir, "loop-events.jsonl")
+	data, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["journal"] = map[string]any{
+		"path":          ".claude/loop-events.jsonl",
+		"last_sequence": 0,
+		"last_event_id": nil,
+	}
+	data, err = json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journalPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	guidance := buildGuidance(root, state, "PreToolUse", policy.Input{})
+	guidance.LifecycleState = "building"
+	gate := controller.QualityGateResult{Status: controller.StatusNotReady, GateID: "GATE-TEST-BUILDING", NextCursor: "building"}
+	snapshot, err := runtime.NewStore(statePath, journalPath).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, changed, err := refreshMilestoneWithGate(root, statePath, journalPath, snapshot, guidance, "PreToolUse", gate)
+	if err != nil {
+		t.Fatalf("refresh milestone: %v", err)
+	}
+	if !changed {
+		t.Fatal("first refresh must persist the milestone")
+	}
+	firstEvent, firstKey := lastJournalEventIdentity(t, journalPath)
+
+	// The Runtime moved: the persisted milestone's S6 observation went stale
+	// although its projected content did not change.
+	ageMilestoneObservation(t, statePath, updated.Revision-1)
+	moved, err := runtime.NewStore(statePath, journalPath).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, changed, err := refreshMilestoneWithGate(root, statePath, journalPath, moved, guidance, "PreToolUse", gate)
+	if err != nil {
+		t.Fatalf("refresh milestone after the Runtime moved: %v", err)
+	}
+	if !changed {
+		t.Fatal("a stale S6 observation must still rewrite the milestone")
+	}
+	if again.Revision != moved.Revision+1 {
+		t.Fatalf("the stale observation must write exactly once, before=%d after=%d", moved.Revision, again.Revision)
+	}
+	secondEvent, secondKey := lastJournalEventIdentity(t, journalPath)
+	if firstEvent == secondEvent {
+		t.Fatalf("two milestone writes must not collapse onto one journal event id: %s", firstEvent)
+	}
+	if firstKey == secondKey {
+		t.Fatalf("two milestone writes must not share one idempotency key: %s", firstKey)
+	}
+	for _, identity := range []string{firstEvent, secondEvent} {
+		if strings.HasPrefix(identity, "evt-milestone-refreshed-r") {
+			t.Fatalf("milestone identity must not carry the Runtime write count: %s", identity)
+		}
+	}
+	for _, key := range []string{firstKey, secondKey} {
+		if !strings.HasPrefix(key, "runtime:milestone:") {
+			t.Fatalf("milestone idempotency key must name its responsibility and intent: %s", key)
+		}
+		if strings.HasPrefix(key, "milestone:") {
+			t.Fatalf("milestone idempotency key must not keep the legacy write-count shape: %s", key)
+		}
+	}
+}
+
+// G18 §1.3: the same milestone intent retried against the same Runtime state
+// keeps its identity, a moved Runtime gets a new one, and two different
+// responsibilities never share an idempotency key.
+func TestMilestoneRefreshIdentitySeparatesObservationAndResponsibility(t *testing.T) {
+	state := map[string]any{"journal": map[string]any{"last_event_id": "evt-lifecycle-committed"}}
+	eventID, key := milestoneRefreshIdentity(state, "loop-REQ-1")
+	againEvent, againKey := milestoneRefreshIdentity(state, "loop-REQ-1")
+	if eventID != againEvent || key != againKey {
+		t.Fatal("the same milestone intent against the same Runtime state must keep its identity")
+	}
+	moved := map[string]any{"journal": map[string]any{"last_event_id": "evt-lifecycle-committed-next"}}
+	movedEvent, movedKey := milestoneRefreshIdentity(moved, "loop-REQ-1")
+	if movedEvent == eventID || movedKey == key {
+		t.Fatal("a moved Runtime must not collapse onto the previous observation")
+	}
+	_, otherKey := milestoneRefreshIdentity(state, "loop-REQ-2")
+	if otherKey == key {
+		t.Fatal("two different responsibilities must not share one idempotency key")
+	}
+	if strings.HasPrefix(eventID, "evt-milestone-refreshed-r") || strings.HasPrefix(key, "milestone:") {
+		t.Fatalf("milestone identity must not carry the Runtime write count: %s %s", eventID, key)
+	}
+}
+
+// lastJournalEventIdentity returns the event id and the idempotency key of
+// the journal's last registered event.
+func lastJournalEventIdentity(t *testing.T, journalPath string) (string, string) {
+	t.Helper()
+	data, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 || lines[len(lines)-1] == "" {
+		t.Fatal("the journal must hold the committed event")
+	}
+	var event map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := event["event_id"].(string)
+	key, _ := event["idempotency_key"].(string)
+	return id, key
+}
+
+// ageMilestoneObservation rewinds the persisted milestone's observed
+// revision so its S6 observation went stale against the moved Runtime.
+func ageMilestoneObservation(t *testing.T, statePath string, observedRevision int) {
+	t.Helper()
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	milestone, _ := state["milestone"].(map[string]any)
+	if milestone == nil {
+		t.Fatal("the milestone must be persisted")
+	}
+	milestone["source_revision"] = float64(observedRevision)
+	data, err = json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRefreshMilestonePreservesLastTransition(t *testing.T) {
 	root := factory.Clone(t, filepath.Join("..", ".."))
 	dir := t.TempDir()

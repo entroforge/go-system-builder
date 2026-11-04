@@ -109,10 +109,14 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 		return loopruntime.Snapshot{}, fmt.Errorf(
 			"runtime_id mismatch: request=%s state=%s", request.RuntimeID, currentRuntimeID)
 	}
-	commitSequence, err := commitRevision(request.ExpectedRevision, currentState)
-	if err != nil {
+	if _, err := commitRevision(request.ExpectedRevision, currentState); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
+	// The BUG's own retry counter is the domain attempt number of the current
+	// investigation round. It is the existing domain fact that tells two
+	// otherwise identical BUG lifecycle events apart, and it never comes from
+	// the Runtime write counter (G18 §1.2).
+	bugAttempt := bugAttemptCount(currentState, request.BugID)
 	lifecycle, ok := currentState["lifecycle"].(map[string]any)
 	if !ok {
 		return loopruntime.Snapshot{}, fmt.Errorf("runtime lifecycle must be an object")
@@ -122,11 +126,13 @@ func AdvanceBug(root, statePath, journalPath string, request BugEventRequest) (l
 
 	mutation := loopruntime.Mutation{
 		Audit: loopruntime.AuditEnvelope{
-			EventID:        fmt.Sprintf("evt-bug-%s-%d", request.BugID, commitSequence+1),
+			// The identity of a BUG lifecycle event is the BUG, the operation
+			// and the domain attempt it belongs to (G18 §1/§1.3).
+			EventID:        fmt.Sprintf("evt-bug-%s-%s-%d", request.BugID, request.Event, bugAttempt),
 			TransitionID:   "BUG-LIFECYCLE",
 			Event:          request.Event,
 			Actor:          "orchestrator",
-			IdempotencyKey: fmt.Sprintf("bug:%s:%s:%d", request.BugID, request.Event, commitSequence),
+			IdempotencyKey: fmt.Sprintf("runtime:bug:%s:%s:%d", request.BugID, request.Event, bugAttempt),
 			RuntimeID:      currentRuntimeID,
 			From:           cursor,
 			To:             cursor,
@@ -315,6 +321,26 @@ func readBugInt(bug map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+// bugAttemptCount returns the domain attempt number of the BUG's current
+// investigation round. It is read from the registered BUG row, so it is an
+// existing domain fact and never a Runtime write counter (G18 §1.2). A BUG
+// that is not registered yet has no attempt and its mutation is rejected by
+// the guard that requires a registered BUG.
+func bugAttemptCount(state map[string]any, bugID string) int {
+	entities, _ := state["entities"].(map[string]any)
+	bugs, _ := entities["bugs"].([]any)
+	for _, raw := range bugs {
+		bug, _ := raw.(map[string]any)
+		if bug == nil {
+			continue
+		}
+		if id, _ := bug["id"].(string); id == bugID {
+			return readBugInt(bug, "attempt_count")
+		}
+	}
+	return 0
 }
 
 // OriginalFinderAssigned implements the identity check required by BUG-003

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -939,6 +941,37 @@ func recoveryReadOrder(root string, next nextProjection) []string {
 	return order
 }
 
+// domainEventToken folds a domain coordinate that is not naturally short or
+// opaque-safe (a path, a list of ids, a long record id) into a bounded,
+// stable token. The token is derived from the domain fact itself, so it
+// carries no Runtime write count (G18 §1.2/§1.3).
+func domainEventToken(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// journalEventAnchor returns the Runtime journal's last registered event id:
+// the record identity of the commit the caller observed. It is a record
+// identity, not a write counter. Two writes that start from the same journal
+// state share the anchor, and every committed write moves it, so it separates
+// two otherwise identical writes without encoding the Runtime revision.
+func journalEventAnchor(state map[string]any) string {
+	journal, _ := state["journal"].(map[string]any)
+	last, _ := journal["last_event_id"].(string)
+	return last
+}
+
+// milestoneRefreshIdentity returns the journal event id and the idempotency
+// key of one milestone refresh. The observation is anchored on the Runtime
+// journal's last registered event id — a record identity, not the Runtime
+// write count — so the same intent retried against the same journal state
+// keeps its identity, a moved Runtime gets a new one, and no write count is
+// encoded (G18 §1.2/§1.3).
+func milestoneRefreshIdentity(state map[string]any, runtimeID string) (string, string) {
+	anchor := domainEventToken(journalEventAnchor(state))
+	return "evt-milestone-refreshed-" + anchor, fmt.Sprintf("runtime:milestone:%s:%s", runtimeID, anchor)
+}
+
 // refreshMilestone commits the controller checkpoint through the same CAS
 // Store used by lifecycle transitions. A semantically identical checkpoint is
 // a no-op, which prevents repeated SessionStart/PreCompact hooks from burning
@@ -968,9 +1001,15 @@ func refreshMilestoneWithGate(root, statePath, journalPath string, snapshot runt
 	milestone := guidanceMapWithGate(persistedGuidance, controller.QualityGateResult{}, event, snapshot.Revision+1, now, gate)
 	from := lifecycleCursor(snapshot.State)
 	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	idempotencyKey := fmt.Sprintf("milestone:%s:r%d", guidance.RuntimeID, snapshot.Revision+1)
+	// The milestone observation is anchored on the Runtime journal's last
+	// registered event id — a record identity, not the Runtime write count.
+	// An S6 observation that went stale against a moved Runtime still has to
+	// write again although its projected content did not change, and the
+	// anchor is what tells that write apart from the previous one. The same
+	// intent retried from the same journal state keeps the same key.
+	eventID, idempotencyKey := milestoneRefreshIdentity(snapshot.State, guidance.RuntimeID)
 	updated, err := store.Update(snapshot.Revision, runtime.Mutation{
-		EventID:              fmt.Sprintf("evt-milestone-refreshed-r%d", snapshot.Revision+1),
+		EventID:              eventID,
 		TransitionID:         "MILESTONE-REFRESH",
 		Event:                "milestone_refreshed",
 		JournalEvent:         "milestone_refreshed",
@@ -1211,11 +1250,9 @@ func milestoneMatchesWithGate(current map[string]any, guidance policy.Guidance, 
 // The journal idempotency key is a separate concern and is not built from
 // this projection. A milestone refresh still has to write when an S6
 // observation went stale against a moved Runtime, even though its projected
-// content did not change, and only the write count tells that write apart
-// from the one before it. That is the remaining place where the Runtime
-// write count stands in for an identity; the replacement is to anchor the
-// observation on the journal's last event id, which is a record identity
-// rather than a counter. Tracked in DEFECT-REMEDIATION-PLAN.md §14.11 C-E.
+// content did not change. That write is separated from the previous one by
+// the Runtime journal's last registered event id — a record identity, not the
+// Runtime write count (G18 §1.2/§1.3; DEFECT-REMEDIATION-PLAN.md §14.11 C-E).
 func stableMilestoneProjection(milestone map[string]any) map[string]any {
 	if milestone == nil {
 		return nil
@@ -1268,18 +1305,21 @@ func milestoneIdempotency(g policy.Guidance) string {
 
 // milestoneIdempotencyWithGate builds a milestone key that tells a changed
 // gate apart from an unchanged one. The gate's observed revision is left out
-// on purpose, so an observation-only revision change keeps the same key; the
-// guidance revision is in the key because the key also has to separate two
-// writes whose projected content is identical.
+// on purpose, so an observation-only revision change keeps the same key. The
+// key carries the responsibility (the Runtime) and the intent (the gate's
+// identity) and no Runtime write count.
 //
 // It is not the key the Writer uses: refreshMilestoneWithGate builds the
-// journal idempotency key itself. The write count inside that key is the
-// remaining write-count identity recorded in DEFECT-REMEDIATION-PLAN.md
-// §14.11 C-E.
+// journal idempotency key itself and additionally anchors the observation on
+// the journal's last registered event id, which is what separates two writes
+// whose projected content is identical (G18 §1.2/§1.3).
 func milestoneIdempotencyWithGate(g policy.Guidance, gate controller.QualityGateResult) string {
-	// Legacy helper kept for existing callers; actual Writer idempotency uses
-	// the original Runtime and next revision in refreshMilestoneWithGate.
-	return fmt.Sprintf("milestone:%s:r%d:%s", g.RuntimeID, g.Revision, gate.GateID)
+	// Legacy helper kept for existing callers; the Writer's own key adds the
+	// journal anchor in refreshMilestoneWithGate.
+	if gate.GateID == "" {
+		return fmt.Sprintf("runtime:milestone:%s", g.RuntimeID)
+	}
+	return fmt.Sprintf("runtime:milestone:%s:%s", g.RuntimeID, gate.GateID)
 }
 
 func lifecycleCursor(state map[string]any) map[string]any {
@@ -2490,16 +2530,22 @@ func persistSubagentCheckpoint(root, statePath, journalPath string, snapshot run
 	for _, check := range inspection.RequiredChecks {
 		integrationEntries = append(integrationEntries, fmt.Sprintf("check=%s:%s", check.Command, check.Status))
 	}
+	// The responsibility is the inspected Worker slot, the intent is the
+	// integration state it reached. The journal anchor separates two writes of
+	// the same state for the same slot without encoding the Runtime write
+	// count (G18 §1.2/§1.3).
+	anchor := domainEventToken(journalEventAnchor(snapshot.State))
+	runtimeID := stringValue(snapshot.State["runtime_id"])
 	updated, err := store.Update(snapshot.Revision, runtime.Mutation{
-		EventID:        fmt.Sprintf("evt-subagent-integration-%s-r%d", integratedState, snapshot.Revision+1),
+		EventID:        fmt.Sprintf("evt-subagent-integration-%s-%s", integratedState, anchor),
 		TransitionID:   "SUBAGENT-INTEGRATION",
 		Event:          "subagent_integration",
 		Actor:          "hook_controller",
-		RuntimeID:      stringValue(snapshot.State["runtime_id"]),
+		RuntimeID:      runtimeID,
 		From:           teammateFromCursor(snapshot.State),
 		To:             teammateFromCursor(snapshot.State),
 		EvidenceIDs:    []string{},
-		IdempotencyKey: fmt.Sprintf("subagent:%s:%s:%d", inspection.WorktreePath, integratedState, snapshot.Revision),
+		IdempotencyKey: fmt.Sprintf("runtime:subagent-integration:%s:%s:%s:%s", runtimeID, inspection.WorktreePath, integratedState, anchor),
 		Message:        fmt.Sprintf("SubagentStop recorded integration checkpoint state=%s", integratedState),
 		OccurredAt:     now,
 		Apply: func(state map[string]any) error {

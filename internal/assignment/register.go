@@ -298,9 +298,12 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 	// staged artifact; if the commit may still be recoverable, the file is
 	// intentionally retained.
 	stagedActivations := make([]loopruntime.ArtifactCleanupRequest, 0, len(value.Assignments))
-	mutationEventID := fmt.Sprintf("evt-register-%s-r%d", value.WorkgroupID, commitRevision+1)
+	// The identity of a workgroup registration is the registered workgroup and
+	// the manifest that declares it. The workgroup id is unique per
+	// registration, so no Runtime write counter is needed (G18 §1/§1.3).
+	mutationEventID := fmt.Sprintf("evt-register-%s", value.WorkgroupID)
 	mutationTransitionID, mutationEvent := "ENTITY-REGISTER", "workgroup_registered"
-	mutationIdempotencyKey := fmt.Sprintf("runtime:register:%s:%d", value.ManifestID, commitRevision)
+	mutationIdempotencyKey := fmt.Sprintf("runtime:register:%s:%s", value.ManifestID, value.WorkgroupID)
 	mutationMessage := "Registered a validated workgroup, task and phase-one Agents."
 	if request.Revision != nil {
 		mutationEventID = loopruntime.AssignmentRevisionEventID(request.Revision.ExpectedRecord, request.Revision.IntentKey)
@@ -912,8 +915,7 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
-	commitRevision, err := commitRevision(req.ExpectedRevision, current)
-	if err != nil {
+	if _, err := commitRevision(req.ExpectedRevision, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	runtimeID, _ := current["runtime_id"].(string)
@@ -930,11 +932,14 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	return updateRuntime(store, req.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-register-task-%s-r%d", req.TaskID, commitRevision+1),
+		// The identity of a TASK registration is the registered TASK and the
+		// canonical task document it registers. The TASK id is unique per
+		// registration, so no Runtime write counter is needed (G18 §1/§1.3).
+		EventID:        fmt.Sprintf("evt-register-task-%s", req.TaskID),
 		TransitionID:   "ENTITY-REGISTER",
 		Event:          "task_registered",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:register:task:%s:%d", req.TaskID, commitRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:register:task:%s:%s", req.TaskID, taskRef),
 		From:           cursor,
 		To:             cursor,
 		RuntimeID:      runtimeID,

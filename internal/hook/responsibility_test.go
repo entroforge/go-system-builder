@@ -708,6 +708,19 @@ func TestStopIdleAcceptsOnlyOriginalOrCanonicalS7Blocker(t *testing.T) {
 			t.Fatalf("original blocker must not prevent the Reviewer from returning: %#v", decision)
 		}
 	})
+	// G18 §1.4: a journal already written with the historical
+	// "-r<revision>" Agent lifecycle identity stays readable, so the prefix
+	// scan must accept the old and the new shape alike.
+	t.Run("historical work_blocked identity", func(t *testing.T) {
+		root := writeOriginalS7WorkBlockedRuntime(t)
+		rewriteHookTestJournalEventID(t, root,
+			"evt-agent-reviewer-1-work_blocked-msg-reviewer-1-blocked",
+			"evt-agent-reviewer-1-work_blocked-r1")
+		decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
+		if controlled && decision.Decision == "deny" {
+			t.Fatalf("historical blocker identity must not prevent the Reviewer from returning: %#v", decision)
+		}
+	})
 	t.Run("site lost blocker", func(t *testing.T) {
 		root := writeSiteLostS7BlockerRuntime(t)
 		decision, controlled := hook.StopIdleDecision(root, policy.Input{Event: "TeammateIdle", AgentID: "reviewer-1"})
@@ -1118,6 +1131,47 @@ func writeSiteLostS7BlockerRuntime(t *testing.T) string {
 		t.Fatalf("commit exact site_lost Runtime transaction shape: %v", err)
 	}
 	return root
+}
+
+// rewriteHookTestJournalEventID rewrites the committed Agent lifecycle event
+// id and keeps the Runtime journal cursor consistent, so a reader can be
+// exercised against a journal that was already written with the historical
+// "-r<revision>" identity (G18 §1.4).
+func rewriteHookTestJournalEventID(t *testing.T, root, from, to string) {
+	t.Helper()
+	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
+	journalBytes, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(journalBytes)), "\n")
+	for index, line := range lines {
+		lines[index] = strings.ReplaceAll(line, from, to)
+	}
+	if err := os.WriteFile(journalPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(root, ".claude", "loop-state.json")
+	stateBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stateBytes, &state); err != nil {
+		t.Fatal(err)
+	}
+	journal, _ := state["journal"].(map[string]any)
+	if journal == nil {
+		t.Fatal("runtime state has no journal cursor")
+	}
+	journal["last_event_id"] = to
+	updated, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, updated, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func containsHookTestText(value, needle string) bool {

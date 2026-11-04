@@ -550,7 +550,10 @@ func reviewProofJournalBindsWorkBlock(root string, state map[string]any, agentID
 		default:
 			continue
 		}
-		if !strings.HasPrefix(eventID, prefix+kind+"-r") {
+		// Both the historical "-r<revision>" shape and the semantic
+		// "-<intent key>" shape of the Agent lifecycle event id are accepted
+		// so an already written journal stays readable (G18 §1.4).
+		if !strings.HasPrefix(eventID, prefix+kind+"-") {
 			continue
 		}
 		sequence := reviewProofInt(event["sequence"])

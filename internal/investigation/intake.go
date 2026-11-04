@@ -181,7 +181,6 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 		occurredAt = time.Now().UTC()
 	}
 	runtimeID := stringField(current.State["runtime_id"])
-	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	cursor := map[string]any{"state": stringField(lifecycle["state"]), "phase": lifecycle["phase"]}
 	pointerMap := map[string]any{
 		"case_id":            caseID,
@@ -193,11 +192,18 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	}
 	store := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	snapshot, err := updateRuntime(store, request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-investigation-case-%s-r%d", caseID, commitRevision+1),
-		TransitionID:           "INVESTIGATION-CASE-INGESTED",
-		Event:                  "transition_committed",
-		Actor:                  "orchestrator",
-		IdempotencyKey:         fmt.Sprintf("runtime:investigation-ingest:%s:%d", sourceID, commitRevision),
+		// G18 §1: the ingest is its own event domain, so the Case creation
+		// never shares one event id with the Case revision or the accepted
+		// hypothesis result of the same Case. The immutable Case artifact
+		// cases/<case_id>.json may exist only once, so one Case is ingested
+		// once and a retried ingest keeps this same identity.
+		EventID:      "evt-investigation-case-ingested-" + caseID,
+		TransitionID: "INVESTIGATION-CASE-INGESTED",
+		Event:        "transition_committed",
+		Actor:        "orchestrator",
+		// G18 §1.3: the idempotency key carries the responsibility coordinate
+		// (the Case) and the intent key (the accepted source that opened it).
+		IdempotencyKey:         fmt.Sprintf("runtime:investigation-case-ingested:%s:%s", caseID, sourceID),
 		RuntimeID:              runtimeID,
 		From:                   cursor,
 		To:                     cursor,

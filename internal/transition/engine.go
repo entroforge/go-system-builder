@@ -10,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/buildsurface"
+	"github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/impact"
 	"github.com/entroforge/go-system-builder/internal/metrics"
@@ -135,12 +137,8 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	}
 	// A committed S7 entry is already the result of this original request.
 	// Resolve it before source-state checks, which now see the destination cursor.
-	if replayS7Entry(current, request) {
+	if replayS7Entry(current, request, journalPath) {
 		return snapshot, nil
-	}
-	commitRevision := snapshot.Revision
-	if request.ExpectedRevision >= 0 {
-		commitRevision = request.ExpectedRevision
 	}
 	catalog, err := LoadCatalog(root)
 	if err != nil {
@@ -204,13 +202,23 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if request.BaselineGeneration > 0 {
 		baselineGen = request.BaselineGeneration
 	}
-	eventID := mutationEventID(request.TransitionID, commitRevision)
+	// The committed transition is named by the responsibility that owns it and
+	// by the intent it carries, never by the Runtime write count (G18 §1.1,
+	// §1.3): the same intent always produces the same event id and the same
+	// idempotency key, and two responsibilities never share one.
+	eventID, idempotencyKey := mutationEventIdentity(
+		request.TransitionID,
+		runtimeID,
+		baselineGen,
+		fromCursor,
+		integer(currentLifecycle["phase_revision"]),
+	)
 	mutation := loopruntime.Mutation{
 		EventID:                eventID,
 		TransitionID:           resolved.Spec.ID,
 		Event:                  resolved.Spec.Event,
 		Actor:                  request.Actor,
-		IdempotencyKey:         fmt.Sprintf("runtime:%s:%d", request.TransitionID, commitRevision),
+		IdempotencyKey:         idempotencyKey,
 		EvidenceIDs:            evidenceIDs,
 		GuardResults:           guardResults,
 		ActionResults:          actionResults,
@@ -401,7 +409,7 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 			}
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			if request.SubmissionFollowupID != "" {
-				if err := loopruntime.StampSubmissionTransition(state, request.SubmissionFollowupID, mutationEventID(request.TransitionID, commitRevision)); err != nil {
+				if err := loopruntime.StampSubmissionTransition(state, request.SubmissionFollowupID, eventID); err != nil {
 					return err
 				}
 			}
@@ -430,9 +438,13 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	return next, err
 }
 
-// replayS7Entry recognizes only the saved relation for the original CAS request.
-// ExpectedRevision=-1 selects a current-state action, not an identified replay.
-func replayS7Entry(state map[string]any, request Request) bool {
+// replayS7Entry recognizes only the saved relation for the original CAS
+// request. The saved S7 entry identity is compared with the plan identity of
+// the committed journal event, and that event is read exactly as it was
+// saved: a historical event id keeps working and no identity is recomputed
+// from a newer shape (G18 §1.4). ExpectedRevision=-1 selects a current-state
+// action, not an identified replay.
+func replayS7Entry(state map[string]any, request Request, journalPath string) bool {
 	switch request.TransitionID {
 	case "TR-006", "TR-012", "TR-016", "TR-022", "TR-031":
 	default:
@@ -444,12 +456,86 @@ func replayS7Entry(state map[string]any, request Request) bool {
 	runtimeID, _ := state["runtime_id"].(string)
 	rev, _ := state["review"].(map[string]any)
 	entry, _ := rev["round_entry"].(map[string]any)
-	expectedID := reviewmeta.NewPlanID(runtimeID, mutationEventID(request.TransitionID, request.ExpectedRevision))
-	return expectedID != "" && entry["transition_id"] == request.TransitionID && reviewmeta.FromRoundEntry(rev).PlanID == expectedID
+	if entry["transition_id"] != request.TransitionID {
+		return false
+	}
+	savedPlanID := reviewmeta.FromRoundEntry(rev).PlanID
+	if savedPlanID == "" || runtimeID == "" {
+		return false
+	}
+	savedEventID, ok := committedTransitionEventID(journalPath, state, request.TransitionID, request.ExpectedRevision)
+	if !ok {
+		return false
+	}
+	return savedPlanID == reviewmeta.NewPlanID(runtimeID, savedEventID)
 }
 
-func mutationEventID(transitionID string, revision int) string {
-	return fmt.Sprintf("evt-%s-r%d", strings.ToLower(transitionID), revision+1)
+// committedTransitionEventID reads the saved journal event that committed the
+// given transition at the caller's CAS revision. The event id is returned as
+// it was written; the current identity shape is never recomputed over it.
+func committedTransitionEventID(journalPath string, state map[string]any, transitionID string, expectedRevision int) (string, bool) {
+	if journalPath == "" {
+		return "", false
+	}
+	ctx := context.Background()
+	data, err := controlproof.ReadJournalForStateAtContext(ctx, journalPath, state)
+	if err != nil {
+		return "", false
+	}
+	inspection, err := controlproof.InspectJournalSegmentDataFromContext(ctx, data, 1)
+	if err != nil {
+		return "", false
+	}
+	for _, event := range inspection.Events {
+		if event["transition_id"] != transitionID {
+			continue
+		}
+		if event["event"] != "transition_committed" || event["outcome"] != "committed" {
+			continue
+		}
+		if integer(event["before_revision"]) != expectedRevision {
+			continue
+		}
+		eventID, _ := event["event_id"].(string)
+		if eventID == "" {
+			continue
+		}
+		return eventID, true
+	}
+	return "", false
+}
+
+// mutationEventIdentity names one committed transition by the responsibility
+// that owns it and by the intent it carries. The Runtime write count is never
+// part of the identity (G18 §1.1, §1.3).
+//
+// The intent key is the cursor this transition moves from plus the lifecycle
+// stage it starts at (G18 §1.1 stage coordinate). A transition legitimately
+// occurs more than once inside one responsibility — every S7 round enters
+// verification again — so the stage entry, a domain fact about the cursor,
+// separates those occurrences (G18 §1.2).
+func mutationEventIdentity(transitionID, runtimeID string, generation int, from map[string]any, stageEntry int) (string, string) {
+	domain := strings.ToLower(transitionID)
+	intent := semanticIdentityKey(
+		strconv.Itoa(generation),
+		stringValue(from["state"]),
+		stringValue(from["phase"]),
+		strconv.Itoa(stageEntry),
+	)
+	// The idempotency key names the responsibility coordinate (runtime and
+	// baseline generation) together with the intent key (G18 §1.3).
+	responsibility := semanticIdentityKey(runtimeID, strconv.Itoa(generation))
+	return "evt-" + domain + "-" + intent, "runtime:" + domain + ":" + responsibility + ":" + intent
+}
+
+// semanticIdentityKey encodes its parts injectively, so two different
+// responsibilities or intents can never produce the same key.
+func semanticIdentityKey(parts ...string) string {
+	var key strings.Builder
+	for _, part := range parts {
+		fmt.Fprintf(&key, "%d:%s", len(part), part)
+	}
+	return key.String()
 }
 
 func resolveCatalog(catalog *Catalog, id, currentState string, currentPhase any) (resolvedTransition, error) {

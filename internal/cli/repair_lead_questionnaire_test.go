@@ -657,3 +657,31 @@ func writeRepairLeadContractWithUnits(t *testing.T, root, caseID string, units [
 	}
 	return repair.ContractRef{Path: rel}
 }
+
+// G18: a new S9 artifact identity is distinguished by the already saved
+// artifact paths of the same responsibility, never by the Runtime write count
+// and never by an accumulated round counter.
+func TestRepairArtifactIdentityTokenUsesSavedPaths(t *testing.T) {
+	base := "reverify-abc"
+	saved := []string{".claude/evidence/s9/reverification/reverify-abc.json"}
+	first := repairArtifactIdentityToken(saved)
+	if first == "" {
+		t.Fatal("empty artifact identity token")
+	}
+	if repairArtifactIdentityToken(saved) != first {
+		t.Fatal("the same saved artifact produced two identity tokens")
+	}
+	other := repairArtifactIdentityToken([]string{".claude/evidence/s9/reverification/reverify-abc-0123456789abcdef.json"})
+	if other == first {
+		t.Fatal("two different saved artifacts produced one identity token")
+	}
+	if !repairArtifactCarriesID(saved[0], base) {
+		t.Fatalf("saved artifact %q does not carry identity %q", saved[0], base)
+	}
+	if !repairArtifactCarriesID(".claude/evidence/s9/reverification/reverify-abc-0123456789abcdef.json", base) {
+		t.Fatal("a later delivery of the same identity was not recognized")
+	}
+	if repairArtifactCarriesID(".claude/evidence/s9/reverification/reverify-other.json", base) {
+		t.Fatal("an unrelated artifact was taken for the same identity")
+	}
+}

@@ -149,8 +149,13 @@ func runBatchScopeRepair(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "stale or changed repair plan; inspect again")
 		return 1
 	}
-	event := fmt.Sprintf("evt-batch-scope-repaired-r%d", plan.Revision+1)
-	_, err = store.Update(plan.Revision, runtime.Mutation{EventID: event, TransitionID: "BATCH-SCOPE-REPAIR", Actor: "framework-maintainer", Event: "batch_scope_repaired", IdempotencyKey: event, RuntimeID: plan.Runtime, From: map[string]any{"state": "building", "phase": nil}, To: map[string]any{"state": "document_verification", "phase": nil}, BaselineGeneration: batchNestedInt(snapshot.State, "baseline", "generation"), RequestID: "repair-batch-scope", OccurredAt: time.Now().UTC(), Message: fmt.Sprintf("Removed foreign registrations %v; retained tasks %v; invalidated document reviews %v; files preserved; repeat S5", plan.Removed, plan.RetainedTasks, plan.Invalidated), Apply: func(state map[string]any) error {
+	// The responsibility is the Runtime that owns the polluted scope; the
+	// intent is the exact set of foreign registrations this repair removes.
+	// The repaired lifecycle admits no second batch-scope repair, so this
+	// intent key is stable and carries no Runtime write count (G18 §1.3).
+	intent := domainEventToken(strings.Join(plan.Removed, "+"))
+	event := fmt.Sprintf("evt-batch-scope-repaired-%s-%s", plan.Runtime, intent)
+	_, err = store.Update(plan.Revision, runtime.Mutation{EventID: event, TransitionID: "BATCH-SCOPE-REPAIR", Actor: "framework-maintainer", Event: "batch_scope_repaired", IdempotencyKey: fmt.Sprintf("runtime:batch-scope-repair:%s:%s", plan.Runtime, intent), RuntimeID: plan.Runtime, From: map[string]any{"state": "building", "phase": nil}, To: map[string]any{"state": "document_verification", "phase": nil}, BaselineGeneration: batchNestedInt(snapshot.State, "baseline", "generation"), RequestID: "repair-batch-scope", OccurredAt: time.Now().UTC(), Message: fmt.Sprintf("Removed foreign registrations %v; retained tasks %v; invalidated document reviews %v; files preserved; repeat S5", plan.Removed, plan.RetainedTasks, plan.Invalidated), Apply: func(state map[string]any) error {
 		current, err := inspectBatchScope(*root, state)
 		if err != nil {
 			return err

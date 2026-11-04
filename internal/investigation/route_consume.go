@@ -63,14 +63,19 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 		actor = "orchestrator"
 	}
 	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
-	eventID := fmt.Sprintf("evt-s8-route-consume-%s-r%d", request.CaseID, commitRevision+1)
+	// G18 §1: the route consumption is named by its own responsibility (the
+	// Case) and carries no Runtime write count. One Case route is consumed
+	// once — the consumption records route_consumed_at on the pointer — so this
+	// identity stays unique and stays stable across a retried consumption.
+	eventID := "evt-s8-route-consume-" + request.CaseID
 	return updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
-		EventID:                eventID,
-		TransitionID:           "S8-ROUTE-CONSUME",
-		Event:                  "investigation_route_consumed",
-		Actor:                  actor,
-		IdempotencyKey:         fmt.Sprintf("runtime:s8:route-consume:%s:%d", request.CaseID, commitRevision),
+		EventID:      eventID,
+		TransitionID: "S8-ROUTE-CONSUME",
+		Event:        "investigation_route_consumed",
+		Actor:        actor,
+		// G18 §1.3: the idempotency key carries the responsibility coordinate
+		// (the Case) and the intent key (the consumed route).
+		IdempotencyKey:         fmt.Sprintf("runtime:s8:route-consume:%s:%s", request.CaseID, route),
 		RuntimeID:              stringField(current.State["runtime_id"]),
 		EvidenceIDs:            []string{stringField(pointer["path"])},
 		From:                   routeCursor(current.State),

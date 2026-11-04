@@ -3358,12 +3358,17 @@ func recordPlanCheckpoint(root, statePath, journalPath string, snapshot runtime.
 				return nil
 			}
 		}
+		// The responsibility is the observing Worker, the intent is the exact
+		// plan report it registered. The guard above already skips a report
+		// that is registered, so the pair is a stable intent key and no
+		// Runtime write count belongs in it (G18 §1.3).
+		planToken := domainEventToken(ref)
 		_, err = store.Update(snapshot.Revision, runtime.Mutation{
-			EventID:        fmt.Sprintf("evt-plan-observed-%s-r%d", agentID, snapshot.Revision+1),
+			EventID:        fmt.Sprintf("evt-plan-observed-%s-%s", agentID, planToken),
 			TransitionID:   "PLAN-OBSERVATION",
 			Event:          "plan_report_observed",
 			Actor:          "hook_controller",
-			IdempotencyKey: fmt.Sprintf("hook:plan-observed:%s:%s:r%d", agentID, ref, snapshot.Revision),
+			IdempotencyKey: fmt.Sprintf("runtime:plan-observed:%s:%s:%s", runtimeIDString(snapshot.State), agentID, planToken),
 			RuntimeID:      runtimeIDString(snapshot.State),
 			OccurredAt:     time.Now().UTC(),
 			Apply: func(state map[string]any) error {

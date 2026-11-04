@@ -104,6 +104,34 @@ func TestIngestCreatesCaseAndCommitsInvestigationPointer(t *testing.T) {
 	}
 }
 
+// G18 §1 reverse assertion: the ingest owns its own event identity, and its
+// idempotency key names the Case responsibility and the source intent that
+// opened it — never the Runtime write count. The ingest must therefore not
+// share one event identity with a later Case revision of the same Case.
+func TestIngestEventIdentityNamesTheCaseNotTheRuntimeWriteCount(t *testing.T) {
+	fixture := newIntakeFixture(t, []string{"finding-1"})
+	snapshot, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
+		ExpectedRevision: 0, GroupingRationale: "one sealed Finding enters one bounded Case",
+	})
+	if err != nil {
+		t.Fatalf("Ingest() error = %v", err)
+	}
+	pointer := snapshot.State["review"].(map[string]any)["investigation"].(map[string]any)
+	caseID, _ := pointer["case_id"].(string)
+	event := readLastJournalEvent(t, fixture.journalPath)
+	eventID, _ := event["event_id"].(string)
+	key, _ := event["idempotency_key"].(string)
+	if eventID != "evt-investigation-case-ingested-"+caseID {
+		t.Fatalf("ingest event id = %q, want the ingest identity of Case %s", eventID, caseID)
+	}
+	if !strings.HasPrefix(key, "runtime:investigation-case-ingested:"+caseID+":") {
+		t.Fatalf("ingest idempotency key = %q, want the Case responsibility and its source intent", key)
+	}
+	if strings.HasSuffix(key, fmt.Sprintf(":%d", snapshot.Revision)) {
+		t.Fatalf("ingest idempotency key = %q, want no Runtime write count", key)
+	}
+}
+
 // setIntakeLifecycle overrides the fixture lifecycle cursor. The RC-18
 // phase-gate test uses it to move the cursor back to verification.running.
 func setIntakeLifecycle(t *testing.T, fixture *intakeFixture, state, phase string) {

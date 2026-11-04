@@ -69,17 +69,11 @@ type CommitHandoffRequest struct {
 	Handoff ArtifactRef
 }
 
-// runtimeCommitRevision is an internal event/idempotency detail. A negative
-// request means the normal single-writer path: use the snapshot read by the
-// domain operation to name the commit, while the Writer assigns the actual
-// next Runtime revision under its lock.
-func runtimeCommitRevision(expected int, current runtimepkg.Snapshot) int {
-	if expected >= 0 {
-		return expected
-	}
-	return current.Revision
-}
-
+// updateRuntime commits one domain mutation. A negative expectation selects
+// the normal single-writer path: the Writer reads the current state under its
+// lock and assigns the actual next Runtime revision itself. The Runtime write
+// count never names an event or an idempotency key (G18): an event identity
+// is derived from the responsibility and the intent that caused it.
 func updateRuntime(writer *runtimepkg.Store, expected int, mutation runtimepkg.Mutation) (runtimepkg.Snapshot, error) {
 	if expected < 0 {
 		return writer.UpdateCurrent(mutation)
@@ -166,8 +160,10 @@ func OpenRepairSession(root, statePath, journalPath string, req OpenSessionReque
 		return runtimepkg.Snapshot{}, RepairSession{}, ArtifactRef{}, err
 	}
 	at := occurred(req.OccurredAt)
-	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
-	snapshot, err := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-session-open-%s-r%d", req.SessionID, commitRevision+1), TransitionID: whitelistChecked("S9-SESSION-OPEN"), Event: "repair_session_opened", Actor: req.Actor, IdempotencyKey: fmt.Sprintf("runtime:s9:session-open:%s:%d", req.SessionID, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.SessionID, contract.ContractID}, From: cursor(current.State), To: cursor(current.State), RequestID: "s9-session-open", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-SESSION-OPEN", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	// G18: the session id is the repair responsibility. One session is opened
+	// once per session id, and a repeated open of the same id reads the
+	// existing session, so the identity never needs a Runtime write count.
+	snapshot, err := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-session-open-%s", req.SessionID), TransitionID: whitelistChecked("S9-SESSION-OPEN"), Event: "repair_session_opened", Actor: req.Actor, IdempotencyKey: fmt.Sprintf("runtime:s9:session-open:%s", req.SessionID), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.SessionID, contract.ContractID}, From: cursor(current.State), To: cursor(current.State), RequestID: "s9-session-open", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-SESSION-OPEN", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 		ensureObject(state, "review")["repair"] = map[string]any{"session_id": session.SessionID, "case_id": contract.CaseID, "contract_id": contract.ContractID, "contract_ref": contract.Ref.Path, "path": ref.Path, "questionnaire_root": QuestionnaireRoot(stringField(state["runtime_id"]), session.SessionID), "revision": 1, "status": "contract_ready", "updated_at": at.Format(time.RFC3339Nano), "next_action": "runtime repair plan compile --root <root> --plan-id <plan> --created-by <agent>"}
 		return nil
 	}})
@@ -200,8 +196,10 @@ func CompileRepairPlan(root, statePath, journalPath string, req CompilePlanReque
 	if actor == "" {
 		actor = req.CreatedBy
 	}
-	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
-	snapshot, err := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-plan-%s-r%d", plan.PlanID, commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-09"), Event: "repair_plan_compiled", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:plan:%s:%d", plan.PlanID, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{plan.PlanID}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "planning"}, RequestID: "s9-plan-compile", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-PLAN-COMPILE", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	// G18: the plan id is the compiled plan's own identity; the plan artifact
+	// is written at a path derived from it, so a repeated compile of the same
+	// plan id is one intent and keeps one event identity.
+	snapshot, err := updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-plan-%s", plan.PlanID), TransitionID: whitelistChecked("PTR-BUG-09"), Event: "repair_plan_compiled", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:plan:%s", plan.PlanID), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{plan.PlanID}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "planning"}, RequestID: "s9-plan-compile", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-PLAN-COMPILE", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 		updateRepairPointer(state, map[string]any{"plan_ref": ref.Path, "status": "planning", "updated_at": at.Format(time.RFC3339Nano), "next_action": "record each Builder plan and actual precheck before that Builder implements"})
 		setLifecycle(state, "bug_resolution", "planning")
 		return nil
@@ -265,9 +263,11 @@ func submitIssuedRepairPlanReportToRuntime(root, statePath, journalPath string, 
 	if lifecycleState(current.State) != "bug_resolution" || (p["status"] != "planning" && p["status"] != "reproducing" && p["status"] != "repairing") {
 		nextStatus, nextCursor = stringField(p["status"]), cursor(current.State)
 	}
-	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
-	eventID := fmt.Sprintf("evt-s9-plan-report-%s-r%d", report.ReportID, commitRevision+1)
-	idempotencyKey := fmt.Sprintf("runtime:s9:plan-report:%s:%d", report.ReportID, commitRevision)
+	// G18: the report id is the plan report's own identity. The issued
+	// responsibility receipt carries the accepted event identity of the
+	// receipted submission, which is the authoritative identity when present.
+	eventID := fmt.Sprintf("evt-s9-plan-report-%s", report.ReportID)
+	idempotencyKey := fmt.Sprintf("runtime:s9:plan-report:%s", report.ReportID)
 	if req.issued != nil {
 		eventID = req.issued.receipt.AcceptedEventID
 		idempotencyKey = req.issued.receipt.AcceptedIdempotencyKey
@@ -331,11 +331,17 @@ func BeginRepairExecution(root, statePath, journalPath string, req BeginRepairEx
 	if actor == "" {
 		actor = "Main"
 	}
-	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
-	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-execution-begin-r%d", commitRevision+1),
+	// G18: the startup fact is named by the repair session (the responsibility)
+	// and the already recorded PlanReport that authorised it (the intent). The
+	// same session and the same recorded report stay one identity, so a
+	// repeated startup of the same session is deduplicated by the journal
+	// instead of being rejected as a new write.
+	sessionID := stringField(p["session_id"])
+	planReportRef := stringField(p["plan_report_ref"])
+	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-execution-begin-%s-%s", sessionID, planReportRef),
 		TransitionID: whitelistChecked("PTR-BUG-11"), Event: "repair_execution_started", Actor: actor,
-		IdempotencyKey: fmt.Sprintf("runtime:s9:execution:%s", stringField(p["session_id"])), RuntimeID: stringField(current.State["runtime_id"]),
-		EvidenceIDs: []string{stringField(p["plan_report_ref"])}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "fixing"},
+		IdempotencyKey: fmt.Sprintf("runtime:s9:execution:%s:%s", sessionID, planReportRef), RuntimeID: stringField(current.State["runtime_id"]),
+		EvidenceIDs: []string{planReportRef}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": "fixing"},
 		RequestID: "s9-execution-begin", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-EXECUTION-BEGIN",
 		ProducerResponsibility: "S9 Repair", OccurredAt: at,
 		Apply: func(state map[string]any) error {
@@ -643,8 +649,13 @@ func CommitChangeImpact(root, statePath, journalPath string, req CommitImpactReq
 	if actor == "" {
 		actor = "orchestrator"
 	}
-	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
-	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-impact-r%d", commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-05"), Event: "change_impact_reconciled", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:impact:%s:%d", req.Impact.Path, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Impact.Path}, From: cursor(current.State), To: impactCursor(current.State, late, lifecyclePhase), RequestID: "s9-impact-reconcile", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-IMPACT-RECONCILE", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+	// G18: the impact artifact path is the domain discriminator of this
+	// judgment (a repeated reconciliation of the same artifact is one intent),
+	// and the repair session is the responsibility that owns it. Two different
+	// impact artifacts of the same session therefore keep two identities, and
+	// the same artifact keeps one identity across Runtime write counts.
+	sessionID := stringField(p["session_id"])
+	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-impact-%s-%s", sessionID, req.Impact.Path), TransitionID: whitelistChecked("PTR-BUG-05"), Event: "change_impact_reconciled", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:impact:%s:%s", sessionID, req.Impact.Path), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Impact.Path}, From: cursor(current.State), To: impactCursor(current.State, late, lifecyclePhase), RequestID: "s9-impact-reconcile", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-IMPACT-RECONCILE", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 
 		updateRepairPointer(state, map[string]any{"impact_ref": req.Impact.Path, "status": nextPhase, "required_reverification_ids": requiredReverificationIDs(impactDocument), "updated_at": at.Format(time.RFC3339Nano), "next_action": nextAction})
 		invalidateListedEvidence(state, impactDocument.InvalidatedEvidenceIDs, impactDocument.ImpactID, "declared by ChangeImpact")
@@ -865,11 +876,15 @@ func CommitTargetedReverification(root, statePath, journalPath string, req Commi
 			}
 		}
 		at := occurred(req.OccurredAt)
-		commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
+		// G18: the reverification artifact path is the domain discriminator of
+		// this conclusion, and the repair session owns it. A re-verification
+		// that runs again is a new artifact and therefore a new identity, while
+		// the same artifact keeps one identity across Runtime write counts.
+		sessionID := stringField(p["session_id"])
 		return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{
-			EventID: fmt.Sprintf("evt-s9-targeted-r%d", commitRevision+1), TransitionID: whitelistChecked("PTR-BUG-06"),
+			EventID: fmt.Sprintf("evt-s9-targeted-%s-%s", sessionID, req.Reverification.Path), TransitionID: whitelistChecked("PTR-BUG-06"),
 			Event: "targeted_reverification_recorded", Actor: actor,
-			IdempotencyKey: fmt.Sprintf("runtime:s9:targeted:%s:%d", req.Reverification.Path, commitRevision),
+			IdempotencyKey: fmt.Sprintf("runtime:s9:targeted:%s:%s", sessionID, req.Reverification.Path),
 			RuntimeID:      stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Reverification.Path},
 			From: cursor(current.State), To: cursor(current.State), RequestID: "s9-targeted-reverification",
 			BaselineGeneration: baselineGeneration(current.State), GateID: "S9-TARGETED-REVERIFICATION",
@@ -950,8 +965,12 @@ func CommitTargetedReverification(root, statePath, journalPath string, req Commi
 		failureRoute = route
 	}
 	at := occurred(req.OccurredAt)
-	commitRevision := runtimeCommitRevision(req.ExpectedRevision, current)
-	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-targeted-r%d", commitRevision+1), TransitionID: whitelistChecked(transitionID), Event: event, Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:targeted:%s:%d", req.Reverification.Path, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Reverification.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": phase}, RequestID: "s9-targeted-reverification", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-TARGETED-REVERIFICATION", ProducerResponsibility: "S9 QA", OccurredAt: at, Apply: func(state map[string]any) error {
+	// G18: the reverification artifact path is the domain discriminator of
+	// this conclusion, and the repair session owns it. A re-verification that
+	// runs again is a new artifact and therefore a new identity, while the
+	// same artifact keeps one identity across Runtime write counts.
+	sessionID := stringField(p["session_id"])
+	return updateRuntime(writer, req.ExpectedRevision, runtimepkg.Mutation{EventID: fmt.Sprintf("evt-s9-targeted-%s-%s", sessionID, req.Reverification.Path), TransitionID: whitelistChecked(transitionID), Event: event, Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:targeted:%s:%s", sessionID, req.Reverification.Path), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Reverification.Path}, From: cursor(current.State), To: map[string]any{"state": "bug_resolution", "phase": phase}, RequestID: "s9-targeted-reverification", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-TARGETED-REVERIFICATION", ProducerResponsibility: "S9 QA", OccurredAt: at, Apply: func(state map[string]any) error {
 		updateRepairPointer(state, map[string]any{"targeted_reverification_refs": refs, "targeted_reverification_artifacts": targetedArtifacts, "status": status, "failure_route": failureRoute, "updated_at": at.Format(time.RFC3339Nano), "next_action": action})
 		setLifecycle(state, "bug_resolution", phase)
 		return nil
@@ -1097,7 +1116,13 @@ func commitRepairHandoff(root, statePath, journalPath string, req CommitHandoffR
 			}
 		}
 	}
-	eventID := fmt.Sprintf("evt-s9-handoff-r%d", current.Revision+1)
+	// G18: the repair session is the responsibility that owns this handoff, and
+	// a session hands off exactly once (the pointer moves to status=closed).
+	// The handoff artifact path is the intent key of the idempotency key. The
+	// derived S7 plan identity therefore stays a stable function of the
+	// session instead of a function of the Runtime write count.
+	sessionID := stringField(p["session_id"])
+	eventID := fmt.Sprintf("evt-s9-handoff-%s", sessionID)
 	planID := reviewmeta.NewPlanID(stringField(current.State["runtime_id"]), eventID)
 	if planID == "" {
 		return current, errors.New("S9 handoff cannot establish S7 identity without the original runtime identity")
@@ -1129,9 +1154,8 @@ func commitRepairHandoff(root, statePath, journalPath string, req CommitHandoffR
 	if actor == "" {
 		actor = "orchestrator"
 	}
-	commitRevision := current.Revision
 	return func() (runtimepkg.Snapshot, error) {
-		snapshot, updateErr := writer.Update(current.Revision, runtimepkg.Mutation{EventID: eventID, TransitionID: whitelistChecked("TR-012"), Event: "repair_handoff_ready", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:handoff:%s:%d", req.Handoff.Path, commitRevision), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Handoff.Path, seedRef.Path}, From: cursor(current.State), To: map[string]any{"state": "verification", "phase": "running"}, RequestID: "s9-handoff", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-REPAIR-HANDOFF", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
+		snapshot, updateErr := writer.Update(current.Revision, runtimepkg.Mutation{EventID: eventID, TransitionID: whitelistChecked("TR-012"), Event: "repair_handoff_ready", Actor: actor, IdempotencyKey: fmt.Sprintf("runtime:s9:handoff:%s:%s", sessionID, req.Handoff.Path), RuntimeID: stringField(current.State["runtime_id"]), EvidenceIDs: []string{req.Handoff.Path, seedRef.Path}, From: cursor(current.State), To: map[string]any{"state": "verification", "phase": "running"}, RequestID: "s9-handoff", BaselineGeneration: baselineGeneration(current.State), GateID: "S9-REPAIR-HANDOFF", ProducerResponsibility: "S9 Repair", OccurredAt: at, Apply: func(state map[string]any) error {
 			updates := map[string]any{"handoff_ref": req.Handoff.Path, "status": "closed", "updated_at": at.Format(time.RFC3339Nano), "next_action": "author the first professional S7 plan from the staged seed, preserving its original identity and generation; use change paths as review scope, without inventing fingerprints. Complete and save the original ReviewPlan questionnaire; its original consumer registers the plan. Decide actual E2E applicability and arrange independent verification.", "review_plan_seed_ref": seedRef.Path}
 			if handoff.ChangesetRef.Path != "" {
 				updates["changeset_ref"] = handoff.ChangesetRef.Path

@@ -522,8 +522,13 @@ func submitResult(
 
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	resultRepoPath := repositoryPath(root, request.ResultPath)
-	eventID := fmt.Sprintf("evt-review-result-%s-r%d", result.ResultID, commitRevision+1)
-	idempotencyKey := fmt.Sprintf("runtime:review-result:%s:%d", result.ResultID, commitRevision)
+	// The event identity is the original responsibility and the delivery
+	// intent, never the Runtime write count. The typed receipt already carries
+	// this shape, so both paths publish one identity for the same delivery.
+	eventID, idempotencyKey := receiptEventIdentity(runtimeID, generation, ptr, &result)
+	if request.issuedPacket != nil {
+		eventID, idempotencyKey = receiptEventIdentity(runtimeID, generation, ptr, &result, request.issuedPacket.ID)
+	}
 	if receipt != nil {
 		eventID = receipt.EventID
 		idempotencyKey = receipt.IdempotencyKey
@@ -1157,14 +1162,13 @@ func staleReviewPlanAfterDrift(
 		cursor = map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	}
 	runtimeID, _ := current["runtime_id"].(string)
-	commitRevision := currentCommitRevision(-1, current)
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(ctx)
 	snapshot, err := updateRuntime(store, -1, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-plan-stale-%s-r%d", plan.PlanID, commitRevision+1),
+		EventID:        fmt.Sprintf("evt-review-plan-stale-%s-r%d", plan.PlanID, plan.Revision),
 		TransitionID:   "REVIEW-PLAN-STALE",
 		Event:          "review_plan_stale",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-plan-stale:%s:%d", plan.PlanID, commitRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:review-plan-stale:%s:%d", plan.PlanID, plan.Revision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,

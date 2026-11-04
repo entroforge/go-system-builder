@@ -115,8 +115,12 @@ func runEvidenceBindingRepair(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "stale or changed repair plan; inspect again")
 		return 1
 	}
-	event := fmt.Sprintf("evt-evidence-binding-repair-r%d", plan.Revision+1)
-	next, err := store.Update(plan.Revision, runtime.Mutation{EventID: event, TransitionID: "EVIDENCE-BINDING-REPAIR", Actor: "framework-maintainer", Event: "evidence_binding_repaired", IdempotencyKey: event, RuntimeID: plan.Runtime, From: map[string]any{"state": "document_verification", "phase": nil}, To: map[string]any{"state": "document_verification", "phase": nil}, BaselineGeneration: batchNestedInt(snapshot.State, "baseline", "generation"), RequestID: "repair-evidence-binding", EvidenceIDs: []string{plan.ID}, OccurredAt: time.Now().UTC(), Message: fmt.Sprintf("Invalidated misbound registration %s (envelope %s); preserved files and all other evidence; %s", plan.ID, plan.EnvelopeID, plan.Reason), Apply: func(state map[string]any) error {
+	// The responsibility is the Runtime that registered the evidence; the
+	// intent is the exact misbound registration and its original envelope.
+	// The invalidated registration admits no second binding repair, so this
+	// intent key is stable and carries no Runtime write count (G18 §1.3).
+	event := fmt.Sprintf("evt-evidence-binding-repair-%s-%s", plan.ID, plan.EnvelopeID)
+	next, err := store.Update(plan.Revision, runtime.Mutation{EventID: event, TransitionID: "EVIDENCE-BINDING-REPAIR", Actor: "framework-maintainer", Event: "evidence_binding_repaired", IdempotencyKey: fmt.Sprintf("runtime:evidence-binding-repair:%s:%s:%s", plan.Runtime, plan.ID, plan.EnvelopeID), RuntimeID: plan.Runtime, From: map[string]any{"state": "document_verification", "phase": nil}, To: map[string]any{"state": "document_verification", "phase": nil}, BaselineGeneration: batchNestedInt(snapshot.State, "baseline", "generation"), RequestID: "repair-evidence-binding", EvidenceIDs: []string{plan.ID}, OccurredAt: time.Now().UTC(), Message: fmt.Sprintf("Invalidated misbound registration %s (envelope %s); preserved files and all other evidence; %s", plan.ID, plan.EnvelopeID, plan.Reason), Apply: func(state map[string]any) error {
 		current, err := inspectEvidenceBinding(*root, state, *id)
 		if err != nil {
 			return err

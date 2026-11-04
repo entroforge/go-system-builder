@@ -245,7 +245,6 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	cursor := map[string]any{"state": stringField(lifecycle["state"]), "phase": lifecycle["phase"]}
 	nextCursor := map[string]any{"state": "bug_resolution", "phase": "repair_readback"}
 	runtimeID := stringField(current.State["runtime_id"])
-	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
 	baseline, _ := baselineGeneration(current.State)
 	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	evidenceIDs := []string{request.CaseID, contractID, approvalEvidenceID}
@@ -253,11 +252,16 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 		evidenceIDs = append(evidenceIDs, request.DelegationEvidenceID)
 	}
 	snapshot, err := updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-repair-contract-approved-%s-r%d", contractID, commitRevision+1),
+		// G18 §1: the approval is named by its own responsibility (the Case
+		// and the Contract it approves) and carries no Runtime write count.
+		// One Contract is approved once — the approval flips the Case to
+		// contract_approved and a retry resumes the saved approval — so this
+		// identity stays unique and stays stable across a retried approval.
+		EventID:                fmt.Sprintf("evt-repair-contract-approved-%s-%s", request.CaseID, contractID),
 		TransitionID:           "S8-REPAIR-CONTRACT-APPROVAL",
 		Event:                  "repair_contract_approved",
 		Actor:                  "orchestrator",
-		IdempotencyKey:         fmt.Sprintf("runtime:investigation-contract-approve:%s:%d", contractID, commitRevision),
+		IdempotencyKey:         fmt.Sprintf("runtime:investigation-contract-approve:%s:%s", request.CaseID, contractID),
 		RuntimeID:              runtimeID,
 		From:                   cursor,
 		To:                     nextCursor,

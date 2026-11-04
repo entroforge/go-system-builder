@@ -205,6 +205,19 @@ func AdvanceAgentWithContext(ctx context.Context, root, statePath, journalPath s
 	if err := json.Unmarshal(data, &message); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode Agent message: %w", err)
 	}
+	// The authored message_id names exactly one authored message and is
+	// required by the agent-message schema. It is this event's intent key: the
+	// same intent always produces the same identity, and two different
+	// authored messages never collide (G18 §1.2/§1.3).
+	var authored struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.Unmarshal(data, &authored); err != nil {
+		return loopruntime.Snapshot{}, fmt.Errorf("decode Agent message identity: %w", err)
+	}
+	if strings.TrimSpace(authored.MessageID) == "" {
+		return loopruntime.Snapshot{}, fmt.Errorf("Agent message carries no message_id")
+	}
 	expectedType := expectedAgentMessageType(request.Event)
 	if expectedType == "" {
 		return loopruntime.Snapshot{}, fmt.Errorf(
@@ -299,11 +312,14 @@ func AdvanceAgentWithContext(ctx context.Context, root, statePath, journalPath s
 	}
 
 	mutation := loopruntime.Mutation{
-		EventID:            fmt.Sprintf("evt-agent-%s-%s-r%d", request.AgentID, request.Event, commitRevision+1),
+		// The identity of an Agent lifecycle event is its owner, its operation
+		// and the authored message it answers. The Runtime write counter is a
+		// recorded audit coordinate only (G18 §1/§1.3).
+		EventID:            fmt.Sprintf("evt-agent-%s-%s-%s", request.AgentID, request.Event, authored.MessageID),
 		TransitionID:       "AGENT-LIFECYCLE",
 		Event:              request.Event,
 		Actor:              "orchestrator",
-		IdempotencyKey:     fmt.Sprintf("runtime:agent:%s:%s:%d", request.AgentID, request.Event, commitRevision),
+		IdempotencyKey:     fmt.Sprintf("runtime:agent:%s:%s:%s", request.AgentID, request.Event, authored.MessageID),
 		RuntimeID:          runtimeID,
 		BaselineGeneration: generation,
 		From:               cursor,

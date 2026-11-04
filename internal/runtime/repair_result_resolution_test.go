@@ -96,6 +96,36 @@ func TestVerifiedRepairResultResolutionReceiptKeepsOriginalUntilSuccessor(t *tes
 	}
 }
 
+// G18 §1.4: a journal written with the semantic Agent lifecycle identity is
+// read exactly like the historical "-r<revision>" identity, and the receipt
+// carries the saved identity instead of a recomputed one.
+func TestRepairResultResolutionReaderAcceptsSemanticLifecycleIdentity(t *testing.T) {
+	f := newRepairResultBlockerReaderFixture(t)
+	attachRepairResultResolutionFixture(t, &f, nil)
+	owner := f.runtime.packet.Binding.Sources.OwnerAgentID
+	semanticEventID := "evt-agent-" + owner + "-blocker_resolved-msg-s9-resolution-reader"
+	semanticKey := "runtime:agent:" + owner + ":blocker_resolved:msg-s9-resolution-reader"
+	for _, event := range f.runtime.events {
+		if event["transition_id"] != "AGENT-LIFECYCLE" {
+			continue
+		}
+		if !strings.Contains(fmt.Sprint(event["event_id"]), "-blocker_resolved-") {
+			continue
+		}
+		event["event_id"] = semanticEventID
+		event["idempotency_key"] = semanticKey
+	}
+	writeBlockerReaderJournal(t, &f)
+
+	got, found, err := VerifiedRepairResultResolutionReceipt(f.runtime.plan.root, f.runtime.plan.state, f.runtime.packet.ID, owner)
+	if err != nil || !found {
+		t.Fatalf("semantic resolution identity not found: found=%t err=%v", found, err)
+	}
+	if got.AcceptedEventID != semanticEventID || got.AcceptedIdempotencyKey != semanticKey {
+		t.Fatalf("resolution receipt did not carry the saved semantic identity: %+v", got)
+	}
+}
+
 func TestRepairResultResolutionReaderLeavesBlockerOnlyPacketCurrent(t *testing.T) {
 	f := newRepairResultBlockerReaderFixture(t)
 	owner := f.runtime.packet.Binding.Sources.OwnerAgentID

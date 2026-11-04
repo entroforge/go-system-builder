@@ -108,6 +108,7 @@ func (s *Store) ExternalizePacketBodies() (Snapshot, error) {
 	entities, _ := state["entities"].(map[string]any)
 	rows, _ := entities["work_packets"].([]any)
 	needsMaintenance := false
+	maintainedPacket := ""
 	for _, raw := range rows {
 		row, _ := raw.(map[string]any)
 		_, external, err := packetbody.ReferenceFromIndex(row)
@@ -116,16 +117,24 @@ func (s *Store) ExternalizePacketBodies() (Snapshot, error) {
 		}
 		if packetBodySupportedTemplate(row["template_id"]) && !external {
 			needsMaintenance = true
+			if maintainedPacket == "" {
+				maintainedPacket = stringValue(row["packet_id"])
+			}
 		}
 	}
 	if !needsMaintenance {
 		return Snapshot{Revision: revision, State: state}, nil
 	}
+	// G18: the maintenance is named by the runtime it repairs and by the
+	// legacy packet body it externalizes. A later maintenance of a different
+	// legacy body is a different intent and therefore keeps a different
+	// identity, while a replay of the same maintenance keeps one identity.
+	runtimeID := stringValue(state["runtime_id"])
 	return s.applyMutation(revision, Mutation{
-		EventID:      fmt.Sprintf("evt-packet-body-maintenance-%s-r%d", stringValue(state["runtime_id"]), revision+1),
+		EventID:      fmt.Sprintf("evt-packet-body-maintenance-%s-%s", runtimeID, maintainedPacket),
 		TransitionID: "PACKET-BODY-MAINTENANCE", Event: "packet_body_externalized", Actor: "orchestrator",
-		RuntimeID: stringValue(state["runtime_id"]), BaselineGeneration: baselineGeneration(state),
-		IdempotencyKey:       fmt.Sprintf("packet-body-maintenance:%s:%d", stringValue(state["runtime_id"]), revision+1),
+		RuntimeID: runtimeID, BaselineGeneration: baselineGeneration(state),
+		IdempotencyKey:       fmt.Sprintf("packet-body-maintenance:%s:%s", runtimeID, maintainedPacket),
 		RetainLastTransition: true,
 		Apply: func(candidate map[string]any) error {
 			ctx := WithReviewResultReadCache(WithPacketBodyRoot(s.Context(), s.root))

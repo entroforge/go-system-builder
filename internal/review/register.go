@@ -206,11 +206,11 @@ func registerPlanBytes(root, statePath, journalPath string, request PlanRequest,
 	}
 	input.commitStarted = true
 	snapshot, err := updateRuntime(store, commitExpected, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-plan-%s-r%d", plan.ReviewPlanID, commitRevision+1),
+		EventID:        reviewPlanEventID(plan.ReviewPlanID),
 		TransitionID:   "REVIEW-PLAN",
 		Event:          "review_plan_registered",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-plan:%s:%d", plan.ReviewPlanID, commitRevision),
+		IdempotencyKey: reviewPlanIdempotencyKey(plan.ReviewPlanID),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             map[string]any{"state": "verification", "phase": "running"},
@@ -258,6 +258,48 @@ func registerPlanBytes(root, statePath, journalPath string, request PlanRequest,
 	return snapshot, nil
 }
 
+// reviewPlanEventID names the registration of one ReviewPlan by the Plan
+// responsibility itself. One Plan is registered once per review round, so the
+// Plan identity already separates the registrations; the Runtime write count
+// is never part of an identity (G18 §1.1).
+func reviewPlanEventID(planID string) string {
+	if strings.TrimSpace(planID) == "" {
+		return ""
+	}
+	return "evt-review-plan-" + planID
+}
+
+// legacyReviewPlanEventID recognizes the historical shape of the registration
+// event of one Plan. The old id is located by its saved prefix and numeric
+// suffix — the Runtime write count it carried is never recomputed — so a
+// journal written before the identity change keeps working (G18 §1.4).
+func legacyReviewPlanEventID(eventID, planID string) bool {
+	prefix := "evt-review-plan-" + planID + "-r"
+	if planID == "" || !strings.HasPrefix(eventID, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(eventID, prefix)
+	if suffix == "" {
+		return false
+	}
+	for _, digit := range suffix {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// reviewPlanIdempotencyKey names the registration intent: the Plan identity is
+// the responsibility coordinate and the intent key of this reception
+// (G18 §1.3). Two Plans never share it.
+func reviewPlanIdempotencyKey(planID string) string {
+	if strings.TrimSpace(planID) == "" {
+		return ""
+	}
+	return "runtime:review-plan:" + planID
+}
+
 func samePlanRegistrationCoordinate(original, current map[string]any) bool {
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	return stringField(original["runtime_id"]) != "" && original["runtime_id"] == current["runtime_id"] &&
@@ -287,9 +329,11 @@ func resumePlanRegistration(root, statePath, journalPath string, request PlanReq
 		planBytes := append(canonicalJSON(input.data), '\n')
 		ptr := PlanPointerFromState(current.State)
 		transition, _ := current.State["last_transition"].(map[string]any)
+		savedEventID, _ := transition["event_id"].(string)
 		newReception := current.Revision > intField(input.initial["revision"]) &&
 			transition["transition_id"] == "REVIEW-PLAN" &&
-			transition["event_id"] == fmt.Sprintf("evt-review-plan-%s-r%d", plan.ReviewPlanID, intField(input.initial["revision"])+1)
+			(savedEventID == reviewPlanEventID(plan.ReviewPlanID) ||
+				legacyReviewPlanEventID(savedEventID, plan.ReviewPlanID))
 		if newReception && ptr != nil && ptr.PlanID == plan.ReviewPlanID && ptr.Path != "" && ptr.Revision == 1 &&
 			reviewmeta.CompareIdentity(plan.Identity(), activeReviewIdentity(input.initial)) != reviewmeta.Different &&
 			plan.BaselineGeneration == baselineGeneration(input.initial) {

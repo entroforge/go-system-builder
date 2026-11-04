@@ -94,7 +94,7 @@ func acknowledgeVerifiedIntegration(root string, snapshot runtime.Snapshot, a *h
 		}
 	}
 	now := time.Now().UTC()
-	message := map[string]any{"schema_version": "1.0.0", "message_type": "completion_ack", "message_id": fmt.Sprintf("msg-integration-r%d", snapshot.Revision+1), "correlation_id": "corr-integration", "runtime_id": runtimeID, "agent_id": a.OwnerAgentID, "agent_definition_ref": agent["definition_ref"], "task_id": a.TaskID, "bug_id": nil, "team_id": agent["team_id"], "occurred_at": now.Format(time.RFC3339Nano), "body": "Main integrated the original responsibility and completed its required checks. Cleanup is a separate recoverable operation."}
+	message := map[string]any{"schema_version": "1.0.0", "message_type": "completion_ack", "message_id": integrationAckMessageID(a.AssignmentID), "correlation_id": "corr-integration", "runtime_id": runtimeID, "agent_id": a.OwnerAgentID, "agent_definition_ref": agent["definition_ref"], "task_id": a.TaskID, "bug_id": nil, "team_id": agent["team_id"], "occurred_at": now.Format(time.RFC3339Nano), "body": "Main integrated the original responsibility and completed its required checks. Cleanup is a separate recoverable operation."}
 	dir := filepath.Dir(checkpointPath)
 	f, err := os.CreateTemp(dir, "completion-ack-*.json")
 	if err != nil {
@@ -114,6 +114,14 @@ func acknowledgeVerifiedIntegration(root string, snapshot runtime.Snapshot, a *h
 	}
 	a.CompletionAckRef = f.Name()
 	return next, nil
+}
+
+// integrationAckMessageID names the completion acknowledgement of one
+// Assignment. The Runtime write count never takes part in it: the same
+// acknowledgement keeps one identity and different Assignments get different
+// identities.
+func integrationAckMessageID(assignmentID string) string {
+	return fmt.Sprintf("msg-integration-%s", assignmentID)
 }
 
 // checkpointPathForLoadedAssignment maps the current Hook projection to its

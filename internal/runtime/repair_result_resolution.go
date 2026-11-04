@@ -210,7 +210,7 @@ func repairResultResolutionEvents(journal controlproof.JournalInspection, owner 
 		paths[stringValue(row["path"])] = true
 	}
 	matching := []map[string]any{}
-	prefix := "evt-agent-" + owner + "-blocker_resolved-r"
+	prefix := "evt-agent-" + owner + "-blocker_resolved-"
 	for _, event := range journal.Events {
 		if !strings.HasPrefix(stringValue(event["event_id"]), prefix) {
 			continue
@@ -307,7 +307,7 @@ func verifyRepairResultResolutionMessage(data []byte, p workpacket.RepairResultP
 }
 
 func verifyRepairResultResolutionEvent(event map[string]any, p workpacket.RepairResultPacket, owner, messageRef string, blocker RepairResultBlockerReceipt, state map[string]any) (eventID, key string, after, sequence int, err error) {
-	before, be := integerField(event, "before_revision")
+	_, be := integerField(event, "before_revision")
 	after, ae := integerField(event, "after_revision")
 	sequence, se := integerField(event, "sequence")
 	generation, ge := integerField(event, "baseline_generation")
@@ -315,21 +315,24 @@ func verifyRepairResultResolutionEvent(event map[string]any, p workpacket.Repair
 	from, _ := event["from"].(map[string]any)
 	to, _ := event["to"].(map[string]any)
 	refs, refsOK := checkpointStringSlice(event["evidence_ids"])
-	wantID := fmt.Sprintf("evt-agent-%s-blocker_resolved-r%d", owner, after)
-	wantKey := fmt.Sprintf("runtime:agent:%s:blocker_resolved:%d", owner, before)
+	// The saved identity is compared, never recomputed from the Runtime write
+	// counter (G18 §1.4). Both the historical "-r<revision>" shape and the
+	// semantic "-<intent key>" shape are accepted.
+	eventID = stringValue(event["event_id"])
+	key = stringValue(event["idempotency_key"])
 	// The Runtime's write counter is a recorded field, never a qualifier. It is
 	// read on its original path and carried into the receipt for audit and
 	// history restoration; the required-field checks below only mirror the
 	// journal event schema, and no continuity, freshness or ordering is
 	// derived from the counter. The committed event coordinate (sequence) is
 	// what orders this event after the original blocker.
-	if be != nil || ae != nil || se != nil || ge != nil || !refsOK || sequence <= blocker.AcceptedSequence || generation != p.Binding.Sources.BaselineGeneration || event["event_id"] != wantID || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || event["idempotency_key"] != wantKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (blocker_resolved)" || from["state"] != "bug_resolution" || from["phase"] != "fixing" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, blocker.ArtifactRef) {
+	if be != nil || ae != nil || se != nil || ge != nil || !refsOK || sequence <= blocker.AcceptedSequence || generation != p.Binding.Sources.BaselineGeneration || !agentLifecycleIdentity(eventID, key, owner, "blocker_resolved") || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (blocker_resolved)" || from["state"] != "bug_resolution" || from["phase"] != "fixing" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, blocker.ArtifactRef) {
 		return "", "", 0, 0, fmt.Errorf("S9 blocker_resolved lifecycle event tuple or evidence IDs differ")
 	}
 	if sequence <= blocker.AcceptedSequence {
 		return "", "", 0, 0, fmt.Errorf("S9 blocker_resolved event does not follow its original blocker")
 	}
-	return wantID, wantKey, after, sequence, nil
+	return eventID, key, after, sequence, nil
 }
 
 func sameRepairResultResolutionScopeRefs(refs []string, packetID, repairAssignmentID, blockerRef string) bool {

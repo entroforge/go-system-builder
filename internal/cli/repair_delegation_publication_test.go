@@ -104,3 +104,38 @@ func TestS8GrantOriginalWriterConcurrentReception(t *testing.T) {
 	s8DecisionNormalHook(t, root, path)
 	s8DecisionRequireUnchanged(t, root, before)
 }
+
+// G18: the bounded repair grant identity is the recorded human decision, never
+// the Runtime write count. The same decision keeps one identity and different
+// decisions get different identities.
+func TestRepairDelegationDecisionIdentityCarriesNoWriteCount(t *testing.T) {
+	state := map[string]any{
+		"runtime_id": "loop-delegation",
+		"revision":   7,
+		"baseline":   map[string]any{"generation": 1},
+		"bound_req":  map[string]any{"approved_by": "main-1", "status": "locked"},
+	}
+	answer := repairDelegationApplicationAnswer{Decision: "delegate_bounded_repair", Reviewer: "reviewer-1",
+		AllowedPaths: []string{"src/a"}, ForbiddenPaths: []string{"vendor/"}, MaxContracts: 2, ExpiresAt: "2030-01-01T00:00:00Z"}
+	grant := repairDelegationFromApplication(t.TempDir(), state, answer)
+	if grant.DecisionID == "" {
+		t.Fatal("empty repair delegation decision identity")
+	}
+	if strings.Contains(grant.DecisionID, "-r7") || strings.Contains(grant.DecisionID, "-r8") {
+		t.Fatalf("repair delegation decision identity carries the Runtime write count: %q", grant.DecisionID)
+	}
+	later := map[string]any{
+		"runtime_id": "loop-delegation",
+		"revision":   11,
+		"baseline":   map[string]any{"generation": 1},
+		"bound_req":  map[string]any{"approved_by": "main-1", "status": "locked"},
+	}
+	if retry := repairDelegationFromApplication(t.TempDir(), later, answer); retry.DecisionID != grant.DecisionID {
+		t.Fatalf("the same decision received two identities: %q and %q", grant.DecisionID, retry.DecisionID)
+	}
+	other := answer
+	other.MaxContracts = 3
+	if changed := repairDelegationFromApplication(t.TempDir(), state, other); changed.DecisionID == grant.DecisionID {
+		t.Fatal("two different decisions share one identity")
+	}
+}
