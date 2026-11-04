@@ -1594,6 +1594,66 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 状态里仍只有 1 个 TASK、Runtime 修订仍为 1、journal 里 `ENTITY-REGISTER` 事件**恰好 1 条**且事件 id 为
 `evt-register-task-TASK-100`(不含写计数)。**临时撤掉预检即红**(实测:报 `mutation event_id ... already exists in runtime journal`)。
 
+#### 第三波:事件 id 与 journal 键冲突的整族治理(整包 CLI 暴露)
+
+**触发方式**:第一次跑 `internal/cli` **整包**(1200 个测试函数,此前从未整包跑过)。定向抽样只覆盖 62 条,
+漏掉的回归由整包跑一次全部翻出来:63 条失败。
+
+**归因方法(可复现)**:用 `go test -c -overlay=...` 把**会话基线 `22bb385`** 的内容编译成测试二进制 ——
+overlay 把会话改过的 99 个 `.go` 文件逐个映射回基线版本,**不触碰工作树**,因此基线跑不受并发编辑污染。
+基线跑出 **1192 例 / 53 红**(50 条总账已登记 + **3 条此前从未登记**,因为 internal/cli 从未整包跑过),
+**53 条在 HEAD 仍全部红** ⇒ 基线零污染伪影。会话引入的回归**正好 10 条**,逐条 A/B + 二分到引入提交:
+- `a18e7e3`(第 3 步,事件 id 去写计数)引入 5 条:3 条**陈旧断言**(仍钉 `runtime:<T>:<写计数>` / `evt-<T>-r<写计数+1>`)、
+  1 条 `evidence.go` **锁外预检**把「已接收」变成错误(并发下重放被拒)、1 条 work packet 事件 id 碰撞。
+- `ed15364`(本会话早前的锁外预检)引入 3 条:预检放在 CAS **之前**,错误顺序错了。
+
+**根因(整族)**:事件 id 改成「责任 + 意图」后,**同一意图的重试必然撞同一个 id**;而 journal 的全局
+`event_id` 唯一性检查**先于 `Apply` 触发** ⇒ 住在 `Apply` 里的域内拒绝被 journal 的键冲突顶掉,
+调用方收到 `mutation event_id %q already exists in runtime journal` —— **存储机制泄漏成领域错误面**。
+这是「事件 id 去写计数」与「journal 全局唯一性」之间的新交互。
+
+**通用机制**:`runtime.Mutation` 新增可选 `Precheck func(state map[string]any) error`。
+store 在**锁内**、**revision CAS 之后**、**state/journal 配对校验之后**、**journal 键冲突检查之前**调用它;
+其错误原样返回,失败后**不跑 `Apply`**;`Precheck` **不写** Runtime 状态、**不写** journal 事实。
+⇒ 域内判定优先于键冲突,且顺序与第一波之前一致(先 CAS、后域内)。
+
+**合法重复的域内区分量**(不是写计数):
+| 事件 | 区分量 | 论证 |
+|---|---|---|
+| 转换(PTR-PLAN-01 返工) | **出现锚** = 该责任上一次提交的转换 id | 第一次设计出口跟在 bind 之后,返工跟在把责任打回的触发之后;Runtime 自己的游标证明**中间必有提交**(`phase_revision` 单调) |
+| work packet(S5 问卷) | **准备次数** = journal 记录的该问卷发放次数 | 是**域内出现序号**:S5 夹具里两次发放是 1 和 2,而 Runtime 修订是 5 —— 与写计数相去甚远。内容派生的令牌不可行:两次发放的是**同一份**问卷,内容哈希相同 |
+| agent completion | **交付身份**按已接收提交逐级升级(`-r2`/`-r3`) | 重投是新交付(合法重放),同一身份出现两次才是冲突 |
+| plan 报告观察 | Worker + Assignment/其修订 + **规范化计划路径**的令牌 | 规范化后同一份计划的两种写法**共用一个身份**而不是分叉;令牌来自已登记的计划路径,不来自 Runtime 状态或写计数 |
+
+**已修站点**(11 处,含第一波遗留的 4 处):
+`internal/assignment/register.go`(TASK 登记 + workgroup 登记)、`internal/runtime/evidence.go`(S3 接收)、
+`internal/assignment/completion.go`(legacy 完成)、`internal/assignment/lifecycle.go`(agent 生命周期)、
+`internal/assignment/completion_canonical.go`(canonical 完成)、`internal/transition/engine.go`(转换)、
+`internal/runtime/work_packet.go`(work packet)、`internal/cli/run.go`(plan 报告观察者)。
+
+**陈旧断言改写(一律改强,不是改弱)**:
+- `internal/cli/planning_followup_read_cycle_e2e_test.go` 的 `assertPlanningTransitionJournalEvent`
+  从「钉住写计数形状」改成:把长度前缀意图**解码成 5 段**并逐段断言(代 / 游标 state / 游标 phase / 阶段入口 / 出现锚)、
+  断言锚**不是裸数字**、断言**恰好只有 2 个数字段**(⇒ 写计数无法夹带)、断言被退役的两种形状**不存在**。
+- `internal/assignment/event_identity_test.go` 里那条**原本有意钉住**「already exists in runtime journal」的断言
+  改成钉**域内拒绝的精确文本** + 断言键冲突文案**不存在** + 保留并加强身份断言(反向断言的计数改由 `next.Revision` 推导,
+  且对**两个身份**分别断言)。
+- `internal/cli/s5_s6_guidance_delivery_test.go`、`internal/cli/tasks_e2e_test.go` 追加:准备次数**不跟随** Runtime 写计数;
+  PTR-PLAN-01 的重放**不二次提交**(journal 恰好 1 条、修订不动)。
+
+**新增反向断言**:11 个新测试文件/测试组,每条都做过「撤掉修复即红」的变异校验,
+其中并发用例一律用**确定性夹具**(validator 闸门 / Writer 进程锁 / 真实 auto-chain 写入),不靠撞竞态。
+
+**总账**:371 → **374**(补登 3 条此前未登记的既有红:`TestNativeS6CompactResultPassesTheOriginalIntegrationGate`、
+`TestS7NativeListenerReportsSelectedUnreadableBody`、`TestS7NativeListenerReceivesAssignedOriginalOnNaturalToolEvent`)。
+
+**残留(如实记录,未粉饰)**:
+- 转换锚在「游标被手工改回 + 阶段入口被钉死 + 中间无提交」时,第三次连续出现会与第二次撞同一 id
+  ⇒ 由 journal 拒绝。**裁定:这是诚实的** —— 那种情形下域内确实没有可区分的事实。
+- `internal/assignment/record_revision.go` 的 `stopRevisionOwner` 会抹掉 `plan_reported_ref`,
+  于是「该计划已被登记」只能由 journal 里的域内事实回答(仍是域内拒绝,不是键冲突);
+  想让被取消的尝试保留自己的事实需要新增 agent 字段,而 agent schema 是 `additionalProperties: false` ⇒ 需要改 schema,未做。
+
 #### 残留(留给下一波):
 - `internal/cli/s6_observation.go:26` 仍以 `milestone["source_revision"]` 与当前修订比对来决定是否复用已缓存的 S6 观察 —— 这是 §14.11 C-E 记下的那一处写计数判据。**裁定:它不是门禁**(失效方向永远是「缓存不适用 ⇒ 退回真 Controller 重算」,不可能拒绝任何专业完成),故按最高判据**不强制退役**;但替换设计已算清,留给下一波:
   - 里程碑对象在状态 schema 里是**开放对象**(`additionalProperties` 未设 false)⇒ 换字段不需要改 schema;
