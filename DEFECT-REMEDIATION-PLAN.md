@@ -1300,7 +1300,7 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 | `internal/plancheckpoint/validate.go:111-113` | `assignment_revision != 1` 即拒收 | 与 ReviewPlan 指针 revision 轴是**两轴**,改则混用(`L4-revision-usage.md:50`) |
 | `internal/transition/engine.go:213` | 幂等键只有 `transition+revision`,无责任维度 | 撞键风险;须与 `store.go` 唯一性检查一并裁定,不在 transition 层单方面改键格式 |
 | `internal/hookctx/loader.go:1056` | `document.Revision < CaseRevision` 方向 | Case 是否允许在原路径上前进尚未裁定,判 C 上报 |
-| `internal/controller/replay.go:210/219` | 用 revision 递增判「无进展」 | 应改 `sequence`/cursor;但属恢复语义,需专项 |
+| **`internal/controller/replay.go:210`、`:219-224`** | 恢复重放用 **revision 递增**判「无进展」(`after.Revision <= snapshot.Revision`),并用 `seenRevisions` 判「状态重复」 | 写计数器被当成进度/身份信号。按判据应退:`:210` **同时**已有游标判据(`snapshotCursorString(after) == beforeCursor`),游标是结构性坐标 ⇒ 保留游标判据、退役 revision 判据;`:219-224` 的 `seenRevisions` 应改为按**游标**去重(错误名 `ErrRecoveryReplayRepeatedCursor` 本就写着「cursor or revision」)。**本轮不改** —— 「状态重复」改用游标去重前必须先确认游标在同一恢复链上确实唯一(否则会把合法重复当成循环),这是恢复语义,需专项并配恢复用例;不得为了减负而放弃「重放不产生第二次恢复状态机」(`:105`) |
 | `internal/cli/s6_observation.go:26` vs `controller.go:1251` | 里程碑绑定写计数 vs「observed revision 不是状态变更」自相矛盾 | 一并裁定 |
 | `internal/qualitygate/review_round_gates.go` 门名含 `ROUND`;`internal/assignment/review_readiness.go:75/93`;`internal/hook/stopidle.go:383` | 轮数语汇命名遗留 | 语义已无轮次,非功能门禁;命名清理归入 G18 之后的整洁批次 |
 | `internal/cli/recover_command.go:634` 的 `0` | 零值是具体断言还是省略 | 归 W31d 裁定 |
