@@ -21,6 +21,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/change"
 	"github.com/entroforge/go-system-builder/internal/controller"
+	"github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	impactanalysis "github.com/entroforge/go-system-builder/internal/impact"
@@ -3350,6 +3351,14 @@ func recordPlanCheckpoint(root, statePath, journalPath string, snapshot runtime.
 		if err = validatePlanReportCheckpoint(root, snapshot, agentID, ref); err != nil {
 			return err
 		}
+		planPath, pathErr := canonicalPlanPath(root, ref)
+		if pathErr != nil {
+			return pathErr
+		}
+		assignmentID, assignmentRevision, assignmentErr := planReportAssignment(root, ref)
+		if assignmentErr != nil {
+			return assignmentErr
+		}
 		entities, _ := snapshot.State["entities"].(map[string]any)
 		agents, _ := entities["agents"].([]any)
 		for _, raw := range agents {
@@ -3358,33 +3367,50 @@ func recordPlanCheckpoint(root, statePath, journalPath string, snapshot runtime.
 				return nil
 			}
 		}
-		// The responsibility is the observing Worker, the intent is the exact
-		// plan report it registered. The guard above already skips a report
-		// that is registered, so the pair is a stable intent key and no
-		// Runtime write count belongs in it (G18 §1.3).
-		planToken := domainEventToken(ref)
+		// The identity names the plan, not the spelling of the path the
+		// Worker typed: the plan_checkpoint auto-chain records the canonical
+		// root-relative path, so a spelling-derived identity would fork one
+		// plan into two identities. It also names the responsibility the
+		// dispatch was made for, so a later attempt of that responsibility is
+		// a new observation instead of a repeat of the old one. No Runtime
+		// write count belongs in it (G18 §1/§1.3).
+		planToken := domainEventToken(planPath)
+		eventID := fmt.Sprintf("evt-plan-observed-%s-%s-r%d-%s", agentID, assignmentID, assignmentRevision, planToken)
 		_, err = store.Update(snapshot.Revision, runtime.Mutation{
-			EventID:        fmt.Sprintf("evt-plan-observed-%s-%s", agentID, planToken),
+			EventID:        eventID,
 			TransitionID:   "PLAN-OBSERVATION",
 			Event:          "plan_report_observed",
 			Actor:          "hook_controller",
-			IdempotencyKey: fmt.Sprintf("runtime:plan-observed:%s:%s:%s", runtimeIDString(snapshot.State), agentID, planToken),
+			IdempotencyKey: fmt.Sprintf("runtime:plan-observed:%s:%s:%s-r%d:%s", runtimeIDString(snapshot.State), agentID, assignmentID, assignmentRevision, planToken),
 			RuntimeID:      runtimeIDString(snapshot.State),
 			OccurredAt:     time.Now().UTC(),
-			Apply: func(state map[string]any) error {
-				entities, _ := state["entities"].(map[string]any)
-				for _, raw := range entities["agents"].([]any) {
-					agent, _ := raw.(map[string]any)
-					if agent == nil || agent["id"] != agentID {
-						continue
-					}
-					if existing, _ := agent["plan_reported_ref"].(string); existing != "" && existing != ref {
-						return fmt.Errorf("agent checkpoint already refers to a different plan; investigate dispatch before replacing it")
-					}
-					agent["plan_reported_ref"] = ref
-					return nil
+			// The judgment the caller asked for is whether the checkpoint may
+			// name this plan, so it is decided here, under the store lock and
+			// before the journal's global event-id key collision can answer
+			// for the domain.
+			Precheck: func(state map[string]any) error {
+				if err := judgePlanCheckpoint(state, agentID, ref); err != nil {
+					return err
 				}
-				return fmt.Errorf("agent %s not found", agentID)
+				// An Assignment revision erases the prior owner's plan
+				// checkpoint, so the checkpoint alone cannot say that the
+				// observation was already received. The journal keeps that
+				// record, and the event dedup is the domain's own answer to
+				// it.
+				registered, err := planObservationRegistered(journalPath, eventID)
+				if err != nil {
+					return err
+				}
+				if registered {
+					return fmt.Errorf("the plan observation %q is already registered for Agent %s; investigate dispatch before replacing it", planPath, agentID)
+				}
+				return nil
+			},
+			Apply: func(state map[string]any) error {
+				if err := judgePlanCheckpoint(state, agentID, ref); err != nil {
+					return err
+				}
+				return recordPlanCheckpointOnAgent(state, agentID, ref)
 			},
 		})
 		if !errors.Is(err, runtime.ErrStaleRevision) || attempt == 2 {
@@ -3400,6 +3426,146 @@ func recordPlanCheckpoint(root, statePath, journalPath string, snapshot runtime.
 		fmt.Fprintf(stderr, "note: plan_report observation not persisted (%v)\n", err)
 	}
 	return err
+}
+
+// judgePlanCheckpoint is the domain judgment for a plan checkpoint. The
+// checkpoint is a first-write barrier: a checkpoint that already names
+// another plan may not be replaced by a later observation, and the caller has
+// to hear that decision instead of a storage key collision.
+func judgePlanCheckpoint(state map[string]any, agentID, ref string) error {
+	entities, _ := state["entities"].(map[string]any)
+	agents, _ := entities["agents"].([]any)
+	for _, raw := range agents {
+		agent, _ := raw.(map[string]any)
+		if agent == nil || agent["id"] != agentID {
+			continue
+		}
+		if existing, _ := agent["plan_reported_ref"].(string); existing != "" && existing != ref {
+			return fmt.Errorf("agent checkpoint already refers to a different plan; investigate dispatch before replacing it")
+		}
+		return nil
+	}
+	return fmt.Errorf("agent %s not found", agentID)
+}
+
+// recordPlanCheckpointOnAgent writes the observed plan onto the observing
+// Worker's checkpoint.
+func recordPlanCheckpointOnAgent(state map[string]any, agentID, ref string) error {
+	entities, _ := state["entities"].(map[string]any)
+	agents, _ := entities["agents"].([]any)
+	for _, raw := range agents {
+		agent, _ := raw.(map[string]any)
+		if agent == nil || agent["id"] != agentID {
+			continue
+		}
+		agent["plan_reported_ref"] = ref
+		return nil
+	}
+	return fmt.Errorf("agent %s not found", agentID)
+}
+
+// canonicalPlanPath resolves the reported plan to its root-relative path.
+// The checkpoint and the plan_checkpoint auto-chain name one plan in
+// different spellings (an absolute path, a "./" prefix, a doubled
+// separator), and the observation identity must not fork with the spelling
+// of the path.
+func canonicalPlanPath(root, ref string) (string, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root: %w", err)
+	}
+	abs := ref
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(root, filepath.FromSlash(ref))
+	}
+	abs, err = filepath.Abs(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve plan_ref: %w", err)
+	}
+	rel, err := filepath.Rel(rootAbs, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("plan_ref %q is outside the repository", ref)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+// planReportAssignment reads the responsibility the reported plan is bound
+// to. The plan report declares the Assignment and the Assignment revision it
+// was authored for; that pair binds the checkpoint to the responsibility the
+// dispatch was made for, so a later attempt of that responsibility carries
+// its own observation identity.
+func planReportAssignment(root, ref string) (string, int, error) {
+	abs := ref
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(root, filepath.FromSlash(ref))
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", 0, fmt.Errorf("read plan_ref %q: %w", ref, err)
+	}
+	var message map[string]any
+	if err := json.Unmarshal(data, &message); err != nil {
+		return "", 0, fmt.Errorf("decode plan_ref %q: %w", ref, err)
+	}
+	assignmentID, _ := message["assignment_id"].(string)
+	if assignmentID == "" {
+		return "", 0, fmt.Errorf("plan_ref %q does not declare an Assignment", ref)
+	}
+	revision := 0
+	switch value := message["assignment_revision"].(type) {
+	case float64:
+		revision = int(value)
+	case int:
+		revision = value
+	case json.Number:
+		parsed, _ := value.Int64()
+		revision = int(parsed)
+	}
+	if revision < 1 {
+		return "", 0, fmt.Errorf("plan_ref %q does not declare an Assignment revision", ref)
+	}
+	return assignmentID, revision, nil
+}
+
+// planObservationRegistered reports whether the Runtime journal already
+// holds the observation's identity. The journal is the durable record of the
+// observation, and it survives the Assignment revision that erases the
+// prior owner's plan checkpoint.
+func planObservationRegistered(journalPath, eventID string) (bool, error) {
+	segments, err := controlproof.JournalSegmentPaths(journalPath)
+	if err != nil {
+		return false, err
+	}
+	combined := []byte{}
+	for _, segment := range segments {
+		data, err := os.ReadFile(segment)
+		if err != nil {
+			return false, fmt.Errorf("read journal archive %s: %w", segment, err)
+		}
+		if len(data) == 0 {
+			continue
+		}
+		combined = append(combined, data...)
+		if data[len(data)-1] != '\n' {
+			combined = append(combined, '\n')
+		}
+	}
+	active, err := os.ReadFile(journalPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read journal: %w", err)
+	}
+	if len(active) > 0 {
+		combined = append(combined, active...)
+	}
+	if len(combined) == 0 {
+		return false, nil
+	}
+	inspection, err := controlproof.InspectJournalData(combined)
+	if err != nil {
+		return false, fmt.Errorf("inspect runtime journal: %w", err)
+	}
+	_, exists := inspection.EventIndex[eventID]
+	return exists, nil
 }
 
 func runtimeIDString(state map[string]any) string {
