@@ -337,86 +337,29 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 		BaselineGeneration: dispatch.Number(registeredBaseline["generation"]),
 		From:               cursor,
 		To:                 cursor,
+		// G18 §1/§3.2: the registration event id names the registered
+		// workgroup, so a repeated registration produces the same id and the
+		// journal's global event-id uniqueness check answers before the Apply
+		// closure can refuse it with the domain's own outcome. The store calls
+		// this judgment under its lock, after the revision CAS, so the caller
+		// keeps the domain outcome and the refused repeat writes neither
+		// Runtime state nor a journal fact.
+		Precheck: func(state map[string]any) error {
+			if _, err := validateWorkgroupRegistration(root, request, value, selectedBoard, selectedFiles, taskData, state); err != nil {
+				return err
+			}
+			return workgroupRegistrationRefusal(root, request, value, state)
+		},
 		Apply: func(state map[string]any) error {
-			if value.WorkgroupKind == "builder" {
-				if err := dispatch.CheckConfiguredBackpressure(root, state); err != nil {
-					return err
-				}
-			}
-			var currentBoard *dispatch.Board
-			if selectedBoard != nil {
-				board, err := dispatch.ProjectSelectedPlan(root, state, selectedFiles, selectedBoard.Plan, 1<<20)
-				if err != nil {
-					return err
-				}
-				currentBoard = &board
-			}
-			if request.Revision == nil {
-				if currentBoard != nil {
-					if err := dispatch.CheckBoardRegistration(*currentBoard, request.TaskID); err != nil {
-						return err
-					}
-				} else if err := dispatch.CheckRegistration(root, state, request.TaskID); err != nil {
-					return err
-				}
-			} else if err := checkRevisionDispatchRegistration(root, state, request.TaskID, currentBoard); err != nil {
+			currentBoard, err := validateWorkgroupRegistration(root, request, value, selectedBoard, selectedFiles, taskData, state)
+			if err != nil {
 				return err
 			}
-			plannedWrites := []string{}
-			for _, item := range value.Assignments {
-				plannedWrites = append(plannedWrites, effectiveActivationWritePaths(item.WritePaths, item.OutputPaths)...)
-			}
-			if currentBoard != nil {
-				if err := dispatch.ValidateBoardWorkPackage(root, *currentBoard, request.TaskID, request.TaskPath, plannedWrites, len(value.Assignments)); err != nil {
-					return err
-				}
-			} else if err := dispatch.ValidateWorkPackage(root, state, request.TaskID, request.TaskPath, taskData, plannedWrites, len(value.Assignments)); err != nil {
-				return err
-			}
-
-			_, ok := state["lifecycle"].(map[string]any)
-			if !ok {
-				return fmt.Errorf("runtime lifecycle must be an object")
-			}
-			if err := validateWorkgroupState(value.WorkgroupKind, state); err != nil {
+			if err := checkRepairBinding(value, request, state); err != nil {
 				return err
 			}
 			if request.RepairAssignmentID != "" {
-				if value.WorkgroupKind != "builder" || request.RepairOwnerAgentID == "" {
-					return fmt.Errorf("repair assignment binding requires a builder workgroup and repair owner agent")
-				}
-				manifestAssignment := false
-				manifestOwner := ""
-				for _, item := range value.Assignments {
-					if item.AssignmentID == request.RepairAssignmentID || item.AssignmentID == "assignment-s9-"+strings.TrimPrefix(request.RepairAssignmentID, "repair-assignment-") {
-						manifestAssignment = true
-						manifestOwner = item.AgentID
-						break
-					}
-				}
-				if !manifestAssignment {
-					return fmt.Errorf("repair assignment %s is not represented by the registered builder manifest", request.RepairAssignmentID)
-				}
-				if manifestOwner != request.RepairOwnerAgentID {
-					return fmt.Errorf("repair assignment %s manifest owner %s does not match requested Agent %s", request.RepairAssignmentID, manifestOwner, request.RepairOwnerAgentID)
-				}
-				review, _ := state["review"].(map[string]any)
-				if review == nil {
-					return fmt.Errorf("repair assignment binding requires Runtime review state")
-				}
-				repairPointer, _ := review["repair"].(map[string]any)
-				if repairPointer == nil {
-					return fmt.Errorf("repair assignment %s is not bound to an active S9 RepairSession", request.RepairAssignmentID)
-				}
-				owners, _ := repairPointer["assignment_owners"].(map[string]any)
-				if owners == nil {
-					owners = map[string]any{}
-					repairPointer["assignment_owners"] = owners
-				}
-				if existing, _ := owners[request.RepairAssignmentID].(string); existing != "" && existing != request.RepairOwnerAgentID {
-					return fmt.Errorf("RepairAssignment %s is already owned by Agent %s; do not replace ownership mid-session", request.RepairAssignmentID, existing)
-				}
-				owners[request.RepairAssignmentID] = request.RepairOwnerAgentID
+				recordRepairBindingOwner(request, state)
 			}
 			// L3-S7: reviewer workgroups bind to the registered ReviewPlan —
 			// exact Claim set, lens match, static-before-behavior wave gate.
@@ -431,8 +374,8 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 				_, err := applyAssignmentRevision(root, state, value, manifestData, manifestRef, taskRef, request.TaskID, taskData, *request.Revision, currentBoard, mutationEventID, occurredAt, &stagedActivations)
 				return err
 			}
-			if containsEntity(entities["teams"], value.WorkgroupID) {
-				return fmt.Errorf("workgroup %s is already registered", value.WorkgroupID)
+			if err := checkWorkgroupRegistration(state, value.WorkgroupID); err != nil {
+				return err
 			}
 			life, _ := state["lifecycle"].(map[string]any)
 			// S5 reviewers reference a TASK as a document, not as Builder work.
@@ -680,6 +623,183 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 	return snapshot, updateErr
 }
 
+// validateWorkgroupRegistration runs the read-only validation prefix of a
+// workgroup registration and returns the projected dispatch board (nil when
+// the registration has no selected plan). The Apply closure uses that board
+// for the Assignment revision and for the registered Assignment records.
+//
+// G18 §1/§3.2: the registration event id names the registered workgroup, so a
+// repeated registration produces the same id and the journal's global
+// event-id uniqueness check answers before the Apply closure can refuse it
+// with the domain's own outcome. The mutation's Precheck runs these same
+// judgments under the store lock, after the revision CAS, so the caller keeps
+// the domain outcome.
+//
+// The judgments are side-effect free: they never write the Runtime state and
+// never write a file.
+func validateWorkgroupRegistration(root string, request Request, value manifest, selected *dispatch.Board, files fileview.Reader, taskData []byte, state map[string]any) (*dispatch.Board, error) {
+	if value.WorkgroupKind == "builder" {
+		if err := dispatch.CheckConfiguredBackpressure(root, state); err != nil {
+			return nil, err
+		}
+	}
+	var currentBoard *dispatch.Board
+	if selected != nil {
+		board, err := dispatch.ProjectSelectedPlan(root, state, files, selected.Plan, 1<<20)
+		if err != nil {
+			return nil, err
+		}
+		currentBoard = &board
+	}
+	if request.Revision == nil {
+		if currentBoard != nil {
+			if err := dispatch.CheckBoardRegistration(*currentBoard, request.TaskID); err != nil {
+				return nil, err
+			}
+		} else if err := dispatch.CheckRegistration(root, state, request.TaskID); err != nil {
+			return nil, err
+		}
+	} else if err := checkRevisionDispatchRegistration(root, state, request.TaskID, currentBoard); err != nil {
+		return nil, err
+	}
+	plannedWrites := []string{}
+	for _, item := range value.Assignments {
+		plannedWrites = append(plannedWrites, effectiveActivationWritePaths(item.WritePaths, item.OutputPaths)...)
+	}
+	if currentBoard != nil {
+		if err := dispatch.ValidateBoardWorkPackage(root, *currentBoard, request.TaskID, request.TaskPath, plannedWrites, len(value.Assignments)); err != nil {
+			return nil, err
+		}
+	} else if err := dispatch.ValidateWorkPackage(root, state, request.TaskID, request.TaskPath, taskData, plannedWrites, len(value.Assignments)); err != nil {
+		return nil, err
+	}
+	if _, ok := state["lifecycle"].(map[string]any); !ok {
+		return nil, fmt.Errorf("runtime lifecycle must be an object")
+	}
+	if err := validateWorkgroupState(value.WorkgroupKind, state); err != nil {
+		return nil, err
+	}
+	return currentBoard, nil
+}
+
+// workgroupRegistrationRefusal is the read-only mirror of the judgments the
+// Apply closure runs after its validation prefix. The Apply closure keeps the
+// authority under concurrency; this mirror is what the mutation's Precheck
+// runs, so a repeated registration keeps the domain outcome instead of the
+// journal's event-id collision.
+//
+// The judgments run in the Apply closure's order, so the first refusal is the
+// same one the Apply closure produces.
+func workgroupRegistrationRefusal(root string, request Request, value manifest, state map[string]any) error {
+	if err := checkRepairBinding(value, request, state); err != nil {
+		return err
+	}
+	if err := reviewerDispatchRefusal(root, value, state); err != nil {
+		return err
+	}
+	if request.Revision != nil {
+		// An Assignment revision re-registers the same workgroup on purpose,
+		// so the registered-workgroup judgment does not apply to it.
+		return nil
+	}
+	return checkWorkgroupRegistration(state, value.WorkgroupID)
+}
+
+// checkRepairBinding judges the S9 repair binding of a Builder workgroup
+// registration without recording it. The judgment is read-only so the
+// mutation's Precheck can reach it before the journal's event-id uniqueness
+// check answers a repeated registration.
+func checkRepairBinding(value manifest, request Request, state map[string]any) error {
+	if request.RepairAssignmentID == "" {
+		return nil
+	}
+	if value.WorkgroupKind != "builder" || request.RepairOwnerAgentID == "" {
+		return fmt.Errorf("repair assignment binding requires a builder workgroup and repair owner agent")
+	}
+	manifestAssignment := false
+	manifestOwner := ""
+	for _, item := range value.Assignments {
+		if item.AssignmentID == request.RepairAssignmentID || item.AssignmentID == "assignment-s9-"+strings.TrimPrefix(request.RepairAssignmentID, "repair-assignment-") {
+			manifestAssignment = true
+			manifestOwner = item.AgentID
+			break
+		}
+	}
+	if !manifestAssignment {
+		return fmt.Errorf("repair assignment %s is not represented by the registered builder manifest", request.RepairAssignmentID)
+	}
+	if manifestOwner != request.RepairOwnerAgentID {
+		return fmt.Errorf("repair assignment %s manifest owner %s does not match requested Agent %s", request.RepairAssignmentID, manifestOwner, request.RepairOwnerAgentID)
+	}
+	review, _ := state["review"].(map[string]any)
+	if review == nil {
+		return fmt.Errorf("repair assignment binding requires Runtime review state")
+	}
+	repairPointer, _ := review["repair"].(map[string]any)
+	if repairPointer == nil {
+		return fmt.Errorf("repair assignment %s is not bound to an active S9 RepairSession", request.RepairAssignmentID)
+	}
+	owners, _ := repairPointer["assignment_owners"].(map[string]any)
+	if existing, _ := owners[request.RepairAssignmentID].(string); existing != "" && existing != request.RepairOwnerAgentID {
+		return fmt.Errorf("RepairAssignment %s is already owned by Agent %s; do not replace ownership mid-session", request.RepairAssignmentID, existing)
+	}
+	return nil
+}
+
+// recordRepairBindingOwner records the repair owner in the Runtime review
+// projection. The judgment that accepted the binding is checkRepairBinding's.
+func recordRepairBindingOwner(request Request, state map[string]any) {
+	review, _ := state["review"].(map[string]any)
+	repairPointer, _ := review["repair"].(map[string]any)
+	owners, _ := repairPointer["assignment_owners"].(map[string]any)
+	if owners == nil {
+		owners = map[string]any{}
+		repairPointer["assignment_owners"] = owners
+	}
+	owners[request.RepairAssignmentID] = request.RepairOwnerAgentID
+}
+
+// reviewerDispatchRefusal is the ReviewPlan dispatch judgment of a reviewer
+// workgroup registration. A plan Assignment dispatches once, so a repeated
+// registration is refused with the ReviewPlan bind's own outcome. The bind
+// records the dispatch in the Runtime projection, so it runs against a copy of
+// the locked state and only its outcome is used: the locked state stays
+// untouched.
+func reviewerDispatchRefusal(root string, value manifest, state map[string]any) error {
+	if value.WorkgroupKind != "delivery_verifier" && value.WorkgroupKind != "qa" && value.WorkgroupKind != "e2e_browser" {
+		return nil
+	}
+	candidate, err := cloneRuntimeState(state)
+	if err != nil {
+		return err
+	}
+	return bindReviewPlanAssignments(root, candidate, value)
+}
+
+// checkWorkgroupRegistration refuses a workgroup that is already registered in
+// the Runtime team registry. The judgment is read-only.
+func checkWorkgroupRegistration(state map[string]any, workgroupID string) error {
+	entities, _ := state["entities"].(map[string]any)
+	if containsEntity(entities["teams"], workgroupID) {
+		return fmt.Errorf("workgroup %s is already registered", workgroupID)
+	}
+	return nil
+}
+
+// cloneRuntimeState copies the Runtime state so a read-only judgment can run
+// against the facts without writing them.
+func cloneRuntimeState(state map[string]any) (map[string]any, error) {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return nil, fmt.Errorf("clone runtime state: %w", err)
+	}
+	var clone map[string]any
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return nil, fmt.Errorf("decode cloned runtime state: %w", err)
+	}
+	return clone, nil
+}
+
 func reviewAssignmentQueued(state map[string]any, assignmentID, agentID string) bool {
 	reviewMap, _ := state["review"].(map[string]any)
 	assignments, _ := reviewMap["assignments"].(map[string]any)
@@ -860,26 +980,25 @@ func (e *ErrDuplicateTaskID) Error() string {
 	return fmt.Sprintf("task %s already registered", e.TaskID)
 }
 
-// taskRegistered reports whether the canonical TASK id is already present in
-// entities.tasks. It mirrors the Apply closure of RegisterTask so the domain
-// duplicate judgment can run before the journal's global event-id uniqueness
-// check (which happens earlier in the store).
-func taskRegistered(state map[string]any, taskID string) bool {
+// taskIDPattern matches the canonical TASK id format shared with the S4
+// planning check (semantic.taskIDPattern) and the runtime loop-state schema:
+// TASK-NNN with an optional numeric sub-suffix (TASK-001, TASK-001-01).
+var taskIDPattern = regexp.MustCompile(`^TASK-[0-9]{3,}(?:-[0-9]{2,})?$`)
+
+// duplicateTaskID refuses a canonical TASK id that is already present in the
+// Runtime TASK registry. The judgment is read-only: it reads the registry and
+// writes nothing, so the mutation's Precheck can run it under the store lock.
+func duplicateTaskID(state map[string]any, taskID string) error {
 	entities, _ := state["entities"].(map[string]any)
 	tasks, _ := entities["tasks"].([]any)
 	for _, raw := range tasks {
 		t, _ := raw.(map[string]any)
 		if id, _ := t["id"].(string); id == taskID {
-			return true
+			return &ErrDuplicateTaskID{TaskID: taskID}
 		}
 	}
-	return false
+	return nil
 }
-
-// taskIDPattern matches the canonical TASK id format shared with the S4
-// planning check (semantic.taskIDPattern) and the runtime loop-state schema:
-// TASK-NNN with an optional numeric sub-suffix (TASK-001, TASK-001-01).
-var taskIDPattern = regexp.MustCompile(`^TASK-[0-9]{3,}(?:-[0-9]{2,})?$`)
 
 // manifestHint translates r97-native failure shapes (B/C roads) into the
 // concrete missing piece. It only appends guidance; the underlying
@@ -947,16 +1066,6 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 	if _, err := commitRevision(req.ExpectedRevision, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
-	// G18 §3.1: the identity of a TASK registration is the registered TASK, so
-	// the event id carries no Runtime write counter. The journal's global
-	// event-id uniqueness check therefore runs before the Apply closure below,
-	// which carries the duplicate rejection. A repeated registration of the
-	// same TASK must keep its original observable outcome, so the same order
-	// the Apply closure uses is mirrored here: the domain duplicate judgment
-	// first. Neither path writes Runtime state or a journal fact.
-	if taskRegistered(current, req.TaskID) {
-		return loopruntime.Snapshot{}, &ErrDuplicateTaskID{TaskID: req.TaskID}
-	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	cursor := map[string]any{
@@ -985,19 +1094,27 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 		Message:        fmt.Sprintf("Registered canonical TASK %s", req.TaskID),
 		OccurredAt:     occurredAt,
 		EvidenceIDs:    []string{taskRef},
+		// G18 §3.1: the identity of a TASK registration is the registered TASK,
+		// so the event id carries no Runtime write counter. A repeated
+		// registration therefore collides in the journal's global event-id
+		// index, and that collision runs before the Apply closure below, which
+		// carries the duplicate rejection. The duplicate judgment runs here
+		// instead, under the store lock and after the revision CAS, so the
+		// caller keeps the original observable outcome: the domain refusal,
+		// never the journal's key collision. The Apply closure keeps the same
+		// judgment as the authority under concurrency.
+		Precheck: func(state map[string]any) error {
+			return duplicateTaskID(state, req.TaskID)
+		},
 		Apply: func(state map[string]any) error {
 			entities, ok := state["entities"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("entities must be an object")
 			}
-			tasks, _ := entities["tasks"].([]any)
-			for _, raw := range tasks {
-				t, _ := raw.(map[string]any)
-				id, _ := t["id"].(string)
-				if id == req.TaskID {
-					return &ErrDuplicateTaskID{TaskID: req.TaskID}
-				}
+			if err := duplicateTaskID(state, req.TaskID); err != nil {
+				return err
 			}
+			tasks, _ := entities["tasks"].([]any)
 			agents, _ := entities["agents"].([]any)
 			known := map[string]bool{}
 			for _, raw := range agents {

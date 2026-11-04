@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignment"
+	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 )
 
 // G18 §1/§3.1: a TASK registration is named by the registered TASK and the
@@ -72,6 +73,20 @@ func TestRegisterTaskDuplicateKeepsDomainOutcomeAndWritesNothing(t *testing.T) {
 		t.Fatalf("the journal event-id collision shadowed the domain outcome: %v", err)
 	}
 
+	// The duplicate judgment runs inside the store, after the revision CAS:
+	// a repeat that names a stale Runtime revision answers with the store's
+	// stale-revision error, never with the domain refusal. This is the
+	// original pre-G18 order (the CAS first, the domain judgment second).
+	stale := request
+	stale.ExpectedRevision = 0
+	_, err = assignment.RegisterTask(root, statePath, journalPath, stale)
+	if !errors.Is(err, loopruntime.ErrStaleRevision) {
+		t.Fatalf("a stale repeated TASK registration must answer with the stale-revision error, got %T: %v", err, err)
+	}
+	if strings.Contains(err.Error(), "already exists in runtime journal") {
+		t.Fatalf("the journal event-id collision shadowed the stale-revision error: %v", err)
+	}
+
 	// The repeat wrote nothing: one TASK, one revision, one journal event.
 	after := readRuntimeState(t, statePath)
 	if got := len(after["entities"].(map[string]any)["tasks"].([]any)); got != 1 {
@@ -90,6 +105,13 @@ func TestRegisterTaskDuplicateKeepsDomainOutcomeAndWritesNothing(t *testing.T) {
 		eventID, _ := event["event_id"].(string)
 		if eventID != "evt-register-task-TASK-100" {
 			t.Fatalf("TASK registration event id = %q, want evt-register-task-TASK-100", eventID)
+		}
+		if strings.Contains(eventID, "-r2") {
+			t.Fatalf("TASK registration identity leaked the Runtime write counter: %v", event)
+		}
+		idempotencyKey, _ := event["idempotency_key"].(string)
+		if idempotencyKey != "runtime:register:task:TASK-100:docs/dev/tasks/TASK-100.md" {
+			t.Fatalf("TASK registration idempotency key = %q, want the semantic TASK/document shape", idempotencyKey)
 		}
 	}
 	if registrations != 1 {

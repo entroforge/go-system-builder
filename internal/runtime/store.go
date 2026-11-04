@@ -103,7 +103,15 @@ type Mutation struct {
 	// RetainLastTransition keeps the existing last_transition snapshot when
 	// the mutation is not a legality lifecycle commit (e.g. milestone refresh).
 	RetainLastTransition bool
-	Apply                func(state map[string]any) error
+	// Precheck runs the domain judgment that decides this mutation. The store
+	// calls it under its lock, after the revision check and the state/journal
+	// pair validation, and before the journal's global event-id uniqueness
+	// check and before Apply. An event id names the responsibility and the
+	// intent, so a repeated intent produces the same id and the journal would
+	// answer with its own key collision. Precheck lets the domain keep its own
+	// outcome. It must not write Runtime state or a journal fact.
+	Precheck func(state map[string]any) error
+	Apply    func(state map[string]any) error
 }
 
 // AuditEnvelope contains the fields that identify and anchor one durable
@@ -1223,6 +1231,15 @@ func (s *Store) applyMutation(expectedRevision int, mutation Mutation) (Snapshot
 	}
 	if err := validateStateJournalPair(state, existingJournal); err != nil {
 		return Snapshot{}, fmt.Errorf("inspect runtime journal cursor before mutation (state journal.last_sequence must match the journal tail; use `runtime reconcile` only for a verified pending tail event; for missing/mismatched history run `runtime recover inspect --root <root> --req <locked-REQ-path>` then `runtime recover plan` with the same arguments; never manually realign state/journal): %w", err)
+	}
+	// The domain judgment runs here, under the store lock, so a repeated
+	// intent keeps the domain's own outcome instead of the journal's global
+	// event-id key collision, which names a storage mechanism rather than the
+	// decision the caller asked for.
+	if mutation.Precheck != nil {
+		if err := mutation.Precheck(state); err != nil {
+			return Snapshot{}, err
+		}
 	}
 	if _, exists := existingJournal.EventIndex[mutation.EventID]; exists {
 		return Snapshot{}, fmt.Errorf("mutation event_id %q already exists in runtime journal", mutation.EventID)
