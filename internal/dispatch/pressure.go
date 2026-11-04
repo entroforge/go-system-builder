@@ -98,13 +98,37 @@ func ReconcilePressure(root string, state map[string]any) error {
 	return nil
 }
 
-func CheckConfiguredBackpressure(root string, state map[string]any) error {
+// ConfiguredBackpressureRefusal judges the configured dispatch backpressure
+// and refuses a paused dispatch. The judgment is read-only: it reads the
+// Runtime state and the workspace and writes neither the Runtime state nor a
+// file, so a caller that must not touch the committed state can still answer
+// with the dispatch's own outcome.
+func ConfiguredBackpressureRefusal(root string, state map[string]any) error {
 	p, err := ProjectPressure(root, state)
 	if err != nil {
 		return err
 	}
+	return configuredBackpressureRefusal(p)
+}
+
+// configuredBackpressureRefusal is the pause refusal itself. The message
+// names the unreceived original results and the resume threshold, so the
+// caller learns which results to receive instead of reading a storage
+// mechanism's answer.
+func configuredBackpressureRefusal(p *Pressure) error {
 	if p != nil && p.Paused {
 		return fmt.Errorf("S6 Builder registration queued by explicit dispatch backpressure: %d unreceived; receive original results until <= %d (trigger %d)", p.Unreceived, p.Resume, p.Max)
+	}
+	return nil
+}
+
+// CheckConfiguredBackpressure judges the configured dispatch backpressure and
+// then records the dispatch pressure projection in the Runtime state. The
+// refusal answers a paused dispatch and the projection is committed with the
+// rest of the state, so every existing caller keeps this behaviour.
+func CheckConfiguredBackpressure(root string, state map[string]any) error {
+	if err := ConfiguredBackpressureRefusal(root, state); err != nil {
+		return err
 	}
 	return ReconcilePressure(root, state)
 }

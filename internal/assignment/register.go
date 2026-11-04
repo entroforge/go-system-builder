@@ -355,6 +355,17 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 			if err != nil {
 				return err
 			}
+			// The dispatch pressure projection is part of the committed
+			// state, so the reconcile stays in the Apply closure: the
+			// read-only refusal above already judged the dispatch, and this
+			// write records the projection it judged. A refused dispatch
+			// never reaches this point, so the projection is never written
+			// for a registration the domain refused.
+			if value.WorkgroupKind == "builder" {
+				if err := dispatch.ReconcilePressure(root, state); err != nil {
+					return err
+				}
+			}
 			if err := checkRepairBinding(value, request, state); err != nil {
 				return err
 			}
@@ -366,10 +377,10 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 			if err := bindReviewPlanAssignments(root, state, value); err != nil {
 				return err
 			}
-			entities, ok := state["entities"].(map[string]any)
-			if !ok {
-				return fmt.Errorf("runtime entities must be an object")
+			if err := requireRuntimeEntities(state); err != nil {
+				return err
 			}
+			entities, _ := state["entities"].(map[string]any)
 			if request.Revision != nil {
 				_, err := applyAssignmentRevision(root, state, value, manifestData, manifestRef, taskRef, request.TaskID, taskData, *request.Revision, currentBoard, mutationEventID, occurredAt, &stagedActivations)
 				return err
@@ -636,10 +647,13 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 // the domain outcome.
 //
 // The judgments are side-effect free: they never write the Runtime state and
-// never write a file.
+// never write a file. The dispatch backpressure judgment is the read-only
+// half of dispatch.CheckConfiguredBackpressure; the dispatch pressure
+// projection it judges is written by the Apply closure, which owns the
+// committed state.
 func validateWorkgroupRegistration(root string, request Request, value manifest, selected *dispatch.Board, files fileview.Reader, taskData []byte, state map[string]any) (*dispatch.Board, error) {
 	if value.WorkgroupKind == "builder" {
-		if err := dispatch.CheckConfiguredBackpressure(root, state); err != nil {
+		if err := dispatch.ConfiguredBackpressureRefusal(root, state); err != nil {
 			return nil, err
 		}
 	}
@@ -697,12 +711,30 @@ func workgroupRegistrationRefusal(root string, request Request, value manifest, 
 	if err := reviewerDispatchRefusal(root, value, state); err != nil {
 		return err
 	}
+	// The Apply closure judges the entity registry right after the ReviewPlan
+	// bind, so the mirror keeps that position. A Runtime whose entities are
+	// not an object is refused with the Apply closure's own outcome, never
+	// with the journal's event-id collision.
+	if err := requireRuntimeEntities(state); err != nil {
+		return err
+	}
 	if request.Revision != nil {
 		// An Assignment revision re-registers the same workgroup on purpose,
 		// so the registered-workgroup judgment does not apply to it.
 		return nil
 	}
 	return checkWorkgroupRegistration(state, value.WorkgroupID)
+}
+
+// requireRuntimeEntities refuses a Runtime whose entity registry is not an
+// object. The judgment is read-only, so the mutation's Precheck can reach it
+// before the journal's event-id uniqueness check answers a repeated
+// registration. The refusal text is the Apply closure's own.
+func requireRuntimeEntities(state map[string]any) error {
+	if _, ok := state["entities"].(map[string]any); !ok {
+		return fmt.Errorf("runtime entities must be an object")
+	}
+	return nil
 }
 
 // checkRepairBinding judges the S9 repair binding of a Builder workgroup
@@ -1000,6 +1032,31 @@ func duplicateTaskID(state map[string]any, taskID string) error {
 	return nil
 }
 
+// taskRegistrationRefusal is the read-only mirror of the judgments the
+// RegisterTask Apply closure runs before it writes the TASK registry. The
+// judgments run in the Apply closure's order, so the first refusal is the
+// same one the Apply closure produces.
+func taskRegistrationRefusal(state map[string]any, taskID string) error {
+	// The Apply closure judges the entity registry before the duplicate TASK
+	// judgment, so the mirror keeps that position: a Runtime whose entities
+	// are not an object is refused with the Apply closure's own outcome,
+	// never with the journal's event-id collision.
+	if err := requireTaskEntities(state); err != nil {
+		return err
+	}
+	return duplicateTaskID(state, taskID)
+}
+
+// requireTaskEntities refuses a Runtime whose entity registry is not an
+// object. The TASK registration keeps its own refusal text, so the Apply
+// closure and its mirror answer with the same words.
+func requireTaskEntities(state map[string]any) error {
+	if _, ok := state["entities"].(map[string]any); !ok {
+		return fmt.Errorf("entities must be an object")
+	}
+	return nil
+}
+
 // manifestHint translates r97-native failure shapes (B/C roads) into the
 // concrete missing piece. It only appends guidance; the underlying
 // validation judgment is unchanged.
@@ -1102,18 +1159,18 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 		// instead, under the store lock and after the revision CAS, so the
 		// caller keeps the original observable outcome: the domain refusal,
 		// never the journal's key collision. The Apply closure keeps the same
-		// judgment as the authority under concurrency.
+		// judgments as the authority under concurrency.
 		Precheck: func(state map[string]any) error {
-			return duplicateTaskID(state, req.TaskID)
+			return taskRegistrationRefusal(state, req.TaskID)
 		},
 		Apply: func(state map[string]any) error {
-			entities, ok := state["entities"].(map[string]any)
-			if !ok {
-				return fmt.Errorf("entities must be an object")
-			}
-			if err := duplicateTaskID(state, req.TaskID); err != nil {
+			// The mirror and the Apply closure share one judgment, so the
+			// refusal the caller sees before the journal collision is the
+			// refusal the Apply closure produces.
+			if err := taskRegistrationRefusal(state, req.TaskID); err != nil {
 				return err
 			}
+			entities, _ := state["entities"].(map[string]any)
 			tasks, _ := entities["tasks"].([]any)
 			agents, _ := entities["agents"].([]any)
 			known := map[string]bool{}
