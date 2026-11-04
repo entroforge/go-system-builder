@@ -102,7 +102,7 @@ type RecoveryReplayResult struct {
 // commit at most one transition through the normal selector, Quality Gate,
 // transition Apply, and Guard path. Replay stops at the first non-advanced
 // outcome, a human-required result, the configured step limit, or a repeated
-// cursor/revision. It never creates a second recovery state machine.
+// cursor. It never creates a second recovery state machine.
 func RecoveryReplay(ctx context.Context, request RecoveryReplayRequest) (RecoveryReplayResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -171,7 +171,6 @@ func RecoveryReplay(ctx context.Context, request RecoveryReplayRequest) (Recover
 
 	result := RecoveryReplayResult{Trace: []RecoveryReplayTrace{}}
 	seenCursors := map[string]struct{}{snapshotCursorString(snapshot): {}}
-	seenRevisions := map[int]struct{}{snapshot.Revision: {}}
 	for step := 1; step <= maxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			result = finalizeRecoveryReplay(result, snapshot)
@@ -207,7 +206,11 @@ func RecoveryReplay(ctx context.Context, request RecoveryReplayRequest) (Recover
 				result.StopReason = ReplayStopNoProgress
 				return finalizeRecoveryReplay(result, after), fmt.Errorf("recovery replay step %d: %w", step, ErrRecoveryReplayNoProgress)
 			}
-			if after.Revision <= snapshot.Revision || snapshotCursorString(after) == beforeCursor {
+			// Progress is the lifecycle cursor, a structural coordinate of the
+			// staged Runtime. The Runtime write count is not a progress signal
+			// here: the committed transition already proves the staged pair was
+			// written, and the cursor proves the lifecycle itself moved.
+			if snapshotCursorString(after) == beforeCursor {
 				result.StopReason = ReplayStopNoProgress
 				return finalizeRecoveryReplay(result, after), fmt.Errorf("recovery replay step %d: %w", step, ErrRecoveryReplayNoProgress)
 			}
@@ -216,12 +219,12 @@ func RecoveryReplay(ctx context.Context, request RecoveryReplayRequest) (Recover
 				result.StopReason = ReplayStopNoProgress
 				return finalizeRecoveryReplay(result, after), fmt.Errorf("recovery replay step %d: %w (cursor=%s)", step, ErrRecoveryReplayRepeatedCursor, afterCursor)
 			}
-			if _, exists := seenRevisions[after.Revision]; exists {
-				result.StopReason = ReplayStopNoProgress
-				return finalizeRecoveryReplay(result, after), fmt.Errorf("recovery replay step %d: %w (revision=%d)", step, ErrRecoveryReplayRepeatedCursor, after.Revision)
-			}
+			// The cursor is the only state identity this loop needs. The staged
+			// Runtime maps one revision to exactly one state, so a repeated
+			// revision would repeat the cursor checked just above and stop the
+			// replay there. Keeping a second counter here would only restate
+			// the same fact in a forbidden form.
 			seenCursors[afterCursor] = struct{}{}
-			seenRevisions[after.Revision] = struct{}{}
 			snapshot = after
 		case StatusNotReady:
 			result.StopReason = ReplayStopNotReady
