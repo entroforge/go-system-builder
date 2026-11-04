@@ -1,10 +1,12 @@
 package cli_test
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -136,6 +138,49 @@ func TestS5MainObservationNamesPartiallyIssuedResponsibility(t *testing.T) {
 	if _, found, err := runtime.FindWorkPacket(stageSnapshot(t, f.root).State, missing.ID); err != nil || !found {
 		t.Fatalf("named entry did not restore the original missing issuance: %v %v", found, err)
 	}
+	// The restored preparation is the questionnaire's own second preparation,
+	// not a duplicate of the first one: the Runtime journal already recorded
+	// the first preparation, so each preparation keeps its own identity. The
+	// attempt is the questionnaire's preparation count, never the Runtime write
+	// count.
+	issued := packetIssuanceEventIDs(t, f.root, missing.ID)
+	if len(issued) != 2 {
+		t.Fatalf("the responsibility was prepared %d times, want the original and the restored preparation: %v", len(issued), issued)
+	}
+	if issued[0] != "evt-packet-"+missing.ID+"-1" || issued[1] != "evt-packet-"+missing.ID+"-2" {
+		t.Fatalf("the prepared questionnaire did not keep one identity per preparation attempt: %v", issued)
+	}
+	if issued[1] == "evt-packet-"+missing.ID+"-"+strconv.Itoa(before+1) {
+		t.Fatalf("the preparation attempt follows the Runtime write count %d: %v", before+1, issued)
+	}
+}
+
+// packetIssuanceEventIDs lists the Runtime journal's issuance identities for
+// one questionnaire, in the order the Runtime recorded them.
+func packetIssuanceEventIDs(t *testing.T, root, packetID string) []string {
+	t.Helper()
+	file, err := os.Open(filepath.Join(root, ".claude/loop-events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 2<<20)
+	ids := []string{}
+	for scanner.Scan() {
+		var event map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatal(err)
+		}
+		eventID, _ := event["event_id"].(string)
+		if strings.HasPrefix(eventID, "evt-packet-"+packetID+"-") {
+			ids = append(ids, eventID)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return ids
 }
 
 func TestS5ReturnToS6ProvidesPreparationInsteadOfWaitingForUnstartedBuilder(t *testing.T) {

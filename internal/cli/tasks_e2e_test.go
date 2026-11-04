@@ -128,6 +128,25 @@ func TestS4TaskSplitPipelineE2E(t *testing.T) {
 		"--id", "PTR-PLAN-01", "--expected-revision", "0", "--actor", "orchestrator"); code != 0 {
 		t.Fatalf("PTR-PLAN-01 failed: %s", stderr)
 	}
+	// The committed PTR-PLAN-01 cannot be committed twice. The cursor moved on
+	// to planning.contracts, so the domain refuses the replay with its own
+	// source-cursor guard; the journal's global event-id uniqueness check is
+	// not what refuses it, because the occurrence anchor follows the
+	// responsibility's own committed history (G18 §1.3).
+	replayed, replayStderr, replayCode := run("runtime", "transition", "--root", root,
+		"--id", "PTR-PLAN-01", "--expected-revision", "1", "--actor", "orchestrator")
+	if replayCode == 0 {
+		t.Fatalf("the committed PTR-PLAN-01 accepted a replay: %s", replayed)
+	}
+	if !strings.Contains(replayStderr, "rejects source cursor") {
+		t.Fatalf("the PTR-PLAN-01 replay was not refused by the source cursor: %s", replayStderr)
+	}
+	if count := planningTransitionEventCount(t, root, "PTR-PLAN-01"); count != 1 {
+		t.Fatalf("the PTR-PLAN-01 replay committed %d transition events, want exactly one", count)
+	}
+	if after := stageSnapshot(t, root); after.Revision != 1 {
+		t.Fatalf("the PTR-PLAN-01 replay moved the Runtime revision to %d", after.Revision)
+	}
 	// Jump the phase to tasks without running PTR-PLAN-02 (the state edit
 	// mirrors what recovery/test fixtures do) — the guard must point at the
 	// missing registration, not scan filenames.

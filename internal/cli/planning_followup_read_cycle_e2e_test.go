@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -252,6 +255,17 @@ func planningTransitionEventCount(t *testing.T, root, transitionID string) int {
 	return count
 }
 
+// assertPlanningTransitionJournalEvent pins the canonical identity of one
+// committed transition event.
+//
+// The identity names the responsibility and the intent, and it never carries
+// the Runtime write count. The intent is the length-prefixed encoding of the
+// baseline generation, the cursor the transition moves from, the lifecycle
+// stage entry it starts at and the responsibility's own occurrence anchor —
+// the transition that last committed inside this responsibility. A rework that
+// re-enters the same exit therefore keeps its own identity, while a replay of
+// the same request keeps one identity and is still deduplicated by the
+// journal's global event-id uniqueness check.
 func assertPlanningTransitionJournalEvent(t *testing.T, root, eventID, transitionID, fromPhase string) {
 	t.Helper()
 	file, err := os.Open(filepath.Join(root, ".claude/loop-events.jsonl"))
@@ -261,31 +275,166 @@ func assertPlanningTransitionJournalEvent(t *testing.T, root, eventID, transitio
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
+	committed := []string{}
 	for scanner.Scan() {
 		var event map[string]any
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			t.Fatal(err)
 		}
 		if event["event_id"] != eventID {
+			if event["event"] == "transition_committed" && event["outcome"] == "committed" {
+				if id, _ := event["transition_id"].(string); id != "" {
+					committed = append(committed, id)
+				}
+			}
 			continue
 		}
-		from, _ := event["from"].(map[string]any)
-		beforeRevision, ok := event["before_revision"].(float64)
-		if event["transition_id"] != transitionID || from["state"] != "planning" || from["phase"] != fromPhase || !ok {
-			t.Fatalf("followup points to a different original transition event: %+v", event)
-		}
-		if event["idempotency_key"] != fmt.Sprintf("runtime:%s:%d", transitionID, int(beforeRevision)) {
-			t.Fatalf("transition event has noncanonical original idempotency key: %+v", event)
-		}
-		if event["event_id"] != fmt.Sprintf("evt-%s-r%d", strings.ToLower(transitionID), int(beforeRevision)+1) {
-			t.Fatalf("transition event identity does not match original revision: %+v", event)
-		}
+		assertCanonicalTransitionIdentity(t, event, eventID, transitionID, fromPhase, committed)
 		return
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
 	t.Fatalf("journal does not contain followup's exact transition event %q", eventID)
+}
+
+// assertCanonicalTransitionIdentity checks the recorded identity of one
+// committed transition against the canonical shape the production code writes.
+//
+// The assertions it replaces pinned the Runtime write count:
+// `runtime:<T>:<beforeRevision>` and `evt-<T>-r<beforeRevision+1>` proved only
+// that the identity carried the write count, and they accepted any identity
+// that happened to embed it. The canonical identity is instead a pure function
+// of the domain coordinates, so every segment is pinned here: the baseline
+// generation, the cursor the transition moved from, the lifecycle stage entry
+// and the responsibility's occurrence anchor. The write count is absent from
+// the identity by construction, and the assertions below prove that: only the
+// generation and the stage entry are numbers, and the whole identity is
+// re-derived from the coordinates the event itself records.
+func assertCanonicalTransitionIdentity(t *testing.T, event map[string]any, eventID, transitionID, fromPhase string, committed []string) {
+	t.Helper()
+	from, _ := event["from"].(map[string]any)
+	beforeRevision, ok := event["before_revision"].(float64)
+	if event["transition_id"] != transitionID || from["state"] != "planning" || from["phase"] != fromPhase || !ok {
+		t.Fatalf("followup points to a different original transition event: %+v", event)
+	}
+	generation, ok := event["baseline_generation"].(float64)
+	if !ok {
+		t.Fatalf("transition event does not record the baseline generation: %+v", event)
+	}
+	domain := strings.ToLower(transitionID)
+	prefix := "evt-" + domain + "-"
+	if !strings.HasPrefix(eventID, prefix) {
+		t.Fatalf("transition event identity does not carry the canonical domain prefix %q: %+v", prefix, event)
+	}
+	intent := strings.TrimPrefix(eventID, prefix)
+	intentParts, ok := decodeLengthPrefixedKey(intent)
+	if !ok || len(intentParts) != 5 {
+		t.Fatalf("transition event intent is not the canonical length-prefixed key: %q", intent)
+	}
+	if intentParts[0] != strconv.Itoa(int(generation)) {
+		t.Fatalf("transition event intent does not name the baseline generation %d: %q", int(generation), intentParts[0])
+	}
+	if intentParts[1] != from["state"] || intentParts[2] != from["phase"] {
+		t.Fatalf("transition event intent does not name the original cursor: %+v", intentParts)
+	}
+	if !strings.Contains(intent, fmt.Sprintf("%d:%s", len(from["state"].(string)), from["state"].(string))) {
+		t.Fatalf("transition event intent does not carry the length-prefixed from state: %q", intent)
+	}
+	if !strings.Contains(intent, fmt.Sprintf("%d:%s", len(fromPhase), fromPhase)) {
+		t.Fatalf("transition event intent does not carry the length-prefixed from phase: %q", intent)
+	}
+	stageEntry, err := strconv.Atoi(intentParts[3])
+	if err != nil || stageEntry < 0 {
+		t.Fatalf("transition event intent does not name the lifecycle stage entry: %q", intentParts[3])
+	}
+	anchor := intentParts[4]
+	if anchor == "" {
+		t.Fatalf("transition event intent does not name the responsibility's occurrence anchor: %q", intent)
+	}
+	if _, err := strconv.Atoi(anchor); err == nil {
+		t.Fatalf("transition event occurrence anchor is a bare number, not a domain identity: %q", anchor)
+	}
+	if anchor != "none" && !slices.Contains(committed, anchor) {
+		t.Fatalf("transition event occurrence anchor %q does not name a transition that committed earlier in this responsibility", anchor)
+	}
+	// Only the generation and the stage entry are numbers, and both are domain
+	// coordinates. No other numeric segment — a Runtime write count above all
+	// — can be part of this intent.
+	numbers := 0
+	for _, part := range intentParts {
+		if _, err := strconv.Atoi(part); err == nil {
+			numbers++
+		}
+	}
+	if numbers != 2 {
+		t.Fatalf("transition event intent carries numeric segments beyond the two domain coordinates: %+v", intentParts)
+	}
+	legacy := regexp.MustCompile(`-r\d+$`)
+	if legacy.MatchString(eventID) {
+		t.Fatalf("transition event identity still carries the Runtime write count: %+v", event)
+	}
+	// The exact identities the retired write-counter shape produced must not
+	// come back under any revision.
+	if eventID == fmt.Sprintf("evt-%s-r%d", domain, int(beforeRevision)+1) {
+		t.Fatalf("transition event identity fell back to the retired write-count shape: %+v", event)
+	}
+	// The idempotency key names the responsibility coordinate — the runtime and
+	// the baseline generation — and exactly the same intent.
+	key, _ := event["idempotency_key"].(string)
+	keyPrefix := "runtime:" + domain + ":"
+	if !strings.HasPrefix(key, keyPrefix) {
+		t.Fatalf("transition event does not carry the canonical idempotency key prefix %q: %+v", keyPrefix, event)
+	}
+	keyParts, ok := decodeLengthPrefixedKey(strings.TrimPrefix(key, keyPrefix))
+	if !ok || len(keyParts) != 7 {
+		t.Fatalf("transition event idempotency key is not the canonical responsibility and intent key: %q", key)
+	}
+	if keyParts[0] != event["runtime_id"] {
+		t.Fatalf("transition event idempotency key does not name the runtime: %+v", event)
+	}
+	if keyParts[1] != intentParts[0] {
+		t.Fatalf("transition event idempotency key does not name the baseline generation: %+v", event)
+	}
+	if !slices.Equal(keyParts[2:], intentParts) {
+		t.Fatalf("transition event idempotency key does not carry the event id's intent: %+v", event)
+	}
+	if legacy.MatchString(key) {
+		t.Fatalf("transition event idempotency key still carries the Runtime write count: %+v", event)
+	}
+	if key == fmt.Sprintf("runtime:%s:%d", transitionID, int(beforeRevision)) {
+		t.Fatalf("transition event idempotency key fell back to the retired write-count shape: %+v", event)
+	}
+}
+
+// decodeLengthPrefixedKey decodes the injective "<len>:<part>" encoding the
+// production code uses, so a test reads the identity's own coordinates instead
+// of trusting one opaque string. The parts are concatenated; a colon that
+// follows a part separates two encoded groups (the responsibility coordinate
+// and the intent).
+func decodeLengthPrefixedKey(encoded string) ([]string, bool) {
+	parts := []string{}
+	for encoded != "" {
+		if encoded[0] == ':' {
+			encoded = encoded[1:]
+			continue
+		}
+		colon := strings.Index(encoded, ":")
+		if colon < 1 {
+			return nil, false
+		}
+		length, err := strconv.Atoi(encoded[:colon])
+		if err != nil || length < 0 {
+			return nil, false
+		}
+		encoded = encoded[colon+1:]
+		if len(encoded) < length {
+			return nil, false
+		}
+		parts = append(parts, encoded[:length])
+		encoded = encoded[length:]
+	}
+	return parts, true
 }
 
 func TestTaskPlanningPostReadDoesNotSubmitUnreceivedAnswer(t *testing.T) {

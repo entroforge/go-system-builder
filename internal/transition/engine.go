@@ -205,13 +205,16 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	// The committed transition is named by the responsibility that owns it and
 	// by the intent it carries, never by the Runtime write count (G18 §1.1,
 	// §1.3): the same intent always produces the same event id and the same
-	// idempotency key, and two responsibilities never share one.
+	// idempotency key, and two responsibilities never share one. The occurrence
+	// anchor separates a legitimate repeat inside one responsibility from the
+	// first occurrence (G18 §1.2).
 	eventID, idempotencyKey := mutationEventIdentity(
 		request.TransitionID,
 		runtimeID,
 		baselineGen,
 		fromCursor,
 		integer(currentLifecycle["phase_revision"]),
+		responsibilityOccurrenceAnchor(current),
 	)
 	mutation := loopruntime.Mutation{
 		EventID:                eventID,
@@ -505,27 +508,63 @@ func committedTransitionEventID(journalPath string, state map[string]any, transi
 	return "", false
 }
 
+// occurrenceAnchorNone names the occurrence of a responsibility that has not
+// committed a transition yet.
+const occurrenceAnchorNone = "none"
+
 // mutationEventIdentity names one committed transition by the responsibility
 // that owns it and by the intent it carries. The Runtime write count is never
 // part of the identity (G18 §1.1, §1.3).
 //
-// The intent key is the cursor this transition moves from plus the lifecycle
-// stage it starts at (G18 §1.1 stage coordinate). A transition legitimately
-// occurs more than once inside one responsibility — every S7 round enters
-// verification again — so the stage entry, a domain fact about the cursor,
-// separates those occurrences (G18 §1.2).
-func mutationEventIdentity(transitionID, runtimeID string, generation int, from map[string]any, stageEntry int) (string, string) {
+// The intent key is the cursor this transition moves from, the lifecycle stage
+// it starts at (G18 §1.1 stage coordinate) and the responsibility's own
+// occurrence anchor (G18 §1.2). A transition legitimately occurs more than
+// once inside one responsibility — every S7 round enters verification again,
+// and a planning rework re-enters the very same exit — so the stage entry and
+// the anchor, both domain facts about the cursor and about the
+// responsibility's own committed history, separate those occurrences.
+//
+// The anchor names the transition that last committed inside this
+// responsibility. A rework therefore keeps its own identity: the repeated
+// design exit follows the repair trigger that sent the responsibility back,
+// the first one follows the bind. A replay of the same request sees the same
+// committed history and therefore keeps one identity, so the journal still
+// deduplicates the replay (G18 §1.3).
+//
+// The anchor is optional so that a caller which knows no committed history yet
+// still writes the first occurrence with the same shape.
+func mutationEventIdentity(transitionID, runtimeID string, generation int, from map[string]any, stageEntry int, occurrence ...string) (string, string) {
 	domain := strings.ToLower(transitionID)
+	anchor := occurrenceAnchorNone
+	if len(occurrence) > 0 && strings.TrimSpace(occurrence[0]) != "" {
+		anchor = occurrence[0]
+	}
 	intent := semanticIdentityKey(
 		strconv.Itoa(generation),
 		stringValue(from["state"]),
 		stringValue(from["phase"]),
 		strconv.Itoa(stageEntry),
+		anchor,
 	)
 	// The idempotency key names the responsibility coordinate (runtime and
 	// baseline generation) together with the intent key (G18 §1.3).
 	responsibility := semanticIdentityKey(runtimeID, strconv.Itoa(generation))
 	return "evt-" + domain + "-" + intent, "runtime:" + domain + ":" + responsibility + ":" + intent
+}
+
+// responsibilityOccurrenceAnchor names the transition that last committed
+// inside this responsibility. It is a domain fact about the responsibility's
+// own committed history, never the Runtime write count: the same transition
+// at the same cursor is a different domain thing when the responsibility
+// committed something else in between (a rework follows its own trigger), and
+// the same domain thing when it did not (a replay).
+func responsibilityOccurrenceAnchor(state map[string]any) string {
+	transition, _ := state["last_transition"].(map[string]any)
+	transitionID, _ := transition["transition_id"].(string)
+	if strings.TrimSpace(transitionID) == "" {
+		return occurrenceAnchorNone
+	}
+	return transitionID
 }
 
 // semanticIdentityKey encodes its parts injectively, so two different

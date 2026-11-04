@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -82,7 +83,13 @@ func RecordWorkPacketContext(ctx context.Context, root, statePath, journalPath s
 	// G18: the packet id is the packet's own identity, and the idempotency key
 	// already names it. The event id follows the same shape as the other
 	// packet issuances (`evt-contract-packet-<id>`): no Runtime write count.
-	result, err := store.UpdateCurrent(Mutation{EventID: fmt.Sprintf("evt-packet-%s", packet.ID), TransitionID: "PACKET-ISSUE", Event: "work_packet_issued", Actor: "orchestrator", IdempotencyKey: "packet:" + packet.ID, RuntimeID: packet.Binding.RuntimeID, BaselineGeneration: packet.Binding.Generation, From: cursor, To: cursor, OccurredAt: time.Now().UTC(), RetainLastTransition: true, Apply: func(state map[string]any) error {
+	// The preparation attempt is the questionnaire's own domain index, so a
+	// responsibility that is prepared again keeps its own identity.
+	attempt, err := packetPreparationAttempt(ctx, journalPath, packet.ID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	result, err := store.UpdateCurrent(Mutation{EventID: fmt.Sprintf("evt-packet-%s-%d", packet.ID, attempt), TransitionID: "PACKET-ISSUE", Event: "work_packet_issued", Actor: "orchestrator", IdempotencyKey: fmt.Sprintf("packet:%s:%d", packet.ID, attempt), RuntimeID: packet.Binding.RuntimeID, BaselineGeneration: packet.Binding.Generation, From: cursor, To: cursor, OccurredAt: time.Now().UTC(), RetainLastTransition: true, Apply: func(state map[string]any) error {
 		if err := ValidateWorkPacket(root, state, packet, files); err != nil {
 			return err
 		}
@@ -112,6 +119,48 @@ func RecordWorkPacketContext(ctx context.Context, root, statePath, journalPath s
 		return Snapshot{}, fmt.Errorf("record work packet: %w", err)
 	}
 	return result, nil
+}
+
+// packetPreparationAttempt counts the preparations this responsibility's
+// questionnaire already has inside this responsibility, as the Runtime journal
+// records them.
+//
+// The Runtime state row is only the projection of that fact. A partially
+// issued responsibility can lose its row while the journal keeps the
+// issuance, and the domain then still proves that the questionnaire was
+// prepared before. The new preparation is therefore the next attempt of that
+// domain thing rather than a duplicate of the first one, so it needs its own
+// identity. The attempt number is the questionnaire's own domain index; it is
+// never the Runtime write count, a digest or a wall-clock value.
+//
+// The count is taken from the same journal the store validates the Runtime
+// against, archived segments included, so a rotated journal still counts its
+// preparations. It is taken before the writer takes its lock, so an issuance
+// that was interrupted before it reached the journal is not counted yet; the
+// store's own recovery then reconciles that pending write and the journal's
+// uniqueness check refuses the duplicate, which keeps the domain's outcome
+// instead of a second issuance.
+func packetPreparationAttempt(ctx context.Context, journalPath, packetID string) (int, error) {
+	if journalPath == "" {
+		return 1, nil
+	}
+	inspection, err := inspectJournalContext(ctx, journalPath)
+	if err != nil {
+		return 0, fmt.Errorf("read runtime journal for the packet preparation attempt: %w", err)
+	}
+	prefix := "evt-packet-" + packetID + "-"
+	prepared := 0
+	for _, event := range inspection.Events {
+		if event["transition_id"] != "PACKET-ISSUE" {
+			continue
+		}
+		eventID, _ := event["event_id"].(string)
+		if !strings.HasPrefix(eventID, prefix) {
+			continue
+		}
+		prepared++
+	}
+	return prepared + 1, nil
 }
 
 // Replays use the Writer's recorded paths and original assignment; presentation
