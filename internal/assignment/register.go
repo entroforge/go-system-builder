@@ -860,6 +860,22 @@ func (e *ErrDuplicateTaskID) Error() string {
 	return fmt.Sprintf("task %s already registered", e.TaskID)
 }
 
+// taskRegistered reports whether the canonical TASK id is already present in
+// entities.tasks. It mirrors the Apply closure of RegisterTask so the domain
+// duplicate judgment can run before the journal's global event-id uniqueness
+// check (which happens earlier in the store).
+func taskRegistered(state map[string]any, taskID string) bool {
+	entities, _ := state["entities"].(map[string]any)
+	tasks, _ := entities["tasks"].([]any)
+	for _, raw := range tasks {
+		t, _ := raw.(map[string]any)
+		if id, _ := t["id"].(string); id == taskID {
+			return true
+		}
+	}
+	return false
+}
+
 // taskIDPattern matches the canonical TASK id format shared with the S4
 // planning check (semantic.taskIDPattern) and the runtime loop-state schema:
 // TASK-NNN with an optional numeric sub-suffix (TASK-001, TASK-001-01).
@@ -930,6 +946,16 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 	}
 	if _, err := commitRevision(req.ExpectedRevision, current); err != nil {
 		return loopruntime.Snapshot{}, err
+	}
+	// G18 §3.1: the identity of a TASK registration is the registered TASK, so
+	// the event id carries no Runtime write counter. The journal's global
+	// event-id uniqueness check therefore runs before the Apply closure below,
+	// which carries the duplicate rejection. A repeated registration of the
+	// same TASK must keep its original observable outcome, so the same order
+	// the Apply closure uses is mirrored here: the domain duplicate judgment
+	// first. Neither path writes Runtime state or a journal fact.
+	if taskRegistered(current, req.TaskID) {
+		return loopruntime.Snapshot{}, &ErrDuplicateTaskID{TaskID: req.TaskID}
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)

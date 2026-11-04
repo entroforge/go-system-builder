@@ -1564,6 +1564,36 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
   assignment/repair 3 组(`completion_canonical_test.go`、`record_revision_test.go`、`issued_plan_report_context_test.go`)、
   CLI 1 组(`s9_final_writer_concurrency_test.go` 改写)。
 
+#### 第 3 步的遗留回归(第一波埋下、第二波 CI 暴露并已修)
+
+`make test-ci-core` 暴露 `tests/assignment` 的 `TestRegisterTaskDuplicateIDRejected`:
+期望 `*ErrDuplicateTaskID`,实际得到 `mutation event_id "evt-register-task-TASK-100" already exists in runtime journal`。
+
+**根因**:第 3 步把 TASK 登记的事件 id 从 `evt-register-task-<id>-r<N>` 改成 `evt-register-task-<id>`(去掉写计数)。
+**副作用**:重复登记同一 TASK 时,事件 id 相同 ⇒ **journal 的全局 event_id 唯一性检查先于 `Apply` 触发**,
+而域内的「TASK id 已登记」拒绝原本住在 `Apply` 里 ⇒ **域内判断被 journal 的键冲突顶掉**。
+这是「事件 id 去写计数」与「journal 全局唯一性」之间的新交互,不是写计数门禁的问题本身。
+
+**修法(与第一波 `internal/runtime/evidence.go` 同一手法)**:在 mutation 之前**镜像 `Apply` 的判定顺序**做预检 ——
+`internal/assignment/register.go` 新增 `taskRegistered(...)`,重复登记直接返回 `&ErrDuplicateTaskID{TaskID: ...}`;
+`Apply` 内的原判定**保留**(它是并发下的权威判定),预检只负责让**域内错误面**优先于 journal 键冲突。
+两条路径都**不写** Runtime 状态,也**不写** journal 事实。
+
+**同类回归排查**(全仓静态扫描:域身份形事件 id + 同一函数内的域内拒绝):
+- `internal/runtime/evidence.go:46` —— 第一波已用同样的预检手法修过(`evidenceRegistered`)。
+- `internal/investigation/intake.go:146`(`rejectExistingInvestigation`)、`internal/repair/runtime.go:123`(活跃 S9 RepairSession)、
+  `internal/cli/newassignment_context_check.go:296` —— 域内拒绝都在 mutation **之前**,不会被顶掉。
+- 其余命中(`internal/review/submit.go:1270` 的 pause checkpoint、`internal/review/submit.go:1373` 与
+  `internal/scenario/atomic.go:374` 的文件级拒绝、`internal/workspace/recovery.go:100`)分别是文件系统级或 mutation 前的检查。
+- `internal/review/submit.go:891`/`:991`(Finding 不可变、evidence id 冲突)由提交前的 `replayResultRequest` 预检与
+  收据自带事件 id 覆盖;不同责任复用同一 Finding id 时事件 id 本就不同。
+⇒ **仅此一处真回归**,已修。
+
+**新增反向断言**:`internal/assignment/register_task_identity_test.go`
+「重复登记保持域内结果且不写任何东西」—— 断言重复登记返回 `*ErrDuplicateTaskID`(且**不是** journal 键冲突文案)、
+状态里仍只有 1 个 TASK、Runtime 修订仍为 1、journal 里 `ENTITY-REGISTER` 事件**恰好 1 条**且事件 id 为
+`evt-register-task-TASK-100`(不含写计数)。**临时撤掉预检即红**(实测:报 `mutation event_id ... already exists in runtime journal`)。
+
 #### 残留(留给下一波):
 - `internal/cli/s6_observation.go:26` 仍以 `milestone["source_revision"]` 与当前修订比对来决定是否复用已缓存的 S6 观察 —— 这是 §14.11 C-E 记下的那一处写计数判据。**裁定:它不是门禁**(失效方向永远是「缓存不适用 ⇒ 退回真 Controller 重算」,不可能拒绝任何专业完成),故按最高判据**不强制退役**;但替换设计已算清,留给下一波:
   - 里程碑对象在状态 schema 里是**开放对象**(`additionalProperties` 未设 false)⇒ 换字段不需要改 schema;
