@@ -96,11 +96,17 @@ func Validate(root string, snapshot runtimemeta.Snapshot, agentID, ref string) e
 // validateManifestPlanReportCheckpoint validates the generic L4 checkpoint
 // for Builder/Investigator workgroups that are not S7 ReviewPlan rows. Their
 // Assignment identity lives in the fingerprinted team manifest; the manifest
-// assignment is immutable for the lifetime of that dispatch, so its generic
-// checkpoint revision is deliberately 1. S9 keeps a separate domain
-// RepairAssignment (repair-assignment-*) and maps it to the platform-safe
-// manifest id (assignment-s9-*); this function validates the latter while the
-// S9 domain PlanReport validates the former.
+// assignment is registered at Assignment revision 1 and is immutable for the
+// lifetime of that dispatch, so the checkpoint must declare that coordinate.
+// S9 keeps a separate domain RepairAssignment (repair-assignment-*) and maps
+// it to the platform-safe manifest id (assignment-s9-*); this function
+// validates the latter while the S9 domain PlanReport validates the former.
+//
+// The declared assignment_revision is the Assignment's own stage coordinate,
+// the same axis as the ReviewPlan pointer revision checked above and the
+// canonical Assignment revision checked in validateCanonicalPlan. It is not a
+// checkpoint count and not a Runtime write count: declaring it binds the
+// checkpoint to the responsibility the dispatch was made for.
 func validateManifestPlanReportCheckpoint(root string, snapshot runtimemeta.Snapshot, message map[string]any, agentID string) error {
 	assignmentID := strValue(message["assignment_id"])
 	teamID := strValue(message["team_id"])
