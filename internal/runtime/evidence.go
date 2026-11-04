@@ -117,15 +117,12 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
 	}
 	current := snapshot.State
-	// S3 performs its professional reception inside the atomic Apply below.
-	// Other submission kinds retain their existing preflight behavior.
-	if request.Submission != nil && request.Kind != "planning_contract" {
-		if _, err := prepareSubmission(root, current, request, data); errors.Is(err, errSubmissionAccepted) {
-			return snapshot, nil
-		} else if err != nil {
-			return Snapshot{}, err
-		}
-	}
+	// The submission reception is judged inside the store, under its lock, by
+	// the mutation's Precheck below. It used to be judged here as well, from a
+	// snapshot taken outside the store: a repeat was then answered from a
+	// state the caller no longer held, and the loser of a concurrent reception
+	// was answered with the domain's "submission already accepted" error
+	// instead of replaying the committed reception.
 	if err := validateDocumentRegistration(current, request, data); err != nil {
 		return Snapshot{}, err
 	}
@@ -166,21 +163,6 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	if err != nil {
 		return Snapshot{}, err
 	}
-	// G18: the evidence id is the evidence identity, so the event id is named
-	// by it. The journal's global event-id uniqueness check therefore runs
-	// before the Apply closure below, which used to carry the duplicate
-	// rejection. A repeated record of the same evidence id must keep its
-	// original observable outcome, so the same order the Apply closure uses is
-	// mirrored here: the submission reception check first, then the duplicate
-	// id rejection. Neither path writes Runtime state or a journal fact.
-	if evidenceRegistered(current, request.ID) {
-		if request.Submission != nil {
-			if _, submissionErr := prepareSubmission(root, current, request, data); submissionErr != nil {
-				return Snapshot{}, submissionErr
-			}
-		}
-		return Snapshot{}, fmt.Errorf("evidence %s is already registered", request.ID)
-	}
 	mutation := Mutation{
 		EventID:        fmt.Sprintf("evt-evidence-%s", request.ID),
 		TransitionID:   "EVIDENCE-RECORD",
@@ -193,6 +175,31 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		EvidenceIDs:    []string{request.ID},
 		Message:        "Recorded a current evidence artifact.",
 		OccurredAt:     occurredAt,
+		// G18: the evidence id is the evidence identity, so the event id is
+		// named by it. The journal's global event-id uniqueness check therefore
+		// runs before the Apply closure below, which used to carry the duplicate
+		// rejection. The store calls this Precheck under its lock, after the
+		// revision CAS, so a repeated record keeps its original observable
+		// outcome: the submission reception check first, then the duplicate id
+		// rejection, the same order the Apply closure uses. A concurrent
+		// reception is judged against the committed reception row instead of a
+		// stale snapshot, so the loser of the race replays instead of failing.
+		// Neither path writes Runtime state or a journal fact.
+		Precheck: func(state map[string]any) error {
+			// The event id names this evidence id, so the journal already holds
+			// it exactly when the Runtime already holds the evidence row. That
+			// is the one case the journal's key collision would answer, so it
+			// is the one case the domain has to answer here.
+			if !evidenceRegistered(state, request.ID) {
+				return nil
+			}
+			if request.Submission != nil {
+				if _, err := prepareSubmission(root, state, request, data); err != nil {
+					return err
+				}
+			}
+			return fmt.Errorf("evidence %s is already registered", request.ID)
+		},
 		Apply: func(state map[string]any) error {
 			if isS10ReportKind(request.Kind) {
 				baseline, _ := state["baseline"].(map[string]any)
@@ -273,6 +280,13 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	if request.ExpectedRevision < 0 {
 		next, err := store.UpdateCurrent(mutation)
 		if err != nil && request.Submission != nil {
+			// The store's Precheck judged the submission under its lock. An
+			// already accepted submission is a replay of the committed
+			// reception, so the caller observes the committed Runtime unchanged
+			// instead of the store's error.
+			if replay, ok := acceptedSubmissionReplay(store, request, err); ok {
+				return replay, nil
+			}
 			// The journal rejects duplicate event IDs before Apply. Resolve a
 			// concurrent replay from the atomically committed reception row,
 			// never from the artifact's mere presence or the outer error text.
@@ -294,7 +308,36 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		}
 		return next, err
 	}
-	return store.Update(request.ExpectedRevision, mutation)
+	next, err := store.Update(request.ExpectedRevision, mutation)
+	if replay, ok := acceptedSubmissionReplay(store, request, err); ok {
+		return replay, nil
+	}
+	return next, err
+}
+
+// acceptedSubmissionReplay resolves the store's "submission already accepted"
+// outcome into the committed Runtime. The store's Precheck judges the
+// submission under its lock, so this error means another writer received the
+// very same submission first: the caller observes a replay of the committed
+// reception, not a failed write. The error only ever originates from the
+// submission reception, so a request without one cannot reach it.
+func acceptedSubmissionReplay(store *Store, request EvidenceRequest, err error) (Snapshot, bool) {
+	if !errors.Is(err, errSubmissionAccepted) || request.Submission == nil {
+		return Snapshot{}, false
+	}
+	latest, readErr := store.Snapshot()
+	if readErr != nil {
+		return Snapshot{}, false
+	}
+	// The judgment that produced the error was made under the store lock, so
+	// the reception was already durable when the lock was released. This
+	// re-read only supplies the view of that committed Runtime, and a later
+	// read of the same pair can only see more state, never less. The view
+	// still has to show the reception, or this is not a replay.
+	if _, accepted, findErr := FindSubmission(latest.State, request.Submission.PacketID); findErr != nil || !accepted {
+		return Snapshot{}, false
+	}
+	return latest, true
 }
 
 // evidenceRegistered reports whether the Runtime already holds an evidence row
