@@ -89,7 +89,7 @@ func (s *Service) SaveRepairResultResolutionFrom(ctx context.Context, path strin
 	}
 	owner := packet.Binding.Sources.OwnerAgentID
 	capability, prior, err := repair.PrepareIssuedRepairResultResolution(ctx, s.Root, s.StatePath, s.JournalPath, repair.PrepareIssuedRepairResultResolutionRequest{
-		ExpectedRevision: snapshot.Revision, PacketID: packet.ID, OwnerAgentID: owner,
+		ExpectedRevision: -1, PacketID: packet.ID, OwnerAgentID: owner,
 		AuthoringPath: rel,
 	})
 	if err != nil {
@@ -101,7 +101,7 @@ func (s *Service) SaveRepairResultResolutionFrom(ctx context.Context, path strin
 			return rejected(snapshot, packet.ID, err), err
 		}
 		next, advanceErr := assignment.AdvanceAgentWithContext(ctx, s.Root, s.StatePath, s.JournalPath, assignment.AgentEventRequest{
-			ExpectedRevision: snapshot.Revision, AgentID: owner, Event: "blocker_resolved",
+			ExpectedRevision: -1, AgentID: owner, Event: "blocker_resolved",
 			MessagePath:                  filepath.Join(s.Root, filepath.FromSlash(capability.MessageRef())),
 			IssuedRepairResultResolution: capability,
 		})

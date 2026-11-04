@@ -112,7 +112,7 @@ func (s *Service) saveRepairPlanReport(ctx context.Context, owner, path, sourceR
 	next, report, submitErr := repair.SubmitIssuedRepairPlanReport(s.Root, s.StatePath, s.JournalPath, repair.IssuedPlanReportRequest{
 		Context:          ctx,
 		AnswerBytes:      raw,
-		ExpectedRevision: snapshot.Revision,
+		ExpectedRevision: -1,
 		PacketID:         packet.ID,
 		AnswerPath:       packet.AnswerPath,
 		OwnerAgentID:     owner,

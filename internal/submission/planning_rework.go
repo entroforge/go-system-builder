@@ -55,7 +55,7 @@ func (s *Service) ReworkPlanning(ctx context.Context, target, reason string) (Pl
 			}
 			return r, fmt.Errorf("rework requires the current S3 or S4 Main responsibility")
 		}
-		snap, err = transition.Apply(s.Root, s.StatePath, s.JournalPath, transition.Request{Context: ctx, Files: s.Files, TransitionID: id, ExpectedRevision: snap.Revision, ExpectedRuntimeID: text(snap.State["runtime_id"]), Actor: "orchestrator", ProducerResponsibility: "Main", RequestID: requestID, Params: map[string]any{"reason": r.Reason}})
+		snap, err = transition.Apply(s.Root, s.StatePath, s.JournalPath, transition.Request{Context: ctx, Files: s.Files, TransitionID: id, ExpectedRevision: -1, ExpectedRuntimeID: text(snap.State["runtime_id"]), Actor: "orchestrator", ProducerResponsibility: "Main", RequestID: requestID, Params: map[string]any{"reason": r.Reason}})
 		if err != nil {
 			return r, err
 		}

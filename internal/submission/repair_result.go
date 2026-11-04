@@ -178,7 +178,7 @@ func (s *Service) saveRepairResultFrom(ctx context.Context, owner, path, sourceR
 		return receipt, true, notReady
 	}
 	next, candidate, candidateRef, acceptErr := repair.AcceptIssuedRepairResultCandidate(ctx, s.Root, s.StatePath, s.JournalPath, repair.AcceptIssuedRepairResultCandidateRequest{
-		ExpectedRevision: snapshot.Revision,
+		ExpectedRevision: -1,
 		AnswerBytes:      raw,
 		PacketID:         packet.ID,
 		AnswerPath:       packet.AnswerPath,

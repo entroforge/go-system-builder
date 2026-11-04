@@ -32,7 +32,7 @@ func (s *Service) saveRepairResultBlocker(ctx context.Context, packet workpacket
 		raw = originals[0]
 	}
 	capability, prior, err := repair.PrepareIssuedRepairResultBlocker(ctx, s.Root, s.StatePath, s.JournalPath, repair.AcceptIssuedRepairResultBlockerRequest{
-		AnswerBytes: raw, ExpectedRevision: snapshot.Revision, PacketID: packet.ID, AnswerPath: packet.AnswerPath,
+		AnswerBytes: raw, ExpectedRevision: -1, PacketID: packet.ID, AnswerPath: packet.AnswerPath,
 		OwnerAgentID: owner, SourceRoot: sourceRoot, AuthorizeSource: authorize,
 	})
 	if err != nil {
@@ -44,7 +44,7 @@ func (s *Service) saveRepairResultBlocker(ctx context.Context, packet workpacket
 			return rejected(snapshot, packet.ID, err), err
 		}
 		next, advanceErr := assignment.AdvanceAgentWithContext(ctx, s.Root, s.StatePath, s.JournalPath, assignment.AgentEventRequest{
-			ExpectedRevision: snapshot.Revision, AgentID: owner, Event: "work_blocked",
+			ExpectedRevision: -1, AgentID: owner, Event: "work_blocked",
 			MessagePath:               filepath.Join(s.Root, filepath.FromSlash(capability.MessageRef())),
 			IssuedRepairResultBlocker: capability,
 		})

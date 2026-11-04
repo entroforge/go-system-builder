@@ -187,7 +187,7 @@ func (s *Service) SaveReviewResultFrom(ctx context.Context, owner, path, sourceR
 	}
 	next, submitErr := review.SubmitIssuedResult(s.Root, s.StatePath, s.JournalPath, review.IssuedSubmitRequest{
 		Context:          ctx,
-		ExpectedRevision: snapshot.Revision,
+		ExpectedRevision: -1,
 		PacketID:         packet.ID,
 		AnswerPath:       packet.AnswerPath,
 		OwnerAgentID:     owner,
