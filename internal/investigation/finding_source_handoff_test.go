@@ -155,7 +155,7 @@ func TestFirstS8QuestionReusesOnlySelectedFrozenFindingSource(t *testing.T) {
 			writeInvestigationJSON(t, f.statePath, state)
 			setFixtureAcceptedFindings(t, f, []string{"finding-1", "finding-2"}, 2)
 			setContractLifecycle(t, f)
-			current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: 0, GroupingRationale: "investigate original frozen observations"})
+			current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "investigate original frozen observations"})
 			if err != nil {
 				t.Fatal(err)
 			}

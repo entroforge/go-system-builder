@@ -43,7 +43,7 @@ func TestS8ConcurrentOriginalCaseSubmitIsExactlyOnce(t *testing.T) {
 		go func(index int) {
 			defer workers.Done()
 			<-start
-			outcomes[index].snapshot, outcomes[index].err = submitS8Original(fixture, before.Revision, packet, answerPath, owner.ownerID)
+			outcomes[index].snapshot, outcomes[index].err = submitS8Original(fixture, packet, answerPath, owner.ownerID)
 		}(i)
 	}
 	close(start)
@@ -74,7 +74,7 @@ func TestS8ConcurrentOriginalCaseSubmitIsExactlyOnce(t *testing.T) {
 	// Reconcile both contenders through the original consumer. Exact replay is
 	// a source-backed receipt lookup and must not create a second Case revision.
 	stateBeforeRetry, journalBeforeRetry := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
-	replayed, err := submitS8Original(fixture, accepted.Revision, packet, answerPath, owner.ownerID)
+	replayed, err := submitS8Original(fixture, packet, answerPath, owner.ownerID)
 	if err != nil {
 		t.Fatalf("exact S8 retry after concurrent submit: direct accepted=%d err=%v: %v", directlyAccepted, outcomes, err)
 	}
@@ -100,7 +100,7 @@ func TestS8OriginalCaseReceiptRecoversSealedPendingCommit(t *testing.T) {
 	answerPath := writeS8ProfessionalAnswer(t, fixture.root, packet, "The durable Case receipt survives a sealed commit recovery.")
 	before := currentS8Snapshot(t, fixture)
 	beforeState, beforeJournal := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
-	accepted, err := submitS8Original(fixture, before.Revision, packet, answerPath, owner.ownerID)
+	accepted, err := submitS8Original(fixture, packet, answerPath, owner.ownerID)
 	if err != nil {
 		t.Fatalf("accept actual S8 answer before pending recovery fixture: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestS8OriginalCaseReceiptRecoversSealedPendingCommit(t *testing.T) {
 	// The original S8 consumer is a mutation-capable recovery entry point. It
 	// repairs only the marker-bound state/journal pair, then returns the exact
 	// accepted receipt without writing another Case or journal event.
-	recovered, err := submitS8Original(fixture, before.Revision, packet, answerPath, owner.ownerID)
+	recovered, err := submitS8Original(fixture, packet, answerPath, owner.ownerID)
 	if err != nil {
 		t.Fatalf("recover sealed S8 Case commit and exact-replay answer: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestS8OriginalCaseReceiptRecoversSealedPendingCommit(t *testing.T) {
 		t.Fatalf("read-only original S8 receipt depended on the author's answer file: found=%v err=%v", found, err)
 	}
 	stateBeforeMissingAnswer, journalBeforeMissingAnswer := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
-	if replay, err := submitS8Original(fixture, recovered.Revision, packet, answerPath, owner.ownerID); err != nil || replay.Revision != recovered.Revision {
+	if replay, err := submitS8Original(fixture, packet, answerPath, owner.ownerID); err != nil || replay.Revision != recovered.Revision {
 		t.Fatalf("accepted S8 receipt could not replay without the private answer: revision=%d error=%v", replay.Revision, err)
 	}
 	if !bytes.Equal(stateBeforeMissingAnswer, mustRead(t, fixture.statePath)) || !bytes.Equal(journalBeforeMissingAnswer, mustRead(t, fixture.journalPath)) {
@@ -200,8 +200,7 @@ func TestS8CaseEventIdentitiesSeparateIngestRevisionAndAcceptance(t *testing.T) 
 	}
 	packet := packets[0]
 	answerPath := writeS8ProfessionalAnswer(t, fixture.root, packet, "The accepted answer names one original responsibility.")
-	before := currentS8Snapshot(t, fixture)
-	accepted, err := submitS8Original(fixture, before.Revision, packet, answerPath, owner.ownerID)
+	accepted, err := submitS8Original(fixture, packet, answerPath, owner.ownerID)
 	if err != nil {
 		t.Fatalf("accept the original S8 answer: %v", err)
 	}
@@ -260,9 +259,12 @@ func TestS8CaseEventIdentitiesSeparateIngestRevisionAndAcceptance(t *testing.T) 
 	}
 }
 
-func submitS8Original(fixture *intakeFixture, expectedRevision int, packet workpacket.HypothesisResultPacket, answerPath, owner string) (runtime.Snapshot, error) {
+// submitS8Original states the expectation as "whatever the current value is"
+// (G18 §3.2: the call point no longer asserts a Runtime write count) and lets
+// the Writer resolve the current value.
+func submitS8Original(fixture *intakeFixture, packet workpacket.HypothesisResultPacket, answerPath, owner string) (runtime.Snapshot, error) {
 	return investigation.SubmitIssuedHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.IssuedHypothesisResultRequest{
-		ExpectedRevision: expectedRevision, PacketID: packet.ID, AnswerPath: answerPath, OwnerAgentID: owner, SourceRoot: fixture.root,
+		ExpectedRevision: -1, PacketID: packet.ID, AnswerPath: answerPath, OwnerAgentID: owner, SourceRoot: fixture.root,
 		AuthorizeSource: func(root string, _ map[string]any) error {
 			if root != fixture.root {
 				return fmt.Errorf("unexpected S8 source root %q", root)

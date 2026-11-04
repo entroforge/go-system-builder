@@ -142,9 +142,22 @@ func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request 
 		}
 		// An unresolved original responsibility continues along its own entry.
 	}
-	if request.ExpectedRevision >= 0 && snapshot.Revision != request.ExpectedRevision {
-		return snapshot, HypothesisResultReceipt{}, loopruntime.ErrStaleRevision
-	}
+	// G18 §2/§3.1: the Runtime write count is no longer a gate on this
+	// professional completion. A result reception used to be refused because
+	// the Runtime moved for an unrelated reason; the domain protection is the
+	// three-piece set around it:
+	//   received row — the hypothesis result receipt is the received row, and
+	//     one packet is received once (the accepted receipt above,
+	//     ensureHypothesisResultNotAlreadyOnCase and the in-CAS Case recheck);
+	//   event dedup — the acceptance commits the semantic identity
+	//     evt-investigation-case-revision-<caseID>-r<caseRevision> (and the
+	//     late retention evt-s8-late-result-<packetID>) with its idempotency
+	//     key, so the journal dedups a retried intent;
+	//   domain version — the hypothesis's own binding stays checked
+	//     (validateS8ResultResponsibility) and the Case's own revision is the
+	//     version this reception advances.
+	// A caller that names the revision it holds keeps the Runtime CAS as its
+	// explicit binding; the convention is -1 to omit the expectation.
 
 	review, _ := snapshot.State["review"].(map[string]any)
 	pointer, _ := review["investigation"].(map[string]any)
@@ -211,8 +224,12 @@ func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request 
 		return validateS8ResultResponsibility(state, document, packet)
 	}
 	requestToOriginal := HypothesisResultRequest{
-		Context:          request.Context,
-		ExpectedRevision: snapshot.Revision, ExpectedCaseRevision: current.revision,
+		Context: request.Context,
+		// G18 §3.1/§4.4: the call point states the expectation as "whatever
+		// the current value is" (-1) instead of re-asserting the Runtime write
+		// count it read a moment earlier. The Writer resolves the current
+		// value; the Case's own revision below stays the domain version.
+		ExpectedRevision: -1, ExpectedCaseRevision: current.revision,
 		CaseID: packet.Binding.CaseID, HypothesisID: packet.Binding.HypothesisID, AssignmentID: packet.Binding.AssignmentID,
 		Method: answer.Method, EvidenceRefs: append([]string(nil), answer.EvidenceRefs...), SourceBoundaryRefs: append([]string(nil), answer.SourceBoundaryRefs...),
 		Observed: answer.Observed, Counterfactual: answer.CounterfactualOrDiscriminator, Result: result,
@@ -233,7 +250,14 @@ func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request 
 			return latest, committed, nil
 		}
 	}
-	if errors.Is(submitErr, loopruntime.ErrStaleRevision) {
+	// G18 §3.1: the Runtime write count is no longer asserted, so a concurrent
+	// writer that committed the same Case revision is no longer detected by a
+	// version comparison. The journal's event identity detects it instead, and
+	// the reception answers the same way it answers a lost acknowledgement:
+	// re-read the current responsibility, decide whether the original business
+	// was already received, and record it against the current value.
+	concurrentCommit := readErr == nil && latest.Revision != snapshot.Revision
+	if errors.Is(submitErr, loopruntime.ErrStaleRevision) || concurrentCommit {
 		if request.ExpectedRevision < 0 && request.concurrencyRetry < 3 && (request.Context == nil || request.Context.Err() == nil) {
 			request.frozenAnswer = append([]byte(nil), authoringBytes...)
 			request.concurrencyRetry++

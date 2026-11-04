@@ -259,6 +259,15 @@ func checkRevisionDispatchRegistration(root string, state map[string]any, taskID
 	return nil
 }
 
+// applyAssignmentRevision issues the next immutable Assignment Record
+// revision. G18 §3.2: this issuance path asserts no Runtime write count. A
+// legitimate revision must not be refused because the Runtime moved for an
+// unrelated reason, so the Runtime revision is an audit coordinate only
+// (L4-revision-usage.md:141). The issuance is protected by the received row
+// (the revision receipt index and findRevisionReplay), the journal-level dedup
+// (the domain idempotency key of this revision intent) and the Assignment
+// Record's own revision (ExpectedRecord against the current Record, checked
+// here again inside Apply).
 func applyAssignmentRevision(root string, state map[string]any, value manifest, manifestBytes []byte, manifestRef, taskRef, taskID string, taskBytes []byte, request RevisionRequest, selected *dispatch.Board, eventID string, occurredAt time.Time, staged *[]loopruntime.ArtifactCleanupRequest) (Record, error) {
 	if !workstate.SupportsAssignments(state["schema_version"]) || value.WorkgroupKind != "builder" || len(value.Assignments) != 1 {
 		return Record{}, fmt.Errorf("Assignment revision requires one canonical S6 Builder Assignment")

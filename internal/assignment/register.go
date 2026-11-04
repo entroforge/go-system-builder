@@ -311,7 +311,20 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 		mutationIdempotencyKey = loopruntime.AssignmentRevisionIdempotencyKey(request.Revision.ExpectedRecord, request.Revision.IntentKey)
 		mutationMessage = "Issued a new immutable Assignment revision and invalidated the previous current owner projection."
 	}
-	snapshot, updateErr := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+	// G18 §3.2: the Assignment Record revision issuance is a professional act.
+	// It must not be refused because the Runtime moved for an unrelated
+	// reason, so the revision path takes the current-value path (-1 is the
+	// omission marker) instead of asserting the caller's Runtime write count.
+	// The protection is unchanged and lives in the domain facts: the received
+	// row (findRevisionReplay and the revision receipt index), the
+	// journal-level dedup (the domain idempotency key of this revision
+	// intent) and the Assignment Record's own revision (ExpectedRecord
+	// against the current Record, checked again inside Apply).
+	expectedRevision := request.ExpectedRevision
+	if request.Revision != nil {
+		expectedRevision = -1
+	}
+	snapshot, updateErr := updateRuntime(store, expectedRevision, loopruntime.Mutation{
 		EventID:            mutationEventID,
 		TransitionID:       mutationTransitionID,
 		Event:              mutationEvent,

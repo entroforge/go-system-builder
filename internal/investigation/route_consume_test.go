@@ -15,7 +15,7 @@ func TestConsumeCaseRouteReturnsNoRepairCaseToOriginalS7Entry(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 
 	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision:     1,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 1,
 		CaseID:               "investigation-case-review-plan-r1",
 		Route:                "s7_no_change",
@@ -26,7 +26,7 @@ func TestConsumeCaseRouteReturnsNoRepairCaseToOriginalS7Entry(t *testing.T) {
 	}
 
 	snapshot, err = investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
-		ExpectedRevision: snapshot.Revision,
+		ExpectedRevision: -1,
 		CaseID:           "investigation-case-review-plan-r1",
 		Actor:            "orchestrator",
 	})
@@ -86,14 +86,14 @@ func TestConsumeCaseRouteReturnsNoRepairCaseToOriginalS7Entry(t *testing.T) {
 func TestConsumeCaseRouteEventIdentityNamesTheCaseNotTheRuntimeWriteCount(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision: 1, ExpectedCaseRevision: 1, CaseID: "investigation-case-review-plan-r1",
+		ExpectedRevision: -1, ExpectedCaseRevision: 1, CaseID: "investigation-case-review-plan-r1",
 		Route: "s7_no_change", RouteReason: "the finding is not a product defect and requires no repair",
 	})
 	if err != nil {
 		t.Fatalf("UpdateCaseRoute() error = %v", err)
 	}
 	snapshot, err = investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
-		ExpectedRevision: snapshot.Revision, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
 	})
 	if err != nil {
 		t.Fatalf("ConsumeCaseRoute() error = %v", err)
@@ -112,16 +112,72 @@ func TestConsumeCaseRouteEventIdentityNamesTheCaseNotTheRuntimeWriteCount(t *tes
 	}
 }
 
+// G18 §3.1/§4.5 reverse assertion: the Runtime write count is not a gate on
+// the professional consumption of a Case route. A caller that omits the
+// expectation completes even after the Runtime moved for an unrelated reason,
+// and the G18 §2 received-row clause still consumes the route exactly once.
+func TestConsumeCaseRouteCompletesAfterAnUnrelatedRuntimeMoveAndConsumesTheRouteOnce(t *testing.T) {
+	fixture := readyCaseFixture(t, []string{"finding-1"})
+	_, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
+		ExpectedRevision: -1, ExpectedCaseRevision: 1, CaseID: "investigation-case-review-plan-r1",
+		Route: "s2_spec_rework", RouteReason: "the locked specification is inconsistent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The Runtime moved for an unrelated reason: the write count is no longer
+	// a gate on the professional consumption.
+	moveIntakeRuntimeForAnUnrelatedReason(t, fixture)
+	snapshot, err := investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("ConsumeCaseRoute() error = %v", err)
+	}
+	pointer := investigationPointerFromState(t, snapshot.State)
+	if pointer["route"] != "s2_spec_rework" || pointer["route_consumed_at"] == nil {
+		t.Fatalf("Runtime route pointer did not record the consumption: %#v", pointer)
+	}
+
+	// G18 §2 received-row clause: the route is consumed once. The repeated
+	// consumption is refused and writes nothing.
+	stateBefore, err := os.ReadFile(fixture.statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalBefore, err := os.ReadFile(fixture.journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
+	}); err == nil || !strings.Contains(err.Error(), "already consumed") {
+		t.Fatalf("repeated route consumption error = %v, want the consumed route refusal", err)
+	}
+	stateAfter, err := os.ReadFile(fixture.statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalAfter, err := os.ReadFile(fixture.journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(journalBefore, journalAfter) {
+		t.Fatal("a refused repeated route consumption rewrote the Runtime or the journal")
+	}
+}
+
 func TestConsumeCaseRouteReturnsSpecificationRouteToPlanning(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision: 1, ExpectedCaseRevision: 1, CaseID: "investigation-case-review-plan-r1", Route: "s2_spec_rework", RouteReason: "the locked specification is inconsistent",
+		ExpectedRevision: -1, ExpectedCaseRevision: 1, CaseID: "investigation-case-review-plan-r1", Route: "s2_spec_rework", RouteReason: "the locked specification is inconsistent",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err = investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
-		ExpectedRevision: snapshot.Revision, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -138,14 +194,14 @@ func TestConsumeCaseRouteReturnsSpecificationRouteToPlanning(t *testing.T) {
 
 func TestConsumeCaseRouteKeepsHumanRequirementChangeAtPauseBoundary(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
-	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision: 1, ExpectedCaseRevision: 1, CaseID: "investigation-case-review-plan-r1", Route: "human_req_change", RouteReason: "the locked requirement is wrong",
+	_, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
+		ExpectedRevision: -1, ExpectedCaseRevision: 1, CaseID: "investigation-case-review-plan-r1", Route: "human_req_change", RouteReason: "the locked requirement is wrong",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
-		ExpectedRevision: snapshot.Revision, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", Actor: "orchestrator",
 	})
 	if err == nil || !strings.Contains(err.Error(), "runtime pause") {
 		t.Fatalf("human requirement route must return the pause recovery verb, got %v", err)

@@ -2,6 +2,7 @@ package investigation_test
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/investigation"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
 type intakeFixture struct {
@@ -27,7 +29,7 @@ type intakeFixture struct {
 
 func TestIngestRequiresActualFindingOrHumanReport(t *testing.T) {
 	fixture := newIntakeFixture(t, nil)
-	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{ExpectedRevision: 0, GroupingRationale: "investigate observed defect"})
+	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "investigate observed defect"})
 	if err == nil || !strings.Contains(err.Error(), "Finding or actual human defect") {
 		t.Fatalf("missing source error: %v", err)
 	}
@@ -52,7 +54,7 @@ func TestIngestCreatesCaseAndCommitsInvestigationPointer(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-2", "finding-1"})
 
 	snapshot, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "same sealed batch is the provisional grouping boundary",
 	})
 	if err != nil {
@@ -111,7 +113,7 @@ func TestIngestCreatesCaseAndCommitsInvestigationPointer(t *testing.T) {
 func TestIngestEventIdentityNamesTheCaseNotTheRuntimeWriteCount(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 	snapshot, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision: 0, GroupingRationale: "one sealed Finding enters one bounded Case",
+		ExpectedRevision: -1, GroupingRationale: "one sealed Finding enters one bounded Case",
 	})
 	if err != nil {
 		t.Fatalf("Ingest() error = %v", err)
@@ -164,7 +166,7 @@ func TestIngestRejectsWrongLifecycleCursor(t *testing.T) {
 	setIntakeLifecycle(t, fixture, "verification", "running")
 
 	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "the cursor does not authorize S8 intake yet",
 	})
 	if err == nil {
@@ -184,7 +186,7 @@ func TestIngestAllowsBugResolutionInvestigationCursorAndProjectsBatchViews(t *te
 	setIntakeLifecycle(t, fixture, "bug_resolution", "investigation")
 
 	snapshot, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "TR-008 opened S8 with an exact Finding set",
 	})
 	if err != nil {
@@ -210,25 +212,104 @@ func TestIngestAllowsBugResolutionInvestigationCursorAndProjectsBatchViews(t *te
 	}
 }
 
-func TestIngestRejectsStaleRevisionBeforeCreatingCase(t *testing.T) {
+// G18 §3.1/§4.5 reverse assertion: the Runtime write count is not a domain
+// gate on the professional completion. A caller that omits the expectation
+// lets the Writer resolve the current value, so an intake whose Runtime moved
+// for an unrelated reason still completes. The G18 §2 received-row clause
+// still holds: the same Case is never received twice, and the retried intent
+// writes nothing.
+func TestIngestCompletesWhenTheRuntimeMovedAndTheCallerOmittedTheWriteCount(t *testing.T) {
+	fixture := newIntakeFixture(t, []string{"finding-1"})
+	moveIntakeRuntimeForAnUnrelatedReason(t, fixture)
+
+	snapshot, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
+		ExpectedRevision:  -1,
+		GroupingRationale: "an unrelated Runtime move must not refuse the S8 intake",
+	})
+	if err != nil {
+		t.Fatalf("Ingest() error = %v", err)
+	}
+	pointer := snapshot.State["review"].(map[string]any)["investigation"].(map[string]any)
+	caseID, _ := pointer["case_id"].(string)
+	eventID, _ := readLastJournalEvent(t, fixture.journalPath)["event_id"].(string)
+	if eventID != "evt-investigation-case-ingested-"+caseID {
+		t.Fatalf("ingest event id = %q, want the ingest identity of Case %s", eventID, caseID)
+	}
+
+	stateBefore, err := os.ReadFile(fixture.statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalBefore, err := os.ReadFile(fixture.journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
+		ExpectedRevision:  -1,
+		GroupingRationale: "the same Case must not be received twice",
+	})
+	if !errors.Is(err, investigation.ErrAlreadyIngested) {
+		t.Fatalf("second Ingest() error = %v, want ErrAlreadyIngested", err)
+	}
+	stateAfter, err := os.ReadFile(fixture.statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalAfter, err := os.ReadFile(fixture.journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(journalBefore, journalAfter) {
+		t.Fatal("a refused second ingest wrote the Runtime or the journal")
+	}
+}
+
+// G18 §3.3 reverse assertion: the explicit caller binding stays a mechanism.
+// A caller that names a revision it no longer holds is refused by the Runtime
+// CAS, and the refused intake leaves no Case behind — no Case artifact, no
+// Case directory and no Runtime write.
+func TestIngestRefusesAnExplicitStaleRevisionWithoutLeavingACaseBehind(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 
 	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
 		ExpectedRevision:  7,
-		GroupingRationale: "stale caller must not create an artifact",
+		GroupingRationale: "a caller that names a revision it no longer holds is refused",
 	})
 	if !errors.Is(err, runtime.ErrStaleRevision) {
 		t.Fatalf("error = %v, want ErrStaleRevision", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(fixture.root, ".claude/review/investigation/cases")); !os.IsNotExist(statErr) {
-		t.Fatalf("stale ingest must not create case directory, stat error = %v", statErr)
+		t.Fatalf("refused ingest must not create case directory, stat error = %v", statErr)
+	}
+	snapshot, err := runtime.NewStore(fixture.statePath, fixture.journalPath).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Revision != 0 {
+		t.Fatalf("Runtime revision = %d, want the refused ingest to write no Runtime revision", snapshot.Revision)
+	}
+	if review, _ := snapshot.State["review"].(map[string]any); review["investigation"] != nil {
+		t.Fatalf("refused ingest must not point the Runtime at a Case: %#v", review["investigation"])
+	}
+}
+
+// moveIntakeRuntimeForAnUnrelatedReason commits a Runtime mutation that has
+// nothing to do with the S8 intake, so the Runtime write count moves on.
+func moveIntakeRuntimeForAnUnrelatedReason(t *testing.T, fixture *intakeFixture) {
+	t.Helper()
+	_, err := runtime.NewWriter(fixture.statePath, fixture.journalPath, fixture.root, semantic.RuntimeCandidateValidator{}).UpdateCurrent(runtime.Mutation{
+		EventID: "evt-intake-unrelated-runtime-move", TransitionID: "MILESTONE-REFRESH", Event: "milestone_refreshed",
+		Actor: "Main", IdempotencyKey: "intake-unrelated-runtime-move", RetainLastTransition: true,
+	})
+	if err != nil {
+		t.Fatalf("unrelated Runtime move: %v", err)
 	}
 }
 
 func TestIngestRejectsSecondIngestAsExplicitIdempotentConflict(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 	request := investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "single finding remains a provisional case",
 	}
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, request); err != nil {
@@ -236,11 +317,14 @@ func TestIngestRejectsSecondIngestAsExplicitIdempotentConflict(t *testing.T) {
 	}
 
 	_, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  1,
+		ExpectedRevision:  -1,
 		GroupingRationale: request.GroupingRationale,
 	})
 	if err == nil {
 		t.Fatal("second Ingest() must return an explicit idempotent conflict")
+	}
+	if !errors.Is(err, investigation.ErrAlreadyIngested) {
+		t.Fatalf("second Ingest() error = %v, want ErrAlreadyIngested", err)
 	}
 	assertErrorMentions(t, err, "already", "Case")
 }

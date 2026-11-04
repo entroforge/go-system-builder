@@ -186,12 +186,19 @@ func completeCanonicalTaskWithReceipt(
 ) (loopruntime.Snapshot, ResultAcceptanceReceipt, error) {
 	for {
 		snapshot, receipt, err := attemptCanonicalTaskWithReceipt(root, statePath, journalPath, request, data)
-		if request.ExpectedRevision >= 0 || err != loopruntime.ErrStaleRevision {
+		if err != loopruntime.ErrStaleRevision {
 			return snapshot, receipt, err
 		}
 		// Another Writer committed while this automatic request was preparing.
 		// Re-read the original responsibility and accepted results; the normal
 		// consumer resolves same-answer replay or validates the new state.
+		// G18 §3.2: a stale Runtime CAS is no longer a refusal here. The
+		// canonical consumer never asserts the Runtime write count, so a
+		// legitimate professional completion is chased instead of being
+		// rejected because the Runtime moved for an unrelated reason. The
+		// protection is unchanged: the received row (the accepted Result for
+		// this message_id), the journal-level dedup (the domain idempotency
+		// key) and the Assignment Record's own revision decide the outcome.
 		if request.Context != nil {
 			if err := request.Context.Err(); err != nil {
 				return loopruntime.Snapshot{}, ResultAcceptanceReceipt{}, err
@@ -238,9 +245,13 @@ func attemptCanonicalTaskWithReceipt(
 	if err != nil {
 		return empty, noReceipt, fmt.Errorf("read runtime: %w", err)
 	}
-	if _, err := commitRevision(request.ExpectedRevision, snapshot.State); err != nil {
-		return empty, noReceipt, err
-	}
+	// G18 §3.2: the canonical S6 consumer does not compare the Runtime write
+	// count. The Runtime revision is an audit coordinate only
+	// (L4-revision-usage.md:141). This acceptance is protected by the three
+	// domain facts instead: the received row (the accepted Result for this
+	// message_id, read again inside Apply), the journal-level dedup (the
+	// domain idempotency key of this submission) and the Assignment Record's
+	// own revision (binding.Record versus the current Record inside Apply).
 	binding, err := resolveCanonicalResultBinding(ctx, root, snapshot, request.AgentID, message, request.NativePlanPath)
 	if err != nil {
 		return empty, noReceipt, err

@@ -76,6 +76,52 @@ func TestCurrentMainPlanFirstReceptionOwnsMachineIdentity(t *testing.T) {
 	}
 }
 
+// G18 §3.1: the Runtime write count is not a gate for a professional
+// completion (L4-revision-usage.md §4/§8). A completed ReviewPlan is still
+// registered exactly once — the received Plan row is unique (已收行), the
+// journal keeps one evt-review-plan-<planID> event (事件去重), and the
+// registered Plan pointer keeps its own revision (对象版本) — and an unrelated
+// Runtime commit no longer refuses the reception.
+func TestPlanReceptionRegistersCompletedPlanExactlyOnceWithoutWriteCount(t *testing.T) {
+	root := t.TempDir()
+	statePath, journalPath := writeState(t, root, baseVerificationState())
+	planPath := writePlanFile(t, root)
+
+	// An unrelated Runtime commit moves the write count before the reception.
+	moved := commitUnrelatedRuntime(t, root, statePath, journalPath, 1)
+
+	// The reception asserts no Runtime revision: the omission marker is -1.
+	snapshot, outcome, err := ReceivePlanAnswer(root, statePath, journalPath, PlanRequest{ExpectedRevision: -1, PlanPath: planPath})
+	if err != nil || outcome != PlanReceptionAccepted {
+		t.Fatalf("an unrelated Runtime commit refused the Plan reception: %s %v", outcome, err)
+	}
+	if snapshot.Revision <= moved.Revision {
+		t.Fatalf("the reception did not commit: revision %d", snapshot.Revision)
+	}
+	_, ptr, err := LoadPlan(root, snapshot.State)
+	if err != nil || ptr.PlanID != "review-plan-t-1" || ptr.Revision != 1 {
+		t.Fatalf("registered Plan pointer = %+v %v", ptr, err)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := countJournalEvent(t, journal, "evt-review-plan-review-plan-t-1"); count != 1 {
+		t.Fatalf("review_plan_registered events = %d, want exactly 1", count)
+	}
+	// The received Plan row is unique: the same Plan cannot be registered twice.
+	if _, err := RegisterPlan(root, statePath, journalPath, PlanRequest{ExpectedRevision: -1, PlanPath: planPath}); err == nil {
+		t.Fatal("the same ReviewPlan was registered twice")
+	}
+	journal, err = os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := countJournalEvent(t, journal, "evt-review-plan-review-plan-t-1"); count != 1 {
+		t.Fatalf("a repeated registration wrote another event: %d", count)
+	}
+}
+
 func TestOtherPlanPathDoesNotAcquireCurrentEntryIdentity(t *testing.T) {
 	root := t.TempDir()
 	state := baseVerificationState()

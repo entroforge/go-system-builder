@@ -1510,7 +1510,66 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 - 新增 **22 条反向断言**(同一意图重试同 id、不同责任不同 id、历史形状仍可读、事件 id 不含写计数)。
 - `internal/cli` 定向回归:22 条新增断言全 PASS;9 条红经 `go test -overlay` 把 60 个改动文件整体回退到 HEAD 后**逐字同样红** ⇒ **G18 第 3 步零新增红**。
 
-**残留(留给第二波)**:
-- `internal/cli/s6_observation.go:26` 仍以 `milestone["source_revision"]` 与当前修订比对来决定是否复用已缓存的 S6 观察 —— 这是 §14.11 C-E 记下的那一处写计数判据;里程碑事件 id 已锚到 journal 末事件 id,该字段可以随之退役。
-- `internal/assignment/lifecycle.go:500` 的 `agent["activation_revision"]` 仍把 Runtime 修订存进域行字段(是投影字段,不是身份),归第二波一并裁定。
-- 领域侧 `ExpectedRevision >= 0 && … != …` 门禁(①类 10 个站点)按 §14.13 波次裁定留给第二波。
+#### 第二波执行结果(G18 第 2 步)
+
+**三片全部交付,17 处 ①类比较点退役。**第一波的键形状落地后,第二波把「领域层拿写计数当门禁」逐处换成三件套。
+
+| 片 | 包 | 退役的 ①类比较点 |
+|---|---|---|
+| W-G | `internal/review` | `plan_reception.go:41`(接收拒绝)、`submit.go:337`(提交前比计数)、`submit.go:180`(截止期恢复拒绝移动的计数)、`revise.go:83`(修订比计数)、`register.go:139`(登记比计数)、`supplement.go:83`(陈旧追赶守卫拒绝重试)—— 共 6 处 |
+| W-H | `internal/investigation` | `intake.go:60`、`contract.go:75`、`case_workflow.go:585`、`hypothesis_result_receipt.go:145`、`route_consume.go:36` —— 共 5 处 |
+| W-I | `internal/assignment` + `internal/repair` | `completion_canonical.go:189`(陈旧追赶守卫的写计数分支)、`:241`(`commitRevision` 解析)、`register.go:314`(签发路径的 CAS)、`issued_plan_report.go:589`、`issued_repair_result.go:503`、`issued_repair_result.go:984` —— 共 6 处 |
+
+**关键设计(不可省的一步)**:退役 CAS 绑定会顺带**丢掉并发冲突检测**。W-H 发现后补上了「以当前值为准的并发重试」——
+`hypothesis_result_receipt.go:259` 在检测到并发提交时按**当前值**重试并重新证明,而不是拿计数拒绝专业动作。
+同理 W-I 把 `completion_canonical.go:189` 的陈旧追赶改成「陈旧 CAS 一律追赶」,W-G 把 `supplement.go:83` 改成「总是重读并重试」。
+**门禁退役 ≠ 保护消失**:三件套(已收行 + 事件去重 + 对象版本)必须逐点补齐,否则就是把安全性一起删掉。
+
+**测试侧改写(不放宽)**:唯一一条因退役而变红的用例是
+`internal/cli/s9_final_writer_concurrency_test.go:157`(原名 `TestS9NativeFinalOrphanAfterCASRetry`)——
+它断言 `SubmitIssuedRepairResult` 用陈旧 `ExpectedRevision` 返回 `runtime.ErrStaleRevision`,而那正是被退役的
+`issued_repair_result.go:984`。**改写方向是换更强的断言,不是删断言**:
+- 原断言(必须被写计数拒绝)⇒ 改为 **反向断言**:Runtime 因无关原因移动后,这个专业动作**必须仍然完成**;
+- 并**加断言**:移动确实发生了(`advanced.Revision != request.ExpectedRevision`)、记录的是**新**的交付引用
+  (`ref.Path != firstRef.Path`)、**同一个** `ResultID`(同一次专业动作)、未登记的孤儿文件**字节未变**、
+  收据可读回、重放**幂等**、journal 里 `S9-RESULT-SUBMIT` 事件**恰好 1 条**。
+- 用例改名 `TestS9NativeFinalOrphanAfterUnrelatedRuntimeMove`(名实相符)。
+
+**残留裁定(第一波之后全仓普查,17 处 grep 命中,逐处归类)**:
+
+| 命中 | 归类 |
+|---|---|
+| `internal/transition/engine.go:426/453`、`internal/runtime/{evidence,store}.go:681/950`、`internal/review/supplement.go:214`、`internal/investigation/hypothesis_result_receipt.go:261`、`internal/repair/runtime.go:1058` | **遗漏标记**(`< 0` = 未断言 ⇒ 走当前值路径),是退役的**实现形态**,不是门禁 |
+| `internal/assignment/{auto_chain,activation_envelope}.go:216/267/405` | **记录/转递**:把已读到的坐标原样带下去,不比较、不拒绝 |
+| `internal/review/result_packet.go:103`、`internal/investigation/hypothesis_result_packet.go:55`、`internal/repair/issued_{plan_report,repair_result}.go:112/157/107/129`、`internal/repair/issued_repair_result_{resolution,blocker}.go:154/98` | **A 档保留**:S9 packet 发行 / 阻塞与解决答复绑定**旧快照**;只有**显式非负**绑定才比较,未断言则走当前值路径 |
+| `internal/assignment/lifecycle.go:494` | **A 档保留**:消息内 `ExpectedRuntimeRevision` 与 `request.ExpectedRevision` 的**自洽性**检查(§3.3 KEEP) |
+| `internal/review/register.go:359` | **当前值路径**:陈旧即改用当前值重试,不拒绝 |
+| `internal/cli/{task_receipt,assignment_context}.go`、`internal/cli/controller.go:992` | **观察一致性**:读取期间 Runtime 变了就重读重算,失效方向永远是「重算」,不可能拒绝专业完成 ⇒ 不是门禁 |
+| `internal/review/{submit,revise,register,plan_reception}.go`、`internal/investigation/case_workflow.go`、`internal/cli/s6_observation.go:26` 等 | **域对象版本 / 观察锚**:比的是 Plan 指针修订、Case 域修订、Assignment Record 修订,**不是** Runtime 写计数 |
+
+⇒ **①类真命中 0**(事件 id / 幂等键里的写计数同:真命中 0)。
+
+**验收(实测)**:
+- `go build ./...` / `go vet ./...` / `gofmt -l internal/ cmd/` **全过**(`gofmt` 空输出)。
+- 包级整包:`review` ✅(141.8s)、`assignment` ✅(135.9s)、`repair` ✅(9.3s);`investigation` 仅
+  `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates` 一条红 —— 用 `go test -overlay` 把 **43 个改动文件整体回退 HEAD**
+  后**逐字同样红** ⇒ 非本轮引入。
+- `internal/cli` 定向回归 **两批共 62 条**:批 1(S9/review/assignment 簇)1 条红
+  `TestIndependentReviewRejectsCorruptSourceWithoutReception/frozen_input`;批 2(investigation/S7/S8 簇 + 已知红名单)10 条红。
+  其中**两条此前未登记**(`TestMinimalAnswerFlowOrdinaryFindingEntersS8AndReceivesAlreadyDispatchedPeer`、
+  `TestIndependentReviewRejectsCorruptSourceWithoutReception/frozen_input`)均经 overlay A/B **逐字同样红** ⇒ **零新增红**;
+  其余 9 条与总账已登记红**逐条对上**。
+- 新增反向断言:review 3 组(`plan_first_identity_test.go`、`result_receipt_test.go`、`supplement_test.go`)、
+  investigation 4 组(`intake_test.go`、`case_workflow_test.go`、`contract_test.go`、`route_consume_test.go`)、
+  assignment/repair 3 组(`completion_canonical_test.go`、`record_revision_test.go`、`issued_plan_report_context_test.go`)、
+  CLI 1 组(`s9_final_writer_concurrency_test.go` 改写)。
+
+#### 残留(留给下一波):
+- `internal/cli/s6_observation.go:26` 仍以 `milestone["source_revision"]` 与当前修订比对来决定是否复用已缓存的 S6 观察 —— 这是 §14.11 C-E 记下的那一处写计数判据。**裁定:它不是门禁**(失效方向永远是「缓存不适用 ⇒ 退回真 Controller 重算」,不可能拒绝任何专业完成),故按最高判据**不强制退役**;但替换设计已算清,留给下一波:
+  - 里程碑对象在状态 schema 里是**开放对象**(`additionalProperties` 未设 false)⇒ 换字段不需要改 schema;
+  - 替换物 = **journal 末事件 id 的锚**(记录身份,与 `milestoneRefreshIdentity` 同一套 `journalEventAnchor` + `domainEventToken`);
+  - **关键细节**:里程碑记的必须是**它自己那次写入之后**的锚(即 `domainEventToken("evt-milestone-refreshed-<写入前的锚>")`),而不是写入前的锚 —— 否则每次刷新后当前锚都等于刚写入的事件、而里程碑记的是更早的锚,观察**永远不会被复用**。旧语义记的正是「写入后的修订」(`snapshot.Revision+1`),两者等价。
+  - `stableMilestoneProjection` 的排除清单要把 `source_revision` 换成 `source_anchor`(内容比较语义不变)。
+- `internal/assignment/lifecycle.go:500` 的 `agent["activation_revision"]` 仍把 Runtime 修订存进域行字段。**裁定:保留为审计投影**,字段旁注明它是「激活发生时的审计坐标」,不是断言、不是门禁,不参与任何身份构造。
+- 领域侧 `ExpectedRevision >= 0 && … != …` 门禁(①类)已在**第二波**退役完毕(17 处,真命中 0),详见上节「第二波执行结果」。
+  判定规则留档:`/home/sebs/audit-work/fix-waves/briefs/G18-DOMAIN-GATES.md` §3.1(按**保护对象**分档:专业完成 ⇒ 退役;调用方绑定自己刚读到的快照 ⇒ 保留)。

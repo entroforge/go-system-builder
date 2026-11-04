@@ -85,6 +85,13 @@ func CompleteTaskWithReceipt(
 		if len(data) > canonicalResultMessageLimit {
 			return loopruntime.Snapshot{}, ResultAcceptanceReceipt{}, fmt.Errorf("completion message exceeds the 1 MiB limit")
 		}
+		// G18 §3.2: the canonical S6 consumer does not assert a Runtime write
+		// count. The caller's expected revision is dropped here (-1 is the
+		// omission marker), so a legitimate professional completion is not
+		// refused because the Runtime moved for an unrelated reason. The
+		// received row, the journal-level dedup and the Assignment Record's own
+		// revision remain the protection of this acceptance.
+		request.ExpectedRevision = -1
 		return completeCanonicalTaskWithReceipt(root, statePath, journalPath, request, data)
 	}
 	snapshot, err := completeTaskLegacy(root, statePath, journalPath, request, data)

@@ -136,9 +136,15 @@ func registerPlanBytes(root, statePath, journalPath string, request PlanRequest,
 		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan content and responsibility: %w", err)
 	}
 
-	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
-		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
-	}
+	// The Runtime write count never qualifies this registration
+	// (L4-revision-usage.md §4/§8, G18 §3.1). The three-piece proof replaces
+	// the retired comparison: the received Plan row (the registered Plan
+	// pointer and its identity below), the journal-level dedup of
+	// evt-review-plan-<planID>, and the Plan pointer's own revision.
+	//
+	// An explicit caller binding keeps the store's own CAS semantics
+	// (L4-revision-usage.md §4, §10.2); the omission marker (-1) uses the
+	// current-value entry instead.
 	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	if state, _ := lifecycle["state"].(string); state != "verification" {

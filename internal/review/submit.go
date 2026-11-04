@@ -177,18 +177,19 @@ func continueInterruptedResult(root, statePath, journalPath string, request Subm
 	if !continueReception {
 		return current, context.DeadlineExceeded
 	}
-	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
-		if request.issuedPacket == nil {
-			return current, loopruntime.ErrStaleRevision
-		}
+	if request.issuedPacket != nil {
+		// An issued packet names its own responsibility, so it is re-proved
+		// against the current state instead of being refused for a stale
+		// Runtime counter (L4-revision-usage.md §4/§8, G18 §3.1).
 		return continueIssuedResultAfterPeer(root, statePath, journalPath, request)
 	}
 	return submitResult(root, statePath, journalPath, request)
 }
 
-// continueIssuedResultAfterPeer refreshes only the internal CAS coordinate.
-// The original issuance, exact answer, live responsibility and execution source
-// must still prove the same receipt opportunity before that coordinate is used.
+// continueIssuedResultAfterPeer re-proves the original responsibility against
+// the current state. The original issuance, exact answer, live responsibility
+// and execution source must still prove the same receipt opportunity before
+// the peer continuation is used.
 func continueIssuedResultAfterPeer(root, statePath, journalPath string, request SubmitRequest) (loopruntime.Snapshot, error) {
 	writer := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	current, err := writer.Snapshot()
@@ -210,7 +211,9 @@ func continueIssuedResultAfterPeer(root, statePath, journalPath string, request 
 	if err := validateIssuedResultRequest(root, current.State, request, &incoming, isReplay); err != nil {
 		return current, err
 	}
-	request.ExpectedRevision = current.Revision
+	// The peer continuation reads the current state itself; a caller-held
+	// Runtime counter is never a qualification (L4-revision-usage.md §4/§8).
+	request.ExpectedRevision = -1
 	return submitResult(root, statePath, journalPath, request)
 }
 
@@ -271,7 +274,7 @@ func submitResult(
 	// v1.2 packet-mode Results have a durable idempotency receipt. Recover a
 	// pending Runtime operation before considering artifact publication, then
 	// recognize a fully proven replay before reading the mutable capture buffer
-	// or applying the caller's now-stale ExpectedRevision.
+	// or committing this delivery.
 	var earlyState map[string]any
 	var earlySnapshot loopruntime.Snapshot
 	var earlyStateErr error
@@ -331,12 +334,18 @@ func submitResult(
 			return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 		}
 	}
-	// Reject a stale caller before producing any review artifacts. The CAS
-	// remains authoritative for races, but this early check prevents the
-	// common stale-submit path from leaving orphan evidence on disk.
-	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
-		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
-	}
+	// The Runtime write count never qualifies this professional submission
+	// (L4-revision-usage.md §4/§8, G18 §3.1): an unrelated Runtime commit
+	// must not refuse a legitimate ReviewResult. The three-piece proof
+	// replaces the retired comparison — the received row for this
+	// responsibility (the Assignment row and the recognized receipt above),
+	// the journal-level dedup of the receipt's own event id, and the domain
+	// object's own version (the registered Plan pointer's assignment_revision
+	// checked below).
+	//
+	// An explicit caller binding keeps the store's own CAS semantics
+	// (L4-revision-usage.md §4, §10.2); the omission marker (-1) uses the
+	// current-value entry instead.
 	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
 	if state, _ := lifecycle["state"].(string); state != "verification" && request.issuedPacket == nil {

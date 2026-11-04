@@ -50,14 +50,14 @@ func TestS8OriginalReceiptSurvivesSiblingAndRouteContinuation(t *testing.T) {
 		t.Fatalf("original responsibility after sibling: %+v %v", selected, err)
 	}
 	pointer := investigationPointerFromState(t, current.State)
-	routed, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision: current.Revision, ExpectedCaseRevision: s8TestInt(pointer["revision"]), CaseID: pointer["case_id"].(string), Route: "investigate_more", RouteReason: "Continue the remaining original questions.",
+	_, err = investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
+		ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(pointer["revision"]), CaseID: pointer["case_id"].(string), Route: "investigate_more", RouteReason: "Continue the remaining original questions.",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	consumed, err := investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
-		ExpectedRevision: routed.Revision, CaseID: pointer["case_id"].(string), Actor: "orchestrator",
+		ExpectedRevision: -1, CaseID: pointer["case_id"].(string), Actor: "orchestrator",
 	})
 	if err != nil {
 		t.Fatal(err)

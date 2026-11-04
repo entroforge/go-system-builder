@@ -586,9 +586,13 @@ func SubmitIssuedRepairPlanReport(root, statePath, journalPath string, req Submi
 	if len(problems) != 0 {
 		return snapshot, PlanReport{}, &workpacket.AnswerError{Label: "S9 PlanReport", Fields: problems}
 	}
-	if err := checkRevision(req.ExpectedRevision, snapshot.Revision, "runtime S9 issued PlanReport answer"); err != nil {
-		return snapshot, PlanReport{}, err
-	}
+	// G18 §3.2: the issued PlanReport answer is one professional answer and it
+	// must not be refused because the Runtime moved for an unrelated reason.
+	// The Runtime write count is therefore not compared here. The protection
+	// stays in the three domain facts: the received row (the verified
+	// PlanReport receipt of this packet, replayed above), the journal-level
+	// dedup (the issued receipt's accepted event id and idempotency key) and
+	// the issued packet's own binding (Plan, Session and RepairAssignment).
 	issueAt, err := repairPlanReportIssueTime(root, snapshot.State, packet, req.Context)
 	if err != nil {
 		return snapshot, PlanReport{}, err
@@ -628,7 +632,10 @@ func SubmitIssuedRepairPlanReport(root, statePath, journalPath string, req Submi
 		occurredAt = time.Now().UTC()
 	}
 	next, committed, err := submitIssuedRepairPlanReportToRuntime(root, statePath, journalPath, submitIssuedPlanReportRequest{
-		RuntimeRequest: RuntimeRequest{Context: req.Context, ExpectedRevision: snapshot.Revision, Actor: req.OwnerAgentID, OccurredAt: occurredAt},
+		// G18 §3.2: the caller no longer asserts a Runtime write count (-1 is
+		// the omission marker). The original Writer records the answer against
+		// the current state and revalidates the responsibility inside Apply.
+		RuntimeRequest: RuntimeRequest{Context: req.Context, ExpectedRevision: -1, Actor: req.OwnerAgentID, OccurredAt: occurredAt},
 		Report:         ref, issued: capability,
 	})
 	if err != nil {

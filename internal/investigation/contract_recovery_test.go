@@ -16,7 +16,7 @@ func approvedContractRecoveryFixture(t *testing.T) (*intakeFixture, investigatio
 	t.Helper()
 	f := newIntakeFixture(t, []string{"finding-1"})
 	setContractLifecycle(t, f)
-	if _, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: 0, GroupingRationale: "sealed recovery fixture"}); err != nil {
+	if _, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "sealed recovery fixture"}); err != nil {
 		t.Fatal(err)
 	}
 	prepareCaseForContractApproval(t, f)

@@ -80,12 +80,23 @@ type SupplementRow struct {
 func SubmitSupplement(root, statePath, journalPath string, request SupplementRequest) (SupplementReceipt, error) {
 	for {
 		receipt, err := submitSupplementOnce(root, statePath, journalPath, request)
-		if request.ExpectedRevision >= 0 || !errors.Is(err, loopruntime.ErrStaleRevision) {
+		if !errors.Is(err, loopruntime.ErrStaleRevision) {
 			return receipt, err
 		}
-		// Another Writer committed after our observation. Re-read its actual
-		// original responsibility and retry internally; the staged file is left
-		// untouched because ownership was not committed.
+		// The Runtime write count never qualifies this professional append
+		// (L4-revision-usage.md §4/§8, G18 §3.1). Another Writer committed
+		// after our observation; re-read its actual original responsibility and
+		// retry internally. The append's own protection is the three-piece
+		// proof: the received row (the appended supplement record), the
+		// journal-level dedup of evt-finding-supplement-<id>, and the
+		// object's own version (the Finding's review identity and baseline
+		// generation). The staged file is left untouched because ownership was
+		// not committed.
+		//
+		// The retry drops the caller's stale counter so it re-reads the actual
+		// original responsibility instead of repeating a binding that already
+		// moved (L4-revision-usage.md §4).
+		request.ExpectedRevision = -1
 	}
 }
 
@@ -196,10 +207,10 @@ func submitSupplementOnce(root, statePath, journalPath string, request Supplemen
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	expectedRevision := request.ExpectedRevision
 	// A negative expected revision is the omission marker: the caller did not
-	// assert a Runtime revision. A non-negative value is a concrete assertion
-	// and is compared as such (L4-revision-usage.md:78), so Go's zero value
-	// means "the Runtime is at revision 0" rather than "no assertion".
-	// Callers that mean "omitted" pass a negative value.
+	// assert a Runtime revision. A non-negative value is a concrete binding
+	// and keeps the store's own CAS semantics (L4-revision-usage.md §4, §10.2),
+	// so Go's zero value means "the Runtime is at revision 0" rather than "no
+	// assertion". Callers that mean "omitted" pass a negative value.
 	if expectedRevision < 0 {
 		// The internal CAS ties the generated identity and staged path to the
 		// state used to prepare them; it is not an author-supplied condition.

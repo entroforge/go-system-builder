@@ -2,6 +2,7 @@ package investigation_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,7 +83,7 @@ func TestRegisterHypothesisCreatesImmutableCaseRevisionAndHistory(t *testing.T) 
 func TestRegisterHypothesisRequiresBoundAssignment(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 	_, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
-		ExpectedRevision:     1,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 1,
 		CaseID:               "investigation-case-review-plan-r1",
 		HypothesisID:         "hypothesis-unbound",
@@ -101,7 +102,7 @@ func TestRegisterHypothesisRequiresBoundAssignment(t *testing.T) {
 func TestRegisterHypothesisRequiresEvidenceRefs(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 	_, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
-		ExpectedRevision:     1,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 1,
 		CaseID:               "investigation-case-review-plan-r1",
 		HypothesisID:         "hypothesis-evidence-free",
@@ -123,6 +124,11 @@ func TestRegisterHypothesisRequiresEvidenceRefs(t *testing.T) {
 	}
 }
 
+// G18 §3.1/§3.3 reverse assertion: the Runtime write count is not a domain
+// gate on the Case revision. The explicit caller binding stays a mechanism —
+// a caller that names a revision it no longer holds is still refused — and the
+// G18 §2 domain-version clause still refuses a revision that was built on a
+// changed Case.
 func TestCaseWorkflowRejectsStaleRevisionAndHashDrift(t *testing.T) {
 	fixture := readyCaseFixture(t, []string{"finding-1"})
 	request := investigation.HypothesisRequest{
@@ -142,6 +148,9 @@ func TestCaseWorkflowRejectsStaleRevisionAndHashDrift(t *testing.T) {
 	if !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("stale error = %v, want stale guidance", err)
 	}
+	if !errors.Is(err, runtime.ErrStaleRevision) {
+		t.Fatalf("stale error = %v, want ErrStaleRevision", err)
+	}
 
 	// L3-S8:43 and L3-S9:15 remove hash/SHA computation, registration and
 	// verification from the Hook and its consumers. Identity, version and
@@ -152,6 +161,57 @@ func TestCaseWorkflowRejectsStaleRevisionAndHashDrift(t *testing.T) {
 
 	if _, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, request); err != nil {
 		t.Fatalf("current revision rejected without a hash gate: %v", err)
+	}
+}
+
+// G18 §3.1/§4.5 reverse assertion: the Runtime write count is not a gate on
+// the professional completion of a Case revision. A caller that omits the
+// expectation completes even after the Runtime moved for an unrelated reason,
+// while the G18 §2 domain-version clause still refuses a revision that names
+// a Case revision the Runtime no longer points at.
+func TestCaseRevisionCompletesAfterAnUnrelatedRuntimeMoveAndKeepsTheCaseRevisionAsTheDomainVersion(t *testing.T) {
+	fixture := readyCaseFixture(t, []string{"finding-1"})
+	moveIntakeRuntimeForAnUnrelatedReason(t, fixture)
+
+	request := investigation.HypothesisRequest{
+		ExpectedRevision:     -1,
+		ExpectedCaseRevision: 1,
+		CaseID:               "investigation-case-review-plan-r1",
+		HypothesisID:         "hypothesis-after-runtime-move",
+		Statement:            "the boundary contract is inconsistent",
+		Invariant:            "the boundary has one owner",
+		Discriminator:        "inspect both sides of the boundary",
+		ExpectedOutcomes:     map[string]any{"support": "drift", "refute": "no drift"},
+		SourceFindingIDs:     []string{"finding-1"},
+		EvidenceRefs:         []string{"evidence://boundary"},
+		AssignmentID:         "assignment-hypothesis-runtime-move",
+	}
+	snapshot, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, request)
+	if err != nil {
+		t.Fatalf("RegisterHypothesis() error = %v", err)
+	}
+	pointer := investigationPointerFromState(t, snapshot.State)
+	if pointer["revision"] != float64(2) && pointer["revision"] != 2 {
+		t.Fatalf("case pointer revision = %v, want the Case's own next revision 2", pointer["revision"])
+	}
+
+	// G18 §2 domain-version clause: the Case's own revision still refuses a
+	// revision that names the Case revision the Runtime no longer points at.
+	_, err = investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
+		ExpectedRevision:     -1,
+		ExpectedCaseRevision: 1,
+		CaseID:               "investigation-case-review-plan-r1",
+		HypothesisID:         "hypothesis-on-a-changed-case",
+		Statement:            "the boundary contract is inconsistent",
+		Invariant:            "the boundary has one owner",
+		Discriminator:        "inspect both sides of the boundary",
+		ExpectedOutcomes:     map[string]any{"support": "drift", "refute": "no drift"},
+		SourceFindingIDs:     []string{"finding-1"},
+		EvidenceRefs:         []string{"evidence://boundary"},
+		AssignmentID:         "assignment-hypothesis-changed-case",
+	})
+	if err == nil || !strings.Contains(err.Error(), "stale Case revision") {
+		t.Fatalf("revision of a changed Case error = %v, want the stale Case revision refusal", err)
 	}
 }
 
@@ -216,7 +276,7 @@ func TestSubmitHypothesisResultRejectsUnboundFollowUpHypothesis(t *testing.T) {
 	// new responsibility, so the suggestion must not be rejected for lacking an
 	// `assignment-` prefix — and it must not become a registered Hypothesis.
 	_, err := investigation.SubmitHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisResultRequest{
-		ExpectedRevision:     2,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 2,
 		CaseID:               register.CaseID,
 		HypothesisID:         register.HypothesisID,
@@ -302,7 +362,7 @@ func TestUpdateCaseRouteIsDeterministicAndPreservesExactFindings(t *testing.T) {
 	}
 
 	if _, err := investigation.SubmitHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisResultRequest{
-		ExpectedRevision:     4,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 4,
 		CaseID:               register.CaseID,
 		HypothesisID:         competing.HypothesisID,
@@ -318,7 +378,7 @@ func TestUpdateCaseRouteIsDeterministicAndPreservesExactFindings(t *testing.T) {
 	}
 
 	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision:     5,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 5,
 		CaseID:               register.CaseID,
 		Route:                "s9_repair",
@@ -343,7 +403,7 @@ func TestUpdateCaseRouteIsDeterministicAndPreservesExactFindings(t *testing.T) {
 		t.Fatalf("source Finding set changed: %#v", got)
 	}
 	if _, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision:     6,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 6,
 		CaseID:               register.CaseID,
 		Route:                "s9_repair",
@@ -427,9 +487,8 @@ func discriminatedCaseFixture(t *testing.T, fixture *intakeFixture) (map[string]
 // required element.
 func seedCausalClosure(t *testing.T, fixture *intakeFixture, pointer map[string]any, mutate func(map[string]any) error) map[string]any {
 	t.Helper()
-	runtimeRevision := currentRuntimeRevision(t, fixture)
 	snapshot, err := investigation.UpdateCase(fixture.root, fixture.statePath, fixture.journalPath, investigation.CaseRevisionRequest{
-		ExpectedRevision:     runtimeRevision,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: integerPointerRevision(pointer),
 		CaseID:               "investigation-case-review-plan-r1",
 		Operation:            "seed_causal_closure",
@@ -475,7 +534,7 @@ func integerPointerRevision(pointer map[string]any) int {
 func routeClosedCase(t *testing.T, fixture *intakeFixture, pointer map[string]any, blastRadius, detectionGap map[string]any) error {
 	t.Helper()
 	_, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision:     currentRuntimeRevision(t, fixture),
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: integerPointerRevision(pointer),
 		CaseID:               "investigation-case-review-plan-r1",
 		Route:                "s9_repair",
@@ -502,7 +561,7 @@ func TestUpdateCaseRouteRejectsHollowBlastRadius(t *testing.T) {
 	// Remove the blast_radius paths so the artifact carries a hollow object.
 	pointer = func() map[string]any {
 		snapshot, err := investigation.UpdateCase(fixture.root, fixture.statePath, fixture.journalPath, investigation.CaseRevisionRequest{
-			ExpectedRevision:     6,
+			ExpectedRevision:     -1,
 			ExpectedCaseRevision: 6,
 			CaseID:               "investigation-case-review-plan-r1",
 			Operation:            "hollow_blast_radius",
@@ -592,7 +651,7 @@ func TestUpdateCaseRouteRejectsSingleSupportedWithoutRefutation(t *testing.T) {
 	}
 	pointer = investigationPointer(t, fixture)
 	if _, err := investigation.SubmitHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisResultRequest{
-		ExpectedRevision:     2,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 2,
 		CaseID:               register.CaseID,
 		HypothesisID:         register.HypothesisID,
@@ -647,7 +706,7 @@ func TestUpdateCaseRouteAcceptsExplicitNoCompetingHypothesis(t *testing.T) {
 	}
 	pointer = investigationPointer(t, fixture)
 	if _, err := investigation.SubmitHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisResultRequest{
-		ExpectedRevision:     2,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 2,
 		CaseID:               register.CaseID,
 		HypothesisID:         register.HypothesisID,
@@ -694,7 +753,7 @@ func TestUpdateCaseRouteCanReopenInvestigateMoreAfterNewEvidence(t *testing.T) {
 	}
 
 	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision:     2,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 2,
 		CaseID:               register.CaseID,
 		Route:                "investigate_more",
@@ -756,7 +815,7 @@ func TestUpdateCaseRouteCanReopenInvestigateMoreAfterNewEvidence(t *testing.T) {
 	}
 
 	snapshot, err = investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision:     6,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 6,
 		CaseID:               register.CaseID,
 		Route:                "s9_repair",
@@ -791,14 +850,14 @@ func TestInvestigateMoreContinuesAndRoutesWithSameMaterial(t *testing.T) {
 	for attempt := 0; attempt < 7; attempt++ {
 		pointer := investigationPointer(t, fixture)
 		if _, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-			ExpectedRevision: currentRuntimeRevision(t, fixture), ExpectedCaseRevision: integerPointerRevision(pointer), CaseID: caseID, Route: "investigate_more", RouteReason: "the same material remains unresolved",
+			ExpectedRevision: -1, ExpectedCaseRevision: integerPointerRevision(pointer), CaseID: caseID, Route: "investigate_more", RouteReason: "the same material remains unresolved",
 		}); err != nil {
 			t.Fatalf("continue %d: %v", attempt, err)
 		}
 	}
 	pointer := investigationPointer(t, fixture)
 	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision: currentRuntimeRevision(t, fixture), ExpectedCaseRevision: integerPointerRevision(pointer), CaseID: caseID, Route: "s2_spec_rework", RouteReason: "the same observations establish a specification contradiction",
+		ExpectedRevision: -1, ExpectedCaseRevision: integerPointerRevision(pointer), CaseID: caseID, Route: "s2_spec_rework", RouteReason: "the same observations establish a specification contradiction",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -819,7 +878,7 @@ func TestUpdateCaseRouteReopensApprovedCaseWithCausalReassessmentEvidence(t *tes
 
 	contractRef := ".claude/review/investigation/contracts/repair-contract-r2.json"
 	approvedSnapshot, err := investigation.UpdateCase(fixture.root, fixture.statePath, fixture.journalPath, investigation.CaseRevisionRequest{
-		ExpectedRevision:     1,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 1,
 		CaseID:               "investigation-case-review-plan-r1",
 		Operation:            "test_contract_approved_case",
@@ -855,7 +914,7 @@ func TestUpdateCaseRouteReopensApprovedCaseWithCausalReassessmentEvidence(t *tes
 	}
 
 	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision:     2,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 2,
 		CaseID:               "investigation-case-review-plan-r1",
 		Route:                "investigate_more",
@@ -912,7 +971,7 @@ func TestDuplicateRoutePersistsCanonicalCaseReference(t *testing.T) {
 	}
 
 	snapshot, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision:     1,
+		ExpectedRevision:     -1,
 		ExpectedCaseRevision: 1,
 		CaseID:               "investigation-case-review-plan-r1",
 		Route:                "duplicate",
@@ -937,7 +996,7 @@ func readyCaseFixture(t *testing.T, findingIDs []string) *intakeFixture {
 	fixture := newIntakeFixture(t, findingIDs)
 	setContractLifecycle(t, fixture)
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "the sealed batch is the provisional grouping boundary",
 	}); err != nil {
 		t.Fatalf("Ingest() error = %v", err)

@@ -38,10 +38,17 @@ func ReceivePlanAnswer(root, statePath, journalPath string, request PlanRequest)
 	if err != nil {
 		return snapshot, "", err
 	}
-	if request.ExpectedRevision >= 0 && snapshot.Revision != request.ExpectedRevision {
-		return snapshot, "", loopruntime.ErrStaleRevision
-	}
-	request.ExpectedRevision = snapshot.Revision
+	// The Runtime write count never qualifies this professional reception
+	// (L4-revision-usage.md §4/§8, G18 §3.1): an unrelated Runtime commit
+	// must not refuse a legitimate Plan registration. What decides this
+	// reception is the three-piece proof below — the received Plan row (the
+	// registered Plan pointer and its identity), the journal-level dedup of
+	// evt-review-plan-<planID>, and the Plan pointer's own revision.
+	//
+	// The registration commits against the state it reads itself, so the
+	// downstream registration receives the omission marker instead of a
+	// caller-held counter.
+	request.ExpectedRevision = -1
 	ptr := PlanPointerFromState(snapshot.State)
 	registered := ptr != nil && reviewmeta.CompareIdentity(ptr.Identity(), activeReviewIdentity(snapshot.State)) != reviewmeta.Different
 	review, _ := snapshot.State["review"].(map[string]any)
@@ -100,7 +107,7 @@ func ReceivePlanAnswer(root, statePath, journalPath string, request PlanRequest)
 		return snapshot, PlanReceptionSame, nil
 	}
 	snapshot, err = RevisePlan(root, statePath, journalPath, ReviseRequest{
-		Context: request.Context, ExpectedRevision: snapshot.Revision, PlanPath: request.PlanPath,
+		Context: request.Context, ExpectedRevision: -1, PlanPath: request.PlanPath,
 		OccurredAt: request.OccurredAt, answerBytes: data, natural: true,
 	})
 	return snapshot, PlanReceptionRevised, err

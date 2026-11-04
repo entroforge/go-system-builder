@@ -21,7 +21,9 @@ func TestS9NativeListenerKeepsPrivateOutputsOutOfMainAuthoring(t *testing.T) {
 	p := packets[0]
 	brief := nativeS9BriefPath(p)
 	plan, result, err := nativeS9AuthorPaths(f.root, p)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeRepairLeadFile(t, f.root, brief, "original native brief")
 	// Private authoring need not exist in Main. The reminder must not turn
 	// that absence into a missing-input prerequisite or a Main write target.

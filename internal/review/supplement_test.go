@@ -301,6 +301,89 @@ func TestSubmitSupplementReplaysOriginalAndRejectsConflictingID(t *testing.T) {
 
 // TestSubmitSupplementAuthorBinding: non-original-finder authors are
 // rejected unless a scheduler-appointed replacement is recorded.
+// G18 §3.1: the Runtime write count is not a gate for a professional
+// completion (L4-revision-usage.md §4/§8). A caller whose snapshot already
+// moved is re-read and its append still lands exactly once — the received row
+// is unique (已收行) and evt-finding-supplement-<id> is recorded once
+// (事件去重).
+func TestSubmitSupplementSurvivesMovedRuntimeCounter(t *testing.T) {
+	root := t.TempDir()
+	statePath, journalPath, snap := supplementFixture(t, root)
+
+	// An unrelated Runtime commit moves the write count; the caller still
+	// holds the older snapshot it read before that commit.
+	moved := commitUnrelatedRuntime(t, root, statePath, journalPath, snap.Revision)
+
+	supplementPath := writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-moved", "agent-qa-1"))
+	receipt, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{
+		ExpectedRevision: snap.Revision,
+		FindingID:        "finding-qa-1",
+		FilePath:         supplementPath,
+	})
+	if err != nil {
+		t.Fatalf("a moved Runtime counter refused the FindingSupplement: %v", err)
+	}
+	if receipt.Revision <= moved.Revision {
+		t.Fatalf("the FindingSupplement did not commit: revision %d", receipt.Revision)
+	}
+	rows, err := SupplementsForFinding(root, statePath, "finding-qa-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].SupplementID != "supplement-qa-moved" {
+		t.Fatalf("supplement rows = %#v, want exactly the appended one", rows)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := countJournalEvent(t, journal, "evt-finding-supplement-supplement-qa-moved"); count != 1 {
+		t.Fatalf("finding_supplement events = %d, want exactly 1", count)
+	}
+}
+
+// G18 §3.1: the append's remaining protection is the domain object version,
+// never a write count. A Finding that belongs to another review object is
+// still refused, and nothing is appended.
+func TestSubmitSupplementRefusesFindingFromAnotherReviewObject(t *testing.T) {
+	root := t.TempDir()
+	statePath, journalPath, _ := supplementFixture(t, root)
+
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	// The active review object is a different Plan than the Finding's own.
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-current"}
+	finding := state["entities"].(map[string]any)["findings"].([]any)[0].(map[string]any)
+	finding["review_plan_id"] = "review-plan-old"
+	out, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, append(out, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	supplementPath := writeSupplementFile(t, root, supplementBody("finding-qa-1", "supplement-qa-foreign", "agent-qa-1"))
+	if _, err := SubmitSupplement(root, statePath, journalPath, SupplementRequest{ExpectedRevision: -1,
+		FindingID: "finding-qa-1", FilePath: supplementPath,
+	}); err == nil || !strings.Contains(err.Error(), "belongs to a different review plan") {
+		t.Fatalf("a supplement against another review object was accepted: %v", err)
+	}
+	rows, err := SupplementsForFinding(root, statePath, "finding-qa-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("the refused supplement was appended anyway: %#v", rows)
+	}
+}
+
 func TestSubmitSupplementAuthorBinding(t *testing.T) {
 	root := t.TempDir()
 	statePath, journalPath, _ := supplementFixture(t, root)

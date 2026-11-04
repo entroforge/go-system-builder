@@ -497,6 +497,12 @@ func applyAgentEventParams(root string, agent map[string]any, schemaVersion stri
 		if err := verifyActivationReadbackChain(root, agent, message); err != nil {
 			return err
 		}
+		// activation_revision is the audit coordinate of the activation commit
+		// (the Runtime revision in force when this activation happened). It is
+		// a projection only: it is not an assertion, not a gate, and it takes
+		// part in no identity construction. The Runtime revision is an audit
+		// coordinate and never proves professional correctness
+		// (L4-revision-usage.md:141).
 		agent["activation_revision"] = commitRevision + 1
 	case "understanding_rejected":
 		if currentState != "understanding_submitted" {

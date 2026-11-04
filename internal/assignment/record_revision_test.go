@@ -149,6 +149,54 @@ func TestRegisterS6RevisionUsesOriginalWriterAndCurrentOwnerProjection(t *testin
 	}
 }
 
+// G18 §3.2: the Assignment Record revision issuance does not assert a Runtime
+// write count. A legitimate revision is issued even when the Runtime moved for
+// an unrelated reason. The protection is the received row (the revision
+// receipt), the journal-level dedup (the domain idempotency key of the
+// revision intent) and the Assignment Record's own revision, never the Runtime
+// revision (L4-revision-usage.md:141).
+func TestRegisterS6RevisionIssuanceIgnoresRuntimeWriteCount(t *testing.T) {
+	fixture, statePath, journalPath, previous, _ := registerAgentBeginFixture(t, true)
+	setRevisionManifest(t, fixture, "team-manifest-s6-registration-r2", "workgroup-s6-registration-r2", "platform-s6-r2", "agent-s6-registration-r2")
+
+	request := Request{
+		// A Runtime write count the Runtime left behind. The professional
+		// revision must not be refused because of it.
+		ExpectedRevision: 4,
+		ManifestPath:     filepath.Join(fixture.root, filepath.FromSlash(fixture.manifestRef)),
+		TaskID:           fixture.taskID,
+		TaskPath:         filepath.Join(fixture.root, filepath.FromSlash(fixture.taskRef)),
+		Revision: &RevisionRequest{
+			AssignmentID:   previous.AssignmentID,
+			ExpectedRecord: previous.Reference(),
+			IntentKey:      "s6-test-revision-write-count",
+		},
+		OccurredAt: time.Date(2026, 10, 14, 13, 0, 0, 0, time.UTC),
+	}
+	issued, err := Register(fixture.root, statePath, journalPath, request)
+	if err != nil {
+		t.Fatalf("Assignment revision issuance refused because the Runtime write count moved: %v", err)
+	}
+	if issued.Revision != 10 {
+		t.Fatalf("revision Writer commit = %d, want 10", issued.Revision)
+	}
+	entities := issued.State["entities"].(map[string]any)
+	if len(entities["assignment_revision_receipts"].([]any)) != 1 {
+		t.Fatalf("revision issuance did not append exactly one receipt: %v", entities["assignment_revision_receipts"])
+	}
+	// The Assignment Record's own revision is still the protection: a revision
+	// against the superseded Record stays refused.
+	staleRequest := request
+	staleRequest.Revision = &RevisionRequest{
+		AssignmentID:   previous.AssignmentID,
+		ExpectedRecord: previous.Reference(),
+		IntentKey:      "s6-test-stale-write-count",
+	}
+	if _, err := Register(fixture.root, statePath, journalPath, staleRequest); err == nil || !strings.Contains(err.Error(), "stale Assignment revision") {
+		t.Fatalf("stale expected Record error = %v", err)
+	}
+}
+
 func TestRegisterS6UnifiedRevisionWritesFiveStateWithOriginalEvents(t *testing.T) {
 	fixture, statePath, journalPath, previous, _ := registerAgentBeginConfiguredFixtureVersion(t, true, nil, "1.3.0")
 	setRevisionManifest(t, fixture, "team-manifest-s6-unified-r2", "workgroup-s6-unified-r2", "platform-s6-unified-r2", "agent-s6-unified-r2")

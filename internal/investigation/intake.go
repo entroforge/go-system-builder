@@ -57,9 +57,22 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before investigation intake: %w", err)
 	}
-	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
-		return runtime.Snapshot{}, fmt.Errorf("%w: expected %d but Runtime is at %d; next: %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, intakeNextCommand)
-	}
+	// G18 §2/§3.1: the Runtime write count is no longer a gate on this
+	// professional completion. An intake used to be refused because the
+	// Runtime moved for an unrelated reason; the domain protection is the
+	// three-piece set around it:
+	//   received row — the accepted source (the human defect decision row
+	//     consumed by TR-027, or the accepted Finding set) is the only thing
+	//     that opens a Case, and one Case is received once
+	//     (rejectExistingInvestigation, the exclusive artifact write and the
+	//     in-CAS pointer check below);
+	//   event dedup — the ingest commits the semantic identity
+	//     evt-investigation-case-ingested-<caseID> and its idempotency key,
+	//     so the journal dedups a retried intent;
+	//   domain version — the lifecycle cursor, the baseline generation and
+	//     the Case's own revision 1 stay the versions checked here.
+	// A caller that names the revision it holds keeps the Runtime CAS as its
+	// explicit binding; the convention is -1 to omit the expectation.
 	// RC-18 lifecycle gate: only TR-008 (verification.observation_sealed ->
 	// bug_resolution.investigation) or a human defect decision may open S8
 	// intake (docs/control/loop-definition.json bug_resolution.investigation
@@ -174,6 +187,10 @@ func Ingest(root, statePath, journalPath string, request IngestRequest) (runtime
 			ExpectedRevision: current.Revision, ArtifactPath: caseRel, ArtifactBytes: caseBytes,
 			ReferencedPaths: stateStringReferences(current.State, caseRel),
 		})
+		// A refused intake must leave the Case directory as it found it. The
+		// write-count gate no longer refuses before the artifact is reserved,
+		// so the reservation is released with the artifact itself.
+		_ = os.Remove(filepath.Dir(casePath))
 	}
 
 	occurredAt := request.OccurredAt

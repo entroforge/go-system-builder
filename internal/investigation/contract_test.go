@@ -1,6 +1,7 @@
 package investigation_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,7 +19,7 @@ func TestApproveContractRequiresExactCaseFindingCoverage(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1", "finding-2"})
 	setContractLifecycle(t, fixture)
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "the sealed batch is the provisional grouping boundary",
 	}); err != nil {
 		t.Fatalf("Ingest() error = %v", err)
@@ -26,7 +27,7 @@ func TestApproveContractRequiresExactCaseFindingCoverage(t *testing.T) {
 	prepareCaseForContractApproval(t, fixture)
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
 	_, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision: 1,
+		ExpectedRevision: -1,
 		CaseID:           "investigation-case-review-plan-r1",
 		ContractPath:     contractPath,
 		ApprovedBy:       "main-session",
@@ -40,13 +41,13 @@ func TestApproveContractRequiresCausalClosureBeforeS9(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 	setContractLifecycle(t, fixture)
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "the sealed batch is the provisional grouping boundary",
 	}); err != nil {
 		t.Fatalf("Ingest() error = %v", err)
 	}
 	_, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision: 1,
+		ExpectedRevision: -1,
 		CaseID:           "investigation-case-review-plan-r1",
 		ContractPath:     writeContractDraft(t, fixture.root, []string{"finding-1"}),
 		ApprovedBy:       "main-session",
@@ -60,7 +61,7 @@ func TestApproveContractCommitsApprovedContractAndCaseRevision(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-2", "finding-1"})
 	setContractLifecycle(t, fixture)
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "the sealed batch is the provisional grouping boundary",
 	}); err != nil {
 		t.Fatalf("Ingest() error = %v", err)
@@ -142,7 +143,7 @@ func TestApproveContractRequiresApprovalReceipt(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 	setContractLifecycle(t, fixture)
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "the sealed batch is the provisional grouping boundary",
 	}); err != nil {
 		t.Fatalf("Ingest() error = %v", err)
@@ -150,7 +151,7 @@ func TestApproveContractRequiresApprovalReceipt(t *testing.T) {
 	prepareCaseForContractApproval(t, fixture)
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
 	_, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision: 1,
+		ExpectedRevision: -1,
 		CaseID:           "investigation-case-review-plan-r1",
 		ContractPath:     contractPath,
 		ApprovedBy:       "main-session",
@@ -185,6 +186,89 @@ func writeContractDraft(t *testing.T, root string, findingIDs []string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// G18 §3.1/§4.5 reverse assertion: the Runtime write count is not a gate on
+// the professional approval of a Contract. A caller that omits the expectation
+// completes even after the Runtime moved for an unrelated reason. The G18 §2
+// domain-version clause still refuses an approval whose draft names a Case
+// revision the active Case does not have, and the G18 §2 received-row clause
+// still receives the approval exactly once.
+func TestApproveContractCompletesAfterAnUnrelatedRuntimeMoveAndKeepsTheCaseRevisionAsTheDomainVersion(t *testing.T) {
+	fixture := newIntakeFixture(t, []string{"finding-2", "finding-1"})
+	setContractLifecycle(t, fixture)
+	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
+		ExpectedRevision:  -1,
+		GroupingRationale: "the sealed batch is the provisional grouping boundary",
+	}); err != nil {
+		t.Fatalf("Ingest() error = %v", err)
+	}
+	prepareCaseForContractApproval(t, fixture)
+	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1", "finding-2"})
+	_, approvalEvidenceID, _ := registerContractApprovalEvidence(t, fixture, contractPath)
+
+	// G18 §2 domain-version clause: a draft that names a Case revision the
+	// active Case does not have is refused before anything is written.
+	changedCasePath := writeContractDraftRevision(t, fixture.root, contractPath, 2)
+	if _, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", ContractPath: changedCasePath,
+		ApprovedBy: "main-session", ApprovalEvidenceID: approvalEvidenceID,
+	}); err == nil || !strings.Contains(err.Error(), "revision must equal active InvestigationCase revision") {
+		t.Fatalf("approval of a changed Case error = %v, want the Case revision refusal", err)
+	}
+
+	// The Runtime moved for an unrelated reason: the write count is no longer
+	// a gate on the professional approval.
+	moveIntakeRuntimeForAnUnrelatedReason(t, fixture)
+	snapshot, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", ContractPath: contractPath,
+		ApprovedBy: "main-session", ApprovalEvidenceID: approvalEvidenceID,
+	})
+	if err != nil {
+		t.Fatalf("ApproveContract() error = %v", err)
+	}
+	pointer := investigationPointerFromState(t, snapshot.State)
+	if pointer["status"] != "contract_approved" {
+		t.Fatalf("investigation status = %v, want contract_approved", pointer["status"])
+	}
+
+	// G18 §2 received-row clause: the approval is received once. The repeated
+	// approval resumes the saved approval and writes nothing.
+	stateBefore := mustRead(t, fixture.statePath)
+	journalBefore := mustRead(t, fixture.journalPath)
+	repeated, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", ContractPath: contractPath,
+		ApprovedBy: "main-session", ApprovalEvidenceID: approvalEvidenceID,
+	})
+	if err != nil {
+		t.Fatalf("repeated ApproveContract() error = %v", err)
+	}
+	if repeated.Revision != snapshot.Revision {
+		t.Fatalf("repeated approval wrote Runtime revision %d, want %d", repeated.Revision, snapshot.Revision)
+	}
+	if !bytes.Equal(stateBefore, mustRead(t, fixture.statePath)) || !bytes.Equal(journalBefore, mustRead(t, fixture.journalPath)) {
+		t.Fatal("a repeated approval wrote the Runtime or the journal")
+	}
+}
+
+// writeContractDraftRevision writes a copy of the draft that names another
+// Case revision, so an approval can be tested against a changed Case.
+func writeContractDraftRevision(t *testing.T, root string, path string, revision int) string {
+	t.Helper()
+	var draft map[string]any
+	if err := json.Unmarshal(mustRead(t, path), &draft); err != nil {
+		t.Fatal(err)
+	}
+	draft["revision"] = revision
+	data, err := json.MarshalIndent(draft, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := filepath.Join(root, "repair-contract-draft-r2.json")
+	if err := os.WriteFile(changed, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return changed
 }
 
 func registerContractApprovalEvidence(t *testing.T, fixture *intakeFixture, contractPath string) (string, string, int) {
@@ -345,16 +429,16 @@ func TestApproveContractAcceptsActualPresentedContract(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 	setContractLifecycle(t, fixture)
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "the sealed batch is the provisional grouping boundary",
 	}); err != nil {
 		t.Fatalf("Ingest() error = %v", err)
 	}
 	prepareCaseForContractApproval(t, fixture)
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
-	_, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
+	_, approvalEvidenceID, _ := registerContractApprovalEvidence(t, fixture, contractPath)
 	snapshot, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision: expectedRevision,
+		ExpectedRevision: -1,
 		CaseID:           "investigation-case-review-plan-r1",
 		ContractPath:     contractPath,
 		ApprovedBy:       "main-session",
@@ -387,7 +471,7 @@ func TestApproveContractRejectsForeignHumanDecisionScope(t *testing.T) {
 	fixture := newIntakeFixture(t, []string{"finding-1"})
 	setContractLifecycle(t, fixture)
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision:  0,
+		ExpectedRevision:  -1,
 		GroupingRationale: "the sealed batch is the provisional grouping boundary",
 	}); err != nil {
 		t.Fatalf("Ingest() error = %v", err)
@@ -416,7 +500,7 @@ func TestApproveContractRejectsForeignHumanDecisionScope(t *testing.T) {
 	}
 	contractPath := writeContractDraft(t, fixture.root, []string{"finding-1"})
 	_, err = investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision: 1,
+		ExpectedRevision: -1,
 		CaseID:           "investigation-case-review-plan-r1",
 		ContractPath:     contractPath,
 		ApprovedBy:       "main-session",

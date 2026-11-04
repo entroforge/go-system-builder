@@ -2,6 +2,7 @@ package review
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,6 +163,27 @@ func writePlanFile(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// commitUnrelatedRuntime commits a Runtime change that belongs to no review
+// responsibility. It moves the Runtime write count so a test can prove that
+// the write count no longer qualifies a professional completion
+// (L4-revision-usage.md §4/§8, G18 §3.1).
+func commitUnrelatedRuntime(t *testing.T, root, statePath, journalPath string, revision int) loopruntime.Snapshot {
+	t.Helper()
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	next, err := store.Update(revision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-test-unrelated-runtime-commit-%d", revision),
+		TransitionID:   "TEST",
+		Event:          "test_unrelated_runtime_commit",
+		Actor:          "test",
+		IdempotencyKey: fmt.Sprintf("test:unrelated-runtime-commit:%d", revision),
+		Apply:          func(state map[string]any) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("commit unrelated Runtime update: %v", err)
+	}
+	return next
 }
 
 // registerFixturePlan registers the fixture plan and returns the new snapshot.

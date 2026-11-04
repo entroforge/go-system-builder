@@ -3,7 +3,6 @@ package investigation_test
 import (
 	"bytes"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/investigation"
@@ -34,31 +33,34 @@ func TestS8ConcurrentCommitPreservesAnswerAndOriginalReceiptRecovery(t *testing.
 		},
 	}
 	_, err = investigation.SubmitIssuedHypothesisResult(f.root, f.statePath, f.journalPath, request)
-	// This exact interleaving reaches the original frozen-journal check before
-	// Case CAS. It must remain a rejection, not be disguised as a harmless CAS
-	// or an instruction to reconcile potentially damaged persistence.
-	// L4-state-transition-core.md:13.1 requires the error to correspond to the
-	// actual failure surface, and :340 gives the direction for a concurrent
-	// update: read the current responsibility, decide whether the original
-	// business was already received, then retry as needed. The concurrent
-	// Runtime update therefore surfaces as the real journal conflict it is,
-	// naming the original object and the recovery owner, instead of a generic
-	// continuity label.
-	if err == nil {
-		t.Fatal("concurrent reception was accepted")
-	}
-	if !strings.Contains(err.Error(), packet.ID) && !strings.Contains(err.Error(), packet.AnswerPath) && !strings.Contains(err.Error(), "evt-s8-unrelated-observation") {
-		t.Fatalf("concurrent reception lost its cause, original object or recovery owner: %v", err)
+	// G18 §3.1/§4.5: the Runtime write count is not a gate on the professional
+	// reception. The concurrent Runtime update moved the counter for an
+	// unrelated reason while the original responsibility, the pinned Case and
+	// the hypothesis binding stayed unchanged, so the reception completes
+	// instead of being refused on a counter.
+	if err != nil {
+		t.Fatalf("concurrent reception was refused on the Runtime write count: %v", err)
 	}
 	conflicted := currentS8Snapshot(t, f)
-	if conflicted.Revision != before.Revision+1 {
-		t.Fatalf("failed reception committed beyond the unrelated update: %d/%d", conflicted.Revision, before.Revision)
+	if conflicted.Revision != before.Revision+2 {
+		t.Fatalf("reception committed %d revisions, want exactly the unrelated update and the one reception commit", conflicted.Revision-before.Revision)
 	}
-	if _, found, err := runtime.VerifiedHypothesisResultReceipt(f.root, conflicted.State, packet.ID, owner.ownerID); err != nil || found {
-		t.Fatalf("failed internal CAS fabricated acceptance: found=%t err=%v", found, err)
+	receipt, found, err := runtime.VerifiedHypothesisResultReceipt(f.root, conflicted.State, packet.ID, owner.ownerID)
+	if err != nil || !found {
+		t.Fatalf("accepted receipt is missing: found=%t err=%v", found, err)
 	}
+	// G18 §1: the accepted identity is the committed event identity. The
+	// Runtime write count in the receipt is a diagnostic of where the
+	// acceptance landed, never the identity, so the proof is the committed
+	// event and not a counter.
+	if receipt.AcceptedEventID == "" || receipt.AcceptedIdempotencyKey == "" {
+		t.Fatalf("accepted receipt lost its committed identity: %+v", receipt)
+	}
+	// G18 §2 received-row clause: the same answer is received exactly once —
+	// one result row on the Case and one committed journal event.
+	assertS8SingleAcceptedResult(t, f, receipt, packet)
 	if !bytes.Equal(answerBytes, mustRead(t, filepath.Join(worker, answer))) {
-		t.Fatal("CAS conflict rewrote the professional answer")
+		t.Fatal("the reception rewrote the professional answer")
 	}
 	// Main has checked that the original Case/dispatch still holds. Reuse the
 	// existing consumer and bytes; no new answer, publication or retry loop.
@@ -67,10 +69,10 @@ func TestS8ConcurrentCommitPreservesAnswerAndOriginalReceiptRecovery(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, found, err := runtime.VerifiedHypothesisResultReceipt(f.root, accepted.State, packet.ID, owner.ownerID)
-	if err != nil || !found || receipt.AcceptedAfterRuntimeRevision != accepted.Revision || accepted.Revision != conflicted.Revision+1 {
-		t.Fatalf("original receipt no longer proves its exact commit: receipt=%+v revision=%d err=%v", receipt, accepted.Revision, err)
+	if accepted.Revision != conflicted.Revision {
+		t.Fatalf("the accepted receipt no longer proves its exact commit: revision=%d want=%d", accepted.Revision, conflicted.Revision)
 	}
+	assertS8SingleAcceptedResult(t, f, receipt, packet)
 	if !bytes.Equal(answerBytes, mustRead(t, filepath.Join(worker, answer))) {
 		t.Fatal("Main recovery required changing the accepted professional answer")
 	}

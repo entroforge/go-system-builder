@@ -122,7 +122,12 @@ func TestS9NativeFinalConcurrentFirstAcceptanceAndReplay(t *testing.T) {
 	assertNativeFinalEventCount(t, f.journal, 1)
 }
 
-func TestS9NativeFinalOrphanAfterCASRetry(t *testing.T) {
+// G18 §3.2: the Runtime write count is not a gate on this professional act.
+// After an unrelated Runtime move the Final must still complete, and the
+// protection lives in the domain facts instead: the already accepted Final of
+// this packet (replayed), the issued receipt's event identity (journal dedup)
+// and the Worker attempt's own version (revalidated inside Apply).
+func TestS9NativeFinalOrphanAfterUnrelatedRuntimeMove(t *testing.T) {
 	f := nativeS9VerifiedFinal(t)
 	beforeState, err := os.ReadFile(f.state)
 	if err != nil {
@@ -154,24 +159,33 @@ func TestS9NativeFinalOrphanAfterCASRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("actual concurrent Writer event: %v", err)
 	}
-	if _, _, _, err := repair.SubmitIssuedRepairResult(context.Background(), f.root, f.state, f.journal, f.request); !errors.Is(err, runtime.ErrStaleRevision) {
-		t.Fatalf("old CAS expected stale revision: %v", err)
+	if advanced.Revision == f.request.ExpectedRevision {
+		t.Fatalf("concurrent Writer did not move the Runtime write count: %d", advanced.Revision)
 	}
-	f.request.ExpectedRevision = advanced.Revision
+	// The caller still names the write count it read before the move. The
+	// retired gate would have refused this professional act; the domain proof
+	// must accept it and record the Final against the current state.
 	_, result, ref, err := repair.SubmitIssuedRepairResult(context.Background(), f.root, f.state, f.journal, f.request)
 	if err != nil {
-		t.Fatalf("retry original Final: %v", err)
+		t.Fatalf("professional Final refused after unrelated Runtime move: %v", err)
 	}
 	if ref.Path == firstRef.Path || result.Receipt == nil || result.Receipt.ResultRef != ref.Path || result.ResultID != first.ResultID {
-		t.Fatalf("retry did not record new actual reference: first=%+v final=%+v", firstRef, ref)
+		t.Fatalf("post-move Final did not record new actual reference: first=%+v final=%+v", firstRef, ref)
 	}
 	got, err := os.ReadFile(firstPath)
 	if err != nil || !bytes.Equal(got, orphan) {
 		t.Fatalf("unregistered file changed: %v", err)
 	}
+	snapshot := repairDispatchSnapshot(t, f.root)
+	receipt, found, err := runtime.VerifiedRepairResultReceipt(f.root, snapshot.State, f.request.PacketID, f.request.OwnerAgentID)
+	if err != nil || !found || receipt.ResultRef != ref.Path {
+		t.Fatalf("post-move Final not recorded: %+v %t %v", receipt, found, err)
+	}
+	// The replay stays idempotent even while the caller still names the write
+	// count it read before the move: the professional act is delivered once.
 	_, _, replay, err := repair.SubmitIssuedRepairResult(context.Background(), f.root, f.state, f.journal, f.request)
 	if err != nil || replay.Path != ref.Path {
-		t.Fatalf("registered retry replay: %+v %v", replay, err)
+		t.Fatalf("registered post-move replay: %+v %v", replay, err)
 	}
 	assertNativeFinalEventCount(t, f.journal, 1)
 }

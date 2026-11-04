@@ -121,6 +121,48 @@ func TestCompleteTaskCanonicalResultAcceptsAndReplaysOriginalReceipts(t *testing
 	}
 }
 
+// G18 §3.2: the canonical S6 completion does not assert a Runtime write count.
+// A legitimate professional completion is accepted exactly once even when the
+// Runtime moved for an unrelated reason. The protection is the received row
+// (the accepted Result of this message_id), the journal-level dedup (the
+// domain idempotency key) and the Assignment Record's own revision, never the
+// Runtime revision (L4-revision-usage.md:141).
+func TestCompleteTaskCanonicalResultIgnoresRuntimeWriteCountAndAcceptsOnce(t *testing.T) {
+	fixture, statePath, journalPath, record, sourceRef, sourceBytes := readyCanonicalResultFixture(t)
+	message := canonicalResultMessage(t, fixture, record, "msg-s6-result-write-count", "the professional answer names a source", []string{sourceRef})
+	path := writeRegistrationMessage(t, fixture.root, "canonical-result-write-count.json", message)
+
+	// The caller asserts a Runtime write count the Runtime left behind. The
+	// professional completion must not be refused because of it.
+	first, receipt, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{
+		ExpectedRevision: 3, AgentID: record.OwnerAgentID, MessagePath: path,
+	})
+	if err != nil {
+		t.Fatalf("canonical Result refused because the Runtime write count moved: %v", err)
+	}
+	if receipt.ResultRef == "" || receipt.ResultRevision != 1 || receipt.Replayed {
+		t.Fatalf("canonical Result was not received as the first Result: %+v", receipt)
+	}
+	assertCanonicalResultProjection(t, fixture.root, first, record, receipt, sourceRef, sourceBytes, "submitted")
+
+	// The same S6 answer is still accepted exactly once: the exact replay is
+	// receipt-only and writes no Runtime revision and no journal event.
+	beforeState, beforeJournal := registrationPairBytes(t, statePath, journalPath)
+	replay, replayReceipt, err := CompleteTaskWithReceipt(fixture.root, statePath, journalPath, CompletionRequest{
+		ExpectedRevision: 3, AgentID: record.OwnerAgentID, MessagePath: path,
+	})
+	if err != nil {
+		t.Fatalf("exact canonical Result replay: %v", err)
+	}
+	if replay.Revision != first.Revision || replayReceipt.ResultRef != receipt.ResultRef || !replayReceipt.Replayed {
+		t.Fatalf("canonical Result replay was not receipt-only: revision=%d receipt=%+v", replay.Revision, replayReceipt)
+	}
+	afterState, afterJournal := registrationPairBytes(t, statePath, journalPath)
+	if !bytes.Equal(beforeState, afterState) || !bytes.Equal(beforeJournal, afterJournal) {
+		t.Fatal("canonical Result replay wrote a new Runtime revision or journal event")
+	}
+}
+
 func TestCompleteTaskCanonicalResultKeepsActualAnswerAndRejectsEmptyDraft(t *testing.T) {
 	t.Run("blank professional draft", func(t *testing.T) {
 		fixture, statePath, journalPath, record, sourceRef, _ := readyCanonicalResultFixture(t)

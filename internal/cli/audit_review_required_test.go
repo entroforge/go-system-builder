@@ -268,8 +268,12 @@ func TestS10ReviewRequiredDoesNotUseReviewCountAsGate(t *testing.T) {
 	var reports, impacts int
 	for _, raw := range state["evidence"].([]any) {
 		row := raw.(map[string]any)
-		if row["kind"] == "acceptance" { reports++ }
-		if row["kind"] == "change_impact" { impacts++ }
+		if row["kind"] == "acceptance" {
+			reports++
+		}
+		if row["kind"] == "change_impact" {
+			impacts++
+		}
 	}
 	if reports != 1 || impacts != 1 {
 		t.Fatalf("review return duplicated original facts: %d/%d", reports, impacts)

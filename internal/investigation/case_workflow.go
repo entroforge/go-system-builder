@@ -582,9 +582,21 @@ func updateCaseRevision(root, statePath, journalPath string, request CaseRevisio
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before Case revision: %w", err)
 	}
-	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
-		return runtime.Snapshot{}, fmt.Errorf("%w: expected Runtime revision %d but it is %d; next: %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, caseWorkflowNext)
-	}
+	// G18 §2/§3.1: the Runtime write count is no longer a gate on this
+	// professional completion. A Case revision used to be refused because the
+	// Runtime moved for an unrelated reason; the domain protection is the
+	// three-piece set around it:
+	//   received row — the Case this revision writes is the received row, and
+	//     the answer it carries is received once (the in-CAS recheck of the
+	//     pinned Case bytes and the operation's own receipt check below);
+	//   event dedup — the revision commits the semantic identity
+	//     evt-investigation-case-revision-<caseID>-r<caseRevision> and its
+	//     idempotency key, so the journal dedups a retried intent;
+	//   domain version — the Case's own revision stays the version checked
+	//     here (the Runtime pointer against the requested revision, the
+	//     artifact against that revision and the in-CAS pointer recheck).
+	// A caller that names the revision it holds keeps the Runtime CAS as its
+	// explicit binding; the convention is -1 to omit the expectation.
 	pointer, err := mutableCasePointer(current.State, request.CaseID, request.Operation)
 	if err != nil {
 		return runtime.Snapshot{}, err

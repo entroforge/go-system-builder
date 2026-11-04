@@ -127,15 +127,21 @@ func TestS9RepairPlanReportOriginalHookCoverageReplayAndWriteBarrier(t *testing.
 
 	// A later authoring-file change cannot replace the accepted original.
 	original, found, err := runtime.VerifiedRepairPlanReportReceipt(fixture.root, currentS9State(t, fixture), first.ID, first.Binding.OwnerAgentID)
-	if err != nil || !found { t.Fatalf("original Plan receipt: %+v %v", original, err) }
+	if err != nil || !found {
+		t.Fatalf("original Plan receipt: %+v %v", original, err)
+	}
 	changedAnswer := writeS9RepairPlanReportAnswer(t, fixture.root, first, "changed answer after original acceptance")
 	stateBeforeConflict := mustRead(t, fixture.statePath)
 	journalBeforeConflict := mustRead(t, fixture.journalPath)
 	conflict := submitS9OriginalReceipt(t, fixture, first, changedAnswer)
-	if !conflict.Accepted { t.Fatalf("accepted original was not replayed: %+v", conflict) }
+	if !conflict.Accepted {
+		t.Fatalf("accepted original was not replayed: %+v", conflict)
+	}
 	assertS9RuntimeBytesUnchanged(t, fixture, stateBeforeConflict, journalBeforeConflict, "changed accepted S9 answer")
 	after, found, err := runtime.VerifiedRepairPlanReportReceipt(fixture.root, currentS9State(t, fixture), first.ID, first.Binding.OwnerAgentID)
-	if err != nil || !found || !bytes.Equal(after.SubmittedAnswer, original.SubmittedAnswer) { t.Fatalf("original accepted answer changed: %+v %v", after, err) }
+	if err != nil || !found || !bytes.Equal(after.SubmittedAnswer, original.SubmittedAnswer) {
+		t.Fatalf("original accepted answer changed: %+v %v", after, err)
+	}
 }
 
 func TestS9RepairPlanReportSavedFromReadingRunsOriginalPlanCheckpoint(t *testing.T) {
@@ -405,7 +411,7 @@ func prepareS9RepairPlanReportHookFixtureWithActivity(t *testing.T, setup func(*
 	setContractLifecycle(t, fixture)
 
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision: 0, GroupingRationale: "the two sealed Findings enter one bounded generation-two repair Case",
+		ExpectedRevision: -1, GroupingRationale: "the two sealed Findings enter one bounded generation-two repair Case",
 	}); err != nil {
 		t.Fatalf("original generation-two Ingest: %v", err)
 	}
@@ -421,9 +427,9 @@ func prepareS9RepairPlanReportHookFixtureWithActivity(t *testing.T, setup func(*
 		map[string]any{"id": "unit-api-regression", "description": "repair the sibling detection assertion", "assertion_ids": []string{"symptom-2", "gap-1"}, "scope": []string{"internal/api"}},
 	}
 	writeInvestigationJSON(t, contractPath, contract)
-	_, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
+	_, approvalEvidenceID, _ := registerContractApprovalEvidence(t, fixture, contractPath)
 	approved, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision: expectedRevision, CaseID: "investigation-case-review-plan-r1", ContractPath: contractPath,
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", ContractPath: contractPath,
 		ApprovedBy: "main-session", ApprovalEvidenceID: approvalEvidenceID,
 	})
 	if err != nil {

@@ -157,7 +157,11 @@ func TestCaseWriterConcurrentQuestionsKeepEachResponsibility(t *testing.T) {
 		result := <-results
 		if result.err == nil {
 			successes++
-		} else if strings.Contains(result.err.Error(), "stale runtime revision") {
+		} else if strings.Contains(result.err.Error(), "stale runtime revision") || strings.Contains(result.err.Error(), "stale Case revision") {
+			// G18 §3.1: the Runtime write count is no longer the comparison
+			// that refuses the loser. The loser is refused by the domain
+			// version that actually moved — the Case's own revision — or by
+			// the explicit write-count binding it still holds.
 			failed = result.index
 		} else {
 			t.Fatalf("concurrent writer failed unexpectedly: %v", result.err)
@@ -224,7 +228,7 @@ func TestConcurrentOriginalInvestigatorsKeepTheirActualReceipts(t *testing.T) {
 func TestApprovedCaseIsNotAutomaticallyRewrittenByNewQuestion(t *testing.T) {
 	f := newIntakeFixture(t, []string{"finding-1"})
 	setContractLifecycle(t, f)
-	if _, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: 0, GroupingRationale: "investigate the actual observation"}); err != nil {
+	if _, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "investigate the actual observation"}); err != nil {
 		t.Fatal(err)
 	}
 	prepareCaseForContractApproval(t, f)

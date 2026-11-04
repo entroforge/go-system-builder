@@ -33,9 +33,20 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before route consumption: %w", err)
 	}
-	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
-		return runtime.Snapshot{}, fmt.Errorf("%w: expected Runtime revision %d but it is %d; next: runtime investigation status --case-id %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, request.CaseID)
-	}
+	// G18 §2/§3.1: the Runtime write count is no longer a gate on this
+	// professional completion. A route consumption used to be refused because
+	// the Runtime moved for an unrelated reason; the domain protection is the
+	// three-piece set around it:
+	//   received row — the consumed route is the received row and one Case
+	//     route is consumed once (the route_consumed_at check below and the
+	//     in-CAS route recheck);
+	//   event dedup — the consumption commits the semantic identity
+	//     evt-s8-route-consume-<caseID> and its idempotency key, so the
+	//     journal dedups a retried intent;
+	//   domain version — the Case's own identity and its persisted route stay
+	//     the versions checked here.
+	// A caller that names the revision it holds keeps the Runtime CAS as its
+	// explicit binding; the convention is -1 to omit the expectation.
 	review, ok := current.State["review"].(map[string]any)
 	if !ok || review == nil {
 		return runtime.Snapshot{}, errors.New("Runtime review section is missing; restore state.review before consuming the Case route")

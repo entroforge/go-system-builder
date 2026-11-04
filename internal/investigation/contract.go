@@ -72,9 +72,22 @@ func ApproveContract(root, statePath, journalPath string, request ContractReques
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before RepairContract approval: %w", err)
 	}
-	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
-		return runtime.Snapshot{}, fmt.Errorf("%w: expected %d but Runtime is at %d; next: %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, contractNextCommand)
-	}
+	// G18 §2/§3.1: the Runtime write count is no longer a gate on this
+	// professional completion. An approval used to be refused because the
+	// Runtime moved for an unrelated reason; the domain protection is the
+	// three-piece set around it:
+	//   received row — the approved Contract and the approval receipt are
+	//     received once (the exclusive artifact write, resumeApprovedContract
+	//     for a retried approval and the in-CAS one-time consumption of the
+	//     human decision evidence below);
+	//   event dedup — the approval commits the semantic identity
+	//     evt-repair-contract-approved-<caseID>-<contractID> and its
+	//     idempotency key, so the journal dedups a retried intent;
+	//   domain version — the Case's own revision (the artifact against the
+	//     Runtime pointer, the draft against the Case and the in-CAS pointer
+	//     recheck below) and the Contract's own identity stay checked.
+	// A caller that names the revision it holds keeps the Runtime CAS as its
+	// explicit binding; the convention is -1 to omit the expectation.
 
 	pointer, err := activeCasePointer(current.State, request.CaseID)
 	if err != nil {

@@ -301,7 +301,7 @@ func TestNativeS8StopReceivesOriginalCaseAnswerWithoutGenericPlanOrActorAlias(t 
 	caseBytes := mustRead(t, casePath)
 	acceptedState, acceptedJournal := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
 	writeS8ProfessionalAnswer(t, fixture.root, p, "Changed submitted content is a conflicting answer, not a receipt query.")
-	if _, err := submitS8Original(fixture, accepted.Revision, p, path, owner.ownerID); err != nil {
+	if _, err := submitS8Original(fixture, p, path, owner.ownerID); err != nil {
 		t.Fatalf("resolved delivery replay depended on the changed private answer: %v", err)
 	}
 	if err := os.WriteFile(answerPath, []byte("broken private answer"), 0600); err != nil {

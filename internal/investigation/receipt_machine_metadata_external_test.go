@@ -26,7 +26,7 @@ func TestOriginalHypothesisReceiptIgnoresHistoricalMachineFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	accepted, _, err := investigation.ReceiveIssuedHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.IssuedHypothesisResultRequest{ExpectedRevision: current.Revision, PacketID: p.ID, OwnerAgentID: owners[0].ownerID, AnswerPath: answer}, true)
+	accepted, _, err := investigation.ReceiveIssuedHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.IssuedHypothesisResultRequest{ExpectedRevision: -1, PacketID: p.ID, OwnerAgentID: owners[0].ownerID, AnswerPath: answer}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

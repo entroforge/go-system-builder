@@ -500,9 +500,14 @@ func AcceptIssuedRepairResultCandidate(ctx context.Context, root, statePath, jou
 	if len(problems) != 0 {
 		return mainSnapshot, WorkspaceCandidate{}, ArtifactRef{}, &RepairResultBeforeCandidateError{Cause: &workpacket.AnswerError{Label: "S9 answer", Fields: problems}}
 	}
-	if err := checkRevision(req.ExpectedRevision, mainSnapshot.Revision, "runtime S9 issued RepairResult answer"); err != nil {
-		return mainSnapshot, WorkspaceCandidate{}, ArtifactRef{}, err
-	}
+	// G18 §3.2: the issued RepairResult answer is one professional answer and
+	// it must not be refused because the Runtime moved for an unrelated
+	// reason. The Runtime write count is therefore not compared here. The
+	// protection stays in the three domain facts: the received row (the
+	// accepted candidate of this Worker attempt, read back above and
+	// rechecked inside Apply), the journal-level dedup (the issued candidate
+	// event id and idempotency key of this packet) and the Worker attempt's
+	// own version (generation, rework reference and execution path).
 	current := mainSnapshot
 	provenance, err := newRepairResultCandidateProvenance(ctx, root, current, packet, execution, answer)
 	if err != nil {
@@ -565,7 +570,13 @@ func AcceptIssuedRepairResultCandidate(ctx context.Context, root, statePath, jou
 			return nil
 		},
 	}
-	next, err := writer.Update(current.Revision, mutation)
+	// G18 §3.2: the candidate is recorded against the current Runtime state
+	// (-1 is the omission marker). The Runtime write count is not asserted
+	// here, so this professional answer is not refused because the Runtime
+	// moved for an unrelated reason. Apply revalidates the domain facts
+	// (the selected Worker attempt and the unique delivery candidate of this
+	// attempt) and the journal deduplicates this packet's candidate event.
+	next, err := writer.UpdateCurrent(mutation)
 	if err != nil {
 		if recovered, recoveredSnapshot, recoveredCandidate, recoveredRef, recoverErr := recoverAcceptedRepairResultCandidate(root, writer, packet, req, answer, actualSource); recoverErr == nil && recovered {
 			return recoveredSnapshot, recoveredCandidate, recoveredRef, nil
@@ -981,9 +992,14 @@ func SubmitIssuedRepairResult(ctx context.Context, root, statePath, journalPath 
 		// facts or read/check the original checks a second time.
 		return current, result, ref, nil
 	}
-	if err := checkRevision(req.ExpectedRevision, current.Revision, "runtime S9 Result"); err != nil {
-		return current, RepairResult{}, ArtifactRef{}, err
-	}
+	// G18 §3.2: recording the accepted Final is a professional act and must
+	// not be refused because the Runtime moved for an unrelated reason. The
+	// Runtime write count is therefore not compared here. The protection
+	// stays in the three domain facts: the received row (the already accepted
+	// Final of this packet, replayed above), the journal-level dedup (the
+	// issued receipt's accepted event id and idempotency key) and the
+	// candidate's own version (the Worker attempt and its delivery
+	// candidate, revalidated inside Apply).
 	_, execution, err := currentRepairExecution(ctx, root, current.State, packet, true)
 	if err != nil {
 		return current, RepairResult{}, ArtifactRef{}, err
@@ -1057,7 +1073,11 @@ func SubmitIssuedRepairResult(ctx context.Context, root, statePath, journalPath 
 	proposal.Receipt, proposal.issuedFinal = &receipt, capability
 	proposal.OccurredAt = occurred(req.OccurredAt)
 	return submitIssuedRepairResultToRuntime(root, statePath, journalPath, submitIssuedResultRuntimeRequest{
-		RuntimeRequest: RuntimeRequest{Context: ctx, ExpectedRevision: current.Revision, Actor: execution.AgentID, OccurredAt: proposal.OccurredAt},
+		// G18 §3.2: the caller no longer asserts a Runtime write count (-1 is
+		// the omission marker). The original Writer records the Final against
+		// the current state and revalidates the candidate association inside
+		// Apply.
+		RuntimeRequest: RuntimeRequest{Context: ctx, ExpectedRevision: -1, Actor: execution.AgentID, OccurredAt: proposal.OccurredAt},
 		Result:         proposal, issued: capability,
 	})
 }

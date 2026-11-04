@@ -301,14 +301,14 @@ func TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates(t *testing.T) {
 		t.Fatal(err)
 	}
 	casePointer = investigationPointerFromState(t, latest.State)
-	routed, err := investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
-		ExpectedRevision: latest.Revision, ExpectedCaseRevision: s8TestInt(casePointer["revision"]), CaseID: casePointer["case_id"].(string), Route: "investigate_more", RouteReason: "the original registered question remains open",
+	_, err = investigation.UpdateCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.RouteRequest{
+		ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(casePointer["revision"]), CaseID: casePointer["case_id"].(string), Route: "investigate_more", RouteReason: "the original registered question remains open",
 	})
 	if err != nil {
 		t.Fatalf("record original investigate_more Case route: %v", err)
 	}
 	consumed, err := investigation.ConsumeCaseRoute(fixture.root, fixture.statePath, fixture.journalPath, investigation.ConsumeRouteRequest{
-		ExpectedRevision: routed.Revision, CaseID: casePointer["case_id"].(string), Actor: "orchestrator",
+		ExpectedRevision: -1, CaseID: casePointer["case_id"].(string), Actor: "orchestrator",
 	})
 	if err != nil {
 		t.Fatalf("consume original investigate_more route: %v", err)
@@ -325,7 +325,7 @@ func TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates(t *testing.T) {
 	journalBeforeConsumedRouteSave := mustRead(t, fixture.journalPath)
 	lateAnswer := writeS8ProfessionalAnswer(t, fixture.root, byOwner[routePending.ownerID], "This answer must not be accepted after Runtime consumed the Case route.")
 	_, directErr := investigation.SubmitIssuedHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.IssuedHypothesisResultRequest{
-		ExpectedRevision: consumed.Revision, PacketID: byOwner[routePending.ownerID].ID, AnswerPath: lateAnswer,
+		ExpectedRevision: -1, PacketID: byOwner[routePending.ownerID].ID, AnswerPath: lateAnswer,
 		OwnerAgentID: routePending.ownerID, SourceRoot: fixture.root,
 		AuthorizeSource: func(root string, _ map[string]any) error {
 			if root != fixture.root {
@@ -354,7 +354,7 @@ func TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates(t *testing.T) {
 	// old visible route. That must not revive an unanswered packet whose
 	// immutable Case history crossed the consumed route transaction.
 	registeredAgain, err := investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
-		ExpectedRevision: consumed.Revision, ExpectedCaseRevision: s8TestInt(consumedPointer["revision"]), CaseID: consumedPointer["case_id"].(string), HypothesisID: "hypothesis-after-route-consume", AssignmentID: "assignment-after-route-consume",
+		ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(consumedPointer["revision"]), CaseID: consumedPointer["case_id"].(string), HypothesisID: "hypothesis-after-route-consume", AssignmentID: "assignment-after-route-consume",
 		Statement: "a fresh question follows the consumed investigation route", Invariant: "the consumed route does not restore old work",
 		Discriminator: "compare the old issuance to the immutable Case lineage", ExpectedOutcomes: map[string]any{"support": "the old packet stays stale", "refute": "the old packet becomes current"},
 		SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"evidence://s8-after-route-consume"},
@@ -367,7 +367,7 @@ func TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates(t *testing.T) {
 		t.Fatalf("new Case revision did not clear the pointer-only consumed tuple as expected: %#v", registeredPointer)
 	}
 	restoredRoute, err := investigation.UpdateCase(fixture.root, fixture.statePath, fixture.journalPath, investigation.CaseRevisionRequest{
-		ExpectedRevision: registeredAgain.Revision, ExpectedCaseRevision: s8TestInt(registeredPointer["revision"]), CaseID: registeredPointer["case_id"].(string), Operation: "fixture_restore_prior_route_tuple",
+		ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(registeredPointer["revision"]), CaseID: registeredPointer["case_id"].(string), Operation: "fixture_restore_prior_route_tuple",
 		Mutate: func(document map[string]any) error {
 			document["route"] = nil
 			document["route_reason"] = nil
@@ -384,7 +384,7 @@ func TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates(t *testing.T) {
 	stateBeforeContinuityReject := mustRead(t, fixture.statePath)
 	journalBeforeContinuityReject := mustRead(t, fixture.journalPath)
 	_, continuityErr := investigation.SubmitIssuedHypothesisResult(fixture.root, fixture.statePath, fixture.journalPath, investigation.IssuedHypothesisResultRequest{
-		ExpectedRevision: restoredRoute.Revision, PacketID: byOwner[routePending.ownerID].ID, AnswerPath: lateAnswer,
+		ExpectedRevision: -1, PacketID: byOwner[routePending.ownerID].ID, AnswerPath: lateAnswer,
 		OwnerAgentID: routePending.ownerID, SourceRoot: fixture.root,
 		AuthorizeSource: func(root string, _ map[string]any) error {
 			if root != fixture.root {
@@ -430,7 +430,7 @@ func prepareS8GenerationTwoFixture(t *testing.T, siblings bool, sourceSetup ...f
 	setFixtureAcceptedFindings(t, fixture, []string{"finding-1"}, 2)
 	setContractLifecycle(t, fixture)
 	registered, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision: 0, GroupingRationale: "one sealed Finding enters one bounded Case",
+		ExpectedRevision: -1, GroupingRationale: "one sealed Finding enters one bounded Case",
 	})
 	if err != nil {
 		t.Fatalf("Ingest v1.2 generation 2 Case: %v", err)
@@ -449,7 +449,7 @@ func prepareS8GenerationTwoFixture(t *testing.T, siblings bool, sourceSetup ...f
 		hypothesisID := fmt.Sprintf("hypothesis-s8-generation-two-%02d", index)
 		assignmentID := fmt.Sprintf("assignment-s8-generation-two-%02d", index)
 		registered, err = investigation.RegisterHypothesis(fixture.root, fixture.statePath, fixture.journalPath, investigation.HypothesisRequest{
-			ExpectedRevision: registered.Revision, ExpectedCaseRevision: s8TestInt(pointer["revision"]),
+			ExpectedRevision: -1, ExpectedCaseRevision: s8TestInt(pointer["revision"]),
 			CaseID: caseID, HypothesisID: hypothesisID, AssignmentID: assignmentID,
 			Statement: fmt.Sprintf("question %d checks whether the boundary drops a required value", index),
 			Invariant: "the value survives this boundary", Discriminator: fmt.Sprintf("trace question %d through the decoder", index),

@@ -87,8 +87,8 @@ func writeS8ActorTranscript(t *testing.T, root, ownerID, answerPath string) stri
 
 func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot, string) {
 	t.Helper()
-	f, decision := humanDefectFixture(t)
-	current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: decision.Revision, GroupingRationale: "Investigate the original human report without inventing a review Finding."})
+	f, _ := humanDefectFixture(t)
+	current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "Investigate the original human report without inventing a review Finding."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 	if initial["baseline_generation"] != float64(2) {
 		t.Fatal("human intake lost the current product generation")
 	}
-	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: current.Revision, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
+	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: -1, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
 		document["failure_boundary_refs"] = []string{"test://decoder-boundary-observation"}
 		return nil
 	}})
@@ -110,7 +110,7 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 	}
 	writeInvestigationBytes(t, f.root, ".claude/agents/investigator.md", mustRead(t, filepath.Join("..", "..", "agents", "investigator.md")))
 	owner := s8OwnerFixture{hypothesisID: "hypothesis-human-decoder", assignmentID: "assignment-human-decoder", ownerID: "investigator-human-decoder", teamID: "workgroup-human-decoder", taskID: "TASK-842-90", dispatchMode: "plan_checkpoint"}
-	current, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: current.Revision, CaseID: caseID,
+	current, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: -1, CaseID: caseID,
 		HypothesisID: owner.hypothesisID, AssignmentID: owner.assignmentID, Statement: "the decoder omits the required input field", Invariant: "the required input field survives decoding", Discriminator: "compare the original human report and the decoder field mapping",
 		ExpectedOutcomes: map[string]any{"support": "the field is absent from the decoder mapping", "refute": "the decoder preserves the field"}, SourceFindingIDs: []string{}, EvidenceRefs: []string{".claude/decisions/hd-human-defect.json"}})
 	if err != nil {
@@ -169,7 +169,7 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 	if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
 		t.Fatal("native replay wrote another result")
 	}
-	current, err = investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, investigation.RouteRequest{ExpectedRevision: current.Revision, CaseID: caseID, Route: "s9_repair", RouteReason: "repair the demonstrated decoder omission", PrimaryRootCause: "the field mapping omits a required input", NoCompetingHypothesis: "the seeded input observation and mapping exclude the alternate transport explanation",
+	current, err = investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, investigation.RouteRequest{ExpectedRevision: -1, CaseID: caseID, Route: "s9_repair", RouteReason: "repair the demonstrated decoder omission", PrimaryRootCause: "the field mapping omits a required input", NoCompetingHypothesis: "the seeded input observation and mapping exclude the alternate transport explanation",
 		CausalModel: map[string]any{"trigger": "decode the reported input", "violated_invariant": "required fields survive", "faulty_mechanism": "field omission", "propagation": "missing value reaches caller", "symptoms": []string{"the human-reported value is absent"}}, BlastRadius: map[string]any{"paths": []string{"internal/service/decoder.go"}}, DetectionGap: map[string]any{"gap_type": "test", "evidence_refs": []string{"test://human-decoder-observation"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -359,14 +359,14 @@ func TestHumanDefectIntakeRejectsChangedSourceOrBaselineWithoutWritingCase(t *te
 // professional boundary must not become the original human Case's source.
 func TestHumanCaseOriginalRevisionCannotBeReplacedByCurrentProfessionalBoundary(t *testing.T) {
 	f, current := humanDefectFixture(t)
-	current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: current.Revision, GroupingRationale: "original human source"})
+	current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "original human source"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pointer := investigationPointerFromState(t, current.State)
 	originalPath := pointer["path"].(string)
 	caseID := pointer["case_id"].(string)
-	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: current.Revision, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
+	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: -1, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
 		document["failure_boundary_refs"] = []string{"test://later-observation"}
 		return nil
 	}})
@@ -375,7 +375,7 @@ func TestHumanCaseOriginalRevisionCannotBeReplacedByCurrentProfessionalBoundary(
 	}
 	writeInvestigationBytes(t, f.root, originalPath, []byte("changed original revision"))
 	beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-	_, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: current.Revision, CaseID: caseID, HypothesisID: "hypothesis-history-source", AssignmentID: "assignment-history-source", Statement: "a boundary drops the field", Invariant: "fields survive", Discriminator: "compare input and output", ExpectedOutcomes: map[string]any{"support": "field lost", "refute": "field retained"}, SourceFindingIDs: []string{}, EvidenceRefs: []string{"hd-human-defect"}})
+	_, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: -1, CaseID: caseID, HypothesisID: "hypothesis-history-source", AssignmentID: "assignment-history-source", Statement: "a boundary drops the field", Invariant: "fields survive", Discriminator: "compare input and output", ExpectedOutcomes: map[string]any{"support": "field lost", "refute": "field retained"}, SourceFindingIDs: []string{}, EvidenceRefs: []string{"hd-human-defect"}})
 	if err != nil {
 		t.Fatalf("changed original revision blocked the current question: %v", err)
 	}

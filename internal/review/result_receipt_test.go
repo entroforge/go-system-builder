@@ -42,6 +42,65 @@ func packetModeFixture(t *testing.T) (string, string, string, loopruntime.Snapsh
 	return root, statePath, journalPath, snapshot, plan
 }
 
+// G18 §3.1: the Runtime write count is not a gate for a professional
+// completion (L4-revision-usage.md §4/§8). One delivery is still received
+// exactly once — the Assignment carries one receipt (已收行) and the journal
+// keeps one evt-review-result-<key> event (事件去重) — an unrelated Runtime
+// commit no longer refuses the delivery, and a retried delivery is still
+// deduplicated instead of committing a second time.
+func TestReviewResultDeliveryIsReceivedExactlyOnceWithoutWriteCount(t *testing.T) {
+	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
+	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-once", "agent-qa-1", "pass",
+		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
+
+	// An unrelated Runtime commit moves the write count; the delivery asserts
+	// no Runtime revision: the omission marker is -1.
+	moved := commitUnrelatedRuntime(t, root, statePath, journalPath, snapshot.Revision)
+
+	accepted, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
+	})
+	if err != nil {
+		t.Fatalf("an unrelated Runtime commit refused the ReviewResult: %v", err)
+	}
+	if accepted.Revision <= moved.Revision {
+		t.Fatalf("the ReviewResult did not commit: revision %d", accepted.Revision)
+	}
+	row := accepted.State["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
+	if row["status"] != "consumed" || row["result_receipt"] == nil {
+		t.Fatalf("the consumed Assignment lost its receipt: %#v", row)
+	}
+	var receipt ResultReceipt
+	encoded, _ := json.Marshal(row["result_receipt"])
+	if err := json.Unmarshal(encoded, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := countJournalEvent(t, journal, receipt.EventID); count != 1 {
+		t.Fatalf("review_result events = %d, want exactly 1", count)
+	}
+	// The retried delivery is still deduplicated: no second commit, no second event.
+	retry, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
+	})
+	if err != nil {
+		t.Fatalf("the retried delivery was refused: %v", err)
+	}
+	if retry.Revision != accepted.Revision {
+		t.Fatalf("the retried delivery committed again: revision %d", retry.Revision)
+	}
+	journal, err = os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := countJournalEvent(t, journal, receipt.EventID); count != 1 {
+		t.Fatalf("the retried delivery wrote another event: %d", count)
+	}
+}
+
 func TestTypedResultReceiptsFollowPacketRuntimeVersions(t *testing.T) {
 	for _, test := range []struct {
 		version string
