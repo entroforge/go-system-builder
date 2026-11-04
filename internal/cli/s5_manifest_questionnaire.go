@@ -344,7 +344,7 @@ func registerPreparedS5Manifest(ctx context.Context, root string, snapshot runti
 		if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
 			return nil, err
 		}
-		_, err = assignment.Register(root, service.StatePath, service.JournalPath, assignment.Request{Context: ctx, ExpectedRevision: snapshot.Revision, ManifestPath: path, TaskID: taskID, TaskPath: filepath.Join(root, taskPath)})
+		_, err = assignment.Register(root, service.StatePath, service.JournalPath, assignment.Request{Context: ctx, ExpectedRevision: -1, ManifestPath: path, TaskID: taskID, TaskPath: filepath.Join(root, taskPath)})
 		if err != nil {
 			return nil, err
 		}

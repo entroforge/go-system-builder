@@ -1465,12 +1465,11 @@ func saveRepairTargetedAnswerContext(ctx context.Context, root string, snapshot 
 	answer.PerformedAt = time.Now().UTC()
 	// A new honest answer after a blocker is received directly. It does not
 	// assert that the prior blocker was resolved or require a reason/resume.
-	currentSnapshot := snapshot
 	value, ref, createErr := repair.CreateTargetedReverification(root, answer)
 	if createErr != nil {
 		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 TargetedReverification request at %s did not create the original artifact: %v", path, createErr)), nil
 	}
-	committed, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{Context: ctx, ExpectedRevision: currentSnapshot.Revision, Actor: selection.verifierOwner}, Reverification: ref, Record: &value})
+	committed, err := repair.CommitTargetedReverification(root, statePath, journalPath, repair.CommitTargetedRequest{RuntimeRequest: repair.RuntimeRequest{Context: ctx, ExpectedRevision: -1, Actor: selection.verifierOwner}, Reverification: ref, Record: &value})
 	if err != nil {
 		return true, repairLeadFeedback(stdout, path, fmt.Sprintf("S9 independent TargetedReverification %s at %s was created but original Runtime consumer did not commit it: %v. Preserve its immutable source and follow the specific consumer feedback.", value.ReverificationID, ref.Path, err)), nil
 	}

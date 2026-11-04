@@ -215,7 +215,7 @@ func runSavedInvestigationLeadDisposition(root string, request policy.Input, std
 			return feedback("S8 route answer conflicts with the persisted Case disposition; no accepted professional conclusion was overwritten.")
 		}
 	} else {
-		current, err = investigation.UpdateCaseRoute(root, statePath, journalPath, investigation.RouteRequest{ExpectedRevision: current.Revision, ExpectedCaseRevision: integerValue(document["revision"]), CaseID: stringValue(document["case_id"]), Route: strings.TrimSpace(answer.Route), RouteReason: answer.RouteReason, PrimaryRootCause: answer.PrimaryRootCause, CausalModel: answer.CausalModel, BlastRadius: answer.BlastRadius, DetectionGap: answer.DetectionGap, NoCompetingHypothesis: answer.NoCompetingHypothesis, CompetingHypothesisAssessment: answer.CompetingHypothesisAssessment, CanonicalCaseID: answer.CanonicalCaseID})
+		current, err = investigation.UpdateCaseRoute(root, statePath, journalPath, investigation.RouteRequest{ExpectedRevision: -1, ExpectedCaseRevision: integerValue(document["revision"]), CaseID: stringValue(document["case_id"]), Route: strings.TrimSpace(answer.Route), RouteReason: answer.RouteReason, PrimaryRootCause: answer.PrimaryRootCause, CausalModel: answer.CausalModel, BlastRadius: answer.BlastRadius, DetectionGap: answer.DetectionGap, NoCompetingHypothesis: answer.NoCompetingHypothesis, CompetingHypothesisAssessment: answer.CompetingHypothesisAssessment, CanonicalCaseID: answer.CanonicalCaseID})
 		if err != nil {
 			return feedback("S8 original route validation: " + err.Error())
 		}
@@ -223,7 +223,7 @@ func runSavedInvestigationLeadDisposition(root string, request policy.Input, std
 	}
 	if route == "s7_no_change" || route == "s2_spec_rework" || route == "duplicate" {
 		if stringValue(investigationPointer(current.State)["route_consumed_at"]) == "" {
-			current, err = investigation.ConsumeCaseRoute(root, statePath, journalPath, investigation.ConsumeRouteRequest{ExpectedRevision: current.Revision, CaseID: stringValue(document["case_id"]), Actor: "Main"})
+			current, err = investigation.ConsumeCaseRoute(root, statePath, journalPath, investigation.ConsumeRouteRequest{ExpectedRevision: -1, CaseID: stringValue(document["case_id"]), Actor: "Main"})
 			if err != nil {
 				return feedback("S8 professional route is persisted; original downstream consumption remains outstanding: " + err.Error())
 			}

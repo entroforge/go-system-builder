@@ -151,7 +151,7 @@ func runSavedRepairDelegationApplication(root string, request policy.Input, stdo
 	if err != nil {
 		return feedback("Original grant evidence could not be published: " + err.Error())
 	}
-	next, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{ExpectedRevision: current.Revision, ID: grant.DecisionID, Kind: "human_decision", Path: rel, ProducedBy: []string{grant.ApprovedBy}, ScopeRefs: []string{"s8_repair_delegation:" + grant.RuntimeID}, Validator: semantic.RuntimeCandidateValidator{}})
+	next, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{ExpectedRevision: -1, ID: grant.DecisionID, Kind: "human_decision", Path: rel, ProducedBy: []string{grant.ApprovedBy}, ScopeRefs: []string{"s8_repair_delegation:" + grant.RuntimeID}, Validator: semantic.RuntimeCandidateValidator{}})
 	if err != nil {
 		// A concurrent original Writer may already have recorded this same human
 		// choice. Reuse only that registered authority, never an unregistered

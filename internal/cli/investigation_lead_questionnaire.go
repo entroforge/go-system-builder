@@ -439,7 +439,7 @@ func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, s
 			}
 			return feedback("S8 grouping was already received in the original Case. Repeated save did not write Runtime. Next Main questionnaire: " + paths[0])
 		}
-		next, err := investigation.Ingest(root, statePath, journalPath, investigation.IngestRequest{ExpectedRevision: snapshot.Revision, GroupingRationale: answer.GroupingRationale, OccurredAt: time.Now().UTC()})
+		next, err := investigation.Ingest(root, statePath, journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: answer.GroupingRationale, OccurredAt: time.Now().UTC()})
 		if err != nil {
 			return feedback("S8 original intake validation: " + err.Error())
 		}
@@ -521,7 +521,7 @@ func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, s
 		if registered == nil {
 			outcomes := map[string]any{"support": q.ExpectedOutcomes["support"], "refute": q.ExpectedOutcomes["refute"]}
 			for attempt := 0; ; attempt++ {
-				current, err = investigation.RegisterHypothesis(root, statePath, journalPath, investigation.HypothesisRequest{ExpectedRevision: current.Revision, CaseID: stringValue(document["case_id"]), HypothesisID: q.HypothesisID, AssignmentID: "assignment-" + q.HypothesisID, Statement: q.Statement, Invariant: q.Invariant, Discriminator: q.Discriminator, ExpectedOutcomes: outcomes, SourceFindingIDs: q.SourceFindingIDs, EvidenceRefs: q.EvidenceRefs})
+				current, err = investigation.RegisterHypothesis(root, statePath, journalPath, investigation.HypothesisRequest{ExpectedRevision: -1, CaseID: stringValue(document["case_id"]), HypothesisID: q.HypothesisID, AssignmentID: "assignment-" + q.HypothesisID, Statement: q.Statement, Invariant: q.Invariant, Discriminator: q.Discriminator, ExpectedOutcomes: outcomes, SourceFindingIDs: q.SourceFindingIDs, EvidenceRefs: q.EvidenceRefs})
 				if !errors.Is(err, runtime.ErrStaleRevision) || attempt >= 3 {
 					break
 				}

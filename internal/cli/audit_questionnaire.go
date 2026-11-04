@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -479,7 +478,7 @@ func runSavedAuditQuestionnaire(root string, request policy.Input, stdout, stder
 		}
 		ctx := contextForHook(request)
 		evidenceRequest := runtime.EvidenceRequest{
-			Context: ctx, ExpectedRevision: snapshot.Revision, ID: evidenceID, Kind: kind,
+			Context: ctx, ExpectedRevision: -1, ID: evidenceID, Kind: kind,
 			Path: envelopePath, ProducedBy: []string{actor}, ResponsibilityID: responsibility,
 			Validator: semantic.RuntimeCandidateValidator{},
 		}
@@ -503,12 +502,12 @@ func runSavedAuditQuestionnaire(root string, request policy.Input, stdout, stder
 				}
 				break
 			}
-			if !errors.Is(err, runtime.ErrStaleRevision) || currentAuditKind(latest.State) != kind || ctx.Err() != nil {
-				return reject(fmt.Errorf("register original S10 evidence: %w", err))
-			}
 			// A concurrent unrelated update does not require the author to save
 			// again; the existing Writer rechecks the original responsibility.
-			evidenceRequest.ExpectedRevision = latest.Revision
+			// The current-value entry point never asserts a Runtime write count,
+			// so an unrelated commit cannot fail this reception and there is no
+			// newer revision to re-assert here.
+			return reject(fmt.Errorf("register original S10 evidence: %w", err))
 		}
 
 	}

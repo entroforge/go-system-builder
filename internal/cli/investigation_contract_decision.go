@@ -226,12 +226,12 @@ func runSavedInvestigationContractDecision(root string, request policy.Input, st
 			return feedback("Original decision registration conflicts; no approval was inferred.")
 		}
 	} else {
-		current, err = runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{ExpectedRevision: current.Revision, ID: id, Kind: kind, Path: rel, ProducedBy: []string{actor}, ScopeRefs: []string{scope}, Validator: semantic.RuntimeCandidateValidator{}})
+		current, err = runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{ExpectedRevision: -1, ID: id, Kind: kind, Path: rel, ProducedBy: []string{actor}, ScopeRefs: []string{scope}, Validator: semantic.RuntimeCandidateValidator{}})
 		if err != nil {
 			return feedback("Original decision evidence Writer did not confirm reception; preserve the choice and inspect its actual receipt: " + err.Error())
 		}
 	}
-	next, err := investigation.ApproveContract(root, statePath, journalPath, investigation.ContractRequest{ExpectedRevision: current.Revision, CaseID: stringValue(document["case_id"]), ContractPath: finalPath, ApprovedBy: actor, ContractDraft: json.RawMessage(draft), ApprovalEvidenceID: id, DelegationEvidenceID: target.authority})
+	next, err := investigation.ApproveContract(root, statePath, journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: stringValue(document["case_id"]), ContractPath: finalPath, ApprovedBy: actor, ContractDraft: json.RawMessage(draft), ApprovalEvidenceID: id, DelegationEvidenceID: target.authority})
 	if err != nil {
 		return feedback("The actual decision was recorded; original Contract approval remains outstanding: " + err.Error())
 	}

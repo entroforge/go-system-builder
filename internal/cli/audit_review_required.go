@@ -115,7 +115,7 @@ func recordAuditReviewImpact(root, manifestPath, sourceID, sourceRef string) err
 	}
 	if _, ok := registeredAuditEvidence(snapshot.State, id, ref); !ok {
 		_, err = runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
-			ExpectedRevision: snapshot.Revision, ID: id, Kind: "change_impact", Path: ref,
+			ExpectedRevision: -1, ID: id, Kind: "change_impact", Path: ref,
 			ProducedBy: []string{"Main"}, ResponsibilityID: "Acceptance", ScopeRefs: paths,
 			Validator: semantic.RuntimeCandidateValidator{},
 		})

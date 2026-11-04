@@ -242,7 +242,7 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 		}
 		var result repair.RepairResult
 		snap, result, resultRef, err = repair.SubmitIssuedRepairResult(ctx, *root, statePath, journalPath, repair.SubmitIssuedRepairResultRequest{
-			ExpectedRevision: snap.Revision,
+			ExpectedRevision: -1,
 			PacketID:         typedPacket.ID,
 			OwnerAgentID:     e.AgentID,
 			MainProof:        proof,
