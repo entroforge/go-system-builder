@@ -238,6 +238,18 @@ func completeTaskLegacy(
 		Message: fmt.Sprintf("Registered the canonical Builder Result for %s (completion evidence %s)",
 			message.TaskID, evidenceID),
 		OccurredAt: occurredAt,
+		// G18 §1/§3.2: the identity of a Builder Result names the reporting
+		// Agent and the delivery it registers, so the same delivery presented
+		// twice produces the same event id. The journal's global event-id
+		// uniqueness check runs before the Apply closure, so without this
+		// judgment the caller would receive a storage message instead of the
+		// domain's own outcome. The store calls the Precheck under its lock,
+		// after the revision CAS, so a repeated delivery keeps the domain
+		// outcome and the refused delivery writes neither Runtime state nor a
+		// journal fact.
+		Precheck: func(state map[string]any) error {
+			return completionDeliveryRefusal(state, request, message, agentTransitions, taskTransitions, evidenceID)
+		},
 		Apply: func(state map[string]any) error {
 			if err := applyCompletionAgent(state, request, message, agentTransitions, envelopeRel, occurredAt); err != nil {
 				return err
@@ -252,6 +264,142 @@ func completeTaskLegacy(
 		},
 	}
 	return updateRuntime(store, request.ExpectedRevision, mutation)
+}
+
+// completionDeliveryRefusal is the read-only mirror of the Apply closure's
+// completion judgments. The Apply closure keeps the authority under
+// concurrency; this mirror is what the mutation's Precheck runs, so a repeated
+// delivery keeps the domain's own outcome instead of the journal's global
+// event-id collision.
+//
+// The judgments run in the Apply closure's order, so the first refusal is the
+// same one the Apply closure produces. The mirror writes nothing: it reads
+// the Runtime state and leaves both the Runtime and the journal untouched.
+func completionDeliveryRefusal(
+	state map[string]any,
+	request CompletionRequest,
+	message completionMessage,
+	agentTransitions agentEntityTransitionsResolver,
+	taskTransitions taskEntityTransitionsResolver,
+	evidenceID string,
+) error {
+	if err := completionAgentRefusal(state, request, message, agentTransitions); err != nil {
+		return err
+	}
+	if err := completionTaskRefusal(state, message, taskTransitions); err != nil {
+		return err
+	}
+	return completionEvidenceRefusal(state, evidenceID)
+}
+
+// completionAgentRefusal mirrors the Agent judgment the Apply closure runs
+// first: the reporting Agent must exist, must own the TASK and must be able
+// to record the Builder Result. A repeated Result on an Agent that already
+// reported stays acceptable — the Agent keeps reporting and the latest Result
+// ref replaces the previous one — while a completed Assignment refuses every
+// further Result until an explicit revision names the next attempt.
+func completionAgentRefusal(
+	state map[string]any,
+	request CompletionRequest,
+	message completionMessage,
+	agentTransitions agentEntityTransitionsResolver,
+) error {
+	entities, ok := state["entities"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("runtime entities must be an object")
+	}
+	agents, _ := entities["agents"].([]any)
+	for _, raw := range agents {
+		agent, _ := raw.(map[string]any)
+		if agent["id"] != request.AgentID {
+			continue
+		}
+		taskIDs, _ := agent["task_ids"].([]any)
+		if !stringArrayContains(taskIDs, message.TaskID) {
+			return fmt.Errorf("completion message TASK is outside assignment")
+		}
+		version := fmt.Sprint(state["schema_version"])
+		projection, err := workstate.AgentProjection(agent, version)
+		if err != nil {
+			return fmt.Errorf("resolve completion Agent activity: %w", err)
+		}
+		currentState := projection.Activity
+		if currentState == "reported" || currentState == "done" {
+			if workstate.Unified(version) && currentState == "done" {
+				return fmt.Errorf("completed Assignment requires an explicit revision before accepting another Result")
+			}
+			return nil
+		}
+		if _, found := agentTransitions.resolve(currentState, "completion_reported"); !found {
+			return fmt.Errorf(
+				"completion requires working state (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped), agent is %s",
+				currentState)
+		}
+		return nil
+	}
+	return fmt.Errorf("Agent %s is not registered", request.AgentID)
+}
+
+// completionTaskRefusal mirrors the TASK judgment the Apply closure runs
+// after the Agent judgment. A TASK that already reached review or done keeps
+// its lifecycle state and only advances its canonical Result reference.
+func completionTaskRefusal(
+	state map[string]any,
+	message completionMessage,
+	taskTransitions taskEntityTransitionsResolver,
+) error {
+	entities, ok := state["entities"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("runtime entities must be an object")
+	}
+	tasks, _ := entities["tasks"].([]any)
+	for _, raw := range tasks {
+		task, _ := raw.(map[string]any)
+		if task["id"] != message.TaskID {
+			continue
+		}
+		version := fmt.Sprint(state["schema_version"])
+		projection, err := workstate.TaskProjection(task, version)
+		if err != nil {
+			return fmt.Errorf("resolve completion TASK activity: %w", err)
+		}
+		currentState := projection.Activity
+		switch currentState {
+		case "review", "done":
+			return nil
+		}
+		if _, found := taskTransitions.resolve(currentState, "builder_reported"); !found {
+			return fmt.Errorf(
+				"TASK %s cannot accept a Builder Result from state %s (canonical Task states: candidate, reviewed, locked, in_progress, review, blocked, done, cancelled)",
+				message.TaskID, currentState)
+		}
+		return nil
+	}
+	// No task row: agent-centric completion still stands; the batch gate
+	// evaluates the registered document batch, not entity rows.
+	return nil
+}
+
+// completionEvidenceRefusal mirrors the evidence judgment the Apply closure
+// runs last: one delivery identity is registered once. A delivery that names
+// an identity the Runtime already holds is a conflict rather than a new
+// submission, and the domain refuses it with its own message.
+//
+// A re-delivery of the same completion is not that conflict: the evidence id
+// escalates per accepted submission, so a re-delivery names a new delivery
+// identity and stays acceptable.
+func completionEvidenceRefusal(state map[string]any, evidenceID string) error {
+	items, ok := state["evidence"].([]any)
+	if !ok {
+		return fmt.Errorf("runtime evidence must be an array")
+	}
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item != nil && item["id"] == evidenceID {
+			return fmt.Errorf("evidence %s is already registered", evidenceID)
+		}
+	}
+	return nil
 }
 
 // applyCompletionAgent advances the agent row exactly like the
