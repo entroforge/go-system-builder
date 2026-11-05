@@ -295,6 +295,15 @@ func repairResultExecution(state map[string]any, p workpacket.RepairResultPacket
 	if selected == nil {
 		return nil, fmt.Errorf("S9 result has no exact registered execution")
 	}
+	// The issued attempt froze its own execution definition. A registered
+	// execution that no longer agrees on any structural coordinate is a
+	// different attempt, so this issued package must not be delivered as the
+	// current one. The sibling blocker path reconciles the same coordinates
+	// against the same frozen definition (internal/repair/
+	// issued_repair_result_blocker.go).
+	if key, same := sameRepairResultExecutionCoordinates(frozen, selected); !same {
+		return nil, fmt.Errorf("S9 result current execution %s differs from the frozen assignment", key)
+	}
 	return selected, nil
 }
 

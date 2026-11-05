@@ -41,7 +41,14 @@ func TestNativeS9FlatValidationFeedbackUsesPrivateFileFields(t *testing.T) {
 				document["before_fix_results"] = "not an array"
 				pointer = "before_fix_results"
 			} else {
-				document["migration_ref"] = nil
+				// A declared professional field must carry the value its own type
+				// allows. A number in a string field is a real field error, so the
+				// original professional validator must reject it before creating or
+				// staging a Candidate. A null optional reference is a different
+				// case: the author-side schema allows it, so it is a receivable
+				// "not applicable" statement of the author
+				// (TestNativeS9PublicAuthorKeepsNullOptionalReference).
+				document["migration_ref"] = 42
 				if kind == "blocked Result" {
 					document["verdict"] = "blocked"
 				}

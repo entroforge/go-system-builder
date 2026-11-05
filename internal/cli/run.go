@@ -2703,9 +2703,16 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	if handled, code := hookReaderObservation(root, request, stdout, stderr); handled {
 		return code
 	}
-	if handled, code := observeMainS9Impact(root, request, stdout); handled {
-		return code
-	}
+	// The original ChangeImpact observation is one fragment of this event, not
+	// the whole event. The Main's own S9 reception facts belong to the same
+	// context, so the observer keeps its own ownership of the original Impact
+	// and only hands its fragment back for the shared render
+	// (L4-hook-platform-wiring.md:93 "已收交接直接复用原事实"; L4-workflow-convergence.md:110).
+	// It never ends the event by itself: an already received Impact reports its
+	// own real reception state and must not hide the original S9 reception
+	// facts of the same event (L4-hook-platform-wiring.md:93 "输出本次真实接收、
+	// 后继与准备状态"; :97 "现有实现中的分支顺序与提前返回须按公开入口验证后调整").
+	s9ImpactObservation := observeMainS9ImpactFragment(root, request)
 	s9BriefObservation := observeMainS9Brief(root, request)
 	s7PlanObservation := observeMainS7ReviewPlan(root, request)
 	if s7PlanObservation.Attempted {
@@ -2893,6 +2900,12 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 		// the original renderer rather than be discarded by context deduplication.
 		decision.AdditionalContext = strings.TrimSpace(s7PlanObservation.Context + "\n\n" + decision.AdditionalContext)
 	}
+	if s9ImpactObservation != "" {
+		// The original Impact reception feedback is a fragment of this event and
+		// must reach the Main together with the original S9 reception facts; it
+		// never replaces them.
+		decision.AdditionalContext = strings.TrimSpace(s9ImpactObservation + "\n\n" + decision.AdditionalContext)
+	}
 	// Lifecycle hooks are the agent's re-entry points. Inject only a bounded
 	// native context packet: SessionStart gets the current stage/next action;
 	// SubagentStart additionally gets an Assignment brief when the platform
@@ -2993,7 +3006,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	// full DecisionEnvelope already landed in the outbox above, so skip the
 	// Render call (whose audit branch writes a SECOND, sparse record via
 	// appendAuditLine — the dual-write defect DV-1 / QA-1 §4 T2).
-	if decision.Decision == "audit" && s9BriefObservation.Context == "" && s7PlanObservation.Context == "" {
+	if decision.Decision == "audit" && s9BriefObservation.Context == "" && s7PlanObservation.Context == "" && s9ImpactObservation == "" {
 		return 0
 	}
 	if request.Event == "PreToolUse" || decision.Guidance != nil {
@@ -3158,7 +3171,7 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	// changed delivery. Such feedback itself always retains its complete text.
 	fullOutput := output
 	output, commitContext := hook.PrepareResponsibilityContext(root, request.SessionID, request.EffectiveAgentID(), request.Event, contextStage, responsibility, output)
-	if forcePlanningDelivery || s9BriefObservation.Context != "" || s7PlanObservation.Context != "" {
+	if forcePlanningDelivery || s9BriefObservation.Context != "" || s7PlanObservation.Context != "" || s9ImpactObservation != "" {
 		output = fullOutput
 	}
 	output, commitNotice := hook.PrepareNotice(root, request.SessionID, request.EffectiveAgentID(), request.Event, output)
@@ -3178,6 +3191,36 @@ func evaluate(root, expectedEvent string, input io.Reader, stdout, stderr io.Wri
 	}
 	deliveredReminder()
 	return code
+}
+
+// observeMainS9ImpactFragment observes the Main's original ChangeImpact and
+// returns the fragment this event produced. The observer keeps its own
+// ownership of the original Impact — it commits the reception through the
+// original Runtime Writer and renders its own envelope. This helper only
+// lifts that fragment out of the envelope so the shared Main context can
+// carry it together with the other original reception facts instead of the
+// observation replacing the whole event. The observer runs exactly once per
+// event: a second call would observe the same bytes as a fresh change and
+// report the Impact as "already received" again.
+func observeMainS9ImpactFragment(root string, request policy.Input) string {
+	var scratch bytes.Buffer
+	handled, _ := observeMainS9Impact(root, request, &scratch)
+	if !handled {
+		return ""
+	}
+	var envelope struct {
+		SystemMessage string `json:"systemMessage"`
+		Output        struct {
+			Context string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if json.Unmarshal(scratch.Bytes(), &envelope) != nil {
+		return ""
+	}
+	if envelope.Output.Context != "" {
+		return envelope.Output.Context
+	}
+	return envelope.SystemMessage
 }
 
 // runNativeObserverHook consumes platform-native observation events without

@@ -518,7 +518,11 @@ func TestS9HandoffPublicMainProgressUsesOriginalReceptionFacts(t *testing.T) {
 					t.Fatalf("Final lost original close-out: %s", text)
 				}
 			}
-			repairDispatchAssertUnchanged(t, root, before)
+			// The empty original ChangeImpact may be received along this Pre
+			// event (L4-workflow-convergence.md:110), so the Runtime changes by
+			// exactly that one original Impact reception. Every other already
+			// received S9 fact must stay put.
+			repairDispatchAssertOnlyImpactReception(t, root, before, scenario != "no candidate")
 		})
 	}
 }

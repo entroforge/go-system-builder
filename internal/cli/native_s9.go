@@ -459,6 +459,12 @@ func nativeS9Hook(root string, in policy.Input, out, diagnostic io.Writer) (bool
 
 type nativeS9PlanStopKey struct{}
 
+// nativeS9ExplicitOriginalKey marks an explicit return or an explicit recovery
+// of this original responsibility. Only there is the current original compared
+// with the already accepted object; ordinary observation keeps the accepted
+// fact and never turns a later edit into the author's duty.
+type nativeS9ExplicitOriginalKey struct{}
+
 type nativeS9WorkerFeedbackKey struct{}
 type nativeS9WorkerFeedback struct {
 	messages       []string
@@ -621,6 +627,14 @@ func receiveNativeS9Builder(root string, state map[string]any, in policy.Input, 
 
 // Stop and Main recovery use the same original-answer consumer.
 func receiveNativeS9BuilderFrom(ctx context.Context, root string, state map[string]any, p workpacket.RepairPlanReportPacket, source string, recovery bool, diagnostic io.Writer, capture *nativeS9AttemptCapture) error {
+	if recovery {
+		// A named recovery entry is an explicit return of this original: the
+		// current original is compared with the already accepted object in the
+		// original consumer's professional terms
+		// (L4-hook-platform-wiring.md:369 "Main／系统的具名恢复入口复用同一最小
+		// 接收核心，只读当前原卷一次").
+		ctx = context.WithValue(ctx, nativeS9ExplicitOriginalKey{}, true)
+	}
 	return receiveNativeS9OriginalBuilder(ctx, root, state, p, source, diagnostic, capture)
 }
 

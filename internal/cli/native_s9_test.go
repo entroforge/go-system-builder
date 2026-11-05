@@ -382,6 +382,73 @@ func TestNativeS9NullProfessionalReferenceIsNotConvertedToNotApplicable(t *testi
 	}
 }
 
+// TestNativeS9OptionalReferenceAcceptsOnlyItsOwnNullShape is the reverse
+// assertion of TestNativeS9NullProfessionalReferenceIsNotConvertedToNotApplicable:
+// accepting the author's null reference must not widen the accepted shape.
+//
+//   - migration_ref / rollback_ref accept exactly one extra shape, the null the
+//     published author-side schema allows (internal/schema/assets/
+//     stage-answer-s9-result.schema.json:84-85). A wrong type there is still a
+//     field-level error that names the actual field and its expected type.
+//   - a null verdict still carries no professional judgment. It keeps the
+//     original Result as a draft for its author
+//     (blueprint/l4-mechanisms/L4-workflow-convergence.md:106 — "没有表达判断的
+//     空值通常保留草稿"), and it is never turned into an explicit
+//     "none" / "not applicable" statement.
+//
+// Neither case may reach a Candidate: the original consumer keeps the
+// professional answer open for its author.
+func TestNativeS9OptionalReferenceAcceptsOnlyItsOwnNullShape(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(map[string]any)
+		field  string
+	}{
+		{"wrong-type-reference", func(authored map[string]any) { authored["migration_ref"] = 42 }, "migration_ref"},
+		{"null-verdict", func(authored map[string]any) { authored["verdict"] = nil }, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, worker, p, input, answer := nativeS9WorkerFixture(t)
+			result := nativeS9TestResultPath(t, root, p)
+			data, _ := json.Marshal(answer)
+			var authored map[string]any
+			if err := json.Unmarshal(data, &authored); err != nil {
+				t.Fatal(err)
+			}
+			test.change(authored)
+			if err := persistRepairLeadQuestionnaire(filepath.Join(worker, result), authored); err != nil {
+				t.Fatal(err)
+			}
+			input.Event = "SubagentStop"
+			var out, diagnostic bytes.Buffer
+			handled, code := nativeS9Hook(root, input, &out, &diagnostic)
+			if !handled || code != 0 {
+				t.Fatalf("malformed professional field was not reported to the author: %t %d %s", handled, code, &diagnostic)
+			}
+			if test.field != "" && !strings.Contains(diagnostic.String(), test.field) {
+				t.Fatalf("rejection does not name the actual field %q: %s", test.field, &diagnostic)
+			}
+			// The exact original file stays the subject of the feedback.
+			if !strings.Contains(diagnostic.String(), filepath.Join(worker, result)) {
+				t.Fatalf("rejection lost the exact original Result file: %s", &diagnostic)
+			}
+			// The author's own null is never turned into an explicit statement
+			// by the consumer.
+			if strings.Contains(strings.ToLower(diagnostic.String()), "not applicable") {
+				t.Fatalf("rejection rewrote the author's value into an explicit statement: %s", &diagnostic)
+			}
+			snapshot := repairDispatchSnapshot(t, root)
+			packets, err := runtime.RepairResultPacketsContext(runtime.WithPacketBodyRoot(t.Context(), root), snapshot.State)
+			if err != nil || len(packets) != 1 {
+				t.Fatalf("original Result responsibility missing: packets=%d err=%v", len(packets), err)
+			}
+			if _, found, err := runtime.VerifiedRepairResultCandidateReceipt(root, snapshot.State, packets[0].ID, p.Binding.OwnerAgentID); err != nil || found {
+				t.Fatalf("rejected Result acquired candidate receipt: found=%t err=%v", found, err)
+			}
+		})
+	}
+}
+
 func TestNativeS9UnknownAndAmbiguousReferencesNeverClaimResponsibility(t *testing.T) {
 	root, plan, _, _, division := repairExecutionPlanningFixture(t)
 	rows := []repairDispatchChoice{}
