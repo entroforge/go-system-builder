@@ -87,7 +87,14 @@ func TestS9EntryAssemblyPreservesNewPlanFailureAndOriginalStopFailure(t *testing
 	before := repairDispatchRuntimeBytes(t, root)
 	got := currentQuestionnaireLifecycleContext(root, policy.Input{Event: "PreToolUse", AgentID: "Main", CWD: root})
 	for _, want := range []string{
-		"could not read the original Plan:",
+		// The S9 repairing phase owns the Builder division only. The
+		// independent verifier division is not current there
+		// (repairVerifierDispatchCurrent admits planning, reproducing and
+		// targeted_reverification), so the read failure Main must report is
+		// the execution preparation one. The verifier division's own "could
+		// not read the original Plan:" wording is structurally unreachable in
+		// this state and must not be asserted.
+		"cannot read the original Plan:",
 		"invalid character 'x' looking for beginning of value",
 		"Result is not submitted or is unfinished",
 	} {
@@ -100,6 +107,27 @@ func TestS9EntryAssemblyPreservesNewPlanFailureAndOriginalStopFailure(t *testing
 	}
 	if !strings.Contains(got, filepath.Join(worker, nativeS9TestResultPath(t, root, plan))) {
 		t.Errorf("new Plan read failure erased the exact original failed source: %s", got)
+	}
+	// The unreadable Plan must not be masked by the preparation success
+	// path: Main must not present the dispatch answer as prepared.
+	if strings.Contains(got, "S9 execution preparation uses the same Builder division answer:") {
+		t.Errorf("unreadable original Plan was masked by the preparation success path: %s", got)
+	}
+	// The independent verifier division is not current in the repairing
+	// phase, so Main must not present a division dispatch context it does
+	// not own. Both the prepared-division wording and the failed-division
+	// wording name that division, and neither may appear here.
+	if strings.Contains(got, "independent verifier division") {
+		t.Errorf("Main presented a division that is not current in the repairing phase: %s", got)
+	}
+	// The exact questionnaire Main is supposed to prepare stays named next
+	// to the read failure, so the reader knows which file is blocked.
+	if paths := repairDispatchPaths(root, snap.State); len(paths) == 1 && !strings.Contains(got, paths[0]) {
+		t.Errorf("read failure lost the exact dispatch answer path: %s", got)
+	}
+	// Nothing rewrote the unreadable Plan behind Main's back.
+	if data, err := os.ReadFile(path); err != nil || string(data) != "x-new-plan-read-failure" {
+		t.Errorf("the unreadable original Plan was rewritten: %v %q", err, string(data))
 	}
 	repairDispatchAssertUnchanged(t, root, before)
 }

@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
+	"github.com/entroforge/go-system-builder/internal/transition"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 	"github.com/entroforge/go-system-builder/internal/workstate"
@@ -22,6 +24,36 @@ const progressSourceProjectionByteLimit int64 = 4 << 20
 
 func progressText(v any) string { s, _ := v.(string); return s }
 func progressJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+// progressFileStamp is a file's own length and modification time. It states
+// that an ordinary file changed; it never authenticates the bytes.
+func progressFileStamp(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "missing"
+	}
+	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+}
+
+// progressBranchRefStamp is the bound development branch's own ref record:
+// its length and modification time. The commit layer records the commit
+// change in that ref, so the observation needs no Git object ID, content
+// digest or source summary (L3-S4-task-split.md §10.2).
+func progressBranchRefStamp(root string, state map[string]any) string {
+	ref, err := fileview.DevelopmentRef(state)
+	if err != nil {
+		return "unknown"
+	}
+	branch := strings.TrimPrefix(ref, "refs/heads/")
+	if branch == "" {
+		return "unknown"
+	}
+	gitDir := filepath.Join(root, ".git")
+	if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+		return "unknown"
+	}
+	return progressFileStamp(filepath.Join(gitDir, "refs", "heads", filepath.FromSlash(branch)))
+}
 
 func applyResponsibilityProgress(f *hook.ProgressFacts, responsibility hook.ResponsibilityFacts) bool {
 	if responsibility.ConsumerPending {
@@ -319,6 +351,37 @@ func projectWorkProgress(root string, request policy.Input, snap runtime.Snapsho
 	f.Known = true
 	remaining := progressSourceProjectionByteLimit
 	semantic := map[string]any{}
+	if owner == "Main" && life["state"] == "planning" && (life["phase"] == "contracts" || life["phase"] == "tasks") {
+		// Main observes the current planning answer and the committed source it
+		// belongs to. Neither observation computes or records a digest, a content
+		// hash or a Git object ID (L3-S4-task-split.md §10.2: "Hook 不计算、登记或
+		// 校验来源摘要、内容散列或 Git 对象 ID"): the answer's own length and
+		// modification time are its change signal, and the bound branch's own ref
+		// is where the commit layer records the commit change.
+		catalog, err := transition.LoadCatalog(root)
+		if err != nil {
+			return f, nil, err
+		}
+		for _, rule := range catalog.Definition.FileSources {
+			if rule.Source == "disk" && (rule.Path == "." || rule.Path == "docs" || strings.HasPrefix(rule.Path, "docs/")) {
+				// A disk override of the professional source is observed
+				// conservatively: the original observer keeps its own contract
+				// instead of adding a source qualification rule here.
+				f.Known = false
+				return f, nil, nil
+			}
+		}
+		row, rowErr := registeredPlanningRow(snap.State)
+		if rowErr != nil {
+			return f, nil, rowErr
+		}
+		if row != nil {
+			if answerPath := progressText(row["answer_path"]); answerPath != "" {
+				semantic["answer"] = answerPath + "|" + progressFileStamp(filepath.Join(root, filepath.FromSlash(answerPath)))
+			}
+		}
+		semantic["source"] = progressBranchRefStamp(root, snap.State)
+	}
 	if owner == "Main" {
 		// Main observes the current milestone: the missing professional fact and
 		// the declared necessary read range.

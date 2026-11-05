@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/agentcontext"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
@@ -35,7 +37,25 @@ func TestFrozenS6ObserverUsesOriginalWorkspaceSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	full := filepath.Join(execution.Path, filepath.FromSlash(paths.Completion))
-	stageJSON(t, execution.Path, paths.Completion, map[string]any{})
+	// The canonical Assignment Record freezes the machine tuple of this
+	// Builder's Result, and the canonical contract only accepts a draft that
+	// carries every frozen template field. The hand that plays the Builder
+	// therefore writes that template and then supplies the professional
+	// answer; an empty legacy envelope is not a canonical Result at all and
+	// the observer would refuse it for the wrong reason.
+	record, found, err := assignmentrecord.ForOwner(stageSnapshot(t, f.root).State, execution.AgentID)
+	if err != nil || !found {
+		t.Fatalf("canonical Assignment Record was not registered: found=%t err=%v", found, err)
+	}
+	dispatch, err := agentcontext.ApplyRecord(agentcontext.Assignment{}, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, _ := agentcontext.ResultTemplate(dispatch, record.RuntimeID, "2026-01-01T00:00:00Z")
+	if template == nil {
+		t.Fatal("the registered Builder Record has no canonical Result template")
+	}
+	stageJSON(t, execution.Path, paths.Completion, template)
 	invoke := func(session, cwd, tool string, input, response map[string]any) string {
 		payload, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "session_id": session, "cwd": cwd, "tool_name": tool, "tool_input": input, "tool_response": response})
 		var out, diagnostic bytes.Buffer
