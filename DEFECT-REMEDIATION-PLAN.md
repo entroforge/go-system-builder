@@ -1081,9 +1081,13 @@
 
 ### G01-C —— S9 失败交接的跨请求 deadline 链:测试侧屏障已结构性死亡
 
-**状态**:本轮**未适配**,测试保持红,已在测试文件头写明阻塞原因。
+**状态**:W35 **已转绿**(原为「本轮未适配、测试保持红」)。原阻塞前提已被推翻,见下「原因(W35 实测更正)」。
 
-**原因**:该测试靠一个 `git` shim 作为屏障,当原 Plan 落进 journal 时让 `git` 阻塞 30 秒,从而让 8 秒的工作截止在「Plan 已接收」之后到期。d0d948a 把 `prepareSource` 里的 `merge-base`/`rev-parse HEAD` 一并退役(它们产出的是 base commit/散列坐标),**接收链里已不存在任何 git 调用**,屏障无法再触发。实测:父提交 `9bf73ca:internal/cli/native_s9.go:1165-1168` 的分支解析与 `:1182` 的登记,连同 `:765-774` 的 git 调用一起消失;HEAD 的 `internal/cli/native_s9.go` 与 `internal/cli/native_s9_original.go` 全链无 `workspace.Git`。
+**原因(W35 实测更正)**:该测试靠一个 `git` shim 作为屏障,当原 Plan 落进 journal 时让 `git` 阻塞 30 秒,从而让 8 秒的工作截止在「Plan 已接收」之后到期。d0d948a 确实把 `prepareSource` 里的 `merge-base`/`rev-parse HEAD` 一并退役(它们产出的是 base commit/散列坐标)。**但本节原写的「接收链里已不存在任何 git 调用,屏障无法再触发」不成立** —— G01-A(本文件 §682)落地时**重新引入了普通 Git 分支解析**:HEAD 的 `internal/cli/native_s9_original.go:242` 仍有 `workspace.Git(ctx, source, "branch", "--show-current")`(原卷位置登记路径)。W35 实测:该 shim 的 marker **确实生成**、8 秒截止**确实到期**、`FailureKind` **确实是 `deadline`** ⇒「屏障结构性死亡」的前提**已不成立**,下面的选项 (a)(b)(c) 都不必再走;该用例已按「stage 名等值 → 结构事实(`ConsumerBoundary`/`FailureKind`/`InputRef`)」改写并转绿(W35-G6;`internal/cli/s9_failure_handoff_e2e_test.go` 文件头里那段「屏障已结构性死亡」的阻塞说明已一并更正)。
+
+**W35 补裁(R-35)**:接收链里那一次 `workspace.Git` 调用**必须保留**,只允许把它的**失败改为不致命** —— 分支解析失败时留空、照常保存 Result(`internal/cli/native_s9_original.go:242-245`);**不得整条删除**。删除会让 G01-A 的分支坐标无从取得,并让 G6 #5 的 git shim 屏障失效。
+
+> 本条位置更正:`G01-C` 在本文件 **§11「本轮未闭环项」**(不是 §14.9);§14.9 相关的一行见该节 W25 行,同样已更正。
 
 **为什么不能靠测试侧绕过**(三条路都实测过):
 | 尝试 | 结果 |
@@ -1097,7 +1101,7 @@
 (b) 让发布尾(`internal/cli/native_s9_attempt.go:125` 的 `filelock.Acquire` 路径)成为可观测的截止边界,并允许测试在**不持 Runtime 锁**的前提下冻结该尾段;
 (c) owner 裁定该用例改述为「绝对截止点已过」的请求边界场景(蓝图 G26 已列此案),并相应放弃「精确输入坐标」与「flat consume 命令」两条断言。
 
-在 owner 选定之前,本组保持红并如实标注,不以任何形式削弱断言。
+**W35 结论:该决定已不需要** —— (a)(b)(c) 都不必再走(见上「原因(W35 实测更正)」)。G01-A 引入的普通 Git 分支解析**本身就是那个可观测点**,且它是**非散列**的(分支名是实际坐标,不是 hash);G6 #5 已按「结构事实」把它断言住。**不得**为了「让屏障更确定」再新增一个可注入等待点 —— 那会引入一个没有蓝图依据的生产侧阻塞机制。**本组已转绿,不再保持红。**
 
 ---
 
@@ -1317,13 +1321,16 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 
 ### 14.9 本轮已知保持红(逐条归属,不得靠「恢复门禁」变绿)
 
+> **W35 更正(2026-11-05)**:本表原有 4 行。W35 落地后,**3 行已转绿**,只剩第 1 行(continuity)仍红 —— 它是本波**唯一**的维持红项。下面 3 行保留原文,是为了留痕「当初为什么红、后来靠什么变绿」,**不得**再被读成「现在还红」。
+
 | 用例 | 归属 | 性质与处置 |
 |---|---|---|
-| `internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言 | **G16** | 断言要求「不可变 Case 世系连续性」判据。签发侧 `internal/investigation/hypothesis_result_packet.go:514-531` 自身注释就写明「必须证明完整不可变 Case 世系」,而该机制不存在 —— 需签发侧与消费侧联动,**签发侧不在任何独占文件内**,本轮不实现,**断言维持红** |
-| `internal/cli/native_s9_recovery_test.go:163` `TestNativeS9ExplicitStopChangeStillConflictsAfterRecovery` | 总账 **D2 桶**已知 DEFECT | 生产侧 `internal/cli/native_s9_original.go:37-44` 在 `DeliveryRef != ""` 时直接短路并返回「已接收」,**不做专业语义比较**;蓝图 `:112` 要求「以同一原消费者的专业语义比较当前原卷与其当前已收对象」。**不迁就、不改断言** |
-| `internal/cli/workspace_cleanup_test.go:410` `TestLastFinalPreparesImpactBeforeIndependentCleanup/impact-before-cleanup` | **owner 仲裁已裁(本轮)** | 该变体自带仲裁注记「states the blueprint behaviour, so this variant stays red until the owner decides which reading holds」。**父任务裁定(蓝图优先)**:①`L4-worktree-governance.md:210`「**不以 force remove、git clean 或递归删除未知内容制造完成**」⇒ `--force` 移除路径必须删除;②`L4-worktree-governance.md:208`「**私人目录…都不是删除授权**」+ `L4-workflow-convergence.md:302`「未知、未跟踪、忽略或**私人材料保留为 cleanup_pending**」⇒ 私人答卷材料一律保留、保留即 `cleanup_pending`;③`:302`「cleanup_pending **只与保留材料绑定**」+ `L3-S9-repair.md:271`「Main 可准备原 ChangeImpact 而不使其成为完成门」⇒ 清理**不得**被未决的 ChangeImpact 问卷卡住。**实现侧三条已全部落地**(本轮:删除 `--force` 路径、私人材料改判为保留并命名为 `private answer material`、接收侧脏列表跳过私人答卷区)。该变体断言 `State == complete` 且要求工作区被移除 —— 在**保留材料位于同一工作区**时与第 ② 条**互斥**(不可能既移除该目录又保留其中私人答卷)。⇒ **维持红,但红的原因变了**:断言须按保留语义改写(断言 `cleanup_pending` + 已核实事实不变 + 私人字节保留 + 无强制移除 + **不依赖清理的阶段后继不被阻挡**),**下一轮测试侧执行**;不得为了让该变体变绿而恢复 `--force` |
-| `internal/cli/s9_handoff_wiring_test.go:542` `TestS9HandoffAcceptedFinalCleanupUsesFrozenSessionProtection` | **owner 仲裁已裁(本轮)** | W26 的验收断言写成「状态必须是 `complete`」,与本轮删除 `--force` 后的保留语义互斥(工作区里留着作者的私人答卷 ⇒ 按 `:302` 保留为 `cleanup_pending`)。**父任务裁定**:`:302`「未知、未跟踪、忽略或**私人材料保留为 cleanup_pending**,**不能撤销本人接收、Main 检查或 ACK**」⇒ 清理挂起**不等于**接收被撤销,状态可以是 `cleanup_pending`。断言已改写为**更强**形式:①状态 ∈ {`complete`, `cleanup_pending`};②若为 `cleanup_pending`,阻塞原因**不得**指向缺失的旧 Plan(这正是本用例要证明的「旧 Plan 不阻塞」);③必须报出被保留的工作树路径**且该工作树确实还在**(私人材料没被删);④已接收的 Final 字节不变。**不得**为了让断言回到 `complete` 而恢复强制移除 |
-| `internal/cli/integration_observation_e2e_test.go:23` `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration` | legacy 接线族 | 该 helper 走 legacy `runtime task-integrate` / legacy 接收板路径,与 B4 退役族同源,但**不在** §0.6 退役名单内 ⇒ 按「不得顺手删别的用例」保留并上报 || `internal/cli/s9_handoff_wiring_test.go:265` `TestS9HandoffTypedSelectorPreservesChangedAttemptFence` | W25 | 生产侧 `internal/runtime/repair_result_packet.go:214-244` 执行围栏已落地;该用例断言的 attempt fence 形态仍与围栏口径不一致,待下一轮统一 |
+| `internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言 | **G16** | 断言要求「不可变 Case 世系连续性」判据。签发侧 `internal/investigation/hypothesis_result_packet.go:514-531` 自身注释就写明「必须证明完整不可变 Case 世系」,而该机制不存在 —— 需签发侧与消费侧联动,**签发侧不在任何独占文件内**,本轮不实现,**断言维持红**。**W35 实测:仍红** —— W35 整包验收里 `internal/investigation` 的唯一失败项。台账判档已改为 `DEFECT→A`,但**不改写断言、不加门禁**,等 owner 裁定「能否用非散列的 Case 坐标表达世系」 |
+| `internal/cli/native_s9_recovery_test.go:163` `TestNativeS9ExplicitStopChangeStillConflictsAfterRecovery` | 总账 **D2 桶**已知 DEFECT | 生产侧 `internal/cli/native_s9_original.go:37-44` 在 `DeliveryRef != ""` 时直接短路并返回「已接收」,**不做专业语义比较**;蓝图 `:112` 要求「以同一原消费者的专业语义比较当前原卷与其当前已收对象」。**不迁就、不改断言**。**W35 已转绿(G5 片,生产侧修)**:改为用同一原消费者的专业语义比较当前原卷与已收对象(逐字段专业内容值比较,**不是** revision／计数／散列比较)—— 内容等价 ⇒ 幂等返回「已接收」,实质变化 ⇒ 冲突并保留先前已收事实。变异校验:恢复无条件短路即红 |
+| `internal/cli/workspace_cleanup_test.go:410` `TestLastFinalPreparesImpactBeforeIndependentCleanup/impact-before-cleanup` | **owner 仲裁已裁(本轮)** | 该变体自带仲裁注记「states the blueprint behaviour, so this variant stays red until the owner decides which reading holds」。**父任务裁定(蓝图优先)**:①`L4-worktree-governance.md:210`「**不以 force remove、git clean 或递归删除未知内容制造完成**」⇒ `--force` 移除路径必须删除;②`L4-worktree-governance.md:208`「**私人目录…都不是删除授权**」+ `L4-workflow-convergence.md:302`「未知、未跟踪、忽略或**私人材料保留为 cleanup_pending**」⇒ 私人答卷材料一律保留、保留即 `cleanup_pending`;③`:302`「cleanup_pending **只与保留材料绑定**」+ `L3-S9-repair.md:271`「Main 可准备原 ChangeImpact 而不使其成为完成门」⇒ 清理**不得**被未决的 ChangeImpact 问卷卡住。**实现侧三条已全部落地**(本轮:删除 `--force` 路径、私人材料改判为保留并命名为 `private answer material`、接收侧脏列表跳过私人答卷区)。该变体断言 `State == complete` 且要求工作区被移除 —— 在**保留材料位于同一工作区**时与第 ② 条**互斥**(不可能既移除该目录又保留其中私人答卷)。⇒ **维持红,但红的原因变了**:断言须按保留语义改写(断言 `cleanup_pending` + 已核实事实不变 + 私人字节保留 + 无强制移除 + **不依赖清理的阶段后继不被阻挡**),**下一轮测试侧执行**;不得为了让该变体变绿而恢复 `--force`。**W35 已转绿(G8 片,测试侧改强)**:按保留语义改写为「状态 ∈ {complete, cleanup_pending} + 已核实事实不变 + cleanup_pending 只与保留材料绑定 + 必须点名仍存在的工作树路径 + 私人答卷字节不变 + 已接收 Final 字节不变 + Main checks 未重跑 + Impact 未被重写」;**没有**恢复 `--force` |
+| `internal/cli/s9_handoff_wiring_test.go:542` `TestS9HandoffAcceptedFinalCleanupUsesFrozenSessionProtection` | **owner 仲裁已裁(本轮)** | W26 的验收断言写成「状态必须是 `complete`」,与本轮删除 `--force` 后的保留语义互斥(工作区里留着作者的私人答卷 ⇒ 按 `:302` 保留为 `cleanup_pending`)。**父任务裁定**:`:302`「未知、未跟踪、忽略或**私人材料保留为 cleanup_pending**,**不能撤销本人接收、Main 检查或 ACK**」⇒ 清理挂起**不等于**接收被撤销,状态可以是 `cleanup_pending`。断言已改写为**更强**形式:①状态 ∈ {`complete`, `cleanup_pending`};②若为 `cleanup_pending`,阻塞原因**不得**指向缺失的旧 Plan(这正是本用例要证明的「旧 Plan 不阻塞」);③必须报出被保留的工作树路径**且该工作树确实还在**(私人材料没被删);④已接收的 Final 字节不变。**不得**为了让断言回到 `complete` 而恢复强制移除。**W35 实测:绿**(W26 改写已落地,本波复核确认) |
+| `internal/cli/integration_observation_e2e_test.go:23` `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration` | legacy 接线族 | 该 helper 走 legacy `runtime task-integrate` / legacy 接收板路径,与 B4 退役族同源,但**不在** §0.6 退役名单内 ⇒ 按「不得顺手删别的用例」保留并上报 |
+| `internal/cli/s9_handoff_wiring_test.go:265` `TestS9HandoffTypedSelectorPreservesChangedAttemptFence` | W25(原写有误,W35 已更正) | 原写「生产侧 `internal/runtime/repair_result_packet.go:214-244` 执行围栏**已落地**」**不成立**:该段代码在 W35 开工前**只有定义、零调用**(死代码),围栏从未真正生效。**W35-G5 已接线**:`repairResultExecution` 现在用 `sameRepairResultExecutionCoordinates(frozen, selected)`(`internal/runtime/repair_result_packet.go:241`)比对**已冻结的执行定义**与**当前登记执行**,任一结构坐标不符即拒发;兄弟阻塞路径 `internal/repair/issued_repair_result_blocker.go:321-330`(`verifyIssuedRepairResultBlockerSource`)对同一份冻结定义比对同一组坐标(`assignment_id`/`runtime_id`/`baseline_generation`/`agent_id`/`worktree_path`/`execution_generation`)—— **全是结构坐标,没有一个是散列**。该用例的 attempt fence 断言口径与围栏一致,已随 W35-G5 转绿 |
 | `internal/cli/s6_observation_test.go:115` `TestS6UnchangedPreToolUseReusesObservation`、`TestNativeS6NonblockingNotesReachS7WithoutReanswer` | **G09-A 夹具缺口 → 已修** | 生产侧行为**正确**(W12 验收 `TestS6IntegrationWithoutMainStartKeepsOriginalBatchGate` PASS):当前批次复检必须以「当前代际存在原 TR-003 共同 Main 基线」为前提,缺失即按事实报错。根因**不在**基线守卫上——压缩夹具缺 canonical Assignment Record,闸门一直 not-ready,所以基线错压根未浮现;且 canonical 架构下唯一提交 TR-006 的是 Main 的集成出口(`internal/cli/s6_handoff.go:16`),PreToolUse 钩子只能**评估**批次闸门。**已修**:夹具用真实 TR-003 Writer 建立基线(`internal/cli/s6_observation_test.go:27` `newS6MainBaselineFixture`),新建批次改由原责任原生交付 + Main 真实集成建模,闸门评估在最终钩子前**重新采样**以证明钩子确在变化事实上执行。**断言逐字未动**,未碰生产代码,未改 `tests/fixtures/**` |
 
 
@@ -1666,6 +1673,9 @@ store 在**锁内**、**revision CAS 之后**、**state/journal 配对校验之�
 
 ### 14.14 总账 374 条的闭环现状(实测,基线对照)
 
+> **W35 后续(2026-11-05)**:本节记录的是 **W35 开工前**的现状(59 条未闭环)。W35 已把那 59 条逐条查清「谁错了」并落地,
+> 见 **§14.16**。本节作为基线快照保留。
+
 **测量方法(可复现)**:把会话基线 `22bb385` 用 `git archive` 导出到 `/tmp/base-src`(**不触碰工作树、不写 git 元数据**),
 在基线树与当前树两侧各编译一次测试二进制,只跑**总账涉及的 345 个测试**(374 条里 345 条的主体测试在基线仍存在;
 另 29 条已在基线之前的适配波次被删除)。基线侧 59 红、当前侧 59 红,**逐条同名,双向差集为空**。
@@ -1705,6 +1715,9 @@ G18 的对象是 §14.2 的**写路径 CAS 总账**(①类业务完成路径的�
 
 ### 14.15 W35 闭环规划:59 条未闭环的归因、父任务裁定与修复分片
 
+> **状态:已执行完毕** —— 8 片全部落地,父任务裁定 R-1…R-38 全部落笔;执行结果与整包验收见 **§14.16**。
+> 本节保留为**规划与裁定留档**。
+
 #### 14.15.1 起点与范围
 
 复核总账 374 条里 **59 条未闭环**(§14.14 的 1:1 映射)。本波把 59 条拆成 8 个**只读调查分片**(59 条全覆盖),
@@ -1712,7 +1725,7 @@ G18 的对象是 §14.2 的**写路径 CAS 总账**(①类业务完成路径的�
 `/home/sebs/audit-work/fix-waves/briefs/W35-CLOSURE/`(`PROTOCOL.md` + `G1..G8.md` + `REPORT-G1..G8.md` + `PLAN.md`)。
 调查全程**仓库零改动**(`git status` 空)。
 
-**归因分布**:A 生产缺陷 **22** / B 陈旧断言 **27** / C 夹具缺口 **10**。
+**归因分布**:A 生产缺陷 **22** / B 陈旧断言 **27** / C 夹具缺口 **10**(规划期口径;执行期按实测再判后的**台账最终判档**是 A 18 / B 31 / C 10,5 条再判逐条列在 §14.16.1)。
 
 #### 14.15.2 父任务裁定(16 条争议点全部裁定)
 
@@ -1792,8 +1805,220 @@ G18 的对象是 §14.2 的**写路径 CAS 总账**(①类业务完成路径的�
 #### 14.15.6 验收口径与批次
 
 - **片级**:定向跑该片全部用例 ⇒ 目标用例**转绿** + 非目标用例**不变红**;生产侧修复必须做**「撤掉修复即红」的变异校验**。
-- **整包**:`internal/cli` 整包 + `internal/investigation` + `tests/system/req039` ⇒ 失败集合从 **59** 降到 **2**(探针 1 + 维持红 1);探针批也解决则剩 **1**。
-- **基线对照**:与干净基线 `22bb385`(已导出 `/tmp/base-src`)做差集 ⇒ **无新增红**,会话引入回归数 **0**。
+- **整包**:`internal/cli` 整包 + `internal/investigation` + `tests/system/req039` ⇒ 失败集合从 **59** 降到 **2**(探针 1 + 维持红 1);探针批也解决则剩 **1**。**W35 实测:剩 1** ✓(探针批已解,只剩 §14.9 G16 的维持红)。
+- **基线对照**:与干净基线 `22bb385`(已导出 `/home/sebs/audit-work/base-src` —— **不放 `/tmp`**,那里有周期清理)做差集 ⇒ **无新增红**,会话引入回归数 **0**。
 - **常规**:`make fmt-check` `make vet` `make build` `make test-ci-core` `make test-ci-race` 全绿。
-- **台账**:未闭环数 59 → 2;F1–F5 事实错误同步修正。
+- **台账**:未闭环数 59 → 2(规划口径)⇒ **实测 59 → 1**(探针批已解;仅剩 §14.9 G16 的维持红);F1–F5 事实错误同步修正。
 - **批次**:批 1 = 8 片并行(文件互斥已验证);批 2 = 探针批(依赖批 1 的 `hookctx/loader.go` 结果);批 3 = F1–F5 更正 + 整包验收 + 提交。
+
+---
+
+### 14.16 W35 收尾:8 片落地、59 条闭环与事实更正
+
+#### 14.16.1 8 片的落地结果
+
+| 片 | 目标条目 | 归因 | 生产侧改动 | 变异校验 | 提交 |
+|---|---|---|---|---|---|
+| **G1** | 9 | L4 桶:陈旧断言 + 夹具缺口 | **无**(断言按蓝图新粒度改强 + 补反向断言) | M1–M3b 撤掉 `round_entry` 写入 / 冻结输入位置生产者 / TR-002 阶段推进 / S7 plan 接收 ⇒ 对应用例即红;M4/M5 见 `FIX-G1.md` | 见 14.16.4 |
+| **G2** | 8(含探针批) | A 4 / C 3 / B 1 | `native_review_hooks.go`、`human_release_questionnaire.go`、`native_s8_responsibility.go` | M1–M5 | `0621625` |
+| **G3** | 8 | L1 桶:以 A 为主 | `internal/assignment/completion_canonical.go`、`internal/cli/repair_dispatch_questionnaire.go`、`internal/cli/repair_lead_questionnaire.go`、`internal/cli/s9_questionnaire_listener.go`、`internal/repair/main_impact.go` | 逐条生产锚点撤回即红 | 见 14.16.4 |
+| **G4** | 7(+探针批 1) | D3 桶:夹具缺口 + 一条陈旧措辞 | `internal/cli/work_progress.go` | #5 两项:撤掉「失败不被成功路径掩盖」与「不呈现不 current 的分片」即红;GM1/GM2/GM3/GM4 | 见 14.16.4 |
+| **G5** | 6 | D1/D2 桶:4 条 A + 2 条 B | `internal/cli/native_s9.go`、`internal/cli/native_s9_original.go`、`internal/cli/run.go`、`internal/runtime/repair_result_packet.go` | 9 项,全部「撤掉即红」 | 见 14.16.4 |
+| **G6** | 7 | L3 桶:B 6 / C 1 | **无** | 5 项 | `5b99135` |
+| **G7** | 6 | SYS 5 + INV 1 | **无** | 7 项 | `faed3c9` |
+| **G8** | 8 | A 2 / B 5 / C 1 | `internal/runtime/checkpoint_indices.go`、`internal/workpacket/repair_result.go` | 9 项 | `beab115` |
+
+**归因合计(59 条)**:A 生产缺陷 **22** / B 陈旧断言 **27** / C 夹具缺口 **10**(规划期口径,见下)。
+
+> **规划期归因 vs 台账最终判档(5 条再判,已实据化)** —— 上面的 22/27/10 是**规划期**口径(8 份调查报告的 `**归因**` 行);
+> 台账 `/home/sebs/audit-work/ledger_defect_reviewed.json` 里这 59 条的**最终判档**是 A **18** / B **31** / C **10**。
+> 两组数字**都对,口径不同**;差异全部是**执行期按实测再判**,不是改口径凑数:
+>
+> | 条目 | 规划期 | 最终判档 | 再判依据(台账 `action` 原文要点) |
+> |---|---|---|---|
+> | `TestNativeS9PlanOnlyStopPreservesReceiptAfterPrivatePlanRemoval` | A | **B** | 畸形 JSON 且 Plan 收据已收时,返回值保留双坐标并把具体解析错误作为 consumer diagnostic 附上 —— 生产侧行为符合蓝图,是**断言**表达的是重构前语义 |
+> | `TestS9RepairDispatchExplicitSavePreparesNativeBriefAndPreservesOriginalSources` | A | **B** | 原断言含一条**永假的散列门禁**(期望散列恒为空串 ⇒ 断言永远红),按 R-1 改为逐字节比较 + 退役字段反向断言 |
+> | `TestS9PlanningGuidanceUsesOriginalDivisionAndIssuedOwner` | A | **B** | 上一轮已按蓝图新粒度改写,本轮开工即绿,属测试侧改写 |
+> | `TestS7SharedOriginalCannotBeBorrowedByUnboundNativeWorktree` | C | **B** | 原断言钉死两条**蓝图禁止的 Git-checkout 闸门**文案(生产实现已在 `d0d948a`/`5d1f0a3` 删除),按 R-1 把退役文案改为蓝图负向断言 |
+> | `TestWorkspaceBackendCoreLaunchCommitAndOriginalVerifiedIntegration` | A | **C** | 探针批并入 G4(与 `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration` **同根同修**:失败报文逐字相同),根因是 core Builder 夹具仍是 legacy 接线 ⇒ 判 **C(夹具缺口)** |
+>
+> 净值:**3 条 A→B、1 条 A→C、1 条 C→B** ⇒ A 22→**18**、B 27→**31**、C 10→**10**。
+> 59 条的 `verdict` 与 `action` **全部实据化,零占位符**(父任务逐条复核,非采信 worker 自述)。
+
+> 「目标条目」列按 `G1.md`–`G8.md` 的简报清单数计,合计 **59**。各片**实际**处理量因「落笔点文件归属」而有出入:G1 清单里的 2 条(`TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit`、`TestS8ObservedContractPassiveSkipKeepsExplicitSaveAndChangedValidation`)落在 **G3 的独占文件**,由 G3 完成;G1 额外完成了 G3 清单里的 1 条(`TestIndependentReviewRejectsCorruptSourceWithoutReception`,落在 G1 的独占文件)⇒ `FIX-G3.md` 覆盖 12 条、`FIX-G1.md` 覆盖 8 条,而非各 8 条。
+
+#### 14.16.2 本波的关键生产侧修复(不是改测试迁就)
+
+1. **`internal/runtime/checkpoint_indices.go` 恢复 4 条非散列结构校验**(G8)。`d0d948a` 把该文件从 271 行削到 17 行时误删了它们:孤儿接收 / 重复键 / 伪造 transition / 旧评审复活。四条全部只校验**记录身份**与**事务配对**,`workpacket.Digest`／`sha256`／字节比对／`RebuildS5`+`DeepEqual` 一条都不带回。
+2. **`internal/runtime/repair_result_packet.go` 接上死代码围栏**(G5)。`sameRepairResultExecutionCoordinates` 此前全仓零调用(§14.9 W25 行的「已落地」是错的,已更正);现与兄弟路径 `internal/repair/issued_repair_result_blocker.go:321-330` 用**同一组冻结坐标**对齐。
+3. **`internal/workpacket/repair_result.go` 的 null 语义**(G8)。`migration_ref`／`rollback_ref` 的 `null` 按仓库**自己发布的** `stage-answer-s9-result.schema.json:84-85` 判为合法的「不适用」声明;`verdict` 的 `null` 仍是字段错误。连带把两处测试里的 `migration_ref = nil` 改成 `= 42`(真·类型不匹配),并补「null 被接受且不被改写成空串」的反向断言。
+4. **`internal/cli/native_s9_original.go` 的 Git 分支解析改为失败不致命**(G5,R-35)。**保留**该 `workspace.Git` 调用(删掉会让 G01-A 的分支坐标无从取得,并让 G6 #5 的 git shim 屏障失效),但解析失败时留空、照常接收。
+5. **`internal/cli/repair_lead_questionnaire.go` 的 S9 入口错误分支定位本人原卷**(G3,R-37/R-20)。蓝图 `L3-S9-repair.md:83`「能确定原责任时定位本人原卷」支配错误路径;**禁止**把测试改成断言「不给原卷路径」。
+6. **`internal/assignment/completion_canonical.go` 发布 WorkerCheck 原始捕获字节**(G3)。CompleteTask 的 Apply 在原锁临界区把**原始捕获收据字节**与相邻 `output.log` 字节发布到不可变的 per-Result 路径并回填路径 —— **拷贝字节,不比较摘要**;并把收据行里的**阶段坐标**回填到已被收据证明的事实。
+7. **`internal/repair/main_impact.go` 新增 `ReceivedRepairContributionCount`**(G3)。S9 入口一次响应只读原 RepairPlan 一次。
+8. **`internal/cli/s9_questionnaire_listener.go` 去掉 `brief == ""` 过滤**(G3)。原生性由**作者实际写出的 brief 文件位置**决定,不再由 packet 行的 `brief_path` 缺失误判。
+9. **`internal/cli/work_progress.go` 的 Main 规划观察**(G4)。观察的是答卷**自身的长度与修改时间**与**绑定分支自己的 ref 记录**,**不计算任何摘要、内容散列或 Git 对象 ID**。
+
+#### 14.16.3 五条事实错误更正(F1–F5,已落笔)
+
+| 编号 | 位置 | 原写法 | 实测 | 处置 |
+|---|---|---|---|---|
+| **F1** | §14.9 W25 行 | 「`repair_result_packet.go:214-244` 执行围栏**已落地**」 | 该段只有定义、**零调用** | 已改写为「原写不成立 + W35-G5 已接线」,并给出接线的真实坐标 |
+| **F2** | 台账 J06 action | 「已适配并转绿…定向 PASS」 | 实测**仍红**(生产侧 null 字段错误) | 按 R-18 重写;判档 `STALE→A` |
+| **F3** | 台账 `TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate` action | 「已适配并转绿…定向 PASS」 | 实测**仍红**于 `native_s9_reception_split_test.go:488` | 按 R-8 重写;判档 `STALE→B` |
+| **F4** | §11 G01-C(原写「§14.9 G01-C」,位置本身也写错了) | 「接收链里已不存在任何 git 调用 ⇒ 屏障结构性死亡」 | HEAD `905e068` 上**不成立**(G01-A 重新引入 `git branch --show-current`) | 已改写;补 R-35;并写明「该决定已不需要」 |
+| **F5** | 台账 4 条 action(J06/J08/J15b/L5) | 照抄会做**反方向**工作 | — | 已按新归因重写;判档变更 J06 `STALE→A`、J08 `CONFLICT→A`、J15b `CONFLICT→A`、L5 `DEFECT→B` |
+
+#### 14.16.4 W35 的提交(11 个)
+
+| 提交 | 片 | 内容 |
+|---|---|---|
+| `0621625` | G2 | S11 保存路径补 Main 受众闸门;已收重放不再把回执投进 actor 通道;归属未知的提示只进 stderr;SubagentStop 补「归属本人」闸门;S6 夹具加真实 TR-003 基线变体;S9 证据断言弃用 exit code 代理 |
+| `faed3c9` | G7 | 散列正向 → 蓝图负向 + 来源绑定正向;TR-006 走 canonical 路径;S10 评审身份在测试侧补齐(**未碰 `tests/fixtures/**`**) |
+| `5b99135` | G6 | 夹具去掉伪造的 `runtime_context.agent.id`;Main 面指引移到第一次 S7→S8 事件;退役固定源钉桩改双向断言;恢复入口改指真实未完成部分;stage 名等值 → 结构事实 |
+| `beab115` | G8 | 恢复 4 条非散列结构校验;null 可选引用语义按仓库自有 schema 收窄;退役冻结源快照断言 |
+| `e2f8095` | G1 | S4／S7／S10 陈旧断言按蓝图新粒度改写 + 补反向断言(**零生产改动**) |
+| `b77234b` | G3 | canonical S9 分派修复(原卷定位、单次读 RepairPlan、原生性按作者实际写出的 brief 判定)+ S3／S5／S7／S8／S9 断言改写 |
+| `dac628e` | G4 | core Builder 夹具迁到 canonical Assignment Record;Main 规划观察改用结构事实;#5 陈旧措辞改强 |
+| `b5070b2` | G5 | 原生 S9 接收链修复(已收对象的专业语义比较)+ **接上死代码 attempt 围栏**;Git 分支解析改为失败不致命 |
+| `a1c70a1` | G5 补 | null verdict 的反向断言按形态分列(生产行为**未改**,见 §14.16.5) |
+| `ae46a4b` | G8 补 | 接收配对校验移出常用 checkpoint 路径(见 §14.16.6) |
+| `a5b2b96` | G4 补 | 激活用例回到 legacy 族夹具,**断言逐字未改**(见 §14.16.5 ②) |
+
+#### 14.16.5 整包验收跑出的两个新红点(均已修)
+
+**整包验收是本波唯一能抓到这两个红点的手段** —— 它们都不在本波 61 条目标集里,定向跑与 `make test-ci-core` 都看不见。
+
+**① `TestNativeS9OptionalReferenceAcceptsOnlyItsOwnNullShape/null-verdict`**
+
+`make test-ci-core` 与整包验收各自独立跑出**同一个新红点**:`TestNativeS9OptionalReferenceAcceptsOnlyItsOwnNullShape/null-verdict`
+——「original Result responsibility missing: packets=0」。该用例是 G5 本波**新写**的反向断言,断言两种形态下都应有 1 条已登记的 RepairResult responsibility。
+
+实测事实:null verdict 在 `internal/cli/native_s9_original.go:144` 走的是 `pendingResult()` —— **没有表达判断的空值保留草稿**
+(`L4-workflow-convergence.md:106`),尚未交付,因此**没有**登记任何 responsibility;而「类型写错的 `migration_ref`」走的是字段错误路径,责任**已登记**(作者可以改字段后重存同一原卷)。
+⇒ **生产行为正确,是新写的断言把「保留草稿」误当成「已登记 responsibility」。**
+
+处置(父任务 R-40):断言按形态分列,并**补强**三条反向断言 —— 消费者**不得改写作者的原卷字节**;两种形态都**不得**产生 Candidate;
+responsibility 数量按形态分别为 1（字段错误）与 0（未交付草稿）。变异校验:撤掉生产侧的「保留草稿」分支 ⇒ null verdict 子例红(`count=1 want=0`)。提交 `a1c70a1`。
+
+**② `TestWorkspaceBackendCoreInstallsFixedRoleWithoutChangingActivation`**
+
+失败报文:`workspace_core_profile_test.go:486: enabled context replaced authorization or omitted frozen role`。基线 `22bb385` 实测**绿** ⇒ W35 引入的回归。
+
+根因:core Builder 夹具迁到 canonical 之后,授权 skill 集合在 canonical Assignment Record 里按**记录自己的顺序**保存
+(`[api-contracts testing-strategy]`),而该用例暂存的 legacy activation envelope 保留原序(`[testing-strategy api-contracts]`)——
+**集合完全相同、只是顺序不同**,而断言用的是顺序敏感的 `reflect.DeepEqual`。修掉这一处后又露出该用例的**第二处**问题:
+它在 canonical 上下文里写 **legacy 形状**的 Plan(`steps` + 无 `done_when_indexes` 的 `assertion_checks`),schema 直接拒收
+(`oneOf failed … closest to branch "s6PlanReport"`)。
+
+判定:这条用例**整体属于 legacy 族** —— 它暂存 legacy activation envelope、证明「原始激活字节未变」、并用 legacy 专业 Plan 形状作答;
+在 canonical 族里 activation envelope 已不是权威(权威是 Assignment Record),Plan 是瘦 canonical 草稿,这条用例断言的**对象本身不存在**。
+
+处置(父任务 R-41):该用例回到 **legacy 族夹具**(`coreBuilderFixtureChecks`),**断言逐字未改**;canonical 族的角色安装与回执由 canonical 夹具的既有用例覆盖。
+变异校验:把夹具换回 canonical ⇒ 该用例重新变红(两处)。提交 `a5b2b96`。
+
+> 附带修正:探针文件 `internal/cli/zz_probe_auth_test.go` 在取到实测值后**已删除**,工作树无未跟踪文件。
+
+#### 14.16.6 `internal/runtime` 的 race 耗时(W35 引入的成本与处置)
+
+`make test-ci-race` 用 `CI_TEST_TIMEOUT ?= 5m` 作**包级**超时。W35 恢复 4 条结构校验后,每次 checkpoint 校验都要付全量配对代价 ⇒ race 插桩下撞线:
+
+| 版本 | `go test -race -short ./internal/runtime` 耗时(单包隔离测量) |
+|---|---|
+| 基线 `22bb385` | **266.6s** |
+| W35 完整 | **300.4s** ⇒ **超过 5 分钟门限,`make test-ci-race` 红** |
+| 去掉 G8 的 `checkpoint_indices.go` 改动(归因测量) | 282.2s ⇒ **归因于本文件的 ~18s** |
+| W35 + 三处优化 | **270.9s** |
+
+> **口径提醒**:上表是**单包隔离**测量(只跑 `./internal/runtime`),用于版本间可比;
+> 门禁 `make test-ci-race` 一次跑 10 个包、`-p 2`、包级超时 `CI_TEST_TIMEOUT ?= 5m`。
+> **同一份代码**在终态树上的两次实测:`internal/runtime` = **298.580s**(16:41,机器上同时有别的重活)与
+> **258.427s**(19:59,空载、禁用缓存 `-count=1` 重跑,总墙钟 262.06s)⇒
+> **耗时随机器负载在 258～299s 之间浮动,门限是 300s**。
+> ⇒ 门禁余量**空载时有 41.6s、并发负载下只剩 1.4s**。日志:`/home/sebs/audit-work/race-gate4.log`、`race-final-fresh.log`。
+
+三处优化**不删任何一条校验**,只去掉校验不需要的工作(提交 `ae46a4b`):
+1. **journal 惰性解析** —— journal 只有「伪造 transition」这一条配对需要,而恢复侧配对(`internal/runtime/recovery.go:470`)**已经解析过同一份字节**;原实现等于每次 checkpoint 校验整本 journal 解析两遍。
+2. **紧闸门** —— 状态里没有 document-review 包 ⇒ 不存在 document-review 接收 ⇒ 整段配对空转。原闸门 `hasIssuedIndices` 对几乎所有状态都为真,等于每次 checkpoint 都付全量代价。
+3. **直接读行** —— 接收行来自已解码的 state,再 `json.Marshal` + `json.Unmarshal` 一遍纯属浪费;字段类型错仍然是错误、未知字段仍然忽略。
+
+**遗留项(下一波)**:基线的单包隔离测量已占满 5 分钟门限的 89%(266.6s / 300s),而门禁实跑更是随负载在 **258～299s / 300s** 之间浮动 —— 空载余量 41.6s,并发负载下只剩 **1.4s**。且门禁里另 9 个包与它共享 `-p 2` 的并发额度,机器负载一变就可能撞线。真正的宽松应当在 CI 的**包级超时**上给,而不是靠实现层压缩。`Makefile` 是禁改路径,本波**未动**。
+
+#### 14.16.7 环境侧:连续杀死四个分片 worker 的根因(已修)
+
+W35 开工期间,分片 worker 反复在毫无代码错误的情况下被整体杀死,报错形如
+`ENOENT ... /tmp/minimax-plugin-hooks/transcripts/<uuid>.compatible.jsonl`。四片(G1／G3／G4／G5)先后被杀,
+且每次都在同一分钟。
+
+根因:**不是仓库代码,是主机上的定时清理**。`crontab` 里 `7 * * * * /home/sebs/.local/bin/tmp-gc` 每小时第 7 分钟清理 `/tmp`。
+该脚本在**磁盘水位紧张时**(剩余 < 8 GiB)把保护窗口从 3 天收紧到 **90 分钟**,而 `/tmp/minimax-plugin-hooks/transcripts/`
+是运行时为每个会话(含每个子 agent)写的 transcript 目录 —— 它**只在会话创建时新建、之后只追加**,目录 mtime 因此会随会话时长变旧。
+90 分钟窗口正好落在长会话的寿命之内 ⇒ 12:07:01 的清理删掉该目录 ⇒ 12:08 所有在跑的子 agent 同时死亡。
+主机磁盘长期在 87% 使用率(剩余 7.1 GiB < 8 GiB),所以这个窗口**每小时都会触发一次**。
+
+处置:把 `minimax-plugin-hooks` 加入 `tmp-gc` 的白名单。白名单原本就写明用途是「系统/运行时套接字目录,删除会破坏会话」——
+运行时自己的会话 transcript 目录正是这一类。修改在 `/home/sebs/.local/bin/tmp-gc`(主机脚本,**不在仓库内**),已 `bash -n` 校验并实测匹配。
+**仓库内的任何文件都未因此改动。**
+
+本波因此建立的纪律(仍有效):报告**边做边写**落盘到 `/home/sebs/audit-work/...`(不放 `/tmp`);中间笔记只写 `/home/sebs/audit-work/...`;
+worker 不做 git 写操作(提交统一由父任务做);父任务**独立复核**每个分片的目标用例,不只采信 worker 自述。
+
+#### 14.16.8 整包验收与门禁
+
+**终态整包验收(当前树 `a5b2b96`,包级超时 180 分钟,独占机器)与基线树 `22bb385` 的逐包对照**
+
+| 包 | 基线耗时/结果 | 基线失败 | 终态耗时/结果 | 终态失败 | 转绿 | 新增红 |
+|---|---|---|---|---|---|---|
+| `internal/investigation` | 112.226s / 红 | 1 | 98.285s / 红 | 1 | 0 | 0 |
+| `tests/system/req039` | 223.988s / 红 | 5 | 169.256s / 绿 | 0 | 5 | 0 |
+| `internal/cli` | 2747.541s / 红 | 53 | 2901.859s / 绿 | 0 | 53 | 0 |
+| **合计** | — | **59** | — | **1** | **58** | **0** |
+
+基线树 `22bb385`(与 `/home/sebs/audit-work/base-src` 逐文件一致,`diff -rq` 零差异),**包级超时 180 分钟、独占机器、完整跑完** ⇒ 失败清单是**全集**,可与 §14.14 记录的开工前数字直接对账。
+
+> **新增红 = 0** —— 终态的失败集合是**完整跑完**的枚举结果(未撞包级超时),
+> 它的每一项都能在基线侧找到**同包同名**的失败 ⇒ **本波引入的回归数为 0**。
+>
+> **终态仅剩的失败是 §14.9 G16 那条已登记的维持红**
+> (`internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言),
+> 按裁定**不改写断言、不加门禁**,等 owner 裁定「能否用非散列的 Case 坐标表达世系」。
+>
+> 对账 §14.14:开工前整包失败 **53 + 1 + 5 = 59** ⇒ 终态 **1**,
+> 与 §14.15.6 的验收口径「失败集合从 59 降到 2(探针 1 + 维持红 1),探针批也解决则剩 **1**」一致。
+
+**门禁**
+
+| 门禁 | 结果 |
+|---|---|
+| `make fmt-check` | **绿** |
+| `make vet`(`go vet ./...`) | **绿** |
+| `make build` | **绿** |
+| `make test-ci-core` | **绿**(该目标**排除** `internal/cli`/`internal/investigation`/`internal/integration`/`tests/system/**`) |
+| `make test-ci-smoke` | **绿**(覆盖 `internal/cli` 的 `-short` 子集) |
+| `make test-ci-race` | **绿**(耗时与余量见 §14.16.6) |
+
+> 门禁覆盖不到 `internal/cli` 全量的那一块,由上面的**整包验收**兜住:
+> `internal/cli` HEAD 实测 **1213 个顶层用例**(`go test -list '.*'`;§14.14 记的 1204 是开工前 `8fa862a` 的数),
+> 整包 **2901.859s、0 失败**。
+
+**目标集**:61 条目标用例(8 片目标 59 条 + 2 条关联)全部落在上述三个包里,
+因此整包验收**覆盖**了它们 —— **60/61 绿**,
+余下 1 条是 §14.9 G16 的**维持红**(设计上红:不改写断言、不加门禁)
+—— `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates`。
+
+**台账**:374 条总数不变;59 条目标条目的 `verdict` 与 `action` **全部实据化,零占位符**;
+`bucket`/`test`/`src`/`blueprint` 四个字段与本波开始前**逐条零差异**;
+最终判档 A 18 / B 31 / C 10(与规划期的 22/27/10 的 5 条再判见 §14.16.1)。
+与失败用例 1:1 对应的「未闭环」条数:**59 → 1**(仅剩 §14.9 G16 的维持红);
+按 §14.14 的闭环口径,已闭环 **286 + 58 = 344** 条。
+
+> **顺带结清 §14.10 的一条待办**:§14.10 列的「总账未登记、待补录」6 条**现全部已在 374 条总账内**,
+> 其中 3 条(`TestNativeS9CandidatePreparesImpactWithoutRecordingMainCompletion`、
+> `TestNativeS9PlanOnlyStopPreservesReceiptAfterPrivatePlanRemoval`、
+> `TestNativeS9PublicCorrectsHistoricalUnstagedResult`)**正是本波 G5 判掉的**;
+> 余下 `TestNativeS9ActualWorktreeStopReceivesWithoutLauncherOrPlatformIdentity`
+> **已登记但判档仍为「未决」**(其 `action` 如实写「根因待查,下一轮逐条定性」)——
+> 该用例当前**通过**,不构成红,但判档留作下一波,**不在本波范围内强行定性**。
+
+
+
