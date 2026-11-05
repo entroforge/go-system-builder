@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -23,6 +22,23 @@ func ValidateCheckpointIndicesContext(ctx context.Context, root string, state ma
 		return err
 	}
 	return validateReceptionPairing(state, journalBytes)
+}
+
+// hasDocumentReviewPacket reports whether the state indexes any packet of the
+// document-review family. Only that family records document-review
+// receptions, so without one of its packets the whole reception pairing is
+// vacuous. The check keeps a checkpoint that carries no document-review
+// packet from paying for the pairing work on every save.
+func hasDocumentReviewPacket(state map[string]any) bool {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["work_packets"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["template_id"] == "s5-document-review-v1" {
+			return true
+		}
+	}
+	return false
 }
 
 // validateReceptionPairing restores the recorded pairing between accepted
@@ -49,7 +65,7 @@ func ValidateCheckpointIndicesContext(ctx context.Context, root string, state ma
 // digest of the saved bytes, and comparing it with the revision packet's
 // recorded previous_submission_key is a transaction pairing, not a hash gate.
 func validateReceptionPairing(state map[string]any, journalBytes []byte) error {
-	if !hasIssuedIndices(state) {
+	if !hasIssuedIndices(state) || !hasDocumentReviewPacket(state) {
 		return nil
 	}
 	entities, _ := state["entities"].(map[string]any)
@@ -64,10 +80,12 @@ func validateReceptionPairing(state map[string]any, journalBytes []byte) error {
 	if len(packets) == 0 {
 		return nil
 	}
-	journal, err := inspectJournalData(journalBytes)
-	if err != nil {
-		return err
-	}
+	// The journal is needed by exactly one of the four pairings: the forged
+	// transition. The recovery pair above already inspected the same bytes,
+	// so this parses them a second time only when an advanced reception
+	// actually appears. A checkpoint without one pays no extra journal read.
+	var journal journalInspection
+	journalInspected := false
 	evidence := checkpointEvidenceRows(state)
 	received := map[string]SubmissionRecord{}
 	keys := map[string]string{}
@@ -93,6 +111,14 @@ func validateReceptionPairing(state map[string]any, journalBytes []byte) error {
 			return fmt.Errorf("duplicate checkpoint reception identity %q (%q and %q)", record.Key, owner, record.PacketID)
 		}
 		if record.ControlStatus == "advanced" {
+			if !journalInspected {
+				inspected, err := inspectJournalData(journalBytes)
+				if err != nil {
+					return err
+				}
+				journal = inspected
+				journalInspected = true
+			}
 			if err := checkAdvancedReception(journal, record); err != nil {
 				return err
 			}
@@ -203,14 +229,46 @@ func checkpointEvidenceRows(state map[string]any) map[string]map[string]any {
 
 // decodeSubmissionRow decodes one recorded reception row with the same shape
 // the production typed lookup uses.
+//
+// The row is read directly instead of through a JSON round trip. The row
+// comes from the saved state, so re-encoding it only to decode it again
+// costs a full marshal per reception on every checkpoint validation. A field
+// that is present with the wrong type is still an error, and an unknown
+// field is still ignored, exactly as the typed decode reports it.
 func decodeSubmissionRow(row map[string]any) (SubmissionRecord, error) {
-	data, err := json.Marshal(row)
-	if err != nil {
-		return SubmissionRecord{}, fmt.Errorf("encode checkpoint reception row: %w", err)
-	}
 	var record SubmissionRecord
-	if err := json.Unmarshal(data, &record); err != nil {
-		return record, fmt.Errorf("decode checkpoint reception row: %w", err)
+	for _, field := range []struct {
+		key   string
+		value *string
+	}{
+		{"submission_key", &record.Key},
+		{"packet_id", &record.PacketID},
+		{"owner", &record.Owner},
+		{"evidence_id", &record.EvidenceID},
+		{"followup_event_id", &record.FollowupID},
+		{"control_status", &record.ControlStatus},
+		{"origin_state", &record.OriginState},
+		{"origin_phase", &record.OriginPhase},
+		{"transition_event_id", &record.TransitionEventID},
+		{"revision_packet_id", &record.RevisionPacketID},
+		{"superseded_by", &record.SupersededBy},
+	} {
+		raw, exists := row[field.key]
+		if !exists || raw == nil {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return SubmissionRecord{}, fmt.Errorf("checkpoint reception row field %s is not a string", field.key)
+		}
+		*field.value = value
+	}
+	if raw, exists := row["origin_entry"]; exists && raw != nil {
+		entry, err := integerField(row, "origin_entry")
+		if err != nil {
+			return SubmissionRecord{}, fmt.Errorf("checkpoint reception row field origin_entry is not a number: %w", err)
+		}
+		record.OriginEntry = entry
 	}
 	return record, nil
 }
