@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -180,19 +181,28 @@ func sharedModelDocumentsFromState(state map[string]any) []map[string]any {
 	return out
 }
 
-func assertSharedModelDocuments(t *testing.T, state map[string]any, wantPaths ...string) {
+func assertSharedModelDocuments(t *testing.T, root string, state map[string]any, wantPaths ...string) {
 	t.Helper()
+	view := committedSharedModelSource(t, root)
 	seen := map[string]map[string]any{}
 	for _, doc := range sharedModelDocumentsFromState(state) {
 		path, _ := doc["path"].(string)
+		if _, duplicate := seen[path]; duplicate {
+			t.Fatalf("shared model subject %s is registered more than once", path)
+		}
 		seen[path] = doc
 		if doc["kind"] != "design" || doc["status"] != "locked" {
 			t.Fatalf("shared model document is not a locked design subject: %#v", doc)
 		}
-		sha, _ := doc["sha256"].(string)
-		if len(sha) != 64 {
-			t.Fatalf("shared model document has invalid content hash: %#v", doc)
-		}
+		// Blueprint negative: the content digest of documents[] is retired.
+		// blueprint/l4-mechanisms/L4-shared-model-contract-governance.md:111 —
+		// 「不计算、登记、重算或校验 `documents[]` 的内容摘要」。
+		// blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:7 —
+		// 「S0～S11 的全部自然 Hook、原消费者和后继均不计算、登记或校验散列」。
+		assertNoRetiredDigestField(t, "shared model registration "+path, doc)
+		// Source binding positive: the registered subject must be the committed
+		// Git source the Runtime actually consumed, not a registered digest.
+		assertCommittedSourceReadable(t, view, path)
 	}
 	for _, path := range wantPaths {
 		if _, ok := seen[path]; !ok {
@@ -201,8 +211,53 @@ func assertSharedModelDocuments(t *testing.T, state map[string]any, wantPaths ..
 	}
 }
 
+// retiredDigestFields lists the content-digest field names the blueprint
+// retires for shared-model registration and document-review subjects.
+var retiredDigestFields = []string{
+	"sha256", "sha256_hex", "sha", "hash", "digest", "fingerprint", "checksum",
+	"content_hash", "content_digest", "content_sha256", "git_oid", "blob_sha",
+}
+
+// assertNoRetiredDigestField pins the blueprint negative: the retired content
+// digest must not be present at all — not computed, not registered, not
+// recomputed and not verified.
+func assertNoRetiredDigestField(t *testing.T, context string, row map[string]any) {
+	t.Helper()
+	for _, field := range retiredDigestFields {
+		if value, present := row[field]; present {
+			t.Fatalf("%s must not carry the retired content digest field %q: %#v", context, field, value)
+		}
+	}
+}
+
+// committedSharedModelSource opens the bound REQ branch's committed Git tree.
+// The registration and the review subjects must both be readable there, so the
+// assertions prove which bytes the Runtime consumed.
+func committedSharedModelSource(t *testing.T, root string) *fileview.View {
+	t.Helper()
+	view, err := fileview.New(root, "refs/heads/test-development", []fileview.Rule{{Path: ".", Source: "git_tree"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return view
+}
+
+// assertCommittedSourceReadable is the source-binding positive half: the
+// material must exist in the committed tree the Runtime consumed.
+func assertCommittedSourceReadable(t *testing.T, view *fileview.View, path string) {
+	t.Helper()
+	data, err := view.ReadFile(path)
+	if err != nil {
+		t.Fatalf("committed source %s is not readable from the bound Git tree: %v", path, err)
+	}
+	if len(data) == 0 {
+		t.Fatalf("committed source %s has no content", path)
+	}
+}
+
 func assertReviewSubjectsContain(t *testing.T, root string, path string) {
 	t.Helper()
+	view := committedSharedModelSource(t, root)
 	for _, name := range []string{"ev-dv-spec.json", "ev-dv-task.json"} {
 		data, err := os.ReadFile(filepath.Join(root, "evidence", name))
 		if err != nil {
@@ -218,9 +273,14 @@ func assertReviewSubjectsContain(t *testing.T, root string, path string) {
 			subject, _ := raw.(map[string]any)
 			if subject["path"] == path {
 				found = true
-				if subject["sha256"] == "" {
-					t.Fatalf("%s subject %s has no hash", name, path)
-				}
+				// Blueprint negative: a document-review subject is bound to the
+				// committed source by identity, never by a content digest.
+				// blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:7 —
+				// 「S0～S11 的全部自然 Hook、原消费者和后继均不计算、登记或校验散列」。
+				assertNoRetiredDigestField(t, name+" subject "+path, subject)
+				// Source binding positive: the reviewed subject must be the
+				// committed Git source, not a digest of it.
+				assertCommittedSourceReadable(t, view, path)
 			}
 		}
 		if !found {
@@ -277,7 +337,7 @@ func TestAuditSharedModelHookSpineCommittedSource(t *testing.T) {
 	state = req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "shared-model-s3", "Edit",
 		map[string]any{"file_path": "docs/dev/contracts/CONTRACTS-039.md"},
 		"PTR-PLAN-02", "planning", "tasks", "AUDIT-SHARED-S3")
-	assertSharedModelDocuments(t, state,
+	assertSharedModelDocuments(t, root, state,
 		"docs/architecture/data-model/worker-only.json",
 		"docs/architecture/data-model/request.json",
 		"docs/architecture/data-model/invalid-request.json",
@@ -299,7 +359,7 @@ func TestAuditSharedModelHookSpineCommittedSource(t *testing.T) {
 	if lc, phase := req039fixtures.Lifecycle(state); lc != "document_verification" || phase != "" || req039fixtures.LastTransitionID(state) != "TR-002" {
 		t.Fatalf("S4 Hook did not commit TR-002: lifecycle=%s.%s last=%s qg=%v output=%s stderr=%s", lc, phase, req039fixtures.LastTransitionID(state), qg, hookOutput, stderr)
 	}
-	assertSharedModelDocuments(t, state, "docs/architecture/data-model/worker-only.json")
+	assertSharedModelDocuments(t, root, state, "docs/architecture/data-model/worker-only.json")
 
 	state = req039fixtures.ReadState(t, root)
 	req039fixtures.WriteDocumentVerificationPassEvidence(t, root, state, "shared-dv-spec", "shared-dv-task")
@@ -315,7 +375,7 @@ func TestAuditSharedModelHookSpineCommittedSource(t *testing.T) {
 	state = req039fixtures.RequireStrictLifecycleTransition(t, runner, root, "shared-model-s5", "Edit",
 		map[string]any{"file_path": "docs/dev/contracts/CONTRACTS-039.md"},
 		"TR-003", "building", "", "AUDIT-SHARED-S5")
-	assertSharedModelDocuments(t, state,
+	assertSharedModelDocuments(t, root, state,
 		"docs/architecture/data-model/worker-only.json",
 		"docs/architecture/data-model/request.json",
 		"docs/architecture/data-model/invalid-request.json",

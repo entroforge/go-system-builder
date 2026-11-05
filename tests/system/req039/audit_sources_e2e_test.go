@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -108,8 +109,78 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 	resolve("read S3 source through original file view")
 	runGitIn(t, root, "commit", "-qm", "authority architecture")
 	resolve("")
+
+	// The blueprint retires the hash-based real-time drift gate: the S3 reader
+	// binds the committed source tree and explicitly does not certify real-time
+	// drift integrity.
+	// blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:7 —
+	// 「…系统只确认答卷可读且具备分流所需内容，不证明代码、证据、实际执行、覆盖充分、来源防伪或实时漂移完整性。S0～S11 的全部自然 Hook、原消费者和后继均不计算、登记或校验散列…」
+	// blueprint/l4-mechanisms/L4-workflow-convergence.md:279 —
+	// 「…系统只使用已知的原责任、实际检查及结果和原策略，不计算、登记或比较散列、Git OID、整树内容或逐文件字节来补证；输入是否发生未记录的外部变化可能未知，不能报告为已验证不变。」
+	// So an uncommitted working-tree change must NOT be reported as an S3 source
+	// failure any more; the frozen input must stay the committed bytes.
 	writeAuditFile(t, root, architecturePath, string(architecture)+"\nUncommitted source change.\n")
-	resolve("S3 frozen input differs from original checkout SHA")
+	view, err := fileview.New(root, "refs/heads/test-development", []fileview.Rule{{Path: ".", Source: "git_tree"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirtyInputs, err := runtime.ResolveContractInputs(root, final, view)
+	if err != nil {
+		t.Fatalf("an uncommitted working-tree change must not fail the S3 source reader: %v", err)
+	}
+	if len(dirtyInputs.Designs) != 1 || dirtyInputs.Designs[0].Path != architecturePath || dirtyInputs.Designs[0].Version != "v1.0.0" {
+		t.Fatalf("S3 must keep freezing the committed design while the worktree is dirty: %+v", dirtyInputs.Designs)
+	}
+	// Blueprint negative: the frozen S3 input record carries no content digest.
+	// The retired gate must not survive under another field name either
+	// (L4-workflow-convergence.md:138 「不得将同一用途改名为 fingerprint、checksum 或换用其他散列算法」).
+	assertNoRetiredDigestInJSON(t, "frozen S3 inputs", dirtyInputs)
+	// Source binding positive: the frozen design is the committed bytes, not the
+	// dirty working-tree bytes.
+	committedBytes, err := view.ReadFile(architecturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diskBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(architecturePath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(committedBytes, diskBytes) {
+		t.Fatalf("the frozen S3 design must come from the committed tree, not the dirty worktree")
+	}
+	// Source binding positive, decisive: the working-tree copy of the design
+	// is removed entirely. The reader must still freeze the committed design,
+	// which is only possible when it consumes the committed Git tree.
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(architecturePath))); err != nil {
+		t.Fatal(err)
+	}
+	removedInputs, err := runtime.ResolveContractInputs(root, final, view)
+	if err != nil {
+		t.Fatalf("S3 must read the committed design, not the working tree: %v", err)
+	}
+	if len(removedInputs.Designs) != 1 || removedInputs.Designs[0].Path != architecturePath || removedInputs.Designs[0].Version != "v1.0.0" {
+		t.Fatalf("S3 must keep freezing the committed design when the worktree copy is gone: %+v", removedInputs.Designs)
+	}
+	writeAuditFile(t, root, architecturePath, string(architecture)+"\nUncommitted source change.\n")
+	// The reader tracks the committed tree: a real committed change is followed.
+	writeAuditFile(t, root, architecturePath, string(architecture)+"\nCommitted source change.\n")
+	runGitIn(t, root, "add", architecturePath)
+	runGitIn(t, root, "commit", "-qm", "committed authority architecture")
+	committedInputs, err := runtime.ResolveContractInputs(root, final, view)
+	if err != nil {
+		t.Fatalf("S3 source reader must read the committed tree: %v", err)
+	}
+	if len(committedInputs.Designs) != 1 || committedInputs.Designs[0].Path != architecturePath || committedInputs.Designs[0].Version != "v1.0.0" {
+		t.Fatalf("S3 must freeze the newly committed design: %+v", committedInputs.Designs)
+	}
+	committedAfter, err := view.ReadFile(architecturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(committedAfter, []byte("Committed source change.")) {
+		t.Fatalf("the S3 source view must expose the latest committed bytes: %q", committedAfter)
+	}
+	assertSystemRuntimePairUnchanged(t, before)
 	writeAuditFile(t, root, architecturePath, string(architecture))
 
 	// A dirty test can pass in the execution checkout while still being absent
@@ -127,13 +198,50 @@ func TestDirtyOnly(t *testing.T) {}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("dirty execution test should run in execution root: %v\n%s", err, output)
 	}
-	view, err := fileview.New(root, "refs/heads/test-development", []fileview.Rule{{Path: ".", Source: "git_tree"}})
+	view, err = fileview.New(root, "refs/heads/test-development", []fileview.Rule{{Path: ".", Source: "git_tree"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := view.ReadFile("dirty_test.go"); err == nil {
 		t.Fatal("a dirty execution test must not be readable from the authority commit tree")
 	}
+}
+
+// assertNoRetiredDigestInJSON is the blueprint negative for a frozen record:
+// no retired digest field may survive under any name. It walks the marshalled
+// JSON so a renamed digest cannot slip through a typed struct that simply
+// happens to lack the field today.
+// blueprint/l4-mechanisms/L4-workflow-convergence.md:138 —
+// 「不得将同一用途改名为 fingerprint、checksum 或换用其他散列算法」。
+func assertNoRetiredDigestInJSON(t *testing.T, context string, value any) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	var walk func(node any, path string)
+	walk = func(node any, path string) {
+		switch typed := node.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				for _, field := range retiredDigestFields {
+					if strings.EqualFold(key, field) {
+						t.Fatalf("%s must not carry the retired content digest field %q at %s: %#v", context, field, path, child)
+					}
+				}
+				walk(child, path+"/"+key)
+			}
+		case []any:
+			for i, child := range typed {
+				walk(child, path+"/"+strconv.Itoa(i))
+			}
+		}
+	}
+	walk(decoded, context)
 }
 
 // auditSourceRoot copies the runtime authorities and initializes a real temp
