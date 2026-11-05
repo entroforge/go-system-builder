@@ -1702,3 +1702,98 @@ G18 的对象是 §14.2 的**写路径 CAS 总账**(①类业务完成路径的�
 
 **下一批治理对象** = 上表 59 条未闭环(与 59 个仍红的测试 1:1 映射),按桶推进;
 已给出逐条归属与「不得靠恢复门禁变绿」约束的条目,仍以 §14.9 为准。
+
+### 14.15 W35 闭环规划:59 条未闭环的归因、父任务裁定与修复分片
+
+#### 14.15.1 起点与范围
+
+复核总账 374 条里 **59 条未闭环**(§14.14 的 1:1 映射)。本波把 59 条拆成 8 个**只读调查分片**(59 条全覆盖),
+每条落 A/B/C 三类归因之一,并给蓝图依据 + 生产侧根因坐标。调查协议与 8 份报告留在
+`/home/sebs/audit-work/fix-waves/briefs/W35-CLOSURE/`(`PROTOCOL.md` + `G1..G8.md` + `REPORT-G1..G8.md` + `PLAN.md`)。
+调查全程**仓库零改动**(`git status` 空)。
+
+**归因分布**:A 生产缺陷 **22** / B 陈旧断言 **27** / C 夹具缺口 **10**。
+
+#### 14.15.2 父任务裁定(16 条争议点全部裁定)
+
+**R-1「改强」的口径(元裁定)**:当蓝图已改变被保护不变量的**粒度**(散列退役、接线退役、路径语义变更)时,
+「改强」**不是**逐字放宽,而是:①按蓝图新粒度**完整**表述该不变量(原断言保护过的每条子事实不得丢失);
+②**补反向断言**(钉住被退役的东西确实不存在);③若某子事实已被蓝图整体退役,改为「蓝图负向断言 + 正向来源断言」。
+逐字放宽到比蓝图更松 = 不可执行。
+
+| 编号 | 争议点 | 裁定 | 要点 |
+|---|---|---|---|
+| R-2 | G7 case5/6 归 B 还是 C | **B** | `internal/cli` 孪生在 HEAD 全绿且断言相反结果,是仓内既生效裁定;PreToolUse-only 结构上无法满足该闸门 |
+| R-3 | 散列断言换蓝图负向+来源正向算不算改强 | **算**(按 R-1) | 且是唯一合规方向 |
+| R-4 | G1#9 归 B 还是 A | **B** | 蓝图 `L3-S8-finding-investigation.md:377` 机器不凭路径和版本声称能发现未记录的外部字节修改 |
+| R-5 | 共享夹具归属 | **由文件互斥切分裁定** | 每个文件只归一片,该片一次性改完,不得两片各改一半 |
+| R-6 | G5#2 围栏:§14.9 说「已落地」,实测零调用 | **A(接上围栏)** + **修正 §14.9 该行前提** | 兄弟路径已有同样比较 ⇒ 漏接线;改断言迁就不存在的围栏 = 削弱断言 |
+| R-7 | G5#1 次级 B(「零写入」→「只许一次 Impact 提交」) | **按 R-1 可执行**,须补反向断言 | 蓝图明许「空 Impact 沿 Pre 提前接收」;主因仍是 A(`run.go:2706-2708` 提前返回吞掉接收事实投影) |
+| R-8 | G5#6 归 A 还是 B | **B** | 蓝图 `L4-hook-platform-wiring.md:375` 明文不经过 typed／flat 双卷核验 |
+| R-9 | G3#4 SessionStart「完全无输出」 | **B**(按 R-1) | 改强后须**同时**钉住:本人登记责任 / 不含 Main 面上下文 / 不构成借卷 |
+| R-10 | G3#6/#7 S9 派发显式 vs 被动 | **A(恢复被动入口)** | 同一函数同一输入同一内容却期望不同结果 ⇒ 单一入口不可能同时满足 |
+| R-11 | G4#1 补夹具 vs 退役 legacy | **C(补夹具)**,不推翻 §14.9 | 根因是夹具未写 `assignment_record_contract` 标记 |
+| R-12 | G4#5 文案改进是否并入 | **并入**,归 A | 改强后要求点名损坏 Plan 路径,现文案既错标阶段也不点名 |
+| R-13 | G6 case1 冻结输入字节 | **B**;「冻结输入**缺失**」这半归 **A 单列** | 蓝图不认证历史输入字节;`ValidateInputs` 不查存在性 |
+| R-14 | G6 case2 夹具 vs 生产侧 | **先走夹具修**;生产侧收窄单列上报 | 蓝图 `L4-hook-platform-wiring.md:63` 平台集成测试用真实事件形状 |
+| R-15 | G6 case7 是否新增生产字段 | **不立项** | 断言改结构事实即可覆盖原保护意图 |
+| R-16 | G2#5 归属未知提示可否进 actor stdout | **A(actor 通道静默)** | 跨责任泄漏;提示只进 stderr 交 Main |
+| R-17 | G2#8 canonical 投影是否继承 legacy 坐标兜底 | **单列探针批** | 分叉点未收敛,先做运行态探针 |
+| R-18 | G8 J06 | **A** | 生产 `internal/workpacket/repair_result.go:302` 与自家 `stage-answer-s9-result.schema.json:84-85`(允许 null)自相矛盾 |
+| R-19 | G8 J08 台账 CONFLICT 是否成立 | **不成立** | 3 子例 **A**(`d0d948a` 把 `checkpoint_indices.go` 从 271 行削到 17 行时**误删 4 条非散列结构校验**)+ `old-pass` 子例 **B** |
+| R-20 | G8 J15b | **A** | 蓝图 `L3-S9-repair.md:83`「能确定原责任时定位本人原卷」支配错误路径 |
+| R-21 | G8 L5 | **B** | 结构校验已由 `13373fb` 补回,唯一红点是依赖逐字节散列的第三条断言 |
+
+**附带裁定**:
+- **R-22** `internal/cli/s9_reception_recovery_action.go:67` 的 `len(observations[typed]) == 64` = 散列长度门禁 ⇒ **退役**(并入 G5 片)。
+- **R-23** G4#2 `TestPlanningObserverUsesAnswerAndBoundCommit…` = **真回归**(2026-10-25 快照为绿,11-04 去散列化重构后转红),
+  根因 `internal/cli/work_progress.go:60` 的 `addProgressSource` 不再记 digest ⇒ 被动观察链断。**本波最高优先级**;
+  修法必须用**非散列**的变更信号(长度+mtime 或提交层自记变更)。
+- **R-24** `runtime review-plan` 显式注册入口退役 ⇒ 跨 L1/L4/L2 三桶 5 条**同批同法改**。
+- **R-25** `8144ba7` 重写共享夹具 `s9HandoffMissingCandidate` 时漏改 `native_execution_return_test.go` 3 条 ⇒ 同批成批修。
+- **R-26** G7 case4 的修法落在 `tests/fixtures/req039/fixtures.go` ⇒ **该路径在禁改清单内** ⇒ 改为测试侧补当前 S10 评审身份。
+
+#### 14.15.3 台账与方案的事实错误修正清单(批 3 执行)
+
+| 编号 | 位置 | 现写法 | 实测 | 处置 |
+|---|---|---|---|---|
+| F1 | §14.9 W25 行 | 围栏「已落地」 | 该段零调用 | 改写并接上围栏(R-6) |
+| F2 | 台账 J06 action | 「已适配并转绿」 | 仍红 | 按 R-18 重写 |
+| F3 | 台账 `TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate` action | 「已适配并转绿」 | 仍红于 `native_s9_reception_split_test.go:488` | 按 R-8 重写 |
+| F4 | §14.9 G01-C | 「接收链里已不存在任何 git 调用 ⇒ 屏障结构性死亡」 | HEAD 上不成立 | 改写 |
+| F5 | 台账 4 条 action(J06/J08/J15b/L5) | 照抄会做反方向工作 | — | 按新归因重写;判档变更 J06 `STALE→A`、J08 `CONFLICT→A`、J15b `CONFLICT→A`、L5 `DEFECT→B` |
+
+#### 14.15.4 修复分片(8 片并行,文件互斥经脚本验证 = 零冲突)
+
+切分依据是**落笔点文件**(不是调查分组),每个文件只归一片。**57 条进片 + 1 条探针批 + 1 条维持红 = 59**。
+
+| 片 | 条数 | 落笔点文件 | 覆盖条目 |
+|---|---|---|---|
+| **G1** | 8 | `native_s9_listener_test.go` `s4_continuation_test.go` `s7_context_delivery_test.go` `s7_native_incomplete_return_test.go` `s7_s8_native_handoff_test.go` `stage_answer_e2e_test.go` | `TestIndependentReviewRejectsCorruptSourceWithoutReception` `TestNativeS9ListenerReceivesPlanBeforeResultAndPreservesDirtyWork` `TestS10ReviewRequiredPendingReturnDoesNotReceiveChangedOrWorkerAnswer` `TestS10ReviewRequiredReturnsOriginalFullReviewAndNewPlan` `TestS4AcceptedDescriptionChangeKeepsCompletionButCannotRegisterChangedMaterials` `TestS7ExactNativeStartAndChangedMainContext` `TestS7IncompleteNativeReturnHandsOriginalResponsibilityToMain` `TestS7PartialP0NativeReturnReachesS8Intake` |
+| **G2** | 7 | `native_review_hooks.go` `native_s6_test.go` `native_s6_compact_e2e_test.go` `audit_questionnaire_s11_hook_e2e_test.go` `review_result_hook_test.go` `s7_native_listener_test.go` `s7_native_listener_index_test.go` `s9_preferred_evidence_integration_test.go` | `TestNativeS6CompactResultPassesTheOriginalIntegrationGate` `TestNativeS6StartStopReceivesWithoutActivationOrSaveHook` `TestS11QuestionnaireHookDeliversVerifiableS10PackageAndKeepsDecisionHuman` `TestS7NativeListenerReceivesAssignedOriginalOnNaturalToolEvent` `TestS7NativeListenerReportsSelectedUnreadableBody` `TestS9EvidenceReferenceIsPreservedWithoutCopyOrExistenceGate` `TestStageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent` |
+| **G3** | 12 | `repair_lead_questionnaire.go` `repair_dispatch_questionnaire_test.go` `contract_answer_e2e_test.go` `contract_followup_rework_e2e_test.go` `s5_s6_guidance_delivery_test.go` `s6_native_worker_result_e2e_test.go` `s7_normal_authoring_test.go` `s8_questionnaire_listener_test.go` `s9_native_listener_guidance_test.go` `s9_repair_status_guidance_test.go` `worktree_shared_control_plane_test.go` `completion_canonical.go` `issued_plan_report.go` | `TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource` `TestS5ReturnToS6ProvidesPreparationInsteadOfWaitingForUnstartedBuilder` `TestS8NativeLifecycleDeliversExactQuestionnaireInHookEnvelope` `TestS9EntryAssemblyReadsOriginalRepairPlanOnce` `TestS9ListenerExistingPacketsReadOnlyWithoutIssueRecoveryOrReceiptProof` `TestS9NativeListenerKeepsPrivateOutputsOutOfMainAuthoring` `TestS9PlanningGuidanceUsesOriginalDivisionAndIssuedOwner` `TestS9RepairDispatchExplicitSavePreparesNativeBriefAndPreservesOriginalSources` `TestS9RepairDispatchQuestionnaireResponsibilityAndS8Isolation` + 跨桶同批 3 条(`TestS7SharedOriginalCannotBeBorrowedByUnboundNativeWorktree` `TestS8ObservedContractPassiveSkipKeepsExplicitSaveAndChangedValidation` `TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit`) |
+| **G4** | 6 | `questionnaire_observer.go` `workspace_core_profile_test.go` `hookctx/loader.go` | `TestActualMainCheckBusyObservationDoesNotStartAnotherIntegration` `TestPlanningObserverUsesAnswerAndBoundCommitWithoutRepeatingUnchangedSave` `TestS9CapturedInputCoordinateAloneIsNotSavedTypedInput` `TestS9CapturedRecoveryCommandExecutesOriginalTypedConsumer` `TestS9EntryAssemblyPreservesNewPlanFailureAndOriginalStopFailure` `TestS9PublicFeedbackRecoveryCommandUsesReturnedArgv` |
+| **G5** | 7 | `native_s9_reception_split_test.go` `runtime/repair_result_packet.go` | `TestNativeS9CandidatePreparesImpactWithoutRecordingMainCompletion` `TestNativeS9ExplicitStopChangeStillConflictsAfterRecovery` `TestNativeS9MissingTypedWithoutDiagnosticPreservesStagedCandidate` `TestNativeS9PlanOnlyStopPreservesReceiptAfterPrivatePlanRemoval` `TestNativeS9PublicCorrectsHistoricalUnstagedResult` `TestS9HandoffPublicMainProgressUsesOriginalReceptionFacts` `TestS9HandoffTypedSelectorPreservesChangedAttemptFence` |
+| **G6** | 5 | `minimal_answer_flow_acceptance_test.go` `native_s6_guidance_delivery_test.go` `native_s9_pending_feedback_test.go` `s9_failure_handoff_e2e_test.go` `work_progress_e2e_test.go` | `TestMainOrdinaryReadAndNonCheckpointStatusProgressWire` `TestMinimalAnswerFlowOrdinaryFindingEntersS8AndReceivesAlreadyDispatchedPeer` `TestNativeS6FixedSourceAlignmentAfterMainAdvances` `TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery` `TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain` |
+| **G7** | 5 | `tests/system/req039/{audit_sharedmodel_spine,audit_sources_e2e,ct_l4_precondition,s11_human_decision,s2_to_s11_hook_driven}_test.go` | `TestAuditSharedModelHookSpineCommittedSource` `TestAuditStageSourcesUseOriginalConsumerBoundaryE2E` `TestBUG104S11ExplicitApproveE2E` `TestCT03912_BuilderCompleteCommitsTR006System` `TestS2ToS11_HookDrivenCleanPath` |
+| **G8** | 7 | `design_answer_e2e_test.go` `revision_boundary_e2e_test.go` `workspace_missing_private_test.go` `runtime/checkpoint_indices.go` | `TestCheckpointRejectsOlderPairAndForgedReceptionFacts` `TestContractAuthorityUsesOriginalS2RegisteredDesign` `TestLastFinalPreparesImpactBeforeIndependentCleanup` `TestNativeS6RevisionKeepsObjectGuardsAcrossUnrelatedRuntimeCommit` `TestNativeS9MissingWorkerCleanupResumesOriginalCheckpoint` `TestNativeS9NullProfessionalReferenceIsNotConvertedToNotApplicable` `TestS6MainPreservedCheckpointNamesActualRetryAndRetainsSource` |
+| **探针批** | 1 | — | `TestWorkspaceBackendCoreLaunchCommitAndOriginalVerifiedIntegration`(先做运行态探针,再定 A 还是 C) |
+| **维持红** | 1 | — | `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates`(§14.9 G16 已裁,**不改写、不加门禁**) |
+
+#### 14.15.5 跨片共享事实(各片必须知道,否则会做反)
+
+1. `runtime review-plan` 显式注册入口已退役 ⇒ 跨 L1/L4/L2 三桶 5 条**同批同法改**(R-24);文件各归其 owner。
+2. `nativeDeliveryFixture` 是**共享夹具** ⇒ G2#1/#2 **不得直接改**它(同族在绿用例 `s6_handoff_e2e_test.go:164`
+   `TestS6IntegrationWithoutMainStartKeepsOriginalBatchGate` 依赖它「无基线 ⇒ TR-006 被阻断」这一事实)⇒ **新增带真实 TR-003 基线的变体**。
+3. `worktree_shared_control_plane_test.go` 的 `minimalReviewPlan` 仍写 `"review_round": 1` 与 `frozen_subjects[].sha256`,
+   `markAssignmentDispatched` 仍读现已从不写入的 `review.round` ⇒ 退役字段残留,G3 一次性清掉。
+4. `internal/cli/s9_reception_recovery_action.go:67` 的散列长度门禁 ⇒ 归 G5 片(R-22)。
+
+#### 14.15.6 验收口径与批次
+
+- **片级**:定向跑该片全部用例 ⇒ 目标用例**转绿** + 非目标用例**不变红**;生产侧修复必须做**「撤掉修复即红」的变异校验**。
+- **整包**:`internal/cli` 整包 + `internal/investigation` + `tests/system/req039` ⇒ 失败集合从 **59** 降到 **2**(探针 1 + 维持红 1);探针批也解决则剩 **1**。
+- **基线对照**:与干净基线 `22bb385`(已导出 `/tmp/base-src`)做差集 ⇒ **无新增红**,会话引入回归数 **0**。
+- **常规**:`make fmt-check` `make vet` `make build` `make test-ci-core` `make test-ci-race` 全绿。
+- **台账**:未闭环数 59 → 2;F1–F5 事实错误同步修正。
+- **批次**:批 1 = 8 片并行(文件互斥已验证);批 2 = 探针批(依赖批 1 的 `hookctx/loader.go` 结果);批 3 = F1–F5 更正 + 整包验收 + 提交。
