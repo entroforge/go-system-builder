@@ -403,9 +403,18 @@ func TestNativeS9OptionalReferenceAcceptsOnlyItsOwnNullShape(t *testing.T) {
 		name   string
 		change func(map[string]any)
 		field  string
+		// The number of registered RepairResult responsibilities. A field
+		// error keeps the author's own responsibility registered, so the
+		// author can correct that field and save the same original again. A
+		// null verdict expresses no professional judgment at all, so the
+		// original stays the author's unfinished draft and no responsibility
+		// is registered for it
+		// (blueprint/l4-mechanisms/L4-workflow-convergence.md:106 — "没有表达
+		// 判断的空值通常保留草稿;明确的「无／不适用」按作者原意交接").
+		responsibilities int
 	}{
-		{"wrong-type-reference", func(authored map[string]any) { authored["migration_ref"] = 42 }, "migration_ref"},
-		{"null-verdict", func(authored map[string]any) { authored["verdict"] = nil }, ""},
+		{"wrong-type-reference", func(authored map[string]any) { authored["migration_ref"] = 42 }, "migration_ref", 1},
+		{"null-verdict", func(authored map[string]any) { authored["verdict"] = nil }, "", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root, worker, p, input, answer := nativeS9WorkerFixture(t)
@@ -417,6 +426,11 @@ func TestNativeS9OptionalReferenceAcceptsOnlyItsOwnNullShape(t *testing.T) {
 			}
 			test.change(authored)
 			if err := persistRepairLeadQuestionnaire(filepath.Join(worker, result), authored); err != nil {
+				t.Fatal(err)
+			}
+			// The author's own bytes are the subject of this reception.
+			authoredBytes, err := os.ReadFile(filepath.Join(worker, result))
+			if err != nil {
 				t.Fatal(err)
 			}
 			input.Event = "SubagentStop"
@@ -437,13 +451,32 @@ func TestNativeS9OptionalReferenceAcceptsOnlyItsOwnNullShape(t *testing.T) {
 			if strings.Contains(strings.ToLower(diagnostic.String()), "not applicable") {
 				t.Fatalf("rejection rewrote the author's value into an explicit statement: %s", &diagnostic)
 			}
+			// The consumer never rewrites the author's own draft.
+			after, err := os.ReadFile(filepath.Join(worker, result))
+			if err != nil || !bytes.Equal(after, authoredBytes) {
+				t.Fatalf("the consumer rewrote the author's original Result: %v %s", err, &after)
+			}
 			snapshot := repairDispatchSnapshot(t, root)
 			packets, err := runtime.RepairResultPacketsContext(runtime.WithPacketBodyRoot(t.Context(), root), snapshot.State)
-			if err != nil || len(packets) != 1 {
-				t.Fatalf("original Result responsibility missing: packets=%d err=%v", len(packets), err)
+			if err != nil || len(packets) != test.responsibilities {
+				t.Fatalf("original Result responsibility count=%d want=%d err=%v", len(packets), test.responsibilities, err)
 			}
-			if _, found, err := runtime.VerifiedRepairResultCandidateReceipt(root, snapshot.State, packets[0].ID, p.Binding.OwnerAgentID); err != nil || found {
-				t.Fatalf("rejected Result acquired candidate receipt: found=%t err=%v", found, err)
+			// Neither shape reaches a Candidate. The workspace registry is
+			// absent until an execution exists at all, so an absent registry
+			// is the strongest form of "no Candidate".
+			registry, err := workspace.Decode(snapshot.State)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if registry != nil {
+				if execution, found := registry.Executions[p.Binding.ManifestAssignmentID]; found && execution.DeliveryRef != "" {
+					t.Fatalf("the rejected Result produced a Candidate: %s", execution.DeliveryRef)
+				}
+			}
+			for _, packet := range packets {
+				if _, found, err := runtime.VerifiedRepairResultCandidateReceipt(root, snapshot.State, packet.ID, p.Binding.OwnerAgentID); err != nil || found {
+					t.Fatalf("rejected Result acquired candidate receipt: found=%t err=%v", found, err)
+				}
 			}
 		})
 	}
