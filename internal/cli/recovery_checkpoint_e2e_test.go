@@ -331,10 +331,40 @@ func TestCheckpointRejectsOlderPairAndForgedReceptionFacts(t *testing.T) {
 		{"missing-lineage", func(state map[string]any) {
 			state["entities"].(map[string]any)["work_packets"] = state["entities"].(map[string]any)["work_packets"].([]any)[:2]
 		}},
+		{"orphan-reception", func(state map[string]any) {
+			// The reception names a packet that the Runtime does not index: an
+			// orphan reception must not be accepted as a recorded fact.
+			entities := state["entities"].(map[string]any)
+			named := entities["submissions"].([]any)[0].(map[string]any)["packet_id"]
+			kept := []any{}
+			for _, raw := range entities["work_packets"].([]any) {
+				row, _ := raw.(map[string]any)
+				if row["packet_id"] == named {
+					continue
+				}
+				kept = append(kept, raw)
+			}
+			entities["work_packets"] = kept
+		}},
 		{"fake-transition", func(state map[string]any) {
 			r := state["entities"].(map[string]any)["submissions"].([]any)[0].(map[string]any)
 			r["control_status"] = "advanced"
 			r["transition_event_id"] = "evt-invented"
+		}},
+		{"unbound-revision", func(state map[string]any) {
+			// The revision packet claims a different previous reception than the
+			// one it revises: the recorded transaction pairing is broken.
+			entities := state["entities"].(map[string]any)
+			revision := entities["submissions"].([]any)[0].(map[string]any)["revision_packet_id"]
+			for _, raw := range entities["work_packets"].([]any) {
+				row, _ := raw.(map[string]any)
+				if row["packet_id"] != revision {
+					continue
+				}
+				binding, _ := row["binding"].(map[string]any)
+				binding["previous_submission_key"] = "submission:another-reception"
+				return
+			}
 		}},
 		{"duplicate-key", func(state map[string]any) {
 			e := state["entities"].(map[string]any)

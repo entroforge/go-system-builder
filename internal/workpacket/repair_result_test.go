@@ -377,3 +377,56 @@ func TestBuildRepairResultAcceptsOriginalS9ExecutionWithoutOptionalS6Fields(t *t
 		})
 	}
 }
+
+// The author-side schema this repository publishes allows the optional
+// professional references to be null
+// (internal/schema/assets/stage-answer-s9-result.schema.json:84-85). A null
+// there is the author's own "not applicable" statement, so the consumer must
+// accept it instead of contradicting the schema the author answered against
+// (blueprint/l3-stages/L3-S9-repair.md:198 — 实际需要的已有依据；不适用时可为空字符串).
+// A real type mismatch and a null verdict stay field errors.
+func TestValidateRepairResultAnswerKeepsNullOptionalReferencesButRejectsRealFieldErrors(t *testing.T) {
+	binding, inputs := repairResultTestFixture(t)
+	packet, err := BuildRepairResult(binding, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nullable := repairResultCompleteAnswer()
+	nullable["migration_ref"] = nil
+	nullable["rollback_ref"] = nil
+	got, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, nullable))
+	if len(fields) != 0 {
+		t.Fatalf("a null optional reference was turned into a field error: %#v", fields)
+	}
+	var projected map[string]any
+	if err := json.Unmarshal(got, &projected); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"migration_ref", "rollback_ref"} {
+		value, exists := projected[field]
+		if !exists || value != nil {
+			t.Fatalf("the author's null reference %s was rewritten: %s", field, got)
+		}
+	}
+	// A null verdict expresses no professional judgment, so it stays an
+	// incomplete answer instead of being converted into an explicit
+	// "not applicable" (blueprint/l4-mechanisms/L4-workflow-convergence.md:106).
+	nullVerdict := repairResultCompleteAnswer()
+	nullVerdict["verdict"] = nil
+	if _, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, nullVerdict)); len(fields) == 0 {
+		t.Fatal("a null verdict was accepted as a professional judgment")
+	}
+	// A real type mismatch keeps its own field pointer, so the original
+	// consumer still reports the field to correct.
+	for _, field := range []string{"migration_ref", "rollback_ref"} {
+		mismatch := repairResultCompleteAnswer()
+		mismatch[field] = 42
+		_, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, mismatch))
+		if len(fields) == 0 {
+			t.Fatalf("a type mismatch in %s was accepted", field)
+		}
+		if !strings.Contains(fields[0].Pointer, field) {
+			t.Fatalf("the type mismatch in %s lost its field pointer: %#v", field, fields)
+		}
+	}
+}

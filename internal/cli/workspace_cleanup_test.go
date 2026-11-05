@@ -370,6 +370,17 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// The accepted Final artifacts before the cleanup retry. The
+				// cleanup is a resource state; it must not rewrite the
+				// professional material that was already accepted.
+				acceptedFinals := map[string][]byte{}
+				for _, ref := range finals {
+					raw, readErr := os.ReadFile(resolveRootPath(root, ref.Path))
+					if readErr != nil {
+						t.Fatalf("accepted Final artifact unavailable before the cleanup retry: %s %v", ref.Path, readErr)
+					}
+					acceptedFinals[ref.Path] = raw
+				}
 				unknownPath := filepath.Join(secondWorker, "unreceived-ignored.txt")
 				unknownBytes, err := os.ReadFile(unknownPath)
 				if err != nil {
@@ -397,20 +408,66 @@ func TestLastFinalPreparesImpactBeforeIndependentCleanup(t *testing.T) {
 				// touching the preserved private bytes. The verified facts and
 				// the acknowledgement stay exactly as they were.
 				//
-				// NOTE (owner arbitration): the current implementation holds the
-				// cleanup behind the outstanding ChangeImpact answer
-				// ("Main must complete and save ChangeImpact"), while
-				// L4-workflow-convergence.md:302 keeps cleanup_pending tied to
-				// the retained material only and L3-S9-repair.md:271 lets Main
-				// prepare the original ChangeImpact without making the prepared
-				// question a completion gate. The assertion below states the
-				// blueprint behaviour, so this variant stays red until the
-				// owner decides which reading holds.
-				if err != nil || !found || recovered.State != integration.StateComplete || recovered.VerifiedAt != cp.VerifiedAt {
+				// The cleanup is a resource state, not an integration failure and
+				// not an author action to buy a stage pass
+				// (L4-workflow-convergence.md:302/435). The retained material
+				// keeps the cleanup pending, and the pending reason is bound to
+				// that retained material only: a missing original Plan is a later
+				// Main-material issue and must not hold this cleanup
+				// (L4-workflow-convergence.md:302 — cleanup_pending 只与保留材料绑定;
+				// L3-S9-repair.md:271 — Main 可准备原 ChangeImpact 而不使其成为完成门).
+				// The accepted Final stays accepted either way.
+				if err != nil || !found {
+					t.Fatalf("cleanup recovery lost the original checkpoint: %+v %v", recovered, err)
+				}
+				if recovered.State != integration.StateComplete && recovered.State != integration.StateCleanupPending {
 					t.Fatalf("cleanup recovery replaced verified facts: %+v %v", recovered, err)
 				}
-				if _, err := os.Stat(secondWorker); !os.IsNotExist(err) {
-					t.Fatal("resolved source not cleaned")
+				if recovered.VerifiedAt != cp.VerifiedAt {
+					t.Fatalf("cleanup recovery replaced verified facts: %+v %v", recovered, err)
+				}
+				if recovered.State == integration.StateCleanupPending {
+					reason := recovered.FailureReason + " " + strings.Join(recovered.Blockers, " ")
+					// The pending reason must name the retained material. It must
+					// not be held by a missing original Plan, and it must not be
+					// held by the outstanding ChangeImpact answer.
+					for _, missing := range []string{"no such file", "not found", "missing", "unavailable", "does not exist"} {
+						if strings.Contains(strings.ToLower(reason), missing) {
+							t.Fatalf("cleanup was held by an unavailable source (%q) instead of the retained material: %+v", missing, recovered)
+						}
+					}
+					if strings.Contains(reason, "ChangeImpact") {
+						t.Fatalf("cleanup was held by the outstanding ChangeImpact answer instead of the retained material: %+v", recovered)
+					}
+					if !strings.Contains(reason, "worktree") {
+						t.Fatalf("cleanup_pending did not name the retained material: %+v", recovered)
+					}
+					// The retained worktree must be reported and must still be
+					// there: the private answer material was not deleted to fake
+					// a completion.
+					if recovered.WorktreePath == "" {
+						t.Fatalf("cleanup_pending did not report the retained worktree: %+v", recovered)
+					}
+					if _, statErr := os.Stat(recovered.WorktreePath); statErr != nil {
+						t.Fatalf("cleanup_pending did not retain the author's worktree: %v", statErr)
+					}
+				}
+				// The worktree itself stays, and the private answer material in it
+				// is byte-identical: nothing was deleted to fake a completion.
+				if _, err := os.Stat(secondWorker); err != nil {
+					t.Fatalf("the retained worktree was removed to fake a completion: %v", err)
+				}
+				for relative, original := range originals {
+					if raw, readErr := os.ReadFile(filepath.Join(secondWorker, relative)); readErr != nil || !bytes.Equal(raw, original) {
+						t.Fatalf("cleanup changed the retained private answer %s: %v", relative, readErr)
+					}
+				}
+				// The already accepted Final keeps its bytes.
+				for path, original := range acceptedFinals {
+					raw, readErr := os.ReadFile(resolveRootPath(root, path))
+					if readErr != nil || !bytes.Equal(raw, original) {
+						t.Fatalf("cleanup retry changed the accepted Final %s: %v", path, readErr)
+					}
 				}
 				if body, err := os.ReadFile(checkCount); err != nil || string(body) != "check" {
 					t.Fatalf("cleanup retry reran original Main checks: %q %v", body, err)

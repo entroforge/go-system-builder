@@ -294,12 +294,26 @@ func ValidateRepairResultAnswer(packet RepairResultPacket, data []byte) (json.Ra
 	return json.RawMessage(canonicalAnswer), nil
 }
 
-// repairResultAnswerStringFields are the professional fields that
-// RepairResultProfessionalAnswer declares as strings. A declared field must not
-// be null; a missing field is an allowed partial answer, because a real blocked
-// or conflict expression is receivable on its own. An empty string remains a
-// valid "not applicable" value. Array fields carry no existence requirement.
-var repairResultAnswerStringFields = []string{"verdict", "migration_ref", "rollback_ref"}
+// repairResultAnswerStringFields are the professional fields that must carry a
+// value. A declared field must not be null; a missing field is an allowed
+// partial answer, because a real blocked or conflict expression is receivable
+// on its own. An empty string remains a valid "not applicable" value. Array
+// fields carry no existence requirement.
+//
+// Only the verdict is declared here. A null verdict expresses no professional
+// judgment, so it stays an incomplete answer instead of being turned into an
+// explicit "not applicable" ("没有表达判断的空值通常保留草稿;明确的「无／不适用」
+// 按作者原意交接", blueprint/l4-mechanisms/L4-workflow-convergence.md:106).
+//
+// migration_ref and rollback_ref are deliberately absent: the author-side
+// schema this repository publishes allows them to be null
+// (internal/schema/assets/stage-answer-s9-result.schema.json:84-85) and the
+// blueprint records them as optional references that may stay empty when they
+// do not apply ("实际需要的已有依据;不适用时可为空字符串,不强制成对",
+// blueprint/l3-stages/L3-S9-repair.md:198). A null there is the author's own
+// "not applicable" statement, not a malformed field, so the consumer must
+// accept it instead of contradicting the schema the author answered against.
+var repairResultAnswerStringFields = []string{"verdict"}
 
 func validateCompleteRepairResultAnswer(sources RepairPlanReportInputs, data []byte) (pointer, expected, observed string) {
 	var answer RepairResultProfessionalAnswer

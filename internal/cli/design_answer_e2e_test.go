@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
@@ -396,19 +397,129 @@ func TestContractAuthorityUsesOriginalS2RegisteredDesign(t *testing.T) {
 	if err := runtime.ValidateContractPacket(root, snap.State, p, files); err != nil {
 		t.Fatal(err)
 	}
+	// (1) 权威根不符必须拒收。
+	// L4-state-transition-core.md:31 —— 权威根由 REQ 的 bound_req.workspace.project_root
+	// 确定；不能复制一对 Runtime 文件就成为第二个控制面。:339 —— 权威根或 state/journal
+	// 坐标不符 ⇒ 回绑定工程的准确根，不复制 Runtime 继续。
 	if err := runtime.ValidateContractPacket(t.TempDir(), snap.State, p, files); err == nil {
 		t.Fatal("other root granted S3 authority")
 	}
-	if err := os.WriteFile(filepath.Join(root, refs[0].Path), []byte("changed design"), 0600); err != nil {
+	// (2) 登记的设计关联变化必须使旧契约包失效（设计正文一字不动）。
+	// L4-runtime-control-plane.md:70 —— 普通观察先读取状态与索引，检查索引结构和身份唯一性。
+	// 契约包冻结的是登记关联（ID/Path/Version），不是正文字节；关联一动，旧包即失效。
+	copied := contractStateCopy(t, snap.State)
+	if err := runtime.ValidateContractPacket(root, copied, p, files); err != nil {
+		t.Fatalf("an untouched copy of the Runtime state lost its original S3 authority: %v", err)
+	}
+	reregistered := contractStateWithDesignVersion(t, snap.State, refs[0].Path, "design-r2")
+	before := contractAuthorityFacts(t, root, snap.State)
+	if err := runtime.ValidateContractPacket(root, reregistered, p, files); err == nil {
+		t.Fatal("a re-registered design version reused the frozen S3 contract identity")
+	}
+	if after := contractAuthorityFacts(t, root, snap.State); after != before {
+		t.Fatalf("a rejected contract packet changed the authority facts: %s -> %s", before, after)
+	}
+	// (3) 登记设计文件不存在必须拒收，并点名实际路径。
+	// L4-state-transition-core.md:345 —— 专业材料漂移或缺失 ⇒ 当前完成依据不能直接成立 ⇒
+	// 交原 owner 处理来源、影响或返工，不维护成自动通过。点名实际路径就是把来源交回原 owner。
+	designPath := filepath.Join(root, refs[0].Path)
+	body, err := os.ReadFile(designPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.ValidateContractPacket(root, snap.State, p, files); err == nil {
-		t.Fatal("changed design reused S3 frozen input")
+	// A disk reader hands the authority the actual working-tree bytes, so the
+	// missing-source and drifted-body facts below are observed, not inferred.
+	disk := fileview.Disk{Root: root}
+	if err := os.Remove(designPath); err != nil {
+		t.Fatal(err)
+	}
+	missing := runtime.ValidateContractPacket(root, snap.State, p, disk)
+	if missing == nil {
+		t.Fatal("a missing registered design source still granted S3 authority")
+	}
+	if !strings.Contains(missing.Error(), refs[0].Path) {
+		t.Fatalf("the unavailable registered design was not handed back to its owner by path: %v", missing)
+	}
+	if err := os.WriteFile(designPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// (4) 正文漂移不构成机器门，也不得被伪装成"正文已校验"。
+	// L4-workflow-convergence.md:281 —— 无 hash 不再单凭原路径和版本独立证明字节未被外部
+	// 改动；实际责任人和原专业复验承担判断。L4-state-transition-core.md:345 —— 漂移交回
+	// 原 owner，不维护成自动通过。所以：读者交出漂移后的正文时，契约权威仍只按登记关联
+	// 判断——既不因正文拒收，也不得留下任何"正文已校验"的事实。
+	if err := runtime.ValidateContractPacket(root, snap.State, p, disk); err != nil {
+		t.Fatalf("the available registered design source was refused: %v", err)
+	}
+	drifted := []byte("changed design")
+	if err := os.WriteFile(designPath, drifted, 0600); err != nil {
+		t.Fatal(err)
+	}
+	read, err := disk.ReadFile(refs[0].Path)
+	if err != nil || !bytes.Equal(read, drifted) {
+		t.Fatalf("the drifted design body did not reach the source view: %v", err)
+	}
+	if drift := runtime.ValidateContractPacket(root, snap.State, p, disk); drift != nil {
+		t.Fatalf("the contract authority still holds a byte-level gate over a drifted design body: %v", drift)
+	}
+	if after := contractAuthorityFacts(t, root, snap.State); after != before {
+		t.Fatalf("a drifted design body produced an authority fact: %s -> %s", before, after)
+	}
+	if err := os.WriteFile(designPath, body, 0600); err != nil {
+		t.Fatal(err)
 	}
 	snap.State["lifecycle"].(map[string]any)["phase"] = "tasks"
 	if _, _, err := runtime.CurrentContractBinding(snap.State); err == nil {
 		t.Fatal("S3 Main fabricated outside contracts")
 	}
+}
+
+// contractAuthorityFacts captures the authority facts a contract validation may
+// never produce on its own: the journal it must not append to and the
+// registered documents it must not rewrite.
+func contractAuthorityFacts(t *testing.T, root string, state map[string]any) string {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{
+		"journal":   designJournalEvents(t, root),
+		"documents": state["documents"],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// contractStateCopy returns an independent copy of the Runtime state so a
+// registration change can be tried without touching the original facts.
+func contractStateCopy(t *testing.T, state map[string]any) map[string]any {
+	t.Helper()
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copied map[string]any
+	if err := json.Unmarshal(data, &copied); err != nil {
+		t.Fatal(err)
+	}
+	return copied
+}
+
+// contractStateWithDesignVersion re-registers one design under a new version.
+// The design body on disk is untouched: only the registration moves.
+func contractStateWithDesignVersion(t *testing.T, state map[string]any, path, version string) map[string]any {
+	t.Helper()
+	copied := contractStateCopy(t, state)
+	rows, _ := copied["documents"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["kind"] != "design" || row["path"] != path {
+			continue
+		}
+		row["version"] = version
+		return copied
+	}
+	t.Fatalf("no registered design for %s", path)
+	return nil
 }
 
 // Start at the actual entry, without a seeded S2 packet or hand-built source

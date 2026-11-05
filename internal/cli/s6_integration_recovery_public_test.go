@@ -33,7 +33,13 @@ func s6RecoveryCommand(t *testing.T, root string, r assignmentrecord.Record, ret
 
 func s6RecoveryAccepted(t *testing.T) (string, string, assignmentrecord.Record, string) {
 	t.Helper()
-	root, worker, r := nativeDeliveryFixture(t)
+	// The canonical S6 recovery fixture owns the original TR-003 common Main
+	// baseline of the current generation, established by the real TR-003 Writer
+	// (internal/cli/s6_observation_test.go:27 newS6MainBaselineFixture). The S6
+	// batch recheck needs that baseline before it may read the current batch,
+	// so the recovery path is exercised against a real baseline instead of a
+	// compressed fixture without one.
+	root, worker, r := nativeDeliveryFixtureWithMainBaseline(t)
 	nativeCommit(t, worker)
 	nativeAnswer(t, worker, r)
 	brief, _, result := assignmentrecord.NativePaths(r)
