@@ -462,7 +462,12 @@ func TestWorkspacePlanRejectsAddingInputsToPreparedExecution(t *testing.T) {
 }
 
 func TestWorkspaceBackendCoreInstallsFixedRoleWithoutChangingActivation(t *testing.T) {
-	f := coreBuilderFixture(t)
+	// This scenario is the legacy family's own: it stages a legacy activation
+	// envelope, proves the original activation bytes are untouched, and
+	// answers with the legacy professional Plan shape. The canonical family
+	// binds the Assignment Record instead and is covered by the canonical
+	// fixture cases, so this one stays on the legacy fixture.
+	f := coreBuilderFixtureChecks(t, []string{"go test ./..."})
 	before, err := os.ReadFile(filepath.Join(f.root, ".claude/agents/backend-builder.md"))
 	if err != nil {
 		t.Fatal(err)
