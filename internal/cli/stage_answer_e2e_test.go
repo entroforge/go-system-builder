@@ -641,7 +641,12 @@ func TestIndependentReviewStopsOnlyItsOwnResponsibility(t *testing.T) {
 }
 
 func TestIndependentReviewRejectsCorruptSourceWithoutReception(t *testing.T) {
-	for _, change := range []string{"owner", "view", "frozen input", "symlink", "old entry"} {
+	// The structural rejections of the original reception chain are kept
+	// verbatim: an unregistered owner, an invalid Worker view, a symlinked
+	// answer path and a stale phase entry. L4-hook-acceptance-checklist.md:15 —
+	// the actual Hook path checks the valid questionnaire, the guidance and
+	// the schema, and never computes, registers or verifies any digest.
+	for _, change := range []string{"owner", "view", "symlink", "old entry"} {
 		t.Run(change, func(t *testing.T) {
 			f := newStageAnswerFixture(t)
 			p := f.packets[0]
@@ -661,13 +666,6 @@ func TestIndependentReviewRejectsCorruptSourceWithoutReception(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(filepath.Join(e.Path, workpacket.WorkerViewPath), []byte("{}"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			case "frozen input":
-				if err := os.Chmod(filepath.Join(e.Path, ".claude/inputs", p.Inputs[0].Path), 0600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(e.Path, ".claude/inputs", p.Inputs[0].Path), []byte("drifted"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			case "symlink":
@@ -693,6 +691,95 @@ func TestIndependentReviewRejectsCorruptSourceWithoutReception(t *testing.T) {
 			}
 		})
 	}
+	// The bytes of a frozen input are not authenticated. A drifted frozen
+	// input must not block the reception, and it must not become a new fact:
+	// the frozen input stays a pure location coordinate.
+	t.Run("frozen input", func(t *testing.T) {
+		f := newStageAnswerFixture(t)
+		p := f.packets[0]
+		e := f.prepare(t, p)
+		f.begin(t, p, &e)
+		stageJSON(t, e.Path, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
+		input := filepath.Join(e.Path, ".claude/inputs", p.Inputs[0].Path)
+		if err := os.Chmod(input, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(input, []byte("drifted"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := submission.New(f.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := s.Save(context.Background(), p.Binding.Owner, filepath.Join(e.Path, workpacket.WorkerAnswerPath))
+		if err != nil || !r.Accepted || !r.WorkComplete {
+			t.Fatalf("the drifted frozen input blocked the reception: %+v %v", r, err)
+		}
+		after := stageSnapshot(t, f.root)
+		// Reverse assertion: the drifted bytes must not be registered as a
+		// domain fact, and no digest of them may appear anywhere.
+		stateBytes, err := json.Marshal(after.State)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(stateBytes, []byte("drifted")) {
+			t.Fatal("the drifted frozen input was registered as a domain fact")
+		}
+		receiptBytes, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(receiptBytes, []byte("drifted")) {
+			t.Fatal("the drifted frozen input was reported as a domain fact")
+		}
+		// Positive source assertion: the frozen input is only a location
+		// coordinate. The recorded execution maps every input path onto
+		// itself and carries no digest for it.
+		bound, _ := after.State["workspace"].(map[string]any)
+		executions, _ := bound["executions"].(map[string]any)
+		locations := 0
+		for _, raw := range executions {
+			row, _ := raw.(map[string]any)
+			inputs, _ := row["inputs"].(map[string]any)
+			for path, value := range inputs {
+				locations++
+				if value != path {
+					t.Fatalf("the frozen input is not a pure location coordinate: %v -> %v", path, value)
+				}
+				if strings.Contains(strings.ToLower(path), "sha256") || strings.Contains(strings.ToLower(path), "digest") || strings.Contains(strings.ToLower(path), "checksum") {
+					t.Fatalf("the retired digest coordinate returned: %v", path)
+				}
+			}
+		}
+		if locations == 0 {
+			t.Fatal("the execution record holds no frozen input location")
+		}
+		// The location is what qualifies a frozen input: an input whose
+		// location leaves Main is still rejected.
+		// internal/workspace/workspace.go:484-495 — "Input references remain
+		// useful locations for the current work. Historical digests are not
+		// evidence of identity or a condition for a check."
+		registry, err := workspace.Decode(after.State)
+		if err != nil || registry == nil {
+			t.Fatalf("the workspace registry is unavailable: %v", err)
+		}
+		escaped := workspace.Execution{}
+		located := false
+		for _, execution := range registry.AllExecutions() {
+			if len(execution.Inputs) > 0 {
+				escaped = execution
+				located = true
+				break
+			}
+		}
+		if !located {
+			t.Fatal("the execution record holds no frozen input location")
+		}
+		escaped.Inputs = map[string]string{"../escaped-input.md": "../escaped-input.md"}
+		if err := registry.ValidateInputs(escaped); err == nil {
+			t.Fatalf("a frozen input whose location leaves Main was accepted: %v", escaped)
+		}
+	})
 }
 
 func TestConcurrentIndependentReviewersDoNotLoseAnswersOrDoubleAdvance(t *testing.T) {

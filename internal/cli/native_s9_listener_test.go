@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/submission"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func TestNativeS9ListenerReceivesPlanBeforeResultAndPreservesDirtyWork(t *testing.T) {
@@ -70,12 +71,59 @@ func TestNativeS9ListenerReceivesPlanBeforeResultAndPreservesDirtyWork(t *testin
 		if err := os.WriteFile(resultPath, body, 0600); err != nil {
 			t.Fatal(err)
 		}
+		out.Reset()
 		if _, code := nativeS9Hook(root, in, &out, &diagnostic); code != 0 {
 			t.Fatal(&diagnostic)
 		}
 		repairDispatchAssertUnchanged(t, root, before)
-		if out.Len() != 0 {
-			t.Fatalf("unfinished Result generated feedback: %s", &out)
+		// The system never rewrites the author's own unfinished Result.
+		if raw, err := os.ReadFile(resultPath); err != nil || !bytes.Equal(raw, body) {
+			t.Fatalf("the system rewrote the author's unfinished Result: %v", err)
+		}
+		feedback := nativeS9ListenerFeedback(t, &out)
+		// Reverse assertion: an unfinished Result is never reported as
+		// received, and the retired handoff never reappears.
+		for _, forbidden := range []string{"Your original S9 Result is received", "Main owns the actual integration", "Original S9 Result received", "runtime workspace integrate"} {
+			if strings.Contains(feedback, forbidden) {
+				t.Fatalf("the unfinished Result was reported as received: %s", feedback)
+			}
+		}
+		if json.Valid(body) {
+			// An unfinished draft stays quiet during ordinary work: the author
+			// may still be editing it. L3-S9-repair.md:238 — "系统只识别可见
+			// 事实,未决交 Main,不猜作者是否还想编辑". The original assertion is
+			// kept verbatim for this body.
+			if out.Len() != 0 {
+				t.Fatalf("unfinished Result generated feedback: %s", &out)
+			}
+			continue
+		}
+		// A file that is not a valid original document is a concrete material
+		// fault. It must be reported against the actual file and the actual
+		// failure of that file, and the originals must be preserved.
+		// L3-S9-repair.md:238 — "文件不存在、草稿未就绪或字段缺失时保留原稿,
+		// 反馈实际文件与字段"; :255 — "缺显示材料与缺专业输入分别说明".
+		originalError := workpacket.ValidateUniqueJSON(body)
+		if originalError == nil {
+			t.Fatal("the malformed Result fixture must fail the original JSON validator")
+		}
+		if feedback == "" {
+			t.Fatalf("the unfinished Result generated no feedback: %s", &out)
+		}
+		canonical := resultPath
+		if resolved, err := filepath.EvalSymlinks(resultPath); err == nil {
+			canonical = resolved
+		}
+		if !strings.Contains(feedback, resultPath) && !strings.Contains(feedback, canonical) {
+			t.Fatalf("the feedback did not name the actual Result file: %s", feedback)
+		}
+		if !strings.Contains(feedback, originalError.Error()) {
+			t.Fatalf("the feedback did not name the actual failure of that file: %s", feedback)
+		}
+		for _, want := range []string{"Preserve the originals", "System continuation remains with Main"} {
+			if !strings.Contains(feedback, want) {
+				t.Fatalf("the feedback lost %q: %s", want, feedback)
+			}
 		}
 	}
 	// Restore committed product bytes and a complete professional Result. No

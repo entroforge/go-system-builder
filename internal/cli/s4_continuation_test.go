@@ -373,22 +373,83 @@ func TestS4AcceptedDescriptionChangeKeepsCompletionButCannotRegisterChangedMater
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The replay reuses the original reception: the same submission key, the
+	// same accepted work and the same followup. The original control flow
+	// continues the unfinished stage outlet from the received facts
+	// (L3-S4-task-split.md:415), so the receipt reports the stage the
+	// lifecycle really reached.
 	replayed, err := s.SaveTaskPlanning(context.Background(), p.AnswerPath)
-	if err != nil || !replayed.Accepted || !replayed.WorkComplete || replayed.SubmissionKey != receipt.SubmissionKey || !replayed.ConsumerPending || replayed.ConsumerOwner != "main" || replayed.CurrentStage != "S4" {
-		t.Fatalf("historical completion or pending Main registration was lost: %+v %v", replayed, err)
+	if err != nil || !replayed.Accepted || !replayed.WorkComplete || replayed.SubmissionKey != receipt.SubmissionKey {
+		t.Fatalf("historical completion or the original receipt was lost: %+v %v", replayed, err)
 	}
 	after := stageSnapshot(t, root)
 	current, found, err := runtime.FindSubmission(after.State, p.ID)
-	if err != nil || !found || current.FollowupID != original.FollowupID || current.ControlStatus == "advanced" {
-		t.Fatalf("changed TASK replaced or advanced the original followup: %+v %v", current, err)
+	if err != nil || !found || current.FollowupID != original.FollowupID {
+		t.Fatalf("the original followup was replaced: %+v %v", current, err)
 	}
-	_, err = transition.Apply(root, s.StatePath, s.JournalPath, transition.Request{
+	// The receipt must be consistent with the actual Runtime: it reports the
+	// stage the lifecycle really is in, and it claims a pending Main outlet
+	// only while that outlet really is pending.
+	lifecycle := after.State["lifecycle"].(map[string]any)
+	lifeState, _ := lifecycle["state"].(string)
+	lifePhase, _ := lifecycle["phase"].(string)
+	actualStage, _ := runtime.StageFor(lifeState, lifePhase, "")
+	if actualStage == "" {
+		actualStage = lifeState
+	}
+	if replayed.CurrentStage != actualStage {
+		t.Fatalf("the receipt does not report the actual lifecycle stage: receipt=%q actual=%q", replayed.CurrentStage, actualStage)
+	}
+	outletPending := current.ControlStatus == "pending" && lifeState == "planning" && lifePhase == "tasks"
+	if replayed.ConsumerPending != outletPending || replayed.ConsumerPending != (replayed.ConsumerOwner == "main") {
+		t.Fatalf("the receipt's outlet claim contradicts the recorded followup: receipt=%+v record=%+v lifecycle=%v", replayed, current, lifecycle)
+	}
+	// The changed material must not be registered as new material. The
+	// registration comes from the professional answer's own task paths and
+	// from the task's declared business version, and it appears exactly once.
+	registeredTask := registeredDocument(after.State, "task")
+	registeredPlan := registeredDocument(after.State, "dispatch_plan")
+	if registeredTask == nil || registeredPlan == nil {
+		t.Fatalf("the registered task materials are missing: %v", after.State["documents"])
+	}
+	if registeredTask["path"] != "docs/dev/tasks/TASK-039-01.md" || registeredPlan["path"] != "docs/dev/tasks/index-REQ-039.md" {
+		t.Fatalf("the registration does not point at the original task materials: %v %v", registeredTask, registeredPlan)
+	}
+	if registeredTask["version"] != "v1.0.0" {
+		t.Fatalf("the changed description replaced the registered business version: %v", registeredTask)
+	}
+	if countRegisteredDocuments(after.State, "task") != 1 || countRegisteredDocuments(after.State, "dispatch_plan") != 1 {
+		t.Fatalf("the changed description registered the materials again: %v", after.State["documents"])
+	}
+	// Reverse assertion: the registration is not qualified by a digest of the
+	// changed bytes. L3-S4-task-split.md:494 — "does not review the grant,
+	// the TR-002 registration or the S5 eligibility by digest, Git object ID
+	// or the complete history".
+	for _, field := range []string{"sha256", "hash", "digest", "checksum", "fingerprint"} {
+		if value, _ := registeredTask[field].(string); value != "" {
+			t.Fatalf("the retired byte proof returned to the registration: %v", registeredTask)
+		}
+	}
+	// The original outlet must not advance a second time, and the retired
+	// content-drift gate must not come back. L3-S4-task-split.md:495 — "does
+	// not take a digest or historical byte consistency as a registration
+	// gate".
+	_, applyErr := transition.Apply(root, s.StatePath, s.JournalPath, transition.Request{
 		TransitionID: "TR-002", Actor: "orchestrator", ExpectedRevision: after.Revision,
 		SubmissionFollowupID: current.FollowupID, Files: s.Files,
 	})
-	if err == nil || !strings.Contains(err.Error(), path) || stageSnapshot(t, root).Revision != after.Revision {
-		t.Fatalf("original registration must reject the exact changed TASK without a write: %v", err)
+	if stageSnapshot(t, root).Revision != after.Revision {
+		t.Fatalf("the changed TASK advanced the stage a second time: %v", applyErr)
 	}
+	if applyErr != nil {
+		reason := strings.ToLower(applyErr.Error())
+		for _, forbidden := range []string{"sha256", "hash", "digest", "checksum", "fingerprint", "differs", "byte"} {
+			if strings.Contains(reason, forbidden) {
+				t.Fatalf("the retired content-drift gate returned: %v", applyErr)
+			}
+		}
+	}
+	// The same report must not be received again.
 	beforeEntities := before.State["entities"].(map[string]any)
 	afterEntities := after.State["entities"].(map[string]any)
 	if len(beforeEntities["submissions"].([]any)) != len(afterEntities["submissions"].([]any)) || len(before.State["evidence"].([]any)) != len(after.State["evidence"].([]any)) {
@@ -398,4 +459,29 @@ func TestS4AcceptedDescriptionChangeKeepsCompletionButCannotRegisterChangedMater
 	if err != nil || !bytes.Equal(beforeAnswer, afterAnswer) {
 		t.Fatalf("professional answer changed: %v", err)
 	}
+}
+
+// registeredDocument returns the single registered document of one kind.
+func registeredDocument(state map[string]any, kind string) map[string]any {
+	rows, _ := state["documents"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row != nil && row["kind"] == kind {
+			return row
+		}
+	}
+	return nil
+}
+
+// countRegisteredDocuments counts the registered documents of one kind.
+func countRegisteredDocuments(state map[string]any, kind string) int {
+	rows, _ := state["documents"].([]any)
+	count := 0
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row != nil && row["kind"] == kind {
+			count++
+		}
+	}
+	return count
 }
