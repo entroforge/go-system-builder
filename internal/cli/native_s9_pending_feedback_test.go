@@ -11,6 +11,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/submission"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery(t *testing.T) {
@@ -60,12 +61,50 @@ func TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery(t *test
 	if err := json.Unmarshal(out.Bytes(), &response); err != nil || response.Output.Event != request.Event {
 		t.Fatalf("missing model-side Hook context: %v %s", err, &out)
 	}
-	command := regexp.MustCompile(`'([^']+)' runtime workspace integrate --root '([^']+)' --assignment '([^']+)' --agent '([^']+)'`).FindStringSubmatch(response.Output.Context)
-	if len(command) != 5 || command[1] != filepath.Join(root, ".claude/bin/loop-harness") || command[2] != root || command[3] != p.Binding.ManifestAssignmentID || command[4] != p.Binding.OwnerAgentID {
-		t.Fatalf("same-event recovery did not name the exact original integration successor: %s", response.Output.Context)
+	// The same-event recovery continues the part that is actually unfinished:
+	// Main's own ChangeImpact preparation. The retired integration successor
+	// (`runtime workspace integrate`) was removed with the old wiring
+	// (L4-workflow-convergence.md:312 "删除旧 CLI 入口与旧接线"; :316 "旧接线
+	// 退役后必须不遗留悬空文本"), so the recovery must name the real unfinished
+	// entry instead.
+	impact := "`loop-harness runtime repair impact prepare --root " + s7CaptureShellQuote(root) + "`"
+	if !strings.Contains(response.Output.Context, impact) {
+		t.Fatalf("same-event recovery did not name the exact unfinished ChangeImpact preparation %q: %s", impact, response.Output.Context)
 	}
-	if !strings.Contains(diagnostic.String(), "recovered the original pending Writer") || !strings.Contains(response.Output.Context, "PlanReport receipt is accepted") || !strings.Contains(response.Output.Context, "Worker candidate is recorded") {
+	// The retired successor must not come back with its parameters.
+	retired := regexp.MustCompile(`'([^']+)' runtime workspace integrate --root '([^']+)' --assignment '([^']+)' --agent '([^']+)'`)
+	if retired.MatchString(response.Output.Context) {
+		t.Fatalf("retired integration successor reappeared in the same-event recovery: %s", response.Output.Context)
+	}
+	if strings.Contains(response.Output.Context, "using this exact command") {
+		t.Fatalf("retired copyable-successor wording reappeared in the same-event recovery: %s", response.Output.Context)
+	}
+	if !strings.Contains(diagnostic.String(), "recovered the original pending Writer") || !strings.Contains(response.Output.Context, "PlanReport receipt is accepted") {
 		t.Fatalf("same-event continuation lost original recovery/reception facts: %s %s", &diagnostic, response.Output.Context)
+	}
+	// The Worker's candidate is recorded and received. The current wording of
+	// that fact is the candidate action plus the registered candidate index
+	// (internal/cli/s9_handoff_projection.go:187-188 and :236-238); the retired
+	// wording "Worker candidate is recorded" no longer exists in production.
+	for _, want := range []string{"Original Candidate is received", "Registered candidate reference: "} {
+		if !strings.Contains(response.Output.Context, want) {
+			t.Fatalf("same-event continuation lost the recorded Worker candidate fact %q: %s %s", want, &diagnostic, response.Output.Context)
+		}
+	}
+	// The named candidate index is the original registered candidate path, not
+	// a generic description.
+	registry, err := workspace.Decode(repairDispatchSnapshot(t, root).State)
+	if err != nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef == "" {
+		t.Fatalf("original registered candidate is unreadable: %v", err)
+	}
+	if candidate := filepath.Join(root, registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef); !strings.Contains(response.Output.Context, candidate) {
+		t.Fatalf("same-event continuation lost the registered candidate index %s: %s", candidate, response.Output.Context)
+	}
+	// The accepted contributions stay recorded and are not resubmitted.
+	for _, want := range []string{"Accepted contributions remain recorded", "do not resubmit Builder work"} {
+		if !strings.Contains(response.Output.Context, want) {
+			t.Fatalf("same-event recovery lost the accepted contribution fact %q: %s", want, response.Output.Context)
+		}
 	}
 	for _, check := range []struct {
 		path     string
@@ -85,21 +124,21 @@ func TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery(t *test
 		}
 	}
 	// Repeating the public observation keeps the accepted pair and the same
-	// integration successor; missing or changed private input cannot be re-read
+	// unfinished-part entry; missing or changed private input cannot be re-read
 	// as a new answer or replace the already captured candidate.
 	out.Reset()
 	diagnostic.Reset()
 	if code := Run([]string{"hook", "--root", root, "--event", request.Event}, bytes.NewReader(body), &out, &diagnostic); code != 0 {
 		t.Fatalf("replayed public Pre: %d %s %s", code, &out, &diagnostic)
 	}
-	if err := json.Unmarshal(out.Bytes(), &response); err != nil || !strings.Contains(response.Output.Context, command[0]) {
-		t.Fatalf("replayed Pre lost the exact integration successor: %v %s", err, &out)
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil || !strings.Contains(response.Output.Context, impact) {
+		t.Fatalf("replayed Pre lost the exact ChangeImpact preparation entry: %v %s", err, &out)
 	}
 	// The explicit original recovery entry remains an idempotent fallback with
 	// its receipt-array JSON contract after automatic recovery has completed.
 	out.Reset()
 	diagnostic.Reset()
-	args := []string{"runtime", "stage-answer", "recover", "--root", command[2]}
+	args := []string{"runtime", "stage-answer", "recover", "--root", root}
 	if code := Run(args, strings.NewReader(""), &out, &diagnostic); code != 0 {
 		t.Fatalf("actual model-supplied Writer command: %d %s %s", code, &out, &diagnostic)
 	}
@@ -107,7 +146,22 @@ func TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery(t *test
 	if err := json.Unmarshal(out.Bytes(), &receipts); err != nil {
 		t.Fatalf("recovery changed original JSON array type: %v %s", err, &out)
 	}
-	if !strings.Contains(diagnostic.String(), "runtime workspace integrate") || !strings.Contains(diagnostic.String(), p.Binding.ManifestAssignmentID) {
+	if retired.MatchString(diagnostic.String()) {
+		t.Fatalf("explicit recovery brought the retired integration successor back: %s", &diagnostic)
+	}
+	// The explicit recovery channel names no retired integration successor at
+	// all, in any wording.
+	if strings.Contains(diagnostic.String(), "runtime workspace integrate") {
+		t.Fatalf("explicit recovery named the retired integration successor: %s", &diagnostic)
+	}
+	// The explicit recovery still delivers the recorded original successor
+	// facts instead of the retired command.
+	for _, want := range []string{"Original Candidate is received", "Registered candidate reference: "} {
+		if !strings.Contains(diagnostic.String(), want) {
+			t.Fatalf("explicit recovery lost the recorded original successor fact %q: %s", want, &diagnostic)
+		}
+	}
+	if !strings.Contains(diagnostic.String(), p.Binding.ManifestAssignmentID) {
 		t.Fatalf("explicit recovery did not immediately deliver original successor: %s", &diagnostic)
 	}
 	for _, check := range []struct {

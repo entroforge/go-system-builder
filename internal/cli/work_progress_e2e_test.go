@@ -18,7 +18,20 @@ import (
 
 func progressHook(t *testing.T, root, cwd, owner, session, tool string, input, response map[string]any) string {
 	t.Helper()
-	payload, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "session_id": session, "agent_id": owner, "cwd": cwd, "tool_name": tool, "tool_input": input, "tool_response": response, "runtime_context": map[string]any{"current_state": "forged", "revision": 999, "agent": map[string]any{"id": "forged"}}})
+	// The payload keeps the real platform event shape: the identity is carried
+	// by the platform fields alone, and the private runtime carrier holds only
+	// facts the Runtime never recorded. A platform integration test must not
+	// inject identity through a private field
+	// (blueprint/l4-mechanisms/L4-hook-platform-wiring.md:63 "平台集成测试应使用
+	// 真实事件形状……不能把通过测试私有字段注入的事实称为真实平台执行、阅读或
+	// 接收证据"; :61 "内部的 facts、runtime_context、target_id 等兼容载体,也不能
+	// 当作平台已经证明完成的字段").
+	payload, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "session_id": session, "agent_id": owner, "cwd": cwd, "tool_name": tool, "tool_input": input, "tool_response": response, "runtime_context": map[string]any{"current_state": "forged", "revision": 999}})
+	// The fixture guard: an injected identity field would make the observer
+	// report an unknown owner instead of running the Main observation.
+	if strings.Contains(string(payload), "\"agent\":") {
+		t.Fatalf("platform event shape carries an injected identity field: %s", payload)
+	}
 	var out, errout bytes.Buffer
 	started := time.Now()
 	if code := cli.Run([]string{"hook", "--root", root, "--event", "PostToolUse", "--progress-mode", "notify"}, bytes.NewReader(payload), &out, &errout); code != 0 {

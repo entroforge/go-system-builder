@@ -92,6 +92,26 @@ func TestMinimalAnswerFlowOrdinaryFindingEntersS8AndReceivesAlreadyDispatchedPee
 	minimalAnswerFinding(t, root, first, "finding-minimal-first")
 	firstPayload := s7ListenerPayload(t, "opaque-minimal-first", "Review original "+filepath.Join(root, first.ViewPath))
 	out, diagnostic := s7ListenerEvent(t, root, "PreToolUse", firstPayload)
+	// The accepted transition is the Main-facing successor preparation. Its
+	// guidance is produced by the transition itself
+	// (internal/cli/s7_handoff.go:58-69) and its viewer is Main even when the
+	// reception originated in a Worker hook, so it is asserted at this event,
+	// on the Main-facing diagnostic channel.
+	// L3-S7-verification-round.md:376 — "若晚到结果含新 Finding,交 Main 纳入
+	// 当前调查的实际材料"; L4-hook-platform-wiring.md:348 — "新 Finding 交 Main
+	// 判断".
+	for _, want := range []string{"TR-008 entered S8", "Preserve already dispatched S7 responsibilities", "hand new Findings to Main"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("accepted S7→S8 transition lost its Main-facing successor guidance %q: %s %s", want, out, diagnostic)
+		}
+	}
+	// The Main-facing routing stays on the Main channel: the Reviewer's own
+	// receipt must not carry it, neither in this transition nor in a later one.
+	for _, unwanted := range []string{"hand new Findings to Main", "TR-008 entered S8"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("the Reviewer receipt carried Main's S8 successor guidance %q: %s %s", unwanted, out, diagnostic)
+		}
+	}
 	if receipt := minimalAnswerReviewReceipt(t, root, first); !receipt.Accepted || !receipt.WorkComplete {
 		t.Fatalf("ordinary finding lacks original receipt: %+v; %s %s", receipt, out, diagnostic)
 	}
@@ -125,8 +145,25 @@ func TestMinimalAnswerFlowOrdinaryFindingEntersS8AndReceivesAlreadyDispatchedPee
 	if receipt := minimalAnswerReviewReceipt(t, root, late); !receipt.Accepted || !receipt.WorkComplete {
 		t.Fatalf("already-dispatched S7 peer not received first in S8: %+v; %s %s", receipt, out, diagnostic)
 	}
-	if !strings.Contains(out+diagnostic, "hand new Findings to Main") {
-		t.Fatalf("late Finding lost its Main handoff: %s %s", out, diagnostic)
+	// The late Reviewer receives its own original receipt. Main's S8 routing
+	// guidance is not pushed into the late Reviewer's own model context: the
+	// new Findings are handed to Main, which judges their impact
+	// (L3-S7-verification-round.md:376 "交 Main 纳入当前调查的实际材料";
+	// L4-hook-platform-wiring.md:348 "新 Finding 交 Main 判断").
+	for _, want := range []string{"S7 original ReviewResult receipt", "原 S7 答卷已接收"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("late Reviewer lost its own original receipt %q: %s %s", want, out, diagnostic)
+		}
+	}
+	for _, unwanted := range []string{"hand new Findings to Main", "TR-008 entered S8"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("late Reviewer received Main's S8 successor guidance %q: %s %s", unwanted, out, diagnostic)
+		}
+	}
+	// The late answer does not run the S7→S8 transition a second time: the
+	// transition marker never reappears after the accepted transition.
+	if strings.Contains(out+diagnostic, "TR-008 entered S8") {
+		t.Fatalf("late answer re-entered S8 with the Main-facing successor guidance: %s %s", out, diagnostic)
 	}
 	after := stageSnapshot(t, root)
 	if !reflect.DeepEqual(after.State["lifecycle"], entered.State["lifecycle"]) {
