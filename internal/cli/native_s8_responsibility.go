@@ -47,8 +47,12 @@ type nativeReviewCandidate struct {
 	hypothesis            string
 	stage                 string
 	refs                  []string
-	err                   error
-	diagnosticOnly        bool
+	// taskRefs are the original task (questionnaire) references only. A saved
+	// output path is not a task: a statement that names only that output does
+	// not establish this actor's original task for the responsibility.
+	taskRefs       []string
+	err            error
+	diagnosticOnly bool
 }
 
 func nativeReviewFacts(text string) nativeReviewDispatchFacts {

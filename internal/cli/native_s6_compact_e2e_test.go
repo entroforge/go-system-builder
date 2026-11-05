@@ -95,7 +95,7 @@ func TestNativeS6CompactResultReceivesThroughOriginalConsumerAndReplays(t *testi
 // compact Result that is accepted must still integrate and reach S7, even if
 // its private worktree must be preserved separately.
 func TestNativeS6CompactResultPassesTheOriginalIntegrationGate(t *testing.T) {
-	root, source, r := nativeDeliveryFixture(t)
+	root, source, r := nativeDeliveryFixtureWithMainBaseline(t)
 	nativeCommit(t, source)
 	nativeAnswer(t, source, r)
 	brief, plan, result := assignmentrecord.NativePaths(r)
@@ -136,6 +136,14 @@ func TestNativeS6CompactResultPassesTheOriginalIntegrationGate(t *testing.T) {
 	for _, fact := range []string{source, ".claude/", "cleanup authorization", "cleanup_pending", "completion_ack recorded", "TR-006", "ReviewPlan questionnaire:"} {
 		if !strings.Contains(integrateOut.String(), fact) {
 			t.Fatalf("compact handoff omitted %q: %s %s", fact, &integrateOut, &integrateErr)
+		}
+	}
+	// The current generation owns the original TR-003 common Main baseline, so
+	// the integration exit reads the current batch and reports the original
+	// hand-off instead of a missing baseline or an uninferrable start.
+	for _, gap := range []string{"no original TR-003 common Main baseline", "historical start cannot be inferred"} {
+		if strings.Contains(integrateOut.String(), gap) {
+			t.Fatalf("compact integration reported a missing TR-003 baseline: %s %s", &integrateOut, &integrateErr)
 		}
 	}
 	if lifecycle := stageSnapshot(t, root).State["lifecycle"].(map[string]any)["state"]; lifecycle != "verification" {

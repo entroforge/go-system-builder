@@ -183,8 +183,20 @@ func TestS7NativeListenerReportsSelectedUnreadableBody(t *testing.T) {
 		}
 	}
 	out, diagnostic := s7ListenerEvent(t, root, "PreToolUse", s7ListenerPayload(t, "unrelated-helper", "Read an unrelated file"))
-	if out != "" || diagnostic != "" {
-		t.Fatalf("helper inherited another actor's body failure: %s %s", out, diagnostic)
+	// R-16: the actor's own model context stays silent. The unresolved
+	// original responsibility is a Main-facing diagnostic only, so the helper
+	// inherits neither the actor channel nor another actor's packet, owner or
+	// answer path.
+	if out != "" {
+		t.Fatalf("helper inherited another actor's body failure in the actor channel: %s %s", out, diagnostic)
+	}
+	if !strings.Contains(diagnostic, "Main must inspect the original dispatch") {
+		t.Fatalf("helper's unresolved original responsibility was not reported to Main: %s %s", out, diagnostic)
+	}
+	for _, foreign := range []string{own.ID, own.Binding.OwnerAgentID, own.AnswerPath} {
+		if strings.Contains(out, foreign) || strings.Contains(diagnostic, foreign) {
+			t.Fatalf("helper inherited another actor's body failure: %s %s", out, diagnostic)
+		}
 	}
 }
 

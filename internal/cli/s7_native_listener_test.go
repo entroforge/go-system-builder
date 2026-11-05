@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -124,12 +125,31 @@ func TestS7NativeListenerReceivesAssignedOriginalOnNaturalToolEvent(t *testing.T
 			if row["result_receipt"] == nil {
 				t.Fatal("original receipt missing")
 			}
-			replay, _ := s7ListenerEvent(t, root, event, payload)
+			replay, replayDiagnostic := s7ListenerEvent(t, root, event, payload)
 			if replay != "" {
 				t.Fatalf("accepted ordinary replay repeated feedback: %s", replay)
 			}
+			// The accepted replay stays silent in the actor's model context and
+			// must not repeat the whole receipt in any channel.
+			for _, forbidden := range []string{"S7 original ReviewResult receipt:", "accepted=true", "work_complete=true", p.ID, p.Binding.OwnerAgentID, p.AnswerPath} {
+				if strings.Contains(replay, forbidden) || strings.Contains(replayDiagnostic, forbidden) {
+					t.Fatalf("accepted ordinary replay repeated the receipt %q: %s %s", forbidden, replay, replayDiagnostic)
+				}
+			}
+			// The replay still continues the original responsibility for Main: the
+			// unfinished-successor fact stays in the Main-facing diagnostic
+			// channel. An accepted replay must not become a silent early return.
+			if !strings.Contains(replayDiagnostic, "original exit is already prepared") {
+				t.Fatalf("accepted ordinary replay lost the Main-facing continuation: %s", replayDiagnostic)
+			}
 			if stageSnapshot(t, root).Revision != accepted.Revision {
 				t.Fatal("natural event replay duplicated consequences")
+			}
+			// The replay did not rewrite the recorded original receipt.
+			replayed := stageSnapshot(t, root)
+			replayedRow := replayed.State["review"].(map[string]any)["assignments"].(map[string]any)[p.Binding.AssignmentID].(map[string]any)
+			if !reflect.DeepEqual(replayedRow["result_receipt"], row["result_receipt"]) {
+				t.Fatalf("natural event replay rewrote the original receipt: %v %v", replayedRow["result_receipt"], row["result_receipt"])
 			}
 		})
 	}

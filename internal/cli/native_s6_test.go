@@ -93,7 +93,7 @@ func nativeCommit(t *testing.T, source string) {
 }
 
 func TestNativeS6StartStopReceivesWithoutActivationOrSaveHook(t *testing.T) {
-	root, source, r := nativeDeliveryFixture(t)
+	root, source, r := nativeDeliveryFixtureWithMainBaseline(t)
 	brief, plan, result := assignmentrecord.NativePaths(r)
 	mainInput, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "native-main-session", "cwd": root, "source": "startup"})
 	var mainOut, mainErr bytes.Buffer
@@ -162,6 +162,14 @@ func TestNativeS6StartStopReceivesWithoutActivationOrSaveHook(t *testing.T) {
 	for _, fact := range []string{source, "cleanup authorization", "cleanup_pending", "completion_ack recorded", "TR-006", "ReviewPlan questionnaire:"} {
 		if !strings.Contains(integrateOut.String(), fact) {
 			t.Fatalf("handoff omitted %q: %s %s", fact, &integrateOut, &integrateErr)
+		}
+	}
+	// The current generation owns the original TR-003 common Main baseline, so
+	// the integration exit reads the current batch and reports the original
+	// hand-off instead of a missing baseline or an uninferrable start.
+	for _, gap := range []string{"no original TR-003 common Main baseline", "historical start cannot be inferred"} {
+		if strings.Contains(integrateOut.String(), gap) {
+			t.Fatalf("integration reported a missing TR-003 baseline: %s %s", &integrateOut, &integrateErr)
 		}
 	}
 	if lifecycle := stageSnapshot(t, root).State["lifecycle"].(map[string]any)["state"]; lifecycle != "verification" {

@@ -160,8 +160,19 @@ func TestStageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent(t *testing.T) {
 	if code, _, diagnostic := nativeReviewEvent(t, root, "PostToolUse", "", answerPath); code != 0 || stageSnapshot(t, root).Revision != beforeNative {
 		t.Fatalf("Main tool event consumed another author: %d %s", code, diagnostic)
 	}
-	if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "unrelated-worker", answerPath); code != 0 || stageSnapshot(t, root).Revision != beforeNative {
+	code, actorOut, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "unrelated-worker", answerPath)
+	if code != 0 || stageSnapshot(t, root).Revision != beforeNative {
 		t.Fatalf("unassociated Worker consumed another author: %d %s", code, diagnostic)
+	}
+	// The unrelated actor's Stop did not become the owner's receipt: the
+	// original consumer did not report a reception, and no result receipt was
+	// written for the issued responsibility.
+	if strings.Contains(diagnostic, "received by the original consumer") || strings.Contains(actorOut, "accepted=true") {
+		t.Fatalf("unassociated Worker consumed another author: %d %s %s", code, actorOut, diagnostic)
+	}
+	assignments := stageSnapshot(t, root).State["review"].(map[string]any)["assignments"].(map[string]any)
+	if row, _ := assignments["assignment-dv-1"].(map[string]any); row["result_receipt"] != nil {
+		t.Fatalf("unassociated Worker wrote the owner's receipt: %v", row["result_receipt"])
 	}
 	if code := cli.Run([]string{"runtime", "stage-answer", "consume", "--root", root, "--path", answerPath}, nil, &out, &errout); code != 0 {
 		t.Fatalf("consume exact issued S7 answer without --agent: code=%d stderr=%s stdout=%s", code, errout.String(), out.String())
@@ -171,6 +182,13 @@ func TestStageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent(t *testing.T) {
 	}
 	if err := json.Unmarshal(out.Bytes(), &receipt); err != nil || !receipt.Accepted {
 		t.Fatalf("original S7 consumer did not accept exact registered answer: receipt=%+v err=%v stdout=%s", receipt, err, out.String())
+	}
+	// The original consumer still receives the original answer through the
+	// original path: the unrelated actor's Stop neither blocked nor pre-empted
+	// that reception, so the ownership gate is not a blanket "never receive".
+	assignments = stageSnapshot(t, root).State["review"].(map[string]any)["assignments"].(map[string]any)
+	if row, _ := assignments["assignment-dv-1"].(map[string]any); row["result_receipt"] == nil {
+		t.Fatalf("the original consumer did not write the owner's receipt: %v", assignments)
 	}
 	received := stageSnapshot(t, root).Revision
 	out.Reset()

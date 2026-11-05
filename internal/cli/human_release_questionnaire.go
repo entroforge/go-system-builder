@@ -193,6 +193,19 @@ func runSavedHumanReleaseQuestionnaire(root string, request policy.Input, stdout
 	feedback := func(message string) (bool, int) {
 		return true, auditQuestionnaireFeedback(stdout, "S11 decision application: "+path+". "+message)
 	}
+	if !mainQuestionnaireViewer(request) {
+		// The S11 human decision is Main's audience, exactly as the display
+		// path already decides. Another actor's save is not routed to the
+		// original decision consumer: the decision is not consumed, the
+		// lifecycle cursor does not move and the saved application keeps the
+		// human's own words. This is a routing gate, not an identity proof,
+		// and it never denies the tool.
+		// L4-workflow-convergence.md:191 — "消息、工具输入／输出或本人末次陈述
+		// 中即使含另一责任准确路径，也不能单独改变此子会话的 owner，或促使
+		// Hook 代另一作者接收"; L4-hook-platform-wiring.md:107 — "监听先从已有
+		// 派发／责任关联定位本人".
+		return feedback("This human decision is filled in and saved by Main. The current actor's save was not routed to the original decision consumer: no decision was recorded, the lifecycle cursor did not move and the saved application is unchanged.")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return feedback("Saved file cannot be read: " + err.Error())

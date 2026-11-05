@@ -141,19 +141,23 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 	selectAnswer := func(id, assignment, view, path string, generation int, runtimeID string, aliases ...string) {
 		actual, err := questionnaireSourceRoot(root, snap.State, assignment, id, runtimeID, generation)
 		refs := append([]string{filepath.Join(root, view), filepath.Join(root, path)}, aliases...)
+		taskRefs := []string{filepath.Join(root, view)}
 		if err == nil {
 			refs = append(refs, filepath.Join(actual, view), filepath.Join(actual, path))
+			taskRefs = append(taskRefs, filepath.Join(actual, view))
 		}
-		candidates = append(candidates, nativeReviewCandidate{view: filepath.Join(actual, view), stage: stage, owner: id, answer: filepath.Join(actual, path), source: actual, refs: refs, err: err})
+		candidates = append(candidates, nativeReviewCandidate{view: filepath.Join(actual, view), stage: stage, owner: id, answer: filepath.Join(actual, path), source: actual, refs: refs, taskRefs: taskRefs, err: err})
 	}
 	selectReviewAnswer := func(p runtime.ReviewResultPacketIndex) {
 		packet := workpacket.ReviewResultPacket{ID: p.ID, Binding: p.Binding, AnswerPath: p.AnswerPath, ViewPath: p.ViewPath}
 		source, err := review.IssuedResultSourceRoot(root, snap.State, packet, p.Reception)
 		refs := []string{p.ViewPath, p.AnswerPath, filepath.Join(root, p.ViewPath), filepath.Join(root, p.AnswerPath)}
+		taskRefs := []string{p.ViewPath, filepath.Join(root, p.ViewPath)}
 		if source != "" {
 			refs = append(refs, filepath.Join(source, p.ViewPath), filepath.Join(source, p.AnswerPath))
+			taskRefs = append(taskRefs, filepath.Join(source, p.ViewPath))
 		}
-		candidates = append(candidates, nativeReviewCandidate{owner: p.Binding.OwnerAgentID, answer: filepath.Join(source, p.AnswerPath), source: source, packet: p.ID, view: filepath.Join(source, p.ViewPath), stage: "S7", assignment: p.Binding.AssignmentID, claims: p.Binding.ClaimIDs, refs: refs, err: err})
+		candidates = append(candidates, nativeReviewCandidate{owner: p.Binding.OwnerAgentID, answer: filepath.Join(source, p.AnswerPath), source: source, packet: p.ID, view: filepath.Join(source, p.ViewPath), stage: "S7", assignment: p.Binding.AssignmentID, claims: p.Binding.ClaimIDs, refs: refs, taskRefs: taskRefs, err: err})
 	}
 	switch stage {
 	case "S5":
@@ -270,6 +274,7 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 		taskInput.LastAssistantMessage = ""
 	}
 	var text string
+	fromOriginalTask := false
 	if stage == "S5" {
 		text, _ = nativeTaskTextDiagnostic(taskInput, refs, true)
 	} else {
@@ -280,7 +285,25 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 			}
 			taskInput.AgentTranscriptPath = child
 		}
-		text = nativeReviewTaskText(taskInput, refs)
+		text, fromOriginalTask = nativeReviewOriginalTaskText(taskInput, refs)
+	}
+	selection := candidates
+	if !fromOriginalTask {
+		// The actor's own final statement is not a dispatch. It may still name
+		// the original task it was given, but a statement that names only the
+		// saved output path of another responsibility claims that output
+		// instead of naming a task. The original consumer must not receive on
+		// behalf of that author. L4-workflow-convergence.md:191 — "消息、工具
+		// 输入／输出或本人末次陈述中即使含另一责任准确路径，也不能单独改变此
+		// 子会话的 owner，或促使 Hook 代另一作者接收"; :189 — "本人事件从同一
+		// 平台子会话的真实原任务选择".
+		selection = make([]nativeReviewCandidate, len(candidates))
+		copy(selection, candidates)
+		for i := range selection {
+			if len(selection[i].taskRefs) > 0 {
+				selection[i].refs = selection[i].taskRefs
+			}
+		}
 	}
 	var selected []nativeReviewCandidate
 	unknown := false
@@ -299,7 +322,7 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 			selected = nil
 		}
 	} else {
-		selected, unknown = nativeReviewSelect(nativeReviewFacts(text), text, root, candidates)
+		selected, unknown = nativeReviewSelect(nativeReviewFacts(text), text, root, selection)
 	}
 	if len(selected) == 0 && sourceErr != nil {
 		fmt.Fprintln(diagnostic, "Original responsibility index could not be read:", sourceErr)
@@ -320,11 +343,14 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 			unknown = true
 		}
 		if unknown {
-			message := stage + " lifecycle handoff contains an unresolved original responsibility; Main must inspect the original dispatch"
-			fmt.Fprintln(diagnostic, message)
-			if ordinaryReview {
-				_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
-			}
+			// The unresolved original responsibility belongs to Main's diagnostic
+			// channel only. The actor's own model context stays silent: another
+			// responsibility's gap is not this actor's business, and the honest
+			// hint must not leak another responsibility into this actor's context.
+			// L4-hook-platform-wiring.md:90 — "准确关联不足时保留相关未知并交
+			// Main／系统"; L4-workflow-convergence.md:191 — a path or hint in the
+			// actor's own text cannot change this sub-session's owner.
+			fmt.Fprintln(diagnostic, stage+" lifecycle handoff contains an unresolved original responsibility; Main must inspect the original dispatch")
 		}
 		return true, 0
 	}
@@ -353,6 +379,7 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 		// original; missing/non-Git cwd does not invent a new source binding.
 
 		var received submission.Receipt
+		replayed := false
 		if sourceErr == nil {
 			service, err := submission.NewContext(contextForHook(in), root, true)
 			if err != nil {
@@ -381,6 +408,7 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 						return true, 0
 					}
 					received = receipt
+					replayed = true
 					fmt.Fprintln(diagnostic, stage+" native professional answer received by the original consumer. "+receipt.NextAction)
 				} else {
 					switch stage {
@@ -460,14 +488,17 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 			defer cancelCompletion()
 			current, err := runtime.NewStore(statePath, journalPath).WithContext(completionContext).Snapshot()
 			handoff := ""
+			handoffReported := false
 			if err != nil {
 				handoff = "S7 ReviewResult is received; Main restores current Runtime access before continuing the original clean-round exit: " + err.Error() + ". Recovery: " + s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " runtime review-continue --root " + s7CaptureShellQuote(root)
 				fmt.Fprintln(diagnostic, handoff)
+				handoffReported = true
 			} else {
 				applies, compareErr := reviewPacketAppliesToCurrent(root, current.State, packet, completionContext)
 				if compareErr != nil {
 					handoff = "Original S7 answer is accepted; its relationship to the current responsibility is unknown: " + compareErr.Error() + ". Main restores the original plan materials and continues the original outlet; the Reviewer need not resubmit."
 					fmt.Fprintln(diagnostic, handoff)
+					handoffReported = true
 				} else if !applies {
 					handoff = "原 S7 晚到答卷已收；Main 查阅原 Result 与发现后决定补充调查或后续处理。"
 				} else if !s7SuccessorPending(root, current.State) {
@@ -479,6 +510,7 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 					current, handoff, continuationErr = continueS7AcceptanceResult(completionContext, root, statePath, journalPath, current)
 					if handoff != "" {
 						fmt.Fprintln(diagnostic, handoff)
+						handoffReported = true
 					}
 					if continuationErr == nil {
 						handoff = ""
@@ -486,9 +518,22 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 				}
 			}
 			if ordinaryReview {
-				// A failed snapshot cannot supply a current stage. Reception remains
-				// durable and its concrete recovery is carried to this actual Worker.
-				nativeS7NaturalReceipt(root, in, current, owner, packet, answer, received, handoff, out)
+				if replayed {
+					// The answer was already received. The original consumer keeps
+					// its Main-facing facts, but the actor's own model context stays
+					// silent: an accepted replay must not project the whole receipt
+					// again, and it must not rerun Gate checks or S10 material
+					// preparation. L4-workflow-convergence.md:191 — "已收只续未完成
+					// 后继"; L4-hook-platform-wiring.md:113 — "已收交接直接复用原事实,
+					// 不重接收或重转阶段".
+					if handoff != "" && !handoffReported {
+						fmt.Fprintln(diagnostic, handoff)
+					}
+				} else {
+					// A failed snapshot cannot supply a current stage. Reception remains
+					// durable and its concrete recovery is carried to this actual Worker.
+					nativeS7NaturalReceipt(root, in, current, owner, packet, answer, received, handoff, out)
+				}
 			}
 		}
 		if stage == "S8" {
@@ -567,6 +612,14 @@ func s7ResultHasProfessionalExpression(path string) bool {
 // The original platform task selects the responsibility. Later coordinator
 // messages and the Worker's final text are not a new dispatch.
 func nativeReviewTaskText(in policy.Input, refs []string) string {
+	text, _ := nativeReviewOriginalTaskText(in, refs)
+	return text
+}
+
+// nativeReviewOriginalTaskText reports the original task text and whether it
+// came from that proven original task (the platform sidechain) instead of the
+// actor's final statement.
+func nativeReviewOriginalTaskText(in policy.Input, refs []string) (string, bool) {
 	defer metrics.Span(contextForHook(in), "hook/native_routes/task_text")()
 	file, err := os.Open(in.AgentTranscriptPath)
 	if err != nil {
@@ -574,18 +627,18 @@ func nativeReviewTaskText(in policy.Input, refs []string) string {
 		// fallback text source instead of returning an empty task, so the exact
 		// registered reference carried by the payload can still select the
 		// original responsibility.
-		return in.LastAssistantMessage
+		return in.LastAssistantMessage, false
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return in.LastAssistantMessage
+		return in.LastAssistantMessage, false
 	}
 	reader := &nativeTaskTranscript{ctx: contextForHook(in), reader: file, size: info.Size()}
 	text, _, _ := reader.earliestUsing("", func(line []byte, final string) (string, bool, bool) {
 		return nativeReviewOriginalTask(line, in.AgentID, final)
 	})
-	return text
+	return text, true
 }
 
 // Project durable personal acceptance and the original Main-owned outlet only.
