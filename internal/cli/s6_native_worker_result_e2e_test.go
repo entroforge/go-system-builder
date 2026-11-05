@@ -195,6 +195,26 @@ func TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource(t *t
 			t.Fatalf("durable Worker fact artifact is missing or changed: %+v err=%v", artifact, err)
 		}
 	}
+	// Reverse: the durable artifact is the original captured receipt byte for
+	// byte. It is a copy, never a digest, fingerprint, checksum or a
+	// re-serialized form of the original bytes.
+	originalReceiptBytes, err := os.ReadFile(wrapper.ToolReceipt.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishedReceipt, err := read(firstFact.ReceiptArtifact.Path)
+	if err != nil || !bytes.Equal(publishedReceipt, originalReceiptBytes) {
+		t.Fatalf("durable Worker fact receipt is not the original captured bytes: err=%v", err)
+	}
+	// Reverse: the artifact lives at the immutable per-Result path under its
+	// logical reference; the path certifies nothing about its contents.
+	if want := assignmentresult.WorkerCheckEvidenceArtifactPath(record, firstAccepted.EvidenceID, 0, "receipt"); firstFact.ReceiptArtifact.Path != want {
+		t.Fatalf("durable Worker fact receipt artifact is not the immutable per-Result path: got=%s want=%s", firstFact.ReceiptArtifact.Path, want)
+	}
+	if firstFact.ReceiptArtifact.Ref != assignmentresult.WorkerCheckEvidenceRef(0, "receipt") || firstFact.LogArtifact.Ref != assignmentresult.WorkerCheckEvidenceRef(0, "log") {
+		t.Fatalf("durable Worker fact artifacts lost their logical reference: %+v", firstFact)
+	}
+	assertWorkerCheckArtifactTruth(t, firstAccepted.WorkerCheckFacts)
 	complete := assignmentresult.WorkerClosureComplete(record, accepted)
 	if complete != (rawReceipt.Status == "pass") {
 		t.Fatalf("work closure changed the process result into a different judgment: complete=%t actual=%s", complete, rawReceipt.Status)
@@ -295,19 +315,69 @@ func TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource(t *t
 	if assignmentresult.WorkerClosureComplete(record, secondDurable) != (secondRawReceipt.Status == "pass") {
 		t.Fatalf("new Result closure differs from the fresh actual receipt status %q", secondRawReceipt.Status)
 	}
-	var proofEvidence *assignmentresult.ResolvedEvidence
-	for i := range secondAccepted.ResolvedEvidenceRefs {
-		if secondAccepted.ResolvedEvidenceRefs[i].Ref == proofRef {
-			proofEvidence = &secondAccepted.ResolvedEvidenceRefs[i]
-			break
+	// The new Result binds the actual professional evidence by its registered
+	// position coordinate. The retired per-source digest resolution no longer
+	// publishes a byte copy of the source next to the Result (d0d948a dropped
+	// the hash-proof machinery), so the binding is asserted on the coordinate
+	// the Answer actually carries, and the bytes at that coordinate must be
+	// the changed professional output.
+	var proofCoordinate string
+	for _, evidence := range secondAccepted.Answer.AssertionEvidence {
+		for _, ref := range evidence.EvidenceRefs {
+			if ref == proofRef {
+				proofCoordinate = ref
+			}
 		}
 	}
-	if proofEvidence == nil {
-		t.Fatalf("new Result omitted the professional evidence reference: %+v", secondAccepted.ResolvedEvidenceRefs)
+	if proofCoordinate == "" {
+		t.Fatalf("new Result omitted the professional evidence coordinate: %+v", secondAccepted.Answer.AssertionEvidence)
 	}
-	if got, err := read(proofEvidence.Path); err != nil || !bytes.Equal(got, changedProof) {
+	if got, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(proofCoordinate))); err != nil || !bytes.Equal(got, changedProof) {
 		t.Fatalf("new Result did not retain the actual professional evidence: %q %v", got, err)
 	}
+	// Reverse: the Result envelope carries no retired content digest. A
+	// digest gate would let a rewritten source pass as the original one, and
+	// the digest machinery is retired: the professional evidence is bound by
+	// its position coordinate only.
+	envelopeBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(second.Acceptance.ResultRef)))
+	if err != nil {
+		t.Fatalf("read the new Result envelope bytes: %v", err)
+	}
+	var rawEnvelope map[string]any
+	if err := json.Unmarshal(envelopeBytes, &rawEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	for _, retired := range []string{"sha256", "digest", "fingerprint", "checksum", "answer_digest", "assignment_record_sha256"} {
+		if _, found := rawEnvelope[retired]; found {
+			t.Fatalf("new Result envelope still carries the retired digest field %q: %s", retired, envelopeBytes)
+		}
+	}
+	if resolved, found := rawEnvelope["resolved_evidence_refs"]; found {
+		if rows, _ := resolved.([]any); len(rows) != 0 {
+			t.Fatalf("new Result envelope still carries the retired digest-resolved evidence refs: %s", envelopeBytes)
+		}
+	}
+	// Reverse: a new Result with a new closure owns its own immutable
+	// per-Result Worker fact artifacts; the earlier Result keeps its own bytes.
+	secondFact := secondAccepted.WorkerCheckFacts[0]
+	if secondFact.ReceiptArtifact == nil || secondFact.LogArtifact == nil {
+		t.Fatalf("new Result lost its durable Worker fact artifacts: %+v", secondFact)
+	}
+	if secondFact.ReceiptArtifact.Path == firstFact.ReceiptArtifact.Path {
+		t.Fatalf("two Results shared one immutable Worker fact artifact path: %s", secondFact.ReceiptArtifact.Path)
+	}
+	if want := assignmentresult.WorkerCheckEvidenceArtifactPath(record, secondAccepted.EvidenceID, 0, "receipt"); secondFact.ReceiptArtifact.Path != want {
+		t.Fatalf("new Result Worker fact artifact is not its own immutable per-Result path: got=%s want=%s", secondFact.ReceiptArtifact.Path, want)
+	}
+	secondOriginalBytes, err := os.ReadFile(wrappers[1].ToolReceipt.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPublished, err := read(secondFact.ReceiptArtifact.Path)
+	if err != nil || !bytes.Equal(secondPublished, secondOriginalBytes) {
+		t.Fatalf("new Result Worker fact receipt is not the fresh original captured bytes: err=%v", err)
+	}
+	assertWorkerCheckArtifactTruth(t, secondAccepted.WorkerCheckFacts)
 
 	if !strings.HasPrefix(secondAccepted.WorkerCheckFacts[0].ContextRef, ".claude/assignment-context/native/") || !reflect.DeepEqual(secondAccepted.WorkerCheckFacts[0].Record, record.Reference()) {
 		t.Fatalf("fresh Worker Result lost its current fixed native context/Record: %+v", secondAccepted.WorkerCheckFacts[0])
@@ -332,4 +402,23 @@ func cloneJSONMap(source map[string]any) map[string]any {
 	var clone map[string]any
 	_ = json.Unmarshal(encoded, &clone)
 	return clone
+}
+
+// assertWorkerCheckArtifactTruth pins that a durable Worker fact artifact is
+// published only for an actually captured original receipt, and that an
+// unavailable or missing check never gains a fabricated artifact path.
+func assertWorkerCheckArtifactTruth(t *testing.T, facts []assignmentresult.WorkerCheckFact) {
+	t.Helper()
+	for _, fact := range facts {
+		switch fact.Status {
+		case "pass", "fail":
+			if fact.ReceiptArtifact == nil || fact.LogArtifact == nil {
+				t.Fatalf("captured Worker check %d lost its durable artifacts: %+v", fact.Index, fact)
+			}
+		default:
+			if fact.ReceiptArtifact != nil || fact.LogArtifact != nil {
+				t.Fatalf("unavailable Worker check %d gained a fabricated artifact: %+v", fact.Index, fact)
+			}
+		}
+	}
 }

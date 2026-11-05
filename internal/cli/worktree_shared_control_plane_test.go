@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -161,10 +160,11 @@ func minimalReviewPlan(t *testing.T, dir, planID string) string {
 	plan := map[string]any{
 		"schema_version":      "1.0.0",
 		"review_plan_id":      planID,
-		"review_round":        1,
 		"baseline_generation": 1,
 		"frozen_subjects": []any{
-			map[string]any{"path": "internal/example/service.go", "sha256": fmt.Sprintf("%x", sha256.Sum256(subjectBytes)), "kind": "product_code"},
+			// Existing frozen references carry no digest. The machine does not
+			// certify file content from a path and a version.
+			map[string]any{"path": "internal/example/service.go", "kind": "product_code"},
 		},
 		"claims": []any{
 			map[string]any{
@@ -428,7 +428,7 @@ func markAssignmentDispatched(t *testing.T, root, assignmentID, agentID string) 
 	// real registration and selected-method delivery have separate integration tests.
 	manifest := map[string]any{
 		"runtime_id": state["runtime_id"], "baseline_generation": state["baseline"].(map[string]any)["generation"],
-		"review_round": state["review"].(map[string]any)["round"], "workgroup_id": teamID, "workgroup_kind": kind,
+		"workgroup_id": teamID, "workgroup_kind": kind,
 		"assignments": []any{map[string]any{"assignment_id": assignmentID, "agent_id": agentID, "role_family": role, "claim_ids": row["claim_ids"], "skill_refs": []string{}}},
 	}
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
@@ -442,7 +442,7 @@ func markAssignmentDispatched(t *testing.T, root, assignmentID, agentID string) 
 		t.Fatal(err)
 	}
 	teams, _ := state["entities"].(map[string]any)["teams"].([]any)
-	team := map[string]any{"id": teamID, "platform_team_id": teamID, "kind": kind, "status": "planned", "manifest_ref": manifestRef, "responsibility_ids": []any{}, "agent_ids": []any{agentID}, "review_round": state["review"].(map[string]any)["round"]}
+	team := map[string]any{"id": teamID, "platform_team_id": teamID, "kind": kind, "status": "planned", "manifest_ref": manifestRef, "responsibility_ids": []any{}, "agent_ids": []any{agentID}}
 	if state["schema_version"] != "1.1.0" {
 		team["manifest_sha256"] = fmt.Sprintf("%x", sha256.Sum256(manifestData))
 	}
@@ -528,35 +528,6 @@ func TestReviewPlanWithoutExplicitRootWritesToCwdNotProjectRoot(t *testing.T) {
 	_ = code
 	_ = stdout
 	_ = stderr
-}
-
-// subjectDigestFor computes the same sha256 that review.SubjectDigest
-// produces. The shared control plane keeps frozen_subjects per plan, so
-// the result's subject_digest must equal this digest or the runtime
-// rejects it.
-func subjectDigestFor(t *testing.T, root string) string {
-	t.Helper()
-	planBytes, err := os.ReadFile(filepath.Join(root, ".claude", "review", "plans",
-		"review-plan-worktree-result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var plan struct {
-		FrozenSubjects []struct {
-			Path   string `json:"path"`
-			SHA256 string `json:"sha256"`
-		} `json:"frozen_subjects"`
-	}
-	if err := json.Unmarshal(planBytes, &plan); err != nil {
-		t.Fatal(err)
-	}
-	paths := make([]string, 0, len(plan.FrozenSubjects))
-	for _, fs := range plan.FrozenSubjects {
-		paths = append(paths, fs.Path+":"+fs.SHA256)
-	}
-	sort.Strings(paths)
-	joined := strings.Join(paths, "\n")
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(joined)))
 }
 
 func intFieldValue(value any) int {

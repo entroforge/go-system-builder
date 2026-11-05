@@ -87,9 +87,14 @@ func TestS8ObservedContractPassiveSkipKeepsExplicitSaveAndChangedValidation(t *t
 	current := investigationLeadTestSnapshot(t, root)
 	_, document, _, _ := investigationLeadSource(root, current.State)
 	finalPath, finalBytes, _ := investigationLeadContractProjection(root, path, document)
+	oldDecisionPath, err := investigationContractDecisionTargetFor(root, current.State, finalBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
 	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
 	stateBefore, _ := os.ReadFile(statePath)
 	journalBefore, _ := os.ReadFile(journalPath)
+	evidenceBefore := len(investigationLeadTestSnapshot(t, root).State["evidence"].([]any))
 	request := policy.Input{Event: "PostToolUse", ToolName: "Bash", CWD: root}
 	var out, diagnostic bytes.Buffer
 	if handled, _ := runObservedQuestionnaireSaves(root, request, &out, &diagnostic); handled || out.Len() != 0 {
@@ -106,6 +111,7 @@ func TestS8ObservedContractPassiveSkipKeepsExplicitSaveAndChangedValidation(t *t
 				t.Fatal(err)
 			}
 			expected := "Save is not approval"
+			occupied := false
 			switch name {
 			case "missing final draft":
 				if err := os.Remove(finalPath); err != nil {
@@ -129,7 +135,13 @@ func TestS8ObservedContractPassiveSkipKeepsExplicitSaveAndChangedValidation(t *t
 				if err := os.WriteFile(finalPath, []byte("different bytes"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				expected = "differs from its exact projected bytes"
+				// The occupied review draft is immutable: the system neither
+				// rewrites it nor presents it. It publishes another draft whose
+				// bytes are exactly the projected bytes.
+				// L3-S8-finding-investigation.md:377 keeps the machine from
+				// claiming it can detect an unrecorded external byte
+				// modification from a path or a version.
+				occupied = true
 			}
 			out.Reset()
 			if handled, _ := runObservedQuestionnaireSaves(root, request, &out, &diagnostic); !handled || !strings.Contains(out.String(), expected) {
@@ -139,11 +151,79 @@ func TestS8ObservedContractPassiveSkipKeepsExplicitSaveAndChangedValidation(t *t
 			if handled, _ := receiveSavedQuestionnaire(root, explicit, &out, &diagnostic); !handled || !strings.Contains(out.String(), expected) {
 				t.Fatalf("explicit save bypassed the original consumer: %s", &out)
 			}
+			if occupied {
+				receipt := out.String()
+				// (1) The occupied draft keeps the external bytes. The system
+				// must not "repair" it back to the projected bytes.
+				occupiedBytes, err := os.ReadFile(finalPath)
+				if err != nil || string(occupiedBytes) != "different bytes" {
+					t.Fatalf("occupied review draft was rewritten by the system: %q err=%v", occupiedBytes, err)
+				}
+				// (2) The receipt names another review draft, and that draft
+				// carries the exact projected bytes.
+				projected := ""
+				entries, err := os.ReadDir(filepath.Dir(finalPath))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range entries {
+					if entry.IsDir() || !strings.HasPrefix(entry.Name(), "draft-") {
+						continue
+					}
+					candidate := filepath.Join(filepath.Dir(finalPath), entry.Name())
+					if candidate == finalPath {
+						continue
+					}
+					body, err := os.ReadFile(candidate)
+					if err != nil || !bytes.Equal(body, finalBytes) {
+						continue
+					}
+					projected = candidate
+				}
+				if projected == "" {
+					t.Fatalf("no other review draft carries the exact projected bytes: %s", receipt)
+				}
+				if !strings.Contains(receipt, projected) {
+					t.Fatalf("receipt did not name the new review draft %s: %s", projected, receipt)
+				}
+				// (3) The tampered draft is never presented as the review draft.
+				if strings.Contains(receipt, finalPath) {
+					t.Fatalf("receipt presented the tampered review draft: %s", receipt)
+				}
+				// (4) The approval application for the new draft is another
+				// original file; the earlier one is not redirected at the new
+				// draft and is not removed.
+				newDecisionPath, err := investigationContractDecisionTargetFor(root, current.State, finalBytes)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if newDecisionPath.path == oldDecisionPath.path {
+					t.Fatalf("the new review draft reused the earlier approval application: %s", newDecisionPath.path)
+				}
+				if !strings.Contains(receipt, newDecisionPath.path) {
+					t.Fatalf("receipt did not name the new approval application %s: %s", newDecisionPath.path, receipt)
+				}
+				if _, err := os.Stat(oldDecisionPath.path); err != nil {
+					t.Fatalf("the earlier approval application was removed: %v", err)
+				}
+				// (5) The machine does not claim it detected an external byte
+				// modification from a path or a version. The retired report is
+				// absent, and no approval is inferred.
+				for _, forbidden := range []string{"differs from its exact projected bytes", "is approved", "approval granted"} {
+					if strings.Contains(receipt, forbidden) {
+						t.Fatalf("receipt made a retired approval/detection claim (%q): %s", forbidden, receipt)
+					}
+				}
+			}
 		})
 	}
 	stateAfter, _ := os.ReadFile(statePath)
 	journalAfter, _ := os.ReadFile(journalPath)
 	if !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(journalBefore, journalAfter) {
 		t.Fatal("passive projection/explicit save changed Runtime or inferred approval")
+	}
+	// Reverse: no approval evidence was registered at all.
+	if evidenceAfter := len(investigationLeadTestSnapshot(t, root).State["evidence"].([]any)); evidenceAfter != evidenceBefore {
+		t.Fatalf("passive projection/explicit save registered approval evidence: %d -> %d", evidenceBefore, evidenceAfter)
 	}
 }

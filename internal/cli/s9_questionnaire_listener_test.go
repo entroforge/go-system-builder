@@ -150,8 +150,33 @@ func TestS9ListenerExistingPacketsReadOnlyWithoutIssueRecoveryOrReceiptProof(t *
 			}
 		}
 		got := currentQuestionnaireLifecycleContext(f.root, policy.Input{Event: "SessionStart", AgentID: "builder-listener", Runtime: policy.RuntimeContext{PacketMode: true}})
-		if !strings.Contains(got, f.packet.answer) || strings.Contains(got, "S5 accepted") {
+		// The S9 entry must locate the requester's own registered original
+		// volume: the exact answer and view coordinates of that responsibility,
+		// not a generic service or recovery text.
+		// L3-S9-repair.md:83 — "能确定原责任时定位本人原卷，不要求每个事件同时
+		// 提供所有坐标".
+		if !strings.Contains(got, f.packet.answer) || !strings.Contains(got, f.packet.view) || strings.Contains(got, "S5 accepted") {
 			t.Fatalf("S9 entry used generic service/recovery: %s", got)
+		}
+		// When the entry cannot resolve the current obligations, it must still
+		// hand the unknown to Main/system and still name the specific unknown,
+		// in addition to locating the requester's own original volume.
+		// L3-S9-repair.md:49 + :390 — the unresolved part belongs to Main and
+		// the concrete unknown must stay named.
+		if strings.Contains(got, "cannot be resolved") {
+			if !strings.Contains(got, "Main/system must restore the missing source") {
+				t.Fatalf("S9 entry did not hand the unresolved obligation to Main: %s", got)
+			}
+			if !strings.Contains(got, "invalid workspace binding") {
+				t.Fatalf("S9 entry did not name the specific unknown: %s", got)
+			}
+		}
+		// Reverse: the original volume is located by its position coordinate
+		// only. The entry must never carry the retired content digest of the
+		// original plan, and it must never fall back to the generic S5 service
+		// or recovery text.
+		if strings.Contains(got, strings.Repeat("a", 64)) {
+			t.Fatalf("S9 entry located the original volume by a retired content digest: %s", got)
 		}
 		after, _ := os.ReadFile(filepath.Join(f.root, ".claude/loop-state.json"))
 		if string(after) != string(before) {

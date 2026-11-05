@@ -34,7 +34,7 @@ func stageRepairLeadQuestionnaireContext(root string, request policy.Input, snap
 	}
 	phase, phaseErr := observedRepairLeadPhase(root, snapshot.State)
 	if phaseErr != nil {
-		return "S9 current TargetedReverification obligations cannot be resolved: " + phaseErr.Error() + repairLeadExistingQuestionnaires(root, snapshot.State)
+		return "S9 current TargetedReverification obligations cannot be resolved: " + phaseErr.Error() + repairLeadExistingQuestionnaires(root, snapshot.State) + repairLeadOwnRegisteredAnswer(root, snapshot.State, request.EffectiveAgentID())
 	}
 	owner := request.EffectiveAgentID()
 	main := owner == "" || owner == "Main"
@@ -351,11 +351,16 @@ func repairLeadPhase(root string, state map[string]any, missingIDs func(string, 
 	case "impact_reconciliation", "targeted_reverification", "ready_for_full_review":
 		return stringValue(pointer["status"]), nil
 	case "repairing":
-		contributions, err := repair.ReceivedRepairContributions(root, state)
+		// The current phase only needs to know whether contributions were
+		// already received. That count does not depend on the original
+		// RepairPlan content, so this observation does not read the same
+		// original Plan that the division consumer already read in this
+		// response.
+		received, err := repair.ReceivedRepairContributionCount(root, state)
 		if err != nil {
 			return "", err
 		}
-		if len(contributions) > 0 {
+		if received > 0 {
 			return "impact_reconciliation", nil
 		}
 	case "blocked":
@@ -412,6 +417,40 @@ func repairLeadExistingQuestionnaires(root string, state map[string]any) string 
 		return "; no questionnaire exists under the current source; Main/system owns preparation"
 	}
 	return "; preserve existing questionnaires at " + strings.Join(paths, ", ") + "; do not continue under a changed source binding"
+}
+
+// repairLeadOwnRegisteredAnswer locates the requester's own registered
+// original questionnaire when the current original responsibility is
+// determinable. L3-S9-repair.md:83 requires that a determinable original
+// responsibility is located even when the event does not carry every
+// coordinate. The lookup uses the Runtime's registered owner/assignment
+// coordinates only; it never guesses by role, directory or a unique
+// candidate, and it reports nothing when the responsibility is unknown.
+func repairLeadOwnRegisteredAnswer(root string, state map[string]any, owner string) string {
+	if owner == "" || owner == "Main" {
+		return ""
+	}
+	seen := map[string]bool{}
+	paths := []string{}
+	for _, result := range []bool{false, true} {
+		packets, err := s9ListenerQuestionnaires(state, owner, result)
+		if err != nil {
+			continue
+		}
+		for _, packet := range packets {
+			for _, ref := range []string{packet.answer, packet.view} {
+				if ref == "" || seen[ref] {
+					continue
+				}
+				seen[ref] = true
+				paths = append(paths, resolveRootPath(root, ref))
+			}
+		}
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	return "; the requester's own original responsibility is determinable: " + strings.Join(paths, ", ")
 }
 
 func repairLeadPreparationEvent(event string) bool {

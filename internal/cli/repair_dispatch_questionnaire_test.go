@@ -87,6 +87,32 @@ func repairDispatchAssertUnchanged(t *testing.T, root string, before [][]byte) {
 	}
 }
 
+// repairDispatchFrozenArtifacts captures the exact bytes of every registered
+// workgroup manifest and TASK file. The bytes are the frozen originals and
+// are compared directly; no digest, fingerprint or checksum is computed, so
+// the capture cannot stand in for a content proof.
+func repairDispatchFrozenArtifacts(t *testing.T, root string, state map[string]any) map[string][]byte {
+	t.Helper()
+	files := map[string][]byte{}
+	for _, kind := range []string{"teams", "tasks"} {
+		for _, entity := range objectSliceAny(mapFieldCLI(state, "entities")[kind]) {
+			ref := stringValue(entity["manifest_ref"])
+			if kind == "tasks" {
+				ref = stringValue(entity["path"])
+			}
+			if ref == "" {
+				continue
+			}
+			data, err := os.ReadFile(resolveRootPath(root, ref))
+			if err != nil {
+				t.Fatalf("registered %s artifact %s is unavailable: %v", kind, ref, err)
+			}
+			files[ref] = data
+		}
+	}
+	return files
+}
+
 func TestS9RepairDispatchQuestionnaireNormalPendingAndRealDispatch(t *testing.T) {
 	root, snapshot, plan, path := repairDispatchFixture(t)
 	snapshot.State["schema_version"] = "1.2.0"
@@ -255,10 +281,22 @@ func TestS9RepairDispatchQuestionnaireResponsibilityAndS8Isolation(t *testing.T)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("read-only reminders recreated Main division: %v", err)
 	}
-	mapFieldCLI(snapshot.State, "lifecycle")["state"] = "investigation"
-	mapFieldCLI(snapshot.State, "lifecycle")["phase"] = nil
+	// Reverse: the S9 division is still delivered in its own S9 phases. The
+	// phase gate is a stage boundary, not a blanket suppression.
+	if got := stageRepairDispatchContext(root, policy.Input{Event: "PreToolUse"}, snapshot); got == "" {
+		t.Fatal("S9 division was suppressed inside its own phase")
+	}
+	// S8 runs inside the same lifecycle state; the S9 division and its
+	// questionnaire must not answer there.
+	mapFieldCLI(snapshot.State, "lifecycle")["state"] = "bug_resolution"
+	mapFieldCLI(snapshot.State, "lifecycle")["phase"] = "investigation"
 	if got := stageRepairDispatchContext(root, policy.Input{Event: "PreToolUse"}, snapshot); got != "" || len(repairDispatchPaths(root, snapshot.State)) != 0 {
 		t.Fatalf("S9 division leaked into S8: %s", got)
+	}
+	// Reverse: the S9 lifecycle projection is unavailable while the S8
+	// investigation owns the lifecycle.
+	if context, handled := s9PacketQuestionnaireLifecycleContext(root, policy.Input{Event: "PreToolUse"}, snapshot); handled || context != "" {
+		t.Fatalf("S9 lifecycle projection leaked into S8: %s", context)
 	}
 	repairDispatchAssertUnchanged(t, root, before)
 	if !repairDispatchHasProfessionalContent(path, []byte("{")) || repairDispatchHasProfessionalContent("hypotheses.json", []byte("{")) {
@@ -292,7 +330,7 @@ func TestS9RepairDispatchExplicitSavePreparesNativeBriefAndPreservesOriginalSour
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if handled, code := runSavedRepairDispatch(root, repairLeadSaveInput(root, path, "Main"), &stdout, &stderr); !handled || code != 0 {
+	if handled, code := runObservedRepairDispatch(root, repairLeadSaveInput(root, path, "Main"), &stdout, &stderr); !handled || code != 0 {
 		t.Fatalf("passive original dispatch: handled=%t code=%d %s %s", handled, code, stdout.String(), stderr.String())
 	}
 	passive := repairDispatchSnapshot(t, root)
@@ -329,17 +367,35 @@ func TestS9RepairDispatchExplicitSavePreparesNativeBriefAndPreservesOriginalSour
 			}
 		}
 	}
+	// The registered workgroup manifest and TASK files are frozen at
+	// registration. The issuance must not rewrite them.
+	//
+	// The retired content digest is not a valid gate any more: production
+	// writes no `manifest_sha256`/`sha256` for a registered team or TASK
+	// (d0d948a dropped the hash-proof machinery), so the old check compared
+	// the file bytes against an empty digest and could never hold. The
+	// invariant is now expressed at the new granularity: the frozen bytes are
+	// captured from the original registration and compared byte for byte.
+	// L4-worktree-governance.md:212 keeps a content digest out of the S9
+	// evidence chain, so no digest, fingerprint or checksum is computed here.
+	for ref, original := range repairDispatchFrozenArtifacts(t, root, passive.State) {
+		current, err := os.ReadFile(resolveRootPath(root, ref))
+		if err != nil || !bytes.Equal(current, original) {
+			t.Fatalf("issuance changed the original frozen dispatch artifact %s: %v", ref, err)
+		}
+		originalFiles[ref] = original
+	}
+	// Reverse: the registered Runtime rows really carry no retired digest
+	// field. A check that compared a stored digest could not notice a
+	// rewrite that happened together with that digest, and the digest gate
+	// is retired.
 	for _, kind := range []string{"teams", "tasks"} {
 		for _, entity := range objectSliceAny(mapFieldCLI(complete.State, "entities")[kind]) {
-			ref, sha := stringValue(entity["manifest_ref"]), stringValue(entity["manifest_sha256"])
-			if kind == "tasks" {
-				ref, sha = stringValue(entity["path"]), stringValue(entity["sha256"])
+			for _, retired := range []string{"manifest_sha256", "sha256", "digest", "fingerprint", "checksum"} {
+				if _, found := entity[retired]; found {
+					t.Fatalf("registered %s row still carries the retired digest field %q: %+v", kind, retired, entity)
+				}
 			}
-			data, err := os.ReadFile(resolveRootPath(root, ref))
-			if err != nil || repairLeadDigest(data) != sha {
-				t.Fatalf("issuance changed the original frozen %s bytes: %s %v", kind, ref, err)
-			}
-			originalFiles[ref] = data
 		}
 	}
 	// Restore a missing issued view without replacing the Builder's authored

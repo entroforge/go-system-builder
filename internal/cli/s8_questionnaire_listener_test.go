@@ -151,6 +151,11 @@ func TestS8ObserverKeepsMainQuietForDelegatedAnswer(t *testing.T) {
 func TestS8NativeLifecycleDeliversExactQuestionnaireInHookEnvelope(t *testing.T) {
 	f := newS8ListenerFixture(t)
 	answer := filepath.Join(f.root, filepath.FromSlash(f.packet.AnswerPath))
+	view := filepath.Join(f.root, filepath.FromSlash(f.packet.ViewPath))
+	statePath := filepath.Join(f.root, ".claude/loop-state.json")
+	journalPath := filepath.Join(f.root, ".claude/loop-events.jsonl")
+	stateBefore, _ := os.ReadFile(statePath)
+	journalBefore, _ := os.ReadFile(journalPath)
 	for _, event := range []string{"SessionStart", "SubagentStart"} {
 		request := policy.Input{Event: event, AgentID: f.packet.Binding.OwnerAgentID, CWD: f.root}
 		data, _ := json.Marshal(request)
@@ -158,12 +163,46 @@ func TestS8NativeLifecycleDeliversExactQuestionnaireInHookEnvelope(t *testing.T)
 		if code := evaluate(f.root, event, bytes.NewReader(data), &out, &errout, true); code != 0 {
 			t.Fatalf("%s exit=%d stdout=%s stderr=%s", event, code, out.String(), errout.String())
 		}
-		if event == "SessionStart" && out.Len() != 0 {
-			t.Fatalf("ordinary Worker session managed native work: %s", out.String())
+		text := out.String()
+		// L4-hook-anchor-catalog.md:64 and L4-hook-platform-wiring.md:207
+		// require a re-entering session to see the current exact
+		// responsibility again. The retired "SessionStart must be silent"
+		// expectation is replaced by this Worker's own registration: both
+		// re-entry events must deliver the exact registered view AND answer
+		// path, not just a directory prefix.
+		if !strings.Contains(text, view) || !strings.Contains(text, answer) {
+			t.Fatalf("%s did not deliver the registered responsibility: %s", event, text)
 		}
-		if event == "SubagentStart" && (!strings.Contains(out.String(), answer)) {
-			t.Fatalf("Start did not deliver the registered responsibility: %s", out.String())
+		if !strings.Contains(text, f.packet.Binding.OwnerAgentID) {
+			t.Fatalf("%s did not name the registered owner: %s", event, text)
 		}
+		// (1) the delivered responsibility is this Worker's own registration,
+		// (2) no Main-side context is projected onto this Worker and
+		// (3) no other responsibility is borrowed: apart from this packet's
+		// own registered paths, the envelope carries no other absolute path.
+		remaining := strings.ReplaceAll(text, view, "")
+		remaining = strings.ReplaceAll(remaining, answer, "")
+		if strings.Contains(remaining, f.root) {
+			t.Fatalf("%s projected a path outside this Worker's own registered responsibility: %s", event, text)
+		}
+	}
+	// Reverse: this re-entry projection is read-only. Runtime state and
+	// journal bytes must not change.
+	stateAfter, _ := os.ReadFile(statePath)
+	journalAfter, _ := os.ReadFile(journalPath)
+	if !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(journalBefore, journalAfter) {
+		t.Fatal("Worker re-entry projection rewrote Runtime state or journal")
+	}
+	// Reverse: an unregistered agent must not be able to borrow this
+	// Worker's registered view/answer by SessionStart.
+	unregistered := policy.Input{Event: "SessionStart", AgentID: "investigator-unregistered", CWD: f.root}
+	data, _ := json.Marshal(unregistered)
+	var out, errout bytes.Buffer
+	if code := evaluate(f.root, "SessionStart", bytes.NewReader(data), &out, &errout, true); code != 0 {
+		t.Fatalf("unregistered SessionStart exit=%d stdout=%s stderr=%s", code, out.String(), errout.String())
+	}
+	if strings.Contains(out.String(), view) || strings.Contains(out.String(), answer) {
+		t.Fatalf("unregistered agent borrowed another Worker's registered responsibility: %s", out.String())
 	}
 }
 

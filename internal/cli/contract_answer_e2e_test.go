@@ -32,7 +32,7 @@ func contractAnswerFromDesignFixture(t *testing.T, root string, design workpacke
 	stageCLI(t, "runtime", "stage-answer", "consume", "--root", root, "--agent", "Main", "--path", design.AnswerPath)
 	settleMainPlanningFollowups(t, root)
 	writeContractSource(t, root, "docs/design/README.md", "# Design sources\n")
-	writeContractSource(t, root, "docs/dev/contracts/CONTRACTS-039.md", "# Contract batch\n> 需求：REQ-039\n> 状态：locked\n> 版本：v1.0.0\n> Shared model policy: none\n> Shared model reason: This fixture delivers no shared wire model.\n\n## 合同清单\n\n| 合同ID | 类型 | 负责人 | 状态 | 版本 | 联调点 |\n|:---|:---|:---|:---|:---|:---|\n| BE-039 | 后端 | Main | locked | v1.0.0 | N/A |\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:---|:---|:---|:---|\n")
+	writeContractSource(t, root, "docs/dev/contracts/CONTRACTS-039.md", "# Contract batch\n> 需求：REQ-039\n> 状态：locked\n> 版本：v1.0.0\n> Shared model policy: none\n> Shared model reason: This fixture delivers no shared wire model.\n\n## 合同清单\n\n| 合同ID | 类型 | 负责人 | 状态 | 版本 | 联调点 |\n|:---|:---|:---|:---|:---|:---|\n| BE-039 | 后端 | Main | locked | v1.0.0 | N/A |\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:---|:---|:---|:---|\n| REQ-039 | — | BE-039 §1 | — |\n")
 	writeContractSource(t, root, "docs/dev/contracts/BE-039.md", "# Backend contract\n> 状态：locked\n> 版本：v1.0.0\n\n## Contract clauses\n\n| 本合同条款 | 条款 |\n|:---|:---|\n| §1 | Fixture service behavior |\n")
 	for _, setup := range configure {
 		setup(root)

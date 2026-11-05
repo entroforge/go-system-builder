@@ -29,7 +29,15 @@ type repairDispatchChoice struct {
 
 func repairDispatchCurrent(state map[string]any) bool {
 	status := stringValue(repairPointerCLI(state)["status"])
-	return stringValue(repairPointerCLI(state)["session_id"]) != "" && (status == "planning" || status == "reproducing" || status == "repairing" || status == "targeted_reverification" || status == "ready_for_full_review" || status == "closed")
+	return stringValue(repairPointerCLI(state)["session_id"]) != "" && (status == "planning" || status == "reproducing" || status == "repairing" || status == "targeted_reverification" || status == "ready_for_full_review" || status == "closed") && repairDispatchS9Phase(state)
+}
+
+// repairDispatchS9Phase reports whether the current lifecycle phase still
+// belongs to S9. The Builder division is an S9 surface. The S8 investigation
+// runs inside the same lifecycle state, so a recorded repair session alone
+// must not make the S9 division answer in S8.
+func repairDispatchS9Phase(state map[string]any) bool {
+	return s9ProfessionalPhase(stringValue(mapFieldCLI(state, "lifecycle")["phase"]))
 }
 
 func repairDispatchPaths(root string, state map[string]any) []string {
@@ -194,10 +202,20 @@ func repairDispatchSameRegistered(state map[string]any, row repairDispatchChoice
 }
 
 func runSavedRepairDispatch(root string, request policy.Input, stdout, stderr io.Writer) (bool, int) {
-	return runRepairDispatchQuestionnaire(root, request, stdout, stderr)
+	return runRepairDispatchQuestionnaire(root, request, stdout, stderr, true)
 }
 
-func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, stderr io.Writer) (bool, int) {
+// runObservedRepairDispatch registers an already observed original division.
+// A passive registration only records the original owner of the selected
+// Assignment; it never issues the original pre-execution questionnaire, never
+// prepares the next execution and never claims that a native brief was
+// prepared for that Builder. L3-S9-repair.md:376 requires the preparation
+// cost to stay with the consumer that asked for it.
+func runObservedRepairDispatch(root string, request policy.Input, stdout, stderr io.Writer) (bool, int) {
+	return runRepairDispatchQuestionnaire(root, request, stdout, stderr, false)
+}
+
+func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, stderr io.Writer, prepareExecution bool) (bool, int) {
 	path, saved := savedQuestionnairePath(request)
 	if !saved {
 		return false, 0
@@ -288,7 +306,7 @@ func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, s
 		}
 		result.WriteString(repairDispatchRegisteredContext(root, latest.State, row.AssignmentID, owner))
 		status := stringValue(repairPointerCLI(latest.State)["status"])
-		if status == "planning" || status == "reproducing" || status == "targeted_reverification" || status == "ready_for_full_review" || status == "repairing" && len(nativeS9PlanPackets(root, latest.State)) > 0 {
+		if prepareExecution && (status == "planning" || status == "reproducing" || status == "targeted_reverification" || status == "ready_for_full_review" || status == "repairing" && len(nativeS9PlanPackets(root, latest.State)) > 0) {
 			brief, err := repairDispatchPlanReportBrief(root, request, latest.State, row.AssignmentID, owner)
 			result.WriteString(brief)
 			if err != nil {
@@ -296,7 +314,7 @@ func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, s
 				continue
 			}
 		}
-		if stringValue(repairPointerCLI(latest.State)["status"]) == "repairing" {
+		if prepareExecution && stringValue(repairPointerCLI(latest.State)["status"]) == "repairing" {
 			result.WriteString(prepareRepairExecutionFromChoiceContext(contextForHook(request), root, latest.State, row, owner))
 		}
 	}
@@ -305,8 +323,10 @@ func runRepairDispatchQuestionnaire(root string, request policy.Input, stdout, s
 	}
 	if stringValue(repairPointerCLI(snapshot.State)["status"]) == "repairing" {
 		result.WriteString("Main continues the original native Agent or handles the returned delivery with the supplied exact references; registration did not start an Agent. Preserve real dependencies.")
-	} else {
+	} else if prepareExecution {
 		result.WriteString("Main now uses Claude Code native Agent with the exact prepared S9 brief and native worktree isolation. Each Builder saves its own professional plan and Result; PreToolUse observes ready originals, with successful PostToolUse and Stop/SubagentStop fallback. Main does not write professional answers on the Builder's behalf. No execution workspace or Claude session was prepared.")
+	} else {
+		result.WriteString("Main must obtain each exact Main-root PlanReport path before the actual platform spawn/resume. This passive registration recorded the original owner only; it issued no original PlanReport and prepared no native brief. Save the division answer through its normal questionnaire consumer to prepare missing original questions. Each Builder saves its own professional answer.")
 	}
 	return feedback(result.String())
 }

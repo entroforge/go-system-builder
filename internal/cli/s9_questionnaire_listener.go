@@ -726,9 +726,13 @@ func s9ListenerNativePlans(root string, state map[string]any) []workpacket.Repai
 	}
 	var packets []workpacket.RepairPlanReportPacket
 	for _, question := range questions {
-		if question.brief == "" {
-			continue
-		}
+		// A native responsibility is identified by the original brief file at
+		// its deterministic packet coordinate. A packet row that carries no
+		// brief_path still has exactly one such location, derived from the
+		// same registered coordinates the native authoring entry uses, so the
+		// authored brief itself decides whether this responsibility is native.
+		// Without that, the projection falls back to telling Main to prepare
+		// the Builder's own professional answer.
 		packet := workpacket.RepairPlanReportPacket{ID: question.id, Binding: question.binding, ViewPath: question.view, AnswerPath: question.answer, BriefPath: question.brief}
 		brief := nativeS9BriefPath(packet)
 		if s8QuestionnaireFileExists(resolveRootPath(root, brief)) {

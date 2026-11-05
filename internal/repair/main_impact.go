@@ -15,6 +15,34 @@ import (
 // A newer accepted Candidate remains visible beside historical integration.
 func ReceivedRepairContributions(root string, state map[string]any) ([]RepairResult, error) {
 	p := repairPointer(state)
+	planBytes, err := workpacket.ReadFile(root, stringField(p["plan_ref"]), 20<<20)
+	if err != nil {
+		return nil, err
+	}
+	return receivedRepairContributions(root, state, planBytes)
+}
+
+// ReceivedRepairContributionCount reports how many contributions the current
+// original responsibility already received. The count never depends on the
+// original RepairPlan content: accepted Results come from the Runtime pointer
+// and workspace candidates come from the execution registry. A response that
+// already read the original Plan for its own consumer therefore does not read
+// the same original Plan a second time just to decide the current phase.
+// L3-S9-repair.md:502 requires read and consumer counts to prove the cost
+// boundary of one response.
+func ReceivedRepairContributionCount(root string, state map[string]any) (int, error) {
+	results, err := receivedRepairContributions(root, state, nil)
+	if err != nil {
+		return 0, err
+	}
+	return len(results), nil
+}
+
+// receivedRepairContributions reads the original accepted contributions
+// against the original RepairPlan. planBytes is nil when the caller does not
+// need Plan content; only the synthesized Contract identity uses it.
+func receivedRepairContributions(root string, state map[string]any, planBytes []byte) ([]RepairResult, error) {
+	p := repairPointer(state)
 	results := []RepairResult{}
 	if len(existingArtifactRefs(p["result_refs"])) > 0 || stringField(p["result_ref"]) != "" {
 		var err error
@@ -28,12 +56,10 @@ func ReceivedRepairContributions(root string, state map[string]any) ([]RepairRes
 		positions[result.AssignmentID] = i
 	}
 	var plan RepairPlan
-	planBytes, err := workpacket.ReadFile(root, stringField(p["plan_ref"]), 20<<20)
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(planBytes, &plan); err != nil {
-		return nil, err
+	if planBytes != nil {
+		if err := json.Unmarshal(planBytes, &plan); err != nil {
+			return nil, err
+		}
 	}
 	registry, err := workspace.Decode(state)
 	if err != nil {

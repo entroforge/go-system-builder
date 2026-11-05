@@ -383,6 +383,22 @@ func attemptCanonicalTaskWithReceipt(
 			// responsibility. An unavailable receipt stays unavailable; it does
 			// not turn professional answer reception into a new check gate.
 			facts, _, _ := CollectWorkerCheckFacts(ctx, root, state, current.Record)
+			// The durable fact records which fixed native context actually ran
+			// the check. The coordinate comes from the original captured receipt
+			// row itself; it is a stage coordinate, never a digest, fingerprint
+			// or checksum, and an unproved fact keeps no coordinate at all.
+			bindWorkerCheckStageCoordinates(state, current.Record, facts)
+			// The original CompleteTask Apply publishes the exact captured
+			// receipt bytes and the adjacent output log under the immutable
+			// per-Result paths and fills those paths on the facts. This copies
+			// bytes; it never compares a digest and never certifies a
+			// fingerprint. L4-worktree-governance.md:212 keeps S9 free of an
+			// extra evidence capture or SHA chain.
+			checkArtifacts, err := publishWorkerCheckArtifacts(root, current.Record, resultID, facts)
+			if err != nil {
+				return err
+			}
+			staged = append(staged, checkArtifacts...)
 			result.WorkerCheckFacts = facts
 			encoded, err := json.MarshalIndent(result, "", "  ")
 			if err != nil {
@@ -489,6 +505,109 @@ func attemptCanonicalTaskWithReceipt(
 	}
 	receipt.ResultRef, receipt.ResultRevision = resultRel, accepted.ResultRevision
 	return committed, receipt, nil
+}
+
+// publishWorkerCheckArtifacts publishes byte-for-byte copies of the original
+// captured check receipt and its adjacent output log under the immutable
+// per-Result paths, and records those paths on the facts. The copied bytes
+// are the original captured ones; no digest, fingerprint or checksum is
+// computed or compared, and an unavailable receipt stays unavailable.
+func publishWorkerCheckArtifacts(root string, record assignmentrecord.Record, resultID string, facts []assignmentresult.WorkerCheckFact) ([]stagedCanonicalResultArtifact, error) {
+	var staged []stagedCanonicalResultArtifact
+	for i := range facts {
+		fact := &facts[i]
+		if fact.OriginalReceipt == nil {
+			continue
+		}
+		receiptRel, err := filepath.Rel(root, fact.OriginalReceipt.Path)
+		if err != nil || !filepath.IsLocal(receiptRel) {
+			continue
+		}
+		receiptBytes, err := workpacket.ReadFile(root, filepath.ToSlash(receiptRel), 4<<20)
+		if err != nil {
+			continue
+		}
+		logRel, err := filepath.Rel(root, filepath.Join(filepath.Dir(fact.OriginalReceipt.Path), "output.log"))
+		if err != nil || !filepath.IsLocal(logRel) {
+			continue
+		}
+		logBytes, err := workpacket.ReadFile(root, filepath.ToSlash(logRel), 4<<20)
+		if err != nil {
+			continue
+		}
+		for _, artifact := range []struct {
+			kind string
+			body []byte
+		}{
+			{kind: "receipt", body: receiptBytes},
+			{kind: "log", body: logBytes},
+		} {
+			rel := assignmentresult.WorkerCheckEvidenceArtifactPath(record, resultID, fact.Index, artifact.kind)
+			if rel == "" {
+				continue
+			}
+			created, err := workpacket.PublishNewBounded(root, rel, artifact.body, canonicalResultAssetLimit)
+			if err != nil {
+				return staged, fmt.Errorf("publish Worker check %s artifact: %w", artifact.kind, err)
+			}
+			if created {
+				staged = append(staged, stagedCanonicalResultArtifact{Path: rel, Bytes: append([]byte(nil), artifact.body...)})
+			}
+			resolved := &assignmentresult.ResolvedEvidence{Ref: assignmentresult.WorkerCheckEvidenceRef(fact.Index, artifact.kind), Path: rel}
+			if artifact.kind == "receipt" {
+				fact.ReceiptArtifact = resolved
+			} else {
+				fact.LogArtifact = resolved
+			}
+		}
+	}
+	return staged, nil
+}
+
+// bindWorkerCheckStageCoordinates records the stage coordinate of the fixed
+// native context that actually produced each durable Worker fact.
+//
+// The coordinate is copied from the original captured receipt row: that row is
+// the authority for which fixed context ran the check. It is a stage
+// coordinate, never a digest, fingerprint, checksum or any other content
+// proof, and it is never a reception gate. A fact that no receipt proved
+// keeps no coordinate at all, exactly like the checkout coordinate.
+func bindWorkerCheckStageCoordinates(state map[string]any, record assignmentrecord.Record, facts []assignmentresult.WorkerCheckFact) {
+	if len(facts) == 0 {
+		return
+	}
+	agent, found := findCompletionAgent(state, record.OwnerAgentID)
+	if !found {
+		return
+	}
+	data, err := json.Marshal(agent["owned_check_receipts"])
+	if err != nil {
+		return
+	}
+	var rows []NativeOwnedCheckReceipt
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return
+	}
+	for i := range facts {
+		if facts[i].OriginalReceipt == nil {
+			continue
+		}
+		for j := len(rows) - 1; j >= 0; j-- {
+			row := rows[j]
+			if row.CheckIndex != facts[i].Index {
+				continue
+			}
+			if row.Record != record.Reference() || row.RuntimeID != record.RuntimeID || row.BaselineGeneration != record.BaselineGeneration || row.AssignmentID != record.AssignmentID || row.OwnerAgentID != record.OwnerAgentID {
+				break
+			}
+			facts[i].ContextGeneration = row.NativeContextGeneration
+			facts[i].ContextRef = row.NativeContextRef
+			facts[i].ActivationRef = row.ActivationRef
+			facts[i].SourceBranch = row.SourceBranch
+			facts[i].TargetBranch = row.TargetBranch
+			break
+		}
+	}
 }
 
 // sameActualWorkerCheckFacts compares original receipt relationships and

@@ -75,7 +75,7 @@ func TestS9PlanningGuidanceUsesOriginalDivisionAndIssuedOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if handled, code := runSavedRepairDispatch(root, repairLeadSaveInput(root, division, "Main"), &stdout, &stderr); !handled || code != 0 {
+	if handled, code := runObservedRepairDispatch(root, repairLeadSaveInput(root, division, "Main"), &stdout, &stderr); !handled || code != 0 {
 		t.Fatalf("passive original dispatch: handled=%t code=%d stdout=%s stderr=%s", handled, code, stdout.String(), stderr.String())
 	}
 	snapshot, next, _ = status()

@@ -1,7 +1,10 @@
 package cli_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,6 +133,11 @@ func TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The uncommitted working-tree copy declares a different version than the
+	// bound branch. The bound branch is the registered source of a git_tree
+	// contract, so the received evidence must carry the bound branch's
+	// version and must not silently record the uncommitted disk content.
+	data = bytes.Replace(data, []byte("> 版本：v1.0.0"), []byte("> 版本：v1.0.1"), 1)
 	data = append(data, []byte("\nProfessional rework retained in this S3 entry.\n")...)
 	writeContractSource(t, root, path, string(data))
 	stageJSON(t, root, packet.AnswerPath, completedContractDraft(packet))
@@ -142,11 +150,29 @@ func TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit(t *testin
 	if branchErr != nil {
 		t.Fatal(branchErr)
 	}
-	if err == nil || rejected.Accepted || !strings.Contains(rejected.Error, path) || !strings.Contains(rejected.Error, branch) || !strings.Contains(rejected.Error, "commit") || !strings.Contains(rejected.NextAction, filepath.Join(root, packet.AnswerPath)) || strings.Contains(rejected.NextAction, "具名修订") {
+	// L3-S3-contracts.md:432 and :520: a git_tree source is read from the
+	// bound development branch. An uncommitted working-tree change is not a
+	// rejection reason, and it does not require an extra checkout or commit
+	// action from the professional author.
+	if err != nil || !rejected.Accepted || !rejected.WorkComplete || rejected.CurrentStage != "S4" {
 		t.Fatalf("uncommitted professional output sent Main to a different route: %+v %v", rejected, err)
 	}
-	if _, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, packet.ID); err != nil || found {
-		t.Fatalf("rejected output was received: found=%t %v", found, err)
+	// Reverse: no extra commit, checkout or named revision is demanded from
+	// the professional author, and the answer path is not turned into a
+	// hand-written repair instruction.
+	for _, forbidden := range []string{"commit this file to that ref", "git commit", "please commit", "must commit", "具名修订"} {
+		if strings.Contains(rejected.Error, forbidden) || strings.Contains(rejected.NextAction, forbidden) {
+			t.Fatalf("uncommitted professional output was routed to an extra %q requirement: %+v %v", forbidden, rejected, err)
+		}
+	}
+	// Reverse: the received S3 artifact comes from the bound branch. The
+	// uncommitted disk bytes are not silently recorded as received evidence.
+	record, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, packet.ID)
+	if err != nil || !found {
+		t.Fatalf("professional output was not received: found=%t %v", found, err)
+	}
+	if got := contractEvidenceSubjectVersion(t, root, stageSnapshot(t, root).State, record.EvidenceID, path); got != "v1.0.0" {
+		t.Fatalf("received S3 artifact did not come from the bound branch %s: version=%s", branch, got)
 	}
 	fixtures.CommitCurrentFixture(t, root)
 	s, err = submission.New(root)
@@ -160,8 +186,65 @@ func TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit(t *testin
 	if current, _ := os.ReadFile(filepath.Join(root, path)); string(current) != string(data) {
 		t.Fatal("professional repair was rolled back")
 	}
-	record, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, packet.ID)
-	if err != nil || !found || record.ControlStatus != "advanced" {
-		t.Fatalf("same packet did not advance: %+v %v", record, err)
+	// Reverse: the replay reuses the original reception fact. The same
+	// submission key and the same evidence id stay registered, and no second
+	// submission row appears.
+	replayed, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, packet.ID)
+	if err != nil || !found || replayed.ControlStatus != "advanced" {
+		t.Fatalf("same packet did not advance: %+v %v", replayed, err)
 	}
+	if replayed.EvidenceID != record.EvidenceID || replayed.Key != record.Key {
+		t.Fatalf("the same answer created a new reception fact: %+v -> %+v", record, replayed)
+	}
+	if count := contractSubmissionRowCount(stageSnapshot(t, root).State, packet.ID); count != 1 {
+		t.Fatalf("the same answer added another submission row: %d", count)
+	}
+}
+
+// contractEvidenceSubjectVersion reads the version the received evidence
+// registered for one subject path.
+func contractEvidenceSubjectVersion(t *testing.T, root string, state map[string]any, evidenceID, path string) string {
+	t.Helper()
+	rows, _ := state["evidence"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["id"] != evidenceID {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(fmt.Sprint(row["path"]))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope struct {
+			Subjects []struct {
+				Path    string `json:"path"`
+				Version string `json:"version"`
+			} `json:"subject_refs"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		for _, subject := range envelope.Subjects {
+			if subject.Path == path {
+				return subject.Version
+			}
+		}
+	}
+	t.Fatalf("evidence %s is not registered", evidenceID)
+	return ""
+}
+
+// contractSubmissionRowCount counts the registered submission rows of one
+// original packet.
+func contractSubmissionRowCount(state map[string]any, packetID string) int {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["submissions"].([]any)
+	count := 0
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["packet_id"] == packetID {
+			count++
+		}
+	}
+	return count
 }
