@@ -2167,8 +2167,10 @@ identified from that actor's own original task only; a Stop without it has no un
 **终态**:仓库 `git status --porcelain --untracked-files=all` **为空**(无待提交变更、无未跟踪文件);
 `git worktree list` **仅主 worktree**;`.local/framework-maintenance/` **7.40 GB → 1.5 GB**;
 **生产代码与测试文件零改动**(本节只是本文件与审计小结的文档增量)。
-**磁盘**:`/` 58G / 已用 50G / 可用 8.8G(**85%**)—— 删除物暂存于 `~/.local/share/Trash`(13 GB),
-**清空回收站属永久删除,需 owner 明示后才执行**。
+**磁盘**:`/` 58G / 已用 50G / 可用 8.8G(**85%**)—— 删除物先暂存于 `~/.local/share/Trash`(13 GB);
+**清空回收站属永久删除,经 owner 明示后已执行** —— 回收站清空、13 GB 实际释放,
+终态 `/` 58G / 已用 **37G** / 可用 **22G**(**63%**)。
+**复核**:`gofmt -l` 空、`go build ./...` 通过、`go vet ./...` 通过(清理只动未跟踪产物与文档,工作树始终为空)。
 
 
 
