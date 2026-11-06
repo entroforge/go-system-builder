@@ -2001,6 +2001,12 @@ worker 不做 git 写操作(提交统一由父任务做);父任务**独立复核
 > `internal/cli` HEAD 实测 **1213 个顶层用例**(`go test -list '.*'`;§14.14 记的 1204 是开工前 `8fa862a` 的数),
 > 整包 **2901.859s、0 失败**。
 
+> **覆盖范围补记(重要)**:上表的整包验收只覆盖三个包;**全仓 77 个包**里还有 `internal/integration` 与
+> `tests/system/recovery` **从未被整包跑到** —— `make test-ci-core` **排除** `internal/(cli|integration|investigation)`
+> 与 `tests/system/**`,`make test-ci-smoke` 只跑 `-run` 子集(不含这两条)。
+> ⇒ **CI 门禁全绿,但仓里可能躺着红**。补跑这两包后**抓到 2 条本分支引入的回归**,处置见 **§14.16.9**。
+> 至此全仓 77 个包的覆盖是:`make test-ci-core` 的 72 个 + 上述 3 个整包 + 这次 2 个补跑,**无一遗漏**。
+
 **目标集**:61 条目标用例(8 片目标 59 条 + 2 条关联)全部落在上述三个包里,
 因此整包验收**覆盖**了它们 —— **60/61 绿**,
 余下 1 条是 §14.9 G16 的**维持红**(设计上红:不改写断言、不加门禁)
@@ -2019,6 +2025,59 @@ worker 不做 git 写操作(提交统一由父任务做);父任务**独立复核
 > 余下 `TestNativeS9ActualWorktreeStopReceivesWithoutLauncherOrPlatformIdentity`
 > **已登记但判档仍为「未决」**(其 `action` 如实写「根因待查,下一轮逐条定性」)——
 > 该用例当前**通过**,不构成红,但判档留作下一波,**不在本波范围内强行定性**。
+
+#### 14.16.9 验收覆盖范围之外抓到的两条回归(W35 引入,已修)
+
+**发现**:§14.16.8 的整包验收只覆盖 `internal/cli` / `internal/investigation` / `tests/system/req039` 三个包,
+而**全仓 77 个包**里 `internal/integration` 与 `tests/system/recovery` **从未被整包跑到** ——
+`make test-ci-core` **排除** `internal/(cli|integration|investigation)` 与 `tests/system/**`,`make test-ci-smoke` 只跑 `-run` 子集(不含这两条)。
+⇒ **CI 门禁全绿,仓里却躺着红**。补跑后实测:
+
+| 包 | 修前 | 修后 |
+|---|---|---|
+| `internal/integration` | 98.536s / **2 红** | 87.575s / **0 红** |
+| `tests/system/recovery` | 6.660s / 0 红 | — |
+
+两条红是:
+`TestS7IssuedResultPacketUsesOriginalDispatchAcceptanceReceiptAndCleanRound`、
+`TestS7IssuedResultColdHookProcessesUseOriginalAcceptanceReceiptAndCleanRound`。
+
+**是本分支引入的回归**:基线 `22bb385` 与 W35 开工前的 `8fa862a` 上定向实测**均为绿**;
+`git bisect` 定位到 **`0621625`(G2)`fix(cli): close the native reception audience and ownership gates`**。
+
+**归因**:**不是生产缺陷,是集成夹具陈旧(C 类)**。G2 按蓝图 `L4-workflow-convergence.md:191`
+「本人末次陈述不能单独促使 Hook 代另一作者接收」加了闸门:事件文本若不是来自**同一平台子会话的真实原任务**,
+候选的匹配面就收窄到 task refs,答卷路径不再能选中责任。
+而这条集成用例的 payload **既没有 actor 自己的 sidechain transcript、`agent_id` 又是不相干的 `-unrelated-hook-payload`**,
+形状与仓内自己的 G2 夹具(`internal/cli/s7_native_listener_test.go:190-192`:
+「The official SubagentStop payload carries the actor's own transcript. The original responsibility is
+identified from that actor's own original task only; a Stop without it has no unique responsibility to bind」)
+**不一致** —— 那条夹具还把「无自己原任务的 Stop 不得猜绑」钉成了反向断言。
+蓝图依据:`L4-workflow-convergence.md:189`「本人事件从同一平台子会话的真实原任务选择」、
+`:185`「原 Reviewer 的真实首派发可直接引用已发行原 view／answer」。
+
+**处置(测试侧补夹具,生产侧零改动)**:
+1. 新增 `s7ReviewerOriginalDispatch(...)`:写出 Reviewer **自己 sidechain 的 transcript**,首行 user 消息就是平台交给它的
+   **真实首派发**,其中点名已登记的答卷路径;payload 改为携带 `agent_transcript_path`,`agent_id` 置为**登记的 Reviewer 自身**
+   (该 Stop 本就是本人的事件)。
+2. **原断言逐字未改** —— `runS7StopHookMode` 的收据 / 接收报告 / 阶段判定一字未动。
+3. **补反向断言**:同一链路里再发一个**没有自己原任务**的 Stop(不相干 actor + 只在末次陈述里点名已登记答卷路径),
+   断言它**不得绑定该责任**、**不得把答卷路径 / owner /「received by the original consumer」写进任何通道**、**不得改动 Runtime**。
+
+**变异校验**:
+
+| 编号 | 撤掉什么 | 结果 |
+|---|---|---|
+| **M1** | 夹具的 sidechain 原任务 | **红** —— 复现原报文「active S7 Stop did not report original reception」⇒ 修复承重 |
+| **M5** | 让反向用例带上自己的原任务(它就会绑定) | **红** —— 断言抓到「received by the original consumer」⇒ 反向断言**非空**、承重 |
+| M2 / M3 / M4 | 生产侧的两道守卫(收窄闸门 / assignment-claim 事实要求)各自撤掉 | 正例即红 ⇒ 两道守卫**各自独立**保护「不相干 actor 不绑定」,反向断言并非只靠单一闸门 |
+
+**提交**:`e615408 fix(acceptance): give the S7 integration Stop its own original dispatch`。
+
+**全仓红数**:补跑前 **3 条**(这 2 条本分支引入 + §14.9 G16 那 1 条登记在案的维持红)⇒ 修后 **1 条**(只剩维持红)。
+
+**教训(留给下一波)**:**验收覆盖面必须按「全仓每个包都整包跑过」来对账,不能按「CI 门禁绿」对账。**
+本波的门禁全绿、三个包整包全绿,却漏掉了 `internal/integration` 的 2 条 —— 只有按包枚举全仓才抓到。
 
 
 
