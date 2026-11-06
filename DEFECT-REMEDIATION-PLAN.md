@@ -1199,6 +1199,7 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
   - **关键前置(本轮新发现)**:许多调用点的**事件 id 与幂等键里嵌了 revision**(如 `internal/repair/runtime.go:335/865-867`、`internal/investigation/hypothesis_result_receipt.go:176/246-250`、`internal/assignment/lifecycle.go:302/306`、`internal/assignment/completion.go:218/222`、`internal/assignment/task_lifecycle.go:88/92`、`internal/assignment/register.go:933/937`、`internal/runtime/evidence.go:174/178`、`internal/runtime/change.go:58/62`、`internal/review/supplement.go:206/210`、`internal/investigation/contract.go:256/260`、`internal/investigation/intake.go:200`、`internal/transition/engine.go:213`)。id 依赖**预分配的序号** ⇒ 调用方必须先知道 revision ⇒ **这正是逼着写路径用 CAS 的根因**。所以「业务完成路径退役 CAS」与「事件 id / 幂等键不再嵌入写计数」是**同一个改造的两面**,必须一起做,否则改不动。
   - **本轮处置**:立案记账 + 给出口径与四分类 + 记下这个前置依赖;**不改实现**(68 文件 224 处 + 事件 id 形状变更会波及全部幂等查找与历史兼容,搭进已改 60+ 文件的批次会失控;按 `L4-workflow-convergence.md:61`「削减机器核验会改变系统可证明的保证,应明确交给谁判断」,写路径并发保证的变更单独交给实际责任人裁定)。**下一轮专项**,且必须先出「id 形状迁移 + 历史事件兼容读取」的方案再动。
 - **G16**(S8 消费侧缺少「不可变 Case 世系连续性」判据):`internal/investigation/hypothesis_result_registration_test.go:396` 要求消费侧错误信息含 `continuity`,`:402` 要求签发侧同样拒收;而签发侧 `internal/investigation/hypothesis_result_packet.go:514-531` 的 `verifyHypothesisResultPacketCurrent` **自身注释**即写明「必须证明完整不可变 Case 世系,不能只比当前投影」—— 该机制在生产中**不存在**(现实现只比当前投影)。全仓无任何 S8 错误信息含 `continuity`。裁定:**本轮立案记账、不实现** —— 它需要签发侧与消费侧两处联动的新机制,签发侧不在任何工作包的独占文件内;且与 `L3-S8:408`「旧轮晚到结果沿原责任接收」直接张力,实现口径(能否用非散列的 Case 坐标表达世系)需 owner 裁定。该断言按 DEFECT 处置(只记录、保持红)。
+  - **W35 收尾已实现(提交 `65831d2`)** —— owner 待裁的那个口径问题**已有答案:能用非散列的 Case 坐标表达世系**。世系坐标就是 **Case 自己的不可变修订链**(`InvestigationCase.revision_history` 逐条记录前一修订的 `revision` / `path` / `operation`,每份修订文件都在盘上)加上**答卷包自己已绑定的 route 坐标**(`Binding.CaseRef` / `Binding.CaseRevision` 与 `Inputs.CaseRoute`)。这些是蓝图 `L3-S8:43`「Case 修订…关联专业对象的版本」意义上的**专业版本坐标**,**不是** revision 计数、round、digest、fingerprint 或 checksum。新机制见 §14.16.10。
 
 - **G15**(`internal/hook/stopidle.go` `ReviewAssignmentBlocked`):d0d948a 把「原来源证明」改写成「manifest 行 `activity == blocked` 状态串」,并删除 `reviewSiteLostBlocker` ⇒ 已验证的**原始** blocker 不再使 S7 Reviewer 责任成立。裁定:恢复原来源判定(原始 `work_blocked` 事件 / S7 `site_lost` blocker 事务),不在 manifest 状态串上判定。
 - **W05 的 frozen 场景**(`internal/cli/native_stop_pending_test.go`):S9 绑定通知的 deny 触发条件**收窄**为「绑定本身不可确定」(`repairAssignmentID == "" || agent.RepairAssignmentID != repairAssignmentID`),使「绑定已知、仅旧 execution/source-pin 证明缺失」的场景不落进绑定未知分支。依据 `:342`「删除旧 C／D、frozen …… source pin 的并行接收、来源证明及恢复接线」;`:300`「删除仅为旧 frozen execution 准备的 commit／适配及其兼容恢复接线」。此收窄**不是**弱化生产行为,而是把 deny 限定在真正无法确定绑定时。
@@ -1322,10 +1323,12 @@ W21 的实现把「未知键」与「缺声明键」都当成拒收理由,与两
 ### 14.9 本轮已知保持红(逐条归属,不得靠「恢复门禁」变绿)
 
 > **W35 更正(2026-11-05)**:本表原有 4 行。W35 落地后,**3 行已转绿**,只剩第 1 行(continuity)仍红 —— 它是本波**唯一**的维持红项。下面 3 行保留原文,是为了留痕「当初为什么红、后来靠什么变绿」,**不得**再被读成「现在还红」。
+>
+> **W35 收尾更正(2026-11-06)**:第 1 行(continuity)**也已转绿**(提交 `65831d2`)⇒ **本表 4 行全部转绿,全仓已无维持红**。
 
 | 用例 | 归属 | 性质与处置 |
 |---|---|---|
-| `internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言 | **G16** | 断言要求「不可变 Case 世系连续性」判据。签发侧 `internal/investigation/hypothesis_result_packet.go:514-531` 自身注释就写明「必须证明完整不可变 Case 世系」,而该机制不存在 —— 需签发侧与消费侧联动,**签发侧不在任何独占文件内**,本轮不实现,**断言维持红**。**W35 实测:仍红** —— W35 整包验收里 `internal/investigation` 的唯一失败项。台账判档已改为 `DEFECT→A`,但**不改写断言、不加门禁**,等 owner 裁定「能否用非散列的 Case 坐标表达世系」 |
+| `internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言 | **G16** | 断言要求「不可变 Case 世系连续性」判据。签发侧 `internal/investigation/hypothesis_result_packet.go:514-531` 自身注释就写明「必须证明完整不可变 Case 世系」,而该机制不存在 —— 需签发侧与消费侧联动,**签发侧不在任何独占文件内**,本轮不实现,**断言维持红**。**W35 实测:仍红** —— W35 整包验收里 `internal/investigation` 的唯一失败项。台账判档已改为 `DEFECT→A`,但**不改写断言、不加门禁**,等 owner 裁定「能否用非散列的 Case 坐标表达世系」。**W35 收尾已转绿(提交 `65831d2`)** —— owner 待裁的口径已有答案:**能用非散列的 Case 坐标表达世系**(Case 自己的不可变修订链 + 答卷包已绑定的 route 坐标)。生产侧新增 `verifyS8CaseLineageContinuity`,消费侧与签发侧两条路径都证明该世系;**断言逐字未改、未加任何门禁、未恢复任何散列比较**。变异校验:撤掉消费侧校验 ⇒ 复现原报文;撤掉签发侧校验 ⇒ 签发侧会复活旧包。详见 §14.16.10 |
 | `internal/cli/native_s9_recovery_test.go:163` `TestNativeS9ExplicitStopChangeStillConflictsAfterRecovery` | 总账 **D2 桶**已知 DEFECT | 生产侧 `internal/cli/native_s9_original.go:37-44` 在 `DeliveryRef != ""` 时直接短路并返回「已接收」,**不做专业语义比较**;蓝图 `:112` 要求「以同一原消费者的专业语义比较当前原卷与其当前已收对象」。**不迁就、不改断言**。**W35 已转绿(G5 片,生产侧修)**:改为用同一原消费者的专业语义比较当前原卷与已收对象(逐字段专业内容值比较,**不是** revision／计数／散列比较)—— 内容等价 ⇒ 幂等返回「已接收」,实质变化 ⇒ 冲突并保留先前已收事实。变异校验:恢复无条件短路即红 |
 | `internal/cli/workspace_cleanup_test.go:410` `TestLastFinalPreparesImpactBeforeIndependentCleanup/impact-before-cleanup` | **owner 仲裁已裁(本轮)** | 该变体自带仲裁注记「states the blueprint behaviour, so this variant stays red until the owner decides which reading holds」。**父任务裁定(蓝图优先)**:①`L4-worktree-governance.md:210`「**不以 force remove、git clean 或递归删除未知内容制造完成**」⇒ `--force` 移除路径必须删除;②`L4-worktree-governance.md:208`「**私人目录…都不是删除授权**」+ `L4-workflow-convergence.md:302`「未知、未跟踪、忽略或**私人材料保留为 cleanup_pending**」⇒ 私人答卷材料一律保留、保留即 `cleanup_pending`;③`:302`「cleanup_pending **只与保留材料绑定**」+ `L3-S9-repair.md:271`「Main 可准备原 ChangeImpact 而不使其成为完成门」⇒ 清理**不得**被未决的 ChangeImpact 问卷卡住。**实现侧三条已全部落地**(本轮:删除 `--force` 路径、私人材料改判为保留并命名为 `private answer material`、接收侧脏列表跳过私人答卷区)。该变体断言 `State == complete` 且要求工作区被移除 —— 在**保留材料位于同一工作区**时与第 ② 条**互斥**(不可能既移除该目录又保留其中私人答卷)。⇒ **维持红,但红的原因变了**:断言须按保留语义改写(断言 `cleanup_pending` + 已核实事实不变 + 私人字节保留 + 无强制移除 + **不依赖清理的阶段后继不被阻挡**),**下一轮测试侧执行**;不得为了让该变体变绿而恢复 `--force`。**W35 已转绿(G8 片,测试侧改强)**:按保留语义改写为「状态 ∈ {complete, cleanup_pending} + 已核实事实不变 + cleanup_pending 只与保留材料绑定 + 必须点名仍存在的工作树路径 + 私人答卷字节不变 + 已接收 Final 字节不变 + Main checks 未重跑 + Impact 未被重写」;**没有**恢复 `--force` |
 | `internal/cli/s9_handoff_wiring_test.go:542` `TestS9HandoffAcceptedFinalCleanupUsesFrozenSessionProtection` | **owner 仲裁已裁(本轮)** | W26 的验收断言写成「状态必须是 `complete`」,与本轮删除 `--force` 后的保留语义互斥(工作区里留着作者的私人答卷 ⇒ 按 `:302` 保留为 `cleanup_pending`)。**父任务裁定**:`:302`「未知、未跟踪、忽略或**私人材料保留为 cleanup_pending**,**不能撤销本人接收、Main 检查或 ACK**」⇒ 清理挂起**不等于**接收被撤销,状态可以是 `cleanup_pending`。断言已改写为**更强**形式:①状态 ∈ {`complete`, `cleanup_pending`};②若为 `cleanup_pending`,阻塞原因**不得**指向缺失的旧 Plan(这正是本用例要证明的「旧 Plan 不阻塞」);③必须报出被保留的工作树路径**且该工作树确实还在**(私人材料没被删);④已接收的 Final 字节不变。**不得**为了让断言回到 `complete` 而恢复强制移除。**W35 实测:绿**(W26 改写已落地,本波复核确认) |
@@ -1791,7 +1794,7 @@ G18 的对象是 §14.2 的**写路径 CAS 总账**(①类业务完成路径的�
 | **G7** | 5 | `tests/system/req039/{audit_sharedmodel_spine,audit_sources_e2e,ct_l4_precondition,s11_human_decision,s2_to_s11_hook_driven}_test.go` | `TestAuditSharedModelHookSpineCommittedSource` `TestAuditStageSourcesUseOriginalConsumerBoundaryE2E` `TestBUG104S11ExplicitApproveE2E` `TestCT03912_BuilderCompleteCommitsTR006System` `TestS2ToS11_HookDrivenCleanPath` |
 | **G8** | 7 | `design_answer_e2e_test.go` `revision_boundary_e2e_test.go` `workspace_missing_private_test.go` `runtime/checkpoint_indices.go` | `TestCheckpointRejectsOlderPairAndForgedReceptionFacts` `TestContractAuthorityUsesOriginalS2RegisteredDesign` `TestLastFinalPreparesImpactBeforeIndependentCleanup` `TestNativeS6RevisionKeepsObjectGuardsAcrossUnrelatedRuntimeCommit` `TestNativeS9MissingWorkerCleanupResumesOriginalCheckpoint` `TestNativeS9NullProfessionalReferenceIsNotConvertedToNotApplicable` `TestS6MainPreservedCheckpointNamesActualRetryAndRetainsSource` |
 | **探针批** | 1 | — | `TestWorkspaceBackendCoreLaunchCommitAndOriginalVerifiedIntegration`(先做运行态探针,再定 A 还是 C) |
-| **维持红** | 1 | — | `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates`(§14.9 G16 已裁,**不改写、不加门禁**) |
+| **维持红** | 1 | — | `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates`(§14.9 G16 已裁,**不改写、不加门禁**)**W35 收尾:已转绿(提交 `65831d2`,§14.16.10)** |
 
 #### 14.15.5 跨片共享事实(各片必须知道,否则会做反)
 
@@ -1805,10 +1808,10 @@ G18 的对象是 §14.2 的**写路径 CAS 总账**(①类业务完成路径的�
 #### 14.15.6 验收口径与批次
 
 - **片级**:定向跑该片全部用例 ⇒ 目标用例**转绿** + 非目标用例**不变红**;生产侧修复必须做**「撤掉修复即红」的变异校验**。
-- **整包**:`internal/cli` 整包 + `internal/investigation` + `tests/system/req039` ⇒ 失败集合从 **59** 降到 **2**(探针 1 + 维持红 1);探针批也解决则剩 **1**。**W35 实测:剩 1** ✓(探针批已解,只剩 §14.9 G16 的维持红)。
+- **整包**:`internal/cli` 整包 + `internal/investigation` + `tests/system/req039` ⇒ 失败集合从 **59** 降到 **2**(探针 1 + 维持红 1);探针批也解决则剩 **1**。**W35 实测:剩 1** ✓(探针批已解,只剩 §14.9 G16 的维持红)。**W35 收尾:剩 0** ✓(G16 的 continuity 亦已转绿,见 §14.16.10)。
 - **基线对照**:与干净基线 `22bb385`(已导出 `/home/sebs/audit-work/base-src` —— **不放 `/tmp`**,那里有周期清理)做差集 ⇒ **无新增红**,会话引入回归数 **0**。
 - **常规**:`make fmt-check` `make vet` `make build` `make test-ci-core` `make test-ci-race` 全绿。
-- **台账**:未闭环数 59 → 2(规划口径)⇒ **实测 59 → 1**(探针批已解;仅剩 §14.9 G16 的维持红);F1–F5 事实错误同步修正。
+- **台账**:未闭环数 59 → 2(规划口径)⇒ **实测 59 → 1**(探针批已解;仅剩 §14.9 G16 的维持红);F1–F5 事实错误同步修正。**W35 收尾:59 → 0**(G16 亦已转绿)。
 - **批次**:批 1 = 8 片并行(文件互斥已验证);批 2 = 探针批(依赖批 1 的 `hookctx/loader.go` 结果);批 3 = F1–F5 更正 + 整包验收 + 提交。
 
 ---
@@ -1965,25 +1968,29 @@ worker 不做 git 写操作(提交统一由父任务做);父任务**独立复核
 
 #### 14.16.8 整包验收与门禁
 
-**终态整包验收(当前树 `a5b2b96`,包级超时 180 分钟,独占机器)与基线树 `22bb385` 的逐包对照**
+**终态整包验收(当前树 `65831d2`),包级超时 180 分钟,独占机器)与基线树 `22bb385` 的逐包对照**
 
 | 包 | 基线耗时/结果 | 基线失败 | 终态耗时/结果 | 终态失败 | 转绿 | 新增红 |
 |---|---|---|---|---|---|---|
-| `internal/investigation` | 112.226s / 红 | 1 | 98.285s / 红 | 1 | 0 | 0 |
-| `tests/system/req039` | 223.988s / 红 | 5 | 169.256s / 绿 | 0 | 5 | 0 |
-| `internal/cli` | 2747.541s / 红 | 53 | 2901.859s / 绿 | 0 | 53 | 0 |
-| **合计** | — | **59** | — | **1** | **58** | **0** |
+| `internal/investigation` | 112.226s / 红 | 1 | 83.071s / 绿 | 0 | 1 | 0 |
+| `tests/system/req039` | 223.988s / 红 | 5 | 149.581s / 绿 | 0 | 5 | 0 |
+| `internal/cli` | 2747.541s / 红 | 53 | 2508.278s / 绿 | 0 | 53 | 0 |
+| **合计** | — | **59** | — | **0** | **59** | **0** |
 
 基线树 `22bb385`(与 `/home/sebs/audit-work/base-src` 逐文件一致,`diff -rq` 零差异),**包级超时 180 分钟、独占机器、完整跑完** ⇒ 失败清单是**全集**,可与 §14.14 记录的开工前数字直接对账。
 
 > **新增红 = 0** —— 终态的失败集合是**完整跑完**的枚举结果(未撞包级超时),
-> 它的每一项都能在基线侧找到**同包同名**的失败 ⇒ **本波引入的回归数为 0**。
+> 且该集合**为空** ⇒ 本波既没有引入回归,也没有留下未闭环项。
+
+> **覆盖范围补记**:上表的整包验收覆盖三个包;**全仓 77 个包**里另两个
+> (`internal/integration`、`tests/system/recovery`)在 §14.16.9 里补跑过 —— 它们**从未**被
+> `make test-ci-core` 或 `make test-ci-smoke` 覆盖,而补跑**抓到了 2 条本分支引入的回归**。
+> 至此全仓 77 个包的覆盖是:`make test-ci-core` 的 72 个 + 上表 3 个整包 + 这 2 个补跑,**无一遗漏**;
+> 本次复跑五个包全部重跑,五包**全绿**。
 >
-> **终态仅剩的失败是 §14.9 G16 那条已登记的维持红**
-> (`internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言),
-> 按裁定**不改写断言、不加门禁**,等 owner 裁定「能否用非散列的 Case 坐标表达世系」。
+> **终态失败集合为空 —— 全仓已无维持红。**§14.9 保持红表的最后一条(`internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言)已在本波收尾转绿(提交 `65831d2`,§14.16.10):生产侧新增 `verifyS8CaseLineageContinuity`,用 **Case 自己的不可变修订链** 表达世系,消费侧与签发侧两条路径都证明它;**断言逐字未改、未加门禁、未恢复任何散列比较**。
 >
-> 对账 §14.14:开工前整包失败 **53 + 1 + 5 = 59** ⇒ 终态 **1**,
+> 对账 §14.14:开工前整包失败 **53 + 1 + 5 = 59** ⇒ 终态 **0**,
 > 与 §14.15.6 的验收口径「失败集合从 59 降到 2(探针 1 + 维持红 1),探针批也解决则剩 **1**」一致。
 
 **门禁**
@@ -1997,26 +2004,15 @@ worker 不做 git 写操作(提交统一由父任务做);父任务**独立复核
 | `make test-ci-smoke` | **绿**(覆盖 `internal/cli` 的 `-short` 子集) |
 | `make test-ci-race` | **绿**(耗时与余量见 §14.16.6) |
 
-> 门禁覆盖不到 `internal/cli` 全量的那一块,由上面的**整包验收**兜住:
-> `internal/cli` HEAD 实测 **1213 个顶层用例**(`go test -list '.*'`;§14.14 记的 1204 是开工前 `8fa862a` 的数),
-> 整包 **2901.859s、0 失败**。
-
-> **覆盖范围补记(重要)**:上表的整包验收只覆盖三个包;**全仓 77 个包**里还有 `internal/integration` 与
-> `tests/system/recovery` **从未被整包跑到** —— `make test-ci-core` **排除** `internal/(cli|integration|investigation)`
-> 与 `tests/system/**`,`make test-ci-smoke` 只跑 `-run` 子集(不含这两条)。
-> ⇒ **CI 门禁全绿,但仓里可能躺着红**。补跑这两包后**抓到 2 条本分支引入的回归**,处置见 **§14.16.9**。
-> 至此全仓 77 个包的覆盖是:`make test-ci-core` 的 72 个 + 上述 3 个整包 + 这次 2 个补跑,**无一遗漏**。
-
 **目标集**:61 条目标用例(8 片目标 59 条 + 2 条关联)全部落在上述三个包里,
-因此整包验收**覆盖**了它们 —— **60/61 绿**,
-余下 1 条是 §14.9 G16 的**维持红**(设计上红:不改写断言、不加门禁)
-—— `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates`。
+因此整包验收**覆盖**了它们 —— **61/61 绿**。
 
 **台账**:374 条总数不变;59 条目标条目的 `verdict` 与 `action` **全部实据化,零占位符**;
 `bucket`/`test`/`src`/`blueprint` 四个字段与本波开始前**逐条零差异**;
 最终判档 A 18 / B 31 / C 10(与规划期的 22/27/10 的 5 条再判见 §14.16.1)。
-与失败用例 1:1 对应的「未闭环」条数:**59 → 1**(仅剩 §14.9 G16 的维持红);
-按 §14.14 的闭环口径,已闭环 **286 + 58 = 344** 条。
+与失败用例 1:1 对应的「未闭环」条数:**59 → 0**;
+按 §14.14 的闭环口径(测试仍在代码中且当前通过 / 测试已删除 / 未闭环):
+**286 + 59 = 345 通过 + 29 已删除 + 0 未闭环 = 374**。
 
 > **顺带结清 §14.10 的一条待办**:§14.10 列的「总账未登记、待补录」6 条**现全部已在 374 条总账内**,
 > 其中 3 条(`TestNativeS9CandidatePreparesImpactWithoutRecordingMainCompletion`、
@@ -2075,9 +2071,53 @@ identified from that actor's own original task only; a Stop without it has no un
 **提交**:`e615408 fix(acceptance): give the S7 integration Stop its own original dispatch`。
 
 **全仓红数**:补跑前 **3 条**(这 2 条本分支引入 + §14.9 G16 那 1 条登记在案的维持红)⇒ 修后 **1 条**(只剩维持红)。
+> **后续**:剩下的这 1 条维持红已在 **§14.16.10** 转绿 ⇒ **全仓红数 0**。
 
 **教训(留给下一波)**:**验收覆盖面必须按「全仓每个包都整包跑过」来对账,不能按「CI 门禁绿」对账。**
 本波的门禁全绿、三个包整包全绿,却漏掉了 `internal/integration` 的 2 条 —— 只有按包枚举全仓才抓到。
+
+#### 14.16.10 结清最后一条维持红:S8 答卷包的「不可变 Case 世系」判据
+
+**背景**:§14.9 G16 登记的唯一维持红 —— `internal/investigation/hypothesis_result_registration_test.go:396` 的 `continuity` 断言。
+它要求「不可变 Case 世系连续性」判据,而签发侧 `verifyHypothesisResultPacketCurrent` **自身注释**就写着
+「必须证明完整不可变 Case 世系,不能只比当前投影」—— 但该机制在生产里**不存在**,当时裁定为「只记账、保持红」,
+并把口径问题(「能否用非散列的 Case 坐标表达世系」)留给 owner。
+
+**owner 待裁问题的答案:能。** 世系坐标就是 **Case 自己的不可变修订链**:
+`InvestigationCase.revision_history` 逐条记录前一修订的 `revision` / `path` / `operation`,
+每份修订文件都在盘上 ⇒ **签发修订与当前修订之间的每一版中间修订都可读、可比**。
+加上答卷包**自己已经绑定**的 route 坐标(`Binding.CaseRef` / `Binding.CaseRevision` 与 `Inputs.CaseRoute`)。
+这些都是蓝图 `L3-S8-finding-investigation.md:43`「Case 修订…关联专业对象的版本」意义上的**专业版本坐标** ——
+**不是** revision 计数、不是 round、不是 digest / fingerprint / checksum,也不是 CAS。
+
+**根因(生产侧,不是测试侧)**:两处
+1. **新鲜提交路径根本没有证明世系** —— `ReceiveIssuedHypothesisResult` 只做「当前投影」的责任校验
+   (`validateS8ResultResponsibility`:Case 身份、状态、题面的 Assignment 与状态),
+   从不比对包自己绑定的 route 坐标;
+2. **恢复路径只比当前投影** —— 签发侧注释要求的「完整不可变 Case 世系」在代码里没有落点。
+   而**当前投影可以被复原**:夹具把可见 route 复原成签发时的样子,投影比对就看不出「中间修订改过路线」。
+
+**实现(提交 `65831d2`,新增 `internal/investigation/hypothesis_result_lineage.go`)**:
+- `verifyS8CaseLineageContinuity(root, current, packet)`:沿当前 Case 的 `revision_history`
+  取出**签发修订之后**的每一份中间修订,逐份读出并与**答卷包自己绑定的** route 坐标与题面含义比对;
+  任一中间修订改过路线或题面 ⇒ 报 **`continuity`** 错误。
+- **消费侧**(新鲜提交)与**签发侧**(开放包恢复)两条路径**都调用**它 —— 这正是签发侧注释早就要求的
+  「Fresh submission **and** open-packet recovery must prove the full immutable Case lineage」。
+- 题面比对**不含 status**:status 记录「题面是否已答」,不是「题面是什么意思」。
+
+**断言与门禁**:**原断言逐字未改**;**未新增任何门禁**;**未恢复任何散列比较**;
+计数器 / revision 计数 / round **一律未作为门禁**。
+
+**变异校验**:
+
+| 编号 | 撤掉什么 | 结果 |
+|---|---|---|
+| **M6** | 消费侧(新鲜提交)的世系校验 | **红** —— 复现原报文「direct original writer revived an old packet after route consumption and tuple restoration: <nil>」⇒ 修复承重 |
+| **M7** | 签发侧(开放包恢复)的世系校验 | **红** —— 签发侧也会复活旧包(断言落在 `hypothesis_result_registration_test.go:405`)⇒ **两条路径各自必要** |
+
+**实测**:`internal/investigation` 整包 **83.129s / 0 失败**(修前 98.285s / 1 失败);
+定向 `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates` **PASS**(修前 FAIL)。
+**全仓已无维持红** ⇒ §14.9 保持红表 4 行全部转绿,总账「未闭环」**59 → 0**。
 
 
 
