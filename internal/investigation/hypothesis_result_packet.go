@@ -527,6 +527,12 @@ func verifyHypothesisResultPacketCurrent(root string, state map[string]any, curr
 	if !reflect.DeepEqual(old, now) || !reflect.DeepEqual(packet.Inputs, currentPacket.Inputs) {
 		return errors.New("S8 packet source/question/route/registration differs from the current Case")
 	}
+	// The current projection can be restored. The immutable Case lineage
+	// between this issuance and the current revision cannot, so it is proved
+	// separately.
+	if err := verifyS8CaseLineageContinuity(root, current, packet); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -178,6 +178,13 @@ func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request 
 	if err := validateS8ResultResponsibility(snapshot.State, current.document, packet); err != nil {
 		return snapshot, HypothesisResultReceipt{}, err
 	}
+	// A fresh submission proves the same immutable Case lineage that the
+	// open-packet recovery proves. A route or a question that changed in an
+	// intermediate revision cannot be undone in the current projection, and an
+	// old issuance must not be revived by that restored projection.
+	if err := verifyS8CaseLineageContinuity(root, current, packet); err != nil {
+		return snapshot, HypothesisResultReceipt{}, err
+	}
 	if !accepted {
 		if err := ensureHypothesisResultNotAlreadyOnCase(current.document, packet); err != nil {
 			return snapshot, HypothesisResultReceipt{}, err
