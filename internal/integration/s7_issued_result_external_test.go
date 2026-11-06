@@ -148,6 +148,27 @@ func runS7IssuedResultPacketChain(t *testing.T, coldHooks bool) {
 	if replayed.Revision != promoted.Revision {
 		t.Fatalf("replay changed Runtime: %d -> %d", promoted.Revision, replayed.Revision)
 	}
+	// The reverse case in the same chain: an actor that is not the registered
+	// Reviewer states the exact registered answer path and carries no sidechain
+	// original task. It must not bind the responsibility, must not leak that
+	// answer path or its owner into any channel, and must not move Runtime.
+	// L4-workflow-convergence.md:191 — the actor's own final statement cannot by
+	// itself make the Hook receive for another author; :189 — the person's event
+	// selects from the same sidechain's real original task.
+	beforeUnbound := readRuntimeSnapshot(t, fixture.statePath, fixture.journalPath)
+	code, unboundOut, unboundDiagnostic := invokeS7StopHookWithoutOwnTask(t, fixture, first, firstOwner, coldHooks)
+	if code != 0 {
+		t.Fatalf("S7 Stop without an original task was blocked: %d %s %s", code, unboundOut, unboundDiagnostic)
+	}
+	unboundAnswer := filepath.Join(fixture.root, filepath.FromSlash(first.AnswerPath))
+	for _, forbidden := range []string{"received by the original consumer", unboundAnswer, firstOwner} {
+		if strings.Contains(unboundOut+unboundDiagnostic, forbidden) {
+			t.Fatalf("S7 Stop without an original task bound the responsibility (%q): %s %s", forbidden, unboundOut, unboundDiagnostic)
+		}
+	}
+	if after := readRuntimeSnapshot(t, fixture.statePath, fixture.journalPath); after.Revision != beforeUnbound.Revision {
+		t.Fatalf("S7 Stop without an original task changed Runtime: %d -> %d", beforeUnbound.Revision, after.Revision)
+	}
 }
 
 func enablePacketModeAndApplyTR003(t *testing.T, root, statePath, journalPath string) {
@@ -442,19 +463,74 @@ func invokeS7StopHook(t *testing.T, fixture *canonicalMainFixture, packet workpa
 	return invokeS7StopHookMode(t, fixture, packet, owner, false)
 }
 
+// s7ReviewerOriginalDispatch writes the platform sidechain transcript of the
+// original Reviewer. Its first user row is the real first dispatch the platform
+// handed to this sidechain, naming the registered answer path where the
+// Reviewer must save its own professional Result.
+//
+// The official SubagentStop payload carries the actor's own sidechain
+// transcript, and the original responsibility is selected from that
+// sidechain's real original task.
+// L4-workflow-convergence.md:189 — "本人事件从同一平台子会话的真实原任务选择";
+// :185 — "原 Reviewer 的真实首派发可直接引用已发行原 view／answer".
+func s7ReviewerOriginalDispatch(t *testing.T, root, agentID, answerPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "subagents", "agent-"+agentID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := json.Marshal(map[string]any{
+		"type": "user", "isSidechain": true, "agentId": agentID,
+		"message": map[string]any{"role": "user", "content": "Review the assigned S7 plan and save your professional Result at " + answerPath},
+	})
+	if err := os.WriteFile(path, append(row, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func invokeS7StopHookMode(t *testing.T, fixture *canonicalMainFixture, packet workpacket.ReviewResultPacket, owner string, cold bool) (int, string, string) {
 	t.Helper()
+	answerPath := filepath.Join(fixture.root, filepath.FromSlash(packet.AnswerPath))
+	// This is the Reviewer's own natural Stop: the actor is the registered
+	// Reviewer, and the payload carries that sidechain's original dispatch.
+	// The original consumer binds the responsibility from that original task.
 	payload, err := json.Marshal(map[string]any{
 		"hook_event_name":        "SubagentStop",
-		"last_assistant_message": filepath.Join(fixture.root, filepath.FromSlash(packet.AnswerPath)),
-		// The exact registered answer path supplies the professional owner and
-		// source root. Hook actor, cwd, and session metadata are not required to
-		// prove those already registered facts.
-		"agent_id": owner + "-unrelated-hook-payload", "cwd": filepath.Join(fixture.root, "not-main"), "session_id": "unrelated-session",
+		"last_assistant_message": answerPath,
+		"agent_id":               owner,
+		"agent_type":             "reviewer",
+		"agent_transcript_path":  s7ReviewerOriginalDispatch(t, fixture.root, owner, answerPath),
+		"cwd":                    filepath.Join(fixture.root, "not-main"), "session_id": "unrelated-session",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return runS7StopPayload(t, fixture, payload, cold)
+}
+
+// invokeS7StopHookWithoutOwnTask is the reverse case: an actor that is not the
+// registered Reviewer states the exact registered answer path as its final
+// message and carries no sidechain original task. That statement names another
+// author's output, so it must not make the Hook receive for that author.
+// L4-workflow-convergence.md:191 — "消息、工具输入／输出或本人末次陈述中即使含
+// 另一责任准确路径，也不能单独改变此子会话的 owner，或促使 Hook 代另一作者接收".
+func invokeS7StopHookWithoutOwnTask(t *testing.T, fixture *canonicalMainFixture, packet workpacket.ReviewResultPacket, owner string, cold bool) (int, string, string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"hook_event_name":        "SubagentStop",
+		"last_assistant_message": filepath.Join(fixture.root, filepath.FromSlash(packet.AnswerPath)),
+		"agent_id":               "unrelated-hook-actor",
+		"cwd":                    filepath.Join(fixture.root, "not-main"), "session_id": "unrelated-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runS7StopPayload(t, fixture, payload, cold)
+}
+
+func runS7StopPayload(t *testing.T, fixture *canonicalMainFixture, payload []byte, cold bool) (int, string, string) {
+	t.Helper()
 	if cold {
 		return factory.RunHook(t, fixture.hookBinary, fixture.root, "SubagentStop", payload)
 	}
