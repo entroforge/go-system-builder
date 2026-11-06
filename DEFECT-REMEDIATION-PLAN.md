@@ -2119,5 +2119,56 @@ identified from that actor's own original task only; a Stop without it has no un
 定向 `TestS8GenerationTwoOriginalHookReceiptReplaySiblingAndGates` **PASS**(修前 FAIL)。
 **全仓已无维持红** ⇒ §14.9 保持红表 4 行全部转绿,总账「未闭环」**59 → 0**。
 
+### 14.17 W35 收尾清理:旧迭代模版包与中间件的退役
+
+**起因**:owner 指令「提交全部变更 → 清理模版和迭代中间件 → 保持项目整洁干净」。
+提交部分已在 §14.16.4 记全(本轮共 4 个提交:`e615408` / `d6cbd78` / `65831d2` / `a7dae22`),
+本节只记**清理**。
+
+**分界原则(先判归属,再动手)**:
+1. **tracked 模版是产品资产,不可删** —— `AGENTS-template.md` / `loop-template.md` 由 `packaging/include.txt`
+   装进发布包,是产品本体;要清的是**构建出来的**旧迭代模版包(`release/`、`*.tar.gz`、`extracted/`)。
+2. **交叉编译二进制是中间件,可退役** —— `loop-harness*` 的 linux/darwin/windows 各平台副本,
+   源码在仓内、可重建,逐轮各留一份没有信息量。
+3. **证据与机器记录要留** —— 报告、ledger JSON、live transcript、diff/patch 是各轮审计凭据,
+   且 `blueprint/BUGS.md` 有 6 处链接直接指向其中的文件。
+4. 一律走**可恢复删除**(`mavis-trash`),不永久删除。
+
+**第一轮清理**:
+
+| 对象 | 规模 | 处置 |
+|---|---|---|
+| `dist/` | 6 个旧迭代模版包 240 MB + 5 个陈旧交叉编译二进制 123 MB | 退役 |
+| `integration.test` | 41 MB(`CI-AUDIT.md` 明示 safe to rm) | 退役 |
+| `.claude/bin/` | 27 MB 构建产物 | 退役 |
+| `.local/framework-maintenance/` 下 98 个源码拷贝目录 | 7.40 GB | 退役(保留 blueprint 引用的 6 个证据文件) |
+| `/home/sebs/audit-work/_pre_w35` | 临时 git 导出 | 退役 |
+| `/tmp/wtA` 残留 worktree | 其未提交改动经 diff 确认是**更旧**版本(G8 恢复+性能优化已落主树) | 退役 + `git worktree prune` 清掉另 2 个 prunable 元数据 |
+
+**第二轮清理**(`.local/framework-maintenance/` 剩余 6.4 GB,逐类查清后按类退役):
+
+| 类别 | 条目 | 规模 | 判定 |
+|---|---|---|---|
+| `release` / `staged-bin` / `extracted` 目录 | 40 个 | 3416.0 MB | 旧迭代模版包与发布暂存树 ⇒ 退役 |
+| `*.tar.gz` 发布包 | 54 个 | 1568.7 MB | 发布产物副本 ⇒ 退役 |
+| `loop-harness*` / `production-loop-harness` / `loop-harness-*.exe` | 58 个 | 1650.1 MB(含上两类的交叉编译二进制) | 中间件 ⇒ 退役 |
+| `harness-before-s6fix` ×2、`remove-one-review-test` | 3 个 | 42.9 MB | 编译二进制 ⇒ 退役(第一轮规则漏网,补删) |
+| 空目录 | 28 个 | — | 清理 ⇒ 退役 |
+| `.claude/hook-metrics/.pending-*.json` ×5、`compact.lock` | 6 个 | 262 B | 2026-10-24 中断写入的陈旧运行时残留 ⇒ 退役 |
+
+**保留(逐条复验存在)**:
+- `blueprint/BUGS.md` 引用的 6 个证据文件 —— `global-retest-20261026T025354Z/{NEXT-ITERATION.md, S9-S11-ACCEPTANCE.md,
+  S9-S11-ACCEPTANCE-EVIDENCE.json, SINGLE-PLATFORM-ACCEPTANCE.md}`、`hook-handoff-implementation-20261026/RESULT.md`、
+  `convergence-bugs-review-20261026T082158Z/NEXT-ITERATION.md`;
+- `.local/framework-maintenance/` 剩余 **1.5 GB** 证据:`jsonl` 802.6 MB(live actor transcript)、
+  `json` 296.9 MB(各轮 ledger)、`.bin` 195.4 MB(live transcript 段)、`diff` 30.2 MB、`log` 17.9 MB、
+  `go` 17.6 MB、`patch` 10.0 MB、`md` 8.4 MB、`txt` 2.8 MB、`sha256` 2.4 MB。
+
+**终态**:仓库 `git status --porcelain --untracked-files=all` **为空**(无待提交变更、无未跟踪文件);
+`git worktree list` **仅主 worktree**;`.local/framework-maintenance/` **7.40 GB → 1.5 GB**;
+**生产代码与测试文件零改动**(本节只是本文件与审计小结的文档增量)。
+**磁盘**:`/` 58G / 已用 50G / 可用 8.8G(**85%**)—— 删除物暂存于 `~/.local/share/Trash`(13 GB),
+**清空回收站属永久删除,需 owner 明示后才执行**。
+
 
 
