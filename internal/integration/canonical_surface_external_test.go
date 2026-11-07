@@ -228,19 +228,6 @@ func canonicalS5Document(id, kind, path, version string, _ []byte) map[string]an
 	}
 }
 
-func cloneCanonicalState(t *testing.T, state map[string]any) map[string]any {
-	t.Helper()
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cloned map[string]any
-	if err := json.Unmarshal(data, &cloned); err != nil {
-		t.Fatal(err)
-	}
-	return cloned
-}
-
 func canonicalEvidenceIDForPath(t *testing.T, state map[string]any, path string) string {
 	t.Helper()
 	rows, _ := state["evidence"].([]any)

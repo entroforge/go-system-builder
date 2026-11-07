@@ -8,17 +8,6 @@ import (
 	"testing"
 )
 
-func writeProjectionObject(t *testing.T, root, path string, data []byte) {
-	t.Helper()
-	full := filepath.Join(root, filepath.FromSlash(path))
-	if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // The old content-addressed cleanup proof is no longer a deletion authority.
 // Unknown ignored files are preserved even in an otherwise clean worktree.
 func TestCleanupPreservesUnknownIgnoredAndUntrackedFiles(t *testing.T) {

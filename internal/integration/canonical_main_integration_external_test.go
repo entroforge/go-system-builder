@@ -19,13 +19,10 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/catalog"
 	"github.com/entroforge/go-system-builder/internal/checkexec"
-	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
-	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
-	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
 const (
@@ -314,32 +311,6 @@ func (f *canonicalMainFixture) acceptResultWithClosing(t *testing.T, messageID, 
 	return receipt
 }
 
-func currentCanonicalReceiptAndGate(t *testing.T, fixture *canonicalMainFixture) (qualitygate.BuilderReceipt, qualitygate.Evaluation) {
-	t.Helper()
-	snapshot := readRuntimeSnapshot(t, fixture.statePath, fixture.journalPath)
-	files := fileview.Disk{Root: fixture.root}
-	currentRef := fixture.currentResultRef(t)
-	receipt := qualitygate.CurrentBuilderReceipt(qualitygate.Input{Root: fixture.root, Snapshot: snapshot, Files: files}, qualitygate.BuilderReceiptRequest{
-		Owner: fixture.record.OwnerAgentID, AssignmentID: fixture.record.AssignmentID, TaskID: fixture.record.Task.ID,
-		CompletionRef: currentRef,
-	})
-	catalog, err := transition.LoadCatalog(fixture.root)
-	if err != nil {
-		t.Fatalf("load original Loop Definition for TR-006 Gate: %v", err)
-	}
-	registry, err := qualitygate.NewRegistry(catalog)
-	if err != nil {
-		t.Fatalf("build original Quality Gate registry: %v", err)
-	}
-	evaluation, err := qualitygate.NewEvaluator(registry).Evaluate(context.Background(), qualitygate.Input{
-		Root: fixture.root, Snapshot: snapshot, Files: files, GateID: "GATE-BUILDER-BATCH-READY", TransitionID: "TR-006",
-	})
-	if err != nil {
-		t.Fatalf("evaluate original TR-006 Quality Gate: %v", err)
-	}
-	return receipt, evaluation
-}
-
 func nonNilStrings(values []string) []string {
 	if values == nil {
 		return []string{}
@@ -408,35 +379,6 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func containsEveryString(values, want []string) bool {
-	for _, item := range want {
-		if !containsString(values, item) {
-			return false
-		}
-	}
-	return true
-}
-
-func corruptCanonicalMainProof(t *testing.T, f *canonicalMainFixture) error {
-	t.Helper()
-	path := integration.CheckpointPath(f.root, canonicalRuntimeID, 1, canonicalAssignment)
-	cp, found, err := integration.DefaultCheckpointStore().Load(path)
-	if err != nil || !found || cp.CanonicalMainFacts == nil || len(cp.CanonicalMainFacts.Checks) != 1 {
-		return fmt.Errorf("load verified canonical Main checkpoint: found %t err %v", found, err)
-	}
-	fact := cp.CanonicalMainFacts.Checks[0]
-	for _, ref := range []string{fact.ReceiptRef, fact.LogRef} {
-		if err := os.Remove(ref); err != nil {
-			return fmt.Errorf("remove original Main evidence %s: %w", ref, err)
-		}
-	}
-	data, err := json.MarshalIndent(cp, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
 }
 
 func prepareCanonicalRuntime(t *testing.T, root string, taskBytes, indexBytes []byte) (string, string) {

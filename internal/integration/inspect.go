@@ -136,15 +136,6 @@ func intersectLocked(files, locked []string) []string {
 	return hits
 }
 
-func hasFailing(results []CheckResult) bool {
-	for _, r := range results {
-		if r.Status == "fail" {
-			return true
-		}
-	}
-	return false
-}
-
 // outsideWriteScope returns the changed files not covered by any declared
 // write path pattern. Patterns follow the manifest's glob conventions:
 // `**` matches any number of path segments, `*` matches within one

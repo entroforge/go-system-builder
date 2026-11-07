@@ -125,6 +125,9 @@ func TestPathMatchesPattern(t *testing.T) {
 // wiring that makes `verified` mean "checks actually ran".
 func TestCommandCheckRunnerRunsRealCommands(t *testing.T) {
 	root := t.TempDir()
+	// The failing check keeps its receipt and log as evidence; the attempt
+	// directory belongs to this test so it is reclaimed with it.
+	t.Setenv("TMPDIR", t.TempDir())
 	if err := os.WriteFile(filepath.Join(root, "marker.txt"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}

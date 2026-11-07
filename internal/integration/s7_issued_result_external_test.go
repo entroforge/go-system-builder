@@ -391,10 +391,6 @@ func s7MechanismAnswer(t *testing.T, fixture *canonicalMainFixture, packet workp
 	return valid
 }
 
-func runS7StopHook(t *testing.T, fixture *canonicalMainFixture, packet workpacket.ReviewResultPacket, owner string) loopruntime.Snapshot {
-	return runS7StopHookMode(t, fixture, packet, owner, false)
-}
-
 func runS7StopHookMode(t *testing.T, fixture *canonicalMainFixture, packet workpacket.ReviewResultPacket, owner string, cold bool) loopruntime.Snapshot {
 	t.Helper()
 	code, stdoutText, stderrText := invokeS7StopHookMode(t, fixture, packet, owner, cold)
@@ -457,10 +453,6 @@ func runS7StopHookMode(t *testing.T, fixture *canonicalMainFixture, packet workp
 	// The exact durable receipt above, not a repeated reception phrase, proves
 	// the old work was accepted. Callers separately verify replay has no writes.
 	return snapshot
-}
-
-func invokeS7StopHook(t *testing.T, fixture *canonicalMainFixture, packet workpacket.ReviewResultPacket, owner string) (int, string, string) {
-	return invokeS7StopHookMode(t, fixture, packet, owner, false)
 }
 
 // s7ReviewerOriginalDispatch writes the platform sidechain transcript of the
