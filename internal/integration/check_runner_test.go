@@ -28,6 +28,9 @@ func TestCheckRunnerInheritsEnvironmentAndKeepsCheckoutClean(t *testing.T) {
 }
 func TestCheckRunnerExitCodeAndTimeoutDiagnostics(t *testing.T) {
 	root := t.TempDir()
+	// A failed check keeps its receipt and log as evidence; the attempt
+	// directory belongs to this test so it is reclaimed with it.
+	t.Setenv("TMPDIR", t.TempDir())
 	err := CommandCheckRunner(context.Background(), root, "printf 'failure-detail'; exit 7")
 	if err == nil || !strings.Contains(err.Error(), "exit=7") || !strings.Contains(err.Error(), "receipt=") {
 		t.Fatalf("missing real failure: %v", err)
@@ -49,6 +52,9 @@ func TestCheckRunnerExitCodeAndTimeoutDiagnostics(t *testing.T) {
 }
 func TestCheckRunnerTypedFailureMatchesActualReceipt(t *testing.T) {
 	root := t.TempDir()
+	// A failed check keeps its receipt and log as evidence; the attempt
+	// directory belongs to this test so it is reclaimed with it.
+	t.Setenv("TMPDIR", t.TempDir())
 	err := CommandCheckRunner(context.Background(), root, "printf 'actual-error'; exit 17")
 	var failure *checkexec.Failure
 	if !errors.As(err, &failure) || failure.Category != "process_exit" || failure.ReceiptRef == "" || failure.LogRef == "" {
@@ -82,5 +88,65 @@ func TestCheckRunnerTypedFailureMatchesActualReceipt(t *testing.T) {
 	err = CommandCheckRunner(ctx, root, "true")
 	if !errors.As(err, &failure) || failure.Category != "diagnostic_io" {
 		t.Fatalf("diagnostic error misclassified: %v", err)
+	}
+}
+
+// A check attempt that no evidence owner keeps must not pile up in the
+// system temporary directory, while the attempts that something does refer to
+// must survive exactly as they are today.
+func TestCheckRunnerRemovesOnlyUnownedPassedAttempts(t *testing.T) {
+	root := t.TempDir()
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
+	// A passed check with no evidence owner has no referent left.
+	if err := CommandCheckRunner(context.Background(), root, "true"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("passed check left attempt directories behind: %v", entries)
+	}
+
+	// A failed check keeps its receipt and log, because the failure points at
+	// them.
+	failureErr := CommandCheckRunner(context.Background(), root, "exit 9")
+	if failureErr == nil {
+		t.Fatal("failed check must not pass")
+	}
+	entries, err = os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("failed check lost its attempt directory: %v", entries)
+	}
+	attempt := filepath.Join(tmp, entries[0].Name())
+	if !strings.HasPrefix(entries[0].Name(), "loop-integration-check-") {
+		t.Fatalf("attempt directory is not the original layout: %s", entries[0].Name())
+	}
+	for _, name := range []string{"receipt.json", "output.log"} {
+		if _, statErr := os.Stat(filepath.Join(attempt, name)); statErr != nil {
+			t.Fatalf("failed check lost its %s: %v", name, statErr)
+		}
+	}
+
+	// An owned attempt directory survives even when the check passes, because
+	// its receipt is the canonical Main check artifact.
+	receipts := []string{}
+	owned := context.WithValue(context.Background(), checkEvidenceKey{}, checkEvidence{
+		Directory: filepath.Join(t.TempDir(), "checks"), Receipts: &receipts,
+	})
+	if err := CommandCheckRunner(owned, root, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("owned check did not publish its receipt: %v", receipts)
+	}
+	if _, statErr := os.Stat(receipts[0]); statErr != nil {
+		t.Fatalf("owned check lost its receipt file: %v", statErr)
 	}
 }

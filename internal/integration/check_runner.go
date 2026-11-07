@@ -110,6 +110,15 @@ func CommandCheckRunner(ctx context.Context, root, command string) error {
 		failure.LogRef = logPath
 		return fmt.Errorf("check %q failed (%s, exit=%d): %w; receipt=%s; log=%s", command, kind, exitCode, failure, receiptPath, logPath)
 	}
+	// A passed check that owns no evidence directory leaves nothing referring
+	// to its attempt files, so keeping them would accumulate one directory per
+	// check in the system temporary directory. An owned attempt directory
+	// stays, because the receipt is the canonical Main check artifact, and a
+	// failed check stays, because the failure above points at its receipt and
+	// log.
+	if parent == "" && evidence.Receipts == nil {
+		_ = os.RemoveAll(dir)
+	}
 	return nil
 }
 
