@@ -2172,5 +2172,85 @@ identified from that actor's own original task only; a Stop without it has no un
 终态 `/` 58G / 已用 **37G** / 可用 **22G**(**63%**)。
 **复核**:`gofmt -l` 空、`go build ./...` 通过、`go vet ./...` 通过(清理只动未跟踪产物与文档,工作树始终为空)。
 
+### 14.18 `internal/integration` 的测试残留清理
+
+**起因**:owner 指令「清理 `internal/integration` 测试残留并确认 `go test ./internal/integration` 通过后提交清理变更」。
+
+**排查方法**(两条独立证据,不靠肉眼扫):
+1. **逐符号引用计数** —— 把 `internal/integration` 全部 **131** 个小写函数(包内 helper)逐个在全仓 `.go` 里数出现次数,
+   只出现 1 次(= 只有定义、无任何调用)的就是死代码;
+2. **测试前后快照差分** —— 跑整包前后分别快照「仓内全部文件(路径/大小/mtime)」与「`/tmp` 目录清单」,做差分,
+   实测**仓内零残留**(只有被删文件的改名与内容变化),但 **`/tmp` 每跑一次就多出 6 个 `loop-integration-check-*` 目录**。
+
+### 14.18.1 死代码残留(8 处,全仓零引用)
+
+| 位置 | 符号 | 失去调用方的提交 |
+|---|---|---|
+| `canonical_main_integration_external_test.go:317` | `currentCanonicalReceiptAndGate` | `d0d948a` |
+| `canonical_main_integration_external_test.go:413` | `containsEveryString` | `d0d948a` |
+| `canonical_main_integration_external_test.go:422` | `corruptCanonicalMainProof` | `d0d948a` |
+| `canonical_surface_external_test.go:231` | `cloneCanonicalState` | `d0d948a` |
+| `s7_issued_result_external_test.go:394` | `runS7StopHook` | `7f38047` |
+| `s7_issued_result_external_test.go:462` | `invokeS7StopHook` | `7f38047` |
+| `storage_projection_test.go:11` | `writeProjectionObject` | `5228547` |
+| `inspect.go:139` | `hasFailing` | `d0d948a` |
+
+前 7 个是测试 helper,最后一个 `hasFailing` 是**生产侧死函数**(`CheckResult` 类型本身仍被 `inspect_responsibility.go:123` 使用,保留)。
+`containsString` / `nonNilStrings` 虽同形,但仍被同包 `canonical_deleted_surface_external_test.go` 与本文件调用 ⇒ **保留**。
+清理后该包小写函数 **131 → 123**,复扫**零引用残留**。
+
+### 14.18.2 夹具文件顶着生产文件名
+
+`internal/integration/git_ops_test.go` —— **420 行、零 Test 函数**(`git log -S"func Test"` 对该路径**从未**命中),
+内容是 `fakeRunner`(实现 `git_ops.go` 的 `gitRunner` 接口),被 `inspect_test.go` / `integrate_test.go` / `scope_p0_test.go` 共用。
+文件名的读法是「git_ops 的测试」,实际它一个 git_ops 测试都没有 ⇒ **改名为 `fake_git_runner_test.go`**(内容零改动)。
+`git_ops.go` 的生产函数本身有引用(`runGit` 101 处)且由 `git_lock_root_test.go` 等覆盖,**未动**。
+
+### 14.18.3 生产侧真实泄漏:无归属的检查尝试目录
+
+**根因**:`check_runner.go:35` 用 `os.MkdirTemp(parent, "loop-integration-check-")` 建检查尝试目录。
+`parent` 取自 context 里的 `checkEvidence.Directory`:
+- **有归属时**(生产主流程 `integrate_responsibility.go:232` 把目录钉在 checkpoint 的 `checks/` 下)—— 落盘正确、随工作区回收;
+- **无归属时**(`parent == ""`)—— `os.MkdirTemp("", …)` 直接落进**系统 `/tmp`**,而**没有任何地方删除它** ⇒ 每跑一次检查就多一个目录,无限累积。
+
+无归属的调用点有两个:
+- `inspect_responsibility.go:126` —— Inspect 路径用**裸 ctx** 调用检查器;
+- `canonical_result.go:342` —— 规范主路径的闭包(其 ctx 由 `Integrate` 注入 evidence,经 `checkexec.WithBinding` 透传 ⇒ **规范路径本无泄漏**)。
+
+**修复(`check_runner.go`)**:检查**通过**且**无人归属**时删除该尝试目录 —— 成功且无归属时没有任何东西引用它的收据与日志,
+留着只是垃圾;而**失败**时必须保留(错误消息与 `failure.ReceiptRef`/`LogRef` 都指向它),
+**有归属**时也必须保留(收据就是 canonical Main 检查工件,见 `qualitygate/canonical_builder_result.go:390` 的目录形状校验)。
+
+**断言(新增,不削弱任何既有断言)**:`check_runner_test.go` 新增 `TestCheckRunnerRemovesOnlyUnownedPassedAttempts`,
+把三条不变量写成断言 —— ①通过且无归属 ⇒ 临时目录**零新增**;②失败 ⇒ 收据与日志**仍在**;
+③有归属且通过 ⇒ 收据**仍发布且文件仍在**。
+
+**变异校验**:把清理条件改成 `if false && …` ⇒ 新断言**变红**,报文精确指向
+`passed check left attempt directories behind: [d loop-integration-check-1867925078/]` ⇒ 修复承重,已还原。
+
+**测试侧残余**:失败用例的证据目录(每轮 6 个)按设计留存,故让它们落进**测试自有的临时目录**
+(`t.Setenv("TMPDIR", t.TempDir())`,`check_runner_test.go` ×2、`scope_p0_test.go` ×1、`process_tree_test.go` ×1)⇒ 随测试自动回收。
+
+**实测**:
+- 整包 `internal/integration`:**76.974s / 0 失败**(清理前 90.424s / 0 失败;W35 基线 92.514s / 0 失败);
+- 整包跑完后 `/tmp` 的 `loop-integration-check-*` 目录数:**6 → 0**;
+- 历史累积的 **54** 个残留目录已全部回收(可恢复删除);
+- 下游复跑:`internal/cli` 4 条相关用例全绿(`TestDomainChecksUseActualPassingReceiptsWithoutDigestOrOID`、
+  `TestWorkspaceMainSelectsActualChecksAndRejectsFailure`、`TestNativeS9UnrecordedMergePreservesUnknownAndWorktree`、
+  `TestS9NativeFinalConcurrentFirstAcceptanceAndReplay`)、`internal/qualitygate` 5.103s / 0 失败、
+  `internal/mainreceipt` 1.694s / 0 失败;
+- 全仓 `gofmt -l` 空、`go build ./...` 通过、`go vet ./...` 通过。
+
+### 14.18.4 本轮记下的覆盖缺口(不改代码,留给下一波)
+
+`corruptCanonicalMainProof` 承载的是一条**负例**:把 canonical Main 检查点引用的收据与日志**从盘上删掉**,
+再要求 canonical Main 集成**拒绝**。它的调用方随 `d0d948a` 一起消失,此后**全仓再无该负例的覆盖**
+(`qualitygate` / `mainreceipt` 覆盖的是收据形状与 Main 根迁移,不是「证据文件被删 ⇒ 必须拒绝」)。
+本轮按「清理残留」处置:**删掉死助手,如实登记缺口**,不假装它还在被测。
+
+**另一条留给下一波的观察**(属产品证据放置问题,不是清理问题,本轮**不改**):
+Inspect 路径(`inspect_responsibility.go:126`)与 `canonical_result.go:342` 存在**无归属**调用,
+生产失败时证据只落在系统临时目录、且**仅由错误消息引用** —— 该把检查证据归到工作区的哪个位置,需要独立裁定。
+
 
 
