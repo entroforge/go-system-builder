@@ -2252,5 +2252,131 @@ identified from that actor's own original task only; a Stop without it has no un
 Inspect 路径(`inspect_responsibility.go:126`)与 `canonical_result.go:342` 存在**无归属**调用,
 生产失败时证据只落在系统临时目录、且**仅由错误消息引用** —— 该把检查证据归到工作区的哪个位置,需要独立裁定。
 
+### 14.19 全仓整包与 CI 门禁复跑:门禁缓存掩盖了一条负载触发的红
+
+**起因**:owner 指令「重跑全仓整包与 CI 门禁」。
+
+#### 14.19.1 第一遍复跑(HEAD `a836183`)—— 表面全绿
+
+5 个包顺序独占 + 6 道门禁(`run-sweep.sh`,12:00:50 起):
+
+| 包 | 结果 | 耗时 |
+|---|---|---|
+| `internal/investigation` | ok | 58.026s |
+| `internal/integration` | ok | 55.012s |
+| `tests/system/req039` | ok | 90.278s |
+| `tests/system/recovery` | ok | 3.679s |
+| `internal/cli` | ok | 1424.179s |
+
+| 门禁 | 退出码 | 耗时 |
+|---|---|---|
+| `fmt-check` | 0 | — |
+| `vet` | 0 | — |
+| `build` | 0 | — |
+| `test-ci-core` | 0 | 82.94s(65 个包命中 Go 内容寻址缓存) |
+| `test-ci-smoke` | 0 | 81.71s |
+| `test-ci-race` | 0 | 133.70s |
+
+5 个包日志 **0 条 FAIL**;跑完 `/tmp` 的 `loop-integration-check-*` 残留 **0**(§14.18.3 的泄漏修复在整包尺度成立)。
+
+#### 14.19.1.1 第二遍复跑被**并发改写**污染(记录,不归因于本波改动)
+
+复跑 2 期间**另一个进程在并发修改本仓**:先后出现 `Makefile`、`.github/workflows/ci.yml`、
+`.github/workflows/release.yml`、`tests/fixtures/**`、`internal/cli/*_test.go` 等改动(含禁改路径),
+且新增 `tests/fixtures/catalog/`、`internal/cli/s{5,8,9}_fixture_catalog_test.go`。
+其 `internal/cli/hook_acceptance_external_test.go`、`hook_acceptance_outlet_test.go`、
+`tests/fixtures/factory/harness.go` 的 mtime 为 **13:24:52**,**正落在 `internal/cli` 整包运行窗口
+(13:05:50–13:26:08)之内** ⇒ 该次 `internal/cli` 的 FAIL
+(`TestMainStageReceptionCanceledBeforePendingPreservesOriginalPair/S4`:
+`packet artifact exceeds 1256 bytes`)**不是本波改动造成的**。
+(`internal/audit` 对 `internal/integration` 的依赖数为 0,本波改动不触及 `internal/cli` 的包路径。)
+
+#### 14.19.1.2 第三遍复跑(终态,干净)
+
+等并发改写静默(连续 2 分钟全树 mtime 不变)后,**先快照全树 2230 个文件的 mtime**,再复跑;
+运行期间树**未被改写**(差分只有 `make build` 重建的 `.claude/bin/loop-harness` 一项,无任何源码变化):
+
+| 包 | 结果 | 耗时 |
+|---|---|---|
+| `internal/investigation` | ok | 45.415s |
+| `internal/integration` | ok | 50.207s |
+| `tests/system/req039` | ok | 80.996s |
+| `tests/system/recovery` | ok | 3.256s |
+| `internal/cli` | ok | 1257.330s |
+
+| 门禁 | 退出码 | 耗时 |
+|---|---|---|
+| `fmt-check` | 0 | — |
+| `vet` | 0 | — |
+| `build` | 0 | — |
+| `test-ci-core` | 0 | 73.26s |
+| `test-ci-smoke` | 0 | 73.51s |
+| `test-ci-race` | 0 | 5.76s(全部命中缓存) |
+
+`internal/cli` 由复跑 2 的 FAIL 转 ok ⇒ 复归因成立:那条 FAIL 来自并发改写。
+
+#### 14.19.2 门禁的缓存掩盖了一条真红
+
+`make test-ci-race` 的 `internal/audit` 显示 **`(cached)`**。Go 的测试缓存按内容寻址,**命中即复用旧结果**;
+而该包存在一条**负载触发**的红,缓存会把它盖成绿。故补跑**无缓存**(`-count=1`)独占 race 门禁:
+
+| 次数 | 结果 | `internal/audit` | `internal/runtime` | 总 wall |
+|---|---|---|---|---|
+| 第 1 次 | **FAIL** | **46.194s** | ~250s | 307.58s |
+| 第 2 次 | ok | 5.661s | 222.463s | 225.07s |
+
+第 1 次的红:
+
+```
+--- FAIL: TestDecisionIndexReusesHistoryAndRepairsCacheOnReplay (41.08s)
+    --- FAIL: TestDecisionIndexReusesHistoryAndRepairsCacheOnReplay/oversized (41.04s)
+        decision_index_test.go:67: replay failed to repair cache: context deadline exceeded
+```
+
+**归因**(三条证据):
+1. `internal/audit` 对 `internal/integration` 的依赖数 **0** ⇒ 与 §14.18 的改动**无关**,是既有脆弱点;
+2. 单包实测稳定通过 —— 不带 race 0.15s;带 race 连跑 3 次 1.724s/1.975s/1.907s;整包 race 4.90s ⇒ **只在机器饱和时出现**;
+3. 机制(源码定位):`AppendContext` 给整次追加一个 **30 秒墙钟预算**(`outbox.go:28`),
+   而 `readDecisionIndex`(`decision_index.go:75`)用 `io.ReadAll(io.LimitReader(file, decisionIndexLimit+1))`
+   **读满 16 MB 才发现索引超预算**,且这段读取**不检查 ctx**。机器饱和时这段读取把 30 秒预算耗尽,
+   随后重建路径的 `readDecisions` 命中 `ctx.Err()`(`decision_index.go:118`)返回**裸 `context deadline exceeded`** ——
+   一个**缓存问题**把幂等重放变成了失败,报错还误导性地指向「超时」而不是「缓存已超预算」。
+
+**实测代价**:同一把合成 I/O 负载(4 路 400MB fsync)下,该子用例耗时 **0.67～3.51s**,
+而同级的 `missing`/`corrupt` 子用例是 **0.00～0.01s** ⇒ 该子用例的成本几乎全部来自**那次被丢弃的 16 MB 读取**,
+且随 I/O 争用放大。
+
+#### 14.19.3 修法:减少实际工作,不增加预算
+
+蓝图 `BUGS.md:446` 对「审计追加」的修复方向是「保留事件和去重,采用可验证复用／索引,**等待受父请求约束**」,
+`BUGS.md:450` 明写「主修是**减少实际工作**及按进度续接,**不是增加预算**」。据此:
+**不抬高 30 秒预算**,而是**不读那份注定被丢弃的 16 MB**。
+
+改 `internal/audit/decision_index.go`:`readDecisionIndex` 先 `file.Stat()`,**尺寸超过有界缓存预算就直接判为 miss**,
+不再为了知道「它超了」而把它读完。语义**完全不变**(旧代码接受条件即「文件大小 ≤ limit 且内容可解析」),
+**既有断言逐字未改**,未新增任何门禁 / 散列 / round。
+
+**测量对比**(同一把合成负载、`-race`、`-count=6`):
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 合成 I/O 负载下 `oversized` 子用例 | 0.67～3.51s | **0.00～0.01s** |
+| 不带 race 单次 `oversized` 子用例 | 0.13s | **0.00s** |
+
+被丢弃的 16 MB 读取已从关键路径消失;修复后该子用例与同级子用例**同量级**。
+
+**修复后的无缓存 race 门禁认证**(`-count=1`、独占、10 个包全绿,退出码 0):
+`internal/audit` **3.350s**(修复前那次红为 46.194s 且 FAIL)、总 wall **207.38s**(修复前那轮 307.58s)。
+`internal/audit` 整包单跑(race、无缓存)**ok 3.298s**。
+
+#### 14.19.4 残留风险(留给下一波,本轮不改)
+
+1. **门禁本身报绿靠的是缓存**:`make test-ci-race` 不带 `-count=1`,Go 内容寻址缓存会把 `internal/audit` 复用成绿。
+   真正无缓存的门禁需要 `-count=1`,而 **`Makefile` 是禁改路径**,本轮**不能改** ⇒
+   下一波应把「race 门禁必须无缓存」列为 CI 口径待裁定项。
+2. **30 秒预算与 I/O 竞争的关系**仍未闭合:本轮只消除了那次**可避免的** 16 MB 读取;
+   `writeDecisionIndex` 的 `temp.Sync()` / `dir.Sync()` 仍是不可 ctx 感知的 fsync 家族操作,
+   饱和盘上仍可能顶到预算。本轮**没有**证据表明它们曾顶爆(未复现),故**不臆造修法**,留待有实测证据时再定。
+
 
 

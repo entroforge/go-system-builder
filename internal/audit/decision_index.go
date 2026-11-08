@@ -72,6 +72,13 @@ func readDecisionIndex(path, identity string, size int64) (decisionIndex, bool) 
 		return decisionIndex{}, false
 	}
 	defer file.Close()
+	// An index above the bounded cache budget can never be used, and reading it
+	// would only pay for bytes the reader then throws away. Decide from the
+	// size, so a damaged cache costs one stat instead of a full read that
+	// scales with the host's I/O load.
+	if info, statErr := file.Stat(); statErr != nil || info.Size() > decisionIndexLimit {
+		return decisionIndex{}, false
+	}
 	data, err := io.ReadAll(io.LimitReader(file, decisionIndexLimit+1))
 	if err != nil || len(data) > decisionIndexLimit {
 		return decisionIndex{}, false
