@@ -57,9 +57,10 @@ func dryRunTree(t *testing.T, root string) map[string]string {
 }
 
 func TestDryRunNeverConsumesNativeAnswersOrWritesHookArtifacts(t *testing.T) {
+	c := s5FixtureCatalogForTest(t)
 	for _, event := range []string{"SubagentStop", "SubagentStart", "PreToolUse", "PostToolUse", "Stop", "TeammateIdle", "SessionStart", "PreCompact", "PostToolUseFailure", "ConfigChange"} {
 		t.Run(event, func(t *testing.T) {
-			f := newStageAnswerFixture(t)
+			f := s5FixtureFromCatalog(t, c)
 			for _, packet := range f.packets {
 				stageJSON(t, f.root, packet.AnswerPath, completedDraft(packet, "pass"))
 			}

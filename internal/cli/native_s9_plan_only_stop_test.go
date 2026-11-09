@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -20,6 +21,11 @@ import (
 func nativeS9PlanOnlyFixture(t *testing.T, issuedFeedback ...*string) (string, string, workpacket.RepairPlanReportPacket, policy.Input) {
 	t.Helper()
 	root, plan, _, _, division := repairExecutionPlanningFixture(t)
+	return nativeS9PlanOnlyWithPlanning(t, root, plan, division, issuedFeedback...)
+}
+
+func nativeS9PlanOnlyWithPlanning(t *testing.T, root string, plan repair.RepairPlan, division string, issuedFeedback ...*string) (string, string, workpacket.RepairPlanReportPacket, policy.Input) {
+	t.Helper()
 	feedback := repairDispatchSave(t, root, division, []repairDispatchChoice{{AssignmentID: plan.Assignments[0].AssignmentID, RoleFamily: "backend-builder"}})
 	if len(issuedFeedback) > 0 {
 		*issuedFeedback[0] = feedback
@@ -87,12 +93,14 @@ func nativeS9AssertPlanOnlyBoundary(t *testing.T, root, worker string, p workpac
 }
 
 func TestNativeS9BeforeImplementationPlanOnlyPublicEvents(t *testing.T) {
+	c := s9PreDispatchCatalogForTest(t)
 	// One original source for each event, without a spelling/event Cartesian
 	// product. Read Post is deliberately only an independent observation.
 	for _, event := range []string{"PreToolUse", "PostToolUse", "SubagentStop", "ReadPostObservation", "IssuedDispatchPrompt"} {
 		t.Run(event, func(t *testing.T) {
 			var issued string
-			root, worker, p, in := nativeS9PlanOnlyFixture(t, &issued)
+			root, plan, division := s9PreDispatchFixtureFromCatalog(t, c)
+			root, worker, p, in := nativeS9PlanOnlyWithPlanning(t, root, plan, division, &issued)
 			planPath, result := nativeS9TestAuthorPaths(t, root, p)
 			brief := nativeS9BriefPath(p)
 			ref := "./" + brief

@@ -898,10 +898,11 @@ func TestS7ExplicitPluralViewListUsesEveryOriginalResponsibility(t *testing.T) {
 }
 
 func TestS8ExplicitPluralInvestigateAndViewListsUseOriginalResponsibilities(t *testing.T) {
+	c := s8FixtureCatalogForTest(t)
 	for _, event := range []string{"PostToolUse", "MainReturn"} {
 		for _, mode := range []string{"investigate-both", "investigate-unknown", "investigate-background", "view-both", "view-unknown", "view-background"} {
 			t.Run(event+"/"+mode, func(t *testing.T) {
-				root, ps := s8TwoIssuedInvestigatorsFixture(t)
+				root, ps := s8FixtureFromCatalog(t, c)
 				item := func(p workpacket.HypothesisResultPacket) string {
 					return fmt.Sprintf("investigate `%s` (owner `%s`)", p.Binding.HypothesisID, p.Binding.OwnerAgentID)
 				}
@@ -947,10 +948,11 @@ func TestS8ExplicitPluralInvestigateAndViewListsUseOriginalResponsibilities(t *t
 // investigations in a singular task conflict; mentioning the second only as
 // background does not assign it. Both packets were issued by the real Writer.
 func TestS8SingularOriginalDispatchDistinguishesConflictFromBackground(t *testing.T) {
+	c := s8FixtureCatalogForTest(t)
 	for _, event := range []string{"PreToolUse", "PostToolUse", "SubagentStop", "MainReturn"} {
 		for _, mode := range []string{"explicit-conflict", "background-comparison"} {
 			t.Run(event+"/"+mode, func(t *testing.T) {
-				root, ps := s8TwoIssuedInvestigatorsFixture(t)
+				root, ps := s8FixtureFromCatalog(t, c)
 				item := func(p workpacket.HypothesisResultPacket) string {
 					return fmt.Sprintf("investigate `%s` (owner `%s`)", p.Binding.HypothesisID, p.Binding.OwnerAgentID)
 				}

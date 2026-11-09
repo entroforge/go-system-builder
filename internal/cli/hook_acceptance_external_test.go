@@ -19,10 +19,7 @@ import (
 // the public native Stop, original Result consumer and real TR-009; no test
 // writes a clean label or snapshot to stand in for the final received result.
 func TestAcceptanceExternalS7LastResultAndGuidance(t *testing.T) {
-	binary := os.Getenv("HOOK_ACCEPTANCE_BINARY")
-	if binary == "" {
-		binary = factory.BuildHarness(t)
-	}
+	binary := factory.BuildHarness(t)
 	for _, version := range []string{"1.2.0", "1.3.0"} {
 		t.Run(version, func(t *testing.T) {
 			root := fixtures.FreshRoot(t)

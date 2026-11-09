@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/workspace"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 )
 
 func s9LiveShellQuote(value string) string {
@@ -198,11 +199,7 @@ func TestClaudeCodeNativeS9Live(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(binary), 0700); err != nil {
 		t.Fatal(err)
 	}
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "./cmd/loop-harness")
-	build.Dir = repo
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build Hook: %v %s", err, output)
-	}
+	factory.InstallHarness(t, binary, repo)
 	settingsBytes, err := os.ReadFile(filepath.Join(repo, "settings.json"))
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 )
 
 // This opt-in test spends real model requests. The subprocess is the native
@@ -86,12 +87,9 @@ func runClaudeNativeS6Live(t *testing.T, name string, background bool) {
 	if err := os.MkdirAll(filepath.Dir(binary), 0700); err != nil {
 		t.Fatal(err)
 	}
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "./cmd/loop-harness")
-	build.Dir = filepath.Clean(filepath.Join("..", ".."))
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build actual Hook binary: %v %s", err, output)
-	}
-	settingsData, err := os.ReadFile(filepath.Join(build.Dir, "settings.json"))
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	factory.InstallHarness(t, binary, repo)
+	settingsData, err := os.ReadFile(filepath.Join(repo, "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

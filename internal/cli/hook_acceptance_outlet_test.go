@@ -114,10 +114,7 @@ func TestAcceptanceExternalS10SourceRepairPreservesStage(t *testing.T) {
 
 func acceptanceRuntimeProcess(t *testing.T) func([]string, io.Reader, io.Writer, io.Writer) int {
 	t.Helper()
-	binary := os.Getenv("HOOK_ACCEPTANCE_BINARY")
-	if binary == "" {
-		binary = factory.BuildHarness(t)
-	}
+	binary := factory.BuildHarness(t)
 	return func(args []string, input io.Reader, out, diagnostic io.Writer) int {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
