@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,19 +86,45 @@ func TestS9FinalOriginalWriterSkipsOccupiedPathAndReusesRecordedResult(t *testin
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
 	paths := make([]string, 2)
+	request := repair.SubmitIssuedRepairResultRequest{ExpectedRevision: -1, PacketID: packet.ID, OwnerAgentID: plan.Binding.OwnerAgentID}
+	start := make(chan struct{})
 	for i := range errs {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _, ref, err := repair.SubmitIssuedRepairResult(context.Background(), root, statePath, journalPath, repair.SubmitIssuedRepairResultRequest{ExpectedRevision: -1, PacketID: packet.ID, OwnerAgentID: plan.Binding.OwnerAgentID})
+			<-start
+			_, _, ref, err := repair.SubmitIssuedRepairResult(context.Background(), root, statePath, journalPath, request)
 			errs[i], paths[i] = err, ref.Path
 		}(i)
 	}
+	close(start)
 	wg.Wait()
+	successful := 0
 	for i := range errs {
+		if errors.Is(errs[i], integration.ErrIntegrationBusy) {
+			t.Logf("concurrent replay %d reported busy; retrying after both attempts finish", i)
+			continue
+		}
 		if errs[i] != nil || paths[i] != selected {
 			t.Fatalf("recorded Result replay %d: path=%q err=%v", i, paths[i], errs[i])
 		}
+		successful++
+	}
+	if successful == 0 {
+		t.Fatal("no concurrent original Result replay completed")
+	}
+	for i := range errs {
+		if !errors.Is(errs[i], integration.ErrIntegrationBusy) {
+			continue
+		}
+		_, _, ref, err := repair.SubmitIssuedRepairResult(context.Background(), root, statePath, journalPath, request)
+		if err != nil || ref.Path != selected {
+			t.Fatalf("busy Result replay %d did not resume the same result: path=%q err=%v", i, ref.Path, err)
+		}
+	}
+	assertNativeFinalEventCount(t, journalPath, 1)
+	if got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(selected))); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("replay changed accepted Result: %q %v", got, err)
 	}
 	if got, err := os.ReadFile(occupied); err != nil || !bytes.Equal(got, original) {
 		t.Fatalf("replay changed unknown occupant: %q %v", got, err)

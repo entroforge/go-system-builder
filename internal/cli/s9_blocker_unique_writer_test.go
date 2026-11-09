@@ -2,18 +2,41 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 )
 
+// The platform Hook is an ordinary-built process with its own watchdog. The
+// test process can independently run with -race without changing that budget.
+func s9BlockerPublicHook(t *testing.T, binary, root string, input policy.Input) (string, string) {
+	t.Helper()
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out, diagnostic := factory.RunHook(t, binary, root, input.Event, raw)
+	if code != 0 {
+		t.Fatalf("public %s: %d %s %s", input.Event, code, out, diagnostic)
+	}
+	if input.Event == "PreToolUse" || input.Event == "PostToolUse" {
+		buffer := bytes.NewBufferString(out)
+		nativeS9ListenerFeedback(t, buffer)
+	}
+	return out, diagnostic
+}
+
 func TestNativeS9BlockerAndResolutionSurviveUnknownEvidenceRoot(t *testing.T) {
+	binary := factory.BuildHarness(t)
 	root, worker, plan, input, answer := nativeS9WorkerFixture(t)
 	resultPath := nativeS9TestResultPath(t, root, plan)
 	answer.Verdict, answer.ResidualRisks = "blocked", []string{"dependent service is temporarily unavailable"}
@@ -28,7 +51,7 @@ func TestNativeS9BlockerAndResolutionSurviveUnknownEvidenceRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.Event = "SubagentStop"
-	publicBlockerOut, publicBlockerDiagnostic := s9ReferencePublicHook(t, root, input)
+	publicBlockerOut, publicBlockerDiagnostic := s9BlockerPublicHook(t, binary, root, input)
 	snapshot := repairDispatchSnapshot(t, root)
 	packets, err := runtime.RepairResultPacketsContext(runtime.WithPacketBodyRoot(t.Context(), root), snapshot.State)
 	if err != nil || len(packets) != 1 {
@@ -52,9 +75,9 @@ func TestNativeS9BlockerAndResolutionSurviveUnknownEvidenceRoot(t *testing.T) {
 	before := repairDispatchRuntimeBytes(t, root)
 	failedSave := repairLeadSaveInput(root, filepath.Join(root, path), "Main")
 	failedSave.ToolResponse = map[string]any{"is_error": true}
-	s9ReferencePublicHook(t, root, failedSave)
+	s9BlockerPublicHook(t, binary, root, failedSave)
 	repairDispatchAssertUnchanged(t, root, before)
-	publicOut, publicDiagnostic := s9ReferencePublicHook(t, root, repairLeadSaveInput(root, filepath.Join(root, path), "Main"))
+	publicOut, publicDiagnostic := s9BlockerPublicHook(t, binary, root, repairLeadSaveInput(root, filepath.Join(root, path), "Main"))
 	afterHook := repairDispatchSnapshot(t, root)
 	resolved, found, err := runtime.VerifiedRepairResultResolutionReceipt(root, afterHook.State, packets[0].ID, plan.Binding.OwnerAgentID)
 	if err != nil || !found {
@@ -70,7 +93,30 @@ func TestNativeS9BlockerAndResolutionSurviveUnknownEvidenceRoot(t *testing.T) {
 }
 
 func TestNativeS9ResumedSecondBlockerUsesCurrentResponsibility(t *testing.T) {
+	t.Run("public-hook", func(t *testing.T) {
+		runS9ResumedSecondBlocker(t, factory.BuildHarness(t), false)
+	})
+	t.Run("in-process-writer", func(t *testing.T) {
+		runS9ResumedSecondBlocker(t, "", true)
+	})
+}
+
+// Each path starts with its own original fixture and accepts the second
+// blocker for the first time. The in-process path retains Writer race
+// coverage without making the instrumented test binary a platform Hook.
+func runS9ResumedSecondBlocker(t *testing.T, binary string, inProcess bool) {
+	t.Helper()
 	root, worker, plan, input, answer := nativeS9WorkerFixture(t)
+	var occupied string
+	if inProcess {
+		occupied = filepath.Join(root, ".claude", "evidence", "s9")
+		if err := os.MkdirAll(filepath.Dir(occupied), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(occupied, []byte("unknown evidence root"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	resultPath := nativeS9TestResultPath(t, root, plan)
 	answer.Verdict, answer.ResidualRisks = "blocked", []string{"first dependency unavailable"}
 	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, resultPath), answer); err != nil {
@@ -106,7 +152,16 @@ func TestNativeS9ResumedSecondBlockerUsesCurrentResponsibility(t *testing.T) {
 	}
 	input.AgentID = "new-native-owner-after-resolution"
 	diagnostic.Reset()
-	publicOut, publicDiagnostic := s9ReferencePublicHook(t, root, input)
+	var publicOut, publicDiagnostic string
+	if inProcess {
+		var out, diagnostic bytes.Buffer
+		if handled, code := nativeS9Hook(root, input, &out, &diagnostic); !handled || code != 0 {
+			t.Fatalf("second blocker Writer: %t %d %s %s", handled, code, &out, &diagnostic)
+		}
+		publicOut, publicDiagnostic = out.String(), diagnostic.String()
+	} else {
+		publicOut, publicDiagnostic = s9BlockerPublicHook(t, binary, root, input)
+	}
 	snapshot = repairDispatchSnapshot(t, root)
 	current, err := runtime.CurrentRepairResultPackets(root, snapshot.State, plan.Binding.OwnerAgentID)
 	if err != nil || len(current) != 1 || current[0].Binding.Resume == nil || current[0].Binding.Resume.PredecessorPacketID != first[0].ID {
@@ -122,6 +177,17 @@ func TestNativeS9ResumedSecondBlockerUsesCurrentResponsibility(t *testing.T) {
 	}
 	if agent["work_blocked_ref"] != receipt.Artifact.MessageRef {
 		t.Fatal("new original blocker was not recorded")
+	}
+	if _, found, err := runtime.VerifiedRepairResultBlockerReceipt(root, snapshot.State, first[0].ID, plan.Binding.OwnerAgentID); err != nil || !found {
+		t.Fatalf("first original blocker was not retained: %t %v", found, err)
+	}
+	if _, found, err := runtime.VerifiedRepairResultResolutionReceipt(root, snapshot.State, first[0].ID, plan.Binding.OwnerAgentID); err != nil || !found {
+		t.Fatalf("first original resolution was not retained: %t %v", found, err)
+	}
+	if inProcess {
+		if got, err := os.ReadFile(occupied); err != nil || string(got) != "unknown evidence root" {
+			t.Fatalf("unknown evidence root changed: %q %v", got, err)
+		}
 	}
 }
 

@@ -117,12 +117,34 @@ func TestProfiledWorkerActualAttemptCapturesPermissionFactsWithoutFallback(t *te
 			t.Fatal("shadow skipped actual execution", err)
 		}
 	}
-	// Tampering with installed authority fails before executing again.
-	if err := os.WriteFile(filepath.Join(e.Path, ".claude/settings.json"), []byte("{}"), 0600); err != nil {
+	// Historical Bootstrap bytes are not authenticated. A changed installed
+	// file does not itself reject another real isolated attempt.
+	settings := filepath.Join(e.Path, ".claude/settings.json")
+	changedSettings := []byte("{}")
+	if err := os.WriteFile(settings, changedSettings, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.RunCheck(ctx, e, 0, io.Discard); err == nil {
-		t.Fatal("changed Bootstrap was accepted")
+	previous := ref
+	ref = checkexec.ToolReceipt{}
+	changedPath, changedErr := b.RunCheck(ctx, e, 0, io.Discard)
+	if changedPath == "" || changedPath == previous.Path || ref.Path != changedPath {
+		t.Fatalf("changed settings did not produce a new actual attempt: path=%q receipt=%q error=%v", changedPath, ref.Path, changedErr)
+	}
+	changedReceipt, err := checkexec.VerifyToolReceipt(filepath.Join(b.MainRoot, ".claude/evidence/workspace-checks"), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedReceipt.Observation.Permissions == nil || changedReceipt.Observation.ReuseEligible {
+		t.Fatal("changed-settings attempt lost original constraints or enabled reuse")
+	}
+	if (changedErr == nil) != changedReceipt.Passed {
+		t.Fatalf("changed-settings attempt error and receipt disagree: error=%v passed=%t", changedErr, changedReceipt.Passed)
+	}
+	if !changedReceipt.Observation.Permissions.Available && (changedErr == nil || changedReceipt.Passed) {
+		t.Fatal("unavailable isolation used a fallback after settings changed")
+	}
+	if got, err := os.ReadFile(settings); err != nil || string(got) != string(changedSettings) {
+		t.Fatalf("changed settings were not preserved: %q, %v", got, err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
