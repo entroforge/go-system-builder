@@ -140,10 +140,10 @@ func TestDefaultProgressShadowRecordsWithoutContext(t *testing.T) {
 }
 
 func TestS5WorkerReadProgressAndReceivedPeerWaitWire(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	e := f.prepare(t, p)
-	f.begin(t, p, &e)
+	f.startFrozenReviewWorker(t, e)
 	before := stageSnapshot(t, f.root)
 	path := filepath.Join(e.Path, ".claude/inputs", p.Inputs[0].Path)
 	body, err := os.ReadFile(path)

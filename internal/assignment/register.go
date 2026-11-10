@@ -3,6 +3,7 @@ package assignment
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 )
 
 type Request struct {
+	s5Prepared       bool // Only the original automatic S5 preparation chooses a registered winner.
 	Context          context.Context
 	ExpectedRevision int
 	ManifestPath     string
@@ -87,6 +89,45 @@ type RevisionAcceptanceReceipt struct {
 func Register(root, statePath, journalPath string, request Request) (loopruntime.Snapshot, error) {
 	snapshot, err := registerWithReceipt(root, statePath, journalPath, request, nil)
 	return snapshot, err
+}
+
+// RegisterS5Prepared shares Register's transaction and validation. Only this
+// original preparation path resumes an already registered current S5 team;
+// ordinary register-workgroup retains its duplicate-registration refusal.
+func RegisterS5Prepared(root, statePath, journalPath string, request Request) (loopruntime.Snapshot, error) {
+	request.s5Prepared = true
+	return Register(root, statePath, journalPath, request)
+}
+
+var errS5PreparationWinner = errors.New("current S5 preparation is already registered")
+
+func s5PreparedWinner(state map[string]any, value manifest) bool {
+	if !loopruntime.PacketEnabled(state) || value.WorkgroupKind != "document_verifier" {
+		return false
+	}
+	life, _ := state["lifecycle"].(map[string]any)
+	baseline, _ := state["baseline"].(map[string]any)
+	if life["state"] != "document_verification" {
+		return false
+	}
+	entities, _ := state["entities"].(map[string]any)
+	teams, _ := entities["teams"].([]any)
+	for _, raw := range teams {
+		t, _ := raw.(map[string]any)
+		if t["kind"] == "document_verifier" && t["id"] == value.WorkgroupID && dispatch.Number(t["packet_stage_entry"]) == dispatch.Number(life["phase_revision"]) && dispatch.Number(t["packet_generation"]) == dispatch.Number(baseline["generation"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func s5NativeReviewAssignment(state map[string]any, value manifest, item assignment) bool {
+	life, _ := state["lifecycle"].(map[string]any)
+	mode := item.DispatchMode
+	if mode == "" {
+		mode = "plan_checkpoint"
+	}
+	return loopruntime.PacketEnabled(state) && life["state"] == "document_verification" && value.WorkgroupKind == "document_verifier" && item.RoleFamily == "document-verifier" && (item.ResponsibilityID == "DV-SPEC-CONSISTENCY" || item.ResponsibilityID == "DV-TASK-EXECUTABILITY") && (mode == "plan_checkpoint" || mode == "one_shot")
 }
 
 // RegisterWithReceipt adds the original durable issuance receipt for
@@ -345,6 +386,9 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 		// keeps the domain outcome and the refused repeat writes neither
 		// Runtime state nor a journal fact.
 		Precheck: func(state map[string]any) error {
+			if request.s5Prepared && s5PreparedWinner(state, value) {
+				return errS5PreparationWinner
+			}
 			if _, err := validateWorkgroupRegistration(root, request, value, selectedBoard, selectedFiles, taskData, state); err != nil {
 				return err
 			}
@@ -539,7 +583,7 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 				registeredRecords = records
 			}
 			for _, item := range value.Assignments {
-				if value.AssignmentRecordContract == assignmentrecord.NativeDeliveryContract {
+				if value.AssignmentRecordContract == assignmentrecord.NativeDeliveryContract || s5NativeReviewAssignment(state, value, item) {
 					continue // Native delivery records engineering responsibility, never activation.
 				}
 				dispatchMode := item.DispatchMode
@@ -597,12 +641,13 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 			return nil
 		},
 	})
+	if errors.Is(updateErr, errS5PreparationWinner) {
+		return store.Snapshot()
+	}
 	if updateErr != nil {
-		for index := len(stagedActivations) - 1; index >= 0; index-- {
-			if _, cleanupErr := store.RemoveUnreferencedArtifact(stagedActivations[index]); cleanupErr != nil {
-				return snapshot, fmt.Errorf("%w; staged registration artifact cleanup failed: %v", updateErr, cleanupErr)
-			}
-		}
+		// A path and equal bytes cannot prove that a failed registration's
+		// candidate still belongs to this attempt. Preserve unregistered
+		// artifacts; retry publishes a new exclusive candidate.
 		if request.Revision != nil {
 			latest, readErr := readRuntimeSnapshot(statePath)
 			if readErr == nil {

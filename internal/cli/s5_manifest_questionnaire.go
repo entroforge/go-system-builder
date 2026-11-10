@@ -32,7 +32,39 @@ func s5ManifestQuestionnairePath(root string, state map[string]any) string {
 	if req == "" {
 		return ""
 	}
+	if ref, err := s5CurrentManifestRef(state); err == nil && ref != "" {
+		return filepath.Join(root, filepath.FromSlash(ref))
+	}
+	return s5PreferredManifestPath(root, state)
+}
+
+func s5PreferredManifestPath(root string, state map[string]any) string {
+	req := stringValue(mapFieldCLI(state, "bound_req")["id"])
+	life := mapFieldCLI(state, "lifecycle")
 	return filepath.Join(root, ".claude/workgroups", req, fmt.Sprintf("review-e%d", stageAnswerEntry(life["phase_revision"])), "manifest.json")
+}
+
+// Only current registered team facts identify a manifest. Unknown candidates
+// are never read to choose a winner.
+func s5CurrentManifestRef(state map[string]any) (string, error) {
+	life := mapFieldCLI(state, "lifecycle")
+	generation := tolerantInt(mapFieldCLI(state, "baseline")["generation"])
+	entry := tolerantInt(life["phase_revision"])
+	ref := ""
+	for _, raw := range anySlice(mapFieldCLI(state, "entities")["teams"]) {
+		row, _ := raw.(map[string]any)
+		if row["kind"] != "document_verifier" || tolerantInt(row["packet_generation"]) != generation || tolerantInt(row["packet_stage_entry"]) != entry {
+			continue
+		}
+		if ref != "" {
+			return "", fmt.Errorf("multiple registered current S5 teams")
+		}
+		ref = stringValue(row["manifest_ref"])
+		if ref == "" {
+			return "", fmt.Errorf("registered current S5 team has no manifest_ref")
+		}
+	}
+	return ref, nil
 }
 
 // The original manifest is both the prepared Main interface and registration
@@ -107,37 +139,67 @@ func s5ManifestProjection(ctx context.Context, root string, state map[string]any
 	return value, taskID, taskPath, nil
 }
 
+// Preparation publishes and registers in one original preparation event. A
+// candidate left before registration is an orphan, never an input to retry.
 func prepareS5ManifestQuestionnaire(ctx context.Context, root string, state map[string]any) error {
-	path := s5ManifestQuestionnairePath(root, state)
-	if path == "" {
-		return nil
+	_, err := prepareS5Manifest(ctx, root, state, "")
+	return err
+}
+
+func prepareS5Manifest(ctx context.Context, root string, state map[string]any, savedInput string) (string, error) {
+	ref, err := s5CurrentManifestRef(state)
+	if err != nil || ref != "" {
+		return ref, err
 	}
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	draft, _, _, err := s5ManifestProjection(ctx, root, state)
+	draft, taskID, taskPath, err := s5ManifestProjection(ctx, root, state)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
+	if savedInput != "" {
+		data, err := os.ReadFile(savedInput)
+		if err != nil {
+			return "", err
+		}
+		var input map[string]any
+		if err := json.Unmarshal(data, &input); err != nil {
+			return "", err
+		}
+		if input == nil {
+			return "", fmt.Errorf("S5 manifest must be an object")
+		}
+		if err := completeS5Manifest(input, draft); err != nil {
+			return "", err
+		}
+		draft = input
 	}
 	data, err := json.MarshalIndent(draft, "", "  ")
 	if err != nil {
-		return err
+		return "", err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if os.IsExist(err) {
-		return nil
+	if err := schema.NewValidator(root).ValidateBytes("team-manifest.schema.json", data); err != nil {
+		return "", err
 	}
+	if err := team.ValidateBytes(data); err != nil {
+		return "", err
+	}
+	preferred, err := filepath.Rel(root, s5PreferredManifestPath(root, state))
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer file.Close()
-	_, err = file.Write(append(data, '\n'))
-	return err
+	data = append(data, '\n')
+	actual, err := workpacket.PublishS9Questionnaire(ctx, root, filepath.ToSlash(preferred), data, int64(len(data)))
+	if err != nil {
+		return "", err
+	}
+	service, err := submission.NewContext(ctx, root, false)
+	if err != nil {
+		return "", err
+	}
+	winner, err := assignment.RegisterS5Prepared(root, service.StatePath, service.JournalPath, assignment.Request{Context: ctx, ExpectedRevision: -1, ManifestPath: filepath.Join(root, filepath.FromSlash(actual)), TaskID: taskID, TaskPath: filepath.Join(root, taskPath)})
+	if err != nil {
+		return "", err
+	}
+	return s5CurrentManifestRef(winner.State)
 }
 
 func s5RegisteredManifest(state map[string]any, path, root string) bool {
@@ -279,79 +341,36 @@ func prepareS5ReviewResponsibilitiesOriginal(ctx context.Context, root string, s
 	if s5ManifestQuestionnairePath(root, state) == "" {
 		return nil
 	}
+	if _, err := s5CurrentManifestRef(state); err != nil {
+		return err
+	}
 	current, err := observedS5Packets(state)
 	if err != nil {
 		return err
 	}
-	if len(current) > 0 {
-		service, err := submission.NewContext(ctx, root, false)
-		if err != nil {
+	// Existing packet responsibilities always take precedence over a new
+	// preparation. The issuer retains each peer and repairs only missing work.
+	if len(current) == 0 {
+		if err := prepareS5ManifestQuestionnaire(ctx, root, state); err != nil {
 			return err
 		}
-		_, err = service.IssueContext(ctx, "")
-		return err
-	}
-	if err := prepareS5ManifestQuestionnaire(ctx, root, state); err != nil {
-		return err
 	}
 	service, err := submission.NewContext(ctx, root, false)
 	if err != nil {
 		return err
 	}
-	snapshot, err := runtime.NewStore(service.StatePath, service.JournalPath).Snapshot()
-	if err != nil {
-		return err
-	}
-	_, err = registerPreparedS5Manifest(ctx, root, snapshot)
+	_, err = service.IssueContext(ctx, "")
 	return err
 }
 
 func registerPreparedS5Manifest(ctx context.Context, root string, snapshot runtime.Snapshot) ([]workpacket.Packet, error) {
+	if _, err := prepareS5Manifest(ctx, root, snapshot.State, ""); err != nil {
+		return nil, err
+	}
 	service, err := submission.NewContext(ctx, root, false)
 	if err != nil {
 		return nil, err
 	}
-	path := s5ManifestQuestionnairePath(root, snapshot.State)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if !s5RegisteredManifest(snapshot.State, path, root) {
-		var value map[string]any
-		if err := json.Unmarshal(data, &value); err != nil {
-			return nil, err
-		}
-		if value == nil {
-			return nil, fmt.Errorf("S5 manifest must be an object")
-		}
-		expected, taskID, taskPath, err := s5ManifestProjection(ctx, root, snapshot.State)
-		if err != nil {
-			return nil, err
-		}
-		if err := completeS5Manifest(value, expected); err != nil {
-			return nil, err
-		}
-		data, err = json.MarshalIndent(value, "", "  ")
-		if err != nil {
-			return nil, err
-		}
-		if err := schema.NewValidator(root).ValidateBytes("team-manifest.schema.json", data); err != nil {
-			return nil, err
-		}
-		if err := team.ValidateBytes(data); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
-			return nil, err
-		}
-		_, err = assignment.Register(root, service.StatePath, service.JournalPath, assignment.Request{Context: ctx, ExpectedRevision: -1, ManifestPath: path, TaskID: taskID, TaskPath: filepath.Join(root, taskPath)})
-		if err != nil {
-			return nil, err
-		}
-	}
-	// The original issuer checks the registration digest even before its
-	// first packet, and existing packet pins afterwards. Do not normalize or
-	// re-sign an already registered manifest here.
 	return service.IssueContext(ctx, "")
 }
 
@@ -368,10 +387,19 @@ func runSavedS5ManifestQuestionnaire(root string, request policy.Input, stdout, 
 		return false, 0
 	}
 	current := s5ManifestQuestionnairePath(root, snapshot.State)
-	if current == "" || !samePath(path, current) {
+	if current == "" || !samePath(path, current) || !s5HasAcceptedPlanning(snapshot.State) {
 		return false, 0
 	}
-	packets, err := registerPreparedS5Manifest(contextForHook(request), root, snapshot)
+	ctx := contextForHook(request)
+	_, err = prepareS5Manifest(ctx, root, snapshot.State, path)
+	var packets []workpacket.Packet
+	if err == nil {
+		service, serviceErr := submission.NewContext(ctx, root, false)
+		err = serviceErr
+		if err == nil {
+			packets, err = service.IssueContext(ctx, "")
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "S5 Main manifest:", err)
 		nextAction := "Main 只修正尚未登记的真实专业选择；机器字段由系统准备，原来源缺失或漂移由系统恢复，不填写或刷新 SHA。"
@@ -388,6 +416,31 @@ func runSavedS5ManifestQuestionnaire(root string, request policy.Input, stdout, 
 	// facts and exact issued references, without forging packet_id or claiming
 	// that either review has completed.
 	context := "S5 原分工登记与原问卷发行已就绪；原清单保持冻结，这不代表审查通过。Main 直接分别派发真实独立原生上下文。\n" + strings.TrimSpace(next.String())
+	if latest, readErr := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot(); readErr == nil {
+		context += "\n" + stageS5ObservedContext(root, latest.State)
+	}
 	_ = json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PostToolUse", "additionalContext": context}})
 	return true, 0
+}
+
+// An accepted Main S4 responsibility in this generation is the existing
+// handoff association; a filename or professional-looking body is insufficient.
+func s5HasAcceptedPlanning(state map[string]any) bool {
+	generation := tolerantInt(mapFieldCLI(state, "baseline")["generation"])
+	entry := tolerantInt(mapFieldCLI(state, "lifecycle")["phase_revision"])
+	for _, raw := range anySlice(mapFieldCLI(state, "entities")["work_packets"]) {
+		row, _ := raw.(map[string]any)
+		if row["template_id"] != "s4-task-planning-v1" {
+			continue
+		}
+		p, found, err := runtime.FindTaskPlanningPacket(state, stringValue(row["packet_id"]))
+		if err != nil || !found || p.Binding.RuntimeID != state["runtime_id"] || p.Binding.Generation != generation || p.Binding.Owner != "Main" || p.Binding.StageEntry+1 != entry {
+			continue
+		}
+		r, received, err := runtime.FindSubmission(state, p.ID)
+		if err == nil && received && r.ControlStatus == "advanced" {
+			return true
+		}
+	}
+	return false
 }

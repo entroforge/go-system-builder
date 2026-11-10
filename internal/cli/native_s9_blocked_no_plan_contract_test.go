@@ -11,10 +11,12 @@ import (
 )
 
 func TestNativeS9BlockedWithoutPlanNaturalEvents(t *testing.T) {
+	c := s9PreDispatchCatalogForTest(t)
 	for _, verdict := range []string{"blocked", "contract_conflict"} {
 		for _, event := range []string{"PreToolUse", "PostToolUse", "SubagentStop"} {
 			t.Run(verdict+"/"+event, func(t *testing.T) {
-				root, worker, plan, in, _ := nativeS9WorkerFixture(t)
+				root, repairPlan, division := s9PreDispatchFixtureFromCatalog(t, c)
+				root, worker, plan, in, _ := nativeS9WorkerFixtureFromPlanning(t, root, repairPlan, division)
 				planPath, resultPath := nativeS9TestAuthorPaths(t, root, plan)
 				if err := os.Remove(filepath.Join(worker, planPath)); err != nil {
 					t.Fatal(err)

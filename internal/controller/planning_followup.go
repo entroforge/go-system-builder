@@ -248,7 +248,7 @@ func validatePlanningSubmissionEvidence(root string, state map[string]any, packe
 		// Followup does not reauthenticate the machine report.
 		return nil
 	case workpacket.TaskPlanningPacket:
-		data, err := workpacket.ReadFile(root, path, 1<<20)
+		data, err := runtime.ReadTaskPlanningReport(root, path)
 		if err != nil {
 			return fmt.Errorf("current %s accepted report is unavailable: %w", binding.Stage, err)
 		}
@@ -256,7 +256,7 @@ func validatePlanningSubmissionEvidence(root string, state map[string]any, packe
 			Answer workpacket.TaskPlanningAnswer `json:"task_planning_answer"`
 		}
 		if err := json.Unmarshal(data, &envelope); err != nil {
-			return fmt.Errorf("current S4 accepted evidence envelope is malformed")
+			return fmt.Errorf("current S4 accepted evidence envelope is malformed: %w", err)
 		}
 		if err := runtime.ValidateTaskPlanningEnvelope(p, record.EvidenceID, envelope.Answer, data); err != nil {
 			return fmt.Errorf("current S4 accepted evidence does not match its packet: %w", err)

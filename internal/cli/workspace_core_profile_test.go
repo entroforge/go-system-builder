@@ -164,8 +164,8 @@ func coreBuilderFixtureProfilesReadSources(t *testing.T, checks []string, profil
 	var lastWaiting any
 	deferredFollowup := false
 	for _, p := range f.packets {
-		f.begin(t, p, nil)
-		r := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
+		f.startNative(t, p)
+		r := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
 		lastReceiptError, lastStage, lastWaiting = r.Error, r.CurrentStage, r.WaitingOn
 		deferredFollowup = false
 		for _, waiting := range r.WaitingOn {

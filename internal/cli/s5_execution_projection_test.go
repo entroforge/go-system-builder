@@ -15,10 +15,10 @@ import (
 )
 
 func TestS5RevisionHookProjectsOnlyExactExecution(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	old := f.prepare(t, p)
-	f.begin(t, p, &old)
+	f.startFrozenReviewWorker(t, old)
 	accepted := saveStageHook(t, f.root, old.Path, old.AgentID, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
 	oldAnswer, err := os.ReadFile(filepath.Join(old.Path, workpacket.WorkerAnswerPath))
 	if err != nil {

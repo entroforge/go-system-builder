@@ -65,14 +65,14 @@ func damageStagePair(t *testing.T, root string) {
 func TestCheckpointRecoverPreservesNamedRevisionAndExactlyOnceRoute(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	old, peer := f.packets[0], f.packets[1]
-	f.begin(t, old, nil)
-	f.begin(t, peer, nil)
-	first := saveStageHook(t, f.root, f.root, old.Binding.Owner, old.AnswerPath, completedDraft(old, "pass"))
+	f.startNative(t, old)
+	f.startNative(t, peer)
+	first := saveNativeStageStop(t, f.root, f.root, old.Binding.Owner, old.AnswerPath, completedDraft(old, "pass"))
 	var next workpacket.Packet
 	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "revise", "--root", f.root, "--previous", first.SubmissionKey, "--reason", "Recheck the concrete missing dependency before advancing")), &next); err != nil {
 		t.Fatal(err)
 	}
-	if !saveStageHook(t, f.root, f.root, peer.Binding.Owner, peer.AnswerPath, completedDraft(peer, "pass")).WorkComplete {
+	if !saveNativeStageStop(t, f.root, f.root, peer.Binding.Owner, peer.AnswerPath, completedDraft(peer, "pass")).WorkComplete {
 		t.Fatal("peer was not received")
 	}
 	path, pair := latestStageCheckpoint(t, f.root)
@@ -112,7 +112,7 @@ func TestCheckpointRecoverPreservesNamedRevisionAndExactlyOnceRoute(t *testing.T
 	if s := stageSnapshot(t, f.root); s.State["lifecycle"].(map[string]any)["state"] != "document_verification" {
 		t.Fatal("pending revision was skipped")
 	}
-	r = saveStageHook(t, f.root, f.root, next.Binding.Owner, next.AnswerPath, completedDraft(next, "pass"))
+	r = saveNativeStageStop(t, f.root, f.root, next.Binding.Owner, next.AnswerPath, completedDraft(next, "pass"))
 	if !r.WorkComplete {
 		t.Fatalf("restored activation/source did not receive: %+v", r)
 	}
@@ -280,10 +280,10 @@ func isCheckpointContentDigest(name string) bool {
 }
 
 func TestCheckpointRecoverRejectsLiveIndependentWorker(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	e := f.prepare(t, p)
-	f.begin(t, p, &e)
+	f.startFrozenReviewWorker(t, e)
 	if !saveStageHook(t, f.root, e.Path, p.Binding.Owner, workpacket.WorkerAnswerPath, completedDraft(p, "pass")).WorkComplete {
 		t.Fatal("Worker conclusion not received")
 	}
@@ -316,8 +316,8 @@ func TestCheckpointRejectsOlderPairAndForgedReceptionFacts(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	oldPath, _ := latestStageCheckpoint(t, f.root)
 	p := f.packets[0]
-	f.begin(t, p, nil)
-	first := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
+	f.startNative(t, p)
+	first := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
 	stageCLI(t, "runtime", "stage-answer", "revise", "--root", f.root, "--previous", first.SubmissionKey, "--reason", "Recheck the frozen dependency")
 	_, pair := latestStageCheckpoint(t, f.root)
 	if _, err := runtime.ReadRuntimeCheckpoint(f.root, oldPath, semantic.RuntimeCandidateValidator{}); err == nil {
@@ -421,8 +421,8 @@ func TestCheckpointSealedRecoveryResumesAfterPairReplacementAndSourceLoss(t *tes
 		t.Run(string(step), func(t *testing.T) {
 			f := newStageAnswerFixture(t)
 			p := f.packets[0]
-			f.begin(t, p, nil)
-			if !saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass")).WorkComplete {
+			f.startNative(t, p)
+			if !saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass")).WorkComplete {
 				t.Fatal("domain reception failed")
 			}
 			path, pair := latestStageCheckpoint(t, f.root)

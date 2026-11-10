@@ -42,13 +42,18 @@ func prepareTaskPlanningSubmission(root string, state map[string]any, req Eviden
 		if prior.EvidenceID != req.ID {
 			return prior, fmt.Errorf("S4 replay original domain differs")
 		}
-		if err := ValidateTaskPlanningEnvelope(p, req.ID, answer, data); err != nil {
-			return prior, err
-		}
 		rows, _ := state["evidence"].([]any)
 		for _, raw := range rows {
 			row, _ := raw.(map[string]any)
-			if row["id"] == req.ID && row["kind"] == req.Kind && row["path"] == req.Path {
+			if row["id"] == req.ID && row["kind"] == req.Kind {
+				path, _ := row["path"].(string)
+				winner, err := ReadTaskPlanningReport(root, path)
+				if err != nil {
+					return prior, err
+				}
+				if err := ValidateTaskPlanningReplay(p, req.ID, answer, winner); err != nil {
+					return prior, err
+				}
 				return prior, errSubmissionAccepted
 			}
 		}
@@ -66,6 +71,29 @@ func prepareTaskPlanningSubmission(root string, state map[string]any, req Eviden
 	}
 	key := "submission:" + p.ID
 	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: p.Binding.Owner, EvidenceID: req.ID, FollowupID: "followup:" + p.ID, ControlStatus: "pending", OriginState: "planning", OriginPhase: "tasks", OriginEntry: p.Binding.StageEntry}, nil
+}
+
+// ValidateTaskPlanningReplay first validates the accepted report against its
+// own answer and association. Only a valid report with a different professional
+// answer is a submission conflict; unreadable or malformed reports retain their
+// actual error.
+func ValidateTaskPlanningReplay(p workpacket.TaskPlanningPacket, id string, answer workpacket.TaskPlanningAnswer, data []byte) error {
+	var recorded struct {
+		Answer workpacket.TaskPlanningAnswer `json:"task_planning_answer"`
+	}
+	if err := json.Unmarshal(data, &recorded); err != nil {
+		return err
+	}
+	if err := ValidateTaskPlanningEnvelope(p, id, recorded.Answer, data); err != nil {
+		return err
+	}
+	if err := validateStoredTaskPlanningAnswer(answer); err != nil {
+		return err
+	}
+	if err := ValidateTaskPlanningEnvelope(p, id, answer, data); err != nil {
+		return ErrSubmissionConflict
+	}
+	return nil
 }
 
 // ValidateTaskPlanningEnvelope checks readable recorded facts, not historical source proof.

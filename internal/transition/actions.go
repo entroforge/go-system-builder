@@ -626,7 +626,7 @@ func acceptedTaskPlanningBatch(state map[string]any, ctx *ActionContext) (accept
 	if evidencePath == "" || filepath.IsAbs(evidencePath) || filepath.ToSlash(cleanEvidencePath) != evidencePath || cleanEvidencePath == ".." || strings.HasPrefix(cleanEvidencePath, ".."+string(filepath.Separator)) {
 		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 evidence path is invalid")
 	}
-	envelopeBytes, err := files.ReadFile(evidencePath)
+	envelopeBytes, err := loopruntime.ReadTaskPlanningReport(actionRoot(state, ctx), evidencePath)
 	if err != nil {
 		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 accepted S4 report is unavailable: %w", err)
 	}

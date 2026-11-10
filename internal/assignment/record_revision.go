@@ -711,12 +711,8 @@ func preStageRevisionActivation(root string, state map[string]any, value manifes
 	if activationRef == "" {
 		return nil
 	}
-	envelope := buildActivationEnvelope(item.AgentID, source)
-	activationBytes, err := json.MarshalIndent(envelope, "", "  ")
-	if err != nil {
-		return err
-	}
-	*staged = append(*staged, loopruntime.ArtifactCleanupRequest{ExpectedRevision: dispatch.Number(state["revision"]), ArtifactPath: activationRef, ArtifactBytes: append(activationBytes, '\n'), ReferencedPaths: stateArtifactPaths(state)})
+	// Keep a failed publication as an unregistered candidate. Matching bytes
+	// cannot prove that a later occupant is still the object we created.
 	agent["activation_ref"] = activationRef
 	_ = occurredAt
 	return nil

@@ -47,7 +47,9 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	if request.Submission != nil {
 		frozen := *request.Submission
 		frozen.AnswerJSON = append([]byte(nil), frozen.AnswerJSON...)
-		frozen.EvidenceJSON = append([]byte(nil), frozen.EvidenceJSON...)
+		if frozen.EvidenceJSON != nil {
+			frozen.EvidenceJSON = append([]byte{}, frozen.EvidenceJSON...)
+		}
 		request.Submission = &frozen
 	}
 	if request.ID == "" {
@@ -79,13 +81,13 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			return Snapshot{}, fmt.Errorf("evidence produced_by contains an empty actor")
 		}
 	}
-	// The original S2/S3 consumers hand their prepared reports to this Writer;
+	// The original S2/S3/S4/S5 consumers hand their prepared reports to this Writer;
 	// it chooses and records their paths in the same locked mutation.
-	publishPlanning := (request.Kind == "planning_design" || request.Kind == "planning_contract") && request.Submission != nil && request.Submission.EvidenceJSON != nil
+	publishPreparedReport := (request.Kind == "planning_design" || request.Kind == "planning_contract" || request.Kind == "planning_task" || request.Kind == "document_review") && request.Submission != nil && request.Submission.EvidenceJSON != nil
 	cleanPath := ""
 	var data []byte
 	var err error
-	if publishPlanning {
+	if publishPreparedReport {
 		data = request.Submission.EvidenceJSON
 	} else {
 		cleanPath, err = safeEvidencePath(root, request.Path)
@@ -219,14 +221,14 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			if err := validateDocumentRegistration(state, request, data); err != nil {
 				return err
 			}
-			if publishPlanning {
+			if publishPreparedReport {
 				ctx := request.Context
 				if ctx == nil {
 					ctx = context.Background()
 				}
 				path, err := workpacket.PublishS9Questionnaire(ctx, root, request.Path, data, int64(len(data)))
 				if err != nil {
-					return fmt.Errorf("publish original planning evidence: %w", err)
+					return fmt.Errorf("publish original prepared evidence: %w", err)
 				}
 				cleanPath, err = safeEvidencePath(root, path)
 				if err != nil {
@@ -292,7 +294,7 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			// never from the artifact's mere presence or the outer error text.
 			latest, readErr := store.Snapshot()
 			if readErr == nil {
-				if request.Kind == "planning_contract" {
+				if request.Kind == "planning_contract" || request.Kind == "planning_task" || request.Kind == "document_review" {
 					if _, accepted, findErr := FindSubmission(latest.State, request.Submission.PacketID); findErr != nil || !accepted {
 						return next, err
 					}
@@ -301,7 +303,7 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 				if errors.Is(replayErr, errSubmissionAccepted) {
 					return latest, nil
 				}
-				if errors.Is(replayErr, ErrSubmissionConflict) {
+				if errors.Is(replayErr, ErrSubmissionConflict) || ((request.Kind == "planning_task" || request.Kind == "document_review") && replayErr != nil) {
 					return Snapshot{}, replayErr
 				}
 			}
@@ -372,30 +374,83 @@ func expandRolloverScopeRefs(scopeRefs []string, runtimeID string) ([]string, er
 }
 
 func safeEvidencePath(root, path string) (string, error) {
+	clean, _, err := resolveEvidencePath(root, path)
+	return clean, err
+}
+
+// ReadTaskPlanningReport reads a recorded S4 system report from its actual
+// control-root path. Association and professional validation belong to callers.
+// It shares the Evidence Writer's path rules and reads the resolved target
+// without imposing an additional report size limit.
+func ReadTaskPlanningReport(root, path string) ([]byte, error) {
+	return ReadRecordedEvidenceReport(root, path)
+}
+
+// ReadRecordedEvidenceReport reads a report already located by its registered
+// association. It shares the Evidence Writer's resolved-in-repository path
+// boundary, without a byte limit or product FileView. Callers own association
+// and professional validation. This is not a pinned, symlink-free read.
+func ReadRecordedEvidenceReport(root, path string) ([]byte, error) {
+	_, resolved, err := resolveEvidencePath(root, path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read recorded evidence report: %w", err)
+	}
+	return data, nil
+}
+
+// RecordedDocumentReviewReportPath locates an accepted packet report, including
+// historical revisions. It does not qualify a conclusion or change gate rules.
+func RecordedDocumentReviewReportPath(state map[string]any, id string) (string, bool) {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["submissions"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["evidence_id"] != id {
+			continue
+		}
+		if _, found, err := FindWorkPacket(state, stringValue(row["packet_id"])); err != nil || !found {
+			continue
+		}
+		evidence, _ := state["evidence"].([]any)
+		for _, raw := range evidence {
+			item, _ := raw.(map[string]any)
+			if item["id"] == id && item["kind"] == "document_review" {
+				return stringValue(item["path"]), true
+			}
+		}
+	}
+	return "", false
+}
+
+func resolveEvidencePath(root, path string) (string, string, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("evidence path is required")
+		return "", "", fmt.Errorf("evidence path is required")
 	}
 	clean := filepath.Clean(path)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
+		return "", "", fmt.Errorf("evidence path must stay within repository: %q", path)
 	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("resolve repository root: %w", err)
+		return "", "", fmt.Errorf("resolve repository root: %w", err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
 	if err != nil {
-		return "", fmt.Errorf("resolve repository root symlinks: %w", err)
+		return "", "", fmt.Errorf("resolve repository root symlinks: %w", err)
 	}
 	resolvedPath, err := filepath.EvalSymlinks(filepath.Join(rootAbs, clean))
 	if err != nil {
-		return "", fmt.Errorf("resolve evidence path symlinks: %w", err)
+		return "", "", fmt.Errorf("resolve evidence path symlinks: %w", err)
 	}
 	relative, err := filepath.Rel(resolvedRoot, resolvedPath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
+		return "", "", fmt.Errorf("evidence path must stay within repository: %q", path)
 	}
-	return filepath.ToSlash(clean), nil
+	return filepath.ToSlash(clean), resolvedPath, nil
 }
 
 func nullableString(value string) any {

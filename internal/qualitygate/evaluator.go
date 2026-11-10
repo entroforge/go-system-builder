@@ -55,6 +55,8 @@ type Input struct {
 	GateID        string
 	AffectedPaths []string
 	Files         FileView
+	// Set only by the current S4 reception projection during this evaluation.
+	taskPlanningEvidence map[string]any
 }
 
 // Evaluation is the pure evaluator result consumed by the Controller.
@@ -235,7 +237,7 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) (Evaluation, error) 
 	}
 	if input.GateID == "GATE-PLANNING-TASKS-COMPLETE" {
 		if runtime.PacketEnabled(input.Snapshot.State) {
-			sources, accepted, factErr := verifiedTaskPlanningPacketFacts(input)
+			sources, accepted, factErr := verifiedTaskPlanningPacketFacts(&input)
 			if factErr != nil {
 				result.Status = StatusUnknown
 				result.ErrorCode = ErrorGateUnknown
@@ -479,6 +481,7 @@ func evaluateRegisteredGate(input Input, result Evaluation, spec GateSpec, docum
 			generation,
 			requirement,
 			documents,
+			input.readEvidenceRow,
 		)
 		if len(conflicts) > 0 {
 			result.Status = StatusUnknown
@@ -706,6 +709,21 @@ func evidenceMissingKey(spec GateSpec, requirement EvidenceRequirement) string {
 	return key
 }
 
+// Read the selected S4 reception and accepted packet-bound S5 reports from
+// their registered control paths. Formal materials and other evidence retain
+// the gate's declared product FileView.
+func (input Input) readEvidenceRow(row map[string]any) ([]byte, error) {
+	selected := input.taskPlanningEvidence
+	if selected != nil && stringValue(row["id"]) == stringValue(selected["id"]) &&
+		stringValue(row["path"]) == stringValue(selected["path"]) {
+		return runtime.ReadTaskPlanningReport(input.Root, stringValue(selected["path"]))
+	}
+	if path, found := runtime.RecordedDocumentReviewReportPath(input.Snapshot.State, stringValue(row["id"])); found && path == stringValue(row["path"]) {
+		return runtime.ReadRecordedEvidenceReport(input.Root, path)
+	}
+	return input.Files.ReadFile(stringValue(row["path"]))
+}
+
 func unauthorizedProducerConflicts(
 	input Input,
 	spec GateSpec,
@@ -767,7 +785,7 @@ func unauthorizedProducerConflicts(
 			input.Files == nil {
 			continue
 		}
-		data, err := input.Files.ReadFile(stringValue(index["path"]))
+		data, err := input.readEvidenceRow(index)
 		if err != nil {
 			continue
 		}
@@ -845,7 +863,7 @@ func (e *Engine) qualifiedRequestedEvents(input Input, documents []documentFact)
 		if input.Files == nil || path == "" {
 			continue
 		}
-		data, err := input.Files.ReadFile(path)
+		data, err := input.readEvidenceRow(index)
 		if err != nil {
 			continue
 		}
@@ -897,6 +915,7 @@ func qualifiedEvidence(
 	generation int,
 	requirement EvidenceRequirement,
 	documents []documentFact,
+	readers ...func(map[string]any) ([]byte, error),
 ) ([]string, []string) {
 	raw, _ := state["evidence"].([]any)
 	var valid []string
@@ -923,7 +942,11 @@ func qualifiedEvidence(
 			conflicts = append(conflicts, "evidence:"+stringValue(index["id"])+":unreadable")
 			continue
 		}
-		data, err := files.ReadFile(path)
+		read := func(row map[string]any) ([]byte, error) { return files.ReadFile(stringValue(row["path"])) }
+		if len(readers) > 0 {
+			read = readers[0]
+		}
+		data, err := read(index)
 		if err != nil {
 			conflicts = append(conflicts, "evidence:"+stringValue(index["id"])+":unreadable")
 			continue
@@ -1042,7 +1065,7 @@ func evidenceEnvelopesByID(input Input, ids []string) []evidenceEnvelope {
 		if _, ok := wanted[stringValue(index["id"])]; !ok || input.Files == nil {
 			continue
 		}
-		data, err := input.Files.ReadFile(stringValue(index["path"]))
+		data, err := input.readEvidenceRow(index)
 		if err != nil {
 			continue
 		}

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 )
 
 func TestS9OriginalContractPublicMinimalPlan(t *testing.T) {
@@ -34,49 +36,96 @@ func TestS9OriginalContractPublicMinimalPlan(t *testing.T) {
 	}
 }
 
+// s9OriginalReceiver separates the public Hook process from direct original
+// consumer coverage. Each scenario creates its own untouched fixture.
+type s9OriginalReceiver func(*testing.T, string, policy.Input) (string, string)
+
+// s9OriginalInProcessReceiver exercises the first original consumer/Writer in
+// the race-instrumented test process without imposing a platform Hook budget.
+// Public event routing and its watchdog are covered by the separate Harness
+// scenarios below, not by this direct consumer call.
+func s9OriginalInProcessReceiver(t *testing.T, root string, in policy.Input) (string, string) {
+	t.Helper()
+	var out, diagnostic bytes.Buffer
+	if in.AgentID == "Main" {
+		snapshot := repairDispatchSnapshot(t, root)
+		path, err := repairLeadQuestionnairePath(root, snapshot.State, "change-impact.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handled, code := saveRepairImpactQuestionnaireBytes(root, snapshot, path, data, &out, t.Context())
+		if !handled || code != 0 {
+			t.Fatalf("original Impact consumer: handled=%t code=%d output=%s", handled, code, &out)
+		}
+	} else {
+		in.Context = t.Context()
+		handled, code := nativeS9Hook(root, in, &out, &diagnostic)
+		if !handled || code != 0 {
+			t.Fatalf("original Builder consumer: handled=%t code=%d output=%s diagnostic=%s", handled, code, &out, &diagnostic)
+		}
+	}
+	return out.String(), diagnostic.String()
+}
+
 func TestS9OriginalContractPublicEarlyEmptyImpactKeepsBuilderAndUpdates(t *testing.T) {
+	binary := factory.BuildHarness(t)
+	public := func(t *testing.T, root string, in policy.Input) (string, string) {
+		return s9BlockerPublicHook(t, binary, root, in)
+	}
 	for _, event := range []string{"PreToolUse", "PostToolUse", "Stop"} {
 		t.Run(event, func(t *testing.T) {
-			root, worker, packet, in, _ := nativeS9WorkerFixture(t)
-			before := repairDispatchSnapshot(t, root)
-			impact, err := prepareRepairImpactQuestionnaire(root, before.State)
-			if err != nil {
-				t.Fatal(err)
-			}
-			main := policy.Input{Event: event, AgentID: "Main", CWD: root, ToolName: "Bash", ToolInput: map[string]any{"command": "true"}}
-			s9ReferencePublicHook(t, root, main)
-			early := repairDispatchSnapshot(t, root)
-			p := repairPointerCLI(early.State)
-			first := stringValue(p["impact_ref"])
-			if first == "" || stringValue(p["status"]) != "targeted_reverification" {
-				t.Fatalf("empty Impact not received through %s: %+v", event, p)
-			}
-			if stringValue(p["result_ref"]) != "" || len(repairArtifactRefs(p, "targeted_reverification_artifacts", "")) != 0 || early.State["workspace"] != nil {
-				t.Fatalf("empty template invented completed work: %+v", p)
-			}
-			// The original Builder is still in flight when Main's template is received.
-			in.Event, in.CWD = "SubagentStop", worker
-			nativeS9SplitChild(t, &in)
-			s9ReferencePublicHook(t, root, in)
-			after := repairDispatchSnapshot(t, root)
-			contributions, err := repair.ReceivedRepairContributions(root, after.State)
-			if err != nil || len(contributions) != 1 || contributions[0].AssignmentID != packet.Binding.RepairAssignmentID {
-				t.Fatalf("late original Builder lost: %+v %v", contributions, err)
-			}
-			if stringValue(repairPointerCLI(after.State)["result_ref"]) != "" {
-				t.Fatal("Impact manufactured a Final")
-			}
-			writeRepairLeadJSON(t, impact, map[string]any{"change_types": []string{"implementation"}, "decisions": []any{}})
-			main.Event = "PreToolUse"
-			s9ReferencePublicHook(t, root, main)
-			updated := repairPointerCLI(repairDispatchSnapshot(t, root).State)
-			if stringValue(updated["impact_ref"]) == first {
-				t.Fatalf("existing impact_ref closed Main's original judgment: %+v", updated)
-			}
-			if _, err := os.Stat(resolveRootPath(root, first)); err != nil {
-				t.Fatalf("earlier accepted Impact disappeared: %v", err)
-			}
+			runS9EarlyImpactKeepsBuilderAndUpdates(t, event, public)
 		})
+	}
+	t.Run("in-process-original-consumers", func(t *testing.T) {
+		runS9EarlyImpactKeepsBuilderAndUpdates(t, "PreToolUse", s9OriginalInProcessReceiver)
+	})
+}
+
+func runS9EarlyImpactKeepsBuilderAndUpdates(t *testing.T, event string, receive s9OriginalReceiver) {
+	t.Helper()
+	root, worker, packet, in, _ := nativeS9WorkerFixture(t)
+	before := repairDispatchSnapshot(t, root)
+	impact, err := prepareRepairImpactQuestionnaire(root, before.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := policy.Input{Event: event, AgentID: "Main", CWD: root, ToolName: "Bash", ToolInput: map[string]any{"command": "true"}}
+	receive(t, root, main)
+	early := repairDispatchSnapshot(t, root)
+	p := repairPointerCLI(early.State)
+	first := stringValue(p["impact_ref"])
+	if first == "" || stringValue(p["status"]) != "targeted_reverification" {
+		t.Fatalf("empty Impact not received through %s: %+v", event, p)
+	}
+	if stringValue(p["result_ref"]) != "" || len(repairArtifactRefs(p, "targeted_reverification_artifacts", "")) != 0 || early.State["workspace"] != nil {
+		t.Fatalf("empty template invented completed work: %+v", p)
+	}
+	// The original Builder is still in flight when Main's template is received.
+	in.Event, in.CWD = "SubagentStop", worker
+	nativeS9SplitChild(t, &in)
+	receive(t, root, in)
+	after := repairDispatchSnapshot(t, root)
+	contributions, err := repair.ReceivedRepairContributions(root, after.State)
+	if err != nil || len(contributions) != 1 || contributions[0].AssignmentID != packet.Binding.RepairAssignmentID {
+		t.Fatalf("late original Builder lost: %+v %v", contributions, err)
+	}
+	if stringValue(repairPointerCLI(after.State)["result_ref"]) != "" {
+		t.Fatal("Impact manufactured a Final")
+	}
+	writeRepairLeadJSON(t, impact, map[string]any{"change_types": []string{"implementation"}, "decisions": []any{}})
+	main.Event = "PreToolUse"
+	receive(t, root, main)
+	updated := repairPointerCLI(repairDispatchSnapshot(t, root).State)
+	if stringValue(updated["impact_ref"]) == first {
+		t.Fatalf("existing impact_ref closed Main's original judgment: %+v", updated)
+	}
+	if _, err := os.Stat(resolveRootPath(root, first)); err != nil {
+		t.Fatalf("earlier accepted Impact disappeared: %v", err)
 	}
 }
 

@@ -83,7 +83,16 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 	// S5 retains its document-review routing. S7/S8 always identify an
 	// original responsibility by the same exact task and answer references.
 	if stage == "S5" {
-		if prior := contextAgent(snap.State, in.AgentID); stringValue(prior["activation_ref"]) != "" {
+		// A registered activation belongs to an already issued legacy
+		// responsibility, including its pre-staged reading/PLAN checkpoint.
+		// Preserve that route even before activation_revision exists. Fresh
+		// native S5 responsibilities do not register an activation_ref.
+		prior := contextAgent(snap.State, in.AgentID)
+		if stringValue(prior["activation_ref"]) != "" {
+			return false, 0
+		}
+		mode := stringValue(prior["dispatch_mode"])
+		if mode != "" && mode != "plan_checkpoint" && mode != "one_shot" {
 			return false, 0
 		}
 		for _, raw := range mapFieldCLI(mapFieldCLI(snap.State, "workspace"), "executions") {

@@ -23,6 +23,20 @@ import (
 // CompleteTask Writer. Every status is read from the runner's sealed bytes;
 // the test never fabricates a passing receipt.
 func TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource(t *testing.T) {
+	testNativeWorkerCheckResultPersistsDurableFacts(t, "")
+}
+
+// checkPath changes only the two runner invocations, leaving fixture setup,
+// Result reception and replay on the original host environment.
+func testNativeWorkerCheckResultPersistsDurableFacts(t *testing.T, checkPath string) {
+	runCheck := func(args []string, out, diagnostic *bytes.Buffer) int {
+		if checkPath != "" {
+			originalPath := os.Getenv("PATH")
+			t.Setenv("PATH", checkPath)
+			defer t.Setenv("PATH", originalPath)
+		}
+		return cli.Run(args, nil, out, diagnostic)
+	}
 	root, taskID, taskPath := newS6RecordContextFixture(t)
 	const (
 		manifestRef = ".claude/workgroups/manifest-s6-native-context.json"
@@ -112,7 +126,7 @@ func TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource(t *t
 	stageCLI(t, "runtime", "agent-begin", "--root", root, "--agent-id", owner, "--plan", contextView.PlanPath)
 
 	var checkOut, checkErr bytes.Buffer
-	checkCode := cli.Run([]string{"runtime", "assignment-context", "check", "--root", root, "--agent-id", owner, "--check-index", "0"}, nil, &checkOut, &checkErr)
+	checkCode := runCheck([]string{"runtime", "assignment-context", "check", "--root", root, "--agent-id", owner, "--check-index", "0"}, &checkOut, &checkErr)
 	stateAfterCheck := stageSnapshot(t, root)
 	var wrappers []assignment.NativeOwnedCheckReceipt
 	for _, raw := range stateAfterCheck.State["entities"].(map[string]any)["agents"].([]any) {
@@ -189,12 +203,6 @@ func TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource(t *t
 	if err != nil {
 		t.Fatalf("original Result did not validate its durable runner evidence: %v", err)
 	}
-	for _, artifact := range []*assignmentresult.ResolvedEvidence{firstFact.ReceiptArtifact, firstFact.LogArtifact} {
-		body, err := read(artifact.Path)
-		if err != nil || len(body) == 0 {
-			t.Fatalf("durable Worker fact artifact is missing or changed: %+v err=%v", artifact, err)
-		}
-	}
 	// Reverse: the durable artifact is the original captured receipt byte for
 	// byte. It is a copy, never a digest, fingerprint, checksum or a
 	// re-serialized form of the original bytes.
@@ -214,6 +222,7 @@ func TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource(t *t
 	if firstFact.ReceiptArtifact.Ref != assignmentresult.WorkerCheckEvidenceRef(0, "receipt") || firstFact.LogArtifact.Ref != assignmentresult.WorkerCheckEvidenceRef(0, "log") {
 		t.Fatalf("durable Worker fact artifacts lost their logical reference: %+v", firstFact)
 	}
+	assertNativeWorkerLogCopy(t, read, firstFact, rawBytes, checkPath != "")
 	assertWorkerCheckArtifactTruth(t, firstAccepted.WorkerCheckFacts)
 	complete := assignmentresult.WorkerClosureComplete(record, accepted)
 	if complete != (rawReceipt.Status == "pass") {
@@ -252,7 +261,7 @@ func TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource(t *t
 		t.Fatal(err)
 	}
 	var rerunOut, rerunErr bytes.Buffer
-	rerunCode := cli.Run([]string{"runtime", "assignment-context", "check", "--root", root, "--agent-id", owner, "--check-index", "0"}, nil, &rerunOut, &rerunErr)
+	rerunCode := runCheck([]string{"runtime", "assignment-context", "check", "--root", root, "--agent-id", owner, "--check-index", "0"}, &rerunOut, &rerunErr)
 	stateAfterRerun := stageSnapshot(t, root)
 	wrappers = nil
 	for _, raw := range stateAfterRerun.State["entities"].(map[string]any)["agents"].([]any) {
@@ -377,12 +386,25 @@ func TestNativeWorkerCheckResultPersistsDurableFactsAndBindsAnswerAndSource(t *t
 	if err != nil || !bytes.Equal(secondPublished, secondOriginalBytes) {
 		t.Fatalf("new Result Worker fact receipt is not the fresh original captured bytes: err=%v", err)
 	}
+	assertNativeWorkerLogCopy(t, read, secondFact, secondRawBytes, checkPath != "")
 	assertWorkerCheckArtifactTruth(t, secondAccepted.WorkerCheckFacts)
 
 	if !strings.HasPrefix(secondAccepted.WorkerCheckFacts[0].ContextRef, ".claude/assignment-context/native/") || !reflect.DeepEqual(secondAccepted.WorkerCheckFacts[0].Record, record.Reference()) {
 		t.Fatalf("fresh Worker Result lost its current fixed native context/Record: %+v", secondAccepted.WorkerCheckFacts[0])
 	}
 
+	// Durable accepted facts remain readable after the live owner workspace
+	// and both original runner receipts/logs are gone.
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatal(err)
+	}
+	for _, wrapper := range wrappers {
+		for _, path := range []string{wrapper.ToolReceipt.Path, filepath.Join(filepath.Dir(wrapper.ToolReceipt.Path), "output.log")} {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	latestState := second.State
 	// Earlier immutable Result and check artifacts remain readable after the
 	// owner's live source has drifted and newer stale Results are current.
@@ -419,6 +441,46 @@ func assertWorkerCheckArtifactTruth(t *testing.T, facts []assignmentresult.Worke
 			if fact.ReceiptArtifact != nil || fact.LogArtifact != nil {
 				t.Fatalf("unavailable Worker check %d gained a fabricated artifact: %+v", fact.Index, fact)
 			}
+		}
+	}
+}
+
+// The receipt is structured evidence, while output is a captured stream that
+// may legitimately contain no bytes when the runner cannot start.
+func assertNativeWorkerLogCopy(t *testing.T, read func(string) ([]byte, error), fact assignmentresult.WorkerCheckFact, receiptBytes []byte, missingBwrap bool) {
+	t.Helper()
+	if fact.OriginalReceipt == nil || fact.LogArtifact == nil {
+		t.Fatalf("Worker fact lost original receipt/log coordinates: %+v", fact)
+	}
+	var receipt struct {
+		Status      string             `json:"status"`
+		Output      string             `json:"output"`
+		Failure     *checkexec.Failure `json:"failure"`
+		Observation struct {
+			Permissions struct {
+				Available  bool   `json:"available"`
+				Diagnostic string `json:"diagnostic"`
+			} `json:"permissions"`
+		} `json:"profile_observation"`
+	}
+	if err := json.Unmarshal(receiptBytes, &receipt); err != nil || receipt.Output == "" {
+		t.Fatalf("original runner receipt has no readable output coordinate: %v", err)
+	}
+	if want := filepath.Join(filepath.Dir(fact.OriginalReceipt.Path), "output.log"); receipt.Output != want {
+		t.Fatalf("original receipt output differs from its runner directory: got=%s want=%s", receipt.Output, want)
+	}
+	original, err := os.ReadFile(receipt.Output)
+	if err != nil {
+		t.Fatalf("read original runner output: %v", err)
+	}
+	published, err := read(fact.LogArtifact.Path)
+	if err != nil || !bytes.Equal(published, original) {
+		t.Fatalf("durable Worker log differs from original captured bytes: original=%d durable=%d err=%v", len(original), len(published), err)
+	}
+	t.Logf("actual WorkerCheck log copied unchanged: status=%s original_bytes=%d durable_bytes=%d missing_bwrap=%t", receipt.Status, len(original), len(published), missingBwrap)
+	if missingBwrap {
+		if receipt.Status != "fail" || receipt.Failure == nil || receipt.Failure.Code != "CHECK_CAPABILITY_MISSING" || !strings.Contains(receipt.Failure.Observed, "bwrap") || receipt.Observation.Permissions.Available || !strings.Contains(receipt.Observation.Permissions.Diagnostic, "bwrap") || len(original) != 0 {
+			t.Fatalf("missing bwrap did not preserve actual capability failure and empty output: receipt=%s output=%q", receiptBytes, original)
 		}
 	}
 }

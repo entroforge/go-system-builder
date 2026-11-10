@@ -13,9 +13,11 @@ import (
 )
 
 func TestNativeS9PrivateOriginalConsumer(t *testing.T) {
+	c := s9PreDispatchCatalogForTest(t)
 	for _, scenario := range []string{"changed", "nochange", "blocked", "same-packet-scratch", "other-packet-sibling", "staged-plan", "ignored-result", "changed-after-receipt"} {
 		t.Run(scenario, func(t *testing.T) {
-			root, worker, p, _, answer := nativeS9WorkerFixture(t)
+			root, repairPlan, division := s9PreDispatchFixtureFromCatalog(t, c)
+			root, worker, p, _, answer := nativeS9WorkerFixtureFromPlanning(t, root, repairPlan, division)
 			plan, result, err := nativeS9AuthorPaths(root, p)
 			if err != nil {
 				t.Fatal(err)

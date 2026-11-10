@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/controller"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
@@ -75,6 +76,18 @@ func newStageAnswerFixtureMode(t *testing.T, packet bool, configure ...func(stri
 }
 
 func newStageAnswerFixtureIssuance(t *testing.T, packet, issue bool, configure ...func(string, map[string]any)) stageAnswerFixture {
+	return newStageAnswerFixtureHistory(t, packet, issue, false, configure...)
+}
+
+// Simulated historical registration boundary: these responsibilities already
+// carried generic activation references before native S5 stopped creating them.
+// No working state, approval or received professional result is seeded. Actual
+// begin, frozen workspace preparation and reception still use production paths.
+func newHistoricalStageAnswerFixture(t *testing.T, configure ...func(string, map[string]any)) stageAnswerFixture {
+	return newStageAnswerFixtureHistory(t, true, true, true, configure...)
+}
+
+func newStageAnswerFixtureHistory(t *testing.T, packet, issue, historical bool, configure ...func(string, map[string]any)) stageAnswerFixture {
 	t.Helper()
 	root := fixtures.FreshRoot(t)
 	state := fixtures.BaseState(t, root, "document_verification", "", 0)
@@ -197,6 +210,28 @@ func newStageAnswerFixtureIssuance(t *testing.T, packet, issue bool, configure .
 	manifestPath := ".claude/workgroups/REQ-039/review/manifest.json"
 	stageJSON(t, root, manifestPath, manifest)
 	stageCLI(t, "runtime", "register-workgroup", "--root", root, "--manifest", manifestPath, "--task-id", f.taskID, "--task", f.taskPath)
+	if historical {
+		snap := stageSnapshot(t, root)
+		for _, raw := range snap.State["entities"].(map[string]any)["agents"].([]any) {
+			row := raw.(map[string]any)
+			for _, item := range assignments {
+				a := item.(map[string]any)
+				if row["id"] != a["agent_id"] {
+					continue
+				}
+				source := assignment.ActivationSourceEntry{AgentID: a["agent_id"].(string), AgentDefinitionRef: a["agent_definition_ref"].(string), SkillRefs: a["skill_refs"].([]string), WritePaths: a["write_paths"].([]string), OutputPaths: a["output_paths"].([]string)}
+				ref, err := assignment.PreStageActivationEnvelope(root, "workgroup-stage-answer", f.taskID, source.AgentID, "plan_checkpoint", source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row["activation_ref"] = ref
+			}
+		}
+		if err := schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", mustStageJSON(t, snap.State)); err != nil {
+			t.Fatalf("historical S5 snapshot: %v", err)
+		}
+		stageJSON(t, root, ".claude/loop-state.json", snap.State)
+	}
 	if !issue {
 		return f
 	}
@@ -215,8 +250,20 @@ func newStageAnswerFixtureIssuance(t *testing.T, packet, issue bool, configure .
 	return f
 }
 
-func (f stageAnswerFixture) begin(t *testing.T, p workpacket.Packet, worker *workspace.Execution) {
+func (f stageAnswerFixture) beginHistorical(t *testing.T, p workpacket.Packet) {
 	t.Helper()
+	registered := false
+	for _, raw := range stageSnapshot(t, f.root).State["entities"].(map[string]any)["agents"].([]any) {
+		row := raw.(map[string]any)
+		if row["id"] == p.Binding.Owner {
+			ref, _ := row["activation_ref"].(string)
+			registered = ref != ""
+		}
+	}
+	if !registered {
+		t.Fatal("historical begin requires an existing registered activation reference")
+	}
+
 	asset, err := schema.ReadAsset("agent-message.examples.json")
 	if err != nil {
 		t.Fatal(err)
@@ -238,27 +285,41 @@ func (f stageAnswerFixture) begin(t *testing.T, p workpacket.Packet, worker *wor
 	plan["planned_paths"] = []string{p.AnswerPath}
 	plan["objective"] = "Independently verify the frozen document responsibility."
 	path := ".claude/evidence/plan-" + p.Binding.Owner + ".json"
-	if worker != nil {
-		registry, _, err := workspace.Load(f.root)
-		if err != nil {
-			t.Fatalf("read registered Worker submission paths: %v", err)
-		}
-		if registry == nil {
-			t.Fatal("Worker plan fixture requires the registered workspace")
-		}
-		submissionPaths, err := registry.WorkerSubmissionPaths(*worker)
-		if err != nil {
-			t.Fatalf("resolve frozen Worker submission paths: %v", err)
-		}
-		if submissionPaths.Plan == "" {
-			return
-		}
-		stageJSON(t, worker.Path, submissionPaths.Plan, plan)
-		stageCLI(t, "runtime", "workspace", "begin", "--root", worker.Path, "--assignment", worker.AssignmentID, "--agent", worker.AgentID)
-	} else {
-		stageJSON(t, f.root, path, plan)
-		stageCLI(t, "runtime", "agent-begin", "--root", f.root, "--agent-id", p.Binding.Owner, "--plan", path)
+	stageJSON(t, f.root, path, plan)
+	stageCLI(t, "runtime", "agent-begin", "--root", f.root, "--agent-id", p.Binding.Owner, "--plan", path)
+}
+
+// Frozen S5 review executions have never carried a generic Worker PLAN.
+// Exercise their real lifecycle entrance instead of the former silent begin.
+func (f stageAnswerFixture) startFrozenReviewWorker(t *testing.T, worker workspace.Execution) {
+	t.Helper()
+	if code, message := stageHookCode(t, f.root, worker.Path, worker.AgentID, "SessionStart", ""); code != 0 || !strings.Contains(message, filepath.Join(worker.Path, workpacket.WorkerAnswerPath)) {
+		t.Fatalf("frozen review Worker Start: %d %s", code, message)
 	}
+}
+
+func (f stageAnswerFixture) startNative(t *testing.T, p workpacket.Packet) {
+	t.Helper()
+	if code, out, diagnostic := nativeReviewEvent(t, f.root, "SubagentStart", p.Binding.Owner, ""); code != 0 {
+		t.Fatalf("native S5 Start: %d %s %s", code, out, diagnostic)
+	}
+}
+
+func saveNativeStageStop(t *testing.T, root, cwd, owner, path string, answer workpacket.Draft) submission.Receipt {
+	t.Helper()
+	stageJSON(t, cwd, path, answer)
+	if code, out, diagnostic := nativeReviewEvent(t, root, "SubagentStop", owner, filepath.Join(cwd, path)); code != 0 {
+		t.Fatalf("native S5 Stop: %d %s %s", code, out, diagnostic)
+	}
+	service, err := submission.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.Receipt(owner, filepath.Join(cwd, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipt
 }
 
 // Frozen teammate save compatibility; native delivery uses nativeReviewEvent/Stop.
@@ -437,13 +498,13 @@ func TestStageAnswerLastSaveReceivesAndRoutesOriginalS5(t *testing.T) {
 			f := newStageAnswerFixture(t)
 			receivedCalls := int64(0)
 			for _, p := range f.packets {
-				f.begin(t, p, nil)
+				f.startNative(t, p)
 			}
 			for _, p := range f.packets {
 				if stageSnapshot(t, f.root).State["lifecycle"].(map[string]any)["state"] != "document_verification" {
 					break
 				}
-				r := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, verdict))
+				r := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, verdict))
 				receivedCalls++
 				t.Logf("receipt: %+v", r)
 				if !r.Accepted || !r.WorkComplete {
@@ -454,8 +515,9 @@ func TestStageAnswerLastSaveReceivesAndRoutesOriginalS5(t *testing.T) {
 				}
 				if r.CurrentStage != "S5" {
 					before := stageSnapshot(t, f.root)
-					replay := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, verdict))
-					receivedCalls++
+					replay := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, verdict))
+					// Native Stop projects the durable receipt on replay, without
+					// invoking Save or recording another submission-save call.
 					if !replay.WorkComplete || stageSnapshot(t, f.root).Revision != before.Revision {
 						t.Fatal("lost transition response caused a second reception or transition")
 					}
@@ -500,7 +562,7 @@ func TestIndependentStageAnswerFrozenSourceAndDeferredReceipt(t *testing.T) {
 
 func testIndependentStageAnswerFrozenReceipt(t *testing.T, deferControl bool) {
 	t.Helper()
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	stageCLI(t, "runtime", "workspace", "prepare", "--root", f.root, "--assignment", p.Binding.AssignmentID, "--agent", p.Binding.Owner)
 	b, err := workspace.Decode(stageSnapshot(t, f.root).State)
@@ -512,7 +574,7 @@ func testIndependentStageAnswerFrozenReceipt(t *testing.T, deferControl bool) {
 		t.Fatalf("review execution widened product authority: %+v", e)
 	}
 	before := stageSnapshot(t, f.root)
-	f.begin(t, p, &e)
+	f.startFrozenReviewWorker(t, e)
 	answer := completedDraft(p, "pass")
 	var r submission.Receipt
 	if deferControl {
@@ -596,7 +658,7 @@ func stageHookCode(t *testing.T, root, cwd, owner, event, path string) (int, str
 func TestIndependentReviewStopsOnlyItsOwnResponsibility(t *testing.T) {
 	for _, verdict := range []string{"pass", "fix_required"} {
 		t.Run(verdict, func(t *testing.T) {
-			f := newStageAnswerFixture(t)
+			f := newHistoricalStageAnswerFixture(t)
 			p := f.packets[0]
 			e := f.prepare(t, p)
 			before := stageSnapshot(t, f.root)
@@ -609,7 +671,7 @@ func TestIndependentReviewStopsOnlyItsOwnResponsibility(t *testing.T) {
 			if code, msg := stageHookCode(t, f.root, e.Path, e.AgentID, "PreToolUse", filepath.Join(e.Path, workpacket.WorkerAnswerPath)); code != 0 || strings.Contains(msg, `"permissionDecision":"deny"`) {
 				t.Fatalf("questionnaire listener denied the tool: %d %s", code, msg)
 			}
-			f.begin(t, p, &e)
+			f.startFrozenReviewWorker(t, e)
 			if code, msg := stageHookCode(t, f.root, e.Path, e.AgentID, "PreToolUse", filepath.Join(e.Path, "product.go")); code != 0 || strings.Contains(msg, `"permissionDecision":"deny"`) {
 				t.Fatalf("listener must not enforce tool scope: %d %s", code, msg)
 			}
@@ -648,10 +710,10 @@ func TestIndependentReviewRejectsCorruptSourceWithoutReception(t *testing.T) {
 	// the schema, and never computes, registers or verifies any digest.
 	for _, change := range []string{"owner", "view", "symlink", "old entry"} {
 		t.Run(change, func(t *testing.T) {
-			f := newStageAnswerFixture(t)
+			f := newHistoricalStageAnswerFixture(t)
 			p := f.packets[0]
 			e := f.prepare(t, p)
-			f.begin(t, p, &e)
+			f.startFrozenReviewWorker(t, e)
 			stageJSON(t, e.Path, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
 			owner := p.Binding.Owner
 			s, err := submission.New(f.root)
@@ -695,10 +757,10 @@ func TestIndependentReviewRejectsCorruptSourceWithoutReception(t *testing.T) {
 	// input must not block the reception, and it must not become a new fact:
 	// the frozen input stays a pure location coordinate.
 	t.Run("frozen input", func(t *testing.T) {
-		f := newStageAnswerFixture(t)
+		f := newHistoricalStageAnswerFixture(t)
 		p := f.packets[0]
 		e := f.prepare(t, p)
-		f.begin(t, p, &e)
+		f.startFrozenReviewWorker(t, e)
 		stageJSON(t, e.Path, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
 		input := filepath.Join(e.Path, ".claude/inputs", p.Inputs[0].Path)
 		if err := os.Chmod(input, 0600); err != nil {
@@ -783,11 +845,11 @@ func TestIndependentReviewRejectsCorruptSourceWithoutReception(t *testing.T) {
 }
 
 func TestConcurrentIndependentReviewersDoNotLoseAnswersOrDoubleAdvance(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	executions := make([]workspace.Execution, len(f.packets))
 	for i, p := range f.packets {
 		executions[i] = f.prepare(t, p)
-		f.begin(t, p, &executions[i])
+		f.startFrozenReviewWorker(t, executions[i])
 		stageJSON(t, executions[i].Path, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
 	}
 	receipts := make([]submission.Receipt, 2)
@@ -880,7 +942,7 @@ func (v cancelValidatedReception) ValidateCandidate(root string, state map[strin
 func TestStageAnswerCanceledBeforePendingDoesNotClaimReception(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	p := f.packets[0]
-	f.begin(t, p, nil)
+	f.startNative(t, p)
 	stageJSON(t, f.root, p.AnswerPath, completedDraft(p, "pass"))
 	service, err := submission.New(f.root)
 	if err != nil {
@@ -922,7 +984,7 @@ func mustStageFile(t *testing.T, path string) []byte {
 func TestStageAnswerDomainCommitSurvivesInterruptedFollowup(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	p := f.packets[0]
-	f.begin(t, p, nil)
+	f.startNative(t, p)
 	stageJSON(t, f.root, p.AnswerPath, completedDraft(p, "pass"))
 	s, err := submission.New(f.root)
 	if err != nil {
@@ -953,9 +1015,9 @@ func TestStageAnswerDomainCommitSurvivesInterruptedFollowup(t *testing.T) {
 func TestLastS5ReviewerControlInterruptionRecoversOriginalTR003WithoutResubmission(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	for i, p := range f.packets {
-		f.begin(t, p, nil)
+		f.startNative(t, p)
 		if i == 0 {
-			if !saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass")).WorkComplete {
+			if !saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass")).WorkComplete {
 				t.Fatal("first original responsibility not received")
 			}
 			continue

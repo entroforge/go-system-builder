@@ -30,7 +30,7 @@ func prepareNativeBinding(t *testing.T, f stageAnswerFixture, owner string, extr
 }
 
 func TestNativeContextBindingFreezesAcrossWorkingStateAndRejectsSourceDrift(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	b := prepareNativeBinding(t, f, p.Binding.Owner)
 	if _, present := b["owned_check_commands"]; present {
@@ -48,7 +48,7 @@ func TestNativeContextBindingFreezesAcrossWorkingStateAndRejectsSourceDrift(t *t
 	if actual.Path != ref["path"] {
 		t.Fatal("lifecycle did not consume frozen binding")
 	}
-	f.begin(t, p, nil)
+	f.beginHistorical(t, p)
 	actual, _ = explicitContextRead(t, f, p.Binding.Owner)
 	if actual.Path != ref["path"] {
 		t.Fatal("working state silently rebuilt captured profile")
@@ -134,8 +134,8 @@ func TestNativeContextBindingNamedRevisionUsesExactReceivedPredecessor(t *testin
 	if code := cli.Run(args, nil, &out, &errout); code == 0 || stageSnapshot(t, f.root).Revision != before {
 		t.Fatal("generic profile refresh was accepted")
 	}
-	f.begin(t, p, nil)
-	receipt := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
+	f.startNative(t, p)
+	receipt := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
 	var next workpacket.Packet
 	issued := stageCLI(t, "runtime", "stage-answer", "revise", "--root", f.root, "--previous", receipt.SubmissionKey, "--reason", "Re-evaluate the original frozen dependency finding")
 	json.Unmarshal([]byte(issued), &next)

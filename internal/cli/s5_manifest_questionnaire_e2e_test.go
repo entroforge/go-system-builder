@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
@@ -311,7 +312,7 @@ func TestS5PreparationRecoveryRejectsAcceptedSourceDriftWithoutRefreshingSHA(t *
 	}
 }
 
-func TestS5EntryAcceptsProfessionalOnlyManifestWithoutMachineFields(t *testing.T) {
+func TestS5ExplicitMainSavePreservesProfessionalScopeAtIndependentManifest(t *testing.T) {
 	root := newUnregisteredS5InputFixture(t)
 	before := stageSnapshot(t, root)
 	life := before.State["lifecycle"].(map[string]any)
@@ -320,24 +321,136 @@ func TestS5EntryAcceptsProfessionalOnlyManifestWithoutMachineFields(t *testing.T
 		map[string]any{"scope": []string{"整批规格链，特别核对无权限拒绝语义"}},
 		map[string]any{"scope": []string{"整批任务，特别核对错误路径的真实验证责任"}},
 	}})
-	output := s5EntryRecovery(t, root, 0)
-	packets, err := runtime.S5Packets(root, stageSnapshot(t, root).State, "")
-	if err != nil || len(packets) != 2 {
-		t.Fatalf("professional choices without machine fields rejected: %v %s", err, output)
-	}
-	data, err := os.ReadFile(filepath.Join(root, path))
+	original, err := os.ReadFile(filepath.Join(root, path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var completed map[string]any
-	if err := json.Unmarshal(data, &completed); err != nil {
+	payload, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "agent_id": "Main", "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(root, path)}, "cwd": root})
+	var out, diagnostic bytes.Buffer
+	if code := cli.Run([]string{"hook", "--event", "PostToolUse", "--root", root}, bytes.NewReader(payload), &out, &diagnostic); code != 0 {
+		t.Fatalf("save: %d %s %s", code, &out, &diagnostic)
+	}
+	after := stageSnapshot(t, root)
+	packets, err := runtime.S5Packets(root, after.State, "")
+	if err != nil || len(packets) != 2 {
+		t.Fatalf("explicit choices: %v %s %s", err, &out, &diagnostic)
+	}
+	manifest := s5ActualManifestForTest(t, after.State)
+	if manifest == path {
+		t.Fatal("explicit original was modified in place")
+	}
+	completed, err := os.ReadFile(filepath.Join(root, manifest))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if completed["runtime_id"] == nil || completed["documents"] == nil || completed["validation"] == nil {
-		t.Fatalf("system fields not supplied: %s", data)
+	for _, scope := range []string{"无权限拒绝语义", "错误路径的真实验证责任"} {
+		if !strings.Contains(string(completed), scope) || !strings.Contains(out.String(), scope) {
+			t.Fatalf("scope not preserved and dispatched: %s %s", completed, &out)
+		}
 	}
-	if !strings.Contains(string(data), "无权限拒绝语义") || !strings.Contains(string(data), "错误路径的真实验证责任") {
-		t.Fatal("preparation overwrote Main professional choices")
+	unchanged, _ := os.ReadFile(filepath.Join(root, path))
+	if !bytes.Equal(original, unchanged) {
+		t.Fatal("Main original changed")
+	}
+}
+
+func s5ActualManifestForTest(t *testing.T, state map[string]any) string {
+	t.Helper()
+	for _, raw := range state["entities"].(map[string]any)["teams"].([]any) {
+		row := raw.(map[string]any)
+		if row["kind"] == "document_verifier" {
+			return row["manifest_ref"].(string)
+		}
+	}
+	t.Fatal("missing S5 registered manifest")
+	return ""
+}
+
+func TestS5UnknownManifestAndAncestorsArePreservedWithoutBlockingIssue(t *testing.T) {
+	for _, kind := range []string{"file", "directory", "symlink", "ancestor-file", "ancestor-symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root := newUnregisteredS5InputFixture(t)
+			life := stageSnapshot(t, root).State["lifecycle"].(map[string]any)
+			preferred := fmt.Sprintf(".claude/workgroups/REQ-039/review-e%.0f/manifest.json", life["phase_revision"])
+			occupied := filepath.Join(root, preferred)
+			if strings.HasPrefix(kind, "ancestor-") {
+				occupied = filepath.Join(root, ".claude/workgroups")
+			}
+			if err := os.MkdirAll(filepath.Dir(occupied), 0700); err != nil {
+				t.Fatal(err)
+			}
+			unknown := []byte(`{"assignments":[{"scope":["UNKNOWN DO NOT CLAIM"]},{"scope":["UNKNOWN DO NOT CLAIM"]}]}`)
+			target := filepath.Join(t.TempDir(), "target")
+			switch kind {
+			case "directory":
+				if err := os.Mkdir(occupied, 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.WriteFile(target, unknown, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, occupied); err != nil {
+					t.Skip(err)
+				}
+			case "ancestor-symlink":
+				if err := os.Mkdir(target, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(target, "unknown"), unknown, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, occupied); err != nil {
+					t.Skip(err)
+				}
+			default:
+				if err := os.WriteFile(occupied, unknown, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output := s5EntryRecovery(t, root, 0)
+			after := stageSnapshot(t, root)
+			actual := s5ActualManifestForTest(t, after.State)
+			if actual == preferred || strings.Contains(output, "UNKNOWN DO NOT CLAIM") {
+				t.Fatalf("claimed unknown manifest: %s %s", actual, output)
+			}
+			packets, err := runtime.S5Packets(root, after.State, "")
+			if err != nil || len(packets) != 2 {
+				t.Fatalf("unknown blocked issue: %d %v", len(packets), err)
+			}
+			for _, raw := range after.State["entities"].(map[string]any)["agents"].([]any) {
+				a := raw.(map[string]any)
+				if a["role"] == "document-verifier" && a["activation_ref"] != nil {
+					t.Fatalf("native S5 staged legacy activation: %v", a)
+				}
+			}
+			switch kind {
+			case "directory":
+				entries, err := os.ReadDir(occupied)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("unknown directory changed: %v %v", entries, err)
+				}
+			case "ancestor-symlink":
+				entries, err := os.ReadDir(target)
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("symlink target changed: %v %v", entries, err)
+				}
+				data, _ := os.ReadFile(filepath.Join(target, "unknown"))
+				if !bytes.Equal(data, unknown) {
+					t.Fatal("symlink target bytes changed")
+				}
+			default:
+				data, err := os.ReadFile(occupied)
+				if err != nil || !bytes.Equal(data, unknown) {
+					t.Fatalf("unknown changed: %s %v", data, err)
+				}
+			}
+			beforeReplay := after.Revision
+			s5EntryRecovery(t, root, 0)
+			if stageSnapshot(t, root).Revision != beforeReplay {
+				t.Fatal("registered actual manifest did not win replay")
+			}
+		})
 	}
 }
 
@@ -610,5 +723,78 @@ func TestS5RegisteredManifestCannotChangeBeforeFirstQuestionnaire(t *testing.T) 
 	// manifest digest and its registration gate).
 	if got := stageSnapshot(t, scope.root).Revision; got != scopeBefore.Revision {
 		t.Fatalf("the scope edit registered a second preparation: %d -> %d", scopeBefore.Revision, got)
+	}
+}
+
+func TestS5SuccessfulMainPostResumesAcceptedHandoffWithoutResubmittingS4(t *testing.T) {
+	root := newUnregisteredS5InputFixture(t)
+	before := stageSnapshot(t, root)
+	post := func(failed bool) string {
+		payload, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "agent_id": "Main", "tool_name": "Read", "tool_input": map[string]any{"file_path": filepath.Join(root, "docs/dev/tasks/TASK-039-01.md")}, "tool_response": map[string]any{"is_error": failed}, "cwd": root})
+		var out, diag bytes.Buffer
+		if code := cli.Run([]string{"hook", "--event", "PostToolUse", "--root", root}, bytes.NewReader(payload), &out, &diag); code != 0 {
+			t.Fatalf("Post: %d %s %s", code, &out, &diag)
+		}
+		return out.String() + diag.String()
+	}
+	post(true)
+	if stageSnapshot(t, root).Revision != before.Revision {
+		t.Fatal("failed Post prepared S5")
+	}
+	output := post(false)
+	after := stageSnapshot(t, root)
+	packets, err := runtime.S5Packets(root, after.State, "")
+	if err != nil || len(packets) != 2 {
+		t.Fatalf("successful Post did not resume: %d %v %s", len(packets), err, output)
+	}
+	for _, raw := range before.State["entities"].(map[string]any)["work_packets"].([]any) {
+		row := raw.(map[string]any)
+		if row["template_id"] != "s4-task-planning-v1" {
+			continue
+		}
+		old, found, err := runtime.FindSubmission(before.State, row["packet_id"].(string))
+		if err != nil || !found {
+			t.Fatalf("S4 missing: %v", err)
+		}
+		current, found, err := runtime.FindSubmission(after.State, old.PacketID)
+		if err != nil || !found || !reflect.DeepEqual(old, current) {
+			t.Fatalf("S4 reception changed: %v", err)
+		}
+	}
+	post(false)
+	if stageSnapshot(t, root).Revision != after.Revision {
+		t.Fatal("complete S5 Post registered again")
+	}
+}
+
+func TestS5ConcurrentPreparationRetainsOneRegisteredTeamAndBothQuestions(t *testing.T) {
+	root := newUnregisteredS5InputFixture(t)
+	var wait sync.WaitGroup
+	results := make(chan string, 2)
+	for i := 0; i < 2; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			var out, diag bytes.Buffer
+			if code := cli.Run([]string{"runtime", "stage-answer", "issue", "--root", root}, nil, &out, &diag); code != 0 {
+				results <- fmt.Sprintf("issue %d: %s %s", code, &out, &diag)
+			}
+		}()
+	}
+	wait.Wait()
+	close(results)
+	for failure := range results {
+		t.Error(failure)
+	}
+	after := stageSnapshot(t, root)
+	teams := 0
+	for _, raw := range after.State["entities"].(map[string]any)["teams"].([]any) {
+		if raw.(map[string]any)["kind"] == "document_verifier" {
+			teams++
+		}
+	}
+	packets, err := runtime.S5Packets(root, after.State, "")
+	if teams != 1 || err != nil || len(packets) != 2 {
+		t.Fatalf("concurrent preparation: teams=%d packets=%d %v", teams, len(packets), err)
 	}
 }

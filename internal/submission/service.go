@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -247,58 +246,33 @@ func (s *Service) Save(ctx context.Context, owner, path string) (Receipt, error)
 		return rejected(snapshot, p.ID, runtime.ErrSubmissionSuperseded), runtime.ErrSubmissionSuperseded
 	}
 	id := "ev-submission-" + p.ID
-	envelopePath := ".claude/evidence/submissions/" + p.ID + "/document-review.json"
+	// The Writer publishes only after judging the current reception under its lock.
+	parts := []string{".claude/evidence/submissions"}
+	remaining := p.ID
+	for len(remaining) > 120 {
+		parts = append(parts, remaining[:120])
+		remaining = remaining[120:]
+	}
+	parts = append(parts, remaining, "document-review.json")
+	envelopePath := filepath.ToSlash(filepath.Join(parts...))
 	if accepted {
 		id = prior.EvidenceID
-		var ok bool
-		for _, ev := range evidenceRows(snapshot.State) {
-			if ev["id"] == id {
-				envelopePath, _ = ev["path"].(string)
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			err := fmt.Errorf("accepted submission has no domain evidence")
-			return rejected(snapshot, p.ID, err), err
-		}
-		original, readErr := workpacket.ReadFile(s.Root, envelopePath, 1<<20)
-		var received workpacket.DocumentReviewEnvelope
-		if readErr != nil || json.Unmarshal(original, &received) != nil {
-			err := fmt.Errorf("accepted submission's original professional content is unavailable")
-			return rejected(snapshot, p.ID, err), err
-		}
-		previous := workpacket.Answer{Conclusion: &received.Conclusion, Findings: received.Findings}
-		if previous.Conclusion == nil || answer.Conclusion == nil || *previous.Conclusion != *answer.Conclusion || !slices.Equal(previous.Findings, answer.Findings) {
-			return rejected(snapshot, p.ID, runtime.ErrSubmissionConflict), runtime.ErrSubmissionConflict
-		}
 	} else {
-		// Preflight protects the artifact spool. Both checks repeat under the
-		// original domain Writer; publication alone never proves acceptance.
 		if err := runtime.ValidateWorkPacket(s.Root, snapshot.State, p, s.Files); err != nil {
 			return rejected(snapshot, p.ID, err), err
 		}
 		if err := validateS5ApprovalMode(s.Root, snapshot.State, owner); err != nil {
 			return rejected(snapshot, p.ID, err), err
 		}
-		projected, err := json.MarshalIndent(workpacket.DocumentReview(p, id, answer, time.Now().UTC()), "", "  ")
-		if err != nil {
-			return rejected(snapshot, p.ID, err), err
-		}
-		stored, err := workpacket.Publish(s.Root, envelopePath, append(projected, '\n'))
-		if err != nil {
-			return rejected(snapshot, p.ID, err), err
-		}
-		var published workpacket.DocumentReviewEnvelope
-		if err := json.Unmarshal(stored, &published); err != nil || published.EvidenceID != id || published.Conclusion != *answer.Conclusion || !slices.Equal(published.Findings, answer.Findings) {
-			err := fmt.Errorf("published professional review differs from the current answer")
-			return rejected(snapshot, p.ID, err), err
-		}
+	}
+	projected, err := json.MarshalIndent(workpacket.DocumentReview(p, id, answer, time.Now().UTC()), "", "  ")
+	if err != nil {
+		return rejected(snapshot, p.ID, err), err
 	}
 	if err := ctx.Err(); err != nil {
 		return rejected(snapshot, p.ID, err), err
 	}
-	next, err := runtime.RecordEvidence(s.Root, s.StatePath, s.JournalPath, runtime.EvidenceRequest{Context: ctx, ExpectedRevision: -1, ID: id, Kind: "document_review", Path: envelopePath, ProducedBy: []string{owner}, ResponsibilityID: p.Binding.Responsibility, Validator: s.Validator, Submission: &runtime.SubmissionRequest{PacketID: p.ID, Owner: owner, AnswerJSON: data, Files: s.Files, Authorize: func(root string, state map[string]any) error {
+	next, err := runtime.RecordEvidence(s.Root, s.StatePath, s.JournalPath, runtime.EvidenceRequest{Context: ctx, ExpectedRevision: -1, ID: id, Kind: "document_review", Path: envelopePath, ProducedBy: []string{owner}, ResponsibilityID: p.Binding.Responsibility, Validator: s.Validator, Submission: &runtime.SubmissionRequest{PacketID: p.ID, Owner: owner, AnswerJSON: data, EvidenceJSON: append(projected, '\n'), Files: s.Files, Authorize: func(root string, state map[string]any) error {
 		if err := s.validateSource(ctx, state, p, source); err != nil {
 			return err
 		}

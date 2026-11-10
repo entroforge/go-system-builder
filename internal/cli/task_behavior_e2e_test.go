@@ -96,7 +96,7 @@ func TestTaskBehaviorProjectsOnlyDeclaredCurrentCases(t *testing.T) {
 }
 
 func TestS5FrozenBehaviorSourcesRemainUsableWithoutDigestGate(t *testing.T) {
-	f := newStageAnswerFixtureMode(t, true, func(root string, state map[string]any) {
+	f := newHistoricalStageAnswerFixture(t, func(root string, state map[string]any) {
 		installBehaviorModule(t, root)
 		for _, name := range []string{"scenario-model.json", "cross-matrix.json", "stories.md"} {
 			path := filepath.Join(root, "docs/design/prototypes/investor-workbench", name)
@@ -222,7 +222,7 @@ func TestS5FrozenBehaviorSourcesRemainUsableWithoutDigestGate(t *testing.T) {
 	if !reflect.DeepEqual(result.BehaviorExamples, behavior) {
 		t.Fatal("review-check refreshed frozen behavior")
 	}
-	f.begin(t, p, &e)
+	f.startFrozenReviewWorker(t, e)
 	changed := filepath.Join(f.root, "docs/design/prototypes/investor-workbench/scenario-model.json")
 	data, err := os.ReadFile(changed)
 	if err != nil {

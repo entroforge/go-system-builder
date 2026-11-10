@@ -232,6 +232,23 @@ func runObservedQuestionnaireSavesForOwner(root string, request policy.Input, st
 		failed, _ := request.ToolResponse["is_error"].(bool)
 		if owner := request.EffectiveAgentID(); !failed && (owner == "" || owner == "Main") {
 			snapshot, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
+			if err == nil && owner == "Main" && mapFieldCLI(snapshot.State, "lifecycle")["state"] == "document_verification" && s5HasAcceptedPlanning(snapshot.State) {
+				packets, packetErr := observedS5Packets(snapshot.State)
+				if packetErr == nil && len(packets) < 2 {
+					ctx, cancel := context.WithTimeout(contextForHook(request), 12*time.Second)
+					prepareErr := prepareS5ReviewResponsibilities(ctx, root, snapshot.State)
+					cancel()
+					_, message, observeErr := s5IssueHandoffContext(contextForHook(request), root, prepareErr)
+					if prepareErr != nil {
+						fmt.Fprintf(stderr, "S5 original preparation pending: %v\n", prepareErr)
+					}
+					if observeErr != nil {
+						fmt.Fprintf(stderr, "S5 original preparation observation: %v\n", observeErr)
+					}
+					_ = json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PostToolUse", "additionalContext": message}})
+					return true, 0
+				}
+			}
 			if err == nil && mapFieldCLI(snapshot.State, "lifecycle")["phase"] == "tasks" {
 				row, rowErr := registeredPlanningRow(snapshot.State)
 				if rowErr == nil && row != nil {

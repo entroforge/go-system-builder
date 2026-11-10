@@ -228,7 +228,7 @@ func acceptedCurrentS4(root string, state map[string]any, files fileview.Reader)
 		return workpacket.TaskPlanningPacket{}, workpacket.TaskPlanningAnswer{}, nil, fmt.Errorf("accepted S4 evidence is invalidated or has a different producer/generation")
 	}
 	path := stringValue(evidence["path"])
-	data, err := files.ReadFile(path)
+	data, err := ReadTaskPlanningReport(root, path)
 	if err != nil {
 		return workpacket.TaskPlanningPacket{}, workpacket.TaskPlanningAnswer{}, nil, fmt.Errorf("read accepted S4 envelope %s: %w", path, err)
 	}

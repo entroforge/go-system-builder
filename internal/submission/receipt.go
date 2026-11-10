@@ -212,7 +212,7 @@ func receipt(root string, snapshot runtime.Snapshot, p workpacket.Packet, r runt
 		if ev["id"] != r.EvidenceID {
 			continue
 		}
-		data, err := workpacket.ReadFile(root, text(ev["path"]), 1<<20)
+		data, err := runtime.ReadRecordedEvidenceReport(root, text(ev["path"]))
 		if err != nil {
 			return result, err
 		}
@@ -284,7 +284,7 @@ func receipt(root string, snapshot runtime.Snapshot, p workpacket.Packet, r runt
 					if ev["id"] != otherRecord.EvidenceID {
 						continue
 					}
-					data, err := workpacket.ReadFile(root, text(ev["path"]), 1<<20)
+					data, err := runtime.ReadRecordedEvidenceReport(root, text(ev["path"]))
 					if err != nil {
 						result.WaitingOn = append(result.WaitingOn, Waiting{Reason: "peer_evidence_unavailable", Owner: "Main", Ref: otherRecord.EvidenceID})
 						break

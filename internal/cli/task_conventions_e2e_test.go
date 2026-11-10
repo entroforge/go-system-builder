@@ -16,7 +16,7 @@ import (
 )
 
 func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
-	f := newStageAnswerFixtureMode(t, true, func(root string, state map[string]any) {
+	f := newHistoricalStageAnswerFixture(t, func(root string, state map[string]any) {
 		path := "docs/rules/error-handling.md"
 		if _, err := os.ReadFile(filepath.Join(root, path)); err != nil {
 			t.Fatal(err)
@@ -103,7 +103,7 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 	if !reflect.DeepEqual(result.TaskConventions, frozen) {
 		t.Fatal("review-check recomputed frozen conventions")
 	}
-	f.begin(t, p, &e)
+	f.startFrozenReviewWorker(t, e)
 	if err := os.WriteFile(registry, append(original, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}

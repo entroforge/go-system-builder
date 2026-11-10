@@ -123,13 +123,14 @@ func (s *Service) SaveTaskPlanning(ctx context.Context, path string) (Receipt, e
 	}
 	id := "ev-submission-" + p.ID
 	envelopePath := ".claude/evidence/submissions/" + p.ID + "/answer.json"
+	var evidenceJSON []byte
 	if accepted {
-		recorded, readErr := readPlanningEvidence(s.Root, snap.State, prior.EvidenceID)
+		recorded, readErr := readTaskPlanningEvidence(s.Root, snap.State, prior.EvidenceID)
 		if readErr != nil {
-			return Receipt{}, readErr
+			return s.rejectedTaskPlanning(snap, p, readErr), readErr
 		}
-		if err := runtime.ValidateTaskPlanningEnvelope(p, prior.EvidenceID, answer, recorded); err != nil {
-			return s.rejectedTaskPlanning(snap, p, runtime.ErrSubmissionConflict), runtime.ErrSubmissionConflict
+		if err := runtime.ValidateTaskPlanningReplay(p, prior.EvidenceID, answer, recorded); err != nil {
+			return s.rejectedTaskPlanning(snap, p, err), err
 		}
 		RecordPlanningDiagnostic(s.Root, snap.State, "reception", "")
 		life, _ := snap.State["lifecycle"].(map[string]any)
@@ -160,16 +161,16 @@ func (s *Service) SaveTaskPlanning(ctx context.Context, path string) (Receipt, e
 		if err != nil {
 			return Receipt{}, err
 		}
-		encoded, _ := json.MarshalIndent(envelope, "", "  ")
-		_, err = workpacket.PublishBounded(s.Root, envelopePath, append(encoded, '\n'), int64(len(encoded)+1))
+		encoded, err := json.MarshalIndent(envelope, "", "  ")
 		if err != nil {
 			return Receipt{}, err
 		}
+		evidenceJSON = append(encoded, '\n')
 	}
 	if err := ctx.Err(); err != nil {
 		return s.rejectedTaskPlanning(snap, p, err), err
 	}
-	next, err := runtime.RecordEvidence(s.Root, s.StatePath, s.JournalPath, runtime.EvidenceRequest{Context: ctx, ExpectedRevision: -1, ID: id, Kind: "planning_task", Path: envelopePath, ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: s.Validator, Submission: &runtime.SubmissionRequest{PacketID: p.ID, Owner: "Main", AnswerJSON: data, Files: s.Files}})
+	next, err := runtime.RecordEvidence(s.Root, s.StatePath, s.JournalPath, runtime.EvidenceRequest{Context: ctx, ExpectedRevision: -1, ID: id, Kind: "planning_task", Path: envelopePath, ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: s.Validator, Submission: &runtime.SubmissionRequest{PacketID: p.ID, Owner: "Main", AnswerJSON: data, EvidenceJSON: evidenceJSON, Files: s.Files}})
 	if err != nil {
 		r := s.rejectedTaskPlanning(snap, p, err)
 		if ctx.Err() != nil {
@@ -381,4 +382,14 @@ func (s *Service) taskPlanningControlReceipt(origin runtime.Snapshot, p workpack
 		RecordPlanningDiagnostic(s.Root, origin.State, "outlet", "")
 	}
 	return r, nil
+}
+
+// readTaskPlanningEvidence follows the registered report, including Writer fallback paths.
+func readTaskPlanningEvidence(root string, state map[string]any, id string) ([]byte, error) {
+	for _, ev := range evidenceRows(state) {
+		if ev["id"] == id {
+			return runtime.ReadTaskPlanningReport(root, text(ev["path"]))
+		}
+	}
+	return nil, fmt.Errorf("original planning evidence %s is unavailable", id)
 }

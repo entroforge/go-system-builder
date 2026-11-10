@@ -430,7 +430,7 @@ func ValidateCurrentDocumentReviewRevisions(root string, state map[string]any, f
 			if e["status"] != "valid" || e["kind"] != "document_review" {
 				return fmt.Errorf("current revision evidence is not valid")
 			}
-			data, err := workpacket.ReadFile(root, stringValue(e["path"]), 1<<20)
+			data, err := ReadRecordedEvidenceReport(root, stringValue(e["path"]))
 			if err != nil {
 				return fmt.Errorf("current original review report is unavailable: %w", err)
 			}
@@ -509,7 +509,7 @@ func validateCurrentTypedS5Pass(root string, state map[string]any, p workpacket.
 		if item["kind"] != "document_review" || item["status"] != "valid" {
 			return fmt.Errorf("current review evidence is not valid")
 		}
-		data, err := workpacket.ReadFile(root, stringValue(item["path"]), 1<<20)
+		data, err := ReadRecordedEvidenceReport(root, stringValue(item["path"]))
 		if err != nil {
 			return fmt.Errorf("current original review report is unavailable: %w", err)
 		}

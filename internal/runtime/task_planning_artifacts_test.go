@@ -184,7 +184,7 @@ func TestTaskPlanningInputsAllowDeclaredForeignREQContractBatch(t *testing.T) {
 	}
 }
 
-func taskPlanningRuntimeFixture(t *testing.T) (string, map[string]any, fileview.Reader) {
+func taskPlanningRuntimeFixture(t *testing.T, includeBoundREQ ...bool) (string, map[string]any, fileview.Reader) {
 	t.Helper()
 	root := t.TempDir()
 	for _, dir := range []string{".claude/evidence", "docs/requirements", "docs/architecture", "docs/design/decisions", "docs/dev/contracts", "docs/dev/tasks", "docs/rules"} {
@@ -251,6 +251,13 @@ func taskPlanningRuntimeFixture(t *testing.T) (string, map[string]any, fileview.
 			map[string]any{"id": "CONTRACTS-001", "kind": "contract", "path": indexPath, "version": "v1.0.0", "status": "locked", "generation": 1},
 			map[string]any{"id": "FE-001", "kind": "contract", "path": contractPath, "version": "v1.0.0", "status": "locked", "generation": 1},
 		},
+	}
+	if len(includeBoundREQ) > 0 && includeBoundREQ[0] {
+		// Match the original bindREQ registration before the S3 Writers run.
+		state["documents"] = append(state["documents"].([]any), map[string]any{
+			"id": reqRef.ID, "kind": "req", "path": reqRef.Path, "version": reqRef.Version,
+			"status": "locked", "generation": s3Binding.Generation,
+		})
 	}
 	state = taskPlanningOriginalS3(t, root, state, s3Packet, answer, evidencePath)
 	return root, state, fileview.Disk{Root: root}

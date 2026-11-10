@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
@@ -42,15 +43,23 @@ func publishRegisteredRecordSources(root string, state map[string]any, captured 
 		body := artifacts[path]
 		for attempt := 0; ; attempt++ {
 			actual := path
-			if attempt > 0 {
+			if attempt == 1 {
 				actual = filepath.ToSlash(filepath.Join(".claude/evidence", fmt.Sprintf("assignment-source-candidate-%d", attempt), filepath.Base(path)))
+			} else if attempt > 1 {
+				actual = filepath.ToSlash(filepath.Join(".claude", fmt.Sprintf("evidence-alt-%d", attempt-1), strings.TrimPrefix(path, ".claude/evidence/")))
 			}
 			created, err := publish(root, actual, body, 16<<20)
 			if err != nil {
 				return record, fmt.Errorf("publish Record source snapshot: %w", err)
 			}
 			if !created {
-				if err := workpacket.CheckPath(root, ".claude/evidence/assignment-source-probe/source.bin"); err != nil {
+				// Only the common control parent must be available. An occupied
+				// evidence root is preserved while later candidates use another root.
+				parent, _, err := workpacket.OpenParent(root, ".claude/assignment-source-root-probe", true)
+				if err != nil {
+					return record, fmt.Errorf("Assignment source storage unavailable: %w", err)
+				}
+				if err := parent.Close(); err != nil {
 					return record, fmt.Errorf("Assignment source storage unavailable: %w", err)
 				}
 				continue

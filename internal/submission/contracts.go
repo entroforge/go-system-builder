@@ -478,6 +478,7 @@ func planningDeclaredSourceGuidance(root string, paths []string, state map[strin
 // from a possibly edited author answer or from the complete source closure.
 func AcceptedPlanningDeliveryGuidance(root string, state map[string]any, record runtime.SubmissionRecord, stage string) string {
 	var limit int64
+	packetFound := false
 	entities, _ := state["entities"].(map[string]any)
 	packets, _ := entities["work_packets"].([]any)
 	for _, raw := range packets {
@@ -500,11 +501,12 @@ func AcceptedPlanningDeliveryGuidance(root string, state map[string]any, record 
 			if err := json.Unmarshal(data, &packet); err != nil {
 				return " Original accepted questionnaire cannot be read: " + err.Error()
 			}
-			limit = workpacket.TaskPlanningEvidenceReadLimit(packet)
+			// S4 reads the complete registered system report.
 		}
+		packetFound = true
 		break
 	}
-	if limit == 0 {
+	if !packetFound {
 		return " Original accepted questionnaire is unavailable; Main must restore its registered record."
 	}
 	for _, ev := range evidenceRows(state) {
@@ -512,7 +514,13 @@ func AcceptedPlanningDeliveryGuidance(root string, state map[string]any, record 
 			continue
 		}
 		path := text(ev["path"])
-		data, err := workpacket.ReadFile(root, path, limit)
+		var data []byte
+		var err error
+		if stage == "S4" {
+			data, err = runtime.ReadTaskPlanningReport(root, path)
+		} else {
+			data, err = workpacket.ReadFile(root, path, limit)
+		}
 		if err != nil {
 			return " Accepted delivery record unavailable at " + filepath.Join(root, path) + ": " + err.Error()
 		}

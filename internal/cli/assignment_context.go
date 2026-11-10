@@ -400,6 +400,9 @@ func contextPathID(value string) string {
 // An unregistered candidate never gains ownership from matching contents.
 // The original Agent context Writer records the returned actual paths.
 func publishNativeContextAsset(root, original, storageRoot, kind string, data []byte) (string, error) {
+	preferredRoot := storageRoot
+	preferredPath := original
+	rootAttempt := 0
 	for attempt := 0; ; attempt++ {
 		path := original
 		if attempt > 0 {
@@ -413,7 +416,22 @@ func publishNativeContextAsset(root, original, storageRoot, kind string, data []
 			return path, nil
 		}
 		if err := workpacket.CheckPath(root, filepath.ToSlash(filepath.Join(storageRoot, "native-context-probe", "file.json"))); err != nil {
-			return "", fmt.Errorf("native context storage unavailable: %w", err)
+			// PLAN/Result drafts may use another evidence root. Schema and
+			// context keep their existing storage and candidate coordinates.
+			if preferredRoot != ".claude/evidence" {
+				return "", fmt.Errorf("native context storage unavailable: %w", err)
+			}
+			parent, _, err := workpacket.OpenParent(root, ".claude/native-context-probe.json", false)
+			if err != nil {
+				return "", fmt.Errorf("native context storage unavailable: %w", err)
+			}
+			if err := parent.Close(); err != nil {
+				return "", err
+			}
+			rootAttempt++
+			storageRoot = fmt.Sprintf("%s-alt-%d", preferredRoot, rootAttempt)
+			original = storageRoot + strings.TrimPrefix(preferredPath, preferredRoot)
+			attempt = -1
 		}
 	}
 }

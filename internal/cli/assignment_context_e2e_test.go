@@ -190,8 +190,8 @@ func TestExplicitAssignmentContextRejectsMissingSourcesWithoutAuthorOverwrite(t 
 func TestNativeAssignmentContextDoesNotIssuePlanForRetiredS5Peer(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	first := f.packets[0]
-	f.begin(t, first, nil)
-	receipt := saveStageHook(t, f.root, f.root, first.Binding.Owner, first.AnswerPath, completedDraft(first, "fix_required"))
+	f.startNative(t, first)
+	receipt := saveNativeStageStop(t, f.root, f.root, first.Binding.Owner, first.AnswerPath, completedDraft(first, "fix_required"))
 	if !receipt.WorkComplete || stageSnapshot(t, f.root).State["lifecycle"].(map[string]any)["state"] != "planning" {
 		t.Fatal("original FIX did not retire its S5 entry")
 	}

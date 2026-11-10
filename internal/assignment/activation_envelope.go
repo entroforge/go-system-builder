@@ -28,6 +28,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/identity"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // ActivationEnvelope is the on-disk representation read by
@@ -77,17 +78,15 @@ func PreStageActivationEnvelope(root, workgroupID, taskID, agentID, dispatchMode
 	}
 	envelope := buildActivationEnvelope(agentID, source)
 	rel := activationEnvelopePath(root, workgroupID, taskID, agentID)
-	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
-		return "", fmt.Errorf("activation envelope: mkdir: %w", err)
-	}
 	data, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("activation envelope: encode: %w", err)
 	}
-	if err := os.WriteFile(rel, append(data, '\n'), 0o644); err != nil {
-		return "", fmt.Errorf("activation envelope: write: %w", err)
+	actual, err := publishActivationArtifact(root, rel, append(data, '\n'))
+	if err != nil {
+		return "", fmt.Errorf("activation envelope: publish: %w", err)
 	}
-	return repositoryPath(root, rel), nil
+	return repositoryPath(root, actual), nil
 }
 
 // buildActivationEnvelope fills the four hookctx-loader fields deterministically.
@@ -347,17 +346,15 @@ func ValidateActivationMessageBytes(root string, data []byte) error {
 // verb pass the returned path to AdvanceAgent as the activation_sent message.
 func WriteActivationMessageFile(root, workgroupID, taskID, agentID string, message map[string]any) (string, error) {
 	rel := activationMessagePath(root, workgroupID, taskID, agentID)
-	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
-		return "", fmt.Errorf("activation message: mkdir: %w", err)
-	}
 	data, err := json.MarshalIndent(message, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("activation message: encode: %w", err)
 	}
-	if err := os.WriteFile(rel, append(data, '\n'), 0o644); err != nil {
-		return "", fmt.Errorf("activation message: write: %w", err)
+	actual, err := publishActivationArtifact(root, rel, append(data, '\n'))
+	if err != nil {
+		return "", fmt.Errorf("activation message: publish: %w", err)
 	}
-	return rel, nil
+	return actual, nil
 }
 
 // activationMessagePath returns the absolute path for the synthesized
@@ -384,9 +381,6 @@ func WriteWorkStartMessageFile(
 	if len(safeWorkgroupID) > 180 || len(safeTaskID) > 180 || len(safeAgentID) > 180 {
 		rel = longActivationArtifactPath(root, workgroupID, taskID, agentID, "work-start")
 	}
-	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
-		return "", fmt.Errorf("work_start message: mkdir: %w", err)
-	}
 	message := map[string]any{
 		"schema_version":       "1.0.0",
 		"message_type":         "work_start",
@@ -409,10 +403,48 @@ func WriteWorkStartMessageFile(
 	if err != nil {
 		return "", fmt.Errorf("work_start message: encode: %w", err)
 	}
-	if err := os.WriteFile(rel, append(data, '\n'), 0o644); err != nil {
-		return "", fmt.Errorf("work_start message: write: %w", err)
+	actual, err := publishActivationArtifact(root, rel, append(data, '\n'))
+	if err != nil {
+		return "", fmt.Errorf("work_start message: publish: %w", err)
 	}
-	return rel, nil
+	return actual, nil
+}
+
+// publishActivationArtifact publishes only a fresh candidate. Existing objects,
+// including identical unregistered files, are never read or adopted. The caller
+// gives the actual path to the original registration or lifecycle Writer.
+func publishActivationArtifact(root, preferred string, data []byte) (string, error) {
+	relative, err := filepath.Rel(root, preferred)
+	if err != nil {
+		return "", err
+	}
+	relative = filepath.ToSlash(relative)
+	const prefix = ".claude/evidence/"
+	if !strings.HasPrefix(relative, prefix) {
+		return "", fmt.Errorf("activation artifact is outside its control directory")
+	}
+	// A blocked common control parent cannot be repaired by choosing another
+	// evidence root; report that real failure instead of retrying forever.
+	parent, _, err := workpacket.OpenParent(root, ".claude/activation-root-probe", true)
+	if err != nil {
+		return "", err
+	}
+	if err := parent.Close(); err != nil {
+		return "", err
+	}
+	for attempt := 0; ; attempt++ {
+		candidate := relative
+		if attempt > 0 {
+			candidate = filepath.ToSlash(filepath.Join(".claude", fmt.Sprintf("evidence-alt-%d", attempt), strings.TrimPrefix(relative, prefix)))
+		}
+		created, err := workpacket.PublishNewBounded(root, candidate, data, int64(len(data)))
+		if err != nil {
+			return "", err
+		}
+		if created {
+			return filepath.Join(root, filepath.FromSlash(candidate)), nil
+		}
+	}
 }
 
 // ResolveAgentActivationEnvelope reads the activation envelope that the

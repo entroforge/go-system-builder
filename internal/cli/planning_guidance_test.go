@@ -72,7 +72,16 @@ func TestS5PreparationGuidanceNamesCurrentEntryManifestAndOriginalSkill(t *testi
 			t.Fatalf("S5 preparation omitted exact path %s: %s", path, guidance)
 		}
 	}
-	for _, want := range []string{"S5 entry 8", "DV-SPEC-CONSISTENCY and DV-TASK-EXECUTABILITY", "accepted S4", "runtime stage-answer issue", "普通读取与 Stop 不补登记"} {
+	for _, want := range []string{
+		"S5 entry 8", "DV-SPEC-CONSISTENCY and DV-TASK-EXECUTABILITY",
+		"两项责任及 manifest/issue 由系统原入口自动准备；Main 不手工组装或登记",
+		"runtime stage-answer issue",
+		"保留 accepted S4 及已发行问卷和答案，不重交 S4",
+		"成功 Main Post 可沿已接收 S4 原责任续补当前缺题",
+		"Pre、失败 Post 与 Stop 不补登记",
+		"准备后携带准确 view/answer/source root 派入两个独立原生上下文",
+		"登记不证明平台已启动",
+	} {
 		if !strings.Contains(guidance, want) {
 			t.Fatalf("S5 preparation lost %q: %s", want, guidance)
 		}

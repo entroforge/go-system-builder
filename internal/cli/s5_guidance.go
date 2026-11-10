@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,6 +56,11 @@ func stageS5ObservedContext(root string, state map[string]any) string {
 		return stageS5PreparationGuidance(root, state)
 	}
 	var lines []string
+	if ref, refErr := s5CurrentManifestRef(state); refErr != nil {
+		lines = append(lines, "S5 registered manifest unavailable: "+refErr.Error())
+	} else if ref != "" {
+		lines = append(lines, "S5 actual registered manifest: "+filepath.Join(root, filepath.FromSlash(ref))+". Unassociated default files and unregistered candidates are preserved; their presence does not establish Main's professional input.")
+	}
 	responsibilities := map[string]bool{}
 	for _, p := range packets {
 		responsibilities[p.Binding.Responsibility] = true
@@ -91,6 +97,14 @@ func stageS5ObservedContext(root string, state map[string]any) string {
 			continue
 		}
 
+		scope, scopeErr := s5RegisteredScope(root, state, p)
+		if scopeErr != nil {
+			lines = append(lines, prefix+"registered professional scope unavailable: "+scopeErr.Error()+"; Main restores the original registered manifest.")
+			continue
+		}
+		if scope != "" {
+			lines = append(lines, prefix+"Main carries this original assignment scope into the independent native context: "+scope)
+		}
 		lines = append(lines, prefix+fmt.Sprintf("Main carries exact view %s, private answer %s and source root %s into a separate native Agent context. Resolve the packet draft.read, task_analysis.path and method paths relative to that source root; open the analysis reference before reading its structural_check. Save the professional answer and return the exact reference for SubagentStop reception. Registration does not prove the platform has started; use the actual native task to dispatch or resume. A real blocker returns to Main without a fabricated conclusion.", view, answer, root))
 	}
 	for _, responsibility := range []string{"DV-SPEC-CONSISTENCY", "DV-TASK-EXECUTABILITY"} {
@@ -106,6 +120,48 @@ func applyS5ObservedGuidance(guidance *policy.Guidance) {
 	guidance.Missing = nil // Exact pending responsibilities are projected below.
 	guidance.ReadOrder = []string{"the exact current S5 questionnaire references below"}
 	guidance.Read = append([]string(nil), guidance.ReadOrder...)
-	guidance.Automation = []string{"ordinary observation does not issue questionnaires, receive answers or advance S5", "native SubagentStop calls the original consumer and valid reception runs the original S5 outlet", "preparation and pending followup recover through their named original entry; received reviewers do not resubmit"}
+	guidance.Automation = []string{"successful Main Post may resume missing current questions from the accepted S4 handoff; ordinary observation does not receive answers or advance S5", "native SubagentStop calls the original consumer and valid reception runs the original S5 outlet", "preparation and pending followup recover through their named original entry; received reviewers do not resubmit"}
 	guidance.Recovery = []string{"Main restores the exact missing source or original responsibility named below; ordinary tools remain available"}
+}
+
+func s5RegisteredScope(root string, state map[string]any, p workpacket.Packet) (string, error) {
+	ref, err := s5CurrentManifestRef(state)
+	if err != nil {
+		return "", err
+	}
+	if ref == "" {
+		return "", fmt.Errorf("current team manifest_ref is missing")
+	}
+	path := filepath.Join(root, filepath.FromSlash(ref))
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("registered manifest is outside root")
+	}
+	data, err := runtime.ReadRecordedEvidenceReport(root, ref)
+	if err != nil {
+		return "", err
+	}
+	var manifest struct {
+		Assignments []struct {
+			ID             string   `json:"assignment_id"`
+			Owner          string   `json:"agent_id"`
+			Responsibility string   `json:"responsibility_id"`
+			Scope          []string `json:"scope"`
+		} `json:"assignments"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return "", err
+	}
+	var scope []string
+	matches := 0
+	for _, a := range manifest.Assignments {
+		if a.ID == p.Binding.AssignmentID && a.Owner == p.Binding.Owner && a.Responsibility == p.Binding.Responsibility {
+			matches++
+			scope = a.Scope
+		}
+	}
+	if matches != 1 {
+		return "", fmt.Errorf("packet has no unique registered assignment")
+	}
+	return strings.Join(scope, "; "), nil
 }

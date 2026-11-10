@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -40,7 +38,7 @@ type SubmissionRequest struct {
 	PacketID   string
 	Owner      string
 	AnswerJSON []byte
-	// EvidenceJSON is the original S3 consumer's prepared professional report.
+	// EvidenceJSON is the original consumer's prepared professional report.
 	// Its actual path is chosen exclusively by the existing Evidence Writer.
 	EvidenceJSON []byte
 	Files        fileview.Reader
@@ -308,13 +306,7 @@ func prepareSubmission(root string, state map[string]any, req EvidenceRequest, e
 			if item["id"] != prior.EvidenceID || item["kind"] != req.Kind {
 				continue
 			}
-			path, err := safeEvidencePath(root, stringValue(item["path"]))
-			if err != nil {
-				return prior, err
-			}
-			// An explicit new expression is compared to the actual accepted
-			// result, not to a digest or the caller's new envelope.
-			original, err := os.ReadFile(filepath.Join(root, path))
+			original, err := ReadRecordedEvidenceReport(root, stringValue(item["path"]))
 			if err != nil {
 				return prior, fmt.Errorf("accepted document review is unavailable: %w", err)
 			}

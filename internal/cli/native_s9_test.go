@@ -21,6 +21,11 @@ import (
 func nativeS9WorkerFixture(t *testing.T, assertionCopies ...int) (string, string, workpacket.RepairPlanReportPacket, policy.Input, workpacket.RepairResultProfessionalAnswer) {
 	t.Helper()
 	root, plan, _, _, division := repairExecutionPlanningFixture(t, assertionCopies...)
+	return nativeS9WorkerFixtureFromPlanning(t, root, plan, division)
+}
+
+func nativeS9WorkerFixtureFromPlanning(t *testing.T, root string, plan repair.RepairPlan, division string) (string, string, workpacket.RepairPlanReportPacket, policy.Input, workpacket.RepairResultProfessionalAnswer) {
+	t.Helper()
 	writeRepairLeadFile(t, root, "go.mod", "module native.s9.fixture\n\ngo 1.26\n")
 	repairLeadCommitFixture(t, root)
 	feedback := repairDispatchSave(t, root, division, []repairDispatchChoice{{AssignmentID: plan.Assignments[0].AssignmentID, RoleFamily: "backend-builder"}})

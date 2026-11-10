@@ -817,7 +817,12 @@ func validateCurrentEvidenceWithSource(root string, state map[string]any, requir
 	if files == nil {
 		files = fileview.Disk{Root: root}
 	}
-	_, err := files.ReadFile(clean)
+	var err error
+	if path, found := loopruntime.RecordedDocumentReviewReportPath(state, stringValue(evidenceItem["id"])); found && path == rel {
+		_, err = loopruntime.ReadRecordedEvidenceReport(root, path)
+	} else {
+		_, err = files.ReadFile(clean)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

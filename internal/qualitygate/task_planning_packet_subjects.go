@@ -12,7 +12,7 @@ import (
 
 // Project the current original reception into TR-002's document facts. The
 // original save owns professional checks; this read does not replay them.
-func verifiedTaskPlanningPacketFacts(input Input) ([]documentFact, bool, error) {
+func verifiedTaskPlanningPacketFacts(input *Input) ([]documentFact, bool, error) {
 	state := input.Snapshot.State
 	if state == nil {
 		return nil, false, nil
@@ -61,7 +61,7 @@ func verifiedTaskPlanningPacketFacts(input Input) ([]documentFact, bool, error) 
 	if !safeTaskPlanningEvidencePath(path) {
 		return fail(fmt.Errorf("current S4 envelope path is unreadable: %s", path))
 	}
-	data, err := input.Files.ReadFile(path)
+	data, err := runtime.ReadTaskPlanningReport(input.Root, path)
 	if err != nil {
 		return fail(fmt.Errorf("read recorded S4 envelope %s: %w", path, err))
 	}
@@ -112,6 +112,7 @@ func verifiedTaskPlanningPacketFacts(input Input) ([]documentFact, bool, error) 
 		id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		facts = append(facts, documentFact{ID: prefix + id, Kind: kind, Path: path, Version: subject.Version, Status: status, Generation: binding.Generation})
 	}
+	input.taskPlanningEvidence = evidence
 	return facts, true, nil
 }
 

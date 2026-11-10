@@ -14,7 +14,7 @@ import (
 )
 
 func TestS5FrozenTaskAnalysisSurvivesRevisionAndRejectsLostBytes(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	if p.TaskAnalysis == nil {
 		t.Fatal("new S5 packet has no frozen analysis")
@@ -45,7 +45,7 @@ func TestS5FrozenTaskAnalysisSurvivesRevisionAndRejectsLostBytes(t *testing.T) {
 	if installedAnalysis.ParserVersion != artifact.ParserVersion || !reflect.DeepEqual(installedAnalysis.Inputs, p.Inputs) || len(originalContexts) == 0 || !reflect.DeepEqual(installedContexts, originalContexts) {
 		t.Fatal("installed analysis lost its sources or professional TASK context")
 	}
-	f.begin(t, p, &e)
+	f.startFrozenReviewWorker(t, e)
 	r := saveStageHook(t, f.root, e.Path, e.AgentID, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
 	if !r.WorkComplete {
 		t.Fatal("original S5 receiver failed", r)

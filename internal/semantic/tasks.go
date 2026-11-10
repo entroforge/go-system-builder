@@ -290,7 +290,7 @@ func TaskBatchComplete(root string) (complete, cancelled int, problems []string,
 	return TaskBatchCompleteWithFiles(root, fileview.Disk{Root: root})
 }
 func TaskBatchCompleteWithFiles(root string, files fileview.Reader) (complete, cancelled int, problems []string, err error) {
-	tasks, err := loadTaskDocumentsWithFiles(root, files)
+	tasks, err := loadTaskDocumentsForBatchWithFiles(root, files)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -316,6 +316,17 @@ func loadTaskDocuments(root string) ([]*taskDocument, error) {
 	return loadTaskDocumentsWithFiles(root, fileview.Disk{Root: root})
 }
 func loadTaskDocumentsWithFiles(root string, files fileview.Reader) ([]*taskDocument, error) {
+	return loadTaskDocumentsWithDetails(root, files, true)
+}
+
+// The batch guard consumes only rel/status. Keep discovery, ownership, status
+// parsing and errors shared with the full check without computing unused detail
+// or reading its reference materials. This is local to this invocation.
+func loadTaskDocumentsForBatchWithFiles(root string, files fileview.Reader) ([]*taskDocument, error) {
+	return loadTaskDocumentsWithDetails(root, files, false)
+}
+
+func loadTaskDocumentsWithDetails(root string, files fileview.Reader, details bool) ([]*taskDocument, error) {
 	root, _ = filepath.Abs(root)
 	dir := filepath.Join(root, projectlayout.Tasks)
 	entries, err := files.ReadDir(dir)
@@ -344,16 +355,22 @@ func loadTaskDocumentsWithFiles(root string, files fileview.Reader) ([]*taskDocu
 		}
 		content := string(data)
 		task := &taskDocument{
-			id:       id,
-			content:  content,
-			rel:      "docs/dev/tasks/" + name,
-			hasClose: strings.Contains(content, "Closing Contract") && strings.Contains(content, "assert "),
+			id:      id,
+			content: content,
+			rel:     "docs/dev/tasks/" + name,
 		}
 		if m := taskStatusField.FindStringSubmatch(content); m != nil {
 			task.status = strings.TrimSpace(m[1])
 		}
-		if m := taskPrimaryField.FindStringSubmatch(content); m != nil {
-			task.contract = m[1]
+		if !details {
+			tasks = append(tasks, task)
+			continue
+		}
+		task.hasClose = strings.Contains(content, "Closing Contract") && strings.Contains(content, "assert ")
+		if strings.Contains(content, "Primary contract:") {
+			if m := taskPrimaryField.FindStringSubmatch(content); m != nil {
+				task.contract = m[1]
+			}
 		}
 		for _, row := range sectionTable(content, "Delivered Clauses") {
 			if len(row) >= 2 && taskContractCell.MatchString(row[0]) {

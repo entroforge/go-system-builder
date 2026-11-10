@@ -158,7 +158,7 @@ func TestWorkerLifecycleWireHasOneUTF8BudgetAndLocalFullEntrances(t *testing.T) 
 }
 
 func TestWorkerReplacementRebindsFrozenContextAndPreservesOldAssets(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	old := f.prepare(t, p)
 	data, err := os.ReadFile(filepath.Join(old.Path, workspace.DispatchContextPath))
@@ -195,7 +195,7 @@ func TestWorkerReplacementRebindsFrozenContextAndPreservesOldAssets(t *testing.T
 	if !bytes.Equal(oldData, data) {
 		t.Fatal("replacement overwrote old context")
 	}
-	f.begin(t, p, &next)
+	f.startFrozenReviewWorker(t, next)
 	if !saveStageHook(t, f.root, next.Path, p.Binding.Owner, workpacket.WorkerAnswerPath, completedDraft(p, "pass")).WorkComplete {
 		t.Fatal("replacement did not retain original answer admission")
 	}

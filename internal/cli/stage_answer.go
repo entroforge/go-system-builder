@@ -139,7 +139,7 @@ func runStageAnswer(args []string, stdout, stderr io.Writer) int {
 			result, err = s.IssueRepairResults(ctx, "")
 		} else if life["state"] == "document_verification" && runtime.PacketEnabled(snapshot.State) && (*owner == "" || *owner == "Main") {
 			// The named recovery entry reuses the original S5 preparation.
-			// Ordinary Main observations never register or issue responsibilities.
+			// Successful Main Post events may resume this same accepted S4 handoff.
 			err = prepareS5ReviewResponsibilities(ctx, s.Root, snapshot.State)
 			// Preparation already ran the original issuer. Project its durable
 			// publication facts once, without issuing or validating sources again.
@@ -1034,7 +1034,7 @@ func stageAnswerLifecycleContext(root string, request policy.Input) string {
 
 func stageS5PreparationGuidance(root string, state map[string]any) string {
 	life := mapFieldCLI(state, "lifecycle")
-	return fmt.Sprintf("S5 entry %d: DV-SPEC-CONSISTENCY and DV-TASK-EXECUTABILITY 原独立责任尚未准备完成。两项责任及 manifest/issue 由系统原入口自动准备；Main 不手工组装或登记。Main 恢复原准备：%s；manifest %s。保留 accepted S4 及已发行问卷和答案，不重交 S4；普通读取与 Stop 不补登记。方法入口 %s；准备后携带准确 view/answer/source root 派入两个独立原生上下文，登记不证明平台已启动。", stageAnswerEntry(life["phase_revision"]), submission.PlanningRecoveryCommand(root, "issue"), s5ManifestQuestionnairePath(root, state), filepath.Join(root, ".claude/skills/team-planning/SKILL.md")) + submission.PlanningDiagnostic(root, state, "preparation")
+	return fmt.Sprintf("S5 entry %d: DV-SPEC-CONSISTENCY and DV-TASK-EXECUTABILITY 原独立责任尚未准备完成。两项责任及 manifest/issue 由系统原入口自动准备；Main 不手工组装或登记。Main 恢复原准备：%s；manifest %s。保留 accepted S4 及已发行问卷和答案，不重交 S4；成功 Main Post 可沿已接收 S4 原责任续补当前缺题；Pre、失败 Post 与 Stop 不补登记。方法入口 %s；准备后携带准确 view/answer/source root 派入两个独立原生上下文，登记不证明平台已启动。", stageAnswerEntry(life["phase_revision"]), submission.PlanningRecoveryCommand(root, "issue"), s5ManifestQuestionnairePath(root, state), filepath.Join(root, ".claude/skills/team-planning/SKILL.md")) + submission.PlanningDiagnostic(root, state, "preparation")
 }
 
 // stageDesignQuestionnaireContext projects current work, not issuance proof.
