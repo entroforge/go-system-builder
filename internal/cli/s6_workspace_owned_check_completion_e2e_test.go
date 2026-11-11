@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,9 +14,11 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
+	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 // On a capable host this follows the S6 workspace owned-check path through
@@ -24,6 +27,28 @@ import (
 // pair, then records that the runner/Result path was not exercised.
 func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing.T) {
 	root, taskID, taskPath := newS6RecordContextFixture(t)
+	// Give the isolated command a real standalone Go package and only the
+	// declared environment it needs. The sandbox mounts /tmp as writable, so
+	// Go's caches must live there rather than under the read-only host root.
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/s6-owned-check\n\ngo 1.23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixtures.CommitCurrentFixture(t, root)
+	for name, value := range map[string]string{
+		"HOME": "/tmp", "GOCACHE": "/tmp/gsb-s6-worker-go-cache",
+		"GOMODCACHE": "/tmp/gsb-s6-worker-mod-cache", "GOPROXY": "off",
+		"GOSUMDB": "off", "GOTOOLCHAIN": "local", "CGO_ENABLED": "0",
+	} {
+		t.Setenv(name, value)
+	}
+	pathValue, present := os.LookupEnv("PATH")
+	if !present || pathValue == "" {
+		t.Fatal("the test needs the actual Go toolchain on PATH")
+	}
+	environment := []any{}
+	for _, name := range []string{"PATH", "HOME", "GOCACHE", "GOMODCACHE", "GOPROXY", "GOSUMDB", "GOTOOLCHAIN", "CGO_ENABLED"} {
+		environment = append(environment, map[string]any{"name": name, "value": os.Getenv(name)})
+	}
 	const (
 		manifestRef = ".claude/workgroups/manifest-s6-native-context.json"
 		owner       = "agent-s6-native-context"
@@ -44,7 +69,7 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	workerProfile := map[string]any{
 		"id": "profile-s6-workspace-owned-check", "version": "v1.0.0", "check_index": 0,
 		"command": "go test ./src/pkg", "location": "worker", "timeout_seconds": 30,
-		"environment_policy": "declared_only", "environment": []any{},
+		"environment_policy": "declared_only", "environment": environment,
 		"dependencies": []any{map[string]any{
 			"path": "src/pkg/input.go",
 		}},
@@ -84,8 +109,8 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	}
 	prepareOutput := prepareOut.String()
 	var prepared struct {
+		workspace.Execution
 		OwnedCheckCommands []string `json:"owned_check_commands"`
-		Execution          workspace.Execution
 	}
 	if err := json.Unmarshal([]byte(prepareOutput), &prepared); err != nil || prepared.Execution.Status != "ready" || len(prepared.OwnedCheckCommands) != 1 {
 		t.Fatalf("original workspace prepare did not project the frozen owned check: prepared=%+v err=%v", prepared, err)
@@ -151,6 +176,7 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	if err != nil || verifiedFirst.Passed || verifiedFirst.Observation.Permissions == nil {
 		t.Fatalf("original runner did not preserve an actual failed host fact: passed=%t observation=%+v err=%v", verifiedFirst.Passed, verifiedFirst.Observation, err)
 	}
+	assertS6CapturedOwnedTestFailure(t, firstToolReceipt.Path, "first captured execution must fail")
 	firstRaw, err := os.ReadFile(firstToolReceipt.Path)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +229,7 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 		assignmentresult.WorkerClosureComplete(record, firstAccepted) {
 		t.Fatalf("canonical Result did not retain the current actual failed Workspace machine fact as fail: %+v", firstAccepted.WorkerCheckFacts)
 	}
-	s6AssertCanonicalBuilderTaskReceipt(t, fixture, first.Acceptance.ResultRef)
+	s6AssertIncompleteOwnedCheckReceipt(t, fixture, first.Acceptance.ResultRef, 1)
 
 	beforeSameKeyState, beforeSameKeyJournal := s6CanonicalRuntimePair(t, root)
 	sameKeyOutput := stageCLI(t, "runtime", "task-complete", "--root", root, "--agent-id", owner, "--message", firstMessagePath)
@@ -247,11 +273,12 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	if err != nil || verifiedSecond.Passed {
 		t.Fatalf("second original runner fact was not an actual failure: passed=%t err=%v", verifiedSecond.Passed, err)
 	}
+	assertS6CapturedOwnedTestFailure(t, secondToolReceipt.Path, "second captured execution has different source bytes")
 	secondMessagePath := ".claude/messages/s6-workspace-owned-second-machine-facts.json"
 	stageJSON(t, root, secondMessagePath, answer("msg-s6-workspace-owned-second-machine-facts"))
 	secondOutput := stageCLI(t, "runtime", "task-complete", "--root", root, "--agent-id", owner, "--message", secondMessagePath)
 	second := s6DecodeCanonicalTaskCompleteOutput(t, secondOutput)
-	if second.Revision != alias.Revision+1 || second.Acceptance.ResultRevision != 2 ||
+	if second.Acceptance.ResultRevision != 2 ||
 		second.Acceptance.ResultRef == first.Acceptance.ResultRef || second.Acceptance.Replayed || !second.Acceptance.Current {
 		t.Fatalf("same professional answer with new captured machine facts did not create Result revision 2: %+v", second.Acceptance)
 	}
@@ -261,7 +288,7 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 		t.Fatalf("revision 2 did not bind the latest captured source/receipt facts: %+v", secondAccepted.WorkerCheckFacts)
 	}
 	s6AssertCurrentResultRefs(t, second.State, record, second.Acceptance.ResultRef)
-	s6AssertCanonicalBuilderTaskReceipt(t, fixture, second.Acceptance.ResultRef)
+	s6AssertIncompleteOwnedCheckReceipt(t, fixture, second.Acceptance.ResultRef, 2)
 
 	// Replaying the earlier accepted key reads its immutable Result snapshots;
 	// a later Worker checkout/source receipt cannot rebind historical proof.
@@ -282,6 +309,46 @@ func TestS6WorkspaceOwnedCheckCompletionReplayAliasAndNewMachineFacts(t *testing
 	if err := schema.NewEmbeddedValidator().ValidateBytes("agent-message.schema.json", mustJSONForS6(t, answer("msg-s6-workspace-owned-schema-check"))); err != nil {
 		t.Fatalf("same professional answer shape stopped matching the canonical completion schema: %v", err)
 	}
+}
+
+// This scenario explicitly reports an incomplete professional assessment and
+// an actual failing owned check. The shared receipt helper covers an older
+// result with no closing assessment and expects accepted_unassessed instead.
+func s6AssertIncompleteOwnedCheckReceipt(t *testing.T, fixture s6CanonicalResultCLIFixture, resultRef string, resultRevision int) {
+	t.Helper()
+	output := stageCLI(t, "runtime", "task-receipt", "--root", fixture.root, "--agent-id", fixture.record.OwnerAgentID, "--assignment-id", fixture.record.AssignmentID)
+	var receipt qualitygate.BuilderReceipt
+	if err := json.Unmarshal([]byte(output), &receipt); err != nil {
+		t.Fatalf("decode incomplete Builder receipt: %v\n%s", err, output)
+	}
+	if !receipt.DeliveryRecorded || !receipt.Accepted || receipt.WorkComplete || receipt.Integrated ||
+		receipt.ResponsibilityStatus != "accepted_incomplete" || receipt.ProfessionalStatus != "incomplete" ||
+		receipt.ResultRef != resultRef || receipt.ResultRevision != resultRevision ||
+		receipt.Owner != fixture.record.OwnerAgentID || receipt.AssignmentID != fixture.record.AssignmentID ||
+		receipt.TaskID != fixture.record.Task.ID || receipt.AssignmentRecord == nil || *receipt.AssignmentRecord != fixture.record.Reference() {
+		t.Fatalf("incomplete Builder receipt lost its original responsibility or conclusion: %+v", receipt)
+	}
+	if !slices.Contains(receipt.OwnPending, "closing_conditions_incomplete") || !slices.Contains(receipt.OwnPending, "owned_check_failed:0") {
+		t.Fatalf("incomplete Builder receipt lost the assessment or actual failing check: %+v", receipt.OwnPending)
+	}
+	for _, waiting := range receipt.WaitingOn {
+		if waiting.Owner == "main" && waiting.Reason == "integration_pending" && waiting.Ref != "" && waiting.Ref == receipt.MainCheckpointRef {
+			return
+		}
+	}
+	t.Fatalf("incomplete Builder receipt lost its Main integration responsibility: %+v", receipt.WaitingOn)
+}
+
+func assertS6CapturedOwnedTestFailure(t *testing.T, receiptPath, expectedMessage string) {
+	t.Helper()
+	output, err := os.ReadFile(filepath.Join(filepath.Dir(receiptPath), "output.log"))
+	if err != nil {
+		t.Fatalf("read captured WorkerCheck output: %v", err)
+	}
+	if !strings.Contains(string(output), "--- FAIL: TestCapturedWorkerCheckFailure") || !strings.Contains(string(output), expectedMessage) {
+		t.Fatalf("WorkerCheck did not execute the intended failing Go test: %s", output)
+	}
+	t.Logf("original isolated WorkerCheck executed the intended failing Go test: %s", expectedMessage)
 }
 
 type s6WorkspaceOwnedRun struct {

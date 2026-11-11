@@ -22,11 +22,87 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  target:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+    outputs:
+      commit: ${{ steps.target.outputs.commit }}
+      partition_tools: ${{ steps.target.outputs.partition_tools }}
+    steps:
+      - name: Validate version
+        run: '[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.VERSION }}
+          persist-credentials: false
+
+      - name: Resolve release target
+        id: target
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [[ -f tools/full-ci/run.sh && -f tools/full-ci/race-summary.py ]]; then
+            echo "partition_tools=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "partition_tools=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify:
+    needs: target
+    if: ${{ needs.target.outputs.partition_tools == 'true' }}
+    uses: ./.github/workflows/full-verification.yml
+    with:
+      ref: ${{ needs.target.outputs.commit }}
+
+  # Existing tags predate the partition tools. Preserve their original full
+  # verification command when rebuilding them via workflow_dispatch.
+  verify-legacy:
+    needs: target
+    if: ${{ needs.target.outputs.partition_tools == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release target
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.target.outputs.commit }}
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Initialize local runtime
+        run: go run ./cmd/loop-harness init --root .
+      - name: Verify complete suite and release installation
+        run: |
+          # The tag's original Verify step is the authority for its checks.
+          # Only known exact commands are accepted; a new/incomplete tag that
+          # lacks the partition tools cannot silently select weaker checks.
+          original=$(awk '
+            /^[[:space:]]*- name: Verify[[:space:]]*$/ { in_verify=1; next }
+            in_verify && /^[[:space:]]*- name:/ { exit }
+            in_verify && /^[[:space:]]*run: make ci-verify/ {
+              sub(/^[[:space:]]*run: /, ""); print; exit
+            }
+          ' .github/workflows/release.yml)
+          case "$original" in
+            'make ci-verify-full-shared-harness') make ci-verify-full-shared-harness ;;
+            'make ci-verify-full') make ci-verify-full ;;
+            'make ci-verify') make ci-verify ;;
+            *) echo "Unknown original Verify command for this release tag" >&2; exit 1 ;;
+          esac
+
   release:
+    needs: [target, verify, verify-legacy]
+    if: >-
+      ${{ !cancelled() && needs.target.result == 'success' &&
+          ((needs.target.outputs.partition_tools == 'true' && needs.verify.result == 'success') ||
+           (needs.target.outputs.partition_tools == 'false' && needs.verify-legacy.result == 'success')) }}
     runs-on: ubuntu-latest
 
-    # Configure required reviewers for the `release` environment in GitHub
-    # repository settings when a human release approval is desired.
+    # Preserve the existing human-controlled release environment.
     environment:
       name: release
 
@@ -37,10 +113,11 @@ jobs:
       VERSION: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
 
     steps:
-      - name: Checkout
+      - name: Checkout verified release target
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+          ref: ${{ needs.target.outputs.commit }}
+          persist-credentials: false
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -51,20 +128,21 @@ jobs:
       - name: Initialize local runtime
         run: go run ./cmd/loop-harness init --root .
 
-      - name: Validate version
-        run: |
-          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-
-      - name: Verify
-        run: make ci-verify-full-shared-harness
-
       - name: Build release package
         run: make release-checksum VERSION="$VERSION"
 
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          VERIFIED_COMMIT: ${{ needs.target.outputs.commit }}
         run: |
+          # Resolve both lightweight and annotated tags through the commits
+          # endpoint, and publish only while the tag names the tested target.
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/commits/$VERSION" --jq .sha)
+          if [[ "$actual" != "$VERIFIED_COMMIT" ]]; then
+            echo "Release tag $VERSION no longer points to the verified commit" >&2
+            exit 1
+          fi
           assets=(
             "dist/vibe-coding-loop-template-$VERSION.tar.gz"
             "dist/sha256sums-$VERSION.txt"

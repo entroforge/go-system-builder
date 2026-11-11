@@ -24,8 +24,9 @@ concurrency:
 
 jobs:
   verify:
+    if: ${{ inputs.full != true }}
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.full == true && 120 || 15 }}
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -41,9 +42,11 @@ jobs:
         run: go run ./cmd/loop-harness init --root .
 
       - name: Verify PR checks
-        if: ${{ inputs.full != true }}
         run: make ci-verify
 
-      - name: Verify complete suite and release installation
-        if: ${{ inputs.full == true }}
-        run: make ci-verify-full-shared-harness
+  full:
+    if: ${{ inputs.full == true }}
+    uses: ./.github/workflows/full-verification.yml
+    with:
+      ref: ${{ github.sha }}
+      job_timeout_minutes: 120
