@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/workstate"
@@ -214,6 +215,19 @@ func acceptWorkspaceOwnedCheckReceipt(root string, execution workspace.Execution
 	return acceptWorkspaceCheckReceipt(root, execution, index, ref)
 }
 
+// workspaceCheckReceiptToken names the original captured path without a
+// digest. Most runner paths are under the Main evidence directory, so use a
+// relative coordinate to avoid repeating a potentially long project root in
+// the journal. Keep an absolute fallback for cross-volume or aliased paths;
+// this helper does not decide whether a receipt is valid or belongs to us.
+func workspaceCheckReceiptToken(mainRoot, receiptPath string) string {
+	base := filepath.Join(mainRoot, ".claude", "evidence", "workspace-checks")
+	if rel, err := filepath.Rel(base, receiptPath); err == nil && filepath.IsLocal(rel) && filepath.Join(base, rel) == receiptPath {
+		return "relative-" + base64.RawURLEncoding.EncodeToString([]byte(rel))
+	}
+	return "absolute-" + base64.RawURLEncoding.EncodeToString([]byte(receiptPath))
+}
+
 func acceptWorkspaceCheckReceipt(root string, execution workspace.Execution, ownedIndex int, ref checkexec.ToolReceipt) error {
 	receive := func(state map[string]any) error {
 		b, err := workspace.Decode(state)
@@ -303,17 +317,16 @@ func acceptWorkspaceCheckReceipt(root string, execution workspace.Execution, own
 			return nil
 		}
 		transition, event, message := "WORKSPACE-CHECK", "workspace_check_received", "record actual tool receipt; no professional acceptance or gate PASS"
-		operation, intent := "tool-check", domainEventToken(ref.Path)
+		receiptToken := workspaceCheckReceiptToken(original.MainRoot, ref.Path)
+		operation, intent := "tool-check", "receipt-"+receiptToken
 		if ownedIndex >= 0 {
-			operation, intent = "owned-check", fmt.Sprintf("check%d", ownedIndex)
+			operation, intent = "owned-check", fmt.Sprintf("check%d-receipt-%s", ownedIndex, receiptToken)
 			transition, event = "WORKSPACE-OWNED-CHECK", "workspace_owned_check_received"
 			message = "record actual frozen WorkerCheck receipt; no professional acceptance or gate PASS"
 		}
-		// The responsibility is the Worker slot that produced the receipt; the
-		// intent is the exact captured receipt, or the frozen owner-run check
-		// index it belongs to. The replay guard above already refuses a second
-		// registration of the same receipt, so this intent key is stable and
-		// carries no Runtime write count (G18 §1.3).
+		// The Worker slot and the actual captured path identify this run.
+		// Replays of an already recorded receipt return above; independent
+		// runs of the same check receive distinct, reversible event identities.
 		eventID, idempotencyKey := workspaceEventIdentity(execution.RuntimeID, operation, execution.AssignmentID, execution.AgentID, execution.Generation, intent, "")
 		_, err = writer.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: transition, Event: event, Actor: execution.AgentID, RuntimeID: execution.RuntimeID, IdempotencyKey: idempotencyKey, RetainLastTransition: true, ProducerResponsibility: "owned_check", OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
 			return receive(state)

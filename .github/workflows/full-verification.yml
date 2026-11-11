@@ -1,0 +1,121 @@
+name: Complete verification
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Immutable commit to verify
+        required: true
+        type: string
+      job_timeout_minutes:
+        description: Maximum time per verification job
+        required: false
+        default: 360
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  normal:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run all normal checks
+        env:
+          FULL_CI_RESULTS: ${{ runner.temp }}/full-ci-results
+        run: bash tools/full-ci/run.sh normal
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: full-ci-normal
+          path: ${{ runner.temp }}/full-ci-results/
+          if-no-files-found: error
+
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run all non-CLI race packages
+        env:
+          FULL_CI_RESULTS: ${{ runner.temp }}/full-ci-results
+        run: bash tools/full-ci/run.sh race
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: full-ci-non-cli-race
+          path: ${{ runner.temp }}/full-ci-results/
+          if-no-files-found: error
+
+  cli-race:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run CLI race shard
+        env:
+          FULL_CI_RESULTS: ${{ runner.temp }}/full-ci-results
+        run: bash tools/full-ci/run.sh cli '${{ matrix.shard }}'
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: cli-race-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/full-ci-results/
+          if-no-files-found: error
+
+  coverage:
+    # A failure or cancellation in any job must prevent publishing. This job
+    # still runs to make that outcome explicit and preserve the shard reports.
+    if: ${{ always() }}
+    needs: [normal, race, cli-race]
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Test verification tooling
+        run: python3 -m unittest discover -s tools/full-ci -p 'test_*.py'
+      - name: Require all verification jobs to succeed
+        env:
+          NORMAL_RESULT: ${{ needs.normal.result }}
+          RACE_RESULT: ${{ needs.race.result }}
+          CLI_RACE_RESULT: ${{ needs.cli-race.result }}
+        run: |
+          test "$NORMAL_RESULT" = success
+          test "$RACE_RESULT" = success
+          test "$CLI_RACE_RESULT" = success
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-race-shard-*
+          path: collected
+      - name: Verify complete CLI race coverage
+        run: python3 tools/full-ci/race-summary.py aggregate collected "$(git rev-parse HEAD)"
